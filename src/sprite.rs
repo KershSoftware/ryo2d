@@ -19,7 +19,11 @@ impl Sprite {
       (width * height * 4) as usize,
       "Data length must match width * height * 4"
     );
-    Sprite { data, width, height }
+    Sprite {
+      data,
+      width,
+      height,
+    }
   }
 
   /// Create a solid color rectangle sprite
@@ -31,7 +35,11 @@ impl Sprite {
       pixel[2] = b;
       pixel[3] = a;
     }
-    Sprite { data, width, height }
+    Sprite {
+      data,
+      width,
+      height,
+    }
   }
 
   /// Load a sprite from an image file (PNG, JPEG, etc.)
@@ -44,7 +52,11 @@ impl Sprite {
     let height = img.height();
     let data = img.into_raw();
 
-    Ok(Sprite { data, width, height })
+    Ok(Sprite {
+      data,
+      width,
+      height,
+    })
   }
 
   /// Get the sprite width
@@ -58,7 +70,7 @@ impl Sprite {
   }
 
   /// Draw the sprite to a pixel buffer at the given position
-  /// 
+  ///
   /// # Arguments
   /// * `frame` - The pixel buffer (RGBA, 4 bytes per pixel)
   /// * `frame_width` - Width of the frame buffer
@@ -139,7 +151,7 @@ pub struct AnimatedSprite {
 
 impl AnimatedSprite {
   /// Create an animated sprite from a horizontal sprite sheet
-  /// 
+  ///
   /// # Arguments
   /// * `sheet` - The sprite sheet (frames arranged horizontally)
   /// * `frame_count` - Number of frames in the sheet
@@ -226,5 +238,107 @@ impl AnimatedSprite {
   /// Get the frame dimensions
   pub fn frame_size(&self) -> (u32, u32) {
     (self.frame_width, self.frame_height)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn solid_rect_creates_correct_size() {
+    let sprite = Sprite::solid_rect(10, 20, 255, 0, 0, 255);
+    assert_eq!(sprite.width(), 10);
+    assert_eq!(sprite.height(), 20);
+  }
+
+  #[test]
+  fn solid_rect_fills_with_color() {
+    let sprite = Sprite::solid_rect(2, 2, 100, 150, 200, 255);
+    // Check first pixel
+    assert_eq!(sprite.data[0], 100); // R
+    assert_eq!(sprite.data[1], 150); // G
+    assert_eq!(sprite.data[2], 200); // B
+    assert_eq!(sprite.data[3], 255); // A
+  }
+
+  #[test]
+  fn from_rgba_validates_size() {
+    let data = vec![0u8; 4 * 4 * 4]; // 4x4 sprite
+    let sprite = Sprite::from_rgba(data, 4, 4);
+    assert_eq!(sprite.width(), 4);
+    assert_eq!(sprite.height(), 4);
+  }
+
+  #[test]
+  #[should_panic(expected = "Data length must match")]
+  fn from_rgba_panics_on_wrong_size() {
+    let data = vec![0u8; 10]; // Wrong size
+    Sprite::from_rgba(data, 4, 4);
+  }
+
+  #[test]
+  fn draw_opaque_sprite() {
+    let sprite = Sprite::solid_rect(2, 2, 255, 0, 0, 255);
+    let mut frame = vec![0u8; 4 * 4 * 4]; // 4x4 frame, all black
+
+    sprite.draw(&mut frame, 4, 4, 1, 1);
+
+    // Check pixel at (1, 1) - should be red
+    let idx = (1 * 4 + 1) * 4;
+    assert_eq!(frame[idx], 255); // R
+    assert_eq!(frame[idx + 1], 0); // G
+    assert_eq!(frame[idx + 2], 0); // B
+
+    // Check pixel at (0, 0) - should still be black
+    assert_eq!(frame[0], 0);
+  }
+
+  #[test]
+  fn draw_clips_to_frame_bounds() {
+    let sprite = Sprite::solid_rect(4, 4, 255, 255, 255, 255);
+    let mut frame = vec![0u8; 2 * 2 * 4]; // 2x2 frame
+
+    // Draw sprite at (-1, -1), only bottom-right 1x1 should appear at (0,0)
+    sprite.draw(&mut frame, 2, 2, -1, -1);
+
+    // Pixel at (0, 0) should be white
+    assert_eq!(frame[0], 255);
+  }
+
+  #[test]
+  fn draw_offscreen_does_nothing() {
+    let sprite = Sprite::solid_rect(2, 2, 255, 0, 0, 255);
+    let mut frame = vec![0u8; 4 * 4 * 4];
+    let original = frame.clone();
+
+    sprite.draw(&mut frame, 4, 4, 100, 100); // Way off screen
+
+    assert_eq!(frame, original);
+  }
+
+  #[test]
+  fn draw_transparent_sprite_is_skipped() {
+    let sprite = Sprite::solid_rect(2, 2, 255, 0, 0, 0); // Alpha = 0
+    let mut frame = vec![128u8; 4 * 4 * 4]; // Gray background
+    let original = frame.clone();
+
+    sprite.draw(&mut frame, 4, 4, 0, 0);
+
+    assert_eq!(frame, original); // Should be unchanged
+  }
+
+  #[test]
+  fn animated_sprite_advances_frames() {
+    let sheet = Sprite::solid_rect(30, 10, 255, 255, 255, 255); // 3 frames of 10x10
+    let mut anim = AnimatedSprite::from_sheet(sheet, 3, 10.0); // 10 FPS
+
+    assert_eq!(anim.current_frame, 0);
+
+    anim.update(0.1); // 100ms = 1 frame at 10 FPS
+    assert_eq!(anim.current_frame, 1);
+
+    anim.update(0.2); // 200ms = 2 more frames
+    assert_eq!(anim.current_frame, 0); // Wrapped around (1 + 2) % 3 = 0
   }
 }

@@ -6,6 +6,7 @@
 #   ./run          - Run the engine with hot-reload
 #   ./run check    - Fast compilation check with hot-reload
 #   ./run lint     - Linting with hot-reload
+#   ./run test     - Run tests with hot-reload
 
 param(
     [Parameter(Position = 0)]
@@ -34,6 +35,9 @@ switch ($Command.ToLower()) {
     "lint" {
         cargo watch -c -x clippy
     }
+    "test" {
+        cargo watch -c -x test
+    }
     default {
         Write-Host "Unknown command: $Command"
         Write-Host ""
@@ -41,6 +45,7 @@ switch ($Command.ToLower()) {
         Write-Host "  ./run          - Run the engine with hot-reload"
         Write-Host "  ./run check    - Fast compilation check with hot-reload"
         Write-Host "  ./run lint     - Linting with hot-reload"
+        Write-Host "  ./run test     - Run tests with hot-reload"
         exit 1
     }
 }

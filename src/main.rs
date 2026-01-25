@@ -1,3 +1,4 @@
+mod ecs;
 mod engine;
 mod input;
 mod sprite;

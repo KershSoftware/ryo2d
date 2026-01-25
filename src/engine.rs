@@ -8,6 +8,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use crate::ecs::{Entity, SpriteRenderer, Transform, Velocity, World};
 use crate::input::InputState;
 use crate::sprite::Sprite;
 
@@ -48,7 +49,7 @@ impl TimeState {
     let now = Instant::now();
     self.delta_time = now.duration_since(self.frame_start);
     self.frame_start = now;
-    
+
     // Add delta to accumulator, but cap it to prevent spiral of death
     // If we fall too far behind, we just drop updates rather than freezing
     self.accumulator += self.delta_time;
@@ -56,7 +57,7 @@ impl TimeState {
     if self.accumulator > max_accumulator {
       self.accumulator = max_accumulator;
     }
-    
+
     self.frame_count += 1;
   }
 
@@ -125,26 +126,37 @@ pub struct Engine {
   pixels: Option<Pixels<'static>>,
   time: Option<TimeState>,
   input: InputState,
-  // Player state
-  player_x: f32,
-  player_y: f32,
-  player_sprite: Option<Sprite>,
+  // ECS World
+  world: World,
+  // Player entity (for demo purposes, we track this specifically)
+  player: Option<Entity>,
 }
 
 impl Engine {
   fn new(config: EngineConfig) -> Self {
-    // Create a simple player sprite (32x32 white square with colored border)
+    let mut world = World::new();
+
+    // Create a player entity with components
+    let player = world.spawn();
+
+    // Add Transform component (position in world)
+    world.add_component(player, Transform::new(100.0, 100.0));
+
+    // Add Velocity component (for movement)
+    world.add_component(player, Velocity::zero());
+
+    // Add SpriteRenderer component (visual representation)
     let player_sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
-    
+    world.add_component(player, SpriteRenderer::new(player_sprite));
+
     Engine {
       config,
       window: None,
       pixels: None,
       time: None,
       input: InputState::new(),
-      player_x: 100.0,
-      player_y: 100.0,
-      player_sprite: Some(player_sprite),
+      world,
+      player: Some(player),
     }
   }
 
@@ -162,44 +174,71 @@ impl Engine {
   }
 
   /// Fixed timestep update - called multiple times per frame if needed
+  ///
+  /// This is now an ECS-style "system" that operates on entities with components.
   fn update(&mut self, dt: f32) {
     use winit::keyboard::KeyCode;
-    
-    // Player movement speed (pixels per second)
-    let speed = 200.0;
-    
-    // Handle WASD / Arrow key movement
-    if self.input.key_down(KeyCode::KeyW) || self.input.key_down(KeyCode::ArrowUp) {
-      self.player_y -= speed * dt;
+
+    // === Input System: Set player velocity based on input ===
+    // This demonstrates querying a specific entity and modifying its components
+    if let Some(player) = self.player {
+      if let Some(mut velocity) = self.world.get_component_mut::<Velocity>(player) {
+        let speed = 200.0;
+        velocity.dx = 0.0;
+        velocity.dy = 0.0;
+
+        if self.input.key_down(KeyCode::KeyW) || self.input.key_down(KeyCode::ArrowUp) {
+          velocity.dy = -speed;
+        }
+        if self.input.key_down(KeyCode::KeyS) || self.input.key_down(KeyCode::ArrowDown) {
+          velocity.dy = speed;
+        }
+        if self.input.key_down(KeyCode::KeyA) || self.input.key_down(KeyCode::ArrowLeft) {
+          velocity.dx = -speed;
+        }
+        if self.input.key_down(KeyCode::KeyD) || self.input.key_down(KeyCode::ArrowRight) {
+          velocity.dx = speed;
+        }
+      }
     }
-    if self.input.key_down(KeyCode::KeyS) || self.input.key_down(KeyCode::ArrowDown) {
-      self.player_y += speed * dt;
+
+    // === Movement System: Apply velocity to transform ===
+    // This demonstrates iterating over all entities with specific components
+    let entities = self.world.entities_with_two::<Transform, Velocity>();
+    for entity in entities {
+      // Get velocity first (immutable borrow)
+      let (dx, dy) = {
+        let velocity = self.world.get_component::<Velocity>(entity).unwrap();
+        (velocity.dx, velocity.dy)
+      };
+
+      // Then modify transform (mutable borrow)
+      if let Some(mut transform) = self.world.get_component_mut::<Transform>(entity) {
+        transform.x += dx * dt;
+        transform.y += dy * dt;
+
+        // Clamp to screen bounds (hardcoded for now, will be improved with camera system)
+        let max_x = (self.config.width - 32) as f32;
+        let max_y = (self.config.height - 32) as f32;
+        transform.x = transform.x.clamp(0.0, max_x);
+        transform.y = transform.y.clamp(0.0, max_y);
+      }
     }
-    if self.input.key_down(KeyCode::KeyA) || self.input.key_down(KeyCode::ArrowLeft) {
-      self.player_x -= speed * dt;
-    }
-    if self.input.key_down(KeyCode::KeyD) || self.input.key_down(KeyCode::ArrowRight) {
-      self.player_x += speed * dt;
-    }
-    
-    // Clamp player to screen bounds
-    let max_x = (self.config.width - 32) as f32;
-    let max_y = (self.config.height - 32) as f32;
-    self.player_x = self.player_x.clamp(0.0, max_x);
-    self.player_y = self.player_y.clamp(0.0, max_y);
   }
 
   /// Render the current frame
+  ///
+  /// This is the "Render System" - it draws all entities with Transform + SpriteRenderer
   fn render(&mut self, _alpha: f32) {
     // Get frame buffer
     let frame = match &mut self.pixels {
       Some(pixels) => pixels.frame_mut(),
       None => return,
     };
-    
+
     let frame_width = self.config.width;
     let frame_height = self.config.height;
-    
+
     // Fill background with dark blue
     for pixel in frame.chunks_exact_mut(4) {
       pixel[0] = 0x1e;
@@ -207,10 +246,22 @@ impl Engine {
       pixel[2] = 0x5e;
       pixel[3] = 0xff;
     }
-    
-    // Draw the player sprite
-    if let Some(sprite) = &self.player_sprite {
-      sprite.draw(frame, frame_width, frame_height, self.player_x as i32, self.player_y as i32);
+
+    // === Render System: Draw all entities with Transform + SpriteRenderer ===
+    let entities = self.world.entities_with_two::<Transform, SpriteRenderer>();
+    for entity in entities {
+      let transform = self.world.get_component::<Transform>(entity).unwrap();
+      let sprite_renderer = self.world.get_component::<SpriteRenderer>(entity).unwrap();
+
+      if sprite_renderer.visible {
+        sprite_renderer.sprite.draw(
+          frame,
+          frame_width,
+          frame_height,
+          transform.x as i32,
+          transform.y as i32,
+        );
+      }
     }
   }
 }
@@ -219,7 +270,10 @@ impl ApplicationHandler for Engine {
   fn resumed(&mut self, event_loop: &ActiveEventLoop) {
     let window_attrs = WindowAttributes::default()
       .with_title(&self.config.title)
-      .with_inner_size(winit::dpi::LogicalSize::new(self.config.width, self.config.height))
+      .with_inner_size(winit::dpi::LogicalSize::new(
+        self.config.width,
+        self.config.height,
+      ))
       .with_resizable(false);
 
     let window = Arc::new(
@@ -229,17 +283,24 @@ impl ApplicationHandler for Engine {
     );
 
     let window_size = window.inner_size();
-    let surface_texture = SurfaceTexture::new(window_size.width, window_size.height, Arc::clone(&window));
+    let surface_texture =
+      SurfaceTexture::new(window_size.width, window_size.height, Arc::clone(&window));
 
     let pixels = Pixels::new(self.config.width, self.config.height, surface_texture)
       .expect("Failed to create pixel buffer");
 
     self.window = Some(window);
     self.pixels = Some(pixels);
-    self.time = Some(TimeState::new(self.config.target_fps, self.config.physics_hz));
+    self.time = Some(TimeState::new(
+      self.config.target_fps,
+      self.config.physics_hz,
+    ));
 
     println!("Engine initialized successfully!");
-    println!("Game loop using fixed timestep: {}Hz updates", self.config.physics_hz);
+    println!(
+      "Game loop using fixed timestep: {}Hz updates",
+      self.config.physics_hz
+    );
   }
 
   fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -275,7 +336,12 @@ impl ApplicationHandler for Engine {
         }
 
         // Fixed timestep update loop
-        while self.time.as_ref().map(|t| t.should_update()).unwrap_or(false) {
+        while self
+          .time
+          .as_ref()
+          .map(|t| t.should_update())
+          .unwrap_or(false)
+        {
           let fixed_dt = self.time.as_ref().unwrap().fixed_dt();
           self.update(fixed_dt);
           if let Some(time) = &mut self.time {
@@ -284,7 +350,11 @@ impl ApplicationHandler for Engine {
         }
 
         // Render with interpolation alpha
-        let alpha = self.time.as_ref().map(|t| t.interpolation_alpha()).unwrap_or(0.0);
+        let alpha = self
+          .time
+          .as_ref()
+          .map(|t| t.interpolation_alpha())
+          .unwrap_or(0.0);
         self.render(alpha);
 
         // Actually draw to screen
@@ -357,5 +427,109 @@ impl EngineBuilder {
 impl Default for EngineBuilder {
   fn default() -> Self {
     Self::new()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn engine_config_has_sensible_defaults() {
+    let config = EngineConfig::default();
+    assert_eq!(config.title, "Ferrum2D");
+    assert_eq!(config.width, 800);
+    assert_eq!(config.height, 600);
+    assert_eq!(config.target_fps, 60);
+    assert_eq!(config.physics_hz, 60);
+  }
+
+  #[test]
+  fn engine_builder_sets_title() {
+    let builder = EngineBuilder::new().title("Test Game");
+    assert_eq!(builder.config.title, "Test Game");
+  }
+
+  #[test]
+  fn engine_builder_sets_resolution() {
+    let builder = EngineBuilder::new().resolution(1920, 1080);
+    assert_eq!(builder.config.width, 1920);
+    assert_eq!(builder.config.height, 1080);
+  }
+
+  #[test]
+  fn engine_builder_sets_fps() {
+    let builder = EngineBuilder::new().fps(144);
+    assert_eq!(builder.config.target_fps, 144);
+  }
+
+  #[test]
+  fn engine_builder_sets_physics_hz() {
+    let builder = EngineBuilder::new().physics_hz(120);
+    assert_eq!(builder.config.physics_hz, 120);
+  }
+
+  #[test]
+  fn engine_builder_chains() {
+    let builder = EngineBuilder::new()
+      .title("Chained")
+      .resolution(640, 480)
+      .fps(30)
+      .physics_hz(50);
+
+    assert_eq!(builder.config.title, "Chained");
+    assert_eq!(builder.config.width, 640);
+    assert_eq!(builder.config.height, 480);
+    assert_eq!(builder.config.target_fps, 30);
+    assert_eq!(builder.config.physics_hz, 50);
+  }
+
+  #[test]
+  fn time_state_initializes_correctly() {
+    let time = TimeState::new(60, 120);
+    let expected = 1.0 / 120.0;
+    assert!((time.fixed_dt() - expected).abs() < 0.0001);
+    assert!(!time.should_update()); // No time accumulated yet
+  }
+
+  #[test]
+  fn time_state_accumulator_logic() {
+    let mut time = TimeState::new(60, 60);
+
+    // Simulate adding time
+    time.accumulator = Duration::from_secs_f64(1.0 / 60.0);
+    assert!(time.should_update());
+
+    time.consume_update();
+    assert!(!time.should_update());
+  }
+
+  #[test]
+  fn time_state_caps_accumulator() {
+    let mut time = TimeState::new(60, 60);
+
+    // Simulate a huge frame spike
+    time.delta_time = Duration::from_secs(1); // 1 second!
+    time.accumulator = Duration::ZERO;
+
+    time.begin_frame();
+
+    // Should be capped to 5 * fixed_timestep
+    let max = time.fixed_timestep * 5;
+    assert!(time.accumulator <= max);
+  }
+
+  #[test]
+  fn interpolation_alpha_is_bounded() {
+    let mut time = TimeState::new(60, 60);
+
+    time.accumulator = Duration::ZERO;
+    assert_eq!(time.interpolation_alpha(), 0.0);
+
+    time.accumulator = time.fixed_timestep;
+    assert_eq!(time.interpolation_alpha(), 1.0);
+
+    time.accumulator = time.fixed_timestep * 2; // Over 1.0
+    assert_eq!(time.interpolation_alpha(), 1.0); // Clamped
   }
 }

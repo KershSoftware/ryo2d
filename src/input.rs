@@ -173,3 +173,91 @@ impl InputState {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn key_down_tracks_held_keys() {
+    let mut input = InputState::new();
+
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
+    assert!(input.key_down(KeyCode::KeyW));
+    assert!(!input.key_down(KeyCode::KeyA));
+
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Released);
+    assert!(!input.key_down(KeyCode::KeyW));
+  }
+
+  #[test]
+  fn key_pressed_only_fires_once() {
+    let mut input = InputState::new();
+
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
+    assert!(input.key_pressed(KeyCode::KeyW));
+
+    // Simulate holding the key (repeated press events)
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
+    assert!(input.key_pressed(KeyCode::KeyW)); // Still true this frame
+
+    // Next frame - pressed should clear
+    input.begin_frame();
+    assert!(!input.key_pressed(KeyCode::KeyW));
+    assert!(input.key_down(KeyCode::KeyW)); // But still held
+  }
+
+  #[test]
+  fn key_released_fires_on_release() {
+    let mut input = InputState::new();
+
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Released);
+    assert!(input.key_released(KeyCode::KeyW));
+
+    input.begin_frame();
+    assert!(!input.key_released(KeyCode::KeyW));
+  }
+
+  #[test]
+  fn mouse_position_tracking() {
+    let mut input = InputState::new();
+
+    input.handle_mouse_move(100.0, 200.0);
+    assert_eq!(input.mouse_position(), (100.0, 200.0));
+    assert_eq!(input.mouse_delta(), (100.0, 200.0)); // Delta from (0,0)
+
+    input.begin_frame();
+    input.handle_mouse_move(150.0, 250.0);
+    assert_eq!(input.mouse_delta(), (50.0, 50.0)); // Delta from previous position
+  }
+
+  #[test]
+  fn mouse_button_tracking() {
+    let mut input = InputState::new();
+
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    assert!(input.mouse_down(MouseButton::Left));
+    assert!(input.mouse_pressed(MouseButton::Left));
+
+    input.begin_frame();
+    assert!(input.mouse_down(MouseButton::Left));
+    assert!(!input.mouse_pressed(MouseButton::Left));
+
+    input.handle_mouse_button(MouseButton::Left, ElementState::Released);
+    assert!(!input.mouse_down(MouseButton::Left));
+    assert!(input.mouse_released(MouseButton::Left));
+  }
+
+  #[test]
+  fn scroll_accumulates_within_frame() {
+    let mut input = InputState::new();
+
+    input.handle_scroll(MouseScrollDelta::LineDelta(1.0, 2.0));
+    input.handle_scroll(MouseScrollDelta::LineDelta(0.5, 1.0));
+    assert_eq!(input.scroll_delta(), (1.5, 3.0));
+
+    input.begin_frame();
+    assert_eq!(input.scroll_delta(), (0.0, 0.0));
+  }
+}
