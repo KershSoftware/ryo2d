@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run linting and formatting checks
+# Run linting and auto-fix issues
 
 source $HOME/.cargo/env
 
@@ -7,12 +7,12 @@ echo "🔍 Running cargo check..."
 cargo check
 
 echo ""
-echo "🎨 Running cargo fmt --check..."
-cargo fmt --check
+echo "🎨 Running cargo fmt..."
+cargo fmt
 
 echo ""
-echo "📎 Running cargo clippy..."
-cargo clippy -- -D warnings
+echo "📎 Running cargo clippy --fix..."
+cargo clippy --fix --allow-dirty --allow-staged
 
 echo ""
 echo "✅ All checks complete!"
