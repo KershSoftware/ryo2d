@@ -1,3 +1,3 @@
 fn main() {
-    println!("Rust 2D Game Engine");
+    println!("Ferrum2D - A Rust 2D Game Engine");
 }

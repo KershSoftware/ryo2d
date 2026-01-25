@@ -1,5 +1,5 @@
 [package]
-name = "rust-2d-engine"
+name = "ferrum2d"
 version = "0.0.1"
 edition = "2024"
 
