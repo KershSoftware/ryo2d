@@ -12,7 +12,7 @@ Cargo.lock
 *.swo
 *~
 AGENTS.md
-.github/skills/
+.github/skills/*
 
 # OS
 .DS_Store
