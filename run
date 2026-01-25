@@ -1,0 +1,5 @@
+#!/bin/bash
+# Run the Rust 2D engine with watching
+
+source $HOME/.cargo/env
+cargo watch -c -x run

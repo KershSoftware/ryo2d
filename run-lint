@@ -1,0 +1,18 @@
+#!/bin/bash
+# Run linting and formatting checks
+
+source $HOME/.cargo/env
+
+echo "🔍 Running cargo check..."
+cargo check
+
+echo ""
+echo "🎨 Running cargo fmt --check..."
+cargo fmt --check
+
+echo ""
+echo "📎 Running cargo clippy..."
+cargo clippy -- -D warnings
+
+echo ""
+echo "✅ All checks complete!"

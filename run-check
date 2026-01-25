@@ -1,0 +1,5 @@
+#!/bin/bash
+# Run cargo check with continuous watching (faster feedback)
+
+source $HOME/.cargo/env
+cargo watch -c -x check
