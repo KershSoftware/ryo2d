@@ -9,6 +9,7 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::input::InputState;
+use crate::sprite::Sprite;
 
 /// Tracks timing state for the game loop
 #[derive(Debug)]
@@ -124,16 +125,26 @@ pub struct Engine {
   pixels: Option<Pixels<'static>>,
   time: Option<TimeState>,
   input: InputState,
+  // Player state
+  player_x: f32,
+  player_y: f32,
+  player_sprite: Option<Sprite>,
 }
 
 impl Engine {
   fn new(config: EngineConfig) -> Self {
+    // Create a simple player sprite (32x32 white square with colored border)
+    let player_sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
+    
     Engine {
       config,
       window: None,
       pixels: None,
       time: None,
       input: InputState::new(),
+      player_x: 100.0,
+      player_y: 100.0,
+      player_sprite: Some(player_sprite),
     }
   }
 
@@ -151,61 +162,55 @@ impl Engine {
   }
 
   /// Fixed timestep update - called multiple times per frame if needed
-  fn update(&mut self, _dt: f32) {
-    // This will be called at a fixed rate (60Hz by default)
-    // Game logic, physics, input handling goes here
-    
-    // Demo: Exit on Escape key
+  fn update(&mut self, dt: f32) {
     use winit::keyboard::KeyCode;
-    if self.input.key_pressed(KeyCode::Escape) {
-      println!("Escape pressed!");
+    
+    // Player movement speed (pixels per second)
+    let speed = 200.0;
+    
+    // Handle WASD / Arrow key movement
+    if self.input.key_down(KeyCode::KeyW) || self.input.key_down(KeyCode::ArrowUp) {
+      self.player_y -= speed * dt;
     }
+    if self.input.key_down(KeyCode::KeyS) || self.input.key_down(KeyCode::ArrowDown) {
+      self.player_y += speed * dt;
+    }
+    if self.input.key_down(KeyCode::KeyA) || self.input.key_down(KeyCode::ArrowLeft) {
+      self.player_x -= speed * dt;
+    }
+    if self.input.key_down(KeyCode::KeyD) || self.input.key_down(KeyCode::ArrowRight) {
+      self.player_x += speed * dt;
+    }
+    
+    // Clamp player to screen bounds
+    let max_x = (self.config.width - 32) as f32;
+    let max_y = (self.config.height - 32) as f32;
+    self.player_x = self.player_x.clamp(0.0, max_x);
+    self.player_y = self.player_y.clamp(0.0, max_y);
   }
 
   /// Render the current frame
   fn render(&mut self, _alpha: f32) {
-    use winit::keyboard::KeyCode;
-    use winit::event::MouseButton;
+    // Get frame buffer
+    let frame = match &mut self.pixels {
+      Some(pixels) => pixels.frame_mut(),
+      None => return,
+    };
     
-    // alpha is for interpolation between physics states
-    if let Some(pixels) = &mut self.pixels {
-      let frame = pixels.frame_mut();
-      let width = self.config.width as usize;
-      
-      // Base color - changes when Space is held
-      let (base_r, base_g, base_b) = if self.input.key_down(KeyCode::Space) {
-        (0x40u8, 0x80u8, 0x40u8) // Green when space held
-      } else {
-        (0x1eu8, 0x40u8, 0x5eu8) // Default blue
-      };
-      
-      // Fill background
-      for pixel in frame.chunks_exact_mut(4) {
-        pixel[0] = base_r;
-        pixel[1] = base_g;
-        pixel[2] = base_b;
-        pixel[3] = 0xff;
-      }
-      
-      // Draw a cursor at mouse position (white square)
-      let (mx, my) = self.input.mouse_position();
-      let cursor_size = if self.input.mouse_down(MouseButton::Left) { 20 } else { 10 };
-      let cursor_color = if self.input.mouse_down(MouseButton::Right) {
-        [0xffu8, 0x00, 0x00, 0xff] // Red when right-click
-      } else {
-        [0xffu8, 0xff, 0xff, 0xff] // White normally
-      };
-      
-      for dy in 0..cursor_size {
-        for dx in 0..cursor_size {
-          let px = mx as usize + dx;
-          let py = my as usize + dy;
-          if px < self.config.width as usize && py < self.config.height as usize {
-            let idx = (py * width + px) * 4;
-            frame[idx..idx + 4].copy_from_slice(&cursor_color);
-          }
-        }
-      }
+    let frame_width = self.config.width;
+    let frame_height = self.config.height;
+    
+    // Fill background with dark blue
+    for pixel in frame.chunks_exact_mut(4) {
+      pixel[0] = 0x1e;
+      pixel[1] = 0x40;
+      pixel[2] = 0x5e;
+      pixel[3] = 0xff;
+    }
+    
+    // Draw the player sprite
+    if let Some(sprite) = &self.player_sprite {
+      sprite.draw(frame, frame_width, frame_height, self.player_x as i32, self.player_y as i32);
     }
   }
 }

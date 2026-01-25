@@ -1,5 +1,6 @@
 mod engine;
 mod input;
+mod sprite;
 
 use engine::EngineBuilder;
 
