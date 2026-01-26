@@ -2,6 +2,21 @@
 
 use crate::sprite::Sprite;
 
+/// Common render layers for organizing draw order
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RenderLayer {
+  Background = -1000,
+  Default = 0,
+  Foreground = 1000,
+  UI = 2000,
+}
+
+impl RenderLayer {
+  pub fn as_z_order(self) -> i32 {
+    self as i32
+  }
+}
+
 /// Position and rotation in 2D space
 #[derive(Debug, Clone)]
 pub struct Transform {

@@ -6,6 +6,6 @@ mod entity;
 mod world;
 
 pub use component::Component;
-pub use components::{SpriteRenderer, Transform, Velocity};
+pub use components::{RenderLayer, SpriteRenderer, Transform, Velocity};
 pub use entity::Entity;
 pub use world::World;

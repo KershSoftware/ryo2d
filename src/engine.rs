@@ -149,10 +149,15 @@ impl Engine {
     world.add_component(player, Velocity::zero());
 
     // Add SpriteRenderer component (visual representation)
+    // Player draws on top of background (z_order = 10)
     let player_sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
-    world.add_component(player, SpriteRenderer::new(player_sprite));
+    world.add_component(
+      player,
+      SpriteRenderer::new(player_sprite).with_z_order(10),
+    );
 
     // Create some background markers so zoom is visible
+    // Background layer (z_order = 0, drawn first)
     for row in 0..10 {
       for col in 0..10 {
         let marker = world.spawn();
@@ -166,6 +171,7 @@ impl Engine {
           (0x40, 0x60, 0x80) // blue-gray
         };
         let marker_sprite = Sprite::solid_rect(16, 16, color.0, color.1, color.2, 0xff);
+        // z_order = 0 (default, drawn behind player)
         world.add_component(marker, SpriteRenderer::new(marker_sprite));
       }
     }
@@ -284,8 +290,19 @@ impl Engine {
     }
 
     // === Render System: Draw all entities with Transform + SpriteRenderer ===
-    let entities = self.world.entities_with_two::<Transform, SpriteRenderer>();
-    for entity in entities {
+    // Collect entities and sort by z_order (lower values drawn first, higher on top)
+    let mut entities: Vec<_> = self
+      .world
+      .entities_with_two::<Transform, SpriteRenderer>()
+      .into_iter()
+      .filter_map(|entity| {
+        let z = self.world.get_component::<SpriteRenderer>(entity)?.z_order;
+        Some((entity, z))
+      })
+      .collect();
+    entities.sort_by_key(|(_, z)| *z);
+
+    for (entity, _) in entities {
       let transform = self.world.get_component::<Transform>(entity).unwrap();
       let sprite_renderer = self.world.get_component::<SpriteRenderer>(entity).unwrap();
 
