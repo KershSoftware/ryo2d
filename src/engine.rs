@@ -9,9 +9,9 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::camera::Camera;
-use crate::ecs::{Entity, SpriteRenderer, Transform, Velocity, World};
+use crate::ecs::{SpriteRenderer, Transform, Velocity, World};
+use crate::game::{Game, GameContext};
 use crate::input::InputState;
-use crate::sprite::Sprite;
 
 /// Tracks timing state for the game loop
 #[derive(Debug)]
@@ -129,55 +129,23 @@ pub struct Engine {
   input: InputState,
   // ECS World
   world: World,
-  // Player entity (for demo purposes, we track this specifically)
-  player: Option<Entity>,
   // Camera for world-to-screen transformations
   camera: Camera,
+  // User-defined game logic (Option to allow taking ownership temporarily)
+  game: Option<Box<dyn Game>>,
+  // Whether init has been called
+  initialized: bool,
 }
 
 impl Engine {
-  fn new(config: EngineConfig) -> Self {
-    let mut world = World::new();
-
-    // Create a player entity with components
-    let player = world.spawn();
-
-    // Add Transform component (position in world)
-    world.add_component(player, Transform::new(400.0, 300.0));
-
-    // Add Velocity component (for movement)
-    world.add_component(player, Velocity::zero());
-
-    // Add SpriteRenderer component (visual representation)
-    // Player draws on top of background (z_order = 10)
-    let player_sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
-    world.add_component(
-      player,
-      SpriteRenderer::new(player_sprite).with_z_order(10),
+  fn new(config: EngineConfig, game: Box<dyn Game>) -> Self {
+    let world = World::new();
+    let camera = Camera::centered_at(
+      config.width as f32 / 2.0,
+      config.height as f32 / 2.0,
+      config.width,
+      config.height,
     );
-
-    // Create some background markers so zoom is visible
-    // Background layer (z_order = 0, drawn first)
-    for row in 0..10 {
-      for col in 0..10 {
-        let marker = world.spawn();
-        let x = col as f32 * 100.0;
-        let y = row as f32 * 100.0;
-        world.add_component(marker, Transform::new(x, y));
-        // Alternating colors for a grid pattern
-        let color = if (row + col) % 2 == 0 {
-          (0x80, 0x60, 0x40) // brown
-        } else {
-          (0x40, 0x60, 0x80) // blue-gray
-        };
-        let marker_sprite = Sprite::solid_rect(16, 16, color.0, color.1, color.2, 0xff);
-        // z_order = 0 (default, drawn behind player)
-        world.add_component(marker, SpriteRenderer::new(marker_sprite));
-      }
-    }
-
-    // Create camera centered on player start position
-    let camera = Camera::centered_at(400.0, 300.0, config.width, config.height);
 
     Engine {
       config,
@@ -186,8 +154,9 @@ impl Engine {
       time: None,
       input: InputState::new(),
       world,
-      player: Some(player),
       camera,
+      game: Some(game),
+      initialized: false,
     }
   }
 
@@ -206,35 +175,26 @@ impl Engine {
 
   /// Fixed timestep update - called multiple times per frame if needed
   ///
-  /// This is now an ECS-style "system" that operates on entities with components.
+  /// This runs user game logic and built-in engine systems (movement, camera).
   fn update(&mut self, dt: f32) {
-    use winit::keyboard::KeyCode;
+    // Temporarily take ownership of the game to avoid borrow conflicts
+    if let Some(mut game) = self.game.take() {
+      // Create context for the game
+      let mut ctx = GameContext {
+        world: &mut self.world,
+        camera: &mut self.camera,
+        input: &self.input,
+      };
 
-    // === Input System: Set player velocity based on input ===
-    // This demonstrates querying a specific entity and modifying its components
-    if let Some(player) = self.player {
-      if let Some(mut velocity) = self.world.get_component_mut::<Velocity>(player) {
-        let speed = 200.0;
-        velocity.dx = 0.0;
-        velocity.dy = 0.0;
+      // Call user's update function
+      game.update(&mut ctx, dt);
 
-        if self.input.key_down(KeyCode::KeyW) || self.input.key_down(KeyCode::ArrowUp) {
-          velocity.dy = -speed;
-        }
-        if self.input.key_down(KeyCode::KeyS) || self.input.key_down(KeyCode::ArrowDown) {
-          velocity.dy = speed;
-        }
-        if self.input.key_down(KeyCode::KeyA) || self.input.key_down(KeyCode::ArrowLeft) {
-          velocity.dx = -speed;
-        }
-        if self.input.key_down(KeyCode::KeyD) || self.input.key_down(KeyCode::ArrowRight) {
-          velocity.dx = speed;
-        }
-      }
+      // Put the game back
+      self.game = Some(game);
     }
 
     // === Movement System: Apply velocity to transform ===
-    // This demonstrates iterating over all entities with specific components
+    // This is an engine-level system that runs after game logic
     let entities = self.world.entities_with_two::<Transform, Velocity>();
     for entity in entities {
       // Get velocity first (immutable borrow)
@@ -248,23 +208,6 @@ impl Engine {
         transform.x += dx * dt;
         transform.y += dy * dt;
       }
-    }
-
-    // === Camera System: Follow the player ===
-    if let Some(player) = self.player {
-      if let Some(transform) = self.world.get_component::<Transform>(player) {
-        // Center camera on player (with smooth follow)
-        let center_x = transform.x + 16.0; // Center of 32x32 sprite
-        let center_y = transform.y + 16.0;
-        self.camera.follow(center_x, center_y, 0.1);
-      }
-    }
-
-    // === Zoom Controls ===
-    let scroll = self.input.scroll_delta();
-    if scroll.1 != 0.0 {
-      let new_zoom = self.camera.zoom + scroll.1 * 0.1;
-      self.camera.set_zoom(new_zoom);
     }
   }
 
@@ -364,6 +307,20 @@ impl ApplicationHandler for Engine {
       self.config.physics_hz,
     ));
 
+    // Call game init if not already initialized
+    if !self.initialized {
+      if let Some(mut game) = self.game.take() {
+        let mut ctx = GameContext {
+          world: &mut self.world,
+          camera: &mut self.camera,
+          input: &self.input,
+        };
+        game.init(&mut ctx);
+        self.game = Some(game);
+      }
+      self.initialized = true;
+    }
+
     println!("Engine initialized successfully!");
     println!(
       "Game loop using fixed timestep: {}Hz updates",
@@ -428,9 +385,12 @@ impl ApplicationHandler for Engine {
 
         // Actually draw to screen
         if let Some(pixels) = &mut self.pixels {
-          if let Err(e) = pixels.render() {
-            eprintln!("Render error: {}", e);
-            event_loop.exit();
+          match pixels.render() {
+            Ok(_) => {}
+            Err(e) => {
+              eprintln!("Render error: {}", e);
+              event_loop.exit();
+            }
           }
         }
 
@@ -458,12 +418,14 @@ impl ApplicationHandler for Engine {
 /// Builder pattern for Engine configuration
 pub struct EngineBuilder {
   config: EngineConfig,
+  game: Option<Box<dyn Game>>,
 }
 
 impl EngineBuilder {
   pub fn new() -> Self {
     EngineBuilder {
       config: EngineConfig::default(),
+      game: None,
     }
   }
 
@@ -488,8 +450,19 @@ impl EngineBuilder {
     self
   }
 
+  /// Set the game implementation that will run on this engine.
+  ///
+  /// This is required - you must provide a game that implements the `Game` trait.
+  pub fn with_game(mut self, game: impl Game + 'static) -> Self {
+    self.game = Some(Box::new(game));
+    self
+  }
+
   pub fn build(self) -> Engine {
-    Engine::new(self.config)
+    let game = self
+      .game
+      .expect("EngineBuilder requires a game - call .with_game() before .build()");
+    Engine::new(self.config, game)
   }
 }
 

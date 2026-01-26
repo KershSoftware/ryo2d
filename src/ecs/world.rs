@@ -98,7 +98,10 @@ impl World {
   }
 
   /// Get a mutable reference to a component
-  pub fn get_component_mut<T: 'static + Send + Sync>(&self, entity: Entity) -> Option<RefMut<'_, T>> {
+  pub fn get_component_mut<T: 'static + Send + Sync>(
+    &self,
+    entity: Entity,
+  ) -> Option<RefMut<'_, T>> {
     let type_id = TypeId::of::<T>();
     self.components.get(&type_id).and_then(|storage| {
       let map = storage.borrow_mut::<T>()?;
@@ -138,11 +141,11 @@ impl World {
   /// Iterate with mutable access to a component type
   pub fn for_each_mut<T: 'static + Send + Sync>(&self, mut f: impl FnMut(Entity, &mut T)) {
     let type_id = TypeId::of::<T>();
-    if let Some(storage) = self.components.get(&type_id) {
-      if let Some(mut map) = storage.borrow_mut::<T>() {
-        for (&entity, component) in map.iter_mut() {
-          f(entity, component);
-        }
+    if let Some(storage) = self.components.get(&type_id)
+      && let Some(mut map) = storage.borrow_mut::<T>()
+    {
+      for (&entity, component) in map.iter_mut() {
+        f(entity, component);
       }
     }
   }
@@ -250,7 +253,13 @@ mod tests {
     let entity = world.spawn();
 
     world.add_component(entity, Position { x: 5.0, y: 10.0 });
-    world.add_component(entity, Health { current: 100, max: 100 });
+    world.add_component(
+      entity,
+      Health {
+        current: 100,
+        max: 100,
+      },
+    );
 
     let pos = world.get_component::<Position>(entity).unwrap();
     let health = world.get_component::<Health>(entity).unwrap();
@@ -268,9 +277,21 @@ mod tests {
     let e3 = world.spawn();
 
     world.add_component(e1, Position { x: 0.0, y: 0.0 });
-    world.add_component(e2, Health { current: 50, max: 100 });
+    world.add_component(
+      e2,
+      Health {
+        current: 50,
+        max: 100,
+      },
+    );
     world.add_component(e3, Position { x: 1.0, y: 1.0 });
-    world.add_component(e3, Health { current: 75, max: 100 });
+    world.add_component(
+      e3,
+      Health {
+        current: 75,
+        max: 100,
+      },
+    );
 
     let with_position = world.entities_with::<Position>();
     let with_health = world.entities_with::<Health>();
