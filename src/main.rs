@@ -1,3 +1,4 @@
+mod camera;
 mod ecs;
 mod engine;
 mod input;

@@ -8,6 +8,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use crate::camera::Camera;
 use crate::ecs::{Entity, SpriteRenderer, Transform, Velocity, World};
 use crate::input::InputState;
 use crate::sprite::Sprite;
@@ -130,6 +131,8 @@ pub struct Engine {
   world: World,
   // Player entity (for demo purposes, we track this specifically)
   player: Option<Entity>,
+  // Camera for world-to-screen transformations
+  camera: Camera,
 }
 
 impl Engine {
@@ -140,7 +143,7 @@ impl Engine {
     let player = world.spawn();
 
     // Add Transform component (position in world)
-    world.add_component(player, Transform::new(100.0, 100.0));
+    world.add_component(player, Transform::new(400.0, 300.0));
 
     // Add Velocity component (for movement)
     world.add_component(player, Velocity::zero());
@@ -148,6 +151,27 @@ impl Engine {
     // Add SpriteRenderer component (visual representation)
     let player_sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
     world.add_component(player, SpriteRenderer::new(player_sprite));
+
+    // Create some background markers so zoom is visible
+    for row in 0..10 {
+      for col in 0..10 {
+        let marker = world.spawn();
+        let x = col as f32 * 100.0;
+        let y = row as f32 * 100.0;
+        world.add_component(marker, Transform::new(x, y));
+        // Alternating colors for a grid pattern
+        let color = if (row + col) % 2 == 0 {
+          (0x80, 0x60, 0x40) // brown
+        } else {
+          (0x40, 0x60, 0x80) // blue-gray
+        };
+        let marker_sprite = Sprite::solid_rect(16, 16, color.0, color.1, color.2, 0xff);
+        world.add_component(marker, SpriteRenderer::new(marker_sprite));
+      }
+    }
+
+    // Create camera centered on player start position
+    let camera = Camera::centered_at(400.0, 300.0, config.width, config.height);
 
     Engine {
       config,
@@ -157,6 +181,7 @@ impl Engine {
       input: InputState::new(),
       world,
       player: Some(player),
+      camera,
     }
   }
 
@@ -216,13 +241,24 @@ impl Engine {
       if let Some(mut transform) = self.world.get_component_mut::<Transform>(entity) {
         transform.x += dx * dt;
         transform.y += dy * dt;
-
-        // Clamp to screen bounds (hardcoded for now, will be improved with camera system)
-        let max_x = (self.config.width - 32) as f32;
-        let max_y = (self.config.height - 32) as f32;
-        transform.x = transform.x.clamp(0.0, max_x);
-        transform.y = transform.y.clamp(0.0, max_y);
       }
+    }
+
+    // === Camera System: Follow the player ===
+    if let Some(player) = self.player {
+      if let Some(transform) = self.world.get_component::<Transform>(player) {
+        // Center camera on player (with smooth follow)
+        let center_x = transform.x + 16.0; // Center of 32x32 sprite
+        let center_y = transform.y + 16.0;
+        self.camera.follow(center_x, center_y, 0.1);
+      }
+    }
+
+    // === Zoom Controls ===
+    let scroll = self.input.scroll_delta();
+    if scroll.1 != 0.0 {
+      let new_zoom = self.camera.zoom + scroll.1 * 0.1;
+      self.camera.set_zoom(new_zoom);
     }
   }
 
@@ -254,12 +290,27 @@ impl Engine {
       let sprite_renderer = self.world.get_component::<SpriteRenderer>(entity).unwrap();
 
       if sprite_renderer.visible {
-        sprite_renderer.sprite.draw(
+        // Convert world position to screen position using camera
+        let (screen_x, screen_y) = self.camera.world_to_screen(transform.x, transform.y);
+
+        // Optionally cull off-screen sprites (optimization)
+        let sprite_w = sprite_renderer.sprite.width() as f32;
+        let sprite_h = sprite_renderer.sprite.height() as f32;
+        if !self
+          .camera
+          .is_visible(transform.x, transform.y, sprite_w, sprite_h)
+        {
+          continue;
+        }
+
+        // Draw scaled by camera zoom
+        sprite_renderer.sprite.draw_scaled(
           frame,
           frame_width,
           frame_height,
-          transform.x as i32,
-          transform.y as i32,
+          screen_x as i32,
+          screen_y as i32,
+          self.camera.zoom,
         );
       }
     }
@@ -329,8 +380,6 @@ impl ApplicationHandler for Engine {
         event_loop.exit();
       }
       WindowEvent::RedrawRequested => {
-        // Begin frame - clear per-frame input state
-        self.input.begin_frame();
         if let Some(time) = &mut self.time {
           time.begin_frame();
         }
@@ -348,6 +397,9 @@ impl ApplicationHandler for Engine {
             time.consume_update();
           }
         }
+
+        // Clear per-frame input state AFTER update has read it
+        self.input.begin_frame();
 
         // Render with interpolation alpha
         let alpha = self
