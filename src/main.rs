@@ -1,15 +1,6 @@
-mod camera;
-mod ecs;
-mod engine;
-mod game;
-mod input;
-mod sprite;
+//! Demo game showcasing Ferrum2D engine features
 
-use ecs::{Entity, SpriteRenderer, Transform, Velocity};
-use engine::EngineBuilder;
-use game::{Game, GameContext};
-use sprite::Sprite;
-use winit::keyboard::KeyCode;
+use ferrum2d::prelude::*;
 
 /// Demo game showcasing the engine's features
 struct DemoGame {

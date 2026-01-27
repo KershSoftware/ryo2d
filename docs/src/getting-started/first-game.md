@@ -1,0 +1,83 @@
+# Your First Game
+
+In this tutorial, we'll create a simple game with a player that moves around the screen.
+
+## Setting Up the Game Struct
+
+```rust
+use ferrum2d::prelude::*;
+
+struct MyGame {
+    player: Option<Entity>,
+}
+
+impl MyGame {
+    fn new() -> Self {
+        MyGame { player: None }
+    }
+}
+```
+
+## Spawning a Player
+
+In `init()`, we create an entity and attach components:
+
+```rust
+impl Game for MyGame {
+    fn init(&mut self, ctx: &mut GameContext) {
+        // Create a player entity
+        let player = ctx.world.spawn();
+        
+        // Add position (Transform)
+        ctx.world.add_component(player, Transform::new(400.0, 300.0));
+        
+        // Add movement capability (Velocity)
+        ctx.world.add_component(player, Velocity::zero());
+        
+        // Add visual representation (SpriteRenderer)
+        let sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
+        ctx.world.add_component(player, SpriteRenderer::new(sprite));
+        
+        self.player = Some(player);
+    }
+    
+    fn update(&mut self, _ctx: &mut GameContext, _dt: f32) {
+        // Coming next...
+    }
+}
+```
+
+## Handling Input
+
+Now let's make the player move with WASD:
+
+```rust
+fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    if let Some(player) = self.player {
+        if let Some(mut velocity) = ctx.world.get_component_mut::<Velocity>(player) {
+            let speed = 200.0;
+            velocity.dx = 0.0;
+            velocity.dy = 0.0;
+
+            if ctx.input.key_down(KeyCode::KeyW) {
+                velocity.dy = -speed;
+            }
+            if ctx.input.key_down(KeyCode::KeyS) {
+                velocity.dy = speed;
+            }
+            if ctx.input.key_down(KeyCode::KeyA) {
+                velocity.dx = -speed;
+            }
+            if ctx.input.key_down(KeyCode::KeyD) {
+                velocity.dx = speed;
+            }
+        }
+    }
+}
+```
+
+The engine automatically applies velocity to transform each frame!
+
+## Complete Code
+
+See the [Moving Player Example](../examples/moving-player.md) for the complete code.

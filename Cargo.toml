@@ -2,6 +2,18 @@
 name = "ferrum2d"
 version = "0.0.1"
 edition = "2024"
+description = "A simple, scriptable 2D game engine"
+documentation = "https://docs.rs/ferrum2d"
+readme = "README.md"
+license = "MIT"
+
+[lib]
+name = "ferrum2d"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ferrum2d-demo"
+path = "src/main.rs"
 
 [dependencies]
 winit = "0.30"
