@@ -4,7 +4,7 @@ A simple, scriptable 2D game engine built in Rust.
 
 ## What is Ferrum2D?
 
-Ferrum2D is a lightweight 2D game engine designed for simplicity and ease of use. Inspired by [LÖVE2D](https://love2d.org/), it provides a clean API for building 2D games while leveraging Rust's safety and performance.
+Ferrum2D is a lightweight 2D game engine designed for simplicity and ease of use. It provides a clean API for building 2D games while leveraging Rust's safety and performance.
 
 ## Features
 

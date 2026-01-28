@@ -1,12 +1,35 @@
-# Ferrum2D Documentation Build Script
+# Ferrum2D Documentation Build Script (Windows PowerShell)
+# For Unix/Linux/macOS, use build-docs.sh instead
 # Generates combined docs: mdbook (guides) + rustdoc (API reference)
-
-param(
-    [switch]$Open,
-    [switch]$Serve
-)
+# Usage: 
+#   .\build-docs.ps1         → Build and open
+#   .\build-docs.ps1 --open  → Open last build (no rebuild)
+#   .\build-docs.ps1 --serve → Build and serve with live reload
 
 $ErrorActionPreference = "Stop"
+
+# Parse bash-style arguments
+$OpenOnly = $false
+$Serve = $false
+foreach ($arg in $args) {
+    switch ($arg) {
+        "--open" { $OpenOnly = $true }
+        "--serve" { $Serve = $true }
+        default { Write-Host "Unknown option: $arg" -ForegroundColor Red; exit 1 }
+    }
+}
+
+# If --open, just open the last build
+if ($OpenOnly) {
+    if (Test-Path "docs/book/index.html") {
+        $indexPath = Resolve-Path "docs/book/index.html"
+        Start-Process $indexPath
+        exit 0
+    } else {
+        Write-Host "No documentation found. Run without --open to build." -ForegroundColor Red
+        exit 1
+    }
+}
 
 Write-Host "Building Ferrum2D Documentation..." -ForegroundColor Cyan
 
@@ -35,7 +58,9 @@ Write-Host "  API:   docs/book/api/ferrum2d/index.html"
 if ($Serve) {
     Write-Host "`nStarting local server..." -ForegroundColor Cyan
     & "$env:USERPROFILE\.cargo\bin\mdbook.exe" serve docs --open
-} elseif ($Open) {
+}
+else {
+    # Default: open after build
     $indexPath = Resolve-Path "docs/book/index.html"
     Start-Process $indexPath
 }

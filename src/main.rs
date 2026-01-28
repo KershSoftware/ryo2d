@@ -85,7 +85,9 @@ impl Game for DemoGame {
     }
 
     // === Camera Follow System ===
-    if let Some(player) = self.player && let Some(transform) = ctx.world.get_component::<Transform>(player) {
+    if let Some(player) = self.player
+      && let Some(transform) = ctx.world.get_component::<Transform>(player)
+    {
       // Center camera on player (with smooth follow)
       let center_x = transform.x + 16.0; // Center of 32x32 sprite
       let center_y = transform.y + 16.0;

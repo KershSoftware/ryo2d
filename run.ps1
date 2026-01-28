@@ -1,12 +1,11 @@
-#!/usr/bin/env pwsh
-# Cross-platform unified run script for Ferrum2D
-# Works on Windows, Linux, and macOS with PowerShell Core
+# Ferrum2D Development Run Script (Windows PowerShell)
+# For Unix/Linux/macOS, use run.sh instead
 #
 # Usage:
-#   ./run          - Run the engine with hot-reload
-#   ./run check    - Fast compilation check with hot-reload
-#   ./run lint     - Linting with hot-reload
-#   ./run test     - Run tests with hot-reload
+#   .\run          - Run the engine with hot-reload
+#   .\run check    - Fast compilation check with hot-reload
+#   .\run lint     - Linting with hot-reload
+#   .\run test     - Run tests with hot-reload
 
 param(
     [Parameter(Position = 0)]
@@ -16,7 +15,8 @@ param(
 # Add cargo to PATH if not already present
 if ($IsWindows -or $env:OS -eq "Windows_NT") {
     $cargoPath = "$env:USERPROFILE\.cargo\bin"
-} else {
+}
+else {
     $cargoPath = "$HOME/.cargo/bin"
 }
 
