@@ -22,4 +22,4 @@
 
 ---
 
-[API Reference](./api/ferrum2d/index.html)
+[API Reference](api/ferrum2d/index.html)

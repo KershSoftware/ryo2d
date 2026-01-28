@@ -1,6 +1,6 @@
 //! Built-in components for the game engine
 
-use crate::sprite::Sprite;
+use crate::core::sprite::Sprite;
 
 /// Common render layers for organizing draw order
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

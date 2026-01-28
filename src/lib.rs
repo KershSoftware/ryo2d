@@ -38,34 +38,29 @@
 //! - **Components** are data attached to entities (Transform, Velocity, SpriteRenderer)
 //! - **Systems** process entities with specific components (handled by the engine)
 //!
-//! You implement the [`game::Game`] trait to define your game's behavior.
+//! You implement the [`core::game::Game`] trait to define your game's behavior.
 
-pub mod camera;
-pub mod ecs;
-pub mod engine;
-pub mod game;
-pub mod input;
-pub mod sprite;
+pub mod core;
 
 /// The prelude module - import everything you need with `use ferrum2d::prelude::*`
 pub mod prelude {
   // Core game trait
-  pub use crate::game::{Game, GameContext};
+  pub use crate::core::game::{Game, GameContext};
 
   // Engine builder
-  pub use crate::engine::EngineBuilder;
+  pub use crate::core::engine::EngineBuilder;
 
   // ECS types
-  pub use crate::ecs::{Entity, RenderLayer, SpriteRenderer, Transform, Velocity, World};
+  pub use crate::core::ecs::{Entity, RenderLayer, SpriteRenderer, Transform, Velocity, World};
 
   // Graphics
-  pub use crate::sprite::{AnimatedSprite, Sprite};
+  pub use crate::core::sprite::{AnimatedSprite, Sprite};
 
   // Camera
-  pub use crate::camera::Camera;
+  pub use crate::core::camera::Camera;
 
   // Input (re-export KeyCode for convenience)
-  pub use crate::input::InputState;
+  pub use crate::core::input::InputState;
   pub use winit::event::MouseButton;
   pub use winit::keyboard::KeyCode;
 }

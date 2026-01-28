@@ -8,10 +8,10 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::camera::Camera;
-use crate::ecs::{SpriteRenderer, Transform, Velocity, World};
-use crate::game::{Game, GameContext};
-use crate::input::InputState;
+use super::camera::Camera;
+use super::ecs::{SpriteRenderer, Transform, Velocity, World};
+use super::game::{Game, GameContext};
+use super::input::InputState;
 
 /// Tracks timing state for the game loop
 #[derive(Debug)]

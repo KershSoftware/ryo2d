@@ -11,7 +11,7 @@ Cargo.lock
 *.swp
 *.swo
 *~
-AGENTS.md
+**/AGENTS.md
 .github/skills/*
 
 # OS

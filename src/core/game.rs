@@ -3,9 +3,9 @@
 //! The engine handles low-level systems (window, input, rendering).
 //! Users implement the `Game` trait to define their game behavior.
 
-use crate::camera::Camera;
-use crate::ecs::World;
-use crate::input::InputState;
+use super::camera::Camera;
+use super::ecs::World;
+use super::input::InputState;
 
 /// Context passed to game callbacks, providing access to engine systems.
 ///

@@ -49,4 +49,4 @@ fn main() {
 - **[Getting Started](./getting-started/quick-start.md)** - Installation and first steps
 - **[Core Concepts](./concepts/game-loop.md)** - Understand how the engine works
 - **[Examples](./examples/moving-player.md)** - Learn by example
-- **[API Reference](./api/ferrum2d/index.html)** - Complete API documentation
+- **[API Reference](api/ferrum2d/index.html)** - Complete API documentation
