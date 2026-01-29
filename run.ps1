@@ -49,7 +49,7 @@ function Get-Examples {
                     }
                 }
                 
-                $examples += @{
+                $examples += [PSCustomObject]@{
                     Name = $name
                     DisplayName = $displayName
                     Path = $_.FullName
@@ -58,7 +58,8 @@ function Get-Examples {
         }
     }
     
-    return $examples
+    # Force array return to prevent unwrapping
+    return ,$examples
 }
 
 # Function to run an example
