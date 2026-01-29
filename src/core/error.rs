@@ -38,6 +38,10 @@ pub enum EngineError {
   #[error(transparent)]
   Sprite(#[from] SpriteError),
 
+  /// Save/load error
+  #[error(transparent)]
+  Save(#[from] SaveError),
+
   /// I/O error
   #[error("I/O error: {0}")]
   Io(#[from] std::io::Error),
@@ -143,6 +147,45 @@ pub enum HotReloadError {
 
 /// Result type for hot reload operations
 pub type HotReloadResult<T> = Result<T, HotReloadError>;
+
+/// Save/load system errors
+#[derive(Error, Debug)]
+pub enum SaveError {
+  /// Failed to serialize data
+  #[error("Serialization failed: {0}")]
+  Serialization(String),
+
+  /// Failed to deserialize data
+  #[error("Deserialization failed: {0}")]
+  Deserialization(String),
+
+  /// Failed to compress data
+  #[error("Compression failed: {0}")]
+  Compression(String),
+
+  /// Failed to decompress data
+  #[error("Decompression failed: {0}")]
+  Decompression(String),
+
+  /// I/O error during save/load
+  #[error("I/O error: {0}")]
+  Io(#[from] std::io::Error),
+
+  /// Save data version mismatch
+  #[error("Version mismatch: save is v{found}, expected v{expected}")]
+  VersionMismatch { expected: u32, found: u32 },
+
+  /// Save file not found
+  #[error("Save not found: {0}")]
+  NotFound(PathBuf),
+
+  /// Invalid save slot
+  #[error("Invalid save slot: {0}")]
+  InvalidSlot(String),
+}
+
+/// Result type for save operations
+pub type SaveResult<T> = Result<T, SaveError>;
 
 #[cfg(test)]
 mod tests {

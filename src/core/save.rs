@@ -1,0 +1,853 @@
+//! Save/Load System for Ryo2D
+//!
+//! Provides a 3-tier save system with automatic compression:
+//!
+//! - **Tier 1: System State** - Low-level engine state (settings, audio levels, etc.)
+//! - **Tier 2: World State** - ECS world snapshots (entities and serializable components)
+//! - **Tier 3: Game Data** - Generic user data for game-specific saves
+//!
+//! All save files are compressed using DEFLATE compression for efficient storage.
+//!
+//! # Configuration
+//!
+//! Save files default to `{workspace}/data/` but can be configured:
+//!
+//! ```toml
+//! # ryo.toml
+//! [paths]
+//! save_data = "saves"  # Custom save directory
+//! ```
+//!
+//! Or at runtime:
+//!
+//! ```rust,ignore
+//! save_manager.set_save_dir("my_custom_saves");
+//! ```
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use ryo2d::prelude::*;
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Serialize, Deserialize)]
+//! struct PlayerProgress {
+//!     level: u32,
+//!     score: u64,
+//!     unlocked_items: Vec<String>,
+//! }
+//!
+//! // High-level game data
+//! let progress = PlayerProgress {
+//!     level: 5,
+//!     score: 12500,
+//!     unlocked_items: vec!["sword".into(), "shield".into()],
+//! };
+//!
+//! // Save game data to slot
+//! save_manager.save_game("slot1", &progress)?;
+//!
+//! // Load game data
+//! let loaded: PlayerProgress = save_manager.load_game("slot1")?;
+//! ```
+
+use flate2::Compression;
+use flate2::read::DeflateDecoder;
+use flate2::write::DeflateEncoder;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+use super::error::{SaveError, SaveResult};
+
+// ============================================================================
+// Save File Format
+// ============================================================================
+
+/// Magic bytes identifying Ryo2D save files
+const MAGIC: &[u8; 4] = b"RYO2";
+
+/// Current save format version
+const SAVE_VERSION: u32 = 1;
+
+/// File extension for system saves
+const SYSTEM_EXTENSION: &str = "ryo-system";
+
+/// File extension for world saves
+const WORLD_EXTENSION: &str = "ryo-world";
+
+/// File extension for game saves
+const GAME_EXTENSION: &str = "ryo-save";
+
+// ============================================================================
+// Tier 1: System State
+// ============================================================================
+
+/// Low-level system state for engine settings.
+///
+/// This tier handles engine-level configuration that persists across sessions:
+/// - Audio volume levels
+/// - Display settings
+/// - Key bindings
+/// - Debug flags
+///
+/// System state is saved to `{save_dir}/system.ryo-system`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SystemState {
+  /// Master volume (0.0 - 1.0)
+  pub master_volume: f32,
+  /// Music volume (0.0 - 1.0)
+  pub music_volume: f32,
+  /// Sound effects volume (0.0 - 1.0)
+  pub sfx_volume: f32,
+
+  /// Display settings
+  pub display: DisplaySettings,
+
+  /// Custom key-value storage for engine extensions
+  #[serde(default)]
+  pub custom: HashMap<String, String>,
+}
+
+/// Display configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisplaySettings {
+  /// Window width
+  pub width: u32,
+  /// Window height
+  pub height: u32,
+  /// Fullscreen mode
+  pub fullscreen: bool,
+  /// VSync enabled
+  pub vsync: bool,
+}
+
+impl Default for DisplaySettings {
+  fn default() -> Self {
+    DisplaySettings {
+      width: 800,
+      height: 600,
+      fullscreen: false,
+      vsync: true,
+    }
+  }
+}
+
+impl SystemState {
+  /// Create with sensible defaults
+  pub fn new() -> Self {
+    SystemState {
+      master_volume: 1.0,
+      music_volume: 0.8,
+      sfx_volume: 1.0,
+      display: DisplaySettings::default(),
+      custom: HashMap::new(),
+    }
+  }
+
+  /// Set a custom key-value pair
+  pub fn set_custom(&mut self, key: impl Into<String>, value: impl Into<String>) {
+    self.custom.insert(key.into(), value.into());
+  }
+
+  /// Get a custom value by key
+  pub fn get_custom(&self, key: &str) -> Option<&str> {
+    self.custom.get(key).map(|s| s.as_str())
+  }
+}
+
+// ============================================================================
+// Tier 2: World State
+// ============================================================================
+
+/// Serializable component data for ECS snapshots.
+///
+/// Components that should be saved must implement `Serialize + DeserializeOwned`.
+/// Not all components are serializable (e.g., sprites contain raw pixel data).
+///
+/// This struct holds serialized component data keyed by type name.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EntitySnapshot {
+  /// Entity identifier (for reference purposes)
+  pub id: u64,
+  /// Component data keyed by component type name
+  pub components: HashMap<String, Vec<u8>>,
+}
+
+/// World state snapshot for ECS serialization.
+///
+/// Captures all entities and their serializable components.
+/// Non-serializable components (sprites, handles) are excluded.
+///
+/// World state is saved to `{save_dir}/{slot}.ryo-world`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorldState {
+  /// All entity snapshots
+  pub entities: Vec<EntitySnapshot>,
+  /// Custom world-level metadata
+  #[serde(default)]
+  pub metadata: HashMap<String, String>,
+}
+
+impl WorldState {
+  /// Create an empty world state
+  pub fn new() -> Self {
+    WorldState::default()
+  }
+
+  /// Set world metadata
+  pub fn set_metadata(&mut self, key: impl Into<String>, value: impl Into<String>) {
+    self.metadata.insert(key.into(), value.into());
+  }
+
+  /// Get world metadata
+  pub fn get_metadata(&self, key: &str) -> Option<&str> {
+    self.metadata.get(key).map(|s| s.as_str())
+  }
+
+  /// Add an entity snapshot
+  pub fn add_entity(&mut self, snapshot: EntitySnapshot) {
+    self.entities.push(snapshot);
+  }
+
+  /// Number of entities in the snapshot
+  pub fn entity_count(&self) -> usize {
+    self.entities.len()
+  }
+}
+
+// ============================================================================
+// Tier 3: Game Data
+// ============================================================================
+
+/// Generic game data wrapper with metadata.
+///
+/// This tier is for game-specific save data that doesn't fit into
+/// system settings or ECS snapshots:
+/// - Player progress
+/// - Inventory
+/// - Quest state
+/// - Achievements
+///
+/// Game data is saved to `{save_dir}/{slot}.ryo-save`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameSaveData<T> {
+  /// The actual game data
+  pub data: T,
+  /// Save timestamp (Unix epoch seconds)
+  pub timestamp: u64,
+  /// Optional save name/description
+  pub name: Option<String>,
+  /// Play time in seconds
+  pub play_time: u64,
+  /// Additional metadata
+  #[serde(default)]
+  pub metadata: HashMap<String, String>,
+}
+
+impl<T> GameSaveData<T> {
+  /// Create a new game save wrapper
+  pub fn new(data: T) -> Self {
+    GameSaveData {
+      data,
+      timestamp: std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs(),
+      name: None,
+      play_time: 0,
+      metadata: HashMap::new(),
+    }
+  }
+
+  /// Set a custom name for this save
+  pub fn with_name(mut self, name: impl Into<String>) -> Self {
+    self.name = Some(name.into());
+    self
+  }
+
+  /// Set the play time for this save
+  pub fn with_play_time(mut self, seconds: u64) -> Self {
+    self.play_time = seconds;
+    self
+  }
+
+  /// Set metadata for this save
+  pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    self.metadata.insert(key.into(), value.into());
+    self
+  }
+}
+
+// ============================================================================
+// Save Manager
+// ============================================================================
+
+/// Manages all save/load operations for the engine.
+///
+/// Provides a unified interface for all three save tiers with
+/// automatic compression and file format handling.
+///
+/// # Save Directory Structure
+///
+/// ```text
+/// {workspace}/data/
+/// ├── system.ryo-system    # Tier 1: System state
+/// ├── slot1.ryo-world      # Tier 2: World snapshots
+/// ├── slot1.ryo-save       # Tier 3: Game data
+/// ├── slot2.ryo-world
+/// ├── slot2.ryo-save
+/// └── ...
+/// ```
+#[derive(Debug)]
+pub struct SaveManager {
+  /// Base directory for saves
+  save_dir: PathBuf,
+  /// Compression level (0-9)
+  compression_level: u32,
+}
+
+impl SaveManager {
+  /// Create a new save manager with the given save directory.
+  ///
+  /// The directory will be created if it doesn't exist.
+  pub fn new(save_dir: impl Into<PathBuf>) -> SaveResult<Self> {
+    let save_dir = save_dir.into();
+    fs::create_dir_all(&save_dir)?;
+    Ok(SaveManager {
+      save_dir,
+      compression_level: 6,
+    })
+  }
+
+  /// Set the compression level (0-9).
+  ///
+  /// - 0: No compression
+  /// - 1-3: Fast compression
+  /// - 4-6: Balanced (default is 6)
+  /// - 7-9: Best compression
+  pub fn set_compression_level(&mut self, level: u32) {
+    self.compression_level = level.min(9);
+  }
+
+  /// Get the current save directory.
+  pub fn save_dir(&self) -> &Path {
+    &self.save_dir
+  }
+
+  /// Change the save directory at runtime.
+  ///
+  /// The new directory will be created if it doesn't exist.
+  pub fn set_save_dir(&mut self, path: impl Into<PathBuf>) -> SaveResult<()> {
+    let new_dir = path.into();
+    fs::create_dir_all(&new_dir)?;
+    self.save_dir = new_dir;
+    Ok(())
+  }
+
+  // ==========================================================================
+  // Tier 1: System State
+  // ==========================================================================
+
+  /// Save system state to disk.
+  pub fn save_system(&self, state: &SystemState) -> SaveResult<()> {
+    let path = self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION));
+    self.write_save_file(&path, state)
+  }
+
+  /// Load system state from disk.
+  ///
+  /// Returns default state if no save file exists.
+  pub fn load_system(&self) -> SaveResult<SystemState> {
+    let path = self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION));
+    if !path.exists() {
+      return Ok(SystemState::new());
+    }
+    self.read_save_file(&path)
+  }
+
+  /// Check if system state exists.
+  pub fn has_system_save(&self) -> bool {
+    self
+      .save_dir
+      .join(format!("system.{}", SYSTEM_EXTENSION))
+      .exists()
+  }
+
+  // ==========================================================================
+  // Tier 2: World State
+  // ==========================================================================
+
+  /// Save world state to a named slot.
+  pub fn save_world(&self, slot: &str, state: &WorldState) -> SaveResult<()> {
+    self.validate_slot_name(slot)?;
+    let path = self.save_dir.join(format!("{}.{}", slot, WORLD_EXTENSION));
+    self.write_save_file(&path, state)
+  }
+
+  /// Load world state from a named slot.
+  pub fn load_world(&self, slot: &str) -> SaveResult<WorldState> {
+    self.validate_slot_name(slot)?;
+    let path = self.save_dir.join(format!("{}.{}", slot, WORLD_EXTENSION));
+    if !path.exists() {
+      return Err(SaveError::NotFound(path));
+    }
+    self.read_save_file(&path)
+  }
+
+  /// Check if a world save exists.
+  pub fn has_world_save(&self, slot: &str) -> bool {
+    self
+      .save_dir
+      .join(format!("{}.{}", slot, WORLD_EXTENSION))
+      .exists()
+  }
+
+  /// Delete a world save.
+  pub fn delete_world(&self, slot: &str) -> SaveResult<()> {
+    self.validate_slot_name(slot)?;
+    let path = self.save_dir.join(format!("{}.{}", slot, WORLD_EXTENSION));
+    if path.exists() {
+      fs::remove_file(&path)?;
+    }
+    Ok(())
+  }
+
+  // ==========================================================================
+  // Tier 3: Game Data
+  // ==========================================================================
+
+  /// Save game data to a named slot.
+  ///
+  /// The data is wrapped in `GameSaveData` which adds metadata
+  /// like timestamp and play time.
+  pub fn save_game<T: Serialize>(&self, slot: &str, data: &T) -> SaveResult<()> {
+    self.save_game_with_info(slot, GameSaveData::new(data))
+  }
+
+  /// Save game data with full metadata control.
+  pub fn save_game_with_info<T: Serialize>(
+    &self,
+    slot: &str,
+    save: GameSaveData<&T>,
+  ) -> SaveResult<()> {
+    self.validate_slot_name(slot)?;
+    let path = self.save_dir.join(format!("{}.{}", slot, GAME_EXTENSION));
+    self.write_save_file(&path, &save)
+  }
+
+  /// Load game data from a named slot.
+  pub fn load_game<T: DeserializeOwned>(&self, slot: &str) -> SaveResult<GameSaveData<T>> {
+    self.validate_slot_name(slot)?;
+    let path = self.save_dir.join(format!("{}.{}", slot, GAME_EXTENSION));
+    if !path.exists() {
+      return Err(SaveError::NotFound(path));
+    }
+    self.read_save_file(&path)
+  }
+
+  /// Check if a game save exists.
+  pub fn has_game_save(&self, slot: &str) -> bool {
+    self
+      .save_dir
+      .join(format!("{}.{}", slot, GAME_EXTENSION))
+      .exists()
+  }
+
+  /// Delete a game save.
+  pub fn delete_game(&self, slot: &str) -> SaveResult<()> {
+    self.validate_slot_name(slot)?;
+    let path = self.save_dir.join(format!("{}.{}", slot, GAME_EXTENSION));
+    if path.exists() {
+      fs::remove_file(&path)?;
+    }
+    Ok(())
+  }
+
+  /// List all game save slots.
+  pub fn list_game_saves(&self) -> SaveResult<Vec<String>> {
+    self.list_saves_with_extension(GAME_EXTENSION)
+  }
+
+  /// List all world save slots.
+  pub fn list_world_saves(&self) -> SaveResult<Vec<String>> {
+    self.list_saves_with_extension(WORLD_EXTENSION)
+  }
+
+  // ==========================================================================
+  // Raw Data API (for advanced use)
+  // ==========================================================================
+
+  /// Save arbitrary serializable data to a custom file.
+  ///
+  /// Use this for custom save formats not covered by the 3 tiers.
+  pub fn save_raw<T: Serialize>(&self, filename: &str, data: &T) -> SaveResult<()> {
+    let path = self.save_dir.join(filename);
+    self.write_save_file(&path, data)
+  }
+
+  /// Load arbitrary data from a custom file.
+  pub fn load_raw<T: DeserializeOwned>(&self, filename: &str) -> SaveResult<T> {
+    let path = self.save_dir.join(filename);
+    if !path.exists() {
+      return Err(SaveError::NotFound(path));
+    }
+    self.read_save_file(&path)
+  }
+
+  // ==========================================================================
+  // Internal Helpers
+  // ==========================================================================
+
+  fn write_save_file<T: Serialize>(&self, path: &Path, data: &T) -> SaveResult<()> {
+    // Serialize to RON format
+    let serialized = ron::to_string(data).map_err(|e| SaveError::Serialization(e.to_string()))?;
+
+    // Compress the serialized data
+    let compressed = self.compress(serialized.as_bytes())?;
+
+    // Write with header
+    let mut file = File::create(path)?;
+    file.write_all(MAGIC)?;
+    file.write_all(&SAVE_VERSION.to_le_bytes())?;
+    file.write_all(&compressed)?;
+    file.flush()?;
+
+    Ok(())
+  }
+
+  fn read_save_file<T: DeserializeOwned>(&self, path: &Path) -> SaveResult<T> {
+    let mut file = File::open(path)?;
+
+    // Read and verify magic bytes
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic)?;
+    if &magic != MAGIC {
+      return Err(SaveError::Deserialization(
+        "Invalid save file format".into(),
+      ));
+    }
+
+    // Read and verify version
+    let mut version_bytes = [0u8; 4];
+    file.read_exact(&mut version_bytes)?;
+    let version = u32::from_le_bytes(version_bytes);
+    if version != SAVE_VERSION {
+      return Err(SaveError::VersionMismatch {
+        expected: SAVE_VERSION,
+        found: version,
+      });
+    }
+
+    // Read compressed data
+    let mut compressed = Vec::new();
+    file.read_to_end(&mut compressed)?;
+
+    // Decompress
+    let decompressed = self.decompress(&compressed)?;
+
+    // Deserialize from RON
+    let data = ron::from_str(&String::from_utf8_lossy(&decompressed))
+      .map_err(|e| SaveError::Deserialization(e.to_string()))?;
+
+    Ok(data)
+  }
+
+  fn compress(&self, data: &[u8]) -> SaveResult<Vec<u8>> {
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::new(self.compression_level));
+    encoder
+      .write_all(data)
+      .map_err(|e| SaveError::Compression(e.to_string()))?;
+    encoder
+      .finish()
+      .map_err(|e| SaveError::Compression(e.to_string()))
+  }
+
+  fn decompress(&self, data: &[u8]) -> SaveResult<Vec<u8>> {
+    let mut decoder = DeflateDecoder::new(data);
+    let mut decompressed = Vec::new();
+    decoder
+      .read_to_end(&mut decompressed)
+      .map_err(|e| SaveError::Decompression(e.to_string()))?;
+    Ok(decompressed)
+  }
+
+  fn validate_slot_name(&self, slot: &str) -> SaveResult<()> {
+    // Prevent path traversal and invalid characters
+    if slot.is_empty()
+      || slot.contains('/')
+      || slot.contains('\\')
+      || slot.contains("..")
+      || slot.starts_with('.')
+    {
+      return Err(SaveError::InvalidSlot(slot.to_string()));
+    }
+    Ok(())
+  }
+
+  fn list_saves_with_extension(&self, ext: &str) -> SaveResult<Vec<String>> {
+    let mut saves = Vec::new();
+    for entry in fs::read_dir(&self.save_dir)? {
+      let entry = entry?;
+      let path = entry.path();
+      if let Some(file_ext) = path.extension()
+        && file_ext == ext
+        && let Some(stem) = path.file_stem()
+        && let Some(name) = stem.to_str()
+      {
+        saves.push(name.to_string());
+      }
+    }
+    saves.sort();
+    Ok(saves)
+  }
+}
+
+// ============================================================================
+// Convenience Functions
+// ============================================================================
+
+/// Compress data using DEFLATE compression.
+///
+/// Useful for manual compression of game data outside the save system.
+pub fn compress_data(data: &[u8]) -> SaveResult<Vec<u8>> {
+  let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+  encoder
+    .write_all(data)
+    .map_err(|e| SaveError::Compression(e.to_string()))?;
+  encoder
+    .finish()
+    .map_err(|e| SaveError::Compression(e.to_string()))
+}
+
+/// Decompress DEFLATE compressed data.
+pub fn decompress_data(data: &[u8]) -> SaveResult<Vec<u8>> {
+  let mut decoder = DeflateDecoder::new(data);
+  let mut decompressed = Vec::new();
+  decoder
+    .read_to_end(&mut decompressed)
+    .map_err(|e| SaveError::Decompression(e.to_string()))?;
+  Ok(decompressed)
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use tempfile::tempdir;
+
+  #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+  struct TestGameData {
+    level: u32,
+    score: u64,
+    player_name: String,
+  }
+
+  #[test]
+  fn save_manager_creation_creates_directory() {
+    let dir = tempdir().unwrap();
+    let save_path = dir.path().join("saves");
+    assert!(!save_path.exists());
+
+    let _manager = SaveManager::new(&save_path).unwrap();
+    assert!(save_path.exists());
+  }
+
+  #[test]
+  fn system_state_save_and_load() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let mut state = SystemState::new();
+    state.master_volume = 0.75;
+    state.music_volume = 0.5;
+    state.display.width = 1920;
+    state.display.height = 1080;
+    state.set_custom("language", "en");
+
+    manager.save_system(&state).unwrap();
+    assert!(manager.has_system_save());
+
+    let loaded = manager.load_system().unwrap();
+    assert_eq!(loaded.master_volume, 0.75);
+    assert_eq!(loaded.music_volume, 0.5);
+    assert_eq!(loaded.display.width, 1920);
+    assert_eq!(loaded.display.height, 1080);
+    assert_eq!(loaded.get_custom("language"), Some("en"));
+  }
+
+  #[test]
+  fn system_state_load_returns_default_if_no_file() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let state = manager.load_system().unwrap();
+    assert_eq!(state.master_volume, 1.0);
+    assert_eq!(state.music_volume, 0.8);
+  }
+
+  #[test]
+  fn world_state_save_and_load() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let mut world = WorldState::new();
+    world.set_metadata("scene", "level_1");
+    world.add_entity(EntitySnapshot {
+      id: 42,
+      components: HashMap::new(),
+    });
+
+    manager.save_world("slot1", &world).unwrap();
+    assert!(manager.has_world_save("slot1"));
+
+    let loaded = manager.load_world("slot1").unwrap();
+    assert_eq!(loaded.entity_count(), 1);
+    assert_eq!(loaded.get_metadata("scene"), Some("level_1"));
+    assert_eq!(loaded.entities[0].id, 42);
+  }
+
+  #[test]
+  fn game_data_save_and_load() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let data = TestGameData {
+      level: 5,
+      score: 12500,
+      player_name: "Alice".to_string(),
+    };
+
+    manager.save_game("save1", &data).unwrap();
+    assert!(manager.has_game_save("save1"));
+
+    let loaded: GameSaveData<TestGameData> = manager.load_game("save1").unwrap();
+    assert_eq!(loaded.data, data);
+    assert!(loaded.timestamp > 0);
+  }
+
+  #[test]
+  fn game_data_with_metadata() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let data = TestGameData {
+      level: 10,
+      score: 50000,
+      player_name: "Bob".to_string(),
+    };
+
+    let save = GameSaveData::new(&data)
+      .with_name("My Best Run")
+      .with_play_time(3600)
+      .with_metadata("difficulty", "hard");
+
+    manager.save_game_with_info("save2", save).unwrap();
+
+    let loaded: GameSaveData<TestGameData> = manager.load_game("save2").unwrap();
+    assert_eq!(loaded.name, Some("My Best Run".to_string()));
+    assert_eq!(loaded.play_time, 3600);
+    assert_eq!(loaded.metadata.get("difficulty"), Some(&"hard".to_string()));
+  }
+
+  #[test]
+  fn list_saves() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let data = TestGameData {
+      level: 1,
+      score: 100,
+      player_name: "Test".to_string(),
+    };
+
+    manager.save_game("slot_a", &data).unwrap();
+    manager.save_game("slot_b", &data).unwrap();
+    manager.save_game("slot_c", &data).unwrap();
+
+    let saves = manager.list_game_saves().unwrap();
+    assert_eq!(saves, vec!["slot_a", "slot_b", "slot_c"]);
+  }
+
+  #[test]
+  fn delete_saves() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let data = TestGameData {
+      level: 1,
+      score: 100,
+      player_name: "Test".to_string(),
+    };
+
+    manager.save_game("to_delete", &data).unwrap();
+    assert!(manager.has_game_save("to_delete"));
+
+    manager.delete_game("to_delete").unwrap();
+    assert!(!manager.has_game_save("to_delete"));
+  }
+
+  #[test]
+  fn invalid_slot_names_rejected() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let data = TestGameData {
+      level: 1,
+      score: 100,
+      player_name: "Test".to_string(),
+    };
+
+    assert!(manager.save_game("", &data).is_err());
+    assert!(manager.save_game("../escape", &data).is_err());
+    assert!(manager.save_game("path/traversal", &data).is_err());
+    assert!(manager.save_game(".hidden", &data).is_err());
+  }
+
+  #[test]
+  fn compression_decompression_roundtrip() {
+    let original = b"Hello, World! This is some test data for compression.";
+    let compressed = compress_data(original).unwrap();
+    let decompressed = decompress_data(&compressed).unwrap();
+    assert_eq!(decompressed, original);
+  }
+
+  #[test]
+  fn load_nonexistent_file_returns_not_found() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let result: SaveResult<GameSaveData<TestGameData>> = manager.load_game("nonexistent");
+    assert!(matches!(result, Err(SaveError::NotFound(_))));
+  }
+
+  #[test]
+  fn raw_data_save_and_load() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let data = vec![1u32, 2, 3, 4, 5];
+    manager.save_raw("custom.dat", &data).unwrap();
+
+    let loaded: Vec<u32> = manager.load_raw("custom.dat").unwrap();
+    assert_eq!(loaded, data);
+  }
+
+  #[test]
+  fn set_save_dir_changes_location() {
+    let dir = tempdir().unwrap();
+    let mut manager = SaveManager::new(dir.path().join("original")).unwrap();
+
+    let new_dir = dir.path().join("new_location");
+    manager.set_save_dir(&new_dir).unwrap();
+
+    assert_eq!(manager.save_dir(), new_dir);
+    assert!(new_dir.exists());
+  }
+}

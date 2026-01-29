@@ -257,6 +257,35 @@ impl Workspace {
   pub fn has_config_file(&self) -> bool {
     self.root.join(CONFIG_FILENAME).exists()
   }
+
+  /// Change the save data directory at runtime.
+  ///
+  /// This updates the workspace configuration in memory. The change is not
+  /// persisted to `ryo.toml` but affects all subsequent save operations.
+  ///
+  /// # Arguments
+  ///
+  /// * `path` - New path for save data. If relative, it's relative to workspace root.
+  pub fn set_save_data_path(&mut self, path: impl Into<PathBuf>) {
+    self.config.save_data = path.into();
+  }
+
+  /// Create a `SaveManager` configured for this workspace.
+  ///
+  /// The save manager will use the workspace's save data directory.
+  /// The directory will be created if it doesn't exist.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// let workspace = Workspace::discover()?;
+  /// let save_manager = workspace.create_save_manager()?;
+  /// save_manager.save_game("slot1", &my_data)?;
+  /// ```
+  pub fn create_save_manager(&self) -> Result<super::save::SaveManager, EngineError> {
+    let save_dir = self.save_data_dir()?;
+    super::save::SaveManager::new(save_dir).map_err(EngineError::Save)
+  }
 }
 
 impl Default for WorkspaceConfig {

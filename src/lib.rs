@@ -97,9 +97,15 @@ pub mod prelude {
   // Workspace
   pub use crate::core::workspace::{Workspace, WorkspaceConfig};
 
+  // Save system
+  pub use crate::core::save::{
+    DisplaySettings, EntitySnapshot, GameSaveData, SaveManager, SystemState, WorldState,
+    compress_data, decompress_data,
+  };
+
   // Error types (centralized)
   pub use crate::core::error::{
     AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,
-    HotReloadResult, SpriteError, SpriteResult,
+    HotReloadResult, SaveError, SaveResult, SpriteError, SpriteResult,
   };
 }
