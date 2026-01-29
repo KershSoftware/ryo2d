@@ -1,6 +1,21 @@
 # Collision Detection
 
-Ferrum2D provides a collision detection system with support for basic shapes, layer filtering, and collision response.
+Ferrum2D provides two collision systems:
+
+1. **Rapier2D Physics Collisions** — Automatic collision response and events for physics bodies
+2. **Manual Collision Queries** — For game logic, triggers, and non-physics interactions
+
+This page focuses on the **manual collision system**. For physics-based collisions with automatic response, see [Physics System](./physics.md).
+
+## When to Use Which
+
+| Use Case | System |
+|----------|--------|
+| Bouncing ball, falling objects | Rapier (automatic) |
+| Platformer ground detection | Rapier collision events |
+| Bullet hitting enemy (damage) | Rapier events + game logic |
+| Mouse click on entity | Manual collision |
+| Custom trigger zones | Manual collision or Rapier sensors |
 
 ## Collision Shapes
 

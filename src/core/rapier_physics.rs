@@ -156,15 +156,18 @@ impl RapierPhysicsWorld {
     let y_meters = transform.y / PIXELS_PER_METER;
 
     // Create Rapier rigid body
+    // Lock rotation for all bodies - this is a 2D engine and we don't sync rotation
     let body = if rigid_body.is_kinematic {
       RigidBodyBuilder::kinematic_position_based()
         .translation(vector![x_meters, y_meters])
+        .locked_axes(LockedAxes::ROTATION_LOCKED)
         .build()
     } else {
       let mut builder = RigidBodyBuilder::dynamic()
         .translation(vector![x_meters, y_meters])
         .gravity_scale(rigid_body.gravity_scale)
-        .linear_damping(rigid_body.drag);
+        .linear_damping(rigid_body.drag)
+        .locked_axes(LockedAxes::ROTATION_LOCKED);
 
       // Set initial velocity if present
       if let Some(vel) = velocity {
@@ -371,6 +374,23 @@ impl RapierPhysicsWorld {
         let x_meters = transform.x / PIXELS_PER_METER;
         let y_meters = transform.y / PIXELS_PER_METER;
         body.set_next_kinematic_translation(vector![x_meters, y_meters]);
+      }
+    }
+  }
+
+  /// Sync dynamic body positions from ECS to Rapier (for teleportation/reset)
+  ///
+  /// Call this before `step()` if game code modifies Transform of dynamic bodies directly.
+  /// This teleports the body to the new position without physics interpolation.
+  pub fn sync_dynamic_from_ecs(&mut self, world: &World) {
+    for (&entity, &body_handle) in &self.entity_to_body {
+      if let Some(body) = self.rigid_body_set.get_mut(body_handle)
+        && body.is_dynamic()
+        && let Some(transform) = world.get_component::<Transform>(entity)
+      {
+        let x_meters = transform.x / PIXELS_PER_METER;
+        let y_meters = transform.y / PIXELS_PER_METER;
+        body.set_translation(vector![x_meters, y_meters], true);
       }
     }
   }

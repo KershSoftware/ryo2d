@@ -1,27 +1,21 @@
-//! Physics components and systems for 2D game physics
+//! Physics components for Rapier2D integration
 //!
-//! This module provides basic physics simulation including:
-//! - Acceleration and force application
-//! - Gravity
-//! - Simple Euler integration
-//! - Drag/friction
-
-/// Acceleration component - applied to velocity each frame
-#[derive(Debug, Clone, Default)]
-pub struct Acceleration {
-  pub ax: f32,
-  pub ay: f32,
-}
-
-impl Acceleration {
-  pub fn new(ax: f32, ay: f32) -> Self {
-    Acceleration { ax, ay }
-  }
-
-  pub fn zero() -> Self {
-    Self::new(0.0, 0.0)
-  }
-}
+//! This module provides component types used by the Rapier2D physics backend.
+//! The actual physics simulation is handled by [`super::rapier_physics::RapierPhysicsWorld`].
+//!
+//! ## Components
+//!
+//! - [`RigidBody`] - Controls how physics affects an entity (dynamic vs kinematic)
+//! - [`PhysicsConfig`] - Global physics settings like gravity
+//!
+//! ## How Physics Works
+//!
+//! 1. Add `RigidBody` + `Collider` + `Transform` to an entity
+//! 2. The engine auto-registers it with Rapier
+//! 3. Rapier handles gravity, collision response, and velocity integration
+//! 4. Positions sync back to `Transform` after each physics step
+//!
+//! For collision events, see [`super::rapier_physics::PhysicsCollisionEvent`].
 
 /// RigidBody component - controls how physics affects an entity
 #[derive(Debug, Clone)]

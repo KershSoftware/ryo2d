@@ -57,7 +57,7 @@ pub mod prelude {
   pub use crate::core::ecs::{Mat4, Vec2, Vec3, Vec4};
 
   // Physics
-  pub use crate::core::physics::{Acceleration, PhysicsConfig, RigidBody};
+  pub use crate::core::physics::{PhysicsConfig, RigidBody};
 
   // Physics events (from Rapier integration)
   pub use crate::core::rapier_physics::{CollisionEventType, PhysicsCollisionEvent};

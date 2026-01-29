@@ -243,8 +243,13 @@ impl Engine {
         .register_entity(entity, &transform, velocity.as_deref(), &rb, &col);
     }
 
-    // Sync kinematic bodies from ECS to Rapier (game code may have moved them)
+    // Sync ECS changes to Rapier before stepping physics
+    // - Kinematic bodies: game code moves them directly via Transform
+    // - Dynamic bodies: game code may teleport them (e.g., reset position)
+    // - Velocities: game code may apply impulses via Velocity component
     self.physics.sync_kinematic_from_ecs(&self.world);
+    self.physics.sync_dynamic_from_ecs(&self.world);
+    self.physics.sync_velocities_from_ecs(&self.world);
 
     // Step the physics simulation
     let gravity = self.config.physics.gravity;
