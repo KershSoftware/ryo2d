@@ -148,7 +148,9 @@ impl HotReloadWatcher {
 
     // Spawn thread to set up watches (watcher callbacks run on notify's internal thread)
     let thread_handle = thread::spawn(move || {
-      let mut watcher = watcher_clone.lock().expect("HotReload watcher Mutex poisoned");
+      let mut watcher = watcher_clone
+        .lock()
+        .expect("HotReload watcher Mutex poisoned");
       let mode = if recursive {
         RecursiveMode::Recursive
       } else {

@@ -126,7 +126,13 @@ impl Camera {
   ///
   /// Useful to prevent the camera from showing areas outside the game world.
   /// The bounds represent the minimum visible area (camera won't go beyond edges).
-  pub fn clamp_to_bounds(&mut self, world_min_x: f32, world_min_y: f32, world_max_x: f32, world_max_y: f32) {
+  pub fn clamp_to_bounds(
+    &mut self,
+    world_min_x: f32,
+    world_min_y: f32,
+    world_max_x: f32,
+    world_max_y: f32,
+  ) {
     let half_w = self.viewport_width / (2.0 * self.zoom);
     let half_h = self.viewport_height / (2.0 * self.zoom);
 

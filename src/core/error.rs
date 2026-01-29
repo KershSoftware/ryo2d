@@ -59,7 +59,10 @@ pub enum AssetError {
 
   /// Asset type mismatch
   #[error("Type mismatch for {path}: expected {expected}")]
-  TypeMismatch { path: PathBuf, expected: &'static str },
+  TypeMismatch {
+    path: PathBuf,
+    expected: &'static str,
+  },
 
   /// Failed to set up file watcher for hot reloading
   #[error("Failed to set up file watcher: {0}")]
@@ -128,7 +131,10 @@ pub enum HotReloadError {
 
   /// Failed to watch a path
   #[error("Failed to watch path {path}: {reason}")]
-  WatchPath { path: std::path::PathBuf, reason: String },
+  WatchPath {
+    path: std::path::PathBuf,
+    reason: String,
+  },
 }
 
 /// Result type for hot reload operations

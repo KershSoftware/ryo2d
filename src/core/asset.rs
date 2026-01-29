@@ -67,12 +67,20 @@ impl SpriteHandle {
 
   /// Get the sprite width
   pub fn width(&self) -> u32 {
-    self.inner.read().expect("SpriteHandle RwLock poisoned").width()
+    self
+      .inner
+      .read()
+      .expect("SpriteHandle RwLock poisoned")
+      .width()
   }
 
   /// Get the sprite height
   pub fn height(&self) -> u32 {
-    self.inner.read().expect("SpriteHandle RwLock poisoned").height()
+    self
+      .inner
+      .read()
+      .expect("SpriteHandle RwLock poisoned")
+      .height()
   }
 
   /// Get the path this sprite was loaded from
@@ -198,12 +206,22 @@ impl AsyncSpriteHandle {
 
   /// Get the current loading state
   pub fn state(&self) -> LoadingState {
-    self.state.read().expect("AsyncSpriteHandle state RwLock poisoned").clone()
+    self
+      .state
+      .read()
+      .expect("AsyncSpriteHandle state RwLock poisoned")
+      .clone()
   }
 
   /// Check if the asset is still loading
   pub fn is_loading(&self) -> bool {
-    matches!(*self.state.read().expect("AsyncSpriteHandle state RwLock poisoned"), LoadingState::Loading)
+    matches!(
+      *self
+        .state
+        .read()
+        .expect("AsyncSpriteHandle state RwLock poisoned"),
+      LoadingState::Loading
+    )
   }
 
   /// Check if the asset has finished loading (success or failure)
@@ -213,19 +231,35 @@ impl AsyncSpriteHandle {
 
   /// Check if the asset loaded successfully
   pub fn is_loaded(&self) -> bool {
-    matches!(*self.state.read().expect("AsyncSpriteHandle state RwLock poisoned"), LoadingState::Loaded)
+    matches!(
+      *self
+        .state
+        .read()
+        .expect("AsyncSpriteHandle state RwLock poisoned"),
+      LoadingState::Loaded
+    )
   }
 
   /// Check if the asset failed to load
   pub fn is_failed(&self) -> bool {
-    matches!(*self.state.read().expect("AsyncSpriteHandle state RwLock poisoned"), LoadingState::Failed(_))
+    matches!(
+      *self
+        .state
+        .read()
+        .expect("AsyncSpriteHandle state RwLock poisoned"),
+      LoadingState::Failed(_)
+    )
   }
 
   /// Get the loaded sprite, if available
   ///
   /// Returns `None` if still loading or failed.
   pub fn get(&self) -> Option<SpriteHandle> {
-    self.inner.read().expect("AsyncSpriteHandle inner RwLock poisoned").clone()
+    self
+      .inner
+      .read()
+      .expect("AsyncSpriteHandle inner RwLock poisoned")
+      .clone()
   }
 
   /// Get the loaded sprite, or a fallback if not ready
@@ -242,13 +276,22 @@ impl AsyncSpriteHandle {
 
   /// Internal: Mark as loaded with sprite data
   fn complete_success(&self, handle: SpriteHandle) {
-    *self.inner.write().expect("AsyncSpriteHandle inner RwLock poisoned") = Some(handle);
-    *self.state.write().expect("AsyncSpriteHandle state RwLock poisoned") = LoadingState::Loaded;
+    *self
+      .inner
+      .write()
+      .expect("AsyncSpriteHandle inner RwLock poisoned") = Some(handle);
+    *self
+      .state
+      .write()
+      .expect("AsyncSpriteHandle state RwLock poisoned") = LoadingState::Loaded;
   }
 
   /// Internal: Mark as failed with error
   fn complete_failure(&self, reason: String) {
-    *self.state.write().expect("AsyncSpriteHandle state RwLock poisoned") = LoadingState::Failed(reason);
+    *self
+      .state
+      .write()
+      .expect("AsyncSpriteHandle state RwLock poisoned") = LoadingState::Failed(reason);
   }
 }
 
@@ -720,10 +763,10 @@ impl AssetManager {
             }
           }
         }
-        HotReloadEvent::FileDeleted(path) => {
+        HotReloadEvent::FileDeleted(_path) => {
           // Just log - don't remove from cache as handles may still be in use
           #[cfg(debug_assertions)]
-          eprintln!("[HotReload] Asset removed (still cached): {:?}", path);
+          eprintln!("[HotReload] Asset removed (still cached): {:?}", _path);
         }
         HotReloadEvent::Error(e) => {
           eprintln!("[HotReload] Watcher error: {}", e);
