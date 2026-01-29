@@ -10,7 +10,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::asset::AssetManager;
 use super::camera::Camera;
-use super::ecs::{SpriteRenderer, Transform, Velocity, World};
+use super::ecs::{Entity, SpriteRenderer, Transform, Velocity, World};
 use super::error::{EngineError, EngineResult};
 use super::game::{Game, GameContext};
 use super::input::InputState;
@@ -143,6 +143,10 @@ pub struct Engine {
   game: Option<Box<dyn Game>>,
   // Whether init has been called
   initialized: bool,
+  // Cached sorted list of renderable entities (reused across frames)
+  render_cache: Vec<(Entity, i32)>,
+  // Whether render cache needs rebuilding (entities spawned/despawned, z_order changed)
+  render_cache_dirty: bool,
 }
 
 impl Engine {
@@ -167,6 +171,8 @@ impl Engine {
       assets,
       game: Some(game),
       initialized: false,
+      render_cache: Vec::new(),
+      render_cache_dirty: true,
     }
   }
 
@@ -202,6 +208,9 @@ impl Engine {
 
       // Put the game back
       self.game = Some(game);
+
+      // Mark render cache dirty in case entities were spawned/despawned
+      self.render_cache_dirty = true;
     }
 
     // === Physics System: Apply gravity and acceleration to velocity ===
@@ -289,26 +298,26 @@ impl Engine {
     }
 
     // === Render System: Draw all entities with Transform + SpriteRenderer ===
-    // Collect entities and sort by z_order (lower values drawn first, higher on top)
-    let mut entities: Vec<_> = self
-      .world
-      .entities_with_two::<Transform, SpriteRenderer>()
-      .into_iter()
-      .filter_map(|entity| {
-        let z = self.world.get_component::<SpriteRenderer>(entity)?.z_order;
-        Some((entity, z))
-      })
-      .collect();
-    entities.sort_by_key(|(_, z)| *z);
+    // Rebuild render cache if dirty (entities added/removed or z_order changed)
+    if self.render_cache_dirty {
+      self.render_cache.clear();
+      for entity in self.world.entities_with_two::<Transform, SpriteRenderer>() {
+        if let Some(renderer) = self.world.get_component::<SpriteRenderer>(entity) {
+          self.render_cache.push((entity, renderer.z_order));
+        }
+      }
+      self.render_cache.sort_by_key(|(_, z)| *z);
+      self.render_cache_dirty = false;
+    }
 
-    for (entity, _) in entities {
-      let transform = self
-        .world
-        .get_component::<Transform>(entity)
-        .expect("Entity from entities_with_two::<Transform, SpriteRenderer> should have Transform");
-      let sprite_renderer = self.world.get_component::<SpriteRenderer>(entity).expect(
-        "Entity from entities_with_two::<Transform, SpriteRenderer> should have SpriteRenderer",
-      );
+    for &(entity, _) in &self.render_cache {
+      // Skip entities that no longer exist (stale cache entries)
+      let Some(transform) = self.world.get_component::<Transform>(entity) else {
+        continue;
+      };
+      let Some(sprite_renderer) = self.world.get_component::<SpriteRenderer>(entity) else {
+        continue;
+      };
 
       if sprite_renderer.visible {
         // Convert world position to screen position using camera
@@ -381,6 +390,8 @@ impl ApplicationHandler for Engine {
         self.game = Some(game);
       }
       self.initialized = true;
+      // Entities were spawned during init, rebuild render cache
+      self.render_cache_dirty = true;
     }
 
     println!("Engine initialized successfully!");
