@@ -3,9 +3,24 @@
 //! This module wraps Rapier2D to provide physics simulation with collision response.
 //! It maintains a mapping between ECS entities and Rapier physics bodies, handling
 //! automatic synchronization of positions and velocities.
+//!
+//! ## Collision Events
+//!
+//! The physics world collects collision events during each `step()` call. Query them
+//! with `get_collision_events()` or consume them with `drain_collision_events()`.
+//!
+//! ```ignore
+//! for event in physics.drain_collision_events() {
+//!     match event.event_type {
+//!         CollisionEventType::Started => println!("Collision started!"),
+//!         CollisionEventType::Stopped => println!("Collision ended!"),
+//!     }
+//! }
+//! ```
 
 use std::collections::HashMap;
 
+use crossbeam_channel as channel;
 use rapier2d::prelude::*;
 
 use super::collision::{Collider, ColliderShape};
@@ -17,12 +32,58 @@ use super::physics::RigidBody;
 /// 100 pixels = 1 meter is a common convention.
 const PIXELS_PER_METER: f32 = 100.0;
 
+/// Type of collision event
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionEventType {
+  /// Two colliders started touching
+  Started,
+  /// Two colliders stopped touching
+  Stopped,
+}
+
+/// A collision event between two entities
+///
+/// Generated when colliders start or stop intersecting. Use `is_sensor_event()`
+/// to check if this was a sensor/trigger collision (no physical response).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicsCollisionEvent {
+  /// First entity in the collision pair
+  pub entity_a: Entity,
+  /// Second entity in the collision pair
+  pub entity_b: Entity,
+  /// Whether the collision started or stopped
+  pub event_type: CollisionEventType,
+  /// True if this collision involves a sensor/trigger collider
+  pub is_sensor: bool,
+}
+
+impl PhysicsCollisionEvent {
+  /// Check if this event involves a specific entity
+  pub fn involves(&self, entity: Entity) -> bool {
+    self.entity_a == entity || self.entity_b == entity
+  }
+
+  /// Get the other entity in the collision (given one participant)
+  ///
+  /// Returns `None` if the given entity is not part of this collision.
+  pub fn other(&self, entity: Entity) -> Option<Entity> {
+    if self.entity_a == entity {
+      Some(self.entity_b)
+    } else if self.entity_b == entity {
+      Some(self.entity_a)
+    } else {
+      None
+    }
+  }
+}
+
 /// Wrapper around Rapier2D physics simulation
 ///
 /// This struct manages the physics world and provides methods for:
 /// - Registering/unregistering entities with physics bodies
 /// - Stepping the physics simulation
 /// - Syncing positions between Rapier and the ECS world
+/// - Collecting and querying collision events
 pub struct RapierPhysicsWorld {
   // Rapier structures
   rigid_body_set: RigidBodySet,
@@ -40,6 +101,10 @@ pub struct RapierPhysicsWorld {
   entity_to_body: HashMap<Entity, RigidBodyHandle>,
   body_to_entity: HashMap<RigidBodyHandle, Entity>,
   entity_to_collider: HashMap<Entity, ColliderHandle>,
+  collider_to_entity: HashMap<ColliderHandle, Entity>,
+
+  // Collected events from the last step
+  collision_events: Vec<PhysicsCollisionEvent>,
 }
 
 impl RapierPhysicsWorld {
@@ -59,6 +124,8 @@ impl RapierPhysicsWorld {
       entity_to_body: HashMap::new(),
       body_to_entity: HashMap::new(),
       entity_to_collider: HashMap::new(),
+      collider_to_entity: HashMap::new(),
+      collision_events: Vec::new(),
     }
   }
 
@@ -130,6 +197,7 @@ impl RapierPhysicsWorld {
     };
 
     // Create Rapier collider based on shape
+    // All colliders get COLLISION_EVENTS enabled to support event queries
     let rapier_collider = match collider.shape {
       ColliderShape::Box { width, height } => {
         let half_w = (width / 2.0) / PIXELS_PER_METER;
@@ -139,6 +207,7 @@ impl RapierPhysicsWorld {
           .restitution(0.5) // Default bounciness
           .friction(0.3) // Default friction
           .sensor(collider.is_trigger)
+          .active_events(ActiveEvents::COLLISION_EVENTS)
           .build()
       }
       ColliderShape::Circle { radius } => {
@@ -148,6 +217,7 @@ impl RapierPhysicsWorld {
           .restitution(0.7) // Circles bounce more
           .friction(0.3)
           .sensor(collider.is_trigger)
+          .active_events(ActiveEvents::COLLISION_EVENTS)
           .build()
       }
     };
@@ -161,13 +231,16 @@ impl RapierPhysicsWorld {
     self.entity_to_body.insert(entity, body_handle);
     self.body_to_entity.insert(body_handle, entity);
     self.entity_to_collider.insert(entity, collider_handle);
+    self.collider_to_entity.insert(collider_handle, entity);
   }
 
   /// Remove an entity from the physics world
   pub fn unregister_entity(&mut self, entity: Entity) {
     if let Some(body_handle) = self.entity_to_body.remove(&entity) {
       self.body_to_entity.remove(&body_handle);
-      self.entity_to_collider.remove(&entity);
+      if let Some(collider_handle) = self.entity_to_collider.remove(&entity) {
+        self.collider_to_entity.remove(&collider_handle);
+      }
       self.rigid_body_set.remove(
         body_handle,
         &mut self.island_manager,
@@ -182,8 +255,19 @@ impl RapierPhysicsWorld {
   /// Step the physics simulation
   ///
   /// `gravity` is in pixels per second squared (e.g., (0.0, 980.0) for Earth-like gravity)
+  ///
+  /// Collision events are collected during this step and can be queried
+  /// with `get_collision_events()` or `drain_collision_events()`.
   pub fn step(&mut self, gravity: (f32, f32)) {
+    // Clear previous events
+    self.collision_events.clear();
+
     let gravity_meters = vector![gravity.0 / PIXELS_PER_METER, gravity.1 / PIXELS_PER_METER];
+
+    // Create fresh channels for this step using crossbeam (required by Rapier)
+    let (collision_send, collision_recv) = channel::unbounded();
+    let (contact_force_send, contact_force_recv) = channel::unbounded();
+    let event_handler = ChannelEventCollector::new(collision_send, contact_force_send);
 
     self.physics_pipeline.step(
       &gravity_meters,
@@ -198,8 +282,46 @@ impl RapierPhysicsWorld {
       &mut self.ccd_solver,
       None,
       &(),
-      &(),
+      &event_handler,
     );
+
+    // Collect and convert Rapier events to our event type
+    while let Ok(event) = collision_recv.try_recv() {
+      let (collider1, collider2, started) = match event {
+        CollisionEvent::Started(c1, c2, _flags) => (c1, c2, true),
+        CollisionEvent::Stopped(c1, c2, _flags) => (c1, c2, false),
+      };
+
+      // Look up entities from collider handles
+      if let (Some(&entity_a), Some(&entity_b)) = (
+        self.collider_to_entity.get(&collider1),
+        self.collider_to_entity.get(&collider2),
+      ) {
+        // Check if either collider is a sensor
+        let is_sensor = self
+          .collider_set
+          .get(collider1)
+          .is_some_and(|c| c.is_sensor())
+          || self
+            .collider_set
+            .get(collider2)
+            .is_some_and(|c| c.is_sensor());
+
+        self.collision_events.push(PhysicsCollisionEvent {
+          entity_a,
+          entity_b,
+          event_type: if started {
+            CollisionEventType::Started
+          } else {
+            CollisionEventType::Stopped
+          },
+          is_sensor,
+        });
+      }
+    }
+
+    // Contact force events channel is dropped here - no need to drain
+    drop(contact_force_recv);
   }
 
   /// Sync Rapier body positions and velocities back to ECS components
@@ -269,6 +391,55 @@ impl RapierPhysicsWorld {
     }
   }
 
+  /// Get collision events from the last physics step
+  ///
+  /// Returns a slice of all collision events that occurred. Events are
+  /// cleared at the start of each `step()` call.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// for event in physics.get_collision_events() {
+  ///     if event.involves(player_entity) {
+  ///         match event.event_type {
+  ///             CollisionEventType::Started => println!("Player hit something!"),
+  ///             CollisionEventType::Stopped => println!("Player separated"),
+  ///         }
+  ///     }
+  /// }
+  /// ```
+  pub fn get_collision_events(&self) -> &[PhysicsCollisionEvent] {
+    &self.collision_events
+  }
+
+  /// Take ownership of collision events, clearing the internal buffer
+  ///
+  /// Prefer `get_collision_events()` if you don't need ownership.
+  pub fn drain_collision_events(&mut self) -> Vec<PhysicsCollisionEvent> {
+    std::mem::take(&mut self.collision_events)
+  }
+
+  /// Get collision events involving a specific entity
+  pub fn get_collision_events_for(
+    &self,
+    entity: Entity,
+  ) -> impl Iterator<Item = &PhysicsCollisionEvent> {
+    self
+      .collision_events
+      .iter()
+      .filter(move |e| e.involves(entity))
+  }
+
+  /// Check if an entity had any collision this frame
+  pub fn has_collision(&self, entity: Entity) -> bool {
+    self.collision_events.iter().any(|e| e.involves(entity))
+  }
+
+  /// Get the number of collision events from the last step
+  pub fn collision_event_count(&self) -> usize {
+    self.collision_events.len()
+  }
+
   /// Get the number of registered physics bodies
   pub fn body_count(&self) -> usize {
     self.rigid_body_set.len()
@@ -283,7 +454,14 @@ impl Default for RapierPhysicsWorld {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
+  use super::{
+    super::{
+      collision::Collider,
+      ecs::{Transform, Velocity, World},
+      physics::RigidBody,
+    },
+    *,
+  };
 
   #[test]
   fn rapier_world_creates() {
@@ -447,5 +625,71 @@ mod tests {
       "Ball should be stopped by floor, not fall through. Y = {}",
       ball_transform.y
     );
+  }
+
+  #[test]
+  fn collision_events_generated() {
+    let mut physics = RapierPhysicsWorld::new();
+    let mut world = World::new();
+
+    // Ball starting above floor (will collide after physics step)
+    let ball = world.spawn((
+      Transform::new(100.0, 80.0), // Ball at y=80
+      Velocity::new(0.0, 100.0),   // Moving downward
+      RigidBody::new().with_gravity_scale(1.0),
+      Collider::circle_collider(10.0),
+    ));
+
+    // Static floor at y=100
+    let floor = world.spawn((
+      Transform::new(50.0, 100.0),
+      RigidBody::kinematic(),
+      Collider::box_collider(100.0, 20.0),
+    ));
+
+    // Register both entities
+    {
+      let t = world.get_component::<Transform>(ball).unwrap();
+      let v = world.get_component::<Velocity>(ball);
+      let rb = world.get_component::<RigidBody>(ball).unwrap();
+      let col = world.get_component::<Collider>(ball).unwrap();
+      physics.register_entity(ball, &t, v.as_deref(), &rb, &col);
+    }
+    {
+      let t = world.get_component::<Transform>(floor).unwrap();
+      let rb = world.get_component::<RigidBody>(floor).unwrap();
+      let col = world.get_component::<Collider>(floor).unwrap();
+      physics.register_entity(floor, &t, None, &rb, &col);
+    }
+
+    // Step physics until collision happens
+    let mut collision_detected = false;
+    for _ in 0..30 {
+      physics.step((0.0, 980.0));
+      physics.sync_to_ecs(&mut world);
+
+      // Check for collision events
+      for event in physics.get_collision_events() {
+        if event.event_type == CollisionEventType::Started
+          && event.involves(ball)
+          && event.involves(floor)
+        {
+          collision_detected = true;
+          // Verify helper methods work
+          assert_eq!(event.other(ball), Some(floor));
+          assert_eq!(event.other(floor), Some(ball));
+        }
+      }
+    }
+
+    assert!(
+      collision_detected,
+      "Expected collision event between ball and floor"
+    );
+
+    // Step again to show events are cleared between steps
+    physics.step((0.0, 980.0));
+    // After a step with no new collisions starting, event count should reflect
+    // only events from that step (could be 0 or continued contact)
   }
 }

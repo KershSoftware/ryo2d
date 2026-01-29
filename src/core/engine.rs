@@ -200,12 +200,13 @@ impl Engine {
   fn update(&mut self, _dt: f32) {
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
-      // Create context for the game
+      // Create context for the game with collision events from last physics step
       let mut ctx = GameContext {
         world: &mut self.world,
         camera: &mut self.camera,
         input: &self.input,
         assets: &mut self.assets,
+        collision_events: self.physics.get_collision_events(),
       };
 
       // Call user's update function
@@ -362,6 +363,7 @@ impl ApplicationHandler for Engine {
           camera: &mut self.camera,
           input: &self.input,
           assets: &mut self.assets,
+          collision_events: &[], // No physics events during init
         };
         game.init(&mut ctx);
         self.game = Some(game);

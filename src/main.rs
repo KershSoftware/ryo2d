@@ -113,6 +113,32 @@ impl Game for DemoGame {
     }
 
     // === Collision Detection using PhysicsWorld (broad + narrow phase) ===
+    // Note: Rapier2D now handles physics collision response automatically.
+    // We still use PhysicsWorld for game logic collision detection.
+
+    // Log collision events from Rapier physics (demonstrates the new API)
+    for event in ctx.collision_events {
+      // Only log collision starts to avoid spam
+      if event.event_type == CollisionEventType::Started {
+        // Check if this involves a ball hitting the floor
+        if let Some(floor) = self.floor
+          && event.involves(floor)
+          && let Some(ball) = event.other(floor)
+          && self.balls.contains(&ball)
+        {
+          println!("Ball {:?} hit the floor!", ball);
+        }
+        // Check if a ball hit the player paddle
+        if let Some(player) = self.player
+          && event.involves(player)
+          && let Some(ball) = event.other(player)
+          && self.balls.contains(&ball)
+        {
+          println!("Ball {:?} hit the player paddle!", ball);
+        }
+      }
+    }
+
     // Update the spatial hash with current entity positions
     self.physics_world.update(ctx.world);
 

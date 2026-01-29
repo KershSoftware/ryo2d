@@ -59,6 +59,9 @@ pub mod prelude {
   // Physics
   pub use crate::core::physics::{Acceleration, PhysicsConfig, RigidBody};
 
+  // Physics events (from Rapier integration)
+  pub use crate::core::rapier_physics::{CollisionEventType, PhysicsCollisionEvent};
+
   // Collision
   pub use crate::core::collision::{
     AABB, Circle, Collider, ColliderShape, Collision, check_collision,

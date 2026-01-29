@@ -7,6 +7,7 @@ use super::asset::AssetManager;
 use super::camera::Camera;
 use super::ecs::World;
 use super::input::InputState;
+use super::rapier_physics::PhysicsCollisionEvent;
 
 /// Context passed to game callbacks, providing access to engine systems.
 ///
@@ -21,6 +22,8 @@ pub struct GameContext<'a> {
   pub input: &'a InputState,
   /// Asset manager for loading and caching resources
   pub assets: &'a mut AssetManager,
+  /// Collision events from the last physics step
+  pub collision_events: &'a [PhysicsCollisionEvent],
 }
 
 /// Trait for user-defined game logic.
