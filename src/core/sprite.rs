@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::core::error::{SpriteError, SpriteResult};
+
 /// A 2D sprite that can be drawn to the screen
 #[derive(Debug, Clone)]
 pub struct Sprite {
@@ -43,14 +45,17 @@ impl Sprite {
   }
 
   /// Load a sprite from an image file (PNG, JPEG, etc.)
-  pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, String> {
-    let img = image::open(path.as_ref())
-      .map_err(|e| format!("Failed to load image: {}", e))?
-      .into_rgba8();
+  pub fn load<P: AsRef<Path>>(path: P) -> SpriteResult<Self> {
+    let path_ref = path.as_ref();
+    let img = image::open(path_ref).map_err(|e| SpriteError::DecodeError {
+      path: path_ref.to_path_buf(),
+      reason: e.to_string(),
+    })?;
 
-    let width = img.width();
-    let height = img.height();
-    let data = img.into_raw();
+    let rgba = img.into_rgba8();
+    let width = rgba.width();
+    let height = rgba.height();
+    let data = rgba.into_raw();
 
     Ok(Sprite {
       data,

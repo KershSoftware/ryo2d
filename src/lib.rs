@@ -72,8 +72,7 @@ pub mod prelude {
 
   // Assets
   pub use crate::core::asset::{
-    AssetError, AssetManager, AssetResult, AssetStats, AsyncSpriteHandle, LoadingState,
-    SpriteHandle,
+    AssetManager, AssetStats, AsyncSpriteHandle, LoadingState, SpriteHandle,
   };
 
   // Camera
@@ -85,5 +84,11 @@ pub mod prelude {
   pub use winit::keyboard::KeyCode;
 
   // Audio
-  pub use crate::core::audio::{AudioError, AudioManager, AudioResult, MusicHandle, SoundHandle};
+  pub use crate::core::audio::{AudioManager, MusicHandle, SoundHandle};
+
+  // Error types (centralized)
+  pub use crate::core::error::{
+    AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,
+    HotReloadResult, SpriteError, SpriteResult,
+  };
 }

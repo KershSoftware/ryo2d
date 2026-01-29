@@ -26,51 +26,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 
+use crate::core::error::{AssetError, AssetResult};
 use crate::core::hot_reload::{HotReloadEvent, HotReloadWatcher};
 use crate::core::sprite::Sprite;
-
-/// Errors that can occur during asset operations
-#[derive(Debug)]
-pub enum AssetError {
-  /// Asset file not found
-  NotFound(PathBuf),
-  /// Failed to load asset data
-  LoadError { path: PathBuf, reason: String },
-  /// Asset type mismatch
-  TypeMismatch {
-    path: PathBuf,
-    expected: &'static str,
-  },
-  /// Failed to set up file watcher for hot reloading
-  WatchError { reason: String },
-}
-
-impl std::fmt::Display for AssetError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      AssetError::NotFound(path) => write!(f, "Asset not found: {}", path.display()),
-      AssetError::LoadError { path, reason } => {
-        write!(f, "Failed to load {}: {}", path.display(), reason)
-      }
-      AssetError::TypeMismatch { path, expected } => {
-        write!(
-          f,
-          "Type mismatch for {}: expected {}",
-          path.display(),
-          expected
-        )
-      }
-      AssetError::WatchError { reason } => {
-        write!(f, "Failed to set up file watcher: {}", reason)
-      }
-    }
-  }
-}
-
-impl std::error::Error for AssetError {}
-
-/// Result type for asset operations
-pub type AssetResult<T> = Result<T, AssetError>;
 
 /// A handle to a loaded sprite asset
 ///
@@ -109,12 +67,12 @@ impl SpriteHandle {
 
   /// Get the sprite width
   pub fn width(&self) -> u32 {
-    self.inner.read().unwrap().width()
+    self.inner.read().expect("SpriteHandle RwLock poisoned").width()
   }
 
   /// Get the sprite height
   pub fn height(&self) -> u32 {
-    self.inner.read().unwrap().height()
+    self.inner.read().expect("SpriteHandle RwLock poisoned").height()
   }
 
   /// Get the path this sprite was loaded from
@@ -127,7 +85,7 @@ impl SpriteHandle {
   /// This acquires a read lock on the sprite. For rendering, prefer
   /// using `with_sprite()` which handles the lock scope properly.
   pub fn sprite(&self) -> std::sync::RwLockReadGuard<'_, Sprite> {
-    self.inner.read().unwrap()
+    self.inner.read().expect("SpriteHandle RwLock poisoned")
   }
 
   /// Execute a closure with read access to the sprite
@@ -146,7 +104,7 @@ impl SpriteHandle {
   where
     F: FnOnce(&Sprite) -> R,
   {
-    let sprite = self.inner.read().unwrap();
+    let sprite = self.inner.read().expect("SpriteHandle RwLock poisoned");
     f(&sprite)
   }
 
@@ -155,7 +113,7 @@ impl SpriteHandle {
   /// This replaces the sprite data with new data. All handles
   /// pointing to this sprite will see the updated data.
   pub(crate) fn update(&self, new_sprite: Sprite) {
-    let mut sprite = self.inner.write().unwrap();
+    let mut sprite = self.inner.write().expect("SpriteHandle RwLock poisoned");
     *sprite = new_sprite;
   }
 
@@ -240,12 +198,12 @@ impl AsyncSpriteHandle {
 
   /// Get the current loading state
   pub fn state(&self) -> LoadingState {
-    self.state.read().unwrap().clone()
+    self.state.read().expect("AsyncSpriteHandle state RwLock poisoned").clone()
   }
 
   /// Check if the asset is still loading
   pub fn is_loading(&self) -> bool {
-    matches!(*self.state.read().unwrap(), LoadingState::Loading)
+    matches!(*self.state.read().expect("AsyncSpriteHandle state RwLock poisoned"), LoadingState::Loading)
   }
 
   /// Check if the asset has finished loading (success or failure)
@@ -255,19 +213,19 @@ impl AsyncSpriteHandle {
 
   /// Check if the asset loaded successfully
   pub fn is_loaded(&self) -> bool {
-    matches!(*self.state.read().unwrap(), LoadingState::Loaded)
+    matches!(*self.state.read().expect("AsyncSpriteHandle state RwLock poisoned"), LoadingState::Loaded)
   }
 
   /// Check if the asset failed to load
   pub fn is_failed(&self) -> bool {
-    matches!(*self.state.read().unwrap(), LoadingState::Failed(_))
+    matches!(*self.state.read().expect("AsyncSpriteHandle state RwLock poisoned"), LoadingState::Failed(_))
   }
 
   /// Get the loaded sprite, if available
   ///
   /// Returns `None` if still loading or failed.
   pub fn get(&self) -> Option<SpriteHandle> {
-    self.inner.read().unwrap().clone()
+    self.inner.read().expect("AsyncSpriteHandle inner RwLock poisoned").clone()
   }
 
   /// Get the loaded sprite, or a fallback if not ready
@@ -284,13 +242,13 @@ impl AsyncSpriteHandle {
 
   /// Internal: Mark as loaded with sprite data
   fn complete_success(&self, handle: SpriteHandle) {
-    *self.inner.write().unwrap() = Some(handle);
-    *self.state.write().unwrap() = LoadingState::Loaded;
+    *self.inner.write().expect("AsyncSpriteHandle inner RwLock poisoned") = Some(handle);
+    *self.state.write().expect("AsyncSpriteHandle state RwLock poisoned") = LoadingState::Loaded;
   }
 
   /// Internal: Mark as failed with error
   fn complete_failure(&self, reason: String) {
-    *self.state.write().unwrap() = LoadingState::Failed(reason);
+    *self.state.write().expect("AsyncSpriteHandle state RwLock poisoned") = LoadingState::Failed(reason);
   }
 }
 
@@ -466,10 +424,7 @@ impl AssetManager {
     }
 
     // Load from disk
-    let sprite = Sprite::load(&full_path).map_err(|e| AssetError::LoadError {
-      path: full_path.clone(),
-      reason: e,
-    })?;
+    let sprite = Sprite::load(&full_path).map_err(AssetError::Sprite)?;
 
     // Create handle and cache it
     let handle = SpriteHandle::new(sprite, full_path.clone());
@@ -705,7 +660,7 @@ impl AssetManager {
     };
 
     let watcher =
-      HotReloadWatcher::new(config).map_err(|e| AssetError::WatchError { reason: e })?;
+      HotReloadWatcher::new(config).map_err(|e| AssetError::WatchError(e.to_string()))?;
 
     self.watcher = Some(watcher);
     Ok(())

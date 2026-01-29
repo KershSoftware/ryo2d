@@ -28,6 +28,8 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use crate::core::error::{HotReloadError, HotReloadResult};
+
 /// Messages sent from the watcher thread to the main thread
 #[derive(Debug, Clone)]
 pub enum HotReloadEvent {
@@ -93,7 +95,7 @@ impl HotReloadWatcher {
   /// Create a new hot reload watcher with the given configuration
   ///
   /// This spawns a background thread that monitors the filesystem.
-  pub fn new(config: HotReloadConfig) -> Result<Self, String> {
+  pub fn new(config: HotReloadConfig) -> HotReloadResult<Self> {
     let (tx, rx) = channel::<HotReloadEvent>();
 
     // Create the notify watcher
@@ -137,7 +139,7 @@ impl HotReloadWatcher {
         }
       }
     })
-    .map_err(|e| format!("Failed to create file watcher: {}", e))?;
+    .map_err(|e| HotReloadError::WatcherCreation(e.to_string()))?;
 
     let watcher = Arc::new(Mutex::new(watcher));
     let watcher_clone = Arc::clone(&watcher);
@@ -146,7 +148,7 @@ impl HotReloadWatcher {
 
     // Spawn thread to set up watches (watcher callbacks run on notify's internal thread)
     let thread_handle = thread::spawn(move || {
-      let mut watcher = watcher_clone.lock().unwrap();
+      let mut watcher = watcher_clone.lock().expect("HotReload watcher Mutex poisoned");
       let mode = if recursive {
         RecursiveMode::Recursive
       } else {
@@ -173,12 +175,12 @@ impl HotReloadWatcher {
   /// Create a hot reload watcher with default configuration
   ///
   /// Watches the current directory recursively for common asset types.
-  pub fn with_defaults() -> Result<Self, String> {
+  pub fn with_defaults() -> HotReloadResult<Self> {
     Self::new(HotReloadConfig::default())
   }
 
   /// Create a watcher for a specific assets directory
-  pub fn for_directory<P: AsRef<Path>>(path: P) -> Result<Self, String> {
+  pub fn for_directory<P: AsRef<Path>>(path: P) -> HotReloadResult<Self> {
     let config = HotReloadConfig {
       watch_paths: vec![path.as_ref().to_path_buf()],
       ..HotReloadConfig::default()

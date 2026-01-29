@@ -1,0 +1,174 @@
+//! Unified error types for the Ferrum2D engine
+//!
+//! This module provides a hierarchy of error types:
+//! - `EngineError` - Top-level engine errors
+//! - `AssetError` - Asset loading and management errors
+//! - `AudioError` - Audio system errors
+//! - `SpriteError` - Sprite loading errors
+//!
+//! All error types implement `std::error::Error` and use `thiserror` for
+//! ergonomic error handling.
+
+use std::path::PathBuf;
+use thiserror::Error;
+
+/// Top-level engine error type
+///
+/// This encompasses all errors that can occur within the engine.
+/// Use this type for functions that may fail in multiple subsystems.
+#[derive(Error, Debug)]
+pub enum EngineError {
+  /// Window creation or management failed
+  #[error("Window error: {0}")]
+  Window(String),
+
+  /// Rendering error
+  #[error("Render error: {0}")]
+  Render(String),
+
+  /// Asset loading or management error
+  #[error(transparent)]
+  Asset(#[from] AssetError),
+
+  /// Audio system error
+  #[error(transparent)]
+  Audio(#[from] AudioError),
+
+  /// Sprite loading error
+  #[error(transparent)]
+  Sprite(#[from] SpriteError),
+
+  /// I/O error
+  #[error("I/O error: {0}")]
+  Io(#[from] std::io::Error),
+}
+
+/// Result type for engine operations
+pub type EngineResult<T> = Result<T, EngineError>;
+
+/// Errors that can occur during asset operations
+#[derive(Error, Debug)]
+pub enum AssetError {
+  /// Asset file not found
+  #[error("Asset not found: {0}")]
+  NotFound(PathBuf),
+
+  /// Failed to load asset data
+  #[error("Failed to load {path}: {reason}")]
+  LoadError { path: PathBuf, reason: String },
+
+  /// Asset type mismatch
+  #[error("Type mismatch for {path}: expected {expected}")]
+  TypeMismatch { path: PathBuf, expected: &'static str },
+
+  /// Failed to set up file watcher for hot reloading
+  #[error("Failed to set up file watcher: {0}")]
+  WatchError(String),
+
+  /// Sprite loading error (wraps SpriteError)
+  #[error(transparent)]
+  Sprite(#[from] SpriteError),
+}
+
+/// Result type for asset operations
+pub type AssetResult<T> = Result<T, AssetError>;
+
+/// Errors that can occur when loading sprites
+#[derive(Error, Debug)]
+pub enum SpriteError {
+  /// File not found
+  #[error("Sprite file not found: {0}")]
+  NotFound(PathBuf),
+
+  /// Failed to decode image
+  #[error("Failed to decode image {path}: {reason}")]
+  DecodeError { path: PathBuf, reason: String },
+
+  /// I/O error while reading file
+  #[error("I/O error reading {path}: {source}")]
+  IoError {
+    path: PathBuf,
+    #[source]
+    source: std::io::Error,
+  },
+}
+
+/// Result type for sprite operations
+pub type SpriteResult<T> = Result<T, SpriteError>;
+
+/// Audio system errors
+#[derive(Error, Debug)]
+pub enum AudioError {
+  /// Failed to initialize the audio backend
+  #[error("Audio initialization failed: {0}")]
+  InitError(String),
+
+  /// Failed to load a sound file
+  #[error("Failed to load audio: {0}")]
+  LoadError(String),
+
+  /// Failed to play a sound
+  #[error("Failed to play audio: {0}")]
+  PlayError(String),
+
+  /// Sound not found in cache
+  #[error("Sound not found: {0}")]
+  NotFound(String),
+}
+
+/// Result type for audio operations
+pub type AudioResult<T> = Result<T, AudioError>;
+
+/// Hot reload system errors
+#[derive(Error, Debug)]
+pub enum HotReloadError {
+  /// Failed to create the file watcher
+  #[error("Failed to create file watcher: {0}")]
+  WatcherCreation(String),
+
+  /// Failed to watch a path
+  #[error("Failed to watch path {path}: {reason}")]
+  WatchPath { path: std::path::PathBuf, reason: String },
+}
+
+/// Result type for hot reload operations
+pub type HotReloadResult<T> = Result<T, HotReloadError>;
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn asset_error_display() {
+    let err = AssetError::NotFound(PathBuf::from("missing.png"));
+    assert_eq!(format!("{}", err), "Asset not found: missing.png");
+  }
+
+  #[test]
+  fn engine_error_from_asset_error() {
+    let asset_err = AssetError::NotFound(PathBuf::from("test.png"));
+    let engine_err: EngineError = asset_err.into();
+    assert!(matches!(engine_err, EngineError::Asset(_)));
+  }
+
+  #[test]
+  fn sprite_error_chains_to_asset_error() {
+    let sprite_err = SpriteError::NotFound(PathBuf::from("test.png"));
+    let asset_err: AssetError = sprite_err.into();
+    assert!(matches!(asset_err, AssetError::Sprite(_)));
+  }
+
+  #[test]
+  fn error_source_chain() {
+    use std::error::Error;
+
+    let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+    let sprite_err = SpriteError::IoError {
+      path: PathBuf::from("test.png"),
+      source: io_err,
+    };
+
+    // Verify the source chain works
+    assert!(sprite_err.source().is_some());
+  }
+}

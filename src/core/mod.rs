@@ -6,6 +6,7 @@ pub mod camera;
 pub mod collision;
 pub mod ecs;
 pub mod engine;
+pub mod error;
 pub mod game;
 pub mod hot_reload;
 pub mod input;

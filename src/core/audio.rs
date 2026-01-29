@@ -19,35 +19,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-/// Result type for audio operations
-pub type AudioResult<T> = Result<T, AudioError>;
+use crate::core::error::{AudioError, AudioResult};
 
-/// Audio system errors
-#[derive(Debug)]
-pub enum AudioError {
-  /// Failed to initialize the audio backend
-  InitError(String),
-  /// Failed to load a sound file
-  LoadError(String),
-  /// Failed to play a sound
-  PlayError(String),
-  /// Sound not found in cache
-  NotFound(String),
-}
-
-impl std::fmt::Display for AudioError {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      AudioError::InitError(msg) => write!(f, "Audio init error: {}", msg),
-      AudioError::LoadError(msg) => write!(f, "Audio load error: {}", msg),
-      AudioError::PlayError(msg) => write!(f, "Audio play error: {}", msg),
-      AudioError::NotFound(msg) => write!(f, "Sound not found: {}", msg),
-    }
-  }
-}
-
-impl std::error::Error for AudioError {}
-
+// Implement From<FromFileError> for AudioError here since kira is only available in this module
 impl From<FromFileError> for AudioError {
   fn from(err: FromFileError) -> Self {
     AudioError::LoadError(format!("{}", err))

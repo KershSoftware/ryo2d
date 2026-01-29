@@ -11,6 +11,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use super::asset::AssetManager;
 use super::camera::Camera;
 use super::ecs::{SpriteRenderer, Transform, Velocity, World};
+use super::error::{EngineError, EngineResult};
 use super::game::{Game, GameContext};
 use super::input::InputState;
 use super::physics::{Acceleration, PhysicsConfig, RigidBody};
@@ -170,16 +171,16 @@ impl Engine {
   }
 
   /// Run the engine
-  pub fn run(mut self) -> Result<(), String> {
+  pub fn run(mut self) -> EngineResult<()> {
     println!("Initializing {}...", self.config.title);
     println!("  Resolution: {}x{}", self.config.width, self.config.height);
     println!("  Target FPS: {}", self.config.target_fps);
 
-    let event_loop = EventLoop::new().map_err(|e| format!("Failed to create event loop: {}", e))?;
+    let event_loop = EventLoop::new().map_err(|e| EngineError::Window(format!("{}", e)))?;
 
     event_loop
       .run_app(&mut self)
-      .map_err(|e| format!("Event loop error: {}", e))
+      .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))
   }
 
   /// Fixed timestep update - called multiple times per frame if needed
@@ -209,7 +210,10 @@ impl Engine {
     for entity in entities {
       // Get physics properties
       let (gravity_scale, drag, is_kinematic) = {
-        let rb = self.world.get_component::<RigidBody>(entity).unwrap();
+        let rb = self
+          .world
+          .get_component::<RigidBody>(entity)
+          .expect("Entity from entities_with::<RigidBody> should have RigidBody");
         (rb.gravity_scale, rb.drag, rb.is_kinematic)
       };
 
@@ -247,7 +251,10 @@ impl Engine {
     for entity in entities {
       // Get velocity first (immutable borrow)
       let (dx, dy, dz) = {
-        let velocity = self.world.get_component::<Velocity>(entity).unwrap();
+        let velocity = self
+          .world
+          .get_component::<Velocity>(entity)
+          .expect("Entity from entities_with_two::<Transform, Velocity> should have Velocity");
         (velocity.dx, velocity.dy, velocity.dz)
       };
 
@@ -295,8 +302,13 @@ impl Engine {
     entities.sort_by_key(|(_, z)| *z);
 
     for (entity, _) in entities {
-      let transform = self.world.get_component::<Transform>(entity).unwrap();
-      let sprite_renderer = self.world.get_component::<SpriteRenderer>(entity).unwrap();
+      let transform = self
+        .world
+        .get_component::<Transform>(entity)
+        .expect("Entity from entities_with_two::<Transform, SpriteRenderer> should have Transform");
+      let sprite_renderer = self.world.get_component::<SpriteRenderer>(entity).expect(
+        "Entity from entities_with_two::<Transform, SpriteRenderer> should have SpriteRenderer",
+      );
 
       if sprite_renderer.visible {
         // Convert world position to screen position using camera
@@ -415,7 +427,11 @@ impl ApplicationHandler for Engine {
           .map(|t| t.should_update())
           .unwrap_or(false)
         {
-          let fixed_dt = self.time.as_ref().unwrap().fixed_dt();
+          let fixed_dt = self
+            .time
+            .as_ref()
+            .expect("TimeState should be initialized")
+            .fixed_dt();
           self.update(fixed_dt);
           if let Some(time) = &mut self.time {
             time.consume_update();
