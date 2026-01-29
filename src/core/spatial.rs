@@ -5,7 +5,7 @@
 //! - `BroadPhase` - Trait for broad-phase collision detection
 //! - `PhysicsWorld` - Combines broad + narrow phase collision detection
 
-use crate::core::collision::{check_collision, Collider};
+use crate::core::collision::{Collider, check_collision};
 use crate::core::ecs::{Entity, Transform, World};
 use std::collections::{HashMap, HashSet};
 
@@ -251,20 +251,23 @@ impl PhysicsWorld {
     for (entity_a, entity_b) in pairs {
       // Extract values to avoid holding multiple RefCell borrows simultaneously
       let a_data = {
-        let pos = world.get_component::<Transform>(entity_a).map(|t| (t.x, t.y));
+        let pos = world
+          .get_component::<Transform>(entity_a)
+          .map(|t| (t.x, t.y));
         let col = world.get_component::<Collider>(entity_a).map(|c| c.clone());
         pos.zip(col)
       };
       let b_data = {
-        let pos = world.get_component::<Transform>(entity_b).map(|t| (t.x, t.y));
+        let pos = world
+          .get_component::<Transform>(entity_b)
+          .map(|t| (t.x, t.y));
         let col = world.get_component::<Collider>(entity_b).map(|c| c.clone());
         pos.zip(col)
       };
 
       if let (Some((pos_a, col_a)), Some((pos_b, col_b))) = (a_data, b_data) {
         // Narrow phase: actual collision check
-        if let Some((pen_x, pen_y, norm_x, norm_y)) =
-          check_collision(&col_a, pos_a, &col_b, pos_b)
+        if let Some((pen_x, pen_y, norm_x, norm_y)) = check_collision(&col_a, pos_a, &col_b, pos_b)
         {
           results.push(CollisionResult {
             entity_a,

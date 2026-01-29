@@ -1,5 +1,6 @@
 //! Core engine modules
 
+pub mod audio;
 pub mod camera;
 pub mod collision;
 pub mod ecs;

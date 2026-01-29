@@ -77,4 +77,7 @@ pub mod prelude {
   pub use crate::core::input::InputState;
   pub use winit::event::MouseButton;
   pub use winit::keyboard::KeyCode;
+
+  // Audio
+  pub use crate::core::audio::{AudioError, AudioManager, AudioResult, MusicHandle, SoundHandle};
 }
