@@ -3,33 +3,16 @@
 # For Windows, use build-docs.ps1 instead
 # Generates combined docs: mdbook (guides) + rustdoc (API reference)
 # Usage: 
-#   ./build-docs.sh          → Build and open
-#   ./build-docs.sh --open   → Open last build (no rebuild)
-#   ./build-docs.sh --serve  → Build and serve with live reload
+#   ./build-docs.sh         → Build and open
+#   ./build-docs.sh open    → Open last build (no rebuild)
+#   ./build-docs.sh serve   → Build and serve with live reload
 
 set -e
 
-# Parse arguments
-OPEN_ONLY=false
-SERVE=false
+COMMAND="${1:-build}"
 
-for arg in "$@"; do
-    case $arg in
-        --open)
-            OPEN_ONLY=true
-            ;;
-        --serve)
-            SERVE=true
-            ;;
-        *)
-            echo "Unknown option: $arg"
-            exit 1
-            ;;
-    esac
-done
-
-# If --open, just open the last build
-if [ "$OPEN_ONLY" = true ]; then
+# If open, just open the last build
+if [ "$COMMAND" = "open" ]; then
     if [ -f "docs/book/index.html" ]; then
         if command -v start &> /dev/null; then
             start docs/book/index.html  # Windows git-bash
@@ -42,9 +25,25 @@ if [ "$OPEN_ONLY" = true ]; then
         fi
         exit 0
     else
-        echo "No documentation found. Run without --open to build."
+        echo "No documentation found. Run without 'open' to build."
         exit 1
     fi
+fi
+
+if [ "$COMMAND" = "serve" ]; then
+    echo "Starting documentation server with live reload..."
+    mdbook serve docs --open
+    exit 0
+fi
+
+if [ "$COMMAND" != "build" ]; then
+    echo "Unknown command: $COMMAND"
+    echo ""
+    echo "Usage:"
+    echo "  ./build-docs.sh         → Build and open"
+    echo "  ./build-docs.sh open    → Open last build (no rebuild)"
+    echo "  ./build-docs.sh serve   → Build and serve with live reload"
+    exit 1
 fi
 
 echo "Building Ferrum2D Documentation..."
@@ -69,20 +68,15 @@ echo ""
 echo "Documentation built successfully!"
 echo "  Guide: docs/book/index.html"
 echo "  API:   docs/book/api/ferrum2d/index.html"
+echo ""
 
-if [ "$SERVE" = true ]; then
-    echo ""
-    echo "Starting local server..."
-    mdbook serve docs --open
+# Open in browser
+if command -v start &> /dev/null; then
+    start docs/book/index.html  # Windows git-bash
+elif command -v open &> /dev/null; then
+    open docs/book/index.html  # macOS
+elif command -v xdg-open &> /dev/null; then
+    xdg-open docs/book/index.html  # Linux
 else
-    # Default: open after build
-    if command -v start &> /dev/null; then
-        start docs/book/index.html  # Windows git-bash
-    elif command -v open &> /dev/null; then
-        open docs/book/index.html  # macOS
-    elif command -v xdg-open &> /dev/null; then
-        xdg-open docs/book/index.html  # Linux
-    else
-        echo "Built! Open docs/book/index.html in your browser"
-    fi
+    echo "Built! Open docs/book/index.html in your browser"
 fi

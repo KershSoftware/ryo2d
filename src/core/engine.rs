@@ -12,6 +12,7 @@ use super::camera::Camera;
 use super::ecs::{SpriteRenderer, Transform, Velocity, World};
 use super::game::{Game, GameContext};
 use super::input::InputState;
+use super::physics::{Acceleration, PhysicsConfig, RigidBody};
 
 /// Tracks timing state for the game loop
 #[derive(Debug)]
@@ -70,6 +71,7 @@ impl TimeState {
     self.accumulator -= self.fixed_timestep;
   }
 
+  #[allow(dead_code)]
   fn dt(&self) -> f32 {
     self.delta_time.as_secs_f32()
   }
@@ -106,6 +108,7 @@ pub struct EngineConfig {
   pub height: u32,
   pub target_fps: u32,
   pub physics_hz: u32,
+  pub physics: PhysicsConfig,
 }
 
 impl Default for EngineConfig {
@@ -116,6 +119,7 @@ impl Default for EngineConfig {
       height: 600,
       target_fps: 60,
       physics_hz: 60,
+      physics: PhysicsConfig::default(),
     }
   }
 }
@@ -175,7 +179,7 @@ impl Engine {
 
   /// Fixed timestep update - called multiple times per frame if needed
   ///
-  /// This runs user game logic and built-in engine systems (movement, camera).
+  /// This runs user game logic and built-in engine systems (physics, movement, camera).
   fn update(&mut self, dt: f32) {
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
@@ -193,8 +197,46 @@ impl Engine {
       self.game = Some(game);
     }
 
+    // === Physics System: Apply gravity and acceleration to velocity ===
+    let gravity = self.config.physics.gravity;
+    let entities = self.world.entities_with::<RigidBody>();
+    for entity in entities {
+      // Get physics properties
+      let (gravity_scale, drag, is_kinematic) = {
+        let rb = self.world.get_component::<RigidBody>(entity).unwrap();
+        (rb.gravity_scale, rb.drag, rb.is_kinematic)
+      };
+
+      // Skip kinematic bodies
+      if is_kinematic {
+        continue;
+      }
+
+      // Apply acceleration to velocity (if entity has both)
+      if let Some(accel) = self.world.get_component::<Acceleration>(entity) {
+        let (ax, ay) = (accel.ax, accel.ay);
+        if let Some(mut vel) = self.world.get_component_mut::<Velocity>(entity) {
+          vel.dx += ax * dt;
+          vel.dy += ay * dt;
+        }
+      }
+
+      // Apply gravity to velocity (scaled by gravity_scale)
+      if let Some(mut vel) = self.world.get_component_mut::<Velocity>(entity) {
+        vel.dx += gravity.0 * gravity_scale * dt;
+        vel.dy += gravity.1 * gravity_scale * dt;
+
+        // Apply drag (velocity decay)
+        if drag > 0.0 {
+          let decay = (1.0 - drag).powf(dt);
+          vel.dx *= decay;
+          vel.dy *= decay;
+        }
+      }
+    }
+
     // === Movement System: Apply velocity to transform ===
-    // This is an engine-level system that runs after game logic
+    // This is an engine-level system that runs after physics
     let entities = self.world.entities_with_two::<Transform, Velocity>();
     for entity in entities {
       // Get velocity first (immutable borrow)

@@ -6,13 +6,13 @@ Ferrum2D uses a **fixed timestep** game loop pattern, which is the industry stan
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    Frame Start                       │
+│                    Frame Start                      │
 ├─────────────────────────────────────────────────────┤
 │  Accumulate time since last frame                   │
 ├─────────────────────────────────────────────────────┤
 │  While (accumulated_time >= fixed_timestep):        │
-│    ├── Run update() with fixed dt (e.g., 1/60s)    │
-│    └── Subtract fixed_timestep from accumulator    │
+│    ├── Run update() with fixed dt (e.g., 1/60s)     │
+│    └── Subtract fixed_timestep from accumulator     │
 ├─────────────────────────────────────────────────────┤
 │  Render with interpolation alpha                    │
 ├─────────────────────────────────────────────────────┤

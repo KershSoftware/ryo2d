@@ -53,6 +53,17 @@ pub mod prelude {
   // ECS types
   pub use crate::core::ecs::{Entity, RenderLayer, SpriteRenderer, Transform, Velocity, World};
 
+  // Physics
+  pub use crate::core::physics::{Acceleration, PhysicsConfig, RigidBody};
+
+  // Collision
+  pub use crate::core::collision::{
+    AABB, Circle, Collider, ColliderShape, Collision, check_collision,
+  };
+
+  // Spatial partitioning
+  pub use crate::core::spatial::{CollisionPair, CollisionResult, PhysicsWorld, SpatialHash};
+
   // Graphics
   pub use crate::core::sprite::{AnimatedSprite, Sprite};
 

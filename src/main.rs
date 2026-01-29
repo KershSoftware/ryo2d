@@ -5,77 +5,134 @@ use ferrum2d::prelude::*;
 /// Demo game showcasing the engine's features
 struct DemoGame {
   player: Option<Entity>,
+  balls: Vec<Entity>,
+  floor: Option<Entity>,
+  physics_world: PhysicsWorld,
 }
 
 impl DemoGame {
   fn new() -> Self {
-    DemoGame { player: None }
+    DemoGame {
+      player: None,
+      balls: Vec::new(),
+      floor: None,
+      physics_world: PhysicsWorld::new(),
+    }
   }
 }
 
 impl Game for DemoGame {
   fn init(&mut self, ctx: &mut GameContext) {
-    // Create a player entity with components
+    // Create a player entity with components (kinematic - controlled by input)
     let player = ctx.world.spawn();
 
     // Add Transform component (position in world)
     ctx
       .world
-      .add_component(player, Transform::new(400.0, 300.0));
+      .add_component(player, Transform::new(400.0, 500.0));
 
     // Add Velocity component (for movement)
     ctx.world.add_component(player, Velocity::zero());
 
+    // Player is kinematic - not affected by physics, controlled by input
+    ctx.world.add_component(player, RigidBody::kinematic());
+
+    // Add box collider for player paddle
+    ctx
+      .world
+      .add_component(player, Collider::box_collider(64.0, 16.0));
+
     // Add SpriteRenderer component (visual representation)
     // Player draws on top of background (z_order = 10)
-    let player_sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
+    let player_sprite = Sprite::solid_rect(64, 16, 0x40, 0xc0, 0xff, 0xff);
     ctx
       .world
       .add_component(player, SpriteRenderer::new(player_sprite).with_z_order(10));
 
     self.player = Some(player);
 
+    // Create falling balls with physics (many balls to demonstrate spatial partitioning)
+    for i in 0..20 {
+      let ball = ctx.world.spawn();
+      let x = 100.0 + (i % 10) as f32 * 110.0;
+      let y = 50.0 + (i / 10) as f32 * 50.0 + (i % 5) as f32 * 20.0;
+      ctx.world.add_component(ball, Transform::new(x, y));
+      ctx.world.add_component(ball, Velocity::zero());
+
+      // Dynamic rigid body - affected by gravity
+      ctx.world.add_component(
+        ball,
+        RigidBody::new().with_gravity_scale(1.0).with_drag(0.01),
+      );
+
+      // Add circle collider for ball (centered on sprite)
+      ctx.world.add_component(
+        ball,
+        Collider::circle_collider(12.0).with_offset(12.0, 12.0),
+      );
+
+      // Colored ball sprite
+      let colors = [
+        (0xff, 0x40, 0x40), // Red
+        (0x40, 0xff, 0x40), // Green
+        (0x40, 0x40, 0xff), // Blue
+        (0xff, 0xff, 0x40), // Yellow
+        (0xff, 0x40, 0xff), // Magenta
+      ];
+      let (r, g, b) = colors[i % colors.len()];
+      let ball_sprite = Sprite::solid_rect(24, 24, r, g, b, 0xff);
+      ctx
+        .world
+        .add_component(ball, SpriteRenderer::new(ball_sprite).with_z_order(5));
+
+      self.balls.push(ball);
+    }
+
+    // Create a floor (static - no physics, but has collider)
+    let floor = ctx.world.spawn();
+    ctx.world.add_component(floor, Transform::new(0.0, 600.0));
+    ctx
+      .world
+      .add_component(floor, Collider::box_collider(1280.0, 32.0));
+    let floor_sprite = Sprite::solid_rect(1280, 32, 0x60, 0x60, 0x60, 0xff);
+    ctx
+      .world
+      .add_component(floor, SpriteRenderer::new(floor_sprite).with_z_order(0));
+    self.floor = Some(floor);
+
     // Create some background markers so zoom is visible
-    // Background layer (z_order = 0, drawn first)
-    for row in 0..10 {
-      for col in 0..10 {
+    // Background layer (z_order = -10, drawn first)
+    for row in 0..8 {
+      for col in 0..14 {
         let marker = ctx.world.spawn();
         let x = col as f32 * 100.0;
         let y = row as f32 * 100.0;
         ctx.world.add_component(marker, Transform::new(x, y));
         // Alternating colors for a grid pattern
         let color = if (row + col) % 2 == 0 {
-          (0x80, 0x60, 0x40) // brown
+          (0x30, 0x30, 0x38) // dark
         } else {
-          (0x40, 0x60, 0x80) // blue-gray
+          (0x38, 0x38, 0x40) // slightly lighter
         };
         let marker_sprite = Sprite::solid_rect(16, 16, color.0, color.1, color.2, 0xff);
-        // z_order = 0 (default, drawn behind player)
         ctx
           .world
-          .add_component(marker, SpriteRenderer::new(marker_sprite));
+          .add_component(marker, SpriteRenderer::new(marker_sprite).with_z_order(-10));
       }
     }
 
-    // Center camera on player start position
-    ctx.camera.set_position(400.0, 300.0);
+    // Center camera
+    ctx.camera.set_position(640.0, 360.0);
   }
 
   fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
-    // === Player Input System ===
+    // === Player Input System (left/right movement only) ===
     if let Some(player) = self.player
       && let Some(mut velocity) = ctx.world.get_component_mut::<Velocity>(player)
     {
-      let speed = 200.0;
+      let speed = 300.0;
       velocity.dx = 0.0;
-      velocity.dy = 0.0;
 
-      if ctx.input.key_down(KeyCode::KeyW) || ctx.input.key_down(KeyCode::ArrowUp) {
-        velocity.dy = -speed;
-      }
-      if ctx.input.key_down(KeyCode::KeyS) || ctx.input.key_down(KeyCode::ArrowDown) {
-        velocity.dy = speed;
-      }
       if ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft) {
         velocity.dx = -speed;
       }
@@ -84,14 +141,97 @@ impl Game for DemoGame {
       }
     }
 
-    // === Camera Follow System ===
-    if let Some(player) = self.player
-      && let Some(transform) = ctx.world.get_component::<Transform>(player)
-    {
-      // Center camera on player (with smooth follow)
-      let center_x = transform.x + 16.0; // Center of 32x32 sprite
-      let center_y = transform.y + 16.0;
-      ctx.camera.follow(center_x, center_y, 0.1);
+    // === Collision Detection using PhysicsWorld (broad + narrow phase) ===
+    // Update the spatial hash with current entity positions
+    self.physics_world.update(ctx.world);
+
+    // Get all collisions using efficient spatial partitioning
+    let collisions = self.physics_world.get_collisions(ctx.world);
+
+    for collision in collisions {
+      // Ball vs Floor collision
+      if let Some(floor) = self.floor
+        && collision.involves(floor)
+        && let Some(ball) = collision.other(floor)
+        && self.balls.contains(&ball)
+      {
+        // Get ball velocity to check direction (extract value, release borrow)
+        let vel_dy = ctx.world.get_component::<Velocity>(ball).map(|v| v.dy);
+
+        if let Some(vel_dy) = vel_dy
+          && vel_dy > 0.0
+        {
+          // Extract floor position (release borrow before mutating)
+          let floor_top = ctx.world.get_component::<Transform>(floor).map(|t| t.y);
+
+          if let Some(floor_top) = floor_top {
+            // Now safe to mutate Transform
+            if let Some(mut t) = ctx.world.get_component_mut::<Transform>(ball) {
+              t.y = floor_top - 24.0;
+            }
+          }
+          // Bounce with energy loss
+          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
+            vel.dy = -vel.dy.abs() * 0.7;
+            if vel.dy.abs() < 30.0 {
+              vel.dy = 0.0;
+            }
+          }
+        }
+      }
+
+      // Ball vs Player collision
+      if let Some(player) = self.player
+        && collision.involves(player)
+        && let Some(ball) = collision.other(player)
+        && self.balls.contains(&ball)
+      {
+        let vel_dy = ctx.world.get_component::<Velocity>(ball).map(|v| v.dy);
+
+        if let Some(vel_dy) = vel_dy
+          && vel_dy > 0.0
+        {
+          // Extract all values first to release borrows before mutation
+          let ball_x = ctx
+            .world
+            .get_component::<Transform>(ball)
+            .map(|t| t.x)
+            .unwrap_or(0.0);
+          let player_pos = ctx
+            .world
+            .get_component::<Transform>(player)
+            .map(|t| (t.x, t.y));
+
+          if let Some((paddle_x, paddle_y)) = player_pos {
+            // Now safe to mutate - no immutable borrows held
+            if let Some(mut t) = ctx.world.get_component_mut::<Transform>(ball) {
+              t.y = paddle_y - 24.0;
+            }
+            // Bounce off player with extra force
+            if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
+              vel.dy = -vel.dy.abs() - 100.0;
+              // Add horizontal velocity based on hit position
+              let ball_center_x = ball_x + 12.0;
+              let paddle_center_x = paddle_x + 32.0;
+              vel.dx += (ball_center_x - paddle_center_x) * 4.0;
+            }
+          }
+        }
+      }
+    }
+
+    // === Reset balls with Space key ===
+    if ctx.input.key_pressed(KeyCode::Space) {
+      for (i, &ball) in self.balls.iter().enumerate() {
+        if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(ball) {
+          transform.x = 100.0 + (i % 10) as f32 * 110.0;
+          transform.y = 50.0 + (i / 10) as f32 * 50.0 + (i % 5) as f32 * 20.0;
+        }
+        if let Some(mut velocity) = ctx.world.get_component_mut::<Velocity>(ball) {
+          velocity.dx = 0.0;
+          velocity.dy = 0.0;
+        }
+      }
     }
 
     // === Zoom Controls ===

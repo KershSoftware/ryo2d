@@ -2,33 +2,43 @@
 # For Unix/Linux/macOS, use build-docs.sh instead
 # Generates combined docs: mdbook (guides) + rustdoc (API reference)
 # Usage: 
-#   .\build-docs.ps1         → Build and open
-#   .\build-docs.ps1 --open  → Open last build (no rebuild)
-#   .\build-docs.ps1 --serve → Build and serve with live reload
+#   .\build-docs.ps1        → Build and open
+#   .\build-docs.ps1 open   → Open last build (no rebuild)
+#   .\build-docs.ps1 serve  → Build and serve with live reload
+
+param(
+    [Parameter(Position = 0)]
+    [string]$Command = "build"
+)
 
 $ErrorActionPreference = "Stop"
 
-# Parse bash-style arguments
-$OpenOnly = $false
-$Serve = $false
-foreach ($arg in $args) {
-    switch ($arg) {
-        "--open" { $OpenOnly = $true }
-        "--serve" { $Serve = $true }
-        default { Write-Host "Unknown option: $arg" -ForegroundColor Red; exit 1 }
-    }
-}
-
-# If --open, just open the last build
-if ($OpenOnly) {
+# If open, just open the last build
+if ($Command -eq "open") {
     if (Test-Path "docs/book/index.html") {
         $indexPath = Resolve-Path "docs/book/index.html"
         Start-Process $indexPath
         exit 0
     } else {
-        Write-Host "No documentation found. Run without --open to build." -ForegroundColor Red
+        Write-Host "No documentation found. Run without 'open' to build." -ForegroundColor Red
         exit 1
     }
+}
+
+if ($Command -eq "serve") {
+    Write-Host "Starting documentation server with live reload..." -ForegroundColor Cyan
+    & "$env:USERPROFILE\.cargo\bin\mdbook.exe" serve docs --open
+    exit 0
+}
+
+if ($Command -ne "build") {
+    Write-Host "Unknown command: $Command" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Usage:"
+    Write-Host "  .\build-docs.ps1        → Build and open"
+    Write-Host "  .\build-docs.ps1 open   → Open last build (no rebuild)"
+    Write-Host "  .\build-docs.ps1 serve  → Build and serve with live reload"
+    exit 1
 }
 
 Write-Host "Building Ferrum2D Documentation..." -ForegroundColor Cyan
@@ -54,6 +64,10 @@ Copy-Item -Recurse "target/doc" $apiDir
 Write-Host "`nDocumentation built successfully!" -ForegroundColor Green
 Write-Host "  Guide: docs/book/index.html"
 Write-Host "  API:   docs/book/api/ferrum2d/index.html"
+
+# Open in browser
+$indexPath = Resolve-Path "docs/book/index.html"
+Start-Process $indexPath
 
 if ($Serve) {
     Write-Host "`nStarting local server..." -ForegroundColor Cyan
