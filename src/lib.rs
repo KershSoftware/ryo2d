@@ -53,6 +53,9 @@ pub mod prelude {
   // ECS types
   pub use crate::core::ecs::{Entity, RenderLayer, SpriteRenderer, Transform, Velocity, World};
 
+  // Math types (from glam)
+  pub use crate::core::ecs::{Mat4, Vec2, Vec3, Vec4};
+
   // Physics
   pub use crate::core::physics::{Acceleration, PhysicsConfig, RigidBody};
 

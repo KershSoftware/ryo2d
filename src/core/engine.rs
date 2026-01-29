@@ -240,15 +240,16 @@ impl Engine {
     let entities = self.world.entities_with_two::<Transform, Velocity>();
     for entity in entities {
       // Get velocity first (immutable borrow)
-      let (dx, dy) = {
+      let (dx, dy, dz) = {
         let velocity = self.world.get_component::<Velocity>(entity).unwrap();
-        (velocity.dx, velocity.dy)
+        (velocity.dx, velocity.dy, velocity.dz)
       };
 
       // Then modify transform (mutable borrow)
       if let Some(mut transform) = self.world.get_component_mut::<Transform>(entity) {
         transform.x += dx * dt;
         transform.y += dy * dt;
+        transform.z += dz * dt;
       }
     }
   }

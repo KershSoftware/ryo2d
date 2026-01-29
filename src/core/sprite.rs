@@ -356,7 +356,8 @@ mod tests {
     sprite.draw(&mut frame, 4, 4, 1, 1);
 
     // Check pixel at (1, 1) - should be red
-    let idx = (1 * 4 + 1) * 4;
+    // Index calculation: (y * width + x) * 4 (RGBA)
+    let idx = (4 + 1) * 4;
     assert_eq!(frame[idx], 255); // R
     assert_eq!(frame[idx + 1], 0); // G
     assert_eq!(frame[idx + 2], 0); // B
