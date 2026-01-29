@@ -10,11 +10,13 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::asset::AssetManager;
 use super::camera::Camera;
+use super::collision::Collider;
 use super::ecs::{Entity, SpriteRenderer, Transform, Velocity, World};
 use super::error::{EngineError, EngineResult};
 use super::game::{Game, GameContext};
 use super::input::InputState;
-use super::physics::{Acceleration, PhysicsConfig, RigidBody};
+use super::physics::{PhysicsConfig, RigidBody};
+use super::rapier_physics::RapierPhysicsWorld;
 
 /// Tracks timing state for the game loop
 #[derive(Debug)]
@@ -147,6 +149,8 @@ pub struct Engine {
   render_cache: Vec<(Entity, i32)>,
   // Whether render cache needs rebuilding (entities spawned/despawned, z_order changed)
   render_cache_dirty: bool,
+  // Rapier2D physics world
+  physics: RapierPhysicsWorld,
 }
 
 impl Engine {
@@ -173,6 +177,7 @@ impl Engine {
       initialized: false,
       render_cache: Vec::new(),
       render_cache_dirty: true,
+      physics: RapierPhysicsWorld::new(),
     }
   }
 
@@ -192,7 +197,7 @@ impl Engine {
   /// Fixed timestep update - called multiple times per frame if needed
   ///
   /// This runs user game logic and built-in engine systems (physics, movement, camera).
-  fn update(&mut self, dt: f32) {
+  fn update(&mut self, _dt: f32) {
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
       // Create context for the game
@@ -204,7 +209,7 @@ impl Engine {
       };
 
       // Call user's update function
-      game.update(&mut ctx, dt);
+      game.update(&mut ctx, _dt);
 
       // Put the game back
       self.game = Some(game);
@@ -213,67 +218,39 @@ impl Engine {
       self.render_cache_dirty = true;
     }
 
-    // === Physics System: Apply gravity and acceleration to velocity ===
+    // === Physics System (Rapier2D) ===
+
+    // Auto-register any new physics entities (RigidBody + Collider + Transform)
+    let physics_entities: Vec<Entity> = self
+      .world
+      .entities_with::<RigidBody>()
+      .into_iter()
+      .filter(|&e| {
+        !self.physics.is_registered(e)
+          && self.world.get_component::<Transform>(e).is_some()
+          && self.world.get_component::<Collider>(e).is_some()
+      })
+      .collect();
+
+    for entity in physics_entities {
+      let transform = self.world.get_component::<Transform>(entity).unwrap();
+      let velocity = self.world.get_component::<Velocity>(entity);
+      let rb = self.world.get_component::<RigidBody>(entity).unwrap();
+      let col = self.world.get_component::<Collider>(entity).unwrap();
+      self
+        .physics
+        .register_entity(entity, &transform, velocity.as_deref(), &rb, &col);
+    }
+
+    // Sync kinematic bodies from ECS to Rapier (game code may have moved them)
+    self.physics.sync_kinematic_from_ecs(&self.world);
+
+    // Step the physics simulation
     let gravity = self.config.physics.gravity;
-    let entities = self.world.entities_with::<RigidBody>();
-    for entity in entities {
-      // Get physics properties
-      let (gravity_scale, drag, is_kinematic) = {
-        let rb = self
-          .world
-          .get_component::<RigidBody>(entity)
-          .expect("Entity from entities_with::<RigidBody> should have RigidBody");
-        (rb.gravity_scale, rb.drag, rb.is_kinematic)
-      };
+    self.physics.step(gravity);
 
-      // Skip kinematic bodies
-      if is_kinematic {
-        continue;
-      }
-
-      // Apply acceleration to velocity (if entity has both)
-      if let Some(accel) = self.world.get_component::<Acceleration>(entity) {
-        let (ax, ay) = (accel.ax, accel.ay);
-        if let Some(mut vel) = self.world.get_component_mut::<Velocity>(entity) {
-          vel.dx += ax * dt;
-          vel.dy += ay * dt;
-        }
-      }
-
-      // Apply gravity to velocity (scaled by gravity_scale)
-      if let Some(mut vel) = self.world.get_component_mut::<Velocity>(entity) {
-        vel.dx += gravity.0 * gravity_scale * dt;
-        vel.dy += gravity.1 * gravity_scale * dt;
-
-        // Apply drag (velocity decay)
-        if drag > 0.0 {
-          let decay = (1.0 - drag).powf(dt);
-          vel.dx *= decay;
-          vel.dy *= decay;
-        }
-      }
-    }
-
-    // === Movement System: Apply velocity to transform ===
-    // This is an engine-level system that runs after physics
-    let entities = self.world.entities_with_two::<Transform, Velocity>();
-    for entity in entities {
-      // Get velocity first (immutable borrow)
-      let (dx, dy, dz) = {
-        let velocity = self
-          .world
-          .get_component::<Velocity>(entity)
-          .expect("Entity from entities_with_two::<Transform, Velocity> should have Velocity");
-        (velocity.dx, velocity.dy, velocity.dz)
-      };
-
-      // Then modify transform (mutable borrow)
-      if let Some(mut transform) = self.world.get_component_mut::<Transform>(entity) {
-        transform.x += dx * dt;
-        transform.y += dy * dt;
-        transform.z += dz * dt;
-      }
-    }
+    // Sync physics results back to ECS (Transform and Velocity)
+    self.physics.sync_to_ecs(&mut self.world);
   }
 
   /// Render the current frame

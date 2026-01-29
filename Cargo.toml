@@ -24,3 +24,4 @@ glam = "0.31"
 notify = "7"
 thiserror = "2"
 hecs = { version = "0.11", features = ["macros"] }
+rapier2d = "0.22"

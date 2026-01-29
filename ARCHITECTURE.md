@@ -185,13 +185,13 @@ WindowEvent::MouseWheel    ───► handle_scroll()       ───► scrol
                      ┌─────────────────────────────────────────────┐
                      │             Per-Frame State                 │
                      │                                             │
-Events accumulate    │  keys_pressed     (cleared each frame)     │
-between frames  ────►│  keys_released    (cleared each frame)     │
-                     │  mouse_delta      (cleared each frame)     │
-                     │  scroll_delta     (cleared each frame)     │
+Events accumulate    │  keys_pressed     (cleared each frame)      │
+between frames  ────►│  keys_released    (cleared each frame)      │
+                     │  mouse_delta      (cleared each frame)      │
+                     │  scroll_delta     (cleared each frame)      │
                      │                                             │
-Persistent state     │  keys_down        (tracks held keys)       │
-                     │  mouse_position   (current position)       │
+Persistent state     │  keys_down        (tracks held keys)        │
+                     │  mouse_position   (current position)        │
                      └─────────────────────────────────────────────┘
 ```
 

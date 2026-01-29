@@ -62,10 +62,11 @@ impl Game for DemoGame {
       self.balls.push(ball);
     }
 
-    // Create a floor (static - no physics, but has collider)
+    // Create a floor (kinematic - static platform for collision)
     let floor_sprite = Sprite::solid_rect(1280, 32, 0x60, 0x60, 0x60, 0xff);
     let floor = ctx.world.spawn((
       Transform::new(0.0, 600.0),
+      RigidBody::kinematic(),
       Collider::box_collider(1280.0, 32.0),
       SpriteRenderer::new(floor_sprite).with_z_order(0),
     ));
@@ -95,19 +96,19 @@ impl Game for DemoGame {
     ctx.camera.set_position(640.0, 360.0);
   }
 
-  fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+  fn update(&mut self, ctx: &mut GameContext, dt: f32) {
     // === Player Input System (left/right movement only) ===
+    // Kinematic bodies are position-based in Rapier, so we modify Transform directly
     if let Some(player) = self.player
-      && let Some(mut velocity) = ctx.world.get_component_mut::<Velocity>(player)
+      && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(player)
     {
       let speed = 300.0;
-      velocity.dx = 0.0;
 
       if ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft) {
-        velocity.dx = -speed;
+        transform.x -= speed * dt;
       }
       if ctx.input.key_down(KeyCode::KeyD) || ctx.input.key_down(KeyCode::ArrowRight) {
-        velocity.dx = speed;
+        transform.x += speed * dt;
       }
     }
 
