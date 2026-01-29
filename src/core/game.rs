@@ -3,6 +3,7 @@
 //! The engine handles low-level systems (window, input, rendering).
 //! Users implement the `Game` trait to define their game behavior.
 
+use super::asset::AssetManager;
 use super::camera::Camera;
 use super::ecs::World;
 use super::input::InputState;
@@ -18,6 +19,8 @@ pub struct GameContext<'a> {
   pub camera: &'a mut Camera,
   /// Current input state (keyboard, mouse)
   pub input: &'a InputState,
+  /// Asset manager for loading and caching resources
+  pub assets: &'a mut AssetManager,
 }
 
 /// Trait for user-defined game logic.

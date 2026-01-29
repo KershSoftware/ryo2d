@@ -70,6 +70,12 @@ pub mod prelude {
   // Graphics
   pub use crate::core::sprite::{AnimatedSprite, Sprite};
 
+  // Assets
+  pub use crate::core::asset::{
+    AssetError, AssetManager, AssetResult, AssetStats, AsyncSpriteHandle, LoadingState,
+    SpriteHandle,
+  };
+
   // Camera
   pub use crate::core::camera::Camera;
 

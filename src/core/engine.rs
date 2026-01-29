@@ -8,6 +8,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use super::asset::AssetManager;
 use super::camera::Camera;
 use super::ecs::{SpriteRenderer, Transform, Velocity, World};
 use super::game::{Game, GameContext};
@@ -135,6 +136,8 @@ pub struct Engine {
   world: World,
   // Camera for world-to-screen transformations
   camera: Camera,
+  // Asset manager for loading and caching resources
+  assets: AssetManager,
   // User-defined game logic (Option to allow taking ownership temporarily)
   game: Option<Box<dyn Game>>,
   // Whether init has been called
@@ -150,6 +153,7 @@ impl Engine {
       config.width,
       config.height,
     );
+    let assets = AssetManager::new();
 
     Engine {
       config,
@@ -159,6 +163,7 @@ impl Engine {
       input: InputState::new(),
       world,
       camera,
+      assets,
       game: Some(game),
       initialized: false,
     }
@@ -188,6 +193,7 @@ impl Engine {
         world: &mut self.world,
         camera: &mut self.camera,
         input: &self.input,
+        assets: &mut self.assets,
       };
 
       // Call user's update function
@@ -357,6 +363,7 @@ impl ApplicationHandler for Engine {
           world: &mut self.world,
           camera: &mut self.camera,
           input: &self.input,
+          assets: &mut self.assets,
         };
         game.init(&mut ctx);
         self.game = Some(game);
