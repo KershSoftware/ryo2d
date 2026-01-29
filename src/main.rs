@@ -383,14 +383,12 @@ impl Scene for PauseScene {
 // ============================================================================
 
 fn main() {
-  // Use SceneGame adapter to run scenes with the existing engine
-  let game = SceneGame::new(Box::new(MenuScene::new()));
-
+  // Use with_scene() for scene-based games
   let engine = EngineBuilder::new()
     .title("Ferrum2D - Scene Demo")
     .resolution(1280, 720)
     .fps(60)
-    .with_game(game)
+    .with_scene(MenuScene::new())
     .build();
 
   if let Err(e) = engine.run() {

@@ -17,6 +17,7 @@ use super::game::{Game, GameContext};
 use super::input::InputState;
 use super::physics::{PhysicsConfig, RigidBody};
 use super::rapier_physics::RapierPhysicsWorld;
+use super::scene::{Scene, SceneGame};
 
 /// Tracks timing state for the game loop
 #[derive(Debug)]
@@ -513,16 +514,51 @@ impl EngineBuilder {
 
   /// Set the game implementation that will run on this engine.
   ///
-  /// This is required - you must provide a game that implements the `Game` trait.
+  /// Use this for simple games or quick prototypes where you don't need
+  /// scene management. For games with multiple screens (menu, gameplay,
+  /// pause), use [`with_scene`](Self::with_scene) instead.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("Simple Game")
+  ///     .with_game(MyGame::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
   pub fn with_game(mut self, game: impl Game + 'static) -> Self {
     self.game = Some(Box::new(game));
     self
   }
 
+  /// Set the initial scene that will run on this engine.
+  ///
+  /// Use this for games that need scene management (menus, pause screens,
+  /// level transitions). Scenes can push/pop other scenes, enabling
+  /// complex game flows.
+  ///
+  /// For simple games without scene transitions, you can use
+  /// [`with_game`](Self::with_game) instead.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("Scene-Based Game")
+  ///     .with_scene(MenuScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn with_scene(mut self, scene: impl Scene + 'static) -> Self {
+    self.game = Some(Box::new(SceneGame::new(Box::new(scene))));
+    self
+  }
+
   pub fn build(self) -> Engine {
-    let game = self
-      .game
-      .expect("EngineBuilder requires a game - call .with_game() before .build()");
+    let game = self.game.expect(
+      "EngineBuilder requires a game or scene - call .with_game() or .with_scene() before .build()",
+    );
     Engine::new(self.config, game)
   }
 }

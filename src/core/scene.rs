@@ -204,9 +204,7 @@ pub struct SceneManager {
 impl SceneManager {
   /// Create a new empty scene manager.
   pub fn new() -> Self {
-    SceneManager {
-      scenes: Vec::new(),
-    }
+    SceneManager { scenes: Vec::new() }
   }
 
   /// Create a scene manager with an initial scene.

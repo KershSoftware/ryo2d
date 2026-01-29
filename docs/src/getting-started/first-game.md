@@ -2,6 +2,17 @@
 
 In this tutorial, we'll create a simple game with a player that moves around the screen.
 
+## Choosing Your Architecture
+
+Ferrum2D offers two approaches for structuring your game:
+
+| Approach | Best For | Entry Point |
+|----------|----------|-------------|
+| **Game trait** | Simple games, tutorials, prototypes | `with_game()` |
+| **Scene trait** | Multi-screen games (menus, pause, levels) | `with_scene()` |
+
+This tutorial uses the simpler `Game` trait. For scene-based architecture, see [Scene Management](../concepts/scenes.md).
+
 ## Setting Up the Game Struct
 
 ```rust
@@ -78,6 +89,44 @@ fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
 
 The engine automatically applies velocity to transform each frame!
 
+## Running the Game
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    EngineBuilder::new()
+        .title("My First Game")
+        .resolution(800, 600)
+        .with_game(MyGame::new())  // Use with_game() for Game trait
+        .build()
+        .run()?;
+    Ok(())
+}
+```
+
 ## Complete Code
 
 See the [Moving Player Example](../examples/moving-player.md) for the complete code.
+
+## Next Steps
+
+Once you're comfortable with the basics, consider:
+
+- **[Scene Management](../concepts/scenes.md)** - For games with menus, pause screens, and multiple levels
+- **[Physics System](../concepts/physics.md)** - For collision detection and physics simulation
+- **[Asset Loading](../concepts/asset-loading.md)** - For loading sprites, sounds, and other resources
+
+### Quick Comparison: Game vs Scene
+
+```rust
+// Simple approach: Game trait
+EngineBuilder::new()
+    .with_game(MyGame::new())
+    .build()
+    .run()?;
+
+// Scene-based approach: for multi-screen games
+EngineBuilder::new()
+    .with_scene(MenuScene::new())  // Scenes can push/pop other scenes
+    .build()
+    .run()?;
+```

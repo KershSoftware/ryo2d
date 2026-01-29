@@ -71,7 +71,7 @@ The `SceneManager` maintains a stack of scenes:
 
 ## Usage with Engine
 
-Use the `SceneGame` adapter to run scenes with the existing engine:
+The simplest way to use scenes is with the `with_scene()` method:
 
 ```rust
 use ferrum2d::prelude::*;
@@ -99,15 +99,17 @@ impl Scene for MenuScene {
 }
 
 fn main() {
-    let game = SceneGame::new(Box::new(MenuScene));
-    
     EngineBuilder::new()
         .title("Scene Demo")
-        .with_game(game)
+        .with_scene(MenuScene)  // Direct scene support!
         .build()
         .run()
         .unwrap();
 }
+```
+
+> **Note:** You can also use `with_game(SceneGame::new(Box::new(scene)))` if you need 
+> direct access to the `SceneManager`, but `with_scene()` is cleaner for most cases.
 ```
 
 ## Transparent Scenes (Overlays)
