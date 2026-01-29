@@ -1,6 +1,6 @@
 # Sprites & Rendering
 
-Ferrum2D uses a simple sprite-based rendering system.
+ryo2d uses a simple sprite-based rendering system.
 
 ## Creating Sprites
 
@@ -56,7 +56,7 @@ if let Some(mut renderer) = ctx.world.get_component_mut::<SpriteRenderer>(entity
 Use preset layers for common cases:
 
 ```rust
-use ferrum2d::prelude::RenderLayer;
+use ryo2d::prelude::RenderLayer;
 
 SpriteRenderer::new(sprite).with_z_order(RenderLayer::Background.as_z_order())
 SpriteRenderer::new(sprite).with_z_order(RenderLayer::Default.as_z_order())

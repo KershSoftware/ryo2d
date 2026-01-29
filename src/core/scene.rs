@@ -808,7 +808,7 @@ use super::game::{Game, GameContext};
 /// # Example
 ///
 /// ```rust,ignore
-/// use ferrum2d::prelude::*;
+/// use ryo2d::prelude::*;
 ///
 /// // Create your scenes
 /// struct MenuScene;

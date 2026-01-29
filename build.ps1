@@ -1,4 +1,4 @@
-# Ferrum2D Build Script (Windows PowerShell)
+# Ryo2D Build Script (Windows PowerShell)
 # For Unix/Linux/macOS, use build.sh instead
 #
 # Usage:
@@ -10,7 +10,7 @@ param(
     [string]$Mode = "release"
 )
 
-Write-Host "Ferrum2D Build Script" -ForegroundColor Cyan
+Write-Host "Ryo2D Build Script" -ForegroundColor Cyan
 Write-Host "=====================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -39,9 +39,9 @@ if ($exitCode -eq 0) {
     Write-Host ""
     Write-Host "Build completed successfully!" -ForegroundColor Green
     if ($Mode.ToLower() -eq "release") {
-        Write-Host "Binary location: target\release\ferrum2d-demo.exe" -ForegroundColor Cyan
+        Write-Host "Binary location: target\release\ryo2d-demo.exe" -ForegroundColor Cyan
     } elseif ($Mode.ToLower() -eq "debug") {
-        Write-Host "Binary location: target\debug\ferrum2d-demo.exe" -ForegroundColor Cyan
+        Write-Host "Binary location: target\debug\ryo2d-demo.exe" -ForegroundColor Cyan
     }
 } else {
     Write-Host ""

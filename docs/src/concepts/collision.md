@@ -1,6 +1,6 @@
 # Collision Detection
 
-Ferrum2D provides two collision systems:
+ryo2d provides two collision systems:
 
 1. **Rapier2D Physics Collisions** — Automatic collision response and events for physics bodies
 2. **Manual Collision Queries** — For game logic, triggers, and non-physics interactions
@@ -24,7 +24,7 @@ This page focuses on the **manual collision system**. For physics-based collisio
 A rectangle aligned to the screen axes. Fast and simple, ideal for most 2D games.
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 // Create from position and size
 let box1 = AABB::from_position_size(100.0, 50.0, 64.0, 32.0);
@@ -148,7 +148,7 @@ if collider_a.should_collide_with(&collider_b) {
 Use `check_collision` to test if two colliders overlap:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 fn update(&mut self, ctx: &mut GameContext) {
     // Get positions and colliders
@@ -291,4 +291,4 @@ impl Game for BouncingBall {
 
 - [ECS Architecture](./ecs.md) - Entity and component basics
 - [Physics System](./physics.md) - Gravity, velocity, and rigid bodies
-- [API Reference](../api/ferrum2d/index.html) - Full collision API
+- [API Reference](../api/ryo2d/index.html) - Full collision API

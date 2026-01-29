@@ -1,6 +1,6 @@
 # Error Handling
 
-Ferrum2D provides a unified error handling system using idiomatic Rust patterns. All error types implement `std::error::Error` and provide helpful error messages for debugging.
+ryo2d provides a unified error handling system using idiomatic Rust patterns. All error types implement `std::error::Error` and provide helpful error messages for debugging.
 
 ## Error Type Hierarchy
 
@@ -43,7 +43,7 @@ HotReloadError
 Each subsystem has a convenient result type alias:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 // Engine-wide operations
 fn run_game() -> EngineResult<()> { /* ... */ }
@@ -71,7 +71,7 @@ fn load_image() -> SpriteResult<Sprite> {
 Errors automatically convert up the hierarchy, so you can use `?` freely:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 fn setup_game(ctx: &mut GameContext) -> EngineResult<()> {
     // AssetError converts to EngineError automatically
@@ -89,7 +89,7 @@ fn setup_game(ctx: &mut GameContext) -> EngineResult<()> {
 For fine-grained error handling, match on specific variants:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 fn load_with_fallback(assets: &mut AssetManager) -> SpriteHandle {
     match assets.load_sprite("player.png") {
@@ -217,7 +217,7 @@ fn play_sound_safe(audio: &mut AudioManager, name: &str) {
 All error types are exported from the prelude:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 // Error types
 // - EngineError, AssetError, AudioError, SpriteError, HotReloadError

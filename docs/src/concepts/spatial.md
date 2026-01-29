@@ -1,6 +1,6 @@
 # Spatial Partitioning
 
-For games with many collidable entities, checking every entity against every other entity becomes expensive (O(n²) complexity). Ferrum2D provides **spatial partitioning** to dramatically reduce collision checks.
+For games with many collidable entities, checking every entity against every other entity becomes expensive (O(n²) complexity). ryo2d provides **spatial partitioning** to dramatically reduce collision checks.
 
 ## The Problem
 
@@ -32,7 +32,7 @@ A **spatial hash** divides the world into a grid of cells. Each entity is placed
 The `PhysicsWorld` struct handles all collision detection automatically:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct MyGame {
     physics_world: PhysicsWorld,
@@ -118,7 +118,7 @@ for collision in self.physics_world.get_collisions(ctx.world) {
 For advanced scenarios, you can use `SpatialHash` directly:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 let mut spatial = SpatialHash::new(64.0); // 64 pixel cells
 
@@ -188,7 +188,7 @@ use rapier2d::prelude::*;
 let physics_pipeline = PhysicsPipeline::new();
 ```
 
-Ferrum2D's simple physics are suitable for:
+ryo2d's simple physics are suitable for:
 - Platformers
 - Top-down games
 - Breakout/Pong-style games

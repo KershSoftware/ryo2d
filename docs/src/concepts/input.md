@@ -1,6 +1,6 @@
 # Input Handling
 
-Ferrum2D provides keyboard and mouse input through the `GameContext`.
+ryo2d provides keyboard and mouse input through the `GameContext`.
 
 ## Keyboard
 
@@ -63,7 +63,7 @@ if scroll_y != 0.0 {
 Import `KeyCode` from the prelude:
 
 ```rust
-use ferrum2d::prelude::*;  // Includes KeyCode
+use ryo2d::prelude::*;  // Includes KeyCode
 
 // Common keys
 KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD

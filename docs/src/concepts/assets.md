@@ -1,6 +1,6 @@
 # Asset Management
 
-Ferrum2D provides a centralized asset management system for loading, caching, and hot-reloading game resources like sprites, textures, and audio files.
+ryo2d provides a centralized asset management system for loading, caching, and hot-reloading game resources like sprites, textures, and audio files.
 
 ## Overview
 
@@ -15,7 +15,7 @@ The asset system provides:
 ## Quick Start
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct MyGame {
     player_sprite: Option<SpriteHandle>,
@@ -449,7 +449,7 @@ fn init(&mut self, ctx: &mut GameContext) {
 Asset operations can fail. Handle errors gracefully:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 fn load_assets(&mut self, ctx: &mut GameContext) {
     match ctx.assets.load_sprite("player.png") {
@@ -622,7 +622,7 @@ The `RwLock` is key: when `process_reloads()` updates sprite data, any code hold
 Here's a complete game showing asset management patterns:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 use std::collections::HashMap;
 
 struct AssetDemo {

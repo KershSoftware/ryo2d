@@ -4,7 +4,7 @@ In this tutorial, we'll create a simple game with a player that moves around the
 
 ## Choosing Your Architecture
 
-Ferrum2D offers two approaches for structuring your game:
+Ryo2D offers two approaches for structuring your game:
 
 | Approach | Best For | Entry Point |
 |----------|----------|-------------|
@@ -16,7 +16,7 @@ This tutorial uses the simpler `Game` trait. For scene-based architecture, see [
 ## Setting Up the Game Struct
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct MyGame {
     player: Option<Entity>,

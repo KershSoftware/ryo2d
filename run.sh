@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ferrum2D Development Run Script (Unix/Linux/macOS)
+# Ryo2D Development Run Script (Unix/Linux/macOS)
 # For Windows, use run.ps1 instead
 #
 # Usage:
@@ -113,7 +113,7 @@ show_example_menu() {
     fi
     
     echo ""
-    echo -e "${CYAN}=== Ferrum2D Examples ===${NC}"
+    echo -e "${CYAN}=== Ryo2D Examples ===${NC}"
     echo ""
     
     for ((i=0; i<count; i++)); do
@@ -168,7 +168,7 @@ case "$COMMAND" in
         ;;
     help)
         echo ""
-        echo -e "${CYAN}Ferrum2D Development Script${NC}"
+        echo -e "${CYAN}Ryo2D Development Script${NC}"
         echo ""
         echo "Usage:"
         echo "  ./run.sh              - Interactive example selection"

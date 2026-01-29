@@ -1,6 +1,6 @@
 # Audio System
 
-Ferrum2D includes a built-in audio system powered by [Kira](https://github.com/tesselode/kira), a game audio library designed for games.
+ryo2d includes a built-in audio system powered by [Kira](https://github.com/tesselode/kira), a game audio library designed for games.
 
 ## Overview
 
@@ -16,7 +16,7 @@ The audio system provides:
 ## Quick Start
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct MyGame {
     audio: Option<AudioManager>,
@@ -432,7 +432,7 @@ if let Some(handle) = &mut self.music_handle {
 ## Complete Example
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct AudioDemo {
     audio: Option<AudioManager>,
@@ -505,4 +505,4 @@ impl Game for AudioDemo {
 
 - [Getting Started](../getting-started/quick-start.md) - Basic engine setup
 - [Game Loop](./game-loop.md) - Understanding update cycles
-- [API Reference](../api/ferrum2d/index.html) - Full audio API
+- [API Reference](../api/ryo2d/index.html) - Full audio API

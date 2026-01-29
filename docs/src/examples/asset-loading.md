@@ -7,7 +7,7 @@ This example demonstrates common patterns for managing game assets effectively.
 The simplest approach - load sprites during initialization:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct BasicGame {
     player_sprite: Option<SpriteHandle>,
@@ -42,7 +42,7 @@ impl Game for BasicGame {
 For games with many sprites, use a registry:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 use std::collections::HashMap;
 
 /// A registry of named sprites for easy access
@@ -133,7 +133,7 @@ impl Game for RegistryGame {
 Handle missing assets gracefully with placeholders:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 use std::collections::HashMap;
 
 struct RobustGame {
@@ -210,7 +210,7 @@ impl Game for RobustGame {
 Load and unload assets per level for memory efficiency:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 use std::collections::HashMap;
 
 struct LevelAssets {
@@ -277,7 +277,7 @@ impl Game for LevelGame {
 Optimal setup for development iteration:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 use std::collections::HashMap;
 
 struct DevGame {
@@ -366,7 +366,7 @@ impl DevGame {
 Loading sprite sheets for animations:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct AnimatedGame {
     walk_animation: Option<AnimatedSprite>,
@@ -409,7 +409,7 @@ impl Game for AnimatedGame {
 Show loading progress for many assets:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 use std::collections::HashMap;
 
 struct LoadingGame {
@@ -489,7 +489,7 @@ impl Game for LoadingGame {
 For large textures or runtime loading without frame hitches:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 use std::collections::HashMap;
 
 struct AsyncGame {
@@ -588,7 +588,7 @@ impl Game for AsyncGame {
 For open-world games that load chunks dynamically:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 use std::collections::HashMap;
 
 struct StreamingWorld {

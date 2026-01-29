@@ -1,6 +1,6 @@
 # ECS Architecture
 
-Ferrum2D uses a simple **Entity-Component-System** (ECS) architecture for managing game objects.
+ryo2d uses a simple **Entity-Component-System** (ECS) architecture for managing game objects.
 
 ## Core Concepts
 
@@ -15,7 +15,7 @@ let enemy = ctx.world.spawn();   // Another unique Entity
 
 ### Components
 
-**Components** are data attached to entities. Ferrum2D provides several built-in components:
+**Components** are data attached to entities. ryo2d provides several built-in components:
 
 | Component | Purpose |
 |-----------|---------|

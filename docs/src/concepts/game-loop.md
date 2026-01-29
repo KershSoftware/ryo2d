@@ -1,6 +1,6 @@
 # Game Loop
 
-Ferrum2D uses a **fixed timestep** game loop pattern, which is the industry standard for deterministic game physics.
+ryo2d uses a **fixed timestep** game loop pattern, which is the industry standard for deterministic game physics.
 
 ## The Pattern
 

@@ -1,4 +1,4 @@
-//! Workspace management for Ferrum2D projects
+//! Workspace management for Ryo2D projects
 //!
 //! A workspace represents a game project directory containing:
 //! - `ryo.toml` configuration file (optional)
@@ -22,7 +22,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ferrum2d::prelude::*;
+//! use ryo2d::prelude::*;
 //!
 //! // Auto-discover workspace from current directory
 //! let workspace = Workspace::discover()?;
@@ -46,7 +46,7 @@ pub const CONFIG_FILENAME: &str = "ryo.toml";
 /// Maximum directory levels to search upward for config
 const MAX_SEARCH_DEPTH: usize = 3;
 
-/// A Ferrum2D project workspace.
+/// A Ryo2D project workspace.
 ///
 /// Represents the root directory of a game project and provides
 /// access to configured paths and settings.
@@ -101,8 +101,7 @@ impl Workspace {
   ///
   /// Returns an error if the current directory cannot be determined.
   pub fn discover() -> Result<Self, EngineError> {
-    let cwd =
-      std::env::current_dir().map_err(|e| EngineError::WorkspaceError(e.to_string()))?;
+    let cwd = std::env::current_dir().map_err(|e| EngineError::WorkspaceError(e.to_string()))?;
 
     Self::discover_from(&cwd)
   }

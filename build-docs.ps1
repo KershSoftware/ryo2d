@@ -1,4 +1,4 @@
-# Ferrum2D Documentation Build Script (Windows PowerShell)
+# Ryo2D Documentation Build Script (Windows PowerShell)
 # For Unix/Linux/macOS, use build-docs.sh instead
 # Generates combined docs: mdbook (guides) + rustdoc (API reference)
 # Usage: 
@@ -42,7 +42,7 @@ if ($Command -ne "build") {
     exit 1
 }
 
-Write-Host "Building Ferrum2D Documentation..." -ForegroundColor Cyan
+Write-Host "Building Ryo2D Documentation..." -ForegroundColor Cyan
 
 # Step 1: Build rustdoc
 Write-Host "`n[1/3] Building API documentation (rustdoc)..." -ForegroundColor Yellow
@@ -64,7 +64,7 @@ Copy-Item -Recurse "target/doc" $apiDir
 
 Write-Host "`nDocumentation built successfully!" -ForegroundColor Green
 Write-Host "  Guide: docs/book/index.html"
-Write-Host "  API:   docs/book/api/ferrum2d/index.html"
+Write-Host "  API:   docs/book/api/ryo2d/index.html"
 
 # Open in browser
 $indexPath = Resolve-Path "docs/book/index.html"

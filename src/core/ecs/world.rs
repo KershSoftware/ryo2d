@@ -1,7 +1,7 @@
 //! World - The ECS container that manages entities and components
 //!
 //! This module provides a wrapper around `hecs::World` with a simplified API
-//! that maintains compatibility with the existing Ferrum2D codebase while
+//! that maintains compatibility with the existing Ryo2D codebase while
 //! gaining the benefits of hecs:
 //!
 //! - **Generational entity IDs** - Prevents use-after-free bugs
@@ -13,7 +13,7 @@ use hecs::Entity;
 /// The ECS World - container for all entities and components
 ///
 /// This is a thin wrapper around `hecs::World` that provides a simplified API
-/// compatible with the existing Ferrum2D engine.
+/// compatible with the existing Ryo2D engine.
 ///
 /// ## Generational IDs
 ///

@@ -3,7 +3,7 @@
 A complete example of a player that moves with WASD keys.
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct MyGame {
     player: Option<Entity>,

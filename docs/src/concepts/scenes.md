@@ -74,7 +74,7 @@ The `SceneManager` maintains a stack of scenes:
 The simplest way to use scenes is with the `with_scene()` method:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct MenuScene;
 

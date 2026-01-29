@@ -1,4 +1,4 @@
-# Ferrum2D Development Run Script (Windows PowerShell)
+# Ryo2D Development Run Script (Windows PowerShell)
 # For Unix/Linux/macOS, use run.sh instead
 #
 # Usage:
@@ -89,7 +89,7 @@ function Show-ExampleMenu {
     }
     
     Write-Host ""
-    Write-Host "=== Ferrum2D Examples ===" -ForegroundColor Cyan
+    Write-Host "=== Ryo2D Examples ===" -ForegroundColor Cyan
     Write-Host ""
     
     for ($i = 0; $i -lt $examples.Count; $i++) {
@@ -145,7 +145,7 @@ switch ($Command.ToLower()) {
     }
     "help" {
         Write-Host ""
-        Write-Host "Ferrum2D Development Script" -ForegroundColor Cyan
+        Write-Host "Ryo2D Development Script" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "Usage:"
         Write-Host "  ./run              - Interactive example selection"

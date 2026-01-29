@@ -1,4 +1,4 @@
-//! Unified error types for the Ferrum2D engine
+//! Unified error types for the Ryo2D engine
 //!
 //! This module provides a hierarchy of error types:
 //! - `EngineError` - Top-level engine errors

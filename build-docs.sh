@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ferrum2D Documentation Build Script (Unix/Linux/macOS)
+# Ryo2D Documentation Build Script (Unix/Linux/macOS)
 # For Windows, use build-docs.ps1 instead
 # Generates combined docs: mdbook (guides) + rustdoc (API reference)
 # Usage: 
@@ -46,7 +46,7 @@ if [ "$COMMAND" != "build" ]; then
     exit 1
 fi
 
-echo "Building Ferrum2D Documentation..."
+echo "Building Ryo2D Documentation..."
 
 # Step 1: Build rustdoc
 echo ""
@@ -67,7 +67,7 @@ cp -r target/doc docs/book/api
 echo ""
 echo "Documentation built successfully!"
 echo "  Guide: docs/book/index.html"
-echo "  API:   docs/book/api/ferrum2d/index.html"
+echo "  API:   docs/book/api/ryo2d/index.html"
 echo ""
 
 # Open in browser

@@ -3,7 +3,7 @@
 A player that moves with WASD while the camera smoothly follows.
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct MyGame {
     player: Option<Entity>,

@@ -1,6 +1,6 @@
 # Physics System
 
-Ferrum2D uses [Rapier2D](https://rapier.rs/), a professional-grade 2D physics engine, for realistic physics simulation including gravity, collisions, and rigid body dynamics.
+ryo2d uses [Rapier2D](https://rapier.rs/), a professional-grade 2D physics engine, for realistic physics simulation including gravity, collisions, and rigid body dynamics.
 
 ## Overview
 
@@ -18,7 +18,7 @@ All physics simulation runs at a fixed timestep (default 60Hz) for deterministic
 To add physics to an entity, give it a `Transform`, `RigidBody`, and `Collider`:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 // Create a bouncing ball with physics
 let ball = ctx.world.spawn((
@@ -234,7 +234,7 @@ RigidBody::new().with_gravity_scale(2.0)
 
 ## Coordinate System
 
-Rapier uses a meters-based coordinate system internally. Ferrum2D automatically converts between pixel coordinates and physics units:
+Rapier uses a meters-based coordinate system internally. ryo2d automatically converts between pixel coordinates and physics units:
 
 ```
 PIXELS_PER_METER = 100.0
@@ -248,7 +248,7 @@ This conversion is transparent - you always work in pixels.
 ## Complete Example: Breakout Physics
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct BreakoutGame {
     paddle: Entity,

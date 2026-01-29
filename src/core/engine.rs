@@ -119,7 +119,7 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
   fn default() -> Self {
     EngineConfig {
-      title: String::from("Ferrum2D"),
+      title: String::from("Ryo2D"),
       width: 800,
       height: 600,
       target_fps: 60,
@@ -603,7 +603,7 @@ mod tests {
   #[test]
   fn engine_config_has_sensible_defaults() {
     let config = EngineConfig::default();
-    assert_eq!(config.title, "Ferrum2D");
+    assert_eq!(config.title, "Ryo2D");
     assert_eq!(config.width, 800);
     assert_eq!(config.height, 600);
     assert_eq!(config.target_fps, 60);

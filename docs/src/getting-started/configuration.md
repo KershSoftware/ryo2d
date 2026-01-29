@@ -1,6 +1,6 @@
 # Project Configuration
 
-Ferrum2D uses a `ryo.toml` configuration file to define project settings. This file is optional but recommended for organizing your game project.
+Ryo2D uses a `ryo.toml` configuration file to define project settings. This file is optional but recommended for organizing your game project.
 
 ## The ryo.toml File
 
@@ -34,7 +34,7 @@ assets = "assets"
 
 ## Entry Point Detection
 
-If you don't specify an `entry_point`, Ferrum2D will look for:
+If you don't specify an `entry_point`, Ryo2D will look for:
 
 1. `./main.rs` (project root)
 2. `./src/main.rs` (standard Rust layout)
@@ -44,7 +44,7 @@ If you don't specify an `entry_point`, Ferrum2D will look for:
 The engine automatically discovers your workspace by looking for `ryo.toml` in the current directory and up to 3 parent directories. This is useful when running from subdirectories.
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 fn main() {
     // Discover workspace from current directory
@@ -61,7 +61,7 @@ fn main() {
 You can access workspace configuration at runtime:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 fn main() {
     let workspace = Workspace::discover().unwrap();

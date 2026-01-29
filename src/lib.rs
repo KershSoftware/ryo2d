@@ -1,11 +1,11 @@
-//! # Ferrum2D
+//! # Ryo2D
 //!
 //! A simple, scriptable 2D game engine built in Rust.
 //!
 //! ## Quick Start
 //!
-//! ```rust,no_run
-//! use ferrum2d::prelude::*;
+//! ```no_run
+//! use ryo2d::prelude::*;
 //!
 //! struct MyGame;
 //!
@@ -32,7 +32,7 @@
 //!
 //! ## Architecture
 //!
-//! Ferrum2D uses a simple Entity-Component-System (ECS) architecture:
+//! Ryo2D uses a simple Entity-Component-System (ECS) architecture:
 //!
 //! - **Entities** are unique IDs representing game objects
 //! - **Components** are data attached to entities (Transform, Velocity, SpriteRenderer)
@@ -42,7 +42,7 @@
 
 pub mod core;
 
-/// The prelude module - import everything you need with `use ferrum2d::prelude::*`
+/// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
   // Core game trait
   pub use crate::core::game::{Game, GameContext};

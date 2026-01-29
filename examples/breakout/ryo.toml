@@ -1,5 +1,5 @@
 # Breakout Demo - Ryo Engine Project Configuration
-# This file configures the example project for the Ferrum2D/Ryo engine
+# This file configures the example project for the Ryo2D engine
 
 [project]
 name = "Breakout Demo"

@@ -1,5 +1,5 @@
 [book]
-title = "Ferrum2D"
+title = "Ryo2D"
 authors = ["Kersheh"]
 language = "en"
 
@@ -7,7 +7,7 @@ language = "en"
 build-dir = "book"
 
 [output.html]
-git-repository-url = "https://github.com/Kersheh/ferrum2d"
-edit-url-template = "https://github.com/Kersheh/ferrum2d/edit/main/docs/{path}"
+git-repository-url = "https://github.com/Kersheh/ryo2d"
+edit-url-template = "https://github.com/Kersheh/ryo2d/edit/main/docs/{path}"
 default-theme = "rust"
 preferred-dark-theme = "ayu"

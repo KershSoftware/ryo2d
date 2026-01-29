@@ -2,11 +2,11 @@
 
 ## Installation
 
-Add Ferrum2D to your `Cargo.toml`:
+Add Ryo2D to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ferrum2d = { git = "https://github.com/Kersheh/ferrum2d" }
+ryo2d = { git = "https://github.com/Kersheh/ryo2d" }
 ```
 
 ## Minimal Example
@@ -14,7 +14,7 @@ ferrum2d = { git = "https://github.com/Kersheh/ferrum2d" }
 Create a new Rust project and add this to `src/main.rs`:
 
 ```rust
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 struct MyGame;
 

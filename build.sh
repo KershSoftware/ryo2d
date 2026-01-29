@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ferrum2D Build Script (Unix/Linux/macOS)
+# Ryo2D Build Script (Unix/Linux/macOS)
 # For Windows, use build.ps1 instead
 #
 # Usage:
@@ -11,7 +11,7 @@ set -e  # Exit on error
 
 MODE="${1:-release}"
 
-echo -e "\033[0;36mFerrum2D Build Script\033[0m"
+echo -e "\033[0;36mRyo2D Build Script\033[0m"
 echo -e "\033[0;36m=====================\033[0m"
 echo ""
 
@@ -38,7 +38,7 @@ esac
 echo ""
 echo -e "\033[0;32mBuild completed successfully!\033[0m"
 if [ "$MODE" = "release" ]; then
-    echo -e "\033[0;36mBinary location: target/release/ferrum2d-demo\033[0m"
+    echo -e "\033[0;36mBinary location: target/release/ryo2d-demo\033[0m"
 elif [ "$MODE" = "debug" ]; then
-    echo -e "\033[0;36mBinary location: target/debug/ferrum2d-demo\033[0m"
+    echo -e "\033[0;36mBinary location: target/debug/ryo2d-demo\033[0m"
 fi

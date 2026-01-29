@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use ferrum2d::prelude::*;
+use ryo2d::prelude::*;
 
 // ============================================================================
 // Menu Scene
@@ -406,7 +406,7 @@ impl Scene for PauseScene {
 
 fn main() {
   let engine = EngineBuilder::new()
-    .title("Breakout - Ferrum2D Example")
+    .title("Breakout - Ryo2D Example")
     .resolution(1280, 720)
     .fps(60)
     .with_scene(MenuScene::new())

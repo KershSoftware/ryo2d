@@ -1,4 +1,4 @@
-# Ferrum2D Architecture
+# Ryo2D Architecture
 
 ## High-Level Overview
 
@@ -81,7 +81,7 @@
 
 ## ECS Architecture (hecs)
 
-Ferrum2D uses [hecs](https://github.com/Ralith/hecs), a high-performance archetype-based ECS.
+Ryo2D uses [hecs](https://github.com/Ralith/hecs), a high-performance archetype-based ECS.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
