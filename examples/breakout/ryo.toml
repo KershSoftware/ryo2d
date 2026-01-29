@@ -1,0 +1,13 @@
+# Breakout Demo - Ryo Engine Project Configuration
+# This file configures the example project for the Ferrum2D/Ryo engine
+
+[project]
+name = "Breakout Demo"
+
+[paths]
+# Entry point is in this directory (not in src/)
+entry_point = "main.rs"
+# Save data directory (created on demand)
+save_data = "data"
+# Assets directory
+assets = "assets"

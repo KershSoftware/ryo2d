@@ -94,6 +94,9 @@ pub mod prelude {
   // Audio
   pub use crate::core::audio::{AudioManager, MusicHandle, SoundHandle};
 
+  // Workspace
+  pub use crate::core::workspace::{Workspace, WorkspaceConfig};
+
   // Error types (centralized)
   pub use crate::core::error::{
     AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,

@@ -15,3 +15,4 @@ pub mod rapier_physics;
 pub mod scene;
 pub mod spatial;
 pub mod sprite;
+pub mod workspace;

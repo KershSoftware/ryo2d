@@ -41,6 +41,10 @@ pub enum EngineError {
   /// I/O error
   #[error("I/O error: {0}")]
   Io(#[from] std::io::Error),
+
+  /// Workspace configuration error
+  #[error("Workspace error: {0}")]
+  WorkspaceError(String),
 }
 
 /// Result type for engine operations

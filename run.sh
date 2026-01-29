@@ -3,37 +3,206 @@
 # For Windows, use run.ps1 instead
 #
 # Usage:
-#   ./run.sh          - Run the engine with hot-reload
-#   ./run.sh check    - Fast compilation check with hot-reload
-#   ./run.sh lint     - Linting with hot-reload
-#   ./run.sh test     - Run tests with hot-reload
+#   ./run.sh              - Interactive example selection
+#   ./run.sh <example>    - Run specific example (e.g., ./run.sh breakout)
+#   ./run.sh check        - Fast compilation check
+#   ./run.sh lint         - Linting with clippy
+#   ./run.sh test         - Run tests
+#   ./run.sh watch        - Watch mode with hot-reload (requires cargo-watch)
 
 set -e
 
-COMMAND="${1:-run}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMMAND="${1:-}"
 
-# Execute the appropriate cargo command
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+GRAY='\033[0;90m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Function to discover examples
+get_examples() {
+    local examples=()
+    local display_names=()
+    
+    if [[ -d "$SCRIPT_DIR/examples" ]]; then
+        for dir in "$SCRIPT_DIR/examples"/*/; do
+            if [[ -d "$dir" ]]; then
+                local name=$(basename "$dir")
+                local main_rs="$dir/main.rs"
+                local ryo_toml="$dir/ryo.toml"
+                
+                # Check if it's a valid example (has main.rs)
+                if [[ -f "$main_rs" ]]; then
+                    local display_name="$name"
+                    
+                    # Try to read project name from ryo.toml
+                    if [[ -f "$ryo_toml" ]]; then
+                        local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
+                        if [[ -n "$parsed_name" ]]; then
+                            display_name="$parsed_name"
+                        fi
+                    fi
+                    
+                    examples+=("$name")
+                    display_names+=("$display_name")
+                fi
+            fi
+        done
+    fi
+    
+    # Export as newline-separated strings
+    printf '%s\n' "${examples[@]}"
+}
+
+get_display_names() {
+    if [[ -d "$SCRIPT_DIR/examples" ]]; then
+        for dir in "$SCRIPT_DIR/examples"/*/; do
+            if [[ -d "$dir" ]]; then
+                local name=$(basename "$dir")
+                local main_rs="$dir/main.rs"
+                local ryo_toml="$dir/ryo.toml"
+                
+                if [[ -f "$main_rs" ]]; then
+                    local display_name="$name"
+                    
+                    if [[ -f "$ryo_toml" ]]; then
+                        local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
+                        if [[ -n "$parsed_name" ]]; then
+                            display_name="$parsed_name"
+                        fi
+                    fi
+                    
+                    echo "$display_name"
+                fi
+            fi
+        done
+    fi
+}
+
+# Function to run an example
+run_example() {
+    local example_name="$1"
+    echo ""
+    echo -e "${CYAN}Running example: $example_name${NC}"
+    echo ""
+    cargo run --example "$example_name"
+}
+
+# Function to show interactive example selection
+show_example_menu() {
+    mapfile -t examples < <(get_examples)
+    mapfile -t display_names < <(get_display_names)
+    
+    local count=${#examples[@]}
+    
+    if [[ $count -eq 0 ]]; then
+        echo -e "${RED}No examples found in examples/ directory.${NC}"
+        exit 1
+    fi
+    
+    # Auto-select if only one example
+    if [[ $count -eq 1 ]]; then
+        echo -e "${GREEN}Auto-selecting only example: ${display_names[0]}${NC}"
+        run_example "${examples[0]}"
+        return
+    fi
+    
+    echo ""
+    echo -e "${CYAN}=== Ferrum2D Examples ===${NC}"
+    echo ""
+    
+    for ((i=0; i<count; i++)); do
+        local num=$((i + 1))
+        echo -e "  ${WHITE}[$num] ${display_names[$i]}${NC}"
+    done
+    
+    echo ""
+    echo -e "  ${GRAY}[q] Quit${NC}"
+    echo ""
+    
+    read -p "Select an example: " selection
+    
+    if [[ "$selection" == "q" || "$selection" == "Q" ]]; then
+        echo -e "${GRAY}Exiting.${NC}"
+        exit 0
+    fi
+    
+    local index=$((selection - 1))
+    if [[ $index -ge 0 && $index -lt $count ]]; then
+        run_example "${examples[$index]}"
+    else
+        echo -e "${RED}Invalid selection.${NC}"
+        exit 1
+    fi
+}
+
+# Execute the appropriate command
 case "$COMMAND" in
-    run)
-        cargo watch -c -x run
+    "")
+        show_example_menu
         ;;
     check)
-        cargo watch -c -x check
+        cargo check
         ;;
     lint)
-        cargo watch -c -x clippy
+        cargo clippy
         ;;
     test)
-        cargo watch -c -x test
+        cargo test
         ;;
-    *)
-        echo "Unknown command: $COMMAND"
+    watch)
+        # Watch mode - runs first example by default
+        mapfile -t examples < <(get_examples)
+        if [[ ${#examples[@]} -gt 0 ]]; then
+            echo -e "${CYAN}Watching example: ${examples[0]} (Ctrl+C to stop)${NC}"
+            cargo watch -c -x "run --example ${examples[0]}"
+        else
+            echo -e "${RED}No examples found.${NC}"
+            exit 1
+        fi
+        ;;
+    help)
+        echo ""
+        echo -e "${CYAN}Ferrum2D Development Script${NC}"
         echo ""
         echo "Usage:"
-        echo "  ./run.sh          - Run the engine with hot-reload"
-        echo "  ./run.sh check    - Fast compilation check with hot-reload"
-        echo "  ./run.sh lint     - Linting with hot-reload"
-        echo "  ./run.sh test     - Run tests with hot-reload"
-        exit 1
+        echo "  ./run.sh              - Interactive example selection"
+        echo "  ./run.sh <example>    - Run specific example (e.g., ./run.sh breakout)"
+        echo "  ./run.sh check        - Fast compilation check"
+        echo "  ./run.sh lint         - Linting with clippy"
+        echo "  ./run.sh test         - Run tests"
+        echo "  ./run.sh watch        - Watch mode with hot-reload"
+        echo "  ./run.sh help         - Show this help"
+        echo ""
+        ;;
+    *)
+        # Try to run as an example name
+        mapfile -t examples < <(get_examples)
+        
+        found=false
+        for example in "${examples[@]}"; do
+            if [[ "$example" == "$COMMAND" ]]; then
+                run_example "$example"
+                found=true
+                break
+            fi
+        done
+        
+        if [[ "$found" == false ]]; then
+            echo -e "${RED}Unknown command or example: $COMMAND${NC}"
+            echo ""
+            echo -e "${YELLOW}Available examples:${NC}"
+            for example in "${examples[@]}"; do
+                echo "  - $example"
+            done
+            echo ""
+            echo "Run './run.sh help' for more options."
+            exit 1
+        fi
         ;;
 esac
