@@ -78,7 +78,7 @@ impl Scene for MenuScene {
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     if ctx.input.key_pressed(KeyCode::Enter) {
-      // Use a fade transition when starting the game
+      // Fade to black over 300ms
       return SceneAction::SwitchWith(
         Box::new(GameplayScene::new()),
         Transition::fade(Duration::from_millis(300)),
@@ -380,7 +380,7 @@ impl Scene for PauseScene {
     }
 
     if ctx.input.key_pressed(KeyCode::Escape) {
-      // Pop pause, then switch to menu with fade transition
+      // Fade to black when returning to menu
       return SceneAction::ResetWith(
         Box::new(MenuScene::new()),
         Transition::fade(Duration::from_millis(200)),

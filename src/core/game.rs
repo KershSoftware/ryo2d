@@ -72,6 +72,17 @@ pub trait Game {
   ///
   /// `dt` is the fixed delta time in seconds (e.g., 1/60 = 0.01667)
   fn update(&mut self, ctx: &mut GameContext, dt: f32);
+
+  /// Return an optional screen overlay for transition effects.
+  ///
+  /// The engine will blend this color over the entire screen after
+  /// rendering all sprites. Used for fade transitions between scenes.
+  ///
+  /// Returns `Some((alpha, [r, g, b, a]))` to show overlay, `None` for no overlay.
+  /// Alpha is 0.0 (transparent) to 1.0 (opaque).
+  fn get_overlay(&self) -> Option<(f32, [u8; 4])> {
+    None
+  }
 }
 
 #[cfg(test)]

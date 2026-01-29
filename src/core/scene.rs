@@ -895,6 +895,19 @@ impl Game for SceneGame {
       self.manager.handle_action(action, &mut scene_ctx);
     }
   }
+
+  fn get_overlay(&self) -> Option<(f32, [u8; 4])> {
+    let alpha = self.manager.transition_overlay_alpha();
+    if alpha > 0.001 {
+      let color = self
+        .manager
+        .transition_overlay_color()
+        .unwrap_or([0, 0, 0, 255]);
+      Some((alpha, color))
+    } else {
+      None
+    }
+  }
 }
 
 impl SceneGame {

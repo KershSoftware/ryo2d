@@ -328,6 +328,33 @@ impl Engine {
         );
       }
     }
+
+    // === Apply screen overlay (for transitions) ===
+    if let Some(game) = &self.game
+      && let Some((alpha, color)) = game.get_overlay()
+      && alpha > 0.001
+    {
+      blend_overlay(frame, color, alpha);
+    }
+  }
+}
+
+/// Blend a color overlay over the entire frame buffer.
+///
+/// This is used for transition effects (fade to black, etc.).
+/// Alpha of 0.0 = no change, 1.0 = fully replaced with overlay color.
+#[inline]
+fn blend_overlay(frame: &mut [u8], color: [u8; 4], alpha: f32) {
+  let inv_alpha = 1.0 - alpha;
+  let overlay_r = color[0] as f32 * alpha;
+  let overlay_g = color[1] as f32 * alpha;
+  let overlay_b = color[2] as f32 * alpha;
+
+  for pixel in frame.chunks_exact_mut(4) {
+    pixel[0] = (pixel[0] as f32 * inv_alpha + overlay_r) as u8;
+    pixel[1] = (pixel[1] as f32 * inv_alpha + overlay_g) as u8;
+    pixel[2] = (pixel[2] as f32 * inv_alpha + overlay_b) as u8;
+    // pixel[3] (alpha) stays unchanged
   }
 }
 
