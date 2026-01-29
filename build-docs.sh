@@ -3,9 +3,9 @@
 # For Windows, use build-docs.ps1 instead
 # Generates combined docs: mdbook (guides) + rustdoc (API reference)
 # Usage: 
-#   ./build-docs.sh         → Build and open
-#   ./build-docs.sh open    → Open last build (no rebuild)
-#   ./build-docs.sh serve   → Build and serve with live reload
+#   ./build-docs.sh         - Build and open
+#   ./build-docs.sh open    - Open last build (no rebuild)
+#   ./build-docs.sh serve   - Build and serve with live reload
 
 set -e
 
@@ -40,9 +40,9 @@ if [ "$COMMAND" != "build" ]; then
     echo "Unknown command: $COMMAND"
     echo ""
     echo "Usage:"
-    echo "  ./build-docs.sh         → Build and open"
-    echo "  ./build-docs.sh open    → Open last build (no rebuild)"
-    echo "  ./build-docs.sh serve   → Build and serve with live reload"
+    echo "  ./build-docs.sh         - Build and open"
+    echo "  ./build-docs.sh open    - Open last build (no rebuild)"
+    echo "  ./build-docs.sh serve   - Build and serve with live reload"
     exit 1
 fi
 

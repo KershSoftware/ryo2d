@@ -2,9 +2,9 @@
 # For Unix/Linux/macOS, use build-docs.sh instead
 # Generates combined docs: mdbook (guides) + rustdoc (API reference)
 # Usage: 
-#   .\build-docs.ps1        → Build and open
-#   .\build-docs.ps1 open   → Open last build (no rebuild)
-#   .\build-docs.ps1 serve  → Build and serve with live reload
+#   .\build-docs.ps1        - Build and open
+#   .\build-docs.ps1 open   - Open last build (no rebuild)
+#   .\build-docs.ps1 serve  - Build and serve with live reload
 
 param(
     [Parameter(Position = 0)]
@@ -36,9 +36,9 @@ if ($Command -ne "build") {
     Write-Host "Unknown command: $Command" -ForegroundColor Red
     Write-Host ""
     Write-Host "Usage:"
-    Write-Host "  .\build-docs.ps1        → Build and open"
-    Write-Host "  .\build-docs.ps1 open   → Open last build (no rebuild)"
-    Write-Host "  .\build-docs.ps1 serve  → Build and serve with live reload"
+    Write-Host "  .\build-docs.ps1        - Build and open"
+    Write-Host "  .\build-docs.ps1 open   - Open last build (no rebuild)"
+    Write-Host "  .\build-docs.ps1 serve  - Build and serve with live reload"
     exit 1
 }
 
