@@ -25,6 +25,8 @@
 //! }
 //! ```
 
+use std::time::Duration;
+
 use super::asset::AssetManager;
 use super::camera::Camera;
 use super::ecs::World;
@@ -47,9 +49,110 @@ pub struct SceneContext<'a> {
   pub collision_events: &'a [PhysicsCollisionEvent],
 }
 
+// ============================================================================
+// Transitions
+// ============================================================================
+
+/// Visual transition effect when switching between scenes.
+///
+/// Transitions provide smooth visual effects during scene changes,
+/// improving the user experience.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Fade to black over 500ms, then fade in the new scene
+/// SceneAction::SwitchWith(
+///     Box::new(GameplayScene::new()),
+///     Transition::fade(Duration::from_millis(500))
+/// )
+/// ```
+#[derive(Debug, Clone, Default)]
+pub enum Transition {
+  /// Instant transition (no effect)
+  #[default]
+  None,
+  /// Fade through a solid color (default: black)
+  Fade {
+    /// Duration of the fade out (old scene)
+    duration: Duration,
+    /// Color to fade through (RGBA)
+    color: [u8; 4],
+  },
+  /// Slide the new scene in from a direction
+  Slide {
+    /// Duration of the slide
+    duration: Duration,
+    /// Direction to slide from
+    direction: SlideDirection,
+  },
+}
+
+impl Transition {
+  /// Create a fade transition through black.
+  pub fn fade(duration: Duration) -> Self {
+    Transition::Fade {
+      duration,
+      color: [0, 0, 0, 255], // Black
+    }
+  }
+
+  /// Create a fade transition through a custom color.
+  pub fn fade_color(duration: Duration, r: u8, g: u8, b: u8) -> Self {
+    Transition::Fade {
+      duration,
+      color: [r, g, b, 255],
+    }
+  }
+
+  /// Create a fade transition through white.
+  pub fn fade_white(duration: Duration) -> Self {
+    Transition::Fade {
+      duration,
+      color: [255, 255, 255, 255],
+    }
+  }
+
+  /// Create a slide transition.
+  pub fn slide(duration: Duration, direction: SlideDirection) -> Self {
+    Transition::Slide {
+      duration,
+      direction,
+    }
+  }
+
+  /// Get the total duration of this transition.
+  pub fn duration(&self) -> Duration {
+    match self {
+      Transition::None => Duration::ZERO,
+      Transition::Fade { duration, .. } => *duration * 2, // fade out + fade in
+      Transition::Slide { duration, .. } => *duration,
+    }
+  }
+}
+
+/// Direction for slide transitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlideDirection {
+  /// Slide in from the left
+  Left,
+  /// Slide in from the right
+  Right,
+  /// Slide in from the top
+  Up,
+  /// Slide in from the bottom
+  Down,
+}
+
 /// Actions a scene can return to control scene flow.
 ///
 /// Return these from `update()` to tell the SceneManager what to do next.
+///
+/// # Transitions
+///
+/// Actions with `With` suffix (e.g., `SwitchWith`, `PushWith`) accept a
+/// `Transition` for smooth visual effects. Actions without transitions
+/// change immediately.
 #[derive(Default)]
 pub enum SceneAction {
   /// Continue running the current scene (default)
@@ -57,12 +160,20 @@ pub enum SceneAction {
   Continue,
   /// Push a new scene onto the stack (current scene pauses)
   Push(Box<dyn Scene>),
+  /// Push with a transition effect
+  PushWith(Box<dyn Scene>, Transition),
   /// Pop the current scene off the stack (returns to previous)
   Pop,
+  /// Pop with a transition effect
+  PopWith(Transition),
   /// Replace the current scene with a new one
   Switch(Box<dyn Scene>),
+  /// Switch with a transition effect
+  SwitchWith(Box<dyn Scene>, Transition),
   /// Clear all scenes and push a new one
   Reset(Box<dyn Scene>),
+  /// Reset with a transition effect
+  ResetWith(Box<dyn Scene>, Transition),
   /// Exit the game
   Quit,
 }
@@ -175,6 +286,25 @@ pub trait Scene {
   fn updates_below(&self) -> bool {
     false
   }
+
+  /// Human-readable name for debugging and logging.
+  ///
+  /// Override this to provide a custom name, or leave the default
+  /// which uses the type name.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// fn name(&self) -> &str {
+  ///     "MainMenu"
+  /// }
+  /// ```
+  fn name(&self) -> &str {
+    std::any::type_name::<Self>()
+      .rsplit("::")
+      .next()
+      .unwrap_or("Unknown")
+  }
 }
 
 /// Manages a stack of scenes.
@@ -182,6 +312,11 @@ pub trait Scene {
 /// The scene at the top of the stack is the "active" scene that receives
 /// update calls. Scenes below may or may not update/render depending on
 /// the `is_transparent()` and `updates_below()` settings of scenes above.
+///
+/// # Transitions
+///
+/// Scene changes can include visual transitions (fade, slide).
+/// During a transition, both scenes may be rendered with effects applied.
 ///
 /// # Example
 ///
@@ -199,12 +334,56 @@ pub trait Scene {
 pub struct SceneManager {
   /// Stack of scenes (back = top)
   scenes: Vec<Box<dyn Scene>>,
+  /// Active transition state
+  transition_state: Option<TransitionState>,
+}
+
+/// Internal state for an in-progress transition.
+#[derive(Debug)]
+struct TransitionState {
+  /// The transition effect being applied
+  transition: Transition,
+  /// Elapsed time in the transition
+  elapsed: Duration,
+  /// The action to perform at the midpoint (for fades) or end
+  pending_action: PendingAction,
+  /// Current phase of the transition
+  phase: TransitionPhase,
+}
+
+enum PendingAction {
+  Push(Box<dyn Scene>),
+  Pop,
+  Switch(Box<dyn Scene>),
+  Reset(Box<dyn Scene>),
+}
+
+impl std::fmt::Debug for PendingAction {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      PendingAction::Push(_) => write!(f, "Push(...)"),
+      PendingAction::Pop => write!(f, "Pop"),
+      PendingAction::Switch(_) => write!(f, "Switch(...)"),
+      PendingAction::Reset(_) => write!(f, "Reset(...)"),
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransitionPhase {
+  /// Fading/sliding out the old scene
+  Out,
+  /// Fading/sliding in the new scene
+  In,
 }
 
 impl SceneManager {
   /// Create a new empty scene manager.
   pub fn new() -> Self {
-    SceneManager { scenes: Vec::new() }
+    SceneManager {
+      scenes: Vec::new(),
+      transition_state: None,
+    }
   }
 
   /// Create a scene manager with an initial scene.
@@ -212,6 +391,59 @@ impl SceneManager {
     let mut manager = Self::new();
     manager.scenes.push(scene);
     manager
+  }
+
+  /// Check if a transition is currently in progress.
+  pub fn is_transitioning(&self) -> bool {
+    self.transition_state.is_some()
+  }
+
+  /// Get the current transition progress (0.0 to 1.0).
+  ///
+  /// Returns `None` if no transition is active.
+  pub fn transition_progress(&self) -> Option<f32> {
+    self.transition_state.as_ref().map(|state| {
+      let total = state.transition.duration();
+      if total.is_zero() {
+        1.0
+      } else {
+        (state.elapsed.as_secs_f32() / total.as_secs_f32()).min(1.0)
+      }
+    })
+  }
+
+  /// Get the current transition overlay alpha (0.0 to 1.0).
+  ///
+  /// For fade transitions, this is the opacity of the fade overlay.
+  /// Returns 0.0 if no transition or transition doesn't use overlay.
+  pub fn transition_overlay_alpha(&self) -> f32 {
+    match &self.transition_state {
+      Some(state) => match &state.transition {
+        Transition::None => 0.0,
+        Transition::Fade { duration, .. } => {
+          let half_duration = duration.as_secs_f32();
+          let elapsed = state.elapsed.as_secs_f32();
+
+          match state.phase {
+            TransitionPhase::Out => (elapsed / half_duration).min(1.0),
+            TransitionPhase::In => (1.0 - (elapsed / half_duration)).max(0.0),
+          }
+        }
+        Transition::Slide { .. } => 0.0,
+      },
+      None => 0.0,
+    }
+  }
+
+  /// Get the transition overlay color (if any).
+  pub fn transition_overlay_color(&self) -> Option<[u8; 4]> {
+    match &self.transition_state {
+      Some(state) => match &state.transition {
+        Transition::Fade { color, .. } => Some(*color),
+        _ => None,
+      },
+      None => None,
+    }
   }
 
   /// Push a new scene onto the stack.
@@ -351,7 +583,126 @@ impl SceneManager {
         self.reset(scene, ctx);
         true
       }
+      // Transition variants
+      SceneAction::PushWith(scene, transition) => {
+        self.start_transition(transition, PendingAction::Push(scene));
+        true
+      }
+      SceneAction::PopWith(transition) => {
+        self.start_transition(transition, PendingAction::Pop);
+        true
+      }
+      SceneAction::SwitchWith(scene, transition) => {
+        self.start_transition(transition, PendingAction::Switch(scene));
+        true
+      }
+      SceneAction::ResetWith(scene, transition) => {
+        self.start_transition(transition, PendingAction::Reset(scene));
+        true
+      }
       SceneAction::Quit => false,
+    }
+  }
+
+  /// Start a transition effect.
+  fn start_transition(&mut self, transition: Transition, action: PendingAction) {
+    if matches!(transition, Transition::None) {
+      // No transition, just a marker - shouldn't happen but handle it
+      return;
+    }
+
+    self.transition_state = Some(TransitionState {
+      transition,
+      elapsed: Duration::ZERO,
+      pending_action: action,
+      phase: TransitionPhase::Out,
+    });
+  }
+
+  /// Update transition state, performing the scene change at the right moment.
+  ///
+  /// Call this each frame with the delta time to advance transitions.
+  /// Returns `true` if the game should continue, `false` if it should quit.
+  pub fn update_transition(&mut self, dt: f32, ctx: &mut SceneContext) -> bool {
+    let dt_duration = Duration::from_secs_f32(dt);
+
+    // First pass: update elapsed time and check what action to take
+    let action_to_execute = if let Some(ref mut state) = self.transition_state {
+      state.elapsed += dt_duration;
+
+      match &state.transition {
+        Transition::None => {
+          // Shouldn't be here, but clean up
+          self.transition_state = None;
+          None
+        }
+        Transition::Fade { duration, .. } => {
+          let duration = *duration;
+          match state.phase {
+            TransitionPhase::Out => {
+              if state.elapsed >= duration {
+                // Need to execute action and switch to In phase
+                state.elapsed = Duration::ZERO;
+                state.phase = TransitionPhase::In;
+                Some(std::mem::replace(
+                  &mut state.pending_action,
+                  PendingAction::Pop,
+                ))
+              } else {
+                None
+              }
+            }
+            TransitionPhase::In => {
+              if state.elapsed >= duration {
+                self.transition_state = None;
+              }
+              None
+            }
+          }
+        }
+        Transition::Slide { duration, .. } => {
+          let duration = *duration;
+          if state.phase == TransitionPhase::Out {
+            state.phase = TransitionPhase::In;
+            Some(std::mem::replace(
+              &mut state.pending_action,
+              PendingAction::Pop,
+            ))
+          } else if state.elapsed >= duration {
+            self.transition_state = None;
+            None
+          } else {
+            None
+          }
+        }
+      }
+    } else {
+      None
+    };
+
+    // Second pass: execute any pending action
+    if let Some(action) = action_to_execute {
+      self.execute_pending_action(action, ctx);
+    }
+
+    !self.scenes.is_empty()
+  }
+
+  /// Execute a pending action during a transition.
+  fn execute_pending_action(&mut self, action: PendingAction, ctx: &mut SceneContext) {
+    match action {
+      PendingAction::Push(scene) => {
+        self.push(scene, ctx);
+      }
+      PendingAction::Pop => {
+        self.pop(ctx);
+      }
+      PendingAction::Switch(scene) => {
+        self.switch(scene, ctx);
+      }
+      PendingAction::Reset(scene) => {
+        self.reset(scene, ctx);
+      }
     }
   }
 
@@ -398,6 +749,42 @@ impl SceneManager {
   #[allow(clippy::borrowed_box)]
   pub fn top_mut(&mut self) -> Option<&mut Box<dyn Scene>> {
     self.scenes.last_mut()
+  }
+
+  /// Get a debug representation of the current scene stack.
+  ///
+  /// Useful for logging and debugging scene flow.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// println!("{}", manager.debug_stack());
+  /// // Output: "[MenuScene] -> [GameplayScene] -> [PauseScene*]"
+  /// ```
+  pub fn debug_stack(&self) -> String {
+    if self.scenes.is_empty() {
+      return String::from("(empty)");
+    }
+
+    self
+      .scenes
+      .iter()
+      .enumerate()
+      .map(|(i, scene)| {
+        let name = scene.name();
+        if i == self.scenes.len() - 1 {
+          format!("[{}*]", name) // Mark active scene
+        } else {
+          format!("[{}]", name)
+        }
+      })
+      .collect::<Vec<_>>()
+      .join(" -> ")
+  }
+
+  /// Get the names of all scenes in the stack (bottom to top).
+  pub fn scene_names(&self) -> Vec<&str> {
+    self.scenes.iter().map(|s| s.name()).collect()
   }
 }
 
@@ -499,9 +886,33 @@ impl Game for SceneGame {
       collision_events: ctx.collision_events,
     };
 
-    // Update scenes and handle actions
-    let action = self.manager.update(&mut scene_ctx, dt);
-    self.manager.handle_action(action, &mut scene_ctx);
+    // Update any active transitions first
+    self.manager.update_transition(dt, &mut scene_ctx);
+
+    // Only update scenes if not in the middle of a transition
+    if !self.manager.is_transitioning() {
+      let action = self.manager.update(&mut scene_ctx, dt);
+      self.manager.handle_action(action, &mut scene_ctx);
+    }
+  }
+}
+
+impl SceneGame {
+  /// Check if a transition is currently active.
+  pub fn is_transitioning(&self) -> bool {
+    self.manager.is_transitioning()
+  }
+
+  /// Get the transition overlay alpha for rendering fade effects.
+  ///
+  /// Returns a value from 0.0 (fully transparent) to 1.0 (fully opaque).
+  pub fn transition_overlay(&self) -> (f32, [u8; 4]) {
+    let alpha = self.manager.transition_overlay_alpha();
+    let color = self
+      .manager
+      .transition_overlay_color()
+      .unwrap_or([0, 0, 0, 255]);
+    (alpha, color)
   }
 }
 

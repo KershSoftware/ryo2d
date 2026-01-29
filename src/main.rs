@@ -10,6 +10,8 @@
 //! - Game: A/D to move paddle, Space to reset, Escape for pause
 //! - Pause: Enter to resume, Escape to menu
 
+use std::time::Duration;
+
 use ferrum2d::prelude::*;
 
 // ============================================================================
@@ -76,7 +78,11 @@ impl Scene for MenuScene {
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     if ctx.input.key_pressed(KeyCode::Enter) {
-      return SceneAction::Switch(Box::new(GameplayScene::new()));
+      // Use a fade transition when starting the game
+      return SceneAction::SwitchWith(
+        Box::new(GameplayScene::new()),
+        Transition::fade(Duration::from_millis(300)),
+      );
     }
 
     if ctx.input.key_pressed(KeyCode::Escape) {
@@ -84,6 +90,10 @@ impl Scene for MenuScene {
     }
 
     SceneAction::Continue
+  }
+
+  fn name(&self) -> &str {
+    "MainMenu"
   }
 }
 
@@ -317,6 +327,10 @@ impl Scene for GameplayScene {
 
     SceneAction::Continue
   }
+
+  fn name(&self) -> &str {
+    "Gameplay"
+  }
 }
 
 // ============================================================================
@@ -366,8 +380,11 @@ impl Scene for PauseScene {
     }
 
     if ctx.input.key_pressed(KeyCode::Escape) {
-      // Pop pause, then switch to menu (which clears everything)
-      return SceneAction::Reset(Box::new(MenuScene::new()));
+      // Pop pause, then switch to menu with fade transition
+      return SceneAction::ResetWith(
+        Box::new(MenuScene::new()),
+        Transition::fade(Duration::from_millis(200)),
+      );
     }
 
     SceneAction::Continue
@@ -375,6 +392,10 @@ impl Scene for PauseScene {
 
   fn is_transparent(&self) -> bool {
     true // Render gameplay scene below
+  }
+
+  fn name(&self) -> &str {
+    "PauseMenu"
   }
 }
 

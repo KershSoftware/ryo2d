@@ -48,7 +48,9 @@ pub mod prelude {
   pub use crate::core::game::{Game, GameContext};
 
   // Scene management
-  pub use crate::core::scene::{Scene, SceneAction, SceneContext, SceneGame, SceneManager};
+  pub use crate::core::scene::{
+    Scene, SceneAction, SceneContext, SceneGame, SceneManager, SlideDirection, Transition,
+  };
 
   // Engine builder
   pub use crate::core::engine::EngineBuilder;
