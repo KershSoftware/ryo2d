@@ -18,6 +18,7 @@ use super::input::InputState;
 use super::physics::{PhysicsConfig, RigidBody};
 use super::rapier_physics::RapierPhysicsWorld;
 use super::scene::{Scene, SceneGame};
+use super::ui::{BitmapFont, UiContext, create_debug_font};
 
 /// Tracks timing state for the game loop
 #[derive(Debug)]
@@ -152,6 +153,8 @@ pub struct Engine {
   render_cache_dirty: bool,
   // Rapier2D physics world
   physics: RapierPhysicsWorld,
+  // UI font for text rendering
+  ui_font: BitmapFont,
 }
 
 impl Engine {
@@ -164,6 +167,7 @@ impl Engine {
       config.height,
     );
     let assets = AssetManager::new();
+    let ui_font = create_debug_font();
 
     Engine {
       config,
@@ -179,6 +183,7 @@ impl Engine {
       render_cache: Vec::new(),
       render_cache_dirty: true,
       physics: RapierPhysicsWorld::new(),
+      ui_font,
     }
   }
 
@@ -327,6 +332,14 @@ impl Engine {
           self.camera.zoom,
         );
       }
+    }
+
+    // === UI Rendering ===
+    // Call game's render_ui with UiContext for immediate-mode UI
+    if let Some(mut game) = self.game.take() {
+      let mut ui_ctx = UiContext::new(frame, frame_width, frame_height, &self.input, &self.ui_font);
+      game.render_ui(&mut ui_ctx);
+      self.game = Some(game);
     }
 
     // === Apply screen overlay (for transitions) ===

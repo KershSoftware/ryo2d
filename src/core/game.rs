@@ -8,6 +8,7 @@ use super::camera::Camera;
 use super::ecs::World;
 use super::input::InputState;
 use super::rapier_physics::PhysicsCollisionEvent;
+use super::ui::UiContext;
 
 /// Context passed to game callbacks, providing access to engine systems.
 ///
@@ -72,6 +73,34 @@ pub trait Game {
   ///
   /// `dt` is the fixed delta time in seconds (e.g., 1/60 = 0.01667)
   fn update(&mut self, ctx: &mut GameContext, dt: f32);
+
+  /// Called after sprite rendering to draw UI elements.
+  ///
+  /// Use this for:
+  /// - HUD elements (health bars, score, minimap)
+  /// - Debug overlays
+  /// - In-game UI (inventory, dialogs)
+  ///
+  /// UI is drawn in screen space, on top of all world sprites.
+  /// The provided `UiContext` offers immediate-mode drawing methods.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// fn render_ui(&mut self, ui: &mut UiContext) {
+  ///     // Draw health bar
+  ///     ui.draw_progress_bar(
+  ///         Rect::new(10.0, 10.0, 200.0, 20.0),
+  ///         self.health / 100.0,
+  ///         Color::RED,
+  ///         Color::DARK_GRAY,
+  ///     );
+  ///
+  ///     // Draw score
+  ///     ui.draw_text(&format!("Score: {}", self.score), 10.0, 40.0, Color::WHITE);
+  /// }
+  /// ```
+  fn render_ui(&mut self, _ui: &mut UiContext) {}
 
   /// Return an optional screen overlay for transition effects.
   ///

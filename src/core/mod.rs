@@ -16,4 +16,5 @@ pub mod save;
 pub mod scene;
 pub mod spatial;
 pub mod sprite;
+pub mod ui;
 pub mod workspace;

@@ -103,6 +103,9 @@ pub mod prelude {
     compress_data, decompress_data,
   };
 
+  // UI system
+  pub use crate::core::ui::{Anchor, BitmapFont, Color, Rect, UiContext, create_debug_font};
+
   // Error types (centralized)
   pub use crate::core::error::{
     AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,

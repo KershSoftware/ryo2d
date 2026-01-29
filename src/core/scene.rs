@@ -32,6 +32,7 @@ use super::camera::Camera;
 use super::ecs::World;
 use super::input::InputState;
 use super::rapier_physics::PhysicsCollisionEvent;
+use super::ui::UiContext;
 
 /// Context passed to scene callbacks, providing access to engine systems.
 ///
@@ -270,6 +271,23 @@ pub trait Scene {
   /// * `ctx` - Access to engine systems
   /// * `alpha` - Interpolation alpha for smooth rendering (0.0 to 1.0)
   fn render(&mut self, _ctx: &mut SceneContext, _alpha: f32) {}
+
+  /// Called after sprite rendering to draw UI elements.
+  ///
+  /// Use this for HUD elements, debug overlays, and in-game UI.
+  /// UI is drawn in screen space, on top of all world sprites.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// fn render_ui(&mut self, ui: &mut UiContext) {
+  ///     ui.draw_text("Press ENTER to start", 300.0, 400.0, Color::WHITE);
+  ///     if ui.button("Start", Rect::new(350.0, 450.0, 100.0, 30.0)) {
+  ///         self.start_game = true;
+  ///     }
+  /// }
+  /// ```
+  fn render_ui(&mut self, _ui: &mut UiContext) {}
 
   /// Whether scenes below this one should also be rendered.
   ///
@@ -729,6 +747,29 @@ impl SceneManager {
     }
   }
 
+  /// Render UI for all visible scenes.
+  ///
+  /// Called after sprite rendering. Renders from bottom to top.
+  pub fn render_ui(&mut self, ui: &mut UiContext) {
+    if self.scenes.is_empty() {
+      return;
+    }
+
+    // Find the first scene that's not transparent (render from there)
+    let mut render_from = self.scenes.len() - 1;
+    for i in (0..self.scenes.len()).rev() {
+      render_from = i;
+      if i == 0 || !self.scenes[i].is_transparent() {
+        break;
+      }
+    }
+
+    // Render UI from bottom-up
+    for i in render_from..self.scenes.len() {
+      self.scenes[i].render_ui(ui);
+    }
+  }
+
   /// Check if the scene stack is empty.
   pub fn is_empty(&self) -> bool {
     self.scenes.is_empty()
@@ -907,6 +948,10 @@ impl Game for SceneGame {
     } else {
       None
     }
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    self.manager.render_ui(ui);
   }
 }
 
