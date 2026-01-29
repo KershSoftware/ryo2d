@@ -47,7 +47,23 @@ cargo run
 
 You should see an 800x600 window with a dark blue background!
 
+## Project Configuration (Optional)
+
+For larger projects, create a `ryo.toml` to configure paths and project settings:
+
+```toml
+[project]
+name = "My First Game"
+
+[paths]
+save_data = "data"
+assets = "assets"
+```
+
+See [Project Configuration](./configuration.md) for full details.
+
 ## Next Steps
 
+- [Project Configuration](./configuration.md) - Configure your project structure
 - [Your First Game](./first-game.md) - Add a player you can move around
 - [Core Concepts](../concepts/game-loop.md) - Understand the engine architecture

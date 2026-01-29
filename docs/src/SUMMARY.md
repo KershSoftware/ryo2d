@@ -5,6 +5,7 @@
 # Getting Started
 
 - [Quick Start](./getting-started/quick-start.md)
+- [Project Configuration](./getting-started/configuration.md)
 - [Your First Game](./getting-started/first-game.md)
 
 # Core Concepts
