@@ -19,7 +19,8 @@ if ($Command -eq "open") {
         $indexPath = Resolve-Path "docs/book/index.html"
         Start-Process $indexPath
         exit 0
-    } else {
+    }
+    else {
         Write-Host "No documentation found. Run without 'open' to build." -ForegroundColor Red
         exit 1
     }
