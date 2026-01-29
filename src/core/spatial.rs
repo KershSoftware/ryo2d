@@ -234,7 +234,9 @@ impl PhysicsWorld {
     for entity in entities {
       // Extract values from refs to avoid holding borrows across iterations
       let transform_data = world.get_component::<Transform>(entity).map(|t| (t.x, t.y));
-      let collider_data = world.get_component::<Collider>(entity).map(|c| c.clone());
+      let collider_data = world
+        .get_component::<Collider>(entity)
+        .map(|c| (*c).clone());
 
       if let (Some((x, y)), Some(collider)) = (transform_data, collider_data) {
         self.spatial_hash.insert_collider(entity, &collider, x, y);
@@ -254,14 +256,18 @@ impl PhysicsWorld {
         let pos = world
           .get_component::<Transform>(entity_a)
           .map(|t| (t.x, t.y));
-        let col = world.get_component::<Collider>(entity_a).map(|c| c.clone());
+        let col = world
+          .get_component::<Collider>(entity_a)
+          .map(|c| (*c).clone());
         pos.zip(col)
       };
       let b_data = {
         let pos = world
           .get_component::<Transform>(entity_b)
           .map(|t| (t.x, t.y));
-        let col = world.get_component::<Collider>(entity_b).map(|c| c.clone());
+        let col = world
+          .get_component::<Collider>(entity_b)
+          .map(|c| (*c).clone());
         pos.zip(col)
       };
 
@@ -349,9 +355,9 @@ mod tests {
     // This is a workaround since Entity::from_raw is pub(crate)
     let mut world = World::new();
     for _ in 0..id {
-      world.spawn();
+      world.spawn(());
     }
-    world.spawn()
+    world.spawn(())
   }
 
   #[test]
@@ -381,9 +387,9 @@ mod tests {
   fn spatial_hash_collision_pairs() {
     let mut hash = SpatialHash::new(64.0);
     let mut world = World::new();
-    let e1 = world.spawn();
-    let e2 = world.spawn();
-    let e3 = world.spawn();
+    let e1 = world.spawn(());
+    let e2 = world.spawn(());
+    let e3 = world.spawn(());
 
     // e1 and e2 are in the same cell
     hash.insert(e1, 0.0, 0.0, 32.0, 32.0);
@@ -416,27 +422,32 @@ mod tests {
   #[test]
   fn physics_world_update() {
     let mut world = World::new();
-    let entity = world.spawn();
-    world.add_component(entity, Transform::new(100.0, 100.0));
-    world.add_component(entity, Collider::box_collider(32.0, 32.0));
+    let entity = world.spawn((
+      Transform::new(100.0, 100.0),
+      Collider::box_collider(32.0, 32.0),
+    ));
 
     let mut physics = PhysicsWorld::new();
     physics.update(&world);
 
     assert_eq!(physics.spatial_hash().len(), 1);
+    // Use entity to avoid unused warning
+    let _ = entity;
   }
 
   #[test]
   fn physics_world_detects_collision() {
     let mut world = World::new();
 
-    let e1 = world.spawn();
-    world.add_component(e1, Transform::new(100.0, 100.0));
-    world.add_component(e1, Collider::box_collider(32.0, 32.0));
+    let e1 = world.spawn((
+      Transform::new(100.0, 100.0),
+      Collider::box_collider(32.0, 32.0),
+    ));
 
-    let e2 = world.spawn();
-    world.add_component(e2, Transform::new(110.0, 110.0)); // Overlapping
-    world.add_component(e2, Collider::box_collider(32.0, 32.0));
+    let e2 = world.spawn((
+      Transform::new(110.0, 110.0), // Overlapping
+      Collider::box_collider(32.0, 32.0),
+    ));
 
     let mut physics = PhysicsWorld::new();
     physics.update(&world);
@@ -450,8 +461,8 @@ mod tests {
   #[test]
   fn collision_result_mtv() {
     let mut world = World::new();
-    let e1 = world.spawn();
-    let e2 = world.spawn();
+    let e1 = world.spawn(());
+    let e2 = world.spawn(());
 
     let result = CollisionResult {
       entity_a: e1,
@@ -471,9 +482,9 @@ mod tests {
   #[test]
   fn collision_result_other() {
     let mut world = World::new();
-    let e1 = world.spawn();
-    let e2 = world.spawn();
-    let e3 = world.spawn();
+    let e1 = world.spawn(());
+    let e2 = world.spawn(());
+    let e3 = world.spawn(());
 
     let result = CollisionResult {
       entity_a: e1,

@@ -24,52 +24,21 @@ impl DemoGame {
 impl Game for DemoGame {
   fn init(&mut self, ctx: &mut GameContext) {
     // Create a player entity with components (kinematic - controlled by input)
-    let player = ctx.world.spawn();
-
-    // Add Transform component (position in world)
-    ctx
-      .world
-      .add_component(player, Transform::new(400.0, 500.0));
-
-    // Add Velocity component (for movement)
-    ctx.world.add_component(player, Velocity::zero());
-
-    // Player is kinematic - not affected by physics, controlled by input
-    ctx.world.add_component(player, RigidBody::kinematic());
-
-    // Add box collider for player paddle
-    ctx
-      .world
-      .add_component(player, Collider::box_collider(64.0, 16.0));
-
-    // Add SpriteRenderer component (visual representation)
-    // Player draws on top of background (z_order = 10)
     let player_sprite = Sprite::solid_rect(64, 16, 0x40, 0xc0, 0xff, 0xff);
-    ctx
-      .world
-      .add_component(player, SpriteRenderer::new(player_sprite).with_z_order(10));
+    let player = ctx.world.spawn((
+      Transform::new(400.0, 500.0),
+      Velocity::zero(),
+      RigidBody::kinematic(),
+      Collider::box_collider(64.0, 16.0),
+      SpriteRenderer::new(player_sprite).with_z_order(10),
+    ));
 
     self.player = Some(player);
 
     // Create falling balls with physics (many balls to demonstrate spatial partitioning)
     for i in 0..20 {
-      let ball = ctx.world.spawn();
       let x = 100.0 + (i % 10) as f32 * 110.0;
       let y = 50.0 + (i / 10) as f32 * 50.0 + (i % 5) as f32 * 20.0;
-      ctx.world.add_component(ball, Transform::new(x, y));
-      ctx.world.add_component(ball, Velocity::zero());
-
-      // Dynamic rigid body - affected by gravity
-      ctx.world.add_component(
-        ball,
-        RigidBody::new().with_gravity_scale(1.0).with_drag(0.01),
-      );
-
-      // Add circle collider for ball (centered on sprite)
-      ctx.world.add_component(
-        ball,
-        Collider::circle_collider(12.0).with_offset(12.0, 12.0),
-      );
 
       // Colored ball sprite
       let colors = [
@@ -81,33 +50,33 @@ impl Game for DemoGame {
       ];
       let (r, g, b) = colors[i % colors.len()];
       let ball_sprite = Sprite::solid_rect(24, 24, r, g, b, 0xff);
-      ctx
-        .world
-        .add_component(ball, SpriteRenderer::new(ball_sprite).with_z_order(5));
+
+      let ball = ctx.world.spawn((
+        Transform::new(x, y),
+        Velocity::zero(),
+        RigidBody::new().with_gravity_scale(1.0).with_drag(0.01),
+        Collider::circle_collider(12.0).with_offset(12.0, 12.0),
+        SpriteRenderer::new(ball_sprite).with_z_order(5),
+      ));
 
       self.balls.push(ball);
     }
 
     // Create a floor (static - no physics, but has collider)
-    let floor = ctx.world.spawn();
-    ctx.world.add_component(floor, Transform::new(0.0, 600.0));
-    ctx
-      .world
-      .add_component(floor, Collider::box_collider(1280.0, 32.0));
     let floor_sprite = Sprite::solid_rect(1280, 32, 0x60, 0x60, 0x60, 0xff);
-    ctx
-      .world
-      .add_component(floor, SpriteRenderer::new(floor_sprite).with_z_order(0));
+    let floor = ctx.world.spawn((
+      Transform::new(0.0, 600.0),
+      Collider::box_collider(1280.0, 32.0),
+      SpriteRenderer::new(floor_sprite).with_z_order(0),
+    ));
     self.floor = Some(floor);
 
     // Create some background markers so zoom is visible
     // Background layer (z_order = -10, drawn first)
     for row in 0..8 {
       for col in 0..14 {
-        let marker = ctx.world.spawn();
         let x = col as f32 * 100.0;
         let y = row as f32 * 100.0;
-        ctx.world.add_component(marker, Transform::new(x, y));
         // Alternating colors for a grid pattern
         let color = if (row + col) % 2 == 0 {
           (0x30, 0x30, 0x38) // dark
@@ -115,9 +84,10 @@ impl Game for DemoGame {
           (0x38, 0x38, 0x40) // slightly lighter
         };
         let marker_sprite = Sprite::solid_rect(16, 16, color.0, color.1, color.2, 0xff);
-        ctx
-          .world
-          .add_component(marker, SpriteRenderer::new(marker_sprite).with_z_order(-10));
+        ctx.world.spawn((
+          Transform::new(x, y),
+          SpriteRenderer::new(marker_sprite).with_z_order(-10),
+        ));
       }
     }
 
