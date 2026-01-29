@@ -91,6 +91,14 @@ impl World {
     self.inner.contains(entity)
   }
 
+  /// Remove all entities from the world
+  ///
+  /// This despawns every entity and their components. Useful for scene
+  /// transitions where you want to start fresh.
+  pub fn clear(&mut self) {
+    self.inner.clear();
+  }
+
   // =========================================================================
   // Component Access
   // =========================================================================

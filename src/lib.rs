@@ -47,6 +47,9 @@ pub mod prelude {
   // Core game trait
   pub use crate::core::game::{Game, GameContext};
 
+  // Scene management
+  pub use crate::core::scene::{Scene, SceneAction, SceneContext, SceneGame, SceneManager};
+
   // Engine builder
   pub use crate::core::engine::EngineBuilder;
 

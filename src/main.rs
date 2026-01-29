@@ -1,21 +1,104 @@
-//! Ferrum2D Demo - Breakout-style physics showcase
+//! Ferrum2D Demo - Scene-based Breakout Physics Showcase
 //!
-//! This demo showcases the engine's Rapier2D physics integration:
-//! - Balls fall and bounce with realistic physics (handled by Rapier)
-//! - Player controls a paddle with keyboard
-//! - Collision events used for game logic (not physics response)
+//! This demo showcases:
+//! - Scene management (menu → gameplay → pause)
+//! - Rapier2D physics integration
+//! - Collision events for game logic
+//!
+//! Controls:
+//! - Menu: Enter to start, Escape to quit
+//! - Game: A/D to move paddle, Space to reset, Escape for pause
+//! - Pause: Enter to resume, Escape to menu
 
 use ferrum2d::prelude::*;
 
-/// Demo game showcasing Rapier2D physics
-struct BreakoutDemo {
+// ============================================================================
+// Menu Scene
+// ============================================================================
+
+struct MenuScene {
+  title_entity: Option<Entity>,
+}
+
+impl MenuScene {
+  fn new() -> Self {
+    Self { title_entity: None }
+  }
+}
+
+impl Scene for MenuScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // Clear any existing entities
+    ctx.world.clear();
+
+    // Create simple "title" text (using colored rectangles as placeholder)
+    // In a real game, you'd use a text rendering system
+
+    // "BREAKOUT" title bar
+    self.title_entity = Some(ctx.world.spawn((
+      Transform::new(440.0, 200.0),
+      SpriteRenderer::new(Sprite::solid_rect(400, 80, 0x40, 0xc0, 0xff, 0xff)).with_z_order(10),
+    )));
+
+    // "Press ENTER" prompt
+    ctx.world.spawn((
+      Transform::new(490.0, 400.0),
+      SpriteRenderer::new(Sprite::solid_rect(300, 40, 0x80, 0x80, 0x80, 0xff)).with_z_order(10),
+    ));
+
+    // Decorative elements
+    for i in 0..6 {
+      let colors = [
+        (0xff, 0x60, 0x60),
+        (0xff, 0xff, 0x60),
+        (0x60, 0xff, 0x60),
+        (0x60, 0xff, 0xff),
+        (0x60, 0x60, 0xff),
+        (0xff, 0x60, 0xff),
+      ];
+      let (r, g, b) = colors[i];
+      ctx.world.spawn((
+        Transform::new(300.0 + i as f32 * 120.0, 550.0),
+        SpriteRenderer::new(Sprite::solid_rect(40, 40, r, g, b, 0xff)).with_z_order(5),
+      ));
+    }
+
+    ctx.camera.set_position(640.0, 360.0);
+
+    println!("=== Ferrum2D Breakout Demo ===");
+    println!("Press ENTER to start, ESCAPE to quit");
+  }
+
+  fn on_exit(&mut self, ctx: &mut SceneContext) {
+    // Clean up menu entities
+    ctx.world.clear();
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if ctx.input.key_pressed(KeyCode::Enter) {
+      return SceneAction::Switch(Box::new(GameplayScene::new()));
+    }
+
+    if ctx.input.key_pressed(KeyCode::Escape) {
+      return SceneAction::Quit;
+    }
+
+    SceneAction::Continue
+  }
+}
+
+// ============================================================================
+// Gameplay Scene
+// ============================================================================
+
+struct GameplayScene {
   paddle: Option<Entity>,
   balls: Vec<Entity>,
   walls: Vec<Entity>,
   score: u32,
 }
 
-impl BreakoutDemo {
+impl GameplayScene {
   fn new() -> Self {
     Self {
       paddle: None,
@@ -25,8 +108,7 @@ impl BreakoutDemo {
     }
   }
 
-  /// Create wall entities (kinematic bodies that don't move)
-  fn spawn_walls(&mut self, ctx: &mut GameContext) {
+  fn spawn_walls(&mut self, ctx: &mut SceneContext) {
     // Floor
     let floor = ctx.world.spawn((
       Transform::new(0.0, 680.0),
@@ -64,8 +146,7 @@ impl BreakoutDemo {
     self.walls.push(ceiling);
   }
 
-  /// Create the player paddle (kinematic body - controlled by input)
-  fn spawn_paddle(&mut self, ctx: &mut GameContext) {
+  fn spawn_paddle(&mut self, ctx: &mut SceneContext) {
     let paddle_width = 120.0;
     let paddle_height = 16.0;
 
@@ -87,23 +168,20 @@ impl BreakoutDemo {
     self.paddle = Some(paddle);
   }
 
-  /// Spawn balls with physics
-  fn spawn_balls(&mut self, ctx: &mut GameContext) {
+  fn spawn_balls(&mut self, ctx: &mut SceneContext) {
     let colors = [
-      (0xff, 0x60, 0x60), // Red
-      (0x60, 0xff, 0x60), // Green
-      (0x60, 0x60, 0xff), // Blue
-      (0xff, 0xff, 0x60), // Yellow
-      (0xff, 0x60, 0xff), // Magenta
-      (0x60, 0xff, 0xff), // Cyan
+      (0xff, 0x60, 0x60),
+      (0x60, 0xff, 0x60),
+      (0x60, 0x60, 0xff),
+      (0xff, 0xff, 0x60),
+      (0xff, 0x60, 0xff),
+      (0x60, 0xff, 0xff),
     ];
 
     for i in 0..12 {
       let x = 150.0 + (i % 6) as f32 * 160.0;
       let y = 80.0 + (i / 6) as f32 * 80.0;
       let (r, g, b) = colors[i % colors.len()];
-
-      // Random-ish initial velocity for variety
       let vx = ((i as f32 * 47.0) % 200.0) - 100.0;
       let vy = 50.0 + (i as f32 * 23.0) % 100.0;
 
@@ -113,11 +191,7 @@ impl BreakoutDemo {
       let ball = ctx.world.spawn((
         Transform::new(x, y),
         Velocity::new(vx, vy),
-        // Dynamic body - fully simulated by Rapier
-        // Gravity scale controls how much gravity affects this body
-        // Restitution (bounciness) is configured in rapier_physics.rs collider defaults
         RigidBody::new().with_gravity_scale(0.5).with_drag(0.01),
-        // Circle collider centered on sprite
         Collider::circle_collider(ball_radius).with_offset(ball_radius, ball_radius),
         SpriteRenderer::new(Sprite::solid_rect(ball_size, ball_size, r, g, b, 0xff))
           .with_z_order(5),
@@ -127,8 +201,7 @@ impl BreakoutDemo {
     }
   }
 
-  /// Reset all balls to starting positions
-  fn reset_balls(&mut self, ctx: &mut GameContext) {
+  fn reset_balls(&mut self, ctx: &mut SceneContext) {
     for (i, &ball) in self.balls.iter().enumerate() {
       let x = 150.0 + (i % 6) as f32 * 160.0;
       let y = 80.0 + (i / 6) as f32 * 80.0;
@@ -147,8 +220,7 @@ impl BreakoutDemo {
     self.score = 0;
   }
 
-  /// Create background grid for visual reference
-  fn spawn_background(&mut self, ctx: &mut GameContext) {
+  fn spawn_background(&mut self, ctx: &mut SceneContext) {
     for row in 0..8 {
       for col in 0..14 {
         let x = col as f32 * 100.0;
@@ -158,36 +230,49 @@ impl BreakoutDemo {
         } else {
           (0x2a, 0x2a, 0x35)
         };
-        let marker = Sprite::solid_rect(16, 16, color.0, color.1, color.2, 0xff);
         ctx.world.spawn((
           Transform::new(x, y),
-          SpriteRenderer::new(marker).with_z_order(-10),
+          SpriteRenderer::new(Sprite::solid_rect(16, 16, color.0, color.1, color.2, 0xff))
+            .with_z_order(-10),
         ));
       }
     }
   }
 }
 
-impl Game for BreakoutDemo {
-  fn init(&mut self, ctx: &mut GameContext) {
-    // Spawn game entities
+impl Scene for GameplayScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
     self.spawn_background(ctx);
     self.spawn_walls(ctx);
     self.spawn_paddle(ctx);
     self.spawn_balls(ctx);
 
-    // Center camera
     ctx.camera.set_position(640.0, 360.0);
 
-    println!("=== Ferrum2D Breakout Demo ===");
-    println!("Controls:");
-    println!("  A/D or Arrow Keys - Move paddle");
-    println!("  Space - Reset balls");
-    println!("  Mouse scroll - Zoom camera");
+    println!("Game started! Score: 0");
+    println!("Controls: A/D to move, Space to reset, Escape to pause");
   }
 
-  fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-    // === Paddle Movement (kinematic body) ===
+  fn on_exit(&mut self, ctx: &mut SceneContext) {
+    println!("Final score: {}", self.score);
+    ctx.world.clear();
+  }
+
+  fn on_pause(&mut self, _ctx: &mut SceneContext) {
+    println!("Game paused");
+  }
+
+  fn on_resume(&mut self, _ctx: &mut SceneContext) {
+    println!("Game resumed");
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    // Escape to pause
+    if ctx.input.key_pressed(KeyCode::Escape) {
+      return SceneAction::Push(Box::new(PauseScene::new(self.score)));
+    }
+
+    // Paddle movement
     if let Some(paddle) = self.paddle
       && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(paddle)
     {
@@ -200,52 +285,112 @@ impl Game for BreakoutDemo {
         transform.x += speed * dt;
       }
 
-      // Clamp paddle to screen bounds
       transform.x = transform.x.clamp(0.0, 1280.0 - 120.0);
     }
 
-    // === Process Collision Events (game logic only) ===
-    // Note: Physics response (bouncing) is handled automatically by Rapier.
-    // We only use events for game logic like scoring.
+    // Collision events for scoring
     for event in ctx.collision_events {
       if event.event_type != CollisionEventType::Started {
         continue;
       }
 
-      // Check if a ball hit the paddle
       if let Some(paddle) = self.paddle
         && event.involves(paddle)
         && let Some(ball) = event.other(paddle)
         && self.balls.contains(&ball)
       {
         self.score += 1;
-        // Could play a sound here
       }
     }
 
-    // === Reset with Space ===
+    // Reset balls
     if ctx.input.key_pressed(KeyCode::Space) {
       self.reset_balls(ctx);
       println!("Balls reset! Score was: {}", self.score);
     }
 
-    // === Zoom Controls ===
+    // Zoom
     let scroll = ctx.input.scroll_delta();
     if scroll.1 != 0.0 {
-      let new_zoom = ctx.camera.zoom + scroll.1 * 0.1;
-      ctx.camera.set_zoom(new_zoom);
+      ctx.camera.set_zoom(ctx.camera.zoom + scroll.1 * 0.1);
+    }
+
+    SceneAction::Continue
+  }
+}
+
+// ============================================================================
+// Pause Scene (Overlay)
+// ============================================================================
+
+struct PauseScene {
+  score_at_pause: u32,
+}
+
+impl PauseScene {
+  fn new(score: u32) -> Self {
+    Self {
+      score_at_pause: score,
     }
   }
 }
 
+impl Scene for PauseScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // Add a semi-transparent overlay (dark rectangle)
+    ctx.world.spawn((
+      Transform::new(440.0, 280.0),
+      SpriteRenderer::new(Sprite::solid_rect(400, 160, 0x20, 0x20, 0x20, 0xcc)).with_z_order(100),
+    ));
+
+    // "PAUSED" text placeholder
+    ctx.world.spawn((
+      Transform::new(540.0, 320.0),
+      SpriteRenderer::new(Sprite::solid_rect(200, 40, 0xff, 0xff, 0xff, 0xff)).with_z_order(101),
+    ));
+
+    println!("=== PAUSED ===");
+    println!("Score: {}", self.score_at_pause);
+    println!("Press ENTER to resume, ESCAPE to return to menu");
+  }
+
+  fn on_exit(&mut self, _ctx: &mut SceneContext) {
+    // Note: We don't clear the world here because we want to preserve
+    // the game state when resuming. The pause overlay entities will
+    // be cleaned up when the gameplay scene exits.
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if ctx.input.key_pressed(KeyCode::Enter) {
+      return SceneAction::Pop;
+    }
+
+    if ctx.input.key_pressed(KeyCode::Escape) {
+      // Pop pause, then switch to menu (which clears everything)
+      return SceneAction::Reset(Box::new(MenuScene::new()));
+    }
+
+    SceneAction::Continue
+  }
+
+  fn is_transparent(&self) -> bool {
+    true // Render gameplay scene below
+  }
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
 fn main() {
-  // Engine uses default physics: gravity = (0.0, 980.0) pixels/s²
-  // Balls have gravity_scale=0.5 for a gentler, bouncier feel
+  // Use SceneGame adapter to run scenes with the existing engine
+  let game = SceneGame::new(Box::new(MenuScene::new()));
+
   let engine = EngineBuilder::new()
-    .title("Ferrum2D - Breakout Demo")
+    .title("Ferrum2D - Scene Demo")
     .resolution(1280, 720)
     .fps(60)
-    .with_game(BreakoutDemo::new())
+    .with_game(game)
     .build();
 
   if let Err(e) = engine.run() {

@@ -12,5 +12,6 @@ pub mod hot_reload;
 pub mod input;
 pub mod physics;
 pub mod rapier_physics;
+pub mod scene;
 pub mod spatial;
 pub mod sprite;
