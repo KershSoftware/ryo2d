@@ -17,6 +17,7 @@
 - [Game Loop](./concepts/game-loop.md)
 - [ECS Architecture](./concepts/ecs.md)
 - [Scene Management](./concepts/scenes.md)
+- [Window Modes](./concepts/window-modes.md)
 - [Input Handling](./concepts/input.md)
 - [Camera System](./concepts/camera.md)
 - [Sprites & Rendering](./concepts/sprites.md)

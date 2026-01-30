@@ -54,7 +54,7 @@ pub mod prelude {
   };
 
   // Engine builder
-  pub use crate::core::engine::EngineBuilder;
+  pub use crate::core::engine::{EngineBuilder, WindowMode};
 
   // ECS types
   pub use crate::core::ecs::{Entity, RenderLayer, SpriteRenderer, Transform, Velocity, World};

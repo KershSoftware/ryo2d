@@ -23,6 +23,51 @@ use super::rapier_physics::RapierPhysicsWorld;
 use super::scene::{Scene, SceneGame};
 use super::ui::{BitmapFont, UiContext, create_debug_font};
 
+/// Window resize behavior.
+///
+/// Controls how the game viewport responds to window resizing and maximizing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowMode {
+  /// Fixed window size, no resizing or maximizing.
+  ///
+  /// The window cannot be resized by the user. Best for games that want
+  /// complete control over presentation.
+  Fixed,
+
+  /// Resizable with aspect ratio preservation (letterbox/pillarbox).
+  ///
+  /// The game viewport scales to fit the window while maintaining its original
+  /// aspect ratio. Black bars fill unused space. This is the default and most
+  /// common approach for 2D games.
+  ///
+  /// Example: 800×600 game in a 1920×1080 window will scale up with black bars
+  /// on the sides.
+  ResizableAspectRatio,
+
+  /// Resizable with integer scaling only (pixel-perfect).
+  ///
+  /// The game viewport scales in integer multiples (1×, 2×, 3×, 4×) to maintain
+  /// perfect pixel crispness. Letterboxing fills remaining space. Best for
+  /// retro-styled pixel art games.
+  ///
+  /// Example: 800×600 game in a 1000×800 window will scale to 1× (800×600) with
+  /// black bars, not to fit the full window.
+  ResizableIntegerScale,
+
+  /// Resizable, stretch to fill (may distort aspect ratio).
+  ///
+  /// The game viewport stretches to fill the entire window, potentially distorting
+  /// the aspect ratio. Rarely used as a default, but can be useful for UI-heavy
+  /// games where distortion isn't noticeable.
+  ResizableStretch,
+}
+
+impl Default for WindowMode {
+  fn default() -> Self {
+    WindowMode::ResizableAspectRatio
+  }
+}
+
 /// Tracks timing state for the game loop
 #[derive(Debug)]
 struct TimeState {
@@ -122,6 +167,7 @@ pub struct EngineConfig {
   pub physics_hz: u32,
   pub physics: PhysicsConfig,
   pub debug: DebugConfig,
+  pub window_mode: WindowMode,
 }
 
 /// Re-export for backward compatibility
@@ -137,6 +183,7 @@ impl Default for EngineConfig {
       physics_hz: 60,
       physics: PhysicsConfig::default(),
       debug: EngineDebugConfig::default(),
+      window_mode: WindowMode::default(),
     }
   }
 }
@@ -528,13 +575,14 @@ fn blend_overlay(frame: &mut [u8], color: [u8; 4], alpha: f32) {
 
 impl ApplicationHandler for Engine {
   fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    let resizable = self.config.window_mode != WindowMode::Fixed;
     let window_attrs = WindowAttributes::default()
       .with_title(&self.config.title)
       .with_inner_size(winit::dpi::LogicalSize::new(
         self.config.width,
         self.config.height,
       ))
-      .with_resizable(false);
+      .with_resizable(resizable);
 
     let window = Arc::new(
       event_loop
@@ -598,6 +646,31 @@ impl ApplicationHandler for Engine {
       }
       WindowEvent::MouseWheel { delta, .. } => {
         self.input.handle_scroll(*delta);
+      }
+      WindowEvent::Resized(new_size) => {
+        // Handle window resize based on window mode
+        if let Some(pixels) = &mut self.pixels {
+          // Update surface size
+          if let Err(e) = pixels.resize_surface(new_size.width, new_size.height) {
+            eprintln!("Failed to resize surface: {}", e);
+          }
+
+          // For stretch mode, also resize the internal buffer
+          if self.config.window_mode == WindowMode::ResizableStretch {
+            if let Err(e) = pixels.resize_buffer(new_size.width, new_size.height) {
+              eprintln!("Failed to resize buffer: {}", e);
+            }
+            // Update camera to match new buffer size
+            self.camera = Camera::centered_at(
+              new_size.width as f32 / 2.0,
+              new_size.height as f32 / 2.0,
+              new_size.width,
+              new_size.height,
+            );
+            // Mark render cache as dirty since viewport changed
+            self.render_cache_dirty = true;
+          }
+        }
       }
       _ => {}
     }
@@ -711,6 +784,34 @@ impl EngineBuilder {
 
   pub fn physics_hz(mut self, hz: u32) -> Self {
     self.config.physics_hz = hz;
+    self
+  }
+
+  /// Set the window resize behavior.
+  ///
+  /// Controls how the game viewport responds to window resizing, maximizing,
+  /// and drag-to-resize operations.
+  ///
+  /// # Modes
+  ///
+  /// - [`WindowMode::Fixed`] - Window cannot be resized
+  /// - [`WindowMode::ResizableAspectRatio`] - Scale with letterboxing (default)
+  /// - [`WindowMode::ResizableIntegerScale`] - Integer scaling for pixel-perfect
+  /// - [`WindowMode::ResizableStretch`] - Stretch to fill (may distort)
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("Pixel Art Game")
+  ///     .resolution(320, 240)
+  ///     .window_mode(WindowMode::ResizableIntegerScale)
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn window_mode(mut self, mode: WindowMode) -> Self {
+    self.config.window_mode = mode;
     self
   }
 
@@ -982,5 +1083,29 @@ mod tests {
 
     time.accumulator = time.fixed_timestep * 2; // Over 1.0
     assert_eq!(time.interpolation_alpha(), 1.0); // Clamped
+  }
+
+  #[test]
+  fn window_mode_defaults_to_resizable_aspect_ratio() {
+    let mode = WindowMode::default();
+    assert_eq!(mode, WindowMode::ResizableAspectRatio);
+  }
+
+  #[test]
+  fn engine_config_includes_window_mode() {
+    let config = EngineConfig::default();
+    assert_eq!(config.window_mode, WindowMode::ResizableAspectRatio);
+  }
+
+  #[test]
+  fn engine_builder_sets_window_mode() {
+    let builder = EngineBuilder::new().window_mode(WindowMode::Fixed);
+    assert_eq!(builder.config.window_mode, WindowMode::Fixed);
+
+    let builder = EngineBuilder::new().window_mode(WindowMode::ResizableIntegerScale);
+    assert_eq!(builder.config.window_mode, WindowMode::ResizableIntegerScale);
+
+    let builder = EngineBuilder::new().window_mode(WindowMode::ResizableStretch);
+    assert_eq!(builder.config.window_mode, WindowMode::ResizableStretch);
   }
 }
