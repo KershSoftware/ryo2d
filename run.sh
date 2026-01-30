@@ -109,8 +109,16 @@ run_example() {
 
 # Function to show interactive example selection
 show_example_menu() {
-    mapfile -t examples < <(get_examples)
-    mapfile -t display_names < <(get_display_names)
+    local examples=()
+    local display_names=()
+    
+    while IFS= read -r line; do
+        examples+=("$line")
+    done < <(get_examples)
+    
+    while IFS= read -r line; do
+        display_names+=("$line")
+    done < <(get_display_names)
     
     local count=${#examples[@]}
     
