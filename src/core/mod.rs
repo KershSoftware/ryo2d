@@ -1,5 +1,6 @@
 //! Core engine modules
 
+pub mod animation;
 pub mod asset;
 pub mod audio;
 pub mod camera;

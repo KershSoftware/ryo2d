@@ -40,7 +40,7 @@ fn main() {
   let engine = EngineBuilder::new()
     .title("Breakout - Ryo2D Demo")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
-    .fps(60)
+    .fps(144)
     .physics_hz(120)
     .with_scene(MenuScene::new())
     .build();

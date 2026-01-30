@@ -79,6 +79,11 @@ pub mod prelude {
   // Graphics
   pub use crate::core::sprite::{AnimatedSprite, Sprite};
 
+  // Animation system
+  pub use crate::core::animation::{
+    Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState,
+  };
+
   // Assets
   pub use crate::core::asset::{
     AssetManager, AssetStats, AsyncSpriteHandle, LoadingState, SpriteHandle,

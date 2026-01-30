@@ -1,47 +1,55 @@
 //! Bird component - the player character
 
-use ryo2d::prelude::Sprite;
+use ryo2d::prelude::*;
 
 use crate::constants::*;
 
-/// Holds all bird sprite states
-pub struct BirdSprites {
-  pub flap_up: Sprite,
-  pub flap_down: Sprite,
-  pub hurt_1: Sprite,
-  pub hurt_2: Sprite,
-}
+/// Create an AnimationController for the bird with flap and hurt animations
+pub fn create_bird_animation_controller() -> AnimationController {
+  let size = BIRD_SIZE as u32;
 
-impl BirdSprites {
-  pub fn load() -> Self {
-    let size = BIRD_SIZE as u32;
-    Self {
-      flap_up: Sprite::load_svg_fit("assets/bird-flap-up.svg", size, size)
-        .expect("Failed to load bird-flap-up.svg"),
-      flap_down: Sprite::load_svg_fit("assets/bird-flap-down.svg", size, size)
-        .expect("Failed to load bird-flap-down.svg"),
-      hurt_1: Sprite::load_svg_fit("assets/bird-hurt-1.svg", size, size)
-        .expect("Failed to load bird-hurt-1.svg"),
-      hurt_2: Sprite::load_svg_fit("assets/bird-hurt-2.svg", size, size)
-        .expect("Failed to load bird-hurt-2.svg"),
-    }
-  }
+  // Load sprite frames
+  let flap_up = SpriteHandle::from_sprite(
+    Sprite::load_svg_fit("assets/bird-flap-up.svg", size, size)
+      .expect("Failed to load bird-flap-up.svg"),
+    "bird-flap-up.svg",
+  );
+  let flap_down = SpriteHandle::from_sprite(
+    Sprite::load_svg_fit("assets/bird-flap-down.svg", size, size)
+      .expect("Failed to load bird-flap-down.svg"),
+    "bird-flap-down.svg",
+  );
+  let hurt_1 = SpriteHandle::from_sprite(
+    Sprite::load_svg_fit("assets/bird-hurt-1.svg", size, size)
+      .expect("Failed to load bird-hurt-1.svg"),
+    "bird-hurt-1.svg",
+  );
+  let hurt_2 = SpriteHandle::from_sprite(
+    Sprite::load_svg_fit("assets/bird-hurt-2.svg", size, size)
+      .expect("Failed to load bird-hurt-2.svg"),
+    "bird-hurt-2.svg",
+  );
 
-  /// Get the appropriate sprite based on bird state
-  pub fn get_sprite(&self, velocity_y: f32, is_alive: bool, hurt_frame: u32) -> &Sprite {
-    if !is_alive {
-      // Alternate between hurt frames
-      if hurt_frame % 2 == 0 {
-        &self.hurt_1
-      } else {
-        &self.hurt_2
-      }
-    } else if velocity_y < 0.0 {
-      &self.flap_up
-    } else {
-      &self.flap_down
-    }
-  }
+  // Create animations
+  let flap_anim = Animation::new(
+    "flap",
+    vec![flap_down.clone(), flap_up.clone()],
+    0.15, // 150ms per frame = ~6.6 FPS flapping
+  );
+
+  let hurt_anim = Animation::new(
+    "hurt",
+    vec![hurt_1.clone(), hurt_2.clone()],
+    0.1, // 100ms per frame = 10 FPS hurt animation
+  );
+
+  // Build controller
+  let mut controller = AnimationController::new();
+  controller.add_animation("flap", flap_anim);
+  controller.add_animation("hurt", hurt_anim);
+  controller.set_state("flap"); // Start with flapping
+
+  controller
 }
 
 /// Marks an entity as the player-controlled bird
@@ -50,8 +58,6 @@ pub struct Bird {
   pub velocity_y: f32,
   pub is_alive: bool,
   pub has_started: bool,
-  pub hurt_timer: f32,
-  pub hurt_frame: u32,
 }
 
 impl Bird {
@@ -60,8 +66,6 @@ impl Bird {
       velocity_y: 0.0,
       is_alive: true,
       has_started: false,
-      hurt_timer: 0.0,
-      hurt_frame: 0,
     }
   }
 

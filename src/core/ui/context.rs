@@ -370,4 +370,31 @@ impl<'a> UiContext<'a> {
       scale,
     );
   }
+
+  /// Draw a sprite handle at the given position.
+  pub fn draw_sprite_handle(&mut self, handle: &crate::core::asset::SpriteHandle, x: f32, y: f32) {
+    handle.with_sprite(|sprite| {
+      sprite.draw(self.frame, self.frame_width, self.frame_height, x as i32, y as i32);
+    });
+  }
+
+  /// Draw a sprite handle scaled uniformly.
+  pub fn draw_sprite_handle_scaled(
+    &mut self,
+    handle: &crate::core::asset::SpriteHandle,
+    x: f32,
+    y: f32,
+    scale: f32,
+  ) {
+    handle.with_sprite(|sprite| {
+      sprite.draw_scaled(
+        self.frame,
+        self.frame_width,
+        self.frame_height,
+        x as i32,
+        y as i32,
+        scale,
+      );
+    });
+  }
 }

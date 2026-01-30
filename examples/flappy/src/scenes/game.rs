@@ -19,9 +19,6 @@ pub struct GameScene {
   bird: Option<Entity>,
   pipes: Vec<Entity>,
   ground_entities: Vec<Entity>,
-
-  // Bird sprites for animation
-  bird_sprites: BirdSprites,
 }
 
 const DEATH_DELAY: f32 = 1.0; // seconds to show death animation
@@ -36,18 +33,27 @@ impl GameScene {
       bird: None,
       pipes: Vec::new(),
       ground_entities: Vec::new(),
-      bird_sprites: BirdSprites::load(),
     }
   }
 
   fn spawn_bird(&mut self, ctx: &mut SceneContext) {
+    // Create animation controller with flapping and hurt animations
+    let controller = create_bird_animation_controller();
+
+    // Get the first sprite from the controller for initial rendering
+    let initial_sprite = controller
+      .current_sprite()
+      .cloned()
+      .expect("Animation controller should have a sprite");
+
     let bird = ctx.world.spawn((
       Transform::new(BIRD_START_X, BIRD_START_Y),
       Velocity::zero(),
       RigidBody::new().with_gravity_scale(0.0),
       // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
       Collider::circle_collider(BIRD_SIZE * 0.35).with_offset(BIRD_SIZE / 2.0, BIRD_SIZE / 2.0),
-      SpriteRenderer::new(self.bird_sprites.flap_down.clone()).with_z_order(10),
+      SpriteRenderer::new(initial_sprite).with_z_order(10),
+      controller,
       Bird::new(),
     ));
     self.bird = Some(bird);
@@ -62,6 +68,7 @@ impl GameScene {
     let pipe_sprite = Sprite::load("assets/pipe.png").expect("Failed to load pipe sprite");
     let sprite_w = pipe_sprite.width() as f32;
     let sprite_h = pipe_sprite.height() as f32;
+    let pipe_handle = SpriteHandle::from_sprite(pipe_sprite, "pipe.png");
     let scale_y = top_height / sprite_h;
     let mut transform = Transform::new(x, 0.0);
     transform.scale_y = scale_y;
@@ -71,7 +78,7 @@ impl GameScene {
       RigidBody::kinematic(),
       // Use final world-space dimensions for collider (sprite_w, top_height)
       Collider::box_collider(sprite_w, top_height),
-      SpriteRenderer::new(pipe_sprite).with_z_order(5),
+      SpriteRenderer::new(pipe_handle.clone()).with_z_order(5),
       Pipe::new_top(),
       Scrolling::no_wrap(PIPE_SCROLL_SPEED),
     ));
@@ -79,9 +86,8 @@ impl GameScene {
     // Bottom pipe
     let bottom_y = gap_center_y + PIPE_GAP / 2.0;
     let bottom_height = GROUND_Y - bottom_y;
-    let pipe_sprite = Sprite::load("assets/pipe.png").expect("Failed to load pipe sprite");
-    let sprite_w = pipe_sprite.width() as f32;
-    let sprite_h = pipe_sprite.height() as f32;
+    let sprite_w = pipe_handle.sprite().width() as f32;
+    let sprite_h = pipe_handle.sprite().height() as f32;
     let scale_y = bottom_height / sprite_h;
     let mut transform = Transform::new(x, bottom_y);
     transform.scale_y = scale_y;
@@ -91,7 +97,7 @@ impl GameScene {
       RigidBody::kinematic(),
       // Use final world-space dimensions for collider (sprite_w, bottom_height)
       Collider::box_collider(sprite_w, bottom_height),
-      SpriteRenderer::new(pipe_sprite).with_z_order(5),
+      SpriteRenderer::new(pipe_handle).with_z_order(5),
       Pipe::new_bottom(),
       Scrolling::no_wrap(PIPE_SCROLL_SPEED),
     ));
@@ -108,12 +114,11 @@ impl GameScene {
     let wrap_distance = SCREEN_WIDTH as f32 * 2.0;
     for i in 0..2 {
       let x = i as f32 * SCREEN_WIDTH as f32;
+      let ground_sprite = Sprite::load("assets/ground.png").expect("Failed to load ground sprite");
+      let ground_handle = SpriteHandle::from_sprite(ground_sprite, "ground.png");
       let ground = ctx.world.spawn((
         Transform::new(x, GROUND_Y),
-        SpriteRenderer::new(
-          Sprite::load("assets/ground.png").expect("Failed to load ground sprite"),
-        )
-        .with_z_order(15),
+        SpriteRenderer::new(ground_handle).with_z_order(15),
         Ground,
         Scrolling::new(GROUND_SCROLL_SPEED, tile_width, wrap_distance),
       ));
@@ -184,36 +189,26 @@ impl GameScene {
     // Note: Dead state is checked in main update loop, not here
   }
 
-  fn update_bird_sprite(&mut self, ctx: &mut SceneContext, dt: f32) {
+  fn update_bird_animation(&mut self, ctx: &mut SceneContext, _dt: f32) {
     let Some(bird_entity) = self.bird else {
       return;
     };
 
-    // Get bird state
-    let (velocity_y, is_alive, hurt_frame) = {
-      let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) else {
+    // Check if bird is alive and switch animation state if needed
+    let is_alive = {
+      let Some(bird) = ctx.world.get::<Bird>(bird_entity) else {
         return;
       };
-
-      // Update hurt animation timer if dead
-      if !bird.is_alive {
-        bird.hurt_timer += dt;
-        if bird.hurt_timer >= 0.1 {
-          // 10 FPS hurt animation
-          bird.hurt_timer = 0.0;
-          bird.hurt_frame += 1;
-        }
-      }
-
-      (bird.velocity_y, bird.is_alive, bird.hurt_frame)
+      bird.is_alive
     };
 
-    // Update sprite based on state
-    if let Some(mut renderer) = ctx.world.get_mut::<SpriteRenderer>(bird_entity) {
-      renderer.sprite = self
-        .bird_sprites
-        .get_sprite(velocity_y, is_alive, hurt_frame)
-        .clone();
+    // Switch to hurt animation when dead
+    if !is_alive {
+      if let Some(mut controller) = ctx.world.get_mut::<AnimationController>(bird_entity) {
+        if controller.current_state() != Some("hurt") {
+          controller.set_state("hurt");
+        }
+      }
     }
   }
 
@@ -355,7 +350,7 @@ impl Scene for GameScene {
 
     // Update game systems
     self.update_bird(ctx, dt);
-    self.update_bird_sprite(ctx, dt);
+    self.update_bird_animation(ctx, dt);
     self.update_scrolling(ctx, dt);
     self.update_pipes(ctx);
     self.check_collisions(ctx);

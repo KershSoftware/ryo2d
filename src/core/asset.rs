@@ -65,6 +65,13 @@ impl SpriteHandle {
     }
   }
 
+  /// Create a sprite handle from an existing sprite with a name
+  ///
+  /// Convenience method that accepts any path-like type.
+  pub fn from_sprite<P: AsRef<Path>>(sprite: Sprite, name: P) -> Self {
+    Self::new(sprite, name.as_ref().to_path_buf())
+  }
+
   /// Get the sprite width
   pub fn width(&self) -> u32 {
     self

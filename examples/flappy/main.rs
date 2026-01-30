@@ -40,7 +40,7 @@ fn main() {
   let builder = EngineBuilder::new()
     .title("Flappy Bird - Ryo2D Demo")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
-    .fps(60)
+    .fps(144)
     .physics_hz(120)
     .with_workspace_debug(); // Load debug settings from Ryo.toml
 

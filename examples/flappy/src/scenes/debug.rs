@@ -33,13 +33,14 @@ impl DebugScene {
   fn spawn_bird(&mut self, ctx: &mut SceneContext) {
     // Spawn bird as DYNAMIC (not kinematic) so Rapier generates collision events
     // But with zero gravity so it doesn't fall - we move it manually
+    let bird_sprite = Sprite::load("assets/bird.svg").expect("Failed to load bird sprite");
+    let bird_handle = SpriteHandle::from_sprite(bird_sprite, "bird.svg");
     let bird = ctx.world.spawn((
       Transform::new(BIRD_START_X, BIRD_START_Y),
       Velocity::new(0.0, 0.0),
       RigidBody::new().with_gravity_scale(0.0), // Dynamic but no gravity
       Collider::circle_collider(BIRD_SIZE / 2.0).with_offset(BIRD_SIZE / 2.0, BIRD_SIZE / 2.0),
-      SpriteRenderer::new(Sprite::load("assets/bird.svg").expect("Failed to load bird sprite"))
-        .with_z_order(10),
+      SpriteRenderer::new(bird_handle).with_z_order(10),
     ));
     self.bird = Some(bird);
   }
@@ -59,6 +60,7 @@ impl DebugScene {
       let pipe_sprite = Sprite::load("assets/pipe.png").expect("Failed to load pipe sprite");
       let sprite_w = pipe_sprite.width() as f32;
       let sprite_h = pipe_sprite.height() as f32;
+      let pipe_handle = SpriteHandle::from_sprite(pipe_sprite, "pipe.png");
       let scale_y = top_height / sprite_h;
       let mut transform = Transform::new(x, 0.0);
       transform.scale_y = scale_y;
@@ -67,16 +69,15 @@ impl DebugScene {
         Velocity::new(0.0, 0.0),
         RigidBody::kinematic(),
         Collider::box_collider(sprite_w, top_height),
-        SpriteRenderer::new(pipe_sprite).with_z_order(5),
+        SpriteRenderer::new(pipe_handle.clone()).with_z_order(5),
       ));
       self.pipes.push(top_pipe);
 
       // Bottom pipe
       let bottom_y = gap_center_y + PIPE_GAP / 2.0;
       let bottom_height = GROUND_Y - bottom_y;
-      let pipe_sprite = Sprite::load("assets/pipe.png").expect("Failed to load pipe sprite");
-      let sprite_w = pipe_sprite.width() as f32;
-      let sprite_h = pipe_sprite.height() as f32;
+      let sprite_w = pipe_handle.sprite().width() as f32;
+      let sprite_h = pipe_handle.sprite().height() as f32;
       let scale_y = bottom_height / sprite_h;
       let mut transform = Transform::new(x, bottom_y);
       transform.scale_y = scale_y;
@@ -85,20 +86,21 @@ impl DebugScene {
         Velocity::new(0.0, 0.0),
         RigidBody::kinematic(),
         Collider::box_collider(sprite_w, bottom_height),
-        SpriteRenderer::new(pipe_sprite).with_z_order(5),
+        SpriteRenderer::new(pipe_handle).with_z_order(5),
       ));
       self.pipes.push(bottom_pipe);
     }
   }
 
   fn spawn_ground(&mut self, ctx: &mut SceneContext) {
+    let ground_sprite = Sprite::load("assets/ground.png").expect("Failed to load ground sprite");
+    let ground_handle = SpriteHandle::from_sprite(ground_sprite, "ground.png");
     let ground = ctx.world.spawn((
       Transform::new(0.0, GROUND_Y),
       Velocity::new(0.0, 0.0),
       RigidBody::kinematic(),
       Collider::box_collider(SCREEN_WIDTH as f32, GROUND_HEIGHT),
-      SpriteRenderer::new(Sprite::load("assets/ground.png").expect("Failed to load ground sprite"))
-        .with_z_order(15),
+      SpriteRenderer::new(ground_handle).with_z_order(15),
     ));
     self.ground = Some(ground);
   }

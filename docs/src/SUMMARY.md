@@ -20,6 +20,7 @@
 - [Input Handling](./concepts/input.md)
 - [Camera System](./concepts/camera.md)
 - [Sprites & Rendering](./concepts/sprites.md)
+- [Animation System](./concepts/animation.md)
 - [Asset Management](./concepts/assets.md)
 - [Physics System](./concepts/physics.md)
 - [Collision Detection](./concepts/collision.md)
@@ -34,6 +35,7 @@
 
 - [Moving Player](./examples/moving-player.md)
 - [Camera Follow](./examples/camera-follow.md)
+- [Sprite Animations](./examples/animations.md)
 - [Asset Loading Patterns](./examples/asset-loading.md)
 - [Save Game System](./examples/save-game.md)
 

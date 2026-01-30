@@ -8,6 +8,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use super::animation::{AnimationController, Animator};
 use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::camera::Camera;
@@ -255,6 +256,49 @@ impl Engine {
       }
     }
 
+    // === Animation System ===
+    // Update all Animator components
+    for entity in self.world.entities_with::<Animator>() {
+      if let Some(mut animator) = self.world.get_component_mut::<Animator>(entity) {
+        animator.update(_dt);
+      }
+    }
+
+    // Sync Animator sprites to SpriteRenderer
+    let animator_entities: Vec<Entity> = self.world.entities_with::<Animator>();
+    for entity in animator_entities {
+      let sprite = self
+        .world
+        .get_component::<Animator>(entity)
+        .and_then(|a| a.current_sprite().cloned());
+      if let Some(sprite) = sprite
+        && let Some(mut renderer) = self.world.get_component_mut::<SpriteRenderer>(entity)
+      {
+        renderer.sprite = sprite;
+      }
+    }
+
+    // Update all AnimationController components
+    for entity in self.world.entities_with::<AnimationController>() {
+      if let Some(mut controller) = self.world.get_component_mut::<AnimationController>(entity) {
+        controller.update(_dt);
+      }
+    }
+
+    // Sync AnimationController sprites to SpriteRenderer
+    let controller_entities: Vec<Entity> = self.world.entities_with::<AnimationController>();
+    for entity in controller_entities {
+      let sprite = self
+        .world
+        .get_component::<AnimationController>(entity)
+        .and_then(|c| c.current_sprite().cloned());
+      if let Some(sprite) = sprite
+        && let Some(mut renderer) = self.world.get_component_mut::<SpriteRenderer>(entity)
+      {
+        renderer.sprite = sprite;
+      }
+    }
+
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
       // Create context for the game with collision events from last physics step
@@ -411,15 +455,17 @@ impl Engine {
         }
 
         // Draw scaled by transform scale and camera zoom
-        sprite_renderer.sprite.draw_scaled_xy(
-          frame,
-          frame_width,
-          frame_height,
-          screen_x as i32,
-          screen_y as i32,
-          final_scale_x,
-          final_scale_y,
-        );
+        sprite_renderer.sprite.with_sprite(|sprite| {
+          sprite.draw_scaled_xy(
+            frame,
+            frame_width,
+            frame_height,
+            screen_x as i32,
+            screen_y as i32,
+            final_scale_x,
+            final_scale_y,
+          );
+        });
       }
     }
 
