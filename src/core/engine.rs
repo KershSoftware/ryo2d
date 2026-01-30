@@ -9,6 +9,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::animation::{AnimationController, Animator};
 use super::asset::AssetManager;
+use super::tile::{CompositeTile, GroupedCollider, TileDirection, TiledSprite};
 use super::audio::AudioManager;
 use super::camera::Camera;
 use super::collision::Collider;
@@ -512,6 +513,28 @@ impl Engine {
         .register_entity(entity, &transform, velocity.as_deref(), &rb, &col);
     }
 
+    // Auto-register entities with GroupedCollider (for composite tiles)
+    let grouped_entities: Vec<Entity> = self
+      .world
+      .entities_with::<RigidBody>()
+      .into_iter()
+      .filter(|&e| {
+        !self.physics.is_registered(e)
+          && self.world.get_component::<Transform>(e).is_some()
+          && self.world.get_component::<GroupedCollider>(e).is_some()
+      })
+      .collect();
+
+    for entity in grouped_entities {
+      let transform = self.world.get_component::<Transform>(entity).unwrap();
+      let velocity = self.world.get_component::<Velocity>(entity);
+      let rb = self.world.get_component::<RigidBody>(entity).unwrap();
+      let grouped = self.world.get_component::<GroupedCollider>(entity).unwrap();
+      self
+        .physics
+        .register_grouped_entity(entity, &transform, velocity.as_deref(), &rb, &grouped);
+    }
+
     // Sync ECS changes to Rapier before stepping physics
     // - Kinematic bodies: game code moves them directly via Transform
     // - Dynamic bodies: game code may teleport them (e.g., reset position)
@@ -602,6 +625,151 @@ impl Engine {
             final_scale_y,
           );
         });
+      }
+    }
+
+    // === Render TiledSprite components ===
+    // These are simple repeating sprites in one direction
+    for entity in self.world.entities_with_two::<Transform, TiledSprite>() {
+      let Some(transform) = self.world.get_component::<Transform>(entity) else {
+        continue;
+      };
+      let Some(tiled) = self.world.get_component::<TiledSprite>(entity) else {
+        continue;
+      };
+
+      if !tiled.visible {
+        continue;
+      }
+
+      let tile_size = tiled.tile_size();
+      if tile_size <= 0.0 {
+        continue;
+      }
+
+      let tile_count = tiled.tile_count();
+      let (offset_dx, offset_dy) = tiled.direction.offset(tile_size);
+
+      for i in 0..tile_count {
+        let tile_offset_x = offset_dx * i as f32;
+        let tile_offset_y = offset_dy * i as f32;
+
+        // For Up/Left directions, we need to start from the negative offset
+        let (start_x, start_y) = match tiled.direction {
+          TileDirection::Up => (0.0, -(tile_count as f32 - 1.0) * tile_size),
+          TileDirection::Left => (-(tile_count as f32 - 1.0) * tile_size, 0.0),
+          TileDirection::Down | TileDirection::Right => (0.0, 0.0),
+        };
+
+        let world_x = transform.x + start_x + tile_offset_x;
+        let world_y = transform.y + start_y + tile_offset_y;
+
+        let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
+        let final_scale_x = transform.scale_x * self.camera.zoom;
+        let final_scale_y = transform.scale_y * self.camera.zoom;
+
+        tiled.sprite.with_sprite(|sprite| {
+          sprite.draw_scaled_xy(
+            frame,
+            frame_width,
+            frame_height,
+            screen_x as i32,
+            screen_y as i32,
+            final_scale_x,
+            final_scale_y,
+          );
+        });
+      }
+    }
+
+    // === Render CompositeTile components ===
+    // These are multi-part tiles with static and tiled sections
+    for entity in self.world.entities_with_two::<Transform, CompositeTile>() {
+      let Some(transform) = self.world.get_component::<Transform>(entity) else {
+        continue;
+      };
+      let Some(composite) = self.world.get_component::<CompositeTile>(entity) else {
+        continue;
+      };
+
+      if !composite.visible {
+        continue;
+      }
+
+      let final_scale_x = transform.scale_x * self.camera.zoom;
+      let final_scale_y = transform.scale_y * self.camera.zoom;
+
+      for part in &composite.parts {
+        let flip_x = part.flip_x;
+        let flip_y = part.flip_y;
+
+        match &part.tiling {
+          None => {
+            // Static part - draw once
+            let world_x = transform.x + part.offset_x;
+            let world_y = transform.y + part.offset_y;
+            let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
+
+            part.sprite.with_sprite(|sprite| {
+              sprite.draw_scaled_xy_flipped(
+                frame,
+                frame_width,
+                frame_height,
+                screen_x as i32,
+                screen_y as i32,
+                final_scale_x,
+                final_scale_y,
+                flip_x,
+                flip_y,
+              );
+            });
+          }
+          Some((direction, target_size)) => {
+            // Tiled part - draw multiple times
+            let tile_size = if direction.is_horizontal() {
+              part.sprite.width() as f32
+            } else {
+              part.sprite.height() as f32
+            };
+
+            if tile_size <= 0.0 || *target_size <= 0.0 {
+              continue;
+            }
+
+            let tile_count = (target_size / tile_size).ceil() as u32;
+            let (offset_dx, offset_dy) = direction.offset(tile_size);
+
+            for i in 0..tile_count {
+              let tile_offset_x = offset_dx * i as f32;
+              let tile_offset_y = offset_dy * i as f32;
+
+              // For Up/Left directions, adjust starting position
+              let (start_x, start_y) = match direction {
+                TileDirection::Up => (0.0, -(tile_count as f32 - 1.0) * tile_size),
+                TileDirection::Left => (-(tile_count as f32 - 1.0) * tile_size, 0.0),
+                TileDirection::Down | TileDirection::Right => (0.0, 0.0),
+              };
+
+              let world_x = transform.x + part.offset_x + start_x + tile_offset_x;
+              let world_y = transform.y + part.offset_y + start_y + tile_offset_y;
+              let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
+
+              part.sprite.with_sprite(|sprite| {
+                sprite.draw_scaled_xy_flipped(
+                  frame,
+                  frame_width,
+                  frame_height,
+                  screen_x as i32,
+                  screen_y as i32,
+                  final_scale_x,
+                  final_scale_y,
+                  flip_x,
+                  flip_y,
+                );
+              });
+            }
+          }
+        }
       }
     }
 

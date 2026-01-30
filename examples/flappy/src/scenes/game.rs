@@ -63,47 +63,68 @@ impl GameScene {
     let mut rng = rand::thread_rng();
     let gap_center_y = rng.gen_range(PIPE_MIN_HEIGHT..=PIPE_MAX_HEIGHT);
 
-    // Top pipe
-    let top_height = gap_center_y - PIPE_GAP / 2.0;
-    let pipe_sprite = Sprite::load("assets/pipe.png").expect("Failed to load pipe sprite");
-    let sprite_w = pipe_sprite.width() as f32;
-    let sprite_h = pipe_sprite.height() as f32;
-    let pipe_handle = SpriteHandle::from_sprite(pipe_sprite, "pipe.png");
-    let scale_y = top_height / sprite_h;
-    let mut transform = Transform::new(x, 0.0);
-    transform.scale_y = scale_y;
+    // Load pipe sprites
+    let cap_sprite = Sprite::load("assets/pipe_cap.png").expect("Failed to load pipe cap");
+    let body_sprite = Sprite::load("assets/pipe_body.png").expect("Failed to load pipe body");
+    let cap_handle = SpriteHandle::from_sprite(cap_sprite, "pipe_cap.png");
+    let body_handle = SpriteHandle::from_sprite(body_sprite, "pipe_body.png");
+
+    let cap_height = cap_handle.height() as f32; // 24px
+
+    // TOP PIPE: hangs from ceiling, opening faces down
+    // Spans from y=0 to gap_center_y - PIPE_GAP/2
+    let top_pipe_bottom_y = gap_center_y - PIPE_GAP / 2.0;
+    let top_pipe_height = top_pipe_bottom_y;
+    let top_body_height = (top_pipe_height - cap_height).max(0.0);
+
+    // Build: body tiles downward from origin, cap at bottom (flipped)
+    let (top_composite, top_collider) = CompositeTileBuilder::new()
+      .body_tiled(body_handle.clone(), 0.0, 0.0, TileDirection::Down, top_body_height)
+      .cap_flipped_y(cap_handle.clone(), 0.0, top_body_height) // Cap below body, flipped
+      .z_order(5)
+      .build_with_collider();
+
     let top_pipe = ctx.world.spawn((
-      transform,
+      Transform::new(x, 0.0), // Start at top of screen
       Velocity::zero(),
       RigidBody::kinematic(),
-      // Use final world-space dimensions for collider (sprite_w, top_height)
-      Collider::box_collider(sprite_w, top_height),
-      SpriteRenderer::new(pipe_handle.clone()).with_z_order(5),
+      top_collider,
+      top_composite,
       Pipe::new_top(),
       Scrolling::no_wrap(PIPE_SCROLL_SPEED),
     ));
 
-    // Bottom pipe
+    // BOTTOM PIPE: rises from ground, opening faces up
+    // Spans from gap_center_y + PIPE_GAP/2 down to bottom of screen
     let bottom_y = gap_center_y + PIPE_GAP / 2.0;
-    let bottom_height = GROUND_Y - bottom_y;
-    let sprite_w = pipe_handle.sprite().width() as f32;
-    let sprite_h = pipe_handle.sprite().height() as f32;
-    let scale_y = bottom_height / sprite_h;
-    let mut transform = Transform::new(x, bottom_y);
-    transform.scale_y = scale_y;
-    let bottom_pipe = ctx.world.spawn((
-      transform,
-      Velocity::zero(),
-      RigidBody::kinematic(),
-      // Use final world-space dimensions for collider (sprite_w, bottom_height)
-      Collider::box_collider(sprite_w, bottom_height),
-      SpriteRenderer::new(pipe_handle).with_z_order(5),
-      Pipe::new_bottom(),
-      Scrolling::no_wrap(PIPE_SCROLL_SPEED),
-    ));
+
+    // Only spawn bottom pipe if the cap would be above the ground
+    if bottom_y < GROUND_Y {
+      // Extend to bottom of screen so all pipes align visually
+      let bottom_pipe_height = SCREEN_HEIGHT as f32 - bottom_y;
+      let bottom_body_height = (bottom_pipe_height - cap_height).max(0.0);
+
+      // Build: cap at top (normal orientation), body tiles downward
+      let (bottom_composite, bottom_collider) = CompositeTileBuilder::new()
+        .cap(cap_handle, 0.0, 0.0) // Cap at top, facing up
+        .body_tiled(body_handle, 0.0, cap_height, TileDirection::Down, bottom_body_height)
+        .z_order(5)
+        .build_with_collider();
+
+      let bottom_pipe = ctx.world.spawn((
+        Transform::new(x, bottom_y),
+        Velocity::zero(),
+        RigidBody::kinematic(),
+        bottom_collider,
+        bottom_composite,
+        Pipe::new_bottom(),
+        Scrolling::no_wrap(PIPE_SCROLL_SPEED),
+      ));
+
+      self.pipes.push(bottom_pipe);
+    }
 
     self.pipes.push(top_pipe);
-    self.pipes.push(bottom_pipe);
   }
 
   fn spawn_ground(&mut self, ctx: &mut SceneContext) {

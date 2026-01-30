@@ -79,6 +79,11 @@ pub mod prelude {
   // Graphics
   pub use crate::core::sprite::{AnimatedSprite, Sprite};
 
+  // Tiled rendering
+  pub use crate::core::tile::{
+    CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart, TiledSprite,
+  };
+
   // Animation system
   pub use crate::core::animation::{
     Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState,

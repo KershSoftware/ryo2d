@@ -62,9 +62,7 @@ fn prompt_project_name() -> CliResult<String> {
   io::stdout().flush().map_err(CliError::Io)?;
 
   let mut input = String::new();
-  io::stdin()
-    .read_line(&mut input)
-    .map_err(CliError::Io)?;
+  io::stdin().read_line(&mut input).map_err(CliError::Io)?;
 
   let name = input.trim().to_string();
 

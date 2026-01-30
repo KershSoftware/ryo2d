@@ -412,6 +412,95 @@ impl Sprite {
       }
     }
   }
+
+  /// Draw the sprite with scaling and optional flipping (nearest-neighbor)
+  ///
+  /// Uses nearest-neighbor sampling for crisp pixel-art scaling.
+  /// Supports horizontal and/or vertical flipping.
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_scaled_xy_flipped(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    x: i32,
+    y: i32,
+    scale_x: f32,
+    scale_y: f32,
+    flip_x: bool,
+    flip_y: bool,
+  ) {
+    // If no flipping, use the regular method
+    if !flip_x && !flip_y {
+      return self.draw_scaled_xy(frame, frame_width, frame_height, x, y, scale_x, scale_y);
+    }
+
+    if scale_x <= 0.0 || scale_y <= 0.0 {
+      return;
+    }
+
+    let frame_w = frame_width as i32;
+    let frame_h = frame_height as i32;
+    let scaled_w = (self.width as f32 * scale_x) as i32;
+    let scaled_h = (self.height as f32 * scale_y) as i32;
+
+    // Calculate visible region in screen space (clipped)
+    let start_dx = (-x).max(0);
+    let start_dy = (-y).max(0);
+    let end_dx = (frame_w - x).min(scaled_w);
+    let end_dy = (frame_h - y).min(scaled_h);
+
+    if start_dx >= end_dx || start_dy >= end_dy {
+      return;
+    }
+
+    for dy in start_dy..end_dy {
+      for dx in start_dx..end_dx {
+        // Map screen pixel back to source sprite (nearest neighbor)
+        let mut sx = ((dx as f32) / scale_x) as u32;
+        let mut sy = ((dy as f32) / scale_y) as u32;
+
+        // Apply flipping
+        if flip_x {
+          sx = self.width.saturating_sub(1).saturating_sub(sx);
+        }
+        if flip_y {
+          sy = self.height.saturating_sub(1).saturating_sub(sy);
+        }
+
+        // Clamp to sprite bounds (safety)
+        let sx = sx.min(self.width - 1);
+        let sy = sy.min(self.height - 1);
+
+        let fx = (x + dx) as usize;
+        let fy = (y + dy) as usize;
+
+        let src_idx = ((sy * self.width + sx) * 4) as usize;
+        let dst_idx = (fy * frame_width as usize + fx) * 4;
+
+        let src_a = self.data[src_idx + 3];
+
+        if src_a == 255 {
+          frame[dst_idx..dst_idx + 4].copy_from_slice(&self.data[src_idx..src_idx + 4]);
+        } else if src_a > 0 {
+          let src_r = self.data[src_idx] as u16;
+          let src_g = self.data[src_idx + 1] as u16;
+          let src_b = self.data[src_idx + 2] as u16;
+          let alpha = src_a as u16;
+          let inv_alpha = 255 - alpha;
+
+          let dst_r = frame[dst_idx] as u16;
+          let dst_g = frame[dst_idx + 1] as u16;
+          let dst_b = frame[dst_idx + 2] as u16;
+
+          frame[dst_idx] = ((src_r * alpha + dst_r * inv_alpha) / 255) as u8;
+          frame[dst_idx + 1] = ((src_g * alpha + dst_g * inv_alpha) / 255) as u8;
+          frame[dst_idx + 2] = ((src_b * alpha + dst_b * inv_alpha) / 255) as u8;
+          frame[dst_idx + 3] = 255;
+        }
+      }
+    }
+  }
 }
 
 /// A simple animated sprite using a sprite sheet

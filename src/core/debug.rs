@@ -44,6 +44,7 @@
 use super::camera::Camera;
 use super::collision::{Collider, ColliderShape};
 use super::ecs::{Transform, Velocity, World};
+use super::tile::GroupedCollider;
 use super::ui::{Color, UiContext};
 
 /// Debug configuration for engine rendering.
@@ -84,9 +85,10 @@ pub mod colors {
 
 /// Render collision debug visualization.
 ///
-/// Draws outlines around all entities with `Collider` components.
+/// Draws outlines around all entities with `Collider` or `GroupedCollider` components.
 /// Uses bright green to clearly stand out against game graphics.
 pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World, camera: &Camera) {
+  // Render standard Collider components
   for entity in world.entities_with_two::<Transform, Collider>() {
     let Some(transform) = world.get_component::<Transform>(entity) else {
       continue;
@@ -133,6 +135,36 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
         );
       }
     }
+  }
+
+  // Render GroupedCollider components (used by composite tiles)
+  for entity in world.entities_with_two::<Transform, GroupedCollider>() {
+    let Some(transform) = world.get_component::<Transform>(entity) else {
+      continue;
+    };
+    let Some(grouped) = world.get_component::<GroupedCollider>(entity) else {
+      continue;
+    };
+
+    // Calculate world position with offset
+    let world_x = transform.x + grouped.offset_x;
+    let world_y = transform.y + grouped.offset_y;
+
+    // Convert to screen position
+    let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
+
+    let scaled_w = (grouped.width * camera.zoom) as i32;
+    let scaled_h = (grouped.height * camera.zoom) as i32;
+    draw_rect_outline(
+      frame,
+      width,
+      height,
+      screen_x as i32,
+      screen_y as i32,
+      scaled_w,
+      scaled_h,
+      colors::COLLIDER,
+    );
   }
 }
 

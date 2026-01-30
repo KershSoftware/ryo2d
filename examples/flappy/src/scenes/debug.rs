@@ -33,8 +33,11 @@ impl DebugScene {
   fn spawn_bird(&mut self, ctx: &mut SceneContext) {
     // Spawn bird as DYNAMIC (not kinematic) so Rapier generates collision events
     // But with zero gravity so it doesn't fall - we move it manually
-    let bird_sprite = Sprite::load("assets/bird.svg").expect("Failed to load bird sprite");
-    let bird_handle = SpriteHandle::from_sprite(bird_sprite, "bird.svg");
+    let size = BIRD_SIZE as u32;
+    let bird_sprite = Sprite::load_svg_fit("assets/bird-flap-up.svg", size, size)
+      .expect("Failed to load bird sprite");
+    let bird_handle = SpriteHandle::from_sprite(bird_sprite, "bird-flap-up.svg");
+    
     let bird = ctx.world.spawn((
       Transform::new(BIRD_START_X, BIRD_START_Y),
       Velocity::new(0.0, 0.0),
@@ -47,48 +50,62 @@ impl DebugScene {
 
   fn spawn_test_pipes(&mut self, ctx: &mut SceneContext) {
     // Spawn a few static pipes at known positions for testing
-    // Use kinematic bodies so they participate in physics collision detection
-    // Format: (x, gap_center_y) - top_height is calculated from gap_center_y
+    // Uses CompositeTile with GroupedCollider (same as game scene)
+    // Format: (x, gap_center_y)
     let pipe_positions = [
       (200.0, 250.0), // x, gap_center_y (gap at y=175 to y=325)
       (350.0, 300.0), // x, gap_center_y (gap at y=225 to y=375)
     ];
 
+    // Load pipe sprites
+    let cap_sprite = Sprite::load("assets/pipe_cap.png").expect("Failed to load pipe cap");
+    let body_sprite = Sprite::load("assets/pipe_body.png").expect("Failed to load pipe body");
+    let cap_handle = SpriteHandle::from_sprite(cap_sprite, "pipe_cap.png");
+    let body_handle = SpriteHandle::from_sprite(body_sprite, "pipe_body.png");
+    let cap_height = cap_handle.height() as f32;
+
     for (x, gap_center_y) in pipe_positions {
-      // Top pipe: from y=0 to (gap_center_y - PIPE_GAP/2)
-      let top_height = gap_center_y - PIPE_GAP / 2.0;
-      let pipe_sprite = Sprite::load("assets/pipe.png").expect("Failed to load pipe sprite");
-      let sprite_w = pipe_sprite.width() as f32;
-      let sprite_h = pipe_sprite.height() as f32;
-      let pipe_handle = SpriteHandle::from_sprite(pipe_sprite, "pipe.png");
-      let scale_y = top_height / sprite_h;
-      let mut transform = Transform::new(x, 0.0);
-      transform.scale_y = scale_y;
+      // TOP PIPE: hangs from ceiling
+      let top_pipe_bottom_y = gap_center_y - PIPE_GAP / 2.0;
+      let top_pipe_height = top_pipe_bottom_y;
+      let top_body_height = (top_pipe_height - cap_height).max(0.0);
+
+      let (top_composite, top_collider) = CompositeTileBuilder::new()
+        .body_tiled(body_handle.clone(), 0.0, 0.0, TileDirection::Down, top_body_height)
+        .cap_flipped_y(cap_handle.clone(), 0.0, top_body_height)
+        .z_order(5)
+        .build_with_collider();
+
       let top_pipe = ctx.world.spawn((
-        transform,
-        Velocity::new(0.0, 0.0),
+        Transform::new(x, 0.0),
+        Velocity::zero(),
         RigidBody::kinematic(),
-        Collider::box_collider(sprite_w, top_height),
-        SpriteRenderer::new(pipe_handle.clone()).with_z_order(5),
+        top_collider,
+        top_composite,
       ));
       self.pipes.push(top_pipe);
 
-      // Bottom pipe
+      // BOTTOM PIPE: rises from ground
       let bottom_y = gap_center_y + PIPE_GAP / 2.0;
-      let bottom_height = GROUND_Y - bottom_y;
-      let sprite_w = pipe_handle.sprite().width() as f32;
-      let sprite_h = pipe_handle.sprite().height() as f32;
-      let scale_y = bottom_height / sprite_h;
-      let mut transform = Transform::new(x, bottom_y);
-      transform.scale_y = scale_y;
-      let bottom_pipe = ctx.world.spawn((
-        transform,
-        Velocity::new(0.0, 0.0),
-        RigidBody::kinematic(),
-        Collider::box_collider(sprite_w, bottom_height),
-        SpriteRenderer::new(pipe_handle).with_z_order(5),
-      ));
-      self.pipes.push(bottom_pipe);
+      if bottom_y < GROUND_Y {
+        let bottom_pipe_height = SCREEN_HEIGHT as f32 - bottom_y;
+        let bottom_body_height = (bottom_pipe_height - cap_height).max(0.0);
+
+        let (bottom_composite, bottom_collider) = CompositeTileBuilder::new()
+          .cap(cap_handle.clone(), 0.0, 0.0)
+          .body_tiled(body_handle.clone(), 0.0, cap_height, TileDirection::Down, bottom_body_height)
+          .z_order(5)
+          .build_with_collider();
+
+        let bottom_pipe = ctx.world.spawn((
+          Transform::new(x, bottom_y),
+          Velocity::zero(),
+          RigidBody::kinematic(),
+          bottom_collider,
+          bottom_composite,
+        ));
+        self.pipes.push(bottom_pipe);
+      }
     }
   }
 
@@ -127,37 +144,37 @@ impl DebugScene {
 
     self.is_colliding = false;
 
-    // Check against all pipes
+    // Check against all pipes (now using GroupedCollider)
     for &pipe_entity in &self.pipes {
       let Some(pipe_transform) = ctx.world.get::<Transform>(pipe_entity) else {
         continue;
       };
-      let Some(pipe_collider) = ctx.world.get::<Collider>(pipe_entity) else {
+      let Some(grouped_collider) = ctx.world.get::<GroupedCollider>(pipe_entity) else {
         continue;
       };
 
-      if let ColliderShape::Box { width, height } = pipe_collider.shape {
-        // Pipe box in world space
-        let box_x = pipe_transform.x + pipe_collider.offset_x;
-        let box_y = pipe_transform.y + pipe_collider.offset_y;
+      // GroupedCollider has a simple box covering the entire composite tile
+      let box_x = pipe_transform.x + grouped_collider.offset_x;
+      let box_y = pipe_transform.y + grouped_collider.offset_y;
+      let width = grouped_collider.width;
+      let height = grouped_collider.height;
 
-        // Circle vs AABB collision check
-        let closest_x = bird_cx.clamp(box_x, box_x + width);
-        let closest_y = bird_cy.clamp(box_y, box_y + height);
+      // Circle vs AABB collision check
+      let closest_x = bird_cx.clamp(box_x, box_x + width);
+      let closest_y = bird_cy.clamp(box_y, box_y + height);
 
-        let dx = bird_cx - closest_x;
-        let dy = bird_cy - closest_y;
-        let dist_sq = dx * dx + dy * dy;
+      let dx = bird_cx - closest_x;
+      let dy = bird_cy - closest_y;
+      let dist_sq = dx * dx + dy * dy;
 
-        if dist_sq < bird_radius * bird_radius {
-          self.is_colliding = true;
-          self.collision_info = format!("Pipe {:?}", pipe_entity);
-          break;
-        }
+      if dist_sq < bird_radius * bird_radius {
+        self.is_colliding = true;
+        self.collision_info = format!("Pipe {:?}", pipe_entity);
+        break;
       }
     }
 
-    // Check against ground
+    // Check against ground (still uses regular Collider)
     if !self.is_colliding {
       if let Some(ground_entity) = self.ground {
         if let Some(ground_transform) = ctx.world.get::<Transform>(ground_entity) {

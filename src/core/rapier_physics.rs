@@ -26,6 +26,7 @@ use rapier2d::prelude::*;
 use super::collision::{Collider, ColliderShape};
 use super::ecs::{Entity, Transform, Velocity, World};
 use super::physics::RigidBody;
+use super::tile::GroupedCollider;
 
 /// Pixels per meter conversion factor
 /// Rapier works in meters, games typically work in pixels.
@@ -276,6 +277,82 @@ impl RapierPhysicsWorld {
           .build()
       }
     };
+
+    let collider_handle =
+      self
+        .collider_set
+        .insert_with_parent(rapier_collider, body_handle, &mut self.rigid_body_set);
+
+    // Store mappings
+    self.entity_to_body.insert(entity, body_handle);
+    self.body_to_entity.insert(body_handle, entity);
+    self.entity_to_collider.insert(entity, collider_handle);
+    self.collider_to_entity.insert(collider_handle, entity);
+  }
+
+  /// Register an ECS entity with a grouped collider (for composite tiles)
+  ///
+  /// Similar to `register_entity` but uses a `GroupedCollider` instead of `Collider`.
+  /// GroupedCollider is a simple box that covers an entire composite tile.
+  pub fn register_grouped_entity(
+    &mut self,
+    entity: Entity,
+    transform: &Transform,
+    velocity: Option<&Velocity>,
+    rigid_body: &RigidBody,
+    grouped: &GroupedCollider,
+  ) {
+    // Skip if already registered
+    if self.entity_to_body.contains_key(&entity) {
+      return;
+    }
+
+    // Convert position from pixels to meters
+    let x_meters = transform.x / PIXELS_PER_METER;
+    let y_meters = transform.y / PIXELS_PER_METER;
+
+    // Create Rapier rigid body
+    let body = if rigid_body.is_kinematic {
+      RigidBodyBuilder::kinematic_position_based()
+        .translation(vector![x_meters, y_meters])
+        .locked_axes(LockedAxes::ROTATION_LOCKED)
+        .build()
+    } else {
+      let mut builder = RigidBodyBuilder::dynamic()
+        .translation(vector![x_meters, y_meters])
+        .gravity_scale(rigid_body.gravity_scale)
+        .linear_damping(rigid_body.drag)
+        .locked_axes(LockedAxes::ROTATION_LOCKED);
+
+      if let Some(vel) = velocity {
+        let vx_meters = vel.dx / PIXELS_PER_METER;
+        let vy_meters = vel.dy / PIXELS_PER_METER;
+        builder = builder.linvel(vector![vx_meters, vy_meters]);
+      }
+
+      builder.build()
+    };
+
+    let body_handle = self.rigid_body_set.insert(body);
+
+    // GroupedCollider uses top-left positioning like regular box colliders
+    // Convert offset + half-size to center position
+    let half_w = grouped.width / 2.0;
+    let half_h = grouped.height / 2.0;
+    let center_offset_x = (grouped.offset_x + half_w) / PIXELS_PER_METER;
+    let center_offset_y = (grouped.offset_y + half_h) / PIXELS_PER_METER;
+
+    // Create box collider for the grouped area
+    let half_w_meters = half_w / PIXELS_PER_METER;
+    let half_h_meters = half_h / PIXELS_PER_METER;
+
+    let rapier_collider = ColliderBuilder::cuboid(half_w_meters, half_h_meters)
+      .translation(vector![center_offset_x, center_offset_y])
+      .restitution(grouped.restitution)
+      .friction(grouped.friction)
+      .sensor(grouped.is_trigger)
+      .active_events(ActiveEvents::COLLISION_EVENTS)
+      .build();
 
     let collider_handle =
       self

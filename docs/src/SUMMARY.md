@@ -21,6 +21,7 @@
 - [Input Handling](./concepts/input.md)
 - [Camera System](./concepts/camera.md)
 - [Sprites & Rendering](./concepts/sprites.md)
+- [Tiled Rendering](./concepts/tiled-rendering.md)
 - [Animation System](./concepts/animation.md)
 - [Asset Management](./concepts/assets.md)
 - [Physics System](./concepts/physics.md)
