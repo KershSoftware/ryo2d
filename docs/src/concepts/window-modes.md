@@ -35,6 +35,23 @@ EngineBuilder::new()
 
 **Example:** An 800×600 game in a 1920×1080 window will scale up to 1440×1080 with black bars on the sides.
 
+**Constraining viewport size:**
+
+You can limit how much the viewport scales with `max_width()` and `max_height()`:
+
+```rust
+EngineBuilder::new()
+    .resolution(320, 240)
+    .max_width(1280)   // Don't scale wider than 1280px
+    .max_height(960)   // Don't scale taller than 960px
+    .window_mode(WindowMode::ResizableAspectRatio)
+    .with_scene(GameScene::new())
+    .build()
+    .run()?;
+```
+
+This prevents blur on large displays and maintains pixel density. Useful for pixel art games that look best at specific scales.
+
 ### Fixed
 
 Window cannot be resized or maximized by the user.
@@ -73,6 +90,20 @@ EngineBuilder::new()
 - Games like Celeste, Enter the Gungeon
 
 **Example:** A 320×240 game in a 1000×800 window will scale to 960×720 (3×) with black bars, not 1000×750 (3.125×).
+
+**Constraining viewport size:**
+
+Max width/height constraints work with integer scaling too:
+
+```rust
+EngineBuilder::new()
+    .resolution(320, 240)
+    .max_width(960)    // Allow up to 3× scaling
+    .window_mode(WindowMode::ResizableIntegerScale)
+    .with_scene(GameScene::new())
+    .build()
+    .run()?;
+```
 
 ### ResizableStretch
 
@@ -181,6 +212,8 @@ world.spawn((
 ### Input Mapping
 
 Mouse/touch coordinates are automatically mapped to your game's resolution. A click at window position (1920, 1080) might map to game position (400, 300).
+
+**Important:** Clicks in black bars (letterbox/pillarbox areas) are ignored and don't register as input. The engine only reports coordinates within the actual game viewport.
 
 ## See Also
 

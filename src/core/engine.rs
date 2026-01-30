@@ -26,7 +26,7 @@ use super::ui::{BitmapFont, UiContext, create_debug_font};
 /// Window resize behavior.
 ///
 /// Controls how the game viewport responds to window resizing and maximizing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowMode {
   /// Fixed window size, no resizing or maximizing.
   ///
@@ -42,6 +42,7 @@ pub enum WindowMode {
   ///
   /// Example: 800×600 game in a 1920×1080 window will scale up with black bars
   /// on the sides.
+  #[default]
   ResizableAspectRatio,
 
   /// Resizable with integer scaling only (pixel-perfect).
@@ -60,12 +61,6 @@ pub enum WindowMode {
   /// the aspect ratio. Rarely used as a default, but can be useful for UI-heavy
   /// games where distortion isn't noticeable.
   ResizableStretch,
-}
-
-impl Default for WindowMode {
-  fn default() -> Self {
-    WindowMode::ResizableAspectRatio
-  }
 }
 
 /// Tracks timing state for the game loop
@@ -168,6 +163,10 @@ pub struct EngineConfig {
   pub physics: PhysicsConfig,
   pub debug: DebugConfig,
   pub window_mode: WindowMode,
+  /// Maximum width for letterboxed viewport (None = no limit)
+  pub max_width: Option<u32>,
+  /// Maximum height for letterboxed viewport (None = no limit)
+  pub max_height: Option<u32>,
 }
 
 /// Re-export for backward compatibility
@@ -184,6 +183,8 @@ impl Default for EngineConfig {
       physics: PhysicsConfig::default(),
       debug: EngineDebugConfig::default(),
       window_mode: WindowMode::default(),
+      max_width: None,
+      max_height: None,
     }
   }
 }
@@ -217,39 +218,46 @@ pub struct Engine {
   ui_font: BitmapFont,
   // Last known world generation (for detecting world.clear() calls)
   last_world_generation: u64,
+  // Cached window size to avoid redundant resize_surface calls
+  last_window_size: (u32, u32),
 }
 
 impl Engine {
   /// Transform window coordinates to game coordinates.
   ///
   /// Handles scaling and letterboxing when window size differs from game resolution.
-  fn window_to_game_coords(&self, window_x: f64, window_y: f64) -> (f32, f32) {
+  /// Returns `None` if the coordinates are outside the game viewport (in black bars).
+  fn window_to_game_coords(&self, window_x: f64, window_y: f64) -> Option<(f32, f32)> {
     if let (Some(window), Some(_pixels)) = (&self.window, &self.pixels) {
       let window_size = window.inner_size();
       let (game_width, game_height) = (self.config.width as f32, self.config.height as f32);
 
       // For stretch mode, coordinates map 1:1 to the resized buffer
       if self.config.window_mode == WindowMode::ResizableStretch {
-        return (window_x as f32, window_y as f32);
+        return Some((window_x as f32, window_y as f32));
       }
 
       // Calculate scaling and letterboxing for aspect ratio preservation
       let window_aspect = window_size.width as f32 / window_size.height as f32;
       let game_aspect = game_width / game_height;
 
-      let (scale, offset_x, offset_y) = if window_aspect > game_aspect {
+      let mut scale = if window_aspect > game_aspect {
         // Window is wider - pillarboxing (black bars on sides)
-        let scale = window_size.height as f32 / game_height;
-        let scaled_width = game_width * scale;
-        let offset_x = (window_size.width as f32 - scaled_width) / 2.0;
-        (scale, offset_x, 0.0)
+        window_size.height as f32 / game_height
       } else {
         // Window is taller - letterboxing (black bars on top/bottom)
-        let scale = window_size.width as f32 / game_width;
-        let scaled_height = game_height * scale;
-        let offset_y = (window_size.height as f32 - scaled_height) / 2.0;
-        (scale, 0.0, offset_y)
+        window_size.width as f32 / game_width
       };
+
+      // Apply max width/height constraints if set
+      if let Some(max_width) = self.config.max_width {
+        let max_scale_width = max_width as f32 / game_width;
+        scale = scale.min(max_scale_width);
+      }
+      if let Some(max_height) = self.config.max_height {
+        let max_scale_height = max_height as f32 / game_height;
+        scale = scale.min(max_scale_height);
+      }
 
       // For integer scale mode, round down the scale
       let scale = if self.config.window_mode == WindowMode::ResizableIntegerScale {
@@ -258,18 +266,25 @@ impl Engine {
         scale
       };
 
+      // Recalculate offsets with constrained scale
+      let scaled_width = game_width * scale;
+      let scaled_height = game_height * scale;
+      let offset_x = (window_size.width as f32 - scaled_width) / 2.0;
+      let offset_y = (window_size.height as f32 - scaled_height) / 2.0;
+
       // Transform from window space to game space
       let game_x = (window_x as f32 - offset_x) / scale;
       let game_y = (window_y as f32 - offset_y) / scale;
 
-      // Clamp to game bounds
-      let game_x = game_x.clamp(0.0, game_width);
-      let game_y = game_y.clamp(0.0, game_height);
+      // Check if coordinates are within game bounds (reject clicks in black bars)
+      if game_x < 0.0 || game_x > game_width || game_y < 0.0 || game_y > game_height {
+        return None;
+      }
 
-      (game_x, game_y)
+      Some((game_x, game_y))
     } else {
       // Fallback if window/pixels not initialized
-      (window_x as f32, window_y as f32)
+      Some((window_x as f32, window_y as f32))
     }
   }
 
@@ -283,6 +298,7 @@ impl Engine {
     );
     let mut assets = AssetManager::new();
     let ui_font = create_debug_font();
+    let initial_size = (config.width, config.height);
 
     // Enable hot reload in debug builds if a workspace with assets directory exists
     #[cfg(debug_assertions)]
@@ -326,6 +342,7 @@ impl Engine {
       physics: RapierPhysicsWorld::new(),
       ui_font,
       last_world_generation: 0,
+      last_window_size: initial_size,
     }
   }
 
@@ -506,7 +523,7 @@ impl Engine {
     let frame_width = self.config.width;
     let frame_height = self.config.height;
 
-    // Fill background with dark blue
+    // Fill background with dark blue (game area only - letterbox is handled by clear color)
     for pixel in frame.chunks_exact_mut(4) {
       pixel[0] = 0x1e;
       pixel[1] = 0x40;
@@ -696,8 +713,10 @@ impl ApplicationHandler for Engine {
       }
       WindowEvent::CursorMoved { position, .. } => {
         // Transform window coordinates to game coordinates
-        let (game_x, game_y) = self.window_to_game_coords(position.x, position.y);
-        self.input.handle_mouse_move(game_x as f64, game_y as f64);
+        // If None, cursor is in black bars (letterbox area) - don't update mouse position
+        if let Some((game_x, game_y)) = self.window_to_game_coords(position.x, position.y) {
+          self.input.handle_mouse_move(game_x as f64, game_y as f64);
+        }
       }
       WindowEvent::MouseWheel { delta, .. } => {
         self.input.handle_scroll(*delta);
@@ -705,12 +724,7 @@ impl ApplicationHandler for Engine {
       WindowEvent::Resized(new_size) => {
         // Handle window resize based on window mode
         if let Some(pixels) = &mut self.pixels {
-          // Update surface size
-          if let Err(e) = pixels.resize_surface(new_size.width, new_size.height) {
-            eprintln!("Failed to resize surface: {}", e);
-          }
-
-          // For stretch mode, also resize the internal buffer
+          // For stretch mode, resize the internal buffer to match window
           if self.config.window_mode == WindowMode::ResizableStretch {
             if let Err(e) = pixels.resize_buffer(new_size.width, new_size.height) {
               eprintln!("Failed to resize buffer: {}", e);
@@ -725,6 +739,18 @@ impl ApplicationHandler for Engine {
             // Mark render cache as dirty since viewport changed
             self.render_cache_dirty = true;
           }
+          
+          // For all modes, update surface size immediately for responsive scaling
+          if let Err(e) = pixels.resize_surface(new_size.width, new_size.height) {
+            eprintln!("Failed to resize surface: {}", e);
+          } else {
+            self.last_window_size = (new_size.width, new_size.height);
+          }
+        }
+
+        // Request immediate redraw to update display
+        if let Some(window) = &self.window {
+          window.request_redraw();
         }
       }
       _ => {}
@@ -870,6 +896,52 @@ impl EngineBuilder {
     self
   }
 
+  /// Set maximum width for letterboxed viewport.
+  ///
+  /// Constrains how much the game viewport can scale up horizontally in
+  /// letterbox/pillarbox modes. Useful for maintaining pixel density or
+  /// limiting blur on large displays.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("Pixel Art Game")
+  ///     .resolution(320, 240)
+  ///     .max_width(1280)  // Don't scale wider than 1280px
+  ///     .window_mode(WindowMode::ResizableAspectRatio)
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn max_width(mut self, max: u32) -> Self {
+    self.config.max_width = Some(max);
+    self
+  }
+
+  /// Set maximum height for letterboxed viewport.
+  ///
+  /// Constrains how much the game viewport can scale up vertically in
+  /// letterbox/pillarbox modes. Useful for maintaining pixel density or
+  /// limiting blur on large displays.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("Pixel Art Game")
+  ///     .resolution(320, 240)
+  ///     .max_height(960)  // Don't scale taller than 960px
+  ///     .window_mode(WindowMode::ResizableAspectRatio)
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn max_height(mut self, max: u32) -> Self {
+    self.config.max_height = Some(max);
+    self
+  }
+
   /// Enable or disable collision boundary debug visualization.
   ///
   /// When enabled, renders bright green outlines around all colliders
@@ -967,14 +1039,13 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn with_system_state_overrides(mut self) -> Self {
-    if let Ok(workspace) = super::workspace::Workspace::discover() {
-      if let Ok(save_manager) = workspace.create_save_manager() {
-        if let Ok(system_state) = save_manager.load_system() {
-          // Apply overrides if present
-          if let Some(show_fps) = system_state.show_fps {
-            self.config.debug.show_fps = show_fps;
-          }
-        }
+    if let Ok(workspace) = super::workspace::Workspace::discover()
+      && let Ok(save_manager) = workspace.create_save_manager()
+      && let Ok(system_state) = save_manager.load_system()
+    {
+      // Apply overrides if present
+      if let Some(show_fps) = system_state.show_fps {
+        self.config.debug.show_fps = show_fps;
       }
     }
     self
