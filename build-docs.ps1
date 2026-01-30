@@ -77,12 +77,3 @@ Write-Host "  API:   docs/book/api/ryo2d/index.html"
 $indexPath = Resolve-Path "docs/book/index.html"
 Start-Process $indexPath
 
-if ($Serve) {
-    Write-Host "`nStarting local server..." -ForegroundColor Cyan
-    & "$env:USERPROFILE\.cargo\bin\mdbook.exe" serve docs --open
-}
-else {
-    # Default: open after build
-    $indexPath = Resolve-Path "docs/book/index.html"
-    Start-Process $indexPath
-}
