@@ -8,13 +8,13 @@ pub const SCREEN_HEIGHT: u32 = 600;
 pub const BIRD_GRAVITY: f32 = 800.0;
 pub const BIRD_FLAP_VELOCITY: f32 = -300.0;
 pub const BIRD_MAX_FALL_SPEED: f32 = 400.0;
-pub const BIRD_SIZE: f32 = 34.0;
+pub const BIRD_SIZE: f32 = 64.0;
 pub const BIRD_START_X: f32 = 100.0;
-pub const BIRD_START_Y: f32 = 300.0;
+pub const BIRD_START_Y: f32 = 200.0;
 
 // Pipe configuration
 pub const PIPE_WIDTH: f32 = 52.0;
-pub const PIPE_GAP: f32 = 200.0; // Gap between top and bottom pipes (increased for easier gameplay)
+pub const PIPE_GAP: f32 = 225.0; // Gap between top and bottom pipes
 pub const PIPE_SPAWN_DISTANCE: f32 = 250.0;
 pub const PIPE_SCROLL_SPEED: f32 = 120.0;
 pub const PIPE_MIN_HEIGHT: f32 = 100.0;

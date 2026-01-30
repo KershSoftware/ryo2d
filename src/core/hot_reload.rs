@@ -63,6 +63,8 @@ impl Default for HotReloadConfig {
     extensions.insert("jpeg".to_string());
     extensions.insert("gif".to_string());
     extensions.insert("bmp".to_string());
+    // Vector formats
+    extensions.insert("svg".to_string());
     // Audio formats
     extensions.insert("wav".to_string());
     extensions.insert("ogg".to_string());

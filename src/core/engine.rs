@@ -180,8 +180,21 @@ impl Engine {
       config.width,
       config.height,
     );
-    let assets = AssetManager::new();
+    let mut assets = AssetManager::new();
     let ui_font = create_debug_font();
+
+    // Enable hot reload in debug builds if a workspace with assets directory exists
+    #[cfg(debug_assertions)]
+    {
+      if let Ok(workspace) = super::workspace::Workspace::discover() {
+        let assets_dir = workspace.assets_dir();
+        if assets_dir.exists()
+          && let Err(e) = assets.enable_hot_reload(vec![assets_dir])
+        {
+          eprintln!("[HotReload] Failed to enable: {}", e);
+        }
+      }
+    }
 
     // Try to initialize audio (gracefully handle no audio device)
     let audio = match AudioManager::new() {
@@ -232,6 +245,16 @@ impl Engine {
   ///
   /// This runs user game logic and built-in engine systems (physics, movement, camera).
   fn update(&mut self, _dt: f32) {
+    // Process hot reloads (debug builds only)
+    #[cfg(debug_assertions)]
+    {
+      let reloaded = self.assets.process_reloads();
+      if reloaded > 0 {
+        // Mark render cache dirty since sprites may have changed
+        self.render_cache_dirty = true;
+      }
+    }
+
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
       // Create context for the game with collision events from last physics step

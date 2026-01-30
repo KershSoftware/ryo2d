@@ -21,6 +21,8 @@ examples/*/data/
 **/AGENTS.md
 **/TASKS.md
 .github/skills/*
+.claude
+CLAUDE.md
 
 # OS
 .DS_Store

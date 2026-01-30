@@ -38,7 +38,7 @@ impl DebugScene {
       Velocity::new(0.0, 0.0),
       RigidBody::new().with_gravity_scale(0.0), // Dynamic but no gravity
       Collider::circle_collider(BIRD_SIZE / 2.0).with_offset(BIRD_SIZE / 2.0, BIRD_SIZE / 2.0),
-      SpriteRenderer::new(Sprite::load("assets/bird.png").expect("Failed to load bird sprite"))
+      SpriteRenderer::new(Sprite::load("assets/bird.svg").expect("Failed to load bird sprite"))
         .with_z_order(10),
     ));
     self.bird = Some(bird);
@@ -49,8 +49,8 @@ impl DebugScene {
     // Use kinematic bodies so they participate in physics collision detection
     // Format: (x, gap_center_y) - top_height is calculated from gap_center_y
     let pipe_positions = [
-      (200.0, 250.0),  // x, gap_center_y (gap at y=175 to y=325)
-      (350.0, 300.0),  // x, gap_center_y (gap at y=225 to y=375)
+      (200.0, 250.0), // x, gap_center_y (gap at y=175 to y=325)
+      (350.0, 300.0), // x, gap_center_y (gap at y=225 to y=375)
     ];
 
     for (x, gap_center_y) in pipe_positions {
@@ -97,10 +97,8 @@ impl DebugScene {
       Velocity::new(0.0, 0.0),
       RigidBody::kinematic(),
       Collider::box_collider(SCREEN_WIDTH as f32, GROUND_HEIGHT),
-      SpriteRenderer::new(
-        Sprite::load("assets/ground.png").expect("Failed to load ground sprite"),
-      )
-      .with_z_order(15),
+      SpriteRenderer::new(Sprite::load("assets/ground.png").expect("Failed to load ground sprite"))
+        .with_z_order(15),
     ));
     self.ground = Some(ground);
   }
@@ -308,7 +306,12 @@ impl Scene for DebugScene {
     };
 
     // Draw collision status prominently at top-right
-    ui.draw_text(indicator_text, screen_w as f32 - 120.0, 10.0, indicator_color);
+    ui.draw_text(
+      indicator_text,
+      screen_w as f32 - 120.0,
+      10.0,
+      indicator_color,
+    );
 
     // Draw detailed collision info
     ui.draw_text(&self.collision_info, 10.0, 70.0, Color::rgb(200, 200, 200));

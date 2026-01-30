@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::Path;
 
 use crate::core::error::{SpriteError, SpriteResult};
@@ -44,9 +45,19 @@ impl Sprite {
     }
   }
 
-  /// Load a sprite from an image file (PNG, JPEG, etc.)
+  /// Load a sprite from an image file (PNG, JPEG, SVG, etc.)
+  ///
+  /// SVG files are rasterized at their native size. Use `load_svg_scaled`
+  /// if you need to render at a specific size.
   pub fn load<P: AsRef<Path>>(path: P) -> SpriteResult<Self> {
     let path_ref = path.as_ref();
+
+    // Check if it's an SVG file
+    if path_ref.extension().and_then(OsStr::to_str) == Some("svg") {
+      return Self::load_svg(path_ref, 1.0);
+    }
+
+    // Use image crate for raster formats
     let img = image::open(path_ref).map_err(|e| SpriteError::DecodeError {
       path: path_ref.to_path_buf(),
       reason: e.to_string(),
@@ -62,6 +73,146 @@ impl Sprite {
       width,
       height,
     })
+  }
+
+  /// Load an SVG file and rasterize it at a specific scale factor.
+  ///
+  /// # Arguments
+  /// * `path` - Path to the SVG file
+  /// * `scale` - Scale factor (1.0 = native size, 2.0 = double size, etc.)
+  ///
+  /// # Example
+  /// ```rust,ignore
+  /// // Load SVG at native size
+  /// let icon = Sprite::load_svg("icon.svg", 1.0)?;
+  ///
+  /// // Load SVG at 2x size for high-DPI displays
+  /// let icon_hd = Sprite::load_svg("icon.svg", 2.0)?;
+  /// ```
+  pub fn load_svg<P: AsRef<Path>>(path: P, scale: f32) -> SpriteResult<Self> {
+    let path_ref = path.as_ref();
+
+    // Read SVG data
+    let svg_data = std::fs::read(path_ref).map_err(|e| SpriteError::DecodeError {
+      path: path_ref.to_path_buf(),
+      reason: e.to_string(),
+    })?;
+
+    Self::from_svg_data(&svg_data, scale).map_err(|reason| SpriteError::DecodeError {
+      path: path_ref.to_path_buf(),
+      reason,
+    })
+  }
+
+  /// Load an SVG and rasterize it to fit within specific dimensions.
+  ///
+  /// The aspect ratio is preserved - the SVG will be scaled to fit within
+  /// the given bounds while maintaining proportions.
+  ///
+  /// # Arguments
+  /// * `path` - Path to the SVG file
+  /// * `max_width` - Maximum width in pixels
+  /// * `max_height` - Maximum height in pixels
+  pub fn load_svg_fit<P: AsRef<Path>>(
+    path: P,
+    max_width: u32,
+    max_height: u32,
+  ) -> SpriteResult<Self> {
+    let path_ref = path.as_ref();
+
+    let svg_data = std::fs::read(path_ref).map_err(|e| SpriteError::DecodeError {
+      path: path_ref.to_path_buf(),
+      reason: e.to_string(),
+    })?;
+
+    Self::from_svg_data_fit(&svg_data, max_width, max_height).map_err(|reason| {
+      SpriteError::DecodeError {
+        path: path_ref.to_path_buf(),
+        reason,
+      }
+    })
+  }
+
+  /// Create a sprite from raw SVG data with a scale factor.
+  pub fn from_svg_data(svg_data: &[u8], scale: f32) -> Result<Self, String> {
+    use resvg::usvg;
+    use tiny_skia::{Pixmap, Transform};
+
+    // Parse SVG
+    let opt = usvg::Options::default();
+    let tree =
+      usvg::Tree::from_data(svg_data, &opt).map_err(|e| format!("Failed to parse SVG: {}", e))?;
+
+    // Calculate scaled dimensions
+    let size = tree.size();
+    let width = (size.width() * scale) as u32;
+    let height = (size.height() * scale) as u32;
+
+    if width == 0 || height == 0 {
+      return Err("SVG has zero dimensions".to_string());
+    }
+
+    // Create pixmap and render
+    let mut pixmap =
+      Pixmap::new(width, height).ok_or_else(|| "Failed to create pixmap".to_string())?;
+
+    let transform = Transform::from_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    // Convert to RGBA (tiny-skia uses premultiplied alpha, need to unpremultiply)
+    let data = Self::unpremultiply_alpha(pixmap.data());
+
+    Ok(Sprite {
+      data,
+      width,
+      height,
+    })
+  }
+
+  /// Create a sprite from raw SVG data, fitting within max dimensions.
+  pub fn from_svg_data_fit(
+    svg_data: &[u8],
+    max_width: u32,
+    max_height: u32,
+  ) -> Result<Self, String> {
+    use resvg::usvg;
+
+    // Parse SVG to get dimensions
+    let opt = usvg::Options::default();
+    let tree =
+      usvg::Tree::from_data(svg_data, &opt).map_err(|e| format!("Failed to parse SVG: {}", e))?;
+
+    let size = tree.size();
+    let svg_width = size.width();
+    let svg_height = size.height();
+
+    if svg_width == 0.0 || svg_height == 0.0 {
+      return Err("SVG has zero dimensions".to_string());
+    }
+
+    // Calculate scale to fit within bounds
+    let scale_x = max_width as f32 / svg_width;
+    let scale_y = max_height as f32 / svg_height;
+    let scale = scale_x.min(scale_y);
+
+    Self::from_svg_data(svg_data, scale)
+  }
+
+  /// Convert premultiplied alpha to straight alpha
+  fn unpremultiply_alpha(data: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(data.len());
+    for chunk in data.chunks_exact(4) {
+      let a = chunk[3] as f32 / 255.0;
+      if a > 0.0 {
+        result.push((chunk[0] as f32 / a).min(255.0) as u8);
+        result.push((chunk[1] as f32 / a).min(255.0) as u8);
+        result.push((chunk[2] as f32 / a).min(255.0) as u8);
+        result.push(chunk[3]);
+      } else {
+        result.extend_from_slice(&[0, 0, 0, 0]);
+      }
+    }
+    result
   }
 
   /// Get the sprite width

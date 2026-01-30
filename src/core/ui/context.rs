@@ -343,4 +343,31 @@ impl<'a> UiContext<'a> {
     }
     self.draw_text(text, x, y, text_color);
   }
+
+  // =========================================================================
+  // Sprite Drawing
+  // =========================================================================
+
+  /// Draw a sprite at the given position.
+  pub fn draw_sprite(&mut self, sprite: &crate::core::sprite::Sprite, x: f32, y: f32) {
+    sprite.draw(self.frame, self.frame_width, self.frame_height, x as i32, y as i32);
+  }
+
+  /// Draw a sprite scaled uniformly.
+  pub fn draw_sprite_scaled(
+    &mut self,
+    sprite: &crate::core::sprite::Sprite,
+    x: f32,
+    y: f32,
+    scale: f32,
+  ) {
+    sprite.draw_scaled(
+      self.frame,
+      self.frame_width,
+      self.frame_height,
+      x as i32,
+      y as i32,
+      scale,
+    );
+  }
 }

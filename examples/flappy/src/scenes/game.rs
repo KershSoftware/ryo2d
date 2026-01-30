@@ -13,12 +13,18 @@ pub struct GameScene {
   score: u32,
   high_score: u32,
   game_started: bool,
+  death_timer: Option<f32>,
 
   // Entity tracking
   bird: Option<Entity>,
   pipes: Vec<Entity>,
   ground_entities: Vec<Entity>,
+
+  // Bird sprites for animation
+  bird_sprites: BirdSprites,
 }
+
+const DEATH_DELAY: f32 = 1.0; // seconds to show death animation
 
 impl GameScene {
   pub fn new(high_score: u32) -> Self {
@@ -26,9 +32,11 @@ impl GameScene {
       score: 0,
       high_score,
       game_started: false,
+      death_timer: None,
       bird: None,
       pipes: Vec::new(),
       ground_entities: Vec::new(),
+      bird_sprites: BirdSprites::load(),
     }
   }
 
@@ -37,9 +45,9 @@ impl GameScene {
       Transform::new(BIRD_START_X, BIRD_START_Y),
       Velocity::zero(),
       RigidBody::new().with_gravity_scale(0.0),
-      Collider::circle_collider(BIRD_SIZE / 2.0).with_offset(BIRD_SIZE / 2.0, BIRD_SIZE / 2.0),
-      SpriteRenderer::new(Sprite::load("assets/bird.png").expect("Failed to load bird sprite"))
-        .with_z_order(10),
+      // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
+      Collider::circle_collider(BIRD_SIZE * 0.35).with_offset(BIRD_SIZE / 2.0, BIRD_SIZE / 2.0),
+      SpriteRenderer::new(self.bird_sprites.flap_down.clone()).with_z_order(10),
       Bird::new(),
     ));
     self.bird = Some(bird);
@@ -174,6 +182,39 @@ impl GameScene {
     }
 
     // Note: Dead state is checked in main update loop, not here
+  }
+
+  fn update_bird_sprite(&mut self, ctx: &mut SceneContext, dt: f32) {
+    let Some(bird_entity) = self.bird else {
+      return;
+    };
+
+    // Get bird state
+    let (velocity_y, is_alive, hurt_frame) = {
+      let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) else {
+        return;
+      };
+
+      // Update hurt animation timer if dead
+      if !bird.is_alive {
+        bird.hurt_timer += dt;
+        if bird.hurt_timer >= 0.1 {
+          // 10 FPS hurt animation
+          bird.hurt_timer = 0.0;
+          bird.hurt_frame += 1;
+        }
+      }
+
+      (bird.velocity_y, bird.is_alive, bird.hurt_frame)
+    };
+
+    // Update sprite based on state
+    if let Some(mut renderer) = ctx.world.get_mut::<SpriteRenderer>(bird_entity) {
+      renderer.sprite = self
+        .bird_sprites
+        .get_sprite(velocity_y, is_alive, hurt_frame)
+        .clone();
+    }
   }
 
   fn update_scrolling(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -314,25 +355,34 @@ impl Scene for GameScene {
 
     // Update game systems
     self.update_bird(ctx, dt);
+    self.update_bird_sprite(ctx, dt);
     self.update_scrolling(ctx, dt);
     self.update_pipes(ctx);
     self.check_collisions(ctx);
 
-    // Check if bird died
+    // Check if bird died - start death timer
     if let Some(bird_entity) = self.bird {
       if let Some(bird) = ctx.world.get::<Bird>(bird_entity) {
-        if !bird.is_alive {
-          let is_new_high_score = self.score > self.high_score;
-          if is_new_high_score {
-            save_high_score(self.score);
-            self.high_score = self.score;
-          }
-          return SceneAction::Switch(Box::new(GameOverScene::new(
-            self.score,
-            self.high_score,
-            is_new_high_score,
-          )));
+        if !bird.is_alive && self.death_timer.is_none() {
+          self.death_timer = Some(0.0);
         }
+      }
+    }
+
+    // Handle death timer
+    if let Some(timer) = &mut self.death_timer {
+      *timer += dt;
+      if *timer >= DEATH_DELAY {
+        let is_new_high_score = self.score > self.high_score;
+        if is_new_high_score {
+          save_high_score(self.score);
+          self.high_score = self.score;
+        }
+        return SceneAction::Switch(Box::new(GameOverScene::new(
+          self.score,
+          self.high_score,
+          is_new_high_score,
+        )));
       }
     }
 

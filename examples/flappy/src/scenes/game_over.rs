@@ -63,33 +63,41 @@ impl Scene for GameOverScene {
     );
 
     // Game Over title
+    let title = "GAME OVER";
+    let (title_w, _) = ui.text_size(title);
     ui.draw_text(
-      "GAME OVER",
-      screen_w as f32 / 2.0 - 70.0,
+      title,
+      screen_w as f32 / 2.0 - title_w as f32 / 2.0,
       150.0,
       Color::WHITE,
     );
 
     // Score display
+    let score_text = format!("Score: {}", self.score);
+    let (score_w, _) = ui.text_size(&score_text);
     ui.draw_text(
-      &format!("Score: {}", self.score),
-      screen_w as f32 / 2.0 - 50.0,
+      &score_text,
+      screen_w as f32 / 2.0 - score_w as f32 / 2.0,
       220.0,
       Color::WHITE,
     );
 
     // High score
     if self.is_new_high_score {
+      let high_text = "NEW HIGH SCORE!";
+      let (high_w, _) = ui.text_size(high_text);
       ui.draw_text(
-        "NEW HIGH SCORE!",
-        screen_w as f32 / 2.0 - 80.0,
+        high_text,
+        screen_w as f32 / 2.0 - high_w as f32 / 2.0,
         270.0,
         Color::rgb(255, 215, 0), // Gold
       );
     } else {
+      let high_text = format!("High Score: {}", self.high_score);
+      let (high_w, _) = ui.text_size(&high_text);
       ui.draw_text(
-        &format!("High Score: {}", self.high_score),
-        screen_w as f32 / 2.0 - 80.0,
+        &high_text,
+        screen_w as f32 / 2.0 - high_w as f32 / 2.0,
         270.0,
         Color::rgb(200, 200, 200),
       );
