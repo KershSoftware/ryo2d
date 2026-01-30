@@ -9,7 +9,6 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::animation::{AnimationController, Animator};
 use super::asset::AssetManager;
-use super::tile::{CompositeTile, GroupedCollider, TileDirection, TiledSprite};
 use super::audio::AudioManager;
 use super::camera::Camera;
 use super::collision::Collider;
@@ -22,6 +21,7 @@ use super::physics::{PhysicsConfig, RigidBody};
 use super::rapier_physics::RapierPhysicsWorld;
 use super::renderer::WgpuRenderer;
 use super::scene::{Scene, SceneGame};
+use super::tile::{CompositeTile, GroupedCollider, TileDirection, TiledSprite};
 use super::ui::{BitmapFont, UiContext, create_debug_font};
 
 /// Window resize behavior.
@@ -615,7 +615,7 @@ impl Engine {
 
         // Draw scaled by transform scale and camera zoom
         sprite_renderer.sprite.with_sprite(|sprite| {
-          sprite.draw_scaled_xy(
+          sprite.draw_rotated(
             frame,
             frame_width,
             frame_height,
@@ -623,6 +623,9 @@ impl Engine {
             screen_y as i32,
             final_scale_x,
             final_scale_y,
+            transform.rotation,
+            false, // flip_x
+            false, // flip_y
           );
         });
       }

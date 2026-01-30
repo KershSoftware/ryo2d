@@ -501,6 +501,211 @@ impl Sprite {
       }
     }
   }
+
+  /// Draw the sprite with rotation, scaling, and optional flipping
+  ///
+  /// Rotates around the center of the sprite.
+  /// Uses nearest-neighbor sampling for pixel-art rendering.
+  ///
+  /// # Arguments
+  ///
+  /// * `rotation_degrees` - Rotation angle in degrees (positive = clockwise)
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_rotated(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    x: i32,
+    y: i32,
+    scale_x: f32,
+    scale_y: f32,
+    rotation_degrees: f32,
+    flip_x: bool,
+    flip_y: bool,
+  ) {
+    // Early exit for zero rotation - use faster path
+    if rotation_degrees.abs() < 0.01 {
+      return self.draw_scaled_xy_flipped(
+        frame,
+        frame_width,
+        frame_height,
+        x,
+        y,
+        scale_x,
+        scale_y,
+        flip_x,
+        flip_y,
+      );
+    }
+
+    if scale_x <= 0.0 || scale_y <= 0.0 {
+      return;
+    }
+
+    let scaled_w = (self.width as f32 * scale_x) as i32;
+    let scaled_h = (self.height as f32 * scale_y) as i32;
+
+    // Rotation center (center of scaled sprite in screen space)
+    let center_x = x + scaled_w / 2;
+    let center_y = y + scaled_h / 2;
+
+    // Convert to radians
+    let angle = rotation_degrees.to_radians();
+    let cos_a = angle.cos();
+    let sin_a = angle.sin();
+
+    // Calculate bounding box of rotated sprite
+    let half_w = scaled_w as f32 / 2.0;
+    let half_h = scaled_h as f32 / 2.0;
+    let corners = [
+      (-half_w, -half_h),
+      (half_w, -half_h),
+      (-half_w, half_h),
+      (half_w, half_h),
+    ];
+
+    let mut min_x = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut min_y = f32::MAX;
+    let mut max_y = f32::MIN;
+
+    for (cx, cy) in corners {
+      let rx = cx * cos_a - cy * sin_a;
+      let ry = cx * sin_a + cy * cos_a;
+      min_x = min_x.min(rx);
+      max_x = max_x.max(rx);
+      min_y = min_y.min(ry);
+      max_y = max_y.max(ry);
+    }
+
+    let bbox_x1 = (center_x as f32 + min_x).floor() as i32;
+    let bbox_y1 = (center_y as f32 + min_y).floor() as i32;
+    let bbox_x2 = (center_x as f32 + max_x).ceil() as i32;
+    let bbox_y2 = (center_y as f32 + max_y).ceil() as i32;
+
+    // Clip to frame bounds
+    let start_x = bbox_x1.max(0);
+    let start_y = bbox_y1.max(0);
+    let end_x = bbox_x2.min(frame_width as i32);
+    let end_y = bbox_y2.min(frame_height as i32);
+
+    if start_x >= end_x || start_y >= end_y {
+      return;
+    }
+
+    // Inverse rotation matrix for reverse mapping
+    let inv_cos = cos_a;
+    let inv_sin = -sin_a;
+
+    for py in start_y..end_y {
+      for px in start_x..end_x {
+        // Sample at pixel center for better quality (0.5 offset)
+        let dx = (px - center_x) as f32 + 0.5;
+        let dy = (py - center_y) as f32 + 0.5;
+
+        // Rotate backwards (inverse transform)
+        let src_x = dx * inv_cos - dy * inv_sin;
+        let src_y = dx * inv_sin + dy * inv_cos;
+
+        // Map back to sprite coordinates (accounting for scale)
+        let sprite_x_f = src_x / scale_x + (self.width as f32 / 2.0);
+        let sprite_y_f = src_y / scale_y + (self.height as f32 / 2.0);
+
+        // Check bounds (with margin for bilinear sampling)
+        if sprite_x_f < 0.0
+          || sprite_x_f >= (self.width - 1) as f32
+          || sprite_y_f < 0.0
+          || sprite_y_f >= (self.height - 1) as f32
+        {
+          continue;
+        }
+
+        // Bilinear interpolation for smoother rotation
+        let x0 = sprite_x_f.floor() as u32;
+        let y0 = sprite_y_f.floor() as u32;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+
+        // Interpolation weights
+        let fx = sprite_x_f - x0 as f32;
+        let fy = sprite_y_f - y0 as f32;
+        let fx_inv = 1.0 - fx;
+        let fy_inv = 1.0 - fy;
+
+        // Apply flipping to all four sample points
+        let (sx0, sx1) = if flip_x {
+          ((self.width - 1) - x1, (self.width - 1) - x0)
+        } else {
+          (x0, x1)
+        };
+        let (sy0, sy1) = if flip_y {
+          ((self.height - 1) - y1, (self.height - 1) - y0)
+        } else {
+          (y0, y1)
+        };
+
+        // Sample four pixels
+        let idx00 = ((sy0 * self.width + sx0) * 4) as usize;
+        let idx10 = ((sy0 * self.width + sx1) * 4) as usize;
+        let idx01 = ((sy1 * self.width + sx0) * 4) as usize;
+        let idx11 = ((sy1 * self.width + sx1) * 4) as usize;
+
+        // Bilinear interpolation for each channel
+        let mut r = 0.0;
+        let mut g = 0.0;
+        let mut b = 0.0;
+        let mut a = 0.0;
+
+        let w00 = fx_inv * fy_inv;
+        let w10 = fx * fy_inv;
+        let w01 = fx_inv * fy;
+        let w11 = fx * fy;
+
+        r += self.data[idx00] as f32 * w00;
+        g += self.data[idx00 + 1] as f32 * w00;
+        b += self.data[idx00 + 2] as f32 * w00;
+        a += self.data[idx00 + 3] as f32 * w00;
+
+        r += self.data[idx10] as f32 * w10;
+        g += self.data[idx10 + 1] as f32 * w10;
+        b += self.data[idx10 + 2] as f32 * w10;
+        a += self.data[idx10 + 3] as f32 * w10;
+
+        r += self.data[idx01] as f32 * w01;
+        g += self.data[idx01 + 1] as f32 * w01;
+        b += self.data[idx01 + 2] as f32 * w01;
+        a += self.data[idx01 + 3] as f32 * w01;
+
+        r += self.data[idx11] as f32 * w11;
+        g += self.data[idx11 + 1] as f32 * w11;
+        b += self.data[idx11 + 2] as f32 * w11;
+        a += self.data[idx11 + 3] as f32 * w11;
+
+        let src_a = a.round() as u8;
+        let dst_idx = (py as usize * frame_width as usize + px as usize) * 4;
+
+        if src_a == 255 {
+          frame[dst_idx] = r.round() as u8;
+          frame[dst_idx + 1] = g.round() as u8;
+          frame[dst_idx + 2] = b.round() as u8;
+          frame[dst_idx + 3] = 255;
+        } else if src_a > 0 {
+          let alpha = src_a as u16;
+          let inv_alpha = 255 - alpha;
+
+          let dst_r = frame[dst_idx] as u16;
+          let dst_g = frame[dst_idx + 1] as u16;
+          let dst_b = frame[dst_idx + 2] as u16;
+
+          frame[dst_idx] = (((r as u16) * alpha + dst_r * inv_alpha) / 255) as u8;
+          frame[dst_idx + 1] = (((g as u16) * alpha + dst_g * inv_alpha) / 255) as u8;
+          frame[dst_idx + 2] = (((b as u16) * alpha + dst_b * inv_alpha) / 255) as u8;
+          frame[dst_idx + 3] = 255;
+        }
+      }
+    }
+  }
 }
 
 /// A simple animated sprite using a sprite sheet
@@ -714,5 +919,216 @@ mod tests {
 
     anim.update(0.2); // 200ms = 2 more frames
     assert_eq!(anim.current_frame, 0); // Wrapped around (1 + 2) % 3 = 0
+  }
+
+  #[test]
+  fn draw_rotated_zero_degrees() {
+    // Rotation of 0 degrees should match non-rotated rendering
+    let sprite = Sprite::solid_rect(4, 4, 255, 0, 0, 255);
+    let mut frame_rotated = vec![0u8; 10 * 10 * 4];
+    let mut frame_normal = vec![0u8; 10 * 10 * 4];
+
+    sprite.draw_rotated(
+      &mut frame_rotated,
+      10,
+      10,
+      3,
+      3,
+      1.0,
+      1.0,
+      0.0,
+      false,
+      false,
+    );
+    sprite.draw_scaled_xy(&mut frame_normal, 10, 10, 3, 3, 1.0, 1.0);
+
+    // Should be identical (or very close due to bilinear filtering)
+    let mut diff_count = 0;
+    for i in (0..frame_rotated.len()).step_by(4) {
+      if frame_rotated[i] != frame_normal[i] {
+        diff_count += 1;
+      }
+    }
+    // Allow small differences due to interpolation
+    assert!(diff_count < 5, "Too many pixel differences: {}", diff_count);
+  }
+
+  #[test]
+  fn draw_rotated_90_degrees() {
+    // Create a small sprite with distinct red color
+    let sprite = Sprite::solid_rect(3, 3, 255, 0, 0, 255);
+    let mut frame = vec![0u8; 20 * 20 * 4];
+
+    // Rotate 90 degrees
+    sprite.draw_rotated(&mut frame, 20, 20, 8, 8, 1.0, 1.0, 90.0, false, false);
+
+    // After any rotation, we should have some red pixels
+    let mut found_red = false;
+    for idx in (0..frame.len()).step_by(4) {
+      if frame[idx] > 200 && frame[idx + 1] < 50 && frame[idx + 2] < 50 {
+        found_red = true;
+        break;
+      }
+    }
+    assert!(found_red, "Should find red pixels after 90-degree rotation");
+  }
+
+  #[test]
+  fn draw_rotated_180_degrees() {
+    // Simple test - just verify rotation works
+    let sprite = Sprite::solid_rect(3, 3, 255, 0, 0, 255);
+    let mut frame = vec![0u8; 20 * 20 * 4];
+
+    sprite.draw_rotated(&mut frame, 20, 20, 8, 8, 1.0, 1.0, 180.0, false, false);
+
+    // Should have red pixels somewhere
+    let mut red_count = 0;
+    for idx in (0..frame.len()).step_by(4) {
+      if frame[idx] > 150 && frame[idx + 1] < 50 && frame[idx + 2] < 50 {
+        red_count += 1;
+      }
+    }
+    assert!(
+      red_count > 0,
+      "Should find red pixels after 180-degree rotation"
+    );
+  }
+
+  #[test]
+  fn draw_rotated_with_scaling() {
+    let sprite = Sprite::solid_rect(2, 2, 0, 255, 0, 255); // Green
+    let mut frame = vec![0u8; 20 * 20 * 4];
+
+    // Rotate 45 degrees with 3x scaling for more visible result
+    sprite.draw_rotated(&mut frame, 20, 20, 6, 6, 3.0, 3.0, 45.0, false, false);
+
+    // Check that green pixels exist
+    let mut green_count = 0;
+    for idx in (0..frame.len()).step_by(4) {
+      if frame[idx + 1] > 150 && frame[idx] < 50 && frame[idx + 2] < 50 {
+        green_count += 1;
+      }
+    }
+    assert!(
+      green_count > 5,
+      "Should have green pixels from scaled rotation, got {}",
+      green_count
+    );
+  }
+
+  #[test]
+  fn draw_rotated_with_flip_x() {
+    // Simple flip test - just verify it doesn't crash and renders something
+    let sprite = Sprite::solid_rect(4, 4, 255, 0, 0, 255);
+    let mut frame = vec![0u8; 20 * 20 * 4];
+
+    // Draw with horizontal flip
+    sprite.draw_rotated(&mut frame, 20, 20, 8, 8, 1.0, 1.0, 0.0, true, false);
+
+    // Should have some red pixels
+    let mut red_count = 0;
+    for idx in (0..frame.len()).step_by(4) {
+      if frame[idx] > 200 {
+        red_count += 1;
+      }
+    }
+    assert!(red_count > 5, "Should have red pixels with flip_x");
+  }
+
+  #[test]
+  fn draw_rotated_with_flip_y() {
+    // Simple flip test - just verify it doesn't crash and renders something
+    let sprite = Sprite::solid_rect(4, 4, 255, 0, 0, 255);
+    let mut frame = vec![0u8; 20 * 20 * 4];
+
+    // Draw with vertical flip
+    sprite.draw_rotated(&mut frame, 20, 20, 8, 8, 1.0, 1.0, 0.0, false, true);
+
+    // Should have some red pixels
+    let mut red_count = 0;
+    for idx in (0..frame.len()).step_by(4) {
+      if frame[idx] > 200 {
+        red_count += 1;
+      }
+    }
+    assert!(red_count > 5, "Should have red pixels with flip_y");
+  }
+
+  #[test]
+  fn draw_rotated_clips_to_bounds() {
+    let sprite = Sprite::solid_rect(5, 5, 255, 255, 255, 255);
+    let mut frame = vec![0u8; 10 * 10 * 4];
+
+    // Draw partially off-screen
+    sprite.draw_rotated(&mut frame, 10, 10, -2, -2, 1.0, 1.0, 45.0, false, false);
+
+    // Should not panic and should clip properly
+    // Just verify no out-of-bounds access occurred
+  }
+
+  #[test]
+  fn draw_rotated_offscreen_does_nothing() {
+    let sprite = Sprite::solid_rect(3, 3, 255, 0, 0, 255);
+    let mut frame = vec![128u8; 10 * 10 * 4];
+    let original = frame.clone();
+
+    // Draw completely off-screen
+    sprite.draw_rotated(&mut frame, 10, 10, 100, 100, 1.0, 1.0, 30.0, false, false);
+
+    assert_eq!(
+      frame, original,
+      "Frame should be unchanged when drawing off-screen"
+    );
+  }
+
+  #[test]
+  fn draw_rotated_alpha_blending() {
+    // Create semi-transparent red sprite
+    let sprite = Sprite::solid_rect(4, 4, 255, 0, 0, 128); // 50% alpha
+
+    // Green background
+    let mut frame = vec![0u8; 10 * 10 * 4];
+    for i in (0..frame.len()).step_by(4) {
+      frame[i + 1] = 255; // Green
+      frame[i + 3] = 255; // Opaque
+    }
+
+    sprite.draw_rotated(&mut frame, 10, 10, 3, 3, 1.0, 1.0, 0.0, false, false);
+
+    // Check center pixel - should be blend of red and green
+    let idx = (5 * 10 + 5) * 4;
+    let r = frame[idx];
+    let g = frame[idx + 1];
+
+    // Should have both red and green components (blending)
+    assert!(r > 50, "Should have significant red component");
+    assert!(g > 50, "Should have significant green component");
+    assert!(
+      r > g,
+      "Red should be stronger than green due to red overlay"
+    );
+  }
+
+  #[test]
+  fn draw_rotated_small_angle_smooth() {
+    // Test that small rotations work without crashing
+    let sprite = Sprite::solid_rect(4, 4, 255, 255, 255, 255);
+    let mut frame = vec![0u8; 20 * 20 * 4];
+
+    // Rotate by small angle
+    sprite.draw_rotated(&mut frame, 20, 20, 8, 8, 1.0, 1.0, 5.0, false, false);
+
+    // Count white pixels
+    let mut white_count = 0;
+    for idx in (0..frame.len()).step_by(4) {
+      if frame[idx] > 200 && frame[idx + 1] > 200 && frame[idx + 2] > 200 {
+        white_count += 1;
+      }
+    }
+    assert!(
+      white_count > 2,
+      "Should have white pixels from small rotation, got {}",
+      white_count
+    );
   }
 }

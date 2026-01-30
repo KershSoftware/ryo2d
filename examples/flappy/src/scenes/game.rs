@@ -79,7 +79,13 @@ impl GameScene {
 
     // Build: body tiles downward from origin, cap at bottom (flipped)
     let (top_composite, top_collider) = CompositeTileBuilder::new()
-      .body_tiled(body_handle.clone(), 0.0, 0.0, TileDirection::Down, top_body_height)
+      .body_tiled(
+        body_handle.clone(),
+        0.0,
+        0.0,
+        TileDirection::Down,
+        top_body_height,
+      )
       .cap_flipped_y(cap_handle.clone(), 0.0, top_body_height) // Cap below body, flipped
       .z_order(5)
       .build_with_collider();
@@ -107,7 +113,13 @@ impl GameScene {
       // Build: cap at top (normal orientation), body tiles downward
       let (bottom_composite, bottom_collider) = CompositeTileBuilder::new()
         .cap(cap_handle, 0.0, 0.0) // Cap at top, facing up
-        .body_tiled(body_handle, 0.0, cap_height, TileDirection::Down, bottom_body_height)
+        .body_tiled(
+          body_handle,
+          0.0,
+          cap_height,
+          TileDirection::Down,
+          bottom_body_height,
+        )
         .z_order(5)
         .build_with_collider();
 
@@ -174,6 +186,33 @@ impl GameScene {
     // Update velocity
     if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(bird_entity) {
       velocity.dy = velocity_y;
+    }
+
+    // Update rotation based on velocity (exponential tilt)
+    if let Some(mut transform) = ctx.world.get_mut::<Transform>(bird_entity) {
+      // Normalize velocity to -1.0 to 1.0 range
+      // Flapping gives -300, max fall is 400
+      let velocity_normalized = (velocity_y / BIRD_MAX_FALL_SPEED).clamp(-1.0, 1.0);
+
+      // Apply different exponential curves for climbing vs falling
+      let tilt_factor = if velocity_normalized < 0.0 {
+        // Climbing/upward - use gentler curve (lower power) for quicker rotation response
+        velocity_normalized.abs().powf(0.8) * velocity_normalized.signum()
+      } else {
+        // Falling/downward - use steeper curve (higher power) for delayed rotation
+        velocity_normalized.abs().powf(2.2) * velocity_normalized.signum()
+      };
+
+      // Map to rotation range
+      let target_rotation = if tilt_factor < 0.0 {
+        // Jumping/upward - tilt back (negative rotation)
+        tilt_factor * BIRD_TILT_UP_MAX.abs()
+      } else {
+        // Falling/downward - tilt forward (positive rotation)
+        tilt_factor * BIRD_TILT_DOWN_MAX
+      };
+
+      transform.rotation = target_rotation;
     }
 
     // Check bounds and clamp position

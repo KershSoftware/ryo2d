@@ -37,7 +37,7 @@ impl DebugScene {
     let bird_sprite = Sprite::load_svg_fit("assets/bird-flap-up.svg", size, size)
       .expect("Failed to load bird sprite");
     let bird_handle = SpriteHandle::from_sprite(bird_sprite, "bird-flap-up.svg");
-    
+
     let bird = ctx.world.spawn((
       Transform::new(BIRD_START_X, BIRD_START_Y),
       Velocity::new(0.0, 0.0),
@@ -71,7 +71,13 @@ impl DebugScene {
       let top_body_height = (top_pipe_height - cap_height).max(0.0);
 
       let (top_composite, top_collider) = CompositeTileBuilder::new()
-        .body_tiled(body_handle.clone(), 0.0, 0.0, TileDirection::Down, top_body_height)
+        .body_tiled(
+          body_handle.clone(),
+          0.0,
+          0.0,
+          TileDirection::Down,
+          top_body_height,
+        )
         .cap_flipped_y(cap_handle.clone(), 0.0, top_body_height)
         .z_order(5)
         .build_with_collider();
@@ -93,7 +99,13 @@ impl DebugScene {
 
         let (bottom_composite, bottom_collider) = CompositeTileBuilder::new()
           .cap(cap_handle.clone(), 0.0, 0.0)
-          .body_tiled(body_handle.clone(), 0.0, cap_height, TileDirection::Down, bottom_body_height)
+          .body_tiled(
+            body_handle.clone(),
+            0.0,
+            cap_height,
+            TileDirection::Down,
+            bottom_body_height,
+          )
           .z_order(5)
           .build_with_collider();
 

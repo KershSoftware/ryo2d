@@ -11,6 +11,8 @@ pub const BIRD_MAX_FALL_SPEED: f32 = 400.0;
 pub const BIRD_SIZE: f32 = 64.0;
 pub const BIRD_START_X: f32 = 100.0;
 pub const BIRD_START_Y: f32 = 200.0;
+pub const BIRD_TILT_UP_MAX: f32 = -25.0; // Max upward tilt in degrees when jumping
+pub const BIRD_TILT_DOWN_MAX: f32 = 70.0; // Max downward tilt in degrees when falling
 
 // Pipe configuration
 pub const PIPE_WIDTH: f32 = 52.0;

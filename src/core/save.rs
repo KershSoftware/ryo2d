@@ -2,9 +2,9 @@
 //!
 //! Provides a 3-tier save system:
 //!
-//! - **Tier 1: System State** - User settings (display, audio, keybindings) [JSON, uncompressed]
-//! - **Tier 2: World State** - ECS world snapshots (entities and serializable components) [compressed]
-//! - **Tier 3: Game Data** - Generic user data for game-specific saves [compressed]
+//! - **Tier 1: System State** - User settings (display, audio, keybindings) \[JSON, uncompressed\]
+//! - **Tier 2: World State** - ECS world snapshots (entities and serializable components) \[compressed\]
+//! - **Tier 3: Game Data** - Generic user data for game-specific saves \[compressed\]
 //!
 //! Tier 1 uses plain JSON for human readability and easy manual editing.
 //! Tiers 2-3 are compressed using DEFLATE compression for efficient storage.
