@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use super::{discover_workspace, CliError, CliResult, Output};
+use super::{CliError, CliResult, Output, discover_workspace};
 
 /// Execute the build command
 pub fn execute(args: &[String]) -> CliResult<()> {

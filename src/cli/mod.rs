@@ -25,4 +25,4 @@
 
 mod commands;
 
-pub use commands::{run_cli, CliError, CliResult};
+pub use commands::{CliError, CliResult, run_cli};

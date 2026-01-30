@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use super::{discover_workspace, CliError, CliResult, Output};
+use super::{CliError, CliResult, Output, discover_workspace};
 
 /// Execute the run command
 pub fn execute(args: &[String]) -> CliResult<()> {
@@ -22,14 +22,15 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     project_name.to_string()
   };
 
-  let binary_path = workspace.root().join("target").join("release").join(&binary_name);
+  let binary_path = workspace
+    .root()
+    .join("target")
+    .join("release")
+    .join(&binary_name);
 
   // Check if build exists
   if !binary_path.exists() {
-    Output::warning(&format!(
-      "No production build found for '{}'",
-      project_name
-    ));
+    Output::warning(&format!("No production build found for '{}'", project_name));
     Output::status("Hint", "Run 'ryo2d build' first to create a release build");
     return Err(CliError::NoBuildExists(binary_path));
   }

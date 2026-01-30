@@ -50,7 +50,8 @@ if ($Uninstall) {
     if (Test-Path $InstalledBinary) {
         Remove-Item $InstalledBinary -Force
         Write-Success "ryo2d CLI uninstalled"
-    } else {
+    }
+    else {
         Write-Warning "ryo2d CLI was not installed at $InstalledBinary"
     }
     exit 0
@@ -67,13 +68,14 @@ Write-Status "Building" "ryo2d CLI (release mode)..."
 
 Push-Location $ScriptDir
 try {
-    $buildResult = cargo build --release --bin ryo2d 2>&1
+    # Run cargo build - let output stream directly to console
+    & cargo build --release --bin ryo2d
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Build failed"
-        Write-Host $buildResult
         exit 1
     }
-} finally {
+}
+finally {
     Pop-Location
 }
 
