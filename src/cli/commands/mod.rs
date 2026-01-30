@@ -152,3 +152,33 @@ fn print_version() {
 fn discover_workspace() -> CliResult<Workspace> {
   Workspace::discover().map_err(|e| CliError::WorkspaceNotFound(e.to_string()))
 }
+
+/// Get the Cargo package name from Cargo.toml
+///
+/// The binary name is based on the package name in Cargo.toml, not the
+/// display name in Ryo.toml.
+fn get_cargo_package_name(workspace: &Workspace) -> CliResult<String> {
+  use std::fs;
+
+  let cargo_toml_path = workspace.root().join("Cargo.toml");
+
+  if !cargo_toml_path.exists() {
+    return Err(CliError::Other(
+      "Cargo.toml not found in workspace".to_string(),
+    ));
+  }
+
+  let contents = fs::read_to_string(&cargo_toml_path)
+    .map_err(|e| CliError::Other(format!("Failed to read Cargo.toml: {}", e)))?;
+
+  let parsed: toml::Value = toml::from_str(&contents)
+    .map_err(|e| CliError::Other(format!("Failed to parse Cargo.toml: {}", e)))?;
+
+  let package_name = parsed
+    .get("package")
+    .and_then(|p| p.get("name"))
+    .and_then(|n| n.as_str())
+    .ok_or_else(|| CliError::Other("No package.name found in Cargo.toml".to_string()))?;
+
+  Ok(package_name.to_string())
+}

@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use super::{CliError, CliResult, Output, discover_workspace};
+use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
 
 /// Execute the run command
 pub fn execute(args: &[String]) -> CliResult<()> {
@@ -13,13 +13,14 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   }
 
   let workspace = discover_workspace()?;
-  let project_name = workspace.name();
+  let package_name = get_cargo_package_name(&workspace)?;
+  let display_name = workspace.name();
 
-  // Determine the binary path
+  // Determine the binary path using Cargo package name
   let binary_name = if cfg!(windows) {
-    format!("{}.exe", project_name)
+    format!("{}.exe", package_name)
   } else {
-    project_name.to_string()
+    package_name.to_string()
   };
 
   let binary_path = workspace
@@ -30,12 +31,12 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   // Check if build exists
   if !binary_path.exists() {
-    Output::warning(&format!("No production build found for '{}'", project_name));
+    Output::warning(&format!("No production build found for '{}'", display_name));
     Output::status("Hint", "Run 'ryo2d build' first to create a release build");
     return Err(CliError::NoBuildExists(binary_path));
   }
 
-  Output::status("Running", &format!("{} (release)...", project_name));
+  Output::status("Running", &format!("{} (release)...", display_name));
 
   // Execute the binary
   let status = Command::new(&binary_path)

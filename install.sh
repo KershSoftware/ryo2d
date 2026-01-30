@@ -117,19 +117,54 @@ ln -s "$TARGET_BINARY" "$INSTALLED_BINARY"
 
 # Step 4: Check if install dir is in PATH
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+    echo ""
     warning "$INSTALL_DIR is not in your PATH"
     echo ""
-    echo "Add it to your shell configuration:"
-    echo ""
-    echo "  # For bash (~/.bashrc)"
-    echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
-    echo ""
-    echo "  # For zsh (~/.zshrc)"
-    echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
-    echo ""
-    echo "  # For fish (~/.config/fish/config.fish)"
-    echo "  fish_add_path $INSTALL_DIR"
-    echo ""
+    
+    read -p "Would you like to add it to your shell config now? [Y/n] " response
+    if [[ "$response" == "" || "$response" =~ ^[Yy] ]]; then
+        # Detect shell and config file
+        SHELL_NAME=$(basename "$SHELL")
+        case "$SHELL_NAME" in
+            bash)
+                CONFIG_FILE="$HOME/.bashrc"
+                ;;
+            zsh)
+                CONFIG_FILE="$HOME/.zshrc"
+                ;;
+            fish)
+                CONFIG_FILE="$HOME/.config/fish/config.fish"
+                ;;
+            *)
+                CONFIG_FILE=""
+                ;;
+        esac
+        
+        if [ -n "$CONFIG_FILE" ]; then
+            echo "" >> "$CONFIG_FILE"
+            echo "# Ryo2D CLI" >> "$CONFIG_FILE"
+            if [ "$SHELL_NAME" = "fish" ]; then
+                echo "fish_add_path $INSTALL_DIR" >> "$CONFIG_FILE"
+            else
+                echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$CONFIG_FILE"
+            fi
+            
+            status "Updated" "$CONFIG_FILE"
+            echo ""
+            echo "  Run 'source $CONFIG_FILE' or restart your terminal."
+        else
+            warning "Unknown shell: $SHELL_NAME"
+            echo ""
+            echo "Add this to your shell configuration:"
+            echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+        fi
+    else
+        echo ""
+        echo "To add manually, add this to your shell configuration:"
+        echo ""
+        echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+        echo ""
+    fi
 fi
 
 echo ""

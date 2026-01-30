@@ -99,16 +99,32 @@ Copy-Item $TargetBinary $InstalledBinary -Force
 # Step 4: Check if install dir is in PATH
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$InstallDir*") {
+    Write-Host ""
     Write-Warning "$InstallDir is not in your PATH"
     Write-Host ""
-    Write-Host "Add it to your PATH with:" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  `$env:Path += `";$InstallDir`"" -ForegroundColor White
-    Write-Host ""
-    Write-Host "Or permanently (requires restart):" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  [Environment]::SetEnvironmentVariable('Path', `$env:Path + ';$InstallDir', 'User')" -ForegroundColor White
-    Write-Host ""
+    
+    $response = Read-Host "Would you like to add it to your PATH now? [Y/n]"
+    if ($response -eq "" -or $response -match "^[Yy]") {
+        # Add to current session
+        $env:Path += ";$InstallDir"
+        
+        # Add permanently to user PATH
+        $newPath = $userPath + ";$InstallDir"
+        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+        
+        Write-Status "Updated" "PATH environment variable"
+        Write-Host ""
+        Write-Host "  The PATH has been updated for this session and permanently." -ForegroundColor Gray
+        Write-Host "  New terminal windows will also have ryo2d available." -ForegroundColor Gray
+    }
+    else {
+        Write-Host ""
+        Write-Host "To add manually, run:" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  [Environment]::SetEnvironmentVariable('Path', `$env:Path + ';$InstallDir', 'User')" -ForegroundColor White
+        Write-Host ""
+        Write-Host "Then restart your terminal." -ForegroundColor Gray
+    }
 }
 
 Write-Host ""
