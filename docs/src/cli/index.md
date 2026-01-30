@@ -14,6 +14,37 @@ For now, run commands from within your project directory.
 
 ## Commands
 
+### `ryo2d init <project-name>`
+
+Create a new Ryo2D project from scratch.
+
+```bash
+ryo2d init my-awesome-game
+```
+
+This command:
+- Creates a new directory with the project name
+- Scaffolds complete project structure (assets/, data/, src/)
+- Generates Cargo.toml with Ryo2D dependency
+- Creates Ryo.toml with sensible engine defaults (800×600 @ 60 FPS)
+- Provides working main.rs with a Scene example
+- Includes .gitignore with standard Rust patterns
+- Generates README with quick start instructions
+
+**Project name rules:**
+- Must be lowercase
+- Can contain hyphens and underscores
+- Must be valid as both a directory name and Rust crate name
+
+**When to use:** Starting a new game project.
+
+**Example:**
+```bash
+ryo2d init my-game
+cd my-game
+ryo2d dev
+```
+
 ### `ryo2d dev`
 
 Development mode - the primary command during development.
@@ -62,10 +93,19 @@ This command:
 
 ## Typical Workflow
 
+### Starting a New Project
+
+```bash
+# Create and start a new game
+ryo2d init my-game
+cd my-game
+ryo2d dev
+```
+
 ### During Development
 
 ```bash
-# Start your development session
+# Continue working on existing project
 cd my_game
 ryo2d dev
 ```
@@ -86,6 +126,7 @@ Each command supports `--help` for detailed information:
 
 ```bash
 ryo2d --help
+ryo2d init --help
 ryo2d build --help
 ryo2d run --help
 ryo2d dev --help
@@ -107,6 +148,5 @@ All commands automatically detect your Ryo2D workspace by searching for `Ryo.tom
 
 The following commands are planned for future releases:
 
-- `ryo2d new <name>` - Create a new project from a template
 - `ryo2d assets` - Asset pipeline operations
 - `ryo2d package` - Package for distribution (Windows installer, macOS app bundle, etc.)
