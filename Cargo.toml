@@ -13,6 +13,10 @@ autoexamples = false
 name = "ryo2d"
 path = "src/lib.rs"
 
+[[bin]]
+name = "ryo2d"
+path = "src/bin/ryo2d.rs"
+
 # Example games are standalone projects in examples/ - run them with:
 #   cd examples/breakout && cargo run
 # Or use the run script: ./run breakout
