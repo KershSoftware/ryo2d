@@ -212,8 +212,13 @@ Persistent state     │  keys_down        (tracks held keys)        │
 ```
 src/
 ├── lib.rs              # Library root, prelude exports
-├── main.rs             # Demo game implementation
-└── core/
+├── bin/
+│   └── ryo2d.rs        # CLI binary entry point
+├── cli/                # Command-line interface
+│   ├── mod.rs          # CLI entry point and exports
+│   └── commands/       # build, run, dev commands
+│
+└── core/               # Engine core modules
     ├── mod.rs          # Module declarations
     ├── engine.rs       # Main engine, game loop, ApplicationHandler
     ├── game.rs         # Game trait, GameContext
@@ -221,6 +226,7 @@ src/
     ├── ecs/            # Entity-Component-System (hecs wrapper)
     │   ├── mod.rs
     │   ├── world.rs    # World wrapper with helper methods
+    │   ├── component.rs # Component trait
     │   └── components.rs # Transform, Velocity, SpriteRenderer, RenderLayer
     │
     ├── physics.rs      # RigidBody, PhysicsConfig components
@@ -235,6 +241,15 @@ src/
     ├── asset.rs        # AssetManager, SpriteHandle, hot reload, async loading
     ├── audio.rs        # AudioManager (Kira), SoundHandle, MusicHandle
     ├── hot_reload.rs   # HotReloadWatcher, filesystem notifications
+    │
+    ├── scene.rs        # Scene trait, SceneManager, scene stack
+    ├── save.rs         # SaveManager, serialization, compression
+    ├── workspace.rs    # Workspace, Ryo.toml configuration
+    │
+    ├── ui/             # User interface primitives
+    │   ├── mod.rs
+    │   ├── font.rs     # Font rendering, text layout
+    │   └── types.rs    # Color, Rect, Anchor
     │
     └── error.rs        # Error types (EngineError, AssetError, etc.)
 ```
@@ -253,6 +268,10 @@ src/
 | `thiserror` | Ergonomic error types |
 | `glam` | Math types (Vec2, Vec3, Mat4) |
 | `crossbeam-channel` | Multi-producer channels for Rapier events |
+| `ron` | Rusty Object Notation for save data serialization |
+| `flate2` | Compression for save files |
+| `toml` | TOML parsing for configuration (Ryo.toml, Cargo.toml) |
+| `serde` | Serialization framework |
 
 ## Coordinate Systems
 
@@ -301,4 +320,185 @@ Rapier Space (meters)
                      │ Started/     │
                      │ Stopped      │
                      └──────────────┘
+```
+
+## Scene Management
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                          SceneManager                                     │
+│                                                                           │
+│  Scene Stack (Vec<Box<dyn Scene>>)                                        │
+│  ┌──────────────────────────────────────────────────────────────────┐     │
+│  │  [MenuScene]           ← Top (active, receives update/render)    │     │
+│  │  [GameScene]           ← Paused (not updated)                    │     │
+│  └──────────────────────────────────────────────────────────────────┘     │
+│                                                                           │
+│  Actions (processed after update):                                        │
+│  • Push(scene)    — Add new scene on top                                  │
+│  • Pop            — Remove current scene, resume previous                 │
+│  • Replace(scene) — Replace current scene with new one                    │
+│  • Clear          — Remove all scenes                                     │
+│                                                                           │
+│  Scene Lifecycle:                                                         │
+│  1. on_enter()    — Called when scene becomes active                      │
+│  2. update()      — Called every frame while active                       │
+│  3. render()      — Called every frame while active                       │
+│  4. on_exit()     — Called when scene is removed                          │
+└───────────────────────────────────────────────────────────────────────────┘
+
+Usage:
+  scene_manager.push(Box::new(MenuScene::new()));
+  scene_manager.replace(Box::new(GameScene::new(level)));
+```
+
+## Save System
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                           SaveManager                                     │
+│                                                                           │
+│  Save Directory: workspace.save_data_dir()                                │
+│  ┌──────────────────────────────────────────────────────────────────┐     │
+│  │  data/                                                           │     │
+│  │  ├── slot1.save     (compressed RON)                             │     │
+│  │  ├── slot2.save                                                  │     │
+│  │  └── system.save    (game settings, progress)                    │     │
+│  └──────────────────────────────────────────────────────────────────┘     │
+│                                                                           │
+│  Features:                                                                │
+│  • Named slots (e.g., "autosave", "slot1")                                │
+│  • Automatic compression (flate2/gzip)                                    │
+│  • Metadata (timestamp, version, description)                             │
+│  • RON serialization (human-readable, versionable)                        │
+│  • List/delete saves                                                      │
+│                                                                           │
+│  Types:                                                                   │
+│  • Game saves    — Full world state, entities, components                 │
+│  • System saves  — Settings, keybinds, preferences                        │
+│  • Raw saves     — Custom binary data                                     │
+└───────────────────────────────────────────────────────────────────────────┘
+
+Usage:
+  let save_mgr = workspace.create_save_manager()?;
+  save_mgr.save_game("slot1", &game_data)?;
+  let loaded = save_mgr.load_game::<GameData>("slot1")?;
+```
+
+## Workspace System
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                            Workspace                                      │
+│                                                                           │
+│  Project Structure:                                                       │
+│  ┌──────────────────────────────────────────────────────────────────┐     │
+│  │  my_game/                                                        │     │
+│  │  ├── Ryo.toml         (case-insensitive: ryo.toml also works)    │     │
+│  │  ├── Cargo.toml                                                  │     │
+│  │  ├── main.rs                                                     │     │
+│  │  ├── assets/          (sprites, sounds, etc.)                    │     │
+│  │  └── data/            (save files)                               │     │
+│  └──────────────────────────────────────────────────────────────────┘     │
+│                                                                           │
+│  Ryo.toml:                                                                │
+│  [project]                                                                │
+│  name = "My Game"                                                         │
+│                                                                           │
+│  [paths]                                                                  │
+│  entry_point = "main.rs"   # or "src/main.rs"                             │
+│  assets = "assets"                                                        │
+│  save_data = "data"                                                       │
+│                                                                           │
+│  Discovery:                                                               │
+│  • Workspace::discover() searches cwd and 3 parent directories            │
+│  • Used by CLI commands to find project root                              │
+│  • Provides canonical paths for assets, saves, etc.                       │
+└───────────────────────────────────────────────────────────────────────────┘
+
+Usage:
+  let workspace = Workspace::discover()?;
+  let assets_dir = workspace.assets_dir();
+  let save_manager = workspace.create_save_manager()?;
+```
+
+## CLI System
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                        ryo2d CLI Commands                                 │
+│                                                                           │
+│  ryo2d build                                                              │
+│  ├─► cargo build --release                                                │
+│  └─► Output: target/release/my_game                                       │
+│                                                                           │
+│  ryo2d run                                                                │
+│  ├─► Check: target/release/my_game exists?                                │
+│  ├─► Read Cargo.toml for binary name                                      │
+│  └─► Execute: ./target/release/my_game                                    │
+│                                                                           │
+│  ryo2d dev                                                                │
+│  ├─► cargo run (debug build)                                              │
+│  └─► (Future: file watching + hot reload)                                 │
+│                                                                           │
+│  Workflow Integration:                                                    │
+│  ├─► Workspace-aware (discovers Ryo.toml)                                 │
+│  ├─► Runs from any subdirectory                                           │
+│  └─► Uses Cargo for compilation                                           │
+└───────────────────────────────────────────────────────────────────────────┘
+
+Installation:
+  ./install.ps1  (Windows) or ./install.sh (Unix)
+  Copies/symlinks to ~/.ryo2d/bin/
+  Optionally adds to PATH
+```
+
+## UI System
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                         Immediate-Mode UI                                 │
+│                                                                           │
+│  Design Philosophy:                                                       │
+│  • Call draw functions each frame                                         │
+│  • No persistent widget state                                             │
+│  • Simple and predictable                                                 │
+│                                                                           │
+│  Components:                                                              │
+│  ┌──────────────────────────────────────────────────────────────────┐     │
+│  │  BitmapFont                                                      │     │
+│  │  ├── Embedded debug font (fixed-width)                           │     │
+│  │  ├── Character lookup and positioning                            │     │
+│  │  └── Text rendering with color                                   │     │
+│  └──────────────────────────────────────────────────────────────────┘     │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐     │
+│  │  UiContext (Drawing API)                                         │     │
+│  │  ├── draw_text(text, x, y, color)                                │     │
+│  │  ├── draw_rect(rect, color)                                      │     │
+│  │  ├── draw_bordered_rect(rect, fill, border)                      │     │
+│  │  ├── draw_progress_bar(rect, value, fill, bg)                    │     │
+│  │  └── button(label, rect) -> bool                                 │     │
+│  └──────────────────────────────────────────────────────────────────┘     │
+│                                                                           │
+│  Types:                                                                   │
+│  • Color   — RGBA with named constants (RED, GREEN, BLUE, etc.)           │
+│  • Rect    — Screen-space rectangle (x, y, width, height)                 │
+│  • Anchor  — Positioning helper (TopLeft, Center, BottomRight, etc.)      │
+│                                                                           │
+│  Use Cases:                                                               │
+│  • HUD elements (health bars, score display)                              │
+│  • Debug overlays (FPS counter, system info)                              │
+│  • Simple menus and buttons                                               │
+│  • Text rendering for gameplay                                            │
+└───────────────────────────────────────────────────────────────────────────┘
+
+Usage:
+  fn render_ui(&mut self, ui: &mut UiContext) {
+      ui.draw_text(&format!("Score: {}", score), 10.0, 10.0, Color::WHITE);
+      ui.draw_progress_bar(health_bar_rect, health / 100.0, Color::RED, Color::GRAY);
+      if ui.button("Pause", pause_button_rect) {
+          self.paused = true;
+      }
+  }
 ```
