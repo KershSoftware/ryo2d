@@ -4,6 +4,7 @@
 
 mod build;
 mod dev;
+mod init;
 mod run;
 
 use std::env;
@@ -105,6 +106,7 @@ pub fn run_cli() -> CliResult<()> {
   }
 
   match args[1].as_str() {
+    "init" => init::execute(&args[2..]),
     "build" => build::execute(&args[2..]),
     "run" => run::execute(&args[2..]),
     "dev" => dev::execute(&args[2..]),
@@ -132,7 +134,8 @@ ryo2d - Ryo2D Game Engine CLI
 USAGE:
     ryo2d <COMMAND>
 
-COMMANDS:
+COMMinit     Create a new Ryo2D project
+    ANDS:
     build    Build a production release
     run      Run the production build
     dev      Development mode (build + run with watching)
