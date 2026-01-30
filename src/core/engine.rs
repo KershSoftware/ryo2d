@@ -11,7 +11,8 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::camera::Camera;
-use super::collision::{Collider, ColliderShape};
+use super::collision::Collider;
+use super::debug::{self, DebugConfig};
 use super::ecs::{Entity, SpriteRenderer, Transform, Velocity, World};
 use super::error::{EngineError, EngineResult};
 use super::game::{Game, GameContext};
@@ -36,6 +37,8 @@ struct TimeState {
   target_frame_time: Duration,
   /// Frame counter for debugging
   frame_count: u64,
+  /// Last calculated FPS (updated each second)
+  current_fps: u64,
   /// Last time we printed debug info
   last_debug_print: Instant,
 }
@@ -50,6 +53,7 @@ impl TimeState {
       accumulator: Duration::ZERO,
       target_frame_time: Duration::from_secs_f64(1.0 / target_fps as f64),
       frame_count: 0,
+      current_fps: 0,
       last_debug_print: now,
     }
   }
@@ -94,10 +98,10 @@ impl TimeState {
   fn print_debug_info(&mut self) {
     let now = Instant::now();
     if now.duration_since(self.last_debug_print) >= Duration::from_secs(1) {
-      let fps = self.frame_count;
+      self.current_fps = self.frame_count;
       println!(
         "[GameLoop] FPS: {}, Delta: {:.2}ms, Fixed DT: {:.2}ms",
-        fps,
+        self.current_fps,
         self.delta_time.as_secs_f64() * 1000.0,
         self.fixed_timestep.as_secs_f64() * 1000.0
       );
@@ -116,15 +120,11 @@ pub struct EngineConfig {
   pub target_fps: u32,
   pub physics_hz: u32,
   pub physics: PhysicsConfig,
-  pub debug: EngineDebugConfig,
+  pub debug: DebugConfig,
 }
 
-/// Debug configuration for engine rendering
-#[derive(Debug, Clone, Default)]
-pub struct EngineDebugConfig {
-  /// Whether to render collision boundaries
-  pub show_colliders: bool,
-}
+/// Re-export for backward compatibility
+pub type EngineDebugConfig = DebugConfig;
 
 impl Default for EngineConfig {
   fn default() -> Self {
@@ -400,21 +400,29 @@ impl Engine {
       }
     }
 
-    // === Debug Rendering: Collision boundaries ===
+    // === Debug Rendering ===
     if self.config.debug.show_colliders {
-      render_collider_debug(
-        frame,
-        frame_width,
-        frame_height,
-        &self.world,
-        &self.camera,
-      );
+      debug::render_colliders(frame, frame_width, frame_height, &self.world, &self.camera);
+    }
+    if self.config.debug.show_velocities {
+      debug::render_velocities(frame, frame_width, frame_height, &self.world, &self.camera);
+    }
+    if self.config.debug.show_origins {
+      debug::render_origins(frame, frame_width, frame_height, &self.world, &self.camera);
     }
 
     // === UI Rendering ===
     // Call game's render_ui with UiContext for immediate-mode UI
     if let Some(mut game) = self.game.take() {
       let mut ui_ctx = UiContext::new(frame, frame_width, frame_height, &self.input, &self.ui_font);
+
+      // Render FPS counter if enabled
+      if self.config.debug.show_fps
+        && let Some(time) = &self.time
+      {
+        debug::render_fps_counter(&mut ui_ctx, time.current_fps);
+      }
+
       game.render_ui(&mut ui_ctx);
       self.game = Some(game);
     }
@@ -425,209 +433,6 @@ impl Engine {
       && alpha > 0.001
     {
       blend_overlay(frame, color, alpha);
-    }
-  }
-}
-
-/// Render collision debug visualization
-///
-/// Draws outlines around all entities with Collider components
-fn render_collider_debug(
-  frame: &mut [u8],
-  width: u32,
-  height: u32,
-  world: &World,
-  camera: &Camera,
-) {
-  // Color for debug outlines (bright green with some transparency)
-  let debug_color: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
-
-  // Iterate all entities with Transform and Collider
-  for entity in world.entities_with_two::<Transform, Collider>() {
-    let Some(transform) = world.get_component::<Transform>(entity) else {
-      continue;
-    };
-    let Some(collider) = world.get_component::<Collider>(entity) else {
-      continue;
-    };
-
-    // Calculate world position with offset
-    let world_x = transform.x + collider.offset_x;
-    let world_y = transform.y + collider.offset_y;
-
-    // Convert to screen position
-    let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
-
-    match &collider.shape {
-      ColliderShape::Box {
-        width: box_w,
-        height: box_h,
-      } => {
-        // Collider dimensions are already in world-space, only apply camera zoom
-        let scaled_w = (*box_w * camera.zoom) as i32;
-        let scaled_h = (*box_h * camera.zoom) as i32;
-        draw_rect_outline(
-          frame,
-          width,
-          height,
-          screen_x as i32,
-          screen_y as i32,
-          scaled_w,
-          scaled_h,
-          debug_color,
-        );
-      }
-      ColliderShape::Circle { radius } => {
-        // Collider radius is already in world-space, only apply camera zoom
-        let scaled_radius = (*radius * camera.zoom) as i32;
-        // The offset points to the center of the circle, so draw directly at screen position
-        draw_circle_outline(
-          frame,
-          width,
-          height,
-          screen_x as i32,
-          screen_y as i32,
-          scaled_radius,
-          debug_color,
-        );
-      }
-    }
-  }
-}
-
-/// Draw a rectangle outline (1px thick)
-fn draw_rect_outline(
-  frame: &mut [u8],
-  frame_width: u32,
-  frame_height: u32,
-  x: i32,
-  y: i32,
-  w: i32,
-  h: i32,
-  color: [u8; 4],
-) {
-  // Top edge
-  draw_horizontal_line(frame, frame_width, frame_height, x, y, w, color);
-  // Bottom edge
-  draw_horizontal_line(frame, frame_width, frame_height, x, y + h - 1, w, color);
-  // Left edge
-  draw_vertical_line(frame, frame_width, frame_height, x, y, h, color);
-  // Right edge
-  draw_vertical_line(frame, frame_width, frame_height, x + w - 1, y, h, color);
-}
-
-/// Draw a horizontal line
-#[inline]
-fn draw_horizontal_line(
-  frame: &mut [u8],
-  frame_width: u32,
-  frame_height: u32,
-  x: i32,
-  y: i32,
-  length: i32,
-  color: [u8; 4],
-) {
-  if y < 0 || y >= frame_height as i32 {
-    return;
-  }
-  // Calculate the visible portion of the line
-  let end_x_signed = x.saturating_add(length);
-  if end_x_signed <= 0 || x >= frame_width as i32 {
-    return; // Entirely off-screen
-  }
-  let start_x = x.max(0) as u32;
-  let end_x = (end_x_signed as u32).min(frame_width);
-  for px in start_x..end_x {
-    let idx = ((y as u32 * frame_width + px) * 4) as usize;
-    if idx + 3 < frame.len() {
-      frame[idx] = color[0];
-      frame[idx + 1] = color[1];
-      frame[idx + 2] = color[2];
-      frame[idx + 3] = color[3];
-    }
-  }
-}
-
-/// Draw a vertical line
-#[inline]
-fn draw_vertical_line(
-  frame: &mut [u8],
-  frame_width: u32,
-  frame_height: u32,
-  x: i32,
-  y: i32,
-  length: i32,
-  color: [u8; 4],
-) {
-  if x < 0 || x >= frame_width as i32 {
-    return;
-  }
-  // Calculate the visible portion of the line
-  let end_y_signed = y.saturating_add(length);
-  if end_y_signed <= 0 || y >= frame_height as i32 {
-    return; // Entirely off-screen
-  }
-  let start_y = y.max(0) as u32;
-  let end_y = (end_y_signed as u32).min(frame_height);
-  for py in start_y..end_y {
-    let idx = ((py * frame_width + x as u32) * 4) as usize;
-    if idx + 3 < frame.len() {
-      frame[idx] = color[0];
-      frame[idx + 1] = color[1];
-      frame[idx + 2] = color[2];
-      frame[idx + 3] = color[3];
-    }
-  }
-}
-
-/// Draw a circle outline using midpoint circle algorithm
-fn draw_circle_outline(
-  frame: &mut [u8],
-  frame_width: u32,
-  frame_height: u32,
-  cx: i32,
-  cy: i32,
-  radius: i32,
-  color: [u8; 4],
-) {
-  if radius <= 0 {
-    return;
-  }
-
-  let mut x = radius;
-  let mut y = 0;
-  let mut err = 0;
-
-  while x >= y {
-    // Draw 8 octants
-    set_pixel(frame, frame_width, frame_height, cx + x, cy + y, color);
-    set_pixel(frame, frame_width, frame_height, cx + y, cy + x, color);
-    set_pixel(frame, frame_width, frame_height, cx - y, cy + x, color);
-    set_pixel(frame, frame_width, frame_height, cx - x, cy + y, color);
-    set_pixel(frame, frame_width, frame_height, cx - x, cy - y, color);
-    set_pixel(frame, frame_width, frame_height, cx - y, cy - x, color);
-    set_pixel(frame, frame_width, frame_height, cx + y, cy - x, color);
-    set_pixel(frame, frame_width, frame_height, cx + x, cy - y, color);
-
-    y += 1;
-    err += 1 + 2 * y;
-    if 2 * (err - x) + 1 > 0 {
-      x -= 1;
-      err += 1 - 2 * x;
-    }
-  }
-}
-
-/// Set a single pixel (with bounds checking)
-#[inline]
-fn set_pixel(frame: &mut [u8], width: u32, height: u32, x: i32, y: i32, color: [u8; 4]) {
-  if x >= 0 && x < width as i32 && y >= 0 && y < height as i32 {
-    let idx = ((y as u32 * width + x as u32) * 4) as usize;
-    if idx + 3 < frame.len() {
-      frame[idx] = color[0];
-      frame[idx + 1] = color[1];
-      frame[idx + 2] = color[2];
-      frame[idx + 3] = color[3];
     }
   }
 }
@@ -859,6 +664,30 @@ impl EngineBuilder {
     self
   }
 
+  /// Enable or disable FPS counter display.
+  ///
+  /// When enabled, renders an FPS counter in the top-left corner.
+  pub fn show_fps(mut self, enabled: bool) -> Self {
+    self.config.debug.show_fps = enabled;
+    self
+  }
+
+  /// Enable or disable velocity vector visualization.
+  ///
+  /// When enabled, renders cyan arrows showing entity velocities.
+  pub fn show_velocities(mut self, enabled: bool) -> Self {
+    self.config.debug.show_velocities = enabled;
+    self
+  }
+
+  /// Enable or disable entity origin visualization.
+  ///
+  /// When enabled, renders yellow crosshairs at entity transform positions.
+  pub fn show_origins(mut self, enabled: bool) -> Self {
+    self.config.debug.show_origins = enabled;
+    self
+  }
+
   /// Load debug settings from the workspace's Ryo.toml file.
   ///
   /// This reads the `[debug]` section from the project's configuration
@@ -877,7 +706,11 @@ impl EngineBuilder {
   /// ```
   pub fn with_workspace_debug(mut self) -> Self {
     if let Ok(workspace) = super::workspace::Workspace::discover() {
-      self.config.debug.show_colliders = workspace.config().debug.show_colliders;
+      let debug = &workspace.config().debug;
+      self.config.debug.show_colliders = debug.show_colliders;
+      self.config.debug.show_fps = debug.show_fps;
+      self.config.debug.show_velocities = debug.show_velocities;
+      self.config.debug.show_origins = debug.show_origins;
     }
     self
   }

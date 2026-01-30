@@ -71,13 +71,24 @@ pub struct WorkspaceConfig {
   pub assets: PathBuf,
   /// Debug configuration options
   pub debug: DebugConfig,
+  /// Game-specific environment variables from [env] section
+  pub env: std::collections::HashMap<String, toml::Value>,
 }
 
 /// Debug configuration options for development.
+///
+/// See [`crate::core::debug::DebugConfig`] for the engine-level config.
+/// This struct mirrors those options for TOML deserialization.
 #[derive(Debug, Clone, Default)]
 pub struct DebugConfig {
   /// Whether to render collision boundaries
   pub show_colliders: bool,
+  /// Whether to display FPS counter in corner
+  pub show_fps: bool,
+  /// Whether to draw velocity vectors on physics entities
+  pub show_velocities: bool,
+  /// Whether to draw entity origin points
+  pub show_origins: bool,
 }
 
 /// Raw TOML structure for deserialization
@@ -86,6 +97,9 @@ struct RyoToml {
   project: Option<ProjectSection>,
   paths: Option<PathsSection>,
   debug: Option<DebugSection>,
+  /// Game-specific environment variables (arbitrary key-value pairs)
+  #[serde(default)]
+  env: std::collections::HashMap<String, toml::Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -103,6 +117,9 @@ struct PathsSection {
 #[derive(Debug, Deserialize, Default)]
 struct DebugSection {
   show_colliders: Option<bool>,
+  show_fps: Option<bool>,
+  show_velocities: Option<bool>,
+  show_origins: Option<bool>,
 }
 
 impl Workspace {
@@ -245,7 +262,13 @@ impl Workspace {
     // Debug config
     let debug = DebugConfig {
       show_colliders: debug_section.show_colliders.unwrap_or(false),
+      show_fps: debug_section.show_fps.unwrap_or(false),
+      show_velocities: debug_section.show_velocities.unwrap_or(false),
+      show_origins: debug_section.show_origins.unwrap_or(false),
     };
+
+    // Game-specific env (pass through as-is)
+    let env = raw.env;
 
     Ok(WorkspaceConfig {
       name,
@@ -253,6 +276,7 @@ impl Workspace {
       save_data,
       assets,
       debug,
+      env,
     })
   }
 
@@ -356,7 +380,69 @@ impl Default for WorkspaceConfig {
       save_data: PathBuf::from("data"),
       assets: PathBuf::from("assets"),
       debug: DebugConfig::default(),
+      env: std::collections::HashMap::new(),
     }
+  }
+}
+
+impl WorkspaceConfig {
+  /// Get an environment variable as a string.
+  ///
+  /// Returns `None` if the key doesn't exist or isn't a string.
+  ///
+  /// # Example
+  ///
+  /// ```toml
+  /// [env]
+  /// game_mode = "debug"
+  /// ```
+  ///
+  /// ```rust,ignore
+  /// if config.env_str("game_mode") == Some("debug") {
+  ///     // Enable debug features
+  /// }
+  /// ```
+  pub fn env_str(&self, key: &str) -> Option<&str> {
+    self.env.get(key).and_then(|v| v.as_str())
+  }
+
+  /// Get an environment variable as a boolean.
+  ///
+  /// Returns `None` if the key doesn't exist or isn't a boolean.
+  ///
+  /// # Example
+  ///
+  /// ```toml
+  /// [env]
+  /// debug_scene = true
+  /// ```
+  ///
+  /// ```rust,ignore
+  /// if config.env_bool("debug_scene").unwrap_or(false) {
+  ///     // Start with debug scene
+  /// }
+  /// ```
+  pub fn env_bool(&self, key: &str) -> Option<bool> {
+    self.env.get(key).and_then(|v| v.as_bool())
+  }
+
+  /// Get an environment variable as an integer.
+  ///
+  /// Returns `None` if the key doesn't exist or isn't an integer.
+  pub fn env_int(&self, key: &str) -> Option<i64> {
+    self.env.get(key).and_then(|v| v.as_integer())
+  }
+
+  /// Get an environment variable as a float.
+  ///
+  /// Returns `None` if the key doesn't exist or isn't a float.
+  pub fn env_float(&self, key: &str) -> Option<f64> {
+    self.env.get(key).and_then(|v| v.as_float())
+  }
+
+  /// Check if an environment variable exists.
+  pub fn has_env(&self, key: &str) -> bool {
+    self.env.contains_key(key)
   }
 }
 
@@ -372,6 +458,31 @@ mod tests {
     assert_eq!(config.entry_point, PathBuf::from("src/main.rs"));
     assert_eq!(config.save_data, PathBuf::from("data"));
     assert_eq!(config.assets, PathBuf::from("assets"));
+    assert!(config.env.is_empty());
+  }
+
+  #[test]
+  fn workspace_config_env_helpers() {
+    let mut config = WorkspaceConfig::default();
+    config
+      .env
+      .insert("debug_scene".to_string(), toml::Value::Boolean(true));
+    config
+      .env
+      .insert("level".to_string(), toml::Value::Integer(5));
+    config
+      .env
+      .insert("name".to_string(), toml::Value::String("test".to_string()));
+    config
+      .env
+      .insert("speed".to_string(), toml::Value::Float(1.5));
+
+    assert_eq!(config.env_bool("debug_scene"), Some(true));
+    assert_eq!(config.env_int("level"), Some(5));
+    assert_eq!(config.env_str("name"), Some("test"));
+    assert_eq!(config.env_float("speed"), Some(1.5));
+    assert!(config.has_env("debug_scene"));
+    assert!(!config.has_env("nonexistent"));
   }
 
   #[test]

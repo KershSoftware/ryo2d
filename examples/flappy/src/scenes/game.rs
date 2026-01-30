@@ -18,9 +18,6 @@ pub struct GameScene {
   bird: Option<Entity>,
   pipes: Vec<Entity>,
   ground_entities: Vec<Entity>,
-
-  // Scoring
-  last_scored_pipe_x: f32,
 }
 
 impl GameScene {
@@ -32,7 +29,6 @@ impl GameScene {
       bird: None,
       pipes: Vec::new(),
       ground_entities: Vec::new(),
-      last_scored_pipe_x: -1000.0,
     }
   }
 
@@ -123,7 +119,8 @@ impl GameScene {
     };
 
     // Get bird component and check input
-    let should_flap = ctx.input.key_pressed(KeyCode::Space);
+    let should_flap =
+      ctx.input.key_pressed(KeyCode::Space) || ctx.input.mouse_pressed(MouseButton::Left);
     let velocity_y = {
       let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) else {
         return;
@@ -231,27 +228,25 @@ impl GameScene {
       if let Some(bird_transform) = ctx.world.get::<Transform>(bird_entity) {
         let bird_x = bird_transform.x;
 
-        // Find the leftmost pipe pair that hasn't been scored
-        let mut pipe_x_to_score = None;
+        // Find any pipe pair that hasn't been scored and has been passed
+        let mut scored_this_frame = false;
         for &pipe_entity in &self.pipes {
           if let Some(pipe_transform) = ctx.world.get::<Transform>(pipe_entity) {
             let pipe_x = pipe_transform.x;
-            if pipe_x < bird_x && pipe_x > self.last_scored_pipe_x {
+            // Check if pipe's right edge has passed the bird's position
+            if pipe_x + PIPE_WIDTH < bird_x {
               if let Some(mut pipe) = ctx.world.get_mut::<Pipe>(pipe_entity) {
                 if !pipe.has_scored {
                   pipe.has_scored = true;
-                  if pipe_x_to_score.is_none() || pipe_x > pipe_x_to_score.unwrap() {
-                    pipe_x_to_score = Some(pipe_x);
+                  // Only count score once per pipe pair (both top and bottom share same x)
+                  if !scored_this_frame {
+                    scored_this_frame = true;
+                    self.score += 1;
                   }
                 }
               }
             }
           }
-        }
-
-        if let Some(pipe_x) = pipe_x_to_score {
-          self.last_scored_pipe_x = pipe_x;
-          self.score += 1;
         }
       }
     }
@@ -307,7 +302,7 @@ impl Scene for GameScene {
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Start game on first input
     if !self.game_started {
-      if ctx.input.key_pressed(KeyCode::Space) {
+      if ctx.input.key_pressed(KeyCode::Space) || ctx.input.mouse_pressed(MouseButton::Left) {
         self.game_started = true;
         if let Some(bird_entity) = self.bird {
           if let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) {
@@ -351,9 +346,11 @@ impl Scene for GameScene {
     // Pre-game instructions
     if !self.game_started {
       let (screen_w, screen_h) = ui.screen_size();
+      let text = "Press SPACE or CLICK to start";
+      let (text_w, _) = ui.text_size(text);
       ui.draw_text(
-        "Press SPACE to start",
-        screen_w as f32 / 2.0 - 80.0,
+        text,
+        screen_w as f32 / 2.0 - text_w as f32 / 2.0,
         screen_h as f32 / 2.0,
         Color::WHITE,
       );

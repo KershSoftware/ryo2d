@@ -31,14 +31,25 @@ use flappy::prelude::*;
 use ryo2d::prelude::*;
 
 fn main() {
-  let engine = EngineBuilder::new()
+  // Check if debug_scene is enabled in Ryo.toml [env] section
+  let start_debug = Workspace::discover()
+    .ok()
+    .and_then(|ws| ws.config().env_bool("debug_scene"))
+    .unwrap_or(false);
+
+  let builder = EngineBuilder::new()
     .title("Flappy Bird - Ryo2D Demo")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
     .fps(60)
     .physics_hz(120)
-    .with_workspace_debug() // Load debug settings from Ryo.toml
-    .with_scene(MenuScene::new())
-    .build();
+    .with_workspace_debug(); // Load debug settings from Ryo.toml
+
+  // Start with debug scene or menu based on env config
+  let engine = if start_debug {
+    builder.with_scene(DebugScene::new()).build()
+  } else {
+    builder.with_scene(MenuScene::new()).build()
+  };
 
   if let Err(e) = engine.run() {
     eprintln!("Engine error: {}", e);

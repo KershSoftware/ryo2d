@@ -518,9 +518,12 @@ impl RapierPhysicsWorld {
     let Some(&collider_b) = self.entity_to_collider.get(&entity_b) else {
       return false;
     };
-    
+
     // Check if there's a contact pair in the narrow phase
-    self.narrow_phase.contact_pair(collider_a, collider_b).is_some()
+    self
+      .narrow_phase
+      .contact_pair(collider_a, collider_b)
+      .is_some()
   }
 
   /// Check if an entity is currently intersecting with any other entity
@@ -532,7 +535,7 @@ impl RapierPhysicsWorld {
     };
 
     let mut intersecting = Vec::new();
-    
+
     // Iterate all contact pairs involving this collider
     for contact_pair in self.narrow_phase.contact_pairs_with(collider_handle) {
       let other_handle = if contact_pair.collider1 == collider_handle {
@@ -540,7 +543,7 @@ impl RapierPhysicsWorld {
       } else {
         contact_pair.collider1
       };
-      
+
       if let Some(&other_entity) = self.collider_to_entity.get(&other_handle) {
         // Check if there are actual contact points (not just AABB overlap)
         if contact_pair.has_any_active_contact {
@@ -548,7 +551,7 @@ impl RapierPhysicsWorld {
         }
       }
     }
-    
+
     intersecting
   }
 

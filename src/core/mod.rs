@@ -4,6 +4,7 @@ pub mod asset;
 pub mod audio;
 pub mod camera;
 pub mod collision;
+pub mod debug;
 pub mod ecs;
 pub mod engine;
 pub mod error;

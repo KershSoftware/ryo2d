@@ -11,14 +11,22 @@ pub struct MenuScene {
   high_score: u32,
   start_clicked: bool,
   debug_clicked: bool,
+  debug_enabled: bool,
 }
 
 impl MenuScene {
   pub fn new() -> Self {
+    // Check if debug mode is enabled in Ryo.toml
+    let debug_enabled = Workspace::discover()
+      .ok()
+      .and_then(|ws| ws.config().env_bool("debug_scene"))
+      .unwrap_or(false);
+
     Self {
       high_score: load_high_score(),
       start_clicked: false,
       debug_clicked: false,
+      debug_enabled,
     }
   }
 }
@@ -50,8 +58,8 @@ impl Scene for MenuScene {
       );
     }
 
-    // Debug mode on D key or debug button click
-    if ctx.input.key_pressed(KeyCode::KeyD) || self.debug_clicked {
+    // Debug mode on D key or debug button click (only if enabled)
+    if self.debug_enabled && (ctx.input.key_pressed(KeyCode::KeyD) || self.debug_clicked) {
       self.debug_clicked = false;
       return SceneAction::SwitchWith(
         Box::new(DebugScene::new()),
@@ -99,28 +107,36 @@ impl Scene for MenuScene {
       self.start_clicked = true;
     }
 
-    // Debug button (smaller, below start)
-    let debug_button_w = 120.0;
-    let debug_button_h = 40.0;
-    let debug_button_x = screen_w as f32 / 2.0 - debug_button_w / 2.0;
-    let debug_button_y = button_y + button_h + 20.0;
+    // Debug button (smaller, below start) - only if debug mode enabled
+    if self.debug_enabled {
+      let debug_button_w = 120.0;
+      let debug_button_h = 40.0;
+      let debug_button_x = screen_w as f32 / 2.0 - debug_button_w / 2.0;
+      let debug_button_y = button_y + button_h + 20.0;
 
-    if ui.button(
-      "DEBUG",
-      Rect::new(
-        debug_button_x,
-        debug_button_y,
-        debug_button_w,
-        debug_button_h,
-      ),
-    ) {
-      self.debug_clicked = true;
+      if ui.button(
+        "DEBUG",
+        Rect::new(
+          debug_button_x,
+          debug_button_y,
+          debug_button_w,
+          debug_button_h,
+        ),
+      ) {
+        self.debug_clicked = true;
+      }
     }
 
     // Instructions
+    let instructions = if self.debug_enabled {
+      "Press SPACE or CLICK to flap | D for debug"
+    } else {
+      "Press SPACE or CLICK to flap"
+    };
+    let (text_w, _) = ui.text_size(instructions);
     ui.draw_text(
-      "Press SPACE to flap | D for debug",
-      screen_w as f32 / 2.0 - 120.0,
+      instructions,
+      screen_w as f32 / 2.0 - text_w as f32 / 2.0,
       screen_h as f32 - 100.0,
       Color::rgb(100, 100, 100),
     );

@@ -14,4 +14,15 @@ assets = "assets"
 
 [debug]
 # Show collision boundaries for debugging
-show_colliders = true
+show_colliders = false
+# Display FPS counter in corner
+show_fps = false
+# Show velocity vectors (useful for physics debugging)
+show_velocities = false
+# Show entity origin points
+show_origins = false
+
+[env]
+# Game-specific configuration (not engine features)
+# Set to true to start with the debug scene instead of menu
+debug_scene = false

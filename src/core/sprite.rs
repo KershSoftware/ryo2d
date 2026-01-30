@@ -153,6 +153,7 @@ impl Sprite {
   ///
   /// Uses nearest-neighbor sampling for crisp pixel-art scaling.
   /// Allows different scale factors for x and y axes.
+  #[allow(clippy::too_many_arguments)]
   pub fn draw_scaled_xy(
     &self,
     frame: &mut [u8],
