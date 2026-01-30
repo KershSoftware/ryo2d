@@ -35,13 +35,8 @@ get_examples() {
                 local name=$(basename "$dir")
                 local main_rs="$dir/main.rs"
                 
-                # Check for config file (Ryo.toml or ryo.toml)
-                local ryo_toml=""
-                if [[ -f "$dir/Ryo.toml" ]]; then
-                    ryo_toml="$dir/Ryo.toml"
-                elif [[ -f "$dir/ryo.toml" ]]; then
-                    ryo_toml="$dir/ryo.toml"
-                fi
+                # Check for config file (case-insensitive)
+                local ryo_toml=$(find "$dir" -maxdepth 1 -iname "ryo.toml" -type f | head -1)
                 
                 # Check if it's a valid example (has main.rs)
                 if [[ -f "$main_rs" ]]; then
@@ -73,13 +68,8 @@ get_display_names() {
                 local name=$(basename "$dir")
                 local main_rs="$dir/main.rs"
                 
-                # Check for config file (Ryo.toml or ryo.toml)
-                local ryo_toml=""
-                if [[ -f "$dir/Ryo.toml" ]]; then
-                    ryo_toml="$dir/Ryo.toml"
-                elif [[ -f "$dir/ryo.toml" ]]; then
-                    ryo_toml="$dir/ryo.toml"
-                fi
+                # Check for config file (case-insensitive)
+                local ryo_toml=$(find "$dir" -maxdepth 1 -iname "ryo.toml" -type f | head -1)
                 
                 if [[ -f "$main_rs" ]]; then
                     local display_name="$name"

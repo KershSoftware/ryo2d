@@ -7,7 +7,7 @@
 //!
 //! # Configuration File
 //!
-//! The `Ryo.toml` file configures project settings (also accepts `ryo.toml`):
+//! The `Ryo.toml` file (case-insensitive) configures project settings:
 //!
 //! ```toml
 //! [project]
@@ -40,11 +40,8 @@ use std::path::{Path, PathBuf};
 
 use super::error::EngineError;
 
-/// The primary configuration filename (matches Cargo.toml naming convention)
+/// Configuration filename (case-insensitive on lookup)
 pub const CONFIG_FILENAME: &str = "Ryo.toml";
-
-/// Alternative configuration filename (case-insensitive fallback)
-const CONFIG_FILENAME_ALT: &str = "ryo.toml";
 
 /// Maximum directory levels to search upward for config
 const MAX_SEARCH_DEPTH: usize = 3;
@@ -111,13 +108,13 @@ impl Workspace {
 
   /// Discover workspace starting from a specific directory.
   ///
-  /// Searches the given directory and up to 3 parent directories.
-  /// Checks for both `Ryo.toml` and `ryo.toml` (case-insensitive).
+  /// Searches the given directory and up to 3 parent directories
+  /// for `Ryo.toml` (case-insensitive).
   pub fn discover_from(start: &Path) -> Result<Self, EngineError> {
     let mut current = start.to_path_buf();
 
     for _ in 0..MAX_SEARCH_DEPTH {
-      // Check for config file (case-insensitive: Ryo.toml or ryo.toml)
+      // Check for config file (case-insensitive)
       if let Some(config_path) = Self::find_config_file(&current) {
         return Self::from_path_with_config(&current, &config_path);
       }
@@ -134,16 +131,24 @@ impl Workspace {
 
   /// Find the config file in a directory (case-insensitive).
   ///
-  /// Checks for `Ryo.toml` first, then `ryo.toml`.
+  /// Searches for a file matching `CONFIG_FILENAME` case-insensitively.
   fn find_config_file(dir: &Path) -> Option<PathBuf> {
-    let primary = dir.join(CONFIG_FILENAME);
-    if primary.exists() {
-      return Some(primary);
+    // Fast path: exact match
+    let exact = dir.join(CONFIG_FILENAME);
+    if exact.exists() {
+      return Some(exact);
     }
 
-    let alt = dir.join(CONFIG_FILENAME_ALT);
-    if alt.exists() {
-      return Some(alt);
+    // Case-insensitive search
+    let target_lower = CONFIG_FILENAME.to_lowercase();
+    if let Ok(entries) = fs::read_dir(dir) {
+      for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str()
+          && name.to_lowercase() == target_lower
+        {
+          return Some(entry.path());
+        }
+      }
     }
 
     None
@@ -151,7 +156,7 @@ impl Workspace {
 
   /// Load workspace from an explicit path.
   ///
-  /// If `Ryo.toml` or `ryo.toml` exists in the directory, it will be parsed.
+  /// If `Ryo.toml` exists in the directory (case-insensitive), it will be parsed.
   /// Otherwise, default settings are used.
   pub fn from_path(root: impl AsRef<Path>) -> Result<Self, EngineError> {
     let root = root.as_ref().to_path_buf();
@@ -286,7 +291,7 @@ impl Workspace {
     self.root.join(&self.config.assets)
   }
 
-  /// Check if a `Ryo.toml` or `ryo.toml` config file exists in the workspace.
+  /// Check if a `Ryo.toml` config file exists in the workspace (case-insensitive).
   pub fn has_config_file(&self) -> bool {
     Self::find_config_file(&self.root).is_some()
   }

@@ -33,11 +33,11 @@ function Get-Examples {
     
     if (Test-Path $examplesDir) {
         Get-ChildItem -Path $examplesDir -Directory | ForEach-Object {
-            # Check for config file (case-insensitive: Ryo.toml or ryo.toml)
-            $ryoToml = Join-Path $_.FullName "Ryo.toml"
-            if (-not (Test-Path $ryoToml)) {
-                $ryoToml = Join-Path $_.FullName "ryo.toml"
-            }
+            # Check for config file (case-insensitive)
+            $ryoToml = Get-ChildItem -Path $_.FullName -Filter "*.toml" | 
+                Where-Object { $_.Name -ieq "Ryo.toml" } | 
+                Select-Object -First 1 -ExpandProperty FullName
+            
             $mainRs = Join-Path $_.FullName "main.rs"
             
             # Check if it's a valid example (has main.rs)
