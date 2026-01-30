@@ -28,6 +28,7 @@
 use std::time::Duration;
 
 use super::asset::AssetManager;
+use super::audio::AudioManager;
 use super::camera::Camera;
 use super::ecs::World;
 use super::input::InputState;
@@ -46,6 +47,8 @@ pub struct SceneContext<'a> {
   pub input: &'a InputState,
   /// Asset manager for loading and caching resources
   pub assets: &'a mut AssetManager,
+  /// Audio manager for sound effects and music (None if audio unavailable)
+  pub audio: &'a mut Option<AudioManager>,
   /// Collision events from the last physics step
   pub collision_events: &'a [PhysicsCollisionEvent],
 }
@@ -827,6 +830,20 @@ impl SceneManager {
   pub fn scene_names(&self) -> Vec<&str> {
     self.scenes.iter().map(|s| s.name()).collect()
   }
+
+  /// Check if physics should be paused based on scene stack.
+  ///
+  /// Physics is paused when there's more than one scene and the top scene
+  /// doesn't allow updates below (e.g., a pause menu blocking the game).
+  pub fn is_physics_paused(&self) -> bool {
+    if self.scenes.len() > 1 {
+      // If top scene doesn't update below, physics should pause
+      if let Some(top) = self.scenes.last() {
+        return !top.updates_below();
+      }
+    }
+    false
+  }
 }
 
 impl Default for SceneManager {
@@ -877,6 +894,8 @@ pub struct SceneGame {
   manager: SceneManager,
   /// Whether the initial scene has been entered
   initialized: bool,
+  /// Whether a scene requested to quit
+  quit_requested: bool,
 }
 
 impl SceneGame {
@@ -885,6 +904,7 @@ impl SceneGame {
     SceneGame {
       manager: SceneManager::with_scene(initial_scene),
       initialized: false,
+      quit_requested: false,
     }
   }
 
@@ -907,6 +927,7 @@ impl Game for SceneGame {
       camera: ctx.camera,
       input: ctx.input,
       assets: ctx.assets,
+      audio: ctx.audio,
       collision_events: ctx.collision_events,
     };
 
@@ -924,6 +945,7 @@ impl Game for SceneGame {
       camera: ctx.camera,
       input: ctx.input,
       assets: ctx.assets,
+      audio: ctx.audio,
       collision_events: ctx.collision_events,
     };
 
@@ -933,7 +955,10 @@ impl Game for SceneGame {
     // Only update scenes if not in the middle of a transition
     if !self.manager.is_transitioning() {
       let action = self.manager.update(&mut scene_ctx, dt);
-      self.manager.handle_action(action, &mut scene_ctx);
+      let should_continue = self.manager.handle_action(action, &mut scene_ctx);
+      if !should_continue {
+        self.quit_requested = true;
+      }
     }
   }
 
@@ -952,6 +977,16 @@ impl Game for SceneGame {
 
   fn render_ui(&mut self, ui: &mut UiContext) {
     self.manager.render_ui(ui);
+  }
+
+  fn is_physics_paused(&self) -> bool {
+    // Physics is paused when the top scene doesn't update below
+    // (e.g., a pause menu that blocks the game scene)
+    self.manager.is_physics_paused()
+  }
+
+  fn should_quit(&self) -> bool {
+    self.quit_requested
   }
 }
 

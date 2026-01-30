@@ -1,0 +1,18 @@
+# Breakout Level 1 - Classic Layout
+# Format: Each character represents a block
+# . = empty space
+# R = red block (1 hit)
+# O = orange block (1 hit)
+# Y = yellow block (1 hit)
+# G = green block (1 hit)
+# B = blue block (1 hit)
+# P = purple block (1 hit)
+# W = white block (2 hits - sturdy)
+# S = silver block (3 hits - strong)
+
+WWWWWWWWWWWW
+OOOOOOOOOOOO
+YYYYYYYYYYYY
+GGGGGGGGGGGG
+BBBBBBBBBBBB
+PPPPPPPPPPPP

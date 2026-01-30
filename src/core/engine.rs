@@ -9,6 +9,7 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::asset::AssetManager;
+use super::audio::AudioManager;
 use super::camera::Camera;
 use super::collision::Collider;
 use super::ecs::{Entity, SpriteRenderer, Transform, Velocity, World};
@@ -143,6 +144,8 @@ pub struct Engine {
   camera: Camera,
   // Asset manager for loading and caching resources
   assets: AssetManager,
+  // Audio manager for sound effects and music
+  audio: Option<AudioManager>,
   // User-defined game logic (Option to allow taking ownership temporarily)
   game: Option<Box<dyn Game>>,
   // Whether init has been called
@@ -169,6 +172,18 @@ impl Engine {
     let assets = AssetManager::new();
     let ui_font = create_debug_font();
 
+    // Try to initialize audio (gracefully handle no audio device)
+    let audio = match AudioManager::new() {
+      Ok(manager) => Some(manager),
+      Err(e) => {
+        eprintln!(
+          "Warning: Could not initialize audio: {}. Continuing without sound.",
+          e
+        );
+        None
+      }
+    };
+
     Engine {
       config,
       window: None,
@@ -178,6 +193,7 @@ impl Engine {
       world,
       camera,
       assets,
+      audio,
       game: Some(game),
       initialized: false,
       render_cache: Vec::new(),
@@ -212,6 +228,7 @@ impl Engine {
         camera: &mut self.camera,
         input: &self.input,
         assets: &mut self.assets,
+        audio: &mut self.audio,
         collision_events: self.physics.get_collision_events(),
       };
 
@@ -225,7 +242,30 @@ impl Engine {
       self.render_cache_dirty = true;
     }
 
+    // Check if physics should be paused
+    let physics_paused = self
+      .game
+      .as_ref()
+      .map(|g| g.is_physics_paused())
+      .unwrap_or(false);
+
     // === Physics System (Rapier2D) ===
+    // Skip physics simulation if game requests pause
+    if physics_paused {
+      return;
+    }
+
+    // Auto-unregister despawned entities from physics
+    // (entities that were registered but no longer exist in the ECS world)
+    let stale_physics_entities: Vec<Entity> = self
+      .physics
+      .registered_entities()
+      .filter(|&e| !self.world.contains(e))
+      .collect();
+
+    for entity in stale_physics_entities {
+      self.physics.unregister_entity(entity);
+    }
 
     // Auto-register any new physics entities (RigidBody + Collider + Transform)
     let physics_entities: Vec<Entity> = self
@@ -409,6 +449,7 @@ impl ApplicationHandler for Engine {
           camera: &mut self.camera,
           input: &self.input,
           assets: &mut self.assets,
+          audio: &mut self.audio,
           collision_events: &[], // No physics events during init
         };
         game.init(&mut ctx);
@@ -474,8 +515,11 @@ impl ApplicationHandler for Engine {
           }
         }
 
-        // Clear per-frame input state AFTER update has read it
-        self.input.begin_frame();
+        // Check if game wants to quit
+        if self.game.as_ref().map(|g| g.should_quit()).unwrap_or(false) {
+          event_loop.exit();
+          return;
+        }
 
         // Render with interpolation alpha
         let alpha = self
@@ -505,6 +549,9 @@ impl ApplicationHandler for Engine {
             std::thread::sleep(time.target_frame_time - frame_time);
           }
         }
+
+        // Clear per-frame input state at END of frame (after update and render_ui have read it)
+        self.input.begin_frame();
       }
       _ => {}
     }

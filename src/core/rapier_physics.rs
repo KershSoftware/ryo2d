@@ -134,6 +134,13 @@ impl RapierPhysicsWorld {
     self.entity_to_body.contains_key(&entity)
   }
 
+  /// Iterate over all registered entities
+  ///
+  /// Useful for cleanup when checking which entities have been despawned.
+  pub fn registered_entities(&self) -> impl Iterator<Item = Entity> + '_ {
+    self.entity_to_body.keys().copied()
+  }
+
   /// Register an ECS entity with the physics world
   ///
   /// Call this when spawning entities with RigidBody + Collider + Transform.

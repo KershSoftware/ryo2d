@@ -8,7 +8,7 @@
 //! - Background music with looping and crossfading
 
 use kira::{
-  AudioManager as KiraAudioManager, AudioManagerSettings, Tween,
+  AudioManager as KiraAudioManager, AudioManagerSettings, Decibels, Tween,
   sound::{
     FromFileError, PlaybackState,
     static_sound::{StaticSoundData, StaticSoundHandle, StaticSoundSettings},
@@ -25,6 +25,16 @@ use crate::core::error::{AudioError, AudioResult};
 impl From<FromFileError> for AudioError {
   fn from(err: FromFileError) -> Self {
     AudioError::LoadError(format!("{}", err))
+  }
+}
+
+/// Convert linear amplitude (0.0 - 1.0) to decibels
+fn amplitude_to_db(amplitude: f32) -> Decibels {
+  if amplitude <= 0.0 {
+    Decibels::SILENCE
+  } else {
+    // dB = 20 * log10(amplitude)
+    Decibels(20.0 * amplitude.log10())
   }
 }
 
@@ -51,9 +61,10 @@ impl SoundHandle {
   }
 
   /// Set the volume (0.0 = silent, 1.0 = full volume)
-  /// Note: Uses linear amplitude, not decibels
   pub fn set_volume(&mut self, volume: f32) {
-    self.handle.set_volume(volume, Tween::default());
+    self
+      .handle
+      .set_volume(amplitude_to_db(volume), Tween::default());
   }
 
   /// Set the stereo panning (-1.0 = left, 0.0 = center, 1.0 = right)
@@ -109,7 +120,9 @@ impl MusicHandle {
 
   /// Set the volume (0.0 = silent, 1.0 = full volume)
   pub fn set_volume(&mut self, volume: f32) {
-    self.handle.set_volume(volume, Tween::default());
+    self
+      .handle
+      .set_volume(amplitude_to_db(volume), Tween::default());
   }
 
   /// Set the stereo panning (-1.0 = left, 0.0 = center, 1.0 = right)
@@ -134,7 +147,7 @@ impl MusicHandle {
   /// Use this for smooth volume transitions, like fading out before stopping.
   pub fn fade_to(&mut self, target_volume: f32, duration: Duration) {
     self.handle.set_volume(
-      target_volume,
+      amplitude_to_db(target_volume),
       Tween {
         duration,
         ..Default::default()
@@ -148,7 +161,6 @@ impl MusicHandle {
   pub fn fade_in(&mut self, target_volume: f32, duration: Duration) {
     self.fade_to(target_volume, duration);
   }
-
   /// Fade out to silence over a duration
   ///
   /// The music will continue playing at volume 0. Call `stop()` after
@@ -229,7 +241,8 @@ impl AudioManager {
       .ok_or_else(|| AudioError::NotFound(name.to_string()))?
       .clone();
 
-    let settings = StaticSoundSettings::default().volume(self.effective_sfx_volume());
+    let volume_db = amplitude_to_db(self.effective_sfx_volume());
+    let settings = StaticSoundSettings::default().volume(volume_db);
     let sound_with_settings = sound_data.with_settings(settings);
 
     let handle = self
@@ -249,7 +262,8 @@ impl AudioManager {
       .clone();
 
     let final_volume = self.effective_sfx_volume() * volume;
-    let settings = StaticSoundSettings::default().volume(final_volume);
+    let volume_db = amplitude_to_db(final_volume);
+    let settings = StaticSoundSettings::default().volume(volume_db);
     let sound_with_settings = sound_data.with_settings(settings);
 
     let handle = self
@@ -273,8 +287,9 @@ impl AudioManager {
       .ok_or_else(|| AudioError::NotFound(name.to_string()))?
       .clone();
 
+    let volume_db = amplitude_to_db(self.effective_sfx_volume());
     let settings = StaticSoundSettings::default()
-      .volume(self.effective_sfx_volume())
+      .volume(volume_db)
       .panning(pan.clamp(-1.0, 1.0));
     let sound_with_settings = sound_data.with_settings(settings);
 
@@ -305,8 +320,9 @@ impl AudioManager {
       .clone();
 
     let final_volume = self.effective_sfx_volume() * volume;
+    let volume_db = amplitude_to_db(final_volume);
     let settings = StaticSoundSettings::default()
-      .volume(final_volume)
+      .volume(volume_db)
       .panning(pan.clamp(-1.0, 1.0))
       .playback_rate(playback_rate as f64);
     let sound_with_settings = sound_data.with_settings(settings);
@@ -324,7 +340,8 @@ impl AudioManager {
   /// For long audio files, this is more memory-efficient than loading into memory.
   /// Set `looping` to true for continuous playback.
   pub fn play_music(&mut self, path: impl AsRef<Path>, looping: bool) -> AudioResult<MusicHandle> {
-    let mut settings = StreamingSoundSettings::default().volume(self.effective_music_volume());
+    let volume_db = amplitude_to_db(self.effective_music_volume());
+    let mut settings = StreamingSoundSettings::default().volume(volume_db);
 
     if looping {
       settings = settings.loop_region(..);
@@ -353,7 +370,7 @@ impl AudioManager {
   ) -> AudioResult<MusicHandle> {
     // Start at zero volume with a fade-in tween
     let mut settings = StreamingSoundSettings::default()
-      .volume(0.0)
+      .volume(Decibels::SILENCE)
       .fade_in_tween(Tween {
         duration: fade_duration,
         ..Default::default()
@@ -373,8 +390,9 @@ impl AudioManager {
       .map_err(|e| AudioError::PlayError(format!("{}", e)))?;
 
     // Fade to the effective music volume
+    let target_volume_db = amplitude_to_db(self.effective_music_volume());
     handle.set_volume(
-      self.effective_music_volume(),
+      target_volume_db,
       Tween {
         duration: fade_duration,
         ..Default::default()
@@ -383,7 +401,6 @@ impl AudioManager {
 
     Ok(MusicHandle { handle })
   }
-
   /// Crossfade from current music to new music
   ///
   /// Fades out the current music while fading in the new music.

@@ -4,6 +4,7 @@
 //! Users implement the `Game` trait to define their game behavior.
 
 use super::asset::AssetManager;
+use super::audio::AudioManager;
 use super::camera::Camera;
 use super::ecs::World;
 use super::input::InputState;
@@ -23,6 +24,8 @@ pub struct GameContext<'a> {
   pub input: &'a InputState,
   /// Asset manager for loading and caching resources
   pub assets: &'a mut AssetManager,
+  /// Audio manager for sound effects and music (None if audio unavailable)
+  pub audio: &'a mut Option<AudioManager>,
   /// Collision events from the last physics step
   pub collision_events: &'a [PhysicsCollisionEvent],
 }
@@ -111,6 +114,22 @@ pub trait Game {
   /// Alpha is 0.0 (transparent) to 1.0 (opaque).
   fn get_overlay(&self) -> Option<(f32, [u8; 4])> {
     None
+  }
+
+  /// Whether physics simulation should be paused.
+  ///
+  /// Override this to pause physics during pause menus, cutscenes, etc.
+  /// Default is `false` (physics runs normally).
+  fn is_physics_paused(&self) -> bool {
+    false
+  }
+
+  /// Whether the game wants to quit.
+  ///
+  /// When this returns `true`, the engine will close the window and exit.
+  /// Default is `false` (game keeps running).
+  fn should_quit(&self) -> bool {
+    false
   }
 }
 
