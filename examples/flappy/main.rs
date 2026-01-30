@@ -43,7 +43,7 @@ fn main() {
     .fps(144)
     .physics_hz(120)
     .with_workspace_debug() // Load debug settings from Ryo.toml
-    .with_system_state_overrides(); // Apply user overrides from system.json
+    .with_system_state_overrides(); // Apply user overrides from system.json on startup
 
   // Start with debug scene or menu based on env config
   let engine = if start_debug {

@@ -23,7 +23,11 @@ This example showcases a comprehensive set of engine capabilities:
 
 ### Content & Data
 - **Level Loading** - External level files loaded from disk
-- **Audio System** - Sound effects for gameplay events
+- **Audio System** - Background music, sound effects, and runtime volume controls
+  - Looping background music during gameplay
+  - Sound effects for paddle hits, block breaks, and ball death
+  - Interactive volume sliders in pause menu (Master, Music, SFX)
+  - Volume settings persist via system.json
 - **Asset Management** - Sprite rendering and resource handling
 
 ## Controls
@@ -34,6 +38,8 @@ This example showcases a comprehensive set of engine capabilities:
   - `Space` or click - Launch ball
   - `Escape` - Pause game
 - **Pause Menu**: Click buttons or use keyboard to navigate
+  - Adjust audio volumes with interactive sliders
+  - Changes are saved automatically to system.json
 
 ## Running the Game
 

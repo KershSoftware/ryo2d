@@ -397,4 +397,80 @@ impl<'a> UiContext<'a> {
       );
     });
   }
+
+  // =========================================================================
+  // Slider Widget
+  // =========================================================================
+
+  /// Draw an interactive horizontal slider.
+  ///
+  /// Returns true if the value was changed this frame.
+  ///
+  /// # Arguments
+  /// * `rect` - The bounding box for the slider track
+  /// * `value` - Mutable reference to the value being controlled (will be updated if dragged)
+  /// * `min` - Minimum value
+  /// * `max` - Maximum value
+  pub fn slider(&mut self, rect: Rect, value: &mut f32, min: f32, max: f32) -> bool {
+    let track_color = Color::rgb(60, 60, 80);
+    let fill_color = Color::rgb(80, 150, 255);
+    let handle_color = Color::rgb(255, 255, 255);
+    let hover_color = Color::rgb(200, 220, 255);
+
+    let mouse_pos = self.input.mouse_position();
+    
+    // Expand interaction area vertically for easier clicking
+    let interaction_rect = Rect::new(
+      rect.x,
+      rect.y - 10.0,
+      rect.width,
+      rect.height + 20.0,
+    );
+    let mouse_in_interaction = interaction_rect.contains(mouse_pos.0, mouse_pos.1);
+
+    // Calculate handle position
+    let normalized = (*value - min) / (max - min).max(0.0001);
+    let handle_x = rect.x + normalized * rect.width;
+    let handle_width = 12.0;
+    let handle_height = rect.height + 8.0;
+    let handle_rect = Rect::new(
+      handle_x - handle_width / 2.0,
+      rect.y - 4.0,
+      handle_width,
+      handle_height,
+    );
+
+    let mut changed = false;
+
+    // Handle dragging
+    if self.input.mouse_down(MouseButton::Left) && mouse_in_interaction {
+      // Calculate new value based on mouse position
+      let mouse_x = mouse_pos.0.clamp(rect.x, rect.right());
+      let new_normalized = (mouse_x - rect.x) / rect.width;
+      let new_value = min + new_normalized * (max - min);
+      let clamped_value = new_value.clamp(min, max);
+      
+      if (*value - clamped_value).abs() > 0.001 {
+        *value = clamped_value;
+        changed = true;
+      }
+    }
+
+    // Draw track background
+    self.draw_rect(rect, track_color);
+
+    // Draw filled portion
+    let fill_rect = Rect::new(rect.x, rect.y, normalized * rect.width, rect.height);
+    self.draw_rect(fill_rect, fill_color);
+
+    // Draw handle
+    let handle_visual_color = if mouse_in_interaction {
+      hover_color
+    } else {
+      handle_color
+    };
+    self.draw_rect(handle_rect, handle_visual_color);
+
+    changed
+  }
 }

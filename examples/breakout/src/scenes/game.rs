@@ -35,6 +35,9 @@ pub struct GameScene {
 
   // Wait for escape release after resuming from pause
   escape_was_released: bool,
+
+  // Background music
+  music: Option<MusicHandle>,
 }
 
 impl GameScene {
@@ -54,6 +57,7 @@ impl GameScene {
       death_zone: None,
       blocks_remaining: 0,
       escape_was_released: true,
+      music: None,
     }
   }
 
@@ -341,6 +345,11 @@ impl Scene for GameScene {
       let _ = audio.load_sound("paddle_hit", "assets/audio/bounce.wav");
       let _ = audio.load_sound("block_break", "assets/audio/break.wav");
       let _ = audio.load_sound("ball_death", "assets/audio/life-lost.wav");
+      
+      // Start background music (looping)
+      if let Ok(music) = audio.play_music("assets/audio/bgm.mp3", true) {
+        self.music = Some(music);
+      }
     }
 
     self.spawn_walls(ctx);

@@ -19,11 +19,26 @@ pub struct PauseScene {
   resume_clicked: bool,
   quit_clicked: bool,
   quit_desktop_clicked: bool,
+  /// System state for volume controls
+  settings: SystemState,
+  /// Track if we need to save settings
+  settings_changed: bool,
 }
 
 impl PauseScene {
   /// Create a new pause scene
   pub fn new(score: u32, high_score: u32) -> Self {
+    // Try to load existing settings, or use defaults
+    let settings = if let Ok(workspace) = Workspace::discover() {
+      if let Ok(save_manager) = workspace.create_save_manager() {
+        save_manager.load_system().unwrap_or_default()
+      } else {
+        SystemState::default()
+      }
+    } else {
+      SystemState::default()
+    };
+
     Self {
       score,
       high_score,
@@ -31,6 +46,8 @@ impl PauseScene {
       resume_clicked: false,
       quit_clicked: false,
       quit_desktop_clicked: false,
+      settings,
+      settings_changed: false,
     }
   }
 }
@@ -50,6 +67,23 @@ impl Scene for PauseScene {
     // Check for button clicks from previous render_ui
     if self.resume_clicked {
       self.resume_clicked = false;
+      
+      // Apply volume changes to audio manager
+      if let Some(audio) = ctx.audio.as_mut() {
+        audio.set_master_volume(self.settings.master_volume);
+        audio.set_music_volume(self.settings.music_volume);
+        audio.set_sfx_volume(self.settings.sfx_volume);
+      }
+      
+      // Save settings if changed
+      if self.settings_changed {
+        if let Ok(workspace) = Workspace::discover() {
+          if let Ok(save_manager) = workspace.create_save_manager() {
+            let _ = save_manager.save_system(&self.settings);
+          }
+        }
+      }
+      
       return SceneAction::Pop;
     }
 
@@ -97,9 +131,9 @@ impl Scene for PauseScene {
       Color::new(0, 0, 0, 180),
     );
 
-    // Pause panel
-    let panel_w = 300.0;
-    let panel_h = 310.0;
+    // Pause panel (taller to fit volume sliders)
+    let panel_w = 340.0;
+    let panel_h = 450.0;
     let panel_x = (screen_w as f32 - panel_w) / 2.0;
     let panel_y = (screen_h as f32 - panel_h) / 2.0;
 
@@ -124,20 +158,80 @@ impl Scene for PauseScene {
       Color::YELLOW,
     );
 
+    // Volume controls section
+    let slider_y_start = panel_y + 100.0;
+    let slider_spacing = 50.0;
+    let slider_x = panel_x + 30.0;
+    let slider_w = panel_w - 60.0;
+
+    // Master Volume
+    ui.draw_text(
+      &format!("Master: {:.0}%", self.settings.master_volume * 100.0),
+      slider_x,
+      slider_y_start,
+      Color::WHITE,
+    );
+    let master_changed = ui.slider(
+      Rect::new(slider_x, slider_y_start + 20.0, slider_w, 8.0),
+      &mut self.settings.master_volume,
+      0.0,
+      1.0,
+    );
+    if master_changed {
+      self.settings_changed = true;
+    }
+
+    // Music Volume
+    ui.draw_text(
+      &format!("Music: {:.0}%", self.settings.music_volume * 100.0),
+      slider_x,
+      slider_y_start + slider_spacing,
+      Color::WHITE,
+    );
+    let music_changed = ui.slider(
+      Rect::new(slider_x, slider_y_start + slider_spacing + 20.0, slider_w, 8.0),
+      &mut self.settings.music_volume,
+      0.0,
+      1.0,
+    );
+    if music_changed {
+      self.settings_changed = true;
+    }
+
+    // SFX Volume
+    ui.draw_text(
+      &format!("SFX: {:.0}%", self.settings.sfx_volume * 100.0),
+      slider_x,
+      slider_y_start + slider_spacing * 2.0,
+      Color::WHITE,
+    );
+    let sfx_changed = ui.slider(
+      Rect::new(slider_x, slider_y_start + slider_spacing * 2.0 + 20.0, slider_w, 8.0),
+      &mut self.settings.sfx_volume,
+      0.0,
+      1.0,
+    );
+    if sfx_changed {
+      self.settings_changed = true;
+    }
+
+    // Buttons section
+    let buttons_y_start = slider_y_start + slider_spacing * 3.0 + 20.0;
+
     // Resume button
-    let resume_rect = Rect::new(panel_x + 50.0, panel_y + 110.0, 200.0, 40.0);
+    let resume_rect = Rect::new(panel_x + 70.0, buttons_y_start, 200.0, 40.0);
     if ui.button("RESUME", resume_rect) {
       self.resume_clicked = true;
     }
 
     // Quit to menu button
-    let quit_rect = Rect::new(panel_x + 50.0, panel_y + 160.0, 200.0, 40.0);
+    let quit_rect = Rect::new(panel_x + 70.0, buttons_y_start + 50.0, 200.0, 40.0);
     if ui.button("QUIT TO MENU", quit_rect) {
       self.quit_clicked = true;
     }
 
     // Quit to desktop button
-    let quit_desktop_rect = Rect::new(panel_x + 50.0, panel_y + 210.0, 200.0, 40.0);
+    let quit_desktop_rect = Rect::new(panel_x + 70.0, buttons_y_start + 100.0, 200.0, 40.0);
     if ui.button("QUIT TO DESKTOP", quit_desktop_rect) {
       self.quit_desktop_clicked = true;
     }
