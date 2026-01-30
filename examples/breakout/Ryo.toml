@@ -14,7 +14,7 @@ assets = "assets"
 
 [info]
 # Display FPS counter in corner
-show_fps = true
+show_fps = false
 
 [debug]
 # Show collision boundaries for debugging

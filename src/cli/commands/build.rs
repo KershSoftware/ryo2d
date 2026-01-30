@@ -58,9 +58,8 @@ fn create_release_bundle(
 
   // Create release directory
   if release_dir.exists() {
-    fs::remove_dir_all(&release_dir).map_err(|e| {
-      CliError::Other(format!("Failed to clean release directory: {}", e))
-    })?;
+    fs::remove_dir_all(&release_dir)
+      .map_err(|e| CliError::Other(format!("Failed to clean release directory: {}", e)))?;
   }
   fs::create_dir_all(&release_dir)
     .map_err(|e| CliError::Other(format!("Failed to create release directory: {}", e)))?;
@@ -118,16 +117,9 @@ fn create_release_bundle(
   fs::create_dir_all(&data_dir)
     .map_err(|e| CliError::Other(format!("Failed to create data directory: {}", e)))?;
 
-  // Copy Ryo.toml if it exists
-  if workspace.has_config_file() {
-    let source_config = workspace_root.join("Ryo.toml");
-    let dest_config = release_dir.join("Ryo.toml");
-    if source_config.exists() {
-      fs::copy(&source_config, &dest_config).map_err(|e| {
-        CliError::Other(format!("Failed to copy Ryo.toml: {}", e))
-      })?;
-    }
-  }
+  // Note: Ryo.toml is NOT included in release bundles
+  // Configuration values are compiled into the binary at build time
+  // If runtime configuration is needed, games should provide their own config system
 
   // Copy README if it exists
   let readme_path = workspace_root.join("README.md");
@@ -147,13 +139,19 @@ fn create_release_bundle(
 
 /// Recursively copy a directory
 fn copy_dir_recursive(src: &PathBuf, dest: &PathBuf) -> CliResult<()> {
-  fs::create_dir_all(dest)
-    .map_err(|e| CliError::Other(format!("Failed to create directory {}: {}", dest.display(), e)))?;
+  fs::create_dir_all(dest).map_err(|e| {
+    CliError::Other(format!(
+      "Failed to create directory {}: {}",
+      dest.display(),
+      e
+    ))
+  })?;
 
   for entry in fs::read_dir(src)
     .map_err(|e| CliError::Other(format!("Failed to read directory {}: {}", src.display(), e)))?
   {
-    let entry = entry.map_err(|e| CliError::Other(format!("Failed to read directory entry: {}", e)))?;
+    let entry =
+      entry.map_err(|e| CliError::Other(format!("Failed to read directory entry: {}", e)))?;
     let path = entry.path();
     let file_name = entry.file_name();
     let dest_path = dest.join(&file_name);
@@ -191,12 +189,15 @@ DESCRIPTION:
     a distributable bundle in the 'release/' directory.
 
     The bundle includes:
-    - Executable binary
+    - Executable binary (with config baked in at compile time)
     - Assets directory
     - Levels directory (if present)
     - Data directory (empty, for save files)
-    - Ryo.toml configuration
     - README.md (if present)
+
+    Note: Ryo.toml is NOT included in the release bundle. All
+    configuration values (paths, env variables) are compiled into
+    the binary at build time.
 
 EXAMPLE:
     ryo2d build
