@@ -44,6 +44,13 @@ if ($Command -ne "build") {
 
 Write-Host "Building Ryo2D Documentation..." -ForegroundColor Cyan
 
+# Check for mdbook
+if (-not (Test-Path "$env:USERPROFILE\.cargo\bin\mdbook.exe")) {
+    Write-Host "`nError: mdbook is not installed." -ForegroundColor Red
+    Write-Host "Install it with: cargo install mdbook" -ForegroundColor Yellow
+    exit 1
+}
+
 # Step 1: Build rustdoc
 Write-Host "`n[1/3] Building API documentation (rustdoc)..." -ForegroundColor Yellow
 & "$env:USERPROFILE\.cargo\bin\cargo.exe" doc --no-deps --document-private-items

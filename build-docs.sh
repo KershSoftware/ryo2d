@@ -48,6 +48,14 @@ fi
 
 echo "Building Ryo2D Documentation..."
 
+# Check for mdbook
+if ! command -v mdbook &> /dev/null; then
+    echo ""
+    echo "Error: mdbook is not installed."
+    echo "Install it with: cargo install mdbook"
+    exit 1
+fi
+
 # Step 1: Build rustdoc
 echo ""
 echo "[1/3] Building API documentation (rustdoc)..."

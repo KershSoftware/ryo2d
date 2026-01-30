@@ -39,9 +39,9 @@
 //!
 //! # Module Structure
 //!
-//! - [`types`] - Basic types: `Color`, `Rect`, `Anchor`
-//! - [`font`] - Bitmap font rendering: `BitmapFont`, `create_debug_font`
-//! - [`context`] - Immediate-mode drawing API: `UiContext`
+//! - Basic types: `Color`, `Rect`, `Anchor`
+//! - Bitmap font rendering: `BitmapFont`, `create_debug_font`
+//! - Immediate-mode drawing API: `UiContext`
 
 mod context;
 mod font;
