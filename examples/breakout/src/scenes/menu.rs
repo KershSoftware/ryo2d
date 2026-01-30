@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use ryo2d::prelude::*;
 
-use super::super::constants::{SCREEN_HEIGHT, SCREEN_WIDTH};
-use super::super::save::load_high_score;
 use super::{GameScene, QuitConfirmScene};
+use crate::constants::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use crate::save::load_high_score;
 
 /// Main menu scene
 pub struct MenuScene {

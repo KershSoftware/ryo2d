@@ -1,13 +1,13 @@
 //! Workspace management for Ryo2D projects
 //!
 //! A workspace represents a game project directory containing:
-//! - `ryo.toml` configuration file (optional)
+//! - `Ryo.toml` configuration file (optional, case-insensitive)
 //! - Entry point (main.rs)
 //! - Assets, save data, and other resources
 //!
 //! # Configuration File
 //!
-//! The `ryo.toml` file configures project settings:
+//! The `Ryo.toml` file configures project settings (also accepts `ryo.toml`):
 //!
 //! ```toml
 //! [project]
@@ -40,8 +40,11 @@ use std::path::{Path, PathBuf};
 
 use super::error::EngineError;
 
-/// The configuration filename to look for
-pub const CONFIG_FILENAME: &str = "ryo.toml";
+/// The primary configuration filename (matches Cargo.toml naming convention)
+pub const CONFIG_FILENAME: &str = "Ryo.toml";
+
+/// Alternative configuration filename (case-insensitive fallback)
+const CONFIG_FILENAME_ALT: &str = "ryo.toml";
 
 /// Maximum directory levels to search upward for config
 const MAX_SEARCH_DEPTH: usize = 3;
@@ -109,13 +112,14 @@ impl Workspace {
   /// Discover workspace starting from a specific directory.
   ///
   /// Searches the given directory and up to 3 parent directories.
+  /// Checks for both `Ryo.toml` and `ryo.toml` (case-insensitive).
   pub fn discover_from(start: &Path) -> Result<Self, EngineError> {
     let mut current = start.to_path_buf();
 
     for _ in 0..MAX_SEARCH_DEPTH {
-      let config_path = current.join(CONFIG_FILENAME);
-      if config_path.exists() {
-        return Self::from_path(&current);
+      // Check for config file (case-insensitive: Ryo.toml or ryo.toml)
+      if let Some(config_path) = Self::find_config_file(&current) {
+        return Self::from_path_with_config(&current, &config_path);
       }
 
       match current.parent() {
@@ -128,28 +132,57 @@ impl Workspace {
     Self::from_path_with_defaults(start)
   }
 
+  /// Find the config file in a directory (case-insensitive).
+  ///
+  /// Checks for `Ryo.toml` first, then `ryo.toml`.
+  fn find_config_file(dir: &Path) -> Option<PathBuf> {
+    let primary = dir.join(CONFIG_FILENAME);
+    if primary.exists() {
+      return Some(primary);
+    }
+
+    let alt = dir.join(CONFIG_FILENAME_ALT);
+    if alt.exists() {
+      return Some(alt);
+    }
+
+    None
+  }
+
   /// Load workspace from an explicit path.
   ///
-  /// If `ryo.toml` exists in the directory, it will be parsed.
+  /// If `Ryo.toml` or `ryo.toml` exists in the directory, it will be parsed.
   /// Otherwise, default settings are used.
   pub fn from_path(root: impl AsRef<Path>) -> Result<Self, EngineError> {
     let root = root.as_ref().to_path_buf();
-    let config_path = root.join(CONFIG_FILENAME);
 
-    if config_path.exists() {
-      let contents = fs::read_to_string(&config_path).map_err(|e| {
-        EngineError::WorkspaceError(format!("Failed to read {}: {}", CONFIG_FILENAME, e))
-      })?;
-
-      let raw: RyoToml = toml::from_str(&contents).map_err(|e| {
-        EngineError::WorkspaceError(format!("Failed to parse {}: {}", CONFIG_FILENAME, e))
-      })?;
-
-      let config = Self::build_config(&root, raw)?;
-      Ok(Workspace { root, config })
-    } else {
-      Self::from_path_with_defaults(&root)
+    // Check for config file (case-insensitive)
+    if let Some(config_path) = Self::find_config_file(&root) {
+      return Self::from_path_with_config(&root, &config_path);
     }
+
+    Self::from_path_with_defaults(&root)
+  }
+
+  /// Load workspace from a path with an explicit config file.
+  fn from_path_with_config(root: &Path, config_path: &Path) -> Result<Self, EngineError> {
+    let config_name = config_path
+      .file_name()
+      .and_then(|n| n.to_str())
+      .unwrap_or(CONFIG_FILENAME);
+
+    let contents = fs::read_to_string(config_path)
+      .map_err(|e| EngineError::WorkspaceError(format!("Failed to read {}: {}", config_name, e)))?;
+
+    let raw: RyoToml = toml::from_str(&contents).map_err(|e| {
+      EngineError::WorkspaceError(format!("Failed to parse {}: {}", config_name, e))
+    })?;
+
+    let config = Self::build_config(root, raw)?;
+    Ok(Workspace {
+      root: root.to_path_buf(),
+      config,
+    })
   }
 
   /// Create workspace with default settings (no config file).
@@ -253,9 +286,9 @@ impl Workspace {
     self.root.join(&self.config.assets)
   }
 
-  /// Check if a `ryo.toml` config file exists in the workspace.
+  /// Check if a `Ryo.toml` or `ryo.toml` config file exists in the workspace.
   pub fn has_config_file(&self) -> bool {
-    self.root.join(CONFIG_FILENAME).exists()
+    Self::find_config_file(&self.root).is_some()
   }
 
   /// Change the save data directory at runtime.

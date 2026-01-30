@@ -14,7 +14,11 @@ pub struct Block {
 impl Block {
   /// Create a new block
   pub fn new(color: BlockColor, hits: u32, points: u32) -> Self {
-    Self { hits, color, points }
+    Self {
+      hits,
+      color,
+      points,
+    }
   }
 }
 

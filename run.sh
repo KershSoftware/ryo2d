@@ -34,14 +34,21 @@ get_examples() {
             if [[ -d "$dir" ]]; then
                 local name=$(basename "$dir")
                 local main_rs="$dir/main.rs"
-                local ryo_toml="$dir/ryo.toml"
+                
+                # Check for config file (Ryo.toml or ryo.toml)
+                local ryo_toml=""
+                if [[ -f "$dir/Ryo.toml" ]]; then
+                    ryo_toml="$dir/Ryo.toml"
+                elif [[ -f "$dir/ryo.toml" ]]; then
+                    ryo_toml="$dir/ryo.toml"
+                fi
                 
                 # Check if it's a valid example (has main.rs)
                 if [[ -f "$main_rs" ]]; then
                     local display_name="$name"
                     
-                    # Try to read project name from ryo.toml
-                    if [[ -f "$ryo_toml" ]]; then
+                    # Try to read project name from Ryo.toml
+                    if [[ -n "$ryo_toml" ]]; then
                         local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
                         if [[ -n "$parsed_name" ]]; then
                             display_name="$parsed_name"
@@ -65,12 +72,19 @@ get_display_names() {
             if [[ -d "$dir" ]]; then
                 local name=$(basename "$dir")
                 local main_rs="$dir/main.rs"
-                local ryo_toml="$dir/ryo.toml"
+                
+                # Check for config file (Ryo.toml or ryo.toml)
+                local ryo_toml=""
+                if [[ -f "$dir/Ryo.toml" ]]; then
+                    ryo_toml="$dir/Ryo.toml"
+                elif [[ -f "$dir/ryo.toml" ]]; then
+                    ryo_toml="$dir/ryo.toml"
+                fi
                 
                 if [[ -f "$main_rs" ]]; then
                     local display_name="$name"
                     
-                    if [[ -f "$ryo_toml" ]]; then
+                    if [[ -n "$ryo_toml" ]]; then
                         local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
                         if [[ -n "$parsed_name" ]]; then
                             display_name="$parsed_name"
@@ -84,13 +98,22 @@ get_display_names() {
     fi
 }
 
-# Function to run an example
+# Function to run an example (from its own directory as a standalone project)
 run_example() {
     local example_name="$1"
+    local example_path="$SCRIPT_DIR/examples/$example_name"
     echo ""
     echo -e "${CYAN}Running example: $example_name${NC}"
+    echo -e "${GRAY}  Path: $example_path${NC}"
     echo ""
-    cargo run --example "$example_name"
+    
+    # Save current directory and move to example directory
+    local original_dir="$(pwd)"
+    cd "$example_path"
+    
+    # Run and ensure we return to original directory
+    cargo run || true
+    cd "$original_dir"
 }
 
 # Function to show interactive example selection
@@ -159,8 +182,12 @@ case "$COMMAND" in
         # Watch mode - runs first example by default
         mapfile -t examples < <(get_examples)
         if [[ ${#examples[@]} -gt 0 ]]; then
-            echo -e "${CYAN}Watching example: ${examples[0]} (Ctrl+C to stop)${NC}"
-            cargo watch -c -x "run --example ${examples[0]}"
+            local example_name="${examples[0]}"
+            local example_path="$SCRIPT_DIR/examples/$example_name"
+            echo -e "${CYAN}Watching example: $example_name (Ctrl+C to stop)${NC}"
+            echo -e "${GRAY}  Path: $example_path${NC}"
+            cd "$example_path"
+            cargo watch -c -x run
         else
             echo -e "${RED}No examples found.${NC}"
             exit 1

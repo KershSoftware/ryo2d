@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ryo2d::prelude::*;
 
-use super::super::save::save_high_score;
+use crate::save::save_high_score;
 use super::MenuScene;
 
 /// Pause menu overlay

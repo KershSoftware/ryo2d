@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use ryo2d::prelude::*;
 
-use super::super::components::{Ball, Block, DeathZone, Paddle, Wall};
-use super::super::constants::*;
-use super::super::levels::{level_path, load_level};
-use super::super::save::save_high_score;
 use super::{MenuScene, PauseScene};
+use crate::components::{Ball, Block, DeathZone, Paddle, Wall};
+use crate::constants::*;
+use crate::levels::{level_path, load_level};
+use crate::save::save_high_score;
 
 /// Main gameplay scene
 pub struct GameScene {
@@ -359,9 +359,9 @@ impl Scene for GameScene {
 
     // Load audio files (gracefully handle missing files)
     if let Some(audio) = ctx.audio.as_mut() {
-      let _ = audio.load_sound("paddle_hit", "examples/breakout/assets/audio/bounce.wav");
-      let _ = audio.load_sound("block_break", "examples/breakout/assets/audio/break.wav");
-      let _ = audio.load_sound("ball_death", "examples/breakout/assets/audio/life-lost.wav");
+      let _ = audio.load_sound("paddle_hit", "assets/audio/bounce.wav");
+      let _ = audio.load_sound("block_break", "assets/audio/break.wav");
+      let _ = audio.load_sound("ball_death", "assets/audio/life-lost.wav");
     }
 
     self.spawn_walls(ctx);

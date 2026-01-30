@@ -5,8 +5,10 @@
 use std::fs;
 use std::path::Path;
 
-use super::components::BlockColor;
-use super::constants::{BLOCK_HEIGHT, BLOCK_LEFT_OFFSET, BLOCK_PADDING, BLOCK_TOP_OFFSET, BLOCK_WIDTH};
+use crate::components::BlockColor;
+use crate::constants::{
+  BLOCK_HEIGHT, BLOCK_LEFT_OFFSET, BLOCK_PADDING, BLOCK_TOP_OFFSET, BLOCK_WIDTH,
+};
 
 /// Loaded level data containing block positions and properties
 pub struct LevelData {
@@ -66,5 +68,5 @@ pub fn load_level(path: &Path) -> Result<LevelData, String> {
 
 /// Get the path for a numbered level file
 pub fn level_path(level: u32) -> String {
-  format!("examples/breakout/levels/level{}.txt", level)
+  format!("levels/level{}.txt", level)
 }

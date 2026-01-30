@@ -19,16 +19,19 @@
 //! - `save/` - High score persistence
 //! - `constants.rs` - Game configuration values
 //!
+//! ## Running
+//!
+//! From the game directory:
+//! ```bash
+//! cargo run
+//! ```
+//!
 //! ## Controls
 //!
 //! - Menu: Click "Start", Enter, or Space to begin
 //! - Game: A/D or Arrow keys to move paddle
 //! - Game: Any key or click to launch ball
 //! - Pause: Escape to pause, Resume/Quit buttons
-
-// Include the local src/ modules
-#[path = "src/lib.rs"]
-mod breakout;
 
 use breakout::prelude::*;
 use ryo2d::prelude::*;

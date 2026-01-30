@@ -1,14 +1,10 @@
 //! Save Data
 //!
 //! Persistent game data like high scores and settings.
-
-use std::path::Path;
+//! Uses the workspace configuration from ryo.toml for save paths.
 
 use ryo2d::prelude::*;
 use serde::{Deserialize, Serialize};
-
-/// Path to the save data directory
-const SAVE_PATH: &str = "examples/breakout/data";
 
 /// High score save data
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -20,9 +16,16 @@ pub struct HighScoreData {
 ///
 /// Returns 0 if no save file exists or if loading fails
 pub fn load_high_score() -> u32 {
-  if let Ok(data) =
-    SaveManager::new(Path::new(SAVE_PATH)).and_then(|sm| sm.load_game::<HighScoreData>("highscore"))
-  {
+  // Use workspace configuration for save paths
+  let Ok(workspace) = Workspace::discover() else {
+    return 0;
+  };
+
+  let Ok(save_manager) = workspace.create_save_manager() else {
+    return 0;
+  };
+
+  if let Ok(data) = save_manager.load_game::<HighScoreData>("highscore") {
     return data.data.high_score;
   }
   0
@@ -30,8 +33,15 @@ pub fn load_high_score() -> u32 {
 
 /// Save the high score to disk
 pub fn save_high_score(score: u32) {
-  if let Ok(save_manager) = SaveManager::new(Path::new(SAVE_PATH)) {
-    let data = HighScoreData { high_score: score };
-    let _ = save_manager.save_game("highscore", &data);
-  }
+  // Use workspace configuration for save paths
+  let Ok(workspace) = Workspace::discover() else {
+    return;
+  };
+
+  let Ok(save_manager) = workspace.create_save_manager() else {
+    return;
+  };
+
+  let data = HighScoreData { high_score: score };
+  let _ = save_manager.save_game("highscore", &data);
 }

@@ -33,7 +33,11 @@ function Get-Examples {
     
     if (Test-Path $examplesDir) {
         Get-ChildItem -Path $examplesDir -Directory | ForEach-Object {
-            $ryoToml = Join-Path $_.FullName "ryo.toml"
+            # Check for config file (case-insensitive: Ryo.toml or ryo.toml)
+            $ryoToml = Join-Path $_.FullName "Ryo.toml"
+            if (-not (Test-Path $ryoToml)) {
+                $ryoToml = Join-Path $_.FullName "ryo.toml"
+            }
             $mainRs = Join-Path $_.FullName "main.rs"
             
             # Check if it's a valid example (has main.rs)
@@ -41,7 +45,7 @@ function Get-Examples {
                 $name = $_.Name
                 $displayName = $name
                 
-                # Try to read project name from ryo.toml
+                # Try to read project name from Ryo.toml
                 if (Test-Path $ryoToml) {
                     $content = Get-Content $ryoToml -Raw
                     if ($content -match 'name\s*=\s*"([^"]+)"') {
@@ -50,26 +54,41 @@ function Get-Examples {
                 }
                 
                 $examples += [PSCustomObject]@{
-                    Name = $name
+                    Name        = $name
                     DisplayName = $displayName
-                    Path = $_.FullName
+                    Path        = $_.FullName
                 }
             }
         }
     }
     
     # Force array return to prevent unwrapping
-    return ,$examples
+    return , $examples
 }
 
-# Function to run an example
+# Function to run an example (from its own directory as a standalone project)
 function Run-Example {
-    param([string]$ExampleName)
+    param(
+        [string]$ExampleName,
+        [string]$ExamplePath
+    )
     
     Write-Host ""
     Write-Host "Running example: $ExampleName" -ForegroundColor Cyan
+    Write-Host "  Path: $ExamplePath" -ForegroundColor DarkGray
     Write-Host ""
-    cargo run --example $ExampleName
+    
+    # Save current directory and move to example directory
+    $originalDir = Get-Location
+    Set-Location $ExamplePath
+    
+    try {
+        cargo run
+    }
+    finally {
+        # Always restore original directory
+        Set-Location $originalDir
+    }
 }
 
 # Function to show interactive example selection
@@ -84,7 +103,7 @@ function Show-ExampleMenu {
     # Auto-select if only one example
     if ($examples.Count -eq 1) {
         Write-Host "Auto-selecting only example: $($examples[0].DisplayName)" -ForegroundColor Green
-        Run-Example $examples[0].Name
+        Run-Example $examples[0].Name $examples[0].Path
         return
     }
     
@@ -110,8 +129,9 @@ function Show-ExampleMenu {
     
     $index = [int]$selection - 1
     if ($index -ge 0 -and $index -lt $examples.Count) {
-        Run-Example $examples[$index].Name
-    } else {
+        Run-Example $examples[$index].Name $examples[$index].Path
+    }
+    else {
         Write-Host "Invalid selection." -ForegroundColor Red
         exit 1
     }
@@ -135,10 +155,19 @@ switch ($Command.ToLower()) {
         # Watch mode - runs first example by default
         $examples = Get-Examples
         if ($examples.Count -gt 0) {
-            $exampleName = $examples[0].Name
-            Write-Host "Watching example: $exampleName (Ctrl+C to stop)" -ForegroundColor Cyan
-            cargo watch -c -x "run --example $exampleName"
-        } else {
+            $example = $examples[0]
+            Write-Host "Watching example: $($example.Name) (Ctrl+C to stop)" -ForegroundColor Cyan
+            Write-Host "  Path: $($example.Path)" -ForegroundColor DarkGray
+            $originalDir = Get-Location
+            Set-Location $example.Path
+            try {
+                cargo watch -c -x run
+            }
+            finally {
+                Set-Location $originalDir
+            }
+        }
+        else {
             Write-Host "No examples found." -ForegroundColor Red
             exit 1
         }
@@ -163,8 +192,9 @@ switch ($Command.ToLower()) {
         $match = $examples | Where-Object { $_.Name -eq $Command.ToLower() }
         
         if ($match) {
-            Run-Example $match.Name
-        } else {
+            Run-Example $match.Name $match.Path
+        }
+        else {
             Write-Host "Unknown command or example: $Command" -ForegroundColor Red
             Write-Host ""
             Write-Host "Available examples:" -ForegroundColor Yellow

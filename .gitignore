@@ -4,6 +4,13 @@
 *.pdb
 Cargo.lock
 
+# Example project build artifacts (standalone projects in examples/)
+examples/*/target/
+examples/*/Cargo.lock
+
+# Example project save data (generated at runtime)
+examples/*/data/
+
 # IDE
 .idea/
 .vscode/*
