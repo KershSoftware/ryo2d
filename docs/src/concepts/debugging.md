@@ -26,16 +26,7 @@ EngineBuilder::new()
     .run()?;
 ```
 
-To automatically load debug settings from `Ryo.toml`:
-
-```rust,ignore
-EngineBuilder::new()
-    .title("My Game")
-    .with_workspace_debug()  // Reads [debug] from Ryo.toml
-    .with_scene(GameScene::new())
-    .build()
-    .run()?;
-```
+**Note:** Debug settings from `Ryo.toml` are **automatically loaded** during `build()` if the file exists. Any values set programmatically will override the config file settings.
 
 ## Available Debug Options
 
@@ -169,7 +160,8 @@ fn main() {
 | `.show_fps(bool)` | Enable/disable FPS counter |
 | `.show_velocities(bool)` | Enable/disable velocity vectors |
 | `.show_origins(bool)` | Enable/disable origin crosshairs |
-| `.with_workspace_debug()` | Load all debug settings from Ryo.toml |
+
+**Note:** Debug settings from `Ryo.toml` are automatically loaded. These methods override config file values.
 
 ## Debug Colors
 

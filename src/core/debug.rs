@@ -28,9 +28,11 @@
 //! EngineBuilder::new()
 //!     .show_colliders(true)
 //!     .show_fps(true)
-//!     .with_workspace_debug()  // Load from Ryo.toml
 //!     .build()
 //! ```
+//!
+//! Debug settings from `Ryo.toml` are automatically loaded during `build()`.
+//! Values set programmatically will override config file settings.
 
 use super::camera::Camera;
 use super::collision::{Collider, ColliderShape};

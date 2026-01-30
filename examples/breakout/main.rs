@@ -43,7 +43,7 @@ fn main() {
     .fps(144)
     .physics_hz(120)
     .with_scene(MenuScene::new())
-    .with_system_state_overrides()
+    .with_system_state_overrides() // Apply user overrides from system.json on startup
     .build();
 
   if let Err(e) = engine.run() {

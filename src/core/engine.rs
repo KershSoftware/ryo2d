@@ -1018,37 +1018,6 @@ impl EngineBuilder {
     self
   }
 
-  /// Load debug settings from the workspace's Ryo.toml file.
-  ///
-  /// This reads the `[debug]` section from the project's configuration
-  /// file and applies it to the engine. Call this to automatically
-  /// enable debug features configured in Ryo.toml.
-  ///
-  /// Note: User settings in system.json can override these values.
-  /// Call `with_system_state_overrides()` after this to apply user preferences.
-  ///
-  /// # Example
-  ///
-  /// ```rust,ignore
-  /// EngineBuilder::new()
-  ///     .title("My Game")
-  ///     .with_workspace_debug()  // Reads [debug] from Ryo.toml
-  ///     .with_system_state_overrides()  // Apply user overrides from system.json
-  ///     .with_scene(GameScene::new())
-  ///     .build()
-  ///     .run()?;
-  /// ```
-  pub fn with_workspace_debug(mut self) -> Self {
-    if let Ok(workspace) = super::workspace::Workspace::discover() {
-      let debug = &workspace.config().debug;
-      self.config.debug.show_colliders = debug.show_colliders;
-      self.config.debug.show_fps = debug.show_fps;
-      self.config.debug.show_velocities = debug.show_velocities;
-      self.config.debug.show_origins = debug.show_origins;
-    }
-    self
-  }
-
   /// Apply user preference overrides from system.json.
   ///
   /// Loads the system state from the workspace's data directory and applies
@@ -1064,7 +1033,6 @@ impl EngineBuilder {
   /// ```rust,ignore
   /// EngineBuilder::new()
   ///     .title("My Game")
-  ///     .with_workspace_debug()  // Load Ryo.toml defaults
   ///     .with_system_state_overrides()  // Apply user overrides from system.json
   ///     .with_scene(GameScene::new())
   ///     .build()
@@ -1136,8 +1104,19 @@ impl EngineBuilder {
     let game = self.game.expect(
       "EngineBuilder requires a game or scene - call .with_game() or .with_scene() before .build()",
     );
+    
+    // Automatically load workspace config if available
+    let mut config = self.config;
+    if let Ok(workspace) = super::workspace::Workspace::discover() {
+      let debug = &workspace.config().debug;
+      config.debug.show_colliders = debug.show_colliders;
+      config.debug.show_fps = debug.show_fps;
+      config.debug.show_velocities = debug.show_velocities;
+      config.debug.show_origins = debug.show_origins;
+    }
+    
     Engine::new(
-      self.config,
+      config,
       game,
       self.vsync,
       self.master_volume,

@@ -14,7 +14,7 @@ assets = "assets"
 
 [debug]
 # Show collision boundaries for debugging
-show_colliders = false
+show_colliders = true
 
 [env]
 # Game-specific configuration (not engine features)
