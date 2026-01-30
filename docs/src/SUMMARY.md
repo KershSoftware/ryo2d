@@ -8,6 +8,10 @@
 - [Project Configuration](./getting-started/configuration.md)
 - [Your First Game](./getting-started/first-game.md)
 
+# Command Line Interface
+
+- [CLI Overview](./cli/index.md)
+
 # Core Concepts
 
 - [Game Loop](./concepts/game-loop.md)

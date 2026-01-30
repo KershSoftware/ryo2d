@@ -40,6 +40,7 @@
 //!
 //! You implement the [`core::game::Game`] trait to define your game's behavior.
 
+pub mod cli;
 pub mod core;
 
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`

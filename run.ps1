@@ -35,8 +35,8 @@ function Get-Examples {
         Get-ChildItem -Path $examplesDir -Directory | ForEach-Object {
             # Check for config file (case-insensitive)
             $ryoToml = Get-ChildItem -Path $_.FullName -Filter "*.toml" | 
-                Where-Object { $_.Name -ieq "Ryo.toml" } | 
-                Select-Object -First 1 -ExpandProperty FullName
+            Where-Object { $_.Name -ieq "Ryo.toml" } | 
+            Select-Object -First 1 -ExpandProperty FullName
             
             $mainRs = Join-Path $_.FullName "main.rs"
             
