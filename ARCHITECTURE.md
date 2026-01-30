@@ -57,8 +57,8 @@
 │   └──────────┬───────────┘                             │                  │
 │              │ yes                                     │                  │
 │              ▼                                         │                  │
-│   2. update(fixed_dt)              Fixed 60Hz updates  │                  │
-│      • game.update()               (deterministic)     │                  │
+│   2. update(fixed_dt)           Defaults 60Hz updates  │                  │
+│      • game.update()            (deterministic)        │                  │
 │      • Rapier physics step                             │                  │
 │      • Sync positions                                  │                  │
 │              │                                         │                  │
@@ -205,53 +205,6 @@ between frames  ────►│  keys_released    (cleared each frame)      �
 Persistent state     │  keys_down        (tracks held keys)        │
                      │  mouse_position   (current position)        │
                      └─────────────────────────────────────────────┘
-```
-
-## Module Structure
-
-```
-src/
-├── lib.rs              # Library root, prelude exports
-├── bin/
-│   └── ryo2d.rs        # CLI binary entry point
-├── cli/                # Command-line interface
-│   ├── mod.rs          # CLI entry point and exports
-│   └── commands/       # build, run, dev commands
-│
-└── core/               # Engine core modules
-    ├── mod.rs          # Module declarations
-    ├── engine.rs       # Main engine, game loop, ApplicationHandler
-    ├── game.rs         # Game trait, GameContext
-    │
-    ├── ecs/            # Entity-Component-System (hecs wrapper)
-    │   ├── mod.rs
-    │   ├── world.rs    # World wrapper with helper methods
-    │   ├── component.rs # Component trait
-    │   └── components.rs # Transform, Velocity, SpriteRenderer, RenderLayer
-    │
-    ├── physics.rs      # RigidBody, PhysicsConfig components
-    ├── rapier_physics.rs # Rapier2D integration, collision events
-    ├── collision.rs    # Collider, ColliderShape, AABB, Circle
-    ├── spatial.rs      # SpatialHash for broad-phase (game logic)
-    │
-    ├── sprite.rs       # Sprite, AnimatedSprite, drawing
-    ├── camera.rs       # Camera, coordinate transforms
-    ├── input.rs        # InputState, keyboard/mouse handling
-    │
-    ├── asset.rs        # AssetManager, SpriteHandle, hot reload, async loading
-    ├── audio.rs        # AudioManager (Kira), SoundHandle, MusicHandle
-    ├── hot_reload.rs   # HotReloadWatcher, filesystem notifications
-    │
-    ├── scene.rs        # Scene trait, SceneManager, scene stack
-    ├── save.rs         # SaveManager, serialization, compression
-    ├── workspace.rs    # Workspace, Ryo.toml configuration
-    │
-    ├── ui/             # User interface primitives
-    │   ├── mod.rs
-    │   ├── font.rs     # Font rendering, text layout
-    │   └── types.rs    # Color, Rect, Anchor
-    │
-    └── error.rs        # Error types (EngineError, AssetError, etc.)
 ```
 
 ## Key Dependencies

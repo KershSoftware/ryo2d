@@ -1,12 +1,13 @@
 //! Save/Load System for Ryo2D
 //!
-//! Provides a 3-tier save system with automatic compression:
+//! Provides a 3-tier save system:
 //!
-//! - **Tier 1: System State** - Low-level engine state (settings, audio levels, etc.)
-//! - **Tier 2: World State** - ECS world snapshots (entities and serializable components)
-//! - **Tier 3: Game Data** - Generic user data for game-specific saves
+//! - **Tier 1: System State** - User settings (display, audio, keybindings) [JSON, uncompressed]
+//! - **Tier 2: World State** - ECS world snapshots (entities and serializable components) [compressed]
+//! - **Tier 3: Game Data** - Generic user data for game-specific saves [compressed]
 //!
-//! All save files are compressed using DEFLATE compression for efficient storage.
+//! Tier 1 uses plain JSON for human readability and easy manual editing.
+//! Tiers 2-3 are compressed using DEFLATE compression for efficient storage.
 //!
 //! # Configuration
 //!
@@ -24,7 +25,42 @@
 //! save_manager.set_save_dir("my_custom_saves");
 //! ```
 //!
-//! # Example
+//! # Tier 1 Example (User Settings)
+//!
+//! ```rust,ignore
+//! use ryo2d::prelude::*;
+//!
+//! // Load or create system state
+//! let mut settings = save_manager.load_system()?;
+//!
+//! // Modify settings
+//! settings.display.width = 1920;
+//! settings.display.height = 1080;
+//! settings.master_volume = 0.75;
+//! settings.set_setting("language", "en");
+//!
+//! // Save as human-editable JSON
+//! save_manager.save_system(&settings)?;
+//!
+//! // system.json contents:
+//! // {
+//! //   "master_volume": 0.75,
+//! //   "music_volume": 0.8,
+//! //   "sfx_volume": 1.0,
+//! //   "display": {
+//! //     "width": 1920,
+//! //     "height": 1080,
+//! //     "fullscreen": false,
+//! //     "vsync": true
+//! //   },
+//! //   "show_fps": true,
+//! //   "settings": {
+//! //     "language": "en"
+//! //   }
+//! // }
+//! ```
+//!
+//! # Tier 3 Example (Game Data)
 //!
 //! ```rust,ignore
 //! use ryo2d::prelude::*;
@@ -44,7 +80,7 @@
 //!     unlocked_items: vec!["sword".into(), "shield".into()],
 //! };
 //!
-//! // Save game data to slot
+//! // Save game data to slot (compressed)
 //! save_manager.save_game("slot1", &progress)?;
 //!
 //! // Load game data
@@ -73,8 +109,8 @@ const MAGIC: &[u8; 4] = b"RYO2";
 /// Current save format version
 const SAVE_VERSION: u32 = 1;
 
-/// File extension for system saves
-const SYSTEM_EXTENSION: &str = "ryo-system";
+/// File extension for system saves (JSON)
+const SYSTEM_EXTENSION: &str = "json";
 
 /// File extension for world saves
 const WORLD_EXTENSION: &str = "ryo-world";
@@ -86,15 +122,21 @@ const GAME_EXTENSION: &str = "ryo-save";
 // Tier 1: System State
 // ============================================================================
 
-/// Low-level system state for engine settings.
+/// User settings and configuration (Tier 1).
 ///
-/// This tier handles engine-level configuration that persists across sessions:
+/// This tier handles user-editable configuration in JSON format:
 /// - Audio volume levels
-/// - Display settings
-/// - Key bindings
-/// - Debug flags
+/// - Display settings (resolution, fullscreen, vsync)
+/// - Engine overrides (e.g., show_fps)
+/// - Custom key-value storage for game-specific settings
 ///
-/// System state is saved to `{save_dir}/system.ryo-system`.
+/// **Note:** system.json fields do not necessarily have a 1-to-1 mapping with Ryo.toml.
+/// For example, `show_fps` is an engine-level override in system.json but a debug
+/// setting in Ryo.toml. Use system.json for user preferences and Ryo.toml for
+/// game developer defaults.
+///
+/// Saved as human-readable JSON to `{save_dir}/system.json`.
+/// Users can manually edit this file for advanced configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SystemState {
   /// Master volume (0.0 - 1.0)
@@ -107,9 +149,13 @@ pub struct SystemState {
   /// Display settings
   pub display: DisplaySettings,
 
-  /// Custom key-value storage for engine extensions
+  /// Show FPS counter (engine override, optional)
   #[serde(default)]
-  pub custom: HashMap<String, String>,
+  pub show_fps: Option<bool>,
+
+  /// Custom key-value storage for game-specific settings
+  #[serde(default)]
+  pub settings: HashMap<String, String>,
 }
 
 /// Display configuration
@@ -144,18 +190,19 @@ impl SystemState {
       music_volume: 0.8,
       sfx_volume: 1.0,
       display: DisplaySettings::default(),
-      custom: HashMap::new(),
+      show_fps: None,
+      settings: HashMap::new(),
     }
   }
 
-  /// Set a custom key-value pair
-  pub fn set_custom(&mut self, key: impl Into<String>, value: impl Into<String>) {
-    self.custom.insert(key.into(), value.into());
+  /// Set a custom setting key-value pair
+  pub fn set_setting(&mut self, key: impl Into<String>, value: impl Into<String>) {
+    self.settings.insert(key.into(), value.into());
   }
 
-  /// Get a custom value by key
-  pub fn get_custom(&self, key: &str) -> Option<&str> {
-    self.custom.get(key).map(|s| s.as_str())
+  /// Get a setting value by key
+  pub fn get_setting(&self, key: &str) -> Option<&str> {
+    self.settings.get(key).map(|s| s.as_str())
   }
 }
 
@@ -295,9 +342,9 @@ impl<T> GameSaveData<T> {
 ///
 /// ```text
 /// {workspace}/data/
-/// ├── system.ryo-system    # Tier 1: System state
-/// ├── slot1.ryo-world      # Tier 2: World snapshots
-/// ├── slot1.ryo-save       # Tier 3: Game data
+/// ├── system.json          # Tier 1: User settings (uncompressed JSON)
+/// ├── slot1.ryo-world      # Tier 2: World snapshots (compressed)
+/// ├── slot1.ryo-save       # Tier 3: Game data (compressed)
 /// ├── slot2.ryo-world
 /// ├── slot2.ryo-save
 /// └── ...
@@ -349,16 +396,19 @@ impl SaveManager {
   }
 
   // ==========================================================================
-  // Tier 1: System State
+  // Tier 1: System State (JSON, uncompressed)
   // ==========================================================================
 
-  /// Save system state to disk.
+  /// Save system state as human-editable JSON.
+  ///
+  /// Unlike world/game saves, system state is stored as uncompressed JSON
+  /// so users can manually edit settings if needed.
   pub fn save_system(&self, state: &SystemState) -> SaveResult<()> {
     let path = self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION));
-    self.write_save_file(&path, state)
+    self.write_json_file(&path, state)
   }
 
-  /// Load system state from disk.
+  /// Load system state from JSON file.
   ///
   /// Returns default state if no save file exists.
   pub fn load_system(&self) -> SaveResult<SystemState> {
@@ -366,7 +416,7 @@ impl SaveManager {
     if !path.exists() {
       return Ok(SystemState::new());
     }
-    self.read_save_file(&path)
+    self.read_json_file(&path)
   }
 
   /// Check if system state exists.
@@ -502,6 +552,25 @@ impl SaveManager {
   // Internal Helpers
   // ==========================================================================
 
+  /// Write data as pretty-printed JSON (for Tier 1: SystemState)
+  fn write_json_file<T: Serialize>(&self, path: &Path, data: &T) -> SaveResult<()> {
+    let json =
+      serde_json::to_string_pretty(data).map_err(|e| SaveError::Serialization(e.to_string()))?;
+    let mut file = File::create(path)?;
+    file.write_all(json.as_bytes())?;
+    file.flush()?;
+    Ok(())
+  }
+
+  /// Read data from JSON file (for Tier 1: SystemState)
+  fn read_json_file<T: DeserializeOwned>(&self, path: &Path) -> SaveResult<T> {
+    let json = fs::read_to_string(path)?;
+    let data =
+      serde_json::from_str(&json).map_err(|e| SaveError::Deserialization(e.to_string()))?;
+    Ok(data)
+  }
+
+  /// Write compressed save file with header (for Tiers 2-3)
   fn write_save_file<T: Serialize>(&self, path: &Path, data: &T) -> SaveResult<()> {
     // Serialize to RON format
     let serialized = ron::to_string(data).map_err(|e| SaveError::Serialization(e.to_string()))?;
@@ -519,6 +588,7 @@ impl SaveManager {
     Ok(())
   }
 
+  /// Read compressed save file with header verification (for Tiers 2-3)
   fn read_save_file<T: DeserializeOwned>(&self, path: &Path) -> SaveResult<T> {
     let mut file = File::open(path)?;
 
@@ -669,7 +739,7 @@ mod tests {
     state.music_volume = 0.5;
     state.display.width = 1920;
     state.display.height = 1080;
-    state.set_custom("language", "en");
+    state.set_setting("language", "en");
 
     manager.save_system(&state).unwrap();
     assert!(manager.has_system_save());
@@ -679,7 +749,7 @@ mod tests {
     assert_eq!(loaded.music_volume, 0.5);
     assert_eq!(loaded.display.width, 1920);
     assert_eq!(loaded.display.height, 1080);
-    assert_eq!(loaded.get_custom("language"), Some("en"));
+    assert_eq!(loaded.get_setting("language"), Some("en"));
   }
 
   #[test]
@@ -690,6 +760,34 @@ mod tests {
     let state = manager.load_system().unwrap();
     assert_eq!(state.master_volume, 1.0);
     assert_eq!(state.music_volume, 0.8);
+  }
+
+  #[test]
+  fn system_state_is_json_format() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let mut state = SystemState::new();
+    state.master_volume = 0.75;
+    state.display.width = 1920;
+    state.display.height = 1080;
+    state.set_setting("language", "en");
+
+    manager.save_system(&state).unwrap();
+
+    // Read raw file and verify it's JSON (not compressed)
+    let path = dir.path().join("system.json");
+    let content = fs::read_to_string(&path).unwrap();
+
+    // Should be valid JSON
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed["master_volume"], 0.75);
+    assert_eq!(parsed["display"]["width"], 1920);
+    assert_eq!(parsed["settings"]["language"], "en");
+
+    // Should be human-readable (contains newlines from pretty-print)
+    assert!(content.contains('\n'));
+    assert!(content.contains("master_volume"));
   }
 
   #[test]

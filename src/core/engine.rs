@@ -485,14 +485,15 @@ impl Engine {
     if let Some(mut game) = self.game.take() {
       let mut ui_ctx = UiContext::new(frame, frame_width, frame_height, &self.input, &self.ui_font);
 
-      // Render FPS counter if enabled
+      game.render_ui(&mut ui_ctx);
+
+      // Render FPS counter after game UI so it's always on top
       if self.config.debug.show_fps
         && let Some(time) = &self.time
       {
         debug::render_fps_counter(&mut ui_ctx, time.current_fps);
       }
 
-      game.render_ui(&mut ui_ctx);
       self.game = Some(game);
     }
 
@@ -763,12 +764,16 @@ impl EngineBuilder {
   /// file and applies it to the engine. Call this to automatically
   /// enable debug features configured in Ryo.toml.
   ///
+  /// Note: User settings in system.json can override these values.
+  /// Call `with_system_state_overrides()` after this to apply user preferences.
+  ///
   /// # Example
   ///
   /// ```rust,ignore
   /// EngineBuilder::new()
   ///     .title("My Game")
   ///     .with_workspace_debug()  // Reads [debug] from Ryo.toml
+  ///     .with_system_state_overrides()  // Apply user overrides from system.json
   ///     .with_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
@@ -780,6 +785,41 @@ impl EngineBuilder {
       self.config.debug.show_fps = debug.show_fps;
       self.config.debug.show_velocities = debug.show_velocities;
       self.config.debug.show_origins = debug.show_origins;
+    }
+    self
+  }
+
+  /// Apply user preference overrides from system.json.
+  ///
+  /// Loads the system state from the workspace's data directory and applies
+  /// any overrides. This allows users to override engine settings without
+  /// editing Ryo.toml.
+  ///
+  /// Note: system.json fields may not have a 1-to-1 mapping with Ryo.toml.
+  /// For example, `show_fps` is a top-level field in system.json but a debug
+  /// setting in Ryo.toml.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("My Game")
+  ///     .with_workspace_debug()  // Load Ryo.toml defaults
+  ///     .with_system_state_overrides()  // Apply user overrides from system.json
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn with_system_state_overrides(mut self) -> Self {
+    if let Ok(workspace) = super::workspace::Workspace::discover() {
+      if let Ok(save_manager) = workspace.create_save_manager() {
+        if let Ok(system_state) = save_manager.load_system() {
+          // Apply overrides if present
+          if let Some(show_fps) = system_state.show_fps {
+            self.config.debug.show_fps = show_fps;
+          }
+        }
+      }
     }
     self
   }
