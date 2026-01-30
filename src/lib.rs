@@ -98,7 +98,9 @@ pub mod prelude {
   pub use winit::keyboard::KeyCode;
 
   // Audio
-  pub use crate::core::audio::{AudioManager, MusicHandle, SoundHandle};
+  pub use crate::core::audio::{
+    AudioManager, MusicHandle, MusicOptions, SoundHandle, SoundOptions,
+  };
 
   // Workspace
   pub use crate::core::workspace::{Workspace, WorkspaceConfig};

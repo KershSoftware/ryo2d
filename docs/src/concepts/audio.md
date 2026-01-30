@@ -77,29 +77,42 @@ audio.load_sound("laser", "assets/sounds/laser.ogg")?;
 ### Playing Sound Effects
 
 ```rust
-// Play a loaded sound
+// Play a loaded sound with default options
 let handle = audio.play_sound("explosion")?;
 
-// Play with custom volume (0.0 - 1.0)
-let handle = audio.play_sound_with_volume("explosion", 0.5)?;
+// Play with custom options using the builder pattern
+let handle = audio.play_sound_with("explosion", SoundOptions::new()
+    .volume(0.5)        // 50% volume
+    .panning(-0.3)      // Slightly left
+    .playback_rate(1.2) // 20% faster
+)?;
 ```
 
 ### Playing Music
 
-Music is streamed from disk, making it memory-efficient for long tracks:
+Music is streamed from disk, making it memory-efficient for long tracks. By default, music loops.
 
 ```rust
-// Play music (non-looping)
-let music = audio.play_music("assets/music/theme.ogg", false)?;
+// Play looping music with defaults
+let music = audio.play_music("assets/music/theme.ogg")?;
 
-// Play looping music
-let music = audio.play_music("assets/music/ambient.ogg", true)?;
+// Play once (no loop) with a fade-in effect
+let music = audio.play_music_with("assets/music/intro.ogg", MusicOptions::new()
+    .once()
+    .fade_in(Duration::from_secs(2))
+)?;
 
-// Play with fade-in effect (2 second fade)
-let music = audio.play_music_with_fade_in(
-    "assets/music/intro.ogg",
-    true,
-    Duration::from_secs(2),
+// Auto-fade-out when the handle is dropped (scene exits)
+let music = audio.play_music_with("assets/music/level.ogg", MusicOptions::new()
+    .fade_out_on_drop(Duration::from_millis(500))
+)?;
+
+// Full customization
+let music = audio.play_music_with("assets/music/boss.ogg", MusicOptions::new()
+    .volume(0.8)
+    .looping(true)
+    .fade_in(Duration::from_secs(1))
+    .fade_out_on_drop(Duration::from_millis(500))
 )?;
 ```
 
@@ -139,7 +152,7 @@ if handle.is_finished() {
 ### MusicHandle (for music)
 
 ```rust
-let mut music = audio.play_music("assets/music/boss.ogg", true)?;
+let mut music = audio.play_music("assets/music/boss.ogg")?;
 
 // Same controls as SoundHandle
 music.pause();
@@ -172,7 +185,26 @@ let sfx = audio.sfx_volume();
 let music = audio.music_volume();
 ```
 
-The effective volume is: `master * category_volume * sound_volume`
+The effective volume is calculated as: `master × category × sound`
+
+For example, if master is 0.5, SFX is 0.5, and you call:
+```rust
+audio.play_sound_with("explosion", SoundOptions::new().volume(0.5))?;
+```
+The final volume is 0.5 × 0.5 × 0.5 = 0.125 (12.5%)
+
+### Updating Music Volume in Real-Time
+
+Music volume changes are applied when tracks start. To update playing music:
+
+```rust
+// When music category volume changes, update the active track
+if let Some(music) = &mut self.music_handle {
+    music.update_category_volume(audio.master_volume(), audio.music_volume());
+}
+```
+
+This is useful in pause menus or settings screens where users adjust volume sliders.
 
 ## Positional Audio (Panning)
 
@@ -182,7 +214,7 @@ For 2D games, you can position sounds in the stereo field using panning. This ma
 
 ```rust
 // Play sound panned to the left (-1.0 = left, 0.0 = center, 1.0 = right)
-let handle = audio.play_sound_panned("explosion", -0.5)?;
+let handle = audio.play_sound_with("explosion", SoundOptions::new().panning(-0.5))?;
 
 // Calculate pan based on screen position
 fn screen_position_to_pan(x: f32, screen_width: f32) -> f32 {
@@ -191,7 +223,7 @@ fn screen_position_to_pan(x: f32, screen_width: f32) -> f32 {
 }
 
 let pan = screen_position_to_pan(enemy_x, 800.0);
-audio.play_sound_panned("enemy_hit", pan)?;
+audio.play_sound_with("enemy_hit", SoundOptions::new().panning(pan))?;
 ```
 
 ### Adjust panning on playing sounds
@@ -212,11 +244,10 @@ Adjust the playback rate to change both speed and pitch of sounds:
 
 ```rust
 // Play at half speed (lower pitch)
-let mut handle = audio.play_sound("laser")?;
-handle.set_playback_rate(0.5);
+let handle = audio.play_sound_with("laser", SoundOptions::new().playback_rate(0.5))?;
 
 // Play at double speed (higher pitch)
-handle.set_playback_rate(2.0);
+let handle = audio.play_sound_with("laser", SoundOptions::new().playback_rate(2.0))?;
 ```
 
 ### Common use cases
@@ -228,23 +259,42 @@ handle.set_playback_rate(2.0);
 ```rust
 // Randomize pitch slightly for variety
 let pitch = 0.9 + rand::random::<f32>() * 0.2;  // 0.9 to 1.1
-let mut handle = audio.play_sound("footstep")?;
-handle.set_playback_rate(pitch);
+let handle = audio.play_sound_with("footstep", SoundOptions::new().playback_rate(pitch))?;
 ```
 
-## Full Customization
+## SoundOptions and MusicOptions
 
-Use `play_sound_ex` for complete control over all parameters at once:
+Use builder-pattern structs for full control:
+
+### SoundOptions
 
 ```rust
-// play_sound_ex(name, volume, pan, playback_rate)
-let handle = audio.play_sound_ex(
-    "explosion",
-    0.8,    // 80% volume
-    -0.3,   // Slightly left
-    1.2,    // 20% faster/higher pitch
-)?;
+let options = SoundOptions::new()
+    .volume(0.8)        // 0.0-1.0, default: 1.0
+    .panning(-0.5)      // -1.0 to 1.0, default: 0.0 (center)
+    .playback_rate(1.5); // default: 1.0
+
+audio.play_sound_with("explosion", options)?;
 ```
+
+### MusicOptions
+
+```rust
+let options = MusicOptions::new()
+    .volume(0.8)                                    // 0.0-1.0, default: 1.0
+    .panning(0.0)                                   // -1.0 to 1.0, default: 0.0
+    .playback_rate(1.0)                             // default: 1.0
+    .looping(true)                                  // default: true
+    .fade_in(Duration::from_secs(2))                // default: None (no fade)
+    .fade_out_on_drop(Duration::from_millis(500));  // default: None (no fade)
+
+audio.play_music_with("assets/music/boss.ogg", options)?;
+
+// Shorthand for non-looping
+let options = MusicOptions::new().once();  // Same as .looping(false)
+```
+
+The `fade_out_on_drop` option automatically fades out music when the handle is dropped (e.g., when a scene exits). This ensures smooth transitions without manual cleanup.
 
 ## Music System
 
@@ -258,10 +308,8 @@ Use fading for professional-sounding music transitions:
 use std::time::Duration;
 
 // Start music with a fade-in
-let mut music = audio.play_music_with_fade_in(
-    "assets/music/level1.ogg",
-    true,  // loop
-    Duration::from_secs(2),
+let mut music = audio.play_music_with("assets/music/level1.ogg", MusicOptions::new()
+    .fade_in(Duration::from_secs(2))
 )?;
 
 // Fade out when leaving the level
@@ -289,14 +337,21 @@ Smoothly transition between two music tracks:
 
 ```rust
 // Current music is playing...
-let mut current_music = audio.play_music("assets/music/explore.ogg", true)?;
+let mut current_music = audio.play_music("assets/music/explore.ogg")?;
 
 // Later, crossfade to boss music (2 second transition)
 let boss_music = audio.crossfade_music(
     &mut current_music,
     "assets/music/boss.ogg",
-    true,
     Duration::from_secs(2),
+)?;
+
+// With custom options for the new track
+let boss_music = audio.crossfade_music_with(
+    &mut current_music,
+    "assets/music/boss.ogg",
+    Duration::from_secs(2),
+    MusicOptions::new().volume(0.8),
 )?;
 ```
 
@@ -313,17 +368,18 @@ The crossfade will:
 self.music.fade_out_and_stop(Duration::from_millis(500));
 // Load new level...
 // Start new music with fade-in
-self.music = audio.play_music_with_fade_in("new_level.ogg", true, Duration::from_secs(1))?;
+self.music = audio.play_music_with("new_level.ogg", MusicOptions::new()
+    .fade_in(Duration::from_secs(1))
+)?;
 ```
 
 **Intensity changes:**
 ```rust
-// Combat starts - increase intensity
+// Combat starts - crossfade to combat music
 if combat_started {
     self.music = audio.crossfade_music(
         &mut self.music,
         "combat.ogg",
-        true,
         Duration::from_secs(1),
     )?;
 }
@@ -333,7 +389,6 @@ if combat_ended {
     self.music = audio.crossfade_music(
         &mut self.music,
         "explore.ogg",
-        true,
         Duration::from_secs(2),
     )?;
 }
@@ -415,13 +470,13 @@ if let Some(audio) = &mut self.audio {
 audio.load_sound("hit", "assets/hit.wav");
 
 // Long audio (music, ambient): play_music (streams from disk)
-audio.play_music("assets/music/level1.ogg", true);
+audio.play_music("assets/music/level1.ogg")?;
 ```
 
 ### 4. Reuse sound handles for control
 ```rust
 // Store handle if you need to control it later
-self.music_handle = Some(audio.play_music("theme.ogg", true)?);
+self.music_handle = Some(audio.play_music("theme.ogg")?);
 
 // Later...
 if let Some(handle) = &mut self.music_handle {
@@ -452,7 +507,7 @@ impl Game for AudioDemo {
             let _ = audio.load_sound("blip", "assets/blip.wav");
             
             // Start background music
-            if let Ok(music) = audio.play_music("assets/music.ogg", true) {
+            if let Ok(music) = audio.play_music("assets/music.ogg") {
                 self.music = Some(music);
             }
             

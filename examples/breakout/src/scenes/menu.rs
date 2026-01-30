@@ -17,6 +17,8 @@ pub struct MenuScene {
   start_clicked: bool,
   /// Wait for escape to be released before accepting input
   escape_was_released: bool,
+  /// Background music
+  music: Option<MusicHandle>,
 }
 
 impl MenuScene {
@@ -26,6 +28,17 @@ impl MenuScene {
       high_score: load_high_score(),
       start_clicked: false,
       escape_was_released: false,
+      music: None,
+    }
+  }
+
+  /// Create a new menu scene with music from previous scene for crossfading
+  pub fn with_prev_music(prev_music: Option<MusicHandle>) -> Self {
+    Self {
+      high_score: load_high_score(),
+      start_clicked: false,
+      escape_was_released: false,
+      music: prev_music,
     }
   }
 }
@@ -42,6 +55,30 @@ impl Scene for MenuScene {
     ctx
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
+
+    // Load and start menu background music
+    if let Some(audio) = ctx.audio.as_mut() {
+      let _ = audio.load_sound("intro_sfx", "assets/audio/intro-sfx.wav");
+
+      // If we have music from previous scene (game), crossfade to menu music
+      if let Some(mut prev_music) = self.music.take() {
+        if let Ok(music) = audio.crossfade_music(
+          &mut prev_music,
+          "assets/audio/bgm-main-menu.mp3",
+          Duration::from_millis(1000),
+        ) {
+          self.music = Some(music);
+        }
+      } else {
+        // No previous music, just start menu music with auto-fade on scene exit
+        if let Ok(music) = audio.play_music_with(
+          "assets/audio/bgm-main-menu.mp3",
+          MusicOptions::new().fade_out_on_drop(Duration::from_millis(500)),
+        ) {
+          self.music = Some(music);
+        }
+      }
+    }
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -56,8 +93,16 @@ impl Scene for MenuScene {
       || self.start_clicked
     {
       self.start_clicked = false;
+
+      // Play intro sound effect
+      if let Some(audio) = ctx.audio.as_mut() {
+        let _ = audio.play_sound_with("intro_sfx", SoundOptions::new().volume(0.5));
+      }
+
+      // Take music handle to pass to game for crossfading
+      let music = self.music.take();
       return SceneAction::SwitchWith(
-        Box::new(GameScene::new(self.high_score)),
+        Box::new(GameScene::with_prev_music(self.high_score, music)),
         Transition::fade(Duration::from_millis(300)),
       );
     }

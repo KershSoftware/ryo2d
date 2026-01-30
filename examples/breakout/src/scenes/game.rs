@@ -38,6 +38,8 @@ pub struct GameScene {
 
   // Background music
   music: Option<MusicHandle>,
+  // Previous scene's music for crossfading
+  prev_music: Option<MusicHandle>,
 }
 
 impl GameScene {
@@ -58,6 +60,28 @@ impl GameScene {
       blocks_remaining: 0,
       escape_was_released: true,
       music: None,
+      prev_music: None,
+    }
+  }
+
+  /// Create a new game scene with music from previous scene for crossfading
+  pub fn with_prev_music(high_score: u32, prev_music: Option<MusicHandle>) -> Self {
+    Self {
+      score: 0,
+      high_score,
+      lives: STARTING_LIVES,
+      level: 1,
+      game_started: false,
+      game_over: false,
+      paddle: None,
+      ball: None,
+      blocks: Vec::new(),
+      walls: Vec::new(),
+      death_zone: None,
+      blocks_remaining: 0,
+      escape_was_released: true,
+      music: None,
+      prev_music,
     }
   }
 
@@ -68,7 +92,14 @@ impl GameScene {
       RigidBody::kinematic(),
       Collider::box_collider(PADDLE_WIDTH, PADDLE_HEIGHT),
       SpriteRenderer::new(SpriteHandle::from_sprite(
-        Sprite::solid_rect(PADDLE_WIDTH as u32, PADDLE_HEIGHT as u32, 0x40, 0xc0, 0xff, 0xff),
+        Sprite::solid_rect(
+          PADDLE_WIDTH as u32,
+          PADDLE_HEIGHT as u32,
+          0x40,
+          0xc0,
+          0xff,
+          0xff,
+        ),
         "paddle",
       ))
       .with_z_order(10),
@@ -225,7 +256,7 @@ impl GameScene {
   fn handle_ball_death(&mut self, ctx: &mut SceneContext) {
     // Play death sound
     if let Some(audio) = ctx.audio.as_mut() {
-      let _ = audio.play_sound_with_volume("ball_death", 0.5);
+      let _ = audio.play_sound_with("ball_death", SoundOptions::new().volume(0.5));
     }
 
     self.lives = self.lives.saturating_sub(1);
@@ -286,7 +317,7 @@ impl GameScene {
       if remaining_hits == 0 {
         // Play block break sound
         if let Some(audio) = ctx.audio.as_mut() {
-          let _ = audio.play_sound_with_volume("block_break", 0.15);
+          let _ = audio.play_sound_with("block_break", SoundOptions::new().volume(0.15));
         }
 
         // Destroy block
@@ -345,10 +376,24 @@ impl Scene for GameScene {
       let _ = audio.load_sound("paddle_hit", "assets/audio/bounce.wav");
       let _ = audio.load_sound("block_break", "assets/audio/break.wav");
       let _ = audio.load_sound("ball_death", "assets/audio/life-lost.wav");
-      
-      // Start background music (looping)
-      if let Ok(music) = audio.play_music("assets/audio/bgm.mp3", true) {
-        self.music = Some(music);
+
+      // Crossfade from previous music to game music if available
+      if let Some(mut prev_music) = self.prev_music.take() {
+        if let Ok(music) = audio.crossfade_music(
+          &mut prev_music,
+          "assets/audio/bgm.mp3",
+          Duration::from_millis(1000),
+        ) {
+          self.music = Some(music);
+        }
+      } else {
+        // No previous music, just start game music with auto-fade on scene exit
+        if let Ok(music) = audio.play_music_with(
+          "assets/audio/bgm.mp3",
+          MusicOptions::new().fade_out_on_drop(Duration::from_millis(500)),
+        ) {
+          self.music = Some(music);
+        }
       }
     }
 
@@ -381,7 +426,11 @@ impl Scene for GameScene {
     // Pause (only if escape was released since last pause)
     if self.escape_was_released && ctx.input.key_pressed(KeyCode::Escape) {
       self.escape_was_released = false;
-      return SceneAction::Push(Box::new(PauseScene::new(self.score, self.high_score)));
+      return SceneAction::Push(Box::new(PauseScene::with_music(
+        self.score,
+        self.high_score,
+        self.music.as_mut(),
+      )));
     }
 
     // Check for game over
@@ -401,6 +450,9 @@ impl Scene for GameScene {
           || ctx.input.key_pressed(KeyCode::Escape);
 
         if any_key_pressed {
+          // Drop music handle (will fade out via fade_out_on_drop)
+          // Don't pass to menu - let it stop cleanly
+          self.music = None;
           return SceneAction::SwitchWith(
             Box::new(MenuScene::new()),
             Transition::fade(Duration::from_millis(500)),
@@ -491,7 +543,7 @@ impl Scene for GameScene {
         if self.paddle == Some(other) {
           // Play paddle hit sound
           if let Some(audio) = ctx.audio.as_mut() {
-            let _ = audio.play_sound_with_volume("paddle_hit", 0.15);
+            let _ = audio.play_sound_with("paddle_hit", SoundOptions::new().volume(0.15));
           }
 
           if let (Some(ball_transform), Some(paddle_transform)) = (

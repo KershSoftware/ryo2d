@@ -305,6 +305,7 @@ impl Engine {
       config.width,
       config.height,
     );
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut assets = AssetManager::new();
     let ui_font = create_debug_font();
     let initial_size = (config.width, config.height);

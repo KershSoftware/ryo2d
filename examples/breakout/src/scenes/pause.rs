@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use ryo2d::prelude::*;
 
-use crate::save::save_high_score;
 use super::MenuScene;
+use crate::save::save_high_score;
 
 /// Pause menu overlay
 pub struct PauseScene {
@@ -23,11 +23,22 @@ pub struct PauseScene {
   settings: SystemState,
   /// Track if we need to save settings
   settings_changed: bool,
+  /// Previous volume values for detecting changes
+  prev_master_volume: f32,
+  prev_music_volume: f32,
+  prev_sfx_volume: f32,
+  /// Reference to the parent scene's music for real-time volume updates
+  parent_music: Option<*mut MusicHandle>,
 }
 
 impl PauseScene {
   /// Create a new pause scene
   pub fn new(score: u32, high_score: u32) -> Self {
+    Self::with_music(score, high_score, None)
+  }
+
+  /// Create a new pause scene with a reference to the parent's music
+  pub fn with_music(score: u32, high_score: u32, parent_music: Option<&mut MusicHandle>) -> Self {
     // Try to load existing settings, or use defaults
     let settings = if let Ok(workspace) = Workspace::discover() {
       if let Ok(save_manager) = workspace.create_save_manager() {
@@ -39,6 +50,10 @@ impl PauseScene {
       SystemState::default()
     };
 
+    let prev_master_volume = settings.master_volume;
+    let prev_music_volume = settings.music_volume;
+    let prev_sfx_volume = settings.sfx_volume;
+
     Self {
       score,
       high_score,
@@ -48,6 +63,10 @@ impl PauseScene {
       quit_desktop_clicked: false,
       settings,
       settings_changed: false,
+      prev_master_volume,
+      prev_music_volume,
+      prev_sfx_volume,
+      parent_music: parent_music.map(|m| m as *mut MusicHandle),
     }
   }
 }
@@ -58,6 +77,33 @@ impl Scene for PauseScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    // Check if volumes changed since last frame and apply immediately
+    let master_changed = (self.settings.master_volume - self.prev_master_volume).abs() > 0.001;
+    let music_changed = (self.settings.music_volume - self.prev_music_volume).abs() > 0.001;
+    let sfx_changed = (self.settings.sfx_volume - self.prev_sfx_volume).abs() > 0.001;
+
+    if master_changed || music_changed || sfx_changed {
+      if let Some(audio) = ctx.audio.as_mut() {
+        audio.set_master_volume(self.settings.master_volume);
+        audio.set_music_volume(self.settings.music_volume);
+        audio.set_sfx_volume(self.settings.sfx_volume);
+
+        // Update playing music in real-time if we have a reference to it
+        if let Some(music_ptr) = self.parent_music {
+          unsafe {
+            if let Some(music) = music_ptr.as_mut() {
+              music.update_category_volume(audio.master_volume(), audio.music_volume());
+            }
+          }
+        }
+      }
+      // Update previous values
+      self.prev_master_volume = self.settings.master_volume;
+      self.prev_music_volume = self.settings.music_volume;
+      self.prev_sfx_volume = self.settings.sfx_volume;
+      self.settings_changed = true;
+    }
+
     // Wait for Escape to be released before accepting new Escape presses
     // This prevents the same keypress that opened the menu from closing it
     if !self.escape_was_released && !ctx.input.key_down(KeyCode::Escape) {
@@ -67,14 +113,7 @@ impl Scene for PauseScene {
     // Check for button clicks from previous render_ui
     if self.resume_clicked {
       self.resume_clicked = false;
-      
-      // Apply volume changes to audio manager
-      if let Some(audio) = ctx.audio.as_mut() {
-        audio.set_master_volume(self.settings.master_volume);
-        audio.set_music_volume(self.settings.music_volume);
-        audio.set_sfx_volume(self.settings.sfx_volume);
-      }
-      
+
       // Save settings if changed
       if self.settings_changed {
         if let Ok(workspace) = Workspace::discover() {
@@ -82,8 +121,9 @@ impl Scene for PauseScene {
             let _ = save_manager.save_system(&self.settings);
           }
         }
+        self.settings_changed = false; // Clear after saving
       }
-      
+
       return SceneAction::Pop;
     }
 
@@ -178,7 +218,8 @@ impl Scene for PauseScene {
       1.0,
     );
     if master_changed {
-      self.settings_changed = true;
+      // Round to 0.05 increments
+      self.settings.master_volume = (self.settings.master_volume * 20.0).round() / 20.0;
     }
 
     // Music Volume
@@ -189,13 +230,19 @@ impl Scene for PauseScene {
       Color::WHITE,
     );
     let music_changed = ui.slider(
-      Rect::new(slider_x, slider_y_start + slider_spacing + 20.0, slider_w, 8.0),
+      Rect::new(
+        slider_x,
+        slider_y_start + slider_spacing + 20.0,
+        slider_w,
+        8.0,
+      ),
       &mut self.settings.music_volume,
       0.0,
       1.0,
     );
     if music_changed {
-      self.settings_changed = true;
+      // Round to 0.05 increments
+      self.settings.music_volume = (self.settings.music_volume * 20.0).round() / 20.0;
     }
 
     // SFX Volume
@@ -206,12 +253,23 @@ impl Scene for PauseScene {
       Color::WHITE,
     );
     let sfx_changed = ui.slider(
-      Rect::new(slider_x, slider_y_start + slider_spacing * 2.0 + 20.0, slider_w, 8.0),
+      Rect::new(
+        slider_x,
+        slider_y_start + slider_spacing * 2.0 + 20.0,
+        slider_w,
+        8.0,
+      ),
       &mut self.settings.sfx_volume,
       0.0,
       1.0,
     );
     if sfx_changed {
+      // Round to 0.05 increments
+      self.settings.sfx_volume = (self.settings.sfx_volume * 20.0).round() / 20.0;
+    }
+
+    // Apply volume changes immediately for real-time feedback
+    if master_changed || music_changed || sfx_changed {
       self.settings_changed = true;
     }
 
