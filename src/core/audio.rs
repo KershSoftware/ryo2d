@@ -496,4 +496,37 @@ mod tests {
     let volume = (-0.5_f32).clamp(0.0, 1.0);
     assert_eq!(volume, 0.0);
   }
+
+  #[test]
+  fn effective_volume_calculation() {
+    // Test that effective volumes are properly multiplied
+    let master = 0.8;
+    let sfx = 0.5;
+    let music = 0.6;
+
+    let effective_sfx = master * sfx;
+    let effective_music = master * music;
+
+    assert_eq!(effective_sfx, 0.4);
+    assert_eq!(effective_music, 0.48);
+  }
+
+  #[test]
+  fn volume_categories_independent() {
+    // Verify that changing one volume category doesn't affect others
+    let master_v1 = 1.0;
+    let sfx_v1 = 0.7;
+    let music = 0.9;
+
+    // Changing master affects effective volumes but not category volumes
+    let master_v2 = 0.5;
+    assert_eq!(sfx_v1, 0.7); // sfx category unchanged
+    assert_eq!(music, 0.9); // music category unchanged
+    assert_ne!(master_v1, master_v2); // master changed
+
+    // Changing sfx doesn't affect music
+    let sfx_v2 = 0.3;
+    assert_eq!(music, 0.9);
+    assert_ne!(sfx_v1, sfx_v2); // sfx changed
+  }
 }

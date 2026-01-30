@@ -290,7 +290,14 @@ impl Engine {
     }
   }
 
-  fn new(config: EngineConfig, game: Box<dyn Game>, vsync: Option<bool>) -> Self {
+  fn new(
+    config: EngineConfig,
+    game: Box<dyn Game>,
+    vsync: Option<bool>,
+    master_volume: f32,
+    music_volume: f32,
+    sfx_volume: f32,
+  ) -> Self {
     let world = World::new();
     let camera = Camera::centered_at(
       config.width as f32 / 2.0,
@@ -316,7 +323,7 @@ impl Engine {
     }
 
     // Try to initialize audio (gracefully handle no audio device)
-    let audio = match AudioManager::new() {
+    let mut audio = match AudioManager::new() {
       Ok(manager) => Some(manager),
       Err(e) => {
         eprintln!(
@@ -326,6 +333,13 @@ impl Engine {
         None
       }
     };
+
+    // Apply audio volumes from system.json if audio was initialized
+    if let Some(ref mut audio_manager) = audio {
+      audio_manager.set_master_volume(master_volume);
+      audio_manager.set_music_volume(music_volume);
+      audio_manager.set_sfx_volume(sfx_volume);
+    }
 
     Engine {
       config,
@@ -847,6 +861,9 @@ pub struct EngineBuilder {
   config: EngineConfig,
   game: Option<Box<dyn Game>>,
   vsync: Option<bool>,
+  master_volume: f32,
+  music_volume: f32,
+  sfx_volume: f32,
 }
 
 impl EngineBuilder {
@@ -855,6 +872,9 @@ impl EngineBuilder {
       config: EngineConfig::default(),
       game: None,
       vsync: None,
+      master_volume: 1.0,
+      music_volume: 0.8,
+      sfx_volume: 1.0,
     }
   }
 
@@ -1060,6 +1080,10 @@ impl EngineBuilder {
       }
       // Store vsync preference to use when creating renderer
       self.vsync = system_state.vsync;
+      // Store audio volumes to apply after AudioManager creation
+      self.master_volume = system_state.master_volume;
+      self.music_volume = system_state.music_volume;
+      self.sfx_volume = system_state.sfx_volume;
     }
     self
   }
@@ -1111,7 +1135,14 @@ impl EngineBuilder {
     let game = self.game.expect(
       "EngineBuilder requires a game or scene - call .with_game() or .with_scene() before .build()",
     );
-    Engine::new(self.config, game, self.vsync)
+    Engine::new(
+      self.config,
+      game,
+      self.vsync,
+      self.master_volume,
+      self.music_volume,
+      self.sfx_volume,
+    )
   }
 }
 
