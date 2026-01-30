@@ -43,6 +43,9 @@ pub struct GameScene {
 
   // Debug mode flag
   debug_mode: bool,
+  // Debounce level switching - wait for key release
+  level_switch_q_released: bool,
+  level_switch_e_released: bool,
 }
 
 impl GameScene {
@@ -65,6 +68,8 @@ impl GameScene {
       music: None,
       prev_music: None,
       debug_mode: false,
+      level_switch_q_released: true,
+      level_switch_e_released: true,
     }
   }
 
@@ -87,6 +92,8 @@ impl GameScene {
       music: None,
       prev_music,
       debug_mode: false,
+      level_switch_q_released: true,
+      level_switch_e_released: true,
     }
   }
 
@@ -484,12 +491,23 @@ impl Scene for GameScene {
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Debug mode: Level switching with Q/E
     if self.debug_mode {
-      if ctx.input.key_pressed(KeyCode::KeyQ) {
+      // Track key releases for debouncing
+      if !ctx.input.key_down(KeyCode::KeyQ) {
+        self.level_switch_q_released = true;
+      }
+      if !ctx.input.key_down(KeyCode::KeyE) {
+        self.level_switch_e_released = true;
+      }
+
+      // Only switch if key was previously released
+      if ctx.input.key_pressed(KeyCode::KeyQ) && self.level_switch_q_released {
+        self.level_switch_q_released = false;
         // Previous level (wrap to 10)
         let new_level = if self.level == 1 { 10 } else { self.level - 1 };
         self.load_level(ctx, new_level);
         return SceneAction::Continue;
-      } else if ctx.input.key_pressed(KeyCode::KeyE) {
+      } else if ctx.input.key_pressed(KeyCode::KeyE) && self.level_switch_e_released {
+        self.level_switch_e_released = false;
         // Next level (wrap to 1)
         let new_level = if self.level == 10 { 1 } else { self.level + 1 };
         self.load_level(ctx, new_level);
