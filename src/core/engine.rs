@@ -1104,17 +1104,18 @@ impl EngineBuilder {
     let game = self.game.expect(
       "EngineBuilder requires a game or scene - call .with_game() or .with_scene() before .build()",
     );
-    
+
     // Automatically load workspace config if available
     let mut config = self.config;
     if let Ok(workspace) = super::workspace::Workspace::discover() {
       let debug = &workspace.config().debug;
+      let info = &workspace.config().info;
       config.debug.show_colliders = debug.show_colliders;
-      config.debug.show_fps = debug.show_fps;
+      config.debug.show_fps = info.show_fps;
       config.debug.show_velocities = debug.show_velocities;
       config.debug.show_origins = debug.show_origins;
     }
-    
+
     Engine::new(
       config,
       game,

@@ -8,18 +8,25 @@
 //! | Option | Description |
 //! |--------|-------------|
 //! | `show_colliders` | Draw collision boundaries (green outlines) |
-//! | `show_fps` | Display FPS counter overlay |
 //! | `show_velocities` | Draw velocity vectors on physics entities |
 //! | `show_origins` | Draw entity origin points (transform position) |
+//!
+//! # Available Info Overlays
+//!
+//! | Option | Description |
+//! |--------|-------------|
+//! | `show_fps` | Display FPS counter overlay |
 //!
 //! # Ryo.toml Configuration
 //!
 //! ```toml
 //! [debug]
 //! show_colliders = true
-//! show_fps = true
 //! show_velocities = false
 //! show_origins = false
+//!
+//! [info]
+//! show_fps = true
 //! ```
 //!
 //! # Programmatic Configuration

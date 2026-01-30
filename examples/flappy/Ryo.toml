@@ -12,11 +12,13 @@ save_data = "data"
 # Assets directory
 assets = "assets"
 
+[info]
+# Display FPS counter in corner
+show_fps = false
+
 [debug]
 # Show collision boundaries for debugging
 show_colliders = false
-# Display FPS counter in corner
-show_fps = false
 # Show velocity vectors (useful for physics debugging)
 show_velocities = false
 # Show entity origin points

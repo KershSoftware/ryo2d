@@ -80,6 +80,6 @@ breakout/
 ## Implementation Notes
 
 - **Physics tick rate**: 120 Hz for stable ball physics
-- **Render rate**: 60 FPS
+- **Render rate**: 144 FPS
 - **Level format**: RON (Rusty Object Notation) for easy editing
 - **Save location**: Configured via `Ryo.toml`, stored in `data/` directory

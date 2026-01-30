@@ -71,6 +71,8 @@ pub struct WorkspaceConfig {
   pub assets: PathBuf,
   /// Debug configuration options
   pub debug: DebugConfig,
+  /// Info overlay configuration
+  pub info: InfoConfig,
   /// Game-specific environment variables from [env] section
   pub env: std::collections::HashMap<String, toml::Value>,
 }
@@ -83,12 +85,19 @@ pub struct WorkspaceConfig {
 pub struct DebugConfig {
   /// Whether to render collision boundaries
   pub show_colliders: bool,
-  /// Whether to display FPS counter in corner
-  pub show_fps: bool,
   /// Whether to draw velocity vectors on physics entities
   pub show_velocities: bool,
   /// Whether to draw entity origin points
   pub show_origins: bool,
+}
+
+/// Info overlay configuration options.
+///
+/// Controls informational overlays shown during gameplay.
+#[derive(Debug, Clone, Default)]
+pub struct InfoConfig {
+  /// Whether to display FPS counter in corner
+  pub show_fps: bool,
 }
 
 /// Raw TOML structure for deserialization
@@ -97,6 +106,7 @@ struct RyoToml {
   project: Option<ProjectSection>,
   paths: Option<PathsSection>,
   debug: Option<DebugSection>,
+  info: Option<InfoSection>,
   /// Game-specific environment variables (arbitrary key-value pairs)
   #[serde(default)]
   env: std::collections::HashMap<String, toml::Value>,
@@ -117,9 +127,13 @@ struct PathsSection {
 #[derive(Debug, Deserialize, Default)]
 struct DebugSection {
   show_colliders: Option<bool>,
-  show_fps: Option<bool>,
   show_velocities: Option<bool>,
   show_origins: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct InfoSection {
+  show_fps: Option<bool>,
 }
 
 impl Workspace {
@@ -237,6 +251,7 @@ impl Workspace {
     let project = raw.project.unwrap_or_default();
     let paths = raw.paths.unwrap_or_default();
     let debug_section = raw.debug.unwrap_or_default();
+    let info_section = raw.info.unwrap_or_default();
 
     // Project name: from config, or directory name
     let name = project.name.unwrap_or_else(|| {
@@ -262,9 +277,13 @@ impl Workspace {
     // Debug config
     let debug = DebugConfig {
       show_colliders: debug_section.show_colliders.unwrap_or(false),
-      show_fps: debug_section.show_fps.unwrap_or(false),
       show_velocities: debug_section.show_velocities.unwrap_or(false),
       show_origins: debug_section.show_origins.unwrap_or(false),
+    };
+
+    // Info config
+    let info = InfoConfig {
+      show_fps: info_section.show_fps.unwrap_or(false),
     };
 
     // Game-specific env (pass through as-is)
@@ -276,6 +295,7 @@ impl Workspace {
       save_data,
       assets,
       debug,
+      info,
       env,
     })
   }
@@ -380,6 +400,7 @@ impl Default for WorkspaceConfig {
       save_data: PathBuf::from("data"),
       assets: PathBuf::from("assets"),
       debug: DebugConfig::default(),
+      info: InfoConfig::default(),
       env: std::collections::HashMap::new(),
     }
   }

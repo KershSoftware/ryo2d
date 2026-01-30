@@ -1,23 +1,20 @@
 #!/usr/bin/env pwsh
 # Ryo2D CLI Installation Script (Windows)
 #
-# This script builds the ryo2d CLI and creates a symlink for global access.
+# Installs the ryo2d CLI using `cargo install --path .`
+# This installs to ~/.cargo/bin, which should already be in your PATH.
 #
 # Usage:
-#   ./install.ps1           # Install to default location (~/.ryo2d/bin)
-#   ./install.ps1 -Uninstall # Remove the symlink
+#   ./install.ps1           # Install to ~/.cargo/bin
+#   ./install.ps1 -Uninstall # Uninstall the CLI
 
 param(
-    [switch]$Uninstall,
-    [string]$InstallDir = "$env:USERPROFILE\.ryo2d\bin"
+    [switch]$Uninstall
 )
 
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$BinaryName = "ryo2d.exe"
-$TargetBinary = Join-Path $ScriptDir "target\release\$BinaryName"
-$InstalledBinary = Join-Path $InstallDir $BinaryName
 
 function Write-Status {
     param([string]$Action, [string]$Message)
@@ -45,14 +42,17 @@ function Write-Error {
 
 # Uninstall mode
 if ($Uninstall) {
-    Write-Status "Removing" $InstalledBinary
+    Write-Status "Uninstalling" "ryo2d CLI"
     
-    if (Test-Path $InstalledBinary) {
-        Remove-Item $InstalledBinary -Force
-        Write-Success "ryo2d CLI uninstalled"
+    Push-Location $ScriptDir
+    try {
+        & cargo uninstall ryo2d
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "ryo2d CLI uninstalled"
+        }
     }
-    else {
-        Write-Warning "ryo2d CLI was not installed at $InstalledBinary"
+    finally {
+        Pop-Location
     }
     exit 0
 }
@@ -63,68 +63,18 @@ Write-Host "Ryo2D CLI Installer" -ForegroundColor Cyan
 Write-Host "===================" -ForegroundColor Cyan
 Write-Host ""
 
-# Step 1: Build release binary
-Write-Status "Building" "ryo2d CLI (release mode)..."
+Write-Status "Installing" "ryo2d CLI to ~/.cargo/bin..."
 
 Push-Location $ScriptDir
 try {
-    # Run cargo build - let output stream directly to console
-    & cargo build --release --bin ryo2d
+    & cargo install --path . --bin ryo2d
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Build failed"
+        Write-Error "Installation failed"
         exit 1
     }
 }
 finally {
     Pop-Location
-}
-
-# Verify binary exists
-if (-not (Test-Path $TargetBinary)) {
-    Write-Error "Binary not found at $TargetBinary"
-    Write-Host "Make sure you have a [[bin]] entry for ryo2d in Cargo.toml"
-    exit 1
-}
-
-# Step 2: Create install directory
-if (-not (Test-Path $InstallDir)) {
-    Write-Status "Creating" $InstallDir
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-}
-
-# Step 3: Copy binary (symlinks require admin on Windows, so we copy instead)
-Write-Status "Installing" "to $InstalledBinary"
-Copy-Item $TargetBinary $InstalledBinary -Force
-
-# Step 4: Check if install dir is in PATH
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($userPath -notlike "*$InstallDir*") {
-    Write-Host ""
-    Write-Warning "$InstallDir is not in your PATH"
-    Write-Host ""
-    
-    $response = Read-Host "Would you like to add it to your PATH now? [Y/n]"
-    if ($response -eq "" -or $response -match "^[Yy]") {
-        # Add to current session
-        $env:Path += ";$InstallDir"
-        
-        # Add permanently to user PATH
-        $newPath = $userPath + ";$InstallDir"
-        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-        
-        Write-Status "Updated" "PATH environment variable"
-        Write-Host ""
-        Write-Host "  The PATH has been updated for this session and permanently." -ForegroundColor Gray
-        Write-Host "  New terminal windows will also have ryo2d available." -ForegroundColor Gray
-    }
-    else {
-        Write-Host ""
-        Write-Host "To add manually, run:" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  [Environment]::SetEnvironmentVariable('Path', `$env:Path + ';$InstallDir', 'User')" -ForegroundColor White
-        Write-Host ""
-        Write-Host "Then restart your terminal." -ForegroundColor Gray
-    }
 }
 
 Write-Host ""

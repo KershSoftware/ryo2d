@@ -12,11 +12,19 @@ save_data = "data"
 # Assets directory
 assets = "assets"
 
+[info]
+# Display FPS counter in corner
+show_fps = true
+
 [debug]
 # Show collision boundaries for debugging
-show_colliders = true
+show_colliders = false
+# Show velocity vectors (useful for physics debugging)
+show_velocities = false
+# Show entity origin points
+show_origins = false
 
 [env]
 # Game-specific configuration (not engine features)
 # Set to true to enable debug mode with level switching (Q/E keys)
-debug_scene = true
+debug_scene = false

@@ -89,7 +89,7 @@ flappy/
 ## Implementation Notes
 
 - **Physics tick rate**: 120 Hz for smooth bird movement
-- **Render rate**: 60 FPS
+- **Render rate**: 144 FPS
 - **Pipe spawning**: Procedurally generated with random gap positions
 - **Scrolling system**: Reusable component for parallax effects
 - **Asset loading**: `Sprite::load()` reads PNG files from `assets/` directory
