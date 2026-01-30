@@ -220,6 +220,59 @@ pub struct Engine {
 }
 
 impl Engine {
+  /// Transform window coordinates to game coordinates.
+  ///
+  /// Handles scaling and letterboxing when window size differs from game resolution.
+  fn window_to_game_coords(&self, window_x: f64, window_y: f64) -> (f32, f32) {
+    if let (Some(window), Some(_pixels)) = (&self.window, &self.pixels) {
+      let window_size = window.inner_size();
+      let (game_width, game_height) = (self.config.width as f32, self.config.height as f32);
+
+      // For stretch mode, coordinates map 1:1 to the resized buffer
+      if self.config.window_mode == WindowMode::ResizableStretch {
+        return (window_x as f32, window_y as f32);
+      }
+
+      // Calculate scaling and letterboxing for aspect ratio preservation
+      let window_aspect = window_size.width as f32 / window_size.height as f32;
+      let game_aspect = game_width / game_height;
+
+      let (scale, offset_x, offset_y) = if window_aspect > game_aspect {
+        // Window is wider - pillarboxing (black bars on sides)
+        let scale = window_size.height as f32 / game_height;
+        let scaled_width = game_width * scale;
+        let offset_x = (window_size.width as f32 - scaled_width) / 2.0;
+        (scale, offset_x, 0.0)
+      } else {
+        // Window is taller - letterboxing (black bars on top/bottom)
+        let scale = window_size.width as f32 / game_width;
+        let scaled_height = game_height * scale;
+        let offset_y = (window_size.height as f32 - scaled_height) / 2.0;
+        (scale, 0.0, offset_y)
+      };
+
+      // For integer scale mode, round down the scale
+      let scale = if self.config.window_mode == WindowMode::ResizableIntegerScale {
+        scale.floor().max(1.0)
+      } else {
+        scale
+      };
+
+      // Transform from window space to game space
+      let game_x = (window_x as f32 - offset_x) / scale;
+      let game_y = (window_y as f32 - offset_y) / scale;
+
+      // Clamp to game bounds
+      let game_x = game_x.clamp(0.0, game_width);
+      let game_y = game_y.clamp(0.0, game_height);
+
+      (game_x, game_y)
+    } else {
+      // Fallback if window/pixels not initialized
+      (window_x as f32, window_y as f32)
+    }
+  }
+
   fn new(config: EngineConfig, game: Box<dyn Game>) -> Self {
     let world = World::new();
     let camera = Camera::centered_at(
@@ -642,7 +695,9 @@ impl ApplicationHandler for Engine {
         self.input.handle_mouse_button(*button, *state);
       }
       WindowEvent::CursorMoved { position, .. } => {
-        self.input.handle_mouse_move(position.x, position.y);
+        // Transform window coordinates to game coordinates
+        let (game_x, game_y) = self.window_to_game_coords(position.x, position.y);
+        self.input.handle_mouse_move(game_x as f64, game_y as f64);
       }
       WindowEvent::MouseWheel { delta, .. } => {
         self.input.handle_scroll(*delta);
@@ -1103,7 +1158,10 @@ mod tests {
     assert_eq!(builder.config.window_mode, WindowMode::Fixed);
 
     let builder = EngineBuilder::new().window_mode(WindowMode::ResizableIntegerScale);
-    assert_eq!(builder.config.window_mode, WindowMode::ResizableIntegerScale);
+    assert_eq!(
+      builder.config.window_mode,
+      WindowMode::ResizableIntegerScale
+    );
 
     let builder = EngineBuilder::new().window_mode(WindowMode::ResizableStretch);
     assert_eq!(builder.config.window_mode, WindowMode::ResizableStretch);
