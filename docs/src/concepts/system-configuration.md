@@ -105,6 +105,102 @@ The `vsync` field controls the rendering present mode with smart fallbacks:
 
 This uses `Immediate` present mode, which may cause screen tearing but provides the lowest latency.
 
+## Audio Volume Configuration
+
+The audio system uses a hierarchical volume structure with three levels:
+
+### Volume Hierarchy
+
+```
+Master Volume (0.0 - 1.0)
+├── Music Volume (0.0 - 1.0)
+│   └── Effective Music = master × music
+└── SFX Volume (0.0 - 1.0)
+    └── Effective SFX = master × sfx
+```
+
+**Master volume** scales all audio globally. **Music** and **SFX** volumes independently control their respective categories. Multiple sounds can play simultaneously in each category.
+
+### Example: Volume Calculations
+
+```json
+{
+  "master_volume": 0.8,  // 80% global volume
+  "music_volume": 0.6,   // 60% of master for music
+  "sfx_volume": 1.0      // 100% of master for sfx
+}
+```
+
+Effective volumes:
+- **Music plays at:** `0.8 × 0.6 = 0.48` (48%)
+- **SFX plays at:** `0.8 × 1.0 = 0.8` (80%)
+
+### Runtime API
+
+Control volumes programmatically through `AudioManager`:
+
+```rust
+// Access audio through GameContext or SceneContext
+if let Some(audio) = ctx.audio {
+    // Master volume (affects everything)
+    audio.set_master_volume(0.75);
+    let master = audio.master_volume();
+    
+    // Music category (background music, ambient sounds)
+    audio.set_music_volume(0.6);
+    let music = audio.music_volume();
+    
+    // SFX category (sound effects, UI sounds)
+    audio.set_sfx_volume(1.0);
+    let sfx = audio.sfx_volume();
+}
+```
+
+### Options Menu Example
+
+```rust
+struct AudioSettings {
+    settings: SystemState,
+}
+
+impl AudioSettings {
+    fn adjust_master(&mut self, delta: f32) {
+        self.settings.master_volume = 
+            (self.settings.master_volume + delta).clamp(0.0, 1.0);
+    }
+    
+    fn adjust_music(&mut self, delta: f32) {
+        self.settings.music_volume = 
+            (self.settings.music_volume + delta).clamp(0.0, 1.0);
+    }
+    
+    fn adjust_sfx(&mut self, delta: f32) {
+        self.settings.sfx_volume = 
+            (self.settings.sfx_volume + delta).clamp(0.0, 1.0);
+    }
+    
+    fn apply_to_audio_manager(&self, audio: &mut AudioManager) {
+        audio.set_master_volume(self.settings.master_volume);
+        audio.set_music_volume(self.settings.music_volume);
+        audio.set_sfx_volume(self.settings.sfx_volume);
+    }
+}
+```
+
+### Volume Categories
+
+**Music** - Used by:
+- Background music (`play_music()`)
+- Ambient loops
+- Dynamic music systems
+
+**SFX** - Used by:
+- Sound effects (`play_sound()`)
+- UI feedback sounds
+- One-shot audio events
+
+Both categories support multiple simultaneous sounds with independent volume control.
+
 ## Field Mapping Differences
 
 Not all fields have 1-to-1 mappings between `Ryo.toml` and `system.json`:
@@ -163,9 +259,27 @@ impl OptionsMenu {
         };
     }
 
-    fn adjust_volume(&mut self, delta: f32) {
+    fn adjust_master_volume(&mut self, delta: f32) {
         self.settings.master_volume = 
             (self.settings.master_volume + delta).clamp(0.0, 1.0);
+    }
+
+    fn adjust_music_volume(&mut self, delta: f32) {
+        self.settings.music_volume = 
+            (self.settings.music_volume + delta).clamp(0.0, 1.0);
+    }
+
+    fn adjust_sfx_volume(&mut self, delta: f32) {
+        self.settings.sfx_volume = 
+            (self.settings.sfx_volume + delta).clamp(0.0, 1.0);
+    }
+
+    fn apply_audio(&self, audio: &mut Option<AudioManager>) {
+        if let Some(audio_manager) = audio {
+            audio_manager.set_master_volume(self.settings.master_volume);
+            audio_manager.set_music_volume(self.settings.music_volume);
+            audio_manager.set_sfx_volume(self.settings.sfx_volume);
+        }
     }
 
     fn save(&self, save_manager: &SaveManager) -> SaveResult<()> {
@@ -205,6 +319,7 @@ This allows:
 - User's `vsync` preference to control present mode
 - User's `show_fps` to override `Ryo.toml` debug settings
 - User's display settings to override window configuration
+- User's audio volumes to be applied to the AudioManager on startup
 
 ## Best Practices
 
