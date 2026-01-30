@@ -220,6 +220,8 @@ pub struct Engine {
   last_world_generation: u64,
   // Cached window size to avoid redundant resize calls
   last_window_size: (u32, u32),
+  // VSync preference from system.json (None = use engine default)
+  vsync: Option<bool>,
 }
 
 impl Engine {
@@ -288,7 +290,7 @@ impl Engine {
     }
   }
 
-  fn new(config: EngineConfig, game: Box<dyn Game>) -> Self {
+  fn new(config: EngineConfig, game: Box<dyn Game>, vsync: Option<bool>) -> Self {
     let world = World::new();
     let camera = Camera::centered_at(
       config.width as f32 / 2.0,
@@ -343,6 +345,7 @@ impl Engine {
       ui_font,
       last_world_generation: 0,
       last_window_size: initial_size,
+      vsync,
     }
   }
 
@@ -669,6 +672,7 @@ impl ApplicationHandler for Engine {
       self.config.window_mode,
       self.config.max_width,
       self.config.max_height,
+      self.vsync,
     ));
 
     self.window = Some(window);
@@ -842,6 +846,7 @@ impl ApplicationHandler for Engine {
 pub struct EngineBuilder {
   config: EngineConfig,
   game: Option<Box<dyn Game>>,
+  vsync: Option<bool>,
 }
 
 impl EngineBuilder {
@@ -849,6 +854,7 @@ impl EngineBuilder {
     EngineBuilder {
       config: EngineConfig::default(),
       game: None,
+      vsync: None,
     }
   }
 
@@ -1052,6 +1058,8 @@ impl EngineBuilder {
       if let Some(show_fps) = system_state.show_fps {
         self.config.debug.show_fps = show_fps;
       }
+      // Store vsync preference to use when creating renderer
+      self.vsync = system_state.vsync;
     }
     self
   }
@@ -1103,7 +1111,7 @@ impl EngineBuilder {
     let game = self.game.expect(
       "EngineBuilder requires a game or scene - call .with_game() or .with_scene() before .build()",
     );
-    Engine::new(self.config, game)
+    Engine::new(self.config, game, self.vsync)
   }
 }
 

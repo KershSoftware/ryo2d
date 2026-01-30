@@ -51,7 +51,16 @@ struct ViewportUniform {
 }
 
 impl WgpuRenderer {
-  /// Create a new wgpu renderer.
+  /// Create a new renderer.
+  ///
+  /// # Arguments
+  /// - `window`: The window to render to
+  /// - `game_width`: Internal game resolution width
+  /// - `game_height`: Internal game resolution height
+  /// - `window_mode`: How to scale the game viewport to window size
+  /// - `max_width`: Optional maximum viewport width constraint
+  /// - `max_height`: Optional maximum viewport height constraint
+  /// - `vsync`: VSync preference (None = Mailbox→Immediate, Some(true) = Mailbox→Fifo, Some(false) = Immediate)
   pub async fn new(
     window: Arc<Window>,
     game_width: u32,
@@ -59,6 +68,7 @@ impl WgpuRenderer {
     window_mode: WindowMode,
     max_width: Option<u32>,
     max_height: Option<u32>,
+    vsync: Option<bool>,
   ) -> Self {
     let size = window.inner_size();
 
@@ -104,20 +114,40 @@ impl WgpuRenderer {
       .copied()
       .unwrap_or(surface_caps.formats[0]);
 
+    // Choose present mode based on vsync preference
+    let present_mode = match vsync {
+      // Not configured: Mailbox (best of both worlds) → Immediate (no tearing, max perf)
+      None => {
+        if surface_caps
+          .present_modes
+          .contains(&wgpu::PresentMode::Mailbox)
+        {
+          wgpu::PresentMode::Mailbox
+        } else {
+          wgpu::PresentMode::Immediate
+        }
+      }
+      // VSync on: Mailbox → Fifo (traditional vsync)
+      Some(true) => {
+        if surface_caps
+          .present_modes
+          .contains(&wgpu::PresentMode::Mailbox)
+        {
+          wgpu::PresentMode::Mailbox
+        } else {
+          wgpu::PresentMode::Fifo
+        }
+      }
+      // VSync off: Immediate (maximum performance, may tear)
+      Some(false) => wgpu::PresentMode::Immediate,
+    };
+
     let config = wgpu::SurfaceConfiguration {
       usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
       format: surface_format,
       width: size.width.max(1),
       height: size.height.max(1),
-      // Use Mailbox if available (non-blocking, low latency), fall back to Fifo
-      present_mode: if surface_caps
-        .present_modes
-        .contains(&wgpu::PresentMode::Mailbox)
-      {
-        wgpu::PresentMode::Mailbox
-      } else {
-        wgpu::PresentMode::Fifo
-      },
+      present_mode,
       alpha_mode: surface_caps.alpha_modes[0],
       view_formats: vec![],
       desired_maximum_frame_latency: 2,
@@ -793,8 +823,7 @@ mod tests {
       None,
       None,
     );
-    let fixed =
-      calculate_viewport_scale(800, 600, 1920, 1080, WindowMode::Fixed, None, None);
+    let fixed = calculate_viewport_scale(800, 600, 1920, 1080, WindowMode::Fixed, None, None);
     assert_eq!(aspect, fixed);
   }
 }

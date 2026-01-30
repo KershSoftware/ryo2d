@@ -153,6 +153,13 @@ pub struct SystemState {
   #[serde(default)]
   pub show_fps: Option<bool>,
 
+  /// VSync preference (overrides display.vsync when present)
+  /// - None: Use Mailbox with fallback to Immediate (best performance, no tearing)
+  /// - Some(true): Use Mailbox with fallback to Fifo (vsync on)
+  /// - Some(false): Use Immediate (vsync off, may tear)
+  #[serde(default)]
+  pub vsync: Option<bool>,
+
   /// Custom key-value storage for game-specific settings
   #[serde(default)]
   pub settings: HashMap<String, String>,
@@ -191,6 +198,7 @@ impl SystemState {
       sfx_volume: 1.0,
       display: DisplaySettings::default(),
       show_fps: None,
+      vsync: None,
       settings: HashMap::new(),
     }
   }

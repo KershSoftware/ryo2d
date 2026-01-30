@@ -29,6 +29,7 @@
 - [Audio System](./concepts/audio.md)
 - [UI Basics](./concepts/ui-basics.md)
 - [Save System](./concepts/save-system.md)
+- [System Configuration](./concepts/system-configuration.md)
 - [Debugging](./concepts/debugging.md)
 - [Error Handling](./concepts/error-handling.md)
 
