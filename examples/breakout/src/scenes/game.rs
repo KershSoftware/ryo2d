@@ -90,7 +90,9 @@ impl GameScene {
       Transform::new(SCREEN_WIDTH as f32 / 2.0 - PADDLE_WIDTH / 2.0, PADDLE_Y),
       Velocity::zero(),
       RigidBody::kinematic(),
-      Collider::box_collider(PADDLE_WIDTH, PADDLE_HEIGHT),
+      Collider::box_collider(PADDLE_WIDTH, PADDLE_HEIGHT)
+        .with_restitution(1.0) // Perfect bounce
+        .with_friction(0.0), // No friction
       SpriteRenderer::new(SpriteHandle::from_sprite(
         Sprite::solid_rect(
           PADDLE_WIDTH as u32,
@@ -117,9 +119,12 @@ impl GameScene {
       Transform::new(ball_x, ball_y),
       Velocity::zero(),                                        // Frozen initially
       RigidBody::new().with_gravity_scale(0.0).with_drag(0.0), // No gravity
-      Collider::circle_collider(BALL_SIZE / 2.0).with_offset(BALL_SIZE / 2.0, BALL_SIZE / 2.0),
+      Collider::circle_collider(BALL_SIZE / 2.0)
+        .with_offset(BALL_SIZE / 2.0, BALL_SIZE / 2.0)
+        .with_restitution(1.0) // Perfect bounce
+        .with_friction(0.0), // No friction
       SpriteRenderer::new(SpriteHandle::from_sprite(
-        Sprite::solid_rect(BALL_SIZE as u32, BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
+        Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
         "ball",
       ))
       .with_z_order(15),
@@ -134,7 +139,9 @@ impl GameScene {
     let left = ctx.world.spawn((
       Transform::new(-WALL_THICKNESS, 0.0),
       RigidBody::kinematic(),
-      Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32),
+      Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32)
+        .with_restitution(1.0) // Perfect bounce
+        .with_friction(0.0), // No friction
       SpriteRenderer::new(SpriteHandle::from_sprite(
         Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
         "wall_left",
@@ -148,7 +155,9 @@ impl GameScene {
     let right = ctx.world.spawn((
       Transform::new(SCREEN_WIDTH as f32, 0.0),
       RigidBody::kinematic(),
-      Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32),
+      Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32)
+        .with_restitution(1.0) // Perfect bounce
+        .with_friction(0.0), // No friction
       SpriteRenderer::new(SpriteHandle::from_sprite(
         Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
         "wall_right",
@@ -162,7 +171,9 @@ impl GameScene {
     let ceiling = ctx.world.spawn((
       Transform::new(0.0, -WALL_THICKNESS),
       RigidBody::kinematic(),
-      Collider::box_collider(SCREEN_WIDTH as f32, WALL_THICKNESS),
+      Collider::box_collider(SCREEN_WIDTH as f32, WALL_THICKNESS)
+        .with_restitution(1.0) // Perfect bounce
+        .with_friction(0.0), // No friction
       SpriteRenderer::new(SpriteHandle::from_sprite(
         Sprite::solid_rect(SCREEN_WIDTH, WALL_THICKNESS as u32, 0x30, 0x30, 0x40, 0xff),
         "wall_ceiling",
@@ -203,7 +214,9 @@ impl GameScene {
       let block = ctx.world.spawn((
         Transform::new(x, y),
         RigidBody::kinematic(),
-        Collider::box_collider(BLOCK_WIDTH, BLOCK_HEIGHT),
+        Collider::box_collider(BLOCK_WIDTH, BLOCK_HEIGHT)
+          .with_restitution(1.0) // Perfect bounce
+          .with_friction(0.0), // No friction
         SpriteRenderer::new(SpriteHandle::from_sprite(
           Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, a),
           format!("block_{}_{}", x as u32, y as u32),

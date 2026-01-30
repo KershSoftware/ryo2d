@@ -45,6 +45,45 @@ impl Sprite {
     }
   }
 
+  /// Create a solid color circle sprite with anti-aliasing
+  ///
+  /// The sprite will be `diameter x diameter` pixels, with a circle centered in it.
+  pub fn solid_circle(diameter: u32, r: u8, g: u8, b: u8, a: u8) -> Self {
+    let mut data = vec![0u8; (diameter * diameter * 4) as usize];
+    let radius = diameter as f32 / 2.0;
+    let center = radius;
+
+    for y in 0..diameter {
+      for x in 0..diameter {
+        let dx = x as f32 + 0.5 - center;
+        let dy = y as f32 + 0.5 - center;
+        let dist = (dx * dx + dy * dy).sqrt();
+
+        // Anti-aliased edge
+        let alpha = if dist <= radius - 1.0 {
+          a as f32
+        } else if dist <= radius + 1.0 {
+          // Smooth falloff at edge
+          a as f32 * (radius + 1.0 - dist)
+        } else {
+          0.0
+        };
+
+        let idx = ((y * diameter + x) * 4) as usize;
+        data[idx] = r;
+        data[idx + 1] = g;
+        data[idx + 2] = b;
+        data[idx + 3] = alpha as u8;
+      }
+    }
+
+    Sprite {
+      data,
+      width: diameter,
+      height: diameter,
+    }
+  }
+
   /// Load a sprite from an image file (PNG, JPEG, SVG, etc.)
   ///
   /// SVG files are rasterized at their native size. Use `load_svg_scaled`

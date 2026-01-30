@@ -259,8 +259,8 @@ impl RapierPhysicsWorld {
         let half_h = (height / 2.0) / PIXELS_PER_METER;
         ColliderBuilder::cuboid(half_w, half_h)
           .translation(vector![offset_x_meters, offset_y_meters])
-          .restitution(0.5) // Default bounciness
-          .friction(0.3) // Default friction
+          .restitution(collider.restitution)
+          .friction(collider.friction)
           .sensor(collider.is_trigger)
           .active_events(ActiveEvents::COLLISION_EVENTS)
           .build()
@@ -269,8 +269,8 @@ impl RapierPhysicsWorld {
         let radius_meters = radius / PIXELS_PER_METER;
         ColliderBuilder::ball(radius_meters)
           .translation(vector![offset_x_meters, offset_y_meters])
-          .restitution(0.7) // Circles bounce more
-          .friction(0.3)
+          .restitution(collider.restitution)
+          .friction(collider.friction)
           .sensor(collider.is_trigger)
           .active_events(ActiveEvents::COLLISION_EVENTS)
           .build()

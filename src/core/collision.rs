@@ -197,6 +197,10 @@ pub struct Collider {
   pub layer: u32,
   /// Collision mask (which layers to collide with)
   pub mask: u32,
+  /// Restitution (bounciness): 0.0 = no bounce, 1.0 = perfect bounce
+  pub restitution: f32,
+  /// Friction: 0.0 = frictionless, higher = more drag
+  pub friction: f32,
 }
 
 impl Collider {
@@ -208,7 +212,9 @@ impl Collider {
       offset_y: 0.0,
       is_trigger: false,
       layer: 1,
-      mask: u32::MAX, // Collide with everything by default
+      mask: u32::MAX,   // Collide with everything by default
+      restitution: 0.5, // Moderate bounce
+      friction: 0.3,    // Moderate friction
     }
   }
 
@@ -221,6 +227,8 @@ impl Collider {
       is_trigger: false,
       layer: 1,
       mask: u32::MAX,
+      restitution: 0.5, // Moderate bounce
+      friction: 0.3,    // Moderate friction
     }
   }
 
@@ -246,6 +254,23 @@ impl Collider {
   /// Set collision mask
   pub fn with_mask(mut self, mask: u32) -> Self {
     self.mask = mask;
+    self
+  }
+
+  /// Set restitution (bounciness)
+  /// - 0.0 = no bounce (inelastic collision)
+  /// - 1.0 = perfect bounce (elastic collision)
+  /// - >1.0 = adds energy (not physically accurate)
+  pub fn with_restitution(mut self, restitution: f32) -> Self {
+    self.restitution = restitution;
+    self
+  }
+
+  /// Set friction coefficient
+  /// - 0.0 = frictionless (no tangential drag)
+  /// - Higher values = more resistance to sliding
+  pub fn with_friction(mut self, friction: f32) -> Self {
+    self.friction = friction;
     self
   }
 
