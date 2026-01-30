@@ -1,0 +1,9 @@
+# Breakout Level 5 - Mixed Defense
+# More white blocks scattered
+
+WWWWWWWWWWWW
+RORORORORORО
+WYYYYYYYYYWW
+WGGGGGGGGGGW
+WBBBBBBBBBBW
+PPPPPPPPPPPP

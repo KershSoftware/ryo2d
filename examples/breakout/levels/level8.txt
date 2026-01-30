@@ -1,0 +1,11 @@
+# Breakout Level 8 - The Gauntlet
+# Heavy defenses, narrow gaps
+
+SSSSSSSSSSSS
+WWWWWWWWWWWW
+SSSSSSSSSSSS
+WWWWWWWWWWWW
+O.O.O.O.O.O.
+YYYYYYYYYY.Y
+G.GGGGGGGG.G
+BBBBBBBBBBBB

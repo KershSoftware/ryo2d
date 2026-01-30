@@ -1,0 +1,8 @@
+# Breakout Level 2 - Building Up
+# More blocks, still single-hit
+
+.RRRRRRRRRR.
+.O.O.O.O.O.
+.YYYYYYYYYY.
+..G.G.G.G..
+...B.B.B...

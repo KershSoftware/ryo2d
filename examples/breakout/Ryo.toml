@@ -15,3 +15,8 @@ assets = "assets"
 [debug]
 # Show collision boundaries for debugging
 show_colliders = false
+
+[env]
+# Game-specific configuration (not engine features)
+# Set to true to enable debug mode with level switching (Q/E keys)
+debug_scene = false

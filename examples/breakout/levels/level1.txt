@@ -1,4 +1,4 @@
-# Breakout Level 1 - Classic Layout
+# Breakout Level 1 - Easy Start
 # Format: Each character represents a block
 # . = empty space
 # R = red block (1 hit)
@@ -10,9 +10,8 @@
 # W = white block (2 hits - sturdy)
 # S = silver block (3 hits - strong)
 
-WWWWWWWWWWWW
-OOOOOOOOOOOO
-YYYYYYYYYYYY
-GGGGGGGGGGGG
-BBBBBBBBBBBB
-PPPPPPPPPPPP
+..RRRRRRRR..
+..O.O.O.O...
+...........
+.Y.Y.Y.Y.Y.
+..G.....G..

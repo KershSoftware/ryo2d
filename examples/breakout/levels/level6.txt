@@ -1,0 +1,10 @@
+# Breakout Level 6 - Silver Fortress
+# Introducing 3-hit silver blocks
+
+SSSS..SSSS..
+WWWWWWWWWWWW
+OOWOOWOOWOOW
+YYYYYYYYYYYY
+GWGWGWGWGWGW
+BBBBBBBBBBBB
+PPWPPWPPWPPW

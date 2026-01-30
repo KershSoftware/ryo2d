@@ -1,0 +1,9 @@
+# Breakout Level 4 - Striped Pattern
+# Dense pattern with gaps
+
+RRRR..RRRR..
+.OOOOOOOOOO.
+YYWWYYWWYYWY
+GGGGGGGGGGGG
+.B.B.B.B.B.B
+.P.P.P.P.P.P

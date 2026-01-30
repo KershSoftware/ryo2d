@@ -1,0 +1,8 @@
+# Breakout Level 3 - First Challenge
+# Introducing 2-hit white blocks
+
+WWWWWWWWWWWW
+OOOOOOOOOOOO
+.Y.Y.Y.Y.Y.Y
+.G.G.G.G.G.G
+BBBBBBBBBBBB

@@ -40,6 +40,9 @@ pub struct GameScene {
   music: Option<MusicHandle>,
   // Previous scene's music for crossfading
   prev_music: Option<MusicHandle>,
+
+  // Debug mode flag
+  debug_mode: bool,
 }
 
 impl GameScene {
@@ -61,6 +64,7 @@ impl GameScene {
       escape_was_released: true,
       music: None,
       prev_music: None,
+      debug_mode: false,
     }
   }
 
@@ -82,6 +86,7 @@ impl GameScene {
       escape_was_released: true,
       music: None,
       prev_music,
+      debug_mode: false,
     }
   }
 
@@ -228,6 +233,47 @@ impl GameScene {
     }
 
     self.blocks_remaining = self.blocks.len() as u32;
+  }
+
+  /// Clear all level entities (blocks, walls, ball, paddle)
+  fn clear_level(&mut self, ctx: &mut SceneContext) {
+    // Despawn all blocks
+    for block in self.blocks.drain(..) {
+      let _ = ctx.world.despawn(block);
+    }
+
+    // Despawn walls
+    for wall in self.walls.drain(..) {
+      let _ = ctx.world.despawn(wall);
+    }
+
+    // Despawn ball
+    if let Some(ball) = self.ball.take() {
+      let _ = ctx.world.despawn(ball);
+    }
+
+    // Despawn paddle
+    if let Some(paddle) = self.paddle.take() {
+      let _ = ctx.world.despawn(paddle);
+    }
+
+    // Despawn death zone
+    if let Some(death_zone) = self.death_zone.take() {
+      let _ = ctx.world.despawn(death_zone);
+    }
+
+    self.blocks_remaining = 0;
+    self.game_started = false;
+  }
+
+  /// Load a specific level
+  fn load_level(&mut self, ctx: &mut SceneContext, level: u32) {
+    self.clear_level(ctx);
+    self.level = level;
+    self.spawn_walls(ctx);
+    self.spawn_paddle(ctx);
+    self.spawn_ball(ctx);
+    self.spawn_blocks(ctx);
   }
 
   fn launch_ball(&mut self, ctx: &mut SceneContext) {
@@ -379,6 +425,11 @@ impl GameScene {
 
 impl Scene for GameScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // Check for debug mode from workspace config
+    if let Ok(workspace) = Workspace::discover() {
+      self.debug_mode = workspace.config().env_bool("debug_scene").unwrap_or(false);
+    }
+
     ctx.world.clear();
     ctx
       .camera
@@ -431,6 +482,21 @@ impl Scene for GameScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    // Debug mode: Level switching with Q/E
+    if self.debug_mode {
+      if ctx.input.key_pressed(KeyCode::KeyQ) {
+        // Previous level (wrap to 10)
+        let new_level = if self.level == 1 { 10 } else { self.level - 1 };
+        self.load_level(ctx, new_level);
+        return SceneAction::Continue;
+      } else if ctx.input.key_pressed(KeyCode::KeyE) {
+        // Next level (wrap to 1)
+        let new_level = if self.level == 10 { 1 } else { self.level + 1 };
+        self.load_level(ctx, new_level);
+        return SceneAction::Continue;
+      }
+    }
+
     // Track escape key release (needed after resuming from pause)
     if !self.escape_was_released && !ctx.input.key_down(KeyCode::Escape) {
       self.escape_was_released = true;
@@ -637,6 +703,24 @@ impl Scene for GameScene {
         0.0,
         30.0,
         Color::LIGHT_GRAY,
+      );
+    }
+
+    // Debug mode UI
+    if self.debug_mode {
+      ui.draw_text_anchored(
+        "[DEBUG MODE]",
+        Anchor::BottomLeft,
+        20.0,
+        -10.0,
+        Color::new(255, 255, 0, 180),
+      );
+      ui.draw_text_anchored(
+        "Q: Prev Level | E: Next Level",
+        Anchor::BottomLeft,
+        20.0,
+        -25.0,
+        Color::new(200, 200, 200, 180),
       );
     }
   }

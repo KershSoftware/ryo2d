@@ -1,0 +1,10 @@
+# Breakout Level 7 - Checkerboard
+# Complex pattern with tough blocks
+
+SWSWSWSWSWSW
+WSРSРSРSРSРS
+SWOWOWOWOWS
+WSYSYSYSYSYW
+SWGWGWGWGWGS
+WSBSBSBSBSBW
+PPPPPPPPPРPP
