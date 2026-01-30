@@ -482,9 +482,9 @@ impl Scene for GameScene {
       }
     }
 
-    // Process collision events
+    // Process collision events (only Started - when objects first touch)
     for event in ctx.collision_events {
-      if event.event_type != CollisionEventType::Started {
+      if !event.is_started() {
         continue;
       }
 

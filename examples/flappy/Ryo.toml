@@ -1,0 +1,17 @@
+# Flappy Bird Demo - Ryo Engine Project Configuration
+# This file configures the example project for the Ryo2D engine
+
+[project]
+name = "Flappy Bird Demo"
+
+[paths]
+# Entry point is in this directory (not in src/)
+entry_point = "main.rs"
+# Save data directory (created on demand)
+save_data = "data"
+# Assets directory
+assets = "assets"
+
+[debug]
+# Show collision boundaries for debugging
+show_colliders = true

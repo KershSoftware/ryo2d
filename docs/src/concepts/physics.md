@@ -136,46 +136,50 @@ When objects collide, the engine generates events you can query:
 
 ```rust
 fn update(&mut self, ctx: &mut GameContext) {
-    // Process all collision events this frame
-    for event in ctx.collision_events.iter() {
-        match event.event_type {
-            CollisionEventType::Started => {
-                println!("Collision started between {:?} and {:?}", 
-                    event.entity_a, event.entity_b);
-                
-                // Check if either is a sensor
-                if event.sensor_a || event.sensor_b {
-                    self.handle_trigger(event.entity_a, event.entity_b, ctx);
-                } else {
-                    self.handle_collision(event.entity_a, event.entity_b, ctx);
-                }
-            }
-            CollisionEventType::Stopped => {
-                println!("Collision ended");
-            }
+    // React when objects START touching (most common)
+    for event in ctx.collisions_started() {
+        println!("Collision started between {:?} and {:?}", 
+            event.entity_a, event.entity_b);
+        
+        // Check if a specific entity is involved
+        if event.involves(self.player) {
+            let other = event.other(self.player).unwrap();
+            self.handle_player_collision(other, ctx);
         }
     }
+    
+    // React when objects STOP touching (less common)
+    for event in ctx.collisions_stopped() {
+        println!("Collision ended");
+    }
 }
+```
 
-fn handle_trigger(&mut self, a: Entity, b: Entity, ctx: &mut GameContext) {
+**Important:** Most game logic should use `collisions_started()`. Use `collisions_stopped()` only for "exit trigger" scenarios (e.g., player leaves a zone).
+
+### Handling Triggers (Sensors)
+
+```rust
+fn handle_player_collision(&mut self, other: Entity, ctx: &mut GameContext) {
     // Check if player touched a coin
-    if a == self.player || b == self.player {
-        let other = if a == self.player { b } else { a };
-        if self.coins.contains(&other) {
-            ctx.world.despawn(other).ok();
-            self.score += 1;
-        }
+    if self.coins.contains(&other) {
+        ctx.world.despawn(other).ok();
+        self.score += 1;
     }
 }
 ```
 
 ### Collision Event Fields
 
-| Field | Description |
-|-------|-------------|
+| Field/Method | Description |
+|--------------|-------------|
 | `entity_a`, `entity_b` | The two entities involved |
 | `event_type` | `Started` or `Stopped` |
-| `sensor_a`, `sensor_b` | Whether each collider is a sensor |
+| `is_sensor` | Whether this collision involves a sensor/trigger |
+| `involves(entity)` | Returns true if the given entity is part of this collision |
+| `other(entity)` | Returns the other entity in the collision pair |
+| `is_started()` | Returns true if this is a collision start event |
+| `is_stopped()` | Returns true if this is a collision end event |
 
 ## Applying Forces and Impulses
 

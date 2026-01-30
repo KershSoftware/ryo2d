@@ -146,14 +146,31 @@ impl Sprite {
     y: i32,
     scale: f32,
   ) {
-    if scale <= 0.0 {
+    self.draw_scaled_xy(frame, frame_width, frame_height, x, y, scale, scale);
+  }
+
+  /// Draw the sprite with non-uniform scaling (nearest-neighbor)
+  ///
+  /// Uses nearest-neighbor sampling for crisp pixel-art scaling.
+  /// Allows different scale factors for x and y axes.
+  pub fn draw_scaled_xy(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    x: i32,
+    y: i32,
+    scale_x: f32,
+    scale_y: f32,
+  ) {
+    if scale_x <= 0.0 || scale_y <= 0.0 {
       return;
     }
 
     let frame_w = frame_width as i32;
     let frame_h = frame_height as i32;
-    let scaled_w = (self.width as f32 * scale) as i32;
-    let scaled_h = (self.height as f32 * scale) as i32;
+    let scaled_w = (self.width as f32 * scale_x) as i32;
+    let scaled_h = (self.height as f32 * scale_y) as i32;
 
     // Calculate visible region in screen space (clipped)
     let start_dx = (-x).max(0);
@@ -168,8 +185,8 @@ impl Sprite {
     for dy in start_dy..end_dy {
       for dx in start_dx..end_dx {
         // Map screen pixel back to source sprite (nearest neighbor)
-        let sx = ((dx as f32) / scale) as u32;
-        let sy = ((dy as f32) / scale) as u32;
+        let sx = ((dx as f32) / scale_x) as u32;
+        let sy = ((dy as f32) / scale_y) as u32;
 
         // Clamp to sprite bounds (safety)
         let sx = sx.min(self.width - 1);

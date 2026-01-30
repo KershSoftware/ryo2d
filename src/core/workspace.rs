@@ -69,6 +69,15 @@ pub struct WorkspaceConfig {
   pub save_data: PathBuf,
   /// Path to assets directory relative to workspace root
   pub assets: PathBuf,
+  /// Debug configuration options
+  pub debug: DebugConfig,
+}
+
+/// Debug configuration options for development.
+#[derive(Debug, Clone, Default)]
+pub struct DebugConfig {
+  /// Whether to render collision boundaries
+  pub show_colliders: bool,
 }
 
 /// Raw TOML structure for deserialization
@@ -76,6 +85,7 @@ pub struct WorkspaceConfig {
 struct RyoToml {
   project: Option<ProjectSection>,
   paths: Option<PathsSection>,
+  debug: Option<DebugSection>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -88,6 +98,11 @@ struct PathsSection {
   entry_point: Option<String>,
   save_data: Option<String>,
   assets: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DebugSection {
+  show_colliders: Option<bool>,
 }
 
 impl Workspace {
@@ -204,6 +219,7 @@ impl Workspace {
   fn build_config(root: &Path, raw: RyoToml) -> Result<WorkspaceConfig, EngineError> {
     let project = raw.project.unwrap_or_default();
     let paths = raw.paths.unwrap_or_default();
+    let debug_section = raw.debug.unwrap_or_default();
 
     // Project name: from config, or directory name
     let name = project.name.unwrap_or_else(|| {
@@ -226,11 +242,17 @@ impl Workspace {
     // Assets: from config, or default
     let assets = PathBuf::from(paths.assets.unwrap_or_else(|| "assets".to_string()));
 
+    // Debug config
+    let debug = DebugConfig {
+      show_colliders: debug_section.show_colliders.unwrap_or(false),
+    };
+
     Ok(WorkspaceConfig {
       name,
       entry_point,
       save_data,
       assets,
+      debug,
     })
   }
 
@@ -333,6 +355,7 @@ impl Default for WorkspaceConfig {
       entry_point: PathBuf::from("src/main.rs"),
       save_data: PathBuf::from("data"),
       assets: PathBuf::from("assets"),
+      debug: DebugConfig::default(),
     }
   }
 }

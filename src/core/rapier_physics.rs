@@ -75,6 +75,24 @@ impl PhysicsCollisionEvent {
       None
     }
   }
+
+  /// Returns true if this is a collision start event.
+  ///
+  /// Use this to react when objects first touch.
+  /// Most game logic (damage, scoring, death) should check this.
+  #[inline]
+  pub fn is_started(&self) -> bool {
+    self.event_type == CollisionEventType::Started
+  }
+
+  /// Returns true if this is a collision end event.
+  ///
+  /// Use this to react when objects separate.
+  /// Useful for "exit trigger" logic or resetting state.
+  #[inline]
+  pub fn is_stopped(&self) -> bool {
+    self.event_type == CollisionEventType::Stopped
+  }
 }
 
 /// Wrapper around Rapier2D physics simulation
@@ -127,6 +145,31 @@ impl RapierPhysicsWorld {
       collider_to_entity: HashMap::new(),
       collision_events: Vec::new(),
     }
+  }
+
+  /// Clear all physics bodies and reset the physics world.
+  ///
+  /// Call this when resetting game state or switching scenes to ensure
+  /// no stale physics bodies remain. This is more efficient than
+  /// unregistering entities one by one.
+  pub fn clear(&mut self) {
+    // Clear all Rapier structures
+    self.rigid_body_set = RigidBodySet::new();
+    self.collider_set = ColliderSet::new();
+    self.island_manager = IslandManager::new();
+    self.broad_phase = DefaultBroadPhase::new();
+    self.narrow_phase = NarrowPhase::new();
+    self.impulse_joint_set = ImpulseJointSet::new();
+    self.multibody_joint_set = MultibodyJointSet::new();
+
+    // Clear entity mappings
+    self.entity_to_body.clear();
+    self.body_to_entity.clear();
+    self.entity_to_collider.clear();
+    self.collider_to_entity.clear();
+
+    // Clear any pending collision events
+    self.collision_events.clear();
   }
 
   /// Check if an entity is registered with the physics world
@@ -208,6 +251,8 @@ impl RapierPhysicsWorld {
 
     // Create Rapier collider based on shape
     // All colliders get COLLISION_EVENTS enabled to support event queries
+    // NOTE: Collider dimensions should be the FINAL world-space sizes
+    //       (already scaled by the game if needed)
     let rapier_collider = match collider.shape {
       ColliderShape::Box { width, height } => {
         let half_w = (width / 2.0) / PIXELS_PER_METER;
@@ -460,6 +505,51 @@ impl RapierPhysicsWorld {
   /// Check if an entity had any collision this frame
   pub fn has_collision(&self, entity: Entity) -> bool {
     self.collision_events.iter().any(|e| e.involves(entity))
+  }
+
+  /// Check if two entities are currently intersecting using Rapier's narrow phase
+  ///
+  /// Unlike collision events which only fire on state change, this checks
+  /// the current intersection status directly.
+  pub fn are_intersecting(&self, entity_a: Entity, entity_b: Entity) -> bool {
+    let Some(&collider_a) = self.entity_to_collider.get(&entity_a) else {
+      return false;
+    };
+    let Some(&collider_b) = self.entity_to_collider.get(&entity_b) else {
+      return false;
+    };
+    
+    // Check if there's a contact pair in the narrow phase
+    self.narrow_phase.contact_pair(collider_a, collider_b).is_some()
+  }
+
+  /// Check if an entity is currently intersecting with any other entity
+  ///
+  /// Returns a list of entities the given entity is currently touching.
+  pub fn get_current_intersections(&self, entity: Entity) -> Vec<Entity> {
+    let Some(&collider_handle) = self.entity_to_collider.get(&entity) else {
+      return Vec::new();
+    };
+
+    let mut intersecting = Vec::new();
+    
+    // Iterate all contact pairs involving this collider
+    for contact_pair in self.narrow_phase.contact_pairs_with(collider_handle) {
+      let other_handle = if contact_pair.collider1 == collider_handle {
+        contact_pair.collider2
+      } else {
+        contact_pair.collider1
+      };
+      
+      if let Some(&other_entity) = self.collider_to_entity.get(&other_handle) {
+        // Check if there are actual contact points (not just AABB overlap)
+        if contact_pair.has_any_active_contact {
+          intersecting.push(other_entity);
+        }
+      }
+    }
+    
+    intersecting
   }
 
   /// Get the number of collision events from the last step
@@ -718,5 +808,86 @@ mod tests {
     physics.step((0.0, 980.0));
     // After a step with no new collisions starting, event count should reflect
     // only events from that step (could be 0 or continued contact)
+  }
+
+  #[test]
+  fn clear_resets_physics_world() {
+    let mut physics = RapierPhysicsWorld::new();
+    let mut world = World::new();
+
+    // Register some entities
+    let e1 = world.spawn((
+      Transform::new(100.0, 100.0),
+      RigidBody::new(),
+      Collider::box_collider(32.0, 32.0),
+    ));
+    let e2 = world.spawn((
+      Transform::new(200.0, 200.0),
+      RigidBody::kinematic(),
+      Collider::circle_collider(16.0),
+    ));
+
+    {
+      let t = world.get_component::<Transform>(e1).unwrap();
+      let rb = world.get_component::<RigidBody>(e1).unwrap();
+      let col = world.get_component::<Collider>(e1).unwrap();
+      physics.register_entity(e1, &t, None, &rb, &col);
+    }
+    {
+      let t = world.get_component::<Transform>(e2).unwrap();
+      let rb = world.get_component::<RigidBody>(e2).unwrap();
+      let col = world.get_component::<Collider>(e2).unwrap();
+      physics.register_entity(e2, &t, None, &rb, &col);
+    }
+
+    assert_eq!(physics.body_count(), 2);
+    assert!(physics.is_registered(e1));
+    assert!(physics.is_registered(e2));
+
+    // Clear the physics world
+    physics.clear();
+
+    // All bodies should be gone
+    assert_eq!(physics.body_count(), 0);
+    assert!(!physics.is_registered(e1));
+    assert!(!physics.is_registered(e2));
+
+    // Should be able to register new entities after clear
+    let e3 = world.spawn((
+      Transform::new(50.0, 50.0),
+      RigidBody::new(),
+      Collider::box_collider(10.0, 10.0),
+    ));
+    {
+      let t = world.get_component::<Transform>(e3).unwrap();
+      let rb = world.get_component::<RigidBody>(e3).unwrap();
+      let col = world.get_component::<Collider>(e3).unwrap();
+      physics.register_entity(e3, &t, None, &rb, &col);
+    }
+    assert_eq!(physics.body_count(), 1);
+    assert!(physics.is_registered(e3));
+  }
+
+  #[test]
+  fn collision_event_is_started_is_stopped() {
+    // Test Started event
+    let started_event = PhysicsCollisionEvent {
+      entity_a: hecs::Entity::DANGLING,
+      entity_b: hecs::Entity::DANGLING,
+      event_type: CollisionEventType::Started,
+      is_sensor: false,
+    };
+    assert!(started_event.is_started());
+    assert!(!started_event.is_stopped());
+
+    // Test Stopped event
+    let stopped_event = PhysicsCollisionEvent {
+      entity_a: hecs::Entity::DANGLING,
+      entity_b: hecs::Entity::DANGLING,
+      event_type: CollisionEventType::Stopped,
+      is_sensor: false,
+    };
+    assert!(!stopped_event.is_started());
+    assert!(stopped_event.is_stopped());
   }
 }

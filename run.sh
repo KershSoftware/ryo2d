@@ -102,7 +102,8 @@ run_example() {
     cd "$example_path"
     
     # Run and ensure we return to original directory
-    cargo run || true
+    # Use cargo to run the ryo2d CLI from the engine root
+    cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- dev || true
     cd "$original_dir"
 }
 

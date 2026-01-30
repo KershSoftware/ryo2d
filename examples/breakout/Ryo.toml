@@ -11,3 +11,7 @@ entry_point = "main.rs"
 save_data = "data"
 # Assets directory
 assets = "assets"
+
+[debug]
+# Show collision boundaries for debugging
+show_colliders = false

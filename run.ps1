@@ -83,7 +83,8 @@ function Run-Example {
     Set-Location $ExamplePath
     
     try {
-        cargo run
+        # Use cargo to run the ryo2d CLI from the engine root
+        & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- dev
     }
     finally {
         # Always restore original directory

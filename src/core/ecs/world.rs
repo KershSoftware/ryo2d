@@ -39,6 +39,9 @@ use hecs::Entity;
 /// ```
 pub struct World {
   inner: hecs::World,
+  /// Generation counter that increments each time clear() is called.
+  /// Used by the engine to detect world resets for physics synchronization.
+  generation: u64,
 }
 
 impl World {
@@ -46,6 +49,7 @@ impl World {
   pub fn new() -> Self {
     World {
       inner: hecs::World::new(),
+      generation: 0,
     }
   }
 
@@ -95,8 +99,20 @@ impl World {
   ///
   /// This despawns every entity and their components. Useful for scene
   /// transitions where you want to start fresh.
+  ///
+  /// Note: This increments the world's generation counter, which the engine
+  /// uses to detect that physics state needs to be reset.
   pub fn clear(&mut self) {
     self.inner.clear();
+    self.generation = self.generation.wrapping_add(1);
+  }
+
+  /// Get the current generation counter
+  ///
+  /// This counter increments each time `clear()` is called. The engine uses
+  /// this to detect when the world has been reset and physics needs clearing.
+  pub fn generation(&self) -> u64 {
+    self.generation
   }
 
   // =========================================================================
@@ -479,5 +495,32 @@ mod tests {
 
     assert_eq!(pos.x, 100.0);
     assert_eq!(health.current, 50);
+  }
+
+  #[test]
+  fn clear_increments_generation() {
+    let mut world = World::new();
+
+    // Initial generation is 0
+    assert_eq!(world.generation(), 0);
+
+    // Spawn some entities
+    world.spawn((Position { x: 1.0, y: 2.0 },));
+    world.spawn((Position { x: 3.0, y: 4.0 },));
+    assert_eq!(world.entities().len(), 2);
+
+    // Clear should increment generation
+    world.clear();
+    assert_eq!(world.generation(), 1);
+    assert_eq!(world.entities().len(), 0);
+
+    // Clear again
+    world.clear();
+    assert_eq!(world.generation(), 2);
+
+    // Spawn after clear works
+    let e = world.spawn((Position { x: 10.0, y: 20.0 },));
+    assert!(world.contains(e));
+    assert_eq!(world.generation(), 2); // Spawn doesn't change generation
   }
 }

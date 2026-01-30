@@ -26,8 +26,41 @@ pub struct GameContext<'a> {
   pub assets: &'a mut AssetManager,
   /// Audio manager for sound effects and music (None if audio unavailable)
   pub audio: &'a mut Option<AudioManager>,
-  /// Collision events from the last physics step
+  /// Collision events from the last physics step.
+  ///
+  /// **Note:** This includes BOTH `Started` and `Stopped` events.
+  /// For most game logic (damage, death, scoring), you probably only
+  /// want `Started` events. Use [`collisions_started()`](Self::collisions_started)
+  /// for a filtered iterator.
   pub collision_events: &'a [PhysicsCollisionEvent],
+}
+
+impl<'a> GameContext<'a> {
+  /// Iterate over collision events where objects started touching.
+  ///
+  /// This is the most common case for game logic - reacting when
+  /// objects first collide (damage, pickups, death triggers, etc.).
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// for event in ctx.collisions_started() {
+  ///     if event.involves(player) {
+  ///         // Player hit something!
+  ///     }
+  /// }
+  /// ```
+  pub fn collisions_started(&self) -> impl Iterator<Item = &PhysicsCollisionEvent> {
+    self.collision_events.iter().filter(|e| e.is_started())
+  }
+
+  /// Iterate over collision events where objects stopped touching.
+  ///
+  /// Useful for "exit trigger" logic or resetting state when
+  /// objects separate.
+  pub fn collisions_stopped(&self) -> impl Iterator<Item = &PhysicsCollisionEvent> {
+    self.collision_events.iter().filter(|e| e.is_stopped())
+  }
 }
 
 /// Trait for user-defined game logic.

@@ -11,7 +11,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::camera::Camera;
-use super::collision::Collider;
+use super::collision::{Collider, ColliderShape};
 use super::ecs::{Entity, SpriteRenderer, Transform, Velocity, World};
 use super::error::{EngineError, EngineResult};
 use super::game::{Game, GameContext};
@@ -116,6 +116,14 @@ pub struct EngineConfig {
   pub target_fps: u32,
   pub physics_hz: u32,
   pub physics: PhysicsConfig,
+  pub debug: EngineDebugConfig,
+}
+
+/// Debug configuration for engine rendering
+#[derive(Debug, Clone, Default)]
+pub struct EngineDebugConfig {
+  /// Whether to render collision boundaries
+  pub show_colliders: bool,
 }
 
 impl Default for EngineConfig {
@@ -127,6 +135,7 @@ impl Default for EngineConfig {
       target_fps: 60,
       physics_hz: 60,
       physics: PhysicsConfig::default(),
+      debug: EngineDebugConfig::default(),
     }
   }
 }
@@ -158,6 +167,8 @@ pub struct Engine {
   physics: RapierPhysicsWorld,
   // UI font for text rendering
   ui_font: BitmapFont,
+  // Last known world generation (for detecting world.clear() calls)
+  last_world_generation: u64,
 }
 
 impl Engine {
@@ -200,6 +211,7 @@ impl Engine {
       render_cache_dirty: true,
       physics: RapierPhysicsWorld::new(),
       ui_font,
+      last_world_generation: 0,
     }
   }
 
@@ -255,8 +267,17 @@ impl Engine {
       return;
     }
 
+    // Check if world was cleared (generation changed) - this means physics must be reset
+    // because hecs reuses entity IDs, so stale detection via contains() doesn't work
+    let current_generation = self.world.generation();
+    if current_generation != self.last_world_generation {
+      self.physics.clear();
+      self.last_world_generation = current_generation;
+    }
+
     // Auto-unregister despawned entities from physics
     // (entities that were registered but no longer exist in the ECS world)
+    // This handles normal gameplay despawning (not world.clear())
     let stale_physics_entities: Vec<Entity> = self
       .physics
       .registered_entities()
@@ -352,9 +373,13 @@ impl Engine {
         // Convert world position to screen position using camera
         let (screen_x, screen_y) = self.camera.world_to_screen(transform.x, transform.y);
 
+        // Calculate final scale (transform scale * camera zoom)
+        let final_scale_x = transform.scale_x * self.camera.zoom;
+        let final_scale_y = transform.scale_y * self.camera.zoom;
+
         // Optionally cull off-screen sprites (optimization)
-        let sprite_w = sprite_renderer.sprite.width() as f32;
-        let sprite_h = sprite_renderer.sprite.height() as f32;
+        let sprite_w = sprite_renderer.sprite.width() as f32 * final_scale_x;
+        let sprite_h = sprite_renderer.sprite.height() as f32 * final_scale_y;
         if !self
           .camera
           .is_visible(transform.x, transform.y, sprite_w, sprite_h)
@@ -362,16 +387,28 @@ impl Engine {
           continue;
         }
 
-        // Draw scaled by camera zoom
-        sprite_renderer.sprite.draw_scaled(
+        // Draw scaled by transform scale and camera zoom
+        sprite_renderer.sprite.draw_scaled_xy(
           frame,
           frame_width,
           frame_height,
           screen_x as i32,
           screen_y as i32,
-          self.camera.zoom,
+          final_scale_x,
+          final_scale_y,
         );
       }
+    }
+
+    // === Debug Rendering: Collision boundaries ===
+    if self.config.debug.show_colliders {
+      render_collider_debug(
+        frame,
+        frame_width,
+        frame_height,
+        &self.world,
+        &self.camera,
+      );
     }
 
     // === UI Rendering ===
@@ -388,6 +425,209 @@ impl Engine {
       && alpha > 0.001
     {
       blend_overlay(frame, color, alpha);
+    }
+  }
+}
+
+/// Render collision debug visualization
+///
+/// Draws outlines around all entities with Collider components
+fn render_collider_debug(
+  frame: &mut [u8],
+  width: u32,
+  height: u32,
+  world: &World,
+  camera: &Camera,
+) {
+  // Color for debug outlines (bright green with some transparency)
+  let debug_color: [u8; 4] = [0x00, 0xff, 0x00, 0xff];
+
+  // Iterate all entities with Transform and Collider
+  for entity in world.entities_with_two::<Transform, Collider>() {
+    let Some(transform) = world.get_component::<Transform>(entity) else {
+      continue;
+    };
+    let Some(collider) = world.get_component::<Collider>(entity) else {
+      continue;
+    };
+
+    // Calculate world position with offset
+    let world_x = transform.x + collider.offset_x;
+    let world_y = transform.y + collider.offset_y;
+
+    // Convert to screen position
+    let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
+
+    match &collider.shape {
+      ColliderShape::Box {
+        width: box_w,
+        height: box_h,
+      } => {
+        // Collider dimensions are already in world-space, only apply camera zoom
+        let scaled_w = (*box_w * camera.zoom) as i32;
+        let scaled_h = (*box_h * camera.zoom) as i32;
+        draw_rect_outline(
+          frame,
+          width,
+          height,
+          screen_x as i32,
+          screen_y as i32,
+          scaled_w,
+          scaled_h,
+          debug_color,
+        );
+      }
+      ColliderShape::Circle { radius } => {
+        // Collider radius is already in world-space, only apply camera zoom
+        let scaled_radius = (*radius * camera.zoom) as i32;
+        // The offset points to the center of the circle, so draw directly at screen position
+        draw_circle_outline(
+          frame,
+          width,
+          height,
+          screen_x as i32,
+          screen_y as i32,
+          scaled_radius,
+          debug_color,
+        );
+      }
+    }
+  }
+}
+
+/// Draw a rectangle outline (1px thick)
+fn draw_rect_outline(
+  frame: &mut [u8],
+  frame_width: u32,
+  frame_height: u32,
+  x: i32,
+  y: i32,
+  w: i32,
+  h: i32,
+  color: [u8; 4],
+) {
+  // Top edge
+  draw_horizontal_line(frame, frame_width, frame_height, x, y, w, color);
+  // Bottom edge
+  draw_horizontal_line(frame, frame_width, frame_height, x, y + h - 1, w, color);
+  // Left edge
+  draw_vertical_line(frame, frame_width, frame_height, x, y, h, color);
+  // Right edge
+  draw_vertical_line(frame, frame_width, frame_height, x + w - 1, y, h, color);
+}
+
+/// Draw a horizontal line
+#[inline]
+fn draw_horizontal_line(
+  frame: &mut [u8],
+  frame_width: u32,
+  frame_height: u32,
+  x: i32,
+  y: i32,
+  length: i32,
+  color: [u8; 4],
+) {
+  if y < 0 || y >= frame_height as i32 {
+    return;
+  }
+  // Calculate the visible portion of the line
+  let end_x_signed = x.saturating_add(length);
+  if end_x_signed <= 0 || x >= frame_width as i32 {
+    return; // Entirely off-screen
+  }
+  let start_x = x.max(0) as u32;
+  let end_x = (end_x_signed as u32).min(frame_width);
+  for px in start_x..end_x {
+    let idx = ((y as u32 * frame_width + px) * 4) as usize;
+    if idx + 3 < frame.len() {
+      frame[idx] = color[0];
+      frame[idx + 1] = color[1];
+      frame[idx + 2] = color[2];
+      frame[idx + 3] = color[3];
+    }
+  }
+}
+
+/// Draw a vertical line
+#[inline]
+fn draw_vertical_line(
+  frame: &mut [u8],
+  frame_width: u32,
+  frame_height: u32,
+  x: i32,
+  y: i32,
+  length: i32,
+  color: [u8; 4],
+) {
+  if x < 0 || x >= frame_width as i32 {
+    return;
+  }
+  // Calculate the visible portion of the line
+  let end_y_signed = y.saturating_add(length);
+  if end_y_signed <= 0 || y >= frame_height as i32 {
+    return; // Entirely off-screen
+  }
+  let start_y = y.max(0) as u32;
+  let end_y = (end_y_signed as u32).min(frame_height);
+  for py in start_y..end_y {
+    let idx = ((py * frame_width + x as u32) * 4) as usize;
+    if idx + 3 < frame.len() {
+      frame[idx] = color[0];
+      frame[idx + 1] = color[1];
+      frame[idx + 2] = color[2];
+      frame[idx + 3] = color[3];
+    }
+  }
+}
+
+/// Draw a circle outline using midpoint circle algorithm
+fn draw_circle_outline(
+  frame: &mut [u8],
+  frame_width: u32,
+  frame_height: u32,
+  cx: i32,
+  cy: i32,
+  radius: i32,
+  color: [u8; 4],
+) {
+  if radius <= 0 {
+    return;
+  }
+
+  let mut x = radius;
+  let mut y = 0;
+  let mut err = 0;
+
+  while x >= y {
+    // Draw 8 octants
+    set_pixel(frame, frame_width, frame_height, cx + x, cy + y, color);
+    set_pixel(frame, frame_width, frame_height, cx + y, cy + x, color);
+    set_pixel(frame, frame_width, frame_height, cx - y, cy + x, color);
+    set_pixel(frame, frame_width, frame_height, cx - x, cy + y, color);
+    set_pixel(frame, frame_width, frame_height, cx - x, cy - y, color);
+    set_pixel(frame, frame_width, frame_height, cx - y, cy - x, color);
+    set_pixel(frame, frame_width, frame_height, cx + y, cy - x, color);
+    set_pixel(frame, frame_width, frame_height, cx + x, cy - y, color);
+
+    y += 1;
+    err += 1 + 2 * y;
+    if 2 * (err - x) + 1 > 0 {
+      x -= 1;
+      err += 1 - 2 * x;
+    }
+  }
+}
+
+/// Set a single pixel (with bounds checking)
+#[inline]
+fn set_pixel(frame: &mut [u8], width: u32, height: u32, x: i32, y: i32, color: [u8; 4]) {
+  if x >= 0 && x < width as i32 && y >= 0 && y < height as i32 {
+    let idx = ((y as u32 * width + x as u32) * 4) as usize;
+    if idx + 3 < frame.len() {
+      frame[idx] = color[0];
+      frame[idx + 1] = color[1];
+      frame[idx + 2] = color[2];
+      frame[idx + 3] = color[3];
     }
   }
 }
@@ -596,6 +836,49 @@ impl EngineBuilder {
 
   pub fn physics_hz(mut self, hz: u32) -> Self {
     self.config.physics_hz = hz;
+    self
+  }
+
+  /// Enable or disable collision boundary debug visualization.
+  ///
+  /// When enabled, renders bright green outlines around all colliders
+  /// to help debug collision detection issues.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("Debug Game")
+  ///     .show_colliders(true)
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn show_colliders(mut self, enabled: bool) -> Self {
+    self.config.debug.show_colliders = enabled;
+    self
+  }
+
+  /// Load debug settings from the workspace's Ryo.toml file.
+  ///
+  /// This reads the `[debug]` section from the project's configuration
+  /// file and applies it to the engine. Call this to automatically
+  /// enable debug features configured in Ryo.toml.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("My Game")
+  ///     .with_workspace_debug()  // Reads [debug] from Ryo.toml
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn with_workspace_debug(mut self) -> Self {
+    if let Ok(workspace) = super::workspace::Workspace::discover() {
+      self.config.debug.show_colliders = workspace.config().debug.show_colliders;
+    }
     self
   }
 
