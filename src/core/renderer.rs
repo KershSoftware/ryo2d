@@ -1,0 +1,800 @@
+//! WGPU-based software renderer for 2D games.
+//!
+//! This module provides a renderer that:
+//! 1. Maintains a CPU-side pixel buffer (like a framebuffer)
+//! 2. Uploads it to a GPU texture each frame
+//! 3. Renders the texture to screen with proper letterboxing/scaling
+
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
+use winit::window::Window;
+
+use super::engine::WindowMode;
+
+/// Handles wgpu rendering of a software pixel buffer to screen.
+pub struct WgpuRenderer {
+  surface: wgpu::Surface<'static>,
+  device: wgpu::Device,
+  queue: wgpu::Queue,
+  config: wgpu::SurfaceConfiguration,
+  // The pixel buffer texture on GPU
+  texture: wgpu::Texture,
+  texture_view: wgpu::TextureView,
+  sampler: wgpu::Sampler,
+  // Pipeline for rendering texture to screen
+  render_pipeline: wgpu::RenderPipeline,
+  bind_group: wgpu::BindGroup,
+  // Uniform buffer for viewport transform
+  uniform_buffer: wgpu::Buffer,
+  // Game resolution
+  game_width: u32,
+  game_height: u32,
+  // Current window size
+  window_width: u32,
+  window_height: u32,
+  // Window mode for scaling
+  window_mode: WindowMode,
+  // Max viewport constraints
+  max_width: Option<u32>,
+  max_height: Option<u32>,
+  // CPU-side pixel buffer (RGBA)
+  pixel_buffer: Vec<u8>,
+}
+
+/// Viewport uniform data sent to shader
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct ViewportUniform {
+  // Scale and offset for rendering the quad
+  // x: scale_x, y: scale_y, z: offset_x, w: offset_y
+  transform: [f32; 4],
+}
+
+impl WgpuRenderer {
+  /// Create a new wgpu renderer.
+  pub async fn new(
+    window: Arc<Window>,
+    game_width: u32,
+    game_height: u32,
+    window_mode: WindowMode,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+  ) -> Self {
+    let size = window.inner_size();
+
+    // Create wgpu instance
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+      backends: wgpu::Backends::all(),
+      ..Default::default()
+    });
+
+    // Create surface
+    let surface = instance.create_surface(window).unwrap();
+
+    // Request adapter
+    let adapter = instance
+      .request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::default(),
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+      })
+      .await
+      .expect("Failed to find an appropriate adapter");
+
+    // Request device and queue
+    let (device, queue) = adapter
+      .request_device(
+        &wgpu::DeviceDescriptor {
+          label: Some("Ryo2D Device"),
+          required_features: wgpu::Features::empty(),
+          required_limits: wgpu::Limits::default(),
+          memory_hints: Default::default(),
+        },
+        None,
+      )
+      .await
+      .expect("Failed to create device");
+
+    // Configure surface
+    let surface_caps = surface.get_capabilities(&adapter);
+    let surface_format = surface_caps
+      .formats
+      .iter()
+      .find(|f| f.is_srgb())
+      .copied()
+      .unwrap_or(surface_caps.formats[0]);
+
+    let config = wgpu::SurfaceConfiguration {
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+      format: surface_format,
+      width: size.width.max(1),
+      height: size.height.max(1),
+      // Use Mailbox if available (non-blocking, low latency), fall back to Fifo
+      present_mode: if surface_caps
+        .present_modes
+        .contains(&wgpu::PresentMode::Mailbox)
+      {
+        wgpu::PresentMode::Mailbox
+      } else {
+        wgpu::PresentMode::Fifo
+      },
+      alpha_mode: surface_caps.alpha_modes[0],
+      view_formats: vec![],
+      desired_maximum_frame_latency: 2,
+    };
+    surface.configure(&device, &config);
+
+    // Create the game texture (where we upload our pixel buffer)
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Game Texture"),
+      size: wgpu::Extent3d {
+        width: game_width,
+        height: game_height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+      view_formats: &[],
+    });
+
+    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Create sampler (nearest neighbor for pixel art crispness)
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+      label: Some("Game Sampler"),
+      address_mode_u: wgpu::AddressMode::ClampToEdge,
+      address_mode_v: wgpu::AddressMode::ClampToEdge,
+      address_mode_w: wgpu::AddressMode::ClampToEdge,
+      mag_filter: wgpu::FilterMode::Nearest,
+      min_filter: wgpu::FilterMode::Nearest,
+      mipmap_filter: wgpu::FilterMode::Nearest,
+      ..Default::default()
+    });
+
+    // Create uniform buffer for viewport transform
+    let uniform = ViewportUniform {
+      transform: [1.0, 1.0, 0.0, 0.0],
+    };
+    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+      label: Some("Viewport Uniform Buffer"),
+      contents: bytemuck::cast_slice(&[uniform]),
+      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    // Create bind group layout
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+      label: Some("Texture Bind Group Layout"),
+      entries: &[
+        wgpu::BindGroupLayoutEntry {
+          binding: 0,
+          visibility: wgpu::ShaderStages::FRAGMENT,
+          ty: wgpu::BindingType::Texture {
+            multisampled: false,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+          },
+          count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+          binding: 1,
+          visibility: wgpu::ShaderStages::FRAGMENT,
+          ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+          count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+          binding: 2,
+          visibility: wgpu::ShaderStages::VERTEX,
+          ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+          },
+          count: None,
+        },
+      ],
+    });
+
+    // Create bind group
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("Texture Bind Group"),
+      layout: &bind_group_layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: wgpu::BindingResource::TextureView(&texture_view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: wgpu::BindingResource::Sampler(&sampler),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: uniform_buffer.as_entire_binding(),
+        },
+      ],
+    });
+
+    // Create shader module
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+      label: Some("Fullscreen Quad Shader"),
+      source: wgpu::ShaderSource::Wgsl(include_str!("shaders/fullscreen_quad.wgsl").into()),
+    });
+
+    // Create pipeline layout
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: Some("Render Pipeline Layout"),
+      bind_group_layouts: &[&bind_group_layout],
+      push_constant_ranges: &[],
+    });
+
+    // Create render pipeline
+    let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+      label: Some("Render Pipeline"),
+      layout: Some(&pipeline_layout),
+      vertex: wgpu::VertexState {
+        module: &shader,
+        entry_point: "vs_main",
+        buffers: &[],
+        compilation_options: Default::default(),
+      },
+      fragment: Some(wgpu::FragmentState {
+        module: &shader,
+        entry_point: "fs_main",
+        targets: &[Some(wgpu::ColorTargetState {
+          format: surface_format,
+          blend: Some(wgpu::BlendState::REPLACE),
+          write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+      }),
+      primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        strip_index_format: None,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: None,
+        polygon_mode: wgpu::PolygonMode::Fill,
+        unclipped_depth: false,
+        conservative: false,
+      },
+      depth_stencil: None,
+      multisample: wgpu::MultisampleState {
+        count: 1,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+      },
+      multiview: None,
+      cache: None,
+    });
+
+    // Create CPU-side pixel buffer
+    let pixel_buffer = vec![0u8; (game_width * game_height * 4) as usize];
+
+    let mut renderer = WgpuRenderer {
+      surface,
+      device,
+      queue,
+      config,
+      texture,
+      texture_view,
+      sampler,
+      render_pipeline,
+      bind_group,
+      uniform_buffer,
+      game_width,
+      game_height,
+      window_width: size.width,
+      window_height: size.height,
+      window_mode,
+      max_width,
+      max_height,
+      pixel_buffer,
+    };
+
+    // Initialize viewport transform
+    renderer.update_viewport_transform();
+
+    renderer
+  }
+
+  /// Get a mutable reference to the pixel buffer for rendering.
+  pub fn frame_mut(&mut self) -> &mut [u8] {
+    &mut self.pixel_buffer
+  }
+
+  /// Get the game width.
+  pub fn game_width(&self) -> u32 {
+    self.game_width
+  }
+
+  /// Get the game height.
+  pub fn game_height(&self) -> u32 {
+    self.game_height
+  }
+
+  /// Resize the surface when window size changes.
+  pub fn resize(&mut self, new_width: u32, new_height: u32) {
+    if new_width > 0 && new_height > 0 {
+      self.window_width = new_width;
+      self.window_height = new_height;
+      self.config.width = new_width;
+      self.config.height = new_height;
+      self.surface.configure(&self.device, &self.config);
+      self.update_viewport_transform();
+    }
+  }
+
+  /// Resize the internal pixel buffer (for stretch mode).
+  pub fn resize_buffer(&mut self, new_width: u32, new_height: u32) {
+    self.game_width = new_width;
+    self.game_height = new_height;
+    self.pixel_buffer = vec![0u8; (new_width * new_height * 4) as usize];
+
+    // Recreate texture with new size
+    self.texture = self.device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Game Texture"),
+      size: wgpu::Extent3d {
+        width: new_width,
+        height: new_height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+      view_formats: &[],
+    });
+
+    self.texture_view = self
+      .texture
+      .create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Recreate bind group with new texture view
+    let bind_group_layout = self.render_pipeline.get_bind_group_layout(0);
+    self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("Texture Bind Group"),
+      layout: &bind_group_layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: wgpu::BindingResource::TextureView(&self.texture_view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: wgpu::BindingResource::Sampler(&self.sampler),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: self.uniform_buffer.as_entire_binding(),
+        },
+      ],
+    });
+
+    self.update_viewport_transform();
+  }
+
+  /// Update the viewport uniform based on current window mode and sizes.
+  fn update_viewport_transform(&mut self) {
+    let (scale_x, scale_y, offset_x, offset_y) = self.calculate_viewport();
+
+    let uniform = ViewportUniform {
+      transform: [scale_x, scale_y, offset_x, offset_y],
+    };
+
+    self
+      .queue
+      .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
+  }
+
+  /// Calculate viewport scale and offset based on window mode.
+  fn calculate_viewport(&self) -> (f32, f32, f32, f32) {
+    let game_width = self.game_width as f32;
+    let game_height = self.game_height as f32;
+    let window_width = self.window_width as f32;
+    let window_height = self.window_height as f32;
+
+    match self.window_mode {
+      WindowMode::Fixed | WindowMode::ResizableAspectRatio => {
+        let window_aspect = window_width / window_height;
+        let game_aspect = game_width / game_height;
+
+        let mut scale = if window_aspect > game_aspect {
+          window_height / game_height
+        } else {
+          window_width / game_width
+        };
+
+        // Apply max constraints
+        if let Some(max_width) = self.max_width {
+          let max_scale_width = max_width as f32 / game_width;
+          scale = scale.min(max_scale_width);
+        }
+        if let Some(max_height) = self.max_height {
+          let max_scale_height = max_height as f32 / game_height;
+          scale = scale.min(max_scale_height);
+        }
+
+        let scaled_width = game_width * scale;
+        let scaled_height = game_height * scale;
+
+        // Convert to normalized device coordinates (-1 to 1)
+        let scale_x = scaled_width / window_width;
+        let scale_y = scaled_height / window_height;
+
+        (scale_x, scale_y, 0.0, 0.0)
+      }
+      WindowMode::ResizableIntegerScale => {
+        let window_aspect = window_width / window_height;
+        let game_aspect = game_width / game_height;
+
+        let mut scale = if window_aspect > game_aspect {
+          window_height / game_height
+        } else {
+          window_width / game_width
+        };
+
+        // Integer scaling
+        scale = scale.floor().max(1.0);
+
+        // Apply max constraints
+        if let Some(max_width) = self.max_width {
+          let max_scale_width = max_width as f32 / game_width;
+          scale = scale.min(max_scale_width.floor().max(1.0));
+        }
+        if let Some(max_height) = self.max_height {
+          let max_scale_height = max_height as f32 / game_height;
+          scale = scale.min(max_scale_height.floor().max(1.0));
+        }
+
+        let scaled_width = game_width * scale;
+        let scaled_height = game_height * scale;
+
+        let scale_x = scaled_width / window_width;
+        let scale_y = scaled_height / window_height;
+
+        (scale_x, scale_y, 0.0, 0.0)
+      }
+      WindowMode::ResizableStretch => {
+        // Fill entire window
+        (1.0, 1.0, 0.0, 0.0)
+      }
+    }
+  }
+
+  /// Render the pixel buffer to the screen.
+  pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    // Upload pixel buffer to GPU texture
+    self.queue.write_texture(
+      wgpu::ImageCopyTexture {
+        texture: &self.texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+      },
+      &self.pixel_buffer,
+      wgpu::ImageDataLayout {
+        offset: 0,
+        bytes_per_row: Some(4 * self.game_width),
+        rows_per_image: Some(self.game_height),
+      },
+      wgpu::Extent3d {
+        width: self.game_width,
+        height: self.game_height,
+        depth_or_array_layers: 1,
+      },
+    );
+
+    // Get surface texture
+    let output = self.surface.get_current_texture()?;
+    let view = output
+      .texture
+      .create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Create command encoder
+    let mut encoder = self
+      .device
+      .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Render Encoder"),
+      });
+
+    // Render pass
+    {
+      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Render Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            // Clear to black (letterbox color)
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+      });
+
+      render_pass.set_pipeline(&self.render_pipeline);
+      render_pass.set_bind_group(0, &self.bind_group, &[]);
+      // Draw fullscreen quad (6 vertices, generated in shader)
+      render_pass.draw(0..6, 0..1);
+    }
+
+    // Submit commands
+    self.queue.submit(std::iter::once(encoder.finish()));
+    output.present();
+
+    Ok(())
+  }
+
+  /// Set the window mode.
+  pub fn set_window_mode(&mut self, mode: WindowMode) {
+    self.window_mode = mode;
+    self.update_viewport_transform();
+  }
+
+  /// Set max width constraint.
+  pub fn set_max_width(&mut self, max: Option<u32>) {
+    self.max_width = max;
+    self.update_viewport_transform();
+  }
+
+  /// Set max height constraint.
+  pub fn set_max_height(&mut self, max: Option<u32>) {
+    self.max_height = max;
+    self.update_viewport_transform();
+  }
+}
+
+/// Calculate viewport scale for a given configuration.
+///
+/// This is a pure function used for testing viewport math without GPU context.
+/// Returns (scale_x, scale_y, offset_x, offset_y) for the fullscreen quad shader.
+#[allow(dead_code)]
+fn calculate_viewport_scale(
+  game_width: u32,
+  game_height: u32,
+  window_width: u32,
+  window_height: u32,
+  window_mode: WindowMode,
+  max_width: Option<u32>,
+  max_height: Option<u32>,
+) -> (f32, f32, f32, f32) {
+  let game_w = game_width as f32;
+  let game_h = game_height as f32;
+  let window_w = window_width as f32;
+  let window_h = window_height as f32;
+
+  match window_mode {
+    WindowMode::Fixed | WindowMode::ResizableAspectRatio => {
+      let window_aspect = window_w / window_h;
+      let game_aspect = game_w / game_h;
+
+      let mut scale = if window_aspect > game_aspect {
+        window_h / game_h
+      } else {
+        window_w / game_w
+      };
+
+      if let Some(max_w) = max_width {
+        let max_scale_w = max_w as f32 / game_w;
+        scale = scale.min(max_scale_w);
+      }
+      if let Some(max_h) = max_height {
+        let max_scale_h = max_h as f32 / game_h;
+        scale = scale.min(max_scale_h);
+      }
+
+      let scaled_w = game_w * scale;
+      let scaled_h = game_h * scale;
+
+      (scaled_w / window_w, scaled_h / window_h, 0.0, 0.0)
+    }
+    WindowMode::ResizableIntegerScale => {
+      let window_aspect = window_w / window_h;
+      let game_aspect = game_w / game_h;
+
+      let mut scale = if window_aspect > game_aspect {
+        window_h / game_h
+      } else {
+        window_w / game_w
+      };
+
+      scale = scale.floor().max(1.0);
+
+      if let Some(max_w) = max_width {
+        let max_scale_w = max_w as f32 / game_w;
+        scale = scale.min(max_scale_w.floor().max(1.0));
+      }
+      if let Some(max_h) = max_height {
+        let max_scale_h = max_h as f32 / game_h;
+        scale = scale.min(max_scale_h.floor().max(1.0));
+      }
+
+      let scaled_w = game_w * scale;
+      let scaled_h = game_h * scale;
+
+      (scaled_w / window_w, scaled_h / window_h, 0.0, 0.0)
+    }
+    WindowMode::ResizableStretch => (1.0, 1.0, 0.0, 0.0),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn viewport_uniform_is_pod() {
+    // ViewportUniform must be Pod for bytemuck::cast_slice
+    let uniform = ViewportUniform {
+      transform: [1.0, 1.0, 0.0, 0.0],
+    };
+    let bytes = bytemuck::bytes_of(&uniform);
+    assert_eq!(bytes.len(), 16); // 4 floats * 4 bytes
+  }
+
+  #[test]
+  fn stretch_mode_fills_window() {
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
+      800,
+      600,
+      1920,
+      1080,
+      WindowMode::ResizableStretch,
+      None,
+      None,
+    );
+    assert_eq!(scale_x, 1.0);
+    assert_eq!(scale_y, 1.0);
+  }
+
+  #[test]
+  fn aspect_ratio_letterbox_wider_window() {
+    // 800x600 game (4:3) in 1920x1080 window (16:9) = pillarboxing
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
+      800,
+      600,
+      1920,
+      1080,
+      WindowMode::ResizableAspectRatio,
+      None,
+      None,
+    );
+    // Window is wider than game, so height is limiting factor
+    // scale = 1080 / 600 = 1.8, scaled = 1440x1080
+    // scale_x = 1440/1920 = 0.75, scale_y = 1080/1080 = 1.0
+    assert!((scale_x - 0.75).abs() < 0.001);
+    assert!((scale_y - 1.0).abs() < 0.001);
+  }
+
+  #[test]
+  fn aspect_ratio_letterbox_taller_window() {
+    // 800x600 game (4:3) in 800x1000 window = letterboxing (black bars top/bottom)
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
+      800,
+      600,
+      800,
+      1000,
+      WindowMode::ResizableAspectRatio,
+      None,
+      None,
+    );
+    // Window is taller than game, so width is limiting factor
+    // scale = 800 / 800 = 1.0, scaled = 800x600
+    // scale_x = 800/800 = 1.0, scale_y = 600/1000 = 0.6
+    assert!((scale_x - 1.0).abs() < 0.001);
+    assert!((scale_y - 0.6).abs() < 0.001);
+  }
+
+  #[test]
+  fn aspect_ratio_exact_fit() {
+    // Same aspect ratio, no letterboxing needed
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
+      400,
+      300,
+      800,
+      600,
+      WindowMode::ResizableAspectRatio,
+      None,
+      None,
+    );
+    assert!((scale_x - 1.0).abs() < 0.001);
+    assert!((scale_y - 1.0).abs() < 0.001);
+  }
+
+  #[test]
+  fn integer_scale_rounds_down() {
+    // 320x240 game in 1000x800 window
+    // Max scale that fits: 1000/320 = 3.125, 800/240 = 3.33
+    // Integer: floor(3.125) = 3
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
+      320,
+      240,
+      1000,
+      800,
+      WindowMode::ResizableIntegerScale,
+      None,
+      None,
+    );
+    // scaled = 960x720, scale_x = 960/1000 = 0.96, scale_y = 720/800 = 0.9
+    assert!((scale_x - 0.96).abs() < 0.001);
+    assert!((scale_y - 0.9).abs() < 0.001);
+  }
+
+  #[test]
+  fn integer_scale_minimum_is_one() {
+    // Small window, should still be at least 1x scale
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
+      800,
+      600,
+      400,
+      300,
+      WindowMode::ResizableIntegerScale,
+      None,
+      None,
+    );
+    // scale = floor(400/800) = 0 -> clamped to 1
+    // scaled = 800x600, scale_x = 800/400 = 2.0, scale_y = 600/300 = 2.0
+    assert!((scale_x - 2.0).abs() < 0.001);
+    assert!((scale_y - 2.0).abs() < 0.001);
+  }
+
+  #[test]
+  fn max_width_constrains_scale() {
+    // 400x300 game in 1600x1200 window, max_width = 800
+    // Without constraint: scale = 4x, scaled = 1600x1200
+    // With max_width 800: scale = 800/400 = 2x, scaled = 800x600
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
+      400,
+      300,
+      1600,
+      1200,
+      WindowMode::ResizableAspectRatio,
+      Some(800),
+      None,
+    );
+    // scaled = 800x600, scale_x = 800/1600 = 0.5, scale_y = 600/1200 = 0.5
+    assert!((scale_x - 0.5).abs() < 0.001);
+    assert!((scale_y - 0.5).abs() < 0.001);
+  }
+
+  #[test]
+  fn max_height_constrains_scale() {
+    // 400x300 game in 1600x1200 window, max_height = 600
+    // Without constraint: scale = 4x
+    // With max_height 600: scale = 600/300 = 2x, scaled = 800x600
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
+      400,
+      300,
+      1600,
+      1200,
+      WindowMode::ResizableAspectRatio,
+      None,
+      Some(600),
+    );
+    // scaled = 800x600, scale_x = 800/1600 = 0.5, scale_y = 600/1200 = 0.5
+    assert!((scale_x - 0.5).abs() < 0.001);
+    assert!((scale_y - 0.5).abs() < 0.001);
+  }
+
+  #[test]
+  fn fixed_mode_same_as_aspect_ratio() {
+    let aspect = calculate_viewport_scale(
+      800,
+      600,
+      1920,
+      1080,
+      WindowMode::ResizableAspectRatio,
+      None,
+      None,
+    );
+    let fixed =
+      calculate_viewport_scale(800, 600, 1920, 1080, WindowMode::Fixed, None, None);
+    assert_eq!(aspect, fixed);
+  }
+}

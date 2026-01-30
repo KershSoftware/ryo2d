@@ -36,7 +36,7 @@
 │  └─────────────┘  └─────────────┘  └─────────────┘  └──────────────────────┘ │
 │                                                                              │
 │  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │                     Window (winit) + Pixels (wgpu)                    │   │
+│  │                     Window (winit) + WgpuRenderer                     │   │
 │  └───────────────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -66,15 +66,16 @@
 │      accumulator -= fixed_dt ──────────────────────────┘                  │
 │              │                                                            │
 │              ▼ (exit loop)                                                │
-│   3. input.begin_frame()           Clear per-frame input                  │
-│              │                                                            │
+│   3. input.begin_frame()           Clear per-frame input (only if        │
+│              │                     update ran, to preserve input)        │
 │              ▼                                                            │
 │   4. render(alpha)                 Variable rate rendering                │
 │      • Z-sorted sprites            (with interpolation)                   │
 │      • Frustum culling                                                    │
 │              │                                                            │
 │              ▼                                                            │
-│   5. pixels.render()               Push to GPU                            │
+│   5. renderer.render()             Upload pixel buffer to GPU texture,    │
+│                                    draw fullscreen quad with scaling      │
 │                                                                           │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
@@ -158,10 +159,10 @@ Physics Loop:
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│                             render(alpha)                                 │
+│                             render                                 │
 ├───────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
-│   1. Get frame buffer from Pixels                                         │
+│   1. Get frame buffer from WgpuRenderer                                   │
 │      frame: &mut [u8] (RGBA, 4 bytes per pixel)                           │
 │                                                                           │
 │   2. Clear background (dark blue)                                         │
@@ -178,7 +179,10 @@ Physics Loop:
 │      • Frustum culling — skip if not visible                              │
 │      • sprite.draw() — alpha blending, screen clipping                    │
 │                                                                           │
-│   5. pixels.render() → Push to GPU                                        │
+│   5. renderer.render() → Upload pixel buffer to GPU texture               │
+│      • Upload CPU pixel buffer to GPU texture                             │
+│      • Draw fullscreen quad with WGSL shader                              │
+│      • Shader applies viewport scaling for letterbox/pillarbox            │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -214,7 +218,9 @@ Persistent state     │  keys_down        (tracks held keys)        │
 | `hecs` | High-performance archetype ECS with generational IDs |
 | `rapier2d` | Physics simulation, collision detection/response |
 | `winit` | Cross-platform windowing and input events |
-| `pixels` | 2D pixel buffer rendering via wgpu |
+| `wgpu` | GPU abstraction for rendering |
+| `bytemuck` | Safe transmutation for shader uniforms |
+| `pollster` | Minimal async runtime for wgpu initialization |
 | `kira` | Game audio (sound effects, music, streaming) |
 | `image` | Image loading (PNG, JPEG) |
 | `notify` | Filesystem watching for hot reload |

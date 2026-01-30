@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use pixels::{Pixels, SurfaceTexture};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -20,6 +19,7 @@ use super::game::{Game, GameContext};
 use super::input::InputState;
 use super::physics::{PhysicsConfig, RigidBody};
 use super::rapier_physics::RapierPhysicsWorld;
+use super::renderer::WgpuRenderer;
 use super::scene::{Scene, SceneGame};
 use super::ui::{BitmapFont, UiContext, create_debug_font};
 
@@ -193,7 +193,7 @@ impl Default for EngineConfig {
 pub struct Engine {
   config: EngineConfig,
   window: Option<Arc<Window>>,
-  pixels: Option<Pixels<'static>>,
+  renderer: Option<WgpuRenderer>,
   time: Option<TimeState>,
   input: InputState,
   // ECS World
@@ -218,7 +218,7 @@ pub struct Engine {
   ui_font: BitmapFont,
   // Last known world generation (for detecting world.clear() calls)
   last_world_generation: u64,
-  // Cached window size to avoid redundant resize_surface calls
+  // Cached window size to avoid redundant resize calls
   last_window_size: (u32, u32),
 }
 
@@ -228,7 +228,7 @@ impl Engine {
   /// Handles scaling and letterboxing when window size differs from game resolution.
   /// Returns `None` if the coordinates are outside the game viewport (in black bars).
   fn window_to_game_coords(&self, window_x: f64, window_y: f64) -> Option<(f32, f32)> {
-    if let (Some(window), Some(_pixels)) = (&self.window, &self.pixels) {
+    if let (Some(window), Some(_renderer)) = (&self.window, &self.renderer) {
       let window_size = window.inner_size();
       let (game_width, game_height) = (self.config.width as f32, self.config.height as f32);
 
@@ -283,7 +283,7 @@ impl Engine {
 
       Some((game_x, game_y))
     } else {
-      // Fallback if window/pixels not initialized
+      // Fallback if window/renderer not initialized
       Some((window_x as f32, window_y as f32))
     }
   }
@@ -328,7 +328,7 @@ impl Engine {
     Engine {
       config,
       window: None,
-      pixels: None,
+      renderer: None,
       time: None,
       input: InputState::new(),
       world,
@@ -514,14 +514,15 @@ impl Engine {
   ///
   /// This is the "Render System" - it draws all entities with Transform + SpriteRenderer
   fn render(&mut self, _alpha: f32) {
-    // Get frame buffer
-    let frame = match &mut self.pixels {
-      Some(pixels) => pixels.frame_mut(),
+    // Get frame buffer from renderer
+    let (frame, frame_width, frame_height) = match &mut self.renderer {
+      Some(renderer) => {
+        let w = renderer.game_width();
+        let h = renderer.game_height();
+        (renderer.frame_mut(), w, h)
+      }
       None => return,
     };
-
-    let frame_width = self.config.width;
-    let frame_height = self.config.height;
 
     // Fill background with dark blue (game area only - letterbox is handled by clear color)
     for pixel in frame.chunks_exact_mut(4) {
@@ -660,15 +661,18 @@ impl ApplicationHandler for Engine {
         .expect("Failed to create window"),
     );
 
-    let window_size = window.inner_size();
-    let surface_texture =
-      SurfaceTexture::new(window_size.width, window_size.height, Arc::clone(&window));
-
-    let pixels = Pixels::new(self.config.width, self.config.height, surface_texture)
-      .expect("Failed to create pixel buffer");
+    // Create wgpu renderer (blocking on async)
+    let renderer = pollster::block_on(WgpuRenderer::new(
+      Arc::clone(&window),
+      self.config.width,
+      self.config.height,
+      self.config.window_mode,
+      self.config.max_width,
+      self.config.max_height,
+    ));
 
     self.window = Some(window);
-    self.pixels = Some(pixels);
+    self.renderer = Some(renderer);
     self.time = Some(TimeState::new(
       self.config.target_fps,
       self.config.physics_hz,
@@ -723,12 +727,10 @@ impl ApplicationHandler for Engine {
       }
       WindowEvent::Resized(new_size) => {
         // Handle window resize based on window mode
-        if let Some(pixels) = &mut self.pixels {
+        if let Some(renderer) = &mut self.renderer {
           // For stretch mode, resize the internal buffer to match window
           if self.config.window_mode == WindowMode::ResizableStretch {
-            if let Err(e) = pixels.resize_buffer(new_size.width, new_size.height) {
-              eprintln!("Failed to resize buffer: {}", e);
-            }
+            renderer.resize_buffer(new_size.width, new_size.height);
             // Update camera to match new buffer size
             self.camera = Camera::centered_at(
               new_size.width as f32 / 2.0,
@@ -739,13 +741,10 @@ impl ApplicationHandler for Engine {
             // Mark render cache as dirty since viewport changed
             self.render_cache_dirty = true;
           }
-          
-          // For all modes, update surface size immediately for responsive scaling
-          if let Err(e) = pixels.resize_surface(new_size.width, new_size.height) {
-            eprintln!("Failed to resize surface: {}", e);
-          } else {
-            self.last_window_size = (new_size.width, new_size.height);
-          }
+
+          // For all modes, update surface size for proper scaling
+          renderer.resize(new_size.width, new_size.height);
+          self.last_window_size = (new_size.width, new_size.height);
         }
 
         // Request immediate redraw to update display
@@ -767,12 +766,14 @@ impl ApplicationHandler for Engine {
         }
 
         // Fixed timestep update loop
+        let mut did_update = false;
         while self
           .time
           .as_ref()
           .map(|t| t.should_update())
           .unwrap_or(false)
         {
+          did_update = true;
           let fixed_dt = self
             .time
             .as_ref()
@@ -799,11 +800,11 @@ impl ApplicationHandler for Engine {
         self.render(alpha);
 
         // Actually draw to screen
-        if let Some(pixels) = &mut self.pixels {
-          match pixels.render() {
+        if let Some(renderer) = &mut self.renderer {
+          match renderer.render() {
             Ok(_) => {}
             Err(e) => {
-              eprintln!("Render error: {}", e);
+              eprintln!("Render error: {:?}", e);
               event_loop.exit();
             }
           }
@@ -819,8 +820,12 @@ impl ApplicationHandler for Engine {
           }
         }
 
-        // Clear per-frame input state at END of frame (after update and render_ui have read it)
-        self.input.begin_frame();
+        // Clear per-frame input state ONLY if we ran at least one update
+        // This prevents losing input events that arrive between frames when
+        // the fixed timestep accumulator isn't ready yet
+        if did_update {
+          self.input.begin_frame();
+        }
       }
       _ => {}
     }

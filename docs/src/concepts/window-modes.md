@@ -127,16 +127,17 @@ EngineBuilder::new()
 
 ## How It Works
 
-Behind the scenes, Ryo2D uses the [pixels](https://github.com/parasyte/pixels) crate, which:
+Behind the scenes, Ryo2D uses a custom wgpu-based renderer:
 
 1. **Your game** renders to a fixed-size pixel buffer (e.g., 800×600)
-2. **The engine** scales this buffer to fit the window
-3. **GPU** handles the actual scaling using fast hardware
+2. **The engine** uploads this buffer to a GPU texture
+3. **A WGSL shader** draws a fullscreen quad with viewport scaling
 
 This separation means:
 - Your game logic always works with consistent coordinates
 - No need to handle different resolutions in your code
 - Scaling is cheap and GPU-accelerated
+- The shader handles letterbox/pillarbox with proper aspect ratio
 
 ## Choosing a Mode
 

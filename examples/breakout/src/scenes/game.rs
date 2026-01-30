@@ -63,13 +63,9 @@ impl GameScene {
       Velocity::zero(),
       RigidBody::kinematic(),
       Collider::box_collider(PADDLE_WIDTH, PADDLE_HEIGHT),
-      SpriteRenderer::new(Sprite::solid_rect(
-        PADDLE_WIDTH as u32,
-        PADDLE_HEIGHT as u32,
-        0x40,
-        0xc0,
-        0xff,
-        0xff,
+      SpriteRenderer::new(SpriteHandle::from_sprite(
+        Sprite::solid_rect(PADDLE_WIDTH as u32, PADDLE_HEIGHT as u32, 0x40, 0xc0, 0xff, 0xff),
+        "paddle",
       ))
       .with_z_order(10),
       Paddle,
@@ -87,13 +83,9 @@ impl GameScene {
       Velocity::zero(),                                        // Frozen initially
       RigidBody::new().with_gravity_scale(0.0).with_drag(0.0), // No gravity
       Collider::circle_collider(BALL_SIZE / 2.0).with_offset(BALL_SIZE / 2.0, BALL_SIZE / 2.0),
-      SpriteRenderer::new(Sprite::solid_rect(
-        BALL_SIZE as u32,
-        BALL_SIZE as u32,
-        0xff,
-        0xff,
-        0xff,
-        0xff,
+      SpriteRenderer::new(SpriteHandle::from_sprite(
+        Sprite::solid_rect(BALL_SIZE as u32, BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
+        "ball",
       ))
       .with_z_order(15),
       Ball { frozen: true },
@@ -108,13 +100,9 @@ impl GameScene {
       Transform::new(-WALL_THICKNESS, 0.0),
       RigidBody::kinematic(),
       Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32),
-      SpriteRenderer::new(Sprite::solid_rect(
-        WALL_THICKNESS as u32,
-        SCREEN_HEIGHT,
-        0x30,
-        0x30,
-        0x40,
-        0xff,
+      SpriteRenderer::new(SpriteHandle::from_sprite(
+        Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
+        "wall_left",
       ))
       .with_z_order(0),
       Wall,
@@ -126,13 +114,9 @@ impl GameScene {
       Transform::new(SCREEN_WIDTH as f32, 0.0),
       RigidBody::kinematic(),
       Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32),
-      SpriteRenderer::new(Sprite::solid_rect(
-        WALL_THICKNESS as u32,
-        SCREEN_HEIGHT,
-        0x30,
-        0x30,
-        0x40,
-        0xff,
+      SpriteRenderer::new(SpriteHandle::from_sprite(
+        Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
+        "wall_right",
       ))
       .with_z_order(0),
       Wall,
@@ -144,13 +128,9 @@ impl GameScene {
       Transform::new(0.0, -WALL_THICKNESS),
       RigidBody::kinematic(),
       Collider::box_collider(SCREEN_WIDTH as f32, WALL_THICKNESS),
-      SpriteRenderer::new(Sprite::solid_rect(
-        SCREEN_WIDTH,
-        WALL_THICKNESS as u32,
-        0x30,
-        0x30,
-        0x40,
-        0xff,
+      SpriteRenderer::new(SpriteHandle::from_sprite(
+        Sprite::solid_rect(SCREEN_WIDTH, WALL_THICKNESS as u32, 0x30, 0x30, 0x40, 0xff),
+        "wall_ceiling",
       ))
       .with_z_order(0),
       Wall,
@@ -189,13 +169,9 @@ impl GameScene {
         Transform::new(x, y),
         RigidBody::kinematic(),
         Collider::box_collider(BLOCK_WIDTH, BLOCK_HEIGHT),
-        SpriteRenderer::new(Sprite::solid_rect(
-          BLOCK_WIDTH as u32,
-          BLOCK_HEIGHT as u32,
-          r,
-          g,
-          b,
-          a,
+        SpriteRenderer::new(SpriteHandle::from_sprite(
+          Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, a),
+          format!("block_{}_{}", x as u32, y as u32),
         ))
         .with_z_order(5),
         Block::new(color, hits, points),
@@ -323,7 +299,10 @@ impl GameScene {
         // Update block appearance to show damage
         let (r, g, b, a) = color.dimmed();
         if let Some(mut sprite) = ctx.world.get_component_mut::<SpriteRenderer>(block) {
-          sprite.sprite = Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, a);
+          sprite.sprite = SpriteHandle::from_sprite(
+            Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, a),
+            "block_damaged",
+          );
         }
       }
     }
