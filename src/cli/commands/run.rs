@@ -16,31 +16,47 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   let package_name = get_cargo_package_name(&workspace)?;
   let display_name = workspace.name();
 
-  // Determine the binary path using Cargo package name
+  // Determine the binary path - check release bundle first
   let binary_name = if cfg!(windows) {
     format!("{}.exe", package_name)
   } else {
     package_name.to_string()
   };
 
-  let binary_path = workspace
+  let release_bundle_binary = workspace.root().join("release").join(&binary_name);
+  let cargo_build_binary = workspace
     .root()
     .join("target")
     .join("release")
     .join(&binary_name);
 
-  // Check if build exists
-  if !binary_path.exists() {
+  let (binary_path, from_bundle) = if release_bundle_binary.exists() {
+    (release_bundle_binary, true)
+  } else if cargo_build_binary.exists() {
+    (cargo_build_binary, false)
+  } else {
     Output::warning(&format!("No production build found for '{}'", display_name));
     Output::status("Hint", "Run 'ryo2d build' first to create a release build");
-    return Err(CliError::NoBuildExists(binary_path));
+    return Err(CliError::NoBuildExists(release_bundle_binary));
+  };
+
+  if !from_bundle {
+    Output::warning("Running from cargo target/, not release bundle");
+    Output::status("Tip", "Run 'ryo2d build' to create a proper release bundle");
   }
 
   Output::status("Running", &format!("{} (release)...", display_name));
 
+  // Set working directory to release bundle if running from there
+  let working_dir = if from_bundle {
+    workspace.root().join("release")
+  } else {
+    workspace.root().to_path_buf()
+  };
+
   // Execute the binary
   let status = Command::new(&binary_path)
-    .current_dir(workspace.root())
+    .current_dir(&working_dir)
     .status()
     .map_err(|e| CliError::CommandFailed {
       command: binary_path.display().to_string(),
