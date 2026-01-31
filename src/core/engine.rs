@@ -12,7 +12,7 @@ use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::camera::Camera;
 use super::collision::Collider;
-use super::debug::{self, DebugConfig};
+use super::debug::{self, DebugConfig, FrameTimings, SmoothedFrameTimings};
 use super::ecs::{
   Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
 };
@@ -142,7 +142,7 @@ impl TimeState {
     (self.accumulator.as_secs_f32() / self.fixed_timestep.as_secs_f32()).min(1.0)
   }
 
-  fn print_debug_info(&mut self) {
+  fn print_debug_info(&mut self) -> bool {
     let now = Instant::now();
     if now.duration_since(self.last_debug_print) >= Duration::from_secs(1) {
       self.current_fps = self.frame_count;
@@ -154,6 +154,9 @@ impl TimeState {
       );
       self.frame_count = 0;
       self.last_debug_print = now;
+      true // Signal that debug info was printed
+    } else {
+      false
     }
   }
 }
@@ -234,6 +237,12 @@ pub struct Engine {
   sprite_gpu: Option<SpriteGpuRenderer>,
   // Batch collector for GPU sprite rendering (reused each frame)
   batch_collector: BatchCollector,
+  // Frame timing breakdown for profiling (current frame, in-progress)
+  frame_timings: FrameTimings,
+  // Smoothed frame timings for stable overlay display
+  smoothed_timings: SmoothedFrameTimings,
+  // Whether debug font has been uploaded to GPU
+  debug_font_uploaded: bool,
 }
 
 impl Engine {
@@ -380,6 +389,9 @@ impl Engine {
       vsync,
       sprite_gpu: None, // Initialized when renderer is created
       batch_collector: BatchCollector::new(),
+      frame_timings: FrameTimings::default(),
+      smoothed_timings: SmoothedFrameTimings::default(),
+      debug_font_uploaded: false,
     }
   }
 
@@ -894,12 +906,9 @@ impl Engine {
 
       game.render_ui(&mut ui_ctx);
 
-      // Render FPS counter after game UI so it's always on top
-      if self.config.debug.show_fps
-        && let Some(time) = &self.time
-      {
-        debug::render_fps_counter(&mut ui_ctx, time.current_fps);
-      }
+      // Note: Debug overlays (FPS/frame timing) are rendered via GPU sprites
+      // to ensure they appear on top of all game content. See the GPU debug
+      // overlay section in the game loop.
 
       self.game = Some(game);
     }
@@ -1064,12 +1073,17 @@ impl ApplicationHandler for Engine {
         event_loop.exit();
       }
       WindowEvent::RedrawRequested => {
+        // Reset frame timings
+        self.frame_timings = FrameTimings::default();
+        let frame_start = std::time::Instant::now();
+
         if let Some(time) = &mut self.time {
           time.begin_frame();
         }
 
-        // Fixed timestep update loop
+        // Fixed timestep update loop (includes game logic + physics)
         let mut did_update = false;
+        let update_start = std::time::Instant::now();
         while self
           .time
           .as_ref()
@@ -1087,6 +1101,8 @@ impl ApplicationHandler for Engine {
             time.consume_update();
           }
         }
+        // Update time includes both game logic and physics
+        self.frame_timings.update = update_start.elapsed();
 
         // Check if game wants to quit
         if self.game.as_ref().map(|g| g.should_quit()).unwrap_or(false) {
@@ -1095,6 +1111,7 @@ impl ApplicationHandler for Engine {
         }
 
         // Render with interpolation alpha
+        let render_start = std::time::Instant::now();
         let alpha = self
           .time
           .as_ref()
@@ -1108,6 +1125,19 @@ impl ApplicationHandler for Engine {
           if let (Some(sprite_gpu), Some(renderer)) =
             (self.sprite_gpu.as_mut(), self.renderer.as_ref())
           {
+            // Upload debug font texture on first frame (if debug overlays enabled)
+            if !self.debug_font_uploaded
+              && (self.config.debug.show_fps || self.config.debug.show_frame_timing)
+            {
+              debug::upload_debug_font(
+                &self.ui_font,
+                sprite_gpu,
+                renderer.device(),
+                renderer.queue(),
+              );
+              self.debug_font_uploaded = true;
+            }
+
             let mut gpu_ctx = GpuRenderContext::new(
               &mut self.batch_collector,
               sprite_gpu,
@@ -1121,8 +1151,39 @@ impl ApplicationHandler for Engine {
           self.game = Some(game);
         }
 
+        // Add GPU debug overlays AFTER game rendering (so they appear on top)
+        // We use smoothed_timings for stable display (exponential moving average)
+        if self.config.debug.show_frame_timing || self.config.debug.show_fps {
+          let screen_w = self.config.width as f32;
+          let screen_h = self.config.height as f32;
+
+          if self.config.debug.show_frame_timing {
+            debug::render_frame_timing_gpu(
+              &mut self.batch_collector,
+              &self.ui_font,
+              &self.smoothed_timings,
+              screen_w,
+              screen_h,
+            );
+          } else if self.config.debug.show_fps {
+            // Show FPS counter only if frame timing is not shown
+            // (frame timing already includes FPS in its display)
+            debug::render_fps_counter_gpu(
+              &mut self.batch_collector,
+              &self.ui_font,
+              &self.smoothed_timings,
+              screen_w,
+              screen_h,
+            );
+          }
+        }
+
+        // Render time includes software rendering + GPU batch collection
+        self.frame_timings.render = render_start.elapsed();
+
         // Actually draw to screen with post-processing effects and GPU sprites
         // Take sprite_gpu out to avoid borrow conflicts with renderer
+        let present_start = std::time::Instant::now();
         let mut sprite_gpu = self.sprite_gpu.take();
         let mut renderer = self.renderer.take();
 
@@ -1167,10 +1228,33 @@ impl ApplicationHandler for Engine {
         // Put sprite_gpu and renderer back
         self.sprite_gpu = sprite_gpu;
         self.renderer = renderer;
+        // Present time = GPU submission + effects pipeline
+        self.frame_timings.present = present_start.elapsed();
+
+        // Calculate total frame time and FPS
+        self.frame_timings.total = frame_start.elapsed();
+        self.frame_timings.calculate_fps();
 
         // Debug output and frame limiting
         if let Some(time) = &mut self.time {
-          time.print_debug_info();
+          // Update smoothed timings using actual measured FPS (includes vsync/sleep)
+          self
+            .smoothed_timings
+            .update(&self.frame_timings, time.current_fps);
+
+          let printed_debug = time.print_debug_info();
+
+          // Print frame timing to console periodically (once per second) if enabled
+          // This supplements the on-screen overlay for games using GPU sprites
+          if self.config.debug.show_frame_timing && printed_debug {
+            println!(
+              "[FrameTiming] Update: {:.2}ms | Render: {:.2}ms | Present: {:.2}ms | Total: {:.2}ms",
+              self.frame_timings.update.as_secs_f64() * 1000.0,
+              self.frame_timings.render.as_secs_f64() * 1000.0,
+              self.frame_timings.present.as_secs_f64() * 1000.0,
+              self.frame_timings.total.as_secs_f64() * 1000.0,
+            );
+          }
 
           let frame_time = time.frame_start.elapsed();
           if frame_time < time.target_frame_time {
@@ -1455,6 +1539,7 @@ impl EngineBuilder {
       config.debug.show_fps = info.show_fps;
       config.debug.show_velocities = debug.show_velocities;
       config.debug.show_origins = debug.show_origins;
+      config.debug.show_frame_timing = debug.show_frame_timing;
     }
 
     Engine::new(

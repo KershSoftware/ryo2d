@@ -121,6 +121,8 @@ pub struct DebugConfig {
   pub show_velocities: bool,
   /// Whether to draw entity origin points
   pub show_origins: bool,
+  /// Whether to display frame timing breakdown
+  pub show_frame_timing: bool,
 }
 
 /// Info overlay configuration options.
@@ -208,6 +210,7 @@ struct DebugSection {
   show_colliders: Option<bool>,
   show_velocities: Option<bool>,
   show_origins: Option<bool>,
+  show_frame_timing: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -370,6 +373,7 @@ impl Workspace {
       show_colliders: debug_section.show_colliders.unwrap_or(false),
       show_velocities: debug_section.show_velocities.unwrap_or(false),
       show_origins: debug_section.show_origins.unwrap_or(false),
+      show_frame_timing: debug_section.show_frame_timing.unwrap_or(false),
     };
 
     // Info config
