@@ -39,11 +39,11 @@ use ryo2d::prelude::*;
 fn main() {
   let engine = EngineBuilder::new()
     .title("Breakout - Ryo2D Demo")
-    .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
+    .resolution(1280, 720) // Fixed resolution - game uses hardcoded wall positions
     .fps(144)
     .physics_hz(120)
     .with_scene(MenuScene::new())
-    .with_system_state_overrides() // Apply user overrides from system.json on startup
+    .with_system_state_overrides() // Apply audio overrides from system.json
     .build();
 
   if let Err(e) = engine.run() {

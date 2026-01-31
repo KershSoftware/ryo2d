@@ -12,6 +12,20 @@ save_data = "data"
 # Assets directory
 assets = "assets"
 
+# ==============================================================================
+# USER-FACING DEFAULTS
+# ==============================================================================
+
+[system]
+# Flappy uses a portrait orientation (mobile-style)
+resolution_width = 400
+resolution_height = 600
+vsync = true
+fullscreen = false
+master_volume = 0.8
+music_volume = 1.0
+sfx_volume = 1.0
+
 [info]
 # Display FPS counter in corner
 show_fps = false

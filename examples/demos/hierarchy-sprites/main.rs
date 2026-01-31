@@ -13,10 +13,6 @@
 
 use ryo2d::prelude::*;
 
-/// Screen dimensions
-const WIDTH: u32 = 800;
-const HEIGHT: u32 = 600;
-
 /// Rotation speeds (degrees per second)
 const SUN_ROTATION: f32 = 10.0;
 const PLANET_ORBIT: f32 = 45.0;
@@ -83,9 +79,10 @@ impl Scene for HierarchyScene {
     let satellite_handle = SpriteHandle::from_sprite(satellite_sprite, "satellite");
 
     // Create the sun at center of screen
+    let (center_x, center_y) = ctx.screen_size();
     let sun = ctx.world.spawn((
       Sun,
-      Transform::new((WIDTH / 2) as f32, (HEIGHT / 2) as f32),
+      Transform::new(center_x / 2.0, center_y / 2.0),
       Renderable::sprite(sun_handle),
     ));
 
@@ -203,7 +200,6 @@ impl Scene for HierarchyScene {
 fn main() {
   let engine = EngineBuilder::new()
     .title("Hierarchy Sprites Demo - Ryo2D")
-    .resolution(WIDTH, HEIGHT)
     .window_mode(WindowMode::ResizableIntegerScale) // Pixel-perfect scaling
     .fps(60)
     .physics_hz(60)

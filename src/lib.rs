@@ -112,7 +112,7 @@ pub mod prelude {
   };
 
   // Workspace
-  pub use crate::core::workspace::{Workspace, WorkspaceConfig};
+  pub use crate::core::workspace::{SystemDefaults, Workspace, WorkspaceConfig};
 
   // Save system
   pub use crate::core::save::{

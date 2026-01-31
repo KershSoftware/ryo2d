@@ -1,22 +1,51 @@
 //! Workspace management for Ryo2D projects
 //!
 //! A workspace represents a game project directory containing:
-//! - `Ryo.toml` configuration file (optional, case-insensitive)
+//! - `Ryo.toml` configuration file (developer settings)
+//! - `data/system.json` user configuration file (player settings)
 //! - Entry point (main.rs)
 //! - Assets, save data, and other resources
 //!
-//! # Configuration File
+//! # Configuration Hierarchy
 //!
-//! The `Ryo.toml` file (case-insensitive) configures project settings:
+//! Ryo2D uses a two-file configuration system with fallback chain:
+//!
+//! | File | Purpose | Who Edits |
+//! |------|---------|-----------|
+//! | `Ryo.toml` | Developer defaults, debug flags | Game developer |
+//! | `system.json` | User preferences (resolution, audio) | Player |
+//!
+//! **Priority chain:** `system.json` > `Ryo.toml [system]` > engine defaults
+//!
+//! # Ryo.toml Structure
 //!
 //! ```toml
 //! [project]
 //! name = "My Game"
 //!
 //! [paths]
-//! entry_point = "src/main.rs"  # Default: inferred
-//! save_data = "data"           # Default: "data"
-//! assets = "assets"            # Default: "assets"
+//! entry_point = "src/main.rs"
+//! save_data = "data"
+//! assets = "assets"
+//!
+//! [system]  # Defaults for system.json (user-facing settings)
+//! resolution_width = 1920
+//! resolution_height = 1080
+//! vsync = true
+//! fullscreen = false
+//! master_volume = 1.0
+//! music_volume = 0.8
+//! sfx_volume = 1.0
+//!
+//! [debug]  # Developer debug flags (NOT in system.json)
+//! show_colliders = false
+//! show_fps = false
+//!
+//! [info]
+//! show_fps = false
+//!
+//! [env]  # Game-specific variables
+//! debug_mode = false
 //! ```
 //!
 //! # Example
@@ -30,8 +59,9 @@
 //! // Or load from explicit path
 //! let workspace = Workspace::from_path("./my_game")?;
 //!
-//! // Access paths
-//! println!("Save data: {:?}", workspace.save_data_dir());
+//! // Access system defaults from Ryo.toml [system] section
+//! let system_defaults = &workspace.config().system;
+//! println!("Default resolution: {}x{}", system_defaults.resolution_width, system_defaults.resolution_height);
 //! ```
 
 use serde::Deserialize;
@@ -73,6 +103,8 @@ pub struct WorkspaceConfig {
   pub debug: DebugConfig,
   /// Info overlay configuration
   pub info: InfoConfig,
+  /// System defaults for user configuration (from [system] section)
+  pub system: SystemDefaults,
   /// Game-specific environment variables from [env] section
   pub env: std::collections::HashMap<String, toml::Value>,
 }
@@ -100,11 +132,58 @@ pub struct InfoConfig {
   pub show_fps: bool,
 }
 
+/// System defaults for user configuration (system.json).
+///
+/// These values from `[system]` and `[info]` sections in Ryo.toml define the
+/// developer defaults for user-facing settings. When system.json is created,
+/// these values are used. When system.json is loaded, missing fields fall back
+/// to these values.
+///
+/// **Mapped sections:** `[system]` + `[info]` only
+/// **Not mapped:** `[debug]`, `[project]`, `[paths]`, `[env]` (dev-only)
+///
+/// Priority chain: system.json (user) > Ryo.toml [system]/[info] (dev) > engine defaults
+#[derive(Debug, Clone)]
+pub struct SystemDefaults {
+  /// Default resolution width
+  pub resolution_width: u32,
+  /// Default resolution height
+  pub resolution_height: u32,
+  /// Default VSync setting
+  pub vsync: bool,
+  /// Default fullscreen setting
+  pub fullscreen: bool,
+  /// Default master volume (0.0 - 1.0)
+  pub master_volume: f32,
+  /// Default music volume (0.0 - 1.0)
+  pub music_volume: f32,
+  /// Default SFX volume (0.0 - 1.0)
+  pub sfx_volume: f32,
+  /// Default show FPS setting (from [info] section)
+  pub show_fps: bool,
+}
+
+impl Default for SystemDefaults {
+  fn default() -> Self {
+    SystemDefaults {
+      resolution_width: 1280,
+      resolution_height: 720,
+      vsync: true,
+      fullscreen: false,
+      master_volume: 0.8,
+      music_volume: 1.0,
+      sfx_volume: 1.0,
+      show_fps: false,
+    }
+  }
+}
+
 /// Raw TOML structure for deserialization
 #[derive(Debug, Deserialize, Default)]
 struct RyoToml {
   project: Option<ProjectSection>,
   paths: Option<PathsSection>,
+  system: Option<SystemSection>,
   debug: Option<DebugSection>,
   info: Option<InfoSection>,
   /// Game-specific environment variables (arbitrary key-value pairs)
@@ -134,6 +213,18 @@ struct DebugSection {
 #[derive(Debug, Deserialize, Default)]
 struct InfoSection {
   show_fps: Option<bool>,
+}
+
+/// Raw TOML [system] section for user-facing defaults
+#[derive(Debug, Deserialize, Default)]
+struct SystemSection {
+  resolution_width: Option<u32>,
+  resolution_height: Option<u32>,
+  vsync: Option<bool>,
+  fullscreen: Option<bool>,
+  master_volume: Option<f32>,
+  music_volume: Option<f32>,
+  sfx_volume: Option<f32>,
 }
 
 impl Workspace {
@@ -286,6 +377,34 @@ impl Workspace {
       show_fps: info_section.show_fps.unwrap_or(false),
     };
 
+    // System defaults (for system.json generation)
+    // Combines [system] + [info] sections (user-facing settings only)
+    let system_section = raw.system.unwrap_or_default();
+    let engine_defaults = SystemDefaults::default();
+    let system = SystemDefaults {
+      resolution_width: system_section
+        .resolution_width
+        .unwrap_or(engine_defaults.resolution_width),
+      resolution_height: system_section
+        .resolution_height
+        .unwrap_or(engine_defaults.resolution_height),
+      vsync: system_section.vsync.unwrap_or(engine_defaults.vsync),
+      fullscreen: system_section
+        .fullscreen
+        .unwrap_or(engine_defaults.fullscreen),
+      master_volume: system_section
+        .master_volume
+        .unwrap_or(engine_defaults.master_volume),
+      music_volume: system_section
+        .music_volume
+        .unwrap_or(engine_defaults.music_volume),
+      sfx_volume: system_section
+        .sfx_volume
+        .unwrap_or(engine_defaults.sfx_volume),
+      // show_fps comes from [info] section but maps to system.json
+      show_fps: info_section.show_fps.unwrap_or(engine_defaults.show_fps),
+    };
+
     // Game-specific env (pass through as-is)
     let env = raw.env;
 
@@ -296,6 +415,7 @@ impl Workspace {
       assets,
       debug,
       info,
+      system,
       env,
     })
   }
@@ -401,6 +521,7 @@ impl Default for WorkspaceConfig {
       assets: PathBuf::from("assets"),
       debug: DebugConfig::default(),
       info: InfoConfig::default(),
+      system: SystemDefaults::default(),
       env: std::collections::HashMap::new(),
     }
   }
@@ -519,5 +640,80 @@ mod tests {
     let cwd = env::current_dir().unwrap();
     let workspace = Workspace::from_path_with_defaults(&cwd).unwrap();
     assert_eq!(workspace.root(), cwd);
+  }
+
+  // ==========================================================================
+  // SystemDefaults tests
+  // ==========================================================================
+
+  #[test]
+  fn system_defaults_engine_values() {
+    let defaults = SystemDefaults::default();
+
+    // Engine defaults: 1280x720
+    assert_eq!(defaults.resolution_width, 1280);
+    assert_eq!(defaults.resolution_height, 720);
+    // VSync on, windowed
+    assert_eq!(defaults.vsync, true);
+    assert_eq!(defaults.fullscreen, false);
+    // Audio: master=0.8, music=1.0, sfx=1.0
+    assert_eq!(defaults.master_volume, 0.8);
+    assert_eq!(defaults.music_volume, 1.0);
+    assert_eq!(defaults.sfx_volume, 1.0);
+    // FPS off by default
+    assert_eq!(defaults.show_fps, false);
+  }
+
+  #[test]
+  fn system_defaults_clone() {
+    let defaults = SystemDefaults::default();
+    let cloned = defaults.clone();
+
+    assert_eq!(cloned.resolution_width, defaults.resolution_width);
+    assert_eq!(cloned.resolution_height, defaults.resolution_height);
+    assert_eq!(cloned.vsync, defaults.vsync);
+    assert_eq!(cloned.fullscreen, defaults.fullscreen);
+    assert_eq!(cloned.master_volume, defaults.master_volume);
+    assert_eq!(cloned.music_volume, defaults.music_volume);
+    assert_eq!(cloned.sfx_volume, defaults.sfx_volume);
+    assert_eq!(cloned.show_fps, defaults.show_fps);
+  }
+
+  #[test]
+  fn debug_config_defaults_all_false() {
+    let config = DebugConfig::default();
+    assert!(!config.show_colliders);
+    assert!(!config.show_velocities);
+    assert!(!config.show_origins);
+  }
+
+  #[test]
+  fn info_config_defaults_fps_off() {
+    let config = InfoConfig::default();
+    assert!(!config.show_fps);
+  }
+
+  #[test]
+  fn workspace_config_system_defaults_included() {
+    let config = WorkspaceConfig::default();
+    // System defaults should be engine defaults
+    assert_eq!(config.system.resolution_width, 1280);
+    assert_eq!(config.system.resolution_height, 720);
+    assert_eq!(config.system.master_volume, 0.8);
+    assert_eq!(config.system.show_fps, false);
+  }
+
+  #[test]
+  fn workspace_config_debug_defaults_included() {
+    let config = WorkspaceConfig::default();
+    assert!(!config.debug.show_colliders);
+    assert!(!config.debug.show_velocities);
+    assert!(!config.debug.show_origins);
+  }
+
+  #[test]
+  fn workspace_config_info_defaults_included() {
+    let config = WorkspaceConfig::default();
+    assert!(!config.info.show_fps);
   }
 }

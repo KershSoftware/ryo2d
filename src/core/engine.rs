@@ -1359,13 +1359,15 @@ impl EngineBuilder {
 
   /// Apply user preference overrides from system.json.
   ///
-  /// Loads the system state from the workspace's data directory and applies
-  /// any overrides. This allows users to override engine settings without
-  /// editing Ryo.toml.
+  /// Loads or creates the system state from the workspace's data directory
+  /// using the proper fallback chain:
   ///
-  /// Note: system.json fields may not have a 1-to-1 mapping with Ryo.toml.
-  /// For example, `show_fps` is a top-level field in system.json but a debug
-  /// setting in Ryo.toml.
+  /// 1. **system.json** (user settings) - highest priority
+  /// 2. **Ryo.toml [system]** (developer defaults) - middle priority
+  /// 3. **Engine defaults** - lowest priority (fallback)
+  ///
+  /// If system.json doesn't exist, it will be created from the developer
+  /// defaults in Ryo.toml's [system] section combined with engine defaults.
   ///
   /// # Example
   ///
@@ -1380,7 +1382,7 @@ impl EngineBuilder {
   pub fn with_system_state_overrides(mut self) -> Self {
     if let Ok(workspace) = super::workspace::Workspace::discover()
       && let Ok(save_manager) = workspace.create_save_manager()
-      && let Ok(system_state) = save_manager.load_system()
+      && let Ok(system_state) = save_manager.load_or_create_system(&workspace.config().system)
     {
       // Apply overrides if present
       if let Some(show_fps) = system_state.show_fps {

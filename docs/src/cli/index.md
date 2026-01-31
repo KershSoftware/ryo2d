@@ -26,7 +26,7 @@ This command:
 - Creates a new directory with the project name
 - Scaffolds complete project structure (assets/, data/, src/)
 - Generates Cargo.toml with Ryo2D dependency
-- Creates Ryo.toml with sensible engine defaults (800×600 @ 60 FPS)
+- Creates Ryo.toml with sensible engine defaults (1280×720, master volume 0.8)
 - Provides working main.rs with a Scene example
 - Includes .gitignore with standard Rust patterns
 - Generates README with quick start instructions

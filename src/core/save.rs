@@ -2,27 +2,36 @@
 //!
 //! Provides a 3-tier save system:
 //!
-//! - **Tier 1: System State** - User settings (display, audio, keybindings) \[JSON, uncompressed\]
+//! - **Tier 1: System State** - User settings (display, audio) \[JSON, uncompressed\]
 //! - **Tier 2: World State** - ECS world snapshots (entities and serializable components) \[compressed\]
 //! - **Tier 3: Game Data** - Generic user data for game-specific saves \[compressed\]
 //!
-//! Tier 1 uses plain JSON for human readability and easy manual editing.
-//! Tiers 2-3 are compressed using DEFLATE compression for efficient storage.
+//! # Configuration Hierarchy
 //!
-//! # Configuration
+//! System state (Tier 1) follows a priority chain:
+//!
+//! 1. **system.json** (user settings) - highest priority, player edits
+//! 2. **Ryo.toml [system]** (dev defaults) - developer-defined defaults
+//! 3. **Engine defaults** - hardcoded fallbacks
+//!
+//! Use [`SaveManager::load_or_create_system`] to automatically handle this chain:
+//! - Creates system.json from Ryo.toml [system] + engine defaults if missing
+//! - Merges missing fields when loading existing files
+//!
+//! # Configuration Files
 //!
 //! Save files default to `{workspace}/data/` but can be configured:
 //!
 //! ```toml
-//! # ryo.toml
+//! # Ryo.toml
 //! [paths]
 //! save_data = "saves"  # Custom save directory
-//! ```
 //!
-//! Or at runtime:
-//!
-//! ```rust,ignore
-//! save_manager.set_save_dir("my_custom_saves");
+//! [system]  # Defaults for system.json when first created
+//! resolution_width = 1920
+//! resolution_height = 1080
+//! vsync = true
+//! master_volume = 0.8
 //! ```
 //!
 //! # Tier 1 Example (User Settings)
@@ -30,34 +39,16 @@
 //! ```rust,ignore
 //! use ryo2d::prelude::*;
 //!
-//! // Load or create system state
+//! // Recommended: Use load_or_create_system for proper fallback chain
+//! let workspace = Workspace::discover()?;
+//! let save_manager = workspace.create_save_manager()?;
+//! let settings = save_manager.load_or_create_system(&workspace.config().system)?;
+//!
+//! // Or manually load/save:
 //! let mut settings = save_manager.load_system()?;
-//!
-//! // Modify settings
 //! settings.display.width = 1920;
-//! settings.display.height = 1080;
 //! settings.master_volume = 0.75;
-//! settings.set_setting("language", "en");
-//!
-//! // Save as human-editable JSON
 //! save_manager.save_system(&settings)?;
-//!
-//! // system.json contents:
-//! // {
-//! //   "master_volume": 0.75,
-//! //   "music_volume": 0.8,
-//! //   "sfx_volume": 1.0,
-//! //   "display": {
-//! //     "width": 1920,
-//! //     "height": 1080,
-//! //     "fullscreen": false,
-//! //     "vsync": true
-//! //   },
-//! //   "show_fps": true,
-//! //   "settings": {
-//! //     "language": "en"
-//! //   }
-//! // }
 //! ```
 //!
 //! # Tier 3 Example (Game Data)
@@ -124,19 +115,27 @@ const GAME_EXTENSION: &str = "ryo-save";
 
 /// User settings and configuration (Tier 1).
 ///
-/// This tier handles user-editable configuration in JSON format:
-/// - Audio volume levels
-/// - Display settings (resolution, fullscreen, vsync)
-/// - Engine overrides (e.g., show_fps)
-/// - Custom key-value storage for game-specific settings
+/// Represents the contents of `system.json`, the player-editable configuration file.
+/// This is separate from `Ryo.toml` which contains developer settings.
 ///
-/// **Note:** system.json fields do not necessarily have a 1-to-1 mapping with Ryo.toml.
-/// For example, `show_fps` is an engine-level override in system.json but a debug
-/// setting in Ryo.toml. Use system.json for user preferences and Ryo.toml for
-/// game developer defaults.
+/// # Configuration Hierarchy
+///
+/// ```text
+/// system.json (user) > Ryo.toml [system] (dev) > engine defaults
+/// ```
+///
+/// When `system.json` doesn't exist, it's created from `Ryo.toml`'s `[system]` section
+/// combined with engine defaults. Use [`SaveManager::load_or_create_system`] to handle
+/// this automatically.
+///
+/// # Contents
+///
+/// - Audio volume levels (master, music, sfx)
+/// - Display settings (resolution, fullscreen, vsync)
+/// - Optional engine overrides (show_fps)
+/// - Custom key-value storage for game-specific user settings
 ///
 /// Saved as human-readable JSON to `{save_dir}/system.json`.
-/// Users can manually edit this file for advanced configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SystemState {
   /// Master volume (0.0 - 1.0)
@@ -181,8 +180,8 @@ pub struct DisplaySettings {
 impl Default for DisplaySettings {
   fn default() -> Self {
     DisplaySettings {
-      width: 800,
-      height: 600,
+      width: 1280,
+      height: 720,
       fullscreen: false,
       vsync: true,
     }
@@ -193,14 +192,69 @@ impl SystemState {
   /// Create with sensible defaults
   pub fn new() -> Self {
     SystemState {
-      master_volume: 1.0,
-      music_volume: 0.8,
+      master_volume: 0.8,
+      music_volume: 1.0,
       sfx_volume: 1.0,
       display: DisplaySettings::default(),
       show_fps: None,
       vsync: None,
       settings: HashMap::new(),
     }
+  }
+
+  /// Create from SystemDefaults (Ryo.toml [system] + [info] sections).
+  ///
+  /// Used when creating a new system.json file from developer defaults.
+  pub fn from_defaults(defaults: &super::workspace::SystemDefaults) -> Self {
+    SystemState {
+      master_volume: defaults.master_volume,
+      music_volume: defaults.music_volume,
+      sfx_volume: defaults.sfx_volume,
+      display: DisplaySettings {
+        width: defaults.resolution_width,
+        height: defaults.resolution_height,
+        fullscreen: defaults.fullscreen,
+        vsync: defaults.vsync,
+      },
+      // show_fps comes from [info] section via SystemDefaults
+      show_fps: Some(defaults.show_fps),
+      vsync: None,
+      settings: HashMap::new(),
+    }
+  }
+
+  /// Merge missing fields from defaults.
+  ///
+  /// This is used when loading an existing system.json that may be missing
+  /// fields added in newer versions. Missing fields are filled from the
+  /// provided defaults.
+  ///
+  /// Returns true if any fields were updated.
+  pub fn merge_defaults(&mut self, defaults: &super::workspace::SystemDefaults) -> bool {
+    // Currently all fields have values, but this method exists for future
+    // fields that may be added. The pattern is:
+    // - If a field is missing/None and defaults has a value, apply it
+    // - Return true if anything changed
+
+    // For now, we ensure display settings match if they were at engine defaults
+    // This handles the case where system.json was created before [system] existed
+    let engine_defaults = super::workspace::SystemDefaults::default();
+
+    let mut changed = false;
+
+    // If display matches old engine defaults but Ryo.toml has different values,
+    // update to use Ryo.toml values (one-time migration)
+    if self.display.width == engine_defaults.resolution_width
+      && self.display.height == engine_defaults.resolution_height
+      && (defaults.resolution_width != engine_defaults.resolution_width
+        || defaults.resolution_height != engine_defaults.resolution_height)
+    {
+      self.display.width = defaults.resolution_width;
+      self.display.height = defaults.resolution_height;
+      changed = true;
+    }
+
+    changed
   }
 
   /// Set a custom setting key-value pair
@@ -425,6 +479,55 @@ impl SaveManager {
       return Ok(SystemState::new());
     }
     self.read_json_file(&path)
+  }
+
+  /// Load or create system state with proper fallback chain.
+  ///
+  /// This is the primary method for loading user configuration with the
+  /// correct priority chain:
+  ///
+  /// 1. **system.json** (user settings) - highest priority
+  /// 2. **Ryo.toml [system]** (developer defaults) - middle priority
+  /// 3. **Engine defaults** - lowest priority (fallback)
+  ///
+  /// Behavior:
+  /// - If system.json doesn't exist, creates it from Ryo.toml [system] + engine defaults
+  /// - If system.json exists but is missing fields, merges from Ryo.toml [system]
+  /// - Returns the loaded/created state
+  ///
+  /// # Arguments
+  ///
+  /// * `defaults` - Developer defaults from Ryo.toml [system] section
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// let workspace = Workspace::discover()?;
+  /// let save_manager = workspace.create_save_manager()?;
+  /// let system_state = save_manager.load_or_create_system(&workspace.config().system)?;
+  /// ```
+  pub fn load_or_create_system(
+    &self,
+    defaults: &super::workspace::SystemDefaults,
+  ) -> SaveResult<SystemState> {
+    let path = self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION));
+
+    if !path.exists() {
+      // Create new system.json from Ryo.toml [system] defaults
+      let state = SystemState::from_defaults(defaults);
+      self.save_system(&state)?;
+      return Ok(state);
+    }
+
+    // Load existing and merge any missing fields
+    let mut state: SystemState = self.read_json_file(&path)?;
+
+    if state.merge_defaults(defaults) {
+      // Save updated state with merged fields
+      self.save_system(&state)?;
+    }
+
+    Ok(state)
   }
 
   /// Check if system state exists.
@@ -766,8 +869,9 @@ mod tests {
     let manager = SaveManager::new(dir.path()).unwrap();
 
     let state = manager.load_system().unwrap();
-    assert_eq!(state.master_volume, 1.0);
-    assert_eq!(state.music_volume, 0.8);
+    // Uses engine defaults: master=0.8, music=1.0
+    assert_eq!(state.master_volume, 0.8);
+    assert_eq!(state.music_volume, 1.0);
   }
 
   #[test]
@@ -955,5 +1059,194 @@ mod tests {
 
     assert_eq!(manager.save_dir(), new_dir);
     assert!(new_dir.exists());
+  }
+
+  // ==========================================================================
+  // SystemDefaults and from_defaults tests
+  // ==========================================================================
+
+  #[test]
+  fn system_state_from_defaults_uses_all_fields() {
+    let defaults = super::super::workspace::SystemDefaults {
+      resolution_width: 1920,
+      resolution_height: 1080,
+      vsync: false,
+      fullscreen: true,
+      master_volume: 0.5,
+      music_volume: 0.7,
+      sfx_volume: 0.9,
+      show_fps: true,
+    };
+
+    let state = SystemState::from_defaults(&defaults);
+
+    assert_eq!(state.display.width, 1920);
+    assert_eq!(state.display.height, 1080);
+    assert_eq!(state.display.vsync, false);
+    assert_eq!(state.display.fullscreen, true);
+    assert_eq!(state.master_volume, 0.5);
+    assert_eq!(state.music_volume, 0.7);
+    assert_eq!(state.sfx_volume, 0.9);
+    assert_eq!(state.show_fps, Some(true));
+  }
+
+  #[test]
+  fn system_state_from_defaults_with_engine_defaults() {
+    let defaults = super::super::workspace::SystemDefaults::default();
+
+    let state = SystemState::from_defaults(&defaults);
+
+    // Engine defaults: 1280x720, vsync=true, fullscreen=false
+    assert_eq!(state.display.width, 1280);
+    assert_eq!(state.display.height, 720);
+    assert_eq!(state.display.vsync, true);
+    assert_eq!(state.display.fullscreen, false);
+    // Engine defaults: master=0.8, music=1.0, sfx=1.0
+    assert_eq!(state.master_volume, 0.8);
+    assert_eq!(state.music_volume, 1.0);
+    assert_eq!(state.sfx_volume, 1.0);
+    assert_eq!(state.show_fps, Some(false));
+  }
+
+  #[test]
+  fn system_state_merge_defaults_no_change_when_matching() {
+    let defaults = super::super::workspace::SystemDefaults::default();
+    let mut state = SystemState::from_defaults(&defaults);
+
+    // No change when state already matches defaults
+    let changed = state.merge_defaults(&defaults);
+    assert!(!changed);
+  }
+
+  #[test]
+  fn system_state_merge_defaults_migrates_resolution() {
+    let engine_defaults = super::super::workspace::SystemDefaults::default();
+
+    // State with engine default resolution
+    let mut state = SystemState::from_defaults(&engine_defaults);
+    assert_eq!(state.display.width, 1280);
+    assert_eq!(state.display.height, 720);
+
+    // Developer wants different resolution in Ryo.toml
+    let dev_defaults = super::super::workspace::SystemDefaults {
+      resolution_width: 800,
+      resolution_height: 600,
+      ..engine_defaults
+    };
+
+    // Merge should update resolution since it was at engine defaults
+    let changed = state.merge_defaults(&dev_defaults);
+    assert!(changed);
+    assert_eq!(state.display.width, 800);
+    assert_eq!(state.display.height, 600);
+  }
+
+  #[test]
+  fn system_state_merge_defaults_preserves_user_changes() {
+    let engine_defaults = super::super::workspace::SystemDefaults::default();
+
+    // User modified their resolution (not at engine defaults)
+    let mut state = SystemState::new();
+    state.display.width = 1600;
+    state.display.height = 900;
+
+    // Developer has different defaults
+    let dev_defaults = super::super::workspace::SystemDefaults {
+      resolution_width: 800,
+      resolution_height: 600,
+      ..engine_defaults
+    };
+
+    // Merge should NOT change user's custom resolution
+    let changed = state.merge_defaults(&dev_defaults);
+    assert!(!changed);
+    assert_eq!(state.display.width, 1600);
+    assert_eq!(state.display.height, 900);
+  }
+
+  #[test]
+  fn display_settings_default_uses_engine_defaults() {
+    let settings = DisplaySettings::default();
+    assert_eq!(settings.width, 1280);
+    assert_eq!(settings.height, 720);
+    assert_eq!(settings.vsync, true);
+    assert_eq!(settings.fullscreen, false);
+  }
+
+  // ==========================================================================
+  // load_or_create_system tests
+  // ==========================================================================
+
+  #[test]
+  fn load_or_create_system_creates_new_file() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let defaults = super::super::workspace::SystemDefaults {
+      resolution_width: 1024,
+      resolution_height: 768,
+      vsync: true,
+      fullscreen: false,
+      master_volume: 0.9,
+      music_volume: 0.8,
+      sfx_volume: 0.7,
+      show_fps: true,
+    };
+
+    assert!(!manager.has_system_save());
+
+    let state = manager.load_or_create_system(&defaults).unwrap();
+
+    assert!(manager.has_system_save());
+    assert_eq!(state.display.width, 1024);
+    assert_eq!(state.display.height, 768);
+    assert_eq!(state.master_volume, 0.9);
+    assert_eq!(state.show_fps, Some(true));
+  }
+
+  #[test]
+  fn load_or_create_system_loads_existing_file() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    // Create initial state with custom values
+    let mut initial = SystemState::new();
+    initial.master_volume = 0.42;
+    initial.display.width = 1600;
+    initial.display.height = 900;
+    manager.save_system(&initial).unwrap();
+
+    // load_or_create should load existing, not overwrite
+    let defaults = super::super::workspace::SystemDefaults::default();
+    let state = manager.load_or_create_system(&defaults).unwrap();
+
+    assert_eq!(state.master_volume, 0.42);
+    assert_eq!(state.display.width, 1600);
+    assert_eq!(state.display.height, 900);
+  }
+
+  #[test]
+  fn load_or_create_system_merges_missing_fields() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    // Create state with engine default resolution
+    let engine_defaults = super::super::workspace::SystemDefaults::default();
+    let initial = SystemState::from_defaults(&engine_defaults);
+    manager.save_system(&initial).unwrap();
+
+    // Developer later changes resolution in Ryo.toml
+    let dev_defaults = super::super::workspace::SystemDefaults {
+      resolution_width: 800,
+      resolution_height: 600,
+      ..engine_defaults
+    };
+
+    // load_or_create should merge the new defaults
+    let state = manager.load_or_create_system(&dev_defaults).unwrap();
+
+    // Resolution should be updated (migrated from engine defaults)
+    assert_eq!(state.display.width, 800);
+    assert_eq!(state.display.height, 600);
   }
 }

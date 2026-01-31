@@ -59,6 +59,32 @@ pub struct SceneContext<'a> {
 }
 
 impl<'a> SceneContext<'a> {
+  /// Get the current screen/viewport dimensions.
+  ///
+  /// Returns `(width, height)` in pixels. This reflects the game's
+  /// logical resolution (from system.json > Ryo.toml > engine defaults).
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// let (width, height) = ctx.screen_size();
+  /// let center_x = width / 2.0;
+  /// let center_y = height / 2.0;
+  /// ```
+  pub fn screen_size(&self) -> (f32, f32) {
+    self.camera.viewport_size()
+  }
+
+  /// Get the screen width in pixels.
+  pub fn screen_width(&self) -> f32 {
+    self.camera.viewport_size().0
+  }
+
+  /// Get the screen height in pixels.
+  pub fn screen_height(&self) -> f32 {
+    self.camera.viewport_size().1
+  }
+
   /// Iterate over collision events where objects started touching.
   ///
   /// This is the most common case for game logic - reacting when

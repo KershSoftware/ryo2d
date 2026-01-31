@@ -174,9 +174,33 @@ entry_point = "main.rs"
 save_data = "data"
 assets = "assets"
 
+# ==============================================================================
+# USER-FACING DEFAULTS
+# Values here are written to system.json on first run.
+# Players can override these in system.json; their changes persist.
+# ==============================================================================
+
+[system]
+# Default window resolution (user can change in system.json)
+resolution_width = 1280
+resolution_height = 720
+# Enable VSync for smoother rendering (recommended)
+vsync = true
+# Start in windowed mode (user preference)
+fullscreen = false
+# Audio volume defaults (0.0 - 1.0)
+master_volume = 0.8
+music_volume = 1.0
+sfx_volume = 1.0
+
 [info]
-# Display FPS counter in corner
+# Display FPS counter in corner (user can toggle)
 show_fps = false
+
+# ==============================================================================
+# DEVELOPER-ONLY SETTINGS
+# These are NOT written to system.json - they're for development.
+# ==============================================================================
 
 [debug]
 # Show collision boundaries for debugging
@@ -210,10 +234,10 @@ impl Scene for GameScene {
     // Initialize your game here
     // Spawn entities, load assets, etc.
     
-    // Example: Spawn a simple colored square
+    // Example: Spawn a simple colored square at center
     let sprite = ctx.assets.create_sprite(Sprite::solid_rect(64, 64, [0, 255, 255, 255]));
     ctx.world.spawn((
-      Transform::new(400.0, 300.0),
+      Transform::new(640.0, 360.0),
       Renderable::sprite(sprite).with_z_order(0),
     ));
   }
@@ -244,7 +268,7 @@ impl Scene for GameScene {
 fn main() {
   let engine = EngineBuilder::new()
     .title("My Ryo2D Game")
-    .resolution(800, 600)
+    .resolution(1280, 720)
     .fps(60)
     .with_scene(GameScene)
     .build();

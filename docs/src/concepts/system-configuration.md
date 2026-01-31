@@ -1,19 +1,47 @@
 # System Configuration
 
-Ryo2D supports two types of configuration files with different purposes:
+Ryo2D uses a 3-tier configuration system that cleanly separates developer defaults from user preferences:
 
-- **`Ryo.toml`** - Developer configuration (paths, defaults, project metadata)
-- **`system.json`** - Runtime user settings (display, audio, keybindings)
+```
+system.json (user) > Ryo.toml [system] (developer) > Engine Defaults
+```
 
 ## Configuration Precedence
 
-When both files exist and define the same setting:
+| Source | Purpose | Who Controls It |
+|--------|---------|-----------------|
+| **Engine Defaults** | Hardcoded fallback | Engine developers |
+| **Ryo.toml [system]** | Design-time defaults | Game developers |
+| **system.json** | Runtime preferences | Players |
 
-```
-system.json > Ryo.toml > Engine Defaults
-```
+**Important:** `system.json` only overrides fields that are explicitly present. Missing fields fall back through the chain.
 
-**Important:** `system.json` only overrides when explicitly present. Missing fields fall back to `Ryo.toml` or engine defaults.
+## Section Mapping
+
+Not all `Ryo.toml` sections are user-facing:
+
+| Section | Maps to system.json? | Purpose |
+|---------|---------------------|---------|
+| `[system]` | ✅ Yes | Display, audio defaults |
+| `[info]` | ✅ Yes | `show_fps` overlay |
+| `[project]` | ❌ No | Project metadata |
+| `[paths]` | ❌ No | File locations |
+| `[debug]` | ❌ No | Development debugging |
+| `[env]` | ❌ No | Environment variables |
+
+## Engine Defaults
+
+When no configuration exists, the engine uses these defaults:
+
+| Setting | Default Value |
+|---------|---------------|
+| Resolution | 1280 × 720 |
+| VSync | `true` |
+| Fullscreen | `false` |
+| Master Volume | 0.8 |
+| Music Volume | 1.0 |
+| SFX Volume | 1.0 |
+| Show FPS | `false` |
 
 ## Ryo.toml (Developer Config)
 
@@ -27,14 +55,21 @@ name = "My Game"
 save_data = "data"
 assets = "assets"
 
-[window]
-width = 800
-height = 600
-title = "My Game"
-mode = "ResizableAspectRatio"
-max_width = 1920
-max_height = 1080
+# User-facing defaults (→ system.json)
+[system]
+resolution_width = 1280
+resolution_height = 720
+vsync = true
+fullscreen = false
+master_volume = 0.8
+music_volume = 1.0
+sfx_volume = 1.0
 
+# User-facing info (→ system.json)
+[info]
+show_fps = false
+
+# Developer-only (NOT saved to system.json)
 [debug]
 show_fps = false
 show_colliders = false
@@ -70,18 +105,20 @@ Located at: `{save_dir}/system.json`
 
 ### SystemState Fields
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `master_volume` | `f32` | `1.0` | Master volume (0.0 - 1.0) |
-| `music_volume` | `f32` | `0.8` | Music volume (0.0 - 1.0) |
+| Field | Type | Engine Default | Description |
+|-------|------|----------------|-------------|
+| `master_volume` | `f32` | `0.8` | Master volume (0.0 - 1.0) |
+| `music_volume` | `f32` | `1.0` | Music volume (0.0 - 1.0) |
 | `sfx_volume` | `f32` | `1.0` | Sound effects volume (0.0 - 1.0) |
-| `display.width` | `u32` | `800` | Window width |
-| `display.height` | `u32` | `600` | Window height |
+| `display.width` | `u32` | `1280` | Window width |
+| `display.height` | `u32` | `720` | Window height |
 | `display.fullscreen` | `bool` | `false` | Fullscreen mode |
 | `display.vsync` | `bool` | `true` | VSync enabled (legacy field) |
 | `vsync` | `bool?` | `None` | VSync preference (overrides display.vsync) |
 | `show_fps` | `bool?` | `None` | Show FPS counter (engine override) |
 | `settings` | `map` | `{}` | Custom key-value storage for game-specific settings |
+
+**Note:** These are the engine defaults. Game developers can override them in `Ryo.toml [system]`, and players can override in `system.json`.
 
 ## VSync Configuration
 
@@ -201,16 +238,47 @@ impl AudioSettings {
 
 Both categories support multiple simultaneous sounds with independent volume control.
 
-## Field Mapping Differences
+## Field Mapping: Ryo.toml → system.json
 
-Not all fields have 1-to-1 mappings between `Ryo.toml` and `system.json`:
+The `[system]` and `[info]` sections map directly to `system.json` fields:
 
-| Setting | Ryo.toml | system.json |
-|---------|----------|-------------|
-| FPS display | `[debug] show_fps` | `show_fps` (root level) |
-| VSync | N/A | `vsync` |
-| Window size | `[window] width/height` | `display.width/height` |
-| Audio levels | N/A | `master_volume`, `music_volume`, `sfx_volume` |
+| Ryo.toml Section | Ryo.toml Field | system.json Field |
+|------------------|----------------|-------------------|
+| `[system]` | `resolution_width` | `display.width` |
+| `[system]` | `resolution_height` | `display.height` |
+| `[system]` | `vsync` | `display.vsync` / `vsync` |
+| `[system]` | `fullscreen` | `display.fullscreen` |
+| `[system]` | `master_volume` | `master_volume` |
+| `[system]` | `music_volume` | `music_volume` |
+| `[system]` | `sfx_volume` | `sfx_volume` |
+| `[info]` | `show_fps` | `show_fps` |
+
+**Not mapped:** `[project]`, `[paths]`, `[debug]`, `[env]` are developer-only and never written to `system.json`.
+
+## Runtime Screen Size API
+
+During gameplay, access the current screen dimensions through the context:
+
+```rust
+impl Scene for MyScene {
+    fn update(&mut self, ctx: &mut SceneContext) {
+        // Get current screen dimensions
+        let (width, height) = ctx.screen_size();
+        let w = ctx.screen_width();
+        let h = ctx.screen_height();
+        
+        // Use for dynamic positioning
+        let center = (w / 2.0, h / 2.0);
+    }
+    
+    fn render_ui(&mut self, ui: &mut UiContext) {
+        // Also available in UI rendering
+        let (w, h) = ui.screen_size();
+    }
+}
+```
+
+**Best practice:** Set your design resolution in `Ryo.toml [system]`, then use the runtime API for positioning. This allows users to customize resolution in `system.json` without breaking your game layout.
 
 ## Loading System State
 

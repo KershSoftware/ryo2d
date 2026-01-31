@@ -384,7 +384,6 @@ impl Game for PostProcessingDemo {
 fn main() {
   EngineBuilder::new()
     .title("Post-Processing Effects Demo")
-    .resolution(800, 600)
     .window_mode(WindowMode::ResizableAspectRatio)
     .with_game(PostProcessingDemo::new())
     .build()

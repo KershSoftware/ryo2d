@@ -22,8 +22,6 @@ use ryo2d::prelude::*;
 
 // GPU batching types
 
-const WIDTH: u32 = 800;
-const HEIGHT: u32 = 600;
 const PARTICLE_RADIUS: f32 = 4.0;
 const INITIAL_PARTICLES: usize = 1000;
 const SPAWN_BATCH: usize = 100;
@@ -73,6 +71,9 @@ struct ParticlesDemo {
   particle_sprites: Vec<SpriteHandle>,
   imported_sprite: Option<SpriteHandle>,
   nav_cooldown: f32,
+  // Screen dimensions (set at init from config)
+  screen_width: f32,
+  screen_height: f32,
 }
 
 impl ParticlesDemo {
@@ -83,6 +84,8 @@ impl ParticlesDemo {
       particle_sprites: Vec::new(),
       imported_sprite: None,
       nav_cooldown: 0.0,
+      screen_width: 800.0,  // Default, updated in init
+      screen_height: 600.0, // Default, updated in init
     }
   }
 
@@ -117,14 +120,16 @@ impl ParticlesDemo {
   /// Spawn walls around the screen boundaries
   fn spawn_walls(&self, world: &mut World) {
     let wall_thickness = 20.0;
+    let width = self.screen_width;
+    let height = self.screen_height;
 
     // Bottom wall (flush with bottom edge of viewport)
     // Transform is top-left corner, collider auto-centers
     world.spawn((
       Wall,
-      Transform::new(0.0, HEIGHT as f32 - wall_thickness),
+      Transform::new(0.0, height - wall_thickness),
       RigidBody::kinematic(),
-      Collider::box_collider(WIDTH as f32, wall_thickness)
+      Collider::box_collider(width, wall_thickness)
         .with_layer(LAYER_WALL)
         .with_restitution(0.7)
         .with_friction(0.1),
@@ -135,7 +140,7 @@ impl ParticlesDemo {
       Wall,
       Transform::new(0.0, 0.0),
       RigidBody::kinematic(),
-      Collider::box_collider(wall_thickness, HEIGHT as f32)
+      Collider::box_collider(wall_thickness, height)
         .with_layer(LAYER_WALL)
         .with_restitution(0.7)
         .with_friction(0.1),
@@ -144,9 +149,9 @@ impl ParticlesDemo {
     // Right wall (flush with right edge of viewport)
     world.spawn((
       Wall,
-      Transform::new(WIDTH as f32 - wall_thickness, 0.0),
+      Transform::new(width - wall_thickness, 0.0),
       RigidBody::kinematic(),
-      Collider::box_collider(wall_thickness, HEIGHT as f32)
+      Collider::box_collider(wall_thickness, height)
         .with_layer(LAYER_WALL)
         .with_restitution(0.7)
         .with_friction(0.1),
@@ -169,7 +174,7 @@ impl ParticlesDemo {
     }
 
     // Random position across top of screen
-    let x = rand_range(50.0, WIDTH as f32 - 50.0);
+    let x = rand_range(50.0, self.screen_width - 50.0);
     let y = rand_range(-50.0, 50.0);
 
     // Random initial velocity
@@ -273,6 +278,11 @@ impl Game for ParticlesDemo {
     println!("  R     - Reset scene");
     println!("  Escape - Quit");
     println!();
+
+    // Store screen dimensions for wall/particle placement
+    let (width, height) = ctx.screen_size();
+    self.screen_width = width;
+    self.screen_height = height;
 
     // Create sprite assets
     self.create_particle_sprites();
@@ -407,10 +417,11 @@ impl Game for ParticlesDemo {
     ui.draw_text("Gravity: 400 px/s²", 10.0, 50.0, Color::CYAN);
 
     // FPS hint
+    let (_, height) = ui.screen_size();
     ui.draw_text(
       "Space: +100 particles | R: Reset",
       10.0,
-      HEIGHT as f32 - 30.0,
+      height as f32 - 30.0,
       Color::new(150, 150, 150, 255),
     );
   }
@@ -528,7 +539,6 @@ fn rand_range(min: f32, max: f32) -> f32 {
 fn main() {
   EngineBuilder::new()
     .title("Particles Demo - 1000+ Physics Sprites")
-    .resolution(WIDTH, HEIGHT)
     .fps(144)
     .with_game(ParticlesDemo::new())
     .build()

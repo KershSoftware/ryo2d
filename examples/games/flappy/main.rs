@@ -39,10 +39,10 @@ fn main() {
 
   let builder = EngineBuilder::new()
     .title("Flappy Bird - Ryo2D Demo")
-    .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
+    .resolution(400, 600) // Fixed resolution - game uses hardcoded spawn distances
     .fps(144)
     .physics_hz(120)
-    .with_system_state_overrides(); // Apply user overrides from system.json on startup
+    .with_system_state_overrides(); // Apply audio overrides from system.json
 
   // Start with debug scene or menu based on env config
   let engine = if start_debug {
