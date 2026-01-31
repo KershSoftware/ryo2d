@@ -111,9 +111,15 @@ run_example() {
     local original_dir="$(pwd)"
     cd "$example_path"
     
-    # Run and ensure we return to original directory
-    # Use cargo to run the ryo2d CLI from the engine root
-    cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- dev || true
+    # Build and run the game
+    echo -e "${YELLOW}Building...${NC}"
+    if cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- build; then
+        echo -e "${YELLOW}Running...${NC}"
+        cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- run || true
+    else
+        echo -e "${RED}Build failed!${NC}"
+    fi
+    
     cd "$original_dir"
 }
 

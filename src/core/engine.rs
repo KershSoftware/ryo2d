@@ -17,7 +17,7 @@ use super::ecs::{
   Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
 };
 use super::error::{EngineError, EngineResult};
-use super::game::{Game, GameContext};
+use super::game::{Game, GameContext, GpuRenderContext};
 use super::input::InputState;
 use super::physics::{PhysicsConfig, RigidBody};
 use super::rapier_physics::RapierPhysicsWorld;
@@ -25,7 +25,7 @@ use super::renderer::WgpuRenderer;
 use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
 use super::sprite::Sprite;
-use super::sprite_gpu::SpriteGpuRenderer;
+use super::sprite_gpu::{BatchCollector, SpriteGpuRenderer};
 use super::tile::{CompositeTile, GroupedCollider, TileDirection};
 use super::ui::{BitmapFont, UiContext, create_debug_font};
 
@@ -232,6 +232,8 @@ pub struct Engine {
   vsync: Option<bool>,
   // GPU sprite renderer for entities with Material/shader effects
   sprite_gpu: Option<SpriteGpuRenderer>,
+  // Batch collector for GPU sprite rendering (reused each frame)
+  batch_collector: BatchCollector,
 }
 
 impl Engine {
@@ -373,6 +375,7 @@ impl Engine {
       last_window_size: initial_size,
       vsync,
       sprite_gpu: None, // Initialized when renderer is created
+      batch_collector: BatchCollector::new(),
     }
   }
 
@@ -574,6 +577,9 @@ impl Engine {
   ///
   /// This is the "Render System" - it draws all entities with Transform + Renderable
   fn render(&mut self, _alpha: f32) {
+    // Clear batch collector for this frame (used for GPU sprite batching)
+    self.batch_collector.clear();
+
     // Get frame buffer from renderer
     let (frame, frame_width, frame_height) = match &mut self.renderer {
       Some(renderer) => {
@@ -936,11 +942,11 @@ impl ApplicationHandler for Engine {
       self.vsync,
     ));
 
-    // Create GPU sprite renderer using the same device/queue
+    // Create GPU sprite renderer using the game texture format (not surface format)
     let sprite_gpu = SpriteGpuRenderer::new(
       renderer.device(),
       renderer.queue(),
-      renderer.surface_format(),
+      renderer.game_texture_format(),
     );
 
     self.window = Some(window);
@@ -1073,16 +1079,67 @@ impl ApplicationHandler for Engine {
           .unwrap_or(0.0);
         self.render(alpha);
 
-        // Actually draw to screen with post-processing effects
-        if let Some(renderer) = &mut self.renderer {
-          match renderer.render_with_effects(Some(&self.effects)) {
+        // Call game.render_gpu() to populate GPU sprite batches
+        if let Some(mut game) = self.game.take() {
+          // Get device/queue from renderer for texture uploads
+          if let (Some(sprite_gpu), Some(renderer)) =
+            (self.sprite_gpu.as_mut(), self.renderer.as_ref())
+          {
+            let mut gpu_ctx = GpuRenderContext::new(
+              &mut self.batch_collector,
+              sprite_gpu,
+              renderer.device(),
+              renderer.queue(),
+              &self.camera,
+              &self.world,
+            );
+            game.render_gpu(&mut gpu_ctx);
+          }
+          self.game = Some(game);
+        }
+
+        // Actually draw to screen with post-processing effects and GPU sprites
+        // Take sprite_gpu out to avoid borrow conflicts with renderer
+        let mut sprite_gpu = self.sprite_gpu.take();
+        let mut renderer = self.renderer.take();
+
+        if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
+          // Only use GPU sprite callback if we have batched sprites
+          let has_gpu_sprites = self.batch_collector.sprite_count() > 0;
+
+          let result = if has_gpu_sprites {
+            // Update GPU renderer viewport
+            gpu.set_viewport(rend.queue(), rend.game_width() as f32, rend.game_height() as f32);
+
+            // Create callback closure that captures gpu and batch_collector
+            let batch_collector = &self.batch_collector;
+            let callback = |queue: &wgpu::Queue,
+                            encoder: &mut wgpu::CommandEncoder,
+                            view: &wgpu::TextureView| {
+              gpu.render_batches(queue, encoder, view, batch_collector);
+            };
+
+            rend.render_with_gpu_sprites(Some(&self.effects), Some(callback))
+          } else {
+            rend.render_with_effects(Some(&self.effects))
+          };
+
+          match result {
             Ok(_) => {}
             Err(e) => {
               eprintln!("Render error: {:?}", e);
+              // Put back before exiting
+              self.sprite_gpu = sprite_gpu;
+              self.renderer = renderer;
               event_loop.exit();
+              return;
             }
           }
         }
+
+        // Put sprite_gpu and renderer back
+        self.sprite_gpu = sprite_gpu;
+        self.renderer = renderer;
 
         // Debug output and frame limiting
         if let Some(time) = &mut self.time {

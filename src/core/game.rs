@@ -3,13 +3,14 @@
 //! The engine handles low-level systems (window, input, rendering).
 //! Users implement the `Game` trait to define their game behavior.
 
-use super::asset::AssetManager;
+use super::asset::{AssetManager, SpriteHandle};
 use super::audio::AudioManager;
 use super::camera::Camera;
 use super::ecs::World;
 use super::input::InputState;
 use super::rapier_physics::PhysicsCollisionEvent;
 use super::shaders::EffectsManager;
+use super::sprite_gpu::{BatchCollector, SpriteGpuRenderer};
 use super::ui::UiContext;
 
 /// Context passed to game callbacks, providing access to engine systems.
@@ -66,6 +67,83 @@ impl<'a> GameContext<'a> {
   }
 }
 
+/// Context for GPU sprite rendering.
+///
+/// This context is passed to the optional `render_gpu` callback,
+/// allowing games to use GPU-accelerated sprite batching for
+/// high-performance particle systems and effects.
+///
+/// # Example
+///
+/// ```ignore
+/// fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+///     for particle in &self.particles {
+///         // Upload texture if not cached
+///         gpu.upload_sprite(&particle.sprite);
+///
+///         // Create instance with transform
+///         let instance = SpriteInstance::new()
+///             .with_transform(particle.x, particle.y, particle.rotation, 1.0, 1.0);
+///
+///         // Add to batch
+///         gpu.batch.add(particle.sprite.id(), false, instance, particle.z_order);
+///     }
+/// }
+/// ```
+pub struct GpuRenderContext<'a> {
+  /// The batch collector for grouping sprites by texture
+  pub batch: &'a mut BatchCollector,
+  /// The GPU sprite renderer (for uploading textures)
+  gpu_renderer: &'a mut SpriteGpuRenderer,
+  /// Device for GPU operations
+  device: &'a wgpu::Device,
+  /// Queue for GPU operations
+  queue: &'a wgpu::Queue,
+  /// Camera for coordinate transforms
+  pub camera: &'a super::camera::Camera,
+  /// The ECS world (read-only for rendering)
+  pub world: &'a World,
+}
+
+impl<'a> GpuRenderContext<'a> {
+  /// Create a new GPU render context
+  pub fn new(
+    batch: &'a mut BatchCollector,
+    gpu_renderer: &'a mut SpriteGpuRenderer,
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    camera: &'a super::camera::Camera,
+    world: &'a World,
+  ) -> Self {
+    Self {
+      batch,
+      gpu_renderer,
+      device,
+      queue,
+      camera,
+      world,
+    }
+  }
+
+  /// Upload a sprite texture to the GPU cache.
+  ///
+  /// Call this for each unique sprite before adding instances to the batch.
+  /// Sprites are cached by ID, so subsequent calls with the same sprite are no-ops.
+  pub fn upload_sprite(&mut self, sprite: &SpriteHandle) {
+    self.gpu_renderer.upload_sprite(self.device, self.queue, sprite);
+  }
+
+  /// Check if a sprite texture is already uploaded
+  pub fn has_texture(&self, id: &str) -> bool {
+    self.gpu_renderer.has_texture(id)
+  }
+
+  /// Get screen dimensions (width, height)
+  pub fn screen_size(&self) -> (f32, f32) {
+    self.camera.viewport_size()
+  }
+}
+
 /// Trait for user-defined game logic.
 ///
 /// Implement this trait to create your game. The engine will call your
@@ -112,6 +190,36 @@ pub trait Game {
   ///
   /// `dt` is the fixed delta time in seconds (e.g., 1/60 = 0.01667)
   fn update(&mut self, ctx: &mut GameContext, dt: f32);
+
+  /// Called to populate GPU sprite batches for high-performance rendering.
+  ///
+  /// Use this for:
+  /// - Particle systems (1000+ sprites)
+  /// - Bullet hell games
+  /// - Any scenario where CPU sprite blitting is too slow
+  ///
+  /// GPU sprites are rendered on top of CPU-rendered sprites but before UI.
+  /// The provided `GpuRenderContext` gives access to batch collection and
+  /// texture upload.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+  ///     // Upload textures (cached, safe to call every frame)
+  ///     for sprite in &self.particle_sprites {
+  ///         gpu.upload_sprite(sprite);
+  ///     }
+  ///
+  ///     // Add particle instances to batches
+  ///     for particle in &self.particles {
+  ///         let instance = SpriteInstance::new()
+  ///             .with_transform(particle.x, particle.y, 0.0, 1.0, 1.0);
+  ///         gpu.batch.add(&particle.sprite.id(), false, instance, 10);
+  ///     }
+  /// }
+  /// ```
+  fn render_gpu(&mut self, _gpu: &mut GpuRenderContext) {}
 
   /// Called after sprite rendering to draw UI elements.
   ///

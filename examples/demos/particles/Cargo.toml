@@ -1,0 +1,12 @@
+[package]
+name = "particles-demo"
+version = "0.1.0"
+edition = "2021"
+description = "Particle physics demo - 1000+ sprites with gravity and collision"
+
+[[bin]]
+name = "particles-demo"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }

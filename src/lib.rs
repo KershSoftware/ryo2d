@@ -46,7 +46,7 @@ pub mod core;
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
   // Core game trait
-  pub use crate::core::game::{Game, GameContext};
+  pub use crate::core::game::{Game, GameContext, GpuRenderContext};
 
   // Scene management
   pub use crate::core::scene::{
@@ -125,6 +125,9 @@ pub mod prelude {
 
   // Post-processing effects
   pub use crate::core::shaders::{EffectTarget, EffectsManager, PostProcessEffect};
+
+  // GPU sprite batching (for high-performance particle systems)
+  pub use crate::core::sprite_gpu::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
 
   // Error types (centralized)
   pub use crate::core::error::{

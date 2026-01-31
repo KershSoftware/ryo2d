@@ -91,8 +91,17 @@ function Run-Example {
     Set-Location $ExamplePath
     
     try {
-        # Use cargo to run the ryo2d CLI from the engine root
-        & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- dev
+        # Build the game
+        Write-Host "Building..." -ForegroundColor Yellow
+        & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- build
+        
+        if ($LASTEXITCODE -eq 0) {
+            # Run the built game
+            Write-Host "Running..." -ForegroundColor Yellow
+            & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- run
+        } else {
+            Write-Host "Build failed!" -ForegroundColor Red
+        }
     }
     finally {
         # Always restore original directory

@@ -1,0 +1,10 @@
+[project]
+name = "Particles Demo"
+
+[info]
+show_fps = true
+
+[debug]
+show_colliders = false
+show_velocities = false
+show_origins = false

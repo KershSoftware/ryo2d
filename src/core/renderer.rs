@@ -388,6 +388,11 @@ impl WgpuRenderer {
     self.config.format
   }
 
+  /// Get the format of the game texture (where GPU sprites render to)
+  pub fn game_texture_format(&self) -> wgpu::TextureFormat {
+    wgpu::TextureFormat::Rgba8UnormSrgb
+  }
+
   /// Resize the surface when window size changes.
   pub fn resize(&mut self, new_width: u32, new_height: u32) {
     if new_width > 0 && new_height > 0 {
@@ -543,7 +548,7 @@ impl WgpuRenderer {
 
   /// Render the pixel buffer to the screen.
   pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-    self.render_with_gpu_sprites::<fn(&mut wgpu::CommandEncoder, &wgpu::TextureView)>(None, None)
+    self.render_with_gpu_sprites::<fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView)>(None, None)
   }
 
   /// Render the pixel buffer with post-processing effects.
@@ -551,12 +556,12 @@ impl WgpuRenderer {
     &mut self,
     effects: Option<&EffectsManager>,
   ) -> Result<(), wgpu::SurfaceError> {
-    self.render_with_gpu_sprites::<fn(&mut wgpu::CommandEncoder, &wgpu::TextureView)>(effects, None)
+    self.render_with_gpu_sprites::<fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView)>(effects, None)
   }
 
   /// Render with optional GPU sprites and post-processing effects.
   ///
-  /// The GPU sprite callback receives the command encoder and game texture view,
+  /// The GPU sprite callback receives the queue, command encoder and game texture view,
   /// allowing GPU sprites to be rendered on top of the CPU-rendered content.
   ///
   /// # Render Order
@@ -570,7 +575,7 @@ impl WgpuRenderer {
     gpu_sprite_callback: Option<F>,
   ) -> Result<(), wgpu::SurfaceError>
   where
-    F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
+    F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
   {
     // Upload pixel buffer to GPU texture
     self.queue.write_texture(
@@ -608,7 +613,7 @@ impl WgpuRenderer {
 
     // Render GPU sprites on top of CPU content (if callback provided)
     if let Some(callback) = gpu_sprite_callback {
-      callback(&mut encoder, &self.texture_view);
+      callback(&self.queue, &mut encoder, &self.texture_view);
     }
 
     // Check if we have active effects to apply

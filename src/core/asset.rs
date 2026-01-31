@@ -95,6 +95,13 @@ impl SpriteHandle {
     &self.path
   }
 
+  /// Get a unique identifier for this sprite (for caching/batching)
+  ///
+  /// Returns the path as a string, which is unique for each loaded sprite.
+  pub fn id(&self) -> String {
+    self.path.to_string_lossy().to_string()
+  }
+
   /// Get a reference to the underlying sprite data
   ///
   /// This acquires a read lock on the sprite. For rendering, prefer
