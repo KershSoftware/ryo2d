@@ -499,4 +499,78 @@ mod tests {
     assert_eq!(result.other(e2), Some(e1));
     assert_eq!(result.other(e3), None);
   }
+
+  #[test]
+  fn spatial_hash_clear() {
+    use crate::core::ecs::World;
+    let mut world = World::new();
+    let e1 = world.spawn(());
+    let e2 = world.spawn(());
+
+    let mut spatial = SpatialHash::new(64.0);
+    spatial.insert(e1, 0.0, 0.0, 10.0, 10.0);
+    spatial.insert(e2, 50.0, 50.0, 60.0, 60.0);
+
+    spatial.clear();
+    assert_eq!(spatial.query(5.0, 5.0, 10.0, 10.0).len(), 0);
+    assert_eq!(spatial.query(55.0, 55.0, 10.0, 10.0).len(), 0);
+  }
+
+  #[test]
+  fn spatial_hash_query_with_bounds() {
+    use crate::core::ecs::World;
+    let mut world = World::new();
+    let e1 = world.spawn(());
+    let e2 = world.spawn(());
+    let e3 = world.spawn(());
+
+    let mut spatial = SpatialHash::new(64.0);
+    spatial.insert(e1, 0.0, 0.0, 10.0, 10.0);
+    spatial.insert(e2, 100.0, 100.0, 110.0, 110.0);
+    spatial.insert(e3, 5.0, 5.0, 15.0, 15.0);
+
+    // Query near origin should find entities 1 and 3
+    let results = spatial.query(0.0, 0.0, 20.0, 20.0);
+    assert_eq!(results.len(), 2);
+    assert!(results.contains(&e1));
+    assert!(results.contains(&e3));
+
+    // Query at 100,100 should only find entity 2
+    let results = spatial.query(100.0, 100.0, 120.0, 120.0);
+    assert_eq!(results.len(), 1);
+    assert!(results.contains(&e2));
+  }
+
+  #[test]
+  fn spatial_hash_insert_collider() {
+    use crate::core::collision::Collider;
+    use crate::core::ecs::World;
+    let mut world = World::new();
+    let entity = world.spawn(());
+
+    let mut spatial = SpatialHash::new(64.0);
+    let collider = Collider::box_collider(20.0, 20.0);
+
+    spatial.insert_collider(entity, &collider, 10.0, 10.0);
+    let results = spatial.query(15.0, 15.0, 10.0, 10.0);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], entity);
+  }
+
+  #[test]
+  fn spatial_hash_default_cell_size() {
+    let spatial = SpatialHash::default();
+    // Just verify it constructs with default cell size
+    assert!(spatial.cell_size > 0.0);
+  }
+
+  #[test]
+  fn spatial_hash_prevents_zero_cell_size() {
+    let spatial = SpatialHash::new(0.0);
+    // Should clamp to minimum of 1.0
+    assert_eq!(spatial.cell_size, 1.0);
+
+    let spatial2 = SpatialHash::new(-5.0);
+    assert_eq!(spatial2.cell_size, 1.0);
+  }
 }

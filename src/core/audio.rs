@@ -649,6 +649,9 @@ mod tests {
   fn audio_error_display() {
     let err = AudioError::NotFound("boom.wav".to_string());
     assert!(err.to_string().contains("boom.wav"));
+
+    let err2 = AudioError::LoadError("decode failed".to_string());
+    assert!(err2.to_string().contains("decode failed"));
   }
 
   #[test]
@@ -684,6 +687,41 @@ mod tests {
   }
 
   #[test]
+  fn sound_options_defaults() {
+    let opts = SoundOptions::default();
+    assert_eq!(opts.volume, 1.0);
+    assert_eq!(opts.panning, 0.0);
+    assert_eq!(opts.playback_rate, 1.0);
+  }
+
+  #[test]
+  fn sound_options_volume_clamps() {
+    let high = SoundOptions::new().volume(2.0);
+    assert_eq!(high.volume, 1.0);
+
+    let low = SoundOptions::new().volume(-0.5);
+    assert_eq!(low.volume, 0.0);
+  }
+
+  #[test]
+  fn sound_options_panning_clamps() {
+    let far_left = SoundOptions::new().panning(-5.0);
+    assert_eq!(far_left.panning, -1.0);
+
+    let far_right = SoundOptions::new().panning(5.0);
+    assert_eq!(far_right.panning, 1.0);
+  }
+
+  #[test]
+  fn sound_options_playback_rate_clamps() {
+    let negative = SoundOptions::new().playback_rate(-0.5);
+    assert_eq!(negative.playback_rate, 0.0);
+
+    let normal = SoundOptions::new().playback_rate(2.0);
+    assert_eq!(normal.playback_rate, 2.0);
+  }
+
+  #[test]
   fn music_options_builder() {
     let opts = MusicOptions::new()
       .volume(0.8)
@@ -693,17 +731,6 @@ mod tests {
     assert_eq!(opts.volume, 0.8);
     assert!(!opts.looping);
     assert_eq!(opts.fade_in, Some(Duration::from_secs(2)));
-  }
-
-  #[test]
-  fn options_clamp_values() {
-    let sound = SoundOptions::new().volume(2.0).panning(5.0);
-    assert_eq!(sound.volume, 1.0);
-    assert_eq!(sound.panning, 1.0);
-
-    let music = MusicOptions::new().volume(-0.5).panning(-10.0);
-    assert_eq!(music.volume, 0.0);
-    assert_eq!(music.panning, -1.0);
   }
 
   #[test]
@@ -718,8 +745,120 @@ mod tests {
   }
 
   #[test]
+  fn music_options_volume_clamps() {
+    let high = MusicOptions::new().volume(1.5);
+    assert_eq!(high.volume, 1.0);
+
+    let low = MusicOptions::new().volume(-0.2);
+    assert_eq!(low.volume, 0.0);
+  }
+
+  #[test]
+  fn music_options_panning_clamps() {
+    let far_left = MusicOptions::new().panning(-10.0);
+    assert_eq!(far_left.panning, -1.0);
+
+    let far_right = MusicOptions::new().panning(10.0);
+    assert_eq!(far_right.panning, 1.0);
+  }
+
+  #[test]
+  fn music_options_playback_rate_clamps() {
+    let negative = MusicOptions::new().playback_rate(-1.0);
+    assert_eq!(negative.playback_rate, 0.0);
+  }
+
+  #[test]
+  fn music_options_looping() {
+    let looping = MusicOptions::new().looping(true);
+    assert!(looping.looping);
+
+    let once = MusicOptions::new().looping(false);
+    assert!(!once.looping);
+  }
+
+  #[test]
+  fn music_options_once_convenience() {
+    let opts = MusicOptions::new().once();
+    assert!(!opts.looping);
+  }
+
+  #[test]
+  fn music_options_fade_in() {
+    let opts = MusicOptions::new().fade_in(Duration::from_millis(500));
+    assert_eq!(opts.fade_in, Some(Duration::from_millis(500)));
+  }
+
+  #[test]
   fn music_options_fade_out_on_drop() {
     let opts = MusicOptions::new().fade_out_on_drop(Duration::from_secs(1));
     assert_eq!(opts.fade_out_on_drop, Some(Duration::from_secs(1)));
+  }
+
+  #[test]
+  fn options_clamp_values() {
+    let sound = SoundOptions::new().volume(2.0).panning(5.0);
+    assert_eq!(sound.volume, 1.0);
+    assert_eq!(sound.panning, 1.0);
+
+    let music = MusicOptions::new().volume(-0.5).panning(-10.0);
+    assert_eq!(music.volume, 0.0);
+    assert_eq!(music.panning, -1.0);
+  }
+
+  #[test]
+  fn amplitude_to_db_zero() {
+    let db = amplitude_to_db(0.0);
+    assert_eq!(db, Decibels::SILENCE);
+  }
+
+  #[test]
+  fn amplitude_to_db_one() {
+    let db = amplitude_to_db(1.0);
+    // 20 * log10(1.0) = 0.0 dB
+    assert!((db.0 - 0.0).abs() < 0.001);
+  }
+
+  #[test]
+  fn amplitude_to_db_half() {
+    let db = amplitude_to_db(0.5);
+    // 20 * log10(0.5) ≈ -6.02 dB
+    assert!((db.0 + 6.02).abs() < 0.1);
+  }
+
+  #[test]
+  fn amplitude_to_db_negative_is_silence() {
+    let db = amplitude_to_db(-0.5);
+    assert_eq!(db, Decibels::SILENCE);
+  }
+
+  #[test]
+  fn music_options_chaining() {
+    let opts = MusicOptions::new()
+      .volume(0.7)
+      .panning(0.3)
+      .playback_rate(1.1)
+      .once()
+      .fade_in(Duration::from_millis(200))
+      .fade_out_on_drop(Duration::from_millis(100));
+
+    assert_eq!(opts.volume, 0.7);
+    assert_eq!(opts.panning, 0.3);
+    assert_eq!(opts.playback_rate, 1.1);
+    assert!(!opts.looping);
+    assert_eq!(opts.fade_in, Some(Duration::from_millis(200)));
+    assert_eq!(opts.fade_out_on_drop, Some(Duration::from_millis(100)));
+  }
+
+  #[test]
+  fn sound_options_chaining() {
+    let opts = SoundOptions::new()
+      .volume(0.8)
+      .panning(-0.4)
+      .playback_rate(1.2);
+
+    assert_eq!(opts.volume, 0.8);
+    assert_eq!(opts.panning, -0.4);
+    assert_eq!(opts.playback_rate, 1.2);
   }
 }

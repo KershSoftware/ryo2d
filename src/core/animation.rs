@@ -515,4 +515,119 @@ mod tests {
     controller.set_state("walk");
     assert_eq!(controller.current_state(), Some("walk"));
   }
+
+  #[test]
+  fn animation_builder() {
+    let frames = vec![mock_sprite_handle(), mock_sprite_handle()];
+    let anim = Animation::new("test", frames, 0.5)
+      .with_loop_mode(LoopMode::PingPong);
+    
+    assert_eq!(anim.name(), "test");
+    assert!(matches!(anim.loop_mode, LoopMode::PingPong));
+  }
+
+  #[test]
+  fn animator_pause_play() {
+    let frames = vec![mock_sprite_handle(), mock_sprite_handle()];
+    let anim = Animation::new("test", frames, 0.1);
+    let mut animator = Animator::new(anim);
+
+    animator.update(0.05);
+    assert!(animator.is_playing());
+    
+    animator.pause();
+    let frame_before = animator.current_frame_index();
+    animator.update(0.5); // Time shouldn't advance when paused
+    assert_eq!(animator.current_frame_index(), frame_before);
+
+    animator.play();
+    assert!(animator.is_playing());
+  }
+
+  #[test]
+  fn animator_speed_control() {
+    let frames = vec![mock_sprite_handle(), mock_sprite_handle()];
+    let anim = Animation::new("test", frames, 1.0);
+    let mut animator = Animator::new(anim);
+    
+    animator.set_speed(2.0);
+    assert_eq!(animator.speed(), 2.0);
+    
+    animator.update(0.5); // Effective time: 0.5 * 2.0 = 1.0
+    assert_eq!(animator.current_frame_index(), 1);
+  }
+
+  #[test]
+  fn animator_reset() {
+    let frames = vec![mock_sprite_handle(), mock_sprite_handle(), mock_sprite_handle()];
+    let anim = Animation::new("test", frames, 0.1);
+    let mut animator = Animator::new(anim);
+
+    animator.update(0.25); // Advance past frame 0
+    assert_ne!(animator.current_frame_index(), 0);
+    
+    animator.reset();
+    assert_eq!(animator.current_frame_index(), 0);
+  }
+
+  #[test]
+  fn loop_mode_pingpong() {
+    let frames = vec![mock_sprite_handle(), mock_sprite_handle(), mock_sprite_handle()];
+    let anim = Animation::new("test", frames, 0.1).with_loop_mode(LoopMode::PingPong);
+    let mut animator = Animator::new(anim);
+
+    // Forward: 0 -> 1 -> 2
+    animator.update(0.1);
+    assert_eq!(animator.current_frame_index(), 1);
+    animator.update(0.1);
+    assert_eq!(animator.current_frame_index(), 2);
+    
+    // Reverse: 2 -> 1 -> 0
+    animator.update(0.1);
+    assert_eq!(animator.current_frame_index(), 1);
+    animator.update(0.1);
+    assert_eq!(animator.current_frame_index(), 0);
+    
+    // Forward again
+    animator.update(0.1);
+    assert_eq!(animator.current_frame_index(), 1);
+  }
+
+  #[test]
+  fn loop_mode_times() {
+    let frames = vec![mock_sprite_handle(), mock_sprite_handle()];
+    let anim = Animation::new("test", frames, 0.1).with_loop_mode(LoopMode::Times(2));
+    let mut animator = Animator::new(anim);
+
+    // First loop
+    animator.update(0.1);
+    assert_eq!(animator.current_frame_index(), 1);
+    animator.update(0.1);
+    assert_eq!(animator.current_frame_index(), 0); // Loop back
+    
+    // Second loop
+    animator.update(0.1);
+    assert_eq!(animator.current_frame_index(), 1);
+    animator.update(0.1);
+    assert!(animator.just_finished()); // Should stop after 2 loops
+  }
+
+  #[test]
+  fn controller_default() {
+    let controller = AnimationController::default();
+    assert_eq!(controller.current_state(), None);
+  }
+
+  #[test]
+  fn controller_clone() {
+    let mut controller = AnimationController::new();
+    controller.add_animation(
+      "idle",
+      Animation::new("idle", vec![mock_sprite_handle()], 1.0),
+    );
+    controller.set_state("idle");
+
+    let cloned = controller.clone();
+    assert_eq!(cloned.current_state(), Some("idle"));
+  }
 }

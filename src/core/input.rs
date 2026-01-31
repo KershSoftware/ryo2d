@@ -260,4 +260,75 @@ mod tests {
     input.begin_frame();
     assert_eq!(input.scroll_delta(), (0.0, 0.0));
   }
+
+  #[test]
+  fn scroll_pixel_delta_conversion() {
+    let mut input = InputState::new();
+    input.handle_scroll(MouseScrollDelta::PixelDelta(
+      winit::dpi::PhysicalPosition::new(120.0, 240.0),
+    ));
+    assert_eq!(input.scroll_delta(), (1.0, 2.0)); // Divided by 120.0
+  }
+
+  #[test]
+  fn mouse_x_y_getters() {
+    let mut input = InputState::new();
+    input.handle_mouse_move(150.0, 250.0);
+    assert_eq!(input.mouse_x(), 150.0);
+    assert_eq!(input.mouse_y(), 250.0);
+  }
+
+  #[test]
+  fn mouse_delta_accumulates() {
+    let mut input = InputState::new();
+    input.handle_mouse_move(10.0, 20.0);
+    input.handle_mouse_move(15.0, 25.0);
+    assert_eq!(input.mouse_delta(), (15.0, 25.0)); // Total delta from origin
+  }
+
+  #[test]
+  fn begin_frame_clears_one_frame_events() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::KeyA, ElementState::Released);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    input.handle_mouse_move(100.0, 200.0);
+    input.handle_scroll(MouseScrollDelta::LineDelta(1.0, 2.0));
+
+    assert!(input.key_pressed(KeyCode::KeyW));
+    assert!(input.key_released(KeyCode::KeyA));
+    assert!(input.mouse_pressed(MouseButton::Left));
+    assert_eq!(input.mouse_delta(), (100.0, 200.0));
+    assert_eq!(input.scroll_delta(), (1.0, 2.0));
+
+    input.begin_frame();
+
+    // One-frame events cleared
+    assert!(!input.key_pressed(KeyCode::KeyW));
+    assert!(!input.key_released(KeyCode::KeyA));
+    assert!(!input.mouse_pressed(MouseButton::Left));
+    assert_eq!(input.mouse_delta(), (0.0, 0.0));
+    assert_eq!(input.scroll_delta(), (0.0, 0.0));
+
+    // Held states persist
+    assert!(input.key_down(KeyCode::KeyW));
+    assert!(!input.key_down(KeyCode::KeyA));
+    assert!(input.mouse_down(MouseButton::Left));
+  }
+
+  #[test]
+  fn mouse_button_no_repeat_registration() {
+    let mut input = InputState::new();
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    assert!(input.mouse_pressed(MouseButton::Left));
+
+    // Repeated press (OS key repeat)
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    // Should still be registered as pressed this frame
+    assert!(input.mouse_pressed(MouseButton::Left));
+
+    input.begin_frame();
+    assert!(!input.mouse_pressed(MouseButton::Left));
+    assert!(input.mouse_down(MouseButton::Left));
+  }
 }

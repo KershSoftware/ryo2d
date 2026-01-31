@@ -829,6 +829,45 @@ mod tests {
   }
 
   #[test]
+  fn sprite_handle_dimensions() {
+    let sprite = Sprite::solid_rect(64, 32, 255, 128, 0, 255);
+    let handle = SpriteHandle::new(sprite, PathBuf::from("test.png"));
+
+    assert_eq!(handle.width(), 64);
+    assert_eq!(handle.height(), 32);
+    assert_eq!(handle.path(), Path::new("test.png"));
+  }
+
+  #[test]
+  fn sprite_handle_update() {
+    let sprite1 = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let handle = SpriteHandle::new(sprite1, PathBuf::from("test.png"));
+    assert_eq!(handle.width(), 10);
+
+    let sprite2 = Sprite::solid_rect(20, 20, 0, 255, 0, 255);
+    handle.update(sprite2);
+    assert_eq!(handle.width(), 20);
+    assert_eq!(handle.height(), 20);
+  }
+
+  #[test]
+  fn sprite_handle_from_sprite() {
+    let sprite = Sprite::solid_rect(50, 50, 100, 100, 100, 255);
+    let handle = SpriteHandle::from_sprite(sprite, "named_sprite");
+
+    assert_eq!(handle.path(), Path::new("named_sprite"));
+    assert_eq!(handle.width(), 50);
+  }
+
+  #[test]
+  fn sprite_handle_id_matches_path() {
+    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let handle = SpriteHandle::new(sprite, PathBuf::from("assets/test.png"));
+
+    assert_eq!(handle.id(), "assets/test.png");
+  }
+
+  #[test]
   fn asset_manager_creates_sprite_handle() {
     let assets = AssetManager::new();
     let sprite = Sprite::solid_rect(32, 32, 0, 255, 0, 255);
@@ -844,6 +883,46 @@ mod tests {
     let assets = AssetManager::with_base_path("assets");
     let resolved = assets.resolve_path("sprites/player.png");
     assert_eq!(resolved, PathBuf::from("assets/sprites/player.png"));
+  }
+
+  #[test]
+  fn asset_manager_resolves_absolute_paths() {
+    let assets = AssetManager::with_base_path("assets");
+    let absolute = PathBuf::from("/absolute/path/sprite.png");
+    let resolved = assets.resolve_path(&absolute);
+    assert_eq!(resolved, absolute);
+  }
+
+  #[test]
+  fn asset_manager_set_base_path() {
+    let mut assets = AssetManager::new();
+    assets.set_base_path("new_assets");
+    assert_eq!(assets.base_path(), Path::new("new_assets"));
+
+    let resolved = assets.resolve_path("sprite.png");
+    assert_eq!(resolved, PathBuf::from("new_assets/sprite.png"));
+  }
+
+  #[test]
+  fn asset_manager_default() {
+    let assets = AssetManager::default();
+    assert_eq!(assets.base_path(), Path::new("."));
+    assert_eq!(assets.sprite_count(), 0);
+  }
+
+  #[test]
+  fn asset_manager_stats() {
+    let assets = AssetManager::new();
+    let sprite1 = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite2 = Sprite::solid_rect(20, 20, 0, 255, 0, 255);
+
+    let handle1 = assets.create_sprite(sprite1, "test1");
+    let _handle2 = assets.create_sprite(sprite2, "test2");
+    let _handle1_clone = handle1.clone();
+
+    let stats = assets.stats();
+    assert_eq!(stats.sprites_cached, 0); // create_sprite doesn't cache
+    assert_eq!(stats.sprites_loading, 0);
   }
 
   #[test]
@@ -866,5 +945,155 @@ mod tests {
     drop(handle);
     assert_eq!(assets.gc_sprites(), 1);
     assert_eq!(assets.sprite_count(), 0);
+  }
+
+  #[test]
+  fn asset_manager_gc_threshold() {
+    let mut assets = AssetManager::new();
+    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+
+    // Add sprites at ref_count = 1
+    for i in 0..5 {
+      let handle = SpriteHandle::new(sprite.clone(), PathBuf::from(format!("test{}.png", i)));
+      assets
+        .sprites
+        .insert(PathBuf::from(format!("test{}.png", i)), handle);
+    }
+
+    assert_eq!(assets.sprite_count(), 5);
+
+    // Default threshold is 1 - should remove all
+    assert_eq!(assets.gc_sprites(), 5);
+    assert_eq!(assets.sprite_count(), 0);
+  }
+
+  #[test]
+  fn asset_manager_clear_cache() {
+    let mut assets = AssetManager::new();
+    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+
+    let handle = SpriteHandle::new(sprite, PathBuf::from("test.png"));
+    assets
+      .sprites
+      .insert(PathBuf::from("test.png"), handle.clone());
+
+    assert_eq!(assets.sprite_count(), 1);
+    assets.clear_sprite_cache();
+    assert_eq!(assets.sprite_count(), 0);
+
+    // Handle still works after cache clear
+    assert_eq!(handle.width(), 10);
+  }
+
+  #[test]
+  fn asset_manager_create_doesnt_cache() {
+    let assets = AssetManager::new();
+    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+
+    let _handle1 = assets.create_sprite(sprite.clone(), "test1");
+    let _handle2 = assets.create_sprite(sprite.clone(), "test2");
+
+    // create_sprite doesn't cache, only load_sprite does
+    assert_eq!(assets.sprite_count(), 0);
+  }
+
+  #[test]
+  fn async_sprite_handle_states() {
+    let handle = AsyncSpriteHandle::new_pending(PathBuf::from("loading.png"));
+
+    assert!(handle.is_loading());
+    assert!(!handle.is_complete());
+    assert!(!handle.is_loaded());
+    assert!(!handle.is_failed());
+    assert!(handle.get().is_none());
+  }
+
+  #[test]
+  fn async_sprite_handle_success() {
+    let handle = AsyncSpriteHandle::new_pending(PathBuf::from("test.png"));
+    let sprite = Sprite::solid_rect(10, 10, 255, 0, 0, 255);
+    let sprite_handle = SpriteHandle::new(sprite, PathBuf::from("test.png"));
+
+    handle.complete_success(sprite_handle.clone());
+
+    assert!(!handle.is_loading());
+    assert!(handle.is_complete());
+    assert!(handle.is_loaded());
+    assert!(!handle.is_failed());
+    assert!(handle.get().is_some());
+    assert_eq!(handle.get().unwrap().width(), 10);
+  }
+
+  #[test]
+  fn async_sprite_handle_failure() {
+    let handle = AsyncSpriteHandle::new_pending(PathBuf::from("missing.png"));
+    handle.complete_failure("File not found".to_string());
+
+    assert!(!handle.is_loading());
+    assert!(handle.is_complete());
+    assert!(!handle.is_loaded());
+    assert!(handle.is_failed());
+    assert!(handle.get().is_none());
+
+    match handle.state() {
+      LoadingState::Failed(msg) => assert_eq!(msg, "File not found"),
+      _ => panic!("Expected Failed state"),
+    }
+  }
+
+  #[test]
+  fn async_sprite_handle_get_or_fallback() {
+    let loading = AsyncSpriteHandle::new_pending(PathBuf::from("loading.png"));
+    let fallback = SpriteHandle::new(
+      Sprite::solid_rect(5, 5, 128, 128, 128, 255),
+      PathBuf::from("fallback.png"),
+    );
+
+    let result = loading.get_or(&fallback);
+    assert_eq!(result.width(), 5); // Got fallback
+
+    // Complete loading
+    let loaded_sprite = SpriteHandle::new(
+      Sprite::solid_rect(20, 20, 255, 255, 255, 255),
+      PathBuf::from("loading.png"),
+    );
+    loading.complete_success(loaded_sprite);
+
+    let result = loading.get_or(&fallback);
+    assert_eq!(result.width(), 20); // Got loaded sprite
+  }
+
+  #[test]
+  fn async_sprite_handle_path() {
+    let handle = AsyncSpriteHandle::new_pending(PathBuf::from("assets/sprite.png"));
+    assert_eq!(handle.path(), Path::new("assets/sprite.png"));
+  }
+
+  #[test]
+  fn loading_state_clone() {
+    let state1 = LoadingState::Failed("test".to_string());
+    let state2 = state1.clone();
+
+    match (state1, state2) {
+      (LoadingState::Failed(msg1), LoadingState::Failed(msg2)) => {
+        assert_eq!(msg1, msg2);
+      }
+      _ => panic!("Clone didn't preserve state"),
+    }
+  }
+
+  #[test]
+  fn loading_state_pattern_matching() {
+    let loading = LoadingState::Loading;
+    let loaded = LoadingState::Loaded;
+    let failed = LoadingState::Failed("error".to_string());
+
+    assert!(matches!(loading, LoadingState::Loading));
+    assert!(matches!(loaded, LoadingState::Loaded));
+    if let LoadingState::Failed(msg) = failed {
+      assert_eq!(msg, "error");
+    } else {
+      panic!("Expected Failed state");
+    }
   }
 }

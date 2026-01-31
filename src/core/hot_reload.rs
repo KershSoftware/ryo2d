@@ -238,17 +238,128 @@ mod tests {
   #[test]
   fn hot_reload_config_default_has_common_extensions() {
     let config = HotReloadConfig::default();
+    
+    // Image formats
     assert!(config.extensions.contains("png"));
     assert!(config.extensions.contains("jpg"));
+    assert!(config.extensions.contains("jpeg"));
+    assert!(config.extensions.contains("gif"));
+    assert!(config.extensions.contains("bmp"));
+    assert!(config.extensions.contains("svg"));
+    
+    // Audio formats
     assert!(config.extensions.contains("ogg"));
     assert!(config.extensions.contains("wav"));
+    assert!(config.extensions.contains("mp3"));
+    assert!(config.extensions.contains("flac"));
   }
 
   #[test]
-  fn hot_reload_event_debug() {
+  fn hot_reload_config_default_settings() {
+    let config = HotReloadConfig::default();
+    assert_eq!(config.watch_paths, vec![PathBuf::from(".")]);
+    assert!(config.recursive);
+  }
+
+  #[test]
+  fn hot_reload_config_clone() {
+    let config1 = HotReloadConfig::default();
+    let config2 = config1.clone();
+    
+    assert_eq!(config1.watch_paths, config2.watch_paths);
+    assert_eq!(config1.recursive, config2.recursive);
+  }
+
+  #[test]
+  fn hot_reload_config_custom() {
+    let mut extensions = HashSet::new();
+    extensions.insert("txt".to_string());
+    extensions.insert("md".to_string());
+
+    let config = HotReloadConfig {
+      watch_paths: vec![PathBuf::from("assets"), PathBuf::from("sprites")],
+      extensions,
+      recursive: false,
+    };
+
+    assert_eq!(config.watch_paths.len(), 2);
+    assert!(config.extensions.contains("txt"));
+    assert!(config.extensions.contains("md"));
+    assert!(!config.extensions.contains("png"));
+    assert!(!config.recursive);
+  }
+
+  #[test]
+  fn hot_reload_event_file_modified() {
     let event = HotReloadEvent::FileModified(PathBuf::from("test.png"));
     let debug = format!("{:?}", event);
     assert!(debug.contains("FileModified"));
     assert!(debug.contains("test.png"));
+  }
+
+  #[test]
+  fn hot_reload_event_file_created() {
+    let event = HotReloadEvent::FileCreated(PathBuf::from("new.jpg"));
+    match event {
+      HotReloadEvent::FileCreated(path) => {
+        assert_eq!(path, PathBuf::from("new.jpg"));
+      }
+      _ => panic!("Expected FileCreated event"),
+    }
+  }
+
+  #[test]
+  fn hot_reload_event_file_deleted() {
+    let event = HotReloadEvent::FileDeleted(PathBuf::from("old.ogg"));
+    match event {
+      HotReloadEvent::FileDeleted(path) => {
+        assert_eq!(path, PathBuf::from("old.ogg"));
+      }
+      _ => panic!("Expected FileDeleted event"),
+    }
+  }
+
+  #[test]
+  fn hot_reload_event_error() {
+    let event = HotReloadEvent::Error("test error".to_string());
+    match event {
+      HotReloadEvent::Error(msg) => {
+        assert_eq!(msg, "test error");
+      }
+      _ => panic!("Expected Error event"),
+    }
+  }
+
+  #[test]
+  fn hot_reload_event_clone() {
+    let event1 = HotReloadEvent::FileModified(PathBuf::from("sprite.png"));
+    let event2 = event1.clone();
+
+    match (event1, event2) {
+      (HotReloadEvent::FileModified(p1), HotReloadEvent::FileModified(p2)) => {
+        assert_eq!(p1, p2);
+      }
+      _ => panic!("Clone didn't preserve event type"),
+    }
+  }
+
+  #[test]
+  fn hot_reload_event_equality() {
+    let event1 = HotReloadEvent::FileModified(PathBuf::from("test.png"));
+    let event2 = HotReloadEvent::FileModified(PathBuf::from("test.png"));
+    let event3 = HotReloadEvent::FileModified(PathBuf::from("other.png"));
+
+    // Events should be comparable via pattern matching
+    match (&event1, &event2, &event3) {
+      (
+        HotReloadEvent::FileModified(p1),
+        HotReloadEvent::FileModified(p2),
+        HotReloadEvent::FileModified(p3),
+      ) => {
+        assert_eq!(p1, p2);
+        assert_ne!(p1, p3);
+      }
+      _ => panic!("Event type mismatch"),
+    }
   }
 }

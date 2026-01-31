@@ -589,4 +589,141 @@ mod tests {
     let result = check_collision(&a, (0.0, 0.0), &b, (20.0, 0.0));
     assert!(result.is_none());
   }
+
+  #[test]
+  fn aabb_translate() {
+    let aabb = AABB::new(0.0, 0.0, 10.0, 10.0);
+    let translated = aabb.translate(5.0, 3.0);
+    assert_eq!(translated, AABB::new(5.0, 3.0, 15.0, 13.0));
+  }
+
+  #[test]
+  fn aabb_center() {
+    let aabb = AABB::new(0.0, 0.0, 10.0, 10.0);
+    assert_eq!(aabb.center(), (5.0, 5.0));
+  }
+
+  #[test]
+  fn aabb_width_height() {
+    let aabb = AABB::new(0.0, 0.0, 10.0, 20.0);
+    assert_eq!(aabb.width(), 10.0);
+    assert_eq!(aabb.height(), 20.0);
+  }
+
+  #[test]
+  fn aabb_from_position_size() {
+    let aabb = AABB::from_position_size(10.0, 20.0, 5.0, 8.0);
+    assert_eq!(aabb.min_x, 10.0);
+    assert_eq!(aabb.min_y, 20.0);
+    assert_eq!(aabb.max_x, 15.0);
+    assert_eq!(aabb.max_y, 28.0);
+  }
+
+  #[test]
+  fn aabb_centered() {
+    let aabb = AABB::centered(10.0, 20.0, 6.0, 8.0);
+    assert_eq!(aabb.min_x, 7.0);
+    assert_eq!(aabb.min_y, 16.0);
+    assert_eq!(aabb.max_x, 13.0);
+    assert_eq!(aabb.max_y, 24.0);
+  }
+
+  #[test]
+  fn circle_translate() {
+    let circle = Circle::new(0.0, 0.0, 5.0);
+    let translated = circle.translate(10.0, 20.0);
+    assert_eq!(translated.x, 10.0);
+    assert_eq!(translated.y, 20.0);
+    assert_eq!(translated.radius, 5.0);
+  }
+
+  #[test]
+  fn circle_contains_point() {
+    let circle = Circle::new(0.0, 0.0, 5.0);
+    assert!(circle.contains_point(0.0, 0.0));
+    assert!(circle.contains_point(3.0, 4.0)); // 3-4-5 triangle
+    assert!(!circle.contains_point(6.0, 0.0));
+  }
+
+  #[test]
+  fn circle_bounding_aabb() {
+    let circle = Circle::new(10.0, 20.0, 5.0);
+    let aabb = circle.bounding_aabb();
+    assert_eq!(aabb.min_x, 5.0);
+    assert_eq!(aabb.min_y, 15.0);
+    assert_eq!(aabb.max_x, 15.0);
+    assert_eq!(aabb.max_y, 25.0);
+  }
+
+  #[test]
+  fn collider_with_restitution() {
+    let collider = Collider::box_collider(10.0, 10.0).with_restitution(0.8);
+    assert_eq!(collider.restitution, 0.8);
+  }
+
+  #[test]
+  fn collider_with_friction() {
+    let collider = Collider::box_collider(10.0, 10.0).with_friction(0.6);
+    assert_eq!(collider.friction, 0.6);
+  }
+
+  #[test]
+  fn collider_as_trigger() {
+    let collider = Collider::box_collider(10.0, 10.0).as_trigger();
+    assert!(collider.is_trigger);
+  }
+
+  #[test]
+  fn collider_get_aabb() {
+    let collider = Collider::box_collider(20.0, 30.0).with_offset(5.0, 10.0);
+    let aabb = collider.get_aabb(100.0, 200.0);
+    assert_eq!(aabb.min_x, 105.0);
+    assert_eq!(aabb.min_y, 210.0);
+    assert_eq!(aabb.max_x, 125.0);
+    assert_eq!(aabb.max_y, 240.0);
+  }
+
+  #[test]
+  fn collider_get_circle() {
+    let box_collider = Collider::box_collider(10.0, 10.0);
+    assert!(box_collider.get_circle(0.0, 0.0).is_none());
+
+    let circle_collider = Collider::circle_collider(5.0).with_offset(10.0, 20.0);
+    let circle = circle_collider.get_circle(100.0, 200.0).unwrap();
+    assert_eq!(circle.x, 110.0);
+    assert_eq!(circle.y, 220.0);
+    assert_eq!(circle.radius, 5.0);
+  }
+
+  #[test]
+  fn collision_mtv_prefers_smaller_axis() {
+    use crate::core::ecs::World;
+    let mut world = World::new();
+    let e1 = world.spawn(());
+    let e2 = world.spawn(());
+
+    // Mock collision with more penetration on Y
+    let collision = Collision {
+      entity_a: e1,
+      entity_b: e2,
+      penetration_x: 2.0,
+      penetration_y: 5.0,
+      normal_x: 1.0,
+      normal_y: 1.0,
+    };
+    let mtv = collision.mtv();
+    assert_eq!(mtv, (-2.0, 0.0)); // Resolves on smaller (X) axis
+
+    // More penetration on X
+    let collision2 = Collision {
+      entity_a: e1,
+      entity_b: e2,
+      penetration_x: 10.0,
+      penetration_y: 3.0,
+      normal_x: 1.0,
+      normal_y: -1.0,
+    };
+    let mtv2 = collision2.mtv();
+    assert_eq!(mtv2, (0.0, 3.0)); // Resolves on smaller (Y) axis
+  }
 }

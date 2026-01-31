@@ -1102,6 +1102,13 @@ mod tests {
   }
 
   #[test]
+  fn scene_manager_with_scene() {
+    let manager = SceneManager::with_scene(Box::new(TestScene::new("initial")));
+    assert!(!manager.is_empty());
+    assert_eq!(manager.len(), 1);
+  }
+
+  #[test]
   fn scene_action_default() {
     let action: SceneAction = Default::default();
     assert!(matches!(action, SceneAction::Continue));
@@ -1115,5 +1122,117 @@ mod tests {
     assert!(!scene.paused);
     assert!(!scene.resumed);
     assert_eq!(scene.update_count, 0);
+  }
+
+  #[test]
+  fn transition_none_default() {
+    let transition: Transition = Default::default();
+    assert!(matches!(transition, Transition::None));
+    assert_eq!(transition.duration(), Duration::ZERO);
+  }
+
+  #[test]
+  fn transition_fade_black() {
+    let transition = Transition::fade(Duration::from_millis(500));
+    match transition {
+      Transition::Fade { duration, color } => {
+        assert_eq!(duration, Duration::from_millis(500));
+        assert_eq!(color, [0, 0, 0, 255]);
+      }
+      _ => panic!("Expected Fade transition"),
+    }
+    assert_eq!(transition.duration(), Duration::from_millis(1000)); // 2x (out + in)
+  }
+
+  #[test]
+  fn transition_fade_white() {
+    let transition = Transition::fade_white(Duration::from_millis(300));
+    match transition {
+      Transition::Fade { color, .. } => {
+        assert_eq!(color, [255, 255, 255, 255]);
+      }
+      _ => panic!("Expected Fade transition"),
+    }
+  }
+
+  #[test]
+  fn transition_fade_custom_color() {
+    let transition = Transition::fade_color(Duration::from_millis(200), 128, 64, 32);
+    match transition {
+      Transition::Fade { color, .. } => {
+        assert_eq!(color, [128, 64, 32, 255]);
+      }
+      _ => panic!("Expected Fade transition"),
+    }
+  }
+
+  #[test]
+  fn transition_slide() {
+    let transition = Transition::slide(Duration::from_millis(400), SlideDirection::Left);
+    match transition {
+      Transition::Slide {
+        duration,
+        direction,
+      } => {
+        assert_eq!(duration, Duration::from_millis(400));
+        assert_eq!(direction, SlideDirection::Left);
+      }
+      _ => panic!("Expected Slide transition"),
+    }
+    assert_eq!(transition.duration(), Duration::from_millis(400));
+  }
+
+  #[test]
+  fn slide_directions() {
+    assert_eq!(SlideDirection::Left, SlideDirection::Left);
+    assert_ne!(SlideDirection::Left, SlideDirection::Right);
+    assert_ne!(SlideDirection::Up, SlideDirection::Down);
+  }
+
+  #[test]
+  fn scene_manager_empty() {
+    let manager = SceneManager::new();
+    assert!(manager.is_empty());
+    assert_eq!(manager.len(), 0);
+    assert!(!manager.is_transitioning());
+    assert_eq!(manager.transition_progress(), None);
+  }
+
+  #[test]
+  fn scene_manager_clone_transition() {
+    let transition1 = Transition::fade(Duration::from_millis(100));
+    let transition2 = transition1.clone();
+
+    match (transition1, transition2) {
+      (Transition::Fade { duration: d1, .. }, Transition::Fade { duration: d2, .. }) => {
+        assert_eq!(d1, d2);
+      }
+      _ => panic!("Clone didn't preserve transition type"),
+    }
+  }
+
+  #[test]
+  fn transition_overlay_alpha_no_transition() {
+    let manager = SceneManager::new();
+    assert_eq!(manager.transition_overlay_alpha(), 0.0);
+    assert_eq!(manager.transition_overlay_color(), None);
+  }
+
+  #[test]
+  fn scene_name_defaults_to_type_name() {
+    let scene = TestScene::new("test");
+    assert_eq!(scene.name(), "TestScene");
+  }
+
+  #[test]
+  fn scene_transparent_defaults_to_false() {
+    let scene = TestScene::new("test");
+    assert!(!scene.is_transparent());
+  }
+
+  #[test]
+  fn scene_updates_below_defaults_to_false() {
+    let scene = TestScene::new("test");
+    assert!(!scene.updates_below());
   }
 }

@@ -618,6 +618,64 @@ mod tests {
     if let SpriteEffect::Outline { thickness, .. } = effect {
       assert_eq!(thickness, 8); // max is 8
     }
+
+    let thin = SpriteEffect::outline(Color::WHITE, 0);
+    if let SpriteEffect::Outline { thickness, .. } = thin {
+      assert_eq!(thickness, 1); // min is 1
+    }
+  }
+
+  #[test]
+  fn white_outline_convenience() {
+    let effect = SpriteEffect::white_outline(2);
+    match effect {
+      SpriteEffect::Outline { color, thickness } => {
+        assert_eq!(color, Color::WHITE);
+        assert_eq!(thickness, 2);
+      }
+      _ => panic!("Expected Outline effect"),
+    }
+  }
+
+  #[test]
+  fn glow_defaults() {
+    let effect = SpriteEffect::glow(Color::YELLOW, 5.0);
+    match effect {
+      SpriteEffect::Glow {
+        color,
+        radius,
+        intensity,
+      } => {
+        assert_eq!(color, Color::YELLOW);
+        assert_eq!(radius, 5.0);
+        assert_eq!(intensity, 0.8);
+      }
+      _ => panic!("Expected Glow effect"),
+    }
+  }
+
+  #[test]
+  fn glow_with_custom_intensity() {
+    let effect = SpriteEffect::glow_with_intensity(Color::BLUE, 3.0, 0.5);
+    match effect {
+      SpriteEffect::Glow { intensity, .. } => {
+        assert_eq!(intensity, 0.5);
+      }
+      _ => panic!("Expected Glow effect"),
+    }
+  }
+
+  #[test]
+  fn glow_clamps_intensity() {
+    let too_high = SpriteEffect::glow_with_intensity(Color::RED, 2.0, 2.0);
+    if let SpriteEffect::Glow { intensity, .. } = too_high {
+      assert_eq!(intensity, 1.0);
+    }
+
+    let too_low = SpriteEffect::glow_with_intensity(Color::RED, 2.0, -0.5);
+    if let SpriteEffect::Glow { intensity, .. } = too_low {
+      assert_eq!(intensity, 0.0);
+    }
   }
 
   #[test]
@@ -625,6 +683,107 @@ mod tests {
     let effect = SpriteEffect::flash(Color::RED, 2.0);
     if let SpriteEffect::Flash { intensity, .. } = effect {
       assert!((intensity - 1.0).abs() < 0.001);
+    }
+
+    let low = SpriteEffect::flash(Color::RED, -0.5);
+    if let SpriteEffect::Flash { intensity, .. } = low {
+      assert_eq!(intensity, 0.0);
+    }
+  }
+
+  #[test]
+  fn damage_flash_convenience() {
+    let effect = SpriteEffect::damage_flash(0.6);
+    match effect {
+      SpriteEffect::Flash { color, intensity } => {
+        assert_eq!(color, Color::RED);
+        assert_eq!(intensity, 0.6);
+      }
+      _ => panic!("Expected Flash effect"),
+    }
+  }
+
+  #[test]
+  fn hit_flash_convenience() {
+    let effect = SpriteEffect::hit_flash(0.9);
+    match effect {
+      SpriteEffect::Flash { color, intensity } => {
+        assert_eq!(color, Color::WHITE);
+        assert_eq!(intensity, 0.9);
+      }
+      _ => panic!("Expected Flash effect"),
+    }
+  }
+
+  #[test]
+  fn color_shift_clamps_amount() {
+    let high = SpriteEffect::color_shift(Color::GREEN, 1.5);
+    if let SpriteEffect::ColorShift { amount, .. } = high {
+      assert_eq!(amount, 1.0);
+    }
+
+    let low = SpriteEffect::color_shift(Color::GREEN, -0.2);
+    if let SpriteEffect::ColorShift { amount, .. } = low {
+      assert_eq!(amount, 0.0);
+    }
+  }
+
+  #[test]
+  fn silhouette_creation() {
+    let effect = SpriteEffect::silhouette(Color::new(100, 50, 200, 255));
+    match effect {
+      SpriteEffect::Silhouette { color } => {
+        assert_eq!(color.r, 100);
+        assert_eq!(color.g, 50);
+        assert_eq!(color.b, 200);
+      }
+      _ => panic!("Expected Silhouette effect"),
+    }
+  }
+
+  #[test]
+  fn shadow_convenience() {
+    let effect = SpriteEffect::shadow();
+    match effect {
+      SpriteEffect::Silhouette { color } => {
+        assert_eq!(color.r, 0);
+        assert_eq!(color.g, 0);
+        assert_eq!(color.b, 0);
+        assert_eq!(color.a, 128);
+      }
+      _ => panic!("Expected Silhouette effect"),
+    }
+  }
+
+  #[test]
+  fn pixelate_clamps_block_size() {
+    let large = SpriteEffect::pixelate(100);
+    if let SpriteEffect::Pixelate { block_size } = large {
+      assert_eq!(block_size, 32); // max is 32
+    }
+
+    let small = SpriteEffect::pixelate(1);
+    if let SpriteEffect::Pixelate { block_size } = small {
+      assert_eq!(block_size, 2); // min is 2
+    }
+  }
+
+  #[test]
+  fn wave_creation() {
+    let effect = SpriteEffect::wave(3.0, 2.0, 1.5);
+    match effect {
+      SpriteEffect::Wave {
+        amplitude,
+        frequency,
+        speed,
+        time,
+      } => {
+        assert_eq!(amplitude, 3.0);
+        assert_eq!(frequency, 2.0);
+        assert_eq!(speed, 1.5);
+        assert_eq!(time, 0.0);
+      }
+      _ => panic!("Expected Wave effect"),
     }
   }
 
@@ -650,10 +809,103 @@ mod tests {
   }
 
   #[test]
+  fn non_animated_effects_dont_update() {
+    let mut flash = SpriteEffect::flash(Color::RED, 0.5);
+    let mut invert = SpriteEffect::invert();
+    let mut grayscale = SpriteEffect::grayscale(0.5);
+
+    assert!(!flash.update(1.0));
+    assert!(!invert.update(1.0));
+    assert!(!grayscale.update(1.0));
+  }
+
+  #[test]
   fn dissolve_clamps_progress() {
     let effect = SpriteEffect::dissolve(1.5);
     if let SpriteEffect::Dissolve { progress, .. } = effect {
       assert!((progress - 1.0).abs() < 0.001);
     }
+
+    let low = SpriteEffect::dissolve(-0.1);
+    if let SpriteEffect::Dissolve { progress, .. } = low {
+      assert_eq!(progress, 0.0);
+    }
+  }
+
+  #[test]
+  fn dissolve_with_edge() {
+    let effect = SpriteEffect::dissolve_with_edge(0.5, Color::RED);
+    match effect {
+      SpriteEffect::Dissolve {
+        progress,
+        edge_color,
+      } => {
+        assert_eq!(progress, 0.5);
+        assert_eq!(edge_color, Some(Color::RED));
+      }
+      _ => panic!("Expected Dissolve effect"),
+    }
+  }
+
+  #[test]
+  fn dissolve_without_edge() {
+    let effect = SpriteEffect::dissolve(0.3);
+    match effect {
+      SpriteEffect::Dissolve {
+        progress,
+        edge_color,
+      } => {
+        assert_eq!(progress, 0.3);
+        assert_eq!(edge_color, None);
+      }
+      _ => panic!("Expected Dissolve effect"),
+    }
+  }
+
+  #[test]
+  fn invert_creation() {
+    let effect = SpriteEffect::invert();
+    assert!(matches!(effect, SpriteEffect::Invert));
+  }
+
+  #[test]
+  fn grayscale_clamps_intensity() {
+    let high = SpriteEffect::grayscale(2.0);
+    if let SpriteEffect::Grayscale { intensity } = high {
+      assert_eq!(intensity, 1.0);
+    }
+
+    let low = SpriteEffect::grayscale(-0.5);
+    if let SpriteEffect::Grayscale { intensity } = low {
+      assert_eq!(intensity, 0.0);
+    }
+  }
+
+  #[test]
+  fn full_grayscale_convenience() {
+    let effect = SpriteEffect::full_grayscale();
+    match effect {
+      SpriteEffect::Grayscale { intensity } => {
+        assert_eq!(intensity, 1.0);
+      }
+      _ => panic!("Expected Grayscale effect"),
+    }
+  }
+
+  #[test]
+  fn effect_equality() {
+    let flash1 = SpriteEffect::flash(Color::RED, 0.5);
+    let flash2 = SpriteEffect::flash(Color::RED, 0.5);
+    let flash3 = SpriteEffect::flash(Color::BLUE, 0.5);
+
+    assert_eq!(flash1, flash2);
+    assert_ne!(flash1, flash3);
+  }
+
+  #[test]
+  fn effect_clone() {
+    let original = SpriteEffect::glow(Color::GREEN, 3.0);
+    let cloned = original.clone();
+    assert_eq!(original, cloned);
   }
 }
