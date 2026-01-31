@@ -10,6 +10,7 @@ Add a `[debug]` section to your `Ryo.toml`:
 [debug]
 show_colliders = true
 show_fps = true
+show_frame_timing = false
 show_velocities = false
 show_origins = false
 ```
@@ -21,6 +22,7 @@ EngineBuilder::new()
     .title("My Game")
     .show_colliders(true)
     .show_fps(true)
+    .show_frame_timing(false)
     .with_scene(GameScene::new())
     .build()
     .run()?;
@@ -46,15 +48,31 @@ Renders bright green outlines around all entities with `Collider` components.
 
 ### `show_fps`
 
-Displays a frames-per-second counter in the top-left corner.
+Displays a frames-per-second counter in the bottom-left corner.
 
 **When to use:**
-- Performance profiling
-- Detecting frame rate drops
+- Quick performance check
 - Verifying target FPS is being met
 
 **What it shows:**
-- Current frame count with a semi-transparent background
+- Current smoothed FPS value with a semi-transparent background
+
+### `show_frame_timing`
+
+Displays a detailed frame timing breakdown overlay in the bottom-left corner. When enabled, this replaces the simple FPS counter with more detailed information.
+
+**When to use:**
+- Detailed performance profiling
+- Identifying which phase of the game loop is slow
+- Diagnosing frame drops and stuttering
+
+**What it shows:**
+- **Update**: Time spent in game logic and physics (ms)
+- **Render**: Time spent preparing the frame for display (ms)
+- **Present**: Time spent submitting to GPU and effects pipeline (ms)
+- **Total**: Combined frame time with smoothed FPS
+
+**Note:** Values are smoothed using an exponential moving average for stable, readable display. The overlay also logs timing to console once per second for capture/analysis.
 
 ### `show_velocities`
 
@@ -91,8 +109,11 @@ Renders small yellow crosshairs at each entity's `Transform` position.
 # Draw collision boundaries (green outlines)
 show_colliders = true
 
-# Display FPS counter in top-left corner
+# Display FPS counter in bottom-left corner
 show_fps = true
+
+# Display detailed frame timing breakdown (replaces FPS when enabled)
+show_frame_timing = false
 
 # Draw velocity vectors (cyan arrows)
 show_velocities = false
@@ -158,6 +179,7 @@ fn main() {
 |--------|-------------|
 | `.show_colliders(bool)` | Enable/disable collider visualization |
 | `.show_fps(bool)` | Enable/disable FPS counter |
+| `.show_frame_timing(bool)` | Enable/disable detailed frame timing overlay |
 | `.show_velocities(bool)` | Enable/disable velocity vectors |
 | `.show_origins(bool)` | Enable/disable origin crosshairs |
 

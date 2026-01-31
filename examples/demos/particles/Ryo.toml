@@ -14,3 +14,4 @@ show_fps = true
 show_colliders = false
 show_velocities = false
 show_origins = false
+show_frame_timing = false

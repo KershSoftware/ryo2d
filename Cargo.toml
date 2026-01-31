@@ -44,3 +44,14 @@ winit = "0.30"
 
 [dev-dependencies]
 tempfile = "3"
+
+# Release builds with debug symbols for profiling (flamegraph, perf, etc.)
+# This enables function names in profiles without affecting runtime performance.
+[profile.release]
+debug = true
+
+# Profiling profile: optimized like release but with full debug symbols
+# Use with: cargo build --profile profiling
+[profile.profiling]
+inherits = "release"
+debug = true

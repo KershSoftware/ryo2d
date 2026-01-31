@@ -57,10 +57,115 @@ pub struct DebugConfig {
   pub show_colliders: bool,
   /// Whether to display FPS counter in corner
   pub show_fps: bool,
+  /// Whether to display frame timing breakdown (update/physics/render/present)
+  pub show_frame_timing: bool,
   /// Whether to draw velocity vectors on physics entities
   pub show_velocities: bool,
   /// Whether to draw entity origin points (small crosshairs at transform position)
   pub show_origins: bool,
+}
+
+// ============================================================================
+// Frame Timing
+// ============================================================================
+
+use std::time::{Duration, Instant};
+
+/// Tracks timing for each phase of the game loop.
+///
+/// Used to display frame timing breakdown when `show_frame_timing` is enabled.
+/// Measurements have minimal overhead (just Instant::now() calls).
+///
+/// Note: Currently, `update` includes physics time (combined in fixed timestep loop).
+/// The `physics` field is reserved for future separate measurement.
+#[derive(Debug, Clone, Default)]
+pub struct FrameTimings {
+  /// Time spent in game update logic (currently includes physics)
+  pub update: Duration,
+  /// Time spent in physics simulation (reserved for future use)
+  pub physics: Duration,
+  /// Time spent rendering (CPU side)
+  pub render: Duration,
+  /// Time spent presenting to screen (GPU sync)
+  pub present: Duration,
+  /// Total frame time
+  pub total: Duration,
+  /// Calculated FPS from total time
+  pub fps: u32,
+}
+
+impl FrameTimings {
+  /// Calculate FPS from total frame time
+  pub fn calculate_fps(&mut self) {
+    if self.total.as_secs_f32() > 0.0 {
+      self.fps = (1.0 / self.total.as_secs_f32()) as u32;
+    }
+  }
+}
+
+/// Smoothed frame timing values for stable overlay display.
+///
+/// Uses exponential moving average to prevent jittery numbers.
+/// The smoothing factor (alpha) controls responsiveness vs stability.
+#[derive(Debug, Clone)]
+pub struct SmoothedFrameTimings {
+  /// Smoothed update time in milliseconds
+  pub update_ms: f64,
+  /// Smoothed render time in milliseconds
+  pub render_ms: f64,
+  /// Smoothed present time in milliseconds
+  pub present_ms: f64,
+  /// Smoothed total time in milliseconds
+  pub total_ms: f64,
+  /// Smoothed FPS value (from actual measured FPS, not instantaneous)
+  pub fps: f64,
+  /// Smoothing factor (0.0 = no change, 1.0 = instant update)
+  alpha: f64,
+}
+
+impl Default for SmoothedFrameTimings {
+  fn default() -> Self {
+    Self {
+      update_ms: 0.0,
+      render_ms: 0.0,
+      present_ms: 0.0,
+      total_ms: 0.0,
+      fps: 0.0,
+      alpha: 0.02, // Smooth over ~50 frames for stable display
+    }
+  }
+}
+
+impl SmoothedFrameTimings {
+  /// Update smoothed values from raw frame timings and actual measured FPS.
+  ///
+  /// Note: `actual_fps` should come from the time module's measured FPS,
+  /// not from instantaneous frame time (which excludes vsync/sleep).
+  pub fn update(&mut self, raw: &FrameTimings, actual_fps: u64) {
+    let update_ms = raw.update.as_secs_f64() * 1000.0;
+    let render_ms = raw.render.as_secs_f64() * 1000.0;
+    let present_ms = raw.present.as_secs_f64() * 1000.0;
+    let total_ms = raw.total.as_secs_f64() * 1000.0;
+
+    // Exponential moving average: smoothed = alpha * new + (1 - alpha) * old
+    self.update_ms = self.alpha * update_ms + (1.0 - self.alpha) * self.update_ms;
+    self.render_ms = self.alpha * render_ms + (1.0 - self.alpha) * self.render_ms;
+    self.present_ms = self.alpha * present_ms + (1.0 - self.alpha) * self.present_ms;
+    self.total_ms = self.alpha * total_ms + (1.0 - self.alpha) * self.total_ms;
+    // Use actual measured FPS from time module (includes vsync/frame limiting)
+    self.fps = self.alpha * (actual_fps as f64) + (1.0 - self.alpha) * self.fps;
+  }
+}
+
+/// Helper to time a code block and return the duration.
+#[inline]
+pub fn time_block<F, R>(f: F) -> (R, Duration)
+where
+  F: FnOnce() -> R,
+{
+  let start = Instant::now();
+  let result = f();
+  (result, start.elapsed())
 }
 
 // ============================================================================
@@ -248,14 +353,66 @@ pub fn render_origins(frame: &mut [u8], width: u32, height: u32, world: &World, 
   }
 }
 
-/// Render FPS counter in the top-left corner.
-pub fn render_fps_counter(ui: &mut UiContext, fps: u64) {
+/// Render FPS counter in the bottom-left corner.
+pub fn render_fps_counter(ui: &mut UiContext, fps: u64, screen_height: u32) {
+  let y = screen_height as f32 - 24.0;
   ui.label(
     &format!("FPS: {}", fps),
     4.0,
-    4.0,
+    y,
     Color::rgb(255, 255, 255),
     Some(Color::new(0, 0, 0, 180)),
+  );
+}
+
+/// Render frame timing breakdown in the bottom-left corner.
+pub fn render_frame_timing(ui: &mut UiContext, timings: &FrameTimings, screen_height: u32) {
+  let line_height = 18.0;
+  let base_y = screen_height as f32 - (line_height * 5.0) - 8.0;
+  let x = 4.0;
+  let bg = Some(Color::new(0, 0, 0, 180));
+  let white = Color::rgb(255, 255, 255);
+  let dim = Color::rgb(180, 180, 180);
+
+  // Note: Update time includes game logic + physics (combined in fixed timestep loop)
+  ui.label(
+    &format!("Update:  {:5.2}ms", timings.update.as_secs_f64() * 1000.0),
+    x,
+    base_y,
+    white,
+    bg,
+  );
+  ui.label(
+    &format!("Render:  {:5.2}ms", timings.render.as_secs_f64() * 1000.0),
+    x,
+    base_y + line_height,
+    white,
+    bg,
+  );
+  ui.label(
+    &format!("Present: {:5.2}ms", timings.present.as_secs_f64() * 1000.0),
+    x,
+    base_y + line_height * 2.0,
+    white,
+    bg,
+  );
+  ui.label(
+    "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+    x,
+    base_y + line_height * 3.0,
+    dim,
+    bg,
+  );
+  ui.label(
+    &format!(
+      "Total:   {:5.2}ms ({} FPS)",
+      timings.total.as_secs_f64() * 1000.0,
+      timings.fps
+    ),
+    x,
+    base_y + line_height * 4.0,
+    white,
+    bg,
   );
 }
 
@@ -444,6 +601,181 @@ pub fn set_pixel(frame: &mut [u8], width: u32, height: u32, x: i32, y: i32, colo
       frame[idx + 2] = color[2];
       frame[idx + 3] = color[3];
     }
+  }
+}
+
+// ============================================================================
+// GPU Debug Overlay
+// ============================================================================
+
+use super::sprite_gpu::{BatchCollector, SpriteGpuRenderer, SpriteInstance};
+use super::ui::BitmapFont;
+
+/// Debug overlay texture ID constant
+pub const DEBUG_FONT_TEXTURE_ID: &str = "__debug_font__";
+
+/// Z-order for debug overlays (renders on top of everything)
+pub const DEBUG_OVERLAY_Z_ORDER: i32 = i32::MAX - 1000;
+
+/// Upload the debug font texture to GPU for overlay rendering.
+pub fn upload_debug_font(
+  font: &BitmapFont,
+  gpu: &mut SpriteGpuRenderer,
+  device: &wgpu::Device,
+  queue: &wgpu::Queue,
+) {
+  gpu.upload_texture(
+    device,
+    queue,
+    DEBUG_FONT_TEXTURE_ID,
+    font.atlas_width(),
+    font.atlas_height(),
+    font.atlas_data(),
+  );
+}
+
+/// Add text to the GPU batch collector for overlay rendering.
+///
+/// This renders text as GPU sprites, ensuring it appears on top of all game content.
+#[allow(clippy::too_many_arguments)]
+pub fn add_gpu_text(
+  batch: &mut BatchCollector,
+  font: &BitmapFont,
+  text: &str,
+  x: f32,
+  y: f32,
+  color: Color,
+) {
+  let char_w = font.char_width() as f32;
+  let char_h = font.char_height() as f32;
+
+  let mut cursor_x = x;
+
+  for ch in text.chars() {
+    if let Some((u_min, v_min, u_max, v_max)) = font.char_uv(ch) {
+      // Position is top-left corner of the glyph (consistent with particles demo)
+      let instance = SpriteInstance::new()
+        .with_transform(cursor_x, y, 0.0, char_w, char_h)
+        .with_uv(u_min, v_min, u_max, v_max)
+        .with_tint(color, 1.0);
+
+      batch.add(
+        DEBUG_FONT_TEXTURE_ID,
+        false,
+        instance,
+        DEBUG_OVERLAY_Z_ORDER,
+      );
+    }
+    cursor_x += char_w;
+  }
+}
+
+/// Add a filled rectangle background to the GPU batch.
+///
+/// Uses a 1x1 white pixel region from the font texture (if available)
+/// or just skips if not available.
+pub fn add_gpu_rect(
+  batch: &mut BatchCollector,
+  x: f32,
+  y: f32,
+  width: f32,
+  height: f32,
+  color: Color,
+) {
+  // Use a small region of the font texture as a "solid" pixel
+  // We'll use the very first pixel which should be background
+  // Position is top-left corner
+  let instance = SpriteInstance::new()
+    .with_transform(x, y, 0.0, width, height)
+    .with_uv(0.0, 0.0, 0.001, 0.001) // Tiny UV = single pixel sample
+    .with_tint(color, 1.0);
+
+  batch.add(
+    DEBUG_FONT_TEXTURE_ID,
+    false,
+    instance,
+    DEBUG_OVERLAY_Z_ORDER - 1,
+  ); // Behind text
+}
+
+/// Render FPS counter as GPU overlay (bottom-left).
+pub fn render_fps_counter_gpu(
+  batch: &mut BatchCollector,
+  font: &BitmapFont,
+  smoothed: &SmoothedFrameTimings,
+  _screen_width: f32,
+  screen_height: f32,
+) {
+  let text = format!("FPS: {}", smoothed.fps.round() as u32);
+  let char_h = font.char_height() as f32;
+  let x = 4.0;
+  let y = screen_height - char_h - 8.0;
+
+  // Background
+  let text_width = font.text_width(&text) as f32;
+  add_gpu_rect(
+    batch,
+    x - 2.0,
+    y - 2.0,
+    text_width + 4.0,
+    char_h + 4.0,
+    Color::new(0, 0, 0, 180),
+  );
+
+  // Text
+  add_gpu_text(batch, font, &text, x, y, Color::WHITE);
+}
+
+/// Render frame timing breakdown as GPU overlay (bottom-left).
+pub fn render_frame_timing_gpu(
+  batch: &mut BatchCollector,
+  font: &BitmapFont,
+  smoothed: &SmoothedFrameTimings,
+  _screen_width: f32,
+  screen_height: f32,
+) {
+  let char_h = font.char_height() as f32;
+  let line_height = char_h + 2.0;
+  let x = 4.0;
+  let base_y = screen_height - (line_height * 5.0) - 8.0;
+
+  let lines = [
+    format!("Update:  {:5.2}ms", smoothed.update_ms),
+    format!("Render:  {:5.2}ms", smoothed.render_ms),
+    format!("Present: {:5.2}ms", smoothed.present_ms),
+    String::from(
+      "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+    ),
+    format!(
+      "Total:   {:5.2}ms ({} FPS)",
+      smoothed.total_ms,
+      smoothed.fps.round() as u32
+    ),
+  ];
+
+  // Calculate max width for background
+  let max_width = lines.iter().map(|l| font.text_width(l)).max().unwrap_or(0) as f32;
+
+  // Background
+  add_gpu_rect(
+    batch,
+    x - 2.0,
+    base_y - 2.0,
+    max_width + 4.0,
+    line_height * 5.0 + 4.0,
+    Color::new(0, 0, 0, 180),
+  );
+
+  // Lines
+  for (i, line) in lines.iter().enumerate() {
+    add_gpu_text(
+      batch,
+      font,
+      line,
+      x,
+      base_y + (i as f32 * line_height),
+      Color::WHITE,
+    );
   }
 }
 
