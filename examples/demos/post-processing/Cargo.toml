@@ -1,0 +1,13 @@
+[package]
+name = "post-processing-demo"
+version = "0.1.0"
+edition = "2021"
+description = "Post-processing shader effects demo for Ryo2D engine"
+
+[[bin]]
+name = "post-processing-demo"
+path = "main.rs"
+
+[dependencies]
+# Use path dependency during development
+ryo2d = { path = "../.." }

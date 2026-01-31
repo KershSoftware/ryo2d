@@ -17,6 +17,7 @@ pub mod rapier_physics;
 pub mod renderer;
 pub mod save;
 pub mod scene;
+pub mod shaders;
 pub mod spatial;
 pub mod sprite;
 pub mod tile;

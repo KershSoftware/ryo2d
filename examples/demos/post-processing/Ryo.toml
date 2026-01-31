@@ -1,0 +1,17 @@
+# Post-Processing Demo - Ryo Engine Project Configuration
+
+[project]
+name = "Post-Processing Effects Demo"
+
+[paths]
+entry_point = "main.rs"
+save_data = "data"
+assets = "assets"
+
+[info]
+show_fps = true
+
+[debug]
+show_colliders = false
+show_velocities = false
+show_origins = false

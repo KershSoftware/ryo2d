@@ -3,13 +3,15 @@
 //! This module provides a renderer that:
 //! 1. Maintains a CPU-side pixel buffer (like a framebuffer)
 //! 2. Uploads it to a GPU texture each frame
-//! 3. Renders the texture to screen with proper letterboxing/scaling
+//! 3. Applies post-processing effects (optional)
+//! 4. Renders the texture to screen with proper letterboxing/scaling
 
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use super::engine::WindowMode;
+use super::shaders::{EffectsManager, PostProcessPipeline};
 
 /// Handles wgpu rendering of a software pixel buffer to screen.
 pub struct WgpuRenderer {
@@ -24,6 +26,7 @@ pub struct WgpuRenderer {
   // Pipeline for rendering texture to screen
   render_pipeline: wgpu::RenderPipeline,
   bind_group: wgpu::BindGroup,
+  bind_group_layout: wgpu::BindGroupLayout,
   // Uniform buffer for viewport transform
   uniform_buffer: wgpu::Buffer,
   // Game resolution
@@ -39,6 +42,8 @@ pub struct WgpuRenderer {
   max_height: Option<u32>,
   // CPU-side pixel buffer (RGBA)
   pixel_buffer: Vec<u8>,
+  // Post-processing pipeline
+  post_process: Option<PostProcessPipeline>,
 }
 
 /// Viewport uniform data sent to shader
@@ -166,7 +171,9 @@ impl WgpuRenderer {
       sample_count: 1,
       dimension: wgpu::TextureDimension::D2,
       format: wgpu::TextureFormat::Rgba8UnormSrgb,
-      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING
+        | wgpu::TextureUsages::COPY_DST
+        | wgpu::TextureUsages::COPY_SRC, // Allow copying from this texture for post-processing
       view_formats: &[],
     });
 
@@ -250,7 +257,7 @@ impl WgpuRenderer {
     // Create shader module
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Fullscreen Quad Shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("shaders/fullscreen_quad.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(include_str!("shaders/core/fullscreen_quad.wgsl").into()),
     });
 
     // Create pipeline layout
@@ -302,6 +309,14 @@ impl WgpuRenderer {
     // Create CPU-side pixel buffer
     let pixel_buffer = vec![0u8; (game_width * game_height * 4) as usize];
 
+    // Create post-process pipeline
+    let post_process = PostProcessPipeline::new(
+      &device,
+      game_width,
+      game_height,
+      wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+
     let mut renderer = WgpuRenderer {
       surface,
       device,
@@ -312,6 +327,7 @@ impl WgpuRenderer {
       sampler,
       render_pipeline,
       bind_group,
+      bind_group_layout,
       uniform_buffer,
       game_width,
       game_height,
@@ -321,6 +337,7 @@ impl WgpuRenderer {
       max_width,
       max_height,
       pixel_buffer,
+      post_process: Some(post_process),
     };
 
     // Initialize viewport transform
@@ -496,6 +513,14 @@ impl WgpuRenderer {
 
   /// Render the pixel buffer to the screen.
   pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    self.render_with_effects(None)
+  }
+
+  /// Render the pixel buffer with post-processing effects.
+  pub fn render_with_effects(
+    &mut self,
+    effects: Option<&EffectsManager>,
+  ) -> Result<(), wgpu::SurfaceError> {
     // Upload pixel buffer to GPU texture
     self.queue.write_texture(
       wgpu::ImageCopyTexture {
@@ -530,8 +555,102 @@ impl WgpuRenderer {
         label: Some("Render Encoder"),
       });
 
-    // Render pass
+    // Check if we have active effects to apply
+    let has_effects = effects.map(|e| e.has_active_effects()).unwrap_or(false);
+
+    // Apply post-processing if we have effects
+    let use_post_process = if has_effects {
+      if let (Some(effects_mgr), Some(post_process)) = (effects, self.post_process.as_mut()) {
+        // Collect active effects
+        let active: Vec<_> = effects_mgr
+          .active_effects()
+          .map(|e| (e, effects_mgr.time()))
+          .collect();
+
+        if !active.is_empty() {
+          // Copy game texture to post-process texture A first
+          encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+              texture: &self.texture,
+              mip_level: 0,
+              origin: wgpu::Origin3d::ZERO,
+              aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+              texture: post_process.texture_a(),
+              mip_level: 0,
+              origin: wgpu::Origin3d::ZERO,
+              aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+              width: self.game_width,
+              height: self.game_height,
+              depth_or_array_layers: 1,
+            },
+          );
+
+          // Apply effects chain
+          let output_buffer =
+            post_process.apply_effects(&self.device, &self.queue, &mut encoder, &active);
+
+          Some(output_buffer)
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+
+    // Final render pass to screen
     {
+      // Create bind group for the appropriate source texture
+      let final_bind_group = if let Some(output_buffer) = use_post_process {
+        let post_process = self.post_process.as_ref().unwrap();
+        let output_view = post_process.get_output_view(output_buffer);
+
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("Post-Process Output Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(output_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        })
+      } else {
+        // Clone isn't available, so recreate the bind group
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("Game Texture Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(&self.texture_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        })
+      };
+
       let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Render Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -549,7 +668,7 @@ impl WgpuRenderer {
       });
 
       render_pass.set_pipeline(&self.render_pipeline);
-      render_pass.set_bind_group(0, &self.bind_group, &[]);
+      render_pass.set_bind_group(0, &final_bind_group, &[]);
       // Draw fullscreen quad (6 vertices, generated in shader)
       render_pass.draw(0..6, 0..1);
     }

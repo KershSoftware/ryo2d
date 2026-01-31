@@ -465,7 +465,11 @@ mod tests {
 
   #[test]
   fn animator_advances_frames() {
-    let frames = vec![mock_sprite_handle(), mock_sprite_handle(), mock_sprite_handle()];
+    let frames = vec![
+      mock_sprite_handle(),
+      mock_sprite_handle(),
+      mock_sprite_handle(),
+    ];
     let anim = Animation::new("test", frames, 0.1);
     let mut animator = Animator::new(anim);
 
@@ -496,8 +500,14 @@ mod tests {
   #[test]
   fn controller_state_changes() {
     let mut controller = AnimationController::new();
-    controller.add_animation("idle", Animation::new("idle", vec![mock_sprite_handle()], 1.0));
-    controller.add_animation("walk", Animation::new("walk", vec![mock_sprite_handle()], 1.0));
+    controller.add_animation(
+      "idle",
+      Animation::new("idle", vec![mock_sprite_handle()], 1.0),
+    );
+    controller.add_animation(
+      "walk",
+      Animation::new("walk", vec![mock_sprite_handle()], 1.0),
+    );
 
     controller.set_state("idle");
     assert_eq!(controller.current_state(), Some("idle"));

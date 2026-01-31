@@ -21,6 +21,7 @@ use super::physics::{PhysicsConfig, RigidBody};
 use super::rapier_physics::RapierPhysicsWorld;
 use super::renderer::WgpuRenderer;
 use super::scene::{Scene, SceneGame};
+use super::shaders::EffectsManager;
 use super::tile::{CompositeTile, GroupedCollider, TileDirection, TiledSprite};
 use super::ui::{BitmapFont, UiContext, create_debug_font};
 
@@ -205,6 +206,8 @@ pub struct Engine {
   assets: AssetManager,
   // Audio manager for sound effects and music
   audio: Option<AudioManager>,
+  // Post-process effects manager
+  effects: EffectsManager,
   // User-defined game logic (Option to allow taking ownership temporarily)
   game: Option<Box<dyn Game>>,
   // Whether init has been called
@@ -353,6 +356,7 @@ impl Engine {
       camera,
       assets,
       audio,
+      effects: EffectsManager::new(),
       game: Some(game),
       initialized: false,
       render_cache: Vec::new(),
@@ -444,6 +448,7 @@ impl Engine {
         input: &self.input,
         assets: &mut self.assets,
         audio: &mut self.audio,
+        effects: &mut self.effects,
         collision_events: self.physics.get_collision_events(),
       };
 
@@ -456,6 +461,9 @@ impl Engine {
       // Mark render cache dirty in case entities were spawned/despawned
       self.render_cache_dirty = true;
     }
+
+    // Update timed post-process effects
+    self.effects.update(_dt);
 
     // Check if physics should be paused
     let physics_paused = self
@@ -877,6 +885,7 @@ impl ApplicationHandler for Engine {
           input: &self.input,
           assets: &mut self.assets,
           audio: &mut self.audio,
+          effects: &mut self.effects,
           collision_events: &[], // No physics events during init
         };
         game.init(&mut ctx);
@@ -989,9 +998,9 @@ impl ApplicationHandler for Engine {
           .unwrap_or(0.0);
         self.render(alpha);
 
-        // Actually draw to screen
+        // Actually draw to screen with post-processing effects
         if let Some(renderer) = &mut self.renderer {
-          match renderer.render() {
+          match renderer.render_with_effects(Some(&self.effects)) {
             Ok(_) => {}
             Err(e) => {
               eprintln!("Render error: {:?}", e);

@@ -183,7 +183,79 @@ Physics Loop:
 │      • Upload CPU pixel buffer to GPU texture                             │
 │      • Draw fullscreen quad with WGSL shader                              │
 │      • Shader applies viewport scaling for letterbox/pillarbox            │
+│      • Apply post-processing effects (if any active)                      │
 └───────────────────────────────────────────────────────────────────────────┘
+```
+
+## Post-Processing Shader System
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                        PostProcessPipeline                                │
+│                                                                           │
+│  Ping-Pong Buffer Architecture:                                           │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │                                                                    │   │
+│  │   Game        Effect 1      Effect 2      Effect N       Final    │   │
+│  │  Texture  ──►  (Fade)   ──►  (CRT)    ──►   ...     ──►  Output   │   │
+│  │     │           │             │             │             │        │   │
+│  │     ▼           ▼             ▼             ▼             ▼        │   │
+│  │  [Copy to]   [Tex A]      [Tex B]       [Tex A/B]     [Screen]    │   │
+│  │   Tex A        ↓             ↓             ↓                      │   │
+│  │              Shader       Shader        Shader                    │   │
+│  │              Pass 1       Pass 2        Pass N                    │   │
+│  │                                                                    │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  Available Effects:                                                       │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  Fade              │  Screen fade to color (scene transitions)    │   │
+│  │  ColorTint         │  Color grading/mood (sepia, night vision)    │   │
+│  │  Vignette          │  Darkened edges (cinematic look)             │   │
+│  │  ScreenFlash       │  One-shot flash with auto-decay (damage)     │   │
+│  │  CRT               │  Scanlines, curvature, RGB offset (retro)    │   │
+│  │  ChromaticAberration │  RGB color fringing (glitch/lens effect)   │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  Key Types:                                                               │
+│  • PostProcessEffect  — Enum of all effect variants with parameters       │
+│  • EffectsManager     — Manages effect stack, timing, convenience API     │
+│  • PostProcessPipeline — GPU resources, ping-pong buffers, rendering      │
+│  • EffectParams       — 64-byte uniform struct for shader parameters      │
+│                                                                           │
+│  Shader Organization:                                                     │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  src/core/shaders/                                                 │   │
+│  │  ├── mod.rs            (exports, shader embedding)                 │   │
+│  │  ├── effects.rs        (PostProcessEffect enum, EffectParams)      │   │
+│  │  ├── manager.rs        (EffectsManager, convenience API)           │   │
+│  │  ├── pipeline.rs       (PostProcessPipeline, GPU resources)        │   │
+│  │  ├── core/             (vertex shaders)                            │   │
+│  │  │   └── fullscreen_quad.wgsl                                      │   │
+│  │  └── post-process/     (fragment shaders, one per effect)          │   │
+│  │      ├── fade.wgsl                                                 │   │
+│  │      ├── color_tint.wgsl                                           │   │
+│  │      ├── vignette.wgsl                                             │   │
+│  │      ├── screen_flash.wgsl                                         │   │
+│  │      ├── crt.wgsl                                                  │   │
+│  │      └── chromatic_aberration.wgsl                                 │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────────────────────┘
+
+Usage:
+  fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+      // Persistent effects
+      ctx.effects.set_vignette(0.3);
+      ctx.effects.set_crt(0.2, 0.01, 0.001);
+      
+      // Timed effects (auto-decay)
+      if player_hit {
+          ctx.effects.flash(Color::RED, Duration::from_millis(150));
+      }
+      
+      // Scene transitions
+      ctx.effects.set_fade(self.fade_progress);
+  }
 ```
 
 ## Input Flow

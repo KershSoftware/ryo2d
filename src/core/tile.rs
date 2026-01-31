@@ -311,15 +311,30 @@ impl CompositeTile {
       let (part_min_x, part_min_y, part_max_x, part_max_y) = match &part.tiling {
         Some((TileDirection::Up, _)) => {
           // Tiling upward: part extends from offset_y - h to offset_y
-          (part.offset_x, part.offset_y - h, part.offset_x + w, part.offset_y)
+          (
+            part.offset_x,
+            part.offset_y - h,
+            part.offset_x + w,
+            part.offset_y,
+          )
         }
         Some((TileDirection::Left, _)) => {
           // Tiling leftward: part extends from offset_x - w to offset_x
-          (part.offset_x - w, part.offset_y, part.offset_x, part.offset_y + h)
+          (
+            part.offset_x - w,
+            part.offset_y,
+            part.offset_x,
+            part.offset_y + h,
+          )
         }
         _ => {
           // Static, Down, or Right: part extends from offset to offset + size
-          (part.offset_x, part.offset_y, part.offset_x + w, part.offset_y + h)
+          (
+            part.offset_x,
+            part.offset_y,
+            part.offset_x + w,
+            part.offset_y + h,
+          )
         }
       };
 
@@ -470,13 +485,17 @@ impl CompositeTileBuilder {
 
   /// Add a static cap/header part
   pub fn cap(mut self, sprite: SpriteHandle, offset_x: f32, offset_y: f32) -> Self {
-    self.parts.push(TilePart::static_part(sprite, offset_x, offset_y));
+    self
+      .parts
+      .push(TilePart::static_part(sprite, offset_x, offset_y));
     self
   }
 
   /// Add a static cap/header part with vertical flip
   pub fn cap_flipped_y(mut self, sprite: SpriteHandle, offset_x: f32, offset_y: f32) -> Self {
-    self.parts.push(TilePart::static_part(sprite, offset_x, offset_y).with_flip_y(true));
+    self
+      .parts
+      .push(TilePart::static_part(sprite, offset_x, offset_y).with_flip_y(true));
     self
   }
 
@@ -522,6 +541,7 @@ impl CompositeTileBuilder {
   }
 
   /// Add a tiled body part with specified flip options
+  #[allow(clippy::too_many_arguments)]
   pub fn body_tiled_flipped(
     mut self,
     sprite: SpriteHandle,
@@ -665,7 +685,13 @@ mod tests {
 
     let composite = CompositeTile::new()
       .add_part(TilePart::static_part(cap, 0.0, 0.0))
-      .add_part(TilePart::tiled_part(body, 0.0, 16.0, TileDirection::Down, 64.0));
+      .add_part(TilePart::tiled_part(
+        body,
+        0.0,
+        16.0,
+        TileDirection::Down,
+        64.0,
+      ));
 
     let (min_x, min_y, max_x, max_y) = composite.bounds();
     assert_eq!(min_x, 0.0);
@@ -686,7 +712,13 @@ mod tests {
     // Cap at bottom, body extends upward
     let composite = CompositeTile::new()
       .add_part(TilePart::static_part(cap, 0.0, 0.0))
-      .add_part(TilePart::tiled_part(body, 0.0, 0.0, TileDirection::Up, 64.0));
+      .add_part(TilePart::tiled_part(
+        body,
+        0.0,
+        0.0,
+        TileDirection::Up,
+        64.0,
+      ));
 
     let (min_x, min_y, max_x, max_y) = composite.bounds();
     assert_eq!(min_x, 0.0);
@@ -702,7 +734,13 @@ mod tests {
 
     let composite = CompositeTile::new()
       .add_part(TilePart::static_part(cap, 0.0, 0.0))
-      .add_part(TilePart::tiled_part(body, 0.0, 16.0, TileDirection::Down, 64.0));
+      .add_part(TilePart::tiled_part(
+        body,
+        0.0,
+        16.0,
+        TileDirection::Down,
+        64.0,
+      ));
 
     let collider = GroupedCollider::from_composite(&composite);
     assert_eq!(collider.width, 32.0);

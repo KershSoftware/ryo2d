@@ -9,6 +9,7 @@ use super::camera::Camera;
 use super::ecs::World;
 use super::input::InputState;
 use super::rapier_physics::PhysicsCollisionEvent;
+use super::shaders::EffectsManager;
 use super::ui::UiContext;
 
 /// Context passed to game callbacks, providing access to engine systems.
@@ -26,6 +27,8 @@ pub struct GameContext<'a> {
   pub assets: &'a mut AssetManager,
   /// Audio manager for sound effects and music (None if audio unavailable)
   pub audio: &'a mut Option<AudioManager>,
+  /// Post-process effects manager for screen-wide visual effects
+  pub effects: &'a mut EffectsManager,
   /// Collision events from the last physics step.
   ///
   /// **Note:** This includes BOTH `Started` and `Stopped` events.

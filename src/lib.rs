@@ -119,6 +119,9 @@ pub mod prelude {
   // UI system
   pub use crate::core::ui::{Anchor, BitmapFont, Color, Rect, UiContext, create_debug_font};
 
+  // Post-processing effects
+  pub use crate::core::shaders::{EffectTarget, EffectsManager, PostProcessEffect};
+
   // Error types (centralized)
   pub use crate::core::error::{
     AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,

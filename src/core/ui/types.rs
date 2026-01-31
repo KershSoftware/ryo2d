@@ -82,6 +82,16 @@ impl Color {
   pub const XP_GOLD: Self = Self::rgb(255, 200, 50);
   pub const PANEL_BG: Self = Self::new(20, 20, 30, 200);
   pub const PANEL_BORDER: Self = Self::rgb(80, 80, 100);
+
+  /// Convert to normalized RGBA (0.0-1.0 range) for shader uniforms.
+  pub fn to_normalized(self) -> [f32; 4] {
+    [
+      self.r as f32 / 255.0,
+      self.g as f32 / 255.0,
+      self.b as f32 / 255.0,
+      self.a as f32 / 255.0,
+    ]
+  }
 }
 
 // ============================================================================

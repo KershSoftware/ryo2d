@@ -119,10 +119,7 @@ impl<'a> UiContext<'a> {
     // Top
     self.draw_rect(Rect::new(rect.x, rect.y, rect.width, t), color);
     // Bottom
-    self.draw_rect(
-      Rect::new(rect.x, rect.bottom() - t, rect.width, t),
-      color,
-    );
+    self.draw_rect(Rect::new(rect.x, rect.bottom() - t, rect.width, t), color);
     // Left
     self.draw_rect(
       Rect::new(rect.x, rect.y + t, t, rect.height - t * 2.0),
@@ -350,7 +347,13 @@ impl<'a> UiContext<'a> {
 
   /// Draw a sprite at the given position.
   pub fn draw_sprite(&mut self, sprite: &crate::core::sprite::Sprite, x: f32, y: f32) {
-    sprite.draw(self.frame, self.frame_width, self.frame_height, x as i32, y as i32);
+    sprite.draw(
+      self.frame,
+      self.frame_width,
+      self.frame_height,
+      x as i32,
+      y as i32,
+    );
   }
 
   /// Draw a sprite scaled uniformly.
@@ -374,7 +377,13 @@ impl<'a> UiContext<'a> {
   /// Draw a sprite handle at the given position.
   pub fn draw_sprite_handle(&mut self, handle: &crate::core::asset::SpriteHandle, x: f32, y: f32) {
     handle.with_sprite(|sprite| {
-      sprite.draw(self.frame, self.frame_width, self.frame_height, x as i32, y as i32);
+      sprite.draw(
+        self.frame,
+        self.frame_width,
+        self.frame_height,
+        x as i32,
+        y as i32,
+      );
     });
   }
 
@@ -418,14 +427,9 @@ impl<'a> UiContext<'a> {
     let hover_color = Color::rgb(200, 220, 255);
 
     let mouse_pos = self.input.mouse_position();
-    
+
     // Expand interaction area vertically for easier clicking
-    let interaction_rect = Rect::new(
-      rect.x,
-      rect.y - 10.0,
-      rect.width,
-      rect.height + 20.0,
-    );
+    let interaction_rect = Rect::new(rect.x, rect.y - 10.0, rect.width, rect.height + 20.0);
     let mouse_in_interaction = interaction_rect.contains(mouse_pos.0, mouse_pos.1);
 
     // Calculate handle position
@@ -449,7 +453,7 @@ impl<'a> UiContext<'a> {
       let new_normalized = (mouse_x - rect.x) / rect.width;
       let new_value = min + new_normalized * (max - min);
       let clamped_value = new_value.clamp(min, max);
-      
+
       if (*value - clamped_value).abs() > 0.001 {
         *value = clamped_value;
         changed = true;
