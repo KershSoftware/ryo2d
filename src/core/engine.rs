@@ -237,6 +237,10 @@ pub struct Engine {
 }
 
 impl Engine {
+  // =============================================================================
+  // Coordinate Transformations & Utilities
+  // =============================================================================
+
   /// Transform window coordinates to game coordinates.
   ///
   /// Handles scaling and letterboxing when window size differs from game resolution.
@@ -379,6 +383,10 @@ impl Engine {
     }
   }
 
+  // =============================================================================
+  // Main Loop
+  // =============================================================================
+
   /// Run the engine
   pub fn run(mut self) -> EngineResult<()> {
     println!("Initializing {}...", self.config.title);
@@ -391,6 +399,10 @@ impl Engine {
       .run_app(&mut self)
       .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))
   }
+
+  // =============================================================================
+  // Update System - Game Logic & Physics
+  // =============================================================================
 
   /// Fixed timestep update - called multiple times per frame if needed
   ///
@@ -406,7 +418,7 @@ impl Engine {
       }
     }
 
-    // === Animation System ===
+    // --- Animation System ---
     // Update all Animator components
     for entity in self.world.entities_with::<Animator>() {
       if let Some(mut animator) = self.world.get_component_mut::<Animator>(entity) {
@@ -447,6 +459,7 @@ impl Engine {
       }
     }
 
+    // --- Game Logic Update ---
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
       // Create context for the game with collision events from last physics step
@@ -470,15 +483,17 @@ impl Engine {
       self.render_cache_dirty = true;
     }
 
-    // === Hierarchy Transform Propagation ===
+    // --- Hierarchy Transform Propagation ---
     // Update world transforms for all entities with parent-child relationships.
     // This must happen after user update (so local transforms are set) and
     // before rendering (so WorldTransform is current).
     self.world.propagate_transforms();
 
+    // --- Post-Process Effects ---
     // Update timed post-process effects
     self.effects.update(_dt);
 
+    // --- Physics System (Rapier2D) ---
     // Check if physics should be paused
     let physics_paused = self
       .game
@@ -486,7 +501,6 @@ impl Engine {
       .map(|g| g.is_physics_paused())
       .unwrap_or(false);
 
-    // === Physics System (Rapier2D) ===
     // Skip physics simulation if game requests pause
     if physics_paused {
       return;
@@ -573,6 +587,10 @@ impl Engine {
     self.physics.sync_to_ecs(&mut self.world);
   }
 
+  // =============================================================================
+  // Render System - CPU & GPU Drawing
+  // =============================================================================
+
   /// Render the current frame
   ///
   /// This is the "Render System" - it draws all entities with Transform + Renderable
@@ -598,7 +616,7 @@ impl Engine {
       pixel[3] = 0xff;
     }
 
-    // === Render System: Draw all entities with Transform + Renderable ===
+    // --- Rebuild Render Cache (if dirty) ---
     // Rebuild render cache if dirty (entities added/removed or z_order changed)
     if self.render_cache_dirty {
       self.renderable_cache.clear();
@@ -612,6 +630,7 @@ impl Engine {
       self.render_cache_dirty = false;
     }
 
+    // --- Render All Entities (CPU Path) ---
     for &(entity, _) in &self.renderable_cache {
       let Some(renderable) = self.world.get_component::<Renderable>(entity) else {
         continue;
@@ -857,7 +876,7 @@ impl Engine {
       }
     }
 
-    // === Debug Rendering ===
+    // --- Debug Overlays ---
     if self.config.debug.show_colliders {
       debug::render_colliders(frame, frame_width, frame_height, &self.world, &self.camera);
     }
@@ -868,7 +887,7 @@ impl Engine {
       debug::render_origins(frame, frame_width, frame_height, &self.world, &self.camera);
     }
 
-    // === UI Rendering ===
+    // --- UI & FPS Counter ---
     // Call game's render_ui with UiContext for immediate-mode UI
     if let Some(mut game) = self.game.take() {
       let mut ui_ctx = UiContext::new(frame, frame_width, frame_height, &self.input, &self.ui_font);
@@ -885,7 +904,7 @@ impl Engine {
       self.game = Some(game);
     }
 
-    // === Apply screen overlay (for transitions) ===
+    // --- Screen Overlay (for transitions) ---
     if let Some(game) = &self.game
       && let Some((alpha, color)) = game.get_overlay()
       && alpha > 0.001
@@ -913,6 +932,10 @@ fn blend_overlay(frame: &mut [u8], color: [u8; 4], alpha: f32) {
     // pixel[3] (alpha) stays unchanged
   }
 }
+
+// =============================================================================
+// Window Event Handler
+// =============================================================================
 
 impl ApplicationHandler for Engine {
   fn resumed(&mut self, event_loop: &ActiveEventLoop) {
