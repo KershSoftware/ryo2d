@@ -1,0 +1,8 @@
+[package]
+name = "ui-demo"
+version = "0.1.0"
+edition = "2021"
+description = "UI system demonstration for Ryo2D engine"
+
+[dependencies]
+ryo2d = { path = "../../.." }

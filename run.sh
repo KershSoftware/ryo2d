@@ -20,6 +20,7 @@ COMMAND="${1:-}"
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 WHITE='\033[1;37m'
 GRAY='\033[0;90m'
 YELLOW='\033[1;33m'
@@ -103,24 +104,32 @@ get_display_names() {
 run_example() {
     local example_name="$1"
     local example_path="$SCRIPT_DIR/examples/$example_name"
+    local base_name=$(basename "$example_name")
     echo ""
     echo -e "${CYAN}Running example: $example_name${NC}"
     echo -e "${GRAY}  Path: $example_path${NC}"
-    echo ""
-    
+
     # Save current directory and move to example directory
     local original_dir="$(pwd)"
     cd "$example_path"
-    
-    # Build and run the game
-    echo -e "${YELLOW}Building...${NC}"
-    if cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- build; then
-        echo -e "${YELLOW}Running...${NC}"
-        cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- run || true
+
+    # Use dev mode for ui-demo (enables hot-reload), release for others
+    if [[ "$base_name" == "ui-demo" ]]; then
+        echo -e "${MAGENTA}  Mode: Development (hot-reload enabled)${NC}"
+        echo ""
+        cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- dev || true
     else
-        echo -e "${RED}Build failed!${NC}"
+        echo ""
+        # Build and run the game
+        echo -e "${YELLOW}Building...${NC}"
+        if cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- build; then
+            echo -e "${YELLOW}Running...${NC}"
+            cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- run || true
+        else
+            echo -e "${RED}Build failed!${NC}"
+        fi
     fi
-    
+
     cd "$original_dir"
 }
 

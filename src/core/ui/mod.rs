@@ -1,53 +1,80 @@
-//! Basic UI System
+//! Hybrid UI System
 //!
-//! Provides immediate-mode inspired UI for HUD elements, text rendering, and simple widgets.
+//! A two-layer UI system combining immediate-mode and retained-mode approaches:
 //!
-//! # Overview
+//! - **Immediate mode** (`immediate/`): Stateless, per-frame drawing for HUDs and debug overlays
+//! - **Retained mode** (`retained/`): Stateful widgets with layout containers for complex UIs
+//! - **Theme system** (`theme.rs`): Centralized styling with hot-reload support
 //!
-//! This module provides a minimal but functional UI system for game HUDs and debug overlays.
-//! It uses an immediate-mode inspired design where you call draw functions each frame - no
-//! persistent widget state is stored.
+//! # Architecture
 //!
-//! # Features
+//! ```text
+//! ┌─────────────────────────────────────────────────────────┐
+//! │              Game Code (render_ui callback)             │
+//! ├─────────────────────────────────────────────────────────┤
+//! │   Retained Mode Layer                                   │
+//! │   ├─ Layout Containers (HBox, VBox, Stack)              │
+//! │   ├─ Stateful Widgets (TextInput, Dropdown, ScrollView) │
+//! │   └─ Automatic state management                         │
+//! ├─────────────────────────────────────────────────────────┤
+//! │   Immediate Mode Layer                                  │
+//! │   ├─ UiContext drawing API                              │
+//! │   ├─ Stateless widgets (Button, Label, ProgressBar)     │
+//! │   └─ Direct frame buffer rendering                      │
+//! ├─────────────────────────────────────────────────────────┤
+//! │   Theme System                                          │
+//! │   ├─ Widget styles (colors, spacing, borders)           │
+//! │   └─ Hot-reload from RON files                          │
+//! └─────────────────────────────────────────────────────────┘
+//! ```
 //!
-//! - **Text rendering** via bitmap fonts (fixed-width initially)
-//! - **Shapes**: rectangles, bordered panels, progress bars
-//! - **Positioning**: screen-space coordinates with optional anchoring
-//! - **Input**: click detection for simple buttons/regions
+//! # When to Use Each Mode
+//!
+//! ## Immediate Mode
+//! - Simple HUDs (health bars, score displays)
+//! - Debug overlays
+//! - Dynamic UI that changes frequently
+//! - Prototyping
+//!
+//! ## Retained Mode (coming soon)
+//! - Complex forms with text input
+//! - Menus with many options
+//! - Inventory screens
+//! - Settings screens
 //!
 //! # Example
 //!
 //! ```ignore
 //! fn render_ui(&mut self, ui: &mut UiContext) {
-//!     // Draw a health bar
+//!     // Immediate mode: draw directly
 //!     ui.draw_progress_bar(
 //!         Rect::new(10.0, 10.0, 200.0, 20.0),
 //!         self.health / 100.0,
-//!         Color::RED,
+//!         Color::HEALTH_RED,
 //!         Color::DARK_GRAY,
 //!     );
 //!
-//!     // Draw score text
-//!     ui.draw_text(&format!("Score: {}", self.score), 10.0, 40.0, Color::WHITE);
-//!
-//!     // Draw a button
+//!     // Button returns true when clicked
 //!     if ui.button("Pause", Rect::new(700.0, 10.0, 80.0, 30.0)) {
 //!         self.paused = true;
 //!     }
 //! }
 //! ```
-//!
-//! # Module Structure
-//!
-//! - Basic types: `Color`, `Rect`, `Anchor`
-//! - Bitmap font rendering: `BitmapFont`, `create_debug_font`
-//! - Immediate-mode drawing API: `UiContext`
 
-mod context;
-mod font;
+// Submodules
+pub mod immediate;
+pub mod retained;
+pub mod theme;
 mod types;
 
-// Re-export all public types at the module root
-pub use context::UiContext;
-pub use font::{BitmapFont, create_debug_font};
+// Re-export core types at module root for convenience
 pub use types::{Anchor, Color, Rect};
+
+// Re-export immediate mode API (most commonly used)
+pub use immediate::{BitmapFont, UiContext, create_debug_font};
+
+// Re-export theme types
+pub use theme::{
+    ButtonStyle, CheckboxStyle, HotReloadTheme, LabelStyle, PanelStyle, ProgressBarStyle,
+    ScrollbarStyle, SliderStyle, TextInputStyle, Theme, ThemeError, ToggleStyle, TooltipStyle,
+};

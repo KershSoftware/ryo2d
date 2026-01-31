@@ -81,27 +81,34 @@ function Run-Example {
         [string]$ExampleName,
         [string]$ExamplePath
     )
-    
+
     Write-Host ""
     Write-Host "Running example: $ExampleName" -ForegroundColor Cyan
     Write-Host "  Path: $ExamplePath" -ForegroundColor DarkGray
-    Write-Host ""
-    
+
     # Save current directory and move to example directory
     $originalDir = Get-Location
     Set-Location $ExamplePath
-    
+
     try {
-        # Build the game
-        Write-Host "Building..." -ForegroundColor Yellow
-        & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- build
-        
-        if ($LASTEXITCODE -eq 0) {
-            # Run the built game
-            Write-Host "Running..." -ForegroundColor Yellow
-            & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- run
+        # Use dev mode for ui-demo (enables hot-reload), release for others
+        if ($ExampleName -eq "ui-demo") {
+            Write-Host "  Mode: Development (hot-reload enabled)" -ForegroundColor Magenta
+            Write-Host ""
+            & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- dev
         } else {
-            Write-Host "Build failed!" -ForegroundColor Red
+            Write-Host ""
+            # Build the game
+            Write-Host "Building..." -ForegroundColor Yellow
+            & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- build
+
+            if ($LASTEXITCODE -eq 0) {
+                # Run the built game
+                Write-Host "Running..." -ForegroundColor Yellow
+                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- run
+            } else {
+                Write-Host "Build failed!" -ForegroundColor Red
+            }
         }
     }
     finally {
