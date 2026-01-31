@@ -30,62 +30,72 @@ get_examples() {
     local display_names=()
     
     if [[ -d "$SCRIPT_DIR/examples" ]]; then
-        for dir in "$SCRIPT_DIR/examples"/*/; do
-            if [[ -d "$dir" ]]; then
-                local name=$(basename "$dir")
-                local main_rs="$dir/main.rs"
-                
-                # Check for config file (case-insensitive)
-                local ryo_toml=$(find "$dir" -maxdepth 1 -iname "ryo.toml" -type f | head -1)
-                
-                # Check if it's a valid example (has main.rs)
-                if [[ -f "$main_rs" ]]; then
-                    local display_name="$name"
-                    
-                    # Try to read project name from Ryo.toml
-                    if [[ -n "$ryo_toml" ]]; then
-                        local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
-                        if [[ -n "$parsed_name" ]]; then
-                            display_name="$parsed_name"
+        # Search in both demos/ and games/ subdirectories
+        for category in "demos" "games"; do
+            local category_path="$SCRIPT_DIR/examples/$category"
+            if [[ -d "$category_path" ]]; then
+                for dir in "$category_path"/*/; do
+                    if [[ -d "$dir" ]]; then
+                        local name=$(basename "$dir")
+                        local main_rs="$dir/main.rs"
+                        
+                        # Check for config file (case-insensitive)
+                        local ryo_toml=$(find "$dir" -maxdepth 1 -iname "ryo.toml" -type f | head -1)
+                        
+                        # Check if it's a valid example (has main.rs)
+                        if [[ -f "$main_rs" ]]; then
+                            local display_name="$name"
+                            
+                            # Try to read project name from Ryo.toml
+                            if [[ -n "$ryo_toml" ]]; then
+                                local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
+                                if [[ -n "$parsed_name" ]]; then
+                                    display_name="$parsed_name"
+                                fi
+                            fi
+                            
+                            # Output: category/name
+                            echo "$category/$name"
                         fi
                     fi
-                    
-                    examples+=("$name")
-                    display_names+=("$display_name")
-                fi
+                done
             fi
         done
     fi
-    
-    # Export as newline-separated strings
-    printf '%s\n' "${examples[@]}"
 }
 
 get_display_names() {
     if [[ -d "$SCRIPT_DIR/examples" ]]; then
-        for dir in "$SCRIPT_DIR/examples"/*/; do
-            if [[ -d "$dir" ]]; then
-                local name=$(basename "$dir")
-                local main_rs="$dir/main.rs"
-                
-                # Check for config file (case-insensitive)
-                local ryo_toml=$(find "$dir" -maxdepth 1 -iname "ryo.toml" -type f | head -1)
-                
-                if [[ -f "$main_rs" ]]; then
-                    local display_name="$name"
-                    
-                    if [[ -n "$ryo_toml" ]]; then
-                        local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
-                        if [[ -n "$parsed_name" ]]; then
-                            display_name="$parsed_name"
+        # Search in both demos/ and games/ subdirectories
+        for category in "demos" "games"; do
+            local category_path="$SCRIPT_DIR/examples/$category"
+            if [[ -d "$category_path" ]]; then
+                for dir in "$category_path"/*/; do
+                    if [[ -d "$dir" ]]; then
+                        local name=$(basename "$dir")
+                        local main_rs="$dir/main.rs"
+                        
+                        # Check for config file (case-insensitive)
+                        local ryo_toml=$(find "$dir" -maxdepth 1 -iname "ryo.toml" -type f | head -1)
+                        
+                        if [[ -f "$main_rs" ]]; then
+                            local display_name="$name"
+                            
+                            if [[ -n "$ryo_toml" ]]; then
+                                local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
+                                if [[ -n "$parsed_name" ]]; then
+                                    display_name="$parsed_name"
+                                fi
+                            fi
+                            
+                            echo "$display_name"
                         fi
                     fi
-                    
-                    echo "$display_name"
-                fi
+                done
             fi
-        done
-    fi
+        donepath_with_category="$1"
+    local example_name=$(basename "$example_path_with_category")
+    local example_path="$SCRIPT_DIR/examples/$example_path_with_category
 }
 
 # Function to run an example (from its own directory as a standalone project)
@@ -107,8 +117,8 @@ run_example() {
     cd "$original_dir"
 }
 
-# Function to show interactive example selection
-show_example_menu() {
+# Function to show category selection menu
+show_category_menu() {
     local examples=()
     local display_names=()
     
@@ -127,46 +137,149 @@ show_example_menu() {
         exit 1
     fi
     
-    # Auto-select if only one example
-    if [[ $count -eq 1 ]]; then
-        echo -e "${GREEN}Auto-selecting only example: ${display_names[0]}${NC}"
-        run_example "${examples[0]}"
+    # Separate examples into demos and games
+    local demos=()
+    local games=()
+    local demos_display=()
+    local games_display=()
+    
+    for ((i=0; i<count; i++)); do
+        local example="${examples[$i]}"
+        local display="${display_names[$i]}"
+        if [[ "$example" == demos/* ]]; then
+            demos+=("$example")
+            demos_display+=("$display")
+        else
+            games+=("$example")
+            games_display+=("$display")
+        fi
+    done
+    
+    # Check if we have both categories
+    local has_games=$([[ ${#games[@]} -gt 0 ]] && echo "true" || echo "false")
+    local has_demos=$([[ ${#demos[@]} -gt 0 ]] && echo "true" || echo "false")
+    
+    # If only one category exists, skip to that category
+    if [[ "$has_games" == "true" && "$has_demos" == "false" ]]; then
+        show_example_list games "${games[@]}" -- "${games_display[@]}"
+        return
+    fi
+    if [[ "$has_demos" == "true" && "$has_games" == "false" ]]; then
+        show_example_list demos "${demos[@]}" -- "${demos_display[@]}"
         return
     fi
     
+    # Show category selection
     echo ""
     echo -e "${CYAN}=== Ryo2D Examples ===${NC}"
     echo ""
-    
-    for ((i=0; i<count; i++)); do
-        local num=$((i + 1))
-        echo -e "  ${WHITE}[$num] ${display_names[$i]}${NC}"
-    done
-    
+    echo -e "  ${WHITE}[1] Games${NC}"
+    echo -e "  ${WHITE}[2] Demos${NC}"
     echo ""
     echo -e "  ${GRAY}[q] Quit${NC}"
     echo ""
     
-    read -p "Select an example: " selection
+    echo -n "Select a category: "
+    read -n 1 -r selection
+    echo ""
+    echo ""
     
-    if [[ "$selection" == "q" || "$selection" == "Q" ]]; then
-        echo -e "${GRAY}Exiting.${NC}"
-        exit 0
-    fi
+    case "$selection" in
+        1)
+            show_example_list games "${games[@]}" -- "${games_display[@]}"
+            ;;
+        2)
+            show_example_list demos "${demos[@]}" -- "${demos_display[@]}"
+            ;;
+        *)
+            echo -e "${GRAY}Exiting.${NC}"
+            exit 0
+            ;;
+    esac
+}
+
+# Function to show examples within a category
+show_example_list() {
+    local category_name="$1"
+    shift
     
-    local index=$((selection - 1))
-    if [[ $index -ge 0 && $index -lt $count ]]; then
-        run_example "${examples[$index]}"
-    else
-        echo -e "${RED}Invalid selection.${NC}"
+    local category_examples=()
+    local category_display=()
+    local reading_examples=true
+    
+    for arg in "$@"; do
+        if [[ "$arg" == "--" ]]; then
+            reading_examples=false
+            continue
+        fi
+        if [[ "$reading_examples" == "true" ]]; then
+            category_examples+=("$arg")
+        else
+            category_display+=("$arg")
+        fi
+    done
+    
+    local count=${#category_examples[@]}
+    
+    if [[ $count -eq 0 ]]; then
+        echo -e "${RED}No examples found in $category_name.${NC}"
         exit 1
     fi
+    
+    # Auto-select if only one example
+    if [[ $count -eq 1 ]]; then
+        echo -e "${GREEN}Auto-selecting only example: ${category_display[0]}${NC}"
+        run_example "${category_examples[0]}"
+        return
+    fi
+    
+    # Capitalize category name for display
+    local display_name="$(tr '[:lower:]' '[:upper:]' <<< ${category_name:0:1})${category_name:1}"
+    
+    echo ""
+    echo -e "${CYAN}=== $display_name ===${NC}"
+    echo ""
+    
+    for ((i=0; i<count; i++)); do
+        local num=$((i + 1))
+        echo -e "  ${WHITE}[$num] ${category_display[$i]}${NC}"
+    done
+    
+    echo ""
+    echo -e "  ${GRAY}[b] Back${NC}"
+    echo -e "  ${GRAY}[q] Quit${NC}"
+    echo ""
+    
+    echo -n "Select an example: "
+    read -n 1 -r selection
+    echo ""
+    echo ""
+    
+    case "$selection" in
+        b|B)
+            show_category_menu
+            return
+            ;;
+        *)
+            # Try to use as number
+            if [[ "$selection" =~ ^[0-9]+$ ]]; then
+                local index=$((selection - 1))
+                if [[ $index -ge 0 && $index -lt $count ]]; then
+                    run_example "${category_examples[$index]}"
+                    return
+                fi
+            fi
+            # Any other input (including 'q' or invalid) quits
+            echo -e "${GRAY}Exiting.${NC}"
+            exit 0
+            ;;
+    esac
 }
 
 # Execute the appropriate command
 case "$COMMAND" in
     "")
-        show_example_menu
+        show_category_menu
         ;;
     check)
         cargo check
@@ -178,19 +291,21 @@ case "$COMMAND" in
         cargo test
         ;;
     watch)
-        # Watch mode - runs first example by default
-        mapfile -t examples < <(get_examples)
-        if [[ ${#examples[@]} -gt 0 ]]; then
-            local example_name="${examples[0]}"
-            local example_path="$SCRIPT_DIR/examples/$example_name"
-            echo -e "${CYAN}Watching example: $example_name (Ctrl+C to stop)${NC}"
-            echo -e "${GRAY}  Path: $example_path${NC}"
-            cd "$example_path"
-            cargo watch -c -x run
-        else
-            echo -e "${RED}No examples found.${NC}"
-            exit 1
-        fi
+        # Wa# Match both "demos/example" and just "example"
+            local base_name=$(basename "$example")
+            if [[ "$example" == "$COMMAND" || "$base_name" == "$COMMAND" ]]; then
+                run_example "$example"
+                found=true
+                break
+            fi
+        done
+        
+        if [[ "$found" == false ]]; then
+            echo -e "${RED}Unknown command or example: $COMMAND${NC}"
+            echo ""
+            echo -e "${YELLOW}Available examples:${NC}"
+            for example in "${examples[@]}"; do
+                echo "  - $(basename "$example")
         ;;
     help)
         echo ""

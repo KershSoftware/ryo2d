@@ -32,31 +32,39 @@ function Get-Examples {
     $examplesDir = Join-Path $PSScriptRoot "examples"
     
     if (Test-Path $examplesDir) {
-        Get-ChildItem -Path $examplesDir -Directory | ForEach-Object {
-            # Check for config file (case-insensitive)
-            $ryoToml = Get-ChildItem -Path $_.FullName -Filter "*.toml" | 
-            Where-Object { $_.Name -ieq "Ryo.toml" } | 
-            Select-Object -First 1 -ExpandProperty FullName
-            
-            $mainRs = Join-Path $_.FullName "main.rs"
-            
-            # Check if it's a valid example (has main.rs)
-            if (Test-Path $mainRs) {
-                $name = $_.Name
-                $displayName = $name
-                
-                # Try to read project name from Ryo.toml
-                if (Test-Path $ryoToml) {
-                    $content = Get-Content $ryoToml -Raw
-                    if ($content -match 'name\s*=\s*"([^"]+)"') {
-                        $displayName = $matches[1]
+        # Search in both demos/ and games/ subdirectories
+        $categories = @("demos", "games")
+        foreach ($category in $categories) {
+            $categoryPath = Join-Path $examplesDir $category
+            if (Test-Path $categoryPath) {
+                Get-ChildItem -Path $categoryPath -Directory | ForEach-Object {
+                    # Check for config file (case-insensitive)
+                    $ryoToml = Get-ChildItem -Path $_.FullName -Filter "*.toml" | 
+                    Where-Object { $_.Name -ieq "Ryo.toml" } | 
+                    Select-Object -First 1 -ExpandProperty FullName
+                    
+                    $mainRs = Join-Path $_.FullName "main.rs"
+                    
+                    # Check if it's a valid example (has main.rs)
+                    if (Test-Path $mainRs) {
+                        $name = $_.Name
+                        $displayName = $name
+                        
+                        # Try to read project name from Ryo.toml
+                        if (Test-Path $ryoToml) {
+                            $content = Get-Content $ryoToml -Raw
+                            if ($content -match 'name\s*=\s*"([^"]+)"') {
+                                $displayName = $matches[1]
+                            }
+                        }
+                        
+                        $examples += [PSCustomObject]@{
+                            Name        = $name
+                            Category    = $category
+                            DisplayName = $displayName
+                            Path        = $_.FullName
+                        }
                     }
-                }
-                
-                $examples += [PSCustomObject]@{
-                    Name        = $name
-                    DisplayName = $displayName
-                    Path        = $_.FullName
                 }
             }
         }
@@ -92,8 +100,8 @@ function Run-Example {
     }
 }
 
-# Function to show interactive example selection
-function Show-ExampleMenu {
+# Function to show category selection menu
+function Show-CategoryMenu {
     $examples = Get-Examples
     
     if ($examples.Count -eq 0) {
@@ -101,47 +109,112 @@ function Show-ExampleMenu {
         exit 1
     }
     
-    # Auto-select if only one example
-    if ($examples.Count -eq 1) {
-        Write-Host "Auto-selecting only example: $($examples[0].DisplayName)" -ForegroundColor Green
-        Run-Example $examples[0].Name $examples[0].Path
+    # Group examples by category
+    $demos = $examples | Where-Object { $_.Category -eq "demos" }
+    $games = $examples | Where-Object { $_.Category -eq "games" }
+    
+    # Check if we have both categories
+    $hasGames = $games.Count -gt 0
+    $hasDemos = $demos.Count -gt 0
+    
+    # If only one category exists, skip to that category
+    if ($hasGames -and -not $hasDemos) {
+        Show-ExampleList $games "Games"
+        return
+    }
+    if ($hasDemos -and -not $hasGames) {
+        Show-ExampleList $demos "Demos"
         return
     }
     
+    # Show category selection
     Write-Host ""
     Write-Host "=== Ryo2D Examples ===" -ForegroundColor Cyan
     Write-Host ""
-    
-    for ($i = 0; $i -lt $examples.Count; $i++) {
-        $num = $i + 1
-        Write-Host "  [$num] $($examples[$i].DisplayName)" -ForegroundColor White
-    }
-    
+    Write-Host "  [1] Games" -ForegroundColor White
+    Write-Host "  [2] Demos" -ForegroundColor White
     Write-Host ""
     Write-Host "  [q] Quit" -ForegroundColor DarkGray
     Write-Host ""
     
-    $selection = Read-Host "Select an example"
+    Write-Host "Select a category: " -NoNewline
+    $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    $selection = $key.Character
+    Write-Host $selection
+    Write-Host ""
     
-    if ($selection -eq "q" -or $selection -eq "Q") {
-        Write-Host "Exiting." -ForegroundColor DarkGray
-        exit 0
+    switch ($selection) {
+        "1" { Show-ExampleList $games "Games" }
+        "2" { Show-ExampleList $demos "Demos" }
+        default {
+            Write-Host "Exiting." -ForegroundColor DarkGray
+            exit 0
+        }
     }
+}
+
+# Function to show examples within a category
+function Show-ExampleList {
+    param(
+        [array]$CategoryExamples,
+        [string]$CategoryName
+    )
     
-    $index = [int]$selection - 1
-    if ($index -ge 0 -and $index -lt $examples.Count) {
-        Run-Example $examples[$index].Name $examples[$index].Path
-    }
-    else {
-        Write-Host "Invalid selection." -ForegroundColor Red
+    if ($CategoryExamples.Count -eq 0) {
+        Write-Host "No examples found in $CategoryName." -ForegroundColor Red
         exit 1
     }
+    
+    # Auto-select if only one example
+    if ($CategoryExamples.Count -eq 1) {
+        Write-Host "Auto-selecting only example: $($CategoryExamples[0].DisplayName)" -ForegroundColor Green
+        Run-Example $CategoryExamples[0].Name $CategoryExamples[0].Path
+        return
+    }
+    
+    Write-Host ""
+    Write-Host "=== $CategoryName ===" -ForegroundColor Cyan
+    Write-Host ""
+    
+    for ($i = 0; $i -lt $CategoryExamples.Count; $i++) {
+        $num = $i + 1
+        Write-Host "  [$num] $($CategoryExamples[$i].DisplayName)" -ForegroundColor White
+    }
+    
+    Write-Host ""
+    Write-Host "  [b] Back" -ForegroundColor DarkGray
+    Write-Host "  [q] Quit" -ForegroundColor DarkGray
+    Write-Host ""
+    
+    Write-Host "Select an example: " -NoNewline
+    $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    $selection = $key.Character.ToString()
+    Write-Host $selection
+    Write-Host ""
+    
+    if ($selection -eq "b" -or $selection -eq "B") {
+        Show-CategoryMenu
+        return
+    }
+    
+    # Try to parse as number
+    if ($selection -match '^[0-9]$') {
+        $selectedIndex = [int]$selection - 1
+        if ($selectedIndex -ge 0 -and $selectedIndex -lt $CategoryExamples.Count) {
+            Run-Example $CategoryExamples[$selectedIndex].Name $CategoryExamples[$selectedIndex].Path
+            return
+        }
+    }
+    
+    # Any other input (including 'q') quits
+    Write-Host "Exiting." -ForegroundColor DarkGray
+    exit 0
 }
 
 # Execute the appropriate command
 switch ($Command.ToLower()) {
     "" {
-        Show-ExampleMenu
+        Show-CategoryMenu
     }
     "check" {
         cargo check
