@@ -66,8 +66,8 @@
 │      accumulator -= fixed_dt ──────────────────────────┘                  │
 │              │                                                            │
 │              ▼ (exit loop)                                                │
-│   3. input.begin_frame()           Clear per-frame input (only if        │
-│              │                     update ran, to preserve input)        │
+│   3. input.begin_frame()           Clear per-frame input (only if         │
+│              │                     update ran, to preserve input)         │
 │              ▼                                                            │
 │   4. render(alpha)                 Variable rate rendering                │
 │      • Z-sorted sprites            (with interpolation)                   │
