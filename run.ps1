@@ -248,8 +248,8 @@ switch ($Command.ToLower()) {
             Write-Host ""
         }
         
-        # Generate coverage report (HTML format)
-        cargo llvm-cov --html --open
+        # Generate coverage report (HTML format, library only)
+        cargo llvm-cov --lib --html --open
         
         if ($LASTEXITCODE -eq 0) {
             Write-Host ""

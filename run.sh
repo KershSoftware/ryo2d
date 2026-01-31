@@ -309,8 +309,8 @@ case "$COMMAND" in
             echo ""
         fi
         
-        # Generate coverage report (HTML format)
-        cargo llvm-cov --html --open
+        # Generate coverage report (HTML format, library only)
+        cargo llvm-cov --lib --html --open
         
         if [[ $? -eq 0 ]]; then
             echo ""
