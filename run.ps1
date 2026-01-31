@@ -7,6 +7,7 @@
 #   .\run check        - Fast compilation check
 #   .\run lint         - Linting with clippy
 #   .\run test         - Run tests
+#   .\run coverage     - Generate code coverage report
 #   .\run watch        - Watch mode with hot-reload (requires cargo-watch)
 
 param(
@@ -234,6 +235,28 @@ switch ($Command.ToLower()) {
     "test" {
         cargo test
     }
+    "coverage" {
+        Write-Host "Generating code coverage report..." -ForegroundColor Cyan
+        Write-Host ""
+        
+        # Check if cargo-llvm-cov is installed
+        $cov = Get-Command cargo-llvm-cov -ErrorAction SilentlyContinue
+        if (-not $cov) {
+            Write-Host "cargo-llvm-cov is not installed." -ForegroundColor Yellow
+            Write-Host "Installing cargo-llvm-cov..." -ForegroundColor Cyan
+            cargo install cargo-llvm-cov
+            Write-Host ""
+        }
+        
+        # Generate coverage report (HTML format)
+        cargo llvm-cov --html --open
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host ""
+            Write-Host "Coverage report generated successfully!" -ForegroundColor Green
+            Write-Host "Report opened in browser. Also available at: target/llvm-cov/html/index.html" -ForegroundColor DarkGray
+        }
+    }
     "watch" {
         # Watch mode - runs first example by default
         $examples = Get-Examples
@@ -265,6 +288,7 @@ switch ($Command.ToLower()) {
         Write-Host "  ./run check        - Fast compilation check"
         Write-Host "  ./run lint         - Linting with clippy"
         Write-Host "  ./run test         - Run tests"
+        Write-Host "  ./run coverage     - Generate code coverage report"
         Write-Host "  ./run watch        - Watch mode with hot-reload"
         Write-Host "  ./run help         - Show this help"
         Write-Host ""

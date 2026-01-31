@@ -8,6 +8,7 @@
 #   ./run.sh check        - Fast compilation check
 #   ./run.sh lint         - Linting with clippy
 #   ./run.sh test         - Run tests
+#   ./run.sh coverage     - Generate code coverage report
 #   ./run.sh watch        - Watch mode with hot-reload (requires cargo-watch)
 
 set -e
@@ -296,6 +297,27 @@ case "$COMMAND" in
     test)
         cargo test
         ;;
+    coverage)
+        echo -e "${CYAN}Generating code coverage report...${NC}"
+        echo ""
+        
+        # Check if cargo-llvm-cov is installed
+        if ! command -v cargo-llvm-cov &> /dev/null; then
+            echo -e "${YELLOW}cargo-llvm-cov is not installed.${NC}"
+            echo -e "${CYAN}Installing cargo-llvm-cov...${NC}"
+            cargo install cargo-llvm-cov
+            echo ""
+        fi
+        
+        # Generate coverage report (HTML format)
+        cargo llvm-cov --html --open
+        
+        if [[ $? -eq 0 ]]; then
+            echo ""
+            echo -e "${GREEN}Coverage report generated successfully!${NC}"
+            echo -e "${GRAY}Report opened in browser. Also available at: target/llvm-cov/html/index.html${NC}"
+        fi
+        ;;
     watch)
         # Wa# Match both "demos/example" and just "example"
             local base_name=$(basename "$example")
@@ -323,6 +345,7 @@ case "$COMMAND" in
         echo "  ./run.sh check        - Fast compilation check"
         echo "  ./run.sh lint         - Linting with clippy"
         echo "  ./run.sh test         - Run tests"
+        echo "  ./run.sh coverage     - Generate code coverage report"
         echo "  ./run.sh watch        - Watch mode with hot-reload"
         echo "  ./run.sh help         - Show this help"
         echo ""
