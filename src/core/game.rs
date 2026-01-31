@@ -130,7 +130,9 @@ impl<'a> GpuRenderContext<'a> {
   /// Call this for each unique sprite before adding instances to the batch.
   /// Sprites are cached by ID, so subsequent calls with the same sprite are no-ops.
   pub fn upload_sprite(&mut self, sprite: &SpriteHandle) {
-    self.gpu_renderer.upload_sprite(self.device, self.queue, sprite);
+    self
+      .gpu_renderer
+      .upload_sprite(self.device, self.queue, sprite);
   }
 
   /// Check if a sprite texture is already uploaded

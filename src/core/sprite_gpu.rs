@@ -686,7 +686,7 @@ impl SpriteGpuRenderer {
       }
 
       let instance_count = instances.len() as u32;
-      let instance_data = bytemuck::cast_slice(*instances);
+      let instance_data = bytemuck::cast_slice(instances);
 
       queue.write_buffer(&self.instance_buffer, current_offset, instance_data);
 

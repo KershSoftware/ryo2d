@@ -548,7 +548,9 @@ impl WgpuRenderer {
 
   /// Render the pixel buffer to the screen.
   pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-    self.render_with_gpu_sprites::<fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView)>(None, None)
+    self.render_with_gpu_sprites::<fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView)>(
+      None, None,
+    )
   }
 
   /// Render the pixel buffer with post-processing effects.
@@ -556,7 +558,9 @@ impl WgpuRenderer {
     &mut self,
     effects: Option<&EffectsManager>,
   ) -> Result<(), wgpu::SurfaceError> {
-    self.render_with_gpu_sprites::<fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView)>(effects, None)
+    self.render_with_gpu_sprites::<fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView)>(
+      effects, None,
+    )
   }
 
   /// Render with optional GPU sprites and post-processing effects.

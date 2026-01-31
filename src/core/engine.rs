@@ -1132,7 +1132,11 @@ impl ApplicationHandler for Engine {
 
           let result = if has_gpu_sprites {
             // Update GPU renderer viewport
-            gpu.set_viewport(rend.queue(), rend.game_width() as f32, rend.game_height() as f32);
+            gpu.set_viewport(
+              rend.queue(),
+              rend.game_width() as f32,
+              rend.game_height() as f32,
+            );
 
             // Create callback closure that captures gpu and batch_collector
             let batch_collector = &self.batch_collector;
