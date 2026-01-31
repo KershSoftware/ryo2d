@@ -1,7 +1,5 @@
 //! Built-in components for the game engine
 
-use crate::core::asset::SpriteHandle;
-
 // Re-export glam types for convenience
 pub use glam::{Mat4, Vec2, Vec3, Vec4};
 
@@ -134,31 +132,6 @@ impl Velocity {
 
   pub fn zero() -> Self {
     Self::new(0.0, 0.0)
-  }
-}
-
-/// Visual representation for rendering
-///
-/// Uses `SpriteHandle` for efficient shared ownership and hot reload support.
-#[derive(Clone)]
-pub struct SpriteRenderer {
-  pub sprite: SpriteHandle,
-  pub visible: bool,
-  pub z_order: i32,
-}
-
-impl SpriteRenderer {
-  pub fn new(sprite: SpriteHandle) -> Self {
-    SpriteRenderer {
-      sprite,
-      visible: true,
-      z_order: 0,
-    }
-  }
-
-  pub fn with_z_order(mut self, z: i32) -> Self {
-    self.z_order = z;
-    self
   }
 }
 

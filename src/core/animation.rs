@@ -14,7 +14,7 @@
 //!
 //! ctx.world.spawn((
 //!     Transform::new(x, y),
-//!     SpriteRenderer::new(frame1),
+//!     Renderable::sprite(frame1),
 //!     Animator::new(spin),
 //! ));
 //! // Engine handles frame timing automatically
@@ -148,7 +148,7 @@ pub enum PlaybackState {
 
 /// ECS component for playing animations on an entity
 ///
-/// Attach this to any entity with a [`SpriteRenderer`](crate::core::ecs::SpriteRenderer).
+/// Attach this to any entity with a [`Renderable`](crate::core::ecs::Renderable).
 /// The engine automatically updates the sprite each frame.
 #[derive(Clone)]
 pub struct Animator {

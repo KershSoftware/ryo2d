@@ -264,6 +264,14 @@ impl Sprite {
     self.height
   }
 
+  /// Get the raw RGBA pixel data
+  ///
+  /// Returns a slice of the raw pixel data. Each pixel is 4 bytes: R, G, B, A.
+  /// The data is stored in row-major order (left to right, top to bottom).
+  pub fn data(&self) -> &[u8] {
+    &self.data
+  }
+
   /// Draw the sprite to a pixel buffer at the given position
   ///
   /// # Arguments

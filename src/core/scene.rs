@@ -295,7 +295,7 @@ pub trait Scene {
   /// Called every frame for custom rendering (optional).
   ///
   /// Most scenes don't need to override this - the engine's built-in
-  /// render system handles SpriteRenderer components automatically.
+  /// render system handles Renderable components automatically.
   ///
   /// Override this for:
   /// - Custom UI drawing

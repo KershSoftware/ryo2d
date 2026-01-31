@@ -1,0 +1,12 @@
+[package]
+name = "sprite-shaders-demo"
+version = "0.1.0"
+edition = "2021"
+description = "Per-sprite shader effects demo for Ryo2D engine"
+
+[[bin]]
+name = "sprite-shaders-demo"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }

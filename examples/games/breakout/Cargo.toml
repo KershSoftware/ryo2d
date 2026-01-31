@@ -10,5 +10,5 @@ path = "main.rs"
 
 [dependencies]
 # Use path dependency during development
-ryo2d = { path = "../.." }
+ryo2d = { path = "../../.." }
 serde = { version = "1.0", features = ["derive"] }

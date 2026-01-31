@@ -23,7 +23,7 @@ impl Game for MyGame {
         ctx.world.add_component(player, Velocity::zero());
         
         let sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
-        ctx.world.add_component(player, SpriteRenderer::new(sprite).with_z_order(10));
+        ctx.world.add_component(player, Renderable::sprite(sprite).with_z_order(10));
         
         self.player = Some(player);
 
@@ -37,7 +37,7 @@ impl Game for MyGame {
                 
                 let color = if (row + col) % 2 == 0 { 0x60 } else { 0x40 };
                 let sprite = Sprite::solid_rect(16, 16, color, color, color, 0xff);
-                ctx.world.add_component(marker, SpriteRenderer::new(sprite));
+                ctx.world.add_component(marker, Renderable::sprite(sprite));
             }
         }
 

@@ -134,8 +134,8 @@ ryo2d - Ryo2D Game Engine CLI
 USAGE:
     ryo2d <COMMAND>
 
-COMMinit     Create a new Ryo2D project
-    ANDS:
+COMMANDS
+    init     Create a new Ryo2D project
     build    Build a production release
     run      Run the production build
     dev      Development mode (build + run with watching)

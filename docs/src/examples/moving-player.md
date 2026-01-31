@@ -28,7 +28,7 @@ impl Game for MyGame {
         
         // Visual: 32x32 cyan square
         let sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
-        ctx.world.add_component(player, SpriteRenderer::new(sprite));
+        ctx.world.add_component(player, Renderable::sprite(sprite));
         
         self.player = Some(player);
     }
@@ -71,7 +71,7 @@ fn main() {
 
 ## How It Works
 
-1. **`init()`** - Creates a player entity with Transform, Velocity, and SpriteRenderer
+1. **`init()`** - Creates a player entity with Transform, Velocity, and Renderable
 2. **`update()`** - Reads keyboard input and sets velocity
 3. **Movement System** - The engine automatically applies velocity to transform
 

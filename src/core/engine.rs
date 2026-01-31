@@ -13,7 +13,9 @@ use super::audio::AudioManager;
 use super::camera::Camera;
 use super::collision::Collider;
 use super::debug::{self, DebugConfig};
-use super::ecs::{Entity, SpriteRenderer, Transform, Velocity, World};
+use super::ecs::{
+  Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
+};
 use super::error::{EngineError, EngineResult};
 use super::game::{Game, GameContext};
 use super::input::InputState;
@@ -22,7 +24,9 @@ use super::rapier_physics::RapierPhysicsWorld;
 use super::renderer::WgpuRenderer;
 use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
-use super::tile::{CompositeTile, GroupedCollider, TileDirection, TiledSprite};
+use super::sprite::Sprite;
+use super::sprite_gpu::SpriteGpuRenderer;
+use super::tile::{CompositeTile, GroupedCollider, TileDirection};
 use super::ui::{BitmapFont, UiContext, create_debug_font};
 
 /// Window resize behavior.
@@ -212,8 +216,8 @@ pub struct Engine {
   game: Option<Box<dyn Game>>,
   // Whether init has been called
   initialized: bool,
-  // Cached sorted list of renderable entities (reused across frames)
-  render_cache: Vec<(Entity, i32)>,
+  // Cached sorted list of Renderable component entities
+  renderable_cache: Vec<(Entity, i32)>,
   // Whether render cache needs rebuilding (entities spawned/despawned, z_order changed)
   render_cache_dirty: bool,
   // Rapier2D physics world
@@ -226,6 +230,8 @@ pub struct Engine {
   last_window_size: (u32, u32),
   // VSync preference from system.json (None = use engine default)
   vsync: Option<bool>,
+  // GPU sprite renderer for entities with Material/shader effects
+  sprite_gpu: Option<SpriteGpuRenderer>,
 }
 
 impl Engine {
@@ -359,13 +365,14 @@ impl Engine {
       effects: EffectsManager::new(),
       game: Some(game),
       initialized: false,
-      render_cache: Vec::new(),
+      renderable_cache: Vec::new(),
       render_cache_dirty: true,
       physics: RapierPhysicsWorld::new(),
       ui_font,
       last_world_generation: 0,
       last_window_size: initial_size,
       vsync,
+      sprite_gpu: None, // Initialized when renderer is created
     }
   }
 
@@ -404,17 +411,16 @@ impl Engine {
       }
     }
 
-    // Sync Animator sprites to SpriteRenderer
-    let animator_entities: Vec<Entity> = self.world.entities_with::<Animator>();
-    for entity in animator_entities {
+    // Sync Animator sprites to Renderable
+    for entity in self.world.entities_with::<Animator>() {
       let sprite = self
         .world
         .get_component::<Animator>(entity)
         .and_then(|a| a.current_sprite().cloned());
       if let Some(sprite) = sprite
-        && let Some(mut renderer) = self.world.get_component_mut::<SpriteRenderer>(entity)
+        && let Some(mut renderable) = self.world.get_component_mut::<Renderable>(entity)
       {
-        renderer.sprite = sprite;
+        renderable.sprite = sprite;
       }
     }
 
@@ -425,17 +431,16 @@ impl Engine {
       }
     }
 
-    // Sync AnimationController sprites to SpriteRenderer
-    let controller_entities: Vec<Entity> = self.world.entities_with::<AnimationController>();
-    for entity in controller_entities {
+    // Sync AnimationController sprites to Renderable
+    for entity in self.world.entities_with::<AnimationController>() {
       let sprite = self
         .world
         .get_component::<AnimationController>(entity)
         .and_then(|c| c.current_sprite().cloned());
       if let Some(sprite) = sprite
-        && let Some(mut renderer) = self.world.get_component_mut::<SpriteRenderer>(entity)
+        && let Some(mut renderable) = self.world.get_component_mut::<Renderable>(entity)
       {
-        renderer.sprite = sprite;
+        renderable.sprite = sprite;
       }
     }
 
@@ -461,6 +466,12 @@ impl Engine {
       // Mark render cache dirty in case entities were spawned/despawned
       self.render_cache_dirty = true;
     }
+
+    // === Hierarchy Transform Propagation ===
+    // Update world transforms for all entities with parent-child relationships.
+    // This must happen after user update (so local transforms are set) and
+    // before rendering (so WorldTransform is current).
+    self.world.propagate_transforms();
 
     // Update timed post-process effects
     self.effects.update(_dt);
@@ -561,7 +572,7 @@ impl Engine {
 
   /// Render the current frame
   ///
-  /// This is the "Render System" - it draws all entities with Transform + SpriteRenderer
+  /// This is the "Render System" - it draws all entities with Transform + Renderable
   fn render(&mut self, _alpha: f32) {
     // Get frame buffer from renderer
     let (frame, frame_width, frame_height) = match &mut self.renderer {
@@ -581,115 +592,171 @@ impl Engine {
       pixel[3] = 0xff;
     }
 
-    // === Render System: Draw all entities with Transform + SpriteRenderer ===
+    // === Render System: Draw all entities with Transform + Renderable ===
     // Rebuild render cache if dirty (entities added/removed or z_order changed)
     if self.render_cache_dirty {
-      self.render_cache.clear();
-      for entity in self.world.entities_with_two::<Transform, SpriteRenderer>() {
-        if let Some(renderer) = self.world.get_component::<SpriteRenderer>(entity) {
-          self.render_cache.push((entity, renderer.z_order));
+      self.renderable_cache.clear();
+      for entity in self.world.entities_with_two::<Transform, Renderable>() {
+        if let Some(renderable) = self.world.get_component::<Renderable>(entity) {
+          self.renderable_cache.push((entity, renderable.z_order));
         }
       }
-      self.render_cache.sort_by_key(|(_, z)| *z);
+      self.renderable_cache.sort_by_key(|(_, z)| *z);
+
       self.render_cache_dirty = false;
     }
 
-    for &(entity, _) in &self.render_cache {
-      // Skip entities that no longer exist (stale cache entries)
-      let Some(transform) = self.world.get_component::<Transform>(entity) else {
-        continue;
-      };
-      let Some(sprite_renderer) = self.world.get_component::<SpriteRenderer>(entity) else {
+    for &(entity, _) in &self.renderable_cache {
+      let Some(renderable) = self.world.get_component::<Renderable>(entity) else {
         continue;
       };
 
-      if sprite_renderer.visible {
-        // Convert world position to screen position using camera
-        let (screen_x, screen_y) = self.camera.world_to_screen(transform.x, transform.y);
+      if !renderable.visible {
+        continue;
+      }
 
-        // Calculate final scale (transform scale * camera zoom)
-        let final_scale_x = transform.scale_x * self.camera.zoom;
-        let final_scale_y = transform.scale_y * self.camera.zoom;
-
-        // Optionally cull off-screen sprites (optimization)
-        let sprite_w = sprite_renderer.sprite.width() as f32 * final_scale_x;
-        let sprite_h = sprite_renderer.sprite.height() as f32 * final_scale_y;
-        if !self
-          .camera
-          .is_visible(transform.x, transform.y, sprite_w, sprite_h)
-        {
+      // Use WorldTransform if available (for hierarchical entities),
+      // otherwise fall back to local Transform
+      let (x, y, rotation, scale_x, scale_y) =
+        if let Some(wt) = self.world.get_component::<WorldTransform>(entity) {
+          (wt.x, wt.y, wt.rotation, wt.scale_x, wt.scale_y)
+        } else if let Some(t) = self.world.get_component::<Transform>(entity) {
+          (t.x, t.y, t.rotation, t.scale_x, t.scale_y)
+        } else {
           continue;
-        }
-
-        // Draw scaled by transform scale and camera zoom
-        sprite_renderer.sprite.with_sprite(|sprite| {
-          sprite.draw_rotated(
-            frame,
-            frame_width,
-            frame_height,
-            screen_x as i32,
-            screen_y as i32,
-            final_scale_x,
-            final_scale_y,
-            transform.rotation,
-            false, // flip_x
-            false, // flip_y
-          );
-        });
-      }
-    }
-
-    // === Render TiledSprite components ===
-    // These are simple repeating sprites in one direction
-    for entity in self.world.entities_with_two::<Transform, TiledSprite>() {
-      let Some(transform) = self.world.get_component::<Transform>(entity) else {
-        continue;
-      };
-      let Some(tiled) = self.world.get_component::<TiledSprite>(entity) else {
-        continue;
-      };
-
-      if !tiled.visible {
-        continue;
-      }
-
-      let tile_size = tiled.tile_size();
-      if tile_size <= 0.0 {
-        continue;
-      }
-
-      let tile_count = tiled.tile_count();
-      let (offset_dx, offset_dy) = tiled.direction.offset(tile_size);
-
-      for i in 0..tile_count {
-        let tile_offset_x = offset_dx * i as f32;
-        let tile_offset_y = offset_dy * i as f32;
-
-        // For Up/Left directions, we need to start from the negative offset
-        let (start_x, start_y) = match tiled.direction {
-          TileDirection::Up => (0.0, -(tile_count as f32 - 1.0) * tile_size),
-          TileDirection::Left => (-(tile_count as f32 - 1.0) * tile_size, 0.0),
-          TileDirection::Down | TileDirection::Right => (0.0, 0.0),
         };
 
-        let world_x = transform.x + start_x + tile_offset_x;
-        let world_y = transform.y + start_y + tile_offset_y;
+      // Note: draw_rotated expects degrees, not radians (it converts internally)
+      let rotation_deg = rotation;
 
-        let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
-        let final_scale_x = transform.scale_x * self.camera.zoom;
-        let final_scale_y = transform.scale_y * self.camera.zoom;
+      match &renderable.style {
+        RenderStyle::Single => {
+          // Convert world position to screen position using camera
+          let (screen_x, screen_y) = self.camera.world_to_screen(x, y);
 
-        tiled.sprite.with_sprite(|sprite| {
-          sprite.draw_scaled_xy(
-            frame,
-            frame_width,
-            frame_height,
-            screen_x as i32,
-            screen_y as i32,
-            final_scale_x,
-            final_scale_y,
-          );
-        });
+          // Calculate final scale (transform scale * camera zoom)
+          let final_scale_x = scale_x * self.camera.zoom;
+          let final_scale_y = scale_y * self.camera.zoom;
+
+          // Cull off-screen sprites
+          let sprite_w = renderable.sprite.width() as f32 * final_scale_x;
+          let sprite_h = renderable.sprite.height() as f32 * final_scale_y;
+          if !self.camera.is_visible(x, y, sprite_w, sprite_h) {
+            continue;
+          }
+
+          // Check if sprite has a shader effect to apply
+          if let Some(SpriteShader::BuiltIn(effect)) = &renderable.shader {
+            // Apply CPU-based shader effect
+            renderable.sprite.with_sprite(|sprite| {
+              let src_width = sprite.width();
+              let src_height = sprite.height();
+              let (transformed_data, new_width, new_height) =
+                effect.apply_cpu(sprite.data(), src_width, src_height);
+
+              // For expanded sprites (outline/glow), we need to adjust position to keep sprite centered
+              let offset_x = ((new_width as i32 - src_width as i32) / 2) as f32 * final_scale_x;
+              let offset_y = ((new_height as i32 - src_height as i32) / 2) as f32 * final_scale_y;
+
+              let transformed_sprite = Sprite::from_rgba(transformed_data, new_width, new_height);
+              transformed_sprite.draw_rotated(
+                frame,
+                frame_width,
+                frame_height,
+                screen_x as i32 - offset_x as i32,
+                screen_y as i32 - offset_y as i32,
+                final_scale_x,
+                final_scale_y,
+                rotation_deg,
+                renderable.flip_x,
+                renderable.flip_y,
+              );
+            });
+          } else {
+            // No shader - draw normally
+            renderable.sprite.with_sprite(|sprite| {
+              sprite.draw_rotated(
+                frame,
+                frame_width,
+                frame_height,
+                screen_x as i32,
+                screen_y as i32,
+                final_scale_x,
+                final_scale_y,
+                rotation_deg,
+                renderable.flip_x,
+                renderable.flip_y,
+              );
+            });
+          }
+        }
+
+        RenderStyle::Tiled {
+          direction,
+          target_size,
+        } => {
+          let tile_size = if direction.is_horizontal() {
+            renderable.sprite.width() as f32
+          } else {
+            renderable.sprite.height() as f32
+          };
+
+          if tile_size <= 0.0 {
+            continue;
+          }
+
+          let tile_count = (target_size / tile_size).ceil() as u32;
+          let (offset_dx, offset_dy) = direction.offset(tile_size);
+
+          for i in 0..tile_count {
+            let tile_offset_x = offset_dx * i as f32;
+            let tile_offset_y = offset_dy * i as f32;
+
+            // For Up/Left directions, start from negative offset
+            let (start_x, start_y) = match direction {
+              TileDirection::Up => (0.0, -(tile_count as f32 - 1.0) * tile_size),
+              TileDirection::Left => (-(tile_count as f32 - 1.0) * tile_size, 0.0),
+              TileDirection::Down | TileDirection::Right => (0.0, 0.0),
+            };
+
+            // Calculate tile position relative to entity, then rotate
+            let local_x = start_x + tile_offset_x;
+            let local_y = start_y + tile_offset_y;
+
+            // Apply entity rotation to tile offset (need radians for trig)
+            let rotation_rad = rotation_deg.to_radians();
+            let cos_r = rotation_rad.cos();
+            let sin_r = rotation_rad.sin();
+            let rotated_x = local_x * cos_r - local_y * sin_r;
+            let rotated_y = local_x * sin_r + local_y * cos_r;
+
+            // Apply scale to rotated offset
+            let scaled_x = rotated_x * scale_x;
+            let scaled_y = rotated_y * scale_y;
+
+            let world_x = x + scaled_x;
+            let world_y = y + scaled_y;
+
+            let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
+            let final_scale_x = scale_x * self.camera.zoom;
+            let final_scale_y = scale_y * self.camera.zoom;
+
+            renderable.sprite.with_sprite(|sprite| {
+              sprite.draw_rotated(
+                frame,
+                frame_width,
+                frame_height,
+                screen_x as i32,
+                screen_y as i32,
+                final_scale_x,
+                final_scale_y,
+                rotation_deg,
+                renderable.flip_x,
+                renderable.flip_y,
+              );
+            });
+          }
+        }
       }
     }
 
@@ -869,8 +936,16 @@ impl ApplicationHandler for Engine {
       self.vsync,
     ));
 
+    // Create GPU sprite renderer using the same device/queue
+    let sprite_gpu = SpriteGpuRenderer::new(
+      renderer.device(),
+      renderer.queue(),
+      renderer.surface_format(),
+    );
+
     self.window = Some(window);
     self.renderer = Some(renderer);
+    self.sprite_gpu = Some(sprite_gpu);
     self.time = Some(TimeState::new(
       self.config.target_fps,
       self.config.physics_hz,

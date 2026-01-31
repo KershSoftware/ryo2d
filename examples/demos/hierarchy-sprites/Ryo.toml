@@ -1,0 +1,15 @@
+# Hierarchy Sprites Demo - Ryo Engine Project Configuration
+# Demonstrates parent-child entity relationships with the Renderable component
+
+[project]
+name = "Hierarchy Sprites Demo"
+
+[paths]
+entry_point = "main.rs"
+assets = "assets"
+
+[info]
+show_fps = true
+
+[debug]
+show_origins = false

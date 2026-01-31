@@ -24,10 +24,7 @@ impl Game for BasicGame {
         if let Some(sprite) = &self.player_sprite {
             let player = ctx.world.spawn();
             ctx.world.add_component(player, Transform::new(400.0, 300.0));
-            ctx.world.add_component(player, SpriteRenderer {
-                sprite: sprite.clone(),
-                ..Default::default()
-            });
+            ctx.world.add_component(player, Renderable::sprite(sprite.clone()));
         }
     }
     
@@ -104,10 +101,7 @@ impl Game for RegistryGame {
         let player = ctx.world.spawn();
         ctx.world.add_component(player, Transform::new(400.0, 300.0));
         if let Some(sprite) = self.sprites.get("player") {
-            ctx.world.add_component(player, SpriteRenderer {
-                sprite,
-                ..Default::default()
-            });
+            ctx.world.add_component(player, Renderable::sprite(sprite));
         }
     }
     
@@ -118,10 +112,7 @@ impl Game for RegistryGame {
             ctx.world.add_component(enemy, Transform::new(100.0, 100.0));
             
             if let Some(sprite) = self.sprites.get("enemy_small") {
-                ctx.world.add_component(enemy, SpriteRenderer {
-                    sprite,
-                    ..Default::default()
-                });
+                ctx.world.add_component(enemy, Renderable::sprite(sprite));
             }
         }
     }
@@ -194,10 +185,7 @@ impl Game for RobustGame {
         let player = ctx.world.spawn();
         ctx.world.add_component(player, Transform::new(400.0, 300.0));
         if let Some(sprite) = self.get_sprite("player") {
-            ctx.world.add_component(player, SpriteRenderer {
-                sprite,
-                ..Default::default()
-            });
+            ctx.world.add_component(player, Renderable::sprite(sprite));
         }
     }
     

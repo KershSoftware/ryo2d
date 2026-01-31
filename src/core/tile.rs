@@ -6,9 +6,9 @@
 //!
 //! # Components
 //!
-//! - [`TiledSprite`] - Repeats a single sprite to fill a target size
 //! - [`CompositeTile`] - Combines multiple parts (static + tiled) into one entity
 //! - [`GroupedCollider`] - Single collision box covering a composite tile
+//! - [`TileDirection`] - Direction for tiled rendering (Up, Down, Left, Right)
 //!
 //! # Example
 //!
@@ -64,94 +64,6 @@ impl TileDirection {
   /// Returns true if this direction is vertical
   pub fn is_vertical(&self) -> bool {
     matches!(self, TileDirection::Up | TileDirection::Down)
-  }
-}
-
-/// Simple tiled sprite component
-///
-/// Repeats a single sprite in one direction to fill a target size.
-/// Attach to an entity with `Transform` for rendering.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// // Create a horizontal bar by tiling a segment
-/// let tiled = TiledSprite::new(segment_sprite, TileDirection::Right, 200.0);
-/// world.spawn((Transform::new(0.0, 100.0), tiled));
-/// ```
-#[derive(Debug, Clone)]
-pub struct TiledSprite {
-  /// The sprite to tile
-  pub sprite: SpriteHandle,
-  /// Direction of tiling
-  pub direction: TileDirection,
-  /// Total size to fill in pixels (in the tile direction)
-  pub target_size: f32,
-  /// Whether this tiled sprite is visible
-  pub visible: bool,
-  /// Render order (higher = drawn later, on top)
-  pub z_order: i32,
-}
-
-impl TiledSprite {
-  /// Create a new tiled sprite
-  pub fn new(sprite: SpriteHandle, direction: TileDirection, target_size: f32) -> Self {
-    TiledSprite {
-      sprite,
-      direction,
-      target_size,
-      visible: true,
-      z_order: 0,
-    }
-  }
-
-  /// Set visibility
-  pub fn with_visible(mut self, visible: bool) -> Self {
-    self.visible = visible;
-    self
-  }
-
-  /// Set z-order for rendering
-  pub fn with_z_order(mut self, z_order: i32) -> Self {
-    self.z_order = z_order;
-    self
-  }
-
-  /// Calculate how many tiles are needed to fill the target size
-  pub fn tile_count(&self) -> u32 {
-    let tile_size = if self.direction.is_horizontal() {
-      self.sprite.width() as f32
-    } else {
-      self.sprite.height() as f32
-    };
-
-    if tile_size <= 0.0 {
-      return 0;
-    }
-
-    (self.target_size / tile_size).ceil() as u32
-  }
-
-  /// Get the size of one tile in the tiling direction
-  pub fn tile_size(&self) -> f32 {
-    if self.direction.is_horizontal() {
-      self.sprite.width() as f32
-    } else {
-      self.sprite.height() as f32
-    }
-  }
-
-  /// Get the total bounds of the tiled area
-  ///
-  /// Returns (width, height) of the full tiled region.
-  pub fn bounds(&self) -> (f32, f32) {
-    let sprite_w = self.sprite.width() as f32;
-    let sprite_h = self.sprite.height() as f32;
-
-    match self.direction {
-      TileDirection::Up | TileDirection::Down => (sprite_w, self.target_size),
-      TileDirection::Left | TileDirection::Right => (self.target_size, sprite_h),
-    }
   }
 }
 
@@ -640,31 +552,6 @@ mod tests {
     assert!(TileDirection::Down.is_vertical());
     assert!(!TileDirection::Left.is_vertical());
     assert!(!TileDirection::Right.is_vertical());
-  }
-
-  #[test]
-  fn tiled_sprite_tile_count() {
-    let sprite = test_sprite(32, 32);
-
-    let tiled = TiledSprite::new(sprite.clone(), TileDirection::Down, 100.0);
-    assert_eq!(tiled.tile_count(), 4); // ceil(100/32) = 4
-
-    let tiled = TiledSprite::new(sprite.clone(), TileDirection::Right, 64.0);
-    assert_eq!(tiled.tile_count(), 2); // 64/32 = 2
-
-    let tiled = TiledSprite::new(sprite, TileDirection::Down, 32.0);
-    assert_eq!(tiled.tile_count(), 1);
-  }
-
-  #[test]
-  fn tiled_sprite_bounds() {
-    let sprite = test_sprite(32, 16);
-
-    let tiled = TiledSprite::new(sprite.clone(), TileDirection::Down, 100.0);
-    assert_eq!(tiled.bounds(), (32.0, 100.0));
-
-    let tiled = TiledSprite::new(sprite, TileDirection::Right, 100.0);
-    assert_eq!(tiled.bounds(), (100.0, 16.0));
   }
 
   #[test]

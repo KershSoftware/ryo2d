@@ -2,7 +2,7 @@
 
 ryo2d provides a tiled rendering system for repeating sprites and composite multi-part tiles like pipes, walls, and platforms.
 
-## TiledSprite - Simple Repeating
+## Tiled Sprites - Simple Repeating
 
 Repeat a single sprite in one direction to fill a target size:
 
@@ -10,7 +10,7 @@ Repeat a single sprite in one direction to fill a target size:
 use ryo2d::prelude::*;
 
 // Create a vertical ladder by tiling a rung sprite downward
-let tiled = TiledSprite::new(rung_sprite, TileDirection::Down, 200.0);
+let tiled = Renderable::tiled(rung_sprite, TileDirection::Down, 200.0);
 
 ctx.world.spawn((
     Transform::new(100.0, 50.0),
@@ -28,7 +28,7 @@ ctx.world.spawn((
 ### Properties
 
 ```rust
-let tiled = TiledSprite::new(sprite, TileDirection::Right, 300.0)
+let tiled = Renderable::tiled(sprite, TileDirection::Right, 300.0)
     .with_z_order(5)      // Render order
     .with_visible(true);  // Visibility toggle
 ```

@@ -20,6 +20,7 @@ pub mod scene;
 pub mod shaders;
 pub mod spatial;
 pub mod sprite;
+pub mod sprite_gpu;
 pub mod tile;
 pub mod ui;
 pub mod workspace;

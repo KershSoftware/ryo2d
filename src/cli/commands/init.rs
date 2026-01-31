@@ -211,14 +211,10 @@ impl Scene for GameScene {
     // Spawn entities, load assets, etc.
     
     // Example: Spawn a simple colored square
+    let sprite = ctx.assets.create_sprite(Sprite::solid_rect(64, 64, [0, 255, 255, 255]));
     ctx.world.spawn((
       Transform::new(400.0, 300.0),
-      SpriteRenderer {
-        sprite: ctx.assets.create_sprite(Sprite::solid_rect(64, 64, [0, 255, 255, 255])),
-        width: 64,
-        height: 64,
-        z_order: 0,
-      },
+      Renderable::sprite(sprite).with_z_order(0),
     ));
   }
 

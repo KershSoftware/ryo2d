@@ -10,4 +10,4 @@ path = "main.rs"
 
 [dependencies]
 # Use path dependency during development
-ryo2d = { path = "../.." }
+ryo2d = { path = "../../.." }

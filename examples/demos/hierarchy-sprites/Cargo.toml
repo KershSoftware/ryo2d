@@ -1,0 +1,11 @@
+[package]
+name = "hierarchy-sprites"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ryo2d = { path = "../../../" }
+
+[[bin]]
+name = "hierarchy-sprites"
+path = "main.rs"

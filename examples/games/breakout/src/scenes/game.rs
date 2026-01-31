@@ -105,7 +105,7 @@ impl GameScene {
       Collider::box_collider(PADDLE_WIDTH, PADDLE_HEIGHT)
         .with_restitution(1.0) // Perfect bounce
         .with_friction(0.0), // No friction
-      SpriteRenderer::new(SpriteHandle::from_sprite(
+      Renderable::sprite(SpriteHandle::from_sprite(
         Sprite::solid_rect(
           PADDLE_WIDTH as u32,
           PADDLE_HEIGHT as u32,
@@ -135,7 +135,7 @@ impl GameScene {
         .with_offset(BALL_SIZE / 2.0, BALL_SIZE / 2.0)
         .with_restitution(1.0) // Perfect bounce
         .with_friction(0.0), // No friction
-      SpriteRenderer::new(SpriteHandle::from_sprite(
+      Renderable::sprite(SpriteHandle::from_sprite(
         Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
         "ball",
       ))
@@ -154,7 +154,7 @@ impl GameScene {
       Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32)
         .with_restitution(1.0) // Perfect bounce
         .with_friction(0.0), // No friction
-      SpriteRenderer::new(SpriteHandle::from_sprite(
+      Renderable::sprite(SpriteHandle::from_sprite(
         Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
         "wall_left",
       ))
@@ -170,7 +170,7 @@ impl GameScene {
       Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32)
         .with_restitution(1.0) // Perfect bounce
         .with_friction(0.0), // No friction
-      SpriteRenderer::new(SpriteHandle::from_sprite(
+      Renderable::sprite(SpriteHandle::from_sprite(
         Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
         "wall_right",
       ))
@@ -186,7 +186,7 @@ impl GameScene {
       Collider::box_collider(SCREEN_WIDTH as f32, WALL_THICKNESS)
         .with_restitution(1.0) // Perfect bounce
         .with_friction(0.0), // No friction
-      SpriteRenderer::new(SpriteHandle::from_sprite(
+      Renderable::sprite(SpriteHandle::from_sprite(
         Sprite::solid_rect(SCREEN_WIDTH, WALL_THICKNESS as u32, 0x30, 0x30, 0x40, 0xff),
         "wall_ceiling",
       ))
@@ -229,7 +229,7 @@ impl GameScene {
         Collider::box_collider(BLOCK_WIDTH, BLOCK_HEIGHT)
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
-        SpriteRenderer::new(SpriteHandle::from_sprite(
+        Renderable::sprite(SpriteHandle::from_sprite(
           Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, a),
           format!("block_{}_{}", x as u32, y as u32),
         ))
@@ -399,8 +399,8 @@ impl GameScene {
       } else {
         // Update block appearance to show damage
         let (r, g, b, a) = color.dimmed();
-        if let Some(mut sprite) = ctx.world.get_component_mut::<SpriteRenderer>(block) {
-          sprite.sprite = SpriteHandle::from_sprite(
+        if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
+          renderable.sprite = SpriteHandle::from_sprite(
             Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, a),
             "block_damaged",
           );

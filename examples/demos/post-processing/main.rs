@@ -99,11 +99,7 @@ impl PostProcessingDemo {
             start_x + col as f32 * spacing,
             start_y + row as f32 * spacing,
           ),
-          SpriteRenderer {
-            sprite: handle,
-            visible: true,
-            z_order: 0,
-          },
+          Renderable::sprite(handle).with_z_order(0),
         ));
 
         self.background_sprites.push(entity);
@@ -127,11 +123,7 @@ impl PostProcessingDemo {
 
       let entity = ctx.world.spawn((
         Transform::new(400.0 + angle.cos() * radius, 300.0 + angle.sin() * radius),
-        SpriteRenderer {
-          sprite: handle,
-          visible: true,
-          z_order: 1,
-        },
+        Renderable::sprite(handle).with_z_order(1),
       ));
 
       self.rotating_sprites.push(entity);

@@ -1,6 +1,6 @@
 # Sprites & Rendering
 
-ryo2d uses a simple sprite-based rendering system.
+ryo2d uses a simple sprite-based rendering system with the `Renderable` component.
 
 ## Creating Sprites
 
@@ -19,14 +19,15 @@ let sprite = Sprite::load("assets/player.png")?;
 
 Supported formats: PNG, JPEG, and other formats supported by the `image` crate.
 
-## SpriteRenderer Component
+## Renderable Component
 
-Attach a sprite to an entity:
+Attach a sprite to an entity for rendering:
 
 ```rust
-let player = ctx.world.spawn();
-ctx.world.add_component(player, Transform::new(100.0, 100.0));
-ctx.world.add_component(player, SpriteRenderer::new(sprite));
+let player = ctx.world.spawn((
+    Transform::new(100.0, 100.0),
+    Renderable::sprite(SpriteHandle::from_sprite(sprite, "player")),
+));
 ```
 
 ### Z-Ordering
@@ -35,10 +36,10 @@ Control draw order with z_order (lower = behind, higher = in front):
 
 ```rust
 // Background (drawn first)
-SpriteRenderer::new(bg_sprite).with_z_order(-100)
+Renderable::sprite(bg_handle).with_z_order(-100)
 
 // Player (drawn on top)
-SpriteRenderer::new(player_sprite).with_z_order(10)
+Renderable::sprite(player_handle).with_z_order(10)
 ```
 
 ### Visibility
@@ -46,8 +47,8 @@ SpriteRenderer::new(player_sprite).with_z_order(10)
 Toggle sprite visibility:
 
 ```rust
-if let Some(mut renderer) = ctx.world.get_component_mut::<SpriteRenderer>(entity) {
-    renderer.visible = false;  // Hide
+if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(entity) {
+    renderable.visible = false;  // Hide
 }
 ```
 
@@ -58,11 +59,27 @@ Use preset layers for common cases:
 ```rust
 use ryo2d::prelude::RenderLayer;
 
-SpriteRenderer::new(sprite).with_z_order(RenderLayer::Background.as_z_order())
-SpriteRenderer::new(sprite).with_z_order(RenderLayer::Default.as_z_order())
-SpriteRenderer::new(sprite).with_z_order(RenderLayer::Foreground.as_z_order())
-SpriteRenderer::new(sprite).with_z_order(RenderLayer::UI.as_z_order())
+Renderable::sprite(handle).with_z_order(RenderLayer::Background.as_z_order())
+Renderable::sprite(handle).with_z_order(RenderLayer::Default.as_z_order())
+Renderable::sprite(handle).with_z_order(RenderLayer::Foreground.as_z_order())
+Renderable::sprite(handle).with_z_order(RenderLayer::UI.as_z_order())
 ```
+
+## Shader Effects
+
+Add per-sprite visual effects:
+
+```rust
+// Outline effect
+Renderable::sprite(handle)
+    .with_shader(SpriteShader::outline(Color::WHITE, 2))
+
+// Damage flash
+Renderable::sprite(handle)
+    .with_shader(SpriteShader::damage_flash())
+```
+
+See [Sprite Shaders](sprite-shaders.md) for all available effects.
 
 ## Alpha Blending
 

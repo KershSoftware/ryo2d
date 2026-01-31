@@ -159,7 +159,7 @@ Physics Loop:
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│                             render                                 │
+│                             render                                        │
 ├───────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
 │   1. Get frame buffer from WgpuRenderer                                   │
@@ -196,25 +196,25 @@ Physics Loop:
 │  Ping-Pong Buffer Architecture:                                           │
 │  ┌────────────────────────────────────────────────────────────────────┐   │
 │  │                                                                    │   │
-│  │   Game        Effect 1      Effect 2      Effect N       Final    │   │
-│  │  Texture  ──►  (Fade)   ──►  (CRT)    ──►   ...     ──►  Output   │   │
+│  │   Game        Effect 1      Effect 2      Effect N       Final     │   │
+│  │  Texture  ──►  (Fade)   ──►  (CRT)    ──►   ...     ──►  Output    │   │
 │  │     │           │             │             │             │        │   │
 │  │     ▼           ▼             ▼             ▼             ▼        │   │
-│  │  [Copy to]   [Tex A]      [Tex B]       [Tex A/B]     [Screen]    │   │
-│  │   Tex A        ↓             ↓             ↓                      │   │
-│  │              Shader       Shader        Shader                    │   │
-│  │              Pass 1       Pass 2        Pass N                    │   │
+│  │  [Copy to]   [Tex A]      [Tex B]       [Tex A/B]     [Screen]     │   │
+│  │   Tex A        ↓             ↓             ↓                       │   │
+│  │              Shader       Shader        Shader                     │   │
+│  │              Pass 1       Pass 2        Pass N                     │   │
 │  │                                                                    │   │
 │  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
 │  Available Effects:                                                       │
 │  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  Fade              │  Screen fade to color (scene transitions)    │   │
-│  │  ColorTint         │  Color grading/mood (sepia, night vision)    │   │
-│  │  Vignette          │  Darkened edges (cinematic look)             │   │
-│  │  ScreenFlash       │  One-shot flash with auto-decay (damage)     │   │
-│  │  CRT               │  Scanlines, curvature, RGB offset (retro)    │   │
-│  │  ChromaticAberration │  RGB color fringing (glitch/lens effect)   │   │
+│  │  Fade              │  Screen fade to color (scene transitions)     │   │
+│  │  ColorTint         │  Color grading/mood (sepia, night vision)     │   │
+│  │  Vignette          │  Darkened edges (cinematic look)              │   │
+│  │  ScreenFlash       │  One-shot flash with auto-decay (damage)      │   │
+│  │  CRT               │  Scanlines, curvature, RGB offset (retro)     │   │
+│  │  ChromaticAberration │  RGB color fringing (glitch/lens effect)    │   │
 │  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
 │  Key Types:                                                               │

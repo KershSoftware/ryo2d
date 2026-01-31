@@ -5,6 +5,7 @@
 //!
 //! # Commands
 //!
+//! - `ryo2d init` - Create a new Ryo2D project
 //! - `ryo2d build` - Build a production release
 //! - `ryo2d run` - Run the production build
 //! - `ryo2d dev` - Development mode with file watching
@@ -13,6 +14,7 @@
 //!
 //! ```bash
 //! # Start a new project
+//! ryo2d init my_game
 //! cd my_game
 //!
 //! # Development workflow

@@ -83,7 +83,7 @@ impl Scene for MenuScene {
         // Create menu UI
         ctx.world.spawn((
             Transform::new(400.0, 300.0),
-            SpriteRenderer::new(Sprite::solid_rect(200, 50, 0xff, 0xff, 0xff, 0xff)),
+            Renderable::sprite(Sprite::solid_rect(200, 50, 0xff, 0xff, 0xff, 0xff)),
         ));
     }
 

@@ -7,7 +7,10 @@
 //! - **Generational entity IDs** - Prevents use-after-free bugs
 //! - **Archetype-based storage** - Cache-friendly iteration
 //! - **Thread-safe queries** - `Send + Sync` by default
+//! - **Hierarchy support** - Parent-child relationships with transform propagation
 
+use super::components::Transform;
+use super::hierarchy::{Children, Parent, WorldTransform};
 use hecs::Entity;
 
 /// The ECS World - container for all entities and components
@@ -68,7 +71,7 @@ impl World {
   /// let entity = world.spawn((
   ///     Transform::new(100.0, 200.0),
   ///     Velocity::new(10.0, 0.0),
-  ///     SpriteRenderer::new(sprite),
+  ///     Renderable::sprite(sprite),
   /// ));
   /// ```
   pub fn spawn(&mut self, components: impl hecs::DynamicBundle) -> Entity {
@@ -113,6 +116,236 @@ impl World {
   /// this to detect when the world has been reset and physics needs clearing.
   pub fn generation(&self) -> u64 {
     self.generation
+  }
+
+  // =========================================================================
+  // Hierarchy - Parent/Child Relationships
+  // =========================================================================
+
+  /// Spawn an entity as a child of another entity
+  ///
+  /// The child's `Transform` will be relative to the parent's position.
+  /// Use `WorldTransform` to get the computed world-space position.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// let ship = world.spawn((Transform::new(100.0, 200.0),));
+  ///
+  /// // Spawn turret as child of ship
+  /// let turret = world.spawn_child(ship, (
+  ///     Transform::new(10.0, 0.0),  // 10 units right of ship center
+  ///     Renderable::sprite(turret_sprite),
+  /// ));
+  /// ```
+  pub fn spawn_child(
+    &mut self,
+    parent: Entity,
+    components: impl hecs::DynamicBundle + Send + Sync,
+  ) -> Entity {
+    // First spawn the child entity with just Parent
+    let child = self.inner.spawn((Parent(parent),));
+    // Then insert the additional components
+    let _ = self.inner.insert(child, components);
+
+    // Update parent's Children list
+    if let Ok(mut children) = self.inner.get::<&mut Children>(parent) {
+      children.0.push(child);
+    } else {
+      // Parent doesn't have Children component yet, add it
+      let _ = self.inner.insert_one(parent, Children(vec![child]));
+    }
+
+    child
+  }
+
+  /// Set or change the parent of an entity
+  ///
+  /// If the entity already has a parent, it will be removed from the old
+  /// parent's children list.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if either entity doesn't exist.
+  pub fn set_parent(
+    &mut self,
+    child: Entity,
+    new_parent: Entity,
+  ) -> Result<(), hecs::NoSuchEntity> {
+    // Verify both entities exist
+    if !self.inner.contains(child) || !self.inner.contains(new_parent) {
+      return Err(hecs::NoSuchEntity);
+    }
+
+    // Remove from old parent's children list if it has one
+    if let Ok(old_parent) = self.inner.get::<&Parent>(child).map(|p| p.0)
+      && let Ok(mut children) = self.inner.get::<&mut Children>(old_parent)
+    {
+      children.0.retain(|&e| e != child);
+    }
+
+    // Set new parent
+    let _ = self.inner.insert_one(child, Parent(new_parent));
+
+    // Add to new parent's children list
+    if let Ok(mut children) = self.inner.get::<&mut Children>(new_parent) {
+      children.0.push(child);
+    } else {
+      let _ = self.inner.insert_one(new_parent, Children(vec![child]));
+    }
+
+    Ok(())
+  }
+
+  /// Remove parent from an entity (make it a root entity)
+  ///
+  /// The entity's local Transform will become its world position.
+  pub fn unparent(&mut self, child: Entity) -> Result<(), hecs::NoSuchEntity> {
+    if !self.inner.contains(child) {
+      return Err(hecs::NoSuchEntity);
+    }
+
+    // Get current parent and remove from their children list
+    if let Ok(parent) = self.inner.get::<&Parent>(child).map(|p| p.0)
+      && let Ok(mut children) = self.inner.get::<&mut Children>(parent)
+    {
+      children.0.retain(|&e| e != child);
+    }
+
+    // Remove Parent component
+    let _ = self.inner.remove_one::<Parent>(child);
+
+    Ok(())
+  }
+
+  /// Despawn an entity and all its descendants
+  ///
+  /// This recursively despawns all children, grandchildren, etc.
+  pub fn despawn_recursive(&mut self, entity: Entity) -> Result<(), hecs::NoSuchEntity> {
+    if !self.inner.contains(entity) {
+      return Err(hecs::NoSuchEntity);
+    }
+
+    // Collect all descendants first (to avoid borrowing issues)
+    let descendants = self.collect_descendants(entity);
+
+    // Remove from parent's children list
+    if let Ok(parent) = self.inner.get::<&Parent>(entity).map(|p| p.0)
+      && let Ok(mut children) = self.inner.get::<&mut Children>(parent)
+    {
+      children.0.retain(|&e| e != entity);
+    }
+
+    // Despawn all descendants (children first, then entity)
+    for descendant in descendants {
+      let _ = self.inner.despawn(descendant);
+    }
+
+    // Despawn the entity itself
+    self.inner.despawn(entity)
+  }
+
+  /// Collect all descendants of an entity (children, grandchildren, etc.)
+  fn collect_descendants(&self, entity: Entity) -> Vec<Entity> {
+    let mut result = Vec::new();
+    self.collect_descendants_recursive(entity, &mut result);
+    result
+  }
+
+  fn collect_descendants_recursive(&self, entity: Entity, result: &mut Vec<Entity>) {
+    if let Ok(children) = self.inner.get::<&Children>(entity) {
+      for &child in &children.0 {
+        result.push(child);
+        self.collect_descendants_recursive(child, result);
+      }
+    }
+  }
+
+  /// Get the parent of an entity, if it has one
+  pub fn parent(&self, entity: Entity) -> Option<Entity> {
+    self.inner.get::<&Parent>(entity).ok().map(|p| p.0)
+  }
+
+  /// Get the children of an entity
+  pub fn children(&self, entity: Entity) -> Vec<Entity> {
+    self
+      .inner
+      .get::<&Children>(entity)
+      .map(|c| c.0.clone())
+      .unwrap_or_default()
+  }
+
+  /// Check if an entity has a parent
+  pub fn has_parent(&self, entity: Entity) -> bool {
+    self.inner.get::<&Parent>(entity).is_ok()
+  }
+
+  /// Check if an entity has children
+  pub fn has_children(&self, entity: Entity) -> bool {
+    self
+      .inner
+      .get::<&Children>(entity)
+      .map(|c| !c.0.is_empty())
+      .unwrap_or(false)
+  }
+
+  // =========================================================================
+  // Transform Propagation
+  // =========================================================================
+
+  /// Propagate transforms through the hierarchy
+  ///
+  /// This updates `WorldTransform` for all entities based on their local
+  /// `Transform` and parent hierarchy. Call this after updating transforms
+  /// and before rendering.
+  ///
+  /// Entities without a `Transform` component are skipped.
+  pub fn propagate_transforms(&mut self) {
+    // Phase 1: Update root entities (no Parent component)
+    // Collect root entities first to avoid borrow issues
+    let roots: Vec<(Entity, Transform)> = {
+      let query = self.inner.query::<(Entity, &Transform)>();
+      query
+        .without::<&Parent>()
+        .iter()
+        .map(|(e, t)| (e, (*t).clone()))
+        .collect()
+    };
+
+    for (entity, transform) in roots {
+      let world_transform = WorldTransform::from_transform(&transform);
+      let _ = self.inner.insert_one(entity, world_transform);
+
+      // Recursively propagate to children
+      self.propagate_to_children(entity, world_transform);
+    }
+  }
+
+  /// Recursively propagate world transforms to children
+  fn propagate_to_children(&mut self, parent: Entity, parent_world: WorldTransform) {
+    // Get children list (clone to avoid borrow issues)
+    let children = self
+      .inner
+      .get::<&Children>(parent)
+      .map(|c| c.0.clone())
+      .unwrap_or_default();
+
+    for child in children {
+      // Get child's local transform (clone to release borrow)
+      let local_transform = self
+        .inner
+        .get::<&Transform>(child)
+        .map(|t| (*t).clone())
+        .ok();
+
+      if let Some(local) = local_transform {
+        let child_world = WorldTransform::from_parent_and_local(&parent_world, &local);
+        let _ = self.inner.insert_one(child, child_world);
+
+        // Recurse to grandchildren
+        self.propagate_to_children(child, child_world);
+      }
+    }
   }
 
   // =========================================================================
@@ -522,5 +755,207 @@ mod tests {
     let e = world.spawn((Position { x: 10.0, y: 20.0 },));
     assert!(world.contains(e));
     assert_eq!(world.generation(), 2); // Spawn doesn't change generation
+  }
+
+  // =========================================================================
+  // Hierarchy Tests
+  // =========================================================================
+
+  #[test]
+  fn spawn_child_creates_parent_relationship() {
+    let mut world = World::new();
+    let parent = world.spawn((Position { x: 0.0, y: 0.0 },));
+    let child = world.spawn_child(parent, (Position { x: 10.0, y: 0.0 },));
+
+    // Child has Parent component
+    assert!(world.has_parent(child));
+    assert_eq!(world.parent(child), Some(parent));
+
+    // Parent has Children component
+    assert!(world.has_children(parent));
+    assert_eq!(world.children(parent), vec![child]);
+  }
+
+  #[test]
+  fn spawn_multiple_children() {
+    let mut world = World::new();
+    let parent = world.spawn((Position { x: 0.0, y: 0.0 },));
+    let c1 = world.spawn_child(parent, (Position { x: 1.0, y: 0.0 },));
+    let c2 = world.spawn_child(parent, (Position { x: 2.0, y: 0.0 },));
+    let c3 = world.spawn_child(parent, (Position { x: 3.0, y: 0.0 },));
+
+    let children = world.children(parent);
+    assert_eq!(children.len(), 3);
+    assert!(children.contains(&c1));
+    assert!(children.contains(&c2));
+    assert!(children.contains(&c3));
+  }
+
+  #[test]
+  fn set_parent_changes_hierarchy() {
+    let mut world = World::new();
+    let p1 = world.spawn((Position { x: 0.0, y: 0.0 },));
+    let p2 = world.spawn((Position { x: 100.0, y: 0.0 },));
+    let child = world.spawn_child(p1, (Position { x: 10.0, y: 0.0 },));
+
+    // Initially child of p1
+    assert_eq!(world.parent(child), Some(p1));
+    assert_eq!(world.children(p1), vec![child]);
+
+    // Move to p2
+    world.set_parent(child, p2).unwrap();
+    assert_eq!(world.parent(child), Some(p2));
+    assert!(world.children(p1).is_empty());
+    assert_eq!(world.children(p2), vec![child]);
+  }
+
+  #[test]
+  fn unparent_removes_relationship() {
+    let mut world = World::new();
+    let parent = world.spawn((Position { x: 0.0, y: 0.0 },));
+    let child = world.spawn_child(parent, (Position { x: 10.0, y: 0.0 },));
+
+    world.unparent(child).unwrap();
+
+    assert!(!world.has_parent(child));
+    assert_eq!(world.parent(child), None);
+    assert!(world.children(parent).is_empty());
+  }
+
+  #[test]
+  fn despawn_recursive_removes_all_descendants() {
+    let mut world = World::new();
+    let root = world.spawn((Position { x: 0.0, y: 0.0 },));
+    let child1 = world.spawn_child(root, (Position { x: 1.0, y: 0.0 },));
+    let child2 = world.spawn_child(root, (Position { x: 2.0, y: 0.0 },));
+    let grandchild = world.spawn_child(child1, (Position { x: 3.0, y: 0.0 },));
+
+    assert_eq!(world.entities().len(), 4);
+
+    world.despawn_recursive(root).unwrap();
+
+    // All entities should be gone
+    assert_eq!(world.entities().len(), 0);
+    assert!(!world.contains(root));
+    assert!(!world.contains(child1));
+    assert!(!world.contains(child2));
+    assert!(!world.contains(grandchild));
+  }
+
+  #[test]
+  fn despawn_recursive_subtree() {
+    let mut world = World::new();
+    let root = world.spawn((Position { x: 0.0, y: 0.0 },));
+    let child1 = world.spawn_child(root, (Position { x: 1.0, y: 0.0 },));
+    let child2 = world.spawn_child(root, (Position { x: 2.0, y: 0.0 },));
+    let grandchild = world.spawn_child(child1, (Position { x: 3.0, y: 0.0 },));
+
+    // Remove just child1 and its descendants
+    world.despawn_recursive(child1).unwrap();
+
+    // Root and child2 should remain
+    assert!(world.contains(root));
+    assert!(world.contains(child2));
+    assert!(!world.contains(child1));
+    assert!(!world.contains(grandchild));
+
+    // Root's children should only include child2
+    assert_eq!(world.children(root), vec![child2]);
+  }
+
+  #[test]
+  fn propagate_transforms_root_only() {
+    use crate::core::ecs::components::Transform;
+
+    let mut world = World::new();
+    let e = world.spawn((Transform {
+      x: 10.0,
+      y: 20.0,
+      z: 0.0,
+      rotation: 0.0,
+      scale_x: 1.0,
+      scale_y: 1.0,
+    },));
+
+    world.propagate_transforms();
+
+    let wt = world.get_component::<WorldTransform>(e).unwrap();
+    assert_eq!(wt.x, 10.0);
+    assert_eq!(wt.y, 20.0);
+    assert_eq!(wt.rotation, 0.0);
+  }
+
+  #[test]
+  fn propagate_transforms_with_hierarchy() {
+    use crate::core::ecs::components::Transform;
+
+    let mut world = World::new();
+    let parent = world.spawn((Transform {
+      x: 100.0,
+      y: 50.0,
+      z: 0.0,
+      rotation: 0.0,
+      scale_x: 1.0,
+      scale_y: 1.0,
+    },));
+
+    let child = world.spawn_child(
+      parent,
+      (Transform {
+        x: 10.0,
+        y: 5.0,
+        z: 0.0,
+        rotation: 0.0,
+        scale_x: 1.0,
+        scale_y: 1.0,
+      },),
+    );
+
+    world.propagate_transforms();
+
+    // Parent's world transform equals local transform (no parent)
+    let parent_wt = world.get_component::<WorldTransform>(parent).unwrap();
+    assert_eq!(parent_wt.x, 100.0);
+    assert_eq!(parent_wt.y, 50.0);
+
+    // Child's world transform is parent + local
+    let child_wt = world.get_component::<WorldTransform>(child).unwrap();
+    assert_eq!(child_wt.x, 110.0);
+    assert_eq!(child_wt.y, 55.0);
+  }
+
+  #[test]
+  fn propagate_transforms_with_rotation() {
+    use crate::core::ecs::components::Transform;
+
+    let mut world = World::new();
+    let parent = world.spawn((Transform {
+      x: 100.0,
+      y: 100.0,
+      z: 0.0,
+      rotation: 90.0, // 90 degrees (WorldTransform uses degrees)
+      scale_x: 1.0,
+      scale_y: 1.0,
+    },));
+
+    let child = world.spawn_child(
+      parent,
+      (Transform {
+        x: 10.0, // 10 units right in local space
+        y: 0.0,  // But parent is rotated 90°, so this should be 10 up in world
+        z: 0.0,
+        rotation: 0.0,
+        scale_x: 1.0,
+        scale_y: 1.0,
+      },),
+    );
+
+    world.propagate_transforms();
+
+    let child_wt = world.get_component::<WorldTransform>(child).unwrap();
+    // After 90° rotation: (10, 0) -> (0, 10)
+    // Plus parent offset: (100 + 0, 100 + 10) = (100, 110)
+    assert!((child_wt.x - 100.0).abs() < 0.01);
+    assert!((child_wt.y - 110.0).abs() < 0.01);
   }
 }

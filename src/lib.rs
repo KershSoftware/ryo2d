@@ -35,7 +35,7 @@
 //! Ryo2D uses a simple Entity-Component-System (ECS) architecture:
 //!
 //! - **Entities** are unique IDs representing game objects
-//! - **Components** are data attached to entities (Transform, Velocity, SpriteRenderer)
+//! - **Components** are data attached to entities (Transform, Velocity, Renderable)
 //! - **Systems** process entities with specific components (handled by the engine)
 //!
 //! You implement the [`core::game::Game`] trait to define your game's behavior.
@@ -57,7 +57,11 @@ pub mod prelude {
   pub use crate::core::engine::{EngineBuilder, WindowMode};
 
   // ECS types
-  pub use crate::core::ecs::{Entity, RenderLayer, SpriteRenderer, Transform, Velocity, World};
+  pub use crate::core::ecs::{
+    Children, Entity, Material, Parent, RenderLayer, RenderMode, RenderStyle, Renderable,
+    ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, Transform, Velocity, World,
+    WorldTransform,
+  };
 
   // Math types (from glam)
   pub use crate::core::ecs::{Mat4, Vec2, Vec3, Vec4};
@@ -81,7 +85,7 @@ pub mod prelude {
 
   // Tiled rendering
   pub use crate::core::tile::{
-    CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart, TiledSprite,
+    CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart,
   };
 
   // Animation system

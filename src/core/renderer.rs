@@ -173,7 +173,8 @@ impl WgpuRenderer {
       format: wgpu::TextureFormat::Rgba8UnormSrgb,
       usage: wgpu::TextureUsages::TEXTURE_BINDING
         | wgpu::TextureUsages::COPY_DST
-        | wgpu::TextureUsages::COPY_SRC, // Allow copying from this texture for post-processing
+        | wgpu::TextureUsages::COPY_SRC // Allow copying from this texture for post-processing
+        | wgpu::TextureUsages::RENDER_ATTACHMENT, // Allow GPU sprite rendering to this texture
       view_formats: &[],
     });
 
@@ -361,6 +362,32 @@ impl WgpuRenderer {
     self.game_height
   }
 
+  /// Get a reference to the wgpu device.
+  ///
+  /// Used by GPU sprite renderer for creating resources.
+  pub fn device(&self) -> &wgpu::Device {
+    &self.device
+  }
+
+  /// Get a reference to the wgpu queue.
+  ///
+  /// Used by GPU sprite renderer for uploading data.
+  pub fn queue(&self) -> &wgpu::Queue {
+    &self.queue
+  }
+
+  /// Get the main game texture view.
+  ///
+  /// GPU sprite rendering draws directly to this texture.
+  pub fn game_texture_view(&self) -> &wgpu::TextureView {
+    &self.texture_view
+  }
+
+  /// Get the surface format.
+  pub fn surface_format(&self) -> wgpu::TextureFormat {
+    self.config.format
+  }
+
   /// Resize the surface when window size changes.
   pub fn resize(&mut self, new_width: u32, new_height: u32) {
     if new_width > 0 && new_height > 0 {
@@ -391,7 +418,10 @@ impl WgpuRenderer {
       sample_count: 1,
       dimension: wgpu::TextureDimension::D2,
       format: wgpu::TextureFormat::Rgba8UnormSrgb,
-      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING
+        | wgpu::TextureUsages::COPY_DST
+        | wgpu::TextureUsages::COPY_SRC
+        | wgpu::TextureUsages::RENDER_ATTACHMENT,
       view_formats: &[],
     });
 
@@ -513,7 +543,7 @@ impl WgpuRenderer {
 
   /// Render the pixel buffer to the screen.
   pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-    self.render_with_effects(None)
+    self.render_with_gpu_sprites::<fn(&mut wgpu::CommandEncoder, &wgpu::TextureView)>(None, None)
   }
 
   /// Render the pixel buffer with post-processing effects.
@@ -521,6 +551,27 @@ impl WgpuRenderer {
     &mut self,
     effects: Option<&EffectsManager>,
   ) -> Result<(), wgpu::SurfaceError> {
+    self.render_with_gpu_sprites::<fn(&mut wgpu::CommandEncoder, &wgpu::TextureView)>(effects, None)
+  }
+
+  /// Render with optional GPU sprites and post-processing effects.
+  ///
+  /// The GPU sprite callback receives the command encoder and game texture view,
+  /// allowing GPU sprites to be rendered on top of the CPU-rendered content.
+  ///
+  /// # Render Order
+  /// 1. CPU pixel buffer is uploaded to game texture
+  /// 2. `gpu_sprite_callback` draws GPU sprites on top (if provided)
+  /// 3. Post-processing effects are applied (if provided)
+  /// 4. Final result is rendered to screen with letterboxing
+  pub fn render_with_gpu_sprites<F>(
+    &mut self,
+    effects: Option<&EffectsManager>,
+    gpu_sprite_callback: Option<F>,
+  ) -> Result<(), wgpu::SurfaceError>
+  where
+    F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
+  {
     // Upload pixel buffer to GPU texture
     self.queue.write_texture(
       wgpu::ImageCopyTexture {
@@ -554,6 +605,11 @@ impl WgpuRenderer {
       .create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Render Encoder"),
       });
+
+    // Render GPU sprites on top of CPU content (if callback provided)
+    if let Some(callback) = gpu_sprite_callback {
+      callback(&mut encoder, &self.texture_view);
+    }
 
     // Check if we have active effects to apply
     let has_effects = effects.map(|e| e.has_active_effects()).unwrap_or(false);

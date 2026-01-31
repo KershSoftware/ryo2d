@@ -43,7 +43,7 @@ impl DebugScene {
       Velocity::new(0.0, 0.0),
       RigidBody::new().with_gravity_scale(0.0), // Dynamic but no gravity
       Collider::circle_collider(BIRD_SIZE / 2.0).with_offset(BIRD_SIZE / 2.0, BIRD_SIZE / 2.0),
-      SpriteRenderer::new(bird_handle).with_z_order(10),
+      Renderable::sprite(bird_handle).with_z_order(10),
     ));
     self.bird = Some(bird);
   }
@@ -129,7 +129,7 @@ impl DebugScene {
       Velocity::new(0.0, 0.0),
       RigidBody::kinematic(),
       Collider::box_collider(SCREEN_WIDTH as f32, GROUND_HEIGHT),
-      SpriteRenderer::new(ground_handle).with_z_order(15),
+      Renderable::sprite(ground_handle).with_z_order(15),
     ));
     self.ground = Some(ground);
   }

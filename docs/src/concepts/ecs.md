@@ -19,15 +19,17 @@ let enemy = ctx.world.spawn();   // Another unique Entity
 
 | Component | Purpose |
 |-----------|---------|
-| `Transform` | Position (x, y), rotation, scale |
-| `Velocity` | Movement speed (dx, dy) |
-| `SpriteRenderer` | Visual representation, z-order |
+| `Transform` | Position (x, y, z), rotation, scale |
+| `Velocity` | Movement speed (dx, dy, dz) |
+| `Renderable` | Visual representation with sprite, z-order, and optional shader |
 
 ```rust
-// Attach components to an entity
-ctx.world.add_component(player, Transform::new(100.0, 200.0));
-ctx.world.add_component(player, Velocity::zero());
-ctx.world.add_component(player, SpriteRenderer::new(sprite));
+// Spawn an entity with components
+let player = ctx.world.spawn((
+    Transform::new(100.0, 200.0),
+    Velocity::zero(),
+    Renderable::sprite(sprite_handle),
+));
 ```
 
 ### Systems
@@ -35,7 +37,7 @@ ctx.world.add_component(player, SpriteRenderer::new(sprite));
 **Systems** process entities with specific component combinations. The engine runs these automatically:
 
 - **Movement System** - Applies `Velocity` to `Transform` each frame
-- **Render System** - Draws entities with `Transform` + `SpriteRenderer`
+- **Render System** - Draws entities with `Transform` + `Renderable`
 
 ## Querying Components
 

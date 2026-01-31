@@ -223,10 +223,7 @@ fn spawn_enemies(&mut self, ctx: &mut GameContext, count: usize) {
         ctx.world.add_component(entity, Transform::new(i as f32 * 50.0, 100.0));
         
         // Clone is cheap - just increments ref count
-        ctx.world.add_component(entity, SpriteRenderer {
-            sprite: enemy_sprite.clone(),
-            ..Default::default()
-        });
+        ctx.world.add_component(entity, Renderable::sprite(enemy_sprite.clone()));
     }
 }
 // One sprite in memory, many enemies on screen!
@@ -514,7 +511,7 @@ Handles are designed to be cloned:
 ```rust
 // This is fine and cheap
 let sprite = self.player_sprite.clone();
-ctx.world.add_component(entity, SpriteRenderer { sprite, ..Default::default() });
+ctx.world.add_component(entity, Renderable::sprite(sprite));
 ```
 
 ### Batch Loading
@@ -672,10 +669,9 @@ impl Game for AssetDemo {
         // Spawn initial player
         let player = ctx.world.spawn();
         ctx.world.add_component(player, Transform::new(400.0, 300.0));
-        ctx.world.add_component(player, SpriteRenderer {
-            sprite: self.sprites.get("player").unwrap().clone(),
-            ..Default::default()
-        });
+        ctx.world.add_component(player, Renderable::sprite(
+            self.sprites.get("player").unwrap().clone()
+        ));
     }
     
     fn update(&mut self, ctx: &mut GameContext, dt: f32) {
@@ -695,10 +691,9 @@ impl Game for AssetDemo {
                 rand::random::<f32>() * 800.0,
                 rand::random::<f32>() * 600.0,
             ));
-            ctx.world.add_component(enemy, SpriteRenderer {
-                sprite: self.sprites.get("enemy").unwrap().clone(),
-                ..Default::default()
-            });
+            ctx.world.add_component(enemy, Renderable::sprite(
+                self.sprites.get("enemy").unwrap().clone()
+            ));
         }
         
         // Print cache stats on F1

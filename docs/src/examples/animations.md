@@ -29,7 +29,7 @@ fn spawn_coin(ctx: &mut SceneContext, x: f32, y: f32) -> Entity {
     // Spawn coin entity with Animator
     ctx.world.spawn((
         Transform::new(x, y),
-        SpriteRenderer::new(initial_sprite),
+        Renderable::sprite(initial_sprite),
         Animator::new(spin_animation),
         Coin,  // Custom marker component
     ))
@@ -97,7 +97,7 @@ fn spawn_player(ctx: &mut SceneContext) -> Entity {
     ctx.world.spawn((
         Transform::new(100.0, 100.0),
         Velocity::zero(),
-        SpriteRenderer::new(initial_sprite),
+        Renderable::sprite(initial_sprite),
         controller,
         Player { speed: 150.0 },
     ))
@@ -187,7 +187,7 @@ fn spawn_explosion(ctx: &mut SceneContext, x: f32, y: f32) -> Entity {
     
     ctx.world.spawn((
         Transform::new(x, y),
-        SpriteRenderer::new(initial_sprite).with_z_order(100),
+        Renderable::sprite(initial_sprite).with_z_order(100),
         Animator::new(explosion),
         Explosion { lifetime: 0.25 },  // Cleanup after animation
     ))
@@ -252,7 +252,7 @@ fn spawn_player_with_attack(ctx: &mut SceneContext) -> Entity {
     
     ctx.world.spawn((
         Transform::new(100.0, 100.0),
-        SpriteRenderer::new(initial_sprite),
+        Renderable::sprite(initial_sprite),
         controller,
         Player { can_attack: true },
     ))
@@ -323,7 +323,7 @@ fn spawn_breathing_monster(ctx: &mut SceneContext, x: f32, y: f32) -> Entity {
     
     ctx.world.spawn((
         Transform::new(x, y),
-        SpriteRenderer::new(initial_sprite),
+        Renderable::sprite(initial_sprite),
         Animator::new(breathe),
         Monster,
     ))

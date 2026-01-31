@@ -52,7 +52,7 @@ impl GameScene {
       RigidBody::new().with_gravity_scale(0.0),
       // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
       Collider::circle_collider(BIRD_SIZE * 0.35).with_offset(BIRD_SIZE / 2.0, BIRD_SIZE / 2.0),
-      SpriteRenderer::new(initial_sprite).with_z_order(10),
+      Renderable::sprite(initial_sprite).with_z_order(10),
       controller,
       Bird::new(),
     ));
@@ -151,7 +151,7 @@ impl GameScene {
       let ground_handle = SpriteHandle::from_sprite(ground_sprite, "ground.png");
       let ground = ctx.world.spawn((
         Transform::new(x, GROUND_Y),
-        SpriteRenderer::new(ground_handle).with_z_order(15),
+        Renderable::sprite(ground_handle).with_z_order(15),
         Ground,
         Scrolling::new(GROUND_SCROLL_SPEED, tile_width, wrap_distance),
       ));

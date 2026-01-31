@@ -24,6 +24,7 @@
 - [Tiled Rendering](./concepts/tiled-rendering.md)
 - [Animation System](./concepts/animation.md)
 - [Post-Processing Effects](./concepts/post-processing.md)
+- [Per-Sprite Shaders](./concepts/sprite-shaders.md)
 - [Asset Management](./concepts/assets.md)
 - [Physics System](./concepts/physics.md)
 - [Collision Detection](./concepts/collision.md)

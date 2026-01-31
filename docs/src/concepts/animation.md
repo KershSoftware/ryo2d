@@ -72,13 +72,13 @@ The `Animator` component is perfect for simple, always-playing animations like s
 // Spawn a spinning coin
 ctx.world.spawn((
     Transform::new(100.0, 100.0),
-    SpriteRenderer::new(frame1.clone()),  // Initial sprite
-    Animator::new(spin_animation),         // Animation component
+    Renderable::sprite(frame1.clone()),  // Initial sprite
+    Animator::new(spin_animation),        // Animation component
 ));
 
 // The engine automatically:
 // - Updates frames each tick
-// - Syncs current sprite to SpriteRenderer
+// - Syncs current sprite to Renderable
 // - Handles loop logic
 ```
 
@@ -125,7 +125,7 @@ controller.set_state("idle");
 // Spawn entity with controller
 ctx.world.spawn((
     Transform::new(x, y),
-    SpriteRenderer::new(initial_sprite),
+    Renderable::sprite(initial_sprite),
     controller,
     Player::new(),
 ));
@@ -201,7 +201,7 @@ fn spawn_player(ctx: &mut SceneContext) -> Entity {
     ctx.world.spawn((
         Transform::new(100.0, 100.0),
         Velocity::zero(),
-        SpriteRenderer::new(initial_sprite),
+        Renderable::sprite(initial_sprite),
         controller,
     ))
 }
@@ -243,7 +243,7 @@ controller.set_state("flap");
 // Spawn bird with controller
 ctx.world.spawn((
     Transform::new(x, y),
-    SpriteRenderer::new(initial_sprite),
+    Renderable::sprite(initial_sprite),
     controller,
     Bird::new(),
 ));
@@ -270,7 +270,7 @@ if bird.is_dead {
 The animation system is fully integrated into the engine:
 
 1. **Automatic Updates** - The engine updates `Animator` and `AnimationController` components each frame
-2. **Sprite Syncing** - Current animation frames are automatically synced to the entity's `SpriteRenderer`
+2. **Sprite Syncing** - Current animation frames are automatically synced to the entity's `Renderable`
 3. **No Manual Work** - You never need to manually set sprites or update frame counters
 4. **Game Logic Focus** - Just set animation states in response to game events
 

@@ -149,6 +149,44 @@ This separation means:
 | UI-heavy/tools | `ResizableStretch` |
 | Very specific experience | `Fixed` |
 
+## Why Pixel Art Looks Blurry
+
+If your pixel art appears blurry or distorted when fullscreening, you're likely using `ResizableAspectRatio` (the default) instead of `ResizableIntegerScale`.
+
+### The Problem
+
+With non-integer scaling (like 2.3× or 1.7×), game pixels don't map evenly to screen pixels:
+
+```
+Game: 320×240 → Window: 1000×750
+Scale: 3.125×
+
+Some game pixels → 3 screen pixels
+Other game pixels → 4 screen pixels
+```
+
+This creates **uneven pixels** - some appear larger than others, causing visual distortion. Even with nearest-neighbor sampling (no bilinear blur), the unevenness is visible.
+
+### The Solution
+
+Use `ResizableIntegerScale` for pixel art games:
+
+```rust
+EngineBuilder::new()
+    .resolution(320, 240)
+    .window_mode(WindowMode::ResizableIntegerScale)
+    .with_scene(GameScene::new())
+    .build()
+    .run()?;
+```
+
+This ensures every game pixel maps to exactly N×N screen pixels (where N is 1, 2, 3, etc.), preserving crisp edges.
+
+### When to Use Each
+
+- **Pixel art / retro games:** Use `ResizableIntegerScale` for perfect pixels
+- **Smooth art / high-res games:** Use `ResizableAspectRatio` (default) to maximize screen usage
+
 ## Common Patterns
 
 ### Let Users Choose
@@ -206,7 +244,7 @@ let center_y = 300.0;
 
 world.spawn((
     Transform::new(center_x, center_y),
-    SpriteRenderer::new(sprite),
+    Renderable::sprite(sprite),
 ));
 ```
 

@@ -264,6 +264,7 @@ struct BreakoutGame {
 impl Game for BreakoutGame {
     fn init(&mut self, ctx: &mut GameContext) {
         // Ball - bouncy, affected by physics
+        let ball_sprite = ctx.assets.create_sprite(Sprite::solid_rect(16, 16, 255, 255, 255, 255));
         self.ball = ctx.world.spawn((
             Transform::new(400.0, 300.0),
             Velocity { dx: 200.0, dy: -300.0 },
@@ -271,16 +272,17 @@ impl Game for BreakoutGame {
                 .with_restitution(1.0)      // Perfect bounce
                 .with_gravity_scale(0.0),   // No gravity
             Collider::circle(8.0),
-            SpriteRenderer::from_color([255, 255, 255]),
+            Renderable::sprite(ball_sprite),
         ));
         
         // Paddle - kinematic, player controlled
+        let paddle_sprite = ctx.assets.create_sprite(Sprite::solid_rect(100, 16, 100, 200, 100, 255));
         self.paddle = ctx.world.spawn((
             Transform::new(350.0, 550.0),
             Velocity::zero(),
             RigidBody::kinematic(),
             Collider::box_collider(100.0, 16.0),
-            SpriteRenderer::from_color([100, 200, 100]),
+            Renderable::sprite(paddle_sprite),
         ));
         
         // Walls - static

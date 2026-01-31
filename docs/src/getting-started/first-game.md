@@ -36,18 +36,15 @@ In `init()`, we create an entity and attach components:
 ```rust
 impl Game for MyGame {
     fn init(&mut self, ctx: &mut GameContext) {
-        // Create a player entity
-        let player = ctx.world.spawn();
-        
-        // Add position (Transform)
-        ctx.world.add_component(player, Transform::new(400.0, 300.0));
-        
-        // Add movement capability (Velocity)
-        ctx.world.add_component(player, Velocity::zero());
-        
-        // Add visual representation (SpriteRenderer)
+        // Create a player entity with all components
         let sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
-        ctx.world.add_component(player, SpriteRenderer::new(sprite));
+        let sprite_handle = SpriteHandle::from_sprite(sprite, "player");
+        
+        let player = ctx.world.spawn((
+            Transform::new(400.0, 300.0),
+            Velocity::zero(),
+            Renderable::sprite(sprite_handle),
+        ));
         
         self.player = Some(player);
     }
