@@ -25,11 +25,24 @@ use winit::event::MouseButton;
 use crate::core::input::InputState;
 
 use super::font::BitmapFont;
+use crate::core::ui::retained::{DropdownState, ScrollViewState, TextInputState};
 use crate::core::ui::theme::Theme;
 use crate::core::ui::types::{Anchor, Color, Rect};
 
 /// Maximum depth of nested clip rects.
 const MAX_CLIP_STACK_DEPTH: usize = 16;
+
+/// Pending dropdown overlay to be drawn at the end of the frame.
+struct PendingDropdown {
+  /// The trigger button rect
+  trigger_rect: Rect,
+  /// The dropdown list rect
+  list_rect: Rect,
+  /// Currently hovered index (for keyboard navigation)
+  hover_index: usize,
+  /// Options to display (stored as owned strings for lifetime management)
+  options: Vec<String>,
+}
 
 // ============================================================================
 // UiContext - Immediate Mode Drawing
@@ -70,6 +83,14 @@ pub struct UiContext<'a> {
   clip_stack: Vec<Rect>,
   /// Current effective clip rect (intersection of all stacked clips)
   current_clip: Option<Rect>,
+  /// Pending dropdown overlays to draw at end of frame
+  pending_dropdowns: Vec<PendingDropdown>,
+  /// Whether escape was consumed by a widget this frame
+  escape_consumed: bool,
+  /// Whether the primary mouse click was consumed by a widget this frame
+  click_consumed: bool,
+  /// ID of the currently focused dropdown (0 = none)
+  focused_dropdown_id: u32,
 }
 
 impl<'a> UiContext<'a> {
@@ -90,6 +111,10 @@ impl<'a> UiContext<'a> {
       theme: None,
       clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
       current_clip: None,
+      pending_dropdowns: Vec::new(),
+      escape_consumed: false,
+      click_consumed: false,
+      focused_dropdown_id: 0,
     }
   }
 
@@ -111,6 +136,10 @@ impl<'a> UiContext<'a> {
       theme: Some(theme),
       clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
       current_clip: None,
+      pending_dropdowns: Vec::new(),
+      escape_consumed: false,
+      click_consumed: false,
+      focused_dropdown_id: 0,
     }
   }
 
@@ -122,6 +151,55 @@ impl<'a> UiContext<'a> {
   /// Get the screen dimensions.
   pub fn screen_size(&self) -> (u32, u32) {
     (self.frame_width, self.frame_height)
+  }
+
+  // =========================================================================
+  // Input Consumption
+  // =========================================================================
+
+  /// Check if the Escape key was consumed by a widget this frame.
+  ///
+  /// Use this after calling your UI methods to know whether to handle
+  /// Escape yourself (e.g., for scene navigation).
+  ///
+  /// # Example
+  /// ```ignore
+  /// // In update():
+  /// if ctx.input.key_pressed(KeyCode::Escape) && !self.escape_consumed {
+  ///     return SceneAction::Pop;
+  /// }
+  ///
+  /// // In render_ui():
+  /// ui.dropdown(&mut self.dropdown, rect, &options);
+  /// self.escape_consumed = ui.escape_consumed();
+  /// ```
+  pub fn escape_consumed(&self) -> bool {
+    self.escape_consumed
+  }
+
+  /// Check if a mouse click was consumed by a widget this frame.
+  ///
+  /// Use this to avoid processing clicks on game elements when UI
+  /// handled the click.
+  pub fn click_consumed(&self) -> bool {
+    self.click_consumed
+  }
+
+  /// Check if any dropdown is currently open.
+  ///
+  /// Useful for knowing whether to handle scene-level input.
+  pub fn any_dropdown_open(&self) -> bool {
+    !self.pending_dropdowns.is_empty()
+  }
+
+  /// Get the currently focused dropdown ID (0 = none focused).
+  pub fn focused_dropdown(&self) -> u32 {
+    self.focused_dropdown_id
+  }
+
+  /// Set the currently focused dropdown ID.
+  pub fn set_focused_dropdown(&mut self, id: u32) {
+    self.focused_dropdown_id = id;
   }
 
   // =========================================================================
@@ -987,6 +1065,896 @@ impl<'a> UiContext<'a> {
     self.draw_rect(knob_rect, knob_color);
 
     clicked
+  }
+
+  // =========================================================================
+  // Text Input Widget
+  // =========================================================================
+
+  /// Draw an interactive text input field.
+  ///
+  /// This is a retained-mode widget - the `state` persists across frames and
+  /// holds the text buffer, cursor position, and selection state.
+  ///
+  /// Returns `true` if the text was modified this frame.
+  ///
+  /// # Arguments
+  /// * `state` - Mutable reference to the text input state
+  /// * `rect` - The bounding box for the text field
+  /// * `placeholder` - Text to show when the field is empty
+  /// * `dt` - Delta time for cursor blinking
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // In your scene struct:
+  /// struct MyScene {
+  ///     username: TextInputState,
+  /// }
+  ///
+  /// // Each frame:
+  /// let rect = Rect::new(100.0, 100.0, 200.0, 30.0);
+  /// if ui.text_input(&mut self.username, rect, "Enter name...", dt) {
+  ///     println!("Text changed: {}", self.username.text());
+  /// }
+  /// ```
+  pub fn text_input(
+    &mut self,
+    state: &mut TextInputState,
+    rect: Rect,
+    placeholder: &str,
+    dt: f32,
+  ) -> bool {
+    // Update blink timer
+    state.update_blink(dt);
+
+    // Get padding for click position calculation
+    let (pad_x, _pad_y) = self
+      .theme
+      .map(|t| t.text_input.padding)
+      .unwrap_or((8.0, 4.0));
+    let char_width = self.font.char_width() as f32;
+    let text_x = rect.x + pad_x;
+
+    // Handle focus on click
+    let clicked = self.is_clicked(rect);
+    let hovered = self.is_hovered(rect);
+
+    if clicked {
+      state.set_focused(true);
+
+      // Calculate which character was clicked and position cursor there
+      let mouse_x = self.input.mouse_x();
+      let relative_x = mouse_x - text_x;
+
+      if relative_x <= 0.0 {
+        // Click before text - position at start
+        state.set_cursor_char(0, false);
+      } else {
+        // Calculate character position from click
+        let char_index = (relative_x / char_width).round() as usize;
+        let text_char_count = state.text().chars().count();
+        state.set_cursor_char(char_index.min(text_char_count), false);
+      }
+    } else if self.input.mouse_pressed(MouseButton::Left) && !hovered {
+      // Click outside unfocuses
+      state.set_focused(false);
+    }
+
+    // Handle keyboard input
+    let modified = state.handle_input(self.input);
+
+    // Get colors from theme or use defaults
+    let (bg_color, border_color, text_color, placeholder_color, cursor_color, selection_color) =
+      if let Some(theme) = self.theme {
+        let bg = if state.is_focused() {
+          theme.text_input.background_focused
+        } else {
+          theme.text_input.background
+        };
+        let border = if state.is_focused() {
+          theme.text_input.border_focused
+        } else {
+          theme.text_input.border
+        };
+        (
+          bg,
+          border,
+          theme.text_input.text,
+          theme.text_input.placeholder,
+          theme.text_input.cursor,
+          theme.text_input.selection,
+        )
+      } else {
+        let bg = if state.is_focused() {
+          Color::rgb(35, 35, 50)
+        } else {
+          Color::rgb(30, 30, 45)
+        };
+        let border = if state.is_focused() {
+          Color::rgb(100, 140, 200)
+        } else {
+          Color::rgb(70, 70, 90)
+        };
+        (
+          bg,
+          border,
+          Color::WHITE,
+          Color::GRAY,
+          Color::WHITE,
+          Color::new(100, 140, 200, 100),
+        )
+      };
+
+    // Get padding from theme or default
+    let (pad_x, pad_y) = self
+      .theme
+      .map(|t| t.text_input.padding)
+      .unwrap_or((8.0, 4.0));
+    let border_thickness = self
+      .theme
+      .map(|t| t.text_input.border_thickness)
+      .unwrap_or(1.0);
+
+    // Draw background and border
+    self.draw_rect(rect, bg_color);
+    self.draw_rect_outline(rect, border_color, border_thickness);
+
+    // Calculate text area (inside padding)
+    let text_x = rect.x + pad_x;
+    let text_y = rect.y + (rect.height - self.font.char_height() as f32) / 2.0;
+    let text_width = rect.width - pad_x * 2.0;
+
+    // Clip to text area for overflow handling
+    let text_area = Rect::new(
+      text_x,
+      rect.y + pad_y,
+      text_width,
+      rect.height - pad_y * 2.0,
+    );
+    self.push_clip(text_area);
+
+    let char_width = self.font.char_width() as f32;
+    let text = state.text();
+
+    // Draw selection highlight if any
+    if let Some((sel_start, sel_end)) = state.selection_range() {
+      // Calculate pixel positions for selection
+      let start_chars = text[..sel_start].chars().count();
+      let end_chars = text[..sel_end].chars().count();
+      let sel_x = text_x + start_chars as f32 * char_width;
+      let sel_width = (end_chars - start_chars) as f32 * char_width;
+      let sel_rect = Rect::new(sel_x, text_y, sel_width, self.font.char_height() as f32);
+      self.draw_rect(sel_rect, selection_color);
+    }
+
+    // Draw text or placeholder
+    if text.is_empty() {
+      self.draw_text(placeholder, text_x, text_y, placeholder_color);
+    } else {
+      // Draw the text content
+      self.draw_text(text, text_x, text_y, text_color);
+
+      // Draw IME preedit text at cursor if composing
+      let preedit = self.input.ime_preedit();
+      if !preedit.is_empty() {
+        let cursor_chars = text[..state.cursor()].chars().count();
+        let preedit_x = text_x + cursor_chars as f32 * char_width;
+        // Draw preedit with underline-style indicator
+        self.draw_text(preedit, preedit_x, text_y, text_color);
+        // Draw underline for preedit text
+        let preedit_width = preedit.chars().count() as f32 * char_width;
+        self.draw_rect(
+          Rect::new(
+            preedit_x,
+            text_y + self.font.char_height() as f32 - 1.0,
+            preedit_width,
+            1.0,
+          ),
+          cursor_color,
+        );
+      }
+    }
+
+    // Draw cursor if focused and visible (blinking)
+    if state.should_draw_cursor() && !state.has_selection() {
+      let cursor_chars = text[..state.cursor()].chars().count();
+      // Account for preedit text when positioning cursor
+      let preedit_chars = self.input.ime_preedit().chars().count();
+      let cursor_x = text_x + (cursor_chars + preedit_chars) as f32 * char_width;
+      let cursor_rect = Rect::new(cursor_x, text_y, 2.0, self.font.char_height() as f32);
+      self.draw_rect(cursor_rect, cursor_color);
+    }
+
+    self.pop_clip();
+
+    modified
+  }
+
+  // =========================================================================
+  // Scroll View Widget
+  // =========================================================================
+
+  /// Draw a scrollable content area.
+  ///
+  /// This widget provides a scrollable container with automatic scrollbar.
+  /// The content is drawn by the provided closure, which receives the
+  /// current scroll offset.
+  ///
+  /// # Arguments
+  /// * `state` - Mutable reference to the scroll view state (retained across frames)
+  /// * `rect` - The visible area of the scroll view
+  /// * `content_height` - Total height of the scrollable content
+  /// * `dt` - Delta time for momentum/animation
+  /// * `content_fn` - Closure that draws the content, receives (ui, scroll_offset)
+  ///
+  /// # Returns
+  /// `true` if the scroll position changed this frame
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// let content_height = items.len() as f32 * 30.0;
+  /// let view_rect = Rect::new(20.0, 50.0, 300.0, 400.0);
+  ///
+  /// ui.scroll_view(&mut self.scroll_state, view_rect, content_height, dt, |ui, scroll_y| {
+  ///     for (i, item) in items.iter().enumerate() {
+  ///         let y = 50.0 + i as f32 * 30.0 - scroll_y;
+  ///         ui.draw_text(item, 30.0, y, Color::WHITE);
+  ///     }
+  /// });
+  /// ```
+  pub fn scroll_view<F>(
+    &mut self,
+    state: &mut ScrollViewState,
+    rect: Rect,
+    content_height: f32,
+    dt: f32,
+    content_fn: F,
+  ) -> bool
+  where
+    F: FnOnce(&mut Self, f32),
+  {
+    // Constants for scrollbar
+    const SCROLLBAR_WIDTH: f32 = 12.0;
+    const SCROLLBAR_PADDING: f32 = 2.0;
+    const SCROLLBAR_THUMB_MIN: f32 = 20.0;
+
+    let view_height = rect.height;
+    let needs_scrollbar = content_height > view_height;
+
+    // Calculate content area (leave room for scrollbar if needed)
+    let content_width = if needs_scrollbar {
+      rect.width - SCROLLBAR_WIDTH
+    } else {
+      rect.width
+    };
+    let content_rect = Rect::new(rect.x, rect.y, content_width, rect.height);
+
+    // Scrollbar dimensions
+    let scrollbar_rect = Rect::new(rect.x + content_width, rect.y, SCROLLBAR_WIDTH, rect.height);
+    let track_rect = Rect::new(
+      scrollbar_rect.x + SCROLLBAR_PADDING,
+      scrollbar_rect.y + SCROLLBAR_PADDING,
+      SCROLLBAR_WIDTH - SCROLLBAR_PADDING * 2.0,
+      scrollbar_rect.height - SCROLLBAR_PADDING * 2.0,
+    );
+
+    // Calculate thumb position
+    let (thumb_y, thumb_height) =
+      state.calculate_thumb(view_height, content_height, track_rect.height);
+    let thumb_height = thumb_height.max(SCROLLBAR_THUMB_MIN);
+    let thumb_rect = (
+      track_rect.x,
+      track_rect.y + thumb_y,
+      track_rect.width,
+      thumb_height,
+    );
+
+    // Check hover states
+    let content_hovered = self.is_hovered(content_rect);
+    let scrollbar_hovered = self.is_hovered(scrollbar_rect);
+
+    // Handle input
+    let scrollbar_thumb_rect = if needs_scrollbar {
+      Some(thumb_rect)
+    } else {
+      None
+    };
+    let changed = state.handle_input(
+      self.input,
+      view_height,
+      content_height,
+      content_hovered || scrollbar_hovered,
+      scrollbar_hovered,
+      scrollbar_thumb_rect,
+      dt,
+    );
+
+    // Get colors from theme or use defaults
+    let (bg_color, scrollbar_bg, scrollbar_thumb, scrollbar_thumb_hover) =
+      if let Some(theme) = self.theme {
+        (
+          theme.scrollbar.track,
+          theme.scrollbar.track,
+          theme.scrollbar.thumb,
+          theme.scrollbar.thumb_hovered,
+        )
+      } else {
+        (
+          Color::rgb(30, 30, 40),
+          Color::rgb(40, 40, 55),
+          Color::rgb(80, 80, 100),
+          Color::rgb(100, 100, 130),
+        )
+      };
+
+    // Draw background
+    self.draw_rect(rect, bg_color);
+
+    // Draw content with clipping
+    self.push_clip(content_rect);
+    content_fn(self, state.scroll_y());
+    self.pop_clip();
+
+    // Draw scrollbar if needed
+    if needs_scrollbar {
+      // Scrollbar track
+      self.draw_rect(scrollbar_rect, scrollbar_bg);
+
+      // Scrollbar thumb
+      let thumb_color = if state.is_dragging() || scrollbar_hovered {
+        scrollbar_thumb_hover
+      } else {
+        scrollbar_thumb
+      };
+      let thumb_draw_rect = Rect::new(thumb_rect.0, thumb_rect.1, thumb_rect.2, thumb_rect.3);
+      self.draw_rect(thumb_draw_rect, thumb_color);
+    }
+
+    changed
+  }
+
+  /// A scrollable container widget with horizontal scrolling.
+  ///
+  /// Similar to `scroll_view` but scrolls horizontally instead of vertically.
+  /// The scrollbar appears at the bottom of the view.
+  ///
+  /// # Arguments
+  /// * `state` - The retained scroll state (must be stored between frames)
+  /// * `rect` - The visible viewport rectangle
+  /// * `content_width` - Total width of the scrollable content
+  /// * `dt` - Delta time for momentum physics
+  /// * `content_fn` - Closure that draws content, receives `scroll_x` offset
+  ///
+  /// # Returns
+  /// `true` if the scroll position changed this frame
+  ///
+  /// # Example
+  /// ```ignore
+  /// ui.scroll_view_horizontal(&mut scroll_state, rect, 2000.0, dt, |ui, scroll_x| {
+  ///     for i in 0..20 {
+  ///         let x = 10.0 + i as f32 * 100.0 - scroll_x;
+  ///         ui.draw_rect(Rect::new(x, 10.0, 80.0, 80.0), Color::BLUE);
+  ///     }
+  /// });
+  /// ```
+  pub fn scroll_view_horizontal<F>(
+    &mut self,
+    state: &mut ScrollViewState,
+    rect: Rect,
+    content_width: f32,
+    dt: f32,
+    content_fn: F,
+  ) -> bool
+  where
+    F: FnOnce(&mut Self, f32),
+  {
+    // Constants for scrollbar
+    const SCROLLBAR_HEIGHT: f32 = 12.0;
+    const SCROLLBAR_PADDING: f32 = 2.0;
+    const SCROLLBAR_THUMB_MIN: f32 = 20.0;
+
+    let view_width = rect.width;
+    let needs_scrollbar = content_width > view_width;
+
+    // Calculate content area (leave room for scrollbar if needed)
+    let content_height = if needs_scrollbar {
+      rect.height - SCROLLBAR_HEIGHT
+    } else {
+      rect.height
+    };
+    let content_rect = Rect::new(rect.x, rect.y, rect.width, content_height);
+
+    // Scrollbar dimensions (at bottom)
+    let scrollbar_rect = Rect::new(
+      rect.x,
+      rect.y + content_height,
+      rect.width,
+      SCROLLBAR_HEIGHT,
+    );
+    let track_rect = Rect::new(
+      scrollbar_rect.x + SCROLLBAR_PADDING,
+      scrollbar_rect.y + SCROLLBAR_PADDING,
+      scrollbar_rect.width - SCROLLBAR_PADDING * 2.0,
+      SCROLLBAR_HEIGHT - SCROLLBAR_PADDING * 2.0,
+    );
+
+    // Calculate thumb position (using scroll_x for horizontal)
+    let scroll_x = state.scroll_x();
+    let thumb_ratio = view_width / content_width;
+    let thumb_width = (track_rect.width * thumb_ratio).max(SCROLLBAR_THUMB_MIN);
+    let max_scroll = (content_width - view_width).max(0.0);
+    let scroll_ratio = if max_scroll > 0.0 {
+      scroll_x / max_scroll
+    } else {
+      0.0
+    };
+    let thumb_x = scroll_ratio * (track_rect.width - thumb_width);
+    let thumb_rect = (
+      track_rect.x + thumb_x,
+      track_rect.y,
+      thumb_width,
+      track_rect.height,
+    );
+
+    // Check hover states
+    let content_hovered = self.is_hovered(content_rect);
+    let scrollbar_hovered = self.is_hovered(scrollbar_rect);
+
+    // Handle input for horizontal scrolling
+    let scrollbar_thumb_rect = if needs_scrollbar {
+      Some(thumb_rect)
+    } else {
+      None
+    };
+    let changed = state.handle_input_horizontal(
+      self.input,
+      view_width,
+      content_width,
+      content_hovered || scrollbar_hovered,
+      scrollbar_hovered,
+      scrollbar_thumb_rect,
+      dt,
+    );
+
+    // Get colors from theme or use defaults
+    let (bg_color, scrollbar_bg, scrollbar_thumb, scrollbar_thumb_hover) =
+      if let Some(theme) = self.theme {
+        (
+          theme.scrollbar.track,
+          theme.scrollbar.track,
+          theme.scrollbar.thumb,
+          theme.scrollbar.thumb_hovered,
+        )
+      } else {
+        (
+          Color::rgb(30, 30, 40),
+          Color::rgb(40, 40, 55),
+          Color::rgb(80, 80, 100),
+          Color::rgb(100, 100, 130),
+        )
+      };
+
+    // Draw background
+    self.draw_rect(rect, bg_color);
+
+    // Draw content with clipping
+    self.push_clip(content_rect);
+    content_fn(self, state.scroll_x());
+    self.pop_clip();
+
+    // Draw scrollbar if needed
+    if needs_scrollbar {
+      // Scrollbar track
+      self.draw_rect(scrollbar_rect, scrollbar_bg);
+
+      // Scrollbar thumb
+      let thumb_color = if state.is_dragging() || scrollbar_hovered {
+        scrollbar_thumb_hover
+      } else {
+        scrollbar_thumb
+      };
+      let thumb_draw_rect = Rect::new(thumb_rect.0, thumb_rect.1, thumb_rect.2, thumb_rect.3);
+      self.draw_rect(thumb_draw_rect, thumb_color);
+    }
+
+    changed
+  }
+
+  // =========================================================================
+  // Dropdown Widget
+  // =========================================================================
+
+  /// A dropdown selector widget for choosing from a list of options.
+  ///
+  /// This is a retained-mode widget - the state persists between frames.
+  /// When open, the dropdown draws above other content using the modal overlay.
+  ///
+  /// # Arguments
+  /// * `state` - The retained dropdown state (must be stored between frames)
+  /// * `rect` - The trigger button rectangle (closed dropdown size)
+  /// * `options` - Slice of option labels to display
+  ///
+  /// # Returns
+  /// `true` if the selection changed this frame
+  ///
+  /// # Input Consumption
+  /// When a dropdown is open:
+  /// - Escape key is consumed (check `ui.escape_consumed()` afterwards)
+  /// - Clicks on the dropdown list are consumed (check `ui.click_consumed()`)
+  ///
+  /// # Tab Navigation
+  /// If the dropdown has an ID > 0, Tab/Shift+Tab can navigate between dropdowns.
+  /// Space or Enter opens a focused dropdown.
+  ///
+  /// # Note
+  /// Call `finish_dropdowns()` at the end of your `render_ui` to draw all open
+  /// dropdown lists on top of other content.
+  ///
+  /// # Example
+  /// ```ignore
+  /// let options = ["Easy", "Medium", "Hard"];
+  /// if ui.dropdown(&mut self.difficulty, rect, &options) {
+  ///     println!("Selected: {}", options[self.difficulty.selected()]);
+  /// }
+  ///
+  /// // At end of render_ui:
+  /// ui.finish_dropdowns();
+  /// ```
+  pub fn dropdown(&mut self, state: &mut DropdownState, rect: Rect, options: &[&str]) -> bool {
+    if options.is_empty() {
+      return false;
+    }
+
+    let old_selected = state.selected();
+
+    // Get colors from theme or use defaults
+    let (bg_color, bg_hover, text_color, border_color, focus_color) =
+      if let Some(theme) = self.theme {
+        (
+          theme.button.background,
+          theme.button.background_hovered,
+          theme.button.text,
+          theme.panel.border.unwrap_or(Color::rgb(60, 60, 80)),
+          theme.text_input.border_focused,
+        )
+      } else {
+        (
+          Color::rgb(50, 50, 65),
+          Color::rgb(65, 65, 85),
+          Color::WHITE,
+          Color::rgb(80, 80, 100),
+          Color::rgb(100, 150, 255),
+        )
+      };
+
+    let trigger_hovered = self.is_hovered(rect);
+    let mouse_pressed = self.input.mouse_pressed(MouseButton::Left) && !self.click_consumed;
+    let mouse_x = self.input.mouse_x();
+    let mouse_y = self.input.mouse_y();
+
+    // Handle focus via click on trigger - this dropdown becomes focused
+    if trigger_hovered && mouse_pressed {
+      state.set_focused(true);
+      // Track this as the focused dropdown so we can unfocus others
+      if state.id() > 0 {
+        self.focused_dropdown_id = state.id();
+      }
+    }
+
+    // Sync focus: if another dropdown was clicked this frame, unfocus this one
+    // This ensures only one dropdown has focus at a time
+    if state.id() > 0 && self.focused_dropdown_id > 0 && self.focused_dropdown_id != state.id() {
+      state.set_focused(false);
+    }
+
+    // Determine if we should show focus ring
+    let show_focus = state.is_focused();
+
+    // Draw the trigger button
+    let trigger_bg = if trigger_hovered || state.is_open() {
+      bg_hover
+    } else {
+      bg_color
+    };
+    self.draw_rect(rect, trigger_bg);
+
+    // Draw focus ring if focused
+    if show_focus {
+      self.draw_rect_outline(rect, focus_color, 2.0);
+    } else {
+      self.draw_rect_outline(rect, border_color, 1.0);
+    }
+
+    // Draw selected option text
+    let selected_text = if state.selected() < options.len() {
+      options[state.selected()]
+    } else {
+      ""
+    };
+    let text_x = rect.x + 8.0;
+    let text_y = rect.y + (rect.height - 8.0) / 2.0; // Center vertically (assuming ~8px font)
+    self.draw_text(selected_text, text_x, text_y, text_color);
+
+    // Draw dropdown arrow
+    let arrow_size = 6.0;
+    let arrow_x = rect.x + rect.width - 16.0;
+    let arrow_y = rect.y + rect.height / 2.0;
+    self.draw_dropdown_arrow(arrow_x, arrow_y, arrow_size, text_color, state.is_open());
+
+    // Handle trigger click to toggle dropdown
+    if trigger_hovered && mouse_pressed {
+      state.toggle();
+      self.click_consumed = true;
+    }
+
+    // Note: Space/Enter to open focused dropdown is handled in handle_dropdown_tab_navigation()
+    // which runs after all dropdowns are processed, ensuring focus state is correct.
+
+    // Handle keyboard when open
+    if state.is_open() {
+      let max_index = options.len().saturating_sub(1);
+
+      if self.input.key_pressed(winit::keyboard::KeyCode::ArrowUp) {
+        state.hover_up();
+      }
+      if self.input.key_pressed(winit::keyboard::KeyCode::ArrowDown) {
+        state.hover_down(max_index);
+      }
+      // Both Enter and Space select the hovered item
+      if self.input.key_pressed(winit::keyboard::KeyCode::Enter)
+        || self.input.key_pressed(winit::keyboard::KeyCode::Space)
+      {
+        state.select_hovered();
+      }
+      if self.input.key_pressed(winit::keyboard::KeyCode::Escape) {
+        state.close();
+        self.escape_consumed = true;
+      }
+
+      // Calculate list rect for click-outside detection
+      let item_height = rect.height;
+      let list_height = options.len() as f32 * item_height;
+      let list_rect = Rect::new(rect.x, rect.y + rect.height, rect.width, list_height);
+
+      // Check if click is outside the dropdown entirely
+      let full_dropdown = Rect::new(rect.x, rect.y, rect.width, rect.height + list_height);
+      if mouse_pressed && !full_dropdown.contains(mouse_x, mouse_y) {
+        state.close();
+      }
+
+      // Handle clicks on options (must be done here for state mutation)
+      for (i, _) in options.iter().enumerate() {
+        let option_rect = Rect::new(
+          rect.x,
+          rect.y + rect.height + i as f32 * item_height,
+          rect.width,
+          item_height,
+        );
+        let option_hovered = option_rect.contains(mouse_x, mouse_y);
+
+        if option_hovered && mouse_pressed {
+          state.set_selected(i);
+          state.close();
+          self.click_consumed = true;
+        }
+      }
+
+      // Consume click if anywhere on the dropdown to prevent passthrough
+      if mouse_pressed && full_dropdown.contains(mouse_x, mouse_y) {
+        self.click_consumed = true;
+      }
+
+      // Queue the dropdown list to be drawn later (on top of everything)
+      // Only add if still open after handling clicks
+      if state.is_open() {
+        self.pending_dropdowns.push(PendingDropdown {
+          trigger_rect: rect,
+          list_rect,
+          hover_index: state.hover_index(),
+          options: options.iter().map(|s| s.to_string()).collect(),
+        });
+      }
+    }
+
+    state.selected() != old_selected
+  }
+
+  /// Handle Tab navigation between multiple dropdowns.
+  ///
+  /// Call this once per frame after all dropdowns to enable Tab/Shift+Tab
+  /// navigation. Provide all dropdown states in tab order.
+  ///
+  /// # Example
+  /// ```ignore
+  /// ui.dropdown(&mut self.dropdown1, rect1, &options1);
+  /// ui.dropdown(&mut self.dropdown2, rect2, &options2);
+  /// ui.dropdown(&mut self.dropdown3, rect3, &options3);
+  ///
+  /// // Enable tab navigation
+  /// ui.handle_dropdown_tab_navigation(&mut [
+  ///     &mut self.dropdown1,
+  ///     &mut self.dropdown2,
+  ///     &mut self.dropdown3,
+  /// ]);
+  /// ```
+  pub fn handle_dropdown_tab_navigation(&mut self, dropdowns: &mut [&mut DropdownState]) {
+    if dropdowns.is_empty() {
+      return;
+    }
+
+    // Clear just_closed flags at the start of each frame's handling
+    // This must happen BEFORE we check for open key, so a dropdown closed
+    // on a previous frame doesn't block opening on this frame
+    for dropdown in dropdowns.iter_mut() {
+      if dropdown.was_just_closed() {
+        // Don't clear yet - we'll use this to prevent re-open this frame
+      }
+    }
+
+    // If a dropdown was clicked this frame (focused_dropdown_id was set),
+    // ensure only that one has focus
+    if self.focused_dropdown_id > 0 {
+      for dropdown in dropdowns.iter_mut() {
+        let should_focus = dropdown.id() == self.focused_dropdown_id;
+        dropdown.set_focused(should_focus);
+      }
+    }
+
+    // Don't do keyboard navigation if any dropdown is open
+    if dropdowns.iter().any(|d| d.is_open()) {
+      return;
+    }
+
+    // Handle Space/Enter to open the focused dropdown
+    // This must be done HERE because focus may have been set by Tab on a previous frame
+    let open_key = self.input.key_pressed(winit::keyboard::KeyCode::Space)
+      || self.input.key_pressed(winit::keyboard::KeyCode::Enter);
+    if open_key {
+      for dropdown in dropdowns.iter_mut() {
+        // Don't re-open if this dropdown was just closed this frame (by selecting an item)
+        if dropdown.is_focused() && !dropdown.was_just_closed() {
+          dropdown.open();
+          return; // Only open one
+        }
+      }
+    }
+
+    // Clear just_closed flags at the END so they persist for one frame
+    for dropdown in dropdowns.iter_mut() {
+      dropdown.clear_just_closed();
+    }
+
+    let tab_pressed = self.input.key_pressed(winit::keyboard::KeyCode::Tab);
+    if !tab_pressed {
+      return;
+    }
+
+    let shift_held = self.input.key_down(winit::keyboard::KeyCode::ShiftLeft)
+      || self.input.key_down(winit::keyboard::KeyCode::ShiftRight);
+
+    // Find currently focused dropdown index
+    let current_idx = dropdowns.iter().position(|d| d.is_focused());
+
+    let next_idx = match current_idx {
+      Some(idx) => {
+        if shift_held {
+          // Shift+Tab: go backwards
+          if idx == 0 {
+            dropdowns.len() - 1
+          } else {
+            idx - 1
+          }
+        } else {
+          // Tab: go forwards
+          (idx + 1) % dropdowns.len()
+        }
+      }
+      None => {
+        // Nothing focused, start at first (or last if shift)
+        if shift_held { dropdowns.len() - 1 } else { 0 }
+      }
+    };
+
+    // Update focus
+    for (i, dropdown) in dropdowns.iter_mut().enumerate() {
+      dropdown.set_focused(i == next_idx);
+    }
+  }
+
+  /// Draw all pending dropdown lists on top of other content.
+  ///
+  /// Call this at the end of your `render_ui` function to ensure dropdown
+  /// lists appear above other UI elements.
+  ///
+  /// # Example
+  /// ```ignore
+  /// fn render_ui(&mut self, ui: &mut UiContext) {
+  ///     // Draw all your UI...
+  ///     ui.dropdown(&mut self.dropdown1, rect1, &options1);
+  ///     ui.dropdown(&mut self.dropdown2, rect2, &options2);
+  ///     
+  ///     // Draw dropdown overlays last
+  ///     ui.finish_dropdowns();
+  /// }
+  /// ```
+  pub fn finish_dropdowns(&mut self) {
+    // Take pending dropdowns to avoid borrow issues
+    let dropdowns = std::mem::take(&mut self.pending_dropdowns);
+
+    if dropdowns.is_empty() {
+      return;
+    }
+
+    // Get colors from theme
+    let (text_color, border_color, option_bg, option_hover) = if let Some(theme) = self.theme {
+      (
+        theme.button.text,
+        theme.panel.border.unwrap_or(Color::rgb(60, 60, 80)),
+        theme.panel.background,
+        theme.button.background_hovered,
+      )
+    } else {
+      (
+        Color::WHITE,
+        Color::rgb(80, 80, 100),
+        Color::rgb(40, 40, 55),
+        Color::rgb(60, 60, 80),
+      )
+    };
+
+    let mouse_x = self.input.mouse_x();
+    let mouse_y = self.input.mouse_y();
+
+    // Draw each pending dropdown list
+    for dropdown in dropdowns {
+      let item_height = dropdown.trigger_rect.height;
+
+      // Draw list background
+      self.draw_rect(dropdown.list_rect, option_bg);
+      self.draw_rect_outline(dropdown.list_rect, border_color, 1.0);
+
+      // Draw options
+      for (i, option) in dropdown.options.iter().enumerate() {
+        let option_rect = Rect::new(
+          dropdown.trigger_rect.x,
+          dropdown.trigger_rect.y + dropdown.trigger_rect.height + i as f32 * item_height,
+          dropdown.trigger_rect.width,
+          item_height,
+        );
+
+        let option_hovered = option_rect.contains(mouse_x, mouse_y);
+        let is_keyboard_hover = i == dropdown.hover_index;
+
+        // Highlight hovered or keyboard-selected option
+        if option_hovered || is_keyboard_hover {
+          self.draw_rect(option_rect, option_hover);
+        }
+
+        // Draw option text
+        let opt_text_y = option_rect.y + (option_rect.height - 8.0) / 2.0;
+        self.draw_text(option, option_rect.x + 8.0, opt_text_y, text_color);
+      }
+    }
+  }
+
+  /// Draw a dropdown arrow indicator.
+  fn draw_dropdown_arrow(&mut self, x: f32, y: f32, size: f32, color: Color, pointing_up: bool) {
+    // Draw a simple triangle arrow
+    // For now, we'll draw it using small rectangles (since we don't have triangle primitives)
+    let half = size / 2.0;
+    if pointing_up {
+      // Arrow pointing up (dropdown is open)
+      self.draw_rect(Rect::new(x - half, y, size, 2.0), color);
+      self.draw_rect(Rect::new(x - half + 1.0, y - 2.0, size - 2.0, 2.0), color);
+      self.draw_rect(Rect::new(x - half + 2.0, y - 4.0, size - 4.0, 2.0), color);
+    } else {
+      // Arrow pointing down (dropdown is closed)
+      self.draw_rect(Rect::new(x - half, y - 2.0, size, 2.0), color);
+      self.draw_rect(Rect::new(x - half + 1.0, y, size - 2.0, 2.0), color);
+      self.draw_rect(Rect::new(x - half + 2.0, y + 2.0, size - 4.0, 2.0), color);
+    }
   }
 
   // =========================================================================

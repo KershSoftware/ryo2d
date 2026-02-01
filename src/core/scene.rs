@@ -419,6 +419,10 @@ pub struct SceneManager {
   scenes: Vec<Box<dyn Scene>>,
   /// Active transition state
   transition_state: Option<TransitionState>,
+  /// When true, skip the next update cycle to prevent input leak-through.
+  /// Set after scene transitions (pop/switch/reset) so the newly-active
+  /// scene doesn't process stale input from the previous scene.
+  skip_next_update: bool,
 }
 
 /// Internal state for an in-progress transition.
@@ -466,6 +470,7 @@ impl SceneManager {
     SceneManager {
       scenes: Vec::new(),
       transition_state: None,
+      skip_next_update: false,
     }
   }
 
@@ -559,6 +564,9 @@ impl SceneManager {
       // Resume the new top scene
       if let Some(new_top) = self.scenes.last_mut() {
         new_top.on_resume(ctx);
+        // Skip the next update so the resumed scene doesn't process
+        // stale input (e.g., the Escape that caused the pop)
+        self.skip_next_update = true;
       }
 
       Some(scene)
@@ -610,6 +618,14 @@ impl SceneManager {
   pub fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     if self.scenes.is_empty() {
       return SceneAction::Quit;
+    }
+
+    // If a scene transition just happened, skip this update to prevent
+    // the newly-active scene from processing stale input (e.g., the Escape
+    // key that caused the previous scene to pop).
+    if self.skip_next_update {
+      self.skip_next_update = false;
+      return SceneAction::Continue;
     }
 
     // Determine which scenes should update

@@ -116,10 +116,10 @@ impl Scene for PauseScene {
 
       // Save settings if changed
       if self.settings_changed {
-        if let Ok(workspace) = Workspace::discover() {
-          if let Ok(save_manager) = workspace.create_save_manager() {
-            let _ = save_manager.save_system(&self.settings);
-          }
+        if let Ok(workspace) = Workspace::discover()
+          && let Ok(save_manager) = workspace.create_save_manager()
+        {
+          let _ = save_manager.save_system(&self.settings);
         }
         self.settings_changed = false; // Clear after saving
       }

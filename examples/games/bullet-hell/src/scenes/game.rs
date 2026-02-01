@@ -15,6 +15,7 @@ pub struct GameScene {
   particles: Vec<Entity>,
   platforms: Vec<Entity>,
   survival_time: f32,
+  #[allow(dead_code)]
   best_time: f32,
   player_lives: u32,
   player_invincible: bool,
@@ -33,6 +34,12 @@ pub struct GameScene {
   // Screen dimensions (obtained from engine at runtime)
   screen_width: f32,
   screen_height: f32,
+}
+
+impl Default for GameScene {
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 impl GameScene {
@@ -358,7 +365,7 @@ impl GameScene {
   }
 
   fn update_turrets(&mut self, ctx: &mut SceneContext, dt: f32) {
-    let turrets_to_update: Vec<_> = self.turrets.iter().copied().collect();
+    let turrets_to_update: Vec<_> = self.turrets.to_vec();
 
     for turret_entity in turrets_to_update {
       let Some(mut transform) = ctx.world.get_mut::<Transform>(turret_entity) else {

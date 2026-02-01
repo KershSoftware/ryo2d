@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{Ime, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::PhysicalKey;
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::animation::{AnimationController, Animator};
@@ -963,6 +963,9 @@ impl ApplicationHandler for Engine {
         .expect("Failed to create window"),
     );
 
+    // Enable IME for text input support
+    window.set_ime_allowed(true);
+
     // Create wgpu renderer (blocking on async)
     let renderer = pollster::block_on(WgpuRenderer::new(
       Arc::clone(&window),
@@ -1023,6 +1026,22 @@ impl ApplicationHandler for Engine {
         if let PhysicalKey::Code(key) = event.physical_key {
           self.input.handle_keyboard(key, event.state);
         }
+        // Capture text input from key events (winit 0.30+)
+        // This handles regular character input when IME is not composing
+        if event.state == winit::event::ElementState::Pressed
+          && let Some(text) = &event.text
+        {
+          // Don't capture control characters (backspace, enter, etc.)
+          // These are handled separately as key presses
+          // Also skip when Ctrl or Alt is held (for shortcuts like Ctrl+A, Ctrl+C)
+          let ctrl_held = self.input.key_down(KeyCode::ControlLeft)
+            || self.input.key_down(KeyCode::ControlRight);
+          let alt_held =
+            self.input.key_down(KeyCode::AltLeft) || self.input.key_down(KeyCode::AltRight);
+          if !ctrl_held && !alt_held && !text.chars().all(|c| c.is_control()) {
+            self.input.handle_text_input(text);
+          }
+        }
       }
       WindowEvent::MouseInput { state, button, .. } => {
         self.input.handle_mouse_button(*button, *state);
@@ -1036,6 +1055,23 @@ impl ApplicationHandler for Engine {
       }
       WindowEvent::MouseWheel { delta, .. } => {
         self.input.handle_scroll(*delta);
+      }
+      WindowEvent::Ime(ime_event) => {
+        // Handle Input Method Editor (IME) events for text input
+        match ime_event {
+          Ime::Enabled => {
+            self.input.handle_ime_enabled();
+          }
+          Ime::Disabled => {
+            self.input.handle_ime_disabled();
+          }
+          Ime::Preedit(text, cursor) => {
+            self.input.handle_ime_preedit(text.clone(), *cursor);
+          }
+          Ime::Commit(text) => {
+            self.input.handle_ime_commit(text.clone());
+          }
+        }
       }
       WindowEvent::Resized(new_size) => {
         // Handle window resize based on window mode
