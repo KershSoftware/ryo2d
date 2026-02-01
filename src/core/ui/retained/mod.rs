@@ -38,9 +38,11 @@
 //! ```
 
 mod dropdown;
+mod focus;
 mod scroll_view;
 mod text_input;
 
 pub use dropdown::DropdownState;
+pub use focus::{Focusable, FocusTrap};
 pub use scroll_view::ScrollViewState;
 pub use text_input::TextInputState;
