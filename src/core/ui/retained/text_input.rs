@@ -130,13 +130,18 @@ impl TextInputState {
     if self.cursor == self.selection_anchor {
       None
     } else {
-      Some((self.cursor.min(self.selection_anchor), self.cursor.max(self.selection_anchor)))
+      Some((
+        self.cursor.min(self.selection_anchor),
+        self.cursor.max(self.selection_anchor),
+      ))
     }
   }
 
   /// Get the selected text, if any.
   pub fn selected_text(&self) -> Option<&str> {
-    self.selection_range().map(|(start, end)| &self.text[start..end])
+    self
+      .selection_range()
+      .map(|(start, end)| &self.text[start..end])
   }
 
   /// Select all text.
