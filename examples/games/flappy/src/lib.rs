@@ -1,4 +1,4 @@
-//! Flappy Bird - Ryo2D Example Game
+//! Flappy - Ryo2D Example Game
 //!
 //! This example demonstrates:
 //! - Image asset loading and rendering

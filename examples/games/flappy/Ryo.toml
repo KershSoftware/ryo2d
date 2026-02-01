@@ -1,8 +1,8 @@
-# Flappy Bird Demo - Ryo Engine Project Configuration
+# Flappy Demo - Ryo Engine Project Configuration
 # This file configures the example project for the Ryo2D engine
 
 [project]
-name = "Flappy Bird Demo"
+name = "Flappy Demo"
 
 [paths]
 # Entry point is in this directory (not in src/)

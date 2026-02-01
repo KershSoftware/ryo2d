@@ -29,8 +29,8 @@ impl MenuScene {
     // Load bird sprites for animation
     let bird_flap_up =
       Sprite::load_svg_fit("assets/bird-flap-up.svg", 64, 64).expect("Failed to load bird sprite");
-    let bird_flap_down =
-      Sprite::load_svg_fit("assets/bird-flap-down.svg", 64, 64).expect("Failed to load bird sprite");
+    let bird_flap_down = Sprite::load_svg_fit("assets/bird-flap-down.svg", 64, 64)
+      .expect("Failed to load bird sprite");
 
     Self {
       high_score: load_high_score(),
@@ -101,7 +101,7 @@ impl Scene for MenuScene {
     );
 
     // Title
-    let title = "FLAPPY BIRD";
+    let title = "FLAPPY";
     let (title_w, _) = ui.text_size(title);
     ui.draw_text(
       title,

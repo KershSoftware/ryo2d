@@ -19,6 +19,7 @@ pub struct GameScene {
   bird: Option<Entity>,
   pipes: Vec<Entity>,
   ground_entities: Vec<Entity>,
+  background_entities: Vec<Entity>,
 }
 
 const DEATH_DELAY: f32 = 1.0; // seconds to show death animation
@@ -33,6 +34,7 @@ impl GameScene {
       bird: None,
       pipes: Vec::new(),
       ground_entities: Vec::new(),
+      background_entities: Vec::new(),
     }
   }
 
@@ -156,6 +158,38 @@ impl GameScene {
         Scrolling::new(GROUND_SCROLL_SPEED, tile_width, wrap_distance),
       ));
       self.ground_entities.push(ground);
+    }
+  }
+
+  fn spawn_background(&mut self, ctx: &mut SceneContext) {
+    // Spawn two background segments for seamless parallax scrolling
+    // Background scrolls slower than pipes/ground for depth effect
+    let bg_sprite = Sprite::load("assets/bg.png").expect("Failed to load background sprite");
+    let bg_width = bg_sprite.width() as f32;
+    let bg_height = bg_sprite.height() as f32;
+    let tile_width = bg_width;
+    let wrap_distance = bg_width * 2.0;
+
+    // Scale background to fill screen height while maintaining aspect ratio
+    let screen_height = SCREEN_HEIGHT as f32;
+    let scale = screen_height / bg_height;
+
+    for i in 0..2 {
+      let x = i as f32 * bg_width * scale;
+      let bg_handle = SpriteHandle::from_sprite(bg_sprite.clone(), "bg.png");
+      let mut transform = Transform::new(x, 0.0);
+      transform.scale_x = scale;
+      transform.scale_y = scale;
+      let background = ctx.world.spawn((
+        transform,
+        Renderable::sprite(bg_handle).with_z_order(0), // Render behind everything
+        Scrolling::new(
+          BACKGROUND_SCROLL_SPEED,
+          tile_width * scale,
+          wrap_distance * scale,
+        ),
+      ));
+      self.background_entities.push(background);
     }
   }
 
@@ -388,6 +422,7 @@ impl Scene for GameScene {
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
     // Spawn entities
+    self.spawn_background(ctx);
     self.spawn_bird(ctx);
     self.spawn_ground(ctx);
 
