@@ -49,6 +49,10 @@ pub enum EngineError {
   /// Workspace configuration error
   #[error("Workspace error: {0}")]
   WorkspaceError(String),
+
+  /// Network error
+  #[error(transparent)]
+  Network(#[from] NetworkError),
 }
 
 /// Result type for engine operations
@@ -186,6 +190,41 @@ pub enum SaveError {
 
 /// Result type for save operations
 pub type SaveResult<T> = Result<T, SaveError>;
+
+/// Network system errors
+#[derive(Error, Debug)]
+pub enum NetworkError {
+  /// Failed to initialize networking
+  #[error("Network initialization failed: {0}")]
+  InitError(String),
+
+  /// Connection failed
+  #[error("Connection failed: {0}")]
+  ConnectionError(String),
+
+  /// Failed to send message
+  #[error("Failed to send message: {0}")]
+  SendError(String),
+
+  /// Failed to receive message
+  #[error("Failed to receive message: {0}")]
+  ReceiveError(String),
+
+  /// Transport layer error
+  #[error("Transport error: {0}")]
+  TransportError(String),
+
+  /// Client is not connected
+  #[error("Client not connected")]
+  NotConnected,
+
+  /// Server is not running
+  #[error("Server not running")]
+  NotRunning,
+}
+
+/// Result type for network operations
+pub type NetworkResult<T> = Result<T, NetworkError>;
 
 #[cfg(test)]
 mod tests {
