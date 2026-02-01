@@ -9,7 +9,7 @@
 #   ./install.ps1 -Uninstall # Uninstall ryo2d
 
 param(
-    [switch]$Uninstall
+  [switch]$Uninstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,101 +19,102 @@ $InstallDir = Join-Path $env:LOCALAPPDATA "ryo2d\bin"
 $BinaryPath = Join-Path $InstallDir "ryo2d.exe"
 
 function Write-Status {
-    param([string]$Action, [string]$Message)
-    Write-Host ("{0,12} " -f $Action) -NoNewline -ForegroundColor Cyan
-    Write-Host $Message
+  param([string]$Action, [string]$Message)
+  Write-Host ("{0,12} " -f $Action) -NoNewline -ForegroundColor Cyan
+  Write-Host $Message
 }
 
 function Write-Success {
-    param([string]$Message)
-    Write-Host ("{0,12} " -f "Done") -NoNewline -ForegroundColor Green
-    Write-Host $Message
+  param([string]$Message)
+  Write-Host ("{0,12} " -f "Done") -NoNewline -ForegroundColor Green
+  Write-Host $Message
 }
 
 function Write-Warning {
-    param([string]$Message)
-    Write-Host ("{0,12} " -f "Warning") -NoNewline -ForegroundColor Yellow
-    Write-Host $Message
+  param([string]$Message)
+  Write-Host ("{0,12} " -f "Warning") -NoNewline -ForegroundColor Yellow
+  Write-Host $Message
 }
 
 function Write-Error {
-    param([string]$Message)
-    Write-Host ("{0,12} " -f "Error") -NoNewline -ForegroundColor Red
-    Write-Host $Message
+  param([string]$Message)
+  Write-Host ("{0,12} " -f "Error") -NoNewline -ForegroundColor Red
+  Write-Host $Message
 }
 
 function Test-InPath {
-    param([string]$Directory)
-    $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    return $currentPath -like "*$Directory*"
+  param([string]$Directory)
+  $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  return $currentPath -like "*$Directory*"
 }
 
 function Add-ToPath {
-    param([string]$Directory)
+  param([string]$Directory)
     
-    if (Test-InPath $Directory) {
-        return $false  # Already in PATH
-    }
+  if (Test-InPath $Directory) {
+    return $false  # Already in PATH
+  }
     
-    Write-Host ""
-    Write-Host "The installation directory needs to be added to your PATH:" -ForegroundColor Yellow
-    Write-Host "  $Directory" -ForegroundColor Gray
-    Write-Host ""
-    $response = Read-Host "Add to PATH? (Y/n)"
+  Write-Host ""
+  Write-Host "The installation directory needs to be added to your PATH:" -ForegroundColor Yellow
+  Write-Host "  $Directory" -ForegroundColor Gray
+  Write-Host ""
+  $response = Read-Host "Add to PATH? (Y/n)"
     
-    if ($response -eq "" -or $response -match "^[Yy]") {
-        Write-Status "Updating" "User PATH environment variable (modifying Windows registry)..."
+  if ($response -eq "" -or $response -match "^[Yy]") {
+    Write-Status "Updating" "User PATH environment variable (modifying Windows registry)..."
         
-        $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-        $newPath = "$currentPath;$Directory"
-        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+    $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $newPath = "$currentPath;$Directory"
+    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
         
-        Write-Status "Updating" "Current session PATH..."
-        # Update current session
-        $env:Path = "$env:Path;$Directory"
+    Write-Status "Updating" "Current session PATH..."
+    # Update current session
+    $env:Path = "$env:Path;$Directory"
         
-        return $true
-    }
+    return $true
+  }
     
-    return $false
+  return $false
 }
 
 # Uninstall mode
 if ($Uninstall) {
+  Write-Host ""
+  Write-Host "Ryo2D CLI Uninstaller" -ForegroundColor Cyan
+  Write-Host "=====================" -ForegroundColor Cyan
+  Write-Host ""
+    
+  $removed = $false
+    
+  if (Test-Path $BinaryPath) {
+    Write-Status "Removing" "ryo2d.exe from $InstallDir"
+    Remove-Item $BinaryPath -Force
+    $removed = $true
+  }
+    
+  # Remove install directory if empty
+  if (Test-Path $InstallDir) {
+    $items = Get-ChildItem $InstallDir -ErrorAction SilentlyContinue
+    if ($null -eq $items -or $items.Count -eq 0) {
+      Write-Status "Removing" "empty directory $InstallDir"
+      Remove-Item $InstallDir -Force -Recurse
+    }
+  }
+    
+  if ($removed) {
     Write-Host ""
-    Write-Host "Ryo2D CLI Uninstaller" -ForegroundColor Cyan
-    Write-Host "=====================" -ForegroundColor Cyan
+    Write-Success "ryo2d CLI uninstalled"
     Write-Host ""
+    Write-Host "Note: PATH was not modified. You may want to manually remove:" -ForegroundColor Gray
+    Write-Host "  $InstallDir" -ForegroundColor Gray
+    Write-Host ""
+  }
+  else {
+    Write-Warning "ryo2d CLI not found at $BinaryPath"
+  }
     
-    $removed = $false
-    
-    if (Test-Path $BinaryPath) {
-        Write-Status "Removing" "ryo2d.exe from $InstallDir"
-        Remove-Item $BinaryPath -Force
-        $removed = $true
-    }
-    
-    # Remove install directory if empty
-    if (Test-Path $InstallDir) {
-        $items = Get-ChildItem $InstallDir -ErrorAction SilentlyContinue
-        if ($null -eq $items -or $items.Count -eq 0) {
-            Write-Status "Removing" "empty directory $InstallDir"
-            Remove-Item $InstallDir -Force -Recurse
-        }
-    }
-    
-    if ($removed) {
-        Write-Host ""
-        Write-Success "ryo2d CLI uninstalled"
-        Write-Host ""
-        Write-Host "Note: PATH was not modified. You may want to manually remove:" -ForegroundColor Gray
-        Write-Host "  $InstallDir" -ForegroundColor Gray
-        Write-Host ""
-    } else {
-        Write-Warning "ryo2d CLI not found at $BinaryPath"
-    }
-    
-    exit 0
+  exit 0
 }
 
 # Install mode
@@ -124,8 +125,8 @@ Write-Host ""
 
 # Check for Rust/Cargo
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    Write-Error "Cargo not found. Please install Rust from https://rustup.rs/"
-    exit 1
+  Write-Error "Cargo not found. Please install Rust from https://rustup.rs/"
+  exit 1
 }
 
 Write-Status "Building" "ryo2d CLI in release mode..."
@@ -133,14 +134,14 @@ Write-Host ""
 
 Push-Location $ScriptDir
 try {
-    & cargo build --release --bin ryo2d
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Build failed"
-        exit 1
-    }
+  & cargo build --release --bin ryo2d
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error "Build failed"
+    exit 1
+  }
 }
 finally {
-    Pop-Location
+  Pop-Location
 }
 
 Write-Host ""
@@ -155,28 +156,28 @@ Copy-Item $sourceBinary $BinaryPath -Force
 $sourceSkills = Join-Path $ScriptDir ".github\skills"
 $targetSkills = Join-Path (Split-Path $InstallDir) "skills"
 if (Test-Path $sourceSkills) {
-    Write-Status "Installing" "Agent Skills to $(Split-Path $InstallDir)\skills"
-    if (Test-Path $targetSkills) {
-        Remove-Item $targetSkills -Recurse -Force
-    }
-    Copy-Item $sourceSkills $targetSkills -Recurse -Force
+  Write-Status "Installing" "Agent Skills to $(Split-Path $InstallDir)\skills"
+  if (Test-Path $targetSkills) {
+    Remove-Item $targetSkills -Recurse -Force
+  }
+  Copy-Item $sourceSkills $targetSkills -Recurse -Force
 }
 
 # Install engine source for game projects to reference
 $engineDir = Join-Path (Split-Path $InstallDir) "engine"
 Write-Status "Installing" "ryo2d engine source to $(Split-Path $InstallDir)\engine"
 if (Test-Path $engineDir) {
-    Remove-Item $engineDir -Recurse -Force
+  Remove-Item $engineDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $engineDir -Force | Out-Null
 
 # Copy essential engine files
 $filesToCopy = @("src", "Cargo.toml", "LICENSE", "README.md")
 foreach ($item in $filesToCopy) {
-    $source = Join-Path $ScriptDir $item
-    if (Test-Path $source) {
-        Copy-Item $source (Join-Path $engineDir $item) -Recurse -Force
-    }
+  $source = Join-Path $ScriptDir $item
+  if (Test-Path $source) {
+    Copy-Item $source (Join-Path $engineDir $item) -Recurse -Force
+  }
 }
 
 Write-Host ""
@@ -187,20 +188,22 @@ $addedToPath = Add-ToPath $InstallDir
 
 Write-Host ""
 if ($addedToPath) {
-    Write-Host "Installation complete! You can now use 'ryo2d' from any directory." -ForegroundColor Green
-    Write-Host ""
-    Write-Host "The PATH has been updated for:" -ForegroundColor Gray
-    Write-Host "  - Current terminal session (works immediately)" -ForegroundColor Gray
-    Write-Host "  - Future terminal sessions" -ForegroundColor Gray
-} else {
-    Write-Host "Installation complete!" -ForegroundColor Green
-    Write-Host ""
-    if (Test-InPath $InstallDir) {
-        Write-Host "You can now use 'ryo2d' from any directory." -ForegroundColor Gray
-    } else {
-        Write-Host "To use 'ryo2d' from any directory, add this to your PATH:" -ForegroundColor Yellow
-        Write-Host "  $InstallDir" -ForegroundColor Gray
-    }
+  Write-Host "Installation complete! You can now use 'ryo2d' from any directory." -ForegroundColor Green
+  Write-Host ""
+  Write-Host "The PATH has been updated for:" -ForegroundColor Gray
+  Write-Host "  - Current terminal session (works immediately)" -ForegroundColor Gray
+  Write-Host "  - Future terminal sessions" -ForegroundColor Gray
+}
+else {
+  Write-Host "Installation complete!" -ForegroundColor Green
+  Write-Host ""
+  if (Test-InPath $InstallDir) {
+    Write-Host "You can now use 'ryo2d' from any directory." -ForegroundColor Gray
+  }
+  else {
+    Write-Host "To use 'ryo2d' from any directory, add this to your PATH:" -ForegroundColor Yellow
+    Write-Host "  $InstallDir" -ForegroundColor Gray
+  }
 }
 
 Write-Host ""
