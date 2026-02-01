@@ -79,14 +79,13 @@ add_to_path() {
     read -p "Add to PATH? (Y/n): " response
     
     if [[ "$response" =~ ^[Yy]?$ ]]; then
-        status "Updating" "shell configuration files..."
-        
         local export_line="export PATH=\"\$PATH:$dir\""
         local updated=false
         
         # Add to bash
         if [ -f "$HOME/.bashrc" ]; then
             if ! grep -q "ryo2d/bin" "$HOME/.bashrc"; then
+                status "Updating" ".bashrc..."
                 echo "" >> "$HOME/.bashrc"
                 echo "# Ryo2D CLI" >> "$HOME/.bashrc"
                 echo "$export_line" >> "$HOME/.bashrc"
@@ -97,6 +96,7 @@ add_to_path() {
         # Add to zsh
         if [ -f "$HOME/.zshrc" ]; then
             if ! grep -q "ryo2d/bin" "$HOME/.zshrc"; then
+                status "Updating" ".zshrc..."
                 echo "" >> "$HOME/.zshrc"
                 echo "# Ryo2D CLI" >> "$HOME/.zshrc"
                 echo "$export_line" >> "$HOME/.zshrc"
@@ -104,6 +104,7 @@ add_to_path() {
             fi
         fi
         
+        status "Updating" "current session PATH..."
         # Update current session
         export PATH="$PATH:$dir"
         

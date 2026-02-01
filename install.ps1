@@ -62,12 +62,13 @@ function Add-ToPath {
     $response = Read-Host "Add to PATH? (Y/n)"
     
     if ($response -eq "" -or $response -match "^[Yy]") {
-        Write-Status "Updating" "PATH environment variable..."
+        Write-Status "Updating" "User PATH environment variable (modifying Windows registry)..."
         
         $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
         $newPath = "$currentPath;$Directory"
         [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
         
+        Write-Status "Updating" "Current session PATH..."
         # Update current session
         $env:Path = "$env:Path;$Directory"
         
