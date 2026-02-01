@@ -8,15 +8,42 @@ use super::{CliError, CliResult, Output};
 
 /// Available skills to install
 const AVAILABLE_SKILLS: &[(&str, &str)] = &[
-  ("ryo-animation", "Sprite animations, Animator component, AnimationController state machines"),
-  ("ryo-audio", "Sound effects and music with Kira audio backend"),
-  ("ryo-cli", "Using the ryo2d CLI for building, running, and developing games"),
-  ("ryo-config-save", "Project configuration (Ryo.toml), user settings (system.json), and the 3-tier save system"),
-  ("ryo-ecs-internals", "Working on the hecs wrapper, adding components, and ECS patterns"),
-  ("ryo-engine-dev", "Working on the Ryo2D engine - architecture, systems, public API"),
-  ("ryo-game-dev", "Building games with Ryo2D engine - ECS, entities, scenes, input"),
-  ("ryo-physics", "Rapier2D physics integration - colliders, rigid bodies, events"),
-  ("ryo-renderer", "Working on the wgpu renderer, shaders, and GPU batching"),
+  (
+    "ryo-animation",
+    "Sprite animations, Animator component, AnimationController state machines",
+  ),
+  (
+    "ryo-audio",
+    "Sound effects and music with Kira audio backend",
+  ),
+  (
+    "ryo-cli",
+    "Using the ryo2d CLI for building, running, and developing games",
+  ),
+  (
+    "ryo-config-save",
+    "Project configuration (Ryo.toml), user settings (system.json), and the 3-tier save system",
+  ),
+  (
+    "ryo-ecs-internals",
+    "Working on the hecs wrapper, adding components, and ECS patterns",
+  ),
+  (
+    "ryo-engine-dev",
+    "Working on the Ryo2D engine - architecture, systems, public API",
+  ),
+  (
+    "ryo-game-dev",
+    "Building games with Ryo2D engine - ECS, entities, scenes, input",
+  ),
+  (
+    "ryo-physics",
+    "Rapier2D physics integration - colliders, rigid bodies, events",
+  ),
+  (
+    "ryo-renderer",
+    "Working on the wgpu renderer, shaders, and GPU batching",
+  ),
   ("ryo-ui", "Immediate-mode UI for HUDs, menus, and overlays"),
 ];
 
@@ -28,7 +55,11 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     return Ok(());
   }
 
-  install_skills_to_dir(&std::env::current_dir().map_err(|e| CliError::Other(format!("Failed to get current directory: {}", e)))?, false)
+  // Discover workspace from current directory
+  let workspace = super::discover_workspace()?;
+  let project_dir = workspace.root();
+
+  install_skills_to_dir(project_dir, false)
 }
 
 /// Install all skills to a project directory
@@ -124,15 +155,30 @@ pub fn prompt_install_skills() -> CliResult<bool> {
 
 /// Get the engine's skills directory
 fn get_engine_skills_dir() -> CliResult<PathBuf> {
-  // Try to find the ryo2d repository skills directory
-  // This could be:
-  // 1. Installed via cargo (in $CARGO_HOME/git/...)
-  // 2. Local development (workspace root)
-  // 3. Bundled with the binary
+  // Priority order:
+  // 1. Installed location (next to binary) - for production installs
+  // 2. Development location (CARGO_MANIFEST_DIR) - for cargo run
 
-  // For now, we'll embed skills at compile time and write them out
-  // In the future, we could bundle them differently
-  
+  // Try relative to binary location (for installed ryo2d)
+  if let Ok(exe) = std::env::current_exe()
+    && let Some(parent) = exe.parent()
+  {
+    // Windows: %LOCALAPPDATA%\ryo2d\bin\ryo2d.exe -> %LOCALAPPDATA%\ryo2d\skills
+    // Unix: ~/.ryo2d/bin/ryo2d -> ~/.ryo2d/skills
+    let bundled = parent.parent().map(|p| p.join("skills"));
+    if let Some(path) = bundled
+      && path.exists()
+    {
+      return Ok(path);
+    }
+
+    // Fallback: check directly next to binary (old behavior)
+    let bundled = parent.join("skills");
+    if bundled.exists() {
+      return Ok(bundled);
+    }
+  }
+
   // Try to locate ryo2d workspace (for development)
   if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
     let dev_skills = PathBuf::from(manifest_dir).join(".github").join("skills");
@@ -141,18 +187,9 @@ fn get_engine_skills_dir() -> CliResult<PathBuf> {
     }
   }
 
-  // Try relative to binary location (for installed ryo2d)
-  if let Ok(exe) = std::env::current_exe()
-    && let Some(parent) = exe.parent()
-  {
-    let bundled = parent.join("skills");
-    if bundled.exists() {
-      return Ok(bundled);
-    }
-  }
-
   Err(CliError::Other(
-    "Could not locate Ryo2D skills directory. Are you running from the ryo2d repository?".to_string()
+    "Could not locate Ryo2D skills directory. Please reinstall ryo2d using the install script."
+      .to_string(),
   ))
 }
 
@@ -176,9 +213,8 @@ fn install_skill(engine_skills_dir: &Path, target_dir: &Path, skill_name: &str) 
   let source_skill_md = source.join("SKILL.md");
   let target_skill_md = target.join("SKILL.md");
 
-  fs::copy(&source_skill_md, &target_skill_md).map_err(|e| {
-    CliError::Other(format!("Failed to copy SKILL.md for {}: {}", skill_name, e))
-  })?;
+  fs::copy(&source_skill_md, &target_skill_md)
+    .map_err(|e| CliError::Other(format!("Failed to copy SKILL.md for {}: {}", skill_name, e)))?;
 
   Ok(())
 }
