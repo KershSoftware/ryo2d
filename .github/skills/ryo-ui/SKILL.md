@@ -9,12 +9,6 @@ metadata:
 
 You help users build game UI using the immediate-mode system.
 
-## Resources
-
-- **UI Module**: `src/core/ui/AGENTS.md`
-- **Types**: `src/core/ui/types.rs`
-- **Context**: `src/core/ui/context.rs`
-
 ## Immediate Mode
 
 Call draw functions every frame - no persistent widget state:

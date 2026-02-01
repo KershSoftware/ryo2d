@@ -9,11 +9,6 @@ metadata:
 
 You help users use the `ryo2d` CLI for managing game projects.
 
-## Resources
-
-- **CLI Module**: `src/cli/AGENTS.md`
-- **Commands**: `src/cli/commands/`
-
 ## Commands
 
 Run from a game project directory (containing `Ryo.toml`):

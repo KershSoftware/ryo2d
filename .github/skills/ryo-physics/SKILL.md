@@ -11,12 +11,6 @@ You help users integrate Rapier2D physics into their games, including rigid bodi
 
 **For complete API signatures, see the `ryo-api` skill.**
 
-## Resources
-
-- **Physics Module**: `src/core/rapier_physics.rs`
-- **Collision Module**: `src/core/collision.rs`
-- **Physics Config**: `src/core/physics.rs`
-
 ## RigidBody Types
 
 ```rust
