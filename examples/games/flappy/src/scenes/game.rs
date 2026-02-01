@@ -432,13 +432,13 @@ impl Scene for GameScene {
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Start game on first input
-    if !self.game_started {
-      if ctx.input.key_pressed(KeyCode::Space) || ctx.input.mouse_pressed(MouseButton::Left) {
-        self.game_started = true;
-        if let Some(bird_entity) = self.bird {
-          if let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) {
-            bird.flap();
-          }
+    if !self.game_started
+      && (ctx.input.key_pressed(KeyCode::Space) || ctx.input.mouse_pressed(MouseButton::Left))
+    {
+      self.game_started = true;
+      if let Some(bird_entity) = self.bird {
+        if let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) {
+          bird.flap();
         }
       }
     }

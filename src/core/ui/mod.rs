@@ -70,8 +70,11 @@ mod types;
 // Re-export core types at module root for convenience
 pub use types::{Anchor, Color, Rect};
 
-// Re-export immediate mode API (most commonly used)
+// Re-export immediate mode API (stateless per-frame drawing)
 pub use immediate::{BitmapFont, HAlign, HBox, Stack, UiContext, VAlign, VBox, create_debug_font};
+
+// Re-export retained mode API (stateful widgets)
+pub use retained::{DropdownState, ScrollViewState, TextInputState};
 
 // Re-export theme types
 pub use theme::{

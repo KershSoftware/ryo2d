@@ -25,12 +25,12 @@
 //!     // Draw score text
 //!     ui.draw_text(&format!("Score: {}", self.score), 10.0, 40.0, Color::WHITE);
 //!
-//!     // Button returns true when clicked
+//!     // Button returns true when clicked (immediate - no state persisted)
 //!     if ui.button("Pause", Rect::new(700.0, 10.0, 80.0, 30.0)) {
 //!         self.paused = true;
 //!     }
 //!
-//!     // Layout containers for positioning
+//!     // Layout containers for positioning (stateless helpers)
 //!     let mut row = HBox::new(10.0, 100.0, 8.0);
 //!     ui.button("A", row.next(60.0, 30.0));
 //!     ui.button("B", row.next(60.0, 30.0));

@@ -2,7 +2,7 @@
 
 use ryo2d::prelude::*;
 
-use super::{ClippingDemo, LayoutDemo, TextDemo, ThemeDemo};
+use super::{ClippingDemo, LayoutDemo, TextDemo, TextInputDemo, ThemeDemo};
 
 pub struct MainMenu {
   selected_demo: Option<usize>,
@@ -33,9 +33,12 @@ impl Scene for MainMenu {
     if let Some(demo_index) = self.selected_demo.take() {
       match demo_index {
         0 => return SceneAction::Push(Box::new(ThemeDemo::new())),
-        2 => return SceneAction::Push(Box::new(LayoutDemo::new())),
-        3 => return SceneAction::Push(Box::new(ClippingDemo::new())),
-        4 => return SceneAction::Push(Box::new(TextDemo::new())),
+        1 => return SceneAction::Push(Box::new(LayoutDemo::new())),
+        2 => return SceneAction::Push(Box::new(ClippingDemo::new())),
+        3 => return SceneAction::Push(Box::new(TextDemo::new())),
+        4 => return SceneAction::Push(Box::new(TextInputDemo::new())),
+        5 => return SceneAction::Push(Box::new(super::ScrollViewDemo::new())),
+        6 => return SceneAction::Push(Box::new(super::DropdownDemo::new())),
         // Future demos will be added here
         _ => {}
       }
@@ -72,17 +75,19 @@ impl Scene for MainMenu {
     let start_y = 120.0;
 
     let demos = [
-      ("1. Theme System", "Hot-reloadable UI styling"),
       (
-        "2. Basic Widgets",
-        "Buttons, sliders, checkboxes (coming soon)",
+        "1. Widgets & Themes",
+        "Buttons, sliders, toggles, hot-reload",
       ),
-      ("3. Layout Containers", "HBox, VBox, Stack positioning"),
+      ("2. Layout Containers", "HBox, VBox, Stack positioning"),
       (
-        "4. Clipping & Modals",
+        "3. Clipping & Modals",
         "Scissor clipping and modal overlays",
       ),
-      ("5. Text Wrapping", "Word wrap and text layout"),
+      ("4. Text Wrapping", "Word wrap and text layout"),
+      ("5. Text Input", "Editable text fields with cursor"),
+      ("6. Scroll Views", "Scrollable content containers"),
+      ("7. Dropdowns", "Select from list of options"),
     ];
 
     // Calculate item height (button + gap + description text height + spacing)
@@ -98,8 +103,8 @@ impl Scene for MainMenu {
         button_height,
       );
 
-      // Theme System, Layout Containers, Clipping, and Text Wrapping are clickable
-      let enabled = i == 0 || i == 2 || i == 3 || i == 4;
+      // All demos are now enabled
+      let enabled = true;
 
       if enabled {
         if ui.button(title, button_rect) {
@@ -133,7 +138,7 @@ impl Scene for MainMenu {
 
     // Version info
     ui.draw_text_anchored(
-      "Ryo2D Engine - Phase 8 UI System",
+      "Ryo2D Engine - UI System",
       Anchor::BottomRight,
       -10.0,
       -10.0,

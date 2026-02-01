@@ -1,13 +1,18 @@
 //! Menu scene
 
 use crate::save::load_best_time;
-use crate::*;
 use ryo2d::prelude::*;
 
 use super::GameScene;
 
 pub struct MenuScene {
   best_time: f32,
+}
+
+impl Default for MenuScene {
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 impl MenuScene {

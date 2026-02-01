@@ -1,7 +1,6 @@
 //! Game over scene
 
 use crate::save::load_best_time;
-use crate::*;
 use ryo2d::prelude::*;
 
 use super::GameScene;
@@ -74,12 +73,7 @@ impl Scene for GameOverScene {
       Color::rgb(200, 200, 200)
     };
     let (best_w, _) = ui.text_size(&best_text);
-    ui.draw_text(
-      &best_text,
-      center_x - best_w as f32 / 2.0,
-      320.0,
-      color,
-    );
+    ui.draw_text(&best_text, center_x - best_w as f32 / 2.0, 320.0, color);
 
     // Restart prompt
     let restart_text = "Press SPACE to Retry";

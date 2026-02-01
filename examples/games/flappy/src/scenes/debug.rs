@@ -18,6 +18,12 @@ pub struct DebugScene {
   collision_info: String,
 }
 
+impl Default for DebugScene {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl DebugScene {
   pub fn new() -> Self {
     Self {
@@ -227,20 +233,18 @@ impl DebugScene {
 
     // Check if any collision event involves the bird
     for event in ctx.collision_events {
-      if event.involves(bird_entity) {
-        if event.event_type == CollisionEventType::Started {
-          self.is_colliding = true;
-          let other = event.other(bird_entity).unwrap();
-          // Identify what we hit
-          if self.pipes.contains(&other) {
-            self.collision_info = format!("PHYSICS: Pipe {:?}", other);
-          } else if self.ground == Some(other) {
-            self.collision_info = "PHYSICS: Ground".to_string();
-          } else {
-            self.collision_info = format!("PHYSICS: Unknown {:?}", other);
-          }
-          return;
+      if event.involves(bird_entity) && event.event_type == CollisionEventType::Started {
+        self.is_colliding = true;
+        let other = event.other(bird_entity).unwrap();
+        // Identify what we hit
+        if self.pipes.contains(&other) {
+          self.collision_info = format!("PHYSICS: Pipe {:?}", other);
+        } else if self.ground == Some(other) {
+          self.collision_info = "PHYSICS: Ground".to_string();
+        } else {
+          self.collision_info = format!("PHYSICS: Unknown {:?}", other);
         }
+        return;
       }
     }
   }

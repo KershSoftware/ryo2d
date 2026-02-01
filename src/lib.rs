@@ -122,8 +122,8 @@ pub mod prelude {
 
   // UI system
   pub use crate::core::ui::{
-    Anchor, BitmapFont, Color, HAlign, HBox, HotReloadTheme, Rect, Stack, Theme, ThemeError,
-    UiContext, VAlign, VBox, create_debug_font,
+    Anchor, BitmapFont, Color, DropdownState, HAlign, HBox, HotReloadTheme, Rect, ScrollViewState,
+    Stack, TextInputState, Theme, ThemeError, UiContext, VAlign, VBox, create_debug_font,
   };
 
   // Post-processing effects

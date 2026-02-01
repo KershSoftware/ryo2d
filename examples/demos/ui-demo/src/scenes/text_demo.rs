@@ -55,15 +55,11 @@ impl Scene for TextDemo {
 
     // Navigate samples with arrow keys
     let samples = Self::sample_texts();
-    if ctx.input.key_pressed(KeyCode::ArrowUp) {
-      if self.sample_index > 0 {
-        self.sample_index -= 1;
-      }
+    if ctx.input.key_pressed(KeyCode::ArrowUp) && self.sample_index > 0 {
+      self.sample_index -= 1;
     }
-    if ctx.input.key_pressed(KeyCode::ArrowDown) {
-      if self.sample_index < samples.len() - 1 {
-        self.sample_index += 1;
-      }
+    if ctx.input.key_pressed(KeyCode::ArrowDown) && self.sample_index < samples.len() - 1 {
+      self.sample_index += 1;
     }
 
     // Adjust width with left/right

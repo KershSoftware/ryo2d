@@ -1,34 +1,46 @@
-//! Retained-mode UI system
+//! Retained-mode UI widgets
 //!
-//! This module provides stateful widgets and layout containers for complex UIs.
-//! Widgets maintain their own state between frames, and layouts handle positioning.
+//! This module provides stateful widgets for complex UIs. Unlike immediate-mode
+//! widgets that are purely per-frame, retained widgets maintain state across frames:
+//!
+//! - **TextInputState** - Text buffer, cursor, selection, blink state
+//! - **DropdownState** - Selected index, open/closed, focus, hover index  
+//! - **ScrollViewState** - Scroll offset, velocity, drag state
 //!
 //! # When to Use Retained Mode
 //!
-//! - Complex forms with text input
-//! - Menus with many options
-//! - Inventory screens
-//! - Settings/options screens
-//! - Any UI that benefits from persistent state
+//! - Text input fields (cursor, selection, editing state)
+//! - Dropdowns/select boxes (open/closed, keyboard navigation)
+//! - Scrollable areas (scroll position, momentum)
+//! - Any widget that needs state across frames
 //!
-//! # Module Structure
+//! # Usage Pattern
 //!
-//! - `widget` - Base widget trait and common functionality
-//! - `state` - UI state management
-//! - `containers` - Layout containers (HBox, VBox, Stack, etc.)
-//! - `widgets` - Individual widget implementations
+//! 1. Store the state struct in your scene/game struct
+//! 2. Pass it mutably to UiContext each frame
+//! 3. The widget renders and updates based on input
 //!
-//! # Future Implementation
+//! ```ignore
+//! struct MyScene {
+//!     username: TextInputState,
+//!     difficulty: DropdownState,
+//!     settings_scroll: ScrollViewState,
+//! }
 //!
-//! This module is a placeholder for the retained-mode UI system that will be
-//! built incrementally. Check `src/core/ui/AGENTS.md` for the roadmap.
+//! fn render_ui(&mut self, ui: &mut UiContext) {
+//!     ui.text_input(&mut self.username, rect, "Enter name...", dt);
+//!     ui.dropdown(&mut self.difficulty, rect, &["Easy", "Medium", "Hard"]);
+//!     ui.scroll_view(&mut self.settings_scroll, rect, content_height, |ui, offset| {
+//!         // Draw scrollable content
+//!     });
+//!     ui.finish_dropdowns(); // Render dropdown overlays on top
+//! }
+//! ```
 
-// Future modules:
-// mod widget;
-// mod state;
-// mod containers;
-// mod widgets;
+mod dropdown;
+mod scroll_view;
+mod text_input;
 
-// Placeholder to ensure the module compiles
-#[allow(dead_code)]
-fn _placeholder() {}
+pub use dropdown::DropdownState;
+pub use scroll_view::ScrollViewState;
+pub use text_input::TextInputState;

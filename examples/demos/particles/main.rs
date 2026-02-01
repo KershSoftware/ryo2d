@@ -35,19 +35,19 @@ const LAYER_WALL: u32 = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DemoScene {
   /// Procedurally generated colored circles
-  CreatedSprites,
+  Created,
   /// Image-based particle sprites
-  ImportedSprites,
+  Imported,
   /// Parent-child particle clusters
-  HierarchicalSprites,
+  Hierarchical,
 }
 
 impl DemoScene {
   fn name(&self) -> &'static str {
     match self {
-      DemoScene::CreatedSprites => "Created Sprites",
-      DemoScene::ImportedSprites => "Imported Sprites",
-      DemoScene::HierarchicalSprites => "Hierarchical Sprites",
+      DemoScene::Created => "Created Sprites",
+      DemoScene::Imported => "Imported Sprites",
+      DemoScene::Hierarchical => "Hierarchical Sprites",
     }
   }
 }
@@ -79,7 +79,7 @@ struct ParticlesDemo {
 impl ParticlesDemo {
   fn new() -> Self {
     Self {
-      current_scene: DemoScene::CreatedSprites,
+      current_scene: DemoScene::Created,
       particle_count: 0,
       particle_sprites: Vec::new(),
       imported_sprite: None,
@@ -105,7 +105,7 @@ impl ParticlesDemo {
 
     for (i, (r, g, b)) in colors.iter().enumerate() {
       let sprite = create_particle_sprite(*r, *g, *b);
-      let handle = SpriteHandle::from_sprite(sprite, &format!("particle_{}", i));
+      let handle = SpriteHandle::from_sprite(sprite, format!("particle_{}", i));
       self.particle_sprites.push(handle);
     }
   }
@@ -182,13 +182,13 @@ impl ParticlesDemo {
     let vy = rand_range(0.0, 100.0);
 
     match self.current_scene {
-      DemoScene::CreatedSprites => {
+      DemoScene::Created => {
         self.spawn_created_particle(ctx.world, x, y, vx, vy);
       }
-      DemoScene::ImportedSprites => {
+      DemoScene::Imported => {
         self.spawn_imported_particle(ctx.world, x, y, vx, vy);
       }
-      DemoScene::HierarchicalSprites => {
+      DemoScene::Hierarchical => {
         self.spawn_hierarchical_particle(ctx.world, x, y, vx, vy);
       }
     }
@@ -197,7 +197,7 @@ impl ParticlesDemo {
   }
 
   fn spawn_created_particle(&self, world: &mut World, x: f32, y: f32, vx: f32, vy: f32) {
-    let color_idx = (self.particle_count % self.particle_sprites.len()) as usize;
+    let color_idx = self.particle_count % self.particle_sprites.len();
 
     // Store which sprite index this particle uses (for GPU batching lookup)
     world.spawn((
@@ -304,13 +304,13 @@ impl Game for ParticlesDemo {
     // Scene switching
     if self.nav_cooldown <= 0.0 {
       let scene_changed = if ctx.input.key_pressed(KeyCode::Digit1) {
-        self.current_scene = DemoScene::CreatedSprites;
+        self.current_scene = DemoScene::Created;
         true
       } else if ctx.input.key_pressed(KeyCode::Digit2) {
-        self.current_scene = DemoScene::ImportedSprites;
+        self.current_scene = DemoScene::Imported;
         true
       } else if ctx.input.key_pressed(KeyCode::Digit3) {
-        self.current_scene = DemoScene::HierarchicalSprites;
+        self.current_scene = DemoScene::Hierarchical;
         true
       } else {
         false

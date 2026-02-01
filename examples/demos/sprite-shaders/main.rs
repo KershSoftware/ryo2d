@@ -251,7 +251,7 @@ impl SpriteShaderDemo {
     match self.current_effect() {
       DemoEffect::Wave => {
         // For Wave, C changes speed (wrap around at max)
-        self.wave_speed = self.wave_speed + delta * 0.5;
+        self.wave_speed += delta * 0.5;
         if self.wave_speed > 5.0 {
           self.wave_speed = 0.0;
         } else if self.wave_speed < 0.0 {
