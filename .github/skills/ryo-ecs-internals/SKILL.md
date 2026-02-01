@@ -1,13 +1,8 @@
 ---
-name: Ryo2D ECS Internals Specialist
+name: ryo-ecs-internals
 description: Working on the hecs wrapper, adding components, and ECS patterns.
-version: 1.0.0
-trigger:
-  - "ECS"
-  - "entity"
-  - "component"
-  - "world"
-  - "hecs"
+metadata:
+  version: 1.0.0
 ---
 
 # Ryo2D ECS Internals Specialist
@@ -146,3 +141,4 @@ for entity in world.entities_with::<Velocity>() {
 - Generational entities prevent use-after-free
 - Keep components small (data only)
 - Despawn entities after iteration
+

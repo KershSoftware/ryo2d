@@ -1,12 +1,8 @@
 ---
-name: Ryo2D Game Developer
+name: ryo-game-dev
 description: Building games with Ryo2D engine - ECS, entities, scenes, input.
-version: 1.0.0
-trigger:
-  - "create game"
-  - "spawn entity"
-  - "player movement"
-  - "game logic"
+metadata:
+  version: 1.0.0
 ---
 
 # Ryo2D Game Developer
@@ -196,3 +192,4 @@ EngineBuilder::new()
 ```
 
 WindowMode: `Fixed`, `ResizableAspectRatio` (default), `ResizableIntegerScale`, `ResizableStretch`
+

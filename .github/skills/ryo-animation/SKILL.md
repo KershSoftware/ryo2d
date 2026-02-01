@@ -1,12 +1,8 @@
 ---
-name: Ryo2D Animation Specialist
+name: ryo-animation
 description: Sprite animations, Animator component, AnimationController state machines.
-version: 1.0.0
-trigger:
-  - "animation"
-  - "animate"
-  - "sprite sheet"
-  - "animation controller"
+metadata:
+  version: 1.0.0
 ---
 
 # Ryo2D Animation Specialist
@@ -151,3 +147,4 @@ if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(self.pla
 - `set_state_then()` is perfect for attack/hurt animations that return to idle
 - Flip sprites with `renderable.flip_x` rather than separate left/right animations
 - The engine auto-syncs animation frames to `Renderable`
+

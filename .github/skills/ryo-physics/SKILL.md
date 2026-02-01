@@ -1,12 +1,8 @@
 ---
-name: Ryo2D Physics Specialist
+name: ryo-physics
 description: Rapier2D physics integration - colliders, rigid bodies, events.
-version: 1.0.0
-trigger:
-  - "physics"
-  - "collision"
-  - "rigid body"
-  - "collider"
+metadata:
+  version: 1.0.0
 ---
 
 # Ryo2D Physics Specialist
@@ -143,3 +139,4 @@ if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
 - Check **collisions_stopped()** for exit events (leaving trigger zones)
 - **Kinematic** bodies are great for moving platforms
 - Despawn collected items in a separate loop to avoid iterator invalidation
+

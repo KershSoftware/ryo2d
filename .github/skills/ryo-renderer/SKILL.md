@@ -1,13 +1,8 @@
 ---
-name: Ryo2D Renderer Specialist
+name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
-version: 1.0.0
-trigger:
-  - "renderer"
-  - "shader"
-  - "wgpu"
-  - "GPU"
-  - "batching"
+metadata:
+  version: 1.0.0
 ---
 
 # Ryo2D Renderer Specialist
@@ -114,3 +109,4 @@ render_pass.draw_indexed(...);
 - Use GPU path when CPU blitting becomes a bottleneck
 - Keep shaders simple for mobile compatibility
 - Instance buffers are more efficient than individual draws
+

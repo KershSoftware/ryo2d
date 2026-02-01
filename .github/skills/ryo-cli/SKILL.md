@@ -1,12 +1,8 @@
 ---
-name: Ryo2D CLI Specialist
+name: ryo-cli
 description: Using the ryo2d CLI for building, running, and developing games.
-version: 1.0.0
-trigger:
-  - "ryo2d"
-  - "build game"
-  - "run game"
-  - "dev mode"
+metadata:
+  version: 1.0.0
 ---
 
 # Ryo2D CLI Specialist
@@ -112,3 +108,4 @@ Settings cascade (highest to lowest priority):
 - Use `ryo2d dev` for fast iteration
 - Asset hot reload works in dev mode (no recompile needed)
 - For engine dev, use `./run` scripts from repo root
+
