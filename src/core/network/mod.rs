@@ -50,6 +50,16 @@ use super::error::{NetworkError, NetworkResult};
 // Re-export ClientId for convenience
 pub use renet::ClientId;
 
+/// Reserved client ID for the local host player in a listen server.
+///
+/// This constant is used to represent the host player who runs the server
+/// and also participates in the game. The host's messages are handled
+/// directly in game logic without going through the network.
+///
+/// This ID (0) will never be assigned to a remote client by renet,
+/// making it safe to use as a sentinel value for the local host.
+pub const LOCAL_HOST_ID: ClientId = 0;
+
 /// Channel types for message delivery
 ///
 /// These map to renet's DefaultChannel variants but provide a cleaner API.
@@ -445,6 +455,187 @@ impl NetworkClient {
   }
 }
 
+/// A network server where the host is also a player.
+///
+/// Use this for player-hosted games where one player runs the server
+/// and also plays in the game. Remote clients connect normally via
+/// `NetworkClient`.
+///
+/// The host player's messages are NOT part of the networking system -
+/// the host's input/state is handled directly in game logic. The
+/// `ListenServer` only manages remote client connections.
+///
+/// # Example
+///
+/// ```no_run
+/// use ryo2d::prelude::*;
+/// use std::time::Duration;
+///
+/// let config = NetworkServerConfig {
+///     port: 5000,
+///     max_clients: 4,
+///     protocol_id: 12345,
+/// };
+/// let mut server = ListenServer::new(config).unwrap();
+///
+/// // Game loop
+/// let dt = Duration::from_secs_f32(1.0 / 60.0);
+/// server.update(dt);
+///
+/// // Handle remote client events
+/// for event in server.events() {
+///     match event {
+///         NetworkEvent::ClientConnected { client_id } => {
+///             println!("Remote client {} connected", client_id);
+///         }
+///         NetworkEvent::ClientDisconnected { client_id, reason } => {
+///             println!("Remote client {} disconnected: {}", client_id, reason);
+///         }
+///         _ => {}
+///     }
+/// }
+///
+/// // Iterate all players (host + remote)
+/// for client_id in server.all_clients() {
+///     if server.is_host(client_id) {
+///         // Host player - handle directly
+///     } else {
+///         // Remote player - receive messages
+///         while let Some(data) = server.receive(client_id, Channel::ReliableOrdered) {
+///             // Process remote input
+///         }
+///     }
+/// }
+/// ```
+pub struct ListenServer {
+  server: NetworkServer,
+  host_id: ClientId,
+}
+
+impl ListenServer {
+  /// Create a new listen server.
+  ///
+  /// The host player is automatically assigned `LOCAL_HOST_ID`.
+  ///
+  /// # Errors
+  ///
+  /// Returns `NetworkError::InitError` if socket binding or transport
+  /// creation fails.
+  pub fn new(config: NetworkServerConfig) -> NetworkResult<Self> {
+    let server = NetworkServer::new(config)?;
+    Ok(Self {
+      server,
+      host_id: LOCAL_HOST_ID,
+    })
+  }
+
+  /// The host player's client ID (always `LOCAL_HOST_ID`).
+  pub fn host_id(&self) -> ClientId {
+    self.host_id
+  }
+
+  /// Update network state.
+  ///
+  /// Must be called each frame with the frame's delta time.
+  /// This processes incoming packets and generates events for remote clients.
+  pub fn update(&mut self, dt: Duration) {
+    self.server.update(dt);
+  }
+
+  /// Get pending network events.
+  ///
+  /// Events are about remote clients only (connected, disconnected).
+  /// Events are cleared after iteration. Call this each frame after `update()`.
+  pub fn events(&mut self) -> impl Iterator<Item = NetworkEvent> + '_ {
+    self.server.events()
+  }
+
+  /// Iterator over remote client IDs only.
+  ///
+  /// Does not include the host player.
+  pub fn remote_clients(&self) -> impl Iterator<Item = ClientId> + '_ {
+    self.server.clients()
+  }
+
+  /// Iterator over all clients (remote + host).
+  ///
+  /// Useful for game logic that treats all players uniformly.
+  /// The host is always included first.
+  pub fn all_clients(&self) -> impl Iterator<Item = ClientId> + '_ {
+    std::iter::once(self.host_id).chain(self.server.clients())
+  }
+
+  /// Check if a client ID is the local host.
+  pub fn is_host(&self, client_id: ClientId) -> bool {
+    client_id == self.host_id
+  }
+
+  /// Send a message to a specific remote client.
+  ///
+  /// Does nothing if `client_id` is the host (use direct game logic instead).
+  /// The message is queued and sent during the next `update()` call.
+  pub fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]) {
+    if !self.is_host(client_id) {
+      self.server.send(client_id, channel, data);
+    }
+  }
+
+  /// Broadcast a message to all remote clients.
+  ///
+  /// Does not send to the host (the host's state is local).
+  pub fn broadcast(&mut self, channel: Channel, data: &[u8]) {
+    self.server.broadcast(channel, data);
+  }
+
+  /// Broadcast a message to all remote clients except one.
+  ///
+  /// If `exclude` is the host, this is equivalent to `broadcast()`.
+  pub fn broadcast_except(&mut self, exclude: ClientId, channel: Channel, data: &[u8]) {
+    if self.is_host(exclude) {
+      // Excluding host means broadcast to all remotes
+      self.server.broadcast(channel, data);
+    } else {
+      self.server.broadcast_except(exclude, channel, data);
+    }
+  }
+
+  /// Receive a message from a specific remote client.
+  ///
+  /// Returns `None` if no message is available, or if `client_id` is the host.
+  /// Call repeatedly until `None` to drain all messages.
+  pub fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>> {
+    if self.is_host(client_id) {
+      None
+    } else {
+      self.server.receive(client_id, channel)
+    }
+  }
+
+  /// Number of connected remote clients (not including host).
+  pub fn remote_count(&self) -> usize {
+    self.server.connected_count()
+  }
+
+  /// Total player count (remote clients + host).
+  pub fn player_count(&self) -> usize {
+    self.server.connected_count() + 1
+  }
+
+  /// Disconnect a remote client.
+  ///
+  /// Does nothing if `client_id` is the host.
+  pub fn disconnect(&mut self, client_id: ClientId) {
+    if !self.is_host(client_id) {
+      self.server.disconnect(client_id);
+    }
+  }
+
+  /// Check if the server is running.
+  pub fn is_running(&self) -> bool {
+    self.server.is_running()
+  }
+}
+
 /// Generate a random u64 using system randomness
 fn rand_u64() -> u64 {
   use std::collections::hash_map::RandomState;
@@ -497,5 +688,83 @@ mod tests {
 
     let event = NetworkEvent::Connected;
     assert!(format!("{:?}", event).contains("Connected"));
+  }
+
+  #[test]
+  fn local_host_id_is_zero() {
+    assert_eq!(LOCAL_HOST_ID, 0);
+  }
+
+  #[test]
+  fn listen_server_host_id() {
+    // Note: This test creates a real server, so it needs a free port
+    let config = NetworkServerConfig {
+      port: 19000,
+      max_clients: 4,
+      protocol_id: 12345,
+    };
+
+    if let Ok(server) = ListenServer::new(config) {
+      assert_eq!(server.host_id(), LOCAL_HOST_ID);
+    }
+    // If port is in use, skip test silently
+  }
+
+  #[test]
+  fn listen_server_is_host() {
+    let config = NetworkServerConfig {
+      port: 19001,
+      max_clients: 4,
+      protocol_id: 12345,
+    };
+
+    if let Ok(server) = ListenServer::new(config) {
+      assert!(server.is_host(LOCAL_HOST_ID));
+      assert!(!server.is_host(1));
+      assert!(!server.is_host(999));
+    }
+  }
+
+  #[test]
+  fn listen_server_player_count_starts_at_one() {
+    let config = NetworkServerConfig {
+      port: 19002,
+      max_clients: 4,
+      protocol_id: 12345,
+    };
+
+    if let Ok(server) = ListenServer::new(config) {
+      // Host is always counted
+      assert_eq!(server.player_count(), 1);
+      assert_eq!(server.remote_count(), 0);
+    }
+  }
+
+  #[test]
+  fn listen_server_all_clients_includes_host() {
+    let config = NetworkServerConfig {
+      port: 19003,
+      max_clients: 4,
+      protocol_id: 12345,
+    };
+
+    if let Ok(server) = ListenServer::new(config) {
+      let clients: Vec<_> = server.all_clients().collect();
+      assert_eq!(clients.len(), 1);
+      assert_eq!(clients[0], LOCAL_HOST_ID);
+    }
+  }
+
+  #[test]
+  fn listen_server_is_running() {
+    let config = NetworkServerConfig {
+      port: 19004,
+      max_clients: 4,
+      protocol_id: 12345,
+    };
+
+    if let Ok(server) = ListenServer::new(config) {
+      assert!(server.is_running());
+    }
   }
 }

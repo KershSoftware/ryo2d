@@ -1,6 +1,7 @@
 //! Integration tests for the networking module
 //!
-//! These tests verify actual network communication between server and client.
+//! These tests verify actual network communication between server and client,
+//! including the `ListenServer` for player-hosted games.
 
 use ryo2d::prelude::*;
 use std::net::SocketAddr;
@@ -486,4 +487,392 @@ fn client_disconnect_generates_event() {
     got_disconnect_event,
     "Server did not receive ClientDisconnected event"
   );
+}
+
+// =============================================================================
+// ListenServer Tests
+// =============================================================================
+
+/// Helper to run update loops for ListenServer with a timeout
+fn run_listen_server_updates_until<F>(
+  server: &mut ListenServer,
+  client: &mut NetworkClient,
+  timeout_ms: u64,
+  mut condition: F,
+) -> bool
+where
+  F: FnMut(&mut ListenServer, &mut NetworkClient) -> bool,
+{
+  let dt = Duration::from_millis(16);
+  let start = std::time::Instant::now();
+  let timeout = Duration::from_millis(timeout_ms);
+
+  while start.elapsed() < timeout {
+    server.update(dt);
+    client.update(dt);
+
+    if condition(server, client) {
+      return true;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  false
+}
+
+#[test]
+fn listen_server_creates_successfully() {
+  let port = get_test_port();
+
+  let config = NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 77777,
+  };
+
+  let server = ListenServer::new(config).expect("Failed to create listen server");
+
+  assert!(server.is_running());
+  assert_eq!(server.host_id(), LOCAL_HOST_ID);
+  assert_eq!(server.player_count(), 1); // Host is always counted
+  assert_eq!(server.remote_count(), 0);
+}
+
+#[test]
+fn listen_server_host_id_is_local_host_id() {
+  let port = get_test_port();
+
+  let server = ListenServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 77778,
+  })
+  .unwrap();
+
+  assert_eq!(server.host_id(), LOCAL_HOST_ID);
+  assert!(server.is_host(LOCAL_HOST_ID));
+  assert!(!server.is_host(1)); // ClientId is just u64
+}
+
+#[test]
+fn listen_server_remote_client_connects() {
+  let port = get_test_port();
+
+  let mut server = ListenServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 77779,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 77779,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected =
+    run_listen_server_updates_until(&mut server, &mut client, 2000, |server, client| {
+      client.is_connected() && server.remote_count() == 1
+    });
+
+  assert!(connected, "Remote client failed to connect");
+  assert!(client.is_connected());
+  assert_eq!(server.remote_count(), 1);
+  assert_eq!(server.player_count(), 2); // Host + 1 remote
+}
+
+#[test]
+fn listen_server_generates_client_connected_event() {
+  let port = get_test_port();
+
+  let mut server = ListenServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 77780,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 77780,
+  })
+  .unwrap();
+
+  let mut got_client_connected = false;
+
+  let success =
+    run_listen_server_updates_until(&mut server, &mut client, 2000, |server, _client| {
+      for event in server.events() {
+        if matches!(event, NetworkEvent::ClientConnected { .. }) {
+          got_client_connected = true;
+          return true;
+        }
+      }
+      false
+    });
+
+  assert!(
+    success,
+    "Did not receive ClientConnected event within timeout"
+  );
+  assert!(got_client_connected);
+}
+
+#[test]
+fn listen_server_all_clients_includes_host_and_remotes() {
+  let port = get_test_port();
+
+  let mut server = ListenServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 77781,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 77781,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected =
+    run_listen_server_updates_until(&mut server, &mut client, 2000, |server, client| {
+      client.is_connected() && server.remote_count() == 1
+    });
+
+  assert!(connected, "Remote client failed to connect");
+
+  // Check all_clients includes both host and remote
+  let all_clients: Vec<_> = server.all_clients().collect();
+  assert_eq!(all_clients.len(), 2);
+  assert_eq!(all_clients[0], LOCAL_HOST_ID); // Host is first
+  assert!(!server.is_host(all_clients[1])); // Second is remote
+
+  // Check remote_clients excludes host
+  let remote_clients: Vec<_> = server.remote_clients().collect();
+  assert_eq!(remote_clients.len(), 1);
+  assert!(!server.is_host(remote_clients[0]));
+}
+
+#[test]
+fn listen_server_sends_to_remote_client() {
+  let port = get_test_port();
+
+  let mut server = ListenServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 77782,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 77782,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected =
+    run_listen_server_updates_until(&mut server, &mut client, 2000, |server, client| {
+      client.is_connected() && server.remote_count() == 1
+    });
+  assert!(connected, "Failed to establish connection");
+
+  // Get the remote client ID
+  let remote_clients: Vec<_> = server.remote_clients().collect();
+  let remote_id = remote_clients[0];
+
+  // Send message to remote client
+  let message = b"Hello from listen server!";
+  server.send(remote_id, Channel::ReliableOrdered, message);
+
+  // Wait for client to receive it
+  let mut received_message = None;
+  let dt = Duration::from_millis(16);
+
+  for _ in 0..100 {
+    server.update(dt);
+    client.update(dt);
+
+    if let Some(data) = client.receive(Channel::ReliableOrdered) {
+      received_message = Some(data);
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  assert!(
+    received_message.is_some(),
+    "Remote client did not receive message"
+  );
+  assert_eq!(received_message.unwrap(), message.to_vec());
+}
+
+#[test]
+fn listen_server_receives_from_remote_client() {
+  let port = get_test_port();
+
+  let mut server = ListenServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 77783,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 77783,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected =
+    run_listen_server_updates_until(&mut server, &mut client, 2000, |server, client| {
+      client.is_connected() && server.remote_count() == 1
+    });
+  assert!(connected, "Failed to establish connection");
+
+  // Get remote client ID
+  let remote_clients: Vec<_> = server.remote_clients().collect();
+  let remote_id = remote_clients[0];
+
+  // Send message from client
+  let message = b"Hello from remote client!";
+  client.send(Channel::ReliableOrdered, message);
+
+  // Wait for server to receive it
+  let mut received_message = None;
+  let dt = Duration::from_millis(16);
+
+  for _ in 0..100 {
+    server.update(dt);
+    client.update(dt);
+
+    if let Some(data) = server.receive(remote_id, Channel::ReliableOrdered) {
+      received_message = Some(data);
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  assert!(
+    received_message.is_some(),
+    "Listen server did not receive message from remote"
+  );
+  assert_eq!(received_message.unwrap(), message.to_vec());
+}
+
+#[test]
+fn listen_server_broadcast_to_remotes() {
+  let port = get_test_port();
+
+  let mut server = ListenServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 77784,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+
+  // Connect two remote clients
+  let mut client1 = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 77784,
+  })
+  .unwrap();
+
+  let mut client2 = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 77784,
+  })
+  .unwrap();
+
+  // Wait for both to connect
+  let dt = Duration::from_millis(16);
+  let start = std::time::Instant::now();
+  let timeout = Duration::from_millis(3000);
+
+  while start.elapsed() < timeout {
+    server.update(dt);
+    client1.update(dt);
+    client2.update(dt);
+
+    if client1.is_connected() && client2.is_connected() && server.remote_count() == 2 {
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  assert_eq!(server.remote_count(), 2, "Both clients should be connected");
+  assert_eq!(server.player_count(), 3); // Host + 2 remotes
+
+  // Broadcast message
+  let message = b"Broadcast from listen server!";
+  server.broadcast(Channel::ReliableOrdered, message);
+
+  // Wait for both clients to receive
+  let mut client1_received = None;
+  let mut client2_received = None;
+
+  let start = std::time::Instant::now();
+  while start.elapsed() < timeout {
+    server.update(dt);
+    client1.update(dt);
+    client2.update(dt);
+
+    if client1_received.is_none() && let Some(data) = client1.receive(Channel::ReliableOrdered) {
+      client1_received = Some(data);
+    }
+
+    if client2_received.is_none() && let Some(data) = client2.receive(Channel::ReliableOrdered) {
+      client2_received = Some(data);
+    }
+
+    if client1_received.is_some() && client2_received.is_some() {
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  assert!(
+    client1_received.is_some(),
+    "Client 1 did not receive broadcast"
+  );
+  assert!(
+    client2_received.is_some(),
+    "Client 2 did not receive broadcast"
+  );
+  assert_eq!(client1_received.unwrap(), message.to_vec());
+  assert_eq!(client2_received.unwrap(), message.to_vec());
+}
+
+#[test]
+fn listen_server_receive_from_host_returns_none() {
+  let port = get_test_port();
+
+  let mut server = ListenServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 77785,
+  })
+  .unwrap();
+
+  // Attempting to receive from the host should return None
+  // (host messages are not networked)
+  assert!(server.receive(LOCAL_HOST_ID, Channel::ReliableOrdered).is_none());
+  assert!(server.receive(LOCAL_HOST_ID, Channel::Unreliable).is_none());
 }
