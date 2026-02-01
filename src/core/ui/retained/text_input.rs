@@ -26,6 +26,7 @@
 //! }
 //! ```
 
+use arboard::Clipboard;
 use winit::keyboard::KeyCode;
 
 use crate::core::input::InputState;
@@ -147,6 +148,63 @@ impl TextInputState {
   /// Clear the selection (keep cursor position).
   pub fn clear_selection(&mut self) {
     self.selection_anchor = self.cursor;
+  }
+
+  // =========================================================================
+  // Clipboard Operations
+  // =========================================================================
+
+  /// Copy the selected text to the system clipboard.
+  ///
+  /// Returns `true` if text was copied successfully.
+  pub fn copy(&self) -> bool {
+    if let Some(selected) = self.selected_text()
+      && let Ok(mut clipboard) = Clipboard::new()
+    {
+      return clipboard.set_text(selected).is_ok();
+    }
+    false
+  }
+
+  /// Cut the selected text to the system clipboard.
+  ///
+  /// Returns `true` if text was cut successfully.
+  pub fn cut(&mut self) -> bool {
+    if self.copy() {
+      self.delete_selection();
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Paste text from the system clipboard at the cursor position.
+  ///
+  /// Returns `true` if text was pasted successfully.
+  pub fn paste(&mut self) -> bool {
+    if let Ok(mut clipboard) = Clipboard::new()
+      && let Ok(text) = clipboard.get_text()
+    {
+      // Filter out control characters except newlines (which we'll convert to space)
+      let clean_text: String = text
+        .chars()
+        .filter_map(|c| {
+          if c == '\n' || c == '\r' {
+            Some(' ') // Convert newlines to spaces for single-line input
+          } else if c.is_control() {
+            None // Remove other control characters
+          } else {
+            Some(c)
+          }
+        })
+        .collect();
+
+      if !clean_text.is_empty() {
+        self.insert(&clean_text);
+        return true;
+      }
+    }
+    false
   }
 
   /// Update the blink timer. Call once per frame with delta time.
@@ -340,6 +398,21 @@ impl TextInputState {
     // Select all (Ctrl+A)
     if ctrl && input.key_pressed(KeyCode::KeyA) {
       self.select_all();
+    }
+
+    // Copy (Ctrl+C)
+    if ctrl && input.key_pressed(KeyCode::KeyC) {
+      self.copy();
+    }
+
+    // Cut (Ctrl+X)
+    if ctrl && input.key_pressed(KeyCode::KeyX) && self.cut() {
+      modified = true;
+    }
+
+    // Paste (Ctrl+V)
+    if ctrl && input.key_pressed(KeyCode::KeyV) && self.paste() {
+      modified = true;
     }
 
     modified
@@ -590,5 +663,94 @@ mod tests {
     // Click at character 5 (end)
     state.set_cursor_char(5, false);
     assert_eq!(state.cursor(), 6); // Full byte length
+  }
+
+  // =========================================================================
+  // Clipboard tests
+  // =========================================================================
+  // Note: These tests interact with the system clipboard and must run serially.
+  // They are marked #[ignore] by default to avoid CI issues.
+  // Run with: cargo test clipboard -- --ignored --test-threads=1
+
+  #[test]
+  #[ignore] // Requires system clipboard access
+  fn copy_with_selection_copies_to_clipboard() {
+    let mut state = TextInputState::with_text("hello world");
+    state.cursor = 0;
+    state.selection_anchor = 5;
+
+    let copied = state.copy();
+    assert!(copied);
+
+    // Verify we can paste it back
+    let mut clipboard = Clipboard::new().unwrap();
+    assert_eq!(clipboard.get_text().unwrap(), "hello");
+  }
+
+  #[test]
+  #[ignore] // Requires system clipboard access
+  fn copy_without_selection_returns_false() {
+    let state = TextInputState::with_text("hello");
+    // No selection (cursor == anchor)
+    assert!(!state.copy());
+  }
+
+  #[test]
+  #[ignore] // Requires system clipboard access
+  fn cut_removes_selection_and_copies() {
+    let mut state = TextInputState::with_text("hello world");
+    state.cursor = 6;
+    state.selection_anchor = 11; // Select "world"
+
+    let cut_result = state.cut();
+    assert!(cut_result);
+    assert_eq!(state.text(), "hello ");
+    assert_eq!(state.cursor(), 6);
+
+    // Verify clipboard has the cut text
+    let mut clipboard = Clipboard::new().unwrap();
+    assert_eq!(clipboard.get_text().unwrap(), "world");
+  }
+
+  #[test]
+  #[ignore] // Requires system clipboard access
+  fn paste_inserts_text_at_cursor() {
+    let mut clipboard = Clipboard::new().unwrap();
+    clipboard.set_text("inserted").unwrap();
+
+    let mut state = TextInputState::with_text("hello world");
+    state.cursor = 6;
+    state.selection_anchor = 6;
+
+    let pasted = state.paste();
+    assert!(pasted);
+    assert_eq!(state.text(), "hello insertedworld");
+  }
+
+  #[test]
+  #[ignore] // Requires system clipboard access
+  fn paste_replaces_selection() {
+    let mut clipboard = Clipboard::new().unwrap();
+    clipboard.set_text("there").unwrap();
+
+    let mut state = TextInputState::with_text("hello world");
+    state.cursor = 6;
+    state.selection_anchor = 11; // Select "world"
+
+    let pasted = state.paste();
+    assert!(pasted);
+    assert_eq!(state.text(), "hello there");
+  }
+
+  #[test]
+  #[ignore] // Requires system clipboard access
+  fn paste_converts_newlines_to_spaces() {
+    let mut clipboard = Clipboard::new().unwrap();
+    clipboard.set_text("line1\nline2\r\nline3").unwrap();
+
+    let mut state = TextInputState::new();
+    let pasted = state.paste();
+    assert!(pasted);
+    assert_eq!(state.text(), "line1 line2  line3"); // \r\n becomes two spaces
   }
 }
