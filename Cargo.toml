@@ -23,6 +23,7 @@ path = "src/bin/ryo2d.rs"
 # Or use the run script: ./run breakout
 
 [dependencies]
+arboard = "3.6.1"
 bytemuck = { version = "1.21", features = ["derive"] }
 crossbeam-channel = "0.5"
 flate2 = "1.1"
