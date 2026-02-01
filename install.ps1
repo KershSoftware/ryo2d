@@ -1,12 +1,12 @@
 #!/usr/bin/env pwsh
 # Ryo2D CLI Installation Script (Windows)
 #
-# Installs the ryo2d CLI using `cargo install --path .`
-# This installs to ~/.cargo/bin, which should already be in your PATH.
+# Installs the ryo2d CLI to a dedicated directory and adds it to PATH.
+# Installation directory: $env:LOCALAPPDATA\ryo2d\bin
 #
 # Usage:
-#   ./install.ps1           # Install to ~/.cargo/bin
-#   ./install.ps1 -Uninstall # Uninstall the CLI
+#   ./install.ps1           # Install ryo2d
+#   ./install.ps1 -Uninstall # Uninstall ryo2d
 
 param(
     [switch]$Uninstall
@@ -15,6 +15,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$InstallDir = Join-Path $env:LOCALAPPDATA "ryo2d\bin"
+$BinaryPath = Join-Path $InstallDir "ryo2d.exe"
 
 function Write-Status {
     param([string]$Action, [string]$Message)
@@ -40,20 +42,76 @@ function Write-Error {
     Write-Host $Message
 }
 
+function Test-InPath {
+    param([string]$Directory)
+    $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    return $currentPath -like "*$Directory*"
+}
+
+function Add-ToPath {
+    param([string]$Directory)
+    
+    if (Test-InPath $Directory) {
+        return $false  # Already in PATH
+    }
+    
+    Write-Host ""
+    Write-Host "The installation directory needs to be added to your PATH:" -ForegroundColor Yellow
+    Write-Host "  $Directory" -ForegroundColor Gray
+    Write-Host ""
+    $response = Read-Host "Add to PATH? (Y/n)"
+    
+    if ($response -eq "" -or $response -match "^[Yy]") {
+        Write-Status "Updating" "PATH environment variable..."
+        
+        $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        $newPath = "$currentPath;$Directory"
+        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+        
+        # Update current session
+        $env:Path = "$env:Path;$Directory"
+        
+        return $true
+    }
+    
+    return $false
+}
+
 # Uninstall mode
 if ($Uninstall) {
-    Write-Status "Uninstalling" "ryo2d CLI"
+    Write-Host ""
+    Write-Host "Ryo2D CLI Uninstaller" -ForegroundColor Cyan
+    Write-Host "=====================" -ForegroundColor Cyan
+    Write-Host ""
     
-    Push-Location $ScriptDir
-    try {
-        & cargo uninstall ryo2d
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "ryo2d CLI uninstalled"
+    $removed = $false
+    
+    if (Test-Path $BinaryPath) {
+        Write-Status "Removing" "ryo2d.exe from $InstallDir"
+        Remove-Item $BinaryPath -Force
+        $removed = $true
+    }
+    
+    # Remove install directory if empty
+    if (Test-Path $InstallDir) {
+        $items = Get-ChildItem $InstallDir -ErrorAction SilentlyContinue
+        if ($null -eq $items -or $items.Count -eq 0) {
+            Write-Status "Removing" "empty directory $InstallDir"
+            Remove-Item $InstallDir -Force -Recurse
         }
     }
-    finally {
-        Pop-Location
+    
+    if ($removed) {
+        Write-Host ""
+        Write-Success "ryo2d CLI uninstalled"
+        Write-Host ""
+        Write-Host "Note: PATH was not modified. You may want to manually remove:" -ForegroundColor Gray
+        Write-Host "  $InstallDir" -ForegroundColor Gray
+        Write-Host ""
+    } else {
+        Write-Warning "ryo2d CLI not found at $BinaryPath"
     }
+    
     exit 0
 }
 
@@ -63,13 +121,20 @@ Write-Host "Ryo2D CLI Installer" -ForegroundColor Cyan
 Write-Host "===================" -ForegroundColor Cyan
 Write-Host ""
 
-Write-Status "Installing" "ryo2d CLI to ~/.cargo/bin..."
+# Check for Rust/Cargo
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    Write-Error "Cargo not found. Please install Rust from https://rustup.rs/"
+    exit 1
+}
+
+Write-Status "Building" "ryo2d CLI in release mode..."
+Write-Host ""
 
 Push-Location $ScriptDir
 try {
-    & cargo install --path . --bin ryo2d
+    & cargo build --release --bin ryo2d
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Installation failed"
+        Write-Error "Build failed"
         exit 1
     }
 }
@@ -78,7 +143,48 @@ finally {
 }
 
 Write-Host ""
-Write-Success "ryo2d CLI installed successfully!"
+Write-Status "Creating" "installation directory $InstallDir"
+New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+
+$sourceBinary = Join-Path $ScriptDir "target\release\ryo2d.exe"
+Write-Status "Installing" "ryo2d.exe to $InstallDir"
+Copy-Item $sourceBinary $BinaryPath -Force
+
+# Copy skills directory for install-skills command
+$sourceSkills = Join-Path $ScriptDir ".github\skills"
+$targetSkills = Join-Path (Split-Path $InstallDir) "skills"
+if (Test-Path $sourceSkills) {
+    Write-Status "Installing" "Agent Skills to $(Split-Path $InstallDir)\skills"
+    if (Test-Path $targetSkills) {
+        Remove-Item $targetSkills -Recurse -Force
+    }
+    Copy-Item $sourceSkills $targetSkills -Recurse -Force
+}
+
 Write-Host ""
-Write-Host "Run 'ryo2d --help' to get started." -ForegroundColor Gray
+Write-Success "ryo2d CLI installed successfully!"
+
+# Add to PATH
+$addedToPath = Add-ToPath $InstallDir
+
+Write-Host ""
+if ($addedToPath) {
+    Write-Host "Installation complete! You can now use 'ryo2d' from any directory." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "The PATH has been updated for:" -ForegroundColor Gray
+    Write-Host "  - Current terminal session (works immediately)" -ForegroundColor Gray
+    Write-Host "  - Future terminal sessions" -ForegroundColor Gray
+} else {
+    Write-Host "Installation complete!" -ForegroundColor Green
+    Write-Host ""
+    if (Test-InPath $InstallDir) {
+        Write-Host "You can now use 'ryo2d' from any directory." -ForegroundColor Gray
+    } else {
+        Write-Host "To use 'ryo2d' from any directory, add this to your PATH:" -ForegroundColor Yellow
+        Write-Host "  $InstallDir" -ForegroundColor Gray
+    }
+}
+
+Write-Host ""
+Write-Host "Run 'ryo2d --help' to get started." -ForegroundColor Cyan
 Write-Host ""
