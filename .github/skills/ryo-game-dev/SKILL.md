@@ -23,6 +23,11 @@ struct MyGame {
 
 impl Game for MyGame {
     fn init(&mut self, ctx: &mut GameContext) {
+        // IMPORTANT: Center camera so world coords match screen coords (0,0 = top-left)
+        // Resolution comes from Ryo.toml, get it from camera viewport
+        let (vw, vh) = ctx.camera.viewport_size();
+        ctx.camera.set_position(vw / 2.0, vh / 2.0);
+        
         // Load a sprite from assets folder
         let sprite = ctx.assets.load_sprite("player.png").unwrap();
         
@@ -32,9 +37,9 @@ impl Game for MyGame {
             "red-square"
         );
         
-        // Spawn player entity
+        // Spawn player entity at screen center (640, 360 for 1280x720)
         self.player = Some(ctx.world.spawn((
-            Transform::new(640.0, 360.0),
+            Transform::new(vw / 2.0, vh / 2.0),
             Velocity::zero(),
             Renderable::sprite(sprite).with_z_order(10),
         )));
@@ -53,10 +58,9 @@ impl Game for MyGame {
 }
 
 fn main() {
+    // Resolution/FPS come from Ryo.toml - don't set .resolution() here!
     EngineBuilder::new()
         .title("My Game")
-        .resolution(1280, 720)
-        .fps(60)
         .with_game(MyGame { player: None, score: 0 })
         .build()
         .run()
@@ -138,23 +142,31 @@ let (wx, wy) = ctx.camera.screen_to_world(mx, my);
 ### Querying & Modifying Entities
 
 ```rust
-// Get component
+// Get component from a stored entity
 if let Some(transform) = ctx.world.get_component::<Transform>(entity) {
-    let pos = transform.position;
+    let x = transform.x;  // Direct field access (not .position.x!)
+    let y = transform.y;
 }
 
 // Modify component
 if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
-    vel.x = 100.0;
+    vel.dx = 100.0;  // Fields are dx, dy, dz (not x, y, z!)
+    vel.dy = -50.0;
 }
 
 // Query all entities with components
-for (entity, (transform, velocity)) in ctx.world.query::<(&Transform, &Velocity)>().iter() {
-    // process each
+// IMPORTANT: Returns flat tuple of components, NOT (entity, components)
+for (transform, velocity) in ctx.world.query::<(&Transform, &Velocity)>().iter() {
+    // Use transform.x, velocity.dx etc directly
+}
+
+// Query with mutable access
+for (transform, velocity) in ctx.world.query::<(&Transform, &mut Velocity)>().iter() {
+    velocity.dx = transform.x * 0.1;
 }
 
 // Query with optional
-for (entity, (t, maybe_v)) in ctx.world.query::<(&Transform, Option<&Velocity>)>().iter() {
+for (t, maybe_v) in ctx.world.query::<(&Transform, Option<&Velocity>)>().iter() {
     if let Some(vel) = maybe_v { /* has velocity */ }
 }
 
@@ -207,7 +219,7 @@ if let Some(audio) = ctx.audio.as_mut() {
 ```rust
 // Follow player
 if let Some(t) = ctx.world.get_component::<Transform>(self.player.unwrap()) {
-    ctx.camera.set_position(t.position.x, t.position.y);
+    ctx.camera.set_position(t.x, t.y);  // Direct x, y fields
 }
 
 // Zoom
@@ -238,32 +250,96 @@ impl Scene for MenuScene {
     }
 
     fn render_ui(&mut self, ui: &mut UiContext) {
-        ui.label("Press ENTER to start", 100.0, 100.0, Color::WHITE, None);
+        // Get screen size (returns u32, cast to f32 for positioning)
+        let (sw, sh) = ui.screen_size();
+        let screen_w = sw as f32;
+        let screen_h = sh as f32;
+        
+        ui.label("Press ENTER to start", screen_w / 2.0 - 80.0, screen_h / 2.0, Color::WHITE, None);
     }
 }
 
 // SceneAction options:
-// - Continue         Keep running
-// - Push(scene)      Add scene on top (pause current)
-// - Pop              Return to previous scene
-// - Replace(scene)   Swap current scene
-// - Quit             Exit game
+// - Continue            Keep running
+// - Push(scene)         Add scene on top (pause current)
+// - Pop                 Return to previous scene  
+// - Switch(scene)       Replace current scene (NOT "Replace"!)
+// - Reset(scene)        Clear all scenes, push new one
+// - Quit                Exit game
+// All except Continue/Pop/Quit have "With" variants for transitions
 ```
 
 ## EngineBuilder Options
 
 ```rust
+// Minimal - uses Ryo.toml for resolution, fps, etc.
 EngineBuilder::new()
     .title("My Game")
-    .resolution(1280, 720)
-    .fps(60)
-    .physics_hz(120)
-    .window_mode(WindowMode::ResizableAspectRatio)
     .with_game(MyGame::default())  // OR
     .with_scene(MenuScene)         // for multi-scene
     .build()
     .run()
     .unwrap();
+
+// Override Ryo.toml (only if needed for special cases)
+EngineBuilder::new()
+    .title("My Game")
+    .resolution(1920, 1080)           // Override resolution
+    .fps(120)                         // Override FPS
+    .physics_hz(240)                  // Physics update rate
+    .window_mode(WindowMode::ResizableAspectRatio)
+    .with_game(MyGame::default())
+    .build()
+    .run()
+    .unwrap();
+```
+
+**Note:** Prefer using `Ryo.toml` for configuration. EngineBuilder methods override the config file.
+
+## Coordinate System
+
+**CRITICAL:** The camera defaults to position (0, 0), which puts the screen center at world origin.
+
+To use screen-style coordinates (0, 0 = top-left):
+
+```rust
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // Center camera so world coords match screen coords
+    let (vw, vh) = ctx.camera.viewport_size();
+    ctx.camera.set_position(vw / 2.0, vh / 2.0);
+    
+    // Now world (0, 0) = screen top-left
+    // world (1280, 720) = screen bottom-right (for 1280x720)
+}
+```
+
+### Screen Bounds Helper
+
+For clamping entities to screen, **sprite origin is TOP-LEFT**:
+
+```rust
+// In your Scene or Game struct, store screen bounds
+struct GameScene {
+    screen_w: f32,
+    screen_h: f32,
+    // ...
+}
+
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let (vw, vh) = ctx.camera.viewport_size();
+    self.screen_w = vw;
+    self.screen_h = vh;
+    ctx.camera.set_position(vw / 2.0, vh / 2.0);
+}
+
+// Clamp player to screen (sprite origin is TOP-LEFT)
+let sprite_w = 48.0;  // Full sprite width
+let sprite_h = 32.0;  // Full sprite height
+
+// Left/top edge: position >= 0
+// Right/bottom edge: position <= screen - sprite_size
+transform.x = transform.x.clamp(0.0, self.screen_w - sprite_w);
+transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 ```
 
 ## Common Components
