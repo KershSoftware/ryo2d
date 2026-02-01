@@ -23,5 +23,6 @@ pub mod spatial;
 pub mod sprite;
 pub mod sprite_gpu;
 pub mod tile;
+pub mod trail;
 pub mod ui;
 pub mod workspace;

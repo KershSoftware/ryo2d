@@ -133,6 +133,9 @@ pub mod prelude {
   // 2D Lighting system
   pub use crate::core::lighting::{AmbientLight, Light2D, LightOccluder2D, LightingRenderer};
 
+  // Trail and Line rendering
+  pub use crate::core::trail::{Line2D, Trail2D, TrailPoint, TrailRenderer, TrailStyle};
+
   // GPU sprite batching (for high-performance particle systems)
   pub use crate::core::sprite_gpu::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
 
