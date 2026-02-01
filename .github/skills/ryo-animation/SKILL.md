@@ -9,6 +9,8 @@ metadata:
 
 You help users create sprite animations, from simple loops to complex character state machines.
 
+**For complete API signatures, see the `ryo-api` skill.**
+
 ## Resources
 
 - **Animation Module**: `src/core/animation.rs`

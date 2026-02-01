@@ -9,6 +9,8 @@ metadata:
 
 You help users integrate audio using the Kira audio backend.
 
+**For complete API signatures, see the `ryo-api` skill.**
+
 ## Resources
 
 - **Audio Module**: `src/core/audio.rs`
