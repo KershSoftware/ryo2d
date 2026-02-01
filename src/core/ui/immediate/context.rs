@@ -2,6 +2,23 @@
 //!
 //! The `UiContext` provides a simple API for drawing shapes, text, and
 //! interactive elements. Create one per frame and pass it to render functions.
+//!
+//! # Clipping
+//!
+//! The UI context supports nested clip rects for scroll views and overflow handling.
+//! Use `push_clip()` and `pop_clip()` to manage the clip stack:
+//!
+//! ```ignore
+//! // Set up a scroll region
+//! ui.push_clip(scroll_area);
+//!
+//! // Draw content - anything outside scroll_area is clipped
+//! ui.draw_text("Item 1", 10.0, 10.0, Color::WHITE);
+//! ui.draw_text("Item 2", 10.0, 30.0, Color::WHITE);
+//!
+//! // Restore previous clip state
+//! ui.pop_clip();
+//! ```
 
 use winit::event::MouseButton;
 
@@ -10,6 +27,9 @@ use crate::core::input::InputState;
 use super::font::BitmapFont;
 use crate::core::ui::theme::Theme;
 use crate::core::ui::types::{Anchor, Color, Rect};
+
+/// Maximum depth of nested clip rects.
+const MAX_CLIP_STACK_DEPTH: usize = 16;
 
 // ============================================================================
 // UiContext - Immediate Mode Drawing
@@ -46,6 +66,10 @@ pub struct UiContext<'a> {
     font: &'a BitmapFont,
     /// Optional theme for styled widgets
     theme: Option<&'a Theme>,
+    /// Stack of clip rects for nested clipping
+    clip_stack: Vec<Rect>,
+    /// Current effective clip rect (intersection of all stacked clips)
+    current_clip: Option<Rect>,
 }
 
 impl<'a> UiContext<'a> {
@@ -64,6 +88,8 @@ impl<'a> UiContext<'a> {
             input,
             font,
             theme: None,
+            clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
+            current_clip: None,
         }
     }
 
@@ -83,6 +109,8 @@ impl<'a> UiContext<'a> {
             input,
             font,
             theme: Some(theme),
+            clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
+            current_clip: None,
         }
     }
 
@@ -97,15 +125,194 @@ impl<'a> UiContext<'a> {
     }
 
     // =========================================================================
+    // Clipping
+    // =========================================================================
+
+    /// Push a clip rect onto the stack.
+    ///
+    /// All subsequent drawing will be clipped to the intersection of the
+    /// current clip and this new rect. Use `pop_clip()` to restore the
+    /// previous clip state.
+    ///
+    /// # Panics
+    /// Panics if the clip stack exceeds `MAX_CLIP_STACK_DEPTH` (16 levels).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Create a scroll region
+    /// let scroll_area = Rect::new(10.0, 10.0, 200.0, 150.0);
+    /// ui.push_clip(scroll_area);
+    ///
+    /// // Draw clipped content
+    /// for (i, item) in items.iter().enumerate() {
+    ///     let y = 10.0 + i as f32 * 20.0 - scroll_offset;
+    ///     ui.draw_text(item, 15.0, y, Color::WHITE);
+    /// }
+    ///
+    /// ui.pop_clip();
+    /// ```
+    pub fn push_clip(&mut self, rect: Rect) {
+        assert!(
+            self.clip_stack.len() < MAX_CLIP_STACK_DEPTH,
+            "Clip stack overflow: exceeded {} nested clips",
+            MAX_CLIP_STACK_DEPTH
+        );
+
+        self.clip_stack.push(rect);
+        self.update_current_clip();
+    }
+
+    /// Pop the most recent clip rect from the stack.
+    ///
+    /// Restores the clip state to what it was before the corresponding
+    /// `push_clip()` call.
+    ///
+    /// # Panics
+    /// Panics if called when the clip stack is empty.
+    pub fn pop_clip(&mut self) {
+        assert!(
+            !self.clip_stack.is_empty(),
+            "Clip stack underflow: pop_clip() called with empty stack"
+        );
+
+        self.clip_stack.pop();
+        self.update_current_clip();
+    }
+
+    /// Get the current effective clip rect, if any.
+    ///
+    /// Returns `None` if no clip is active (full screen is visible).
+    pub fn current_clip(&self) -> Option<Rect> {
+        self.current_clip
+    }
+
+    /// Check if a clip is currently active.
+    pub fn has_clip(&self) -> bool {
+        self.current_clip.is_some()
+    }
+
+    /// Get the current clip stack depth.
+    pub fn clip_depth(&self) -> usize {
+        self.clip_stack.len()
+    }
+
+    /// Clear all clips from the stack.
+    ///
+    /// Useful for drawing modal overlays that should ignore parent clips.
+    pub fn clear_clips(&mut self) {
+        self.clip_stack.clear();
+        self.current_clip = None;
+    }
+
+    /// Temporarily clear clips, run a closure, then restore.
+    ///
+    /// Useful for drawing modal backgrounds or overlays.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Draw a dimmed background over everything
+    /// ui.with_no_clip(|ui| {
+    ///     let (w, h) = ui.screen_size();
+    ///     ui.draw_rect(Rect::new(0.0, 0.0, w as f32, h as f32),
+    ///                  Color::rgba(0, 0, 0, 128));
+    /// });
+    /// ```
+    pub fn with_no_clip<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        let saved_stack = std::mem::take(&mut self.clip_stack);
+        let saved_clip = self.current_clip.take();
+
+        let result = f(self);
+
+        self.clip_stack = saved_stack;
+        self.current_clip = saved_clip;
+
+        result
+    }
+
+    /// Recalculate the current effective clip rect.
+    fn update_current_clip(&mut self) {
+        if self.clip_stack.is_empty() {
+            self.current_clip = None;
+        } else {
+            // Start with first clip rect
+            let mut result = self.clip_stack[0];
+
+            // Intersect with all subsequent clips
+            for clip in &self.clip_stack[1..] {
+                result = Self::intersect_rects(result, *clip);
+            }
+
+            // Check if the intersection is valid (non-empty)
+            if result.width > 0.0 && result.height > 0.0 {
+                self.current_clip = Some(result);
+            } else {
+                // Empty intersection - nothing visible
+                self.current_clip = Some(Rect::new(0.0, 0.0, 0.0, 0.0));
+            }
+        }
+    }
+
+    /// Calculate the intersection of two rectangles.
+    fn intersect_rects(a: Rect, b: Rect) -> Rect {
+        let x = a.x.max(b.x);
+        let y = a.y.max(b.y);
+        let right = a.right().min(b.right());
+        let bottom = a.bottom().min(b.bottom());
+
+        let width = (right - x).max(0.0);
+        let height = (bottom - y).max(0.0);
+
+        Rect::new(x, y, width, height)
+    }
+
+    /// Apply clipping to a rectangle and return the visible portion.
+    ///
+    /// Returns `None` if the rect is completely outside the clip area.
+    fn clip_rect(&self, rect: Rect) -> Option<Rect> {
+        // First clip to screen bounds
+        let screen = Rect::new(0.0, 0.0, self.frame_width as f32, self.frame_height as f32);
+        let clipped = Self::intersect_rects(rect, screen);
+
+        if clipped.width <= 0.0 || clipped.height <= 0.0 {
+            return None;
+        }
+
+        // Then clip to current clip rect if any
+        if let Some(clip) = self.current_clip {
+            let final_rect = Self::intersect_rects(clipped, clip);
+            if final_rect.width > 0.0 && final_rect.height > 0.0 {
+                Some(final_rect)
+            } else {
+                None
+            }
+        } else {
+            Some(clipped)
+        }
+    }
+
+    // =========================================================================
     // Shape Drawing
     // =========================================================================
 
     /// Draw a filled rectangle.
+    ///
+    /// The rectangle is automatically clipped to the current clip rect if one
+    /// is active, and to screen bounds.
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
-        let x0 = rect.x.max(0.0) as i32;
-        let y0 = rect.y.max(0.0) as i32;
-        let x1 = rect.right().min(self.frame_width as f32) as i32;
-        let y1 = rect.bottom().min(self.frame_height as f32) as i32;
+        // Apply clipping
+        let Some(clipped) = self.clip_rect(rect) else {
+            return; // Completely outside clip area
+        };
+
+        let x0 = clipped.x as i32;
+        let y0 = clipped.y as i32;
+        let x1 = clipped.right() as i32;
+        let y1 = clipped.bottom() as i32;
 
         if x0 >= x1 || y0 >= y1 || color.a == 0 {
             return;
@@ -252,16 +459,48 @@ impl<'a> UiContext<'a> {
     // =========================================================================
 
     /// Draw text at the given position.
+    ///
+    /// Text is clipped per-pixel to the current clip rect if one is active.
     pub fn draw_text(&mut self, text: &str, x: f32, y: f32, color: Color) {
-        self.font.draw_text(
-            self.frame,
-            self.frame_width,
-            self.frame_height,
-            text,
-            x as i32,
-            y as i32,
-            color,
-        );
+        // Quick bounds check if clip is active
+        if let Some(clip) = self.current_clip {
+            let (text_w, text_h) = self.font.text_size(text);
+            let text_rect = Rect::new(x, y, text_w as f32, text_h as f32);
+
+            // Skip if text is completely outside clip region
+            if text_rect.right() < clip.x
+                || text_rect.x > clip.right()
+                || text_rect.bottom() < clip.y
+                || text_rect.y > clip.bottom()
+            {
+                return;
+            }
+
+            // Use per-pixel clipped rendering
+            self.font.draw_text_clipped(
+                self.frame,
+                self.frame_width,
+                self.frame_height,
+                text,
+                x as i32,
+                y as i32,
+                color,
+                clip.x as i32,
+                clip.y as i32,
+                clip.width as i32,
+                clip.height as i32,
+            );
+        } else {
+            self.font.draw_text(
+                self.frame,
+                self.frame_width,
+                self.frame_height,
+                text,
+                x as i32,
+                y as i32,
+                color,
+            );
+        }
     }
 
     /// Draw text with anchor-based positioning.
@@ -715,5 +954,187 @@ impl<'a> UiContext<'a> {
         self.draw_rect(knob_rect, knob_color);
 
         clicked
+    }
+
+    // =========================================================================
+    // Modal & Overlay Support
+    // =========================================================================
+
+    /// Draw a modal overlay that dims the background.
+    ///
+    /// This clears all current clips and draws a semi-transparent rectangle
+    /// over the entire screen. Useful as a backdrop for modal dialogs.
+    ///
+    /// # Arguments
+    /// * `dim_color` - The color to overlay (typically semi-transparent black)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Dim the background
+    /// ui.draw_modal_overlay(Color::rgba(0, 0, 0, 128));
+    ///
+    /// // Draw the modal dialog on top
+    /// let dialog = Rect::centered_at(center_x, center_y, 300.0, 200.0);
+    /// ui.draw_panel(dialog, Color::rgb(40, 40, 50), Some(Color::WHITE));
+    /// ui.draw_text_centered("Confirm?", dialog, Color::WHITE);
+    /// ```
+    pub fn draw_modal_overlay(&mut self, dim_color: Color) {
+        self.with_no_clip(|ui| {
+            let (w, h) = ui.screen_size();
+            ui.draw_rect(Rect::new(0.0, 0.0, w as f32, h as f32), dim_color);
+        });
+    }
+
+    /// Check if a point is within the current clip region.
+    ///
+    /// Returns `true` if no clip is active or if the point is inside the clip.
+    pub fn point_in_clip(&self, x: f32, y: f32) -> bool {
+        match self.current_clip {
+            Some(clip) => clip.contains(x, y),
+            None => {
+                // Check screen bounds
+                x >= 0.0
+                    && y >= 0.0
+                    && x < self.frame_width as f32
+                    && y < self.frame_height as f32
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_context(width: u32, height: u32, frame: &mut [u8]) -> UiContext<'_> {
+        let input = InputState::new();
+        // Leak the input to get a static reference for testing
+        let input_ref: &'static InputState = Box::leak(Box::new(input));
+        let font = super::super::font::create_debug_font();
+        let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
+
+        UiContext::new(frame, width, height, input_ref, font_ref)
+    }
+
+    #[test]
+    fn clip_stack_push_pop() {
+        let mut frame = vec![0u8; 100 * 100 * 4];
+        let mut ui = create_test_context(100, 100, &mut frame);
+
+        assert_eq!(ui.clip_depth(), 0);
+        assert!(!ui.has_clip());
+
+        ui.push_clip(Rect::new(10.0, 10.0, 50.0, 50.0));
+        assert_eq!(ui.clip_depth(), 1);
+        assert!(ui.has_clip());
+        assert_eq!(ui.current_clip(), Some(Rect::new(10.0, 10.0, 50.0, 50.0)));
+
+        ui.pop_clip();
+        assert_eq!(ui.clip_depth(), 0);
+        assert!(!ui.has_clip());
+    }
+
+    #[test]
+    fn nested_clips_intersect() {
+        let mut frame = vec![0u8; 100 * 100 * 4];
+        let mut ui = create_test_context(100, 100, &mut frame);
+
+        // First clip: 10,10 to 60,60
+        ui.push_clip(Rect::new(10.0, 10.0, 50.0, 50.0));
+        // Second clip: 30,30 to 80,80
+        ui.push_clip(Rect::new(30.0, 30.0, 50.0, 50.0));
+
+        // Intersection should be: 30,30 to 60,60 (30x30)
+        let clip = ui.current_clip().unwrap();
+        assert_eq!(clip.x, 30.0);
+        assert_eq!(clip.y, 30.0);
+        assert_eq!(clip.width, 30.0);
+        assert_eq!(clip.height, 30.0);
+    }
+
+    #[test]
+    fn clear_clips_resets_stack() {
+        let mut frame = vec![0u8; 100 * 100 * 4];
+        let mut ui = create_test_context(100, 100, &mut frame);
+
+        ui.push_clip(Rect::new(10.0, 10.0, 50.0, 50.0));
+        ui.push_clip(Rect::new(20.0, 20.0, 30.0, 30.0));
+        assert_eq!(ui.clip_depth(), 2);
+
+        ui.clear_clips();
+        assert_eq!(ui.clip_depth(), 0);
+        assert!(!ui.has_clip());
+    }
+
+    #[test]
+    fn with_no_clip_restores_state() {
+        let mut frame = vec![0u8; 100 * 100 * 4];
+        let mut ui = create_test_context(100, 100, &mut frame);
+
+        ui.push_clip(Rect::new(10.0, 10.0, 50.0, 50.0));
+        let original_clip = ui.current_clip();
+
+        let inside_clip = ui.with_no_clip(|ui| {
+            assert!(!ui.has_clip());
+            42
+        });
+
+        assert_eq!(inside_clip, 42);
+        assert_eq!(ui.current_clip(), original_clip);
+        assert_eq!(ui.clip_depth(), 1);
+    }
+
+    #[test]
+    fn point_in_clip_checks_bounds() {
+        let mut frame = vec![0u8; 100 * 100 * 4];
+        let mut ui = create_test_context(100, 100, &mut frame);
+
+        // No clip - check screen bounds
+        assert!(ui.point_in_clip(50.0, 50.0));
+        assert!(!ui.point_in_clip(-1.0, 50.0));
+        assert!(!ui.point_in_clip(100.0, 50.0));
+
+        // With clip
+        ui.push_clip(Rect::new(20.0, 20.0, 40.0, 40.0));
+        assert!(ui.point_in_clip(30.0, 30.0)); // Inside clip
+        assert!(!ui.point_in_clip(10.0, 30.0)); // Left of clip
+        assert!(!ui.point_in_clip(70.0, 30.0)); // Right of clip
+    }
+
+    #[test]
+    fn empty_clip_intersection() {
+        let mut frame = vec![0u8; 100 * 100 * 4];
+        let mut ui = create_test_context(100, 100, &mut frame);
+
+        // Two non-overlapping clips
+        ui.push_clip(Rect::new(10.0, 10.0, 20.0, 20.0)); // 10,10 to 30,30
+        ui.push_clip(Rect::new(50.0, 50.0, 20.0, 20.0)); // 50,50 to 70,70
+
+        // Intersection is empty
+        let clip = ui.current_clip().unwrap();
+        assert!(clip.width == 0.0 || clip.height == 0.0);
+    }
+
+    #[test]
+    fn rect_intersection_calculation() {
+        // Overlapping rects
+        let a = Rect::new(10.0, 10.0, 50.0, 50.0);
+        let b = Rect::new(30.0, 30.0, 50.0, 50.0);
+        let result = UiContext::intersect_rects(a, b);
+        assert_eq!(result.x, 30.0);
+        assert_eq!(result.y, 30.0);
+        assert_eq!(result.width, 30.0);
+        assert_eq!(result.height, 30.0);
+
+        // Non-overlapping rects
+        let c = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let d = Rect::new(20.0, 20.0, 10.0, 10.0);
+        let result2 = UiContext::intersect_rects(c, d);
+        assert!(result2.width == 0.0 || result2.height == 0.0);
     }
 }
