@@ -1,5 +1,7 @@
 //! Built-in components for the game engine
 
+use serde::{Deserialize, Serialize};
+
 // Re-export glam types for convenience
 pub use glam::{Mat4, Vec2, Vec3, Vec4};
 
@@ -35,7 +37,7 @@ impl RenderLayer {
 /// - `(0.5, 0.0)` - Top-center - useful for hanging objects like pendulums
 /// - `(0.0, 0.5)` - Left-center - useful for door hinges
 /// - `(1.0, 1.0)` - Bottom-right corner
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transform {
   pub x: f32,
   pub y: f32,
@@ -225,7 +227,7 @@ impl Default for Transform {
 }
 
 /// Movement per second in 2D/3D space
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Velocity {
   pub dx: f32,
   pub dy: f32,
@@ -267,6 +269,40 @@ impl Velocity {
   pub fn zero() -> Self {
     Self::new(0.0, 0.0)
   }
+}
+
+// ========== Replicated implementations ==========
+
+use crate::core::network::replication::{ComponentTypeId, Replicated};
+
+impl Replicated for Transform {
+    fn component_id() -> ComponentTypeId {
+        ComponentTypeId::from_name("ryo2d::Transform")
+    }
+
+    fn component_name() -> &'static str {
+        "Transform"
+    }
+
+    fn replication_priority() -> u8 {
+        // Transform is high priority - position updates are time-sensitive
+        10
+    }
+}
+
+impl Replicated for Velocity {
+    fn component_id() -> ComponentTypeId {
+        ComponentTypeId::from_name("ryo2d::Velocity")
+    }
+
+    fn component_name() -> &'static str {
+        "Velocity"
+    }
+
+    fn replication_priority() -> u8 {
+        // Velocity is medium priority
+        5
+    }
 }
 
 #[cfg(test)]

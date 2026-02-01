@@ -602,8 +602,51 @@ The current implementation uses `ServerAuthentication::Unsecure`:
 - Fine for casual co-op with friends
 - For public internet games, consider implementing authentication with connect tokens
 
+## Advanced Features
+
+ryo2d includes higher-level networking features built on top of the basic client-server system:
+
+### Network Replication
+
+Automatic synchronization of game state between server and clients. Register components for replication and they stay in sync automatically.
+
+```rust
+// Server: spawn networked entity
+let entity = replication.spawn_networked(&mut world,
+    NetworkEntityBuilder::new()
+        .with_component(Transform::new(100.0, 100.0))
+);
+
+// Changes are automatically broadcast to clients
+```
+
+See [Network Replication](./replication.md) for the complete guide.
+
+### Remote Procedure Calls (RPC)
+
+Type-safe messaging for game events that don't fit the component model:
+
+```rust
+// Define RPC
+#[derive(Clone, Serialize, Deserialize)]
+struct JumpRpc { height: f32 }
+
+impl Rpc for JumpRpc {
+    fn rpc_id() -> RpcTypeId { RpcTypeId::from_name("Jump") }
+    fn rpc_name() -> &'static str { "Jump" }
+}
+
+// Client sends to server
+let serialized = SerializedRpc::from_rpc(&JumpRpc { height: 10.0 }, client_id, RpcTarget::Server)?;
+client.send(Channel::ReliableOrdered, &serialized.to_bytes()?);
+```
+
+See [Remote Procedure Calls](./rpc.md) for the complete guide.
+
 ## See Also
 
+- [Network Replication](./replication.md) - Automatic state synchronization
+- [Remote Procedure Calls](./rpc.md) - Game events and actions
 - [Game Loop](./game-loop.md) - Understanding update cycles
 - [ECS Architecture](./ecs.md) - Entity management for multiplayer
 - [Save System](./save-system.md) - Persisting game state

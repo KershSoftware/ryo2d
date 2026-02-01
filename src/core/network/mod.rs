@@ -10,6 +10,11 @@
 //! - [`ListenServer`] - Player-hosted server (host plays while serving)
 //! - [`NetworkClient`] - Connects to either server type
 //!
+//! # Replication
+//!
+//! The [`replication`] submodule provides automatic entity/component
+//! synchronization between server and clients.
+//!
 //! # Quick Start
 //!
 //! ## Dedicated Server
@@ -126,8 +131,47 @@ use renet_netcode::{
 
 use super::error::{NetworkError, NetworkResult};
 
+pub mod replication;
+pub mod rpc;
+
 // Re-export ClientId for convenience
 pub use renet::ClientId;
+
+/// Trait for abstracting over different server types.
+///
+/// This trait allows code to work with both [`NetworkServer`] and
+/// [`ListenServer`] without knowing which one is being used.
+///
+/// # Example
+///
+/// ```no_run
+/// use ryo2d::prelude::*;
+///
+/// fn broadcast_game_state<S: ServerLike>(server: &mut S, data: &[u8]) {
+///     server.broadcast(Channel::Unreliable, data);
+/// }
+/// ```
+pub trait ServerLike {
+    /// Send a message to a specific client.
+    fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]);
+
+    /// Broadcast a message to all clients.
+    fn broadcast(&mut self, channel: Channel, data: &[u8]);
+
+    /// Receive a message from a specific client.
+    fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>>;
+
+    /// Get an iterator over all client IDs.
+    ///
+    /// For `ListenServer`, this includes the host. For `NetworkServer`, this
+    /// is only remote clients.
+    fn clients(&self) -> Box<dyn Iterator<Item = ClientId> + '_>;
+
+    /// Check if a client ID is the local host.
+    ///
+    /// Returns `true` for `ListenServer`'s host player, `false` otherwise.
+    fn is_host(&self, client_id: ClientId) -> bool;
+}
 
 /// Reserved client ID for the local host player in a listen server.
 ///
@@ -377,6 +421,29 @@ impl NetworkServer {
   pub fn connected_count(&self) -> usize {
     self.server.connected_clients()
   }
+}
+
+impl ServerLike for NetworkServer {
+    fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]) {
+        NetworkServer::send(self, client_id, channel, data);
+    }
+
+    fn broadcast(&mut self, channel: Channel, data: &[u8]) {
+        NetworkServer::broadcast(self, channel, data);
+    }
+
+    fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>> {
+        NetworkServer::receive(self, client_id, channel)
+    }
+
+    fn clients(&self) -> Box<dyn Iterator<Item = ClientId> + '_> {
+        Box::new(NetworkServer::clients(self))
+    }
+
+    fn is_host(&self, _client_id: ClientId) -> bool {
+        // NetworkServer has no host - all clients are remote
+        false
+    }
 }
 
 /// Configuration for connecting to a network server
@@ -713,6 +780,28 @@ impl ListenServer {
   pub fn is_running(&self) -> bool {
     self.server.is_running()
   }
+}
+
+impl ServerLike for ListenServer {
+    fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]) {
+        ListenServer::send(self, client_id, channel, data);
+    }
+
+    fn broadcast(&mut self, channel: Channel, data: &[u8]) {
+        ListenServer::broadcast(self, channel, data);
+    }
+
+    fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>> {
+        ListenServer::receive(self, client_id, channel)
+    }
+
+    fn clients(&self) -> Box<dyn Iterator<Item = ClientId> + '_> {
+        Box::new(ListenServer::all_clients(self))
+    }
+
+    fn is_host(&self, client_id: ClientId) -> bool {
+        ListenServer::is_host(self, client_id)
+    }
 }
 
 /// Generate a random u64 using system randomness
