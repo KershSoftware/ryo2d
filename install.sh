@@ -193,6 +193,19 @@ if [ -d "$source_skills" ]; then
     cp -r "$source_skills" "$target_skills"
 fi
 
+# Install engine source for game projects to reference
+engine_dir="$HOME/.ryo2d/engine"
+status "Installing" "ryo2d engine source to ~/.ryo2d/engine"
+rm -rf "$engine_dir"
+mkdir -p "$engine_dir"
+
+# Copy essential engine files
+for item in "src" "Cargo.toml" "LICENSE" "README.md"; do
+    if [ -e "$SCRIPT_DIR/$item" ]; then
+        cp -r "$SCRIPT_DIR/$item" "$engine_dir/"
+    fi
+done
+
 echo ""
 success "ryo2d CLI installed successfully!"
 

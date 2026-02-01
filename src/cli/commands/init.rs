@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::{CliError, CliResult, Output};
 
@@ -134,6 +134,15 @@ fn create_project_structure(project_dir: &Path, project_name: &str) -> CliResult
 
 /// Generate Cargo.toml content
 fn generate_cargo_toml(project_name: &str) -> String {
+  // Detect installed engine location
+  let ryo2d_dep = if let Some(engine_path) = get_installed_engine_path() {
+    format!(r#"ryo2d = {{ path = "{}" }}"#, engine_path.display())
+  } else {
+    // Fallback to git dependency if engine not installed
+    r#"# ryo2d = { git = "https://github.com/your-username/ryo2d" }
+ryo2d = { path = "../path/to/ryo2d" }  # Update this path"#.to_string()
+  };
+
   format!(
     r#"[package]
 name = "{}"
@@ -146,15 +155,49 @@ name = "{}"
 path = "main.rs"
 
 [dependencies]
-# TODO: Once ryo2d is published to crates.io, use:
-# ryo2d = "0.1"
-#
-# For now, use a git dependency or local path:
-# ryo2d = {{ git = "https://github.com/your-username/ryo2d" }}
-ryo2d = {{ path = "../path/to/ryo2d" }}
+# Ryo2D engine dependency
+{}
+
+# Add your game dependencies here
+# serde = {{ version = "1.0", features = ["derive"] }}
+# rand = "0.8"
 "#,
-    project_name, project_name
+    project_name, project_name, ryo2d_dep
   )
+}
+
+/// Get the installed engine path
+fn get_installed_engine_path() -> Option<PathBuf> {
+  // Check for installed engine in standard locations
+  #[cfg(target_os = "windows")]
+  {
+    let engine_path = std::env::var("LOCALAPPDATA")
+      .ok()
+      .map(PathBuf::from)
+      .map(|p| p.join("ryo2d").join("engine"));
+
+    if let Some(ref path) = engine_path
+      && path.exists()
+    {
+      return engine_path;
+    }
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  {
+    let engine_path = std::env::var("HOME")
+      .ok()
+      .map(PathBuf::from)
+      .map(|p| p.join(".ryo2d").join("engine"));
+
+    if let Some(ref path) = engine_path
+      && path.exists()
+    {
+      return engine_path;
+    }
+  }
+
+  None
 }
 
 /// Generate Ryo.toml content
