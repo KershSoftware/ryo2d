@@ -33,6 +33,7 @@ use super::camera::Camera;
 use super::ecs::World;
 use super::input::InputState;
 use super::rapier_physics::PhysicsCollisionEvent;
+use super::shaders::EffectsManager;
 use super::ui::UiContext;
 
 /// Context passed to scene callbacks, providing access to engine systems.
@@ -49,6 +50,8 @@ pub struct SceneContext<'a> {
   pub assets: &'a mut AssetManager,
   /// Audio manager for sound effects and music (None if audio unavailable)
   pub audio: &'a mut Option<AudioManager>,
+  /// Post-process effects manager for screen-wide visual effects
+  pub effects: &'a mut EffectsManager,
   /// Collision events from the last physics step.
   ///
   /// **Note:** This includes BOTH `Started` and `Stopped` events.
@@ -987,6 +990,7 @@ impl Game for SceneGame {
       input: ctx.input,
       assets: ctx.assets,
       audio: ctx.audio,
+      effects: ctx.effects,
       collision_events: ctx.collision_events,
     };
 
@@ -1005,6 +1009,7 @@ impl Game for SceneGame {
       input: ctx.input,
       assets: ctx.assets,
       audio: ctx.audio,
+      effects: ctx.effects,
       collision_events: ctx.collision_events,
     };
 

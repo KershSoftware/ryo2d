@@ -6,6 +6,7 @@ description = "A simple, scriptable 2D game engine"
 documentation = "https://docs.rs/ryo2d"
 readme = "README.md"
 license = "MIT"
+build = "src/build.rs"
 # Disable auto-discovery - example games are standalone projects
 autoexamples = false
 

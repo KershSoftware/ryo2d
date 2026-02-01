@@ -147,6 +147,8 @@ pub struct InfoConfig {
 /// Priority chain: system.json (user) > Ryo.toml [system]/[info] (dev) > engine defaults
 #[derive(Debug, Clone)]
 pub struct SystemDefaults {
+  /// Window title (from [info] section)
+  pub title: String,
   /// Default resolution width
   pub resolution_width: u32,
   /// Default resolution height
@@ -168,6 +170,7 @@ pub struct SystemDefaults {
 impl Default for SystemDefaults {
   fn default() -> Self {
     SystemDefaults {
+      title: String::from("Ryo2D"),
       resolution_width: 1280,
       resolution_height: 720,
       vsync: true,
@@ -215,6 +218,7 @@ struct DebugSection {
 
 #[derive(Debug, Deserialize, Default)]
 struct InfoSection {
+  title: Option<String>,
   show_fps: Option<bool>,
 }
 
@@ -386,6 +390,8 @@ impl Workspace {
     let system_section = raw.system.unwrap_or_default();
     let engine_defaults = SystemDefaults::default();
     let system = SystemDefaults {
+      // title comes from [info] section, falls back to project name
+      title: info_section.title.unwrap_or_else(|| name.clone()),
       resolution_width: system_section
         .resolution_width
         .unwrap_or(engine_defaults.resolution_width),
