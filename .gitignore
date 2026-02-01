@@ -25,6 +25,8 @@ release/
 **/AGENTS.md
 **/TASKS.md
 .github/skills/*
+!.github/skills/ryo-*/
+!.github/skills/ryo-*/**
 .claude
 CLAUDE.md
 
