@@ -44,6 +44,9 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // Create project structure
   create_project_structure(project_dir, &project_name)?;
 
+  // Initialize git repository
+  init_git_repository(project_dir)?;
+
   Output::success(&format!("created project '{}'", project_name));
   println!();
 
@@ -132,11 +135,67 @@ fn create_project_structure(project_dir: &Path, project_name: &str) -> CliResult
   Ok(())
 }
 
+/// Initialize a git repository in the project directory
+fn init_git_repository(project_dir: &Path) -> CliResult<()> {
+  use std::process::Command;
+
+  // Check if git is available
+  let git_check = Command::new("git")
+    .arg("--version")
+    .output();
+
+  if git_check.is_err() {
+    Output::warning("git not found - skipping repository initialization");
+    return Ok(());
+  }
+
+  // Initialize git repository
+  let output = Command::new("git")
+    .arg("init")
+    .current_dir(project_dir)
+    .output()
+    .map_err(|e| CliError::Other(format!("Failed to run git init: {}", e)))?;
+
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    return Err(CliError::Other(format!("git init failed: {}", stderr)));
+  }
+
+  // Create initial commit
+  let add_output = Command::new("git")
+    .args(["add", "."])
+    .current_dir(project_dir)
+    .output()
+    .map_err(|e| CliError::Other(format!("Failed to run git add: {}", e)))?;
+
+  if !add_output.status.success() {
+    Output::warning("git add failed - repository initialized but no initial commit");
+    return Ok(());
+  }
+
+  let commit_output = Command::new("git")
+    .args(["commit", "-m", "Initial commit"])
+    .current_dir(project_dir)
+    .output()
+    .map_err(|e| CliError::Other(format!("Failed to run git commit: {}", e)))?;
+
+  if !commit_output.status.success() {
+    Output::warning("git commit failed - repository initialized but no initial commit");
+    return Ok(());
+  }
+
+  Output::success("initialized git repository");
+
+  Ok(())
+}
+
 /// Generate Cargo.toml content
 fn generate_cargo_toml(project_name: &str) -> String {
   // Detect installed engine location
   let ryo2d_dep = if let Some(engine_path) = get_installed_engine_path() {
-    format!(r#"ryo2d = {{ path = "{}" }}"#, engine_path.display())
+    // Convert backslashes to forward slashes for TOML compatibility
+    let path_str = engine_path.display().to_string().replace('\\', "/");
+    format!(r#"ryo2d = {{ path = "{}" }}"#, path_str)
   } else {
     // Fallback to git dependency if engine not installed
     r#"# ryo2d = { git = "https://github.com/your-username/ryo2d" }
@@ -286,14 +345,17 @@ impl Scene for GameScene {
     // Spawn entities, load assets, etc.
     
     // Example: Spawn a simple colored square at center
-    let sprite = ctx.assets.create_sprite(Sprite::solid_rect(64, 64, [0, 255, 255, 255]));
+    let sprite = ctx.assets.create_sprite(
+      Sprite::solid_rect(64, 64, 0, 255, 255, 255),
+      "square"
+    );
     ctx.world.spawn((
       Transform::new(640.0, 360.0),
       Renderable::sprite(sprite).with_z_order(0),
     ));
   }
 
-  fn update(&mut self, ctx: &mut SceneContext) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     // Update game logic here
     
     // Example: Quit on Escape
@@ -304,7 +366,7 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ctx: &mut SceneContext, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     // Draw UI here
     ui.label(
       "My Ryo2D Game",
