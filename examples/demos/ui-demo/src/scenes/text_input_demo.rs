@@ -1,4 +1,7 @@
 //! Text input demo scene - demonstrates the text input widget
+//!
+//! This demo showcases the unified focus system with Tab/Shift+Tab navigation
+//! across multiple TextInputState widgets using handle_tab_navigation().
 
 use ryo2d::prelude::*;
 
@@ -21,7 +24,7 @@ pub struct TextInputDemo {
 
 impl TextInputDemo {
   pub fn new() -> Self {
-    Self {
+    let mut demo = Self {
       username: TextInputState::new(),
       password: TextInputState::new(),
       bio: TextInputState::with_text("Type your bio here..."),
@@ -29,49 +32,10 @@ impl TextInputDemo {
       submitted: false,
       last_submitted_username: String::new(),
       last_dt: 0.016, // Default to ~60fps
-    }
-  }
-
-  /// Cycle focus between input fields.
-  /// If `reverse` is true (Shift+Tab), go backwards.
-  fn cycle_focus(&mut self, reverse: bool) {
-    // Field order: username -> password -> bio -> search -> (wrap)
-    let current = if self.username.is_focused() {
-      0
-    } else if self.password.is_focused() {
-      1
-    } else if self.bio.is_focused() {
-      2
-    } else if self.search.is_focused() {
-      3
-    } else {
-      // None focused, start at first (or last if reverse)
-      if reverse { 4 } else { usize::MAX }
     };
-
-    // Clear all focus first
-    self.username.set_focused(false);
-    self.password.set_focused(false);
-    self.bio.set_focused(false);
-    self.search.set_focused(false);
-
-    // Calculate next field
-    let next = if reverse {
-      if current == 0 { 3 } else { current.saturating_sub(1) }
-    } else if current >= 3 {
-      0
-    } else {
-      current.wrapping_add(1)
-    };
-
-    // Set focus on next field
-    match next {
-      0 => self.username.set_focused(true),
-      1 => self.password.set_focused(true),
-      2 => self.bio.set_focused(true),
-      3 => self.search.set_focused(true),
-      _ => self.username.set_focused(true),
-    }
+    // Focus first field by default
+    demo.username.set_focused(true);
+    demo
   }
 }
 
@@ -87,12 +51,6 @@ impl Scene for TextInputDemo {
     // Press Escape to go back to main menu
     if ctx.input.key_pressed(KeyCode::Escape) {
       return SceneAction::Pop;
-    }
-
-    // Handle Tab to cycle between fields
-    if ctx.input.key_pressed(KeyCode::Tab) {
-      let shift = ctx.input.key_down(KeyCode::ShiftLeft) || ctx.input.key_down(KeyCode::ShiftRight);
-      self.cycle_focus(shift);
     }
 
     // Check for Enter key to "submit" the form when username is focused
@@ -113,7 +71,7 @@ impl Scene for TextInputDemo {
 
     // Title
     ui.draw_text("Text Input Demo", 20.0, 20.0, Color::WHITE);
-    ui.draw_text("Press ESC to return to menu", 20.0, 40.0, Color::GRAY);
+    ui.draw_text("Press ESC to return | Tab/Shift+Tab to navigate fields", 20.0, 40.0, Color::GRAY);
 
     // Form layout
     let form_x = 20.0;
@@ -152,10 +110,20 @@ impl Scene for TextInputDemo {
     ui.text_input(&mut self.search, search_rect, "Search...", dt);
     y += field_height + 25.0;
 
+    // Tab navigation between all text inputs (uses the new unified focus system!)
+    ui.handle_tab_navigation(&mut [
+      &mut self.username,
+      &mut self.password,
+      &mut self.bio,
+      &mut self.search,
+    ]);
+
     // Instructions
     ui.draw_text("Instructions:", form_x, y, Color::rgb(100, 180, 255));
     y += 20.0;
     ui.draw_text("- Click a field to focus it", form_x + 10.0, y, Color::LIGHT_GRAY);
+    y += 16.0;
+    ui.draw_text("- Tab / Shift+Tab to navigate", form_x + 10.0, y, Color::LIGHT_GRAY);
     y += 16.0;
     ui.draw_text("- Type to enter text", form_x + 10.0, y, Color::LIGHT_GRAY);
     y += 16.0;
@@ -163,11 +131,9 @@ impl Scene for TextInputDemo {
     y += 16.0;
     ui.draw_text("- Shift+Arrow to select text", form_x + 10.0, y, Color::LIGHT_GRAY);
     y += 16.0;
-    ui.draw_text("- Backspace/Delete to remove", form_x + 10.0, y, Color::LIGHT_GRAY);
+    ui.draw_text("- Ctrl+C/X/V for clipboard", form_x + 10.0, y, Color::LIGHT_GRAY);
     y += 16.0;
     ui.draw_text("- Ctrl+A to select all", form_x + 10.0, y, Color::LIGHT_GRAY);
-    y += 16.0;
-    ui.draw_text("- Home/End to jump", form_x + 10.0, y, Color::LIGHT_GRAY);
     y += 16.0;
     ui.draw_text("- Enter in username to 'submit'", form_x + 10.0, y, Color::LIGHT_GRAY);
     y += 25.0;

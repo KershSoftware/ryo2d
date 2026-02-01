@@ -74,10 +74,10 @@ pub use types::{Anchor, Color, Rect};
 pub use immediate::{BitmapFont, HAlign, HBox, Stack, UiContext, VAlign, VBox, create_debug_font};
 
 // Re-export retained mode API (stateful widgets)
-pub use retained::{DropdownState, Focusable, FocusTrap, ScrollViewState, TextInputState};
+pub use retained::{DropdownState, FocusTrap, Focusable, ScrollViewState, TextInputState};
 
 // Re-export theme types
 pub use theme::{
-    ButtonStyle, CheckboxStyle, HotReloadTheme, LabelStyle, PanelStyle, ProgressBarStyle,
-    ScrollbarStyle, SliderStyle, TextInputStyle, Theme, ThemeError, ToggleStyle, TooltipStyle,
+  ButtonStyle, CheckboxStyle, HotReloadTheme, LabelStyle, PanelStyle, ProgressBarStyle,
+  ScrollbarStyle, SliderStyle, TextInputStyle, Theme, ThemeError, ToggleStyle, TooltipStyle,
 };
