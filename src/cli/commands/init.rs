@@ -46,6 +46,14 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   Output::success(&format!("created project '{}'", project_name));
   println!();
+
+  // Prompt to install skills
+  if super::install_skills::prompt_install_skills()? {
+    println!();
+    super::install_skills::install_skills_to_dir(project_dir, false)?;
+  }
+
+  println!();
   println!("Next steps:");
   println!("  cd {}", project_name);
   println!("  cargo run         # Run in development mode");
