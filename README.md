@@ -1,6 +1,6 @@
 # Ryo2D
 
-A Rust 2D game engine designed for agent-assisted development. Build professional games through AI agents or traditional code -- your choice.
+A Rust 2D game engine designed with agent-assisted development in mind from the beginning. Build professional games with AI agents or by hand with traditional code -- your choice.
 
 ## Quick Start
 
@@ -48,7 +48,7 @@ When you run `ryo2d init`, you'll be prompted to install **Agent Skills**—doma
 - **Animation** — Sprite sheets and state machine controllers
 - **Audio** — Music and sound effects with Kira
 - **Scene Management** — Stack-based scenes with transitions
-- **UI System** — Immediate-mode UI for HUDs and menus
+- **UI System** — Hybrid immediate/retained mode with theme support, layout containers, text inputs, dropdowns, scroll views, and focus management
 - **Post-Processing** — Shader pipeline for visual effects
 - **Hot Reload** — Asset changes apply without restart
 - **Configuration** — TOML-based project and user settings
