@@ -5,6 +5,7 @@
 mod build;
 mod dev;
 mod init;
+pub mod install_skills;
 mod run;
 
 use std::env;
@@ -110,6 +111,7 @@ pub fn run_cli() -> CliResult<()> {
     "build" => build::execute(&args[2..]),
     "run" => run::execute(&args[2..]),
     "dev" => dev::execute(&args[2..]),
+    "install-skills" => install_skills::execute(&args[2..]),
     "help" | "--help" | "-h" => {
       print_help();
       Ok(())
@@ -135,12 +137,13 @@ USAGE:
     ryo2d <COMMAND>
 
 COMMANDS
-    init     Create a new Ryo2D project
-    build    Build a production release
-    run      Run the production build
-    dev      Development mode (build + run with watching)
-    help     Show this help message
-    version  Show version information
+    init            Create a new Ryo2D project
+    build           Build a production release
+    run             Run the production build
+    dev             Development mode (build + run with watching)
+    install-skills  Install Agent Skills for AI assistants
+    help            Show this help message
+    version         Show version information
 
 Run 'ryo2d <COMMAND> --help' for more information about a command.
 "#

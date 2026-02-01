@@ -9,6 +9,7 @@
 //! - `ryo2d build` - Build a production release
 //! - `ryo2d run` - Run the production build
 //! - `ryo2d dev` - Development mode with file watching
+//! - `ryo2d install-skills` - Install Agent Skills for AI assistants
 //!
 //! # Example
 //!
@@ -16,6 +17,9 @@
 //! # Start a new project
 //! ryo2d init my_game
 //! cd my_game
+//!
+//! # Install AI assistant skills
+//! ryo2d install-skills
 //!
 //! # Development workflow
 //! ryo2d dev
