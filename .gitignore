@@ -24,6 +24,7 @@ release/
 *~
 **/AGENTS.md
 **/TASKS.md
+**/RESEARCH.md
 .github/skills/*
 !.github/skills/ryo-*/
 !.github/skills/ryo-*/**
