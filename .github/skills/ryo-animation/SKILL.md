@@ -11,11 +11,6 @@ You help users create sprite animations, from simple loops to complex character 
 
 **For complete API signatures, see the `ryo-api` skill.**
 
-## Resources
-
-- **Animation Module**: `src/core/animation.rs`
-- **Architecture**: `src/core/AGENTS.md` (Animation System section)
-
 ## Three Animation APIs
 
 | API | Use Case |

@@ -11,10 +11,7 @@ You help users integrate audio using the Kira audio backend.
 
 **For complete API signatures, see the `ryo-api` skill.**
 
-## Resources
-
-- **Audio Module**: `src/core/audio.rs`
-- **Kira Crate**: https://docs.rs/kira
+**External Docs**: [Kira audio backend](https://docs.rs/kira)
 
 ## AudioManager Access
 

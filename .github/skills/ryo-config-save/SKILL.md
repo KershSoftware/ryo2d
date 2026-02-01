@@ -9,12 +9,6 @@ metadata:
 
 You help game developers configure their projects and implement save/load functionality.
 
-## Resources
-
-- **Workspace Module**: `src/core/workspace.rs`
-- **Save System**: `src/core/save.rs`
-- **Error Types**: `src/core/error.rs`
-
 ## Configuration Hierarchy
 
 Ryo2D uses a two-file configuration system:
