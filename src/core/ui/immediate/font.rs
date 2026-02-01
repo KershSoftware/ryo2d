@@ -215,6 +215,116 @@ impl BitmapFont {
     (max_width, height)
   }
 
+  /// Wrap text to fit within a maximum width.
+  ///
+  /// Returns a vector of lines, each fitting within `max_width` pixels.
+  /// Words are kept together when possible; long words are broken if needed.
+  pub fn wrap_text(&self, text: &str, max_width: u32) -> Vec<String> {
+    if max_width == 0 {
+      return vec![text.to_string()];
+    }
+
+    let mut lines = Vec::new();
+    let space_width = self.char_width + self.spacing as u32;
+
+    for paragraph in text.lines() {
+      if paragraph.is_empty() {
+        lines.push(String::new());
+        continue;
+      }
+
+      let words: Vec<&str> = paragraph.split_whitespace().collect();
+      if words.is_empty() {
+        lines.push(String::new());
+        continue;
+      }
+
+      let mut current_line = String::new();
+      let mut current_width: u32 = 0;
+
+      for word in words {
+        let word_width = self.text_width(word);
+
+        // If word alone is too long, we need to break it
+        if word_width > max_width {
+          // Flush current line if not empty
+          if !current_line.is_empty() {
+            lines.push(current_line);
+            current_line = String::new();
+          }
+
+          // Break the long word across lines
+          let mut remaining = word;
+          while !remaining.is_empty() {
+            let mut fit_chars = 0;
+            for (i, _ch) in remaining.char_indices() {
+              let test_width = self.text_width(&remaining[..=i]);
+              if test_width <= max_width {
+                fit_chars = i + 1;
+              } else {
+                break;
+              }
+            }
+            // Ensure at least one character fits
+            if fit_chars == 0 {
+              fit_chars = remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            }
+            let (part, rest) = remaining.split_at(fit_chars);
+            lines.push(part.to_string());
+            remaining = rest;
+          }
+          // Reset for next word after breaking a long one
+          current_line.clear();
+          current_width = 0;
+          continue;
+        }
+
+        // Check if word fits on current line
+        let needed_width = if current_line.is_empty() {
+          word_width
+        } else {
+          current_width + space_width + word_width
+        };
+
+        if needed_width <= max_width {
+          // Word fits - add it
+          if !current_line.is_empty() {
+            current_line.push(' ');
+            current_width += space_width;
+          }
+          current_line.push_str(word);
+          current_width += word_width;
+        } else {
+          // Word doesn't fit - start new line
+          if !current_line.is_empty() {
+            lines.push(current_line);
+          }
+          current_line = word.to_string();
+          current_width = word_width;
+        }
+      }
+
+      // Don't forget the last line
+      if !current_line.is_empty() {
+        lines.push(current_line);
+      }
+    }
+
+    if lines.is_empty() {
+      lines.push(String::new());
+    }
+
+    lines
+  }
+
+  /// Calculate the dimensions of wrapped text.
+  pub fn wrapped_text_size(&self, text: &str, max_width: u32) -> (u32, u32) {
+    let lines = self.wrap_text(text, max_width);
+    let width = lines.iter().map(|l| self.text_width(l)).max().unwrap_or(0);
+    let height = lines.len() as u32 * self.char_height;
+    (width, height)
+  }
+
   /// Draw a single character to the frame buffer.
   ///
   /// Returns the character width (for cursor advancement).
@@ -667,5 +777,110 @@ mod tests {
     let (w, h) = font.text_size("Hello\nWorld");
     assert_eq!(w, 40); // "Hello" and "World" are same length
     assert_eq!(h, 16); // 2 lines * 8 pixels
+  }
+
+  #[test]
+  fn wrap_text_single_word_fits() {
+    let font = create_debug_font();
+    let lines = font.wrap_text("Hello", 100);
+    assert_eq!(lines, vec!["Hello"]);
+  }
+
+  #[test]
+  fn wrap_text_multiple_words_fit() {
+    let font = create_debug_font();
+    // "Hello World" = 11 chars * 8 = 88 pixels + 1 space (8) = 96
+    let lines = font.wrap_text("Hello World", 100);
+    assert_eq!(lines, vec!["Hello World"]);
+  }
+
+  #[test]
+  fn wrap_text_word_wrap_needed() {
+    let font = create_debug_font();
+    // Max width 50 fits "Hello" (40px) but not "Hello World" (96px)
+    let lines = font.wrap_text("Hello World", 50);
+    assert_eq!(lines, vec!["Hello", "World"]);
+  }
+
+  #[test]
+  fn wrap_text_preserves_paragraphs() {
+    let font = create_debug_font();
+    let lines = font.wrap_text("Line1\nLine2", 100);
+    assert_eq!(lines, vec!["Line1", "Line2"]);
+  }
+
+  #[test]
+  fn wrap_text_empty_lines() {
+    let font = create_debug_font();
+    let lines = font.wrap_text("Hello\n\nWorld", 100);
+    assert_eq!(lines, vec!["Hello", "", "World"]);
+  }
+
+  #[test]
+  fn wrap_text_long_word_breaks() {
+    let font = create_debug_font();
+    // "ABCDEFGHIJ" = 10 chars * 8 = 80 pixels
+    // Max width 30 can fit 3 chars (24px), so 10 chars -> 4 lines
+    let lines = font.wrap_text("ABCDEFGHIJ", 30);
+    assert_eq!(lines.len(), 4);
+    assert_eq!(lines[0], "ABC");
+    assert_eq!(lines[1], "DEF");
+    assert_eq!(lines[2], "GHI");
+    assert_eq!(lines[3], "J");
+  }
+
+  #[test]
+  fn wrap_text_zero_width_returns_original() {
+    let font = create_debug_font();
+    let lines = font.wrap_text("Hello World", 0);
+    assert_eq!(lines, vec!["Hello World"]);
+  }
+
+  #[test]
+  fn wrapped_text_size_calculates_correctly() {
+    let font = create_debug_font();
+    let (w, h) = font.wrapped_text_size("Hello World", 50);
+    // Should wrap to 2 lines
+    assert_eq!(h, 16); // 2 lines * 8 pixels
+    assert_eq!(w, 40); // "Hello" or "World" = 5 * 8 = 40
+  }
+
+  #[test]
+  fn wrap_text_empty_string() {
+    let font = create_debug_font();
+    let lines = font.wrap_text("", 100);
+    assert_eq!(lines, vec![""]);
+  }
+
+  #[test]
+  fn wrap_text_single_char() {
+    let font = create_debug_font();
+    let lines = font.wrap_text("A", 100);
+    assert_eq!(lines, vec!["A"]);
+  }
+
+  #[test]
+  fn wrap_text_trailing_spaces_trimmed() {
+    let font = create_debug_font();
+    // split_whitespace naturally trims, so "Hello  World" becomes ["Hello", "World"]
+    let lines = font.wrap_text("Hello  World", 50);
+    assert_eq!(lines, vec!["Hello", "World"]);
+  }
+
+  #[test]
+  fn wrap_text_many_words() {
+    let font = create_debug_font();
+    // "A B C D E" with width 20 (2 chars + space = 24, so 2 chars fit)
+    let lines = font.wrap_text("A B C D E", 20);
+    // Each letter is 8px, space is 8px, width 20 fits 2 chars
+    assert!(lines.len() >= 3); // At least 3 lines needed
+  }
+
+  #[test]
+  fn wrapped_text_size_single_line() {
+    let font = create_debug_font();
+    let (w, h) = font.wrapped_text_size("Hi", 100);
+    assert_eq!(w, 16); // 2 chars * 8
+    assert_eq!(h, 8); // 1 line
   }
 }
