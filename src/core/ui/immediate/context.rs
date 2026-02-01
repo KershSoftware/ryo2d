@@ -25,7 +25,7 @@ use winit::event::MouseButton;
 use crate::core::input::InputState;
 
 use super::font::BitmapFont;
-use crate::core::ui::retained::{DropdownState, ScrollViewState, TextInputState};
+use crate::core::ui::retained::{DropdownState, Focusable, ScrollViewState, TextInputState};
 use crate::core::ui::theme::Theme;
 use crate::core::ui::types::{Anchor, Color, Rect};
 
@@ -1998,6 +1998,149 @@ impl<'a> UiContext<'a> {
         x >= 0.0 && y >= 0.0 && x < self.frame_width as f32 && y < self.frame_height as f32
       }
     }
+  }
+
+  // =========================================================================
+  // Focus Management
+  // =========================================================================
+
+  /// Handle Tab/Shift+Tab navigation between focusable widgets.
+  ///
+  /// Call this once per frame after all widgets to enable Tab navigation
+  /// across different widget types (text inputs, dropdowns, etc.).
+  ///
+  /// # Arguments
+  /// * `widgets` - Slice of focusable widgets in tab order
+  ///
+  /// # Example
+  /// ```ignore
+  /// ui.text_input(&mut self.username, rect1, "Username", dt);
+  /// ui.text_input(&mut self.password, rect2, "Password", dt);
+  /// ui.dropdown(&mut self.role, rect3, &roles);
+  ///
+  /// // Enable tab navigation across all widgets
+  /// ui.handle_tab_navigation(&mut [
+  ///     &mut self.username,
+  ///     &mut self.password,
+  ///     &mut self.role,
+  /// ]);
+  /// ```
+  pub fn handle_tab_navigation(&mut self, widgets: &mut [&mut dyn Focusable]) {
+    if widgets.is_empty() {
+      return;
+    }
+
+    // Don't do keyboard navigation if any widget is capturing input
+    // (e.g., open dropdown handling arrow keys)
+    if widgets.iter().any(|w| w.is_capturing()) {
+      return;
+    }
+
+    let tab_pressed = self.input.key_pressed(winit::keyboard::KeyCode::Tab);
+    if !tab_pressed {
+      return;
+    }
+
+    let shift_held = self.input.key_down(winit::keyboard::KeyCode::ShiftLeft)
+      || self.input.key_down(winit::keyboard::KeyCode::ShiftRight);
+
+    // Find currently focused widget index
+    let current_idx = widgets.iter().position(|w| w.is_focused());
+
+    let next_idx = match current_idx {
+      Some(idx) => {
+        if shift_held {
+          // Shift+Tab: go backwards (wrap around)
+          if idx == 0 {
+            widgets.len() - 1
+          } else {
+            idx - 1
+          }
+        } else {
+          // Tab: go forwards (wrap around)
+          (idx + 1) % widgets.len()
+        }
+      }
+      None => {
+        // Nothing focused, start at first (or last if shift)
+        if shift_held {
+          widgets.len() - 1
+        } else {
+          0
+        }
+      }
+    };
+
+    // Blur current widget
+    if let Some(idx) = current_idx {
+      widgets[idx].set_focused(false);
+      widgets[idx].on_blur();
+    }
+
+    // Focus next widget
+    widgets[next_idx].set_focused(true);
+    widgets[next_idx].on_focus();
+  }
+
+  /// Draw a focus ring (outline) around a rectangle.
+  ///
+  /// Use this to indicate which widget currently has keyboard focus.
+  /// The ring is drawn outside the widget bounds.
+  ///
+  /// # Arguments
+  /// * `rect` - The widget bounds to draw around
+  /// * `color` - The focus ring color (typically a bright accent color)
+  /// * `thickness` - Ring thickness in pixels (typically 2.0)
+  /// * `offset` - Gap between widget and ring (typically 1.0-2.0)
+  ///
+  /// # Example
+  /// ```ignore
+  /// if self.button_focused {
+  ///     ui.draw_focus_ring(button_rect, Color::rgb(100, 150, 255), 2.0, 2.0);
+  /// }
+  /// ui.button("Submit", button_rect);
+  /// ```
+  pub fn draw_focus_ring(&mut self, rect: Rect, color: Color, thickness: f32, offset: f32) {
+    let expanded = rect.expand(offset + thickness);
+    let inner = rect.expand(offset);
+
+    // Draw the four sides of the ring
+    // Top
+    self.draw_rect(
+      Rect::new(expanded.x, expanded.y, expanded.width, thickness),
+      color,
+    );
+    // Bottom
+    self.draw_rect(
+      Rect::new(
+        expanded.x,
+        inner.y + inner.height,
+        expanded.width,
+        thickness,
+      ),
+      color,
+    );
+    // Left
+    self.draw_rect(
+      Rect::new(expanded.x, inner.y, thickness, inner.height),
+      color,
+    );
+    // Right
+    self.draw_rect(
+      Rect::new(inner.x + inner.width, inner.y, thickness, inner.height),
+      color,
+    );
+  }
+
+  /// Draw a focus ring using theme colors.
+  ///
+  /// Convenience method that uses the theme's text input focus color.
+  pub fn draw_focus_ring_themed(&mut self, rect: Rect) {
+    let color = self
+      .theme
+      .map(|t| t.text_input.border_focused)
+      .unwrap_or(Color::rgb(100, 150, 255));
+    self.draw_focus_ring(rect, color, 2.0, 1.0);
   }
 }
 

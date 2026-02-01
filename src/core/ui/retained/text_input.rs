@@ -29,6 +29,7 @@
 use arboard::Clipboard;
 use winit::keyboard::KeyCode;
 
+use super::focus::Focusable;
 use crate::core::input::InputState;
 
 /// State for a text input widget.
@@ -757,5 +758,29 @@ mod tests {
     let pasted = state.paste();
     assert!(pasted);
     assert_eq!(state.text(), "line1 line2  line3"); // \r\n becomes two spaces
+  }
+}
+
+// ============================================================================
+// Focusable implementation
+// ============================================================================
+
+impl Focusable for TextInputState {
+  fn is_focused(&self) -> bool {
+    self.focused
+  }
+
+  fn set_focused(&mut self, focused: bool) {
+    TextInputState::set_focused(self, focused);
+  }
+
+  fn on_focus(&mut self) {
+    self.blink_timer = 0.0;
+    self.cursor_visible = true;
+  }
+
+  fn on_blur(&mut self) {
+    // Optionally clear selection on blur
+    // self.clear_selection();
   }
 }
