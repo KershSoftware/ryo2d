@@ -2051,11 +2051,7 @@ impl<'a> UiContext<'a> {
       Some(idx) => {
         if shift_held {
           // Shift+Tab: go backwards (wrap around)
-          if idx == 0 {
-            widgets.len() - 1
-          } else {
-            idx - 1
-          }
+          if idx == 0 { widgets.len() - 1 } else { idx - 1 }
         } else {
           // Tab: go forwards (wrap around)
           (idx + 1) % widgets.len()
@@ -2063,11 +2059,7 @@ impl<'a> UiContext<'a> {
       }
       None => {
         // Nothing focused, start at first (or last if shift)
-        if shift_held {
-          widgets.len() - 1
-        } else {
-          0
-        }
+        if shift_held { widgets.len() - 1 } else { 0 }
       }
     };
 
