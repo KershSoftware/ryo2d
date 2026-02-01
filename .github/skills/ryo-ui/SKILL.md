@@ -1,13 +1,8 @@
 ---
-name: Ryo2D UI Specialist
+name: ryo-ui
 description: Immediate-mode UI for HUDs, menus, and overlays.
-version: 1.0.0
-trigger:
-  - "UI"
-  - "HUD"
-  - "menu"
-  - "button"
-  - "health bar"
+metadata:
+  version: 1.0.0
 ---
 
 # Ryo2D UI Specialist
@@ -156,3 +151,4 @@ if self.debug_mode {
 - Use `Anchor` for responsive positioning
 - Layer UI by draw order (first = behind)
 - Use semi-transparent backgrounds for readability
+

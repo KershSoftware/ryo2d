@@ -1,12 +1,8 @@
 ---
-name: Ryo2D Engine Developer
+name: ryo-engine-dev
 description: Working on the Ryo2D engine - architecture, systems, public API.
-version: 1.0.0
-trigger:
-  - "engine"
-  - "add feature"
-  - "engine architecture"
-  - "core module"
+metadata:
+  version: 1.0.0
 ---
 
 # Ryo2D Engine Developer
@@ -25,20 +21,20 @@ You help developers work on the Ryo2D engine itself.
 
 ```
 User's Game (Game trait)
-         │
-         ▼
+         |
+         v
     GameContext
-    ┌─────────────────────────────────────┐
-    │ World │ Camera │ Input │ Assets    │
-    └─────────────────────────────────────┘
-         │
-         ▼
+    +-------------------------------------+
+    | World | Camera | Input | Assets    |
+    +-------------------------------------+
+         |
+         v
     Engine Systems
-    Animation → Physics → Collision → Rendering
-         │
-         ▼
+    Animation -> Physics -> Collision -> Rendering
+         |
+         v
     WgpuRenderer
-    CPU Pixel Buffer → GPU Texture → Present
+    CPU Pixel Buffer -> GPU Texture -> Present
 ```
 
 ## Module Organization

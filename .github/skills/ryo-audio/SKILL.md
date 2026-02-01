@@ -1,12 +1,8 @@
 ---
-name: Ryo2D Audio Specialist
+name: ryo-audio
 description: Sound effects and music with Kira audio backend.
-version: 1.0.0
-trigger:
-  - "audio"
-  - "sound"
-  - "music"
-  - "play sound"
+metadata:
+  version: 1.0.0
 ---
 
 # Ryo2D Audio Specialist
@@ -130,3 +126,4 @@ fn pause_game(&mut self, ctx: &mut GameContext) {
 - Add slight pitch variation to repeated sounds
 - Fade music during scene transitions
 - Lower music volume during pause/dialogs
+
