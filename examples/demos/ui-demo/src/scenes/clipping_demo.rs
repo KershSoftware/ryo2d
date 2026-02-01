@@ -72,7 +72,11 @@ impl Scene for ClippingDemo {
     let visible_ratio = self.content_area.height / content_height;
     let scrollbar_height = (visible_ratio * self.content_area.height).max(20.0);
     let track_height = self.content_area.height - scrollbar_height;
-    let scroll_ratio = if max_scroll > 0.0 { self.scroll_offset / max_scroll } else { 0.0 };
+    let scroll_ratio = if max_scroll > 0.0 {
+      self.scroll_offset / max_scroll
+    } else {
+      0.0
+    };
     let scrollbar_y = self.content_area.y + scroll_ratio * track_height;
     let scrollbar_rect = Rect::new(
       self.scroll_area.right() - 10.0,
@@ -235,7 +239,11 @@ impl Scene for ClippingDemo {
     let visible_ratio = self.content_area.height / content_height;
     let scrollbar_height = (visible_ratio * self.content_area.height).max(20.0);
     let track_height = self.content_area.height - scrollbar_height;
-    let scroll_ratio = if max_scroll > 0.0 { self.scroll_offset / max_scroll } else { 0.0 };
+    let scroll_ratio = if max_scroll > 0.0 {
+      self.scroll_offset / max_scroll
+    } else {
+      0.0
+    };
     let scrollbar_y = self.content_area.y + scroll_ratio * track_height;
 
     let scrollbar_rect = Rect::new(
