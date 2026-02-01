@@ -86,24 +86,40 @@ impl UiContext {
     fn rect_outline(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color, thickness: f32);
     
     // Layout helpers
-    fn screen_width(&self) -> f32;
-    fn screen_height(&self) -> f32;
+    fn screen_size(&self) -> (u32, u32);  // Returns (width, height) as u32
 }
+
+// Usage example:
+let (sw, sh) = ui.screen_size();
+let screen_w = sw as f32;  // Cast to f32 for positioning
+let screen_h = sh as f32;
 ```
 
 ---
 
 ## Engine Builder
 
+**Note:** Resolution, FPS, and other settings come from `Ryo.toml` by default.
+Only use these methods to override the config file.
+
 ```rust
+// Minimal - uses Ryo.toml configuration
 EngineBuilder::new()
     .title("Game Title")              // Window title
-    .resolution(1280, 720)            // Window size
-    .fps(60)                          // Target frame rate
+    .with_game(MyGame::default())     // Single-scene game
+    .with_scene(MenuScene)            // OR multi-scene game
+    .build()
+    .run()
+    .unwrap();
+
+// Override Ryo.toml (only when needed)
+EngineBuilder::new()
+    .title("Game Title")
+    .resolution(1280, 720)            // Override window size
+    .fps(60)                          // Override target FPS
     .physics_hz(120)                  // Physics update rate
     .window_mode(WindowMode::Fixed)   // Window behavior
-    .with_game(MyGame::default())     // Single-scene game
-    .with_scene(MenuScene)            // Multi-scene game
+    .with_game(MyGame::default())
     .build()
     .run()
     .unwrap();
@@ -128,19 +144,22 @@ pub enum WindowMode {
 
 ```rust
 pub struct Transform {
-    pub position: Vec3,  // x, y, z (z for depth)
-    pub rotation: f32,   // Radians
-    pub scale: Vec2,     // x, y scale
+    pub x: f32,         // X position
+    pub y: f32,         // Y position
+    pub z: f32,         // Depth (for parallax/layering), defaults to 0.0
+    pub rotation: f32,  // Radians
+    pub scale_x: f32,   // X scale
+    pub scale_y: f32,   // Y scale
 }
 
 impl Transform {
-    fn new(x: f32, y: f32) -> Self;
-    fn new_3d(x: f32, y: f32, z: f32) -> Self;
+    fn new(x: f32, y: f32) -> Self;              // z defaults to 0.0
+    fn new_3d(x: f32, y: f32, z: f32) -> Self;   // Explicit z
     fn from_vec2(pos: Vec2) -> Self;
     fn from_vec3(pos: Vec3) -> Self;
-    fn as_vec2(&self) -> Vec2;
-    fn as_vec3(&self) -> Vec3;
-    fn origin() -> Self;
+    fn as_vec2(&self) -> Vec2;                   // Returns Vec2(x, y)
+    fn as_vec3(&self) -> Vec3;                   // Returns Vec3(x, y, z)
+    fn origin() -> Self;                         // (0, 0, 0)
 }
 ```
 
@@ -148,19 +167,19 @@ impl Transform {
 
 ```rust
 pub struct Velocity {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
+    pub dx: f32,  // X velocity (not x!)
+    pub dy: f32,  // Y velocity (not y!)
+    pub dz: f32,  // Z velocity, defaults to 0.0
 }
 
 impl Velocity {
-    fn new(dx: f32, dy: f32) -> Self;
+    fn new(dx: f32, dy: f32) -> Self;            // dz defaults to 0.0
     fn new_3d(dx: f32, dy: f32, dz: f32) -> Self;
     fn from_vec2(vel: Vec2) -> Self;
     fn from_vec3(vel: Vec3) -> Self;
-    fn as_vec2(&self) -> Vec2;
-    fn as_vec3(&self) -> Vec3;
-    fn zero() -> Self;
+    fn as_vec2(&self) -> Vec2;                   // Returns Vec2(dx, dy)
+    fn as_vec3(&self) -> Vec3;                   // Returns Vec3(dx, dy, dz)
+    fn zero() -> Self;                           // (0, 0, 0)
 }
 ```
 
@@ -532,16 +551,36 @@ pub enum MouseButton {
 
 ## Camera
 
+**CRITICAL:** Camera defaults to position (0, 0), which centers the screen on world origin.
+For screen-style coordinates (0,0 = top-left), center the camera at half the viewport size.
+
 ```rust
 impl Camera {
+    fn new(viewport_width: u32, viewport_height: u32) -> Self;
+    fn centered_at(x: f32, y: f32, viewport_width: u32, viewport_height: u32) -> Self;
+    
     fn set_position(&mut self, x: f32, y: f32);
     fn position(&self) -> (f32, f32);
     fn set_zoom(&mut self, zoom: f32);
     fn zoom(&self) -> f32;
+    fn viewport_size(&self) -> (f32, f32);        // (width, height)
+    
     fn screen_to_world(&self, screen_x: f32, screen_y: f32) -> (f32, f32);
     fn world_to_screen(&self, world_x: f32, world_y: f32) -> (f32, f32);
-    fn viewport(&self) -> (f32, f32, f32, f32);  // x, y, width, height
+    
+    fn visible_bounds(&self) -> CameraBounds;     // World-space AABB
+    fn is_visible(&self, x: f32, y: f32, w: f32, h: f32) -> bool;
+    
+    fn follow(&mut self, target_x: f32, target_y: f32, lerp_factor: f32);
+    fn snap_to(&mut self, target_x: f32, target_y: f32);
+    fn clamp_to_bounds(&mut self, min_x: f32, min_y: f32, max_x: f32, max_y: f32);
 }
+
+// Screen-style coordinates setup (0,0 = top-left):
+let (vw, vh) = ctx.camera.viewport_size();
+ctx.camera.set_position(vw / 2.0, vh / 2.0);
+// Now world (0, 0) = screen top-left
+// world (vw, vh) = screen bottom-right
 ```
 
 ---
@@ -573,18 +612,30 @@ impl World {
 
 ### Query Examples
 
+**IMPORTANT:** Query iteration returns components directly, NOT `(entity, components)`.
+The query type must match the destructuring pattern exactly.
+
 ```rust
-// Single component
-for (entity, transform) in ctx.world.query::<&Transform>().iter() { }
+// Single component - note: just (transform,) not (entity, transform)
+for (transform,) in ctx.world.query::<(&Transform,)>().iter() { }
 
-// Multiple components
-for (entity, (transform, velocity)) in ctx.world.query::<(&Transform, &Velocity)>().iter() { }
+// Multiple components - flat tuple, no entity
+for (transform, velocity) in ctx.world.query::<(&Transform, &Velocity)>().iter() { }
 
-// Mutable access
-for (entity, (transform, mut velocity)) in ctx.world.query::<(&Transform, &mut Velocity)>().iter() { }
+// Mutable access - use &mut in query type
+for (transform, velocity) in ctx.world.query::<(&Transform, &mut Velocity)>().iter() {
+    velocity.dx = 100.0;  // Can modify
+}
 
 // Optional components
-for (entity, (transform, maybe_vel)) in ctx.world.query::<(&Transform, Option<&Velocity>)>().iter() { }
+for (transform, maybe_vel) in ctx.world.query::<(&Transform, Option<&Velocity>)>().iter() {
+    if let Some(vel) = maybe_vel { /* has velocity */ }
+}
+
+// To get entity with components, use get_component on a stored entity:
+if let Some(transform) = ctx.world.get_component::<Transform>(self.player_entity) {
+    // Access transform.x, transform.y, etc.
+}
 ```
 
 ---
@@ -595,11 +646,16 @@ for (entity, (transform, maybe_vel)) in ctx.world.query::<(&Transform, Option<&V
 
 ```rust
 pub enum SceneAction {
-    Continue,                    // Keep running current scene
-    Push(Box<dyn Scene>),        // Push new scene on stack
-    Pop,                         // Return to previous scene
-    Replace(Box<dyn Scene>),     // Replace current scene
-    Quit,                        // Exit the game
+    Continue,                          // Keep running current scene (default)
+    Push(Box<dyn Scene>),              // Push new scene on stack (pauses current)
+    PushWith(Box<dyn Scene>, Transition),
+    Pop,                               // Return to previous scene
+    PopWith(Transition),
+    Switch(Box<dyn Scene>),            // Replace current scene (NOT Replace!)
+    SwitchWith(Box<dyn Scene>, Transition),
+    Reset(Box<dyn Scene>),             // Clear all scenes, push new one
+    ResetWith(Box<dyn Scene>, Transition),
+    Quit,                              // Exit the game
 }
 ```
 
