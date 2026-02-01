@@ -40,12 +40,21 @@ get_examples() {
                     if [[ -d "$dir" ]]; then
                         local name=$(basename "$dir")
                         local main_rs="$dir/main.rs"
+<<<<<<< Updated upstream
+=======
+                        local src_main_rs="$dir/src/main.rs"
+>>>>>>> Stashed changes
 
                         # Check for config file (case-insensitive)
                         local ryo_toml=$(find "$dir" -maxdepth 1 -iname "ryo.toml" -type f | head -1)
 
+<<<<<<< Updated upstream
                         # Check if it's a valid example (has main.rs)
                         if [[ -f "$main_rs" ]]; then
+=======
+                        # Check if it's a valid example (has main.rs or src/main.rs)
+                        if [[ -f "$main_rs" || -f "$src_main_rs" ]]; then
+>>>>>>> Stashed changes
                             local display_name="$name"
 
                             # Try to read project name from Ryo.toml
@@ -76,11 +85,19 @@ get_display_names() {
                     if [[ -d "$dir" ]]; then
                         local name=$(basename "$dir")
                         local main_rs="$dir/main.rs"
+<<<<<<< Updated upstream
+=======
+                        local src_main_rs="$dir/src/main.rs"
+>>>>>>> Stashed changes
 
                         # Check for config file (case-insensitive)
                         local ryo_toml=$(find "$dir" -maxdepth 1 -iname "ryo.toml" -type f | head -1)
 
+<<<<<<< Updated upstream
                         if [[ -f "$main_rs" ]]; then
+=======
+                        if [[ -f "$main_rs" || -f "$src_main_rs" ]]; then
+>>>>>>> Stashed changes
                             local display_name="$name"
 
                             if [[ -n "$ryo_toml" ]]; then
@@ -327,6 +344,7 @@ case "$COMMAND" in
         fi
         ;;
     watch)
+<<<<<<< Updated upstream
         # Watch mode with hot-reload (requires cargo-watch)
         if ! command -v cargo-watch &> /dev/null; then
             echo -e "${YELLOW}cargo-watch is not installed.${NC}"
@@ -337,6 +355,23 @@ case "$COMMAND" in
 
         echo -e "${CYAN}Starting watch mode...${NC}"
         cargo watch -x check -x test
+=======
+        # Watch mode - runs first example by default
+        mapfile -t examples < <(get_examples)
+        if [[ ${#examples[@]} -gt 0 ]]; then
+            local example="${examples[0]}"
+            local base_name=$(basename "$example")
+            echo -e "${CYAN}Watching example: $base_name (Ctrl+C to stop)${NC}"
+            echo -e "${GRAY}  Path: $SCRIPT_DIR/examples/$example${NC}"
+            local original_dir="$(pwd)"
+            cd "$SCRIPT_DIR/examples/$example"
+            cargo watch -c -x run || true
+            cd "$original_dir"
+        else
+            echo -e "${RED}No examples found.${NC}"
+            exit 1
+        fi
+>>>>>>> Stashed changes
         ;;
     help)
         echo ""
@@ -359,7 +394,9 @@ case "$COMMAND" in
 
         found=false
         for example in "${examples[@]}"; do
-            if [[ "$example" == "$COMMAND" ]]; then
+            # Match both "demos/example" and just "example"
+            local base_name=$(basename "$example")
+            if [[ "$example" == "$COMMAND" || "$base_name" == "$COMMAND" ]]; then
                 run_example "$example"
                 found=true
                 break
@@ -371,7 +408,7 @@ case "$COMMAND" in
             echo ""
             echo -e "${YELLOW}Available examples:${NC}"
             for example in "${examples[@]}"; do
-                echo "  - $example"
+                echo "  - $(basename "$example")"
             done
             echo ""
             echo "Run './run.sh help' for more options."

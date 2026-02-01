@@ -2,7 +2,7 @@
 
 use ryo2d::prelude::*;
 
-use super::ThemeDemo;
+use super::{ClippingDemo, LayoutDemo, ThemeDemo};
 
 pub struct MainMenu {
     selected_demo: Option<usize>,
@@ -33,6 +33,8 @@ impl Scene for MainMenu {
         if let Some(demo_index) = self.selected_demo.take() {
             match demo_index {
                 0 => return SceneAction::Push(Box::new(ThemeDemo::new())),
+                2 => return SceneAction::Push(Box::new(LayoutDemo::new())),
+                3 => return SceneAction::Push(Box::new(ClippingDemo::new())),
                 // Future demos will be added here
                 _ => {}
             }
@@ -42,11 +44,11 @@ impl Scene for MainMenu {
     }
 
     fn render_ui(&mut self, ui: &mut UiContext) {
-        let (screen_w, _screen_h) = ui.screen_size();
+        let (screen_w, screen_h) = ui.screen_size();
         let center_x = screen_w as f32 / 2.0;
 
         // Dark background - draw a full screen rect
-        let bg_rect = Rect::new(0.0, 0.0, screen_w as f32, 600.0);
+        let bg_rect = Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32);
         ui.draw_rect(bg_rect, Color::rgb(25, 25, 35));
 
         // Title
@@ -77,9 +79,9 @@ impl Scene for MainMenu {
         let demos = [
             ("1. Theme System", "Hot-reloadable UI styling"),
             ("2. Basic Widgets", "Buttons, sliders, checkboxes (coming soon)"),
-            ("3. Layout Containers", "HBox, VBox, Stack (coming soon)"),
-            ("4. Text Input", "Editable text fields (coming soon)"),
-            ("5. Scrollable Content", "ScrollView demo (coming soon)"),
+            ("3. Layout Containers", "HBox, VBox, Stack positioning"),
+            ("4. Clipping & Modals", "Scissor clipping and modal overlays"),
+            ("5. Text Input", "Editable text fields (coming soon)"),
         ];
 
         // Calculate item height (button + gap + description text height + spacing)
@@ -91,8 +93,8 @@ impl Scene for MainMenu {
             let button_rect =
                 Rect::centered_at(center_x, y + button_height / 2.0, button_width, button_height);
 
-            // Only Theme System is clickable for now
-            let enabled = i == 0;
+            // Theme System, Layout Containers, and Clipping are clickable
+            let enabled = i == 0 || i == 2 || i == 3;
 
             if enabled {
                 if ui.button(title, button_rect) {

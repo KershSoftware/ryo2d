@@ -323,6 +323,160 @@ impl BitmapFont {
       cursor_x += advance;
     }
   }
+
+  /// Draw a string to the frame buffer with per-pixel clipping.
+  ///
+  /// Only pixels within the clip rect will be drawn.
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_text_clipped(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Color,
+    clip_x: i32,
+    clip_y: i32,
+    clip_w: i32,
+    clip_h: i32,
+  ) {
+    let mut cursor_x = x;
+    let advance = self.char_width as i32 + self.spacing;
+    let char_w = self.char_width as i32;
+    let clip_right = clip_x + clip_w;
+
+    for ch in text.chars() {
+      if ch == '\n' {
+        continue;
+      }
+
+      // Skip characters entirely outside clip region (horizontal early-out)
+      if cursor_x + char_w <= clip_x {
+        cursor_x += advance;
+        continue;
+      }
+      if cursor_x >= clip_right {
+        break; // No more visible characters
+      }
+
+      self.draw_char_clipped(
+        frame,
+        frame_width,
+        frame_height,
+        ch,
+        cursor_x,
+        y,
+        color,
+        clip_x,
+        clip_y,
+        clip_w,
+        clip_h,
+      );
+      cursor_x += advance;
+    }
+  }
+
+  /// Draw a single character with per-pixel clipping.
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_char_clipped(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    ch: char,
+    x: i32,
+    y: i32,
+    color: Color,
+    clip_x: i32,
+    clip_y: i32,
+    clip_w: i32,
+    clip_h: i32,
+  ) -> u32 {
+    let ascii = ch as u8;
+
+    // Skip characters outside our range
+    if ascii < self.first_char || ascii > self.last_char {
+      return self.char_width;
+    }
+
+    let char_index = (ascii - self.first_char) as u32;
+    let atlas_col = char_index % self.chars_per_row;
+    let atlas_row = char_index / self.chars_per_row;
+
+    let src_x = atlas_col * self.char_width;
+    let src_y = atlas_row * self.char_height;
+
+    // Compute effective bounds
+    let frame_w = frame_width as i32;
+    let frame_h = frame_height as i32;
+    let char_w = self.char_width as i32;
+    let char_h = self.char_height as i32;
+
+    // Clip rect bounds
+    let clip_right = clip_x + clip_w;
+    let clip_bottom = clip_y + clip_h;
+
+    for cy in 0..char_h {
+      let dst_y = y + cy;
+      // Screen bounds check
+      if dst_y < 0 || dst_y >= frame_h {
+        continue;
+      }
+      // Clip rect vertical check
+      if dst_y < clip_y || dst_y >= clip_bottom {
+        continue;
+      }
+
+      for cx in 0..char_w {
+        let dst_x = x + cx;
+        // Screen bounds check
+        if dst_x < 0 || dst_x >= frame_w {
+          continue;
+        }
+        // Clip rect horizontal check
+        if dst_x < clip_x || dst_x >= clip_right {
+          continue;
+        }
+
+        // Sample from atlas
+        let atlas_px = ((src_y + cy as u32) * self.atlas_width + (src_x + cx as u32)) as usize * 4;
+        if atlas_px + 3 >= self.atlas_data.len() {
+          continue;
+        }
+
+        let src_a = self.atlas_data[atlas_px + 3];
+        if src_a == 0 {
+          continue; // Fully transparent
+        }
+
+        // Blend with tint color
+        let dst_idx = (dst_y as usize * frame_width as usize + dst_x as usize) * 4;
+        if dst_idx + 3 >= frame.len() {
+          continue;
+        }
+
+        // Use atlas alpha and apply tint color
+        let alpha = src_a as u16 * color.a as u16 / 255;
+        if alpha == 0 {
+          continue;
+        }
+
+        let inv_alpha = 255 - alpha;
+        let dst_r = frame[dst_idx] as u16;
+        let dst_g = frame[dst_idx + 1] as u16;
+        let dst_b = frame[dst_idx + 2] as u16;
+
+        frame[dst_idx] = ((color.r as u16 * alpha + dst_r * inv_alpha) / 255) as u8;
+        frame[dst_idx + 1] = ((color.g as u16 * alpha + dst_g * inv_alpha) / 255) as u8;
+        frame[dst_idx + 2] = ((color.b as u16 * alpha + dst_b * inv_alpha) / 255) as u8;
+        frame[dst_idx + 3] = 255;
+      }
+    }
+
+    self.char_width
+  }
 }
 
 /// Create a simple built-in debug font (8x8 monospace).

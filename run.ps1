@@ -45,9 +45,10 @@ function Get-Examples {
                     Select-Object -First 1 -ExpandProperty FullName
                     
                     $mainRs = Join-Path $_.FullName "main.rs"
-                    
-                    # Check if it's a valid example (has main.rs)
-                    if (Test-Path $mainRs) {
+                    $srcMainRs = Join-Path (Join-Path $_.FullName "src") "main.rs"
+
+                    # Check if it's a valid example (has main.rs or src/main.rs)
+                    if ((Test-Path $mainRs) -or (Test-Path $srcMainRs)) {
                         $name = $_.Name
                         $displayName = $name
                         

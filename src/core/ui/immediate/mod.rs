@@ -29,11 +29,19 @@
 //!     if ui.button("Pause", Rect::new(700.0, 10.0, 80.0, 30.0)) {
 //!         self.paused = true;
 //!     }
+//!
+//!     // Layout containers for positioning
+//!     let mut row = HBox::new(10.0, 100.0, 8.0);
+//!     ui.button("A", row.next(60.0, 30.0));
+//!     ui.button("B", row.next(60.0, 30.0));
+//!     ui.button("C", row.next(60.0, 30.0));
 //! }
 //! ```
 
 mod context;
 mod font;
+mod layout;
 
 pub use context::UiContext;
 pub use font::{BitmapFont, create_debug_font};
+pub use layout::{HAlign, HBox, Stack, VAlign, VBox};

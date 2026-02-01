@@ -71,7 +71,7 @@ mod types;
 pub use types::{Anchor, Color, Rect};
 
 // Re-export immediate mode API (most commonly used)
-pub use immediate::{BitmapFont, UiContext, create_debug_font};
+pub use immediate::{BitmapFont, HAlign, HBox, Stack, UiContext, VAlign, VBox, create_debug_font};
 
 // Re-export theme types
 pub use theme::{

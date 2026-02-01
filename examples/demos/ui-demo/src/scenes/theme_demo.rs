@@ -61,23 +61,7 @@ impl ThemeDemo {
         let new_theme = match self.current_variant {
             0 => Theme::default(),
             1 => Theme::light(),
-            2 => {
-                // Custom "neon" theme
-                let mut theme = Theme::default();
-                theme.name = "neon".to_string();
-                theme.button.background = Color::rgb(20, 20, 40);
-                theme.button.background_hovered = Color::rgb(40, 20, 80);
-                theme.button.background_pressed = Color::rgb(60, 30, 100);
-                theme.button.border = Color::rgb(100, 50, 200);
-                theme.button.border_hovered = Color::rgb(150, 100, 255);
-                theme.panel.background = Color::new(10, 10, 30, 220);
-                theme.panel.border = Some(Color::rgb(80, 40, 160));
-                theme.slider.track_fill = Color::rgb(150, 50, 255);
-                theme.checkbox.background_checked = Color::rgb(120, 50, 200);
-                theme.toggle.track_on = Color::rgb(100, 50, 180);
-                theme.progress_bar.fill = Color::rgb(150, 80, 255);
-                theme
-            }
+            2 => create_neon_theme(),
             _ => Theme::default(),
         };
 
@@ -92,28 +76,78 @@ impl ThemeDemo {
             let new_theme = match variant {
                 0 => Theme::default(),
                 1 => Theme::light(),
-                2 => {
-                    let mut theme = Theme::default();
-                    theme.name = "neon".to_string();
-                    theme.button.background = Color::rgb(20, 20, 40);
-                    theme.button.background_hovered = Color::rgb(40, 20, 80);
-                    theme.button.background_pressed = Color::rgb(60, 30, 100);
-                    theme.button.border = Color::rgb(100, 50, 200);
-                    theme.button.border_hovered = Color::rgb(150, 100, 255);
-                    theme.panel.background = Color::new(10, 10, 30, 220);
-                    theme.panel.border = Some(Color::rgb(80, 40, 160));
-                    theme.slider.track_fill = Color::rgb(150, 50, 255);
-                    theme.checkbox.background_checked = Color::rgb(120, 50, 200);
-                    theme.toggle.track_on = Color::rgb(100, 50, 180);
-                    theme.progress_bar.fill = Color::rgb(150, 80, 255);
-                    theme
-                }
+                2 => create_neon_theme(),
                 _ => Theme::default(),
             };
             if let Some(ref hot_theme) = self.hot_theme {
                 let _ = hot_theme.set(new_theme);
             }
         }
+    }
+}
+
+/// Create a neon/cyberpunk themed UI variant
+fn create_neon_theme() -> Theme {
+    Theme {
+        name: "neon".to_string(),
+        button: ryo2d::core::ui::ButtonStyle {
+            background: Color::rgb(30, 20, 50),
+            background_hovered: Color::rgb(50, 30, 80),
+            background_pressed: Color::rgb(80, 50, 120),
+            background_disabled: Color::rgb(20, 15, 30),
+            border: Color::rgb(150, 80, 255),
+            border_hovered: Color::rgb(200, 120, 255),
+            border_thickness: 2.0,
+            text: Color::rgb(200, 180, 255),
+            text_disabled: Color::rgb(80, 60, 100),
+            padding: (8.0, 4.0),
+        },
+        panel: ryo2d::core::ui::PanelStyle {
+            background: Color::new(20, 15, 35, 220),
+            border: Some(Color::rgb(100, 60, 180)),
+            border_thickness: 2.0,
+            padding: 12.0,
+        },
+        progress_bar: ryo2d::core::ui::ProgressBarStyle {
+            fill: Color::rgb(150, 80, 255),
+            background: Color::rgb(30, 20, 50),
+            border: Some(Color::rgb(100, 60, 180)),
+            border_thickness: 1.0,
+            height: 20.0,
+        },
+        slider: ryo2d::core::ui::SliderStyle {
+            track_background: Color::rgb(40, 25, 60),
+            track_fill: Color::rgb(150, 80, 255),
+            handle: Color::rgb(200, 140, 255),
+            handle_hovered: Color::rgb(220, 180, 255),
+            track_height: 8.0,
+            handle_width: 12.0,
+            handle_height: 16.0,
+        },
+        checkbox: ryo2d::core::ui::CheckboxStyle {
+            background: Color::rgb(30, 20, 50),
+            background_checked: Color::rgb(100, 50, 180),
+            background_hovered: Color::rgb(50, 35, 70),
+            border: Color::rgb(150, 80, 255),
+            checkmark: Color::rgb(220, 200, 255),
+            size: 20.0,
+            border_thickness: 2.0,
+        },
+        toggle: ryo2d::core::ui::ToggleStyle {
+            track_off: Color::rgb(40, 25, 60),
+            track_on: Color::rgb(100, 50, 180),
+            track_hovered: Color::rgb(50, 35, 70),
+            knob: Color::rgb(200, 140, 255),
+            width: 44.0,
+            height: 24.0,
+            knob_size: 20.0,
+        },
+        label: ryo2d::core::ui::LabelStyle {
+            text: Color::rgb(200, 180, 255),
+            text_muted: Color::rgb(120, 100, 160),
+            ..ryo2d::core::ui::LabelStyle::default()
+        },
+        ..Theme::default()
     }
 }
 
@@ -321,7 +355,7 @@ impl Scene for ThemeDemo {
                 theme.panel.background.r.saturating_add(15),
                 theme.panel.background.g.saturating_add(15),
                 theme.panel.background.b.saturating_add(15),
-                theme.panel.background.a.saturating_add(30).min(255),
+                theme.panel.background.a.saturating_add(30),
             );
             ui.draw_rect(nested_panel_rect, nested_bg);
             if let Some(border) = theme.panel.border {
