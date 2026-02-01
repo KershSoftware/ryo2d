@@ -114,6 +114,12 @@ pub mod prelude {
         AudioManager, MusicHandle, MusicOptions, SoundHandle, SoundOptions,
     };
 
+    // Networking
+    pub use crate::core::network::{
+        Channel, ClientId, NetworkClient, NetworkClientConfig, NetworkEvent, NetworkServer,
+        NetworkServerConfig,
+    };
+
     // Workspace & config
     pub use crate::core::config::{SystemDefaults, Workspace, WorkspaceConfig};
 
@@ -145,6 +151,7 @@ pub mod prelude {
     // Error types (centralized)
     pub use crate::core::error::{
         AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult,
-        HotReloadError, HotReloadResult, SaveError, SaveResult, SpriteError, SpriteResult,
+        HotReloadError, HotReloadResult, NetworkError, NetworkResult, SaveError, SaveResult,
+        SpriteError, SpriteResult,
     };
 }

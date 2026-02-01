@@ -50,6 +50,8 @@ kira = "0.11"
 notify = "7"
 pollster = "0.4"
 rapier2d = "0.22"
+renet = "2.0"
+renet_netcode = "2.0"
 resvg = "0.44"
 ron = "0.10"
 serde = { version = "1.0.228", features = ["derive"] }
