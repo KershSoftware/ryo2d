@@ -4,13 +4,20 @@
 //! This module wraps renet's low-level API with a cleaner interface
 //! suitable for game development.
 //!
-//! # Example
+//! # Server Types
+//!
+//! - [`NetworkServer`] - Dedicated server (no local player)
+//! - [`ListenServer`] - Player-hosted server (host plays while serving)
+//! - [`NetworkClient`] - Connects to either server type
+//!
+//! # Quick Start
+//!
+//! ## Dedicated Server
 //!
 //! ```no_run
 //! use ryo2d::prelude::*;
 //! use std::time::Duration;
 //!
-//! // Server setup
 //! let config = NetworkServerConfig {
 //!     port: 5000,
 //!     max_clients: 16,
@@ -22,7 +29,6 @@
 //! let dt = Duration::from_secs_f32(1.0 / 60.0);
 //! server.update(dt);
 //!
-//! // Handle events
 //! for event in server.events() {
 //!     match event {
 //!         NetworkEvent::ClientConnected { client_id } => {
@@ -33,6 +39,79 @@
 //!         }
 //!         _ => {}
 //!     }
+//! }
+//! ```
+//!
+//! ## Listen Server (Player-Hosted)
+//!
+//! For casual co-op games where one player hosts:
+//!
+//! ```no_run
+//! use ryo2d::prelude::*;
+//! use std::time::Duration;
+//!
+//! let config = NetworkServerConfig {
+//!     port: 5000,
+//!     max_clients: 3, // 3 remote + host = 4 players
+//!     protocol_id: 12345,
+//! };
+//! let mut server = ListenServer::new(config).unwrap();
+//!
+//! // Game loop
+//! server.update(Duration::from_secs_f32(1.0 / 60.0));
+//!
+//! // Handle remote client events
+//! for event in server.events() {
+//!     // Only remote clients generate events
+//! }
+//!
+//! // Iterate all players uniformly
+//! for client_id in server.all_clients() {
+//!     if server.is_host(client_id) {
+//!         // Host player - handle directly
+//!     } else {
+//!         // Remote player - receive from network
+//!         while let Some(data) = server.receive(client_id, Channel::ReliableOrdered) {
+//!             // Process remote input
+//!         }
+//!     }
+//! }
+//!
+//! // Broadcast to remote clients (host's state is local)
+//! server.broadcast(Channel::Unreliable, b"game state");
+//! ```
+//!
+//! ## Client
+//!
+//! ```no_run
+//! use ryo2d::prelude::*;
+//! use std::net::SocketAddr;
+//! use std::time::Duration;
+//!
+//! let server_addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+//! let config = NetworkClientConfig {
+//!     server_addr,
+//!     protocol_id: 12345, // Must match server
+//! };
+//! let mut client = NetworkClient::connect(config).unwrap();
+//!
+//! // Game loop
+//! client.update(Duration::from_secs_f32(1.0 / 60.0));
+//!
+//! for event in client.events() {
+//!     match event {
+//!         NetworkEvent::Connected => println!("Connected!"),
+//!         NetworkEvent::Disconnected { reason } => println!("Lost connection: {}", reason),
+//!         _ => {}
+//!     }
+//! }
+//!
+//! // Send input to server
+//! client.send(Channel::ReliableOrdered, b"jump");
+//!
+//! // Receive game state
+//! while let Some(data) = client.receive(Channel::Unreliable) {
+//!     // Update local state
 //! }
 //! ```
 
