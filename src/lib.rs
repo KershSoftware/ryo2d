@@ -130,6 +130,9 @@ pub mod prelude {
   // Post-processing effects
   pub use crate::core::shaders::{EffectTarget, EffectsManager, PostProcessEffect};
 
+  // 2D Lighting system
+  pub use crate::core::lighting::{AmbientLight, Light2D, LightOccluder2D, LightingRenderer};
+
   // GPU sprite batching (for high-performance particle systems)
   pub use crate::core::sprite_gpu::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
 
