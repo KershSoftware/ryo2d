@@ -116,8 +116,8 @@ pub mod prelude {
 
     // Networking
     pub use crate::core::network::{
-        Channel, ClientId, NetworkClient, NetworkClientConfig, NetworkEvent, NetworkServer,
-        NetworkServerConfig,
+        Channel, ClientId, ListenServer, NetworkClient, NetworkClientConfig, NetworkEvent,
+        NetworkServer, NetworkServerConfig, LOCAL_HOST_ID,
     };
 
     // Workspace & config
