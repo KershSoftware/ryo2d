@@ -20,10 +20,25 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   Output::status("Building", &format!("{} (release)...", project_name));
 
-  // Run cargo build --release
+  // Read Ryo.toml config to embed at compile time
+  let config = workspace.config();
+  let system = &config.system;
+
+  // Run cargo build --release with embedded config values from [system] and [info]
   let status = Command::new("cargo")
     .arg("build")
     .arg("--release")
+    // [system] section values
+    .env("RYO_EMBED_RESOLUTION_WIDTH", system.resolution_width.to_string())
+    .env("RYO_EMBED_RESOLUTION_HEIGHT", system.resolution_height.to_string())
+    .env("RYO_EMBED_VSYNC", system.vsync.to_string())
+    .env("RYO_EMBED_FULLSCREEN", system.fullscreen.to_string())
+    .env("RYO_EMBED_MASTER_VOLUME", system.master_volume.to_string())
+    .env("RYO_EMBED_MUSIC_VOLUME", system.music_volume.to_string())
+    .env("RYO_EMBED_SFX_VOLUME", system.sfx_volume.to_string())
+    // [info] section values (stored in system for embedding)
+    .env("RYO_EMBED_SHOW_FPS", system.show_fps.to_string())
+    .env("RYO_EMBED_TITLE", &system.title)
     .current_dir(workspace.root())
     .status()
     .map_err(|e| CliError::CommandFailed {

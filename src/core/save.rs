@@ -1068,6 +1068,7 @@ mod tests {
   #[test]
   fn system_state_from_defaults_uses_all_fields() {
     let defaults = super::super::workspace::SystemDefaults {
+      title: String::from("Test Game"),
       resolution_width: 1920,
       resolution_height: 1080,
       vsync: false,
@@ -1183,6 +1184,7 @@ mod tests {
     let manager = SaveManager::new(dir.path()).unwrap();
 
     let defaults = super::super::workspace::SystemDefaults {
+      title: String::from("Test Game"),
       resolution_width: 1024,
       resolution_height: 768,
       vsync: true,

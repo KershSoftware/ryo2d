@@ -202,9 +202,9 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
       continue;
     };
 
-    // Calculate world position with offset
-    let world_x = transform.x + collider.offset_x;
-    let world_y = transform.y + collider.offset_y;
+    // Calculate world position with offset (scaled by transform)
+    let world_x = transform.x + collider.offset_x * transform.scale_x;
+    let world_y = transform.y + collider.offset_y * transform.scale_y;
 
     // Convert to screen position
     let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
@@ -214,8 +214,9 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
         width: box_w,
         height: box_h,
       } => {
-        let scaled_w = (*box_w * camera.zoom) as i32;
-        let scaled_h = (*box_h * camera.zoom) as i32;
+        // Apply transform scale AND camera zoom to collider dimensions
+        let scaled_w = (*box_w * transform.scale_x * camera.zoom) as i32;
+        let scaled_h = (*box_h * transform.scale_y * camera.zoom) as i32;
         draw_rect_outline(
           frame,
           width,
@@ -228,7 +229,9 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
         );
       }
       ColliderShape::Circle { radius } => {
-        let scaled_radius = (*radius * camera.zoom) as i32;
+        // Apply average scale for circle (circles don't scale non-uniformly well)
+        let avg_scale = (transform.scale_x + transform.scale_y) / 2.0;
+        let scaled_radius = (*radius * avg_scale * camera.zoom) as i32;
         draw_circle_outline(
           frame,
           width,

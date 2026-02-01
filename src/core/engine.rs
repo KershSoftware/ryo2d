@@ -1530,26 +1530,72 @@ impl EngineBuilder {
       "EngineBuilder requires a game or scene - call .with_game() or .with_scene() before .build()",
     );
 
-    // Automatically load workspace config if available
     let mut config = self.config;
-    if let Ok(workspace) = super::workspace::Workspace::discover() {
+    let mut vsync = self.vsync;
+    let mut master_volume = self.master_volume;
+    let mut music_volume = self.music_volume;
+    let mut sfx_volume = self.sfx_volume;
+
+    // Priority chain for configuration:
+    // 1. Explicit builder calls (highest) - already in self.config
+    // 2. Embedded values from `ryo2d build` (compile-time)
+    // 3. Runtime workspace discovery (Ryo.toml)
+    // 4. Engine defaults (lowest) - already in EngineConfig::default()
+
+    // Check for embedded values (set when built via `ryo2d build`)
+    let has_embedded = option_env!("RYO_EMBED_RESOLUTION_WIDTH").is_some();
+
+    if has_embedded {
+      // Use compile-time embedded values from Ryo.toml
+      if config.width == 800 && config.height == 600 {
+        if let Some(w) = option_env!("RYO_EMBED_RESOLUTION_WIDTH") {
+          config.width = w.parse().unwrap_or(800);
+        }
+        if let Some(h) = option_env!("RYO_EMBED_RESOLUTION_HEIGHT") {
+          config.height = h.parse().unwrap_or(600);
+        }
+      }
+      if let Some(v) = option_env!("RYO_EMBED_VSYNC") {
+        vsync = Some(v.parse().unwrap_or(true));
+      }
+      if let Some(fps) = option_env!("RYO_EMBED_SHOW_FPS") {
+        config.debug.show_fps = fps.parse().unwrap_or(false);
+      }
+      if let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME") {
+        master_volume = vol.parse().unwrap_or(1.0);
+      }
+      if let Some(vol) = option_env!("RYO_EMBED_MUSIC_VOLUME") {
+        music_volume = vol.parse().unwrap_or(0.8);
+      }
+      if let Some(vol) = option_env!("RYO_EMBED_SFX_VOLUME") {
+        sfx_volume = vol.parse().unwrap_or(1.0);
+      }
+      if let Some(title) = option_env!("RYO_EMBED_TITLE")
+        && config.title == "Ryo2D"
+      {
+        config.title = title.to_string();
+      }
+    } else if let Ok(workspace) = super::workspace::Workspace::discover() {
+      // Fall back to runtime workspace discovery (development mode)
       let debug = &workspace.config().debug;
       let info = &workspace.config().info;
+      let system = &workspace.config().system;
+
+      // Load debug settings
       config.debug.show_colliders = debug.show_colliders;
       config.debug.show_fps = info.show_fps;
       config.debug.show_velocities = debug.show_velocities;
       config.debug.show_origins = debug.show_origins;
       config.debug.show_frame_timing = debug.show_frame_timing;
+
+      // Load resolution from [system] section if not explicitly set via builder
+      if config.width == 800 && config.height == 600 {
+        config.width = system.resolution_width;
+        config.height = system.resolution_height;
+      }
     }
 
-    Engine::new(
-      config,
-      game,
-      self.vsync,
-      self.master_volume,
-      self.music_volume,
-      self.sfx_volume,
-    )
+    Engine::new(config, game, vsync, master_volume, music_volume, sfx_volume)
   }
 }
 
