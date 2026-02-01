@@ -9,6 +9,10 @@ use super::{CliError, CliResult, Output};
 /// Available skills to install
 const AVAILABLE_SKILLS: &[(&str, &str)] = &[
   (
+    "ryo-api",
+    "Complete API reference for ryo2d::prelude - all types, methods, and signatures",
+  ),
+  (
     "ryo-animation",
     "Sprite animations, Animator component, AnimationController state machines",
   ),

@@ -7,18 +7,11 @@ metadata:
 
 # Ryo2D Game Developer
 
-You help users build complete games using the Ryo2D engine. You understand the ECS architecture, the Game trait lifecycle, and common game patterns.
+You help users build complete games using the Ryo2D engine. You understand the ECS architecture, the Game/Scene trait lifecycle, and common game patterns.
 
-## Resources
+**For complete API signatures, see the `ryo-api` skill.**
 
-- **Engine Architecture**: `src/core/AGENTS.md`
-- **ECS Patterns**: `src/core/ecs/AGENTS.md`
-- **Public API**: `ryo2d::prelude::*`
-- **Examples**: `examples/games/breakout/`, `examples/games/flappy/`
-
-## The Game Trait
-
-Every Ryo2D game implements the `Game` trait:
+## Quick Reference
 
 ```rust
 use ryo2d::prelude::*;
@@ -30,20 +23,55 @@ struct MyGame {
 
 impl Game for MyGame {
     fn init(&mut self, ctx: &mut GameContext) {
-        // Called once at startup - spawn entities, load assets
+        // Load a sprite from assets folder
+        let sprite = ctx.assets.load_sprite("player.png").unwrap();
+        
+        // Or create a colored rectangle
+        let sprite = ctx.assets.create_sprite(
+            Sprite::solid_rect(32, 32, 255, 0, 0, 255),
+            "red-square"
+        );
+        
+        // Spawn player entity
+        self.player = Some(ctx.world.spawn((
+            Transform::new(640.0, 360.0),
+            Velocity::zero(),
+            Renderable::sprite(sprite).with_z_order(10),
+        )));
     }
 
     fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-        // Called every fixed timestep - game logic, input
+        // Handle input, update game state
+        if ctx.input.key_pressed(KeyCode::Escape) {
+            // Exit game
+        }
     }
 
     fn render_ui(&mut self, ui: &mut UiContext) {
-        // Called after sprites - draw HUD elements
+        ui.label(&format!("Score: {}", self.score), 10.0, 10.0, Color::WHITE, None);
     }
+}
+
+fn main() {
+    EngineBuilder::new()
+        .title("My Game")
+        .resolution(1280, 720)
+        .fps(60)
+        .with_game(MyGame { player: None, score: 0 })
+        .build()
+        .run()
+        .unwrap();
 }
 ```
 
-## GameContext
+## Game vs Scene
+
+| Use | When |
+|-----|------|
+| `Game` trait | Single-screen games, simple projects |
+| `Scene` trait | Menu systems, multiple game states, level transitions |
+
+## GameContext Fields
 
 | Field | Type | Purpose |
 |-------|------|---------|
@@ -55,20 +83,45 @@ impl Game for MyGame {
 | `ctx.effects` | `&mut EffectsManager` | Post-processing effects |
 | `ctx.collision_events` | `&[PhysicsCollisionEvent]` | Physics collisions |
 
-## Spawning Entities
+## Essential Patterns
+
+### Loading Assets
 
 ```rust
-let player = ctx.world.spawn((
-    Transform::new(100.0, 200.0),
-    Velocity::new(0.0, 0.0),
+// From file (relative to assets/ folder)
+let sprite = ctx.assets.load_sprite("player.png").unwrap();
+let sprite = ctx.assets.load_sprite("sprites/enemy.png").unwrap();
+
+// Programmatic sprite
+let bullet = ctx.assets.create_sprite(
+    Sprite::solid_circle(8, 255, 255, 0, 255),  // Yellow circle
+    "bullet"
+);
+```
+
+### Spawning Entities
+
+```rust
+// Basic entity
+let entity = ctx.world.spawn((
+    Transform::new(x, y),
+    Renderable::sprite(sprite_handle),
+));
+
+// With physics
+let entity = ctx.world.spawn((
+    Transform::new(x, y),
+    Velocity::zero(),
     Renderable::sprite(sprite_handle),
     RigidBody::dynamic(),
     Collider::circle(16.0),
 ));
-self.player = Some(player);
+
+// Store for later reference
+self.player = Some(entity);
 ```
 
-## Input Handling
+### Input
 
 ```rust
 // Keyboard
@@ -79,104 +132,125 @@ if ctx.input.key_released(KeyCode::Escape) { /* just released */ }
 // Mouse
 if ctx.input.mouse_pressed(MouseButton::Left) { /* clicked */ }
 let (mx, my) = ctx.input.mouse_position();
-
-// World coordinates (camera-adjusted)
-let world_pos = ctx.camera.screen_to_world(mx, my);
+let (wx, wy) = ctx.camera.screen_to_world(mx, my);
 ```
 
-## Querying Entities
+### Querying & Modifying Entities
 
 ```rust
-// Get single component
+// Get component
 if let Some(transform) = ctx.world.get_component::<Transform>(entity) {
-    println!("Position: {:?}", transform.position);
+    let pos = transform.position;
 }
 
-// Mutate component
+// Modify component
 if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
-    vel.x += 10.0;
+    vel.x = 100.0;
 }
 
-// Query multiple components
+// Query all entities with components
 for (entity, (transform, velocity)) in ctx.world.query::<(&Transform, &Velocity)>().iter() {
-    // access both components
+    // process each
+}
+
+// Query with optional
+for (entity, (t, maybe_v)) in ctx.world.query::<(&Transform, Option<&Velocity>)>().iter() {
+    if let Some(vel) = maybe_v { /* has velocity */ }
+}
+
+// Remove entity
+ctx.world.despawn(entity);
+```
+
+### Collision Handling
+
+```rust
+// In update()
+for event in ctx.collision_events.iter() {
+    if event.event_type == CollisionEventType::Started {
+        if event.involves(self.player.unwrap()) {
+            let other = event.other_entity(self.player.unwrap());
+            
+            if ctx.world.has_component::<Enemy>(other) {
+                self.take_damage();
+            } else if ctx.world.has_component::<Coin>(other) {
+                self.score += 10;
+                ctx.world.despawn(other);
+            }
+        }
+    }
 }
 ```
 
-## Scene Management
+### Audio
+
+```rust
+// Sound effects
+if let Some(audio) = ctx.audio.as_mut() {
+    audio.play_sound("jump.wav").ok();
+    audio.play_sound_with("explosion.wav", SoundOptions {
+        volume: 0.8,
+        pitch: 1.2,
+        panning: 0.0,
+    }).ok();
+}
+
+// Music
+if let Some(audio) = ctx.audio.as_mut() {
+    audio.play_music("bgm.ogg").ok();
+    audio.set_music_volume(0.5);
+}
+```
+
+### Camera
+
+```rust
+// Follow player
+if let Some(t) = ctx.world.get_component::<Transform>(self.player.unwrap()) {
+    ctx.camera.set_position(t.position.x, t.position.y);
+}
+
+// Zoom
+ctx.camera.set_zoom(2.0);  // 2x zoom
+
+// Convert coordinates
+let (world_x, world_y) = ctx.camera.screen_to_world(screen_x, screen_y);
+```
+
+## Scene System
 
 ```rust
 struct MenuScene;
 
 impl Scene for MenuScene {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+        // Setup when scene becomes active
+    }
+
     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         if ctx.input.key_pressed(KeyCode::Enter) {
             return SceneAction::Push(Box::new(GameScene::new()));
         }
+        if ctx.input.key_pressed(KeyCode::Escape) {
+            return SceneAction::Quit;
+        }
         SceneAction::Continue
     }
-}
 
-// In main.rs - use with_scene for multi-scene games
-EngineBuilder::new()
-    .with_scene(MenuScene)
-    .build()
-    .run()
-```
-
-SceneAction options: `Continue`, `Push(scene)`, `Pop`, `Replace(scene)`, `Quit`
-
-## Common Patterns
-
-### Player Movement
-
-```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-    let speed = 200.0;
-    let mut dx = 0.0;
-    let mut dy = 0.0;
-
-    if ctx.input.key_down(KeyCode::KeyW) { dy -= 1.0; }
-    if ctx.input.key_down(KeyCode::KeyS) { dy += 1.0; }
-    if ctx.input.key_down(KeyCode::KeyA) { dx -= 1.0; }
-    if ctx.input.key_down(KeyCode::KeyD) { dx += 1.0; }
-
-    // Normalize diagonal
-    let len = (dx * dx + dy * dy).sqrt();
-    if len > 0.0 { dx /= len; dy /= len; }
-
-    if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(self.player.unwrap()) {
-        vel.x = dx * speed;
-        vel.y = dy * speed;
+    fn render_ui(&mut self, ui: &mut UiContext) {
+        ui.label("Press ENTER to start", 100.0, 100.0, Color::WHITE, None);
     }
 }
+
+// SceneAction options:
+// - Continue         Keep running
+// - Push(scene)      Add scene on top (pause current)
+// - Pop              Return to previous scene
+// - Replace(scene)   Swap current scene
+// - Quit             Exit game
 ```
 
-### Collision Response
-
-```rust
-for event in ctx.collisions_started() {
-    if event.involves(self.player.unwrap()) {
-        let other = event.other_entity(self.player.unwrap());
-        if ctx.world.has_component::<Enemy>(other) {
-            self.take_damage();
-        } else if ctx.world.has_component::<Coin>(other) {
-            self.score += 10;
-            ctx.world.despawn(other);
-        }
-    }
-}
-```
-
-### Camera Follow
-
-```rust
-if let Some(transform) = ctx.world.get_component::<Transform>(self.player.unwrap()) {
-    ctx.camera.set_position(transform.position.x, transform.position.y);
-}
-```
-
-## EngineBuilder
+## EngineBuilder Options
 
 ```rust
 EngineBuilder::new()
@@ -185,11 +259,22 @@ EngineBuilder::new()
     .fps(60)
     .physics_hz(120)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_game(MyGame::default())
+    .with_game(MyGame::default())  // OR
+    .with_scene(MenuScene)         // for multi-scene
     .build()
     .run()
     .unwrap();
 ```
 
-WindowMode: `Fixed`, `ResizableAspectRatio` (default), `ResizableIntegerScale`, `ResizableStretch`
+## Common Components
+
+| Component | Purpose |
+|-----------|---------|
+| `Transform` | Position, rotation, scale |
+| `Velocity` | Movement direction and speed |
+| `Renderable` | Sprite and rendering options |
+| `RigidBody` | Physics body (dynamic, kinematic, fixed) |
+| `Collider` | Collision shape (circle, rect, capsule) |
+| `Animator` | Sprite animation state |
+| `Parent` / `Children` | Entity hierarchy |
 

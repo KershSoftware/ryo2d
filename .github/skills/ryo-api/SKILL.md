@@ -1,0 +1,735 @@
+---
+name: ryo-api
+description: Complete API reference for ryo2d::prelude - all types, methods, and signatures.
+metadata:
+  version: 1.0.0
+---
+
+# Ryo2D API Reference
+
+Complete reference for everything exported from `ryo2d::prelude::*`. Use this when you need exact method signatures or want to know what's available.
+
+## Import
+
+```rust
+use ryo2d::prelude::*;
+```
+
+---
+
+## Core Traits
+
+### Game
+
+The main trait for single-scene games:
+
+```rust
+pub trait Game {
+    fn init(&mut self, ctx: &mut GameContext) {}
+    fn update(&mut self, ctx: &mut GameContext, dt: f32) {}
+    fn fixed_update(&mut self, ctx: &mut GameContext) {}
+    fn render_ui(&mut self, ui: &mut UiContext) {}
+    fn on_exit(&mut self, ctx: &mut GameContext) {}
+}
+```
+
+### Scene
+
+For multi-scene games with state transitions:
+
+```rust
+pub trait Scene {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {}
+    fn on_exit(&mut self, ctx: &mut SceneContext) {}
+    fn on_pause(&mut self, ctx: &mut SceneContext) {}
+    fn on_resume(&mut self, ctx: &mut SceneContext) {}
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction;
+    fn fixed_update(&mut self, ctx: &mut SceneContext) {}
+    fn render_ui(&mut self, ui: &mut UiContext) {}
+}
+```
+
+---
+
+## Context Types
+
+### GameContext
+
+Available in `Game` trait methods:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `world` | `&mut World` | ECS world for spawning/querying entities |
+| `camera` | `&mut Camera` | Camera position, zoom, viewport |
+| `input` | `&InputState` | Keyboard and mouse input |
+| `assets` | `&mut AssetManager` | Load/create sprites and assets |
+| `audio` | `&mut Option<AudioManager>` | Play sounds and music |
+| `effects` | `&mut EffectsManager` | Post-processing effects |
+| `collision_events` | `&[PhysicsCollisionEvent]` | Physics collision events this frame |
+
+### SceneContext
+
+Available in `Scene` trait methods (same fields as GameContext).
+
+### UiContext
+
+Available in `render_ui`:
+
+```rust
+impl UiContext {
+    // Text
+    fn label(&mut self, text: &str, x: f32, y: f32, color: Color, bg: Option<Color>);
+    fn label_shadow(&mut self, text: &str, x: f32, y: f32, color: Color, shadow: Color);
+    
+    // Shapes
+    fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color);
+    fn rect_outline(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color, thickness: f32);
+    
+    // Layout helpers
+    fn screen_width(&self) -> f32;
+    fn screen_height(&self) -> f32;
+}
+```
+
+---
+
+## Engine Builder
+
+```rust
+EngineBuilder::new()
+    .title("Game Title")              // Window title
+    .resolution(1280, 720)            // Window size
+    .fps(60)                          // Target frame rate
+    .physics_hz(120)                  // Physics update rate
+    .window_mode(WindowMode::Fixed)   // Window behavior
+    .with_game(MyGame::default())     // Single-scene game
+    .with_scene(MenuScene)            // Multi-scene game
+    .build()
+    .run()
+    .unwrap();
+```
+
+### WindowMode
+
+```rust
+pub enum WindowMode {
+    Fixed,                    // Fixed size, no resizing
+    ResizableAspectRatio,     // Maintains aspect ratio (default)
+    ResizableIntegerScale,    // Pixel-perfect scaling
+    ResizableStretch,         // Stretches to fill
+}
+```
+
+---
+
+## Components
+
+### Transform
+
+```rust
+pub struct Transform {
+    pub position: Vec3,  // x, y, z (z for depth)
+    pub rotation: f32,   // Radians
+    pub scale: Vec2,     // x, y scale
+}
+
+impl Transform {
+    fn new(x: f32, y: f32) -> Self;
+    fn new_3d(x: f32, y: f32, z: f32) -> Self;
+    fn from_vec2(pos: Vec2) -> Self;
+    fn from_vec3(pos: Vec3) -> Self;
+    fn as_vec2(&self) -> Vec2;
+    fn as_vec3(&self) -> Vec3;
+    fn origin() -> Self;
+}
+```
+
+### Velocity
+
+```rust
+pub struct Velocity {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+impl Velocity {
+    fn new(dx: f32, dy: f32) -> Self;
+    fn new_3d(dx: f32, dy: f32, dz: f32) -> Self;
+    fn from_vec2(vel: Vec2) -> Self;
+    fn from_vec3(vel: Vec3) -> Self;
+    fn as_vec2(&self) -> Vec2;
+    fn as_vec3(&self) -> Vec3;
+    fn zero() -> Self;
+}
+```
+
+### Renderable
+
+```rust
+pub struct Renderable {
+    pub sprite: SpriteHandle,
+    pub z_order: i32,
+    pub visible: bool,
+    pub flip_x: bool,
+    pub flip_y: bool,
+    pub tint: Option<Color>,
+}
+
+impl Renderable {
+    fn sprite(handle: SpriteHandle) -> Self;
+    fn with_z_order(self, z: i32) -> Self;
+    fn with_flip_x(self, flip: bool) -> Self;
+    fn with_flip_y(self, flip: bool) -> Self;
+    fn with_tint(self, color: Color) -> Self;
+    fn hidden(self) -> Self;
+}
+```
+
+### RenderLayer
+
+```rust
+pub enum RenderLayer {
+    Background,  // z_order: -1000
+    Default,     // z_order: 0
+    Foreground,  // z_order: 1000
+    UI,          // z_order: 10000
+}
+```
+
+### Parent / Children (Hierarchy)
+
+```rust
+pub struct Parent(pub Entity);
+pub struct Children(pub Vec<Entity>);
+```
+
+---
+
+## Physics Components
+
+### RigidBody
+
+```rust
+pub struct RigidBody {
+    pub body_type: RigidBodyType,
+    pub gravity_scale: f32,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+    pub fixed_rotation: bool,
+}
+
+impl RigidBody {
+    fn dynamic() -> Self;      // Affected by forces
+    fn kinematic() -> Self;    // Moved by code, affects others
+    fn fixed() -> Self;        // Static, immovable
+}
+```
+
+### Collider
+
+```rust
+pub struct Collider {
+    pub shape: ColliderShape,
+    pub is_sensor: bool,
+    pub friction: f32,
+    pub restitution: f32,
+}
+
+impl Collider {
+    fn circle(radius: f32) -> Self;
+    fn rect(width: f32, height: f32) -> Self;
+    fn capsule(half_height: f32, radius: f32) -> Self;
+    fn sensor(self) -> Self;  // Triggers events but no physics
+    fn with_friction(self, friction: f32) -> Self;
+    fn with_restitution(self, bounce: f32) -> Self;
+}
+```
+
+### ColliderShape
+
+```rust
+pub enum ColliderShape {
+    Circle { radius: f32 },
+    Rect { width: f32, height: f32 },
+    Capsule { half_height: f32, radius: f32 },
+}
+```
+
+### PhysicsCollisionEvent
+
+```rust
+pub struct PhysicsCollisionEvent {
+    pub entity_a: Entity,
+    pub entity_b: Entity,
+    pub event_type: CollisionEventType,
+}
+
+impl PhysicsCollisionEvent {
+    fn involves(&self, entity: Entity) -> bool;
+    fn other_entity(&self, entity: Entity) -> Entity;
+}
+
+pub enum CollisionEventType {
+    Started,
+    Stopped,
+}
+```
+
+---
+
+## Sprites & Assets
+
+### Sprite
+
+```rust
+pub struct Sprite {
+    data: Vec<u8>,   // RGBA pixel data
+    width: u32,
+    height: u32,
+}
+
+impl Sprite {
+    // Create from data
+    fn from_rgba(data: Vec<u8>, width: u32, height: u32) -> Self;
+    
+    // Solid shapes
+    fn solid_rect(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Self;
+    fn solid_circle(diameter: u32, r: u8, g: u8, b: u8, a: u8) -> Self;
+    
+    // Load from file
+    fn load<P: AsRef<Path>>(path: P) -> SpriteResult<Self>;
+    fn load_svg<P: AsRef<Path>>(path: P, scale: f32) -> SpriteResult<Self>;
+    fn load_svg_fit<P: AsRef<Path>>(path: P, max_width: u32, max_height: u32) -> SpriteResult<Self>;
+    
+    // Properties
+    fn width(&self) -> u32;
+    fn height(&self) -> u32;
+    fn data(&self) -> &[u8];
+}
+```
+
+### SpriteHandle
+
+Reference-counted handle to a loaded sprite. Clone freely.
+
+### AssetManager
+
+```rust
+impl AssetManager {
+    // Loading
+    fn load_sprite<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<SpriteHandle>;
+    fn load_sprite_async<P: AsRef<Path>>(&mut self, path: P) -> AsyncSpriteHandle;
+    
+    // Creating
+    fn create_sprite<P: AsRef<Path>>(&self, sprite: Sprite, name: P) -> SpriteHandle;
+    
+    // Async management
+    fn process_async_loads(&mut self) -> usize;
+    fn has_pending_loads(&self) -> bool;
+    fn pending_load_count(&self) -> usize;
+    
+    // Cache management
+    fn is_sprite_cached<P: AsRef<Path>>(&self, path: P) -> bool;
+    fn sprite_count(&self) -> usize;
+    fn gc_sprites(&mut self) -> usize;
+    fn clear_sprite_cache(&mut self);
+    fn stats(&self) -> AssetStats;
+    
+    // Hot reload
+    fn enable_hot_reload<P, I>(&mut self, watch_paths: I) -> AssetResult<()>;
+    fn disable_hot_reload(&mut self);
+    fn is_hot_reload_enabled(&self) -> bool;
+    fn process_reloads(&mut self) -> usize;
+}
+```
+
+### AsyncSpriteHandle
+
+```rust
+impl AsyncSpriteHandle {
+    fn state(&self) -> LoadingState;
+    fn is_loading(&self) -> bool;
+    fn is_loaded(&self) -> bool;
+    fn is_failed(&self) -> bool;
+    fn get(&self) -> Option<SpriteHandle>;
+    fn get_or(&self, fallback: &SpriteHandle) -> SpriteHandle;
+}
+
+pub enum LoadingState {
+    Loading,
+    Loaded(SpriteHandle),
+    Failed(String),
+}
+```
+
+---
+
+## Animation
+
+### Animator
+
+```rust
+pub struct Animator {
+    pub animations: HashMap<AnimationId, Animation>,
+    pub current: Option<AnimationId>,
+    pub frame: usize,
+    pub timer: f32,
+    pub state: PlaybackState,
+}
+
+impl Animator {
+    fn new() -> Self;
+    fn add(self, id: impl Into<AnimationId>, animation: Animation) -> Self;
+    fn with_default(self, id: impl Into<AnimationId>) -> Self;
+    fn play(&mut self, id: impl Into<AnimationId>);
+    fn stop(&mut self);
+    fn pause(&mut self);
+    fn resume(&mut self);
+    fn current_frame(&self) -> Option<SpriteHandle>;
+}
+```
+
+### Animation
+
+```rust
+pub struct Animation {
+    pub frames: Vec<SpriteHandle>,
+    pub frame_duration: f32,
+    pub loop_mode: LoopMode,
+}
+
+impl Animation {
+    fn new(frames: Vec<SpriteHandle>, fps: f32) -> Self;
+    fn with_loop_mode(self, mode: LoopMode) -> Self;
+}
+
+pub enum LoopMode {
+    Once,
+    Loop,
+    PingPong,
+}
+
+pub enum PlaybackState {
+    Playing,
+    Paused,
+    Stopped,
+    Finished,
+}
+```
+
+### AnimationController
+
+State machine for complex animation logic:
+
+```rust
+pub struct AnimationController {
+    states: HashMap<String, AnimationState>,
+    transitions: Vec<Transition>,
+    current_state: String,
+}
+
+impl AnimationController {
+    fn new(initial_state: &str) -> Self;
+    fn add_state(self, name: &str, animation: Animation) -> Self;
+    fn add_transition(self, from: &str, to: &str, condition: TransitionCondition) -> Self;
+    fn set_trigger(&mut self, trigger: &str);
+    fn set_bool(&mut self, name: &str, value: bool);
+    fn set_float(&mut self, name: &str, value: f32);
+}
+```
+
+---
+
+## Audio
+
+### AudioManager
+
+```rust
+impl AudioManager {
+    // Sound effects (short, can overlap)
+    fn play_sound<P: AsRef<Path>>(&mut self, path: P) -> AudioResult<SoundHandle>;
+    fn play_sound_with<P: AsRef<Path>>(&mut self, path: P, options: SoundOptions) -> AudioResult<SoundHandle>;
+    
+    // Music (long, one at a time per track)
+    fn play_music<P: AsRef<Path>>(&mut self, path: P) -> AudioResult<MusicHandle>;
+    fn play_music_with<P: AsRef<Path>>(&mut self, path: P, options: MusicOptions) -> AudioResult<MusicHandle>;
+    
+    // Volume control
+    fn set_master_volume(&mut self, volume: f32);
+    fn set_music_volume(&mut self, volume: f32);
+    fn set_sfx_volume(&mut self, volume: f32);
+    fn master_volume(&self) -> f32;
+    fn music_volume(&self) -> f32;
+    fn sfx_volume(&self) -> f32;
+    
+    // Music control
+    fn stop_music(&mut self);
+    fn pause_music(&mut self);
+    fn resume_music(&mut self);
+}
+```
+
+### SoundOptions / MusicOptions
+
+```rust
+pub struct SoundOptions {
+    pub volume: f32,      // 0.0 - 1.0
+    pub pitch: f32,       // 1.0 = normal
+    pub panning: f32,     // -1.0 left, 0.0 center, 1.0 right
+}
+
+pub struct MusicOptions {
+    pub volume: f32,
+    pub looping: bool,
+    pub fade_in: Option<f32>,  // Seconds
+}
+```
+
+---
+
+## Input
+
+### InputState
+
+```rust
+impl InputState {
+    // Keyboard
+    fn key_pressed(&self, key: KeyCode) -> bool;   // Just pressed this frame
+    fn key_down(&self, key: KeyCode) -> bool;      // Currently held
+    fn key_released(&self, key: KeyCode) -> bool;  // Just released this frame
+    
+    // Mouse
+    fn mouse_pressed(&self, button: MouseButton) -> bool;
+    fn mouse_down(&self, button: MouseButton) -> bool;
+    fn mouse_released(&self, button: MouseButton) -> bool;
+    fn mouse_position(&self) -> (f32, f32);       // Screen coordinates
+    fn mouse_delta(&self) -> (f32, f32);          // Movement since last frame
+    fn scroll_delta(&self) -> f32;                // Mouse wheel
+}
+```
+
+### KeyCode (from winit)
+
+Common keys:
+- Letters: `KeyCode::KeyA` through `KeyCode::KeyZ`
+- Numbers: `KeyCode::Digit0` through `KeyCode::Digit9`
+- Arrows: `KeyCode::ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`
+- Special: `KeyCode::Space`, `Escape`, `Enter`, `Tab`, `Backspace`
+- Modifiers: `KeyCode::ShiftLeft`, `ControlLeft`, `AltLeft`
+
+### MouseButton
+
+```rust
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+```
+
+---
+
+## Camera
+
+```rust
+impl Camera {
+    fn set_position(&mut self, x: f32, y: f32);
+    fn position(&self) -> (f32, f32);
+    fn set_zoom(&mut self, zoom: f32);
+    fn zoom(&self) -> f32;
+    fn screen_to_world(&self, screen_x: f32, screen_y: f32) -> (f32, f32);
+    fn world_to_screen(&self, world_x: f32, world_y: f32) -> (f32, f32);
+    fn viewport(&self) -> (f32, f32, f32, f32);  // x, y, width, height
+}
+```
+
+---
+
+## World (ECS)
+
+```rust
+impl World {
+    // Spawning
+    fn spawn<C: ComponentBundle>(&mut self, components: C) -> Entity;
+    fn despawn(&mut self, entity: Entity) -> bool;
+    
+    // Component access
+    fn get_component<T: Component>(&self, entity: Entity) -> Option<&T>;
+    fn get_component_mut<T: Component>(&mut self, entity: Entity) -> Option<&mut T>;
+    fn has_component<T: Component>(&self, entity: Entity) -> bool;
+    fn add_component<T: Component>(&mut self, entity: Entity, component: T);
+    fn remove_component<T: Component>(&mut self, entity: Entity);
+    
+    // Querying
+    fn query<Q: Query>(&self) -> QueryIter<Q>;
+    fn query_mut<Q: Query>(&mut self) -> QueryIterMut<Q>;
+    
+    // Entity checks
+    fn is_alive(&self, entity: Entity) -> bool;
+    fn entity_count(&self) -> usize;
+}
+```
+
+### Query Examples
+
+```rust
+// Single component
+for (entity, transform) in ctx.world.query::<&Transform>().iter() { }
+
+// Multiple components
+for (entity, (transform, velocity)) in ctx.world.query::<(&Transform, &Velocity)>().iter() { }
+
+// Mutable access
+for (entity, (transform, mut velocity)) in ctx.world.query::<(&Transform, &mut Velocity)>().iter() { }
+
+// Optional components
+for (entity, (transform, maybe_vel)) in ctx.world.query::<(&Transform, Option<&Velocity>)>().iter() { }
+```
+
+---
+
+## Scene Management
+
+### SceneAction
+
+```rust
+pub enum SceneAction {
+    Continue,                    // Keep running current scene
+    Push(Box<dyn Scene>),        // Push new scene on stack
+    Pop,                         // Return to previous scene
+    Replace(Box<dyn Scene>),     // Replace current scene
+    Quit,                        // Exit the game
+}
+```
+
+### Transition
+
+```rust
+pub enum Transition {
+    None,
+    Fade { duration: f32, color: Color },
+    Slide { duration: f32, direction: SlideDirection },
+}
+
+pub enum SlideDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+```
+
+---
+
+## UI Types
+
+### Color
+
+```rust
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl Color {
+    const WHITE: Color;
+    const BLACK: Color;
+    const RED: Color;
+    const GREEN: Color;
+    const BLUE: Color;
+    const YELLOW: Color;
+    const CYAN: Color;
+    const MAGENTA: Color;
+    const TRANSPARENT: Color;
+    
+    fn new(r: u8, g: u8, b: u8, a: u8) -> Self;
+    fn rgb(r: u8, g: u8, b: u8) -> Self;
+    fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self;
+    fn from_hex(hex: u32) -> Self;
+}
+```
+
+### Anchor
+
+```rust
+pub enum Anchor {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    CenterLeft,
+    Center,
+    CenterRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+```
+
+---
+
+## Post-Processing
+
+### EffectsManager
+
+```rust
+impl EffectsManager {
+    fn add_effect(&mut self, effect: PostProcessEffect);
+    fn remove_effect(&mut self, name: &str);
+    fn set_enabled(&mut self, name: &str, enabled: bool);
+    fn is_enabled(&self, name: &str) -> bool;
+    fn clear(&mut self);
+}
+```
+
+### PostProcessEffect
+
+```rust
+pub enum PostProcessEffect {
+    Bloom { intensity: f32, threshold: f32 },
+    Vignette { intensity: f32, radius: f32 },
+    ChromaticAberration { intensity: f32 },
+    Pixelate { pixel_size: u32 },
+    Grayscale { intensity: f32 },
+    Custom { shader: ShaderHandle, params: ShaderParams },
+}
+```
+
+---
+
+## Error Types
+
+All error types implement `std::error::Error`:
+
+```rust
+pub type EngineResult<T> = Result<T, EngineError>;
+pub type AssetResult<T> = Result<T, AssetError>;
+pub type AudioResult<T> = Result<T, AudioError>;
+pub type SpriteResult<T> = Result<T, SpriteError>;
+pub type SaveResult<T> = Result<T, SaveError>;
+```
+
+---
+
+## Math Types (from glam)
+
+```rust
+pub struct Vec2 { pub x: f32, pub y: f32 }
+pub struct Vec3 { pub x: f32, pub y: f32, pub z: f32 }
+pub struct Vec4 { pub x: f32, pub y: f32, pub z: f32, pub w: f32 }
+pub struct Mat4 { /* 4x4 matrix */ }
+```
+
+Common operations:
+```rust
+let v = Vec2::new(1.0, 2.0);
+let v = Vec2::ZERO;
+let v = Vec2::ONE;
+let len = v.length();
+let n = v.normalize();
+let d = v1.dot(v2);
+let v = v1 + v2;
+let v = v1 * 2.0;
+```

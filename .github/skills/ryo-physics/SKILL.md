@@ -9,6 +9,8 @@ metadata:
 
 You help users integrate Rapier2D physics into their games, including rigid bodies, colliders, and collision events.
 
+**For complete API signatures, see the `ryo-api` skill.**
+
 ## Resources
 
 - **Physics Module**: `src/core/rapier_physics.rs`
