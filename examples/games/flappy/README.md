@@ -1,6 +1,6 @@
-# Flappy Bird - Ryo2D Example Game
+# Flappy - Ryo2D Example Game
 
-A Flappy Bird clone showcasing scrolling, procedural generation, and physics features of the Ryo2D game engine.
+A Flappy clone showcasing scrolling, procedural generation, parallax backgrounds, and physics features of the Ryo2D game engine.
 
 ## Game Overview
 
@@ -17,26 +17,28 @@ This example highlights key engine capabilities for side-scrolling and arcade ga
 - **Z-ordering** - Layered rendering with depth sorting
 
 ### Scrolling & Camera
-- **Parallax Scrolling** - Custom `Scrolling` component for layered movement
+- **Parallax Scrolling** - Multi-layered backgrounds with varying scroll speeds for depth
+- **Custom Scrolling Component** - Reusable `Scrolling` component for seamless looping
 - **Camera Management** - Smooth scrolling backgrounds and ground
 - **Procedural Generation** - Infinite pipe obstacles with randomized heights
+
+### Entity Component System (ECS)
+- **Hierarchical Sprites** - Parent-child entity relationships for composite objects
+- **Component-Based Design** - Clean separation of data (Transform, Velocity, Renderable, etc.)
+- **Entity Management** - Dynamic spawning and despawning of obstacles
+- **Query System** - Efficient iteration over entities with specific components
 
 ### Physics & Gameplay
 - **Custom Physics** - Gravity and velocity system for bird movement
 - **Collision Detection** - Bird vs pipes and ground boundaries
-- **Entity Management** - Dynamic spawning and despawning of obstacles
+- **Flap Mechanics** - Impulse-based jump with gravity simulation
 
 ### Core Systems
 - **Scene Management** - Menu → Gameplay → Game Over flow
-- **ECS Architecture** - Clean component-based entity design
 - **Save System** - High score persistence via workspace configuration
 - **Immediate-Mode UI** - Score display and menu screens
-
-### Visual Features
-- **Asset Loading** - Images loaded from `assets/` directory
-- **Sprite Rendering** - PNG sprites for bird, pipes, and ground
-- **Dynamic Scaling** - Pipes scaled to fit variable heights
-- **Z-ordering** - Layered rendering with depth sorting
+- **Asset loading**: `Sprite::load()` reads PNG files from `assets/` directory
+- **Dynamic scaling**: Pipes are scaled vertically to match random heights
 
 ## Controls
 
@@ -55,57 +57,11 @@ cargo run
 ### Using the Ryo2D CLI
 
 ```bash
-# From the project root
-ryo2d run
+# From the ryo2d project root
+./run flappy
 
-# Or from anywhere in the project
-cd examples/flappy
-ryo2d run
+# From the example game root
+ryo2d dev # development runner
+# or
+ryo2d build && ryo2d run # production runner
 ```
-
-## Project Structure
-
-```
-flappy/
-├── src/
-│   ├── components/       # ECS components
-│   │   ├── bird.rs       # Player character with physics
-│   │   ├── pipe.rs       # Obstacle pipes
-│   │   ├── ground.rs     # Scrolling floor
-│   │   └── scrolling.rs  # Parallax scroll component
-│   ├── scenes/           # Game screens
-│   │   ├── menu.rs       # Start menu
-│   │   ├── game.rs       # Main gameplay
-│   │   └── game_over.rs  # Results screen
-│   ├── constants.rs      # Game configuration
-│   ├── save.rs           # High score persistence
-│   └── lib.rs            # Module exports
-├── assets/               # Sprites (ready for images)
-├── data/                 # Save data (auto-generated)
-├── main.rs               # Game entry point
-└── Ryo.toml             # Project configuration
-```
-
-## Implementation Notes
-
-- **Physics tick rate**: 120 Hz for smooth bird movement
-- **Render rate**: 144 FPS
-- **Pipe spawning**: Procedurally generated with random gap positions
-- **Scrolling system**: Reusable component for parallax effects
-- **Asset loading**: `Sprite::load()` reads PNG files from `assets/` directory
-- **Dynamic scaling**: Pipes are scaled vertically to match random heights
-
-## Asset Generation
-
-The game includes simple colored sprite assets. To regenerate them:
-
-```bash
-cargo run --bin generate_assets --features generate-assets
-```
-
-This creates three PNG files:
-- `assets/bird.png` - 34x34 yellow square
-- `assets/pipe.png` - 52x200 green rectangle
-- `assets/ground.png` - 400x112 brown rectangle
-
-You can replace these with custom artwork of the same dimensions.

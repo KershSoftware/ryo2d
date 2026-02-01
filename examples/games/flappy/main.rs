@@ -1,4 +1,4 @@
-//! Flappy Bird - Ryo2D Example Game
+//! Flappy - Ryo2D Example Game
 //!
 //! This example demonstrates:
 //! - Image asset loading (sprites for bird, pipes, ground, background)
@@ -38,7 +38,7 @@ fn main() {
     .unwrap_or(false);
 
   let builder = EngineBuilder::new()
-    .title("Flappy Bird - Ryo2D Demo")
+    .title("Flappy - Ryo2D Demo")
     .resolution(400, 600) // Fixed resolution - game uses hardcoded spawn distances
     .fps(144)
     .physics_hz(120)
