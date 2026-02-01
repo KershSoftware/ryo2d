@@ -30,7 +30,7 @@ NC='\033[0m' # No Color
 get_examples() {
     local examples=()
     local display_names=()
-    
+
     if [[ -d "$SCRIPT_DIR/examples" ]]; then
         # Search in both demos/ and games/ subdirectories
         for category in "demos" "games"; do
@@ -40,14 +40,14 @@ get_examples() {
                     if [[ -d "$dir" ]]; then
                         local name=$(basename "$dir")
                         local main_rs="$dir/main.rs"
-                        
+
                         # Check for config file (case-insensitive)
                         local ryo_toml=$(find "$dir" -maxdepth 1 -iname "ryo.toml" -type f | head -1)
-                        
+
                         # Check if it's a valid example (has main.rs)
                         if [[ -f "$main_rs" ]]; then
                             local display_name="$name"
-                            
+
                             # Try to read project name from Ryo.toml
                             if [[ -n "$ryo_toml" ]]; then
                                 local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
@@ -55,7 +55,7 @@ get_examples() {
                                     display_name="$parsed_name"
                                 fi
                             fi
-                            
+
                             # Output: category/name
                             echo "$category/$name"
                         fi
@@ -76,28 +76,27 @@ get_display_names() {
                     if [[ -d "$dir" ]]; then
                         local name=$(basename "$dir")
                         local main_rs="$dir/main.rs"
-                        
+
                         # Check for config file (case-insensitive)
                         local ryo_toml=$(find "$dir" -maxdepth 1 -iname "ryo.toml" -type f | head -1)
-                        
+
                         if [[ -f "$main_rs" ]]; then
                             local display_name="$name"
-                            
+
                             if [[ -n "$ryo_toml" ]]; then
                                 local parsed_name=$(grep -E '^name\s*=' "$ryo_toml" | sed 's/.*=\s*"\([^"]*\)".*/\1/' | head -1)
                                 if [[ -n "$parsed_name" ]]; then
                                     display_name="$parsed_name"
                                 fi
                             fi
-                            
+
                             echo "$display_name"
                         fi
                     fi
                 done
             fi
-        donepath_with_category="$1"
-    local example_name=$(basename "$example_path_with_category")
-    local example_path="$SCRIPT_DIR/examples/$example_path_with_category
+        done
+    fi
 }
 
 # Function to run an example (from its own directory as a standalone project)
@@ -137,28 +136,28 @@ run_example() {
 show_category_menu() {
     local examples=()
     local display_names=()
-    
+
     while IFS= read -r line; do
         examples+=("$line")
     done < <(get_examples)
-    
+
     while IFS= read -r line; do
         display_names+=("$line")
     done < <(get_display_names)
-    
+
     local count=${#examples[@]}
-    
+
     if [[ $count -eq 0 ]]; then
         echo -e "${RED}No examples found in examples/ directory.${NC}"
         exit 1
     fi
-    
+
     # Separate examples into demos and games
     local demos=()
     local games=()
     local demos_display=()
     local games_display=()
-    
+
     for ((i=0; i<count; i++)); do
         local example="${examples[$i]}"
         local display="${display_names[$i]}"
@@ -170,11 +169,11 @@ show_category_menu() {
             games_display+=("$display")
         fi
     done
-    
+
     # Check if we have both categories
     local has_games=$([[ ${#games[@]} -gt 0 ]] && echo "true" || echo "false")
     local has_demos=$([[ ${#demos[@]} -gt 0 ]] && echo "true" || echo "false")
-    
+
     # If only one category exists, skip to that category
     if [[ "$has_games" == "true" && "$has_demos" == "false" ]]; then
         show_example_list games "${games[@]}" -- "${games_display[@]}"
@@ -184,7 +183,7 @@ show_category_menu() {
         show_example_list demos "${demos[@]}" -- "${demos_display[@]}"
         return
     fi
-    
+
     # Show category selection
     echo ""
     echo -e "${CYAN}=== Ryo2D Examples ===${NC}"
@@ -194,12 +193,12 @@ show_category_menu() {
     echo ""
     echo -e "  ${GRAY}[q] Quit${NC}"
     echo ""
-    
+
     echo -n "Select a category: "
     read -n 1 -r selection
     echo ""
     echo ""
-    
+
     case "$selection" in
         1)
             show_example_list games "${games[@]}" -- "${games_display[@]}"
@@ -218,11 +217,11 @@ show_category_menu() {
 show_example_list() {
     local category_name="$1"
     shift
-    
+
     local category_examples=()
     local category_display=()
     local reading_examples=true
-    
+
     for arg in "$@"; do
         if [[ "$arg" == "--" ]]; then
             reading_examples=false
@@ -234,43 +233,43 @@ show_example_list() {
             category_display+=("$arg")
         fi
     done
-    
+
     local count=${#category_examples[@]}
-    
+
     if [[ $count -eq 0 ]]; then
         echo -e "${RED}No examples found in $category_name.${NC}"
         exit 1
     fi
-    
+
     # Auto-select if only one example
     if [[ $count -eq 1 ]]; then
         echo -e "${GREEN}Auto-selecting only example: ${category_display[0]}${NC}"
         run_example "${category_examples[0]}"
         return
     fi
-    
+
     # Capitalize category name for display
     local display_name="$(tr '[:lower:]' '[:upper:]' <<< ${category_name:0:1})${category_name:1}"
-    
+
     echo ""
     echo -e "${CYAN}=== $display_name ===${NC}"
     echo ""
-    
+
     for ((i=0; i<count; i++)); do
         local num=$((i + 1))
         echo -e "  ${WHITE}[$num] ${category_display[$i]}${NC}"
     done
-    
+
     echo ""
     echo -e "  ${GRAY}[b] Back${NC}"
     echo -e "  ${GRAY}[q] Quit${NC}"
     echo ""
-    
+
     echo -n "Select an example: "
     read -n 1 -r selection
     echo ""
     echo ""
-    
+
     case "$selection" in
         b|B)
             show_category_menu
@@ -309,7 +308,7 @@ case "$COMMAND" in
     coverage)
         echo -e "${CYAN}Generating code coverage report...${NC}"
         echo ""
-        
+
         # Check if cargo-llvm-cov is installed
         if ! command -v cargo-llvm-cov &> /dev/null; then
             echo -e "${YELLOW}cargo-llvm-cov is not installed.${NC}"
@@ -317,10 +316,10 @@ case "$COMMAND" in
             cargo install cargo-llvm-cov
             echo ""
         fi
-        
+
         # Generate coverage report (HTML format, library only, excluding CLI)
         cargo llvm-cov --lib --ignore-filename-regex="cli" --html --open
-        
+
         if [[ $? -eq 0 ]]; then
             echo ""
             echo -e "${GREEN}Coverage report generated successfully!${NC}"
@@ -328,21 +327,16 @@ case "$COMMAND" in
         fi
         ;;
     watch)
-        # Wa# Match both "demos/example" and just "example"
-            local base_name=$(basename "$example")
-            if [[ "$example" == "$COMMAND" || "$base_name" == "$COMMAND" ]]; then
-                run_example "$example"
-                found=true
-                break
-            fi
-        done
-        
-        if [[ "$found" == false ]]; then
-            echo -e "${RED}Unknown command or example: $COMMAND${NC}"
+        # Watch mode with hot-reload (requires cargo-watch)
+        if ! command -v cargo-watch &> /dev/null; then
+            echo -e "${YELLOW}cargo-watch is not installed.${NC}"
+            echo -e "${CYAN}Installing cargo-watch...${NC}"
+            cargo install cargo-watch
             echo ""
-            echo -e "${YELLOW}Available examples:${NC}"
-            for example in "${examples[@]}"; do
-                echo "  - $(basename "$example")
+        fi
+
+        echo -e "${CYAN}Starting watch mode...${NC}"
+        cargo watch -x check -x test
         ;;
     help)
         echo ""
@@ -362,7 +356,7 @@ case "$COMMAND" in
     *)
         # Try to run as an example name
         mapfile -t examples < <(get_examples)
-        
+
         found=false
         for example in "${examples[@]}"; do
             if [[ "$example" == "$COMMAND" ]]; then
@@ -371,7 +365,7 @@ case "$COMMAND" in
                 break
             fi
         done
-        
+
         if [[ "$found" == false ]]; then
             echo -e "${RED}Unknown command or example: $COMMAND${NC}"
             echo ""
