@@ -31,6 +31,8 @@
 - [Spatial Partitioning](./concepts/spatial.md)
 - [Audio System](./concepts/audio.md)
 - [Networking](./concepts/networking.md)
+  - [Network Replication](./concepts/replication.md)
+  - [Remote Procedure Calls](./concepts/rpc.md)
 - [UI Basics](./concepts/ui-basics.md)
 - [UI Layout Containers](./concepts/ui-layouts.md)
 - [UI Retained Widgets](./concepts/ui-retained.md)

@@ -117,7 +117,20 @@ pub mod prelude {
     // Networking
     pub use crate::core::network::{
         Channel, ClientId, ListenServer, NetworkClient, NetworkClientConfig, NetworkEvent,
-        NetworkServer, NetworkServerConfig, LOCAL_HOST_ID,
+        NetworkServer, NetworkServerConfig, ServerLike, LOCAL_HOST_ID,
+    };
+
+    // Network Replication
+    pub use crate::core::network::replication::{
+        Authority, ComponentBatchMessage, ComponentRegistry, ComponentTypeId,
+        ComponentUpdateMessage, DespawnEntityMessage, DirtyTracker, FullStateSyncMessage,
+        NetworkEntity, NetworkEntityBuilder, NetworkId, Replicated, ReplicationManager,
+        ReplicationMessage, SerializedComponent, SpawnEntityMessage,
+    };
+
+    // RPC System
+    pub use crate::core::network::rpc::{
+        ReceivedRpc, Rpc, RpcRegistry, RpcTarget, RpcTypeId, SerializedRpc,
     };
 
     // Workspace & config
@@ -151,7 +164,7 @@ pub mod prelude {
     // Error types (centralized)
     pub use crate::core::error::{
         AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult,
-        HotReloadError, HotReloadResult, NetworkError, NetworkResult, SaveError, SaveResult,
-        SpriteError, SpriteResult,
+        HotReloadError, HotReloadResult, NetworkError, NetworkResult, ReplicationError,
+        ReplicationResult, SaveError, SaveResult, SpriteError, SpriteResult,
     };
 }
