@@ -162,6 +162,23 @@ if (Test-Path $sourceSkills) {
     Copy-Item $sourceSkills $targetSkills -Recurse -Force
 }
 
+# Install engine source for game projects to reference
+$engineDir = Join-Path (Split-Path $InstallDir) "engine"
+Write-Status "Installing" "ryo2d engine source to $(Split-Path $InstallDir)\engine"
+if (Test-Path $engineDir) {
+    Remove-Item $engineDir -Recurse -Force
+}
+New-Item -ItemType Directory -Path $engineDir -Force | Out-Null
+
+# Copy essential engine files
+$filesToCopy = @("src", "Cargo.toml", "LICENSE", "README.md")
+foreach ($item in $filesToCopy) {
+    $source = Join-Path $ScriptDir $item
+    if (Test-Path $source) {
+        Copy-Item $source (Join-Path $engineDir $item) -Recurse -Force
+    }
+}
+
 Write-Host ""
 Write-Success "ryo2d CLI installed successfully!"
 
