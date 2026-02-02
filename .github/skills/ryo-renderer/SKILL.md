@@ -19,13 +19,14 @@ You help developers work on the rendering system.
 ## Rendering Pipeline
 
 ```
-1. Clear CPU pixel buffer
-2. CPU sprite rendering (SpriteRenderer components)
-3. GPU sprite rendering (render_gpu callback)
-4. UI rendering (render_ui callback)
-5. Debug overlays
-6. Post-processing effects
-7. Upload to GPU → present
+1. Clear CPU pixel buffer (warm cream background)
+2. Background rendering (render_background callback) ← Parallax layers
+3. CPU sprite rendering (SpriteRenderer components)
+4. GPU sprite rendering (render_gpu callback)
+5. UI rendering (render_ui callback)
+6. Debug overlays
+7. Post-processing effects
+8. Upload to GPU → present
 ```
 
 ## CPU vs GPU Path
@@ -33,6 +34,19 @@ You help developers work on the rendering system.
 **CPU (default)**: Software blitting, good for <1000 sprites
 
 **GPU (opt-in)**: Batched instanced rendering, for 1000+ sprites (particles, bullets)
+
+## Background Rendering
+
+Games use `render_background()` for parallax and background layers:
+
+```rust
+fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
+    // Draw directly to frame buffer before entity rendering
+    self.background.render(frame, width, height, camera);
+}
+```
+
+Called after frame clear but before entity rendering - ensures backgrounds are behind all sprites.
 
 ## GPU Batching
 

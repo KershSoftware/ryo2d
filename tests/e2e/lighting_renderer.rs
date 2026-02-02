@@ -155,8 +155,8 @@ fn test_lighting_renderer_creation() {
 
     let renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
 
-    // Verify it starts disabled (enabled automatically when Light2D entities exist)
-    assert!(!renderer.is_enabled(), "LightingRenderer should be disabled by default");
+    // Verify it starts enabled (as per our fix)
+    assert!(renderer.is_enabled(), "LightingRenderer should be enabled by default");
 
     // Verify UI is not affected by lighting by default
     assert!(
@@ -204,7 +204,7 @@ fn test_lighting_renderer_resize() {
 
     // The renderer should accept the new size without panicking
     // Internal textures are recreated at the new size
-    // (test passes if no panic occurs)
+    // (test passes if we reach here without panic)
 }
 
 /// Test that enabled state can be toggled
@@ -218,13 +218,13 @@ fn test_lighting_renderer_enable_disable() {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
 
-    assert!(!renderer.is_enabled(), "Should start disabled");
-
-    renderer.set_enabled(true);
-    assert!(renderer.is_enabled(), "Should be enabled after set_enabled(true)");
+    assert!(renderer.is_enabled(), "Should start enabled");
 
     renderer.set_enabled(false);
     assert!(!renderer.is_enabled(), "Should be disabled after set_enabled(false)");
+
+    renderer.set_enabled(true);
+    assert!(renderer.is_enabled(), "Should be enabled after set_enabled(true)");
 }
 
 // ============================================================================
@@ -309,7 +309,7 @@ fn test_compose_receives_pixel_data() {
     // With no lights and default ambient, scene is multiplied by ambient
 
     // For now, just verify the operation completed without panic
-    // (test passes if no panic occurs)
+    // (test passes if we reach here without panic)
 }
 
 /// Test that compose with ambient light produces visible output
@@ -325,9 +325,6 @@ fn test_compose_with_ambient() {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
 
     let mut renderer = LightingRenderer::new(&gpu.device, width, height, format);
-
-    // Enable the renderer (disabled by default)
-    renderer.set_enabled(true);
 
     // Set high ambient so scene is fully visible
     renderer.set_ambient(AmbientLight::new(Color::WHITE, 1.0));
@@ -507,7 +504,7 @@ fn test_render_lights_empty() {
     );
 
     gpu.queue.submit(std::iter::once(encoder.finish()));
-    // (test passes if no panic occurs)
+    // (test passes if we reach here without panic)
 }
 
 /// Test that render_lights works with actual light data
@@ -541,7 +538,7 @@ fn test_render_lights_with_data() {
     );
 
     gpu.queue.submit(std::iter::once(encoder.finish()));
-    // (test passes if no panic occurs)
+    // (test passes if we reach here without panic)
 }
 
 /// Test that disabled renderer skips render_lights
@@ -577,5 +574,5 @@ fn test_render_lights_when_disabled() {
     );
 
     gpu.queue.submit(std::iter::once(encoder.finish()));
-    // (test passes if no panic occurs)
+    // (test passes if we reach here without panic)
 }

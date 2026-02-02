@@ -260,12 +260,17 @@ impl Scene for MenuScene {
         SceneAction::Continue
     }
 
+    fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
+        // Draw parallax backgrounds before entity rendering
+        self.background.render(frame, width, height, camera);
+    }
+
     fn render_ui(&mut self, ui: &mut UiContext) {
         // Get screen size (returns u32, cast to f32 for positioning)
         let (sw, sh) = ui.screen_size();
         let screen_w = sw as f32;
         let screen_h = sh as f32;
-        
+
         ui.label("Press ENTER to start", screen_w / 2.0 - 80.0, screen_h / 2.0, Color::WHITE, None);
     }
 }
@@ -434,4 +439,57 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Animator` | Sprite animation state |
 | `Tween` | Smooth interpolation of Transform properties |
 | `Parent` / `Children` | Entity hierarchy |
+| `ParallaxBackground` | Layered scrolling backgrounds |
+
+## Parallax Backgrounds
+
+For scrolling backgrounds with depth layers:
+
+```rust
+struct MyGame {
+    background: ParallaxBackground,
+}
+
+impl Game for MyGame {
+    fn init(&mut self, ctx: &mut GameContext) {
+        let (screen_w, screen_h) = ctx.camera.viewport_size();
+
+        // Load layer sprites
+        let sky = ctx.assets.load_sprite("sky.png").unwrap();
+        let mountains = ctx.assets.load_sprite("mountains.png").unwrap();
+        let grass = ctx.assets.load_sprite("grass.png").unwrap();
+
+        // Build parallax background
+        self.background = ParallaxBackground::builder(screen_w as u32, screen_h as u32)
+            .static_layer(sky, -100)          // Doesn't scroll
+            .layer(mountains, 0.2, -80)       // 20% camera speed (far)
+            .layer(grass, 0.8, -40)           // 80% camera speed (near)
+            .build();
+    }
+
+    fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
+        self.background.render(frame, width, height, camera);
+    }
+
+    // ... other methods
+}
+```
+
+### Parallax Speed Values
+
+| Speed | Effect | Use Case |
+|-------|--------|----------|
+| 0.0 | Static (doesn't move) | Sky, distant stars |
+| 0.1-0.3 | Very slow | Far mountains, clouds |
+| 0.4-0.6 | Medium | Mid-ground hills |
+| 0.7-0.9 | Fast | Near foreground |
+| 1.0 | Moves with camera | Same plane as player |
+
+### TileMode Options
+
+| Mode | Behavior |
+|------|----------|
+| `TileMode::None` | Single sprite, no tiling |
+| `TileMode::Horizontal` | Tiles across screen width |
+| `TileMode::InfiniteScroll` | Seamless endless scrolling (default) |
 

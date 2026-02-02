@@ -28,6 +28,8 @@ pub trait Game {
     fn init(&mut self, ctx: &mut GameContext) {}
     fn update(&mut self, ctx: &mut GameContext, dt: f32) {}
     fn fixed_update(&mut self, ctx: &mut GameContext) {}
+    fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {}
+    fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {}
     fn render_ui(&mut self, ui: &mut UiContext) {}
     fn on_exit(&mut self, ctx: &mut GameContext) {}
 }
@@ -45,6 +47,7 @@ pub trait Scene {
     fn on_resume(&mut self, ctx: &mut SceneContext) {}
     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction;
     fn fixed_update(&mut self, ctx: &mut SceneContext) {}
+    fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {}
     fn render_ui(&mut self, ui: &mut UiContext) {}
 }
 ```
@@ -811,6 +814,83 @@ let (vw, vh) = ctx.camera.viewport_size();
 ctx.camera.set_position(vw / 2.0, vh / 2.0);
 // Now world (0, 0) = screen top-left
 // world (vw, vh) = screen bottom-right
+```
+
+---
+
+## Parallax Background
+
+### TileMode
+
+```rust
+pub enum TileMode {
+    None,           // Static, non-tiling sprite
+    Horizontal,     // Tile across screen width
+    InfiniteScroll, // Seamless endless scrolling (default)
+}
+```
+
+### ParallaxLayer
+
+```rust
+pub struct ParallaxLayer {
+    pub sprite: SpriteHandle,
+    pub scroll_speed: f32,  // 0.0 = static, 1.0 = camera speed
+    pub z_order: i32,       // Lower = drawn first (behind)
+    pub y_offset: f32,      // Vertical offset from top
+    pub tile_mode: TileMode,
+}
+
+impl ParallaxLayer {
+    fn new(sprite: SpriteHandle, scroll_speed: f32, z_order: i32) -> Self;
+    fn static_layer(sprite: SpriteHandle, z_order: i32) -> Self;
+    fn with_y_offset(self, offset: f32) -> Self;
+    fn with_tile_mode(self, mode: TileMode) -> Self;
+}
+```
+
+### ParallaxBackground
+
+```rust
+impl ParallaxBackground {
+    fn new(screen_width: u32, screen_height: u32) -> Self;
+    fn builder(screen_width: u32, screen_height: u32) -> ParallaxBackgroundBuilder;
+    fn add_layer(&mut self, layer: ParallaxLayer);
+    fn set_screen_size(&mut self, width: u32, height: u32);
+    fn layer_count(&self) -> usize;
+    fn render(&self, frame: &mut [u8], frame_width: u32, frame_height: u32, camera: &Camera);
+}
+```
+
+### ParallaxBackgroundBuilder
+
+```rust
+impl ParallaxBackgroundBuilder {
+    fn new(screen_width: u32, screen_height: u32) -> Self;
+    fn layer(self, sprite: SpriteHandle, scroll_speed: f32, z_order: i32) -> Self;
+    fn layer_at(self, sprite: SpriteHandle, scroll_speed: f32, z_order: i32, y_offset: f32) -> Self;
+    fn static_layer(self, sprite: SpriteHandle, z_order: i32) -> Self;
+    fn static_layer_at(self, sprite: SpriteHandle, z_order: i32, y_offset: f32) -> Self;
+    fn layer_with_mode(self, sprite: SpriteHandle, scroll_speed: f32, z_order: i32, tile_mode: TileMode) -> Self;
+    fn custom_layer(self, layer: ParallaxLayer) -> Self;
+    fn build(self) -> ParallaxBackground;
+}
+```
+
+**Usage:**
+
+```rust
+// In init
+let background = ParallaxBackground::builder(1920, 1080)
+    .static_layer(sky_sprite, -100)          // Doesn't move
+    .layer(mountains_sprite, 0.2, -80)       // 20% camera speed
+    .layer(dunes_sprite, 0.5, -60)           // 50% camera speed
+    .build();
+
+// In render_background
+fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
+    self.background.render(frame, width, height, camera);
+}
 ```
 
 ---
