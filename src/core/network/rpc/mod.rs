@@ -44,10 +44,11 @@
 //! ## Registering Handlers (Server)
 //!
 //! ```ignore
-//! // Using PlayerInputRpc defined above:
+//! use ryo2d::prelude::*;
+//!
 //! let mut rpc_registry = RpcRegistry::new();
 //!
-//! rpc_registry.register::<PlayerInputRpc>(|world, rpc| {
+//! rpc_registry.register::<PlayerInputRpc, _>(|world, rpc| {
 //!     let sender = rpc.sender;
 //!     let input = &rpc.payload;
 //!
@@ -60,7 +61,9 @@
 //! ## Sending RPCs (Client)
 //!
 //! ```ignore
-//! // Using PlayerInputRpc defined above:
+//! use ryo2d::prelude::*;
+//!
+//! let client_id = 1;
 //! let rpc = PlayerInputRpc { x: 1.0, y: 0.0, jump: true };
 //! let serialized = SerializedRpc::from_rpc(&rpc, client_id, RpcTarget::Server)?;
 //! let bytes = serialized.to_bytes()?;

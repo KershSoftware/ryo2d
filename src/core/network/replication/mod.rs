@@ -16,8 +16,13 @@
 //! ## Server Side
 //!
 //! ```ignore
-//! // In your game's update loop:
+//! use ryo2d::prelude::*;
+//!
+//! // Create replication manager
 //! let mut replication = ReplicationManager::new_server();
+//! let mut world = World::new();
+//!
+//! // Register replicated components
 //! replication.register::<Transform>();
 //! replication.register::<Velocity>();
 //!
@@ -29,20 +34,23 @@
 //!         .with_component(Velocity::new(5.0, 0.0))
 //! );
 //!
-//! // Broadcast updates to clients
-//! replication.broadcast_updates(&mut world, &mut server);
+//! // In game loop: broadcast updates to clients
+//! // replication.broadcast_updates(&mut world, &mut server);
 //! ```
 //!
 //! ## Client Side
 //!
 //! ```ignore
-//! // In your game's update loop:
+//! use ryo2d::prelude::*;
+//!
 //! let mut replication = ReplicationManager::new_client();
+//!
+//! // Register same components as server
 //! replication.register::<Transform>();
 //! replication.register::<Velocity>();
 //!
-//! // Process incoming replication
-//! replication.process_incoming(&mut world, &mut client);
+//! // In game loop: process incoming replication
+//! // replication.process_incoming(&mut world, &mut client);
 //! ```
 
 mod builder;
@@ -58,7 +66,7 @@ pub use component::{ComponentRegistry, ComponentTypeId, Replicated, SerializedCo
 pub use dirty::DirtyTracker;
 pub use manager::ReplicationManager;
 pub use messages::{
-  ComponentBatchMessage, ComponentUpdateMessage, DespawnEntityMessage, FullStateSyncMessage,
-  ReplicationMessage, SpawnEntityMessage,
+    ComponentBatchMessage, ComponentUpdateMessage, DespawnEntityMessage, FullStateSyncMessage,
+    ReplicationMessage, SpawnEntityMessage,
 };
 pub use types::{Authority, NetworkEntity, NetworkId};
