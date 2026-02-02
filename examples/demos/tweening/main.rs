@@ -261,20 +261,20 @@ impl Scene for TweeningDemoScene {
     let screen_w = screen_w as f32;
     let screen_h = screen_h as f32;
 
+    // Dark colors for readability on warm cream background
+    let text_dark = Color::rgb(40, 40, 50);
+    let text_accent = Color::rgb(60, 60, 180);
+    let text_muted = Color::rgb(100, 100, 110);
+
     // Title
-    ui.draw_text("Tweening Demo", 10.0, 10.0, Color::WHITE);
+    ui.draw_text("Tweening Demo", 10.0, 10.0, text_dark);
 
     // Current loop mode
     let mode_text = format!("Loop Mode: {} (1-4 to change)", self.loop_mode_name());
-    ui.draw_text(&mode_text, 10.0, 30.0, Color::YELLOW);
+    ui.draw_text(&mode_text, 10.0, 30.0, text_accent);
 
     // Controls
-    ui.draw_text(
-      "Space: Restart | ESC: Exit",
-      10.0,
-      50.0,
-      Color::new(150, 150, 150, 255),
-    );
+    ui.draw_text("Space: Restart | ESC: Exit", 10.0, 50.0, text_muted);
 
     // Easing labels (right side)
     let easings = [
@@ -294,7 +294,7 @@ impl Scene for TweeningDemoScene {
 
     for (i, name) in easings.iter().enumerate() {
       let y = start_y + i as f32 * row_height;
-      ui.draw_text(name, screen_w - 90.0, y - 5.0, Color::WHITE);
+      ui.draw_text(name, screen_w - 90.0, y - 5.0, text_dark);
     }
 
     // Bottom section labels
@@ -303,13 +303,13 @@ impl Scene for TweeningDemoScene {
       "Rotation (InOutCubic)",
       130.0,
       bottom_y,
-      Color::new(255, 200, 100, 255),
+      Color::rgb(180, 100, 40),
     );
     ui.draw_text(
       "Scale (OutElastic)",
       screen_w / 2.0 - 60.0,
       bottom_y,
-      Color::new(100, 200, 255, 255),
+      Color::rgb(40, 100, 180),
     );
   }
 }
