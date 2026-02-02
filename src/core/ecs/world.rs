@@ -118,6 +118,16 @@ impl World {
     self.generation
   }
 
+  /// Get the number of entities in the world
+  pub fn len(&self) -> u32 {
+    self.inner.len()
+  }
+
+  /// Check if the world is empty
+  pub fn is_empty(&self) -> bool {
+    self.inner.is_empty()
+  }
+
   // =========================================================================
   // Hierarchy - Parent/Child Relationships
   // =========================================================================
