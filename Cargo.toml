@@ -63,6 +63,15 @@ winit = "0.30"
 [dev-dependencies]
 tempfile = "3"
 
+# Dev builds: optimize dependencies and engine code, but not game code
+# This gives fast compile times for your game while keeping physics/rendering fast
+[profile.dev.package."*"]
+opt-level = 2
+
+# Also optimize the engine itself (since it's a workspace member, "*" doesn't match it)
+[profile.dev.package.ryo2d]
+opt-level = 2
+
 # Release builds with debug symbols for profiling (flamegraph, perf, etc.)
 # This enables function names in profiles without affecting runtime performance.
 [profile.release]

@@ -97,6 +97,22 @@ Settings cascade (highest to lowest priority):
 2. `Ryo.toml` (project defaults)
 3. Engine defaults
 
+## Dev Build Performance
+
+For playable performance in dev builds, ensure `Cargo.toml` includes:
+
+```toml
+# Optimize dependencies in dev builds for playable performance
+[profile.dev.package."*"]
+opt-level = 2
+```
+
+This optimizes **dependencies** (physics, rendering) while keeping game code unoptimized for fast compilation. Without it, dev builds run extremely slowly.
+
+- New projects (`ryo2d init`) include this automatically
+- `ryo2d dev` warns and offers to add it if missing
+- First build after adding is slower (recompiling deps), then fast
+
 ## Tips
 
 - Run CLI from project root (where `Ryo.toml` is)

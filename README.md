@@ -44,6 +44,17 @@ When you run `ryo2d init`, you'll be prompted to install **Agent Skills**—doma
 | `ryo2d dev` | Development mode with hot-reload |
 | `ryo2d install-skills` | Add Agent Skills to existing project |
 
+## Dev Build Performance
+
+New projects include optimized dependencies for playable dev builds. If you're upgrading an existing project or experiencing slow dev builds, add this to your `Cargo.toml`:
+
+```toml
+[profile.dev.package."*"]
+opt-level = 2
+```
+
+This optimizes dependencies (physics, rendering) while keeping your game code fast to compile. `ryo2d dev` will warn you if this is missing.
+
 ## Core Features
 
 - **ECS Architecture** — Entity-Component-System for clean game logic

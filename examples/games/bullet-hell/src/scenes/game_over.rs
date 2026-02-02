@@ -20,6 +20,11 @@ impl GameOverScene {
 }
 
 impl Scene for GameOverScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // Clear the world to remove all entities (including bullets with trails)
+    ctx.world.clear();
+  }
+
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     if ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::Enter) {
       return SceneAction::Switch(Box::new(GameScene::new()));

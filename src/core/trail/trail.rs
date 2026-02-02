@@ -1,0 +1,429 @@
+//! Trail effect component
+//!
+//! Trails render a fading path behind moving entities, perfect for
+//! projectiles, particles, sword swipes, and motion effects.
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use ryo2d::prelude::*;
+//!
+//! // Spawn a bullet with a trail
+//! let bullet = world.spawn((
+//!     Transform::at(100.0, 100.0),
+//!     Renderable::sprite(bullet_sprite),
+//!     Trail2D::new(Color::YELLOW, 5.0)
+//!         .with_length(20)
+//!         .with_fade(true),
+//! ));
+//! ```
+
+use crate::core::ui::Color;
+use std::collections::VecDeque;
+
+/// Maximum number of points a trail can store
+pub const MAX_TRAIL_POINTS: usize = 128;
+
+/// A 2D trail effect that renders a fading path behind an entity.
+///
+/// Trails automatically record position history and render a smooth
+/// line that fades from the current position to older positions.
+#[derive(Debug, Clone)]
+pub struct Trail2D {
+  /// Position history (newest at front)
+  points: VecDeque<TrailPoint>,
+  /// Maximum number of points to store
+  max_points: usize,
+  /// Trail color at the head (newest point)
+  color: Color,
+  /// Optional end color for gradient (if None, fades to transparent)
+  end_color: Option<Color>,
+  /// Width at the head (newest point) in pixels
+  width: f32,
+  /// Width at the tail (oldest point) - for tapering
+  end_width: f32,
+  /// Whether to fade alpha along the trail
+  fade_alpha: bool,
+  /// Minimum distance between points (to avoid clustering)
+  min_distance: f32,
+  /// Whether the trail is currently active (recording points)
+  enabled: bool,
+  /// Time since last point was added (for time-based emission)
+  time_accumulator: f32,
+  /// Emit a point every N seconds (0 = distance-based only)
+  emit_interval: f32,
+}
+
+/// A single point in the trail
+#[derive(Debug, Clone, Copy)]
+pub struct TrailPoint {
+  /// X position
+  pub x: f32,
+  /// Y position
+  pub y: f32,
+  /// Age of this point in seconds
+  pub age: f32,
+}
+
+impl TrailPoint {
+  /// Create a new trail point
+  pub fn new(x: f32, y: f32) -> Self {
+    Self { x, y, age: 0.0 }
+  }
+}
+
+impl Trail2D {
+  /// Create a new trail with default settings.
+  ///
+  /// # Arguments
+  /// * `color` - The color of the trail
+  /// * `width` - The width of the trail at its head (newest point)
+  pub fn new(color: Color, width: f32) -> Self {
+    Self {
+      points: VecDeque::with_capacity(32),
+      max_points: 20,
+      color,
+      end_color: None,
+      width: width.max(0.5),
+      end_width: 0.0,
+      fade_alpha: true,
+      min_distance: 2.0,
+      enabled: true,
+      time_accumulator: 0.0,
+      emit_interval: 0.0,
+    }
+  }
+
+  /// Create a trail optimized for bullets/projectiles.
+  ///
+  /// Short, fast-fading trail with tapering width.
+  pub fn bullet(color: Color) -> Self {
+    Self::new(color, 4.0)
+      .with_length(15)
+      .with_taper(0.5)
+      .with_min_distance(3.0)
+  }
+
+  /// Create a trail optimized for sword/weapon swipes.
+  ///
+  /// Wide trail that tapers to a point.
+  pub fn swipe(color: Color, width: f32) -> Self {
+    Self::new(color, width)
+      .with_length(10)
+      .with_taper(0.0)
+      .with_min_distance(1.0)
+  }
+
+  /// Create a trail optimized for particles.
+  ///
+  /// Thin, short trail.
+  pub fn particle(color: Color) -> Self {
+    Self::new(color, 2.0)
+      .with_length(8)
+      .with_taper(0.0)
+      .with_min_distance(2.0)
+  }
+
+  /// Create a trail optimized for laser/beam effects.
+  ///
+  /// Consistent width, no fade.
+  pub fn laser(color: Color, width: f32) -> Self {
+    Self::new(color, width)
+      .with_length(50)
+      .with_end_width(width)
+      .with_fade(false)
+      .with_min_distance(1.0)
+  }
+
+  /// Set the maximum number of points in the trail.
+  pub fn with_length(mut self, max_points: usize) -> Self {
+    self.max_points = max_points.min(MAX_TRAIL_POINTS).max(2);
+    self
+  }
+
+  /// Set the end width (for tapering). 0.0 = taper to nothing.
+  pub fn with_end_width(mut self, end_width: f32) -> Self {
+    self.end_width = end_width.max(0.0);
+    self
+  }
+
+  /// Set taper as a ratio of the start width (0.0 = point, 1.0 = no taper).
+  pub fn with_taper(mut self, ratio: f32) -> Self {
+    self.end_width = self.width * ratio.clamp(0.0, 1.0);
+    self
+  }
+
+  /// Set whether alpha should fade along the trail.
+  pub fn with_fade(mut self, fade: bool) -> Self {
+    self.fade_alpha = fade;
+    self
+  }
+
+  /// Set a gradient end color (otherwise fades to transparent).
+  pub fn with_end_color(mut self, color: Color) -> Self {
+    self.end_color = Some(color);
+    self
+  }
+
+  /// Set the minimum distance between points.
+  pub fn with_min_distance(mut self, distance: f32) -> Self {
+    self.min_distance = distance.max(0.1);
+    self
+  }
+
+  /// Set time-based emission interval.
+  ///
+  /// When > 0, a point is emitted every N seconds regardless of distance.
+  pub fn with_emit_interval(mut self, interval: f32) -> Self {
+    self.emit_interval = interval.max(0.0);
+    self
+  }
+
+  /// Get the trail color.
+  pub fn color(&self) -> Color {
+    self.color
+  }
+
+  /// Set the trail color.
+  pub fn set_color(&mut self, color: Color) {
+    self.color = color;
+  }
+
+  /// Get the trail width.
+  pub fn width(&self) -> f32 {
+    self.width
+  }
+
+  /// Set the trail width.
+  pub fn set_width(&mut self, width: f32) {
+    self.width = width.max(0.5);
+  }
+
+  /// Check if the trail is enabled.
+  pub fn is_enabled(&self) -> bool {
+    self.enabled
+  }
+
+  /// Enable or disable the trail.
+  pub fn set_enabled(&mut self, enabled: bool) {
+    self.enabled = enabled;
+  }
+
+  /// Get the current points in the trail.
+  pub fn points(&self) -> &VecDeque<TrailPoint> {
+    &self.points
+  }
+
+  /// Get the number of points currently in the trail.
+  pub fn point_count(&self) -> usize {
+    self.points.len()
+  }
+
+  /// Clear all points from the trail.
+  pub fn clear(&mut self) {
+    self.points.clear();
+  }
+
+  /// Update the trail with a new position.
+  ///
+  /// This should be called every frame with the entity's current position.
+  /// Points are automatically added based on distance and time thresholds.
+  pub fn update(&mut self, x: f32, y: f32, dt: f32) {
+    if !self.enabled {
+      return;
+    }
+
+    // Age existing points
+    for point in &mut self.points {
+      point.age += dt;
+    }
+
+    // Check if we should add a new point
+    let should_add = if let Some(front) = self.points.front() {
+      let dx = x - front.x;
+      let dy = y - front.y;
+      let dist = (dx * dx + dy * dy).sqrt();
+
+      // Distance-based emission
+      let dist_emit = dist >= self.min_distance;
+
+      // Time-based emission
+      self.time_accumulator += dt;
+      let time_emit = self.emit_interval > 0.0 && self.time_accumulator >= self.emit_interval;
+
+      if time_emit {
+        self.time_accumulator = 0.0;
+      }
+
+      dist_emit || time_emit
+    } else {
+      true // Always add first point
+    };
+
+    if should_add {
+      // Add new point at front
+      self.points.push_front(TrailPoint::new(x, y));
+
+      // Remove excess points
+      while self.points.len() > self.max_points {
+        self.points.pop_back();
+      }
+    }
+  }
+
+  /// Get interpolated color at a position along the trail (0.0 = head, 1.0 = tail).
+  pub fn color_at(&self, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+
+    let end = self.end_color.unwrap_or(Color::new(
+      self.color.r,
+      self.color.g,
+      self.color.b,
+      0,
+    ));
+
+    let r = lerp(self.color.r as f32, end.r as f32, t) as u8;
+    let g = lerp(self.color.g as f32, end.g as f32, t) as u8;
+    let b = lerp(self.color.b as f32, end.b as f32, t) as u8;
+    let a = if self.fade_alpha {
+      lerp(self.color.a as f32, end.a as f32, t) as u8
+    } else {
+      self.color.a
+    };
+
+    Color::new(r, g, b, a)
+  }
+
+  /// Get interpolated width at a position along the trail (0.0 = head, 1.0 = tail).
+  pub fn width_at(&self, t: f32) -> f32 {
+    lerp(self.width, self.end_width, t.clamp(0.0, 1.0))
+  }
+
+  /// Get the maximum number of points.
+  pub fn max_points(&self) -> usize {
+    self.max_points
+  }
+
+  /// Check if alpha fading is enabled.
+  pub fn fades_alpha(&self) -> bool {
+    self.fade_alpha
+  }
+
+  /// Get the end width.
+  pub fn end_width(&self) -> f32 {
+    self.end_width
+  }
+}
+
+impl Default for Trail2D {
+  fn default() -> Self {
+    Self::new(Color::WHITE, 3.0)
+  }
+}
+
+/// Linear interpolation helper
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+  a + (b - a) * t
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn trail_creation() {
+    let trail = Trail2D::new(Color::RED, 5.0);
+    assert_eq!(trail.width(), 5.0);
+    assert_eq!(trail.color(), Color::RED);
+    assert!(trail.is_enabled());
+    assert_eq!(trail.point_count(), 0);
+  }
+
+  #[test]
+  fn trail_update_adds_points() {
+    let mut trail = Trail2D::new(Color::WHITE, 3.0).with_min_distance(1.0);
+
+    trail.update(0.0, 0.0, 0.016);
+    assert_eq!(trail.point_count(), 1);
+
+    trail.update(10.0, 0.0, 0.016);
+    assert_eq!(trail.point_count(), 2);
+  }
+
+  #[test]
+  fn trail_respects_min_distance() {
+    let mut trail = Trail2D::new(Color::WHITE, 3.0).with_min_distance(10.0);
+
+    trail.update(0.0, 0.0, 0.016);
+    trail.update(5.0, 0.0, 0.016); // Less than min_distance
+    assert_eq!(trail.point_count(), 1); // Should not add
+  }
+
+  #[test]
+  fn trail_respects_max_points() {
+    let mut trail = Trail2D::new(Color::WHITE, 3.0)
+      .with_length(5)
+      .with_min_distance(1.0);
+
+    for i in 0..10 {
+      trail.update(i as f32 * 10.0, 0.0, 0.016);
+    }
+
+    assert_eq!(trail.point_count(), 5);
+  }
+
+  #[test]
+  fn trail_color_interpolation() {
+    let trail = Trail2D::new(Color::WHITE, 3.0);
+
+    let head_color = trail.color_at(0.0);
+    assert_eq!(head_color.r, 255);
+
+    let tail_color = trail.color_at(1.0);
+    assert_eq!(tail_color.a, 0); // Fades to transparent
+  }
+
+  #[test]
+  fn trail_width_interpolation() {
+    let trail = Trail2D::new(Color::WHITE, 10.0).with_end_width(2.0);
+
+    assert!((trail.width_at(0.0) - 10.0).abs() < 0.01);
+    assert!((trail.width_at(1.0) - 2.0).abs() < 0.01);
+    assert!((trail.width_at(0.5) - 6.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn bullet_preset() {
+    let trail = Trail2D::bullet(Color::YELLOW);
+    assert_eq!(trail.max_points(), 15);
+    assert!(trail.fades_alpha());
+  }
+
+  #[test]
+  fn laser_preset() {
+    let trail = Trail2D::laser(Color::RED, 8.0);
+    assert!(!trail.fades_alpha());
+    assert!((trail.width() - trail.end_width()).abs() < 0.01);
+  }
+
+  #[test]
+  fn trail_clear() {
+    let mut trail = Trail2D::new(Color::WHITE, 3.0);
+    trail.update(0.0, 0.0, 0.016);
+    trail.update(10.0, 0.0, 0.016);
+    assert!(trail.point_count() > 0);
+
+    trail.clear();
+    assert_eq!(trail.point_count(), 0);
+  }
+
+  #[test]
+  fn trail_disabled() {
+    let mut trail = Trail2D::new(Color::WHITE, 3.0);
+    trail.set_enabled(false);
+
+    trail.update(0.0, 0.0, 0.016);
+    trail.update(10.0, 0.0, 0.016);
+    assert_eq!(trail.point_count(), 0);
+  }
+}

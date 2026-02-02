@@ -56,10 +56,34 @@ ryo2d dev
 This command:
 - Builds your game in debug mode (faster compilation)
 - Runs the game immediately
+- Checks for dev profile optimization and offers to add it if missing
 - *(Coming soon)* Watches for file changes and rebuilds automatically
 - *(Coming soon)* Supports hot reload for assets
 
 **When to use:** During active development when you're iterating quickly.
+
+## Dev Build Performance
+
+For playable performance in dev builds, your `Cargo.toml` should include:
+
+```toml
+# Optimize dependencies and engine in dev builds for playable performance
+# Your game code stays unoptimized for fast compile times
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.ryo2d]
+opt-level = 2
+```
+
+These settings optimize **dependencies** and the **Ryo2D engine** while keeping your game code unoptimized for fast compilation. Without them, dev builds can run extremely slowly because libraries like Rapier2D physics and the rendering code run unoptimized.
+
+New projects created with `ryo2d init` include this automatically. If you're missing it, `ryo2d dev` will warn you and offer to add it.
+
+| Build Type | Your Code | Dependencies | Use Case |
+|------------|-----------|--------------|----------|
+| `ryo2d dev` | Unoptimized | Optimized | Development |
+| `ryo2d build` | Optimized | Optimized | Release |
 
 ### `ryo2d build`
 

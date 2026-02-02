@@ -24,7 +24,9 @@ impl MenuScene {
 }
 
 impl Scene for MenuScene {
-  fn on_enter(&mut self, _ctx: &mut SceneContext) {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // Clear the world to remove all entities (including bullets with trails)
+    ctx.world.clear();
     self.best_time = load_best_time();
   }
 

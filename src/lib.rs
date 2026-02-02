@@ -136,6 +136,9 @@ pub mod prelude {
     // Post-processing effects
     pub use crate::core::shaders::{EffectTarget, EffectsManager, PostProcessEffect};
 
+    // Trail and Line rendering
+    pub use crate::core::trail::{Line2D, Trail2D, TrailPoint, TrailRenderer, TrailStyle};
+
     // GPU sprite batching (for high-performance particle systems)
     pub use crate::core::graphics::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
 
