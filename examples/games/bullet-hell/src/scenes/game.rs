@@ -16,6 +16,8 @@ const DESIGN_HEIGHT: f32 = 1080.0;
 pub struct GameScene {
   player: Option<Entity>,
   turrets: Vec<Entity>,
+  drones: Vec<Entity>,
+  lasers: Vec<Entity>,
   bullets: Vec<Entity>,
   particles: Vec<Entity>,
   platforms: Vec<Entity>,
@@ -27,6 +29,7 @@ pub struct GameScene {
   player_invincible: bool,
   player_sprite: SpriteHandle,
   turret_sprite: SpriteHandle,
+  drone_sprite: SpriteHandle,
   bullet_sprite: SpriteHandle,
   particle_sprite: SpriteHandle,
   platform_sprite: SpriteHandle,
@@ -38,6 +41,8 @@ pub struct GameScene {
   time_since_last_progression: f32,
   current_turret_speed: f32,
   current_burst_size: u32,
+  // Drone spawning
+  next_drone_spawn_time: f32,
   // Death effect
   death_effect_timer: Option<f32>,
   // Screen dimensions (obtained from engine at runtime)
@@ -73,6 +78,8 @@ impl GameScene {
     // Create barrier sprite programmatically (dark gray rectangle)
     let barrier_sprite =
       Sprite::solid_rect(BARRIER_WIDTH as u32, BARRIER_HEIGHT as u32, 60, 60, 70, 255);
+    // Create drone sprite programmatically (purple color)
+    let drone_sprite = Sprite::solid_rect(DRONE_SIZE as u32, DRONE_SIZE as u32, 150, 80, 200, 255);
 
     // Load parallax background layers
     let sky_sprite = Sprite::load("assets/desert_sky.png").expect("Failed to load sky sprite");
@@ -127,6 +134,8 @@ impl GameScene {
     Self {
       player: None,
       turrets: Vec::new(),
+      drones: Vec::new(),
+      lasers: Vec::new(),
       bullets: Vec::new(),
       particles: Vec::new(),
       platforms: Vec::new(),
@@ -137,6 +146,7 @@ impl GameScene {
       player_invincible: false,
       player_sprite: SpriteHandle::from_sprite(player_sprite, "player.png"),
       turret_sprite: SpriteHandle::from_sprite(turret_sprite, "turret.png"),
+      drone_sprite: SpriteHandle::from_sprite(drone_sprite, "drone"),
       bullet_sprite: SpriteHandle::from_sprite(bullet_sprite, "bullet.png"),
       particle_sprite: SpriteHandle::from_sprite(particle_sprite, "particle.png"),
       platform_sprite: SpriteHandle::from_sprite(platform_sprite, "platform.png"),
@@ -147,6 +157,8 @@ impl GameScene {
       time_since_last_progression: 0.0,
       current_turret_speed: TURRET_MOVE_SPEED,
       current_burst_size: TURRET_BURST_SIZE,
+      // Drone spawning - first drone at 30 seconds
+      next_drone_spawn_time: DRONE_FIRST_SPAWN_TIME,
       // Death effect not active
       death_effect_timer: None,
       // Screen dimensions - fixed design resolution for consistent gameplay
@@ -339,6 +351,358 @@ impl GameScene {
       Barrier::new(-BARRIER_SPEED, min_y, max_y),
     ));
     self.barriers.push(right_barrier);
+  }
+
+  fn spawn_drone(&mut self, ctx: &mut SceneContext) {
+    use crate::constants::{DRONE_SIZE, Z_DRONE};
+
+    let sprite = self.drone_sprite.clone();
+
+    // Spawn drone in center-upper area of screen
+    let spawn_x = self.screen_width / 2.0;
+    let spawn_y = 200.0;
+
+    let drone_entity = ctx.world.spawn((
+      Transform::new(spawn_x, spawn_y).with_pivot_center(),
+      Renderable::sprite(sprite)
+        .with_z_order(Z_DRONE)
+        // Start with dissolve shader for spawn effect (black edge)
+        .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(0, 0, 0))),
+      Collider::box_collider(DRONE_SIZE, DRONE_SIZE),
+      Drone::new(spawn_x, spawn_y),
+    ));
+    self.drones.push(drone_entity);
+  }
+
+  fn update_drones(&mut self, ctx: &mut SceneContext, dt: f32) {
+    use crate::components::drone::DRONE_AIM_SPEED;
+    use crate::components::DroneState;
+    use crate::constants::{
+      DRONE_AIM_DURATION, DRONE_COOLDOWN, DRONE_FIRE_DURATION, DRONE_LASER_WIDTH, DRONE_SPEED,
+    };
+
+    // Clean up lasers from previous frame FIRST (so they render for one frame)
+    for laser in self.lasers.drain(..) {
+      let _ = ctx.world.despawn(laser);
+    }
+
+    let player_entity = self.player;
+
+    // Get player position for aiming
+    let player_pos = player_entity.and_then(|e| {
+      ctx
+        .world
+        .get::<Transform>(e)
+        .map(|t| (t.x + PLAYER_SIZE / 2.0, t.y + PLAYER_SIZE / 2.0))
+    });
+
+    // Collect drones to update
+    let drones_to_update: Vec<_> = self.drones.clone();
+
+    for drone_entity in drones_to_update {
+      // Get drone component
+      let Some(mut drone) = ctx.world.get_mut::<Drone>(drone_entity) else {
+        continue;
+      };
+
+      // Handle spawn animation first (like turrets)
+      if drone.is_spawning() {
+        let just_finished = drone.update_spawn(dt);
+        let spawn_progress = drone.spawn_progress();
+        drop(drone);
+
+        // Apply dissolve shader for spawn effect
+        if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
+          if just_finished {
+            // Finished spawning - restore normal outline shader (black) and play sound
+            renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
+            if let Some(audio) = &mut ctx.audio {
+              let _ = audio.play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15));
+            }
+          } else {
+            // Still spawning - dissolve from invisible to visible
+            let dissolve_progress = 1.0 - spawn_progress;
+            renderable.shader =
+              Some(SpriteShader::dissolve_with_edge(dissolve_progress, Color::rgb(0, 0, 0)));
+          }
+        }
+        continue; // Skip behavior while spawning
+      }
+
+      let state = drone.state;
+      let mut state_timer = drone.state_timer;
+      let velocity_x = drone.velocity_x;
+      let velocity_y = drone.velocity_y;
+      let target_x = drone.target_x;
+      let target_y = drone.target_y;
+      let aim_x = drone.aim_x;
+      let aim_y = drone.aim_y;
+      let laser_target_x = drone.laser_target_x;
+      let laser_target_y = drone.laser_target_y;
+      let laser_active = drone.laser_active;
+      drop(drone);
+
+      // Get current position
+      let Some(transform) = ctx.world.get::<Transform>(drone_entity) else {
+        continue;
+      };
+      let current_x = transform.x;
+      let current_y = transform.y;
+      drop(transform);
+
+      state_timer -= dt;
+
+      match state {
+        DroneState::Moving => {
+          // Move toward target
+          if let Some(mut t) = ctx.world.get_mut::<Transform>(drone_entity) {
+            t.x += velocity_x * dt;
+            t.y += velocity_y * dt;
+          }
+
+          // Check if reached target
+          let dx = target_x - current_x;
+          let dy = target_y - current_y;
+          let dist = (dx * dx + dy * dy).sqrt();
+
+          if dist < 15.0 || state_timer <= 0.0 {
+            // Reached target, start aiming
+            if let Some(mut drone) = ctx.world.get_mut::<Drone>(drone_entity) {
+              drone.state = DroneState::Aiming;
+              drone.state_timer = DRONE_AIM_DURATION;
+              drone.velocity_x = 0.0;
+              drone.velocity_y = 0.0;
+              // Lock on to player position
+              if let Some((px, py)) = player_pos {
+                drone.laser_target_x = px;
+                drone.laser_target_y = py;
+              }
+            }
+          } else {
+            // Update timer
+            if let Some(mut drone) = ctx.world.get_mut::<Drone>(drone_entity) {
+              drone.state_timer = state_timer;
+            }
+          }
+        }
+
+        DroneState::Aiming => {
+          // Slowly pan aim towards player position
+          let aim_progress = 1.0 - (state_timer / DRONE_AIM_DURATION).clamp(0.0, 1.0);
+
+          // Calculate new aim position (lerp towards player)
+          let mut new_aim_x = aim_x;
+          let mut new_aim_y = aim_y;
+          if let Some((px, py)) = player_pos {
+            let lerp_factor = (DRONE_AIM_SPEED * dt).min(1.0);
+            new_aim_x = aim_x + (px - aim_x) * lerp_factor;
+            new_aim_y = aim_y + (py - aim_y) * lerp_factor;
+          }
+
+          // Update drone aim position
+          if let Some(mut drone) = ctx.world.get_mut::<Drone>(drone_entity) {
+            drone.aim_x = new_aim_x;
+            drone.aim_y = new_aim_y;
+            drone.state_timer = state_timer;
+          }
+
+          // Calculate extended laser endpoint (extends beyond screen)
+          let drone_center_x = current_x;
+          let drone_center_y = current_y;
+          let (extended_x, extended_y) =
+            Self::extend_line_to_screen_edge(drone_center_x, drone_center_y, new_aim_x, new_aim_y, self.screen_width, self.screen_height);
+
+          // Flash effect - faster flashing as aim progresses
+          let flash_speed = 8.0 + aim_progress * 20.0;
+          let flash = ((state_timer * flash_speed).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+
+          // Warning line - thin and semi-transparent, pulses brighter
+          let warning_alpha = (100.0 + flash * 100.0) as u8;
+          let warning_width = 2.0 + flash * 2.0;
+
+          let warning_laser = ctx.world.spawn((
+            Transform::new(0.0, 0.0),
+            Line2D::segment(
+              Vec2::new(drone_center_x, drone_center_y),
+              Vec2::new(extended_x, extended_y),
+              Color::new(255, 100, 100, warning_alpha),
+              warning_width,
+            ),
+          ));
+          self.lasers.push(warning_laser);
+
+          // Flash the drone sprite during aiming
+          if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
+            if flash > 0.5 {
+              renderable.shader = Some(SpriteShader::flash(Color::new(255, 200, 200, 255), 0.5));
+            } else {
+              renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
+            }
+          }
+
+          if state_timer <= 0.0 {
+            // Lock the laser target to current aim position and start firing
+            if let Some(mut drone) = ctx.world.get_mut::<Drone>(drone_entity) {
+              drone.laser_target_x = new_aim_x;
+              drone.laser_target_y = new_aim_y;
+              drone.state = DroneState::Firing;
+              drone.state_timer = DRONE_FIRE_DURATION;
+              drone.laser_active = true;
+            }
+            if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
+              renderable.shader = Some(SpriteShader::outline(Color::rgb(255, 50, 50), 2));
+            }
+            if let Some(audio) = &mut ctx.audio {
+              let _ = audio.play_sound_with("laser", SoundOptions::new().volume(0.3));
+            }
+          }
+        }
+
+        DroneState::Firing => {
+          // Create damaging laser line for this frame
+          if laser_active {
+            let drone_center_x = current_x;
+            let drone_center_y = current_y;
+
+            // Extend laser beyond screen edge
+            let (extended_x, extended_y) = Self::extend_line_to_screen_edge(
+              drone_center_x,
+              drone_center_y,
+              laser_target_x,
+              laser_target_y,
+              self.screen_width,
+              self.screen_height,
+            );
+
+            // Full power laser - thick and bright (extends to screen edge)
+            let laser_entity = ctx.world.spawn((
+              Transform::new(0.0, 0.0),
+              Line2D::segment(
+                Vec2::new(drone_center_x, drone_center_y),
+                Vec2::new(extended_x, extended_y),
+                Color::new(255, 50, 50, 255),
+                DRONE_LASER_WIDTH,
+              ),
+            ));
+            self.lasers.push(laser_entity);
+
+            // Add a bright core to the laser
+            let core_laser = ctx.world.spawn((
+              Transform::new(0.0, 0.0),
+              Line2D::segment(
+                Vec2::new(drone_center_x, drone_center_y),
+                Vec2::new(extended_x, extended_y),
+                Color::new(255, 200, 150, 255),
+                DRONE_LASER_WIDTH * 0.4,
+              ),
+            ));
+            self.lasers.push(core_laser);
+
+            // Check laser collision with player (use extended line for collision too)
+            if let Some(player_e) = player_entity {
+              if let Some(player_t) = ctx.world.get::<Transform>(player_e) {
+                let px = player_t.x + PLAYER_SIZE / 2.0;
+                let py = player_t.y + PLAYER_SIZE / 2.0;
+
+                let hit = Self::point_to_line_distance(
+                  px,
+                  py,
+                  drone_center_x,
+                  drone_center_y,
+                  extended_x,
+                  extended_y,
+                ) < PLAYER_SIZE / 2.0 + DRONE_LASER_WIDTH / 2.0;
+
+                if hit {
+                  drop(player_t);
+                  if let Some(mut player) = ctx.world.get_mut::<Player>(player_e) {
+                    player.take_damage();
+                    self.player_lives = player.lives;
+                    self.player_invincible = player.is_invincible();
+                  }
+                }
+              }
+            }
+          }
+
+          if let Some(mut drone) = ctx.world.get_mut::<Drone>(drone_entity) {
+            if state_timer <= 0.0 {
+              // Done firing, go to cooldown
+              drone.state = DroneState::Cooldown;
+              drone.state_timer = DRONE_COOLDOWN;
+              drone.laser_active = false;
+              drop(drone);
+              // Restore normal shader (black outline)
+              if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
+                renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
+              }
+            } else {
+              drone.state_timer = state_timer;
+            }
+          }
+        }
+
+        DroneState::Cooldown => {
+          if state_timer <= 0.0 {
+            // Pick new target and start moving
+            if let Some(mut drone) = ctx.world.get_mut::<Drone>(drone_entity) {
+              drone.pick_new_target(current_x, current_y, self.screen_width, self.screen_height);
+              drone.calculate_velocity(current_x, current_y, DRONE_SPEED);
+              drone.state = DroneState::Moving;
+              drone.state_timer = 3.0; // Max time to reach target
+            }
+          } else if let Some(mut drone) = ctx.world.get_mut::<Drone>(drone_entity) {
+            drone.state_timer = state_timer;
+          }
+        }
+      }
+    }
+  }
+
+  /// Calculate distance from point to line segment
+  fn point_to_line_distance(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len_sq = dx * dx + dy * dy;
+
+    if len_sq < 0.0001 {
+      // Line is a point
+      return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
+    }
+
+    // Project point onto line, clamped to segment
+    let t = (((px - x1) * dx + (py - y1) * dy) / len_sq).clamp(0.0, 1.0);
+    let proj_x = x1 + t * dx;
+    let proj_y = y1 + t * dy;
+
+    ((px - proj_x).powi(2) + (py - proj_y).powi(2)).sqrt()
+  }
+
+  /// Extend a line from (x1, y1) through (x2, y2) to beyond the screen edge
+  fn extend_line_to_screen_edge(
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    screen_w: f32,
+    screen_h: f32,
+  ) -> (f32, f32) {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len = (dx * dx + dy * dy).sqrt();
+
+    if len < 0.001 {
+      return (x2, y2); // No direction, just return target
+    }
+
+    // Normalize direction and extend far beyond screen
+    let dir_x = dx / len;
+    let dir_y = dy / len;
+
+    // Extend to 2x the screen diagonal to ensure it goes off-screen
+    let extend_dist = (screen_w * screen_w + screen_h * screen_h).sqrt() * 2.0;
+
+    (x1 + dir_x * extend_dist, y1 + dir_y * extend_dist)
   }
 
   fn update_player(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -545,10 +909,11 @@ impl GameScene {
         player.wall_sliding = None;
       }
     } else {
-      // Check platform, barrier, and turret collisions
+      // Check platform, barrier, turret, and drone collisions
       self.check_player_platform_collision(ctx, player_entity);
       self.check_player_barrier_collision(ctx, player_entity);
       self.check_player_turret_collision(ctx, player_entity);
+      self.check_player_drone_collision(ctx, player_entity);
     }
   }
 
@@ -862,6 +1227,62 @@ impl GameScene {
         if falling && player_bottom <= turret_top + 15.0 {
           if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
             transform.y = turret_top - PLAYER_SIZE;
+          }
+          if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
+            velocity.y = 0.0;
+          }
+          if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
+            player.is_grounded = true;
+            player.wall_sliding = None;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  fn check_player_drone_collision(&mut self, ctx: &mut SceneContext, player_entity: Entity) {
+    use crate::constants::DRONE_SIZE;
+
+    let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
+      return;
+    };
+    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
+      return;
+    };
+
+    let player_left = player_transform.x;
+    let player_right = player_transform.x + PLAYER_SIZE;
+    let player_top = player_transform.y;
+    let player_bottom = player_transform.y + PLAYER_SIZE;
+    let falling = player_velocity.y > 0.0;
+
+    drop(player_transform);
+    drop(player_velocity);
+
+    for &drone_entity in &self.drones {
+      let Some(drone_transform) = ctx.world.get::<Transform>(drone_entity) else {
+        continue;
+      };
+
+      // Drone uses pivot_center, so position is center
+      let drone_left = drone_transform.x - DRONE_SIZE / 2.0;
+      let drone_right = drone_transform.x + DRONE_SIZE / 2.0;
+      let drone_top = drone_transform.y - DRONE_SIZE / 2.0;
+      let drone_bottom = drone_transform.y + DRONE_SIZE / 2.0;
+
+      drop(drone_transform);
+
+      // Check AABB collision
+      if player_right > drone_left
+        && player_left < drone_right
+        && player_bottom > drone_top
+        && player_top < drone_bottom
+      {
+        // Landing on top of drone (player can use as platform)
+        if falling && player_bottom <= drone_top + 15.0 {
+          if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
+            transform.y = drone_top - PLAYER_SIZE;
           }
           if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
             velocity.y = 0.0;
@@ -1334,6 +1755,15 @@ impl GameScene {
         }
       }
     }
+
+    // Spawn drones based on survival time (independent of difficulty progression)
+    // First drone at 30s, then every 20s up to max 3
+    if (self.drones.len() as u32) < DRONE_MAX_COUNT
+      && self.survival_time >= self.next_drone_spawn_time
+    {
+      self.spawn_drone(ctx);
+      self.next_drone_spawn_time = self.survival_time + DRONE_SPAWN_INTERVAL;
+    }
   }
 
   fn spawn_additional_turrets(&mut self, ctx: &mut SceneContext, count: u32) {
@@ -1387,6 +1817,7 @@ impl Scene for GameScene {
     // Load sound effects
     if let Some(audio) = &mut ctx.audio {
       let _ = audio.load_sound("enemy-spawn", "assets/enemy-spawn.wav");
+      let _ = audio.load_sound("laser", "assets/laser.mp3");
     }
 
     // Clear world
@@ -1396,6 +1827,8 @@ impl Scene for GameScene {
     self.survival_time = 0.0;
     self.player = None;
     self.turrets.clear();
+    self.drones.clear();
+    self.lasers.clear();
     self.bullets.clear();
     self.particles.clear();
     self.platforms.clear();
@@ -1405,6 +1838,7 @@ impl Scene for GameScene {
     self.spawn_platforms(ctx);
     self.spawn_barriers(ctx);
     self.spawn_turrets(ctx);
+    // Drones spawn progressively starting at 30 seconds
     self.spawn_player(ctx);
 
     // Center camera
@@ -1489,6 +1923,7 @@ impl Scene for GameScene {
 
     self.update_player(ctx, dt);
     self.update_turrets(ctx, dt);
+    self.update_drones(ctx, dt);
     self.update_barriers(ctx, dt);
     self.update_bullets(ctx, dt);
     self.update_particles(ctx, dt);
