@@ -116,7 +116,7 @@ pub mod prelude {
   };
 
   // Input (re-export KeyCode for convenience)
-  pub use crate::core::input::InputState;
+  pub use crate::core::input::{GamepadButton, InputState};
   pub use winit::event::MouseButton;
   pub use winit::keyboard::KeyCode;
 

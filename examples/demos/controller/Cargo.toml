@@ -1,0 +1,8 @@
+[package]
+name = "controller"
+version = "0.1.0"
+edition = "2021"
+description = "Gamepad/controller input testing demo for Ryo2D engine"
+
+[dependencies]
+ryo2d = { path = "../../.." }

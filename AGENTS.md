@@ -65,6 +65,7 @@ When you run `ryo2d init`, Agent Skills are automatically installed to `.github/
 | `ryo-animation` | Sprite animations and state machines |
 | `ryo-audio` | Sound effects and music |
 | `ryo-events` | Event bus for decoupled inter-system communication |
+| `ryo-controller` | Gamepad/controller input - buttons, sticks, triggers |
 | `ryo-ui` | Immediate-mode UI for HUDs |
 | `ryo-renderer` | GPU rendering and shaders |
 | `ryo-config-save` | Configuration and save system |

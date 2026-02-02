@@ -757,17 +757,29 @@ impl GameScene {
     // Horizontal movement (skip if wall jump push is active)
     if !is_wall_jump_locked {
       let mut move_x = 0.0;
+      // Keyboard input
       if ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft) {
         move_x -= 1.0;
       }
       if ctx.input.key_down(KeyCode::KeyD) || ctx.input.key_down(KeyCode::ArrowRight) {
         move_x += 1.0;
       }
+      // Gamepad input (additive - left stick or D-pad)
+      move_x += ctx.input.left_stick_x();
+      if ctx.input.gamepad_button_down(GamepadButton::DPadLeft) {
+        move_x -= 1.0;
+      }
+      if ctx.input.gamepad_button_down(GamepadButton::DPadRight) {
+        move_x += 1.0;
+      }
+      // Clamp to -1.0..1.0 range
+      move_x = move_x.clamp(-1.0, 1.0);
       velocity.x = move_x * PLAYER_SPEED;
     }
 
-    let jump_pressed =
-      ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::KeyW);
+    let jump_pressed = ctx.input.key_pressed(KeyCode::Space)
+      || ctx.input.key_pressed(KeyCode::KeyW)
+      || ctx.input.gamepad_button_pressed(GamepadButton::South);
 
     // Jumping - normal ground jump or wall jump
     if jump_pressed {
@@ -855,10 +867,14 @@ impl GameScene {
 
     // Wall slide detection - check if player is against screen edge walls or barriers and falling
     // Player must be pressing towards the wall to initiate wall slide
-    let pressing_left =
-      ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft);
-    let pressing_right =
-      ctx.input.key_down(KeyCode::KeyD) || ctx.input.key_down(KeyCode::ArrowRight);
+    let pressing_left = ctx.input.key_down(KeyCode::KeyA)
+      || ctx.input.key_down(KeyCode::ArrowLeft)
+      || ctx.input.left_stick_x() < -0.5
+      || ctx.input.gamepad_button_down(GamepadButton::DPadLeft);
+    let pressing_right = ctx.input.key_down(KeyCode::KeyD)
+      || ctx.input.key_down(KeyCode::ArrowRight)
+      || ctx.input.left_stick_x() > 0.5
+      || ctx.input.gamepad_button_down(GamepadButton::DPadRight);
 
     let mut new_wall_slide: Option<WallSide> = None;
     if vel_y > 0.0 && !was_grounded {
@@ -1149,10 +1165,14 @@ impl GameScene {
     drop(player_transform);
 
     // Check input direction (player must be pressing towards the barrier)
-    let pressing_right =
-      ctx.input.key_down(KeyCode::KeyD) || ctx.input.key_down(KeyCode::ArrowRight);
-    let pressing_left =
-      ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft);
+    let pressing_right = ctx.input.key_down(KeyCode::KeyD)
+      || ctx.input.key_down(KeyCode::ArrowRight)
+      || ctx.input.left_stick_x() > 0.5
+      || ctx.input.gamepad_button_down(GamepadButton::DPadRight);
+    let pressing_left = ctx.input.key_down(KeyCode::KeyA)
+      || ctx.input.key_down(KeyCode::ArrowLeft)
+      || ctx.input.left_stick_x() < -0.5
+      || ctx.input.gamepad_button_down(GamepadButton::DPadLeft);
 
     // Tolerance for detecting wall contact (larger to account for collision pushback)
     let tolerance = 12.0;
