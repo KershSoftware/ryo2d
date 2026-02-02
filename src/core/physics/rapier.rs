@@ -651,14 +651,9 @@ impl Default for RapierPhysicsWorld {
 
 #[cfg(test)]
 mod tests {
-  use super::{
-    super::{
-      collision::Collider,
-      ecs::{Transform, Velocity, World},
-      physics::RigidBody,
-    },
-    *,
-  };
+  use super::*;
+  use crate::core::ecs::{Transform, Velocity, World};
+  use crate::core::physics::{Collider, RigidBody};
 
   #[test]
   fn rapier_world_creates() {
