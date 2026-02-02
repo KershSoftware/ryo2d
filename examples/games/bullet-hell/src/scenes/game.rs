@@ -24,6 +24,7 @@ pub struct GameScene {
   bullet_sprite: SpriteHandle,
   particle_sprite: SpriteHandle,
   platform_sprite: SpriteHandle,
+  bg_sprite: SpriteHandle,
   // Progression tracking
   difficulty_level: u32,
   time_since_last_progression: f32,
@@ -47,11 +48,13 @@ impl GameScene {
     // Load sprites
     let player_sprite = Sprite::load("assets/player.png").expect("Failed to load player sprite");
     let turret_sprite = Sprite::load("assets/turret.png").expect("Failed to load turret sprite");
-    let bullet_sprite = Sprite::load("assets/bullet.png").expect("Failed to load bullet sprite");
+    // Create a small round bullet programmatically (dark red/maroon)
+    let bullet_sprite = Sprite::solid_circle(BULLET_SIZE as u32, 80, 20, 20, 255);
     let particle_sprite =
       Sprite::load("assets/particle.png").expect("Failed to load particle sprite");
     let platform_sprite =
       Sprite::load("assets/platform.png").expect("Failed to load platform sprite");
+    let bg_sprite = Sprite::load("assets/bg.png").expect("Failed to load background sprite");
 
     Self {
       player: None,
@@ -68,6 +71,7 @@ impl GameScene {
       bullet_sprite: SpriteHandle::from_sprite(bullet_sprite, "bullet.png"),
       particle_sprite: SpriteHandle::from_sprite(particle_sprite, "particle.png"),
       platform_sprite: SpriteHandle::from_sprite(platform_sprite, "platform.png"),
+      bg_sprite: SpriteHandle::from_sprite(bg_sprite, "bg.png"),
       // Progression starts at level 0
       difficulty_level: 0,
       time_since_last_progression: 0.0,
@@ -87,7 +91,9 @@ impl GameScene {
     let spawn_y = self.screen_height - 240.0; // Near bottom
     let player_entity = ctx.world.spawn((
       Transform::new(self.screen_width / 2.0, spawn_y),
-      Renderable::sprite(sprite).with_z_order(Z_PLAYER),
+      Renderable::sprite(sprite)
+        .with_z_order(Z_PLAYER)
+        .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
       Collider::box_collider(PLAYER_SIZE, PLAYER_SIZE),
       PlayerVelocity::zero(),
       Player::new(PLAYER_MAX_LIVES),
@@ -117,34 +123,26 @@ impl GameScene {
     let scale_y = sh / 1440.0;
 
     // Platform configs: (center_x, y, width) in 2560x1440 base coordinates
+    // Reduced platform count for more dynamic gameplay - staggered pattern
     let platform_configs = vec![
-      (400.0, 1270.0, 350.0),  // Left side
-      (1280.0, 1270.0, 400.0), // Center
-      (2160.0, 1270.0, 350.0), // Right side
-      // Layer 2: y=1130 (140px up)
-      (640.0, 1130.0, 350.0),  // Left-center
-      (1920.0, 1130.0, 350.0), // Right-center
-      // Layer 3: y=990 (140px up)
-      (320.0, 990.0, 300.0),  // Far left
-      (1280.0, 990.0, 400.0), // Center
-      (2240.0, 990.0, 300.0), // Far right
-      // Layer 4: y=850 (140px up)
-      (800.0, 850.0, 350.0),  // Left-center
-      (1760.0, 850.0, 350.0), // Right-center
-      // Layer 5: y=710 (140px up)
-      (400.0, 710.0, 350.0),  // Left side
-      (1280.0, 710.0, 400.0), // Center
-      (2160.0, 710.0, 350.0), // Right side
-      // Layer 6: y=570 (140px up)
-      (640.0, 570.0, 350.0),  // Left-center
-      (1920.0, 570.0, 350.0), // Right-center
-      // Layer 7: y=430 (140px up)
-      (1280.0, 430.0, 400.0), // Center
-      // Layer 8: y=290 (140px up)
-      (800.0, 290.0, 350.0),  // Left-center
-      (1760.0, 290.0, 350.0), // Right-center
-      // Layer 9: y=150 (140px up)
-      (1280.0, 150.0, 400.0), // Top center
+      // Layer 1: Bottom (fewer platforms to start)
+      (640.0, 1270.0, 350.0),  // Left-center
+      (1920.0, 1270.0, 350.0), // Right-center
+      // Layer 2: y=1100 - single side platforms
+      (320.0, 1100.0, 300.0),  // Far left
+      (2240.0, 1100.0, 300.0), // Far right
+      // Layer 3: y=920 - center only
+      (1280.0, 920.0, 450.0), // Center (wider)
+      // Layer 4: y=740 - sides
+      (500.0, 740.0, 350.0),  // Left
+      (2060.0, 740.0, 350.0), // Right
+      // Layer 5: y=560 - center only
+      (1280.0, 560.0, 400.0), // Center
+      // Layer 6: y=380 - sides
+      (700.0, 380.0, 300.0),  // Left-center
+      (1860.0, 380.0, 300.0), // Right-center
+      // Layer 7: y=200 - top center
+      (1280.0, 200.0, 350.0), // Top center
     ];
 
     for (base_x, base_y, base_width) in platform_configs {
@@ -175,24 +173,28 @@ impl GameScene {
     let sh = self.screen_height;
     let sw = self.screen_width;
 
-    // Left side turrets
+    // Left side turrets - flush against left wall
     for _ in 0..TURRETS_PER_SIDE {
       let y = rng.gen_range(100.0..(sh - 100.0));
       let turret = ctx.world.spawn((
-        Transform::new(TURRET_SIZE / 2.0 + 20.0, y),
-        Renderable::sprite(sprite.clone()).with_z_order(Z_TURRET),
+        Transform::new(0.0, y),
+        Renderable::sprite(sprite.clone())
+          .with_z_order(Z_TURRET)
+          .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Left),
       ));
       self.turrets.push(turret);
     }
 
-    // Right side turrets
+    // Right side turrets - flush against right wall
     for _ in 0..TURRETS_PER_SIDE {
       let y = rng.gen_range(100.0..(sh - 100.0));
       let turret = ctx.world.spawn((
-        Transform::new(sw - TURRET_SIZE / 2.0 - 20.0, y),
-        Renderable::sprite(sprite.clone()).with_z_order(Z_TURRET),
+        Transform::new(sw - TURRET_SIZE, y),
+        Renderable::sprite(sprite.clone())
+          .with_z_order(Z_TURRET)
+          .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Right),
       ));
@@ -367,6 +369,17 @@ impl GameScene {
   fn update_turrets(&mut self, ctx: &mut SceneContext, dt: f32) {
     let turrets_to_update: Vec<_> = self.turrets.to_vec();
 
+    // First pass: collect turret positions and sides for collision detection
+    let mut turret_data: Vec<(Entity, f32, TurretSide, f32)> = Vec::new(); // entity, y, side, direction
+    for &turret_entity in &turrets_to_update {
+      if let (Some(transform), Some(turret)) = (
+        ctx.world.get::<Transform>(turret_entity),
+        ctx.world.get::<Turret>(turret_entity),
+      ) {
+        turret_data.push((turret_entity, transform.y, turret.side, turret.move_direction));
+      }
+    }
+
     for turret_entity in turrets_to_update {
       let Some(mut transform) = ctx.world.get_mut::<Transform>(turret_entity) else {
         continue;
@@ -385,8 +398,41 @@ impl GameScene {
         transform.y = transform.y.clamp(margin, self.screen_height - margin);
       }
 
-      let turret_x = transform.x;
-      let turret_y = transform.y;
+      // Check collision with other turrets on the same side
+      let my_y = transform.y;
+      let my_side = turret.side;
+      let my_dir = turret.move_direction;
+
+      for &(other_entity, other_y, other_side, other_dir) in &turret_data {
+        if other_entity == turret_entity || other_side != my_side {
+          continue;
+        }
+
+        // Check if turrets overlap (within TURRET_SIZE of each other)
+        let dist = (my_y - other_y).abs();
+        if dist < TURRET_SIZE {
+          // Only bounce if moving towards each other
+          let moving_towards = (my_y < other_y && my_dir > 0.0 && other_dir < 0.0)
+            || (my_y > other_y && my_dir < 0.0 && other_dir > 0.0)
+            || (my_y < other_y && my_dir > 0.0)
+            || (my_y > other_y && my_dir < 0.0);
+
+          if moving_towards {
+            turret.reverse_direction();
+            // Push apart slightly to prevent sticking
+            let push = (TURRET_SIZE - dist) / 2.0 + 1.0;
+            if my_y < other_y {
+              transform.y -= push;
+            } else {
+              transform.y += push;
+            }
+            break;
+          }
+        }
+      }
+
+      let turret_x = transform.x + TURRET_SIZE / 2.0; // Shoot from center of turret
+      let turret_y = transform.y + TURRET_SIZE / 2.0;
       let turret_side = turret.side;
       let max_burst = turret.max_burst_size;
 
@@ -448,10 +494,16 @@ impl GameScene {
 
     let sprite = self.bullet_sprite.clone();
     let bullet = ctx.world.spawn((
-      Transform::new(x, y),
+      // Center the bullet sprite using anchor
+      Transform::new(x, y).with_anchor(Anchor::Center),
       Renderable::sprite(sprite).with_z_order(Z_BULLET),
       Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
       Bullet::new(velocity_x, velocity_y),
+      // Trail effect for bullets - dark red trail that tapers to nothing
+      Trail2D::bullet(Color::rgb(150, 50, 50))
+        .with_length(10)
+        .with_taper(0.0)
+        .with_fade(true),
     ));
 
     self.bullets.push(bullet);
@@ -480,6 +532,11 @@ impl GameScene {
 
       drop(transform);
       drop(bullet);
+
+      // Update trail with new position
+      if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(bullet_entity) {
+        trail.update(bx, by, dt);
+      }
 
       // Check if out of bounds
       if bx < -50.0 || bx > self.screen_width + 50.0 || by < -50.0 || by > self.screen_height + 50.0
@@ -685,21 +742,25 @@ impl GameScene {
     let sw = self.screen_width;
 
     for _ in 0..count {
-      // Left side turret
+      // Left side turret - flush against left wall
       let y = rng.gen_range(100.0..(sh - 100.0));
       let turret = ctx.world.spawn((
-        Transform::new(TURRET_SIZE / 2.0 + 20.0, y),
-        Renderable::sprite(sprite.clone()).with_z_order(Z_TURRET),
+        Transform::new(0.0, y),
+        Renderable::sprite(sprite.clone())
+          .with_z_order(Z_TURRET)
+          .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Left),
       ));
       self.turrets.push(turret);
 
-      // Right side turret
+      // Right side turret - flush against right wall
       let y = rng.gen_range(100.0..(sh - 100.0));
       let turret = ctx.world.spawn((
-        Transform::new(sw - TURRET_SIZE / 2.0 - 20.0, y),
-        Renderable::sprite(sprite.clone()).with_z_order(Z_TURRET),
+        Transform::new(sw - TURRET_SIZE, y),
+        Renderable::sprite(sprite.clone())
+          .with_z_order(Z_TURRET)
+          .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Right),
       ));
@@ -724,6 +785,19 @@ impl Scene for GameScene {
     self.bullets.clear();
     self.particles.clear();
     self.platforms.clear();
+
+    // Spawn background (scaled to fill screen)
+    let bg = self.bg_sprite.clone();
+    let (bg_width, bg_height) = {
+      let sprite = bg.sprite();
+      (sprite.width() as f32, sprite.height() as f32)
+    };
+    let scale_x = self.screen_width / bg_width;
+    let scale_y = self.screen_height / bg_height;
+    ctx.world.spawn((
+      Transform::new(0.0, 0.0).with_scale(scale_x, scale_y),
+      Renderable::sprite(bg).with_z_order(Z_BACKGROUND),
+    ));
 
     // Spawn game entities
     self.spawn_platforms(ctx);
@@ -801,23 +875,13 @@ impl Scene for GameScene {
     let lives = self.player_lives;
     let invincible = self.player_invincible;
 
-    // Lives
+    // Lives - dark red with semi-transparent background for visibility
     let lives_text = format!("Lives: {}", lives);
-    ui.draw_text(&lives_text, 20.0, 20.0, Color::rgb(255, 100, 100));
+    ui.label(&lives_text, 20.0, 20.0, Color::rgb(180, 40, 40), Some(Color::new(0, 0, 0, 150)));
 
-    // Survival time
+    // Survival time - dark text with background for visibility on beige
     let time_text = format!("Time: {:.1}s", self.survival_time);
-    ui.draw_text(&time_text, 20.0, 50.0, Color::rgb(100, 255, 100));
-
-    // Entity counts
-    let bullet_count = self.bullets.len();
-    let particle_count = self.particles.len();
-    let total = bullet_count + particle_count;
-    let counts_text = format!(
-      "Bullets: {}  Particles: {}  Total: {}",
-      bullet_count, particle_count, total
-    );
-    ui.draw_text(&counts_text, 20.0, 80.0, Color::rgb(150, 150, 200));
+    ui.label(&time_text, 20.0, 50.0, Color::rgb(40, 80, 40), Some(Color::new(0, 0, 0, 150)));
 
     // Hit indicator
     if invincible {

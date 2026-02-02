@@ -24,6 +24,7 @@ use super::lighting::{Light2D, LightingRenderer};
 use super::physics::{Collider, PhysicsConfig, RapierPhysicsWorld, RigidBody};
 use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
+use super::trail::{Line2D, Trail2D, TrailRenderer};
 use super::ui::{create_debug_font, BitmapFont, UiContext};
 
 /// Window resize behavior.
@@ -238,6 +239,8 @@ pub struct Engine {
   batch_collector: BatchCollector,
   // 2D Lighting renderer
   lighting: Option<LightingRenderer>,
+  // Trail/line renderer for motion trails and procedural lines
+  trail_renderer: Option<TrailRenderer>,
   // Frame timing breakdown for profiling (current frame, in-progress)
   frame_timings: FrameTimings,
   // Smoothed frame timings for stable overlay display
@@ -394,7 +397,8 @@ impl Engine {
       vsync,
       sprite_gpu: None, // Initialized when renderer is created
       batch_collector: BatchCollector::new(),
-      lighting: None, // Initialized when renderer is created
+      lighting: None,       // Initialized when renderer is created
+      trail_renderer: None, // Initialized when renderer is created
       frame_timings: FrameTimings::default(),
       smoothed_timings: SmoothedFrameTimings::default(),
       debug_font_uploaded: false,
@@ -677,7 +681,8 @@ impl Engine {
           )
         } else if let Some(t) = self.world.get_component::<Transform>(entity) {
           (
-            t.x, t.y, t.rotation, t.scale_x, t.scale_y, t.pivot_x, t.pivot_y, t.offset_x, t.offset_y,
+            t.x, t.y, t.rotation, t.scale_x, t.scale_y, t.pivot_x, t.pivot_y, t.offset_x,
+            t.offset_y,
           )
         } else {
           continue;
@@ -1080,10 +1085,19 @@ impl ApplicationHandler for Engine {
       renderer.game_texture_format(),
     );
 
+    // Create trail/line renderer for motion trails and procedural lines
+    let trail_renderer = TrailRenderer::new(
+      renderer.device(),
+      self.config.width,
+      self.config.height,
+      renderer.game_texture_format(),
+    );
+
     self.window = Some(window);
     self.renderer = Some(renderer);
     self.sprite_gpu = Some(sprite_gpu);
     self.lighting = Some(lighting);
+    self.trail_renderer = Some(trail_renderer);
     self.time = Some(TimeState::new(
       self.config.target_fps,
       self.config.physics_hz,
@@ -1316,15 +1330,45 @@ impl ApplicationHandler for Engine {
         self.frame_timings.render = render_start.elapsed();
 
         // Actually draw to screen with post-processing effects, lighting, and GPU sprites
-        // Take sprite_gpu and lighting out to avoid borrow conflicts with renderer
+        // Take sprite_gpu, lighting, and trail_renderer out to avoid borrow conflicts with renderer
         let present_start = std::time::Instant::now();
         let mut sprite_gpu = self.sprite_gpu.take();
         let mut renderer = self.renderer.take();
         let mut lighting = self.lighting.take();
+        let mut trail_renderer = self.trail_renderer.take();
+
+        // Collect trails and lines from the world
+        if let Some(ref mut trails) = trail_renderer {
+          trails.begin_frame();
+
+          // Add Trail2D components
+          for entity in self.world.entities_with::<Trail2D>() {
+            if let (Some(trail), Some(transform)) = (
+              self.world.get_component::<Trail2D>(entity),
+              self.world.get_component::<Transform>(entity),
+            ) {
+              trails.add_trail(&trail, &transform);
+            }
+          }
+
+          // Add Line2D components
+          for entity in self.world.entities_with::<Line2D>() {
+            if let (Some(line), Some(transform)) = (
+              self.world.get_component::<Line2D>(entity),
+              self.world.get_component::<Transform>(entity),
+            ) {
+              trails.add_line(&line, transform.x, transform.y);
+            }
+          }
+        }
 
         if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
-          // Only use GPU sprite callback if we have batched sprites
+          // Only use GPU sprite callback if we have batched sprites or trails
           let has_gpu_sprites = self.batch_collector.sprite_count() > 0;
+          let has_trails = trail_renderer
+            .as_ref()
+            .map(|t| t.vertex_count() > 0)
+            .unwrap_or(false);
 
           // Collect lights from the world
           let lights: Vec<_> = self
@@ -1349,14 +1393,38 @@ impl ApplicationHandler for Engine {
             rend.game_height() as f32,
           );
 
-          let result = if has_gpu_sprites {
-            // Create callback closure that captures gpu and batch_collector
+          // Prepare camera data for trail rendering
+          let camera_pos = glam::Vec2::new(self.camera.x, self.camera.y);
+          let camera_zoom = self.camera.zoom;
+          let time = self
+            .time
+            .as_ref()
+            .map(|t| t.frame_count as f32 / 60.0)
+            .unwrap_or(0.0);
+
+          let result = if has_gpu_sprites || has_trails {
+            // Create callback closure that captures gpu, batch_collector, and trail_renderer
             let batch_collector = &self.batch_collector;
             let gpu_callback =
               |queue: &wgpu::Queue,
                encoder: &mut wgpu::CommandEncoder,
                view: &wgpu::TextureView| {
-                gpu.render_batches(queue, encoder, view, batch_collector);
+                // Render GPU sprites first
+                if has_gpu_sprites {
+                  gpu.render_batches(queue, encoder, view, batch_collector);
+                }
+                // Render trails on top of sprites
+                if let Some(ref mut trails) = trail_renderer {
+                  trails.render(
+                    queue,
+                    encoder,
+                    view,
+                    camera_pos,
+                    camera_zoom,
+                    time,
+                    super::trail::TrailStyle::Solid,
+                  );
+                }
               };
 
             rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback))
@@ -1372,16 +1440,18 @@ impl ApplicationHandler for Engine {
               self.sprite_gpu = sprite_gpu;
               self.renderer = renderer;
               self.lighting = lighting;
+              self.trail_renderer = trail_renderer;
               event_loop.exit();
               return;
             }
           }
         }
 
-        // Put sprite_gpu, renderer, and lighting back
+        // Put sprite_gpu, renderer, lighting, and trail_renderer back
         self.sprite_gpu = sprite_gpu;
         self.renderer = renderer;
         self.lighting = lighting;
+        self.trail_renderer = trail_renderer;
         // Present time = GPU submission + effects pipeline
         self.frame_timings.present = present_start.elapsed();
 

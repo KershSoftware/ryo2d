@@ -91,10 +91,47 @@ fn create_release_bundle(
     package_name.to_string()
   };
 
-  let source_binary = workspace_root
+  // Find all candidate binaries and use the newest one
+  // (handles workspace members where binary is in parent workspace's target)
+  let local_binary = workspace_root
     .join("target")
     .join("release")
     .join(&binary_name);
+
+  let mut candidates: Vec<PathBuf> = vec![];
+
+  // Check local target directory
+  if local_binary.exists() {
+    candidates.push(local_binary.clone());
+  }
+
+  // Check parent directories for workspace root's target
+  let mut search_dir = workspace_root.to_path_buf();
+  for _ in 0..10 {
+    if let Some(parent) = search_dir.parent() {
+      search_dir = parent.to_path_buf();
+      let candidate = search_dir.join("target").join("release").join(&binary_name);
+      if candidate.exists() {
+        candidates.push(candidate);
+      }
+    } else {
+      break;
+    }
+  }
+
+  // Use the most recently modified binary
+  let source_binary = candidates
+    .into_iter()
+    .filter_map(|path| {
+      fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .map(|mtime| (path, mtime))
+    })
+    .max_by_key(|(_, mtime)| *mtime)
+    .map(|(path, _)| path)
+    .unwrap_or(local_binary); // Fall back to local path for error message
+
   let dest_binary = release_dir.join(&binary_name);
 
   fs::copy(&source_binary, &dest_binary).map_err(|e| {

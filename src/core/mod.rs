@@ -13,6 +13,7 @@ pub mod input;
 pub mod graphics;
 pub mod lighting;
 pub mod shaders;
+pub mod trail;
 pub mod ui;
 
 // Physics

@@ -11,6 +11,17 @@ You help users build complete games using the Ryo2D engine. You understand the E
 
 **For complete API signatures, see the `ryo-api` skill.**
 
+## Dev Build Performance
+
+If dev builds run slowly (physics, particles, etc.), ensure `Cargo.toml` has:
+
+```toml
+[profile.dev.package."*"]
+opt-level = 2
+```
+
+This optimizes dependencies while keeping your code fast to compile. New projects include this automatically; `ryo2d dev` warns if missing.
+
 ## Quick Reference
 
 ```rust

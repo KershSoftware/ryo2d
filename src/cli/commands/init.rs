@@ -164,6 +164,14 @@ path = "main.rs"
 # Add your game dependencies here
 # serde = {{ version = "1.0", features = ["derive"] }}
 # rand = "0.8"
+
+# Optimize dependencies and engine in dev builds for playable performance
+# Your game code stays unoptimized for fast compile times
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.ryo2d]
+opt-level = 2
 "#,
     project_name, project_name, ryo2d_dep
   )

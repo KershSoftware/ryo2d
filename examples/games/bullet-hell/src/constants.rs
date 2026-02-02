@@ -30,7 +30,7 @@ pub const PROGRESSION_INTERVAL: f32 = 15.0; // seconds between difficulty increa
 pub const PROGRESSION_STEPS: u32 = 8; // number of difficulty steps to reach maximum
 
 // Bullet configuration
-pub const BULLET_SIZE: f32 = 8.0;
+pub const BULLET_SIZE: f32 = 6.0;
 pub const BULLET_SPEED: f32 = 250.0;
 
 // Particle configuration
