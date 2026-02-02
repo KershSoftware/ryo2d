@@ -14,7 +14,9 @@ use bullet_hell::scenes::MenuScene;
 use ryo2d::prelude::*;
 
 fn main() {
-  // Resolution, title, and volumes come from Ryo.toml (embedded at build time or read at runtime)
+  // Game uses fixed 1920x1080 design resolution from Ryo.toml
+  // Window can be resized freely - engine handles scaling with letterboxing
+  // Note: NOT calling with_system_state_overrides() to keep fixed game resolution
   let builder = EngineBuilder::new()
     .window_mode(WindowMode::ResizableAspectRatio)
     .fps(144)

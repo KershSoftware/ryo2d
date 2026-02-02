@@ -9,8 +9,11 @@ title = "Bullet Hell - Ryo2D GPU Batching Demo"
 show_fps = true
 
 [system]
+# Design resolution - game logic uses this fixed size
+# Window can be scaled larger/smaller, engine handles letterboxing
 resolution_width = 1920
 resolution_height = 1080
+display_mode = "windowed"
 
 [paths]
 # Entry point is in this directory (not in src/)

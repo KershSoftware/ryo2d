@@ -6,7 +6,12 @@ use crate::*;
 use rand::Rng;
 use ryo2d::prelude::*;
 
-use super::GameOverScene;
+use super::{GameOverScene, MenuScene};
+
+// Fixed design resolution - game logic always uses these values
+// Display settings only affect window scaling, not gameplay
+const DESIGN_WIDTH: f32 = 1920.0;
+const DESIGN_HEIGHT: f32 = 1080.0;
 
 pub struct GameScene {
   player: Option<Entity>,
@@ -14,6 +19,7 @@ pub struct GameScene {
   bullets: Vec<Entity>,
   particles: Vec<Entity>,
   platforms: Vec<Entity>,
+  barriers: Vec<Entity>,
   survival_time: f32,
   #[allow(dead_code)]
   best_time: f32,
@@ -24,6 +30,7 @@ pub struct GameScene {
   bullet_sprite: SpriteHandle,
   particle_sprite: SpriteHandle,
   platform_sprite: SpriteHandle,
+  barrier_sprite: SpriteHandle,
   bg_sprite: SpriteHandle,
   // Progression tracking
   difficulty_level: u32,
@@ -35,6 +42,14 @@ pub struct GameScene {
   // Screen dimensions (obtained from engine at runtime)
   screen_width: f32,
   screen_height: f32,
+  // Pause menu state
+  is_paused: bool,
+  settings_open: bool,
+  selected_display_mode_idx: usize,
+  quit_to_menu: bool,
+  quit_to_desktop: bool,
+  // Flag to apply settings (set in render_ui, processed in update)
+  apply_settings: bool,
 }
 
 impl Default for GameScene {
@@ -54,7 +69,16 @@ impl GameScene {
       Sprite::load("assets/particle.png").expect("Failed to load particle sprite");
     let platform_sprite =
       Sprite::load("assets/platform.png").expect("Failed to load platform sprite");
+    // Create barrier sprite programmatically (dark gray rectangle)
+    let barrier_sprite = Sprite::solid_rect(
+      BARRIER_WIDTH as u32,
+      BARRIER_HEIGHT as u32,
+      60, 60, 70, 255,
+    );
     let bg_sprite = Sprite::load("assets/bg.png").expect("Failed to load background sprite");
+
+    // Load current display mode setting
+    let display_mode_idx = Self::load_current_display_mode_index();
 
     Self {
       player: None,
@@ -62,6 +86,7 @@ impl GameScene {
       bullets: Vec::new(),
       particles: Vec::new(),
       platforms: Vec::new(),
+      barriers: Vec::new(),
       survival_time: 0.0,
       best_time: save::load_best_time(),
       player_lives: PLAYER_MAX_LIVES,
@@ -71,6 +96,7 @@ impl GameScene {
       bullet_sprite: SpriteHandle::from_sprite(bullet_sprite, "bullet.png"),
       particle_sprite: SpriteHandle::from_sprite(particle_sprite, "particle.png"),
       platform_sprite: SpriteHandle::from_sprite(platform_sprite, "platform.png"),
+      barrier_sprite: SpriteHandle::from_sprite(barrier_sprite, "barrier"),
       bg_sprite: SpriteHandle::from_sprite(bg_sprite, "bg.png"),
       // Progression starts at level 0
       difficulty_level: 0,
@@ -79,10 +105,39 @@ impl GameScene {
       current_burst_size: TURRET_BURST_SIZE,
       // Death effect not active
       death_effect_timer: None,
-      // Screen dimensions (set in on_enter from engine config)
-      screen_width: 1920.0, // placeholder, updated in on_enter
-      screen_height: 1080.0,
+      // Screen dimensions - fixed design resolution for consistent gameplay
+      screen_width: DESIGN_WIDTH,
+      screen_height: DESIGN_HEIGHT,
+      // Pause menu state
+      is_paused: false,
+      settings_open: false,
+      selected_display_mode_idx: display_mode_idx,
+      quit_to_menu: false,
+      quit_to_desktop: false,
+      apply_settings: false,
     }
+  }
+
+  /// Load current display mode from system.json
+  fn load_current_display_mode_index() -> usize {
+    let Ok(workspace) = Workspace::discover() else {
+      return 0; // Fallback: Windowed
+    };
+
+    let Ok(save_manager) = workspace.create_save_manager() else {
+      return 0;
+    };
+
+    let system_state = save_manager
+      .load_or_create_system(&workspace.config().system)
+      .unwrap_or_else(|_| SystemState::from_defaults(&workspace.config().system));
+
+    // Find display mode index
+    let modes = DisplayMode::all();
+    modes
+      .iter()
+      .position(|m| *m == system_state.display.display_mode)
+      .unwrap_or(0) // Default to Windowed if not found
   }
 
   fn spawn_player(&mut self, ctx: &mut SceneContext) {
@@ -202,6 +257,35 @@ impl GameScene {
     }
   }
 
+  fn spawn_barriers(&mut self, ctx: &mut SceneContext) {
+    let sprite = self.barrier_sprite.clone();
+    let center_x = self.screen_width / 2.0;
+
+    // Vertical movement bounds (avoid ground and top)
+    let min_y = 150.0;
+    let max_y = self.screen_height - BARRIER_HEIGHT - 100.0;
+
+    // Left barrier - left of center, moving down initially
+    let left_barrier = ctx.world.spawn((
+      Transform::new(center_x - 250.0, min_y + 100.0),
+      Renderable::sprite(sprite.clone())
+        .with_z_order(Z_BARRIER)
+        .with_shader(SpriteShader::outline(Color::rgb(80, 80, 90), 2)),
+      Barrier::new(BARRIER_SPEED, min_y, max_y),
+    ));
+    self.barriers.push(left_barrier);
+
+    // Right barrier - right of center, moving up initially (mirrored)
+    let right_barrier = ctx.world.spawn((
+      Transform::new(center_x + 250.0 - BARRIER_WIDTH, max_y - 100.0),
+      Renderable::sprite(sprite.clone())
+        .with_z_order(Z_BARRIER)
+        .with_shader(SpriteShader::outline(Color::rgb(80, 80, 90), 2)),
+      Barrier::new(-BARRIER_SPEED, min_y, max_y),
+    ));
+    self.barriers.push(right_barrier);
+  }
+
   fn update_player(&mut self, ctx: &mut SceneContext, dt: f32) {
     let Some(player_entity) = self.player else {
       return;
@@ -284,19 +368,19 @@ impl GameScene {
     transform.x += velocity.x * dt;
     transform.y += velocity.y * dt;
 
-    // Screen bounds
-    let half_size = PLAYER_SIZE / 2.0;
-    transform.x = transform.x.clamp(half_size, self.screen_width - half_size);
+    // Screen bounds (sprite draws from top-left, so clamp to keep fully on screen)
+    transform.x = transform.x.clamp(0.0, self.screen_width - PLAYER_SIZE);
 
     let _tx = transform.x;
     let ty = transform.y;
     drop(velocity);
     drop(transform);
 
-    // Ground collision
-    if ty >= self.screen_height - half_size {
+    // Ground collision (sprite draws from top-left, so bottom edge is at y + PLAYER_SIZE)
+    if ty >= self.screen_height - PLAYER_SIZE - 30.0 {
+      // -30 accounts for ground platform thickness
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-        transform.y = self.screen_height - half_size;
+        transform.y = self.screen_height - PLAYER_SIZE - 30.0;
       }
       if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
         velocity.y = 0.0;
@@ -305,8 +389,9 @@ impl GameScene {
         player.is_grounded = true;
       }
     } else {
-      // Check platform collisions
+      // Check platform and barrier collisions
       self.check_player_platform_collision(ctx, player_entity);
+      self.check_player_barrier_collision(ctx, player_entity);
     }
   }
 
@@ -366,6 +451,103 @@ impl GameScene {
     }
   }
 
+  fn check_player_barrier_collision(&mut self, ctx: &mut SceneContext, player_entity: Entity) {
+    let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
+      return;
+    };
+    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
+      return;
+    };
+
+    let player_left = player_transform.x;
+    let player_right = player_transform.x + PLAYER_SIZE;
+    let player_top = player_transform.y;
+    let player_bottom = player_transform.y + PLAYER_SIZE;
+    let vel_x = player_velocity.x;
+    let vel_y = player_velocity.y;
+
+    drop(player_transform);
+    drop(player_velocity);
+
+    for &barrier_entity in &self.barriers {
+      let Some(barrier_transform) = ctx.world.get::<Transform>(barrier_entity) else {
+        continue;
+      };
+
+      let barrier_left = barrier_transform.x;
+      let barrier_right = barrier_transform.x + BARRIER_WIDTH;
+      let barrier_top = barrier_transform.y;
+      let barrier_bottom = barrier_transform.y + BARRIER_HEIGHT;
+
+      // Check AABB collision
+      if player_right > barrier_left
+        && player_left < barrier_right
+        && player_bottom > barrier_top
+        && player_top < barrier_bottom
+      {
+        // Push player out of barrier based on movement direction
+        let overlap_left = player_right - barrier_left;
+        let overlap_right = barrier_right - player_left;
+        let overlap_top = player_bottom - barrier_top;
+        let overlap_bottom = barrier_bottom - player_top;
+
+        // Find smallest overlap to determine push direction
+        let min_overlap = overlap_left.min(overlap_right).min(overlap_top).min(overlap_bottom);
+
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
+          if min_overlap == overlap_left && vel_x > 0.0 {
+            // Push left
+            transform.x = barrier_left - PLAYER_SIZE;
+          } else if min_overlap == overlap_right && vel_x < 0.0 {
+            // Push right
+            transform.x = barrier_right;
+          } else if min_overlap == overlap_top && vel_y > 0.0 {
+            // Push up (landing on top)
+            transform.y = barrier_top - PLAYER_SIZE;
+            drop(transform);
+            if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
+              velocity.y = 0.0;
+            }
+            if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
+              player.is_grounded = true;
+            }
+          } else if min_overlap == overlap_bottom && vel_y < 0.0 {
+            // Push down (hitting from below)
+            transform.y = barrier_bottom;
+            drop(transform);
+            if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
+              velocity.y = 0.0;
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  fn update_barriers(&mut self, ctx: &mut SceneContext, dt: f32) {
+    for &barrier_entity in &self.barriers {
+      let Some(mut transform) = ctx.world.get_mut::<Transform>(barrier_entity) else {
+        continue;
+      };
+      let Some(mut barrier) = ctx.world.get_mut::<Barrier>(barrier_entity) else {
+        continue;
+      };
+
+      // Move barrier
+      transform.y += barrier.velocity_y * dt;
+
+      // Bounce at bounds
+      if transform.y <= barrier.min_y {
+        transform.y = barrier.min_y;
+        barrier.velocity_y = barrier.velocity_y.abs();
+      } else if transform.y >= barrier.max_y {
+        transform.y = barrier.max_y;
+        barrier.velocity_y = -barrier.velocity_y.abs();
+      }
+    }
+  }
+
   fn update_turrets(&mut self, ctx: &mut SceneContext, dt: f32) {
     let turrets_to_update: Vec<_> = self.turrets.to_vec();
 
@@ -403,7 +585,7 @@ impl GameScene {
       let my_side = turret.side;
       let my_dir = turret.move_direction;
 
-      for &(other_entity, other_y, other_side, _other_dir) in &turret_data {
+      for &(other_entity, other_y, other_side, _) in &turret_data {
         if other_entity == turret_entity || other_side != my_side {
           continue;
         }
@@ -411,8 +593,7 @@ impl GameScene {
         // Check if turrets overlap (within TURRET_SIZE of each other)
         let dist = (my_y - other_y).abs();
         if dist < TURRET_SIZE {
-          // Only bounce if moving towards each other
-          // Moving towards = I'm below them and moving up, or I'm above them and moving down
+          // Only bounce if moving towards the other turret
           let moving_towards =
             (my_y < other_y && my_dir > 0.0) || (my_y > other_y && my_dir < 0.0);
 
@@ -495,7 +676,9 @@ impl GameScene {
     let bullet = ctx.world.spawn((
       // Center the bullet sprite using anchor
       Transform::new(x, y).with_anchor(Anchor::Center),
-      Renderable::sprite(sprite).with_z_order(Z_BULLET),
+      Renderable::sprite(sprite)
+        .with_z_order(Z_BULLET)
+        .with_shader(SpriteShader::outline(Color::rgb(255, 220, 50), 1)),
       Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
       Bullet::new(velocity_x, velocity_y),
       // Trail effect for bullets - dark red trail that tapers to nothing
@@ -555,6 +738,14 @@ impl GameScene {
 
       // Check collision with platforms
       if self.check_bullet_platform_collision(ctx, bx, by) {
+        self.create_explosion(ctx, bx, by);
+        bullets_to_remove.push(i);
+        ctx.world.despawn(bullet_entity).ok();
+        continue;
+      }
+
+      // Check collision with barriers
+      if self.check_bullet_barrier_collision(ctx, bx, by) {
         self.create_explosion(ctx, bx, by);
         bullets_to_remove.push(i);
         ctx.world.despawn(bullet_entity).ok();
@@ -618,6 +809,32 @@ impl GameScene {
         && bx - bullet_half < platform_right
         && by + bullet_half > platform_top
         && by - bullet_half < platform_bottom
+      {
+        return true;
+      }
+    }
+
+    false
+  }
+
+  fn check_bullet_barrier_collision(&self, ctx: &mut SceneContext, bx: f32, by: f32) -> bool {
+    let bullet_half = BULLET_SIZE / 2.0;
+
+    for &barrier_entity in &self.barriers {
+      let Some(barrier_transform) = ctx.world.get::<Transform>(barrier_entity) else {
+        continue;
+      };
+
+      // Barrier drawn from top-left
+      let barrier_left = barrier_transform.x;
+      let barrier_right = barrier_transform.x + BARRIER_WIDTH;
+      let barrier_top = barrier_transform.y;
+      let barrier_bottom = barrier_transform.y + BARRIER_HEIGHT;
+
+      if bx + bullet_half > barrier_left
+        && bx - bullet_half < barrier_right
+        && by + bullet_half > barrier_top
+        && by - bullet_half < barrier_bottom
       {
         return true;
       }
@@ -770,9 +987,10 @@ impl GameScene {
 
 impl Scene for GameScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // Capture screen dimensions from engine
-    self.screen_width = ctx.screen_width();
-    self.screen_height = ctx.screen_height();
+    // Use fixed design resolution for consistent gameplay
+    // Display settings only affect window scaling, not game logic
+    self.screen_width = DESIGN_WIDTH;
+    self.screen_height = DESIGN_HEIGHT;
 
     // Clear world
     ctx.world.clear();
@@ -784,6 +1002,7 @@ impl Scene for GameScene {
     self.bullets.clear();
     self.particles.clear();
     self.platforms.clear();
+    self.barriers.clear();
 
     // Spawn background (scaled to fill screen)
     let bg = self.bg_sprite.clone();
@@ -800,6 +1019,7 @@ impl Scene for GameScene {
 
     // Spawn game entities
     self.spawn_platforms(ctx);
+    self.spawn_barriers(ctx);
     self.spawn_turrets(ctx);
     self.spawn_player(ctx);
 
@@ -810,6 +1030,39 @@ impl Scene for GameScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    // Handle pause toggle
+    if ctx.input.key_pressed(KeyCode::Escape) {
+      if self.settings_open {
+        self.settings_open = false;
+      } else {
+        self.is_paused = !self.is_paused;
+      }
+    }
+
+    // Check if user wants to quit to menu
+    if self.quit_to_menu {
+      self.quit_to_menu = false;
+      return SceneAction::Switch(Box::new(MenuScene::new()));
+    }
+
+    // Check if user wants to quit to desktop
+    if self.quit_to_desktop {
+      return SceneAction::Quit;
+    }
+
+    // Apply display mode if requested
+    if self.apply_settings {
+      self.apply_settings = false;
+      let modes = DisplayMode::all();
+      let display_mode = modes[self.selected_display_mode_idx];
+      ctx.request_display_mode(display_mode);
+    }
+
+    // If paused, skip game logic
+    if self.is_paused {
+      return SceneAction::Continue;
+    }
+
     self.survival_time += dt;
 
     // Update progression
@@ -849,6 +1102,7 @@ impl Scene for GameScene {
 
     self.update_player(ctx, dt);
     self.update_turrets(ctx, dt);
+    self.update_barriers(ctx, dt);
     self.update_bullets(ctx, dt);
     self.update_particles(ctx, dt);
 
@@ -859,28 +1113,23 @@ impl Scene for GameScene {
       return SceneAction::Continue;
     }
 
-    // ESC to return to menu
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Switch(Box::new(super::MenuScene::new()));
-    }
-
     SceneAction::Continue
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) {
-    let (screen_w, _screen_h) = ui.screen_size();
+    let (screen_w, screen_h) = ui.screen_size();
 
     // Use cached player state
     let lives = self.player_lives;
     let invincible = self.player_invincible;
 
-    // Lives - dark red with semi-transparent background for visibility
+    // Lives - white text with semi-transparent background for visibility
     let lives_text = format!("Lives: {}", lives);
-    ui.label(&lives_text, 20.0, 20.0, Color::rgb(180, 40, 40), Some(Color::new(0, 0, 0, 150)));
+    ui.label(&lives_text, 20.0, 20.0, Color::WHITE, Some(Color::new(0, 0, 0, 150)));
 
-    // Survival time - dark text with background for visibility on beige
+    // Survival time - white text with background for visibility
     let time_text = format!("Time: {:.1}s", self.survival_time);
-    ui.label(&time_text, 20.0, 50.0, Color::rgb(40, 80, 40), Some(Color::new(0, 0, 0, 150)));
+    ui.label(&time_text, 20.0, 50.0, Color::WHITE, Some(Color::new(0, 0, 0, 150)));
 
     // Hit indicator
     if invincible {
@@ -892,6 +1141,135 @@ impl Scene for GameScene {
         200.0,
         Color::rgb(255, 50, 50),
       );
+    }
+
+    // Pause menu
+    if self.is_paused {
+      self.render_pause_menu(ui, screen_w as f32, screen_h as f32);
+    }
+  }
+}
+
+// Helper methods for pause menu (not part of Scene trait)
+impl GameScene {
+  fn render_pause_menu(&mut self, ui: &mut UiContext, screen_w: f32, screen_h: f32) {
+    // Darken background
+    ui.draw_rect(
+      Rect::new(0.0, 0.0, screen_w, screen_h),
+      Color::new(0, 0, 0, 180),
+    );
+
+    let center_x = screen_w / 2.0;
+    let center_y = screen_h / 2.0;
+
+    if self.settings_open {
+      // Settings modal - simplified to just display mode
+      // Game uses fixed 1920x1080 design resolution, window can be freely resized
+      let modal_w = 400.0;
+      let modal_h = 180.0;
+      let modal_x = center_x - modal_w / 2.0;
+      let modal_y = center_y - modal_h / 2.0;
+
+      // Modal background
+      ui.draw_rect(
+        Rect::new(modal_x, modal_y, modal_w, modal_h),
+        Color::rgb(40, 40, 50),
+      );
+      ui.draw_rect_outline(
+        Rect::new(modal_x, modal_y, modal_w, modal_h),
+        Color::rgb(100, 100, 120),
+        2.0,
+      );
+
+      // Settings title
+      let title = "SETTINGS";
+      let (title_w, _) = ui.text_size(title);
+      ui.draw_text(title, center_x - title_w as f32 / 2.0, modal_y + 20.0, Color::WHITE);
+
+      // Display mode options
+      let mode_y = modal_y + 55.0;
+      ui.draw_text("Display Mode:", modal_x + 20.0, mode_y, Color::rgb(180, 180, 180));
+
+      let modes = DisplayMode::all();
+      for (i, mode) in modes.iter().enumerate() {
+        let btn_x = modal_x + 20.0 + i as f32 * 120.0;
+        let btn_y = mode_y + 25.0;
+        let btn_rect = Rect::new(btn_x, btn_y, 110.0, 28.0);
+
+        let is_selected = i == self.selected_display_mode_idx;
+        let (bg, hover, pressed) = if is_selected {
+          (Color::rgb(60, 100, 60), Color::rgb(70, 110, 70), Color::rgb(50, 90, 50))
+        } else {
+          (Color::rgb(50, 50, 60), Color::rgb(60, 60, 70), Color::rgb(40, 40, 50))
+        };
+
+        if ui.button_styled(mode.display_name(), btn_rect, bg, hover, pressed, Color::WHITE) {
+          self.selected_display_mode_idx = i;
+        }
+      }
+
+      // Apply and Back buttons
+      let btn_y = modal_y + modal_h - 50.0;
+      let apply_rect = Rect::new(center_x - 110.0, btn_y, 100.0, 35.0);
+      let back_rect = Rect::new(center_x + 10.0, btn_y, 100.0, 35.0);
+
+      if ui.button_styled("Apply", apply_rect,
+        Color::rgb(50, 80, 50), Color::rgb(60, 100, 60), Color::rgb(40, 70, 40), Color::WHITE) {
+        // Save display mode to system.json for next launch
+        let display_mode = modes[self.selected_display_mode_idx];
+        crate::save::save_display_mode(display_mode);
+        // Flag to apply changes at runtime (processed in update)
+        self.apply_settings = true;
+        self.settings_open = false;
+      }
+
+      if ui.button_styled("Back", back_rect,
+        Color::rgb(70, 50, 50), Color::rgb(90, 60, 60), Color::rgb(60, 40, 40), Color::WHITE) {
+        self.settings_open = false;
+      }
+    } else {
+      // Main pause menu
+      let title = "PAUSED";
+      let (title_w, _) = ui.text_size(title);
+      ui.draw_text(title, center_x - title_w as f32 / 2.0, center_y - 100.0, Color::WHITE);
+
+      let btn_w = 200.0;
+      let btn_h = 40.0;
+      let btn_x = center_x - btn_w / 2.0;
+
+      // Resume button
+      let resume_rect = Rect::new(btn_x, center_y - 50.0, btn_w, btn_h);
+      if ui.button_styled("Resume", resume_rect,
+        Color::rgb(50, 70, 50), Color::rgb(60, 90, 60), Color::rgb(40, 60, 40), Color::WHITE) {
+        self.is_paused = false;
+      }
+
+      // Settings button
+      let settings_rect = Rect::new(btn_x, center_y, btn_w, btn_h);
+      if ui.button_styled("Settings", settings_rect,
+        Color::rgb(50, 50, 70), Color::rgb(60, 60, 90), Color::rgb(40, 40, 60), Color::WHITE) {
+        self.settings_open = true;
+      }
+
+      // Quit to Menu button
+      let quit_menu_rect = Rect::new(btn_x, center_y + 50.0, btn_w, btn_h);
+      if ui.button_styled("Quit to Menu", quit_menu_rect,
+        Color::rgb(70, 60, 50), Color::rgb(90, 80, 60), Color::rgb(60, 50, 40), Color::WHITE) {
+        self.is_paused = false;
+        self.quit_to_menu = true;
+      }
+
+      // Quit to Desktop button
+      let quit_desktop_rect = Rect::new(btn_x, center_y + 100.0, btn_w, btn_h);
+      if ui.button_styled("Quit to Desktop", quit_desktop_rect,
+        Color::rgb(70, 50, 50), Color::rgb(90, 60, 60), Color::rgb(60, 40, 40), Color::WHITE) {
+        self.quit_to_desktop = true;
+      }
+
+      // Instructions
+      let hint = "Press ESC to resume";
+      let (hint_w, _) = ui.text_size(hint);
+      ui.draw_text(hint, center_x - hint_w as f32 / 2.0, center_y + 170.0, Color::rgb(150, 150, 150));
     }
   }
 }

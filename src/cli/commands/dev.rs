@@ -14,11 +14,16 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     return Ok(());
   }
 
+  // Check for --skip-opt-check flag (used by engine run scripts for examples)
+  let skip_opt_check = args.iter().any(|a| a == "--skip-opt-check");
+
   let workspace = discover_workspace()?;
   let project_name = workspace.name();
 
-  // Check for dev profile optimization
-  check_dev_profile_optimization(&workspace)?;
+  // Check for dev profile optimization (unless skipped)
+  if !skip_opt_check {
+    check_dev_profile_optimization(&workspace)?;
+  }
 
   Output::status("Starting", &format!("{} in dev mode...", project_name));
 
@@ -136,7 +141,8 @@ USAGE:
     ryo2d dev [OPTIONS]
 
 OPTIONS:
-    -h, --help    Show this help message
+    -h, --help          Show this help message
+    --skip-opt-check    Skip the dev profile optimization check
 
 DESCRIPTION:
     Runs your game in development mode with:
