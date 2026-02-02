@@ -163,7 +163,9 @@ impl GameScene {
     ground_transform.scale_x = sw / 800.0; // Scale from 800px base
     let ground = ctx.world.spawn((
       ground_transform,
-      Renderable::sprite(sprite.clone()).with_z_order(Z_PLATFORM),
+      Renderable::sprite(sprite.clone())
+        .with_z_order(Z_PLATFORM)
+        .with_shader(SpriteShader::platform_outline(2)),
       Collider::box_collider(800.0, PLATFORM_THICKNESS),
       Platform,
     ));
@@ -209,7 +211,9 @@ impl GameScene {
       transform.scale_x = width / 800.0; // Scale from 800px base sprite
       let platform = ctx.world.spawn((
         transform,
-        Renderable::sprite(sprite.clone()).with_z_order(Z_PLATFORM),
+        Renderable::sprite(sprite.clone())
+          .with_z_order(Z_PLATFORM)
+          .with_shader(SpriteShader::platform_outline(2)),
         // Collider uses base sprite dimensions; transform.scale_x applies to both
         // sprite rendering and collision detection
         Collider::box_collider(800.0, PLATFORM_THICKNESS),
@@ -225,6 +229,9 @@ impl GameScene {
     let sh = self.screen_height;
     let sw = self.screen_width;
 
+    // Stagger offset for right-side turrets so sounds play back-to-back
+    let stagger_delay = 0.3;
+
     // Left side turrets - flush against left wall
     for _ in 0..TURRETS_PER_SIDE {
       let y = rng.gen_range(100.0..(sh - 100.0));
@@ -239,10 +246,10 @@ impl GameScene {
       self.turrets.push(turret);
     }
 
-    // Right side turrets - flush against right wall
+    // Right side turrets - flush against right wall (staggered spawn)
     for _ in 0..TURRETS_PER_SIDE {
       let y = rng.gen_range(100.0..(sh - 100.0));
-      let turret = ctx.world.spawn((
+      let turret_entity = ctx.world.spawn((
         Transform::new(sw - TURRET_SIZE, y),
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_TURRET)
@@ -250,7 +257,11 @@ impl GameScene {
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Right),
       ));
-      self.turrets.push(turret);
+      // Add stagger delay to right-side turrets
+      if let Some(mut turret) = ctx.world.get_mut::<Turret>(turret_entity) {
+        turret.spawn_timer += stagger_delay;
+      }
+      self.turrets.push(turret_entity);
     }
   }
 
@@ -267,7 +278,7 @@ impl GameScene {
       Transform::new(center_x - 250.0, min_y + 100.0),
       Renderable::sprite(sprite.clone())
         .with_z_order(Z_BARRIER)
-        .with_shader(SpriteShader::outline(Color::rgb(80, 80, 90), 2)),
+        .with_shader(SpriteShader::white_outline(2)),
       Barrier::new(BARRIER_SPEED, min_y, max_y),
     ));
     self.barriers.push(left_barrier);
@@ -277,13 +288,16 @@ impl GameScene {
       Transform::new(center_x + 250.0 - BARRIER_WIDTH, max_y - 100.0),
       Renderable::sprite(sprite.clone())
         .with_z_order(Z_BARRIER)
-        .with_shader(SpriteShader::outline(Color::rgb(80, 80, 90), 2)),
+        .with_shader(SpriteShader::white_outline(2)),
       Barrier::new(-BARRIER_SPEED, min_y, max_y),
     ));
     self.barriers.push(right_barrier);
   }
 
   fn update_player(&mut self, ctx: &mut SceneContext, dt: f32) {
+    use crate::components::WallSide;
+    use crate::constants::{WALL_JUMP_FORCE_X, WALL_JUMP_FORCE_Y, WALL_SLIDE_FRICTION};
+
     let Some(player_entity) = self.player else {
       return;
     };
@@ -294,6 +308,9 @@ impl GameScene {
     };
     let was_invincible = player.is_invincible();
     let was_grounded = player.is_grounded;
+    let was_wall_sliding = player.wall_sliding;
+    let can_wall_jump = player.can_wall_jump;
+    let is_wall_jump_locked = player.is_wall_jump_locked();
     player.update(dt);
     let is_invincible = player.is_invincible();
     drop(player);
@@ -326,32 +343,64 @@ impl GameScene {
       return;
     };
 
-    // Horizontal movement
-    let mut move_x = 0.0;
-    if ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft) {
-      move_x -= 1.0;
+    // Horizontal movement (skip if wall jump push is active)
+    if !is_wall_jump_locked {
+      let mut move_x = 0.0;
+      if ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft) {
+        move_x -= 1.0;
+      }
+      if ctx.input.key_down(KeyCode::KeyD) || ctx.input.key_down(KeyCode::ArrowRight) {
+        move_x += 1.0;
+      }
+      velocity.x = move_x * PLAYER_SPEED;
     }
-    if ctx.input.key_down(KeyCode::KeyD) || ctx.input.key_down(KeyCode::ArrowRight) {
-      move_x += 1.0;
-    }
-    velocity.x = move_x * PLAYER_SPEED;
 
-    // Jumping
-    if (ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::KeyW))
-      && was_grounded
-    {
-      velocity.y = -PLAYER_JUMP_FORCE;
-      drop(velocity);
-      if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
-        player.is_grounded = false;
+    let jump_pressed =
+      ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::KeyW);
+
+    // Jumping - normal ground jump or wall jump
+    if jump_pressed {
+      if was_grounded {
+        // Normal ground jump
+        velocity.y = -PLAYER_JUMP_FORCE;
+        drop(velocity);
+        if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
+          player.is_grounded = false;
+          player.wall_sliding = None;
+        }
+      } else if can_wall_jump && was_wall_sliding.is_some() {
+        // Wall jump - push away from wall with forced momentum
+        let wall_side = was_wall_sliding.unwrap();
+        velocity.y = -WALL_JUMP_FORCE_Y;
+        velocity.x = match wall_side {
+          WallSide::Left => WALL_JUMP_FORCE_X,   // Push right
+          WallSide::Right => -WALL_JUMP_FORCE_X, // Push left
+        };
+        drop(velocity);
+        if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
+          player.start_wall_jump(); // Sets cooldown to prevent horizontal override
+          player.wall_sliding = None;
+        }
+      } else {
+        drop(velocity);
       }
     } else {
       drop(velocity);
     }
 
-    // Apply gravity
-    if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
-      velocity.y += GRAVITY * dt;
+    // Check if player is standing on a moving barrier and ride it
+    let riding_barrier = self.apply_barrier_riding(ctx, player_entity, dt);
+
+    // Apply gravity (skip if riding a barrier - they're supported)
+    if !riding_barrier {
+      if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
+        velocity.y += GRAVITY * dt;
+
+        // Apply wall slide friction if sliding
+        if was_wall_sliding.is_some() && velocity.y > 0.0 {
+          velocity.y *= WALL_SLIDE_FRICTION;
+        }
+      }
     }
 
     // Apply velocity to transform
@@ -363,15 +412,58 @@ impl GameScene {
     };
 
     transform.x += velocity.x * dt;
-    transform.y += velocity.y * dt;
+    // Only apply vertical velocity if not riding (barrier movement already applied)
+    if !riding_barrier {
+      transform.y += velocity.y * dt;
+    }
 
-    // Screen bounds (sprite draws from top-left, so clamp to keep fully on screen)
-    transform.x = transform.x.clamp(0.0, self.screen_width - PLAYER_SIZE);
-
-    let _tx = transform.x;
+    let tx = transform.x;
     let ty = transform.y;
+    let vel_y = velocity.y;
     drop(velocity);
     drop(transform);
+
+    // Wall slide detection - check if player is against screen edge walls or barriers and falling
+    // Player must be pressing towards the wall to initiate wall slide
+    let pressing_left =
+      ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft);
+    let pressing_right =
+      ctx.input.key_down(KeyCode::KeyD) || ctx.input.key_down(KeyCode::ArrowRight);
+
+    let mut new_wall_slide: Option<WallSide> = None;
+    if vel_y > 0.0 && !was_grounded {
+      // Falling and not grounded
+      if tx <= 0.0 && pressing_left {
+        // Against left screen wall and pressing into it
+        new_wall_slide = Some(WallSide::Left);
+      } else if tx >= self.screen_width - PLAYER_SIZE && pressing_right {
+        // Against right screen wall and pressing into it
+        new_wall_slide = Some(WallSide::Right);
+      } else {
+        // Check if against a barrier (moving vertical platform)
+        new_wall_slide = self.check_wall_slide_on_barrier(ctx, player_entity);
+      }
+    }
+
+    // Update wall slide state
+    if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
+      if new_wall_slide.is_some() && was_wall_sliding.is_none() {
+        // Just started wall sliding - can wall jump
+        player.can_wall_jump = true;
+      }
+      player.wall_sliding = new_wall_slide;
+
+      // Reset wall jump ability when grounded
+      if player.is_grounded {
+        player.wall_sliding = None;
+        player.can_wall_jump = false;
+      }
+    }
+
+    // Screen bounds (sprite draws from top-left, so clamp to keep fully on screen)
+    if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
+      transform.x = transform.x.clamp(0.0, self.screen_width - PLAYER_SIZE);
+    }
 
     // Ground collision (sprite draws from top-left, so bottom edge is at y + PLAYER_SIZE)
     if ty >= self.screen_height - PLAYER_SIZE - 30.0 {
@@ -384,11 +476,13 @@ impl GameScene {
       }
       if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
         player.is_grounded = true;
+        player.wall_sliding = None;
       }
     } else {
-      // Check platform and barrier collisions
+      // Check platform, barrier, and turret collisions
       self.check_player_platform_collision(ctx, player_entity);
       self.check_player_barrier_collision(ctx, player_entity);
+      self.check_player_turret_collision(ctx, player_entity);
     }
   }
 
@@ -470,11 +564,18 @@ impl GameScene {
       let Some(barrier_transform) = ctx.world.get::<Transform>(barrier_entity) else {
         continue;
       };
+      let barrier_vel_y = ctx
+        .world
+        .get::<Barrier>(barrier_entity)
+        .map(|b| b.velocity_y)
+        .unwrap_or(0.0);
 
       let barrier_left = barrier_transform.x;
       let barrier_right = barrier_transform.x + BARRIER_WIDTH;
       let barrier_top = barrier_transform.y;
       let barrier_bottom = barrier_transform.y + BARRIER_HEIGHT;
+
+      drop(barrier_transform);
 
       // Check AABB collision
       if player_right > barrier_left
@@ -506,7 +607,8 @@ impl GameScene {
             transform.y = barrier_top - PLAYER_SIZE;
             drop(transform);
             if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
-              velocity.y = 0.0;
+              // Inherit the barrier's vertical velocity so player moves with it
+              velocity.y = barrier_vel_y;
             }
             if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
               player.is_grounded = true;
@@ -521,6 +623,179 @@ impl GameScene {
           }
         }
         break;
+      }
+    }
+  }
+
+  /// Check if player is standing on a barrier and apply its movement
+  /// Returns true if player is riding a barrier (gravity should be skipped)
+  fn apply_barrier_riding(
+    &self,
+    ctx: &mut SceneContext,
+    player_entity: Entity,
+    dt: f32,
+  ) -> bool {
+    let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
+      return false;
+    };
+
+    let player_left = player_transform.x;
+    let player_right = player_transform.x + PLAYER_SIZE;
+    let player_bottom = player_transform.y + PLAYER_SIZE;
+
+    drop(player_transform);
+
+    // Tolerance for "standing on" detection
+    let tolerance = 2.0;
+
+    for &barrier_entity in &self.barriers {
+      let Some(barrier_transform) = ctx.world.get::<Transform>(barrier_entity) else {
+        continue;
+      };
+      let Some(barrier) = ctx.world.get::<Barrier>(barrier_entity) else {
+        continue;
+      };
+
+      let barrier_left = barrier_transform.x;
+      let barrier_right = barrier_transform.x + BARRIER_WIDTH;
+      let barrier_top = barrier_transform.y;
+      let barrier_vel_y = barrier.velocity_y;
+
+      drop(barrier_transform);
+      drop(barrier);
+
+      // Check if player is standing on top of this barrier
+      // Player's bottom must be near barrier's top, and horizontally overlapping
+      let on_top = (player_bottom - barrier_top).abs() < tolerance
+        && player_right > barrier_left
+        && player_left < barrier_right;
+
+      if on_top {
+        // Apply barrier's movement to player
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
+          transform.y += barrier_vel_y * dt;
+        }
+        // Keep player grounded and zero vertical velocity
+        if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
+          velocity.y = 0.0;
+        }
+        if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
+          player.is_grounded = true;
+        }
+        return true;
+      }
+    }
+
+    false
+  }
+
+  fn check_wall_slide_on_barrier(
+    &self,
+    ctx: &mut SceneContext,
+    player_entity: Entity,
+  ) -> Option<WallSide> {
+    use crate::components::WallSide;
+
+    let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
+      return None;
+    };
+
+    let player_left = player_transform.x;
+    let player_right = player_transform.x + PLAYER_SIZE;
+    let player_top = player_transform.y;
+    let player_bottom = player_transform.y + PLAYER_SIZE;
+
+    drop(player_transform);
+
+    // Check input direction (player must be pressing towards the barrier)
+    let pressing_right =
+      ctx.input.key_down(KeyCode::KeyD) || ctx.input.key_down(KeyCode::ArrowRight);
+    let pressing_left =
+      ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft);
+
+    // Tolerance for detecting wall contact (larger to account for collision pushback)
+    let tolerance = 12.0;
+
+    for &barrier_entity in &self.barriers {
+      let Some(barrier_transform) = ctx.world.get::<Transform>(barrier_entity) else {
+        continue;
+      };
+
+      let barrier_left = barrier_transform.x;
+      let barrier_right = barrier_transform.x + BARRIER_WIDTH;
+      let barrier_top = barrier_transform.y;
+      let barrier_bottom = barrier_transform.y + BARRIER_HEIGHT;
+
+      // Check if player overlaps vertically with barrier
+      if player_bottom > barrier_top && player_top < barrier_bottom {
+        // Check if player is against left side of barrier (player to the left, pressing right)
+        if player_right >= barrier_left - tolerance
+          && player_right <= barrier_left + tolerance
+          && pressing_right
+        {
+          return Some(WallSide::Right); // Wall is to player's right, jump will go left
+        }
+
+        // Check if player is against right side of barrier (player to the right, pressing left)
+        if player_left <= barrier_right + tolerance
+          && player_left >= barrier_right - tolerance
+          && pressing_left
+        {
+          return Some(WallSide::Left); // Wall is to player's left, jump will go right
+        }
+      }
+    }
+
+    None
+  }
+
+  fn check_player_turret_collision(&mut self, ctx: &mut SceneContext, player_entity: Entity) {
+    let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
+      return;
+    };
+    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
+      return;
+    };
+
+    let player_left = player_transform.x;
+    let player_right = player_transform.x + PLAYER_SIZE;
+    let player_top = player_transform.y;
+    let player_bottom = player_transform.y + PLAYER_SIZE;
+    let falling = player_velocity.y > 0.0;
+
+    drop(player_transform);
+    drop(player_velocity);
+
+    for &turret_entity in &self.turrets {
+      let Some(turret_transform) = ctx.world.get::<Transform>(turret_entity) else {
+        continue;
+      };
+
+      let turret_left = turret_transform.x;
+      let turret_right = turret_transform.x + TURRET_SIZE;
+      let turret_top = turret_transform.y;
+      let turret_bottom = turret_transform.y + TURRET_SIZE;
+
+      // Check AABB collision
+      if player_right > turret_left
+        && player_left < turret_right
+        && player_bottom > turret_top
+        && player_top < turret_bottom
+      {
+        // Landing on top of turret (player can use as platform)
+        if falling && player_bottom <= turret_top + 15.0 {
+          if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
+            transform.y = turret_top - PLAYER_SIZE;
+          }
+          if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
+            velocity.y = 0.0;
+          }
+          if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
+            player.is_grounded = true;
+            player.wall_sliding = None;
+          }
+          break;
+        }
       }
     }
   }
@@ -575,14 +850,44 @@ impl GameScene {
         continue;
       };
 
+      // Update spawn timer and apply dissolve effect while spawning
+      let is_spawning = turret.is_spawning();
+      if is_spawning {
+        let just_finished = turret.update_spawn(dt);
+        let spawn_progress = turret.spawn_progress();
+
+        drop(transform);
+        drop(turret);
+
+        // Apply dissolve shader for spawn effect (reverse progress for spawn-in)
+        if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(turret_entity) {
+          if just_finished {
+            // Finished spawning - restore normal outline shader and play sound
+            renderable.shader = Some(SpriteShader::outline(Color::rgb(40, 40, 40), 2));
+            if let Some(audio) = &mut ctx.audio {
+              let _ = audio.play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15));
+            }
+          } else {
+            // Still spawning - dissolve from invisible to visible with cyan edge glow
+            let dissolve_progress = 1.0 - spawn_progress;
+            renderable.shader =
+              Some(SpriteShader::dissolve_with_edge(dissolve_progress, Color::rgb(100, 200, 255)));
+          }
+        }
+        continue; // Skip movement and shooting while spawning
+      }
+
       // Move up and down using current (progression-scaled) speed
       transform.y += turret.move_direction * self.current_turret_speed * dt;
 
-      // Bounce off screen edges
-      let margin = TURRET_SIZE;
-      if transform.y < margin || transform.y > self.screen_height - margin {
+      // Bounce off screen top and floor platform
+      let top_margin = TURRET_SIZE;
+      let floor_top = self.screen_height - 30.0; // Floor platform top edge
+      let bottom_limit = floor_top - TURRET_SIZE; // Turret can't go below this
+
+      if transform.y < top_margin || transform.y > bottom_limit {
         turret.reverse_direction();
-        transform.y = transform.y.clamp(margin, self.screen_height - margin);
+        transform.y = transform.y.clamp(top_margin, bottom_limit);
       }
 
       // Check collision with other turrets on the same side
@@ -620,7 +925,7 @@ impl GameScene {
       let turret_side = turret.side;
       let max_burst = turret.max_burst_size;
 
-      // Shooting logic
+      // Shooting logic (only when fully spawned)
       if turret.burst_count > 0 {
         turret.burst_timer -= dt;
         if turret.burst_timer <= 0.0 {
@@ -961,6 +1266,9 @@ impl GameScene {
     let sh = self.screen_height;
     let sw = self.screen_width;
 
+    // Stagger offset for right-side turrets so sounds play back-to-back
+    let stagger_delay = 0.3;
+
     for _ in 0..count {
       // Left side turret - flush against left wall
       let y = rng.gen_range(100.0..(sh - 100.0));
@@ -974,9 +1282,9 @@ impl GameScene {
       ));
       self.turrets.push(turret);
 
-      // Right side turret - flush against right wall
+      // Right side turret - flush against right wall (staggered spawn)
       let y = rng.gen_range(100.0..(sh - 100.0));
-      let turret = ctx.world.spawn((
+      let turret_entity = ctx.world.spawn((
         Transform::new(sw - TURRET_SIZE, y),
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_TURRET)
@@ -984,7 +1292,11 @@ impl GameScene {
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Right),
       ));
-      self.turrets.push(turret);
+      // Add stagger delay to right-side turrets
+      if let Some(mut turret) = ctx.world.get_mut::<Turret>(turret_entity) {
+        turret.spawn_timer += stagger_delay;
+      }
+      self.turrets.push(turret_entity);
     }
   }
 }
@@ -995,6 +1307,11 @@ impl Scene for GameScene {
     // Display settings only affect window scaling, not game logic
     self.screen_width = DESIGN_WIDTH;
     self.screen_height = DESIGN_HEIGHT;
+
+    // Load sound effects
+    if let Some(audio) = &mut ctx.audio {
+      let _ = audio.load_sound("enemy-spawn", "assets/enemy-spawn.wav");
+    }
 
     // Clear world
     ctx.world.clear();
@@ -1127,22 +1444,24 @@ impl Scene for GameScene {
     let lives = self.player_lives;
     let invincible = self.player_invincible;
 
-    // Lives - white text with semi-transparent background for visibility
-    let lives_text = format!("Lives: {}", lives);
-    ui.label(
-      &lives_text,
-      20.0,
-      20.0,
-      Color::WHITE,
-      Some(Color::new(0, 0, 0, 150)),
-    );
+    // Lives - draw 3 hearts (red = alive, grey = lost)
+    let heart_size = 44.0;
+    let heart_spacing = 16.0;
+    let hearts_x = 40.0;
+    let hearts_y = 40.0;
 
-    // Survival time - white text with background for visibility
+    for i in 0..PLAYER_MAX_LIVES {
+      let x = hearts_x + i as f32 * (heart_size + heart_spacing);
+      let has_life = i < lives;
+      self.draw_heart(ui, x, hearts_y, heart_size, has_life, invincible);
+    }
+
+    // Survival time - positioned below hearts
     let time_text = format!("Time: {:.1}s", self.survival_time);
     ui.label(
       &time_text,
-      20.0,
-      50.0,
+      40.0,
+      hearts_y + heart_size + 20.0,
       Color::WHITE,
       Some(Color::new(0, 0, 0, 150)),
     );
@@ -1166,8 +1485,109 @@ impl Scene for GameScene {
   }
 }
 
-// Helper methods for pause menu (not part of Scene trait)
+// Helper methods for UI rendering (not part of Scene trait)
 impl GameScene {
+  /// Draw a pixelated heart icon
+  fn draw_heart(
+    &self,
+    ui: &mut UiContext,
+    x: f32,
+    y: f32,
+    size: f32,
+    filled: bool,
+    flashing: bool,
+  ) {
+    // Colors - apply flash effect when hit
+    let fill_color = if filled {
+      if flashing {
+        // Pulsing flash effect using survival_time for animation
+        let pulse = (self.survival_time * 10.0).sin().abs();
+        let base_r = 220u8;
+        let base_g = 50u8;
+        let base_b = 50u8;
+        // Flash towards white
+        let flash_r = base_r.saturating_add((pulse * 35.0) as u8);
+        let flash_g = base_g.saturating_add((pulse * 200.0) as u8);
+        let flash_b = base_b.saturating_add((pulse * 200.0) as u8);
+        Color::rgb(flash_r, flash_g, flash_b)
+      } else {
+        Color::rgb(220, 50, 50) // Red for alive
+      }
+    } else {
+      Color::rgb(140, 130, 120) // Beige/grey for lost
+    };
+    let border_color = Color::rgb(60, 50, 50); // Dark border
+
+    // Scale factor (heart pattern is 9x8 base)
+    let scale = size / 9.0;
+    let px = scale; // Pixel size
+
+    // Classic pixel heart pattern (9 wide, 8 tall)
+    // 1 = filled, 0 = empty
+    #[rustfmt::skip]
+    let pattern: [[u8; 9]; 8] = [
+      [0, 1, 1, 0, 0, 0, 1, 1, 0], // Row 0: two bumps
+      [1, 1, 1, 1, 1, 1, 1, 1, 1], // Row 1
+      [1, 1, 1, 1, 1, 1, 1, 1, 1], // Row 2
+      [1, 1, 1, 1, 1, 1, 1, 1, 1], // Row 3
+      [0, 1, 1, 1, 1, 1, 1, 1, 0], // Row 4
+      [0, 0, 1, 1, 1, 1, 1, 0, 0], // Row 5
+      [0, 0, 0, 1, 1, 1, 0, 0, 0], // Row 6
+      [0, 0, 0, 0, 1, 0, 0, 0, 0], // Row 7
+    ];
+
+    // Draw border first (slightly larger)
+    let border_offset = 1.0;
+    for (row_idx, row) in pattern.iter().enumerate() {
+      for (col_idx, &pixel) in row.iter().enumerate() {
+        if pixel == 1 {
+          let px_x = x + col_idx as f32 * px;
+          let px_y = y + row_idx as f32 * px;
+          // Draw border by checking if any neighbor is empty
+          let has_empty_neighbor = Self::has_empty_neighbor(&pattern, row_idx, col_idx);
+          if has_empty_neighbor {
+            ui.draw_rect(
+              Rect::new(
+                px_x - border_offset,
+                px_y - border_offset,
+                px + border_offset * 2.0,
+                px + border_offset * 2.0,
+              ),
+              border_color,
+            );
+          }
+        }
+      }
+    }
+
+    // Draw fill
+    for (row_idx, row) in pattern.iter().enumerate() {
+      for (col_idx, &pixel) in row.iter().enumerate() {
+        if pixel == 1 {
+          let px_x = x + col_idx as f32 * px;
+          let px_y = y + row_idx as f32 * px;
+          ui.draw_rect(Rect::new(px_x, px_y, px, px), fill_color);
+        }
+      }
+    }
+  }
+
+  /// Check if a pixel in the heart pattern has an empty neighbor
+  fn has_empty_neighbor(pattern: &[[u8; 9]; 8], row: usize, col: usize) -> bool {
+    let directions: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+    for (dr, dc) in directions {
+      let nr = row as i32 + dr;
+      let nc = col as i32 + dc;
+      if nr < 0 || nr >= 8 || nc < 0 || nc >= 9 {
+        return true; // Edge of pattern counts as empty
+      }
+      if pattern[nr as usize][nc as usize] == 0 {
+        return true;
+      }
+    }
+    false
+  }
+
   fn render_pause_menu(&mut self, ui: &mut UiContext, screen_w: f32, screen_h: f32) {
     // Darken background
     ui.draw_rect(

@@ -11,7 +11,7 @@ use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::config::{self as debug, DebugConfig, DisplayMode, FrameTimings, SmoothedFrameTimings};
 use super::ecs::{
-  Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
+  Entity, RenderStyle, Renderable, SpriteShader, Transform, Tween, Velocity, World, WorldTransform,
 };
 use super::error::{EngineError, EngineResult};
 use super::events::{CollisionStarted, CollisionStopped, Events};
@@ -589,6 +589,29 @@ impl Engine {
       }
     }
 
+    // --- Tween System ---
+    // Update all Tween components and apply to Transform
+    for entity in self.world.entities_with::<Tween>() {
+      // Check if tween is playing before borrowing mutably
+      let should_update = self
+        .world
+        .get_component::<Tween>(entity)
+        .is_some_and(|t| t.playing);
+
+      if !should_update {
+        continue;
+      }
+
+      // Get transform and tween together for update
+      if let (Some(mut transform), Some(mut tween)) = (
+        self.world.get_component_mut::<Transform>(entity),
+        self.world.get_component_mut::<Tween>(entity),
+      ) {
+        tween.update(_dt, &mut transform);
+        self.render_cache_dirty = true;
+      }
+    }
+
     // --- Game Logic Update ---
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
@@ -740,11 +763,11 @@ impl Engine {
       None => return,
     };
 
-    // Fill background with warm cream (game area only - letterbox is handled by clear color)
+    // Fill background with dark charcoal (game area only - letterbox is handled by clear color)
     for pixel in frame.chunks_exact_mut(4) {
-      pixel[0] = 0xf5; // R: 245
-      pixel[1] = 0xf4; // G: 244
-      pixel[2] = 0xef; // B: 239
+      pixel[0] = 0x2d; // R: 45
+      pixel[1] = 0x2d; // G: 45
+      pixel[2] = 0x2d; // B: 45
       pixel[3] = 0xff; // A: 255
     }
 
@@ -867,6 +890,7 @@ impl Engine {
                 effect.apply_cpu(sprite.data(), src_width, src_height);
 
               // For expanded sprites (outline/glow), we need to adjust position to keep sprite centered
+              // Use round() instead of truncation to avoid asymmetric clipping with non-uniform scales
               let offset_x = ((new_width as i32 - src_width as i32) / 2) as f32 * final_scale_x;
               let offset_y = ((new_height as i32 - src_height as i32) / 2) as f32 * final_scale_y;
 
@@ -875,8 +899,8 @@ impl Engine {
                 frame,
                 frame_width,
                 frame_height,
-                screen_x as i32 - offset_x as i32,
-                screen_y as i32 - offset_y as i32,
+                screen_x as i32 - offset_x.round() as i32,
+                screen_y as i32 - offset_y.round() as i32,
                 final_scale_x,
                 final_scale_y,
                 rotation_deg,

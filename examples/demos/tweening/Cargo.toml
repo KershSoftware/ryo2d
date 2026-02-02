@@ -1,0 +1,11 @@
+[package]
+name = "tweening"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ryo2d = { path = "../../../" }
+
+[[bin]]
+name = "tweening"
+path = "main.rs"

@@ -575,6 +575,98 @@ pub enum PlaybackState {
 }
 ```
 
+### Tween
+
+Component for animating Transform properties over time:
+
+```rust
+pub struct Tween {
+    // Target values (None = don't animate)
+    pub target_x: Option<f32>,
+    pub target_y: Option<f32>,
+    pub target_rotation: Option<f32>,
+    pub target_scale_x: Option<f32>,
+    pub target_scale_y: Option<f32>,
+
+    pub duration: f32,      // Seconds
+    pub delay: f32,         // Seconds before starting
+    pub easing: Ease,       // Easing function
+    pub loop_mode: TweenLoop,
+    pub playing: bool,
+    pub just_finished: bool,  // True for one frame on completion
+}
+
+impl Tween {
+    // Constructors
+    fn new(duration: f32) -> Self;
+    fn to_position(x: f32, y: f32, duration: f32) -> Self;
+    fn to_rotation(rotation: f32, duration: f32) -> Self;
+    fn to_scale(scale_x: f32, scale_y: f32, duration: f32) -> Self;
+    fn to_uniform_scale(scale: f32, duration: f32) -> Self;
+
+    // Builder methods
+    fn to_x(self, x: f32) -> Self;
+    fn to_y(self, y: f32) -> Self;
+    fn to_rotation_value(self, rotation: f32) -> Self;
+    fn to_scale_x(self, scale_x: f32) -> Self;
+    fn to_scale_y(self, scale_y: f32) -> Self;
+    fn with_easing(self, easing: Ease) -> Self;
+    fn with_delay(self, delay: f32) -> Self;
+    fn with_loop(self, loop_mode: TweenLoop) -> Self;
+
+    // Control
+    fn pause(&mut self);
+    fn resume(&mut self);
+    fn stop(&mut self);        // Reset to beginning
+    fn restart(&mut self);     // Stop + play
+
+    // State
+    fn is_finished(&self) -> bool;
+    fn progress(&self) -> f32;  // 0.0 to 1.0
+}
+```
+
+### Ease
+
+Easing functions for interpolation:
+
+```rust
+pub enum Ease {
+    Linear,
+    // Quad
+    InQuad, OutQuad, InOutQuad,
+    // Cubic
+    InCubic, OutCubic, InOutCubic,
+    // Quart
+    InQuart, OutQuart, InOutQuart,
+    // Sine
+    InSine, OutSine, InOutSine,
+    // Expo
+    InExpo, OutExpo, InOutExpo,
+    // Back (overshoot)
+    InBack, OutBack, InOutBack,
+    // Elastic
+    InElastic, OutElastic, InOutElastic,
+    // Bounce
+    InBounce, OutBounce, InOutBounce,
+}
+
+impl Ease {
+    fn apply(&self, t: f32) -> f32;  // t in [0,1], returns eased value
+}
+```
+
+### TweenLoop
+
+```rust
+pub enum TweenLoop {
+    Once,           // Play once, stop
+    Loop,           // Repeat forever
+    PingPong,       // Forward then backward
+    Times(u32),     // Repeat n times
+}
+```
+
 ### AnimationController
 
 State machine for complex animation logic:
@@ -903,6 +995,166 @@ pub type AssetResult<T> = Result<T, AssetError>;
 pub type AudioResult<T> = Result<T, AudioError>;
 pub type SpriteResult<T> = Result<T, SpriteError>;
 pub type SaveResult<T> = Result<T, SaveError>;
+```
+
+---
+
+## Networking
+
+### Server Types
+
+```rust
+// Dedicated server (no local player)
+impl NetworkServer {
+    fn new(config: NetworkServerConfig) -> Result<Self, NetworkError>;
+    fn update(&mut self, dt: Duration);
+    fn events(&mut self) -> impl Iterator<Item = NetworkEvent>;
+    fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]);
+    fn broadcast(&mut self, channel: Channel, data: &[u8]);
+    fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>>;
+    fn clients(&self) -> impl Iterator<Item = ClientId>;
+    fn disconnect_client(&mut self, client_id: ClientId);
+}
+
+// Player-hosted server (host plays while serving)
+impl ListenServer {
+    fn new(config: NetworkServerConfig) -> Result<Self, NetworkError>;
+    fn update(&mut self, dt: Duration);
+    fn events(&mut self) -> impl Iterator<Item = NetworkEvent>;
+    fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]);
+    fn broadcast(&mut self, channel: Channel, data: &[u8]);
+    fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>>;
+    fn host_id(&self) -> ClientId;           // Host's virtual ID (always 0)
+    fn is_host(&self, id: ClientId) -> bool;
+    fn all_clients(&self) -> impl Iterator<Item = ClientId>;     // Host + remotes
+    fn remote_clients(&self) -> impl Iterator<Item = ClientId>;  // Only remotes
+    fn player_count(&self) -> usize;         // Includes host
+}
+
+// Client connecting to a server
+impl NetworkClient {
+    fn connect(config: NetworkClientConfig) -> Result<Self, NetworkError>;
+    fn update(&mut self, dt: Duration);
+    fn events(&mut self) -> impl Iterator<Item = NetworkEvent>;
+    fn send(&mut self, channel: Channel, data: &[u8]);
+    fn receive(&mut self, channel: Channel) -> Option<Vec<u8>>;
+    fn client_id(&self) -> ClientId;
+    fn is_connected(&self) -> bool;
+    fn disconnect(&mut self);
+}
+```
+
+### Configuration
+
+```rust
+pub struct NetworkServerConfig {
+    pub port: u16,
+    pub max_clients: usize,
+    pub protocol_id: u64,
+}
+
+pub struct NetworkClientConfig {
+    pub server_addr: SocketAddr,
+    pub protocol_id: u64,
+}
+
+pub enum Channel {
+    Unreliable,        // Best-effort, no ordering
+    ReliableOrdered,   // Guaranteed delivery + order
+}
+
+pub type ClientId = u64;
+```
+
+### Events
+
+```rust
+pub enum NetworkEvent {
+    Connected,
+    Disconnected { reason: DisconnectReason },
+    ClientConnected { client_id: ClientId },
+    ClientDisconnected { client_id: ClientId, reason: DisconnectReason },
+}
+
+pub enum DisconnectReason {
+    Requested,
+    Timeout,
+    Kicked,
+    ServerFull,
+    ProtocolMismatch,
+}
+```
+
+### Replication
+
+```rust
+impl ReplicationManager {
+    fn new_server() -> Self;
+    fn new_client() -> Self;
+    fn register<T: Replicated>(&mut self);
+    fn spawn_networked(&mut self, world: &mut World, builder: NetworkEntityBuilder) -> Entity;
+    fn despawn_networked(&mut self, world: &mut World, entity: Entity);
+    fn mark_dirty<T: Replicated>(&mut self, entity: Entity);
+    fn broadcast_updates(&mut self, world: &World, server: &mut impl ServerLike);
+    fn send_full_state(&mut self, world: &World, server: &mut impl ServerLike, client: ClientId);
+    fn process_incoming(&mut self, world: &mut World, client: &mut NetworkClient);
+    fn get_entity(&self, network_id: NetworkId) -> Option<Entity>;
+}
+
+impl NetworkEntityBuilder {
+    fn new() -> Self;
+    fn server_owned(self) -> Self;
+    fn client_owned(self, client_id: ClientId) -> Self;
+    fn with_component<T: Replicated>(self, component: T) -> Self;
+}
+
+// Trait for replicatable components
+pub trait Replicated: Component + Serialize + DeserializeOwned + Clone {
+    fn component_id() -> ComponentTypeId;
+    fn component_name() -> &'static str;
+    fn replication_priority() -> u8 { 1 }  // Higher = more frequent
+}
+```
+
+### RPCs
+
+```rust
+// Trait for RPC types
+pub trait Rpc: Serialize + DeserializeOwned + Clone + Send + Sync + 'static {
+    fn rpc_id() -> RpcTypeId;
+    fn rpc_name() -> &'static str;
+}
+
+pub enum RpcTarget {
+    Server,
+    Client(ClientId),
+    Broadcast,
+    BroadcastExcept(ClientId),
+}
+
+impl SerializedRpc {
+    fn from_rpc<T: Rpc>(rpc: &T, sender: ClientId, target: RpcTarget) -> Result<Self, NetworkError>;
+    fn from_bytes(data: &[u8]) -> Result<Self, NetworkError>;
+    fn to_bytes(&self) -> Result<Vec<u8>, NetworkError>;
+    fn into_rpc<T: Rpc>(self) -> Result<ReceivedRpc<T>, NetworkError>;
+}
+
+pub struct ReceivedRpc<T: Rpc> {
+    pub payload: T,
+    pub sender: ClientId,
+}
+```
+
+### Errors
+
+```rust
+pub enum NetworkError {
+    InitError(String),
+    ConnectionError(String),
+    SendError(String),
+    ReceiveError(String),
+    TransportError(String),
+}
 ```
 
 ---

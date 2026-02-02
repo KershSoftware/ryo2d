@@ -28,6 +28,11 @@ impl Scene for MenuScene {
     // Clear the world to remove all entities (including bullets with trails)
     ctx.world.clear();
     self.best_time = load_best_time();
+
+    // Start background music (only if not already playing - persists across scenes)
+    if let Some(audio) = &mut ctx.audio {
+      let _ = audio.play_music_once("assets/music.mp3", MusicOptions::new().volume(0.4));
+    }
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {

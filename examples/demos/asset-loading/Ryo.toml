@@ -1,0 +1,18 @@
+# Asset Loading Demo - Ryo Engine Project Configuration
+# Demonstrates async asset loading with progress tracking
+
+[project]
+name = "Asset Loading Demo"
+
+[paths]
+entry_point = "main.rs"
+assets = "assets"
+
+[system]
+resolution_width = 800
+resolution_height = 600
+vsync = true
+fullscreen = false
+
+[info]
+show_fps = true
