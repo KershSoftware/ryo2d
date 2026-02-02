@@ -448,4 +448,14 @@ impl PostProcessPipeline {
   pub fn texture_a(&self) -> &wgpu::Texture {
     &self.texture_a
   }
+
+  /// Get texture B view (for lighting output)
+  pub fn texture_b_view(&self) -> &wgpu::TextureView {
+    &self.view_b
+  }
+
+  /// Get texture B (for lighting output)
+  pub fn texture_b(&self) -> &wgpu::Texture {
+    &self.texture_b
+  }
 }

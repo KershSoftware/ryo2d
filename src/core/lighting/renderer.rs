@@ -88,6 +88,10 @@ pub struct LightingRenderer {
 
   /// Whether UI should be affected by lighting (default: false for always-visible UI)
   ui_affected_by_lighting: bool,
+
+  /// Copy of scene texture for compose shader (workaround for texture sampling issue)
+  scene_copy_texture: wgpu::Texture,
+  scene_copy_view: wgpu::TextureView,
 }
 
 impl LightingRenderer {
@@ -355,6 +359,23 @@ impl LightingRenderer {
       cache: None,
     });
 
+    // Create scene copy texture (workaround for texture sampling issue in compose shader)
+    let scene_copy_texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Scene Copy Texture"),
+      size: wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+      view_formats: &[],
+    });
+    let scene_copy_view = scene_copy_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
     Self {
       light_texture,
       light_texture_view,
@@ -371,6 +392,8 @@ impl LightingRenderer {
       height,
       enabled: false, // Disabled by default, enabled when Light2D entities exist
       ui_affected_by_lighting: false, // By default, UI is always visible
+      scene_copy_texture,
+      scene_copy_view,
     }
   }
 
@@ -437,6 +460,25 @@ impl LightingRenderer {
     });
     self.light_texture_view = self
       .light_texture
+      .create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Recreate scene copy texture
+    self.scene_copy_texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Scene Copy Texture"),
+      size: wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+      view_formats: &[],
+    });
+    self.scene_copy_view = self
+      .scene_copy_texture
       .create_view(&wgpu::TextureViewDescriptor::default());
   }
 
@@ -591,7 +633,7 @@ impl LightingRenderer {
   /// * `device` - The wgpu device
   /// * `queue` - The wgpu queue
   /// * `encoder` - The command encoder
-  /// * `scene_view` - The scene texture view (input)
+  /// * `pixel_data` - The scene pixel data (RGBA8)
   /// * `output_view` - The output texture view
   /// * `time` - Current time for effects
   pub fn compose(
@@ -599,13 +641,34 @@ impl LightingRenderer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
-    scene_view: &wgpu::TextureView,
+    pixel_data: &[u8],
     output_view: &wgpu::TextureView,
     time: f32,
   ) {
     if !self.enabled {
       return;
     }
+
+    // Write pixel data to our scene copy texture
+    queue.write_texture(
+      wgpu::ImageCopyTexture {
+        texture: &self.scene_copy_texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+      },
+      pixel_data,
+      wgpu::ImageDataLayout {
+        offset: 0,
+        bytes_per_row: Some(4 * self.width),
+        rows_per_image: Some(self.height),
+      },
+      wgpu::Extent3d {
+        width: self.width,
+        height: self.height,
+        depth_or_array_layers: 1,
+      },
+    );
 
     // Update compose uniforms
     let compose_uniform = LightingParams {
@@ -632,7 +695,7 @@ impl LightingRenderer {
       entries: &[
         wgpu::BindGroupEntry {
           binding: 0,
-          resource: wgpu::BindingResource::TextureView(scene_view),
+          resource: wgpu::BindingResource::TextureView(&self.scene_copy_view),
         },
         wgpu::BindGroupEntry {
           binding: 1,

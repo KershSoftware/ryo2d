@@ -1546,7 +1546,13 @@ impl ApplicationHandler for Engine {
             .map(|t| t.frame_count as f32 / 60.0)
             .unwrap_or(0.0);
 
-          let result = if has_gpu_sprites || has_trails {
+          // Check if lighting is enabled and should be applied
+          let lighting_enabled = lighting
+            .as_ref()
+            .map(|l| l.is_enabled())
+            .unwrap_or(false);
+
+          let result = if has_gpu_sprites || has_trails || lighting_enabled {
             // Create callback closure that captures gpu, batch_collector, and trail_renderer
             let batch_collector = &self.batch_collector;
             let gpu_callback = |queue: &wgpu::Queue,
@@ -1570,7 +1576,49 @@ impl ApplicationHandler for Engine {
               }
             };
 
-            rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback))
+            // Create lighting callback if lighting is enabled
+            if lighting_enabled {
+              let lighting_callback =
+                |device: &wgpu::Device,
+                 queue: &wgpu::Queue,
+                 encoder: &mut wgpu::CommandEncoder,
+                 pixel_data: &[u8],
+                 output_view: &wgpu::TextureView| {
+                  if let Some(ref lighting_renderer) = lighting {
+                    // Render lights to the light accumulation buffer
+                    lighting_renderer.render_lights(
+                      device,
+                      queue,
+                      encoder,
+                      lights.iter().map(|(t, l)| (t, l)),
+                      camera_pos,
+                      camera_zoom,
+                    );
+
+                    // Compose the lit scene
+                    lighting_renderer.compose(
+                      device,
+                      queue,
+                      encoder,
+                      pixel_data,
+                      output_view,
+                      time,
+                    );
+                  }
+                };
+
+              // Pass ui_buffer for compositing after lighting
+              // If UI was rendered directly to frame, ui_buffer will be zeros (no effect)
+              // If UI was rendered separately, it will be composited on top of lit scene
+              rend.render_with_lighting(
+                Some(&self.effects),
+                Some(gpu_callback),
+                Some(lighting_callback),
+                Some(&self.ui_buffer),
+              )
+            } else {
+              rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback))
+            }
           } else {
             rend.render_with_effects(Some(&self.effects))
           };

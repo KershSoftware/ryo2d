@@ -46,23 +46,12 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Sample the scene
     let scene_color = textureSample(t_scene, s_input, in.tex_coord);
-
-    // Sample the light accumulation buffer
     let light_color = textureSample(t_light, s_input, in.tex_coord);
-
-    // Get ambient light
     let ambient_color = effect.color.rgb;
     let ambient_intensity = effect.params.x;
     let ambient = ambient_color * ambient_intensity;
-
-    // Combine: scene * (ambient + lights)
-    // Light buffer contains additive light contributions
     let total_light = ambient + light_color.rgb;
-
-    // Apply lighting to scene (multiplicative)
     let lit_color = scene_color.rgb * total_light;
-
     return vec4<f32>(lit_color, scene_color.a);
 }

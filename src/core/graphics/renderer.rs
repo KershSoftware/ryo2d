@@ -23,8 +23,10 @@ pub struct WgpuRenderer {
   texture: wgpu::Texture,
   texture_view: wgpu::TextureView,
   sampler: wgpu::Sampler,
-  // Pipeline for rendering texture to screen
+  // Pipeline for rendering texture to screen (REPLACE blend)
   render_pipeline: wgpu::RenderPipeline,
+  // Pipeline for alpha-blending overlay (for UI compositing)
+  blend_pipeline: wgpu::RenderPipeline,
   bind_group: wgpu::BindGroup,
   bind_group_layout: wgpu::BindGroupLayout,
   // Uniform buffer for viewport transform
@@ -271,7 +273,7 @@ impl WgpuRenderer {
       push_constant_ranges: &[],
     });
 
-    // Create render pipeline
+    // Create render pipeline (REPLACE blend - for drawing scene)
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
       label: Some("Render Pipeline"),
       layout: Some(&pipeline_layout),
@@ -287,6 +289,45 @@ impl WgpuRenderer {
         targets: &[Some(wgpu::ColorTargetState {
           format: surface_format,
           blend: Some(wgpu::BlendState::REPLACE),
+          write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+      }),
+      primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        strip_index_format: None,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: None,
+        polygon_mode: wgpu::PolygonMode::Fill,
+        unclipped_depth: false,
+        conservative: false,
+      },
+      depth_stencil: None,
+      multisample: wgpu::MultisampleState {
+        count: 1,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+      },
+      multiview: None,
+      cache: None,
+    });
+
+    // Create blend pipeline (ALPHA_BLENDING - for UI overlay)
+    let blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+      label: Some("Blend Pipeline"),
+      layout: Some(&pipeline_layout),
+      vertex: wgpu::VertexState {
+        module: &shader,
+        entry_point: "vs_main",
+        buffers: &[],
+        compilation_options: Default::default(),
+      },
+      fragment: Some(wgpu::FragmentState {
+        module: &shader,
+        entry_point: "fs_main",
+        targets: &[Some(wgpu::ColorTargetState {
+          format: surface_format,
+          blend: Some(wgpu::BlendState::ALPHA_BLENDING),
           write_mask: wgpu::ColorWrites::ALL,
         })],
         compilation_options: Default::default(),
@@ -333,6 +374,7 @@ impl WgpuRenderer {
       texture_view,
       sampler,
       render_pipeline,
+      blend_pipeline,
       bind_group,
       bind_group_layout,
       uniform_buffer,
@@ -751,6 +793,339 @@ impl WgpuRenderer {
       render_pass.set_bind_group(0, &final_bind_group, &[]);
       // Draw fullscreen quad (6 vertices, generated in shader)
       render_pass.draw(0..6, 0..1);
+    }
+
+    // Submit commands
+    self.queue.submit(std::iter::once(encoder.finish()));
+    output.present();
+
+    Ok(())
+  }
+
+  /// Render with GPU sprites, lighting, UI overlay, and post-processing effects.
+  ///
+  /// This is the most comprehensive render method that supports the full pipeline:
+  /// 1. CPU pixel buffer is uploaded to game texture
+  /// 2. GPU sprite callback renders on top
+  /// 3. Lighting callback processes the scene (render_lights + compose)
+  /// 4. UI buffer is composited on top of lit scene (if provided)
+  /// 5. Post-processing effects are applied
+  /// 6. Final result is rendered to screen with letterboxing
+  ///
+  /// # Arguments
+  /// - `effects`: Optional post-processing effects manager
+  /// - `gpu_sprite_callback`: Optional callback for rendering GPU sprites
+  /// - `lighting_callback`: Optional callback for lighting. Receives (device, queue, encoder,
+  ///   scene_view, output_view). Should render lights and compose to output_view.
+  /// - `ui_buffer`: Optional UI buffer to composite after lighting. Should be RGBA, same dimensions
+  ///   as game resolution. Non-zero alpha pixels are blended on top of the lit scene.
+  ///
+  /// # Lighting Flow
+  /// When a lighting callback is provided:
+  /// - scene_view: The game texture (unlit scene after CPU + GPU sprites)
+  /// - output_view: Texture A from post-process pipeline (write lit result here)
+  /// - After callback, texture A becomes the source for effects/final render
+  /// - If ui_buffer is provided, it's alpha-blended onto the lit scene
+  pub fn render_with_lighting<F, L>(
+    &mut self,
+    effects: Option<&EffectsManager>,
+    gpu_sprite_callback: Option<F>,
+    lighting_callback: Option<L>,
+    ui_buffer: Option<&[u8]>,
+  ) -> Result<(), wgpu::SurfaceError>
+  where
+    F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    L: FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &[u8], &wgpu::TextureView),
+  {
+    // Upload pixel buffer to GPU texture
+    self.queue.write_texture(
+      wgpu::ImageCopyTexture {
+        texture: &self.texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+      },
+      &self.pixel_buffer,
+      wgpu::ImageDataLayout {
+        offset: 0,
+        bytes_per_row: Some(4 * self.game_width),
+        rows_per_image: Some(self.game_height),
+      },
+      wgpu::Extent3d {
+        width: self.game_width,
+        height: self.game_height,
+        depth_or_array_layers: 1,
+      },
+    );
+
+    // Get surface texture
+    let output = self.surface.get_current_texture()?;
+    let view = output
+      .texture
+      .create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Create command encoder
+    let mut encoder = self
+      .device
+      .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Render Encoder"),
+      });
+
+    // Render GPU sprites on top of CPU content (if callback provided)
+    if let Some(callback) = gpu_sprite_callback {
+      callback(&self.queue, &mut encoder, &self.texture_view);
+    }
+
+    // Track whether lighting was applied (changes the source texture)
+    // Create temporary texture for lit output (like the original working implementation)
+    let (lighting_applied, lit_texture_view) = if let Some(callback) = lighting_callback {
+      // Create a temporary texture for the lit result
+      let lit_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Lit Scene Texture"),
+        size: wgpu::Extent3d {
+          width: self.game_width,
+          height: self.game_height,
+          depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+      });
+      let lit_view = lit_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+      // Lighting callback receives pixel data directly, writes lit scene to temp texture
+      callback(
+        &self.device,
+        &self.queue,
+        &mut encoder,
+        &self.pixel_buffer,
+        &lit_view,
+      );
+      (true, Some(lit_view))
+    } else {
+      (false, None)
+    };
+
+    // Check if we have active effects to apply
+    let has_effects = effects.map(|e| e.has_active_effects()).unwrap_or(false);
+
+    // Apply post-processing if we have effects
+    let use_post_process = if has_effects && !lighting_applied {
+      // Normal path: copy game texture to texture_a, then apply effects
+      if let (Some(effects_mgr), Some(post_process)) = (effects, self.post_process.as_mut()) {
+        let active: Vec<_> = effects_mgr
+          .active_effects()
+          .map(|e| (e, effects_mgr.time()))
+          .collect();
+
+        if !active.is_empty() {
+          // Copy game texture to post-process texture A first
+          encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+              texture: &self.texture,
+              mip_level: 0,
+              origin: wgpu::Origin3d::ZERO,
+              aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+              texture: post_process.texture_a(),
+              mip_level: 0,
+              origin: wgpu::Origin3d::ZERO,
+              aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+              width: self.game_width,
+              height: self.game_height,
+              depth_or_array_layers: 1,
+            },
+          );
+
+          // Apply effects chain
+          let output_buffer =
+            post_process.apply_effects(&self.device, &self.queue, &mut encoder, &active);
+
+          Some(output_buffer)
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    } else if has_effects && lighting_applied {
+      // Lighting already wrote to texture_a, apply effects starting from there
+      if let (Some(effects_mgr), Some(post_process)) = (effects, self.post_process.as_mut()) {
+        let active: Vec<_> = effects_mgr
+          .active_effects()
+          .map(|e| (e, effects_mgr.time()))
+          .collect();
+
+        if !active.is_empty() {
+          // Effects start from texture_a (already has lit scene)
+          let output_buffer =
+            post_process.apply_effects(&self.device, &self.queue, &mut encoder, &active);
+
+          Some(output_buffer)
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+
+    // Check if we have UI to overlay (non-zero ui_buffer)
+    let has_ui_overlay = ui_buffer
+      .as_ref()
+      .map(|buf| buf.iter().any(|&b| b != 0))
+      .unwrap_or(false);
+
+    // If we have UI overlay AND lighting was applied, upload UI to game_texture
+    // (We can reuse game_texture because the scene is now in texture_a from compose)
+    // If lighting was NOT applied, we can't overwrite game_texture - scene is still there!
+    if has_ui_overlay && lighting_applied
+      && let Some(ui_data) = ui_buffer
+    {
+      self.queue.write_texture(
+        wgpu::ImageCopyTexture {
+          texture: &self.texture,
+          mip_level: 0,
+          origin: wgpu::Origin3d::ZERO,
+          aspect: wgpu::TextureAspect::All,
+        },
+        ui_data,
+        wgpu::ImageDataLayout {
+          offset: 0,
+          bytes_per_row: Some(4 * self.game_width),
+          rows_per_image: Some(self.game_height),
+        },
+        wgpu::Extent3d {
+          width: self.game_width,
+          height: self.game_height,
+          depth_or_array_layers: 1,
+        },
+      );
+    }
+
+    // Final render pass to screen
+    {
+      // Create bind group for the appropriate source texture
+      let final_bind_group = if let Some(output_buffer) = use_post_process {
+        let post_process = self.post_process.as_ref().unwrap();
+        let output_view = post_process.get_output_view(output_buffer);
+
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("Post-Process Output Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(output_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        })
+      } else if lighting_applied {
+        // Use lit scene from temporary texture
+        let lit_view = lit_texture_view.as_ref().unwrap();
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("Lit Scene Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(lit_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        })
+      } else {
+        // Use original game texture
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("Game Texture Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(&self.texture_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        })
+      };
+
+      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Render Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            // Clear to black (letterbox color)
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+      });
+
+      // Draw the scene
+      render_pass.set_pipeline(&self.render_pipeline);
+      render_pass.set_bind_group(0, &final_bind_group, &[]);
+      render_pass.draw(0..6, 0..1);
+
+      // If we have UI overlay, draw it on top with alpha blending
+      if has_ui_overlay {
+        // Create bind group for UI texture (game_texture now holds UI data)
+        let ui_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("UI Overlay Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(&self.texture_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        });
+
+        render_pass.set_pipeline(&self.blend_pipeline);
+        render_pass.set_bind_group(0, &ui_bind_group, &[]);
+        render_pass.draw(0..6, 0..1);
+      }
     }
 
     // Submit commands
