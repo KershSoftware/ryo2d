@@ -10,7 +10,10 @@
 #     ./run.sh check               - Fast compilation check (engine only)
 #     ./run.sh check-all           - Check + lint all examples in parallel
 #     ./run.sh lint                - Linting with clippy (engine only)
-#     ./run.sh test                - Run tests
+#     ./run.sh test                - Run unit + integration tests
+#     ./run.sh test:unit           - Run unit tests only
+#     ./run.sh test:integration    - Run integration tests only
+#     ./run.sh test:e2e            - Run e2e tests (requires GPU)
 #     ./run.sh coverage            - Generate code coverage report
 
 set -e
@@ -484,7 +487,25 @@ case "$COMMAND" in
         cargo clippy
         ;;
     test)
-        cargo test
+        # Default: run unit tests + integration tests
+        echo -e "${CYAN}Running unit + integration tests...${NC}"
+        cargo test --lib --test integration
+        ;;
+    test:unit)
+        echo -e "${CYAN}Running unit tests only...${NC}"
+        cargo test --lib
+        ;;
+    test:integration)
+        echo -e "${CYAN}Running integration tests only...${NC}"
+        cargo test --test integration
+        ;;
+    test:e2e)
+        echo -e "${CYAN}Running e2e tests (includes ignored tests requiring GPU)...${NC}"
+        cargo test --test e2e -- --include-ignored
+        ;;
+    test:all)
+        echo -e "${CYAN}Running ALL tests (unit + integration + e2e)...${NC}"
+        cargo test --lib --test integration --test e2e -- --include-ignored
         ;;
     coverage)
         echo -e "${CYAN}Generating code coverage report...${NC}"
@@ -528,7 +549,11 @@ case "$COMMAND" in
         echo "    ./run.sh check               - Fast compilation check (engine only)"
         echo "    ./run.sh check-all           - Check + lint all examples in parallel"
         echo "    ./run.sh lint                - Linting with clippy (engine only)"
-        echo "    ./run.sh test                - Run tests"
+        echo "    ./run.sh test                - Run unit + integration tests (default)"
+        echo "    ./run.sh test:unit           - Run unit tests only"
+        echo "    ./run.sh test:integration    - Run integration tests only"
+        echo "    ./run.sh test:e2e            - Run e2e tests (requires GPU)"
+        echo "    ./run.sh test:all            - Run ALL tests"
         echo "    ./run.sh coverage            - Generate code coverage report"
         echo "    ./run.sh watch               - Watch mode with hot-reload"
         echo "    ./run.sh help                - Show this help"

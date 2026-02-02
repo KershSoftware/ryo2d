@@ -9,7 +9,10 @@
 #   .\run check        - Fast compilation check (engine only)
 #   .\run check-all    - Check + lint all examples in parallel
 #   .\run lint         - Linting with clippy (engine only)
-#   .\run test         - Run tests
+#   .\run test         - Run unit + integration tests
+#   .\run test:unit    - Run unit tests only
+#   .\run test:integration - Run integration tests only
+#   .\run test:e2e     - Run e2e tests (requires GPU)
 #   .\run coverage     - Generate code coverage report
 
 param(
@@ -281,7 +284,25 @@ switch ($ExampleName.ToLower()) {
         cargo clippy
     }
     "test" {
-        cargo test
+        # Default: run unit tests + integration tests
+        Write-Host "Running unit + integration tests..." -ForegroundColor Cyan
+        cargo test --lib --test integration
+    }
+    "test:unit" {
+        Write-Host "Running unit tests only..." -ForegroundColor Cyan
+        cargo test --lib
+    }
+    "test:integration" {
+        Write-Host "Running integration tests only..." -ForegroundColor Cyan
+        cargo test --test integration
+    }
+    "test:e2e" {
+        Write-Host "Running e2e tests (includes ignored tests requiring GPU)..." -ForegroundColor Cyan
+        cargo test --test e2e -- --include-ignored
+    }
+    "test:all" {
+        Write-Host "Running ALL tests (unit + integration + e2e)..." -ForegroundColor Cyan
+        cargo test --lib --test integration --test e2e -- --include-ignored
     }
     "coverage" {
         Write-Host "Generating code coverage report..." -ForegroundColor Cyan
@@ -494,7 +515,11 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./run check              - Fast compilation check (engine only)"
         Write-Host "  ./run check-all          - Check + lint all examples in parallel"
         Write-Host "  ./run lint               - Linting with clippy (engine only)"
-        Write-Host "  ./run test               - Run tests"
+        Write-Host "  ./run test               - Run unit + integration tests (default)"
+        Write-Host "  ./run test:unit          - Run unit tests only"
+        Write-Host "  ./run test:integration   - Run integration tests only"
+        Write-Host "  ./run test:e2e           - Run e2e tests (requires GPU)"
+        Write-Host "  ./run test:all           - Run ALL tests"
         Write-Host "  ./run coverage           - Generate code coverage report"
         Write-Host "  ./run watch              - Watch mode with hot-reload"
         Write-Host "  ./run help               - Show this help"
