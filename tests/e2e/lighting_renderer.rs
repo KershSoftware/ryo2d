@@ -155,8 +155,8 @@ fn test_lighting_renderer_creation() {
 
     let renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
 
-    // Verify it starts enabled (as per our fix)
-    assert!(renderer.is_enabled(), "LightingRenderer should be enabled by default");
+    // Verify it starts disabled (enabled automatically when Light2D entities exist)
+    assert!(!renderer.is_enabled(), "LightingRenderer should be disabled by default");
 
     // Verify UI is not affected by lighting by default
     assert!(
@@ -218,13 +218,13 @@ fn test_lighting_renderer_enable_disable() {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
 
-    assert!(renderer.is_enabled(), "Should start enabled");
-
-    renderer.set_enabled(false);
-    assert!(!renderer.is_enabled(), "Should be disabled after set_enabled(false)");
+    assert!(!renderer.is_enabled(), "Should start disabled");
 
     renderer.set_enabled(true);
     assert!(renderer.is_enabled(), "Should be enabled after set_enabled(true)");
+
+    renderer.set_enabled(false);
+    assert!(!renderer.is_enabled(), "Should be disabled after set_enabled(false)");
 }
 
 // ============================================================================
@@ -325,6 +325,9 @@ fn test_compose_with_ambient() {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
 
     let mut renderer = LightingRenderer::new(&gpu.device, width, height, format);
+
+    // Enable the renderer (disabled by default)
+    renderer.set_enabled(true);
 
     // Set high ambient so scene is fully visible
     renderer.set_ambient(AmbientLight::new(Color::WHITE, 1.0));
