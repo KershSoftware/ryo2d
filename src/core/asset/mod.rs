@@ -9,4 +9,6 @@ pub mod hot_reload;
 pub mod manager;
 
 pub use hot_reload::{HotReloadConfig, HotReloadEvent, HotReloadWatcher};
-pub use manager::{AssetManager, AssetStats, AsyncSpriteHandle, LoadingState, SpriteHandle};
+pub use manager::{
+    AssetManager, AssetStats, AsyncSpriteHandle, LoadingProgress, LoadingState, SpriteHandle,
+};

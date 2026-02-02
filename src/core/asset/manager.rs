@@ -369,6 +369,97 @@ impl AsyncLoader {
 }
 
 // ============================================================================
+// LoadingProgress
+// ============================================================================
+
+/// Progress information for batch asset loading.
+///
+/// Use this to display loading screens with progress bars.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let progress = ctx.assets.loading_progress();
+/// if progress.is_loading() {
+///     let pct = progress.percentage();
+///     ui.draw_progress_bar(rect, pct, Color::GREEN, Color::DARK_GRAY);
+///     ui.draw_text(&format!("Loading: {}", progress.current_asset()), x, y, Color::WHITE);
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct LoadingProgress {
+  /// Total number of assets queued for loading
+  pub total: usize,
+  /// Number of assets that have finished loading (success or failure)
+  pub completed: usize,
+  /// Number of assets that loaded successfully
+  pub succeeded: usize,
+  /// Number of assets that failed to load
+  pub failed: usize,
+  /// Path of the asset currently being loaded (if any)
+  pub current: Option<String>,
+  /// Paths of assets that failed to load
+  pub failures: Vec<String>,
+}
+
+impl LoadingProgress {
+  /// Create empty progress (nothing loading)
+  pub fn none() -> Self {
+    Self {
+      total: 0,
+      completed: 0,
+      succeeded: 0,
+      failed: 0,
+      current: None,
+      failures: Vec::new(),
+    }
+  }
+
+  /// Check if any assets are currently loading
+  pub fn is_loading(&self) -> bool {
+    self.total > 0 && self.completed < self.total
+  }
+
+  /// Check if all assets have finished loading
+  pub fn is_complete(&self) -> bool {
+    self.total > 0 && self.completed >= self.total
+  }
+
+  /// Get loading progress as a percentage (0.0 to 1.0)
+  ///
+  /// Returns 1.0 if nothing is loading or all loads are complete.
+  pub fn percentage(&self) -> f32 {
+    if self.total == 0 {
+      1.0
+    } else {
+      self.completed as f32 / self.total as f32
+    }
+  }
+
+  /// Get the name of the asset currently being loaded
+  ///
+  /// Returns the filename without the full path for cleaner display.
+  pub fn current_asset(&self) -> &str {
+    self
+      .current
+      .as_ref()
+      .map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p))
+      .unwrap_or("")
+  }
+
+  /// Check if any assets failed to load
+  pub fn has_failures(&self) -> bool {
+    self.failed > 0
+  }
+}
+
+impl Default for LoadingProgress {
+  fn default() -> Self {
+    Self::none()
+  }
+}
+
+// ============================================================================
 // AssetManager
 // ============================================================================
 
@@ -407,6 +498,14 @@ pub struct AssetManager {
   async_loader: Option<AsyncLoader>,
   /// Pending async load handles, keyed by path
   pending_loads: HashMap<PathBuf, AsyncSpriteHandle>,
+  /// Batch loading tracking: total assets requested in current batch
+  batch_total: usize,
+  /// Batch loading tracking: assets completed (success + failure)
+  batch_completed: usize,
+  /// Batch loading tracking: assets that succeeded
+  batch_succeeded: usize,
+  /// Batch loading tracking: paths that failed
+  batch_failures: Vec<String>,
 }
 
 impl AssetManager {
@@ -418,6 +517,10 @@ impl AssetManager {
       watcher: None,
       async_loader: None,
       pending_loads: HashMap::new(),
+      batch_total: 0,
+      batch_completed: 0,
+      batch_succeeded: 0,
+      batch_failures: Vec::new(),
     }
   }
 
@@ -431,6 +534,10 @@ impl AssetManager {
       watcher: None,
       async_loader: None,
       pending_loads: HashMap::new(),
+      batch_total: 0,
+      batch_completed: 0,
+      batch_succeeded: 0,
+      batch_failures: Vec::new(),
     }
   }
 
@@ -614,8 +721,16 @@ impl AssetManager {
 
             // Update the async handle
             pending.complete_success(handle);
+
+            // Update batch tracking
+            self.batch_completed += 1;
+            self.batch_succeeded += 1;
           }
           Err(reason) => {
+            // Track failure for batch progress
+            self.batch_completed += 1;
+            self.batch_failures.push(result.path.to_string_lossy().to_string());
+
             pending.complete_failure(reason);
           }
         }
@@ -669,6 +784,131 @@ impl AssetManager {
   pub fn clear_sprite_cache(&mut self) {
     self.sprites.clear();
   }
+
+  /// Add a pre-loaded sprite handle to the cache.
+  ///
+  /// This is useful when you've loaded a sprite outside the normal
+  /// asset manager flow and want to register it for cache lookups.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// // Load sprite manually (e.g., in a loading scene)
+  /// let handle = SpriteHandle::from_sprite(sprite, "assets/bg.png");
+  ///
+  /// // Register with asset manager for later lookups
+  /// assets.cache_sprite_handle(handle);
+  ///
+  /// // Now load_sprite will return the cached version instantly
+  /// let bg = assets.load_sprite("assets/bg.png")?; // No disk I/O!
+  /// ```
+  pub fn cache_sprite_handle(&mut self, handle: SpriteHandle) {
+    let path = self.resolve_path(handle.path());
+    self.sprites.insert(path, handle);
+  }
+
+  // ==========================================================================
+  // Batch Loading
+  // ==========================================================================
+
+  /// Start loading multiple assets as a batch.
+  ///
+  /// This queues all provided paths for async loading and initializes
+  /// the progress tracking. Use `loading_progress()` to monitor progress
+  /// and display loading screens.
+  ///
+  /// **Important:** Call `process_async_loads()` each frame to complete loads.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// // In your loading scene's on_enter:
+  /// ctx.assets.start_loading(&[
+  ///     "assets/bg.png",
+  ///     "assets/player.png",
+  ///     "assets/enemy.png",
+  /// ]);
+  ///
+  /// // In update loop:
+  /// ctx.assets.process_async_loads();
+  ///
+  /// let progress = ctx.assets.loading_progress();
+  /// if progress.is_complete() {
+  ///     return SceneAction::Switch(Box::new(GameScene::new()));
+  /// }
+  /// ```
+  pub fn start_loading<P, I>(&mut self, paths: I)
+  where
+    P: AsRef<Path>,
+    I: IntoIterator<Item = P>,
+  {
+    // Reset batch tracking
+    self.batch_total = 0;
+    self.batch_completed = 0;
+    self.batch_succeeded = 0;
+    self.batch_failures.clear();
+
+    // Queue all assets for loading
+    for path in paths {
+      // Skip already-cached assets (they're already loaded)
+      let full_path = self.resolve_path(&path);
+      if self.sprites.contains_key(&full_path) {
+        // Count as already completed
+        self.batch_total += 1;
+        self.batch_completed += 1;
+        self.batch_succeeded += 1;
+        continue;
+      }
+
+      // Queue for async loading
+      self.load_sprite_async(path);
+      self.batch_total += 1;
+    }
+  }
+
+  /// Get current loading progress.
+  ///
+  /// Returns a `LoadingProgress` struct with information about the current
+  /// batch loading operation. Use this to display loading screens.
+  pub fn loading_progress(&self) -> LoadingProgress {
+    // Find currently loading asset (first pending)
+    let current = self
+      .pending_loads
+      .keys()
+      .next()
+      .map(|p| p.to_string_lossy().to_string());
+
+    LoadingProgress {
+      total: self.batch_total,
+      completed: self.batch_completed,
+      succeeded: self.batch_succeeded,
+      failed: self.batch_failures.len(),
+      current,
+      failures: self.batch_failures.clone(),
+    }
+  }
+
+  /// Check if batch loading is complete.
+  ///
+  /// Shorthand for `loading_progress().is_complete()`.
+  pub fn is_loading_complete(&self) -> bool {
+    self.batch_total > 0 && self.batch_completed >= self.batch_total
+  }
+
+  /// Reset batch loading tracking.
+  ///
+  /// Call this when starting a new loading sequence or when you want
+  /// to clear the progress state.
+  pub fn reset_loading_progress(&mut self) {
+    self.batch_total = 0;
+    self.batch_completed = 0;
+    self.batch_succeeded = 0;
+    self.batch_failures.clear();
+  }
+
+  // ==========================================================================
+  // Statistics
+  // ==========================================================================
 
   /// Get cache statistics for debugging
   pub fn stats(&self) -> AssetStats {

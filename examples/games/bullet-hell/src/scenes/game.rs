@@ -403,7 +403,7 @@ impl GameScene {
       let my_side = turret.side;
       let my_dir = turret.move_direction;
 
-      for &(other_entity, other_y, other_side, other_dir) in &turret_data {
+      for &(other_entity, other_y, other_side, _other_dir) in &turret_data {
         if other_entity == turret_entity || other_side != my_side {
           continue;
         }
@@ -412,10 +412,9 @@ impl GameScene {
         let dist = (my_y - other_y).abs();
         if dist < TURRET_SIZE {
           // Only bounce if moving towards each other
-          let moving_towards = (my_y < other_y && my_dir > 0.0 && other_dir < 0.0)
-            || (my_y > other_y && my_dir < 0.0 && other_dir > 0.0)
-            || (my_y < other_y && my_dir > 0.0)
-            || (my_y > other_y && my_dir < 0.0);
+          // Moving towards = I'm below them and moving up, or I'm above them and moving down
+          let moving_towards =
+            (my_y < other_y && my_dir > 0.0) || (my_y > other_y && my_dir < 0.0);
 
           if moving_towards {
             turret.reverse_direction();

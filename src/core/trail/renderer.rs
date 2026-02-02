@@ -181,7 +181,7 @@ impl TrailRenderer {
         vertex: wgpu::VertexState {
           module: &shader,
           entry_point: "vs_main",
-          buffers: &[vertex_layout.clone()],
+          buffers: std::slice::from_ref(&vertex_layout),
           compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -445,6 +445,7 @@ impl TrailRenderer {
   }
 
   /// Render all accumulated trails and lines.
+  #[allow(clippy::too_many_arguments)]
   pub fn render(
     &mut self,
     queue: &wgpu::Queue,
