@@ -575,6 +575,98 @@ pub enum PlaybackState {
 }
 ```
 
+### Tween
+
+Component for animating Transform properties over time:
+
+```rust
+pub struct Tween {
+    // Target values (None = don't animate)
+    pub target_x: Option<f32>,
+    pub target_y: Option<f32>,
+    pub target_rotation: Option<f32>,
+    pub target_scale_x: Option<f32>,
+    pub target_scale_y: Option<f32>,
+
+    pub duration: f32,      // Seconds
+    pub delay: f32,         // Seconds before starting
+    pub easing: Ease,       // Easing function
+    pub loop_mode: TweenLoop,
+    pub playing: bool,
+    pub just_finished: bool,  // True for one frame on completion
+}
+
+impl Tween {
+    // Constructors
+    fn new(duration: f32) -> Self;
+    fn to_position(x: f32, y: f32, duration: f32) -> Self;
+    fn to_rotation(rotation: f32, duration: f32) -> Self;
+    fn to_scale(scale_x: f32, scale_y: f32, duration: f32) -> Self;
+    fn to_uniform_scale(scale: f32, duration: f32) -> Self;
+
+    // Builder methods
+    fn to_x(self, x: f32) -> Self;
+    fn to_y(self, y: f32) -> Self;
+    fn to_rotation_value(self, rotation: f32) -> Self;
+    fn to_scale_x(self, scale_x: f32) -> Self;
+    fn to_scale_y(self, scale_y: f32) -> Self;
+    fn with_easing(self, easing: Ease) -> Self;
+    fn with_delay(self, delay: f32) -> Self;
+    fn with_loop(self, loop_mode: TweenLoop) -> Self;
+
+    // Control
+    fn pause(&mut self);
+    fn resume(&mut self);
+    fn stop(&mut self);        // Reset to beginning
+    fn restart(&mut self);     // Stop + play
+
+    // State
+    fn is_finished(&self) -> bool;
+    fn progress(&self) -> f32;  // 0.0 to 1.0
+}
+```
+
+### Ease
+
+Easing functions for interpolation:
+
+```rust
+pub enum Ease {
+    Linear,
+    // Quad
+    InQuad, OutQuad, InOutQuad,
+    // Cubic
+    InCubic, OutCubic, InOutCubic,
+    // Quart
+    InQuart, OutQuart, InOutQuart,
+    // Sine
+    InSine, OutSine, InOutSine,
+    // Expo
+    InExpo, OutExpo, InOutExpo,
+    // Back (overshoot)
+    InBack, OutBack, InOutBack,
+    // Elastic
+    InElastic, OutElastic, InOutElastic,
+    // Bounce
+    InBounce, OutBounce, InOutBounce,
+}
+
+impl Ease {
+    fn apply(&self, t: f32) -> f32;  // t in [0,1], returns eased value
+}
+```
+
+### TweenLoop
+
+```rust
+pub enum TweenLoop {
+    Once,           // Play once, stop
+    Loop,           // Repeat forever
+    PingPong,       // Forward then backward
+    Times(u32),     // Repeat n times
+}
+```
+
 ### AnimationController
 
 State machine for complex animation logic:

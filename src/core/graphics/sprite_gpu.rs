@@ -201,6 +201,21 @@ impl SpriteInstance {
       SpriteEffect::Grayscale { intensity } => {
         self.effect_params = [10.0, *intensity, 0.0, 0.0];
       }
+      SpriteEffect::DirectionalOutline {
+        solid_color,
+        thickness,
+        ..
+      } => {
+        // For GPU rendering, treat as regular outline with solid color
+        // (directional outline is primarily a CPU effect)
+        self.effect_params = [1.0, *thickness as f32, 0.0, 0.0];
+        self.effect_extra = [
+          solid_color.r as f32 / 255.0,
+          solid_color.g as f32 / 255.0,
+          solid_color.b as f32 / 255.0,
+          solid_color.a as f32 / 255.0,
+        ];
+      }
     }
     self
   }

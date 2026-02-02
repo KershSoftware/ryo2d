@@ -13,6 +13,10 @@ pub const INVINCIBLE_DURATION: f32 = 1.5; // seconds of invincibility after hit
 
 // Physics
 pub const GRAVITY: f32 = 980.0; // pixels per second squared
+pub const WALL_SLIDE_FRICTION: f32 = 0.6; // Multiplier for downward velocity when wall sliding
+pub const WALL_JUMP_FORCE_X: f32 = 450.0; // Horizontal push away from wall
+pub const WALL_JUMP_FORCE_Y: f32 = 500.0; // Vertical jump force (slightly less than normal)
+pub const WALL_JUMP_PUSH_DURATION: f32 = 0.2; // Seconds where player can't override horizontal push
 
 // Turret configuration
 pub const TURRET_SIZE: f32 = 32.0;
@@ -22,11 +26,12 @@ pub const TURRET_SHOOT_INTERVAL: f32 = 1.5; // seconds between bursts
 pub const TURRET_BURST_SIZE: u32 = 5; // bullets per burst (starting)
 pub const TURRET_BURST_SIZE_MAX: u32 = 12; // bullets per burst (maximum)
 pub const TURRET_BURST_DELAY: f32 = 0.1; // seconds between bullets in burst
-pub const TURRETS_PER_SIDE: u32 = 2; // starting turrets per side
-pub const TURRETS_PER_SIDE_MAX: u32 = 6; // maximum turrets per side
+pub const TURRETS_PER_SIDE: u32 = 1; // starting turrets per side (2 total)
+pub const TURRETS_PER_SIDE_MAX: u32 = 6; // maximum turrets per side (12 total)
+pub const TURRET_SPAWN_DURATION: f32 = 1.5; // seconds to fade in before becoming active
 
 // Progression configuration
-pub const PROGRESSION_INTERVAL: f32 = 15.0; // seconds between difficulty increases
+pub const PROGRESSION_INTERVAL: f32 = 10.0; // seconds between difficulty increases
 pub const PROGRESSION_STEPS: u32 = 8; // number of difficulty steps to reach maximum
 
 // Bullet configuration
