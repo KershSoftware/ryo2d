@@ -432,5 +432,6 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `RigidBody` | Physics body (dynamic, kinematic, fixed) |
 | `Collider` | Collision shape (circle, rect, capsule) |
 | `Animator` | Sprite animation state |
+| `Tween` | Smooth interpolation of Transform properties |
 | `Parent` / `Children` | Entity hierarchy |
 

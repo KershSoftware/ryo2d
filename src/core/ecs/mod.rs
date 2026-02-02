@@ -15,6 +15,7 @@ mod hierarchy;
 mod material;
 mod renderable;
 mod sprite_effects;
+mod tween;
 mod world;
 
 pub use component::Component;
@@ -24,4 +25,5 @@ pub use hierarchy::{Children, Parent, WorldTransform};
 pub use material::{Material, ShaderHandle, ShaderParams, SpriteShader};
 pub use renderable::{RenderMode, RenderStyle, Renderable};
 pub use sprite_effects::SpriteEffect;
+pub use tween::{Ease, Tween, TweenLoop};
 pub use world::World;
