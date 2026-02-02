@@ -1,0 +1,18 @@
+# Tweening Demo - Ryo Engine Project Configuration
+# Demonstrates the Tween component and easing functions
+
+[project]
+name = "Tweening Demo"
+
+[paths]
+entry_point = "main.rs"
+assets = "assets"
+
+[system]
+resolution_width = 1024
+resolution_height = 768
+vsync = true
+fullscreen = false
+
+[info]
+show_fps = true

@@ -32,6 +32,7 @@ members = [
   "examples/demos/particles",
   "examples/demos/post-processing",
   "examples/demos/sprite-shaders",
+  "examples/demos/tweening",
   "examples/demos/ui",
 ]
 
