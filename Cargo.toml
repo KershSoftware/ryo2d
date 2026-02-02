@@ -24,6 +24,7 @@ members = [
   "examples/games/flappy",
   "examples/games/breakout",
   "examples/games/bullet-hell",
+  "examples/games/netplay",
   "examples/demos/anchor-positioning",
   "examples/demos/asset-loading",
   "examples/demos/hierarchy-sprites",
