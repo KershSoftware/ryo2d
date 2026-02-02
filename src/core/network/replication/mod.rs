@@ -15,13 +15,9 @@
 //!
 //! ## Server Side
 //!
-//! ```no_run
-//! use ryo2d::prelude::*;
-//!
-//! // Create replication manager
+//! ```ignore
+//! // In your game's update loop:
 //! let mut replication = ReplicationManager::new_server();
-//!
-//! // Register replicated components
 //! replication.register::<Transform>();
 //! replication.register::<Velocity>();
 //!
@@ -33,22 +29,19 @@
 //!         .with_component(Velocity::new(5.0, 0.0))
 //! );
 //!
-//! // In game loop: broadcast updates to clients
+//! // Broadcast updates to clients
 //! replication.broadcast_updates(&mut world, &mut server);
 //! ```
 //!
 //! ## Client Side
 //!
-//! ```no_run
-//! use ryo2d::prelude::*;
-//!
+//! ```ignore
+//! // In your game's update loop:
 //! let mut replication = ReplicationManager::new_client();
-//!
-//! // Register same components as server
 //! replication.register::<Transform>();
 //! replication.register::<Velocity>();
 //!
-//! // In game loop: process incoming replication
+//! // Process incoming replication
 //! replication.process_incoming(&mut world, &mut client);
 //! ```
 

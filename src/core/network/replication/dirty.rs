@@ -17,9 +17,8 @@ use super::types::NetworkId;
 ///
 /// # Example
 ///
-/// ```
-/// use ryo2d::prelude::*;
-///
+/// ```ignore
+/// // In your server's update loop:
 /// let mut tracker = DirtyTracker::new();
 ///
 /// // Mark a component as dirty
