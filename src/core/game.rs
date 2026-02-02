@@ -298,6 +298,32 @@ pub trait Game {
   /// `dt` is the fixed delta time in seconds (e.g., 1/60 = 0.01667)
   fn update(&mut self, ctx: &mut GameContext, dt: f32);
 
+  /// Called before entity rendering to draw background layers.
+  ///
+  /// Use this for:
+  /// - Parallax scrolling backgrounds
+  /// - Static sky/backdrop images
+  /// - Any background elements that should be behind entities
+  ///
+  /// This is called after the frame buffer is cleared but before any
+  /// entities (sprites, tiles, etc.) are rendered.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
+  ///     self.background.render(frame, width, height, camera);
+  /// }
+  /// ```
+  fn render_background(
+    &mut self,
+    _frame: &mut [u8],
+    _width: u32,
+    _height: u32,
+    _camera: &Camera,
+  ) {
+  }
+
   /// Called to populate GPU sprite batches for high-performance rendering.
   ///
   /// Use this for:

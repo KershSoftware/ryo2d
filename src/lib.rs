@@ -105,6 +105,11 @@ pub mod prelude {
   // Camera
   pub use crate::core::graphics::Camera;
 
+  // Parallax backgrounds
+  pub use crate::core::graphics::{
+    ParallaxBackground, ParallaxBackgroundBuilder, ParallaxLayer, TileMode,
+  };
+
   // Assets
   pub use crate::core::asset::{
     AssetManager, AssetStats, AsyncSpriteHandle, LoadingProgress, LoadingState, SpriteHandle,

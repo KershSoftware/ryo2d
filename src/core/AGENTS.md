@@ -32,6 +32,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `spatial.rs` | `SpatialHash` for broad-phase, `PhysicsWorld` integration |
 | `sprite.rs` | `Sprite` and `AnimatedSprite` for 2D rendering |
 | `sprite_gpu.rs` | GPU sprite batching system with per-sprite shaders and effects |
+| `parallax.rs` | Parallax scrolling background system with layered sprites |
 | `tile.rs` | Tiled rendering (`TiledSprite`, `CompositeTile`) and `GroupedCollider` |
 | `shaders/` | WGSL shader files for GPU rendering (sprite effects, post-processing) |
 | `lighting/` | 2D lighting system with point lights, spotlights, and shadows (see `lighting/AGENTS.md`) |
@@ -172,6 +173,67 @@ world.spawn((
 - Top pipe: body tiles downward, cap at bottom flipped vertically
 - Bottom pipe: cap at top (normal), body tiles downward
 - Single `GroupedCollider` covers entire pipe for collision
+
+## Parallax Background System
+
+The parallax background system (`parallax.rs`) provides layered scrolling backgrounds that create depth and movement.
+
+### Architecture
+A system-based approach (not ECS components) because:
+- Parallax layers are a cohesive visual system, not independent entities
+- More efficient render-time tiling vs spawning duplicate entities
+- Cleaner API for game developers
+
+### Key Types
+
+**TileMode** - Controls horizontal tiling:
+- `None` - Single sprite, no tiling (static sky)
+- `Horizontal` - Tile to fill screen width
+- `InfiniteScroll` - Seamless endless scrolling
+
+**ParallaxLayer** - Individual layer definition:
+- `sprite` - SpriteHandle for this layer
+- `scroll_speed` - 0.0 (static) to 1.0 (camera speed)
+- `z_order` - Lower values drawn first (behind)
+- `y_offset` - Vertical position offset
+- `tile_mode` - Horizontal tiling behavior
+
+**ParallaxBackground** - Manages multiple layers with rendering
+
+### Usage Pattern
+
+Games use the builder API and `render_background()` callback:
+
+```rust
+// In scene init:
+let (screen_w, screen_h) = ctx.screen_size();
+self.background = ParallaxBackground::builder(screen_w as u32, screen_h as u32)
+    .static_layer(sky_sprite, -100)              // Doesn't move
+    .layer(mountains_sprite, 0.2, -80)           // 20% camera speed
+    .layer(dunes_mid_sprite, 0.5, -60)           // 50% camera speed
+    .layer(dunes_front_sprite, 0.8, -40)         // 80% camera speed
+    .build();
+
+// In render_background callback:
+fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
+    self.background.render(frame, width, height, camera);
+}
+```
+
+### Parallax Offset Calculation
+```rust
+// scroll_speed: 0.0 = static, 1.0 = moves with camera
+let parallax_offset_x = camera.x * layer.scroll_speed;
+```
+
+### Horizontal Tiling (InfiniteScroll mode)
+```rust
+let tiles_needed = (screen_width / sprite_width).ceil() as i32 + 2;
+let base_offset = parallax_offset_x % sprite_width;
+// Draw tiles from -sprite_width to cover seamless scrolling
+```
+
+**Integration:** The engine calls `game.render_background()` after clearing the frame buffer but before entity rendering. This ensures parallax layers appear behind all game entities.
 
 ## GPU Sprite Rendering System
 

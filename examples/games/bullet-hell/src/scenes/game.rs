@@ -31,7 +31,8 @@ pub struct GameScene {
   particle_sprite: SpriteHandle,
   platform_sprite: SpriteHandle,
   barrier_sprite: SpriteHandle,
-  bg_sprite: SpriteHandle,
+  // Parallax background
+  background: ParallaxBackground,
   // Progression tracking
   difficulty_level: u32,
   time_since_last_progression: f32,
@@ -72,7 +73,53 @@ impl GameScene {
     // Create barrier sprite programmatically (dark gray rectangle)
     let barrier_sprite =
       Sprite::solid_rect(BARRIER_WIDTH as u32, BARRIER_HEIGHT as u32, 60, 60, 70, 255);
-    let bg_sprite = Sprite::load("assets/bg.png").expect("Failed to load background sprite");
+
+    // Load parallax background layers
+    let sky_sprite = Sprite::load("assets/desert_sky.png").expect("Failed to load sky sprite");
+    let moon_sprite = Sprite::load("assets/desert_moon.png").expect("Failed to load moon sprite");
+    let cloud_sprite =
+      Sprite::load("assets/desert_cloud.png").expect("Failed to load cloud sprite");
+    let mountain_sprite =
+      Sprite::load("assets/desert_mountain.png").expect("Failed to load mountain sprite");
+    let dune_mid_sprite =
+      Sprite::load("assets/desert_dunemid.png").expect("Failed to load mid dune sprite");
+    let dune_front_sprite =
+      Sprite::load("assets/desert_dunefrontt.png").expect("Failed to load front dune sprite");
+
+    // Build parallax background with desert layers
+    // Scale to fit screen height and use auto-scroll for fixed-camera game
+    let background = ParallaxBackground::builder(DESIGN_WIDTH as u32, DESIGN_HEIGHT as u32)
+      .scale_to_fit()
+      .static_layer(
+        SpriteHandle::from_sprite(sky_sprite, "desert_sky"),
+        -100,
+      )
+      .auto_scroll_layer(
+        SpriteHandle::from_sprite(moon_sprite, "desert_moon"),
+        5.0, // Very slow moon drift
+        -90,
+      )
+      .auto_scroll_layer(
+        SpriteHandle::from_sprite(cloud_sprite, "desert_cloud"),
+        15.0, // Slow clouds
+        -80,
+      )
+      .auto_scroll_layer(
+        SpriteHandle::from_sprite(mountain_sprite, "desert_mountain"),
+        30.0, // Distant mountains
+        -60,
+      )
+      .auto_scroll_layer(
+        SpriteHandle::from_sprite(dune_mid_sprite, "desert_dunemid"),
+        50.0, // Mid-ground dunes
+        -40,
+      )
+      .auto_scroll_layer(
+        SpriteHandle::from_sprite(dune_front_sprite, "desert_dunefront"),
+        80.0, // Foreground dunes (fastest)
+        -20,
+      )
+      .build();
 
     // Load current display mode setting
     let display_mode_idx = Self::load_current_display_mode_index();
@@ -94,7 +141,7 @@ impl GameScene {
       particle_sprite: SpriteHandle::from_sprite(particle_sprite, "particle.png"),
       platform_sprite: SpriteHandle::from_sprite(platform_sprite, "platform.png"),
       barrier_sprite: SpriteHandle::from_sprite(barrier_sprite, "barrier"),
-      bg_sprite: SpriteHandle::from_sprite(bg_sprite, "bg.png"),
+      background,
       // Progression starts at level 0
       difficulty_level: 0,
       time_since_last_progression: 0.0,
@@ -690,6 +737,18 @@ impl GameScene {
         && player_left < barrier_right;
 
       if on_top {
+        // Check if player is currently jumping (negative velocity = moving up)
+        let is_jumping = ctx
+          .world
+          .get::<PlayerVelocity>(player_entity)
+          .map(|v| v.y < -10.0) // Small threshold to avoid float issues
+          .unwrap_or(false);
+
+        // If jumping, don't apply barrier riding - let the jump happen
+        if is_jumping {
+          return false;
+        }
+
         // Apply barrier's movement to player
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
           transform.y += barrier_vel_y * dt;
@@ -1342,19 +1401,6 @@ impl Scene for GameScene {
     self.platforms.clear();
     self.barriers.clear();
 
-    // Spawn background (scaled to fill screen)
-    let bg = self.bg_sprite.clone();
-    let (bg_width, bg_height) = {
-      let sprite = bg.sprite();
-      (sprite.width() as f32, sprite.height() as f32)
-    };
-    let scale_x = self.screen_width / bg_width;
-    let scale_y = self.screen_height / bg_height;
-    ctx.world.spawn((
-      Transform::new(0.0, 0.0).with_scale(scale_x, scale_y),
-      Renderable::sprite(bg).with_z_order(Z_BACKGROUND),
-    ));
-
     // Spawn game entities
     self.spawn_platforms(ctx);
     self.spawn_barriers(ctx);
@@ -1368,6 +1414,9 @@ impl Scene for GameScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    // Update parallax background (even when paused for nice visual effect)
+    self.background.update(dt);
+
     // Handle pause toggle
     if ctx.input.key_pressed(KeyCode::Escape) {
       if self.settings_open {
@@ -1452,6 +1501,16 @@ impl Scene for GameScene {
     }
 
     SceneAction::Continue
+  }
+
+  fn render_background(
+    &mut self,
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    camera: &Camera,
+  ) {
+    self.background.render(frame, width, height, camera);
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) {

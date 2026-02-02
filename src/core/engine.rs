@@ -771,6 +771,13 @@ impl Engine {
       pixel[3] = 0xff; // A: 255
     }
 
+    // --- Render Background Layers (Parallax, etc.) ---
+    // Call game's render_background before entity rendering
+    if let Some(mut game) = self.game.take() {
+      game.render_background(frame, frame_width, frame_height, &self.camera);
+      self.game = Some(game);
+    }
+
     // --- Rebuild Render Cache (if dirty) ---
     // Rebuild render cache if dirty (entities added/removed or z_order changed)
     if self.render_cache_dirty {

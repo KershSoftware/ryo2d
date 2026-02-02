@@ -15,6 +15,7 @@ The `graphics/` module contains all rendering-related systems: sprites, animatio
 | `camera.rs` | `Camera` - 2D camera with zoom and world/screen transforms |
 | `animation.rs` | `Animation`, `Animator`, `AnimationController` |
 | `tile.rs` | `TiledSprite`, `CompositeTile`, `GroupedCollider` |
+| `parallax.rs` | `ParallaxBackground`, `ParallaxLayer`, `TileMode` |
 
 ## Key Types
 
@@ -81,6 +82,29 @@ let (composite, collider) = CompositeTileBuilder::new()
     .body_tiled(body_sprite, 0.0, 32.0, TileDirection::Down, 128.0)
     .build_with_collider();
 ```
+
+### Parallax Background
+
+Layered scrolling backgrounds for depth effect:
+
+```rust
+// Build parallax background with fluent API
+let background = ParallaxBackground::builder(screen_w, screen_h)
+    .static_layer(sky_sprite, -100)          // Doesn't scroll
+    .layer(mountains_sprite, 0.2, -80)       // 20% camera speed
+    .layer(dunes_sprite, 0.5, -60)           // 50% camera speed
+    .build();
+
+// Render in render_background callback
+fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
+    self.background.render(frame, width, height, camera);
+}
+```
+
+**TileMode options:**
+- `TileMode::None` - Static, non-tiling sprite
+- `TileMode::Horizontal` - Tile across screen width
+- `TileMode::InfiniteScroll` - Seamless endless scrolling
 
 ### GPU Sprite Batching
 

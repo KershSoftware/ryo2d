@@ -7,9 +7,11 @@
 //! - [`Camera`] - 2D camera with world/screen transforms
 //! - [`Animation`] / [`Animator`] / [`AnimationController`] - Sprite animation system
 //! - Tiled rendering for repeating sprites and composite tiles
+//! - [`ParallaxBackground`] - Layered scrolling backgrounds
 
 pub mod animation;
 pub mod camera;
+pub mod parallax;
 pub mod renderer;
 pub mod sprite;
 pub mod sprite_gpu;
@@ -25,4 +27,5 @@ pub use sprite_gpu::{
   BatchCollector, BatchKey, SpriteBatch, SpriteGlobals, SpriteGpuRenderer, SpriteInstance,
   get_sprite_effect,
 };
+pub use parallax::{ParallaxBackground, ParallaxBackgroundBuilder, ParallaxLayer, TileMode};
 pub use tile::{CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart};
