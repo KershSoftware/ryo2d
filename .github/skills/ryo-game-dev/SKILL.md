@@ -307,6 +307,75 @@ EngineBuilder::new()
 
 **Note:** Prefer using `Ryo.toml` for configuration. EngineBuilder methods override the config file.
 
+## Fixed Design Resolution Pattern
+
+For games where gameplay depends on consistent dimensions (platformers, bullet-hell, etc.), use a **fixed design resolution** with scalable display:
+
+```rust
+// In main.rs - set fixed game resolution, allow display scaling
+EngineBuilder::new()
+    .title("My Game")
+    .resolution(1920, 1080)  // Fixed design resolution - game logic uses this
+    .window_mode(WindowMode::ResizableAspectRatio)  // Window can scale
+    .fps(144)
+    .with_scene(MenuScene::new())
+    .build()
+    .run()
+    .unwrap();
+```
+
+**Key concept:** The game's internal resolution stays fixed at 1920x1080 (or whatever you choose). The window can be resized or fullscreened, and the engine automatically scales/letterboxes to maintain aspect ratio.
+
+### Design Resolution Constants
+
+Store fixed dimensions as constants for use throughout your game:
+
+```rust
+// constants.rs
+const DESIGN_WIDTH: f32 = 1920.0;
+const DESIGN_HEIGHT: f32 = 1080.0;
+
+// Use in game logic - these never change regardless of window size
+fn spawn_player(&self, ctx: &mut SceneContext) {
+    ctx.world.spawn((
+        Transform::new(DESIGN_WIDTH / 2.0, DESIGN_HEIGHT - 100.0),
+        // ...
+    ));
+}
+
+fn clamp_to_screen(&self, transform: &mut Transform) {
+    transform.x = transform.x.clamp(0.0, DESIGN_WIDTH - PLAYER_SIZE);
+    transform.y = transform.y.clamp(0.0, DESIGN_HEIGHT - PLAYER_SIZE);
+}
+```
+
+### Display Mode vs Design Resolution
+
+| Concept | Purpose |
+|---------|---------|
+| **Design Resolution** | Fixed internal game coordinates (e.g., 1920x1080) |
+| **Display Mode** | How the game appears on screen (Windowed/Fullscreen/Borderless) |
+| **Window Size** | Actual window dimensions (can scale independently) |
+
+The player can change display mode without affecting game logic:
+
+```rust
+// Request display mode change (settings menu)
+ctx.request_display_mode(DisplayMode::BorderlessFullscreen);
+
+// Game logic remains unchanged - always uses design resolution
+let ground_y = DESIGN_HEIGHT - GROUND_OFFSET;
+```
+
+### WindowMode Options
+
+| Mode | Behavior |
+|------|----------|
+| `Fixed` | Window cannot be resized |
+| `ResizableAspectRatio` | Scales with letterboxing (recommended) |
+| `ResizableIntegerScale` | Pixel-perfect scaling only |
+| `ResizableStretch` | Stretches to fill (may distort) |
+
 ## Coordinate System
 
 **CRITICAL:** The camera defaults to position (0, 0), which puts the screen center at world origin.

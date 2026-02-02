@@ -39,7 +39,7 @@ show_fps = false
 resolution_width = 1920
 resolution_height = 1080
 vsync = true
-fullscreen = false
+display_mode = "Windowed"  # "Windowed", "Fullscreen", or "BorderlessFullscreen"
 master_volume = 1.0
 music_volume = 0.8
 sfx_volume = 1.0
@@ -79,13 +79,21 @@ Players can edit this file directly.
   "display": {
     "width": 1920,
     "height": 1080,
-    "fullscreen": false,
+    "display_mode": "Windowed",
     "vsync": true
   },
   "show_fps": false,
   "settings": {}
 }
 ```
+
+### DisplayMode Values
+
+| Value | Description |
+|-------|-------------|
+| `"Windowed"` | Regular window with decorations |
+| `"Fullscreen"` | Exclusive fullscreen (changes display resolution) |
+| `"BorderlessFullscreen"` | Borderless window covering full screen |
 
 ## Loading Configuration
 
@@ -152,7 +160,7 @@ let settings = save_manager.load_or_create_system(
 // Modify and save
 let mut settings = save_manager.load_system()?;
 settings.master_volume = 0.5;
-settings.display.fullscreen = true;
+settings.display.display_mode = DisplayMode::Fullscreen;
 save_manager.save_system(&settings)?;
 
 // Custom game settings (string key-value)
@@ -226,14 +234,39 @@ save_manager.delete_game("slot1")?;
 ```rust
 fn render_settings(&mut self, ui: &mut UiContext, save_manager: &SaveManager) {
     let mut settings = save_manager.load_system().unwrap_or_default();
-    
+
     if ui.slider("Master Volume", &mut settings.master_volume, 0.0..=1.0) {
         save_manager.save_system(&settings).ok();
     }
-    
-    if ui.checkbox("Fullscreen", &mut settings.display.fullscreen) {
-        save_manager.save_system(&settings).ok();
-        // Apply fullscreen change...
+}
+```
+
+### Display Mode Settings
+
+For runtime display mode changes, use `WindowRequest`:
+
+```rust
+// In your scene/game
+fn apply_display_mode(&mut self, ctx: &mut SceneContext, mode: DisplayMode) {
+    // Request display mode change (applied next frame)
+    ctx.request_display_mode(mode);
+
+    // Save preference
+    save_display_mode(mode);
+}
+
+// Display mode options for settings menu
+const DISPLAY_MODES: &[DisplayMode] = &[
+    DisplayMode::Windowed,
+    DisplayMode::BorderlessFullscreen,
+    DisplayMode::Fullscreen,
+];
+
+fn display_mode_label(mode: DisplayMode) -> &'static str {
+    match mode {
+        DisplayMode::Windowed => "Windowed",
+        DisplayMode::BorderlessFullscreen => "Borderless Fullscreen",
+        DisplayMode::Fullscreen => "Fullscreen",
     }
 }
 ```

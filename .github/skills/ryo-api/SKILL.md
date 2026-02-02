@@ -136,6 +136,67 @@ pub enum WindowMode {
 }
 ```
 
+### DisplayMode
+
+Runtime display mode for window appearance:
+
+```rust
+pub enum DisplayMode {
+    Windowed,             // Regular window with decorations
+    Fullscreen,           // Exclusive fullscreen (changes display resolution)
+    BorderlessFullscreen, // Borderless window covering full screen
+}
+
+impl DisplayMode {
+    fn as_str(&self) -> &'static str;  // "Windowed", "Fullscreen", "BorderlessFullscreen"
+}
+
+// Common display modes for settings menus
+const DISPLAY_MODES: &[DisplayMode] = &[
+    DisplayMode::Windowed,
+    DisplayMode::BorderlessFullscreen,
+    DisplayMode::Fullscreen,
+];
+```
+
+### Resolution
+
+Common resolution presets:
+
+```rust
+pub struct Resolution {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Resolution {
+    fn new(width: u32, height: u32) -> Self;
+
+    // Common 16:9 resolutions
+    fn common() -> Vec<Resolution>;  // Returns [1280x720, 1600x900, 1920x1080, 2560x1440, 3840x2160]
+}
+```
+
+### WindowRequest
+
+Request display changes at runtime (applied next frame):
+
+```rust
+// In SceneContext / GameContext
+impl SceneContext {
+    fn request_display_mode(&mut self, mode: DisplayMode);
+    fn request_resolution(&mut self, width: u32, height: u32);
+}
+```
+
+**Usage:**
+```rust
+// Settings menu - change display mode
+fn apply_settings(&mut self, ctx: &mut SceneContext) {
+    ctx.request_display_mode(DisplayMode::BorderlessFullscreen);
+}
+```
+
 ---
 
 ## Components
