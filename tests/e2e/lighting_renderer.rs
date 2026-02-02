@@ -204,7 +204,7 @@ fn test_lighting_renderer_resize() {
 
     // The renderer should accept the new size without panicking
     // Internal textures are recreated at the new size
-    assert!(true, "Resize should complete without errors");
+    // (test passes if no panic occurs)
 }
 
 /// Test that enabled state can be toggled
@@ -309,7 +309,7 @@ fn test_compose_receives_pixel_data() {
     // With no lights and default ambient, scene is multiplied by ambient
 
     // For now, just verify the operation completed without panic
-    assert!(true, "Compose should complete without errors");
+    // (test passes if no panic occurs)
 }
 
 /// Test that compose with ambient light produces visible output
@@ -507,7 +507,7 @@ fn test_render_lights_empty() {
     );
 
     gpu.queue.submit(std::iter::once(encoder.finish()));
-    assert!(true, "render_lights with empty list should not crash");
+    // (test passes if no panic occurs)
 }
 
 /// Test that render_lights works with actual light data
@@ -524,7 +524,7 @@ fn test_render_lights_with_data() {
     // Create light data
     let transform = Transform::new(50.0, 50.0);
     let light = Light2D::torch(50.0);
-    let lights = vec![(transform, light)];
+    let lights = [(transform, light)];
 
     let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Test With Lights"),
@@ -541,7 +541,7 @@ fn test_render_lights_with_data() {
     );
 
     gpu.queue.submit(std::iter::once(encoder.finish()));
-    assert!(true, "render_lights with data should not crash");
+    // (test passes if no panic occurs)
 }
 
 /// Test that disabled renderer skips render_lights
@@ -560,7 +560,7 @@ fn test_render_lights_when_disabled() {
 
     let transform = Transform::new(50.0, 50.0);
     let light = Light2D::torch(50.0);
-    let lights = vec![(transform, light)];
+    let lights = [(transform, light)];
 
     let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Test Disabled Lights"),
@@ -577,5 +577,5 @@ fn test_render_lights_when_disabled() {
     );
 
     gpu.queue.submit(std::iter::once(encoder.finish()));
-    assert!(true, "render_lights when disabled should complete without error");
+    // (test passes if no panic occurs)
 }

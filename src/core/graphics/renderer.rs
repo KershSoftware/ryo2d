@@ -351,13 +351,13 @@ impl WgpuRenderer {
       cache: None,
     });
 
-    // Create CPU-side pixel buffer pre-filled with warm cream background
-    // This color is presented immediately to prevent white flash on startup
+    // Create CPU-side pixel buffer pre-filled with dark charcoal background
+    // This color is presented immediately to prevent flash on startup
     let mut pixel_buffer = vec![0u8; (game_width * game_height * 4) as usize];
     for pixel in pixel_buffer.chunks_exact_mut(4) {
-      pixel[0] = 0xf5; // R: 245
-      pixel[1] = 0xf4; // G: 244
-      pixel[2] = 0xef; // B: 239
+      pixel[0] = 0x2d; // R: 45
+      pixel[1] = 0x2d; // G: 45
+      pixel[2] = 0x2d; // B: 45
       pixel[3] = 0xff; // A: 255
     }
 
