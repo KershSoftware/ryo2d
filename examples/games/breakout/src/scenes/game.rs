@@ -620,56 +620,63 @@ impl Scene for GameScene {
     }
 
     // Process collision events (only Started - when objects first touch)
-    for event in ctx.collision_events {
-      if !event.is_started() {
+    // Collect ball collision targets first to avoid borrow conflicts
+    let ball_collisions: Vec<Entity> = ctx
+      .events
+      .read::<CollisionStarted>()
+      .filter_map(|event| {
+        if let Some(ball) = self.ball
+          && event.involves(ball)
+        {
+          event.other(ball)
+        } else {
+          None
+        }
+      })
+      .collect();
+
+    for other in ball_collisions {
+      // Ball hit death zone
+      if self.death_zone == Some(other) {
+        self.handle_ball_death(ctx);
         continue;
       }
 
-      // Check for ball collisions
-      if let Some(ball) = self.ball
-        && event.involves(ball)
-        && let Some(other) = event.other(ball)
-      {
-        // Ball hit death zone
-        if self.death_zone == Some(other) {
-          self.handle_ball_death(ctx);
-          continue;
+      // Ball hit paddle - add spin based on hit position
+      if self.paddle == Some(other) {
+        // Play paddle hit sound
+        if let Some(audio) = ctx.audio.as_mut() {
+          let _ = audio.play_sound_with("paddle_hit", SoundOptions::new().volume(0.15));
         }
 
-        // Ball hit paddle - add spin based on hit position
-        if self.paddle == Some(other) {
-          // Play paddle hit sound
-          if let Some(audio) = ctx.audio.as_mut() {
-            let _ = audio.play_sound_with("paddle_hit", SoundOptions::new().volume(0.15));
-          }
-
-          if let (Some(ball_transform), Some(paddle_transform)) = (
+        if let Some(ball) = self.ball
+          && let (Some(ball_transform), Some(paddle_transform)) = (
             ctx.world.get_component::<Transform>(ball),
             ctx.world.get_component::<Transform>(other),
-          ) {
-            let ball_center = ball_transform.x + BALL_SIZE / 2.0;
-            let paddle_center = paddle_transform.x + PADDLE_WIDTH / 2.0;
-            let offset = (ball_center - paddle_center) / (PADDLE_WIDTH / 2.0);
+          )
+        {
+          let ball_center = ball_transform.x + BALL_SIZE / 2.0;
+          let paddle_center = paddle_transform.x + PADDLE_WIDTH / 2.0;
+          let offset = (ball_center - paddle_center) / (PADDLE_WIDTH / 2.0);
 
-            if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
-              // Reflect and add spin
-              vel.dy = -vel.dy.abs(); // Always go up
-              vel.dx += offset * 200.0; // Add horizontal spin
+          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
+            // Reflect and add spin
+            vel.dy = -vel.dy.abs(); // Always go up
+            vel.dx += offset * 200.0; // Add horizontal spin
 
-              // Normalize speed
-              let speed = (vel.dx * vel.dx + vel.dy * vel.dy).sqrt();
-              vel.dx = vel.dx / speed * BALL_SPEED;
-              vel.dy = vel.dy / speed * BALL_SPEED;
-            }
+            // Normalize speed
+            let speed = (vel.dx * vel.dx + vel.dy * vel.dy).sqrt();
+            vel.dx = vel.dx / speed * BALL_SPEED;
+            vel.dy = vel.dy / speed * BALL_SPEED;
           }
-          continue;
         }
+        continue;
+      }
 
-        // Ball hit block
-        if self.blocks.contains(&other) {
-          self.handle_block_hit(ctx, other);
-          continue;
-        }
+      // Ball hit block
+      if self.blocks.contains(&other) {
+        self.handle_block_hit(ctx, other);
+        continue;
       }
     }
 

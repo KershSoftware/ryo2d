@@ -16,6 +16,7 @@
 
 - [Game Loop](./concepts/game-loop.md)
 - [ECS Architecture](./concepts/ecs.md)
+- [Event Bus](./concepts/events.md)
 - [Scene Management](./concepts/scenes.md)
 - [Window Modes](./concepts/window-modes.md)
 - [Input Handling](./concepts/input.md)

@@ -7,10 +7,10 @@ use super::asset::{AssetManager, SpriteHandle};
 use super::audio::AudioManager;
 use super::config::save::DisplayMode;
 use super::ecs::World;
+use super::events::Events;
 use super::graphics::{BatchCollector, Camera, SpriteGpuRenderer};
 use super::input::InputState;
 use super::lighting::LightingRenderer;
-use super::physics::PhysicsCollisionEvent;
 use super::shaders::EffectsManager;
 use super::ui::UiContext;
 
@@ -79,13 +79,25 @@ pub struct GameContext<'a> {
   pub effects: &'a mut EffectsManager,
   /// 2D lighting renderer for controlling ambient light and dynamic lights (None if lighting disabled)
   pub lighting: &'a mut Option<LightingRenderer>,
-  /// Collision events from the last physics step.
+  /// Event bus for decoupled communication between systems.
   ///
-  /// **Note:** This includes BOTH `Started` and `Stopped` events.
-  /// For most game logic (damage, death, scoring), you probably only
-  /// want `Started` events. Use [`collisions_started()`](Self::collisions_started)
-  /// for a filtered iterator.
-  pub collision_events: &'a [PhysicsCollisionEvent],
+  /// Use `events.emit()` to publish events and `events.read()` to subscribe.
+  /// Events are cleared at the start of each frame.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Emit a custom event
+  /// ctx.events.emit(PlayerDied { entity: player });
+  ///
+  /// // Read built-in collision events
+  /// for event in ctx.events.read::<CollisionStarted>() {
+  ///     if event.involves(player) {
+  ///         take_damage();
+  ///     }
+  /// }
+  /// ```
+  pub events: &'a mut Events,
   /// Pending window configuration changes (resolution, display mode)
   pub window_request: &'a mut WindowRequest,
 }
@@ -115,32 +127,6 @@ impl<'a> GameContext<'a> {
   /// Get the screen height in pixels.
   pub fn screen_height(&self) -> f32 {
     self.camera.viewport_size().1
-  }
-
-  /// Iterate over collision events where objects started touching.
-  ///
-  /// This is the most common case for game logic - reacting when
-  /// objects first collide (damage, pickups, death triggers, etc.).
-  ///
-  /// # Example
-  ///
-  /// ```ignore
-  /// for event in ctx.collisions_started() {
-  ///     if event.involves(player) {
-  ///         // Player hit something!
-  ///     }
-  /// }
-  /// ```
-  pub fn collisions_started(&self) -> impl Iterator<Item = &PhysicsCollisionEvent> {
-    self.collision_events.iter().filter(|e| e.is_started())
-  }
-
-  /// Iterate over collision events where objects stopped touching.
-  ///
-  /// Useful for "exit trigger" logic or resetting state when
-  /// objects separate.
-  pub fn collisions_stopped(&self) -> impl Iterator<Item = &PhysicsCollisionEvent> {
-    self.collision_events.iter().filter(|e| e.is_stopped())
   }
 
   /// Request a display mode change (windowed, fullscreen, borderless).

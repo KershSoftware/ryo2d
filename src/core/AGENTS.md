@@ -16,6 +16,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `workspace.rs` | Project discovery, `ryo.toml` configuration, path management |
 | `debug.rs` | Debug visualization (colliders, velocities, origins, FPS) and drawing primitives |
 | `ecs/` | Entity-Component-System using hecs (see `ecs/AGENTS.md`) |
+| `events/` | Event bus for decoupled inter-system communication (see `events/AGENTS.md`) |
 | `animation.rs` | Sprite animation with `Animation`, `Animator`, `AnimationController` |
 | `asset.rs` | `AssetManager` and `SpriteHandle` for resource loading/caching |
 | `audio.rs` | `AudioManager`, sound effects, and music playback (Kira) |
