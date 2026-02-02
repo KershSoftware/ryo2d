@@ -25,13 +25,22 @@ pub struct GameScene {
 
   // Entity tracking
   paddle: Option<Entity>,
-  ball: Option<Entity>,
+  balls: Vec<Entity>,
   blocks: Vec<Entity>,
   walls: Vec<Entity>,
   death_zone: Option<Entity>,
 
   // Block count for win detection
   blocks_remaining: u32,
+
+  // Multi-ball tracking
+  multiball_score_threshold: u32,
+  ball_counter: u32,
+  multiball_blocks: Vec<Entity>,
+  glow_time: f32,
+
+  // Deferred respawn flag (spawn ball next frame to avoid rendering issues)
+  needs_respawn: bool,
 
   // Wait for escape release after resuming from pause
   escape_was_released: bool,
@@ -59,11 +68,16 @@ impl GameScene {
       game_started: false,
       game_over: false,
       paddle: None,
-      ball: None,
+      balls: Vec::new(),
       blocks: Vec::new(),
       walls: Vec::new(),
       death_zone: None,
       blocks_remaining: 0,
+      multiball_score_threshold: 300,
+      ball_counter: 0,
+      multiball_blocks: Vec::new(),
+      glow_time: 0.0,
+      needs_respawn: false,
       escape_was_released: true,
       music: None,
       prev_music: None,
@@ -83,11 +97,16 @@ impl GameScene {
       game_started: false,
       game_over: false,
       paddle: None,
-      ball: None,
+      balls: Vec::new(),
       blocks: Vec::new(),
       walls: Vec::new(),
       death_zone: None,
       blocks_remaining: 0,
+      multiball_score_threshold: 300,
+      ball_counter: 0,
+      multiball_blocks: Vec::new(),
+      glow_time: 0.0,
+      needs_respawn: false,
       escape_was_released: true,
       music: None,
       prev_music,
@@ -127,6 +146,10 @@ impl GameScene {
     let ball_x = SCREEN_WIDTH as f32 / 2.0 - BALL_SIZE / 2.0;
     let ball_y = PADDLE_Y - BALL_SIZE - 10.0;
 
+    // Use unique sprite ID for each ball to avoid caching issues
+    self.ball_counter += 1;
+    let sprite_id = format!("ball_{}", self.ball_counter);
+
     let ball = ctx.world.spawn((
       Transform::new(ball_x, ball_y),
       Velocity::zero(),                                        // Frozen initially
@@ -137,13 +160,108 @@ impl GameScene {
         .with_friction(0.0), // No friction
       Renderable::sprite(SpriteHandle::from_sprite(
         Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
-        "ball",
+        sprite_id,
       ))
       .with_z_order(15),
       Ball { frozen: true },
     ));
-    self.ball = Some(ball);
+    self.balls.push(ball);
     self.game_started = false;
+  }
+
+  /// Spawn an additional ball at a specific position (for multi-ball power-up)
+  fn spawn_ball_at(&mut self, ctx: &mut SceneContext, x: f32, y: f32) {
+    // Use unique sprite ID for each ball
+    self.ball_counter += 1;
+    let sprite_id = format!("ball_{}", self.ball_counter);
+
+    let ball = ctx.world.spawn((
+      Transform::new(x - BALL_SIZE / 2.0, y),
+      Velocity::new(0.0, -BALL_SPEED), // Moving upward
+      RigidBody::new().with_gravity_scale(0.0).with_drag(0.0),
+      Collider::circle_collider(BALL_SIZE / 2.0)
+        .with_offset(BALL_SIZE / 2.0, BALL_SIZE / 2.0)
+        .with_restitution(1.0)
+        .with_friction(0.0),
+      Renderable::sprite(SpriteHandle::from_sprite(
+        Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
+        sprite_id,
+      ))
+      .with_z_order(15),
+      Ball { frozen: false },
+    ));
+    self.balls.push(ball);
+  }
+
+  /// Check if score crossed threshold and convert a random block to multi-ball
+  fn try_spawn_multiball_block(&mut self, ctx: &mut SceneContext) {
+    if self.score >= self.multiball_score_threshold && !self.blocks.is_empty() {
+      // Pick a block based on score (deterministic but varied)
+      let idx = (self.score as usize) % self.blocks.len();
+      let block = self.blocks[idx];
+
+      // Mark as multiball
+      if let Some(mut block_comp) = ctx.world.get_component_mut::<Block>(block) {
+        // Don't convert if already multiball
+        if block_comp.is_multiball {
+          // Try next threshold
+          self.multiball_score_threshold += 300;
+          return;
+        }
+        block_comp.is_multiball = true;
+      } else {
+        return; // Block doesn't exist, skip
+      }
+
+      // Change sprite to gold (will be animated each frame)
+      if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
+        renderable.sprite = SpriteHandle::from_sprite(
+          Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, 0xff, 0xd7, 0x00, 0xff),
+          "multiball_block",
+        );
+      }
+
+      // Add a subtle elastic wiggle with slight rotation
+      let _ = ctx.world.insert_one(
+        block,
+        Tween::new(0.25)
+          .to_scale_x(1.02)
+          .to_scale_y(1.02)
+          .to_rotation_value(0.02)
+          .with_easing(Ease::InOutElastic)
+          .with_loop(TweenLoop::PingPong),
+      );
+
+      // Track this block for color pulse animation
+      self.multiball_blocks.push(block);
+
+      // Set next threshold
+      self.multiball_score_threshold += 300;
+    }
+  }
+
+  /// Update animated pulse effect on multiball blocks
+  fn update_multiball_glow(&mut self, ctx: &mut SceneContext, dt: f32) {
+    self.glow_time += dt;
+
+    // Pulsing brightness: oscillate between gold and bright yellow/white
+    let pulse = (self.glow_time * 5.0).sin(); // 5.0 = speed of pulse
+    let brightness = 0.5 + pulse * 0.5; // 0.0 to 1.0
+
+    // Interpolate between gold (0xff, 0xd7, 0x00) and bright white-gold (0xff, 0xff, 0xaa)
+    let r = 0xff;
+    let g = (0xd7 as f32 + (0xff - 0xd7) as f32 * brightness) as u8;
+    let b = (0x00 as f32 + 0xaa as f32 * brightness) as u8;
+
+    // Update sprite color on all multiball blocks
+    for &block in &self.multiball_blocks {
+      if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
+        renderable.sprite = SpriteHandle::from_sprite(
+          Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, 0xff),
+          "multiball_block",
+        );
+      }
+    }
   }
 
   fn spawn_walls(&mut self, ctx: &mut SceneContext) {
@@ -254,8 +372,8 @@ impl GameScene {
       let _ = ctx.world.despawn(wall);
     }
 
-    // Despawn ball
-    if let Some(ball) = self.ball.take() {
+    // Despawn all balls
+    for ball in self.balls.drain(..) {
       let _ = ctx.world.despawn(ball);
     }
 
@@ -270,6 +388,7 @@ impl GameScene {
     }
 
     self.blocks_remaining = 0;
+    self.multiball_blocks.clear();
     self.game_started = false;
   }
 
@@ -284,27 +403,30 @@ impl GameScene {
   }
 
   fn launch_ball(&mut self, ctx: &mut SceneContext) {
-    if let Some(ball) = self.ball
-      && let Some(mut ball_comp) = ctx.world.get_component_mut::<Ball>(ball)
-      && ball_comp.frozen
-    {
-      ball_comp.frozen = false;
+    // Launch the first frozen ball (should only be one at game start)
+    for &ball in &self.balls {
+      if let Some(mut ball_comp) = ctx.world.get_component_mut::<Ball>(ball)
+        && ball_comp.frozen
+      {
+        ball_comp.frozen = false;
 
-      // Set initial velocity - slightly angled upward
-      if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
-        // Angle varies based on score for variety
-        let angle_offset = (self.score as f32 * 0.1).sin() * 0.5;
-        vel.dx = BALL_SPEED * angle_offset;
-        vel.dy = -BALL_SPEED;
+        // Set initial velocity - slightly angled upward
+        if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
+          // Angle varies based on score for variety
+          let angle_offset = (self.score as f32 * 0.1).sin() * 0.5;
+          vel.dx = BALL_SPEED * angle_offset;
+          vel.dy = -BALL_SPEED;
+        }
+
+        self.game_started = true;
+        break;
       }
-
-      self.game_started = true;
     }
   }
 
   fn reset_ball(&mut self, ctx: &mut SceneContext) {
-    // Remove old ball
-    if let Some(ball) = self.ball.take() {
+    // Remove all existing balls
+    for ball in self.balls.drain(..) {
       let _ = ctx.world.despawn(ball);
     }
 
@@ -334,19 +456,17 @@ impl GameScene {
         save_high_score(self.score);
       }
     } else {
-      // Reset ball for next attempt
-      self.reset_ball(ctx);
+      // Defer ball respawn to next frame to avoid rendering issues
+      self.needs_respawn = true;
     }
   }
 
-  fn handle_block_hit(&mut self, ctx: &mut SceneContext, block: Entity) {
+  fn handle_block_hit(&mut self, ctx: &mut SceneContext, ball: Entity, block: Entity) {
     // Bounce the ball off the block
-    if let Some(ball) = self.ball
-      && let (Some(ball_transform), Some(block_transform)) = (
-        ctx.world.get_component::<Transform>(ball),
-        ctx.world.get_component::<Transform>(block),
-      )
-    {
+    if let (Some(ball_transform), Some(block_transform)) = (
+      ctx.world.get_component::<Transform>(ball),
+      ctx.world.get_component::<Transform>(block),
+    ) {
       // Determine bounce direction based on collision position
       let ball_cx = ball_transform.x + BALL_SIZE / 2.0;
       let ball_cy = ball_transform.y + BALL_SIZE / 2.0;
@@ -373,29 +493,53 @@ impl GameScene {
     let block_info = {
       if let Some(mut block_comp) = ctx.world.get_component_mut::<Block>(block) {
         block_comp.hits = block_comp.hits.saturating_sub(1);
-        Some((block_comp.points, block_comp.hits, block_comp.color))
+        Some((
+          block_comp.points,
+          block_comp.hits,
+          block_comp.color,
+          block_comp.is_multiball,
+        ))
       } else {
         None
       }
     };
 
-    if let Some((points, remaining_hits, color)) = block_info {
+    if let Some((points, remaining_hits, color, is_multiball)) = block_info {
       if remaining_hits == 0 {
         // Play block break sound
         if let Some(audio) = ctx.audio.as_mut() {
           let _ = audio.play_sound_with("block_break", SoundOptions::new().volume(0.15));
         }
 
+        // Get block position before despawning (for multiball spawn)
+        let spawn_pos = if is_multiball {
+          ctx
+            .world
+            .get_component::<Transform>(block)
+            .map(|t| (t.x + BLOCK_WIDTH / 2.0, t.y + BLOCK_HEIGHT))
+        } else {
+          None
+        };
+
         // Destroy block
         self.score += points;
         self.blocks_remaining = self.blocks_remaining.saturating_sub(1);
         self.blocks.retain(|&b| b != block);
+        self.multiball_blocks.retain(|&b| b != block);
         let _ = ctx.world.despawn(block);
+
+        // Spawn extra ball if this was a multiball block
+        if let Some((x, y)) = spawn_pos {
+          self.spawn_ball_at(ctx, x, y);
+        }
 
         // Update high score
         if self.score > self.high_score {
           self.high_score = self.score;
         }
+
+        // Check if we should spawn a new multiball block
+        self.try_spawn_multiball_block(ctx);
       } else {
         // Update block appearance to show damage
         let (r, g, b, a) = color.dimmed();
@@ -418,10 +562,14 @@ impl GameScene {
       // Clear blocks and spawn new level
       ctx.world.clear();
       self.paddle = None;
-      self.ball = None;
+      self.balls.clear();
       self.blocks.clear();
+      self.multiball_blocks.clear();
       self.walls.clear();
       self.death_zone = None;
+
+      // Reset multiball threshold for new level
+      self.multiball_score_threshold = self.score + 300;
 
       true
     } else {
@@ -489,6 +637,15 @@ impl Scene for GameScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    // Handle deferred ball respawn (from previous frame's death)
+    if self.needs_respawn {
+      self.needs_respawn = false;
+      self.reset_ball(ctx);
+    }
+
+    // Animate multiball block glow
+    self.update_multiball_glow(ctx, dt);
+
     // Debug mode: Level switching with Q/E
     if self.debug_mode {
       // Track key releases for debouncing
@@ -597,48 +754,58 @@ impl Scene for GameScene {
       transform.x = transform.x.clamp(0.0, SCREEN_WIDTH as f32 - PADDLE_WIDTH);
     }
 
-    // Ball physics - maintain constant speed
-    if let Some(ball) = self.ball
-      && let Some(ball_comp) = ctx.world.get_component::<Ball>(ball)
-      && !ball_comp.frozen
-      && let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball)
-    {
-      // Normalize velocity to maintain constant speed
-      let speed = (vel.dx * vel.dx + vel.dy * vel.dy).sqrt();
-      if speed > 0.0 && (speed - BALL_SPEED).abs() > 1.0 {
-        vel.dx = vel.dx / speed * BALL_SPEED;
-        vel.dy = vel.dy / speed * BALL_SPEED;
+    // Ball physics - maintain constant speed for all balls
+    for &ball in &self.balls {
+      if let Some(ball_comp) = ctx.world.get_component::<Ball>(ball) {
+        if ball_comp.frozen {
+          continue;
+        }
+      } else {
+        continue;
       }
 
-      // Ensure ball doesn't get stuck going horizontally
-      if vel.dy.abs() < 50.0 {
-        vel.dy = if vel.dy >= 0.0 { 50.0 } else { -50.0 };
+      if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
+        // Normalize velocity to maintain constant speed
         let speed = (vel.dx * vel.dx + vel.dy * vel.dy).sqrt();
-        vel.dx = vel.dx / speed * BALL_SPEED;
-        vel.dy = vel.dy / speed * BALL_SPEED;
+        if speed > 0.0 && (speed - BALL_SPEED).abs() > 1.0 {
+          vel.dx = vel.dx / speed * BALL_SPEED;
+          vel.dy = vel.dy / speed * BALL_SPEED;
+        }
+
+        // Ensure ball doesn't get stuck going horizontally
+        if vel.dy.abs() < 50.0 {
+          vel.dy = if vel.dy >= 0.0 { 50.0 } else { -50.0 };
+          let speed = (vel.dx * vel.dx + vel.dy * vel.dy).sqrt();
+          vel.dx = vel.dx / speed * BALL_SPEED;
+          vel.dy = vel.dy / speed * BALL_SPEED;
+        }
       }
     }
 
     // Process collision events (only Started - when objects first touch)
     // Collect ball collision targets first to avoid borrow conflicts
-    let ball_collisions: Vec<Entity> = ctx
+    // Store (ball_entity, other_entity) pairs
+    let ball_collisions: Vec<(Entity, Entity)> = ctx
       .events
       .read::<CollisionStarted>()
       .filter_map(|event| {
-        if let Some(ball) = self.ball
-          && event.involves(ball)
-        {
-          event.other(ball)
-        } else {
-          None
+        // Find which ball was involved in this collision
+        for &ball in &self.balls {
+          if event.involves(ball) {
+            return event.other(ball).map(|other| (ball, other));
+          }
         }
+        None
       })
       .collect();
 
-    for other in ball_collisions {
+    // Track balls that need to be removed (hit death zone)
+    let mut balls_to_remove: Vec<Entity> = Vec::new();
+
+    for (ball, other) in ball_collisions {
       // Ball hit death zone
       if self.death_zone == Some(other) {
-        self.handle_ball_death(ctx);
+        balls_to_remove.push(ball);
         continue;
       }
 
@@ -649,12 +816,10 @@ impl Scene for GameScene {
           let _ = audio.play_sound_with("paddle_hit", SoundOptions::new().volume(0.15));
         }
 
-        if let Some(ball) = self.ball
-          && let (Some(ball_transform), Some(paddle_transform)) = (
-            ctx.world.get_component::<Transform>(ball),
-            ctx.world.get_component::<Transform>(other),
-          )
-        {
+        if let (Some(ball_transform), Some(paddle_transform)) = (
+          ctx.world.get_component::<Transform>(ball),
+          ctx.world.get_component::<Transform>(other),
+        ) {
           let ball_center = ball_transform.x + BALL_SIZE / 2.0;
           let paddle_center = paddle_transform.x + PADDLE_WIDTH / 2.0;
           let offset = (ball_center - paddle_center) / (PADDLE_WIDTH / 2.0);
@@ -675,9 +840,24 @@ impl Scene for GameScene {
 
       // Ball hit block
       if self.blocks.contains(&other) {
-        self.handle_block_hit(ctx, other);
+        self.handle_block_hit(ctx, ball, other);
         continue;
       }
+    }
+
+    // Remove dead balls from tracking (but don't despawn yet)
+    for &ball in &balls_to_remove {
+      self.balls.retain(|&b| b != ball);
+    }
+
+    // Check if all balls are lost
+    if self.balls.is_empty() && self.game_started {
+      self.handle_ball_death(ctx);
+    }
+
+    // Now despawn the dead ball entities (after new ball is spawned)
+    for ball in balls_to_remove {
+      let _ = ctx.world.despawn(ball);
     }
 
     SceneAction::Continue
