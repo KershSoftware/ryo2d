@@ -34,9 +34,8 @@ pub enum ReplicationRole {
 ///
 /// # Server Usage
 ///
-/// ```no_run
-/// use ryo2d::prelude::*;
-///
+/// ```ignore
+/// // In your game's update loop:
 /// let mut replication = ReplicationManager::new_server();
 /// replication.register::<Transform>();
 ///
@@ -56,9 +55,8 @@ pub enum ReplicationRole {
 ///
 /// # Client Usage
 ///
-/// ```no_run
-/// use ryo2d::prelude::*;
-///
+/// ```ignore
+/// // In your game's update loop:
 /// let mut replication = ReplicationManager::new_client();
 /// replication.register::<Transform>();
 ///

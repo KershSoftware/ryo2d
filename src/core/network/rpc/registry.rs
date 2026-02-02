@@ -23,15 +23,14 @@ type RpcHandler =
 ///
 /// # Example
 ///
-/// ```no_run
-/// use ryo2d::prelude::*;
-///
+/// ```ignore
+/// // In your server code:
 /// let mut registry = RpcRegistry::new();
 ///
-/// // Register a handler
-/// registry.register::<PlayerInputRpc>(|world, rpc, sender| {
+/// // Register a handler (PlayerInputRpc defined elsewhere)
+/// registry.register::<PlayerInputRpc>(|world, rpc| {
 ///     // Handle the RPC
-///     println!("Received input from {}: {:?}", sender, rpc.payload);
+///     println!("Received input from {}: {:?}", rpc.sender, rpc.payload);
 ///     Ok(())
 /// });
 ///

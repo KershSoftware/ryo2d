@@ -147,7 +147,8 @@ impl Transform {
   ///
   /// More readable alternative to `with_pivot()`:
   /// ```
-  /// Transform::new(100.0, 200.0).with_anchor(Anchor::BottomCenter)
+  /// use ryo2d::prelude::*;
+  /// Transform::new(100.0, 200.0).with_anchor(Anchor::BottomCenter);
   /// ```
   pub fn with_anchor(self, anchor: Anchor) -> Self {
     let (px, py) = anchor.to_pivot();
@@ -159,10 +160,11 @@ impl Transform {
   /// Offsets are applied after anchor/pivot calculation, allowing fine-tuned
   /// positioning adjustments:
   /// ```
+  /// use ryo2d::prelude::*;
   /// // Place bottom-center at (100, 200), then shift 10px right and 5px up
   /// Transform::new(100.0, 200.0)
   ///     .with_anchor(Anchor::BottomCenter)
-  ///     .with_offset(10.0, -5.0)
+  ///     .with_offset(10.0, -5.0);
   /// ```
   pub fn with_offset(mut self, offset_x: f32, offset_y: f32) -> Self {
     self.offset_x = offset_x;

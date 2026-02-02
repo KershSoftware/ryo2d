@@ -70,8 +70,9 @@
 //!     // Only remote clients generate events
 //! }
 //!
-//! // Iterate all players uniformly
-//! for client_id in server.all_clients() {
+//! // Iterate all players uniformly (collect first to avoid borrow issues)
+//! let clients: Vec<_> = server.all_clients().collect();
+//! for client_id in clients {
 //!     if server.is_host(client_id) {
 //!         // Host player - handle directly
 //!     } else {
@@ -644,8 +645,9 @@ impl NetworkClient {
 ///     }
 /// }
 ///
-/// // Iterate all players (host + remote)
-/// for client_id in server.all_clients() {
+/// // Iterate all players (host + remote) - collect first to avoid borrow issues
+/// let clients: Vec<_> = server.all_clients().collect();
+/// for client_id in clients {
 ///     if server.is_host(client_id) {
 ///         // Host player - handle directly
 ///     } else {

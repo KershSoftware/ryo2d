@@ -14,8 +14,9 @@ use super::types::{Authority, NetworkEntity, NetworkId};
 ///
 /// # Example
 ///
-/// ```
-/// use ryo2d::prelude::*;
+/// ```ignore
+/// // In your game code:
+/// let client_id = 1; // The owning client's ID
 ///
 /// let builder = NetworkEntityBuilder::new()
 ///     .with_owner(client_id)

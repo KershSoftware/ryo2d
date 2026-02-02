@@ -120,6 +120,7 @@ pub enum Authority {
 /// };
 ///
 /// // Create a player-controlled entity
+/// let client_id = 1; // The owning client's ID
 /// let player_entity = NetworkEntity {
 ///     network_id: NetworkId::new(),
 ///     owner: client_id,
