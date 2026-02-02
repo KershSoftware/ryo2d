@@ -135,7 +135,7 @@ impl Scene for LightingScene {
       // Segment is tall enough to connect to next segment (with slight overlap)
       let rope_sprite = ctx.assets.create_sprite(
         Sprite::solid_rect(4, (segment_length + 2.0) as u32, 139, 90, 43, 255), // brown rope
-        &format!("rope_segment_{}", i),
+        format!("rope_segment_{}", i),
       );
 
       // Use top-center pivot so segment rotates from its top attachment point
@@ -208,7 +208,7 @@ impl Scene for LightingScene {
     for (i, (x, y, w, h, color)) in box_positions.iter().enumerate() {
       let sprite = ctx.assets.create_sprite(
         Sprite::solid_rect(*w as u32, *h as u32, color.r, color.g, color.b, color.a),
-        &format!("box_{}", i),
+        format!("box_{}", i),
       );
 
       ctx.world.spawn((
@@ -228,7 +228,7 @@ impl Scene for LightingScene {
     for (i, (x, y, w, h, color)) in floating_shapes.iter().enumerate() {
       let sprite = ctx.assets.create_sprite(
         Sprite::solid_rect(*w as u32, *h as u32, color.r, color.g, color.b, color.a),
-        &format!("floating_{}", i),
+        format!("floating_{}", i),
       );
 
       ctx.world.spawn((
@@ -293,10 +293,10 @@ impl Scene for LightingScene {
     }
 
     // Update light properties if they changed
-    if let Some(light_entity) = self.light_entity {
-      if let Some(mut light) = ctx.world.get_mut::<Light2D>(light_entity) {
-        *light = Light2D::torch(self.light_radius).with_intensity(self.light_intensity);
-      }
+    if let Some(light_entity) = self.light_entity
+      && let Some(mut light) = ctx.world.get_mut::<Light2D>(light_entity)
+    {
+      *light = Light2D::torch(self.light_radius).with_intensity(self.light_intensity);
     }
 
     // Update pendulum physics
@@ -331,12 +331,12 @@ impl Scene for LightingScene {
 
     // With pivot_top_center, we just set position to the rope end and rotation
     // The engine automatically rotates around the top-center pivot point
-    if let Some(bulb_entity) = self.bulb_entity {
-      if let Some(mut transform) = ctx.world.get_mut::<Transform>(bulb_entity) {
-        transform.x = bob_x;
-        transform.y = bob_y;
-        transform.rotation = self.bulb_angle;
-      }
+    if let Some(bulb_entity) = self.bulb_entity
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(bulb_entity)
+    {
+      transform.x = bob_x;
+      transform.y = bob_y;
+      transform.rotation = self.bulb_angle;
     }
 
     // Calculate where the bulb center ends up after pivot rotation (for light positioning)
@@ -344,11 +344,11 @@ impl Scene for LightingScene {
     let bulb_center_y = bob_y + BULB_RADIUS * self.bulb_angle.cos();
 
     // Update light position (at center of bulb)
-    if let Some(light_entity) = self.light_entity {
-      if let Some(mut transform) = ctx.world.get_mut::<Transform>(light_entity) {
-        transform.x = bulb_center_x;
-        transform.y = bulb_center_y;
-      }
+    if let Some(light_entity) = self.light_entity
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(light_entity)
+    {
+      transform.x = bulb_center_x;
+      transform.y = bulb_center_y;
     }
 
     // Update rope segments to follow pendulum (using stored entity IDs for correct order)
