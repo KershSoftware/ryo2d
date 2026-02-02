@@ -1,0 +1,11 @@
+[package]
+name = "anchor-positioning"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ryo2d = { path = "../../../" }
+
+[[bin]]
+name = "anchor-positioning"
+path = "main.rs"

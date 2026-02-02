@@ -4,7 +4,13 @@
 //! Or via run script: `./run test:e2e`
 //!
 //! E2E tests verify complete workflows and full engine initialization.
-//! Most e2e tests require GPU context and are marked #[ignore] by default.
+//! Tests gracefully skip when GPU is unavailable (CI without GPU).
+
+#[path = "common/mod.rs"]
+mod common;
 
 #[path = "e2e/engine_lifecycle.rs"]
 mod engine_lifecycle;
+
+#[path = "e2e/gpu_basics.rs"]
+mod gpu_basics;
