@@ -3,6 +3,9 @@
 // Re-export glam types for convenience
 pub use glam::{Mat4, Vec2, Vec3, Vec4};
 
+// Import Anchor from UI module (unified 9-point anchor for both UI and sprite positioning)
+use crate::core::ui::Anchor;
+
 /// Common render layers for organizing draw order
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RenderLayer {
@@ -46,6 +49,10 @@ pub struct Transform {
   pub pivot_x: f32,
   /// Pivot Y as normalized value (0.0 = top, 0.5 = center, 1.0 = bottom)
   pub pivot_y: f32,
+  /// Additional X offset in pixels, applied after anchor/pivot calculation
+  pub offset_x: f32,
+  /// Additional Y offset in pixels, applied after anchor/pivot calculation
+  pub offset_y: f32,
 }
 
 impl Transform {
@@ -60,6 +67,8 @@ impl Transform {
       scale_y: 1.0,
       pivot_x: 0.0,
       pivot_y: 0.0,
+      offset_x: 0.0,
+      offset_y: 0.0,
     }
   }
 
@@ -74,6 +83,8 @@ impl Transform {
       scale_y: 1.0,
       pivot_x: 0.0,
       pivot_y: 0.0,
+      offset_x: 0.0,
+      offset_y: 0.0,
     }
   }
 
@@ -130,6 +141,33 @@ impl Transform {
     self
   }
 
+  /// Builder method to set pivot using an Anchor enum
+  ///
+  /// More readable alternative to `with_pivot()`:
+  /// ```
+  /// Transform::new(100.0, 200.0).with_anchor(Anchor::BottomCenter)
+  /// ```
+  pub fn with_anchor(self, anchor: Anchor) -> Self {
+    let (px, py) = anchor.to_pivot();
+    self.with_pivot(px, py)
+  }
+
+  /// Builder method to set pixel offset from the anchor point
+  ///
+  /// Offsets are applied after anchor/pivot calculation, allowing fine-tuned
+  /// positioning adjustments:
+  /// ```
+  /// // Place bottom-center at (100, 200), then shift 10px right and 5px up
+  /// Transform::new(100.0, 200.0)
+  ///     .with_anchor(Anchor::BottomCenter)
+  ///     .with_offset(10.0, -5.0)
+  /// ```
+  pub fn with_offset(mut self, offset_x: f32, offset_y: f32) -> Self {
+    self.offset_x = offset_x;
+    self.offset_y = offset_y;
+    self
+  }
+
   /// Builder method to set pivot at center (useful for centered rotation/scaling)
   pub fn with_pivot_center(self) -> Self {
     self.with_pivot(0.5, 0.5)
@@ -143,6 +181,36 @@ impl Transform {
   /// Builder method to set pivot at bottom-center (useful for standing objects)
   pub fn with_pivot_bottom_center(self) -> Self {
     self.with_pivot(0.5, 1.0)
+  }
+
+  /// Builder method to set pivot at top-left (default, but explicit for clarity)
+  pub fn with_pivot_top_left(self) -> Self {
+    self.with_pivot(0.0, 0.0)
+  }
+
+  /// Builder method to set pivot at top-right
+  pub fn with_pivot_top_right(self) -> Self {
+    self.with_pivot(1.0, 0.0)
+  }
+
+  /// Builder method to set pivot at center-left (useful for side-hinged objects)
+  pub fn with_pivot_center_left(self) -> Self {
+    self.with_pivot(0.0, 0.5)
+  }
+
+  /// Builder method to set pivot at center-right
+  pub fn with_pivot_center_right(self) -> Self {
+    self.with_pivot(1.0, 0.5)
+  }
+
+  /// Builder method to set pivot at bottom-left
+  pub fn with_pivot_bottom_left(self) -> Self {
+    self.with_pivot(0.0, 1.0)
+  }
+
+  /// Builder method to set pivot at bottom-right
+  pub fn with_pivot_bottom_right(self) -> Self {
+    self.with_pivot(1.0, 1.0)
   }
 
   pub fn origin() -> Self {
@@ -216,6 +284,8 @@ mod tests {
     assert_eq!(t.scale_y, 1.0);
     assert_eq!(t.pivot_x, 0.0);
     assert_eq!(t.pivot_y, 0.0);
+    assert_eq!(t.offset_x, 0.0);
+    assert_eq!(t.offset_y, 0.0);
   }
 
   #[test]
@@ -226,6 +296,8 @@ mod tests {
     assert_eq!(t.z, 3.0);
     assert_eq!(t.pivot_x, 0.0);
     assert_eq!(t.pivot_y, 0.0);
+    assert_eq!(t.offset_x, 0.0);
+    assert_eq!(t.offset_y, 0.0);
   }
 
   #[test]
@@ -275,5 +347,75 @@ mod tests {
     let v = Velocity::from_vec3(Vec3::new(1.0, 2.0, 3.0));
     assert_eq!(v.as_vec3(), Vec3::new(1.0, 2.0, 3.0));
     assert_eq!(v.as_vec2(), Vec2::new(1.0, 2.0));
+  }
+
+  #[test]
+  fn anchor_to_pivot() {
+    assert_eq!(Anchor::TopLeft.to_pivot(), (0.0, 0.0));
+    assert_eq!(Anchor::TopCenter.to_pivot(), (0.5, 0.0));
+    assert_eq!(Anchor::TopRight.to_pivot(), (1.0, 0.0));
+    assert_eq!(Anchor::CenterLeft.to_pivot(), (0.0, 0.5));
+    assert_eq!(Anchor::Center.to_pivot(), (0.5, 0.5));
+    assert_eq!(Anchor::CenterRight.to_pivot(), (1.0, 0.5));
+    assert_eq!(Anchor::BottomLeft.to_pivot(), (0.0, 1.0));
+    assert_eq!(Anchor::BottomCenter.to_pivot(), (0.5, 1.0));
+    assert_eq!(Anchor::BottomRight.to_pivot(), (1.0, 1.0));
+  }
+
+  #[test]
+  fn anchor_default() {
+    assert_eq!(Anchor::default(), Anchor::TopLeft);
+  }
+
+  #[test]
+  fn transform_with_anchor() {
+    let t = Transform::new(100.0, 200.0).with_anchor(Anchor::BottomCenter);
+    assert_eq!(t.pivot_x, 0.5);
+    assert_eq!(t.pivot_y, 1.0);
+
+    let t2 = Transform::new(100.0, 200.0).with_anchor(Anchor::Center);
+    assert_eq!(t2.pivot_x, 0.5);
+    assert_eq!(t2.pivot_y, 0.5);
+  }
+
+  #[test]
+  fn transform_with_offset() {
+    let t = Transform::new(100.0, 200.0).with_offset(10.0, -5.0);
+    assert_eq!(t.offset_x, 10.0);
+    assert_eq!(t.offset_y, -5.0);
+  }
+
+  #[test]
+  fn transform_anchor_and_offset_combined() {
+    let t = Transform::new(100.0, 200.0)
+      .with_anchor(Anchor::BottomCenter)
+      .with_offset(10.0, -5.0);
+    assert_eq!(t.x, 100.0);
+    assert_eq!(t.y, 200.0);
+    assert_eq!(t.pivot_x, 0.5);
+    assert_eq!(t.pivot_y, 1.0);
+    assert_eq!(t.offset_x, 10.0);
+    assert_eq!(t.offset_y, -5.0);
+  }
+
+  #[test]
+  fn transform_all_pivot_corners() {
+    let tl = Transform::new(0.0, 0.0).with_pivot_top_left();
+    assert_eq!((tl.pivot_x, tl.pivot_y), (0.0, 0.0));
+
+    let tr = Transform::new(0.0, 0.0).with_pivot_top_right();
+    assert_eq!((tr.pivot_x, tr.pivot_y), (1.0, 0.0));
+
+    let bl = Transform::new(0.0, 0.0).with_pivot_bottom_left();
+    assert_eq!((bl.pivot_x, bl.pivot_y), (0.0, 1.0));
+
+    let br = Transform::new(0.0, 0.0).with_pivot_bottom_right();
+    assert_eq!((br.pivot_x, br.pivot_y), (1.0, 1.0));
+
+    let cl = Transform::new(0.0, 0.0).with_pivot_center_left();
+    assert_eq!((cl.pivot_x, cl.pivot_y), (0.0, 0.5));
+
+    let cr = Transform::new(0.0, 0.0).with_pivot_center_right();
+    assert_eq!((cr.pivot_x, cr.pivot_y), (1.0, 0.5));
   }
 }

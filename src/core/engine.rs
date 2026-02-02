@@ -220,6 +220,8 @@ pub struct Engine {
   game: Option<Box<dyn Game>>,
   // Whether init has been called
   initialized: bool,
+  // Whether the first frame has been rendered (used to show window)
+  first_frame_rendered: bool,
   // Cached sorted list of Renderable component entities
   renderable_cache: Vec<(Entity, i32)>,
   // Whether render cache needs rebuilding (entities spawned/despawned, z_order changed)
@@ -386,6 +388,7 @@ impl Engine {
       effects: EffectsManager::new(),
       game: Some(game),
       initialized: false,
+      first_frame_rendered: false,
       renderable_cache: Vec::new(),
       render_cache_dirty: true,
       physics: RapierPhysicsWorld::new(),
@@ -663,7 +666,7 @@ impl Engine {
 
       // Use WorldTransform if available (for hierarchical entities),
       // otherwise fall back to local Transform
-      let (x, y, rotation, scale_x, scale_y, pivot_x, pivot_y) =
+      let (x, y, rotation, scale_x, scale_y, pivot_x, pivot_y, offset_x, offset_y) =
         if let Some(wt) = self.world.get_component::<WorldTransform>(entity) {
           (
             wt.x,
@@ -673,14 +676,20 @@ impl Engine {
             wt.scale_y,
             wt.pivot_x,
             wt.pivot_y,
+            wt.offset_x,
+            wt.offset_y,
           )
         } else if let Some(t) = self.world.get_component::<Transform>(entity) {
           (
-            t.x, t.y, t.rotation, t.scale_x, t.scale_y, t.pivot_x, t.pivot_y,
+            t.x, t.y, t.rotation, t.scale_x, t.scale_y, t.pivot_x, t.pivot_y, t.offset_x, t.offset_y,
           )
         } else {
           continue;
         };
+
+      // Apply offset to base position (offset is a pixel-level adjustment after anchor)
+      let x = x + offset_x;
+      let y = y + offset_y;
 
       // draw_rotated expects degrees, Transform.rotation is in radians
       let rotation_deg = rotation.to_degrees();
@@ -734,8 +743,8 @@ impl Engine {
           // Convert to screen position using camera
           let (screen_x, screen_y) = self.camera.world_to_screen(draw_x, draw_y);
 
-          // Cull off-screen sprites
-          if !self.camera.is_visible(x, y, sprite_w, sprite_h) {
+          // Cull off-screen sprites (use draw position, not anchor position)
+          if !self.camera.is_visible(draw_x, draw_y, sprite_w, sprite_h) {
             continue;
           }
 
@@ -1418,9 +1427,29 @@ impl ApplicationHandler for Engine {
         // Present time = GPU submission + effects pipeline
         self.frame_timings.present = present_start.elapsed();
 
+        // Track first frame for potential future use
+        if !self.first_frame_rendered {
+          self.first_frame_rendered = true;
+        }
+
         // Calculate total frame time and FPS
         self.frame_timings.total = frame_start.elapsed();
         self.frame_timings.calculate_fps();
+
+        // Debug: Log when a frame takes too long (>33ms = <30fps)
+        #[cfg(debug_assertions)]
+        {
+          let total_ms = self.frame_timings.total.as_secs_f64() * 1000.0;
+          if total_ms > 33.0 {
+            eprintln!(
+              "[SLOW FRAME] Total: {:.1}ms | Update: {:.1}ms | Render: {:.1}ms | Present: {:.1}ms",
+              total_ms,
+              self.frame_timings.update.as_secs_f64() * 1000.0,
+              self.frame_timings.render.as_secs_f64() * 1000.0,
+              self.frame_timings.present.as_secs_f64() * 1000.0,
+            );
+          }
+        }
 
         // Debug output and frame limiting
         if let Some(time) = &mut self.time {

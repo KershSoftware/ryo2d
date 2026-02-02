@@ -1,0 +1,12 @@
+[package]
+name = "asset-loading-demo"
+version = "0.1.0"
+edition = "2021"
+description = "Asset loading demo - async loading with progress tracking"
+
+[[bin]]
+name = "asset-loading-demo"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }

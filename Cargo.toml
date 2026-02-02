@@ -25,12 +25,13 @@ members = [
   "examples/games/breakout",
   "examples/games/bullet-hell",
   "examples/demos/anchor-positioning",
+  "examples/demos/asset-loading",
   "examples/demos/hierarchy-sprites",
   "examples/demos/lighting",
   "examples/demos/particles",
   "examples/demos/post-processing",
   "examples/demos/sprite-shaders",
-  "examples/demos/ui-demo",
+  "examples/demos/ui",
 ]
 
 # Example games are standalone projects in examples/ - run them with:

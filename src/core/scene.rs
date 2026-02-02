@@ -550,7 +550,18 @@ impl SceneManager {
     // Add and enter new scene
     self.scenes.push(scene);
     if let Some(new_top) = self.scenes.last_mut() {
+      #[cfg(debug_assertions)]
+      let start = std::time::Instant::now();
+
       new_top.on_enter(ctx);
+
+      #[cfg(debug_assertions)]
+      {
+        let elapsed = start.elapsed();
+        if elapsed.as_millis() > 5 {
+          eprintln!("[Scene] on_enter took {:?}", elapsed);
+        }
+      }
     }
   }
 
@@ -592,7 +603,18 @@ impl SceneManager {
     // Enter new scene
     self.scenes.push(scene);
     if let Some(new_top) = self.scenes.last_mut() {
+      #[cfg(debug_assertions)]
+      let start = std::time::Instant::now();
+
       new_top.on_enter(ctx);
+
+      #[cfg(debug_assertions)]
+      {
+        let elapsed = start.elapsed();
+        if elapsed.as_millis() > 5 {
+          eprintln!("[Scene] switch on_enter took {:?}", elapsed);
+        }
+      }
     }
   }
 
@@ -1016,7 +1038,18 @@ impl Game for SceneGame {
 
     // Call on_enter for the initial scene
     if let Some(scene) = self.manager.top_mut() {
+      #[cfg(debug_assertions)]
+      let start = std::time::Instant::now();
+
       scene.on_enter(&mut scene_ctx);
+
+      #[cfg(debug_assertions)]
+      {
+        let elapsed = start.elapsed();
+        if elapsed.as_millis() > 5 {
+          eprintln!("[Scene] initial on_enter took {:?}", elapsed);
+        }
+      }
     }
     self.initialized = true;
   }

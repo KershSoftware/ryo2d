@@ -251,6 +251,30 @@ impl Anchor {
 
     (anchor_x + offset_x, anchor_y + offset_y)
   }
+
+  /// Convert anchor to normalized pivot coordinates (0.0-1.0).
+  ///
+  /// This is useful for sprite positioning where the anchor determines
+  /// which part of the sprite aligns with the transform position.
+  ///
+  /// # Returns
+  /// (pivot_x, pivot_y) where:
+  /// - 0.0 = left/top
+  /// - 0.5 = center
+  /// - 1.0 = right/bottom
+  pub fn to_pivot(self) -> (f32, f32) {
+    match self {
+      Anchor::TopLeft => (0.0, 0.0),
+      Anchor::TopCenter => (0.5, 0.0),
+      Anchor::TopRight => (1.0, 0.0),
+      Anchor::CenterLeft => (0.0, 0.5),
+      Anchor::Center => (0.5, 0.5),
+      Anchor::CenterRight => (1.0, 0.5),
+      Anchor::BottomLeft => (0.0, 1.0),
+      Anchor::BottomCenter => (0.5, 1.0),
+      Anchor::BottomRight => (1.0, 1.0),
+    }
+  }
 }
 
 // ============================================================================
