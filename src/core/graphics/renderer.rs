@@ -351,8 +351,36 @@ impl WgpuRenderer {
       cache: None,
     });
 
-    // Create CPU-side pixel buffer
-    let pixel_buffer = vec![0u8; (game_width * game_height * 4) as usize];
+    // Create CPU-side pixel buffer pre-filled with warm cream background
+    // This color is presented immediately to prevent white flash on startup
+    let mut pixel_buffer = vec![0u8; (game_width * game_height * 4) as usize];
+    for pixel in pixel_buffer.chunks_exact_mut(4) {
+      pixel[0] = 0xf5; // R: 245
+      pixel[1] = 0xf4; // G: 244
+      pixel[2] = 0xef; // B: 239
+      pixel[3] = 0xff; // A: 255
+    }
+
+    // Upload initial pixel buffer to GPU texture immediately
+    queue.write_texture(
+      wgpu::ImageCopyTexture {
+        texture: &texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+      },
+      &pixel_buffer,
+      wgpu::ImageDataLayout {
+        offset: 0,
+        bytes_per_row: Some(4 * game_width),
+        rows_per_image: Some(game_height),
+      },
+      wgpu::Extent3d {
+        width: game_width,
+        height: game_height,
+        depth_or_array_layers: 1,
+      },
+    );
 
     // Create post-process pipeline
     let post_process = PostProcessPipeline::new(
