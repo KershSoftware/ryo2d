@@ -232,8 +232,8 @@ impl DebugScene {
     };
 
     // Check if any collision event involves the bird
-    for event in ctx.collision_events {
-      if event.involves(bird_entity) && event.event_type == CollisionEventType::Started {
+    for event in ctx.events.read::<CollisionStarted>() {
+      if event.involves(bird_entity) {
         self.is_colliding = true;
         let other = event.other(bird_entity).unwrap();
         // Identify what we hit
