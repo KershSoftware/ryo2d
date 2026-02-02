@@ -179,4 +179,11 @@ pub mod prelude {
     HotReloadResult, NetworkError, NetworkResult, ReplicationError, ReplicationResult, SaveError,
     SaveResult, SpriteError, SpriteResult,
   };
+
+  // Navigation & Pathfinding
+  pub use crate::core::navigation::{
+    CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder, NavigationGrid,
+    Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode, PathResult,
+    PathSmoothing, PathStarted, Pathfinder, PathfinderConfig,
+  };
 }

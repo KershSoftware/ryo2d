@@ -21,6 +21,9 @@ pub mod ui;
 // Physics
 pub mod physics;
 
+// Navigation & Pathfinding
+pub mod navigation;
+
 // Configuration & persistence
 pub mod config;
 

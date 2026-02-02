@@ -1,0 +1,11 @@
+[package]
+name = "pathfinding"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ryo2d = { path = "../../../" }
+
+[[bin]]
+name = "pathfinding"
+path = "main.rs"

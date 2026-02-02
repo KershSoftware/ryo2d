@@ -16,3 +16,6 @@ mod transform;
 
 #[path = "integration/ui.rs"]
 mod ui;
+
+#[path = "integration/navigation.rs"]
+mod navigation;
