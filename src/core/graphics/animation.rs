@@ -519,9 +519,8 @@ mod tests {
   #[test]
   fn animation_builder() {
     let frames = vec![mock_sprite_handle(), mock_sprite_handle()];
-    let anim = Animation::new("test", frames, 0.5)
-      .with_loop_mode(LoopMode::PingPong);
-    
+    let anim = Animation::new("test", frames, 0.5).with_loop_mode(LoopMode::PingPong);
+
     assert_eq!(anim.name(), "test");
     assert!(matches!(anim.loop_mode, LoopMode::PingPong));
   }
@@ -534,7 +533,7 @@ mod tests {
 
     animator.update(0.05);
     assert!(animator.is_playing());
-    
+
     animator.pause();
     let frame_before = animator.current_frame_index();
     animator.update(0.5); // Time shouldn't advance when paused
@@ -549,30 +548,38 @@ mod tests {
     let frames = vec![mock_sprite_handle(), mock_sprite_handle()];
     let anim = Animation::new("test", frames, 1.0);
     let mut animator = Animator::new(anim);
-    
+
     animator.set_speed(2.0);
     assert_eq!(animator.speed(), 2.0);
-    
+
     animator.update(0.5); // Effective time: 0.5 * 2.0 = 1.0
     assert_eq!(animator.current_frame_index(), 1);
   }
 
   #[test]
   fn animator_reset() {
-    let frames = vec![mock_sprite_handle(), mock_sprite_handle(), mock_sprite_handle()];
+    let frames = vec![
+      mock_sprite_handle(),
+      mock_sprite_handle(),
+      mock_sprite_handle(),
+    ];
     let anim = Animation::new("test", frames, 0.1);
     let mut animator = Animator::new(anim);
 
     animator.update(0.25); // Advance past frame 0
     assert_ne!(animator.current_frame_index(), 0);
-    
+
     animator.reset();
     assert_eq!(animator.current_frame_index(), 0);
   }
 
   #[test]
   fn loop_mode_pingpong() {
-    let frames = vec![mock_sprite_handle(), mock_sprite_handle(), mock_sprite_handle()];
+    let frames = vec![
+      mock_sprite_handle(),
+      mock_sprite_handle(),
+      mock_sprite_handle(),
+    ];
     let anim = Animation::new("test", frames, 0.1).with_loop_mode(LoopMode::PingPong);
     let mut animator = Animator::new(anim);
 
@@ -581,13 +588,13 @@ mod tests {
     assert_eq!(animator.current_frame_index(), 1);
     animator.update(0.1);
     assert_eq!(animator.current_frame_index(), 2);
-    
+
     // Reverse: 2 -> 1 -> 0
     animator.update(0.1);
     assert_eq!(animator.current_frame_index(), 1);
     animator.update(0.1);
     assert_eq!(animator.current_frame_index(), 0);
-    
+
     // Forward again
     animator.update(0.1);
     assert_eq!(animator.current_frame_index(), 1);
@@ -604,7 +611,7 @@ mod tests {
     assert_eq!(animator.current_frame_index(), 1);
     animator.update(0.1);
     assert_eq!(animator.current_frame_index(), 0); // Loop back
-    
+
     // Second loop
     animator.update(0.1);
     assert_eq!(animator.current_frame_index(), 1);

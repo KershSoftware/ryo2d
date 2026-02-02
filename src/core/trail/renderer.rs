@@ -483,11 +483,7 @@ impl TrailRenderer {
     queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
 
     // Upload vertices
-    queue.write_buffer(
-      &self.vertex_buffer,
-      0,
-      bytemuck::cast_slice(&self.vertices),
-    );
+    queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
 
     // Select pipeline
     let pipeline = match style {

@@ -276,33 +276,33 @@ impl Velocity {
 use crate::core::network::replication::{ComponentTypeId, Replicated};
 
 impl Replicated for Transform {
-    fn component_id() -> ComponentTypeId {
-        ComponentTypeId::from_name("ryo2d::Transform")
-    }
+  fn component_id() -> ComponentTypeId {
+    ComponentTypeId::from_name("ryo2d::Transform")
+  }
 
-    fn component_name() -> &'static str {
-        "Transform"
-    }
+  fn component_name() -> &'static str {
+    "Transform"
+  }
 
-    fn replication_priority() -> u8 {
-        // Transform is high priority - position updates are time-sensitive
-        10
-    }
+  fn replication_priority() -> u8 {
+    // Transform is high priority - position updates are time-sensitive
+    10
+  }
 }
 
 impl Replicated for Velocity {
-    fn component_id() -> ComponentTypeId {
-        ComponentTypeId::from_name("ryo2d::Velocity")
-    }
+  fn component_id() -> ComponentTypeId {
+    ComponentTypeId::from_name("ryo2d::Velocity")
+  }
 
-    fn component_name() -> &'static str {
-        "Velocity"
-    }
+  fn component_name() -> &'static str {
+    "Velocity"
+  }
 
-    fn replication_priority() -> u8 {
-        // Velocity is medium priority
-        5
-    }
+  fn replication_priority() -> u8 {
+    // Velocity is medium priority
+    5
+  }
 }
 
 #[cfg(test)]

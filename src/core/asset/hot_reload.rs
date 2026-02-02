@@ -238,7 +238,7 @@ mod tests {
   #[test]
   fn hot_reload_config_default_has_common_extensions() {
     let config = HotReloadConfig::default();
-    
+
     // Image formats
     assert!(config.extensions.contains("png"));
     assert!(config.extensions.contains("jpg"));
@@ -246,7 +246,7 @@ mod tests {
     assert!(config.extensions.contains("gif"));
     assert!(config.extensions.contains("bmp"));
     assert!(config.extensions.contains("svg"));
-    
+
     // Audio formats
     assert!(config.extensions.contains("ogg"));
     assert!(config.extensions.contains("wav"));
@@ -265,7 +265,7 @@ mod tests {
   fn hot_reload_config_clone() {
     let config1 = HotReloadConfig::default();
     let config2 = config1.clone();
-    
+
     assert_eq!(config1.watch_paths, config2.watch_paths);
     assert_eq!(config1.recursive, config2.recursive);
   }

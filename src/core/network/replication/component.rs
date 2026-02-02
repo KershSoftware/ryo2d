@@ -5,7 +5,7 @@
 //! - [`ComponentTypeId`] - Unique identifier for component types
 //! - [`ComponentRegistry`] - Registry for serialization/deserialization
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::any::TypeId;
 use std::collections::HashMap;
 
@@ -20,34 +20,34 @@ use crate::core::error::ReplicationError;
 pub struct ComponentTypeId(pub u32);
 
 impl ComponentTypeId {
-    /// Create a component type ID from a type name.
-    ///
-    /// Uses FNV-1a hash for deterministic, fast hashing.
-    pub fn from_name(name: &str) -> Self {
-        // FNV-1a hash
-        let mut hash: u32 = 2166136261;
-        for byte in name.bytes() {
-            hash ^= byte as u32;
-            hash = hash.wrapping_mul(16777619);
-        }
-        ComponentTypeId(hash)
+  /// Create a component type ID from a type name.
+  ///
+  /// Uses FNV-1a hash for deterministic, fast hashing.
+  pub fn from_name(name: &str) -> Self {
+    // FNV-1a hash
+    let mut hash: u32 = 2166136261;
+    for byte in name.bytes() {
+      hash ^= byte as u32;
+      hash = hash.wrapping_mul(16777619);
     }
+    ComponentTypeId(hash)
+  }
 
-    /// Create from a raw value (for deserialization).
-    pub fn from_raw(id: u32) -> Self {
-        ComponentTypeId(id)
-    }
+  /// Create from a raw value (for deserialization).
+  pub fn from_raw(id: u32) -> Self {
+    ComponentTypeId(id)
+  }
 
-    /// Get the raw u32 value.
-    pub fn raw(&self) -> u32 {
-        self.0
-    }
+  /// Get the raw u32 value.
+  pub fn raw(&self) -> u32 {
+    self.0
+  }
 }
 
 impl std::fmt::Display for ComponentTypeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.0)
+  }
 }
 
 use serde::Deserialize;
@@ -83,79 +83,87 @@ use serde::Deserialize;
 /// }
 /// ```
 pub trait Replicated: Component + Serialize + DeserializeOwned + Clone {
-    /// Get the unique type ID for this component.
-    ///
-    /// This should be deterministic (same ID on server and clients).
-    fn component_id() -> ComponentTypeId;
+  /// Get the unique type ID for this component.
+  ///
+  /// This should be deterministic (same ID on server and clients).
+  fn component_id() -> ComponentTypeId;
 
-    /// Get the human-readable name of this component.
-    fn component_name() -> &'static str;
+  /// Get the human-readable name of this component.
+  fn component_name() -> &'static str;
 
-    /// Get the replication priority (1-255).
-    ///
-    /// Higher priority components are updated more frequently.
-    /// Default is 1 (lowest priority). Use higher values for
-    /// time-critical components like Transform.
-    fn replication_priority() -> u8 {
-        1
-    }
+  /// Get the replication priority (1-255).
+  ///
+  /// Higher priority components are updated more frequently.
+  /// Default is 1 (lowest priority). Use higher values for
+  /// time-critical components like Transform.
+  fn replication_priority() -> u8 {
+    1
+  }
 }
 
 /// Serialized component data for network transmission.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializedComponent {
-    /// The component type identifier.
-    pub type_id: ComponentTypeId,
-    /// Serialized component data (JSON for now, could be binary).
-    pub data: Vec<u8>,
+  /// The component type identifier.
+  pub type_id: ComponentTypeId,
+  /// Serialized component data (JSON for now, could be binary).
+  pub data: Vec<u8>,
 }
 
 impl SerializedComponent {
-    /// Serialize a replicated component.
-    pub fn from_component<T: Replicated>(component: &T) -> Result<Self, ReplicationError> {
-        let data = serde_json::to_vec(component).map_err(|e| {
-            ReplicationError::SerializationError(format!(
-                "Failed to serialize {}: {}",
-                T::component_name(),
-                e
-            ))
-        })?;
+  /// Serialize a replicated component.
+  pub fn from_component<T: Replicated>(component: &T) -> Result<Self, ReplicationError> {
+    let data = serde_json::to_vec(component).map_err(|e| {
+      ReplicationError::SerializationError(format!(
+        "Failed to serialize {}: {}",
+        T::component_name(),
+        e
+      ))
+    })?;
 
-        Ok(SerializedComponent {
-            type_id: T::component_id(),
-            data,
-        })
+    Ok(SerializedComponent {
+      type_id: T::component_id(),
+      data,
+    })
+  }
+
+  /// Deserialize into a specific component type.
+  pub fn into_component<T: Replicated>(self) -> Result<T, ReplicationError> {
+    if self.type_id != T::component_id() {
+      return Err(ReplicationError::TypeMismatch {
+        expected: T::component_name().to_string(),
+        found: format!("ComponentTypeId({})", self.type_id.0),
+      });
     }
 
-    /// Deserialize into a specific component type.
-    pub fn into_component<T: Replicated>(self) -> Result<T, ReplicationError> {
-        if self.type_id != T::component_id() {
-            return Err(ReplicationError::TypeMismatch {
-                expected: T::component_name().to_string(),
-                found: format!("ComponentTypeId({})", self.type_id.0),
-            });
-        }
-
-        serde_json::from_slice(&self.data).map_err(|e| {
-            ReplicationError::DeserializationError(format!(
-                "Failed to deserialize {}: {}",
-                T::component_name(),
-                e
-            ))
-        })
-    }
+    serde_json::from_slice(&self.data).map_err(|e| {
+      ReplicationError::DeserializationError(format!(
+        "Failed to deserialize {}: {}",
+        T::component_name(),
+        e
+      ))
+    })
+  }
 }
 
 /// Type-erased component serializer.
-type ComponentSerializer = Box<dyn Fn(&dyn std::any::Any) -> Option<SerializedComponent> + Send + Sync>;
+type ComponentSerializer =
+  Box<dyn Fn(&dyn std::any::Any) -> Option<SerializedComponent> + Send + Sync>;
 
 /// Type-erased component deserializer that applies to an entity.
-type ComponentDeserializer =
-    Box<dyn Fn(&SerializedComponent, &mut crate::core::ecs::World, hecs::Entity) -> Result<(), ReplicationError> + Send + Sync>;
+type ComponentDeserializer = Box<
+  dyn Fn(
+      &SerializedComponent,
+      &mut crate::core::ecs::World,
+      hecs::Entity,
+    ) -> Result<(), ReplicationError>
+    + Send
+    + Sync,
+>;
 
 /// Type-erased entity component serializer that queries the World.
 type EntityComponentSerializer =
-    Box<dyn Fn(&crate::core::ecs::World, hecs::Entity) -> Option<SerializedComponent> + Send + Sync>;
+  Box<dyn Fn(&crate::core::ecs::World, hecs::Entity) -> Option<SerializedComponent> + Send + Sync>;
 
 /// Registry for replicated component types.
 ///
@@ -172,232 +180,239 @@ type EntityComponentSerializer =
 /// registry.register::<Velocity>();
 /// ```
 pub struct ComponentRegistry {
-    /// Maps TypeId to ComponentTypeId for quick lookup.
-    type_to_id: HashMap<TypeId, ComponentTypeId>,
+  /// Maps TypeId to ComponentTypeId for quick lookup.
+  type_to_id: HashMap<TypeId, ComponentTypeId>,
 
-    /// Maps ComponentTypeId to type name for debugging.
-    id_to_name: HashMap<ComponentTypeId, &'static str>,
+  /// Maps ComponentTypeId to type name for debugging.
+  id_to_name: HashMap<ComponentTypeId, &'static str>,
 
-    /// Serializers indexed by TypeId.
-    serializers: HashMap<TypeId, ComponentSerializer>,
+  /// Serializers indexed by TypeId.
+  serializers: HashMap<TypeId, ComponentSerializer>,
 
-    /// Deserializers indexed by ComponentTypeId.
-    deserializers: HashMap<ComponentTypeId, ComponentDeserializer>,
+  /// Deserializers indexed by ComponentTypeId.
+  deserializers: HashMap<ComponentTypeId, ComponentDeserializer>,
 
-    /// Entity serializers indexed by ComponentTypeId (query World and serialize).
-    entity_serializers: HashMap<ComponentTypeId, EntityComponentSerializer>,
+  /// Entity serializers indexed by ComponentTypeId (query World and serialize).
+  entity_serializers: HashMap<ComponentTypeId, EntityComponentSerializer>,
 
-    /// Priority for each component type.
-    priorities: HashMap<ComponentTypeId, u8>,
+  /// Priority for each component type.
+  priorities: HashMap<ComponentTypeId, u8>,
 }
 
 impl ComponentRegistry {
-    /// Create a new empty registry.
-    pub fn new() -> Self {
-        Self {
-            type_to_id: HashMap::new(),
-            id_to_name: HashMap::new(),
-            serializers: HashMap::new(),
-            deserializers: HashMap::new(),
-            entity_serializers: HashMap::new(),
-            priorities: HashMap::new(),
+  /// Create a new empty registry.
+  pub fn new() -> Self {
+    Self {
+      type_to_id: HashMap::new(),
+      id_to_name: HashMap::new(),
+      serializers: HashMap::new(),
+      deserializers: HashMap::new(),
+      entity_serializers: HashMap::new(),
+      priorities: HashMap::new(),
+    }
+  }
+
+  /// Register a replicated component type.
+  ///
+  /// After registration, the component can be serialized and deserialized
+  /// for network transmission.
+  pub fn register<T: Replicated + 'static>(&mut self) {
+    let type_id = TypeId::of::<T>();
+    let component_id = T::component_id();
+
+    self.type_to_id.insert(type_id, component_id);
+    self.id_to_name.insert(component_id, T::component_name());
+    self
+      .priorities
+      .insert(component_id, T::replication_priority());
+
+    // Create serializer
+    self.serializers.insert(
+      type_id,
+      Box::new(|any| {
+        let component = any.downcast_ref::<T>()?;
+        SerializedComponent::from_component(component).ok()
+      }),
+    );
+
+    // Create deserializer
+    self.deserializers.insert(
+      component_id,
+      Box::new(|serialized, world, entity| {
+        let component: T = serde_json::from_slice(&serialized.data).map_err(|e| {
+          ReplicationError::DeserializationError(format!(
+            "Failed to deserialize {}: {}",
+            T::component_name(),
+            e
+          ))
+        })?;
+
+        // Add or replace the component on the entity
+        if world.get_component::<T>(entity).is_some() {
+          // Entity has this component, need to update it
+          if let Some(mut comp) = world.get_component_mut::<T>(entity) {
+            *comp = component;
+          }
+        } else {
+          // Entity doesn't have this component, add it
+          world.add_component(entity, component);
         }
-    }
 
-    /// Register a replicated component type.
-    ///
-    /// After registration, the component can be serialized and deserialized
-    /// for network transmission.
-    pub fn register<T: Replicated + 'static>(&mut self) {
-        let type_id = TypeId::of::<T>();
-        let component_id = T::component_id();
+        Ok(())
+      }),
+    );
 
-        self.type_to_id.insert(type_id, component_id);
-        self.id_to_name.insert(component_id, T::component_name());
-        self.priorities.insert(component_id, T::replication_priority());
+    // Create entity serializer (queries World for component)
+    self.entity_serializers.insert(
+      component_id,
+      Box::new(|world, entity| {
+        let component = world.get_component::<T>(entity)?;
+        SerializedComponent::from_component(&*component).ok()
+      }),
+    );
+  }
 
-        // Create serializer
-        self.serializers.insert(
-            type_id,
-            Box::new(|any| {
-                let component = any.downcast_ref::<T>()?;
-                SerializedComponent::from_component(component).ok()
-            }),
-        );
+  /// Check if a component type is registered.
+  pub fn is_registered<T: Replicated + 'static>(&self) -> bool {
+    self.type_to_id.contains_key(&TypeId::of::<T>())
+  }
 
-        // Create deserializer
-        self.deserializers.insert(
-            component_id,
-            Box::new(|serialized, world, entity| {
-                let component: T = serde_json::from_slice(&serialized.data).map_err(|e| {
-                    ReplicationError::DeserializationError(format!(
-                        "Failed to deserialize {}: {}",
-                        T::component_name(),
-                        e
-                    ))
-                })?;
+  /// Get the ComponentTypeId for a registered type.
+  pub fn get_component_id<T: Replicated + 'static>(&self) -> Option<ComponentTypeId> {
+    self.type_to_id.get(&TypeId::of::<T>()).copied()
+  }
 
-                // Add or replace the component on the entity
-                if world.get_component::<T>(entity).is_some() {
-                    // Entity has this component, need to update it
-                    if let Some(mut comp) = world.get_component_mut::<T>(entity) {
-                        *comp = component;
-                    }
-                } else {
-                    // Entity doesn't have this component, add it
-                    world.add_component(entity, component);
-                }
+  /// Get the component name for a ComponentTypeId.
+  pub fn get_name(&self, id: ComponentTypeId) -> Option<&'static str> {
+    self.id_to_name.get(&id).copied()
+  }
 
-                Ok(())
-            }),
-        );
+  /// Get the replication priority for a component type.
+  pub fn get_priority(&self, id: ComponentTypeId) -> u8 {
+    self.priorities.get(&id).copied().unwrap_or(1)
+  }
 
-        // Create entity serializer (queries World for component)
-        self.entity_serializers.insert(
-            component_id,
-            Box::new(|world, entity| {
-                let component = world.get_component::<T>(entity)?;
-                SerializedComponent::from_component(&*component).ok()
-            }),
-        );
-    }
+  /// Serialize a component by its TypeId.
+  pub fn serialize(
+    &self,
+    type_id: TypeId,
+    component: &dyn std::any::Any,
+  ) -> Option<SerializedComponent> {
+    self.serializers.get(&type_id).and_then(|f| f(component))
+  }
 
-    /// Check if a component type is registered.
-    pub fn is_registered<T: Replicated + 'static>(&self) -> bool {
-        self.type_to_id.contains_key(&TypeId::of::<T>())
-    }
+  /// Serialize a component from an entity by ComponentTypeId.
+  ///
+  /// This queries the World for the component and serializes it if present.
+  pub fn serialize_from_entity(
+    &self,
+    component_id: ComponentTypeId,
+    world: &crate::core::ecs::World,
+    entity: hecs::Entity,
+  ) -> Option<SerializedComponent> {
+    self
+      .entity_serializers
+      .get(&component_id)
+      .and_then(|f| f(world, entity))
+  }
 
-    /// Get the ComponentTypeId for a registered type.
-    pub fn get_component_id<T: Replicated + 'static>(&self) -> Option<ComponentTypeId> {
-        self.type_to_id.get(&TypeId::of::<T>()).copied()
-    }
+  /// Deserialize and apply a component to an entity.
+  pub fn deserialize_and_apply(
+    &self,
+    serialized: &SerializedComponent,
+    world: &mut crate::core::ecs::World,
+    entity: hecs::Entity,
+  ) -> Result<(), ReplicationError> {
+    let deserializer = self
+      .deserializers
+      .get(&serialized.type_id)
+      .ok_or(ReplicationError::UnknownComponent(serialized.type_id))?;
 
-    /// Get the component name for a ComponentTypeId.
-    pub fn get_name(&self, id: ComponentTypeId) -> Option<&'static str> {
-        self.id_to_name.get(&id).copied()
-    }
+    deserializer(serialized, world, entity)
+  }
 
-    /// Get the replication priority for a component type.
-    pub fn get_priority(&self, id: ComponentTypeId) -> u8 {
-        self.priorities.get(&id).copied().unwrap_or(1)
-    }
-
-    /// Serialize a component by its TypeId.
-    pub fn serialize(&self, type_id: TypeId, component: &dyn std::any::Any) -> Option<SerializedComponent> {
-        self.serializers.get(&type_id).and_then(|f| f(component))
-    }
-
-    /// Serialize a component from an entity by ComponentTypeId.
-    ///
-    /// This queries the World for the component and serializes it if present.
-    pub fn serialize_from_entity(
-        &self,
-        component_id: ComponentTypeId,
-        world: &crate::core::ecs::World,
-        entity: hecs::Entity,
-    ) -> Option<SerializedComponent> {
-        self.entity_serializers
-            .get(&component_id)
-            .and_then(|f| f(world, entity))
-    }
-
-    /// Deserialize and apply a component to an entity.
-    pub fn deserialize_and_apply(
-        &self,
-        serialized: &SerializedComponent,
-        world: &mut crate::core::ecs::World,
-        entity: hecs::Entity,
-    ) -> Result<(), ReplicationError> {
-        let deserializer = self
-            .deserializers
-            .get(&serialized.type_id)
-            .ok_or(ReplicationError::UnknownComponent(serialized.type_id))?;
-
-        deserializer(serialized, world, entity)
-    }
-
-    /// Get all registered component type IDs.
-    pub fn registered_types(&self) -> impl Iterator<Item = ComponentTypeId> + '_ {
-        self.id_to_name.keys().copied()
-    }
+  /// Get all registered component type IDs.
+  pub fn registered_types(&self) -> impl Iterator<Item = ComponentTypeId> + '_ {
+    self.id_to_name.keys().copied()
+  }
 }
 
 impl Default for ComponentRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+  use super::*;
 
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-    struct TestComponent {
-        value: i32,
+  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+  struct TestComponent {
+    value: i32,
+  }
+
+  impl Replicated for TestComponent {
+    fn component_id() -> ComponentTypeId {
+      ComponentTypeId::from_name("TestComponent")
     }
 
-    impl Replicated for TestComponent {
-        fn component_id() -> ComponentTypeId {
-            ComponentTypeId::from_name("TestComponent")
-        }
-
-        fn component_name() -> &'static str {
-            "TestComponent"
-        }
-
-        fn replication_priority() -> u8 {
-            5
-        }
+    fn component_name() -> &'static str {
+      "TestComponent"
     }
 
-    #[test]
-    fn component_type_id_deterministic() {
-        let id1 = ComponentTypeId::from_name("TestComponent");
-        let id2 = ComponentTypeId::from_name("TestComponent");
-        let id3 = ComponentTypeId::from_name("OtherComponent");
-
-        assert_eq!(id1, id2);
-        assert_ne!(id1, id3);
+    fn replication_priority() -> u8 {
+      5
     }
+  }
 
-    #[test]
-    fn serialized_component_roundtrip() {
-        let original = TestComponent { value: 42 };
-        let serialized = SerializedComponent::from_component(&original).unwrap();
-        let deserialized: TestComponent = serialized.into_component().unwrap();
+  #[test]
+  fn component_type_id_deterministic() {
+    let id1 = ComponentTypeId::from_name("TestComponent");
+    let id2 = ComponentTypeId::from_name("TestComponent");
+    let id3 = ComponentTypeId::from_name("OtherComponent");
 
-        assert_eq!(original, deserialized);
-    }
+    assert_eq!(id1, id2);
+    assert_ne!(id1, id3);
+  }
 
-    #[test]
-    fn component_registry_register() {
-        let mut registry = ComponentRegistry::new();
-        assert!(!registry.is_registered::<TestComponent>());
+  #[test]
+  fn serialized_component_roundtrip() {
+    let original = TestComponent { value: 42 };
+    let serialized = SerializedComponent::from_component(&original).unwrap();
+    let deserialized: TestComponent = serialized.into_component().unwrap();
 
-        registry.register::<TestComponent>();
-        assert!(registry.is_registered::<TestComponent>());
+    assert_eq!(original, deserialized);
+  }
 
-        let id = registry.get_component_id::<TestComponent>();
-        assert!(id.is_some());
-        assert_eq!(id.unwrap(), TestComponent::component_id());
-    }
+  #[test]
+  fn component_registry_register() {
+    let mut registry = ComponentRegistry::new();
+    assert!(!registry.is_registered::<TestComponent>());
 
-    #[test]
-    fn component_registry_priority() {
-        let mut registry = ComponentRegistry::new();
-        registry.register::<TestComponent>();
+    registry.register::<TestComponent>();
+    assert!(registry.is_registered::<TestComponent>());
 
-        let id = TestComponent::component_id();
-        assert_eq!(registry.get_priority(id), 5);
-    }
+    let id = registry.get_component_id::<TestComponent>();
+    assert!(id.is_some());
+    assert_eq!(id.unwrap(), TestComponent::component_id());
+  }
 
-    #[test]
-    fn component_registry_name() {
-        let mut registry = ComponentRegistry::new();
-        registry.register::<TestComponent>();
+  #[test]
+  fn component_registry_priority() {
+    let mut registry = ComponentRegistry::new();
+    registry.register::<TestComponent>();
 
-        let id = TestComponent::component_id();
-        assert_eq!(registry.get_name(id), Some("TestComponent"));
-    }
+    let id = TestComponent::component_id();
+    assert_eq!(registry.get_priority(id), 5);
+  }
+
+  #[test]
+  fn component_registry_name() {
+    let mut registry = ComponentRegistry::new();
+    registry.register::<TestComponent>();
+
+    let id = TestComponent::component_id();
+    assert_eq!(registry.get_name(id), Some("TestComponent"));
+  }
 }

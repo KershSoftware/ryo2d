@@ -229,45 +229,45 @@ pub type NetworkResult<T> = Result<T, NetworkError>;
 /// Replication system errors
 #[derive(Error, Debug)]
 pub enum ReplicationError {
-    /// Failed to serialize component data
-    #[error("Serialization failed: {0}")]
-    SerializationError(String),
+  /// Failed to serialize component data
+  #[error("Serialization failed: {0}")]
+  SerializationError(String),
 
-    /// Failed to deserialize component data
-    #[error("Deserialization failed: {0}")]
-    DeserializationError(String),
+  /// Failed to deserialize component data
+  #[error("Deserialization failed: {0}")]
+  DeserializationError(String),
 
-    /// Component type mismatch during deserialization
-    #[error("Type mismatch: expected {expected}, found {found}")]
-    TypeMismatch { expected: String, found: String },
+  /// Component type mismatch during deserialization
+  #[error("Type mismatch: expected {expected}, found {found}")]
+  TypeMismatch { expected: String, found: String },
 
-    /// Unknown component type ID
-    #[error("Unknown component type: ComponentTypeId({0})")]
-    UnknownComponent(crate::core::network::replication::ComponentTypeId),
+  /// Unknown component type ID
+  #[error("Unknown component type: ComponentTypeId({0})")]
+  UnknownComponent(crate::core::network::replication::ComponentTypeId),
 
-    /// Entity not found in world
-    #[error("Entity not found: NetworkId({0})")]
-    EntityNotFound(u64),
+  /// Entity not found in world
+  #[error("Entity not found: NetworkId({0})")]
+  EntityNotFound(u64),
 
-    /// Network ID not found in mapping
-    #[error("Network ID not found: {0}")]
-    NetworkIdNotFound(crate::core::network::replication::NetworkId),
+  /// Network ID not found in mapping
+  #[error("Network ID not found: {0}")]
+  NetworkIdNotFound(crate::core::network::replication::NetworkId),
 
-    /// Authority violation (client tried to modify server-owned entity)
-    #[error("Authority violation: client {client_id} cannot modify entity owned by {owner}")]
-    AuthorityViolation { client_id: u64, owner: u64 },
+  /// Authority violation (client tried to modify server-owned entity)
+  #[error("Authority violation: client {client_id} cannot modify entity owned by {owner}")]
+  AuthorityViolation { client_id: u64, owner: u64 },
 
-    /// RPC handler not found
-    #[error("RPC handler not found: {0}")]
-    RpcNotFound(String),
+  /// RPC handler not found
+  #[error("RPC handler not found: {0}")]
+  RpcNotFound(String),
 
-    /// RPC execution failed
-    #[error("RPC execution failed: {0}")]
-    RpcError(String),
+  /// RPC execution failed
+  #[error("RPC execution failed: {0}")]
+  RpcError(String),
 
-    /// Network send/receive error
-    #[error("Network error: {0}")]
-    NetworkError(String),
+  /// Network send/receive error
+  #[error("Network error: {0}")]
+  NetworkError(String),
 }
 
 /// Result type for replication operations

@@ -65,13 +65,18 @@ impl Scene for TextInputDemo {
 
   fn render_ui(&mut self, ui: &mut UiContext) {
     let dt = self.last_dt;
-    
+
     // Get screen dimensions
     let (sw, _sh) = ui.screen_size();
 
     // Title
     ui.draw_text("Text Input Demo", 20.0, 20.0, Color::WHITE);
-    ui.draw_text("Press ESC to return | Tab/Shift+Tab to navigate fields", 20.0, 40.0, Color::GRAY);
+    ui.draw_text(
+      "Press ESC to return | Tab/Shift+Tab to navigate fields",
+      20.0,
+      40.0,
+      Color::GRAY,
+    );
 
     // Form layout
     let form_x = 20.0;
@@ -121,21 +126,56 @@ impl Scene for TextInputDemo {
     // Instructions
     ui.draw_text("Instructions:", form_x, y, Color::rgb(100, 180, 255));
     y += 20.0;
-    ui.draw_text("- Click a field to focus it", form_x + 10.0, y, Color::LIGHT_GRAY);
+    ui.draw_text(
+      "- Click a field to focus it",
+      form_x + 10.0,
+      y,
+      Color::LIGHT_GRAY,
+    );
     y += 16.0;
-    ui.draw_text("- Tab / Shift+Tab to navigate", form_x + 10.0, y, Color::LIGHT_GRAY);
+    ui.draw_text(
+      "- Tab / Shift+Tab to navigate",
+      form_x + 10.0,
+      y,
+      Color::LIGHT_GRAY,
+    );
     y += 16.0;
     ui.draw_text("- Type to enter text", form_x + 10.0, y, Color::LIGHT_GRAY);
     y += 16.0;
-    ui.draw_text("- Arrow keys to move cursor", form_x + 10.0, y, Color::LIGHT_GRAY);
+    ui.draw_text(
+      "- Arrow keys to move cursor",
+      form_x + 10.0,
+      y,
+      Color::LIGHT_GRAY,
+    );
     y += 16.0;
-    ui.draw_text("- Shift+Arrow to select text", form_x + 10.0, y, Color::LIGHT_GRAY);
+    ui.draw_text(
+      "- Shift+Arrow to select text",
+      form_x + 10.0,
+      y,
+      Color::LIGHT_GRAY,
+    );
     y += 16.0;
-    ui.draw_text("- Ctrl+C/X/V for clipboard", form_x + 10.0, y, Color::LIGHT_GRAY);
+    ui.draw_text(
+      "- Ctrl+C/X/V for clipboard",
+      form_x + 10.0,
+      y,
+      Color::LIGHT_GRAY,
+    );
     y += 16.0;
-    ui.draw_text("- Ctrl+A to select all", form_x + 10.0, y, Color::LIGHT_GRAY);
+    ui.draw_text(
+      "- Ctrl+A to select all",
+      form_x + 10.0,
+      y,
+      Color::LIGHT_GRAY,
+    );
     y += 16.0;
-    ui.draw_text("- Enter in username to 'submit'", form_x + 10.0, y, Color::LIGHT_GRAY);
+    ui.draw_text(
+      "- Enter in username to 'submit'",
+      form_x + 10.0,
+      y,
+      Color::LIGHT_GRAY,
+    );
     y += 25.0;
 
     // Show submitted message if applicable
@@ -169,7 +209,12 @@ impl Scene for TextInputDemo {
     } else {
       "None"
     };
-    ui.draw_text(&format!("Focused: {}", focused_name), debug_x, debug_y, Color::WHITE);
+    ui.draw_text(
+      &format!("Focused: {}", focused_name),
+      debug_x,
+      debug_y,
+      Color::WHITE,
+    );
     debug_y += 20.0;
 
     // Show cursor position for username
@@ -209,6 +254,11 @@ impl Scene for TextInputDemo {
     } else {
       self.username.text().to_string()
     };
-    ui.draw_text(&format!("Text: \"{}\"", text_preview), debug_x, debug_y, Color::WHITE);
+    ui.draw_text(
+      &format!("Text: \"{}\"", text_preview),
+      debug_x,
+      debug_y,
+      Color::WHITE,
+    );
   }
 }

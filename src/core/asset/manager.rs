@@ -729,7 +729,9 @@ impl AssetManager {
           Err(reason) => {
             // Track failure for batch progress
             self.batch_completed += 1;
-            self.batch_failures.push(result.path.to_string_lossy().to_string());
+            self
+              .batch_failures
+              .push(result.path.to_string_lossy().to_string());
 
             pending.complete_failure(reason);
           }

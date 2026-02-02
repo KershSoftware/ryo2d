@@ -29,10 +29,10 @@ pub const PROTOCOL_ID: u64 = 0x4E455450_4C415921; // "NETPLAY!"
 pub const ROOM_CODE_LENGTH: usize = 5;
 
 // Colors
-pub const PLAYER_A_COLOR: (u8, u8, u8) = (66, 135, 245);   // Blue
-pub const PLAYER_B_COLOR: (u8, u8, u8) = (245, 66, 66);    // Red
-pub const PLATFORM_COLOR: (u8, u8, u8) = (80, 80, 80);     // Dark gray
-pub const BACKGROUND_COLOR: (u8, u8, u8) = (30, 30, 40);   // Dark blue-gray
+pub const PLAYER_A_COLOR: (u8, u8, u8) = (66, 135, 245); // Blue
+pub const PLAYER_B_COLOR: (u8, u8, u8) = (245, 66, 66); // Red
+pub const PLATFORM_COLOR: (u8, u8, u8) = (80, 80, 80); // Dark gray
+pub const BACKGROUND_COLOR: (u8, u8, u8) = (30, 30, 40); // Dark blue-gray
 
 // Z-ordering
 pub const Z_BACKGROUND: i32 = 0;

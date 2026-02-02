@@ -11,13 +11,13 @@ use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::config::{self as debug, DebugConfig, DisplayMode, FrameTimings, SmoothedFrameTimings};
 use super::ecs::{
-    Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
+  Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
 };
 use super::error::{EngineError, EngineResult};
 use super::game::{Game, GameContext, GpuRenderContext, WindowRequest};
 use super::graphics::{
-    AnimationController, Animator, BatchCollector, Camera, CompositeTile, GroupedCollider,
-    Sprite, SpriteGpuRenderer, TileDirection, WgpuRenderer,
+  AnimationController, Animator, BatchCollector, Camera, CompositeTile, GroupedCollider, Sprite,
+  SpriteGpuRenderer, TileDirection, WgpuRenderer,
 };
 use super::input::InputState;
 use super::lighting::{Light2D, LightingRenderer};
@@ -25,7 +25,7 @@ use super::physics::{Collider, PhysicsConfig, RapierPhysicsWorld, RigidBody};
 use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
-use super::ui::{create_debug_font, BitmapFont, UiContext};
+use super::ui::{BitmapFont, UiContext, create_debug_font};
 
 /// Window resize behavior.
 ///
@@ -339,8 +339,7 @@ impl Engine {
         self.config.height = actual_size.height;
         self.last_window_size = (actual_size.width, actual_size.height);
         // Update camera viewport
-        self.camera =
-          Camera::centered_at(width as f32 / 2.0, height as f32 / 2.0, width, height);
+        self.camera = Camera::centered_at(width as f32 / 2.0, height as f32 / 2.0, width, height);
       }
     }
 
@@ -1500,27 +1499,26 @@ impl ApplicationHandler for Engine {
           let result = if has_gpu_sprites || has_trails {
             // Create callback closure that captures gpu, batch_collector, and trail_renderer
             let batch_collector = &self.batch_collector;
-            let gpu_callback =
-              |queue: &wgpu::Queue,
-               encoder: &mut wgpu::CommandEncoder,
-               view: &wgpu::TextureView| {
-                // Render GPU sprites first
-                if has_gpu_sprites {
-                  gpu.render_batches(queue, encoder, view, batch_collector);
-                }
-                // Render trails on top of sprites
-                if let Some(ref mut trails) = trail_renderer {
-                  trails.render(
-                    queue,
-                    encoder,
-                    view,
-                    camera_pos,
-                    camera_zoom,
-                    time,
-                    super::trail::TrailStyle::Solid,
-                  );
-                }
-              };
+            let gpu_callback = |queue: &wgpu::Queue,
+                                encoder: &mut wgpu::CommandEncoder,
+                                view: &wgpu::TextureView| {
+              // Render GPU sprites first
+              if has_gpu_sprites {
+                gpu.render_batches(queue, encoder, view, batch_collector);
+              }
+              // Render trails on top of sprites
+              if let Some(ref mut trails) = trail_renderer {
+                trails.render(
+                  queue,
+                  encoder,
+                  view,
+                  camera_pos,
+                  camera_zoom,
+                  time,
+                  super::trail::TrailStyle::Solid,
+                );
+              }
+            };
 
             rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback))
           } else {

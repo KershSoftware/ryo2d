@@ -227,14 +227,8 @@ impl Line2D {
     let base = Vec2::new(end.x - nx * head_size, end.y - ny * head_size);
 
     // Arrow head wings
-    let wing1 = Vec2::new(
-      base.x + px * head_size * 0.5,
-      base.y + py * head_size * 0.5,
-    );
-    let wing2 = Vec2::new(
-      base.x - px * head_size * 0.5,
-      base.y - py * head_size * 0.5,
-    );
+    let wing1 = Vec2::new(base.x + px * head_size * 0.5, base.y + py * head_size * 0.5);
+    let wing2 = Vec2::new(base.x - px * head_size * 0.5, base.y - py * head_size * 0.5);
 
     // Build the arrow as: start -> end, then head
     Self::new(vec![start, end, wing1, end, wing2], color, width)
@@ -444,7 +438,12 @@ mod tests {
 
   #[test]
   fn line_creation() {
-    let line = Line2D::segment(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Color::WHITE, 2.0);
+    let line = Line2D::segment(
+      Vec2::new(0.0, 0.0),
+      Vec2::new(100.0, 0.0),
+      Color::WHITE,
+      2.0,
+    );
     assert_eq!(line.point_count(), 2);
     assert!((line.length() - 100.0).abs() < 0.01);
   }
@@ -503,7 +502,12 @@ mod tests {
 
   #[test]
   fn point_at_distance() {
-    let line = Line2D::segment(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Color::WHITE, 2.0);
+    let line = Line2D::segment(
+      Vec2::new(0.0, 0.0),
+      Vec2::new(100.0, 0.0),
+      Color::WHITE,
+      2.0,
+    );
 
     let p = line.point_at_distance(50.0).unwrap();
     assert!((p.x - 50.0).abs() < 0.01);

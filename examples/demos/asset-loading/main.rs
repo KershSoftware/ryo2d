@@ -130,7 +130,12 @@ impl Scene for LoadingDemoScene {
           if self.ui_shown_count <= assets.len() {
             let path = assets[self.ui_shown_count - 1];
             let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-            println!("UI: Showing {}/{}: {}", self.ui_shown_count, assets.len(), filename);
+            println!(
+              "UI: Showing {}/{}: {}",
+              self.ui_shown_count,
+              assets.len(),
+              filename
+            );
           }
         }
 
@@ -225,7 +230,10 @@ impl LoadingDemoScene {
     let button_x = center_x - button_w / 2.0;
     let button_y = screen_h - 100.0;
 
-    if ui.button("Load Assets", Rect::new(button_x, button_y, button_w, button_h)) {
+    if ui.button(
+      "Load Assets",
+      Rect::new(button_x, button_y, button_w, button_h),
+    ) {
       self.load_clicked = true;
     }
   }
@@ -259,34 +267,19 @@ impl LoadingDemoScene {
     let bar_y = 160.0;
 
     // Background
-    ui.draw_rect(
-      Rect::new(bar_x, bar_y, bar_w, bar_h),
-      Color::DARK_GRAY,
-    );
+    ui.draw_rect(Rect::new(bar_x, bar_y, bar_w, bar_h), Color::DARK_GRAY);
 
     // Progress fill
     let fill_w = bar_w * percentage;
     if fill_w > 0.0 {
-      ui.draw_rect(
-        Rect::new(bar_x, bar_y, fill_w, bar_h),
-        Color::GREEN,
-      );
+      ui.draw_rect(Rect::new(bar_x, bar_y, fill_w, bar_h), Color::GREEN);
     }
 
     // Border
-    ui.draw_rect_outline(
-      Rect::new(bar_x, bar_y, bar_w, bar_h),
-      Color::WHITE,
-      2.0,
-    );
+    ui.draw_rect_outline(Rect::new(bar_x, bar_y, bar_w, bar_h), Color::WHITE, 2.0);
 
     // Progress text
-    let progress_text = format!(
-      "{}/{} ({:.0}%)",
-      completed,
-      total,
-      percentage * 100.0
-    );
+    let progress_text = format!("{}/{} ({:.0}%)", completed, total, percentage * 100.0);
     let (text_w, _) = ui.text_size(&progress_text);
     ui.draw_text(
       &progress_text,
@@ -299,7 +292,10 @@ impl LoadingDemoScene {
     let assets = Self::assets_to_load();
     if completed < total {
       let current_path = assets[completed];
-      let filename = current_path.rsplit(['/', '\\']).next().unwrap_or(current_path);
+      let filename = current_path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(current_path);
       let current_text = format!("Loading: {}", filename);
       let (text_w, _) = ui.text_size(&current_text);
       ui.draw_text(

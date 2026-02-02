@@ -236,10 +236,18 @@ impl Scene for AnchorDemoScene {
 
     // Controls and offset info at bottom
     let info_y = screen_h - 60.0;
-    ui.draw_text("Controls: Arrows=Offset  R=Reset  Space=Toggle Info  ESC=Exit", 10.0, info_y, Color::WHITE);
+    ui.draw_text(
+      "Controls: Arrows=Offset  R=Reset  Space=Toggle Info  ESC=Exit",
+      10.0,
+      info_y,
+      Color::WHITE,
+    );
 
     if self.show_offset_info {
-      let offset_text = format!("Current Offset: ({:.0}, {:.0})", self.offset.0, self.offset.1);
+      let offset_text = format!(
+        "Current Offset: ({:.0}, {:.0})",
+        self.offset.0, self.offset.1
+      );
       ui.draw_text(&offset_text, 10.0, info_y + 20.0, Color::GREEN);
     }
   }

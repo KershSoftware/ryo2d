@@ -8,6 +8,9 @@ pub struct Bullet {
 
 impl Bullet {
   pub fn new(velocity_x: f32, velocity_y: f32) -> Self {
-    Self { velocity_x, velocity_y }
+    Self {
+      velocity_x,
+      velocity_y,
+    }
   }
 }

@@ -208,12 +208,30 @@ pub struct Resolution {
 
 /// Static list of common resolutions
 static COMMON_RESOLUTIONS: &[Resolution] = &[
-  Resolution { width: 1280, height: 720 },   // 720p
-  Resolution { width: 1366, height: 768 },   // HD
-  Resolution { width: 1600, height: 900 },   // HD+
-  Resolution { width: 1920, height: 1080 },  // 1080p
-  Resolution { width: 2560, height: 1440 },  // 1440p / 2K
-  Resolution { width: 3840, height: 2160 },  // 4K UHD
+  Resolution {
+    width: 1280,
+    height: 720,
+  }, // 720p
+  Resolution {
+    width: 1366,
+    height: 768,
+  }, // HD
+  Resolution {
+    width: 1600,
+    height: 900,
+  }, // HD+
+  Resolution {
+    width: 1920,
+    height: 1080,
+  }, // 1080p
+  Resolution {
+    width: 2560,
+    height: 1440,
+  }, // 1440p / 2K
+  Resolution {
+    width: 3840,
+    height: 2160,
+  }, // 4K UHD
 ];
 
 impl Resolution {
