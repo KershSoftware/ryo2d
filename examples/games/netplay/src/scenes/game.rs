@@ -389,7 +389,8 @@ impl GameScene {
     }
 
     // Update grounded state if jumped
-    if jump && grounded
+    if jump
+      && grounded
       && let Some(mut player) = ctx.world.get_component_mut::<Player>(entity)
     {
       player.grounded = false;

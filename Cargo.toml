@@ -38,6 +38,7 @@ members = [
   "examples/demos/tweening",
   "examples/demos/ui",
   "examples/demos/pathfinding",
+  "examples/demos/procgen",
 ]
 
 # Example games are standalone projects in examples/ - run them with:
@@ -68,6 +69,8 @@ toml = "0.9.11"
 wgpu = "22"
 winit = "0.30"
 gilrs = "0.11"
+noise = "0.9"
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

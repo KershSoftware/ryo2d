@@ -37,10 +37,7 @@ impl MenuScene {
     // Build parallax background with desert layers
     let background = ParallaxBackground::builder(DESIGN_WIDTH as u32, DESIGN_HEIGHT as u32)
       .scale_to_fit()
-      .static_layer(
-        SpriteHandle::from_sprite(sky_sprite, "desert_sky"),
-        -100,
-      )
+      .static_layer(SpriteHandle::from_sprite(sky_sprite, "desert_sky"), -100)
       .auto_scroll_layer(
         SpriteHandle::from_sprite(moon_sprite, "desert_moon"),
         5.0,
@@ -102,13 +99,7 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_background(
-    &mut self,
-    frame: &mut [u8],
-    width: u32,
-    height: u32,
-    camera: &Camera,
-  ) {
+  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
     self.background.render(frame, width, height, camera);
   }
 

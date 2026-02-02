@@ -21,11 +21,11 @@ pub use animation::{
   Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState,
 };
 pub use camera::{Camera, CameraBounds};
+pub use parallax::{ParallaxBackground, ParallaxBackgroundBuilder, ParallaxLayer, TileMode};
 pub use renderer::WgpuRenderer;
 pub use sprite::{AnimatedSprite, Sprite};
 pub use sprite_gpu::{
   BatchCollector, BatchKey, SpriteBatch, SpriteGlobals, SpriteGpuRenderer, SpriteInstance,
   get_sprite_effect,
 };
-pub use parallax::{ParallaxBackground, ParallaxBackgroundBuilder, ParallaxLayer, TileMode};
 pub use tile::{CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart};

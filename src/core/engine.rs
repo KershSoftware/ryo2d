@@ -1766,10 +1766,7 @@ impl ApplicationHandler for Engine {
             .unwrap_or(0.0);
 
           // Check if lighting is enabled and should be applied
-          let lighting_enabled = lighting
-            .as_ref()
-            .map(|l| l.is_enabled())
-            .unwrap_or(false);
+          let lighting_enabled = lighting.as_ref().map(|l| l.is_enabled()).unwrap_or(false);
 
           let result = if has_gpu_sprites || has_trails || lighting_enabled {
             // Create callback closure that captures gpu, batch_collector, and trail_renderer
@@ -2358,9 +2355,7 @@ impl EngineBuilder {
         config.title = title.to_string();
       }
       // Display mode (only if not explicitly set via builder or system.json)
-      if !display_mode_set
-        && let Some(mode) = option_env!("RYO_EMBED_DISPLAY_MODE")
-      {
+      if !display_mode_set && let Some(mode) = option_env!("RYO_EMBED_DISPLAY_MODE") {
         config.display_mode = match mode.to_lowercase().as_str() {
           "fullscreen" => DisplayMode::Fullscreen,
           "borderless" | "borderless_fullscreen" => DisplayMode::BorderlessFullscreen,

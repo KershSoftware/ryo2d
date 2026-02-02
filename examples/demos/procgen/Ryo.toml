@@ -1,0 +1,9 @@
+[project]
+name = "Procgen Demo"
+version = "0.1.0"
+
+[window]
+title = "Procedural Generation Demo - Ryo2D"
+width = 1024
+height = 768
+resizable = true

@@ -216,7 +216,14 @@ impl GameScene {
       // Change sprite to gold (will be animated each frame)
       if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
         renderable.sprite = SpriteHandle::from_sprite(
-          Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, 0xff, 0xd7, 0x00, 0xff),
+          Sprite::solid_rect(
+            BLOCK_WIDTH as u32,
+            BLOCK_HEIGHT as u32,
+            0xff,
+            0xd7,
+            0x00,
+            0xff,
+          ),
           "multiball_block",
         );
       }

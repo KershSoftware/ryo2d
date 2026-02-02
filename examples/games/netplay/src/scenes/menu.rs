@@ -161,7 +161,12 @@ impl Scene for MenuScene {
       addr_input_width,
       32.0,
     );
-    ui.text_input(&mut self.address_input, addr_input_rect, "127.0.0.1:7777", dt);
+    ui.text_input(
+      &mut self.address_input,
+      addr_input_rect,
+      "127.0.0.1:7777",
+      dt,
+    );
 
     // Join button
     let join_rect = Rect::new(button_x, center_y + 125.0, button_width, button_height);

@@ -1,0 +1,11 @@
+[package]
+name = "procgen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ryo2d = { path = "../../../" }
+
+[[bin]]
+name = "procgen"
+path = "main.rs"

@@ -186,4 +186,14 @@ pub mod prelude {
     Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode, PathResult,
     PathSmoothing, PathStarted, Pathfinder, PathfinderConfig,
   };
+
+  // Procedural Generation
+  pub use crate::core::procgen::{
+    BspConfig, CellularConfig, Connection, GenerationCompleted, GenerationFailed,
+    GenerationFailureReason, GenerationGrid, GenerationResult, GenerationStarted, GridRect,
+    MstConfig, MstEdge, NoiseConfig, NoiseThreshold, NoiseType, PoissonConfig, PoissonResult,
+    ProcgenBuilder, RandomWalkConfig, Region, RegionCreated, RegionMetadata, RegionType,
+    RegionsConnected, SeededRng, TileType, WfcConfig, WfcDirection, WfcResult, WfcTile,
+    poisson_points,
+  };
 }

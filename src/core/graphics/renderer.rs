@@ -1015,7 +1015,8 @@ impl WgpuRenderer {
     // If we have UI overlay AND lighting was applied, upload UI to game_texture
     // (We can reuse game_texture because the scene is now in texture_a from compose)
     // If lighting was NOT applied, we can't overwrite game_texture - scene is still there!
-    if has_ui_overlay && lighting_applied
+    if has_ui_overlay
+      && lighting_applied
       && let Some(ui_data) = ui_buffer
     {
       self.queue.write_texture(
