@@ -53,11 +53,24 @@ pub const BARRIER_WIDTH: f32 = 20.0;
 pub const BARRIER_HEIGHT: f32 = 200.0;
 pub const BARRIER_SPEED: f32 = 100.0; // moderate speed
 
+// Drone configuration
+pub const DRONE_SIZE: f32 = 28.0;
+pub const DRONE_SPEED: f32 = 200.0;
+pub const DRONE_AIM_DURATION: f32 = 0.8; // Time spent aiming before firing
+pub const DRONE_FIRE_DURATION: f32 = 0.5; // How long the laser stays active
+pub const DRONE_COOLDOWN: f32 = 1.5; // Cooldown after firing before moving again
+pub const DRONE_LASER_WIDTH: f32 = 6.0;
+pub const DRONE_FIRST_SPAWN_TIME: f32 = 30.0; // First drone spawns at 30 seconds
+pub const DRONE_SPAWN_INTERVAL: f32 = 20.0; // Seconds between additional drone spawns
+pub const DRONE_MAX_COUNT: u32 = 3; // Maximum number of drones
+
 // Z-ordering
 pub const Z_BACKGROUND: i32 = 0;
 pub const Z_PLATFORM: i32 = 5;
 pub const Z_BARRIER: i32 = 6;
 pub const Z_TURRET: i32 = 10;
+pub const Z_DRONE: i32 = 12;
+pub const Z_LASER: i32 = 14;
 pub const Z_BULLET: i32 = 15;
 pub const Z_PLAYER: i32 = 20;
 pub const Z_PARTICLE: i32 = 25;
