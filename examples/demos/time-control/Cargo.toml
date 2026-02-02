@@ -1,0 +1,11 @@
+[package]
+name = "time-control"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ryo2d = { path = "../../../" }
+
+[[bin]]
+name = "time-control"
+path = "main.rs"

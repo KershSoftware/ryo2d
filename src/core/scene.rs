@@ -32,7 +32,7 @@ use super::audio::AudioManager;
 use super::config::save::DisplayMode;
 use super::ecs::World;
 use super::events::Events;
-use super::game::WindowRequest;
+use super::game::{TimeControl, WindowRequest};
 use super::graphics::Camera;
 use super::input::InputState;
 use super::lighting::LightingRenderer;
@@ -78,6 +78,8 @@ pub struct SceneContext<'a> {
   pub events: &'a mut Events,
   /// Pending window configuration changes (resolution, display mode)
   pub window_request: &'a mut WindowRequest,
+  /// Time control for slow-mo and hitstop effects
+  pub time_control: &'a mut TimeControl,
 }
 
 impl<'a> SceneContext<'a> {
@@ -147,6 +149,65 @@ impl<'a> SceneContext<'a> {
     self.window_request.width = Some(width);
     self.window_request.height = Some(height);
     self.window_request.display_mode = Some(mode);
+  }
+
+  // ===========================================================================
+  // Time Control (Game Juice)
+  // ===========================================================================
+
+  /// Set the time scale for game logic, physics, and animations.
+  ///
+  /// - `0.0` = frozen (equivalent to pause)
+  /// - `1.0` = normal speed (default)
+  /// - `0.5` = half speed (slow-mo)
+  /// - `2.0` = double speed (fast-forward)
+  ///
+  /// Note: UI and input remain at real-time regardless of time scale.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Slow-mo during boss death
+  /// ctx.set_time_scale(0.3);
+  ///
+  /// // Return to normal after 2 seconds
+  /// // (use a timer in game code)
+  /// ctx.set_time_scale(1.0);
+  /// ```
+  pub fn set_time_scale(&mut self, scale: f32) {
+    self.time_control.time_scale = scale.max(0.0);
+  }
+
+  /// Get the current time scale.
+  pub fn time_scale(&self) -> f32 {
+    self.time_control.time_scale
+  }
+
+  /// Trigger a hitstop (freeze frame) effect for the given duration.
+  ///
+  /// During hitstop, game time is frozen (dt = 0) while UI and input
+  /// continue at real-time. Great for emphasizing impacts.
+  ///
+  /// # Arguments
+  ///
+  /// * `duration_secs` - How long to freeze, in seconds (e.g., 0.05 for 50ms)
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // On successful hit - 50ms freeze for impact
+  /// ctx.hitstop(0.05);
+  ///
+  /// // On critical hit - longer freeze
+  /// ctx.hitstop(0.1);
+  /// ```
+  pub fn hitstop(&mut self, duration_secs: f32) {
+    self.time_control.hitstop_remaining = duration_secs.max(0.0);
+  }
+
+  /// Check if a hitstop is currently active.
+  pub fn is_hitstop_active(&self) -> bool {
+    self.time_control.hitstop_remaining > 0.0
   }
 }
 
@@ -1104,6 +1165,7 @@ impl Game for SceneGame {
       lighting: ctx.lighting,
       events: ctx.events,
       window_request: ctx.window_request,
+      time_control: ctx.time_control,
     };
 
     // Call on_enter for the initial scene
@@ -1136,6 +1198,7 @@ impl Game for SceneGame {
       lighting: ctx.lighting,
       events: ctx.events,
       window_request: ctx.window_request,
+      time_control: ctx.time_control,
     };
 
     // Update any active transitions first

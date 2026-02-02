@@ -1,0 +1,18 @@
+# Time Control Demo - Ryo Engine Project Configuration
+# Demonstrates time scale (slow-mo) and hitstop (freeze frame) effects
+
+[project]
+name = "Time Control Demo"
+
+[paths]
+entry_point = "main.rs"
+assets = "assets"
+
+[system]
+resolution_width = 800
+resolution_height = 600
+vsync = true
+fullscreen = false
+
+[info]
+show_fps = true

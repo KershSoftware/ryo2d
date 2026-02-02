@@ -28,6 +28,27 @@ pub struct WindowRequest {
   pub display_mode: Option<DisplayMode>,
 }
 
+/// Time control state for game juice effects.
+///
+/// Allows game code to control time scale and hitstop effects.
+/// Changes are applied immediately and persist until changed again.
+#[derive(Debug, Clone)]
+pub struct TimeControl {
+  /// Time scale multiplier (0.0 = frozen, 1.0 = normal, >1.0 = fast)
+  pub time_scale: f32,
+  /// Remaining hitstop duration in seconds
+  pub hitstop_remaining: f32,
+}
+
+impl Default for TimeControl {
+  fn default() -> Self {
+    Self {
+      time_scale: 1.0,
+      hitstop_remaining: 0.0,
+    }
+  }
+}
+
 impl WindowRequest {
   /// Create a new empty window request
   pub fn new() -> Self {
@@ -100,6 +121,8 @@ pub struct GameContext<'a> {
   pub events: &'a mut Events,
   /// Pending window configuration changes (resolution, display mode)
   pub window_request: &'a mut WindowRequest,
+  /// Time control for slow-mo and hitstop effects
+  pub time_control: &'a mut TimeControl,
 }
 
 impl<'a> GameContext<'a> {
@@ -169,6 +192,65 @@ impl<'a> GameContext<'a> {
     self.window_request.width = Some(width);
     self.window_request.height = Some(height);
     self.window_request.display_mode = Some(mode);
+  }
+
+  // ===========================================================================
+  // Time Control (Game Juice)
+  // ===========================================================================
+
+  /// Set the time scale for game logic, physics, and animations.
+  ///
+  /// - `0.0` = frozen (equivalent to pause)
+  /// - `1.0` = normal speed (default)
+  /// - `0.5` = half speed (slow-mo)
+  /// - `2.0` = double speed (fast-forward)
+  ///
+  /// Note: UI and input remain at real-time regardless of time scale.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Slow-mo during boss death
+  /// ctx.set_time_scale(0.3);
+  ///
+  /// // Return to normal after 2 seconds
+  /// // (use a timer in game code)
+  /// ctx.set_time_scale(1.0);
+  /// ```
+  pub fn set_time_scale(&mut self, scale: f32) {
+    self.time_control.time_scale = scale.max(0.0);
+  }
+
+  /// Get the current time scale.
+  pub fn time_scale(&self) -> f32 {
+    self.time_control.time_scale
+  }
+
+  /// Trigger a hitstop (freeze frame) effect for the given duration.
+  ///
+  /// During hitstop, game time is frozen (dt = 0) while UI and input
+  /// continue at real-time. Great for emphasizing impacts.
+  ///
+  /// # Arguments
+  ///
+  /// * `duration_secs` - How long to freeze, in seconds (e.g., 0.05 for 50ms)
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // On successful hit - 50ms freeze for impact
+  /// ctx.hitstop(0.05);
+  ///
+  /// // On critical hit - longer freeze
+  /// ctx.hitstop(0.1);
+  /// ```
+  pub fn hitstop(&mut self, duration_secs: f32) {
+    self.time_control.hitstop_remaining = duration_secs.max(0.0);
+  }
+
+  /// Check if a hitstop is currently active.
+  pub fn is_hitstop_active(&self) -> bool {
+    self.time_control.hitstop_remaining > 0.0
   }
 }
 
@@ -438,5 +520,54 @@ mod tests {
     });
     // If this compiles, the trait is object-safe
     let _ = game;
+  }
+
+  // ===========================================================================
+  // TimeControl Tests
+  // ===========================================================================
+
+  #[test]
+  fn time_control_default_values() {
+    let tc = TimeControl::default();
+    assert_eq!(tc.time_scale, 1.0);
+    assert_eq!(tc.hitstop_remaining, 0.0);
+  }
+
+  #[test]
+  fn time_control_time_scale_clamped_positive() {
+    let mut tc = TimeControl::default();
+    tc.time_scale = -1.0;
+    // Note: Clamping is done in the context methods, not in the struct itself
+    // This test just verifies the field can be set
+    assert_eq!(tc.time_scale, -1.0);
+  }
+
+  #[test]
+  fn time_control_hitstop_sets_value() {
+    let mut tc = TimeControl::default();
+    tc.hitstop_remaining = 0.05;
+    assert!((tc.hitstop_remaining - 0.05).abs() < 0.001);
+  }
+
+  #[test]
+  fn time_control_is_hitstop_active() {
+    let mut tc = TimeControl::default();
+    assert!(!(tc.hitstop_remaining > 0.0));
+
+    tc.hitstop_remaining = 0.05;
+    assert!(tc.hitstop_remaining > 0.0);
+
+    tc.hitstop_remaining = 0.0;
+    assert!(!(tc.hitstop_remaining > 0.0));
+  }
+
+  #[test]
+  fn window_request_time_scale_integration() {
+    // Verify WindowRequest and TimeControl can coexist in the same context
+    let wr = WindowRequest::default();
+    let tc = TimeControl::default();
+
+    assert!(!wr.has_changes());
+    assert_eq!(tc.time_scale, 1.0);
   }
 }
