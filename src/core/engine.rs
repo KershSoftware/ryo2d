@@ -740,12 +740,12 @@ impl Engine {
       None => return,
     };
 
-    // Fill background with dark blue (game area only - letterbox is handled by clear color)
+    // Fill background with warm cream (game area only - letterbox is handled by clear color)
     for pixel in frame.chunks_exact_mut(4) {
-      pixel[0] = 0x1e;
-      pixel[1] = 0x40;
-      pixel[2] = 0x5e;
-      pixel[3] = 0xff;
+      pixel[0] = 0xf5; // R: 245
+      pixel[1] = 0xf4; // G: 244
+      pixel[2] = 0xef; // B: 239
+      pixel[3] = 0xff; // A: 255
     }
 
     // --- Rebuild Render Cache (if dirty) ---
@@ -1152,6 +1152,7 @@ impl ApplicationHandler for Engine {
     let resizable = self.config.window_mode != WindowMode::Fixed;
 
     // For borderless/fullscreen, we still create with the resolution but apply fullscreen after
+    // Window starts hidden to prevent white flash - shown after first frame is rendered
     let window_attrs = WindowAttributes::default()
       .with_title(&self.config.title)
       .with_inner_size(winit::dpi::LogicalSize::new(
@@ -1159,7 +1160,8 @@ impl ApplicationHandler for Engine {
         self.config.height,
       ))
       .with_resizable(resizable)
-      .with_decorations(self.config.display_mode != DisplayMode::BorderlessFullscreen);
+      .with_decorations(self.config.display_mode != DisplayMode::BorderlessFullscreen)
+      .with_visible(false);
 
     let window = Arc::new(
       event_loop
@@ -1192,7 +1194,7 @@ impl ApplicationHandler for Engine {
     window.set_ime_allowed(true);
 
     // Create wgpu renderer (blocking on async)
-    let renderer = pollster::block_on(WgpuRenderer::new(
+    let mut renderer = pollster::block_on(WgpuRenderer::new(
       Arc::clone(&window),
       self.config.width,
       self.config.height,
@@ -1224,6 +1226,13 @@ impl ApplicationHandler for Engine {
       self.config.height,
       renderer.game_texture_format(),
     );
+
+    // Present the first frame immediately to prevent white flash on startup
+    // The renderer's pixel buffer is pre-filled with warm cream background
+    let _ = renderer.render();
+
+    // Now that the first frame is rendered, show the window
+    window.set_visible(true);
 
     self.window = Some(window);
     self.renderer = Some(renderer);
