@@ -37,6 +37,7 @@ members = [
   "examples/demos/time-control",
   "examples/demos/tweening",
   "examples/demos/ui",
+  "examples/demos/pathfinding",
 ]
 
 # Example games are standalone projects in examples/ - run them with:
