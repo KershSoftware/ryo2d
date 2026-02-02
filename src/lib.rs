@@ -58,9 +58,10 @@ pub mod prelude {
 
   // ECS types
   pub use crate::core::ecs::{
-    Children, Ease, Entity, Material, Parent, RenderLayer, RenderMode, RenderStyle, Renderable,
-    ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, Transform, Tween, TweenLoop, Velocity,
-    World, WorldTransform,
+    Active, Children, Ease, Entity, Inactive, Material, Parent, Pool, PoolConfig,
+    PoolExhaustedPolicy, PoolStats, RenderLayer, RenderMode, RenderStyle, Renderable, ShaderHandle,
+    ShaderParams, SpriteEffect, SpriteShader, Transform, Tween, TweenLoop, Velocity, World,
+    WorldTransform,
   };
 
   // Math types (from glam)

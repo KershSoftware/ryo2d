@@ -4,6 +4,7 @@
 //! - Gravity-driven falling
 //! - Collision with walls and each other
 //! - Three different rendering modes
+//! - **Object pooling** for zero-allocation particle spawning
 //!
 //! ## Scenes
 //!
@@ -16,6 +17,7 @@
 //! - 1/2/3: Switch between scenes
 //! - Space: Spawn more particles (100 at a time)
 //! - R: Reset scene
+//! - P: Toggle pooling stats overlay
 //! - Escape: Quit
 
 use ryo2d::prelude::*;
@@ -26,6 +28,7 @@ const PARTICLE_RADIUS: f32 = 4.0;
 const INITIAL_PARTICLES: usize = 1000;
 const SPAWN_BATCH: usize = 100;
 const MAX_PARTICLES: usize = 2000;
+const POOL_INITIAL_CAPACITY: usize = 1200; // Pre-allocate more than initial to avoid expansion
 
 // Collision layers
 const LAYER_PARTICLE: u32 = 1;
@@ -53,16 +56,26 @@ impl DemoScene {
 }
 
 /// Marker component for particles
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 struct Particle;
 
 /// Stores which sprite index this particle uses (for GPU batching)
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 struct ParticleSpriteIndex(usize);
 
 /// Marker component for walls
 #[derive(Debug)]
 struct Wall;
+
+/// Bundle type for pooled particles (Created scene)
+type CreatedParticleBundle = (
+  Particle,
+  ParticleSpriteIndex,
+  Transform,
+  Velocity,
+  RigidBody,
+  Collider,
+);
 
 struct ParticlesDemo {
   current_scene: DemoScene,
@@ -74,6 +87,11 @@ struct ParticlesDemo {
   // Screen dimensions (set at init from config)
   screen_width: f32,
   screen_height: f32,
+  // Object pool for Created particles (most common case)
+  created_pool: Option<Pool<CreatedParticleBundle>>,
+  // Track whether pooling is enabled (for comparison)
+  use_pooling: bool,
+  show_pool_stats: bool,
 }
 
 impl ParticlesDemo {
@@ -86,7 +104,37 @@ impl ParticlesDemo {
       nav_cooldown: 0.0,
       screen_width: 800.0,  // Default, updated in init
       screen_height: 600.0, // Default, updated in init
+      created_pool: None,
+      use_pooling: true, // Pooling enabled by default
+      show_pool_stats: false,
     }
+  }
+
+  /// Initialize the particle pool for Created scene
+  fn init_pool(&mut self, world: &mut World) {
+    let pool = Pool::new(
+      world,
+      PoolConfig::default()
+        .with_capacity(POOL_INITIAL_CAPACITY)
+        .with_max_capacity(MAX_PARTICLES)
+        .with_expand_batch_size(100)
+        .with_exhausted_policy(PoolExhaustedPolicy::ReturnNone),
+      || {
+        (
+          Particle,
+          ParticleSpriteIndex(0), // Will be set on acquire
+          Transform::default(),
+          Velocity::default(),
+          RigidBody::new().with_gravity_scale(1.0).with_drag(0.01),
+          Collider::circle_collider(PARTICLE_RADIUS)
+            .with_layer(LAYER_PARTICLE)
+            .with_mask(LAYER_PARTICLE | LAYER_WALL)
+            .with_restitution(0.8)
+            .with_friction(0.1),
+        )
+      },
+    );
+    self.created_pool = Some(pool);
   }
 
   /// Create a variety of colored particle sprites
@@ -196,16 +244,38 @@ impl ParticlesDemo {
     self.particle_count += 1;
   }
 
-  fn spawn_created_particle(&self, world: &mut World, x: f32, y: f32, vx: f32, vy: f32) {
+  fn spawn_created_particle(&mut self, world: &mut World, x: f32, y: f32, vx: f32, vy: f32) {
     let color_idx = self.particle_count % self.particle_sprites.len();
 
-    // Store which sprite index this particle uses (for GPU batching lookup)
+    // Use pooling if enabled and pool exists
+    if self.use_pooling {
+      if let Some(ref mut pool) = self.created_pool {
+        if let Some(entity) = pool.acquire(world) {
+          // Configure the acquired entity
+          if let Some(mut transform) = world.get_mut::<Transform>(entity) {
+            transform.x = x;
+            transform.y = y;
+            transform.scale_x = 1.0;
+            transform.scale_y = 1.0;
+          }
+          if let Some(mut velocity) = world.get_mut::<Velocity>(entity) {
+            velocity.dx = vx;
+            velocity.dy = vy;
+          }
+          if let Some(mut sprite_idx) = world.get_mut::<ParticleSpriteIndex>(entity) {
+            sprite_idx.0 = color_idx;
+          }
+          return;
+        }
+      }
+    }
+
+    // Fallback: direct spawning (no pooling or pool exhausted)
     world.spawn((
       Particle,
       ParticleSpriteIndex(color_idx),
       Transform::new(x, y),
       Velocity::new(vx, vy),
-      // No Renderable - we'll use GPU batching in render_gpu()
       RigidBody::new().with_gravity_scale(1.0).with_drag(0.01),
       Collider::circle_collider(PARTICLE_RADIUS)
         .with_layer(LAYER_PARTICLE)
@@ -255,10 +325,17 @@ impl ParticlesDemo {
 
   /// Clear all particles and reset the scene
   fn reset_scene(&mut self, ctx: &mut GameContext) {
-    // Despawn all particles
-    let particles = ctx.world.entities_with::<Particle>();
-    for entity in particles {
-      let _ = ctx.world.despawn(entity);
+    // For Created scene with pooling, release all particles back to pool
+    if self.current_scene == DemoScene::Created && self.use_pooling {
+      if let Some(ref mut pool) = self.created_pool {
+        pool.release_all(ctx.world);
+      }
+    } else {
+      // For other scenes or non-pooled, despawn directly
+      let particles = ctx.world.entities_with::<Particle>();
+      for entity in particles {
+        let _ = ctx.world.despawn(entity);
+      }
     }
 
     self.particle_count = 0;
@@ -270,12 +347,13 @@ impl ParticlesDemo {
 
 impl Game for ParticlesDemo {
   fn init(&mut self, ctx: &mut GameContext) {
-    println!("Particles Demo - 1000+ Sprites with Physics!");
+    println!("Particles Demo - 1000+ Sprites with Physics + Object Pooling!");
     println!();
     println!("Controls:");
     println!("  1/2/3 - Switch scenes");
     println!("  Space - Spawn 100 more particles");
     println!("  R     - Reset scene");
+    println!("  P     - Toggle pool stats overlay");
     println!("  Escape - Quit");
     println!();
 
@@ -287,6 +365,9 @@ impl Game for ParticlesDemo {
     // Create sprite assets
     self.create_particle_sprites();
     self.create_imported_sprite();
+
+    // Initialize object pool for Created particles
+    self.init_pool(ctx.world);
 
     // Set up walls
     self.spawn_walls(ctx.world);
@@ -332,6 +413,11 @@ impl Game for ParticlesDemo {
       self.reset_scene(ctx);
     }
 
+    // Toggle pool stats overlay
+    if ctx.input.key_pressed(KeyCode::KeyP) {
+      self.show_pool_stats = !self.show_pool_stats;
+    }
+
     // Quit on Escape
     if ctx.input.key_pressed(KeyCode::Escape) {
       std::process::exit(0);
@@ -349,6 +435,11 @@ impl Game for ParticlesDemo {
 
     // Iterate through all particles and add to GPU batch
     for entity in gpu.world.entities_with::<Particle>() {
+      // Skip inactive pooled entities
+      if gpu.world.has::<Inactive>(entity) {
+        continue;
+      }
+
       // Get transform for position
       let Some(transform) = gpu.world.get_component::<Transform>(entity) else {
         continue;
@@ -416,10 +507,55 @@ impl Game for ParticlesDemo {
     // Gravity info
     ui.draw_text("Gravity: 400 px/s²", 10.0, 50.0, Color::CYAN);
 
+    // Pool stats (when enabled)
+    if self.show_pool_stats {
+      if let Some(ref pool) = self.created_pool {
+        let stats = pool.stats();
+        let mut y = 80.0;
+
+        ui.draw_text("=== Pool Stats ===", 10.0, y, Color::GREEN);
+        y += 20.0;
+        ui.draw_text(
+          &format!("Pre-allocated: {}", stats.total_spawned),
+          10.0,
+          y,
+          Color::WHITE,
+        );
+        y += 16.0;
+        ui.draw_text(
+          &format!("Active: {} / Available: {}", stats.current_active, stats.current_available),
+          10.0,
+          y,
+          Color::WHITE,
+        );
+        y += 16.0;
+        ui.draw_text(
+          &format!("Peak active: {}", stats.peak_active),
+          10.0,
+          y,
+          Color::WHITE,
+        );
+        y += 16.0;
+        ui.draw_text(
+          &format!("Acquires: {} / Releases: {}", stats.acquires, stats.releases),
+          10.0,
+          y,
+          Color::WHITE,
+        );
+        y += 16.0;
+        ui.draw_text(
+          &format!("Expansions: {}", stats.expansions),
+          10.0,
+          y,
+          if stats.expansions > 1 { Color::YELLOW } else { Color::WHITE },
+        );
+      }
+    }
+
     // FPS hint
     let (_, height) = ui.screen_size();
     ui.draw_text(
-      "Space: +100 particles | R: Reset",
+      "Space: +100 | R: Reset | P: Pool stats",
       10.0,
       height as f32 - 30.0,
       Color::new(150, 150, 150, 255),

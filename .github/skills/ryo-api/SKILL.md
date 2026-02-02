@@ -1043,6 +1043,123 @@ if let Some(transform) = ctx.world.get_component::<Transform>(self.player_entity
 
 ---
 
+## Object Pooling
+
+### Pool
+
+Generic object pool for high-frequency entity spawning:
+
+```rust
+pub struct Pool<B> {
+    // Internal fields...
+}
+
+impl<B: DynamicBundle> Pool<B> {
+    fn new(
+        world: &mut World,
+        config: PoolConfig,
+        factory: impl Fn() -> B + 'static
+    ) -> Self;
+
+    fn acquire(&mut self, world: &mut World) -> Option<Entity>;
+    fn release(&mut self, world: &mut World, entity: Entity);
+    fn release_all(&mut self, world: &mut World);
+    fn active_iter(&self) -> impl Iterator<Item = Entity> + '_;
+    fn stats(&self) -> PoolStats;
+}
+```
+
+### PoolConfig
+
+```rust
+pub struct PoolConfig {
+    pub initial_capacity: usize,    // Default: 32
+    pub max_capacity: usize,        // Default: 0 (unlimited)
+    pub expand_batch_size: usize,   // Default: 16
+    pub exhausted_policy: PoolExhaustedPolicy,
+}
+
+impl PoolConfig {
+    fn default() -> Self;
+    fn with_capacity(self, capacity: usize) -> Self;
+    fn with_max_capacity(self, max: usize) -> Self;
+    fn with_expand_batch_size(self, size: usize) -> Self;
+    fn with_exhausted_policy(self, policy: PoolExhaustedPolicy) -> Self;
+}
+```
+
+### PoolExhaustedPolicy
+
+```rust
+pub enum PoolExhaustedPolicy {
+    Expand,         // Spawn more entities (default)
+    ReturnNone,     // Return None from acquire()
+    RecycleOldest,  // Force-release oldest active entity
+}
+```
+
+### PoolStats
+
+```rust
+pub struct PoolStats {
+    pub total_spawned: usize,       // Total entities ever created
+    pub current_available: usize,   // Ready for reuse
+    pub current_active: usize,      // Currently in use
+    pub peak_active: usize,         // Maximum concurrent active
+    pub acquires: usize,            // Total acquire() calls
+    pub releases: usize,            // Total release() calls
+    pub expansions: usize,          // Times pool was expanded
+}
+```
+
+### Active / Inactive
+
+Marker components for entity state:
+
+```rust
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Active;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Inactive;
+```
+
+**Usage:**
+
+```rust
+// Initialize pool in scene
+let sprite = ctx.assets.load_sprite("bullet.png").unwrap();
+self.bullet_pool = Pool::new(
+    &mut ctx.world,
+    PoolConfig::default()
+        .with_capacity(200)
+        .with_max_capacity(500)
+        .with_exhausted_policy(PoolExhaustedPolicy::RecycleOldest),
+    move || (
+        Transform::default(),
+        Renderable::sprite(sprite.clone()),
+        Velocity::zero(),
+        Bullet::default(),
+    )
+);
+
+// Acquire entity (activates it)
+if let Some(entity) = self.bullet_pool.acquire(&mut ctx.world) {
+    // Reset component values...
+}
+
+// Release entity (deactivates it)
+self.bullet_pool.release(&mut ctx.world, entity);
+
+// Release all active entities
+self.bullet_pool.release_all(&mut ctx.world);
+
+// Get stats for debugging
+let stats = self.bullet_pool.stats();
+```
+
+---
+
 ## Scene Management
 
 ### SceneAction
