@@ -148,6 +148,13 @@ if ctx.input.key_released(KeyCode::Escape) { /* just released */ }
 if ctx.input.mouse_pressed(MouseButton::Left) { /* clicked */ }
 let (mx, my) = ctx.input.mouse_position();
 let (wx, wy) = ctx.camera.screen_to_world(mx, my);
+
+// Gamepad (see ryo-controller skill for full API)
+if ctx.input.gamepad_connected() {
+    let (x, y) = ctx.input.left_stick();     // -1.0 to 1.0 with deadzone
+    let trigger = ctx.input.right_trigger(); // 0.0 to 1.0
+    if ctx.input.gamepad_button_pressed(GamepadButton::South) { /* A/Cross */ }
+}
 ```
 
 ### Querying & Modifying Entities

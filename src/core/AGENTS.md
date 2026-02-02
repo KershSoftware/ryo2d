@@ -23,7 +23,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `camera.rs` | 2D camera with follow, zoom, coordinate transforms |
 | `collision.rs` | AABB/Circle shapes, `Collider` component, collision detection |
 | `hot_reload.rs` | Background filesystem watcher for dev-time asset hot reloading |
-| `input.rs` | Keyboard/mouse/scroll input state tracking |
+| `input.rs` | Keyboard, mouse, scroll, and gamepad input state tracking (gilrs) |
 | `network/` | Client-server networking, replication, and RPCs (see `network/AGENTS.md`) |
 | `physics.rs` | `RigidBody`, `Acceleration`, gravity, drag (config) |
 | `rapier_physics.rs` | Rapier2D integration, physics world, collision events |

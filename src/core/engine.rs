@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use gilrs::Gilrs;
 use winit::application::ApplicationHandler;
 use winit::event::{Ime, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -285,6 +286,8 @@ pub struct Engine {
   surface_needs_reconfigure: bool,
   // Event bus for decoupled inter-system communication
   events: Events,
+  // Gamepad input library (gilrs)
+  gilrs: Option<Gilrs>,
 }
 
 impl Engine {
@@ -458,6 +461,21 @@ impl Engine {
       audio_manager.set_sfx_volume(sfx_volume);
     }
 
+    // Initialize gamepad input (gracefully handle no gamepad support)
+    let gilrs = match Gilrs::new() {
+      Ok(g) => {
+        println!("[Gamepad] Initialized successfully");
+        Some(g)
+      }
+      Err(e) => {
+        eprintln!(
+          "Warning: Could not initialize gamepad support: {}. Continuing without gamepads.",
+          e
+        );
+        None
+      }
+    };
+
     Engine {
       config,
       window: None,
@@ -490,6 +508,7 @@ impl Engine {
       window_request: WindowRequest::default(),
       surface_needs_reconfigure: false,
       events: Events::new(),
+      gilrs,
     }
   }
 
@@ -1411,6 +1430,48 @@ impl ApplicationHandler for Engine {
 
         if let Some(time) = &mut self.time {
           time.begin_frame();
+        }
+
+        // Process gamepad events
+        if let Some(ref mut gilrs) = self.gilrs {
+          // Check for newly connected gamepads
+          for (id, gamepad) in gilrs.gamepads() {
+            if gamepad.is_connected() {
+              self
+                .input
+                .try_set_active_gamepad(id, gamepad.name().to_string());
+            }
+          }
+
+          // Process all pending events
+          while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
+            match event {
+              gilrs::EventType::Connected => {
+                if let Some(gamepad) = gilrs.connected_gamepad(id) {
+                  self
+                    .input
+                    .handle_gamepad_connected(id, gamepad.name().to_string());
+                }
+              }
+              gilrs::EventType::Disconnected => {
+                self.input.handle_gamepad_disconnected(id);
+              }
+              gilrs::EventType::ButtonPressed(button, _) => {
+                self.input.handle_gamepad_button(id, button, true);
+              }
+              gilrs::EventType::ButtonReleased(button, _) => {
+                self.input.handle_gamepad_button(id, button, false);
+              }
+              gilrs::EventType::ButtonChanged(button, value, _) => {
+                // For analog buttons like triggers
+                self.input.handle_gamepad_trigger(id, button, value);
+              }
+              gilrs::EventType::AxisChanged(axis, value, _) => {
+                self.input.handle_gamepad_axis(id, axis, value);
+              }
+              _ => {}
+            }
+          }
         }
 
         // Fixed timestep update loop (includes game logic + physics)

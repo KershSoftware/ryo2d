@@ -750,7 +750,7 @@ impl InputState {
     fn key_pressed(&self, key: KeyCode) -> bool;   // Just pressed this frame
     fn key_down(&self, key: KeyCode) -> bool;      // Currently held
     fn key_released(&self, key: KeyCode) -> bool;  // Just released this frame
-    
+
     // Mouse
     fn mouse_pressed(&self, button: MouseButton) -> bool;
     fn mouse_down(&self, button: MouseButton) -> bool;
@@ -758,6 +758,44 @@ impl InputState {
     fn mouse_position(&self) -> (f32, f32);       // Screen coordinates
     fn mouse_delta(&self) -> (f32, f32);          // Movement since last frame
     fn scroll_delta(&self) -> f32;                // Mouse wheel
+
+    // Gamepad (see ryo-controller skill for patterns)
+    fn gamepad_connected(&self) -> bool;
+    fn gamepad_name(&self) -> &str;
+    fn gamepad_button_pressed(&self, button: GamepadButton) -> bool;
+    fn gamepad_button_down(&self, button: GamepadButton) -> bool;
+    fn gamepad_button_released(&self, button: GamepadButton) -> bool;
+    fn left_stick(&self) -> (f32, f32);            // -1.0 to 1.0, deadzone applied
+    fn left_stick_x(&self) -> f32;
+    fn left_stick_y(&self) -> f32;
+    fn right_stick(&self) -> (f32, f32);
+    fn right_stick_x(&self) -> f32;
+    fn right_stick_y(&self) -> f32;
+    fn left_stick_raw(&self) -> (f32, f32);        // No deadzone (for debug)
+    fn right_stick_raw(&self) -> (f32, f32);
+    fn left_trigger(&self) -> f32;                 // 0.0 to 1.0
+    fn right_trigger(&self) -> f32;
+}
+```
+
+### GamepadButton
+
+```rust
+pub enum GamepadButton {
+    South,      // Cross (PS) / A (Xbox)
+    East,       // Circle (PS) / B (Xbox)
+    West,       // Square (PS) / X (Xbox)
+    North,      // Triangle (PS) / Y (Xbox)
+    LeftBumper,   // L1 / LB
+    RightBumper,  // R1 / RB
+    LeftTrigger,  // L2 / LT (as digital button)
+    RightTrigger, // R2 / RT (as digital button)
+    LeftStick,    // L3 (stick click)
+    RightStick,   // R3 (stick click)
+    Select,       // Share / Back
+    Start,        // Options / Menu
+    Guide,        // PS / Xbox button
+    DPadUp, DPadDown, DPadLeft, DPadRight,
 }
 ```
 

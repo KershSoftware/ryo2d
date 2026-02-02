@@ -2,6 +2,95 @@ use std::collections::HashSet;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
+/// Standard gamepad buttons (mapped from gilrs).
+///
+/// Uses positional names (South, East, West, North) that work across controllers.
+/// South = Cross (PS) / A (Xbox), etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GamepadButton {
+  /// Face button - bottom (Cross on PS, A on Xbox)
+  South,
+  /// Face button - right (Circle on PS, B on Xbox)
+  East,
+  /// Face button - left (Square on PS, X on Xbox)
+  West,
+  /// Face button - top (Triangle on PS, Y on Xbox)
+  North,
+
+  /// Left shoulder button (L1 / LB)
+  LeftBumper,
+  /// Right shoulder button (R1 / RB)
+  RightBumper,
+
+  /// Left trigger as button (L2 / LT when fully pressed)
+  LeftTrigger,
+  /// Right trigger as button (R2 / RT when fully pressed)
+  RightTrigger,
+
+  /// Left stick click (L3)
+  LeftStick,
+  /// Right stick click (R3)
+  RightStick,
+
+  /// Select/Share/Back button
+  Select,
+  /// Start/Options/Menu button
+  Start,
+  /// Guide/PS/Xbox button (may not be available on all controllers)
+  Guide,
+
+  /// D-pad up
+  DPadUp,
+  /// D-pad down
+  DPadDown,
+  /// D-pad left
+  DPadLeft,
+  /// D-pad right
+  DPadRight,
+}
+
+impl GamepadButton {
+  /// Convert from gilrs Button to our GamepadButton.
+  pub(crate) fn from_gilrs(button: gilrs::Button) -> Option<Self> {
+    use gilrs::Button as B;
+    match button {
+      B::South => Some(GamepadButton::South),
+      B::East => Some(GamepadButton::East),
+      B::West => Some(GamepadButton::West),
+      B::North => Some(GamepadButton::North),
+      B::LeftTrigger => Some(GamepadButton::LeftBumper),
+      B::RightTrigger => Some(GamepadButton::RightBumper),
+      B::LeftTrigger2 => Some(GamepadButton::LeftTrigger),
+      B::RightTrigger2 => Some(GamepadButton::RightTrigger),
+      B::LeftThumb => Some(GamepadButton::LeftStick),
+      B::RightThumb => Some(GamepadButton::RightStick),
+      B::Select => Some(GamepadButton::Select),
+      B::Start => Some(GamepadButton::Start),
+      B::Mode => Some(GamepadButton::Guide),
+      B::DPadUp => Some(GamepadButton::DPadUp),
+      B::DPadDown => Some(GamepadButton::DPadDown),
+      B::DPadLeft => Some(GamepadButton::DPadLeft),
+      B::DPadRight => Some(GamepadButton::DPadRight),
+      _ => None,
+    }
+  }
+}
+
+/// Deadzone for analog sticks (radial deadzone).
+const STICK_DEADZONE: f32 = 0.15;
+
+/// Apply radial deadzone to stick input and rescale to use full range.
+fn apply_deadzone(x: f32, y: f32) -> (f32, f32) {
+  let magnitude = (x * x + y * y).sqrt();
+  if magnitude < STICK_DEADZONE {
+    (0.0, 0.0)
+  } else {
+    // Rescale to use full range after deadzone
+    let scale = (magnitude - STICK_DEADZONE) / (1.0 - STICK_DEADZONE) / magnitude;
+    (x * scale, y * scale)
+  }
+}
+
 /// Tracks all input state for the current and previous frame
 #[derive(Debug, Default)]
 pub struct InputState {
@@ -36,6 +125,44 @@ pub struct InputState {
   ime_preedit_cursor: Option<(usize, usize)>,
   /// Whether IME is currently enabled
   ime_enabled: bool,
+
+  // Gamepad state (first connected gamepad only)
+  /// Whether a gamepad is currently connected
+  gamepad_connected: bool,
+  /// Name of the connected gamepad
+  gamepad_name: String,
+  /// ID of the active gamepad (for gilrs)
+  gamepad_id: Option<gilrs::GamepadId>,
+
+  /// Gamepad buttons currently held down
+  gamepad_buttons_down: HashSet<GamepadButton>,
+  /// Gamepad buttons that were just pressed this frame
+  gamepad_buttons_pressed: HashSet<GamepadButton>,
+  /// Gamepad buttons that were just released this frame
+  gamepad_buttons_released: HashSet<GamepadButton>,
+
+  /// Left stick X axis (after deadzone, -1.0 to 1.0)
+  left_stick_x: f32,
+  /// Left stick Y axis (after deadzone, -1.0 to 1.0)
+  left_stick_y: f32,
+  /// Right stick X axis (after deadzone, -1.0 to 1.0)
+  right_stick_x: f32,
+  /// Right stick Y axis (after deadzone, -1.0 to 1.0)
+  right_stick_y: f32,
+
+  /// Raw left stick X (before deadzone, for visualization)
+  left_stick_x_raw: f32,
+  /// Raw left stick Y (before deadzone, for visualization)
+  left_stick_y_raw: f32,
+  /// Raw right stick X (before deadzone, for visualization)
+  right_stick_x_raw: f32,
+  /// Raw right stick Y (before deadzone, for visualization)
+  right_stick_y_raw: f32,
+
+  /// Left trigger value (0.0 to 1.0)
+  left_trigger: f32,
+  /// Right trigger value (0.0 to 1.0)
+  right_trigger: f32,
 }
 
 impl InputState {
@@ -56,6 +183,9 @@ impl InputState {
     self.scroll_delta_y = 0.0;
     // Clear committed text, but keep preedit (it persists until cleared by IME)
     self.text_input.clear();
+    // Clear per-frame gamepad state
+    self.gamepad_buttons_pressed.clear();
+    self.gamepad_buttons_released.clear();
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -274,6 +404,228 @@ impl InputState {
       self.text_input.push_str(text);
     }
   }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Gamepad Input
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /// Returns true if a gamepad is currently connected.
+  pub fn gamepad_connected(&self) -> bool {
+    self.gamepad_connected
+  }
+
+  /// Returns the name of the connected gamepad, or empty string if none.
+  pub fn gamepad_name(&self) -> &str {
+    &self.gamepad_name
+  }
+
+  /// Returns true if the gamepad button is currently held down.
+  pub fn gamepad_button_down(&self, button: GamepadButton) -> bool {
+    self.gamepad_buttons_down.contains(&button)
+  }
+
+  /// Returns true if the gamepad button was just pressed this frame.
+  pub fn gamepad_button_pressed(&self, button: GamepadButton) -> bool {
+    self.gamepad_buttons_pressed.contains(&button)
+  }
+
+  /// Returns true if the gamepad button was just released this frame.
+  pub fn gamepad_button_released(&self, button: GamepadButton) -> bool {
+    self.gamepad_buttons_released.contains(&button)
+  }
+
+  /// Get the left stick position as (x, y) with deadzone applied.
+  /// Values range from -1.0 to 1.0.
+  pub fn left_stick(&self) -> (f32, f32) {
+    (self.left_stick_x, self.left_stick_y)
+  }
+
+  /// Get the left stick X axis with deadzone applied (-1.0 to 1.0).
+  pub fn left_stick_x(&self) -> f32 {
+    self.left_stick_x
+  }
+
+  /// Get the left stick Y axis with deadzone applied (-1.0 to 1.0).
+  pub fn left_stick_y(&self) -> f32 {
+    self.left_stick_y
+  }
+
+  /// Get the right stick position as (x, y) with deadzone applied.
+  /// Values range from -1.0 to 1.0.
+  pub fn right_stick(&self) -> (f32, f32) {
+    (self.right_stick_x, self.right_stick_y)
+  }
+
+  /// Get the right stick X axis with deadzone applied (-1.0 to 1.0).
+  pub fn right_stick_x(&self) -> f32 {
+    self.right_stick_x
+  }
+
+  /// Get the right stick Y axis with deadzone applied (-1.0 to 1.0).
+  pub fn right_stick_y(&self) -> f32 {
+    self.right_stick_y
+  }
+
+  /// Get raw left stick position without deadzone (for debug visualization).
+  pub fn left_stick_raw(&self) -> (f32, f32) {
+    (self.left_stick_x_raw, self.left_stick_y_raw)
+  }
+
+  /// Get raw right stick position without deadzone (for debug visualization).
+  pub fn right_stick_raw(&self) -> (f32, f32) {
+    (self.right_stick_x_raw, self.right_stick_y_raw)
+  }
+
+  /// Get the left trigger value (0.0 to 1.0).
+  pub fn left_trigger(&self) -> f32 {
+    self.left_trigger
+  }
+
+  /// Get the right trigger value (0.0 to 1.0).
+  pub fn right_trigger(&self) -> f32 {
+    self.right_trigger
+  }
+
+  /// Handle gamepad connection event.
+  pub(crate) fn handle_gamepad_connected(&mut self, id: gilrs::GamepadId, name: String) {
+    // Only track first gamepad if none connected
+    if !self.gamepad_connected {
+      self.gamepad_connected = true;
+      self.gamepad_id = Some(id);
+      self.gamepad_name = name;
+      println!("[Gamepad] Connected: {}", self.gamepad_name);
+    }
+  }
+
+  /// Handle gamepad disconnection event.
+  pub(crate) fn handle_gamepad_disconnected(&mut self, id: gilrs::GamepadId) {
+    if self.gamepad_id == Some(id) {
+      println!("[Gamepad] Disconnected: {}", self.gamepad_name);
+      self.gamepad_connected = false;
+      self.gamepad_id = None;
+      self.gamepad_name.clear();
+      // Clear all gamepad state
+      self.gamepad_buttons_down.clear();
+      self.gamepad_buttons_pressed.clear();
+      self.gamepad_buttons_released.clear();
+      self.left_stick_x = 0.0;
+      self.left_stick_y = 0.0;
+      self.right_stick_x = 0.0;
+      self.right_stick_y = 0.0;
+      self.left_stick_x_raw = 0.0;
+      self.left_stick_y_raw = 0.0;
+      self.right_stick_x_raw = 0.0;
+      self.right_stick_y_raw = 0.0;
+      self.left_trigger = 0.0;
+      self.right_trigger = 0.0;
+    }
+  }
+
+  /// Handle gamepad button event.
+  pub(crate) fn handle_gamepad_button(
+    &mut self,
+    id: gilrs::GamepadId,
+    button: gilrs::Button,
+    pressed: bool,
+  ) {
+    // Only process events from the active gamepad
+    if self.gamepad_id != Some(id) {
+      return;
+    }
+
+    let Some(btn) = GamepadButton::from_gilrs(button) else {
+      return;
+    };
+
+    if pressed {
+      if !self.gamepad_buttons_down.contains(&btn) {
+        self.gamepad_buttons_pressed.insert(btn);
+      }
+      self.gamepad_buttons_down.insert(btn);
+    } else {
+      self.gamepad_buttons_down.remove(&btn);
+      self.gamepad_buttons_released.insert(btn);
+    }
+  }
+
+  /// Handle gamepad axis event.
+  pub(crate) fn handle_gamepad_axis(
+    &mut self,
+    id: gilrs::GamepadId,
+    axis: gilrs::Axis,
+    value: f32,
+  ) {
+    // Only process events from the active gamepad
+    if self.gamepad_id != Some(id) {
+      return;
+    }
+
+    use gilrs::Axis;
+    match axis {
+      Axis::LeftStickX => {
+        self.left_stick_x_raw = value;
+        let (x, y) = apply_deadzone(value, self.left_stick_y_raw);
+        self.left_stick_x = x;
+        self.left_stick_y = y;
+      }
+      Axis::LeftStickY => {
+        self.left_stick_y_raw = value;
+        let (x, y) = apply_deadzone(self.left_stick_x_raw, value);
+        self.left_stick_x = x;
+        self.left_stick_y = y;
+      }
+      Axis::RightStickX => {
+        self.right_stick_x_raw = value;
+        let (x, y) = apply_deadzone(value, self.right_stick_y_raw);
+        self.right_stick_x = x;
+        self.right_stick_y = y;
+      }
+      Axis::RightStickY => {
+        self.right_stick_y_raw = value;
+        let (x, y) = apply_deadzone(self.right_stick_x_raw, value);
+        self.right_stick_x = x;
+        self.right_stick_y = y;
+      }
+      Axis::LeftZ | Axis::RightZ => {
+        // Some controllers report triggers as Z axes
+        // Z is typically left trigger, RightZ is right trigger
+        // However, gilrs normalizes this - we handle it via LeftTrigger2/RightTrigger2 buttons
+        // and via dedicated trigger events (handled below)
+      }
+      _ => {}
+    }
+  }
+
+  /// Handle gamepad trigger event (analog triggers).
+  pub(crate) fn handle_gamepad_trigger(
+    &mut self,
+    id: gilrs::GamepadId,
+    button: gilrs::Button,
+    value: f32,
+  ) {
+    // Only process events from the active gamepad
+    if self.gamepad_id != Some(id) {
+      return;
+    }
+
+    use gilrs::Button;
+    match button {
+      Button::LeftTrigger2 => {
+        self.left_trigger = value;
+      }
+      Button::RightTrigger2 => {
+        self.right_trigger = value;
+      }
+      _ => {}
+    }
+  }
+
+  /// Try to set the active gamepad if none is currently active.
+  pub(crate) fn try_set_active_gamepad(&mut self, id: gilrs::GamepadId, name: String) {
+    if !self.gamepad_connected {
+      self.handle_gamepad_connected(id, name);
+    }
+  }
 }
 
 #[cfg(test)]
@@ -466,5 +818,76 @@ mod tests {
     assert!(!input.key_repeat(KeyCode::Backspace));
     // But key is still held
     assert!(input.key_down(KeyCode::Backspace));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Gamepad Tests
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  #[test]
+  fn deadzone_filters_small_values() {
+    let (x, y) = apply_deadzone(0.1, 0.05);
+    assert_eq!((x, y), (0.0, 0.0));
+  }
+
+  #[test]
+  fn deadzone_passes_large_values() {
+    let (x, y) = apply_deadzone(1.0, 0.0);
+    // Should be close to 1.0 after rescaling
+    assert!((x - 1.0).abs() < 0.01);
+    assert_eq!(y, 0.0);
+  }
+
+  #[test]
+  fn deadzone_rescales_values() {
+    // Value just above deadzone should be close to 0
+    let (x, _) = apply_deadzone(STICK_DEADZONE + 0.01, 0.0);
+    assert!(x > 0.0);
+    assert!(x < 0.02); // Small value just above deadzone
+  }
+
+  #[test]
+  fn gamepad_not_connected_by_default() {
+    let input = InputState::new();
+    assert!(!input.gamepad_connected());
+    assert!(input.gamepad_name().is_empty());
+  }
+
+  #[test]
+  fn gamepad_stick_values_default_to_zero() {
+    let input = InputState::new();
+    assert_eq!(input.left_stick(), (0.0, 0.0));
+    assert_eq!(input.right_stick(), (0.0, 0.0));
+    assert_eq!(input.left_trigger(), 0.0);
+    assert_eq!(input.right_trigger(), 0.0);
+  }
+
+  #[test]
+  fn gamepad_button_enum_conversion() {
+    // Test a few button conversions
+    assert_eq!(
+      GamepadButton::from_gilrs(gilrs::Button::South),
+      Some(GamepadButton::South)
+    );
+    assert_eq!(
+      GamepadButton::from_gilrs(gilrs::Button::East),
+      Some(GamepadButton::East)
+    );
+    assert_eq!(
+      GamepadButton::from_gilrs(gilrs::Button::West),
+      Some(GamepadButton::West)
+    );
+    assert_eq!(
+      GamepadButton::from_gilrs(gilrs::Button::North),
+      Some(GamepadButton::North)
+    );
+    assert_eq!(
+      GamepadButton::from_gilrs(gilrs::Button::DPadUp),
+      Some(GamepadButton::DPadUp)
+    );
+    assert_eq!(
+      GamepadButton::from_gilrs(gilrs::Button::Start),
+      Some(GamepadButton::Start)
+    );
   }
 }
