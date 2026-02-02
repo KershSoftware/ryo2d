@@ -157,6 +157,32 @@ impl TimeState {
       false
     }
   }
+
+  /// Wait precisely until target frame time using hybrid sleep/spin.
+  ///
+  /// This is more accurate than pure `thread::sleep()` which has ~1-15ms
+  /// granularity depending on OS scheduler. We sleep for most of the time
+  /// to save CPU, then spin-wait for the final microseconds for precision.
+  fn wait_for_target_frame_time(&self) {
+    let elapsed = self.frame_start.elapsed();
+    if elapsed >= self.target_frame_time {
+      return; // Already past target, no waiting needed
+    }
+
+    let remaining = self.target_frame_time - elapsed;
+
+    // Sleep for most of the remaining time (save CPU)
+    // Leave 1.5ms margin for spin-waiting to hit exact target
+    let spin_margin = Duration::from_micros(1500);
+    if remaining > spin_margin {
+      std::thread::sleep(remaining - spin_margin);
+    }
+
+    // Spin-wait for precise timing (busy loop but very short)
+    while self.frame_start.elapsed() < self.target_frame_time {
+      std::hint::spin_loop();
+    }
+  }
 }
 
 /// Configuration for the engine
@@ -1607,9 +1633,18 @@ impl ApplicationHandler for Engine {
             );
           }
 
-          let frame_time = time.frame_start.elapsed();
-          if frame_time < time.target_frame_time {
-            std::thread::sleep(time.target_frame_time - frame_time);
+          // Frame limiting: only apply manual limiting if presentation doesn't already block.
+          // When vsync uses Fifo mode, the GPU blocks until vsync - adding sleep would
+          // cause double-waiting and prevent hitting target framerate.
+          // For Mailbox/Immediate modes, we use hybrid sleep/spin for precise timing.
+          let presentation_blocks = self
+            .renderer
+            .as_ref()
+            .map(|r| r.presentation_blocks())
+            .unwrap_or(false);
+
+          if !presentation_blocks {
+            time.wait_for_target_frame_time();
           }
         }
 
