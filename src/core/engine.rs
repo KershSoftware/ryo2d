@@ -1422,7 +1422,6 @@ impl ApplicationHandler for Engine {
           .map(|t| t.should_update())
           .unwrap_or(false)
         {
-          did_update = true;
           let fixed_dt = self
             .time
             .as_ref()
@@ -1431,6 +1430,14 @@ impl ApplicationHandler for Engine {
           self.update(fixed_dt);
           if let Some(time) = &mut self.time {
             time.consume_update();
+          }
+          // Clear keyboard one-shot events after the FIRST update only.
+          // This prevents key presses from being processed multiple times
+          // when multiple fixed timestep updates run in a single frame,
+          // while preserving mouse state for UI button clicks in render_ui.
+          if !did_update {
+            self.input.consume_keyboard_events();
+            did_update = true;
           }
         }
         // Update time includes both game logic and physics
@@ -1760,9 +1767,9 @@ impl ApplicationHandler for Engine {
           }
         }
 
-        // Clear per-frame input state ONLY if we ran at least one update
-        // This prevents losing input events that arrive between frames when
-        // the fixed timestep accumulator isn't ready yet
+        // Clear all per-frame input state at the END of the frame, but ONLY if
+        // we ran at least one update. This preserves input events for the next
+        // frame when the fixed timestep accumulator isn't ready yet.
         if did_update {
           self.input.begin_frame();
         }
@@ -1793,6 +1800,8 @@ pub struct EngineBuilder {
   master_volume: f32,
   music_volume: f32,
   sfx_volume: f32,
+  /// Tracks whether display_mode was explicitly set (prevents build() from overwriting)
+  display_mode_set: bool,
 }
 
 impl EngineBuilder {
@@ -1804,6 +1813,7 @@ impl EngineBuilder {
       master_volume: 1.0,
       music_volume: 0.8,
       sfx_volume: 1.0,
+      display_mode_set: false,
     }
   }
 
@@ -1879,6 +1889,7 @@ impl EngineBuilder {
   /// ```
   pub fn display_mode(mut self, mode: DisplayMode) -> Self {
     self.config.display_mode = mode;
+    self.display_mode_set = true;
     self
   }
 
@@ -2006,6 +2017,52 @@ impl EngineBuilder {
       self.config.width = system_state.display.width;
       self.config.height = system_state.display.height;
       self.config.display_mode = system_state.display.display_mode;
+      self.display_mode_set = true;
+
+      // Apply overrides if present
+      if let Some(show_fps) = system_state.show_fps {
+        self.config.debug.show_fps = show_fps;
+      }
+      // Store vsync preference to use when creating renderer
+      self.vsync = system_state.vsync;
+      // Store audio volumes to apply after AudioManager creation
+      self.master_volume = system_state.master_volume;
+      self.music_volume = system_state.music_volume;
+      self.sfx_volume = system_state.sfx_volume;
+    }
+    self
+  }
+
+  /// Apply only display mode from system.json, keeping fixed resolution.
+  ///
+  /// This is useful for games with a fixed design resolution (e.g., pixel art games)
+  /// that still want to respect the user's display mode preference (windowed/fullscreen).
+  ///
+  /// Unlike [`with_system_state_overrides`](Self::with_system_state_overrides), this method
+  /// does NOT override the game's resolution - only the display mode and audio/vsync settings.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("Pixel Art Game")
+  ///     .resolution(320, 240)  // Fixed design resolution
+  ///     .with_saved_display_mode()  // Load windowed/fullscreen from user settings
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn with_saved_display_mode(mut self) -> Self {
+    if let Ok(workspace) = super::config::Workspace::discover()
+      && let Ok(save_manager) = workspace.create_save_manager()
+      && let Ok(mut system_state) = save_manager.load_or_create_system(&workspace.config().system)
+    {
+      // Migrate legacy fullscreen field if present
+      system_state.display.migrate_legacy();
+
+      // Apply ONLY display mode - not resolution
+      self.config.display_mode = system_state.display.display_mode;
+      self.display_mode_set = true;
 
       // Apply overrides if present
       if let Some(show_fps) = system_state.show_fps {
@@ -2074,6 +2131,7 @@ impl EngineBuilder {
     let mut master_volume = self.master_volume;
     let mut music_volume = self.music_volume;
     let mut sfx_volume = self.sfx_volume;
+    let display_mode_set = self.display_mode_set;
 
     // Priority chain for configuration:
     // 1. Explicit builder calls (highest) - already in self.config
@@ -2127,8 +2185,10 @@ impl EngineBuilder {
       {
         config.title = title.to_string();
       }
-      // Display mode
-      if let Some(mode) = option_env!("RYO_EMBED_DISPLAY_MODE") {
+      // Display mode (only if not explicitly set via builder or system.json)
+      if !display_mode_set
+        && let Some(mode) = option_env!("RYO_EMBED_DISPLAY_MODE")
+      {
         config.display_mode = match mode.to_lowercase().as_str() {
           "fullscreen" => DisplayMode::Fullscreen,
           "borderless" | "borderless_fullscreen" => DisplayMode::BorderlessFullscreen,
@@ -2154,8 +2214,10 @@ impl EngineBuilder {
         config.height = system.resolution_height;
       }
 
-      // Load display mode from [system] section
-      config.display_mode = system.display_mode;
+      // Load display mode from [system] section (only if not explicitly set)
+      if !display_mode_set {
+        config.display_mode = system.display_mode;
+      }
     }
 
     Engine::new(config, game, vsync, master_volume, music_volume, sfx_volume)

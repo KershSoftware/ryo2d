@@ -58,6 +58,17 @@ impl InputState {
     self.text_input.clear();
   }
 
+  /// Clear only keyboard one-shot events (pressed/released/repeated).
+  ///
+  /// This is used internally by the engine to prevent keyboard events
+  /// from being processed multiple times during fixed timestep updates,
+  /// while preserving mouse state for UI rendering.
+  pub(crate) fn consume_keyboard_events(&mut self) {
+    self.keys_pressed.clear();
+    self.keys_released.clear();
+    self.keys_repeated.clear();
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Keyboard Input
   // ─────────────────────────────────────────────────────────────────────────────
@@ -466,5 +477,184 @@ mod tests {
     assert!(!input.key_repeat(KeyCode::Backspace));
     // But key is still held
     assert!(input.key_down(KeyCode::Backspace));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Fixed Timestep Integration Tests
+  // These tests simulate the engine's fixed timestep loop where multiple
+  // updates can run in a single frame. Input should be consumed after
+  // each update to prevent double-processing of one-shot events.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  #[test]
+  fn key_pressed_only_fires_once_across_multiple_updates() {
+    let mut input = InputState::new();
+
+    // Simulate: key pressed before frame starts
+    input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
+
+    // First update sees the press
+    assert!(input.key_pressed(KeyCode::Escape), "First update should see key_pressed");
+    assert!(input.key_down(KeyCode::Escape), "Key should be held");
+
+    // After first update, clear per-frame input (as engine does)
+    input.begin_frame();
+
+    // Second update in same frame should NOT see the press again
+    assert!(!input.key_pressed(KeyCode::Escape), "Second update should NOT see key_pressed");
+    assert!(input.key_down(KeyCode::Escape), "Key should still be held");
+
+    // Third update - still no press event
+    input.begin_frame();
+    assert!(!input.key_pressed(KeyCode::Escape), "Third update should NOT see key_pressed");
+    assert!(input.key_down(KeyCode::Escape), "Key should still be held");
+  }
+
+  #[test]
+  fn key_down_persists_across_multiple_updates() {
+    let mut input = InputState::new();
+
+    // Simulate: key pressed and held
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
+
+    // Simulate multiple fixed timestep updates (like movement input)
+    for i in 0..5 {
+      assert!(
+        input.key_down(KeyCode::KeyW),
+        "Update {} should see key_down for held key",
+        i + 1
+      );
+      input.begin_frame();
+    }
+
+    // Key still held after all updates
+    assert!(input.key_down(KeyCode::KeyW), "Key should remain held after all updates");
+
+    // Only when released does it stop
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Released);
+    assert!(!input.key_down(KeyCode::KeyW), "Key should no longer be held after release");
+  }
+
+  #[test]
+  fn mouse_pressed_persists_for_ui_rendering() {
+    let mut input = InputState::new();
+
+    // Simulate: mouse button pressed
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+
+    // First update sees the press
+    assert!(input.mouse_pressed(MouseButton::Left), "First update should see mouse_pressed");
+    assert!(input.mouse_down(MouseButton::Left), "Button should be held");
+
+    // After first update, only consume keyboard events (engine behavior)
+    input.consume_keyboard_events();
+
+    // Mouse pressed should STILL be visible for UI rendering
+    assert!(
+      input.mouse_pressed(MouseButton::Left),
+      "Mouse pressed should persist for render_ui"
+    );
+    assert!(input.mouse_down(MouseButton::Left), "Button should still be held");
+
+    // Only begin_frame clears mouse state (at end of frame)
+    input.begin_frame();
+    assert!(
+      !input.mouse_pressed(MouseButton::Left),
+      "Mouse pressed should be cleared after begin_frame"
+    );
+  }
+
+  #[test]
+  fn toggle_action_only_toggles_once_per_keypress() {
+    let mut input = InputState::new();
+    let mut is_paused = false;
+
+    // Simulate: user presses Escape to toggle pause
+    input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
+
+    // Simulate 3 fixed timestep updates in one frame (e.g., frame stutter)
+    for _ in 0..3 {
+      // Game logic: toggle pause on key_pressed
+      if input.key_pressed(KeyCode::Escape) {
+        is_paused = !is_paused;
+      }
+      input.begin_frame();
+    }
+
+    // Should only have toggled ONCE
+    assert!(is_paused, "Pause should be toggled exactly once, not back to false");
+  }
+
+  #[test]
+  fn continuous_action_works_across_multiple_updates() {
+    let mut input = InputState::new();
+    let mut move_count = 0;
+
+    // Simulate: user holds W key for movement
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
+
+    // Simulate 3 fixed timestep updates
+    for _ in 0..3 {
+      // Game logic: move while key is held
+      if input.key_down(KeyCode::KeyW) {
+        move_count += 1;
+      }
+      input.begin_frame();
+    }
+
+    // Should have moved in ALL 3 updates
+    assert_eq!(move_count, 3, "Movement should occur in all updates while key is held");
+  }
+
+  #[test]
+  fn key_released_only_fires_once_across_multiple_updates() {
+    let mut input = InputState::new();
+
+    // Press and release key
+    input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::Space, ElementState::Released);
+
+    // First update sees the release
+    assert!(input.key_released(KeyCode::Space), "First update should see key_released");
+
+    input.begin_frame();
+
+    // Second update should NOT see the release again
+    assert!(!input.key_released(KeyCode::Space), "Second update should NOT see key_released");
+  }
+
+  #[test]
+  fn consume_keyboard_events_only_clears_keyboard() {
+    let mut input = InputState::new();
+
+    // Set up both keyboard and mouse input
+    input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::Space, ElementState::Released);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    input.handle_mouse_move(100.0, 200.0);
+    input.handle_scroll(MouseScrollDelta::LineDelta(1.0, 2.0));
+
+    // Verify all input is present
+    assert!(input.key_pressed(KeyCode::Escape));
+    assert!(input.key_released(KeyCode::Space));
+    assert!(input.mouse_pressed(MouseButton::Left));
+    assert_eq!(input.mouse_delta(), (100.0, 200.0));
+    assert_eq!(input.scroll_delta(), (1.0, 2.0));
+
+    // Consume only keyboard events
+    input.consume_keyboard_events();
+
+    // Keyboard one-shot events should be cleared
+    assert!(!input.key_pressed(KeyCode::Escape), "key_pressed should be cleared");
+    assert!(!input.key_released(KeyCode::Space), "key_released should be cleared");
+
+    // But keyboard held state should persist
+    assert!(input.key_down(KeyCode::Escape), "key_down should persist");
+
+    // Mouse and scroll should be PRESERVED (for UI rendering)
+    assert!(input.mouse_pressed(MouseButton::Left), "mouse_pressed should persist");
+    assert!(input.mouse_down(MouseButton::Left), "mouse_down should persist");
+    assert_eq!(input.mouse_delta(), (100.0, 200.0), "mouse_delta should persist");
+    assert_eq!(input.scroll_delta(), (1.0, 2.0), "scroll_delta should persist");
   }
 }
