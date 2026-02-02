@@ -141,7 +141,8 @@ function Run-Example {
         if ($UseDevMode) {
             Write-Host "  Mode: Development (hot-reload enabled)" -ForegroundColor Magenta
             Write-Host ""
-            & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- dev
+            # Skip opt-check since engine examples don't need it
+            & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- dev --skip-opt-check
         } else {
             Write-Host "  Mode: Build + Run (release)" -ForegroundColor Green
             Write-Host ""

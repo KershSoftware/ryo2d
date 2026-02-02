@@ -31,8 +31,13 @@ impl Scene for MenuScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    // Start game
     if ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::Enter) {
       return SceneAction::Switch(Box::new(GameScene::new()));
+    }
+    // Quit to desktop
+    if ctx.input.key_pressed(KeyCode::Escape) {
+      return SceneAction::Quit;
     }
     SceneAction::Continue
   }
@@ -109,6 +114,16 @@ impl Scene for MenuScene {
       center_x - prompt_w as f32 / 2.0,
       520.0,
       Color::rgb(100, 255, 100),
+    );
+
+    // Quit hint
+    let quit_hint = "Press ESC to Quit";
+    let (quit_w, _) = ui.text_size(quit_hint);
+    ui.draw_text(
+      quit_hint,
+      center_x - quit_w as f32 / 2.0,
+      550.0,
+      Color::rgb(150, 150, 150),
     );
   }
 }

@@ -46,7 +46,7 @@ pub mod core;
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
     // Core game trait
-    pub use crate::core::game::{Game, GameContext, GpuRenderContext};
+    pub use crate::core::game::{Game, GameContext, GpuRenderContext, WindowRequest};
 
     // Scene management
     pub use crate::core::scene::{
@@ -119,8 +119,8 @@ pub mod prelude {
 
     // Save system
     pub use crate::core::config::{
-        compress_data, decompress_data, DisplaySettings, EntitySnapshot, GameSaveData,
-        SaveManager, SystemState, WorldState,
+        compress_data, decompress_data, DisplayMode, DisplaySettings, EntitySnapshot, GameSaveData,
+        Resolution, SaveManager, SystemState, WorldState,
     };
 
     // UI system

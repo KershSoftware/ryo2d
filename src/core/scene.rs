@@ -29,7 +29,9 @@ use std::time::Duration;
 
 use super::asset::AssetManager;
 use super::audio::AudioManager;
+use super::config::save::DisplayMode;
 use super::ecs::World;
+use super::game::WindowRequest;
 use super::graphics::Camera;
 use super::input::InputState;
 use super::lighting::LightingRenderer;
@@ -62,6 +64,8 @@ pub struct SceneContext<'a> {
   /// want `Started` events. Use [`collisions_started()`](Self::collisions_started)
   /// for a filtered iterator.
   pub collision_events: &'a [PhysicsCollisionEvent],
+  /// Pending window configuration changes (resolution, display mode)
+  pub window_request: &'a mut WindowRequest,
 }
 
 impl<'a> SceneContext<'a> {
@@ -115,6 +119,48 @@ impl<'a> SceneContext<'a> {
   /// objects separate.
   pub fn collisions_stopped(&self) -> impl Iterator<Item = &PhysicsCollisionEvent> {
     self.collision_events.iter().filter(|e| e.is_stopped())
+  }
+
+  /// Request a display mode change (windowed, fullscreen, borderless).
+  ///
+  /// The change will be applied after the current frame completes.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_display_mode(DisplayMode::Fullscreen);
+  /// ```
+  pub fn request_display_mode(&mut self, mode: DisplayMode) {
+    self.window_request.display_mode = Some(mode);
+  }
+
+  /// Request a resolution change.
+  ///
+  /// The change will be applied after the current frame completes.
+  /// Note: In fullscreen mode, resolution changes may be limited to
+  /// available video modes.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_resolution(1920, 1080);
+  /// ```
+  pub fn request_resolution(&mut self, width: u32, height: u32) {
+    self.window_request.width = Some(width);
+    self.window_request.height = Some(height);
+  }
+
+  /// Request both resolution and display mode change.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_display_change(1920, 1080, DisplayMode::BorderlessFullscreen);
+  /// ```
+  pub fn request_display_change(&mut self, width: u32, height: u32, mode: DisplayMode) {
+    self.window_request.width = Some(width);
+    self.window_request.height = Some(height);
+    self.window_request.display_mode = Some(mode);
   }
 }
 
@@ -1034,6 +1080,7 @@ impl Game for SceneGame {
       effects: ctx.effects,
       lighting: ctx.lighting,
       collision_events: ctx.collision_events,
+      window_request: ctx.window_request,
     };
 
     // Call on_enter for the initial scene
@@ -1065,6 +1112,7 @@ impl Game for SceneGame {
       effects: ctx.effects,
       lighting: ctx.lighting,
       collision_events: ctx.collision_events,
+      window_request: ctx.window_request,
     };
 
     // Update any active transitions first

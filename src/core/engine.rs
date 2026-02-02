@@ -9,12 +9,12 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::asset::AssetManager;
 use super::audio::AudioManager;
-use super::config::{self as debug, DebugConfig, FrameTimings, SmoothedFrameTimings};
+use super::config::{self as debug, DebugConfig, DisplayMode, FrameTimings, SmoothedFrameTimings};
 use super::ecs::{
     Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
 };
 use super::error::{EngineError, EngineResult};
-use super::game::{Game, GameContext, GpuRenderContext};
+use super::game::{Game, GameContext, GpuRenderContext, WindowRequest};
 use super::graphics::{
     AnimationController, Animator, BatchCollector, Camera, CompositeTile, GroupedCollider,
     Sprite, SpriteGpuRenderer, TileDirection, WgpuRenderer,
@@ -170,6 +170,8 @@ pub struct EngineConfig {
   pub physics: PhysicsConfig,
   pub debug: DebugConfig,
   pub window_mode: WindowMode,
+  /// Display mode (windowed, fullscreen, borderless)
+  pub display_mode: DisplayMode,
   /// Maximum width for letterboxed viewport (None = no limit)
   pub max_width: Option<u32>,
   /// Maximum height for letterboxed viewport (None = no limit)
@@ -190,6 +192,7 @@ impl Default for EngineConfig {
       physics: PhysicsConfig::default(),
       debug: EngineDebugConfig::default(),
       window_mode: WindowMode::default(),
+      display_mode: DisplayMode::default(),
       max_width: None,
       max_height: None,
     }
@@ -249,6 +252,10 @@ pub struct Engine {
   debug_font_uploaded: bool,
   // Temporary buffer for UI when not affected by lighting
   ui_buffer: Vec<u8>,
+  // Pending window configuration changes from game
+  window_request: WindowRequest,
+  // Flag indicating surface needs reconfiguration (after display mode change)
+  surface_needs_reconfigure: bool,
 }
 
 impl Engine {
@@ -319,6 +326,55 @@ impl Engine {
       // Fallback if window/renderer not initialized
       Some((window_x as f32, window_y as f32))
     }
+  }
+
+  /// Apply pending window configuration changes from the game.
+  fn apply_window_request(&mut self, window: &Arc<Window>) {
+    // Apply resolution change
+    if let (Some(width), Some(height)) = (self.window_request.width, self.window_request.height) {
+      let new_size = winit::dpi::PhysicalSize::new(width, height);
+      if let Some(actual_size) = window.request_inner_size(new_size) {
+        // Update internal config
+        self.config.width = actual_size.width;
+        self.config.height = actual_size.height;
+        self.last_window_size = (actual_size.width, actual_size.height);
+        // Update camera viewport
+        self.camera =
+          Camera::centered_at(width as f32 / 2.0, height as f32 / 2.0, width, height);
+      }
+    }
+
+    // Apply display mode change
+    if let Some(mode) = self.window_request.display_mode {
+      match mode {
+        DisplayMode::Windowed => {
+          window.set_fullscreen(None);
+          window.set_decorations(true); // Restore window title bar
+        }
+        DisplayMode::Fullscreen => {
+          // Exclusive fullscreen - use current monitor's native resolution
+          if let Some(monitor) = window.current_monitor()
+            && let Some(video_mode) = monitor.video_modes().next()
+          {
+            window.set_fullscreen(Some(winit::window::Fullscreen::Exclusive(video_mode)));
+          }
+        }
+        DisplayMode::BorderlessFullscreen => {
+          // Borderless fullscreen - fill screen without mode change
+          window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(
+            window.current_monitor(),
+          )));
+        }
+      }
+      // Update internal config
+      self.config.display_mode = mode;
+
+      // Mark that surface needs reconfiguration on next frame
+      self.surface_needs_reconfigure = true;
+    }
+
+    // Clear the request after processing
+    self.window_request.clear();
   }
 
   fn new(
@@ -403,6 +459,8 @@ impl Engine {
       smoothed_timings: SmoothedFrameTimings::default(),
       debug_font_uploaded: false,
       ui_buffer: vec![0; ui_buffer_size], // RGBA buffer for UI
+      window_request: WindowRequest::default(),
+      surface_needs_reconfigure: false,
     }
   }
 
@@ -495,6 +553,7 @@ impl Engine {
         effects: &mut self.effects,
         lighting: &mut self.lighting,
         collision_events: self.physics.get_collision_events(),
+        window_request: &mut self.window_request,
       };
 
       // Call user's update function
@@ -1042,19 +1101,43 @@ fn blend_overlay(frame: &mut [u8], color: [u8; 4], alpha: f32) {
 impl ApplicationHandler for Engine {
   fn resumed(&mut self, event_loop: &ActiveEventLoop) {
     let resizable = self.config.window_mode != WindowMode::Fixed;
+
+    // For borderless/fullscreen, we still create with the resolution but apply fullscreen after
     let window_attrs = WindowAttributes::default()
       .with_title(&self.config.title)
       .with_inner_size(winit::dpi::LogicalSize::new(
         self.config.width,
         self.config.height,
       ))
-      .with_resizable(resizable);
+      .with_resizable(resizable)
+      .with_decorations(self.config.display_mode != DisplayMode::BorderlessFullscreen);
 
     let window = Arc::new(
       event_loop
         .create_window(window_attrs)
         .expect("Failed to create window"),
     );
+
+    // Apply display mode (fullscreen/borderless)
+    match self.config.display_mode {
+      DisplayMode::Windowed => {
+        // Already windowed, nothing to do
+      }
+      DisplayMode::Fullscreen => {
+        // Exclusive fullscreen - use current monitor's native resolution
+        if let Some(monitor) = window.current_monitor()
+          && let Some(video_mode) = monitor.video_modes().next()
+        {
+          window.set_fullscreen(Some(winit::window::Fullscreen::Exclusive(video_mode)));
+        }
+      }
+      DisplayMode::BorderlessFullscreen => {
+        // Borderless fullscreen - fill screen without mode change
+        window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(
+          window.current_monitor(),
+        )));
+      }
+    }
 
     // Enable IME for text input support
     window.set_ime_allowed(true);
@@ -1115,6 +1198,7 @@ impl ApplicationHandler for Engine {
           effects: &mut self.effects,
           lighting: &mut self.lighting,
           collision_events: &[], // No physics events during init
+          window_request: &mut self.window_request,
         };
         game.init(&mut ctx);
         self.game = Some(game);
@@ -1221,6 +1305,17 @@ impl ApplicationHandler for Engine {
         event_loop.exit();
       }
       WindowEvent::RedrawRequested => {
+        // Handle surface reconfiguration if needed (after display mode change)
+        if self.surface_needs_reconfigure {
+          self.surface_needs_reconfigure = false;
+          if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) {
+            let size = window.inner_size();
+            if size.width > 0 && size.height > 0 {
+              renderer.resize(size.width, size.height);
+            }
+          }
+        }
+
         // Reset frame timings
         self.frame_timings = FrameTimings::default();
         let frame_start = std::time::Instant::now();
@@ -1434,6 +1529,20 @@ impl ApplicationHandler for Engine {
 
           match result {
             Ok(_) => {}
+            Err(wgpu::SurfaceError::Outdated) => {
+              // Surface needs reconfiguration (display mode changed, window resized, etc.)
+              // This is recoverable - the next frame will work after resize event
+              self.surface_needs_reconfigure = true;
+            }
+            Err(wgpu::SurfaceError::Lost) => {
+              // Surface was lost, try to reconfigure
+              if let Some(ref mut rend) = renderer
+                && let Some(window) = &self.window
+              {
+                let size = window.inner_size();
+                rend.resize(size.width, size.height);
+              }
+            }
             Err(e) => {
               eprintln!("Render error: {:?}", e);
               // Put back before exiting
@@ -1518,6 +1627,13 @@ impl ApplicationHandler for Engine {
   }
 
   fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    // Process any pending window configuration requests
+    if self.window_request.has_changes()
+      && let Some(window) = self.window.clone()
+    {
+      self.apply_window_request(&window);
+    }
+
     if let Some(window) = &self.window {
       window.request_redraw();
     }
@@ -1592,6 +1708,32 @@ impl EngineBuilder {
   /// ```
   pub fn window_mode(mut self, mode: WindowMode) -> Self {
     self.config.window_mode = mode;
+    self
+  }
+
+  /// Set the display mode (windowed, fullscreen, or borderless).
+  ///
+  /// Controls whether the game runs in a window or takes over the screen.
+  ///
+  /// # Modes
+  ///
+  /// - [`DisplayMode::Windowed`] - Regular window (default)
+  /// - [`DisplayMode::Fullscreen`] - Exclusive fullscreen (takes over display)
+  /// - [`DisplayMode::BorderlessFullscreen`] - Borderless window filling screen
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("My Game")
+  ///     .resolution(1920, 1080)
+  ///     .display_mode(DisplayMode::BorderlessFullscreen)
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn display_mode(mut self, mode: DisplayMode) -> Self {
+    self.config.display_mode = mode;
     self
   }
 
@@ -1710,8 +1852,16 @@ impl EngineBuilder {
   pub fn with_system_state_overrides(mut self) -> Self {
     if let Ok(workspace) = super::config::Workspace::discover()
       && let Ok(save_manager) = workspace.create_save_manager()
-      && let Ok(system_state) = save_manager.load_or_create_system(&workspace.config().system)
+      && let Ok(mut system_state) = save_manager.load_or_create_system(&workspace.config().system)
     {
+      // Migrate legacy fullscreen field if present
+      system_state.display.migrate_legacy();
+
+      // Apply display overrides
+      self.config.width = system_state.display.width;
+      self.config.height = system_state.display.height;
+      self.config.display_mode = system_state.display.display_mode;
+
       // Apply overrides if present
       if let Some(show_fps) = system_state.show_fps {
         self.config.debug.show_fps = show_fps;
@@ -1832,6 +1982,14 @@ impl EngineBuilder {
       {
         config.title = title.to_string();
       }
+      // Display mode
+      if let Some(mode) = option_env!("RYO_EMBED_DISPLAY_MODE") {
+        config.display_mode = match mode.to_lowercase().as_str() {
+          "fullscreen" => DisplayMode::Fullscreen,
+          "borderless" | "borderless_fullscreen" => DisplayMode::BorderlessFullscreen,
+          _ => DisplayMode::Windowed,
+        };
+      }
     } else if let Ok(workspace) = super::config::Workspace::discover() {
       // Fall back to runtime workspace discovery (development mode)
       let debug = &workspace.config().debug;
@@ -1850,6 +2008,9 @@ impl EngineBuilder {
         config.width = system.resolution_width;
         config.height = system.resolution_height;
       }
+
+      // Load display mode from [system] section
+      config.display_mode = system.display_mode;
     }
 
     Engine::new(config, game, vsync, master_volume, music_volume, sfx_volume)

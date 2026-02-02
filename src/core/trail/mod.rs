@@ -171,6 +171,7 @@
 
 mod line;
 mod renderer;
+#[allow(clippy::module_inception)]
 mod trail;
 
 pub use line::Line2D;

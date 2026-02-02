@@ -5,6 +5,7 @@
 
 use super::asset::{AssetManager, SpriteHandle};
 use super::audio::AudioManager;
+use super::config::save::DisplayMode;
 use super::ecs::World;
 use super::graphics::{BatchCollector, Camera, SpriteGpuRenderer};
 use super::input::InputState;
@@ -12,6 +13,52 @@ use super::lighting::LightingRenderer;
 use super::physics::PhysicsCollisionEvent;
 use super::shaders::EffectsManager;
 use super::ui::UiContext;
+
+/// Pending window configuration change requested by the game.
+///
+/// Set via [`GameContext::request_display_change`] or [`SceneContext::request_display_change`].
+/// The engine will apply these changes after the current update.
+#[derive(Debug, Clone, Default)]
+pub struct WindowRequest {
+  /// New resolution width (None = no change)
+  pub width: Option<u32>,
+  /// New resolution height (None = no change)
+  pub height: Option<u32>,
+  /// New display mode (None = no change)
+  pub display_mode: Option<DisplayMode>,
+}
+
+impl WindowRequest {
+  /// Create a new empty window request
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Request a resolution change
+  pub fn with_resolution(mut self, width: u32, height: u32) -> Self {
+    self.width = Some(width);
+    self.height = Some(height);
+    self
+  }
+
+  /// Request a display mode change
+  pub fn with_display_mode(mut self, mode: DisplayMode) -> Self {
+    self.display_mode = Some(mode);
+    self
+  }
+
+  /// Check if any change is requested
+  pub fn has_changes(&self) -> bool {
+    self.width.is_some() || self.height.is_some() || self.display_mode.is_some()
+  }
+
+  /// Clear all pending requests
+  pub fn clear(&mut self) {
+    self.width = None;
+    self.height = None;
+    self.display_mode = None;
+  }
+}
 
 /// Context passed to game callbacks, providing access to engine systems.
 ///
@@ -39,6 +86,8 @@ pub struct GameContext<'a> {
   /// want `Started` events. Use [`collisions_started()`](Self::collisions_started)
   /// for a filtered iterator.
   pub collision_events: &'a [PhysicsCollisionEvent],
+  /// Pending window configuration changes (resolution, display mode)
+  pub window_request: &'a mut WindowRequest,
 }
 
 impl<'a> GameContext<'a> {
@@ -92,6 +141,48 @@ impl<'a> GameContext<'a> {
   /// objects separate.
   pub fn collisions_stopped(&self) -> impl Iterator<Item = &PhysicsCollisionEvent> {
     self.collision_events.iter().filter(|e| e.is_stopped())
+  }
+
+  /// Request a display mode change (windowed, fullscreen, borderless).
+  ///
+  /// The change will be applied after the current frame completes.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_display_mode(DisplayMode::Fullscreen);
+  /// ```
+  pub fn request_display_mode(&mut self, mode: DisplayMode) {
+    self.window_request.display_mode = Some(mode);
+  }
+
+  /// Request a resolution change.
+  ///
+  /// The change will be applied after the current frame completes.
+  /// Note: In fullscreen mode, resolution changes may be limited to
+  /// available video modes.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_resolution(1920, 1080);
+  /// ```
+  pub fn request_resolution(&mut self, width: u32, height: u32) {
+    self.window_request.width = Some(width);
+    self.window_request.height = Some(height);
+  }
+
+  /// Request both resolution and display mode change.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_display_change(1920, 1080, DisplayMode::BorderlessFullscreen);
+  /// ```
+  pub fn request_display_change(&mut self, width: u32, height: u32, mode: DisplayMode) {
+    self.window_request.width = Some(width);
+    self.window_request.height = Some(height);
+    self.window_request.display_mode = Some(mode);
   }
 }
 

@@ -164,6 +164,74 @@ pub struct SystemState {
   pub settings: HashMap<String, String>,
 }
 
+/// Display/window mode for the game.
+///
+/// Controls how the game window appears on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayMode {
+  /// Regular resizable window
+  #[default]
+  Windowed,
+  /// Exclusive fullscreen (takes over the display)
+  Fullscreen,
+  /// Borderless fullscreen window (fills screen, easy alt-tab)
+  BorderlessFullscreen,
+}
+
+impl DisplayMode {
+  /// Returns all available display modes for UI selection
+  pub fn all() -> &'static [DisplayMode] {
+    &[
+      DisplayMode::Windowed,
+      DisplayMode::Fullscreen,
+      DisplayMode::BorderlessFullscreen,
+    ]
+  }
+
+  /// Human-readable name for UI display
+  pub fn display_name(&self) -> &'static str {
+    match self {
+      DisplayMode::Windowed => "Windowed",
+      DisplayMode::Fullscreen => "Fullscreen",
+      DisplayMode::BorderlessFullscreen => "Borderless",
+    }
+  }
+}
+
+/// Common screen resolutions for settings UI
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resolution {
+  pub width: u32,
+  pub height: u32,
+}
+
+/// Static list of common resolutions
+static COMMON_RESOLUTIONS: &[Resolution] = &[
+  Resolution { width: 1280, height: 720 },   // 720p
+  Resolution { width: 1366, height: 768 },   // HD
+  Resolution { width: 1600, height: 900 },   // HD+
+  Resolution { width: 1920, height: 1080 },  // 1080p
+  Resolution { width: 2560, height: 1440 },  // 1440p / 2K
+  Resolution { width: 3840, height: 2160 },  // 4K UHD
+];
+
+impl Resolution {
+  pub const fn new(width: u32, height: u32) -> Self {
+    Self { width, height }
+  }
+
+  /// Returns common resolutions from 720p to 4K
+  pub fn common() -> &'static [Resolution] {
+    COMMON_RESOLUTIONS
+  }
+
+  /// Format as "WxH" string
+  pub fn display_name(&self) -> String {
+    format!("{}x{}", self.width, self.height)
+  }
+}
+
 /// Display configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplaySettings {
@@ -171,10 +239,14 @@ pub struct DisplaySettings {
   pub width: u32,
   /// Window height
   pub height: u32,
-  /// Fullscreen mode
-  pub fullscreen: bool,
+  /// Display mode (windowed, fullscreen, borderless)
+  #[serde(default)]
+  pub display_mode: DisplayMode,
   /// VSync enabled
   pub vsync: bool,
+  /// Legacy fullscreen field for backward compatibility (ignored if display_mode is set)
+  #[serde(default, skip_serializing)]
+  fullscreen: Option<bool>,
 }
 
 impl Default for DisplaySettings {
@@ -182,9 +254,23 @@ impl Default for DisplaySettings {
     DisplaySettings {
       width: 1280,
       height: 720,
-      fullscreen: false,
+      display_mode: DisplayMode::Windowed,
       vsync: true,
+      fullscreen: None,
     }
+  }
+}
+
+impl DisplaySettings {
+  /// Migrate from old fullscreen bool to new display_mode if needed
+  pub fn migrate_legacy(&mut self) {
+    if let Some(true) = self.fullscreen {
+      // Old fullscreen=true maps to BorderlessFullscreen for better UX
+      if self.display_mode == DisplayMode::Windowed {
+        self.display_mode = DisplayMode::BorderlessFullscreen;
+      }
+    }
+    self.fullscreen = None;
   }
 }
 
@@ -213,8 +299,9 @@ impl SystemState {
       display: DisplaySettings {
         width: defaults.resolution_width,
         height: defaults.resolution_height,
-        fullscreen: defaults.fullscreen,
+        display_mode: defaults.display_mode,
         vsync: defaults.vsync,
+        fullscreen: None,
       },
       // show_fps comes from [info] section via SystemDefaults
       show_fps: Some(defaults.show_fps),
@@ -1072,7 +1159,7 @@ mod tests {
       resolution_width: 1920,
       resolution_height: 1080,
       vsync: false,
-      fullscreen: true,
+      display_mode: DisplayMode::Fullscreen,
       master_volume: 0.5,
       music_volume: 0.7,
       sfx_volume: 0.9,
@@ -1084,7 +1171,7 @@ mod tests {
     assert_eq!(state.display.width, 1920);
     assert_eq!(state.display.height, 1080);
     assert_eq!(state.display.vsync, false);
-    assert_eq!(state.display.fullscreen, true);
+    assert_eq!(state.display.display_mode, DisplayMode::Fullscreen);
     assert_eq!(state.master_volume, 0.5);
     assert_eq!(state.music_volume, 0.7);
     assert_eq!(state.sfx_volume, 0.9);
@@ -1097,11 +1184,11 @@ mod tests {
 
     let state = SystemState::from_defaults(&defaults);
 
-    // Engine defaults: 1280x720, vsync=true, fullscreen=false
+    // Engine defaults: 1280x720, vsync=true, windowed mode
     assert_eq!(state.display.width, 1280);
     assert_eq!(state.display.height, 720);
     assert_eq!(state.display.vsync, true);
-    assert_eq!(state.display.fullscreen, false);
+    assert_eq!(state.display.display_mode, DisplayMode::Windowed);
     // Engine defaults: master=0.8, music=1.0, sfx=1.0
     assert_eq!(state.master_volume, 0.8);
     assert_eq!(state.music_volume, 1.0);
@@ -1171,7 +1258,7 @@ mod tests {
     assert_eq!(settings.width, 1280);
     assert_eq!(settings.height, 720);
     assert_eq!(settings.vsync, true);
-    assert_eq!(settings.fullscreen, false);
+    assert_eq!(settings.display_mode, DisplayMode::Windowed);
   }
 
   // ==========================================================================
@@ -1188,7 +1275,7 @@ mod tests {
       resolution_width: 1024,
       resolution_height: 768,
       vsync: true,
-      fullscreen: false,
+      display_mode: DisplayMode::Windowed,
       master_volume: 0.9,
       music_volume: 0.8,
       sfx_volume: 0.7,

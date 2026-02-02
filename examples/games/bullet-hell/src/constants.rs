@@ -43,9 +43,15 @@ pub const PARTICLE_LIFETIME: f32 = 1.0; // seconds
 // Platform configuration
 pub const PLATFORM_THICKNESS: f32 = 20.0;
 
+// Barrier configuration (vertical moving obstacles)
+pub const BARRIER_WIDTH: f32 = 20.0;
+pub const BARRIER_HEIGHT: f32 = 200.0;
+pub const BARRIER_SPEED: f32 = 100.0; // moderate speed
+
 // Z-ordering
 pub const Z_BACKGROUND: i32 = 0;
 pub const Z_PLATFORM: i32 = 5;
+pub const Z_BARRIER: i32 = 6;
 pub const Z_TURRET: i32 = 10;
 pub const Z_BULLET: i32 = 15;
 pub const Z_PLAYER: i32 = 20;

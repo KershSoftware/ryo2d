@@ -155,8 +155,8 @@ pub struct SystemDefaults {
   pub resolution_height: u32,
   /// Default VSync setting
   pub vsync: bool,
-  /// Default fullscreen setting
-  pub fullscreen: bool,
+  /// Default display mode (windowed, fullscreen, borderless)
+  pub display_mode: super::save::DisplayMode,
   /// Default master volume (0.0 - 1.0)
   pub master_volume: f32,
   /// Default music volume (0.0 - 1.0)
@@ -174,7 +174,7 @@ impl Default for SystemDefaults {
       resolution_width: 1280,
       resolution_height: 720,
       vsync: true,
-      fullscreen: false,
+      display_mode: super::save::DisplayMode::Windowed,
       master_volume: 0.8,
       music_volume: 1.0,
       sfx_volume: 1.0,
@@ -228,6 +228,9 @@ struct SystemSection {
   resolution_width: Option<u32>,
   resolution_height: Option<u32>,
   vsync: Option<bool>,
+  /// New display mode field (windowed, fullscreen, borderless_fullscreen)
+  display_mode: Option<String>,
+  /// Legacy fullscreen field for backward compatibility
   fullscreen: Option<bool>,
   master_volume: Option<f32>,
   music_volume: Option<f32>,
@@ -389,6 +392,22 @@ impl Workspace {
     // Combines [system] + [info] sections (user-facing settings only)
     let system_section = raw.system.unwrap_or_default();
     let engine_defaults = SystemDefaults::default();
+
+    // Parse display_mode from string, with fallback to legacy fullscreen field
+    let display_mode = if let Some(mode_str) = &system_section.display_mode {
+      match mode_str.to_lowercase().as_str() {
+        "windowed" => super::save::DisplayMode::Windowed,
+        "fullscreen" => super::save::DisplayMode::Fullscreen,
+        "borderless" | "borderless_fullscreen" => super::save::DisplayMode::BorderlessFullscreen,
+        _ => engine_defaults.display_mode,
+      }
+    } else if system_section.fullscreen == Some(true) {
+      // Legacy: fullscreen=true maps to BorderlessFullscreen for better UX
+      super::save::DisplayMode::BorderlessFullscreen
+    } else {
+      engine_defaults.display_mode
+    };
+
     let system = SystemDefaults {
       // title comes from [info] section, falls back to project name
       title: info_section.title.unwrap_or_else(|| name.clone()),
@@ -399,9 +418,7 @@ impl Workspace {
         .resolution_height
         .unwrap_or(engine_defaults.resolution_height),
       vsync: system_section.vsync.unwrap_or(engine_defaults.vsync),
-      fullscreen: system_section
-        .fullscreen
-        .unwrap_or(engine_defaults.fullscreen),
+      display_mode,
       master_volume: system_section
         .master_volume
         .unwrap_or(engine_defaults.master_volume),
@@ -601,6 +618,7 @@ impl WorkspaceConfig {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::config::save::DisplayMode;
   use std::env;
 
   #[test]
@@ -665,7 +683,7 @@ mod tests {
     assert_eq!(defaults.resolution_height, 720);
     // VSync on, windowed
     assert_eq!(defaults.vsync, true);
-    assert_eq!(defaults.fullscreen, false);
+    assert_eq!(defaults.display_mode, DisplayMode::Windowed);
     // Audio: master=0.8, music=1.0, sfx=1.0
     assert_eq!(defaults.master_volume, 0.8);
     assert_eq!(defaults.music_volume, 1.0);
@@ -682,7 +700,7 @@ mod tests {
     assert_eq!(cloned.resolution_width, defaults.resolution_width);
     assert_eq!(cloned.resolution_height, defaults.resolution_height);
     assert_eq!(cloned.vsync, defaults.vsync);
-    assert_eq!(cloned.fullscreen, defaults.fullscreen);
+    assert_eq!(cloned.display_mode, defaults.display_mode);
     assert_eq!(cloned.master_volume, defaults.master_volume);
     assert_eq!(cloned.music_volume, defaults.music_volume);
     assert_eq!(cloned.sfx_volume, defaults.sfx_volume);

@@ -148,7 +148,8 @@ run_example() {
     if [[ "$use_dev_mode" == "true" ]]; then
         echo -e "${MAGENTA}  Mode: Development (hot-reload enabled)${NC}"
         echo ""
-        cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- dev || true
+        # Skip opt-check since engine examples don't need it
+        cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- dev --skip-opt-check || true
     else
         echo -e "${GREEN}  Mode: Build + Run (release)${NC}"
         echo ""

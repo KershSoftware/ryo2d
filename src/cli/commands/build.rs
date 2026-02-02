@@ -24,6 +24,13 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   let config = workspace.config();
   let system = &config.system;
 
+  // Convert display_mode to string for embedding
+  let display_mode_str = match system.display_mode {
+    crate::core::config::DisplayMode::Windowed => "windowed",
+    crate::core::config::DisplayMode::Fullscreen => "fullscreen",
+    crate::core::config::DisplayMode::BorderlessFullscreen => "borderless",
+  };
+
   // Run cargo build --release with embedded config values from [system] and [info]
   let status = Command::new("cargo")
     .arg("build")
@@ -32,7 +39,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     .env("RYO_EMBED_RESOLUTION_WIDTH", system.resolution_width.to_string())
     .env("RYO_EMBED_RESOLUTION_HEIGHT", system.resolution_height.to_string())
     .env("RYO_EMBED_VSYNC", system.vsync.to_string())
-    .env("RYO_EMBED_FULLSCREEN", system.fullscreen.to_string())
+    .env("RYO_EMBED_DISPLAY_MODE", display_mode_str)
     .env("RYO_EMBED_MASTER_VOLUME", system.master_volume.to_string())
     .env("RYO_EMBED_MUSIC_VOLUME", system.music_volume.to_string())
     .env("RYO_EMBED_SFX_VOLUME", system.sfx_volume.to_string())
