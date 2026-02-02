@@ -15,7 +15,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `scene.rs` | Scene management, transitions, scene stack |
 | `workspace.rs` | Project discovery, `ryo.toml` configuration, path management |
 | `debug.rs` | Debug visualization (colliders, velocities, origins, FPS) and drawing primitives |
-| `ecs/` | Entity-Component-System using hecs (see `ecs/AGENTS.md`) |
+| `ecs/` | Entity-Component-System using hecs, object pooling (see `ecs/AGENTS.md`) |
 | `events/` | Event bus for decoupled inter-system communication (see `events/AGENTS.md`) |
 | `animation.rs` | Sprite animation with `Animation`, `Animator`, `AnimationController` |
 | `asset.rs` | `AssetManager` and `SpriteHandle` for resource loading/caching |
@@ -382,3 +382,96 @@ Time scale and hitstop work together:
 - Hitstop takes priority (dt=0 regardless of time_scale)
 - After hitstop ends, time_scale resumes
 - Useful pattern: hitstop on hit, then slow-mo for kill cam
+
+## Object Pooling System
+
+The object pooling system (`ecs/pool.rs` and `ecs/active.rs`) provides pre-allocated entity pools for high-frequency spawning scenarios like bullets, particles, and enemies.
+
+### Why Object Pooling?
+
+Allocating/deallocating entities rapidly (100+ bullets per second) can cause:
+- Memory allocation overhead
+- GC pressure in some scenarios
+- Frame rate stutters during heavy spawning
+
+Object pools pre-allocate entities at load time and recycle them during gameplay.
+
+### Architecture
+
+- `Active`/`Inactive` marker components control entity state
+- Engine automatically skips `Inactive` entities in: rendering, physics, animations, tweens
+- `Pool<B>` is generic over component bundle type `B`
+- World generation tracking detects scene clears automatically
+
+### Key Types
+
+**PoolConfig** - Configure pool behavior:
+- `initial_capacity` - Pre-spawn count (default: 32)
+- `max_capacity` - Hard limit (0 = unlimited)
+- `expand_batch_size` - Entities to add when exhausted (default: 16)
+- `exhausted_policy` - What to do when empty
+
+**PoolExhaustedPolicy** - Handle empty pool:
+- `Expand` - Spawn more entities (default)
+- `ReturnNone` - Return `None` from `acquire()`
+- `RecycleOldest` - Force-release oldest active entity
+
+**PoolStats** - Monitor performance:
+- `total_spawned`, `current_active`, `current_available`
+- `peak_active`, `acquires`, `releases`, `expansions`
+
+### Usage Pattern
+
+```rust
+// In scene struct
+struct GameScene {
+    bullet_pool: Pool<(Transform, Renderable, Collider, Bullet)>,
+}
+
+// Initialize in on_enter
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let sprite = ctx.assets.load_sprite("bullet.png").unwrap();
+    self.bullet_pool = Pool::new(
+        &mut ctx.world,
+        PoolConfig::default().with_capacity(200),
+        move || (
+            Transform::default(),
+            Renderable::sprite(sprite.clone()),
+            Collider::circle(4.0).as_trigger(),
+            Bullet::default(),
+        )
+    );
+}
+
+// Acquire bullet (no allocation!)
+fn fire(&mut self, ctx: &mut SceneContext, x: f32, y: f32) {
+    if let Some(entity) = self.bullet_pool.acquire(&mut ctx.world) {
+        if let Some(mut t) = ctx.world.get_component_mut::<Transform>(entity) {
+            t.x = x;
+            t.y = y;
+        }
+    }
+}
+
+// Release bullet (no deallocation!)
+fn despawn_bullet(&mut self, ctx: &mut SceneContext, entity: Entity) {
+    self.bullet_pool.release(&mut ctx.world, entity);
+}
+```
+
+### GPU Rendering Note
+
+When using `render_gpu()`, you must manually filter `Inactive` entities:
+
+```rust
+fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+    for entity in self.bullet_pool.active_iter() {
+        if gpu.world.has::<Inactive>(entity) {
+            continue;  // Skip inactive pooled entities
+        }
+        // ... render entity
+    }
+}
+```
+
+**Integration:** The engine handles `Inactive` filtering for CPU rendering, physics registration, animations, and tweens automatically. Only GPU rendering in `render_gpu()` requires manual filtering.

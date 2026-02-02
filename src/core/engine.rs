@@ -596,15 +596,21 @@ impl Engine {
     }
 
     // --- Animation System ---
-    // Update all Animator components
+    // Update all Animator components (skip inactive pooled entities)
     for entity in self.world.entities_with::<Animator>() {
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
       if let Some(mut animator) = self.world.get_component_mut::<Animator>(entity) {
         animator.update(_dt);
       }
     }
 
-    // Sync Animator sprites to Renderable
+    // Sync Animator sprites to Renderable (skip inactive pooled entities)
     for entity in self.world.entities_with::<Animator>() {
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
       let sprite = self
         .world
         .get_component::<Animator>(entity)
@@ -616,15 +622,21 @@ impl Engine {
       }
     }
 
-    // Update all AnimationController components
+    // Update all AnimationController components (skip inactive pooled entities)
     for entity in self.world.entities_with::<AnimationController>() {
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
       if let Some(mut controller) = self.world.get_component_mut::<AnimationController>(entity) {
         controller.update(_dt);
       }
     }
 
-    // Sync AnimationController sprites to Renderable
+    // Sync AnimationController sprites to Renderable (skip inactive pooled entities)
     for entity in self.world.entities_with::<AnimationController>() {
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
       let sprite = self
         .world
         .get_component::<AnimationController>(entity)
@@ -637,8 +649,13 @@ impl Engine {
     }
 
     // --- Tween System ---
-    // Update all Tween components and apply to Transform
+    // Update all Tween components and apply to Transform (skip inactive pooled entities)
     for entity in self.world.entities_with::<Tween>() {
+      // Skip inactive pooled entities
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+
       // Check if tween is playing before borrowing mutably
       let should_update = self
         .world
@@ -737,13 +754,26 @@ impl Engine {
       self.physics.unregister_entity(entity);
     }
 
+    // Unregister inactive pooled entities from physics (they should not collide)
+    let inactive_physics_entities: Vec<Entity> = self
+      .physics
+      .registered_entities()
+      .filter(|&e| self.world.has::<super::ecs::Inactive>(e))
+      .collect();
+
+    for entity in inactive_physics_entities {
+      self.physics.unregister_entity(entity);
+    }
+
     // Auto-register any new physics entities (RigidBody + Collider + Transform)
+    // Skip inactive entities (used by object pooling)
     let physics_entities: Vec<Entity> = self
       .world
       .entities_with::<RigidBody>()
       .into_iter()
       .filter(|&e| {
         !self.physics.is_registered(e)
+          && !self.world.has::<super::ecs::Inactive>(e)
           && self.world.get_component::<Transform>(e).is_some()
           && self.world.get_component::<Collider>(e).is_some()
       })
@@ -760,12 +790,14 @@ impl Engine {
     }
 
     // Auto-register entities with GroupedCollider (for composite tiles)
+    // Skip inactive entities (used by object pooling)
     let grouped_entities: Vec<Entity> = self
       .world
       .entities_with::<RigidBody>()
       .into_iter()
       .filter(|&e| {
         !self.physics.is_registered(e)
+          && !self.world.has::<super::ecs::Inactive>(e)
           && self.world.get_component::<Transform>(e).is_some()
           && self.world.get_component::<GroupedCollider>(e).is_some()
       })
@@ -849,6 +881,11 @@ impl Engine {
 
     // --- Render All Entities (CPU Path) ---
     for &(entity, _) in &self.renderable_cache {
+      // Skip inactive entities (used by object pooling)
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+
       let Some(renderable) = self.world.get_component::<Renderable>(entity) else {
         continue;
       };

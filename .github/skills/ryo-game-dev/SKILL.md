@@ -447,6 +447,7 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Tween` | Smooth interpolation of Transform properties |
 | `Parent` / `Children` | Entity hierarchy |
 | `ParallaxBackground` | Layered scrolling backgrounds |
+| `Active` / `Inactive` | Marker components for object pooling |
 
 ## Parallax Backgrounds
 
@@ -577,4 +578,102 @@ fn on_player_death(&mut self, ctx: &mut SceneContext) {
     ctx.set_time_scale(0.2);      // Slow-mo death sequence
 }
 ```
+
+## Object Pooling
+
+For high-frequency entity spawning (bullets, particles, enemies), use object pools to eliminate allocation overhead:
+
+```rust
+struct GameScene {
+    bullet_pool: Pool<(Transform, Renderable, Velocity, Bullet)>,
+}
+
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let sprite = ctx.assets.load_sprite("bullet.png").unwrap();
+
+    // Pre-allocate 200 bullets, expand in batches of 50 if needed
+    self.bullet_pool = Pool::new(
+        &mut ctx.world,
+        PoolConfig::default()
+            .with_capacity(200)
+            .with_max_capacity(500)
+            .with_expand_batch_size(50),
+        move || (
+            Transform::default(),
+            Renderable::sprite(sprite.clone()),
+            Velocity::zero(),
+            Bullet::default(),
+        )
+    );
+}
+
+fn fire_bullet(&mut self, ctx: &mut SceneContext, x: f32, y: f32, vx: f32, vy: f32) {
+    // Acquire from pool (no allocation!)
+    if let Some(entity) = self.bullet_pool.acquire(&mut ctx.world) {
+        // Reset component state for this bullet
+        if let Some(mut t) = ctx.world.get_component_mut::<Transform>(entity) {
+            t.x = x;
+            t.y = y;
+        }
+        if let Some(mut v) = ctx.world.get_component_mut::<Velocity>(entity) {
+            v.dx = vx;
+            v.dy = vy;
+        }
+    }
+}
+
+fn despawn_bullet(&mut self, ctx: &mut SceneContext, entity: Entity) {
+    // Return to pool (no deallocation!)
+    self.bullet_pool.release(&mut ctx.world, entity);
+}
+```
+
+### Pool Configuration
+
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `with_capacity(n)` | 32 | Initial pre-spawn count |
+| `with_max_capacity(n)` | 0 (unlimited) | Hard limit on entities |
+| `with_expand_batch_size(n)` | 16 | Entities to spawn when empty |
+| `with_exhausted_policy(p)` | Expand | What to do when pool is empty |
+
+### Exhaustion Policies
+
+| Policy | Behavior |
+|--------|----------|
+| `PoolExhaustedPolicy::Expand` | Spawn more entities (default) |
+| `PoolExhaustedPolicy::ReturnNone` | Return `None` from `acquire()` |
+| `PoolExhaustedPolicy::RecycleOldest` | Force-release oldest active entity |
+
+### Pool Stats for Debugging
+
+```rust
+let stats = self.bullet_pool.stats();
+ui.label(&format!("Active: {}/{}", stats.current_active, stats.total_spawned), 10.0, 50.0, Color::WHITE, None);
+ui.label(&format!("Peak: {}", stats.peak_active), 10.0, 60.0, Color::WHITE, None);
+```
+
+### Best Practices
+
+1. **Pre-warm generously** - Over-allocate slightly to avoid runtime expansion
+2. **Reset components on acquire** - Don't assume state from previous use
+3. **Match pool size to peak usage** - Monitor `peak_active` to tune capacity
+4. **Use `release_all()` for cleanup** - Reset pool state on level end/restart
+
+### Important: GPU Rendering
+
+When using `render_gpu()`, manually filter inactive entities:
+
+```rust
+fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+    for entity in self.bullet_pool.active_iter() {
+        if gpu.world.has::<Inactive>(entity) {
+            continue;  // Skip inactive pooled entities
+        }
+        // ... render entity
+    }
+}
+```
+
+CPU rendering, physics, animations, and tweens automatically skip `Inactive` entities.
 

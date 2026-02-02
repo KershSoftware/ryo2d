@@ -9,9 +9,11 @@ This folder implements the Entity-Component-System (ECS) layer using the **hecs*
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Public exports (`Entity` from hecs, `World` wrapper) |
+| `active.rs` | `Active`/`Inactive` marker components for object pooling |
 | `component.rs` | `Component` trait with blanket impl |
 | `components.rs` | Built-in components: `Transform`, `Velocity` |
 | `hierarchy.rs` | Parent/child relationships, `WorldTransform` |
+| `pool.rs` | Object pooling: `Pool`, `PoolConfig`, `PoolExhaustedPolicy` |
 | `renderable.rs` | `Renderable` component for sprites |
 | `tween.rs` | Tweening system: `Tween`, `Ease`, `TweenLoop` |
 | `world.rs` | `World` wrapper around `hecs::World` with compatibility API |
@@ -221,3 +223,113 @@ world.spawn((
 ```
 
 **Engine Integration:** The engine updates all `Tween` components automatically after the animation system, applying interpolated values to the entity's `Transform`.
+
+## Object Pooling System
+
+The pooling system (`pool.rs` and `active.rs`) provides pre-allocated entity pools for high-frequency spawning scenarios like bullets, particles, and enemies.
+
+### Why Object Pooling?
+
+Allocating/deallocating entities rapidly (100+ bullets per second) can cause:
+- Memory allocation overhead
+- GC pressure in some scenarios
+- Frame rate stutters during heavy spawning
+
+Object pools pre-allocate entities at load time and recycle them during gameplay.
+
+### Active/Inactive Markers
+
+Two marker components control entity visibility:
+
+| Component | Purpose |
+|-----------|---------|
+| `Active` | Entity is processed (rendered, physics, animations) |
+| `Inactive` | Entity is pooled/dormant (skipped by all systems) |
+
+The engine automatically skips `Inactive` entities in:
+- Rendering (CPU and GPU paths)
+- Physics registration and simulation
+- Animation systems (Animator, AnimationController)
+- Tween updates
+
+### Pool Configuration
+
+```rust
+PoolConfig::default()
+    .with_capacity(100)          // Pre-spawn 100 entities
+    .with_max_capacity(500)      // Never exceed 500
+    .with_expand_batch_size(25)  // Spawn 25 when depleted
+    .with_exhausted_policy(PoolExhaustedPolicy::Expand)
+```
+
+**Exhaustion Policies:**
+- `Expand` - Spawn more entities (default)
+- `ReturnNone` - Return `None` from `acquire()`
+- `RecycleOldest` - Force-release oldest active entity
+
+### Pool Usage
+
+```rust
+// In scene struct
+struct GameScene {
+    bullet_pool: Pool<(Transform, Renderable, Collider, Bullet)>,
+}
+
+// Initialize in on_enter
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let sprite = ctx.assets.load_sprite("bullet.png");
+    self.bullet_pool = Pool::new(
+        &mut ctx.world,
+        PoolConfig::default().with_capacity(200),
+        move || (
+            Transform::default(),
+            Renderable::sprite(sprite.clone()),
+            Collider::circle(4.0).as_trigger(),
+            Bullet::default(),
+        )
+    );
+}
+
+// Acquire bullet (no allocation!)
+fn fire(&mut self, ctx: &mut SceneContext, x: f32, y: f32, vx: f32, vy: f32) {
+    if let Some(entity) = self.bullet_pool.acquire(&mut ctx.world) {
+        if let Some(mut t) = ctx.world.get_mut::<Transform>(entity) {
+            t.x = x;
+            t.y = y;
+        }
+        if let Some(mut b) = ctx.world.get_mut::<Bullet>(entity) {
+            b.velocity_x = vx;
+            b.velocity_y = vy;
+        }
+    }
+}
+
+// Release bullet (no deallocation!)
+fn despawn_bullet(&mut self, ctx: &mut SceneContext, entity: Entity) {
+    self.bullet_pool.release(&mut ctx.world, entity);
+}
+```
+
+### Pool Statistics
+
+Monitor pool performance with `pool.stats()`:
+
+```rust
+let stats = pool.stats();
+println!("Total spawned: {}", stats.total_spawned);
+println!("Currently active: {}", stats.current_active);
+println!("Available for reuse: {}", stats.current_available);
+println!("Peak active: {}", stats.peak_active);
+println!("Expansions: {}", stats.expansions);
+```
+
+### Scene Safety
+
+Pools track `world.generation()` to detect scene clears. When `world.clear()` is called during scene transitions, pools automatically invalidate their entity references on the next operation.
+
+### Best Practices
+
+1. **Pre-warm generously** - Over-allocate slightly to avoid runtime expansion
+2. **Reset components on acquire** - Don't assume component state from previous use
+3. **Match pool size to peak usage** - Monitor `peak_active` to tune capacity
+4. **Use `release_all()` for cleanup** - Reset pool state on level end/restart

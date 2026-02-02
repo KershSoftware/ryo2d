@@ -13,6 +13,9 @@ use super::{GameOverScene, MenuScene};
 const DESIGN_WIDTH: f32 = 1920.0;
 const DESIGN_HEIGHT: f32 = 1080.0;
 
+/// Bundle type for pooled bullets
+type BulletBundle = (Transform, Renderable, Collider, Bullet, Trail2D);
+
 pub struct GameScene {
   player: Option<Entity>,
   turrets: Vec<Entity>,
@@ -56,6 +59,8 @@ pub struct GameScene {
   quit_to_desktop: bool,
   // Flag to apply settings (set in render_ui, processed in update)
   apply_settings: bool,
+  // Object pool for bullets (high-frequency spawning)
+  bullet_pool: Option<Pool<BulletBundle>>,
 }
 
 impl Default for GameScene {
@@ -171,6 +176,8 @@ impl GameScene {
       quit_to_menu: false,
       quit_to_desktop: false,
       apply_settings: false,
+      // Bullet pool initialized in on_enter
+      bullet_pool: None,
     }
   }
 
@@ -1500,16 +1507,39 @@ impl GameScene {
       (direction * BULLET_SPEED, 0.0)
     };
 
+    // Use bullet pool for zero-allocation spawning
+    if let Some(ref mut pool) = self.bullet_pool {
+      if let Some(bullet) = pool.acquire(ctx.world) {
+        // Configure the pooled bullet entity
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(bullet) {
+          transform.x = x;
+          transform.y = y;
+          // Reset anchor to center
+          transform.pivot_x = 0.5;
+          transform.pivot_y = 0.5;
+        }
+        if let Some(mut b) = ctx.world.get_mut::<Bullet>(bullet) {
+          b.velocity_x = velocity_x;
+          b.velocity_y = velocity_y;
+        }
+        // Clear trail from previous use
+        if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(bullet) {
+          trail.clear();
+        }
+        self.bullets.push(bullet);
+        return;
+      }
+    }
+
+    // Fallback: direct spawning if pool unavailable
     let sprite = self.bullet_sprite.clone();
     let bullet = ctx.world.spawn((
-      // Center the bullet sprite using anchor
       Transform::new(x, y).with_anchor(Anchor::Center),
       Renderable::sprite(sprite)
         .with_z_order(Z_BULLET)
         .with_shader(SpriteShader::outline(Color::rgb(255, 220, 50), 1)),
       Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
       Bullet::new(velocity_x, velocity_y),
-      // Trail effect for bullets - dark red trail that tapers to nothing
       Trail2D::bullet(Color::rgb(150, 50, 50))
         .with_length(10)
         .with_taper(0.0)
@@ -1520,16 +1550,17 @@ impl GameScene {
   }
 
   fn update_bullets(&mut self, ctx: &mut SceneContext, dt: f32) {
-    let mut bullets_to_remove = Vec::new();
+    // Collect (index, entity) pairs to remove/release
+    let mut bullets_to_release: Vec<(usize, Entity)> = Vec::new();
     let bullets_to_process: Vec<_> = self.bullets.iter().copied().enumerate().collect();
 
     for (i, bullet_entity) in bullets_to_process {
       let Some(mut transform) = ctx.world.get_mut::<Transform>(bullet_entity) else {
-        bullets_to_remove.push(i);
+        bullets_to_release.push((i, bullet_entity));
         continue;
       };
       let Some(bullet) = ctx.world.get::<Bullet>(bullet_entity) else {
-        bullets_to_remove.push(i);
+        bullets_to_release.push((i, bullet_entity));
         continue;
       };
 
@@ -1551,38 +1582,42 @@ impl GameScene {
       // Check if out of bounds
       if bx < -50.0 || bx > self.screen_width + 50.0 || by < -50.0 || by > self.screen_height + 50.0
       {
-        bullets_to_remove.push(i);
-        ctx.world.despawn(bullet_entity).ok();
+        bullets_to_release.push((i, bullet_entity));
         continue;
       }
 
       // Check collision with player
       if self.check_bullet_player_collision(ctx, bx, by) {
         self.create_explosion(ctx, bx, by);
-        bullets_to_remove.push(i);
-        ctx.world.despawn(bullet_entity).ok();
+        bullets_to_release.push((i, bullet_entity));
         continue;
       }
 
       // Check collision with platforms
       if self.check_bullet_platform_collision(ctx, bx, by) {
         self.create_explosion(ctx, bx, by);
-        bullets_to_remove.push(i);
-        ctx.world.despawn(bullet_entity).ok();
+        bullets_to_release.push((i, bullet_entity));
         continue;
       }
 
       // Check collision with barriers
       if self.check_bullet_barrier_collision(ctx, bx, by) {
         self.create_explosion(ctx, bx, by);
-        bullets_to_remove.push(i);
-        ctx.world.despawn(bullet_entity).ok();
+        bullets_to_release.push((i, bullet_entity));
       }
     }
 
-    // Remove bullets in reverse order
-    for i in bullets_to_remove.iter().rev() {
-      self.bullets.swap_remove(*i);
+    // Release bullets back to pool (or despawn if not pooled)
+    // Sort by index descending to safely swap_remove
+    bullets_to_release.sort_by(|a, b| b.0.cmp(&a.0));
+    for (i, entity) in bullets_to_release {
+      self.bullets.swap_remove(i);
+      // Release to pool if available, otherwise despawn
+      if let Some(ref mut pool) = self.bullet_pool {
+        pool.release(ctx.world, entity);
+      } else {
+        ctx.world.despawn(entity).ok();
+      }
     }
   }
 
@@ -1864,6 +1899,31 @@ impl Scene for GameScene {
     self.spawn_turrets(ctx);
     // Drones spawn progressively starting at 30 seconds
     self.spawn_player(ctx);
+
+    // Initialize bullet pool (pre-allocate 200 bullets)
+    let bullet_sprite = self.bullet_sprite.clone();
+    self.bullet_pool = Some(Pool::new(
+      ctx.world,
+      PoolConfig::default()
+        .with_capacity(200)
+        .with_max_capacity(500)
+        .with_expand_batch_size(50)
+        .with_exhausted_policy(PoolExhaustedPolicy::RecycleOldest),
+      move || {
+        (
+          Transform::default(),
+          Renderable::sprite(bullet_sprite.clone())
+            .with_z_order(Z_BULLET)
+            .with_shader(SpriteShader::outline(Color::rgb(255, 220, 50), 1)),
+          Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
+          Bullet::new(0.0, 0.0),
+          Trail2D::bullet(Color::rgb(150, 50, 50))
+            .with_length(10)
+            .with_taper(0.0)
+            .with_fade(true),
+        )
+      },
+    ));
 
     // Center camera
     ctx
