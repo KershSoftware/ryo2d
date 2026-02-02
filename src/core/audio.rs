@@ -349,6 +349,8 @@ pub struct AudioManager {
   sfx_volume: f32,
   /// Volume for music (0.0 - 1.0)
   music_volume: f32,
+  /// Currently playing music track (if any)
+  active_music: Option<MusicHandle>,
 }
 
 impl AudioManager {
@@ -365,6 +367,7 @@ impl AudioManager {
       master_volume: 1.0,
       sfx_volume: 1.0,
       music_volume: 1.0,
+      active_music: None,
     })
   }
 
@@ -638,6 +641,64 @@ impl AudioManager {
   /// Unload all cached sounds
   pub fn clear_sounds(&mut self) {
     self.sounds.clear();
+  }
+
+  // =========================================================================
+  // Music Management
+  // =========================================================================
+
+  /// Check if music is currently playing
+  pub fn is_music_playing(&self) -> bool {
+    self.active_music.as_ref().is_some_and(|m| m.is_playing())
+  }
+
+  /// Stop the currently playing music (if any)
+  pub fn stop_music(&mut self) {
+    self.active_music = None;
+  }
+
+  /// Stop music with fade out
+  pub fn stop_music_fade(&mut self, duration: Duration) {
+    if let Some(music) = &mut self.active_music {
+      music.fade_out_and_stop(duration);
+    }
+    self.active_music = None;
+  }
+
+  /// Play music only if no music is currently playing.
+  ///
+  /// This is useful for persistent background music that should continue
+  /// across scene transitions. Returns `Ok(true)` if music was started,
+  /// `Ok(false)` if music was already playing.
+  ///
+  /// # Example
+  /// ```ignore
+  /// // In menu and game scenes - music persists across both
+  /// if let Some(audio) = &mut ctx.audio {
+  ///   audio.play_music_once(
+  ///     "assets/music/theme.mp3",
+  ///     MusicOptions::new().volume(0.3).looping(true)
+  ///   )?;
+  /// }
+  /// ```
+  pub fn play_music_once(
+    &mut self,
+    path: impl AsRef<Path>,
+    options: MusicOptions,
+  ) -> AudioResult<bool> {
+    // If music is already playing, don't start a new track
+    if self.is_music_playing() {
+      return Ok(false);
+    }
+
+    let handle = self.play_music_with(path, options)?;
+    self.active_music = Some(handle);
+    Ok(true)
+  }
+
+  /// Get a mutable reference to the currently playing music
+  pub fn current_music(&mut self) -> Option<&mut MusicHandle> {
+    self.active_music.as_mut()
   }
 }
 

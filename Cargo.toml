@@ -18,6 +18,14 @@ path = "src/lib.rs"
 name = "ryo2d"
 path = "src/bin/ryo2d.rs"
 
+[workspace]
+members = [
+  ".",
+  "examples/games/flappy",
+  "examples/games/breakout",
+  "examples/games/bullet-hell",
+]
+
 # Example games are standalone projects in examples/ - run them with:
 #   cd examples/breakout && cargo run
 # Or use the run script: ./run breakout

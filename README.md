@@ -1,6 +1,10 @@
 # Ryo2D
 
+*Tagline:*
 A Rust 2D game engine designed with agent-assisted development in mind from the beginning. Build professional games with AI agents or by hand with traditional code -- your choice.
+
+*Reality:*
+I started learning Rust and then I decided to start building a 2D game engine to apply the language; all while using agentic tools.
 
 ## Quick Start
 

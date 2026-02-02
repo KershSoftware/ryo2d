@@ -46,6 +46,11 @@ pub struct WgpuRenderer {
   pixel_buffer: Vec<u8>,
   // Post-processing pipeline
   post_process: Option<PostProcessPipeline>,
+  // UI overlay texture (for UI not affected by lighting)
+  ui_texture: wgpu::Texture,
+  ui_texture_view: wgpu::TextureView,
+  // UI overlay render pipeline (with alpha blending)
+  ui_pipeline: wgpu::RenderPipeline,
 }
 
 /// Viewport uniform data sent to shader
@@ -182,6 +187,26 @@ impl WgpuRenderer {
 
     let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+    // Create UI overlay texture (for UI not affected by lighting)
+    let ui_texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("UI Overlay Texture"),
+      size: wgpu::Extent3d {
+        width: game_width,
+        height: game_height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING
+        | wgpu::TextureUsages::COPY_DST
+        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+      view_formats: &[],
+    });
+
+    let ui_texture_view = ui_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
     // Create sampler (nearest neighbor for pixel art crispness)
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
       label: Some("Game Sampler"),
@@ -309,6 +334,45 @@ impl WgpuRenderer {
       cache: None,
     });
 
+    // Create UI render pipeline with alpha blending
+    let ui_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+      label: Some("UI Overlay Pipeline"),
+      layout: Some(&pipeline_layout),
+      vertex: wgpu::VertexState {
+        module: &shader,
+        entry_point: "vs_main",
+        buffers: &[],
+        compilation_options: Default::default(),
+      },
+      fragment: Some(wgpu::FragmentState {
+        module: &shader,
+        entry_point: "fs_main",
+        targets: &[Some(wgpu::ColorTargetState {
+          format: surface_format,
+          blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+          write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+      }),
+      primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        strip_index_format: None,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: None,
+        polygon_mode: wgpu::PolygonMode::Fill,
+        unclipped_depth: false,
+        conservative: false,
+      },
+      depth_stencil: None,
+      multisample: wgpu::MultisampleState {
+        count: 1,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+      },
+      multiview: None,
+      cache: None,
+    });
+
     // Create CPU-side pixel buffer
     let pixel_buffer = vec![0u8; (game_width * game_height * 4) as usize];
 
@@ -341,6 +405,9 @@ impl WgpuRenderer {
       max_height,
       pixel_buffer,
       post_process: Some(post_process),
+      ui_texture,
+      ui_texture_view,
+      ui_pipeline,
     };
 
     // Initialize viewport transform
@@ -393,6 +460,37 @@ impl WgpuRenderer {
   /// Get the format of the game texture (where GPU sprites render to)
   pub fn game_texture_format(&self) -> wgpu::TextureFormat {
     wgpu::TextureFormat::Rgba8UnormSrgb
+  }
+
+  /// Upload a UI buffer to the UI texture for compositing after lighting.
+  ///
+  /// The UI buffer should be RGBA with the same dimensions as the game.
+  /// Pixels with alpha > 0 will be composited on top of the lit scene.
+  pub fn upload_ui_buffer(&self, ui_buffer: &[u8]) {
+    self.queue.write_texture(
+      wgpu::ImageCopyTexture {
+        texture: &self.ui_texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+      },
+      ui_buffer,
+      wgpu::ImageDataLayout {
+        offset: 0,
+        bytes_per_row: Some(4 * self.game_width),
+        rows_per_image: Some(self.game_height),
+      },
+      wgpu::Extent3d {
+        width: self.game_width,
+        height: self.game_height,
+        depth_or_array_layers: 1,
+      },
+    );
+  }
+
+  /// Get the UI texture view for compositing.
+  pub fn ui_texture_view(&self) -> &wgpu::TextureView {
+    &self.ui_texture_view
   }
 
   /// Resize the surface when window size changes.
@@ -754,8 +852,10 @@ impl WgpuRenderer {
   /// 2. GPU sprites are rendered on top (if provided)
   /// 3. Lights are rendered to accumulation buffer
   /// 4. Scene is composited with lighting
-  /// 5. Post-processing effects are applied (if provided)
-  /// 6. Final result is rendered to screen with letterboxing
+  /// 5. UI overlay is composited (if provided, not affected by lighting)
+  /// 6. Post-processing effects are applied (if provided)
+  /// 7. Final result is rendered to screen with letterboxing
+  #[allow(clippy::too_many_arguments)]
   pub fn render_with_lighting<'a, F, I>(
     &mut self,
     effects: Option<&EffectsManager>,
@@ -765,6 +865,7 @@ impl WgpuRenderer {
     camera_pos: Vec2,
     camera_zoom: f32,
     time: f32,
+    ui_buffer: Option<&[u8]>, // UI buffer to composite after lighting
   ) -> Result<(), wgpu::SurfaceError>
   where
     F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
@@ -988,6 +1089,72 @@ impl WgpuRenderer {
 
       render_pass.set_pipeline(&self.render_pipeline);
       render_pass.set_bind_group(0, &final_bind_group, &[]);
+      render_pass.draw(0..6, 0..1);
+    }
+
+    // Composite UI overlay on top of final scene (if provided)
+    // This draws UI after all lighting and effects, so UI is always visible
+    if let Some(ui_data) = ui_buffer {
+      // Upload UI buffer to UI texture
+      self.queue.write_texture(
+        wgpu::ImageCopyTexture {
+          texture: &self.ui_texture,
+          mip_level: 0,
+          origin: wgpu::Origin3d::ZERO,
+          aspect: wgpu::TextureAspect::All,
+        },
+        ui_data,
+        wgpu::ImageDataLayout {
+          offset: 0,
+          bytes_per_row: Some(4 * self.game_width),
+          rows_per_image: Some(self.game_height),
+        },
+        wgpu::Extent3d {
+          width: self.game_width,
+          height: self.game_height,
+          depth_or_array_layers: 1,
+        },
+      );
+
+      // Create bind group for UI texture
+      let ui_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("UI Overlay Bind Group"),
+        layout: &self.bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&self.ui_texture_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&self.sampler),
+          },
+          wgpu::BindGroupEntry {
+            binding: 2,
+            resource: self.uniform_buffer.as_entire_binding(),
+          },
+        ],
+      });
+
+      // Render UI with alpha blending on top of the scene
+      // Uses ui_pipeline which has proper alpha blending configured
+      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("UI Overlay Render Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Load, // Keep existing content
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+      });
+
+      render_pass.set_pipeline(&self.ui_pipeline);
+      render_pass.set_bind_group(0, &ui_bind_group, &[]);
       render_pass.draw(0..6, 0..1);
     }
 

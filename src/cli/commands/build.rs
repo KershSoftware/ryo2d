@@ -39,6 +39,11 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     // [info] section values (stored in system for embedding)
     .env("RYO_EMBED_SHOW_FPS", system.show_fps.to_string())
     .env("RYO_EMBED_TITLE", &system.title)
+    // [debug] section values
+    .env("RYO_EMBED_SHOW_COLLIDERS", config.debug.show_colliders.to_string())
+    .env("RYO_EMBED_SHOW_VELOCITIES", config.debug.show_velocities.to_string())
+    .env("RYO_EMBED_SHOW_ORIGINS", config.debug.show_origins.to_string())
+    .env("RYO_EMBED_SHOW_FRAME_TIMING", config.debug.show_frame_timing.to_string())
     .current_dir(workspace.root())
     .status()
     .map_err(|e| CliError::CommandFailed {
