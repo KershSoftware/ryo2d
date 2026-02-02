@@ -14,7 +14,10 @@
 #     ./run.sh test:unit           - Run unit tests only
 #     ./run.sh test:integration    - Run integration tests only
 #     ./run.sh test:e2e            - Run e2e tests (requires GPU)
-#     ./run.sh coverage            - Generate code coverage report
+#     ./run.sh coverage            - Unit test coverage (default)
+#     ./run.sh coverage:unit       - Unit test coverage
+#     ./run.sh coverage:integration - Integration test coverage
+#     ./run.sh coverage:all        - Combined coverage (unit + integration)
 
 set -e
 
@@ -513,8 +516,8 @@ case "$COMMAND" in
         echo -e "${CYAN}Running ALL tests (unit + integration + e2e)...${NC}"
         cargo test --lib --test integration --test e2e -- --include-ignored
         ;;
-    coverage)
-        echo -e "${CYAN}Generating code coverage report...${NC}"
+    coverage|coverage:unit)
+        echo -e "${CYAN}Generating unit test coverage report...${NC}"
         echo ""
 
         if ! command -v cargo-llvm-cov &> /dev/null; then
@@ -524,12 +527,50 @@ case "$COMMAND" in
             echo ""
         fi
 
-        cargo llvm-cov --lib --ignore-filename-regex="cli" --html --open
+        cargo llvm-cov --lib --ignore-filename-regex="cli" --html --output-dir target/llvm-cov/unit --open
 
         if [[ $? -eq 0 ]]; then
             echo ""
-            echo -e "${GREEN}Coverage report generated successfully!${NC}"
-            echo -e "${GRAY}Report opened in browser. Also available at: target/llvm-cov/html/index.html${NC}"
+            echo -e "${GREEN}Unit coverage report generated successfully!${NC}"
+            echo -e "${GRAY}Report: target/llvm-cov/unit/index.html${NC}"
+        fi
+        ;;
+    coverage:integration)
+        echo -e "${CYAN}Generating integration test coverage report...${NC}"
+        echo ""
+
+        if ! command -v cargo-llvm-cov &> /dev/null; then
+            echo -e "${YELLOW}cargo-llvm-cov is not installed.${NC}"
+            echo -e "${CYAN}Installing cargo-llvm-cov...${NC}"
+            cargo install cargo-llvm-cov
+            echo ""
+        fi
+
+        cargo llvm-cov --test integration --ignore-filename-regex="cli" --html --output-dir target/llvm-cov/integration --open
+
+        if [[ $? -eq 0 ]]; then
+            echo ""
+            echo -e "${GREEN}Integration coverage report generated successfully!${NC}"
+            echo -e "${GRAY}Report: target/llvm-cov/integration/index.html${NC}"
+        fi
+        ;;
+    coverage:all)
+        echo -e "${CYAN}Generating combined coverage report (unit + integration)...${NC}"
+        echo ""
+
+        if ! command -v cargo-llvm-cov &> /dev/null; then
+            echo -e "${YELLOW}cargo-llvm-cov is not installed.${NC}"
+            echo -e "${CYAN}Installing cargo-llvm-cov...${NC}"
+            cargo install cargo-llvm-cov
+            echo ""
+        fi
+
+        cargo llvm-cov --lib --test integration --ignore-filename-regex="cli" --html --output-dir target/llvm-cov/all --open
+
+        if [[ $? -eq 0 ]]; then
+            echo ""
+            echo -e "${GREEN}Combined coverage report generated successfully!${NC}"
+            echo -e "${GRAY}Report: target/llvm-cov/all/index.html${NC}"
         fi
         ;;
     watch)
@@ -560,7 +601,10 @@ case "$COMMAND" in
         echo "    ./run.sh test:integration    - Run integration tests only"
         echo "    ./run.sh test:e2e            - Run e2e tests (requires GPU)"
         echo "    ./run.sh test:all            - Run ALL tests"
-        echo "    ./run.sh coverage            - Generate code coverage report"
+        echo "    ./run.sh coverage            - Unit test coverage (default)"
+        echo "    ./run.sh coverage:unit       - Unit test coverage"
+        echo "    ./run.sh coverage:integration - Integration test coverage"
+        echo "    ./run.sh coverage:all        - Combined coverage (unit + integration)"
         echo "    ./run.sh watch               - Watch mode with hot-reload"
         echo "    ./run.sh help                - Show this help"
         echo ""

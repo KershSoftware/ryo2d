@@ -13,7 +13,10 @@
 #   .\run test:unit    - Run unit tests only
 #   .\run test:integration - Run integration tests only
 #   .\run test:e2e     - Run e2e tests (requires GPU)
-#   .\run coverage     - Generate code coverage report
+#   .\run coverage     - Unit test coverage (default)
+#   .\run coverage:unit - Unit test coverage
+#   .\run coverage:integration - Integration test coverage
+#   .\run coverage:all - Combined coverage (unit + integration)
 
 param(
     [Parameter(Position = 0)]
@@ -304,8 +307,8 @@ switch ($ExampleName.ToLower()) {
         Write-Host "Running ALL tests (unit + integration + e2e)..." -ForegroundColor Cyan
         cargo test --lib --test integration --test e2e -- --include-ignored
     }
-    "coverage" {
-        Write-Host "Generating code coverage report..." -ForegroundColor Cyan
+    { $_ -in "coverage", "coverage:unit" } {
+        Write-Host "Generating unit test coverage report..." -ForegroundColor Cyan
         Write-Host ""
 
         # Check if cargo-llvm-cov is installed
@@ -317,13 +320,52 @@ switch ($ExampleName.ToLower()) {
             Write-Host ""
         }
 
-        # Generate coverage report (HTML format, library only, excluding CLI)
-        cargo llvm-cov --lib --ignore-filename-regex="cli" --html --open
+        cargo llvm-cov --lib --ignore-filename-regex="cli" --html --output-dir target/llvm-cov/unit --open
 
         if ($LASTEXITCODE -eq 0) {
             Write-Host ""
-            Write-Host "Coverage report generated successfully!" -ForegroundColor Green
-            Write-Host "Report opened in browser. Also available at: target/llvm-cov/html/index.html" -ForegroundColor DarkGray
+            Write-Host "Unit coverage report generated successfully!" -ForegroundColor Green
+            Write-Host "Report: target/llvm-cov/unit/index.html" -ForegroundColor DarkGray
+        }
+    }
+    "coverage:integration" {
+        Write-Host "Generating integration test coverage report..." -ForegroundColor Cyan
+        Write-Host ""
+
+        $cov = Get-Command cargo-llvm-cov -ErrorAction SilentlyContinue
+        if (-not $cov) {
+            Write-Host "cargo-llvm-cov is not installed." -ForegroundColor Yellow
+            Write-Host "Installing cargo-llvm-cov..." -ForegroundColor Cyan
+            cargo install cargo-llvm-cov
+            Write-Host ""
+        }
+
+        cargo llvm-cov --test integration --ignore-filename-regex="cli" --html --output-dir target/llvm-cov/integration --open
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host ""
+            Write-Host "Integration coverage report generated successfully!" -ForegroundColor Green
+            Write-Host "Report: target/llvm-cov/integration/index.html" -ForegroundColor DarkGray
+        }
+    }
+    "coverage:all" {
+        Write-Host "Generating combined coverage report (unit + integration)..." -ForegroundColor Cyan
+        Write-Host ""
+
+        $cov = Get-Command cargo-llvm-cov -ErrorAction SilentlyContinue
+        if (-not $cov) {
+            Write-Host "cargo-llvm-cov is not installed." -ForegroundColor Yellow
+            Write-Host "Installing cargo-llvm-cov..." -ForegroundColor Cyan
+            cargo install cargo-llvm-cov
+            Write-Host ""
+        }
+
+        cargo llvm-cov --lib --test integration --ignore-filename-regex="cli" --html --output-dir target/llvm-cov/all --open
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host ""
+            Write-Host "Combined coverage report generated successfully!" -ForegroundColor Green
+            Write-Host "Report: target/llvm-cov/all/index.html" -ForegroundColor DarkGray
         }
     }
     "check-all" {
@@ -520,7 +562,10 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./run test:integration   - Run integration tests only"
         Write-Host "  ./run test:e2e           - Run e2e tests (requires GPU)"
         Write-Host "  ./run test:all           - Run ALL tests"
-        Write-Host "  ./run coverage           - Generate code coverage report"
+        Write-Host "  ./run coverage           - Unit test coverage (default)"
+        Write-Host "  ./run coverage:unit      - Unit test coverage"
+        Write-Host "  ./run coverage:integration - Integration test coverage"
+        Write-Host "  ./run coverage:all       - Combined coverage (unit + integration)"
         Write-Host "  ./run watch              - Watch mode with hot-reload"
         Write-Host "  ./run help               - Show this help"
         Write-Host ""
