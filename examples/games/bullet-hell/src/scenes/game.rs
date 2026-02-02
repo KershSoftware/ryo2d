@@ -619,6 +619,8 @@ impl GameScene {
                     player.take_damage();
                     self.player_lives = player.lives;
                     self.player_invincible = player.is_invincible();
+                    // Camera shake on hit
+                    ctx.camera.add_trauma(0.4);
                   }
                 }
               }
@@ -1607,6 +1609,8 @@ impl GameScene {
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_entity) {
         renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 0, 0), 0.7));
       }
+      // Camera shake on hit
+      ctx.camera.add_trauma(0.4);
       return true;
     }
 
