@@ -272,6 +272,60 @@ impl Sprite {
     &self.data
   }
 
+  /// Create a new sprite with pre-scaled pixel data (nearest-neighbor).
+  ///
+  /// This is useful for caching scaled versions of sprites to avoid
+  /// expensive per-frame scaling operations.
+  ///
+  /// # Arguments
+  /// * `scale` - Uniform scale factor (1.0 = original size)
+  pub fn scaled(&self, scale: f32) -> Self {
+    self.scaled_xy(scale, scale)
+  }
+
+  /// Create a new sprite with pre-scaled pixel data (nearest-neighbor, non-uniform).
+  ///
+  /// # Arguments
+  /// * `scale_x` - Horizontal scale factor
+  /// * `scale_y` - Vertical scale factor
+  pub fn scaled_xy(&self, scale_x: f32, scale_y: f32) -> Self {
+    if scale_x <= 0.0 || scale_y <= 0.0 {
+      return Self::from_rgba(vec![], 0, 0);
+    }
+
+    let new_width = (self.width as f32 * scale_x).ceil() as u32;
+    let new_height = (self.height as f32 * scale_y).ceil() as u32;
+
+    if new_width == 0 || new_height == 0 {
+      return Self::from_rgba(vec![], 0, 0);
+    }
+
+    let mut data = vec![0u8; (new_width * new_height * 4) as usize];
+
+    for dy in 0..new_height {
+      for dx in 0..new_width {
+        // Map destination pixel back to source (nearest neighbor)
+        let sx = ((dx as f32) / scale_x) as u32;
+        let sy = ((dy as f32) / scale_y) as u32;
+
+        // Clamp to sprite bounds
+        let sx = sx.min(self.width - 1);
+        let sy = sy.min(self.height - 1);
+
+        let src_idx = ((sy * self.width + sx) * 4) as usize;
+        let dst_idx = ((dy * new_width + dx) * 4) as usize;
+
+        data[dst_idx..dst_idx + 4].copy_from_slice(&self.data[src_idx..src_idx + 4]);
+      }
+    }
+
+    Sprite {
+      data,
+      width: new_width,
+      height: new_height,
+    }
+  }
+
   /// Draw the sprite to a pixel buffer at the given position
   ///
   /// # Arguments

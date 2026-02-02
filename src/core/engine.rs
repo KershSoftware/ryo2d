@@ -627,13 +627,18 @@ impl Engine {
         self.world.get_component_mut::<Tween>(entity),
       ) {
         tween.update(_dt, &mut transform);
-        self.render_cache_dirty = true;
+        // Note: Tweens only modify Transform (position/scale/rotation), NOT z_order.
+        // No need to dirty the render cache - it only needs rebuilding when
+        // entities are spawned/despawned or z_order changes.
       }
     }
 
     // --- Game Logic Update ---
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
+      // Track entity count before update to detect spawns/despawns
+      let entity_count_before = self.world.len();
+
       // Create context for the game
       let mut ctx = GameContext {
         world: &mut self.world,
@@ -653,8 +658,10 @@ impl Engine {
       // Put the game back
       self.game = Some(game);
 
-      // Mark render cache dirty in case entities were spawned/despawned
-      self.render_cache_dirty = true;
+      // Only mark render cache dirty if entities were actually spawned/despawned
+      if self.world.len() != entity_count_before {
+        self.render_cache_dirty = true;
+      }
     }
 
     // --- Hierarchy Transform Propagation ---

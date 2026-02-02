@@ -57,6 +57,10 @@ pub struct ParallaxLayer {
   /// The sprite to render for this layer
   pub sprite: SpriteHandle,
 
+  /// Pre-scaled sprite for fast rendering (avoids per-frame scaling).
+  /// Set by ParallaxBackground when scale_to_fit is enabled.
+  cached_scaled: Option<SpriteHandle>,
+
   /// Scroll speed relative to camera movement.
   /// - 0.0 = static (doesn't move with camera)
   /// - 0.5 = moves at 50% camera speed (appears far away)
@@ -85,6 +89,7 @@ impl ParallaxLayer {
   pub fn new(sprite: SpriteHandle, scroll_speed: f32, z_order: i32) -> Self {
     Self {
       sprite,
+      cached_scaled: None,
       scroll_speed,
       auto_scroll_speed: 0.0,
       z_order,
@@ -97,6 +102,7 @@ impl ParallaxLayer {
   pub fn static_layer(sprite: SpriteHandle, z_order: i32) -> Self {
     Self {
       sprite,
+      cached_scaled: None,
       scroll_speed: 0.0,
       auto_scroll_speed: 0.0,
       z_order,
@@ -227,22 +233,39 @@ impl ParallaxBackground {
     camera: &Camera,
     layer: &ParallaxLayer,
   ) {
-    let sprite_width = layer.sprite.width() as f32;
-    let sprite_height = layer.sprite.height() as f32;
+    // Use cached scaled sprite if available (pre-computed in build() for scale_to_fit)
+    // This avoids expensive per-frame scaling operations
+    let (sprite_to_use, use_scaling) = if let Some(ref cached) = layer.cached_scaled {
+      (cached, false) // Use cached sprite, no runtime scaling needed
+    } else {
+      (&layer.sprite, self.scale_to_fit) // Use original sprite, may need scaling
+    };
+
+    let sprite_width = sprite_to_use.width() as f32;
+    let sprite_height = sprite_to_use.height() as f32;
 
     if sprite_width <= 0.0 || sprite_height <= 0.0 {
       return;
     }
 
-    // Calculate scale factor if scale_to_fit is enabled
-    let scale = if self.scale_to_fit {
-      frame_height as f32 / sprite_height
+    // Calculate scale factor (only used when rendering without cached sprite)
+    let scale = if use_scaling {
+      let orig_height = layer.sprite.height() as f32;
+      if orig_height > 0.0 {
+        frame_height as f32 / orig_height
+      } else {
+        1.0
+      }
     } else {
       1.0
     };
 
-    let scaled_width = sprite_width * scale;
-    let _scaled_height = sprite_height * scale;
+    // When using cached sprite, width is already scaled
+    let render_width = if layer.cached_scaled.is_some() {
+      sprite_width
+    } else {
+      layer.sprite.width() as f32 * scale
+    };
 
     // Calculate the y position for this layer (scaled offset)
     let y_pos = (layer.y_offset * scale) as i32;
@@ -256,8 +279,8 @@ impl ParallaxBackground {
       TileMode::None => {
         // Draw the sprite once, offset by parallax
         let x_pos = -total_offset as i32;
-        layer.sprite.with_sprite(|sprite| {
-          if scale != 1.0 {
+        sprite_to_use.with_sprite(|sprite| {
+          if use_scaling && scale != 1.0 {
             sprite.draw_scaled(frame, frame_width, frame_height, x_pos, y_pos, scale);
           } else {
             sprite.draw(frame, frame_width, frame_height, x_pos, y_pos);
@@ -267,14 +290,14 @@ impl ParallaxBackground {
 
       TileMode::Horizontal => {
         // Tile horizontally to fill the screen, with parallax offset
-        let tiles_needed = (frame_width as f32 / scaled_width).ceil() as i32 + 1;
+        let tiles_needed = (frame_width as f32 / render_width).ceil() as i32 + 1;
 
         for i in 0..tiles_needed {
-          let x_pos = (i as f32 * scaled_width - total_offset) as i32;
+          let x_pos = (i as f32 * render_width - total_offset) as i32;
           // Only draw if the tile is at least partially visible
-          if x_pos + scaled_width as i32 >= 0 && x_pos < frame_width as i32 {
-            layer.sprite.with_sprite(|sprite| {
-              if scale != 1.0 {
+          if x_pos + render_width as i32 >= 0 && x_pos < frame_width as i32 {
+            sprite_to_use.with_sprite(|sprite| {
+              if use_scaling && scale != 1.0 {
                 sprite.draw_scaled(frame, frame_width, frame_height, x_pos, y_pos, scale);
               } else {
                 sprite.draw(frame, frame_width, frame_height, x_pos, y_pos);
@@ -287,21 +310,21 @@ impl ParallaxBackground {
       TileMode::InfiniteScroll => {
         // Infinite horizontal scrolling with seamless wrapping
         // Calculate how many tiles we need to cover the screen plus buffer
-        let tiles_needed = (frame_width as f32 / scaled_width).ceil() as i32 + 2;
+        let tiles_needed = (frame_width as f32 / render_width).ceil() as i32 + 2;
 
         // Calculate base offset with modulo for seamless wrapping
-        let base_offset = total_offset.rem_euclid(scaled_width);
+        let base_offset = total_offset.rem_euclid(render_width);
 
         for i in 0..tiles_needed {
           // Calculate screen x position for this tile
-          // Start one tile to the left (-scaled_width) to ensure seamless scrolling
-          let screen_x = (i as f32 * scaled_width) - base_offset - scaled_width;
+          // Start one tile to the left (-render_width) to ensure seamless scrolling
+          let screen_x = (i as f32 * render_width) - base_offset - render_width;
           let x_pos = screen_x as i32;
 
           // Only draw if the tile is at least partially visible
-          if x_pos + scaled_width as i32 >= 0 && x_pos < frame_width as i32 {
-            layer.sprite.with_sprite(|sprite| {
-              if scale != 1.0 {
+          if x_pos + render_width as i32 >= 0 && x_pos < frame_width as i32 {
+            sprite_to_use.with_sprite(|sprite| {
+              if use_scaling && scale != 1.0 {
                 sprite.draw_scaled(frame, frame_width, frame_height, x_pos, y_pos, scale);
               } else {
                 sprite.draw(frame, frame_width, frame_height, x_pos, y_pos);
@@ -445,7 +468,32 @@ impl ParallaxBackgroundBuilder {
   }
 
   /// Build the final ParallaxBackground.
-  pub fn build(self) -> ParallaxBackground {
+  ///
+  /// When scale_to_fit is enabled, this pre-computes scaled versions of all
+  /// layer sprites for faster rendering (avoids per-frame scaling).
+  pub fn build(mut self) -> ParallaxBackground {
+    // Pre-cache scaled sprites when scale_to_fit is enabled
+    if self.background.scale_to_fit {
+      let screen_height = self.background.screen_height;
+
+      for layer in &mut self.background.layers {
+        // Get the scale factor for this layer
+        let sprite_height = layer.sprite.height() as f32;
+        if sprite_height <= 0.0 {
+          continue;
+        }
+
+        let scale = screen_height as f32 / sprite_height;
+
+        // Pre-compute the scaled sprite
+        layer.sprite.with_sprite(|sprite| {
+          let scaled_sprite = sprite.scaled(scale);
+          layer.cached_scaled =
+            Some(SpriteHandle::from_sprite(scaled_sprite, "cached_parallax"));
+        });
+      }
+    }
+
     self.background
   }
 }
