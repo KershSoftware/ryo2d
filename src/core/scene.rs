@@ -36,7 +36,6 @@ use super::game::WindowRequest;
 use super::graphics::Camera;
 use super::input::InputState;
 use super::lighting::LightingRenderer;
-use super::physics::PhysicsCollisionEvent;
 use super::shaders::EffectsManager;
 use super::ui::UiContext;
 
@@ -77,16 +76,6 @@ pub struct SceneContext<'a> {
   /// }
   /// ```
   pub events: &'a mut Events,
-  /// Collision events from the last physics step.
-  ///
-  /// **Deprecated:** Use `events.read::<CollisionStarted>()` instead.
-  ///
-  /// **Note:** This includes BOTH `Started` and `Stopped` events.
-  /// For most game logic (damage, death, scoring), you probably only
-  /// want `Started` events. Use [`collisions_started()`](Self::collisions_started)
-  /// for a filtered iterator.
-  #[deprecated(since = "0.1.0", note = "Use ctx.events.read::<CollisionStarted>() instead")]
-  pub collision_events: &'a [PhysicsCollisionEvent],
   /// Pending window configuration changes (resolution, display mode)
   pub window_request: &'a mut WindowRequest,
 }
@@ -116,40 +105,6 @@ impl<'a> SceneContext<'a> {
   /// Get the screen height in pixels.
   pub fn screen_height(&self) -> f32 {
     self.camera.viewport_size().1
-  }
-
-  /// Iterate over collision events where objects started touching.
-  ///
-  /// **Deprecated:** Use `ctx.events.read::<CollisionStarted>()` instead.
-  ///
-  /// This is the most common case for game logic - reacting when
-  /// objects first collide (damage, pickups, death triggers, etc.).
-  ///
-  /// # Example
-  ///
-  /// ```ignore
-  /// for event in ctx.collisions_started() {
-  ///     if event.involves(player) {
-  ///         // Player hit something!
-  ///     }
-  /// }
-  /// ```
-  #[deprecated(since = "0.1.0", note = "Use ctx.events.read::<CollisionStarted>() instead")]
-  #[allow(deprecated)]
-  pub fn collisions_started(&self) -> impl Iterator<Item = &PhysicsCollisionEvent> {
-    self.collision_events.iter().filter(|e| e.is_started())
-  }
-
-  /// Iterate over collision events where objects stopped touching.
-  ///
-  /// **Deprecated:** Use `ctx.events.read::<CollisionStopped>()` instead.
-  ///
-  /// Useful for "exit trigger" logic or resetting state when
-  /// objects separate.
-  #[deprecated(since = "0.1.0", note = "Use ctx.events.read::<CollisionStopped>() instead")]
-  #[allow(deprecated)]
-  pub fn collisions_stopped(&self) -> impl Iterator<Item = &PhysicsCollisionEvent> {
-    self.collision_events.iter().filter(|e| e.is_stopped())
   }
 
   /// Request a display mode change (windowed, fullscreen, borderless).
@@ -1100,7 +1055,6 @@ impl SceneGame {
 }
 
 impl Game for SceneGame {
-  #[allow(deprecated)] // collision_events field is deprecated but still supported
   fn init(&mut self, ctx: &mut GameContext) {
     // Convert GameContext to SceneContext and call on_enter for initial scene
     let mut scene_ctx = SceneContext {
@@ -1112,7 +1066,6 @@ impl Game for SceneGame {
       effects: ctx.effects,
       lighting: ctx.lighting,
       events: ctx.events,
-      collision_events: ctx.collision_events,
       window_request: ctx.window_request,
     };
 
@@ -1134,7 +1087,6 @@ impl Game for SceneGame {
     self.initialized = true;
   }
 
-  #[allow(deprecated)] // collision_events field is deprecated but still supported
   fn update(&mut self, ctx: &mut GameContext, dt: f32) {
     // Convert GameContext to SceneContext
     let mut scene_ctx = SceneContext {
@@ -1146,7 +1098,6 @@ impl Game for SceneGame {
       effects: ctx.effects,
       lighting: ctx.lighting,
       events: ctx.events,
-      collision_events: ctx.collision_events,
       window_request: ctx.window_request,
     };
 

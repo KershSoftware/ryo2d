@@ -592,8 +592,7 @@ impl Engine {
     // --- Game Logic Update ---
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
-      // Create context for the game with collision events from last physics step
-      #[allow(deprecated)] // collision_events field is deprecated but still supported
+      // Create context for the game
       let mut ctx = GameContext {
         world: &mut self.world,
         camera: &mut self.camera,
@@ -603,7 +602,6 @@ impl Engine {
         effects: &mut self.effects,
         lighting: &mut self.lighting,
         events: &mut self.events,
-        collision_events: self.physics.get_collision_events(),
         window_request: &mut self.window_request,
       };
 
@@ -1240,7 +1238,6 @@ impl ApplicationHandler for Engine {
     // Call game init if not already initialized
     if !self.initialized {
       if let Some(mut game) = self.game.take() {
-        #[allow(deprecated)] // collision_events field is deprecated but still supported
         let mut ctx = GameContext {
           world: &mut self.world,
           camera: &mut self.camera,
@@ -1250,7 +1247,6 @@ impl ApplicationHandler for Engine {
           effects: &mut self.effects,
           lighting: &mut self.lighting,
           events: &mut self.events,
-          collision_events: &[], // No physics events during init
           window_request: &mut self.window_request,
         };
         game.init(&mut ctx);
