@@ -1698,8 +1698,11 @@ impl ApplicationHandler for Engine {
         if let Some(ref mut trails) = trail_renderer {
           trails.begin_frame();
 
-          // Add Trail2D components
+          // Add Trail2D components (skip inactive pooled entities)
           for entity in self.world.entities_with::<Trail2D>() {
+            if self.world.has::<super::ecs::Inactive>(entity) {
+              continue;
+            }
             if let (Some(trail), Some(transform)) = (
               self.world.get_component::<Trail2D>(entity),
               self.world.get_component::<Transform>(entity),
@@ -1708,8 +1711,11 @@ impl ApplicationHandler for Engine {
             }
           }
 
-          // Add Line2D components
+          // Add Line2D components (skip inactive pooled entities)
           for entity in self.world.entities_with::<Line2D>() {
+            if self.world.has::<super::ecs::Inactive>(entity) {
+              continue;
+            }
             if let (Some(line), Some(transform)) = (
               self.world.get_component::<Line2D>(entity),
               self.world.get_component::<Transform>(entity),

@@ -71,14 +71,16 @@ gilrs = "0.11"
 [dev-dependencies]
 tempfile = "3"
 
-# Dev builds: optimize dependencies and engine code, but not game code
-# This gives fast compile times for your game while keeping physics/rendering fast
-[profile.dev.package."*"]
-opt-level = 2
+# Dev builds: optimize dependencies and engine for performance, keep game code light for fast iteration
+# The engine's pixel operations (parallax, sprite blitting) need full optimization
+[profile.dev]
+opt-level = 1
 
-# Also optimize the engine itself (since it's a workspace member, "*" doesn't match it)
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.dev.package.ryo2d]
-opt-level = 2
+opt-level = 3
 
 # Release builds with debug symbols for profiling (flamegraph, perf, etc.)
 # This enables function names in profiles without affecting runtime performance.

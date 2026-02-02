@@ -12,9 +12,16 @@ pub struct Sprite {
   width: u32,
   /// Height in pixels
   height: u32,
+  /// Whether all pixels are fully opaque (alpha=255), enabling fast row-copy rendering
+  is_opaque: bool,
 }
 
 impl Sprite {
+  /// Check if all pixels in the data are fully opaque (alpha=255)
+  fn check_opaque(data: &[u8]) -> bool {
+    data.chunks_exact(4).all(|pixel| pixel[3] == 255)
+  }
+
   /// Create a new sprite from raw RGBA data
   pub fn from_rgba(data: Vec<u8>, width: u32, height: u32) -> Self {
     assert_eq!(
@@ -22,10 +29,12 @@ impl Sprite {
       (width * height * 4) as usize,
       "Data length must match width * height * 4"
     );
+    let is_opaque = Self::check_opaque(&data);
     Sprite {
       data,
       width,
       height,
+      is_opaque,
     }
   }
 
@@ -42,6 +51,7 @@ impl Sprite {
       data,
       width,
       height,
+      is_opaque: a == 255,
     }
   }
 
@@ -77,10 +87,12 @@ impl Sprite {
       }
     }
 
+    // Circles with anti-aliasing are never fully opaque
     Sprite {
       data,
       width: diameter,
       height: diameter,
+      is_opaque: false,
     }
   }
 
@@ -106,11 +118,13 @@ impl Sprite {
     let width = rgba.width();
     let height = rgba.height();
     let data = rgba.into_raw();
+    let is_opaque = Self::check_opaque(&data);
 
     Ok(Sprite {
       data,
       width,
       height,
+      is_opaque,
     })
   }
 
@@ -200,11 +214,13 @@ impl Sprite {
 
     // Convert to RGBA (tiny-skia uses premultiplied alpha, need to unpremultiply)
     let data = Self::unpremultiply_alpha(pixmap.data());
+    let is_opaque = Self::check_opaque(&data);
 
     Ok(Sprite {
       data,
       width,
       height,
+      is_opaque,
     })
   }
 
@@ -264,6 +280,11 @@ impl Sprite {
     self.height
   }
 
+  /// Check if the sprite is fully opaque (no transparent or semi-transparent pixels)
+  pub fn is_opaque(&self) -> bool {
+    self.is_opaque
+  }
+
   /// Get the raw RGBA pixel data
   ///
   /// Returns a slice of the raw pixel data. Each pixel is 4 bytes: R, G, B, A.
@@ -319,10 +340,12 @@ impl Sprite {
       }
     }
 
+    // Scaled sprite inherits opacity from source (scaling doesn't change alpha)
     Sprite {
       data,
       width: new_width,
       height: new_height,
+      is_opaque: self.is_opaque,
     }
   }
 
@@ -351,6 +374,23 @@ impl Sprite {
       return;
     }
 
+    // Fast path for fully opaque sprites: use row-based memcpy
+    if self.is_opaque {
+      let row_width = (end_sx - start_sx) as usize * 4;
+      for sy in start_sy..end_sy {
+        let fy = (y + sy) as usize;
+        let fx = (x + start_sx) as usize;
+
+        let src_row_start = ((sy as u32 * self.width + start_sx as u32) * 4) as usize;
+        let dst_row_start = (fy * frame_width as usize + fx) * 4;
+
+        frame[dst_row_start..dst_row_start + row_width]
+          .copy_from_slice(&self.data[src_row_start..src_row_start + row_width]);
+      }
+      return;
+    }
+
+    // Slow path for sprites with transparency: per-pixel alpha blending
     for sy in start_sy..end_sy {
       for sx in start_sx..end_sx {
         let fx = (x + sx) as usize;
