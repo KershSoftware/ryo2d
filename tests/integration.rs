@@ -8,6 +8,9 @@
 #[path = "integration/lighting.rs"]
 mod lighting;
 
+#[path = "integration/network.rs"]
+mod network;
+
 #[path = "integration/transform.rs"]
 mod transform;
 

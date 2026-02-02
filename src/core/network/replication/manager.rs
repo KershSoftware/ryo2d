@@ -300,17 +300,11 @@ impl ReplicationManager {
     /// Serialize a specific component from an entity.
     fn serialize_component(
         &self,
-        _world: &World,
-        _entity: Entity,
-        _component_id: ComponentTypeId,
+        world: &World,
+        entity: Entity,
+        component_id: ComponentTypeId,
     ) -> Option<SerializedComponent> {
-        // We need to check each registered type to find the matching one
-        // This is a limitation of the trait-based approach without proc-macros
-        // In practice, we'd use the registry's internal TypeId mapping
-
-        // For now, return None - the actual implementation requires
-        // querying each component type, which we'll handle in the integration
-        None
+        self.registry.serialize_from_entity(component_id, world, entity)
     }
 
     /// Build a full state sync message for a new client.

@@ -153,6 +153,10 @@ type ComponentSerializer = Box<dyn Fn(&dyn std::any::Any) -> Option<SerializedCo
 type ComponentDeserializer =
     Box<dyn Fn(&SerializedComponent, &mut crate::core::ecs::World, hecs::Entity) -> Result<(), ReplicationError> + Send + Sync>;
 
+/// Type-erased entity component serializer that queries the World.
+type EntityComponentSerializer =
+    Box<dyn Fn(&crate::core::ecs::World, hecs::Entity) -> Option<SerializedComponent> + Send + Sync>;
+
 /// Registry for replicated component types.
 ///
 /// The registry maintains serializers and deserializers for all registered
@@ -180,6 +184,9 @@ pub struct ComponentRegistry {
     /// Deserializers indexed by ComponentTypeId.
     deserializers: HashMap<ComponentTypeId, ComponentDeserializer>,
 
+    /// Entity serializers indexed by ComponentTypeId (query World and serialize).
+    entity_serializers: HashMap<ComponentTypeId, EntityComponentSerializer>,
+
     /// Priority for each component type.
     priorities: HashMap<ComponentTypeId, u8>,
 }
@@ -192,6 +199,7 @@ impl ComponentRegistry {
             id_to_name: HashMap::new(),
             serializers: HashMap::new(),
             deserializers: HashMap::new(),
+            entity_serializers: HashMap::new(),
             priorities: HashMap::new(),
         }
     }
@@ -243,6 +251,15 @@ impl ComponentRegistry {
                 Ok(())
             }),
         );
+
+        // Create entity serializer (queries World for component)
+        self.entity_serializers.insert(
+            component_id,
+            Box::new(|world, entity| {
+                let component = world.get_component::<T>(entity)?;
+                SerializedComponent::from_component(&*component).ok()
+            }),
+        );
     }
 
     /// Check if a component type is registered.
@@ -268,6 +285,20 @@ impl ComponentRegistry {
     /// Serialize a component by its TypeId.
     pub fn serialize(&self, type_id: TypeId, component: &dyn std::any::Any) -> Option<SerializedComponent> {
         self.serializers.get(&type_id).and_then(|f| f(component))
+    }
+
+    /// Serialize a component from an entity by ComponentTypeId.
+    ///
+    /// This queries the World for the component and serializes it if present.
+    pub fn serialize_from_entity(
+        &self,
+        component_id: ComponentTypeId,
+        world: &crate::core::ecs::World,
+        entity: hecs::Entity,
+    ) -> Option<SerializedComponent> {
+        self.entity_serializers
+            .get(&component_id)
+            .and_then(|f| f(world, entity))
     }
 
     /// Deserialize and apply a component to an entity.
