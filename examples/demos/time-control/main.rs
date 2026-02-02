@@ -125,28 +125,32 @@ impl TimeControlDemoScene {
   fn spawn_rotating_square(&mut self, ctx: &mut SceneContext) {
     let sprite = Self::create_square(40, 255, 200, 100);
 
-    self.rotating_square = Some(ctx.world.spawn((
-      RotatingSquare,
-      Transform::new(150.0, self.screen_h - 100.0).with_pivot_center(),
-      Renderable::sprite(sprite).with_z_order(5),
-      Tween::to_rotation(PI * 2.0, 2.0)
-        .with_easing(Ease::Linear)
-        .with_loop(TweenLoop::Loop),
-    )));
+    self.rotating_square = Some(
+      ctx.world.spawn((
+        RotatingSquare,
+        Transform::new(150.0, self.screen_h - 100.0).with_pivot_center(),
+        Renderable::sprite(sprite).with_z_order(5),
+        Tween::to_rotation(PI * 2.0, 2.0)
+          .with_easing(Ease::Linear)
+          .with_loop(TweenLoop::Loop),
+      )),
+    );
   }
 
   /// Spawn a pulsing circle (uses Tween for scale)
   fn spawn_pulsing_circle(&mut self, ctx: &mut SceneContext) {
     let sprite = Self::create_circle(20, 100, 200, 255);
 
-    self.pulsing_circle = Some(ctx.world.spawn((
-      PulsingCircle,
-      Transform::new(self.screen_w - 150.0, self.screen_h - 100.0).with_pivot_center(),
-      Renderable::sprite(sprite).with_z_order(5),
-      Tween::to_scale(1.5, 1.5, 0.5)
-        .with_easing(Ease::InOutSine)
-        .with_loop(TweenLoop::PingPong),
-    )));
+    self.pulsing_circle = Some(
+      ctx.world.spawn((
+        PulsingCircle,
+        Transform::new(self.screen_w - 150.0, self.screen_h - 100.0).with_pivot_center(),
+        Renderable::sprite(sprite).with_z_order(5),
+        Tween::to_scale(1.5, 1.5, 0.5)
+          .with_easing(Ease::InOutSine)
+          .with_loop(TweenLoop::PingPong),
+      )),
+    );
   }
 
   /// Reset all balls to starting positions
@@ -292,7 +296,12 @@ impl Scene for TimeControlDemoScene {
     ui.draw_text("Time Control Demo", 10.0, 10.0, text_light);
 
     // Instructions
-    ui.draw_text("1-5: Time scale | Space/H: Hitstop | R: Reset", 10.0, 30.0, text_muted);
+    ui.draw_text(
+      "1-5: Time scale | Space/H: Hitstop | R: Reset",
+      10.0,
+      30.0,
+      text_muted,
+    );
 
     // Bottom labels
     let (_, screen_h) = ui.screen_size();

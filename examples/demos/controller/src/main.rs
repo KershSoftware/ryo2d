@@ -137,7 +137,12 @@ impl Scene for ControllerDemo {
         Color::hex(0x00FF00),
       );
     } else {
-      ui.draw_text("No controller connected", 20.0, status_y, Color::hex(0xFF6666));
+      ui.draw_text(
+        "No controller connected",
+        20.0,
+        status_y,
+        Color::hex(0xFF6666),
+      );
       ui.draw_text(
         "Connect a gamepad to test inputs",
         20.0,
@@ -149,11 +154,23 @@ impl Scene for ControllerDemo {
     // Left stick visualization
     let stick_section_y = 100.0;
     ui.draw_text("Left Stick", 80.0, stick_section_y, Color::WHITE);
-    self.draw_stick(ui, 100.0, stick_section_y + 80.0, self.left_stick_raw, self.left_stick);
+    self.draw_stick(
+      ui,
+      100.0,
+      stick_section_y + 80.0,
+      self.left_stick_raw,
+      self.left_stick,
+    );
 
     // Right stick visualization
     ui.draw_text("Right Stick", 260.0, stick_section_y, Color::WHITE);
-    self.draw_stick(ui, 280.0, stick_section_y + 80.0, self.right_stick_raw, self.right_stick);
+    self.draw_stick(
+      ui,
+      280.0,
+      stick_section_y + 80.0,
+      self.right_stick_raw,
+      self.right_stick,
+    );
 
     // Triggers
     let trigger_y = stick_section_y + 180.0;
@@ -244,7 +261,12 @@ impl Scene for ControllerDemo {
     // D-pad
     let dpad_x = buttons_x + 180.0;
     let dpad_y = buttons_y + 70.0;
-    ui.draw_text("D-Pad", dpad_x - 10.0, buttons_y + 30.0, Color::hex(0xAAAAAA));
+    ui.draw_text(
+      "D-Pad",
+      dpad_x - 10.0,
+      buttons_y + 30.0,
+      Color::hex(0xAAAAAA),
+    );
 
     self.draw_button_indicator(
       ui,
@@ -325,7 +347,12 @@ impl Scene for ControllerDemo {
     // Raw vs processed values
     let values_x = 450.0;
     let values_y = SCREEN_HEIGHT - 140.0;
-    ui.draw_text("Stick Values (Raw / Processed)", values_x, values_y, Color::WHITE);
+    ui.draw_text(
+      "Stick Values (Raw / Processed)",
+      values_x,
+      values_y,
+      Color::WHITE,
+    );
 
     let (lx_raw, ly_raw) = self.left_stick_raw;
     let (lx, ly) = self.left_stick;
@@ -371,7 +398,13 @@ impl ControllerDemo {
 
     // Draw deadzone circle
     let deadzone_radius = radius * 0.15; // 15% deadzone
-    self.draw_circle_outline(ui, center_x, center_y, deadzone_radius, Color::hex(0x664444));
+    self.draw_circle_outline(
+      ui,
+      center_x,
+      center_y,
+      deadzone_radius,
+      Color::hex(0x664444),
+    );
 
     // Draw raw position (red dot)
     let raw_x = center_x + raw.0 * radius;

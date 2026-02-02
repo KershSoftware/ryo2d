@@ -830,8 +830,7 @@ fn e2e_rpc_client_a_chat_relayed_to_client_b() {
         && SerializedRpc::from_bytes(&data).is_ok()
       {
         // Re-broadcast to all clients
-        let broadcast =
-          SerializedRpc::from_rpc(&chat, client_a_id, RpcTarget::Broadcast).unwrap();
+        let broadcast = SerializedRpc::from_rpc(&chat, client_a_id, RpcTarget::Broadcast).unwrap();
         server
           .server
           .broadcast(Channel::ReliableOrdered, &broadcast.to_bytes().unwrap());

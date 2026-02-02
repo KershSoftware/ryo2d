@@ -485,11 +485,9 @@ mod tests {
   #[test]
   fn pool_creation_prewarms() {
     let mut world = World::new();
-    let pool = Pool::new(
-      &mut world,
-      PoolConfig::default().with_capacity(10),
-      || (Transform::default(), TestComponent::default()),
-    );
+    let pool = Pool::new(&mut world, PoolConfig::default().with_capacity(10), || {
+      (Transform::default(), TestComponent::default())
+    });
 
     assert_eq!(pool.available_count(), 10);
     assert_eq!(pool.active_count(), 0);
@@ -499,11 +497,9 @@ mod tests {
   #[test]
   fn acquire_activates_entity() {
     let mut world = World::new();
-    let mut pool = Pool::new(
-      &mut world,
-      PoolConfig::default().with_capacity(5),
-      || (Transform::default(), TestComponent::default()),
-    );
+    let mut pool = Pool::new(&mut world, PoolConfig::default().with_capacity(5), || {
+      (Transform::default(), TestComponent::default())
+    });
 
     let entity = pool.acquire(&mut world).unwrap();
 
@@ -516,11 +512,9 @@ mod tests {
   #[test]
   fn release_deactivates_entity() {
     let mut world = World::new();
-    let mut pool = Pool::new(
-      &mut world,
-      PoolConfig::default().with_capacity(5),
-      || (Transform::default(), TestComponent::default()),
-    );
+    let mut pool = Pool::new(&mut world, PoolConfig::default().with_capacity(5), || {
+      (Transform::default(), TestComponent::default())
+    });
 
     let entity = pool.acquire(&mut world).unwrap();
     assert!(pool.release(&mut world, entity));
@@ -534,11 +528,9 @@ mod tests {
   #[test]
   fn acquire_release_cycle() {
     let mut world = World::new();
-    let mut pool = Pool::new(
-      &mut world,
-      PoolConfig::default().with_capacity(3),
-      || (Transform::default(), TestComponent::default()),
-    );
+    let mut pool = Pool::new(&mut world, PoolConfig::default().with_capacity(3), || {
+      (Transform::default(), TestComponent::default())
+    });
 
     // Acquire all
     let e1 = pool.acquire(&mut world).unwrap();
@@ -662,11 +654,9 @@ mod tests {
   #[test]
   fn release_all_returns_everything() {
     let mut world = World::new();
-    let mut pool = Pool::new(
-      &mut world,
-      PoolConfig::default().with_capacity(5),
-      || (Transform::default(), TestComponent::default()),
-    );
+    let mut pool = Pool::new(&mut world, PoolConfig::default().with_capacity(5), || {
+      (Transform::default(), TestComponent::default())
+    });
 
     pool.acquire(&mut world);
     pool.acquire(&mut world);
@@ -682,11 +672,9 @@ mod tests {
   #[test]
   fn world_clear_invalidates_pool() {
     let mut world = World::new();
-    let mut pool = Pool::new(
-      &mut world,
-      PoolConfig::default().with_capacity(5),
-      || (Transform::default(), TestComponent::default()),
-    );
+    let mut pool = Pool::new(&mut world, PoolConfig::default().with_capacity(5), || {
+      (Transform::default(), TestComponent::default())
+    });
 
     pool.acquire(&mut world);
     pool.acquire(&mut world);
@@ -707,11 +695,9 @@ mod tests {
   #[test]
   fn stats_tracking() {
     let mut world = World::new();
-    let mut pool = Pool::new(
-      &mut world,
-      PoolConfig::default().with_capacity(3),
-      || (Transform::default(), TestComponent::default()),
-    );
+    let mut pool = Pool::new(&mut world, PoolConfig::default().with_capacity(3), || {
+      (Transform::default(), TestComponent::default())
+    });
 
     let e1 = pool.acquire(&mut world).unwrap();
     let e2 = pool.acquire(&mut world).unwrap();
@@ -733,11 +719,9 @@ mod tests {
   #[test]
   fn active_iter_returns_active_entities() {
     let mut world = World::new();
-    let mut pool = Pool::new(
-      &mut world,
-      PoolConfig::default().with_capacity(5),
-      || (Transform::default(), TestComponent::default()),
-    );
+    let mut pool = Pool::new(&mut world, PoolConfig::default().with_capacity(5), || {
+      (Transform::default(), TestComponent::default())
+    });
 
     let e1 = pool.acquire(&mut world).unwrap();
     let e2 = pool.acquire(&mut world).unwrap();
@@ -753,11 +737,9 @@ mod tests {
   #[test]
   fn contains_and_is_active() {
     let mut world = World::new();
-    let mut pool = Pool::new(
-      &mut world,
-      PoolConfig::default().with_capacity(3),
-      || (Transform::default(), TestComponent::default()),
-    );
+    let mut pool = Pool::new(&mut world, PoolConfig::default().with_capacity(3), || {
+      (Transform::default(), TestComponent::default())
+    });
 
     let e1 = pool.acquire(&mut world).unwrap();
     pool.release(&mut world, e1);

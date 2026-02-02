@@ -186,12 +186,22 @@ impl Scene for CameraShakeDemoScene {
     ui.draw_text(&config_text, 10.0, 30.0, text_accent);
 
     // Controls
-    ui.draw_text("1-3: Shake levels | Space: Max | R: Reset", 10.0, 50.0, text_muted);
+    ui.draw_text(
+      "1-3: Shake levels | Space: Max | R: Reset",
+      10.0,
+      50.0,
+      text_muted,
+    );
     ui.draw_text("Arrows: Adjust config | ESC: Exit", 10.0, 70.0, text_muted);
 
     // Visual indicator area
     let (screen_w, _) = ui.screen_size();
-    ui.draw_text("Press keys to trigger shake!", screen_w as f32 / 2.0 - 80.0, 100.0, text_warning);
+    ui.draw_text(
+      "Press keys to trigger shake!",
+      screen_w as f32 / 2.0 - 80.0,
+      100.0,
+      text_warning,
+    );
   }
 }
 

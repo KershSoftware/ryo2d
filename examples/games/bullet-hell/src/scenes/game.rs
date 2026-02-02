@@ -102,10 +102,7 @@ impl GameScene {
     // Scale to fit screen height and use auto-scroll for fixed-camera game
     let background = ParallaxBackground::builder(DESIGN_WIDTH as u32, DESIGN_HEIGHT as u32)
       .scale_to_fit()
-      .static_layer(
-        SpriteHandle::from_sprite(sky_sprite, "desert_sky"),
-        -100,
-      )
+      .static_layer(SpriteHandle::from_sprite(sky_sprite, "desert_sky"), -100)
       .auto_scroll_layer(
         SpriteHandle::from_sprite(moon_sprite, "desert_moon"),
         5.0, // Very slow moon drift
@@ -429,8 +426,10 @@ impl GameScene {
           } else {
             // Still spawning - dissolve from invisible to visible
             let dissolve_progress = 1.0 - spawn_progress;
-            renderable.shader =
-              Some(SpriteShader::dissolve_with_edge(dissolve_progress, Color::rgb(0, 0, 0)));
+            renderable.shader = Some(SpriteShader::dissolve_with_edge(
+              dissolve_progress,
+              Color::rgb(0, 0, 0),
+            ));
           }
         }
         continue; // Skip behavior while spawning
@@ -516,8 +515,14 @@ impl GameScene {
           // Calculate extended laser endpoint (extends beyond screen)
           let drone_center_x = current_x;
           let drone_center_y = current_y;
-          let (extended_x, extended_y) =
-            Self::extend_line_to_screen_edge(drone_center_x, drone_center_y, new_aim_x, new_aim_y, self.screen_width, self.screen_height);
+          let (extended_x, extended_y) = Self::extend_line_to_screen_edge(
+            drone_center_x,
+            drone_center_y,
+            new_aim_x,
+            new_aim_y,
+            self.screen_width,
+            self.screen_height,
+          );
 
           // Flash effect - faster flashing as aim progresses
           let flash_speed = 8.0 + aim_progress * 20.0;
@@ -1085,12 +1090,7 @@ impl GameScene {
 
   /// Check if player is standing on a barrier and apply its movement
   /// Returns true if player is riding a barrier (gravity should be skipped)
-  fn apply_barrier_riding(
-    &self,
-    ctx: &mut SceneContext,
-    player_entity: Entity,
-    dt: f32,
-  ) -> bool {
+  fn apply_barrier_riding(&self, ctx: &mut SceneContext, player_entity: Entity, dt: f32) -> bool {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return false;
     };
@@ -1396,8 +1396,10 @@ impl GameScene {
           } else {
             // Still spawning - dissolve from invisible to visible with cyan edge glow
             let dissolve_progress = 1.0 - spawn_progress;
-            renderable.shader =
-              Some(SpriteShader::dissolve_with_edge(dissolve_progress, Color::rgb(100, 200, 255)));
+            renderable.shader = Some(SpriteShader::dissolve_with_edge(
+              dissolve_progress,
+              Color::rgb(100, 200, 255),
+            ));
           }
         }
         continue; // Skip movement and shooting while spawning
@@ -2022,13 +2024,7 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_background(
-    &mut self,
-    frame: &mut [u8],
-    width: u32,
-    height: u32,
-    camera: &Camera,
-  ) {
+  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
     self.background.render(frame, width, height, camera);
   }
 

@@ -64,7 +64,9 @@ impl TweeningDemoScene {
     // Restart position tweens
     for &entity in &self.position_entities {
       // Get the demo info
-      let demo_info = world.get::<PositionDemo>(entity).map(|d| (d.start_x, d.ease));
+      let demo_info = world
+        .get::<PositionDemo>(entity)
+        .map(|d| (d.start_x, d.ease));
 
       if let Some((start_x, _ease)) = demo_info {
         // Reset transform position
@@ -177,28 +179,32 @@ impl TweeningDemoScene {
     let rotation_y = screen_h - 120.0;
     let rotation_x = 200.0;
 
-    self.rotation_entity = Some(ctx.world.spawn((
-      RotationDemo,
-      Transform::new(rotation_x, rotation_y).with_pivot_center(),
-      Renderable::sprite(rotation_sprite).with_z_order(10),
-      Tween::to_rotation(PI * 2.0, 2.0)
-        .with_easing(Ease::InOutCubic)
-        .with_loop(self.loop_mode),
-    )));
+    self.rotation_entity = Some(
+      ctx.world.spawn((
+        RotationDemo,
+        Transform::new(rotation_x, rotation_y).with_pivot_center(),
+        Renderable::sprite(rotation_sprite).with_z_order(10),
+        Tween::to_rotation(PI * 2.0, 2.0)
+          .with_easing(Ease::InOutCubic)
+          .with_loop(self.loop_mode),
+      )),
+    );
 
     // Create scale demo (bottom center area)
     let scale_sprite = Self::create_square(100, 200, 255);
     let scale_x = screen_w / 2.0;
     let scale_y = screen_h - 120.0;
 
-    self.scale_entity = Some(ctx.world.spawn((
-      ScaleDemo,
-      Transform::new(scale_x, scale_y).with_pivot_center(),
-      Renderable::sprite(scale_sprite).with_z_order(10),
-      Tween::to_scale(2.0, 2.0, 1.0)
-        .with_easing(Ease::OutElastic)
-        .with_loop(self.loop_mode),
-    )));
+    self.scale_entity = Some(
+      ctx.world.spawn((
+        ScaleDemo,
+        Transform::new(scale_x, scale_y).with_pivot_center(),
+        Renderable::sprite(scale_sprite).with_z_order(10),
+        Tween::to_scale(2.0, 2.0, 1.0)
+          .with_easing(Ease::OutElastic)
+          .with_loop(self.loop_mode),
+      )),
+    );
   }
 }
 

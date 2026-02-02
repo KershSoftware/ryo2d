@@ -917,19 +917,28 @@ mod tests {
     input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
 
     // First update sees the press
-    assert!(input.key_pressed(KeyCode::Escape), "First update should see key_pressed");
+    assert!(
+      input.key_pressed(KeyCode::Escape),
+      "First update should see key_pressed"
+    );
     assert!(input.key_down(KeyCode::Escape), "Key should be held");
 
     // After first update, clear per-frame input (as engine does)
     input.begin_frame();
 
     // Second update in same frame should NOT see the press again
-    assert!(!input.key_pressed(KeyCode::Escape), "Second update should NOT see key_pressed");
+    assert!(
+      !input.key_pressed(KeyCode::Escape),
+      "Second update should NOT see key_pressed"
+    );
     assert!(input.key_down(KeyCode::Escape), "Key should still be held");
 
     // Third update - still no press event
     input.begin_frame();
-    assert!(!input.key_pressed(KeyCode::Escape), "Third update should NOT see key_pressed");
+    assert!(
+      !input.key_pressed(KeyCode::Escape),
+      "Third update should NOT see key_pressed"
+    );
     assert!(input.key_down(KeyCode::Escape), "Key should still be held");
   }
 
@@ -951,11 +960,17 @@ mod tests {
     }
 
     // Key still held after all updates
-    assert!(input.key_down(KeyCode::KeyW), "Key should remain held after all updates");
+    assert!(
+      input.key_down(KeyCode::KeyW),
+      "Key should remain held after all updates"
+    );
 
     // Only when released does it stop
     input.handle_keyboard(KeyCode::KeyW, ElementState::Released);
-    assert!(!input.key_down(KeyCode::KeyW), "Key should no longer be held after release");
+    assert!(
+      !input.key_down(KeyCode::KeyW),
+      "Key should no longer be held after release"
+    );
   }
 
   #[test]
@@ -966,7 +981,10 @@ mod tests {
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
 
     // First update sees the press
-    assert!(input.mouse_pressed(MouseButton::Left), "First update should see mouse_pressed");
+    assert!(
+      input.mouse_pressed(MouseButton::Left),
+      "First update should see mouse_pressed"
+    );
     assert!(input.mouse_down(MouseButton::Left), "Button should be held");
 
     // After first update, only consume keyboard events (engine behavior)
@@ -977,7 +995,10 @@ mod tests {
       input.mouse_pressed(MouseButton::Left),
       "Mouse pressed should persist for render_ui"
     );
-    assert!(input.mouse_down(MouseButton::Left), "Button should still be held");
+    assert!(
+      input.mouse_down(MouseButton::Left),
+      "Button should still be held"
+    );
 
     // Only begin_frame clears mouse state (at end of frame)
     input.begin_frame();
@@ -1005,7 +1026,10 @@ mod tests {
     }
 
     // Should only have toggled ONCE
-    assert!(is_paused, "Pause should be toggled exactly once, not back to false");
+    assert!(
+      is_paused,
+      "Pause should be toggled exactly once, not back to false"
+    );
   }
 
   #[test]
@@ -1026,7 +1050,10 @@ mod tests {
     }
 
     // Should have moved in ALL 3 updates
-    assert_eq!(move_count, 3, "Movement should occur in all updates while key is held");
+    assert_eq!(
+      move_count, 3,
+      "Movement should occur in all updates while key is held"
+    );
   }
 
   #[test]
@@ -1038,12 +1065,18 @@ mod tests {
     input.handle_keyboard(KeyCode::Space, ElementState::Released);
 
     // First update sees the release
-    assert!(input.key_released(KeyCode::Space), "First update should see key_released");
+    assert!(
+      input.key_released(KeyCode::Space),
+      "First update should see key_released"
+    );
 
     input.begin_frame();
 
     // Second update should NOT see the release again
-    assert!(!input.key_released(KeyCode::Space), "Second update should NOT see key_released");
+    assert!(
+      !input.key_released(KeyCode::Space),
+      "Second update should NOT see key_released"
+    );
   }
 
   #[test]
@@ -1068,16 +1101,36 @@ mod tests {
     input.consume_keyboard_events();
 
     // Keyboard one-shot events should be cleared
-    assert!(!input.key_pressed(KeyCode::Escape), "key_pressed should be cleared");
-    assert!(!input.key_released(KeyCode::Space), "key_released should be cleared");
+    assert!(
+      !input.key_pressed(KeyCode::Escape),
+      "key_pressed should be cleared"
+    );
+    assert!(
+      !input.key_released(KeyCode::Space),
+      "key_released should be cleared"
+    );
 
     // But keyboard held state should persist
     assert!(input.key_down(KeyCode::Escape), "key_down should persist");
 
     // Mouse and scroll should be PRESERVED (for UI rendering)
-    assert!(input.mouse_pressed(MouseButton::Left), "mouse_pressed should persist");
-    assert!(input.mouse_down(MouseButton::Left), "mouse_down should persist");
-    assert_eq!(input.mouse_delta(), (100.0, 200.0), "mouse_delta should persist");
-    assert_eq!(input.scroll_delta(), (1.0, 2.0), "scroll_delta should persist");
+    assert!(
+      input.mouse_pressed(MouseButton::Left),
+      "mouse_pressed should persist"
+    );
+    assert!(
+      input.mouse_down(MouseButton::Left),
+      "mouse_down should persist"
+    );
+    assert_eq!(
+      input.mouse_delta(),
+      (100.0, 200.0),
+      "mouse_delta should persist"
+    );
+    assert_eq!(
+      input.scroll_delta(),
+      (1.0, 2.0),
+      "scroll_delta should persist"
+    );
   }
 }

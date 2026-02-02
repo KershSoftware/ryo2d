@@ -30,38 +30,38 @@ static NEXT_NETWORK_ID: AtomicU64 = AtomicU64::new(1);
 pub struct NetworkId(pub u64);
 
 impl NetworkId {
-    /// Generate a new unique network ID.
-    ///
-    /// IDs are monotonically increasing and guaranteed unique within
-    /// a single process. In networked games, only the server should
-    /// generate network IDs.
-    pub fn new() -> Self {
-        NetworkId(NEXT_NETWORK_ID.fetch_add(1, Ordering::Relaxed))
-    }
+  /// Generate a new unique network ID.
+  ///
+  /// IDs are monotonically increasing and guaranteed unique within
+  /// a single process. In networked games, only the server should
+  /// generate network IDs.
+  pub fn new() -> Self {
+    NetworkId(NEXT_NETWORK_ID.fetch_add(1, Ordering::Relaxed))
+  }
 
-    /// Create a network ID from a known value.
-    ///
-    /// Used when receiving entity spawn messages from the server.
-    pub fn from_raw(id: u64) -> Self {
-        NetworkId(id)
-    }
+  /// Create a network ID from a known value.
+  ///
+  /// Used when receiving entity spawn messages from the server.
+  pub fn from_raw(id: u64) -> Self {
+    NetworkId(id)
+  }
 
-    /// Get the raw u64 value.
-    pub fn raw(&self) -> u64 {
-        self.0
-    }
+  /// Get the raw u64 value.
+  pub fn raw(&self) -> u64 {
+    self.0
+  }
 }
 
 impl Default for NetworkId {
-    fn default() -> Self {
-        Self::new()
-    }
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 impl std::fmt::Display for NetworkId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NetworkId({})", self.0)
-    }
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "NetworkId({})", self.0)
+  }
 }
 
 /// Authority determines who can modify an entity.
@@ -83,15 +83,15 @@ impl std::fmt::Display for NetworkId {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Authority {
-    /// Server has authority over this entity (default).
-    /// Only the server can modify component values.
-    #[default]
-    Server,
+  /// Server has authority over this entity (default).
+  /// Only the server can modify component values.
+  #[default]
+  Server,
 
-    /// A specific client has authority over this entity.
-    /// Used for player-controlled entities where the client
-    /// sends authoritative input/state.
-    Client(ClientId),
+  /// A specific client has authority over this entity.
+  /// Used for player-controlled entities where the client
+  /// sends authoritative input/state.
+  Client(ClientId),
 }
 
 /// Component marking an entity as networked.
@@ -129,110 +129,110 @@ pub enum Authority {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkEntity {
-    /// Unique network identifier for this entity.
-    pub network_id: NetworkId,
+  /// Unique network identifier for this entity.
+  pub network_id: NetworkId,
 
-    /// The client that owns this entity.
-    /// For server-spawned entities, this is typically 0 or the server's ID.
-    /// For client-requested entities, this is the requesting client's ID.
-    pub owner: ClientId,
+  /// The client that owns this entity.
+  /// For server-spawned entities, this is typically 0 or the server's ID.
+  /// For client-requested entities, this is the requesting client's ID.
+  pub owner: ClientId,
 
-    /// Who has authority to modify this entity.
-    pub authority: Authority,
+  /// Who has authority to modify this entity.
+  pub authority: Authority,
 }
 
 impl NetworkEntity {
-    /// Create a new server-owned, server-authoritative network entity.
-    pub fn new_server_owned() -> Self {
-        Self {
-            network_id: NetworkId::new(),
-            owner: 0,
-            authority: Authority::Server,
-        }
+  /// Create a new server-owned, server-authoritative network entity.
+  pub fn new_server_owned() -> Self {
+    Self {
+      network_id: NetworkId::new(),
+      owner: 0,
+      authority: Authority::Server,
     }
+  }
 
-    /// Create a new client-owned network entity.
-    ///
-    /// By default, the client also has authority over the entity.
-    pub fn new_client_owned(client_id: ClientId) -> Self {
-        Self {
-            network_id: NetworkId::new(),
-            owner: client_id,
-            authority: Authority::Client(client_id),
-        }
+  /// Create a new client-owned network entity.
+  ///
+  /// By default, the client also has authority over the entity.
+  pub fn new_client_owned(client_id: ClientId) -> Self {
+    Self {
+      network_id: NetworkId::new(),
+      owner: client_id,
+      authority: Authority::Client(client_id),
     }
+  }
 
-    /// Check if this entity is owned by the server.
-    pub fn is_server_owned(&self) -> bool {
-        self.owner == 0
-    }
+  /// Check if this entity is owned by the server.
+  pub fn is_server_owned(&self) -> bool {
+    self.owner == 0
+  }
 
-    /// Check if a specific client has authority over this entity.
-    pub fn has_authority(&self, client_id: ClientId) -> bool {
-        match self.authority {
-            Authority::Server => client_id == 0,
-            Authority::Client(auth_id) => client_id == auth_id,
-        }
+  /// Check if a specific client has authority over this entity.
+  pub fn has_authority(&self, client_id: ClientId) -> bool {
+    match self.authority {
+      Authority::Server => client_id == 0,
+      Authority::Client(auth_id) => client_id == auth_id,
     }
+  }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+  use super::*;
 
-    #[test]
-    fn network_id_uniqueness() {
-        let id1 = NetworkId::new();
-        let id2 = NetworkId::new();
-        let id3 = NetworkId::new();
+  #[test]
+  fn network_id_uniqueness() {
+    let id1 = NetworkId::new();
+    let id2 = NetworkId::new();
+    let id3 = NetworkId::new();
 
-        assert_ne!(id1, id2);
-        assert_ne!(id2, id3);
-        assert_ne!(id1, id3);
-    }
+    assert_ne!(id1, id2);
+    assert_ne!(id2, id3);
+    assert_ne!(id1, id3);
+  }
 
-    #[test]
-    fn network_id_from_raw() {
-        let id = NetworkId::from_raw(42);
-        assert_eq!(id.raw(), 42);
-        assert_eq!(id.0, 42);
-    }
+  #[test]
+  fn network_id_from_raw() {
+    let id = NetworkId::from_raw(42);
+    assert_eq!(id.raw(), 42);
+    assert_eq!(id.0, 42);
+  }
 
-    #[test]
-    fn authority_default_is_server() {
-        assert_eq!(Authority::default(), Authority::Server);
-    }
+  #[test]
+  fn authority_default_is_server() {
+    assert_eq!(Authority::default(), Authority::Server);
+  }
 
-    #[test]
-    fn network_entity_server_owned() {
-        let entity = NetworkEntity::new_server_owned();
-        assert!(entity.is_server_owned());
-        assert_eq!(entity.authority, Authority::Server);
-        assert!(entity.has_authority(0));
-        assert!(!entity.has_authority(1));
-    }
+  #[test]
+  fn network_entity_server_owned() {
+    let entity = NetworkEntity::new_server_owned();
+    assert!(entity.is_server_owned());
+    assert_eq!(entity.authority, Authority::Server);
+    assert!(entity.has_authority(0));
+    assert!(!entity.has_authority(1));
+  }
 
-    #[test]
-    fn network_entity_client_owned() {
-        let client_id = 5;
-        let entity = NetworkEntity::new_client_owned(client_id);
+  #[test]
+  fn network_entity_client_owned() {
+    let client_id = 5;
+    let entity = NetworkEntity::new_client_owned(client_id);
 
-        assert!(!entity.is_server_owned());
-        assert_eq!(entity.owner, client_id);
-        assert_eq!(entity.authority, Authority::Client(client_id));
-        assert!(entity.has_authority(client_id));
-        assert!(!entity.has_authority(0));
-        assert!(!entity.has_authority(6));
-    }
+    assert!(!entity.is_server_owned());
+    assert_eq!(entity.owner, client_id);
+    assert_eq!(entity.authority, Authority::Client(client_id));
+    assert!(entity.has_authority(client_id));
+    assert!(!entity.has_authority(0));
+    assert!(!entity.has_authority(6));
+  }
 
-    #[test]
-    fn network_entity_serialization() {
-        let entity = NetworkEntity::new_server_owned();
-        let json = serde_json::to_string(&entity).unwrap();
-        let deserialized: NetworkEntity = serde_json::from_str(&json).unwrap();
+  #[test]
+  fn network_entity_serialization() {
+    let entity = NetworkEntity::new_server_owned();
+    let json = serde_json::to_string(&entity).unwrap();
+    let deserialized: NetworkEntity = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(entity.network_id, deserialized.network_id);
-        assert_eq!(entity.owner, deserialized.owner);
-        assert_eq!(entity.authority, deserialized.authority);
-    }
+    assert_eq!(entity.network_id, deserialized.network_id);
+    assert_eq!(entity.owner, deserialized.owner);
+    assert_eq!(entity.authority, deserialized.authority);
+  }
 }

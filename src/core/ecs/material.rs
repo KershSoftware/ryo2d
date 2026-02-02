@@ -261,7 +261,11 @@ impl SpriteShader {
 
   /// Create a directional outline (different colors for solid vs passable edges)
   pub fn directional_outline(solid_color: Color, passable_color: Color, thickness: u32) -> Self {
-    Self::BuiltIn(SpriteEffect::directional_outline(solid_color, passable_color, thickness))
+    Self::BuiltIn(SpriteEffect::directional_outline(
+      solid_color,
+      passable_color,
+      thickness,
+    ))
   }
 
   /// Create a platform outline (white solid edges, pale passable edges)
@@ -450,7 +454,11 @@ impl Material {
 
   /// Create a directional outline material
   pub fn directional_outline(solid_color: Color, passable_color: Color, thickness: u32) -> Self {
-    Self::new(SpriteShader::directional_outline(solid_color, passable_color, thickness))
+    Self::new(SpriteShader::directional_outline(
+      solid_color,
+      passable_color,
+      thickness,
+    ))
   }
 
   /// Create a platform outline material (white solid, pale passable)

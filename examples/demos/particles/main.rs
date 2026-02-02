@@ -523,7 +523,10 @@ impl Game for ParticlesDemo {
         );
         y += 16.0;
         ui.draw_text(
-          &format!("Active: {} / Available: {}", stats.current_active, stats.current_available),
+          &format!(
+            "Active: {} / Available: {}",
+            stats.current_active, stats.current_available
+          ),
           10.0,
           y,
           Color::WHITE,
@@ -537,7 +540,10 @@ impl Game for ParticlesDemo {
         );
         y += 16.0;
         ui.draw_text(
-          &format!("Acquires: {} / Releases: {}", stats.acquires, stats.releases),
+          &format!(
+            "Acquires: {} / Releases: {}",
+            stats.acquires, stats.releases
+          ),
           10.0,
           y,
           Color::WHITE,
@@ -547,7 +553,11 @@ impl Game for ParticlesDemo {
           &format!("Expansions: {}", stats.expansions),
           10.0,
           y,
-          if stats.expansions > 1 { Color::YELLOW } else { Color::WHITE },
+          if stats.expansions > 1 {
+            Color::YELLOW
+          } else {
+            Color::WHITE
+          },
         );
       }
     }

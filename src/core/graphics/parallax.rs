@@ -488,8 +488,7 @@ impl ParallaxBackgroundBuilder {
         // Pre-compute the scaled sprite
         layer.sprite.with_sprite(|sprite| {
           let scaled_sprite = sprite.scaled(scale);
-          layer.cached_scaled =
-            Some(SpriteHandle::from_sprite(scaled_sprite, "cached_parallax"));
+          layer.cached_scaled = Some(SpriteHandle::from_sprite(scaled_sprite, "cached_parallax"));
         });
       }
     }

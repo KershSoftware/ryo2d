@@ -24,6 +24,9 @@ pub mod physics;
 // Navigation & Pathfinding
 pub mod navigation;
 
+// Procedural Generation
+pub mod procgen;
+
 // Configuration & persistence
 pub mod config;
 
