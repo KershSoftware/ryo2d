@@ -31,10 +31,16 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     crate::core::config::DisplayMode::BorderlessFullscreen => "borderless",
   };
 
+  // Find workspace root's target directory for shared dependency caching
+  // This allows all examples to share compiled dependencies
+  let target_dir = find_workspace_target_dir(workspace.root());
+
   // Run cargo build --release with embedded config values from [system] and [info]
   let status = Command::new("cargo")
     .arg("build")
     .arg("--release")
+    // Use shared target directory for dependency caching
+    .env("CARGO_TARGET_DIR", &target_dir)
     // [system] section values
     .env("RYO_EMBED_RESOLUTION_WIDTH", system.resolution_width.to_string())
     .env("RYO_EMBED_RESOLUTION_HEIGHT", system.resolution_height.to_string())
@@ -235,6 +241,34 @@ fn copy_dir_recursive(src: &PathBuf, dest: &PathBuf) -> CliResult<()> {
   }
 
   Ok(())
+}
+
+/// Find the workspace root's target directory for shared dependency caching.
+/// Searches parent directories for a Cargo.toml with a [workspace] section.
+fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
+  let mut search_dir = start_dir.to_path_buf();
+
+  // Search up to 10 parent directories for workspace root
+  for _ in 0..10 {
+    let cargo_toml = search_dir.join("Cargo.toml");
+    if cargo_toml.exists() {
+      // Check if this Cargo.toml has a [workspace] section
+      if let Ok(content) = fs::read_to_string(&cargo_toml) {
+        if content.contains("[workspace]") {
+          return search_dir.join("target");
+        }
+      }
+    }
+
+    if let Some(parent) = search_dir.parent() {
+      search_dir = parent.to_path_buf();
+    } else {
+      break;
+    }
+  }
+
+  // Fallback to local target directory
+  start_dir.join("target")
 }
 
 fn print_help() {
