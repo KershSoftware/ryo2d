@@ -16,13 +16,14 @@ use ryo2d::prelude::*;
 fn main() {
   // Game uses fixed 1920x1080 design resolution from Ryo.toml
   // Window can be resized freely - engine handles scaling with letterboxing
-  // Note: NOT calling with_system_state_overrides() to keep fixed game resolution
-  let builder = EngineBuilder::new()
+  // Load display mode (windowed/fullscreen) from user settings while keeping fixed resolution
+  let game = EngineBuilder::new()
     .window_mode(WindowMode::ResizableAspectRatio)
     .fps(144)
-    .physics_hz(60);
-
-  let game = builder.with_scene(MenuScene::new()).build();
+    .physics_hz(60)
+    .with_saved_display_mode() // Load display mode from system.json (not resolution)
+    .with_scene(MenuScene::new())
+    .build();
 
   let _ = game.run();
 }
