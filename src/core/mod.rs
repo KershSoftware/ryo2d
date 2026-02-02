@@ -8,6 +8,7 @@ pub mod error;
 pub mod asset;
 pub mod audio;
 pub mod input;
+pub mod network;
 
 // Graphics & rendering
 pub mod graphics;

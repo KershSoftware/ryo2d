@@ -907,6 +907,166 @@ pub type SaveResult<T> = Result<T, SaveError>;
 
 ---
 
+## Networking
+
+### Server Types
+
+```rust
+// Dedicated server (no local player)
+impl NetworkServer {
+    fn new(config: NetworkServerConfig) -> Result<Self, NetworkError>;
+    fn update(&mut self, dt: Duration);
+    fn events(&mut self) -> impl Iterator<Item = NetworkEvent>;
+    fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]);
+    fn broadcast(&mut self, channel: Channel, data: &[u8]);
+    fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>>;
+    fn clients(&self) -> impl Iterator<Item = ClientId>;
+    fn disconnect_client(&mut self, client_id: ClientId);
+}
+
+// Player-hosted server (host plays while serving)
+impl ListenServer {
+    fn new(config: NetworkServerConfig) -> Result<Self, NetworkError>;
+    fn update(&mut self, dt: Duration);
+    fn events(&mut self) -> impl Iterator<Item = NetworkEvent>;
+    fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]);
+    fn broadcast(&mut self, channel: Channel, data: &[u8]);
+    fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>>;
+    fn host_id(&self) -> ClientId;           // Host's virtual ID (always 0)
+    fn is_host(&self, id: ClientId) -> bool;
+    fn all_clients(&self) -> impl Iterator<Item = ClientId>;     // Host + remotes
+    fn remote_clients(&self) -> impl Iterator<Item = ClientId>;  // Only remotes
+    fn player_count(&self) -> usize;         // Includes host
+}
+
+// Client connecting to a server
+impl NetworkClient {
+    fn connect(config: NetworkClientConfig) -> Result<Self, NetworkError>;
+    fn update(&mut self, dt: Duration);
+    fn events(&mut self) -> impl Iterator<Item = NetworkEvent>;
+    fn send(&mut self, channel: Channel, data: &[u8]);
+    fn receive(&mut self, channel: Channel) -> Option<Vec<u8>>;
+    fn client_id(&self) -> ClientId;
+    fn is_connected(&self) -> bool;
+    fn disconnect(&mut self);
+}
+```
+
+### Configuration
+
+```rust
+pub struct NetworkServerConfig {
+    pub port: u16,
+    pub max_clients: usize,
+    pub protocol_id: u64,
+}
+
+pub struct NetworkClientConfig {
+    pub server_addr: SocketAddr,
+    pub protocol_id: u64,
+}
+
+pub enum Channel {
+    Unreliable,        // Best-effort, no ordering
+    ReliableOrdered,   // Guaranteed delivery + order
+}
+
+pub type ClientId = u64;
+```
+
+### Events
+
+```rust
+pub enum NetworkEvent {
+    Connected,
+    Disconnected { reason: DisconnectReason },
+    ClientConnected { client_id: ClientId },
+    ClientDisconnected { client_id: ClientId, reason: DisconnectReason },
+}
+
+pub enum DisconnectReason {
+    Requested,
+    Timeout,
+    Kicked,
+    ServerFull,
+    ProtocolMismatch,
+}
+```
+
+### Replication
+
+```rust
+impl ReplicationManager {
+    fn new_server() -> Self;
+    fn new_client() -> Self;
+    fn register<T: Replicated>(&mut self);
+    fn spawn_networked(&mut self, world: &mut World, builder: NetworkEntityBuilder) -> Entity;
+    fn despawn_networked(&mut self, world: &mut World, entity: Entity);
+    fn mark_dirty<T: Replicated>(&mut self, entity: Entity);
+    fn broadcast_updates(&mut self, world: &World, server: &mut impl ServerLike);
+    fn send_full_state(&mut self, world: &World, server: &mut impl ServerLike, client: ClientId);
+    fn process_incoming(&mut self, world: &mut World, client: &mut NetworkClient);
+    fn get_entity(&self, network_id: NetworkId) -> Option<Entity>;
+}
+
+impl NetworkEntityBuilder {
+    fn new() -> Self;
+    fn server_owned(self) -> Self;
+    fn client_owned(self, client_id: ClientId) -> Self;
+    fn with_component<T: Replicated>(self, component: T) -> Self;
+}
+
+// Trait for replicatable components
+pub trait Replicated: Component + Serialize + DeserializeOwned + Clone {
+    fn component_id() -> ComponentTypeId;
+    fn component_name() -> &'static str;
+    fn replication_priority() -> u8 { 1 }  // Higher = more frequent
+}
+```
+
+### RPCs
+
+```rust
+// Trait for RPC types
+pub trait Rpc: Serialize + DeserializeOwned + Clone + Send + Sync + 'static {
+    fn rpc_id() -> RpcTypeId;
+    fn rpc_name() -> &'static str;
+}
+
+pub enum RpcTarget {
+    Server,
+    Client(ClientId),
+    Broadcast,
+    BroadcastExcept(ClientId),
+}
+
+impl SerializedRpc {
+    fn from_rpc<T: Rpc>(rpc: &T, sender: ClientId, target: RpcTarget) -> Result<Self, NetworkError>;
+    fn from_bytes(data: &[u8]) -> Result<Self, NetworkError>;
+    fn to_bytes(&self) -> Result<Vec<u8>, NetworkError>;
+    fn into_rpc<T: Rpc>(self) -> Result<ReceivedRpc<T>, NetworkError>;
+}
+
+pub struct ReceivedRpc<T: Rpc> {
+    pub payload: T,
+    pub sender: ClientId,
+}
+```
+
+### Errors
+
+```rust
+pub enum NetworkError {
+    InitError(String),
+    ConnectionError(String),
+    SendError(String),
+    ReceiveError(String),
+    TransportError(String),
+}
+```
+
+---
+
 ## Math Types (from glam)
 
 ```rust
