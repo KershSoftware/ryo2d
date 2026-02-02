@@ -295,3 +295,90 @@ Sprites can use built-in effects via `SpriteEffect`:
 Effects are specified per-instance via `SpriteInstance::with_effect()`.
 
 **Integration:** GPU rendering happens after CPU rendering but before post-processing. The engine automatically routes sprites through GPU path when `render_gpu()` populates the batch collector.
+
+## Camera Shake System
+
+The camera shake system (`camera.rs`) provides trauma-based screen shake for impact feedback.
+
+### Architecture
+- **Trauma-based**: Shake intensity is `trauma²` for better feel
+- **Smooth noise**: Layered sine waves for organic movement (no external dependencies)
+- **Auto-integrated**: Shake offset applied automatically in `world_to_screen()`
+- **Real-time decay**: Uses unscaled dt so shake works during slow-mo
+
+### Key Types
+
+**CameraShake** (internal struct on Camera):
+- `trauma` - Current trauma level (0.0 to 1.0)
+- `max_offset` - Maximum pixel displacement (default: 10.0)
+- `decay_rate` - Trauma decay per second (default: 1.0)
+
+### Usage Pattern
+
+```rust
+// Trigger shake on impacts
+ctx.camera.add_trauma(0.3);  // Light hit
+ctx.camera.add_trauma(0.7);  // Explosion
+
+// Configure shake feel
+ctx.camera.configure_shake(20.0, 0.5);  // max_offset, decay_rate
+
+// Query state
+let trauma = ctx.camera.trauma();
+let (offset_x, offset_y) = ctx.camera.shake_offset();
+```
+
+### How It Works
+1. Game calls `add_trauma(amount)` - trauma accumulates (clamped to 1.0)
+2. Engine calls `update_shake(real_dt)` each frame
+3. Intensity = trauma² is calculated
+4. Smooth noise generates offset within `±max_offset * intensity`
+5. Trauma decays by `decay_rate * dt`
+6. `world_to_screen()` adds shake offset automatically
+
+## Time Scale & Hitstop System
+
+The time control system (`engine.rs`, `game.rs`) provides slow-motion and freeze-frame effects for game juice.
+
+### Architecture
+- **Time scale**: Multiplier applied to game dt (0.0=frozen, 1.0=normal, 2.0=fast)
+- **Hitstop**: Temporary freeze that auto-expires after duration
+- **Selective**: Affects game logic, physics, animations, tweens
+- **Real-time exceptions**: Camera shake, UI, and input use unscaled time
+
+### Key Types
+
+**TimeControl** (shared between engine and contexts):
+- `time_scale` - Speed multiplier (default: 1.0)
+- `hitstop_remaining` - Seconds until hitstop ends (default: 0.0)
+
+### Usage Pattern
+
+```rust
+// Slow-motion effects
+ctx.set_time_scale(0.3);  // 30% speed for dramatic moments
+ctx.set_time_scale(1.0);  // Return to normal
+ctx.set_time_scale(2.0);  // Fast-forward
+
+// Hitstop (freeze frame)
+ctx.hitstop(0.05);  // 50ms freeze on hit
+ctx.hitstop(0.1);   // 100ms freeze on critical
+
+// Query state
+let scale = ctx.time_scale();
+let frozen = ctx.is_hitstop_active();
+```
+
+### How It Works
+1. Game calls `set_time_scale()` or `hitstop()` via context
+2. Engine syncs to internal TimeState before each update
+3. `scaled_fixed_dt()` returns `fixed_dt * time_scale` (or 0 during hitstop)
+4. All systems receive scaled dt: animations, tweens, physics, game logic
+5. Hitstop decays with real dt after all updates complete
+6. Camera shake and UI continue at real-time speed
+
+### Combining Effects
+Time scale and hitstop work together:
+- Hitstop takes priority (dt=0 regardless of time_scale)
+- After hitstop ends, time_scale resumes
+- Useful pattern: hitstop on hit, then slow-mo for kill cam

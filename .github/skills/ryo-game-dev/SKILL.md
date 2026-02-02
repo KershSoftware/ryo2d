@@ -500,3 +500,81 @@ impl Game for MyGame {
 | `TileMode::Horizontal` | Tiles across screen width |
 | `TileMode::InfiniteScroll` | Seamless endless scrolling (default) |
 
+## Game Juice (Camera Shake & Time Control)
+
+### Camera Shake
+
+Trauma-based screen shake for impact feedback:
+
+```rust
+// Trigger shake on impacts
+ctx.camera.add_trauma(0.3);  // Light hit
+ctx.camera.add_trauma(0.7);  // Heavy explosion
+
+// Configure shake feel (optional, defaults are good)
+ctx.camera.configure_shake(20.0, 0.5);  // max_offset, decay_rate
+```
+
+| Trauma | Effect | Use Case |
+|--------|--------|----------|
+| 0.1-0.2 | Light rumble | Small hits, pickups |
+| 0.3-0.5 | Medium shake | Player damage, kills |
+| 0.6-0.8 | Heavy shake | Explosions, boss hits |
+| 1.0 | Maximum | Screen-filling events |
+
+**How it works:** Intensity = trauma², so small values feel gentle while large values feel intense. Trauma decays automatically.
+
+### Time Scale / Slow-Mo
+
+Slow down or speed up game time:
+
+```rust
+// Slow-mo effects
+ctx.set_time_scale(0.3);  // 30% speed for dramatic moments
+ctx.set_time_scale(1.0);  // Return to normal
+ctx.set_time_scale(2.0);  // Fast-forward
+
+// Query state
+let scale = ctx.time_scale();
+```
+
+**What's affected:** Game logic dt, physics, animations, tweens.
+**What's NOT affected:** Input, UI, camera shake (these use real-time).
+
+### Hitstop / Freeze Frame
+
+Brief freeze for impact emphasis:
+
+```rust
+// Freeze on impact
+ctx.hitstop(0.05);  // 50ms freeze on hit
+ctx.hitstop(0.1);   // 100ms freeze on critical/kill
+
+// Check state
+if ctx.is_hitstop_active() {
+    // Currently frozen
+}
+```
+
+**How it works:** Game dt becomes 0 during hitstop, then auto-resumes.
+
+### Combining for Maximum Juice
+
+```rust
+// On enemy kill
+fn on_enemy_killed(&mut self, ctx: &mut SceneContext) {
+    ctx.camera.add_trauma(0.4);   // Screen shake
+    ctx.hitstop(0.05);            // Brief freeze
+    // Optionally slow-mo after hitstop
+    ctx.set_time_scale(0.5);
+    self.slowmo_timer = 0.3;      // Return to normal after 0.3s real time
+}
+
+// On player death
+fn on_player_death(&mut self, ctx: &mut SceneContext) {
+    ctx.camera.add_trauma(1.0);   // Big shake
+    ctx.hitstop(0.15);            // Long freeze
+    ctx.set_time_scale(0.2);      // Slow-mo death sequence
+}
+```
+

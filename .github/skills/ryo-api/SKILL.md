@@ -70,9 +70,34 @@ Available in `Game` trait methods:
 | `effects` | `&mut EffectsManager` | Post-processing effects |
 | `collision_events` | `&[PhysicsCollisionEvent]` | Physics collision events this frame |
 
+**Time Control Methods (on GameContext and SceneContext):**
+
+```rust
+impl GameContext<'_> {
+    // Time Scale - affects game logic, physics, animations, tweens
+    fn set_time_scale(&mut self, scale: f32);  // 0.0=frozen, 1.0=normal, >1.0=fast
+    fn time_scale(&self) -> f32;
+
+    // Hitstop - freeze frame that auto-expires
+    fn hitstop(&mut self, duration_secs: f32); // Freeze for duration
+    fn is_hitstop_active(&self) -> bool;
+}
+```
+
 ### SceneContext
 
-Available in `Scene` trait methods (same fields as GameContext).
+Available in `Scene` trait methods (same fields and methods as GameContext).
+
+### TimeControl
+
+Shared state for time scale and hitstop:
+
+```rust
+pub struct TimeControl {
+    pub time_scale: f32,        // Default: 1.0
+    pub hitstop_remaining: f32, // Default: 0.0
+}
+```
 
 ### UiContext
 
@@ -829,22 +854,28 @@ For screen-style coordinates (0,0 = top-left), center the camera at half the vie
 impl Camera {
     fn new(viewport_width: u32, viewport_height: u32) -> Self;
     fn centered_at(x: f32, y: f32, viewport_width: u32, viewport_height: u32) -> Self;
-    
+
     fn set_position(&mut self, x: f32, y: f32);
     fn position(&self) -> (f32, f32);
     fn set_zoom(&mut self, zoom: f32);
     fn zoom(&self) -> f32;
     fn viewport_size(&self) -> (f32, f32);        // (width, height)
-    
+
     fn screen_to_world(&self, screen_x: f32, screen_y: f32) -> (f32, f32);
     fn world_to_screen(&self, world_x: f32, world_y: f32) -> (f32, f32);
-    
+
     fn visible_bounds(&self) -> CameraBounds;     // World-space AABB
     fn is_visible(&self, x: f32, y: f32, w: f32, h: f32) -> bool;
-    
+
     fn follow(&mut self, target_x: f32, target_y: f32, lerp_factor: f32);
     fn snap_to(&mut self, target_x: f32, target_y: f32);
     fn clamp_to_bounds(&mut self, min_x: f32, min_y: f32, max_x: f32, max_y: f32);
+
+    // Camera Shake
+    fn add_trauma(&mut self, amount: f32);        // Add trauma (0.0-1.0), accumulates
+    fn configure_shake(&mut self, max_offset: f32, decay_rate: f32);  // Configure shake feel
+    fn trauma(&self) -> f32;                      // Current trauma level
+    fn shake_offset(&self) -> (f32, f32);         // Current shake offset (auto-applied)
 }
 
 // Screen-style coordinates setup (0,0 = top-left):
@@ -853,6 +884,30 @@ ctx.camera.set_position(vw / 2.0, vh / 2.0);
 // Now world (0, 0) = screen top-left
 // world (vw, vh) = screen bottom-right
 ```
+
+### Camera Shake
+
+Trauma-based screen shake for impact feedback. Intensity = trauma² for better feel.
+
+```rust
+// Trigger shake on impacts
+ctx.camera.add_trauma(0.3);  // Light hit
+ctx.camera.add_trauma(0.7);  // Explosion
+
+// Configure shake parameters (defaults: max_offset=10.0, decay_rate=1.0)
+ctx.camera.configure_shake(20.0, 0.5);  // More intense, slower decay
+
+// Query state
+let trauma = ctx.camera.trauma();
+let (offset_x, offset_y) = ctx.camera.shake_offset();
+```
+
+**How it works:**
+1. `add_trauma(amount)` accumulates trauma (clamped to 1.0)
+2. Engine updates shake each frame with real dt
+3. Intensity = trauma² creates smooth shake feel
+4. `world_to_screen()` auto-applies shake offset
+5. Trauma decays by `decay_rate * dt` each frame
 
 ---
 

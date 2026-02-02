@@ -16,7 +16,7 @@ use super::ecs::{
 };
 use super::error::{EngineError, EngineResult};
 use super::events::{CollisionStarted, CollisionStopped, Events};
-use super::game::{Game, GameContext, GpuRenderContext, WindowRequest};
+use super::game::{Game, GameContext, GpuRenderContext, TimeControl, WindowRequest};
 use super::graphics::{
   AnimationController, Animator, BatchCollector, Camera, CompositeTile, GroupedCollider, Sprite,
   SpriteGpuRenderer, TileDirection, WgpuRenderer,
@@ -88,6 +88,10 @@ struct TimeState {
   current_fps: u64,
   /// Last time we printed debug info
   last_debug_print: Instant,
+  /// Time scale multiplier (0.0 = frozen, 1.0 = normal, >1.0 = fast)
+  time_scale: f32,
+  /// Remaining hitstop duration in seconds (freeze frame effect)
+  hitstop_remaining: f32,
 }
 
 impl TimeState {
@@ -102,6 +106,8 @@ impl TimeState {
       frame_count: 0,
       current_fps: 0,
       last_debug_print: now,
+      time_scale: 1.0,
+      hitstop_remaining: 0.0,
     }
   }
 
@@ -136,6 +142,25 @@ impl TimeState {
 
   fn fixed_dt(&self) -> f32 {
     self.fixed_timestep.as_secs_f32()
+  }
+
+  /// Get the fixed delta time scaled by time_scale, returning 0.0 during hitstop.
+  ///
+  /// This is used for animations, tweens, and game logic that should be affected
+  /// by slow-mo and hitstop effects.
+  fn scaled_fixed_dt(&self) -> f32 {
+    if self.hitstop_remaining > 0.0 {
+      0.0
+    } else {
+      self.fixed_timestep.as_secs_f32() * self.time_scale
+    }
+  }
+
+  /// Update hitstop timer with real (unscaled) delta time.
+  fn update_hitstop(&mut self, dt: f32) {
+    if self.hitstop_remaining > 0.0 {
+      self.hitstop_remaining = (self.hitstop_remaining - dt).max(0.0);
+    }
   }
 
   fn interpolation_alpha(&self) -> f32 {
@@ -288,6 +313,8 @@ pub struct Engine {
   events: Events,
   // Gamepad input library (gilrs)
   gilrs: Option<Gilrs>,
+  // Time control for slow-mo and hitstop effects (shared with GameContext/SceneContext)
+  time_control: TimeControl,
 }
 
 impl Engine {
@@ -509,6 +536,7 @@ impl Engine {
       surface_needs_reconfigure: false,
       events: Events::new(),
       gilrs,
+      time_control: TimeControl::default(),
     }
   }
 
@@ -650,6 +678,7 @@ impl Engine {
         lighting: &mut self.lighting,
         events: &mut self.events,
         window_request: &mut self.window_request,
+        time_control: &mut self.time_control,
       };
 
       // Call user's update function
@@ -1314,6 +1343,7 @@ impl ApplicationHandler for Engine {
           lighting: &mut self.lighting,
           events: &mut self.events,
           window_request: &mut self.window_request,
+          time_control: &mut self.time_control,
         };
         game.init(&mut ctx);
         self.game = Some(game);
@@ -1481,6 +1511,12 @@ impl ApplicationHandler for Engine {
           }
         }
 
+        // Get real dt for systems that should use unscaled time (shake, hitstop decay, UI)
+        let real_dt = self.time.as_ref().map(|t| t.fixed_dt()).unwrap_or(0.0);
+
+        // Update camera shake with real (unscaled) dt
+        self.camera.update_shake(real_dt);
+
         // Fixed timestep update loop (includes game logic + physics)
         let mut did_update = false;
         let update_start = std::time::Instant::now();
@@ -1490,12 +1526,24 @@ impl ApplicationHandler for Engine {
           .map(|t| t.should_update())
           .unwrap_or(false)
         {
-          let fixed_dt = self
+          // Sync time_control to TimeState before each update
+          // This picks up any time_scale or hitstop changes from game code
+          if let Some(time) = &mut self.time {
+            time.time_scale = self.time_control.time_scale;
+            // Only use time_control hitstop if it's greater (allows game to trigger new hitstops)
+            if self.time_control.hitstop_remaining > time.hitstop_remaining {
+              time.hitstop_remaining = self.time_control.hitstop_remaining;
+            }
+          }
+
+          // Use scaled dt for game logic (affected by time_scale and hitstop)
+          let scaled_dt = self
             .time
             .as_ref()
             .expect("TimeState should be initialized")
-            .fixed_dt();
-          self.update(fixed_dt);
+            .scaled_fixed_dt();
+          self.update(scaled_dt);
+
           if let Some(time) = &mut self.time {
             time.consume_update();
           }
@@ -1507,6 +1555,19 @@ impl ApplicationHandler for Engine {
             self.input.consume_keyboard_events();
             did_update = true;
           }
+        }
+
+        // After all updates: decay hitstop and sync back to time_control
+        // This must happen AFTER the loop so game-triggered hitstops take effect immediately
+        if let Some(time) = &mut self.time {
+          // First sync any final hitstop the game set in the last update
+          if self.time_control.hitstop_remaining > time.hitstop_remaining {
+            time.hitstop_remaining = self.time_control.hitstop_remaining;
+          }
+          // Then decay with real dt
+          time.update_hitstop(real_dt);
+          // Sync back so game can read is_hitstop_active()
+          self.time_control.hitstop_remaining = time.hitstop_remaining;
         }
         // Update time includes both game logic and physics
         self.frame_timings.update = update_start.elapsed();
@@ -2426,5 +2487,94 @@ mod tests {
 
     let builder = EngineBuilder::new().window_mode(WindowMode::ResizableStretch);
     assert_eq!(builder.config.window_mode, WindowMode::ResizableStretch);
+  }
+
+  // ===========================================================================
+  // Time Scale & Hitstop Tests
+  // ===========================================================================
+
+  #[test]
+  fn time_state_initializes_time_scale() {
+    let time = TimeState::new(60, 60);
+    assert_eq!(time.time_scale, 1.0);
+    assert_eq!(time.hitstop_remaining, 0.0);
+  }
+
+  #[test]
+  fn scaled_fixed_dt_returns_normal_at_scale_one() {
+    let time = TimeState::new(60, 60);
+    let expected = 1.0 / 60.0;
+    assert!((time.scaled_fixed_dt() - expected).abs() < 0.0001);
+  }
+
+  #[test]
+  fn scaled_fixed_dt_scales_by_time_scale() {
+    let mut time = TimeState::new(60, 60);
+    time.time_scale = 0.5;
+    let expected = (1.0 / 60.0) * 0.5;
+    assert!((time.scaled_fixed_dt() - expected).abs() < 0.0001);
+  }
+
+  #[test]
+  fn scaled_fixed_dt_returns_zero_during_hitstop() {
+    let mut time = TimeState::new(60, 60);
+    time.hitstop_remaining = 0.05;
+    assert_eq!(time.scaled_fixed_dt(), 0.0);
+  }
+
+  #[test]
+  fn scaled_fixed_dt_ignores_time_scale_during_hitstop() {
+    let mut time = TimeState::new(60, 60);
+    time.time_scale = 2.0;
+    time.hitstop_remaining = 0.05;
+    // Hitstop takes priority
+    assert_eq!(time.scaled_fixed_dt(), 0.0);
+  }
+
+  #[test]
+  fn update_hitstop_decays_remaining() {
+    let mut time = TimeState::new(60, 60);
+    time.hitstop_remaining = 0.1;
+
+    time.update_hitstop(0.03);
+    assert!((time.hitstop_remaining - 0.07).abs() < 0.001);
+
+    time.update_hitstop(0.03);
+    assert!((time.hitstop_remaining - 0.04).abs() < 0.001);
+  }
+
+  #[test]
+  fn update_hitstop_clamps_to_zero() {
+    let mut time = TimeState::new(60, 60);
+    time.hitstop_remaining = 0.05;
+
+    time.update_hitstop(0.1); // More than remaining
+    assert_eq!(time.hitstop_remaining, 0.0);
+  }
+
+  #[test]
+  fn update_hitstop_noop_when_zero() {
+    let mut time = TimeState::new(60, 60);
+    assert_eq!(time.hitstop_remaining, 0.0);
+
+    time.update_hitstop(0.1);
+    assert_eq!(time.hitstop_remaining, 0.0);
+  }
+
+  #[test]
+  fn scaled_fixed_dt_resumes_after_hitstop_ends() {
+    let mut time = TimeState::new(60, 60);
+    time.hitstop_remaining = 0.01;
+
+    // During hitstop
+    assert_eq!(time.scaled_fixed_dt(), 0.0);
+
+    // End hitstop
+    time.update_hitstop(0.02);
+    assert_eq!(time.hitstop_remaining, 0.0);
+
+    // Should now return normal dt
+    let expected = 1.0 / 60.0;
+    assert!((time.scaled_fixed_dt() - expected).abs() < 0.0001);
   }
 }

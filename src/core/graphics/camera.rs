@@ -1,3 +1,79 @@
+/// Camera shake state for impact feedback.
+///
+/// Uses a trauma-based system where trauma accumulates from impacts
+/// and decays over time. Shake intensity is trauma² for better feel.
+#[derive(Debug, Clone)]
+pub struct CameraShake {
+  /// Current trauma level (0.0 to 1.0, clamped)
+  trauma: f32,
+  /// Maximum pixel offset at full trauma (default: 10.0)
+  max_offset: f32,
+  /// Trauma decay rate per second (default: 1.0)
+  decay_rate: f32,
+  /// Time accumulator for smooth noise sampling
+  noise_time: f32,
+  /// Current shake offset in X (pixels)
+  offset_x: f32,
+  /// Current shake offset in Y (pixels)
+  offset_y: f32,
+}
+
+impl Default for CameraShake {
+  fn default() -> Self {
+    Self {
+      trauma: 0.0,
+      max_offset: 10.0,
+      decay_rate: 1.0,
+      noise_time: 0.0,
+      offset_x: 0.0,
+      offset_y: 0.0,
+    }
+  }
+}
+
+impl CameraShake {
+  /// Create shake with custom parameters.
+  pub fn new(max_offset: f32, decay_rate: f32) -> Self {
+    Self {
+      max_offset,
+      decay_rate,
+      ..Default::default()
+    }
+  }
+
+  /// Smooth noise function using layered sine waves.
+  /// Returns value in range [-1.0, 1.0].
+  fn noise(t: f32, seed: f32) -> f32 {
+    // Layer multiple frequencies for more organic feel
+    let n1 = (t * 7.0 + seed).sin();
+    let n2 = (t * 13.0 + seed * 2.3).sin() * 0.5;
+    let n3 = (t * 23.0 + seed * 5.7).sin() * 0.25;
+    (n1 + n2 + n3) / 1.75 // Normalize to [-1, 1]
+  }
+
+  /// Update shake state and calculate new offsets.
+  fn update(&mut self, dt: f32) {
+    if self.trauma <= 0.0 {
+      self.offset_x = 0.0;
+      self.offset_y = 0.0;
+      return;
+    }
+
+    // Advance noise time
+    self.noise_time += dt * 10.0;
+
+    // Calculate intensity (trauma squared for better feel)
+    let intensity = self.trauma * self.trauma;
+
+    // Calculate offsets using smooth noise
+    self.offset_x = Self::noise(self.noise_time, 0.0) * self.max_offset * intensity;
+    self.offset_y = Self::noise(self.noise_time, 100.0) * self.max_offset * intensity;
+
+    // Decay trauma
+    self.trauma = (self.trauma - self.decay_rate * dt).max(0.0);
+  }
+}
+
 /// 2D Camera for world-to-screen transformations
 #[derive(Debug, Clone)]
 pub struct Camera {
@@ -9,6 +85,8 @@ pub struct Camera {
   /// Viewport dimensions (screen size)
   viewport_width: f32,
   viewport_height: f32,
+  /// Camera shake state
+  shake: CameraShake,
 }
 
 impl Camera {
@@ -20,6 +98,7 @@ impl Camera {
       zoom: 1.0,
       viewport_width: viewport_width as f32,
       viewport_height: viewport_height as f32,
+      shake: CameraShake::default(),
     }
   }
 
@@ -31,6 +110,7 @@ impl Camera {
       zoom: 1.0,
       viewport_width: viewport_width as f32,
       viewport_height: viewport_height as f32,
+      shake: CameraShake::default(),
     }
   }
 
@@ -61,12 +141,15 @@ impl Camera {
   /// The camera position represents the center of the view, so:
   /// - Objects at camera position appear at screen center
   /// - Objects to the left/above camera appear to the left/above center
+  ///
+  /// Camera shake offset is automatically applied.
   pub fn world_to_screen(&self, world_x: f32, world_y: f32) -> (f32, f32) {
     let half_w = self.viewport_width / 2.0;
     let half_h = self.viewport_height / 2.0;
 
-    let screen_x = (world_x - self.x) * self.zoom + half_w;
-    let screen_y = (world_y - self.y) * self.zoom + half_h;
+    // Apply shake offset to camera position
+    let screen_x = (world_x - self.x) * self.zoom + half_w + self.shake.offset_x;
+    let screen_y = (world_y - self.y) * self.zoom + half_h + self.shake.offset_y;
 
     (screen_x, screen_y)
   }
@@ -120,6 +203,68 @@ impl Camera {
   pub fn snap_to(&mut self, target_x: f32, target_y: f32) {
     self.x = target_x;
     self.y = target_y;
+  }
+
+  // ===========================================================================
+  // Camera Shake
+  // ===========================================================================
+
+  /// Add trauma to trigger camera shake.
+  ///
+  /// Trauma values are clamped to 0.0-1.0 and accumulate.
+  /// Use small values (0.1-0.3) for minor impacts, larger values (0.5-0.8) for
+  /// explosions or significant events.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // On player hit
+  /// ctx.camera.add_trauma(0.3);
+  ///
+  /// // On explosion
+  /// ctx.camera.add_trauma(0.7);
+  /// ```
+  pub fn add_trauma(&mut self, amount: f32) {
+    self.shake.trauma = (self.shake.trauma + amount).clamp(0.0, 1.0);
+  }
+
+  /// Configure camera shake parameters.
+  ///
+  /// # Arguments
+  ///
+  /// * `max_offset` - Maximum pixel offset at full trauma (default: 10.0)
+  /// * `decay_rate` - How fast trauma decays per second (default: 1.0)
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Stronger shake that decays slowly
+  /// ctx.camera.configure_shake(20.0, 0.5);
+  /// ```
+  pub fn configure_shake(&mut self, max_offset: f32, decay_rate: f32) {
+    self.shake.max_offset = max_offset;
+    self.shake.decay_rate = decay_rate;
+  }
+
+  /// Get the current trauma level (0.0 to 1.0).
+  pub fn trauma(&self) -> f32 {
+    self.shake.trauma
+  }
+
+  /// Get the current shake offset in pixels.
+  ///
+  /// Returns (offset_x, offset_y). Useful for custom rendering that needs
+  /// to account for shake.
+  pub fn shake_offset(&self) -> (f32, f32) {
+    (self.shake.offset_x, self.shake.offset_y)
+  }
+
+  /// Update camera shake state.
+  ///
+  /// Called internally by the engine each frame with real (unscaled) delta time.
+  /// Game code should not call this directly.
+  pub(crate) fn update_shake(&mut self, dt: f32) {
+    self.shake.update(dt);
   }
 
   /// Clamp camera position to stay within world bounds
@@ -314,5 +459,94 @@ mod tests {
     assert!(bounds.contains(0.0, 0.0));
     assert!(!bounds.contains(-1.0, 50.0));
     assert!(!bounds.contains(50.0, 101.0));
+  }
+
+  // ===========================================================================
+  // Camera Shake Tests
+  // ===========================================================================
+
+  #[test]
+  fn shake_starts_at_zero() {
+    let cam = Camera::new(800, 600);
+    assert_eq!(cam.trauma(), 0.0);
+    assert_eq!(cam.shake_offset(), (0.0, 0.0));
+  }
+
+  #[test]
+  fn add_trauma_accumulates() {
+    let mut cam = Camera::new(800, 600);
+    cam.add_trauma(0.3);
+    assert!((cam.trauma() - 0.3).abs() < 0.001);
+
+    cam.add_trauma(0.4);
+    assert!((cam.trauma() - 0.7).abs() < 0.001);
+  }
+
+  #[test]
+  fn trauma_clamps_to_one() {
+    let mut cam = Camera::new(800, 600);
+    cam.add_trauma(0.8);
+    cam.add_trauma(0.5);
+    assert_eq!(cam.trauma(), 1.0);
+  }
+
+  #[test]
+  fn shake_decays_over_time() {
+    let mut cam = Camera::new(800, 600);
+    cam.add_trauma(1.0);
+    assert_eq!(cam.trauma(), 1.0);
+
+    // Decay at default rate (1.0 per second), 0.5 seconds
+    cam.update_shake(0.5);
+    assert!((cam.trauma() - 0.5).abs() < 0.001);
+
+    // Another 0.5 seconds should bring it to zero
+    cam.update_shake(0.5);
+    assert_eq!(cam.trauma(), 0.0);
+  }
+
+  #[test]
+  fn shake_produces_offset_when_active() {
+    let mut cam = Camera::new(800, 600);
+    cam.add_trauma(1.0);
+    cam.update_shake(0.1);
+
+    let (ox, oy) = cam.shake_offset();
+    // Offset should be non-zero when trauma is active
+    assert!(ox.abs() > 0.001 || oy.abs() > 0.001);
+  }
+
+  #[test]
+  fn shake_offset_zero_when_no_trauma() {
+    let mut cam = Camera::new(800, 600);
+    cam.update_shake(0.1);
+
+    assert_eq!(cam.shake_offset(), (0.0, 0.0));
+  }
+
+  #[test]
+  fn configure_shake_changes_parameters() {
+    let mut cam = Camera::new(800, 600);
+    cam.configure_shake(20.0, 2.0);
+    cam.add_trauma(1.0);
+
+    // With decay_rate 2.0, 0.5 seconds should fully decay
+    cam.update_shake(0.5);
+    assert_eq!(cam.trauma(), 0.0);
+  }
+
+  #[test]
+  fn world_to_screen_includes_shake_offset() {
+    let mut cam = Camera::new(800, 600);
+    cam.add_trauma(1.0);
+    cam.update_shake(0.05);
+
+    let (ox, oy) = cam.shake_offset();
+    let (sx, sy) = cam.world_to_screen(0.0, 0.0);
+
+    // Screen position should include shake offset
+    // Without shake: center is (400, 300)
+    assert!((sx - 400.0 - ox).abs() < 0.001);
+    assert!((sy - 300.0 - oy).abs() < 0.001);
   }
 }
