@@ -14,3 +14,6 @@ mod engine_lifecycle;
 
 #[path = "e2e/gpu_basics.rs"]
 mod gpu_basics;
+
+#[path = "e2e/network.rs"]
+mod network;
