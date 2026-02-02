@@ -65,11 +65,15 @@ impl GameScene {
     let mut rng = rand::thread_rng();
     let gap_center_y = rng.gen_range(PIPE_MIN_HEIGHT..=PIPE_MAX_HEIGHT);
 
-    // Load pipe sprites
-    let cap_sprite = Sprite::load("assets/pipe_cap.png").expect("Failed to load pipe cap");
-    let body_sprite = Sprite::load("assets/pipe_body.png").expect("Failed to load pipe body");
-    let cap_handle = SpriteHandle::from_sprite(cap_sprite, "pipe_cap.png");
-    let body_handle = SpriteHandle::from_sprite(body_sprite, "pipe_body.png");
+    // Load pipe sprites (cached by AssetManager)
+    let cap_handle = ctx
+      .assets
+      .load_sprite("assets/pipe_cap.png")
+      .expect("Failed to load pipe cap");
+    let body_handle = ctx
+      .assets
+      .load_sprite("assets/pipe_body.png")
+      .expect("Failed to load pipe body");
 
     let cap_height = cap_handle.height() as f32; // 24px
 
@@ -142,39 +146,37 @@ impl GameScene {
   }
 
   fn spawn_ground(&mut self, ctx: &mut SceneContext) {
-    // Spawn two ground segments for seamless scrolling at original size
-    let ground_sprite = Sprite::load("assets/ground.png").expect("Failed to load ground sprite");
-    let sprite_width = ground_sprite.width() as f32;
-    let sprite_height = ground_sprite.height() as f32;
+    // Spawn ground segments for seamless scrolling (cached by AssetManager)
+    let ground_handle = ctx
+      .assets
+      .load_sprite("assets/bg-ground.png")
+      .expect("Failed to load ground sprite");
+    let sprite_width = ground_handle.width() as f32;
+    let sprite_height = ground_handle.height() as f32;
 
-    // Position sprite so its bottom edge is at the bottom of the screen
-    // Sprite is anchored top-left, so to put bottom at SCREEN_HEIGHT:
-    // top_y + sprite_height = SCREEN_HEIGHT
-    // top_y = SCREEN_HEIGHT - sprite_height
-    let y = (SCREEN_HEIGHT as f32) - sprite_height;
+    // Scale to match desired ground height (same as old ground.png)
+    let target_height = 112.0;
+    let scale = target_height / sprite_height;
+    let scaled_width = sprite_width * scale;
 
-    println!(
-      "Ground sprite: width={}, height={}, y position={}, sprite bottom will be at={}",
-      sprite_width,
-      sprite_height,
-      y,
-      y + sprite_height
-    );
+    // Calculate how many tiles needed to cover screen width + buffer
+    let tiles_needed = ((SCREEN_WIDTH as f32 / scaled_width).ceil() as i32 + 1) as usize;
+    let wrap_distance = scaled_width * tiles_needed as f32;
 
-    // Use actual sprite width for tiling
-    let tile_width = sprite_width;
-    let wrap_distance = sprite_width * 2.0;
+    // Position ground at bottom of screen using BottomLeft anchor
+    let screen_bottom = SCREEN_HEIGHT as f32;
 
-    for i in 0..2 {
-      let x = i as f32 * sprite_width;
-      let ground_handle = SpriteHandle::from_sprite(ground_sprite.clone(), "bg-ground.png");
-      let transform = Transform::new(x, y);
+    for i in 0..tiles_needed {
+      let x = i as f32 * scaled_width;
+      let transform = Transform::new(x, screen_bottom)
+        .with_anchor(Anchor::BottomLeft)
+        .with_scale(scale, scale);
 
       let ground = ctx.world.spawn((
         transform,
-        Renderable::sprite(ground_handle).with_z_order(15),
+        Renderable::sprite(ground_handle.clone()).with_z_order(15),
         Ground,
-        Scrolling::new(GROUND_SCROLL_SPEED, tile_width, wrap_distance),
+        Scrolling::new(GROUND_SCROLL_SPEED, scaled_width, wrap_distance),
       ));
       self.ground_entities.push(ground);
     }
@@ -182,10 +184,13 @@ impl GameScene {
 
   fn spawn_background(&mut self, ctx: &mut SceneContext) {
     // Spawn two background segments for seamless parallax scrolling
-    // Background scrolls slower than pipes/ground for depth effect
-    let bg_sprite = Sprite::load("assets/bg.png").expect("Failed to load background sprite");
-    let bg_width = bg_sprite.width() as f32;
-    let bg_height = bg_sprite.height() as f32;
+    // Background scrolls slower than pipes/ground for depth effect (cached by AssetManager)
+    let bg_handle = ctx
+      .assets
+      .load_sprite("assets/bg.png")
+      .expect("Failed to load background sprite");
+    let bg_width = bg_handle.width() as f32;
+    let bg_height = bg_handle.height() as f32;
     let tile_width = bg_width;
     let wrap_distance = bg_width * 2.0;
 
@@ -195,13 +200,12 @@ impl GameScene {
 
     for i in 0..2 {
       let x = i as f32 * bg_width * scale;
-      let bg_handle = SpriteHandle::from_sprite(bg_sprite.clone(), "bg.png");
       let mut transform = Transform::new(x, 0.0);
       transform.scale_x = scale;
       transform.scale_y = scale;
       let background = ctx.world.spawn((
         transform,
-        Renderable::sprite(bg_handle).with_z_order(0), // Render behind everything
+        Renderable::sprite(bg_handle.clone()).with_z_order(0), // Render behind everything
         Scrolling::new(
           BACKGROUND_SCROLL_SPEED,
           tile_width * scale,

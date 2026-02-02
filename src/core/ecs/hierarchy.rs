@@ -98,6 +98,10 @@ pub struct WorldTransform {
   pub pivot_x: f32,
   /// Pivot Y as normalized value (0.0 = top, 0.5 = center, 1.0 = bottom)
   pub pivot_y: f32,
+  /// Local X offset in pixels (not accumulated from parents)
+  pub offset_x: f32,
+  /// Local Y offset in pixels (not accumulated from parents)
+  pub offset_y: f32,
 }
 
 impl WorldTransform {
@@ -112,6 +116,8 @@ impl WorldTransform {
       scale_y: 1.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     }
   }
 
@@ -126,6 +132,8 @@ impl WorldTransform {
       scale_y: t.scale_y,
       pivot_x: t.pivot_x,
       pivot_y: t.pivot_y,
+      offset_x: t.offset_x,
+      offset_y: t.offset_y,
     }
   }
 
@@ -164,6 +172,9 @@ impl WorldTransform {
       // Pivot: use child's pivot (not inherited from parent)
       pivot_x: local.pivot_x,
       pivot_y: local.pivot_y,
+      // Offset: use child's offset (local adjustment, not accumulated)
+      offset_x: local.offset_x,
+      offset_y: local.offset_y,
     }
   }
 
@@ -193,6 +204,8 @@ mod tests {
       scale_y: 0.5,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 3.0,
+      offset_y: 4.0,
     };
 
     let wt = WorldTransform::from_transform(&t);
@@ -205,6 +218,8 @@ mod tests {
     assert_eq!(wt.scale_y, 0.5);
     assert_eq!(wt.pivot_x, 0.5);
     assert_eq!(wt.pivot_y, 0.5);
+    assert_eq!(wt.offset_x, 3.0);
+    assert_eq!(wt.offset_y, 4.0);
   }
 
   #[test]
@@ -218,6 +233,8 @@ mod tests {
       scale_y: 1.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     };
 
     let local = Transform {
@@ -229,6 +246,8 @@ mod tests {
       scale_y: 1.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     };
 
     let child = WorldTransform::from_parent_and_local(&parent, &local);
@@ -248,6 +267,8 @@ mod tests {
       scale_y: 1.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     };
 
     let local = Transform {
@@ -259,6 +280,8 @@ mod tests {
       scale_y: 1.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     };
 
     let child = WorldTransform::from_parent_and_local(&parent, &local);
@@ -280,6 +303,8 @@ mod tests {
       scale_y: 2.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     };
 
     let local = Transform {
@@ -291,6 +316,8 @@ mod tests {
       scale_y: 1.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     };
 
     let child = WorldTransform::from_parent_and_local(&parent, &local);
@@ -314,6 +341,8 @@ mod tests {
       scale_y: 1.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     };
 
     let local = Transform {
@@ -325,6 +354,8 @@ mod tests {
       scale_y: 2.0,
       pivot_x: 0.25,
       pivot_y: 0.75,
+      offset_x: 5.0,
+      offset_y: -3.0,
     };
 
     let child = WorldTransform::from_parent_and_local(&parent, &local);
@@ -339,6 +370,9 @@ mod tests {
     // Pivot is taken from local (child)
     assert_eq!(child.pivot_x, 0.25);
     assert_eq!(child.pivot_y, 0.75);
+    // Offset is taken from local (not accumulated)
+    assert_eq!(child.offset_x, 5.0);
+    assert_eq!(child.offset_y, -3.0);
   }
 
   #[test]

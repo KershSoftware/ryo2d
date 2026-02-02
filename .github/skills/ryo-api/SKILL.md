@@ -360,30 +360,83 @@ Reference-counted handle to a loaded sprite. Clone freely.
 
 ```rust
 impl AssetManager {
-    // Loading
+    // Synchronous loading (blocks until complete)
     fn load_sprite<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<SpriteHandle>;
+
+    // Single async load
     fn load_sprite_async<P: AsRef<Path>>(&mut self, path: P) -> AsyncSpriteHandle;
-    
-    // Creating
+
+    // Batch async loading (for loading screens with progress)
+    fn start_loading<P, I>(&mut self, paths: I);  // Queue multiple assets
+    fn process_async_loads(&mut self) -> usize;   // Process completed loads (call each frame)
+    fn loading_progress(&self) -> LoadingProgress; // Get current progress
+    fn is_loading_complete(&self) -> bool;        // All queued assets loaded?
+    fn reset_loading_progress(&mut self);         // Reset for new batch
+
+    // Creating sprites from data
     fn create_sprite<P: AsRef<Path>>(&self, sprite: Sprite, name: P) -> SpriteHandle;
-    
-    // Async management
-    fn process_async_loads(&mut self) -> usize;
-    fn has_pending_loads(&self) -> bool;
-    fn pending_load_count(&self) -> usize;
-    
+
     // Cache management
+    fn cache_sprite_handle(&mut self, handle: SpriteHandle); // Pre-cache a loaded sprite
     fn is_sprite_cached<P: AsRef<Path>>(&self, path: P) -> bool;
     fn sprite_count(&self) -> usize;
     fn gc_sprites(&mut self) -> usize;
     fn clear_sprite_cache(&mut self);
     fn stats(&self) -> AssetStats;
-    
+
     // Hot reload
     fn enable_hot_reload<P, I>(&mut self, watch_paths: I) -> AssetResult<()>;
     fn disable_hot_reload(&mut self);
     fn is_hot_reload_enabled(&self) -> bool;
     fn process_reloads(&mut self) -> usize;
+}
+```
+
+### LoadingProgress
+
+Progress tracking for batch asset loading:
+
+```rust
+pub struct LoadingProgress {
+    pub total: usize,      // Total assets in batch
+    pub completed: usize,  // Assets finished (success or fail)
+    pub succeeded: usize,  // Successfully loaded
+    pub failed: usize,     // Failed to load
+    pub current: Option<String>,  // Path of asset being loaded
+    pub failures: Vec<String>,    // Paths that failed
+}
+
+impl LoadingProgress {
+    fn percentage(&self) -> f32;      // 0.0 to 1.0
+    fn current_asset(&self) -> &str;  // Filename of current asset (or "")
+}
+```
+
+**Loading Screen Example:**
+
+```rust
+// In Ready state - start loading
+ctx.assets.start_loading(vec![
+    "assets/player.png",
+    "assets/enemies.png",
+    "assets/background.png",
+]);
+
+// In Loading state - process and check progress
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    // Process completed loads each frame
+    ctx.assets.process_async_loads();
+
+    // Get progress for UI
+    let progress = ctx.assets.loading_progress();
+    self.progress_bar_fill = progress.percentage();
+    self.current_asset_text = progress.current_asset().to_string();
+
+    // Check completion
+    if ctx.assets.is_loading_complete() {
+        return SceneAction::Switch(Box::new(GameScene::new()));
+    }
+    SceneAction::Continue
 }
 ```
 

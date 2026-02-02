@@ -95,7 +95,7 @@ pub mod prelude {
 
   // Assets
   pub use crate::core::asset::{
-    AssetManager, AssetStats, AsyncSpriteHandle, LoadingState, SpriteHandle,
+    AssetManager, AssetStats, AsyncSpriteHandle, LoadingProgress, LoadingState, SpriteHandle,
   };
 
   // Camera

@@ -75,7 +75,7 @@ function Get-Examples {
                         $displayName = $name
 
                         # Try to read project name from Ryo.toml
-                        if (Test-Path $ryoToml) {
+                        if ($ryoToml -and (Test-Path $ryoToml)) {
                             $content = Get-Content $ryoToml -Raw
                             if ($content -match 'name\s*=\s*"([^"]+)"') {
                                 $displayName = $matches[1]

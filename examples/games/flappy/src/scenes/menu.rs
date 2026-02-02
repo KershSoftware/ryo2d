@@ -8,6 +8,45 @@ use crate::components::Scrolling;
 use crate::constants::*;
 use crate::save::load_high_score;
 
+/// Pre-loaded sprite handles for game assets.
+/// Loaded once in MenuScene::new() before the window appears.
+struct PreloadedAssets {
+  background: Sprite,
+  ground: Sprite,
+  pipe_cap: Sprite,
+  pipe_body: Sprite,
+}
+
+impl PreloadedAssets {
+  /// Load all PNG assets upfront during engine initialization.
+  /// This prevents the white flash that would occur if we loaded during on_enter.
+  fn load() -> Self {
+    Self {
+      background: Sprite::load("assets/bg.png").expect("Failed to load bg.png"),
+      ground: Sprite::load("assets/bg-ground.png").expect("Failed to load bg-ground.png"),
+      pipe_cap: Sprite::load("assets/pipe_cap.png").expect("Failed to load pipe_cap.png"),
+      pipe_body: Sprite::load("assets/pipe_body.png").expect("Failed to load pipe_body.png"),
+    }
+  }
+
+  /// Register preloaded sprites with the AssetManager for caching.
+  /// Call this in on_enter to populate the cache so other scenes can use ctx.assets.load_sprite().
+  fn register_with_cache(self, assets: &mut AssetManager) {
+    // Create handles and register them - these will be cached by path
+    let bg_handle = SpriteHandle::from_sprite(self.background, "assets/bg.png");
+    assets.cache_sprite_handle(bg_handle);
+
+    let ground_handle = SpriteHandle::from_sprite(self.ground, "assets/bg-ground.png");
+    assets.cache_sprite_handle(ground_handle);
+
+    let cap_handle = SpriteHandle::from_sprite(self.pipe_cap, "assets/pipe_cap.png");
+    assets.cache_sprite_handle(cap_handle);
+
+    let body_handle = SpriteHandle::from_sprite(self.pipe_body, "assets/pipe_body.png");
+    assets.cache_sprite_handle(body_handle);
+  }
+}
+
 pub struct MenuScene {
   high_score: u32,
   start_clicked: bool,
@@ -18,6 +57,8 @@ pub struct MenuScene {
   anim_timer: f32,
   anim_frame: bool,
   background_entities: Vec<Entity>,
+  /// Pre-loaded PNG assets (loaded before window appears, registered on first on_enter)
+  preloaded_assets: Option<PreloadedAssets>,
 }
 
 impl MenuScene {
@@ -28,11 +69,14 @@ impl MenuScene {
       .and_then(|ws| ws.config().env_bool("debug_scene"))
       .unwrap_or(false);
 
-    // Load bird sprites for animation
+    // Load bird sprites for animation (SVG - not cacheable via AssetManager)
     let bird_flap_up =
       Sprite::load_svg_fit("assets/bird-flap-up.svg", 64, 64).expect("Failed to load bird sprite");
     let bird_flap_down = Sprite::load_svg_fit("assets/bird-flap-down.svg", 64, 64)
       .expect("Failed to load bird sprite");
+
+    // Pre-load all PNG assets before window appears (prevents long white flash)
+    let preloaded_assets = PreloadedAssets::load();
 
     Self {
       high_score: load_high_score(),
@@ -44,6 +88,7 @@ impl MenuScene {
       anim_timer: 0.0,
       anim_frame: false,
       background_entities: Vec::new(),
+      preloaded_assets: Some(preloaded_assets),
     }
   }
 }
@@ -61,15 +106,21 @@ impl Scene for MenuScene {
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
+    // Register pre-loaded assets with the cache (loaded in new(), before window appeared)
+    // This makes load_sprite() calls instant for other scenes
+    if let Some(preloaded) = self.preloaded_assets.take() {
+      preloaded.register_with_cache(ctx.assets);
+    }
+
     // Start background music (persists across scenes)
     if let Some(audio) = &mut ctx.audio {
-      let options = MusicOptions::new().volume(0.8).looping(true);
+      let options = MusicOptions::new().volume(0.02).looping(true);
       if let Err(e) = audio.play_music_once("assets/8bit-bg.mp3", options) {
         eprintln!("Failed to play background music: {}", e);
       }
     }
 
-    // Spawn scrolling background
+    // Spawn scrolling background (uses cached assets)
     self.spawn_background(ctx);
   }
 
@@ -205,9 +256,12 @@ impl MenuScene {
   fn spawn_background(&mut self, ctx: &mut SceneContext) {
     // Spawn two background segments for seamless parallax scrolling
     // Menu background scrolls faster than game for visual appeal
-    let bg_sprite = Sprite::load("assets/bg.png").expect("Failed to load background sprite");
-    let bg_width = bg_sprite.width() as f32;
-    let bg_height = bg_sprite.height() as f32;
+    let bg_handle = ctx
+      .assets
+      .load_sprite("assets/bg.png")
+      .expect("Failed to load background sprite");
+    let bg_width = bg_handle.width() as f32;
+    let bg_height = bg_handle.height() as f32;
     let tile_width = bg_width;
     let wrap_distance = bg_width * 2.0;
 
@@ -217,13 +271,12 @@ impl MenuScene {
 
     for i in 0..2 {
       let x = i as f32 * bg_width * scale;
-      let bg_handle = SpriteHandle::from_sprite(bg_sprite.clone(), "bg.png");
       let mut transform = Transform::new(x, 0.0);
       transform.scale_x = scale;
       transform.scale_y = scale;
       let background = ctx.world.spawn((
         transform,
-        Renderable::sprite(bg_handle).with_z_order(0), // Render behind everything
+        Renderable::sprite(bg_handle.clone()).with_z_order(0), // Render behind everything
         Scrolling::new(
           MENU_BACKGROUND_SCROLL_SPEED,
           tile_width * scale,

@@ -877,6 +877,8 @@ mod tests {
       scale_y: 1.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     },));
 
     world.propagate_transforms();
@@ -901,6 +903,8 @@ mod tests {
       scale_y: 1.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     },));
 
     let child = world.spawn_child(
@@ -914,6 +918,8 @@ mod tests {
         scale_y: 1.0,
         pivot_x: 0.5,
         pivot_y: 0.5,
+        offset_x: 0.0,
+        offset_y: 0.0,
       },),
     );
 
@@ -944,6 +950,8 @@ mod tests {
       scale_y: 1.0,
       pivot_x: 0.5,
       pivot_y: 0.5,
+      offset_x: 0.0,
+      offset_y: 0.0,
     },));
 
     let child = world.spawn_child(
@@ -957,6 +965,8 @@ mod tests {
         scale_y: 1.0,
         pivot_x: 0.5,
         pivot_y: 0.5,
+        offset_x: 0.0,
+        offset_y: 0.0,
       },),
     );
 
