@@ -66,6 +66,12 @@ pub mod prelude {
   // Math types (from glam)
   pub use crate::core::ecs::{Mat4, Vec2, Vec3, Vec4};
 
+  // Event Bus
+  pub use crate::core::events::{
+    AssetLoadFailed, AssetReloaded, ClientConnected, ClientDisconnected, CollisionStarted,
+    CollisionStopped, ConnectedToServer, DisconnectReason, DisconnectedFromServer, Events,
+  };
+
   // Physics components
   pub use crate::core::physics::{PhysicsConfig, RigidBody};
 

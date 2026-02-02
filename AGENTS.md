@@ -64,6 +64,7 @@ When you run `ryo2d init`, Agent Skills are automatically installed to `.github/
 | `ryo-physics` | Rapier2D physics integration |
 | `ryo-animation` | Sprite animations and state machines |
 | `ryo-audio` | Sound effects and music |
+| `ryo-events` | Event bus for decoupled inter-system communication |
 | `ryo-ui` | Immediate-mode UI for HUDs |
 | `ryo-renderer` | GPU rendering and shaders |
 | `ryo-config-save` | Configuration and save system |
@@ -119,6 +120,7 @@ This project uses **nested AGENTS.md files** in subdirectories where additional 
 | `src/AGENTS.md` | Source code structure and module responsibilities |
 | `src/core/AGENTS.md` | Core engine module organization and import patterns |
 | `src/core/ecs/AGENTS.md` | ECS implementation patterns and design decisions |
+| `src/core/events/AGENTS.md` | Event bus system for decoupled communication |
 | `src/core/network/AGENTS.md` | Networking module architecture and usage |
 | `src/core/network/replication/AGENTS.md` | Entity/component replication system |
 | `src/core/network/rpc/AGENTS.md` | Remote procedure call system |

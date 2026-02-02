@@ -424,9 +424,9 @@ impl GameScene {
       return;
     };
 
-    // Use collisions_started() to only react when objects first touch
-    // (not when they separate - that's collisions_stopped())
-    for event in ctx.collisions_started() {
+    // Use CollisionStarted events to only react when objects first touch
+    // (not when they separate - that's CollisionStopped)
+    for event in ctx.events.read::<CollisionStarted>() {
       if event.involves(bird_entity) {
         // Bird hit something - game over
         if let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) {

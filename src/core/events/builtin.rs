@@ -1,0 +1,260 @@
+//! Built-in engine events
+//!
+//! These events are emitted by engine systems or intended for game code to emit.
+//!
+//! ## Automatically Emitted Events
+//!
+//! The following events are automatically emitted by the engine each frame:
+//!
+//! - [`CollisionStarted`] - Physics detected two entities began colliding
+//! - [`CollisionStopped`] - Physics detected two entities stopped colliding
+//!
+//! ## Game-Emitted Events
+//!
+//! The following events are intended for game code to emit when using
+//! networking or responding to asset changes:
+//!
+//! - [`ClientConnected`] - Emit when `ListenServer` reports a new client
+//! - [`ClientDisconnected`] - Emit when `ListenServer` reports a client left
+//! - [`ConnectedToServer`] - Emit when `NetworkClient` successfully connects
+//! - [`DisconnectedFromServer`] - Emit when `NetworkClient` loses connection
+//! - [`AssetReloaded`] - Emit when handling hot-reloaded assets
+//! - [`AssetLoadFailed`] - Emit when an asset fails to load
+
+use std::path::PathBuf;
+
+use crate::core::ecs::Entity;
+use crate::core::network::ClientId;
+
+// ============================================================================
+// Physics Events
+// ============================================================================
+
+/// Emitted when two entities start colliding.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<CollisionStarted>() {
+///         if event.involves(self.player) {
+///             let other = event.other(self.player);
+///             println!("Player hit {:?}", other);
+///         }
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollisionStarted {
+  /// First entity in the collision pair
+  pub entity_a: Entity,
+  /// Second entity in the collision pair
+  pub entity_b: Entity,
+}
+
+impl CollisionStarted {
+  /// Check if this collision involves a specific entity
+  pub fn involves(&self, entity: Entity) -> bool {
+    self.entity_a == entity || self.entity_b == entity
+  }
+
+  /// Get the other entity in a collision (given one of them)
+  ///
+  /// Returns `None` if the given entity is not part of this collision.
+  pub fn other(&self, entity: Entity) -> Option<Entity> {
+    if self.entity_a == entity {
+      Some(self.entity_b)
+    } else if self.entity_b == entity {
+      Some(self.entity_a)
+    } else {
+      None
+    }
+  }
+}
+
+/// Emitted when two entities stop colliding.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<CollisionStopped>() {
+///         if event.involves(self.player) {
+///             println!("Player left collision");
+///         }
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollisionStopped {
+  /// First entity in the collision pair
+  pub entity_a: Entity,
+  /// Second entity in the collision pair
+  pub entity_b: Entity,
+}
+
+impl CollisionStopped {
+  /// Check if this collision involves a specific entity
+  pub fn involves(&self, entity: Entity) -> bool {
+    self.entity_a == entity || self.entity_b == entity
+  }
+
+  /// Get the other entity in a collision (given one of them)
+  ///
+  /// Returns `None` if the given entity is not part of this collision.
+  pub fn other(&self, entity: Entity) -> Option<Entity> {
+    if self.entity_a == entity {
+      Some(self.entity_b)
+    } else if self.entity_b == entity {
+      Some(self.entity_a)
+    } else {
+      None
+    }
+  }
+}
+
+// ============================================================================
+// Network Events
+// ============================================================================
+
+/// Emitted when a client connects to the server (host only).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<ClientConnected>() {
+///         println!("Client {:?} connected!", event.client_id);
+///         // Spawn player for new client, send world state, etc.
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientConnected {
+  /// The unique identifier for the connected client
+  pub client_id: ClientId,
+}
+
+/// Emitted when a client disconnects from the server (host only).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<ClientDisconnected>() {
+///         println!("Client {:?} disconnected", event.client_id);
+///         // Remove player entity, clean up state, etc.
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientDisconnected {
+  /// The unique identifier for the disconnected client
+  pub client_id: ClientId,
+}
+
+/// Emitted when the local client connects to a server (client only).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<ConnectedToServer>() {
+///         println!("Connected! My client ID: {:?}", event.client_id);
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectedToServer {
+  /// The client ID assigned by the server
+  pub client_id: ClientId,
+}
+
+/// Emitted when the local client disconnects from the server (client only).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for _ in ctx.events.read::<DisconnectedFromServer>() {
+///         println!("Lost connection to server");
+///         // Return to menu, show error, etc.
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisconnectedFromServer {
+  /// Optional reason for disconnection
+  pub reason: DisconnectReason,
+}
+
+/// Reason for disconnection from server
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisconnectReason {
+  /// Unknown or unspecified reason
+  #[default]
+  Unknown,
+  /// Server closed the connection
+  ServerClosed,
+  /// Connection timed out
+  Timeout,
+  /// Kicked by server
+  Kicked,
+}
+
+// ============================================================================
+// Asset Events
+// ============================================================================
+
+/// Emitted when an asset is hot-reloaded during development.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<AssetReloaded>() {
+///         println!("Asset reloaded: {:?}", event.path);
+///         // Refresh any cached data derived from this asset
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetReloaded {
+  /// Path to the reloaded asset (relative to assets directory)
+  pub path: PathBuf,
+}
+
+/// Emitted when an asset fails to load or reload.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<AssetLoadFailed>() {
+///         eprintln!("Failed to load {}: {}", event.path.display(), event.error);
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetLoadFailed {
+  /// Path to the asset that failed to load
+  pub path: PathBuf,
+  /// Error message describing the failure
+  pub error: String,
+}

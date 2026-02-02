@@ -3,6 +3,7 @@
 // Foundation
 pub mod ecs;
 pub mod error;
+pub mod events;
 
 // Core systems
 pub mod asset;

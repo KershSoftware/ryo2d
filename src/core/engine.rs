@@ -14,6 +14,7 @@ use super::ecs::{
   Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
 };
 use super::error::{EngineError, EngineResult};
+use super::events::{CollisionStarted, CollisionStopped, Events};
 use super::game::{Game, GameContext, GpuRenderContext, WindowRequest};
 use super::graphics::{
   AnimationController, Animator, BatchCollector, Camera, CompositeTile, GroupedCollider, Sprite,
@@ -282,6 +283,8 @@ pub struct Engine {
   window_request: WindowRequest,
   // Flag indicating surface needs reconfiguration (after display mode change)
   surface_needs_reconfigure: bool,
+  // Event bus for decoupled inter-system communication
+  events: Events,
 }
 
 impl Engine {
@@ -486,6 +489,7 @@ impl Engine {
       ui_buffer: vec![0; ui_buffer_size], // RGBA buffer for UI
       window_request: WindowRequest::default(),
       surface_needs_reconfigure: false,
+      events: Events::new(),
     }
   }
 
@@ -514,6 +518,26 @@ impl Engine {
   ///
   /// This runs user game logic and built-in engine systems (physics, movement, camera).
   fn update(&mut self, _dt: f32) {
+    // --- Event Bus Management ---
+    // Clear events from previous frame
+    self.events.clear();
+
+    // Emit collision events from the physics system (from previous frame's physics step)
+    // These are now available via ctx.events.read::<CollisionStarted>()
+    for event in self.physics.get_collision_events() {
+      if event.is_started() {
+        self.events.emit(CollisionStarted {
+          entity_a: event.entity_a,
+          entity_b: event.entity_b,
+        });
+      } else {
+        self.events.emit(CollisionStopped {
+          entity_a: event.entity_a,
+          entity_b: event.entity_b,
+        });
+      }
+    }
+
     // Process hot reloads (debug builds only)
     #[cfg(debug_assertions)]
     {
@@ -569,6 +593,7 @@ impl Engine {
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
       // Create context for the game with collision events from last physics step
+      #[allow(deprecated)] // collision_events field is deprecated but still supported
       let mut ctx = GameContext {
         world: &mut self.world,
         camera: &mut self.camera,
@@ -577,6 +602,7 @@ impl Engine {
         audio: &mut self.audio,
         effects: &mut self.effects,
         lighting: &mut self.lighting,
+        events: &mut self.events,
         collision_events: self.physics.get_collision_events(),
         window_request: &mut self.window_request,
       };
@@ -1214,6 +1240,7 @@ impl ApplicationHandler for Engine {
     // Call game init if not already initialized
     if !self.initialized {
       if let Some(mut game) = self.game.take() {
+        #[allow(deprecated)] // collision_events field is deprecated but still supported
         let mut ctx = GameContext {
           world: &mut self.world,
           camera: &mut self.camera,
@@ -1222,6 +1249,7 @@ impl ApplicationHandler for Engine {
           audio: &mut self.audio,
           effects: &mut self.effects,
           lighting: &mut self.lighting,
+          events: &mut self.events,
           collision_events: &[], // No physics events during init
           window_request: &mut self.window_request,
         };

@@ -31,6 +31,7 @@ use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::config::save::DisplayMode;
 use super::ecs::World;
+use super::events::Events;
 use super::game::WindowRequest;
 use super::graphics::Camera;
 use super::input::InputState;
@@ -57,12 +58,34 @@ pub struct SceneContext<'a> {
   pub effects: &'a mut EffectsManager,
   /// 2D lighting renderer for controlling ambient light and dynamic lights (None if lighting disabled)
   pub lighting: &'a mut Option<LightingRenderer>,
+  /// Event bus for decoupled communication between systems.
+  ///
+  /// Use `events.emit()` to publish events and `events.read()` to subscribe.
+  /// Events are cleared at the start of each frame.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Emit a custom event
+  /// ctx.events.emit(EnemyDied { entity: enemy, score: 100 });
+  ///
+  /// // Read built-in collision events
+  /// for event in ctx.events.read::<CollisionStarted>() {
+  ///     if event.involves(player) {
+  ///         take_damage();
+  ///     }
+  /// }
+  /// ```
+  pub events: &'a mut Events,
   /// Collision events from the last physics step.
+  ///
+  /// **Deprecated:** Use `events.read::<CollisionStarted>()` instead.
   ///
   /// **Note:** This includes BOTH `Started` and `Stopped` events.
   /// For most game logic (damage, death, scoring), you probably only
   /// want `Started` events. Use [`collisions_started()`](Self::collisions_started)
   /// for a filtered iterator.
+  #[deprecated(since = "0.1.0", note = "Use ctx.events.read::<CollisionStarted>() instead")]
   pub collision_events: &'a [PhysicsCollisionEvent],
   /// Pending window configuration changes (resolution, display mode)
   pub window_request: &'a mut WindowRequest,
@@ -97,6 +120,8 @@ impl<'a> SceneContext<'a> {
 
   /// Iterate over collision events where objects started touching.
   ///
+  /// **Deprecated:** Use `ctx.events.read::<CollisionStarted>()` instead.
+  ///
   /// This is the most common case for game logic - reacting when
   /// objects first collide (damage, pickups, death triggers, etc.).
   ///
@@ -109,14 +134,20 @@ impl<'a> SceneContext<'a> {
   ///     }
   /// }
   /// ```
+  #[deprecated(since = "0.1.0", note = "Use ctx.events.read::<CollisionStarted>() instead")]
+  #[allow(deprecated)]
   pub fn collisions_started(&self) -> impl Iterator<Item = &PhysicsCollisionEvent> {
     self.collision_events.iter().filter(|e| e.is_started())
   }
 
   /// Iterate over collision events where objects stopped touching.
   ///
+  /// **Deprecated:** Use `ctx.events.read::<CollisionStopped>()` instead.
+  ///
   /// Useful for "exit trigger" logic or resetting state when
   /// objects separate.
+  #[deprecated(since = "0.1.0", note = "Use ctx.events.read::<CollisionStopped>() instead")]
+  #[allow(deprecated)]
   pub fn collisions_stopped(&self) -> impl Iterator<Item = &PhysicsCollisionEvent> {
     self.collision_events.iter().filter(|e| e.is_stopped())
   }
@@ -1069,6 +1100,7 @@ impl SceneGame {
 }
 
 impl Game for SceneGame {
+  #[allow(deprecated)] // collision_events field is deprecated but still supported
   fn init(&mut self, ctx: &mut GameContext) {
     // Convert GameContext to SceneContext and call on_enter for initial scene
     let mut scene_ctx = SceneContext {
@@ -1079,6 +1111,7 @@ impl Game for SceneGame {
       audio: ctx.audio,
       effects: ctx.effects,
       lighting: ctx.lighting,
+      events: ctx.events,
       collision_events: ctx.collision_events,
       window_request: ctx.window_request,
     };
@@ -1101,6 +1134,7 @@ impl Game for SceneGame {
     self.initialized = true;
   }
 
+  #[allow(deprecated)] // collision_events field is deprecated but still supported
   fn update(&mut self, ctx: &mut GameContext, dt: f32) {
     // Convert GameContext to SceneContext
     let mut scene_ctx = SceneContext {
@@ -1111,6 +1145,7 @@ impl Game for SceneGame {
       audio: ctx.audio,
       effects: ctx.effects,
       lighting: ctx.lighting,
+      events: ctx.events,
       collision_events: ctx.collision_events,
       window_request: ctx.window_request,
     };
