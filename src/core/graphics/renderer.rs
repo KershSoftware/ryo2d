@@ -44,6 +44,9 @@ pub struct WgpuRenderer {
   pixel_buffer: Vec<u8>,
   // Post-processing pipeline
   post_process: Option<PostProcessPipeline>,
+  // Whether presentation blocks until vsync (Fifo mode)
+  // When true, manual frame limiting should be skipped to avoid double-waiting
+  presentation_blocks: bool,
 }
 
 /// Viewport uniform data sent to shader
@@ -318,6 +321,9 @@ impl WgpuRenderer {
       wgpu::TextureFormat::Rgba8UnormSrgb,
     );
 
+    // Fifo mode blocks until vsync - no manual frame limiting needed
+    let presentation_blocks = present_mode == wgpu::PresentMode::Fifo;
+
     let mut renderer = WgpuRenderer {
       surface,
       device,
@@ -339,6 +345,7 @@ impl WgpuRenderer {
       max_height,
       pixel_buffer,
       post_process: Some(post_process),
+      presentation_blocks,
     };
 
     // Initialize viewport transform
@@ -360,6 +367,14 @@ impl WgpuRenderer {
   /// Get the game height.
   pub fn game_height(&self) -> u32 {
     self.game_height
+  }
+
+  /// Check if presentation blocks until vsync (Fifo mode).
+  ///
+  /// When this returns true, manual frame limiting should be skipped
+  /// to avoid double-waiting (vsync already limits framerate).
+  pub fn presentation_blocks(&self) -> bool {
+    self.presentation_blocks
   }
 
   /// Get a reference to the wgpu device.
