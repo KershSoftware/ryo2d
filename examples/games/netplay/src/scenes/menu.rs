@@ -17,6 +17,7 @@ fn generate_room_code() -> String {
 
 pub struct MenuScene {
   room_code_input: TextInputState,
+  address_input: TextInputState,
   error_message: Option<String>,
   last_dt: f32,
   pending_scene: Option<Box<dyn Scene>>,
@@ -24,8 +25,11 @@ pub struct MenuScene {
 
 impl MenuScene {
   pub fn new() -> Self {
+    let mut address_input = TextInputState::new();
+    address_input.set_text(DEFAULT_ADDRESS);
     Self {
       room_code_input: TextInputState::new(),
+      address_input,
       error_message: None,
       last_dt: 0.016,
       pending_scene: None,
@@ -45,14 +49,20 @@ impl MenuScene {
   }
 
   fn try_join_room(&mut self) {
-    let code = self.room_code_input.text().trim().to_uppercase();
+    let room_code = self.room_code_input.text().trim().to_uppercase();
+    let address = self.address_input.text().trim().to_string();
 
-    if code.len() != ROOM_CODE_LENGTH {
-      self.error_message = Some(format!("Code must be {} chars", ROOM_CODE_LENGTH));
+    if room_code.len() != ROOM_CODE_LENGTH {
+      self.error_message = Some(format!("Room code must be {} characters", ROOM_CODE_LENGTH));
       return;
     }
 
-    match GameScene::new_client(&code) {
+    if address.is_empty() {
+      self.error_message = Some("Enter server address".to_string());
+      return;
+    }
+
+    match GameScene::new_client(&room_code, &address) {
       Ok(scene) => {
         self.pending_scene = Some(Box::new(scene));
       }
@@ -81,11 +91,13 @@ impl Scene for MenuScene {
       return SceneAction::Quit;
     }
 
-    // Enter to join if focused and valid
-    if self.room_code_input.is_focused()
-      && ctx.input.key_pressed(KeyCode::Enter)
-      && self.room_code_input.text().len() == ROOM_CODE_LENGTH
-    {
+    // Enter to join if either input is focused and both have content
+    let enter_pressed = ctx.input.key_pressed(KeyCode::Enter);
+    let either_focused = self.room_code_input.is_focused() || self.address_input.is_focused();
+    let has_code = self.room_code_input.text().len() == ROOM_CODE_LENGTH;
+    let has_address = !self.address_input.text().trim().is_empty();
+
+    if enter_pressed && either_focused && has_code && has_address {
       self.try_join_room();
     }
 
@@ -127,18 +139,29 @@ impl Scene for MenuScene {
     // Separator
     ui.draw_text_anchored("- or -", Anchor::Center, 0.0, 25.0, Color::GRAY);
 
-    // Join section
-    ui.draw_text_anchored("Enter Room Code:", Anchor::Center, 0.0, 55.0, Color::WHITE);
+    // Join section - Room Code
+    ui.draw_text_anchored("Room Code:", Anchor::Center, -80.0, 55.0, Color::WHITE);
 
-    // Room code input
-    let input_width = 150.0;
-    let input_rect = Rect::new(
-      center_x - input_width / 2.0,
-      center_y + 80.0,
-      input_width,
+    let code_input_width = 100.0;
+    let code_input_rect = Rect::new(
+      center_x - 80.0 - code_input_width / 2.0,
+      center_y + 75.0,
+      code_input_width,
       32.0,
     );
-    ui.text_input(&mut self.room_code_input, input_rect, "XXXXX", dt);
+    ui.text_input(&mut self.room_code_input, code_input_rect, "XXXXX", dt);
+
+    // Join section - Server Address
+    ui.draw_text_anchored("Address:", Anchor::Center, 80.0, 55.0, Color::WHITE);
+
+    let addr_input_width = 160.0;
+    let addr_input_rect = Rect::new(
+      center_x + 80.0 - addr_input_width / 2.0,
+      center_y + 75.0,
+      addr_input_width,
+      32.0,
+    );
+    ui.text_input(&mut self.address_input, addr_input_rect, "127.0.0.1:7777", dt);
 
     // Join button
     let join_rect = Rect::new(button_x, center_y + 125.0, button_width, button_height);

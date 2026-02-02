@@ -1,7 +1,7 @@
 //! Game scene with multiplayer gameplay
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
 use ryo2d::prelude::*;
@@ -10,6 +10,37 @@ use crate::components::*;
 use crate::constants::*;
 
 use super::MenuScene;
+
+/// Get the local LAN IP address by connecting to a remote address.
+/// This doesn't actually send data, just determines which interface would be used.
+fn get_lan_ip() -> Option<String> {
+  // Connect to Google's DNS to determine local interface IP
+  let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+  socket.connect("8.8.8.8:80").ok()?;
+  let local_addr = socket.local_addr().ok()?;
+  Some(local_addr.ip().to_string())
+}
+
+/// Get the public WAN IP address using an external service.
+/// This is done synchronously for simplicity - in production you'd want async.
+fn get_wan_ip() -> Option<String> {
+  // Use a simple HTTP request to get public IP
+  // This blocks briefly but only happens once when hosting
+  let response = std::process::Command::new("curl")
+    .args(["-s", "--max-time", "2", "https://api.ipify.org"])
+    .output()
+    .ok()?;
+
+  if response.status.success() {
+    let ip = String::from_utf8(response.stdout).ok()?;
+    let ip = ip.trim().to_string();
+    // Basic validation - should look like an IP
+    if ip.contains('.') && ip.len() <= 15 {
+      return Some(ip);
+    }
+  }
+  None
+}
 
 /// Network role
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,6 +63,10 @@ pub struct GameScene {
   // Networking
   server: Option<ListenServer>,
   client: Option<NetworkClient>,
+
+  // Host IP addresses (only populated for host)
+  lan_ip: Option<String>,
+  wan_ip: Option<String>,
 
   // Entity tracking
   players: HashMap<ClientId, Entity>,
@@ -61,11 +96,17 @@ impl GameScene {
 
     let host_id = server.host_id();
 
+    // Detect LAN and WAN IPs for display
+    let lan_ip = get_lan_ip();
+    let wan_ip = get_wan_ip();
+
     Ok(Self {
       role: Role::Host,
       room_code,
       server: Some(server),
       client: None,
+      lan_ip,
+      wan_ip,
       players: HashMap::new(),
       local_client_id: Some(host_id),
       local_move_x: 0.0,
@@ -78,11 +119,17 @@ impl GameScene {
   }
 
   /// Create a new client game
-  pub fn new_client(room_code: &str) -> Result<Self, NetworkError> {
-    // For now, connect to localhost - in a real game you'd resolve the room code
-    let server_addr: SocketAddr = format!("127.0.0.1:{}", DEFAULT_PORT)
-      .parse()
-      .map_err(|_| NetworkError::ConnectionError("Invalid address".into()))?;
+  pub fn new_client(room_code: &str, address: &str) -> Result<Self, NetworkError> {
+    // Parse the address (expected format: "ip:port" or just "ip" for default port)
+    let server_addr: SocketAddr = if address.contains(':') {
+      address
+        .parse()
+        .map_err(|_| NetworkError::ConnectionError(format!("Invalid address: {}", address)))?
+    } else {
+      format!("{}:{}", address, DEFAULT_PORT)
+        .parse()
+        .map_err(|_| NetworkError::ConnectionError(format!("Invalid address: {}", address)))?
+    };
 
     let client = NetworkClient::connect(NetworkClientConfig {
       server_addr,
@@ -94,6 +141,8 @@ impl GameScene {
       room_code: room_code.to_string(),
       server: None,
       client: Some(client),
+      lan_ip: None,
+      wan_ip: None,
       players: HashMap::new(),
       local_client_id: None,
       local_move_x: 0.0,
@@ -602,6 +651,34 @@ impl Scene for GameScene {
       20.0,
       Color::new(255, 255, 255, 100),
     );
+
+    // Show host IP addresses below room code (host only)
+    if self.role == Role::Host {
+      let mut y_pos = 40.0;
+
+      if let Some(ref lan) = self.lan_ip {
+        let lan_text = format!("LAN: {}:{}", lan, DEFAULT_PORT);
+        let (tw, _) = ui.text_size(&lan_text);
+        ui.draw_text(
+          &lan_text,
+          sw as f32 - tw as f32 - 20.0,
+          y_pos,
+          Color::new(100, 200, 100, 150), // Green tint
+        );
+        y_pos += 16.0;
+      }
+
+      if let Some(ref wan) = self.wan_ip {
+        let wan_text = format!("WAN: {}:{}", wan, DEFAULT_PORT);
+        let (tw, _) = ui.text_size(&wan_text);
+        ui.draw_text(
+          &wan_text,
+          sw as f32 - tw as f32 - 20.0,
+          y_pos,
+          Color::new(200, 150, 100, 150), // Orange tint
+        );
+      }
+    }
 
     // Debug info panel (top left)
     let role_str = if self.role == Role::Host {
