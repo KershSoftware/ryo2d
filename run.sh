@@ -20,6 +20,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Add cargo to PATH if not already present
+CARGO_PATH="$HOME/.cargo/bin"
+if [[ ":$PATH:" != *":$CARGO_PATH:"* ]]; then
+    export PATH="$CARGO_PATH:$PATH"
+fi
+
 # Parse arguments
 DEV_MODE=false
 COMMAND=""
