@@ -368,6 +368,16 @@ impl GameScene {
           player.is_grounded = false;
           player.wall_sliding = None;
         }
+        // Add elastic squash-and-stretch effect on jump
+        // First stretch the sprite, then tween back to normal with elastic bounce
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
+          transform.scale_x = 0.7;
+          transform.scale_y = 1.4;
+        }
+        let _ = ctx.world.insert_one(
+          player_entity,
+          Tween::to_scale(1.0, 1.0, 0.5).with_easing(Ease::OutElastic),
+        );
       } else if can_wall_jump && was_wall_sliding.is_some() {
         // Wall jump - push away from wall with forced momentum
         let wall_side = was_wall_sliding.unwrap();
@@ -381,6 +391,15 @@ impl GameScene {
           player.start_wall_jump(); // Sets cooldown to prevent horizontal override
           player.wall_sliding = None;
         }
+        // Add elastic squash-and-stretch effect on wall jump
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
+          transform.scale_x = 0.7;
+          transform.scale_y = 1.4;
+        }
+        let _ = ctx.world.insert_one(
+          player_entity,
+          Tween::to_scale(1.0, 1.0, 0.5).with_easing(Ease::OutElastic),
+        );
       } else {
         drop(velocity);
       }
@@ -696,9 +715,7 @@ impl GameScene {
   ) -> Option<WallSide> {
     use crate::components::WallSide;
 
-    let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
-      return None;
-    };
+    let player_transform = ctx.world.get::<Transform>(player_entity)?;
 
     let player_left = player_transform.x;
     let player_right = player_transform.x + PLAYER_SIZE;
@@ -1578,7 +1595,7 @@ impl GameScene {
     for (dr, dc) in directions {
       let nr = row as i32 + dr;
       let nc = col as i32 + dc;
-      if nr < 0 || nr >= 8 || nc < 0 || nc >= 9 {
+      if !(0..8).contains(&nr) || !(0..9).contains(&nc) {
         return true; // Edge of pattern counts as empty
       }
       if pattern[nr as usize][nc as usize] == 0 {
