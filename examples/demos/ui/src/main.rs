@@ -9,13 +9,13 @@ use ryo2d::prelude::*;
 use scenes::MainMenu;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    EngineBuilder::new()
-        .title("Ryo2D UI Demo")
-        .resolution(800, 600)
-        .window_mode(WindowMode::ResizableAspectRatio)
-        .with_scene(MainMenu::new())
-        .build()
-        .run()?;
+  EngineBuilder::new()
+    .title("Ryo2D UI Demo")
+    .resolution(800, 600)
+    .window_mode(WindowMode::ResizableAspectRatio)
+    .with_scene(MainMenu::new())
+    .build()
+    .run()?;
 
-    Ok(())
+  Ok(())
 }

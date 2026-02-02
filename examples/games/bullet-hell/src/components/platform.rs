@@ -16,6 +16,10 @@ pub struct Barrier {
 
 impl Barrier {
   pub fn new(velocity_y: f32, min_y: f32, max_y: f32) -> Self {
-    Self { velocity_y, min_y, max_y }
+    Self {
+      velocity_y,
+      min_y,
+      max_y,
+    }
   }
 }

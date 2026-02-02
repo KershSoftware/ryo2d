@@ -11,7 +11,7 @@ pub mod components;
 pub mod rapier;
 pub mod spatial;
 
-pub use collision::{check_collision, Collider, ColliderShape, Collision, AABB, Circle};
+pub use collision::{AABB, Circle, Collider, ColliderShape, Collision, check_collision};
 pub use components::{PhysicsConfig, RigidBody};
 pub use rapier::{CollisionEventType, PhysicsCollisionEvent, RapierPhysicsWorld};
 pub use spatial::{CollisionPair, CollisionResult, PhysicsWorld, SpatialHash};

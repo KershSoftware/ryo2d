@@ -5,7 +5,7 @@
 //! - `BroadPhase` - Trait for broad-phase collision detection
 //! - `PhysicsWorld` - Combines broad + narrow phase collision detection
 
-use super::collision::{check_collision, Collider};
+use super::collision::{Collider, check_collision};
 use crate::core::ecs::{Entity, Transform, World};
 use std::collections::{HashMap, HashSet};
 

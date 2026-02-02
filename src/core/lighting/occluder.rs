@@ -132,16 +132,10 @@ impl LightOccluder2D {
     let half_thick = thickness / 2.0;
 
     Self::polygon(vec![
-      Vec2::new(
-        start.x + perp.x * half_thick,
-        start.y + perp.y * half_thick,
-      ),
+      Vec2::new(start.x + perp.x * half_thick, start.y + perp.y * half_thick),
       Vec2::new(end.x + perp.x * half_thick, end.y + perp.y * half_thick),
       Vec2::new(end.x - perp.x * half_thick, end.y - perp.y * half_thick),
-      Vec2::new(
-        start.x - perp.x * half_thick,
-        start.y - perp.y * half_thick,
-      ),
+      Vec2::new(start.x - perp.x * half_thick, start.y - perp.y * half_thick),
     ])
   }
 

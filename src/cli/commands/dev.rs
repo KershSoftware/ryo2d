@@ -58,9 +58,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 }
 
 /// Check if the project has dev profile optimization configured
-fn check_dev_profile_optimization(
-  workspace: &crate::core::config::Workspace,
-) -> CliResult<()> {
+fn check_dev_profile_optimization(workspace: &crate::core::config::Workspace) -> CliResult<()> {
   let cargo_toml_path = workspace.root().join("Cargo.toml");
 
   if !cargo_toml_path.exists() {

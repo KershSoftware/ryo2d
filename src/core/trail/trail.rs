@@ -275,12 +275,9 @@ impl Trail2D {
   pub fn color_at(&self, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
 
-    let end = self.end_color.unwrap_or(Color::new(
-      self.color.r,
-      self.color.g,
-      self.color.b,
-      0,
-    ));
+    let end = self
+      .end_color
+      .unwrap_or(Color::new(self.color.r, self.color.g, self.color.b, 0));
 
     let r = lerp(self.color.r as f32, end.r as f32, t) as u8;
     let g = lerp(self.color.g as f32, end.g as f32, t) as u8;

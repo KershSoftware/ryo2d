@@ -75,12 +75,22 @@ impl Scene for ScrollViewDemo {
 
     // Title
     ui.draw_text("Scroll View Demo", 20.0, 15.0, Color::WHITE);
-    ui.draw_text("Press ESC to return | +/- items | Home/End jump", 20.0, 35.0, Color::GRAY);
+    ui.draw_text(
+      "Press ESC to return | +/- items | Home/End jump",
+      20.0,
+      35.0,
+      Color::GRAY,
+    );
 
     // --- Row 1: Vertical scroll views ---
 
     // Left panel - text content scroll view (vertical)
-    ui.draw_text("Vertical Text Scroll:", 20.0, 60.0, Color::rgb(100, 180, 255));
+    ui.draw_text(
+      "Vertical Text Scroll:",
+      20.0,
+      60.0,
+      Color::rgb(100, 180, 255),
+    );
 
     let text_content = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.\n\nDuis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.\n\nCurabitur pretium tincidunt lacus. Nulla gravida orci a odio. Nullam varius, turpis et commodo pharetra, est eros bibendum elit, nec luctus magna felis sollicitudin mauris. Integer in mauris eu nibh euismod gravida.\n\nDuis ac tellus et risus vulputate vehicula. Donec lobortis risus a elit. Etiam tempor. Ut ullamcorper, ligula eu tempor congue, eros est euismod turpis, id tincidunt sapien risus a quam.\n\nMaecenas fermentum consequat mi. Donec fermentum. Pellentesque malesuada nulla a mi. Duis sapien sem, aliquet sed, vulputate eget, feugiat non, lacus. Morbi interdum mollis sapien. Sed ac risus.\n\nPraesent nec nisl a purus blandit viverra. Praesent ac massa at ligula laoreet iaculis. Nulla neque dolor, sagittis eget, iaculis quis, molestie non, velit.";
 
@@ -129,7 +139,12 @@ impl Scene for ScrollViewDemo {
 
           // Only process visible items
           if y > list_rect.y - item_height && y < list_rect.y + list_rect.height {
-            let item_rect = Rect::new(list_rect.x + padding, y, list_rect.width - 30.0 - padding * 2.0, item_height - 2.0);
+            let item_rect = Rect::new(
+              list_rect.x + padding,
+              y,
+              list_rect.width - 30.0 - padding * 2.0,
+              item_height - 2.0,
+            );
 
             // Alternate row colors
             let bg_color = if Some(i) == self.selected_item {
@@ -141,14 +156,24 @@ impl Scene for ScrollViewDemo {
             };
 
             ui.draw_rect(item_rect, bg_color);
-            ui.draw_text(&format!("  Item #{:03}", i + 1), item_rect.x, y + 6.0, Color::WHITE);
+            ui.draw_text(
+              &format!("  Item #{:03}", i + 1),
+              item_rect.x,
+              y + 6.0,
+              Color::WHITE,
+            );
           }
         }
       },
     );
 
     // --- Row 2: Horizontal scroll view ---
-    ui.draw_text("Horizontal Scroll (X-axis):", 20.0, 345.0, Color::rgb(100, 180, 255));
+    ui.draw_text(
+      "Horizontal Scroll (X-axis):",
+      20.0,
+      345.0,
+      Color::rgb(100, 180, 255),
+    );
 
     let horiz_rect = Rect::new(20.0, 363.0, 660.0, 120.0);
     let card_width = 150.0;
@@ -165,7 +190,12 @@ impl Scene for ScrollViewDemo {
       |ui, scroll_x| {
         for i in 0..num_cards {
           let x = horiz_rect.x + padding + i as f32 * (card_width + card_spacing) - scroll_x;
-          let card_rect = Rect::new(x, horiz_rect.y + padding, card_width, horiz_rect.height - padding * 2.0 - 16.0);
+          let card_rect = Rect::new(
+            x,
+            horiz_rect.y + padding,
+            card_width,
+            horiz_rect.height - padding * 2.0 - 16.0,
+          );
 
           // Only draw visible cards
           if x > horiz_rect.x - card_width && x < horiz_rect.x + horiz_rect.width {
@@ -176,9 +206,24 @@ impl Scene for ScrollViewDemo {
             ui.draw_rect_outline(card_rect, Color::rgb(100, 100, 120), 1.0);
 
             // Card title
-            ui.draw_text(&format!("Card {}", i + 1), x + 10.0, card_rect.y + 10.0, Color::WHITE);
-            ui.draw_text("Drag to scroll", x + 10.0, card_rect.y + 30.0, Color::LIGHT_GRAY);
-            ui.draw_text("horizontally", x + 10.0, card_rect.y + 48.0, Color::LIGHT_GRAY);
+            ui.draw_text(
+              &format!("Card {}", i + 1),
+              x + 10.0,
+              card_rect.y + 10.0,
+              Color::WHITE,
+            );
+            ui.draw_text(
+              "Drag to scroll",
+              x + 10.0,
+              card_rect.y + 30.0,
+              Color::LIGHT_GRAY,
+            );
+            ui.draw_text(
+              "horizontally",
+              x + 10.0,
+              card_rect.y + 48.0,
+              Color::LIGHT_GRAY,
+            );
           }
         }
       },
@@ -188,16 +233,23 @@ impl Scene for ScrollViewDemo {
     let debug_y = 500.0;
     ui.draw_text("Scroll State:", 20.0, debug_y, Color::rgb(100, 180, 255));
     ui.draw_text(
-      &format!("Text Y: {:.1}  |  List Y: {:.1}  |  Horiz X: {:.1}",
+      &format!(
+        "Text Y: {:.1}  |  List Y: {:.1}  |  Horiz X: {:.1}",
         self.content_scroll.scroll_y(),
         self.list_scroll.scroll_y(),
-        self.horizontal_scroll.scroll_x()),
+        self.horizontal_scroll.scroll_x()
+      ),
       30.0,
       debug_y + 18.0,
       Color::WHITE,
     );
 
     ui.draw_text("Controls:", 520.0, debug_y, Color::rgb(100, 180, 255));
-    ui.draw_text("Mouse wheel | Drag scrollbar | Drag content", 530.0, debug_y + 18.0, Color::LIGHT_GRAY);
+    ui.draw_text(
+      "Mouse wheel | Drag scrollbar | Drag content",
+      530.0,
+      debug_y + 18.0,
+      Color::LIGHT_GRAY,
+    );
   }
 }

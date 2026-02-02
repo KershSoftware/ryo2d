@@ -42,8 +42,14 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     // Use shared target directory for dependency caching
     .env("CARGO_TARGET_DIR", &target_dir)
     // [system] section values
-    .env("RYO_EMBED_RESOLUTION_WIDTH", system.resolution_width.to_string())
-    .env("RYO_EMBED_RESOLUTION_HEIGHT", system.resolution_height.to_string())
+    .env(
+      "RYO_EMBED_RESOLUTION_WIDTH",
+      system.resolution_width.to_string(),
+    )
+    .env(
+      "RYO_EMBED_RESOLUTION_HEIGHT",
+      system.resolution_height.to_string(),
+    )
     .env("RYO_EMBED_VSYNC", system.vsync.to_string())
     .env("RYO_EMBED_DISPLAY_MODE", display_mode_str)
     .env("RYO_EMBED_MASTER_VOLUME", system.master_volume.to_string())
@@ -53,10 +59,22 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     .env("RYO_EMBED_SHOW_FPS", system.show_fps.to_string())
     .env("RYO_EMBED_TITLE", &system.title)
     // [debug] section values
-    .env("RYO_EMBED_SHOW_COLLIDERS", config.debug.show_colliders.to_string())
-    .env("RYO_EMBED_SHOW_VELOCITIES", config.debug.show_velocities.to_string())
-    .env("RYO_EMBED_SHOW_ORIGINS", config.debug.show_origins.to_string())
-    .env("RYO_EMBED_SHOW_FRAME_TIMING", config.debug.show_frame_timing.to_string())
+    .env(
+      "RYO_EMBED_SHOW_COLLIDERS",
+      config.debug.show_colliders.to_string(),
+    )
+    .env(
+      "RYO_EMBED_SHOW_VELOCITIES",
+      config.debug.show_velocities.to_string(),
+    )
+    .env(
+      "RYO_EMBED_SHOW_ORIGINS",
+      config.debug.show_origins.to_string(),
+    )
+    .env(
+      "RYO_EMBED_SHOW_FRAME_TIMING",
+      config.debug.show_frame_timing.to_string(),
+    )
     .current_dir(workspace.root())
     .status()
     .map_err(|e| CliError::CommandFailed {

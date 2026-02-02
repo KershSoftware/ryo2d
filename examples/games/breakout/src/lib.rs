@@ -37,7 +37,7 @@ pub mod scenes;
 pub mod prelude {
   pub use super::components::*;
   pub use super::constants::*;
-  pub use super::levels::{level_path, load_level, LevelData};
-  pub use super::save::{load_high_score, save_high_score, HighScoreData};
+  pub use super::levels::{LevelData, level_path, load_level};
+  pub use super::save::{HighScoreData, load_high_score, save_high_score};
   pub use super::scenes::*;
 }

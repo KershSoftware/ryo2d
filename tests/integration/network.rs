@@ -298,7 +298,11 @@ fn server_broadcasts_to_multiple_clients() {
     thread::sleep(Duration::from_millis(10));
   }
 
-  assert_eq!(server.connected_count(), 2, "Both clients should be connected");
+  assert_eq!(
+    server.connected_count(),
+    2,
+    "Both clients should be connected"
+  );
 
   // Broadcast message
   let message = b"Broadcast message!";
@@ -314,11 +318,15 @@ fn server_broadcasts_to_multiple_clients() {
     client1.update(dt);
     client2.update(dt);
 
-    if client1_received.is_none() && let Some(data) = client1.receive(Channel::ReliableOrdered) {
+    if client1_received.is_none()
+      && let Some(data) = client1.receive(Channel::ReliableOrdered)
+    {
       client1_received = Some(data);
     }
 
-    if client2_received.is_none() && let Some(data) = client2.receive(Channel::ReliableOrdered) {
+    if client2_received.is_none()
+      && let Some(data) = client2.receive(Channel::ReliableOrdered)
+    {
       client2_received = Some(data);
     }
 
@@ -329,8 +337,14 @@ fn server_broadcasts_to_multiple_clients() {
     thread::sleep(Duration::from_millis(10));
   }
 
-  assert!(client1_received.is_some(), "Client 1 did not receive broadcast");
-  assert!(client2_received.is_some(), "Client 2 did not receive broadcast");
+  assert!(
+    client1_received.is_some(),
+    "Client 1 did not receive broadcast"
+  );
+  assert!(
+    client2_received.is_some(),
+    "Client 2 did not receive broadcast"
+  );
   assert_eq!(client1_received.unwrap(), message.to_vec());
   assert_eq!(client2_received.unwrap(), message.to_vec());
 }
@@ -833,11 +847,15 @@ fn listen_server_broadcast_to_remotes() {
     client1.update(dt);
     client2.update(dt);
 
-    if client1_received.is_none() && let Some(data) = client1.receive(Channel::ReliableOrdered) {
+    if client1_received.is_none()
+      && let Some(data) = client1.receive(Channel::ReliableOrdered)
+    {
       client1_received = Some(data);
     }
 
-    if client2_received.is_none() && let Some(data) = client2.receive(Channel::ReliableOrdered) {
+    if client2_received.is_none()
+      && let Some(data) = client2.receive(Channel::ReliableOrdered)
+    {
       client2_received = Some(data);
     }
 
@@ -873,7 +891,11 @@ fn listen_server_receive_from_host_returns_none() {
 
   // Attempting to receive from the host should return None
   // (host messages are not networked)
-  assert!(server.receive(LOCAL_HOST_ID, Channel::ReliableOrdered).is_none());
+  assert!(
+    server
+      .receive(LOCAL_HOST_ID, Channel::ReliableOrdered)
+      .is_none()
+  );
   assert!(server.receive(LOCAL_HOST_ID, Channel::Unreliable).is_none());
 }
 
@@ -1076,7 +1098,10 @@ fn network_entity_builder_creates_client_owned_entity() {
   manager.register::<Transform>();
 
   let client_id: ClientId = 42;
-  let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().client_owned(client_id));
+  let entity = manager.spawn_networked(
+    &mut world,
+    NetworkEntityBuilder::new().client_owned(client_id),
+  );
 
   // Add component after spawning
   world.add_component(entity, Transform::new(100.0, 200.0));
@@ -1146,7 +1171,10 @@ fn replication_manager_marks_components_dirty() {
   let network_id = manager.get_network_id(entity).unwrap();
   let dirty = manager.dirty_tracker().get_dirty_for_client(0);
   let entity_dirty = dirty.iter().find(|(id, _)| *id == network_id);
-  assert!(entity_dirty.is_some(), "Entity should have dirty components");
+  assert!(
+    entity_dirty.is_some(),
+    "Entity should have dirty components"
+  );
 }
 
 #[test]
@@ -1198,10 +1226,11 @@ fn full_state_sync_message_serializes_correctly() {
 
   for i in 0..3 {
     let network_id = NetworkId::new();
-    let transform = SerializedComponent::from_component(&Transform::new(i as f32 * 100.0, 0.0)).unwrap();
+    let transform =
+      SerializedComponent::from_component(&Transform::new(i as f32 * 100.0, 0.0)).unwrap();
 
-    let spawn_msg = SpawnEntityMessage::new(network_id, 0, Authority::Server)
-      .with_component(transform);
+    let spawn_msg =
+      SpawnEntityMessage::new(network_id, 0, Authority::Server).with_component(transform);
     sync.add_entity(spawn_msg);
   }
 
@@ -1231,7 +1260,10 @@ fn replication_message_enum_wraps_all_types() {
   let _: ReplicationMessage = serde_json::from_slice(&bytes).unwrap();
 
   // Test ComponentBatch variant
-  let batch = ReplicationMessage::ComponentBatch(ComponentBatchMessage { updates: vec![], generation: 0 });
+  let batch = ReplicationMessage::ComponentBatch(ComponentBatchMessage {
+    updates: vec![],
+    generation: 0,
+  });
   let bytes = serde_json::to_vec(&batch).unwrap();
   let _: ReplicationMessage = serde_json::from_slice(&bytes).unwrap();
 }
@@ -1402,8 +1434,8 @@ fn rpc_registry_registers_handlers() {
 
 #[test]
 fn rpc_registry_dispatches_to_handler() {
-  use std::sync::atomic::{AtomicU32, Ordering};
   use std::sync::Arc;
+  use std::sync::atomic::{AtomicU32, Ordering};
 
   let mut registry = RpcRegistry::new();
   let call_count = Arc::new(AtomicU32::new(0));
@@ -1440,8 +1472,8 @@ fn rpc_registry_returns_error_for_unknown_rpc() {
 
 #[test]
 fn rpc_registry_dispatches_multiple_types() {
-  use std::sync::atomic::{AtomicU32, Ordering};
   use std::sync::Arc;
+  use std::sync::atomic::{AtomicU32, Ordering};
 
   let mut registry = RpcRegistry::new();
 
@@ -1683,8 +1715,7 @@ fn rpc_client_sends_to_server() {
     jump: true,
     attack: false,
   };
-  let serialized =
-    SerializedRpc::from_rpc(&rpc, client.client_id(), RpcTarget::Server).unwrap();
+  let serialized = SerializedRpc::from_rpc(&rpc, client.client_id(), RpcTarget::Server).unwrap();
   client.send(Channel::ReliableOrdered, &serialized.to_bytes().unwrap());
 
   // Get client ID on server
@@ -1779,11 +1810,15 @@ fn rpc_server_broadcasts_to_clients() {
     client1.update(dt);
     client2.update(dt);
 
-    if client1_received.is_none() && let Some(data) = client1.receive(Channel::ReliableOrdered) {
+    if client1_received.is_none()
+      && let Some(data) = client1.receive(Channel::ReliableOrdered)
+    {
       client1_received = Some(data);
     }
 
-    if client2_received.is_none() && let Some(data) = client2.receive(Channel::ReliableOrdered) {
+    if client2_received.is_none()
+      && let Some(data) = client2.receive(Channel::ReliableOrdered)
+    {
       client2_received = Some(data);
     }
 
@@ -1798,16 +1833,14 @@ fn rpc_server_broadcasts_to_clients() {
   assert!(client2_received.is_some(), "Client 2 did not receive RPC");
 
   // Verify both received the same message
-  let rpc1: ReceivedRpc<TestChatRpc> =
-    SerializedRpc::from_bytes(&client1_received.unwrap())
-      .unwrap()
-      .into_rpc()
-      .unwrap();
-  let rpc2: ReceivedRpc<TestChatRpc> =
-    SerializedRpc::from_bytes(&client2_received.unwrap())
-      .unwrap()
-      .into_rpc()
-      .unwrap();
+  let rpc1: ReceivedRpc<TestChatRpc> = SerializedRpc::from_bytes(&client1_received.unwrap())
+    .unwrap()
+    .into_rpc()
+    .unwrap();
+  let rpc2: ReceivedRpc<TestChatRpc> = SerializedRpc::from_bytes(&client2_received.unwrap())
+    .unwrap()
+    .into_rpc()
+    .unwrap();
 
   assert_eq!(rpc1.payload.message, "Hello everyone!");
   assert_eq!(rpc2.payload.message, "Hello everyone!");
@@ -1815,8 +1848,8 @@ fn rpc_server_broadcasts_to_clients() {
 
 #[test]
 fn rpc_registry_processes_network_rpcs() {
-  use std::sync::atomic::{AtomicU32, Ordering};
   use std::sync::Arc;
+  use std::sync::atomic::{AtomicU32, Ordering};
 
   let port = get_test_port();
 
@@ -1852,8 +1885,7 @@ fn rpc_registry_processes_network_rpcs() {
 
   // Client sends RPC
   let rpc = TestPingRpc { sequence: 12345 };
-  let serialized =
-    SerializedRpc::from_rpc(&rpc, client.client_id(), RpcTarget::Server).unwrap();
+  let serialized = SerializedRpc::from_rpc(&rpc, client.client_id(), RpcTarget::Server).unwrap();
   client.send(Channel::ReliableOrdered, &serialized.to_bytes().unwrap());
 
   // Server processes RPC

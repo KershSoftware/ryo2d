@@ -70,11 +70,8 @@ impl GameScene {
     let platform_sprite =
       Sprite::load("assets/platform.png").expect("Failed to load platform sprite");
     // Create barrier sprite programmatically (dark gray rectangle)
-    let barrier_sprite = Sprite::solid_rect(
-      BARRIER_WIDTH as u32,
-      BARRIER_HEIGHT as u32,
-      60, 60, 70, 255,
-    );
+    let barrier_sprite =
+      Sprite::solid_rect(BARRIER_WIDTH as u32, BARRIER_HEIGHT as u32, 60, 60, 70, 255);
     let bg_sprite = Sprite::load("assets/bg.png").expect("Failed to load background sprite");
 
     // Load current display mode setting
@@ -492,7 +489,10 @@ impl GameScene {
         let overlap_bottom = barrier_bottom - player_top;
 
         // Find smallest overlap to determine push direction
-        let min_overlap = overlap_left.min(overlap_right).min(overlap_top).min(overlap_bottom);
+        let min_overlap = overlap_left
+          .min(overlap_right)
+          .min(overlap_top)
+          .min(overlap_bottom);
 
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
           if min_overlap == overlap_left && vel_x > 0.0 {
@@ -558,7 +558,12 @@ impl GameScene {
         ctx.world.get::<Transform>(turret_entity),
         ctx.world.get::<Turret>(turret_entity),
       ) {
-        turret_data.push((turret_entity, transform.y, turret.side, turret.move_direction));
+        turret_data.push((
+          turret_entity,
+          transform.y,
+          turret.side,
+          turret.move_direction,
+        ));
       }
     }
 
@@ -594,8 +599,7 @@ impl GameScene {
         let dist = (my_y - other_y).abs();
         if dist < TURRET_SIZE {
           // Only bounce if moving towards the other turret
-          let moving_towards =
-            (my_y < other_y && my_dir > 0.0) || (my_y > other_y && my_dir < 0.0);
+          let moving_towards = (my_y < other_y && my_dir > 0.0) || (my_y > other_y && my_dir < 0.0);
 
           if moving_towards {
             turret.reverse_direction();
@@ -1125,11 +1129,23 @@ impl Scene for GameScene {
 
     // Lives - white text with semi-transparent background for visibility
     let lives_text = format!("Lives: {}", lives);
-    ui.label(&lives_text, 20.0, 20.0, Color::WHITE, Some(Color::new(0, 0, 0, 150)));
+    ui.label(
+      &lives_text,
+      20.0,
+      20.0,
+      Color::WHITE,
+      Some(Color::new(0, 0, 0, 150)),
+    );
 
     // Survival time - white text with background for visibility
     let time_text = format!("Time: {:.1}s", self.survival_time);
-    ui.label(&time_text, 20.0, 50.0, Color::WHITE, Some(Color::new(0, 0, 0, 150)));
+    ui.label(
+      &time_text,
+      20.0,
+      50.0,
+      Color::WHITE,
+      Some(Color::new(0, 0, 0, 150)),
+    );
 
     // Hit indicator
     if invincible {
@@ -1184,11 +1200,21 @@ impl GameScene {
       // Settings title
       let title = "SETTINGS";
       let (title_w, _) = ui.text_size(title);
-      ui.draw_text(title, center_x - title_w as f32 / 2.0, modal_y + 20.0, Color::WHITE);
+      ui.draw_text(
+        title,
+        center_x - title_w as f32 / 2.0,
+        modal_y + 20.0,
+        Color::WHITE,
+      );
 
       // Display mode options
       let mode_y = modal_y + 55.0;
-      ui.draw_text("Display Mode:", modal_x + 20.0, mode_y, Color::rgb(180, 180, 180));
+      ui.draw_text(
+        "Display Mode:",
+        modal_x + 20.0,
+        mode_y,
+        Color::rgb(180, 180, 180),
+      );
 
       let modes = DisplayMode::all();
       for (i, mode) in modes.iter().enumerate() {
@@ -1198,12 +1224,27 @@ impl GameScene {
 
         let is_selected = i == self.selected_display_mode_idx;
         let (bg, hover, pressed) = if is_selected {
-          (Color::rgb(60, 100, 60), Color::rgb(70, 110, 70), Color::rgb(50, 90, 50))
+          (
+            Color::rgb(60, 100, 60),
+            Color::rgb(70, 110, 70),
+            Color::rgb(50, 90, 50),
+          )
         } else {
-          (Color::rgb(50, 50, 60), Color::rgb(60, 60, 70), Color::rgb(40, 40, 50))
+          (
+            Color::rgb(50, 50, 60),
+            Color::rgb(60, 60, 70),
+            Color::rgb(40, 40, 50),
+          )
         };
 
-        if ui.button_styled(mode.display_name(), btn_rect, bg, hover, pressed, Color::WHITE) {
+        if ui.button_styled(
+          mode.display_name(),
+          btn_rect,
+          bg,
+          hover,
+          pressed,
+          Color::WHITE,
+        ) {
           self.selected_display_mode_idx = i;
         }
       }
@@ -1213,8 +1254,14 @@ impl GameScene {
       let apply_rect = Rect::new(center_x - 110.0, btn_y, 100.0, 35.0);
       let back_rect = Rect::new(center_x + 10.0, btn_y, 100.0, 35.0);
 
-      if ui.button_styled("Apply", apply_rect,
-        Color::rgb(50, 80, 50), Color::rgb(60, 100, 60), Color::rgb(40, 70, 40), Color::WHITE) {
+      if ui.button_styled(
+        "Apply",
+        apply_rect,
+        Color::rgb(50, 80, 50),
+        Color::rgb(60, 100, 60),
+        Color::rgb(40, 70, 40),
+        Color::WHITE,
+      ) {
         // Save display mode to system.json for next launch
         let display_mode = modes[self.selected_display_mode_idx];
         crate::save::save_display_mode(display_mode);
@@ -1223,15 +1270,26 @@ impl GameScene {
         self.settings_open = false;
       }
 
-      if ui.button_styled("Back", back_rect,
-        Color::rgb(70, 50, 50), Color::rgb(90, 60, 60), Color::rgb(60, 40, 40), Color::WHITE) {
+      if ui.button_styled(
+        "Back",
+        back_rect,
+        Color::rgb(70, 50, 50),
+        Color::rgb(90, 60, 60),
+        Color::rgb(60, 40, 40),
+        Color::WHITE,
+      ) {
         self.settings_open = false;
       }
     } else {
       // Main pause menu
       let title = "PAUSED";
       let (title_w, _) = ui.text_size(title);
-      ui.draw_text(title, center_x - title_w as f32 / 2.0, center_y - 100.0, Color::WHITE);
+      ui.draw_text(
+        title,
+        center_x - title_w as f32 / 2.0,
+        center_y - 100.0,
+        Color::WHITE,
+      );
 
       let btn_w = 200.0;
       let btn_h = 40.0;
@@ -1239,37 +1297,66 @@ impl GameScene {
 
       // Resume button
       let resume_rect = Rect::new(btn_x, center_y - 50.0, btn_w, btn_h);
-      if ui.button_styled("Resume", resume_rect,
-        Color::rgb(50, 70, 50), Color::rgb(60, 90, 60), Color::rgb(40, 60, 40), Color::WHITE) {
+      if ui.button_styled(
+        "Resume",
+        resume_rect,
+        Color::rgb(50, 70, 50),
+        Color::rgb(60, 90, 60),
+        Color::rgb(40, 60, 40),
+        Color::WHITE,
+      ) {
         self.is_paused = false;
       }
 
       // Settings button
       let settings_rect = Rect::new(btn_x, center_y, btn_w, btn_h);
-      if ui.button_styled("Settings", settings_rect,
-        Color::rgb(50, 50, 70), Color::rgb(60, 60, 90), Color::rgb(40, 40, 60), Color::WHITE) {
+      if ui.button_styled(
+        "Settings",
+        settings_rect,
+        Color::rgb(50, 50, 70),
+        Color::rgb(60, 60, 90),
+        Color::rgb(40, 40, 60),
+        Color::WHITE,
+      ) {
         self.settings_open = true;
       }
 
       // Quit to Menu button
       let quit_menu_rect = Rect::new(btn_x, center_y + 50.0, btn_w, btn_h);
-      if ui.button_styled("Quit to Menu", quit_menu_rect,
-        Color::rgb(70, 60, 50), Color::rgb(90, 80, 60), Color::rgb(60, 50, 40), Color::WHITE) {
+      if ui.button_styled(
+        "Quit to Menu",
+        quit_menu_rect,
+        Color::rgb(70, 60, 50),
+        Color::rgb(90, 80, 60),
+        Color::rgb(60, 50, 40),
+        Color::WHITE,
+      ) {
         self.is_paused = false;
         self.quit_to_menu = true;
       }
 
       // Quit to Desktop button
       let quit_desktop_rect = Rect::new(btn_x, center_y + 100.0, btn_w, btn_h);
-      if ui.button_styled("Quit to Desktop", quit_desktop_rect,
-        Color::rgb(70, 50, 50), Color::rgb(90, 60, 60), Color::rgb(60, 40, 40), Color::WHITE) {
+      if ui.button_styled(
+        "Quit to Desktop",
+        quit_desktop_rect,
+        Color::rgb(70, 50, 50),
+        Color::rgb(90, 60, 60),
+        Color::rgb(60, 40, 40),
+        Color::WHITE,
+      ) {
         self.quit_to_desktop = true;
       }
 
       // Instructions
       let hint = "Press ESC to resume";
       let (hint_w, _) = ui.text_size(hint);
-      ui.draw_text(hint, center_x - hint_w as f32 / 2.0, center_y + 170.0, Color::rgb(150, 150, 150));
+      ui.draw_text(
+        hint,
+        center_x - hint_w as f32 / 2.0,
+        center_y + 170.0,
+        Color::rgb(150, 150, 150),
+      );
     }
   }
 }

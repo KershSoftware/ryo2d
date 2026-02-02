@@ -400,7 +400,7 @@ impl LightingRenderer {
   }
 
   /// Set whether UI should be affected by lighting.
-  /// 
+  ///
   /// - `true`: UI is lit like the rest of the scene (fades in darkness)
   /// - `false`: UI is always fully visible (rendered after lighting)
   pub fn set_ui_affected_by_lighting(&mut self, affected: bool) {

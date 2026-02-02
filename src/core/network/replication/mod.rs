@@ -65,7 +65,7 @@ pub use component::{ComponentRegistry, ComponentTypeId, Replicated, SerializedCo
 pub use dirty::DirtyTracker;
 pub use manager::ReplicationManager;
 pub use messages::{
-    ComponentBatchMessage, ComponentUpdateMessage, DespawnEntityMessage, FullStateSyncMessage,
-    ReplicationMessage, SpawnEntityMessage,
+  ComponentBatchMessage, ComponentUpdateMessage, DespawnEntityMessage, FullStateSyncMessage,
+  ReplicationMessage, SpawnEntityMessage,
 };
 pub use types::{Authority, NetworkEntity, NetworkId};
