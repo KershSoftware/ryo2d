@@ -137,7 +137,7 @@ impl Trail2D {
 
   /// Set the maximum number of points in the trail.
   pub fn with_length(mut self, max_points: usize) -> Self {
-    self.max_points = max_points.min(MAX_TRAIL_POINTS).max(2);
+    self.max_points = max_points.clamp(2, MAX_TRAIL_POINTS);
     self
   }
 

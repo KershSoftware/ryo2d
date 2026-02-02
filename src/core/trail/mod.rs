@@ -1,3 +1,4 @@
+#![allow(clippy::module_inception)]
 //! Trail and Line Rendering System
 //!
 //! This module provides components for rendering trails (motion paths) and
