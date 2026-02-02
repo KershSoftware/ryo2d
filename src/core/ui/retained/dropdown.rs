@@ -185,6 +185,32 @@ impl DropdownState {
   }
 }
 
+// ============================================================================
+// Focusable implementation
+// ============================================================================
+
+impl Focusable for DropdownState {
+  fn is_focused(&self) -> bool {
+    self.focused
+  }
+
+  fn set_focused(&mut self, focused: bool) {
+    self.focused = focused;
+  }
+
+  fn is_capturing(&self) -> bool {
+    // When open, dropdown captures input for arrow key navigation
+    self.open
+  }
+
+  fn on_blur(&mut self) {
+    // Close dropdown when it loses focus
+    if self.open {
+      self.close();
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -355,31 +381,5 @@ mod tests {
 
     state.toggle(); // close
     assert!(state.was_just_closed());
-  }
-}
-
-// ============================================================================
-// Focusable implementation
-// ============================================================================
-
-impl Focusable for DropdownState {
-  fn is_focused(&self) -> bool {
-    self.focused
-  }
-
-  fn set_focused(&mut self, focused: bool) {
-    self.focused = focused;
-  }
-
-  fn is_capturing(&self) -> bool {
-    // When open, dropdown captures input for arrow key navigation
-    self.open
-  }
-
-  fn on_blur(&mut self) {
-    // Close dropdown when it loses focus
-    if self.open {
-      self.close();
-    }
   }
 }

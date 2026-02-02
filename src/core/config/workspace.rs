@@ -682,14 +682,14 @@ mod tests {
     assert_eq!(defaults.resolution_width, 1280);
     assert_eq!(defaults.resolution_height, 720);
     // VSync on, windowed
-    assert_eq!(defaults.vsync, true);
+    assert!(defaults.vsync);
     assert_eq!(defaults.display_mode, DisplayMode::Windowed);
     // Audio: master=0.8, music=1.0, sfx=1.0
     assert_eq!(defaults.master_volume, 0.8);
     assert_eq!(defaults.music_volume, 1.0);
     assert_eq!(defaults.sfx_volume, 1.0);
     // FPS off by default
-    assert_eq!(defaults.show_fps, false);
+    assert!(!defaults.show_fps);
   }
 
   #[test]
@@ -728,7 +728,7 @@ mod tests {
     assert_eq!(config.system.resolution_width, 1280);
     assert_eq!(config.system.resolution_height, 720);
     assert_eq!(config.system.master_volume, 0.8);
-    assert_eq!(config.system.show_fps, false);
+    assert!(!config.system.show_fps);
   }
 
   #[test]

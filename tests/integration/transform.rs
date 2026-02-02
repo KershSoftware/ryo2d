@@ -10,7 +10,7 @@
 //! - Pivot offset calculation was incorrectly applied to (0,0) pivot
 
 use ryo2d::prelude::*;
-use std::f32::consts::PI;
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 // ============================================================================
 // REGRESSION TESTS - Critical invariants that must never break
@@ -85,24 +85,24 @@ fn regression_rotation_is_in_radians() {
   let mut transform = Transform::new(0.0, 0.0);
 
   // 90 degrees = PI/2 radians
-  transform.rotation = PI / 2.0;
+  transform.rotation = FRAC_PI_2;
   assert!(
-    (transform.rotation - 1.5707963).abs() < 0.0001,
-    "90 degrees should be ~1.57 radians"
+    (transform.rotation - FRAC_PI_2).abs() < 0.0001,
+    "90 degrees should be PI/2 radians"
   );
 
   // 180 degrees = PI radians
   transform.rotation = PI;
   assert!(
-    (transform.rotation - 3.1415926).abs() < 0.0001,
-    "180 degrees should be ~3.14 radians"
+    (transform.rotation - PI).abs() < 0.0001,
+    "180 degrees should be PI radians"
   );
 
-  // Full rotation = 2*PI radians
-  transform.rotation = 2.0 * PI;
+  // Full rotation = 2*PI radians (TAU)
+  transform.rotation = TAU;
   assert!(
-    (transform.rotation - 6.2831853).abs() < 0.0001,
-    "360 degrees should be ~6.28 radians"
+    (transform.rotation - TAU).abs() < 0.0001,
+    "360 degrees should be TAU radians"
   );
 
   // Common mistake: using degrees directly
