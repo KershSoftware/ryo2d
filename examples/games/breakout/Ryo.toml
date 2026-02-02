@@ -44,11 +44,11 @@ show_fps = false
 
 [debug]
 # Show collision boundaries for debugging
-show_colliders = true
+show_colliders = false
 # Show velocity vectors (useful for physics debugging)
-show_velocities = true
+show_velocities = false
 # Show entity origin points
-show_origins = true
+show_origins = false
 
 # =============================================================================
 # [env] - Game-specific environment variables
