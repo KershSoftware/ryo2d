@@ -27,6 +27,7 @@ pub const PLAYER_SPAWN_Y: f32 = 400.0;
 pub const DEFAULT_PORT: u16 = 7777;
 pub const PROTOCOL_ID: u64 = 0x4E455450_4C415921; // "NETPLAY!"
 pub const ROOM_CODE_LENGTH: usize = 5;
+pub const DEFAULT_ADDRESS: &str = "127.0.0.1:7777";
 
 // Colors
 pub const PLAYER_A_COLOR: (u8, u8, u8) = (66, 135, 245); // Blue
