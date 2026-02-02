@@ -450,7 +450,7 @@ mod tests {
   use super::*;
 
   fn mock_sprite_handle() -> SpriteHandle {
-    use super::Sprite;
+    use crate::core::graphics::Sprite;
     SpriteHandle::from_sprite(Sprite::solid_rect(1, 1, 255, 0, 0, 255), "test.png")
   }
 
