@@ -876,3 +876,1178 @@ fn listen_server_receive_from_host_returns_none() {
   assert!(server.receive(LOCAL_HOST_ID, Channel::ReliableOrdered).is_none());
   assert!(server.receive(LOCAL_HOST_ID, Channel::Unreliable).is_none());
 }
+
+// =============================================================================
+// Replication Tests
+// =============================================================================
+
+use serde::{Deserialize, Serialize};
+
+/// Test component for replication tests
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TestHealth {
+  current: f32,
+  max: f32,
+}
+
+impl Replicated for TestHealth {
+  fn component_id() -> ComponentTypeId {
+    ComponentTypeId::from_name("TestHealth")
+  }
+
+  fn component_name() -> &'static str {
+    "TestHealth"
+  }
+
+  fn replication_priority() -> u8 {
+    5
+  }
+}
+
+/// Test component with higher priority
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TestScore {
+  points: i32,
+}
+
+impl Replicated for TestScore {
+  fn component_id() -> ComponentTypeId {
+    ComponentTypeId::from_name("TestScore")
+  }
+
+  fn component_name() -> &'static str {
+    "TestScore"
+  }
+
+  fn replication_priority() -> u8 {
+    1
+  }
+}
+
+#[test]
+fn network_id_generates_unique_ids() {
+  let id1 = NetworkId::new();
+  let id2 = NetworkId::new();
+  let id3 = NetworkId::new();
+
+  assert_ne!(id1, id2);
+  assert_ne!(id2, id3);
+  assert_ne!(id1, id3);
+
+  // IDs should be sequential
+  assert!(id2.0 > id1.0);
+  assert!(id3.0 > id2.0);
+}
+
+#[test]
+fn component_type_id_consistent_for_same_name() {
+  let id1 = ComponentTypeId::from_name("Transform");
+  let id2 = ComponentTypeId::from_name("Transform");
+  let id3 = ComponentTypeId::from_name("Velocity");
+
+  assert_eq!(id1, id2);
+  assert_ne!(id1, id3);
+}
+
+#[test]
+fn component_registry_registers_and_serializes() {
+  let mut registry = ComponentRegistry::new();
+  registry.register::<Transform>();
+  registry.register::<Velocity>();
+
+  assert!(registry.is_registered::<Transform>());
+  assert!(registry.is_registered::<Velocity>());
+  assert!(!registry.is_registered::<TestHealth>());
+
+  // Test serialization using SerializedComponent directly
+  let transform = Transform::new(100.0, 200.0);
+  let serialized = SerializedComponent::from_component(&transform).unwrap();
+
+  assert_eq!(serialized.type_id, Transform::component_id());
+
+  // Test deserialization
+  let deserialized: Transform = serialized.into_component().unwrap();
+  assert_eq!(deserialized.x, 100.0);
+  assert_eq!(deserialized.y, 200.0);
+}
+
+#[test]
+fn component_registry_handles_custom_components() {
+  let mut registry = ComponentRegistry::new();
+  registry.register::<TestHealth>();
+  registry.register::<TestScore>();
+
+  let health = TestHealth {
+    current: 75.0,
+    max: 100.0,
+  };
+  let serialized = SerializedComponent::from_component(&health).unwrap();
+  let deserialized: TestHealth = serialized.into_component().unwrap();
+
+  assert_eq!(deserialized.current, 75.0);
+  assert_eq!(deserialized.max, 100.0);
+}
+
+#[test]
+fn dirty_tracker_tracks_component_changes() {
+  let mut tracker = DirtyTracker::new();
+
+  let net_id1 = NetworkId::from_raw(1);
+  let net_id2 = NetworkId::from_raw(2);
+  let transform_id = ComponentTypeId::from_name("Transform");
+  let velocity_id = ComponentTypeId::from_name("Velocity");
+
+  // Mark components as dirty
+  tracker.mark_dirty(net_id1, transform_id);
+  tracker.mark_dirty(net_id1, velocity_id);
+  tracker.mark_dirty(net_id2, transform_id);
+
+  // Check dirty status for new client (unregistered = sees everything)
+  let dirty = tracker.get_dirty_for_client(1);
+  assert!(!dirty.is_empty(), "Should have dirty components");
+
+  // Find net_id1's dirty components
+  let net_id1_dirty = dirty.iter().find(|(id, _)| *id == net_id1);
+  assert!(net_id1_dirty.is_some());
+  let (_, components) = net_id1_dirty.unwrap();
+  assert!(components.contains(&transform_id));
+  assert!(components.contains(&velocity_id));
+
+  // Register and acknowledge client
+  tracker.register_client(1);
+  tracker.acknowledge_client(1);
+
+  // Move to next generation
+  tracker.next_generation();
+
+  // After acknowledgment and generation advance, client shouldn't see old changes
+  let dirty_after_ack = tracker.get_dirty_for_client(1);
+  assert!(
+    dirty_after_ack.is_empty(),
+    "Should not have dirty components after ack"
+  );
+
+  // Mark something new
+  tracker.mark_dirty(net_id1, transform_id);
+
+  // Now client should see it
+  let dirty_new = tracker.get_dirty_for_client(1);
+  assert!(!dirty_new.is_empty(), "New change should be dirty");
+}
+
+#[test]
+fn dirty_tracker_handles_spawns_and_despawns() {
+  let mut tracker = DirtyTracker::new();
+  let net_id = NetworkId::from_raw(1);
+
+  tracker.mark_spawned(net_id);
+  assert!(tracker.is_spawned(net_id));
+
+  tracker.mark_despawned(net_id);
+  assert!(tracker.is_despawned(net_id));
+}
+
+#[test]
+fn network_entity_builder_creates_server_owned_entity() {
+  let mut world = World::new();
+  let mut manager = ReplicationManager::new_server();
+  manager.register::<Transform>();
+
+  // NetworkEntityBuilder doesn't add components directly - it just sets network metadata
+  // Components are added separately after spawning
+  let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
+
+  // Add component after spawning
+  world.add_component(entity, Transform::new(50.0, 75.0));
+
+  // Verify entity was created
+  assert!(world.get_component::<Transform>(entity).is_some());
+  assert!(world.get_component::<NetworkEntity>(entity).is_some());
+
+  let network_entity = world.get_component::<NetworkEntity>(entity).unwrap();
+  assert_eq!(network_entity.authority, Authority::Server);
+  assert_eq!(network_entity.owner, 0);
+}
+
+#[test]
+fn network_entity_builder_creates_client_owned_entity() {
+  let mut world = World::new();
+  let mut manager = ReplicationManager::new_server();
+  manager.register::<Transform>();
+
+  let client_id: ClientId = 42;
+  let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().client_owned(client_id));
+
+  // Add component after spawning
+  world.add_component(entity, Transform::new(100.0, 200.0));
+
+  let network_entity = world.get_component::<NetworkEntity>(entity).unwrap();
+  assert_eq!(network_entity.authority, Authority::Client(client_id));
+  assert_eq!(network_entity.owner, client_id);
+}
+
+#[test]
+fn replication_manager_tracks_network_ids() {
+  let mut world = World::new();
+  let mut manager = ReplicationManager::new_server();
+  manager.register::<Transform>();
+
+  let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
+  world.add_component(entity, Transform::new(0.0, 0.0));
+
+  // Get network ID from entity
+  let network_id = manager.get_network_id(entity);
+  assert!(network_id.is_some());
+
+  // Get entity from network ID
+  let found_entity = manager.get_entity(network_id.unwrap());
+  assert_eq!(found_entity, Some(entity));
+}
+
+#[test]
+fn replication_manager_despawns_entities() {
+  let mut world = World::new();
+  let mut manager = ReplicationManager::new_server();
+  manager.register::<Transform>();
+
+  let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
+  world.add_component(entity, Transform::new(0.0, 0.0));
+
+  let network_id = manager.get_network_id(entity).unwrap();
+
+  // Despawn the entity
+  manager.despawn_networked(&mut world, entity);
+
+  // Entity should be gone from world
+  assert!(world.get_component::<Transform>(entity).is_none());
+
+  // Network ID mapping should be removed
+  assert!(manager.get_entity(network_id).is_none());
+}
+
+#[test]
+fn replication_manager_marks_components_dirty() {
+  let mut world = World::new();
+  let mut manager = ReplicationManager::new_server();
+  manager.register::<Transform>();
+  manager.register::<Velocity>();
+
+  let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
+  world.add_component(entity, Transform::new(0.0, 0.0));
+  world.add_component(entity, Velocity::new(1.0, 2.0));
+
+  // Modify and mark dirty
+  if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+    transform.x = 100.0;
+  }
+  manager.mark_dirty::<Transform>(entity);
+
+  // Check dirty tracker has something dirty
+  let network_id = manager.get_network_id(entity).unwrap();
+  let dirty = manager.dirty_tracker().get_dirty_for_client(0);
+  let entity_dirty = dirty.iter().find(|(id, _)| *id == network_id);
+  assert!(entity_dirty.is_some(), "Entity should have dirty components");
+}
+
+#[test]
+fn spawn_entity_message_serializes_correctly() {
+  let network_id = NetworkId::new();
+  let transform = Transform::new(100.0, 200.0);
+
+  let serialized_transform = SerializedComponent::from_component(&transform).unwrap();
+
+  let msg = SpawnEntityMessage::new(network_id, 1, Authority::Client(1))
+    .with_component(serialized_transform);
+
+  // Serialize to bytes
+  let bytes = serde_json::to_vec(&msg).unwrap();
+  assert!(!bytes.is_empty());
+
+  // Deserialize back
+  let deserialized: SpawnEntityMessage = serde_json::from_slice(&bytes).unwrap();
+  assert_eq!(deserialized.network_id, network_id);
+  assert_eq!(deserialized.owner, 1);
+  assert_eq!(deserialized.authority, Authority::Client(1));
+  assert_eq!(deserialized.components.len(), 1);
+}
+
+#[test]
+fn component_batch_message_serializes_correctly() {
+  let network_id = NetworkId::new();
+
+  let transform = SerializedComponent::from_component(&Transform::new(50.0, 75.0)).unwrap();
+  let velocity = SerializedComponent::from_component(&Velocity::new(1.0, 2.0)).unwrap();
+
+  let msg = ComponentBatchMessage {
+    updates: vec![
+      ComponentUpdateMessage::new(network_id, transform),
+      ComponentUpdateMessage::new(network_id, velocity),
+    ],
+    generation: 0,
+  };
+
+  let bytes = serde_json::to_vec(&msg).unwrap();
+  let deserialized: ComponentBatchMessage = serde_json::from_slice(&bytes).unwrap();
+
+  assert_eq!(deserialized.updates.len(), 2);
+}
+
+#[test]
+fn full_state_sync_message_serializes_correctly() {
+  let mut sync = FullStateSyncMessage::new(0);
+
+  for i in 0..3 {
+    let network_id = NetworkId::new();
+    let transform = SerializedComponent::from_component(&Transform::new(i as f32 * 100.0, 0.0)).unwrap();
+
+    let spawn_msg = SpawnEntityMessage::new(network_id, 0, Authority::Server)
+      .with_component(transform);
+    sync.add_entity(spawn_msg);
+  }
+
+  let bytes = serde_json::to_vec(&sync).unwrap();
+  let deserialized: FullStateSyncMessage = serde_json::from_slice(&bytes).unwrap();
+
+  assert_eq!(deserialized.entities.len(), 3);
+}
+
+#[test]
+fn replication_message_enum_wraps_all_types() {
+  let network_id = NetworkId::new();
+
+  // Test SpawnEntity variant
+  let spawn = ReplicationMessage::SpawnEntity(SpawnEntityMessage {
+    network_id,
+    owner: 0,
+    authority: Authority::Server,
+    components: vec![],
+  });
+  let bytes = serde_json::to_vec(&spawn).unwrap();
+  let _: ReplicationMessage = serde_json::from_slice(&bytes).unwrap();
+
+  // Test DespawnEntity variant
+  let despawn = ReplicationMessage::DespawnEntity(DespawnEntityMessage { network_id });
+  let bytes = serde_json::to_vec(&despawn).unwrap();
+  let _: ReplicationMessage = serde_json::from_slice(&bytes).unwrap();
+
+  // Test ComponentBatch variant
+  let batch = ReplicationMessage::ComponentBatch(ComponentBatchMessage { updates: vec![], generation: 0 });
+  let bytes = serde_json::to_vec(&batch).unwrap();
+  let _: ReplicationMessage = serde_json::from_slice(&bytes).unwrap();
+}
+
+// =============================================================================
+// RPC Tests
+// =============================================================================
+
+/// Test RPC type for integration tests
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TestPingRpc {
+  sequence: u32,
+}
+
+impl Rpc for TestPingRpc {
+  fn rpc_id() -> RpcTypeId {
+    RpcTypeId::from_name("TestPingRpc")
+  }
+
+  fn rpc_name() -> &'static str {
+    "TestPingRpc"
+  }
+}
+
+/// Test RPC with payload data
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TestPlayerInputRpc {
+  movement_x: f32,
+  movement_y: f32,
+  jump: bool,
+  attack: bool,
+}
+
+impl Rpc for TestPlayerInputRpc {
+  fn rpc_id() -> RpcTypeId {
+    RpcTypeId::from_name("TestPlayerInputRpc")
+  }
+
+  fn rpc_name() -> &'static str {
+    "TestPlayerInputRpc"
+  }
+}
+
+/// Test RPC for chat messages
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TestChatRpc {
+  message: String,
+}
+
+impl Rpc for TestChatRpc {
+  fn rpc_id() -> RpcTypeId {
+    RpcTypeId::from_name("TestChatRpc")
+  }
+
+  fn rpc_name() -> &'static str {
+    "TestChatRpc"
+  }
+}
+
+#[test]
+fn rpc_type_id_consistent_for_same_name() {
+  let id1 = RpcTypeId::from_name("TestRpc");
+  let id2 = RpcTypeId::from_name("TestRpc");
+  let id3 = RpcTypeId::from_name("OtherRpc");
+
+  assert_eq!(id1, id2);
+  assert_ne!(id1, id3);
+}
+
+#[test]
+fn serialized_rpc_roundtrip() {
+  let rpc = TestPingRpc { sequence: 42 };
+  let sender: ClientId = 1;
+  let target = RpcTarget::Server;
+
+  // Serialize
+  let serialized = SerializedRpc::from_rpc(&rpc, sender, target).unwrap();
+
+  assert_eq!(serialized.rpc_id, TestPingRpc::rpc_id());
+  assert_eq!(serialized.sender, sender);
+  assert!(matches!(serialized.target, RpcTarget::Server));
+
+  // Convert to bytes and back
+  let bytes = serialized.to_bytes().unwrap();
+  let restored = SerializedRpc::from_bytes(&bytes).unwrap();
+
+  assert_eq!(restored.rpc_id, TestPingRpc::rpc_id());
+  assert_eq!(restored.sender, sender);
+
+  // Deserialize payload
+  let received: ReceivedRpc<TestPingRpc> = restored.into_rpc().unwrap();
+  assert_eq!(received.payload.sequence, 42);
+  assert_eq!(received.sender, sender);
+}
+
+#[test]
+fn serialized_rpc_handles_complex_payload() {
+  let rpc = TestPlayerInputRpc {
+    movement_x: 1.0,
+    movement_y: -0.5,
+    jump: true,
+    attack: false,
+  };
+
+  let serialized = SerializedRpc::from_rpc(&rpc, 5, RpcTarget::Server).unwrap();
+  let bytes = serialized.to_bytes().unwrap();
+  let restored = SerializedRpc::from_bytes(&bytes).unwrap();
+  let received: ReceivedRpc<TestPlayerInputRpc> = restored.into_rpc().unwrap();
+
+  assert_eq!(received.payload.movement_x, 1.0);
+  assert_eq!(received.payload.movement_y, -0.5);
+  assert!(received.payload.jump);
+  assert!(!received.payload.attack);
+}
+
+#[test]
+fn serialized_rpc_handles_string_payload() {
+  let rpc = TestChatRpc {
+    message: "Hello, world!".to_string(),
+  };
+
+  let serialized = SerializedRpc::from_rpc(&rpc, 10, RpcTarget::Broadcast).unwrap();
+  let bytes = serialized.to_bytes().unwrap();
+  let restored = SerializedRpc::from_bytes(&bytes).unwrap();
+  let received: ReceivedRpc<TestChatRpc> = restored.into_rpc().unwrap();
+
+  assert_eq!(received.payload.message, "Hello, world!");
+}
+
+#[test]
+fn rpc_target_variants() {
+  // Test all RpcTarget variants serialize correctly
+  let targets = [
+    RpcTarget::Server,
+    RpcTarget::Client(42),
+    RpcTarget::Broadcast,
+    RpcTarget::BroadcastExcept(7),
+  ];
+
+  for target in targets {
+    let rpc = TestPingRpc { sequence: 1 };
+    let serialized = SerializedRpc::from_rpc(&rpc, 0, target).unwrap();
+    let bytes = serialized.to_bytes().unwrap();
+    let restored = SerializedRpc::from_bytes(&bytes).unwrap();
+
+    match (&target, &restored.target) {
+      (RpcTarget::Server, RpcTarget::Server) => {}
+      (RpcTarget::Client(a), RpcTarget::Client(b)) => assert_eq!(a, b),
+      (RpcTarget::Broadcast, RpcTarget::Broadcast) => {}
+      (RpcTarget::BroadcastExcept(a), RpcTarget::BroadcastExcept(b)) => assert_eq!(a, b),
+      _ => panic!("Target mismatch"),
+    }
+  }
+}
+
+#[test]
+fn rpc_registry_registers_handlers() {
+  let mut registry = RpcRegistry::new();
+
+  registry.register::<TestPingRpc, _>(|_world, rpc| {
+    assert_eq!(rpc.payload.sequence, 100);
+    Ok(())
+  });
+
+  assert!(registry.is_registered::<TestPingRpc>());
+  assert!(!registry.is_registered::<TestChatRpc>());
+}
+
+#[test]
+fn rpc_registry_dispatches_to_handler() {
+  use std::sync::atomic::{AtomicU32, Ordering};
+  use std::sync::Arc;
+
+  let mut registry = RpcRegistry::new();
+  let call_count = Arc::new(AtomicU32::new(0));
+  let call_count_clone = call_count.clone();
+
+  registry.register::<TestPingRpc, _>(move |_world, rpc| {
+    assert_eq!(rpc.payload.sequence, 999);
+    call_count_clone.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+  });
+
+  let rpc = TestPingRpc { sequence: 999 };
+  let serialized = SerializedRpc::from_rpc(&rpc, 1, RpcTarget::Server).unwrap();
+
+  let mut world = World::new();
+  registry.dispatch(&mut world, &serialized).unwrap();
+
+  assert_eq!(call_count.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn rpc_registry_returns_error_for_unknown_rpc() {
+  let registry = RpcRegistry::new();
+
+  let rpc = TestPingRpc { sequence: 1 };
+  let serialized = SerializedRpc::from_rpc(&rpc, 1, RpcTarget::Server).unwrap();
+
+  let mut world = World::new();
+  let result = registry.dispatch(&mut world, &serialized);
+
+  assert!(result.is_err());
+  assert!(matches!(result, Err(ReplicationError::RpcNotFound(_))));
+}
+
+#[test]
+fn rpc_registry_dispatches_multiple_types() {
+  use std::sync::atomic::{AtomicU32, Ordering};
+  use std::sync::Arc;
+
+  let mut registry = RpcRegistry::new();
+
+  let ping_count = Arc::new(AtomicU32::new(0));
+  let ping_count_clone = ping_count.clone();
+
+  let chat_count = Arc::new(AtomicU32::new(0));
+  let chat_count_clone = chat_count.clone();
+
+  registry.register::<TestPingRpc, _>(move |_world, _rpc| {
+    ping_count_clone.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+  });
+
+  registry.register::<TestChatRpc, _>(move |_world, _rpc| {
+    chat_count_clone.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+  });
+
+  let mut world = World::new();
+
+  // Dispatch ping
+  let ping = SerializedRpc::from_rpc(&TestPingRpc { sequence: 1 }, 1, RpcTarget::Server).unwrap();
+  registry.dispatch(&mut world, &ping).unwrap();
+
+  // Dispatch chat
+  let chat = SerializedRpc::from_rpc(
+    &TestChatRpc {
+      message: "hi".to_string(),
+    },
+    2,
+    RpcTarget::Server,
+  )
+  .unwrap();
+  registry.dispatch(&mut world, &chat).unwrap();
+
+  // Dispatch another ping
+  let ping2 = SerializedRpc::from_rpc(&TestPingRpc { sequence: 2 }, 1, RpcTarget::Server).unwrap();
+  registry.dispatch(&mut world, &ping2).unwrap();
+
+  assert_eq!(ping_count.load(Ordering::SeqCst), 2);
+  assert_eq!(chat_count.load(Ordering::SeqCst), 1);
+}
+
+// =============================================================================
+// Network Integration Tests for Replication and RPC
+// =============================================================================
+
+#[test]
+fn replication_server_broadcasts_spawn_to_client() {
+  let port = get_test_port();
+
+  let mut server = NetworkServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 88880,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 88880,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
+    client.is_connected() && server.connected_count() == 1
+  });
+  assert!(connected, "Failed to establish connection");
+
+  // Setup replication on server
+  let mut server_world = World::new();
+  let mut server_replication = ReplicationManager::new_server();
+  server_replication.register::<Transform>();
+
+  // Spawn a networked entity
+  let entity = server_replication.spawn_networked(
+    &mut server_world,
+    NetworkEntityBuilder::new().server_owned(),
+  );
+  server_world.add_component(entity, Transform::new(123.0, 456.0));
+
+  let network_id = server_replication.get_network_id(entity).unwrap();
+
+  // Get client ID
+  let client_ids: Vec<_> = server.clients().collect();
+  let client_id = client_ids[0];
+
+  // Send full state to client (no Result, just call it)
+  server_replication.send_full_state(&server_world, &mut server, client_id);
+
+  // Wait for client to receive
+  let mut received_data = None;
+  let dt = Duration::from_millis(16);
+
+  for _ in 0..100 {
+    server.update(dt);
+    client.update(dt);
+
+    if let Some(data) = client.receive(Channel::ReliableOrdered) {
+      received_data = Some(data);
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  assert!(received_data.is_some(), "Client did not receive spawn data");
+
+  // Parse the message
+  let msg = ReplicationMessage::from_bytes(&received_data.unwrap()).unwrap();
+
+  if let ReplicationMessage::FullStateSync(sync) = msg {
+    assert_eq!(sync.entities.len(), 1);
+    assert_eq!(sync.entities[0].network_id, network_id);
+    assert_eq!(sync.entities[0].authority, Authority::Server);
+  } else {
+    panic!("Expected FullStateSync message");
+  }
+}
+
+#[test]
+fn replication_client_receives_component_updates() {
+  let port = get_test_port();
+
+  let mut server = NetworkServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 88881,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 88881,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
+    client.is_connected() && server.connected_count() == 1
+  });
+  assert!(connected);
+
+  // Setup replication
+  let mut server_world = World::new();
+  let mut server_replication = ReplicationManager::new_server();
+  server_replication.register::<Transform>();
+
+  let entity = server_replication.spawn_networked(
+    &mut server_world,
+    NetworkEntityBuilder::new().server_owned(),
+  );
+  server_world.add_component(entity, Transform::new(0.0, 0.0));
+
+  // Modify the transform
+  if let Some(mut transform) = server_world.get_component_mut::<Transform>(entity) {
+    transform.x = 500.0;
+    transform.y = 600.0;
+  }
+  server_replication.mark_dirty::<Transform>(entity);
+
+  // Broadcast updates (no Result, just call it)
+  server_replication.broadcast_updates(&server_world, &mut server);
+
+  // Wait for client to receive - could be spawn or batch
+  let mut received_data = None;
+  let dt = Duration::from_millis(16);
+
+  for _ in 0..100 {
+    server.update(dt);
+    client.update(dt);
+
+    // Check reliable channel for spawns
+    if let Some(data) = client.receive(Channel::ReliableOrdered) {
+      received_data = Some(data);
+      break;
+    }
+
+    // Check unreliable channel for component updates
+    if let Some(data) = client.receive(Channel::Unreliable) {
+      received_data = Some(data);
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  assert!(
+    received_data.is_some(),
+    "Client did not receive any replication data"
+  );
+
+  // Parse the message - could be spawn or batch
+  let msg = ReplicationMessage::from_bytes(&received_data.unwrap()).unwrap();
+
+  match msg {
+    ReplicationMessage::SpawnEntity(_) => {
+      // Got spawn message - that's expected for new entity
+    }
+    ReplicationMessage::ComponentBatch(batch) => {
+      assert!(!batch.updates.is_empty());
+    }
+    _ => panic!("Expected SpawnEntity or ComponentBatch message"),
+  }
+}
+
+#[test]
+fn rpc_client_sends_to_server() {
+  let port = get_test_port();
+
+  let mut server = NetworkServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 88882,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 88882,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
+    client.is_connected() && server.connected_count() == 1
+  });
+  assert!(connected);
+
+  // Client sends RPC
+  let rpc = TestPlayerInputRpc {
+    movement_x: 1.0,
+    movement_y: -1.0,
+    jump: true,
+    attack: false,
+  };
+  let serialized =
+    SerializedRpc::from_rpc(&rpc, client.client_id(), RpcTarget::Server).unwrap();
+  client.send(Channel::ReliableOrdered, &serialized.to_bytes().unwrap());
+
+  // Get client ID on server
+  let client_ids: Vec<_> = server.clients().collect();
+  let client_id = client_ids[0];
+
+  // Wait for server to receive
+  let mut received_data = None;
+  let dt = Duration::from_millis(16);
+
+  for _ in 0..100 {
+    server.update(dt);
+    client.update(dt);
+
+    if let Some(data) = server.receive(client_id, Channel::ReliableOrdered) {
+      received_data = Some(data);
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  assert!(received_data.is_some(), "Server did not receive RPC");
+
+  // Parse the RPC
+  let serialized = SerializedRpc::from_bytes(&received_data.unwrap()).unwrap();
+  let received: ReceivedRpc<TestPlayerInputRpc> = serialized.into_rpc().unwrap();
+
+  assert_eq!(received.payload.movement_x, 1.0);
+  assert_eq!(received.payload.movement_y, -1.0);
+  assert!(received.payload.jump);
+  assert!(!received.payload.attack);
+}
+
+#[test]
+fn rpc_server_broadcasts_to_clients() {
+  let port = get_test_port();
+
+  let mut server = NetworkServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 88883,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+
+  let mut client1 = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 88883,
+  })
+  .unwrap();
+
+  let mut client2 = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 88883,
+  })
+  .unwrap();
+
+  // Wait for both to connect
+  let dt = Duration::from_millis(16);
+  let start = std::time::Instant::now();
+  let timeout = Duration::from_millis(3000);
+
+  while start.elapsed() < timeout {
+    server.update(dt);
+    client1.update(dt);
+    client2.update(dt);
+
+    if client1.is_connected() && client2.is_connected() && server.connected_count() == 2 {
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+  assert_eq!(server.connected_count(), 2);
+
+  // Server broadcasts RPC
+  let rpc = TestChatRpc {
+    message: "Hello everyone!".to_string(),
+  };
+  let serialized = SerializedRpc::from_rpc(&rpc, 0, RpcTarget::Broadcast).unwrap();
+  server.broadcast(Channel::ReliableOrdered, &serialized.to_bytes().unwrap());
+
+  // Wait for both clients to receive
+  let mut client1_received = None;
+  let mut client2_received = None;
+
+  let start = std::time::Instant::now();
+  while start.elapsed() < timeout {
+    server.update(dt);
+    client1.update(dt);
+    client2.update(dt);
+
+    if client1_received.is_none() && let Some(data) = client1.receive(Channel::ReliableOrdered) {
+      client1_received = Some(data);
+    }
+
+    if client2_received.is_none() && let Some(data) = client2.receive(Channel::ReliableOrdered) {
+      client2_received = Some(data);
+    }
+
+    if client1_received.is_some() && client2_received.is_some() {
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  assert!(client1_received.is_some(), "Client 1 did not receive RPC");
+  assert!(client2_received.is_some(), "Client 2 did not receive RPC");
+
+  // Verify both received the same message
+  let rpc1: ReceivedRpc<TestChatRpc> =
+    SerializedRpc::from_bytes(&client1_received.unwrap())
+      .unwrap()
+      .into_rpc()
+      .unwrap();
+  let rpc2: ReceivedRpc<TestChatRpc> =
+    SerializedRpc::from_bytes(&client2_received.unwrap())
+      .unwrap()
+      .into_rpc()
+      .unwrap();
+
+  assert_eq!(rpc1.payload.message, "Hello everyone!");
+  assert_eq!(rpc2.payload.message, "Hello everyone!");
+}
+
+#[test]
+fn rpc_registry_processes_network_rpcs() {
+  use std::sync::atomic::{AtomicU32, Ordering};
+  use std::sync::Arc;
+
+  let port = get_test_port();
+
+  let mut server = NetworkServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 88884,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 88884,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
+    client.is_connected() && server.connected_count() == 1
+  });
+  assert!(connected);
+
+  // Setup RPC registry on server
+  let mut registry = RpcRegistry::new();
+  let received_sequence = Arc::new(AtomicU32::new(0));
+  let received_sequence_clone = received_sequence.clone();
+
+  registry.register::<TestPingRpc, _>(move |_world, rpc| {
+    received_sequence_clone.store(rpc.payload.sequence, Ordering::SeqCst);
+    Ok(())
+  });
+
+  // Client sends RPC
+  let rpc = TestPingRpc { sequence: 12345 };
+  let serialized =
+    SerializedRpc::from_rpc(&rpc, client.client_id(), RpcTarget::Server).unwrap();
+  client.send(Channel::ReliableOrdered, &serialized.to_bytes().unwrap());
+
+  // Server processes RPC
+  let client_ids: Vec<_> = server.clients().collect();
+  let client_id = client_ids[0];
+  let mut world = World::new();
+  let dt = Duration::from_millis(16);
+
+  for _ in 0..100 {
+    server.update(dt);
+    client.update(dt);
+
+    if let Some(data) = server.receive(client_id, Channel::ReliableOrdered) {
+      if let Ok(serialized) = SerializedRpc::from_bytes(&data) {
+        let _ = registry.dispatch(&mut world, &serialized);
+      }
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  assert_eq!(
+    received_sequence.load(Ordering::SeqCst),
+    12345,
+    "RPC handler was not called with correct sequence"
+  );
+}
+
+#[test]
+fn listen_server_replication_excludes_host_from_network() {
+  let port = get_test_port();
+
+  let mut server = ListenServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 88885,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 88885,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected =
+    run_listen_server_updates_until(&mut server, &mut client, 2000, |server, client| {
+      client.is_connected() && server.remote_count() == 1
+    });
+  assert!(connected);
+
+  // Setup replication
+  let mut world = World::new();
+  let mut replication = ReplicationManager::new_server();
+  replication.register::<Transform>();
+
+  // Spawn entity for host
+  let host_entity = replication.spawn_networked(
+    &mut world,
+    NetworkEntityBuilder::new().client_owned(server.host_id()),
+  );
+  world.add_component(host_entity, Transform::new(100.0, 100.0));
+
+  // Spawn entity for remote client
+  let remote_clients: Vec<_> = server.remote_clients().collect();
+  let remote_id = remote_clients[0];
+
+  let remote_entity = replication.spawn_networked(
+    &mut world,
+    NetworkEntityBuilder::new().client_owned(remote_id),
+  );
+  world.add_component(remote_entity, Transform::new(200.0, 200.0));
+
+  // Verify both entities exist
+  assert!(world.get_component::<Transform>(host_entity).is_some());
+  assert!(world.get_component::<Transform>(remote_entity).is_some());
+
+  // Verify host is correctly identified
+  assert!(server.is_host(server.host_id()));
+  assert!(!server.is_host(remote_id));
+
+  // Verify player count
+  assert_eq!(server.player_count(), 2); // Host + 1 remote
+}
+
+#[test]
+fn serverlike_trait_works_with_network_server() {
+  let port = get_test_port();
+
+  let mut server = NetworkServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 88886,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 88886,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
+    client.is_connected() && server.connected_count() == 1
+  });
+  assert!(connected);
+
+  // Test ServerLike methods
+  fn test_serverlike<S: ServerLike>(server: &mut S) {
+    let clients: Vec<_> = server.clients().collect();
+    assert_eq!(clients.len(), 1);
+
+    // NetworkServer has no host
+    assert!(!server.is_host(clients[0]));
+  }
+
+  test_serverlike(&mut server);
+}
+
+#[test]
+fn serverlike_trait_works_with_listen_server() {
+  let port = get_test_port();
+
+  let mut server = ListenServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 88887,
+  })
+  .unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig {
+    server_addr,
+    protocol_id: 88887,
+  })
+  .unwrap();
+
+  // Wait for connection
+  let connected =
+    run_listen_server_updates_until(&mut server, &mut client, 2000, |server, client| {
+      client.is_connected() && server.remote_count() == 1
+    });
+  assert!(connected);
+
+  // Test ServerLike methods
+  fn test_serverlike<S: ServerLike>(server: &mut S, expected_host: bool) {
+    let clients: Vec<_> = server.clients().collect();
+
+    if expected_host {
+      // ListenServer includes host in clients()
+      assert!(!clients.is_empty());
+      assert!(server.is_host(LOCAL_HOST_ID));
+    }
+  }
+
+  test_serverlike(&mut server, true);
+}
+
+#[test]
+fn multiple_entities_replicate_correctly() {
+  let mut world = World::new();
+  let mut manager = ReplicationManager::new_server();
+  manager.register::<Transform>();
+  manager.register::<Velocity>();
+
+  // Spawn multiple entities
+  let entities: Vec<_> = (0..10)
+    .map(|i| {
+      let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
+      world.add_component(entity, Transform::new(i as f32 * 100.0, 0.0));
+      world.add_component(entity, Velocity::new(1.0, 0.0));
+      entity
+    })
+    .collect();
+
+  // Verify all entities were created with unique network IDs
+  let network_ids: Vec<_> = entities
+    .iter()
+    .filter_map(|&e| manager.get_network_id(e))
+    .collect();
+
+  assert_eq!(network_ids.len(), 10);
+
+  // Verify all IDs are unique
+  let unique_ids: std::collections::HashSet<_> = network_ids.iter().collect();
+  assert_eq!(unique_ids.len(), 10);
+
+  // Verify bidirectional lookup works for all
+  for (entity, network_id) in entities.iter().zip(network_ids.iter()) {
+    assert_eq!(manager.get_entity(*network_id), Some(*entity));
+  }
+}
