@@ -22,6 +22,16 @@ impl RenderLayer {
 ///
 /// For 2D games, the `z` field represents depth (used for parallax, layering).
 /// For 3D games, `z` becomes the third spatial dimension.
+///
+/// ## Pivot Point
+///
+/// The `pivot_x` and `pivot_y` fields define the rotation/scale origin as a normalized
+/// value (0.0 to 1.0) relative to the sprite dimensions:
+/// - `(0.5, 0.5)` - Center (default) - rotates around the center
+/// - `(0.0, 0.0)` - Top-left corner
+/// - `(0.5, 0.0)` - Top-center - useful for hanging objects like pendulums
+/// - `(0.0, 0.5)` - Left-center - useful for door hinges
+/// - `(1.0, 1.0)` - Bottom-right corner
 #[derive(Debug, Clone)]
 pub struct Transform {
   pub x: f32,
@@ -32,10 +42,14 @@ pub struct Transform {
   pub rotation: f32,
   pub scale_x: f32,
   pub scale_y: f32,
+  /// Pivot X as normalized value (0.0 = left, 0.5 = center, 1.0 = right)
+  pub pivot_x: f32,
+  /// Pivot Y as normalized value (0.0 = top, 0.5 = center, 1.0 = bottom)
+  pub pivot_y: f32,
 }
 
 impl Transform {
-  /// Create a new 2D transform (z defaults to 0.0)
+  /// Create a new 2D transform (z defaults to 0.0, pivot defaults to center)
   pub fn new(x: f32, y: f32) -> Self {
     Transform {
       x,
@@ -44,6 +58,8 @@ impl Transform {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     }
   }
 
@@ -56,6 +72,8 @@ impl Transform {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     }
   }
 
@@ -77,6 +95,49 @@ impl Transform {
   /// Get position as Vec3
   pub fn as_vec3(&self) -> Vec3 {
     Vec3::new(self.x, self.y, self.z)
+  }
+
+  /// Builder method to set rotation
+  pub fn with_rotation(mut self, rotation: f32) -> Self {
+    self.rotation = rotation;
+    self
+  }
+
+  /// Builder method to set scale
+  pub fn with_scale(mut self, scale_x: f32, scale_y: f32) -> Self {
+    self.scale_x = scale_x;
+    self.scale_y = scale_y;
+    self
+  }
+
+  /// Builder method to set uniform scale
+  pub fn with_uniform_scale(mut self, scale: f32) -> Self {
+    self.scale_x = scale;
+    self.scale_y = scale;
+    self
+  }
+
+  /// Builder method to set pivot point (normalized 0.0-1.0)
+  ///
+  /// The pivot determines the center of rotation and scaling:
+  /// - `(0.5, 0.5)` - Center (default)
+  /// - `(0.5, 0.0)` - Top-center (pendulums, hanging objects)
+  /// - `(0.0, 0.5)` - Left-center (door hinges)
+  /// - `(0.0, 0.0)` - Top-left corner
+  pub fn with_pivot(mut self, pivot_x: f32, pivot_y: f32) -> Self {
+    self.pivot_x = pivot_x;
+    self.pivot_y = pivot_y;
+    self
+  }
+
+  /// Builder method to set pivot at top-center (useful for hanging objects)
+  pub fn with_pivot_top_center(self) -> Self {
+    self.with_pivot(0.5, 0.0)
+  }
+
+  /// Builder method to set pivot at bottom-center (useful for standing objects)
+  pub fn with_pivot_bottom_center(self) -> Self {
+    self.with_pivot(0.5, 1.0)
   }
 
   pub fn origin() -> Self {
@@ -148,6 +209,8 @@ mod tests {
     assert_eq!(t.rotation, 0.0);
     assert_eq!(t.scale_x, 1.0);
     assert_eq!(t.scale_y, 1.0);
+    assert_eq!(t.pivot_x, 0.5);
+    assert_eq!(t.pivot_y, 0.5);
   }
 
   #[test]
@@ -156,6 +219,23 @@ mod tests {
     assert_eq!(t.x, 1.0);
     assert_eq!(t.y, 2.0);
     assert_eq!(t.z, 3.0);
+    assert_eq!(t.pivot_x, 0.5);
+    assert_eq!(t.pivot_y, 0.5);
+  }
+
+  #[test]
+  fn transform_pivot_builder() {
+    let t = Transform::new(100.0, 100.0).with_pivot(0.5, 0.0);
+    assert_eq!(t.pivot_x, 0.5);
+    assert_eq!(t.pivot_y, 0.0);
+
+    let t2 = Transform::new(100.0, 100.0).with_pivot_top_center();
+    assert_eq!(t2.pivot_x, 0.5);
+    assert_eq!(t2.pivot_y, 0.0);
+
+    let t3 = Transform::new(100.0, 100.0).with_pivot_bottom_center();
+    assert_eq!(t3.pivot_x, 0.5);
+    assert_eq!(t3.pivot_y, 1.0);
   }
 
   #[test]

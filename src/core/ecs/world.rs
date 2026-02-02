@@ -875,6 +875,8 @@ mod tests {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     },));
 
     world.propagate_transforms();
@@ -897,6 +899,8 @@ mod tests {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     },));
 
     let child = world.spawn_child(
@@ -908,6 +912,8 @@ mod tests {
         rotation: 0.0,
         scale_x: 1.0,
         scale_y: 1.0,
+        pivot_x: 0.5,
+        pivot_y: 0.5,
       },),
     );
 
@@ -936,6 +942,8 @@ mod tests {
       rotation: 90.0, // 90 degrees (WorldTransform uses degrees)
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     },));
 
     let child = world.spawn_child(
@@ -947,6 +955,8 @@ mod tests {
         rotation: 0.0,
         scale_x: 1.0,
         scale_y: 1.0,
+        pivot_x: 0.5,
+        pivot_y: 0.5,
       },),
     );
 

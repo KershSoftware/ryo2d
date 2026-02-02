@@ -67,3 +67,33 @@ struct Health {
 
 ctx.world.add_component(player, Health { current: 100, max: 100 });
 ```
+
+## Transform Pivot Points
+
+By default, sprites rotate and scale around their center. You can change this with **pivot points**:
+
+```rust
+// Rotate around top-center (for pendulums, hanging objects)
+Transform::new(x, y)
+    .with_pivot_top_center()
+    .with_rotation(angle)
+
+// Rotate around left edge (for door hinges)
+Transform::new(x, y)
+    .with_pivot(0.0, 0.5)
+    .with_rotation(angle)
+
+// Custom pivot (normalized 0.0-1.0)
+Transform::new(x, y)
+    .with_pivot(0.25, 0.75)
+```
+
+**Common pivot values:**
+
+| Pivot | Value | Use Case |
+|-------|-------|----------|
+| Center | `(0.5, 0.5)` | Default - spin around center |
+| Top-center | `(0.5, 0.0)` | Pendulums, hanging lamps |
+| Bottom-center | `(0.5, 1.0)` | Trees swaying, standing objects |
+| Left-center | `(0.0, 0.5)` | Door hinges, book pages |
+| Top-left | `(0.0, 0.0)` | Traditional top-left origin |

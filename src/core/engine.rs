@@ -14,11 +14,12 @@ use super::camera::Camera;
 use super::collision::Collider;
 use super::debug::{self, DebugConfig, FrameTimings, SmoothedFrameTimings};
 use super::ecs::{
-  Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
+  Entity, RenderStyle, Renderable, SpriteShader, Transform, Vec2, Velocity, World, WorldTransform,
 };
 use super::error::{EngineError, EngineResult};
 use super::game::{Game, GameContext, GpuRenderContext};
 use super::input::InputState;
+use super::lighting::{Light2D, LightingRenderer};
 use super::physics::{PhysicsConfig, RigidBody};
 use super::rapier_physics::RapierPhysicsWorld;
 use super::renderer::WgpuRenderer;
@@ -237,6 +238,8 @@ pub struct Engine {
   sprite_gpu: Option<SpriteGpuRenderer>,
   // Batch collector for GPU sprite rendering (reused each frame)
   batch_collector: BatchCollector,
+  // 2D Lighting renderer
+  lighting: Option<LightingRenderer>,
   // Frame timing breakdown for profiling (current frame, in-progress)
   frame_timings: FrameTimings,
   // Smoothed frame timings for stable overlay display
@@ -389,6 +392,7 @@ impl Engine {
       vsync,
       sprite_gpu: None, // Initialized when renderer is created
       batch_collector: BatchCollector::new(),
+      lighting: None, // Initialized when renderer is created
       frame_timings: FrameTimings::default(),
       smoothed_timings: SmoothedFrameTimings::default(),
       debug_font_uploaded: false,
@@ -654,30 +658,74 @@ impl Engine {
 
       // Use WorldTransform if available (for hierarchical entities),
       // otherwise fall back to local Transform
-      let (x, y, rotation, scale_x, scale_y) =
+      let (x, y, rotation, scale_x, scale_y, pivot_x, pivot_y) =
         if let Some(wt) = self.world.get_component::<WorldTransform>(entity) {
-          (wt.x, wt.y, wt.rotation, wt.scale_x, wt.scale_y)
+          (
+            wt.x,
+            wt.y,
+            wt.rotation,
+            wt.scale_x,
+            wt.scale_y,
+            wt.pivot_x,
+            wt.pivot_y,
+          )
         } else if let Some(t) = self.world.get_component::<Transform>(entity) {
-          (t.x, t.y, t.rotation, t.scale_x, t.scale_y)
+          (
+            t.x, t.y, t.rotation, t.scale_x, t.scale_y, t.pivot_x, t.pivot_y,
+          )
         } else {
           continue;
         };
 
-      // Note: draw_rotated expects degrees, not radians (it converts internally)
-      let rotation_deg = rotation;
+      // draw_rotated expects degrees, Transform.rotation is in radians
+      let rotation_deg = rotation.to_degrees();
 
       match &renderable.style {
         RenderStyle::Single => {
-          // Convert world position to screen position using camera
-          let (screen_x, screen_y) = self.camera.world_to_screen(x, y);
-
           // Calculate final scale (transform scale * camera zoom)
           let final_scale_x = scale_x * self.camera.zoom;
           let final_scale_y = scale_y * self.camera.zoom;
 
-          // Cull off-screen sprites
+          // Calculate sprite dimensions after scaling
           let sprite_w = renderable.sprite.width() as f32 * final_scale_x;
           let sprite_h = renderable.sprite.height() as f32 * final_scale_y;
+
+          // Pivot offset calculation:
+          // The transform position (x, y) is where the pivot point should be.
+          // draw_rotated rotates around the sprite's CENTER.
+          // We need to calculate where the sprite's top-left corner should be
+          // so that the pivot point ends up at (x, y) after rotation.
+          //
+          // Pivot is normalized (0-1): (0.5, 0.5) = center, (0.5, 0.0) = top-center
+          // Offset from pivot to center in sprite-local coords (before rotation):
+          let pivot_to_center_x = (0.5 - pivot_x) * sprite_w;
+          let pivot_to_center_y = (0.5 - pivot_y) * sprite_h;
+
+          // Rotate this offset by the sprite's rotation
+          let (rotated_offset_x, rotated_offset_y) = if rotation_deg.abs() > 0.01 {
+            let angle_rad = rotation_deg.to_radians();
+            let cos_a = angle_rad.cos();
+            let sin_a = angle_rad.sin();
+            (
+              pivot_to_center_x * cos_a - pivot_to_center_y * sin_a,
+              pivot_to_center_x * sin_a + pivot_to_center_y * cos_a,
+            )
+          } else {
+            (pivot_to_center_x, pivot_to_center_y)
+          };
+
+          // The sprite's center in world coords = pivot position + rotated offset
+          let center_x = x + rotated_offset_x;
+          let center_y = y + rotated_offset_y;
+
+          // The sprite's top-left corner (what draw_rotated expects)
+          let draw_x = center_x - sprite_w / 2.0;
+          let draw_y = center_y - sprite_h / 2.0;
+
+          // Convert to screen position using camera
+          let (screen_x, screen_y) = self.camera.world_to_screen(draw_x, draw_y);
+
+          // Cull off-screen sprites
           if !self.camera.is_visible(x, y, sprite_w, sprite_h) {
             continue;
           }
@@ -984,9 +1032,18 @@ impl ApplicationHandler for Engine {
       renderer.game_texture_format(),
     );
 
+    // Create 2D lighting renderer
+    let lighting = LightingRenderer::new(
+      renderer.device(),
+      self.config.width,
+      self.config.height,
+      renderer.game_texture_format(),
+    );
+
     self.window = Some(window);
     self.renderer = Some(renderer);
     self.sprite_gpu = Some(sprite_gpu);
+    self.lighting = Some(lighting);
     self.time = Some(TimeState::new(
       self.config.target_fps,
       self.config.physics_hz,
@@ -1034,8 +1091,8 @@ impl ApplicationHandler for Engine {
           // Don't capture control characters (backspace, enter, etc.)
           // These are handled separately as key presses
           // Also skip when Ctrl or Alt is held (for shortcuts like Ctrl+A, Ctrl+C)
-          let ctrl_held = self.input.key_down(KeyCode::ControlLeft)
-            || self.input.key_down(KeyCode::ControlRight);
+          let ctrl_held =
+            self.input.key_down(KeyCode::ControlLeft) || self.input.key_down(KeyCode::ControlRight);
           let alt_held =
             self.input.key_down(KeyCode::AltLeft) || self.input.key_down(KeyCode::AltRight);
           if !ctrl_held && !alt_held && !text.chars().all(|c| c.is_control()) {
@@ -1217,33 +1274,67 @@ impl ApplicationHandler for Engine {
         // Render time includes software rendering + GPU batch collection
         self.frame_timings.render = render_start.elapsed();
 
-        // Actually draw to screen with post-processing effects and GPU sprites
-        // Take sprite_gpu out to avoid borrow conflicts with renderer
+        // Actually draw to screen with post-processing effects, lighting, and GPU sprites
+        // Take sprite_gpu and lighting out to avoid borrow conflicts with renderer
         let present_start = std::time::Instant::now();
         let mut sprite_gpu = self.sprite_gpu.take();
         let mut renderer = self.renderer.take();
+        let lighting = self.lighting.take();
 
         if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
           // Only use GPU sprite callback if we have batched sprites
           let has_gpu_sprites = self.batch_collector.sprite_count() > 0;
 
-          let result = if has_gpu_sprites {
-            // Update GPU renderer viewport
-            gpu.set_viewport(
-              rend.queue(),
-              rend.game_width() as f32,
-              rend.game_height() as f32,
-            );
+          // Collect lights from the world
+          let lights: Vec<_> = self
+            .world
+            .query_mut::<(&Transform, &Light2D)>()
+            .into_iter()
+            .map(|(t, l)| (t.clone(), l.clone()))
+            .collect();
+          let has_lights = !lights.is_empty() && lighting.is_some();
 
+          // Get camera state for lighting
+          let camera_pos = Vec2::new(self.camera.x, self.camera.y);
+          let camera_zoom = self.camera.zoom;
+          let time = self
+            .time
+            .as_ref()
+            .map(|t| t.frame_count as f32 * 0.016)
+            .unwrap_or(0.0);
+
+          // Update GPU renderer viewport
+          gpu.set_viewport(
+            rend.queue(),
+            rend.game_width() as f32,
+            rend.game_height() as f32,
+          );
+
+          let result = if has_lights || has_gpu_sprites {
             // Create callback closure that captures gpu and batch_collector
             let batch_collector = &self.batch_collector;
-            let callback = |queue: &wgpu::Queue,
-                            encoder: &mut wgpu::CommandEncoder,
-                            view: &wgpu::TextureView| {
-              gpu.render_batches(queue, encoder, view, batch_collector);
+            let gpu_callback = if has_gpu_sprites {
+              Some(
+                |queue: &wgpu::Queue,
+                 encoder: &mut wgpu::CommandEncoder,
+                 view: &wgpu::TextureView| {
+                  gpu.render_batches(queue, encoder, view, batch_collector);
+                },
+              )
+            } else {
+              None
             };
 
-            rend.render_with_gpu_sprites(Some(&self.effects), Some(callback))
+            // Use the full lighting pipeline
+            rend.render_with_lighting(
+              Some(&self.effects),
+              gpu_callback,
+              lighting.as_ref(),
+              lights.iter().map(|(t, l)| (t, l)),
+              camera_pos,
+              camera_zoom,
+              time,
+            )
           } else {
             rend.render_with_effects(Some(&self.effects))
           };
@@ -1255,15 +1346,17 @@ impl ApplicationHandler for Engine {
               // Put back before exiting
               self.sprite_gpu = sprite_gpu;
               self.renderer = renderer;
+              self.lighting = lighting;
               event_loop.exit();
               return;
             }
           }
         }
 
-        // Put sprite_gpu and renderer back
+        // Put sprite_gpu, renderer, and lighting back
         self.sprite_gpu = sprite_gpu;
         self.renderer = renderer;
+        self.lighting = lighting;
         // Present time = GPU submission + effects pipeline
         self.frame_timings.present = present_start.elapsed();
 
