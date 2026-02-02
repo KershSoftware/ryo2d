@@ -33,8 +33,12 @@ impl Scene for GameOverScene {
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
   }
 
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    if self.restart_clicked {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    // Space or Enter to restart
+    if self.restart_clicked
+      || ctx.input.key_pressed(KeyCode::Space)
+      || ctx.input.key_pressed(KeyCode::Enter)
+    {
       self.restart_clicked = false;
       return SceneAction::SwitchWith(
         Box::new(super::GameScene::new(self.high_score)),
@@ -42,7 +46,8 @@ impl Scene for GameOverScene {
       );
     }
 
-    if self.menu_clicked {
+    // Escape to return to menu
+    if self.menu_clicked || ctx.input.key_pressed(KeyCode::Escape) {
       self.menu_clicked = false;
       return SceneAction::SwitchWith(
         Box::new(MenuScene::new()),
@@ -116,5 +121,15 @@ impl Scene for GameOverScene {
     if ui.button("MENU", Rect::new(button_x, 420.0, button_w, button_h)) {
       self.menu_clicked = true;
     }
+
+    // Keyboard hints
+    let hint = "SPACE to restart  |  ESC for menu";
+    let (hint_w, _) = ui.text_size(hint);
+    ui.draw_text(
+      hint,
+      screen_w as f32 / 2.0 - hint_w as f32 / 2.0,
+      500.0,
+      Color::rgb(150, 150, 150),
+    );
   }
 }
