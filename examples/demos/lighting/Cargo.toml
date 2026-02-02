@@ -1,0 +1,17 @@
+[package]
+name = "lighting"
+version = "0.1.0"
+edition = "2024"
+description = "A game built with Ryo2D engine"
+
+[[bin]]
+name = "lighting"
+path = "main.rs"
+
+[dependencies]
+# Ryo2D engine dependency (local path for examples)
+ryo2d = { path = "../../../" }
+
+# Add your game dependencies here
+# serde = { version = "1.0", features = ["derive"] }
+# rand = "0.8"

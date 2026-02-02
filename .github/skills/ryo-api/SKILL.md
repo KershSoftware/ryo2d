@@ -150,17 +150,37 @@ pub struct Transform {
     pub rotation: f32,  // Radians
     pub scale_x: f32,   // X scale
     pub scale_y: f32,   // Y scale
+    pub pivot_x: f32,   // Pivot X (0.0=left, 0.5=center, 1.0=right), defaults to 0.5
+    pub pivot_y: f32,   // Pivot Y (0.0=top, 0.5=center, 1.0=bottom), defaults to 0.5
 }
 
 impl Transform {
-    fn new(x: f32, y: f32) -> Self;              // z defaults to 0.0
+    fn new(x: f32, y: f32) -> Self;              // z defaults to 0.0, pivot defaults to center
     fn new_3d(x: f32, y: f32, z: f32) -> Self;   // Explicit z
     fn from_vec2(pos: Vec2) -> Self;
     fn from_vec3(pos: Vec3) -> Self;
     fn as_vec2(&self) -> Vec2;                   // Returns Vec2(x, y)
     fn as_vec3(&self) -> Vec3;                   // Returns Vec3(x, y, z)
     fn origin() -> Self;                         // (0, 0, 0)
+    fn with_rotation(self, rotation: f32) -> Self;
+    fn with_scale(self, scale_x: f32, scale_y: f32) -> Self;
+    fn with_uniform_scale(self, scale: f32) -> Self;
+    fn with_pivot(self, pivot_x: f32, pivot_y: f32) -> Self;  // Custom pivot point
+    fn with_pivot_top_center(self) -> Self;      // Pivot at (0.5, 0.0) - pendulums
+    fn with_pivot_bottom_center(self) -> Self;   // Pivot at (0.5, 1.0) - standing objects
 }
+```
+
+**Pivot Point Examples:**
+```rust
+// Pendulum - rotates from top-center connection point
+Transform::new(x, y).with_pivot_top_center().with_rotation(angle)
+
+// Door hinge - rotates from left edge
+Transform::new(x, y).with_pivot(0.0, 0.5).with_rotation(angle)
+
+// Default center rotation
+Transform::new(x, y).with_rotation(angle)  // pivot defaults to (0.5, 0.5)
 ```
 
 ### Velocity

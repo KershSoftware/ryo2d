@@ -84,6 +84,74 @@ impl Sprite {
     }
   }
 
+  /// Create a solid color triangle sprite with anti-aliasing
+  ///
+  /// Creates an isoceles triangle pointing downward, useful for lamp shades.
+  /// The sprite will be `width x height` pixels.
+  ///
+  /// # Arguments
+  /// * `width` - Width of the sprite (base of the triangle)
+  /// * `height` - Height of the sprite (from base to tip)
+  /// * `r`, `g`, `b`, `a` - RGBA color components
+  ///
+  /// # Example
+  /// ```rust,ignore
+  /// // Create a 60x50 golden triangle lamp shade
+  /// let lamp = Sprite::solid_triangle(60, 50, 200, 180, 50, 255);
+  /// ```
+  pub fn solid_triangle(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Self {
+    let mut data = vec![0u8; (width * height * 4) as usize];
+
+    // Triangle vertices (pointing down):
+    // Top-left: (0, 0), Top-right: (width, 0), Bottom-center: (width/2, height)
+    let half_width = width as f32 / 2.0;
+
+    for py in 0..height {
+      for px in 0..width {
+        // Pixel center
+        let x = px as f32 + 0.5;
+        let y = py as f32 + 0.5;
+
+        // Calculate how far into the triangle this row goes
+        // At y=0, the valid x range is [0, width]
+        // At y=height, the valid x range is [width/2, width/2] (single point)
+        let progress = y / height as f32;
+        let left_edge = half_width * progress;
+        let right_edge = width as f32 - half_width * progress;
+
+        // Signed distances to edges (negative = inside)
+        let dist_left = left_edge - x;
+        let dist_right = x - right_edge;
+        let dist_top = -y;
+        let dist_bottom = y - height as f32;
+
+        // Distance to nearest edge (positive = outside)
+        let dist_to_edge = dist_left.max(dist_right).max(dist_top).max(dist_bottom);
+
+        // Anti-aliased alpha
+        let alpha = if dist_to_edge <= -1.0 {
+          a as f32
+        } else if dist_to_edge <= 1.0 {
+          a as f32 * (1.0 - dist_to_edge) / 2.0
+        } else {
+          0.0
+        };
+
+        let idx = ((py * width + px) * 4) as usize;
+        data[idx] = r;
+        data[idx + 1] = g;
+        data[idx + 2] = b;
+        data[idx + 3] = alpha as u8;
+      }
+    }
+
+    Sprite {
+      data,
+      width,
+      height,
+    }
+  }
+
   /// Load a sprite from an image file (PNG, JPEG, SVG, etc.)
   ///
   /// SVG files are rasterized at their native size. Use `load_svg_scaled`

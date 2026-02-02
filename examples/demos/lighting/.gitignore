@@ -1,0 +1,8 @@
+/target/
+/data/
+/release/
+Cargo.lock
+*.swp
+*.swo
+*~
+.DS_Store

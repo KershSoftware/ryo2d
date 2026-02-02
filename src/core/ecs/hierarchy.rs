@@ -94,6 +94,10 @@ pub struct WorldTransform {
   pub scale_x: f32,
   /// Accumulated Y scale
   pub scale_y: f32,
+  /// Pivot X as normalized value (0.0 = left, 0.5 = center, 1.0 = right)
+  pub pivot_x: f32,
+  /// Pivot Y as normalized value (0.0 = top, 0.5 = center, 1.0 = bottom)
+  pub pivot_y: f32,
 }
 
 impl WorldTransform {
@@ -106,6 +110,8 @@ impl WorldTransform {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     }
   }
 
@@ -118,6 +124,8 @@ impl WorldTransform {
       rotation: t.rotation,
       scale_x: t.scale_x,
       scale_y: t.scale_y,
+      pivot_x: t.pivot_x,
+      pivot_y: t.pivot_y,
     }
   }
 
@@ -127,6 +135,7 @@ impl WorldTransform {
   /// - Position: Child position is rotated and scaled by parent, then added
   /// - Rotation: Child rotation is added to parent rotation
   /// - Scale: Child scale is multiplied by parent scale
+  /// - Pivot: Child's pivot is preserved (not affected by parent)
   pub fn from_parent_and_local(parent: &WorldTransform, local: &Transform) -> Self {
     // Convert parent rotation to radians for trig
     let angle = parent.rotation.to_radians();
@@ -152,6 +161,9 @@ impl WorldTransform {
       // Scale: multiply
       scale_x: parent.scale_x * local.scale_x,
       scale_y: parent.scale_y * local.scale_y,
+      // Pivot: use child's pivot (not inherited from parent)
+      pivot_x: local.pivot_x,
+      pivot_y: local.pivot_y,
     }
   }
 
@@ -179,6 +191,8 @@ mod tests {
       rotation: 45.0,
       scale_x: 2.0,
       scale_y: 0.5,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     };
 
     let wt = WorldTransform::from_transform(&t);
@@ -189,6 +203,8 @@ mod tests {
     assert_eq!(wt.rotation, 45.0);
     assert_eq!(wt.scale_x, 2.0);
     assert_eq!(wt.scale_y, 0.5);
+    assert_eq!(wt.pivot_x, 0.5);
+    assert_eq!(wt.pivot_y, 0.5);
   }
 
   #[test]
@@ -200,6 +216,8 @@ mod tests {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     };
 
     let local = Transform {
@@ -209,6 +227,8 @@ mod tests {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     };
 
     let child = WorldTransform::from_parent_and_local(&parent, &local);
@@ -226,6 +246,8 @@ mod tests {
       rotation: 90.0, // 90 degrees clockwise
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     };
 
     let local = Transform {
@@ -235,6 +257,8 @@ mod tests {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     };
 
     let child = WorldTransform::from_parent_and_local(&parent, &local);
@@ -254,6 +278,8 @@ mod tests {
       rotation: 0.0,
       scale_x: 2.0,
       scale_y: 2.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     };
 
     let local = Transform {
@@ -263,6 +289,8 @@ mod tests {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     };
 
     let child = WorldTransform::from_parent_and_local(&parent, &local);
@@ -284,6 +312,8 @@ mod tests {
       rotation: 45.0,
       scale_x: 2.0,
       scale_y: 1.0,
+      pivot_x: 0.5,
+      pivot_y: 0.5,
     };
 
     let local = Transform {
@@ -293,6 +323,8 @@ mod tests {
       rotation: 15.0,
       scale_x: 0.5,
       scale_y: 2.0,
+      pivot_x: 0.25,
+      pivot_y: 0.75,
     };
 
     let child = WorldTransform::from_parent_and_local(&parent, &local);
@@ -304,6 +336,9 @@ mod tests {
     assert_eq!(child.scale_y, 2.0); // 1.0 * 2.0
     // Z adds
     assert_eq!(child.z, 3.0);
+    // Pivot is taken from local (child)
+    assert_eq!(child.pivot_x, 0.25);
+    assert_eq!(child.pivot_y, 0.75);
   }
 
   #[test]
