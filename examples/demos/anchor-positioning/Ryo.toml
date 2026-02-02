@@ -1,0 +1,21 @@
+# Anchor Positioning Demo - Ryo Engine Project Configuration
+# Demonstrates the Anchor enum and offset system for sprite positioning
+
+[project]
+name = "Anchor Positioning Demo"
+
+[paths]
+entry_point = "main.rs"
+assets = "assets"
+
+[system]
+resolution_width = 800
+resolution_height = 600
+vsync = true
+fullscreen = false
+
+[info]
+show_fps = true
+
+[debug]
+show_origins = true
