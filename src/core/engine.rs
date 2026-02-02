@@ -7,28 +7,24 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use super::animation::{AnimationController, Animator};
 use super::asset::AssetManager;
 use super::audio::AudioManager;
-use super::camera::Camera;
-use super::collision::Collider;
-use super::debug::{self, DebugConfig, FrameTimings, SmoothedFrameTimings};
+use super::config::{self as debug, DebugConfig, FrameTimings, SmoothedFrameTimings};
 use super::ecs::{
-  Entity, RenderStyle, Renderable, SpriteShader, Transform, Vec2, Velocity, World, WorldTransform,
+    Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
 };
 use super::error::{EngineError, EngineResult};
 use super::game::{Game, GameContext, GpuRenderContext};
+use super::graphics::{
+    AnimationController, Animator, BatchCollector, Camera, CompositeTile, GroupedCollider,
+    Sprite, SpriteGpuRenderer, TileDirection, WgpuRenderer,
+};
 use super::input::InputState;
 use super::lighting::{Light2D, LightingRenderer};
-use super::physics::{PhysicsConfig, RigidBody};
-use super::rapier_physics::RapierPhysicsWorld;
-use super::renderer::WgpuRenderer;
+use super::physics::{Collider, PhysicsConfig, RapierPhysicsWorld, RigidBody};
 use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
-use super::sprite::Sprite;
-use super::sprite_gpu::{BatchCollector, SpriteGpuRenderer};
-use super::tile::{CompositeTile, GroupedCollider, TileDirection};
-use super::ui::{BitmapFont, UiContext, create_debug_font};
+use super::ui::{create_debug_font, BitmapFont, UiContext};
 
 /// Window resize behavior.
 ///
@@ -346,7 +342,7 @@ impl Engine {
     // Enable hot reload in debug builds if a workspace with assets directory exists
     #[cfg(debug_assertions)]
     {
-      if let Ok(workspace) = super::workspace::Workspace::discover() {
+      if let Ok(workspace) = super::config::Workspace::discover() {
         let assets_dir = workspace.assets_dir();
         if assets_dir.exists()
           && let Err(e) = assets.enable_hot_reload(vec![assets_dir])
@@ -1346,18 +1342,6 @@ impl ApplicationHandler for Engine {
             l.set_enabled(true);
           }
 
-          let has_lights =
-            !lights.is_empty() && lighting.as_ref().map(|l| l.is_enabled()).unwrap_or(false);
-
-          // Get camera state for lighting
-          let camera_pos = Vec2::new(self.camera.x, self.camera.y);
-          let camera_zoom = self.camera.zoom;
-          let time = self
-            .time
-            .as_ref()
-            .map(|t| t.frame_count as f32 * 0.016)
-            .unwrap_or(0.0);
-
           // Update GPU renderer viewport
           gpu.set_viewport(
             rend.queue(),
@@ -1365,43 +1349,17 @@ impl ApplicationHandler for Engine {
             rend.game_height() as f32,
           );
 
-          let result = if has_lights || has_gpu_sprites {
+          let result = if has_gpu_sprites {
             // Create callback closure that captures gpu and batch_collector
             let batch_collector = &self.batch_collector;
-            let gpu_callback = if has_gpu_sprites {
-              Some(
-                |queue: &wgpu::Queue,
-                 encoder: &mut wgpu::CommandEncoder,
-                 view: &wgpu::TextureView| {
-                  gpu.render_batches(queue, encoder, view, batch_collector);
-                },
-              )
-            } else {
-              None
-            };
+            let gpu_callback =
+              |queue: &wgpu::Queue,
+               encoder: &mut wgpu::CommandEncoder,
+               view: &wgpu::TextureView| {
+                gpu.render_batches(queue, encoder, view, batch_collector);
+              };
 
-            // Use the full lighting pipeline
-            // Pass UI buffer if UI should NOT be affected by lighting
-            let ui_buf = if lighting
-              .as_ref()
-              .map(|l| l.is_enabled() && !l.is_ui_affected_by_lighting())
-              .unwrap_or(false)
-            {
-              Some(self.ui_buffer.as_slice())
-            } else {
-              None
-            };
-
-            rend.render_with_lighting(
-              Some(&self.effects),
-              gpu_callback,
-              lighting.as_ref(),
-              lights.iter().map(|(t, l)| (t, l)),
-              camera_pos,
-              camera_zoom,
-              time,
-              ui_buf,
-            )
+            rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback))
           } else {
             rend.render_with_effects(Some(&self.effects))
           };
@@ -1680,7 +1638,7 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn with_system_state_overrides(mut self) -> Self {
-    if let Ok(workspace) = super::workspace::Workspace::discover()
+    if let Ok(workspace) = super::config::Workspace::discover()
       && let Ok(save_manager) = workspace.create_save_manager()
       && let Ok(system_state) = save_manager.load_or_create_system(&workspace.config().system)
     {
@@ -1804,7 +1762,7 @@ impl EngineBuilder {
       {
         config.title = title.to_string();
       }
-    } else if let Ok(workspace) = super::workspace::Workspace::discover() {
+    } else if let Ok(workspace) = super::config::Workspace::discover() {
       // Fall back to runtime workspace discovery (development mode)
       let debug = &workspace.config().debug;
       let info = &workspace.config().info;

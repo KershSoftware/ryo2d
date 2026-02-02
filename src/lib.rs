@@ -45,100 +45,103 @@ pub mod core;
 
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
-  // Core game trait
-  pub use crate::core::game::{Game, GameContext, GpuRenderContext};
+    // Core game trait
+    pub use crate::core::game::{Game, GameContext, GpuRenderContext};
 
-  // Scene management
-  pub use crate::core::scene::{
-    Scene, SceneAction, SceneContext, SceneGame, SceneManager, SlideDirection, Transition,
-  };
+    // Scene management
+    pub use crate::core::scene::{
+        Scene, SceneAction, SceneContext, SceneGame, SceneManager, SlideDirection, Transition,
+    };
 
-  // Engine builder
-  pub use crate::core::engine::{EngineBuilder, WindowMode};
+    // Engine builder
+    pub use crate::core::engine::{EngineBuilder, WindowMode};
 
-  // ECS types
-  pub use crate::core::ecs::{
-    Children, Entity, Material, Parent, RenderLayer, RenderMode, RenderStyle, Renderable,
-    ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, Transform, Velocity, World,
-    WorldTransform,
-  };
+    // ECS types
+    pub use crate::core::ecs::{
+        Children, Entity, Material, Parent, RenderLayer, RenderMode, RenderStyle, Renderable,
+        ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, Transform, Velocity, World,
+        WorldTransform,
+    };
 
-  // Math types (from glam)
-  pub use crate::core::ecs::{Mat4, Vec2, Vec3, Vec4};
+    // Math types (from glam)
+    pub use crate::core::ecs::{Mat4, Vec2, Vec3, Vec4};
 
-  // Physics
-  pub use crate::core::physics::{PhysicsConfig, RigidBody};
+    // Physics components
+    pub use crate::core::physics::{PhysicsConfig, RigidBody};
 
-  // Physics events (from Rapier integration)
-  pub use crate::core::rapier_physics::{CollisionEventType, PhysicsCollisionEvent};
+    // Physics events (from Rapier integration)
+    pub use crate::core::physics::{CollisionEventType, PhysicsCollisionEvent};
 
-  // Collision
-  pub use crate::core::collision::{
-    AABB, Circle, Collider, ColliderShape, Collision, check_collision,
-  };
+    // Collision shapes
+    pub use crate::core::physics::{
+        check_collision, Collider, ColliderShape, Collision, AABB, Circle,
+    };
 
-  // Spatial partitioning
-  pub use crate::core::spatial::{CollisionPair, CollisionResult, PhysicsWorld, SpatialHash};
+    // Spatial partitioning
+    pub use crate::core::physics::{CollisionPair, CollisionResult, PhysicsWorld, SpatialHash};
 
-  // Graphics
-  pub use crate::core::sprite::{AnimatedSprite, Sprite};
+    // Rapier physics world
+    pub use crate::core::physics::RapierPhysicsWorld;
 
-  // Tiled rendering
-  pub use crate::core::tile::{
-    CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart,
-  };
+    // Graphics
+    pub use crate::core::graphics::{AnimatedSprite, Sprite};
 
-  // Animation system
-  pub use crate::core::animation::{
-    Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState,
-  };
+    // Tiled rendering
+    pub use crate::core::graphics::{
+        CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart,
+    };
 
-  // Assets
-  pub use crate::core::asset::{
-    AssetManager, AssetStats, AsyncSpriteHandle, LoadingProgress, LoadingState, SpriteHandle,
-  };
+    // Animation system
+    pub use crate::core::graphics::{
+        Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState,
+    };
 
-  // Camera
-  pub use crate::core::camera::Camera;
+    // Camera
+    pub use crate::core::graphics::Camera;
 
-  // Input (re-export KeyCode for convenience)
-  pub use crate::core::input::InputState;
-  pub use winit::event::MouseButton;
-  pub use winit::keyboard::KeyCode;
+    // Assets
+    pub use crate::core::asset::{
+        AssetManager, AssetStats, AsyncSpriteHandle, LoadingState, SpriteHandle,
+    };
 
-  // Audio
-  pub use crate::core::audio::{
-    AudioManager, MusicHandle, MusicOptions, SoundHandle, SoundOptions,
-  };
+    // Input (re-export KeyCode for convenience)
+    pub use crate::core::input::InputState;
+    pub use winit::event::MouseButton;
+    pub use winit::keyboard::KeyCode;
 
-  // Workspace
-  pub use crate::core::workspace::{SystemDefaults, Workspace, WorkspaceConfig};
+    // Audio
+    pub use crate::core::audio::{
+        AudioManager, MusicHandle, MusicOptions, SoundHandle, SoundOptions,
+    };
 
-  // Save system
-  pub use crate::core::save::{
-    DisplaySettings, EntitySnapshot, GameSaveData, SaveManager, SystemState, WorldState,
-    compress_data, decompress_data,
-  };
+    // Workspace & config
+    pub use crate::core::config::{SystemDefaults, Workspace, WorkspaceConfig};
 
-  // UI system
-  pub use crate::core::ui::{
-    Anchor, BitmapFont, Color, DropdownState, Focusable, FocusTrap, HAlign, HBox, HotReloadTheme,
-    Rect, ScrollViewState, Stack, TextInputState, Theme, ThemeError, UiContext, VAlign, VBox,
-    create_debug_font,
-  };
+    // Save system
+    pub use crate::core::config::{
+        compress_data, decompress_data, DisplaySettings, EntitySnapshot, GameSaveData,
+        SaveManager, SystemState, WorldState,
+    };
 
-  // Post-processing effects
-  pub use crate::core::shaders::{EffectTarget, EffectsManager, PostProcessEffect};
+    // UI system
+    pub use crate::core::ui::{
+        create_debug_font, Anchor, BitmapFont, Color, DropdownState, Focusable, FocusTrap, HAlign,
+        HBox, HotReloadTheme, Rect, ScrollViewState, Stack, TextInputState, Theme, ThemeError,
+        UiContext, VAlign, VBox,
+    };
 
-  // 2D Lighting system
-  pub use crate::core::lighting::{AmbientLight, Light2D, LightOccluder2D, LightingRenderer};
+    // 2D Lighting system
+    pub use crate::core::lighting::{AmbientLight, Light2D, LightOccluder2D, LightingRenderer};
 
-  // GPU sprite batching (for high-performance particle systems)
-  pub use crate::core::sprite_gpu::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
+    // Post-processing effects
+    pub use crate::core::shaders::{EffectTarget, EffectsManager, PostProcessEffect};
 
-  // Error types (centralized)
-  pub use crate::core::error::{
-    AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,
-    HotReloadResult, SaveError, SaveResult, SpriteError, SpriteResult,
-  };
+    // GPU sprite batching (for high-performance particle systems)
+    pub use crate::core::graphics::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
+
+    // Error types (centralized)
+    pub use crate::core::error::{
+        AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult,
+        HotReloadError, HotReloadResult, SaveError, SaveResult, SpriteError, SpriteResult,
+    };
 }

@@ -37,7 +37,7 @@
 
 use std::collections::HashMap;
 
-use super::asset::SpriteHandle;
+use crate::core::asset::SpriteHandle;
 
 /// How an animation behaves when it reaches the end
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -450,7 +450,7 @@ mod tests {
   use super::*;
 
   fn mock_sprite_handle() -> SpriteHandle {
-    use crate::core::sprite::Sprite;
+    use super::Sprite;
     SpriteHandle::from_sprite(Sprite::solid_rect(1, 1, 255, 0, 0, 255), "test.png")
   }
 

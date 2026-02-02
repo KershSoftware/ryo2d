@@ -24,9 +24,9 @@ use crossbeam_channel as channel;
 use rapier2d::prelude::*;
 
 use super::collision::{Collider, ColliderShape};
-use super::ecs::{Entity, Transform, Velocity, World};
-use super::physics::RigidBody;
-use super::tile::GroupedCollider;
+use super::components::RigidBody;
+use crate::core::ecs::{Entity, Transform, Velocity, World};
+use crate::core::graphics::GroupedCollider;
 
 /// Pixels per meter conversion factor
 /// Rapier works in meters, games typically work in pixels.

@@ -68,7 +68,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::error::EngineError;
+use crate::core::error::EngineError;
 
 /// Configuration filename (case-insensitive on lookup)
 pub const CONFIG_FILENAME: &str = "Ryo.toml";

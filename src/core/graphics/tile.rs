@@ -526,7 +526,7 @@ impl Default for CompositeTileBuilder {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::sprite::Sprite;
+  use super::Sprite;
 
   fn test_sprite(w: u32, h: u32) -> SpriteHandle {
     let sprite = Sprite::solid_rect(w, h, 255, 0, 0, 255);

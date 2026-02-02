@@ -88,7 +88,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use super::error::{SaveError, SaveResult};
+use crate::core::error::{SaveError, SaveResult};
 
 // ============================================================================
 // Save File Format
