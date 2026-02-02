@@ -85,6 +85,9 @@ pub struct LightingRenderer {
 
   /// Whether lighting is enabled
   enabled: bool,
+
+  /// Whether UI should be affected by lighting (default: false for always-visible UI)
+  ui_affected_by_lighting: bool,
 }
 
 impl LightingRenderer {
@@ -303,7 +306,9 @@ impl LightingRenderer {
     // Create composition pipeline
     let compose_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Lighting Compose Shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/post-process/lighting.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(
+        include_str!("../shaders/post-process/lighting.wgsl").into(),
+      ),
     });
 
     let compose_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -364,7 +369,8 @@ impl LightingRenderer {
       ambient: AmbientLight::default(),
       width,
       height,
-      enabled: true,
+      enabled: false, // Disabled by default, enabled when Light2D entities exist
+      ui_affected_by_lighting: false, // By default, UI is always visible
     }
   }
 
@@ -391,6 +397,19 @@ impl LightingRenderer {
   /// Check if lighting is enabled.
   pub fn is_enabled(&self) -> bool {
     self.enabled
+  }
+
+  /// Set whether UI should be affected by lighting.
+  /// 
+  /// - `true`: UI is lit like the rest of the scene (fades in darkness)
+  /// - `false`: UI is always fully visible (rendered after lighting)
+  pub fn set_ui_affected_by_lighting(&mut self, affected: bool) {
+    self.ui_affected_by_lighting = affected;
+  }
+
+  /// Check if UI is affected by lighting.
+  pub fn is_ui_affected_by_lighting(&self) -> bool {
+    self.ui_affected_by_lighting
   }
 
   /// Resize the light accumulation texture.

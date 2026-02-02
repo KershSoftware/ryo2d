@@ -27,8 +27,8 @@ impl RenderLayer {
 ///
 /// The `pivot_x` and `pivot_y` fields define the rotation/scale origin as a normalized
 /// value (0.0 to 1.0) relative to the sprite dimensions:
-/// - `(0.5, 0.5)` - Center (default) - rotates around the center
-/// - `(0.0, 0.0)` - Top-left corner
+/// - `(0.0, 0.0)` - Top-left corner (default) - standard 2D sprite positioning
+/// - `(0.5, 0.5)` - Center - rotates around the center
 /// - `(0.5, 0.0)` - Top-center - useful for hanging objects like pendulums
 /// - `(0.0, 0.5)` - Left-center - useful for door hinges
 /// - `(1.0, 1.0)` - Bottom-right corner
@@ -49,7 +49,7 @@ pub struct Transform {
 }
 
 impl Transform {
-  /// Create a new 2D transform (z defaults to 0.0, pivot defaults to center)
+  /// Create a new 2D transform (z defaults to 0.0, pivot defaults to top-left)
   pub fn new(x: f32, y: f32) -> Self {
     Transform {
       x,
@@ -58,8 +58,8 @@ impl Transform {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
-      pivot_x: 0.5,
-      pivot_y: 0.5,
+      pivot_x: 0.0,
+      pivot_y: 0.0,
     }
   }
 
@@ -72,8 +72,8 @@ impl Transform {
       rotation: 0.0,
       scale_x: 1.0,
       scale_y: 1.0,
-      pivot_x: 0.5,
-      pivot_y: 0.5,
+      pivot_x: 0.0,
+      pivot_y: 0.0,
     }
   }
 
@@ -120,14 +120,19 @@ impl Transform {
   /// Builder method to set pivot point (normalized 0.0-1.0)
   ///
   /// The pivot determines the center of rotation and scaling:
-  /// - `(0.5, 0.5)` - Center (default)
+  /// - `(0.0, 0.0)` - Top-left corner (default)
+  /// - `(0.5, 0.5)` - Center
   /// - `(0.5, 0.0)` - Top-center (pendulums, hanging objects)
   /// - `(0.0, 0.5)` - Left-center (door hinges)
-  /// - `(0.0, 0.0)` - Top-left corner
   pub fn with_pivot(mut self, pivot_x: f32, pivot_y: f32) -> Self {
     self.pivot_x = pivot_x;
     self.pivot_y = pivot_y;
     self
+  }
+
+  /// Builder method to set pivot at center (useful for centered rotation/scaling)
+  pub fn with_pivot_center(self) -> Self {
+    self.with_pivot(0.5, 0.5)
   }
 
   /// Builder method to set pivot at top-center (useful for hanging objects)
@@ -209,8 +214,8 @@ mod tests {
     assert_eq!(t.rotation, 0.0);
     assert_eq!(t.scale_x, 1.0);
     assert_eq!(t.scale_y, 1.0);
-    assert_eq!(t.pivot_x, 0.5);
-    assert_eq!(t.pivot_y, 0.5);
+    assert_eq!(t.pivot_x, 0.0);
+    assert_eq!(t.pivot_y, 0.0);
   }
 
   #[test]
@@ -219,8 +224,8 @@ mod tests {
     assert_eq!(t.x, 1.0);
     assert_eq!(t.y, 2.0);
     assert_eq!(t.z, 3.0);
-    assert_eq!(t.pivot_x, 0.5);
-    assert_eq!(t.pivot_y, 0.5);
+    assert_eq!(t.pivot_x, 0.0);
+    assert_eq!(t.pivot_y, 0.0);
   }
 
   #[test]
@@ -236,6 +241,10 @@ mod tests {
     let t3 = Transform::new(100.0, 100.0).with_pivot_bottom_center();
     assert_eq!(t3.pivot_x, 0.5);
     assert_eq!(t3.pivot_y, 1.0);
+
+    let t4 = Transform::new(100.0, 100.0).with_pivot_center();
+    assert_eq!(t4.pivot_x, 0.5);
+    assert_eq!(t4.pivot_y, 0.5);
   }
 
   #[test]

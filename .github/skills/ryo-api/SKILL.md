@@ -166,6 +166,7 @@ impl Transform {
     fn with_scale(self, scale_x: f32, scale_y: f32) -> Self;
     fn with_uniform_scale(self, scale: f32) -> Self;
     fn with_pivot(self, pivot_x: f32, pivot_y: f32) -> Self;  // Custom pivot point
+    fn with_pivot_center(self) -> Self;          // Pivot at (0.5, 0.5) - centered rotation
     fn with_pivot_top_center(self) -> Self;      // Pivot at (0.5, 0.0) - pendulums
     fn with_pivot_bottom_center(self) -> Self;   // Pivot at (0.5, 1.0) - standing objects
 }
@@ -179,8 +180,11 @@ Transform::new(x, y).with_pivot_top_center().with_rotation(angle)
 // Door hinge - rotates from left edge
 Transform::new(x, y).with_pivot(0.0, 0.5).with_rotation(angle)
 
-// Default center rotation
-Transform::new(x, y).with_rotation(angle)  // pivot defaults to (0.5, 0.5)
+// Center rotation - spin around center
+Transform::new(x, y).with_pivot_center().with_rotation(angle)
+
+// Default - pivot at (0.0, 0.0) top-left for traditional sprite positioning
+Transform::new(x, y).with_rotation(angle)
 ```
 
 ### Velocity

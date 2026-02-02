@@ -142,17 +142,36 @@ impl GameScene {
   }
 
   fn spawn_ground(&mut self, ctx: &mut SceneContext) {
-    // Spawn two ground segments for seamless scrolling
-    // tile_width = SCREEN_WIDTH (when tile goes off left edge)
-    // wrap_distance = 2*SCREEN_WIDTH (jump to behind the other tile)
-    let tile_width = SCREEN_WIDTH as f32;
-    let wrap_distance = SCREEN_WIDTH as f32 * 2.0;
+    // Spawn two ground segments for seamless scrolling at original size
+    let ground_sprite = Sprite::load("assets/ground.png").expect("Failed to load ground sprite");
+    let sprite_width = ground_sprite.width() as f32;
+    let sprite_height = ground_sprite.height() as f32;
+
+    // Position sprite so its bottom edge is at the bottom of the screen
+    // Sprite is anchored top-left, so to put bottom at SCREEN_HEIGHT:
+    // top_y + sprite_height = SCREEN_HEIGHT
+    // top_y = SCREEN_HEIGHT - sprite_height
+    let y = (SCREEN_HEIGHT as f32) - sprite_height;
+
+    println!(
+      "Ground sprite: width={}, height={}, y position={}, sprite bottom will be at={}",
+      sprite_width,
+      sprite_height,
+      y,
+      y + sprite_height
+    );
+
+    // Use actual sprite width for tiling
+    let tile_width = sprite_width;
+    let wrap_distance = sprite_width * 2.0;
+
     for i in 0..2 {
-      let x = i as f32 * SCREEN_WIDTH as f32;
-      let ground_sprite = Sprite::load("assets/ground.png").expect("Failed to load ground sprite");
-      let ground_handle = SpriteHandle::from_sprite(ground_sprite, "ground.png");
+      let x = i as f32 * sprite_width;
+      let ground_handle = SpriteHandle::from_sprite(ground_sprite.clone(), "bg-ground.png");
+      let transform = Transform::new(x, y);
+
       let ground = ctx.world.spawn((
-        Transform::new(x, GROUND_Y),
+        transform,
         Renderable::sprite(ground_handle).with_z_order(15),
         Ground,
         Scrolling::new(GROUND_SCROLL_SPEED, tile_width, wrap_distance),
@@ -237,8 +256,8 @@ impl GameScene {
         velocity_normalized.abs().powf(2.2) * velocity_normalized.signum()
       };
 
-      // Map to rotation range
-      let target_rotation = if tilt_factor < 0.0 {
+      // Map to rotation range (in degrees, then convert to radians)
+      let target_rotation_deg = if tilt_factor < 0.0 {
         // Jumping/upward - tilt back (negative rotation)
         tilt_factor * BIRD_TILT_UP_MAX.abs()
       } else {
@@ -246,7 +265,7 @@ impl GameScene {
         tilt_factor * BIRD_TILT_DOWN_MAX
       };
 
-      transform.rotation = target_rotation;
+      transform.rotation = target_rotation_deg.to_radians();
     }
 
     // Check bounds and clamp position

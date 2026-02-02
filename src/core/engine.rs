@@ -246,6 +246,8 @@ pub struct Engine {
   smoothed_timings: SmoothedFrameTimings,
   // Whether debug font has been uploaded to GPU
   debug_font_uploaded: bool,
+  // Temporary buffer for UI when not affected by lighting
+  ui_buffer: Vec<u8>,
 }
 
 impl Engine {
@@ -337,6 +339,7 @@ impl Engine {
     let mut assets = AssetManager::new();
     let ui_font = create_debug_font();
     let initial_size = (config.width, config.height);
+    let ui_buffer_size = (config.width * config.height * 4) as usize;
 
     // Enable hot reload in debug builds if a workspace with assets directory exists
     #[cfg(debug_assertions)]
@@ -396,6 +399,7 @@ impl Engine {
       frame_timings: FrameTimings::default(),
       smoothed_timings: SmoothedFrameTimings::default(),
       debug_font_uploaded: false,
+      ui_buffer: vec![0; ui_buffer_size], // RGBA buffer for UI
     }
   }
 
@@ -486,6 +490,7 @@ impl Engine {
         assets: &mut self.assets,
         audio: &mut self.audio,
         effects: &mut self.effects,
+        lighting: &mut self.lighting,
         collision_events: self.physics.get_collision_events(),
       };
 
@@ -690,37 +695,41 @@ impl Engine {
           let sprite_w = renderable.sprite.width() as f32 * final_scale_x;
           let sprite_h = renderable.sprite.height() as f32 * final_scale_y;
 
-          // Pivot offset calculation:
-          // The transform position (x, y) is where the pivot point should be.
-          // draw_rotated rotates around the sprite's CENTER.
-          // We need to calculate where the sprite's top-left corner should be
-          // so that the pivot point ends up at (x, y) after rotation.
+          // Calculate draw position based on pivot point
+          // draw_rotated takes the TOP-LEFT corner and rotates around the CENTER.
           //
-          // Pivot is normalized (0-1): (0.5, 0.5) = center, (0.5, 0.0) = top-center
-          // Offset from pivot to center in sprite-local coords (before rotation):
-          let pivot_to_center_x = (0.5 - pivot_x) * sprite_w;
-          let pivot_to_center_y = (0.5 - pivot_y) * sprite_h;
-
-          // Rotate this offset by the sprite's rotation
-          let (rotated_offset_x, rotated_offset_y) = if rotation_deg.abs() > 0.01 {
-            let angle_rad = rotation_deg.to_radians();
-            let cos_a = angle_rad.cos();
-            let sin_a = angle_rad.sin();
-            (
-              pivot_to_center_x * cos_a - pivot_to_center_y * sin_a,
-              pivot_to_center_x * sin_a + pivot_to_center_y * cos_a,
-            )
+          // For top-left pivot (0, 0): position IS the top-left, sprite rotates around its center
+          // For other pivots: position is the pivot point, we must offset so pivot stays fixed during rotation
+          let (draw_x, draw_y) = if pivot_x.abs() < 0.001 && pivot_y.abs() < 0.001 {
+            // Top-left pivot (default): original behavior
+            // Position is the top-left corner, rotation happens around sprite center
+            (x, y)
           } else {
-            (pivot_to_center_x, pivot_to_center_y)
+            // Custom pivot point: calculate where top-left should be so pivot stays at (x, y)
+            // Offset from pivot to center in sprite-local coords:
+            let pivot_to_center_x = (0.5 - pivot_x) * sprite_w;
+            let pivot_to_center_y = (0.5 - pivot_y) * sprite_h;
+
+            // Rotate this offset by the sprite's rotation
+            let (rotated_offset_x, rotated_offset_y) = if rotation_deg.abs() > 0.01 {
+              let angle_rad = rotation_deg.to_radians();
+              let cos_a = angle_rad.cos();
+              let sin_a = angle_rad.sin();
+              (
+                pivot_to_center_x * cos_a - pivot_to_center_y * sin_a,
+                pivot_to_center_x * sin_a + pivot_to_center_y * cos_a,
+              )
+            } else {
+              (pivot_to_center_x, pivot_to_center_y)
+            };
+
+            // The sprite's center in world coords = pivot position + rotated offset
+            let center_x = x + rotated_offset_x;
+            let center_y = y + rotated_offset_y;
+
+            // The sprite's top-left corner (what draw_rotated expects)
+            (center_x - sprite_w / 2.0, center_y - sprite_h / 2.0)
           };
-
-          // The sprite's center in world coords = pivot position + rotated offset
-          let center_x = x + rotated_offset_x;
-          let center_y = y + rotated_offset_y;
-
-          // The sprite's top-left corner (what draw_rotated expects)
-          let draw_x = center_x - sprite_w / 2.0;
-          let draw_y = center_y - sprite_h / 2.0;
 
           // Convert to screen position using camera
           let (screen_x, screen_y) = self.camera.world_to_screen(draw_x, draw_y);
@@ -949,16 +958,39 @@ impl Engine {
 
     // --- UI & FPS Counter ---
     // Call game's render_ui with UiContext for immediate-mode UI
-    if let Some(mut game) = self.game.take() {
-      let mut ui_ctx = UiContext::new(frame, frame_width, frame_height, &self.input, &self.ui_font);
+    // If lighting is enabled and UI is not affected by lighting, render to separate buffer
+    let render_ui_after_lighting = self
+      .lighting
+      .as_ref()
+      .map(|l| l.is_enabled() && !l.is_ui_affected_by_lighting())
+      .unwrap_or(false);
 
-      game.render_ui(&mut ui_ctx);
+    if !render_ui_after_lighting {
+      // Render UI directly to frame (will be affected by lighting if enabled)
+      if let Some(mut game) = self.game.take() {
+        let mut ui_ctx =
+          UiContext::new(frame, frame_width, frame_height, &self.input, &self.ui_font);
 
-      // Note: Debug overlays (FPS/frame timing) are rendered via GPU sprites
-      // to ensure they appear on top of all game content. See the GPU debug
-      // overlay section in the game loop.
+        game.render_ui(&mut ui_ctx);
 
-      self.game = Some(game);
+        self.game = Some(game);
+      }
+    } else {
+      // Clear UI buffer and render UI to it (will be composited after lighting)
+      self.ui_buffer.fill(0);
+      if let Some(mut game) = self.game.take() {
+        let mut ui_ctx = UiContext::new(
+          &mut self.ui_buffer,
+          frame_width,
+          frame_height,
+          &self.input,
+          &self.ui_font,
+        );
+
+        game.render_ui(&mut ui_ctx);
+
+        self.game = Some(game);
+      }
     }
 
     // --- Screen Overlay (for transitions) ---
@@ -968,6 +1000,9 @@ impl Engine {
     {
       blend_overlay(frame, color, alpha);
     }
+
+    // Note: UI compositing for non-lit UI is now done on GPU in render_with_lighting
+    // The ui_buffer is passed to the renderer and composited after the lighting pass
   }
 }
 
@@ -1032,7 +1067,7 @@ impl ApplicationHandler for Engine {
       renderer.game_texture_format(),
     );
 
-    // Create 2D lighting renderer
+    // Create 2D lighting renderer (disabled by default, enabled when Light2D entities exist)
     let lighting = LightingRenderer::new(
       renderer.device(),
       self.config.width,
@@ -1059,6 +1094,7 @@ impl ApplicationHandler for Engine {
           assets: &mut self.assets,
           audio: &mut self.audio,
           effects: &mut self.effects,
+          lighting: &mut self.lighting,
           collision_events: &[], // No physics events during init
         };
         game.init(&mut ctx);
@@ -1279,7 +1315,7 @@ impl ApplicationHandler for Engine {
         let present_start = std::time::Instant::now();
         let mut sprite_gpu = self.sprite_gpu.take();
         let mut renderer = self.renderer.take();
-        let lighting = self.lighting.take();
+        let mut lighting = self.lighting.take();
 
         if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
           // Only use GPU sprite callback if we have batched sprites
@@ -1292,7 +1328,17 @@ impl ApplicationHandler for Engine {
             .into_iter()
             .map(|(t, l)| (t.clone(), l.clone()))
             .collect();
-          let has_lights = !lights.is_empty() && lighting.is_some();
+
+          // Auto-enable lighting when Light2D entities exist
+          if !lights.is_empty()
+            && let Some(ref mut l) = lighting
+            && !l.is_enabled()
+          {
+            l.set_enabled(true);
+          }
+
+          let has_lights =
+            !lights.is_empty() && lighting.as_ref().map(|l| l.is_enabled()).unwrap_or(false);
 
           // Get camera state for lighting
           let camera_pos = Vec2::new(self.camera.x, self.camera.y);
@@ -1326,6 +1372,17 @@ impl ApplicationHandler for Engine {
             };
 
             // Use the full lighting pipeline
+            // Pass UI buffer if UI should NOT be affected by lighting
+            let ui_buf = if lighting
+              .as_ref()
+              .map(|l| l.is_enabled() && !l.is_ui_affected_by_lighting())
+              .unwrap_or(false)
+            {
+              Some(self.ui_buffer.as_slice())
+            } else {
+              None
+            };
+
             rend.render_with_lighting(
               Some(&self.effects),
               gpu_callback,
@@ -1334,6 +1391,7 @@ impl ApplicationHandler for Engine {
               camera_pos,
               camera_zoom,
               time,
+              ui_buf,
             )
           } else {
             rend.render_with_effects(Some(&self.effects))
@@ -1689,6 +1747,19 @@ impl EngineBuilder {
       }
       if let Some(fps) = option_env!("RYO_EMBED_SHOW_FPS") {
         config.debug.show_fps = fps.parse().unwrap_or(false);
+      }
+      // [debug] section embedded values
+      if let Some(v) = option_env!("RYO_EMBED_SHOW_COLLIDERS") {
+        config.debug.show_colliders = v.parse().unwrap_or(false);
+      }
+      if let Some(v) = option_env!("RYO_EMBED_SHOW_VELOCITIES") {
+        config.debug.show_velocities = v.parse().unwrap_or(false);
+      }
+      if let Some(v) = option_env!("RYO_EMBED_SHOW_ORIGINS") {
+        config.debug.show_origins = v.parse().unwrap_or(false);
+      }
+      if let Some(v) = option_env!("RYO_EMBED_SHOW_FRAME_TIMING") {
+        config.debug.show_frame_timing = v.parse().unwrap_or(false);
       }
       if let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME") {
         master_volume = vol.parse().unwrap_or(1.0);

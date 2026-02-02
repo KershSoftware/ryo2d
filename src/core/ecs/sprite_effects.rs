@@ -306,13 +306,14 @@ impl SpriteEffect {
 
       Self::Silhouette { color } => {
         let mut dst = src.to_vec();
-        // Replace all RGB with silhouette color, preserve alpha
+        // Replace all RGB with silhouette color, blend alpha with silhouette alpha
         for pixel in dst.chunks_exact_mut(4) {
           if pixel[3] > 0 {
             pixel[0] = color.r;
             pixel[1] = color.g;
             pixel[2] = color.b;
-            // Optionally blend alpha: pixel[3] = ((pixel[3] as u16 * color.a as u16) / 255) as u8;
+            // Blend original alpha with silhouette color alpha
+            pixel[3] = ((pixel[3] as u16 * color.a as u16) / 255) as u8;
           }
         }
         (dst, width, height)

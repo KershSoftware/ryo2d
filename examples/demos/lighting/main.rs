@@ -95,6 +95,8 @@ struct LightingScene {
   // Light properties (adjustable with arrow keys)
   light_intensity: f32,
   light_radius: f32,
+  // Ambient darkness (adjustable with Q/E keys)
+  ambient_intensity: f32,
 }
 
 impl LightingScene {
@@ -108,14 +110,17 @@ impl LightingScene {
       bulb_angular_velocity: 0.0,
       light_intensity: 1.2,
       light_radius: 250.0,
+      ambient_intensity: 0.0, // Start pitch black
     }
   }
 }
 
 impl Scene for LightingScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // Note: Ambient light is currently managed by the renderer
-    // For now, we'll rely on the default ambient settings
+    // Configure lighting to not affect UI - keeps text readable in darkness
+    if let Some(lighting) = ctx.lighting {
+      lighting.set_ui_affected_by_lighting(false);
+    }
 
     // Create rope segments (visual only, connected chain of rectangles)
     let rope_segments = 20;
@@ -170,25 +175,25 @@ impl Scene for LightingScene {
 
     // Floor occluders (walls)
     ctx.world.spawn((
-      Transform::new(640.0, 650.0),
+      Transform::new(640.0, 650.0).with_pivot_center(),
       LightOccluder2D::rect(1280.0, 100.0),
     ));
 
     // Left wall
     ctx.world.spawn((
-      Transform::new(50.0, 360.0),
+      Transform::new(50.0, 360.0).with_pivot_center(),
       LightOccluder2D::rect(20.0, 720.0),
     ));
 
     // Right wall
     ctx.world.spawn((
-      Transform::new(1230.0, 360.0),
+      Transform::new(1230.0, 360.0).with_pivot_center(),
       LightOccluder2D::rect(20.0, 720.0),
     ));
 
     // Ceiling
     ctx.world.spawn((
-      Transform::new(640.0, 20.0),
+      Transform::new(640.0, 20.0).with_pivot_center(),
       LightOccluder2D::rect(1280.0, 40.0),
     ));
 
@@ -207,7 +212,7 @@ impl Scene for LightingScene {
       );
 
       ctx.world.spawn((
-        Transform::new(*x, *y),
+        Transform::new(*x, *y).with_pivot_center(),
         Renderable::sprite(sprite).with_z_order(5),
         LightOccluder2D::rect(*w, *h),
       ));
@@ -227,7 +232,7 @@ impl Scene for LightingScene {
       );
 
       ctx.world.spawn((
-        Transform::new(*x, *y),
+        Transform::new(*x, *y).with_pivot_center(),
         Renderable::sprite(sprite).with_z_order(5),
         LightOccluder2D::rect(*w, *h),
       ));
@@ -239,7 +244,7 @@ impl Scene for LightingScene {
       .create_sprite(Sprite::solid_rect(40, 200, 80, 80, 80, 255), "pillar");
 
     ctx.world.spawn((
-      Transform::new(640.0, 450.0),
+      Transform::new(640.0, 450.0).with_pivot_center(),
       Renderable::sprite(pillar_sprite).with_z_order(5),
       LightOccluder2D::rect(40.0, 200.0),
     ));
@@ -272,6 +277,19 @@ impl Scene for LightingScene {
     }
     if ctx.input.key_down(KeyCode::ArrowLeft) {
       self.light_radius = (self.light_radius - 2.0).max(50.0);
+    }
+
+    // Adjust ambient darkness with Q/E keys
+    if ctx.input.key_down(KeyCode::KeyQ) {
+      self.ambient_intensity = (self.ambient_intensity - 0.01).max(0.0);
+    }
+    if ctx.input.key_down(KeyCode::KeyE) {
+      self.ambient_intensity = (self.ambient_intensity + 0.01).min(1.0);
+    }
+
+    // Update ambient light if it changed
+    if let Some(lighting) = ctx.lighting {
+      lighting.ambient_mut().set_intensity(self.ambient_intensity);
     }
 
     // Update light properties if they changed
@@ -382,15 +400,15 @@ impl Scene for LightingScene {
     );
 
     ui.label(
-      &format!("Light Intensity: {:.2}", self.light_intensity),
+      "Q/E: Decrease/Increase darkness",
       10.0,
       110.0,
-      Color::new(255, 255, 100, 255),
+      Color::new(200, 200, 200, 255),
       Some(Color::new(0, 0, 0, 160)),
     );
 
     ui.label(
-      &format!("Light Radius: {:.0}", self.light_radius),
+      &format!("Light Intensity: {:.2}", self.light_intensity),
       10.0,
       135.0,
       Color::new(255, 255, 100, 255),
@@ -398,9 +416,25 @@ impl Scene for LightingScene {
     );
 
     ui.label(
-      "Press ESC to quit",
+      &format!("Light Radius: {:.0}", self.light_radius),
       10.0,
       160.0,
+      Color::new(255, 255, 100, 255),
+      Some(Color::new(0, 0, 0, 160)),
+    );
+
+    ui.label(
+      &format!("Ambient Darkness: {:.2}", 1.0 - self.ambient_intensity),
+      10.0,
+      185.0,
+      Color::new(255, 255, 100, 255),
+      Some(Color::new(0, 0, 0, 160)),
+    );
+
+    ui.label(
+      "Press ESC to quit",
+      10.0,
+      210.0,
       Color::new(200, 200, 200, 255),
       Some(Color::new(0, 0, 0, 160)),
     );

@@ -28,6 +28,7 @@ pub const GROUND_SCROLL_SPEED: f32 = 120.0;
 
 // Background
 pub const BACKGROUND_SCROLL_SPEED: f32 = 30.0;
+pub const MENU_BACKGROUND_SCROLL_SPEED: f32 = 60.0; // Faster parallax for menu
 
 // Game bounds
 pub const CEILING_Y: f32 = 0.0;

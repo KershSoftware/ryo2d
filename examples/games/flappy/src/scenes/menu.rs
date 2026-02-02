@@ -4,6 +4,7 @@ use ryo2d::prelude::*;
 use std::time::Duration;
 
 use super::{DebugScene, GameScene};
+use crate::components::Scrolling;
 use crate::constants::*;
 use crate::save::load_high_score;
 
@@ -16,6 +17,7 @@ pub struct MenuScene {
   bird_flap_down: Sprite,
   anim_timer: f32,
   anim_frame: bool,
+  background_entities: Vec<Entity>,
 }
 
 impl MenuScene {
@@ -41,6 +43,7 @@ impl MenuScene {
       bird_flap_down,
       anim_timer: 0.0,
       anim_frame: false,
+      background_entities: Vec::new(),
     }
   }
 }
@@ -57,9 +60,34 @@ impl Scene for MenuScene {
     ctx
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
+
+    // Start background music (persists across scenes)
+    if let Some(audio) = &mut ctx.audio {
+      let options = MusicOptions::new().volume(0.8).looping(true);
+      if let Err(e) = audio.play_music_once("assets/8bit-bg.mp3", options) {
+        eprintln!("Failed to play background music: {}", e);
+      }
+    }
+
+    // Spawn scrolling background
+    self.spawn_background(ctx);
+  }
+
+  fn on_exit(&mut self, _ctx: &mut SceneContext) {
+    self.background_entities.clear();
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    // Update scrolling background
+    for &entity in &self.background_entities {
+      if let Some(scrolling) = ctx.world.get::<Scrolling>(entity) {
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
+          let new_x = scrolling.update(transform.x, dt);
+          transform.x = new_x;
+        }
+      }
+    }
+
     // Animate bird
     self.anim_timer += dt;
     if self.anim_timer >= 0.15 {
@@ -93,12 +121,6 @@ impl Scene for MenuScene {
 
   fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
-
-    // Background
-    ui.draw_rect(
-      Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32),
-      Color::rgb(135, 206, 235), // Sky blue
-    );
 
     // Title
     let title = "FLAPPY";
@@ -176,5 +198,39 @@ impl Scene for MenuScene {
       screen_h as f32 - 100.0,
       Color::rgb(100, 100, 100),
     );
+  }
+}
+
+impl MenuScene {
+  fn spawn_background(&mut self, ctx: &mut SceneContext) {
+    // Spawn two background segments for seamless parallax scrolling
+    // Menu background scrolls faster than game for visual appeal
+    let bg_sprite = Sprite::load("assets/bg.png").expect("Failed to load background sprite");
+    let bg_width = bg_sprite.width() as f32;
+    let bg_height = bg_sprite.height() as f32;
+    let tile_width = bg_width;
+    let wrap_distance = bg_width * 2.0;
+
+    // Scale background to fill screen height while maintaining aspect ratio
+    let screen_height = SCREEN_HEIGHT as f32;
+    let scale = screen_height / bg_height;
+
+    for i in 0..2 {
+      let x = i as f32 * bg_width * scale;
+      let bg_handle = SpriteHandle::from_sprite(bg_sprite.clone(), "bg.png");
+      let mut transform = Transform::new(x, 0.0);
+      transform.scale_x = scale;
+      transform.scale_y = scale;
+      let background = ctx.world.spawn((
+        transform,
+        Renderable::sprite(bg_handle).with_z_order(0), // Render behind everything
+        Scrolling::new(
+          MENU_BACKGROUND_SCROLL_SPEED,
+          tile_width * scale,
+          wrap_distance * scale,
+        ),
+      ));
+      self.background_entities.push(background);
+    }
   }
 }

@@ -32,6 +32,7 @@ use super::audio::AudioManager;
 use super::camera::Camera;
 use super::ecs::World;
 use super::input::InputState;
+use super::lighting::LightingRenderer;
 use super::rapier_physics::PhysicsCollisionEvent;
 use super::shaders::EffectsManager;
 use super::ui::UiContext;
@@ -52,6 +53,8 @@ pub struct SceneContext<'a> {
   pub audio: &'a mut Option<AudioManager>,
   /// Post-process effects manager for screen-wide visual effects
   pub effects: &'a mut EffectsManager,
+  /// 2D lighting renderer for controlling ambient light and dynamic lights (None if lighting disabled)
+  pub lighting: &'a mut Option<LightingRenderer>,
   /// Collision events from the last physics step.
   ///
   /// **Note:** This includes BOTH `Started` and `Stopped` events.
@@ -1007,6 +1010,7 @@ impl Game for SceneGame {
       assets: ctx.assets,
       audio: ctx.audio,
       effects: ctx.effects,
+      lighting: ctx.lighting,
       collision_events: ctx.collision_events,
     };
 
@@ -1026,6 +1030,7 @@ impl Game for SceneGame {
       assets: ctx.assets,
       audio: ctx.audio,
       effects: ctx.effects,
+      lighting: ctx.lighting,
       collision_events: ctx.collision_events,
     };
 
