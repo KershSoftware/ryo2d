@@ -137,11 +137,86 @@ if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(self.pla
 }
 ```
 
+## Tweening - Transform Animation
+
+For animating **Transform properties** (position, rotation, scale) rather than sprite frames, use the `Tween` component.
+
+### Quick Examples
+
+```rust
+// Move to position with bounce
+ctx.world.spawn((
+    Transform::new(100.0, 100.0),
+    Tween::to_position(400.0, 300.0, 2.0)
+        .with_easing(Ease::OutBounce),
+));
+
+// Rotate with overshoot
+ctx.world.spawn((
+    Transform::new(200.0, 200.0),
+    Tween::to_rotation(PI, 0.5)
+        .with_easing(Ease::OutBack),
+));
+
+// Pulsing scale (looping)
+ctx.world.spawn((
+    Transform::new(300.0, 300.0),
+    Tween::to_scale(1.2, 1.2, 0.3)
+        .with_easing(Ease::InOutSine)
+        .with_loop(TweenLoop::PingPong),
+));
+
+// Combined with delay
+ctx.world.spawn((
+    Transform::new(0.0, 0.0),
+    Tween::new(1.5)
+        .to_x(200.0)
+        .to_y(100.0)
+        .to_rotation_value(PI / 4.0)
+        .with_easing(Ease::OutCubic)
+        .with_delay(0.5),
+));
+```
+
+### Easing Functions
+
+| Category | Options |
+|----------|---------|
+| Basic | `Linear` |
+| Smooth | `InQuad`, `OutQuad`, `InOutQuad` |
+| Smoother | `InCubic`, `OutCubic`, `InOutCubic` |
+| Dramatic | `InExpo`, `OutExpo`, `InOutExpo` |
+| Overshoot | `InBack`, `OutBack`, `InOutBack` |
+| Bouncy | `InBounce`, `OutBounce`, `InOutBounce` |
+| Elastic | `InElastic`, `OutElastic`, `InOutElastic` |
+
+### Loop Modes
+
+- `TweenLoop::Once` - Play once, stop (default)
+- `TweenLoop::Loop` - Repeat forever
+- `TweenLoop::PingPong` - Forward, backward, repeat
+- `TweenLoop::Times(n)` - Repeat n times
+
+### Detecting Completion
+
+```rust
+if let Some(tween) = ctx.world.get_component::<Tween>(entity) {
+    if tween.just_finished {
+        // Tween completed this frame (or loop iteration)
+    }
+    if tween.is_finished() {
+        // Tween fully done (Once or Times mode)
+    }
+}
+```
+
 ## Tips
 
 - Use `Animator` for decorative animations (coins, flames, water)
 - Use `AnimationController` for player/enemy characters with states
+- Use `Tween` for position/rotation/scale animations (UI, effects, movement)
 - `set_state_then()` is perfect for attack/hurt animations that return to idle
 - Flip sprites with `renderable.flip_x` rather than separate left/right animations
 - The engine auto-syncs animation frames to `Renderable`
+- The engine auto-updates `Tween` and applies to `Transform`
 

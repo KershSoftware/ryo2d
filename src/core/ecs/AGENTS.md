@@ -13,6 +13,7 @@ This folder implements the Entity-Component-System (ECS) layer using the **hecs*
 | `components.rs` | Built-in components: `Transform`, `Velocity` |
 | `hierarchy.rs` | Parent/child relationships, `WorldTransform` |
 | `renderable.rs` | `Renderable` component for sprites |
+| `tween.rs` | Tweening system: `Tween`, `Ease`, `TweenLoop` |
 | `world.rs` | `World` wrapper around `hecs::World` with compatibility API |
 
 ## Key Design Decisions
@@ -159,3 +160,64 @@ When using direct queries, remember:
 - **Cache-friendly**: Iteration is fast due to contiguous memory layout
 - **Spawn overhead**: First spawn with a new component combination creates an archetype
 - **Query overhead**: Queries are O(archetypes) to find matches, then O(entities) to iterate
+
+## Tweening System
+
+The tweening system (`tween.rs`) provides smooth interpolation of Transform properties over time.
+
+### Ease - Easing Functions
+
+24 standard easing functions for controlling interpolation curves:
+
+| Category | Functions |
+|----------|-----------|
+| Linear | `Linear` |
+| Quad | `InQuad`, `OutQuad`, `InOutQuad` |
+| Cubic | `InCubic`, `OutCubic`, `InOutCubic` |
+| Quart | `InQuart`, `OutQuart`, `InOutQuart` |
+| Sine | `InSine`, `OutSine`, `InOutSine` |
+| Expo | `InExpo`, `OutExpo`, `InOutExpo` |
+| Back | `InBack`, `OutBack`, `InOutBack` (overshoot) |
+| Elastic | `InElastic`, `OutElastic`, `InOutElastic` |
+| Bounce | `InBounce`, `OutBounce`, `InOutBounce` |
+
+### TweenLoop - Loop Modes
+
+- `Once` - Play once and stop (default)
+- `Loop` - Repeat forever
+- `PingPong` - Forward then backward, repeat
+- `Times(n)` - Repeat n times
+
+### Tween - Component
+
+Attach to entities with `Transform` to animate properties:
+
+```rust
+// Move to position with easing
+world.spawn((
+    Transform::new(100.0, 100.0),
+    Tween::to_position(400.0, 300.0, 2.0)
+        .with_easing(Ease::OutBounce),
+));
+
+// Pulsing scale
+world.spawn((
+    Transform::new(200.0, 200.0),
+    Tween::to_scale(1.2, 1.2, 0.3)
+        .with_easing(Ease::InOutSine)
+        .with_loop(TweenLoop::PingPong),
+));
+
+// Combined properties with delay
+world.spawn((
+    Transform::new(0.0, 0.0),
+    Tween::new(1.5)
+        .to_x(200.0)
+        .to_y(100.0)
+        .to_rotation_value(PI)
+        .with_easing(Ease::OutCubic)
+        .with_delay(0.5),
+));
+```
+
+**Engine Integration:** The engine updates all `Tween` components automatically after the animation system, applying interpolated values to the entity's `Transform`.

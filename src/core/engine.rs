@@ -11,7 +11,7 @@ use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::config::{self as debug, DebugConfig, DisplayMode, FrameTimings, SmoothedFrameTimings};
 use super::ecs::{
-  Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform,
+  Entity, RenderStyle, Renderable, SpriteShader, Transform, Tween, Velocity, World, WorldTransform,
 };
 use super::error::{EngineError, EngineResult};
 use super::events::{CollisionStarted, CollisionStopped, Events};
@@ -586,6 +586,29 @@ impl Engine {
         && let Some(mut renderable) = self.world.get_component_mut::<Renderable>(entity)
       {
         renderable.sprite = sprite;
+      }
+    }
+
+    // --- Tween System ---
+    // Update all Tween components and apply to Transform
+    for entity in self.world.entities_with::<Tween>() {
+      // Check if tween is playing before borrowing mutably
+      let should_update = self
+        .world
+        .get_component::<Tween>(entity)
+        .is_some_and(|t| t.playing);
+
+      if !should_update {
+        continue;
+      }
+
+      // Get transform and tween together for update
+      if let (Some(mut transform), Some(mut tween)) = (
+        self.world.get_component_mut::<Transform>(entity),
+        self.world.get_component_mut::<Tween>(entity),
+      ) {
+        tween.update(_dt, &mut transform);
+        self.render_cache_dirty = true;
       }
     }
 
