@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::Command;
 
 use super::{CliError, CliResult, Output, discover_workspace};
@@ -27,10 +28,15 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   Output::status("Starting", &format!("{} in dev mode...", project_name));
 
+  // Find workspace root's target directory for shared dependency caching
+  let target_dir = find_workspace_target_dir(workspace.root());
+
   // For now, just run cargo run (debug build)
   // Future: Add file watching with notify crate
   let status = Command::new("cargo")
     .arg("run")
+    // Use shared target directory for dependency caching
+    .env("CARGO_TARGET_DIR", &target_dir)
     .current_dir(workspace.root())
     .status()
     .map_err(|e| CliError::CommandFailed {
@@ -130,6 +136,34 @@ opt-level = 2
   }
 
   Ok(())
+}
+
+/// Find the workspace root's target directory for shared dependency caching.
+/// Searches parent directories for a Cargo.toml with a [workspace] section.
+fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
+  let mut search_dir = start_dir.to_path_buf();
+
+  // Search up to 10 parent directories for workspace root
+  for _ in 0..10 {
+    let cargo_toml = search_dir.join("Cargo.toml");
+    if cargo_toml.exists() {
+      // Check if this Cargo.toml has a [workspace] section
+      if let Ok(content) = fs::read_to_string(&cargo_toml) {
+        if content.contains("[workspace]") {
+          return search_dir.join("target");
+        }
+      }
+    }
+
+    if let Some(parent) = search_dir.parent() {
+      search_dir = parent.to_path_buf();
+    } else {
+      break;
+    }
+  }
+
+  // Fallback to local target directory
+  start_dir.join("target")
 }
 
 fn print_help() {

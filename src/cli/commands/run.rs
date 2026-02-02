@@ -1,5 +1,7 @@
 //! Run command - executes the production build
 
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 
 use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
@@ -24,16 +26,24 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   };
 
   let release_bundle_binary = workspace.root().join("release").join(&binary_name);
-  let cargo_build_binary = workspace
+
+  // Check local target directory
+  let local_target_binary = workspace
     .root()
     .join("target")
     .join("release")
     .join(&binary_name);
 
+  // Check workspace root's shared target directory
+  let workspace_target_dir = find_workspace_target_dir(workspace.root());
+  let workspace_target_binary = workspace_target_dir.join("release").join(&binary_name);
+
   let (binary_path, from_bundle) = if release_bundle_binary.exists() {
     (release_bundle_binary, true)
-  } else if cargo_build_binary.exists() {
-    (cargo_build_binary, false)
+  } else if workspace_target_binary.exists() {
+    (workspace_target_binary, false)
+  } else if local_target_binary.exists() {
+    (local_target_binary, false)
   } else {
     Output::warning(&format!("No production build found for '{}'", display_name));
     Output::status("Hint", "Run 'ryo2d build' first to create a release build");
@@ -69,6 +79,34 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   }
 
   Ok(())
+}
+
+/// Find the workspace root's target directory for shared dependency caching.
+/// Searches parent directories for a Cargo.toml with a [workspace] section.
+fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
+  let mut search_dir = start_dir.to_path_buf();
+
+  // Search up to 10 parent directories for workspace root
+  for _ in 0..10 {
+    let cargo_toml = search_dir.join("Cargo.toml");
+    if cargo_toml.exists() {
+      // Check if this Cargo.toml has a [workspace] section
+      if let Ok(content) = fs::read_to_string(&cargo_toml) {
+        if content.contains("[workspace]") {
+          return search_dir.join("target");
+        }
+      }
+    }
+
+    if let Some(parent) = search_dir.parent() {
+      search_dir = parent.to_path_buf();
+    } else {
+      break;
+    }
+  }
+
+  // Fallback to local target directory
+  start_dir.join("target")
 }
 
 fn print_help() {
