@@ -763,11 +763,11 @@ impl Engine {
       None => return,
     };
 
-    // Fill background with warm cream (game area only - letterbox is handled by clear color)
+    // Fill background with dark charcoal (game area only - letterbox is handled by clear color)
     for pixel in frame.chunks_exact_mut(4) {
-      pixel[0] = 0xf5; // R: 245
-      pixel[1] = 0xf4; // G: 244
-      pixel[2] = 0xef; // B: 239
+      pixel[0] = 0x2d; // R: 45
+      pixel[1] = 0x2d; // G: 45
+      pixel[2] = 0x2d; // B: 45
       pixel[3] = 0xff; // A: 255
     }
 
