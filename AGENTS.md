@@ -76,6 +76,18 @@ The `ryo-api` skill is the canonical reference - other skills reference it for c
 
 ---
 
+## External Asset Resources
+
+Suggested sources for game assets:
+
+| Type | Resource | URL |
+|------|----------|-----|
+| Sound Effects | Sonniss | https://sonniss.com/category/sound-libraries/ |
+| Background Music | Pixabay | https://pixabay.com/music/search/videogame/ |
+| Pixel Art | Itch.io | https://itch.io/game-assets/free/tag-pixel-art |
+
+---
+
 ## Engine Development
 
 **For contributors working on the engine itself** (not game developers using it):

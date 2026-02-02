@@ -867,6 +867,7 @@ impl Engine {
                 effect.apply_cpu(sprite.data(), src_width, src_height);
 
               // For expanded sprites (outline/glow), we need to adjust position to keep sprite centered
+              // Use round() instead of truncation to avoid asymmetric clipping with non-uniform scales
               let offset_x = ((new_width as i32 - src_width as i32) / 2) as f32 * final_scale_x;
               let offset_y = ((new_height as i32 - src_height as i32) / 2) as f32 * final_scale_y;
 
@@ -875,8 +876,8 @@ impl Engine {
                 frame,
                 frame_width,
                 frame_height,
-                screen_x as i32 - offset_x as i32,
-                screen_y as i32 - offset_y as i32,
+                screen_x as i32 - offset_x.round() as i32,
+                screen_y as i32 - offset_y.round() as i32,
                 final_scale_x,
                 final_scale_y,
                 rotation_deg,

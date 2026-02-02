@@ -121,6 +121,20 @@ pub enum SpriteEffect {
     /// Intensity (0.0 = original, 1.0 = fully grayscale)
     intensity: f32,
   },
+
+  /// Draw an outline with different color for the bottom (passable) edge
+  ///
+  /// Useful for platform games where players can jump through from below.
+  /// The bottom edge gets a darker color to indicate it's passable, while
+  /// all other edges (top, left, right) use the solid color.
+  DirectionalOutline {
+    /// Color for solid edges (top, left, right) - cannot pass through
+    solid_color: Color,
+    /// Color for bottom edge - can jump through from below
+    passable_color: Color,
+    /// Thickness in pixels (1-4 recommended)
+    thickness: u32,
+  },
 }
 
 impl SpriteEffect {
@@ -135,6 +149,24 @@ impl SpriteEffect {
   /// Create a white outline (common for selection/highlight)
   pub fn white_outline(thickness: u32) -> Self {
     Self::outline(Color::WHITE, thickness)
+  }
+
+  /// Create a directional outline for platforms (solid edges, passable bottom)
+  pub fn directional_outline(solid_color: Color, passable_color: Color, thickness: u32) -> Self {
+    Self::DirectionalOutline {
+      solid_color,
+      passable_color,
+      thickness: thickness.clamp(1, 8),
+    }
+  }
+
+  /// Create a platform outline (white edges, pale bottom for jump-through)
+  pub fn platform_outline(thickness: u32) -> Self {
+    Self::directional_outline(
+      Color::WHITE,              // Solid edges (top, left, right) - bright white
+      Color::rgb(120, 120, 130), // Bottom edge only - noticeably darker (passable)
+      thickness,
+    )
   }
 
   /// Create a glow effect
@@ -404,6 +436,84 @@ impl SpriteEffect {
             dst[idx * 4 + 1] = color.g;
             dst[idx * 4 + 2] = color.b;
             dst[idx * 4 + 3] = color.a;
+          }
+        }
+
+        (dst, new_w as u32, new_h as u32)
+      }
+
+      Self::DirectionalOutline {
+        solid_color,
+        passable_color,
+        thickness,
+      } => {
+        // Expand canvas to accommodate outline
+        let thick = *thickness as usize;
+        let padding = thick;
+        let new_w = w + padding * 2;
+        let new_h = h + padding * 2;
+        let mut dst = vec![0u8; new_w * new_h * 4];
+
+        // Copy source sprite to center of expanded canvas
+        for y in 0..h {
+          for x in 0..w {
+            let src_idx = (y * w + x) * 4;
+            let dst_idx = ((y + padding) * new_w + (x + padding)) * 4;
+            dst[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+          }
+        }
+
+        // Draw outline by checking for transparent neighbors of opaque pixels
+        // Track which edge each outline pixel is on
+        let thick = *thickness as i32;
+
+        // Sprite bounds in expanded canvas coordinates
+        let sprite_bottom = padding + h - 1;
+
+        // Find and color outline pixels
+        for y in 0..new_h {
+          for x in 0..new_w {
+            let idx = y * new_w + x;
+            // If this pixel is transparent
+            if dst[idx * 4 + 3] == 0 {
+              // Check if any neighbor within thickness is opaque
+              let mut is_outline = false;
+              'outer: for dy in -thick..=thick {
+                for dx in -thick..=thick {
+                  if dx == 0 && dy == 0 {
+                    continue;
+                  }
+                  let nx = x as i32 + dx;
+                  let ny = y as i32 + dy;
+                  if nx >= 0 && nx < new_w as i32 && ny >= 0 && ny < new_h as i32 {
+                    let nidx = ny as usize * new_w + nx as usize;
+                    if dst[nidx * 4 + 3] > 0 {
+                      is_outline = true;
+                      break 'outer;
+                    }
+                  }
+                }
+              }
+
+              if is_outline {
+                // Determine which edge this outline pixel is on
+                // Only the bottom edge is passable (players jump through from below)
+                // All other edges (top, left, right) are solid
+                let is_bottom_edge = y > sprite_bottom;
+
+                // Use passable color only for bottom edge, solid for everything else
+                let color = if is_bottom_edge {
+                  passable_color
+                } else {
+                  solid_color
+                };
+
+                dst[idx * 4] = color.r;
+                dst[idx * 4 + 1] = color.g;
+                dst[idx * 4 + 2] = color.b;
+                dst[idx * 4 + 3] = color.a;
+              }
+            }
           }
         }
 

@@ -368,8 +368,9 @@ impl Sprite {
 
     let frame_w = frame_width as i32;
     let frame_h = frame_height as i32;
-    let scaled_w = (self.width as f32 * scale_x) as i32;
-    let scaled_h = (self.height as f32 * scale_y) as i32;
+    // Use ceiling to ensure we sample the rightmost/bottommost source pixels
+    let scaled_w = (self.width as f32 * scale_x).ceil() as i32;
+    let scaled_h = (self.height as f32 * scale_y).ceil() as i32;
 
     // Calculate visible region in screen space (clipped)
     let start_dx = (-x).max(0);
@@ -449,8 +450,9 @@ impl Sprite {
 
     let frame_w = frame_width as i32;
     let frame_h = frame_height as i32;
-    let scaled_w = (self.width as f32 * scale_x) as i32;
-    let scaled_h = (self.height as f32 * scale_y) as i32;
+    // Use ceiling to ensure we sample the rightmost/bottommost source pixels
+    let scaled_w = (self.width as f32 * scale_x).ceil() as i32;
+    let scaled_h = (self.height as f32 * scale_y).ceil() as i32;
 
     // Calculate visible region in screen space (clipped)
     let start_dx = (-x).max(0);
@@ -551,8 +553,9 @@ impl Sprite {
       return;
     }
 
-    let scaled_w = (self.width as f32 * scale_x) as i32;
-    let scaled_h = (self.height as f32 * scale_y) as i32;
+    // Use ceiling for consistent edge handling
+    let scaled_w = (self.width as f32 * scale_x).ceil() as i32;
+    let scaled_h = (self.height as f32 * scale_y).ceil() as i32;
 
     // Rotation center (center of scaled sprite in screen space)
     let center_x = x + scaled_w / 2;
