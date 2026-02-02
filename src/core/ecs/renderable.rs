@@ -50,7 +50,7 @@
 
 use super::material::SpriteShader;
 use crate::core::asset::SpriteHandle;
-use crate::core::tile::TileDirection;
+use crate::core::graphics::TileDirection;
 
 /// Hints for how the renderer should handle this entity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -234,7 +234,7 @@ impl Renderable {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::sprite::Sprite;
+  use crate::core::graphics::Sprite;
 
   fn test_handle() -> SpriteHandle {
     // Create a minimal test sprite handle

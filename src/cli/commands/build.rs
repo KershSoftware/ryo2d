@@ -67,7 +67,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
 /// Create a distributable release bundle
 fn create_release_bundle(
-  workspace: &super::super::super::core::workspace::Workspace,
+  workspace: &crate::core::config::Workspace,
   package_name: &str,
   display_name: &str,
 ) -> CliResult<()> {

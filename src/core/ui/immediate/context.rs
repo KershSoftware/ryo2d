@@ -792,7 +792,7 @@ impl<'a> UiContext<'a> {
   // =========================================================================
 
   /// Draw a sprite at the given position.
-  pub fn draw_sprite(&mut self, sprite: &crate::core::sprite::Sprite, x: f32, y: f32) {
+  pub fn draw_sprite(&mut self, sprite: &crate::core::graphics::Sprite, x: f32, y: f32) {
     sprite.draw(
       self.frame,
       self.frame_width,
@@ -805,7 +805,7 @@ impl<'a> UiContext<'a> {
   /// Draw a sprite scaled uniformly.
   pub fn draw_sprite_scaled(
     &mut self,
-    sprite: &crate::core::sprite::Sprite,
+    sprite: &crate::core::graphics::Sprite,
     x: f32,
     y: f32,
     scale: f32,

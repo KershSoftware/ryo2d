@@ -29,11 +29,11 @@ use std::time::Duration;
 
 use super::asset::AssetManager;
 use super::audio::AudioManager;
-use super::camera::Camera;
 use super::ecs::World;
+use super::graphics::Camera;
 use super::input::InputState;
 use super::lighting::LightingRenderer;
-use super::rapier_physics::PhysicsCollisionEvent;
+use super::physics::PhysicsCollisionEvent;
 use super::shaders::EffectsManager;
 use super::ui::UiContext;
 

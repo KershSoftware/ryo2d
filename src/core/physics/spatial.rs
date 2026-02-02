@@ -5,7 +5,7 @@
 //! - `BroadPhase` - Trait for broad-phase collision detection
 //! - `PhysicsWorld` - Combines broad + narrow phase collision detection
 
-use crate::core::collision::{Collider, check_collision};
+use super::collision::{check_collision, Collider};
 use crate::core::ecs::{Entity, Transform, World};
 use std::collections::{HashMap, HashSet};
 
@@ -543,7 +543,7 @@ mod tests {
 
   #[test]
   fn spatial_hash_insert_collider() {
-    use crate::core::collision::Collider;
+    use super::Collider;
     use crate::core::ecs::World;
     let mut world = World::new();
     let entity = world.spawn(());

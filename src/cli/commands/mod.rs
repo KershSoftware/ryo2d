@@ -13,7 +13,7 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
-use crate::core::workspace::Workspace;
+use crate::core::config::Workspace;
 
 /// CLI-specific error type
 #[derive(Debug)]

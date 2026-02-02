@@ -41,11 +41,10 @@
 //! Debug settings from `Ryo.toml` are automatically loaded during `build()`.
 //! Values set programmatically will override config file settings.
 
-use super::camera::Camera;
-use super::collision::{Collider, ColliderShape};
-use super::ecs::{Transform, Velocity, World};
-use super::tile::GroupedCollider;
-use super::ui::{Color, UiContext};
+use crate::core::ecs::{Transform, Velocity, World};
+use crate::core::graphics::{Camera, GroupedCollider};
+use crate::core::physics::{Collider, ColliderShape};
+use crate::core::ui::{Color, UiContext};
 
 /// Debug configuration for engine rendering.
 ///
@@ -611,8 +610,8 @@ pub fn set_pixel(frame: &mut [u8], width: u32, height: u32, x: i32, y: i32, colo
 // GPU Debug Overlay
 // ============================================================================
 
-use super::sprite_gpu::{BatchCollector, SpriteGpuRenderer, SpriteInstance};
-use super::ui::BitmapFont;
+use crate::core::graphics::{BatchCollector, SpriteGpuRenderer, SpriteInstance};
+use crate::core::ui::BitmapFont;
 
 /// Debug overlay texture ID constant
 pub const DEBUG_FONT_TEXTURE_ID: &str = "__debug_font__";

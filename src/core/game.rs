@@ -5,13 +5,12 @@
 
 use super::asset::{AssetManager, SpriteHandle};
 use super::audio::AudioManager;
-use super::camera::Camera;
 use super::ecs::World;
+use super::graphics::{BatchCollector, Camera, SpriteGpuRenderer};
 use super::input::InputState;
 use super::lighting::LightingRenderer;
-use super::rapier_physics::PhysicsCollisionEvent;
+use super::physics::PhysicsCollisionEvent;
 use super::shaders::EffectsManager;
-use super::sprite_gpu::{BatchCollector, SpriteGpuRenderer};
 use super::ui::UiContext;
 
 /// Context passed to game callbacks, providing access to engine systems.
@@ -129,7 +128,7 @@ pub struct GpuRenderContext<'a> {
   /// Queue for GPU operations
   queue: &'a wgpu::Queue,
   /// Camera for coordinate transforms
-  pub camera: &'a super::camera::Camera,
+  pub camera: &'a super::graphics::Camera,
   /// The ECS world (read-only for rendering)
   pub world: &'a World,
 }
@@ -141,7 +140,7 @@ impl<'a> GpuRenderContext<'a> {
     gpu_renderer: &'a mut SpriteGpuRenderer,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
-    camera: &'a super::camera::Camera,
+    camera: &'a super::graphics::Camera,
     world: &'a World,
   ) -> Self {
     Self {

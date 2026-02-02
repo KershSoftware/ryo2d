@@ -1,27 +1,27 @@
 //! Core engine modules
 
-pub mod animation;
+// Foundation
+pub mod ecs;
+pub mod error;
+
+// Core systems
 pub mod asset;
 pub mod audio;
-pub mod camera;
-pub mod collision;
-pub mod debug;
-pub mod ecs;
-pub mod engine;
-pub mod error;
-pub mod game;
-pub mod hot_reload;
 pub mod input;
+
+// Graphics & rendering
+pub mod graphics;
 pub mod lighting;
-pub mod physics;
-pub mod rapier_physics;
-pub mod renderer;
-pub mod save;
-pub mod scene;
 pub mod shaders;
-pub mod spatial;
-pub mod sprite;
-pub mod sprite_gpu;
-pub mod tile;
 pub mod ui;
-pub mod workspace;
+
+// Physics
+pub mod physics;
+
+// Configuration & persistence
+pub mod config;
+
+// Engine orchestration
+pub mod engine;
+pub mod game;
+pub mod scene;

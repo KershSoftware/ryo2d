@@ -35,8 +35,8 @@ use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
-use super::ecs::{Material, SpriteEffect, SpriteShader};
-use super::ui::Color;
+use crate::core::ecs::{Material, SpriteEffect, SpriteShader};
+use crate::core::ui::Color;
 
 /// Per-instance data for GPU sprite rendering
 ///
@@ -860,7 +860,7 @@ impl SpriteGpuRenderer {
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    sprite: &super::asset::SpriteHandle,
+    sprite: &crate::core::asset::SpriteHandle,
   ) {
     let id = sprite.id();
     if self.texture_cache.contains_key(&id) {
@@ -901,7 +901,7 @@ pub fn get_sprite_effect<'a>(
 }
 
 /// The WGSL shader for sprite rendering (loaded from external file)
-pub const SPRITE_SHADER: &str = include_str!("shaders/core/sprite.wgsl");
+pub const SPRITE_SHADER: &str = include_str!("../shaders/core/sprite.wgsl");
 
 // =============================================================================
 // Sprite Batching System
