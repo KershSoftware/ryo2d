@@ -91,10 +91,10 @@ fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
     let cargo_toml = search_dir.join("Cargo.toml");
     if cargo_toml.exists() {
       // Check if this Cargo.toml has a [workspace] section
-      if let Ok(content) = fs::read_to_string(&cargo_toml) {
-        if content.contains("[workspace]") {
-          return search_dir.join("target");
-        }
+      if let Ok(content) = fs::read_to_string(&cargo_toml)
+        && content.contains("[workspace]")
+      {
+        return search_dir.join("target");
       }
     }
 
