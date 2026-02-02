@@ -155,8 +155,9 @@ fn test_lighting_renderer_creation() {
 
     let renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
 
-    // Verify it starts enabled (as per our fix)
-    assert!(renderer.is_enabled(), "LightingRenderer should be enabled by default");
+    // LightingRenderer starts disabled by default for performance
+    // The engine auto-enables when Light2D entities exist
+    assert!(!renderer.is_enabled(), "LightingRenderer should be disabled by default for performance");
 
     // Verify UI is not affected by lighting by default
     assert!(
@@ -218,13 +219,14 @@ fn test_lighting_renderer_enable_disable() {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
 
-    assert!(renderer.is_enabled(), "Should start enabled");
-
-    renderer.set_enabled(false);
-    assert!(!renderer.is_enabled(), "Should be disabled after set_enabled(false)");
+    // Starts disabled by default (engine auto-enables when Light2D entities exist)
+    assert!(!renderer.is_enabled(), "Should start disabled by default");
 
     renderer.set_enabled(true);
     assert!(renderer.is_enabled(), "Should be enabled after set_enabled(true)");
+
+    renderer.set_enabled(false);
+    assert!(!renderer.is_enabled(), "Should be disabled after set_enabled(false)");
 }
 
 // ============================================================================
@@ -247,7 +249,10 @@ fn test_compose_receives_pixel_data() {
     let height = 64u32;
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-    let renderer = LightingRenderer::new(&gpu.device, width, height, format);
+    let mut renderer = LightingRenderer::new(&gpu.device, width, height, format);
+
+    // Enable lighting (disabled by default for performance)
+    renderer.set_enabled(true);
 
     // Create output texture
     let output_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -325,6 +330,9 @@ fn test_compose_with_ambient() {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
 
     let mut renderer = LightingRenderer::new(&gpu.device, width, height, format);
+
+    // Enable lighting (disabled by default for performance)
+    renderer.set_enabled(true);
 
     // Set high ambient so scene is fully visible
     renderer.set_ambient(AmbientLight::new(Color::WHITE, 1.0));
@@ -409,6 +417,9 @@ fn test_compose_with_zero_ambient() {
 
     let mut renderer = LightingRenderer::new(&gpu.device, width, height, format);
 
+    // Enable lighting (disabled by default for performance)
+    renderer.set_enabled(true);
+
     // Set zero ambient (pitch black without lights)
     renderer.set_ambient(AmbientLight::new(Color::WHITE, 0.0));
 
@@ -487,7 +498,10 @@ fn test_render_lights_empty() {
     };
 
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
+    let mut renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
+
+    // Enable lighting (disabled by default for performance)
+    renderer.set_enabled(true);
 
     let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Test Empty Lights"),
@@ -516,7 +530,10 @@ fn test_render_lights_with_data() {
     };
 
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
+    let mut renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
+
+    // Enable lighting (disabled by default for performance)
+    renderer.set_enabled(true);
 
     // Create light data
     let transform = Transform::new(50.0, 50.0);
