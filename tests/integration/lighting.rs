@@ -51,7 +51,7 @@ fn regression_ui_unaffected_by_lighting_default() {
 
   // This is a documentation test - actual rendering verification would
   // require a headless GPU context
-  assert!(true, "UI should not be affected by lighting by default");
+  // The test passes if it compiles and runs without panicking
 }
 
 /// REGRESSION: Games without Light2D entities must render normally

@@ -110,6 +110,7 @@ impl Rpc for GameEventRpc {
 struct HeadlessClient {
   client: NetworkClient,
   world: World,
+  #[allow(dead_code)]
   replication: ReplicationManager,
   /// Maps NetworkId to local Entity
   entity_map: HashMap<NetworkId, Entity>,
@@ -226,15 +227,15 @@ impl HeadlessClient {
           self.world.add_component(entity, transform);
         }
       }
-    } else if serialized.type_id == PlayerPosition::component_id() {
-      if let Ok(pos) = serialized.clone().into_component::<PlayerPosition>() {
-        if self.world.get_component::<PlayerPosition>(entity).is_some() {
-          if let Some(mut p) = self.world.get_component_mut::<PlayerPosition>(entity) {
-            *p = pos;
-          }
-        } else {
-          self.world.add_component(entity, pos);
+    } else if serialized.type_id == PlayerPosition::component_id()
+      && let Ok(pos) = serialized.clone().into_component::<PlayerPosition>()
+    {
+      if self.world.get_component::<PlayerPosition>(entity).is_some() {
+        if let Some(mut p) = self.world.get_component_mut::<PlayerPosition>(entity) {
+          *p = pos;
         }
+      } else {
+        self.world.add_component(entity, pos);
       }
     }
   }
@@ -492,11 +493,11 @@ fn e2e_client_a_movement_propagates_to_client_b() {
       clients[1].process_replication();
 
       // Check if client B sees the updated position
-      if let Some(entity) = clients[1].get_entity(network_id) {
-        if let Some(pos) = clients[1].world.get_component::<PlayerPosition>(entity) {
-          // Initial was 100.0 * client_id, moved by 50.0
-          return pos.x > 100.0;
-        }
+      if let Some(entity) = clients[1].get_entity(network_id)
+        && let Some(pos) = clients[1].world.get_component::<PlayerPosition>(entity)
+      {
+        // Initial was 100.0 * client_id, moved by 50.0
+        return pos.x > 100.0;
       }
       false
     },
@@ -683,13 +684,12 @@ fn e2e_rpc_client_to_server() {
     client.update(dt);
 
     for cid in server.clients().collect::<Vec<_>>() {
-      if let Some(data) = server.server.receive(cid, Channel::ReliableOrdered) {
-        if let Ok(serialized) = SerializedRpc::from_bytes(&data) {
-          if let Ok(rpc) = serialized.into_rpc::<PlayerMoveRpc>() {
-            received_rpc = Some(rpc);
-            break;
-          }
-        }
+      if let Some(data) = server.server.receive(cid, Channel::ReliableOrdered)
+        && let Ok(serialized) = SerializedRpc::from_bytes(&data)
+        && let Ok(rpc) = serialized.into_rpc::<PlayerMoveRpc>()
+      {
+        received_rpc = Some(rpc);
+        break;
       }
     }
 
@@ -751,26 +751,22 @@ fn e2e_rpc_server_broadcast_to_all_clients() {
     client_a.update(dt);
     client_b.update(dt);
 
-    if !client_a_received {
-      if let Some(data) = client_a.client.receive(Channel::ReliableOrdered) {
-        if let Ok(serialized) = SerializedRpc::from_bytes(&data) {
-          if let Ok(rpc) = serialized.into_rpc::<GameEventRpc>() {
-            assert_eq!(rpc.payload.event_type, "ROUND_START");
-            client_a_received = true;
-          }
-        }
-      }
+    if !client_a_received
+      && let Some(data) = client_a.client.receive(Channel::ReliableOrdered)
+      && let Ok(serialized) = SerializedRpc::from_bytes(&data)
+      && let Ok(rpc) = serialized.into_rpc::<GameEventRpc>()
+    {
+      assert_eq!(rpc.payload.event_type, "ROUND_START");
+      client_a_received = true;
     }
 
-    if !client_b_received {
-      if let Some(data) = client_b.client.receive(Channel::ReliableOrdered) {
-        if let Ok(serialized) = SerializedRpc::from_bytes(&data) {
-          if let Ok(rpc) = serialized.into_rpc::<GameEventRpc>() {
-            assert_eq!(rpc.payload.event_type, "ROUND_START");
-            client_b_received = true;
-          }
-        }
-      }
+    if !client_b_received
+      && let Some(data) = client_b.client.receive(Channel::ReliableOrdered)
+      && let Ok(serialized) = SerializedRpc::from_bytes(&data)
+      && let Ok(rpc) = serialized.into_rpc::<GameEventRpc>()
+    {
+      assert_eq!(rpc.payload.event_type, "ROUND_START");
+      client_b_received = true;
     }
 
     if client_a_received && client_b_received {
@@ -830,17 +826,17 @@ fn e2e_rpc_client_a_chat_relayed_to_client_b() {
     client_b.update(dt);
 
     for cid in server.clients().collect::<Vec<_>>() {
-      if let Some(data) = server.server.receive(cid, Channel::ReliableOrdered) {
-        if SerializedRpc::from_bytes(&data).is_ok() {
-          // Re-broadcast to all clients
-          let broadcast =
-            SerializedRpc::from_rpc(&chat, client_a_id, RpcTarget::Broadcast).unwrap();
-          server
-            .server
-            .broadcast(Channel::ReliableOrdered, &broadcast.to_bytes().unwrap());
-          server_received = true;
-          break;
-        }
+      if let Some(data) = server.server.receive(cid, Channel::ReliableOrdered)
+        && SerializedRpc::from_bytes(&data).is_ok()
+      {
+        // Re-broadcast to all clients
+        let broadcast =
+          SerializedRpc::from_rpc(&chat, client_a_id, RpcTarget::Broadcast).unwrap();
+        server
+          .server
+          .broadcast(Channel::ReliableOrdered, &broadcast.to_bytes().unwrap());
+        server_received = true;
+        break;
       }
     }
 
@@ -861,16 +857,15 @@ fn e2e_rpc_client_a_chat_relayed_to_client_b() {
     client_a.update(dt);
     client_b.update(dt);
 
-    if let Some(data) = client_b.client.receive(Channel::ReliableOrdered) {
-      if let Ok(serialized) = SerializedRpc::from_bytes(&data) {
-        if let Ok(rpc) = serialized.into_rpc::<ChatMessageRpc>() {
-          assert_eq!(rpc.payload.sender_name, "PlayerA");
-          assert_eq!(rpc.payload.message, "Hello everyone!");
-          assert_eq!(rpc.sender, client_a_id);
-          client_b_received = true;
-          break;
-        }
-      }
+    if let Some(data) = client_b.client.receive(Channel::ReliableOrdered)
+      && let Ok(serialized) = SerializedRpc::from_bytes(&data)
+      && let Ok(rpc) = serialized.into_rpc::<ChatMessageRpc>()
+    {
+      assert_eq!(rpc.payload.sender_name, "PlayerA");
+      assert_eq!(rpc.payload.message, "Hello everyone!");
+      assert_eq!(rpc.sender, client_a_id);
+      client_b_received = true;
+      break;
     }
 
     thread::sleep(Duration::from_millis(10));
@@ -921,11 +916,11 @@ fn e2e_multiple_rapid_updates_arrive_in_order() {
     let player_entity = server.get_player_entity(client_id).unwrap();
     let network_id = server.replication.get_network_id(player_entity).unwrap();
 
-    if let Some(entity) = clients[0].get_entity(network_id) {
-      if let Some(pos) = clients[0].world.get_component::<PlayerPosition>(entity) {
-        // Initial was 100*id + 100, moved 10*10 = 100
-        return pos.x >= 200.0;
-      }
+    if let Some(entity) = clients[0].get_entity(network_id)
+      && let Some(pos) = clients[0].world.get_component::<PlayerPosition>(entity)
+    {
+      // Initial was 100*id + 100, moved 10*10 = 100
+      return pos.x >= 200.0;
     }
     false
   });
@@ -1222,13 +1217,13 @@ fn e2e_listen_server_host_movement_reaches_remote() {
       client.update(dt);
       client.process_replication();
 
-      if let Some(entity) = client.get_entity(host_network_id) {
-        if let Some(pos) = client.world.get_component::<PlayerPosition>(entity) {
-          // Host started at 50*0=0, moved by 500
-          if pos.x >= 400.0 {
-            result = true;
-            break;
-          }
+      if let Some(entity) = client.get_entity(host_network_id)
+        && let Some(pos) = client.world.get_component::<PlayerPosition>(entity)
+      {
+        // Host started at 50*0=0, moved by 500
+        if pos.x >= 400.0 {
+          result = true;
+          break;
         }
       }
 
