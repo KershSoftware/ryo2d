@@ -125,6 +125,8 @@ pub struct DebugConfig {
   pub show_origins: bool,
   /// Whether to display frame timing breakdown
   pub show_frame_timing: bool,
+  /// Whether to disable F1-F4 debug key toggles
+  pub disable_debug_keys: bool,
 }
 
 /// Info overlay configuration options.
@@ -227,6 +229,7 @@ struct DebugSection {
   show_velocities: Option<bool>,
   show_origins: Option<bool>,
   show_frame_timing: Option<bool>,
+  disable_debug_keys: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -402,6 +405,7 @@ impl Workspace {
       show_velocities: debug_section.show_velocities.unwrap_or(false),
       show_origins: debug_section.show_origins.unwrap_or(false),
       show_frame_timing: debug_section.show_frame_timing.unwrap_or(false),
+      disable_debug_keys: debug_section.disable_debug_keys.unwrap_or(false),
     };
 
     // Info config
@@ -741,6 +745,8 @@ mod tests {
     assert!(!config.show_colliders);
     assert!(!config.show_velocities);
     assert!(!config.show_origins);
+    assert!(!config.show_frame_timing);
+    assert!(!config.disable_debug_keys);
   }
 
   #[test]
@@ -771,5 +777,38 @@ mod tests {
   fn workspace_config_info_defaults_included() {
     let config = WorkspaceConfig::default();
     assert!(!config.info.show_fps);
+  }
+
+  #[test]
+  fn workspace_config_debug_disable_keys_default() {
+    let config = WorkspaceConfig::default();
+    assert!(!config.debug.disable_debug_keys);
+  }
+
+  #[test]
+  fn debug_section_parses_disable_debug_keys_true() {
+    let toml_str = r#"
+      disable_debug_keys = true
+    "#;
+    let section: DebugSection = toml::from_str(toml_str).unwrap();
+    assert_eq!(section.disable_debug_keys, Some(true));
+  }
+
+  #[test]
+  fn debug_section_parses_disable_debug_keys_false() {
+    let toml_str = r#"
+      disable_debug_keys = false
+    "#;
+    let section: DebugSection = toml::from_str(toml_str).unwrap();
+    assert_eq!(section.disable_debug_keys, Some(false));
+  }
+
+  #[test]
+  fn debug_section_defaults_disable_debug_keys_to_none() {
+    let toml_str = r#"
+      show_colliders = true
+    "#;
+    let section: DebugSection = toml::from_str(toml_str).unwrap();
+    assert_eq!(section.disable_debug_keys, None);
   }
 }
