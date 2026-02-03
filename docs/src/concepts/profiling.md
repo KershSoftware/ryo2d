@@ -167,16 +167,25 @@ When enabled, the engine:
 2. Instruments key engine systems (update, render, present, physics, scene transitions)
 3. Prints connection instructions to the console
 
-### Connecting puffin_viewer
+### Viewing Profile Data
 
-Install and run the puffin viewer:
+When using `ryo2d dev --profiler`, the CLI automatically launches `puffin_viewer` if installed.
+
+**First-time setup:**
 
 ```bash
 cargo install puffin_viewer
+```
+
+After installation, `puffin_viewer` will auto-launch when you run `ryo2d dev --profiler`.
+
+**Manual launch** (if needed):
+
+```bash
 puffin_viewer --url 127.0.0.1:8585
 ```
 
-This opens a real-time window showing:
+The viewer shows:
 - **Hierarchical flamegraph** of where time is spent each frame
 - **Frame history** with timeline navigation
 - **Pause/resume** for inspecting specific frames
