@@ -10,7 +10,10 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::asset::AssetManager;
 use super::audio::AudioManager;
-use super::config::{self as debug, DebugConfig, DisplayMode, FrameTimings, SmoothedFrameTimings};
+use super::config::{
+  self as debug, DebugConfig, DebugStats, DisplayMode, FrameTimings, OverlayMode,
+  SmoothedDebugStats, SmoothedFrameTimings,
+};
 use super::ecs::{
   Entity, RenderStyle, Renderable, SpriteShader, Transform, Tween, Velocity, World, WorldTransform,
 };
@@ -304,6 +307,14 @@ pub struct Engine {
   frame_timings: FrameTimings,
   // Smoothed frame timings for stable overlay display
   smoothed_timings: SmoothedFrameTimings,
+  // Current overlay mode (controlled by F1 key)
+  overlay_mode: OverlayMode,
+  // Debug statistics for current frame
+  debug_stats: DebugStats,
+  // Smoothed debug stats for stable overlay display
+  smoothed_stats: SmoothedDebugStats,
+  // Whether debug keys (F1-F4) are enabled
+  debug_keys_enabled: bool,
   // Whether debug font has been uploaded to GPU
   debug_font_uploaded: bool,
   // Temporary buffer for UI when not affected by lighting
@@ -476,6 +487,7 @@ impl Engine {
     master_volume: f32,
     music_volume: f32,
     sfx_volume: f32,
+    disable_debug_keys: bool,
   ) -> Self {
     let world = World::new();
     let camera = Camera::centered_at(
@@ -537,6 +549,13 @@ impl Engine {
       }
     };
 
+    // Compute initial overlay mode from config before moving it
+    let initial_overlay_mode = OverlayMode::from_flags(
+      config.debug.show_fps,
+      config.debug.show_frame_timing,
+      config.debug.show_stats,
+    );
+
     Engine {
       config,
       window: None,
@@ -564,6 +583,10 @@ impl Engine {
       trail_renderer: None, // Initialized when renderer is created
       frame_timings: FrameTimings::default(),
       smoothed_timings: SmoothedFrameTimings::default(),
+      overlay_mode: initial_overlay_mode,
+      debug_stats: DebugStats::default(),
+      smoothed_stats: SmoothedDebugStats::default(),
+      debug_keys_enabled: !disable_debug_keys,
       debug_font_uploaded: false,
       ui_buffer: vec![0; ui_buffer_size], // RGBA buffer for UI
       window_request: WindowRequest::default(),
@@ -1495,11 +1518,20 @@ impl Engine {
         game.render_ui(&mut ui_ctx);
 
         // Render debug overlays on top of game UI (always visible)
+        // Render order: stats (top) -> FPS -> frame timing (bottom)
+        if self.config.debug.show_stats {
+          debug::render_stats(&mut ui_ctx, &self.smoothed_stats, frame_height);
+        }
         if self.config.debug.show_fps {
-          debug::render_fps_counter(&mut ui_ctx, self.smoothed_timings.fps as u64, frame_height);
+          debug::render_fps_counter(
+            &mut ui_ctx,
+            self.smoothed_timings.fps as u64,
+            frame_height,
+            self.config.debug.show_frame_timing,
+          );
         }
         if self.config.debug.show_frame_timing {
-          debug::render_frame_timing(&mut ui_ctx, &self.frame_timings, frame_height);
+          debug::render_frame_timing(&mut ui_ctx, &self.smoothed_timings, frame_height);
         }
 
         self.game = Some(game);
@@ -1519,11 +1551,20 @@ impl Engine {
         game.render_ui(&mut ui_ctx);
 
         // Render debug overlays on top of game UI (always visible, even with lighting)
+        // Render order: stats (top) -> FPS -> frame timing (bottom)
+        if self.config.debug.show_stats {
+          debug::render_stats(&mut ui_ctx, &self.smoothed_stats, frame_height);
+        }
         if self.config.debug.show_fps {
-          debug::render_fps_counter(&mut ui_ctx, self.smoothed_timings.fps as u64, frame_height);
+          debug::render_fps_counter(
+            &mut ui_ctx,
+            self.smoothed_timings.fps as u64,
+            frame_height,
+            self.config.debug.show_frame_timing,
+          );
         }
         if self.config.debug.show_frame_timing {
-          debug::render_frame_timing(&mut ui_ctx, &self.frame_timings, frame_height);
+          debug::render_frame_timing(&mut ui_ctx, &self.smoothed_timings, frame_height);
         }
 
         self.game = Some(game);
@@ -1809,6 +1850,35 @@ impl ApplicationHandler for Engine {
           time.begin_frame();
         }
 
+        // Handle debug key toggles (F1-F4)
+        // These are consumed immediately to prevent double-firing if no update runs this frame
+        if self.debug_keys_enabled {
+          // F1: Cycle overlay mode
+          if self.input.key_pressed(KeyCode::F1) {
+            self.overlay_mode = self.overlay_mode.next();
+            let (show_fps, show_frame_timing, show_stats) = self.overlay_mode.to_flags();
+            self.config.debug.show_fps = show_fps;
+            self.config.debug.show_frame_timing = show_frame_timing;
+            self.config.debug.show_stats = show_stats;
+            self.input.consume_key(KeyCode::F1);
+          }
+          // F2: Toggle collision boundaries
+          if self.input.key_pressed(KeyCode::F2) {
+            self.config.debug.show_colliders = !self.config.debug.show_colliders;
+            self.input.consume_key(KeyCode::F2);
+          }
+          // F3: Toggle velocity vectors
+          if self.input.key_pressed(KeyCode::F3) {
+            self.config.debug.show_velocities = !self.config.debug.show_velocities;
+            self.input.consume_key(KeyCode::F3);
+          }
+          // F4: Toggle origin points
+          if self.input.key_pressed(KeyCode::F4) {
+            self.config.debug.show_origins = !self.config.debug.show_origins;
+            self.input.consume_key(KeyCode::F4);
+          }
+        }
+
         // Process gamepad events
         if let Some(ref mut gilrs) = self.gilrs {
           // Check for newly connected gamepads
@@ -1935,7 +2005,9 @@ impl ApplicationHandler for Engine {
           {
             // Upload debug font texture on first frame (if debug overlays enabled)
             if !self.debug_font_uploaded
-              && (self.config.debug.show_fps || self.config.debug.show_frame_timing)
+              && (self.config.debug.show_fps
+                || self.config.debug.show_frame_timing
+                || self.config.debug.show_stats)
             {
               debug::upload_debug_font(
                 &self.ui_font,
@@ -1958,6 +2030,14 @@ impl ApplicationHandler for Engine {
           }
           self.game = Some(game);
         }
+
+        // Capture debug stats before rendering clears them
+        self.debug_stats = DebugStats {
+          entity_count: self.world.len(),
+          draw_calls: self.batch_collector.batch_count() as u32,
+          sprite_count: self.batch_collector.sprite_count() as u32,
+        };
+        self.smoothed_stats.update(&self.debug_stats);
 
         // Note: Debug overlays (FPS, frame timing) are now rendered via UI context
         // in the UI rendering section below, so they appear on top of everything
@@ -2253,6 +2333,8 @@ pub struct EngineBuilder {
   sfx_volume: f32,
   /// Tracks whether display_mode was explicitly set (prevents build() from overwriting)
   display_mode_set: bool,
+  /// Whether to disable F1-F4 debug key toggles
+  disable_debug_keys: bool,
 }
 
 impl EngineBuilder {
@@ -2265,6 +2347,7 @@ impl EngineBuilder {
       music_volume: 0.8,
       sfx_volume: 1.0,
       display_mode_set: false,
+      disable_debug_keys: false,
     }
   }
 
@@ -2603,6 +2686,7 @@ impl EngineBuilder {
     let mut music_volume = self.music_volume;
     let mut sfx_volume = self.sfx_volume;
     let display_mode_set = self.display_mode_set;
+    let mut disable_debug_keys = self.disable_debug_keys;
 
     // Priority chain for configuration:
     // 1. Explicit builder calls (highest) - already in self.config
@@ -2642,6 +2726,9 @@ impl EngineBuilder {
       if let Some(v) = option_env!("RYO_EMBED_SHOW_FRAME_TIMING") {
         config.debug.show_frame_timing = v.parse().unwrap_or(false);
       }
+      if let Some(v) = option_env!("RYO_EMBED_DISABLE_DEBUG_KEYS") {
+        disable_debug_keys = v.parse().unwrap_or(false);
+      }
       if let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME") {
         master_volume = vol.parse().unwrap_or(0.7);
       }
@@ -2677,6 +2764,7 @@ impl EngineBuilder {
       config.debug.show_velocities = debug.show_velocities;
       config.debug.show_origins = debug.show_origins;
       config.debug.show_frame_timing = debug.show_frame_timing;
+      disable_debug_keys = debug.disable_debug_keys;
 
       // Load resolution from [system] section if not explicitly set via builder
       if config.width == 800 && config.height == 600 {
@@ -2710,7 +2798,15 @@ impl EngineBuilder {
       }
     }
 
-    Engine::new(config, game, vsync, master_volume, music_volume, sfx_volume)
+    Engine::new(
+      config,
+      game,
+      vsync,
+      master_volume,
+      music_volume,
+      sfx_volume,
+      disable_debug_keys,
+    )
   }
 }
 
@@ -2937,5 +3033,54 @@ mod tests {
     // Should now return normal dt
     let expected = 1.0 / 60.0;
     assert!((time.scaled_fixed_dt() - expected).abs() < 0.0001);
+  }
+
+  // ===========================================================================
+  // Debug Keys Tests
+  // ===========================================================================
+
+  #[test]
+  fn engine_builder_debug_keys_enabled_by_default() {
+    let builder = EngineBuilder::new();
+    assert!(!builder.disable_debug_keys);
+  }
+
+  #[test]
+  fn overlay_mode_syncs_to_debug_config_flags() {
+    // Test that OverlayMode correctly maps to config flags
+    let mode = OverlayMode::Off;
+    assert_eq!(mode.to_flags(), (false, false, false));
+
+    let mode = OverlayMode::FpsOnly;
+    assert_eq!(mode.to_flags(), (true, false, false));
+
+    // Frame timing includes FPS, so show_fps is false
+    let mode = OverlayMode::FrameTiming;
+    assert_eq!(mode.to_flags(), (false, true, false));
+
+    let mode = OverlayMode::FullStats;
+    assert_eq!(mode.to_flags(), (false, true, true));
+  }
+
+  #[test]
+  fn overlay_mode_from_debug_config_flags() {
+    // Test that config flags correctly map to OverlayMode
+    assert_eq!(
+      OverlayMode::from_flags(false, false, false),
+      OverlayMode::Off
+    );
+    assert_eq!(
+      OverlayMode::from_flags(true, false, false),
+      OverlayMode::FpsOnly
+    );
+    // Frame timing mode (show_fps ignored when frame_timing is true)
+    assert_eq!(
+      OverlayMode::from_flags(false, true, false),
+      OverlayMode::FrameTiming
+    );
+    assert_eq!(
+      OverlayMode::from_flags(false, true, true),
+      OverlayMode::FullStats
+    );
   }
 }
