@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use super::pass::RenderPass;
 use super::RenderContext;
+use super::pass::RenderPass;
 
 /// A configurable render pipeline that executes passes in dependency order.
 ///

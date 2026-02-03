@@ -3,10 +3,15 @@
 use crate::core::render::pass_ids;
 use crate::core::render::{RenderContext, RenderPass, RenderPassId};
 
+/// Default background color for the framebuffer (#191923).
+/// This color is visible when nothing is rendered, making it easy to verify
+/// the render pipeline is working.
+pub const DEFAULT_CLEAR_COLOR: [u8; 4] = [0x19, 0x19, 0x23, 0xff];
+
 /// Render pass that clears the CPU pixel buffer to a background color.
 ///
 /// This pass runs first in the pipeline to ensure a clean slate for rendering.
-/// The default color is dark charcoal (0x2d, 0x2d, 0x2d).
+/// The default color is #191923 - a dark gray that indicates the renderer is working.
 pub struct ClearPass {
   /// Background color (RGBA)
   pub color: [u8; 4],
@@ -21,10 +26,10 @@ impl Default for ClearPass {
 }
 
 impl ClearPass {
-  /// Create a new clear pass with the default dark charcoal color
+  /// Create a new clear pass with the default background color (#191923)
   pub fn new() -> Self {
     Self {
-      color: [0x2d, 0x2d, 0x2d, 0xff], // Dark charcoal
+      color: DEFAULT_CLEAR_COLOR,
       enabled: true,
     }
   }
@@ -78,7 +83,8 @@ mod tests {
   #[test]
   fn test_default_color() {
     let pass = ClearPass::new();
-    assert_eq!(pass.color, [0x2d, 0x2d, 0x2d, 0xff]);
+    assert_eq!(pass.color, DEFAULT_CLEAR_COLOR);
+    assert_eq!(pass.color, [0x19, 0x19, 0x23, 0xff]);
   }
 
   #[test]

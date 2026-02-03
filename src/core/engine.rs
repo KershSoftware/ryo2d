@@ -1796,13 +1796,15 @@ impl ApplicationHandler for Engine {
 
             // Create lighting callback if lighting is enabled
             if lighting_enabled {
+              // Borrow lighting for the callback - we can't move it because it needs to be restored
+              let lighting_ref = &lighting;
               let lighting_callback =
-                |device: &wgpu::Device,
-                 queue: &wgpu::Queue,
-                 encoder: &mut wgpu::CommandEncoder,
-                 pixel_data: &[u8],
-                 output_view: &wgpu::TextureView| {
-                  if let Some(ref lighting_renderer) = lighting {
+                move |device: &wgpu::Device,
+                      queue: &wgpu::Queue,
+                      encoder: &mut wgpu::CommandEncoder,
+                      scene_texture: &wgpu::Texture,
+                      output_view: &wgpu::TextureView| {
+                  if let Some(ref lighting_renderer) = *lighting_ref {
                     // Render lights to the light accumulation buffer
                     lighting_renderer.render_lights(
                       device,
@@ -1813,12 +1815,12 @@ impl ApplicationHandler for Engine {
                       camera_zoom,
                     );
 
-                    // Compose the lit scene
-                    lighting_renderer.compose(
+                    // Compose the lit scene from game texture (has GPU sprites + CPU content)
+                    lighting_renderer.compose_from_texture(
                       device,
                       queue,
                       encoder,
-                      pixel_data,
+                      scene_texture,
                       output_view,
                       time,
                     );

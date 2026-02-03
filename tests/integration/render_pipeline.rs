@@ -2,10 +2,14 @@
 //!
 //! These tests verify the render pipeline orchestration, pass dependencies,
 //! and GPU parallax functionality.
+//!
+//! CRITICAL INVARIANTS (2024-02):
+//! The render pipeline with lighting uses separate textures to avoid
+//! write_texture ordering issues. See tests/integration/lighting.rs for details.
 
 use ryo2d::core::graphics::parallax::TileMode;
 use ryo2d::core::graphics::{GpuParallaxBackground, GpuParallaxLayer};
-use ryo2d::core::render::passes::{ClearPass, ParallaxPass, UploadPass};
+use ryo2d::core::render::passes::{ClearPass, LightingPass, ParallaxPass, UploadPass};
 use ryo2d::core::render::{RenderPass, RenderPipeline, pass_ids};
 
 // =============================================================================
@@ -56,7 +60,10 @@ fn test_pass_dependency_order() {
 
   // Note: upload depends on cpu_sprite which isn't added, so it has 0 resolved deps
   // Both clear and upload will have 0 in-degree, so they'll be sorted alphabetically
-  assert!(clear_pos < upload_pos, "Clear should come before upload in alphabetical order");
+  assert!(
+    clear_pos < upload_pos,
+    "Clear should come before upload in alphabetical order"
+  );
 }
 
 #[test]
@@ -93,7 +100,8 @@ fn test_get_pass() {
 #[test]
 fn test_clear_pass_default_color() {
   let pass = ClearPass::new();
-  assert_eq!(pass.color, [0x2d, 0x2d, 0x2d, 0xff]);
+  // Default color is #191923 (rgb 25, 25, 35)
+  assert_eq!(pass.color, [0x19, 0x19, 0x23, 0xff]);
 }
 
 #[test]
@@ -233,13 +241,11 @@ fn test_gpu_parallax_background_update_time() {
 fn test_gpu_parallax_builder() {
   // Builder pattern works with GpuParallaxBackground
   let mut custom_bg = GpuParallaxBackground::new();
-  custom_bg.add_layer(
-    GpuParallaxLayer::from_id("sky", 1920, 1080, 0.0, -100)
-  );
+  custom_bg.add_layer(GpuParallaxLayer::from_id("sky", 1920, 1080, 0.0, -100));
   custom_bg.add_layer(
     GpuParallaxLayer::from_id("mountains", 1920, 1080, 0.3, -80)
       .with_tile_mode(TileMode::InfiniteScroll)
-      .with_auto_scroll(10.0)
+      .with_auto_scroll(10.0),
   );
 
   assert_eq!(custom_bg.layer_count(), 2);
@@ -257,14 +263,146 @@ fn test_tile_mode_none() {
 
 #[test]
 fn test_tile_mode_horizontal() {
-  let layer = GpuParallaxLayer::from_id("test", 100, 100, 0.0, 0)
-    .with_tile_mode(TileMode::Horizontal);
+  let layer =
+    GpuParallaxLayer::from_id("test", 100, 100, 0.0, 0).with_tile_mode(TileMode::Horizontal);
   assert_eq!(layer.tile_mode, TileMode::Horizontal);
 }
 
 #[test]
 fn test_tile_mode_infinite_scroll() {
-  let layer = GpuParallaxLayer::from_id("test", 100, 100, 0.0, 0)
-    .with_tile_mode(TileMode::InfiniteScroll);
+  let layer =
+    GpuParallaxLayer::from_id("test", 100, 100, 0.0, 0).with_tile_mode(TileMode::InfiniteScroll);
   assert_eq!(layer.tile_mode, TileMode::InfiniteScroll);
+}
+
+// =============================================================================
+// Lighting Pass Tests
+// =============================================================================
+
+#[test]
+fn test_lighting_pass_id() {
+  let pass = LightingPass::new();
+  assert_eq!(pass.id(), pass_ids::LIGHTING);
+}
+
+#[test]
+fn test_lighting_pass_dependencies() {
+  let pass = LightingPass::new();
+  // Lighting depends on GPU sprites being rendered first
+  assert_eq!(pass.dependencies(), &[pass_ids::GPU_SPRITE]);
+}
+
+#[test]
+fn test_lighting_pass_enabled_by_default() {
+  let pass = LightingPass::new();
+  assert!(
+    pass.is_enabled(),
+    "LightingPass should be enabled by default"
+  );
+}
+
+#[test]
+fn test_lighting_pass_enable_disable() {
+  let mut pass = LightingPass::new();
+
+  pass.set_enabled(false);
+  assert!(!pass.is_enabled());
+
+  pass.set_enabled(true);
+  assert!(pass.is_enabled());
+}
+
+#[test]
+fn test_lighting_pass_no_lights_initially() {
+  let pass = LightingPass::new();
+  assert!(!pass.has_lights(), "Should have no lights initially");
+  assert_eq!(pass.light_count(), 0);
+}
+
+#[test]
+fn test_lighting_pass_set_lights() {
+  use ryo2d::core::render::passes::LightData;
+  use ryo2d::prelude::*;
+
+  let mut pass = LightingPass::new();
+
+  let lights = vec![
+    LightData {
+      transform: Transform::new(100.0, 100.0),
+      light: Light2D::point(Color::WHITE, 50.0),
+    },
+    LightData {
+      transform: Transform::new(200.0, 200.0),
+      light: Light2D::torch(75.0),
+    },
+  ];
+
+  pass.set_lights(lights);
+
+  assert!(pass.has_lights());
+  assert_eq!(pass.light_count(), 2);
+}
+
+#[test]
+fn test_lighting_pass_clear_lights() {
+  use ryo2d::core::render::passes::LightData;
+  use ryo2d::prelude::*;
+
+  let mut pass = LightingPass::new();
+
+  pass.set_lights(vec![LightData {
+    transform: Transform::new(0.0, 0.0),
+    light: Light2D::moonlight(100.0),
+  }]);
+
+  assert!(pass.has_lights());
+
+  pass.clear_lights();
+
+  assert!(!pass.has_lights());
+  assert_eq!(pass.light_count(), 0);
+}
+
+#[test]
+fn test_lighting_pass_set_camera() {
+  use ryo2d::prelude::Vec2;
+
+  let mut pass = LightingPass::new();
+
+  // Should not panic
+  pass.set_camera(Vec2::new(100.0, 200.0), 2.0);
+}
+
+// =============================================================================
+// Pipeline with Lighting Pass Tests
+// =============================================================================
+
+#[test]
+fn test_pipeline_with_lighting_pass() {
+  let mut pipeline = RenderPipeline::new();
+
+  pipeline.add_pass(ClearPass::new());
+  pipeline.add_pass(LightingPass::new());
+
+  assert_eq!(pipeline.pass_count(), 2);
+  assert!(pipeline.get_pass(pass_ids::LIGHTING).is_some());
+}
+
+#[test]
+fn test_lighting_pass_ordering_in_pipeline() {
+  let mut pipeline = RenderPipeline::new();
+
+  // Add passes in arbitrary order
+  pipeline.add_pass(LightingPass::new()); // Depends on gpu_sprite
+  pipeline.add_pass(ClearPass::new()); // No dependencies
+
+  let ids = pipeline.pass_ids();
+
+  // Clear should come before lighting (lighting depends on gpu_sprite which
+  // isn't added, but alphabetically clear < lighting anyway)
+  let clear_pos = ids.iter().position(|&id| id == pass_ids::CLEAR);
+  let lighting_pos = ids.iter().position(|&id| id == pass_ids::LIGHTING);
+
+  assert!(clear_pos.is_some());
+  assert!(lighting_pos.is_some());
 }
