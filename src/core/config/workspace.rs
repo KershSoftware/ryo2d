@@ -105,6 +105,8 @@ pub struct WorkspaceConfig {
   pub info: InfoConfig,
   /// System defaults for user configuration (from [system] section)
   pub system: SystemDefaults,
+  /// Release/distribution configuration (from [release] section)
+  pub release: ReleaseConfig,
   /// Game-specific environment variables from [env] section
   pub env: std::collections::HashMap<String, toml::Value>,
 }
@@ -132,6 +134,16 @@ pub struct DebugConfig {
 pub struct InfoConfig {
   /// Whether to display FPS counter in corner
   pub show_fps: bool,
+}
+
+/// Release/distribution configuration options.
+///
+/// Controls build-time settings for distributing the game.
+#[derive(Debug, Clone, Default)]
+pub struct ReleaseConfig {
+  /// Path to custom application icon (PNG), relative to workspace root.
+  /// If None, the Ryo2D default logo is used.
+  pub logo: Option<PathBuf>,
 }
 
 /// System defaults for user configuration (system.json).
@@ -191,6 +203,7 @@ struct RyoToml {
   system: Option<SystemSection>,
   debug: Option<DebugSection>,
   info: Option<InfoSection>,
+  release: Option<ReleaseSection>,
   /// Game-specific environment variables (arbitrary key-value pairs)
   #[serde(default)]
   env: std::collections::HashMap<String, toml::Value>,
@@ -220,6 +233,13 @@ struct DebugSection {
 struct InfoSection {
   title: Option<String>,
   show_fps: Option<bool>,
+}
+
+/// Raw TOML [release] section for build/distribution settings
+#[derive(Debug, Deserialize, Default)]
+struct ReleaseSection {
+  /// Path to custom application icon (PNG). If not specified, uses Ryo2D default.
+  logo: Option<String>,
 }
 
 /// Raw TOML [system] section for user-facing defaults
@@ -353,6 +373,7 @@ impl Workspace {
     let paths = raw.paths.unwrap_or_default();
     let debug_section = raw.debug.unwrap_or_default();
     let info_section = raw.info.unwrap_or_default();
+    let release_section = raw.release.unwrap_or_default();
 
     // Project name: from config, or directory name
     let name = project.name.unwrap_or_else(|| {
@@ -435,6 +456,11 @@ impl Workspace {
     // Game-specific env (pass through as-is)
     let env = raw.env;
 
+    // Release config
+    let release = ReleaseConfig {
+      logo: release_section.logo.map(PathBuf::from),
+    };
+
     Ok(WorkspaceConfig {
       name,
       entry_point,
@@ -443,6 +469,7 @@ impl Workspace {
       debug,
       info,
       system,
+      release,
       env,
     })
   }
@@ -549,6 +576,7 @@ impl Default for WorkspaceConfig {
       debug: DebugConfig::default(),
       info: InfoConfig::default(),
       system: SystemDefaults::default(),
+      release: ReleaseConfig::default(),
       env: std::collections::HashMap::new(),
     }
   }

@@ -119,6 +119,11 @@ fn create_project_structure(project_dir: &Path, project_name: &str) -> CliResult
   fs::write(project_dir.join("main.rs"), main_rs)
     .map_err(|e| CliError::Other(format!("Failed to write main.rs: {}", e)))?;
 
+  // Create build.rs (for Windows icon embedding)
+  let build_rs = generate_build_rs();
+  fs::write(project_dir.join("build.rs"), build_rs)
+    .map_err(|e| CliError::Other(format!("Failed to write build.rs: {}", e)))?;
+
   // Create README.md
   let readme = generate_readme(project_name);
   fs::write(project_dir.join("README.md"), readme)
@@ -152,6 +157,7 @@ name = "{}"
 version = "0.1.0"
 edition = "2024"
 description = "A game built with Ryo2D engine"
+build = "build.rs"
 
 [[bin]]
 name = "{}"
@@ -164,6 +170,10 @@ path = "main.rs"
 # Add your game dependencies here
 # serde = {{ version = "1.0", features = ["derive"] }}
 # rand = "0.8"
+
+[build-dependencies]
+# Windows icon embedding (used by build.rs when building via `ryo2d build`)
+winresource = "0.1"
 
 # Optimize dependencies and engine in dev builds for playable performance
 # Your game code stays unoptimized for fast compile times
@@ -272,6 +282,16 @@ show_velocities = false
 # Show entity origin points
 show_origins = false
 
+# ==============================================================================
+# RELEASE/DISTRIBUTION SETTINGS
+# Build-time settings for `ryo2d build`
+# ==============================================================================
+
+[release]
+# Custom application icon (PNG). If not specified, uses the default Ryo2D logo.
+# The icon appears in the window title bar, taskbar, and Windows .exe file.
+# logo = "assets/icon.png"
+
 [env]
 # Add your game-specific configuration here
 # debug_mode = false
@@ -282,7 +302,12 @@ show_origins = false
 
 /// Generate main.rs content
 fn generate_main_rs() -> &'static str {
-  r#"//! My Ryo2D Game
+  r#"// Windows: Hide the console window in release builds.
+// In debug builds, the console remains visible for println! output.
+// Remove this line if you need console output in release builds.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+//! My Ryo2D Game
 //!
 //! A game built with the Ryo2D engine.
 
@@ -426,6 +451,39 @@ Cargo.lock
 "#
 }
 
+/// Generate build.rs for Windows icon embedding
+fn generate_build_rs() -> &'static str {
+  r#"//! Build script for embedding resources (e.g., Windows icon).
+//!
+//! When building via `ryo2d build`, the RYO_EMBED_ICON environment variable
+//! is set to the path of the application icon. This script uses winresource
+//! to embed it into the Windows executable.
+
+fn main() {
+    // Only embed icon on Windows
+    #[cfg(target_os = "windows")]
+    {
+        // Check if building via ryo2d CLI (which sets RYO_EMBED_ICON)
+        if let Ok(icon_path) = std::env::var("RYO_EMBED_ICON") {
+            println!("cargo:rerun-if-env-changed=RYO_EMBED_ICON");
+
+            // Check if the icon file exists and is a PNG
+            let path = std::path::Path::new(&icon_path);
+            if path.exists() {
+                // winresource can handle PNG files directly
+                let mut res = winresource::WindowsResource::new();
+                res.set_icon(&icon_path);
+
+                if let Err(e) = res.compile() {
+                    eprintln!("Warning: Failed to embed icon: {}", e);
+                }
+            }
+        }
+    }
+}
+"#
+}
+
 fn print_help() {
   println!(
     r#"
@@ -440,9 +498,10 @@ ARGUMENTS:
 
 DESCRIPTION:
     Creates a new Ryo2D game project with the following structure:
-    
+
     project-name/
     ├── main.rs          # Game entry point with basic scene
+    ├── build.rs         # Build script (Windows icon embedding)
     ├── Cargo.toml       # Rust package configuration
     ├── Ryo.toml         # Ryo2D project settings
     ├── README.md        # Project documentation

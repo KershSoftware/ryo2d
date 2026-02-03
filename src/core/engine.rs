@@ -229,6 +229,8 @@ pub struct EngineConfig {
   pub max_width: Option<u32>,
   /// Maximum height for letterboxed viewport (None = no limit)
   pub max_height: Option<u32>,
+  /// Path to window icon (PNG). If None, uses embedded Ryo2D logo.
+  pub icon_path: Option<std::path::PathBuf>,
 }
 
 /// Re-export for backward compatibility
@@ -248,6 +250,7 @@ impl Default for EngineConfig {
       display_mode: DisplayMode::default(),
       max_width: None,
       max_height: None,
+      icon_path: None,
     }
   }
 }
@@ -433,6 +436,34 @@ impl Engine {
 
     // Clear the request after processing
     self.window_request.clear();
+  }
+
+  /// Load a window icon from a file path or use the embedded default logo.
+  ///
+  /// Returns a winit Icon that can be set on the window.
+  fn load_window_icon(icon_path: Option<&std::path::Path>) -> Option<winit::window::Icon> {
+    // Try to load custom icon if specified
+    if let Some(path) = icon_path {
+      if let Ok(img) = image::open(path) {
+        let rgba = img.into_rgba8();
+        let (width, height) = rgba.dimensions();
+        let raw = rgba.into_raw();
+        return winit::window::Icon::from_rgba(raw, width, height).ok();
+      } else {
+        eprintln!("[Icon] Failed to load custom icon from {:?}, using default", path);
+      }
+    }
+
+    // Fall back to embedded Ryo2D logo
+    let logo_bytes = include_bytes!("../assets/logo.png");
+    if let Ok(img) = image::load_from_memory(logo_bytes) {
+      let rgba = img.into_rgba8();
+      let (width, height) = rgba.dimensions();
+      let raw = rgba.into_raw();
+      return winit::window::Icon::from_rgba(raw, width, height).ok();
+    }
+
+    None
   }
 
   fn new(
@@ -1331,6 +1362,11 @@ impl ApplicationHandler for Engine {
     // Enable IME for text input support
     window.set_ime_allowed(true);
 
+    // Set window icon (custom or default Ryo2D logo)
+    if let Some(icon) = Self::load_window_icon(self.config.icon_path.as_deref()) {
+      window.set_window_icon(Some(icon));
+    }
+
     // Create wgpu renderer (blocking on async)
     let mut renderer = pollster::block_on(WgpuRenderer::new(
       Arc::clone(&window),
@@ -2102,6 +2138,26 @@ impl EngineBuilder {
     self
   }
 
+  /// Set a custom window icon from a PNG file.
+  ///
+  /// The icon appears in the window title bar and taskbar. If not specified,
+  /// the default Ryo2D logo is used.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("My Game")
+  ///     .icon("assets/icon.png")
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn icon(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+    self.config.icon_path = Some(path.into());
+    self
+  }
+
   /// Enable or disable collision boundary debug visualization.
   ///
   /// When enabled, renders bright green outlines around all colliders
@@ -2361,6 +2417,7 @@ impl EngineBuilder {
       let debug = &workspace.config().debug;
       let info = &workspace.config().info;
       let system = &workspace.config().system;
+      let release = &workspace.config().release;
 
       // Load debug settings
       config.debug.show_colliders = debug.show_colliders;
@@ -2378,6 +2435,27 @@ impl EngineBuilder {
       // Load display mode from [system] section (only if not explicitly set)
       if !display_mode_set {
         config.display_mode = system.display_mode;
+      }
+
+      // Load icon from [release] section if specified and not explicitly set via builder
+      if config.icon_path.is_none()
+        && let Some(logo_path) = &release.logo
+      {
+        // Make path absolute relative to workspace root
+        config.icon_path = Some(workspace.root().join(logo_path));
+      }
+    }
+
+    // For release builds: check for icon.png next to executable (created by `ryo2d build`)
+    // If not found, load_window_icon() will use the embedded default Ryo2D logo
+    if config.icon_path.is_none() {
+      if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+          let icon_path = exe_dir.join("icon.png");
+          if icon_path.exists() {
+            config.icon_path = Some(icon_path);
+          }
+        }
       }
     }
 
