@@ -160,24 +160,31 @@ opt-level = 2
 /// Launch puffin_viewer in the background to connect to the profiler.
 /// If puffin_viewer is not installed, prints installation instructions.
 fn launch_puffin_viewer() {
+  Output::status("Profiler", "Checking for puffin_viewer...");
+
   // Try to spawn puffin_viewer in the background
-  // Give it a moment for the game to start and the puffin server to be ready
   match Command::new("puffin_viewer")
     .arg("--url")
     .arg("127.0.0.1:8585")
     .spawn()
   {
     Ok(_child) => {
-      Output::status("Launched", "puffin_viewer (connecting to 127.0.0.1:8585)");
+      Output::status("Profiler", "Launching puffin_viewer app...");
+      println!("           Connecting to profiler at http://127.0.0.1:8585");
+      println!("           View real-time flamegraphs in the puffin_viewer window");
+      println!();
     }
     Err(e) => {
       if e.kind() == std::io::ErrorKind::NotFound {
         println!();
-        Output::warning("puffin_viewer not found - install it with:");
-        println!("    cargo install puffin_viewer");
+        Output::warning("puffin_viewer is not installed!");
         println!();
-        println!("  Then it will auto-launch next time, or run manually:");
-        println!("    puffin_viewer --url 127.0.0.1:8585");
+        println!("  The profiler will still run, but you need puffin_viewer to see the data.");
+        println!("  Install it with:");
+        println!();
+        println!("      cargo install puffin_viewer");
+        println!();
+        println!("  Then re-run `ryo2d dev --profiler` and it will auto-launch.");
         println!();
       } else {
         Output::warning(&format!("Failed to launch puffin_viewer: {}", e));
