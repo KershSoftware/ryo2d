@@ -464,6 +464,29 @@ pub trait Scene {
   /// ```
   fn render_ui(&mut self, _ui: &mut UiContext) {}
 
+  /// Called for GPU-accelerated rendering (optional).
+  ///
+  /// Use this for:
+  /// - GPU parallax backgrounds (much faster than CPU)
+  /// - Particle systems with many sprites
+  /// - Any high-performance instanced rendering
+  ///
+  /// Sprites added here are batched and rendered with GPU instancing,
+  /// which is significantly faster than CPU rendering for large quantities.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
+  ///     // Upload textures (cached, safe to call every frame)
+  ///     ctx.upload_sprite(&self.particle_sprite);
+  ///
+  ///     // Render GPU parallax background
+  ///     self.background.render(ctx);
+  /// }
+  /// ```
+  fn render_gpu(&mut self, _ctx: &mut super::game::GpuRenderContext) {}
+
   /// Whether scenes below this one should also be rendered.
   ///
   /// Return `true` for transparent/overlay scenes (pause menu, HUD).
@@ -993,6 +1016,16 @@ impl SceneManager {
     }
   }
 
+  /// Render GPU content for the active scene.
+  ///
+  /// Called during GPU rendering phase for instanced sprite rendering.
+  /// Only renders GPU content for the top scene.
+  pub fn render_gpu(&mut self, ctx: &mut super::game::GpuRenderContext) {
+    if let Some(scene) = self.scenes.last_mut() {
+      scene.render_gpu(ctx);
+    }
+  }
+
   /// Check if the scene stack is empty.
   pub fn is_empty(&self) -> bool {
     self.scenes.is_empty()
@@ -1220,6 +1253,10 @@ impl Game for SceneGame {
 
   fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
     self.manager.render_background(frame, width, height, camera);
+  }
+
+  fn render_gpu(&mut self, ctx: &mut super::game::GpuRenderContext) {
+    self.manager.render_gpu(ctx);
   }
 
   fn is_physics_paused(&self) -> bool {
