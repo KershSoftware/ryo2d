@@ -11,22 +11,80 @@ You help developers work on the rendering system.
 
 ## Resources
 
-- **Renderer**: `src/core/renderer.rs`
-- **GPU Sprites**: `src/core/sprite_gpu.rs`
+- **Render Pipeline**: `src/core/render/` (pass-based architecture)
+- **Pipeline**: `src/core/render/pipeline.rs`
+- **Pass Trait**: `src/core/render/pass.rs`
+- **Built-in Passes**: `src/core/render/passes/`
+- **GPU Sprites**: `src/core/graphics/sprite_gpu.rs`
 - **Shaders**: `src/core/shaders/`
-- **Effects**: `src/core/shaders.rs`
+- **Lighting**: `src/core/lighting/`
+- **Trails**: `src/core/trail/`
 
 ## Rendering Pipeline
 
+The engine uses a **pass-based render pipeline** where each phase is a `RenderPass`. Passes declare dependencies and execute in topological order.
+
 ```
-1. Clear CPU pixel buffer (warm cream background)
-2. Background rendering (render_background callback) ← Parallax layers
-3. CPU sprite rendering (SpriteRenderer components)
-4. GPU sprite rendering (render_gpu callback)
-5. UI rendering (render_ui callback)
-6. Debug overlays
-7. Post-processing effects
-8. Upload to GPU → present
+Built-in Passes (in dependency order):
+┌─────────────────────────────────────────────────────────────┐
+│ clear      │ Clear pixel buffer to background color        │
+│ parallax   │ GPU-rendered parallax background layers       │
+│ cpu_sprite │ Software sprite rendering (Renderable)        │
+│ upload     │ Upload CPU pixel buffer to GPU texture        │
+│ gpu_sprite │ Batched GPU sprite rendering (render_gpu)     │
+│ trail      │ Motion trail rendering                        │
+│ lighting   │ 2D lighting with shadows                      │
+│ ui         │ User interface overlay (render_ui)            │
+│ effects    │ Post-processing (CRT, vignette, etc.)         │
+│ present    │ Final output to swapchain                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### RenderPass Trait
+
+```rust
+pub trait RenderPass: Send + Sync {
+    fn id(&self) -> &'static str;
+    fn dependencies(&self) -> &[&'static str] { &[] }
+    fn execute(&mut self, ctx: &mut RenderContext);
+    fn should_execute(&self, ctx: &RenderContext) -> bool { true }
+    fn is_enabled(&self) -> bool { true }
+    fn set_enabled(&mut self, enabled: bool) {}
+}
+```
+
+### RenderContext
+
+Shared state passed to all passes:
+
+```rust
+pub struct RenderContext<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub game_texture: &'a wgpu::Texture,
+    pub scratch_a: Option<&'a wgpu::Texture>,  // Ping-pong buffers
+    pub scratch_b: Option<&'a wgpu::Texture>,
+    pub pixel_buffer: &'a mut [u8],            // CPU buffer
+    pub camera: &'a Camera,
+    pub sprite_gpu: &'a mut SpriteGpuRenderer,
+    pub batch_collector: &'a mut BatchCollector,
+    pub current_source: TextureSlot,           // Which texture has result
+    // ... more fields
+}
+```
+
+### Pipeline Configuration
+
+```rust
+// Disable a pass at runtime
+pipeline.set_enabled("lighting", false);
+
+// Add custom pass (inserted by dependency order)
+pipeline.add_pass(MyCustomPass::new());
+
+// Remove a pass
+pipeline.remove_pass("trail");
 ```
 
 ## CPU vs GPU Path

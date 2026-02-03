@@ -18,18 +18,17 @@ release/
 # IDE
 .idea/
 .vscode/*
-!.vscode/settings.json
 *.swp
 *.swo
 *~
 **/TASKS.md
 **/RESEARCH.md
-.github/skills/*
-!.github/skills/ryo-*/
-!.github/skills/ryo-*/**
-.claude/*
-!.claude/skills/
-CLAUDE.md
+.claude
+**/skills/*
+!**/skills/ryo-*/
+!**/skills/ryo-*/**
+!.vscode/settings.json
+
 
 # OS
 .DS_Store

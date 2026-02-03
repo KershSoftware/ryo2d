@@ -14,10 +14,12 @@ You help users use the `ryo2d` CLI for managing game projects.
 Run from a game project directory (containing `Ryo.toml`):
 
 ```bash
-ryo2d build    # Production build (cargo build --release)
-ryo2d run      # Run production build
-ryo2d dev      # Development mode with hot reload
-ryo2d init     # Create new project (planned)
+ryo2d init <name>      # Create new project
+ryo2d build            # Production build (cargo build --release)
+ryo2d run              # Run production build
+ryo2d dev              # Development mode with hot reload
+ryo2d export           # Package release into distributable zip
+ryo2d install-skills   # Add Agent Skills to existing project
 ```
 
 ## Project Structure
