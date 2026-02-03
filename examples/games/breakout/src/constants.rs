@@ -35,3 +35,4 @@ pub const WALL_THICKNESS: f32 = 20.0;
 
 /// Gameplay settings
 pub const STARTING_LIVES: u32 = 3;
+pub const MAX_LEVEL: u32 = 10;

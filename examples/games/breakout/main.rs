@@ -1,3 +1,8 @@
+// Windows: Hide the console window in release builds.
+// In debug builds, the console remains visible for println! output.
+// Remove this line if you need console output in release builds.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! Breakout - Complete Ryo2D Example Game
 //!
 //! This example demonstrates all major engine features:

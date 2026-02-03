@@ -450,7 +450,10 @@ impl Engine {
         let raw = rgba.into_raw();
         return winit::window::Icon::from_rgba(raw, width, height).ok();
       } else {
-        eprintln!("[Icon] Failed to load custom icon from {:?}, using default", path);
+        eprintln!(
+          "[Icon] Failed to load custom icon from {:?}, using default",
+          path
+        );
       }
     }
 
@@ -2391,10 +2394,10 @@ impl EngineBuilder {
         config.debug.show_frame_timing = v.parse().unwrap_or(false);
       }
       if let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME") {
-        master_volume = vol.parse().unwrap_or(1.0);
+        master_volume = vol.parse().unwrap_or(0.7);
       }
       if let Some(vol) = option_env!("RYO_EMBED_MUSIC_VOLUME") {
-        music_volume = vol.parse().unwrap_or(0.8);
+        music_volume = vol.parse().unwrap_or(1.0);
       }
       if let Some(vol) = option_env!("RYO_EMBED_SFX_VOLUME") {
         sfx_volume = vol.parse().unwrap_or(1.0);
