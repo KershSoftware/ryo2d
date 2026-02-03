@@ -523,12 +523,16 @@ impl SceneManager {
     self.scenes.push(scene);
     if let Some(new_top) = self.scenes.last_mut() {
       #[cfg(debug_assertions)]
-      let start = std::time::Instant::now();
+      let start = if ctx.profiling_enabled {
+        Some(std::time::Instant::now())
+      } else {
+        None
+      };
 
       new_top.on_enter(ctx);
 
       #[cfg(debug_assertions)]
-      {
+      if let Some(start) = start {
         let elapsed = start.elapsed();
         if elapsed.as_millis() > 5 {
           eprintln!("[Scene] on_enter took {:?}", elapsed);
@@ -576,12 +580,16 @@ impl SceneManager {
     self.scenes.push(scene);
     if let Some(new_top) = self.scenes.last_mut() {
       #[cfg(debug_assertions)]
-      let start = std::time::Instant::now();
+      let start = if ctx.profiling_enabled {
+        Some(std::time::Instant::now())
+      } else {
+        None
+      };
 
       new_top.on_enter(ctx);
 
       #[cfg(debug_assertions)]
-      {
+      if let Some(start) = start {
         let elapsed = start.elapsed();
         if elapsed.as_millis() > 5 {
           eprintln!("[Scene] switch on_enter took {:?}", elapsed);
@@ -1021,29 +1029,20 @@ impl SceneGame {
 
 impl Game for SceneGame {
   fn init(&mut self, ctx: &mut GameContext) {
-    // Convert GameContext to SceneContext and call on_enter for initial scene
-    let mut scene_ctx = SceneContext {
-      world: ctx.world,
-      camera: ctx.camera,
-      input: ctx.input,
-      assets: ctx.assets,
-      audio: ctx.audio,
-      effects: ctx.effects,
-      lighting: ctx.lighting,
-      events: ctx.events,
-      window_request: ctx.window_request,
-      time_control: ctx.time_control,
-    };
-
+    // GameContext and SceneContext are both type aliases for ContextCore
     // Call on_enter for the initial scene
     if let Some(scene) = self.manager.top_mut() {
       #[cfg(debug_assertions)]
-      let start = std::time::Instant::now();
+      let start = if ctx.profiling_enabled {
+        Some(std::time::Instant::now())
+      } else {
+        None
+      };
 
-      scene.on_enter(&mut scene_ctx);
+      scene.on_enter(ctx);
 
       #[cfg(debug_assertions)]
-      {
+      if let Some(start) = start {
         let elapsed = start.elapsed();
         if elapsed.as_millis() > 5 {
           eprintln!("[Scene] initial on_enter took {:?}", elapsed);
@@ -1054,27 +1053,14 @@ impl Game for SceneGame {
   }
 
   fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-    // Convert GameContext to SceneContext
-    let mut scene_ctx = SceneContext {
-      world: ctx.world,
-      camera: ctx.camera,
-      input: ctx.input,
-      assets: ctx.assets,
-      audio: ctx.audio,
-      effects: ctx.effects,
-      lighting: ctx.lighting,
-      events: ctx.events,
-      window_request: ctx.window_request,
-      time_control: ctx.time_control,
-    };
-
+    // GameContext and SceneContext are both type aliases for ContextCore
     // Update any active transitions first
-    self.manager.update_transition(dt, &mut scene_ctx);
+    self.manager.update_transition(dt, ctx);
 
     // Only update scenes if not in the middle of a transition
     if !self.manager.is_transitioning() {
-      let action = self.manager.update(&mut scene_ctx, dt);
-      let should_continue = self.manager.handle_action(action, &mut scene_ctx);
+      let action = self.manager.update(ctx, dt);
+      let should_continue = self.manager.handle_action(action, ctx);
       if !should_continue {
         self.quit_requested = true;
       }

@@ -50,6 +50,9 @@ show_colliders = false
 show_velocities = false
 # Show entity origin points
 show_origins = false
+# Enable detailed profiling (per-phase timing, slow frame warnings)
+# Default: true - set to false to disable timing measurements
+# enable_profiling = true
 
 # =============================================================================
 # [env] - Game-specific environment variables

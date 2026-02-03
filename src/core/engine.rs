@@ -329,6 +329,8 @@ pub struct Engine {
   gilrs: Option<Gilrs>,
   // Time control for slow-mo and hitstop effects (shared with GameContext/SceneContext)
   time_control: TimeControl,
+  // Whether detailed profiling is enabled (per-phase timing, slow frame warnings)
+  profiling_enabled: bool,
 }
 
 impl Engine {
@@ -488,6 +490,7 @@ impl Engine {
     music_volume: f32,
     sfx_volume: f32,
     disable_debug_keys: bool,
+    enable_profiling: bool,
   ) -> Self {
     let world = World::new();
     let camera = Camera::centered_at(
@@ -594,6 +597,7 @@ impl Engine {
       events: Events::new(),
       gilrs,
       time_control: TimeControl::default(),
+      profiling_enabled: enable_profiling,
     }
   }
 
@@ -975,6 +979,7 @@ impl Engine {
         events: &mut self.events,
         window_request: &mut self.window_request,
         time_control: &mut self.time_control,
+        profiling_enabled: self.profiling_enabled,
       };
 
       // Call user's update function
@@ -1723,6 +1728,7 @@ impl ApplicationHandler for Engine {
           events: &mut self.events,
           window_request: &mut self.window_request,
           time_control: &mut self.time_control,
+          profiling_enabled: self.profiling_enabled,
         };
         game.init(&mut ctx);
         self.game = Some(game);
@@ -1929,7 +1935,11 @@ impl ApplicationHandler for Engine {
 
         // Fixed timestep update loop (includes game logic + physics)
         let mut did_update = false;
-        let update_start = std::time::Instant::now();
+        let update_start = if self.profiling_enabled {
+          Some(std::time::Instant::now())
+        } else {
+          None
+        };
         while self
           .time
           .as_ref()
@@ -1980,7 +1990,9 @@ impl ApplicationHandler for Engine {
           self.time_control.hitstop_remaining = time.hitstop_remaining;
         }
         // Update time includes both game logic and physics
-        self.frame_timings.update = update_start.elapsed();
+        if let Some(start) = update_start {
+          self.frame_timings.update = start.elapsed();
+        }
 
         // Check if game wants to quit
         if self.game.as_ref().map(|g| g.should_quit()).unwrap_or(false) {
@@ -1989,7 +2001,11 @@ impl ApplicationHandler for Engine {
         }
 
         // Render with interpolation alpha
-        let render_start = std::time::Instant::now();
+        let render_start = if self.profiling_enabled {
+          Some(std::time::Instant::now())
+        } else {
+          None
+        };
         let alpha = self
           .time
           .as_ref()
@@ -2044,11 +2060,17 @@ impl ApplicationHandler for Engine {
         // including lighting effects.
 
         // Render time includes software rendering + GPU batch collection
-        self.frame_timings.render = render_start.elapsed();
+        if let Some(start) = render_start {
+          self.frame_timings.render = start.elapsed();
+        }
 
         // Actually draw to screen with post-processing effects, lighting, and GPU sprites
         // Take sprite_gpu, lighting, and trail_renderer out to avoid borrow conflicts with renderer
-        let present_start = std::time::Instant::now();
+        let present_start = if self.profiling_enabled {
+          Some(std::time::Instant::now())
+        } else {
+          None
+        };
         let mut sprite_gpu = self.sprite_gpu.take();
         let mut renderer = self.renderer.take();
         let mut lighting = self.lighting.take();
@@ -2236,7 +2258,9 @@ impl ApplicationHandler for Engine {
         self.lighting = lighting;
         self.trail_renderer = trail_renderer;
         // Present time = GPU submission + effects pipeline
-        self.frame_timings.present = present_start.elapsed();
+        if let Some(start) = present_start {
+          self.frame_timings.present = start.elapsed();
+        }
 
         // Track first frame for potential future use
         if !self.first_frame_rendered {
@@ -2248,8 +2272,9 @@ impl ApplicationHandler for Engine {
         self.frame_timings.calculate_fps();
 
         // Debug: Log when a frame takes too long (>33ms = <30fps)
+        // Only when profiling is enabled to avoid console spam
         #[cfg(debug_assertions)]
-        {
+        if self.profiling_enabled {
           let total_ms = self.frame_timings.total.as_secs_f64() * 1000.0;
           if total_ms > 33.0 {
             eprintln!(
@@ -2687,6 +2712,7 @@ impl EngineBuilder {
     let mut sfx_volume = self.sfx_volume;
     let display_mode_set = self.display_mode_set;
     let mut disable_debug_keys = self.disable_debug_keys;
+    let mut enable_profiling = true; // Default to true in dev builds
 
     // Priority chain for configuration:
     // 1. Explicit builder calls (highest) - already in self.config
@@ -2729,6 +2755,9 @@ impl EngineBuilder {
       if let Some(v) = option_env!("RYO_EMBED_DISABLE_DEBUG_KEYS") {
         disable_debug_keys = v.parse().unwrap_or(false);
       }
+      if let Some(v) = option_env!("RYO_EMBED_ENABLE_PROFILING") {
+        enable_profiling = v.parse().unwrap_or(true);
+      }
       if let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME") {
         master_volume = vol.parse().unwrap_or(0.7);
       }
@@ -2765,6 +2794,7 @@ impl EngineBuilder {
       config.debug.show_origins = debug.show_origins;
       config.debug.show_frame_timing = debug.show_frame_timing;
       disable_debug_keys = debug.disable_debug_keys;
+      enable_profiling = debug.enable_profiling;
 
       // Load resolution from [system] section if not explicitly set via builder
       if config.width == 800 && config.height == 600 {
@@ -2806,6 +2836,7 @@ impl EngineBuilder {
       music_volume,
       sfx_volume,
       disable_debug_keys,
+      enable_profiling,
     )
   }
 }
