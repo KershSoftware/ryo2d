@@ -1,0 +1,11 @@
+[package]
+name = "knockback"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ryo2d = { path = "../../../" }
+
+[[bin]]
+name = "knockback"
+path = "main.rs"

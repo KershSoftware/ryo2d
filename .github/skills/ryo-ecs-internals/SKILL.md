@@ -22,8 +22,9 @@ src/core/ecs/
 ├── mod.rs          # Public exports
 ├── active.rs       # Active/Inactive marker components for pooling
 ├── component.rs    # Component trait
-├── components.rs   # Built-in components
+├── components.rs   # Built-in components (Transform, Velocity)
 ├── hierarchy.rs    # Parent/child relationships
+├── knockback.rs    # Knockback component (decay-based force)
 ├── pool.rs         # Object pooling system
 ├── renderable.rs   # Renderable component
 ├── tween.rs        # Tweening system

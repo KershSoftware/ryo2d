@@ -1,0 +1,386 @@
+//! Shared context for game and scene callbacks.
+//!
+//! This module provides the core context struct that both `GameContext` and
+//! `SceneContext` are aliases for. This ensures all convenience methods are
+//! automatically available in both contexts.
+
+use super::asset::AssetManager;
+use super::audio::AudioManager;
+use super::config::save::DisplayMode;
+use super::ecs::{Entity, Knockback, Vec2, World};
+use super::events::Events;
+use super::graphics::Camera;
+use super::input::InputState;
+use super::lighting::LightingRenderer;
+use super::shaders::EffectsManager;
+
+/// Pending window configuration change requested by the game.
+///
+/// Set via [`ContextCore::request_display_change`].
+/// The engine will apply these changes after the current update.
+#[derive(Debug, Clone, Default)]
+pub struct WindowRequest {
+  /// New resolution width (None = no change)
+  pub width: Option<u32>,
+  /// New resolution height (None = no change)
+  pub height: Option<u32>,
+  /// New display mode (None = no change)
+  pub display_mode: Option<DisplayMode>,
+}
+
+/// Time control state for game juice effects.
+///
+/// Allows game code to control time scale and hitstop effects.
+/// Changes are applied immediately and persist until changed again.
+#[derive(Debug, Clone)]
+pub struct TimeControl {
+  /// Time scale multiplier (0.0 = frozen, 1.0 = normal, >1.0 = fast)
+  pub time_scale: f32,
+  /// Remaining hitstop duration in seconds
+  pub hitstop_remaining: f32,
+}
+
+impl Default for TimeControl {
+  fn default() -> Self {
+    Self {
+      time_scale: 1.0,
+      hitstop_remaining: 0.0,
+    }
+  }
+}
+
+impl WindowRequest {
+  /// Create a new empty window request
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Request a resolution change
+  pub fn with_resolution(mut self, width: u32, height: u32) -> Self {
+    self.width = Some(width);
+    self.height = Some(height);
+    self
+  }
+
+  /// Request a display mode change
+  pub fn with_display_mode(mut self, mode: DisplayMode) -> Self {
+    self.display_mode = Some(mode);
+    self
+  }
+
+  /// Check if any change is requested
+  pub fn has_changes(&self) -> bool {
+    self.width.is_some() || self.height.is_some() || self.display_mode.is_some()
+  }
+
+  /// Clear all pending requests
+  pub fn clear(&mut self) {
+    self.width = None;
+    self.height = None;
+    self.display_mode = None;
+  }
+}
+
+/// Core context passed to game/scene callbacks, providing access to engine systems.
+///
+/// This is your "toolkit" for building games - it contains everything
+/// you need to create entities, handle input, and control the camera.
+///
+/// Both `GameContext` and `SceneContext` are type aliases for this struct,
+/// ensuring all methods are available in both contexts.
+pub struct ContextCore<'a> {
+  /// The ECS world containing all entities and components
+  pub world: &'a mut World,
+  /// The camera for world-to-screen transformations
+  pub camera: &'a mut Camera,
+  /// Current input state (keyboard, mouse)
+  pub input: &'a InputState,
+  /// Asset manager for loading and caching resources
+  pub assets: &'a mut AssetManager,
+  /// Audio manager for sound effects and music (None if audio unavailable)
+  pub audio: &'a mut Option<AudioManager>,
+  /// Post-process effects manager for screen-wide visual effects
+  pub effects: &'a mut EffectsManager,
+  /// 2D lighting renderer for controlling ambient light and dynamic lights (None if lighting disabled)
+  pub lighting: &'a mut Option<LightingRenderer>,
+  /// Event bus for decoupled communication between systems.
+  ///
+  /// Use `events.emit()` to publish events and `events.read()` to subscribe.
+  /// Events are cleared at the start of each frame.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Emit a custom event
+  /// ctx.events.emit(PlayerDied { entity: player });
+  ///
+  /// // Read built-in collision events
+  /// for event in ctx.events.read::<CollisionStarted>() {
+  ///     if event.involves(player) {
+  ///         take_damage();
+  ///     }
+  /// }
+  /// ```
+  pub events: &'a mut Events,
+  /// Pending window configuration changes (resolution, display mode)
+  pub window_request: &'a mut WindowRequest,
+  /// Time control for slow-mo and hitstop effects
+  pub time_control: &'a mut TimeControl,
+}
+
+impl<'a> ContextCore<'a> {
+  // ===========================================================================
+  // Screen/Display
+  // ===========================================================================
+
+  /// Get the current screen/viewport dimensions.
+  ///
+  /// Returns `(width, height)` in pixels. This reflects the game's
+  /// logical resolution (from system.json > Ryo.toml > engine defaults).
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// let (width, height) = ctx.screen_size();
+  /// let center_x = width / 2.0;
+  /// let center_y = height / 2.0;
+  /// ```
+  pub fn screen_size(&self) -> (f32, f32) {
+    self.camera.viewport_size()
+  }
+
+  /// Get the screen width in pixels.
+  pub fn screen_width(&self) -> f32 {
+    self.camera.viewport_size().0
+  }
+
+  /// Get the screen height in pixels.
+  pub fn screen_height(&self) -> f32 {
+    self.camera.viewport_size().1
+  }
+
+  /// Request a display mode change (windowed, fullscreen, borderless).
+  ///
+  /// The change will be applied after the current frame completes.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_display_mode(DisplayMode::Fullscreen);
+  /// ```
+  pub fn request_display_mode(&mut self, mode: DisplayMode) {
+    self.window_request.display_mode = Some(mode);
+  }
+
+  /// Request a resolution change.
+  ///
+  /// The change will be applied after the current frame completes.
+  /// Note: In fullscreen mode, resolution changes may be limited to
+  /// available video modes.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_resolution(1920, 1080);
+  /// ```
+  pub fn request_resolution(&mut self, width: u32, height: u32) {
+    self.window_request.width = Some(width);
+    self.window_request.height = Some(height);
+  }
+
+  /// Request both resolution and display mode change.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_display_change(1920, 1080, DisplayMode::BorderlessFullscreen);
+  /// ```
+  pub fn request_display_change(&mut self, width: u32, height: u32, mode: DisplayMode) {
+    self.window_request.width = Some(width);
+    self.window_request.height = Some(height);
+    self.window_request.display_mode = Some(mode);
+  }
+
+  // ===========================================================================
+  // Time Control (Game Juice)
+  // ===========================================================================
+
+  /// Set the time scale for game logic, physics, and animations.
+  ///
+  /// - `0.0` = frozen (equivalent to pause)
+  /// - `1.0` = normal speed (default)
+  /// - `0.5` = half speed (slow-mo)
+  /// - `2.0` = double speed (fast-forward)
+  ///
+  /// Note: UI and input remain at real-time regardless of time scale.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Slow-mo during boss death
+  /// ctx.set_time_scale(0.3);
+  ///
+  /// // Return to normal after 2 seconds
+  /// // (use a timer in game code)
+  /// ctx.set_time_scale(1.0);
+  /// ```
+  pub fn set_time_scale(&mut self, scale: f32) {
+    self.time_control.time_scale = scale.max(0.0);
+  }
+
+  /// Get the current time scale.
+  pub fn time_scale(&self) -> f32 {
+    self.time_control.time_scale
+  }
+
+  /// Trigger a hitstop (freeze frame) effect for the given duration.
+  ///
+  /// During hitstop, game time is frozen (dt = 0) while UI and input
+  /// continue at real-time. Great for emphasizing impacts.
+  ///
+  /// # Arguments
+  ///
+  /// * `duration_secs` - How long to freeze, in seconds (e.g., 0.05 for 50ms)
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // On successful hit - 50ms freeze for impact
+  /// ctx.hitstop(0.05);
+  ///
+  /// // On critical hit - longer freeze
+  /// ctx.hitstop(0.1);
+  /// ```
+  pub fn hitstop(&mut self, duration_secs: f32) {
+    self.time_control.hitstop_remaining = duration_secs.max(0.0);
+  }
+
+  /// Check if a hitstop is currently active.
+  pub fn is_hitstop_active(&self) -> bool {
+    self.time_control.hitstop_remaining > 0.0
+  }
+
+  // ===========================================================================
+  // Knockback
+  // ===========================================================================
+
+  /// Apply knockback to an entity in a given direction.
+  ///
+  /// If the entity already has a Knockback component with `accumulate: true`,
+  /// the new knockback will blend with the existing one. Otherwise, it
+  /// replaces any existing knockback.
+  ///
+  /// # Arguments
+  ///
+  /// * `entity` - The entity to knock back
+  /// * `direction` - Direction to push (will be normalized)
+  /// * `force` - Force in pixels per second at full strength
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // On collision with enemy, knock player back
+  /// let knockback_dir = Vec2::new(
+  ///     player_pos.x - enemy_pos.x,
+  ///     player_pos.y - enemy_pos.y,
+  /// );
+  /// ctx.knockback(player, knockback_dir, 400.0);
+  /// ```
+  pub fn knockback(&mut self, entity: Entity, direction: Vec2, force: f32) {
+    if let Some(mut kb) = self.world.get_component_mut::<Knockback>(entity) {
+      kb.apply(direction, force);
+    } else {
+      self
+        .world
+        .add_component(entity, Knockback::new(direction, force));
+    }
+  }
+
+  /// Apply knockback with a custom decay rate.
+  ///
+  /// Same as [`knockback`](Self::knockback) but allows specifying how fast
+  /// the knockback decays.
+  ///
+  /// # Arguments
+  ///
+  /// * `entity` - The entity to knock back
+  /// * `direction` - Direction to push (will be normalized)
+  /// * `force` - Force in pixels per second at full strength
+  /// * `decay_rate` - How fast strength decays (default: 4.0, higher = faster)
+  ///
+  /// # Examples
+  ///
+  /// ```ignore
+  /// // Quick, snappy knockback (fast decay)
+  /// ctx.knockback_with_decay(enemy, dir, 400.0, 8.0);
+  ///
+  /// // Long, sliding knockback (slow decay)
+  /// ctx.knockback_with_decay(enemy, dir, 200.0, 2.0);
+  /// ```
+  pub fn knockback_with_decay(
+    &mut self,
+    entity: Entity,
+    direction: Vec2,
+    force: f32,
+    decay_rate: f32,
+  ) {
+    if let Some(mut kb) = self.world.get_component_mut::<Knockback>(entity) {
+      kb.apply_with_decay(direction, force, decay_rate);
+    } else {
+      self.world.add_component(
+        entity,
+        Knockback::new(direction, force).with_decay_rate(decay_rate),
+      );
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn time_control_default_values() {
+    let tc = TimeControl::default();
+    assert_eq!(tc.time_scale, 1.0);
+    assert_eq!(tc.hitstop_remaining, 0.0);
+  }
+
+  #[test]
+  fn time_control_time_scale_clamped_positive() {
+    let mut tc = TimeControl::default();
+    tc.time_scale = -1.0;
+    // Note: Clamping is done in the context methods, not in the struct itself
+    // This test just verifies the field can be set
+    assert_eq!(tc.time_scale, -1.0);
+  }
+
+  #[test]
+  fn time_control_hitstop_sets_value() {
+    let mut tc = TimeControl::default();
+    tc.hitstop_remaining = 0.05;
+    assert!((tc.hitstop_remaining - 0.05).abs() < 0.001);
+  }
+
+  #[test]
+  fn time_control_is_hitstop_active() {
+    let mut tc = TimeControl::default();
+    assert!(!(tc.hitstop_remaining > 0.0));
+
+    tc.hitstop_remaining = 0.05;
+    assert!(tc.hitstop_remaining > 0.0);
+
+    tc.hitstop_remaining = 0.0;
+    assert!(!(tc.hitstop_remaining > 0.0));
+  }
+
+  #[test]
+  fn window_request_time_scale_integration() {
+    // Verify WindowRequest and TimeControl can coexist in the same context
+    let wr = WindowRequest::default();
+    let tc = TimeControl::default();
+
+    assert!(!wr.has_changes());
+    assert_eq!(tc.time_scale, 1.0);
+  }
+}
