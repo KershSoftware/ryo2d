@@ -369,3 +369,53 @@ pub struct KnockbackFinished {
   /// The entity that finished being knocked back
   pub entity: Entity,
 }
+
+// ============================================================================
+// Squash/Stretch Events
+// ============================================================================
+
+/// Emitted when a squash/stretch effect starts on an entity.
+///
+/// This event is emitted by the engine when a [`SquashStretch`](crate::core::ecs::SquashStretch)
+/// component becomes active (either newly added or re-triggered).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<SquashStretchStarted>() {
+///         // Play impact sound
+///         self.play_sound("impact.wav");
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SquashStretchStarted {
+  /// The entity that started squash/stretch effect
+  pub entity: Entity,
+}
+
+/// Emitted when a squash/stretch effect finishes on an entity.
+///
+/// This event is emitted by the engine when a [`SquashStretch`](crate::core::ecs::SquashStretch)
+/// component's strength decays to zero and the entity returns to base scale.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<SquashStretchFinished>() {
+///         // Entity has returned to normal scale
+///         println!("Entity {:?} recovered from impact", event.entity);
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SquashStretchFinished {
+  /// The entity that finished squash/stretch effect
+  pub entity: Entity,
+}
