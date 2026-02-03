@@ -46,6 +46,7 @@ ryo2d init <name>       # Create a new game project
 ryo2d build             # Build production release bundle
 ryo2d run               # Run the production build
 ryo2d dev               # Development mode with hot-reload
+ryo2d export            # Package release into distributable zip
 ryo2d install-skills    # Install Agent Skills to existing project
 ```
 
@@ -60,17 +61,20 @@ When you run `ryo2d init`, Agent Skills are automatically installed to `.github/
 | Skill | Purpose |
 |-------|---------|
 | `ryo-api` | **Complete API reference** - all types, methods, signatures |
-| `ryo-game-dev` | Game development patterns, ECS, scenes, input |
-| `ryo-physics` | Rapier2D physics integration |
 | `ryo-animation` | Sprite animations and state machines |
 | `ryo-audio` | Sound effects and music |
-| `ryo-events` | Event bus for decoupled inter-system communication |
-| `ryo-controller` | Gamepad/controller input - buttons, sticks, triggers |
-| `ryo-ui` | Immediate-mode UI for HUDs |
-| `ryo-renderer` | GPU rendering and shaders |
-| `ryo-config-save` | Configuration and save system |
 | `ryo-cli` | CLI tool usage |
+| `ryo-config-save` | Configuration and save system |
+| `ryo-controller` | Gamepad/controller input - buttons, sticks, triggers |
+| `ryo-ecs-internals` | ECS implementation details |
 | `ryo-engine-dev` | For engine contributors |
+| `ryo-events` | Event bus for decoupled inter-system communication |
+| `ryo-game-dev` | Game development patterns, ECS, scenes, input |
+| `ryo-network` | Multiplayer networking - client-server, replication, RPCs |
+| `ryo-physics` | Rapier2D physics integration |
+| `ryo-procgen` | Procedural generation - dungeons, caves, terrain |
+| `ryo-renderer` | GPU rendering and shaders |
+| `ryo-ui` | Hybrid UI system for HUDs, menus, and interfaces |
 | `ryo-ecs-internals` | ECS implementation details |
 
 The `ryo-api` skill is the canonical reference - other skills reference it for complete signatures.

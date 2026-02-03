@@ -12,6 +12,7 @@ The `cli` module provides the `ryo2d` command-line interface for managing Ryo2D 
 | `ryo2d build` | Build a production release of the game |
 | `ryo2d run` | Run the production build (warns if no build exists) |
 | `ryo2d dev` | Development mode: build + run with file watching |
+| `ryo2d export` | Package release into distributable zip |
 | `ryo2d install-skills` | Install Agent Skills for AI assistants |
 
 ## Architecture

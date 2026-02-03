@@ -4,6 +4,7 @@
 
 mod build;
 mod dev;
+mod export;
 mod init;
 pub mod install_skills;
 mod run;
@@ -111,6 +112,7 @@ pub fn run_cli() -> CliResult<()> {
     "build" => build::execute(&args[2..]),
     "run" => run::execute(&args[2..]),
     "dev" => dev::execute(&args[2..]),
+    "export" => export::execute(&args[2..]),
     "install-skills" => install_skills::execute(&args[2..]),
     "help" | "--help" | "-h" => {
       print_help();
@@ -141,6 +143,7 @@ COMMANDS
     build           Build a production release
     run             Run the production build
     dev             Development mode (build + run with watching)
+    export          Package release into distributable zip
     install-skills  Install Agent Skills for AI assistants
     help            Show this help message
     version         Show version information
