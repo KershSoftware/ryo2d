@@ -10,7 +10,7 @@ A Rust 2D game engine designed with agent-assisted development in mind from the 
 *Reality:*
 I started learning Rust and then I decided to start building a 2D game engine to apply the language; all while using agentic tools.
 
-**Should you use this engine?** Probably not -- unless you want to be a part of this exploratory experiment.
+**Should you use this engine?** Probably not -- unless you want to be a part of this experiment.
 
 ## Quick Start
 
@@ -58,16 +58,63 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 
 ## Core Features
 
-- **ECS Architecture** — Entity-Component-System for clean game logic
-- **Physics** — Rapier2D integration with collision events
-- **Sprite Rendering** — GPU-batched sprites with z-ordering
-- **Animation** — Sprite sheets and state machine controllers
-- **Audio** — Music and sound effects with Kira
+### Architecture
+- **ECS** — Entity-Component-System with generational IDs and archetype storage
 - **Scene Management** — Stack-based scenes with transitions
-- **UI System** — Hybrid immediate/retained mode with theme support, layout containers, text inputs, dropdowns, scroll views, and focus management
-- **Post-Processing** — Shader pipeline for visual effects
+- **Event Bus** — Decoupled publish-subscribe communication
+- **Object Pooling** — Pre-allocated entity pools for bullets, particles, effects
+
+### Rendering
+- **Sprites** — GPU-batched rendering with z-ordering and per-sprite shaders
+- **Animation** — Sprite sheets, state machine controllers, 24 easing functions
+- **Tweening** — Smooth interpolation of position, rotation, scale
+- **Parallax** — Layered scrolling backgrounds with infinite scroll
+- **2D Lighting** — Point lights, spotlights, ambient light, shadow casting
+- **Trails** — Motion path rendering with fade and taper effects
+- **Post-Processing** — Shader pipeline (CRT, vignette, chromatic aberration, etc.)
+
+### Physics & Collision
+- **Rapier2D** — Full physics simulation with rigid bodies
+- **Collision Shapes** — AABB and circle colliders with trigger support
+- **Collision Events** — Started/stopped events for gameplay logic
+
+### Camera
+- **2D Camera** — Follow targets, zoom, rotation, bounds
+- **Screen Shake** — Trauma-based shake with smooth noise
+
+### Input
+- **Keyboard & Mouse** — Key states, mouse position, scroll
+- **Gamepad** — Controller support via gilrs (buttons, sticks, triggers)
+
+### Game Feel
+- **Time Scale** — Slow-motion and fast-forward effects
+- **Hitstop** — Freeze frames for impact feedback
+
+### Audio
+- **Kira Backend** — Music and sound effects with volume control
+
+### UI
+- **Hybrid System** — Immediate mode for HUDs, retained mode for forms
+- **Widgets** — Buttons, text input, dropdowns, sliders, checkboxes, scroll views
+- **Layout** — HBox, VBox, Stack containers with alignment
+- **Theming** — Centralized styles with hot-reload support
+
+### Gameplay Systems
+- **Pathfinding** — A* with nav agents and grid-based navigation
+- **Procedural Generation** — BSP dungeons, cellular automata, WFC, noise
+
+### Networking
+- **Client-Server** — Dedicated and listen server modes
+- **Replication** — Automatic entity/component synchronization
+- **RPCs** — Remote procedure calls with targeting
+
+### Persistence
+- **Save System** — 3-tier saves (system, world, game) with compression
+- **Configuration** — TOML-based project settings, JSON user preferences
+
+### Development
 - **Hot Reload** — Asset changes apply without restart
-- **Configuration** — TOML-based project and user settings
+- **Debug Visualization** — Colliders, velocities, origins, FPS overlay
 
 ## Key Dependencies
 
