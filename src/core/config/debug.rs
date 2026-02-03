@@ -10,6 +10,7 @@
 //! | `show_colliders` | Draw collision boundaries (green outlines) |
 //! | `show_velocities` | Draw velocity vectors on physics entities |
 //! | `show_origins` | Draw entity origin points (transform position) |
+//! | `enable_profiling` | Enable detailed timing measurements |
 //!
 //! # Available Info Overlays
 //!
@@ -30,6 +31,27 @@
 //!
 //! Set `disable_debug_keys = true` in `[debug]` to disable these toggles.
 //!
+//! # Profiling Workflow
+//!
+//! When `enable_profiling = true` (default in dev), the following data is captured:
+//!
+//! | Metric | High Value Indicates |
+//! |--------|---------------------|
+//! | Update | Heavy game logic, too many entities, expensive AI |
+//! | Physics | Too many colliders, complex shapes, small timestep |
+//! | Render | Too many draw calls, shader complexity, large textures |
+//! | Present | GPU-bound, vsync waiting, driver overhead |
+//!
+//! **What gets gated behind `enable_profiling`:**
+//! - Per-phase frame timing (update/render/present breakdown)
+//! - Scene `on_enter()` timing warnings to console
+//! - Slow frame warnings to console (>33ms)
+//!
+//! **What stays always available:**
+//! - Basic FPS counting (lightweight)
+//! - Debug overlay rendering (already gated by show_* flags)
+//! - DebugStats collection (entity/sprite/batch counts)
+//!
 //! # Ryo.toml Configuration
 //!
 //! ```toml
@@ -38,6 +60,7 @@
 //! show_velocities = false
 //! show_origins = false
 //! disable_debug_keys = false
+//! enable_profiling = true   # Enable detailed timing measurements
 //!
 //! [info]
 //! show_fps = true
@@ -185,7 +208,7 @@ impl SmoothedDebugStats {
 ///
 /// Controls which debug visualizations are enabled.
 /// Can be loaded from `Ryo.toml` or set programmatically.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DebugConfig {
   /// Whether to render collision boundaries (bright green outlines)
   pub show_colliders: bool,
@@ -199,6 +222,22 @@ pub struct DebugConfig {
   pub show_velocities: bool,
   /// Whether to draw entity origin points (small crosshairs at transform position)
   pub show_origins: bool,
+  /// Whether to enable detailed profiling measurements (per-phase timing, slow frame warnings)
+  pub enable_profiling: bool,
+}
+
+impl Default for DebugConfig {
+  fn default() -> Self {
+    Self {
+      show_colliders: false,
+      show_fps: false,
+      show_frame_timing: false,
+      show_stats: false,
+      show_velocities: false,
+      show_origins: false,
+      enable_profiling: true, // Enabled by default in dev builds
+    }
+  }
 }
 
 // ============================================================================
@@ -1075,7 +1114,7 @@ mod tests {
   use super::*;
 
   #[test]
-  fn debug_config_defaults_to_disabled() {
+  fn debug_config_defaults() {
     let config = DebugConfig::default();
     assert!(!config.show_colliders);
     assert!(!config.show_fps);
@@ -1083,6 +1122,8 @@ mod tests {
     assert!(!config.show_stats);
     assert!(!config.show_velocities);
     assert!(!config.show_origins);
+    // enable_profiling defaults to true for dev builds
+    assert!(config.enable_profiling);
   }
 
   #[test]

@@ -115,7 +115,7 @@ pub struct WorkspaceConfig {
 ///
 /// See [`crate::core::debug::DebugConfig`] for the engine-level config.
 /// This struct mirrors those options for TOML deserialization.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DebugConfig {
   /// Whether to render collision boundaries
   pub show_colliders: bool,
@@ -127,6 +127,21 @@ pub struct DebugConfig {
   pub show_frame_timing: bool,
   /// Whether to disable F1-F4 debug key toggles
   pub disable_debug_keys: bool,
+  /// Whether to enable detailed profiling measurements (per-phase timing, slow frame warnings)
+  pub enable_profiling: bool,
+}
+
+impl Default for DebugConfig {
+  fn default() -> Self {
+    Self {
+      show_colliders: false,
+      show_velocities: false,
+      show_origins: false,
+      show_frame_timing: false,
+      disable_debug_keys: false,
+      enable_profiling: true, // Enabled by default in dev builds
+    }
+  }
 }
 
 /// Info overlay configuration options.
@@ -230,6 +245,7 @@ struct DebugSection {
   show_origins: Option<bool>,
   show_frame_timing: Option<bool>,
   disable_debug_keys: Option<bool>,
+  enable_profiling: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -406,6 +422,7 @@ impl Workspace {
       show_origins: debug_section.show_origins.unwrap_or(false),
       show_frame_timing: debug_section.show_frame_timing.unwrap_or(false),
       disable_debug_keys: debug_section.disable_debug_keys.unwrap_or(false),
+      enable_profiling: debug_section.enable_profiling.unwrap_or(true), // Default true in dev
     };
 
     // Info config
@@ -740,13 +757,15 @@ mod tests {
   }
 
   #[test]
-  fn debug_config_defaults_all_false() {
+  fn debug_config_defaults() {
     let config = DebugConfig::default();
     assert!(!config.show_colliders);
     assert!(!config.show_velocities);
     assert!(!config.show_origins);
     assert!(!config.show_frame_timing);
     assert!(!config.disable_debug_keys);
+    // enable_profiling defaults to true for dev builds
+    assert!(config.enable_profiling);
   }
 
   #[test]
@@ -810,5 +829,39 @@ mod tests {
     "#;
     let section: DebugSection = toml::from_str(toml_str).unwrap();
     assert_eq!(section.disable_debug_keys, None);
+  }
+
+  #[test]
+  fn debug_section_parses_enable_profiling_true() {
+    let toml_str = r#"
+      enable_profiling = true
+    "#;
+    let section: DebugSection = toml::from_str(toml_str).unwrap();
+    assert_eq!(section.enable_profiling, Some(true));
+  }
+
+  #[test]
+  fn debug_section_parses_enable_profiling_false() {
+    let toml_str = r#"
+      enable_profiling = false
+    "#;
+    let section: DebugSection = toml::from_str(toml_str).unwrap();
+    assert_eq!(section.enable_profiling, Some(false));
+  }
+
+  #[test]
+  fn debug_section_defaults_enable_profiling_to_none() {
+    let toml_str = r#"
+      show_colliders = true
+    "#;
+    let section: DebugSection = toml::from_str(toml_str).unwrap();
+    assert_eq!(section.enable_profiling, None);
+  }
+
+  #[test]
+  fn workspace_config_enable_profiling_default_true() {
+    let config = WorkspaceConfig::default();
+    // enable_profiling should default to true in dev builds
+    assert!(config.debug.enable_profiling);
   }
 }

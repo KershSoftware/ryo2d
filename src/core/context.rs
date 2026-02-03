@@ -126,6 +126,8 @@ pub struct ContextCore<'a> {
   pub window_request: &'a mut WindowRequest,
   /// Time control for slow-mo and hitstop effects
   pub time_control: &'a mut TimeControl,
+  /// Whether detailed profiling is enabled (for timing warnings)
+  pub profiling_enabled: bool,
 }
 
 impl<'a> ContextCore<'a> {
