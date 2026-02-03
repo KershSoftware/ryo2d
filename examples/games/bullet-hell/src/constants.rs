@@ -30,7 +30,7 @@ pub const TURRET_BURST_SIZE_MAX: u32 = 12; // bullets per burst (maximum)
 pub const TURRET_BURST_DELAY: f32 = 0.1; // seconds between bullets in burst
 pub const TURRETS_PER_SIDE: u32 = 1; // starting turrets per side (2 total)
 pub const TURRETS_PER_SIDE_MAX: u32 = 6; // maximum turrets per side (12 total)
-pub const TURRET_SPAWN_DURATION: f32 = 1.5; // seconds to fade in before becoming active
+pub const TURRET_SPAWN_DURATION: f32 = 2.5; // seconds to fade in before becoming active
 
 // Progression configuration
 pub const PROGRESSION_INTERVAL: f32 = 10.0; // seconds between difficulty increases

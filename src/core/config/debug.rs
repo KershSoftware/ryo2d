@@ -201,33 +201,48 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
       continue;
     };
 
-    // Calculate world position with offset (scaled by transform)
-    let world_x = transform.x + collider.offset_x * transform.scale_x;
-    let world_y = transform.y + collider.offset_y * transform.scale_y;
-
-    // Convert to screen position
-    let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
-
     match &collider.shape {
       ColliderShape::Box {
         width: box_w,
         height: box_h,
       } => {
+        // Calculate pivot-aware collider center position (matching Rapier registration)
+        // For center pivot (0.5, 0.5): collider center = transform position
+        // For top-left pivot (0, 0): collider center = transform + half_size
+        let pivot_offset_x = (0.5 - transform.pivot_x) * box_w;
+        let pivot_offset_y = (0.5 - transform.pivot_y) * box_h;
+        let center_x = transform.x + (collider.offset_x + pivot_offset_x) * transform.scale_x;
+        let center_y = transform.y + (collider.offset_y + pivot_offset_y) * transform.scale_y;
+
         // Apply transform scale AND camera zoom to collider dimensions
         let scaled_w = (*box_w * transform.scale_x * camera.zoom) as i32;
         let scaled_h = (*box_h * transform.scale_y * camera.zoom) as i32;
+
+        // Convert center to screen, then offset to top-left for drawing
+        let (screen_cx, screen_cy) = camera.world_to_screen(center_x, center_y);
+        let screen_x = screen_cx as i32 - scaled_w / 2;
+        let screen_y = screen_cy as i32 - scaled_h / 2;
+
         draw_rect_outline(
           frame,
           width,
           height,
-          screen_x as i32,
-          screen_y as i32,
+          screen_x,
+          screen_y,
           scaled_w,
           scaled_h,
           colors::COLLIDER,
         );
       }
       ColliderShape::Circle { radius } => {
+        // Calculate pivot-aware center position
+        let pivot_offset_x = (0.5 - transform.pivot_x) * radius * 2.0;
+        let pivot_offset_y = (0.5 - transform.pivot_y) * radius * 2.0;
+        let center_x = transform.x + (collider.offset_x + pivot_offset_x) * transform.scale_x;
+        let center_y = transform.y + (collider.offset_y + pivot_offset_y) * transform.scale_y;
+
+        let (screen_x, screen_y) = camera.world_to_screen(center_x, center_y);
+
         // Apply average scale for circle (circles don't scale non-uniformly well)
         let avg_scale = (transform.scale_x + transform.scale_y) / 2.0;
         let scaled_radius = (*radius * avg_scale * camera.zoom) as i32;
@@ -253,21 +268,26 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
       continue;
     };
 
-    // Calculate world position with offset
-    let world_x = transform.x + grouped.offset_x;
-    let world_y = transform.y + grouped.offset_y;
-
-    // Convert to screen position
-    let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
+    // Calculate pivot-aware collider center position
+    let pivot_offset_x = (0.5 - transform.pivot_x) * grouped.width;
+    let pivot_offset_y = (0.5 - transform.pivot_y) * grouped.height;
+    let center_x = transform.x + grouped.offset_x + pivot_offset_x;
+    let center_y = transform.y + grouped.offset_y + pivot_offset_y;
 
     let scaled_w = (grouped.width * camera.zoom) as i32;
     let scaled_h = (grouped.height * camera.zoom) as i32;
+
+    // Convert center to screen, then offset to top-left for drawing
+    let (screen_cx, screen_cy) = camera.world_to_screen(center_x, center_y);
+    let screen_x = screen_cx as i32 - scaled_w / 2;
+    let screen_y = screen_cy as i32 - scaled_h / 2;
+
     draw_rect_outline(
       frame,
       width,
       height,
-      screen_x as i32,
-      screen_y as i32,
+      screen_x,
+      screen_y,
       scaled_w,
       scaled_h,
       colors::COLLIDER,

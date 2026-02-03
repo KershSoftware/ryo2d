@@ -1,6 +1,7 @@
 //! Menu scene
 
 use crate::save::load_best_time;
+use crate::shared;
 use ryo2d::prelude::*;
 
 use super::GameScene;
@@ -66,35 +67,35 @@ impl MenuScene {
       GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale),
     );
 
-    // Auto-scrolling layers with infinite scroll
+    // Auto-scrolling layers with infinite scroll (2x speed)
     background.add_layer(
       GpuParallaxLayer::new(&moon_sprite, 0.0, -90)
         .with_scale(scale)
-        .with_auto_scroll(5.0)
+        .with_auto_scroll(10.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&cloud_sprite, 0.0, -80)
         .with_scale(scale)
-        .with_auto_scroll(15.0)
+        .with_auto_scroll(30.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&mountain_sprite, 0.0, -60)
         .with_scale(scale)
-        .with_auto_scroll(30.0)
+        .with_auto_scroll(60.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&dune_mid_sprite, 0.0, -40)
         .with_scale(scale)
-        .with_auto_scroll(50.0)
+        .with_auto_scroll(100.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&dune_front_sprite, 0.0, -20)
         .with_scale(scale)
-        .with_auto_scroll(80.0)
+        .with_auto_scroll(160.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
 
@@ -112,6 +113,9 @@ impl Scene for MenuScene {
     ctx.world.clear();
     self.best_time = load_best_time();
 
+    // Sync parallax background with shared time (persists across scenes)
+    self.background.set_elapsed_time(shared::get_parallax_time());
+
     // Start background music (only if not already playing - persists across scenes)
     if let Some(audio) = &mut ctx.audio {
       let _ = audio.play_music_once("assets/music.mp3", MusicOptions::new().volume(0.4));
@@ -119,8 +123,9 @@ impl Scene for MenuScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Update parallax background
-    self.background.update(dt);
+    // Update shared parallax time (persists between menu and game)
+    let parallax_time = shared::add_parallax_time(dt);
+    self.background.set_elapsed_time(parallax_time);
 
     // Start game (keyboard or gamepad)
     if ctx.input.key_pressed(KeyCode::Space)
@@ -166,25 +171,25 @@ impl Scene for MenuScene {
       Color::rgb(255, 50, 50),
     );
 
-    // Controls
-    let controls = vec![
-      "WASD / Arrow Keys - Move",
-      "SPACE - Jump",
-      "",
-      "Survive as long as you can!",
-      "Hide behind platforms to avoid bullets.",
+    // Controls - Keyboard
+    let keyboard_controls = vec![
+      ("CONTROLS", Color::rgb(255, 200, 100)),
+      ("", Color::rgb(200, 200, 200)),
+      ("Keyboard:", Color::rgb(150, 200, 255)),
+      ("WASD / Arrows - Move    SPACE - Jump", Color::rgb(200, 200, 200)),
+      ("", Color::rgb(200, 200, 200)),
+      ("Controller:", Color::rgb(150, 200, 255)),
+      ("Left Stick / D-Pad - Move    A / X - Jump", Color::rgb(200, 200, 200)),
+      ("", Color::rgb(200, 200, 200)),
+      ("Survive as long as you can!", Color::rgb(200, 200, 200)),
+      ("Hide behind platforms to avoid bullets.", Color::rgb(200, 200, 200)),
     ];
 
-    let mut y = 280.0;
-    for line in controls {
+    let mut y = 250.0;
+    for (line, color) in keyboard_controls {
       let (line_w, _) = ui.text_size(line);
-      ui.draw_text(
-        line,
-        center_x - line_w as f32 / 2.0,
-        y,
-        Color::rgb(200, 200, 200),
-      );
-      y += 25.0;
+      ui.draw_text(line, center_x - line_w as f32 / 2.0, y, color);
+      y += 22.0;
     }
 
     // Best time
@@ -194,13 +199,13 @@ impl Scene for MenuScene {
       ui.draw_text(
         &best_text,
         center_x - best_w as f32 / 2.0,
-        450.0,
+        y + 20.0,
         Color::rgb(255, 215, 0),
       );
     }
 
     // Start prompt
-    let prompt = "Press SPACE or A to Start";
+    let prompt = "Press SPACE / A to Start";
     let (prompt_w, _) = ui.text_size(prompt);
     ui.draw_text(
       prompt,
@@ -210,7 +215,7 @@ impl Scene for MenuScene {
     );
 
     // Quit hint
-    let quit_hint = "Press ESC to Quit";
+    let quit_hint = "ESC to Quit";
     let (quit_w, _) = ui.text_size(quit_hint);
     ui.draw_text(
       quit_hint,

@@ -3,7 +3,7 @@
 use rand::Rng;
 
 /// Spawn duration for drone fade-in effect
-pub const DRONE_SPAWN_DURATION: f32 = 1.5;
+pub const DRONE_SPAWN_DURATION: f32 = 2.5;
 
 /// Drone states for behavior control
 #[derive(Debug, Clone, Copy, PartialEq)]

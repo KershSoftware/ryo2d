@@ -233,20 +233,30 @@ impl RapierPhysicsWorld {
 
     let body_handle = self.rigid_body_set.insert(body);
 
-    // Calculate collider offset in meters
-    // For box colliders, also account for the fact that Rapier centers boxes
-    // but our sprites use top-left positioning
+    // Calculate collider offset in meters, accounting for sprite pivot point
+    // Rapier colliders are centered on their origin, so we need to offset
+    // based on where the sprite's pivot is:
+    // - pivot (0.5, 0.5) = center: no offset needed (collider already centered)
+    // - pivot (0.0, 0.0) = top-left: offset by half-size to center
     let (offset_x_meters, offset_y_meters) = match collider.shape {
       ColliderShape::Box { width, height } => {
-        // Add half-size to convert from top-left to center positioning
-        let center_offset_x = (collider.offset_x + width / 2.0) / PIXELS_PER_METER;
-        let center_offset_y = (collider.offset_y + height / 2.0) / PIXELS_PER_METER;
+        // Calculate offset based on pivot: (0.5 - pivot) * size
+        // If pivot is 0.5 (center), offset is 0
+        // If pivot is 0.0 (top-left), offset is 0.5 * size = half-size
+        let pivot_offset_x = (0.5 - transform.pivot_x) * width;
+        let pivot_offset_y = (0.5 - transform.pivot_y) * height;
+        let center_offset_x = (collider.offset_x + pivot_offset_x) / PIXELS_PER_METER;
+        let center_offset_y = (collider.offset_y + pivot_offset_y) / PIXELS_PER_METER;
         (center_offset_x, center_offset_y)
       }
-      ColliderShape::Circle { .. } => {
-        // Circles are already centered, just apply the offset
-        let offset_x = collider.offset_x / PIXELS_PER_METER;
-        let offset_y = collider.offset_y / PIXELS_PER_METER;
+      ColliderShape::Circle { radius } => {
+        // For circles, pivot affects where the circle is positioned relative to transform
+        // Default pivot (0.5, 0.5) means circle is centered on transform
+        // Other pivots need offset adjustment
+        let pivot_offset_x = (0.5 - transform.pivot_x) * radius * 2.0;
+        let pivot_offset_y = (0.5 - transform.pivot_y) * radius * 2.0;
+        let offset_x = (collider.offset_x + pivot_offset_x) / PIXELS_PER_METER;
+        let offset_y = (collider.offset_y + pivot_offset_y) / PIXELS_PER_METER;
         (offset_x, offset_y)
       }
     };
@@ -337,12 +347,14 @@ impl RapierPhysicsWorld {
 
     let body_handle = self.rigid_body_set.insert(body);
 
-    // GroupedCollider uses top-left positioning like regular box colliders
-    // Convert offset + half-size to center position
+    // GroupedCollider offset calculation, accounting for pivot
     let half_w = grouped.width / 2.0;
     let half_h = grouped.height / 2.0;
-    let center_offset_x = (grouped.offset_x + half_w) / PIXELS_PER_METER;
-    let center_offset_y = (grouped.offset_y + half_h) / PIXELS_PER_METER;
+    // Calculate pivot-aware offset (same logic as regular colliders)
+    let pivot_offset_x = (0.5 - transform.pivot_x) * grouped.width;
+    let pivot_offset_y = (0.5 - transform.pivot_y) * grouped.height;
+    let center_offset_x = (grouped.offset_x + pivot_offset_x) / PIXELS_PER_METER;
+    let center_offset_y = (grouped.offset_y + pivot_offset_y) / PIXELS_PER_METER;
 
     // Create box collider for the grouped area
     let half_w_meters = half_w / PIXELS_PER_METER;

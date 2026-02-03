@@ -2,6 +2,7 @@
 
 use crate::components::*;
 use crate::save::save_best_time;
+use crate::shared;
 use crate::*;
 use rand::Rng;
 use ryo2d::prelude::*;
@@ -14,7 +15,7 @@ const DESIGN_WIDTH: f32 = 1920.0;
 const DESIGN_HEIGHT: f32 = 1080.0;
 
 /// Bundle type for pooled bullets
-type BulletBundle = (Transform, Renderable, Collider, Bullet, Trail2D);
+type BulletBundle = (Transform, Renderable, RigidBody, Collider, Velocity, Bullet, Trail2D);
 
 pub struct GameScene {
   player: Option<Entity>,
@@ -80,10 +81,12 @@ impl Default for GameScene {
 impl GameScene {
   pub fn new() -> Self {
     // Load sprites
-    let player_sprite = Sprite::load("assets/player.png").expect("Failed to load player sprite");
+    // Heroic gold/orange player color with black outline
+    let player_sprite =
+      Sprite::solid_rect(PLAYER_SIZE as u32, PLAYER_SIZE as u32, 255, 180, 50, 255);
     let turret_sprite = Sprite::load("assets/turret.png").expect("Failed to load turret sprite");
     // Create a small round bullet programmatically (dark red/maroon)
-    let bullet_sprite = Sprite::solid_circle(BULLET_SIZE as u32, 80, 20, 20, 255);
+    let bullet_sprite = Sprite::solid_circle(BULLET_SIZE as u32, 255, 255, 255, 255);
     let particle_sprite =
       Sprite::load("assets/particle.png").expect("Failed to load particle sprite");
     let platform_sprite =
@@ -143,35 +146,35 @@ impl GameScene {
     );
 
     // Auto-scrolling layers with infinite scroll for seamless wrapping
-    // All layers scaled to fill screen height
+    // Speeds must match menu.rs for seamless scene transition
     background.add_layer(
       GpuParallaxLayer::new(&moon_sprite, 0.0, -90)
         .with_scale(scale)
-        .with_auto_scroll(5.0)
+        .with_auto_scroll(10.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&cloud_sprite, 0.0, -80)
         .with_scale(scale)
-        .with_auto_scroll(15.0)
+        .with_auto_scroll(30.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&mountain_sprite, 0.0, -60)
         .with_scale(scale)
-        .with_auto_scroll(30.0)
+        .with_auto_scroll(60.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&dune_mid_sprite, 0.0, -40)
         .with_scale(scale)
-        .with_auto_scroll(50.0)
+        .with_auto_scroll(100.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&dune_front_sprite, 0.0, -20)
         .with_scale(scale)
-        .with_auto_scroll(80.0)
+        .with_auto_scroll(160.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
 
@@ -258,9 +261,12 @@ impl GameScene {
       Transform::new(self.screen_width / 2.0, spawn_y).with_pivot_center(),
       Renderable::sprite(sprite)
         .with_z_order(Z_PLAYER)
-        .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
+        .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 2)),
+      // Kinematic body - we handle movement manually for wall slides/custom gravity
+      // Rapier still provides collision detection for events
+      RigidBody::kinematic(),
       Collider::box_collider(PLAYER_SIZE, PLAYER_SIZE),
-      PlayerVelocity::zero(),
+      Velocity::zero(),
       Player::new(PLAYER_MAX_LIVES),
     ));
     self.player = Some(player_entity);
@@ -279,6 +285,7 @@ impl GameScene {
       Renderable::sprite(sprite.clone())
         .with_z_order(Z_PLATFORM)
         .with_shader(SpriteShader::platform_outline(2)),
+      RigidBody::kinematic(),
       Collider::box_collider(800.0, PLATFORM_THICKNESS),
       Platform,
     ));
@@ -327,6 +334,7 @@ impl GameScene {
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_PLATFORM)
           .with_shader(SpriteShader::platform_outline(2)),
+        RigidBody::kinematic(),
         // Collider uses base sprite dimensions; transform.scale_x applies to both
         // sprite rendering and collision detection
         Collider::box_collider(800.0, PLATFORM_THICKNESS),
@@ -342,8 +350,11 @@ impl GameScene {
     let sh = self.screen_height;
     let sw = self.screen_width;
 
-    // Stagger offset for right-side turrets so sounds play back-to-back
-    let stagger_delay = 0.3;
+    // Stagger offset between sides so sounds play back-to-back
+    let stagger_delay = 1.3;
+
+    // Randomize which side spawns first
+    let left_first = rng.gen_bool(0.5);
 
     // Left side turrets - flush against left wall
     for _ in 0..TURRETS_PER_SIDE {
@@ -353,13 +364,20 @@ impl GameScene {
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_TURRET)
           .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
+        RigidBody::kinematic(),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Left),
       ));
+      // Add stagger delay if right side spawns first
+      if !left_first {
+        if let Some(mut turret_comp) = ctx.world.get_mut::<Turret>(turret) {
+          turret_comp.spawn_timer += stagger_delay;
+        }
+      }
       self.turrets.push(turret);
     }
 
-    // Right side turrets - flush against right wall (staggered spawn)
+    // Right side turrets - flush against right wall
     for _ in 0..TURRETS_PER_SIDE {
       let y = rng.gen_range(100.0..(sh - 100.0));
       let turret_entity = ctx.world.spawn((
@@ -367,12 +385,15 @@ impl GameScene {
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_TURRET)
           .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
+        RigidBody::kinematic(),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Right),
       ));
-      // Add stagger delay to right-side turrets
-      if let Some(mut turret) = ctx.world.get_mut::<Turret>(turret_entity) {
-        turret.spawn_timer += stagger_delay;
+      // Add stagger delay if left side spawns first
+      if left_first {
+        if let Some(mut turret) = ctx.world.get_mut::<Turret>(turret_entity) {
+          turret.spawn_timer += stagger_delay;
+        }
       }
       self.turrets.push(turret_entity);
     }
@@ -392,6 +413,8 @@ impl GameScene {
       Renderable::sprite(sprite.clone())
         .with_z_order(Z_BARRIER)
         .with_shader(SpriteShader::white_outline(2)),
+      RigidBody::kinematic(),
+      Collider::box_collider(BARRIER_WIDTH, BARRIER_HEIGHT),
       Barrier::new(BARRIER_SPEED, min_y, max_y),
     ));
     self.barriers.push(left_barrier);
@@ -402,6 +425,8 @@ impl GameScene {
       Renderable::sprite(sprite.clone())
         .with_z_order(Z_BARRIER)
         .with_shader(SpriteShader::white_outline(2)),
+      RigidBody::kinematic(),
+      Collider::box_collider(BARRIER_WIDTH, BARRIER_HEIGHT),
       Barrier::new(-BARRIER_SPEED, min_y, max_y),
     ));
     self.barriers.push(right_barrier);
@@ -422,6 +447,7 @@ impl GameScene {
         .with_z_order(Z_DRONE)
         // Start with dissolve shader for spawn effect (black edge)
         .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(0, 0, 0))),
+      RigidBody::kinematic(),
       Collider::box_collider(DRONE_SIZE, DRONE_SIZE),
       Drone::new(spawn_x, spawn_y),
     ));
@@ -465,13 +491,25 @@ impl GameScene {
         let spawn_progress = drone.spawn_progress();
         drop(drone);
 
+        // Get drone position for panning
+        let drone_x = ctx
+          .world
+          .get::<Transform>(drone_entity)
+          .map(|t| t.x)
+          .unwrap_or(self.screen_width / 2.0);
+
         // Apply dissolve shader for spawn effect
         if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
           if just_finished {
-            // Finished spawning - restore normal outline shader (black) and play sound
+            // Finished spawning - restore normal outline shader (black) and play sound with panning
             renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
+            // Pan based on screen position (-1 left, 0 center, 1 right)
+            let pan = ((drone_x / self.screen_width) * 2.0 - 1.0).clamp(-1.0, 1.0);
             if let Some(audio) = &mut ctx.audio {
-              let _ = audio.play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15));
+              let _ = audio.play_sound_with(
+                "enemy-spawn",
+                SoundOptions::new().volume(0.15).panning(pan),
+              );
             }
           } else {
             // Still spawning - dissolve from invisible to visible
@@ -675,11 +713,17 @@ impl GameScene {
                 if hit {
                   drop(player_t);
                   if let Some(mut player) = ctx.world.get_mut::<Player>(player_e) {
+                    let was_invincible = player.is_invincible();
                     player.take_damage();
                     self.player_lives = player.lives;
                     self.player_invincible = player.is_invincible();
-                    // Camera shake on hit
-                    ctx.camera.add_trauma(0.4);
+                    // Camera shake and hurt sound on hit (only if not invincible)
+                    if !was_invincible {
+                      ctx.camera.add_trauma(0.5);
+                      if let Some(audio) = &mut ctx.audio {
+                        let _ = audio.play_sound("hurt");
+                      }
+                    }
                   }
                 }
               }
@@ -814,13 +858,13 @@ impl GameScene {
         renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 0, 0), intensity));
       }
     } else if was_invincible {
-      // Clear shader when invincibility just ended
+      // Restore outline shader when invincibility just ended
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_entity) {
-        renderable.shader = None;
+        renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
       }
     }
 
-    let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) else {
+    let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) else {
       return;
     };
 
@@ -844,7 +888,7 @@ impl GameScene {
       }
       // Clamp to -1.0..1.0 range
       move_x = move_x.clamp(-1.0, 1.0);
-      velocity.x = move_x * PLAYER_SPEED;
+      velocity.dx = move_x * PLAYER_SPEED;
     }
 
     let jump_pressed = ctx.input.key_pressed(KeyCode::Space)
@@ -855,7 +899,7 @@ impl GameScene {
     if jump_pressed {
       if was_grounded {
         // Normal ground jump
-        velocity.y = -PLAYER_JUMP_FORCE;
+        velocity.dy = -PLAYER_JUMP_FORCE;
         drop(velocity);
         if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
           player.is_grounded = false;
@@ -875,8 +919,8 @@ impl GameScene {
         // Wall jump - push away from wall with forced momentum
         // Works both when actively sliding AND during grace period after releasing wall direction
         let wall_side = wall_jump_side.unwrap();
-        velocity.y = -WALL_JUMP_FORCE_Y;
-        velocity.x = match wall_side {
+        velocity.dy = -WALL_JUMP_FORCE_Y;
+        velocity.dx = match wall_side {
           WallSide::Left => WALL_JUMP_FORCE_X,   // Push right
           WallSide::Right => -WALL_JUMP_FORCE_X, // Push left
         };
@@ -902,40 +946,40 @@ impl GameScene {
     }
 
     // Check if player is standing on a moving barrier and ride it
-    let riding_barrier = self.apply_barrier_riding(ctx, player_entity, dt);
+    let riding_barrier = self.apply_barrier_riding(ctx, player_entity);
 
     // Apply gravity (skip if riding a barrier - they're supported)
     if !riding_barrier {
-      if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
+      if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
         // Apply gravity - reduced when wall sliding for smoother slide
-        if was_wall_sliding.is_some() && velocity.y > 0.0 {
+        if was_wall_sliding.is_some() && velocity.dy > 0.0 {
           // Wall sliding: reduced gravity and capped max speed
-          velocity.y += GRAVITY * WALL_SLIDE_GRAVITY_SCALE * dt;
-          velocity.y = velocity.y.min(WALL_SLIDE_MAX_SPEED);
+          velocity.dy += GRAVITY * WALL_SLIDE_GRAVITY_SCALE * dt;
+          velocity.dy = velocity.dy.min(WALL_SLIDE_MAX_SPEED);
         } else {
           // Normal gravity
-          velocity.y += GRAVITY * dt;
+          velocity.dy += GRAVITY * dt;
         }
       }
     }
 
-    // Apply velocity to transform
-    let Some(velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
+    // Apply velocity to transform (player is kinematic, so we handle movement manually)
+    let Some(velocity) = ctx.world.get::<Velocity>(player_entity) else {
       return;
     };
     let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) else {
       return;
     };
 
-    transform.x += velocity.x * dt;
-    // Only apply vertical velocity if not riding (barrier movement already applied)
+    transform.x += velocity.dx * dt;
+    // Skip Y velocity when riding barrier - apply_barrier_riding already snapped position
     if !riding_barrier {
-      transform.y += velocity.y * dt;
+      transform.y += velocity.dy * dt;
     }
 
     let tx = transform.x;
     let ty = transform.y;
-    let vel_y = velocity.y;
+    let vel_y = velocity.dy;
     drop(velocity);
     drop(transform);
 
@@ -999,8 +1043,8 @@ impl GameScene {
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
         transform.y = self.screen_height - half_size - 30.0;
       }
-      if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
-        velocity.y = 0.0;
+      if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+        velocity.dy = 0.0;
       }
       if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
         player.is_grounded = true;
@@ -1019,7 +1063,7 @@ impl GameScene {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
-    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
+    let Some(player_velocity) = ctx.world.get::<Velocity>(player_entity) else {
       return;
     };
 
@@ -1029,7 +1073,7 @@ impl GameScene {
     let player_right = player_transform.x + half_size;
     let player_top = player_transform.y - half_size;
     let player_bottom = player_transform.y + half_size;
-    let vel_y = player_velocity.y;
+    let vel_y = player_velocity.dy;
     let falling = vel_y > 0.0;
 
     drop(player_transform);
@@ -1070,8 +1114,8 @@ impl GameScene {
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
           transform.y = platform_top - half_size;
         }
-        if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
-          velocity.y = 0.0;
+        if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+          velocity.dy = 0.0;
         }
         if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
           player.is_grounded = true;
@@ -1085,7 +1129,7 @@ impl GameScene {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
-    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
+    let Some(player_velocity) = ctx.world.get::<Velocity>(player_entity) else {
       return;
     };
 
@@ -1095,8 +1139,8 @@ impl GameScene {
     let player_right = player_transform.x + half_size;
     let player_top = player_transform.y - half_size;
     let player_bottom = player_transform.y + half_size;
-    let vel_x = player_velocity.x;
-    let vel_y = player_velocity.y;
+    let vel_x = player_velocity.dx;
+    let vel_y = player_velocity.dy;
 
     drop(player_transform);
     drop(player_velocity);
@@ -1147,9 +1191,9 @@ impl GameScene {
             // Push up (landing on top, center pivot)
             transform.y = barrier_top - half_size;
             drop(transform);
-            if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
+            if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
               // Inherit the barrier's vertical velocity so player moves with it
-              velocity.y = barrier_vel_y;
+              velocity.dy = barrier_vel_y;
             }
             if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
               player.is_grounded = true;
@@ -1158,8 +1202,8 @@ impl GameScene {
             // Push down (hitting from below, center pivot)
             transform.y = barrier_bottom + half_size;
             drop(transform);
-            if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
-              velocity.y = 0.0;
+            if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+              velocity.dy = 0.0;
             }
           }
         }
@@ -1170,7 +1214,7 @@ impl GameScene {
 
   /// Check if player is standing on a barrier and apply its movement
   /// Returns true if player is riding a barrier (gravity should be skipped)
-  fn apply_barrier_riding(&self, ctx: &mut SceneContext, player_entity: Entity, dt: f32) -> bool {
+  fn apply_barrier_riding(&self, ctx: &mut SceneContext, player_entity: Entity) -> bool {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return false;
     };
@@ -1182,9 +1226,6 @@ impl GameScene {
     let player_bottom = player_transform.y + half_size;
 
     drop(player_transform);
-
-    // Tolerance for "standing on" detection
-    let tolerance = 2.0;
 
     for &barrier_entity in &self.barriers {
       let Some(barrier_transform) = ctx.world.get::<Transform>(barrier_entity) else {
@@ -1202,32 +1243,53 @@ impl GameScene {
       drop(barrier_transform);
       drop(barrier);
 
+      // Check horizontal overlap first
+      let horizontal_overlap = player_right > barrier_left && player_left < barrier_right;
+      if !horizontal_overlap {
+        continue;
+      }
+
+      // Use larger tolerance when barrier is moving up to prevent bouncing
+      // When barrier moves up, player can briefly separate before next frame
+      let tolerance = if barrier_vel_y < 0.0 {
+        // Moving up: larger tolerance proportional to speed
+        8.0 + (-barrier_vel_y * 0.05).min(10.0)
+      } else {
+        // Stationary or moving down: standard tolerance
+        4.0
+      };
+
       // Check if player is standing on top of this barrier
-      // Player's bottom must be near barrier's top, and horizontally overlapping
-      let on_top = (player_bottom - barrier_top).abs() < tolerance
-        && player_right > barrier_left
-        && player_left < barrier_right;
+      // Player's bottom must be near barrier's top
+      let distance_to_top = player_bottom - barrier_top;
+      let on_top = distance_to_top >= -tolerance && distance_to_top <= tolerance;
 
       if on_top {
-        // Check if player is currently jumping (negative velocity = moving up)
-        let is_jumping = ctx
+        // Check if player is actively jumping (velocity significantly more negative than barrier)
+        // This distinguishes a real jump from just riding an ascending barrier
+        let player_vel_y = ctx
           .world
-          .get::<PlayerVelocity>(player_entity)
-          .map(|v| v.y < -10.0) // Small threshold to avoid float issues
-          .unwrap_or(false);
+          .get::<Velocity>(player_entity)
+          .map(|v| v.dy)
+          .unwrap_or(0.0);
+
+        // Player is jumping if their upward velocity exceeds barrier velocity by a threshold
+        // (e.g., barrier at -200, player at -400 means player jumped off the barrier)
+        let is_jumping = player_vel_y < barrier_vel_y - 50.0;
 
         // If jumping, don't apply barrier riding - let the jump happen
         if is_jumping {
           return false;
         }
 
-        // Apply barrier's movement to player
+        // Snap player to ride on top of the barrier (prevents bouncing)
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-          transform.y += barrier_vel_y * dt;
+          transform.y = barrier_top - half_size;
         }
-        // Keep player grounded and zero vertical velocity
-        if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
-          velocity.y = 0.0;
+
+        // Set player velocity to match barrier movement
+        if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+          velocity.dy = barrier_vel_y;
         }
         if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
           player.is_grounded = true;
@@ -1307,7 +1369,7 @@ impl GameScene {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
-    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
+    let Some(player_velocity) = ctx.world.get::<Velocity>(player_entity) else {
       return;
     };
 
@@ -1317,7 +1379,7 @@ impl GameScene {
     let player_right = player_transform.x + half_size;
     let player_top = player_transform.y - half_size;
     let player_bottom = player_transform.y + half_size;
-    let falling = player_velocity.y > 0.0;
+    let falling = player_velocity.dy > 0.0;
 
     drop(player_transform);
     drop(player_velocity);
@@ -1343,8 +1405,8 @@ impl GameScene {
           if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
             transform.y = turret_top - half_size;
           }
-          if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
-            velocity.y = 0.0;
+          if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+            velocity.dy = 0.0;
           }
           if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
             player.is_grounded = true;
@@ -1362,7 +1424,7 @@ impl GameScene {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
-    let Some(player_velocity) = ctx.world.get::<PlayerVelocity>(player_entity) else {
+    let Some(player_velocity) = ctx.world.get::<Velocity>(player_entity) else {
       return;
     };
 
@@ -1372,7 +1434,7 @@ impl GameScene {
     let player_right = player_transform.x + half_size;
     let player_top = player_transform.y - half_size;
     let player_bottom = player_transform.y + half_size;
-    let falling = player_velocity.y > 0.0;
+    let falling = player_velocity.dy > 0.0;
 
     drop(player_transform);
     drop(player_velocity);
@@ -1401,8 +1463,8 @@ impl GameScene {
           if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
             transform.y = drone_top - half_size;
           }
-          if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
-            velocity.y = 0.0;
+          if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+            velocity.dy = 0.0;
           }
           if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
             player.is_grounded = true;
@@ -1469,6 +1531,7 @@ impl GameScene {
       if is_spawning {
         let just_finished = turret.update_spawn(dt);
         let spawn_progress = turret.spawn_progress();
+        let turret_side = turret.side;
 
         drop(transform);
         drop(turret);
@@ -1476,10 +1539,17 @@ impl GameScene {
         // Apply dissolve shader for spawn effect (reverse progress for spawn-in)
         if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(turret_entity) {
           if just_finished {
-            // Finished spawning - restore normal outline shader and play sound
+            // Finished spawning - restore normal outline shader and play sound with panning
             renderable.shader = Some(SpriteShader::outline(Color::rgb(40, 40, 40), 2));
+            let pan = match turret_side {
+              TurretSide::Left => -0.8,
+              TurretSide::Right => 0.8,
+            };
             if let Some(audio) = &mut ctx.audio {
-              let _ = audio.play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15));
+              let _ = audio.play_sound_with(
+                "enemy-spawn",
+                SoundOptions::new().volume(0.15).panning(pan),
+              );
             }
           } else {
             // Still spawning - dissolve from invisible to visible with cyan edge glow
@@ -1560,6 +1630,16 @@ impl GameScene {
           turret.burst_count = max_burst;
           turret.burst_timer = TURRET_BURST_DELAY;
           turret.shoot_timer = TURRET_SHOOT_INTERVAL;
+          drop(turret);
+
+          // Play burst sound with panning based on turret side
+          let pan = match turret_side {
+            TurretSide::Left => -0.8,
+            TurretSide::Right => 0.8,
+          };
+          if let Some(audio) = &mut ctx.audio {
+            let _ = audio.play_sound_with("bullet", SoundOptions::new().volume(0.1).panning(pan));
+          }
         }
       }
     }
@@ -1608,6 +1688,11 @@ impl GameScene {
           transform.pivot_x = 0.5;
           transform.pivot_y = 0.5;
         }
+        // Set velocity for Rapier physics
+        if let Some(mut vel) = ctx.world.get_mut::<Velocity>(bullet) {
+          vel.dx = velocity_x;
+          vel.dy = velocity_y;
+        }
         if let Some(mut b) = ctx.world.get_mut::<Bullet>(bullet) {
           b.velocity_x = velocity_x;
           b.velocity_y = velocity_y;
@@ -1627,10 +1712,13 @@ impl GameScene {
       Transform::new(x, y).with_anchor(Anchor::Center),
       Renderable::sprite(sprite)
         .with_z_order(Z_BULLET)
-        .with_shader(SpriteShader::outline(Color::rgb(255, 220, 50), 1)),
+        .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 1)),
+      // CCD for fast-moving bullets, no gravity
+      RigidBody::new().with_ccd().with_gravity_scale(0.0),
       Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
+      Velocity::new(velocity_x, velocity_y),
       Bullet::new(velocity_x, velocity_y),
-      Trail2D::bullet(Color::rgb(150, 50, 50))
+      Trail2D::bullet(Color::rgb(180, 180, 180))
         .with_length(10)
         .with_taper(0.0)
         .with_fade(true),
@@ -1645,24 +1733,20 @@ impl GameScene {
     let bullets_to_process: Vec<_> = self.bullets.iter().copied().enumerate().collect();
 
     for (i, bullet_entity) in bullets_to_process {
-      let Some(mut transform) = ctx.world.get_mut::<Transform>(bullet_entity) else {
+      // With Rapier integration, bullet position is updated by physics engine
+      let Some(transform) = ctx.world.get::<Transform>(bullet_entity) else {
         bullets_to_release.push((i, bullet_entity));
         continue;
       };
-      let Some(bullet) = ctx.world.get::<Bullet>(bullet_entity) else {
+      if !ctx.world.has::<Bullet>(bullet_entity) {
         bullets_to_release.push((i, bullet_entity));
         continue;
-      };
-
-      // Move bullet
-      transform.x += bullet.velocity_x * dt;
-      transform.y += bullet.velocity_y * dt;
+      }
 
       let bx = transform.x;
       let by = transform.y;
 
       drop(transform);
-      drop(bullet);
 
       // Update trail with new position
       if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(bullet_entity) {
@@ -1727,15 +1811,28 @@ impl GameScene {
 
     if dist_sq < collision_dist * collision_dist {
       drop(player_transform);
+      let was_invincible = ctx
+        .world
+        .get::<Player>(player_entity)
+        .map(|p| p.is_invincible())
+        .unwrap_or(false);
+
       if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
         player.take_damage();
       }
-      // Apply flash shader effect when hit
-      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_entity) {
-        renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 0, 0), 0.7));
+
+      // Apply effects only if not invincible
+      if !was_invincible {
+        // Apply flash shader effect when hit
+        if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_entity) {
+          renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 0, 0), 0.7));
+        }
+        // Camera shake and hurt sound on hit
+        ctx.camera.add_trauma(0.5);
+        if let Some(audio) = &mut ctx.audio {
+          let _ = audio.play_sound("hurt");
+        }
       }
-      // Camera shake on hit
-      ctx.camera.add_trauma(0.4);
       return true;
     }
 
@@ -1921,37 +2018,50 @@ impl GameScene {
     let sh = self.screen_height;
     let sw = self.screen_width;
 
-    // Stagger offset for right-side turrets so sounds play back-to-back
-    let stagger_delay = 0.3;
+    // Stagger offset between sides so sounds play back-to-back
+    let stagger_delay = 1.3;
 
     for _ in 0..count {
+      // Randomize which side spawns first for each pair
+      let left_first = rng.gen_bool(0.5);
+
       // Left side turret - flush against left wall
       let y = rng.gen_range(100.0..(sh - 100.0));
-      let turret = ctx.world.spawn((
+      let left_turret = ctx.world.spawn((
         Transform::new(0.0, y),
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_TURRET)
           .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
+        RigidBody::kinematic(),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Left),
       ));
-      self.turrets.push(turret);
+      // Add stagger delay if right side spawns first
+      if !left_first {
+        if let Some(mut turret) = ctx.world.get_mut::<Turret>(left_turret) {
+          turret.spawn_timer += stagger_delay;
+        }
+      }
+      self.turrets.push(left_turret);
 
-      // Right side turret - flush against right wall (staggered spawn)
+      // Right side turret - flush against right wall
       let y = rng.gen_range(100.0..(sh - 100.0));
-      let turret_entity = ctx.world.spawn((
+      let right_turret = ctx.world.spawn((
         Transform::new(sw - TURRET_SIZE, y),
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_TURRET)
           .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
+        RigidBody::kinematic(),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Right),
       ));
-      // Add stagger delay to right-side turrets
-      if let Some(mut turret) = ctx.world.get_mut::<Turret>(turret_entity) {
-        turret.spawn_timer += stagger_delay;
+      // Add stagger delay if left side spawns first
+      if left_first {
+        if let Some(mut turret) = ctx.world.get_mut::<Turret>(right_turret) {
+          turret.spawn_timer += stagger_delay;
+        }
       }
-      self.turrets.push(turret_entity);
+      self.turrets.push(right_turret);
     }
   }
 }
@@ -1967,10 +2077,15 @@ impl Scene for GameScene {
     if let Some(audio) = &mut ctx.audio {
       let _ = audio.load_sound("enemy-spawn", "assets/enemy-spawn.wav");
       let _ = audio.load_sound("laser", "assets/laser.mp3");
+      let _ = audio.load_sound("hurt", "assets/hurt.mp3");
+      let _ = audio.load_sound("bullet", "assets/bullet.wav");
     }
 
     // Clear world
     ctx.world.clear();
+
+    // Sync parallax background with shared time (persists from menu)
+    self.background.set_elapsed_time(shared::get_parallax_time());
 
     // Reset state
     self.survival_time = 0.0;
@@ -1982,6 +2097,9 @@ impl Scene for GameScene {
     self.particles.clear();
     self.platforms.clear();
     self.barriers.clear();
+
+    // Configure camera shake for impactful hits (20px max offset, fast decay)
+    ctx.camera.configure_shake(20.0, 1.5);
 
     // Spawn game entities
     self.spawn_platforms(ctx);
@@ -2004,10 +2122,13 @@ impl Scene for GameScene {
           Transform::default(),
           Renderable::sprite(bullet_sprite.clone())
             .with_z_order(Z_BULLET)
-            .with_shader(SpriteShader::outline(Color::rgb(255, 220, 50), 1)),
+            .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 1)),
+          // CCD for fast-moving bullets, no gravity
+          RigidBody::new().with_ccd().with_gravity_scale(0.0),
           Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
+          Velocity::zero(),
           Bullet::new(0.0, 0.0),
-          Trail2D::bullet(Color::rgb(150, 50, 50))
+          Trail2D::bullet(Color::rgb(180, 180, 180))
             .with_length(10)
             .with_taper(0.0)
             .with_fade(true),
@@ -2066,7 +2187,9 @@ impl Scene for GameScene {
     }
 
     // Update parallax background (only when not paused)
-    self.background.update(dt);
+    // Update shared parallax time (persists between menu and game)
+    let parallax_time = shared::add_parallax_time(dt);
+    self.background.set_elapsed_time(parallax_time);
 
     self.survival_time += dt;
 
@@ -2105,10 +2228,11 @@ impl Scene for GameScene {
       return SceneAction::Continue;
     }
 
+    // Update barriers FIRST so player can ride them at correct position
+    self.update_barriers(ctx, dt);
     self.update_player(ctx, dt);
     self.update_turrets(ctx, dt);
     self.update_drones(ctx, dt);
-    self.update_barriers(ctx, dt);
     self.update_bullets(ctx, dt);
     self.update_particles(ctx, dt);
 
@@ -2181,6 +2305,10 @@ impl Scene for GameScene {
     if self.is_paused {
       self.render_pause_menu(ui, screen_w as f32, screen_h as f32);
     }
+  }
+
+  fn is_physics_paused(&self) -> bool {
+    self.is_paused
   }
 }
 
