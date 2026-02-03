@@ -12,6 +12,16 @@ I started learning Rust and then I decided to start building a 2D game engine to
 
 **Should you use this engine?** Probably not -- unless you want to be a part of this experiment.
 
+## Example Games
+
+<p align="center">
+  <img src="docs/assets/flappy.gif" alt="Flappy" height="200">
+  <img src="docs/assets/breakout.gif" alt="Breakout" height="200">
+</p>
+<p align="center">
+  <img src="docs/assets/bullet-hell.gif" alt="Bullet Hell" width="500">
+</p>
+
 ## Quick Start
 
 ### Install
