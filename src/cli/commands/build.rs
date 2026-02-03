@@ -23,6 +23,10 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // Read Ryo.toml config to embed at compile time
   let config = workspace.config();
   let system = &config.system;
+  let release = &config.release;
+
+  // Resolve icon path: custom from [release].logo, or default Ryo2D logo
+  let icon_path = resolve_icon_path(&workspace, release.logo.as_ref())?;
 
   // Convert display_mode to string for embedding
   let display_mode_str = match system.display_mode {
@@ -75,6 +79,8 @@ pub fn execute(args: &[String]) -> CliResult<()> {
       "RYO_EMBED_SHOW_FRAME_TIMING",
       config.debug.show_frame_timing.to_string(),
     )
+    // [release] section values - icon path for Windows .exe embedding
+    .env("RYO_EMBED_ICON", &icon_path)
     .current_dir(workspace.root())
     .status()
     .map_err(|e| CliError::CommandFailed {
@@ -89,7 +95,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   }
 
   // Create release bundle
-  create_release_bundle(&workspace, &package_name, project_name)?;
+  create_release_bundle(&workspace, &package_name, project_name, &icon_path)?;
 
   Output::success(&format!("release build of {}", project_name));
 
@@ -101,6 +107,7 @@ fn create_release_bundle(
   workspace: &crate::core::config::Workspace,
   package_name: &str,
   display_name: &str,
+  icon_path: &PathBuf,
 ) -> CliResult<()> {
   let workspace_root = workspace.root();
   let release_dir = workspace_root.join("release");
@@ -217,6 +224,13 @@ fn create_release_bundle(
       .map_err(|e| CliError::Other(format!("Failed to copy README.md: {}", e)))?;
   }
 
+  // Copy icon to release directory with consistent name for runtime discovery
+  if icon_path.exists() {
+    let dest_icon = release_dir.join("icon.png");
+    fs::copy(icon_path, &dest_icon)
+      .map_err(|e| CliError::Other(format!("Failed to copy icon: {}", e)))?;
+  }
+
   Output::status(
     "Created",
     &format!("release bundle at {}", release_dir.display()),
@@ -287,6 +301,55 @@ fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
 
   // Fallback to local target directory
   start_dir.join("target")
+}
+
+/// Resolve the icon path for embedding.
+///
+/// Returns the absolute path to the PNG icon file. If a custom logo is specified
+/// in [release].logo, validates it exists. Otherwise, extracts the default
+/// Ryo2D logo to a temporary location.
+///
+/// The icon is used for:
+/// - Runtime window icon (title bar, taskbar) via the engine's icon loading
+/// - Windows .exe embedding (requires game project's build.rs to use winres)
+fn resolve_icon_path(
+  workspace: &crate::core::config::Workspace,
+  custom_logo: Option<&PathBuf>,
+) -> CliResult<PathBuf> {
+  if let Some(logo) = custom_logo {
+    // Custom icon specified - make path absolute and validate
+    let absolute_path = if logo.is_absolute() {
+      logo.clone()
+    } else {
+      workspace.root().join(logo)
+    };
+
+    if !absolute_path.exists() {
+      return Err(CliError::Other(format!(
+        "Custom logo not found: {} (specified in [release].logo)",
+        absolute_path.display()
+      )));
+    }
+
+    Output::status("Using", &format!("custom icon: {}", logo.display()));
+    return Ok(absolute_path);
+  }
+
+  // No custom icon - use default Ryo2D logo
+  // Extract embedded logo to a temp file that the game's build.rs can use
+  let temp_dir = std::env::temp_dir().join("ryo2d-build");
+  fs::create_dir_all(&temp_dir)
+    .map_err(|e| CliError::Other(format!("Failed to create temp directory: {}", e)))?;
+
+  let logo_path = temp_dir.join("ryo2d-logo.png");
+
+  // Write embedded logo bytes
+  let logo_bytes = include_bytes!("../../assets/logo.png");
+  fs::write(&logo_path, logo_bytes)
+    .map_err(|e| CliError::Other(format!("Failed to write default logo: {}", e)))?;
+
+  Output::status("Using", "default Ryo2D icon");
+  Ok(logo_path)
 }
 
 fn print_help() {
