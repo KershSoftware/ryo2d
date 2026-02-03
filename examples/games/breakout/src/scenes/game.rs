@@ -780,10 +780,8 @@ impl GameScene {
 
         // Spawn extra ball if this was a multiball block
         // Use position captured BEFORE despawning
-        if is_multiball {
-          if let Some((x, y)) = block_position {
-            self.spawn_ball_at(ctx, x, y);
-          }
+        if is_multiball && let Some((x, y)) = block_position {
+          self.spawn_ball_at(ctx, x, y);
         }
 
         // Update high score
