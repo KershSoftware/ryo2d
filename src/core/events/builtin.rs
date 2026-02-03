@@ -258,3 +258,62 @@ pub struct AssetLoadFailed {
   /// Error message describing the failure
   pub error: String,
 }
+
+// ============================================================================
+// Tween Events
+// ============================================================================
+
+/// Emitted when a tween starts playing (after any delay).
+///
+/// This event is emitted by the engine when a [`Tween`](crate::core::ecs::Tween)
+/// component begins its animation. Use this to react to tween starts across
+/// multiple systems without direct coupling.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<TweenStarted>() {
+///         println!("Tween started on entity {:?}", event.entity);
+///         // Play a sound, trigger particles, etc.
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TweenStarted {
+  /// The entity whose tween started
+  pub entity: Entity,
+}
+
+/// Emitted when a tween completes an iteration.
+///
+/// This event is emitted by the engine when a [`Tween`](crate::core::ecs::Tween)
+/// finishes. For looping tweens (`Loop`, `PingPong`), this fires each cycle.
+/// For `Times(n)`, it fires after each iteration including the final one.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<TweenCompleted>() {
+///         if event.entity == self.door {
+///             // Door finished opening animation
+///             self.door_open = true;
+///         }
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TweenCompleted {
+  /// The entity whose tween completed
+  pub entity: Entity,
+  /// Whether the tween has completely finished (not just one iteration)
+  ///
+  /// - `true` for `TweenLoop::Once` or final iteration of `TweenLoop::Times(n)`
+  /// - `false` for `Loop`, `PingPong`, or non-final iterations of `Times(n)`
+  pub finished: bool,
+}

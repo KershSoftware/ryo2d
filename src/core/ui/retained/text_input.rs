@@ -364,9 +364,13 @@ impl TextInputState {
 
     let mut modified = false;
     let shift = input.key_down(KeyCode::ShiftLeft) || input.key_down(KeyCode::ShiftRight);
-    let ctrl = input.key_down(KeyCode::ControlLeft) || input.key_down(KeyCode::ControlRight);
+    // Check both Ctrl (Windows/Linux) and Super/Cmd (macOS) for shortcuts
+    let ctrl = input.key_down(KeyCode::ControlLeft)
+      || input.key_down(KeyCode::ControlRight)
+      || input.key_down(KeyCode::SuperLeft)
+      || input.key_down(KeyCode::SuperRight);
 
-    // Handle committed text from IME (but not when Ctrl is held - those are shortcuts)
+    // Handle committed text from IME (but not when Ctrl/Cmd is held - those are shortcuts)
     let text = input.text_input();
     if !text.is_empty() && !ctrl {
       self.insert(text);

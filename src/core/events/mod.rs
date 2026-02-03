@@ -43,6 +43,8 @@
 //! |-------|--------|-------------|
 //! | [`CollisionStarted`] | Physics | Two entities began colliding |
 //! | [`CollisionStopped`] | Physics | Two entities stopped colliding |
+//! | [`TweenStarted`] | Tweening | A tween began playing (after delay) |
+//! | [`TweenCompleted`] | Tweening | A tween finished an iteration |
 //! | [`ClientConnected`] | Network | A client joined (host only) |
 //! | [`ClientDisconnected`] | Network | A client left (host only) |
 //! | [`ConnectedToServer`] | Network | Connected to server (client only) |
