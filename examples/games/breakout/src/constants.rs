@@ -11,7 +11,13 @@ pub const SCREEN_HEIGHT: u32 = 720;
 pub const PADDLE_WIDTH: f32 = 120.0;
 pub const PADDLE_HEIGHT: f32 = 16.0;
 pub const PADDLE_Y: f32 = 650.0;
-pub const PADDLE_SPEED: f32 = 600.0;
+pub const PADDLE_SPEED: f32 = 900.0;
+/// Paddle acceleration (pixels per second squared)
+pub const PADDLE_ACCELERATION: f32 = 6300.0;
+/// Paddle deceleration when no input (friction)
+pub const PADDLE_DECELERATION: f32 = 8000.0;
+/// How much paddle velocity affects ball launch angle (0.0 to 1.0)
+pub const PADDLE_LAUNCH_INFLUENCE: f32 = 0.5;
 
 /// Ball configuration
 pub const BALL_SIZE: f32 = 12.0;

@@ -36,8 +36,11 @@ impl Scene for QuitConfirmScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Wait for Escape to be released before accepting new Escape presses
-    if !self.escape_was_released && !ctx.input.key_down(KeyCode::Escape) {
+    // Wait for Escape/B to be released before accepting new presses
+    if !self.escape_was_released
+      && !ctx.input.key_down(KeyCode::Escape)
+      && !ctx.input.gamepad_button_down(GamepadButton::East)
+    {
       self.escape_was_released = true;
     }
 
@@ -52,18 +55,23 @@ impl Scene for QuitConfirmScene {
       return SceneAction::Pop;
     }
 
-    // N to cancel (always works)
+    // N or B to cancel (B only after released once)
     if ctx.input.key_pressed(KeyCode::KeyN) {
       return SceneAction::Pop;
     }
 
-    // ESC to cancel (only after released once)
-    if self.escape_was_released && ctx.input.key_pressed(KeyCode::Escape) {
+    // ESC or B to cancel (only after released once)
+    if self.escape_was_released
+      && (ctx.input.key_pressed(KeyCode::Escape)
+        || ctx.input.gamepad_button_pressed(GamepadButton::East))
+    {
       return SceneAction::Pop;
     }
 
-    // Y to confirm quit
-    if ctx.input.key_pressed(KeyCode::KeyY) {
+    // Y or A to confirm quit
+    if ctx.input.key_pressed(KeyCode::KeyY)
+      || ctx.input.gamepad_button_pressed(GamepadButton::South)
+    {
       return SceneAction::Quit;
     }
 
@@ -100,13 +108,13 @@ impl Scene for QuitConfirmScene {
 
     // Yes button
     let yes_rect = Rect::new(panel_x + 30.0, panel_y + 100.0, 140.0, 40.0);
-    if ui.button("YES (Y)", yes_rect) {
+    if ui.button("YES (Y/A)", yes_rect) {
       self.yes_clicked = true;
     }
 
     // No button
     let no_rect = Rect::new(panel_x + 180.0, panel_y + 100.0, 140.0, 40.0);
-    if ui.button("NO (N)", no_rect) {
+    if ui.button("NO (N/B)", no_rect) {
       self.no_clicked = true;
     }
   }

@@ -82,14 +82,20 @@ impl Scene for MenuScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Wait for Escape to be released before accepting new Escape presses
-    if !self.escape_was_released && !ctx.input.key_down(KeyCode::Escape) {
+    // Wait for Escape/B to be released before accepting new presses
+    if !self.escape_was_released
+      && !ctx.input.key_down(KeyCode::Escape)
+      && !ctx.input.gamepad_button_down(GamepadButton::East)
+      && !ctx.input.gamepad_button_down(GamepadButton::Select)
+    {
       self.escape_was_released = true;
     }
 
-    // Start game on Enter, Space, or button click
+    // Start game on Enter, Space, button click, or gamepad A/Start
     if ctx.input.key_pressed(KeyCode::Enter)
       || ctx.input.key_pressed(KeyCode::Space)
+      || ctx.input.gamepad_button_pressed(GamepadButton::South) // A button
+      || ctx.input.gamepad_button_pressed(GamepadButton::Start)
       || self.start_clicked
     {
       self.start_clicked = false;
@@ -107,8 +113,12 @@ impl Scene for MenuScene {
       );
     }
 
-    // ESC to open quit confirmation (only after released once)
-    if self.escape_was_released && ctx.input.key_pressed(KeyCode::Escape) {
+    // ESC or gamepad B/Select to open quit confirmation (only after released once)
+    if self.escape_was_released
+      && (ctx.input.key_pressed(KeyCode::Escape)
+        || ctx.input.gamepad_button_pressed(GamepadButton::East) // B button
+        || ctx.input.gamepad_button_pressed(GamepadButton::Select))
+    {
       self.escape_was_released = false; // Reset for when we return from overlay
       return SceneAction::Push(Box::new(QuitConfirmScene::new()));
     }
@@ -171,7 +181,7 @@ impl Scene for MenuScene {
 
     // Instructions
     ui.draw_text_anchored(
-      "Press ENTER or SPACE to Start",
+      "Press ENTER, SPACE, or A to Start",
       Anchor::TopCenter,
       0.0,
       450.0,
@@ -179,7 +189,7 @@ impl Scene for MenuScene {
     );
 
     ui.draw_text_anchored(
-      "ESC to Quit",
+      "ESC or B to Quit",
       Anchor::BottomCenter,
       0.0,
       -30.0,

@@ -104,9 +104,13 @@ impl Scene for PauseScene {
       self.settings_changed = true;
     }
 
-    // Wait for Escape to be released before accepting new Escape presses
-    // This prevents the same keypress that opened the menu from closing it
-    if !self.escape_was_released && !ctx.input.key_down(KeyCode::Escape) {
+    // Wait for Escape/Start/B to be released before accepting new presses
+    // This prevents the same press that opened the menu from closing it
+    if !self.escape_was_released
+      && !ctx.input.key_down(KeyCode::Escape)
+      && !ctx.input.gamepad_button_down(GamepadButton::Start)
+      && !ctx.input.gamepad_button_down(GamepadButton::East)
+    {
       self.escape_was_released = true;
     }
 
@@ -142,16 +146,24 @@ impl Scene for PauseScene {
       return SceneAction::Quit;
     }
 
-    // Resume on Enter (always) or Escape (only after released once)
-    if ctx.input.key_pressed(KeyCode::Enter) {
+    // Resume on Enter/A (always) or Escape/Start/B (only after released once)
+    if ctx.input.key_pressed(KeyCode::Enter)
+      || ctx.input.gamepad_button_pressed(GamepadButton::South)
+    {
       return SceneAction::Pop;
     }
-    if self.escape_was_released && ctx.input.key_pressed(KeyCode::Escape) {
+    if self.escape_was_released
+      && (ctx.input.key_pressed(KeyCode::Escape)
+        || ctx.input.gamepad_button_pressed(GamepadButton::Start)
+        || ctx.input.gamepad_button_pressed(GamepadButton::East))
+    {
       return SceneAction::Pop;
     }
 
-    // Return to menu via Q key
-    if ctx.input.key_pressed(KeyCode::KeyQ) {
+    // Return to menu via Q key or Select button
+    if ctx.input.key_pressed(KeyCode::KeyQ)
+      || ctx.input.gamepad_button_pressed(GamepadButton::Select)
+    {
       save_high_score(self.high_score);
       return SceneAction::ResetWith(
         Box::new(MenuScene::new()),
