@@ -681,9 +681,6 @@ impl Engine {
     // --- Game Logic Update ---
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
-      // Track entity count before update to detect spawns/despawns
-      let entity_count_before = self.world.len();
-
       // Create context for the game
       let mut ctx = GameContext {
         world: &mut self.world,
@@ -704,8 +701,8 @@ impl Engine {
       // Put the game back
       self.game = Some(game);
 
-      // Only mark render cache dirty if entities were actually spawned/despawned
-      if self.world.len() != entity_count_before {
+      // Mark render cache dirty if any entities were spawned or despawned
+      if self.world.take_entities_changed() {
         self.render_cache_dirty = true;
       }
     }
