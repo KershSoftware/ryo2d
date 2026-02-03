@@ -684,6 +684,10 @@ impl Engine {
 
     // --- Tween System ---
     // Update all Tween components and apply to Transform (skip inactive pooled entities)
+    // Collect tween events to emit after the loop (to avoid borrow conflicts)
+    let mut tween_started_events = Vec::new();
+    let mut tween_completed_events = Vec::new();
+
     for entity in self.world.entities_with::<Tween>() {
       // Skip inactive pooled entities
       if self.world.has::<super::ecs::Inactive>(entity) {
@@ -705,10 +709,110 @@ impl Engine {
         self.world.get_component_mut::<Transform>(entity),
         self.world.get_component_mut::<Tween>(entity),
       ) {
+        // Capture renderable start values before first update if tween has color targets
+        let has_color = tween.has_color_targets();
+        if has_color
+          && !tween.has_started()
+          && let Some(renderable) = self.world.get_component::<super::ecs::Renderable>(entity)
+        {
+          tween.capture_start_renderable(renderable.alpha, renderable.tint);
+        }
+
         tween.update(_dt, &mut transform);
+
+        // Apply color/alpha tweening to Renderable if targets are set
+        if has_color
+          && let Some(mut renderable) =
+            self.world.get_component_mut::<super::ecs::Renderable>(entity)
+        {
+          if let Some(alpha) = tween.current_alpha() {
+            renderable.alpha = alpha;
+          }
+          if let Some(tint) = tween.current_tint() {
+            renderable.tint = tint;
+          }
+        }
+
+        // Collect events for emission after the loop
+        if tween.just_started {
+          tween_started_events.push(entity);
+        }
+        if tween.just_finished {
+          tween_completed_events.push((entity, tween.is_finished()));
+        }
         // Note: Tweens only modify Transform (position/scale/rotation), NOT z_order.
         // No need to dirty the render cache - it only needs rebuilding when
         // entities are spawned/despawned or z_order changes.
+      }
+    }
+
+    // Emit tween events
+    for entity in tween_started_events {
+      self
+        .events
+        .emit(super::events::TweenStarted { entity });
+    }
+    for (entity, finished) in tween_completed_events {
+      self
+        .events
+        .emit(super::events::TweenCompleted { entity, finished });
+    }
+
+    // --- Tween Sequence System ---
+    // Update TweenSequence components (skip inactive pooled entities)
+    for entity in self.world.entities_with::<super::ecs::TweenSequence>() {
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+
+      // Check if sequence is playing
+      let should_update = self
+        .world
+        .get_component::<super::ecs::TweenSequence>(entity)
+        .is_some_and(|s| s.playing && !s.is_empty());
+
+      if !should_update {
+        continue;
+      }
+
+      // Get transform and sequence together
+      if let (Some(mut transform), Some(mut sequence)) = (
+        self.world.get_component_mut::<Transform>(entity),
+        self.world.get_component_mut::<super::ecs::TweenSequence>(entity),
+      ) {
+        sequence.just_finished = false;
+
+        // Get current tween and update it
+        if let Some(tween) = sequence.current_mut() {
+          // Capture renderable start values if needed
+          let has_color = tween.has_color_targets();
+          if has_color
+            && !tween.has_started()
+            && let Some(renderable) = self.world.get_component::<super::ecs::Renderable>(entity)
+          {
+            tween.capture_start_renderable(renderable.alpha, renderable.tint);
+          }
+
+          tween.update(_dt, &mut transform);
+
+          // Apply color/alpha to Renderable
+          if has_color
+            && let Some(mut renderable) =
+              self.world.get_component_mut::<super::ecs::Renderable>(entity)
+          {
+            if let Some(alpha) = tween.current_alpha() {
+              renderable.alpha = alpha;
+            }
+            if let Some(tint) = tween.current_tint() {
+              renderable.tint = tint;
+            }
+          }
+
+          // If current tween finished, advance to next
+          if tween.just_finished {
+            sequence.advance();
+          }
+        }
       }
     }
 
@@ -1465,12 +1569,14 @@ impl ApplicationHandler for Engine {
         {
           // Don't capture control characters (backspace, enter, etc.)
           // These are handled separately as key presses
-          // Also skip when Ctrl or Alt is held (for shortcuts like Ctrl+A, Ctrl+C)
+          // Also skip when Ctrl, Alt, or Super/Cmd is held (for shortcuts like Ctrl+A, Cmd+C)
           let ctrl_held =
             self.input.key_down(KeyCode::ControlLeft) || self.input.key_down(KeyCode::ControlRight);
           let alt_held =
             self.input.key_down(KeyCode::AltLeft) || self.input.key_down(KeyCode::AltRight);
-          if !ctrl_held && !alt_held && !text.chars().all(|c| c.is_control()) {
+          let super_held =
+            self.input.key_down(KeyCode::SuperLeft) || self.input.key_down(KeyCode::SuperRight);
+          if !ctrl_held && !alt_held && !super_held && !text.chars().all(|c| c.is_control()) {
             self.input.handle_text_input(text);
           }
         }
