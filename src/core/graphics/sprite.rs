@@ -1861,4 +1861,173 @@ mod tests {
       g
     );
   }
+
+  // =========================================================================
+  // Premultiplied Alpha / Black Fringing Tests
+  // =========================================================================
+
+  #[test]
+  fn rotated_circle_no_black_fringing() {
+    // A white circle rotated on a green background should NOT produce black pixels
+    // This tests that premultiplied alpha interpolation works correctly
+    let circle = Sprite::solid_circle(20, 255, 255, 255, 255);
+    let mut frame = vec![0u8; 40 * 40 * 4];
+
+    // Fill with bright green background
+    for i in (0..frame.len()).step_by(4) {
+      frame[i] = 0; // R
+      frame[i + 1] = 255; // G
+      frame[i + 2] = 0; // B
+      frame[i + 3] = 255; // A
+    }
+
+    // Draw the circle rotated (rotation triggers bilinear interpolation)
+    circle.draw_rotated(&mut frame, 40, 40, 10, 10, 1.0, 1.0, 30.0, false, false);
+
+    // Check for any black or near-black pixels that shouldn't exist
+    // Black fringing would show as pixels with very low RGB but some alpha
+    let mut black_pixel_count = 0;
+    for i in (0..frame.len()).step_by(4) {
+      let r = frame[i];
+      let g = frame[i + 1];
+      let b = frame[i + 2];
+
+      // A "black fringe" pixel would be dark (low RGB) but not pure background green
+      // and not the expected white from the circle
+      if r < 30 && g < 30 && b < 30 {
+        black_pixel_count += 1;
+      }
+    }
+
+    assert_eq!(
+      black_pixel_count, 0,
+      "Should have no black fringing pixels around rotated circle, found {}",
+      black_pixel_count
+    );
+  }
+
+  #[test]
+  fn rotated_circle_tinted_no_black_fringing() {
+    // Same test but with tinted drawing
+    let circle = Sprite::solid_circle(20, 255, 255, 255, 255);
+    let mut frame = vec![0u8; 40 * 40 * 4];
+
+    // Fill with bright blue background
+    for i in (0..frame.len()).step_by(4) {
+      frame[i] = 0;
+      frame[i + 1] = 0;
+      frame[i + 2] = 255;
+      frame[i + 3] = 255;
+    }
+
+    // Draw the circle rotated with red tint
+    circle.draw_rotated_tinted(
+      &mut frame,
+      40,
+      40,
+      10,
+      10,
+      1.0,
+      1.0,
+      45.0,
+      false,
+      false,
+      1.0,
+      Color::new(255, 0, 0, 255),
+    );
+
+    // Check for black fringing
+    let mut black_pixel_count = 0;
+    for i in (0..frame.len()).step_by(4) {
+      let r = frame[i];
+      let g = frame[i + 1];
+      let b = frame[i + 2];
+
+      if r < 30 && g < 30 && b < 30 {
+        black_pixel_count += 1;
+      }
+    }
+
+    assert_eq!(
+      black_pixel_count, 0,
+      "Should have no black fringing pixels around tinted rotated circle, found {}",
+      black_pixel_count
+    );
+  }
+
+  #[test]
+  fn scaled_rotated_circle_no_black_fringing() {
+    // Test with scaling which stresses the interpolation more
+    let circle = Sprite::solid_circle(15, 200, 150, 100, 255); // Brown-ish circle
+    let mut frame = vec![0u8; 60 * 60 * 4];
+
+    // Fill with cyan background
+    for i in (0..frame.len()).step_by(4) {
+      frame[i] = 0;
+      frame[i + 1] = 255;
+      frame[i + 2] = 255;
+      frame[i + 3] = 255;
+    }
+
+    // Draw scaled up and rotated
+    circle.draw_rotated(&mut frame, 60, 60, 10, 10, 2.5, 2.5, 67.0, false, false);
+
+    // Check for black fringing
+    let mut black_pixel_count = 0;
+    for i in (0..frame.len()).step_by(4) {
+      let r = frame[i];
+      let g = frame[i + 1];
+      let b = frame[i + 2];
+
+      if r < 30 && g < 30 && b < 30 {
+        black_pixel_count += 1;
+      }
+    }
+
+    assert_eq!(
+      black_pixel_count, 0,
+      "Should have no black fringing on scaled rotated circle, found {}",
+      black_pixel_count
+    );
+  }
+
+  #[test]
+  fn circle_edge_preserves_color_during_rotation() {
+    // Verify that edge pixels of a colored circle maintain their hue when rotated
+    // (not turning black or getting color-shifted)
+    let circle = Sprite::solid_circle(30, 255, 128, 0, 255); // Orange circle
+    let mut frame = vec![0u8; 50 * 50 * 4];
+
+    // White background
+    for i in (0..frame.len()).step_by(4) {
+      frame[i] = 255;
+      frame[i + 1] = 255;
+      frame[i + 2] = 255;
+      frame[i + 3] = 255;
+    }
+
+    // Draw rotated
+    circle.draw_rotated(&mut frame, 50, 50, 10, 10, 1.0, 1.0, 22.0, false, false);
+
+    // Find pixels that are partially orange (edge pixels from blending)
+    // These should have R > G (orange-ish) not R == G == B (gray/black fringing)
+    let mut found_orange_blend = false;
+    for i in (0..frame.len()).step_by(4) {
+      let r = frame[i];
+      let g = frame[i + 1];
+      let b = frame[i + 2];
+
+      // Look for blended edge pixels (not pure white, not pure orange)
+      // Should have orange hue: R > G > B
+      if r > 200 && g > 100 && g < 200 && b < g {
+        found_orange_blend = true;
+        break;
+      }
+    }
+
+    assert!(
+      found_orange_blend,
+      "Should find orange-tinted edge pixels (proper color blending, not black fringing)"
+    );
+  }
 }
