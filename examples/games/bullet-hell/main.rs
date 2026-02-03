@@ -1,3 +1,8 @@
+// Windows: Hide the console window in release builds.
+// In debug builds, the console remains visible for println! output.
+// Remove this line if you need console output in release builds.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! Bullet Hell - Ryo2D GPU Batching Demo
 //!
 //! This demo showcases:

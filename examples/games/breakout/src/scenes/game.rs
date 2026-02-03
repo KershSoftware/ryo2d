@@ -22,6 +22,7 @@ pub struct GameScene {
   level: u32,
   game_started: bool,
   game_over: bool,
+  game_won: bool,
 
   // Entity tracking
   paddle: Option<Entity>,
@@ -83,6 +84,7 @@ impl GameScene {
       level: 1,
       game_started: false,
       game_over: false,
+      game_won: false,
       paddle: None,
       balls: Vec::new(),
       blocks: Vec::new(),
@@ -117,6 +119,7 @@ impl GameScene {
       level: 1,
       game_started: false,
       game_over: false,
+      game_won: false,
       paddle: None,
       balls: Vec::new(),
       blocks: Vec::new(),
@@ -807,8 +810,16 @@ impl GameScene {
 
   fn check_level_complete(&mut self, ctx: &mut SceneContext) -> bool {
     if self.blocks_remaining == 0 {
-      // Level complete! Save high score and advance
+      // Level complete! Save high score
       save_high_score(self.high_score);
+
+      // Check if player beat all levels
+      if self.level >= MAX_LEVEL {
+        self.game_won = true;
+        return true;
+      }
+
+      // Advance to next level
       self.level += 1;
 
       // Clear blocks and spawn new level
@@ -1015,11 +1026,41 @@ impl Scene for GameScene {
 
     // Check for level complete
     if self.check_level_complete(ctx) {
+      // Check if player won the game
+      if self.game_won {
+        // Update high score one final time
+        if self.score > self.high_score {
+          self.high_score = self.score;
+          save_high_score(self.score);
+        }
+        return SceneAction::Continue;
+      }
+
       // Re-enter to spawn new level
       self.spawn_walls(ctx);
       self.spawn_paddle(ctx);
       self.spawn_ball(ctx);
       self.spawn_blocks(ctx);
+      return SceneAction::Continue;
+    }
+
+    // Check for game won state (wait for input to return to menu)
+    if self.game_won {
+      let any_input = ctx.input.key_pressed(KeyCode::Space)
+        || ctx.input.key_pressed(KeyCode::Enter)
+        || ctx.input.mouse_pressed(MouseButton::Left)
+        || ctx.input.key_pressed(KeyCode::Escape)
+        || ctx.input.gamepad_button_pressed(GamepadButton::South)
+        || ctx.input.gamepad_button_pressed(GamepadButton::Start)
+        || ctx.input.gamepad_button_pressed(GamepadButton::East);
+
+      if any_input {
+        self.music = None;
+        return SceneAction::SwitchWith(
+          Box::new(MenuScene::new()),
+          Transition::fade(Duration::from_millis(500)),
+        );
+      }
       return SceneAction::Continue;
     }
 
@@ -1244,6 +1285,34 @@ impl Scene for GameScene {
         0.0,
         100.0,
         Color::WHITE,
+      );
+    }
+
+    // Victory overlay
+    if self.game_won {
+      ui.draw_rect(
+        Rect::new(0.0, 0.0, screen_w as f32, 720.0),
+        Color::new(0, 0, 0, 180),
+      );
+      ui.draw_text_anchored("YOU WIN!", Anchor::Center, 0.0, -70.0, Color::YELLOW);
+      ui.draw_text_anchored(
+        "Congratulations!",
+        Anchor::Center,
+        0.0,
+        -30.0,
+        Color::GREEN,
+      );
+      let final_score = format!("Final Score: {}", self.score);
+      ui.draw_text_anchored(&final_score, Anchor::Center, 0.0, 10.0, Color::WHITE);
+      if self.score >= self.high_score {
+        ui.draw_text_anchored("NEW HIGH SCORE!", Anchor::Center, 0.0, 50.0, Color::CYAN);
+      }
+      ui.draw_text_anchored(
+        "Press any key to continue",
+        Anchor::Center,
+        0.0,
+        90.0,
+        Color::LIGHT_GRAY,
       );
     }
 
