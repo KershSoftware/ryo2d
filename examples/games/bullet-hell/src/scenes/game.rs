@@ -252,9 +252,10 @@ impl GameScene {
   fn spawn_player(&mut self, ctx: &mut SceneContext) {
     let sprite = self.player_sprite.clone();
     // Spawn player at center-bottom of screen
+    // Position is now center of sprite (pivot_center)
     let spawn_y = self.screen_height - 240.0; // Near bottom
     let player_entity = ctx.world.spawn((
-      Transform::new(self.screen_width / 2.0, spawn_y),
+      Transform::new(self.screen_width / 2.0, spawn_y).with_pivot_center(),
       Renderable::sprite(sprite)
         .with_z_order(Z_PLAYER)
         .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
@@ -441,12 +442,12 @@ impl GameScene {
 
     let player_entity = self.player;
 
-    // Get player position for aiming
+    // Get player position for aiming (player uses center pivot)
     let player_pos = player_entity.and_then(|e| {
       ctx
         .world
         .get::<Transform>(e)
-        .map(|t| (t.x + PLAYER_SIZE / 2.0, t.y + PLAYER_SIZE / 2.0))
+        .map(|t| (t.x, t.y))
     });
 
     // Collect drones to update
@@ -659,15 +660,12 @@ impl GameScene {
             ));
             self.lasers.push(core_laser);
 
-            // Check laser collision with player (use extended line for collision too)
+            // Check laser collision with player (player uses center pivot)
             if let Some(player_e) = player_entity {
               if let Some(player_t) = ctx.world.get::<Transform>(player_e) {
-                let px = player_t.x + PLAYER_SIZE / 2.0;
-                let py = player_t.y + PLAYER_SIZE / 2.0;
-
                 let hit = Self::point_to_line_distance(
-                  px,
-                  py,
+                  player_t.x,
+                  player_t.y,
                   drone_center_x,
                   drone_center_y,
                   extended_x,
@@ -954,11 +952,12 @@ impl GameScene {
 
     let mut new_wall_slide: Option<WallSide> = None;
     if vel_y > 0.0 && !was_grounded {
-      // Falling and not grounded
-      if tx <= 0.0 && pressing_left {
+      // Falling and not grounded (player uses center pivot)
+      let half_size = PLAYER_SIZE / 2.0;
+      if tx <= half_size && pressing_left {
         // Against left screen wall and pressing into it
         new_wall_slide = Some(WallSide::Left);
-      } else if tx >= self.screen_width - PLAYER_SIZE && pressing_right {
+      } else if tx >= self.screen_width - half_size && pressing_right {
         // Against right screen wall and pressing into it
         new_wall_slide = Some(WallSide::Right);
       } else {
@@ -988,16 +987,17 @@ impl GameScene {
       }
     }
 
-    // Screen bounds (sprite draws from top-left, so clamp to keep fully on screen)
+    // Screen bounds (player uses center pivot)
+    let half_size = PLAYER_SIZE / 2.0;
     if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-      transform.x = transform.x.clamp(0.0, self.screen_width - PLAYER_SIZE);
+      transform.x = transform.x.clamp(half_size, self.screen_width - half_size);
     }
 
-    // Ground collision (sprite draws from top-left, so bottom edge is at y + PLAYER_SIZE)
-    if ty >= self.screen_height - PLAYER_SIZE - 30.0 {
+    // Ground collision (player uses center pivot, bottom edge is at y + half_size)
+    if ty >= self.screen_height - half_size - 30.0 {
       // -30 accounts for ground platform thickness
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-        transform.y = self.screen_height - PLAYER_SIZE - 30.0;
+        transform.y = self.screen_height - half_size - 30.0;
       }
       if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
         velocity.y = 0.0;
@@ -1023,11 +1023,12 @@ impl GameScene {
       return;
     };
 
-    // Player sprite is drawn at (x, y) as top-left
-    let player_left = player_transform.x;
-    let player_right = player_transform.x + PLAYER_SIZE;
-    let player_top = player_transform.y;
-    let player_bottom = player_transform.y + PLAYER_SIZE;
+    // Player uses center pivot
+    let half_size = PLAYER_SIZE / 2.0;
+    let player_left = player_transform.x - half_size;
+    let player_right = player_transform.x + half_size;
+    let player_top = player_transform.y - half_size;
+    let player_bottom = player_transform.y + half_size;
     let vel_y = player_velocity.y;
     let falling = vel_y > 0.0;
 
@@ -1065,9 +1066,9 @@ impl GameScene {
         && player_top < platform_bottom
         && player_bottom <= platform_top + velocity_tolerance
       {
-        // Landing on top of platform - snap player to platform top
+        // Landing on top of platform - snap player to platform top (center pivot)
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-          transform.y = platform_top - PLAYER_SIZE;
+          transform.y = platform_top - half_size;
         }
         if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
           velocity.y = 0.0;
@@ -1088,10 +1089,12 @@ impl GameScene {
       return;
     };
 
-    let player_left = player_transform.x;
-    let player_right = player_transform.x + PLAYER_SIZE;
-    let player_top = player_transform.y;
-    let player_bottom = player_transform.y + PLAYER_SIZE;
+    // Player uses center pivot
+    let half_size = PLAYER_SIZE / 2.0;
+    let player_left = player_transform.x - half_size;
+    let player_right = player_transform.x + half_size;
+    let player_top = player_transform.y - half_size;
+    let player_bottom = player_transform.y + half_size;
     let vel_x = player_velocity.x;
     let vel_y = player_velocity.y;
 
@@ -1135,14 +1138,14 @@ impl GameScene {
 
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
           if min_overlap == overlap_left && vel_x > 0.0 {
-            // Push left
-            transform.x = barrier_left - PLAYER_SIZE;
+            // Push left (center pivot)
+            transform.x = barrier_left - half_size;
           } else if min_overlap == overlap_right && vel_x < 0.0 {
-            // Push right
-            transform.x = barrier_right;
+            // Push right (center pivot)
+            transform.x = barrier_right + half_size;
           } else if min_overlap == overlap_top && vel_y > 0.0 {
-            // Push up (landing on top)
-            transform.y = barrier_top - PLAYER_SIZE;
+            // Push up (landing on top, center pivot)
+            transform.y = barrier_top - half_size;
             drop(transform);
             if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
               // Inherit the barrier's vertical velocity so player moves with it
@@ -1152,8 +1155,8 @@ impl GameScene {
               player.is_grounded = true;
             }
           } else if min_overlap == overlap_bottom && vel_y < 0.0 {
-            // Push down (hitting from below)
-            transform.y = barrier_bottom;
+            // Push down (hitting from below, center pivot)
+            transform.y = barrier_bottom + half_size;
             drop(transform);
             if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
               velocity.y = 0.0;
@@ -1172,9 +1175,11 @@ impl GameScene {
       return false;
     };
 
-    let player_left = player_transform.x;
-    let player_right = player_transform.x + PLAYER_SIZE;
-    let player_bottom = player_transform.y + PLAYER_SIZE;
+    // Player uses center pivot
+    let half_size = PLAYER_SIZE / 2.0;
+    let player_left = player_transform.x - half_size;
+    let player_right = player_transform.x + half_size;
+    let player_bottom = player_transform.y + half_size;
 
     drop(player_transform);
 
@@ -1243,10 +1248,12 @@ impl GameScene {
 
     let player_transform = ctx.world.get::<Transform>(player_entity)?;
 
-    let player_left = player_transform.x;
-    let player_right = player_transform.x + PLAYER_SIZE;
-    let player_top = player_transform.y;
-    let player_bottom = player_transform.y + PLAYER_SIZE;
+    // Player uses center pivot
+    let half_size = PLAYER_SIZE / 2.0;
+    let player_left = player_transform.x - half_size;
+    let player_right = player_transform.x + half_size;
+    let player_top = player_transform.y - half_size;
+    let player_bottom = player_transform.y + half_size;
 
     drop(player_transform);
 
@@ -1304,10 +1311,12 @@ impl GameScene {
       return;
     };
 
-    let player_left = player_transform.x;
-    let player_right = player_transform.x + PLAYER_SIZE;
-    let player_top = player_transform.y;
-    let player_bottom = player_transform.y + PLAYER_SIZE;
+    // Player uses center pivot
+    let half_size = PLAYER_SIZE / 2.0;
+    let player_left = player_transform.x - half_size;
+    let player_right = player_transform.x + half_size;
+    let player_top = player_transform.y - half_size;
+    let player_bottom = player_transform.y + half_size;
     let falling = player_velocity.y > 0.0;
 
     drop(player_transform);
@@ -1332,7 +1341,7 @@ impl GameScene {
         // Landing on top of turret (player can use as platform)
         if falling && player_bottom <= turret_top + 15.0 {
           if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-            transform.y = turret_top - PLAYER_SIZE;
+            transform.y = turret_top - half_size;
           }
           if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
             velocity.y = 0.0;
@@ -1357,10 +1366,12 @@ impl GameScene {
       return;
     };
 
-    let player_left = player_transform.x;
-    let player_right = player_transform.x + PLAYER_SIZE;
-    let player_top = player_transform.y;
-    let player_bottom = player_transform.y + PLAYER_SIZE;
+    // Player uses center pivot
+    let half_size = PLAYER_SIZE / 2.0;
+    let player_left = player_transform.x - half_size;
+    let player_right = player_transform.x + half_size;
+    let player_top = player_transform.y - half_size;
+    let player_bottom = player_transform.y + half_size;
     let falling = player_velocity.y > 0.0;
 
     drop(player_transform);
@@ -1388,7 +1399,7 @@ impl GameScene {
         // Landing on top of drone (player can use as platform)
         if falling && player_bottom <= drone_top + 15.0 {
           if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-            transform.y = drone_top - PLAYER_SIZE;
+            transform.y = drone_top - half_size;
           }
           if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
             velocity.y = 0.0;
