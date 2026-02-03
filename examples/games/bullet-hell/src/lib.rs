@@ -7,5 +7,6 @@ pub mod components;
 pub mod constants;
 pub mod save;
 pub mod scenes;
+pub mod shared;
 
 pub use constants::*;

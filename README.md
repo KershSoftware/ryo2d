@@ -6,6 +6,8 @@ A Rust 2D game engine designed with agent-assisted development in mind from the 
 *Reality:*
 I started learning Rust and then I decided to start building a 2D game engine to apply the language; all while using agentic tools.
 
+**Should you use this engine?** Probably not -- unless you want to be a part of this exploratory experiment.
+
 ## Quick Start
 
 ### Install

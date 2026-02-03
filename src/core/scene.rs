@@ -521,6 +521,22 @@ pub trait Scene {
       .next()
       .unwrap_or("Unknown")
   }
+
+  /// Whether physics should be paused for this scene.
+  ///
+  /// Override this to pause physics during pause menus, cutscenes, etc.
+  /// Default is `false` (physics runs normally).
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// fn is_physics_paused(&self) -> bool {
+  ///     self.is_paused
+  /// }
+  /// ```
+  fn is_physics_paused(&self) -> bool {
+    false
+  }
 }
 
 /// Manages a stack of scenes.
@@ -1086,13 +1102,18 @@ impl SceneManager {
 
   /// Check if physics should be paused based on scene stack.
   ///
-  /// Physics is paused when there's more than one scene and the top scene
-  /// doesn't allow updates below (e.g., a pause menu blocking the game).
+  /// Physics is paused when:
+  /// - The top scene explicitly requests it via `is_physics_paused()`
+  /// - There's more than one scene and the top scene doesn't allow updates below
   pub fn is_physics_paused(&self) -> bool {
-    if self.scenes.len() > 1 {
-      // If top scene doesn't update below, physics should pause
-      if let Some(top) = self.scenes.last() {
-        return !top.updates_below();
+    if let Some(top) = self.scenes.last() {
+      // Check if the top scene explicitly requests physics pause
+      if top.is_physics_paused() {
+        return true;
+      }
+      // Also pause if there are stacked scenes and top doesn't update below
+      if self.scenes.len() > 1 && !top.updates_below() {
+        return true;
       }
     }
     false
