@@ -195,8 +195,8 @@ impl RenderPipeline {
       .filter_map(|(&i, &deg)| if deg == 0 { Some(i) } else { None })
       .collect();
 
-    // Sort initial queue for deterministic ordering
-    queue.sort_by_key(|&i| self.passes[i].id());
+    // Sort initial queue for deterministic ordering (descending so pop() yields ascending)
+    queue.sort_by(|&a, &b| self.passes[b].id().cmp(self.passes[a].id()));
 
     let mut result = Vec::with_capacity(self.passes.len());
 
@@ -213,8 +213,8 @@ impl RenderPipeline {
         }
       }
 
-      // Sort new ready passes for deterministic ordering
-      new_ready.sort_by_key(|&i| self.passes[i].id());
+      // Sort new ready passes for deterministic ordering (descending so pop() yields ascending)
+      new_ready.sort_by(|&a, &b| self.passes[b].id().cmp(self.passes[a].id()));
       queue.extend(new_ready);
     }
 
@@ -256,6 +256,7 @@ mod tests {
       }
     }
 
+    #[allow(dead_code)]
     fn was_executed(&self) -> bool {
       self.executed.load(std::sync::atomic::Ordering::SeqCst)
     }

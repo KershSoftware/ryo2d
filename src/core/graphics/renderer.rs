@@ -19,14 +19,21 @@ pub struct WgpuRenderer {
   device: wgpu::Device,
   queue: wgpu::Queue,
   config: wgpu::SurfaceConfiguration,
-  // The pixel buffer texture on GPU
+  // The game texture (GPU sprites render here first, then CPU content blended on top)
   texture: wgpu::Texture,
   texture_view: wgpu::TextureView,
   sampler: wgpu::Sampler,
+  // Staging texture for CPU pixel buffer (used for alpha-blending onto game texture)
+  cpu_texture: wgpu::Texture,
+  #[allow(dead_code)] // View is used indirectly through cpu_bind_group
+  cpu_texture_view: wgpu::TextureView,
+  cpu_bind_group: wgpu::BindGroup,
   // Pipeline for rendering texture to screen (REPLACE blend)
   render_pipeline: wgpu::RenderPipeline,
-  // Pipeline for alpha-blending overlay (for UI compositing)
+  // Pipeline for alpha-blending overlay onto surface (for UI compositing)
   blend_pipeline: wgpu::RenderPipeline,
+  // Pipeline for alpha-blending CPU content onto game texture (Rgba8UnormSrgb format)
+  game_blend_pipeline: wgpu::RenderPipeline,
   bind_group: wgpu::BindGroup,
   bind_group_layout: wgpu::BindGroupLayout,
   // Uniform buffer for viewport transform
@@ -185,6 +192,23 @@ impl WgpuRenderer {
 
     let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+    // Create CPU staging texture (for uploading CPU pixel buffer and blending onto game texture)
+    let cpu_texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("CPU Staging Texture"),
+      size: wgpu::Extent3d {
+        width: game_width,
+        height: game_height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+      view_formats: &[],
+    });
+    let cpu_texture_view = cpu_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
     // Create sampler (nearest neighbor for pixel art crispness)
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
       label: Some("Game Sampler"),
@@ -240,7 +264,7 @@ impl WgpuRenderer {
       ],
     });
 
-    // Create bind group
+    // Create bind group for main game texture
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
       label: Some("Texture Bind Group"),
       layout: &bind_group_layout,
@@ -248,6 +272,26 @@ impl WgpuRenderer {
         wgpu::BindGroupEntry {
           binding: 0,
           resource: wgpu::BindingResource::TextureView(&texture_view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: wgpu::BindingResource::Sampler(&sampler),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: uniform_buffer.as_entire_binding(),
+        },
+      ],
+    });
+
+    // Create bind group for CPU staging texture (for blending onto game texture)
+    let cpu_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("CPU Texture Bind Group"),
+      layout: &bind_group_layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: wgpu::BindingResource::TextureView(&cpu_texture_view),
         },
         wgpu::BindGroupEntry {
           binding: 1,
@@ -312,7 +356,7 @@ impl WgpuRenderer {
       cache: None,
     });
 
-    // Create blend pipeline (ALPHA_BLENDING - for UI overlay)
+    // Create blend pipeline (ALPHA_BLENDING - for UI overlay onto surface)
     let blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
       label: Some("Blend Pipeline"),
       layout: Some(&pipeline_layout),
@@ -327,6 +371,46 @@ impl WgpuRenderer {
         entry_point: "fs_main",
         targets: &[Some(wgpu::ColorTargetState {
           format: surface_format,
+          blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+          write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+      }),
+      primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        strip_index_format: None,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: None,
+        polygon_mode: wgpu::PolygonMode::Fill,
+        unclipped_depth: false,
+        conservative: false,
+      },
+      depth_stencil: None,
+      multisample: wgpu::MultisampleState {
+        count: 1,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+      },
+      multiview: None,
+      cache: None,
+    });
+
+    // Create game blend pipeline (ALPHA_BLENDING - for CPU content onto game texture)
+    // Uses Rgba8UnormSrgb format to match the game texture
+    let game_blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+      label: Some("Game Blend Pipeline"),
+      layout: Some(&pipeline_layout),
+      vertex: wgpu::VertexState {
+        module: &shader,
+        entry_point: "vs_main",
+        buffers: &[],
+        compilation_options: Default::default(),
+      },
+      fragment: Some(wgpu::FragmentState {
+        module: &shader,
+        entry_point: "fs_main",
+        targets: &[Some(wgpu::ColorTargetState {
+          format: wgpu::TextureFormat::Rgba8UnormSrgb, // Game texture format
           blend: Some(wgpu::BlendState::ALPHA_BLENDING),
           write_mask: wgpu::ColorWrites::ALL,
         })],
@@ -401,8 +485,12 @@ impl WgpuRenderer {
       texture,
       texture_view,
       sampler,
+      cpu_texture,
+      cpu_texture_view,
+      cpu_bind_group,
       render_pipeline,
       blend_pipeline,
+      game_blend_pipeline,
       bind_group,
       bind_group_layout,
       uniform_buffer,
@@ -650,14 +738,16 @@ impl WgpuRenderer {
 
   /// Render with optional GPU sprites and post-processing effects.
   ///
-  /// The GPU sprite callback receives the queue, command encoder and game texture view,
-  /// allowing GPU sprites to be rendered on top of the CPU-rendered content.
+  /// GPU sprites and CPU content are properly z-ordered:
+  /// - GPU sprites with negative z-order (e.g., parallax backgrounds) render BEHIND CPU content
+  /// - CPU content renders on top with alpha blending
   ///
   /// # Render Order
-  /// 1. CPU pixel buffer is uploaded to game texture
-  /// 2. `gpu_sprite_callback` draws GPU sprites on top (if provided)
-  /// 3. Post-processing effects are applied (if provided)
-  /// 4. Final result is rendered to screen with letterboxing
+  /// 1. Game texture is cleared
+  /// 2. `gpu_sprite_callback` draws GPU sprites (backgrounds, parallax)
+  /// 3. CPU pixel buffer is alpha-blended on top
+  /// 4. Post-processing effects are applied (if provided)
+  /// 5. Final result is rendered to screen with letterboxing
   pub fn render_with_gpu_sprites<F>(
     &mut self,
     effects: Option<&EffectsManager>,
@@ -666,10 +756,10 @@ impl WgpuRenderer {
   where
     F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
   {
-    // Upload pixel buffer to GPU texture
+    // Step 1: Upload CPU pixel buffer to staging texture (not game texture)
     self.queue.write_texture(
       wgpu::ImageCopyTexture {
-        texture: &self.texture,
+        texture: &self.cpu_texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
@@ -700,9 +790,57 @@ impl WgpuRenderer {
         label: Some("Render Encoder"),
       });
 
-    // Render GPU sprites on top of CPU content (if callback provided)
+    // Step 2: Clear game texture (required to prevent ghosting from previous frame)
+    {
+      let _clear_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Clear Game Texture Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &self.texture_view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color {
+              r: 0.0,
+              g: 0.0,
+              b: 0.0,
+              a: 1.0, // Opaque black as default background
+            }),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+      });
+    }
+
+    // Step 3: Render GPU sprites (backgrounds, parallax) if callback provided
     if let Some(callback) = gpu_sprite_callback {
       callback(&self.queue, &mut encoder, &self.texture_view);
+    }
+
+    // Step 3: Blend CPU content on top of GPU sprites
+    // CPU pixel buffer has alpha=0 for transparent areas, alpha=255 for opaque content
+    {
+      let mut blend_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("CPU Content Blend Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &self.texture_view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Load, // Preserve GPU sprite content
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+      });
+
+      // Use game blend pipeline to alpha-composite CPU content onto GPU sprites
+      // (game_blend_pipeline uses Rgba8UnormSrgb format to match game texture)
+      blend_pass.set_pipeline(&self.game_blend_pipeline);
+      blend_pass.set_bind_group(0, &self.cpu_bind_group, &[]);
+      blend_pass.draw(0..6, 0..1);
     }
 
     // Check if we have active effects to apply
@@ -865,10 +1003,10 @@ impl WgpuRenderer {
     F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
     L: FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &[u8], &wgpu::TextureView),
   {
-    // Upload pixel buffer to GPU texture
+    // Step 1: Upload CPU pixel buffer to staging texture (not game texture)
     self.queue.write_texture(
       wgpu::ImageCopyTexture {
-        texture: &self.texture,
+        texture: &self.cpu_texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
@@ -899,9 +1037,55 @@ impl WgpuRenderer {
         label: Some("Render Encoder"),
       });
 
-    // Render GPU sprites on top of CPU content (if callback provided)
+    // Step 2: Clear game texture (required to prevent ghosting from previous frame)
+    {
+      let _clear_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Clear Game Texture Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &self.texture_view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color {
+              r: 0.0,
+              g: 0.0,
+              b: 0.0,
+              a: 1.0, // Opaque black as default background
+            }),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+      });
+    }
+
+    // Step 3: Render GPU sprites (backgrounds, parallax) if callback provided
     if let Some(callback) = gpu_sprite_callback {
       callback(&self.queue, &mut encoder, &self.texture_view);
+    }
+
+    // Step 4: Blend CPU content on top of GPU sprites
+    {
+      let mut blend_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("CPU Content Blend Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &self.texture_view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Load, // Preserve GPU sprite content
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+      });
+
+      // Use game blend pipeline (Rgba8UnormSrgb format to match game texture)
+      blend_pass.set_pipeline(&self.game_blend_pipeline);
+      blend_pass.set_bind_group(0, &self.cpu_bind_group, &[]);
+      blend_pass.draw(0..6, 0..1);
     }
 
     // Track whether lighting was applied (changes the source texture)

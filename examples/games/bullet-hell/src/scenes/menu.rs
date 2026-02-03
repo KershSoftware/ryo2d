@@ -20,18 +20,30 @@ impl Default for MenuScene {
 impl MenuScene {
   pub fn new() -> Self {
     // Load parallax background layers as sprite handles (for GPU upload)
-    let sky_sprite =
-      SpriteHandle::from_sprite(Sprite::load("assets/desert_sky.png").expect("Failed to load sky sprite"), "desert_sky");
-    let moon_sprite =
-      SpriteHandle::from_sprite(Sprite::load("assets/desert_moon.png").expect("Failed to load moon sprite"), "desert_moon");
-    let cloud_sprite =
-      SpriteHandle::from_sprite(Sprite::load("assets/desert_cloud.png").expect("Failed to load cloud sprite"), "desert_cloud");
-    let mountain_sprite =
-      SpriteHandle::from_sprite(Sprite::load("assets/desert_mountain.png").expect("Failed to load mountain sprite"), "desert_mountain");
-    let dune_mid_sprite =
-      SpriteHandle::from_sprite(Sprite::load("assets/desert_dunemid.png").expect("Failed to load mid dune sprite"), "desert_dunemid");
-    let dune_front_sprite =
-      SpriteHandle::from_sprite(Sprite::load("assets/desert_dunefrontt.png").expect("Failed to load front dune sprite"), "desert_dunefront");
+    let sky_sprite = SpriteHandle::from_sprite(
+      Sprite::load("assets/desert_sky.png").expect("Failed to load sky sprite"),
+      "desert_sky",
+    );
+    let moon_sprite = SpriteHandle::from_sprite(
+      Sprite::load("assets/desert_moon.png").expect("Failed to load moon sprite"),
+      "desert_moon",
+    );
+    let cloud_sprite = SpriteHandle::from_sprite(
+      Sprite::load("assets/desert_cloud.png").expect("Failed to load cloud sprite"),
+      "desert_cloud",
+    );
+    let mountain_sprite = SpriteHandle::from_sprite(
+      Sprite::load("assets/desert_mountain.png").expect("Failed to load mountain sprite"),
+      "desert_mountain",
+    );
+    let dune_mid_sprite = SpriteHandle::from_sprite(
+      Sprite::load("assets/desert_dunemid.png").expect("Failed to load mid dune sprite"),
+      "desert_dunemid",
+    );
+    let dune_front_sprite = SpriteHandle::from_sprite(
+      Sprite::load("assets/desert_dunefrontt.png").expect("Failed to load front dune sprite"),
+      "desert_dunefront",
+    );
 
     // Store sprite handles for GPU upload
     let parallax_sprites = vec![
@@ -138,16 +150,6 @@ impl Scene for MenuScene {
       center_x - title_w as f32 / 2.0,
       150.0,
       Color::rgb(255, 50, 50),
-    );
-
-    // Subtitle
-    let subtitle = "GPU Batching Demo";
-    let (subtitle_w, _) = ui.text_size(subtitle);
-    ui.draw_text(
-      subtitle,
-      center_x - subtitle_w as f32 / 2.0,
-      180.0,
-      Color::rgb(150, 150, 150),
     );
 
     // Controls

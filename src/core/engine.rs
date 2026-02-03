@@ -850,12 +850,14 @@ impl Engine {
       None => return,
     };
 
-    // Fill background with dark charcoal (game area only - letterbox is handled by clear color)
+    // Fill background with transparent black
+    // This allows GPU-rendered content (parallax backgrounds) to show through
+    // Areas without CPU sprites will be transparent, showing the GPU layer beneath
     for pixel in frame.chunks_exact_mut(4) {
-      pixel[0] = 0x2d; // R: 45
-      pixel[1] = 0x2d; // G: 45
-      pixel[2] = 0x2d; // B: 45
-      pixel[3] = 0xff; // A: 255
+      pixel[0] = 0x00; // R: 0
+      pixel[1] = 0x00; // G: 0
+      pixel[2] = 0x00; // B: 0
+      pixel[3] = 0x00; // A: 0 (transparent)
     }
 
     // --- Render Background Layers (Parallax, etc.) ---
