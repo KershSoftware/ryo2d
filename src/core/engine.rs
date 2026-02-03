@@ -816,6 +816,67 @@ impl Engine {
       }
     }
 
+    // --- Knockback System ---
+    // Update Knockback components and apply velocity to entities
+    let mut knockback_started_events = Vec::new();
+    let mut knockback_finished_events = Vec::new();
+
+    for entity in self.world.entities_with::<super::ecs::Knockback>() {
+      // Skip inactive pooled entities
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+
+      // Check if knockback is active
+      let should_update = self
+        .world
+        .get_component::<super::ecs::Knockback>(entity)
+        .is_some_and(|kb| kb.active);
+
+      if !should_update {
+        continue;
+      }
+
+      // Get knockback component
+      if let Some(mut knockback) = self.world.get_component_mut::<super::ecs::Knockback>(entity) {
+        // Get velocity before update (to apply this frame)
+        let (vel_x, vel_y) = knockback.current_velocity();
+
+        // Update knockback (decay strength)
+        knockback.update(_dt);
+
+        // Collect events
+        if knockback.just_started {
+          knockback_started_events.push(entity);
+        }
+        if knockback.just_finished {
+          knockback_finished_events.push(entity);
+        }
+
+        // Apply knockback displacement directly to Transform
+        // This works for both simple and physics entities - knockback moves
+        // the entity directly rather than going through velocity
+        if let Some(mut transform) =
+          self.world.get_component_mut::<super::ecs::Transform>(entity)
+        {
+          transform.x += vel_x * _dt;
+          transform.y += vel_y * _dt;
+        }
+      }
+    }
+
+    // Emit knockback events
+    for entity in knockback_started_events {
+      self
+        .events
+        .emit(super::events::KnockbackStarted { entity });
+    }
+    for entity in knockback_finished_events {
+      self
+        .events
+        .emit(super::events::KnockbackFinished { entity });
+    }
+
     // --- Game Logic Update ---
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {

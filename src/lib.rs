@@ -58,7 +58,7 @@ pub mod prelude {
 
   // ECS types
   pub use crate::core::ecs::{
-    Active, Children, Ease, Entity, Inactive, Material, Parent, Pool, PoolConfig,
+    Active, Children, Ease, Entity, Inactive, Knockback, Material, Parent, Pool, PoolConfig,
     PoolExhaustedPolicy, PoolStats, RenderLayer, RenderMode, RenderStyle, Renderable, ShaderHandle,
     ShaderParams, SpriteEffect, SpriteShader, Transform, Tween, TweenLoop, TweenSequence, Velocity,
     World, WorldTransform,
@@ -71,7 +71,7 @@ pub mod prelude {
   pub use crate::core::events::{
     AssetLoadFailed, AssetReloaded, ClientConnected, ClientDisconnected, CollisionStarted,
     CollisionStopped, ConnectedToServer, DisconnectReason, DisconnectedFromServer, Events,
-    TweenCompleted, TweenStarted,
+    KnockbackFinished, KnockbackStarted, TweenCompleted, TweenStarted,
   };
 
   // Physics components

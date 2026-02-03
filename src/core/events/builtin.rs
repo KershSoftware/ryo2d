@@ -317,3 +317,55 @@ pub struct TweenCompleted {
   /// - `false` for `Loop`, `PingPong`, or non-final iterations of `Times(n)`
   pub finished: bool,
 }
+
+// ============================================================================
+// Knockback Events
+// ============================================================================
+
+/// Emitted when knockback starts on an entity.
+///
+/// This event is emitted by the engine when a [`Knockback`](crate::core::ecs::Knockback)
+/// component becomes active (either newly added or reapplied).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<KnockbackStarted>() {
+///         // Play hit sound, spawn impact particles, etc.
+///         self.play_sound("hit.wav");
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KnockbackStarted {
+  /// The entity that started being knocked back
+  pub entity: Entity,
+}
+
+/// Emitted when knockback finishes on an entity.
+///
+/// This event is emitted by the engine when a [`Knockback`](crate::core::ecs::Knockback)
+/// component's strength decays to zero.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     for event in ctx.events.read::<KnockbackFinished>() {
+///         // Entity can move freely again
+///         if event.entity == self.player {
+///             self.player_stunned = false;
+///         }
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KnockbackFinished {
+  /// The entity that finished being knocked back
+  pub entity: Entity,
+}
