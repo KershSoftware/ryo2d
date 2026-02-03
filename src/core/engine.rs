@@ -1131,7 +1131,7 @@ impl Engine {
               let offset_y = ((new_height as i32 - src_height as i32) / 2) as f32 * final_scale_y;
 
               let transformed_sprite = Sprite::from_rgba(transformed_data, new_width, new_height);
-              transformed_sprite.draw_rotated(
+              transformed_sprite.draw_rotated_tinted(
                 frame,
                 frame_width,
                 frame_height,
@@ -1142,12 +1142,14 @@ impl Engine {
                 rotation_deg,
                 renderable.flip_x,
                 renderable.flip_y,
+                renderable.alpha,
+                renderable.tint,
               );
             });
           } else {
-            // No shader - draw normally
+            // No shader - draw with tint/alpha support
             renderable.sprite.with_sprite(|sprite| {
-              sprite.draw_rotated(
+              sprite.draw_rotated_tinted(
                 frame,
                 frame_width,
                 frame_height,
@@ -1158,6 +1160,8 @@ impl Engine {
                 rotation_deg,
                 renderable.flip_x,
                 renderable.flip_y,
+                renderable.alpha,
+                renderable.tint,
               );
             });
           }
@@ -1214,7 +1218,7 @@ impl Engine {
             let final_scale_y = scale_y * self.camera.zoom;
 
             renderable.sprite.with_sprite(|sprite| {
-              sprite.draw_rotated(
+              sprite.draw_rotated_tinted(
                 frame,
                 frame_width,
                 frame_height,
@@ -1225,6 +1229,8 @@ impl Engine {
                 rotation_deg,
                 renderable.flip_x,
                 renderable.flip_y,
+                renderable.alpha,
+                renderable.tint,
               );
             });
           }

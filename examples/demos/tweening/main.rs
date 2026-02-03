@@ -9,10 +9,11 @@
 //! 3. **Callbacks** - on_start, on_update, on_complete callbacks with visual feedback
 //! 4. **Combined Effects** - Position + scale + rotation combinations
 //! 5. **Sequences** - TweenSequence for chained animations
+//! 6. **Color & Alpha** - Alpha fade, tint colors, and combined color effects
 //!
 //! ## Controls
 //!
-//! - 1-5: Switch scenes
+//! - 1-6: Switch scenes
 //! - Space: Restart tweens (scene-specific)
 //! - Escape: Exit
 
@@ -183,6 +184,9 @@ impl Scene for EasingScene {
     if ctx.input.key_pressed(KeyCode::Digit5) {
       return SceneAction::Switch(Box::new(SequenceScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit6) {
+      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
+    }
 
     // Loop mode controls (Q/W/E/R)
     let mut mode_changed = false;
@@ -331,6 +335,9 @@ impl Scene for SpeedControlScene {
     if ctx.input.key_pressed(KeyCode::Digit5) {
       return SceneAction::Switch(Box::new(SequenceScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit6) {
+      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
+    }
 
     // Speed control
     let mut changed = false;
@@ -380,7 +387,7 @@ impl Scene for SpeedControlScene {
     let text_light = Color::rgb(220, 220, 220);
 
     ui.draw_text("[2] Speed Control", 10.0, 10.0, text_accent);
-    ui.draw_text("1,3-5: Other scenes | ESC: Exit", 10.0, 30.0, text_muted);
+    ui.draw_text("1,3-6: Other scenes | ESC: Exit", 10.0, 30.0, text_muted);
 
     ui.draw_text("Speed: Q=0.25x W=0.5x E=1x R=2x T=4x", 10.0, 70.0, text_light);
     ui.draw_text("Space: Toggle Pause", 10.0, 90.0, text_light);
@@ -496,6 +503,9 @@ impl Scene for CallbacksScene {
     if ctx.input.key_pressed(KeyCode::Digit5) {
       return SceneAction::Switch(Box::new(SequenceScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit6) {
+      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
+    }
 
     // Restart
     if ctx.input.key_pressed(KeyCode::Space) {
@@ -514,7 +524,7 @@ impl Scene for CallbacksScene {
     let text_light = Color::rgb(220, 220, 220);
 
     ui.draw_text("[3] Callbacks", 10.0, 10.0, text_accent);
-    ui.draw_text("1-2,4-5: Other scenes | Space: Restart | ESC: Exit", 10.0, 30.0, text_muted);
+    ui.draw_text("1-2,4-6: Other scenes | Space: Restart | ESC: Exit", 10.0, 30.0, text_muted);
 
     ui.draw_text("Tween loops 3 times with callbacks:", 10.0, 70.0, text_light);
 
@@ -682,6 +692,9 @@ impl Scene for CombinedEffectsScene {
     if ctx.input.key_pressed(KeyCode::Digit5) {
       return SceneAction::Switch(Box::new(SequenceScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit6) {
+      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
+    }
 
     // Restart
     if ctx.input.key_pressed(KeyCode::Space) {
@@ -698,7 +711,7 @@ impl Scene for CombinedEffectsScene {
     let text_light = Color::rgb(220, 220, 220);
 
     ui.draw_text("[4] Combined Effects", 10.0, 10.0, text_accent);
-    ui.draw_text("1-3,5: Other scenes | Space: Restart | ESC: Exit", 10.0, 30.0, text_muted);
+    ui.draw_text("1-3,5-6: Other scenes | Space: Restart | ESC: Exit", 10.0, 30.0, text_muted);
 
     let (w, h) = ui.screen_size();
     let center_x = w as f32 / 2.0;
@@ -808,6 +821,9 @@ impl Scene for SequenceScene {
     if ctx.input.key_pressed(KeyCode::Digit4) {
       return SceneAction::Switch(Box::new(CombinedEffectsScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit6) {
+      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
+    }
 
     // Restart
     if ctx.input.key_pressed(KeyCode::Space) {
@@ -831,7 +847,7 @@ impl Scene for SequenceScene {
     let text_light = Color::rgb(220, 220, 220);
 
     ui.draw_text("[5] Tween Sequences", 10.0, 10.0, text_accent);
-    ui.draw_text("1-4: Other scenes | Space: Restart | ESC: Exit", 10.0, 30.0, text_muted);
+    ui.draw_text("1-4,6: Other scenes | Space: Restart | ESC: Exit", 10.0, 30.0, text_muted);
 
     let (w, h) = ui.screen_size();
     let center_x = w as f32 / 2.0;
@@ -840,6 +856,274 @@ impl Scene for SequenceScene {
     ui.draw_text("TweenSequence chains multiple tweens", center_x - 130.0, center_y - 20.0, text_light);
     ui.draw_text("Each tween plays after the previous completes", center_x - 155.0, center_y, text_muted);
     ui.draw_text("This box follows a square path: -> v <- ^", center_x - 145.0, center_y + 20.0, text_muted);
+  }
+}
+
+// ============================================================================
+// Scene 6: Color & Alpha
+// ============================================================================
+
+#[derive(Debug)]
+struct ColorAlphaDemo;
+
+struct ColorAlphaScene {
+  entities: Vec<Entity>,
+  screen_w: f32,
+  screen_h: f32,
+}
+
+impl ColorAlphaScene {
+  fn new() -> Self {
+    Self {
+      entities: Vec::new(),
+      screen_w: 1024.0,
+      screen_h: 768.0,
+    }
+  }
+
+  fn spawn_demos(&mut self, ctx: &mut SceneContext) {
+    let start_y = 200.0;
+    let spacing = 120.0;
+
+    // Demo 1: Alpha fade (ping-pong)
+    let sprite1 = Sprite::solid_rect(60, 60, 100, 150, 255, 255);
+    let handle1 = SpriteHandle::from_sprite(sprite1, "fade_box");
+
+    self.entities.push(ctx.world.spawn((
+      ColorAlphaDemo,
+      Transform::new(200.0, start_y).with_pivot_center(),
+      Renderable::sprite(handle1).with_z_order(10),
+      Tween::new(1.5)
+        .to_alpha(0.1)
+        .with_easing(Ease::InOutSine)
+        .with_loop(TweenLoop::PingPong),
+    )));
+
+    // Demo 2: Tint to red
+    let sprite2 = Sprite::solid_rect(60, 60, 255, 255, 255, 255);
+    let handle2 = SpriteHandle::from_sprite(sprite2, "tint_red");
+
+    self.entities.push(ctx.world.spawn((
+      ColorAlphaDemo,
+      Transform::new(350.0, start_y).with_pivot_center(),
+      Renderable::sprite(handle2).with_z_order(10),
+      Tween::new(1.0)
+        .to_tint(Color::new(255, 80, 80, 255))
+        .with_easing(Ease::InOutQuad)
+        .with_loop(TweenLoop::PingPong),
+    )));
+
+    // Demo 3: Tint to green
+    let sprite3 = Sprite::solid_rect(60, 60, 255, 255, 255, 255);
+    let handle3 = SpriteHandle::from_sprite(sprite3, "tint_green");
+
+    self.entities.push(ctx.world.spawn((
+      ColorAlphaDemo,
+      Transform::new(500.0, start_y).with_pivot_center(),
+      Renderable::sprite(handle3).with_z_order(10),
+      Tween::new(1.0)
+        .to_tint(Color::new(80, 255, 80, 255))
+        .with_easing(Ease::InOutQuad)
+        .with_loop(TweenLoop::PingPong),
+    )));
+
+    // Demo 4: Tint to blue
+    let sprite4 = Sprite::solid_rect(60, 60, 255, 255, 255, 255);
+    let handle4 = SpriteHandle::from_sprite(sprite4, "tint_blue");
+
+    self.entities.push(ctx.world.spawn((
+      ColorAlphaDemo,
+      Transform::new(650.0, start_y).with_pivot_center(),
+      Renderable::sprite(handle4).with_z_order(10),
+      Tween::new(1.0)
+        .to_tint(Color::new(80, 80, 255, 255))
+        .with_easing(Ease::InOutQuad)
+        .with_loop(TweenLoop::PingPong),
+    )));
+
+    // Demo 5: Color cycle (sequence)
+    let sprite5 = Sprite::solid_circle(40, 255, 255, 255, 255);
+    let handle5 = SpriteHandle::from_sprite(sprite5, "color_cycle");
+
+    self.entities.push(ctx.world.spawn((
+      ColorAlphaDemo,
+      Transform::new(825.0, start_y).with_pivot_center(),
+      Renderable::sprite(handle5).with_z_order(10),
+      TweenSequence::new()
+        .then(Tween::new(0.6).to_tint(Color::new(255, 100, 100, 255)).with_easing(Ease::InOutSine))
+        .then(Tween::new(0.6).to_tint(Color::new(100, 255, 100, 255)).with_easing(Ease::InOutSine))
+        .then(Tween::new(0.6).to_tint(Color::new(100, 100, 255, 255)).with_easing(Ease::InOutSine))
+        .then(Tween::new(0.6).to_tint(Color::WHITE).with_easing(Ease::InOutSine))
+        .with_loop(),
+    )));
+
+    // Row 2: Combined effects
+    let row2_y = start_y + spacing;
+
+    // Demo 6: Alpha + Scale (pop in/out)
+    let sprite6 = Sprite::solid_rect(50, 50, 255, 200, 100, 255);
+    let handle6 = SpriteHandle::from_sprite(sprite6, "pop_box");
+
+    self.entities.push(ctx.world.spawn((
+      ColorAlphaDemo,
+      Transform::new(200.0, row2_y).with_pivot_center().with_uniform_scale(0.1),
+      Renderable::sprite(handle6).with_z_order(10).with_alpha(0.0),
+      TweenSequence::new()
+        .then(Tween::new(0.4).to_alpha(1.0).to_scale_x(1.0).to_scale_y(1.0).with_easing(Ease::OutBack))
+        .then(Tween::new(0.8)) // Hold
+        .then(Tween::new(0.4).to_alpha(0.0).to_scale_x(0.1).to_scale_y(0.1).with_easing(Ease::InBack))
+        .then(Tween::new(0.3)) // Pause
+        .with_loop(),
+    )));
+
+    // Demo 7: Tint + Position (moving color)
+    let sprite7 = Sprite::solid_circle(30, 255, 255, 255, 255);
+    let handle7 = SpriteHandle::from_sprite(sprite7, "moving_tint");
+
+    self.entities.push(ctx.world.spawn((
+      ColorAlphaDemo,
+      Transform::new(350.0, row2_y).with_pivot_center(),
+      Renderable::sprite(handle7).with_z_order(10),
+      TweenSequence::new()
+        .then(Tween::new(0.8).to_x(550.0).to_tint(Color::new(255, 100, 255, 255)).with_easing(Ease::InOutQuad))
+        .then(Tween::new(0.8).to_x(350.0).to_tint(Color::WHITE).with_easing(Ease::InOutQuad))
+        .with_loop(),
+    )));
+
+    // Demo 8: Alpha + Rotation (fading spin)
+    let sprite8 = Sprite::solid_rect(45, 45, 150, 255, 200, 255);
+    let handle8 = SpriteHandle::from_sprite(sprite8, "spin_fade");
+
+    self.entities.push(ctx.world.spawn((
+      ColorAlphaDemo,
+      Transform::new(700.0, row2_y).with_pivot_center(),
+      Renderable::sprite(handle8).with_z_order(10),
+      Tween::new(2.0)
+        .to_alpha(0.2)
+        .to_rotation_value(PI * 2.0)
+        .with_easing(Ease::Linear)
+        .with_loop(TweenLoop::PingPong),
+    )));
+
+    // Row 3: Labels
+    let row3_y = start_y + spacing * 2.0;
+
+    // Demo 9: Tint darkening (multiply effect)
+    let sprite9 = Sprite::solid_rect(60, 60, 255, 200, 150, 255);
+    let handle9 = SpriteHandle::from_sprite(sprite9, "darken");
+
+    self.entities.push(ctx.world.spawn((
+      ColorAlphaDemo,
+      Transform::new(200.0, row3_y).with_pivot_center(),
+      Renderable::sprite(handle9).with_z_order(10),
+      Tween::new(1.2)
+        .to_tint(Color::new(80, 80, 80, 255)) // Darken by multiplying with gray
+        .with_easing(Ease::InOutSine)
+        .with_loop(TweenLoop::PingPong),
+    )));
+
+    // Demo 10: Full combo (position + scale + rotation + alpha + tint)
+    let sprite10 = Sprite::solid_circle(25, 255, 255, 255, 255);
+    let handle10 = SpriteHandle::from_sprite(sprite10, "full_combo");
+
+    self.entities.push(ctx.world.spawn((
+      ColorAlphaDemo,
+      Transform::new(500.0, row3_y).with_pivot_center(),
+      Renderable::sprite(handle10).with_z_order(10),
+      TweenSequence::new()
+        .then(
+          Tween::new(1.0)
+            .to_x(700.0)
+            .to_scale_x(1.5).to_scale_y(1.5)
+            .to_rotation_value(PI)
+            .to_alpha(0.5)
+            .to_tint(Color::new(255, 150, 50, 255))
+            .with_easing(Ease::InOutCubic),
+        )
+        .then(
+          Tween::new(1.0)
+            .to_x(500.0)
+            .to_scale_x(1.0).to_scale_y(1.0)
+            .to_rotation_value(PI * 2.0)
+            .to_alpha(1.0)
+            .to_tint(Color::WHITE)
+            .with_easing(Ease::InOutCubic),
+        )
+        .with_loop(),
+    )));
+  }
+
+  fn cleanup(&mut self, ctx: &mut SceneContext) {
+    for entity in self.entities.drain(..) {
+      let _ = ctx.world.despawn(entity);
+    }
+  }
+}
+
+impl Scene for ColorAlphaScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let (screen_w, screen_h) = ctx.screen_size();
+    self.screen_w = screen_w;
+    self.screen_h = screen_h;
+    self.spawn_demos(ctx);
+  }
+
+  fn on_exit(&mut self, ctx: &mut SceneContext) {
+    self.cleanup(ctx);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if ctx.input.key_pressed(KeyCode::Escape) {
+      return SceneAction::Quit;
+    }
+
+    // Scene switching
+    if ctx.input.key_pressed(KeyCode::Digit1) {
+      return SceneAction::Switch(Box::new(EasingScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit2) {
+      return SceneAction::Switch(Box::new(SpeedControlScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit3) {
+      return SceneAction::Switch(Box::new(CallbacksScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit4) {
+      return SceneAction::Switch(Box::new(CombinedEffectsScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit5) {
+      return SceneAction::Switch(Box::new(SequenceScene::new()));
+    }
+
+    // Restart all
+    if ctx.input.key_pressed(KeyCode::Space) {
+      self.cleanup(ctx);
+      self.spawn_demos(ctx);
+    }
+
+    SceneAction::Continue
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let text_accent = Color::rgb(130, 180, 255);
+    let text_muted = Color::rgb(160, 160, 160);
+    let text_white = Color::rgb(240, 240, 240);
+
+    ui.draw_text("[6] Color & Alpha Tweening", 10.0, 10.0, text_accent);
+    ui.draw_text("1-5: Other scenes | Space: Restart | ESC: Exit", 10.0, 30.0, text_muted);
+
+    // Row labels
+    ui.draw_text("Alpha Fade", 170.0, 150.0, text_white);
+    ui.draw_text("Tint Red", 330.0, 150.0, text_white);
+    ui.draw_text("Tint Green", 470.0, 150.0, text_white);
+    ui.draw_text("Tint Blue", 630.0, 150.0, text_white);
+    ui.draw_text("Color Cycle", 785.0, 150.0, text_white);
+
+    ui.draw_text("Pop In/Out", 165.0, 270.0, text_white);
+    ui.draw_text("Moving Tint", 400.0, 270.0, text_white);
+    ui.draw_text("Spin Fade", 665.0, 270.0, text_white);
+
+    ui.draw_text("Darken", 180.0, 390.0, text_white);
+    ui.draw_text("Full Combo (all properties)", 500.0, 390.0, text_white);
   }
 }
 

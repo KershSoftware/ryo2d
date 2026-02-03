@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 use crate::core::error::{SpriteError, SpriteResult};
+use crate::core::ui::Color;
 
 /// A 2D sprite that can be drawn to the screen
 #[derive(Debug, Clone)]
@@ -806,6 +807,352 @@ impl Sprite {
           frame[dst_idx] = (((r as u16) * alpha + dst_r * inv_alpha) / 255) as u8;
           frame[dst_idx + 1] = (((g as u16) * alpha + dst_g * inv_alpha) / 255) as u8;
           frame[dst_idx + 2] = (((b as u16) * alpha + dst_b * inv_alpha) / 255) as u8;
+          frame[dst_idx + 3] = 255;
+        }
+      }
+    }
+  }
+
+  /// Draw the sprite with scaling, flipping, and tint/alpha modulation
+  ///
+  /// This is the tinted version of `draw_scaled_xy_flipped` that supports
+  /// runtime alpha and color modulation for tweening effects.
+  ///
+  /// # Arguments
+  ///
+  /// * `alpha` - Alpha multiplier (0.0 = invisible, 1.0 = fully opaque)
+  /// * `tint` - Color multiplier applied to RGB channels
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_scaled_xy_flipped_tinted(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    x: i32,
+    y: i32,
+    scale_x: f32,
+    scale_y: f32,
+    flip_x: bool,
+    flip_y: bool,
+    alpha: f32,
+    tint: Color,
+  ) {
+    // Early exit for fully transparent
+    if alpha <= 0.0 {
+      return;
+    }
+
+    if scale_x <= 0.0 || scale_y <= 0.0 {
+      return;
+    }
+
+    let frame_w = frame_width as i32;
+    let frame_h = frame_height as i32;
+    let scaled_w = (self.width as f32 * scale_x).ceil() as i32;
+    let scaled_h = (self.height as f32 * scale_y).ceil() as i32;
+
+    // Calculate visible region in screen space (clipped)
+    let start_dx = (-x).max(0);
+    let start_dy = (-y).max(0);
+    let end_dx = (frame_w - x).min(scaled_w);
+    let end_dy = (frame_h - y).min(scaled_h);
+
+    if start_dx >= end_dx || start_dy >= end_dy {
+      return;
+    }
+
+    // Pre-calculate tint multipliers (0.0 - 1.0)
+    let tint_r = tint.r as f32 / 255.0;
+    let tint_g = tint.g as f32 / 255.0;
+    let tint_b = tint.b as f32 / 255.0;
+    let tint_a = (tint.a as f32 / 255.0) * alpha;
+
+    for dy in start_dy..end_dy {
+      for dx in start_dx..end_dx {
+        // Map screen pixel back to source sprite (nearest neighbor)
+        let mut sx = ((dx as f32) / scale_x) as u32;
+        let mut sy = ((dy as f32) / scale_y) as u32;
+
+        // Apply flipping
+        if flip_x {
+          sx = self.width.saturating_sub(1).saturating_sub(sx);
+        }
+        if flip_y {
+          sy = self.height.saturating_sub(1).saturating_sub(sy);
+        }
+
+        // Clamp to sprite bounds (safety)
+        let sx = sx.min(self.width - 1);
+        let sy = sy.min(self.height - 1);
+
+        let fx = (x + dx) as usize;
+        let fy = (y + dy) as usize;
+
+        let src_idx = ((sy * self.width + sx) * 4) as usize;
+        let dst_idx = (fy * frame_width as usize + fx) * 4;
+
+        let src_r = self.data[src_idx] as f32;
+        let src_g = self.data[src_idx + 1] as f32;
+        let src_b = self.data[src_idx + 2] as f32;
+        let src_a = self.data[src_idx + 3] as f32 / 255.0;
+
+        // Apply tint to source color
+        let tinted_r = (src_r * tint_r).min(255.0);
+        let tinted_g = (src_g * tint_g).min(255.0);
+        let tinted_b = (src_b * tint_b).min(255.0);
+
+        // Combined alpha (source alpha * tint alpha * alpha multiplier)
+        let final_alpha = src_a * tint_a;
+
+        if final_alpha >= 1.0 {
+          // Fully opaque after modulation
+          frame[dst_idx] = tinted_r as u8;
+          frame[dst_idx + 1] = tinted_g as u8;
+          frame[dst_idx + 2] = tinted_b as u8;
+          frame[dst_idx + 3] = 255;
+        } else if final_alpha > 0.0 {
+          // Alpha blend
+          let alpha_i = (final_alpha * 255.0) as u16;
+          let inv_alpha = 255 - alpha_i;
+
+          let dst_r = frame[dst_idx] as u16;
+          let dst_g = frame[dst_idx + 1] as u16;
+          let dst_b = frame[dst_idx + 2] as u16;
+
+          frame[dst_idx] = ((tinted_r as u16 * alpha_i + dst_r * inv_alpha) / 255) as u8;
+          frame[dst_idx + 1] = ((tinted_g as u16 * alpha_i + dst_g * inv_alpha) / 255) as u8;
+          frame[dst_idx + 2] = ((tinted_b as u16 * alpha_i + dst_b * inv_alpha) / 255) as u8;
+          frame[dst_idx + 3] = 255;
+        }
+      }
+    }
+  }
+
+  /// Draw the sprite with rotation, scaling, flipping, and tint/alpha modulation
+  ///
+  /// This is the most complete draw method, supporting all transform and color
+  /// modulation options. Used by the engine to render sprites with tweened
+  /// alpha and tint values.
+  ///
+  /// # Arguments
+  ///
+  /// * `alpha` - Alpha multiplier (0.0 = invisible, 1.0 = fully opaque)
+  /// * `tint` - Color multiplier applied to RGB channels
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_rotated_tinted(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    x: i32,
+    y: i32,
+    scale_x: f32,
+    scale_y: f32,
+    rotation_degrees: f32,
+    flip_x: bool,
+    flip_y: bool,
+    alpha: f32,
+    tint: Color,
+  ) {
+    // Early exit for fully transparent
+    if alpha <= 0.0 {
+      return;
+    }
+
+    // Early exit for zero rotation - use faster path
+    if rotation_degrees.abs() < 0.01 {
+      return self.draw_scaled_xy_flipped_tinted(
+        frame,
+        frame_width,
+        frame_height,
+        x,
+        y,
+        scale_x,
+        scale_y,
+        flip_x,
+        flip_y,
+        alpha,
+        tint,
+      );
+    }
+
+    if scale_x <= 0.0 || scale_y <= 0.0 {
+      return;
+    }
+
+    // Pre-calculate tint multipliers (0.0 - 1.0)
+    let tint_r = tint.r as f32 / 255.0;
+    let tint_g = tint.g as f32 / 255.0;
+    let tint_b = tint.b as f32 / 255.0;
+    let tint_a = (tint.a as f32 / 255.0) * alpha;
+
+    // Use ceiling for consistent edge handling
+    let scaled_w = (self.width as f32 * scale_x).ceil() as i32;
+    let scaled_h = (self.height as f32 * scale_y).ceil() as i32;
+
+    // Rotation center (center of scaled sprite in screen space)
+    let center_x = x + scaled_w / 2;
+    let center_y = y + scaled_h / 2;
+
+    // Convert to radians
+    let angle = rotation_degrees.to_radians();
+    let cos_a = angle.cos();
+    let sin_a = angle.sin();
+
+    // Calculate bounding box of rotated sprite
+    let half_w = scaled_w as f32 / 2.0;
+    let half_h = scaled_h as f32 / 2.0;
+    let corners = [
+      (-half_w, -half_h),
+      (half_w, -half_h),
+      (-half_w, half_h),
+      (half_w, half_h),
+    ];
+
+    let mut min_x = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut min_y = f32::MAX;
+    let mut max_y = f32::MIN;
+
+    for (cx, cy) in corners {
+      let rx = cx * cos_a - cy * sin_a;
+      let ry = cx * sin_a + cy * cos_a;
+      min_x = min_x.min(rx);
+      max_x = max_x.max(rx);
+      min_y = min_y.min(ry);
+      max_y = max_y.max(ry);
+    }
+
+    let bbox_x1 = (center_x as f32 + min_x).floor() as i32;
+    let bbox_y1 = (center_y as f32 + min_y).floor() as i32;
+    let bbox_x2 = (center_x as f32 + max_x).ceil() as i32;
+    let bbox_y2 = (center_y as f32 + max_y).ceil() as i32;
+
+    // Clip to frame bounds
+    let start_x = bbox_x1.max(0);
+    let start_y = bbox_y1.max(0);
+    let end_x = bbox_x2.min(frame_width as i32);
+    let end_y = bbox_y2.min(frame_height as i32);
+
+    if start_x >= end_x || start_y >= end_y {
+      return;
+    }
+
+    // Inverse rotation matrix for reverse mapping
+    let inv_cos = cos_a;
+    let inv_sin = -sin_a;
+
+    for py in start_y..end_y {
+      for px in start_x..end_x {
+        // Sample at pixel center for better quality (0.5 offset)
+        let dx = (px - center_x) as f32 + 0.5;
+        let dy = (py - center_y) as f32 + 0.5;
+
+        // Rotate backwards (inverse transform)
+        let src_x = dx * inv_cos - dy * inv_sin;
+        let src_y = dx * inv_sin + dy * inv_cos;
+
+        // Map back to sprite coordinates (accounting for scale)
+        let sprite_x_f = src_x / scale_x + (self.width as f32 / 2.0);
+        let sprite_y_f = src_y / scale_y + (self.height as f32 / 2.0);
+
+        // Check bounds (with margin for bilinear sampling)
+        if sprite_x_f < 0.0
+          || sprite_x_f >= (self.width - 1) as f32
+          || sprite_y_f < 0.0
+          || sprite_y_f >= (self.height - 1) as f32
+        {
+          continue;
+        }
+
+        // Bilinear interpolation for smoother rotation
+        let x0 = sprite_x_f.floor() as u32;
+        let y0 = sprite_y_f.floor() as u32;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+
+        // Interpolation weights
+        let fx = sprite_x_f - x0 as f32;
+        let fy = sprite_y_f - y0 as f32;
+        let fx_inv = 1.0 - fx;
+        let fy_inv = 1.0 - fy;
+
+        // Apply flipping to all four sample points
+        let (sx0, sx1) = if flip_x {
+          ((self.width - 1) - x1, (self.width - 1) - x0)
+        } else {
+          (x0, x1)
+        };
+        let (sy0, sy1) = if flip_y {
+          ((self.height - 1) - y1, (self.height - 1) - y0)
+        } else {
+          (y0, y1)
+        };
+
+        // Sample four pixels
+        let idx00 = ((sy0 * self.width + sx0) * 4) as usize;
+        let idx10 = ((sy0 * self.width + sx1) * 4) as usize;
+        let idx01 = ((sy1 * self.width + sx0) * 4) as usize;
+        let idx11 = ((sy1 * self.width + sx1) * 4) as usize;
+
+        // Bilinear interpolation for each channel
+        let mut r = 0.0;
+        let mut g = 0.0;
+        let mut b = 0.0;
+        let mut a = 0.0;
+
+        let w00 = fx_inv * fy_inv;
+        let w10 = fx * fy_inv;
+        let w01 = fx_inv * fy;
+        let w11 = fx * fy;
+
+        r += self.data[idx00] as f32 * w00;
+        g += self.data[idx00 + 1] as f32 * w00;
+        b += self.data[idx00 + 2] as f32 * w00;
+        a += self.data[idx00 + 3] as f32 * w00;
+
+        r += self.data[idx10] as f32 * w10;
+        g += self.data[idx10 + 1] as f32 * w10;
+        b += self.data[idx10 + 2] as f32 * w10;
+        a += self.data[idx10 + 3] as f32 * w10;
+
+        r += self.data[idx01] as f32 * w01;
+        g += self.data[idx01 + 1] as f32 * w01;
+        b += self.data[idx01 + 2] as f32 * w01;
+        a += self.data[idx01 + 3] as f32 * w01;
+
+        r += self.data[idx11] as f32 * w11;
+        g += self.data[idx11 + 1] as f32 * w11;
+        b += self.data[idx11 + 2] as f32 * w11;
+        a += self.data[idx11 + 3] as f32 * w11;
+
+        // Apply tint to interpolated color
+        let tinted_r = (r * tint_r).min(255.0);
+        let tinted_g = (g * tint_g).min(255.0);
+        let tinted_b = (b * tint_b).min(255.0);
+
+        // Combined alpha (source alpha * tint alpha)
+        let src_a = a / 255.0;
+        let final_alpha = src_a * tint_a;
+
+        let dst_idx = (py as usize * frame_width as usize + px as usize) * 4;
+
+        if final_alpha >= 1.0 {
+          frame[dst_idx] = tinted_r as u8;
+          frame[dst_idx + 1] = tinted_g as u8;
+          frame[dst_idx + 2] = tinted_b as u8;
+          frame[dst_idx + 3] = 255;
+        } else if final_alpha > 0.0 {
+          let alpha_i = (final_alpha * 255.0) as u16;
+          let inv_alpha = 255 - alpha_i;
+
+          let dst_r = frame[dst_idx] as u16;
+          let dst_g = frame[dst_idx + 1] as u16;
+          let dst_b = frame[dst_idx + 2] as u16;
+
+          frame[dst_idx] = ((tinted_r as u16 * alpha_i + dst_r * inv_alpha) / 255) as u8;
+          frame[dst_idx + 1] = ((tinted_g as u16 * alpha_i + dst_g * inv_alpha) / 255) as u8;
+          frame[dst_idx + 2] = ((tinted_b as u16 * alpha_i + dst_b * inv_alpha) / 255) as u8;
           frame[dst_idx + 3] = 255;
         }
       }
