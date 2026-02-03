@@ -2423,21 +2423,19 @@ impl GameScene {
       // Row 2: Apply (3), Back (4)
 
       // Up/Down: Move between rows
-      if ctx.input.gamepad_button_pressed(GamepadButton::DPadDown)
-        || ctx.input.key_pressed(KeyCode::ArrowDown)
+      if (ctx.input.gamepad_button_pressed(GamepadButton::DPadDown)
+        || ctx.input.key_pressed(KeyCode::ArrowDown))
+        && self.settings_menu_focus < 3
       {
-        if self.settings_menu_focus < 3 {
-          // From display modes row, go to Apply/Back row
-          self.settings_menu_focus = 3;
-        }
+        // From display modes row, go to Apply/Back row
+        self.settings_menu_focus = 3;
       }
-      if ctx.input.gamepad_button_pressed(GamepadButton::DPadUp)
-        || ctx.input.key_pressed(KeyCode::ArrowUp)
+      if (ctx.input.gamepad_button_pressed(GamepadButton::DPadUp)
+        || ctx.input.key_pressed(KeyCode::ArrowUp))
+        && self.settings_menu_focus >= 3
       {
-        if self.settings_menu_focus >= 3 {
-          // From Apply/Back row, go to display modes row
-          self.settings_menu_focus = 1; // Go to center (Borderless)
-        }
+        // From Apply/Back row, go to display modes row
+        self.settings_menu_focus = 1; // Go to center (Borderless)
       }
 
       // Left/Right: Move within rows
