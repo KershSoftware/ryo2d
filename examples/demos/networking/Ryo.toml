@@ -1,8 +1,8 @@
-# Netplay - Multiplayer Platformer Demo
+# Networking - Multiplayer Platformer Demo
 # Two players battle on a single platform
 
 [game]
-name = "Netplay"
+name = "Networking"
 version = "0.1.0"
 
 [system]

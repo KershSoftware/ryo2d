@@ -765,38 +765,56 @@ impl Sprite {
         let idx01 = ((sy1 * self.width + sx0) * 4) as usize;
         let idx11 = ((sy1 * self.width + sx1) * 4) as usize;
 
-        // Bilinear interpolation for each channel
-        let mut r = 0.0;
-        let mut g = 0.0;
-        let mut b = 0.0;
-        let mut a = 0.0;
-
+        // Premultiplied alpha bilinear interpolation
+        // This prevents black fringing at edges by weighting RGB by alpha
         let w00 = fx_inv * fy_inv;
         let w10 = fx * fy_inv;
         let w01 = fx_inv * fy;
         let w11 = fx * fy;
 
-        r += self.data[idx00] as f32 * w00;
-        g += self.data[idx00 + 1] as f32 * w00;
-        b += self.data[idx00 + 2] as f32 * w00;
-        a += self.data[idx00 + 3] as f32 * w00;
+        // Get alpha values for each sample (0.0 - 1.0)
+        let a00 = self.data[idx00 + 3] as f32 / 255.0;
+        let a10 = self.data[idx10 + 3] as f32 / 255.0;
+        let a01 = self.data[idx01 + 3] as f32 / 255.0;
+        let a11 = self.data[idx11 + 3] as f32 / 255.0;
 
-        r += self.data[idx10] as f32 * w10;
-        g += self.data[idx10 + 1] as f32 * w10;
-        b += self.data[idx10 + 2] as f32 * w10;
-        a += self.data[idx10 + 3] as f32 * w10;
+        // Interpolate premultiplied RGB (RGB * alpha)
+        let mut pr = 0.0;
+        let mut pg = 0.0;
+        let mut pb = 0.0;
+        let mut a = 0.0;
 
-        r += self.data[idx01] as f32 * w01;
-        g += self.data[idx01 + 1] as f32 * w01;
-        b += self.data[idx01 + 2] as f32 * w01;
-        a += self.data[idx01 + 3] as f32 * w01;
+        pr += self.data[idx00] as f32 * a00 * w00;
+        pg += self.data[idx00 + 1] as f32 * a00 * w00;
+        pb += self.data[idx00 + 2] as f32 * a00 * w00;
+        a += a00 * w00;
 
-        r += self.data[idx11] as f32 * w11;
-        g += self.data[idx11 + 1] as f32 * w11;
-        b += self.data[idx11 + 2] as f32 * w11;
-        a += self.data[idx11 + 3] as f32 * w11;
+        pr += self.data[idx10] as f32 * a10 * w10;
+        pg += self.data[idx10 + 1] as f32 * a10 * w10;
+        pb += self.data[idx10 + 2] as f32 * a10 * w10;
+        a += a10 * w10;
 
-        let src_a = a.round() as u8;
+        pr += self.data[idx01] as f32 * a01 * w01;
+        pg += self.data[idx01 + 1] as f32 * a01 * w01;
+        pb += self.data[idx01 + 2] as f32 * a01 * w01;
+        a += a01 * w01;
+
+        pr += self.data[idx11] as f32 * a11 * w11;
+        pg += self.data[idx11 + 1] as f32 * a11 * w11;
+        pb += self.data[idx11 + 2] as f32 * a11 * w11;
+        a += a11 * w11;
+
+        // Skip pixels with very low alpha to prevent edge artifacts
+        if a < 0.1 {
+          continue;
+        }
+
+        // Unpremultiply to get final RGB
+        let r = (pr / a).min(255.0);
+        let g = (pg / a).min(255.0);
+        let b = (pb / a).min(255.0);
+
+        let src_a = (a * 255.0).round() as u8;
         let dst_idx = (py as usize * frame_width as usize + px as usize) * 4;
 
         if src_a == 255 {
@@ -804,7 +822,7 @@ impl Sprite {
           frame[dst_idx + 1] = g.round() as u8;
           frame[dst_idx + 2] = b.round() as u8;
           frame[dst_idx + 3] = 255;
-        } else if src_a > 0 {
+        } else {
           let alpha = src_a as u16;
           let inv_alpha = 255 - alpha;
 
@@ -1103,54 +1121,66 @@ impl Sprite {
         let idx01 = ((sy1 * self.width + sx0) * 4) as usize;
         let idx11 = ((sy1 * self.width + sx1) * 4) as usize;
 
-        // Bilinear interpolation for each channel
-        let mut r = 0.0;
-        let mut g = 0.0;
-        let mut b = 0.0;
-        let mut a = 0.0;
-
+        // Premultiplied alpha bilinear interpolation
+        // This prevents black fringing at edges by weighting RGB by alpha
         let w00 = fx_inv * fy_inv;
         let w10 = fx * fy_inv;
         let w01 = fx_inv * fy;
         let w11 = fx * fy;
 
-        r += self.data[idx00] as f32 * w00;
-        g += self.data[idx00 + 1] as f32 * w00;
-        b += self.data[idx00 + 2] as f32 * w00;
-        a += self.data[idx00 + 3] as f32 * w00;
+        // Get alpha values for each sample (0.0 - 1.0)
+        let a00 = self.data[idx00 + 3] as f32 / 255.0;
+        let a10 = self.data[idx10 + 3] as f32 / 255.0;
+        let a01 = self.data[idx01 + 3] as f32 / 255.0;
+        let a11 = self.data[idx11 + 3] as f32 / 255.0;
 
-        r += self.data[idx10] as f32 * w10;
-        g += self.data[idx10 + 1] as f32 * w10;
-        b += self.data[idx10 + 2] as f32 * w10;
-        a += self.data[idx10 + 3] as f32 * w10;
+        // Interpolate premultiplied RGB (RGB * alpha)
+        let mut pr = 0.0;
+        let mut pg = 0.0;
+        let mut pb = 0.0;
+        let mut a = 0.0;
 
-        r += self.data[idx01] as f32 * w01;
-        g += self.data[idx01 + 1] as f32 * w01;
-        b += self.data[idx01 + 2] as f32 * w01;
-        a += self.data[idx01 + 3] as f32 * w01;
+        pr += self.data[idx00] as f32 * a00 * w00;
+        pg += self.data[idx00 + 1] as f32 * a00 * w00;
+        pb += self.data[idx00 + 2] as f32 * a00 * w00;
+        a += a00 * w00;
 
-        r += self.data[idx11] as f32 * w11;
-        g += self.data[idx11 + 1] as f32 * w11;
-        b += self.data[idx11 + 2] as f32 * w11;
-        a += self.data[idx11 + 3] as f32 * w11;
+        pr += self.data[idx10] as f32 * a10 * w10;
+        pg += self.data[idx10 + 1] as f32 * a10 * w10;
+        pb += self.data[idx10 + 2] as f32 * a10 * w10;
+        a += a10 * w10;
 
-        // Apply tint to interpolated color
-        let tinted_r = (r * tint_r).min(255.0);
-        let tinted_g = (g * tint_g).min(255.0);
-        let tinted_b = (b * tint_b).min(255.0);
+        pr += self.data[idx01] as f32 * a01 * w01;
+        pg += self.data[idx01 + 1] as f32 * a01 * w01;
+        pb += self.data[idx01 + 2] as f32 * a01 * w01;
+        a += a01 * w01;
 
-        // Combined alpha (source alpha * tint alpha)
-        let src_a = a / 255.0;
-        let final_alpha = src_a * tint_a;
+        pr += self.data[idx11] as f32 * a11 * w11;
+        pg += self.data[idx11 + 1] as f32 * a11 * w11;
+        pb += self.data[idx11 + 2] as f32 * a11 * w11;
+        a += a11 * w11;
+
+        // Combined alpha (interpolated source alpha * tint alpha)
+        let final_alpha = a * tint_a;
+
+        // Skip pixels with very low alpha to prevent edge artifacts
+        if final_alpha < 0.1 {
+          continue;
+        }
+
+        // Unpremultiply to get final RGB, then apply tint
+        let r = ((pr / a) * tint_r).min(255.0);
+        let g = ((pg / a) * tint_g).min(255.0);
+        let b = ((pb / a) * tint_b).min(255.0);
 
         let dst_idx = (py as usize * frame_width as usize + px as usize) * 4;
 
         if final_alpha >= 1.0 {
-          frame[dst_idx] = tinted_r as u8;
-          frame[dst_idx + 1] = tinted_g as u8;
-          frame[dst_idx + 2] = tinted_b as u8;
+          frame[dst_idx] = r as u8;
+          frame[dst_idx + 1] = g as u8;
+          frame[dst_idx + 2] = b as u8;
           frame[dst_idx + 3] = 255;
-        } else if final_alpha > 0.0 {
+        } else {
           let alpha_i = (final_alpha * 255.0) as u16;
           let inv_alpha = 255 - alpha_i;
 
@@ -1158,9 +1188,9 @@ impl Sprite {
           let dst_g = frame[dst_idx + 1] as u16;
           let dst_b = frame[dst_idx + 2] as u16;
 
-          frame[dst_idx] = ((tinted_r as u16 * alpha_i + dst_r * inv_alpha) / 255) as u8;
-          frame[dst_idx + 1] = ((tinted_g as u16 * alpha_i + dst_g * inv_alpha) / 255) as u8;
-          frame[dst_idx + 2] = ((tinted_b as u16 * alpha_i + dst_b * inv_alpha) / 255) as u8;
+          frame[dst_idx] = ((r as u16 * alpha_i + dst_r * inv_alpha) / 255) as u8;
+          frame[dst_idx + 1] = ((g as u16 * alpha_i + dst_g * inv_alpha) / 255) as u8;
+          frame[dst_idx + 2] = ((b as u16 * alpha_i + dst_b * inv_alpha) / 255) as u8;
           frame[dst_idx + 3] = 255;
         }
       }
@@ -1298,6 +1328,26 @@ mod tests {
     assert_eq!(sprite.data[1], 150); // G
     assert_eq!(sprite.data[2], 200); // B
     assert_eq!(sprite.data[3], 255); // A
+  }
+
+  #[test]
+  fn solid_circle_transparent_pixels_have_correct_rgb() {
+    // Create a white circle
+    let sprite = Sprite::solid_circle(25, 255, 200, 100, 255);
+
+    // Corner pixel (0,0) should be transparent but have the circle's RGB
+    let corner_idx = 0;
+    assert_eq!(sprite.data[corner_idx], 255, "Corner R should be 255");
+    assert_eq!(sprite.data[corner_idx + 1], 200, "Corner G should be 200");
+    assert_eq!(sprite.data[corner_idx + 2], 100, "Corner B should be 100");
+    assert_eq!(sprite.data[corner_idx + 3], 0, "Corner A should be 0 (transparent)");
+
+    // Center pixel (12,12) should be fully opaque with the circle's RGB
+    let center_idx = (12 * 25 + 12) * 4;
+    assert_eq!(sprite.data[center_idx], 255, "Center R should be 255");
+    assert_eq!(sprite.data[center_idx + 1], 200, "Center G should be 200");
+    assert_eq!(sprite.data[center_idx + 2], 100, "Center B should be 100");
+    assert_eq!(sprite.data[center_idx + 3], 255, "Center A should be 255 (opaque)");
   }
 
   #[test]
