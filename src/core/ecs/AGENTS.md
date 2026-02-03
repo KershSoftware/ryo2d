@@ -16,6 +16,7 @@ This folder implements the Entity-Component-System (ECS) layer using the **hecs*
 | `pool.rs` | Object pooling: `Pool`, `PoolConfig`, `PoolExhaustedPolicy` |
 | `renderable.rs` | `Renderable` component for sprites |
 | `tween.rs` | Tweening system: `Tween`, `Ease`, `TweenLoop` |
+| `knockback.rs` | Knockback system: decay-based directional force |
 | `world.rs` | `World` wrapper around `hecs::World` with compatibility API |
 
 ## Key Design Decisions
@@ -223,6 +224,92 @@ world.spawn((
 ```
 
 **Engine Integration:** The engine updates all `Tween` components automatically after the animation system, applying interpolated values to the entity's `Transform`.
+
+## Knockback System
+
+The knockback system (`knockback.rs`) applies decaying directional force to entities, useful for hit reactions, explosions, and physics effects.
+
+### Knockback - Component
+
+Attach to entities to apply directional force that decays over time:
+
+```rust
+// Simple knockback - pushes entity right at 300 px/sec
+world.add_component(entity, Knockback::new(Vec2::new(1.0, 0.0), 300.0));
+
+// From angle (radians) - explosion pushback
+world.add_component(entity, Knockback::from_angle(angle_to_player, 500.0));
+
+// Custom decay rate (default 4.0 = ~0.25s full decay)
+world.add_component(entity,
+    Knockback::new(direction, 400.0)
+        .with_decay_rate(8.0)  // Fast decay
+);
+
+// Non-accumulating (replaces existing knockback)
+world.add_component(entity,
+    Knockback::new(direction, 400.0)
+        .with_accumulate(false)
+);
+```
+
+### Decay Algorithm
+
+Knockback uses strength-based decay with squared intensity for a punchy feel:
+
+```rust
+// Each frame:
+self.strength = (self.strength - self.decay_rate * dt).max(0.0);
+let intensity = self.strength * self.strength;  // Squared curve
+let velocity = (direction_x * force * intensity, direction_y * force * intensity);
+```
+
+- `strength` starts at 1.0 and decays to 0.0
+- `decay_rate` controls how fast (4.0 = ~0.25s, 8.0 = ~0.125s, 2.0 = ~0.5s)
+- Squared intensity gives strong initial push that tapers off smoothly
+
+### Accumulation Behavior
+
+When `accumulate` is true (default), applying knockback to an entity with existing knockback:
+1. **Blends directions** - Weighted average based on force magnitudes
+2. **Adds forces** - New force adds to existing
+3. **Resets strength** - Back to 1.0 for full effect
+
+When `accumulate` is false, new knockback completely replaces existing.
+
+### Convenience Methods
+
+Use context methods for common patterns:
+
+```rust
+// Basic knockback (accumulates, default decay 4.0)
+ctx.knockback(entity, Vec2::new(1.0, 0.0), 300.0);
+
+// With custom decay rate
+ctx.knockback_with_decay(entity, direction, 500.0, 8.0);
+```
+
+### Events
+
+The system emits events for feedback:
+
+| Event | When |
+|-------|------|
+| `KnockbackStarted { entity }` | Knockback becomes active |
+| `KnockbackFinished { entity }` | Knockback strength reaches zero |
+
+```rust
+// Flash entity on knockback hit
+for event in ctx.events.read::<KnockbackStarted>() {
+    if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(event.entity) {
+        renderable.tint = Color::WHITE;  // Flash white
+    }
+}
+```
+
+### Engine Integration
+
+The engine updates all `Knockback` components automatically, applying displacement directly to the entity's `Transform`. Works with both simple entities (Transform only) and physics entities (with Velocity component).
 
 ## Object Pooling System
 
