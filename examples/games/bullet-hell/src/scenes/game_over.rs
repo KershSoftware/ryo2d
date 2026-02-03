@@ -26,9 +26,18 @@ impl Scene for GameOverScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::Enter) {
+    // Restart game (keyboard or gamepad)
+    if ctx.input.key_pressed(KeyCode::Space)
+      || ctx.input.key_pressed(KeyCode::Enter)
+      || ctx.input.gamepad_button_pressed(GamepadButton::South)
+      || ctx.input.gamepad_button_pressed(GamepadButton::Start)
+    {
       return SceneAction::Switch(Box::new(GameScene::new()));
-    } else if ctx.input.key_pressed(KeyCode::Escape) {
+    }
+    // Return to menu (keyboard or gamepad)
+    if ctx.input.key_pressed(KeyCode::Escape)
+      || ctx.input.gamepad_button_pressed(GamepadButton::East)
+    {
       return SceneAction::Switch(Box::new(super::MenuScene::new()));
     }
     SceneAction::Continue
@@ -81,7 +90,7 @@ impl Scene for GameOverScene {
     ui.draw_text(&best_text, center_x - best_w as f32 / 2.0, 320.0, color);
 
     // Restart prompt
-    let restart_text = "Press SPACE to Retry";
+    let restart_text = "Press SPACE or A to Retry";
     let (restart_w, _) = ui.text_size(restart_text);
     ui.draw_text(
       restart_text,
@@ -91,7 +100,7 @@ impl Scene for GameOverScene {
     );
 
     // Menu prompt
-    let menu_text = "Press ESC for Menu";
+    let menu_text = "Press ESC or B for Menu";
     let (menu_w, _) = ui.text_size(menu_text);
     ui.draw_text(
       menu_text,

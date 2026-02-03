@@ -58,32 +58,42 @@ impl MenuScene {
     // Build GPU-accelerated parallax background with desert layers
     let mut background = GpuParallaxBackground::new();
 
+    // Scale factor to fit 1000px sprites to 1080px screen height
+    let scale = 1080.0 / 1000.0;
+
     // Static sky layer
-    background.add_layer(GpuParallaxLayer::new(&sky_sprite, 0.0, -100));
+    background.add_layer(
+      GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale),
+    );
 
     // Auto-scrolling layers with infinite scroll
     background.add_layer(
       GpuParallaxLayer::new(&moon_sprite, 0.0, -90)
+        .with_scale(scale)
         .with_auto_scroll(5.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&cloud_sprite, 0.0, -80)
+        .with_scale(scale)
         .with_auto_scroll(15.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&mountain_sprite, 0.0, -60)
+        .with_scale(scale)
         .with_auto_scroll(30.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&dune_mid_sprite, 0.0, -40)
+        .with_scale(scale)
         .with_auto_scroll(50.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&dune_front_sprite, 0.0, -20)
+        .with_scale(scale)
         .with_auto_scroll(80.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
@@ -112,8 +122,12 @@ impl Scene for MenuScene {
     // Update parallax background
     self.background.update(dt);
 
-    // Start game
-    if ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::Enter) {
+    // Start game (keyboard or gamepad)
+    if ctx.input.key_pressed(KeyCode::Space)
+      || ctx.input.key_pressed(KeyCode::Enter)
+      || ctx.input.gamepad_button_pressed(GamepadButton::South)
+      || ctx.input.gamepad_button_pressed(GamepadButton::Start)
+    {
       return SceneAction::Switch(Box::new(GameScene::new()));
     }
     // Quit to desktop
@@ -186,7 +200,7 @@ impl Scene for MenuScene {
     }
 
     // Start prompt
-    let prompt = "Press SPACE to Start";
+    let prompt = "Press SPACE or A to Start";
     let (prompt_w, _) = ui.text_size(prompt);
     ui.draw_text(
       prompt,

@@ -29,6 +29,10 @@ pub struct RigidBody {
   pub drag: f32,
   /// Whether this body is affected by physics simulation
   pub is_kinematic: bool,
+  /// Enable Continuous Collision Detection to prevent tunneling through thin colliders.
+  /// Recommended for fast-moving objects like players, projectiles, or falling objects.
+  /// Has a small performance cost, so only enable where needed.
+  pub ccd_enabled: bool,
 }
 
 impl RigidBody {
@@ -39,6 +43,7 @@ impl RigidBody {
       gravity_scale: 1.0,
       drag: 0.0,
       is_kinematic: false,
+      ccd_enabled: false,
     }
   }
 
@@ -49,6 +54,7 @@ impl RigidBody {
       gravity_scale: 0.0,
       drag: 0.0,
       is_kinematic: true,
+      ccd_enabled: false,
     }
   }
 
@@ -67,6 +73,19 @@ impl RigidBody {
   /// Builder method to set drag
   pub fn with_drag(mut self, drag: f32) -> Self {
     self.drag = drag;
+    self
+  }
+
+  /// Enable Continuous Collision Detection (CCD) to prevent tunneling.
+  ///
+  /// Use this for fast-moving objects that might pass through thin colliders:
+  /// - Players falling from heights
+  /// - Bullets and projectiles
+  /// - Fast-moving enemies
+  ///
+  /// CCD has a small performance cost, so only enable where needed.
+  pub fn with_ccd(mut self) -> Self {
+    self.ccd_enabled = true;
     self
   }
 }
@@ -123,6 +142,7 @@ mod tests {
     assert_eq!(rb.gravity_scale, 1.0);
     assert_eq!(rb.drag, 0.0);
     assert!(!rb.is_kinematic);
+    assert!(!rb.ccd_enabled);
   }
 
   #[test]
@@ -130,6 +150,7 @@ mod tests {
     let rb = RigidBody::kinematic();
     assert!(rb.is_kinematic);
     assert_eq!(rb.gravity_scale, 0.0);
+    assert!(!rb.ccd_enabled);
   }
 
   #[test]
@@ -142,6 +163,18 @@ mod tests {
     assert_eq!(rb.mass, 2.5);
     assert_eq!(rb.gravity_scale, 0.5);
     assert_eq!(rb.drag, 0.1);
+  }
+
+  #[test]
+  fn rigid_body_with_ccd() {
+    let rb = RigidBody::new().with_ccd();
+    assert!(rb.ccd_enabled);
+
+    // CCD should work with other options
+    let rb2 = RigidBody::new().with_mass(2.0).with_ccd().with_drag(0.5);
+    assert!(rb2.ccd_enabled);
+    assert_eq!(rb2.mass, 2.0);
+    assert_eq!(rb2.drag, 0.5);
   }
 
   #[test]

@@ -13,7 +13,9 @@ pub const INVINCIBLE_DURATION: f32 = 1.5; // seconds of invincibility after hit
 
 // Physics
 pub const GRAVITY: f32 = 980.0; // pixels per second squared
-pub const WALL_SLIDE_FRICTION: f32 = 0.6; // Multiplier for downward velocity when wall sliding
+pub const WALL_SLIDE_MAX_SPEED: f32 = 150.0; // Max fall speed when wall sliding (less sticky)
+pub const WALL_SLIDE_GRAVITY_SCALE: f32 = 0.5; // Gravity multiplier during wall slide
+pub const WALL_SLIDE_GRACE_DURATION: f32 = 0.12; // Seconds to still wall jump after releasing wall
 pub const WALL_JUMP_FORCE_X: f32 = 450.0; // Horizontal push away from wall
 pub const WALL_JUMP_FORCE_Y: f32 = 500.0; // Vertical jump force (slightly less than normal)
 pub const WALL_JUMP_PUSH_DURATION: f32 = 0.2; // Seconds where player can't override horizontal push
