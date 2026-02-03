@@ -250,7 +250,7 @@ impl GameScene {
         bird.flap();
         // Play flap sound
         if let Some(audio) = &mut ctx.audio {
-          let _ = audio.play_sound_with(FLAP_SOUND, SoundOptions::new().volume(0.5));
+          let _ = audio.play_sound_with(FLAP_SOUND, SoundOptions::new().volume(0.05));
         }
       }
 
@@ -509,7 +509,7 @@ impl Scene for GameScene {
           self.death_timer = Some(0.0);
           // Play death sound
           if let Some(audio) = &mut ctx.audio {
-            let _ = audio.play_sound_with(DEATH_SOUND, SoundOptions::new().volume(0.6));
+            let _ = audio.play_sound_with(DEATH_SOUND, SoundOptions::new().volume(0.2));
           }
         }
       }
