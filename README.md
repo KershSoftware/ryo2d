@@ -1,7 +1,7 @@
 # Ryo2D
 
 *Tagline:*
-A Rust 2D game engine designed with agent-assisted development in mind from the beginning. Build professional games with AI agents or by hand with traditional code -- your choice.
+A Rust 2D game engine designed with agent-assisted development in mind from the beginning. Build professional games with AI agents or by hand with a sane API and traditional code -- your choice.
 
 *Reality:*
 I started learning Rust and then I decided to start building a 2D game engine to apply the language; all while using agentic tools.
@@ -29,7 +29,7 @@ cd ryo2d
 ```bash
 ryo2d init my-game
 cd my-game
-cargo run
+ryo2d dev
 ```
 
 When you run `ryo2d init`, you'll be prompted to install **Agent Skills**—domain-specific knowledge that helps AI assistants understand the engine's APIs and patterns. This is **highly recommended** for agentic game development.

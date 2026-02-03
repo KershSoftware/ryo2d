@@ -46,6 +46,14 @@ impl ThemeDemo {
 
     match HotReloadTheme::new(&path) {
       Ok(theme) => {
+        // Sync current_variant with the loaded theme's name
+        let loaded_theme = theme.get();
+        self.current_variant = match loaded_theme.name.as_str() {
+          "dark" => 0,
+          "light" => 1,
+          "neon" => 2,
+          _ => 0,
+        };
         self.hot_theme = Some(theme);
         self.theme_load_error = None;
       }

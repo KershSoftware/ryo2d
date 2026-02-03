@@ -298,8 +298,7 @@ show_example_list() {
     echo ""
 
     echo -n "Select an example: "
-    read -n 1 -r selection
-    echo ""
+    read -r selection
     echo ""
 
     case "$selection" in
@@ -314,6 +313,8 @@ show_example_list() {
                     run_example "${category_examples[$index]}" "false" "true"
                     return
                 fi
+                echo -e "${RED}Invalid selection: $selection (valid: 1-$count)${NC}"
+                exit 1
             fi
             echo -e "${GRAY}Exiting.${NC}"
             exit 0
