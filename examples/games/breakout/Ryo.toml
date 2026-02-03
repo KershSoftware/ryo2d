@@ -53,6 +53,8 @@ show_origins = false
 # Enable detailed profiling (per-phase timing, slow frame warnings)
 # Default: true - set to false to disable timing measurements
 # enable_profiling = true
+# Enable puffin hierarchical profiler (or use `ryo2d dev --profiler`)
+# puffin_profiler = false
 
 # =============================================================================
 # [env] - Game-specific environment variables

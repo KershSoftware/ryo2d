@@ -158,6 +158,10 @@ show_stats = false
 # When disabled, timing fields show zeros but FPS still works
 enable_profiling = true
 
+# Enable puffin hierarchical profiler (requires --features profiler or `ryo2d dev --profiler`)
+# Starts HTTP server on port 8585 for puffin_viewer connection
+puffin_profiler = false
+
 # Disable F1-F4 debug key toggles (for release builds)
 disable_debug_keys = false
 

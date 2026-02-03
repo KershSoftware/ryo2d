@@ -37,12 +37,13 @@
 //! music_volume = 0.8
 //! sfx_volume = 1.0
 //!
-//! [debug]  # Developer debug flags (NOT in system.json)
-//! show_colliders = false
-//! show_fps = false
-//!
 //! [info]
 //! show_fps = false
+//!
+//! [debug]  # Developer debug flags (NOT in system.json)
+//! show_colliders = false
+//! show_velocities = false
+//! show_origins = false
 //!
 //! [env]  # Game-specific variables
 //! debug_mode = false
@@ -129,6 +130,8 @@ pub struct DebugConfig {
   pub disable_debug_keys: bool,
   /// Whether to enable detailed profiling measurements (per-phase timing, slow frame warnings)
   pub enable_profiling: bool,
+  /// Whether to start the puffin profiler HTTP server (requires --features profiler)
+  pub puffin_profiler: bool,
 }
 
 impl Default for DebugConfig {
@@ -140,6 +143,7 @@ impl Default for DebugConfig {
       show_frame_timing: false,
       disable_debug_keys: false,
       enable_profiling: true, // Enabled by default in dev builds
+      puffin_profiler: false, // Disabled by default (requires explicit opt-in)
     }
   }
 }
@@ -246,6 +250,7 @@ struct DebugSection {
   show_frame_timing: Option<bool>,
   disable_debug_keys: Option<bool>,
   enable_profiling: Option<bool>,
+  puffin_profiler: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -423,6 +428,7 @@ impl Workspace {
       show_frame_timing: debug_section.show_frame_timing.unwrap_or(false),
       disable_debug_keys: debug_section.disable_debug_keys.unwrap_or(false),
       enable_profiling: debug_section.enable_profiling.unwrap_or(true), // Default true in dev
+      puffin_profiler: debug_section.puffin_profiler.unwrap_or(false),  // Default false (opt-in)
     };
 
     // Info config
