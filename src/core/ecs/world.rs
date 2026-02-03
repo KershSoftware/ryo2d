@@ -45,6 +45,9 @@ pub struct World {
   /// Generation counter that increments each time clear() is called.
   /// Used by the engine to detect world resets for physics synchronization.
   generation: u64,
+  /// Flag set when entities are spawned or despawned.
+  /// Used by the engine to invalidate render caches.
+  entities_changed: bool,
 }
 
 impl World {
@@ -53,7 +56,17 @@ impl World {
     World {
       inner: hecs::World::new(),
       generation: 0,
+      entities_changed: false,
     }
+  }
+
+  /// Check if entities have been spawned or despawned since last check.
+  /// This is used by the engine to invalidate render caches.
+  /// Calling this method clears the flag.
+  pub fn take_entities_changed(&mut self) -> bool {
+    let changed = self.entities_changed;
+    self.entities_changed = false;
+    changed
   }
 
   // =========================================================================
@@ -75,6 +88,7 @@ impl World {
   /// ));
   /// ```
   pub fn spawn(&mut self, components: impl hecs::DynamicBundle) -> Entity {
+    self.entities_changed = true;
     self.inner.spawn(components)
   }
 
@@ -83,6 +97,7 @@ impl World {
   /// You can add components later with `insert` or `insert_one`.
   /// Prefer `spawn()` with components when possible.
   pub fn spawn_empty(&mut self) -> Entity {
+    self.entities_changed = true;
     self.inner.spawn(())
   }
 
@@ -90,6 +105,7 @@ impl World {
   ///
   /// Returns an error if the entity doesn't exist (already despawned or invalid).
   pub fn despawn(&mut self, entity: Entity) -> Result<(), hecs::NoSuchEntity> {
+    self.entities_changed = true;
     self.inner.despawn(entity)
   }
 
@@ -108,6 +124,7 @@ impl World {
   pub fn clear(&mut self) {
     self.inner.clear();
     self.generation = self.generation.wrapping_add(1);
+    self.entities_changed = true;
   }
 
   /// Get the current generation counter
