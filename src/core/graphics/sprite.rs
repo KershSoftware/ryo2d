@@ -59,8 +59,19 @@ impl Sprite {
   /// Create a solid color circle sprite with anti-aliasing
   ///
   /// The sprite will be `diameter x diameter` pixels, with a circle centered in it.
+  /// Note: All pixels (including transparent ones) have the same RGB color to prevent
+  /// black fringing during bilinear interpolation in rotated/scaled rendering.
   pub fn solid_circle(diameter: u32, r: u8, g: u8, b: u8, a: u8) -> Self {
+    // Initialize all pixels with the target color (not black) to prevent
+    // black fringing during bilinear interpolation at edges
     let mut data = vec![0u8; (diameter * diameter * 4) as usize];
+    for pixel in data.chunks_exact_mut(4) {
+      pixel[0] = r;
+      pixel[1] = g;
+      pixel[2] = b;
+      pixel[3] = 0; // Alpha will be set per-pixel below
+    }
+
     let radius = diameter as f32 / 2.0;
     let center = radius;
 
@@ -81,9 +92,6 @@ impl Sprite {
         };
 
         let idx = ((y * diameter + x) * 4) as usize;
-        data[idx] = r;
-        data[idx + 1] = g;
-        data[idx + 2] = b;
         data[idx + 3] = alpha as u8;
       }
     }
@@ -1581,6 +1589,226 @@ mod tests {
       white_count > 2,
       "Should have white pixels from small rotation, got {}",
       white_count
+    );
+  }
+
+  // =========================================================================
+  // Tinted Drawing Tests
+  // =========================================================================
+
+  #[test]
+  fn draw_tinted_with_half_alpha() {
+    // White sprite drawn at 50% alpha on green background should blend
+    let sprite = Sprite::solid_rect(4, 4, 255, 255, 255, 255);
+    let mut frame = vec![0u8; 10 * 10 * 4];
+
+    // Fill with green background
+    for i in (0..frame.len()).step_by(4) {
+      frame[i] = 0; // R
+      frame[i + 1] = 255; // G
+      frame[i + 2] = 0; // B
+      frame[i + 3] = 255; // A
+    }
+
+    // Draw with 50% alpha
+    sprite.draw_scaled_xy_flipped_tinted(
+      &mut frame, 10, 10, 3, 3, 1.0, 1.0, false, false, 0.5, Color::WHITE,
+    );
+
+    // Check a pixel in the sprite area - should be blended (greenish-white)
+    let idx = (4 * 10 + 4) * 4; // Center-ish pixel
+    let r = frame[idx];
+    let g = frame[idx + 1];
+    let b = frame[idx + 2];
+
+    // Should have significant red (from white) and green (from background)
+    assert!(r > 100, "Red should be present from white sprite, got {}", r);
+    assert!(
+      g > 100,
+      "Green should be present from background, got {}",
+      g
+    );
+    // Blue should be roughly half of white (127-ish)
+    assert!(b > 50 && b < 200, "Blue should be blended, got {}", b);
+  }
+
+  #[test]
+  fn draw_tinted_with_red_tint() {
+    // White sprite tinted red should appear red
+    let sprite = Sprite::solid_rect(4, 4, 255, 255, 255, 255);
+    let mut frame = vec![0u8; 10 * 10 * 4];
+
+    // Draw with red tint
+    sprite.draw_scaled_xy_flipped_tinted(
+      &mut frame,
+      10,
+      10,
+      3,
+      3,
+      1.0,
+      1.0,
+      false,
+      false,
+      1.0,
+      Color::new(255, 0, 0, 255),
+    );
+
+    // Check a pixel in the sprite area
+    let idx = (4 * 10 + 4) * 4;
+    let r = frame[idx];
+    let g = frame[idx + 1];
+    let b = frame[idx + 2];
+
+    // Should be red (high R, low G and B)
+    assert_eq!(r, 255, "Red should be full");
+    assert_eq!(g, 0, "Green should be zero from red tint");
+    assert_eq!(b, 0, "Blue should be zero from red tint");
+  }
+
+  #[test]
+  fn draw_tinted_with_zero_alpha_draws_nothing() {
+    // Zero alpha should not modify the frame
+    let sprite = Sprite::solid_rect(4, 4, 255, 0, 0, 255);
+    let mut frame = vec![128u8; 10 * 10 * 4];
+    let original = frame.clone();
+
+    sprite.draw_scaled_xy_flipped_tinted(
+      &mut frame, 10, 10, 3, 3, 1.0, 1.0, false, false, 0.0, Color::WHITE,
+    );
+
+    assert_eq!(frame, original, "Zero alpha should not change frame");
+  }
+
+  #[test]
+  fn draw_tinted_darkening() {
+    // White sprite with gray tint should appear gray (darkened)
+    let sprite = Sprite::solid_rect(4, 4, 255, 255, 255, 255);
+    let mut frame = vec![0u8; 10 * 10 * 4];
+
+    // Draw with 50% gray tint (darkening)
+    sprite.draw_scaled_xy_flipped_tinted(
+      &mut frame,
+      10,
+      10,
+      3,
+      3,
+      1.0,
+      1.0,
+      false,
+      false,
+      1.0,
+      Color::new(128, 128, 128, 255),
+    );
+
+    let idx = (4 * 10 + 4) * 4;
+    let r = frame[idx];
+    let g = frame[idx + 1];
+    let b = frame[idx + 2];
+
+    // Should be approximately half brightness (128)
+    assert!(
+      r > 120 && r < 136,
+      "Red should be ~128 from gray tint, got {}",
+      r
+    );
+    assert!(
+      g > 120 && g < 136,
+      "Green should be ~128 from gray tint, got {}",
+      g
+    );
+    assert!(
+      b > 120 && b < 136,
+      "Blue should be ~128 from gray tint, got {}",
+      b
+    );
+  }
+
+  #[test]
+  fn draw_rotated_tinted_with_alpha() {
+    // Test rotated tinted drawing
+    let sprite = Sprite::solid_rect(4, 4, 255, 255, 255, 255);
+    let mut frame = vec![0u8; 20 * 20 * 4];
+
+    // Fill with blue background
+    for i in (0..frame.len()).step_by(4) {
+      frame[i] = 0;
+      frame[i + 1] = 0;
+      frame[i + 2] = 255;
+      frame[i + 3] = 255;
+    }
+
+    // Draw rotated 45 degrees with 50% alpha and green tint
+    sprite.draw_rotated_tinted(
+      &mut frame,
+      20,
+      20,
+      8,
+      8,
+      1.0,
+      1.0,
+      45.0,
+      false,
+      false,
+      0.5,
+      Color::new(0, 255, 0, 255),
+    );
+
+    // Find pixels that were modified (not pure blue)
+    let mut found_blended = false;
+    for idx in (0..frame.len()).step_by(4) {
+      let g = frame[idx + 1];
+      let b = frame[idx + 2];
+
+      // Look for pixels that have green from tint blended with blue background
+      if g > 50 && b > 50 && g < 255 && b < 255 {
+        found_blended = true;
+        break;
+      }
+    }
+
+    assert!(
+      found_blended,
+      "Should find blended green+blue pixels from tinted rotated sprite"
+    );
+  }
+
+  #[test]
+  fn draw_tinted_combines_source_and_tint_alpha() {
+    // Semi-transparent sprite with tint alpha should multiply
+    let sprite = Sprite::solid_rect(4, 4, 255, 255, 255, 128); // 50% source alpha
+    let mut frame = vec![0u8; 10 * 10 * 4];
+
+    // Fill with green background
+    for i in (0..frame.len()).step_by(4) {
+      frame[i] = 0;
+      frame[i + 1] = 255;
+      frame[i + 2] = 0;
+      frame[i + 3] = 255;
+    }
+
+    // Draw with 50% tint alpha (combined = 25% final alpha)
+    sprite.draw_scaled_xy_flipped_tinted(
+      &mut frame,
+      10,
+      10,
+      3,
+      3,
+      1.0,
+      1.0,
+      false,
+      false,
+      0.5,
+      Color::new(255, 255, 255, 255),
+    );
+
+    let idx = (4 * 10 + 4) * 4;
+    let g = frame[idx + 1];
+
+    // Green should still be quite high since only 25% white was blended
+    assert!(
+      g > 150,
+      "Green should be mostly preserved with 25% blend, got {}",
+      g
     );
   }
 }
