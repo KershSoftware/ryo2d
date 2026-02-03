@@ -51,6 +51,7 @@
 use super::material::SpriteShader;
 use crate::core::asset::SpriteHandle;
 use crate::core::graphics::TileDirection;
+use crate::core::ui::Color;
 
 /// Hints for how the renderer should handle this entity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -103,6 +104,11 @@ pub struct Renderable {
   pub flip_y: bool,
   /// Alpha transparency (0.0 = invisible, 1.0 = opaque)
   pub alpha: f32,
+  /// Tint color multiplied with sprite colors (default: WHITE = no tint)
+  ///
+  /// Use this for color effects like damage flash, power-ups, or fading.
+  /// The alpha component of tint is multiplied with the `alpha` field.
+  pub tint: Color,
   /// Optional inline shader effect
   ///
   /// For simple one-off effects. For reusable/queryable shaders,
@@ -122,6 +128,7 @@ impl Renderable {
       flip_x: false,
       flip_y: false,
       alpha: 1.0,
+      tint: Color::WHITE,
       shader: None,
     }
   }
@@ -140,6 +147,7 @@ impl Renderable {
       flip_x: false,
       flip_y: false,
       alpha: 1.0,
+      tint: Color::WHITE,
       shader: None,
     }
   }
@@ -177,6 +185,14 @@ impl Renderable {
   /// Set alpha transparency
   pub fn with_alpha(mut self, alpha: f32) -> Self {
     self.alpha = alpha.clamp(0.0, 1.0);
+    self
+  }
+
+  /// Set tint color
+  ///
+  /// The tint color is multiplied with sprite colors. Use `Color::WHITE` for no tint.
+  pub fn with_tint(mut self, tint: Color) -> Self {
+    self.tint = tint;
     self
   }
 
