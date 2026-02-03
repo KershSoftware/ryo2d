@@ -1720,8 +1720,8 @@ impl ApplicationHandler for Engine {
       self.config.physics_hz,
     ));
 
-    // Initialize profiler (no-op if `profiler` feature is disabled)
-    super::profiler::init();
+    // Initialize profiler (no-op if `profiler` feature is disabled or puffin_profiler=false)
+    super::profiler::init(self.config.debug.puffin_profiler);
 
     // Call game init if not already initialized
     if !self.initialized {
@@ -2773,6 +2773,9 @@ impl EngineBuilder {
       if let Some(v) = option_env!("RYO_EMBED_ENABLE_PROFILING") {
         enable_profiling = v.parse().unwrap_or(true);
       }
+      if let Some(v) = option_env!("RYO_EMBED_PUFFIN_PROFILER") {
+        config.debug.puffin_profiler = v.parse().unwrap_or(false);
+      }
       if let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME") {
         master_volume = vol.parse().unwrap_or(0.7);
       }
@@ -2808,6 +2811,7 @@ impl EngineBuilder {
       config.debug.show_velocities = debug.show_velocities;
       config.debug.show_origins = debug.show_origins;
       config.debug.show_frame_timing = debug.show_frame_timing;
+      config.debug.puffin_profiler = debug.puffin_profiler;
       disable_debug_keys = debug.disable_debug_keys;
       enable_profiling = debug.enable_profiling;
 
@@ -2829,6 +2833,11 @@ impl EngineBuilder {
         // Make path absolute relative to workspace root
         config.icon_path = Some(workspace.root().join(logo_path));
       }
+    }
+
+    // Runtime env var override for puffin profiler (from `ryo2d dev --profiler`)
+    if std::env::var("RYO_PUFFIN_PROFILER").is_ok() {
+      config.debug.puffin_profiler = true;
     }
 
     // For release builds: check for icon.png next to executable (created by `ryo2d build`)

@@ -224,6 +224,8 @@ pub struct DebugConfig {
   pub show_origins: bool,
   /// Whether to enable detailed profiling measurements (per-phase timing, slow frame warnings)
   pub enable_profiling: bool,
+  /// Whether to start the puffin profiler HTTP server (requires --features profiler or `ryo2d dev --profiler`)
+  pub puffin_profiler: bool,
 }
 
 impl Default for DebugConfig {
@@ -236,6 +238,7 @@ impl Default for DebugConfig {
       show_velocities: false,
       show_origins: false,
       enable_profiling: true, // Enabled by default in dev builds
+      puffin_profiler: false, // Disabled by default (opt-in)
     }
   }
 }

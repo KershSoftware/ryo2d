@@ -106,11 +106,19 @@ macro_rules! profile_scope {
 
 /// Initialize the puffin profiler.
 ///
-/// Call this once at engine startup. When `profiler` feature is enabled,
-/// this enables puffin and starts the HTTP server. When disabled, this
+/// Call this once at engine startup. When `profiler` feature is enabled and
+/// `enabled` is true, this starts the puffin HTTP server. Otherwise, this
 /// is a no-op.
+///
+/// # Arguments
+///
+/// * `enabled` - Whether to actually start the profiler (from Ryo.toml `puffin_profiler` option)
 #[cfg(feature = "profiler")]
-pub fn init() {
+pub fn init(enabled: bool) {
+  if !enabled {
+    return;
+  }
+
   puffin::set_scopes_on(true);
 
   // Start HTTP server for puffin_viewer connection
@@ -136,7 +144,7 @@ pub fn init() {
 }
 
 #[cfg(not(feature = "profiler"))]
-pub fn init() {
+pub fn init(_enabled: bool) {
   // No-op when profiler feature is disabled
 }
 
@@ -173,7 +181,8 @@ mod tests {
   #[test]
   fn test_init_runs() {
     // Verify init doesn't panic (may or may not start server depending on feature)
-    init();
+    // Pass false to avoid actually starting the server during tests
+    init(false);
   }
 
   #[test]

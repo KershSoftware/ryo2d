@@ -136,13 +136,33 @@ For detailed hierarchical profiling with a real-time flamegraph viewer, Ryo2D su
 
 ### Enabling Puffin
 
-Enable the `profiler` feature when building:
+**Recommended: Use the ryo2d CLI**
 
 ```bash
-cargo run --features profiler -p breakout
+ryo2d dev --profiler
+# or shorthand:
+ryo2d dev -p
 ```
 
-When running with this feature, the engine automatically:
+This automatically compiles with the `profiler` feature and enables the puffin server.
+
+**Alternative: Ryo.toml configuration**
+
+For persistent profiler configuration, add to your `Ryo.toml`:
+
+```toml
+[debug]
+puffin_profiler = true
+```
+
+Then run with:
+
+```bash
+ryo2d dev
+# or: cargo run --features profiler
+```
+
+When enabled, the engine:
 1. Starts a puffin HTTP server on port 8585
 2. Instruments key engine systems (update, render, present, physics, scene transitions)
 3. Prints connection instructions to the console

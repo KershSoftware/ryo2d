@@ -18,6 +18,9 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // Check for --skip-opt-check flag (used by engine run scripts for examples)
   let skip_opt_check = args.iter().any(|a| a == "--skip-opt-check");
 
+  // Check for --profiler / -p flag (enables puffin profiling)
+  let enable_profiler = args.iter().any(|a| a == "--profiler" || a == "-p");
+
   let workspace = discover_workspace()?;
   let project_name = workspace.name();
 
@@ -26,18 +29,33 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     check_dev_profile_optimization(&workspace)?;
   }
 
-  Output::status("Starting", &format!("{} in dev mode...", project_name));
+  if enable_profiler {
+    Output::status("Starting", &format!("{} in dev mode with puffin profiler...", project_name));
+  } else {
+    Output::status("Starting", &format!("{} in dev mode...", project_name));
+  }
 
   // Find workspace root's target directory for shared dependency caching
   let target_dir = find_workspace_target_dir(workspace.root());
 
+  // Build cargo command
+  let mut cmd = Command::new("cargo");
+  cmd.arg("run");
+
+  // Add profiler feature flag if requested
+  if enable_profiler {
+    cmd.arg("--features").arg("profiler");
+    // Also set env var to enable puffin at runtime (overrides Ryo.toml)
+    cmd.env("RYO_PUFFIN_PROFILER", "1");
+  }
+
+  // Use shared target directory for dependency caching
+  cmd.env("CARGO_TARGET_DIR", &target_dir);
+  cmd.current_dir(workspace.root());
+
   // For now, just run cargo run (debug build)
   // Future: Add file watching with notify crate
-  let status = Command::new("cargo")
-    .arg("run")
-    // Use shared target directory for dependency caching
-    .env("CARGO_TARGET_DIR", &target_dir)
-    .current_dir(workspace.root())
+  let status = cmd
     .status()
     .map_err(|e| CliError::CommandFailed {
       command: "cargo run".to_string(),
@@ -174,6 +192,7 @@ USAGE:
 
 OPTIONS:
     -h, --help          Show this help message
+    -p, --profiler      Enable puffin hierarchical profiler (HTTP server on port 8585)
     --skip-opt-check    Skip the dev profile optimization check
 
 DESCRIPTION:
@@ -184,8 +203,21 @@ DESCRIPTION:
 
     This is the recommended command during development.
 
+PROFILING:
+    Use --profiler to enable the puffin hierarchical profiler:
+
+        ryo2d dev --profiler
+
+    Then connect with puffin_viewer:
+
+        cargo install puffin_viewer
+        puffin_viewer --url 127.0.0.1:8585
+
+    Alternatively, set `puffin_profiler = true` in your Ryo.toml [debug] section.
+
 EXAMPLE:
-    ryo2d dev
+    ryo2d dev              # Normal development mode
+    ryo2d dev --profiler   # With puffin profiler enabled
 "#
   );
 }
