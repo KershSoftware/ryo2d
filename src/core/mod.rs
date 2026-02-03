@@ -32,6 +32,7 @@ pub mod procgen;
 pub mod config;
 
 // Engine orchestration
+pub mod context;
 pub mod engine;
 pub mod game;
 pub mod scene;

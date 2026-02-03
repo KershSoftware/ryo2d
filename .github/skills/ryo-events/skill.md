@@ -97,6 +97,25 @@ event.involves(entity)   // Check if entity is in this collision
 event.other(entity)      // Get the other entity (returns Option<Entity>)
 ```
 
+### Knockback Events (Automatic)
+
+The engine emits events when knockback state changes:
+
+```rust
+// React to knockback starting (e.g., flash the entity)
+for event in ctx.events.read::<KnockbackStarted>() {
+    if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(event.entity) {
+        renderable.tint = Color::WHITE;  // Flash white on hit
+    }
+}
+
+// React to knockback finishing
+for event in ctx.events.read::<KnockbackFinished>() {
+    // Entity has stopped being pushed
+    self.on_knockback_ended(event.entity);
+}
+```
+
 ### Network Events (Game-Emitted)
 
 When using networking, emit these from your game code:
