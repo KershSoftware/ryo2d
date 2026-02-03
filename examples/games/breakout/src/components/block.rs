@@ -11,6 +11,8 @@ pub struct Block {
   pub points: u32,
   /// Whether this block spawns an extra ball when destroyed
   pub is_multiball: bool,
+  /// Whether this block grants an extra life when destroyed
+  pub is_heart: bool,
 }
 
 impl Block {
@@ -21,6 +23,7 @@ impl Block {
       color,
       points,
       is_multiball: false,
+      is_heart: false,
     }
   }
 }

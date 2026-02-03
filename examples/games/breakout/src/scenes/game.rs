@@ -33,11 +33,23 @@ pub struct GameScene {
   // Block count for win detection
   blocks_remaining: u32,
 
-  // Multi-ball tracking
-  multiball_score_threshold: u32,
+  // Multi-ball tracking (time-based)
   ball_counter: u32,
   multiball_blocks: Vec<Entity>,
   glow_time: f32,
+  /// Time survived on current ball (resets on life lost)
+  survival_time: f32,
+  /// Cooldown after spawning a multiball block (prevents rapid spawning)
+  multiball_cooldown: f32,
+
+  // Heart block tracking (1000 point milestones)
+  heart_blocks: Vec<Entity>,
+  /// Last 1000-point milestone crossed (1000, 2000, 3000, etc.)
+  last_heart_milestone: u32,
+
+  // Paddle physics
+  /// Current paddle velocity (with acceleration)
+  paddle_velocity: f32,
 
   // Deferred respawn flag (spawn ball next frame to avoid rendering issues)
   needs_respawn: bool,
@@ -55,6 +67,10 @@ pub struct GameScene {
   // Debounce level switching - wait for key release
   level_switch_q_released: bool,
   level_switch_e_released: bool,
+
+  // "+1" life animation
+  /// Time remaining for "+1" animation (0 = not showing)
+  plus_one_timer: f32,
 }
 
 impl GameScene {
@@ -73,10 +89,14 @@ impl GameScene {
       walls: Vec::new(),
       death_zone: None,
       blocks_remaining: 0,
-      multiball_score_threshold: 300,
       ball_counter: 0,
       multiball_blocks: Vec::new(),
       glow_time: 0.0,
+      survival_time: 0.0,
+      multiball_cooldown: 0.0,
+      heart_blocks: Vec::new(),
+      last_heart_milestone: 0,
+      paddle_velocity: 0.0,
       needs_respawn: false,
       escape_was_released: true,
       music: None,
@@ -84,6 +104,7 @@ impl GameScene {
       debug_mode: false,
       level_switch_q_released: true,
       level_switch_e_released: true,
+      plus_one_timer: 0.0,
     }
   }
 
@@ -102,10 +123,14 @@ impl GameScene {
       walls: Vec::new(),
       death_zone: None,
       blocks_remaining: 0,
-      multiball_score_threshold: 300,
       ball_counter: 0,
       multiball_blocks: Vec::new(),
       glow_time: 0.0,
+      survival_time: 0.0,
+      multiball_cooldown: 0.0,
+      heart_blocks: Vec::new(),
+      last_heart_milestone: 0,
+      paddle_velocity: 0.0,
       needs_respawn: false,
       escape_was_released: true,
       music: None,
@@ -113,7 +138,103 @@ impl GameScene {
       debug_mode: false,
       level_switch_q_released: true,
       level_switch_e_released: true,
+      plus_one_timer: 0.0,
     }
+  }
+
+  /// Create a bordered rectangle sprite
+  fn bordered_rect(width: u32, height: u32, r: u8, g: u8, b: u8, border_color: (u8, u8, u8)) -> Sprite {
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    let (br, bg, bb) = border_color;
+
+    for y in 0..height {
+      for x in 0..width {
+        let idx = ((y * width + x) * 4) as usize;
+        // Check if on border (1 pixel border)
+        let is_border = x == 0 || x == width - 1 || y == 0 || y == height - 1;
+
+        if is_border {
+          pixels[idx] = br;
+          pixels[idx + 1] = bg;
+          pixels[idx + 2] = bb;
+          pixels[idx + 3] = 255;
+        } else {
+          pixels[idx] = r;
+          pixels[idx + 1] = g;
+          pixels[idx + 2] = b;
+          pixels[idx + 3] = 255;
+        }
+      }
+    }
+
+    Sprite::from_rgba(pixels, width, height)
+  }
+
+  /// Create a health block sprite (white background with red plus sign and black outline)
+  fn health_block_sprite(width: u32, height: u32, intensity: f32) -> Sprite {
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    let (bg_r, bg_g, bg_b) = (0xee, 0xee, 0xf8); // Light grayish-white background
+    let (br, b_g, bb) = (0xcc, 0x33, 0x33); // Red border
+
+    let cx = width / 2;
+    let cy = height / 2;
+
+    // Plus sign dimensions
+    let plus_thickness = 5u32;
+    let plus_arm_length = 8u32;
+    let outline_size = 1u32;
+
+    for y in 0..height {
+      for x in 0..width {
+        let idx = ((y * width + x) * 4) as usize;
+        let is_border = x == 0 || x == width - 1 || y == 0 || y == height - 1;
+
+        if is_border {
+          pixels[idx] = br;
+          pixels[idx + 1] = b_g;
+          pixels[idx + 2] = bb;
+          pixels[idx + 3] = 255;
+        } else {
+          // Check if pixel is part of plus sign or its outline
+          let dx = (x as i32 - cx as i32).unsigned_abs();
+          let dy = (y as i32 - cy as i32).unsigned_abs();
+
+          let in_horizontal = dy <= plus_thickness / 2 && dx <= plus_arm_length;
+          let in_vertical = dx <= plus_thickness / 2 && dy <= plus_arm_length;
+
+          // Outline is slightly larger than the plus
+          let in_h_outline = dy <= plus_thickness / 2 + outline_size && dx <= plus_arm_length + outline_size;
+          let in_v_outline = dx <= plus_thickness / 2 + outline_size && dy <= plus_arm_length + outline_size;
+          let is_outline = (in_h_outline || in_v_outline) && !(in_horizontal || in_vertical);
+
+          if is_outline {
+            // Black outline
+            pixels[idx] = 0x20;
+            pixels[idx + 1] = 0x20;
+            pixels[idx + 2] = 0x20;
+            pixels[idx + 3] = 255;
+          } else if in_horizontal || in_vertical {
+            // Red plus fading to white based on intensity
+            // intensity 1.0 = full red, intensity 0.0 = white
+            let red = 0xff;
+            let green = (0x22 as f32 + (0xff - 0x22) as f32 * (1.0 - intensity)) as u8;
+            let blue = (0x22 as f32 + (0xff - 0x22) as f32 * (1.0 - intensity)) as u8;
+            pixels[idx] = red;
+            pixels[idx + 1] = green;
+            pixels[idx + 2] = blue;
+            pixels[idx + 3] = 255;
+          } else {
+            // Light background
+            pixels[idx] = bg_r;
+            pixels[idx + 1] = bg_g;
+            pixels[idx + 2] = bg_b;
+            pixels[idx + 3] = 255;
+          }
+        }
+      }
+    }
+
+    Sprite::from_rgba(pixels, width, height)
   }
 
   fn spawn_paddle(&mut self, ctx: &mut SceneContext) {
@@ -125,13 +246,13 @@ impl GameScene {
         .with_restitution(1.0) // Perfect bounce
         .with_friction(0.0), // No friction
       Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_rect(
+        Self::bordered_rect(
           PADDLE_WIDTH as u32,
           PADDLE_HEIGHT as u32,
           0x40,
           0xc0,
           0xff,
-          0xff,
+          (0x20, 0x60, 0x80), // Darker blue border
         ),
         "paddle",
       ))
@@ -175,9 +296,17 @@ impl GameScene {
     self.ball_counter += 1;
     let sprite_id = format!("ball_{}", self.ball_counter);
 
+    // Random angle using multiple varying factors for better randomness
+    // Combine glow_time, survival_time, score, and ball_counter for pseudo-random angle
+    let random_seed = self.glow_time * 17.3 + self.survival_time * 7.1 + self.score as f32 * 3.7;
+    let angle_offset = (random_seed.sin()) * 0.6; // -0.6 to 0.6 (~35 degrees each way)
+
+    let vel_x = BALL_SPEED * angle_offset;
+    let vel_y = -(BALL_SPEED * BALL_SPEED - vel_x * vel_x).sqrt(); // Maintain constant speed
+
     let ball = ctx.world.spawn((
       Transform::new(x - BALL_SIZE / 2.0, y),
-      Velocity::new(0.0, -BALL_SPEED), // Moving upward
+      Velocity::new(vel_x, vel_y), // Moving upward with random angle
       RigidBody::new().with_gravity_scale(0.0).with_drag(0.0),
       Collider::circle_collider(BALL_SIZE / 2.0)
         .with_offset(BALL_SIZE / 2.0, BALL_SIZE / 2.0)
@@ -193,57 +322,78 @@ impl GameScene {
     self.balls.push(ball);
   }
 
-  /// Check if score crossed threshold and convert a random block to multi-ball
+  /// Time-based multiball spawn: longer survival = higher chance
+  /// Probability increases from 0% at 0s to ~15% at 30s survival
   fn try_spawn_multiball_block(&mut self, ctx: &mut SceneContext) {
-    if self.score >= self.multiball_score_threshold && !self.blocks.is_empty() {
-      // Pick a block based on score (deterministic but varied)
-      let idx = (self.score as usize) % self.blocks.len();
-      let block = self.blocks[idx];
+    // Don't spawn if on cooldown or no blocks available
+    if self.multiball_cooldown > 0.0 || self.blocks.is_empty() {
+      return;
+    }
 
-      // Mark as multiball
-      if let Some(mut block_comp) = ctx.world.get_component_mut::<Block>(block) {
-        // Don't convert if already multiball
-        if block_comp.is_multiball {
-          // Try next threshold
-          self.multiball_score_threshold += 300;
-          return;
-        }
-        block_comp.is_multiball = true;
-      } else {
-        return; // Block doesn't exist, skip
-      }
+    // Calculate spawn chance based on survival time
+    // Starts at 0, reaches ~15% chance per block hit at 30s survival
+    let survival_factor = (self.survival_time / 30.0).min(1.0);
+    let spawn_chance = 0.15 * survival_factor;
 
-      // Change sprite to gold (will be animated each frame)
+    // Random check (use score as pseudo-random seed for determinism)
+    let pseudo_random = ((self.score as f32 * 7.13 + self.survival_time * 3.17).sin() + 1.0) / 2.0;
+    if pseudo_random > spawn_chance {
+      return;
+    }
+
+    // Find a block that isn't already special AND has only 1 hit remaining
+    // (avoid multi-hit blocks becoming multiball, which would be confusing)
+    let available_blocks: Vec<Entity> = self
+      .blocks
+      .iter()
+      .filter(|&&b| {
+        ctx
+          .world
+          .get_component::<Block>(b)
+          .map(|block| !block.is_multiball && !block.is_heart && block.hits == 1)
+          .unwrap_or(false)
+      })
+      .copied()
+      .collect();
+
+    if available_blocks.is_empty() {
+      return;
+    }
+
+    // Pick a block (use score for variety)
+    let idx = (self.score as usize) % available_blocks.len();
+    let block = available_blocks[idx];
+
+    // Mark as multiball - ONLY proceed if we successfully set the flag
+    let flag_set = if let Some(mut block_comp) = ctx.world.get_component_mut::<Block>(block) {
+      block_comp.is_multiball = true;
+      true
+    } else {
+      false
+    };
+
+    // Only change visuals and track if the flag was actually set
+    if flag_set {
+      // Change sprite to gold with border (will be animated with glow pulse each frame)
       if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
         renderable.sprite = SpriteHandle::from_sprite(
-          Sprite::solid_rect(
+          Self::bordered_rect(
             BLOCK_WIDTH as u32,
             BLOCK_HEIGHT as u32,
             0xff,
             0xd7,
             0x00,
-            0xff,
+            (0x80, 0x6b, 0x00), // Dark gold border
           ),
-          "multiball_block",
+          format!("multiball_block_{}", self.ball_counter),
         );
       }
-
-      // Add a subtle elastic wiggle with slight rotation
-      let _ = ctx.world.insert_one(
-        block,
-        Tween::new(0.25)
-          .to_scale_x(1.02)
-          .to_scale_y(1.02)
-          .to_rotation_value(0.02)
-          .with_easing(Ease::InOutElastic)
-          .with_loop(TweenLoop::PingPong),
-      );
 
       // Track this block for color pulse animation
       self.multiball_blocks.push(block);
 
-      // Set next threshold
-      self.multiball_score_threshold += 300;
+      // Set cooldown (5 seconds before another multiball can spawn)
+      self.multiball_cooldown = 5.0;
     }
   }
 
@@ -251,23 +401,89 @@ impl GameScene {
   fn update_multiball_glow(&mut self, ctx: &mut SceneContext, dt: f32) {
     self.glow_time += dt;
 
-    // Pulsing brightness: oscillate between gold and bright yellow/white
-    let pulse = (self.glow_time * 5.0).sin(); // 5.0 = speed of pulse
+    // Faster, more dramatic color pulse: oscillate between gold and bright white
+    let pulse = (self.glow_time * 8.0).sin(); // 8.0 = faster pulse speed
     let brightness = 0.5 + pulse * 0.5; // 0.0 to 1.0
 
-    // Interpolate between gold (0xff, 0xd7, 0x00) and bright white-gold (0xff, 0xff, 0xaa)
+    // Interpolate between deep gold (0xff, 0xaa, 0x00) and bright white (0xff, 0xff, 0xff)
     let r = 0xff;
-    let g = (0xd7 as f32 + (0xff - 0xd7) as f32 * brightness) as u8;
-    let b = (0x00 as f32 + 0xaa as f32 * brightness) as u8;
+    let g = (0xaa as f32 + (0xff - 0xaa) as f32 * brightness) as u8;
+    let b = (0x00 as f32 + 0xff as f32 * brightness) as u8;
 
-    // Update sprite color on all multiball blocks
-    for &block in &self.multiball_blocks {
+    // Update sprite color on all multiball blocks (use index for unique sprite IDs)
+    // Use darker border based on brightness
+    let border_g = (0x55 as f32 + (0x80 - 0x55) as f32 * brightness) as u8;
+    let border_b = (0x00 as f32 + 0x80 as f32 * brightness) as u8;
+    for (i, &block) in self.multiball_blocks.iter().enumerate() {
       if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
         renderable.sprite = SpriteHandle::from_sprite(
-          Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, 0xff),
-          "multiball_block",
+          Self::bordered_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, (0x80, border_g, border_b)),
+          format!("multiball_glow_{}", i),
         );
       }
+    }
+
+    // Pulse health blocks with smooth fade in/out
+    let fade_cycle = (self.glow_time * 2.0).sin(); // Slow fade cycle
+    let plus_alpha = 0.5 + fade_cycle * 0.5; // 0.0 to 1.0
+
+    for (i, &block) in self.heart_blocks.iter().enumerate() {
+      if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
+        renderable.sprite = SpriteHandle::from_sprite(
+          Self::health_block_sprite(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, plus_alpha),
+          format!("health_glow_{}", i),
+        );
+      }
+    }
+  }
+
+  /// Try to spawn a heart block when crossing 1000 point milestones
+  fn try_spawn_heart_block(&mut self, ctx: &mut SceneContext) {
+    // Calculate current milestone (1000, 2000, 3000, etc.)
+    let current_milestone = (self.score / 1000) * 1000;
+
+    // Check if we crossed a new milestone
+    if current_milestone > self.last_heart_milestone && current_milestone > 0 {
+      self.last_heart_milestone = current_milestone;
+
+      // Find a block that isn't already special (not multiball or heart)
+      let available_blocks: Vec<Entity> = self
+        .blocks
+        .iter()
+        .filter(|&&b| {
+          ctx
+            .world
+            .get_component::<Block>(b)
+            .map(|block| !block.is_multiball && !block.is_heart)
+            .unwrap_or(false)
+        })
+        .copied()
+        .collect();
+
+      if available_blocks.is_empty() {
+        return;
+      }
+
+      // Pick a random block based on glow_time for variety
+      let idx = ((self.glow_time * 13.7).sin().abs() * available_blocks.len() as f32) as usize
+        % available_blocks.len();
+      let block = available_blocks[idx];
+
+      // Mark as heart block
+      if let Some(mut block_comp) = ctx.world.get_component_mut::<Block>(block) {
+        block_comp.is_heart = true;
+      }
+
+      // Change sprite to heart block
+      if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
+        renderable.sprite = SpriteHandle::from_sprite(
+          Self::health_block_sprite(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, 1.0),
+          format!("heart_block_{}", current_milestone),
+        );
+      }
+
+      // Track this block for pulse animation
+      self.heart_blocks.push(block);
     }
   }
 
@@ -346,7 +562,9 @@ impl GameScene {
     };
 
     for (x, y, color, hits, points) in level_data.blocks {
-      let (r, g, b, a) = color.to_rgba();
+      let (r, g, b, _a) = color.to_rgba();
+      // Darker border color (half brightness)
+      let border = (r / 3, g / 3, b / 3);
 
       let block = ctx.world.spawn((
         Transform::new(x, y),
@@ -355,7 +573,7 @@ impl GameScene {
           .with_restitution(1.0) // Perfect bounce
           .with_friction(0.0), // No friction
         Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, a),
+          Self::bordered_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, border),
           format!("block_{}_{}", x as u32, y as u32),
         ))
         .with_z_order(5),
@@ -396,7 +614,9 @@ impl GameScene {
 
     self.blocks_remaining = 0;
     self.multiball_blocks.clear();
+    self.heart_blocks.clear();
     self.game_started = false;
+    // Keep survival_time across levels (reward for not losing lives)
   }
 
   /// Load a specific level
@@ -417,12 +637,22 @@ impl GameScene {
       {
         ball_comp.frozen = false;
 
-        // Set initial velocity - slightly angled upward
+        // Set initial velocity - angle influenced by paddle movement
         if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
-          // Angle varies based on score for variety
-          let angle_offset = (self.score as f32 * 0.1).sin() * 0.5;
-          vel.dx = BALL_SPEED * angle_offset;
-          vel.dy = -BALL_SPEED;
+          // Paddle velocity influences horizontal launch angle
+          // Normalize paddle velocity to -1..1 range, then apply influence factor
+          let paddle_influence = (self.paddle_velocity / PADDLE_SPEED) * PADDLE_LAUNCH_INFLUENCE;
+
+          // Calculate launch velocity with paddle influence
+          // Max horizontal component is ~70% of ball speed to ensure upward motion
+          let max_horizontal = BALL_SPEED * 0.7;
+          let horizontal = paddle_influence * max_horizontal;
+
+          // Calculate vertical component to maintain constant total speed
+          let vertical = -(BALL_SPEED * BALL_SPEED - horizontal * horizontal).sqrt();
+
+          vel.dx = horizontal;
+          vel.dy = vertical;
         }
 
         self.game_started = true;
@@ -437,7 +667,8 @@ impl GameScene {
       let _ = ctx.world.despawn(ball);
     }
 
-    // Reset paddle to center
+    // Reset paddle to center and stop its velocity
+    self.paddle_velocity = 0.0;
     if let Some(paddle) = self.paddle
       && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(paddle)
     {
@@ -455,6 +686,10 @@ impl GameScene {
     }
 
     self.lives = self.lives.saturating_sub(1);
+
+    // Reset survival time (multiball chance resets on life lost)
+    self.survival_time = 0.0;
+    self.multiball_cooldown = 0.0;
 
     if self.lives == 0 {
       // Game over - update high score
@@ -496,6 +731,12 @@ impl GameScene {
       }
     }
 
+    // Get block position FIRST (before any mutation) for multiball spawn
+    let block_position = ctx
+      .world
+      .get_component::<Transform>(block)
+      .map(|t| (t.x + BLOCK_WIDTH / 2.0, t.y + BLOCK_HEIGHT)); // center_x, bottom_y
+
     // Extract data from block component
     let block_info = {
       if let Some(mut block_comp) = ctx.world.get_component_mut::<Block>(block) {
@@ -505,39 +746,41 @@ impl GameScene {
           block_comp.hits,
           block_comp.color,
           block_comp.is_multiball,
+          block_comp.is_heart,
         ))
       } else {
         None
       }
     };
 
-    if let Some((points, remaining_hits, color, is_multiball)) = block_info {
+    if let Some((points, remaining_hits, color, is_multiball, is_heart)) = block_info {
       if remaining_hits == 0 {
         // Play block break sound
         if let Some(audio) = ctx.audio.as_mut() {
           let _ = audio.play_sound_with("block_break", SoundOptions::new().volume(0.15));
         }
 
-        // Get block position before despawning (for multiball spawn)
-        let spawn_pos = if is_multiball {
-          ctx
-            .world
-            .get_component::<Transform>(block)
-            .map(|t| (t.x + BLOCK_WIDTH / 2.0, t.y + BLOCK_HEIGHT))
-        } else {
-          None
-        };
+        // Grant extra life if this was a health block
+        if is_heart {
+          self.lives += 1;
+          // Trigger "+1" fly-by animation
+          self.plus_one_timer = 1.5; // 1.5 seconds animation
+        }
 
         // Destroy block
         self.score += points;
         self.blocks_remaining = self.blocks_remaining.saturating_sub(1);
         self.blocks.retain(|&b| b != block);
         self.multiball_blocks.retain(|&b| b != block);
+        self.heart_blocks.retain(|&b| b != block);
         let _ = ctx.world.despawn(block);
 
         // Spawn extra ball if this was a multiball block
-        if let Some((x, y)) = spawn_pos {
-          self.spawn_ball_at(ctx, x, y);
+        // Use position captured BEFORE despawning
+        if is_multiball {
+          if let Some((x, y)) = block_position {
+            self.spawn_ball_at(ctx, x, y);
+          }
         }
 
         // Update high score
@@ -545,14 +788,16 @@ impl GameScene {
           self.high_score = self.score;
         }
 
-        // Check if we should spawn a new multiball block
+        // Check if we should spawn special blocks
         self.try_spawn_multiball_block(ctx);
+        self.try_spawn_heart_block(ctx);
       } else {
         // Update block appearance to show damage
-        let (r, g, b, a) = color.dimmed();
+        let (r, g, b, _a) = color.dimmed();
+        let border = (r / 3, g / 3, b / 3);
         if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
           renderable.sprite = SpriteHandle::from_sprite(
-            Sprite::solid_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, a),
+            Self::bordered_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, border),
             "block_damaged",
           );
         }
@@ -575,8 +820,8 @@ impl GameScene {
       self.walls.clear();
       self.death_zone = None;
 
-      // Reset multiball threshold for new level
-      self.multiball_score_threshold = self.score + 300;
+      // Reset multiball cooldown for new level (keep survival time as reward)
+      self.multiball_cooldown = 0.0;
 
       true
     } else {
@@ -593,6 +838,14 @@ impl Scene for GameScene {
     }
 
     ctx.world.clear();
+
+    // Clear tracking lists from previous game (fix stale entity references)
+    self.multiball_blocks.clear();
+    self.heart_blocks.clear();
+    self.survival_time = 0.0;
+    self.multiball_cooldown = 0.0;
+    self.last_heart_milestone = 0;
+
     ctx
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
@@ -643,6 +896,19 @@ impl Scene for GameScene {
     self.escape_was_released = false;
   }
 
+  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
+    // Fill with same background color as menu scene (RGB 20, 20, 35)
+    for y in 0..height {
+      for x in 0..width {
+        let idx = ((y * width + x) * 4) as usize;
+        frame[idx] = 20;     // R
+        frame[idx + 1] = 20; // G
+        frame[idx + 2] = 35; // B
+        frame[idx + 3] = 255; // A
+      }
+    }
+  }
+
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Handle deferred ball respawn (from previous frame's death)
     if self.needs_respawn {
@@ -652,6 +918,21 @@ impl Scene for GameScene {
 
     // Animate multiball block glow
     self.update_multiball_glow(ctx, dt);
+
+    // Update survival time (only when game has started and not paused/over)
+    if self.game_started && self.lives > 0 {
+      self.survival_time += dt;
+    }
+
+    // Update multiball cooldown
+    if self.multiball_cooldown > 0.0 {
+      self.multiball_cooldown = (self.multiball_cooldown - dt).max(0.0);
+    }
+
+    // Update "+1" animation timer
+    if self.plus_one_timer > 0.0 {
+      self.plus_one_timer = (self.plus_one_timer - dt).max(0.0);
+    }
 
     // Debug mode: Level switching with Q/E
     if self.debug_mode {
@@ -679,13 +960,19 @@ impl Scene for GameScene {
       }
     }
 
-    // Track escape key release (needed after resuming from pause)
-    if !self.escape_was_released && !ctx.input.key_down(KeyCode::Escape) {
+    // Track escape/Start key release (needed after resuming from pause)
+    if !self.escape_was_released
+      && !ctx.input.key_down(KeyCode::Escape)
+      && !ctx.input.gamepad_button_down(GamepadButton::Start)
+    {
       self.escape_was_released = true;
     }
 
-    // Pause (only if escape was released since last pause)
-    if self.escape_was_released && ctx.input.key_pressed(KeyCode::Escape) {
+    // Pause (only if escape/Start was released since last pause)
+    if self.escape_was_released
+      && (ctx.input.key_pressed(KeyCode::Escape)
+        || ctx.input.gamepad_button_pressed(GamepadButton::Start))
+    {
       self.escape_was_released = false;
       return SceneAction::Push(Box::new(PauseScene::with_music(
         self.score,
@@ -705,12 +992,15 @@ impl Scene for GameScene {
         }
       } else {
         // Wait for any input to return to menu
-        let any_key_pressed = ctx.input.key_pressed(KeyCode::Space)
+        let any_input = ctx.input.key_pressed(KeyCode::Space)
           || ctx.input.key_pressed(KeyCode::Enter)
           || ctx.input.mouse_pressed(MouseButton::Left)
-          || ctx.input.key_pressed(KeyCode::Escape);
+          || ctx.input.key_pressed(KeyCode::Escape)
+          || ctx.input.gamepad_button_pressed(GamepadButton::South)
+          || ctx.input.gamepad_button_pressed(GamepadButton::Start)
+          || ctx.input.gamepad_button_pressed(GamepadButton::East);
 
-        if any_key_pressed {
+        if any_input {
           // Drop music handle (will fade out via fade_out_on_drop)
           // Don't pass to menu - let it stop cleanly
           self.music = None;
@@ -733,32 +1023,66 @@ impl Scene for GameScene {
       return SceneAction::Continue;
     }
 
-    // Launch ball on any key or click
+    // Launch ball on any key, click, or gamepad button
     if !self.game_started {
-      let any_key_pressed = ctx.input.key_pressed(KeyCode::Space)
+      let any_input = ctx.input.key_pressed(KeyCode::Space)
         || ctx.input.key_pressed(KeyCode::Enter)
         || ctx.input.mouse_pressed(MouseButton::Left)
         || ctx.input.key_pressed(KeyCode::KeyW)
-        || ctx.input.key_pressed(KeyCode::ArrowUp);
+        || ctx.input.key_pressed(KeyCode::ArrowUp)
+        || ctx.input.gamepad_button_pressed(GamepadButton::South); // A button
 
-      if any_key_pressed {
+      if any_input {
         self.launch_ball(ctx);
       }
     }
 
-    // Paddle movement
+    // Paddle movement with acceleration (keyboard + D-pad + left stick)
+    let stick_x = ctx.input.left_stick_x();
+    let dpad_left = ctx.input.gamepad_button_down(GamepadButton::DPadLeft);
+    let dpad_right = ctx.input.gamepad_button_down(GamepadButton::DPadRight);
+
+    let move_left = ctx.input.key_down(KeyCode::KeyA)
+      || ctx.input.key_down(KeyCode::ArrowLeft)
+      || dpad_left
+      || stick_x < -0.2; // Stick deadzone
+
+    let move_right = ctx.input.key_down(KeyCode::KeyD)
+      || ctx.input.key_down(KeyCode::ArrowRight)
+      || dpad_right
+      || stick_x > 0.2; // Stick deadzone
+
+    // Apply acceleration or deceleration
+    if move_left && !move_right {
+      self.paddle_velocity -= PADDLE_ACCELERATION * dt;
+    } else if move_right && !move_left {
+      self.paddle_velocity += PADDLE_ACCELERATION * dt;
+    } else {
+      // Decelerate towards zero when no input
+      if self.paddle_velocity > 0.0 {
+        self.paddle_velocity = (self.paddle_velocity - PADDLE_DECELERATION * dt).max(0.0);
+      } else if self.paddle_velocity < 0.0 {
+        self.paddle_velocity = (self.paddle_velocity + PADDLE_DECELERATION * dt).min(0.0);
+      }
+    }
+
+    // Clamp velocity to max speed
+    self.paddle_velocity = self.paddle_velocity.clamp(-PADDLE_SPEED, PADDLE_SPEED);
+
+    // Apply velocity to paddle position
     if let Some(paddle) = self.paddle
       && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(paddle)
     {
-      if ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft) {
-        transform.x -= PADDLE_SPEED * dt;
-      }
-      if ctx.input.key_down(KeyCode::KeyD) || ctx.input.key_down(KeyCode::ArrowRight) {
-        transform.x += PADDLE_SPEED * dt;
-      }
+      transform.x += self.paddle_velocity * dt;
 
-      // Clamp to screen bounds
-      transform.x = transform.x.clamp(0.0, SCREEN_WIDTH as f32 - PADDLE_WIDTH);
+      // Clamp to screen bounds and stop velocity at walls
+      if transform.x < 0.0 {
+        transform.x = 0.0;
+        self.paddle_velocity = 0.0;
+      } else if transform.x > SCREEN_WIDTH as f32 - PADDLE_WIDTH {
+        transform.x = SCREEN_WIDTH as f32 - PADDLE_WIDTH;
+        self.paddle_velocity = 0.0;
+      }
     }
 
     // Ball physics - maintain constant speed for all balls
@@ -884,6 +1208,29 @@ impl Scene for GameScene {
     // Lives (top left)
     let lives_text = format!("Lives: {}", self.lives);
     ui.draw_text_anchored(&lives_text, Anchor::TopLeft, 20.0, 10.0, Color::WHITE);
+
+    // "+1" fly-by animation when gaining a life
+    if self.plus_one_timer > 0.0 {
+      // Animation: starts at Lives position, moves right and fades out
+      let progress = 1.0 - (self.plus_one_timer / 1.5); // 0.0 to 1.0
+      let x_offset = 80.0 + progress * 60.0; // Starts at 80, moves right to 140
+      let y_offset = 10.0 - progress * 15.0; // Starts at 10, floats up to -5
+
+      // Fade: full opacity in first third, then fade out
+      let alpha = if progress < 0.3 {
+        (progress / 0.3 * 255.0) as u8 // Fade in
+      } else {
+        ((1.0 - (progress - 0.3) / 0.7) * 255.0) as u8 // Fade out
+      };
+
+      ui.draw_text_anchored(
+        "+1",
+        Anchor::TopLeft,
+        x_offset,
+        y_offset,
+        Color::new(0x44, 0xff, 0x44, alpha), // Green "+1"
+      );
+    }
 
     // Level
     let level_text = format!("Level: {}", self.level);
