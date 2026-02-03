@@ -8,6 +8,9 @@ use crate::components::*;
 use crate::constants::*;
 use crate::save::save_high_score;
 
+const FLAP_SOUND: &str = "flap";
+const DEATH_SOUND: &str = "death";
+
 pub struct GameScene {
   // Game state
   score: u32,
@@ -243,8 +246,12 @@ impl GameScene {
       };
 
       // Handle flapping
-      if should_flap {
+      if should_flap && bird.is_alive {
         bird.flap();
+        // Play flap sound
+        if let Some(audio) = &mut ctx.audio {
+          let _ = audio.play_sound_with(FLAP_SOUND, SoundOptions::new().volume(0.5));
+        }
       }
 
       // Apply gravity
@@ -460,6 +467,12 @@ impl Scene for GameScene {
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
+    // Load sound effects
+    if let Some(audio) = &mut ctx.audio {
+      let _ = audio.load_sound(FLAP_SOUND, "assets/flap.wav");
+      let _ = audio.load_sound(DEATH_SOUND, "assets/death.wav");
+    }
+
     // Spawn entities
     self.spawn_background(ctx);
     self.spawn_bird(ctx);
@@ -489,11 +502,15 @@ impl Scene for GameScene {
     self.update_pipes(ctx);
     self.check_collisions(ctx);
 
-    // Check if bird died - start death timer
+    // Check if bird died - start death timer and play death sound
     if let Some(bird_entity) = self.bird {
       if let Some(bird) = ctx.world.get::<Bird>(bird_entity) {
         if !bird.is_alive && self.death_timer.is_none() {
           self.death_timer = Some(0.0);
+          // Play death sound
+          if let Some(audio) = &mut ctx.audio {
+            let _ = audio.play_sound_with(DEATH_SOUND, SoundOptions::new().volume(0.6));
+          }
         }
       }
     }
