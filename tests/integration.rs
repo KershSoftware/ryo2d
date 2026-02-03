@@ -19,3 +19,6 @@ mod ui;
 
 #[path = "integration/navigation.rs"]
 mod navigation;
+
+#[path = "integration/render_pipeline.rs"]
+mod render_pipeline;

@@ -14,6 +14,7 @@ pub mod network;
 // Graphics & rendering
 pub mod graphics;
 pub mod lighting;
+pub mod render;
 pub mod shaders;
 pub mod trail;
 pub mod ui;
