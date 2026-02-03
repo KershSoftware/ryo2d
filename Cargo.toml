@@ -31,6 +31,7 @@ members = [
   "examples/demos/controller",
   "examples/demos/hierarchy-sprites",
   "examples/demos/knockback",
+  "examples/demos/squash-stretch",
   "examples/demos/lighting",
   "examples/demos/particles",
   "examples/demos/post-processing",

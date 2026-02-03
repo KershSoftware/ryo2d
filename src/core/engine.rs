@@ -877,6 +877,66 @@ impl Engine {
         .emit(super::events::KnockbackFinished { entity });
     }
 
+    // --- Squash/Stretch System ---
+    // Update SquashStretch components and apply scale to entities
+    let mut squash_started_events = Vec::new();
+    let mut squash_finished_events = Vec::new();
+
+    for entity in self.world.entities_with::<super::ecs::SquashStretch>() {
+      // Skip inactive pooled entities
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+
+      // Get current transform scale to capture base scale
+      let current_scale = self
+        .world
+        .get_component::<super::ecs::Transform>(entity)
+        .map(|t| (t.scale_x, t.scale_y));
+
+      // Update squash/stretch component
+      if let Some(mut squash) = self.world.get_component_mut::<super::ecs::SquashStretch>(entity) {
+        // Capture base scale from transform if not already set
+        if let Some((sx, sy)) = current_scale {
+          squash.capture_base_scale(sx, sy);
+        }
+
+        // Update (decay strength)
+        squash.update(_dt);
+
+        // Collect events
+        if squash.just_started {
+          squash_started_events.push(entity);
+        }
+        if squash.just_finished {
+          squash_finished_events.push(entity);
+        }
+
+        // Get the scale to apply
+        let (scale_x, scale_y) = squash.current_scale();
+
+        // Apply scale to transform
+        if let Some(mut transform) =
+          self.world.get_component_mut::<super::ecs::Transform>(entity)
+        {
+          transform.scale_x = scale_x;
+          transform.scale_y = scale_y;
+        }
+      }
+    }
+
+    // Emit squash/stretch events
+    for entity in squash_started_events {
+      self
+        .events
+        .emit(super::events::SquashStretchStarted { entity });
+    }
+    for entity in squash_finished_events {
+      self
+        .events
+        .emit(super::events::SquashStretchFinished { entity });
+    }
+
     // --- Game Logic Update ---
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {

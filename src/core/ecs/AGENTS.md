@@ -17,6 +17,7 @@ This folder implements the Entity-Component-System (ECS) layer using the **hecs*
 | `renderable.rs` | `Renderable` component for sprites |
 | `tween.rs` | Tweening system: `Tween`, `Ease`, `TweenLoop` |
 | `knockback.rs` | Knockback system: decay-based directional force |
+| `squash_stretch.rs` | Squash/stretch system: impact deformation effects |
 | `world.rs` | `World` wrapper around `hecs::World` with compatibility API |
 
 ## Key Design Decisions
@@ -310,6 +311,59 @@ for event in ctx.events.read::<KnockbackStarted>() {
 ### Engine Integration
 
 The engine updates all `Knockback` components automatically, applying displacement directly to the entity's `Transform`. Works with both simple entities (Transform only) and physics entities (with Velocity component).
+
+## Squash/Stretch System
+
+The squash/stretch system (`squash_stretch.rs`) applies scale deformation that recovers over time, perfect for impact effects, landing animations, and bouncy feel.
+
+### SquashStretch - Component
+
+Attach to entities to apply scale deformation on impact:
+
+```rust
+// Quick squash on landing (compresses Y, stretches X)
+ctx.squash(entity, 0.3);  // 30% deformation
+
+// Horizontal squash for wall hits
+ctx.squash_x(entity, 0.25);
+
+// Custom decay rate
+ctx.squash_with_decay(entity, 0.4, 12.0);  // Very snappy recovery
+
+// Full control via component
+world.add_component(entity,
+    SquashStretch::new(0.3)
+        .with_axis(SquashAxis::Y)
+        .with_decay_rate(8.0)
+        .with_preserve_volume(true)
+);
+```
+
+### Volume Preservation
+
+When `preserve_volume` is true (default), squashing one axis stretches the other:
+- Squash Y (landing): `scale_y = 1.0 - intensity`, `scale_x = 1.0 + intensity`
+- Squash X (wall hit): `scale_x = 1.0 - intensity`, `scale_y = 1.0 + intensity`
+
+### Decay Rates
+
+| Rate | Feel | Time to Recover |
+|------|------|-----------------|
+| 12.0 | Very snappy | ~0.08s |
+| 8.0 | Snappy (default) | ~0.125s |
+| 4.0 | Moderate | ~0.25s |
+| 2.0 | Slow/cartoon | ~0.5s |
+
+### Events
+
+| Event | When |
+|-------|------|
+| `SquashStretchStarted { entity }` | Effect becomes active |
+| `SquashStretchFinished { entity }` | Entity returns to base scale |
+
+### Engine Integration
+
+The engine updates all `SquashStretch` components automatically, applying scale changes directly to the entity's `Transform`. Base scale is captured on first update.
 
 ## Object Pooling System
 
