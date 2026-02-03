@@ -500,9 +500,8 @@ impl LightingRenderer {
     camera_pos: Vec2,
     camera_zoom: f32,
   ) {
-    if !self.enabled {
-      return;
-    }
+    // Note: We still render the light accumulation pass even if disabled to ensure
+    // the light_texture is cleared. The compose pass handles ambient lighting.
 
     // Collect light instances
     let mut instances: Vec<LightInstance> = Vec::with_capacity(MAX_LIGHTS);
@@ -645,9 +644,9 @@ impl LightingRenderer {
     output_view: &wgpu::TextureView,
     time: f32,
   ) {
-    if !self.enabled {
-      return;
-    }
+    // Note: We don't early-return here even if disabled, because we need to
+    // initialize output_view with valid content. The render_lights() call
+    // handles the enabled check for light accumulation.
 
     // Write pixel data to our scene copy texture
     queue.write_texture(
@@ -738,5 +737,112 @@ impl LightingRenderer {
   /// Get the light texture view (for debugging or custom effects).
   pub fn light_texture_view(&self) -> &wgpu::TextureView {
     &self.light_texture_view
+  }
+
+  /// Compose the lit scene from a texture view (instead of pixel data).
+  ///
+  /// This is the preferred method when the scene is already on a GPU texture
+  /// (e.g., after GPU sprites have been rendered to the game texture).
+  ///
+  /// # Arguments
+  /// * `device` - The wgpu device
+  /// * `queue` - The wgpu queue
+  /// * `encoder` - The command encoder
+  /// * `scene_texture` - The source scene texture (will be copied to internal buffer)
+  /// * `output_view` - The output texture view
+  /// * `time` - Current time for effects
+  pub fn compose_from_texture(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    scene_texture: &wgpu::Texture,
+    output_view: &wgpu::TextureView,
+    time: f32,
+  ) {
+    // Copy scene texture to our internal scene_copy_texture
+    encoder.copy_texture_to_texture(
+      wgpu::ImageCopyTexture {
+        texture: scene_texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+      },
+      wgpu::ImageCopyTexture {
+        texture: &self.scene_copy_texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+      },
+      wgpu::Extent3d {
+        width: self.width,
+        height: self.height,
+        depth_or_array_layers: 1,
+      },
+    );
+
+    // Update compose uniforms
+    let compose_uniform = LightingParams {
+      color: [
+        self.ambient.color.r as f32 / 255.0,
+        self.ambient.color.g as f32 / 255.0,
+        self.ambient.color.b as f32 / 255.0,
+        1.0,
+      ],
+      params: [self.ambient.intensity, 0.0, 0.0, 0.0],
+      time_resolution: [time, self.width as f32, self.height as f32, 0.0],
+      _padding: [0.0; 4],
+    };
+    queue.write_buffer(
+      &self.compose_uniform_buffer,
+      0,
+      bytemuck::cast_slice(&[compose_uniform]),
+    );
+
+    // Create compose bind group
+    let compose_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("Lighting Compose Bind Group (from texture)"),
+      layout: &self.compose_bind_group_layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: wgpu::BindingResource::TextureView(&self.scene_copy_view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: wgpu::BindingResource::TextureView(&self.light_texture_view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: wgpu::BindingResource::Sampler(&self.sampler),
+        },
+        wgpu::BindGroupEntry {
+          binding: 3,
+          resource: self.compose_uniform_buffer.as_entire_binding(),
+        },
+      ],
+    });
+
+    // Render composition
+    {
+      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Lighting Compose Pass (from texture)"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: output_view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+      });
+
+      render_pass.set_pipeline(&self.compose_pipeline);
+      render_pass.set_bind_group(0, &compose_bind_group, &[]);
+      render_pass.draw(0..6, 0..1);
+    }
   }
 }

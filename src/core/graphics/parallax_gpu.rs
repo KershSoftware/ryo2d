@@ -87,7 +87,13 @@ impl GpuParallaxLayer {
   }
 
   /// Create from explicit texture ID and dimensions
-  pub fn from_id(texture_id: impl Into<String>, width: u32, height: u32, scroll_speed: f32, z_order: i32) -> Self {
+  pub fn from_id(
+    texture_id: impl Into<String>,
+    width: u32,
+    height: u32,
+    scroll_speed: f32,
+    z_order: i32,
+  ) -> Self {
     Self {
       texture_id: texture_id.into(),
       scroll_speed,
@@ -201,13 +207,7 @@ impl GpuParallaxLayer {
     use crate::core::ui::Color;
 
     SpriteInstance::new()
-      .with_transform(
-        x + width / 2.0,
-        y + height / 2.0,
-        0.0,
-        width,
-        height,
-      )
+      .with_transform(x + width / 2.0, y + height / 2.0, 0.0, width, height)
       .with_tint(
         Color::new(self.tint[0], self.tint[1], self.tint[2], self.tint[3]),
         1.0,
@@ -294,12 +294,8 @@ impl GpuParallaxBackground {
         continue;
       }
 
-      let instances = layer.compute_instances(
-        screen_width,
-        screen_height,
-        camera_x,
-        self.elapsed_time,
-      );
+      let instances =
+        layer.compute_instances(screen_width, screen_height, camera_x, self.elapsed_time);
 
       for instance in instances {
         ctx.add_sprite_instance(&layer.texture_id, instance, layer.z_order, false);
@@ -351,13 +347,17 @@ impl GpuParallaxBuilder {
 
   /// Add a static layer (scroll_speed = 0)
   pub fn static_layer(mut self, sprite: &SpriteHandle, z_order: i32) -> Self {
-    self.layers.push(GpuParallaxLayer::new(sprite, 0.0, z_order));
+    self
+      .layers
+      .push(GpuParallaxLayer::new(sprite, 0.0, z_order));
     self
   }
 
   /// Add a layer with parallax scrolling
   pub fn layer(mut self, sprite: &SpriteHandle, scroll_speed: f32, z_order: i32) -> Self {
-    self.layers.push(GpuParallaxLayer::new(sprite, scroll_speed, z_order));
+    self
+      .layers
+      .push(GpuParallaxLayer::new(sprite, scroll_speed, z_order));
     self
   }
 

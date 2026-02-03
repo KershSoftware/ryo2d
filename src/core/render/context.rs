@@ -1,7 +1,7 @@
 //! Render context providing access to rendering resources
 
-use crate::core::graphics::sprite_gpu::{BatchCollector, SpriteGpuRenderer};
 use crate::core::graphics::Camera;
+use crate::core::graphics::sprite_gpu::{BatchCollector, SpriteGpuRenderer};
 use crate::core::lighting::LightingRenderer;
 use crate::core::shaders::EffectsManager;
 use crate::core::trail::TrailRenderer;

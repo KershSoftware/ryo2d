@@ -7,6 +7,17 @@
 //! 4. Renders the texture to screen with proper letterboxing/scaling
 
 use std::sync::Arc;
+
+/// Default background color for the game framebuffer.
+/// This color matches the UI demo background rgb(25, 25, 35) aka #191923.
+/// Values are LINEAR (not sRGB) because wgpu applies sRGB encoding to the texture.
+/// sRGB to linear conversion: ((srgb + 0.055) / 1.055)^2.4
+pub const DEFAULT_BACKGROUND_COLOR: wgpu::Color = wgpu::Color {
+  r: 0.0296, // sRGB 25 -> linear
+  g: 0.0296, // sRGB 25 -> linear
+  b: 0.0473, // sRGB 35 -> linear
+  a: 1.0,
+};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -28,6 +39,9 @@ pub struct WgpuRenderer {
   #[allow(dead_code)] // View is used indirectly through cpu_bind_group
   cpu_texture_view: wgpu::TextureView,
   cpu_bind_group: wgpu::BindGroup,
+  // Dedicated UI texture (separate from cpu_texture to avoid write_texture ordering issues)
+  ui_texture: wgpu::Texture,
+  ui_texture_view: wgpu::TextureView,
   // Pipeline for rendering texture to screen (REPLACE blend)
   render_pipeline: wgpu::RenderPipeline,
   // Pipeline for alpha-blending overlay onto surface (for UI compositing)
@@ -208,6 +222,23 @@ impl WgpuRenderer {
       view_formats: &[],
     });
     let cpu_texture_view = cpu_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Create UI texture (dedicated texture for UI overlay to avoid write_texture ordering issues)
+    let ui_texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("UI Texture"),
+      size: wgpu::Extent3d {
+        width: game_width,
+        height: game_height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+      view_formats: &[],
+    });
+    let ui_texture_view = ui_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     // Create sampler (nearest neighbor for pixel art crispness)
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -499,6 +530,8 @@ impl WgpuRenderer {
       cpu_texture,
       cpu_texture_view,
       cpu_bind_group,
+      ui_texture,
+      ui_texture_view,
       render_pipeline,
       blend_pipeline,
       game_blend_pipeline,
@@ -809,12 +842,7 @@ impl WgpuRenderer {
           view: &self.texture_view,
           resolve_target: None,
           ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color {
-              r: 0.0,
-              g: 0.0,
-              b: 0.0,
-              a: 1.0, // Opaque black as default background
-            }),
+            load: wgpu::LoadOp::Clear(DEFAULT_BACKGROUND_COLOR),
             store: wgpu::StoreOp::Store,
           },
         })],
@@ -1012,7 +1040,13 @@ impl WgpuRenderer {
   ) -> Result<(), wgpu::SurfaceError>
   where
     F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
-    L: FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &[u8], &wgpu::TextureView),
+    L: FnOnce(
+      &wgpu::Device,
+      &wgpu::Queue,
+      &mut wgpu::CommandEncoder,
+      &wgpu::Texture, // Changed from &[u8] to &wgpu::Texture
+      &wgpu::TextureView,
+    ),
   {
     // Step 1: Upload CPU pixel buffer to staging texture (not game texture)
     self.queue.write_texture(
@@ -1056,12 +1090,7 @@ impl WgpuRenderer {
           view: &self.texture_view,
           resolve_target: None,
           ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(wgpu::Color {
-              r: 0.0,
-              g: 0.0,
-              b: 0.0,
-              a: 1.0, // Opaque black as default background
-            }),
+            load: wgpu::LoadOp::Clear(DEFAULT_BACKGROUND_COLOR),
             store: wgpu::StoreOp::Store,
           },
         })],
@@ -1101,36 +1130,39 @@ impl WgpuRenderer {
 
     // Track whether lighting was applied (changes the source texture)
     // Create temporary texture for lit output (like the original working implementation)
-    let (lighting_applied, lit_texture_view) = if let Some(callback) = lighting_callback {
-      // Create a temporary texture for the lit result
-      let lit_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Lit Scene Texture"),
-        size: wgpu::Extent3d {
-          width: self.game_width,
-          height: self.game_height,
-          depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-      });
-      let lit_view = lit_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    // IMPORTANT: lit_texture must stay alive while lit_view is in use!
+    let (lighting_applied, _lit_texture, lit_texture_view) =
+      if let Some(callback) = lighting_callback {
+        // Create a temporary texture for the lit result
+        let lit_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+          label: Some("Lit Scene Texture"),
+          size: wgpu::Extent3d {
+            width: self.game_width,
+            height: self.game_height,
+            depth_or_array_layers: 1,
+          },
+          mip_level_count: 1,
+          sample_count: 1,
+          dimension: wgpu::TextureDimension::D2,
+          format: wgpu::TextureFormat::Rgba8UnormSrgb,
+          usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+          view_formats: &[],
+        });
+        let lit_view = lit_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-      // Lighting callback receives pixel data directly, writes lit scene to temp texture
-      callback(
-        &self.device,
-        &self.queue,
-        &mut encoder,
-        &self.pixel_buffer,
-        &lit_view,
-      );
-      (true, Some(lit_view))
-    } else {
-      (false, None)
-    };
+        // Lighting callback receives game texture (with GPU sprites + CPU content blended)
+        callback(
+          &self.device,
+          &self.queue,
+          &mut encoder,
+          &self.texture, // Pass game texture instead of pixel buffer
+          &lit_view,
+        );
+        // Return both texture and view - texture must stay alive while view is in use
+        (true, Some(lit_texture), Some(lit_view))
+      } else {
+        (false, None, None)
+      };
 
     // Check if we have active effects to apply
     let has_effects = effects.map(|e| e.has_active_effects()).unwrap_or(false);
@@ -1207,16 +1239,14 @@ impl WgpuRenderer {
       .map(|buf| buf.iter().any(|&b| b != 0))
       .unwrap_or(false);
 
-    // If we have UI overlay AND lighting was applied, upload UI to game_texture
-    // (We can reuse game_texture because the scene is now in texture_a from compose)
-    // If lighting was NOT applied, we can't overwrite game_texture - scene is still there!
-    if has_ui_overlay
-      && lighting_applied
-      && let Some(ui_data) = ui_buffer
-    {
+    // If we have UI overlay, upload UI to dedicated ui_texture for blending
+    // IMPORTANT: We use a separate ui_texture to avoid write_texture ordering issues
+    // (write_texture operations aren't ordered with command buffer execution)
+    if has_ui_overlay && let Some(ui_data) = ui_buffer {
+      // Upload UI buffer to dedicated ui_texture for alpha-blending onto the scene
       self.queue.write_texture(
         wgpu::ImageCopyTexture {
-          texture: &self.texture,
+          texture: &self.ui_texture,
           mip_level: 0,
           origin: wgpu::Origin3d::ZERO,
           aspect: wgpu::TextureAspect::All,
@@ -1326,14 +1356,14 @@ impl WgpuRenderer {
 
       // If we have UI overlay, draw it on top with alpha blending
       if has_ui_overlay {
-        // Create bind group for UI texture (game_texture now holds UI data)
+        // Create bind group for UI texture (ui_texture holds UI data after upload)
         let ui_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
           label: Some("UI Overlay Bind Group"),
           layout: &self.bind_group_layout,
           entries: &[
             wgpu::BindGroupEntry {
               binding: 0,
-              resource: wgpu::BindingResource::TextureView(&self.texture_view),
+              resource: wgpu::BindingResource::TextureView(&self.ui_texture_view),
             },
             wgpu::BindGroupEntry {
               binding: 1,

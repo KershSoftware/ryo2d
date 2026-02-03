@@ -53,5 +53,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ambient = ambient_color * ambient_intensity;
     let total_light = ambient + light_color.rgb;
     let lit_color = scene_color.rgb * total_light;
+
     return vec4<f32>(lit_color, scene_color.a);
 }

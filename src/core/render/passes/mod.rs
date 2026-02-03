@@ -4,10 +4,12 @@
 //! standard 2D rendering pipeline.
 
 mod clear;
+mod lighting;
 mod parallax;
 mod upload;
 
 pub use clear::ClearPass;
+pub use lighting::{LightData, LightingPass};
 pub use parallax::{GpuParallaxLayer, ParallaxPass};
 pub use upload::UploadPass;
 
