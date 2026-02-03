@@ -233,7 +233,7 @@ impl Scene for EasingScene {
     let mode_text = format!("Loop: {} (Q/W/E/R to change)", self.loop_mode_name());
     ui.draw_text(&mode_text, 10.0, 30.0, text_light);
 
-    ui.draw_text("2-5: Scenes | Space: Restart | ESC: Exit", 10.0, 50.0, text_muted);
+    ui.draw_text("2-6: Scenes | Space: Restart | ESC: Exit", 10.0, 50.0, text_muted);
 
     let easings = [
       "Linear", "InQuad", "OutQuad", "InOutQuad", "InCubic",
