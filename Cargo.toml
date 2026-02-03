@@ -76,6 +76,14 @@ zip = "2"
 noise = "0.9"
 rand = "0.8"
 
+# Optional profiling dependencies (enable with --features profiler)
+puffin = { version = "0.19", optional = true }
+puffin_http = { version = "0.16", optional = true }
+
+[features]
+default = []
+profiler = ["puffin", "puffin_http"]
+
 [dev-dependencies]
 tempfile = "3"
 

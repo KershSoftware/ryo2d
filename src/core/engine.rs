@@ -31,6 +31,7 @@ use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
 use super::ui::{BitmapFont, UiContext, create_debug_font};
+use crate::{profile_function, profile_scope};
 
 /// Window resize behavior.
 ///
@@ -626,6 +627,8 @@ impl Engine {
   ///
   /// This runs user game logic and built-in engine systems (physics, movement, camera).
   fn update(&mut self, _dt: f32) {
+    profile_function!();
+
     // --- Event Bus Management ---
     // Clear events from previous frame
     self.events.clear();
@@ -1122,6 +1125,7 @@ impl Engine {
     self.physics.sync_velocities_from_ecs(&self.world);
 
     // Step the physics simulation
+    profile_scope!("physics_step");
     let gravity = self.config.physics.gravity;
     self.physics.step(gravity);
 
@@ -1137,6 +1141,8 @@ impl Engine {
   ///
   /// This is the "Render System" - it draws all entities with Transform + Renderable
   fn render(&mut self, _alpha: f32) {
+    profile_function!();
+
     // Clear batch collector for this frame (used for GPU sprite batching)
     self.batch_collector.clear();
 
@@ -1714,6 +1720,9 @@ impl ApplicationHandler for Engine {
       self.config.physics_hz,
     ));
 
+    // Initialize profiler (no-op if `profiler` feature is disabled)
+    super::profiler::init();
+
     // Call game init if not already initialized
     if !self.initialized {
       if let Some(mut game) = self.game.take() {
@@ -1837,6 +1846,9 @@ impl ApplicationHandler for Engine {
         event_loop.exit();
       }
       WindowEvent::RedrawRequested => {
+        // Signal profiler that a new frame is starting (no-op if feature disabled)
+        super::profiler::new_frame();
+
         // Handle surface reconfiguration if needed (after display mode change)
         if self.surface_needs_reconfigure {
           self.surface_needs_reconfigure = false;
@@ -1934,6 +1946,7 @@ impl ApplicationHandler for Engine {
         self.camera.update_shake(real_dt);
 
         // Fixed timestep update loop (includes game logic + physics)
+        profile_scope!("update");
         let mut did_update = false;
         let update_start = if self.profiling_enabled {
           Some(std::time::Instant::now())
@@ -2001,6 +2014,7 @@ impl ApplicationHandler for Engine {
         }
 
         // Render with interpolation alpha
+        profile_scope!("render");
         let render_start = if self.profiling_enabled {
           Some(std::time::Instant::now())
         } else {
@@ -2066,6 +2080,7 @@ impl ApplicationHandler for Engine {
 
         // Actually draw to screen with post-processing effects, lighting, and GPU sprites
         // Take sprite_gpu, lighting, and trail_renderer out to avoid borrow conflicts with renderer
+        profile_scope!("present");
         let present_start = if self.profiling_enabled {
           Some(std::time::Instant::now())
         } else {
