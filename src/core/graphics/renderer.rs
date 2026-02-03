@@ -221,7 +221,7 @@ impl WgpuRenderer {
       ..Default::default()
     });
 
-    // Create uniform buffer for viewport transform
+    // Create uniform buffer for viewport transform (changes based on window size/mode)
     let uniform = ViewportUniform {
       transform: [1.0, 1.0, 0.0, 0.0],
     };
@@ -229,6 +229,16 @@ impl WgpuRenderer {
       label: Some("Viewport Uniform Buffer"),
       contents: bytemuck::cast_slice(&[uniform]),
       usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    // Create identity uniform buffer for game texture blending (always 1:1 scale)
+    let identity_uniform = ViewportUniform {
+      transform: [1.0, 1.0, 0.0, 0.0],
+    };
+    let identity_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+      label: Some("Identity Uniform Buffer"),
+      contents: bytemuck::cast_slice(&[identity_uniform]),
+      usage: wgpu::BufferUsages::UNIFORM, // No COPY_DST needed - never changes
     });
 
     // Create bind group layout
@@ -285,6 +295,7 @@ impl WgpuRenderer {
     });
 
     // Create bind group for CPU staging texture (for blending onto game texture)
+    // Uses identity_uniform_buffer for 1:1 scale (viewport scaling only on final screen render)
     let cpu_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
       label: Some("CPU Texture Bind Group"),
       layout: &bind_group_layout,
@@ -299,7 +310,7 @@ impl WgpuRenderer {
         },
         wgpu::BindGroupEntry {
           binding: 2,
-          resource: uniform_buffer.as_entire_binding(),
+          resource: identity_uniform_buffer.as_entire_binding(),
         },
       ],
     });
