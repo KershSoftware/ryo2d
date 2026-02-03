@@ -31,6 +31,9 @@ pub mod procgen;
 // Configuration & persistence
 pub mod config;
 
+// Profiling instrumentation
+pub mod profiler;
+
 // Engine orchestration
 pub mod context;
 pub mod engine;

@@ -27,6 +27,8 @@
 
 use std::time::Duration;
 
+use crate::profile_scope;
+
 use super::context::ContextCore;
 use super::graphics::Camera;
 use super::ui::UiContext;
@@ -514,6 +516,8 @@ impl SceneManager {
   /// The current top scene will have `on_pause()` called.
   /// The new scene will have `on_enter()` called.
   pub fn push(&mut self, scene: Box<dyn Scene>, ctx: &mut SceneContext) {
+    profile_scope!("scene_push");
+
     // Pause current top scene
     if let Some(current) = self.scenes.last_mut() {
       current.on_pause(ctx);
@@ -571,6 +575,8 @@ impl SceneManager {
   /// The new scene will have `on_enter()` called.
   /// Scenes below are unaffected.
   pub fn switch(&mut self, scene: Box<dyn Scene>, ctx: &mut SceneContext) {
+    profile_scope!("scene_switch");
+
     // Exit current top
     if let Some(mut current) = self.scenes.pop() {
       current.on_exit(ctx);

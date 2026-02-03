@@ -130,6 +130,79 @@ At 60 FPS, this adds ~24 microseconds/second (**0.002% of frame time**). Safe to
 - **Benchmarking**: Disable for cleaner measurements
 - **Console-sensitive environments**: Disable to reduce log noise
 
+## Advanced: Puffin Hierarchical Profiling
+
+For detailed hierarchical profiling with a real-time flamegraph viewer, Ryo2D supports [puffin](https://github.com/EmbarkStudios/puffin). This provides more detailed call-stack information than the built-in frame timing overlay.
+
+### Enabling Puffin
+
+Enable the `profiler` feature when building:
+
+```bash
+cargo run --features profiler -p breakout
+```
+
+When running with this feature, the engine automatically:
+1. Starts a puffin HTTP server on port 8585
+2. Instruments key engine systems (update, render, present, physics, scene transitions)
+3. Prints connection instructions to the console
+
+### Connecting puffin_viewer
+
+Install and run the puffin viewer:
+
+```bash
+cargo install puffin_viewer
+puffin_viewer --url 127.0.0.1:8585
+```
+
+This opens a real-time window showing:
+- **Hierarchical flamegraph** of where time is spent each frame
+- **Frame history** with timeline navigation
+- **Pause/resume** for inspecting specific frames
+
+### Instrumenting Your Own Code
+
+Add profiling to your game code using the macros from the prelude:
+
+```rust,ignore
+use ryo2d::prelude::*;
+
+fn my_expensive_function() {
+    profile_function!();  // Profiles entire function
+
+    // ... some work ...
+
+    {
+        profile_scope!("particle_update");  // Profiles just this scope
+        for particle in &mut particles {
+            particle.update(dt);
+        }
+    }
+}
+```
+
+When the `profiler` feature is disabled (default), these macros compile to nothing with zero overhead.
+
+### Pre-Instrumented Engine Scopes
+
+The engine automatically instruments these scopes:
+- `update` - Game logic and all fixed timestep work
+- `render` - CPU sprite rendering and batch collection
+- `present` - GPU submission and effects pipeline
+- `physics_step` - Rapier2D physics simulation
+- `scene_push` / `scene_switch` - Scene transitions
+
+### Interpreting Puffin Data
+
+| Scope | High Time Indicates |
+|-------|---------------------|
+| `update` | Heavy game logic, too many entities |
+| `render` | Complex sprite rendering, large textures |
+| `present` | GPU-bound, effects overhead, vsync |
+| `physics_step` | Too many colliders, complex shapes |
+| `scene_*` | Expensive asset loading in on_enter |
+
 ## Advanced: External Flamegraph Profiling
 
 > **Note:** This section covers external profiling tools for deep performance analysis. These require additional setup and administrator privileges on some platforms. Most performance issues can be diagnosed with the built-in frame timing overlay.
