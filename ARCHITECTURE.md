@@ -70,12 +70,14 @@
 │              │                     update ran, to preserve input)         │
 │              ▼                                                            │
 │   4. render(alpha)                 Variable rate rendering                │
-│      • Z-sorted sprites            (with interpolation)                   │
-│      • Frustum culling                                                    │
+│      • game.render() callback      (with interpolation)                   │
+│      • game.render_gpu() callback                                         │
+│      • game.render_ui() callback                                          │
 │              │                                                            │
 │              ▼                                                            │
-│   5. renderer.render()             Upload pixel buffer to GPU texture,    │
-│                                    draw fullscreen quad with scaling      │
+│   5. pipeline.execute()            Pass-based render pipeline             │
+│      • Clear → Parallax → CpuSprite → Upload → GpuSprite                  │
+│      • Trail → Lighting → UI → Effects → Present                          │
 │                                                                           │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
@@ -157,89 +159,129 @@ Physics Loop:
 
 ## Render Pipeline
 
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                             render                                        │
-├───────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│   1. Get frame buffer from WgpuRenderer                                   │
-│      frame: &mut [u8] (RGBA, 4 bytes per pixel)                           │
-│                                                                           │
-│   2. Clear background (dark blue)                                         │
-│                                                                           │
-│   3. Rebuild render cache if dirty                                        │
-│      ┌──────────────────────────────────────────────────────────────┐     │
-│      │  render_cache: Vec<(Entity, z_order)>  — sorted by z_order   │     │
-│      │  Only rebuilt when entities spawn/despawn                    │     │
-│      └──────────────────────────────────────────────────────────────┘     │
-│                                                                           │
-│   4. For each entity in z-order:                                          │
-│      • Get Transform + SpriteRenderer                                     │
-│      • Camera.world_to_screen() — apply camera offset + zoom              │
-│      • Frustum culling — skip if not visible                              │
-│      • sprite.draw() — alpha blending, screen clipping                    │
-│                                                                           │
-│   5. renderer.render() → Upload pixel buffer to GPU texture               │
-│      • Upload CPU pixel buffer to GPU texture                             │
-│      • Draw fullscreen quad with WGSL shader                              │
-│      • Shader applies viewport scaling for letterbox/pillarbox            │
-│      • Apply post-processing effects (if any active)                      │
-└───────────────────────────────────────────────────────────────────────────┘
-```
-
-## Post-Processing Shader System
+Ryo2D uses a **pass-based render pipeline** where each rendering phase is a separate `RenderPass`. Passes declare dependencies and execute in topological order.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│                        PostProcessPipeline                                │
+│                           RenderPipeline                                  │
 │                                                                           │
-│  Ping-Pong Buffer Architecture:                                           │
+│  Pass-Based Architecture:                                                 │
 │  ┌────────────────────────────────────────────────────────────────────┐   │
 │  │                                                                    │   │
-│  │   Game        Effect 1      Effect 2      Effect N       Final     │   │
-│  │  Texture  ──►  (Fade)   ──►  (CRT)    ──►   ...     ──►  Output    │   │
+│  │   ClearPass ──► ParallaxPass ──► CpuSpritePass ──► UploadPass      │   │
+│  │                                                          │         │   │
+│  │                                                          ▼         │   │
+│  │   PresentPass ◄── EffectsPass ◄── UiPass ◄── LightingPass          │   │
+│  │        │              │             │             │                │   │
+│  │        │              │             │             ▼                │   │
+│  │        │              │             │        TrailPass             │   │
+│  │        │              │             │             │                │   │
+│  │        │              │             │             ▼                │   │
+│  │        │              │             │        GpuSpritePass         │   │
+│  │        ▼              ▼             ▼             ▼                │   │
+│  │    [Screen]     [Scratch A/B]  [Game Tex]   [Game Tex]             │   │
+│  │                  (ping-pong)                                       │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  Built-in Passes:                                                         │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  clear       │  Clear pixel buffer to background color             │   │
+│  │  parallax    │  GPU-rendered parallax background layers            │   │
+│  │  cpu_sprite  │  Software sprite rendering to pixel buffer          │   │
+│  │  upload      │  Upload CPU pixel buffer to GPU texture             │   │
+│  │  gpu_sprite  │  Batched GPU sprite rendering                       │   │
+│  │  trail       │  Motion trail rendering                             │   │
+│  │  lighting    │  2D lighting with shadows                           │   │
+│  │  ui          │  User interface overlay                             │   │
+│  │  effects     │  Post-processing (CRT, vignette, etc.)              │   │
+│  │  present     │  Final output to swapchain                          │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  Dependency Resolution:                                                   │
+│  • Passes declare dependencies via dependencies() -> &[&str]              │
+│  • Pipeline computes execution order via topological sort                 │
+│  • Circular dependencies panic at pipeline creation                       │
+│  • Missing dependencies are silently ignored (optional passes)            │
+│                                                                           │
+│  RenderContext (shared state):                                            │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  • device, queue, encoder    — wgpu resources                      │   │
+│  │  • game_texture              — main render target                  │   │
+│  │  • scratch_a, scratch_b      — ping-pong buffers for effects       │   │
+│  │  • pixel_buffer              — CPU buffer for software rendering   │   │
+│  │  • camera                    — world-to-screen transforms          │   │
+│  │  • sprite_gpu, batch_collector — GPU sprite system                 │   │
+│  │  • trail_renderer, lighting  — specialized renderers               │   │
+│  │  • current_source            — which texture has latest result     │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────────────────────┘
+
+Pipeline Configuration:
+  // Disable a pass at runtime
+  pipeline.set_enabled("lighting", false);
+
+  // Add custom pass (inserted by dependency order)
+  pipeline.add_pass(MyCustomPass::new());
+
+  // Remove a pass
+  pipeline.remove_pass("trail");
+
+  // Query pass state
+  if pipeline.is_enabled("effects") { ... }
+
+Custom Pass Example:
+  struct MyPass { enabled: bool }
+
+  impl RenderPass for MyPass {
+      fn id(&self) -> &'static str { "my_pass" }
+
+      fn dependencies(&self) -> &[&'static str] {
+          &["gpu_sprite"]  // Run after GPU sprites
+      }
+
+      fn execute(&mut self, ctx: &mut RenderContext) {
+          // Access ctx.encoder, ctx.device, ctx.pixel_buffer, etc.
+      }
+
+      fn should_execute(&self, ctx: &RenderContext) -> bool {
+          true  // Return false to skip this frame
+      }
+  }
+```
+
+## Post-Processing Effects
+
+Post-processing is handled by the `EffectsPass` in the render pipeline, using ping-pong buffers for effect chaining.
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                         EffectsPass (part of pipeline)                    │
+│                                                                           │
+│  Ping-Pong Buffer Flow:                                                   │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │                                                                    │   │
+│  │   Game        Effect 1      Effect 2      Effect N       Present   │   │
+│  │  Texture  ──►  (Fade)   ──►  (CRT)    ──►   ...     ──►   Pass     │   │
 │  │     │           │             │             │             │        │   │
 │  │     ▼           ▼             ▼             ▼             ▼        │   │
-│  │  [Copy to]   [Tex A]      [Tex B]       [Tex A/B]     [Screen]     │   │
-│  │   Tex A        ↓             ↓             ↓                       │   │
-│  │              Shader       Shader        Shader                     │   │
-│  │              Pass 1       Pass 2        Pass N                     │   │
+│  │  [Scratch A] [Scratch B]  [Scratch A]   [Scratch B]   [Screen]     │   │
 │  │                                                                    │   │
 │  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
 │  Available Effects:                                                       │
 │  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  Fade              │  Screen fade to color (scene transitions)     │   │
-│  │  ColorTint         │  Color grading/mood (sepia, night vision)     │   │
-│  │  Vignette          │  Darkened edges (cinematic look)              │   │
-│  │  ScreenFlash       │  One-shot flash with auto-decay (damage)      │   │
-│  │  CRT               │  Scanlines, curvature, RGB offset (retro)     │   │
+│  │  Fade                │  Screen fade to color (scene transitions)   │   │
+│  │  ColorTint           │  Color grading/mood (sepia, night vision)   │   │
+│  │  Vignette            │  Darkened edges (cinematic look)            │   │
+│  │  ScreenFlash         │  One-shot flash with auto-decay (damage)    │   │
+│  │  CRT                 │  Scanlines, curvature, RGB offset (retro)   │   │
 │  │  ChromaticAberration │  RGB color fringing (glitch/lens effect)    │   │
 │  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
 │  Key Types:                                                               │
-│  • PostProcessEffect  — Enum of all effect variants with parameters       │
-│  • EffectsManager     — Manages effect stack, timing, convenience API     │
-│  • PostProcessPipeline — GPU resources, ping-pong buffers, rendering      │
+│  • EffectsManager     — Manages active effects, timing, convenience API   │
+│  • PostProcessEffect  — Enum of effect variants with parameters           │
 │  • EffectParams       — 64-byte uniform struct for shader parameters      │
-│                                                                           │
-│  Shader Organization:                                                     │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  src/core/shaders/                                                 │   │
-│  │  ├── mod.rs            (exports, shader embedding)                 │   │
-│  │  ├── effects.rs        (PostProcessEffect enum, EffectParams)      │   │
-│  │  ├── manager.rs        (EffectsManager, convenience API)           │   │
-│  │  ├── pipeline.rs       (PostProcessPipeline, GPU resources)        │   │
-│  │  ├── core/             (vertex shaders)                            │   │
-│  │  │   └── fullscreen_quad.wgsl                                      │   │
-│  │  └── post-process/     (fragment shaders, one per effect)          │   │
-│  │      ├── fade.wgsl                                                 │   │
-│  │      ├── color_tint.wgsl                                           │   │
-│  │      ├── vignette.wgsl                                             │   │
-│  │      ├── screen_flash.wgsl                                         │   │
-│  │      ├── crt.wgsl                                                  │   │
-│  │      └── chromatic_aberration.wgsl                                 │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
 └───────────────────────────────────────────────────────────────────────────┘
 
 Usage:
@@ -247,12 +289,12 @@ Usage:
       // Persistent effects
       ctx.effects.set_vignette(0.3);
       ctx.effects.set_crt(0.2, 0.01, 0.001);
-      
+
       // Timed effects (auto-decay)
       if player_hit {
           ctx.effects.flash(Color::RED, Duration::from_millis(150));
       }
-      
+
       // Scene transitions
       ctx.effects.set_fade(self.fade_progress);
   }
@@ -333,10 +375,10 @@ Rapier Space (meters)
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │   Spawn      │────►│   Physics    │────►│    Sync      │────►│   Render     │
-│              │     │   Register   │     │              │     │              │
-│ world.spawn( │     │              │     │  Rapier →    │     │  Z-sorted    │
-│   Transform, │     │ Add to       │     │  Transform   │     │  sprites     │
-│   RigidBody, │     │ RigidBodySet │     │  + Velocity  │     │              │
+│              │     │   Register   │     │              │     │   Pipeline   │
+│ world.spawn( │     │              │     │  Rapier →    │     │              │
+│   Transform, │     │ Add to       │     │  Transform   │     │ Pass-based   │
+│   RigidBody, │     │ RigidBodySet │     │  + Velocity  │     │ execution    │
 │   Collider   │     │ ColliderSet  │     │              │     │              │
 │ )            │     │              │     │              │     │              │
 └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
@@ -486,50 +528,78 @@ Installation:
 
 ## UI System
 
+Ryo2D uses a **hybrid UI system** combining immediate-mode and retained-mode approaches.
+
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│                         Immediate-Mode UI                                 │
+│                          Hybrid UI System                                 │
 │                                                                           │
-│  Design Philosophy:                                                       │
-│  • Call draw functions each frame                                         │
-│  • No persistent widget state                                             │
-│  • Simple and predictable                                                 │
+│  Immediate Mode (stateless):                                              │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  • Call draw functions each frame                                  │   │
+│  │  • No persistent widget state                                      │   │
+│  │  • Buttons return true when clicked                                │   │
+│  │  • Ideal for: HUDs, debug overlays, simple menus                   │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
-│  Components:                                                              │
-│  ┌──────────────────────────────────────────────────────────────────┐     │
-│  │  BitmapFont                                                      │     │
-│  │  ├── Embedded debug font (fixed-width)                           │     │
-│  │  ├── Character lookup and positioning                            │     │
-│  │  └── Text rendering with color                                   │     │
-│  └──────────────────────────────────────────────────────────────────┘     │
+│  Retained Mode (stateful):                                                │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  • Caller owns state structs (TextInputState, DropdownState, etc.) │   │
+│  │  • State persists across frames (cursor, selection, scroll)        │   │
+│  │  • Ideal for: forms, text input, complex menus                     │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐     │
-│  │  UiContext (Drawing API)                                         │     │
-│  │  ├── draw_text(text, x, y, color)                                │     │
-│  │  ├── draw_rect(rect, color)                                      │     │
-│  │  ├── draw_bordered_rect(rect, fill, border)                      │     │
-│  │  ├── draw_progress_bar(rect, value, fill, bg)                    │     │
-│  │  └── button(label, rect) -> bool                                 │     │
-│  └──────────────────────────────────────────────────────────────────┘     │
+│  Immediate Widgets:                                                       │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  button(label, rect)           │  Returns true when clicked        │   │
+│  │  label(text, rect)             │  Static text display              │   │
+│  │  progress_bar(rect, value)     │  0.0-1.0 fill bar                 │   │
+│  │  slider(rect, value, range)    │  Draggable value selector         │   │
+│  │  checkbox(rect, checked)       │  Toggle boolean                   │   │
+│  │  draw_rect, draw_text, ...     │  Primitives                       │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
-│  Types:                                                                   │
-│  • Color   — RGBA with named constants (RED, GREEN, BLUE, etc.)           │
-│  • Rect    — Screen-space rectangle (x, y, width, height)                 │
-│  • Anchor  — Positioning helper (TopLeft, Center, BottomRight, etc.)      │
+│  Retained Widgets:                                                        │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  TextInputState    │  Text field with cursor, selection            │   │
+│  │  DropdownState     │  Expandable option list                       │   │
+│  │  ScrollViewState   │  Scrollable content region                    │   │
+│  │  FocusTrap         │  Keyboard navigation container                │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
-│  Use Cases:                                                               │
-│  • HUD elements (health bars, score display)                              │
-│  • Debug overlays (FPS counter, system info)                              │
-│  • Simple menus and buttons                                               │
-│  • Text rendering for gameplay                                            │
+│  Layout Containers:                                                       │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  HBox     │  Horizontal layout with spacing                        │   │
+│  │  VBox     │  Vertical layout with spacing                          │   │
+│  │  Stack    │  Overlapping children (z-order)                        │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  Theme System:                                                            │
+│  • Centralized styling (colors, spacing, borders)                         │
+│  • Per-widget styles (ButtonStyle, TextInputStyle, etc.)                  │
+│  • Hot-reload from RON files                                              │
+│  • Runtime theme switching                                                │
 └───────────────────────────────────────────────────────────────────────────┘
 
 Usage:
+  // In scene struct - retained state
+  struct MyScene {
+      name_input: TextInputState,
+      difficulty: DropdownState,
+  }
+
   fn render_ui(&mut self, ui: &mut UiContext) {
+      // Immediate mode - no state needed
       ui.draw_text(&format!("Score: {}", score), 10.0, 10.0, Color::WHITE);
-      ui.draw_progress_bar(health_bar_rect, health / 100.0, Color::RED, Color::GRAY);
-      if ui.button("Pause", pause_button_rect) {
-          self.paused = true;
+      ui.draw_progress_bar(health_rect, health / 100.0, Color::RED, Color::GRAY);
+
+      if ui.button("Start", button_rect) {
+          self.start_game();
       }
+
+      // Retained mode - state persists
+      ui.text_input(&mut self.name_input, input_rect);
+      ui.dropdown(&mut self.difficulty, dropdown_rect, &["Easy", "Normal", "Hard"]);
+      ui.finish_dropdowns();  // Call at end for proper z-order
   }
 ```
