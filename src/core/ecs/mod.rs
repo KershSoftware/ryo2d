@@ -30,5 +30,5 @@ pub use material::{Material, ShaderHandle, ShaderParams, SpriteShader};
 pub use pool::{Pool, PoolConfig, PoolExhaustedPolicy, PoolStats};
 pub use renderable::{RenderMode, RenderStyle, Renderable};
 pub use sprite_effects::SpriteEffect;
-pub use tween::{Ease, Tween, TweenLoop};
+pub use tween::{Ease, Tween, TweenLoop, TweenSequence};
 pub use world::World;
