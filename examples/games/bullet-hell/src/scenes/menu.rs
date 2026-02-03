@@ -5,13 +5,10 @@ use ryo2d::prelude::*;
 
 use super::GameScene;
 
-// Fixed design resolution (same as game scene)
-const DESIGN_WIDTH: f32 = 1920.0;
-const DESIGN_HEIGHT: f32 = 1080.0;
-
 pub struct MenuScene {
   best_time: f32,
-  background: ParallaxBackground,
+  background: GpuParallaxBackground,
+  parallax_sprites: Vec<SpriteHandle>,
 }
 
 impl Default for MenuScene {
@@ -22,52 +19,67 @@ impl Default for MenuScene {
 
 impl MenuScene {
   pub fn new() -> Self {
-    // Load parallax background layers (same as game scene)
-    let sky_sprite = Sprite::load("assets/desert_sky.png").expect("Failed to load sky sprite");
-    let moon_sprite = Sprite::load("assets/desert_moon.png").expect("Failed to load moon sprite");
+    // Load parallax background layers as sprite handles (for GPU upload)
+    let sky_sprite =
+      SpriteHandle::from_sprite(Sprite::load("assets/desert_sky.png").expect("Failed to load sky sprite"), "desert_sky");
+    let moon_sprite =
+      SpriteHandle::from_sprite(Sprite::load("assets/desert_moon.png").expect("Failed to load moon sprite"), "desert_moon");
     let cloud_sprite =
-      Sprite::load("assets/desert_cloud.png").expect("Failed to load cloud sprite");
+      SpriteHandle::from_sprite(Sprite::load("assets/desert_cloud.png").expect("Failed to load cloud sprite"), "desert_cloud");
     let mountain_sprite =
-      Sprite::load("assets/desert_mountain.png").expect("Failed to load mountain sprite");
+      SpriteHandle::from_sprite(Sprite::load("assets/desert_mountain.png").expect("Failed to load mountain sprite"), "desert_mountain");
     let dune_mid_sprite =
-      Sprite::load("assets/desert_dunemid.png").expect("Failed to load mid dune sprite");
+      SpriteHandle::from_sprite(Sprite::load("assets/desert_dunemid.png").expect("Failed to load mid dune sprite"), "desert_dunemid");
     let dune_front_sprite =
-      Sprite::load("assets/desert_dunefrontt.png").expect("Failed to load front dune sprite");
+      SpriteHandle::from_sprite(Sprite::load("assets/desert_dunefrontt.png").expect("Failed to load front dune sprite"), "desert_dunefront");
 
-    // Build parallax background with desert layers
-    let background = ParallaxBackground::builder(DESIGN_WIDTH as u32, DESIGN_HEIGHT as u32)
-      .scale_to_fit()
-      .static_layer(SpriteHandle::from_sprite(sky_sprite, "desert_sky"), -100)
-      .auto_scroll_layer(
-        SpriteHandle::from_sprite(moon_sprite, "desert_moon"),
-        5.0,
-        -90,
-      )
-      .auto_scroll_layer(
-        SpriteHandle::from_sprite(cloud_sprite, "desert_cloud"),
-        15.0,
-        -80,
-      )
-      .auto_scroll_layer(
-        SpriteHandle::from_sprite(mountain_sprite, "desert_mountain"),
-        30.0,
-        -60,
-      )
-      .auto_scroll_layer(
-        SpriteHandle::from_sprite(dune_mid_sprite, "desert_dunemid"),
-        50.0,
-        -40,
-      )
-      .auto_scroll_layer(
-        SpriteHandle::from_sprite(dune_front_sprite, "desert_dunefront"),
-        80.0,
-        -20,
-      )
-      .build();
+    // Store sprite handles for GPU upload
+    let parallax_sprites = vec![
+      sky_sprite.clone(),
+      moon_sprite.clone(),
+      cloud_sprite.clone(),
+      mountain_sprite.clone(),
+      dune_mid_sprite.clone(),
+      dune_front_sprite.clone(),
+    ];
+
+    // Build GPU-accelerated parallax background with desert layers
+    let mut background = GpuParallaxBackground::new();
+
+    // Static sky layer
+    background.add_layer(GpuParallaxLayer::new(&sky_sprite, 0.0, -100));
+
+    // Auto-scrolling layers with infinite scroll
+    background.add_layer(
+      GpuParallaxLayer::new(&moon_sprite, 0.0, -90)
+        .with_auto_scroll(5.0)
+        .with_tile_mode(TileMode::InfiniteScroll),
+    );
+    background.add_layer(
+      GpuParallaxLayer::new(&cloud_sprite, 0.0, -80)
+        .with_auto_scroll(15.0)
+        .with_tile_mode(TileMode::InfiniteScroll),
+    );
+    background.add_layer(
+      GpuParallaxLayer::new(&mountain_sprite, 0.0, -60)
+        .with_auto_scroll(30.0)
+        .with_tile_mode(TileMode::InfiniteScroll),
+    );
+    background.add_layer(
+      GpuParallaxLayer::new(&dune_mid_sprite, 0.0, -40)
+        .with_auto_scroll(50.0)
+        .with_tile_mode(TileMode::InfiniteScroll),
+    );
+    background.add_layer(
+      GpuParallaxLayer::new(&dune_front_sprite, 0.0, -20)
+        .with_auto_scroll(80.0)
+        .with_tile_mode(TileMode::InfiniteScroll),
+    );
 
     Self {
       best_time: load_best_time(),
       background,
+      parallax_sprites,
     }
   }
 }
@@ -99,8 +111,18 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-    self.background.render(frame, width, height, camera);
+  fn render_background(&mut self, _frame: &mut [u8], _width: u32, _height: u32, _camera: &Camera) {
+    // Parallax rendering moved to render_gpu for GPU acceleration
+  }
+
+  fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
+    // Upload parallax textures to GPU (only happens once, cached after)
+    for sprite in &self.parallax_sprites {
+      ctx.upload_sprite(sprite);
+    }
+
+    // Render parallax background using GPU instancing
+    self.background.render(ctx);
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) {
