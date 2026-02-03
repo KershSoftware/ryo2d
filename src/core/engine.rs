@@ -1216,6 +1216,14 @@ impl Engine {
 
         game.render_ui(&mut ui_ctx);
 
+        // Render debug overlays on top of game UI (always visible)
+        if self.config.debug.show_fps {
+          debug::render_fps_counter(&mut ui_ctx, self.smoothed_timings.fps as u64, frame_height);
+        }
+        if self.config.debug.show_frame_timing {
+          debug::render_frame_timing(&mut ui_ctx, &self.frame_timings, frame_height);
+        }
+
         self.game = Some(game);
       }
     } else {
@@ -1231,6 +1239,14 @@ impl Engine {
         );
 
         game.render_ui(&mut ui_ctx);
+
+        // Render debug overlays on top of game UI (always visible, even with lighting)
+        if self.config.debug.show_fps {
+          debug::render_fps_counter(&mut ui_ctx, self.smoothed_timings.fps as u64, frame_height);
+        }
+        if self.config.debug.show_frame_timing {
+          debug::render_frame_timing(&mut ui_ctx, &self.frame_timings, frame_height);
+        }
 
         self.game = Some(game);
       }
@@ -1658,32 +1674,9 @@ impl ApplicationHandler for Engine {
           self.game = Some(game);
         }
 
-        // Add GPU debug overlays AFTER game rendering (so they appear on top)
-        // We use smoothed_timings for stable display (exponential moving average)
-        if self.config.debug.show_frame_timing || self.config.debug.show_fps {
-          let screen_w = self.config.width as f32;
-          let screen_h = self.config.height as f32;
-
-          if self.config.debug.show_frame_timing {
-            debug::render_frame_timing_gpu(
-              &mut self.batch_collector,
-              &self.ui_font,
-              &self.smoothed_timings,
-              screen_w,
-              screen_h,
-            );
-          } else if self.config.debug.show_fps {
-            // Show FPS counter only if frame timing is not shown
-            // (frame timing already includes FPS in its display)
-            debug::render_fps_counter_gpu(
-              &mut self.batch_collector,
-              &self.ui_font,
-              &self.smoothed_timings,
-              screen_w,
-              screen_h,
-            );
-          }
-        }
+        // Note: Debug overlays (FPS, frame timing) are now rendered via UI context
+        // in the UI rendering section below, so they appear on top of everything
+        // including lighting effects.
 
         // Render time includes software rendering + GPU batch collection
         self.frame_timings.render = render_start.elapsed();

@@ -251,10 +251,7 @@ function Show-ExampleList {
     Write-Host "  [q] Quit" -ForegroundColor DarkGray
     Write-Host ""
 
-    Write-Host "Select an example: " -NoNewline
-    $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    $selection = $key.Character.ToString()
-    Write-Host $selection
+    $selection = Read-Host "Select an example"
     Write-Host ""
 
     if ($selection -eq "b" -or $selection -eq "B") {
@@ -263,12 +260,14 @@ function Show-ExampleList {
     }
 
     # Try to parse as number
-    if ($selection -match '^[0-9]$') {
+    if ($selection -match '^\d+$') {
         $selectedIndex = [int]$selection - 1
         if ($selectedIndex -ge 0 -and $selectedIndex -lt $CategoryExamples.Count) {
             Run-Example $CategoryExamples[$selectedIndex].Name $CategoryExamples[$selectedIndex].Path -AskMode $true
             return
         }
+        Write-Host "Invalid selection: $selection (valid: 1-$($CategoryExamples.Count))" -ForegroundColor Red
+        exit 1
     }
 
     # Any other input (including 'q') quits

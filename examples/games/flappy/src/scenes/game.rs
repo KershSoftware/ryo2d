@@ -19,6 +19,7 @@ pub struct GameScene {
   bird: Option<Entity>,
   pipes: Vec<Entity>,
   ground_entities: Vec<Entity>,
+  ground_border_entities: Vec<Entity>,
   background_entities: Vec<Entity>,
 }
 
@@ -34,6 +35,7 @@ impl GameScene {
       bird: None,
       pipes: Vec::new(),
       ground_entities: Vec::new(),
+      ground_border_entities: Vec::new(),
       background_entities: Vec::new(),
     }
   }
@@ -180,6 +182,17 @@ impl GameScene {
       ));
       self.ground_entities.push(ground);
     }
+
+    // Spawn ground border - line at top of ground
+    // Use full screen width, z-order 16 puts it on top of ground (15)
+    let border_sprite = Sprite::solid_rect(SCREEN_WIDTH, 2, 80, 50, 30, 80);
+    let border_handle = SpriteHandle::from_sprite(border_sprite, "ground_border");
+
+    let border = ctx.world.spawn((
+      Transform::new(0.0, GROUND_Y),
+      Renderable::sprite(border_handle).with_z_order(16),
+    ));
+    self.ground_border_entities.push(border);
   }
 
   fn spawn_background(&mut self, ctx: &mut SceneContext) {
@@ -274,17 +287,20 @@ impl GameScene {
 
     // Check bounds and clamp position
     if let Some(mut transform) = ctx.world.get_mut::<Transform>(bird_entity) {
-      // Calculate bird's bottom edge (transform.y is top-left corner)
-      let bird_bottom = transform.y + BIRD_SIZE;
+      // Calculate collision circle bounds (matches the actual Collider component)
+      let collider_offset_y = BIRD_SIZE / 2.0; // Circle center offset from transform origin
+      let collider_radius = BIRD_SIZE * 0.35; // Same as Collider::circle_collider(BIRD_SIZE * 0.35)
+      let circle_center_y = transform.y + collider_offset_y;
+      let circle_top = circle_center_y - collider_radius;
+      let circle_bottom = circle_center_y + collider_radius;
 
-      // Check if hit ceiling or ground
-      if transform.y <= CEILING_Y || bird_bottom >= GROUND_Y {
-        // Clamp position at the boundary
-        if transform.y <= CEILING_Y {
-          transform.y = CEILING_Y;
-        } else if bird_bottom >= GROUND_Y {
-          // Clamp so the bottom of the bird is at GROUND_Y
-          transform.y = GROUND_Y - BIRD_SIZE;
+      // Check if collision circle hit ceiling or ground
+      if circle_top <= CEILING_Y || circle_bottom >= GROUND_Y {
+        // Clamp position so circle stays within bounds
+        if circle_top <= CEILING_Y {
+          transform.y = CEILING_Y + collider_radius - collider_offset_y;
+        } else if circle_bottom >= GROUND_Y {
+          transform.y = GROUND_Y - collider_radius - collider_offset_y;
         }
 
         // Stop all movement when hitting boundaries
