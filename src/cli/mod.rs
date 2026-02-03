@@ -9,6 +9,7 @@
 //! - `ryo2d build` - Build a production release
 //! - `ryo2d run` - Run the production build
 //! - `ryo2d dev` - Development mode with file watching
+//! - `ryo2d export` - Package release into distributable zip
 //! - `ryo2d install-skills` - Install Agent Skills for AI assistants
 //!
 //! # Example
@@ -27,6 +28,9 @@
 //! # Production build
 //! ryo2d build
 //! ryo2d run
+//!
+//! # Export for distribution
+//! ryo2d export
 //! ```
 
 mod commands;

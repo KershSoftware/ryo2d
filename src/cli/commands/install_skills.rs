@@ -29,6 +29,10 @@ const AVAILABLE_SKILLS: &[(&str, &str)] = &[
     "Project configuration (Ryo.toml), user settings (system.json), and the 3-tier save system",
   ),
   (
+    "ryo-controller",
+    "Gamepad/controller input handling with gilrs - buttons, sticks, triggers",
+  ),
+  (
     "ryo-ecs-internals",
     "Working on the hecs wrapper, adding components, and ECS patterns",
   ),
@@ -37,18 +41,33 @@ const AVAILABLE_SKILLS: &[(&str, &str)] = &[
     "Working on the Ryo2D engine - architecture, systems, public API",
   ),
   (
+    "ryo-events",
+    "Event bus system for decoupled inter-system communication",
+  ),
+  (
     "ryo-game-dev",
     "Building games with Ryo2D engine - ECS, entities, scenes, input",
+  ),
+  (
+    "ryo-network",
+    "Multiplayer networking with Ryo2D - client-server, replication, RPCs",
   ),
   (
     "ryo-physics",
     "Rapier2D physics integration - colliders, rigid bodies, events",
   ),
   (
+    "ryo-procgen",
+    "Procedural generation framework for dungeons, caves, terrain, and more",
+  ),
+  (
     "ryo-renderer",
     "Working on the wgpu renderer, shaders, and GPU batching",
   ),
-  ("ryo-ui", "Immediate-mode UI for HUDs, menus, and overlays"),
+  (
+    "ryo-ui",
+    "Hybrid UI system for HUDs, menus, settings screens, and in-game interfaces",
+  ),
 ];
 
 /// Execute the install-skills command
@@ -267,10 +286,10 @@ USAGE:
 
 DESCRIPTION:
     Installs all Ryo2D Agent Skills into your project so AI assistants
-    (like GitHub Copilot) can better help you develop your game.
+    (like GitHub Copilot, Claude) can better help you develop your game.
 
     Skills are installed to .github/skills/ (VS Code/Claude format).
-    All 10 skills are installed automatically.
+    All 15 skills are installed automatically.
 
 OPTIONS:
     -h, --help    Show this help message

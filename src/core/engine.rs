@@ -2451,14 +2451,13 @@ impl EngineBuilder {
 
     // For release builds: check for icon.png next to executable (created by `ryo2d build`)
     // If not found, load_window_icon() will use the embedded default Ryo2D logo
-    if config.icon_path.is_none() {
-      if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-          let icon_path = exe_dir.join("icon.png");
-          if icon_path.exists() {
-            config.icon_path = Some(icon_path);
-          }
-        }
+    if config.icon_path.is_none()
+      && let Ok(exe_path) = std::env::current_exe()
+      && let Some(exe_dir) = exe_path.parent()
+    {
+      let icon_path = exe_dir.join("icon.png");
+      if icon_path.exists() {
+        config.icon_path = Some(icon_path);
       }
     }
 
