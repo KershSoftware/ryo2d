@@ -7,11 +7,13 @@
 //! - [`Camera`] - 2D camera with world/screen transforms
 //! - [`Animation`] / [`Animator`] / [`AnimationController`] - Sprite animation system
 //! - Tiled rendering for repeating sprites and composite tiles
-//! - [`ParallaxBackground`] - Layered scrolling backgrounds
+//! - [`ParallaxBackground`] - Layered scrolling backgrounds (CPU)
+//! - [`GpuParallaxBackground`] - GPU-accelerated parallax (recommended for large images)
 
 pub mod animation;
 pub mod camera;
 pub mod parallax;
+pub mod parallax_gpu;
 pub mod renderer;
 pub mod sprite;
 pub mod sprite_gpu;
@@ -22,6 +24,7 @@ pub use animation::{
 };
 pub use camera::{Camera, CameraBounds};
 pub use parallax::{ParallaxBackground, ParallaxBackgroundBuilder, ParallaxLayer, TileMode};
+pub use parallax_gpu::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
 pub use renderer::WgpuRenderer;
 pub use sprite::{AnimatedSprite, Sprite};
 pub use sprite_gpu::{

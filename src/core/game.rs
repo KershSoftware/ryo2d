@@ -331,6 +331,37 @@ impl<'a> GpuRenderContext<'a> {
   pub fn screen_size(&self) -> (f32, f32) {
     self.camera.viewport_size()
   }
+
+  /// Get screen width
+  pub fn screen_width(&self) -> u32 {
+    let (w, _) = self.camera.viewport_size();
+    w as u32
+  }
+
+  /// Get screen height
+  pub fn screen_height(&self) -> u32 {
+    let (_, h) = self.camera.viewport_size();
+    h as u32
+  }
+
+  /// Get the camera reference
+  pub fn camera(&self) -> &super::graphics::Camera {
+    self.camera
+  }
+
+  /// Add a sprite instance to the batch collector.
+  ///
+  /// This is the low-level API for adding GPU sprites. Most games should use
+  /// the higher-level APIs (e.g., GpuParallaxBackground) instead.
+  pub fn add_sprite_instance(
+    &mut self,
+    texture_id: &str,
+    instance: super::graphics::sprite_gpu::SpriteInstance,
+    z_order: i32,
+    has_effects: bool,
+  ) {
+    self.batch.add(texture_id, has_effects, instance, z_order);
+  }
 }
 
 /// Trait for user-defined game logic.

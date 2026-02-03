@@ -111,6 +111,9 @@ pub mod prelude {
     ParallaxBackground, ParallaxBackgroundBuilder, ParallaxLayer, TileMode,
   };
 
+  // GPU-accelerated parallax (recommended for large images)
+  pub use crate::core::graphics::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
+
   // Assets
   pub use crate::core::asset::{
     AssetManager, AssetStats, AsyncSpriteHandle, LoadingProgress, LoadingState, SpriteHandle,
@@ -172,6 +175,9 @@ pub mod prelude {
 
   // GPU sprite batching (for high-performance particle systems)
   pub use crate::core::graphics::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
+
+  // Render pipeline (for advanced users creating custom render passes)
+  pub use crate::core::render::{RenderPass, RenderPipeline, pass_ids};
 
   // Error types (centralized)
   pub use crate::core::error::{
