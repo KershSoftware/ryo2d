@@ -31,6 +31,9 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   if enable_profiler {
     Output::status("Starting", &format!("{} in dev mode with puffin profiler...", project_name));
+
+    // Try to launch puffin_viewer automatically
+    launch_puffin_viewer();
   } else {
     Output::status("Starting", &format!("{} in dev mode...", project_name));
   }
@@ -154,6 +157,35 @@ opt-level = 2
   Ok(())
 }
 
+/// Launch puffin_viewer in the background to connect to the profiler.
+/// If puffin_viewer is not installed, prints installation instructions.
+fn launch_puffin_viewer() {
+  // Try to spawn puffin_viewer in the background
+  // Give it a moment for the game to start and the puffin server to be ready
+  match Command::new("puffin_viewer")
+    .arg("--url")
+    .arg("127.0.0.1:8585")
+    .spawn()
+  {
+    Ok(_child) => {
+      Output::status("Launched", "puffin_viewer (connecting to 127.0.0.1:8585)");
+    }
+    Err(e) => {
+      if e.kind() == std::io::ErrorKind::NotFound {
+        println!();
+        Output::warning("puffin_viewer not found - install it with:");
+        println!("    cargo install puffin_viewer");
+        println!();
+        println!("  Then it will auto-launch next time, or run manually:");
+        println!("    puffin_viewer --url 127.0.0.1:8585");
+        println!();
+      } else {
+        Output::warning(&format!("Failed to launch puffin_viewer: {}", e));
+      }
+    }
+  }
+}
+
 /// Find the workspace root's target directory for shared dependency caching.
 /// Searches parent directories for a Cargo.toml with a [workspace] section.
 fn find_workspace_target_dir(start_dir: &std::path::Path) -> PathBuf {
@@ -208,10 +240,9 @@ PROFILING:
 
         ryo2d dev --profiler
 
-    Then connect with puffin_viewer:
+    This automatically launches puffin_viewer if installed. If not installed:
 
         cargo install puffin_viewer
-        puffin_viewer --url 127.0.0.1:8585
 
     Alternatively, set `puffin_profiler = true` in your Ryo.toml [debug] section.
 
