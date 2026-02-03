@@ -30,11 +30,12 @@ User's Game (Game trait)
          |
          v
     Engine Systems
-    Animation -> Physics -> Collision -> Rendering
+    Animation -> Physics -> Collision -> Tweens
          |
          v
-    WgpuRenderer
-    CPU Pixel Buffer -> GPU Texture -> Present
+    RenderPipeline (pass-based)
+    Clear -> Parallax -> CpuSprite -> Upload -> GpuSprite
+         -> Trail -> Lighting -> UI -> Effects -> Present
 ```
 
 ## Module Organization
@@ -43,16 +44,21 @@ User's Game (Game trait)
 |--------|---------|
 | `engine.rs` | Game loop, window, EngineBuilder |
 | `game.rs` | Game trait, GameContext |
-| `ecs/` | ECS (hecs wrapper) |
-| `renderer.rs` | wgpu software renderer |
-| `sprite_gpu.rs` | GPU sprite batching |
+| `ecs/` | ECS (hecs wrapper), pooling, tweens |
+| `render/` | Pass-based render pipeline |
+| `render/pipeline.rs` | RenderPipeline, pass execution |
+| `render/pass.rs` | RenderPass trait |
+| `render/passes/` | Built-in passes (clear, upload, lighting, etc.) |
+| `graphics/` | wgpu setup, GPU sprite batching |
 | `rapier_physics.rs` | Rapier2D integration |
 | `animation.rs` | Animation system |
 | `asset.rs` | AssetManager |
 | `audio.rs` | Kira audio |
-| `camera.rs` | 2D camera |
+| `camera.rs` | 2D camera with shake |
 | `scene.rs` | Scene management |
-| `ui/` | Immediate-mode UI |
+| `ui/` | Hybrid immediate/retained UI |
+| `lighting/` | 2D lighting system |
+| `trail/` | Motion trail rendering |
 
 ## Adding Components
 
