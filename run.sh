@@ -3,10 +3,12 @@
 # For Windows, use run.ps1 instead
 #
 # Usage:
-#     ./run.sh                     - Interactive example selection
-#     ./run.sh <example>           - Run specific example (shows mode menu)
-#     ./run.sh <example> --dev     - Run in dev mode with hot-reload
-#     ./run.sh --dev <example>     - Same as above
+#     ./run.sh                         - Interactive example selection
+#     ./run.sh <example>               - Run specific example (shows mode menu)
+#     ./run.sh <example> --dev         - Run in dev mode with hot-reload
+#     ./run.sh <example> --release     - Build and run release (no prompts)
+#     ./run.sh --dev <example>         - Same as --dev
+#     ./run.sh --release <example>     - Same as --release
 #     ./run.sh check               - Fast compilation check (engine only)
 #     ./run.sh check-all           - Check + lint all examples in parallel
 #     ./run.sh lint                - Linting with clippy (engine only)
@@ -31,11 +33,14 @@ fi
 
 # Parse arguments
 DEV_MODE=false
+RELEASE_MODE=false
 COMMAND=""
 
 for arg in "$@"; do
     if [[ "$arg" == "--dev" || "$arg" == "-d" ]]; then
         DEV_MODE=true
+    elif [[ "$arg" == "--release" || "$arg" == "-r" ]]; then
+        RELEASE_MODE=true
     elif [[ -z "$COMMAND" ]]; then
         COMMAND="$arg"
     fi
@@ -591,10 +596,12 @@ case "$COMMAND" in
         echo -e "${CYAN}Ryo2D Development Script${NC}"
         echo ""
         echo "Usage:"
-        echo "    ./run.sh                     - Interactive example selection"
-        echo "    ./run.sh <example>           - Run specific example (shows mode menu)"
-        echo "    ./run.sh <example> --dev     - Run in dev mode with hot-reload"
-        echo "    ./run.sh --dev <example>     - Same as above"
+        echo "    ./run.sh                         - Interactive example selection"
+        echo "    ./run.sh <example>               - Run specific example (shows mode menu)"
+        echo "    ./run.sh <example> --dev         - Run in dev mode with hot-reload"
+        echo "    ./run.sh <example> --release     - Build and run release (no prompts)"
+        echo "    ./run.sh --dev <example>         - Same as --dev"
+        echo "    ./run.sh --release <example>     - Same as --release"
         echo "    ./run.sh check               - Fast compilation check (engine only)"
         echo "    ./run.sh check-all           - Check + lint all examples in parallel"
         echo "    ./run.sh lint                - Linting with clippy (engine only)"
@@ -622,6 +629,8 @@ case "$COMMAND" in
             if [[ "$example" == "$COMMAND" || "$base" == "$COMMAND" ]]; then
                 if [[ "$DEV_MODE" == "true" ]]; then
                     run_example "$example" "true" "false"
+                elif [[ "$RELEASE_MODE" == "true" ]]; then
+                    run_example "$example" "false" "false"
                 else
                     run_example "$example" "false" "true"
                 fi

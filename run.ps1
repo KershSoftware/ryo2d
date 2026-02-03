@@ -4,8 +4,10 @@
 # Usage:
 #   .\run              - Interactive example selection
 #   .\run <example>    - Run specific example (e.g., .\run breakout)
-#   .\run <example> --dev  - Run in dev mode with hot-reload
-#   .\run --dev <example>  - Same as above
+#   .\run <example> --dev      - Run in dev mode with hot-reload
+#   .\run <example> --release  - Build and run release (no prompts)
+#   .\run --dev <example>      - Same as above
+#   .\run --release <example>  - Same as above
 #   .\run check        - Fast compilation check (engine only)
 #   .\run check-all    - Check + lint all examples in parallel
 #   .\run lint         - Linting with clippy (engine only)
@@ -23,7 +25,8 @@ param(
     [string]$Command = "",
     [Parameter(Position = 1)]
     [string]$Arg2 = "",
-    [switch]$dev
+    [switch]$dev,
+    [switch]$release
 )
 
 # Add cargo to PATH if not already present
@@ -38,18 +41,26 @@ if (-not ($env:PATH -split [IO.Path]::PathSeparator -contains $cargoPath)) {
     $env:PATH = "$cargoPath$([IO.Path]::PathSeparator)$env:PATH"
 }
 
-# Handle --dev flag in either position
+# Handle --dev and --release flags in either position
 $DevMode = $dev
+$ReleaseMode = $release
 $ExampleName = $Command
 
-# Check if first arg is --dev
+# Check if first arg is --dev or --release
 if ($Command -eq "--dev" -or $Command -eq "-d") {
     $DevMode = $true
     $ExampleName = $Arg2
 }
-# Check if second arg is --dev
+elseif ($Command -eq "--release" -or $Command -eq "-r") {
+    $ReleaseMode = $true
+    $ExampleName = $Arg2
+}
+# Check if second arg is --dev or --release
 elseif ($Arg2 -eq "--dev" -or $Arg2 -eq "-d") {
     $DevMode = $true
+}
+elseif ($Arg2 -eq "--release" -or $Arg2 -eq "-r") {
+    $ReleaseMode = $true
 }
 
 # Function to discover examples from ryo.toml files
@@ -550,10 +561,12 @@ switch ($ExampleName.ToLower()) {
         Write-Host "Ryo2D Development Script" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "Usage:"
-        Write-Host "  ./run                    - Interactive example selection"
-        Write-Host "  ./run <example>          - Run specific example (shows mode menu)"
-        Write-Host "  ./run <example> --dev    - Run in dev mode with hot-reload"
-        Write-Host "  ./run --dev <example>    - Same as above"
+        Write-Host "  ./run                        - Interactive example selection"
+        Write-Host "  ./run <example>              - Run specific example (shows mode menu)"
+        Write-Host "  ./run <example> --dev        - Run in dev mode with hot-reload"
+        Write-Host "  ./run <example> --release    - Build and run release (no prompts)"
+        Write-Host "  ./run --dev <example>        - Same as --dev"
+        Write-Host "  ./run --release <example>    - Same as --release"
         Write-Host "  ./run check              - Fast compilation check (engine only)"
         Write-Host "  ./run check-all          - Check + lint all examples in parallel"
         Write-Host "  ./run lint               - Linting with clippy (engine only)"
@@ -576,9 +589,11 @@ switch ($ExampleName.ToLower()) {
         $match = $examples | Where-Object { $_.Name -eq $ExampleName.ToLower() }
 
         if ($match) {
-            # If --dev flag was provided, use dev mode directly; otherwise show mode menu
+            # If --dev or --release flag was provided, run directly; otherwise show mode menu
             if ($DevMode) {
                 Run-Example $match.Name $match.Path -UseDevMode $true
+            } elseif ($ReleaseMode) {
+                Run-Example $match.Name $match.Path -UseDevMode $false
             } else {
                 Run-Example $match.Name $match.Path -AskMode $true
             }
