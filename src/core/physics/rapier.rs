@@ -218,7 +218,8 @@ impl RapierPhysicsWorld {
         .translation(vector![x_meters, y_meters])
         .gravity_scale(rigid_body.gravity_scale)
         .linear_damping(rigid_body.drag)
-        .locked_axes(LockedAxes::ROTATION_LOCKED);
+        .locked_axes(LockedAxes::ROTATION_LOCKED)
+        .ccd_enabled(rigid_body.ccd_enabled);
 
       // Set initial velocity if present
       if let Some(vel) = velocity {
@@ -322,7 +323,8 @@ impl RapierPhysicsWorld {
         .translation(vector![x_meters, y_meters])
         .gravity_scale(rigid_body.gravity_scale)
         .linear_damping(rigid_body.drag)
-        .locked_axes(LockedAxes::ROTATION_LOCKED);
+        .locked_axes(LockedAxes::ROTATION_LOCKED)
+        .ccd_enabled(rigid_body.ccd_enabled);
 
       if let Some(vel) = velocity {
         let vx_meters = vel.dx / PIXELS_PER_METER;

@@ -95,19 +95,21 @@ impl<'a> UiContext<'a> {
         }
       }
     } else {
-      // Alpha blending
+      // Alpha blending (Porter-Duff "over" operator)
       let alpha = color.a as u16;
       let inv_alpha = 255 - alpha;
       for y in y0..y1 {
         for x in x0..x1 {
           let idx = (y as usize * self.frame_width as usize + x as usize) * 4;
+          let dst_alpha = self.frame[idx + 3] as u16;
           self.frame[idx] =
             ((color.r as u16 * alpha + self.frame[idx] as u16 * inv_alpha) / 255) as u8;
           self.frame[idx + 1] =
             ((color.g as u16 * alpha + self.frame[idx + 1] as u16 * inv_alpha) / 255) as u8;
           self.frame[idx + 2] =
             ((color.b as u16 * alpha + self.frame[idx + 2] as u16 * inv_alpha) / 255) as u8;
-          self.frame[idx + 3] = 255;
+          // Proper alpha: out_alpha = src_alpha + dst_alpha * (1 - src_alpha)
+          self.frame[idx + 3] = (alpha + dst_alpha * inv_alpha / 255).min(255) as u8;
         }
       }
     }

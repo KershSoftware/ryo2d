@@ -61,6 +61,12 @@ pub struct GameScene {
   quit_to_desktop: bool,
   // Flag to apply settings (set in render_ui, processed in update)
   apply_settings: bool,
+  // Controller navigation for pause menu (0=Resume, 1=Settings, 2=Quit Menu, 3=Quit Desktop)
+  pause_menu_focus: usize,
+  // Controller navigation for settings menu (0-2 = display modes, 3=Apply, 4=Back)
+  settings_menu_focus: usize,
+  // Skip one frame of input after unpausing to prevent button press from affecting gameplay
+  unpause_input_cooldown: bool,
   // Object pool for bullets (high-frequency spawning)
   bullet_pool: Option<Pool<BulletBundle>>,
 }
@@ -128,32 +134,43 @@ impl GameScene {
     // Uses instanced rendering for much better performance with large images
     let mut background = GpuParallaxBackground::new();
 
-    // Static sky layer (doesn't scroll)
-    background.add_layer(GpuParallaxLayer::new(&sky_sprite, 0.0, -100));
+    // Scale factor to fit 1000px sprites to 1080px screen height
+    let scale = 1080.0 / 1000.0;
+
+    // Static sky layer (doesn't scroll) - fills entire screen
+    background.add_layer(
+      GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale),
+    );
 
     // Auto-scrolling layers with infinite scroll for seamless wrapping
+    // All layers scaled to fill screen height
     background.add_layer(
       GpuParallaxLayer::new(&moon_sprite, 0.0, -90)
+        .with_scale(scale)
         .with_auto_scroll(5.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&cloud_sprite, 0.0, -80)
+        .with_scale(scale)
         .with_auto_scroll(15.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&mountain_sprite, 0.0, -60)
+        .with_scale(scale)
         .with_auto_scroll(30.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&dune_mid_sprite, 0.0, -40)
+        .with_scale(scale)
         .with_auto_scroll(50.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
     background.add_layer(
       GpuParallaxLayer::new(&dune_front_sprite, 0.0, -20)
+        .with_scale(scale)
         .with_auto_scroll(80.0)
         .with_tile_mode(TileMode::InfiniteScroll),
     );
@@ -202,6 +219,9 @@ impl GameScene {
       quit_to_menu: false,
       quit_to_desktop: false,
       apply_settings: false,
+      pause_menu_focus: 0,
+      settings_menu_focus: 0,
+      unpause_input_cooldown: false,
       // Bullet pool initialized in on_enter
       bullet_pool: None,
     }
@@ -750,7 +770,15 @@ impl GameScene {
 
   fn update_player(&mut self, ctx: &mut SceneContext, dt: f32) {
     use crate::components::WallSide;
-    use crate::constants::{WALL_JUMP_FORCE_X, WALL_JUMP_FORCE_Y, WALL_SLIDE_FRICTION};
+    use crate::constants::{
+      WALL_JUMP_FORCE_X, WALL_JUMP_FORCE_Y, WALL_SLIDE_GRAVITY_SCALE, WALL_SLIDE_MAX_SPEED,
+    };
+
+    // Skip one frame of input after unpausing to prevent A/X button from causing jump
+    if self.unpause_input_cooldown {
+      self.unpause_input_cooldown = false;
+      return;
+    }
 
     let Some(player_entity) = self.player else {
       return;
@@ -763,7 +791,8 @@ impl GameScene {
     let was_invincible = player.is_invincible();
     let was_grounded = player.is_grounded;
     let was_wall_sliding = player.wall_sliding;
-    let can_wall_jump = player.can_wall_jump;
+    let can_perform_wall_jump = player.can_perform_wall_jump();
+    let wall_jump_side = player.wall_jump_side();
     let is_wall_jump_locked = player.is_wall_jump_locked();
     player.update(dt);
     let is_invincible = player.is_invincible();
@@ -844,9 +873,10 @@ impl GameScene {
           player_entity,
           Tween::to_scale(1.0, 1.0, 0.5).with_easing(Ease::OutElastic),
         );
-      } else if can_wall_jump && was_wall_sliding.is_some() {
+      } else if can_perform_wall_jump && wall_jump_side.is_some() {
         // Wall jump - push away from wall with forced momentum
-        let wall_side = was_wall_sliding.unwrap();
+        // Works both when actively sliding AND during grace period after releasing wall direction
+        let wall_side = wall_jump_side.unwrap();
         velocity.y = -WALL_JUMP_FORCE_Y;
         velocity.x = match wall_side {
           WallSide::Left => WALL_JUMP_FORCE_X,   // Push right
@@ -879,11 +909,14 @@ impl GameScene {
     // Apply gravity (skip if riding a barrier - they're supported)
     if !riding_barrier {
       if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
-        velocity.y += GRAVITY * dt;
-
-        // Apply wall slide friction if sliding
+        // Apply gravity - reduced when wall sliding for smoother slide
         if was_wall_sliding.is_some() && velocity.y > 0.0 {
-          velocity.y *= WALL_SLIDE_FRICTION;
+          // Wall sliding: reduced gravity and capped max speed
+          velocity.y += GRAVITY * WALL_SLIDE_GRAVITY_SCALE * dt;
+          velocity.y = velocity.y.min(WALL_SLIDE_MAX_SPEED);
+        } else {
+          // Normal gravity
+          velocity.y += GRAVITY * dt;
         }
       }
     }
@@ -939,6 +972,10 @@ impl GameScene {
       if new_wall_slide.is_some() && was_wall_sliding.is_none() {
         // Just started wall sliding - can wall jump
         player.can_wall_jump = true;
+        player.wall_slide_grace = 0.0; // Clear any existing grace period
+      } else if new_wall_slide.is_none() && was_wall_sliding.is_some() {
+        // Just released wall - start grace period for wall jump
+        player.start_wall_slide_grace(was_wall_sliding.unwrap());
       }
       player.wall_sliding = new_wall_slide;
 
@@ -946,6 +983,8 @@ impl GameScene {
       if player.is_grounded {
         player.wall_sliding = None;
         player.can_wall_jump = false;
+        player.wall_slide_grace = 0.0;
+        player.last_wall_side = None;
       }
     }
 
@@ -989,7 +1028,8 @@ impl GameScene {
     let player_right = player_transform.x + PLAYER_SIZE;
     let player_top = player_transform.y;
     let player_bottom = player_transform.y + PLAYER_SIZE;
-    let falling = player_velocity.y > 0.0;
+    let vel_y = player_velocity.y;
+    let falling = vel_y > 0.0;
 
     drop(player_transform);
     drop(player_velocity);
@@ -1008,26 +1048,34 @@ impl GameScene {
       let platform_top = platform_transform.y;
       let platform_bottom = platform_transform.y + PLATFORM_THICKNESS;
 
-      // Check AABB collision
-      if player_right > platform_left
-        && player_left < platform_right
-        && player_bottom > platform_top
+      // Check horizontal overlap (must be within platform X bounds)
+      let horizontal_overlap = player_right > platform_left && player_left < platform_right;
+
+      if !horizontal_overlap {
+        continue;
+      }
+
+      // Check if player is falling and has crossed or is on the platform
+      // Use velocity-based tolerance to prevent tunneling at high speeds
+      // Tolerance = max(15, velocity * dt) to catch fast-moving players
+      let velocity_tolerance = (vel_y.abs() / 60.0).max(15.0); // Assume ~60fps for tolerance calc
+
+      if falling
+        && player_bottom >= platform_top
         && player_top < platform_bottom
+        && player_bottom <= platform_top + velocity_tolerance
       {
-        // Landing on top of platform
-        if falling && player_bottom <= platform_top + 15.0 {
-          if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-            // Place player so their bottom edge sits on platform top
-            transform.y = platform_top - PLAYER_SIZE;
-          }
-          if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
-            velocity.y = 0.0;
-          }
-          if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
-            player.is_grounded = true;
-          }
-          break;
+        // Landing on top of platform - snap player to platform top
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
+          transform.y = platform_top - PLAYER_SIZE;
         }
+        if let Some(mut velocity) = ctx.world.get_mut::<PlayerVelocity>(player_entity) {
+          velocity.y = 0.0;
+        }
+        if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
+          player.is_grounded = true;
+        }
+        break;
       }
     }
   }
@@ -1963,16 +2011,23 @@ impl Scene for GameScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Update parallax background (even when paused for nice visual effect)
-    self.background.update(dt);
-
-    // Handle pause toggle
-    if ctx.input.key_pressed(KeyCode::Escape) {
+    // Handle pause toggle (keyboard or gamepad Start button)
+    if ctx.input.key_pressed(KeyCode::Escape)
+      || ctx.input.gamepad_button_pressed(GamepadButton::Start)
+    {
       if self.settings_open {
         self.settings_open = false;
       } else {
         self.is_paused = !self.is_paused;
+        if self.is_paused {
+          self.pause_menu_focus = 0; // Reset focus when opening pause menu
+        }
       }
+    }
+
+    // Handle pause menu controller navigation
+    if self.is_paused {
+      self.handle_pause_menu_navigation(ctx);
     }
 
     // Check if user wants to quit to menu
@@ -1994,10 +2049,13 @@ impl Scene for GameScene {
       ctx.request_display_mode(display_mode);
     }
 
-    // If paused, skip game logic
+    // If paused, skip game logic (including parallax animation)
     if self.is_paused {
       return SceneAction::Continue;
     }
+
+    // Update parallax background (only when not paused)
+    self.background.update(dt);
 
     self.survival_time += dt;
 
@@ -2218,6 +2276,124 @@ impl GameScene {
     false
   }
 
+  /// Handle controller/keyboard navigation in the pause menu
+  fn handle_pause_menu_navigation(&mut self, ctx: &mut SceneContext) {
+    if self.settings_open {
+      // Settings layout:
+      // Row 1: Display modes (0=Windowed, 1=Borderless, 2=Fullscreen)
+      // Row 2: Apply (3), Back (4)
+
+      // Up/Down: Move between rows
+      if ctx.input.gamepad_button_pressed(GamepadButton::DPadDown)
+        || ctx.input.key_pressed(KeyCode::ArrowDown)
+      {
+        if self.settings_menu_focus < 3 {
+          // From display modes row, go to Apply/Back row
+          self.settings_menu_focus = 3;
+        }
+      }
+      if ctx.input.gamepad_button_pressed(GamepadButton::DPadUp)
+        || ctx.input.key_pressed(KeyCode::ArrowUp)
+      {
+        if self.settings_menu_focus >= 3 {
+          // From Apply/Back row, go to display modes row
+          self.settings_menu_focus = 1; // Go to center (Borderless)
+        }
+      }
+
+      // Left/Right: Move within rows
+      if ctx.input.gamepad_button_pressed(GamepadButton::DPadLeft)
+        || ctx.input.key_pressed(KeyCode::ArrowLeft)
+      {
+        if self.settings_menu_focus < 3 && self.settings_menu_focus > 0 {
+          // Navigate left through display modes
+          self.settings_menu_focus -= 1;
+        } else if self.settings_menu_focus == 4 {
+          // From Back to Apply
+          self.settings_menu_focus = 3;
+        }
+      }
+      if ctx.input.gamepad_button_pressed(GamepadButton::DPadRight)
+        || ctx.input.key_pressed(KeyCode::ArrowRight)
+      {
+        if self.settings_menu_focus < 2 {
+          // Navigate right through display modes
+          self.settings_menu_focus += 1;
+        } else if self.settings_menu_focus == 3 {
+          // From Apply to Back
+          self.settings_menu_focus = 4;
+        }
+      }
+
+      // A button (South) or Enter to select
+      if ctx.input.gamepad_button_pressed(GamepadButton::South)
+        || ctx.input.key_pressed(KeyCode::Enter)
+      {
+        match self.settings_menu_focus {
+          0..=2 => {
+            // Select display mode
+            self.selected_display_mode_idx = self.settings_menu_focus;
+          }
+          3 => {
+            // Apply button
+            self.apply_settings = true;
+            self.settings_open = false;
+          }
+          4 => {
+            // Back button
+            self.settings_open = false;
+          }
+          _ => {}
+        }
+      }
+
+      // B button (East) to go back
+      if ctx.input.gamepad_button_pressed(GamepadButton::East) {
+        self.settings_open = false;
+      }
+    } else {
+      // Main pause menu navigation (4 items: Resume, Settings, Quit Menu, Quit Desktop)
+      let max_items = 4;
+
+      // D-pad or keyboard navigation
+      if ctx.input.gamepad_button_pressed(GamepadButton::DPadDown)
+        || ctx.input.key_pressed(KeyCode::ArrowDown)
+      {
+        self.pause_menu_focus = (self.pause_menu_focus + 1) % max_items;
+      }
+      if ctx.input.gamepad_button_pressed(GamepadButton::DPadUp)
+        || ctx.input.key_pressed(KeyCode::ArrowUp)
+      {
+        self.pause_menu_focus = (self.pause_menu_focus + max_items - 1) % max_items;
+      }
+
+      // A button (South) or Enter to select
+      if ctx.input.gamepad_button_pressed(GamepadButton::South)
+        || ctx.input.key_pressed(KeyCode::Enter)
+      {
+        match self.pause_menu_focus {
+          0 => {
+            self.is_paused = false; // Resume
+            self.unpause_input_cooldown = true;
+          }
+          1 => {
+            self.settings_open = true; // Settings
+            self.settings_menu_focus = 0; // Reset focus to first item
+          }
+          2 => self.quit_to_menu = true,     // Quit to Menu
+          3 => self.quit_to_desktop = true,  // Quit to Desktop
+          _ => {}
+        }
+      }
+
+      // B button (East) to resume (same as Resume)
+      if ctx.input.gamepad_button_pressed(GamepadButton::East) {
+        self.is_paused = false;
+        self.unpause_input_cooldown = true;
+      }
+    }
+  }
+
   fn render_pause_menu(&mut self, ui: &mut UiContext, screen_w: f32, screen_h: f32) {
     // Darken background
     ui.draw_rect(
@@ -2267,12 +2443,14 @@ impl GameScene {
       );
 
       let modes = DisplayMode::all();
+      let settings_focus = self.settings_menu_focus;
       for (i, mode) in modes.iter().enumerate() {
         let btn_x = modal_x + 20.0 + i as f32 * 120.0;
         let btn_y = mode_y + 25.0;
         let btn_rect = Rect::new(btn_x, btn_y, 110.0, 28.0);
 
         let is_selected = i == self.selected_display_mode_idx;
+        let is_focused = settings_focus == i;
         let (bg, hover, pressed) = if is_selected {
           (
             Color::rgb(60, 100, 60),
@@ -2286,6 +2464,11 @@ impl GameScene {
             Color::rgb(40, 40, 50),
           )
         };
+
+        // Draw focus outline for controller navigation
+        if is_focused {
+          ui.draw_rect_outline(btn_rect, Color::rgb(255, 220, 100), 2.0);
+        }
 
         if ui.button_styled(
           mode.display_name(),
@@ -2304,6 +2487,11 @@ impl GameScene {
       let apply_rect = Rect::new(center_x - 110.0, btn_y, 100.0, 35.0);
       let back_rect = Rect::new(center_x + 10.0, btn_y, 100.0, 35.0);
 
+      // Focus outline for Apply button
+      if settings_focus == 3 {
+        ui.draw_rect_outline(apply_rect, Color::rgb(255, 220, 100), 2.0);
+      }
+
       if ui.button_styled(
         "Apply",
         apply_rect,
@@ -2320,6 +2508,11 @@ impl GameScene {
         self.settings_open = false;
       }
 
+      // Focus outline for Back button
+      if settings_focus == 4 {
+        ui.draw_rect_outline(back_rect, Color::rgb(255, 220, 100), 2.0);
+      }
+
       if ui.button_styled(
         "Back",
         back_rect,
@@ -2330,6 +2523,16 @@ impl GameScene {
       ) {
         self.settings_open = false;
       }
+
+      // Settings navigation hint
+      let hint = "D-Pad: Navigate | A: Select | B: Back";
+      let (hint_w, _) = ui.text_size(hint);
+      ui.draw_text(
+        hint,
+        center_x - hint_w as f32 / 2.0,
+        modal_y + modal_h + 10.0,
+        Color::rgb(150, 150, 150),
+      );
     } else {
       // Main pause menu
       let title = "PAUSED";
@@ -2344,62 +2547,73 @@ impl GameScene {
       let btn_w = 200.0;
       let btn_h = 40.0;
       let btn_x = center_x - btn_w / 2.0;
+      let focus = self.pause_menu_focus;
 
-      // Resume button
+      // Helper to get button colors (brighter, with focus highlight)
+      let get_btn_colors = |base_r: u8, base_g: u8, base_b: u8, is_focused: bool| {
+        if is_focused {
+          // Focused: bright yellow outline effect via brighter colors
+          (
+            Color::rgb(base_r + 60, base_g + 60, base_b + 30), // bg (brighter)
+            Color::rgb(base_r + 80, base_g + 80, base_b + 40), // hover
+            Color::rgb(base_r + 40, base_g + 40, base_b + 20), // pressed
+          )
+        } else {
+          // Normal: brighter than before
+          (
+            Color::rgb(base_r + 30, base_g + 30, base_b + 30), // bg
+            Color::rgb(base_r + 50, base_g + 50, base_b + 50), // hover
+            Color::rgb(base_r + 20, base_g + 20, base_b + 20), // pressed
+          )
+        }
+      };
+
+      // Resume button (green tint)
       let resume_rect = Rect::new(btn_x, center_y - 50.0, btn_w, btn_h);
-      if ui.button_styled(
-        "Resume",
-        resume_rect,
-        Color::rgb(50, 70, 50),
-        Color::rgb(60, 90, 60),
-        Color::rgb(40, 60, 40),
-        Color::WHITE,
-      ) {
+      let (bg, hover, pressed) = get_btn_colors(40, 70, 40, focus == 0);
+      if focus == 0 {
+        ui.draw_rect_outline(resume_rect, Color::rgb(255, 220, 100), 2.0);
+      }
+      if ui.button_styled("Resume", resume_rect, bg, hover, pressed, Color::WHITE) {
         self.is_paused = false;
+        self.unpause_input_cooldown = true;
       }
 
-      // Settings button
+      // Settings button (blue tint)
       let settings_rect = Rect::new(btn_x, center_y, btn_w, btn_h);
-      if ui.button_styled(
-        "Settings",
-        settings_rect,
-        Color::rgb(50, 50, 70),
-        Color::rgb(60, 60, 90),
-        Color::rgb(40, 40, 60),
-        Color::WHITE,
-      ) {
+      let (bg, hover, pressed) = get_btn_colors(40, 40, 70, focus == 1);
+      if focus == 1 {
+        ui.draw_rect_outline(settings_rect, Color::rgb(255, 220, 100), 2.0);
+      }
+      if ui.button_styled("Settings", settings_rect, bg, hover, pressed, Color::WHITE) {
         self.settings_open = true;
+        self.settings_menu_focus = 0; // Reset focus to first item
       }
 
-      // Quit to Menu button
+      // Quit to Menu button (orange tint)
       let quit_menu_rect = Rect::new(btn_x, center_y + 50.0, btn_w, btn_h);
-      if ui.button_styled(
-        "Quit to Menu",
-        quit_menu_rect,
-        Color::rgb(70, 60, 50),
-        Color::rgb(90, 80, 60),
-        Color::rgb(60, 50, 40),
-        Color::WHITE,
-      ) {
+      let (bg, hover, pressed) = get_btn_colors(70, 50, 30, focus == 2);
+      if focus == 2 {
+        ui.draw_rect_outline(quit_menu_rect, Color::rgb(255, 220, 100), 2.0);
+      }
+      if ui.button_styled("Quit to Menu", quit_menu_rect, bg, hover, pressed, Color::WHITE) {
         self.is_paused = false;
+        self.unpause_input_cooldown = true;
         self.quit_to_menu = true;
       }
 
-      // Quit to Desktop button
+      // Quit to Desktop button (red tint)
       let quit_desktop_rect = Rect::new(btn_x, center_y + 100.0, btn_w, btn_h);
-      if ui.button_styled(
-        "Quit to Desktop",
-        quit_desktop_rect,
-        Color::rgb(70, 50, 50),
-        Color::rgb(90, 60, 60),
-        Color::rgb(60, 40, 40),
-        Color::WHITE,
-      ) {
+      let (bg, hover, pressed) = get_btn_colors(70, 40, 40, focus == 3);
+      if focus == 3 {
+        ui.draw_rect_outline(quit_desktop_rect, Color::rgb(255, 220, 100), 2.0);
+      }
+      if ui.button_styled("Quit to Desktop", quit_desktop_rect, bg, hover, pressed, Color::WHITE) {
         self.quit_to_desktop = true;
       }
 
       // Instructions
-      let hint = "Press ESC to resume";
+      let hint = "D-Pad/Arrows: Navigate | A/Enter: Select | B/ESC: Resume";
       let (hint_w, _) = ui.text_size(hint);
       ui.draw_text(
         hint,
