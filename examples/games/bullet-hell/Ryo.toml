@@ -1,11 +1,11 @@
-# Bullet Hell Demo - Ryo Engine Project Configuration
+# Bullet Hell - Ryo2D Demo
 # This demo showcases GPU sprite batching with hundreds of bullets and particles
 
 [project]
-name = "Bullet Hell Demo"
+name = "Bullet Hell"
 
 [info]
-title = "Bullet Hell - Ryo2D GPU Batching Demo"
+title = "Bullet Hell - Ryo2D"
 show_fps = true
 
 [system]

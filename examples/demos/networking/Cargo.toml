@@ -1,11 +1,11 @@
 [package]
-name = "netplay"
+name = "networking"
 version = "0.1.0"
 edition = "2024"
 description = "Multiplayer platformer demo built with Ryo2D engine"
 
 [[bin]]
-name = "netplay"
+name = "networking"
 path = "main.rs"
 
 [dependencies]

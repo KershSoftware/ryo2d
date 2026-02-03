@@ -12,7 +12,7 @@
 //! - A/D or Arrow keys: Move left/right
 //! - Space or W: Jump
 
-use netplay::prelude::*;
+use networking::prelude::*;
 use ryo2d::prelude::*;
 
 fn main() {

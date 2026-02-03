@@ -1,8 +1,8 @@
-# Flappy Demo - Ryo Engine Project Configuration
+# Flappy - Ryo2D Demo
 # This file configures the example project for the Ryo2D engine
 
 [project]
-name = "Flappy Demo"
+name = "Flappy"
 
 [paths]
 # Entry point is in this directory (not in src/)
@@ -28,7 +28,8 @@ sfx_volume = 1.0
 
 [info]
 # Display FPS counter in corner
-show_fps = false
+title = "Flappy - Ryo2D"
+show_fps = true
 
 [debug]
 # Show collision boundaries for debugging

@@ -374,29 +374,31 @@ impl SpriteGpuRenderer {
       uv: [f32; 2],
     }
 
+    // Center-based quad: translation becomes the center position
+    // This matches industry-standard GPU sprite conventions
     let vertices = [
       Vertex {
-        position: [0.0, 0.0],
+        position: [-0.5, -0.5],
         uv: [0.0, 0.0],
       }, // top-left
       Vertex {
-        position: [1.0, 0.0],
+        position: [0.5, -0.5],
         uv: [1.0, 0.0],
       }, // top-right
       Vertex {
-        position: [0.0, 1.0],
+        position: [-0.5, 0.5],
         uv: [0.0, 1.0],
       }, // bottom-left
       Vertex {
-        position: [1.0, 0.0],
+        position: [0.5, -0.5],
         uv: [1.0, 0.0],
       }, // top-right
       Vertex {
-        position: [1.0, 1.0],
+        position: [0.5, 0.5],
         uv: [1.0, 1.0],
       }, // bottom-right
       Vertex {
-        position: [0.0, 1.0],
+        position: [-0.5, 0.5],
         uv: [0.0, 1.0],
       }, // bottom-left
     ];

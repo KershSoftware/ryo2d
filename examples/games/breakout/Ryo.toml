@@ -1,8 +1,8 @@
-# Breakout Demo - Ryo Engine Project Configuration
+# Breakout - Ryo2D Demo
 # This file configures the example project for the Ryo2D engine
 
 [project]
-name = "Breakout Demo"
+name = "Breakout"
 
 [paths]
 # Entry point is in this directory (not in src/)
@@ -34,8 +34,9 @@ sfx_volume = 1.0
 
 # [info] - Information overlays (also maps to system.json)
 [info]
+title = "Breakout - Ryo2D"
 # Display FPS counter in corner (user can toggle)
-show_fps = false
+show_fps = true
 
 # =============================================================================
 # DEVELOPER-ONLY SETTINGS
