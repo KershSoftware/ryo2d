@@ -1585,7 +1585,11 @@ mod tests {
     t.update(0.5, &mut transform);
 
     let alpha = t.current_alpha().expect("Should have alpha");
-    assert!((alpha - 0.5).abs() < 0.01, "Alpha should be ~0.5, got {}", alpha);
+    assert!(
+      (alpha - 0.5).abs() < 0.01,
+      "Alpha should be ~0.5, got {}",
+      alpha
+    );
   }
 
   #[test]
@@ -1601,8 +1605,16 @@ mod tests {
     // At 50%, should be halfway between WHITE(255,255,255) and RED(255,0,0)
     // R stays 255, G and B go from 255 to 0, so at 50% should be ~128
     assert_eq!(tint.r, 255);
-    assert!((tint.g as i32 - 128).abs() <= 1, "G should be ~128, got {}", tint.g);
-    assert!((tint.b as i32 - 128).abs() <= 1, "B should be ~128, got {}", tint.b);
+    assert!(
+      (tint.g as i32 - 128).abs() <= 1,
+      "G should be ~128, got {}",
+      tint.g
+    );
+    assert!(
+      (tint.b as i32 - 128).abs() <= 1,
+      "B should be ~128, got {}",
+      tint.b
+    );
   }
 
   #[test]
@@ -1694,8 +1706,7 @@ mod tests {
 
   #[test]
   fn sequence_pause_resume() {
-    let mut seq = TweenSequence::new()
-      .then(Tween::to_position(100.0, 0.0, 1.0));
+    let mut seq = TweenSequence::new().then(Tween::to_position(100.0, 0.0, 1.0));
 
     assert!(seq.playing);
 

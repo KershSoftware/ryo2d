@@ -26,6 +26,7 @@ Automatically records position history for moving entities. Call `update(x, y, d
 | `Trail2D::particle(color)` | Sparks, particles | Thin, very short |
 | `Trail2D::swipe(color, width)` | Sword slashes | Wide, tapers to point |
 | `Trail2D::laser(color, width)` | Laser beams | Consistent width, no fade |
+| `Trail2D::fading_laser(color, width, fade_time)` | Laser fade-out effects | Time-based fade for ghost effects |
 
 **Key Methods:**
 ```rust
@@ -38,8 +39,13 @@ Trail2D::new(color, width)       // Create custom trail
   .with_min_distance(pixels)     // Min distance between points
 
 trail.clear();                   // Reset trail
-trail.set_enabled(bool);         // Enable/disable recording
+trail.set_enabled(bool);         // Enable/disable recording (aging continues when disabled)
 trail.age_alpha(age)             // Get fade multiplier for point age
+
+// Manual point population (for static effects like laser fade-out)
+trail.push_point(x, y);          // Add point at front (newest)
+trail.push_point_back(x, y);     // Add point at back (oldest)
+trail.populate_line(x1, y1, x2, y2, num_points); // Fill with line segment
 ```
 
 **Fade Modes:**
@@ -134,6 +140,49 @@ fn update_laser(&mut self) {
 }
 ```
 
+### Laser Fade-Out Effects
+
+**Option 1: Static Fade** - Entire line fades uniformly:
+
+```rust
+// When laser stops firing, spawn a fading trail
+let mut fade_trail = Trail2D::fading_laser(Color::RED, 8.0, 0.3);
+fade_trail.populate_line(start_x, start_y, end_x, end_y, 30);
+fade_trail.set_enabled(false); // Stop recording, just fade out
+
+// Spawn without Transform - trail stores absolute positions
+let entity = world.spawn((fade_trail,));
+```
+
+**Option 2: Moving Tracer** - Dynamic "sweep" effect (recommended):
+
+```rust
+// Spawn fast-moving invisible entity that leaves a fading trail
+let trail = Trail2D::new(Color::RED, 8.0)
+    .with_length(60)
+    .with_fade(true)
+    .with_lifetime(0.3)
+    .with_min_distance(8.0);
+
+let tracer = world.spawn((
+    Transform::new(start_x, start_y),
+    trail,
+    LaserTracer::new(end_x, end_y, 3000.0), // Custom marker component
+));
+
+// In update loop: move tracer toward target
+// When reached: set_enabled(false) and remove marker
+// Cleanup: despawn when trail.point_count() == 0
+```
+
+The moving tracer creates a more dynamic "retraction" effect where the laser visually sweeps away rather than uniformly fading.
+
+**Key Points:**
+- `set_enabled(false)` stops new point recording but aging/removal continues
+- Points are removed when they exceed `lifetime`
+- Trails without Transform still render and age correctly
+- Use `populate_line()` for static effects, moving tracer for dynamic effects
+
 ### Drawing Mechanics
 
 ```rust
@@ -180,7 +229,9 @@ The trail shader (`shaders/core/trail.wgsl`) supports three fragment variants:
 
 1. **Trail vs Line**: Use `Trail2D` for moving objects (auto-records), `Line2D` for static/explicit shapes
 2. **Auto-Update**: Engine automatically updates trails using entity's Transform - no manual `update()` needed
-3. **Presets First**: Try presets before customizing (`bullet`, `particle`, `swipe`, `laser`)
+3. **Presets First**: Try presets before customizing (`bullet`, `particle`, `swipe`, `laser`, `fading_laser`)
 4. **Memory**: Trails use `VecDeque` - old points removed when `max_points` exceeded or `lifetime` reached
 5. **Fade Modes**: Position fade (`.with_fade(true)`) for fast objects, Time fade (`.with_lifetime()`) for slow/stationary
 6. **Visibility**: Lines have `visible` flag, Trails have `enabled` flag
+7. **Fade-Out Effects**: Use `fading_laser` + `populate_line()` + `set_enabled(false)` for ghost/fade effects
+8. **No Transform OK**: Trails without Transform still render - useful for standalone fade-out effects

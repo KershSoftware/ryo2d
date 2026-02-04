@@ -2,6 +2,7 @@
 
 pub mod bullet;
 pub mod drone;
+pub mod laser_tracer;
 pub mod particle;
 pub mod platform;
 pub mod player;
@@ -9,6 +10,7 @@ pub mod turret;
 
 pub use bullet::Bullet;
 pub use drone::{Drone, DroneState};
+pub use laser_tracer::LaserTracer;
 pub use particle::Particle;
 pub use platform::{Barrier, Platform, Wall};
 pub use player::{Player, WallSide};

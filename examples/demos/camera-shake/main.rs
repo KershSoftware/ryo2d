@@ -216,7 +216,9 @@ impl Scene for CameraShakeDemoScene {
     // Current config
     let config_text = format!(
       "Max Offset: {:.0}px | Decay: {:.1}/sec | Curve: {}",
-      self.max_offset, self.decay_rate, self.curve_name()
+      self.max_offset,
+      self.decay_rate,
+      self.curve_name()
     );
     ui.draw_text(&config_text, 10.0, 30.0, text_accent);
 

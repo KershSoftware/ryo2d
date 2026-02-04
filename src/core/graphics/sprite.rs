@@ -1340,14 +1340,22 @@ mod tests {
     assert_eq!(sprite.data[corner_idx], 255, "Corner R should be 255");
     assert_eq!(sprite.data[corner_idx + 1], 200, "Corner G should be 200");
     assert_eq!(sprite.data[corner_idx + 2], 100, "Corner B should be 100");
-    assert_eq!(sprite.data[corner_idx + 3], 0, "Corner A should be 0 (transparent)");
+    assert_eq!(
+      sprite.data[corner_idx + 3],
+      0,
+      "Corner A should be 0 (transparent)"
+    );
 
     // Center pixel (12,12) should be fully opaque with the circle's RGB
     let center_idx = (12 * 25 + 12) * 4;
     assert_eq!(sprite.data[center_idx], 255, "Center R should be 255");
     assert_eq!(sprite.data[center_idx + 1], 200, "Center G should be 200");
     assert_eq!(sprite.data[center_idx + 2], 100, "Center B should be 100");
-    assert_eq!(sprite.data[center_idx + 3], 255, "Center A should be 255 (opaque)");
+    assert_eq!(
+      sprite.data[center_idx + 3],
+      255,
+      "Center A should be 255 (opaque)"
+    );
   }
 
   #[test]
@@ -1662,7 +1670,17 @@ mod tests {
 
     // Draw with 50% alpha
     sprite.draw_scaled_xy_flipped_tinted(
-      &mut frame, 10, 10, 3, 3, 1.0, 1.0, false, false, 0.5, Color::WHITE,
+      &mut frame,
+      10,
+      10,
+      3,
+      3,
+      1.0,
+      1.0,
+      false,
+      false,
+      0.5,
+      Color::WHITE,
     );
 
     // Check a pixel in the sprite area - should be blended (greenish-white)
@@ -1672,7 +1690,11 @@ mod tests {
     let b = frame[idx + 2];
 
     // Should have significant red (from white) and green (from background)
-    assert!(r > 100, "Red should be present from white sprite, got {}", r);
+    assert!(
+      r > 100,
+      "Red should be present from white sprite, got {}",
+      r
+    );
     assert!(
       g > 100,
       "Green should be present from background, got {}",
@@ -1723,7 +1745,17 @@ mod tests {
     let original = frame.clone();
 
     sprite.draw_scaled_xy_flipped_tinted(
-      &mut frame, 10, 10, 3, 3, 1.0, 1.0, false, false, 0.0, Color::WHITE,
+      &mut frame,
+      10,
+      10,
+      3,
+      3,
+      1.0,
+      1.0,
+      false,
+      false,
+      0.0,
+      Color::WHITE,
     );
 
     assert_eq!(frame, original, "Zero alpha should not change frame");

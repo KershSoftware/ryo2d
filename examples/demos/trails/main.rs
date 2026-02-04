@@ -334,10 +334,7 @@ impl Scene for TrailsDemoScene {
     if ctx.input.key_pressed(KeyCode::KeyD) {
       self.fade_mode = FadeMode::Distance;
       self.recreate_trails(ctx);
-      println!(
-        "Fade: Distance (pixel-based, {:.0}px)",
-        self.fade_distance
-      );
+      println!("Fade: Distance (pixel-based, {:.0}px)", self.fade_distance);
     }
     if ctx.input.key_pressed(KeyCode::KeyE) {
       self.fade_mode = FadeMode::None;
@@ -490,11 +487,21 @@ impl Scene for TrailsDemoScene {
     y += line_height + 10.0;
 
     // Controls
-    ui.draw_text("Space: Pause | R: Reset | +/-: Lifetime", 10.0, y, text_muted);
+    ui.draw_text(
+      "Space: Pause | R: Reset | +/-: Lifetime",
+      10.0,
+      y,
+      text_muted,
+    );
 
     // Paused indicator
     if self.paused {
-      ui.draw_text("PAUSED", self.screen_width / 2.0 - 30.0, self.screen_height / 2.0, Color::rgb(255, 255, 100));
+      ui.draw_text(
+        "PAUSED",
+        self.screen_width / 2.0 - 30.0,
+        self.screen_height / 2.0,
+        Color::rgb(255, 255, 100),
+      );
     }
   }
 }

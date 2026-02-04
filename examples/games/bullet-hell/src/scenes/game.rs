@@ -15,13 +15,22 @@ const DESIGN_WIDTH: f32 = 1920.0;
 const DESIGN_HEIGHT: f32 = 1080.0;
 
 /// Bundle type for pooled bullets
-type BulletBundle = (Transform, Renderable, RigidBody, Collider, Velocity, Bullet, Trail2D);
+type BulletBundle = (
+  Transform,
+  Renderable,
+  RigidBody,
+  Collider,
+  Velocity,
+  Bullet,
+  Trail2D,
+);
 
 pub struct GameScene {
   player: Option<Entity>,
   turrets: Vec<Entity>,
   drones: Vec<Entity>,
   lasers: Vec<Entity>,
+  fading_lasers: Vec<Entity>,
   bullets: Vec<Entity>,
   particles: Vec<Entity>,
   platforms: Vec<Entity>,
@@ -141,9 +150,7 @@ impl GameScene {
     let scale = 1080.0 / 1000.0;
 
     // Static sky layer (doesn't scroll) - fills entire screen
-    background.add_layer(
-      GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale),
-    );
+    background.add_layer(GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale));
 
     // Auto-scrolling layers with infinite scroll for seamless wrapping
     // Speeds must match menu.rs for seamless scene transition
@@ -186,6 +193,7 @@ impl GameScene {
       turrets: Vec::new(),
       drones: Vec::new(),
       lasers: Vec::new(),
+      fading_lasers: Vec::new(),
       bullets: Vec::new(),
       particles: Vec::new(),
       platforms: Vec::new(),
@@ -466,15 +474,28 @@ impl GameScene {
       let _ = ctx.world.despawn(laser);
     }
 
+    // Clean up fading lasers that have finished fading (no points left)
+    let faded_lasers: Vec<Entity> = self
+      .fading_lasers
+      .iter()
+      .filter(|&&entity| {
+        ctx
+          .world
+          .get::<Trail2D>(entity)
+          .map(|trail| trail.point_count() == 0)
+          .unwrap_or(true) // Despawn if trail missing
+      })
+      .copied()
+      .collect();
+    for entity in &faded_lasers {
+      let _ = ctx.world.despawn(*entity);
+    }
+    self.fading_lasers.retain(|e| !faded_lasers.contains(e));
+
     let player_entity = self.player;
 
     // Get player position for aiming (player uses center pivot)
-    let player_pos = player_entity.and_then(|e| {
-      ctx
-        .world
-        .get::<Transform>(e)
-        .map(|t| (t.x, t.y))
-    });
+    let player_pos = player_entity.and_then(|e| ctx.world.get::<Transform>(e).map(|t| (t.x, t.y)));
 
     // Collect drones to update
     let drones_to_update: Vec<_> = self.drones.clone();
@@ -506,10 +527,8 @@ impl GameScene {
             // Pan based on screen position (-1 left, 0 center, 1 right)
             let pan = ((drone_x / self.screen_width) * 2.0 - 1.0).clamp(-1.0, 1.0);
             if let Some(audio) = &mut ctx.audio {
-              let _ = audio.play_sound_with(
-                "enemy-spawn",
-                SoundOptions::new().volume(0.15).panning(pan),
-              );
+              let _ =
+                audio.play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15).panning(pan));
             }
           } else {
             // Still spawning - dissolve from invisible to visible
@@ -612,13 +631,15 @@ impl GameScene {
             self.screen_height,
           );
 
-          // Flash effect - faster flashing as aim progresses
+          // Flash effect - faster flashing as aim progresses, brighter near end
           let flash_speed = 8.0 + aim_progress * 20.0;
           let flash = ((state_timer * flash_speed).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
 
           // Warning line - thin and semi-transparent, pulses brighter
-          let warning_alpha = (100.0 + flash * 100.0) as u8;
-          let warning_width = 2.0 + flash * 2.0;
+          // Gets more opaque as aim_progress increases (reaching peak near fire time)
+          let base_alpha = 80.0 + aim_progress * 80.0; // 80 -> 160 over aim duration
+          let warning_alpha = (base_alpha + flash * 95.0).min(255.0) as u8; // Can reach 255 near end
+          let warning_width = 2.0 + flash * 3.0 + aim_progress * 2.0; // Gets thicker too
 
           let warning_laser = ctx.world.spawn((
             Transform::new(0.0, 0.0),
@@ -659,90 +680,82 @@ impl GameScene {
         }
 
         DroneState::Firing => {
-          // Create damaging laser line for this frame
+          // Spawn damaging tracer when firing starts (laser_active just turned true)
+          // The tracer sweeps from drone to endpoint, damaging player on contact
           if laser_active {
-            let drone_center_x = current_x;
-            let drone_center_y = current_y;
+            // Check if we already spawned tracers this firing cycle
+            // (laser_active stays true for the whole firing duration)
+            let has_active_tracer = self
+              .fading_lasers
+              .iter()
+              .any(|&e| ctx.world.get::<LaserTracer>(e).is_some());
 
-            // Extend laser beyond screen edge
-            let (extended_x, extended_y) = Self::extend_line_to_screen_edge(
-              drone_center_x,
-              drone_center_y,
-              laser_target_x,
-              laser_target_y,
-              self.screen_width,
-              self.screen_height,
-            );
+            if !has_active_tracer {
+              let drone_center_x = current_x;
+              let drone_center_y = current_y;
 
-            // Full power laser - thick and bright (extends to screen edge)
-            let laser_entity = ctx.world.spawn((
-              Transform::new(0.0, 0.0),
-              Line2D::segment(
-                Vec2::new(drone_center_x, drone_center_y),
-                Vec2::new(extended_x, extended_y),
-                Color::new(255, 50, 50, 255),
-                DRONE_LASER_WIDTH,
-              ),
-            ));
-            self.lasers.push(laser_entity);
+              // Extend laser beyond screen edge
+              let (extended_x, extended_y) = Self::extend_line_to_screen_edge(
+                drone_center_x,
+                drone_center_y,
+                laser_target_x,
+                laser_target_y,
+                self.screen_width,
+                self.screen_height,
+              );
 
-            // Add a bright core to the laser
-            let core_laser = ctx.world.spawn((
-              Transform::new(0.0, 0.0),
-              Line2D::segment(
-                Vec2::new(drone_center_x, drone_center_y),
-                Vec2::new(extended_x, extended_y),
-                Color::new(255, 200, 150, 255),
-                DRONE_LASER_WIDTH * 0.4,
-              ),
-            ));
-            self.lasers.push(core_laser);
+              let tracer_speed = 2500.0; // Fast sweep
+              let damage_radius = PLAYER_SIZE / 2.0 + DRONE_LASER_WIDTH / 2.0;
 
-            // Check laser collision with player (player uses center pivot)
-            if let Some(player_e) = player_entity {
-              if let Some(player_t) = ctx.world.get::<Transform>(player_e) {
-                let hit = Self::point_to_line_distance(
-                  player_t.x,
-                  player_t.y,
-                  drone_center_x,
-                  drone_center_y,
-                  extended_x,
-                  extended_y,
-                ) < PLAYER_SIZE / 2.0 + DRONE_LASER_WIDTH / 2.0;
+              // Outer laser trail (red) - DAMAGING
+              let outer_trail = Trail2D::new(Color::new(255, 50, 50, 220), DRONE_LASER_WIDTH)
+                .with_length(80)
+                .with_fade(true)
+                .with_lifetime(0.35)
+                .with_min_distance(6.0);
 
-                if hit {
-                  drop(player_t);
-                  if let Some(mut player) = ctx.world.get_mut::<Player>(player_e) {
-                    let was_invincible = player.is_invincible();
-                    player.take_damage();
-                    self.player_lives = player.lives;
-                    self.player_invincible = player.is_invincible();
-                    // Camera shake and hurt sound on hit (only if not invincible)
-                    if !was_invincible {
-                      ctx.camera.add_trauma(0.5);
-                      if let Some(audio) = &mut ctx.audio {
-                        let _ = audio.play_sound("hurt");
-                      }
-                    }
-                  }
-                }
-              }
+              let outer_tracer = ctx.world.spawn((
+                Transform::new(drone_center_x, drone_center_y),
+                outer_trail,
+                LaserTracer::damaging(extended_x, extended_y, tracer_speed, damage_radius),
+              ));
+              self.fading_lasers.push(outer_tracer);
+
+              // Inner core trail (bright) - visual only
+              let core_trail =
+                Trail2D::new(Color::new(255, 200, 150, 255), DRONE_LASER_WIDTH * 0.4)
+                  .with_length(80)
+                  .with_fade(true)
+                  .with_lifetime(0.3)
+                  .with_min_distance(6.0);
+
+              let core_tracer = ctx.world.spawn((
+                Transform::new(drone_center_x, drone_center_y),
+                core_trail,
+                LaserTracer::new(extended_x, extended_y, tracer_speed),
+              ));
+              self.fading_lasers.push(core_tracer);
             }
           }
 
+          // Check if firing duration ended
+          let mut finished_firing = false;
           if let Some(mut drone) = ctx.world.get_mut::<Drone>(drone_entity) {
             if state_timer <= 0.0 {
               // Done firing, go to cooldown
               drone.state = DroneState::Cooldown;
               drone.state_timer = DRONE_COOLDOWN;
               drone.laser_active = false;
-              drop(drone);
-              // Restore normal shader (black outline)
-              if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
-                renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
-              }
+              finished_firing = true;
             } else {
               drone.state_timer = state_timer;
+            }
+          }
+
+          // Restore normal shader when firing ends
+          if finished_firing {
+            if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
+              renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
             }
           }
         }
@@ -764,23 +777,99 @@ impl GameScene {
     }
   }
 
-  /// Calculate distance from point to line segment
-  fn point_to_line_distance(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-    let len_sq = dx * dx + dy * dy;
+  /// Update laser tracer entities (moving trails for sweeping laser effect)
+  fn update_laser_tracers(&mut self, ctx: &mut SceneContext, dt: f32) {
+    // Get player position for damage checks
+    let player_pos = self
+      .player
+      .and_then(|e| ctx.world.get::<Transform>(e).map(|t| (t.x, t.y)));
 
-    if len_sq < 0.0001 {
-      // Line is a point
-      return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
+    // Move tracers toward their targets and collect those that reached the end
+    let mut reached_target: Vec<Entity> = Vec::new();
+    let mut player_hit = false;
+
+    for &entity in &self.fading_lasers {
+      // Only process entities with LaserTracer component
+      let Some(tracer) = ctx.world.get::<LaserTracer>(entity) else {
+        continue;
+      };
+
+      let target_x = tracer.target_x;
+      let target_y = tracer.target_y;
+      let speed = tracer.speed;
+      let damages = tracer.damages;
+      let damage_radius = tracer.damage_radius;
+      drop(tracer);
+
+      // Get current position
+      let Some(transform) = ctx.world.get::<Transform>(entity) else {
+        continue;
+      };
+      let current_x = transform.x;
+      let current_y = transform.y;
+      drop(transform);
+
+      // Check damage against player (only if this tracer damages)
+      if damages && !player_hit {
+        if let Some((px, py)) = player_pos {
+          let dx_p = px - current_x;
+          let dy_p = py - current_y;
+          let dist_to_player = (dx_p * dx_p + dy_p * dy_p).sqrt();
+
+          if dist_to_player < damage_radius {
+            player_hit = true;
+          }
+        }
+      }
+
+      // Calculate direction to target
+      let dx = target_x - current_x;
+      let dy = target_y - current_y;
+      let dist = (dx * dx + dy * dy).sqrt();
+
+      if dist < 10.0 {
+        // Reached target - disable trail recording and mark for later cleanup
+        if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
+          trail.set_enabled(false);
+        }
+        reached_target.push(entity);
+      } else {
+        // Move toward target
+        let dir_x = dx / dist;
+        let dir_y = dy / dist;
+        let move_dist = (speed * dt).min(dist); // Don't overshoot
+
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
+          transform.x += dir_x * move_dist;
+          transform.y += dir_y * move_dist;
+        }
+      }
     }
 
-    // Project point onto line, clamped to segment
-    let t = (((px - x1) * dx + (py - y1) * dy) / len_sq).clamp(0.0, 1.0);
-    let proj_x = x1 + t * dx;
-    let proj_y = y1 + t * dy;
+    // Apply damage to player if hit
+    if player_hit {
+      if let Some(player_e) = self.player {
+        if let Some(mut player) = ctx.world.get_mut::<Player>(player_e) {
+          let was_invincible = player.is_invincible();
+          player.take_damage();
+          self.player_lives = player.lives;
+          self.player_invincible = player.is_invincible();
+          // Camera shake and hurt sound on hit (only if not invincible)
+          if !was_invincible {
+            ctx.camera.add_trauma(0.5);
+            if let Some(audio) = &mut ctx.audio {
+              let _ = audio.play_sound("hurt");
+            }
+          }
+        }
+      }
+    }
 
-    ((px - proj_x).powi(2) + (py - proj_y).powi(2)).sqrt()
+    // Remove LaserTracer component from entities that reached target
+    // (they become regular fading trails that will be cleaned up when empty)
+    for entity in reached_target {
+      let _ = ctx.world.remove_one::<LaserTracer>(entity);
+    }
   }
 
   /// Extend a line from (x1, y1) through (x2, y2) to beyond the screen edge
@@ -1546,10 +1635,8 @@ impl GameScene {
               TurretSide::Right => 0.8,
             };
             if let Some(audio) = &mut ctx.audio {
-              let _ = audio.play_sound_with(
-                "enemy-spawn",
-                SoundOptions::new().volume(0.15).panning(pan),
-              );
+              let _ =
+                audio.play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15).panning(pan));
             }
           } else {
             // Still spawning - dissolve from invisible to visible with cyan edge glow
@@ -2082,7 +2169,9 @@ impl Scene for GameScene {
     ctx.world.clear();
 
     // Sync parallax background with shared time (persists from menu)
-    self.background.set_elapsed_time(shared::get_parallax_time());
+    self
+      .background
+      .set_elapsed_time(shared::get_parallax_time());
 
     // Reset state
     self.survival_time = 0.0;
@@ -2090,6 +2179,7 @@ impl Scene for GameScene {
     self.turrets.clear();
     self.drones.clear();
     self.lasers.clear();
+    self.fading_lasers.clear();
     self.bullets.clear();
     self.particles.clear();
     self.platforms.clear();
@@ -2102,7 +2192,8 @@ impl Scene for GameScene {
     self.spawn_platforms(ctx);
     self.spawn_barriers(ctx);
     self.spawn_turrets(ctx);
-    // Drones spawn progressively starting at 30 seconds
+    // Drones additionally spawn progressively every 30 seconds
+    self.spawn_drone(ctx);
     self.spawn_player(ctx);
 
     // Initialize bullet pool (pre-allocate 200 bullets)
@@ -2230,6 +2321,7 @@ impl Scene for GameScene {
     self.update_player(ctx, dt);
     self.update_turrets(ctx, dt);
     self.update_drones(ctx, dt);
+    self.update_laser_tracers(ctx, dt);
     self.update_bullets(ctx, dt);
     self.update_particles(ctx, dt);
 
@@ -2514,8 +2606,8 @@ impl GameScene {
             self.settings_open = true; // Settings
             self.settings_menu_focus = 0; // Reset focus to first item
           }
-          2 => self.quit_to_menu = true,     // Quit to Menu
-          3 => self.quit_to_desktop = true,  // Quit to Desktop
+          2 => self.quit_to_menu = true,    // Quit to Menu
+          3 => self.quit_to_desktop = true, // Quit to Desktop
           _ => {}
         }
       }
@@ -2730,7 +2822,14 @@ impl GameScene {
       if focus == 2 {
         ui.draw_rect_outline(quit_menu_rect, Color::rgb(255, 220, 100), 2.0);
       }
-      if ui.button_styled("Quit to Menu", quit_menu_rect, bg, hover, pressed, Color::WHITE) {
+      if ui.button_styled(
+        "Quit to Menu",
+        quit_menu_rect,
+        bg,
+        hover,
+        pressed,
+        Color::WHITE,
+      ) {
         self.is_paused = false;
         self.unpause_input_cooldown = true;
         self.quit_to_menu = true;
@@ -2742,7 +2841,14 @@ impl GameScene {
       if focus == 3 {
         ui.draw_rect_outline(quit_desktop_rect, Color::rgb(255, 220, 100), 2.0);
       }
-      if ui.button_styled("Quit to Desktop", quit_desktop_rect, bg, hover, pressed, Color::WHITE) {
+      if ui.button_styled(
+        "Quit to Desktop",
+        quit_desktop_rect,
+        bg,
+        hover,
+        pressed,
+        Color::WHITE,
+      ) {
         self.quit_to_desktop = true;
       }
 

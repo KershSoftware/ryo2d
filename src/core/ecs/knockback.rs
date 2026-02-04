@@ -242,8 +242,10 @@ impl Knockback {
       let total_weight = existing_weight + new_weight;
 
       if total_weight > 0.0 {
-        let blended_x = (self.direction_x * existing_weight + new_dir_x * new_weight) / total_weight;
-        let blended_y = (self.direction_y * existing_weight + new_dir_y * new_weight) / total_weight;
+        let blended_x =
+          (self.direction_x * existing_weight + new_dir_x * new_weight) / total_weight;
+        let blended_y =
+          (self.direction_y * existing_weight + new_dir_y * new_weight) / total_weight;
         let (norm_x, norm_y) = normalize(blended_x, blended_y);
         self.direction_x = norm_x;
         self.direction_y = norm_y;
