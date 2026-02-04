@@ -1180,7 +1180,9 @@ impl WgpuRenderer {
           sample_count: 1,
           dimension: wgpu::TextureDimension::D2,
           format: wgpu::TextureFormat::Rgba8UnormSrgb,
-          usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+          usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC, // Allow copying to post-process texture
           view_formats: &[],
         });
         let lit_view = lit_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1245,15 +1247,38 @@ impl WgpuRenderer {
         None
       }
     } else if has_effects && lighting_applied {
-      // Lighting already wrote to texture_a, apply effects starting from there
-      if let (Some(effects_mgr), Some(post_process)) = (effects, self.post_process.as_mut()) {
+      // Lighting wrote to lit_texture, need to copy to texture_a before applying effects
+      if let (Some(effects_mgr), Some(post_process), Some(lit_tex)) =
+        (effects, self.post_process.as_mut(), _lit_texture.as_ref())
+      {
         let active: Vec<_> = effects_mgr
           .active_effects()
           .map(|e| (e, effects_mgr.time()))
           .collect();
 
         if !active.is_empty() {
-          // Effects start from texture_a (already has lit scene)
+          // Copy lit scene to texture_a first
+          encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+              texture: lit_tex,
+              mip_level: 0,
+              origin: wgpu::Origin3d::ZERO,
+              aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+              texture: post_process.texture_a(),
+              mip_level: 0,
+              origin: wgpu::Origin3d::ZERO,
+              aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+              width: self.game_width,
+              height: self.game_height,
+              depth_or_array_layers: 1,
+            },
+          );
+
+          // Now apply effects chain starting from texture_a
           let output_buffer =
             post_process.apply_effects(&self.device, &self.queue, &mut encoder, &active);
 
@@ -1688,5 +1713,32 @@ mod tests {
     );
     let fixed = calculate_viewport_scale(800, 600, 1920, 1080, WindowMode::Fixed, None, None);
     assert_eq!(aspect, fixed);
+  }
+
+  // ============================================================================
+  // CRITICAL INVARIANTS - Document important rendering pipeline constraints
+  // ============================================================================
+
+  /// INVARIANT: When lighting AND effects are both enabled, the lit scene
+  /// must be copied to post-process texture_a before effects are applied.
+  ///
+  /// Background:
+  /// - Lighting renders to a temporary `lit_texture` (not texture_a)
+  /// - Post-process effects read from texture_a and ping-pong to texture_b
+  /// - If we skip the copy, effects read uninitialized data → black screen
+  ///
+  /// This invariant is enforced in `render_with_lighting()` at the code path:
+  /// `has_effects && lighting_applied` → copy lit_texture → texture_a
+  ///
+  /// See: tests/e2e/lighting_renderer.rs::test_lighting_plus_effects_produces_visible_output
+  #[test]
+  fn document_lighting_effects_copy_invariant() {
+    // This is a documentation test - the actual GPU test is in e2e tests.
+    // The invariant is: when `lighting_applied && has_effects`:
+    //   encoder.copy_texture_to_texture(lit_texture, texture_a, ...)
+    // must be called BEFORE apply_effects().
+    //
+    // Key code location: render_with_lighting(), around the comment:
+    //   "Lighting wrote to lit_texture, need to copy to texture_a before applying effects"
   }
 }

@@ -25,6 +25,7 @@ members = [
   "examples/games/breakout",
   "examples/games/bullet-hell",
   "examples/games/profiler-demo",
+  "examples/games/nigh_t",
   "examples/demos/networking",
   "examples/demos/anchor-positioning",
   "examples/demos/asset-loading",

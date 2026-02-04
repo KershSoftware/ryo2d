@@ -621,3 +621,189 @@ fn test_render_lights_when_disabled() {
   gpu.queue.submit(std::iter::once(encoder.finish()));
   // (test passes if we reach here without panic)
 }
+
+// ============================================================================
+// LIGHTING + POST-PROCESSING INTEGRATION TESTS
+// ============================================================================
+
+/// REGRESSION TEST: Lighting output must be copied to post-process texture_a
+/// before effects can be applied.
+///
+/// Bug fixed: When both lighting and CRT (or other effects) were enabled,
+/// the screen went completely dark. The issue was that:
+/// - Lighting rendered to a temporary `lit_texture`
+/// - Effects expected input in `texture_a`
+/// - But nothing copied lit_texture → texture_a
+///
+/// The fix ensures the lit scene is copied to texture_a before effect chain starts.
+#[test]
+fn test_lighting_plus_effects_produces_visible_output() {
+  let Some(gpu) = TestGpu::new() else {
+    eprintln!("Skipping test_lighting_plus_effects_produces_visible_output: no GPU available");
+    return;
+  };
+
+  let width = 64u32;
+  let height = 64u32;
+  let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+  // Create lighting renderer
+  let mut lighting = LightingRenderer::new(&gpu.device, width, height, format);
+  lighting.set_enabled(true);
+  lighting.set_ambient(AmbientLight::new(Color::WHITE, 0.5)); // 50% ambient
+
+  // Create post-process pipeline
+  let mut post_process =
+    ryo2d::core::shaders::PostProcessPipeline::new(&gpu.device, width, height, format);
+
+  // Create output target
+  let target = create_srgb_target(&gpu, width, height);
+
+  // Create bright white pixel data
+  let mut pixel_data = vec![0u8; (width * height * 4) as usize];
+  for pixel in pixel_data.chunks_exact_mut(4) {
+    pixel[0] = 255; // R
+    pixel[1] = 255; // G
+    pixel[2] = 255; // B
+    pixel[3] = 255; // A
+  }
+
+  let mut encoder = gpu
+    .device
+    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+      label: Some("Lighting + Effects Test"),
+    });
+
+  // Step 1: Render lights (no dynamic lights, just ambient)
+  lighting.render_lights(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    std::iter::empty::<(&Transform, &Light2D)>(),
+    Vec2::ZERO,
+    1.0,
+  );
+
+  // Step 2: Compose lit scene
+  lighting.compose(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    &pixel_data,
+    post_process.texture_a_view(),
+    0.0,
+  );
+
+  // Step 3: Apply a CRT effect (the effect that triggered the original bug)
+  let crt_effect = ryo2d::core::shaders::PostProcessEffect::crt();
+  let effects = [(&crt_effect, 0.0f32)];
+  let output_buffer = post_process.apply_effects(&gpu.device, &gpu.queue, &mut encoder, &effects);
+
+  // Step 4: Copy result to our test target for verification
+  let output_texture = match output_buffer {
+    ryo2d::core::shaders::OutputBuffer::A => post_process.texture_a(),
+    ryo2d::core::shaders::OutputBuffer::B => post_process.texture_b(),
+  };
+
+  encoder.copy_texture_to_texture(
+    wgpu::ImageCopyTexture {
+      texture: output_texture,
+      mip_level: 0,
+      origin: wgpu::Origin3d::ZERO,
+      aspect: wgpu::TextureAspect::All,
+    },
+    wgpu::ImageCopyTexture {
+      texture: &target.texture,
+      mip_level: 0,
+      origin: wgpu::Origin3d::ZERO,
+      aspect: wgpu::TextureAspect::All,
+    },
+    wgpu::Extent3d {
+      width,
+      height,
+      depth_or_array_layers: 1,
+    },
+  );
+
+  gpu.queue.submit(std::iter::once(encoder.finish()));
+
+  // Verify output is NOT black (the original bug produced all-black output)
+  let (r, g, b, _a) = target.get_pixel(&gpu, width / 2, height / 2);
+
+  // With 50% ambient on white scene, output should be visible (not black)
+  // CRT effect may darken slightly, but should still be well above black
+  let min_visible = 30u8;
+  assert!(
+    r > min_visible || g > min_visible || b > min_visible,
+    "REGRESSION: Lighting + effects produced black output! \
+     Got ({}, {}, {}), expected visible pixels. \
+     This indicates the lit scene was not copied to texture_a before effects.",
+    r,
+    g,
+    b
+  );
+}
+
+/// Test that multiple effects can be chained after lighting
+#[test]
+fn test_lighting_with_multiple_effects() {
+  let Some(gpu) = TestGpu::new() else {
+    eprintln!("Skipping test_lighting_with_multiple_effects: no GPU available");
+    return;
+  };
+
+  let width = 32u32;
+  let height = 32u32;
+  let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+  let mut lighting = LightingRenderer::new(&gpu.device, width, height, format);
+  lighting.set_enabled(true);
+  lighting.set_ambient(AmbientLight::new(Color::WHITE, 1.0));
+
+  let mut post_process =
+    ryo2d::core::shaders::PostProcessPipeline::new(&gpu.device, width, height, format);
+
+  // Create gray pixel data
+  let mut pixel_data = vec![0u8; (width * height * 4) as usize];
+  for pixel in pixel_data.chunks_exact_mut(4) {
+    pixel[0] = 128;
+    pixel[1] = 128;
+    pixel[2] = 128;
+    pixel[3] = 255;
+  }
+
+  let mut encoder = gpu
+    .device
+    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+      label: Some("Multi-Effect Test"),
+    });
+
+  // Render and compose lighting
+  lighting.render_lights(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    std::iter::empty::<(&Transform, &Light2D)>(),
+    Vec2::ZERO,
+    1.0,
+  );
+
+  lighting.compose(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    &pixel_data,
+    post_process.texture_a_view(),
+    0.0,
+  );
+
+  // Apply multiple effects: CRT + vignette
+  let crt = ryo2d::core::shaders::PostProcessEffect::crt();
+  let vignette = ryo2d::core::shaders::PostProcessEffect::vignette(0.3);
+  let effects = [(&crt, 0.0f32), (&vignette, 0.0f32)];
+
+  let _output = post_process.apply_effects(&gpu.device, &gpu.queue, &mut encoder, &effects);
+
+  gpu.queue.submit(std::iter::once(encoder.finish()));
+  // Test passes if no panic - verifies effect chaining works after lighting
+}

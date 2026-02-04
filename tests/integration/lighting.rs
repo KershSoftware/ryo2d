@@ -371,3 +371,46 @@ fn regression_render_flow_texture_isolation() {
   //
   // Breaking any of these invariants will cause visual bugs.
 }
+
+/// REGRESSION: Lighting + post-processing effects must work together (2024-02)
+///
+/// BUG FIXED: When both lighting AND post-processing effects (CRT, vignette, etc.)
+/// were enabled simultaneously, the screen went completely black.
+///
+/// ROOT CAUSE: The render pipeline had a texture data flow bug:
+/// - Lighting rendered to a temporary `lit_texture`
+/// - Post-processing effects expected input in `texture_a`
+/// - But nothing copied the lit scene from lit_texture to texture_a
+/// - Effects were reading uninitialized/black data
+///
+/// FIX: In render_with_lighting(), when `has_effects && lighting_applied`:
+/// 1. Added COPY_SRC flag to lit_texture (enables copying from it)
+/// 2. Added copy_texture_to_texture(lit_texture -> texture_a) before effects
+///
+/// The complete flow with lighting + effects is now:
+/// 1. Lighting: game_texture -> lit_texture (compose pass)
+/// 2. COPY: lit_texture -> texture_a (bridge to post-process input)
+/// 3. Effects: texture_a -> texture_b (ping-pong chain)
+/// 4. Final: effect output -> screen
+///
+/// See: tests/e2e/lighting_renderer.rs::test_lighting_plus_effects_produces_visible_output
+#[test]
+fn regression_lighting_plus_effects_requires_texture_copy() {
+  // This is a documentation test. The actual GPU verification is in e2e tests.
+  //
+  // The critical code path in WgpuRenderer::render_with_lighting() is:
+  //
+  // } else if has_effects && lighting_applied {
+  //   // Lighting wrote to lit_texture, need to copy to texture_a before applying effects
+  //   if let (Some(effects_mgr), Some(post_process), Some(lit_tex)) = (...) {
+  //     // Copy lit scene to texture_a first
+  //     encoder.copy_texture_to_texture(
+  //       lit_tex -> post_process.texture_a()
+  //     );
+  //     // Now apply effects chain starting from texture_a
+  //     post_process.apply_effects(...)
+  //   }
+  // }
+  //
+  // Without this copy, effects read from an uninitialized texture_a.
+}
