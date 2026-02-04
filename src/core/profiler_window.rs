@@ -4,6 +4,8 @@
 //! and profiling statistics using puffin data. It uses a simple CPU renderer
 //! that's independent of the main game's rendering pipeline.
 
+#![cfg(feature = "profiler")]
+
 use std::sync::Arc;
 
 use winit::event::WindowEvent;
@@ -17,8 +19,33 @@ mod colors {
   pub const TEXT_DIM: [u8; 4] = [150, 150, 150, 255];
   pub const HEADER_BG: [u8; 4] = [45, 45, 45, 255];
   pub const DIVIDER: [u8; 4] = [60, 60, 60, 255];
+  pub const SECTION_BG: [u8; 4] = [40, 40, 40, 255];
 
-  // Scope colors (cycle through these for different scopes)
+  // CPU scope colors (blue/cyan tones)
+  pub const CPU_COLORS: [[u8; 4]; 6] = [
+    [86, 156, 214, 255],  // Blue
+    [78, 201, 176, 255],  // Teal
+    [156, 220, 254, 255], // Cyan
+    [100, 149, 237, 255], // Cornflower
+    [70, 130, 180, 255],  // Steel blue
+    [135, 206, 235, 255], // Sky blue
+  ];
+
+  // GPU scope colors (green/orange tones)
+  pub const GPU_COLORS: [[u8; 4]; 6] = [
+    [184, 215, 163, 255], // Green
+    [220, 220, 170, 255], // Yellow
+    [206, 145, 120, 255], // Orange
+    [244, 135, 113, 255], // Red-orange
+    [255, 193, 37, 255],  // Golden
+    [152, 251, 152, 255], // Pale green
+  ];
+
+  // Section header colors
+  pub const CPU_HEADER: [u8; 4] = [60, 80, 100, 255];
+  pub const GPU_HEADER: [u8; 4] = [80, 100, 60, 255];
+
+  // Legacy scope colors (for scopes without prefix)
   pub const SCOPE_COLORS: [[u8; 4]; 8] = [
     [86, 156, 214, 255],  // Blue
     [78, 201, 176, 255],  // Teal
@@ -37,7 +64,6 @@ struct ScopeEntry {
   name: String,
   duration_ns: u64,
   depth: usize,
-  #[allow(dead_code)] // Reserved for future timeline view
   start_ns: u64,
 }
 
@@ -440,7 +466,7 @@ impl ProfilerWindow {
 
     // Draw tooltip if hovering
     if let Some(ref scope_name) = self.hovered_scope.clone() {
-      self.draw_tooltip(scope_name);
+      self.draw_tooltip(&scope_name);
     }
 
     // Upload and present
@@ -510,17 +536,12 @@ impl ProfilerWindow {
       self.scope_age.insert(scope.name.clone(), 0);
 
       // Update or insert into display_scopes
-      if let Some(existing) = self
-        .display_scopes
-        .iter_mut()
-        .find(|s| s.name == scope.name)
-      {
+      if let Some(existing) = self.display_scopes.iter_mut().find(|s| s.name == scope.name) {
         // Use smoothed update: blend toward new value
         // This keeps scopes visible even when they intermittently have 0 duration
         if scope.duration_ns > 0 {
           // Blend toward the new non-zero value
-          existing.duration_ns =
-            ((existing.duration_ns as f64 * 0.5) + (scope.duration_ns as f64 * 0.5)) as u64;
+          existing.duration_ns = ((existing.duration_ns as f64 * 0.5) + (scope.duration_ns as f64 * 0.5)) as u64;
         }
         // Always keep at least some minimum display duration so scope stays visible
         existing.duration_ns = existing.duration_ns.max(1000); // 1 microsecond minimum
@@ -546,11 +567,7 @@ impl ProfilerWindow {
 
     // Remove scopes that have been absent for very long (60 frames = 6 seconds at 10 FPS)
     self.display_scopes.retain(|s| {
-      self
-        .scope_age
-        .get(&s.name)
-        .map(|&age| age < 60)
-        .unwrap_or(false)
+      self.scope_age.get(&s.name).map(|&age| age < 60).unwrap_or(false)
     });
     self.scope_age.retain(|_, age| *age < 60);
 
@@ -575,29 +592,31 @@ impl ProfilerWindow {
       }
     };
 
-    for scope in reader.flatten() {
-      // Get scope name from the scope collection
-      let name = scope_collection
-        .fetch_by_id(&scope.id)
-        .map(|details| details.name().to_string())
-        .unwrap_or_else(|| format!("scope_{}", scope.id.0));
+    for scope_result in reader {
+      if let Ok(scope) = scope_result {
+        // Get scope name from the scope collection
+        let name = scope_collection
+          .fetch_by_id(&scope.id)
+          .map(|details| details.name().to_string())
+          .unwrap_or_else(|| format!("scope_{}", scope.id.0));
 
-      scopes.push(ScopeEntry {
-        name,
-        duration_ns: scope.record.duration_ns as u64,
-        depth,
-        start_ns: scope.record.start_ns as u64,
-      });
+        scopes.push(ScopeEntry {
+          name,
+          duration_ns: scope.record.duration_ns as u64,
+          depth,
+          start_ns: scope.record.start_ns as u64,
+        });
 
-      // Recursively collect child scopes
-      if scope.child_begin_position < scope.child_end_position {
-        Self::collect_scopes_recursive(
-          stream,
-          scope.child_begin_position,
-          depth + 1,
-          scope_collection,
-          scopes,
-        );
+        // Recursively collect child scopes
+        if scope.child_begin_position < scope.child_end_position {
+          Self::collect_scopes_recursive(
+            stream,
+            scope.child_begin_position,
+            depth + 1,
+            scope_collection,
+            scopes,
+          );
+        }
       }
     }
   }
@@ -635,7 +654,13 @@ impl ProfilerWindow {
     self.draw_text(&text, 10, 8, colors::TEXT);
 
     // Draw divider
-    self.fill_rect(0, header_height - 1, self.width as i32, 1, colors::DIVIDER);
+    self.fill_rect(
+      0,
+      header_height - 1,
+      self.width as i32,
+      1,
+      colors::DIVIDER,
+    );
   }
 
   /// Draw the footer with scope count and help.
@@ -645,13 +670,7 @@ impl ProfilerWindow {
     let padding = 10;
 
     // Draw footer background
-    self.fill_rect(
-      0,
-      footer_y,
-      self.width as i32,
-      footer_height,
-      colors::HEADER_BG,
-    );
+    self.fill_rect(0, footer_y, self.width as i32, footer_height, colors::HEADER_BG);
 
     // Draw divider at top of footer
     self.fill_rect(0, footer_y, self.width as i32, 1, colors::DIVIDER);
@@ -662,21 +681,17 @@ impl ProfilerWindow {
       let text = format!("{} scope(s) | Hover for details", scope_count);
       self.draw_text(&text, padding, footer_y + 6, colors::TEXT_DIM);
     } else if self.has_received_data {
-      self.draw_text(
-        "Add profile_function!() to see more data",
-        padding,
-        footer_y + 6,
-        colors::TEXT_DIM,
-      );
+      self.draw_text("Add profile_function!() to see more data", padding, footer_y + 6, colors::TEXT_DIM);
     }
   }
 
-  /// Draw the flamegraph.
+  /// Draw the flamegraph with CPU and GPU sections.
   fn draw_flamegraph(&mut self) {
     let header_height = 30;
     let padding = 10;
     let bar_height = 20;
     let bar_spacing = 2;
+    let section_header_height = 22;
 
     if self.display_scopes.is_empty() || self.display_frame_duration_ns == 0 {
       let mut y = header_height + padding;
@@ -685,12 +700,7 @@ impl ProfilerWindow {
       // Show different messages based on state
       if !self.has_received_data && self.frames_without_data < 180 {
         // First ~3 seconds: show waiting message
-        self.draw_text(
-          "Waiting for profiling data...",
-          padding,
-          y,
-          colors::TEXT_DIM,
-        );
+        self.draw_text("Waiting for profiling data...", padding, y, colors::TEXT_DIM);
       } else {
         // After 3 seconds of no data: show setup instructions
         self.draw_text("No profiling data detected", padding, y, colors::TEXT);
@@ -701,34 +711,19 @@ impl ProfilerWindow {
 
         self.draw_text("1. Add to your functions:", padding, y, colors::TEXT_DIM);
         y += line_height;
-        self.draw_text(
-          "   profile_function!()",
-          padding + 20,
-          y,
-          colors::SCOPE_COLORS[0],
-        );
+        self.draw_text("   profile_scope!(\"cpu:name\")", padding + 20, y, colors::CPU_COLORS[0]);
         y += line_height * 2;
 
-        self.draw_text("2. Or for specific scopes:", padding, y, colors::TEXT_DIM);
+        self.draw_text("2. For GPU scopes:", padding, y, colors::TEXT_DIM);
         y += line_height;
-        self.draw_text(
-          "   profile_scope!(\"name\")",
-          padding + 20,
-          y,
-          colors::SCOPE_COLORS[1],
-        );
+        self.draw_text("   profile_scope!(\"gpu:name\")", padding + 20, y, colors::GPU_COLORS[0]);
         y += line_height * 2;
 
         self.draw_text("Example:", padding, y, colors::TEXT_DIM);
         y += line_height;
         self.draw_text("  fn update() {", padding, y, colors::TEXT_DIM);
         y += line_height;
-        self.draw_text(
-          "    profile_function!()",
-          padding + 20,
-          y,
-          colors::SCOPE_COLORS[0],
-        );
+        self.draw_text("    profile_scope!(\"cpu:physics\")", padding + 20, y, colors::CPU_COLORS[0]);
         y += line_height;
         self.draw_text("    // your code here", padding + 20, y, colors::TEXT_DIM);
         y += line_height;
@@ -750,15 +745,126 @@ impl ProfilerWindow {
     // Reset hovered scope
     self.hovered_scope = None;
 
-    // Show all scopes
-    let scopes: Vec<_> = self.display_scopes.clone();
+    // Separate scopes by category (cpu:, gpu:, or uncategorized)
+    let mut cpu_scopes: Vec<_> = Vec::new();
+    let mut gpu_scopes: Vec<_> = Vec::new();
+    let mut other_scopes: Vec<_> = Vec::new();
 
+    for scope in &self.display_scopes {
+      if scope.name.starts_with("cpu:") {
+        cpu_scopes.push(scope.clone());
+      } else if scope.name.starts_with("gpu:") {
+        gpu_scopes.push(scope.clone());
+      } else {
+        other_scopes.push(scope.clone());
+      }
+    }
+
+    let mut current_y = header_height + padding;
+
+    // Draw CPU section if there are CPU scopes
+    if !cpu_scopes.is_empty() {
+      // Draw section header
+      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::CPU_HEADER);
+      self.draw_text("CPU", padding, current_y + 5, colors::TEXT);
+
+      // Calculate and show CPU time
+      let cpu_total_ns: u64 = cpu_scopes.iter().filter(|s| s.depth == 0).map(|s| s.duration_ns).sum();
+      let cpu_ms = cpu_total_ns as f64 / 1_000_000.0;
+      let cpu_text = format!("{:.2}ms", cpu_ms);
+      self.draw_text(&cpu_text, 50, current_y + 5, colors::TEXT_DIM);
+
+      current_y += section_header_height + 2;
+
+      // Draw CPU scopes
+      current_y = self.draw_scope_section(
+        &cpu_scopes,
+        current_y,
+        padding,
+        max_x,
+        bar_height,
+        bar_spacing,
+        graph_width,
+        frame_duration,
+        &colors::CPU_COLORS,
+      );
+
+      current_y += padding; // Space before next section
+    }
+
+    // Draw GPU section if there are GPU scopes
+    if !gpu_scopes.is_empty() {
+      // Draw section header
+      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::GPU_HEADER);
+      self.draw_text("GPU", padding, current_y + 5, colors::TEXT);
+
+      // Calculate and show GPU time
+      let gpu_total_ns: u64 = gpu_scopes.iter().filter(|s| s.depth == 0).map(|s| s.duration_ns).sum();
+      let gpu_ms = gpu_total_ns as f64 / 1_000_000.0;
+      let gpu_text = format!("{:.2}ms", gpu_ms);
+      self.draw_text(&gpu_text, 50, current_y + 5, colors::TEXT_DIM);
+
+      current_y += section_header_height + 2;
+
+      // Draw GPU scopes
+      current_y = self.draw_scope_section(
+        &gpu_scopes,
+        current_y,
+        padding,
+        max_x,
+        bar_height,
+        bar_spacing,
+        graph_width,
+        frame_duration,
+        &colors::GPU_COLORS,
+      );
+
+      current_y += padding;
+    }
+
+    // Draw uncategorized scopes if any (using legacy colors)
+    if !other_scopes.is_empty() {
+      // Draw section header
+      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::SECTION_BG);
+      self.draw_text("Other", padding, current_y + 5, colors::TEXT);
+      current_y += section_header_height + 2;
+
+      // Draw other scopes
+      self.draw_scope_section(
+        &other_scopes,
+        current_y,
+        padding,
+        max_x,
+        bar_height,
+        bar_spacing,
+        graph_width,
+        frame_duration,
+        &colors::SCOPE_COLORS,
+      );
+    }
+  }
+
+  /// Draw a section of scopes and return the new y position.
+  fn draw_scope_section(
+    &mut self,
+    scopes: &[ScopeEntry],
+    start_y: i32,
+    padding: i32,
+    max_x: i32,
+    bar_height: i32,
+    bar_spacing: i32,
+    graph_width: f64,
+    frame_duration: f64,
+    color_palette: &[[u8; 4]],
+  ) -> i32 {
     // Track x position for each depth level to stack bars side-by-side
     let mut depth_x: std::collections::HashMap<usize, i32> = std::collections::HashMap::new();
+    let mut max_y = start_y;
 
     // Draw each scope as a bar
     for scope in scopes.iter() {
-      let y = header_height + padding + (scope.depth as i32 * (bar_height + bar_spacing));
+      let y = start_y + (scope.depth as i32 * (bar_height + bar_spacing));
+      max_y = max_y.max(y + bar_height);
 
       // Get current x position for this depth, defaulting to padding
       let x = *depth_x.get(&scope.depth).unwrap_or(&padding);
@@ -778,12 +884,18 @@ impl ProfilerWindow {
       // Update x position for next bar at this depth
       depth_x.insert(scope.depth, x + width + 2);
 
+      // Strip prefix from display name
+      let display_name = if scope.name.starts_with("cpu:") {
+        &scope.name[4..]
+      } else if scope.name.starts_with("gpu:") {
+        &scope.name[4..]
+      } else {
+        &scope.name
+      };
+
       // Choose color based on scope name hash for consistency
-      let name_hash: usize = scope
-        .name
-        .bytes()
-        .fold(0, |acc, b| acc.wrapping_add(b as usize));
-      let color = colors::SCOPE_COLORS[name_hash % colors::SCOPE_COLORS.len()];
+      let name_hash: usize = display_name.bytes().fold(0, |acc, b| acc.wrapping_add(b as usize));
+      let color = color_palette[name_hash % color_palette.len()];
 
       // Check if mouse is hovering over this bar
       let mouse_in_bar = self.mouse_x >= x as f32
@@ -795,7 +907,7 @@ impl ProfilerWindow {
       let draw_color = if mouse_in_bar {
         self.hovered_scope = Some(format!(
           "{}: {:.3}ms",
-          scope.name,
+          display_name,
           scope.duration_ns as f64 / 1_000_000.0
         ));
         [
@@ -814,13 +926,15 @@ impl ProfilerWindow {
       if width > 40 {
         let duration_ms = scope.duration_ns as f64 / 1_000_000.0;
         let label = if width > 100 {
-          format!("{} ({:.2}ms)", scope.name, duration_ms)
+          format!("{} ({:.2}ms)", display_name, duration_ms)
         } else {
-          scope.name.clone()
+          display_name.to_string()
         };
         self.draw_text_shadowed(&label, x + 4, y + 4, colors::TEXT);
       }
     }
+
+    max_y
   }
 
   /// Draw a tooltip near the mouse.
@@ -1029,126 +1143,48 @@ fn get_glyph(ch: char) -> Option<[u8; 12]> {
   // Simple ASCII subset - numbers, letters, and common punctuation
   match ch {
     ' ' => Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    '!' => Some([
-      0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x10, 0x10, 0, 0,
-    ]),
-    '(' => Some([
-      0x08, 0x10, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x10, 0x08, 0, 0,
-    ]),
-    ')' => Some([
-      0x20, 0x10, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x10, 0x20, 0, 0,
-    ]),
+    '!' => Some([0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x10, 0x10, 0, 0]),
+    '(' => Some([0x08, 0x10, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x10, 0x08, 0, 0]),
+    ')' => Some([0x20, 0x10, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x10, 0x20, 0, 0]),
     '-' => Some([0, 0, 0, 0, 0, 0x7C, 0, 0, 0, 0, 0, 0]),
     '.' => Some([0, 0, 0, 0, 0, 0, 0, 0, 0x18, 0x18, 0, 0]),
     ':' => Some([0, 0, 0x18, 0x18, 0, 0, 0, 0x18, 0x18, 0, 0, 0]),
-    '0' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    '1' => Some([
-      0x10, 0x30, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0,
-    ]),
-    '2' => Some([
-      0x38, 0x44, 0x04, 0x04, 0x08, 0x10, 0x20, 0x40, 0x44, 0x7C, 0, 0,
-    ]),
-    '3' => Some([
-      0x38, 0x44, 0x04, 0x04, 0x18, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
-    ]),
-    '4' => Some([
-      0x08, 0x18, 0x28, 0x28, 0x48, 0x48, 0x7C, 0x08, 0x08, 0x08, 0, 0,
-    ]),
-    '5' => Some([
-      0x7C, 0x40, 0x40, 0x78, 0x04, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
-    ]),
-    '6' => Some([
-      0x38, 0x44, 0x40, 0x40, 0x78, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    '7' => Some([
-      0x7C, 0x44, 0x04, 0x08, 0x08, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0,
-    ]),
-    '8' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x38, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    '9' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x3C, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
-    ]),
-    'A' | 'a' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'B' | 'b' => Some([
-      0x78, 0x44, 0x44, 0x44, 0x78, 0x44, 0x44, 0x44, 0x44, 0x78, 0, 0,
-    ]),
-    'C' | 'c' => Some([
-      0x38, 0x44, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x44, 0x38, 0, 0,
-    ]),
-    'D' | 'd' => Some([
-      0x78, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x78, 0, 0,
-    ]),
-    'E' | 'e' => Some([
-      0x7C, 0x40, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x40, 0x7C, 0, 0,
-    ]),
-    'F' | 'f' => Some([
-      0x7C, 0x40, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0,
-    ]),
-    'G' | 'g' => Some([
-      0x38, 0x44, 0x40, 0x40, 0x4C, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    'H' | 'h' => Some([
-      0x44, 0x44, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'I' | 'i' => Some([
-      0x38, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0,
-    ]),
-    'J' | 'j' => Some([
-      0x1C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x48, 0x48, 0x30, 0, 0,
-    ]),
-    'K' | 'k' => Some([
-      0x44, 0x48, 0x50, 0x60, 0x60, 0x50, 0x48, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'L' | 'l' => Some([
-      0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x7C, 0, 0,
-    ]),
-    'M' | 'm' => Some([
-      0x44, 0x6C, 0x54, 0x54, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'N' | 'n' => Some([
-      0x44, 0x64, 0x64, 0x54, 0x54, 0x4C, 0x4C, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'O' | 'o' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    'P' | 'p' => Some([
-      0x78, 0x44, 0x44, 0x44, 0x78, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0,
-    ]),
-    'Q' | 'q' => Some([
-      0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x54, 0x48, 0x44, 0x3A, 0, 0,
-    ]),
-    'R' | 'r' => Some([
-      0x78, 0x44, 0x44, 0x44, 0x78, 0x50, 0x48, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'S' | 's' => Some([
-      0x38, 0x44, 0x40, 0x40, 0x38, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
-    ]),
-    'T' | 't' => Some([
-      0x7C, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0,
-    ]),
-    'U' | 'u' => Some([
-      0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
-    ]),
-    'V' | 'v' => Some([
-      0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x28, 0x28, 0x10, 0, 0,
-    ]),
-    'W' | 'w' => Some([
-      0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x54, 0x54, 0x6C, 0x44, 0, 0,
-    ]),
-    'X' | 'x' => Some([
-      0x44, 0x44, 0x28, 0x28, 0x10, 0x28, 0x28, 0x44, 0x44, 0x44, 0, 0,
-    ]),
-    'Y' | 'y' => Some([
-      0x44, 0x44, 0x44, 0x28, 0x28, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0,
-    ]),
-    'Z' | 'z' => Some([
-      0x7C, 0x04, 0x04, 0x08, 0x10, 0x20, 0x40, 0x40, 0x40, 0x7C, 0, 0,
-    ]),
+    '0' => Some([0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
+    '1' => Some([0x10, 0x30, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0]),
+    '2' => Some([0x38, 0x44, 0x04, 0x04, 0x08, 0x10, 0x20, 0x40, 0x44, 0x7C, 0, 0]),
+    '3' => Some([0x38, 0x44, 0x04, 0x04, 0x18, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0]),
+    '4' => Some([0x08, 0x18, 0x28, 0x28, 0x48, 0x48, 0x7C, 0x08, 0x08, 0x08, 0, 0]),
+    '5' => Some([0x7C, 0x40, 0x40, 0x78, 0x04, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0]),
+    '6' => Some([0x38, 0x44, 0x40, 0x40, 0x78, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
+    '7' => Some([0x7C, 0x44, 0x04, 0x08, 0x08, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0]),
+    '8' => Some([0x38, 0x44, 0x44, 0x44, 0x38, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
+    '9' => Some([0x38, 0x44, 0x44, 0x44, 0x3C, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0]),
+    'A' | 'a' => Some([0x38, 0x44, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0]),
+    'B' | 'b' => Some([0x78, 0x44, 0x44, 0x44, 0x78, 0x44, 0x44, 0x44, 0x44, 0x78, 0, 0]),
+    'C' | 'c' => Some([0x38, 0x44, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x44, 0x38, 0, 0]),
+    'D' | 'd' => Some([0x78, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x78, 0, 0]),
+    'E' | 'e' => Some([0x7C, 0x40, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x40, 0x7C, 0, 0]),
+    'F' | 'f' => Some([0x7C, 0x40, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0]),
+    'G' | 'g' => Some([0x38, 0x44, 0x40, 0x40, 0x4C, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
+    'H' | 'h' => Some([0x44, 0x44, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0]),
+    'I' | 'i' => Some([0x38, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0]),
+    'J' | 'j' => Some([0x1C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x48, 0x48, 0x30, 0, 0]),
+    'K' | 'k' => Some([0x44, 0x48, 0x50, 0x60, 0x60, 0x50, 0x48, 0x44, 0x44, 0x44, 0, 0]),
+    'L' | 'l' => Some([0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x7C, 0, 0]),
+    'M' | 'm' => Some([0x44, 0x6C, 0x54, 0x54, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0]),
+    'N' | 'n' => Some([0x44, 0x64, 0x64, 0x54, 0x54, 0x4C, 0x4C, 0x44, 0x44, 0x44, 0, 0]),
+    'O' | 'o' => Some([0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
+    'P' | 'p' => Some([0x78, 0x44, 0x44, 0x44, 0x78, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0]),
+    'Q' | 'q' => Some([0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x54, 0x48, 0x44, 0x3A, 0, 0]),
+    'R' | 'r' => Some([0x78, 0x44, 0x44, 0x44, 0x78, 0x50, 0x48, 0x44, 0x44, 0x44, 0, 0]),
+    'S' | 's' => Some([0x38, 0x44, 0x40, 0x40, 0x38, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0]),
+    'T' | 't' => Some([0x7C, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0]),
+    'U' | 'u' => Some([0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
+    'V' | 'v' => Some([0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x28, 0x28, 0x10, 0, 0]),
+    'W' | 'w' => Some([0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x54, 0x54, 0x6C, 0x44, 0, 0]),
+    'X' | 'x' => Some([0x44, 0x44, 0x28, 0x28, 0x10, 0x28, 0x28, 0x44, 0x44, 0x44, 0, 0]),
+    'Y' | 'y' => Some([0x44, 0x44, 0x44, 0x28, 0x28, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0]),
+    'Z' | 'z' => Some([0x7C, 0x04, 0x04, 0x08, 0x10, 0x20, 0x40, 0x40, 0x40, 0x7C, 0, 0]),
     '_' => Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0x7C, 0, 0]),
     _ => None, // Unknown character
   }

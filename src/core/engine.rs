@@ -490,7 +490,6 @@ impl Engine {
     None
   }
 
-  #[allow(clippy::too_many_arguments)]
   fn new(
     config: EngineConfig,
     game: Box<dyn Game>,
@@ -670,7 +669,7 @@ impl Engine {
 
     // Fixed timestep update loop with profile scope
     {
-      profile_scope!("update");
+      profile_scope!("cpu:update");
       while self
         .time
         .as_ref()
@@ -713,8 +712,7 @@ impl Engine {
       self.do_full_render_and_present();
 
       // Frame limit to target FPS (Windows doesn't enforce vsync on unfocused windows)
-      let target_frame_time =
-        std::time::Duration::from_secs_f64(1.0 / self.config.target_fps as f64);
+      let target_frame_time = std::time::Duration::from_secs_f64(1.0 / self.config.target_fps as f64);
       let elapsed = frame_start.elapsed();
       if elapsed < target_frame_time {
         std::thread::sleep(target_frame_time - elapsed);
@@ -737,7 +735,7 @@ impl Engine {
   fn do_full_render_and_present(&mut self) {
     // Render phase
     {
-      profile_scope!("render");
+      profile_scope!("cpu:render");
 
       // Get interpolation alpha for smooth rendering
       let alpha = self
@@ -792,7 +790,7 @@ impl Engine {
     self.smoothed_stats.update(&self.debug_stats);
 
     // Present phase
-    profile_scope!("present");
+    profile_scope!("gpu:present");
 
     // Take sprite_gpu, lighting, and trail_renderer out to avoid borrow conflicts
     let mut sprite_gpu = self.sprite_gpu.take();
@@ -877,25 +875,26 @@ impl Engine {
       let result = if has_gpu_sprites || has_trails || lighting_enabled {
         // Create callback closure that captures gpu, batch_collector, and trail_renderer
         let batch_collector = &self.batch_collector;
-        let gpu_callback =
-          |queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
-            // Render GPU sprites first
-            if has_gpu_sprites {
-              gpu.render_batches(queue, encoder, view, batch_collector);
-            }
-            // Render trails on top of sprites
-            if let Some(ref mut trails) = trail_renderer {
-              trails.render(
-                queue,
-                encoder,
-                view,
-                camera_pos,
-                camera_zoom,
-                time,
-                super::trail::TrailStyle::Solid,
-              );
-            }
-          };
+        let gpu_callback = |queue: &wgpu::Queue,
+                            encoder: &mut wgpu::CommandEncoder,
+                            view: &wgpu::TextureView| {
+          // Render GPU sprites first
+          if has_gpu_sprites {
+            gpu.render_batches(queue, encoder, view, batch_collector);
+          }
+          // Render trails on top of sprites
+          if let Some(ref mut trails) = trail_renderer {
+            trails.render(
+              queue,
+              encoder,
+              view,
+              camera_pos,
+              camera_zoom,
+              time,
+              super::trail::TrailStyle::Solid,
+            );
+          }
+        };
 
         // Create lighting callback if lighting is enabled
         if lighting_enabled {
@@ -1068,10 +1067,6 @@ impl Engine {
 
     // --- Tween System ---
     // Update all Tween components and apply to Transform (skip inactive pooled entities)
-    // Collect tween events to emit after the loop (to avoid borrow conflicts)
-    let mut tween_started_events = Vec::new();
-    let mut tween_completed_events = Vec::new();
-
     for entity in self.world.entities_with::<Tween>() {
       // Skip inactive pooled entities
       if self.world.has::<super::ecs::Inactive>(entity) {
@@ -1093,240 +1088,11 @@ impl Engine {
         self.world.get_component_mut::<Transform>(entity),
         self.world.get_component_mut::<Tween>(entity),
       ) {
-        // Capture renderable start values before first update if tween has color targets
-        let has_color = tween.has_color_targets();
-        if has_color
-          && !tween.has_started()
-          && let Some(renderable) = self.world.get_component::<super::ecs::Renderable>(entity)
-        {
-          tween.capture_start_renderable(renderable.alpha, renderable.tint);
-        }
-
         tween.update(_dt, &mut transform);
-
-        // Apply color/alpha tweening to Renderable if targets are set
-        if has_color
-          && let Some(mut renderable) = self
-            .world
-            .get_component_mut::<super::ecs::Renderable>(entity)
-        {
-          if let Some(alpha) = tween.current_alpha() {
-            renderable.alpha = alpha;
-          }
-          if let Some(tint) = tween.current_tint() {
-            renderable.tint = tint;
-          }
-        }
-
-        // Collect events for emission after the loop
-        if tween.just_started {
-          tween_started_events.push(entity);
-        }
-        if tween.just_finished {
-          tween_completed_events.push((entity, tween.is_finished()));
-        }
         // Note: Tweens only modify Transform (position/scale/rotation), NOT z_order.
         // No need to dirty the render cache - it only needs rebuilding when
         // entities are spawned/despawned or z_order changes.
       }
-    }
-
-    // Emit tween events
-    for entity in tween_started_events {
-      self.events.emit(super::events::TweenStarted { entity });
-    }
-    for (entity, finished) in tween_completed_events {
-      self
-        .events
-        .emit(super::events::TweenCompleted { entity, finished });
-    }
-
-    // --- Tween Sequence System ---
-    // Update TweenSequence components (skip inactive pooled entities)
-    for entity in self.world.entities_with::<super::ecs::TweenSequence>() {
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-
-      // Check if sequence is playing
-      let should_update = self
-        .world
-        .get_component::<super::ecs::TweenSequence>(entity)
-        .is_some_and(|s| s.playing && !s.is_empty());
-
-      if !should_update {
-        continue;
-      }
-
-      // Get transform and sequence together
-      if let (Some(mut transform), Some(mut sequence)) = (
-        self.world.get_component_mut::<Transform>(entity),
-        self
-          .world
-          .get_component_mut::<super::ecs::TweenSequence>(entity),
-      ) {
-        sequence.just_finished = false;
-
-        // Get current tween and update it
-        if let Some(tween) = sequence.current_mut() {
-          // Capture renderable start values if needed
-          let has_color = tween.has_color_targets();
-          if has_color
-            && !tween.has_started()
-            && let Some(renderable) = self.world.get_component::<super::ecs::Renderable>(entity)
-          {
-            tween.capture_start_renderable(renderable.alpha, renderable.tint);
-          }
-
-          tween.update(_dt, &mut transform);
-
-          // Apply color/alpha to Renderable
-          if has_color
-            && let Some(mut renderable) = self
-              .world
-              .get_component_mut::<super::ecs::Renderable>(entity)
-          {
-            if let Some(alpha) = tween.current_alpha() {
-              renderable.alpha = alpha;
-            }
-            if let Some(tint) = tween.current_tint() {
-              renderable.tint = tint;
-            }
-          }
-
-          // If current tween finished, advance to next
-          if tween.just_finished {
-            sequence.advance();
-          }
-        }
-      }
-    }
-
-    // --- Knockback System ---
-    // Update Knockback components and apply velocity to entities
-    let mut knockback_started_events = Vec::new();
-    let mut knockback_finished_events = Vec::new();
-
-    for entity in self.world.entities_with::<super::ecs::Knockback>() {
-      // Skip inactive pooled entities
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-
-      // Check if knockback is active
-      let should_update = self
-        .world
-        .get_component::<super::ecs::Knockback>(entity)
-        .is_some_and(|kb| kb.active);
-
-      if !should_update {
-        continue;
-      }
-
-      // Get knockback component
-      if let Some(mut knockback) = self
-        .world
-        .get_component_mut::<super::ecs::Knockback>(entity)
-      {
-        // Get velocity before update (to apply this frame)
-        let (vel_x, vel_y) = knockback.current_velocity();
-
-        // Update knockback (decay strength)
-        knockback.update(_dt);
-
-        // Collect events
-        if knockback.just_started {
-          knockback_started_events.push(entity);
-        }
-        if knockback.just_finished {
-          knockback_finished_events.push(entity);
-        }
-
-        // Apply knockback displacement directly to Transform
-        // This works for both simple and physics entities - knockback moves
-        // the entity directly rather than going through velocity
-        if let Some(mut transform) = self
-          .world
-          .get_component_mut::<super::ecs::Transform>(entity)
-        {
-          transform.x += vel_x * _dt;
-          transform.y += vel_y * _dt;
-        }
-      }
-    }
-
-    // Emit knockback events
-    for entity in knockback_started_events {
-      self.events.emit(super::events::KnockbackStarted { entity });
-    }
-    for entity in knockback_finished_events {
-      self
-        .events
-        .emit(super::events::KnockbackFinished { entity });
-    }
-
-    // --- Squash/Stretch System ---
-    // Update SquashStretch components and apply scale to entities
-    let mut squash_started_events = Vec::new();
-    let mut squash_finished_events = Vec::new();
-
-    for entity in self.world.entities_with::<super::ecs::SquashStretch>() {
-      // Skip inactive pooled entities
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-
-      // Get current transform scale to capture base scale
-      let current_scale = self
-        .world
-        .get_component::<super::ecs::Transform>(entity)
-        .map(|t| (t.scale_x, t.scale_y));
-
-      // Update squash/stretch component
-      if let Some(mut squash) = self
-        .world
-        .get_component_mut::<super::ecs::SquashStretch>(entity)
-      {
-        // Capture base scale from transform if not already set
-        if let Some((sx, sy)) = current_scale {
-          squash.capture_base_scale(sx, sy);
-        }
-
-        // Update (decay strength)
-        squash.update(_dt);
-
-        // Collect events
-        if squash.just_started {
-          squash_started_events.push(entity);
-        }
-        if squash.just_finished {
-          squash_finished_events.push(entity);
-        }
-
-        // Get the scale to apply
-        let (scale_x, scale_y) = squash.current_scale();
-
-        // Apply scale to transform
-        if let Some(mut transform) = self
-          .world
-          .get_component_mut::<super::ecs::Transform>(entity)
-        {
-          transform.scale_x = scale_x;
-          transform.scale_y = scale_y;
-        }
-      }
-    }
-
-    // Emit squash/stretch events
-    for entity in squash_started_events {
-      self
-        .events
-        .emit(super::events::SquashStretchStarted { entity });
-    }
-    for entity in squash_finished_events {
-      self
-        .events
-        .emit(super::events::SquashStretchFinished { entity });
     }
 
     // --- Game Logic Update ---
@@ -1364,27 +1130,6 @@ impl Engine {
     // This must happen after user update (so local transforms are set) and
     // before rendering (so WorldTransform is current).
     self.world.propagate_transforms();
-
-    // --- Trail System ---
-    // Update trail components: age points, add new positions, remove expired points.
-    // Trails always age (for fade-out effects), but only record new points when enabled.
-    for entity in self.world.entities_with::<Trail2D>() {
-      // Skip inactive pooled entities
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-      // Get position from Transform if available, otherwise use (0,0)
-      // Position only matters when trail is enabled (recording), so fade-out
-      // trails without a Transform still work correctly.
-      let (x, y) = if let Some(transform) = self.world.get_component::<Transform>(entity) {
-        (transform.x, transform.y)
-      } else {
-        (0.0, 0.0) // Fade-out trails don't need a position
-      };
-      if let Some(mut trail) = self.world.get_component_mut::<Trail2D>(entity) {
-        trail.update(x, y, _dt);
-      }
-    }
 
     // --- Post-Process Effects ---
     // Update timed post-process effects
@@ -1492,7 +1237,7 @@ impl Engine {
     self.physics.sync_velocities_from_ecs(&self.world);
 
     // Step the physics simulation
-    profile_scope!("physics_step");
+    profile_scope!("cpu:physics");
     let gravity = self.config.physics.gravity;
     self.physics.step(gravity);
 
@@ -1669,7 +1414,7 @@ impl Engine {
               let offset_y = ((new_height as i32 - src_height as i32) / 2) as f32 * final_scale_y;
 
               let transformed_sprite = Sprite::from_rgba(transformed_data, new_width, new_height);
-              transformed_sprite.draw_rotated_tinted(
+              transformed_sprite.draw_rotated(
                 frame,
                 frame_width,
                 frame_height,
@@ -1680,14 +1425,12 @@ impl Engine {
                 rotation_deg,
                 renderable.flip_x,
                 renderable.flip_y,
-                renderable.alpha,
-                renderable.tint,
               );
             });
           } else {
-            // No shader - draw with tint/alpha support
+            // No shader - draw normally
             renderable.sprite.with_sprite(|sprite| {
-              sprite.draw_rotated_tinted(
+              sprite.draw_rotated(
                 frame,
                 frame_width,
                 frame_height,
@@ -1698,8 +1441,6 @@ impl Engine {
                 rotation_deg,
                 renderable.flip_x,
                 renderable.flip_y,
-                renderable.alpha,
-                renderable.tint,
               );
             });
           }
@@ -1756,7 +1497,7 @@ impl Engine {
             let final_scale_y = scale_y * self.camera.zoom;
 
             renderable.sprite.with_sprite(|sprite| {
-              sprite.draw_rotated_tinted(
+              sprite.draw_rotated(
                 frame,
                 frame_width,
                 frame_height,
@@ -1767,8 +1508,6 @@ impl Engine {
                 rotation_deg,
                 renderable.flip_x,
                 renderable.flip_y,
-                renderable.alpha,
-                renderable.tint,
               );
             });
           }
@@ -2092,16 +1831,16 @@ impl ApplicationHandler for Engine {
 
     // Create profiler window if puffin profiling is enabled
     #[cfg(feature = "profiler")]
-    if self.config.debug.puffin_profiler
-      && let Some(ref renderer) = self.renderer
-    {
-      self.profiler_window = super::profiler_window::ProfilerWindow::new(
-        event_loop,
-        renderer.device_arc(),
-        renderer.queue_arc(),
-        renderer.instance(),
-        renderer.adapter(),
-      );
+    if self.config.debug.puffin_profiler {
+      if let Some(ref renderer) = self.renderer {
+        self.profiler_window = super::profiler_window::ProfilerWindow::new(
+          event_loop,
+          renderer.device_arc(),
+          renderer.queue_arc(),
+          renderer.instance(),
+          renderer.adapter(),
+        );
+      }
     }
 
     // Call game init if not already initialized
@@ -2136,37 +1875,32 @@ impl ApplicationHandler for Engine {
   }
 
   #[allow(unused_variables)] // window_id used only when profiler feature is enabled
-  fn window_event(
-    &mut self,
-    event_loop: &ActiveEventLoop,
-    window_id: WindowId,
-    event: WindowEvent,
-  ) {
+  fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
     // Check if this event is for the profiler window
     #[cfg(feature = "profiler")]
     {
-      if let Some(ref mut profiler) = self.profiler_window
-        && window_id == profiler.window_id()
-      {
-        // Handle profiler window events
-        match &event {
-          WindowEvent::CloseRequested => {
-            // Close profiler window but don't exit the app
-            self.profiler_window = None;
-            return;
-          }
-          WindowEvent::RedrawRequested => {
-            profiler.render();
-            return;
-          }
-          WindowEvent::Focused(focused) => {
-            // Track profiler window focus separately
-            self.profiler_window_focused = *focused;
-            return;
-          }
-          _ => {
-            profiler.handle_event(&event);
-            return;
+      if let Some(ref mut profiler) = self.profiler_window {
+        if window_id == profiler.window_id() {
+          // Handle profiler window events
+          match &event {
+            WindowEvent::CloseRequested => {
+              // Close profiler window but don't exit the app
+              self.profiler_window = None;
+              return;
+            }
+            WindowEvent::RedrawRequested => {
+              profiler.render();
+              return;
+            }
+            WindowEvent::Focused(focused) => {
+              // Track profiler window focus separately
+              self.profiler_window_focused = *focused;
+              return;
+            }
+            _ => {
+              profiler.handle_event(&event);
+              return;
+            }
           }
         }
       }
@@ -2185,14 +1919,12 @@ impl ApplicationHandler for Engine {
         {
           // Don't capture control characters (backspace, enter, etc.)
           // These are handled separately as key presses
-          // Also skip when Ctrl, Alt, or Super/Cmd is held (for shortcuts like Ctrl+A, Cmd+C)
+          // Also skip when Ctrl or Alt is held (for shortcuts like Ctrl+A, Ctrl+C)
           let ctrl_held =
             self.input.key_down(KeyCode::ControlLeft) || self.input.key_down(KeyCode::ControlRight);
           let alt_held =
             self.input.key_down(KeyCode::AltLeft) || self.input.key_down(KeyCode::AltRight);
-          let super_held =
-            self.input.key_down(KeyCode::SuperLeft) || self.input.key_down(KeyCode::SuperRight);
-          if !ctrl_held && !alt_held && !super_held && !text.chars().all(|c| c.is_control()) {
+          if !ctrl_held && !alt_held && !text.chars().all(|c| c.is_control()) {
             self.input.handle_text_input(text);
           }
         }
@@ -2374,7 +2106,7 @@ impl ApplicationHandler for Engine {
         // Use a block to limit the profile_scope lifetime
         let mut did_update = false;
         {
-          profile_scope!("update");
+          profile_scope!("cpu:update");
           let update_start = if self.profiling_enabled {
             Some(std::time::Instant::now())
           } else {
@@ -2444,7 +2176,7 @@ impl ApplicationHandler for Engine {
         // Render with interpolation alpha
         // Use a block to limit the profile_scope lifetime
         {
-          profile_scope!("render");
+          profile_scope!("cpu:render");
           let render_start = if self.profiling_enabled {
             Some(std::time::Instant::now())
           } else {
@@ -2511,7 +2243,7 @@ impl ApplicationHandler for Engine {
 
         // Actually draw to screen with post-processing effects, lighting, and GPU sprites
         // Take sprite_gpu, lighting, and trail_renderer out to avoid borrow conflicts with renderer
-        profile_scope!("present");
+        profile_scope!("gpu:present");
         let present_start = if self.profiling_enabled {
           Some(std::time::Instant::now())
         } else {
@@ -2527,18 +2259,14 @@ impl ApplicationHandler for Engine {
           trails.begin_frame();
 
           // Add Trail2D components (skip inactive pooled entities)
-          // Trails store absolute positions, so Transform is optional (used as dummy for trails without one)
-          let dummy_transform = Transform::default();
           for entity in self.world.entities_with::<Trail2D>() {
             if self.world.has::<super::ecs::Inactive>(entity) {
               continue;
             }
-            if let Some(trail) = self.world.get_component::<Trail2D>(entity) {
-              let transform = self
-                .world
-                .get_component::<Transform>(entity)
-                .map(|t| (*t).clone())
-                .unwrap_or_else(|| dummy_transform.clone());
+            if let (Some(trail), Some(transform)) = (
+              self.world.get_component::<Trail2D>(entity),
+              self.world.get_component::<Transform>(entity),
+            ) {
               trails.add_trail(&trail, &transform);
             }
           }
@@ -2720,10 +2448,10 @@ impl ApplicationHandler for Engine {
         // Render profiler window directly when game window has focus
         // (Windows won't deliver RedrawRequested to unfocused profiler window)
         #[cfg(feature = "profiler")]
-        if self.game_window_focused
-          && let Some(ref mut profiler) = self.profiler_window
-        {
-          profiler.render();
+        if self.game_window_focused {
+          if let Some(ref mut profiler) = self.profiler_window {
+            profiler.render();
+          }
         }
 
         // Calculate total frame time and FPS
@@ -2818,17 +2546,17 @@ impl ApplicationHandler for Engine {
 
     // Only request redraws for windows that have focus
     // (unfocused windows are handled manually in tick_frame to respect frame limiting)
-    if self.game_window_focused
-      && let Some(window) = &self.window
-    {
-      window.request_redraw();
+    if self.game_window_focused {
+      if let Some(window) = &self.window {
+        window.request_redraw();
+      }
     }
 
     #[cfg(feature = "profiler")]
-    if self.profiler_window_focused
-      && let Some(ref profiler) = self.profiler_window
-    {
-      profiler.request_redraw();
+    if self.profiler_window_focused {
+      if let Some(ref profiler) = self.profiler_window {
+        profiler.request_redraw();
+      }
     }
   }
 }
@@ -3059,9 +2787,6 @@ impl EngineBuilder {
   /// If system.json doesn't exist, it will be created from the developer
   /// defaults in Ryo.toml's [system] section combined with engine defaults.
   ///
-  /// If `ignore_system_json = true` is set in `Ryo.toml [system]`, this method
-  /// will use the Ryo.toml/engine defaults directly without loading system.json.
-  ///
   /// # Example
   ///
   /// ```rust,ignore
@@ -3073,44 +2798,29 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn with_system_state_overrides(mut self) -> Self {
-    if let Ok(workspace) = super::config::Workspace::discover() {
-      let system_defaults = &workspace.config().system;
+    if let Ok(workspace) = super::config::Workspace::discover()
+      && let Ok(save_manager) = workspace.create_save_manager()
+      && let Ok(mut system_state) = save_manager.load_or_create_system(&workspace.config().system)
+    {
+      // Migrate legacy fullscreen field if present
+      system_state.display.migrate_legacy();
 
-      // Check if we should ignore system.json
-      if system_defaults.ignore_system_json {
-        // Use Ryo.toml/engine defaults directly
-        self.config.width = system_defaults.resolution_width;
-        self.config.height = system_defaults.resolution_height;
-        self.config.display_mode = system_defaults.display_mode;
-        self.display_mode_set = true;
-        self.config.debug.show_fps = system_defaults.show_fps;
-        self.vsync = Some(system_defaults.vsync);
-        self.master_volume = system_defaults.master_volume;
-        self.music_volume = system_defaults.music_volume;
-        self.sfx_volume = system_defaults.sfx_volume;
-      } else if let Ok(save_manager) = workspace.create_save_manager()
-        && let Ok(mut system_state) = save_manager.load_or_create_system(system_defaults)
-      {
-        // Migrate legacy fullscreen field if present
-        system_state.display.migrate_legacy();
+      // Apply display overrides
+      self.config.width = system_state.display.width;
+      self.config.height = system_state.display.height;
+      self.config.display_mode = system_state.display.display_mode;
+      self.display_mode_set = true;
 
-        // Apply display overrides
-        self.config.width = system_state.display.width;
-        self.config.height = system_state.display.height;
-        self.config.display_mode = system_state.display.display_mode;
-        self.display_mode_set = true;
-
-        // Apply overrides if present
-        if let Some(show_fps) = system_state.show_fps {
-          self.config.debug.show_fps = show_fps;
-        }
-        // Store vsync preference to use when creating renderer
-        self.vsync = system_state.vsync;
-        // Store audio volumes to apply after AudioManager creation
-        self.master_volume = system_state.master_volume;
-        self.music_volume = system_state.music_volume;
-        self.sfx_volume = system_state.sfx_volume;
+      // Apply overrides if present
+      if let Some(show_fps) = system_state.show_fps {
+        self.config.debug.show_fps = show_fps;
       }
+      // Store vsync preference to use when creating renderer
+      self.vsync = system_state.vsync;
+      // Store audio volumes to apply after AudioManager creation
+      self.master_volume = system_state.master_volume;
+      self.music_volume = system_state.music_volume;
+      self.sfx_volume = system_state.sfx_volume;
     }
     self
   }
@@ -3122,9 +2832,6 @@ impl EngineBuilder {
   ///
   /// Unlike [`with_system_state_overrides`](Self::with_system_state_overrides), this method
   /// does NOT override the game's resolution - only the display mode and audio/vsync settings.
-  ///
-  /// If `ignore_system_json = true` is set in `Ryo.toml [system]`, this method
-  /// will use the Ryo.toml/engine defaults directly without loading system.json.
   ///
   /// # Example
   ///
@@ -3138,40 +2845,27 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn with_saved_display_mode(mut self) -> Self {
-    if let Ok(workspace) = super::config::Workspace::discover() {
-      let system_defaults = &workspace.config().system;
+    if let Ok(workspace) = super::config::Workspace::discover()
+      && let Ok(save_manager) = workspace.create_save_manager()
+      && let Ok(mut system_state) = save_manager.load_or_create_system(&workspace.config().system)
+    {
+      // Migrate legacy fullscreen field if present
+      system_state.display.migrate_legacy();
 
-      // Check if we should ignore system.json
-      if system_defaults.ignore_system_json {
-        // Use Ryo.toml/engine defaults directly (display mode only, not resolution)
-        self.config.display_mode = system_defaults.display_mode;
-        self.display_mode_set = true;
-        self.config.debug.show_fps = system_defaults.show_fps;
-        self.vsync = Some(system_defaults.vsync);
-        self.master_volume = system_defaults.master_volume;
-        self.music_volume = system_defaults.music_volume;
-        self.sfx_volume = system_defaults.sfx_volume;
-      } else if let Ok(save_manager) = workspace.create_save_manager()
-        && let Ok(mut system_state) = save_manager.load_or_create_system(system_defaults)
-      {
-        // Migrate legacy fullscreen field if present
-        system_state.display.migrate_legacy();
+      // Apply ONLY display mode - not resolution
+      self.config.display_mode = system_state.display.display_mode;
+      self.display_mode_set = true;
 
-        // Apply ONLY display mode - not resolution
-        self.config.display_mode = system_state.display.display_mode;
-        self.display_mode_set = true;
-
-        // Apply overrides if present
-        if let Some(show_fps) = system_state.show_fps {
-          self.config.debug.show_fps = show_fps;
-        }
-        // Store vsync preference to use when creating renderer
-        self.vsync = system_state.vsync;
-        // Store audio volumes to apply after AudioManager creation
-        self.master_volume = system_state.master_volume;
-        self.music_volume = system_state.music_volume;
-        self.sfx_volume = system_state.sfx_volume;
+      // Apply overrides if present
+      if let Some(show_fps) = system_state.show_fps {
+        self.config.debug.show_fps = show_fps;
       }
+      // Store vsync preference to use when creating renderer
+      self.vsync = system_state.vsync;
+      // Store audio volumes to apply after AudioManager creation
+      self.master_volume = system_state.master_volume;
+      self.music_volume = system_state.music_volume;
+      self.sfx_volume = system_state.sfx_volume;
     }
     self
   }

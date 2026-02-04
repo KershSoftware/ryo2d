@@ -30,10 +30,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   }
 
   if enable_profiler {
-    Output::status(
-      "Starting",
-      &format!("{} in dev mode with profiler...", project_name),
-    );
+    Output::status("Starting", &format!("{} in dev mode with profiler...", project_name));
     println!("           A separate profiler window will open with real-time flamegraphs.");
     println!();
   } else {
@@ -60,10 +57,12 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   // For now, just run cargo run (debug build)
   // Future: Add file watching with notify crate
-  let status = cmd.status().map_err(|e| CliError::CommandFailed {
-    command: "cargo run".to_string(),
-    message: e.to_string(),
-  })?;
+  let status = cmd
+    .status()
+    .map_err(|e| CliError::CommandFailed {
+      command: "cargo run".to_string(),
+      message: e.to_string(),
+    })?;
 
   if !status.success() {
     let code = status.code().unwrap_or(-1);

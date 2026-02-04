@@ -29,15 +29,191 @@ use std::time::Duration;
 
 use crate::profile_scope;
 
-use super::context::ContextCore;
+use super::asset::AssetManager;
+use super::audio::AudioManager;
+use super::config::save::DisplayMode;
+use super::ecs::World;
+use super::events::Events;
+use super::game::{TimeControl, WindowRequest};
 use super::graphics::Camera;
+use super::input::InputState;
+use super::lighting::LightingRenderer;
+use super::shaders::EffectsManager;
 use super::ui::UiContext;
 
 /// Context passed to scene callbacks, providing access to engine systems.
 ///
-/// This is a type alias for [`ContextCore`], ensuring the same methods are
-/// available in both [`GameContext`](super::game::GameContext) and `SceneContext`.
-pub type SceneContext<'a> = ContextCore<'a>;
+/// Similar to `GameContext` but designed for scene-based architecture.
+pub struct SceneContext<'a> {
+  /// The ECS world containing all entities and components
+  pub world: &'a mut World,
+  /// The camera for world-to-screen transformations
+  pub camera: &'a mut Camera,
+  /// Current input state (keyboard, mouse)
+  pub input: &'a InputState,
+  /// Asset manager for loading and caching resources
+  pub assets: &'a mut AssetManager,
+  /// Audio manager for sound effects and music (None if audio unavailable)
+  pub audio: &'a mut Option<AudioManager>,
+  /// Post-process effects manager for screen-wide visual effects
+  pub effects: &'a mut EffectsManager,
+  /// 2D lighting renderer for controlling ambient light and dynamic lights (None if lighting disabled)
+  pub lighting: &'a mut Option<LightingRenderer>,
+  /// Event bus for decoupled communication between systems.
+  ///
+  /// Use `events.emit()` to publish events and `events.read()` to subscribe.
+  /// Events are cleared at the start of each frame.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Emit a custom event
+  /// ctx.events.emit(EnemyDied { entity: enemy, score: 100 });
+  ///
+  /// // Read built-in collision events
+  /// for event in ctx.events.read::<CollisionStarted>() {
+  ///     if event.involves(player) {
+  ///         take_damage();
+  ///     }
+  /// }
+  /// ```
+  pub events: &'a mut Events,
+  /// Pending window configuration changes (resolution, display mode)
+  pub window_request: &'a mut WindowRequest,
+  /// Time control for slow-mo and hitstop effects
+  pub time_control: &'a mut TimeControl,
+  /// Whether detailed profiling is enabled (for timing warnings)
+  pub profiling_enabled: bool,
+}
+
+impl<'a> SceneContext<'a> {
+  /// Get the current screen/viewport dimensions.
+  ///
+  /// Returns `(width, height)` in pixels. This reflects the game's
+  /// logical resolution (from system.json > Ryo.toml > engine defaults).
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// let (width, height) = ctx.screen_size();
+  /// let center_x = width / 2.0;
+  /// let center_y = height / 2.0;
+  /// ```
+  pub fn screen_size(&self) -> (f32, f32) {
+    self.camera.viewport_size()
+  }
+
+  /// Get the screen width in pixels.
+  pub fn screen_width(&self) -> f32 {
+    self.camera.viewport_size().0
+  }
+
+  /// Get the screen height in pixels.
+  pub fn screen_height(&self) -> f32 {
+    self.camera.viewport_size().1
+  }
+
+  /// Request a display mode change (windowed, fullscreen, borderless).
+  ///
+  /// The change will be applied after the current frame completes.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_display_mode(DisplayMode::Fullscreen);
+  /// ```
+  pub fn request_display_mode(&mut self, mode: DisplayMode) {
+    self.window_request.display_mode = Some(mode);
+  }
+
+  /// Request a resolution change.
+  ///
+  /// The change will be applied after the current frame completes.
+  /// Note: In fullscreen mode, resolution changes may be limited to
+  /// available video modes.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_resolution(1920, 1080);
+  /// ```
+  pub fn request_resolution(&mut self, width: u32, height: u32) {
+    self.window_request.width = Some(width);
+    self.window_request.height = Some(height);
+  }
+
+  /// Request both resolution and display mode change.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.request_display_change(1920, 1080, DisplayMode::BorderlessFullscreen);
+  /// ```
+  pub fn request_display_change(&mut self, width: u32, height: u32, mode: DisplayMode) {
+    self.window_request.width = Some(width);
+    self.window_request.height = Some(height);
+    self.window_request.display_mode = Some(mode);
+  }
+
+  // ===========================================================================
+  // Time Control (Game Juice)
+  // ===========================================================================
+
+  /// Set the time scale for game logic, physics, and animations.
+  ///
+  /// - `0.0` = frozen (equivalent to pause)
+  /// - `1.0` = normal speed (default)
+  /// - `0.5` = half speed (slow-mo)
+  /// - `2.0` = double speed (fast-forward)
+  ///
+  /// Note: UI and input remain at real-time regardless of time scale.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Slow-mo during boss death
+  /// ctx.set_time_scale(0.3);
+  ///
+  /// // Return to normal after 2 seconds
+  /// // (use a timer in game code)
+  /// ctx.set_time_scale(1.0);
+  /// ```
+  pub fn set_time_scale(&mut self, scale: f32) {
+    self.time_control.time_scale = scale.max(0.0);
+  }
+
+  /// Get the current time scale.
+  pub fn time_scale(&self) -> f32 {
+    self.time_control.time_scale
+  }
+
+  /// Trigger a hitstop (freeze frame) effect for the given duration.
+  ///
+  /// During hitstop, game time is frozen (dt = 0) while UI and input
+  /// continue at real-time. Great for emphasizing impacts.
+  ///
+  /// # Arguments
+  ///
+  /// * `duration_secs` - How long to freeze, in seconds (e.g., 0.05 for 50ms)
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // On successful hit - 50ms freeze for impact
+  /// ctx.hitstop(0.05);
+  ///
+  /// // On critical hit - longer freeze
+  /// ctx.hitstop(0.1);
+  /// ```
+  pub fn hitstop(&mut self, duration_secs: f32) {
+    self.time_control.hitstop_remaining = duration_secs.max(0.0);
+  }
+
+  /// Check if a hitstop is currently active.
+  pub fn is_hitstop_active(&self) -> bool {
+    self.time_control.hitstop_remaining > 0.0
+  }
+}
 
 // ============================================================================
 // Transitions
@@ -516,7 +692,7 @@ impl SceneManager {
   /// The current top scene will have `on_pause()` called.
   /// The new scene will have `on_enter()` called.
   pub fn push(&mut self, scene: Box<dyn Scene>, ctx: &mut SceneContext) {
-    profile_scope!("scene_push");
+    profile_scope!("cpu:scene_push");
 
     // Pause current top scene
     if let Some(current) = self.scenes.last_mut() {
@@ -575,7 +751,7 @@ impl SceneManager {
   /// The new scene will have `on_enter()` called.
   /// Scenes below are unaffected.
   pub fn switch(&mut self, scene: Box<dyn Scene>, ctx: &mut SceneContext) {
-    profile_scope!("scene_switch");
+    profile_scope!("cpu:scene_switch");
 
     // Exit current top
     if let Some(mut current) = self.scenes.pop() {
@@ -1035,17 +1211,31 @@ impl SceneGame {
 
 impl Game for SceneGame {
   fn init(&mut self, ctx: &mut GameContext) {
-    // GameContext and SceneContext are both type aliases for ContextCore
+    // Convert GameContext to SceneContext and call on_enter for initial scene
+    let mut scene_ctx = SceneContext {
+      world: ctx.world,
+      camera: ctx.camera,
+      input: ctx.input,
+      assets: ctx.assets,
+      audio: ctx.audio,
+      effects: ctx.effects,
+      lighting: ctx.lighting,
+      events: ctx.events,
+      window_request: ctx.window_request,
+      time_control: ctx.time_control,
+      profiling_enabled: ctx.profiling_enabled,
+    };
+
     // Call on_enter for the initial scene
     if let Some(scene) = self.manager.top_mut() {
       #[cfg(debug_assertions)]
-      let start = if ctx.profiling_enabled {
+      let start = if scene_ctx.profiling_enabled {
         Some(std::time::Instant::now())
       } else {
         None
       };
 
-      scene.on_enter(ctx);
+      scene.on_enter(&mut scene_ctx);
 
       #[cfg(debug_assertions)]
       if let Some(start) = start {
@@ -1059,14 +1249,28 @@ impl Game for SceneGame {
   }
 
   fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-    // GameContext and SceneContext are both type aliases for ContextCore
+    // Convert GameContext to SceneContext
+    let mut scene_ctx = SceneContext {
+      world: ctx.world,
+      camera: ctx.camera,
+      input: ctx.input,
+      assets: ctx.assets,
+      audio: ctx.audio,
+      effects: ctx.effects,
+      lighting: ctx.lighting,
+      events: ctx.events,
+      window_request: ctx.window_request,
+      time_control: ctx.time_control,
+      profiling_enabled: ctx.profiling_enabled,
+    };
+
     // Update any active transitions first
-    self.manager.update_transition(dt, ctx);
+    self.manager.update_transition(dt, &mut scene_ctx);
 
     // Only update scenes if not in the middle of a transition
     if !self.manager.is_transitioning() {
-      let action = self.manager.update(ctx, dt);
-      let should_continue = self.manager.handle_action(action, ctx);
+      let action = self.manager.update(&mut scene_ctx, dt);
+      let should_continue = self.manager.handle_action(action, &mut scene_ctx);
       if !should_continue {
         self.quit_requested = true;
       }

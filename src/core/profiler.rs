@@ -53,7 +53,7 @@
 #[cfg(feature = "profiler")]
 macro_rules! profile_function {
   () => {
-    $crate::puffin::profile_function!();
+    ::puffin::profile_function!();
   };
 }
 
@@ -89,7 +89,7 @@ macro_rules! profile_function {
 #[cfg(feature = "profiler")]
 macro_rules! profile_scope {
   ($name:expr) => {
-    $crate::puffin::profile_scope!($name);
+    ::puffin::profile_scope!($name);
   };
 }
 

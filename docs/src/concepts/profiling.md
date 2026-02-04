@@ -167,48 +167,28 @@ When enabled, the engine:
 2. Instruments key engine systems (update, render, present, physics, scene transitions)
 3. Prints connection instructions to the console
 
-### Built-in Profiler Window
+### Viewing Profile Data
 
-When using `ryo2d dev --profiler`, a dedicated profiler window opens automatically alongside your game. No external tools required!
+When using `ryo2d dev --profiler`, the CLI automatically launches `puffin_viewer` if installed.
 
-The profiler window shows:
-- **Real-time flamegraph** - Color-coded bars showing where time is spent
-- **FPS and work time** - Actual frame rate and CPU work per frame
-- **Hover tooltips** - Mouse over any bar to see exact timing
-- **Setup hints** - If no profiling data appears, shows instrumentation examples
-
-#### Profiler Window Features
-
-| Feature | Description |
-|---------|-------------|
-| **Color-coded scopes** | Each scope gets a consistent color based on its name |
-| **Hierarchical depth** | Nested scopes appear on lower rows |
-| **Smooth display** | Bars fade gradually instead of flickering |
-| **Separate focus** | Game runs normally even when profiler window is focused |
-| **10 FPS refresh** | Throttled updates for stable, readable display |
-
-#### Reading the Profiler
-
-The header shows:
-- **FPS** - Actual frames per second (including vsync wait)
-- **Work time** - CPU time spent on game logic (excludes vsync)
-
-The flamegraph shows:
-- **Bar width** = Time spent (wider = more time)
-- **Bar depth** = Call nesting (top = outermost scope)
-- **Bar color** = Scope identity (same scope = same color)
-
-#### Alternative: External puffin_viewer
-
-If you prefer the external puffin viewer with frame history navigation:
+**First-time setup:**
 
 ```bash
-# First-time setup
 cargo install puffin_viewer
+```
 
-# Manual launch (profiler also starts HTTP server on port 8585)
+After installation, `puffin_viewer` will auto-launch when you run `ryo2d dev --profiler`.
+
+**Manual launch** (if needed):
+
+```bash
 puffin_viewer --url 127.0.0.1:8585
 ```
+
+The viewer shows:
+- **Hierarchical flamegraph** of where time is spent each frame
+- **Frame history** with timeline navigation
+- **Pause/resume** for inspecting specific frames
 
 ### Instrumenting Your Own Code
 
@@ -251,49 +231,6 @@ The engine automatically instruments these scopes:
 | `present` | GPU-bound, effects overhead, vsync |
 | `physics_step` | Too many colliders, complex shapes |
 | `scene_*` | Expensive asset loading in on_enter |
-
-### Troubleshooting the Profiler
-
-#### "No profiling data detected"
-
-The profiler window shows setup instructions when no scopes are found:
-
-1. **Check your code has profiling macros:**
-   ```rust
-   fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-       profile_function!();  // Add this!
-       // ... your code
-   }
-   ```
-
-2. **Verify profiler is enabled:**
-   - Use `ryo2d dev --profiler` (not just `cargo run`)
-   - Or set `puffin_profiler = true` in Ryo.toml AND use `--features profiler`
-
-3. **Wait a moment** - The profiler shows "Waiting for profiling data..." for the first few seconds
-
-#### Profiler window doesn't open
-
-1. Check console for `[Profiler] Window opened` message
-2. Window may be minimized or behind the game window
-3. Ensure you're using `ryo2d dev --profiler` (the `--profiler` flag is required)
-
-#### Bars are flickering or unstable
-
-This is normal for very fast scopes (sub-millisecond). The profiler smooths values but inherently fast operations will vary. Focus on the wider bars that represent significant work.
-
-#### FPS seems wrong
-
-The profiler shows **actual wall-clock FPS**, which includes vsync wait time. If your game targets 60 FPS with vsync, you'll see ~60 FPS even if work only takes 2ms. The "Work" time shows actual CPU time.
-
-#### Profiler impacts game performance
-
-The built-in profiler is designed for minimal impact:
-- ~200-400ns overhead per `profile_scope!()` call
-- Window renders at 10 FPS to minimize GPU contention
-- When profiler feature is disabled, zero overhead
-
-If you notice impact, reduce the number of fine-grained scopes or profile only specific systems.
 
 ## Advanced: External Flamegraph Profiling
 
