@@ -63,9 +63,7 @@ impl MenuScene {
     let scale = 1080.0 / 1000.0;
 
     // Static sky layer
-    background.add_layer(
-      GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale),
-    );
+    background.add_layer(GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale));
 
     // Auto-scrolling layers with infinite scroll (2x speed)
     background.add_layer(
@@ -114,7 +112,9 @@ impl Scene for MenuScene {
     self.best_time = load_best_time();
 
     // Sync parallax background with shared time (persists across scenes)
-    self.background.set_elapsed_time(shared::get_parallax_time());
+    self
+      .background
+      .set_elapsed_time(shared::get_parallax_time());
 
     // Start background music (only if not already playing - persists across scenes)
     if let Some(audio) = &mut ctx.audio {
@@ -176,13 +176,22 @@ impl Scene for MenuScene {
       ("CONTROLS", Color::rgb(255, 200, 100)),
       ("", Color::rgb(200, 200, 200)),
       ("Keyboard:", Color::rgb(150, 200, 255)),
-      ("WASD / Arrows - Move    SPACE - Jump", Color::rgb(200, 200, 200)),
+      (
+        "WASD / Arrows - Move    SPACE - Jump",
+        Color::rgb(200, 200, 200),
+      ),
       ("", Color::rgb(200, 200, 200)),
       ("Controller:", Color::rgb(150, 200, 255)),
-      ("Left Stick / D-Pad - Move    A / X - Jump", Color::rgb(200, 200, 200)),
+      (
+        "Left Stick / D-Pad - Move    A / X - Jump",
+        Color::rgb(200, 200, 200),
+      ),
       ("", Color::rgb(200, 200, 200)),
       ("Survive as long as you can!", Color::rgb(200, 200, 200)),
-      ("Hide behind platforms to avoid bullets.", Color::rgb(200, 200, 200)),
+      (
+        "Hide behind platforms to avoid bullets.",
+        Color::rgb(200, 200, 200),
+      ),
     ];
 
     let mut y = 250.0;

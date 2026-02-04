@@ -5,8 +5,10 @@
 #   .\run              - Interactive example selection
 #   .\run <example>    - Run specific example (e.g., .\run breakout)
 #   .\run <example> --dev      - Run in dev mode with hot-reload
+#   .\run <example> -p         - Run in dev mode with profiler
 #   .\run <example> --release  - Build and run release (no prompts)
 #   .\run --dev <example>      - Same as above
+#   .\run -p <example>         - Dev mode with profiler (defaults to dev)
 #   .\run --release <example>  - Same as above
 #   .\run check        - Fast compilation check (engine only)
 #   .\run check-all    - Check + lint all examples in parallel
@@ -26,7 +28,8 @@ param(
     [Parameter(Position = 1)]
     [string]$Arg2 = "",
     [switch]$dev,
-    [switch]$release
+    [switch]$release,
+    [switch]$p
 )
 
 # Add cargo to PATH if not already present
@@ -41,12 +44,13 @@ if (-not ($env:PATH -split [IO.Path]::PathSeparator -contains $cargoPath)) {
     $env:PATH = "$cargoPath$([IO.Path]::PathSeparator)$env:PATH"
 }
 
-# Handle --dev and --release flags in either position
+# Handle --dev, --release, and -p flags in either position
 $DevMode = $dev
 $ReleaseMode = $release
+$ProfilerMode = $p
 $ExampleName = $Command
 
-# Check if first arg is --dev or --release
+# Check if first arg is --dev, --release, or -p
 if ($Command -eq "--dev" -or $Command -eq "-d") {
     $DevMode = $true
     $ExampleName = $Arg2
@@ -55,12 +59,21 @@ elseif ($Command -eq "--release" -or $Command -eq "-r") {
     $ReleaseMode = $true
     $ExampleName = $Arg2
 }
-# Check if second arg is --dev or --release
+elseif ($Command -eq "-p") {
+    $ProfilerMode = $true
+    $DevMode = $true  # Profiler implies dev mode
+    $ExampleName = $Arg2
+}
+# Check if second arg is --dev, --release, or -p
 elseif ($Arg2 -eq "--dev" -or $Arg2 -eq "-d") {
     $DevMode = $true
 }
 elseif ($Arg2 -eq "--release" -or $Arg2 -eq "-r") {
     $ReleaseMode = $true
+}
+elseif ($Arg2 -eq "-p") {
+    $ProfilerMode = $true
+    $DevMode = $true  # Profiler implies dev mode
 }
 
 # Function to discover examples from ryo.toml files
@@ -113,31 +126,38 @@ function Get-Examples {
 }
 
 # Function to show run mode selection menu
+# Returns: 0 = release, 1 = dev, 2 = dev with profiler
 function Show-RunModeMenu {
     Write-Host ""
     Write-Host "  [1] Build + Run (release)" -ForegroundColor White
     Write-Host "  [2] Dev mode (hot-reload)" -ForegroundColor White
+    Write-Host "  [3] Dev mode with profiler" -ForegroundColor Magenta
     Write-Host ""
     Write-Host "Select mode [1]: " -NoNewline
     $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     $selection = $key.Character
     Write-Host $selection
 
-    return ($selection -eq "2")
+    switch ($selection) {
+        "2" { return 1 }  # Dev mode
+        "3" { return 2 }  # Dev with profiler
+        default { return 0 }  # Release
+    }
 }
 
 # Function to run an example (from its own directory as a standalone project)
+# RunMode: 0 = release, 1 = dev, 2 = dev with profiler
 function Run-Example {
     param(
         [string]$ExampleName,
         [string]$ExamplePath,
-        [bool]$UseDevMode = $false,
+        [int]$RunMode = 0,
         [bool]$AskMode = $false
     )
 
     # If AskMode is true, prompt user for mode selection
     if ($AskMode) {
-        $UseDevMode = Show-RunModeMenu
+        $RunMode = Show-RunModeMenu
     }
 
     Write-Host ""
@@ -149,24 +169,34 @@ function Run-Example {
     Set-Location $ExamplePath
 
     try {
-        if ($UseDevMode) {
-            Write-Host "  Mode: Development (hot-reload enabled)" -ForegroundColor Magenta
-            Write-Host ""
-            # Skip opt-check since engine examples don't need it
-            & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- dev --skip-opt-check
-        } else {
-            Write-Host "  Mode: Build + Run (release)" -ForegroundColor Green
-            Write-Host ""
-            # Build the game
-            Write-Host "Building..." -ForegroundColor Yellow
-            & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- build
+        switch ($RunMode) {
+            1 {
+                # Dev mode
+                Write-Host "  Mode: Development (hot-reload enabled)" -ForegroundColor Magenta
+                Write-Host ""
+                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- dev --skip-opt-check
+            }
+            2 {
+                # Dev mode with profiler
+                Write-Host "  Mode: Development with Profiler" -ForegroundColor Magenta
+                Write-Host ""
+                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- dev --skip-opt-check -p
+            }
+            default {
+                # Release mode
+                Write-Host "  Mode: Build + Run (release)" -ForegroundColor Green
+                Write-Host ""
+                # Build the game
+                Write-Host "Building..." -ForegroundColor Yellow
+                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- build
 
-            if ($LASTEXITCODE -eq 0) {
-                # Run the built game
-                Write-Host "Running..." -ForegroundColor Yellow
-                & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- run
-            } else {
-                Write-Host "Build failed!" -ForegroundColor Red
+                if ($LASTEXITCODE -eq 0) {
+                    # Run the built game
+                    Write-Host "Running..." -ForegroundColor Yellow
+                    & cargo run --manifest-path "$PSScriptRoot/Cargo.toml" --bin ryo2d -- run
+                } else {
+                    Write-Host "Build failed!" -ForegroundColor Red
+                }
             }
         }
     }
@@ -564,8 +594,10 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./run                        - Interactive example selection"
         Write-Host "  ./run <example>              - Run specific example (shows mode menu)"
         Write-Host "  ./run <example> --dev        - Run in dev mode with hot-reload"
+        Write-Host "  ./run <example> -p           - Run in dev mode with profiler"
         Write-Host "  ./run <example> --release    - Build and run release (no prompts)"
         Write-Host "  ./run --dev <example>        - Same as --dev"
+        Write-Host "  ./run -p <example>           - Same as -p (dev with profiler)"
         Write-Host "  ./run --release <example>    - Same as --release"
         Write-Host "  ./run check              - Fast compilation check (engine only)"
         Write-Host "  ./run check-all          - Check + lint all examples in parallel"
@@ -589,11 +621,13 @@ switch ($ExampleName.ToLower()) {
         $match = $examples | Where-Object { $_.Name -eq $ExampleName.ToLower() }
 
         if ($match) {
-            # If --dev or --release flag was provided, run directly; otherwise show mode menu
-            if ($DevMode) {
-                Run-Example $match.Name $match.Path -UseDevMode $true
+            # If flags were provided, run directly; otherwise show mode menu
+            if ($ProfilerMode) {
+                Run-Example $match.Name $match.Path -RunMode 2  # Dev with profiler
+            } elseif ($DevMode) {
+                Run-Example $match.Name $match.Path -RunMode 1  # Dev mode
             } elseif ($ReleaseMode) {
-                Run-Example $match.Name $match.Path -UseDevMode $false
+                Run-Example $match.Name $match.Path -RunMode 0  # Release
             } else {
                 Run-Example $match.Name $match.Path -AskMode $true
             }

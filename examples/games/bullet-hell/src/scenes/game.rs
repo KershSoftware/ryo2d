@@ -15,7 +15,15 @@ const DESIGN_WIDTH: f32 = 1920.0;
 const DESIGN_HEIGHT: f32 = 1080.0;
 
 /// Bundle type for pooled bullets
-type BulletBundle = (Transform, Renderable, RigidBody, Collider, Velocity, Bullet, Trail2D);
+type BulletBundle = (
+  Transform,
+  Renderable,
+  RigidBody,
+  Collider,
+  Velocity,
+  Bullet,
+  Trail2D,
+);
 
 pub struct GameScene {
   player: Option<Entity>,
@@ -141,9 +149,7 @@ impl GameScene {
     let scale = 1080.0 / 1000.0;
 
     // Static sky layer (doesn't scroll) - fills entire screen
-    background.add_layer(
-      GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale),
-    );
+    background.add_layer(GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale));
 
     // Auto-scrolling layers with infinite scroll for seamless wrapping
     // Speeds must match menu.rs for seamless scene transition
@@ -469,12 +475,7 @@ impl GameScene {
     let player_entity = self.player;
 
     // Get player position for aiming (player uses center pivot)
-    let player_pos = player_entity.and_then(|e| {
-      ctx
-        .world
-        .get::<Transform>(e)
-        .map(|t| (t.x, t.y))
-    });
+    let player_pos = player_entity.and_then(|e| ctx.world.get::<Transform>(e).map(|t| (t.x, t.y)));
 
     // Collect drones to update
     let drones_to_update: Vec<_> = self.drones.clone();
@@ -506,10 +507,8 @@ impl GameScene {
             // Pan based on screen position (-1 left, 0 center, 1 right)
             let pan = ((drone_x / self.screen_width) * 2.0 - 1.0).clamp(-1.0, 1.0);
             if let Some(audio) = &mut ctx.audio {
-              let _ = audio.play_sound_with(
-                "enemy-spawn",
-                SoundOptions::new().volume(0.15).panning(pan),
-              );
+              let _ =
+                audio.play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15).panning(pan));
             }
           } else {
             // Still spawning - dissolve from invisible to visible
@@ -1546,10 +1545,8 @@ impl GameScene {
               TurretSide::Right => 0.8,
             };
             if let Some(audio) = &mut ctx.audio {
-              let _ = audio.play_sound_with(
-                "enemy-spawn",
-                SoundOptions::new().volume(0.15).panning(pan),
-              );
+              let _ =
+                audio.play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15).panning(pan));
             }
           } else {
             // Still spawning - dissolve from invisible to visible with cyan edge glow
@@ -2082,7 +2079,9 @@ impl Scene for GameScene {
     ctx.world.clear();
 
     // Sync parallax background with shared time (persists from menu)
-    self.background.set_elapsed_time(shared::get_parallax_time());
+    self
+      .background
+      .set_elapsed_time(shared::get_parallax_time());
 
     // Reset state
     self.survival_time = 0.0;
@@ -2514,8 +2513,8 @@ impl GameScene {
             self.settings_open = true; // Settings
             self.settings_menu_focus = 0; // Reset focus to first item
           }
-          2 => self.quit_to_menu = true,     // Quit to Menu
-          3 => self.quit_to_desktop = true,  // Quit to Desktop
+          2 => self.quit_to_menu = true,    // Quit to Menu
+          3 => self.quit_to_desktop = true, // Quit to Desktop
           _ => {}
         }
       }
@@ -2730,7 +2729,14 @@ impl GameScene {
       if focus == 2 {
         ui.draw_rect_outline(quit_menu_rect, Color::rgb(255, 220, 100), 2.0);
       }
-      if ui.button_styled("Quit to Menu", quit_menu_rect, bg, hover, pressed, Color::WHITE) {
+      if ui.button_styled(
+        "Quit to Menu",
+        quit_menu_rect,
+        bg,
+        hover,
+        pressed,
+        Color::WHITE,
+      ) {
         self.is_paused = false;
         self.unpause_input_cooldown = true;
         self.quit_to_menu = true;
@@ -2742,7 +2748,14 @@ impl GameScene {
       if focus == 3 {
         ui.draw_rect_outline(quit_desktop_rect, Color::rgb(255, 220, 100), 2.0);
       }
-      if ui.button_styled("Quit to Desktop", quit_desktop_rect, bg, hover, pressed, Color::WHITE) {
+      if ui.button_styled(
+        "Quit to Desktop",
+        quit_desktop_rect,
+        bg,
+        hover,
+        pressed,
+        Color::WHITE,
+      ) {
         self.quit_to_desktop = true;
       }
 

@@ -10,12 +10,47 @@
 //! | `show_colliders` | Draw collision boundaries (green outlines) |
 //! | `show_velocities` | Draw velocity vectors on physics entities |
 //! | `show_origins` | Draw entity origin points (transform position) |
+//! | `enable_profiling` | Enable detailed timing measurements |
 //!
 //! # Available Info Overlays
 //!
 //! | Option | Description |
 //! |--------|-------------|
 //! | `show_fps` | Display FPS counter overlay |
+//! | `show_frame_timing` | Display frame timing breakdown |
+//! | `show_stats` | Display entity/sprite/batch statistics |
+//!
+//! # Runtime Debug Key Toggles
+//!
+//! | Key | Action |
+//! |-----|--------|
+//! | F1 | Cycle overlay mode (Off → FPS → Frame Timing → Full Stats → Off) |
+//! | F2 | Toggle collision boundaries |
+//! | F3 | Toggle velocity vectors |
+//! | F4 | Toggle origin points |
+//!
+//! Set `disable_debug_keys = true` in `[debug]` to disable these toggles.
+//!
+//! # Profiling Workflow
+//!
+//! When `enable_profiling = true` (default in dev), the following data is captured:
+//!
+//! | Metric | High Value Indicates |
+//! |--------|---------------------|
+//! | Update | Heavy game logic, too many entities, expensive AI |
+//! | Physics | Too many colliders, complex shapes, small timestep |
+//! | Render | Too many draw calls, shader complexity, large textures |
+//! | Present | GPU-bound, vsync waiting, driver overhead |
+//!
+//! **What gets gated behind `enable_profiling`:**
+//! - Per-phase frame timing (update/render/present breakdown)
+//! - Scene `on_enter()` timing warnings to console
+//! - Slow frame warnings to console (>33ms)
+//!
+//! **What stays always available:**
+//! - Basic FPS counting (lightweight)
+//! - Debug overlay rendering (already gated by show_* flags)
+//! - DebugStats collection (entity/sprite/batch counts)
 //!
 //! # Ryo.toml Configuration
 //!
@@ -24,6 +59,8 @@
 //! show_colliders = true
 //! show_velocities = false
 //! show_origins = false
+//! disable_debug_keys = false
+//! enable_profiling = true   # Enable detailed timing measurements
 //!
 //! [info]
 //! show_fps = true
@@ -46,11 +83,132 @@ use crate::core::graphics::{Camera, GroupedCollider};
 use crate::core::physics::{Collider, ColliderShape};
 use crate::core::ui::{Color, UiContext};
 
+// ============================================================================
+// Overlay Mode
+// ============================================================================
+
+/// Debug overlay display mode.
+///
+/// Controls which debug information is displayed on screen.
+/// Cycle through modes with the F1 key (unless `disable_debug_keys` is set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverlayMode {
+  /// No debug overlays shown
+  #[default]
+  Off,
+  /// Show FPS counter only
+  FpsOnly,
+  /// Show FPS and frame timing breakdown
+  FrameTiming,
+  /// Show FPS, frame timing, and entity/sprite/batch stats
+  FullStats,
+}
+
+impl OverlayMode {
+  /// Cycle to the next overlay mode.
+  ///
+  /// Off → FpsOnly → FrameTiming → FullStats → Off
+  pub fn next(self) -> Self {
+    match self {
+      OverlayMode::Off => OverlayMode::FpsOnly,
+      OverlayMode::FpsOnly => OverlayMode::FrameTiming,
+      OverlayMode::FrameTiming => OverlayMode::FullStats,
+      OverlayMode::FullStats => OverlayMode::Off,
+    }
+  }
+
+  /// Returns the debug config flags for this overlay mode.
+  ///
+  /// Returns (show_fps, show_frame_timing, show_stats)
+  ///
+  /// Note: show_fps is false when show_frame_timing is true because
+  /// the frame timing overlay already displays FPS in its total line.
+  pub fn to_flags(self) -> (bool, bool, bool) {
+    match self {
+      OverlayMode::Off => (false, false, false),
+      OverlayMode::FpsOnly => (true, false, false),
+      // Frame timing includes FPS, so no separate FPS counter needed
+      OverlayMode::FrameTiming => (false, true, false),
+      OverlayMode::FullStats => (false, true, true),
+    }
+  }
+
+  /// Create overlay mode from debug config flags.
+  ///
+  /// Takes (show_fps, show_frame_timing, show_stats) and returns the matching mode.
+  pub fn from_flags(show_fps: bool, show_frame_timing: bool, show_stats: bool) -> Self {
+    match (show_fps, show_frame_timing, show_stats) {
+      (_, true, true) => OverlayMode::FullStats,
+      (_, true, false) => OverlayMode::FrameTiming,
+      (true, false, false) => OverlayMode::FpsOnly,
+      _ => OverlayMode::Off,
+    }
+  }
+}
+
+// ============================================================================
+// Debug Stats
+// ============================================================================
+
+/// Runtime debug statistics for the current frame.
+///
+/// Captured each frame before batch clearing for display in the stats overlay.
+#[derive(Debug, Clone, Default)]
+pub struct DebugStats {
+  /// Number of active entities in the ECS world
+  pub entity_count: u32,
+  /// Number of draw calls (GPU batches)
+  pub draw_calls: u32,
+  /// Number of sprites submitted for rendering
+  pub sprite_count: u32,
+}
+
+/// Smoothed debug statistics for stable overlay display.
+///
+/// Uses exponential moving average to prevent jittery numbers.
+#[derive(Debug, Clone)]
+pub struct SmoothedDebugStats {
+  /// Smoothed entity count
+  pub entity_count: f64,
+  /// Smoothed draw call count
+  pub draw_calls: f64,
+  /// Smoothed sprite count
+  pub sprite_count: f64,
+  /// Smoothing factor (0.0 = no change, 1.0 = instant update)
+  alpha: f64,
+}
+
+impl Default for SmoothedDebugStats {
+  fn default() -> Self {
+    Self {
+      entity_count: 0.0,
+      draw_calls: 0.0,
+      sprite_count: 0.0,
+      alpha: 0.05, // Smooth over ~20 frames
+    }
+  }
+}
+
+impl SmoothedDebugStats {
+  /// Update smoothed values from raw stats.
+  pub fn update(&mut self, raw: &DebugStats) {
+    self.entity_count =
+      self.alpha * (raw.entity_count as f64) + (1.0 - self.alpha) * self.entity_count;
+    self.draw_calls = self.alpha * (raw.draw_calls as f64) + (1.0 - self.alpha) * self.draw_calls;
+    self.sprite_count =
+      self.alpha * (raw.sprite_count as f64) + (1.0 - self.alpha) * self.sprite_count;
+  }
+}
+
+// ============================================================================
+// Debug Configuration
+// ============================================================================
+
 /// Debug configuration for engine rendering.
 ///
 /// Controls which debug visualizations are enabled.
 /// Can be loaded from `Ryo.toml` or set programmatically.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DebugConfig {
   /// Whether to render collision boundaries (bright green outlines)
   pub show_colliders: bool,
@@ -58,10 +216,31 @@ pub struct DebugConfig {
   pub show_fps: bool,
   /// Whether to display frame timing breakdown (update/physics/render/present)
   pub show_frame_timing: bool,
+  /// Whether to display entity/sprite/batch statistics
+  pub show_stats: bool,
   /// Whether to draw velocity vectors on physics entities
   pub show_velocities: bool,
   /// Whether to draw entity origin points (small crosshairs at transform position)
   pub show_origins: bool,
+  /// Whether to enable detailed profiling measurements (per-phase timing, slow frame warnings)
+  pub enable_profiling: bool,
+  /// Whether to start the puffin profiler HTTP server (requires --features profiler or `ryo2d dev --profiler`)
+  pub puffin_profiler: bool,
+}
+
+impl Default for DebugConfig {
+  fn default() -> Self {
+    Self {
+      show_colliders: false,
+      show_fps: false,
+      show_frame_timing: false,
+      show_stats: false,
+      show_velocities: false,
+      show_origins: false,
+      enable_profiling: true, // Enabled by default in dev builds
+      puffin_profiler: false, // Disabled by default (opt-in)
+    }
+  }
 }
 
 // ============================================================================
@@ -375,9 +554,24 @@ pub fn render_origins(frame: &mut [u8], width: u32, height: u32, world: &World, 
   }
 }
 
+/// Height of the frame timing overlay (5 lines + padding).
+pub const FRAME_TIMING_HEIGHT: f32 = 18.0 * 5.0 + 8.0;
+
 /// Render FPS counter in the bottom-left corner.
-pub fn render_fps_counter(ui: &mut UiContext, fps: u64, screen_height: u32) {
-  let y = screen_height as f32 - 24.0;
+///
+/// When `frame_timing_below` is true, positions the FPS counter above the frame timing overlay.
+pub fn render_fps_counter(
+  ui: &mut UiContext,
+  fps: u64,
+  screen_height: u32,
+  frame_timing_below: bool,
+) {
+  let offset = if frame_timing_below {
+    FRAME_TIMING_HEIGHT
+  } else {
+    0.0
+  };
+  let y = screen_height as f32 - 24.0 - offset;
   ui.label(
     &format!("FPS: {}", fps),
     4.0,
@@ -388,7 +582,14 @@ pub fn render_fps_counter(ui: &mut UiContext, fps: u64, screen_height: u32) {
 }
 
 /// Render frame timing breakdown in the bottom-left corner.
-pub fn render_frame_timing(ui: &mut UiContext, timings: &FrameTimings, screen_height: u32) {
+///
+/// Uses smoothed timings from previous frames for stable display.
+/// Raw timings would show incomplete data since this is called mid-frame.
+pub fn render_frame_timing(
+  ui: &mut UiContext,
+  smoothed: &SmoothedFrameTimings,
+  screen_height: u32,
+) {
   let line_height = 18.0;
   let base_y = screen_height as f32 - (line_height * 5.0) - 8.0;
   let x = 4.0;
@@ -398,21 +599,21 @@ pub fn render_frame_timing(ui: &mut UiContext, timings: &FrameTimings, screen_he
 
   // Note: Update time includes game logic + physics (combined in fixed timestep loop)
   ui.label(
-    &format!("Update:  {:5.2}ms", timings.update.as_secs_f64() * 1000.0),
+    &format!("Update:  {:5.2}ms", smoothed.update_ms),
     x,
     base_y,
     white,
     bg,
   );
   ui.label(
-    &format!("Render:  {:5.2}ms", timings.render.as_secs_f64() * 1000.0),
+    &format!("Render:  {:5.2}ms", smoothed.render_ms),
     x,
     base_y + line_height,
     white,
     bg,
   );
   ui.label(
-    &format!("Present: {:5.2}ms", timings.present.as_secs_f64() * 1000.0),
+    &format!("Present: {:5.2}ms", smoothed.present_ms),
     x,
     base_y + line_height * 2.0,
     white,
@@ -428,12 +629,60 @@ pub fn render_frame_timing(ui: &mut UiContext, timings: &FrameTimings, screen_he
   ui.label(
     &format!(
       "Total:   {:5.2}ms ({} FPS)",
-      timings.total.as_secs_f64() * 1000.0,
-      timings.fps
+      smoothed.total_ms,
+      smoothed.fps.round() as u32
     ),
     x,
     base_y + line_height * 4.0,
     white,
+    bg,
+  );
+}
+
+/// Height of the FPS counter overlay (1 line + padding).
+pub const FPS_COUNTER_HEIGHT: f32 = 24.0;
+
+/// Height of the stats overlay (4 lines + padding).
+pub const STATS_HEIGHT: f32 = 18.0 * 4.0 + 8.0;
+
+/// Render debug stats (entity/sprite/batch counts) in the bottom-left corner.
+///
+/// Positioned above the frame timing overlay (FPS counter is not shown when stats are visible).
+pub fn render_stats(ui: &mut UiContext, stats: &SmoothedDebugStats, screen_height: u32) {
+  let line_height = 18.0;
+  // Position above frame timing only (FPS counter not shown when frame timing is visible)
+  let base_y = screen_height as f32 - FRAME_TIMING_HEIGHT - (line_height * 4.0) - 8.0;
+  let x = 4.0;
+  let bg = Some(Color::new(0, 0, 0, 180));
+  let white = Color::rgb(255, 255, 255);
+  let dim = Color::rgb(180, 180, 180);
+
+  ui.label(
+    &format!("Entities: {:5}", stats.entity_count.round() as u32),
+    x,
+    base_y,
+    white,
+    bg,
+  );
+  ui.label(
+    &format!("Sprites:  {:5}", stats.sprite_count.round() as u32),
+    x,
+    base_y + line_height,
+    white,
+    bg,
+  );
+  ui.label(
+    &format!("Batches:  {:5}", stats.draw_calls.round() as u32),
+    x,
+    base_y + line_height * 2.0,
+    white,
+    bg,
+  );
+  ui.label(
+    "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+    x,
+    base_y + line_height * 3.0,
+    dim,
     bg,
   );
 }
@@ -721,17 +970,28 @@ pub fn add_gpu_rect(
 }
 
 /// Render FPS counter as GPU overlay (bottom-left).
+///
+/// When `frame_timing_below` is true, positions the FPS counter above the frame timing overlay.
 pub fn render_fps_counter_gpu(
   batch: &mut BatchCollector,
   font: &BitmapFont,
   smoothed: &SmoothedFrameTimings,
   _screen_width: f32,
   screen_height: f32,
+  frame_timing_below: bool,
 ) {
   let text = format!("FPS: {}", smoothed.fps.round() as u32);
   let char_h = font.char_height() as f32;
+  let line_height = char_h + 2.0;
   let x = 4.0;
-  let y = screen_height - char_h - 8.0;
+
+  // Calculate offset if frame timing is below
+  let offset = if frame_timing_below {
+    line_height * 5.0 + 8.0 // Height of frame timing overlay
+  } else {
+    0.0
+  };
+  let y = screen_height - char_h - 8.0 - offset;
 
   // Background
   let text_width = font.text_width(&text) as f32;
@@ -801,17 +1061,156 @@ pub fn render_frame_timing_gpu(
   }
 }
 
+/// Render debug stats as GPU overlay (bottom-left, above frame timing).
+pub fn render_stats_gpu(
+  batch: &mut BatchCollector,
+  font: &BitmapFont,
+  stats: &SmoothedDebugStats,
+  _screen_width: f32,
+  screen_height: f32,
+) {
+  let char_h = font.char_height() as f32;
+  let line_height = char_h + 2.0;
+  let x = 4.0;
+
+  // Position above frame timing only (FPS counter not shown when frame timing is visible)
+  let frame_timing_height = line_height * 5.0 + 8.0;
+  let base_y = screen_height - frame_timing_height - (line_height * 4.0) - 8.0;
+
+  let lines = [
+    format!("Entities: {:5}", stats.entity_count.round() as u32),
+    format!("Sprites:  {:5}", stats.sprite_count.round() as u32),
+    format!("Batches:  {:5}", stats.draw_calls.round() as u32),
+    String::from(
+      "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+    ),
+  ];
+
+  // Calculate max width for background
+  let max_width = lines.iter().map(|l| font.text_width(l)).max().unwrap_or(0) as f32;
+
+  // Background
+  add_gpu_rect(
+    batch,
+    x - 2.0,
+    base_y - 2.0,
+    max_width + 4.0,
+    line_height * 4.0 + 4.0,
+    Color::new(0, 0, 0, 180),
+  );
+
+  // Lines
+  for (i, line) in lines.iter().enumerate() {
+    add_gpu_text(
+      batch,
+      font,
+      line,
+      x,
+      base_y + (i as f32 * line_height),
+      Color::WHITE,
+    );
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
 
   #[test]
-  fn debug_config_defaults_to_disabled() {
+  fn debug_config_defaults() {
     let config = DebugConfig::default();
     assert!(!config.show_colliders);
     assert!(!config.show_fps);
+    assert!(!config.show_frame_timing);
+    assert!(!config.show_stats);
     assert!(!config.show_velocities);
     assert!(!config.show_origins);
+    // enable_profiling defaults to true for dev builds
+    assert!(config.enable_profiling);
+  }
+
+  #[test]
+  fn overlay_mode_cycles_correctly() {
+    assert_eq!(OverlayMode::Off.next(), OverlayMode::FpsOnly);
+    assert_eq!(OverlayMode::FpsOnly.next(), OverlayMode::FrameTiming);
+    assert_eq!(OverlayMode::FrameTiming.next(), OverlayMode::FullStats);
+    assert_eq!(OverlayMode::FullStats.next(), OverlayMode::Off);
+  }
+
+  #[test]
+  fn overlay_mode_to_flags() {
+    assert_eq!(OverlayMode::Off.to_flags(), (false, false, false));
+    assert_eq!(OverlayMode::FpsOnly.to_flags(), (true, false, false));
+    // Frame timing includes FPS in its display, so show_fps is false
+    assert_eq!(OverlayMode::FrameTiming.to_flags(), (false, true, false));
+    assert_eq!(OverlayMode::FullStats.to_flags(), (false, true, true));
+  }
+
+  #[test]
+  fn overlay_mode_from_flags() {
+    assert_eq!(
+      OverlayMode::from_flags(false, false, false),
+      OverlayMode::Off
+    );
+    assert_eq!(
+      OverlayMode::from_flags(true, false, false),
+      OverlayMode::FpsOnly
+    );
+    // Frame timing mode regardless of show_fps value
+    assert_eq!(
+      OverlayMode::from_flags(false, true, false),
+      OverlayMode::FrameTiming
+    );
+    assert_eq!(
+      OverlayMode::from_flags(true, true, false),
+      OverlayMode::FrameTiming
+    );
+    // Full stats mode regardless of show_fps value
+    assert_eq!(
+      OverlayMode::from_flags(false, true, true),
+      OverlayMode::FullStats
+    );
+    assert_eq!(
+      OverlayMode::from_flags(true, true, true),
+      OverlayMode::FullStats
+    );
+  }
+
+  #[test]
+  fn overlay_mode_default_is_off() {
+    assert_eq!(OverlayMode::default(), OverlayMode::Off);
+  }
+
+  #[test]
+  fn debug_stats_default() {
+    let stats = DebugStats::default();
+    assert_eq!(stats.entity_count, 0);
+    assert_eq!(stats.draw_calls, 0);
+    assert_eq!(stats.sprite_count, 0);
+  }
+
+  #[test]
+  fn smoothed_debug_stats_update() {
+    let mut smoothed = SmoothedDebugStats::default();
+    let raw = DebugStats {
+      entity_count: 100,
+      draw_calls: 10,
+      sprite_count: 500,
+    };
+
+    // After first update, values should move toward raw
+    smoothed.update(&raw);
+    assert!(smoothed.entity_count > 0.0);
+    assert!(smoothed.draw_calls > 0.0);
+    assert!(smoothed.sprite_count > 0.0);
+
+    // After many updates, should converge (alpha=0.05 needs ~200 iterations)
+    for _ in 0..200 {
+      smoothed.update(&raw);
+    }
+    assert!((smoothed.entity_count - 100.0).abs() < 1.0);
+    assert!((smoothed.draw_calls - 10.0).abs() < 1.0);
+    assert!((smoothed.sprite_count - 500.0).abs() < 1.0);
   }
 
   #[test]

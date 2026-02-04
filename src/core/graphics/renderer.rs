@@ -26,9 +26,12 @@ use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
 /// Handles wgpu rendering of a software pixel buffer to screen.
 pub struct WgpuRenderer {
+  #[allow(dead_code)] // Kept for creating new surfaces (e.g., profiler window)
+  instance: wgpu::Instance,
+  adapter: wgpu::Adapter,
   surface: wgpu::Surface<'static>,
-  device: wgpu::Device,
-  queue: wgpu::Queue,
+  device: std::sync::Arc<wgpu::Device>,
+  queue: std::sync::Arc<wgpu::Queue>,
   config: wgpu::SurfaceConfiguration,
   // The game texture (GPU sprites render here first, then CPU content blended on top)
   texture: wgpu::Texture,
@@ -122,7 +125,7 @@ impl WgpuRenderer {
       .await
       .expect("Failed to find an appropriate adapter");
 
-    // Request device and queue
+    // Request device and queue (wrapped in Arc for sharing with profiler window)
     let (device, queue) = adapter
       .request_device(
         &wgpu::DeviceDescriptor {
@@ -135,6 +138,8 @@ impl WgpuRenderer {
       )
       .await
       .expect("Failed to create device");
+    let device = std::sync::Arc::new(device);
+    let queue = std::sync::Arc::new(queue);
 
     // Configure surface
     let surface_caps = surface.get_capabilities(&adapter);
@@ -520,6 +525,8 @@ impl WgpuRenderer {
     let presentation_blocks = present_mode == wgpu::PresentMode::Fifo;
 
     let mut renderer = WgpuRenderer {
+      instance,
+      adapter,
       surface,
       device,
       queue,
@@ -586,11 +593,39 @@ impl WgpuRenderer {
     &self.device
   }
 
+  /// Get a shared reference to the wgpu device.
+  ///
+  /// Used for creating additional rendering contexts (e.g., profiler window).
+  pub fn device_arc(&self) -> std::sync::Arc<wgpu::Device> {
+    std::sync::Arc::clone(&self.device)
+  }
+
   /// Get a reference to the wgpu queue.
   ///
   /// Used by GPU sprite renderer for uploading data.
   pub fn queue(&self) -> &wgpu::Queue {
     &self.queue
+  }
+
+  /// Get a shared reference to the wgpu queue.
+  ///
+  /// Used for creating additional rendering contexts (e.g., profiler window).
+  pub fn queue_arc(&self) -> std::sync::Arc<wgpu::Queue> {
+    std::sync::Arc::clone(&self.queue)
+  }
+
+  /// Get a reference to the wgpu adapter.
+  ///
+  /// Used for creating additional surfaces (e.g., profiler window).
+  pub fn adapter(&self) -> &wgpu::Adapter {
+    &self.adapter
+  }
+
+  /// Get a reference to the wgpu instance.
+  ///
+  /// Used for creating additional surfaces (e.g., profiler window).
+  pub fn instance(&self) -> &wgpu::Instance {
+    &self.instance
   }
 
   /// Get the main game texture view.

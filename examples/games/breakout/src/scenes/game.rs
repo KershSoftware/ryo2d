@@ -146,7 +146,14 @@ impl GameScene {
   }
 
   /// Create a bordered rectangle sprite
-  fn bordered_rect(width: u32, height: u32, r: u8, g: u8, b: u8, border_color: (u8, u8, u8)) -> Sprite {
+  fn bordered_rect(
+    width: u32,
+    height: u32,
+    r: u8,
+    g: u8,
+    b: u8,
+    border_color: (u8, u8, u8),
+  ) -> Sprite {
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     let (br, bg, bb) = border_color;
 
@@ -206,8 +213,10 @@ impl GameScene {
           let in_vertical = dx <= plus_thickness / 2 && dy <= plus_arm_length;
 
           // Outline is slightly larger than the plus
-          let in_h_outline = dy <= plus_thickness / 2 + outline_size && dx <= plus_arm_length + outline_size;
-          let in_v_outline = dx <= plus_thickness / 2 + outline_size && dy <= plus_arm_length + outline_size;
+          let in_h_outline =
+            dy <= plus_thickness / 2 + outline_size && dx <= plus_arm_length + outline_size;
+          let in_v_outline =
+            dx <= plus_thickness / 2 + outline_size && dy <= plus_arm_length + outline_size;
           let is_outline = (in_h_outline || in_v_outline) && !(in_horizontal || in_vertical);
 
           if is_outline {
@@ -420,7 +429,14 @@ impl GameScene {
     for (i, &block) in self.multiball_blocks.iter().enumerate() {
       if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
         renderable.sprite = SpriteHandle::from_sprite(
-          Self::bordered_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, (0x80, border_g, border_b)),
+          Self::bordered_rect(
+            BLOCK_WIDTH as u32,
+            BLOCK_HEIGHT as u32,
+            r,
+            g,
+            b,
+            (0x80, border_g, border_b),
+          ),
           format!("multiball_glow_{}", i),
         );
       }
@@ -910,7 +926,7 @@ impl Scene for GameScene {
     for y in 0..height {
       for x in 0..width {
         let idx = ((y * width + x) * 4) as usize;
-        frame[idx] = 20;     // R
+        frame[idx] = 20; // R
         frame[idx + 1] = 20; // G
         frame[idx + 2] = 35; // B
         frame[idx + 3] = 255; // A
@@ -1293,13 +1309,7 @@ impl Scene for GameScene {
         Color::new(0, 0, 0, 180),
       );
       ui.draw_text_anchored("YOU WIN!", Anchor::Center, 0.0, -70.0, Color::YELLOW);
-      ui.draw_text_anchored(
-        "Congratulations!",
-        Anchor::Center,
-        0.0,
-        -30.0,
-        Color::GREEN,
-      );
+      ui.draw_text_anchored("Congratulations!", Anchor::Center, 0.0, -30.0, Color::GREEN);
       let final_score = format!("Final Score: {}", self.score);
       ui.draw_text_anchored(&final_score, Anchor::Center, 0.0, 10.0, Color::WHITE);
       if self.score >= self.high_score {

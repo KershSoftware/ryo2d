@@ -1,6 +1,19 @@
 # Debugging
 
-Ryo2D provides built-in debug visualization tools to help you develop and troubleshoot your games. All debug features can be enabled via `Ryo.toml` configuration or programmatically through the `EngineBuilder`.
+Ryo2D provides built-in debug visualization tools to help you develop and troubleshoot your games. All debug features can be enabled via `Ryo.toml` configuration or toggled at runtime with keyboard shortcuts.
+
+## Runtime Debug Keys
+
+During development, press these keys to toggle debug visualizations without restarting:
+
+| Key | Action |
+|-----|--------|
+| **F1** | Cycle overlay: Off → FPS → Frame Timing → Full Stats → Off |
+| **F2** | Toggle collision boundaries (green outlines) |
+| **F3** | Toggle velocity vectors (cyan arrows) |
+| **F4** | Toggle origin points (yellow crosshairs) |
+
+To disable these keys (e.g., for a shipped game), add `disable_debug_keys = true` to your `Ryo.toml`.
 
 ## Quick Start
 
@@ -9,10 +22,14 @@ Add a `[debug]` section to your `Ryo.toml`:
 ```toml
 [debug]
 show_colliders = true
-show_fps = true
-show_frame_timing = false
 show_velocities = false
 show_origins = false
+show_frame_timing = false
+enable_profiling = true     # Enable detailed timing measurements
+disable_debug_keys = false  # Allow F1-F4 debug toggles
+
+[info]
+show_fps = true
 ```
 
 Or enable debug features in code:
@@ -72,7 +89,23 @@ Displays a detailed frame timing breakdown overlay in the bottom-left corner. Wh
 - **Present**: Time spent submitting to GPU and effects pipeline (ms)
 - **Total**: Combined frame time with smoothed FPS
 
-**Note:** Values are smoothed using an exponential moving average for stable, readable display. The overlay also logs timing to console once per second for capture/analysis.
+**Note:** Values are smoothed using an exponential moving average for stable, readable display.
+
+### `show_stats`
+
+Displays entity and rendering statistics above the frame timing overlay.
+
+**When to use:**
+- Monitoring entity count during gameplay
+- Tracking draw call efficiency
+- Debugging entity lifecycle issues
+
+**What it shows:**
+- **Entities**: Number of active entities in the ECS world
+- **Sprites**: Number of sprites submitted for rendering
+- **Batches**: Number of GPU draw calls (lower is better)
+
+**Tip:** Press F1 to cycle to "Full Stats" mode which shows both stats and frame timing together.
 
 ### `show_velocities`
 
@@ -107,19 +140,34 @@ Renders small yellow crosshairs at each entity's `Transform` position.
 ```toml
 [debug]
 # Draw collision boundaries (green outlines)
-show_colliders = true
-
-# Display FPS counter in bottom-left corner
-show_fps = true
-
-# Display detailed frame timing breakdown (replaces FPS when enabled)
-show_frame_timing = false
+show_colliders = false
 
 # Draw velocity vectors (cyan arrows)
 show_velocities = false
 
 # Draw entity origin points (yellow crosshairs)
 show_origins = false
+
+# Display detailed frame timing breakdown
+show_frame_timing = false
+
+# Display entity/sprite/batch statistics
+show_stats = false
+
+# Enable detailed profiling (per-phase timing, slow frame warnings)
+# When disabled, timing fields show zeros but FPS still works
+enable_profiling = true
+
+# Enable puffin hierarchical profiler (requires --features profiler or `ryo2d dev --profiler`)
+# Starts HTTP server on port 8585 for puffin_viewer connection
+puffin_profiler = false
+
+# Disable F1-F4 debug key toggles (for release builds)
+disable_debug_keys = false
+
+[info]
+# Display FPS counter in bottom-left corner
+show_fps = true
 ```
 
 ## Game-Specific Configuration: `[env]`
@@ -184,6 +232,22 @@ fn main() {
 | `.show_origins(bool)` | Enable/disable origin crosshairs |
 
 **Note:** Debug settings from `Ryo.toml` are automatically loaded. These methods override config file values.
+
+### Console Warnings
+
+When `enable_profiling = true` (default), Ryo2D prints helpful warnings to the console:
+
+**Slow Frame Warnings** (>33ms frames):
+```
+[SLOW FRAME] Total: 45.2ms | Update: 38.1ms | Render: 5.3ms | Present: 1.8ms
+```
+
+**Scene Load Warnings** (>5ms scene transitions):
+```
+[Scene] on_enter took 127ms
+```
+
+Set `enable_profiling = false` to disable these warnings.
 
 ## Debug Colors
 
