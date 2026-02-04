@@ -3,10 +3,10 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
-use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
+use zip::write::SimpleFileOptions;
 
-use super::{discover_workspace, get_cargo_package_name, CliError, CliResult, Output};
+use super::{CliError, CliResult, Output, discover_workspace, get_cargo_package_name};
 
 /// Execute the export command
 pub fn execute(args: &[String]) -> CliResult<()> {
@@ -49,7 +49,12 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   // Build zip filename: {project-name}-v{version}-{datestamp} or {project-name}-{datestamp}
   let zip_filename = match version {
-    Some(v) => format!("{}-v{}-{}.zip", sanitize_filename(project_name), v, datestamp),
+    Some(v) => format!(
+      "{}-v{}-{}.zip",
+      sanitize_filename(project_name),
+      v,
+      datestamp
+    ),
     None => format!("{}-{}.zip", sanitize_filename(project_name), datestamp),
   };
 
@@ -74,10 +79,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 /// Get version from Ryo.toml [project].version, falling back to Cargo.toml [package].version
 fn get_project_version(workspace: &crate::core::config::Workspace) -> Option<String> {
   // Try Ryo.toml first
-  if let Some(version) = read_version_from_toml(
-    &workspace.root().join("Ryo.toml"),
-    "project",
-  ) {
+  if let Some(version) = read_version_from_toml(&workspace.root().join("Ryo.toml"), "project") {
     return Some(version);
   }
 

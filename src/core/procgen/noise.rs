@@ -413,7 +413,7 @@ mod tests {
 
     // All values should be in [0, 1]
     for &value in &heightmap {
-      assert!(value >= 0.0 && value <= 1.0);
+      assert!((0.0..=1.0).contains(&value));
     }
   }
 
