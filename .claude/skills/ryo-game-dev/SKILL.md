@@ -458,6 +458,7 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Transform` | Position, rotation, scale |
 | `Velocity` | Movement direction and speed |
 | `Renderable` | Sprite and rendering options |
+| `PreviousTransform` | Previous frame transform (for interpolation) |
 | `RigidBody` | Physics body (dynamic, kinematic, fixed) |
 | `Collider` | Collision shape (circle, rect, capsule) |
 | `Animator` | Sprite animation state |
@@ -465,6 +466,43 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Parent` / `Children` | Entity hierarchy |
 | `NavAgent` | Navigation and pathfinding |
 | `Trail2D` | Motion trails behind entities |
+
+## Render Interpolation
+
+When render FPS exceeds physics update rate, enable interpolation for smooth motion:
+
+```rust
+// Enable interpolation - smooths motion between physics steps
+ctx.world.spawn((
+    Transform::new(x, y),
+    Velocity::new(100.0, 0.0),
+    Renderable::sprite(sprite).interpolated(),  // <-- opt-in
+));
+
+// Good for: balls, bullets, player, scrolling backgrounds
+// Skip for: static entities, short-lived particles, UI
+```
+
+### Handling Teleports
+
+After instantly moving an entity, skip interpolation to prevent sliding:
+
+```rust
+transform.x = new_x;
+transform.y = new_y;
+InterpolationSystem::skip_interpolation(&mut ctx.world, entity);
+```
+
+### Timing Values
+
+Access timing info via `ctx.time`:
+
+```rust
+ctx.time.fixed_dt;      // Fixed timestep (1/60)
+ctx.time.render_alpha;  // Interpolation factor (0.0-1.0)
+ctx.time.time_scale;    // Current time scale
+ctx.time.is_hitstop;    // True during hitstop
+```
 
 ## Navigation & Pathfinding
 

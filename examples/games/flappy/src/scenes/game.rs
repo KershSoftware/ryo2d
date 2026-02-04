@@ -59,7 +59,7 @@ impl GameScene {
       RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling through pipes
       // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
       Collider::circle_collider(BIRD_SIZE * 0.35).centered_in(BIRD_SIZE, BIRD_SIZE),
-      Renderable::sprite(initial_sprite).with_z_order(10),
+      Renderable::sprite(initial_sprite).with_z_order(10).interpolated(),
       controller,
       Bird::new(),
     ));
@@ -179,7 +179,7 @@ impl GameScene {
 
       let ground = ctx.world.spawn((
         transform,
-        Renderable::sprite(ground_handle.clone()).with_z_order(15),
+        Renderable::sprite(ground_handle.clone()).with_z_order(15).interpolated(),
         Ground,
         Scrolling::new(GROUND_SCROLL_SPEED, scaled_width, wrap_distance),
       ));
@@ -221,7 +221,7 @@ impl GameScene {
       transform.scale_y = scale;
       let background = ctx.world.spawn((
         transform,
-        Renderable::sprite(bg_handle.clone()).with_z_order(0), // Render behind everything
+        Renderable::sprite(bg_handle.clone()).with_z_order(0).interpolated(), // Render behind everything
         Scrolling::new(
           BACKGROUND_SCROLL_SPEED,
           tile_width * scale,

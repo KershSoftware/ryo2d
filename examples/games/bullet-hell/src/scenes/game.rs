@@ -299,7 +299,8 @@ impl GameScene {
       Transform::new(self.screen_width / 2.0, spawn_y).with_pivot_center(),
       Renderable::sprite(sprite)
         .with_z_order(Z_PLAYER)
-        .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 2)),
+        .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 2))
+        .interpolated(),
       // Kinematic body - we handle movement manually for wall slides/custom gravity
       // Rapier still provides collision detection for events
       RigidBody::kinematic(),
@@ -484,7 +485,8 @@ impl GameScene {
       Renderable::sprite(sprite)
         .with_z_order(Z_DRONE)
         // Start with dissolve shader for spawn effect (black edge)
-        .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(0, 0, 0))),
+        .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(0, 0, 0)))
+        .interpolated(),
       RigidBody::kinematic(),
       Collider::box_collider(DRONE_SIZE, DRONE_SIZE),
       Drone::new(spawn_x, spawn_y),
@@ -1262,7 +1264,8 @@ impl GameScene {
       Transform::new(pos.x + offset_x, pos.y).with_pivot_center(),
       Renderable::sprite(sprite)
         .with_z_order(Z_ROCKET)
-        .with_shader(SpriteShader::outline(Color::rgb(255, 190, 130), 2)),
+        .with_shader(SpriteShader::outline(Color::rgb(255, 190, 130), 2))
+        .interpolated(),
       RigidBody::kinematic(),
       Collider::circle_collider(ROCKET_SIZE / 2.0),
       rocket,
@@ -2280,7 +2283,7 @@ impl GameScene {
     let sprite = self.bullet_sprite.clone();
     let bullet = ctx.world.spawn((
       Transform::new(x, y).with_anchor(Anchor::Center),
-      Renderable::sprite(sprite).with_z_order(Z_BULLET),
+      Renderable::sprite(sprite).with_z_order(Z_BULLET).interpolated(),
       // CCD for fast-moving bullets, no gravity
       RigidBody::new().with_ccd().with_gravity_scale(0.0),
       Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
@@ -2709,7 +2712,7 @@ impl Scene for GameScene {
       move || {
         (
           Transform::default(),
-          Renderable::sprite(bullet_sprite.clone()).with_z_order(Z_BULLET),
+          Renderable::sprite(bullet_sprite.clone()).with_z_order(Z_BULLET).interpolated(),
           // CCD for fast-moving bullets, no gravity
           RigidBody::new().with_ccd().with_gravity_scale(0.0),
           Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),

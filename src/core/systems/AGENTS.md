@@ -10,6 +10,7 @@ This folder contains game systems extracted from `engine.rs` for modularity and 
 |--------|---------|
 | `mod.rs` | Public exports for all systems |
 | `animation.rs` | Update Animator and AnimationController components |
+| `interpolation.rs` | Snapshot transforms for render interpolation |
 | `tween.rs` | Update Tween and TweenSequence components |
 | `knockback.rs` | Apply knockback forces to entities |
 | `squash_stretch.rs` | Apply squash/stretch scale effects |
@@ -40,6 +41,44 @@ Key conventions:
 - **Stateless**: Systems don't hold state; they operate on World data
 - **Skip Inactive**: Always check for `Inactive` component (object pooling)
 - **Delta time**: Receive scaled dt for time effects (slow-mo, hitstop)
+
+## InterpolationSystem
+
+Manages render interpolation for smooth motion between fixed timestep updates.
+
+**Components handled:**
+- `PreviousTransform` - Stores previous frame's transform for lerping
+- `Renderable` - Checks `interpolate` flag to determine if entity uses interpolation
+
+**Behavior:**
+1. Auto-add `PreviousTransform` to entities with `renderable.interpolate = true`
+2. Snapshot current transforms before fixed timestep updates
+3. Handle skip flag for teleports (prevents visual sliding)
+
+**Usage:**
+
+```rust
+// Enable interpolation on an entity
+Renderable::sprite(sprite).interpolated()
+
+// Skip interpolation after teleporting (prevents slide from old position)
+InterpolationSystem::skip_interpolation(&mut world, entity);
+```
+
+**When to use:**
+- Fast-moving entities (balls, bullets, projectiles)
+- Player-controlled entities for responsive feel
+- Scrolling backgrounds for smooth motion
+- Any entity where fixed timestep causes visible stuttering
+
+**When NOT to use:**
+- Static entities (walls, UI elements)
+- Short-lived particles (overhead not justified)
+- Entities that teleport frequently
+
+```rust
+InterpolationSystem::snapshot(&mut world);  // Called by engine before updates
+```
 
 ## AnimationSystem
 
@@ -178,6 +217,9 @@ Systems are called from `Engine::update()` in this order:
 
 ```rust
 fn update(&mut self, dt: f32) {
+  // 0. Snapshot transforms for interpolation (before any updates)
+  InterpolationSystem::snapshot(&mut self.world);
+
   // 1. Clear events, emit collision events
   self.events.clear();
 

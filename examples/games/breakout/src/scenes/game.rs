@@ -268,7 +268,8 @@ impl GameScene {
         ),
         "paddle",
       ))
-      .with_z_order(10),
+      .with_z_order(10)
+      .interpolated(),
       Paddle,
     ));
     self.paddle = Some(paddle);
@@ -298,7 +299,8 @@ impl GameScene {
         Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
         sprite_id,
       ))
-      .with_z_order(15),
+      .with_z_order(15)
+      .interpolated(),
       Ball { frozen: true },
     ));
     self.balls.push(ball);
@@ -334,7 +336,8 @@ impl GameScene {
         Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
         sprite_id,
       ))
-      .with_z_order(15),
+      .with_z_order(15)
+      .interpolated(),
       Ball { frozen: false },
     ));
     self.balls.push(ball);

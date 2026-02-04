@@ -278,6 +278,7 @@ pub struct Renderable {
     pub flip_x: bool,
     pub flip_y: bool,
     pub tint: Option<Color>,
+    pub interpolate: bool,  // Opt-in render interpolation
 }
 
 impl Renderable {
@@ -287,6 +288,46 @@ impl Renderable {
     fn with_flip_y(self, flip: bool) -> Self;
     fn with_tint(self, color: Color) -> Self;
     fn hidden(self) -> Self;
+    fn interpolated(self) -> Self;                     // Enable render interpolation
+    fn with_interpolation(self, enabled: bool) -> Self; // Set interpolation explicitly
+}
+```
+
+### PreviousTransform
+
+Stores previous frame's transform for render interpolation. Auto-added by engine for entities with `renderable.interpolate = true`.
+
+```rust
+pub struct PreviousTransform {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub rotation: f32,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    pub skip: bool,  // Skip lerp this frame (for teleports)
+}
+
+impl PreviousTransform {
+    fn from_transform(t: &Transform) -> Self;
+    fn copy_from(&mut self, t: &Transform);
+    fn skip_next_frame(&mut self);
+    fn lerp(&self, target: &Transform, alpha: f32) -> (f32, f32, f32, f32, f32);
+    // Returns (x, y, rotation, scale_x, scale_y)
+}
+```
+
+### InterpolationSystem
+
+```rust
+pub struct InterpolationSystem;
+
+impl InterpolationSystem {
+    // Called by engine before fixed timestep loop
+    fn snapshot(world: &mut World);
+
+    // Call after teleporting entity to prevent visual slide
+    fn skip_interpolation(world: &mut World, entity: Entity);
 }
 ```
 
