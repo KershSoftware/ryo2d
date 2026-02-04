@@ -59,6 +59,9 @@ pub struct Trail2D {
   min_distance: f32,
   /// Whether the trail is currently active (recording points)
   enabled: bool,
+  /// Whether the trail is visible (rendered). Separate from enabled to allow
+  /// fade-out effects where trail stops recording but still renders.
+  visible: bool,
   /// Time since last point was added (for time-based emission)
   time_accumulator: f32,
   /// Emit a point every N seconds (0 = distance-based only)
@@ -110,6 +113,7 @@ impl Trail2D {
       fade_alpha: true,
       min_distance: 2.0,
       enabled: true,
+      visible: true,
       time_accumulator: 0.0,
       emit_interval: 0.0,
       lifetime: None,
@@ -323,14 +327,42 @@ impl Trail2D {
     self.width = width.max(0.5);
   }
 
-  /// Check if the trail is enabled.
+  /// Check if the trail is enabled (recording new points).
   pub fn is_enabled(&self) -> bool {
     self.enabled
   }
 
   /// Enable or disable the trail.
+  ///
+  /// When disabled, the trail stops recording new points AND becomes invisible.
+  /// This is the expected behavior for most use cases (toggle trail on/off).
+  ///
+  /// For fade-out effects where you want to stop recording but keep rendering,
+  /// use `set_recording(false)` instead, which only stops point recording.
   pub fn set_enabled(&mut self, enabled: bool) {
     self.enabled = enabled;
+    self.visible = enabled; // Sync visibility with enabled state
+  }
+
+  /// Check if the trail is visible (will be rendered).
+  pub fn is_visible(&self) -> bool {
+    self.visible
+  }
+
+  /// Set trail visibility independently of recording state.
+  ///
+  /// Use this for advanced control, e.g., temporarily hiding a trail
+  /// while keeping it recording, or showing a trail that's no longer recording.
+  pub fn set_visible(&mut self, visible: bool) {
+    self.visible = visible;
+  }
+
+  /// Enable or disable point recording without affecting visibility.
+  ///
+  /// Use this for fade-out effects: call `set_recording(false)` to stop
+  /// adding new points while the existing trail continues to render and fade.
+  pub fn set_recording(&mut self, recording: bool) {
+    self.enabled = recording;
   }
 
   /// Get the current points in the trail.

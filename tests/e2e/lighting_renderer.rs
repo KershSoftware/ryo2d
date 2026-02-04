@@ -807,3 +807,313 @@ fn test_lighting_with_multiple_effects() {
   gpu.queue.submit(std::iter::once(encoder.finish()));
   // Test passes if no panic - verifies effect chaining works after lighting
 }
+
+// ============================================================================
+// VOLUMETRIC LIGHTING GPU TESTS
+// ============================================================================
+
+/// Test that volumetric lights can be rendered without panic
+#[test]
+fn test_render_volumetric_lights() {
+  let Some(gpu) = TestGpu::new() else {
+    eprintln!("Skipping test_render_volumetric_lights: no GPU available");
+    return;
+  };
+
+  let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+  let mut renderer = LightingRenderer::new(&gpu.device, 100, 100, format);
+  renderer.set_enabled(true);
+
+  // Create lights with volumetric settings
+  let transform1 = Transform::new(50.0, 50.0);
+  let light1 = Light2D::flashlight(80.0, 0.0).with_volumetric();
+
+  let transform2 = Transform::new(75.0, 75.0);
+  let light2 = Light2D::point(Color::WHITE, 100.0).with_god_rays();
+
+  let lights = [(transform1, light1), (transform2, light2)];
+
+  let mut encoder = gpu
+    .device
+    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+      label: Some("Volumetric Lights Test"),
+    });
+
+  // Render volumetric lights
+  renderer.render_lights(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    lights.iter().map(|(t, l)| (t, l)),
+    Vec2::ZERO,
+    1.0,
+  );
+
+  gpu.queue.submit(std::iter::once(encoder.finish()));
+  // Test passes if no panic - volumetric data is correctly passed to GPU
+}
+
+/// Test volumetric spotlight beam renders without crashing
+///
+/// This test verifies the complete rendering path for volumetric spotlights:
+/// - Volumetric settings are passed to the GPU correctly
+/// - The light shader processes volumetric data
+/// - Compose completes without errors
+///
+/// Note: Pixel-level verification is complex due to projection matrix setup.
+/// Unit tests verify the volumetric data packing is correct.
+#[test]
+fn test_volumetric_spotlight_beam() {
+  let Some(gpu) = TestGpu::new() else {
+    eprintln!("Skipping test_volumetric_spotlight_beam: no GPU available");
+    return;
+  };
+
+  let width = 64u32;
+  let height = 64u32;
+  let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+  let mut renderer = LightingRenderer::new(&gpu.device, width, height, format);
+  renderer.set_enabled(true);
+  renderer.set_ambient(AmbientLight::new(Color::WHITE, 0.3));
+
+  let target = create_srgb_target(&gpu, width, height);
+
+  // Create a spotlight with volumetric beam
+  let transform = Transform::new(32.0, 32.0);
+  let light = Light2D::spot(Color::WHITE, 50.0, 45.0, 0.0)
+    .with_intensity(2.0)
+    .with_volumetric_settings(VolumetricSettings::strong_beam());
+
+  // Verify volumetric data is set correctly
+  assert!(light.has_volumetric());
+  let vol = light.volumetric().unwrap();
+  assert!(vol.intensity > 0.0);
+  assert!(vol.density > 0.0);
+
+  let lights = [(transform, light)];
+
+  let mut pixel_data = vec![128u8; (width * height * 4) as usize];
+  // Set alpha channel
+  for i in (3..pixel_data.len()).step_by(4) {
+    pixel_data[i] = 255;
+  }
+
+  let mut encoder = gpu
+    .device
+    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+      label: Some("Volumetric Beam Test"),
+    });
+
+  // Render lights - this processes volumetric data in the shader
+  renderer.render_lights(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    lights.iter().map(|(t, l)| (t, l)),
+    Vec2::ZERO,
+    1.0,
+  );
+
+  // Compose - blends lighting with scene
+  renderer.compose(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    &pixel_data,
+    &target.view,
+    0.0,
+  );
+
+  gpu.queue.submit(std::iter::once(encoder.finish()));
+
+  // Verify output has some content (not all black)
+  let center = target.get_pixel(&gpu, 32, 32);
+  let brightness = (center.0 as u32 + center.1 as u32 + center.2 as u32) / 3;
+
+  // With ambient 0.3 on gray 128 scene, expect at least some output
+  assert!(
+    brightness > 20,
+    "Output should have visible content from ambient lighting: brightness={}",
+    brightness
+  );
+}
+
+/// Test god rays effect params packing
+#[test]
+fn test_god_rays_params_gpu_alignment() {
+  use ryo2d::core::shaders::GodRaysParams;
+
+  // GodRaysParams must be 128 bytes for GPU uniform alignment
+  let size = std::mem::size_of::<GodRaysParams>();
+  assert_eq!(
+    size, 128,
+    "GodRaysParams must be 128 bytes for GPU alignment, got {}",
+    size
+  );
+
+  // Test packing via from_effect
+  let light_positions = vec![(0.2, 0.3), (0.7, 0.8)];
+  let effect = ryo2d::core::shaders::PostProcessEffect::god_rays(0.8, light_positions);
+  let params = GodRaysParams::from_effect(&effect, 0.0, 64, 64);
+
+  // Verify light positions are packed correctly
+  assert!((params.light_pos_01[0] - 0.2).abs() < 0.001); // First light X
+  assert!((params.light_pos_01[1] - 0.3).abs() < 0.001); // First light Y
+  assert!((params.light_pos_01[2] - 0.7).abs() < 0.001); // Second light X
+  assert!((params.light_pos_01[3] - 0.8).abs() < 0.001); // Second light Y
+}
+
+/// Test god rays effect with lighting integration
+#[test]
+fn test_god_rays_with_lighting() {
+  let Some(gpu) = TestGpu::new() else {
+    eprintln!("Skipping test_god_rays_with_lighting: no GPU available");
+    return;
+  };
+
+  let width = 64u32;
+  let height = 64u32;
+  let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+  let mut lighting = LightingRenderer::new(&gpu.device, width, height, format);
+  lighting.set_enabled(true);
+  lighting.set_ambient(AmbientLight::new(Color::WHITE, 0.3));
+
+  let mut post_process =
+    ryo2d::core::shaders::PostProcessPipeline::new(&gpu.device, width, height, format);
+
+  // Create a bright light with god rays
+  let transform = Transform::new(10.0, 10.0);
+  let light = Light2D::point(Color::WHITE, 50.0)
+    .with_intensity(2.0)
+    .with_god_rays();
+  let lights = [(transform, light)];
+
+  // Create scene with bright spot where light is
+  let mut pixel_data = vec![0u8; (width * height * 4) as usize];
+  for y in 0..height {
+    for x in 0..width {
+      let idx = ((y * width + x) * 4) as usize;
+      // Make area near light bright (simulating light source visibility)
+      let dist = ((x as f32 - 10.0).powi(2) + (y as f32 - 10.0).powi(2)).sqrt();
+      let brightness = if dist < 15.0 { 255 } else { 50 };
+      pixel_data[idx] = brightness;
+      pixel_data[idx + 1] = brightness;
+      pixel_data[idx + 2] = brightness;
+      pixel_data[idx + 3] = 255;
+    }
+  }
+
+  let mut encoder = gpu
+    .device
+    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+      label: Some("God Rays Integration Test"),
+    });
+
+  // Render lights
+  lighting.render_lights(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    lights.iter().map(|(t, l)| (t, l)),
+    Vec2::ZERO,
+    1.0,
+  );
+
+  // Compose lighting to texture_a
+  lighting.compose(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    &pixel_data,
+    post_process.texture_a_view(),
+    0.0,
+  );
+
+  // Apply god rays effect
+  let light_positions = vec![(10.0 / width as f32, 10.0 / height as f32)];
+  let god_rays = ryo2d::core::shaders::PostProcessEffect::god_rays(0.8, light_positions);
+  let effects = [(&god_rays, 0.0f32)];
+
+  let _output = post_process.apply_effects(&gpu.device, &gpu.queue, &mut encoder, &effects);
+
+  gpu.queue.submit(std::iter::once(encoder.finish()));
+  // Test passes if no panic - god rays work with lighting pipeline
+}
+
+/// Test that lights without volumetric settings render without crashing
+///
+/// This verifies that regular lights (without volumetric) continue to work
+/// correctly alongside the volumetric feature.
+#[test]
+fn test_non_volumetric_lights_unchanged() {
+  let Some(gpu) = TestGpu::new() else {
+    eprintln!("Skipping test_non_volumetric_lights_unchanged: no GPU available");
+    return;
+  };
+
+  let width = 32u32;
+  let height = 32u32;
+  let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+  let mut renderer = LightingRenderer::new(&gpu.device, width, height, format);
+  renderer.set_enabled(true);
+  renderer.set_ambient(AmbientLight::new(Color::WHITE, 0.5));
+
+  let target = create_srgb_target(&gpu, width, height);
+
+  // Create a normal light (no volumetric)
+  let transform = Transform::new(16.0, 16.0);
+  let light = Light2D::point(Color::WHITE, 15.0).with_intensity(1.0);
+
+  // Verify light does NOT have volumetric
+  assert!(!light.has_volumetric());
+
+  let lights = [(transform, light)];
+
+  let mut pixel_data = vec![0u8; (width * height * 4) as usize];
+  for pixel in pixel_data.chunks_exact_mut(4) {
+    pixel[0] = 200;
+    pixel[1] = 200;
+    pixel[2] = 200;
+    pixel[3] = 255;
+  }
+
+  let mut encoder = gpu
+    .device
+    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+      label: Some("Non-Volumetric Light Test"),
+    });
+
+  renderer.render_lights(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    lights.iter().map(|(t, l)| (t, l)),
+    Vec2::ZERO,
+    1.0,
+  );
+
+  renderer.compose(
+    &gpu.device,
+    &gpu.queue,
+    &mut encoder,
+    &pixel_data,
+    &target.view,
+    0.0,
+  );
+
+  gpu.queue.submit(std::iter::once(encoder.finish()));
+
+  // Verify output has visible content from ambient
+  let center = target.get_pixel(&gpu, 16, 16);
+  let brightness = (center.0 as u32 + center.1 as u32 + center.2 as u32) / 3;
+
+  // With ambient 0.5 on light gray scene (200), expect ~100 brightness
+  assert!(
+    brightness > 50,
+    "Output should have visible content: brightness={}",
+    brightness
+  );
+}

@@ -957,15 +957,18 @@ impl Engine {
       let lighting_enabled = lighting.as_ref().map(|l| l.is_enabled()).unwrap_or(false);
 
       let result = if has_gpu_sprites || has_trails || lighting_enabled {
-        // Create callback closure that captures gpu, batch_collector, and trail_renderer
+        // Create GPU sprite callback (backgrounds, parallax - renders BEFORE CPU content)
         let batch_collector = &self.batch_collector;
         let gpu_callback =
           |queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
-            // Render GPU sprites first
             if has_gpu_sprites {
               gpu.render_batches(queue, encoder, view, batch_collector);
             }
-            // Render trails on top of sprites
+          };
+
+        // Create trail callback (renders AFTER CPU content so backgrounds don't cover trails)
+        let trail_callback =
+          |queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
             if let Some(ref mut trails) = trail_renderer {
               trails.render(
                 queue,
@@ -1018,7 +1021,7 @@ impl Engine {
             Some(&self.ui_buffer),
           )
         } else {
-          rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback))
+          rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback), Some(trail_callback))
         }
       } else {
         rend.render_with_effects(Some(&self.effects))
@@ -1262,8 +1265,7 @@ impl Engine {
       if let (Some(seq), Some(mut renderable)) = (
         self.world.get_component::<TweenSequence>(entity),
         self.world.get_component_mut::<Renderable>(entity),
-      )
-        && let Some(tween) = seq.current()
+      ) && let Some(tween) = seq.current()
       {
         if let Some(alpha) = tween.current_alpha() {
           renderable.alpha = alpha;
@@ -1274,8 +1276,7 @@ impl Engine {
       }
 
       // Advance to next tween if current one finished
-      if tween_finished
-        && let Some(mut seq) = self.world.get_component_mut::<TweenSequence>(entity)
+      if tween_finished && let Some(mut seq) = self.world.get_component_mut::<TweenSequence>(entity)
       {
         seq.advance();
       }
@@ -2666,16 +2667,20 @@ impl ApplicationHandler for Engine {
           let lighting_enabled = lighting.as_ref().map(|l| l.is_enabled()).unwrap_or(false);
 
           let result = if has_gpu_sprites || has_trails || lighting_enabled {
-            // Create callback closure that captures gpu, batch_collector, and trail_renderer
+            // Create GPU sprite callback (backgrounds, parallax - renders BEFORE CPU content)
             let batch_collector = &self.batch_collector;
             let gpu_callback = |queue: &wgpu::Queue,
                                 encoder: &mut wgpu::CommandEncoder,
                                 view: &wgpu::TextureView| {
-              // Render GPU sprites first
               if has_gpu_sprites {
                 gpu.render_batches(queue, encoder, view, batch_collector);
               }
-              // Render trails on top of sprites
+            };
+
+            // Create trail callback (renders AFTER CPU content so backgrounds don't cover trails)
+            let trail_callback = |queue: &wgpu::Queue,
+                                  encoder: &mut wgpu::CommandEncoder,
+                                  view: &wgpu::TextureView| {
               if let Some(ref mut trails) = trail_renderer {
                 trails.render(
                   queue,
@@ -2732,7 +2737,7 @@ impl ApplicationHandler for Engine {
                 Some(&self.ui_buffer),
               )
             } else {
-              rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback))
+              rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback), Some(trail_callback))
             }
           } else {
             rend.render_with_effects(Some(&self.effects))

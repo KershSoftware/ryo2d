@@ -3,7 +3,7 @@
 //! Manages GPU resources for rendering post-processing effects.
 //! Uses ping-pong buffers for effect chaining.
 
-use super::effects::{EffectParams, PostProcessEffect};
+use super::effects::{EffectParams, GodRaysParams, PostProcessEffect};
 use super::post_process_shaders;
 use wgpu::util::DeviceExt;
 
@@ -32,12 +32,19 @@ pub struct PostProcessPipeline {
   screen_flash_pipeline: Option<EffectPipeline>,
   crt_pipeline: Option<EffectPipeline>,
   chromatic_aberration_pipeline: Option<EffectPipeline>,
+  god_rays_pipeline: Option<EffectPipeline>,
 
   // Uniform buffer for effect parameters
   uniform_buffer: wgpu::Buffer,
 
-  // Bind group layout shared by all effects
+  // Larger uniform buffer for god rays (128 bytes)
+  god_rays_uniform_buffer: wgpu::Buffer,
+
+  // Bind group layout shared by most effects
   bind_group_layout: wgpu::BindGroupLayout,
+
+  // Bind group layout for god rays (larger uniform)
+  god_rays_bind_group_layout: wgpu::BindGroupLayout,
 
   // Dimensions
   width: u32,
@@ -109,7 +116,7 @@ impl PostProcessPipeline {
       usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    // Create bind group layout (shared by all effects)
+    // Create bind group layout (shared by most effects)
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
       label: Some("Post-Process Bind Group Layout"),
       entries: &[
@@ -145,6 +152,51 @@ impl PostProcessPipeline {
       ],
     });
 
+    // Create bind group layout for god rays (same structure, but with larger uniform)
+    let god_rays_bind_group_layout =
+      device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("God Rays Bind Group Layout"),
+        entries: &[
+          // Input texture
+          wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+              multisampled: false,
+              view_dimension: wgpu::TextureViewDimension::D2,
+              sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            },
+            count: None,
+          },
+          // Sampler
+          wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+          },
+          // God rays uniform buffer (128 bytes)
+          wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+              ty: wgpu::BufferBindingType::Uniform,
+              has_dynamic_offset: false,
+              min_binding_size: None,
+            },
+            count: None,
+          },
+        ],
+      });
+
+    // Create god rays uniform buffer
+    let god_rays_uniform = GodRaysParams::default();
+    let god_rays_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+      label: Some("God Rays Uniform Buffer"),
+      contents: bytemuck::cast_slice(&[god_rays_uniform]),
+      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
     Self {
       texture_a,
       texture_b,
@@ -157,8 +209,11 @@ impl PostProcessPipeline {
       screen_flash_pipeline: None,
       crt_pipeline: None,
       chromatic_aberration_pipeline: None,
+      god_rays_pipeline: None,
       uniform_buffer,
+      god_rays_uniform_buffer,
       bind_group_layout,
+      god_rays_bind_group_layout,
       width,
       height,
       format,
@@ -231,10 +286,6 @@ impl PostProcessPipeline {
     let mut use_a_as_input = true;
 
     for (effect, time) in effects {
-      // Update uniform buffer
-      let params = EffectParams::from_effect(effect, *time, self.width, self.height);
-      queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[params]));
-
       // Get the pipeline (guaranteed to exist after ensure_pipeline_exists)
       let pipeline = self.get_pipeline(effect);
 
@@ -245,24 +296,58 @@ impl PostProcessPipeline {
         (&self.view_b, &self.view_a)
       };
 
-      let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Post-Process Bind Group"),
-        layout: &self.bind_group_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(input_view),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(&self.sampler),
-          },
-          wgpu::BindGroupEntry {
-            binding: 2,
-            resource: self.uniform_buffer.as_entire_binding(),
-          },
-        ],
-      });
+      // Handle god rays specially (different uniform buffer size)
+      let bind_group = if matches!(effect, PostProcessEffect::GodRays { .. }) {
+        // Update god rays uniform buffer
+        let params = GodRaysParams::from_effect(effect, *time, self.width, self.height);
+        queue.write_buffer(
+          &self.god_rays_uniform_buffer,
+          0,
+          bytemuck::cast_slice(&[params]),
+        );
+
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("God Rays Bind Group"),
+          layout: &self.god_rays_bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(input_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.god_rays_uniform_buffer.as_entire_binding(),
+            },
+          ],
+        })
+      } else {
+        // Update standard uniform buffer
+        let params = EffectParams::from_effect(effect, *time, self.width, self.height);
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[params]));
+
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("Post-Process Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(input_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        })
+      };
 
       // Render pass
       {
@@ -357,6 +442,11 @@ impl PostProcessPipeline {
           ));
         }
       }
+      PostProcessEffect::GodRays { .. } => {
+        if self.god_rays_pipeline.is_none() {
+          self.god_rays_pipeline = Some(self.create_god_rays_pipeline(device));
+        }
+      }
     }
   }
 
@@ -377,6 +467,7 @@ impl PostProcessPipeline {
           .unwrap()
           .pipeline
       }
+      PostProcessEffect::GodRays { .. } => &self.god_rays_pipeline.as_ref().unwrap().pipeline,
     }
   }
 
@@ -400,6 +491,60 @@ impl PostProcessPipeline {
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
       label: Some(&format!("{} Pipeline", name)),
+      layout: Some(&pipeline_layout),
+      vertex: wgpu::VertexState {
+        module: &shader,
+        entry_point: "vs_main",
+        buffers: &[],
+        compilation_options: Default::default(),
+      },
+      fragment: Some(wgpu::FragmentState {
+        module: &shader,
+        entry_point: "fs_main",
+        targets: &[Some(wgpu::ColorTargetState {
+          format: self.format,
+          blend: Some(wgpu::BlendState::REPLACE),
+          write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+      }),
+      primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        strip_index_format: None,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: None,
+        polygon_mode: wgpu::PolygonMode::Fill,
+        unclipped_depth: false,
+        conservative: false,
+      },
+      depth_stencil: None,
+      multisample: wgpu::MultisampleState {
+        count: 1,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+      },
+      multiview: None,
+      cache: None,
+    });
+
+    EffectPipeline { pipeline }
+  }
+
+  /// Create the god rays pipeline (uses different bind group layout)
+  fn create_god_rays_pipeline(&self, device: &wgpu::Device) -> EffectPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+      label: Some("God Rays Shader"),
+      source: wgpu::ShaderSource::Wgsl(post_process_shaders::GOD_RAYS.into()),
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: Some("God Rays Pipeline Layout"),
+      bind_group_layouts: &[&self.god_rays_bind_group_layout],
+      push_constant_ranges: &[],
+    });
+
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+      label: Some("God Rays Pipeline"),
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,

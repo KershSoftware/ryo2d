@@ -800,9 +800,8 @@ impl WgpuRenderer {
 
   /// Render the pixel buffer to the screen.
   pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-    self.render_with_gpu_sprites::<fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView)>(
-      None, None,
-    )
+    type Cb = fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView);
+    self.render_with_gpu_sprites::<Cb, Cb>(None, None, None)
   }
 
   /// Render the pixel buffer with post-processing effects.
@@ -810,9 +809,8 @@ impl WgpuRenderer {
     &mut self,
     effects: Option<&EffectsManager>,
   ) -> Result<(), wgpu::SurfaceError> {
-    self.render_with_gpu_sprites::<fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView)>(
-      effects, None,
-    )
+    type Cb = fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView);
+    self.render_with_gpu_sprites::<Cb, Cb>(effects, None, None)
   }
 
   /// Render with optional GPU sprites and post-processing effects.
@@ -825,15 +823,18 @@ impl WgpuRenderer {
   /// 1. Game texture is cleared
   /// 2. `gpu_sprite_callback` draws GPU sprites (backgrounds, parallax)
   /// 3. CPU pixel buffer is alpha-blended on top
-  /// 4. Post-processing effects are applied (if provided)
-  /// 5. Final result is rendered to screen with letterboxing
-  pub fn render_with_gpu_sprites<F>(
+  /// 4. `trail_callback` draws trails ON TOP of CPU content (so backgrounds don't cover trails)
+  /// 5. Post-processing effects are applied (if provided)
+  /// 6. Final result is rendered to screen with letterboxing
+  pub fn render_with_gpu_sprites<F, T>(
     &mut self,
     effects: Option<&EffectsManager>,
     gpu_sprite_callback: Option<F>,
+    trail_callback: Option<T>,
   ) -> Result<(), wgpu::SurfaceError>
   where
     F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    T: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
   {
     // Step 1: Upload CPU pixel buffer to staging texture (not game texture)
     self.queue.write_texture(
@@ -915,6 +916,12 @@ impl WgpuRenderer {
       blend_pass.set_pipeline(&self.game_blend_pipeline);
       blend_pass.set_bind_group(0, &self.cpu_bind_group, &[]);
       blend_pass.draw(0..6, 0..1);
+    }
+
+    // Step 4: Render trails ON TOP of CPU content
+    // This ensures trails are visible even when backgrounds use opaque alpha
+    if let Some(callback) = trail_callback {
+      callback(&self.queue, &mut encoder, &self.texture_view);
     }
 
     // Check if we have active effects to apply

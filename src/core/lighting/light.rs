@@ -18,8 +18,17 @@
 //!     Transform::at(200.0, 200.0),
 //!     Light2D::spot(Color::WHITE, 200.0, 45.0, 0.0), // 45 degree cone, pointing right
 //! ));
+//!
+//! // Create a spotlight with volumetric beam
+//! let volumetric_flashlight = Light2D::flashlight(200.0, 0.0)
+//!     .with_volumetric();  // Visible beam in dusty air
+//!
+//! // Create a light that contributes to god rays
+//! let sun_light = Light2D::point(Color::WHITE, 500.0)
+//!     .with_god_rays();
 //! ```
 
+use super::VolumetricSettings;
 use crate::core::ui::Color;
 
 /// A 2D light source component.
@@ -41,6 +50,8 @@ pub enum Light2D {
     falloff: f32,
     /// Whether this light casts shadows
     cast_shadows: bool,
+    /// Volumetric lighting settings (visible beams, god rays)
+    volumetric: Option<VolumetricSettings>,
   },
 
   /// A spotlight that emits light in a cone
@@ -61,6 +72,8 @@ pub enum Light2D {
     softness: f32,
     /// Whether this light casts shadows
     cast_shadows: bool,
+    /// Volumetric lighting settings (visible beams, god rays)
+    volumetric: Option<VolumetricSettings>,
   },
 }
 
@@ -77,6 +90,7 @@ impl Light2D {
       intensity: 1.0,
       falloff: 2.0, // Quadratic falloff is most natural
       cast_shadows: false,
+      volumetric: None,
     }
   }
 
@@ -88,6 +102,7 @@ impl Light2D {
       intensity: intensity.max(0.0),
       falloff: 2.0,
       cast_shadows: false,
+      volumetric: None,
     }
   }
 
@@ -105,6 +120,7 @@ impl Light2D {
       intensity: intensity.max(0.0),
       falloff: falloff.clamp(0.1, 10.0),
       cast_shadows,
+      volumetric: None,
     }
   }
 
@@ -125,6 +141,7 @@ impl Light2D {
       direction,
       softness: 0.1,
       cast_shadows: false,
+      volumetric: None,
     }
   }
 
@@ -145,6 +162,7 @@ impl Light2D {
       direction,
       softness: 0.1,
       cast_shadows: false,
+      volumetric: None,
     }
   }
 
@@ -169,6 +187,7 @@ impl Light2D {
       direction,
       softness: softness.clamp(0.0, 1.0),
       cast_shadows,
+      volumetric: None,
     }
   }
 
@@ -283,6 +302,76 @@ impl Light2D {
     }
     self
   }
+
+  /// Builder method to enable volumetric effects with default settings
+  ///
+  /// Creates visible light beams in dusty/foggy atmospheres.
+  /// For spotlights, this creates a visible cone. For point lights,
+  /// this creates a subtle glow effect.
+  pub fn with_volumetric(mut self) -> Self {
+    let settings = match &self {
+      Self::Spot { .. } => VolumetricSettings::flashlight(),
+      Self::Point { .. } => VolumetricSettings::subtle_beam(),
+    };
+    self.set_volumetric(Some(settings));
+    self
+  }
+
+  /// Builder method to enable god rays contribution
+  ///
+  /// This light will contribute to the screen-space god rays effect.
+  /// Works best with bright lights positioned at the edge of the screen
+  /// or partially occluded by objects.
+  pub fn with_god_rays(mut self) -> Self {
+    let settings = match self.volumetric() {
+      Some(existing) => (*existing).with_god_rays(),
+      None => VolumetricSettings::god_rays_only(),
+    };
+    self.set_volumetric(Some(settings));
+    self
+  }
+
+  /// Builder method to enable both volumetric beam and god rays
+  pub fn with_volumetric_and_god_rays(mut self) -> Self {
+    let settings = match &self {
+      Self::Spot { .. } => VolumetricSettings::flashlight().with_god_rays(),
+      Self::Point { .. } => VolumetricSettings::subtle_beam().with_god_rays(),
+    };
+    self.set_volumetric(Some(settings));
+    self
+  }
+
+  /// Builder method to set custom volumetric settings
+  pub fn with_volumetric_settings(mut self, settings: VolumetricSettings) -> Self {
+    self.set_volumetric(Some(settings));
+    self
+  }
+
+  /// Get the volumetric settings for this light
+  pub fn volumetric(&self) -> Option<&VolumetricSettings> {
+    match self {
+      Self::Point { volumetric, .. } | Self::Spot { volumetric, .. } => volumetric.as_ref(),
+    }
+  }
+
+  /// Set the volumetric settings for this light
+  pub fn set_volumetric(&mut self, settings: Option<VolumetricSettings>) {
+    match self {
+      Self::Point { volumetric, .. } | Self::Spot { volumetric, .. } => *volumetric = settings,
+    }
+  }
+
+  /// Check if this light has volumetric effects enabled
+  pub fn has_volumetric(&self) -> bool {
+    self
+      .volumetric()
+      .is_some_and(|v| v.enabled && (v.intensity > 0.0 || v.god_rays))
+  }
+
+  /// Check if this light contributes to god rays
+  pub fn contributes_to_god_rays(&self) -> bool {
+    self.volumetric().is_some_and(|v| v.enabled && v.god_rays)
+  }
 }
 
 /// Convenient light presets
@@ -332,6 +421,7 @@ mod tests {
     assert_eq!(light.radius(), 100.0);
     assert_eq!(light.intensity(), 1.0);
     assert!(!light.casts_shadows());
+    assert!(light.volumetric().is_none());
   }
 
   #[test]
@@ -342,6 +432,7 @@ mod tests {
     assert_eq!(light.radius(), 150.0);
     assert_eq!(light.angle(), 45.0);
     assert_eq!(light.direction(), 90.0);
+    assert!(light.volumetric().is_none());
   }
 
   #[test]
@@ -389,5 +480,44 @@ mod tests {
     assert_eq!(light.radius(), 200.0);
     assert_eq!(light.intensity(), 0.5);
     assert!(light.casts_shadows());
+  }
+
+  #[test]
+  fn volumetric_builder() {
+    let light = Light2D::flashlight(200.0, 0.0).with_volumetric();
+    assert!(light.has_volumetric());
+    assert!(!light.contributes_to_god_rays());
+
+    let settings = light.volumetric().unwrap();
+    assert!(settings.enabled);
+    assert!(settings.intensity > 0.0);
+  }
+
+  #[test]
+  fn god_rays_builder() {
+    let light = Light2D::point(Color::WHITE, 500.0).with_god_rays();
+    assert!(light.has_volumetric());
+    assert!(light.contributes_to_god_rays());
+  }
+
+  #[test]
+  fn volumetric_and_god_rays_builder() {
+    let light = Light2D::flashlight(200.0, 90.0).with_volumetric_and_god_rays();
+    assert!(light.has_volumetric());
+    assert!(light.contributes_to_god_rays());
+
+    let settings = light.volumetric().unwrap();
+    assert!(settings.intensity > 0.0);
+    assert!(settings.god_rays);
+  }
+
+  #[test]
+  fn custom_volumetric_settings() {
+    let settings = VolumetricSettings::new(0.8, 0.5, 0.3);
+    let light = Light2D::spot(Color::WHITE, 300.0, 45.0, 90.0).with_volumetric_settings(settings);
+
+    let vs = light.volumetric().unwrap();
+    assert!((vs.intensity - 0.8).abs() < 0.001);
+    assert!((vs.density - 0.5).abs() < 0.001);
   }
 }

@@ -20,6 +20,8 @@ struct LightInstance {
   color_intensity: [f32; 4],
   /// Falloff (x), angle (y), direction (z), softness (w)
   params: [f32; 4],
+  /// Volumetric: intensity (x), density (y), scattering (z), god_rays (w: 0 or 1)
+  volumetric: [f32; 4],
 }
 
 /// Global uniforms for light rendering
@@ -520,6 +522,7 @@ impl LightingRenderer {
           radius,
           intensity,
           falloff,
+          volumetric,
           ..
         } => LightInstance {
           position_radius_type: [pos_x, pos_y, *radius, 0.0],
@@ -530,6 +533,10 @@ impl LightingRenderer {
             *intensity,
           ],
           params: [*falloff, 0.0, 0.0, 0.0],
+          volumetric: volumetric
+            .as_ref()
+            .map(|v| v.to_gpu_vec4())
+            .unwrap_or([0.0; 4]),
         },
         Light2D::Spot {
           color,
@@ -539,6 +546,7 @@ impl LightingRenderer {
           angle,
           direction,
           softness,
+          volumetric,
           ..
         } => LightInstance {
           position_radius_type: [pos_x, pos_y, *radius, 1.0],
@@ -549,6 +557,10 @@ impl LightingRenderer {
             *intensity,
           ],
           params: [*falloff, *angle, *direction, *softness],
+          volumetric: volumetric
+            .as_ref()
+            .map(|v| v.to_gpu_vec4())
+            .unwrap_or([0.0; 4]),
         },
       };
 

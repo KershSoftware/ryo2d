@@ -196,11 +196,15 @@
 //! - Shadow casting adds additional cost; disable for lights that don't need it
 
 mod ambient;
+mod atmosphere;
 mod light;
 mod occluder;
 mod renderer;
+mod volumetric;
 
 pub use ambient::AmbientLight;
+pub use atmosphere::{Atmosphere, GodRaysQuality};
 pub use light::Light2D;
 pub use occluder::LightOccluder2D;
 pub use renderer::{LightingParams, LightingRenderer, MAX_LIGHTS};
+pub use volumetric::VolumetricSettings;

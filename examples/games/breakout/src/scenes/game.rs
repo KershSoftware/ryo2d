@@ -285,8 +285,11 @@ impl GameScene {
 
     let ball = ctx.world.spawn((
       Transform::new(ball_x, ball_y),
-      Velocity::zero(),                                                    // Frozen initially
-      RigidBody::new().with_ccd().with_gravity_scale(0.0).with_drag(0.0), // CCD prevents tunneling
+      Velocity::zero(), // Frozen initially
+      RigidBody::new()
+        .with_ccd()
+        .with_gravity_scale(0.0)
+        .with_drag(0.0), // CCD prevents tunneling
       Collider::circle_collider(BALL_SIZE / 2.0)
         .with_offset(BALL_SIZE / 2.0, BALL_SIZE / 2.0)
         .with_restitution(1.0) // Perfect bounce
@@ -319,7 +322,10 @@ impl GameScene {
     let ball = ctx.world.spawn((
       Transform::new(x - BALL_SIZE / 2.0, y),
       Velocity::new(vel_x, vel_y), // Moving upward with random angle
-      RigidBody::new().with_ccd().with_gravity_scale(0.0).with_drag(0.0), // CCD prevents tunneling
+      RigidBody::new()
+        .with_ccd()
+        .with_gravity_scale(0.0)
+        .with_drag(0.0), // CCD prevents tunneling
       Collider::circle_collider(BALL_SIZE / 2.0)
         .with_offset(BALL_SIZE / 2.0, BALL_SIZE / 2.0)
         .with_restitution(1.0)

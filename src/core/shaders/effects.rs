@@ -66,6 +66,28 @@ pub enum PostProcessEffect {
     /// Direction of the aberration (radial from center or directional)
     radial: bool,
   },
+
+  /// God rays / light shafts effect
+  ///
+  /// Creates radial light beams emanating from bright light sources.
+  /// Works by sampling along rays from each light position.
+  GodRays {
+    /// Overall intensity of the effect (0.0 - 2.0)
+    intensity: f32,
+    /// Number of samples per ray (8-64, more = higher quality)
+    samples: u32,
+    /// Decay rate per sample (0.9 - 0.99)
+    decay: f32,
+    /// Density/length of rays (0.5 - 2.0)
+    density: f32,
+    /// Weight per sample (0.0 - 1.0)
+    weight: f32,
+    /// Brightness threshold for contribution (0.0 - 1.0)
+    threshold: f32,
+    /// Light positions in screen UV space (0-1), max 4 lights
+    /// Format: [(x, y), ...] where each position is a light
+    light_positions: Vec<(f32, f32)>,
+  },
 }
 
 impl PostProcessEffect {
@@ -163,6 +185,44 @@ impl PostProcessEffect {
     }
   }
 
+  /// Create god rays effect with default settings
+  ///
+  /// # Arguments
+  /// * `intensity` - Overall effect intensity (0.0 - 2.0)
+  /// * `light_positions` - Screen-space UV positions of lights (0-1 range)
+  pub fn god_rays(intensity: f32, light_positions: Vec<(f32, f32)>) -> Self {
+    Self::GodRays {
+      intensity: intensity.clamp(0.0, 2.0),
+      samples: 16,
+      decay: 0.96,
+      density: 1.0,
+      weight: 0.5,
+      threshold: 0.5,
+      light_positions,
+    }
+  }
+
+  /// Create god rays effect with custom settings
+  #[allow(clippy::too_many_arguments)]
+  pub fn god_rays_custom(
+    intensity: f32,
+    samples: u32,
+    decay: f32,
+    density: f32,
+    threshold: f32,
+    light_positions: Vec<(f32, f32)>,
+  ) -> Self {
+    Self::GodRays {
+      intensity: intensity.clamp(0.0, 2.0),
+      samples: samples.clamp(4, 64),
+      decay: decay.clamp(0.8, 0.999),
+      density: density.clamp(0.1, 3.0),
+      weight: 0.5,
+      threshold: threshold.clamp(0.0, 1.0),
+      light_positions,
+    }
+  }
+
   /// Get the shader name for this effect
   pub fn shader_name(&self) -> &'static str {
     match self {
@@ -172,6 +232,7 @@ impl PostProcessEffect {
       Self::ScreenFlash { .. } => "screen_flash",
       Self::Crt { .. } => "crt",
       Self::ChromaticAberration { .. } => "chromatic_aberration",
+      Self::GodRays { .. } => "god_rays",
     }
   }
 
@@ -186,6 +247,11 @@ impl PostProcessEffect {
         scanline_intensity, ..
       } => *scanline_intensity > 0.001,
       Self::ChromaticAberration { offset, .. } => *offset > 0.0001,
+      Self::GodRays {
+        intensity,
+        light_positions,
+        ..
+      } => *intensity > 0.001 && !light_positions.is_empty(),
     }
   }
 }
@@ -244,6 +310,16 @@ impl EffectParams {
         [0.0, 0.0, 0.0, 1.0],
         [*offset, if *radial { 1.0 } else { 0.0 }, 0.0, 0.0],
       ),
+      PostProcessEffect::GodRays {
+        intensity,
+        samples,
+        decay,
+        density,
+        ..
+      } => (
+        [0.0, 0.0, 0.0, 1.0],
+        [*intensity, *samples as f32, *decay, *density],
+      ),
     };
 
     Self {
@@ -251,6 +327,95 @@ impl EffectParams {
       params,
       time_resolution: [time, width as f32, height as f32, 0.0],
       _padding: [0.0; 4],
+    }
+  }
+}
+
+/// Extended parameters for god rays effect.
+///
+/// This struct includes the light positions which don't fit in the standard
+/// EffectParams. The shader needs to handle this specially.
+/// Must be 128 bytes total with 16-byte alignment.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GodRaysParams {
+  /// Primary parameters - 16 bytes
+  /// x: intensity, y: samples, z: decay, w: density
+  pub params: [f32; 4],
+  /// Secondary parameters - 16 bytes
+  /// x: weight, y: threshold, z: num_lights, w: unused
+  pub params2: [f32; 4],
+  /// Time + resolution packed - 16 bytes
+  pub time_resolution: [f32; 4],
+  /// Light position 0 (UV coords) - 16 bytes
+  /// x: light0.x, y: light0.y, z: light1.x, w: light1.y
+  pub light_pos_01: [f32; 4],
+  /// Light position 2-3 (UV coords) - 16 bytes
+  /// x: light2.x, y: light2.y, z: light3.x, w: light3.y
+  pub light_pos_23: [f32; 4],
+  /// Padding to reach 128 bytes - 48 bytes
+  pub _padding: [[f32; 4]; 3],
+}
+
+impl GodRaysParams {
+  /// Create god rays parameters from an effect
+  pub fn from_effect(effect: &PostProcessEffect, time: f32, width: u32, height: u32) -> Self {
+    if let PostProcessEffect::GodRays {
+      intensity,
+      samples,
+      decay,
+      density,
+      weight,
+      threshold,
+      light_positions,
+    } = effect
+    {
+      let num_lights = light_positions.len().min(4) as f32;
+
+      // Pack light positions into vec4s
+      let mut light_pos_01 = [0.5, 0.5, 0.5, 0.5]; // default to center
+      let mut light_pos_23 = [0.5, 0.5, 0.5, 0.5];
+
+      if !light_positions.is_empty() {
+        light_pos_01[0] = light_positions[0].0;
+        light_pos_01[1] = light_positions[0].1;
+      }
+      if light_positions.len() > 1 {
+        light_pos_01[2] = light_positions[1].0;
+        light_pos_01[3] = light_positions[1].1;
+      }
+      if light_positions.len() > 2 {
+        light_pos_23[0] = light_positions[2].0;
+        light_pos_23[1] = light_positions[2].1;
+      }
+      if light_positions.len() > 3 {
+        light_pos_23[2] = light_positions[3].0;
+        light_pos_23[3] = light_positions[3].1;
+      }
+
+      Self {
+        params: [*intensity, *samples as f32, *decay, *density],
+        params2: [*weight, *threshold, num_lights, 0.0],
+        time_resolution: [time, width as f32, height as f32, 0.0],
+        light_pos_01,
+        light_pos_23,
+        _padding: [[0.0; 4]; 3],
+      }
+    } else {
+      Self::default()
+    }
+  }
+}
+
+impl Default for GodRaysParams {
+  fn default() -> Self {
+    Self {
+      params: [0.8, 16.0, 0.96, 1.0],
+      params2: [0.5, 0.5, 0.0, 0.0],
+      time_resolution: [0.0, 1.0, 1.0, 0.0],
+      light_pos_01: [0.5, 0.5, 0.5, 0.5],
+      light_pos_23: [0.5, 0.5, 0.5, 0.5],
+      _padding: [[0.0; 4]; 3],
     }
   }
 }
@@ -277,5 +442,37 @@ mod tests {
   fn effect_params_size_is_aligned() {
     // GPU uniform buffers need 16-byte alignment
     assert_eq!(std::mem::size_of::<EffectParams>() % 16, 0);
+  }
+
+  #[test]
+  fn god_rays_params_size_is_aligned() {
+    // GPU uniform buffers need 16-byte alignment
+    assert_eq!(std::mem::size_of::<GodRaysParams>() % 16, 0);
+    // Should be 128 bytes
+    assert_eq!(std::mem::size_of::<GodRaysParams>(), 128);
+  }
+
+  #[test]
+  fn god_rays_effect_is_active_with_lights() {
+    let effect = PostProcessEffect::god_rays(0.8, vec![(0.5, 0.5)]);
+    assert!(effect.is_active());
+  }
+
+  #[test]
+  fn god_rays_effect_inactive_without_lights() {
+    let effect = PostProcessEffect::god_rays(0.8, vec![]);
+    assert!(!effect.is_active());
+  }
+
+  #[test]
+  fn god_rays_params_packs_lights() {
+    let effect = PostProcessEffect::god_rays(0.8, vec![(0.1, 0.2), (0.3, 0.4)]);
+    let params = GodRaysParams::from_effect(&effect, 0.0, 1920, 1080);
+
+    assert!((params.light_pos_01[0] - 0.1).abs() < 0.001);
+    assert!((params.light_pos_01[1] - 0.2).abs() < 0.001);
+    assert!((params.light_pos_01[2] - 0.3).abs() < 0.001);
+    assert!((params.light_pos_01[3] - 0.4).abs() < 0.001);
+    assert!((params.params2[2] - 2.0).abs() < 0.001); // num_lights
   }
 }
