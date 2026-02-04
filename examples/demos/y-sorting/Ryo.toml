@@ -1,0 +1,50 @@
+# Y-Sorting Demo - Ryo2D Project Configuration
+
+[project]
+name = "Y-Sorting Demo"
+
+[paths]
+entry_point = "main.rs"
+save_data = "data"
+assets = "assets"
+
+# ==============================================================================
+# USER-FACING DEFAULTS
+# Values here are written to system.json on first run.
+# Players can override these in system.json; their changes persist.
+# ==============================================================================
+
+[system]
+# Default window resolution (user can change in system.json)
+# Using small resolution with integer scaling for pixel-perfect look
+resolution_width = 320
+resolution_height = 240
+# Enable VSync for smoother rendering (recommended)
+vsync = true
+# Start in windowed mode (user preference)
+fullscreen = false
+# Audio volume defaults (0.0 - 1.0)
+master_volume = 0.8
+music_volume = 1.0
+sfx_volume = 1.0
+
+[info]
+# Display FPS counter in corner (user can toggle)
+show_fps = false
+
+# ==============================================================================
+# DEVELOPER-ONLY SETTINGS
+# These are NOT written to system.json - they're for development.
+# ==============================================================================
+
+[debug]
+# Show collision boundaries for debugging
+show_colliders = false
+# Show velocity vectors (useful for physics debugging)
+show_velocities = false
+# Show entity origin points
+show_origins = false
+
+[env]
+# Add your game-specific configuration here
+# debug_mode = false

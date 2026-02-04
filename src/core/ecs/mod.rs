@@ -22,6 +22,7 @@ mod sprite_effects;
 mod squash_stretch;
 mod tween;
 mod world;
+mod y_sort;
 
 pub use active::{Active, Inactive};
 pub use component::Component;
@@ -36,3 +37,4 @@ pub use sprite_effects::SpriteEffect;
 pub use squash_stretch::{SquashAxis, SquashStretch};
 pub use tween::{Ease, Tween, TweenLoop, TweenSequence};
 pub use world::World;
+pub use y_sort::YSort;
