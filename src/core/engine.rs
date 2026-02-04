@@ -1366,17 +1366,22 @@ impl Engine {
 
     // --- Trail System ---
     // Update trail components: age points, add new positions, remove expired points.
+    // Trails always age (for fade-out effects), but only record new points when enabled.
     for entity in self.world.entities_with::<Trail2D>() {
       // Skip inactive pooled entities
       if self.world.has::<super::ecs::Inactive>(entity) {
         continue;
       }
-      if let Some(transform) = self.world.get_component::<Transform>(entity) {
-        let (x, y) = (transform.x, transform.y);
-        drop(transform); // Release borrow before mutable borrow
-        if let Some(mut trail) = self.world.get_component_mut::<Trail2D>(entity) {
-          trail.update(x, y, _dt);
-        }
+      // Get position from Transform if available, otherwise use (0,0)
+      // Position only matters when trail is enabled (recording), so fade-out
+      // trails without a Transform still work correctly.
+      let (x, y) = if let Some(transform) = self.world.get_component::<Transform>(entity) {
+        (transform.x, transform.y)
+      } else {
+        (0.0, 0.0) // Fade-out trails don't need a position
+      };
+      if let Some(mut trail) = self.world.get_component_mut::<Trail2D>(entity) {
+        trail.update(x, y, _dt);
       }
     }
 
@@ -2521,14 +2526,18 @@ impl ApplicationHandler for Engine {
           trails.begin_frame();
 
           // Add Trail2D components (skip inactive pooled entities)
+          // Trails store absolute positions, so Transform is optional (used as dummy for trails without one)
+          let dummy_transform = Transform::default();
           for entity in self.world.entities_with::<Trail2D>() {
             if self.world.has::<super::ecs::Inactive>(entity) {
               continue;
             }
-            if let (Some(trail), Some(transform)) = (
-              self.world.get_component::<Trail2D>(entity),
-              self.world.get_component::<Transform>(entity),
-            ) {
+            if let Some(trail) = self.world.get_component::<Trail2D>(entity) {
+              let transform = self
+                .world
+                .get_component::<Transform>(entity)
+                .map(|t| (*t).clone())
+                .unwrap_or_else(|| dummy_transform.clone());
               trails.add_trail(&trail, &transform);
             }
           }
@@ -3049,6 +3058,9 @@ impl EngineBuilder {
   /// If system.json doesn't exist, it will be created from the developer
   /// defaults in Ryo.toml's [system] section combined with engine defaults.
   ///
+  /// If `ignore_system_json = true` is set in `Ryo.toml [system]`, this method
+  /// will use the Ryo.toml/engine defaults directly without loading system.json.
+  ///
   /// # Example
   ///
   /// ```rust,ignore
@@ -3060,29 +3072,44 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn with_system_state_overrides(mut self) -> Self {
-    if let Ok(workspace) = super::config::Workspace::discover()
-      && let Ok(save_manager) = workspace.create_save_manager()
-      && let Ok(mut system_state) = save_manager.load_or_create_system(&workspace.config().system)
-    {
-      // Migrate legacy fullscreen field if present
-      system_state.display.migrate_legacy();
+    if let Ok(workspace) = super::config::Workspace::discover() {
+      let system_defaults = &workspace.config().system;
 
-      // Apply display overrides
-      self.config.width = system_state.display.width;
-      self.config.height = system_state.display.height;
-      self.config.display_mode = system_state.display.display_mode;
-      self.display_mode_set = true;
+      // Check if we should ignore system.json
+      if system_defaults.ignore_system_json {
+        // Use Ryo.toml/engine defaults directly
+        self.config.width = system_defaults.resolution_width;
+        self.config.height = system_defaults.resolution_height;
+        self.config.display_mode = system_defaults.display_mode;
+        self.display_mode_set = true;
+        self.config.debug.show_fps = system_defaults.show_fps;
+        self.vsync = Some(system_defaults.vsync);
+        self.master_volume = system_defaults.master_volume;
+        self.music_volume = system_defaults.music_volume;
+        self.sfx_volume = system_defaults.sfx_volume;
+      } else if let Ok(save_manager) = workspace.create_save_manager()
+        && let Ok(mut system_state) = save_manager.load_or_create_system(system_defaults)
+      {
+        // Migrate legacy fullscreen field if present
+        system_state.display.migrate_legacy();
 
-      // Apply overrides if present
-      if let Some(show_fps) = system_state.show_fps {
-        self.config.debug.show_fps = show_fps;
+        // Apply display overrides
+        self.config.width = system_state.display.width;
+        self.config.height = system_state.display.height;
+        self.config.display_mode = system_state.display.display_mode;
+        self.display_mode_set = true;
+
+        // Apply overrides if present
+        if let Some(show_fps) = system_state.show_fps {
+          self.config.debug.show_fps = show_fps;
+        }
+        // Store vsync preference to use when creating renderer
+        self.vsync = system_state.vsync;
+        // Store audio volumes to apply after AudioManager creation
+        self.master_volume = system_state.master_volume;
+        self.music_volume = system_state.music_volume;
+        self.sfx_volume = system_state.sfx_volume;
       }
-      // Store vsync preference to use when creating renderer
-      self.vsync = system_state.vsync;
-      // Store audio volumes to apply after AudioManager creation
-      self.master_volume = system_state.master_volume;
-      self.music_volume = system_state.music_volume;
-      self.sfx_volume = system_state.sfx_volume;
     }
     self
   }
@@ -3094,6 +3121,9 @@ impl EngineBuilder {
   ///
   /// Unlike [`with_system_state_overrides`](Self::with_system_state_overrides), this method
   /// does NOT override the game's resolution - only the display mode and audio/vsync settings.
+  ///
+  /// If `ignore_system_json = true` is set in `Ryo.toml [system]`, this method
+  /// will use the Ryo.toml/engine defaults directly without loading system.json.
   ///
   /// # Example
   ///
@@ -3107,27 +3137,40 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn with_saved_display_mode(mut self) -> Self {
-    if let Ok(workspace) = super::config::Workspace::discover()
-      && let Ok(save_manager) = workspace.create_save_manager()
-      && let Ok(mut system_state) = save_manager.load_or_create_system(&workspace.config().system)
-    {
-      // Migrate legacy fullscreen field if present
-      system_state.display.migrate_legacy();
+    if let Ok(workspace) = super::config::Workspace::discover() {
+      let system_defaults = &workspace.config().system;
 
-      // Apply ONLY display mode - not resolution
-      self.config.display_mode = system_state.display.display_mode;
-      self.display_mode_set = true;
+      // Check if we should ignore system.json
+      if system_defaults.ignore_system_json {
+        // Use Ryo.toml/engine defaults directly (display mode only, not resolution)
+        self.config.display_mode = system_defaults.display_mode;
+        self.display_mode_set = true;
+        self.config.debug.show_fps = system_defaults.show_fps;
+        self.vsync = Some(system_defaults.vsync);
+        self.master_volume = system_defaults.master_volume;
+        self.music_volume = system_defaults.music_volume;
+        self.sfx_volume = system_defaults.sfx_volume;
+      } else if let Ok(save_manager) = workspace.create_save_manager()
+        && let Ok(mut system_state) = save_manager.load_or_create_system(system_defaults)
+      {
+        // Migrate legacy fullscreen field if present
+        system_state.display.migrate_legacy();
 
-      // Apply overrides if present
-      if let Some(show_fps) = system_state.show_fps {
-        self.config.debug.show_fps = show_fps;
+        // Apply ONLY display mode - not resolution
+        self.config.display_mode = system_state.display.display_mode;
+        self.display_mode_set = true;
+
+        // Apply overrides if present
+        if let Some(show_fps) = system_state.show_fps {
+          self.config.debug.show_fps = show_fps;
+        }
+        // Store vsync preference to use when creating renderer
+        self.vsync = system_state.vsync;
+        // Store audio volumes to apply after AudioManager creation
+        self.master_volume = system_state.master_volume;
+        self.music_volume = system_state.music_volume;
+        self.sfx_volume = system_state.sfx_volume;
       }
-      // Store vsync preference to use when creating renderer
-      self.vsync = system_state.vsync;
-      // Store audio volumes to apply after AudioManager creation
-      self.master_volume = system_state.master_volume;
-      self.music_volume = system_state.music_volume;
-      self.sfx_volume = system_state.sfx_volume;
     }
     self
   }
