@@ -148,13 +148,6 @@ if ctx.input.key_released(KeyCode::Escape) { /* just released */ }
 if ctx.input.mouse_pressed(MouseButton::Left) { /* clicked */ }
 let (mx, my) = ctx.input.mouse_position();
 let (wx, wy) = ctx.camera.screen_to_world(mx, my);
-
-// Gamepad (see ryo-controller skill for full API)
-if ctx.input.gamepad_connected() {
-    let (x, y) = ctx.input.left_stick();     // -1.0 to 1.0 with deadzone
-    let trigger = ctx.input.right_trigger(); // 0.0 to 1.0
-    if ctx.input.gamepad_button_pressed(GamepadButton::South) { /* A/Cross */ }
-}
 ```
 
 ### Querying & Modifying Entities
@@ -267,17 +260,12 @@ impl Scene for MenuScene {
         SceneAction::Continue
     }
 
-    fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-        // Draw parallax backgrounds before entity rendering
-        self.background.render(frame, width, height, camera);
-    }
-
     fn render_ui(&mut self, ui: &mut UiContext) {
         // Get screen size (returns u32, cast to f32 for positioning)
         let (sw, sh) = ui.screen_size();
         let screen_w = sw as f32;
         let screen_h = sh as f32;
-
+        
         ui.label("Press ENTER to start", screen_w / 2.0 - 80.0, screen_h / 2.0, Color::WHITE, None);
     }
 }
@@ -446,234 +434,79 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Animator` | Sprite animation state |
 | `Tween` | Smooth interpolation of Transform properties |
 | `Parent` / `Children` | Entity hierarchy |
-| `ParallaxBackground` | Layered scrolling backgrounds |
-| `Active` / `Inactive` | Marker components for object pooling |
+| `NavAgent` | Navigation and pathfinding |
+| `Trail2D` | Motion trails behind entities |
 
-## Parallax Backgrounds
+## Navigation & Pathfinding
 
-For scrolling backgrounds with depth layers:
+The navigation system provides A* pathfinding with manual integration for full control.
 
-```rust
-struct MyGame {
-    background: ParallaxBackground,
-}
-
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
-        let (screen_w, screen_h) = ctx.camera.viewport_size();
-
-        // Load layer sprites
-        let sky = ctx.assets.load_sprite("sky.png").unwrap();
-        let mountains = ctx.assets.load_sprite("mountains.png").unwrap();
-        let grass = ctx.assets.load_sprite("grass.png").unwrap();
-
-        // Build parallax background
-        self.background = ParallaxBackground::builder(screen_w as u32, screen_h as u32)
-            .static_layer(sky, -100)          // Doesn't scroll
-            .layer(mountains, 0.2, -80)       // 20% camera speed (far)
-            .layer(grass, 0.8, -40)           // 80% camera speed (near)
-            .build();
-    }
-
-    fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-        self.background.render(frame, width, height, camera);
-    }
-
-    // ... other methods
-}
-```
-
-### Parallax Speed Values
-
-| Speed | Effect | Use Case |
-|-------|--------|----------|
-| 0.0 | Static (doesn't move) | Sky, distant stars |
-| 0.1-0.3 | Very slow | Far mountains, clouds |
-| 0.4-0.6 | Medium | Mid-ground hills |
-| 0.7-0.9 | Fast | Near foreground |
-| 1.0 | Moves with camera | Same plane as player |
-
-### TileMode Options
-
-| Mode | Behavior |
-|------|----------|
-| `TileMode::None` | Single sprite, no tiling |
-| `TileMode::Horizontal` | Tiles across screen width |
-| `TileMode::InfiniteScroll` | Seamless endless scrolling (default) |
-
-## Game Juice (Camera Shake & Time Control)
-
-### Camera Shake
-
-Trauma-based screen shake for impact feedback:
-
-```rust
-// Trigger shake on impacts
-ctx.camera.add_trauma(0.3);  // Light hit
-ctx.camera.add_trauma(0.7);  // Heavy explosion
-
-// Configure shake feel (optional, defaults are good)
-ctx.camera.configure_shake(20.0, 0.5);  // max_offset, decay_rate
-```
-
-| Trauma | Effect | Use Case |
-|--------|--------|----------|
-| 0.1-0.2 | Light rumble | Small hits, pickups |
-| 0.3-0.5 | Medium shake | Player damage, kills |
-| 0.6-0.8 | Heavy shake | Explosions, boss hits |
-| 1.0 | Maximum | Screen-filling events |
-
-**How it works:** Intensity = trauma², so small values feel gentle while large values feel intense. Trauma decays automatically.
-
-### Time Scale / Slow-Mo
-
-Slow down or speed up game time:
-
-```rust
-// Slow-mo effects
-ctx.set_time_scale(0.3);  // 30% speed for dramatic moments
-ctx.set_time_scale(1.0);  // Return to normal
-ctx.set_time_scale(2.0);  // Fast-forward
-
-// Query state
-let scale = ctx.time_scale();
-```
-
-**What's affected:** Game logic dt, physics, animations, tweens.
-**What's NOT affected:** Input, UI, camera shake (these use real-time).
-
-### Hitstop / Freeze Frame
-
-Brief freeze for impact emphasis:
-
-```rust
-// Freeze on impact
-ctx.hitstop(0.05);  // 50ms freeze on hit
-ctx.hitstop(0.1);   // 100ms freeze on critical/kill
-
-// Check state
-if ctx.is_hitstop_active() {
-    // Currently frozen
-}
-```
-
-**How it works:** Game dt becomes 0 during hitstop, then auto-resumes.
-
-### Combining for Maximum Juice
-
-```rust
-// On enemy kill
-fn on_enemy_killed(&mut self, ctx: &mut SceneContext) {
-    ctx.camera.add_trauma(0.4);   // Screen shake
-    ctx.hitstop(0.05);            // Brief freeze
-    // Optionally slow-mo after hitstop
-    ctx.set_time_scale(0.5);
-    self.slowmo_timer = 0.3;      // Return to normal after 0.3s real time
-}
-
-// On player death
-fn on_player_death(&mut self, ctx: &mut SceneContext) {
-    ctx.camera.add_trauma(1.0);   // Big shake
-    ctx.hitstop(0.15);            // Long freeze
-    ctx.set_time_scale(0.2);      // Slow-mo death sequence
-}
-```
-
-## Object Pooling
-
-For high-frequency entity spawning (bullets, particles, enemies), use object pools to eliminate allocation overhead:
+### Basic Setup
 
 ```rust
 struct GameScene {
-    bullet_pool: Pool<(Transform, Renderable, Velocity, Bullet)>,
+    nav_grid: NavigationGrid,
+    pathfinder: Pathfinder,
 }
 
 fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let sprite = ctx.assets.load_sprite("bullet.png").unwrap();
+    // Build nav grid from world
+    self.nav_grid = NavigationBuilder::new(800.0, 600.0)
+        .with_cell_size(16.0)
+        .build_from_world(&ctx.world);
 
-    // Pre-allocate 200 bullets, expand in batches of 50 if needed
-    self.bullet_pool = Pool::new(
-        &mut ctx.world,
-        PoolConfig::default()
-            .with_capacity(200)
-            .with_max_capacity(500)
-            .with_expand_batch_size(50),
-        move || (
-            Transform::default(),
-            Renderable::sprite(sprite.clone()),
-            Velocity::zero(),
-            Bullet::default(),
-        )
-    );
-}
-
-fn fire_bullet(&mut self, ctx: &mut SceneContext, x: f32, y: f32, vx: f32, vy: f32) {
-    // Acquire from pool (no allocation!)
-    if let Some(entity) = self.bullet_pool.acquire(&mut ctx.world) {
-        // Reset component state for this bullet
-        if let Some(mut t) = ctx.world.get_component_mut::<Transform>(entity) {
-            t.x = x;
-            t.y = y;
-        }
-        if let Some(mut v) = ctx.world.get_component_mut::<Velocity>(entity) {
-            v.dx = vx;
-            v.dy = vy;
-        }
-    }
-}
-
-fn despawn_bullet(&mut self, ctx: &mut SceneContext, entity: Entity) {
-    // Return to pool (no deallocation!)
-    self.bullet_pool.release(&mut ctx.world, entity);
+    // Spawn navigating entity
+    ctx.world.spawn((
+        Transform::new(100.0, 100.0),
+        NavAgent::new(100.0)  // 100 px/sec
+            .with_smoothing(PathSmoothing::LineOfSight),
+    ));
 }
 ```
 
-### Pool Configuration
-
-| Option | Default | Purpose |
-|--------|---------|---------|
-| `with_capacity(n)` | 32 | Initial pre-spawn count |
-| `with_max_capacity(n)` | 0 (unlimited) | Hard limit on entities |
-| `with_expand_batch_size(n)` | 16 | Entities to spawn when empty |
-| `with_exhausted_policy(p)` | Expand | What to do when pool is empty |
-
-### Exhaustion Policies
-
-| Policy | Behavior |
-|--------|----------|
-| `PoolExhaustedPolicy::Expand` | Spawn more entities (default) |
-| `PoolExhaustedPolicy::ReturnNone` | Return `None` from `acquire()` |
-| `PoolExhaustedPolicy::RecycleOldest` | Force-release oldest active entity |
-
-### Pool Stats for Debugging
+### Setting Destinations
 
 ```rust
-let stats = self.bullet_pool.stats();
-ui.label(&format!("Active: {}/{}", stats.current_active, stats.total_spawned), 10.0, 50.0, Color::WHITE, None);
-ui.label(&format!("Peak: {}", stats.peak_active), 10.0, 60.0, Color::WHITE, None);
+// Fixed position
+ctx.world.add_component(entity, NavTarget::position(500.0, 400.0));
+
+// Follow another entity
+ctx.world.add_component(entity, NavTarget::follow(player_entity));
 ```
 
-### Best Practices
+### Agent Avoidance with Steering
 
-1. **Pre-warm generously** - Over-allocate slightly to avoid runtime expansion
-2. **Reset components on acquire** - Don't assume state from previous use
-3. **Match pool size to peak usage** - Monitor `peak_active` to tune capacity
-4. **Use `release_all()` for cleanup** - Reset pool state on level end/restart
-
-### Important: GPU Rendering
-
-When using `render_gpu()`, manually filter inactive entities:
+Use the `steering` module for agents that avoid each other:
 
 ```rust
-fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
-    for entity in self.bullet_pool.active_iter() {
-        if gpu.world.has::<Inactive>(entity) {
-            continue;  // Skip inactive pooled entities
-        }
-        // ... render entity
-    }
+use ryo2d::prelude::steering;
+
+fn move_agent(&self, world: &mut World, entity: Entity, dt: f32) {
+    let (pos, radius) = /* get from entity */;
+    let waypoint = /* from NavAgent path */;
+
+    // Collect nearby agent positions
+    let neighbors: Vec<(Vec2, f32)> = /* query other agents */;
+
+    // Calculate forces
+    let path_dir = (waypoint - pos).normalize_or_zero();
+    let avoid = steering::separation(pos, radius, &neighbors, 100.0);
+
+    // Blend and apply
+    let velocity = (path_dir * speed + avoid).clamp_length_max(speed);
+    transform.x += velocity.x * dt;
+    transform.y += velocity.y * dt;
 }
 ```
 
-CPU rendering, physics, animations, and tweens automatically skip `Inactive` entities.
+### Steering Functions
+
+| Function | Purpose |
+|----------|---------|
+| `steering::separation()` | Push away from nearby agents |
+| `steering::seek()` | Move toward a target |
+| `steering::flee()` | Move away from a threat |
+| `steering::arrive()` | Seek but slow near target |
+| `steering::cohesion()` | Move toward group center |
+| `steering::alignment()` | Match group velocity |
 

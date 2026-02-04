@@ -1159,6 +1159,149 @@ pub enum NetworkError {
 
 ---
 
+## Navigation & Pathfinding
+
+### NavAgent
+
+```rust
+pub struct NavAgent {
+    pub current_path: Option<Path>,
+    pub state: NavAgentState,
+    pub speed: f32,
+    pub arrival_threshold: f32,
+    pub avoid_agents: bool,
+    pub radius: f32,
+    pub path_smoothing: PathSmoothing,
+}
+
+impl NavAgent {
+    fn new(speed: f32) -> Self;
+    fn with_arrival_threshold(self, threshold: f32) -> Self;
+    fn with_avoidance(self, radius: f32) -> Self;  // Enables avoid_agents
+    fn with_smoothing(self, smoothing: PathSmoothing) -> Self;
+    fn has_path(&self) -> bool;
+    fn destination(&self) -> Option<(f32, f32)>;
+    fn set_path(&mut self, path: Path);
+    fn stop(&mut self);
+    fn arrive(&mut self);
+    fn fail(&mut self);
+}
+```
+
+### NavAgentState
+
+```rust
+pub enum NavAgentState {
+    Idle,       // No target
+    Computing,  // Finding path
+    Moving,     // Following path
+    Arrived,    // Reached destination
+    Failed,     // Could not find/follow path
+}
+
+impl NavAgentState {
+    fn is_active(&self) -> bool;    // Computing or Moving
+    fn is_finished(&self) -> bool;  // Arrived or Failed
+}
+```
+
+### NavTarget
+
+```rust
+pub struct NavTarget {
+    pub x: f32,
+    pub y: f32,
+    pub follow_entity: Option<Entity>,
+}
+
+impl NavTarget {
+    fn position(x: f32, y: f32) -> Self;
+    fn follow(entity: Entity) -> Self;
+}
+```
+
+### Steering Module
+
+Standalone steering behaviors for agent movement:
+
+```rust
+pub mod steering {
+    /// Push away from nearby agents
+    fn separation(
+        position: Vec2,
+        radius: f32,
+        neighbors: &[(Vec2, f32)],  // (pos, radius)
+        strength: f32,
+    ) -> Vec2;
+
+    /// Move toward a target at max speed
+    fn seek(position: Vec2, target: Vec2, max_speed: f32) -> Vec2;
+
+    /// Move away from a threat at max speed
+    fn flee(position: Vec2, threat: Vec2, max_speed: f32) -> Vec2;
+
+    /// Seek but slow down when within slow_radius
+    fn arrive(
+        position: Vec2,
+        target: Vec2,
+        max_speed: f32,
+        slow_radius: f32,
+    ) -> Vec2;
+
+    /// Move toward center of mass of neighbors
+    fn cohesion(
+        position: Vec2,
+        neighbors: &[(Vec2, f32)],  // (pos, radius)
+        max_speed: f32,
+    ) -> Vec2;
+
+    /// Match average velocity of neighbors
+    fn alignment(
+        neighbors: &[(Vec2, Vec2)],  // (pos, velocity)
+        max_speed: f32,
+    ) -> Vec2;
+}
+```
+
+### NavigationGrid
+
+```rust
+pub struct NavigationGrid { /* ... */ }
+
+impl NavigationGrid {
+    fn new(width: f32, height: f32, cell_size: f32) -> Self;
+    fn world_to_grid(&self, x: f32, y: f32) -> GridCoord;
+    fn grid_to_world(&self, coord: GridCoord) -> (f32, f32);
+    fn is_walkable(&self, coord: GridCoord) -> bool;
+    fn set(&mut self, coord: GridCoord, state: CellState);
+    fn block_rect(&mut self, x: f32, y: f32, w: f32, h: f32);
+    fn line_of_sight(&self, from: GridCoord, to: GridCoord) -> bool;
+}
+```
+
+### Pathfinder
+
+```rust
+pub struct Pathfinder { /* ... */ }
+
+impl Pathfinder {
+    fn new() -> Self;
+    fn with_config(config: PathfinderConfig) -> Self;
+    fn find_path(&mut self, grid: &NavigationGrid, x1: f32, y1: f32, x2: f32, y2: f32) -> PathResult;
+    fn start_pathfinding(...) -> (u64, PathResult);  // For time-slicing
+    fn continue_pathfinding(&mut self, grid: &NavigationGrid, request_id: u64) -> PathResult;
+}
+
+pub enum PathResult {
+    Found(Path),
+    NoPath,
+    InvalidEndpoints,
+    InProgress,
+}
+```
+
+---
+
 ## Math Types (from glam)
 
 ```rust

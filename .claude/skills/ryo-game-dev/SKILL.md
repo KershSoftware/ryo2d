@@ -434,4 +434,79 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Animator` | Sprite animation state |
 | `Tween` | Smooth interpolation of Transform properties |
 | `Parent` / `Children` | Entity hierarchy |
+| `NavAgent` | Navigation and pathfinding |
+| `Trail2D` | Motion trails behind entities |
+
+## Navigation & Pathfinding
+
+The navigation system provides A* pathfinding with manual integration for full control.
+
+### Basic Setup
+
+```rust
+struct GameScene {
+    nav_grid: NavigationGrid,
+    pathfinder: Pathfinder,
+}
+
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // Build nav grid from world
+    self.nav_grid = NavigationBuilder::new(800.0, 600.0)
+        .with_cell_size(16.0)
+        .build_from_world(&ctx.world);
+
+    // Spawn navigating entity
+    ctx.world.spawn((
+        Transform::new(100.0, 100.0),
+        NavAgent::new(100.0)  // 100 px/sec
+            .with_smoothing(PathSmoothing::LineOfSight),
+    ));
+}
+```
+
+### Setting Destinations
+
+```rust
+// Fixed position
+ctx.world.add_component(entity, NavTarget::position(500.0, 400.0));
+
+// Follow another entity
+ctx.world.add_component(entity, NavTarget::follow(player_entity));
+```
+
+### Agent Avoidance with Steering
+
+Use the `steering` module for agents that avoid each other:
+
+```rust
+use ryo2d::prelude::steering;
+
+fn move_agent(&self, world: &mut World, entity: Entity, dt: f32) {
+    let (pos, radius) = /* get from entity */;
+    let waypoint = /* from NavAgent path */;
+
+    // Collect nearby agent positions
+    let neighbors: Vec<(Vec2, f32)> = /* query other agents */;
+
+    // Calculate forces
+    let path_dir = (waypoint - pos).normalize_or_zero();
+    let avoid = steering::separation(pos, radius, &neighbors, 100.0);
+
+    // Blend and apply
+    let velocity = (path_dir * speed + avoid).clamp_length_max(speed);
+    transform.x += velocity.x * dt;
+    transform.y += velocity.y * dt;
+}
+```
+
+### Steering Functions
+
+| Function | Purpose |
+|----------|---------|
+| `steering::separation()` | Push away from nearby agents |
+| `steering::seek()` | Move toward a target |
+| `steering::flee()` | Move away from a threat |
+| `steering::arrive()` | Seek but slow near target |
+| `steering::cohesion()` | Move toward group center |
+| `steering::alignment()` | Match group velocity |
 

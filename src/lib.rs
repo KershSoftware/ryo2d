@@ -190,9 +190,9 @@ pub mod prelude {
 
   // Navigation & Pathfinding
   pub use crate::core::navigation::{
-    CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder, NavigationGrid,
-    Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode, PathResult,
-    PathSmoothing, PathStarted, Pathfinder, PathfinderConfig,
+    steering, CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder,
+    NavigationGrid, Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode,
+    PathResult, PathSmoothing, PathStarted, Pathfinder, PathfinderConfig,
   };
 
   // Procedural Generation

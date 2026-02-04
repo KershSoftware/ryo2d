@@ -14,6 +14,7 @@ This module provides grid-based A* pathfinding for game entities. It's designed 
 | `path.rs` | `Path`, `PathNode`, `PathSmoothing` |
 | `agent.rs` | `NavAgent`, `NavTarget`, `NavAgentState` components |
 | `events.rs` | `PathCompleted`, `PathFailed`, `PathInvalidated`, `PathStarted` |
+| `steering.rs` | Steering behaviors: `separation`, `seek`, `flee`, `arrive`, `cohesion`, `alignment` |
 
 ## Architecture
 
@@ -93,6 +94,21 @@ Idle → Computing → Moving → Arrived
                        ↓
                     Failed
 ```
+
+### Steering Behaviors
+
+The `steering` module provides standalone functions for agent movement that can be combined with pathfinding or used independently:
+
+| Function | Purpose |
+|----------|---------|
+| `separation(pos, radius, neighbors, strength)` | Push away from nearby agents |
+| `seek(pos, target, max_speed)` | Move toward a target |
+| `flee(pos, threat, max_speed)` | Move away from a threat |
+| `arrive(pos, target, max_speed, slow_radius)` | Seek but slow down near target |
+| `cohesion(pos, neighbors, max_speed)` | Move toward group center |
+| `alignment(neighbors_with_vel, max_speed)` | Match velocity with group |
+
+All functions return a `Vec2` force/velocity that games apply to movement.
 
 ## Usage Patterns
 
@@ -192,6 +208,63 @@ When obstacles move, rebuild the grid:
 if self.nav_grid.needs_rebuild(&ctx.world) {
     self.nav_grid.rebuild_from_world(&ctx.world);
     // Generation increments, stale paths auto-detected
+}
+```
+
+### Agent Avoidance with Steering
+
+Combine pathfinding with separation steering for agents that avoid each other:
+
+```rust
+fn move_agent_with_avoidance(&self, world: &mut World, entity: Entity, dt: f32) {
+    // Get agent info
+    let (pos, radius, waypoint, speed) = /* ... get from NavAgent ... */;
+
+    // Collect nearby agents
+    let neighbors: Vec<(Vec2, f32)> = self.agents.iter()
+        .filter(|&&e| e != entity)
+        .filter_map(|&e| {
+            let t = world.get::<Transform>(e)?;
+            let a = world.get::<NavAgent>(e)?;
+            Some((Vec2::new(t.x, t.y), a.radius))
+        })
+        .filter(|(p, _)| pos.distance(*p) < 50.0)  // Only nearby
+        .collect();
+
+    // Calculate path direction
+    let path_dir = (waypoint - pos).normalize_or_zero();
+
+    // Calculate avoidance force
+    let avoid = steering::separation(pos, radius, &neighbors, 100.0);
+
+    // Blend path following with avoidance
+    let velocity = (path_dir * speed + avoid).clamp_length_max(speed);
+
+    // Apply movement
+    if let Some(mut t) = world.get_mut::<Transform>(entity) {
+        t.x += velocity.x * dt;
+        t.y += velocity.y * dt;
+    }
+}
+```
+
+### Flocking Behavior
+
+Use steering functions together for classic boids:
+
+```rust
+fn update_boid(&self, pos: Vec2, vel: Vec2, neighbors: &[(Vec2, f32, Vec2)]) -> Vec2 {
+    let neighbor_pos: Vec<(Vec2, f32)> = neighbors.iter()
+        .map(|(p, r, _)| (*p, *r)).collect();
+    let neighbor_vel: Vec<(Vec2, Vec2)> = neighbors.iter()
+        .map(|(p, _, v)| (*p, *v)).collect();
+
+    let sep = steering::separation(pos, 8.0, &neighbor_pos, 50.0);
+    let coh = steering::cohesion(pos, &neighbor_pos, 30.0);
+    let ali = steering::alignment(&neighbor_vel, 30.0);
+
+    // Weight and combine
+    sep * 1.5 + coh * 1.0 + ali * 1.0
 }
 ```
 

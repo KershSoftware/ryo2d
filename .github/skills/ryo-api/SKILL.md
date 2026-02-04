@@ -28,8 +28,6 @@ pub trait Game {
     fn init(&mut self, ctx: &mut GameContext) {}
     fn update(&mut self, ctx: &mut GameContext, dt: f32) {}
     fn fixed_update(&mut self, ctx: &mut GameContext) {}
-    fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {}
-    fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {}
     fn render_ui(&mut self, ui: &mut UiContext) {}
     fn on_exit(&mut self, ctx: &mut GameContext) {}
 }
@@ -47,7 +45,6 @@ pub trait Scene {
     fn on_resume(&mut self, ctx: &mut SceneContext) {}
     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction;
     fn fixed_update(&mut self, ctx: &mut SceneContext) {}
-    fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {}
     fn render_ui(&mut self, ui: &mut UiContext) {}
 }
 ```
@@ -70,34 +67,9 @@ Available in `Game` trait methods:
 | `effects` | `&mut EffectsManager` | Post-processing effects |
 | `collision_events` | `&[PhysicsCollisionEvent]` | Physics collision events this frame |
 
-**Time Control Methods (on GameContext and SceneContext):**
-
-```rust
-impl GameContext<'_> {
-    // Time Scale - affects game logic, physics, animations, tweens
-    fn set_time_scale(&mut self, scale: f32);  // 0.0=frozen, 1.0=normal, >1.0=fast
-    fn time_scale(&self) -> f32;
-
-    // Hitstop - freeze frame that auto-expires
-    fn hitstop(&mut self, duration_secs: f32); // Freeze for duration
-    fn is_hitstop_active(&self) -> bool;
-}
-```
-
 ### SceneContext
 
-Available in `Scene` trait methods (same fields and methods as GameContext).
-
-### TimeControl
-
-Shared state for time scale and hitstop:
-
-```rust
-pub struct TimeControl {
-    pub time_scale: f32,        // Default: 1.0
-    pub hitstop_remaining: f32, // Default: 0.0
-}
-```
+Available in `Scene` trait methods (same fields as GameContext).
 
 ### UiContext
 
@@ -775,7 +747,7 @@ impl InputState {
     fn key_pressed(&self, key: KeyCode) -> bool;   // Just pressed this frame
     fn key_down(&self, key: KeyCode) -> bool;      // Currently held
     fn key_released(&self, key: KeyCode) -> bool;  // Just released this frame
-
+    
     // Mouse
     fn mouse_pressed(&self, button: MouseButton) -> bool;
     fn mouse_down(&self, button: MouseButton) -> bool;
@@ -783,44 +755,6 @@ impl InputState {
     fn mouse_position(&self) -> (f32, f32);       // Screen coordinates
     fn mouse_delta(&self) -> (f32, f32);          // Movement since last frame
     fn scroll_delta(&self) -> f32;                // Mouse wheel
-
-    // Gamepad (see ryo-controller skill for patterns)
-    fn gamepad_connected(&self) -> bool;
-    fn gamepad_name(&self) -> &str;
-    fn gamepad_button_pressed(&self, button: GamepadButton) -> bool;
-    fn gamepad_button_down(&self, button: GamepadButton) -> bool;
-    fn gamepad_button_released(&self, button: GamepadButton) -> bool;
-    fn left_stick(&self) -> (f32, f32);            // -1.0 to 1.0, deadzone applied
-    fn left_stick_x(&self) -> f32;
-    fn left_stick_y(&self) -> f32;
-    fn right_stick(&self) -> (f32, f32);
-    fn right_stick_x(&self) -> f32;
-    fn right_stick_y(&self) -> f32;
-    fn left_stick_raw(&self) -> (f32, f32);        // No deadzone (for debug)
-    fn right_stick_raw(&self) -> (f32, f32);
-    fn left_trigger(&self) -> f32;                 // 0.0 to 1.0
-    fn right_trigger(&self) -> f32;
-}
-```
-
-### GamepadButton
-
-```rust
-pub enum GamepadButton {
-    South,      // Cross (PS) / A (Xbox)
-    East,       // Circle (PS) / B (Xbox)
-    West,       // Square (PS) / X (Xbox)
-    North,      // Triangle (PS) / Y (Xbox)
-    LeftBumper,   // L1 / LB
-    RightBumper,  // R1 / RB
-    LeftTrigger,  // L2 / LT (as digital button)
-    RightTrigger, // R2 / RT (as digital button)
-    LeftStick,    // L3 (stick click)
-    RightStick,   // R3 (stick click)
-    Select,       // Share / Back
-    Start,        // Options / Menu
-    Guide,        // PS / Xbox button
-    DPadUp, DPadDown, DPadLeft, DPadRight,
 }
 ```
 
@@ -854,28 +788,22 @@ For screen-style coordinates (0,0 = top-left), center the camera at half the vie
 impl Camera {
     fn new(viewport_width: u32, viewport_height: u32) -> Self;
     fn centered_at(x: f32, y: f32, viewport_width: u32, viewport_height: u32) -> Self;
-
+    
     fn set_position(&mut self, x: f32, y: f32);
     fn position(&self) -> (f32, f32);
     fn set_zoom(&mut self, zoom: f32);
     fn zoom(&self) -> f32;
     fn viewport_size(&self) -> (f32, f32);        // (width, height)
-
+    
     fn screen_to_world(&self, screen_x: f32, screen_y: f32) -> (f32, f32);
     fn world_to_screen(&self, world_x: f32, world_y: f32) -> (f32, f32);
-
+    
     fn visible_bounds(&self) -> CameraBounds;     // World-space AABB
     fn is_visible(&self, x: f32, y: f32, w: f32, h: f32) -> bool;
-
+    
     fn follow(&mut self, target_x: f32, target_y: f32, lerp_factor: f32);
     fn snap_to(&mut self, target_x: f32, target_y: f32);
     fn clamp_to_bounds(&mut self, min_x: f32, min_y: f32, max_x: f32, max_y: f32);
-
-    // Camera Shake
-    fn add_trauma(&mut self, amount: f32);        // Add trauma (0.0-1.0), accumulates
-    fn configure_shake(&mut self, max_offset: f32, decay_rate: f32);  // Configure shake feel
-    fn trauma(&self) -> f32;                      // Current trauma level
-    fn shake_offset(&self) -> (f32, f32);         // Current shake offset (auto-applied)
 }
 
 // Screen-style coordinates setup (0,0 = top-left):
@@ -883,107 +811,6 @@ let (vw, vh) = ctx.camera.viewport_size();
 ctx.camera.set_position(vw / 2.0, vh / 2.0);
 // Now world (0, 0) = screen top-left
 // world (vw, vh) = screen bottom-right
-```
-
-### Camera Shake
-
-Trauma-based screen shake for impact feedback. Intensity = trauma² for better feel.
-
-```rust
-// Trigger shake on impacts
-ctx.camera.add_trauma(0.3);  // Light hit
-ctx.camera.add_trauma(0.7);  // Explosion
-
-// Configure shake parameters (defaults: max_offset=10.0, decay_rate=1.0)
-ctx.camera.configure_shake(20.0, 0.5);  // More intense, slower decay
-
-// Query state
-let trauma = ctx.camera.trauma();
-let (offset_x, offset_y) = ctx.camera.shake_offset();
-```
-
-**How it works:**
-1. `add_trauma(amount)` accumulates trauma (clamped to 1.0)
-2. Engine updates shake each frame with real dt
-3. Intensity = trauma² creates smooth shake feel
-4. `world_to_screen()` auto-applies shake offset
-5. Trauma decays by `decay_rate * dt` each frame
-
----
-
-## Parallax Background
-
-### TileMode
-
-```rust
-pub enum TileMode {
-    None,           // Static, non-tiling sprite
-    Horizontal,     // Tile across screen width
-    InfiniteScroll, // Seamless endless scrolling (default)
-}
-```
-
-### ParallaxLayer
-
-```rust
-pub struct ParallaxLayer {
-    pub sprite: SpriteHandle,
-    pub scroll_speed: f32,  // 0.0 = static, 1.0 = camera speed
-    pub z_order: i32,       // Lower = drawn first (behind)
-    pub y_offset: f32,      // Vertical offset from top
-    pub tile_mode: TileMode,
-}
-
-impl ParallaxLayer {
-    fn new(sprite: SpriteHandle, scroll_speed: f32, z_order: i32) -> Self;
-    fn static_layer(sprite: SpriteHandle, z_order: i32) -> Self;
-    fn with_y_offset(self, offset: f32) -> Self;
-    fn with_tile_mode(self, mode: TileMode) -> Self;
-}
-```
-
-### ParallaxBackground
-
-```rust
-impl ParallaxBackground {
-    fn new(screen_width: u32, screen_height: u32) -> Self;
-    fn builder(screen_width: u32, screen_height: u32) -> ParallaxBackgroundBuilder;
-    fn add_layer(&mut self, layer: ParallaxLayer);
-    fn set_screen_size(&mut self, width: u32, height: u32);
-    fn layer_count(&self) -> usize;
-    fn render(&self, frame: &mut [u8], frame_width: u32, frame_height: u32, camera: &Camera);
-}
-```
-
-### ParallaxBackgroundBuilder
-
-```rust
-impl ParallaxBackgroundBuilder {
-    fn new(screen_width: u32, screen_height: u32) -> Self;
-    fn layer(self, sprite: SpriteHandle, scroll_speed: f32, z_order: i32) -> Self;
-    fn layer_at(self, sprite: SpriteHandle, scroll_speed: f32, z_order: i32, y_offset: f32) -> Self;
-    fn static_layer(self, sprite: SpriteHandle, z_order: i32) -> Self;
-    fn static_layer_at(self, sprite: SpriteHandle, z_order: i32, y_offset: f32) -> Self;
-    fn layer_with_mode(self, sprite: SpriteHandle, scroll_speed: f32, z_order: i32, tile_mode: TileMode) -> Self;
-    fn custom_layer(self, layer: ParallaxLayer) -> Self;
-    fn build(self) -> ParallaxBackground;
-}
-```
-
-**Usage:**
-
-```rust
-// In init
-let background = ParallaxBackground::builder(1920, 1080)
-    .static_layer(sky_sprite, -100)          // Doesn't move
-    .layer(mountains_sprite, 0.2, -80)       // 20% camera speed
-    .layer(dunes_sprite, 0.5, -60)           // 50% camera speed
-    .build();
-
-// In render_background
-fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-    self.background.render(frame, width, height, camera);
-}
 ```
 
 ---
@@ -1039,123 +866,6 @@ for (transform, maybe_vel) in ctx.world.query::<(&Transform, Option<&Velocity>)>
 if let Some(transform) = ctx.world.get_component::<Transform>(self.player_entity) {
     // Access transform.x, transform.y, etc.
 }
-```
-
----
-
-## Object Pooling
-
-### Pool
-
-Generic object pool for high-frequency entity spawning:
-
-```rust
-pub struct Pool<B> {
-    // Internal fields...
-}
-
-impl<B: DynamicBundle> Pool<B> {
-    fn new(
-        world: &mut World,
-        config: PoolConfig,
-        factory: impl Fn() -> B + 'static
-    ) -> Self;
-
-    fn acquire(&mut self, world: &mut World) -> Option<Entity>;
-    fn release(&mut self, world: &mut World, entity: Entity);
-    fn release_all(&mut self, world: &mut World);
-    fn active_iter(&self) -> impl Iterator<Item = Entity> + '_;
-    fn stats(&self) -> PoolStats;
-}
-```
-
-### PoolConfig
-
-```rust
-pub struct PoolConfig {
-    pub initial_capacity: usize,    // Default: 32
-    pub max_capacity: usize,        // Default: 0 (unlimited)
-    pub expand_batch_size: usize,   // Default: 16
-    pub exhausted_policy: PoolExhaustedPolicy,
-}
-
-impl PoolConfig {
-    fn default() -> Self;
-    fn with_capacity(self, capacity: usize) -> Self;
-    fn with_max_capacity(self, max: usize) -> Self;
-    fn with_expand_batch_size(self, size: usize) -> Self;
-    fn with_exhausted_policy(self, policy: PoolExhaustedPolicy) -> Self;
-}
-```
-
-### PoolExhaustedPolicy
-
-```rust
-pub enum PoolExhaustedPolicy {
-    Expand,         // Spawn more entities (default)
-    ReturnNone,     // Return None from acquire()
-    RecycleOldest,  // Force-release oldest active entity
-}
-```
-
-### PoolStats
-
-```rust
-pub struct PoolStats {
-    pub total_spawned: usize,       // Total entities ever created
-    pub current_available: usize,   // Ready for reuse
-    pub current_active: usize,      // Currently in use
-    pub peak_active: usize,         // Maximum concurrent active
-    pub acquires: usize,            // Total acquire() calls
-    pub releases: usize,            // Total release() calls
-    pub expansions: usize,          // Times pool was expanded
-}
-```
-
-### Active / Inactive
-
-Marker components for entity state:
-
-```rust
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Active;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Inactive;
-```
-
-**Usage:**
-
-```rust
-// Initialize pool in scene
-let sprite = ctx.assets.load_sprite("bullet.png").unwrap();
-self.bullet_pool = Pool::new(
-    &mut ctx.world,
-    PoolConfig::default()
-        .with_capacity(200)
-        .with_max_capacity(500)
-        .with_exhausted_policy(PoolExhaustedPolicy::RecycleOldest),
-    move || (
-        Transform::default(),
-        Renderable::sprite(sprite.clone()),
-        Velocity::zero(),
-        Bullet::default(),
-    )
-);
-
-// Acquire entity (activates it)
-if let Some(entity) = self.bullet_pool.acquire(&mut ctx.world) {
-    // Reset component values...
-}
-
-// Release entity (deactivates it)
-self.bullet_pool.release(&mut ctx.world, entity);
-
-// Release all active entities
-self.bullet_pool.release_all(&mut ctx.world);
-
-// Get stats for debugging
-let stats = self.bullet_pool.stats();
 ```
 
 ---
@@ -1444,6 +1154,149 @@ pub enum NetworkError {
     SendError(String),
     ReceiveError(String),
     TransportError(String),
+}
+```
+
+---
+
+## Navigation & Pathfinding
+
+### NavAgent
+
+```rust
+pub struct NavAgent {
+    pub current_path: Option<Path>,
+    pub state: NavAgentState,
+    pub speed: f32,
+    pub arrival_threshold: f32,
+    pub avoid_agents: bool,
+    pub radius: f32,
+    pub path_smoothing: PathSmoothing,
+}
+
+impl NavAgent {
+    fn new(speed: f32) -> Self;
+    fn with_arrival_threshold(self, threshold: f32) -> Self;
+    fn with_avoidance(self, radius: f32) -> Self;  // Enables avoid_agents
+    fn with_smoothing(self, smoothing: PathSmoothing) -> Self;
+    fn has_path(&self) -> bool;
+    fn destination(&self) -> Option<(f32, f32)>;
+    fn set_path(&mut self, path: Path);
+    fn stop(&mut self);
+    fn arrive(&mut self);
+    fn fail(&mut self);
+}
+```
+
+### NavAgentState
+
+```rust
+pub enum NavAgentState {
+    Idle,       // No target
+    Computing,  // Finding path
+    Moving,     // Following path
+    Arrived,    // Reached destination
+    Failed,     // Could not find/follow path
+}
+
+impl NavAgentState {
+    fn is_active(&self) -> bool;    // Computing or Moving
+    fn is_finished(&self) -> bool;  // Arrived or Failed
+}
+```
+
+### NavTarget
+
+```rust
+pub struct NavTarget {
+    pub x: f32,
+    pub y: f32,
+    pub follow_entity: Option<Entity>,
+}
+
+impl NavTarget {
+    fn position(x: f32, y: f32) -> Self;
+    fn follow(entity: Entity) -> Self;
+}
+```
+
+### Steering Module
+
+Standalone steering behaviors for agent movement:
+
+```rust
+pub mod steering {
+    /// Push away from nearby agents
+    fn separation(
+        position: Vec2,
+        radius: f32,
+        neighbors: &[(Vec2, f32)],  // (pos, radius)
+        strength: f32,
+    ) -> Vec2;
+
+    /// Move toward a target at max speed
+    fn seek(position: Vec2, target: Vec2, max_speed: f32) -> Vec2;
+
+    /// Move away from a threat at max speed
+    fn flee(position: Vec2, threat: Vec2, max_speed: f32) -> Vec2;
+
+    /// Seek but slow down when within slow_radius
+    fn arrive(
+        position: Vec2,
+        target: Vec2,
+        max_speed: f32,
+        slow_radius: f32,
+    ) -> Vec2;
+
+    /// Move toward center of mass of neighbors
+    fn cohesion(
+        position: Vec2,
+        neighbors: &[(Vec2, f32)],  // (pos, radius)
+        max_speed: f32,
+    ) -> Vec2;
+
+    /// Match average velocity of neighbors
+    fn alignment(
+        neighbors: &[(Vec2, Vec2)],  // (pos, velocity)
+        max_speed: f32,
+    ) -> Vec2;
+}
+```
+
+### NavigationGrid
+
+```rust
+pub struct NavigationGrid { /* ... */ }
+
+impl NavigationGrid {
+    fn new(width: f32, height: f32, cell_size: f32) -> Self;
+    fn world_to_grid(&self, x: f32, y: f32) -> GridCoord;
+    fn grid_to_world(&self, coord: GridCoord) -> (f32, f32);
+    fn is_walkable(&self, coord: GridCoord) -> bool;
+    fn set(&mut self, coord: GridCoord, state: CellState);
+    fn block_rect(&mut self, x: f32, y: f32, w: f32, h: f32);
+    fn line_of_sight(&self, from: GridCoord, to: GridCoord) -> bool;
+}
+```
+
+### Pathfinder
+
+```rust
+pub struct Pathfinder { /* ... */ }
+
+impl Pathfinder {
+    fn new() -> Self;
+    fn with_config(config: PathfinderConfig) -> Self;
+    fn find_path(&mut self, grid: &NavigationGrid, x1: f32, y1: f32, x2: f32, y2: f32) -> PathResult;
+    fn start_pathfinding(...) -> (u64, PathResult);  // For time-slicing
+    fn continue_pathfinding(&mut self, grid: &NavigationGrid, request_id: u64) -> PathResult;
+}
+
+pub enum PathResult {
+    Found(Path),
+    NoPath,
+    InvalidEndpoints,
+    InProgress,
 }
 ```
 

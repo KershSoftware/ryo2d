@@ -121,6 +121,7 @@ mod events;
 mod grid;
 mod path;
 mod pathfinder;
+pub mod steering;
 
 // Re-export public API
 pub use agent::{NavAgent, NavAgentState, NavTarget};
