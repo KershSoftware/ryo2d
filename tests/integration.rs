@@ -40,3 +40,6 @@ mod trail;
 
 #[path = "integration/y_sort.rs"]
 mod y_sort;
+
+#[path = "integration/ui_tween.rs"]
+mod ui_tween;

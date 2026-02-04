@@ -65,6 +65,7 @@
 pub mod immediate;
 pub mod retained;
 pub mod theme;
+pub mod tween;
 mod types;
 
 // Re-export core types at module root for convenience
@@ -81,3 +82,6 @@ pub use theme::{
   ButtonStyle, CheckboxStyle, HotReloadTheme, LabelStyle, PanelStyle, ProgressBarStyle,
   ScrollbarStyle, SliderStyle, TextInputStyle, Theme, ThemeError, ToggleStyle, TooltipStyle,
 };
+
+// Re-export tween types
+pub use tween::{Ease, Lerp, TweenColor, TweenFloat, TweenRect, TweenVec2, UiTween, UiTweenLoop};

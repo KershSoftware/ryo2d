@@ -1,0 +1,18 @@
+# UI Animations Demo - Ryo2D Engine Project Configuration
+# Demonstrates UiTween system for animating UI properties
+
+[project]
+name = "UI Animations Demo"
+
+[paths]
+entry_point = "src/main.rs"
+assets = "assets"
+
+[system]
+resolution_width = 800
+resolution_height = 600
+vsync = true
+fullscreen = false
+
+[info]
+show_fps = true
