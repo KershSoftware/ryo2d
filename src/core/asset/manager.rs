@@ -30,6 +30,7 @@ use crate::core::error::{AssetError, AssetResult};
 use crate::core::graphics::Sprite;
 
 use super::hot_reload::{HotReloadEvent, HotReloadWatcher};
+use crate::{engine_error, engine_info, engine_warn};
 
 /// A handle to a loaded sprite asset
 ///
@@ -1012,10 +1013,10 @@ impl AssetManager {
                 handle.update(new_sprite);
                 reloaded += 1;
                 #[cfg(debug_assertions)]
-                eprintln!("[HotReload] Reloaded: {:?}", path);
+                engine_info!(module: "HotReload", "Reloaded: {:?}", path);
               }
               Err(e) => {
-                eprintln!("[HotReload] Failed to reload {:?}: {}", path, e);
+                engine_error!(module: "HotReload", "Failed to reload {:?}: {}", path, e);
               }
             }
           }
@@ -1023,10 +1024,10 @@ impl AssetManager {
         HotReloadEvent::FileDeleted(_path) => {
           // Just log - don't remove from cache as handles may still be in use
           #[cfg(debug_assertions)]
-          eprintln!("[HotReload] Asset removed (still cached): {:?}", _path);
+          engine_info!(module: "HotReload", "Asset removed (still cached): {:?}", _path);
         }
         HotReloadEvent::Error(e) => {
-          eprintln!("[HotReload] Watcher error: {}", e);
+          engine_warn!(module: "HotReload", "Watcher error: {}", e);
         }
       }
     }

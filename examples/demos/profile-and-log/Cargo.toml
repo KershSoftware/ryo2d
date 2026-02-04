@@ -1,11 +1,11 @@
 [package]
-name = "profiler-demo"
+name = "profile-and-log"
 version = "0.1.0"
 edition = "2024"
-description = "Profiler stress test demo for Ryo2D engine"
+description = "Profiler and logger demo for Ryo2D engine"
 
 [[bin]]
-name = "profiler-demo"
+name = "profile-and-log"
 path = "main.rs"
 
 [features]

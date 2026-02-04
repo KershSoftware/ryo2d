@@ -37,8 +37,10 @@ pub mod config;
 
 // Profiling instrumentation
 pub mod profiler;
-#[cfg(feature = "profiler")]
-pub mod profiler_window;
+
+// Development tools - logging and dev windows
+pub mod dev_log;
+pub mod windows;
 
 // Engine orchestration
 pub mod engine;

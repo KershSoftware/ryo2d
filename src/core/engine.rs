@@ -35,7 +35,9 @@ use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
 use super::ui::{BitmapFont, UiContext, create_debug_font};
+use crate::core::dev_log::set_frame;
 use crate::profile_scope;
+use crate::{engine_debug, engine_error, engine_info, engine_warn};
 
 /// Window resize behavior.
 ///
@@ -133,6 +135,8 @@ impl TimeState {
     }
 
     self.frame_count += 1;
+    // Update dev_log frame number for log entries
+    set_frame(self.frame_count);
   }
 
   fn should_update(&self) -> bool {
@@ -179,8 +183,9 @@ impl TimeState {
     let now = Instant::now();
     if now.duration_since(self.last_debug_print) >= Duration::from_secs(1) {
       self.current_fps = self.frame_count;
-      println!(
-        "[GameLoop] FPS: {}, Delta: {:.2}ms, Fixed DT: {:.2}ms",
+      engine_debug!(
+        module: "GameLoop",
+        "FPS: {}, Delta: {:.2}ms, Fixed DT: {:.2}ms",
         self.current_fps,
         self.delta_time.as_secs_f64() * 1000.0,
         self.fixed_timestep.as_secs_f64() * 1000.0
@@ -342,13 +347,22 @@ pub struct Engine {
   time_control: TimeControl,
   // Whether detailed profiling is enabled (per-phase timing, slow frame warnings)
   profiling_enabled: bool,
-  // Profiler window (only when profiler feature is enabled and puffin_profiler=true)
+  // Profiler window (only when profiler feature is enabled)
   #[cfg(feature = "profiler")]
-  profiler_window: Option<super::profiler_window::ProfilerWindow>,
+  profiler_window: Option<super::windows::profiler_window::ProfilerWindow>,
+  // Logger window for viewing runtime logs
+  logger_window: Option<super::windows::logger_window::LoggerWindow>,
   // Track focus state of each window separately (game throttles only when ALL lose focus)
   game_window_focused: bool,
   #[cfg(feature = "profiler")]
   profiler_window_focused: bool,
+  logger_window_focused: bool,
+  // Pending requests to open dev windows (set by F9/F10, processed in event loop)
+  #[cfg(feature = "profiler")]
+  pending_open_profiler: bool,
+  pending_open_logger: bool,
+  // Pending request to toggle borderless window (set by F5, processed in event loop)
+  pending_toggle_borderless: bool,
 }
 
 impl Engine {
@@ -499,7 +513,7 @@ impl Engine {
               .insert(custom_data.id.clone(), cursor);
           }
           Err(e) => {
-            eprintln!("[Cursor] Failed to create custom cursor: {:?}", e);
+            engine_warn!(module: "Cursor", "Failed to create custom cursor: {:?}", e);
           }
         }
       }
@@ -539,8 +553,9 @@ impl Engine {
         let raw = rgba.into_raw();
         return winit::window::Icon::from_rgba(raw, width, height).ok();
       } else {
-        eprintln!(
-          "[Icon] Failed to load custom icon from {:?}, using default",
+        engine_warn!(
+          module: "Icon",
+          "Failed to load custom icon from {:?}, using default",
           path
         );
       }
@@ -590,7 +605,7 @@ impl Engine {
         if assets_dir.exists()
           && let Err(e) = assets.enable_hot_reload(vec![assets_dir])
         {
-          eprintln!("[HotReload] Failed to enable: {}", e);
+          engine_warn!(module: "HotReload", "Failed to enable: {}", e);
         }
       }
     }
@@ -599,8 +614,9 @@ impl Engine {
     let mut audio = match AudioManager::new() {
       Ok(manager) => Some(manager),
       Err(e) => {
-        eprintln!(
-          "Warning: Could not initialize audio: {}. Continuing without sound.",
+        engine_warn!(
+          module: "Audio",
+          "Could not initialize audio: {}. Continuing without sound.",
           e
         );
         None
@@ -617,12 +633,13 @@ impl Engine {
     // Initialize gamepad input (gracefully handle no gamepad support)
     let gilrs = match Gilrs::new() {
       Ok(g) => {
-        println!("[Gamepad] Initialized successfully");
+        engine_info!(module: "Gamepad", "Initialized successfully");
         Some(g)
       }
       Err(e) => {
-        eprintln!(
-          "Warning: Could not initialize gamepad support: {}. Continuing without gamepads.",
+        engine_warn!(
+          module: "Gamepad",
+          "Could not initialize gamepad support: {}. Continuing without gamepads.",
           e
         );
         None
@@ -679,10 +696,16 @@ impl Engine {
       time_control: TimeControl::default(),
       profiling_enabled: enable_profiling,
       #[cfg(feature = "profiler")]
-      profiler_window: None, // Initialized in resumed() when renderer is ready
+      profiler_window: None, // Initialized in resumed() or on F10 press
+      logger_window: None, // Initialized in resumed() or on F9 press
       game_window_focused: true,
       #[cfg(feature = "profiler")]
       profiler_window_focused: false,
+      logger_window_focused: false,
+      #[cfg(feature = "profiler")]
+      pending_open_profiler: false,
+      pending_open_logger: false,
+      pending_toggle_borderless: false,
     }
   }
 
@@ -692,15 +715,37 @@ impl Engine {
 
   /// Run the engine
   pub fn run(mut self) -> EngineResult<()> {
-    println!("Initializing {}...", self.config.title);
-    println!("  Resolution: {}x{}", self.config.width, self.config.height);
-    println!("  Target FPS: {}", self.config.target_fps);
+    // Print startup banner to console
+    Self::print_startup_banner(&self.config);
+
+    engine_info!(module: "Init", "Initializing {}...", self.config.title);
+    engine_info!(module: "Init", "Resolution: {}x{}", self.config.width, self.config.height);
+    engine_info!(module: "Init", "Target FPS: {}", self.config.target_fps);
 
     let event_loop = EventLoop::new().map_err(|e| EngineError::Window(format!("{}", e)))?;
 
     event_loop
       .run_app(&mut self)
       .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))
+  }
+
+  /// Print startup banner to console with useful info.
+  fn print_startup_banner(config: &EngineConfig) {
+    let version = env!("CARGO_PKG_VERSION");
+
+    println!();
+    println!("  {} | Ryo2D v{}", config.title, version);
+    println!(
+      "  {}x{} @ {}fps",
+      config.width, config.height, config.target_fps
+    );
+    println!();
+    println!("  F1-F4  Debug overlays");
+    println!("  F5     Toggle borderless");
+    println!("  F9     Logger");
+    #[cfg(feature = "profiler")]
+    println!("  F10    Profiler");
+    println!();
   }
 
   /// Run a single frame tick when the game window is not focused.
@@ -783,6 +828,11 @@ impl Engine {
       // Do full render and present (same as RedrawRequested handler)
       self.do_full_render_and_present();
 
+      // Print GameLoop debug info (same as RedrawRequested handler)
+      if let Some(time) = &mut self.time {
+        time.print_debug_info();
+      }
+
       // Frame limit to target FPS (Windows doesn't enforce vsync on unfocused windows)
       let target_frame_time =
         std::time::Duration::from_secs_f64(1.0 / self.config.target_fps as f64);
@@ -796,6 +846,11 @@ impl Engine {
       #[cfg(feature = "profiler")]
       if let Some(ref mut profiler) = self.profiler_window {
         profiler.render();
+      }
+
+      // Render logger window
+      if let Some(ref mut logger) = self.logger_window {
+        logger.render();
       }
     } else {
       // Cap to 30 FPS when completely unfocused to reduce CPU usage
@@ -1048,7 +1103,7 @@ impl Engine {
           }
         }
         Err(e) => {
-          eprintln!("Render error: {:?}", e);
+          engine_error!(module: "Render", "Render error: {:?}", e);
         }
       }
     }
@@ -2250,7 +2305,20 @@ impl ApplicationHandler for Engine {
     if self.config.debug.puffin_profiler
       && let Some(ref renderer) = self.renderer
     {
-      self.profiler_window = super::profiler_window::ProfilerWindow::new(
+      self.profiler_window = super::windows::profiler_window::ProfilerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        renderer.instance(),
+        renderer.adapter(),
+      );
+    }
+
+    // Create logger window if enabled
+    if self.config.debug.logger_window
+      && let Some(ref renderer) = self.renderer
+    {
+      self.logger_window = super::windows::logger_window::LoggerWindow::new(
         event_loop,
         renderer.device_arc(),
         renderer.queue_arc(),
@@ -2284,8 +2352,9 @@ impl ApplicationHandler for Engine {
       self.render_cache_dirty = true;
     }
 
-    println!("Engine initialized successfully!");
-    println!(
+    engine_info!(module: "Init", "Engine initialized successfully!");
+    engine_info!(
+      module: "Init",
       "Game loop using fixed timestep: {}Hz updates",
       self.config.physics_hz
     );
@@ -2321,6 +2390,33 @@ impl ApplicationHandler for Engine {
         }
         _ => {
           profiler.handle_event(&event);
+          return;
+        }
+      }
+    }
+
+    // Check if this event is for the logger window
+    if let Some(ref mut logger) = self.logger_window
+      && window_id == logger.window_id()
+    {
+      // Handle logger window events
+      match &event {
+        WindowEvent::CloseRequested => {
+          // Close logger window but don't exit the app
+          self.logger_window = None;
+          return;
+        }
+        WindowEvent::RedrawRequested => {
+          logger.render();
+          return;
+        }
+        WindowEvent::Focused(focused) => {
+          // Track logger window focus separately
+          self.logger_window_focused = *focused;
+          return;
+        }
+        _ => {
+          logger.handle_event(&event);
           return;
         }
       }
@@ -2414,7 +2510,7 @@ impl ApplicationHandler for Engine {
 
     match event {
       WindowEvent::CloseRequested => {
-        println!("Close requested, exiting...");
+        engine_info!(module: "Engine", "Close requested, exiting...");
         event_loop.exit();
       }
       WindowEvent::RedrawRequested => {
@@ -2471,6 +2567,42 @@ impl ApplicationHandler for Engine {
           if self.input.key_pressed(KeyCode::F4) {
             self.config.debug.show_origins = !self.config.debug.show_origins;
             self.input.consume_key(KeyCode::F4);
+          }
+          // F5: Toggle borderless window
+          if self.input.key_pressed(KeyCode::F5) {
+            self.pending_toggle_borderless = true;
+            self.input.consume_key(KeyCode::F5);
+          }
+        }
+
+        // Handle dev window keys (F9-F10)
+        // These are separate from debug_keys_enabled and controlled by dev_window_keys
+        if self.config.debug.dev_window_keys {
+          // F9: Toggle logger window
+          if self.input.key_pressed(KeyCode::F9) {
+            if self.logger_window.is_some() {
+              // Close the window
+              self.logger_window = None;
+              self.logger_window_focused = false;
+            } else {
+              // Request to open (will be created in event loop where we have ActiveEventLoop)
+              self.pending_open_logger = true;
+            }
+            self.input.consume_key(KeyCode::F9);
+          }
+
+          // F10: Toggle profiler window
+          #[cfg(feature = "profiler")]
+          if self.input.key_pressed(KeyCode::F10) {
+            if self.profiler_window.is_some() {
+              // Close the window
+              self.profiler_window = None;
+              self.profiler_window_focused = false;
+            } else {
+              // Request to open (will be created in event loop where we have ActiveEventLoop)
+              self.pending_open_profiler = true;
+            }
+            self.input.consume_key(KeyCode::F10);
           }
         }
 
@@ -2853,7 +2985,7 @@ impl ApplicationHandler for Engine {
               }
             }
             Err(e) => {
-              eprintln!("Render error: {:?}", e);
+              engine_error!(module: "Render", "Render error: {:?}", e);
               // Put back before exiting
               self.sprite_gpu = sprite_gpu;
               self.renderer = renderer;
@@ -2889,6 +3021,14 @@ impl ApplicationHandler for Engine {
           profiler.render();
         }
 
+        // Render logger window directly when game window has focus
+        // (Windows won't deliver RedrawRequested to unfocused logger window)
+        if self.game_window_focused
+          && let Some(ref mut logger) = self.logger_window
+        {
+          logger.render();
+        }
+
         // Calculate total frame time and FPS
         self.frame_timings.total = frame_start.elapsed();
         self.frame_timings.calculate_fps();
@@ -2899,8 +3039,9 @@ impl ApplicationHandler for Engine {
         if self.profiling_enabled {
           let total_ms = self.frame_timings.total.as_secs_f64() * 1000.0;
           if total_ms > 33.0 {
-            eprintln!(
-              "[SLOW FRAME] Total: {:.1}ms | Update: {:.1}ms | Render: {:.1}ms | Present: {:.1}ms",
+            engine_warn!(
+              module: "Perf",
+              "SLOW FRAME - Total: {:.1}ms | Update: {:.1}ms | Render: {:.1}ms | Present: {:.1}ms",
               total_ms,
               self.frame_timings.update.as_secs_f64() * 1000.0,
               self.frame_timings.render.as_secs_f64() * 1000.0,
@@ -2921,8 +3062,9 @@ impl ApplicationHandler for Engine {
           // Print frame timing to console periodically (once per second) if enabled
           // This supplements the on-screen overlay for games using GPU sprites
           if self.config.debug.show_frame_timing && printed_debug {
-            println!(
-              "[FrameTiming] Update: {:.2}ms | Render: {:.2}ms | Present: {:.2}ms | Total: {:.2}ms",
+            engine_debug!(
+              module: "FrameTiming",
+              "Update: {:.2}ms | Render: {:.2}ms | Present: {:.2}ms | Total: {:.2}ms",
               self.frame_timings.update.as_secs_f64() * 1000.0,
               self.frame_timings.render.as_secs_f64() * 1000.0,
               self.frame_timings.present.as_secs_f64() * 1000.0,
@@ -2974,14 +3116,71 @@ impl ApplicationHandler for Engine {
       self.apply_cursor_request(&window, event_loop);
     }
 
+    // Process pending dev window open requests (F9/F10)
+    #[cfg(feature = "profiler")]
+    if self.pending_open_profiler
+      && self.profiler_window.is_none()
+      && let Some(ref renderer) = self.renderer
+    {
+      self.pending_open_profiler = false;
+      // Enable puffin scope collection if not already enabled
+      // This allows F10 to work even if puffin_profiler wasn't set in config
+      puffin::set_scopes_on(true);
+      self.profiler_window = super::windows::profiler_window::ProfilerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        renderer.instance(),
+        renderer.adapter(),
+      );
+    }
+
+    if self.pending_open_logger
+      && self.logger_window.is_none()
+      && let Some(ref renderer) = self.renderer
+    {
+      self.pending_open_logger = false;
+      self.logger_window = super::windows::logger_window::LoggerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        renderer.instance(),
+        renderer.adapter(),
+      );
+    }
+
+    // Process pending borderless toggle (F5)
+    if self.pending_toggle_borderless {
+      self.pending_toggle_borderless = false;
+      if let Some(ref window) = self.window {
+        match self.config.display_mode {
+          DisplayMode::Windowed => {
+            // Switch to borderless fullscreen
+            self.config.display_mode = DisplayMode::BorderlessFullscreen;
+            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            window.set_decorations(false);
+            engine_info!(module: "Window", "Switched to borderless fullscreen");
+          }
+          DisplayMode::BorderlessFullscreen | DisplayMode::Fullscreen => {
+            // Switch to windowed
+            self.config.display_mode = DisplayMode::Windowed;
+            window.set_fullscreen(None);
+            window.set_decorations(true);
+            engine_info!(module: "Window", "Switched to windowed mode");
+          }
+        }
+        self.surface_needs_reconfigure = true;
+      }
+    }
+
     // When game window doesn't have focus, Windows doesn't deliver RedrawRequested events
     // So we manually trigger a frame tick to keep the game running
-    // Throttle to 30 FPS only when NO window (game or profiler) has focus
+    // Throttle to 30 FPS only when NO window (game, profiler, or logger) has focus
     if !self.game_window_focused {
       #[cfg(feature = "profiler")]
-      let throttle = !self.profiler_window_focused;
+      let throttle = !self.profiler_window_focused && !self.logger_window_focused;
       #[cfg(not(feature = "profiler"))]
-      let throttle = true;
+      let throttle = !self.logger_window_focused;
 
       self.tick_frame(throttle);
     }
@@ -2999,6 +3198,12 @@ impl ApplicationHandler for Engine {
       && let Some(ref profiler) = self.profiler_window
     {
       profiler.request_redraw();
+    }
+
+    if self.logger_window_focused
+      && let Some(ref logger) = self.logger_window
+    {
+      logger.request_redraw();
     }
   }
 }
@@ -3452,6 +3657,8 @@ impl EngineBuilder {
       config.debug.show_origins = debug.show_origins;
       config.debug.show_frame_timing = debug.show_frame_timing;
       config.debug.puffin_profiler = debug.puffin_profiler;
+      config.debug.logger_window = debug.logger_window;
+      config.debug.dev_window_keys = debug.dev_window_keys;
       disable_debug_keys = debug.disable_debug_keys;
       enable_profiling = debug.enable_profiling;
 

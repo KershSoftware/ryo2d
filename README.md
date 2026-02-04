@@ -123,9 +123,11 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **Save System** — 3-tier saves (system, world, game) with compression
 - **Configuration** — TOML-based project settings, JSON user preferences
 
-### Development
+### Development Tools
 - **Hot Reload** — Asset changes apply without restart
 - **Debug Visualization** — Colliders, velocities, origins, FPS overlay
+- **Profiler Window** — Real-time flamegraph with CPU/GPU timing (requires `--features profiler`)
+- **Logger Window** — Live log viewer with level/context filtering
 
 ## Key Dependencies
 
@@ -137,6 +139,7 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 | [winit](https://crates.io/crates/winit) | Windowing |
 | [kira](https://crates.io/crates/kira) | Audio |
 | [image](https://crates.io/crates/image) | Image loading |
+| [puffin](https://crates.io/crates/puffin) | Profiler instrumentation |
 
 ## Documentation
 

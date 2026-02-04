@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::core::error::{HotReloadError, HotReloadResult};
+use crate::{engine_info, engine_warn};
 
 /// Messages sent from the watcher thread to the main thread
 #[derive(Debug, Clone)]
@@ -161,9 +162,9 @@ impl HotReloadWatcher {
 
       for path in &watch_paths {
         if let Err(e) = watcher.watch(path, mode) {
-          eprintln!("[HotReload] Failed to watch {:?}: {}", path, e);
+          engine_warn!(module: "HotReload", "Failed to watch {:?}: {}", path, e);
         } else {
-          println!("[HotReload] Watching {:?}", path);
+          engine_info!(module: "HotReload", "Watching {:?}", path);
         }
       }
     });

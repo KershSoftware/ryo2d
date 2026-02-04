@@ -1,6 +1,6 @@
-//! Profiler Demo - Stress test for the Ryo2D profiler
+//! Profile and Log Demo - Showcases the Ryo2D profiler and logger windows
 //!
-//! Run with: cargo run -p profiler-demo --features profiler
+//! Run with: cargo run -p profile-and-log --features profiler
 //!
 //! Controls:
 //! - 1/2: Add/Remove CPU-heavy entities (physics simulation)
@@ -10,6 +10,8 @@
 //! - Space: Toggle auto-spawn mode
 //! - R: Reset all entities
 //! - F1: Toggle debug overlay
+//! - F9: Toggle logger window
+//! - F10: Toggle profiler window
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -19,8 +21,16 @@ use ryo2d::prelude::*;
 #[cfg(feature = "profiler")]
 use puffin::profile_scope;
 
-const SCREEN_WIDTH: u32 = 800;
-const SCREEN_HEIGHT: u32 = 600;
+const SCREEN_WIDTH: u32 = 1280;
+const SCREEN_HEIGHT: u32 = 720;
+
+// Spawn area (centered region where entities appear)
+const SPAWN_WIDTH: f32 = 600.0;
+const SPAWN_HEIGHT: f32 = 400.0;
+const SPAWN_LEFT: f32 = (SCREEN_WIDTH as f32 - SPAWN_WIDTH) / 2.0;
+const SPAWN_TOP: f32 = (SCREEN_HEIGHT as f32 - SPAWN_HEIGHT) / 2.0;
+const SPAWN_RIGHT: f32 = SPAWN_LEFT + SPAWN_WIDTH;
+const SPAWN_BOTTOM: f32 = SPAWN_TOP + SPAWN_HEIGHT;
 
 // Batch sizes for spawning
 const CPU_BATCH: usize = 50;
@@ -28,15 +38,17 @@ const GPU_BATCH: usize = 200;
 const MIXED_BATCH: usize = 25;
 
 fn main() {
+  game_info!(module: "Main", "Starting Profile and Log Demo");
+
   let engine = EngineBuilder::new()
-    .title("Profiler Demo - Stress Test")
+    .title("Profile and Log Demo")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
     .fps(144)
-    .with_scene(ProfilerDemoScene::new())
+    .with_scene(DemoScene::new())
     .build();
 
   if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
+    game_error!(module: "Main", "Engine error: {}", e);
   }
 }
 
@@ -63,7 +75,7 @@ struct MixedLoad {
   think_timer: f32,
 }
 
-struct ProfilerDemoScene {
+struct DemoScene {
   cpu_sprite: Sprite,
   gpu_sprite: Sprite,
   mixed_sprite: Sprite,
@@ -76,7 +88,7 @@ struct ProfilerDemoScene {
   work_multiplier: u32,
 }
 
-impl ProfilerDemoScene {
+impl DemoScene {
   fn new() -> Self {
     Self {
       // Create simple colored sprites for each type
@@ -100,8 +112,8 @@ impl ProfilerDemoScene {
     let sprite = SpriteHandle::from_sprite(self.cpu_sprite.clone(), "cpu_sprite");
 
     for _ in 0..count {
-      let center_x = rng.gen_range(100.0..SCREEN_WIDTH as f32 - 100.0);
-      let center_y = rng.gen_range(100.0..SCREEN_HEIGHT as f32 - 100.0);
+      let center_x = rng.gen_range(SPAWN_LEFT + 50.0..SPAWN_RIGHT - 50.0);
+      let center_y = rng.gen_range(SPAWN_TOP + 50.0..SPAWN_BOTTOM - 50.0);
 
       ctx.world.spawn((
         Transform::new(center_x, center_y),
@@ -109,12 +121,14 @@ impl ProfilerDemoScene {
         CpuHeavy {
           angle: rng.gen_range(0.0..std::f32::consts::TAU),
           angular_velocity: rng.gen_range(1.0..5.0),
-          orbit_radius: rng.gen_range(20.0..80.0),
+          orbit_radius: rng.gen_range(20.0..60.0),
           orbit_center: (center_x, center_y),
           bounce_phase: rng.gen_range(0.0..std::f32::consts::TAU),
         },
       ));
     }
+
+    game_info!(module: "Spawner", "Spawned {} CPU-heavy entities", count);
   }
 
   fn despawn_cpu(&mut self, ctx: &mut SceneContext, count: usize) {
@@ -122,8 +136,13 @@ impl ProfilerDemoScene {
     profile_scope!("despawn_cpu");
 
     let entities: Vec<_> = ctx.world.entities_with::<CpuHeavy>();
+    let actual = entities.len().min(count);
     for entity in entities.into_iter().take(count) {
       let _ = ctx.world.despawn(entity);
+    }
+
+    if actual > 0 {
+      game_info!(module: "Spawner", "Despawned {} CPU-heavy entities", actual);
     }
   }
 
@@ -137,8 +156,8 @@ impl ProfilerDemoScene {
     for _ in 0..count {
       ctx.world.spawn((
         Transform::new(
-          rng.gen_range(0.0..SCREEN_WIDTH as f32),
-          rng.gen_range(0.0..SCREEN_HEIGHT as f32),
+          rng.gen_range(SPAWN_LEFT..SPAWN_RIGHT),
+          rng.gen_range(SPAWN_TOP..SPAWN_BOTTOM),
         ),
         Renderable::sprite(sprite.clone()).with_z_order(5),
         GpuHeavy {
@@ -147,6 +166,8 @@ impl ProfilerDemoScene {
         },
       ));
     }
+
+    game_info!(module: "Spawner", "Spawned {} GPU-heavy entities", count);
   }
 
   fn despawn_gpu(&mut self, ctx: &mut SceneContext, count: usize) {
@@ -154,8 +175,13 @@ impl ProfilerDemoScene {
     profile_scope!("despawn_gpu");
 
     let entities: Vec<_> = ctx.world.entities_with::<GpuHeavy>();
+    let actual = entities.len().min(count);
     for entity in entities.into_iter().take(count) {
       let _ = ctx.world.despawn(entity);
+    }
+
+    if actual > 0 {
+      game_info!(module: "Spawner", "Despawned {} GPU-heavy entities", actual);
     }
   }
 
@@ -169,18 +195,20 @@ impl ProfilerDemoScene {
     for _ in 0..count {
       ctx.world.spawn((
         Transform::new(
-          rng.gen_range(0.0..SCREEN_WIDTH as f32),
-          rng.gen_range(0.0..SCREEN_HEIGHT as f32),
+          rng.gen_range(SPAWN_LEFT..SPAWN_RIGHT),
+          rng.gen_range(SPAWN_TOP..SPAWN_BOTTOM),
         ),
         Renderable::sprite(sprite.clone()).with_z_order(15),
         MixedLoad {
-          target_x: rng.gen_range(0.0..SCREEN_WIDTH as f32),
-          target_y: rng.gen_range(0.0..SCREEN_HEIGHT as f32),
+          target_x: rng.gen_range(SPAWN_LEFT..SPAWN_RIGHT),
+          target_y: rng.gen_range(SPAWN_TOP..SPAWN_BOTTOM),
           speed: rng.gen_range(50.0..150.0),
           think_timer: rng.gen_range(0.0..1.0),
         },
       ));
     }
+
+    game_debug!(module: "Spawner", "Spawned {} mixed entities", count);
   }
 
   fn despawn_mixed(&mut self, ctx: &mut SceneContext, count: usize) {
@@ -188,8 +216,13 @@ impl ProfilerDemoScene {
     profile_scope!("despawn_mixed");
 
     let entities: Vec<_> = ctx.world.entities_with::<MixedLoad>();
+    let actual = entities.len().min(count);
     for entity in entities.into_iter().take(count) {
       let _ = ctx.world.despawn(entity);
+    }
+
+    if actual > 0 {
+      game_debug!(module: "Spawner", "Despawned {} mixed entities", actual);
     }
   }
 
@@ -200,6 +233,8 @@ impl ProfilerDemoScene {
     let cpu_entities: Vec<_> = ctx.world.entities_with::<CpuHeavy>();
     let gpu_entities: Vec<_> = ctx.world.entities_with::<GpuHeavy>();
     let mixed_entities: Vec<_> = ctx.world.entities_with::<MixedLoad>();
+
+    let total = cpu_entities.len() + gpu_entities.len() + mixed_entities.len();
 
     for entity in cpu_entities {
       let _ = ctx.world.despawn(entity);
@@ -212,6 +247,8 @@ impl ProfilerDemoScene {
     }
 
     self.auto_spawn = false;
+
+    game_warn!(module: "Demo", "Reset all entities (removed {})", total);
   }
 
   fn update_cpu_entities(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -282,18 +319,18 @@ impl ProfilerDemoScene {
         transform.x += dx * dt;
         transform.y += dy * dt;
 
-        // Wrap around screen
-        if transform.x < 0.0 {
-          transform.x = SCREEN_WIDTH as f32;
+        // Wrap around spawn area
+        if transform.x < SPAWN_LEFT {
+          transform.x = SPAWN_RIGHT;
         }
-        if transform.x > SCREEN_WIDTH as f32 {
-          transform.x = 0.0;
+        if transform.x > SPAWN_RIGHT {
+          transform.x = SPAWN_LEFT;
         }
-        if transform.y < 0.0 {
-          transform.y = SCREEN_HEIGHT as f32;
+        if transform.y < SPAWN_TOP {
+          transform.y = SPAWN_BOTTOM;
         }
-        if transform.y > SCREEN_HEIGHT as f32 {
-          transform.y = 0.0;
+        if transform.y > SPAWN_BOTTOM {
+          transform.y = SPAWN_TOP;
         }
       }
     }
@@ -320,8 +357,8 @@ impl ProfilerDemoScene {
           let need_new_target = dist < 5.0 || mixed.think_timer <= 0.0;
           let (new_target_x, new_target_y) = if need_new_target {
             (
-              rng.gen_range(50.0..SCREEN_WIDTH as f32 - 50.0),
-              rng.gen_range(50.0..SCREEN_HEIGHT as f32 - 50.0),
+              rng.gen_range(SPAWN_LEFT + 20.0..SPAWN_RIGHT - 20.0),
+              rng.gen_range(SPAWN_TOP + 20.0..SPAWN_BOTTOM - 20.0),
             )
           } else {
             (mixed.target_x, mixed.target_y)
@@ -378,9 +415,10 @@ impl ProfilerDemoScene {
   }
 }
 
-impl Scene for ProfilerDemoScene {
+impl Scene for DemoScene {
   fn on_enter(&mut self, _ctx: &mut SceneContext) {
-    // Nothing to initialize
+    game_info!(module: "Demo", "Scene entered - press 1-6 to spawn/despawn entities");
+    game_debug!(module: "Demo", "F9 opens logger, F10 opens profiler");
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
@@ -415,6 +453,11 @@ impl Scene for ProfilerDemoScene {
     // Auto-spawn toggle
     if ctx.input.key_pressed(KeyCode::Space) {
       self.auto_spawn = !self.auto_spawn;
+      if self.auto_spawn {
+        game_info!(module: "Demo", "Auto-spawn enabled");
+      } else {
+        game_info!(module: "Demo", "Auto-spawn disabled");
+      }
     }
 
     // Reset
@@ -424,10 +467,14 @@ impl Scene for ProfilerDemoScene {
 
     // Work multiplier (increases CPU work per entity)
     if ctx.input.key_pressed(KeyCode::Digit7) {
+      let old = self.work_multiplier;
       self.work_multiplier = (self.work_multiplier * 2).min(1024);
+      game_info!(module: "Demo", "Work multiplier: {}x -> {}x", old, self.work_multiplier);
     }
     if ctx.input.key_pressed(KeyCode::Digit8) {
+      let old = self.work_multiplier;
       self.work_multiplier = (self.work_multiplier / 2).max(1);
+      game_info!(module: "Demo", "Work multiplier: {}x -> {}x", old, self.work_multiplier);
     }
 
     // Auto-spawn mode
@@ -458,7 +505,7 @@ impl Scene for ProfilerDemoScene {
     let mut y = 10.0;
 
     // Title
-    ui.draw_text("PROFILER DEMO", 10.0, y, Color::WHITE);
+    ui.draw_text("PROFILE AND LOG DEMO", 10.0, y, Color::WHITE);
     y += line_height + 5.0;
 
     // Counts with inline controls
@@ -509,7 +556,7 @@ impl Scene for ProfilerDemoScene {
     y += line_height + 10.0;
 
     // Other controls
-    ui.draw_text("Other:", 10.0, y, Color::GRAY);
+    ui.draw_text("Controls:", 10.0, y, Color::GRAY);
     y += line_height;
 
     let auto_status = if self.auto_spawn { "ON" } else { "OFF" };
@@ -525,5 +572,11 @@ impl Scene for ProfilerDemoScene {
     y += line_height;
 
     ui.draw_text("F1: Debug overlay", 10.0, y, Color::GRAY);
+    y += line_height;
+
+    ui.draw_text("F9: Logger window", 10.0, y, Color::GRAY);
+    y += line_height;
+
+    ui.draw_text("F10: Profiler window", 10.0, y, Color::GRAY);
   }
 }

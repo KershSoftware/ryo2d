@@ -22,6 +22,8 @@
 //!
 //! # Runtime Debug Key Toggles
 //!
+//! **Game Debug Keys (F1-F4)** - Available to players unless `disable_debug_keys = true`:
+//!
 //! | Key | Action |
 //! |-----|--------|
 //! | F1 | Cycle overlay mode (Off → FPS → Frame Timing → Full Stats → Off) |
@@ -29,7 +31,15 @@
 //! | F3 | Toggle velocity vectors |
 //! | F4 | Toggle origin points |
 //!
-//! Set `disable_debug_keys = true` in `[debug]` to disable these toggles.
+//! **Dev Window Keys (F8-F9)** - Dev-only by default, requires `dev_window_keys = true` in release:
+//!
+//! | Key | Action |
+//! |-----|--------|
+//! | F8 | Toggle profiler window (requires `profiler` feature) |
+//! | F9 | Toggle logger window |
+//!
+//! Set `disable_debug_keys = true` in `[debug]` to disable F1-F4 toggles.
+//! Set `dev_window_keys = true` in `[debug]` to enable F8-F9 in release builds.
 //!
 //! # Profiling Workflow
 //!
@@ -226,6 +236,12 @@ pub struct DebugConfig {
   pub enable_profiling: bool,
   /// Whether to start the puffin profiler HTTP server (requires --features profiler or `ryo2d dev --profiler`)
   pub puffin_profiler: bool,
+  /// Whether to open the logger dev window at startup (shows engine/game logs in real-time)
+  pub logger_window: bool,
+  /// Whether to enable dev window hotkeys (F8=profiler, F9=logger).
+  /// Defaults to true in debug builds, false in release builds.
+  /// Set to true in release builds to enable dev tools for testing.
+  pub dev_window_keys: bool,
 }
 
 impl Default for DebugConfig {
@@ -239,6 +255,12 @@ impl Default for DebugConfig {
       show_origins: false,
       enable_profiling: true, // Enabled by default in dev builds
       puffin_profiler: false, // Disabled by default (opt-in)
+      logger_window: false,   // Disabled by default (opt-in)
+      // Dev window keys (F8/F9) enabled by default in debug builds only
+      #[cfg(debug_assertions)]
+      dev_window_keys: true,
+      #[cfg(not(debug_assertions))]
+      dev_window_keys: false,
     }
   }
 }

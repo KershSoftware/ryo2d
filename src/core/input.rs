@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
+use crate::engine_info;
+
 /// Standard gamepad buttons (mapped from gilrs).
 ///
 /// Uses positional names (South, East, West, North) that work across controllers.
@@ -574,14 +576,14 @@ impl InputState {
       self.gamepad_connected = true;
       self.gamepad_id = Some(id);
       self.gamepad_name = name;
-      println!("[Gamepad] Connected: {}", self.gamepad_name);
+      engine_info!(module: "Gamepad", "Connected: {}", self.gamepad_name);
     }
   }
 
   /// Handle gamepad disconnection event.
   pub(crate) fn handle_gamepad_disconnected(&mut self, id: gilrs::GamepadId) {
     if self.gamepad_id == Some(id) {
-      println!("[Gamepad] Disconnected: {}", self.gamepad_name);
+      engine_info!(module: "Gamepad", "Disconnected: {}", self.gamepad_name);
       self.gamepad_connected = false;
       self.gamepad_id = None;
       self.gamepad_name.clear();

@@ -132,6 +132,11 @@ pub struct DebugConfig {
   pub enable_profiling: bool,
   /// Whether to start the puffin profiler HTTP server (requires --features profiler)
   pub puffin_profiler: bool,
+  /// Whether to open the logger dev window at startup (shows engine/game logs in real-time)
+  pub logger_window: bool,
+  /// Whether to enable dev window hotkeys (F8=profiler, F9=logger).
+  /// Defaults to true in debug builds, false in release builds.
+  pub dev_window_keys: bool,
 }
 
 impl Default for DebugConfig {
@@ -144,6 +149,12 @@ impl Default for DebugConfig {
       disable_debug_keys: false,
       enable_profiling: true, // Enabled by default in dev builds
       puffin_profiler: false, // Disabled by default (requires explicit opt-in)
+      logger_window: false,   // Disabled by default (requires explicit opt-in)
+      // Dev window keys (F8/F9) enabled by default in debug builds only
+      #[cfg(debug_assertions)]
+      dev_window_keys: true,
+      #[cfg(not(debug_assertions))]
+      dev_window_keys: false,
     }
   }
 }
@@ -251,6 +262,8 @@ struct DebugSection {
   disable_debug_keys: Option<bool>,
   enable_profiling: Option<bool>,
   puffin_profiler: Option<bool>,
+  logger_window: Option<bool>,
+  dev_window_keys: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -421,6 +434,12 @@ impl Workspace {
     let assets = PathBuf::from(paths.assets.unwrap_or_else(|| "assets".to_string()));
 
     // Debug config
+    // Dev window keys default to true in debug builds, false in release
+    #[cfg(debug_assertions)]
+    let dev_window_keys_default = true;
+    #[cfg(not(debug_assertions))]
+    let dev_window_keys_default = false;
+
     let debug = DebugConfig {
       show_colliders: debug_section.show_colliders.unwrap_or(false),
       show_velocities: debug_section.show_velocities.unwrap_or(false),
@@ -429,6 +448,10 @@ impl Workspace {
       disable_debug_keys: debug_section.disable_debug_keys.unwrap_or(false),
       enable_profiling: debug_section.enable_profiling.unwrap_or(true), // Default true in dev
       puffin_profiler: debug_section.puffin_profiler.unwrap_or(false),  // Default false (opt-in)
+      logger_window: debug_section.logger_window.unwrap_or(false),      // Default false (opt-in)
+      dev_window_keys: debug_section
+        .dev_window_keys
+        .unwrap_or(dev_window_keys_default),
     };
 
     // Info config
