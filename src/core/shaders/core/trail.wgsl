@@ -44,8 +44,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 // Alternative fragment shader with soft edges
 @fragment
 fn fs_soft(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Soften edges based on distance from center (uv.y = 0 at center, ±0.5 at edges)
-    let edge_dist = abs(in.uv.y * 2.0);
+    // Soften edges based on distance from center
+    // UV.y is 0 at left edge, 1 at right edge, so center is 0.5
+    let edge_dist = abs(in.uv.y - 0.5) * 2.0; // 0 at center, 1 at edges
     let alpha = 1.0 - smoothstep(0.7, 1.0, edge_dist);
 
     return vec4<f32>(in.color.rgb, in.color.a * alpha);
@@ -55,7 +56,8 @@ fn fs_soft(in: VertexOutput) -> @location(0) vec4<f32> {
 @fragment
 fn fs_glow(in: VertexOutput) -> @location(0) vec4<f32> {
     // Create a glow effect that's brightest at center
-    let edge_dist = abs(in.uv.y * 2.0);
+    // UV.y is 0 at left edge, 1 at right edge, so center is 0.5
+    let edge_dist = abs(in.uv.y - 0.5) * 2.0; // 0 at center, 1 at edges
     let core = 1.0 - smoothstep(0.0, 0.3, edge_dist);
     let glow = 1.0 - smoothstep(0.3, 1.0, edge_dist);
 

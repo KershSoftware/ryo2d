@@ -92,10 +92,11 @@ impl Scene for MenuScene {
     }
 
     // Start game on Enter, Space, button click, or gamepad A/Start
-    if ctx.input.key_pressed(KeyCode::Enter)
-      || ctx.input.key_pressed(KeyCode::Space)
-      || ctx.input.gamepad_button_pressed(GamepadButton::South) // A button
-      || ctx.input.gamepad_button_pressed(GamepadButton::Start)
+    // Use consume to prevent input from cascading to the next scene
+    if ctx.input.key_pressed_and_consume(KeyCode::Enter)
+      || ctx.input.key_pressed_and_consume(KeyCode::Space)
+      || ctx.input.gamepad_button_pressed_and_consume(GamepadButton::South) // A button
+      || ctx.input.gamepad_button_pressed_and_consume(GamepadButton::Start)
       || self.start_clicked
     {
       self.start_clicked = false;
@@ -114,10 +115,11 @@ impl Scene for MenuScene {
     }
 
     // ESC or gamepad B/Select to open quit confirmation (only after released once)
+    // Use consume to prevent input from cascading to the overlay
     if self.escape_was_released
-      && (ctx.input.key_pressed(KeyCode::Escape)
-        || ctx.input.gamepad_button_pressed(GamepadButton::East) // B button
-        || ctx.input.gamepad_button_pressed(GamepadButton::Select))
+      && (ctx.input.key_pressed_and_consume(KeyCode::Escape)
+        || ctx.input.gamepad_button_pressed_and_consume(GamepadButton::East) // B button
+        || ctx.input.gamepad_button_pressed_and_consume(GamepadButton::Select))
     {
       self.escape_was_released = false; // Reset for when we return from overlay
       return SceneAction::Push(Box::new(QuitConfirmScene::new()));

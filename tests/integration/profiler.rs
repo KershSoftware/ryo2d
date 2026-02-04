@@ -111,10 +111,7 @@ fn test_scope_edge_cases() {
 
   // Empty and whitespace
   assert_eq!(ScopeCategory::from_scope_name(""), ScopeCategory::Game);
-  assert_eq!(
-    ScopeCategory::from_scope_name("   "),
-    ScopeCategory::Game
-  );
+  assert_eq!(ScopeCategory::from_scope_name("   "), ScopeCategory::Game);
 
   // Just the prefix (edge case)
   assert_eq!(

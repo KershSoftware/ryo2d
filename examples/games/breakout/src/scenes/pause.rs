@@ -147,22 +147,31 @@ impl Scene for PauseScene {
     }
 
     // Resume on Enter/A (always) or Escape/Start/B (only after released once)
-    if ctx.input.key_pressed(KeyCode::Enter)
-      || ctx.input.gamepad_button_pressed(GamepadButton::South)
+    // Use consume to prevent input from cascading to underlying scene
+    if ctx.input.key_pressed_and_consume(KeyCode::Enter)
+      || ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::South)
     {
       return SceneAction::Pop;
     }
     if self.escape_was_released
-      && (ctx.input.key_pressed(KeyCode::Escape)
-        || ctx.input.gamepad_button_pressed(GamepadButton::Start)
-        || ctx.input.gamepad_button_pressed(GamepadButton::East))
+      && (ctx.input.key_pressed_and_consume(KeyCode::Escape)
+        || ctx
+          .input
+          .gamepad_button_pressed_and_consume(GamepadButton::Start)
+        || ctx
+          .input
+          .gamepad_button_pressed_and_consume(GamepadButton::East))
     {
       return SceneAction::Pop;
     }
 
     // Return to menu via Q key or Select button
-    if ctx.input.key_pressed(KeyCode::KeyQ)
-      || ctx.input.gamepad_button_pressed(GamepadButton::Select)
+    if ctx.input.key_pressed_and_consume(KeyCode::KeyQ)
+      || ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::Select)
     {
       save_high_score(self.high_score);
       return SceneAction::ResetWith(

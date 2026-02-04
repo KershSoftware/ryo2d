@@ -58,11 +58,10 @@ pub mod prelude {
 
   // ECS types
   pub use crate::core::ecs::{
-    Active, Children, Ease, Entity, Inactive, Material, Parent, Pool, PoolConfig,
+    Active, Children, Ease, Entity, Inactive, Knockback, Material, Parent, Pool, PoolConfig,
     PoolExhaustedPolicy, PoolStats, RenderLayer, RenderMode, RenderStyle, Renderable, ShaderHandle,
-    ShaderParams, SpriteEffect, SpriteShader, Transform, Tween, TweenLoop, TweenSequence,
-    Velocity, World,
-    WorldTransform,
+    ShaderParams, SpriteEffect, SpriteShader, SquashAxis, SquashStretch, Transform, Tween,
+    TweenLoop, TweenSequence, Velocity, World, WorldTransform,
   };
 
   // Math types (from glam)
@@ -72,6 +71,7 @@ pub mod prelude {
   pub use crate::core::events::{
     AssetLoadFailed, AssetReloaded, ClientConnected, ClientDisconnected, CollisionStarted,
     CollisionStopped, ConnectedToServer, DisconnectReason, DisconnectedFromServer, Events,
+    KnockbackFinished, KnockbackStarted, SquashStretchFinished, SquashStretchStarted,
   };
 
   // Physics components
@@ -173,7 +173,9 @@ pub mod prelude {
   pub use crate::core::shaders::{EffectTarget, EffectsManager, PostProcessEffect};
 
   // Trail and Line rendering
-  pub use crate::core::trail::{Line2D, Trail2D, TrailPoint, TrailRenderer, TrailStyle};
+  pub use crate::core::trail::{
+    Line2D, TextureMode, Trail2D, TrailPoint, TrailRenderer, TrailStyle,
+  };
 
   // GPU sprite batching (for high-performance particle systems)
   pub use crate::core::graphics::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
@@ -190,9 +192,9 @@ pub mod prelude {
 
   // Navigation & Pathfinding
   pub use crate::core::navigation::{
-    steering, CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder,
-    NavigationGrid, Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode,
-    PathResult, PathSmoothing, PathStarted, Pathfinder, PathfinderConfig,
+    CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder, NavigationGrid,
+    Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode, PathResult,
+    PathSmoothing, PathStarted, Pathfinder, PathfinderConfig, steering,
   };
 
   // Procedural Generation

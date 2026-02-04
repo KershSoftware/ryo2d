@@ -10,6 +10,8 @@
 #   .\run --dev <example>      - Same as above
 #   .\run -p <example>         - Dev mode with profiler (defaults to dev)
 #   .\run --release <example>  - Same as above
+#   .\run run-demos    - Build and launch all demos in parallel
+#   .\run kill-demos   - Kill all running demos
 #   .\run check        - Fast compilation check (engine only)
 #   .\run check-all    - Check + lint all examples in parallel
 #   .\run lint         - Linting with clippy (engine only)
@@ -321,6 +323,95 @@ switch ($ExampleName.ToLower()) {
     "" {
         Show-CategoryMenu
     }
+    "run-demos" {
+        # Kill any existing demos first
+        $pidFile = Join-Path $PSScriptRoot ".demo-pids"
+        if (Test-Path $pidFile) {
+            Get-Content $pidFile | ForEach-Object {
+                $procId = [int]$_
+                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+            }
+            Remove-Item $pidFile -Force
+        }
+
+        # Get all demo package names and their directories
+        $demosDir = Join-Path $PSScriptRoot "examples/demos"
+        $demos = @()
+        Get-ChildItem -Path $demosDir -Directory | ForEach-Object {
+            $cargoToml = Join-Path $_.FullName "Cargo.toml"
+            if (Test-Path $cargoToml) {
+                $content = Get-Content $cargoToml -Raw
+                if ($content -match 'name\s*=\s*"([^"]+)"') {
+                    $demos += @{
+                        Name = $matches[1]
+                        Path = $_.FullName
+                    }
+                }
+            }
+        }
+
+        if ($demos.Count -eq 0) {
+            Write-Host "No demos found in examples/demos/" -ForegroundColor Yellow
+            exit 1
+        }
+
+        Write-Host "Building $($demos.Count) demos in release mode..." -ForegroundColor Cyan
+        $buildArgs = @("build", "--release") + ($demos | ForEach-Object { "-p"; $_.Name })
+        & cargo @buildArgs
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Build failed!" -ForegroundColor Red
+            exit 1
+        }
+
+        Write-Host ""
+        Write-Host "Launching $($demos.Count) demos..." -ForegroundColor Cyan
+        $pids = @()
+
+        foreach ($demo in $demos) {
+            $exePath = Join-Path $PSScriptRoot "target/release/$($demo.Name).exe"
+            if (Test-Path $exePath) {
+                # Launch from the demo's directory so it can find its assets
+                $proc = Start-Process -FilePath $exePath -WorkingDirectory $demo.Path -PassThru -WindowStyle Normal
+                $pids += $proc.Id
+                Write-Host "  Started $($demo.Name) (PID $($proc.Id))" -ForegroundColor Green
+            } else {
+                Write-Host "  Warning: $exePath not found" -ForegroundColor Yellow
+            }
+        }
+
+        # Save PIDs
+        $pids | Out-File -FilePath $pidFile
+
+        Write-Host ""
+        Write-Host "All demos launched. Run './run kill-demos' to close them." -ForegroundColor Cyan
+    }
+    "kill-demos" {
+        $pidFile = Join-Path $PSScriptRoot ".demo-pids"
+        if (-not (Test-Path $pidFile)) {
+            Write-Host "No running demos found." -ForegroundColor Yellow
+            exit 0
+        }
+
+        Write-Host "Killing demos..." -ForegroundColor Cyan
+        $killed = 0
+        Get-Content $pidFile | ForEach-Object {
+            $procId = [int]$_
+            $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+            if ($proc) {
+                Stop-Process -Id $procId -Force
+                Write-Host "  Killed PID $procId" -ForegroundColor Green
+                $killed++
+            }
+        }
+        Remove-Item $pidFile -Force
+
+        if ($killed -gt 0) {
+            Write-Host "Done. $killed demos terminated." -ForegroundColor Cyan
+        } else {
+            Write-Host "No demos were running." -ForegroundColor Yellow
+        }
+    }
     "check" {
         cargo check
     }
@@ -599,6 +690,8 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./run --dev <example>        - Same as --dev"
         Write-Host "  ./run -p <example>           - Same as -p (dev with profiler)"
         Write-Host "  ./run --release <example>    - Same as --release"
+        Write-Host "  ./run run-demos          - Build and launch all demos in parallel"
+        Write-Host "  ./run kill-demos         - Kill all running demos"
         Write-Host "  ./run check              - Fast compilation check (engine only)"
         Write-Host "  ./run check-all          - Check + lint all examples in parallel"
         Write-Host "  ./run lint               - Linting with clippy (engine only)"

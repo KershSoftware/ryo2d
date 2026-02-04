@@ -311,10 +311,7 @@ mod tests {
 
   #[test]
   fn test_cohesion_basic() {
-    let neighbors = vec![
-      (Vec2::new(100.0, 0.0), 8.0),
-      (Vec2::new(100.0, 100.0), 8.0),
-    ];
+    let neighbors = vec![(Vec2::new(100.0, 0.0), 8.0), (Vec2::new(100.0, 100.0), 8.0)];
     let vel = cohesion(Vec2::new(0.0, 0.0), &neighbors, 50.0);
     // Center of mass is (100, 50), should seek toward it
     assert!(vel.x > 0.0);

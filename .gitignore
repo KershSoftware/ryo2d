@@ -33,6 +33,9 @@ examples/**/.github/skills/
 !.vscode/settings.json
 
 
+# Demo runner
+.demo-pids
+
 # OS
 .DS_Store
 Thumbs.db

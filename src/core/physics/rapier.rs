@@ -233,31 +233,40 @@ impl RapierPhysicsWorld {
 
     let body_handle = self.rigid_body_set.insert(body);
 
-    // Calculate collider offset in meters, accounting for sprite pivot point
-    // Rapier colliders are centered on their origin, so we need to offset
-    // based on where the sprite's pivot is:
-    // - pivot (0.5, 0.5) = center: no offset needed (collider already centered)
-    // - pivot (0.0, 0.0) = top-left: offset by half-size to center
-    let (offset_x_meters, offset_y_meters) = match collider.shape {
-      ColliderShape::Box { width, height } => {
-        // Calculate offset based on pivot: (0.5 - pivot) * size
-        // If pivot is 0.5 (center), offset is 0
-        // If pivot is 0.0 (top-left), offset is 0.5 * size = half-size
-        let pivot_offset_x = (0.5 - transform.pivot_x) * width;
-        let pivot_offset_y = (0.5 - transform.pivot_y) * height;
-        let center_offset_x = (collider.offset_x + pivot_offset_x) / PIXELS_PER_METER;
-        let center_offset_y = (collider.offset_y + pivot_offset_y) / PIXELS_PER_METER;
-        (center_offset_x, center_offset_y)
-      }
-      ColliderShape::Circle { radius } => {
-        // For circles, pivot affects where the circle is positioned relative to transform
-        // Default pivot (0.5, 0.5) means circle is centered on transform
-        // Other pivots need offset adjustment
-        let pivot_offset_x = (0.5 - transform.pivot_x) * radius * 2.0;
-        let pivot_offset_y = (0.5 - transform.pivot_y) * radius * 2.0;
-        let offset_x = (collider.offset_x + pivot_offset_x) / PIXELS_PER_METER;
-        let offset_y = (collider.offset_y + pivot_offset_y) / PIXELS_PER_METER;
-        (offset_x, offset_y)
+    // Calculate collider offset in meters
+    // If the user explicitly set an offset via with_offset(), use that directly.
+    // Otherwise, auto-center based on pivot point.
+    let user_set_offset = collider.offset_x != 0.0 || collider.offset_y != 0.0;
+
+    let (offset_x_meters, offset_y_meters) = if user_set_offset {
+      // User explicitly positioned the collider - use their offset directly
+      (
+        collider.offset_x / PIXELS_PER_METER,
+        collider.offset_y / PIXELS_PER_METER,
+      )
+    } else {
+      // No explicit offset - auto-center based on pivot
+      // Rapier colliders are centered on their origin, so we need to offset
+      // based on where the sprite's pivot is:
+      // - pivot (0.5, 0.5) = center: no offset needed (collider already centered)
+      // - pivot (0.0, 0.0) = top-left: offset by half-size to center
+      match collider.shape {
+        ColliderShape::Box { width, height } => {
+          let pivot_offset_x = (0.5 - transform.pivot_x) * width;
+          let pivot_offset_y = (0.5 - transform.pivot_y) * height;
+          (
+            pivot_offset_x / PIXELS_PER_METER,
+            pivot_offset_y / PIXELS_PER_METER,
+          )
+        }
+        ColliderShape::Circle { radius } => {
+          let pivot_offset_x = (0.5 - transform.pivot_x) * radius * 2.0;
+          let pivot_offset_y = (0.5 - transform.pivot_y) * radius * 2.0;
+          (
+            pivot_offset_x / PIXELS_PER_METER,
+            pivot_offset_y / PIXELS_PER_METER,
+          )
+        }
       }
     };
 
@@ -978,5 +987,111 @@ mod tests {
     };
     assert!(!stopped_event.is_started());
     assert!(stopped_event.is_stopped());
+  }
+
+  /// REGRESSION: Explicit collider offset should not be combined with pivot offset
+  ///
+  /// Previously, when a user set an explicit offset via with_offset(), the physics
+  /// system would ALSO add a pivot-based offset, causing colliders to be positioned
+  /// incorrectly (e.g., bottom-right of sprite instead of centered).
+  ///
+  /// The fix: when user explicitly sets an offset, use it directly without
+  /// adding automatic pivot-based adjustments.
+  #[test]
+  fn regression_explicit_collider_offset_not_double_adjusted() {
+    let mut physics = RapierPhysicsWorld::new();
+    let mut world = World::new();
+
+    // Create entity with top-left pivot (0, 0) and explicit offset to center collider
+    // For a 64x64 sprite, offset (32, 32) should center a circle collider
+    let entity = world.spawn((
+      Transform::new(100.0, 100.0), // Default pivot (0, 0) = top-left
+      RigidBody::new(),
+      Collider::circle_collider(20.0).with_offset(32.0, 32.0),
+    ));
+
+    {
+      let transform = world.get_component::<Transform>(entity).unwrap();
+      let rb = world.get_component::<RigidBody>(entity).unwrap();
+      let col = world.get_component::<Collider>(entity).unwrap();
+      physics.register_entity(entity, &transform, None, &rb, &col);
+    }
+
+    // Get the Rapier collider position
+    let rapier_handle = physics.entity_to_collider.get(&entity).unwrap();
+    let rapier_collider = physics.collider_set.get(*rapier_handle).unwrap();
+    let translation = rapier_collider.position().translation;
+
+    // Convert back to pixels
+    let collider_x_pixels = translation.x * PIXELS_PER_METER;
+    let collider_y_pixels = translation.y * PIXELS_PER_METER;
+
+    // Collider center should be at transform position (100, 100) + explicit offset (32, 32)
+    // = (132, 132) in pixels, or (1.32, 1.32) in meters
+    // It should NOT be at (100 + 32 + 20, 100 + 32 + 20) = (152, 152) from double-offset bug
+    let expected_x = 100.0 + 32.0;
+    let expected_y = 100.0 + 32.0;
+
+    assert!(
+      (collider_x_pixels - expected_x).abs() < 1.0,
+      "Collider X should be ~{}, got {} (double-offset bug if ~{})",
+      expected_x,
+      collider_x_pixels,
+      expected_x + 20.0
+    );
+    assert!(
+      (collider_y_pixels - expected_y).abs() < 1.0,
+      "Collider Y should be ~{}, got {} (double-offset bug if ~{})",
+      expected_y,
+      collider_y_pixels,
+      expected_y + 20.0
+    );
+  }
+
+  /// Test that auto-centering still works when no explicit offset is set
+  #[test]
+  fn collider_auto_centers_with_no_explicit_offset() {
+    let mut physics = RapierPhysicsWorld::new();
+    let mut world = World::new();
+
+    // Create entity with top-left pivot (0, 0) and NO explicit offset
+    // For a circle with radius 20, auto-centering should add offset = 0.5 * 40 = 20
+    let entity = world.spawn((
+      Transform::new(100.0, 100.0), // Default pivot (0, 0) = top-left
+      RigidBody::new(),
+      Collider::circle_collider(20.0), // No with_offset() call
+    ));
+
+    {
+      let transform = world.get_component::<Transform>(entity).unwrap();
+      let rb = world.get_component::<RigidBody>(entity).unwrap();
+      let col = world.get_component::<Collider>(entity).unwrap();
+      physics.register_entity(entity, &transform, None, &rb, &col);
+    }
+
+    let rapier_handle = physics.entity_to_collider.get(&entity).unwrap();
+    let rapier_collider = physics.collider_set.get(*rapier_handle).unwrap();
+    let translation = rapier_collider.position().translation;
+
+    let collider_x_pixels = translation.x * PIXELS_PER_METER;
+    let collider_y_pixels = translation.y * PIXELS_PER_METER;
+
+    // With pivot (0, 0) and no offset, auto-center should place collider at:
+    // transform + (0.5 - pivot) * diameter = 100 + 0.5 * 40 = 120
+    let expected_x = 100.0 + 20.0;
+    let expected_y = 100.0 + 20.0;
+
+    assert!(
+      (collider_x_pixels - expected_x).abs() < 1.0,
+      "Auto-centered collider X should be ~{}, got {}",
+      expected_x,
+      collider_x_pixels
+    );
+    assert!(
+      (collider_y_pixels - expected_y).abs() < 1.0,
+      "Auto-centered collider Y should be ~{}, got {}",
+      expected_y,
+      collider_y_pixels
+    );
   }
 }

@@ -52,7 +52,10 @@ impl NebulaOrb {
   /// Update orb position around center
   pub fn update(&mut self, dt: f32) {
     self.phase += self.orbit_speed * dt;
-    self.offset = Vec2::new(self.phase.cos() * self.radius, self.phase.sin() * self.radius);
+    self.offset = Vec2::new(
+      self.phase.cos() * self.radius,
+      self.phase.sin() * self.radius,
+    );
   }
 
   /// Get world position given center
@@ -155,10 +158,8 @@ impl Nebula {
 
     if dist < min_distance && dist > 0.1 {
       let scale = min_distance / dist;
-      self.target = (current + diff * scale).clamp(
-        Vec2::new(min_x, min_y),
-        Vec2::new(max_x, max_y),
-      );
+      self.target =
+        (current + diff * scale).clamp(Vec2::new(min_x, min_y), Vec2::new(max_x, max_y));
     }
   }
 

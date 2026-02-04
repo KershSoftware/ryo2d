@@ -25,3 +25,12 @@ mod render_pipeline;
 
 #[path = "integration/profiler.rs"]
 mod profiler;
+
+#[path = "integration/tweening.rs"]
+mod tweening;
+
+#[path = "integration/knockback.rs"]
+mod knockback;
+
+#[path = "integration/squash_stretch.rs"]
+mod squash_stretch;

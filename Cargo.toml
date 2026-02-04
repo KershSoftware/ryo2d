@@ -21,34 +21,11 @@ path = "src/bin/ryo2d.rs"
 [workspace]
 members = [
   ".",
-  "examples/games/flappy",
-  "examples/games/breakout",
-  "examples/games/bullet-hell",
-  "examples/games/profiler-demo",
-  "examples/games/nigh_t",
-  "examples/demos/networking",
-  "examples/demos/anchor-positioning",
-  "examples/demos/asset-loading",
-  "examples/demos/camera-shake",
-  "examples/demos/controller",
-  "examples/demos/hierarchy-sprites",
-  "examples/demos/lighting",
-  "examples/demos/particles",
-  "examples/demos/post-processing",
-  "examples/demos/sprite-shaders",
-  "examples/demos/time-control",
-  "examples/demos/tweening",
-  "examples/demos/ui",
-  "examples/demos/pathfinding",
-  "examples/demos/procgen",
-  "examples/demos/steering",
-  "examples/demos/trails",
-  "examples/demos/cursor",
+  "examples/demos/*",
+  "examples/games/*",
 ]
 
-# Example games are standalone projects in examples/ - run them with:
-#   cd examples/breakout && cargo run
-# Or use the run script: ./run breakout
+# Run demos/games with: cargo run -p <name> or ./run run-demos
 
 [dependencies]
 arboard = "3.6.1"
