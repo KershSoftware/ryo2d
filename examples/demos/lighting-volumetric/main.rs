@@ -44,6 +44,18 @@ impl AtmospherePreset {
     }
   }
 
+  /// Get the Atmosphere settings for this preset
+  fn atmosphere(&self) -> Atmosphere {
+    match self {
+      Self::Clear => Atmosphere::clear(),
+      Self::Hazy => Atmosphere::hazy(),
+      Self::Dusty => Atmosphere::dusty(),
+      Self::Foggy => Atmosphere::foggy(),
+      Self::Smoky => Atmosphere::smoky(),
+      Self::Underwater => Atmosphere::underwater(),
+    }
+  }
+
   /// Get ambient light settings for this atmosphere
   fn ambient(&self) -> (Color, f32) {
     match self {
@@ -172,10 +184,12 @@ impl VolumetricLightingScene {
   }
 
   fn apply_atmosphere(&mut self, ctx: &mut SceneContext) {
-    // Apply ambient light based on atmosphere preset
+    // Apply atmosphere and ambient light based on preset
     let (ambient_color, ambient_intensity) = self.atmosphere_preset.ambient();
+    let atmosphere = self.atmosphere_preset.atmosphere();
     if let Some(lighting) = ctx.lighting {
       lighting.set_ambient(AmbientLight::new(ambient_color, ambient_intensity));
+      lighting.set_atmosphere(atmosphere);
     }
 
     // Apply the current atmosphere preset to god rays effect

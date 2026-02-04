@@ -70,6 +70,13 @@ fn sample_god_rays(
     weight: f32,
     threshold: f32
 ) -> vec3<f32> {
+    // Distance from pixel to light (used for falloff)
+    let dist_to_light = length(light_pos - tex_coord);
+
+    // Reduce effect when very close to light source to prevent blow-out
+    // Falloff starts at distance 0.1, full effect at distance 0.3+
+    let proximity_falloff = smoothstep(0.05, 0.25, dist_to_light);
+
     // Direction from pixel to light
     let delta_uv = (light_pos - tex_coord) * density / f32(samples);
 
@@ -91,14 +98,16 @@ fn sample_god_rays(
         // Only accumulate bright pixels above threshold
         if brightness > threshold {
             let contribution = (brightness - threshold) / (1.0 - threshold);
-            accumulated += sample_color.rgb * decay_factor * weight * contribution;
+            // Cap individual sample contribution to prevent extreme values
+            let capped_contribution = min(contribution, 2.0);
+            accumulated += sample_color.rgb * decay_factor * weight * capped_contribution;
         }
 
         // Apply decay for each sample (rays fade as they extend)
         decay_factor *= decay;
     }
 
-    return accumulated;
+    return accumulated * proximity_falloff;
 }
 
 @fragment
@@ -144,7 +153,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // Additive blend with original scene
-    let final_color = original.rgb + god_rays * intensity;
+    // Clamp god rays contribution to prevent blow-out when looking at bright sources
+    let clamped_rays = min(god_rays * intensity, vec3<f32>(0.6));
+    let final_color = original.rgb + clamped_rays;
 
-    return vec4<f32>(final_color, original.a);
+    // Clamp final result to valid range
+    let clamped_final = min(final_color, vec3<f32>(1.0));
+
+    return vec4<f32>(clamped_final, original.a);
 }

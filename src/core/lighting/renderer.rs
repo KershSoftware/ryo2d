@@ -3,7 +3,7 @@
 //! This renderer collects all lights in the scene and renders them
 //! to an accumulation buffer, which is then used to light the scene.
 
-use super::{AmbientLight, Light2D};
+use super::{AmbientLight, Atmosphere, Light2D};
 use crate::core::ecs::{Transform, Vec2};
 use crate::core::shaders::EffectsManager;
 use wgpu::util::DeviceExt;
@@ -41,12 +41,12 @@ struct LightGlobals {
 pub struct LightingParams {
   /// Ambient color (RGB) + unused (A)
   pub color: [f32; 4],
-  /// Ambient intensity (x), unused (y, z, w)
+  /// Ambient intensity (x), atmosphere density (y), atmosphere scattering (z), unused (w)
   pub params: [f32; 4],
   /// Time (x), width (y), height (z), unused (w)
   pub time_resolution: [f32; 4],
-  /// Padding for alignment
-  pub _padding: [f32; 4],
+  /// Atmosphere fog color (RGB) + unused (A)
+  pub atmosphere_color: [f32; 4],
 }
 
 /// The lighting renderer manages GPU resources for 2D lighting.
@@ -81,6 +81,9 @@ pub struct LightingRenderer {
 
   /// Current ambient light settings
   ambient: AmbientLight,
+
+  /// Current atmosphere settings
+  atmosphere: Atmosphere,
 
   /// Dimensions
   width: u32,
@@ -161,9 +164,9 @@ impl LightingRenderer {
     // Create compose uniform buffer
     let compose_uniform = LightingParams {
       color: [0.1, 0.1, 0.12, 1.0],
-      params: [0.15, 0.0, 0.0, 0.0],
+      params: [0.15, 0.0, 0.0, 0.0], // ambient intensity, atmosphere density, scattering, unused
       time_resolution: [0.0, width as f32, height as f32, 0.0],
-      _padding: [0.0; 4],
+      atmosphere_color: [0.78, 0.78, 0.82, 1.0], // Default fog color (light gray-blue)
     };
     let compose_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
       label: Some("Lighting Compose Uniform Buffer"),
@@ -391,6 +394,7 @@ impl LightingRenderer {
       light_bind_group_layout,
       compose_bind_group_layout,
       ambient: AmbientLight::default(),
+      atmosphere: Atmosphere::default(),
       width,
       height,
       enabled: false, // Disabled by default, enabled when Light2D entities exist
@@ -413,6 +417,24 @@ impl LightingRenderer {
   /// Get a mutable reference to the ambient light.
   pub fn ambient_mut(&mut self) -> &mut AmbientLight {
     &mut self.ambient
+  }
+
+  /// Set the atmosphere settings.
+  ///
+  /// Atmosphere controls fog density, color tinting, and light scattering.
+  /// Use presets like `Atmosphere::dusty()` or `Atmosphere::foggy()`.
+  pub fn set_atmosphere(&mut self, atmosphere: Atmosphere) {
+    self.atmosphere = atmosphere;
+  }
+
+  /// Get the current atmosphere settings.
+  pub fn atmosphere(&self) -> &Atmosphere {
+    &self.atmosphere
+  }
+
+  /// Get a mutable reference to the atmosphere settings.
+  pub fn atmosphere_mut(&mut self) -> &mut Atmosphere {
+    &mut self.atmosphere
   }
 
   /// Enable or disable the lighting system.
@@ -682,7 +704,7 @@ impl LightingRenderer {
       },
     );
 
-    // Update compose uniforms
+    // Update compose uniforms with atmosphere
     let compose_uniform = LightingParams {
       color: [
         self.ambient.color.r as f32 / 255.0,
@@ -690,9 +712,19 @@ impl LightingRenderer {
         self.ambient.color.b as f32 / 255.0,
         1.0,
       ],
-      params: [self.ambient.intensity, 0.0, 0.0, 0.0],
+      params: [
+        self.ambient.intensity,
+        self.atmosphere.density,
+        self.atmosphere.scattering,
+        0.0,
+      ],
       time_resolution: [time, self.width as f32, self.height as f32, 0.0],
-      _padding: [0.0; 4],
+      atmosphere_color: [
+        self.atmosphere.color.r as f32 / 255.0,
+        self.atmosphere.color.g as f32 / 255.0,
+        self.atmosphere.color.b as f32 / 255.0,
+        1.0,
+      ],
     };
     queue.write_buffer(
       &self.compose_uniform_buffer,
@@ -841,7 +873,7 @@ impl LightingRenderer {
       },
     );
 
-    // Update compose uniforms
+    // Update compose uniforms with atmosphere
     let compose_uniform = LightingParams {
       color: [
         self.ambient.color.r as f32 / 255.0,
@@ -849,9 +881,19 @@ impl LightingRenderer {
         self.ambient.color.b as f32 / 255.0,
         1.0,
       ],
-      params: [self.ambient.intensity, 0.0, 0.0, 0.0],
+      params: [
+        self.ambient.intensity,
+        self.atmosphere.density,
+        self.atmosphere.scattering,
+        0.0,
+      ],
       time_resolution: [time, self.width as f32, self.height as f32, 0.0],
-      _padding: [0.0; 4],
+      atmosphere_color: [
+        self.atmosphere.color.r as f32 / 255.0,
+        self.atmosphere.color.g as f32 / 255.0,
+        self.atmosphere.color.b as f32 / 255.0,
+        1.0,
+      ],
     };
     queue.write_buffer(
       &self.compose_uniform_buffer,
