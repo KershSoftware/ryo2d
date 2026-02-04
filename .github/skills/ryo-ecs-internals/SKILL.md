@@ -25,6 +25,7 @@ src/core/ecs/
 ├── components.rs   # Built-in components (Transform, Velocity)
 ├── hierarchy.rs    # Parent/child relationships
 ├── knockback.rs    # Knockback component (decay-based force)
+├── squash_stretch.rs # SquashStretch component (impact deformation)
 ├── pool.rs         # Object pooling system
 ├── renderable.rs   # Renderable component
 ├── tween.rs        # Tweening system

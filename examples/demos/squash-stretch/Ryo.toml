@@ -1,0 +1,18 @@
+# Squash/Stretch Demo - Ryo2D Engine Project Configuration
+# Demonstrates the SquashStretch component for impact deformation effects
+
+[project]
+name = "Squash/Stretch Demo"
+
+[paths]
+entry_point = "main.rs"
+assets = "assets"
+
+[system]
+resolution_width = 800
+resolution_height = 600
+vsync = true
+fullscreen = false
+
+[info]
+show_fps = true
