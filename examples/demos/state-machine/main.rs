@@ -533,16 +533,16 @@ impl Scene for StateMachineDemoScene {
       );
     }
 
-    // Controls
-    ui.draw_text("Controls:", 20.0, 300.0, gray);
-    ui.draw_text("A/D: Walk", 20.0, 318.0, dark_gray);
-    ui.draw_text("Shift+A/D: Run", 20.0, 334.0, dark_gray);
-    ui.draw_text("Space: Jump", 20.0, 350.0, dark_gray);
-    ui.draw_text("S: Crouch", 20.0, 366.0, dark_gray);
-    ui.draw_text("X: Attack", 20.0, 382.0, dark_gray);
-
     // Ground line
     ui.draw_rect(Rect::new(0.0, self.ground_y + 30.0, 400.0, 2.0), dark_gray);
+
+    // Controls (below ground line, in footer area)
+    ui.draw_text("Controls:", 20.0, self.ground_y + 50.0, gray);
+    ui.draw_text("A/D: Walk", 20.0, self.ground_y + 68.0, dark_gray);
+    ui.draw_text("Shift+A/D: Run", 20.0, self.ground_y + 84.0, dark_gray);
+    ui.draw_text("Space: Jump", 120.0, self.ground_y + 68.0, dark_gray);
+    ui.draw_text("S: Crouch", 120.0, self.ground_y + 84.0, dark_gray);
+    ui.draw_text("X: Attack", 220.0, self.ground_y + 68.0, dark_gray);
 
     // =========================================================================
     // Divider

@@ -801,16 +801,17 @@ impl WgpuRenderer {
   /// Render the pixel buffer to the screen.
   pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
     type Cb = fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView);
-    self.render_with_gpu_sprites::<Cb, Cb>(None, None, None)
+    self.render_with_gpu_sprites::<Cb, Cb>(None, None, None, None)
   }
 
   /// Render the pixel buffer with post-processing effects.
   pub fn render_with_effects(
     &mut self,
     effects: Option<&EffectsManager>,
+    ui_buffer: Option<&[u8]>,
   ) -> Result<(), wgpu::SurfaceError> {
     type Cb = fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView);
-    self.render_with_gpu_sprites::<Cb, Cb>(effects, None, None)
+    self.render_with_gpu_sprites::<Cb, Cb>(effects, None, None, ui_buffer)
   }
 
   /// Render with optional GPU sprites and post-processing effects.
@@ -826,11 +827,20 @@ impl WgpuRenderer {
   /// 4. `trail_callback` draws trails ON TOP of CPU content (so backgrounds don't cover trails)
   /// 5. Post-processing effects are applied (if provided)
   /// 6. Final result is rendered to screen with letterboxing
+  /// 7. UI buffer is composited on top (if provided)
+  ///
+  /// # Arguments
+  /// - `effects`: Optional post-processing effects manager
+  /// - `gpu_sprite_callback`: Optional callback for rendering GPU sprites
+  /// - `trail_callback`: Optional callback for rendering trails
+  /// - `ui_buffer`: Optional UI buffer to composite after everything. Should be RGBA, same
+  ///   dimensions as game resolution. Non-zero alpha pixels are blended on top.
   pub fn render_with_gpu_sprites<F, T>(
     &mut self,
     effects: Option<&EffectsManager>,
     gpu_sprite_callback: Option<F>,
     trail_callback: Option<T>,
+    ui_buffer: Option<&[u8]>,
   ) -> Result<(), wgpu::SurfaceError>
   where
     F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
@@ -973,6 +983,35 @@ impl WgpuRenderer {
       None
     };
 
+    // Check if we have UI to overlay (non-zero ui_buffer)
+    let has_ui_overlay = ui_buffer
+      .as_ref()
+      .map(|buf| buf.iter().any(|&b| b != 0))
+      .unwrap_or(false);
+
+    // If we have UI overlay, upload UI to dedicated ui_texture for blending
+    if has_ui_overlay && let Some(ui_data) = ui_buffer {
+      self.queue.write_texture(
+        wgpu::ImageCopyTexture {
+          texture: &self.ui_texture,
+          mip_level: 0,
+          origin: wgpu::Origin3d::ZERO,
+          aspect: wgpu::TextureAspect::All,
+        },
+        ui_data,
+        wgpu::ImageDataLayout {
+          offset: 0,
+          bytes_per_row: Some(4 * self.game_width),
+          rows_per_image: Some(self.game_height),
+        },
+        wgpu::Extent3d {
+          width: self.game_width,
+          height: self.game_height,
+          depth_or_array_layers: 1,
+        },
+      );
+    }
+
     // Final render pass to screen
     {
       // Create bind group for the appropriate source texture
@@ -1040,6 +1079,32 @@ impl WgpuRenderer {
       render_pass.set_bind_group(0, &final_bind_group, &[]);
       // Draw fullscreen quad (6 vertices, generated in shader)
       render_pass.draw(0..6, 0..1);
+
+      // If we have UI overlay, draw it on top with alpha blending
+      if has_ui_overlay {
+        let ui_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("UI Overlay Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(&self.ui_texture_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        });
+
+        render_pass.set_pipeline(&self.blend_pipeline);
+        render_pass.set_bind_group(0, &ui_bind_group, &[]);
+        render_pass.draw(0..6, 0..1);
+      }
     }
 
     // Submit commands

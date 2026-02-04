@@ -1,0 +1,13 @@
+[package]
+name = "lighting-volumetric"
+version = "0.1.0"
+edition = "2024"
+description = "Advanced volumetric lighting demo - god rays, spotlights, and atmosphere effects"
+
+[[bin]]
+name = "lighting-volumetric"
+path = "main.rs"
+
+[dependencies]
+# Ryo2D engine dependency (local path for examples)
+ryo2d = { path = "../../../" }

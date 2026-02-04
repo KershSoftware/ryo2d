@@ -1,0 +1,17 @@
+# State Machine Demo - Ryo2D Engine Project Configuration
+# Demonstrates StateMachine (FSM) and StateStack patterns
+
+[project]
+name = "State Machine Demo"
+
+[paths]
+entry_point = "main.rs"
+
+[system]
+resolution_width = 800
+resolution_height = 600
+vsync = true
+fullscreen = false
+
+[info]
+show_fps = true

@@ -1024,6 +1024,12 @@ impl Engine {
         l.set_enabled(true);
       }
 
+      // Update god rays effect with positions from lights that contribute
+      if let Some(ref l) = lighting {
+        let cam_pos = glam::Vec2::new(self.camera.x, self.camera.y);
+        l.update_god_rays(&mut self.effects, &lights, cam_pos, self.camera.zoom);
+      }
+
       // Update GPU renderer viewport
       gpu.set_viewport(
         rend.queue(),
@@ -1112,10 +1118,11 @@ impl Engine {
             Some(&self.effects),
             Some(gpu_callback),
             Some(trail_callback),
+            Some(&self.ui_buffer),
           )
         }
       } else {
-        rend.render_with_effects(Some(&self.effects))
+        rend.render_with_effects(Some(&self.effects), Some(&self.ui_buffer))
       };
 
       match result {
@@ -2120,80 +2127,39 @@ impl Engine {
 
     // --- UI & FPS Counter ---
     // Call game's render_ui with UiContext for immediate-mode UI
-    // If lighting is enabled and UI is not affected by lighting, render to separate buffer
-    let render_ui_after_lighting = self
-      .lighting
-      .as_ref()
-      .map(|l| l.is_enabled() && !l.is_ui_affected_by_lighting())
-      .unwrap_or(false);
+    // UI is always rendered to a separate buffer and composited last, ensuring it appears
+    // on top of trails, GPU sprites, lighting, and post-processing effects.
+    self.ui_buffer.fill(0);
+    if let Some(mut game) = self.game.take() {
+      let mut ui_ctx = UiContext::new_scaled(
+        &mut self.ui_buffer,
+        frame_width,
+        frame_height,
+        &self.input,
+        &self.ui_font,
+        self.ui_scale,
+      );
 
-    if !render_ui_after_lighting {
-      // Render UI directly to frame (will be affected by lighting if enabled)
-      if let Some(mut game) = self.game.take() {
-        let mut ui_ctx = UiContext::new_scaled(
-          frame,
-          frame_width,
-          frame_height,
-          &self.input,
-          &self.ui_font,
-          self.ui_scale,
-        );
+      game.render_ui(&mut ui_ctx);
 
-        game.render_ui(&mut ui_ctx);
-
-        // Render debug overlays on top of game UI (always visible)
-        // Render order: stats (top) -> FPS -> frame timing (bottom)
-        if self.config.debug.show_stats {
-          debug::render_stats(&mut ui_ctx, &self.smoothed_stats, frame_height);
-        }
-        if self.config.debug.show_fps {
-          debug::render_fps_counter(
-            &mut ui_ctx,
-            self.smoothed_timings.fps as u64,
-            frame_height,
-            self.config.debug.show_frame_timing,
-          );
-        }
-        if self.config.debug.show_frame_timing {
-          debug::render_frame_timing(&mut ui_ctx, &self.smoothed_timings, frame_height);
-        }
-
-        self.game = Some(game);
+      // Render debug overlays on top of game UI (always visible)
+      // Render order: stats (top) -> FPS -> frame timing (bottom)
+      if self.config.debug.show_stats {
+        debug::render_stats(&mut ui_ctx, &self.smoothed_stats, frame_height);
       }
-    } else {
-      // Clear UI buffer and render UI to it (will be composited after lighting)
-      self.ui_buffer.fill(0);
-      if let Some(mut game) = self.game.take() {
-        let mut ui_ctx = UiContext::new_scaled(
-          &mut self.ui_buffer,
-          frame_width,
+      if self.config.debug.show_fps {
+        debug::render_fps_counter(
+          &mut ui_ctx,
+          self.smoothed_timings.fps as u64,
           frame_height,
-          &self.input,
-          &self.ui_font,
-          self.ui_scale,
+          self.config.debug.show_frame_timing,
         );
-
-        game.render_ui(&mut ui_ctx);
-
-        // Render debug overlays on top of game UI (always visible, even with lighting)
-        // Render order: stats (top) -> FPS -> frame timing (bottom)
-        if self.config.debug.show_stats {
-          debug::render_stats(&mut ui_ctx, &self.smoothed_stats, frame_height);
-        }
-        if self.config.debug.show_fps {
-          debug::render_fps_counter(
-            &mut ui_ctx,
-            self.smoothed_timings.fps as u64,
-            frame_height,
-            self.config.debug.show_frame_timing,
-          );
-        }
-        if self.config.debug.show_frame_timing {
-          debug::render_frame_timing(&mut ui_ctx, &self.smoothed_timings, frame_height);
-        }
-
-        self.game = Some(game);
       }
+      if self.config.debug.show_frame_timing {
+        debug::render_frame_timing(&mut ui_ctx, &self.smoothed_timings, frame_height);
+      }
+
+      self.game = Some(game);
     }
 
     // --- Screen Overlay (for transitions) ---
@@ -2926,6 +2892,12 @@ impl ApplicationHandler for Engine {
             l.set_enabled(true);
           }
 
+          // Update god rays effect with positions from lights that contribute
+          if let Some(ref l) = lighting {
+            let cam_pos = glam::Vec2::new(self.camera.x, self.camera.y);
+            l.update_god_rays(&mut self.effects, &lights, cam_pos, self.camera.zoom);
+          }
+
           // Update GPU renderer viewport
           gpu.set_viewport(
             rend.queue(),
@@ -3020,10 +2992,11 @@ impl ApplicationHandler for Engine {
                 Some(&self.effects),
                 Some(gpu_callback),
                 Some(trail_callback),
+                Some(&self.ui_buffer),
               )
             }
           } else {
-            rend.render_with_effects(Some(&self.effects))
+            rend.render_with_effects(Some(&self.effects), Some(&self.ui_buffer))
           };
 
           match result {

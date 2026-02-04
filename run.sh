@@ -11,7 +11,7 @@
 #     ./run.sh --dev <example>         - Same as --dev
 #     ./run.sh -p <example>            - Same as -p (dev + profiler)
 #     ./run.sh --release <example>     - Same as --release
-#     ./run.sh run-demos           - Build and launch all demos in parallel
+#     ./run.sh run-demos           - Launch all demos in dev mode (parallel terminals)
 #     ./run.sh kill-demos          - Kill all running demos
 #     ./run.sh check               - Fast compilation check (engine only)
 #     ./run.sh check-all           - Check + lint all examples in parallel
@@ -306,7 +306,14 @@ show_example_list() {
     # Auto-select if only one example
     if [[ $count -eq 1 ]]; then
         echo -e "${GREEN}Auto-selecting only example: ${category_display[0]}${NC}"
-        run_example "${category_examples[0]}" "ask"
+        local auto_base=$(basename "${category_examples[0]}")
+        # Special case: profile-and-log always runs with profiler enabled
+        if [[ "$auto_base" == "profile-and-log" ]]; then
+            echo -e "${MAGENTA}Auto-enabling profiler mode for profile-and-log demo${NC}"
+            run_example "${category_examples[0]}" 2  # dev with profiler
+        else
+            run_example "${category_examples[0]}" "ask"
+        fi
         return
     fi
 
@@ -340,7 +347,15 @@ show_example_list() {
             if [[ "$selection" =~ ^[0-9]+$ ]]; then
                 local index=$((selection - 1))
                 if [[ $index -ge 0 && $index -lt $count ]]; then
-                    run_example "${category_examples[$index]}" "ask"
+                    local selected_example="${category_examples[$index]}"
+                    local selected_base=$(basename "$selected_example")
+                    # Special case: profile-and-log always runs with profiler enabled
+                    if [[ "$selected_base" == "profile-and-log" ]]; then
+                        echo -e "${MAGENTA}Auto-enabling profiler mode for profile-and-log demo${NC}"
+                        run_example "$selected_example" 2  # dev with profiler
+                    else
+                        run_example "$selected_example" "ask"
+                    fi
                     return
                 fi
                 echo -e "${RED}Invalid selection: $selection (valid: 1-$count)${NC}"
@@ -553,29 +568,47 @@ case "$COMMAND" in
             exit 1
         fi
 
-        echo -e "${CYAN}Building ${#DEMO_NAMES[@]} demos in release mode...${NC}"
-        cargo build --release $(printf -- '-p %s ' "${DEMO_NAMES[@]}")
-
-        if [[ $? -ne 0 ]]; then
-            echo -e "${RED}Build failed!${NC}"
-            exit 1
-        fi
-
-        echo ""
-        echo -e "${CYAN}Launching ${#DEMO_NAMES[@]} demos...${NC}"
+        echo -e "${CYAN}Launching ${#DEMO_NAMES[@]} demos in dev mode...${NC}"
         > "$PID_FILE"
+
+        # Detect available terminal emulator
+        TERM_CMD=""
+        if command -v gnome-terminal &> /dev/null; then
+            TERM_CMD="gnome-terminal"
+        elif command -v konsole &> /dev/null; then
+            TERM_CMD="konsole"
+        elif command -v xterm &> /dev/null; then
+            TERM_CMD="xterm"
+        elif [[ "$(uname)" == "Darwin" ]]; then
+            TERM_CMD="osascript"  # macOS
+        fi
 
         for i in "${!DEMO_NAMES[@]}"; do
             demo="${DEMO_NAMES[$i]}"
             demo_path="${DEMO_PATHS[$i]}"
-            # Launch from demo's directory so it can find its assets
-            (cd "$demo_path" && "$SCRIPT_DIR/target/release/$demo" &)
+            ryo2d_cmd="cargo run --manifest-path \"$SCRIPT_DIR/Cargo.toml\" --bin ryo2d -- dev --skip-opt-check"
+
+            if [[ "$TERM_CMD" == "gnome-terminal" ]]; then
+                gnome-terminal --working-directory="$demo_path" -- bash -c "$ryo2d_cmd; exec bash" &
+            elif [[ "$TERM_CMD" == "konsole" ]]; then
+                konsole --workdir "$demo_path" -e bash -c "$ryo2d_cmd; exec bash" &
+            elif [[ "$TERM_CMD" == "xterm" ]]; then
+                xterm -e "cd '$demo_path' && $ryo2d_cmd; exec bash" &
+            elif [[ "$TERM_CMD" == "osascript" ]]; then
+                # macOS: use AppleScript to open Terminal.app
+                osascript -e "tell application \"Terminal\" to do script \"cd '$demo_path' && $ryo2d_cmd\"" &
+            else
+                # Fallback: run in background without terminal
+                echo -e "  ${YELLOW}No terminal emulator found, running in background${NC}"
+                (cd "$demo_path" && eval "$ryo2d_cmd" &)
+            fi
+
             echo $! >> "$PID_FILE"
-            echo -e "  ${GREEN}Started $demo (PID $!)${NC}"
+            echo -e "  ${GREEN}Started $demo in dev mode${NC}"
         done
 
         echo ""
-        echo -e "${CYAN}All demos launched. Run './run.sh kill-demos' to close them.${NC}"
+        echo -e "${CYAN}All demos launched in dev mode. Run './run.sh kill-demos' to close them.${NC}"
         ;;
     kill-demos)
         PID_FILE="$SCRIPT_DIR/.demo-pids"
@@ -713,7 +746,7 @@ case "$COMMAND" in
         echo "    ./run.sh --dev <example>         - Same as --dev"
         echo "    ./run.sh -p <example>            - Same as -p (dev + profiler)"
         echo "    ./run.sh --release <example>     - Same as --release"
-        echo "    ./run.sh run-demos           - Build and launch all demos in parallel"
+        echo "    ./run.sh run-demos           - Launch all demos in dev mode (parallel terminals)"
         echo "    ./run.sh kill-demos          - Kill all running demos"
         echo "    ./run.sh check               - Fast compilation check (engine only)"
         echo "    ./run.sh check-all           - Check + lint all examples in parallel"

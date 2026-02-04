@@ -5,6 +5,7 @@
 
 use super::{AmbientLight, Light2D};
 use crate::core::ecs::{Transform, Vec2};
+use crate::core::shaders::EffectsManager;
 use wgpu::util::DeviceExt;
 
 /// Maximum number of lights that can be rendered per frame
@@ -749,6 +750,53 @@ impl LightingRenderer {
   /// Get the light texture view (for debugging or custom effects).
   pub fn light_texture_view(&self) -> &wgpu::TextureView {
     &self.light_texture_view
+  }
+
+  /// Update the god rays post-process effect with positions from lights that contribute.
+  ///
+  /// This method filters lights with `contributes_to_god_rays()` enabled, converts their
+  /// world positions to screen UV coordinates, and updates the EffectsManager.
+  ///
+  /// # Arguments
+  /// * `effects` - The effects manager to update
+  /// * `lights` - Slice of (transform, light) pairs
+  /// * `camera_pos` - Camera position in world space
+  /// * `camera_zoom` - Camera zoom level
+  pub fn update_god_rays(
+    &self,
+    effects: &mut EffectsManager,
+    lights: &[(Transform, Light2D)],
+    camera_pos: Vec2,
+    camera_zoom: f32,
+  ) {
+    let half_w = self.width as f32 / 2.0;
+    let half_h = self.height as f32 / 2.0;
+    let viewport_w = self.width as f32;
+    let viewport_h = self.height as f32;
+
+    // Filter lights that contribute to god rays and convert to screen UV
+    let positions: Vec<(f32, f32)> = lights
+      .iter()
+      .filter(|(_, light)| light.contributes_to_god_rays())
+      .take(4) // Shader supports max 4 lights
+      .map(|(transform, _)| {
+        // World to screen (same math as Camera::world_to_screen)
+        let screen_x = (transform.x - camera_pos.x) * camera_zoom + half_w;
+        let screen_y = (transform.y - camera_pos.y) * camera_zoom + half_h;
+        // Screen to UV
+        (screen_x / viewport_w, screen_y / viewport_h)
+      })
+      .collect();
+
+    if !positions.is_empty() {
+      if !effects.has_god_rays() {
+        effects.set_god_rays(0.8, positions);
+      } else {
+        effects.update_god_rays_lights(positions);
+      }
+    } else if effects.has_god_rays() {
+      effects.disable_god_rays();
+    }
   }
 
   /// Compose the lit scene from a texture view (instead of pixel data).

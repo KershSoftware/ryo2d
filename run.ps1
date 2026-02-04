@@ -10,7 +10,7 @@
 #   .\run --dev <example>      - Same as above
 #   .\run -p <example>         - Dev mode with profiler (defaults to dev)
 #   .\run --release <example>  - Same as above
-#   .\run run-demos    - Build and launch all demos in parallel
+#   .\run run-demos    - Launch all demos in dev mode (parallel terminals)
 #   .\run kill-demos   - Kill all running demos
 #   .\run check        - Fast compilation check (engine only)
 #   .\run check-all    - Check + lint all examples in parallel
@@ -276,7 +276,14 @@ function Show-ExampleList {
     # Auto-select if only one example
     if ($CategoryExamples.Count -eq 1) {
         Write-Host "Auto-selecting only example: $($CategoryExamples[0].DisplayName)" -ForegroundColor Green
-        Run-Example $CategoryExamples[0].Name $CategoryExamples[0].Path -AskMode $true
+        $autoSelected = $CategoryExamples[0]
+        # Special case: profile-and-log always runs with profiler enabled
+        if ($autoSelected.Name -eq "profile-and-log") {
+            Write-Host "Auto-enabling profiler mode for profile-and-log demo" -ForegroundColor Magenta
+            Run-Example $autoSelected.Name $autoSelected.Path -RunMode 2  # Dev with profiler
+        } else {
+            Run-Example $autoSelected.Name $autoSelected.Path -AskMode $true
+        }
         return
     }
 
@@ -306,7 +313,14 @@ function Show-ExampleList {
     if ($selection -match '^\d+$') {
         $selectedIndex = [int]$selection - 1
         if ($selectedIndex -ge 0 -and $selectedIndex -lt $CategoryExamples.Count) {
-            Run-Example $CategoryExamples[$selectedIndex].Name $CategoryExamples[$selectedIndex].Path -AskMode $true
+            $selected = $CategoryExamples[$selectedIndex]
+            # Special case: profile-and-log always runs with profiler enabled
+            if ($selected.Name -eq "profile-and-log") {
+                Write-Host "Auto-enabling profiler mode for profile-and-log demo" -ForegroundColor Magenta
+                Run-Example $selected.Name $selected.Path -RunMode 2  # Dev with profiler
+            } else {
+                Run-Example $selected.Name $selected.Path -AskMode $true
+            }
             return
         }
         Write-Host "Invalid selection: $selection (valid: 1-$($CategoryExamples.Count))" -ForegroundColor Red
@@ -334,7 +348,7 @@ switch ($ExampleName.ToLower()) {
             Remove-Item $pidFile -Force
         }
 
-        # Get all demo package names and their directories
+        # Get all demo directories
         $demosDir = Join-Path $PSScriptRoot "examples/demos"
         $demos = @()
         Get-ChildItem -Path $demosDir -Directory | ForEach-Object {
@@ -355,36 +369,22 @@ switch ($ExampleName.ToLower()) {
             exit 1
         }
 
-        Write-Host "Building $($demos.Count) demos in release mode..." -ForegroundColor Cyan
-        $buildArgs = @("build", "--release") + ($demos | ForEach-Object { "-p"; $_.Name })
-        & cargo @buildArgs
-
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "Build failed!" -ForegroundColor Red
-            exit 1
-        }
-
-        Write-Host ""
-        Write-Host "Launching $($demos.Count) demos..." -ForegroundColor Cyan
+        Write-Host "Launching $($demos.Count) demos in dev mode..." -ForegroundColor Cyan
         $pids = @()
 
         foreach ($demo in $demos) {
-            $exePath = Join-Path $PSScriptRoot "target/release/$($demo.Name).exe"
-            if (Test-Path $exePath) {
-                # Launch from the demo's directory so it can find its assets
-                $proc = Start-Process -FilePath $exePath -WorkingDirectory $demo.Path -PassThru -WindowStyle Normal
-                $pids += $proc.Id
-                Write-Host "  Started $($demo.Name) (PID $($proc.Id))" -ForegroundColor Green
-            } else {
-                Write-Host "  Warning: $exePath not found" -ForegroundColor Yellow
-            }
+            # Launch ryo2d dev in a new terminal window for each demo
+            $ryo2dCmd = "cargo run --manifest-path `"$PSScriptRoot/Cargo.toml`" --bin ryo2d -- dev --skip-opt-check"
+            $proc = Start-Process -FilePath "powershell" -ArgumentList "-NoExit", "-Command", "Set-Location '$($demo.Path)'; $ryo2dCmd" -PassThru -WindowStyle Normal
+            $pids += $proc.Id
+            Write-Host "  Started $($demo.Name) in dev mode (PID $($proc.Id))" -ForegroundColor Green
         }
 
         # Save PIDs
         $pids | Out-File -FilePath $pidFile
 
         Write-Host ""
-        Write-Host "All demos launched. Run './run kill-demos' to close them." -ForegroundColor Cyan
+        Write-Host "All demos launched in dev mode. Run './run kill-demos' to close them." -ForegroundColor Cyan
     }
     "kill-demos" {
         $pidFile = Join-Path $PSScriptRoot ".demo-pids"
@@ -690,7 +690,7 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./run --dev <example>        - Same as --dev"
         Write-Host "  ./run -p <example>           - Same as -p (dev with profiler)"
         Write-Host "  ./run --release <example>    - Same as --release"
-        Write-Host "  ./run run-demos          - Build and launch all demos in parallel"
+        Write-Host "  ./run run-demos          - Launch all demos in dev mode (parallel terminals)"
         Write-Host "  ./run kill-demos         - Kill all running demos"
         Write-Host "  ./run check              - Fast compilation check (engine only)"
         Write-Host "  ./run check-all          - Check + lint all examples in parallel"

@@ -1,0 +1,29 @@
+# Volumetric Lighting Demo - Ryo2D Project Configuration
+#
+# Showcases advanced lighting features: god rays, spotlights,
+# volumetric beams, and atmosphere effects.
+
+[project]
+name = "Volumetric Lighting Demo"
+
+[paths]
+entry_point = "main.rs"
+save_data = "data"
+assets = "assets"
+
+[system]
+resolution_width = 1280
+resolution_height = 720
+vsync = true
+fullscreen = false
+master_volume = 0.8
+music_volume = 1.0
+sfx_volume = 1.0
+
+[info]
+show_fps = true
+
+[debug]
+show_colliders = false
+show_velocities = false
+show_origins = false
