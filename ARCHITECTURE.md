@@ -23,8 +23,8 @@
 │  │ • title     │  │ • delta_time│  │ • keys_down │  │ • Archetype storage  │ │
 │  │ • width     │  │ • fixed_dt  │  │ • mouse_pos │  │ • Generational IDs   │ │
 │  │ • height    │  │ • accumulat.│  │ • scroll    │  │ • Type-safe queries  │ │
-│  │ • fps       │  │ • frame_cnt │  │             │  │                      │ │
-│  │ • physics_hz│  │             │  │             │  │                      │ │
+│  │ • fps       │  │ • time_scale│  │ • gamepad   │  │                      │ │
+│  │ • physics_hz│  │ • hitstop   │  │             │  │                      │ │
 │  └─────────────┘  └─────────────┘  └─────────────┘  └──────────────────────┘ │
 │                                                                              │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐ │
@@ -32,7 +32,15 @@
 │  │             │  │             │  │             │  │                      │ │
 │  │ • position  │  │ • sprites   │  │ • sfx       │  │ • RigidBodySet       │ │
 │  │ • zoom      │  │ • hot reload│  │ • music     │  │ • ColliderSet        │ │
-│  │ • viewport  │  │ • async load│  │ • volume    │  │ • PhysicsPipeline    │ │
+│  │ • shake     │  │ • caching   │  │ • volume    │  │ • PhysicsPipeline    │ │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └──────────────────────┘ │
+│                                                                              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐ │
+│  │   Events    │  │EffectsManager│ │  DevLog     │  │   Dev Windows        │ │
+│  │             │  │             │  │             │  │                      │ │
+│  │ • pub/sub   │  │ • fade/crt  │  │ • circular  │  │ • Profiler (F10)     │ │
+│  │ • 1-frame   │  │ • vignette  │  │ • levels    │  │ • Logger (F9)        │ │
+│  │ • type-safe │  │ • flash     │  │ • modules   │  │ • Flamegraph         │ │
 │  └─────────────┘  └─────────────┘  └─────────────┘  └──────────────────────┘ │
 │                                                                              │
 │  ┌───────────────────────────────────────────────────────────────────────┐   │
@@ -66,13 +74,14 @@
 │      accumulator -= fixed_dt ──────────────────────────┘                  │
 │              │                                                            │
 │              ▼ (exit loop)                                                │
-│   3. input.begin_frame()           Clear per-frame input (only if         │
-│              │                     update ran, to preserve input)         │
+│   3. input.begin_frame()           Clear per-frame input                  │
+│              │                                                            │
 │              ▼                                                            │
 │   4. render(alpha)                 Variable rate rendering                │
-│      • game.render() callback      (with interpolation)                   │
-│      • game.render_gpu() callback                                         │
-│      • game.render_ui() callback                                          │
+│      • game.render_background()                                           │
+│      • game.render()                                                      │
+│      • game.render_gpu()                                                  │
+│      • game.render_ui()                                                   │
 │              │                                                            │
 │              ▼                                                            │
 │   5. pipeline.execute()            Pass-based render pipeline             │
@@ -98,28 +107,36 @@ Ryo2D uses [hecs](https://github.com/Ralith/hecs), a high-performance archetype-
 │  │  │ T,V,R,C │ T,V,R,C │ T,V,R,C │         │ T,V,R,C │    friendly   │   │
 │  │  └─────────┴─────────┴─────────┴─────────┴─────────┘               │   │
 │  └────────────────────────────────────────────────────────────────────┘   │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  Archetype B: (Transform, SpriteRenderer)  ← Background tiles      │   │
-│  │  ┌─────────┬─────────┬─────────┐                                   │   │
-│  │  │ Entity  │ Entity  │ Entity  │                                   │   │
-│  │  │ T, S    │ T, S    │ T, S    │                                   │   │
-│  │  └─────────┴─────────┴─────────┘                                   │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
 │  Generational IDs: Entity = (index: u32, generation: u32)                 │
 │  Stale handles safely return None instead of accessing wrong entity       │
+│                                                                           │
+│  World Wrapper Features:                                                  │
+│  • spawn/despawn with generation tracking                                 │
+│  • Parent/Children hierarchy with WorldTransform propagation              │
+│  • spawn_child(), set_parent(), despawn_recursive()                       │
+│  • Generation counter for scene clear detection                           │
 └───────────────────────────────────────────────────────────────────────────┘
-
-Usage:
-  // Spawn with bundle
-  let entity = world.spawn((Transform::new(x, y), Velocity::zero(), RigidBody::new()));
-  
-  // Query
-  for (entity, (transform, velocity)) in world.query::<(&Transform, &Velocity)>() { ... }
-  
-  // Single component access
-  let pos = world.get_component::<Transform>(entity)?;
 ```
+
+### Built-in Components
+
+| Category | Components |
+|----------|------------|
+| **Transform** | Transform (position, rotation, scale, pivot), Velocity, WorldTransform |
+| **Rendering** | Renderable (sprite/tile/shader), Material, SpriteShader, RenderLayer |
+| **Hierarchy** | Parent, Children |
+| **Animation** | Tween (24 easing functions), Knockback, SquashStretch, YSort |
+| **Pooling** | Active, Inactive (engine skips Inactive in render/physics/animation) |
+
+### Object Pooling
+
+Pre-allocated entity pools for high-frequency spawning (bullets, particles):
+- `Pool<B>` generic over component bundle type
+- `PoolConfig`: initial_capacity, max_capacity, expand_batch_size, exhausted_policy
+- Automatic Active/Inactive marker swapping
+- World generation tracking for scene clear safety
+- Engine auto-skips Inactive entities in all systems
 
 ## Physics System (Rapier2D)
 
@@ -134,53 +151,66 @@ Physics is handled by [Rapier2D](https://rapier.rs/), a professional-grade physi
 │  │                 │  │                 │  │                         │    │
 │  │ Dynamic bodies  │  │ Box, Circle     │  │ Broad phase (sweep)     │    │
 │  │ Kinematic       │  │ Sensors/Trigger │  │ Narrow phase (shapes)   │    │
-│  │ Static          │  │ Restitution     │  │ Constraint solving      │    │
+│  │ (no Static)     │  │ Restitution     │  │ Constraint solving      │    │
 │  └─────────────────┘  └─────────────────┘  └─────────────────────────┘    │
 │                                                                           │
-│  Entity ↔ Handle Mapping                                                  │
+│  Entity ↔ Handle Mapping (bidirectional)                                  │
 │  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  entity_to_body: HashMap<Entity, RigidBodyHandle>                  │   │
-│  │  collider_to_entity: HashMap<ColliderHandle, Entity>               │   │
+│  │  entity_to_body / body_to_entity                                   │   │
+│  │  entity_to_collider / collider_to_entity                           │   │
+│  │  Pixel ↔ Meter: PIXELS_PER_METER = 100.0                           │   │
 │  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
 │  Collision Events (via ChannelEventCollector)                             │
 │  ┌────────────────────────────────────────────────────────────────────┐   │
 │  │  PhysicsCollisionEvent { entity_a, entity_b, Started/Stopped }     │   │
+│  │  Helper methods: involves(entity), other(entity)                   │   │
 │  └────────────────────────────────────────────────────────────────────┘   │
 └───────────────────────────────────────────────────────────────────────────┘
-
-Physics Loop:
-  1. Auto-register new entities (RigidBody + Collider + Transform)
-  2. Sync kinematic positions from ECS → Rapier
-  3. physics.step(gravity) — Rapier simulates
-  4. Sync dynamic positions from Rapier → ECS
-  5. Collision events available via ctx.collision_events
 ```
+
+### Physics Loop
+
+1. Auto-register new entities (RigidBody + Collider + Transform)
+2. `sync_kinematic_from_ecs()` - Update kinematic positions BEFORE step
+3. `sync_velocities_from_ecs()` - Apply impulses from game code
+4. `physics.step(gravity)` - Rapier simulates
+5. `sync_to_ecs()` - Copy positions/velocities FROM Rapier TO ECS
+6. Collision events available via `ctx.collision_events`
+
+### Dual Physics Systems
+
+| System | Purpose | Use Case |
+|--------|---------|----------|
+| **RapierPhysicsWorld** | Full dynamics (gravity, forces, impulses) | Platformers, physics puzzles |
+| **PhysicsWorld** | Spatial hash + collision detection only | Simple overlap checks, triggers |
+
+### Spatial Partitioning
+
+Grid-based broad-phase (`SpatialHash`):
+- Default cell size: 64×64 pixels
+- Entities placed in all overlapping cells
+- Reduces narrow-phase from O(n²) to O(n)
+- Automatic cleanup of empty cells
 
 ## Render Pipeline
 
-Ryo2D uses a **pass-based render pipeline** where each rendering phase is a separate `RenderPass`. Passes declare dependencies and execute in topological order.
+Ryo2D uses a **pass-based render pipeline** where each phase is a `RenderPass` with declared dependencies.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
 │                           RenderPipeline                                  │
 │                                                                           │
-│  Pass-Based Architecture:                                                 │
+│  Pass Execution Order (topological sort by dependencies):                 │
 │  ┌────────────────────────────────────────────────────────────────────┐   │
 │  │                                                                    │   │
 │  │   ClearPass ──► ParallaxPass ──► CpuSpritePass ──► UploadPass      │   │
 │  │                                                          │         │   │
 │  │                                                          ▼         │   │
 │  │   PresentPass ◄── EffectsPass ◄── UiPass ◄── LightingPass          │   │
-│  │        │              │             │             │                │   │
-│  │        │              │             │             ▼                │   │
-│  │        │              │             │        TrailPass             │   │
-│  │        │              │             │             │                │   │
-│  │        │              │             │             ▼                │   │
-│  │        │              │             │        GpuSpritePass         │   │
-│  │        ▼              ▼             ▼             ▼                │   │
-│  │    [Screen]     [Scratch A/B]  [Game Tex]   [Game Tex]             │   │
-│  │                  (ping-pong)                                       │   │
+│  │                                                    │               │   │
+│  │                                                    ▼               │   │
+│  │                                              GpuSpritePass         │   │
 │  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
 │  Built-in Passes:                                                         │
@@ -189,162 +219,248 @@ Ryo2D uses a **pass-based render pipeline** where each rendering phase is a sepa
 │  │  parallax    │  GPU-rendered parallax background layers            │   │
 │  │  cpu_sprite  │  Software sprite rendering to pixel buffer          │   │
 │  │  upload      │  Upload CPU pixel buffer to GPU texture             │   │
-│  │  gpu_sprite  │  Batched GPU sprite rendering                       │   │
-│  │  trail       │  Motion trail rendering                             │   │
-│  │  lighting    │  2D lighting with shadows                           │   │
+│  │  gpu_sprite  │  Batched GPU sprite rendering (10k max instances)   │   │
+│  │  trail       │  Motion trail rendering (Line2D, Trail2D)           │   │
+│  │  lighting    │  2D lighting with point lights and shadows          │   │
 │  │  ui          │  User interface overlay                             │   │
-│  │  effects     │  Post-processing (CRT, vignette, etc.)              │   │
+│  │  effects     │  Post-processing (CRT, vignette, fade, flash)       │   │
 │  │  present     │  Final output to swapchain                          │   │
 │  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
-│  Dependency Resolution:                                                   │
-│  • Passes declare dependencies via dependencies() -> &[&str]              │
-│  • Pipeline computes execution order via topological sort                 │
-│  • Circular dependencies panic at pipeline creation                       │
-│  • Missing dependencies are silently ignored (optional passes)            │
-│                                                                           │
-│  RenderContext (shared state):                                            │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  • device, queue, encoder    — wgpu resources                      │   │
-│  │  • game_texture              — main render target                  │   │
-│  │  • scratch_a, scratch_b      — ping-pong buffers for effects       │   │
-│  │  • pixel_buffer              — CPU buffer for software rendering   │   │
-│  │  • camera                    — world-to-screen transforms          │   │
-│  │  • sprite_gpu, batch_collector — GPU sprite system                 │   │
-│  │  • trail_renderer, lighting  — specialized renderers               │   │
-│  │  • current_source            — which texture has latest result     │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
+│  RenderContext (shared state for all passes):                             │
+│  • device, queue, encoder (wgpu resources)                                │
+│  • game_texture, scratch_a/b (ping-pong buffers)                          │
+│  • pixel_buffer (CPU software rendering)                                  │
+│  • camera, sprite_gpu, batch_collector                                    │
+│  • trail_renderer, lighting, effects                                      │
 └───────────────────────────────────────────────────────────────────────────┘
-
-Pipeline Configuration:
-  // Disable a pass at runtime
-  pipeline.set_enabled("lighting", false);
-
-  // Add custom pass (inserted by dependency order)
-  pipeline.add_pass(MyCustomPass::new());
-
-  // Remove a pass
-  pipeline.remove_pass("trail");
-
-  // Query pass state
-  if pipeline.is_enabled("effects") { ... }
-
-Custom Pass Example:
-  struct MyPass { enabled: bool }
-
-  impl RenderPass for MyPass {
-      fn id(&self) -> &'static str { "my_pass" }
-
-      fn dependencies(&self) -> &[&'static str] {
-          &["gpu_sprite"]  // Run after GPU sprites
-      }
-
-      fn execute(&mut self, ctx: &mut RenderContext) {
-          // Access ctx.encoder, ctx.device, ctx.pixel_buffer, etc.
-      }
-
-      fn should_execute(&self, ctx: &RenderContext) -> bool {
-          true  // Return false to skip this frame
-      }
-  }
 ```
 
-## Post-Processing Effects
+### GPU Sprite Batching
 
-Post-processing is handled by the `EffectsPass` in the render pipeline, using ping-pong buffers for effect chaining.
+- Automatic grouping by (texture_id, has_effects)
+- Z-order sorting across batches
+- 112 bytes per instance (transform matrix, UV, tint, effect params)
+- Instance buffer pre-upload before render pass
+- Two pipelines: base (no effects) and effect (per-sprite shaders)
 
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                         EffectsPass (part of pipeline)                    │
-│                                                                           │
-│  Ping-Pong Buffer Flow:                                                   │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                    │   │
-│  │   Game        Effect 1      Effect 2      Effect N       Present   │   │
-│  │  Texture  ──►  (Fade)   ──►  (CRT)    ──►   ...     ──►   Pass     │   │
-│  │     │           │             │             │             │        │   │
-│  │     ▼           ▼             ▼             ▼             ▼        │   │
-│  │  [Scratch A] [Scratch B]  [Scratch A]   [Scratch B]   [Screen]     │   │
-│  │                                                                    │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  Available Effects:                                                       │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  Fade                │  Screen fade to color (scene transitions)   │   │
-│  │  ColorTint           │  Color grading/mood (sepia, night vision)   │   │
-│  │  Vignette            │  Darkened edges (cinematic look)            │   │
-│  │  ScreenFlash         │  One-shot flash with auto-decay (damage)    │   │
-│  │  CRT                 │  Scanlines, curvature, RGB offset (retro)   │   │
-│  │  ChromaticAberration │  RGB color fringing (glitch/lens effect)    │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  Key Types:                                                               │
-│  • EffectsManager     — Manages active effects, timing, convenience API   │
-│  • PostProcessEffect  — Enum of effect variants with parameters           │
-│  • EffectParams       — 64-byte uniform struct for shader parameters      │
-└───────────────────────────────────────────────────────────────────────────┘
+### Per-Sprite Shader Effects (11 built-in)
 
-Usage:
-  fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-      // Persistent effects
-      ctx.effects.set_vignette(0.3);
-      ctx.effects.set_crt(0.2, 0.01, 0.001);
+Outline, Glow, Flash, ColorShift, Silhouette, Pixelate, Wave, Dissolve, Invert, Grayscale, DirectionalOutline
 
-      // Timed effects (auto-decay)
-      if player_hit {
-          ctx.effects.flash(Color::RED, Duration::from_millis(150));
-      }
+### Post-Processing Effects
 
-      // Scene transitions
-      ctx.effects.set_fade(self.fade_progress);
-  }
-```
+| Effect | Description |
+|--------|-------------|
+| Fade | Screen fade to color (scene transitions) |
+| ColorTint | Color grading/mood (sepia, night vision) |
+| Vignette | Darkened edges (cinematic look) |
+| ScreenFlash | One-shot flash with auto-decay (damage) |
+| CRT | Scanlines, curvature, RGB offset (retro) |
+| ChromaticAberration | RGB color fringing (glitch/lens) |
 
-## Input Flow
+## Input System
 
 ```
 ┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
 │   winit Events   │─────►│   InputState     │─────►│  Game Systems    │
 └──────────────────┘      └──────────────────┘      └──────────────────┘
 
-WindowEvent::KeyboardInput ───► handle_keyboard()     ───► keys_down/pressed
-WindowEvent::MouseInput    ───► handle_mouse_button() ───► buttons_down
-WindowEvent::CursorMoved   ───► handle_mouse_move()   ───► mouse_x/y
-WindowEvent::MouseWheel    ───► handle_scroll()       ───► scroll_delta
-
                      ┌─────────────────────────────────────────────┐
                      │             Per-Frame State                 │
                      │                                             │
-Events accumulate    │  keys_pressed     (cleared each frame)      │
-between frames  ────►│  keys_released    (cleared each frame)      │
-                     │  mouse_delta      (cleared each frame)      │
-                     │  scroll_delta     (cleared each frame)      │
+Events accumulate    │  keys_pressed/released  (cleared each frame)│
+between frames  ────►│  mouse_delta            (cleared each frame)│
+                     │  scroll_delta           (cleared each frame)│
                      │                                             │
-Persistent state     │  keys_down        (tracks held keys)        │
-                     │  mouse_position   (current position)        │
+Persistent state     │  keys_down              (tracks held keys)  │
+                     │  mouse_position         (current position)  │
+                     │  gamepad_state          (gilrs integration) │
                      └─────────────────────────────────────────────┘
 ```
 
-## Key Dependencies
+## Event Bus
 
-| Crate | Purpose |
-|-------|---------|
-| `hecs` | High-performance archetype ECS with generational IDs |
-| `rapier2d` | Physics simulation, collision detection/response |
-| `winit` | Cross-platform windowing and input events |
-| `wgpu` | GPU abstraction for rendering |
-| `bytemuck` | Safe transmutation for shader uniforms |
-| `pollster` | Minimal async runtime for wgpu initialization |
-| `kira` | Game audio (sound effects, music, streaming) |
-| `image` | Image loading (PNG, JPEG) |
-| `notify` | Filesystem watching for hot reload |
-| `thiserror` | Ergonomic error types |
-| `glam` | Math types (Vec2, Vec3, Mat4) |
-| `crossbeam-channel` | Multi-producer channels for Rapier events |
-| `ron` | Rusty Object Notation for save data serialization |
-| `flate2` | Compression for save files |
-| `toml` | TOML parsing for configuration (Ryo.toml, Cargo.toml) |
-| `serde` | Serialization framework |
+Type-safe publish-subscribe system for decoupled inter-system communication:
+
+- Events exist for exactly ONE frame (cleared at frame start)
+- Any `'static + Send + Sync` type can be an event
+- Multiple readers can consume same events (no ownership transfer)
+
+### Built-in Events
+
+| Event | Source | Purpose |
+|-------|--------|---------|
+| CollisionStarted/Stopped | Physics | Collision state changes |
+| TweenStarted/Completed | Tweening | Animation lifecycle |
+| ClientConnected/Disconnected | Network | Multiplayer (host) |
+| ConnectedToServer/DisconnectedFromServer | Network | Multiplayer (client) |
+| AssetReloaded/AssetLoadFailed | Assets | Hot reload status |
+
+## Scene Management
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                          SceneManager                                     │
+│                                                                           │
+│  Scene Stack (Vec<Box<dyn Scene>>)                                        │
+│  ┌──────────────────────────────────────────────────────────────────┐     │
+│  │  [MenuScene]           ← Top (active, receives update/render)    │     │
+│  │  [GameScene]           ← Paused (not updated)                    │     │
+│  └──────────────────────────────────────────────────────────────────┘     │
+│                                                                           │
+│  Actions: Push, Pop, Replace, Clear                                       │
+│  Lifecycle: on_enter → update/render → on_exit                            │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+## Audio System
+
+Powered by [Kira](https://github.com/SoftbearStudios/kira) for professional game audio.
+
+### Volume Hierarchy (Multiplicative)
+
+`Final Volume = master × category × sound`
+
+- Master volume: affects ALL audio
+- Category volumes: SFX vs Music (separate control)
+- Per-sound volume: passed in play options
+
+### Capabilities
+
+| Feature | SFX | Music |
+|---------|-----|-------|
+| Format | WAV, MP3, OGG, FLAC | Same |
+| Loading | Cached in memory | Streamed from disk |
+| Control | SoundHandle (pause, resume, stop) | MusicHandle (same + fades) |
+| Fading | No | fade_in, fade_to, fade_out, crossfade |
+| Positioning | Panning (-1.0 to 1.0) | N/A |
+| Pitch | Playback rate | Playback rate |
+
+## UI System
+
+Hybrid approach: **immediate mode** for simple elements, **retained mode** for stateful widgets.
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                          Hybrid UI System                                 │
+│                                                                           │
+│  Immediate Mode (stateless):           Retained Mode (stateful):          │
+│  ┌─────────────────────────────┐       ┌─────────────────────────────┐    │
+│  │  button(), label(), slider  │       │  TextInputState             │    │
+│  │  checkbox(), toggle()       │       │  DropdownState              │    │
+│  │  progress_bar()             │       │  ScrollViewState            │    │
+│  │  draw_rect/text/sprite      │       │  FocusTrap                  │    │
+│  └─────────────────────────────┘       └─────────────────────────────┘    │
+│                                                                           │
+│  Layout Containers:                    Theme System:                      │
+│  ┌─────────────────────────────┐       ┌─────────────────────────────┐    │
+│  │  HBox (horizontal + valign) │       │  Centralized widget styles  │    │
+│  │  VBox (vertical + halign)   │       │  Theme::dark(), light()     │    │
+│  │  Stack (layered/split)      │       │  Hot-reload from JSON       │    │
+│  └─────────────────────────────┘       └─────────────────────────────┘    │
+│                                                                           │
+│  Focus Management:                     UI Tweening:                       │
+│  ┌─────────────────────────────┐       ┌─────────────────────────────┐    │
+│  │  Focusable trait            │       │  TweenFloat, TweenVec2      │    │
+│  │  Tab/Shift+Tab navigation   │       │  TweenColor, TweenRect      │    │
+│  │  FocusTrap for modals       │       │  24 easing functions        │    │
+│  └─────────────────────────────┘       └─────────────────────────────┘    │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+### Clipping & Rendering
+
+- Scissor rect stack (max 16 levels, auto-intersection)
+- `with_no_clip()` for temporary bypass
+- `draw_modal_overlay()` for dimming backgrounds
+- `draw_focus_ring()` for keyboard navigation feedback
+
+## Save System
+
+Three-tier save architecture with compression:
+
+| Tier | Purpose | File Pattern |
+|------|---------|--------------|
+| SystemState | Engine settings (audio, display) | `system.ryo-system` |
+| WorldState | ECS world snapshots | `{slot}.ryo-world` |
+| GameSaveData<T> | Custom game data (generic) | `{slot}.ryo-save` |
+
+**Format**: Magic header (`RYO2`) + version + DEFLATE-compressed RON data
+
+## Dev Tools
+
+### Debug Keys
+
+| Key | Action |
+|-----|--------|
+| F1 | Cycle overlay: Off → FPS → Frame Timing → Full Stats |
+| F2 | Toggle collision boundaries |
+| F3 | Toggle velocity vectors |
+| F4 | Toggle origin points |
+| F5 | Toggle borderless fullscreen |
+| F9 | Toggle Logger window |
+| F10 | Toggle Profiler window (requires `profiler` feature) |
+
+### Profiler Window (F10)
+
+Real-time flamegraph viewer using [puffin](https://github.com/EmbarkStudios/puffin):
+- Hierarchical scope display (Game, Engine-CPU, Engine-GPU sections)
+- Color-coded bars by scope name
+- Hover tooltips with timing
+- Pause/resume for analysis
+- Smooth frame duration display
+
+### Logger Window (F9)
+
+Live log viewer with filtering:
+- 5 log levels: Trace, Debug, Info, Warn, Error
+- Context filtering: Engine, Game, External
+- ISO timestamps + elapsed time
+- Click-drag text selection + Ctrl+C copy
+- Auto-scroll with pause detection
+- Circular buffer (10,000 max entries)
+
+### Dev Logging
+
+Thread-safe global log buffer with macros:
+- `engine_info!()`, `game_warn!()`, etc.
+- Optional module tagging: `engine_info!(module: "Physics", "message")`
+- Frame number tracking
+
+## CLI System
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                        ryo2d CLI Commands                                 │
+│                                                                           │
+│  ryo2d init [name]     Create new project with full structure             │
+│  ryo2d build           Build optimized release bundle                     │
+│  ryo2d run             Execute release build                              │
+│  ryo2d dev [-p]        Development mode (-p enables profiler)             │
+│  ryo2d export          Package release into distributable zip             │
+│  ryo2d install-skills  Install 15 Agent Skills to .github/skills/         │
+│                                                                           │
+│  Features:                                                                │
+│  • Workspace discovery (searches up to 3 parents for Ryo.toml)            │
+│  • Shared target directory for workspace builds                           │
+│  • Dev profile optimization check with auto-fix prompt                    │
+│  • Config embedding via RYO_EMBED_* environment variables                 │
+│  • Windows icon embedding via build.rs                                    │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+## Workspace Configuration (Ryo.toml)
+
+| Section | Purpose | Runtime |
+|---------|---------|---------|
+| `[project]` | Name, description, version | Build-time |
+| `[paths]` | entry_point, assets, save_data | Build-time |
+| `[system]` | Resolution, vsync, volumes (defaults for system.json) | User-modifiable |
+| `[info]` | Window title, show_fps | Build-time |
+| `[debug]` | Debug flags, profiler, logger | Dev-only |
+| `[release]` | Icon path | Build-time |
+| `[env]` | Game-specific key-value pairs | Game code |
 
 ## Coordinate Systems
 
@@ -363,338 +479,38 @@ World Space (pixels)                       Screen Space
           │       Camera follows                 │
           ▼ +Y                                   ▼ Y
 
-Rapier Space (meters)
-  PIXELS_PER_METER = 100.0
-  100 world pixels = 1 Rapier meter
-  
-  Transform.x = 500 pixels → Rapier x = 5.0 meters
+Rapier Space: PIXELS_PER_METER = 100.0 (500 pixels = 5 meters)
 ```
 
-## Data Flow
+## Key Dependencies
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Spawn      │────►│   Physics    │────►│    Sync      │────►│   Render     │
-│              │     │   Register   │     │              │     │   Pipeline   │
-│ world.spawn( │     │              │     │  Rapier →    │     │              │
-│   Transform, │     │ Add to       │     │  Transform   │     │ Pass-based   │
-│   RigidBody, │     │ RigidBodySet │     │  + Velocity  │     │ execution    │
-│   Collider   │     │ ColliderSet  │     │              │     │              │
-│ )            │     │              │     │              │     │              │
-└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
-                            │
-                            ▼
-                     ┌──────────────┐
-                     │  Collision   │
-                     │   Events     │
-                     │              │
-                     │ PhysicsCol-  │
-                     │ lisionEvent  │
-                     │ Started/     │
-                     │ Stopped      │
-                     └──────────────┘
-```
+| Crate | Purpose |
+|-------|---------|
+| `hecs` | Archetype ECS with generational IDs |
+| `rapier2d` | Physics simulation, collision detection |
+| `winit` | Cross-platform windowing and input |
+| `wgpu` | GPU abstraction for rendering |
+| `kira` | Game audio (SFX, music, streaming) |
+| `puffin` | Hierarchical profiling (optional) |
+| `glam` | Math types (Vec2, Vec3, Mat4) |
+| `image` | Image loading (PNG, JPEG) |
+| `notify` | Filesystem watching for hot reload |
+| `ron` | Save data serialization |
+| `flate2` | Save file compression |
+| `toml` | Configuration parsing |
+| `gilrs` | Gamepad input |
+| `arboard` | Clipboard integration |
 
-## Scene Management
+## Additional Systems
 
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                          SceneManager                                     │
-│                                                                           │
-│  Scene Stack (Vec<Box<dyn Scene>>)                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐     │
-│  │  [MenuScene]           ← Top (active, receives update/render)    │     │
-│  │  [GameScene]           ← Paused (not updated)                    │     │
-│  └──────────────────────────────────────────────────────────────────┘     │
-│                                                                           │
-│  Actions (processed after update):                                        │
-│  • Push(scene)    — Add new scene on top                                  │
-│  • Pop            — Remove current scene, resume previous                 │
-│  • Replace(scene) — Replace current scene with new one                    │
-│  • Clear          — Remove all scenes                                     │
-│                                                                           │
-│  Scene Lifecycle:                                                         │
-│  1. on_enter()    — Called when scene becomes active                      │
-│  2. update()      — Called every frame while active                       │
-│  3. render()      — Called every frame while active                       │
-│  4. on_exit()     — Called when scene is removed                          │
-└───────────────────────────────────────────────────────────────────────────┘
-
-Usage:
-  scene_manager.push(Box::new(MenuScene::new()));
-  scene_manager.replace(Box::new(GameScene::new(level)));
-```
-
-## Save System
-
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                           SaveManager                                     │
-│                                                                           │
-│  Save Directory: workspace.save_data_dir()                                │
-│  ┌──────────────────────────────────────────────────────────────────┐     │
-│  │  data/                                                           │     │
-│  │  ├── slot1.save     (compressed RON)                             │     │
-│  │  ├── slot2.save                                                  │     │
-│  │  └── system.save    (game settings, progress)                    │     │
-│  └──────────────────────────────────────────────────────────────────┘     │
-│                                                                           │
-│  Features:                                                                │
-│  • Named slots (e.g., "autosave", "slot1")                                │
-│  • Automatic compression (flate2/gzip)                                    │
-│  • Metadata (timestamp, version, description)                             │
-│  • RON serialization (human-readable, versionable)                        │
-│  • List/delete saves                                                      │
-│                                                                           │
-│  Types:                                                                   │
-│  • Game saves    — Full world state, entities, components                 │
-│  • System saves  — Settings, keybinds, preferences                        │
-│  • Raw saves     — Custom binary data                                     │
-└───────────────────────────────────────────────────────────────────────────┘
-
-Usage:
-  let save_mgr = workspace.create_save_manager()?;
-  save_mgr.save_game("slot1", &game_data)?;
-  let loaded = save_mgr.load_game::<GameData>("slot1")?;
-```
-
-## Workspace System
-
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                            Workspace                                      │
-│                                                                           │
-│  Project Structure:                                                       │
-│  ┌──────────────────────────────────────────────────────────────────┐     │
-│  │  my_game/                                                        │     │
-│  │  ├── Ryo.toml         (case-insensitive: ryo.toml also works)    │     │
-│  │  ├── Cargo.toml                                                  │     │
-│  │  ├── main.rs                                                     │     │
-│  │  ├── assets/          (sprites, sounds, etc.)                    │     │
-│  │  └── data/            (save files)                               │     │
-│  └──────────────────────────────────────────────────────────────────┘     │
-│                                                                           │
-│  Ryo.toml:                                                                │
-│  [project]                                                                │
-│  name = "My Game"                                                         │
-│                                                                           │
-│  [paths]                                                                  │
-│  entry_point = "main.rs"   # or "src/main.rs"                             │
-│  assets = "assets"                                                        │
-│  save_data = "data"                                                       │
-│                                                                           │
-│  Discovery:                                                               │
-│  • Workspace::discover() searches cwd and 3 parent directories            │
-│  • Used by CLI commands to find project root                              │
-│  • Provides canonical paths for assets, saves, etc.                       │
-└───────────────────────────────────────────────────────────────────────────┘
-
-Usage:
-  let workspace = Workspace::discover()?;
-  let assets_dir = workspace.assets_dir();
-  let save_manager = workspace.create_save_manager()?;
-```
-
-## CLI System
-
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                        ryo2d CLI Commands                                 │
-│                                                                           │
-│  ryo2d build                                                              │
-│  ├─► cargo build --release                                                │
-│  └─► Output: target/release/my_game                                       │
-│                                                                           │
-│  ryo2d run                                                                │
-│  ├─► Check: target/release/my_game exists?                                │
-│  ├─► Read Cargo.toml for binary name                                      │
-│  └─► Execute: ./target/release/my_game                                    │
-│                                                                           │
-│  ryo2d dev                                                                │
-│  ├─► cargo run (debug build)                                              │
-│  └─► (Future: file watching + hot reload)                                 │
-│                                                                           │
-│  Workflow Integration:                                                    │
-│  ├─► Workspace-aware (discovers Ryo.toml)                                 │
-│  ├─► Runs from any subdirectory                                           │
-│  └─► Uses Cargo for compilation                                           │
-└───────────────────────────────────────────────────────────────────────────┘
-
-Installation:
-  ./install.ps1  (Windows) or ./install.sh (Unix)
-  Copies/symlinks to ~/.ryo2d/bin/
-  Optionally adds to PATH
-```
-
-## UI System
-
-Ryo2D uses a **hybrid UI system** combining immediate-mode and retained-mode approaches.
-
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                          Hybrid UI System                                 │
-│                                                                           │
-│  Immediate Mode (stateless):                                              │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  • Call draw functions each frame                                  │   │
-│  │  • No persistent widget state                                      │   │
-│  │  • Buttons return true when clicked                                │   │
-│  │  • Ideal for: HUDs, debug overlays, simple menus                   │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  Retained Mode (stateful):                                                │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  • Caller owns state structs (TextInputState, DropdownState, etc.) │   │
-│  │  • State persists across frames (cursor, selection, scroll)        │   │
-│  │  • Ideal for: forms, text input, complex menus                     │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  Immediate Widgets:                                                       │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  button(label, rect)           │  Returns true when clicked        │   │
-│  │  label(text, rect)             │  Static text display              │   │
-│  │  progress_bar(rect, value)     │  0.0-1.0 fill bar                 │   │
-│  │  slider(rect, value, range)    │  Draggable value selector         │   │
-│  │  checkbox(rect, checked)       │  Toggle boolean                   │   │
-│  │  draw_rect, draw_text, ...     │  Primitives                       │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  Retained Widgets:                                                        │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  TextInputState    │  Text field with cursor, selection            │   │
-│  │  DropdownState     │  Expandable option list                       │   │
-│  │  ScrollViewState   │  Scrollable content region                    │   │
-│  │  FocusTrap         │  Keyboard navigation container                │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  Layout Containers:                                                       │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  HBox     │  Horizontal layout with spacing                        │   │
-│  │  VBox     │  Vertical layout with spacing                          │   │
-│  │  Stack    │  Overlapping children (z-order)                        │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  Theme System:                                                            │
-│  • Centralized styling (colors, spacing, borders)                         │
-│  • Per-widget styles (ButtonStyle, TextInputStyle, etc.)                  │
-│  • Hot-reload from RON files                                              │
-│  • Runtime theme switching                                                │
-└───────────────────────────────────────────────────────────────────────────┘
-
-Usage:
-  // In scene struct - retained state
-  struct MyScene {
-      name_input: TextInputState,
-      difficulty: DropdownState,
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) {
-      // Immediate mode - no state needed
-      ui.draw_text(&format!("Score: {}", score), 10.0, 10.0, Color::WHITE);
-      ui.draw_progress_bar(health_rect, health / 100.0, Color::RED, Color::GRAY);
-
-      if ui.button("Start", button_rect) {
-          self.start_game();
-      }
-
-      // Retained mode - state persists
-      ui.text_input(&mut self.name_input, input_rect);
-      ui.dropdown(&mut self.difficulty, dropdown_rect, &["Easy", "Normal", "Hard"]);
-      ui.finish_dropdowns();  // Call at end for proper z-order
-  }
-```
-
-## Profiler System
-
-Ryo2D includes a built-in profiler using [puffin](https://github.com/EmbarkStudios/puffin) for hierarchical frame profiling.
-
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                          Profiler Architecture                            │
-│                                                                           │
-│  puffin (scope collection)                                                │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  profile_scope!("cpu:engine_update")  ← Engine scopes with prefix  │   │
-│  │  profile_scope!("gpu:sprite_batching")                             │   │
-│  │  profile_scope!("player_update")      ← Game scopes (no prefix)    │   │
-│  │                                                                    │   │
-│  │  GlobalProfiler collects timing data per-frame                     │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                          │                                                │
-│                          ▼                                                │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  FrameView (sink)      │  ProfilerWindow subscribes via sink       │   │
-│  │  └► ScopeEntry[]       │  Receives scope data each frame           │   │
-│  │     • name             │                                           │   │
-│  │     • duration_ns      │                                           │   │
-│  │     • depth            │                                           │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                          │                                                │
-│                          ▼                                                │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  ProfilerWindow (separate window)                                  │   │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │   │
-│  │  │  Game Section         ← player_update: 2.1ms                 │  │   │
-│  │  │                         enemy_ai: 1.3ms                      │  │   │
-│  │  │                         physics_sim: 0.8ms                   │  │   │
-│  │  ├──────────────────────────────────────────────────────────────┤  │   │
-│  │  │  Engine - CPU Section ← engine_update: 0.5ms                 │  │   │
-│  │  │                         animation_system: 0.2ms              │  │   │
-│  │  ├──────────────────────────────────────────────────────────────┤  │   │
-│  │  │  Engine - GPU Section ← sprite_batching: 1.1ms               │  │   │
-│  │  │                         lighting_pass: 0.7ms                 │  │   │
-│  │  └──────────────────────────────────────────────────────────────┘  │   │
-│  │                                                                    │   │
-│  │  • CPU pixel buffer rendering (independent of game renderer)       │   │
-│  │  • Mouse hover for scope details                                   │   │
-│  │  • Real-time flamegraph visualization                              │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-└───────────────────────────────────────────────────────────────────────────┘
-
-Scope Categorization:
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │  Prefix      │  Category      │  Used By                           │
-  ├─────────────────────────────────────────────────────────────────────┤
-  │  cpu:        │  Engine - CPU  │  Engine internals (physics, ECS)   │
-  │  gpu:        │  Engine - GPU  │  Rendering, batching, shaders      │
-  │  (none)      │  Game          │  Game developer code               │
-  └─────────────────────────────────────────────────────────────────────┘
-
-  Game developers use unprefixed scopes - categorization is automatic:
-    profile_scope!("enemy_ai");      // Shows in "Game" section
-    profile_scope!("spawn_bullets"); // Shows in "Game" section
-
-  Engine uses prefixed scopes for organization:
-    profile_scope!("cpu:physics_step");   // Shows in "Engine - CPU"
-    profile_scope!("gpu:submit_batches"); // Shows in "Engine - GPU"
-
-Enabling Profiling:
-  // In Ryo.toml
-  [debug]
-  puffin_profiler = true
-
-  // Or via CLI
-  ryo2d dev --profiler
-
-  // Compile with feature
-  cargo run --features profiler
-
-Usage in Game Code:
-  use ryo2d::prelude::*;
-
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-      profile_scope!("game_update");  // Automatic "Game" category
-
-      {
-          profile_scope!("player_movement");
-          self.update_player(ctx, dt);
-      }
-
-      {
-          profile_scope!("enemy_ai");
-          self.update_enemies(ctx, dt);
-      }
-
-      SceneAction::Continue
-  }
-```
+| System | Location | Purpose |
+|--------|----------|---------|
+| Animation | `animation.rs` | Animation, Animator, AnimationController |
+| Camera Shake | `camera.rs` | Trauma-based screen shake |
+| Time Control | `engine.rs` | Slow-mo, hitstop (time_scale, hitstop) |
+| Parallax | `parallax.rs` | Layered scrolling backgrounds |
+| Tiled Rendering | `tile.rs` | TiledSprite, CompositeTile, GroupedCollider |
+| Cursor | `cursor.rs` | 18 system cursor styles, visibility, confinement |
+| State Machine | `state_machine/` | Generic FSM utilities |
+| Proc Gen | `procgen/` | Procedural generation helpers |
+| Navigation | `navigation/` | Pathfinding utilities |
