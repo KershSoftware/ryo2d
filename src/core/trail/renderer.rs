@@ -916,6 +916,7 @@ mod tests {
   use super::*;
 
   /// Helper to create a test trail with specific number of points
+  #[allow(dead_code)]
   fn create_test_trail(num_points: usize) -> Trail2D {
     let mut trail = Trail2D::new(Color::WHITE, 10.0)
       .with_length(num_points + 10) // Ensure we can fit all points

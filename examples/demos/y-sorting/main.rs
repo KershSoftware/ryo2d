@@ -72,8 +72,8 @@ impl YSortingScene {
         data[idx + 3] = 255;
 
         // Add occasional grass blade detail
-        if (x + y * 3 + variant as u32) % 8 == 0 {
-          data[idx + 1] = (g + 20).min(255);
+        if (x + y * 3 + variant as u32).is_multiple_of(8) {
+          data[idx + 1] = g + 20;
         }
       }
     }
@@ -340,7 +340,7 @@ impl Scene for YSortingScene {
     let grass_handles: Vec<_> = (0..4)
       .map(|i| {
         let grass = Self::create_grass_tile(i);
-        ctx.assets.create_sprite(grass, &format!("grass_{}", i))
+        ctx.assets.create_sprite(grass, format!("grass_{}", i))
       })
       .collect();
 
@@ -452,7 +452,7 @@ impl Scene for YSortingScene {
 
     for (i, ((r, g, b), (x, y))) in npc_configs.iter().enumerate() {
       let npc_sprite = Self::create_character_sprite(*r, *g, *b);
-      let npc_handle = ctx.assets.create_sprite(npc_sprite, &format!("npc_{}", i));
+      let npc_handle = ctx.assets.create_sprite(npc_sprite, format!("npc_{}", i));
 
       // NPC shadow
       ctx.world.spawn((
@@ -504,11 +504,11 @@ impl Scene for YSortingScene {
     let mut player_x = 0.0;
     let mut player_y = 0.0;
 
-    if let Some(player) = self.player {
-      if let Some(transform) = ctx.world.get_component::<Transform>(player) {
-        player_x = transform.x;
-        player_y = transform.y;
-      }
+    if let Some(player) = self.player
+      && let Some(transform) = ctx.world.get_component::<Transform>(player)
+    {
+      player_x = transform.x;
+      player_y = transform.y;
     }
 
     let mut dx = 0.0;
@@ -542,19 +542,19 @@ impl Scene for YSortingScene {
     player_y = player_y.clamp(PLAY_AREA_TOP + 8.0, PLAY_AREA_BOTTOM);
 
     // Update player position
-    if let Some(player) = self.player {
-      if let Some(mut transform) = ctx.world.get_mut::<Transform>(player) {
-        transform.x = player_x;
-        transform.y = player_y;
-      }
+    if let Some(player) = self.player
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(player)
+    {
+      transform.x = player_x;
+      transform.y = player_y;
     }
 
     // Update player shadow position
-    if let Some(shadow) = self.player_shadow {
-      if let Some(mut transform) = ctx.world.get_mut::<Transform>(shadow) {
-        transform.x = player_x;
-        transform.y = player_y + 2.0;
-      }
+    if let Some(shadow) = self.player_shadow
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(shadow)
+    {
+      transform.x = player_x;
+      transform.y = player_y + 2.0;
     }
 
     // Update wandering NPCs
@@ -600,7 +600,7 @@ impl Scene for YSortingScene {
         new_dir.0 = -new_dir.0;
         new_x = new_x.clamp(16.0, GAME_WIDTH as f32 - 16.0);
       }
-      if new_y < PLAY_AREA_TOP + 8.0 || new_y > PLAY_AREA_BOTTOM {
+      if !(PLAY_AREA_TOP + 8.0..=PLAY_AREA_BOTTOM).contains(&new_y) {
         new_dir.1 = -new_dir.1;
         new_y = new_y.clamp(PLAY_AREA_TOP + 8.0, PLAY_AREA_BOTTOM);
       }

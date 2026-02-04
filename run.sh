@@ -743,7 +743,11 @@ case "$COMMAND" in
             # Match by full path (demos/example or games/example) or just the name
             base=$(basename "$example")
             if [[ "$example" == "$COMMAND" || "$base" == "$COMMAND" ]]; then
-                if [[ "$PROFILER_MODE" == "true" ]]; then
+                # Special case: profile-and-log always runs with profiler enabled
+                if [[ "$base" == "profile-and-log" ]]; then
+                    echo -e "${MAGENTA}Auto-enabling profiler mode for profile-and-log demo${NC}"
+                    run_example "$example" 2  # dev with profiler
+                elif [[ "$PROFILER_MODE" == "true" ]]; then
                     run_example "$example" 2  # dev with profiler
                 elif [[ "$DEV_MODE" == "true" ]]; then
                     run_example "$example" 1  # dev mode

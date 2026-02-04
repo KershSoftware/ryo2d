@@ -217,4 +217,11 @@ pub mod prelude {
 
   // Profiling (macros work as no-ops when `profiler` feature is disabled)
   pub use crate::core::profiler::{profile_function, profile_scope};
+
+  // Logging macros for game code
+  pub use crate::game_debug;
+  pub use crate::game_error;
+  pub use crate::game_info;
+  pub use crate::game_trace;
+  pub use crate::game_warn;
 }

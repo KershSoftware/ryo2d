@@ -714,9 +714,9 @@ switch ($ExampleName.ToLower()) {
         $match = $examples | Where-Object { $_.Name -eq $ExampleName.ToLower() }
 
         if ($match) {
-            # Special case: profiler-demo always runs with profiler enabled
-            if ($match.Name -eq "profiler-demo") {
-                Write-Host "Auto-enabling profiler mode for profiler-demo" -ForegroundColor Magenta
+            # Special case: profile-and-log always runs with profiler enabled
+            if ($match.Name -eq "profile-and-log") {
+                Write-Host "Auto-enabling profiler mode for profile-and-log demo" -ForegroundColor Magenta
                 Run-Example $match.Name $match.Path -RunMode 2  # Dev with profiler
             }
             # If flags were provided, run directly; otherwise show mode menu
