@@ -54,6 +54,8 @@ pub struct Trail2D {
   emit_interval: f32,
   /// Maximum lifetime of trail points in seconds (None = no time-based removal)
   lifetime: Option<f32>,
+  /// Distance in pixels over which to fade (None = use position-based fade)
+  fade_distance: Option<f32>,
 }
 
 /// A single point in the trail
@@ -94,6 +96,7 @@ impl Trail2D {
       time_accumulator: 0.0,
       emit_interval: 0.0,
       lifetime: None,
+      fade_distance: None,
     }
   }
 
@@ -199,6 +202,27 @@ impl Trail2D {
   /// ```
   pub fn with_lifetime(mut self, seconds: f32) -> Self {
     self.lifetime = Some(seconds.max(0.01));
+    self
+  }
+
+  /// Set the fade distance in pixels.
+  ///
+  /// When set, the trail fades based on actual distance from the head rather than
+  /// position in the point array. This provides more predictable fading regardless
+  /// of entity speed - fast objects won't have stretched-out fades.
+  ///
+  /// # Arguments
+  /// * `pixels` - Distance in pixels over which to fade from opaque to transparent
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Trail fades over 100 pixels of distance
+  /// let trail = Trail2D::new(Color::YELLOW, 5.0)
+  ///     .with_fade_distance(100.0);
+  /// ```
+  pub fn with_fade_distance(mut self, pixels: f32) -> Self {
+    self.fade_distance = Some(pixels.max(1.0));
     self
   }
 
@@ -364,6 +388,69 @@ impl Trail2D {
       None => 1.0,
     }
   }
+
+  /// Get the fade distance setting.
+  pub fn fade_distance(&self) -> Option<f32> {
+    self.fade_distance
+  }
+
+  /// Set the fade distance.
+  ///
+  /// Pass `Some(pixels)` to enable distance-based fade, or `None` to disable.
+  pub fn set_fade_distance(&mut self, distance: Option<f32>) {
+    self.fade_distance = distance.map(|d| d.max(1.0));
+  }
+
+  /// Get the distance-based alpha multiplier.
+  ///
+  /// When fade_distance is set, returns a value from 1.0 (at head) to 0.0 (at fade_distance).
+  /// When fade_distance is not set, always returns 1.0.
+  pub fn distance_alpha(&self, distance_from_head: f32) -> f32 {
+    match self.fade_distance {
+      Some(max_dist) => (1.0 - (distance_from_head / max_dist)).clamp(0.0, 1.0),
+      None => 1.0,
+    }
+  }
+
+  /// Calculate cumulative distances from head for each point.
+  ///
+  /// Returns a Vec where index 0 is always 0.0 (the head), and each subsequent
+  /// index contains the total distance traveled from the head to that point.
+  pub fn cumulative_distances(&self) -> Vec<f32> {
+    let mut distances = Vec::with_capacity(self.points.len());
+    let mut total = 0.0;
+
+    for (i, point) in self.points.iter().enumerate() {
+      if i == 0 {
+        distances.push(0.0);
+      } else {
+        let prev = &self.points[i - 1];
+        let dx = point.x - prev.x;
+        let dy = point.y - prev.y;
+        total += (dx * dx + dy * dy).sqrt();
+        distances.push(total);
+      }
+    }
+
+    distances
+  }
+
+  /// Get the total length of the trail in pixels.
+  pub fn total_length(&self) -> f32 {
+    if self.points.len() < 2 {
+      return 0.0;
+    }
+
+    let mut total = 0.0;
+    for i in 1..self.points.len() {
+      let prev = &self.points[i - 1];
+      let curr = &self.points[i];
+      let dx = curr.x - prev.x;
+      let dy = curr.y - prev.y;
+      total += (dx * dx + dy * dy).sqrt();
+    }
+    total
+  }
 }
 
 impl Default for Trail2D {
@@ -527,5 +614,60 @@ mod tests {
     // Without lifetime, age_alpha always returns 1.0
     assert!((trail.age_alpha(0.0) - 1.0).abs() < 0.01);
     assert!((trail.age_alpha(100.0) - 1.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn trail_distance_alpha_with_fade_distance() {
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_fade_distance(100.0);
+
+    // At head (distance 0) = full alpha
+    assert!((trail.distance_alpha(0.0) - 1.0).abs() < 0.01);
+    // Half distance = half alpha
+    assert!((trail.distance_alpha(50.0) - 0.5).abs() < 0.01);
+    // At fade distance = zero alpha
+    assert!((trail.distance_alpha(100.0) - 0.0).abs() < 0.01);
+    // Beyond fade distance = clamped to zero
+    assert!((trail.distance_alpha(150.0) - 0.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn trail_distance_alpha_without_fade_distance() {
+    let trail = Trail2D::new(Color::WHITE, 3.0); // No fade_distance
+
+    // Without fade_distance, distance_alpha always returns 1.0
+    assert!((trail.distance_alpha(0.0) - 1.0).abs() < 0.01);
+    assert!((trail.distance_alpha(100.0) - 1.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn trail_cumulative_distances() {
+    let mut trail = Trail2D::new(Color::WHITE, 3.0).with_min_distance(1.0);
+
+    // Add points in a straight line: 0, 10, 25
+    // Points are stored newest-first, so after all updates:
+    // Index 0 = (25, 0) - head/newest
+    // Index 1 = (10, 0)
+    // Index 2 = (0, 0) - tail/oldest
+    trail.update(0.0, 0.0, 0.016);
+    trail.update(10.0, 0.0, 0.016);
+    trail.update(25.0, 0.0, 0.016);
+
+    let distances = trail.cumulative_distances();
+    assert_eq!(distances.len(), 3);
+    assert!((distances[0] - 0.0).abs() < 0.01); // Head is always 0
+    assert!((distances[1] - 15.0).abs() < 0.01); // 15 pixels from head (25 -> 10)
+    assert!((distances[2] - 25.0).abs() < 0.01); // 25 pixels from head (25 -> 10 -> 0)
+  }
+
+  #[test]
+  fn trail_total_length() {
+    let mut trail = Trail2D::new(Color::WHITE, 3.0).with_min_distance(1.0);
+
+    // Add points: 0 -> 10 -> 25 (total length = 25)
+    trail.update(0.0, 0.0, 0.016);
+    trail.update(10.0, 0.0, 0.016);
+    trail.update(25.0, 0.0, 0.016);
+
+    assert!((trail.total_length() - 25.0).abs() < 0.01);
   }
 }

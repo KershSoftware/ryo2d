@@ -277,6 +277,13 @@ impl TrailRenderer {
       self.vertices.push(last);
     }
 
+    // Pre-calculate cumulative distances if distance-based fade is enabled
+    let distances = if trail.fade_distance().is_some() {
+      Some(trail.cumulative_distances())
+    } else {
+      None
+    };
+
     let mut prev_point: Option<&TrailPoint> = None;
 
     for (i, point) in points.iter().enumerate() {
@@ -297,13 +304,27 @@ impl TrailRenderer {
       let px = -dy / len;
       let py = dx / len;
 
-      // Get interpolated properties
+      // Get interpolated properties (width still uses position-based t)
       let width = trail.width_at(t);
-      let mut color = trail.color_at(t);
+
+      // For color/alpha, use distance-based fade if enabled, otherwise position-based
+      let mut color = if let Some(ref dists) = distances {
+        // Distance-based fade: use actual distance from head
+        let dist = dists.get(i).copied().unwrap_or(0.0);
+        let dist_t = if let Some(max_dist) = trail.fade_distance() {
+          (dist / max_dist).clamp(0.0, 1.0)
+        } else {
+          0.0
+        };
+        trail.color_at(dist_t)
+      } else {
+        // Position-based fade: use index position
+        trail.color_at(t)
+      };
 
       // Apply age-based alpha fade only when position-based fade is disabled
       // (to avoid double-fading when both are active)
-      if !trail.fades_alpha() {
+      if !trail.fades_alpha() && distances.is_none() {
         let age_alpha = trail.age_alpha(point.age);
         color = Color::new(
           color.r,
