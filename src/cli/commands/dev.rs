@@ -30,10 +30,9 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   }
 
   if enable_profiler {
-    Output::status("Starting", &format!("{} in dev mode with puffin profiler...", project_name));
-
-    // Try to launch puffin_viewer automatically
-    launch_puffin_viewer();
+    Output::status("Starting", &format!("{} in dev mode with profiler...", project_name));
+    println!("           A separate profiler window will open with real-time flamegraphs.");
+    println!();
   } else {
     Output::status("Starting", &format!("{} in dev mode...", project_name));
   }
@@ -68,6 +67,10 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   if !status.success() {
     let code = status.code().unwrap_or(-1);
     if code != 0 {
+      // Check if the failure was due to missing profiler feature
+      if enable_profiler {
+        print_profiler_feature_help(&workspace);
+      }
       return Err(CliError::BuildFailed(format!(
         "Development build failed with exit code {}",
         code
@@ -76,6 +79,30 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   }
 
   Ok(())
+}
+
+/// Print help for adding the profiler feature if it's missing
+fn print_profiler_feature_help(workspace: &crate::core::config::Workspace) {
+  let cargo_toml_path = workspace.root().join("Cargo.toml");
+
+  // Check if Cargo.toml has the profiler feature defined
+  if let Ok(contents) = fs::read_to_string(&cargo_toml_path) {
+    let has_profiler_feature = contents.contains("profiler")
+      && (contents.contains("[features]") || contents.contains("features ="));
+
+    if !has_profiler_feature {
+      println!();
+      Output::warning("The 'profiler' feature may not be configured in your project.");
+      println!();
+      println!("  Add this to your Cargo.toml to enable profiling:");
+      println!();
+      println!("      [features]");
+      println!("      profiler = [\"ryo2d/profiler\"]");
+      println!();
+      println!("  This forwards the profiler feature to the ryo2d dependency.");
+      println!();
+    }
+  }
 }
 
 /// Check if the project has dev profile optimization configured
@@ -155,42 +182,6 @@ opt-level = 2
   }
 
   Ok(())
-}
-
-/// Launch puffin_viewer in the background to connect to the profiler.
-/// If puffin_viewer is not installed, prints installation instructions.
-fn launch_puffin_viewer() {
-  Output::status("Profiler", "Checking for puffin_viewer...");
-
-  // Try to spawn puffin_viewer in the background
-  match Command::new("puffin_viewer")
-    .arg("--url")
-    .arg("127.0.0.1:8585")
-    .spawn()
-  {
-    Ok(_child) => {
-      Output::status("Profiler", "Launching puffin_viewer app...");
-      println!("           Connecting to profiler at http://127.0.0.1:8585");
-      println!("           View real-time flamegraphs in the puffin_viewer window");
-      println!();
-    }
-    Err(e) => {
-      if e.kind() == std::io::ErrorKind::NotFound {
-        println!();
-        Output::warning("puffin_viewer is not installed!");
-        println!();
-        println!("  The profiler will still run, but you need puffin_viewer to see the data.");
-        println!("  Install it with:");
-        println!();
-        println!("      cargo install puffin_viewer");
-        println!();
-        println!("  Then re-run `ryo2d dev --profiler` and it will auto-launch.");
-        println!();
-      } else {
-        Output::warning(&format!("Failed to launch puffin_viewer: {}", e));
-      }
-    }
-  }
 }
 
 /// Find the workspace root's target directory for shared dependency caching.
