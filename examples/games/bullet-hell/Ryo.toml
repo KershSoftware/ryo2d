@@ -6,7 +6,7 @@ name = "Bullet Hell"
 
 [info]
 title = "Bullet Hell - Ryo2D"
-show_fps = false
+show_fps = true
 
 [system]
 # Design resolution - game logic uses this fixed size
