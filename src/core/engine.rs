@@ -38,7 +38,8 @@ use super::shaders::EffectsManager;
 use super::systems::{AnimationSystem, TweenSystem};
 use super::timing::TimeState;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
-use super::ui::{BitmapFont, UiContext, create_debug_font};
+use super::ui::{BitmapFont, Color, UiContext, create_debug_font};
+use crate::core::dev_log::set_frame;
 use crate::profile_scope;
 use crate::{engine_debug, engine_error, engine_info, engine_warn};
 
@@ -1622,6 +1623,42 @@ impl Engine {
             continue;
           }
 
+          // Render drop shadow before main sprite (if present)
+          if let Some(shadow) = &renderable.drop_shadow {
+            // Calculate shadow position (offset from sprite)
+            let shadow_x = draw_x + shadow.offset.x;
+            let shadow_y = draw_y + shadow.offset.y;
+
+            // Convert to screen position
+            let (shadow_screen_x, shadow_screen_y) =
+              self.camera.world_to_screen(shadow_x, shadow_y);
+
+            // Apply shadow scale to sprite scale
+            let shadow_scale_x = final_scale_x * shadow.scale.x;
+            let shadow_scale_y = final_scale_y * shadow.scale.y;
+
+            // Draw shadow sprite with shadow color as tint
+            // Combine shadow alpha with renderable alpha
+            let shadow_alpha = (shadow.color.a as f32 / 255.0) * alpha;
+
+            renderable.sprite.with_sprite(|sprite| {
+              sprite.draw_rotated_tinted(
+                frame,
+                frame_width,
+                frame_height,
+                shadow_screen_x as i32,
+                shadow_screen_y as i32,
+                shadow_scale_x,
+                shadow_scale_y,
+                rotation_deg,
+                renderable.flip_x,
+                renderable.flip_y,
+                shadow_alpha,
+                Color::new(shadow.color.r, shadow.color.g, shadow.color.b, 255), // Full alpha in tint, alpha handled separately
+              );
+            });
+          }
+
           // Check if sprite has a shader effect to apply
           if let Some(SpriteShader::BuiltIn(effect)) = &renderable.shader {
             // Apply CPU-based shader effect
@@ -1690,6 +1727,63 @@ impl Engine {
           let tile_count = (target_size / tile_size).ceil() as u32;
           let (offset_dx, offset_dy) = direction.offset(tile_size);
 
+          // Common values for both shadow and main passes
+          let rotation_rad = rotation_deg.to_radians();
+          let cos_r = rotation_rad.cos();
+          let sin_r = rotation_rad.sin();
+          let final_scale_x = scale_x * self.camera.zoom;
+          let final_scale_y = scale_y * self.camera.zoom;
+
+          // Render drop shadows for all tiles first (if present)
+          if let Some(shadow) = &renderable.drop_shadow {
+            let shadow_alpha = (shadow.color.a as f32 / 255.0) * alpha;
+            let shadow_scale_x = final_scale_x * shadow.scale.x;
+            let shadow_scale_y = final_scale_y * shadow.scale.y;
+            let shadow_tint = Color::new(shadow.color.r, shadow.color.g, shadow.color.b, 255);
+
+            for i in 0..tile_count {
+              let tile_offset_x = offset_dx * i as f32;
+              let tile_offset_y = offset_dy * i as f32;
+
+              let (start_x, start_y) = match direction {
+                TileDirection::Up => (0.0, -(tile_count as f32 - 1.0) * tile_size),
+                TileDirection::Left => (-(tile_count as f32 - 1.0) * tile_size, 0.0),
+                TileDirection::Down | TileDirection::Right => (0.0, 0.0),
+              };
+
+              let local_x = start_x + tile_offset_x;
+              let local_y = start_y + tile_offset_y;
+              let rotated_x = local_x * cos_r - local_y * sin_r;
+              let rotated_y = local_x * sin_r + local_y * cos_r;
+              let scaled_x = rotated_x * scale_x;
+              let scaled_y = rotated_y * scale_y;
+
+              // Shadow position = tile position + shadow offset
+              let world_x = x + scaled_x + shadow.offset.x;
+              let world_y = y + scaled_y + shadow.offset.y;
+
+              let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
+
+              renderable.sprite.with_sprite(|sprite| {
+                sprite.draw_rotated_tinted(
+                  frame,
+                  frame_width,
+                  frame_height,
+                  screen_x as i32,
+                  screen_y as i32,
+                  shadow_scale_x,
+                  shadow_scale_y,
+                  rotation_deg,
+                  renderable.flip_x,
+                  renderable.flip_y,
+                  shadow_alpha,
+                  shadow_tint,
+                );
+              });
+            }
+          }
+
+          // Render main tiles
           for i in 0..tile_count {
             let tile_offset_x = offset_dx * i as f32;
             let tile_offset_y = offset_dy * i as f32;
@@ -1704,11 +1798,6 @@ impl Engine {
             // Calculate tile position relative to entity, then rotate
             let local_x = start_x + tile_offset_x;
             let local_y = start_y + tile_offset_y;
-
-            // Apply entity rotation to tile offset (need radians for trig)
-            let rotation_rad = rotation_deg.to_radians();
-            let cos_r = rotation_rad.cos();
-            let sin_r = rotation_rad.sin();
             let rotated_x = local_x * cos_r - local_y * sin_r;
             let rotated_y = local_x * sin_r + local_y * cos_r;
 
@@ -1720,8 +1809,6 @@ impl Engine {
             let world_y = y + scaled_y;
 
             let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
-            let final_scale_x = scale_x * self.camera.zoom;
-            let final_scale_y = scale_y * self.camera.zoom;
 
             renderable.sprite.with_sprite(|sprite| {
               sprite.draw_rotated_tinted(

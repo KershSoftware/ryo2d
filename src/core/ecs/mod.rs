@@ -32,7 +32,7 @@ pub use hierarchy::{Children, Parent, WorldTransform};
 pub use knockback::Knockback;
 pub use material::{Material, ShaderHandle, ShaderParams, SpriteShader};
 pub use pool::{Pool, PoolConfig, PoolExhaustedPolicy, PoolStats};
-pub use renderable::{RenderMode, RenderStyle, Renderable};
+pub use renderable::{DropShadow, RenderMode, RenderStyle, Renderable};
 pub use sprite_effects::SpriteEffect;
 pub use squash_stretch::{SquashAxis, SquashStretch};
 pub use tween::{Ease, Tween, TweenLoop, TweenSequence};

@@ -50,8 +50,110 @@
 
 use super::material::SpriteShader;
 use crate::core::asset::SpriteHandle;
+use crate::core::ecs::Vec2;
 use crate::core::graphics::TileDirection;
 use crate::core::ui::Color;
+
+/// Configuration for a drop shadow effect on a sprite.
+///
+/// Drop shadows are simple offset shadows beneath sprites, useful for
+/// platformers, UI elements, or any sprite that needs visual grounding.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// // Simple drop shadow with default settings
+/// let sprite = Renderable::sprite(handle).with_drop_shadow(DropShadow::default());
+///
+/// // Customized drop shadow
+/// let sprite = Renderable::sprite(handle).with_drop_shadow(
+///     DropShadow::new()
+///         .offset(4.0, 6.0)
+///         .color(Color::new(0, 0, 0, 128))
+///         .scale(1.0, 0.5)
+/// );
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropShadow {
+  /// Offset from the sprite position (in pixels)
+  pub offset: Vec2,
+  /// Shadow color (default: semi-transparent black)
+  pub color: Color,
+  /// Blur radius in pixels (0 = sharp edge)
+  /// Note: Blur is approximated by drawing multiple offset copies
+  pub blur: f32,
+  /// Scale relative to the sprite (1.0, 1.0 = same size)
+  pub scale: Vec2,
+}
+
+impl Default for DropShadow {
+  fn default() -> Self {
+    Self {
+      offset: Vec2::new(4.0, 4.0),
+      color: Color::new(0, 0, 0, 128), // Semi-transparent black
+      blur: 0.0,
+      scale: Vec2::new(1.0, 1.0),
+    }
+  }
+}
+
+impl DropShadow {
+  /// Create a new drop shadow with default settings
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Set the shadow offset
+  pub fn offset(mut self, x: f32, y: f32) -> Self {
+    self.offset = Vec2::new(x, y);
+    self
+  }
+
+  /// Set the shadow color
+  pub fn color(mut self, color: Color) -> Self {
+    self.color = color;
+    self
+  }
+
+  /// Set the blur radius (0 = sharp)
+  pub fn blur(mut self, blur: f32) -> Self {
+    self.blur = blur.max(0.0);
+    self
+  }
+
+  /// Set the shadow scale relative to sprite
+  pub fn scale(mut self, x: f32, y: f32) -> Self {
+    self.scale = Vec2::new(x, y);
+    self
+  }
+
+  /// Create a simple shadow directly below the sprite
+  pub fn below(offset_y: f32) -> Self {
+    Self {
+      offset: Vec2::new(0.0, offset_y),
+      ..Default::default()
+    }
+  }
+
+  /// Create a shadow offset diagonally (classic drop shadow look)
+  pub fn diagonal(offset: f32) -> Self {
+    Self {
+      offset: Vec2::new(offset, offset),
+      ..Default::default()
+    }
+  }
+
+  /// Create a squashed shadow (good for top-down or isometric)
+  pub fn squashed(offset_y: f32, squash: f32) -> Self {
+    Self {
+      offset: Vec2::new(0.0, offset_y),
+      scale: Vec2::new(1.0, squash),
+      ..Default::default()
+    }
+  }
+}
 
 /// Hints for how the renderer should handle this entity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -114,6 +216,11 @@ pub struct Renderable {
   /// For simple one-off effects. For reusable/queryable shaders,
   /// use a separate `Material` component instead.
   pub shader: Option<SpriteShader>,
+  /// Optional drop shadow effect
+  ///
+  /// When set, a shadow is rendered beneath the sprite at the specified
+  /// offset, color, and scale. Useful for platformers, UI, or visual grounding.
+  pub drop_shadow: Option<DropShadow>,
 }
 
 impl Renderable {
@@ -130,6 +237,7 @@ impl Renderable {
       alpha: 1.0,
       tint: Color::WHITE,
       shader: None,
+      drop_shadow: None,
     }
   }
 
@@ -149,6 +257,7 @@ impl Renderable {
       alpha: 1.0,
       tint: Color::WHITE,
       shader: None,
+      drop_shadow: None,
     }
   }
 
@@ -211,6 +320,34 @@ impl Renderable {
   /// Check if this renderable has an inline shader
   pub fn has_shader(&self) -> bool {
     self.shader.is_some()
+  }
+
+  /// Set a drop shadow effect
+  ///
+  /// The shadow is rendered beneath the sprite at the specified offset,
+  /// color, and scale. Useful for platformers, UI elements, or visual grounding.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// use ryo2d::prelude::*;
+  ///
+  /// // Simple drop shadow
+  /// let sprite = Renderable::sprite(handle).with_drop_shadow(DropShadow::default());
+  ///
+  /// // Custom shadow
+  /// let sprite = Renderable::sprite(handle).with_drop_shadow(
+  ///     DropShadow::new().offset(4.0, 6.0).color(Color::new(0, 0, 0, 100))
+  /// );
+  /// ```
+  pub fn with_drop_shadow(mut self, shadow: DropShadow) -> Self {
+    self.drop_shadow = Some(shadow);
+    self
+  }
+
+  /// Check if this renderable has a drop shadow
+  pub fn has_drop_shadow(&self) -> bool {
+    self.drop_shadow.is_some()
   }
 
   /// Check if this is a single sprite (not tiled)
@@ -308,5 +445,66 @@ mod tests {
 
     let r = Renderable::sprite(test_handle()).with_alpha(-0.5);
     assert_eq!(r.alpha, 0.0);
+  }
+
+  #[test]
+  fn drop_shadow_defaults() {
+    let shadow = DropShadow::default();
+    assert_eq!(shadow.offset.x, 4.0);
+    assert_eq!(shadow.offset.y, 4.0);
+    assert_eq!(shadow.color, Color::new(0, 0, 0, 128));
+    assert_eq!(shadow.blur, 0.0);
+    assert_eq!(shadow.scale.x, 1.0);
+    assert_eq!(shadow.scale.y, 1.0);
+  }
+
+  #[test]
+  fn drop_shadow_builder() {
+    let shadow = DropShadow::new()
+      .offset(10.0, 20.0)
+      .color(Color::new(255, 0, 0, 64))
+      .blur(5.0)
+      .scale(0.8, 0.5);
+
+    assert_eq!(shadow.offset.x, 10.0);
+    assert_eq!(shadow.offset.y, 20.0);
+    assert_eq!(shadow.color, Color::new(255, 0, 0, 64));
+    assert_eq!(shadow.blur, 5.0);
+    assert_eq!(shadow.scale.x, 0.8);
+    assert_eq!(shadow.scale.y, 0.5);
+  }
+
+  #[test]
+  fn drop_shadow_presets() {
+    let below = DropShadow::below(8.0);
+    assert_eq!(below.offset.x, 0.0);
+    assert_eq!(below.offset.y, 8.0);
+
+    let diagonal = DropShadow::diagonal(6.0);
+    assert_eq!(diagonal.offset.x, 6.0);
+    assert_eq!(diagonal.offset.y, 6.0);
+
+    let squashed = DropShadow::squashed(10.0, 0.3);
+    assert_eq!(squashed.offset.x, 0.0);
+    assert_eq!(squashed.offset.y, 10.0);
+    assert_eq!(squashed.scale.x, 1.0);
+    assert_eq!(squashed.scale.y, 0.3);
+  }
+
+  #[test]
+  fn drop_shadow_blur_clamps() {
+    let shadow = DropShadow::new().blur(-5.0);
+    assert_eq!(shadow.blur, 0.0);
+  }
+
+  #[test]
+  fn renderable_with_drop_shadow() {
+    let r = Renderable::sprite(test_handle());
+    assert!(!r.has_drop_shadow());
+    assert!(r.drop_shadow.is_none());
+
+    let r = Renderable::sprite(test_handle()).with_drop_shadow(DropShadow::default());
+    assert!(r.has_drop_shadow());
+    assert!(r.drop_shadow.is_some());
   }
 }
