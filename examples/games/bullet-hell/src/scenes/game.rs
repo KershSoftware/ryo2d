@@ -119,10 +119,16 @@ impl GameScene {
     // Create drone sprite programmatically (purple color)
     let drone_sprite = Sprite::solid_rect(DRONE_SIZE as u32, DRONE_SIZE as u32, 150, 80, 200, 255);
     // Create nebula orb sprite (forest green)
-    let nebula_orb_sprite =
-      Sprite::solid_circle(NEBULA_ORB_SIZE as u32, 45, 120, 50, 255);
+    let nebula_orb_sprite = Sprite::solid_circle(NEBULA_ORB_SIZE as u32, 45, 120, 50, 255);
     // Create rocket sprite (orange/red)
-    let rocket_sprite = Sprite::solid_rect(ROCKET_SIZE as u32, (ROCKET_SIZE * 0.6) as u32, 255, 120, 50, 255);
+    let rocket_sprite = Sprite::solid_rect(
+      ROCKET_SIZE as u32,
+      (ROCKET_SIZE * 0.6) as u32,
+      255,
+      120,
+      50,
+      255,
+    );
 
     // Load parallax background layers as sprite handles (for GPU upload)
     let sky_sprite = SpriteHandle::from_sprite(
@@ -954,7 +960,10 @@ impl GameScene {
         Transform::new(orb_pos.x, orb_pos.y).with_pivot_center(),
         Renderable::sprite(sprite)
           .with_z_order(Z_NEBULA)
-          .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(80, 180, 80))),
+          .with_shader(SpriteShader::dissolve_with_edge(
+            1.0,
+            Color::rgb(80, 180, 80),
+          )),
         RigidBody::kinematic(),
         Collider::circle_collider(NEBULA_ORB_SIZE / 2.0),
         NebulaOrbMarker {
@@ -1196,8 +1205,10 @@ impl GameScene {
           renderable.shader = Some(SpriteShader::outline(Color::rgb(150, 220, 150), 2));
         } else {
           let dissolve = 1.0 - progress;
-          renderable.shader =
-            Some(SpriteShader::dissolve_with_edge(dissolve, Color::rgb(80, 180, 80)));
+          renderable.shader = Some(SpriteShader::dissolve_with_edge(
+            dissolve,
+            Color::rgb(80, 180, 80),
+          ));
         }
       }
     }
@@ -1210,8 +1221,8 @@ impl GameScene {
     charge_progress: f32,
   ) {
     let flash_speed = 6.0 + charge_progress * 12.0;
-    let flash = ((charge_progress * flash_speed * std::f32::consts::TAU).sin() * 0.5 + 0.5)
-      .clamp(0.0, 1.0);
+    let flash =
+      ((charge_progress * flash_speed * std::f32::consts::TAU).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
 
     for (marker, renderable) in ctx
       .world
@@ -1302,17 +1313,14 @@ impl GameScene {
         t.rotation = rotation;
       }
 
-      // Update trail
+      // Trail is automatically updated by the engine's trail system
+
+      // Check bounds - remove if off screen
       let new_pos = ctx
         .world
         .get::<Transform>(entity)
         .map(|t| (t.x, t.y))
         .unwrap_or((0.0, 0.0));
-      if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
-        trail.update(new_pos.0, new_pos.1, dt);
-      }
-
-      // Check bounds - remove if off screen
       if new_pos.0 < -50.0
         || new_pos.0 > self.screen_width + 50.0
         || new_pos.1 < -50.0
@@ -1360,12 +1368,7 @@ impl GameScene {
     // Collect rocket positions for explosions before removing
     let rocket_positions: Vec<(Entity, f32, f32)> = rockets_to_remove
       .iter()
-      .filter_map(|&e| {
-        ctx
-          .world
-          .get::<Transform>(e)
-          .map(|t| (e, t.x, t.y))
-      })
+      .filter_map(|&e| ctx.world.get::<Transform>(e).map(|t| (e, t.x, t.y)))
       .collect();
 
     // Remove rockets and create explosions
@@ -2277,9 +2280,7 @@ impl GameScene {
     let sprite = self.bullet_sprite.clone();
     let bullet = ctx.world.spawn((
       Transform::new(x, y).with_anchor(Anchor::Center),
-      Renderable::sprite(sprite)
-        .with_z_order(Z_BULLET)
-        ,
+      Renderable::sprite(sprite).with_z_order(Z_BULLET),
       // CCD for fast-moving bullets, no gravity
       RigidBody::new().with_ccd().with_gravity_scale(0.0),
       Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
@@ -2700,9 +2701,7 @@ impl Scene for GameScene {
       move || {
         (
           Transform::default(),
-          Renderable::sprite(bullet_sprite.clone())
-            .with_z_order(Z_BULLET)
-            ,
+          Renderable::sprite(bullet_sprite.clone()).with_z_order(Z_BULLET),
           // CCD for fast-moving bullets, no gravity
           RigidBody::new().with_ccd().with_gravity_scale(0.0),
           Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
@@ -2725,8 +2724,11 @@ impl Scene for GameScene {
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Handle pause toggle (keyboard or gamepad Start button)
-    if ctx.input.key_pressed(KeyCode::Escape)
-      || ctx.input.gamepad_button_pressed(GamepadButton::Start)
+    // Use consume to prevent the same input from triggering multiple actions
+    if ctx.input.key_pressed_and_consume(KeyCode::Escape)
+      || ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::Start)
     {
       if self.settings_open {
         self.settings_open = false;
@@ -3002,6 +3004,7 @@ impl GameScene {
   }
 
   /// Handle controller/keyboard navigation in the pause menu
+  /// Uses input consumption to prevent inputs from cascading between nested menus
   fn handle_pause_menu_navigation(&mut self, ctx: &mut SceneContext) {
     if self.settings_open {
       // Settings layout:
@@ -3009,15 +3012,19 @@ impl GameScene {
       // Row 2: Apply (3), Back (4)
 
       // Up/Down: Move between rows
-      if (ctx.input.gamepad_button_pressed(GamepadButton::DPadDown)
-        || ctx.input.key_pressed(KeyCode::ArrowDown))
+      if (ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::DPadDown)
+        || ctx.input.key_pressed_and_consume(KeyCode::ArrowDown))
         && self.settings_menu_focus < 3
       {
         // From display modes row, go to Apply/Back row
         self.settings_menu_focus = 3;
       }
-      if (ctx.input.gamepad_button_pressed(GamepadButton::DPadUp)
-        || ctx.input.key_pressed(KeyCode::ArrowUp))
+      if (ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::DPadUp)
+        || ctx.input.key_pressed_and_consume(KeyCode::ArrowUp))
         && self.settings_menu_focus >= 3
       {
         // From Apply/Back row, go to display modes row
@@ -3025,8 +3032,10 @@ impl GameScene {
       }
 
       // Left/Right: Move within rows
-      if ctx.input.gamepad_button_pressed(GamepadButton::DPadLeft)
-        || ctx.input.key_pressed(KeyCode::ArrowLeft)
+      if ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::DPadLeft)
+        || ctx.input.key_pressed_and_consume(KeyCode::ArrowLeft)
       {
         if self.settings_menu_focus < 3 && self.settings_menu_focus > 0 {
           // Navigate left through display modes
@@ -3036,8 +3045,10 @@ impl GameScene {
           self.settings_menu_focus = 3;
         }
       }
-      if ctx.input.gamepad_button_pressed(GamepadButton::DPadRight)
-        || ctx.input.key_pressed(KeyCode::ArrowRight)
+      if ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::DPadRight)
+        || ctx.input.key_pressed_and_consume(KeyCode::ArrowRight)
       {
         if self.settings_menu_focus < 2 {
           // Navigate right through display modes
@@ -3049,8 +3060,11 @@ impl GameScene {
       }
 
       // A button (South) or Enter to select
-      if ctx.input.gamepad_button_pressed(GamepadButton::South)
-        || ctx.input.key_pressed(KeyCode::Enter)
+      // Consume to prevent cascading to pause menu when closing settings
+      if ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::South)
+        || ctx.input.key_pressed_and_consume(KeyCode::Enter)
       {
         match self.settings_menu_focus {
           0..=2 => {
@@ -3071,7 +3085,10 @@ impl GameScene {
       }
 
       // B button (East) to go back
-      if ctx.input.gamepad_button_pressed(GamepadButton::East) {
+      if ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::East)
+      {
         self.settings_open = false;
       }
     } else {
@@ -3079,20 +3096,26 @@ impl GameScene {
       let max_items = 4;
 
       // D-pad or keyboard navigation
-      if ctx.input.gamepad_button_pressed(GamepadButton::DPadDown)
-        || ctx.input.key_pressed(KeyCode::ArrowDown)
+      if ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::DPadDown)
+        || ctx.input.key_pressed_and_consume(KeyCode::ArrowDown)
       {
         self.pause_menu_focus = (self.pause_menu_focus + 1) % max_items;
       }
-      if ctx.input.gamepad_button_pressed(GamepadButton::DPadUp)
-        || ctx.input.key_pressed(KeyCode::ArrowUp)
+      if ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::DPadUp)
+        || ctx.input.key_pressed_and_consume(KeyCode::ArrowUp)
       {
         self.pause_menu_focus = (self.pause_menu_focus + max_items - 1) % max_items;
       }
 
       // A button (South) or Enter to select
-      if ctx.input.gamepad_button_pressed(GamepadButton::South)
-        || ctx.input.key_pressed(KeyCode::Enter)
+      if ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::South)
+        || ctx.input.key_pressed_and_consume(KeyCode::Enter)
       {
         match self.pause_menu_focus {
           0 => {
@@ -3110,7 +3133,10 @@ impl GameScene {
       }
 
       // B button (East) to resume (same as Resume)
-      if ctx.input.gamepad_button_pressed(GamepadButton::East) {
+      if ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::East)
+      {
         self.is_paused = false;
         self.unpause_input_cooldown = true;
       }

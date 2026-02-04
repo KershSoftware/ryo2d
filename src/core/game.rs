@@ -91,7 +91,8 @@ pub struct GameContext<'a> {
   /// The camera for world-to-screen transformations
   pub camera: &'a mut Camera,
   /// Current input state (keyboard, mouse)
-  pub input: &'a InputState,
+  /// Mutable to allow consuming inputs (preventing double-handling)
+  pub input: &'a mut InputState,
   /// Asset manager for loading and caching resources
   pub assets: &'a mut AssetManager,
   /// Audio manager for sound effects and music (None if audio unavailable)

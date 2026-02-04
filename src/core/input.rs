@@ -163,7 +163,6 @@ pub struct InputState {
   left_trigger: f32,
   /// Right trigger value (0.0 to 1.0)
   right_trigger: f32,
-
 }
 
 impl InputState {
@@ -191,9 +190,10 @@ impl InputState {
 
   /// Clear only keyboard one-shot events (pressed/released/repeated).
   ///
-  /// This is used internally by the engine to prevent keyboard events
-  /// from being processed multiple times during fixed timestep updates,
-  /// while preserving mouse state for UI rendering.
+  /// Note: This function is no longer called in the main frame loop because
+  /// UI widgets need keyboard events to persist until render_ui completes.
+  /// Kept for potential future use and tested for correctness.
+  #[allow(dead_code)]
   pub(crate) fn consume_keyboard_events(&mut self) {
     self.keys_pressed.clear();
     self.keys_released.clear();
@@ -206,6 +206,67 @@ impl InputState {
   /// the fixed timestep loop and need to fire exactly once.
   pub(crate) fn consume_key(&mut self, key: KeyCode) {
     self.keys_pressed.remove(&key);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Input Consumption Utilities
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /// Check if a key was pressed this frame AND consume it, preventing other systems from seeing it.
+  ///
+  /// This is useful when multiple systems might react to the same key press and you want
+  /// only one to handle it. Returns `true` if the key was pressed (and is now consumed),
+  /// `false` if it wasn't pressed.
+  ///
+  /// # Example
+  /// ```ignore
+  /// // In a menu system - consume Escape so the game doesn't also pause
+  /// if input.key_pressed_and_consume(KeyCode::Escape) {
+  ///     self.close_menu();
+  ///     // Other systems checking key_pressed(Escape) will now return false
+  /// }
+  /// ```
+  pub fn key_pressed_and_consume(&mut self, key: KeyCode) -> bool {
+    self.keys_pressed.remove(&key)
+  }
+
+  /// Consume a key press without checking if it was pressed.
+  ///
+  /// Use this when you know a key was pressed and want to prevent other systems from seeing it.
+  pub fn consume_key_press(&mut self, key: KeyCode) {
+    self.keys_pressed.remove(&key);
+  }
+
+  /// Check if a mouse button was pressed this frame AND consume it.
+  ///
+  /// Returns `true` if the button was pressed (and is now consumed), `false` otherwise.
+  ///
+  /// # Example
+  /// ```ignore
+  /// // UI button consumes click so world interaction doesn't trigger
+  /// if input.mouse_pressed_and_consume(MouseButton::Left) {
+  ///     self.handle_button_click();
+  /// }
+  /// ```
+  pub fn mouse_pressed_and_consume(&mut self, button: MouseButton) -> bool {
+    self.mouse_buttons_pressed.remove(&button)
+  }
+
+  /// Consume a mouse button press without checking if it was pressed.
+  pub fn consume_mouse_press(&mut self, button: MouseButton) {
+    self.mouse_buttons_pressed.remove(&button);
+  }
+
+  /// Check if a gamepad button was pressed this frame AND consume it.
+  ///
+  /// Returns `true` if the button was pressed (and is now consumed), `false` otherwise.
+  pub fn gamepad_button_pressed_and_consume(&mut self, button: GamepadButton) -> bool {
+    self.gamepad_buttons_pressed.remove(&button)
+  }
+
+  /// Consume a gamepad button press without checking if it was pressed.
+  pub fn consume_gamepad_button_press(&mut self, button: GamepadButton) {
+    self.gamepad_buttons_pressed.remove(&button);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1164,5 +1225,197 @@ mod tests {
     assert!(!input.key_pressed(KeyCode::F1), "F1 should be consumed");
     assert!(input.key_pressed(KeyCode::F2), "F2 should remain");
     assert!(input.key_pressed(KeyCode::Space), "Space should remain");
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Input Consumption Utility Tests
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  #[test]
+  fn key_pressed_and_consume_returns_true_and_consumes() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
+
+    // First call returns true and consumes
+    assert!(input.key_pressed_and_consume(KeyCode::Escape));
+
+    // Second call returns false (already consumed)
+    assert!(!input.key_pressed_and_consume(KeyCode::Escape));
+
+    // Regular key_pressed also returns false
+    assert!(!input.key_pressed(KeyCode::Escape));
+
+    // But key_down still works (key is held)
+    assert!(input.key_down(KeyCode::Escape));
+  }
+
+  #[test]
+  fn key_pressed_and_consume_returns_false_if_not_pressed() {
+    let mut input = InputState::new();
+    assert!(!input.key_pressed_and_consume(KeyCode::Escape));
+  }
+
+  #[test]
+  fn consume_key_press_removes_without_return() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
+
+    assert!(input.key_pressed(KeyCode::Space));
+    input.consume_key_press(KeyCode::Space);
+    assert!(!input.key_pressed(KeyCode::Space));
+  }
+
+  #[test]
+  fn mouse_pressed_and_consume_returns_true_and_consumes() {
+    let mut input = InputState::new();
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+
+    // First call returns true and consumes
+    assert!(input.mouse_pressed_and_consume(MouseButton::Left));
+
+    // Second call returns false (already consumed)
+    assert!(!input.mouse_pressed_and_consume(MouseButton::Left));
+
+    // Regular mouse_pressed also returns false
+    assert!(!input.mouse_pressed(MouseButton::Left));
+
+    // But mouse_down still works (button is held)
+    assert!(input.mouse_down(MouseButton::Left));
+  }
+
+  #[test]
+  fn mouse_pressed_and_consume_returns_false_if_not_pressed() {
+    let mut input = InputState::new();
+    assert!(!input.mouse_pressed_and_consume(MouseButton::Right));
+  }
+
+  #[test]
+  fn consume_mouse_press_removes_without_return() {
+    let mut input = InputState::new();
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+
+    assert!(input.mouse_pressed(MouseButton::Left));
+    input.consume_mouse_press(MouseButton::Left);
+    assert!(!input.mouse_pressed(MouseButton::Left));
+  }
+
+  #[test]
+  fn gamepad_button_pressed_and_consume_returns_true_and_consumes() {
+    let mut input = InputState::new();
+    // Manually insert a gamepad button press (since we can't easily simulate gilrs)
+    input.gamepad_buttons_pressed.insert(GamepadButton::South);
+    input.gamepad_buttons_down.insert(GamepadButton::South);
+
+    // First call returns true and consumes
+    assert!(input.gamepad_button_pressed_and_consume(GamepadButton::South));
+
+    // Second call returns false (already consumed)
+    assert!(!input.gamepad_button_pressed_and_consume(GamepadButton::South));
+
+    // Regular gamepad_button_pressed also returns false
+    assert!(!input.gamepad_button_pressed(GamepadButton::South));
+
+    // But gamepad_button_down still works (button is held)
+    assert!(input.gamepad_button_down(GamepadButton::South));
+  }
+
+  #[test]
+  fn consume_gamepad_button_press_removes_without_return() {
+    let mut input = InputState::new();
+    input.gamepad_buttons_pressed.insert(GamepadButton::East);
+
+    assert!(input.gamepad_button_pressed(GamepadButton::East));
+    input.consume_gamepad_button_press(GamepadButton::East);
+    assert!(!input.gamepad_button_pressed(GamepadButton::East));
+  }
+
+  #[test]
+  fn consume_prevents_double_handling_pattern() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
+
+    let mut menu_handled = false;
+    let mut game_handled = false;
+
+    // Menu system checks first and consumes
+    if input.key_pressed_and_consume(KeyCode::Escape) {
+      menu_handled = true;
+    }
+
+    // Game system checks after - should not see the press
+    if input.key_pressed(KeyCode::Escape) {
+      game_handled = true;
+    }
+
+    assert!(menu_handled, "Menu should have handled Escape");
+    assert!(!game_handled, "Game should NOT have handled Escape");
+  }
+
+  /// Regression test: keyboard events must persist for the entire frame.
+  ///
+  /// Previously, consume_keyboard_events() was called after game update() but
+  /// before render_ui(), causing UI widgets (text input, dropdowns) to never
+  /// see keyboard events. The fix ensures keyboard events persist until
+  /// begin_frame() is called at frame end.
+  ///
+  /// Frame flow should be:
+  /// 1. Events received -> key_pressed() returns true
+  /// 2. update() runs (possibly multiple times for fixed timestep)
+  /// 3. render() + render_ui() runs -> key_pressed() MUST still return true
+  /// 4. begin_frame() clears events -> key_pressed() returns false
+  #[test]
+  fn keyboard_events_persist_until_begin_frame() {
+    let mut input = InputState::new();
+
+    // Simulate key press event at start of frame
+    input.handle_keyboard(KeyCode::KeyA, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::ControlLeft, ElementState::Pressed);
+
+    // Verify events are present (simulating update phase)
+    assert!(
+      input.key_pressed(KeyCode::KeyA),
+      "key_pressed should be true during update"
+    );
+    assert!(
+      input.key_down(KeyCode::ControlLeft),
+      "modifier should be held during update"
+    );
+
+    // Read again (simulating multiple fixed timestep updates)
+    // Events should STILL be present
+    assert!(
+      input.key_pressed(KeyCode::KeyA),
+      "key_pressed should persist across multiple update reads"
+    );
+
+    // Read again (simulating render_ui phase - the critical regression case)
+    // This is where the bug manifested: UI couldn't see keyboard events
+    assert!(
+      input.key_pressed(KeyCode::KeyA),
+      "key_pressed MUST be available during render_ui (regression test)"
+    );
+    assert!(
+      input.key_down(KeyCode::ControlLeft),
+      "modifier MUST be available for Ctrl+A detection in UI"
+    );
+
+    // Now simulate frame end
+    input.begin_frame();
+
+    // After begin_frame, one-shot events should be cleared
+    assert!(
+      !input.key_pressed(KeyCode::KeyA),
+      "key_pressed should be cleared after begin_frame"
+    );
+
+    // But held state persists (key wasn't released)
+    assert!(
+      input.key_down(KeyCode::KeyA),
+      "key_down should persist (key still held)"
+    );
+    assert!(
+      input.key_down(KeyCode::ControlLeft),
+      "modifier should persist (key still held)"
+    );
   }
 }

@@ -18,8 +18,19 @@
 //! ));
 //! ```
 
+use crate::core::asset::SpriteHandle;
 use crate::core::ui::Color;
 use std::collections::VecDeque;
+
+/// How a texture is mapped along a trail
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextureMode {
+  /// Stretch the texture to fit the entire trail length (UV.x 0-1 maps to full texture)
+  #[default]
+  Stretch,
+  /// Tile the texture along the trail (texture repeats based on trail length)
+  Tile,
+}
 
 /// Maximum number of points a trail can store
 pub const MAX_TRAIL_POINTS: usize = 128;
@@ -56,6 +67,12 @@ pub struct Trail2D {
   lifetime: Option<f32>,
   /// Distance in pixels over which to fade (None = use position-based fade)
   fade_distance: Option<f32>,
+  /// Optional texture to map along the trail
+  texture: Option<SpriteHandle>,
+  /// How the texture is mapped along the trail
+  texture_mode: TextureMode,
+  /// Pixels of texture per tile (only used when texture_mode is Tile)
+  tile_length: f32,
 }
 
 /// A single point in the trail
@@ -97,6 +114,9 @@ impl Trail2D {
       emit_interval: 0.0,
       lifetime: None,
       fade_distance: None,
+      texture: None,
+      texture_mode: TextureMode::Stretch,
+      tile_length: 64.0,
     }
   }
 
@@ -242,6 +262,44 @@ impl Trail2D {
   /// ```
   pub fn with_fade_distance(mut self, pixels: f32) -> Self {
     self.fade_distance = Some(pixels.max(1.0));
+    self
+  }
+
+  /// Set a texture to map along the trail.
+  ///
+  /// The texture will be stretched or tiled along the trail's length,
+  /// and stretched across the trail's width. The texture color is multiplied
+  /// with the trail's color for tinting effects.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Create a fire trail with a flame texture
+  /// let trail = Trail2D::new(Color::WHITE, 32.0)
+  ///     .with_texture(flame_sprite)
+  ///     .with_texture_mode(TextureMode::Tile)
+  ///     .with_tile_length(64.0);
+  /// ```
+  pub fn with_texture(mut self, texture: SpriteHandle) -> Self {
+    self.texture = Some(texture);
+    self
+  }
+
+  /// Set how the texture is mapped along the trail.
+  ///
+  /// - `TextureMode::Stretch` - Stretches the texture to fit the entire trail length
+  /// - `TextureMode::Tile` - Repeats the texture along the trail based on `tile_length`
+  pub fn with_texture_mode(mut self, mode: TextureMode) -> Self {
+    self.texture_mode = mode;
+    self
+  }
+
+  /// Set the length in pixels for each texture tile (when using `TextureMode::Tile`).
+  ///
+  /// The texture will repeat every `length` pixels along the trail.
+  /// Default is 64 pixels.
+  pub fn with_tile_length(mut self, length: f32) -> Self {
+    self.tile_length = length.max(1.0);
     self
   }
 
@@ -527,6 +585,36 @@ impl Trail2D {
     }
     total
   }
+
+  /// Get the texture assigned to this trail, if any.
+  pub fn texture(&self) -> Option<&SpriteHandle> {
+    self.texture.as_ref()
+  }
+
+  /// Set or clear the texture for this trail.
+  pub fn set_texture(&mut self, texture: Option<SpriteHandle>) {
+    self.texture = texture;
+  }
+
+  /// Get the texture mapping mode.
+  pub fn texture_mode(&self) -> TextureMode {
+    self.texture_mode
+  }
+
+  /// Set the texture mapping mode.
+  pub fn set_texture_mode(&mut self, mode: TextureMode) {
+    self.texture_mode = mode;
+  }
+
+  /// Get the tile length (pixels per texture repeat in Tile mode).
+  pub fn tile_length(&self) -> f32 {
+    self.tile_length
+  }
+
+  /// Set the tile length.
+  pub fn set_tile_length(&mut self, length: f32) {
+    self.tile_length = length.max(1.0);
+  }
 }
 
 impl Default for Trail2D {
@@ -745,5 +833,55 @@ mod tests {
     trail.update(25.0, 0.0, 0.016);
 
     assert!((trail.total_length() - 25.0).abs() < 0.01);
+  }
+
+  // ========== Texture Mapping Tests ==========
+
+  #[test]
+  fn trail_texture_mode_default() {
+    let trail = Trail2D::new(Color::WHITE, 3.0);
+    assert!(trail.texture().is_none());
+    assert_eq!(trail.texture_mode(), TextureMode::Stretch);
+    assert!((trail.tile_length() - 64.0).abs() < 0.01); // Default tile length
+  }
+
+  #[test]
+  fn trail_with_texture_mode_stretch() {
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_texture_mode(TextureMode::Stretch);
+    assert_eq!(trail.texture_mode(), TextureMode::Stretch);
+  }
+
+  #[test]
+  fn trail_with_texture_mode_tile() {
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_texture_mode(TextureMode::Tile);
+    assert_eq!(trail.texture_mode(), TextureMode::Tile);
+  }
+
+  #[test]
+  fn trail_with_tile_length() {
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_tile_length(64.0);
+    assert!((trail.tile_length() - 64.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn trail_tile_length_minimum() {
+    // Tile length should be clamped to at least 1.0
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_tile_length(0.0);
+    assert!(trail.tile_length() >= 1.0);
+
+    let trail2 = Trail2D::new(Color::WHITE, 3.0).with_tile_length(-10.0);
+    assert!(trail2.tile_length() >= 1.0);
+  }
+
+  #[test]
+  fn trail_texture_mode_enum_equality() {
+    assert_eq!(TextureMode::Stretch, TextureMode::Stretch);
+    assert_eq!(TextureMode::Tile, TextureMode::Tile);
+    assert_ne!(TextureMode::Stretch, TextureMode::Tile);
+  }
+
+  #[test]
+  fn trail_texture_mode_default_is_stretch() {
+    assert_eq!(TextureMode::default(), TextureMode::Stretch);
   }
 }

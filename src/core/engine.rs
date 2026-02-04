@@ -15,10 +15,14 @@ use super::config::{
   SmoothedDebugStats, SmoothedFrameTimings,
 };
 use super::ecs::{
-  Entity, RenderStyle, Renderable, SpriteShader, Transform, Tween, Velocity, World, WorldTransform,
+  Entity, Knockback, RenderStyle, Renderable, SpriteShader, SquashStretch, Transform, Tween,
+  TweenSequence, Velocity, World, WorldTransform,
 };
 use super::error::{EngineError, EngineResult};
-use super::events::{CollisionStarted, CollisionStopped, Events};
+use super::events::{
+  CollisionStarted, CollisionStopped, Events, KnockbackFinished, KnockbackStarted,
+  SquashStretchFinished, SquashStretchStarted,
+};
 use super::game::{Game, GameContext, GpuRenderContext, TimeControl, WindowRequest};
 use super::graphics::{
   AnimationController, Animator, BatchCollector, Camera, CompositeTile, GroupedCollider, Sprite,
@@ -488,7 +492,9 @@ impl Engine {
             let cursor = event_loop.create_custom_cursor(source);
             window.set_cursor(cursor.clone());
             // Cache for future use
-            self.custom_cursor_cache.insert(custom_data.id.clone(), cursor);
+            self
+              .custom_cursor_cache
+              .insert(custom_data.id.clone(), cursor);
           }
           Err(e) => {
             eprintln!("[Cursor] Failed to create custom cursor: {:?}", e);
@@ -775,7 +781,8 @@ impl Engine {
       self.do_full_render_and_present();
 
       // Frame limit to target FPS (Windows doesn't enforce vsync on unfocused windows)
-      let target_frame_time = std::time::Duration::from_secs_f64(1.0 / self.config.target_fps as f64);
+      let target_frame_time =
+        std::time::Duration::from_secs_f64(1.0 / self.config.target_fps as f64);
       let elapsed = frame_start.elapsed();
       if elapsed < target_frame_time {
         std::thread::sleep(target_frame_time - elapsed);
@@ -875,38 +882,38 @@ impl Engine {
     let mut lighting = self.lighting.take();
     let mut trail_renderer = self.trail_renderer.take();
 
-    // Collect trails and lines from the world
-    if let Some(ref mut trails) = trail_renderer {
-      trails.begin_frame();
-
-      // Add Trail2D components (skip inactive pooled entities)
-      for entity in self.world.entities_with::<Trail2D>() {
-        if self.world.has::<super::ecs::Inactive>(entity) {
-          continue;
-        }
-        if let (Some(trail), Some(transform)) = (
-          self.world.get_component::<Trail2D>(entity),
-          self.world.get_component::<Transform>(entity),
-        ) {
-          trails.add_trail(&trail, &transform);
-        }
-      }
-
-      // Add Line2D components (skip inactive pooled entities)
-      for entity in self.world.entities_with::<Line2D>() {
-        if self.world.has::<super::ecs::Inactive>(entity) {
-          continue;
-        }
-        if let (Some(line), Some(transform)) = (
-          self.world.get_component::<Line2D>(entity),
-          self.world.get_component::<Transform>(entity),
-        ) {
-          trails.add_line(&line, transform.x, transform.y);
-        }
-      }
-    }
-
     if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
+      // Collect trails and lines from the world (inside renderer block for device/queue access)
+      if let Some(ref mut trails) = trail_renderer {
+        trails.begin_frame();
+
+        // Add Trail2D components (skip inactive pooled entities)
+        for entity in self.world.entities_with::<Trail2D>() {
+          if self.world.has::<super::ecs::Inactive>(entity) {
+            continue;
+          }
+          if let (Some(trail), Some(transform)) = (
+            self.world.get_component::<Trail2D>(entity),
+            self.world.get_component::<Transform>(entity),
+          ) {
+            // Use add_trail_with_device for texture caching support
+            trails.add_trail_with_device(rend.device(), rend.queue(), &trail, &transform);
+          }
+        }
+
+        // Add Line2D components (skip inactive pooled entities)
+        for entity in self.world.entities_with::<Line2D>() {
+          if self.world.has::<super::ecs::Inactive>(entity) {
+            continue;
+          }
+          if let (Some(line), Some(transform)) = (
+            self.world.get_component::<Line2D>(entity),
+            self.world.get_component::<Transform>(entity),
+          ) {
+            trails.add_line(&line, transform.x, transform.y);
+          }
+        }
+      }
       // Only use GPU sprite callback if we have batched sprites or trails
       let has_gpu_sprites = self.batch_collector.sprite_count() > 0;
       let has_trails = trail_renderer
@@ -952,26 +959,25 @@ impl Engine {
       let result = if has_gpu_sprites || has_trails || lighting_enabled {
         // Create callback closure that captures gpu, batch_collector, and trail_renderer
         let batch_collector = &self.batch_collector;
-        let gpu_callback = |queue: &wgpu::Queue,
-                            encoder: &mut wgpu::CommandEncoder,
-                            view: &wgpu::TextureView| {
-          // Render GPU sprites first
-          if has_gpu_sprites {
-            gpu.render_batches(queue, encoder, view, batch_collector);
-          }
-          // Render trails on top of sprites
-          if let Some(ref mut trails) = trail_renderer {
-            trails.render(
-              queue,
-              encoder,
-              view,
-              camera_pos,
-              camera_zoom,
-              time,
-              super::trail::TrailStyle::Solid,
-            );
-          }
-        };
+        let gpu_callback =
+          |queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
+            // Render GPU sprites first
+            if has_gpu_sprites {
+              gpu.render_batches(queue, encoder, view, batch_collector);
+            }
+            // Render trails on top of sprites
+            if let Some(ref mut trails) = trail_renderer {
+              trails.render(
+                queue,
+                encoder,
+                view,
+                camera_pos,
+                camera_zoom,
+                time,
+                super::trail::TrailStyle::Solid,
+              );
+            }
+          };
 
         // Create lighting callback if lighting is enabled
         if lighting_enabled {
@@ -1160,15 +1166,224 @@ impl Engine {
         continue;
       }
 
+      // Capture color start values from Renderable if tween has color targets and hasn't started
+      let needs_color_capture = self
+        .world
+        .get_component::<Tween>(entity)
+        .is_some_and(|t| t.has_color_targets() && !t.has_started());
+
+      if needs_color_capture
+        && let Some(renderable) = self.world.get_component::<Renderable>(entity)
+      {
+        let alpha = renderable.alpha;
+        let tint = renderable.tint;
+        if let Some(mut tween) = self.world.get_component_mut::<Tween>(entity) {
+          tween.capture_start_renderable(alpha, tint);
+        }
+      }
+
       // Get transform and tween together for update
       if let (Some(mut transform), Some(mut tween)) = (
         self.world.get_component_mut::<Transform>(entity),
         self.world.get_component_mut::<Tween>(entity),
       ) {
         tween.update(_dt, &mut transform);
-        // Note: Tweens only modify Transform (position/scale/rotation), NOT z_order.
-        // No need to dirty the render cache - it only needs rebuilding when
-        // entities are spawned/despawned or z_order changes.
+      }
+
+      // Apply color/alpha tweening to Renderable
+      if let (Some(tween), Some(mut renderable)) = (
+        self.world.get_component::<Tween>(entity),
+        self.world.get_component_mut::<Renderable>(entity),
+      ) {
+        if let Some(alpha) = tween.current_alpha() {
+          renderable.alpha = alpha;
+        }
+        if let Some(tint) = tween.current_tint() {
+          renderable.tint = tint;
+        }
+      }
+    }
+
+    // --- TweenSequence System ---
+    // Update all TweenSequence components (skip inactive pooled entities)
+    for entity in self.world.entities_with::<TweenSequence>() {
+      // Skip inactive pooled entities
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+
+      // Check if sequence is playing and has a current tween
+      let should_update = self
+        .world
+        .get_component::<TweenSequence>(entity)
+        .is_some_and(|s| s.playing && s.current().is_some());
+
+      if !should_update {
+        continue;
+      }
+
+      // Capture color start values if current tween has color targets and hasn't started
+      let needs_color_capture = self
+        .world
+        .get_component::<TweenSequence>(entity)
+        .is_some_and(|s| {
+          s.current()
+            .is_some_and(|t| t.has_color_targets() && !t.has_started())
+        });
+
+      if needs_color_capture
+        && let Some(renderable) = self.world.get_component::<Renderable>(entity)
+      {
+        let alpha = renderable.alpha;
+        let tint = renderable.tint;
+        if let Some(mut seq) = self.world.get_component_mut::<TweenSequence>(entity)
+          && let Some(tween) = seq.current_mut()
+        {
+          tween.capture_start_renderable(alpha, tint);
+        }
+      }
+
+      // Update the current tween in the sequence
+      let tween_finished = if let (Some(mut transform), Some(mut seq)) = (
+        self.world.get_component_mut::<Transform>(entity),
+        self.world.get_component_mut::<TweenSequence>(entity),
+      ) {
+        if let Some(tween) = seq.current_mut() {
+          tween.update(_dt, &mut transform);
+          tween.just_finished
+        } else {
+          false
+        }
+      } else {
+        false
+      };
+
+      // Apply color/alpha tweening from current tween to Renderable
+      if let (Some(seq), Some(mut renderable)) = (
+        self.world.get_component::<TweenSequence>(entity),
+        self.world.get_component_mut::<Renderable>(entity),
+      )
+        && let Some(tween) = seq.current()
+      {
+        if let Some(alpha) = tween.current_alpha() {
+          renderable.alpha = alpha;
+        }
+        if let Some(tint) = tween.current_tint() {
+          renderable.tint = tint;
+        }
+      }
+
+      // Advance to next tween if current one finished
+      if tween_finished
+        && let Some(mut seq) = self.world.get_component_mut::<TweenSequence>(entity)
+      {
+        seq.advance();
+      }
+    }
+
+    // --- Knockback System ---
+    // Update all Knockback components and apply velocity to Transform/Velocity
+    for entity in self.world.entities_with::<Knockback>() {
+      // Skip inactive pooled entities
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+
+      // Check if knockback is active before borrowing mutably
+      let is_active = self
+        .world
+        .get_component::<Knockback>(entity)
+        .is_some_and(|kb| kb.active);
+
+      if !is_active {
+        continue;
+      }
+
+      // Update the knockback component
+      let (just_started, just_finished, velocity) =
+        if let Some(mut kb) = self.world.get_component_mut::<Knockback>(entity) {
+          let was_just_started = kb.just_started;
+          kb.update(_dt);
+          let vel = kb.current_velocity();
+          (was_just_started, kb.just_finished, vel)
+        } else {
+          continue;
+        };
+
+      // Fire events
+      if just_started {
+        self.events.emit(KnockbackStarted { entity });
+      }
+      if just_finished {
+        self.events.emit(KnockbackFinished { entity });
+      }
+
+      // Apply velocity to entity
+      // For entities with Velocity component, update the velocity
+      // For all entities with Transform, apply position change
+      if let Some(mut vel_component) = self.world.get_component_mut::<Velocity>(entity) {
+        // Set velocity to knockback velocity (for physics systems that read Velocity)
+        vel_component.dx = velocity.0;
+        vel_component.dy = velocity.1;
+      }
+
+      // Always apply knockback directly to Transform position
+      // (Velocity component is for physics systems, but knockback should move entity directly)
+      if let Some(mut transform) = self.world.get_component_mut::<Transform>(entity) {
+        transform.x += velocity.0 * _dt;
+        transform.y += velocity.1 * _dt;
+      }
+    }
+
+    // --- SquashStretch System ---
+    // Update all SquashStretch components and apply scale to Transform
+    for entity in self.world.entities_with::<SquashStretch>() {
+      // Skip inactive pooled entities
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+
+      // Check if squash/stretch is active before borrowing mutably
+      let is_active = self
+        .world
+        .get_component::<SquashStretch>(entity)
+        .is_some_and(|ss| ss.active);
+
+      if !is_active {
+        continue;
+      }
+
+      // Capture base scale from Transform if not yet captured
+      if let (Some(transform), Some(mut ss)) = (
+        self.world.get_component::<Transform>(entity),
+        self.world.get_component_mut::<SquashStretch>(entity),
+      ) {
+        ss.capture_base_scale(transform.scale_x, transform.scale_y);
+      }
+
+      // Update the squash/stretch component and get scale
+      let (just_started, just_finished, scale) =
+        if let Some(mut ss) = self.world.get_component_mut::<SquashStretch>(entity) {
+          let was_just_started = ss.just_started;
+          ss.update(_dt);
+          let scale = ss.current_scale();
+          (was_just_started, ss.just_finished, scale)
+        } else {
+          continue;
+        };
+
+      // Fire events
+      if just_started {
+        self.events.emit(SquashStretchStarted { entity });
+      }
+      if just_finished {
+        self.events.emit(SquashStretchFinished { entity });
+      }
+
+      // Apply scale to Transform
+      if let Some(mut transform) = self.world.get_component_mut::<Transform>(entity) {
+        transform.scale_x = scale.0;
+        transform.scale_y = scale.1;
       }
     }
 
@@ -1179,7 +1394,7 @@ impl Engine {
       let mut ctx = GameContext {
         world: &mut self.world,
         camera: &mut self.camera,
-        input: &self.input,
+        input: &mut self.input,
         assets: &mut self.assets,
         audio: &mut self.audio,
         effects: &mut self.effects,
@@ -1208,6 +1423,29 @@ impl Engine {
     // This must happen after user update (so local transforms are set) and
     // before rendering (so WorldTransform is current).
     self.world.propagate_transforms();
+
+    // --- Trail2D System ---
+    // Automatically update trails for entities with both Trail2D and Transform.
+    // Runs after game logic and hierarchy propagation to capture final positions.
+    for entity in self.world.entities_with::<Trail2D>() {
+      // Skip inactive pooled entities
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+
+      // Get the entity's position from Transform
+      let pos = self
+        .world
+        .get_component::<Transform>(entity)
+        .map(|t| (t.x, t.y));
+
+      // Update the trail with the current position
+      if let Some((x, y)) = pos
+        && let Some(mut trail) = self.world.get_component_mut::<Trail2D>(entity)
+      {
+        trail.update(x, y, _dt);
+      }
+    }
 
     // --- Post-Process Effects ---
     // Update timed post-process effects
@@ -1423,6 +1661,10 @@ impl Engine {
       // draw_rotated expects degrees, Transform.rotation is in radians
       let rotation_deg = rotation.to_degrees();
 
+      // Capture alpha and tint for use in draw calls
+      let alpha = renderable.alpha;
+      let tint = renderable.tint;
+
       match &renderable.style {
         RenderStyle::Single => {
           // Calculate final scale (transform scale * camera zoom)
@@ -1492,7 +1734,7 @@ impl Engine {
               let offset_y = ((new_height as i32 - src_height as i32) / 2) as f32 * final_scale_y;
 
               let transformed_sprite = Sprite::from_rgba(transformed_data, new_width, new_height);
-              transformed_sprite.draw_rotated(
+              transformed_sprite.draw_rotated_tinted(
                 frame,
                 frame_width,
                 frame_height,
@@ -1503,12 +1745,14 @@ impl Engine {
                 rotation_deg,
                 renderable.flip_x,
                 renderable.flip_y,
+                alpha,
+                tint,
               );
             });
           } else {
-            // No shader - draw normally
+            // No shader - draw normally with alpha/tint
             renderable.sprite.with_sprite(|sprite| {
-              sprite.draw_rotated(
+              sprite.draw_rotated_tinted(
                 frame,
                 frame_width,
                 frame_height,
@@ -1519,6 +1763,8 @@ impl Engine {
                 rotation_deg,
                 renderable.flip_x,
                 renderable.flip_y,
+                alpha,
+                tint,
               );
             });
           }
@@ -1575,7 +1821,7 @@ impl Engine {
             let final_scale_y = scale_y * self.camera.zoom;
 
             renderable.sprite.with_sprite(|sprite| {
-              sprite.draw_rotated(
+              sprite.draw_rotated_tinted(
                 frame,
                 frame_width,
                 frame_height,
@@ -1586,6 +1832,8 @@ impl Engine {
                 rotation_deg,
                 renderable.flip_x,
                 renderable.flip_y,
+                alpha,
+                tint,
               );
             });
           }
@@ -1927,7 +2175,7 @@ impl ApplicationHandler for Engine {
         let mut ctx = GameContext {
           world: &mut self.world,
           camera: &mut self.camera,
-          input: &self.input,
+          input: &mut self.input,
           assets: &mut self.assets,
           audio: &mut self.audio,
           effects: &mut self.effects,
@@ -1954,7 +2202,12 @@ impl ApplicationHandler for Engine {
   }
 
   #[allow(unused_variables)] // window_id used only when profiler feature is enabled
-  fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+  fn window_event(
+    &mut self,
+    event_loop: &ActiveEventLoop,
+    window_id: WindowId,
+    event: WindowEvent,
+  ) {
     // Check if this event is for the profiler window
     #[cfg(feature = "profiler")]
     if let Some(ref mut profiler) = self.profiler_window
@@ -2216,14 +2469,7 @@ impl ApplicationHandler for Engine {
             if let Some(time) = &mut self.time {
               time.consume_update();
             }
-            // Clear keyboard one-shot events after the FIRST update only.
-            // This prevents key presses from being processed multiple times
-            // when multiple fixed timestep updates run in a single frame,
-            // while preserving mouse state for UI button clicks in render_ui.
-            if !did_update {
-              self.input.consume_keyboard_events();
-              did_update = true;
-            }
+            did_update = true;
           }
 
           // After all updates: decay hitstop and sync back to time_control
@@ -2345,38 +2591,38 @@ impl ApplicationHandler for Engine {
         let mut lighting = self.lighting.take();
         let mut trail_renderer = self.trail_renderer.take();
 
-        // Collect trails and lines from the world
-        if let Some(ref mut trails) = trail_renderer {
-          trails.begin_frame();
-
-          // Add Trail2D components (skip inactive pooled entities)
-          for entity in self.world.entities_with::<Trail2D>() {
-            if self.world.has::<super::ecs::Inactive>(entity) {
-              continue;
-            }
-            if let (Some(trail), Some(transform)) = (
-              self.world.get_component::<Trail2D>(entity),
-              self.world.get_component::<Transform>(entity),
-            ) {
-              trails.add_trail(&trail, &transform);
-            }
-          }
-
-          // Add Line2D components (skip inactive pooled entities)
-          for entity in self.world.entities_with::<Line2D>() {
-            if self.world.has::<super::ecs::Inactive>(entity) {
-              continue;
-            }
-            if let (Some(line), Some(transform)) = (
-              self.world.get_component::<Line2D>(entity),
-              self.world.get_component::<Transform>(entity),
-            ) {
-              trails.add_line(&line, transform.x, transform.y);
-            }
-          }
-        }
-
         if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
+          // Collect trails and lines from the world (inside renderer block for device/queue access)
+          if let Some(ref mut trails) = trail_renderer {
+            trails.begin_frame();
+
+            // Add Trail2D components (skip inactive pooled entities)
+            for entity in self.world.entities_with::<Trail2D>() {
+              if self.world.has::<super::ecs::Inactive>(entity) {
+                continue;
+              }
+              if let (Some(trail), Some(transform)) = (
+                self.world.get_component::<Trail2D>(entity),
+                self.world.get_component::<Transform>(entity),
+              ) {
+                // Use add_trail_with_device for texture caching support
+                trails.add_trail_with_device(rend.device(), rend.queue(), &trail, &transform);
+              }
+            }
+
+            // Add Line2D components (skip inactive pooled entities)
+            for entity in self.world.entities_with::<Line2D>() {
+              if self.world.has::<super::ecs::Inactive>(entity) {
+                continue;
+              }
+              if let (Some(line), Some(transform)) = (
+                self.world.get_component::<Line2D>(entity),
+                self.world.get_component::<Transform>(entity),
+              ) {
+                trails.add_line(&line, transform.x, transform.y);
+              }
+            }
+          }
           // Only use GPU sprite callback if we have batched sprites or trails
           let has_gpu_sprites = self.batch_collector.sprite_count() > 0;
           let has_trails = trail_renderer

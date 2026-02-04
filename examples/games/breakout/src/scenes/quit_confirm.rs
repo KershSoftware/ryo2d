@@ -56,21 +56,26 @@ impl Scene for QuitConfirmScene {
     }
 
     // N or B to cancel (B only after released once)
-    if ctx.input.key_pressed(KeyCode::KeyN) {
+    // Use consume to prevent input from cascading to underlying scene
+    if ctx.input.key_pressed_and_consume(KeyCode::KeyN) {
       return SceneAction::Pop;
     }
 
     // ESC or B to cancel (only after released once)
     if self.escape_was_released
-      && (ctx.input.key_pressed(KeyCode::Escape)
-        || ctx.input.gamepad_button_pressed(GamepadButton::East))
+      && (ctx.input.key_pressed_and_consume(KeyCode::Escape)
+        || ctx
+          .input
+          .gamepad_button_pressed_and_consume(GamepadButton::East))
     {
       return SceneAction::Pop;
     }
 
     // Y or A to confirm quit
-    if ctx.input.key_pressed(KeyCode::KeyY)
-      || ctx.input.gamepad_button_pressed(GamepadButton::South)
+    if ctx.input.key_pressed_and_consume(KeyCode::KeyY)
+      || ctx
+        .input
+        .gamepad_button_pressed_and_consume(GamepadButton::South)
     {
       return SceneAction::Quit;
     }

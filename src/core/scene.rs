@@ -32,7 +32,7 @@ use crate::profile_scope;
 use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::config::save::DisplayMode;
-use super::ecs::World;
+use super::ecs::{Entity, Knockback, SquashAxis, SquashStretch, Vec2, World};
 use super::events::Events;
 use super::game::{TimeControl, WindowRequest};
 use super::graphics::Camera;
@@ -50,7 +50,8 @@ pub struct SceneContext<'a> {
   /// The camera for world-to-screen transformations
   pub camera: &'a mut Camera,
   /// Current input state (keyboard, mouse)
-  pub input: &'a InputState,
+  /// Mutable to allow consuming inputs (preventing double-handling)
+  pub input: &'a mut InputState,
   /// Asset manager for loading and caching resources
   pub assets: &'a mut AssetManager,
   /// Audio manager for sound effects and music (None if audio unavailable)
@@ -314,6 +315,91 @@ impl<'a> SceneContext<'a> {
     let hotspot_x = (sprite.width() / 2) as u16;
     let hotspot_y = (sprite.height() / 2) as u16;
     self.set_custom_cursor(sprite, hotspot_x, hotspot_y);
+  }
+
+  // ===========================================================================
+  // Knockback
+  // ===========================================================================
+
+  /// Apply knockback to an entity with custom decay rate.
+  ///
+  /// Knockback pushes an entity in a direction with an initial force that
+  /// decays over time. This creates satisfying impact feedback.
+  ///
+  /// # Arguments
+  ///
+  /// * `entity` - The entity to knock back
+  /// * `direction` - Direction to push (will be normalized)
+  /// * `force` - Initial force/speed in pixels per second
+  /// * `decay_rate` - How fast strength decays (default: 4.0, higher = faster)
+  pub fn knockback_with_decay(
+    &mut self,
+    entity: Entity,
+    direction: Vec2,
+    force: f32,
+    decay_rate: f32,
+  ) {
+    if let Some(mut kb) = self.world.get_component_mut::<Knockback>(entity) {
+      kb.apply_with_decay(direction, force, decay_rate);
+    } else {
+      self.world.add_component(
+        entity,
+        Knockback::new(direction, force).with_decay_rate(decay_rate),
+      );
+    }
+  }
+
+  // ===========================================================================
+  // Squash/Stretch
+  // ===========================================================================
+
+  /// Apply a squash effect to an entity (compresses on Y axis, stretches on X).
+  ///
+  /// This is perfect for landing impacts, getting hit from above, or bouncy effects.
+  /// The effect automatically recovers to the entity's base scale.
+  ///
+  /// # Arguments
+  ///
+  /// * `entity` - The entity to squash
+  /// * `intensity` - How much to squash (0.3 = 30% compression)
+  pub fn squash(&mut self, entity: Entity, intensity: f32) {
+    self.squash_on_axis(entity, intensity, SquashAxis::Y);
+  }
+
+  /// Apply a horizontal squash effect (compresses on X axis, stretches on Y).
+  ///
+  /// This is perfect for wall impacts or horizontal hits.
+  pub fn squash_x(&mut self, entity: Entity, intensity: f32) {
+    self.squash_on_axis(entity, intensity, SquashAxis::X);
+  }
+
+  /// Apply a squash effect on a specific axis.
+  pub fn squash_on_axis(&mut self, entity: Entity, intensity: f32, axis: SquashAxis) {
+    if let Some(mut ss) = self.world.get_component_mut::<SquashStretch>(entity) {
+      ss.apply_on_axis(intensity, axis);
+    } else {
+      self
+        .world
+        .add_component(entity, SquashStretch::new(intensity).with_axis(axis));
+    }
+  }
+
+  /// Apply a squash effect with custom decay rate.
+  ///
+  /// # Arguments
+  ///
+  /// * `entity` - The entity to squash
+  /// * `intensity` - How much to squash (0.3 = 30% compression)
+  /// * `decay_rate` - How fast to recover (8.0 = snappy, 4.0 = moderate, 2.0 = slow)
+  pub fn squash_with_decay(&mut self, entity: Entity, intensity: f32, decay_rate: f32) {
+    if let Some(mut ss) = self.world.get_component_mut::<SquashStretch>(entity) {
+      ss.apply_with_decay(intensity, decay_rate);
+    } else {
+      self.world.add_component(
+        entity,
+        SquashStretch::new(intensity).with_decay_rate(decay_rate),
+      );
+    }
   }
 }
 

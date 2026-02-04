@@ -533,12 +533,17 @@ impl ProfilerWindow {
       self.scope_age.insert(scope.name.clone(), 0);
 
       // Update or insert into display_scopes
-      if let Some(existing) = self.display_scopes.iter_mut().find(|s| s.name == scope.name) {
+      if let Some(existing) = self
+        .display_scopes
+        .iter_mut()
+        .find(|s| s.name == scope.name)
+      {
         // Use smoothed update: blend toward new value
         // This keeps scopes visible even when they intermittently have 0 duration
         if scope.duration_ns > 0 {
           // Blend toward the new non-zero value
-          existing.duration_ns = ((existing.duration_ns as f64 * 0.5) + (scope.duration_ns as f64 * 0.5)) as u64;
+          existing.duration_ns =
+            ((existing.duration_ns as f64 * 0.5) + (scope.duration_ns as f64 * 0.5)) as u64;
         }
         // Always keep at least some minimum display duration so scope stays visible
         existing.duration_ns = existing.duration_ns.max(1000); // 1 microsecond minimum
@@ -564,7 +569,11 @@ impl ProfilerWindow {
 
     // Remove scopes that have been absent for very long (60 frames = 6 seconds at 10 FPS)
     self.display_scopes.retain(|s| {
-      self.scope_age.get(&s.name).map(|&age| age < 60).unwrap_or(false)
+      self
+        .scope_age
+        .get(&s.name)
+        .map(|&age| age < 60)
+        .unwrap_or(false)
     });
     self.scope_age.retain(|_, age| *age < 60);
 
@@ -648,13 +657,7 @@ impl ProfilerWindow {
     self.draw_text(&text, 10, 8, colors::TEXT);
 
     // Draw divider
-    self.fill_rect(
-      0,
-      header_height - 1,
-      self.width as i32,
-      1,
-      colors::DIVIDER,
-    );
+    self.fill_rect(0, header_height - 1, self.width as i32, 1, colors::DIVIDER);
   }
 
   /// Draw the footer with scope count and help.
@@ -664,7 +667,13 @@ impl ProfilerWindow {
     let padding = 10;
 
     // Draw footer background
-    self.fill_rect(0, footer_y, self.width as i32, footer_height, colors::HEADER_BG);
+    self.fill_rect(
+      0,
+      footer_y,
+      self.width as i32,
+      footer_height,
+      colors::HEADER_BG,
+    );
 
     // Draw divider at top of footer
     self.fill_rect(0, footer_y, self.width as i32, 1, colors::DIVIDER);
@@ -675,7 +684,12 @@ impl ProfilerWindow {
       let text = format!("{} scope(s) | Hover for details", scope_count);
       self.draw_text(&text, padding, footer_y + 6, colors::TEXT_DIM);
     } else if self.has_received_data {
-      self.draw_text("Add profile_function!() to see more data", padding, footer_y + 6, colors::TEXT_DIM);
+      self.draw_text(
+        "Add profile_function!() to see more data",
+        padding,
+        footer_y + 6,
+        colors::TEXT_DIM,
+      );
     }
   }
 
@@ -694,7 +708,12 @@ impl ProfilerWindow {
       // Show different messages based on state
       if !self.has_received_data && self.frames_without_data < 180 {
         // First ~3 seconds: show waiting message
-        self.draw_text("Waiting for profiling data...", padding, y, colors::TEXT_DIM);
+        self.draw_text(
+          "Waiting for profiling data...",
+          padding,
+          y,
+          colors::TEXT_DIM,
+        );
       } else {
         // After 3 seconds of no data: show setup instructions
         self.draw_text("No profiling data detected", padding, y, colors::TEXT);
@@ -703,14 +722,24 @@ impl ProfilerWindow {
         self.draw_text("To instrument your code:", padding, y, colors::TEXT_DIM);
         y += line_height;
 
-        self.draw_text("  profile_scope!(\"name\")", padding + 10, y, colors::SCOPE_COLORS[0]);
+        self.draw_text(
+          "  profile_scope!(\"name\")",
+          padding + 10,
+          y,
+          colors::SCOPE_COLORS[0],
+        );
         y += line_height * 2;
 
         self.draw_text("Example:", padding, y, colors::TEXT_DIM);
         y += line_height;
         self.draw_text("  fn update() {", padding, y, colors::TEXT_DIM);
         y += line_height;
-        self.draw_text("    profile_scope!(\"physics\")", padding + 20, y, colors::SCOPE_COLORS[1]);
+        self.draw_text(
+          "    profile_scope!(\"physics\")",
+          padding + 20,
+          y,
+          colors::SCOPE_COLORS[1],
+        );
         y += line_height;
         self.draw_text("    // your code here", padding + 20, y, colors::TEXT_DIM);
         y += line_height;
@@ -752,11 +781,21 @@ impl ProfilerWindow {
     // Draw Game section first (user code) - most relevant to game devs
     if !other_scopes.is_empty() {
       // Draw section header
-      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::GAME_HEADER);
+      self.fill_rect(
+        0,
+        current_y,
+        self.width as i32,
+        section_header_height,
+        colors::GAME_HEADER,
+      );
       self.draw_text("Game", padding, current_y + 5, colors::TEXT);
 
       // Calculate and show Game time
-      let game_total_ns: u64 = other_scopes.iter().filter(|s| s.depth == 0).map(|s| s.duration_ns).sum();
+      let game_total_ns: u64 = other_scopes
+        .iter()
+        .filter(|s| s.depth == 0)
+        .map(|s| s.duration_ns)
+        .sum();
       let game_ms = game_total_ns as f64 / 1_000_000.0;
       let game_text = format!("{:.2}ms", game_ms);
       self.draw_text(&game_text, 60, current_y + 5, colors::TEXT_DIM);
@@ -782,11 +821,21 @@ impl ProfilerWindow {
     // Draw Engine - CPU section
     if !cpu_scopes.is_empty() {
       // Draw section header
-      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::ENGINE_CPU_HEADER);
+      self.fill_rect(
+        0,
+        current_y,
+        self.width as i32,
+        section_header_height,
+        colors::ENGINE_CPU_HEADER,
+      );
       self.draw_text("Engine - CPU", padding, current_y + 5, colors::TEXT);
 
       // Calculate and show CPU time
-      let cpu_total_ns: u64 = cpu_scopes.iter().filter(|s| s.depth == 0).map(|s| s.duration_ns).sum();
+      let cpu_total_ns: u64 = cpu_scopes
+        .iter()
+        .filter(|s| s.depth == 0)
+        .map(|s| s.duration_ns)
+        .sum();
       let cpu_ms = cpu_total_ns as f64 / 1_000_000.0;
       let cpu_text = format!("{:.2}ms", cpu_ms);
       self.draw_text(&cpu_text, 120, current_y + 5, colors::TEXT_DIM);
@@ -812,11 +861,21 @@ impl ProfilerWindow {
     // Draw Engine - GPU section
     if !gpu_scopes.is_empty() {
       // Draw section header
-      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::ENGINE_GPU_HEADER);
+      self.fill_rect(
+        0,
+        current_y,
+        self.width as i32,
+        section_header_height,
+        colors::ENGINE_GPU_HEADER,
+      );
       self.draw_text("Engine - GPU", padding, current_y + 5, colors::TEXT);
 
       // Calculate and show GPU time
-      let gpu_total_ns: u64 = gpu_scopes.iter().filter(|s| s.depth == 0).map(|s| s.duration_ns).sum();
+      let gpu_total_ns: u64 = gpu_scopes
+        .iter()
+        .filter(|s| s.depth == 0)
+        .map(|s| s.duration_ns)
+        .sum();
       let gpu_ms = gpu_total_ns as f64 / 1_000_000.0;
       let gpu_text = format!("{:.2}ms", gpu_ms);
       self.draw_text(&gpu_text, 120, current_y + 5, colors::TEXT_DIM);
@@ -887,7 +946,9 @@ impl ProfilerWindow {
         .unwrap_or(&scope.name);
 
       // Choose color based on scope name hash for consistency
-      let name_hash: usize = display_name.bytes().fold(0, |acc, b| acc.wrapping_add(b as usize));
+      let name_hash: usize = display_name
+        .bytes()
+        .fold(0, |acc, b| acc.wrapping_add(b as usize));
       let color = color_palette[name_hash % color_palette.len()];
 
       // Check if mouse is hovering over this bar
@@ -1136,48 +1197,126 @@ fn get_glyph(ch: char) -> Option<[u8; 12]> {
   // Simple ASCII subset - numbers, letters, and common punctuation
   match ch {
     ' ' => Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    '!' => Some([0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x10, 0x10, 0, 0]),
-    '(' => Some([0x08, 0x10, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x10, 0x08, 0, 0]),
-    ')' => Some([0x20, 0x10, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x10, 0x20, 0, 0]),
+    '!' => Some([
+      0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00, 0x10, 0x10, 0, 0,
+    ]),
+    '(' => Some([
+      0x08, 0x10, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x10, 0x08, 0, 0,
+    ]),
+    ')' => Some([
+      0x20, 0x10, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x10, 0x20, 0, 0,
+    ]),
     '-' => Some([0, 0, 0, 0, 0, 0x7C, 0, 0, 0, 0, 0, 0]),
     '.' => Some([0, 0, 0, 0, 0, 0, 0, 0, 0x18, 0x18, 0, 0]),
     ':' => Some([0, 0, 0x18, 0x18, 0, 0, 0, 0x18, 0x18, 0, 0, 0]),
-    '0' => Some([0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
-    '1' => Some([0x10, 0x30, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0]),
-    '2' => Some([0x38, 0x44, 0x04, 0x04, 0x08, 0x10, 0x20, 0x40, 0x44, 0x7C, 0, 0]),
-    '3' => Some([0x38, 0x44, 0x04, 0x04, 0x18, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0]),
-    '4' => Some([0x08, 0x18, 0x28, 0x28, 0x48, 0x48, 0x7C, 0x08, 0x08, 0x08, 0, 0]),
-    '5' => Some([0x7C, 0x40, 0x40, 0x78, 0x04, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0]),
-    '6' => Some([0x38, 0x44, 0x40, 0x40, 0x78, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
-    '7' => Some([0x7C, 0x44, 0x04, 0x08, 0x08, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0]),
-    '8' => Some([0x38, 0x44, 0x44, 0x44, 0x38, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
-    '9' => Some([0x38, 0x44, 0x44, 0x44, 0x3C, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0]),
-    'A' | 'a' => Some([0x38, 0x44, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0]),
-    'B' | 'b' => Some([0x78, 0x44, 0x44, 0x44, 0x78, 0x44, 0x44, 0x44, 0x44, 0x78, 0, 0]),
-    'C' | 'c' => Some([0x38, 0x44, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x44, 0x38, 0, 0]),
-    'D' | 'd' => Some([0x78, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x78, 0, 0]),
-    'E' | 'e' => Some([0x7C, 0x40, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x40, 0x7C, 0, 0]),
-    'F' | 'f' => Some([0x7C, 0x40, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0]),
-    'G' | 'g' => Some([0x38, 0x44, 0x40, 0x40, 0x4C, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
-    'H' | 'h' => Some([0x44, 0x44, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0]),
-    'I' | 'i' => Some([0x38, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0]),
-    'J' | 'j' => Some([0x1C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x48, 0x48, 0x30, 0, 0]),
-    'K' | 'k' => Some([0x44, 0x48, 0x50, 0x60, 0x60, 0x50, 0x48, 0x44, 0x44, 0x44, 0, 0]),
-    'L' | 'l' => Some([0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x7C, 0, 0]),
-    'M' | 'm' => Some([0x44, 0x6C, 0x54, 0x54, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0]),
-    'N' | 'n' => Some([0x44, 0x64, 0x64, 0x54, 0x54, 0x4C, 0x4C, 0x44, 0x44, 0x44, 0, 0]),
-    'O' | 'o' => Some([0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
-    'P' | 'p' => Some([0x78, 0x44, 0x44, 0x44, 0x78, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0]),
-    'Q' | 'q' => Some([0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x54, 0x48, 0x44, 0x3A, 0, 0]),
-    'R' | 'r' => Some([0x78, 0x44, 0x44, 0x44, 0x78, 0x50, 0x48, 0x44, 0x44, 0x44, 0, 0]),
-    'S' | 's' => Some([0x38, 0x44, 0x40, 0x40, 0x38, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0]),
-    'T' | 't' => Some([0x7C, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0]),
-    'U' | 'u' => Some([0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0]),
-    'V' | 'v' => Some([0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x28, 0x28, 0x10, 0, 0]),
-    'W' | 'w' => Some([0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x54, 0x54, 0x6C, 0x44, 0, 0]),
-    'X' | 'x' => Some([0x44, 0x44, 0x28, 0x28, 0x10, 0x28, 0x28, 0x44, 0x44, 0x44, 0, 0]),
-    'Y' | 'y' => Some([0x44, 0x44, 0x44, 0x28, 0x28, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0]),
-    'Z' | 'z' => Some([0x7C, 0x04, 0x04, 0x08, 0x10, 0x20, 0x40, 0x40, 0x40, 0x7C, 0, 0]),
+    '0' => Some([
+      0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
+    ]),
+    '1' => Some([
+      0x10, 0x30, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0,
+    ]),
+    '2' => Some([
+      0x38, 0x44, 0x04, 0x04, 0x08, 0x10, 0x20, 0x40, 0x44, 0x7C, 0, 0,
+    ]),
+    '3' => Some([
+      0x38, 0x44, 0x04, 0x04, 0x18, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
+    ]),
+    '4' => Some([
+      0x08, 0x18, 0x28, 0x28, 0x48, 0x48, 0x7C, 0x08, 0x08, 0x08, 0, 0,
+    ]),
+    '5' => Some([
+      0x7C, 0x40, 0x40, 0x78, 0x04, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
+    ]),
+    '6' => Some([
+      0x38, 0x44, 0x40, 0x40, 0x78, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
+    ]),
+    '7' => Some([
+      0x7C, 0x44, 0x04, 0x08, 0x08, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0,
+    ]),
+    '8' => Some([
+      0x38, 0x44, 0x44, 0x44, 0x38, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
+    ]),
+    '9' => Some([
+      0x38, 0x44, 0x44, 0x44, 0x3C, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
+    ]),
+    'A' | 'a' => Some([
+      0x38, 0x44, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0,
+    ]),
+    'B' | 'b' => Some([
+      0x78, 0x44, 0x44, 0x44, 0x78, 0x44, 0x44, 0x44, 0x44, 0x78, 0, 0,
+    ]),
+    'C' | 'c' => Some([
+      0x38, 0x44, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x44, 0x38, 0, 0,
+    ]),
+    'D' | 'd' => Some([
+      0x78, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x78, 0, 0,
+    ]),
+    'E' | 'e' => Some([
+      0x7C, 0x40, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x40, 0x7C, 0, 0,
+    ]),
+    'F' | 'f' => Some([
+      0x7C, 0x40, 0x40, 0x40, 0x78, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0,
+    ]),
+    'G' | 'g' => Some([
+      0x38, 0x44, 0x40, 0x40, 0x4C, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
+    ]),
+    'H' | 'h' => Some([
+      0x44, 0x44, 0x44, 0x44, 0x7C, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0,
+    ]),
+    'I' | 'i' => Some([
+      0x38, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x38, 0, 0,
+    ]),
+    'J' | 'j' => Some([
+      0x1C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x48, 0x48, 0x30, 0, 0,
+    ]),
+    'K' | 'k' => Some([
+      0x44, 0x48, 0x50, 0x60, 0x60, 0x50, 0x48, 0x44, 0x44, 0x44, 0, 0,
+    ]),
+    'L' | 'l' => Some([
+      0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x7C, 0, 0,
+    ]),
+    'M' | 'm' => Some([
+      0x44, 0x6C, 0x54, 0x54, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0, 0,
+    ]),
+    'N' | 'n' => Some([
+      0x44, 0x64, 0x64, 0x54, 0x54, 0x4C, 0x4C, 0x44, 0x44, 0x44, 0, 0,
+    ]),
+    'O' | 'o' => Some([
+      0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
+    ]),
+    'P' | 'p' => Some([
+      0x78, 0x44, 0x44, 0x44, 0x78, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0,
+    ]),
+    'Q' | 'q' => Some([
+      0x38, 0x44, 0x44, 0x44, 0x44, 0x44, 0x54, 0x48, 0x44, 0x3A, 0, 0,
+    ]),
+    'R' | 'r' => Some([
+      0x78, 0x44, 0x44, 0x44, 0x78, 0x50, 0x48, 0x44, 0x44, 0x44, 0, 0,
+    ]),
+    'S' | 's' => Some([
+      0x38, 0x44, 0x40, 0x40, 0x38, 0x04, 0x04, 0x04, 0x44, 0x38, 0, 0,
+    ]),
+    'T' | 't' => Some([
+      0x7C, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0,
+    ]),
+    'U' | 'u' => Some([
+      0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x38, 0, 0,
+    ]),
+    'V' | 'v' => Some([
+      0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x28, 0x28, 0x10, 0, 0,
+    ]),
+    'W' | 'w' => Some([
+      0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x54, 0x54, 0x6C, 0x44, 0, 0,
+    ]),
+    'X' | 'x' => Some([
+      0x44, 0x44, 0x28, 0x28, 0x10, 0x28, 0x28, 0x44, 0x44, 0x44, 0, 0,
+    ]),
+    'Y' | 'y' => Some([
+      0x44, 0x44, 0x44, 0x28, 0x28, 0x10, 0x10, 0x10, 0x10, 0x10, 0, 0,
+    ]),
+    'Z' | 'z' => Some([
+      0x7C, 0x04, 0x04, 0x08, 0x10, 0x20, 0x40, 0x40, 0x40, 0x7C, 0, 0,
+    ]),
     '_' => Some([0, 0, 0, 0, 0, 0, 0, 0, 0, 0x7C, 0, 0]),
     _ => None, // Unknown character
   }

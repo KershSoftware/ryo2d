@@ -56,7 +56,7 @@ impl GameScene {
     let bird = ctx.world.spawn((
       Transform::new(BIRD_START_X, BIRD_START_Y),
       Velocity::zero(),
-      RigidBody::new().with_gravity_scale(0.0),
+      RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling through pipes
       // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
       Collider::circle_collider(BIRD_SIZE * 0.35).with_offset(BIRD_SIZE / 2.0, BIRD_SIZE / 2.0),
       Renderable::sprite(initial_sprite).with_z_order(10),

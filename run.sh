@@ -11,6 +11,8 @@
 #     ./run.sh --dev <example>         - Same as --dev
 #     ./run.sh -p <example>            - Same as -p (dev + profiler)
 #     ./run.sh --release <example>     - Same as --release
+#     ./run.sh run-demos           - Build and launch all demos in parallel
+#     ./run.sh kill-demos          - Kill all running demos
 #     ./run.sh check               - Fast compilation check (engine only)
 #     ./run.sh check-all           - Check + lint all examples in parallel
 #     ./run.sh lint                - Linting with clippy (engine only)
@@ -522,6 +524,84 @@ case "$COMMAND" in
     "")
         show_category_menu
         ;;
+    run-demos)
+        PID_FILE="$SCRIPT_DIR/.demo-pids"
+
+        # Kill any existing demos first
+        if [[ -f "$PID_FILE" ]]; then
+            while read -r pid; do
+                kill "$pid" 2>/dev/null || true
+            done < "$PID_FILE"
+            rm -f "$PID_FILE"
+        fi
+
+        # Get all demo package names and paths
+        DEMO_NAMES=()
+        DEMO_PATHS=()
+        for toml in "$SCRIPT_DIR"/examples/demos/*/Cargo.toml; do
+            if [[ -f "$toml" ]]; then
+                name=$(grep -m1 '^name = ' "$toml" | sed 's/name = "\(.*\)"/\1/')
+                if [[ -n "$name" ]]; then
+                    DEMO_NAMES+=("$name")
+                    DEMO_PATHS+=("$(dirname "$toml")")
+                fi
+            fi
+        done
+
+        if [[ ${#DEMO_NAMES[@]} -eq 0 ]]; then
+            echo -e "${YELLOW}No demos found in examples/demos/${NC}"
+            exit 1
+        fi
+
+        echo -e "${CYAN}Building ${#DEMO_NAMES[@]} demos in release mode...${NC}"
+        cargo build --release $(printf -- '-p %s ' "${DEMO_NAMES[@]}")
+
+        if [[ $? -ne 0 ]]; then
+            echo -e "${RED}Build failed!${NC}"
+            exit 1
+        fi
+
+        echo ""
+        echo -e "${CYAN}Launching ${#DEMO_NAMES[@]} demos...${NC}"
+        > "$PID_FILE"
+
+        for i in "${!DEMO_NAMES[@]}"; do
+            demo="${DEMO_NAMES[$i]}"
+            demo_path="${DEMO_PATHS[$i]}"
+            # Launch from demo's directory so it can find its assets
+            (cd "$demo_path" && "$SCRIPT_DIR/target/release/$demo" &)
+            echo $! >> "$PID_FILE"
+            echo -e "  ${GREEN}Started $demo (PID $!)${NC}"
+        done
+
+        echo ""
+        echo -e "${CYAN}All demos launched. Run './run.sh kill-demos' to close them.${NC}"
+        ;;
+    kill-demos)
+        PID_FILE="$SCRIPT_DIR/.demo-pids"
+
+        if [[ ! -f "$PID_FILE" ]]; then
+            echo -e "${YELLOW}No running demos found.${NC}"
+            exit 0
+        fi
+
+        echo -e "${CYAN}Killing demos...${NC}"
+        killed=0
+        while read -r pid; do
+            if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null
+                echo -e "  ${GREEN}Killed PID $pid${NC}"
+                ((killed++))
+            fi
+        done < "$PID_FILE"
+        rm -f "$PID_FILE"
+
+        if [[ $killed -gt 0 ]]; then
+            echo -e "${CYAN}Done. $killed demos terminated.${NC}"
+        else
+            echo -e "${YELLOW}No demos were running.${NC}"
+        fi
+        ;;
     check)
         cargo check
         ;;
@@ -633,6 +713,8 @@ case "$COMMAND" in
         echo "    ./run.sh --dev <example>         - Same as --dev"
         echo "    ./run.sh -p <example>            - Same as -p (dev + profiler)"
         echo "    ./run.sh --release <example>     - Same as --release"
+        echo "    ./run.sh run-demos           - Build and launch all demos in parallel"
+        echo "    ./run.sh kill-demos          - Kill all running demos"
         echo "    ./run.sh check               - Fast compilation check (engine only)"
         echo "    ./run.sh check-all           - Check + lint all examples in parallel"
         echo "    ./run.sh lint                - Linting with clippy (engine only)"

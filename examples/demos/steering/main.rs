@@ -237,17 +237,12 @@ impl SteeringDemoScene {
     }
   }
 
-  fn update_trails(&self, ctx: &mut SceneContext, dt: f32) {
+  fn update_trails(&self, ctx: &mut SceneContext, _dt: f32) {
+    // Engine automatically updates trails from Transform position.
+    // We only need to toggle enabled state for visibility.
     for &entity in &self.boids {
-      let pos = ctx.world.get::<Transform>(entity).map(|t| (t.x, t.y));
-
-      if let Some((x, y)) = pos {
-        if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
-          trail.set_enabled(self.show_trails);
-          if self.show_trails {
-            trail.update(x, y, dt);
-          }
-        }
+      if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
+        trail.set_enabled(self.show_trails);
       }
     }
   }

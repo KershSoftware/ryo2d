@@ -256,6 +256,11 @@ impl SquashStretch {
   pub fn base_scale(&self) -> (f32, f32) {
     (self.base_scale_x, self.base_scale_y)
   }
+
+  /// Get the decay rate.
+  pub fn decay_rate(&self) -> f32 {
+    self.decay_rate
+  }
 }
 
 #[cfg(test)]
