@@ -37,3 +37,6 @@ mod squash_stretch;
 
 #[path = "integration/trail.rs"]
 mod trail;
+
+#[path = "integration/y_sort.rs"]
+mod y_sort;

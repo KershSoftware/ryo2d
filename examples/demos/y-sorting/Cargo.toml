@@ -1,0 +1,13 @@
+[package]
+name = "y-sorting"
+version = "0.1.0"
+edition = "2024"
+description = "Y-sorting demo built with Ryo2D engine"
+
+[[bin]]
+name = "y-sorting"
+path = "main.rs"
+
+[dependencies]
+# Ryo2D engine dependency (local path for examples)
+ryo2d = { path = "../../../" }

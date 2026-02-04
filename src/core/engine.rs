@@ -16,7 +16,7 @@ use super::config::{
 };
 use super::ecs::{
   Entity, Knockback, RenderStyle, Renderable, SpriteShader, SquashStretch, Transform, Tween,
-  TweenSequence, Velocity, World, WorldTransform,
+  TweenSequence, Velocity, World, WorldTransform, YSort,
 };
 use super::error::{EngineError, EngineResult};
 use super::events::{
@@ -290,6 +290,8 @@ pub struct Engine {
   renderable_cache: Vec<(Entity, i32)>,
   // Whether render cache needs rebuilding (entities spawned/despawned, z_order changed)
   render_cache_dirty: bool,
+  // Cached list of entities with YSort component (for per-frame Y-based sorting)
+  y_sort_entities: Vec<Entity>,
   // Rapier2D physics world
   physics: RapierPhysicsWorld,
   // UI font for text rendering
@@ -650,6 +652,7 @@ impl Engine {
       first_frame_rendered: false,
       renderable_cache: Vec::new(),
       render_cache_dirty: true,
+      y_sort_entities: Vec::new(),
       physics: RapierPhysicsWorld::new(),
       ui_font,
       last_world_generation: 0,
@@ -1566,6 +1569,65 @@ impl Engine {
   // Render System - CPU & GPU Drawing
   // =============================================================================
 
+  /// Apply Y-based sorting to entities with YSort component
+  ///
+  /// This recalculates sort keys for Y-sorted entities every frame, combining
+  /// their z_order with Y position to achieve Zelda/RPG-style depth sorting.
+  fn apply_y_sorting(&mut self) {
+    // Calculate sort keys for all YSort entities
+    // Sort key = (z_order * 10000) + sort_y, giving layer priority with Y-sorting within layers
+    let mut y_sort_keys: Vec<(Entity, i64)> = Vec::with_capacity(self.y_sort_entities.len());
+
+    for &entity in &self.y_sort_entities {
+      // Skip inactive entities
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+
+      let Some(renderable) = self.world.get_component::<Renderable>(entity) else {
+        continue;
+      };
+
+      let Some(y_sort) = self.world.get_component::<YSort>(entity) else {
+        continue;
+      };
+
+      // Get Y position from WorldTransform or Transform
+      let y = if let Some(wt) = self.world.get_component::<WorldTransform>(entity) {
+        wt.y
+      } else if let Some(t) = self.world.get_component::<Transform>(entity) {
+        t.y
+      } else {
+        continue;
+      };
+
+      // Calculate sort Y based on sprite height and foot offset
+      let sprite_height = renderable.sprite.height() as f32;
+      let sort_y = y_sort.calculate_sort_y(y, sprite_height);
+
+      // Combine z_order with Y position for final sort key
+      // z_order * 10000 ensures layer separation, sort_y provides Y-sorting within layers
+      let sort_key = (renderable.z_order as i64 * 10000) + (sort_y as i64);
+
+      y_sort_keys.push((entity, sort_key));
+    }
+
+    // Update the renderable_cache with new sort keys for YSort entities
+    // First, create a map of entity -> sort_key for quick lookup
+    let y_sort_map: std::collections::HashMap<Entity, i64> = y_sort_keys.into_iter().collect();
+
+    // Update sort keys in renderable_cache for YSort entities
+    for (entity, z_order) in &mut self.renderable_cache {
+      if let Some(&sort_key) = y_sort_map.get(entity) {
+        // Use the Y-aware sort key (stored as i32, truncated if necessary)
+        *z_order = sort_key as i32;
+      }
+    }
+
+    // Re-sort the entire cache with updated keys
+    self.renderable_cache.sort_by_key(|(_, z)| *z);
+  }
+
   /// Render the current frame
   ///
   /// This is the "Render System" - it draws all entities with Transform + Renderable
@@ -1574,6 +1636,35 @@ impl Engine {
 
     // Clear batch collector for this frame (used for GPU sprite batching)
     self.batch_collector.clear();
+
+    // --- Rebuild Render Cache (if dirty) ---
+    // Rebuild render cache if dirty (entities added/removed or z_order changed)
+    // This must happen before we borrow the frame buffer
+    if self.render_cache_dirty {
+      self.renderable_cache.clear();
+      self.y_sort_entities.clear();
+
+      for entity in self.world.entities_with_two::<Transform, Renderable>() {
+        if let Some(renderable) = self.world.get_component::<Renderable>(entity) {
+          self.renderable_cache.push((entity, renderable.z_order));
+
+          // Track entities with YSort component for per-frame Y-based sorting
+          if self.world.has::<YSort>(entity) {
+            self.y_sort_entities.push(entity);
+          }
+        }
+      }
+      self.renderable_cache.sort_by_key(|(_, z)| *z);
+
+      self.render_cache_dirty = false;
+    }
+
+    // --- Apply Y-Sorting (every frame for YSort entities) ---
+    // Y-sorting entities need their sort keys recalculated each frame based on Y position
+    // This must happen before we borrow the frame buffer
+    if !self.y_sort_entities.is_empty() {
+      self.apply_y_sorting();
+    }
 
     // Get frame buffer from renderer
     let (frame, frame_width, frame_height) = match &mut self.renderer {
@@ -1600,20 +1691,6 @@ impl Engine {
     if let Some(mut game) = self.game.take() {
       game.render_background(frame, frame_width, frame_height, &self.camera);
       self.game = Some(game);
-    }
-
-    // --- Rebuild Render Cache (if dirty) ---
-    // Rebuild render cache if dirty (entities added/removed or z_order changed)
-    if self.render_cache_dirty {
-      self.renderable_cache.clear();
-      for entity in self.world.entities_with_two::<Transform, Renderable>() {
-        if let Some(renderable) = self.world.get_component::<Renderable>(entity) {
-          self.renderable_cache.push((entity, renderable.z_order));
-        }
-      }
-      self.renderable_cache.sort_by_key(|(_, z)| *z);
-
-      self.render_cache_dirty = false;
     }
 
     // --- Render All Entities (CPU Path) ---
@@ -1658,6 +1735,14 @@ impl Engine {
       // Apply offset to base position (offset is a pixel-level adjustment after anchor)
       let x = x + offset_x;
       let y = y + offset_y;
+
+      // Apply YSort depth scaling if present
+      let (scale_x, scale_y) = if let Some(y_sort) = self.world.get_component::<YSort>(entity) {
+        let (depth_scale_x, depth_scale_y) = y_sort.calculate_depth_scale(y);
+        (scale_x * depth_scale_x, scale_y * depth_scale_y)
+      } else {
+        (scale_x, scale_y)
+      };
 
       // draw_rotated expects degrees, Transform.rotation is in radians
       let rotation_deg = rotation.to_degrees();
