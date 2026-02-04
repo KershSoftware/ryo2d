@@ -269,24 +269,24 @@ impl ProfilerDemoScene {
                 gpu.map(|g| (g.drift_x, g.drift_y))
             };
 
-            if let Some((dx, dy)) = drift {
-                if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
-                    transform.x += dx * dt;
-                    transform.y += dy * dt;
+            if let Some((dx, dy)) = drift
+                && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity)
+            {
+                transform.x += dx * dt;
+                transform.y += dy * dt;
 
-                    // Wrap around screen
-                    if transform.x < 0.0 {
-                        transform.x = SCREEN_WIDTH as f32;
-                    }
-                    if transform.x > SCREEN_WIDTH as f32 {
-                        transform.x = 0.0;
-                    }
-                    if transform.y < 0.0 {
-                        transform.y = SCREEN_HEIGHT as f32;
-                    }
-                    if transform.y > SCREEN_HEIGHT as f32 {
-                        transform.y = 0.0;
-                    }
+                // Wrap around screen
+                if transform.x < 0.0 {
+                    transform.x = SCREEN_WIDTH as f32;
+                }
+                if transform.x > SCREEN_WIDTH as f32 {
+                    transform.x = 0.0;
+                }
+                if transform.y < 0.0 {
+                    transform.y = SCREEN_HEIGHT as f32;
+                }
+                if transform.y > SCREEN_HEIGHT as f32 {
+                    transform.y = 0.0;
                 }
             }
         }

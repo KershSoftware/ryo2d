@@ -37,7 +37,6 @@ pub mod profiler;
 pub mod profiler_window;
 
 // Engine orchestration
-pub mod context;
 pub mod engine;
 pub mod game;
 pub mod scene;

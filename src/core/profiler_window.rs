@@ -4,8 +4,6 @@
 //! and profiling statistics using puffin data. It uses a simple CPU renderer
 //! that's independent of the main game's rendering pipeline.
 
-#![cfg(feature = "profiler")]
-
 use std::sync::Arc;
 
 use winit::event::WindowEvent;
@@ -64,7 +62,6 @@ struct ScopeEntry {
   name: String,
   duration_ns: u64,
   depth: usize,
-  start_ns: u64,
 }
 
 /// Manages the profiler window and its rendering.
@@ -466,7 +463,7 @@ impl ProfilerWindow {
 
     // Draw tooltip if hovering
     if let Some(ref scope_name) = self.hovered_scope.clone() {
-      self.draw_tooltip(&scope_name);
+      self.draw_tooltip(scope_name);
     }
 
     // Upload and present
@@ -592,31 +589,28 @@ impl ProfilerWindow {
       }
     };
 
-    for scope_result in reader {
-      if let Ok(scope) = scope_result {
-        // Get scope name from the scope collection
-        let name = scope_collection
-          .fetch_by_id(&scope.id)
-          .map(|details| details.name().to_string())
-          .unwrap_or_else(|| format!("scope_{}", scope.id.0));
+    for scope in reader.flatten() {
+      // Get scope name from the scope collection
+      let name = scope_collection
+        .fetch_by_id(&scope.id)
+        .map(|details| details.name().to_string())
+        .unwrap_or_else(|| format!("scope_{}", scope.id.0));
 
-        scopes.push(ScopeEntry {
-          name,
-          duration_ns: scope.record.duration_ns as u64,
-          depth,
-          start_ns: scope.record.start_ns as u64,
-        });
+      scopes.push(ScopeEntry {
+        name,
+        duration_ns: scope.record.duration_ns as u64,
+        depth,
+      });
 
-        // Recursively collect child scopes
-        if scope.child_begin_position < scope.child_end_position {
-          Self::collect_scopes_recursive(
-            stream,
-            scope.child_begin_position,
-            depth + 1,
-            scope_collection,
-            scopes,
-          );
-        }
+      // Recursively collect child scopes
+      if scope.child_begin_position < scope.child_end_position {
+        Self::collect_scopes_recursive(
+          stream,
+          scope.child_begin_position,
+          depth + 1,
+          scope_collection,
+          scopes,
+        );
       }
     }
   }
@@ -845,6 +839,7 @@ impl ProfilerWindow {
   }
 
   /// Draw a section of scopes and return the new y position.
+  #[allow(clippy::too_many_arguments)]
   fn draw_scope_section(
     &mut self,
     scopes: &[ScopeEntry],
@@ -885,13 +880,11 @@ impl ProfilerWindow {
       depth_x.insert(scope.depth, x + width + 2);
 
       // Strip prefix from display name
-      let display_name = if scope.name.starts_with("cpu:") {
-        &scope.name[4..]
-      } else if scope.name.starts_with("gpu:") {
-        &scope.name[4..]
-      } else {
-        &scope.name
-      };
+      let display_name = scope
+        .name
+        .strip_prefix("cpu:")
+        .or_else(|| scope.name.strip_prefix("gpu:"))
+        .unwrap_or(&scope.name);
 
       // Choose color based on scope name hash for consistency
       let name_hash: usize = display_name.bytes().fold(0, |acc, b| acc.wrapping_add(b as usize));

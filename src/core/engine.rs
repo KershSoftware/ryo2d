@@ -490,6 +490,7 @@ impl Engine {
     None
   }
 
+  #[allow(clippy::too_many_arguments)]
   fn new(
     config: EngineConfig,
     game: Box<dyn Game>,
@@ -1831,16 +1832,16 @@ impl ApplicationHandler for Engine {
 
     // Create profiler window if puffin profiling is enabled
     #[cfg(feature = "profiler")]
-    if self.config.debug.puffin_profiler {
-      if let Some(ref renderer) = self.renderer {
-        self.profiler_window = super::profiler_window::ProfilerWindow::new(
-          event_loop,
-          renderer.device_arc(),
-          renderer.queue_arc(),
-          renderer.instance(),
-          renderer.adapter(),
-        );
-      }
+    if self.config.debug.puffin_profiler
+      && let Some(ref renderer) = self.renderer
+    {
+      self.profiler_window = super::profiler_window::ProfilerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        renderer.instance(),
+        renderer.adapter(),
+      );
     }
 
     // Call game init if not already initialized
@@ -1878,30 +1879,28 @@ impl ApplicationHandler for Engine {
   fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
     // Check if this event is for the profiler window
     #[cfg(feature = "profiler")]
+    if let Some(ref mut profiler) = self.profiler_window
+      && window_id == profiler.window_id()
     {
-      if let Some(ref mut profiler) = self.profiler_window {
-        if window_id == profiler.window_id() {
-          // Handle profiler window events
-          match &event {
-            WindowEvent::CloseRequested => {
-              // Close profiler window but don't exit the app
-              self.profiler_window = None;
-              return;
-            }
-            WindowEvent::RedrawRequested => {
-              profiler.render();
-              return;
-            }
-            WindowEvent::Focused(focused) => {
-              // Track profiler window focus separately
-              self.profiler_window_focused = *focused;
-              return;
-            }
-            _ => {
-              profiler.handle_event(&event);
-              return;
-            }
-          }
+      // Handle profiler window events
+      match &event {
+        WindowEvent::CloseRequested => {
+          // Close profiler window but don't exit the app
+          self.profiler_window = None;
+          return;
+        }
+        WindowEvent::RedrawRequested => {
+          profiler.render();
+          return;
+        }
+        WindowEvent::Focused(focused) => {
+          // Track profiler window focus separately
+          self.profiler_window_focused = *focused;
+          return;
+        }
+        _ => {
+          profiler.handle_event(&event);
+          return;
         }
       }
     }
@@ -2448,10 +2447,10 @@ impl ApplicationHandler for Engine {
         // Render profiler window directly when game window has focus
         // (Windows won't deliver RedrawRequested to unfocused profiler window)
         #[cfg(feature = "profiler")]
-        if self.game_window_focused {
-          if let Some(ref mut profiler) = self.profiler_window {
-            profiler.render();
-          }
+        if self.game_window_focused
+          && let Some(ref mut profiler) = self.profiler_window
+        {
+          profiler.render();
         }
 
         // Calculate total frame time and FPS
@@ -2546,17 +2545,17 @@ impl ApplicationHandler for Engine {
 
     // Only request redraws for windows that have focus
     // (unfocused windows are handled manually in tick_frame to respect frame limiting)
-    if self.game_window_focused {
-      if let Some(window) = &self.window {
-        window.request_redraw();
-      }
+    if self.game_window_focused
+      && let Some(window) = &self.window
+    {
+      window.request_redraw();
     }
 
     #[cfg(feature = "profiler")]
-    if self.profiler_window_focused {
-      if let Some(ref profiler) = self.profiler_window {
-        profiler.request_redraw();
-      }
+    if self.profiler_window_focused
+      && let Some(ref profiler) = self.profiler_window
+    {
+      profiler.request_redraw();
     }
   }
 }

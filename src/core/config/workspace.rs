@@ -36,7 +36,6 @@
 //! master_volume = 1.0
 //! music_volume = 0.8
 //! sfx_volume = 1.0
-//! ignore_system_json = false  # Set to true to skip loading system.json
 //!
 //! [info]
 //! show_fps = false
@@ -199,11 +198,6 @@ pub struct SystemDefaults {
   pub sfx_volume: f32,
   /// Default show FPS setting (from [info] section)
   pub show_fps: bool,
-  /// When true, ignore system.json and only use Ryo.toml/engine defaults.
-  ///
-  /// This is useful for games that want deterministic startup behavior
-  /// without user-modified settings overriding developer defaults.
-  pub ignore_system_json: bool,
 }
 
 impl Default for SystemDefaults {
@@ -218,7 +212,6 @@ impl Default for SystemDefaults {
       music_volume: 1.0,
       sfx_volume: 1.0,
       show_fps: false,
-      ignore_system_json: false,
     }
   }
 }
@@ -286,8 +279,6 @@ struct SystemSection {
   master_volume: Option<f32>,
   music_volume: Option<f32>,
   sfx_volume: Option<f32>,
-  /// When true, ignore system.json and only use Ryo.toml/engine defaults
-  ignore_system_json: Option<bool>,
 }
 
 impl Workspace {
@@ -487,10 +478,6 @@ impl Workspace {
         .unwrap_or(engine_defaults.sfx_volume),
       // show_fps comes from [info] section but maps to system.json
       show_fps: info_section.show_fps.unwrap_or(engine_defaults.show_fps),
-      // ignore_system_json defaults to false (load system.json normally)
-      ignore_system_json: system_section
-        .ignore_system_json
-        .unwrap_or(engine_defaults.ignore_system_json),
     };
 
     // Game-specific env (pass through as-is)
@@ -801,7 +788,6 @@ mod tests {
     assert_eq!(config.system.resolution_height, 720);
     assert_eq!(config.system.master_volume, 0.8);
     assert!(!config.system.show_fps);
-    assert!(!config.system.ignore_system_json);
   }
 
   #[test]
