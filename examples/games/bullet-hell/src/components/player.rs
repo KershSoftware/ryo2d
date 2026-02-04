@@ -13,8 +13,8 @@ pub enum WallSide {
 pub struct Player {
   pub lives: u32,
   pub is_grounded: bool,
-  pub invincible_timer: f32,          // Temporary invincibility after hit
-  pub wall_sliding: Option<WallSide>, // Which wall player is sliding on (if any)
+  pub invincible_timer: f32,            // Temporary invincibility after hit
+  pub wall_sliding: Option<WallSide>,   // Which wall player is sliding on (if any)
   pub can_wall_jump: bool, // Whether player can wall jump (reset on ground/new wall contact)
   pub wall_jump_cooldown: f32, // Timer preventing horizontal input override after wall jump
   pub wall_slide_grace: f32, // Grace period to still wall jump after releasing wall direction

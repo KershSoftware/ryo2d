@@ -326,7 +326,12 @@ impl TrailRenderer {
       // (to avoid double-fading when both are active)
       if !trail.fades_alpha() && distances.is_none() {
         let age_alpha = trail.age_alpha(point.age);
-        color = Color::new(color.r, color.g, color.b, (color.a as f32 * age_alpha) as u8);
+        color = Color::new(
+          color.r,
+          color.g,
+          color.b,
+          (color.a as f32 * age_alpha) as u8,
+        );
       }
 
       // Trail points are already in world coordinates (from trail.update(x, y, dt))

@@ -141,6 +141,25 @@ impl Trail2D {
       .with_min_distance(1.0)
   }
 
+  /// Create a trail for fading laser effects.
+  ///
+  /// Consistent width with time-based fade. Perfect for laser fade-out effects
+  /// where you populate the trail with `populate_line()`, then disable recording
+  /// and let the lifetime cause the trail to fade and disappear.
+  ///
+  /// # Arguments
+  /// * `color` - Laser color
+  /// * `width` - Laser width in pixels
+  /// * `fade_time` - Time in seconds for the laser to fade out
+  pub fn fading_laser(color: Color, width: f32, fade_time: f32) -> Self {
+    Self::new(color, width)
+      .with_length(50)
+      .with_end_width(width)
+      .with_fade(true) // Enable fade for gradient effect
+      .with_lifetime(fade_time)
+      .with_min_distance(1.0)
+  }
+
   /// Set the maximum number of points in the trail.
   pub fn with_length(mut self, max_points: usize) -> Self {
     self.max_points = max_points.clamp(2, MAX_TRAIL_POINTS);
@@ -271,30 +290,83 @@ impl Trail2D {
     self.points.clear();
   }
 
+  /// Manually add a point to the front (newest) of the trail.
+  ///
+  /// This is useful for creating static trails like laser fade-out effects
+  /// where you want to populate the trail with specific points rather than
+  /// recording position history.
+  pub fn push_point(&mut self, x: f32, y: f32) {
+    self.points.push_front(TrailPoint::new(x, y));
+    while self.points.len() > self.max_points {
+      self.points.pop_back();
+    }
+  }
+
+  /// Manually add a point to the back (oldest) of the trail.
+  ///
+  /// Useful for building trails from start to end when populating
+  /// a laser or line effect.
+  pub fn push_point_back(&mut self, x: f32, y: f32) {
+    self.points.push_back(TrailPoint::new(x, y));
+    while self.points.len() > self.max_points {
+      self.points.pop_front();
+    }
+  }
+
+  /// Populate the trail with evenly spaced points along a line.
+  ///
+  /// Creates a trail from `start` to `end` with the specified number of points.
+  /// The trail will have `start` at the head (newest) and `end` at the tail (oldest).
+  /// This is perfect for creating laser fade-out effects.
+  ///
+  /// # Arguments
+  /// * `start_x`, `start_y` - Starting position (head of trail)
+  /// * `end_x`, `end_y` - Ending position (tail of trail)
+  /// * `num_points` - Number of points to create (minimum 2)
+  pub fn populate_line(
+    &mut self,
+    start_x: f32,
+    start_y: f32,
+    end_x: f32,
+    end_y: f32,
+    num_points: usize,
+  ) {
+    self.points.clear();
+    let num_points = num_points.max(2).min(self.max_points);
+
+    for i in 0..num_points {
+      let t = i as f32 / (num_points - 1) as f32;
+      let x = start_x + (end_x - start_x) * t;
+      let y = start_y + (end_y - start_y) * t;
+      self.points.push_back(TrailPoint::new(x, y));
+    }
+  }
+
   /// Update the trail with a new position.
   ///
   /// This should be called every frame with the entity's current position.
   /// Points are automatically added based on distance and time thresholds,
   /// and removed when they exceed the lifetime (if set).
+  ///
+  /// When `enabled` is false, points are still aged and removed (for fade-out effects),
+  /// but no new points are recorded. This allows trails to fade out gracefully after
+  /// an entity stops moving or a laser stops firing.
   pub fn update(&mut self, x: f32, y: f32, dt: f32) {
-    if !self.enabled {
-      return;
-    }
-
-    // Age existing points
+    // Age existing points (always, even when disabled for fade-out effects)
     for point in &mut self.points {
       point.age += dt;
     }
 
-    // Remove points that exceed lifetime
+    // Remove points that exceed lifetime (always, even when disabled)
     if let Some(max_age) = self.lifetime {
-      while self
-        .points
-        .back()
-        .is_some_and(|point| point.age > max_age)
-      {
+      while self.points.back().is_some_and(|point| point.age > max_age) {
         self.points.pop_back();
       }
+    }
+
+    // Only record new points when enabled
+    if !self.enabled {
+      return;
     }
 
     // Check if we should add a new point
