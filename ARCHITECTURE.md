@@ -501,6 +501,29 @@ Rapier Space: PIXELS_PER_METER = 100.0 (500 pixels = 5 meters)
 | `gilrs` | Gamepad input |
 | `arboard` | Clipboard integration |
 
+## Networking
+
+Client-server multiplayer with Listen Server support. See **[NETWORK_ARCHITECTURE.md](./NETWORK_ARCHITECTURE.md)** for complete documentation.
+
+**Quick Overview:**
+- **Transport**: UDP via renet (3 channels: Unreliable, ReliableOrdered, ReliableUnordered)
+- **Server Types**: NetworkServer (dedicated), ListenServer (player-hosted)
+- **Replication**: Generation-based delta sync with NetworkEntity, Authority, DirtyTracker
+- **RPC**: Type-safe remote procedure calls with RpcRegistry
+
+```
+┌─────────────────┐         ┌─────────────────┐
+│  ListenServer   │◄──UDP──►│  NetworkClient  │
+│  (host + serve) │         │   (players)     │
+└────────┬────────┘         └────────┬────────┘
+         │                           │
+         ▼                           ▼
+┌─────────────────────────────────────────────┐
+│  ReplicationManager + RpcRegistry           │
+│  (entity sync)         (game events)        │
+└─────────────────────────────────────────────┘
+```
+
 ## Additional Systems
 
 | System | Location | Purpose |
@@ -514,3 +537,4 @@ Rapier Space: PIXELS_PER_METER = 100.0 (500 pixels = 5 meters)
 | State Machine | `state_machine/` | Generic FSM utilities |
 | Proc Gen | `procgen/` | Procedural generation helpers |
 | Navigation | `navigation/` | Pathfinding utilities |
+| Networking | `network/` | Multiplayer (see [NETWORK_ARCHITECTURE.md](./NETWORK_ARCHITECTURE.md)) |
