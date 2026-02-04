@@ -1,0 +1,258 @@
+//! Built-in console commands
+//!
+//! Commands use a category:command format (e.g., `debug:fps`, `system:timescale`).
+//! Root-level commands (help, clear, quit, exit) don't require a category.
+
+use super::commands::{CommandRegistry, CommandResult};
+
+/// Register all built-in commands with the registry
+pub fn register_builtins(registry: &mut CommandRegistry) {
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Root-level commands (no category required)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Helper function to list commands by category
+  fn list_category_commands(ctx: &mut super::commands::CommandContext, prefix: &str) {
+    let mut commands: Vec<_> = ctx.commands.iter()
+      .filter(|cmd| cmd.name.starts_with(prefix))
+      .collect();
+
+    if commands.is_empty() {
+      ctx.console.print_system(format!("No {} commands available", prefix.trim_end_matches(':')));
+      return;
+    }
+
+    commands.sort_by(|a, b| a.name.cmp(&b.name));
+    ctx.console.print_system(format!("{} commands:", prefix.trim_end_matches(':')));
+    ctx.console.print_system("");
+    for cmd in commands {
+      let padded_name = format!("{:<20}", cmd.name);
+      // Show inactive status for game commands
+      let status = if !cmd.is_active { " (inactive)" } else { "" };
+      ctx.console.print(format!("  {} - {}{}", padded_name, cmd.description, status));
+    }
+  }
+
+  // Help command
+  registry.register("help", "List available commands or show help for a specific command", |args, ctx| {
+    if let Some(cmd_name) = args.first() {
+      // Look up specific command
+      if let Some(cmd) = ctx.commands.iter().find(|c| c.name == *cmd_name) {
+        ctx.console.print_system(format!("Command: {}", cmd.name));
+        // Show verbose description if available, otherwise show regular description
+        if let Some(verbose) = &cmd.verbose_description {
+          ctx.console.print(format!("  {}", verbose));
+        } else {
+          ctx.console.print(format!("  {}", cmd.description));
+        }
+        // Show active/inactive status for game commands
+        if cmd.name.starts_with("game:") {
+          if cmd.is_active {
+            ctx.console.print_system("  Status: Active");
+          } else {
+            ctx.console.print_system("  Status: Inactive (no effect in current context)");
+          }
+        }
+      } else {
+        ctx.console.print_error(format!("Unknown command: '{}'", cmd_name));
+        ctx.console.print_system("Type 'help' for available commands");
+      }
+    } else {
+      ctx.console.print_system("Available commands:");
+      ctx.console.print_system("");
+      ctx.console.print("  help [cmd]          - List commands or show specific help");
+      ctx.console.print("  clear               - Clear console output");
+      ctx.console.print("  quit / exit         - Exit the game");
+      ctx.console.print_system("");
+      ctx.console.print_system("debug:");
+      ctx.console.print("  debug:fps           - Toggle FPS display (F1)");
+      ctx.console.print("  debug:stats         - Toggle debug statistics overlay (F1)");
+      ctx.console.print("  debug:timing        - Toggle frame timing breakdown (F1)");
+      ctx.console.print("  debug:colliders     - Toggle collision visualization (F2)");
+      ctx.console.print("  debug:velocities    - Toggle velocity vectors (F3)");
+      ctx.console.print("  debug:origins       - Toggle entity origin points (F4)");
+      ctx.console.print_system("");
+      ctx.console.print_system("system:");
+      ctx.console.print("  system:timescale <n> - Set game time scale (1.0 = normal)");
+      ctx.console.print("  system:version       - Show engine version information");
+
+      // Dynamically list game: commands
+      let mut game_commands: Vec<_> = ctx.commands.iter()
+        .filter(|cmd| cmd.name.starts_with("game:"))
+        .collect();
+
+      if !game_commands.is_empty() {
+        game_commands.sort_by(|a, b| a.name.cmp(&b.name));
+        ctx.console.print_system("");
+        ctx.console.print_system("game:");
+        for cmd in game_commands {
+          // Format: pad name to 18 chars, then description, with inactive indicator
+          let padded_name = format!("{:<18}", cmd.name);
+          let status = if cmd.is_active { "" } else { " (inactive)" };
+          ctx.console.print(format!("  {} - {}{}", padded_name, cmd.description, status));
+        }
+      }
+
+      ctx.console.print_system("");
+      ctx.console.print_system("Type 'debug', 'system', or 'game' to list category commands");
+      ctx.console.print_system("Press ~ (tilde) to toggle console");
+      ctx.console.print_system("Press Escape or X to close console");
+      ctx.console.print_system("Use mouse wheel or Page Up/Down to scroll");
+    }
+    CommandResult::Ok
+  });
+
+  // Category listing commands
+  registry.register("debug", "List all debug commands", |_args, ctx| {
+    list_category_commands(ctx, "debug:");
+    CommandResult::Ok
+  });
+
+  registry.register("system", "List all system commands", |_args, ctx| {
+    list_category_commands(ctx, "system:");
+    CommandResult::Ok
+  });
+
+  registry.register("game", "List all game-specific commands", |_args, ctx| {
+    list_category_commands(ctx, "game:");
+    CommandResult::Ok
+  });
+
+  // Clear command
+  registry.register("clear", "Clear console output", |_args, ctx| {
+    ctx.console.clear();
+    CommandResult::Ok
+  });
+
+  // Quit commands
+  registry.register("quit", "Exit the game", |_args, ctx| {
+    ctx.quit_requested = true;
+    ctx.console.print_system("Shutting down...");
+    CommandResult::Quit
+  });
+
+  registry.register("exit", "Exit the game (alias for quit)", |_args, ctx| {
+    ctx.quit_requested = true;
+    ctx.console.print_system("Shutting down...");
+    CommandResult::Quit
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // debug: category - Debug visualization commands
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // FPS toggle (F1 cycles through overlays)
+  registry.register("debug:fps", "Toggle FPS display", |_args, ctx| {
+    ctx.debug_config.show_fps = !ctx.debug_config.show_fps;
+    if ctx.debug_config.show_fps {
+      ctx.console.print("FPS display enabled");
+    } else {
+      ctx.console.print("FPS display disabled");
+    }
+    CommandResult::Ok
+  });
+
+  // Stats command - show current debug stats (F1 cycles through overlays)
+  registry.register("debug:stats", "Toggle debug statistics overlay", |_args, ctx| {
+    ctx.debug_config.show_stats = !ctx.debug_config.show_stats;
+    if ctx.debug_config.show_stats {
+      ctx.console.print("Debug statistics visible");
+    } else {
+      ctx.console.print("Debug statistics hidden");
+    }
+    CommandResult::Ok
+  });
+
+  // Timing command - toggle frame timing breakdown (F1 cycles through overlays)
+  registry.register("debug:timing", "Toggle frame timing breakdown overlay", |_args, ctx| {
+    ctx.debug_config.show_frame_timing = !ctx.debug_config.show_frame_timing;
+    if ctx.debug_config.show_frame_timing {
+      ctx.console.print("Frame timing breakdown visible");
+    } else {
+      ctx.console.print("Frame timing breakdown hidden");
+    }
+    CommandResult::Ok
+  });
+
+  // Colliders toggle (F2)
+  registry.register("debug:colliders", "Toggle collision boundary visualization", |_args, ctx| {
+    ctx.debug_config.show_colliders = !ctx.debug_config.show_colliders;
+    if ctx.debug_config.show_colliders {
+      ctx.console.print("Collision boundaries visible");
+    } else {
+      ctx.console.print("Collision boundaries hidden");
+    }
+    CommandResult::Ok
+  });
+
+  // Velocities toggle (F3)
+  registry.register("debug:velocities", "Toggle velocity vector visualization", |_args, ctx| {
+    ctx.debug_config.show_velocities = !ctx.debug_config.show_velocities;
+    if ctx.debug_config.show_velocities {
+      ctx.console.print("Velocity vectors visible");
+    } else {
+      ctx.console.print("Velocity vectors hidden");
+    }
+    CommandResult::Ok
+  });
+
+  // Origins toggle (F4)
+  registry.register("debug:origins", "Toggle entity origin point visualization", |_args, ctx| {
+    ctx.debug_config.show_origins = !ctx.debug_config.show_origins;
+    if ctx.debug_config.show_origins {
+      ctx.console.print("Entity origins visible");
+    } else {
+      ctx.console.print("Entity origins hidden");
+    }
+    CommandResult::Ok
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // system: category - System/engine commands
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Time scale command
+  registry.register("system:timescale", "Set game time scale (1.0 = normal speed)", |args, ctx| {
+    if args.is_empty() {
+      ctx.console.print(format!("Current time scale: {:.2}", *ctx.time_scale));
+      return CommandResult::Ok;
+    }
+
+    match args[0].parse::<f32>() {
+      Ok(scale) => {
+        if scale < 0.0 {
+          ctx.console.print_error("Time scale cannot be negative");
+          return CommandResult::Error("Invalid time scale".to_string());
+        }
+        if scale > 10.0 {
+          ctx.console.print_error("Time scale cannot exceed 10.0");
+          return CommandResult::Error("Invalid time scale".to_string());
+        }
+        *ctx.time_scale = scale;
+        ctx.console.print(format!("Time scale set to {:.2}", scale));
+        CommandResult::Ok
+      }
+      Err(_) => {
+        ctx.console.print_error(format!("Invalid number: '{}'", args[0]));
+        ctx.console.print_system("Usage: system:timescale <number>");
+        CommandResult::Error("Invalid argument".to_string())
+      }
+    }
+  });
+
+  // Version/info command
+  registry.register("system:version", "Show engine and game version information", |_args, ctx| {
+    // Show game info if available
+    if let Some(name) = &ctx.game_name {
+      ctx.console.print(format!("{}", name));
+      if let Some(version) = &ctx.game_version {
+        ctx.console.print(format!("  Version: {}", version));
+      }
+      ctx.console.print("");
+    }
+    ctx.console.print("Ryo2D Game Engine");
+    ctx.console.print(format!("  Engine: {}", env!("CARGO_PKG_VERSION")));
+    ctx.console.print(format!("  Build:  {}", if cfg!(debug_assertions) { "Dev" } else { "Release" }));
+    CommandResult::Ok
+  });
+}

@@ -2650,6 +2650,14 @@ impl Scene for GameScene {
     self.screen_width = DESIGN_WIDTH;
     self.screen_height = DESIGN_HEIGHT;
 
+    // Register handler for game:reset command (declared in MenuScene)
+    // Handler is auto-cleaned when this scene exits
+    ctx.register_console_command("game:reset", |_args, cmd_ctx| {
+      cmd_ctx.console.print_system("Resetting game...");
+      shared::request_reset();
+      CommandResult::Ok
+    });
+
     // Load sound effects
     if let Some(audio) = &mut ctx.audio {
       let _ = audio.load_sound("enemy-spawn", "assets/enemy-spawn.wav");
@@ -2723,6 +2731,11 @@ impl Scene for GameScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    // Check for reset request from console command
+    if shared::take_reset_request() {
+      return SceneAction::Switch(Box::new(GameScene::new()));
+    }
+
     // Handle pause toggle (keyboard or gamepad Start button)
     // Use consume to prevent the same input from triggering multiple actions
     if ctx.input.key_pressed_and_consume(KeyCode::Escape)

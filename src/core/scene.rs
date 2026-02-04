@@ -32,6 +32,7 @@ use crate::profile_scope;
 use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::config::save::DisplayMode;
+use super::console::{CommandRegistry, CommandResult};
 use super::ecs::{Entity, Knockback, SquashAxis, SquashStretch, Vec2, World};
 use super::events::Events;
 use super::game::{TimeControl, WindowRequest};
@@ -89,6 +90,10 @@ pub struct SceneContext<'a> {
   pub profiling_enabled: bool,
   /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
   pub scale_factor: f64,
+  /// Console command registry for registering custom commands
+  pub(crate) command_registry: &'a mut CommandRegistry,
+  /// Unique scope ID for this context (used for command handler cleanup)
+  pub(crate) scope_id: u64,
 }
 
 impl<'a> SceneContext<'a> {
@@ -439,6 +444,73 @@ impl<'a> SceneContext<'a> {
         SquashStretch::new(intensity).with_decay_rate(decay_rate),
       );
     }
+  }
+
+  // ===========================================================================
+  // Developer Console
+  // ===========================================================================
+
+  /// Declare a game console command.
+  ///
+  /// Declared commands appear in help immediately but are "noop" until a handler
+  /// is registered. This can be called from any scene but is typically done
+  /// in the first scene or a setup scene.
+  ///
+  /// Note: Declarations are global and idempotent - calling this multiple times
+  /// with the same name just updates the description.
+  ///
+  /// # Arguments
+  ///
+  /// * `name` - The command name (should start with "game:" prefix)
+  /// * `description` - Brief description shown in command listings
+  /// * `verbose_description` - Optional detailed help shown for `help <command>`
+  pub fn declare_console_command(
+    &mut self,
+    name: impl Into<String>,
+    description: impl Into<String>,
+    verbose_description: Option<impl Into<String>>,
+  ) {
+    self.command_registry.declare(name, description, verbose_description);
+  }
+
+  /// Register a handler for a declared game command.
+  ///
+  /// The handler is scoped to this scene - it will be automatically cleaned up
+  /// when the scene exits. Commands must be declared first using
+  /// `declare_console_command` before registering handlers.
+  ///
+  /// # Arguments
+  ///
+  /// * `name` - The command name (must have been declared first)
+  /// * `handler` - The function to execute when the command is invoked
+  ///
+  /// # Returns
+  ///
+  /// `true` if the command was declared and handler was attached, `false` otherwise.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// fn on_enter(&mut self, ctx: &mut SceneContext) {
+  ///     // First, declare the command (typically done once in first scene)
+  ///     ctx.declare_console_command(
+  ///         "game:reset",
+  ///         "Reset the game",
+  ///         Some("Resets all game state. Only works during gameplay."),
+  ///     );
+  ///
+  ///     // Register handler - will be auto-cleaned when this scene exits
+  ///     ctx.register_console_command("game:reset", |_args, cmd_ctx| {
+  ///         cmd_ctx.console.print("Resetting game...");
+  ///         CommandResult::Ok
+  ///     });
+  /// }
+  /// ```
+  pub fn register_console_command<F>(&mut self, name: &str, handler: F) -> bool
+  where
+    F: Fn(&[&str], &mut super::console::CommandContext) -> CommandResult + Send + Sync + 'static,
+  {
+    self.command_registry.register_handler(name, self.scope_id, handler)
   }
 }
 
@@ -1413,6 +1485,10 @@ pub struct SceneGame {
   initialized: bool,
   /// Whether a scene requested to quit
   quit_requested: bool,
+  /// Counter for generating unique scope IDs
+  next_scope_id: u64,
+  /// Current scene's scope ID (for command handler cleanup)
+  current_scope_id: u64,
 }
 
 impl SceneGame {
@@ -1422,6 +1498,8 @@ impl SceneGame {
       manager: SceneManager::with_scene(initial_scene),
       initialized: false,
       quit_requested: false,
+      next_scope_id: 1, // Start at 1 (0 is reserved for game-level permanent scope)
+      current_scope_id: 0, // Will be set on first on_enter
     }
   }
 
@@ -1438,6 +1516,10 @@ impl SceneGame {
 
 impl Game for SceneGame {
   fn init(&mut self, ctx: &mut GameContext) {
+    // Assign scope ID for the initial scene
+    self.current_scope_id = self.next_scope_id;
+    self.next_scope_id += 1;
+
     // Convert GameContext to SceneContext and call on_enter for initial scene
     let mut scene_ctx = SceneContext {
       world: ctx.world,
@@ -1453,6 +1535,8 @@ impl Game for SceneGame {
       time_control: ctx.time_control,
       profiling_enabled: ctx.profiling_enabled,
       scale_factor: ctx.scale_factor,
+      command_registry: ctx.command_registry,
+      scope_id: self.current_scope_id,
     };
 
     // Call on_enter for the initial scene
@@ -1493,6 +1577,8 @@ impl Game for SceneGame {
       time_control: ctx.time_control,
       profiling_enabled: ctx.profiling_enabled,
       scale_factor: ctx.scale_factor,
+      command_registry: ctx.command_registry,
+      scope_id: self.current_scope_id,
     };
 
     // Update any active transitions first
@@ -1501,7 +1587,36 @@ impl Game for SceneGame {
     // Only update scenes if not in the middle of a transition
     if !self.manager.is_transitioning() {
       let action = self.manager.update(&mut scene_ctx, dt);
+
+      // Check if this action will change scenes (requires scope cleanup)
+      let will_change_scene = matches!(
+        action,
+        SceneAction::Pop | SceneAction::Switch(_) | SceneAction::Reset(_) |
+        SceneAction::PopWith(_) | SceneAction::SwitchWith(_, _) | SceneAction::ResetWith(_, _)
+      );
+
+      // Remember old scope if scene will change
+      let old_scope_id = if will_change_scene {
+        Some(self.current_scope_id)
+      } else {
+        None
+      };
+
+      // Generate new scope for incoming scene
+      if will_change_scene {
+        self.current_scope_id = self.next_scope_id;
+        self.next_scope_id += 1;
+        // Update context with new scope
+        scene_ctx.scope_id = self.current_scope_id;
+      }
+
       let should_continue = self.manager.handle_action(action, &mut scene_ctx);
+
+      // Clean up old scope's command handlers
+      if let Some(old_scope) = old_scope_id {
+        scene_ctx.command_registry.clear_scope(old_scope);
+      }
+
       if !should_continue {
         self.quit_requested = true;
       }

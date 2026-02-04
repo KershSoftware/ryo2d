@@ -1182,6 +1182,7 @@ mod tests {
       music_volume: 0.7,
       sfx_volume: 0.9,
       show_fps: true,
+      dev_console: false,
     };
 
     let state = SystemState::from_defaults(&defaults);
@@ -1298,6 +1299,7 @@ mod tests {
       music_volume: 0.8,
       sfx_volume: 0.7,
       show_fps: true,
+      dev_console: false,
     };
 
     assert!(!manager.has_system_save());

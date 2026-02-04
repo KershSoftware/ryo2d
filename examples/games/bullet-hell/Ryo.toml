@@ -3,6 +3,7 @@
 
 [project]
 name = "Bullet Hell"
+version = "0.1.0"
 
 [info]
 title = "Bullet Hell - Ryo2D"
@@ -15,6 +16,7 @@ resolution_width = 1920
 resolution_height = 1080
 display_mode = "windowed"
 vsync = false
+console = true
 
 [paths]
 # Entry point is in this directory (not in src/)

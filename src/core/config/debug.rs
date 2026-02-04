@@ -242,6 +242,9 @@ pub struct DebugConfig {
   /// Defaults to true in debug builds, false in release builds.
   /// Set to true in release builds to enable dev tools for testing.
   pub dev_window_keys: bool,
+  /// Whether to enable the developer console (toggled with backtick key).
+  /// Defaults to true in debug builds, false in release builds.
+  pub dev_console: bool,
 }
 
 impl Default for DebugConfig {
@@ -261,6 +264,11 @@ impl Default for DebugConfig {
       dev_window_keys: true,
       #[cfg(not(debug_assertions))]
       dev_window_keys: false,
+      // Dev console enabled by default in debug builds only
+      #[cfg(debug_assertions)]
+      dev_console: true,
+      #[cfg(not(debug_assertions))]
+      dev_console: false,
     }
   }
 }

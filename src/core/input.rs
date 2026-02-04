@@ -127,6 +127,8 @@ pub struct InputState {
   ime_preedit_cursor: Option<(usize, usize)>,
   /// Whether IME is currently enabled
   ime_enabled: bool,
+  /// Whether IME committed text this frame (used to prevent duplicate input from keyboard events)
+  ime_committed_this_frame: bool,
 
   // Gamepad state (first connected gamepad only)
   /// Whether a gamepad is currently connected
@@ -185,6 +187,7 @@ impl InputState {
     self.scroll_delta_y = 0.0;
     // Clear committed text, but keep preedit (it persists until cleared by IME)
     self.text_input.clear();
+    self.ime_committed_this_frame = false;
     // Clear per-frame gamepad state
     self.gamepad_buttons_pressed.clear();
     self.gamepad_buttons_released.clear();
@@ -269,6 +272,20 @@ impl InputState {
   /// Consume a gamepad button press without checking if it was pressed.
   pub fn consume_gamepad_button_press(&mut self, button: GamepadButton) {
     self.gamepad_buttons_pressed.remove(&button);
+  }
+
+  /// Clear all keyboard state for this frame.
+  ///
+  /// This prevents any keyboard input from reaching systems that check input after this call.
+  /// Used by the developer console to block game input while typing.
+  ///
+  /// Clears: pressed keys, released keys, repeated keys, held keys, and text input.
+  pub fn clear_keyboard_state(&mut self) {
+    self.keys_pressed.clear();
+    self.keys_released.clear();
+    self.keys_repeated.clear();
+    self.keys_down.clear();
+    self.text_input.clear();
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -473,6 +490,7 @@ impl InputState {
   /// Handle IME commit (finalized text ready to insert)
   pub(crate) fn handle_ime_commit(&mut self, text: String) {
     self.text_input.push_str(&text);
+    self.ime_committed_this_frame = true;
     // Preedit should be cleared by winit before commit, but ensure it's clear
     self.ime_preedit.clear();
     self.ime_preedit_cursor = None;
@@ -482,6 +500,11 @@ impl InputState {
   ///
   /// This is used for regular character input when IME is not composing.
   pub(crate) fn handle_text_input(&mut self, text: &str) {
+    // Skip keyboard text input when IME is enabled - let IME handle all text
+    // This prevents double input on Windows where both keyboard and IME events fire
+    if self.ime_enabled {
+      return;
+    }
     // Only add text if not currently in IME composition mode
     if self.ime_preedit.is_empty() {
       self.text_input.push_str(text);

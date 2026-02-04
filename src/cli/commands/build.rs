@@ -59,6 +59,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     .env("RYO_EMBED_MASTER_VOLUME", system.master_volume.to_string())
     .env("RYO_EMBED_MUSIC_VOLUME", system.music_volume.to_string())
     .env("RYO_EMBED_SFX_VOLUME", system.sfx_volume.to_string())
+    .env("RYO_EMBED_CONSOLE", system.dev_console.to_string())
     // [info] section values (stored in system for embedding)
     .env("RYO_EMBED_SHOW_FPS", system.show_fps.to_string())
     .env("RYO_EMBED_TITLE", &system.title)

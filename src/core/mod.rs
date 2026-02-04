@@ -38,7 +38,8 @@ pub mod config;
 // Profiling instrumentation
 pub mod profiler;
 
-// Development tools - logging and dev windows
+// Development tools - logging, dev windows, and console
+pub mod console;
 pub mod dev_log;
 pub mod windows;
 

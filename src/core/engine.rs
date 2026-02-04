@@ -14,6 +14,9 @@ use super::config::{
   self as debug, DebugConfig, DebugStats, DisplayMode, FrameTimings, OverlayMode,
   SmoothedDebugStats, SmoothedFrameTimings,
 };
+use super::console::{
+  CommandContext, CommandRegistry, CommandResult, ConsoleState, register_builtins,
+};
 use super::ecs::{
   Entity, Knockback, RenderStyle, Renderable, SpriteShader, SquashStretch, Transform, Tween,
   TweenSequence, Velocity, World, WorldTransform, YSort,
@@ -374,6 +377,16 @@ pub struct Engine {
   scale_factor: f64,
   // Computed UI scale factor (from config or auto-detected from DPI)
   ui_scale: u32,
+  // Developer console state
+  console_state: ConsoleState,
+  // Console command registry
+  command_registry: CommandRegistry,
+  // Whether console requested quit
+  console_quit_requested: bool,
+  // Game name (from Ryo.toml [project] section)
+  game_name: Option<String>,
+  // Game version (from Ryo.toml [project] section)
+  game_version: Option<String>,
 }
 
 impl Engine {
@@ -607,6 +620,8 @@ impl Engine {
     sfx_volume: f32,
     disable_debug_keys: bool,
     enable_profiling: bool,
+    game_name: Option<String>,
+    game_version: Option<String>,
   ) -> Self {
     let world = World::new();
     let camera = Camera::centered_at(
@@ -680,6 +695,11 @@ impl Engine {
     // Extract ui_scale before moving config
     let initial_ui_scale = config.ui_scale.unwrap_or(1);
 
+    // Initialize developer console with built-in commands
+    let console_state = ConsoleState::new();
+    let mut command_registry = CommandRegistry::new();
+    register_builtins(&mut command_registry);
+
     Engine {
       config,
       window: None,
@@ -735,6 +755,11 @@ impl Engine {
       pending_toggle_borderless: false,
       scale_factor: 1.0,          // Updated when window is created
       ui_scale: initial_ui_scale, // Updated when window is created if auto
+      console_state,
+      command_registry,
+      console_quit_requested: false,
+      game_name,
+      game_version,
     }
   }
 
@@ -769,6 +794,7 @@ impl Engine {
       config.width, config.height, config.target_fps
     );
     println!();
+    println!("  `      Developer console");
     println!("  F1-F4  Debug overlays");
     println!("  F5     Toggle borderless");
     println!("  F9     Logger");
@@ -1504,6 +1530,8 @@ impl Engine {
         time_control: &mut self.time_control,
         profiling_enabled: self.profiling_enabled,
         scale_factor: self.scale_factor,
+        command_registry: &mut self.command_registry,
+        scope_id: 0, // Game-level scope (permanent)
       };
 
       // Call user's update function
@@ -2159,6 +2187,11 @@ impl Engine {
         debug::render_frame_timing(&mut ui_ctx, &self.smoothed_timings, frame_height);
       }
 
+      // Render developer console on top of everything
+      self
+        .console_state
+        .render(&mut ui_ctx, frame_width, frame_height);
+
       self.game = Some(game);
     }
 
@@ -2356,6 +2389,8 @@ impl ApplicationHandler for Engine {
           time_control: &mut self.time_control,
           profiling_enabled: self.profiling_enabled,
           scale_factor: self.scale_factor,
+          command_registry: &mut self.command_registry,
+          scope_id: 0, // Game-level scope (permanent)
         };
         game.init(&mut ctx);
         self.game = Some(game);
@@ -2599,6 +2634,12 @@ impl ApplicationHandler for Engine {
           }
         }
 
+        // Dev console toggle (backtick/grave key)
+        if self.config.debug.dev_console && self.input.key_pressed(KeyCode::Backquote) {
+          self.console_state.toggle();
+          self.input.consume_key(KeyCode::Backquote);
+        }
+
         // Handle dev window keys (F9-F10)
         // These are separate from debug_keys_enabled and controlled by dev_window_keys
         if self.config.debug.dev_window_keys {
@@ -2678,6 +2719,47 @@ impl ApplicationHandler for Engine {
         // Update camera shake with real (unscaled) dt
         self.camera.update_shake(real_dt);
 
+        // Update developer console (cursor blink, etc.)
+        self.console_state.update(real_dt);
+
+        // Handle console input when visible
+        if self.console_state.visible {
+          // Console handles its own input and returns command if submitted
+          if let Some(command_str) = self.console_state.handle_input(&mut self.input) {
+            // Execute the command
+            let commands = self.command_registry.command_info_list();
+            let mut cmd_ctx = CommandContext {
+              console: &mut self.console_state,
+              debug_config: &mut self.config.debug,
+              quit_requested: false,
+              time_scale: &mut self.time_control.time_scale,
+              commands,
+              game_name: self.game_name.clone(),
+              game_version: self.game_version.clone(),
+            };
+
+            let result = self.command_registry.execute(&command_str, &mut cmd_ctx);
+
+            // Handle quit request from console
+            if matches!(result, CommandResult::Quit) || cmd_ctx.quit_requested {
+              self.console_quit_requested = true;
+            }
+          }
+
+          // Only consume keyboard input when console is FOCUSED
+          // This allows playing the game with the console open but unfocused
+          if self.console_state.is_focused() {
+            self.input.clear_keyboard_state();
+          }
+        }
+
+        // Update cursor based on console state (resize handle hover, etc.)
+        // This runs even when console is closed to reset the cursor properly
+        let (mouse_x, mouse_y) = self.input.mouse_position();
+        if let Some(cursor_style) = self.console_state.desired_cursor(mouse_x, mouse_y) {
+          self.cursor_request.cursor = Some(cursor_style);
+        }
+
         // Fixed timestep update loop (includes game logic + physics)
         // Use a block to limit the profile_scope lifetime
         let mut did_update = false;
@@ -2736,8 +2818,10 @@ impl ApplicationHandler for Engine {
           }
         } // update scope ends here
 
-        // Check if game wants to quit
-        if self.game.as_ref().map(|g| g.should_quit()).unwrap_or(false) {
+        // Check if game or console wants to quit
+        if self.game.as_ref().map(|g| g.should_quit()).unwrap_or(false)
+          || self.console_quit_requested
+        {
           event_loop.exit();
           return;
         }
@@ -3640,6 +3724,8 @@ impl EngineBuilder {
     let display_mode_set = self.display_mode_set;
     let mut disable_debug_keys = self.disable_debug_keys;
     let mut enable_profiling = true; // Default to true in dev builds
+    let mut game_name: Option<String> = None;
+    let mut game_version: Option<String> = None;
 
     // Priority chain for configuration:
     // 1. Explicit builder calls (highest) - already in self.config
@@ -3710,12 +3796,21 @@ impl EngineBuilder {
           _ => DisplayMode::Windowed,
         };
       }
+      // Developer console (from [system] section)
+      if let Some(v) = option_env!("RYO_EMBED_CONSOLE") {
+        config.debug.dev_console = v.parse().unwrap_or(false);
+      }
     } else if let Ok(workspace) = super::config::Workspace::discover() {
       // Fall back to runtime workspace discovery (development mode)
-      let debug = &workspace.config().debug;
-      let info = &workspace.config().info;
-      let system = &workspace.config().system;
-      let release = &workspace.config().release;
+      let wconfig = workspace.config();
+      let debug = &wconfig.debug;
+      let info = &wconfig.info;
+      let system = &wconfig.system;
+      let release = &wconfig.release;
+
+      // Load game info from [project] section
+      game_name = Some(wconfig.name.clone());
+      game_version = wconfig.version.clone();
 
       // Load debug settings
       config.debug.show_colliders = debug.show_colliders;
@@ -3726,6 +3821,7 @@ impl EngineBuilder {
       config.debug.puffin_profiler = debug.puffin_profiler;
       config.debug.logger_window = debug.logger_window;
       config.debug.dev_window_keys = debug.dev_window_keys;
+      config.debug.dev_console = system.dev_console; // From [system] section for release build support
       disable_debug_keys = debug.disable_debug_keys;
       enable_profiling = debug.enable_profiling;
 
@@ -3775,6 +3871,8 @@ impl EngineBuilder {
       sfx_volume,
       disable_debug_keys,
       enable_profiling,
+      game_name,
+      game_version,
     )
   }
 }

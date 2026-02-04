@@ -6,6 +6,7 @@
 use super::asset::{AssetManager, SpriteHandle};
 use super::audio::AudioManager;
 use super::config::save::DisplayMode;
+use super::console::{CommandRegistry, CommandResult};
 use super::ecs::World;
 use super::events::Events;
 use super::graphics::{BatchCollector, Camera, SpriteGpuRenderer};
@@ -137,6 +138,11 @@ pub struct GameContext<'a> {
   pub profiling_enabled: bool,
   /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
   pub scale_factor: f64,
+  /// Console command registry for registering custom commands
+  pub(crate) command_registry: &'a mut CommandRegistry,
+  /// Unique scope ID for this context (0 = game level, permanent)
+  #[allow(dead_code)]
+  pub(crate) scope_id: u64,
 }
 
 impl<'a> GameContext<'a> {
@@ -399,6 +405,86 @@ impl<'a> GameContext<'a> {
     let hotspot_x = (sprite.width() / 2) as u16;
     let hotspot_y = (sprite.height() / 2) as u16;
     self.set_custom_cursor(sprite, hotspot_x, hotspot_y);
+  }
+
+  // ===========================================================================
+  // Developer Console
+  // ===========================================================================
+
+  /// Declare a game console command.
+  ///
+  /// Declared commands appear in help immediately but are "noop" until a handler
+  /// is registered. This should be called at game initialization to define all
+  /// game commands that will be available.
+  ///
+  /// # Arguments
+  ///
+  /// * `name` - The command name (should start with "game:" prefix)
+  /// * `description` - Brief description shown in command listings
+  /// * `verbose_description` - Optional detailed help shown for `help <command>`
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// fn init(&mut self, ctx: &mut GameContext) {
+  ///     // Declare all game commands at startup
+  ///     ctx.declare_console_command(
+  ///         "game:reset",
+  ///         "Reset the game to initial state",
+  ///         Some("Resets all game state including score, player position, and enemies. \
+  ///               Only available during gameplay."),
+  ///     );
+  ///     ctx.declare_console_command(
+  ///         "game:godmode",
+  ///         "Toggle invincibility",
+  ///         None,
+  ///     );
+  /// }
+  /// ```
+  pub fn declare_console_command(
+    &mut self,
+    name: impl Into<String>,
+    description: impl Into<String>,
+    verbose_description: Option<impl Into<String>>,
+  ) {
+    self.command_registry.declare(name, description, verbose_description);
+  }
+
+  /// Register a handler for a declared game command.
+  ///
+  /// The handler will remain active for the lifetime of the game.
+  /// For scene-specific handlers that should be cleaned up, use
+  /// `SceneContext::register_console_command` instead.
+  ///
+  /// # Arguments
+  ///
+  /// * `name` - The command name (must have been declared first)
+  /// * `handler` - The function to execute when the command is invoked
+  ///
+  /// # Returns
+  ///
+  /// `true` if the command was declared and handler was attached, `false` otherwise.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// fn init(&mut self, ctx: &mut GameContext) {
+  ///     // First declare the command
+  ///     ctx.declare_console_command("game:godmode", "Toggle invincibility", None);
+  ///
+  ///     // Then register a permanent handler
+  ///     ctx.register_console_command("game:godmode", |_args, cmd_ctx| {
+  ///         cmd_ctx.console.print("God mode toggled");
+  ///         CommandResult::Ok
+  ///     });
+  /// }
+  /// ```
+  pub fn register_console_command<F>(&mut self, name: &str, handler: F) -> bool
+  where
+    F: Fn(&[&str], &mut super::console::CommandContext) -> CommandResult + Send + Sync + 'static,
+  {
+    // Game-level scope uses scope_id = 0 (permanent, never cleaned up)
+    self.command_registry.register_handler(name, 0, handler)
   }
 }
 

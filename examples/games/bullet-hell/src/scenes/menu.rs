@@ -111,6 +111,13 @@ impl Scene for MenuScene {
     ctx.world.clear();
     self.best_time = load_best_time();
 
+    // Declare game commands (idempotent - can be called multiple times)
+    ctx.declare_console_command(
+      "game:reset",
+      "Reset the game to initial state",
+      Some("Resets all game state including score, player position, and enemies. Only available during gameplay."),
+    );
+
     // Sync parallax background with shared time (persists across scenes)
     self
       .background

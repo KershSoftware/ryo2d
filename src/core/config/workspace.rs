@@ -36,6 +36,7 @@
 //! master_volume = 1.0
 //! music_volume = 0.8
 //! sfx_volume = 1.0
+//! console = true  # Enable developer console (works in debug and release)
 //!
 //! [info]
 //! show_fps = false
@@ -94,6 +95,8 @@ pub struct Workspace {
 pub struct WorkspaceConfig {
   /// Project name (defaults to directory name)
   pub name: String,
+  /// Project version (optional, from [project] section)
+  pub version: Option<String>,
   /// Path to entry point relative to workspace root
   pub entry_point: PathBuf,
   /// Path to save data directory relative to workspace root
@@ -126,6 +129,10 @@ pub struct DebugConfig {
   pub show_origins: bool,
   /// Whether to display frame timing breakdown
   pub show_frame_timing: bool,
+  /// Whether to display debug statistics overlay
+  pub show_stats: bool,
+  /// Whether to display FPS counter
+  pub show_fps: bool,
   /// Whether to disable F1-F4 debug key toggles
   pub disable_debug_keys: bool,
   /// Whether to enable detailed profiling measurements (per-phase timing, slow frame warnings)
@@ -146,6 +153,8 @@ impl Default for DebugConfig {
       show_velocities: false,
       show_origins: false,
       show_frame_timing: false,
+      show_stats: false,
+      show_fps: false,
       disable_debug_keys: false,
       enable_profiling: true, // Enabled by default in dev builds
       puffin_profiler: false, // Disabled by default (requires explicit opt-in)
@@ -209,6 +218,9 @@ pub struct SystemDefaults {
   pub sfx_volume: f32,
   /// Default show FPS setting (from [info] section)
   pub show_fps: bool,
+  /// Whether to enable the developer console (toggled with backtick key).
+  /// Unlike debug settings, this is available in both debug and release builds.
+  pub dev_console: bool,
 }
 
 impl Default for SystemDefaults {
@@ -223,6 +235,7 @@ impl Default for SystemDefaults {
       music_volume: 1.0,
       sfx_volume: 1.0,
       show_fps: false,
+      dev_console: false, // Disabled by default, enable in Ryo.toml [system] section
     }
   }
 }
@@ -244,6 +257,7 @@ struct RyoToml {
 #[derive(Debug, Deserialize, Default)]
 struct ProjectSection {
   name: Option<String>,
+  version: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -292,6 +306,8 @@ struct SystemSection {
   master_volume: Option<f32>,
   music_volume: Option<f32>,
   sfx_volume: Option<f32>,
+  /// Whether to enable the developer console (toggled with backtick key)
+  console: Option<bool>,
 }
 
 impl Workspace {
@@ -445,6 +461,8 @@ impl Workspace {
       show_velocities: debug_section.show_velocities.unwrap_or(false),
       show_origins: debug_section.show_origins.unwrap_or(false),
       show_frame_timing: debug_section.show_frame_timing.unwrap_or(false),
+      show_stats: false,                                                // Always off by default
+      show_fps: info_section.show_fps.unwrap_or(false),                 // From [info] section
       disable_debug_keys: debug_section.disable_debug_keys.unwrap_or(false),
       enable_profiling: debug_section.enable_profiling.unwrap_or(true), // Default true in dev
       puffin_profiler: debug_section.puffin_profiler.unwrap_or(false),  // Default false (opt-in)
@@ -501,6 +519,10 @@ impl Workspace {
         .unwrap_or(engine_defaults.sfx_volume),
       // show_fps comes from [info] section but maps to system.json
       show_fps: info_section.show_fps.unwrap_or(engine_defaults.show_fps),
+      // console is in [system] section so it works in both debug and release builds
+      dev_console: system_section
+        .console
+        .unwrap_or(engine_defaults.dev_console),
     };
 
     // Game-specific env (pass through as-is)
@@ -513,6 +535,7 @@ impl Workspace {
 
     Ok(WorkspaceConfig {
       name,
+      version: project.version,
       entry_point,
       save_data,
       assets,
@@ -620,6 +643,7 @@ impl Default for WorkspaceConfig {
   fn default() -> Self {
     WorkspaceConfig {
       name: "unnamed".to_string(),
+      version: None,
       entry_point: PathBuf::from("src/main.rs"),
       save_data: PathBuf::from("data"),
       assets: PathBuf::from("assets"),
