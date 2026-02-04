@@ -39,7 +39,6 @@ use super::systems::{AnimationSystem, TweenSystem};
 use super::timing::TimeState;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
 use super::ui::{BitmapFont, Color, UiContext, create_debug_font};
-use crate::core::dev_log::set_frame;
 use crate::profile_scope;
 use crate::{engine_debug, engine_error, engine_info, engine_warn};
 

@@ -145,6 +145,12 @@ impl DropShadowsScene {
 }
 
 impl Scene for DropShadowsScene {
+  fn on_exit(&mut self, ctx: &mut SceneContext) {
+    // Clean up all entities when leaving scene
+    ctx.world.clear();
+    self.sprites.clear();
+  }
+
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let (w, h) = ctx.screen_size();
     self.screen_w = w;

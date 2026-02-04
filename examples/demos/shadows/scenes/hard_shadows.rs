@@ -135,6 +135,14 @@ impl HardShadowsScene {
 }
 
 impl Scene for HardShadowsScene {
+  fn on_exit(&mut self, ctx: &mut SceneContext) {
+    // Clean up all entities when leaving scene
+    ctx.world.clear();
+    self.placed_occluders.clear();
+    self.static_occluders.clear();
+    self.light_entity = None;
+  }
+
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let (w, h) = ctx.screen_size();
     self.screen_w = w;
