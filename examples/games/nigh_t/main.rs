@@ -16,6 +16,7 @@ fn main() {
     .resolution(1920, 1080)
     .display_mode(DisplayMode::BorderlessFullscreen)
     .fps(60)
+    .ui_scale(None) // Auto-detect from DPI for HiDPI display support
     .with_scene(MainMenuScene::new())
     .build();
 

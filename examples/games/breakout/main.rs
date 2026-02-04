@@ -47,6 +47,7 @@ fn main() {
     .resolution(1280, 720) // Fixed resolution - game uses hardcoded wall positions
     .fps(144)
     .physics_hz(120)
+    .ui_scale(None) // Auto-detect from DPI for HiDPI display support
     .with_scene(MenuScene::new())
     .with_system_state_overrides() // Apply audio overrides from system.json
     .build();

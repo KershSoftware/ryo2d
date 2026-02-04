@@ -62,7 +62,11 @@ impl EasingShowcase {
       // Row 8: Elastic
       EasingBox::new("InElastic", Ease::InElastic, Color::rgb(255, 100, 200)),
       EasingBox::new("OutElastic", Ease::OutElastic, Color::rgb(200, 255, 100)),
-      EasingBox::new("InOutElastic", Ease::InOutElastic, Color::rgb(100, 200, 255)),
+      EasingBox::new(
+        "InOutElastic",
+        Ease::InOutElastic,
+        Color::rgb(100, 200, 255),
+      ),
       // Row 9: Bounce
       EasingBox::new("InBounce", Ease::InBounce, Color::rgb(255, 255, 100)),
       EasingBox::new("OutBounce", Ease::OutBounce, Color::rgb(100, 255, 255)),
@@ -127,13 +131,21 @@ impl Scene for EasingShowcase {
     let screen_h = screen_h as f32;
 
     // Dark background
-    ui.draw_rect(Rect::new(0.0, 0.0, screen_w, screen_h), Color::rgb(20, 20, 30));
+    ui.draw_rect(
+      Rect::new(0.0, 0.0, screen_w, screen_h),
+      Color::rgb(20, 20, 30),
+    );
 
     // Title and instructions
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
 
-    ui.draw_text("Easing Showcase - All 25 Functions", 10.0, 10.0, text_accent);
+    ui.draw_text(
+      "Easing Showcase - All 25 Functions",
+      10.0,
+      10.0,
+      text_accent,
+    );
     ui.draw_text(
       "Space: Restart | A: Toggle Auto | ESC/Backspace: Back",
       10.0,

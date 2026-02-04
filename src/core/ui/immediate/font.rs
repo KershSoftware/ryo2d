@@ -207,6 +207,16 @@ impl BitmapFont {
     (char_count * self.char_width as i32 + total_spacing).max(0) as u32
   }
 
+  /// Calculate the pixel width of a string at a given scale.
+  pub fn text_width_scaled(&self, text: &str, scale: u32) -> u32 {
+    self.text_width(text) * scale
+  }
+
+  /// Get character dimensions at a given scale.
+  pub fn char_size_scaled(&self, scale: u32) -> (u32, u32) {
+    (self.char_width * scale, self.char_height * scale)
+  }
+
   /// Calculate the pixel dimensions of a multi-line string.
   pub fn text_size(&self, text: &str) -> (u32, u32) {
     let lines: Vec<&str> = text.lines().collect();
@@ -432,6 +442,335 @@ impl BitmapFont {
       self.draw_char(frame, frame_width, frame_height, ch, cursor_x, y, color);
       cursor_x += advance;
     }
+  }
+
+  /// Draw a string to the frame buffer with integer scaling (nearest-neighbor).
+  ///
+  /// This renders text at `scale`x size using nearest-neighbor interpolation,
+  /// preserving the crisp pixel-art aesthetic. Useful for HiDPI displays.
+  ///
+  /// # Arguments
+  /// * `frame` - The RGBA frame buffer
+  /// * `frame_width` - Width of the frame buffer in pixels
+  /// * `frame_height` - Height of the frame buffer in pixels
+  /// * `text` - The text to draw
+  /// * `x` - X position (in scaled pixels)
+  /// * `y` - Y position (in scaled pixels)
+  /// * `color` - Text color
+  /// * `scale` - Integer scale factor (1 = normal, 2 = double size, etc.)
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_text_scaled(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Color,
+    scale: u32,
+  ) {
+    if scale <= 1 {
+      return self.draw_text(frame, frame_width, frame_height, text, x, y, color);
+    }
+
+    let mut cursor_x = x;
+    let advance = (self.char_width as i32 + self.spacing) * scale as i32;
+
+    for ch in text.chars() {
+      if ch == '\n' {
+        continue;
+      }
+      self.draw_char_scaled(
+        frame,
+        frame_width,
+        frame_height,
+        ch,
+        cursor_x,
+        y,
+        color,
+        scale,
+      );
+      cursor_x += advance;
+    }
+  }
+
+  /// Draw a single character with integer scaling (nearest-neighbor).
+  ///
+  /// Returns the scaled character width for cursor advancement.
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_char_scaled(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    ch: char,
+    x: i32,
+    y: i32,
+    color: Color,
+    scale: u32,
+  ) -> u32 {
+    if scale <= 1 {
+      return self.draw_char(frame, frame_width, frame_height, ch, x, y, color);
+    }
+
+    let ascii = ch as u8;
+
+    // Skip characters outside our range
+    if ascii < self.first_char || ascii > self.last_char {
+      return self.char_width * scale;
+    }
+
+    let char_index = (ascii - self.first_char) as u32;
+    let atlas_col = char_index % self.chars_per_row;
+    let atlas_row = char_index / self.chars_per_row;
+
+    let src_x = atlas_col * self.char_width;
+    let src_y = atlas_row * self.char_height;
+
+    // Bounds checking
+    let frame_w = frame_width as i32;
+    let frame_h = frame_height as i32;
+    let char_w = self.char_width as i32;
+    let char_h = self.char_height as i32;
+    let scale_i = scale as i32;
+
+    // Draw each source pixel scaled up
+    for cy in 0..char_h {
+      for cx in 0..char_w {
+        // Sample from atlas
+        let atlas_px = ((src_y + cy as u32) * self.atlas_width + (src_x + cx as u32)) as usize * 4;
+        if atlas_px + 3 >= self.atlas_data.len() {
+          continue;
+        }
+
+        let src_a = self.atlas_data[atlas_px + 3];
+        if src_a == 0 {
+          continue; // Fully transparent
+        }
+
+        // Use atlas alpha and apply tint color
+        let alpha = src_a as u16 * color.a as u16 / 255;
+        if alpha == 0 {
+          continue;
+        }
+
+        let inv_alpha = 255 - alpha;
+
+        // Draw scaled pixel (scale x scale block)
+        for sy in 0..scale_i {
+          let dst_y = y + cy * scale_i + sy;
+          if dst_y < 0 || dst_y >= frame_h {
+            continue;
+          }
+
+          for sx in 0..scale_i {
+            let dst_x = x + cx * scale_i + sx;
+            if dst_x < 0 || dst_x >= frame_w {
+              continue;
+            }
+
+            let dst_idx = (dst_y as usize * frame_width as usize + dst_x as usize) * 4;
+            if dst_idx + 3 >= frame.len() {
+              continue;
+            }
+
+            let dst_r = frame[dst_idx] as u16;
+            let dst_g = frame[dst_idx + 1] as u16;
+            let dst_b = frame[dst_idx + 2] as u16;
+
+            frame[dst_idx] = ((color.r as u16 * alpha + dst_r * inv_alpha) / 255) as u8;
+            frame[dst_idx + 1] = ((color.g as u16 * alpha + dst_g * inv_alpha) / 255) as u8;
+            frame[dst_idx + 2] = ((color.b as u16 * alpha + dst_b * inv_alpha) / 255) as u8;
+            frame[dst_idx + 3] = 255;
+          }
+        }
+      }
+    }
+
+    self.char_width * scale
+  }
+
+  /// Draw a string to the frame buffer with integer scaling and per-pixel clipping.
+  ///
+  /// Combines scaled rendering with clipping for scroll views and UI containers.
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_text_scaled_clipped(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Color,
+    scale: u32,
+    clip_x: i32,
+    clip_y: i32,
+    clip_w: i32,
+    clip_h: i32,
+  ) {
+    if scale <= 1 {
+      return self.draw_text_clipped(
+        frame,
+        frame_width,
+        frame_height,
+        text,
+        x,
+        y,
+        color,
+        clip_x,
+        clip_y,
+        clip_w,
+        clip_h,
+      );
+    }
+
+    let mut cursor_x = x;
+    let advance = (self.char_width as i32 + self.spacing) * scale as i32;
+    let char_w = self.char_width as i32 * scale as i32;
+    let clip_right = clip_x + clip_w;
+
+    for ch in text.chars() {
+      if ch == '\n' {
+        continue;
+      }
+
+      // Skip characters entirely outside clip region (horizontal early-out)
+      if cursor_x + char_w <= clip_x {
+        cursor_x += advance;
+        continue;
+      }
+      if cursor_x >= clip_right {
+        break;
+      }
+
+      self.draw_char_scaled_clipped(
+        frame,
+        frame_width,
+        frame_height,
+        ch,
+        cursor_x,
+        y,
+        color,
+        scale,
+        clip_x,
+        clip_y,
+        clip_w,
+        clip_h,
+      );
+      cursor_x += advance;
+    }
+  }
+
+  /// Draw a single character with integer scaling and per-pixel clipping.
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_char_scaled_clipped(
+    &self,
+    frame: &mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    ch: char,
+    x: i32,
+    y: i32,
+    color: Color,
+    scale: u32,
+    clip_x: i32,
+    clip_y: i32,
+    clip_w: i32,
+    clip_h: i32,
+  ) -> u32 {
+    if scale <= 1 {
+      return self.draw_char_clipped(
+        frame,
+        frame_width,
+        frame_height,
+        ch,
+        x,
+        y,
+        color,
+        clip_x,
+        clip_y,
+        clip_w,
+        clip_h,
+      );
+    }
+
+    let ascii = ch as u8;
+
+    // Skip characters outside our range
+    if ascii < self.first_char || ascii > self.last_char {
+      return self.char_width * scale;
+    }
+
+    let char_index = (ascii - self.first_char) as u32;
+    let atlas_col = char_index % self.chars_per_row;
+    let atlas_row = char_index / self.chars_per_row;
+
+    let src_x = atlas_col * self.char_width;
+    let src_y = atlas_row * self.char_height;
+
+    let frame_w = frame_width as i32;
+    let frame_h = frame_height as i32;
+    let char_w = self.char_width as i32;
+    let char_h = self.char_height as i32;
+    let scale_i = scale as i32;
+
+    let clip_right = clip_x + clip_w;
+    let clip_bottom = clip_y + clip_h;
+
+    for cy in 0..char_h {
+      for cx in 0..char_w {
+        // Sample from atlas
+        let atlas_px = ((src_y + cy as u32) * self.atlas_width + (src_x + cx as u32)) as usize * 4;
+        if atlas_px + 3 >= self.atlas_data.len() {
+          continue;
+        }
+
+        let src_a = self.atlas_data[atlas_px + 3];
+        if src_a == 0 {
+          continue;
+        }
+
+        let alpha = src_a as u16 * color.a as u16 / 255;
+        if alpha == 0 {
+          continue;
+        }
+
+        let inv_alpha = 255 - alpha;
+
+        // Draw scaled pixel with clipping
+        for sy in 0..scale_i {
+          let dst_y = y + cy * scale_i + sy;
+          if dst_y < 0 || dst_y >= frame_h || dst_y < clip_y || dst_y >= clip_bottom {
+            continue;
+          }
+
+          for sx in 0..scale_i {
+            let dst_x = x + cx * scale_i + sx;
+            if dst_x < 0 || dst_x >= frame_w || dst_x < clip_x || dst_x >= clip_right {
+              continue;
+            }
+
+            let dst_idx = (dst_y as usize * frame_width as usize + dst_x as usize) * 4;
+            if dst_idx + 3 >= frame.len() {
+              continue;
+            }
+
+            let dst_r = frame[dst_idx] as u16;
+            let dst_g = frame[dst_idx + 1] as u16;
+            let dst_b = frame[dst_idx + 2] as u16;
+
+            frame[dst_idx] = ((color.r as u16 * alpha + dst_r * inv_alpha) / 255) as u8;
+            frame[dst_idx + 1] = ((color.g as u16 * alpha + dst_g * inv_alpha) / 255) as u8;
+            frame[dst_idx + 2] = ((color.b as u16 * alpha + dst_b * inv_alpha) / 255) as u8;
+            frame[dst_idx + 3] = 255;
+          }
+        }
+      }
+    }
+
+    self.char_width * scale
   }
 
   /// Draw a string to the frame buffer with per-pixel clipping.
@@ -882,5 +1221,94 @@ mod tests {
     let (w, h) = font.wrapped_text_size("Hi", 100);
     assert_eq!(w, 16); // 2 chars * 8
     assert_eq!(h, 8); // 1 line
+  }
+
+  // ==========================================================================
+  // DPI/UI Scale Tests
+  // ==========================================================================
+
+  #[test]
+  fn text_width_scaled_1x() {
+    let font = create_debug_font();
+    // At 1x scale, width should be the same as unscaled
+    assert_eq!(font.text_width_scaled("Hello", 1), font.text_width("Hello"));
+    assert_eq!(font.text_width_scaled("Hello", 1), 40);
+  }
+
+  #[test]
+  fn text_width_scaled_2x() {
+    let font = create_debug_font();
+    // At 2x scale, width should be double
+    assert_eq!(font.text_width_scaled("Hello", 2), 80);
+    assert_eq!(font.text_width_scaled("A", 2), 16);
+  }
+
+  #[test]
+  fn text_width_scaled_3x() {
+    let font = create_debug_font();
+    // At 3x scale, width should be triple
+    assert_eq!(font.text_width_scaled("Hello", 3), 120);
+  }
+
+  #[test]
+  fn char_size_scaled_1x() {
+    let font = create_debug_font();
+    let (w, h) = font.char_size_scaled(1);
+    assert_eq!(w, 8);
+    assert_eq!(h, 8);
+  }
+
+  #[test]
+  fn char_size_scaled_2x() {
+    let font = create_debug_font();
+    let (w, h) = font.char_size_scaled(2);
+    assert_eq!(w, 16);
+    assert_eq!(h, 16);
+  }
+
+  #[test]
+  fn char_size_scaled_3x() {
+    let font = create_debug_font();
+    let (w, h) = font.char_size_scaled(3);
+    assert_eq!(w, 24);
+    assert_eq!(h, 24);
+  }
+
+  #[test]
+  fn draw_text_scaled_renders_to_buffer() {
+    let font = create_debug_font();
+    let mut frame = vec![0u8; 100 * 100 * 4];
+
+    // Draw at 2x scale
+    font.draw_text_scaled(&mut frame, 100, 100, "A", 0, 0, Color::WHITE, 2);
+
+    // Verify some pixels were drawn (non-zero)
+    let has_pixels = frame.iter().any(|&p| p != 0);
+    assert!(has_pixels, "Scaled text should draw pixels to buffer");
+  }
+
+  #[test]
+  fn draw_text_scaled_1x_matches_unscaled() {
+    let font = create_debug_font();
+    let mut frame1 = vec![0u8; 100 * 100 * 4];
+    let mut frame2 = vec![0u8; 100 * 100 * 4];
+
+    // Draw with scale=1 should produce same result as unscaled
+    font.draw_text(&mut frame1, 100, 100, "Hi", 10, 10, Color::WHITE);
+    font.draw_text_scaled(&mut frame2, 100, 100, "Hi", 10, 10, Color::WHITE, 1);
+
+    assert_eq!(frame1, frame2, "Scale 1 should match unscaled rendering");
+  }
+
+  #[test]
+  fn draw_char_scaled_returns_correct_advance() {
+    let font = create_debug_font();
+    let mut frame = vec![0u8; 100 * 100 * 4];
+
+    let advance_1x = font.draw_char_scaled(&mut frame, 100, 100, 'A', 0, 0, Color::WHITE, 1);
+    let advance_2x = font.draw_char_scaled(&mut frame, 100, 100, 'A', 0, 0, Color::WHITE, 2);
+
+    assert_eq!(advance_1x, 8, "1x scale should advance 8 pixels");
+    assert_eq!(advance_2x, 16, "2x scale should advance 16 pixels");
   }
 }

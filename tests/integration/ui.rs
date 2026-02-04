@@ -342,3 +342,45 @@ fn ui_types_independent_of_ecs() {
   // No conflicts between UI and ECS systems - verify entity exists
   assert!(world.contains(entity));
 }
+
+// ============================================================================
+// DPI/UI SCALE TESTS
+// ============================================================================
+
+/// Test that EngineBuilder accepts ui_scale configuration
+#[test]
+fn engine_builder_ui_scale_config() {
+  // Test that ui_scale can be set to manual values
+  // We just verify the builder accepts these configurations
+  let _builder = EngineBuilder::new()
+    .title("Test")
+    .resolution(800, 600)
+    .ui_scale(Some(2));
+  // Builder pattern works - can't easily test build() without a window
+}
+
+/// Test that ui_scale None means auto-detect
+#[test]
+fn engine_builder_ui_scale_auto() {
+  // Test that ui_scale can be set to auto-detect
+  let _builder = EngineBuilder::new()
+    .title("Test")
+    .resolution(800, 600)
+    .ui_scale(None); // Auto-detect from DPI
+  // Builder pattern works
+}
+
+/// Test that various ui_scale values are valid
+#[test]
+fn ui_scale_values_valid() {
+  // Scale 1 (normal)
+  let _builder1 = EngineBuilder::new().ui_scale(Some(1));
+
+  // Scale 2 (HiDPI)
+  let _builder2 = EngineBuilder::new().ui_scale(Some(2));
+
+  // Scale 3 (very high DPI)
+  let _builder3 = EngineBuilder::new().ui_scale(Some(3));
+
+  // All configurations accepted by builder
+}

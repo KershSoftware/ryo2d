@@ -55,7 +55,8 @@ impl AnimatedButton {
       self.was_clicked = true;
     } else if self.was_clicked && !mouse_down {
       // Release - bounce back
-      self.click_scale = TweenFloat::new(self.click_scale.value(), 1.0, 0.15).with_ease(Ease::OutBack);
+      self.click_scale =
+        TweenFloat::new(self.click_scale.value(), 1.0, 0.15).with_ease(Ease::OutBack);
       self.was_clicked = false;
     }
   }
@@ -114,7 +115,9 @@ impl Notification {
   fn show(&mut self, message: &str, x: f32, y: f32) {
     self.message = message.to_string();
     self.position = TweenVec2::new((x, y + 20.0), (x, y - 30.0), 0.5).with_ease(Ease::OutQuad);
-    self.alpha = TweenFloat::new(1.0, 0.0, 1.5).with_ease(Ease::InQuad).with_delay(0.3);
+    self.alpha = TweenFloat::new(1.0, 0.0, 1.5)
+      .with_ease(Ease::InQuad)
+      .with_delay(0.3);
     self.scale = TweenFloat::new(0.5, 1.0, 0.2).with_ease(Ease::OutBack);
     self.active = true;
   }
@@ -173,10 +176,38 @@ pub struct InteractiveDemo {
 impl InteractiveDemo {
   pub fn new() -> Self {
     let buttons = vec![
-      AnimatedButton::new("Button A", 100.0, 200.0, 150.0, 50.0, Color::rgb(80, 100, 160)),
-      AnimatedButton::new("Button B", 300.0, 200.0, 150.0, 50.0, Color::rgb(160, 80, 100)),
-      AnimatedButton::new("Button C", 500.0, 200.0, 150.0, 50.0, Color::rgb(80, 160, 100)),
-      AnimatedButton::new("Large Button", 200.0, 320.0, 250.0, 70.0, Color::rgb(120, 100, 160)),
+      AnimatedButton::new(
+        "Button A",
+        100.0,
+        200.0,
+        150.0,
+        50.0,
+        Color::rgb(80, 100, 160),
+      ),
+      AnimatedButton::new(
+        "Button B",
+        300.0,
+        200.0,
+        150.0,
+        50.0,
+        Color::rgb(160, 80, 100),
+      ),
+      AnimatedButton::new(
+        "Button C",
+        500.0,
+        200.0,
+        150.0,
+        50.0,
+        Color::rgb(80, 160, 100),
+      ),
+      AnimatedButton::new(
+        "Large Button",
+        200.0,
+        320.0,
+        250.0,
+        70.0,
+        Color::rgb(120, 100, 160),
+      ),
       AnimatedButton::new("Small", 500.0, 330.0, 80.0, 40.0, Color::rgb(160, 120, 80)),
       AnimatedButton::new("Tiny", 620.0, 330.0, 60.0, 40.0, Color::rgb(80, 140, 140)),
     ];
@@ -249,7 +280,10 @@ impl Scene for InteractiveDemo {
     let screen_h = screen_h as f32;
 
     // Dark background
-    ui.draw_rect(Rect::new(0.0, 0.0, screen_w, screen_h), Color::rgb(20, 20, 30));
+    ui.draw_rect(
+      Rect::new(0.0, 0.0, screen_w, screen_h),
+      Color::rgb(20, 20, 30),
+    );
 
     // Title and instructions
     let text_accent = Color::rgb(130, 180, 255);
@@ -268,7 +302,12 @@ impl Scene for InteractiveDemo {
     ui.draw_text(&count_text, screen_w - 150.0, 10.0, Color::WHITE);
 
     // Section title
-    ui.draw_text("Animated Buttons with Hover & Click Effects:", 100.0, 160.0, Color::WHITE);
+    ui.draw_text(
+      "Animated Buttons with Hover & Click Effects:",
+      100.0,
+      160.0,
+      Color::WHITE,
+    );
 
     // Render buttons
     for button in &self.buttons {

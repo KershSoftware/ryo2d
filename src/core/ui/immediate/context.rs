@@ -91,6 +91,8 @@ pub struct UiContext<'a> {
   click_consumed: bool,
   /// ID of the currently focused dropdown (0 = none)
   focused_dropdown_id: u32,
+  /// UI scale factor for HiDPI displays (1 = normal, 2 = double size, etc.)
+  ui_scale: u32,
 }
 
 impl<'a> UiContext<'a> {
@@ -115,6 +117,36 @@ impl<'a> UiContext<'a> {
       escape_consumed: false,
       click_consumed: false,
       focused_dropdown_id: 0,
+      ui_scale: 1,
+    }
+  }
+
+  /// Create a new UI context with a specific scale factor.
+  ///
+  /// Use this for HiDPI displays where UI should be scaled up for readability.
+  /// Scale of 1 = normal size, 2 = double size (crisp pixel scaling), etc.
+  pub fn new_scaled(
+    frame: &'a mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    input: &'a InputState,
+    font: &'a BitmapFont,
+    ui_scale: u32,
+  ) -> Self {
+    Self {
+      frame,
+      frame_width,
+      frame_height,
+      input,
+      font,
+      theme: None,
+      clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
+      current_clip: None,
+      pending_dropdowns: Vec::new(),
+      escape_consumed: false,
+      click_consumed: false,
+      focused_dropdown_id: 0,
+      ui_scale: ui_scale.max(1),
     }
   }
 
@@ -140,12 +172,47 @@ impl<'a> UiContext<'a> {
       escape_consumed: false,
       click_consumed: false,
       focused_dropdown_id: 0,
+      ui_scale: 1,
+    }
+  }
+
+  /// Create a new UI context with both a theme and scale factor.
+  pub fn with_theme_scaled(
+    frame: &'a mut [u8],
+    frame_width: u32,
+    frame_height: u32,
+    input: &'a InputState,
+    font: &'a BitmapFont,
+    theme: &'a Theme,
+    ui_scale: u32,
+  ) -> Self {
+    Self {
+      frame,
+      frame_width,
+      frame_height,
+      input,
+      font,
+      theme: Some(theme),
+      clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
+      current_clip: None,
+      pending_dropdowns: Vec::new(),
+      escape_consumed: false,
+      click_consumed: false,
+      focused_dropdown_id: 0,
+      ui_scale: ui_scale.max(1),
     }
   }
 
   /// Get the current theme, if any.
   pub fn theme(&self) -> Option<&Theme> {
     self.theme
+  }
+
+  /// Get the current UI scale factor.
+  ///
+  /// Returns 1 for normal size, 2 for double size (HiDPI), etc.
+  pub fn ui_scale(&self) -> u32 {
+    self.ui_scale
   }
 
   /// Get the screen dimensions.
@@ -536,10 +603,12 @@ impl<'a> UiContext<'a> {
   /// Draw text at the given position.
   ///
   /// Text is clipped per-pixel to the current clip rect if one is active.
+  /// If UI scaling is enabled (ui_scale > 1), text is rendered at the scaled size
+  /// using nearest-neighbor interpolation for crisp pixel-art aesthetics.
   pub fn draw_text(&mut self, text: &str, x: f32, y: f32, color: Color) {
     // Quick bounds check if clip is active
     if let Some(clip) = self.current_clip {
-      let (text_w, text_h) = self.font.text_size(text);
+      let (text_w, text_h) = self.text_size(text);
       let text_rect = Rect::new(x, y, text_w as f32, text_h as f32);
 
       // Skip if text is completely outside clip region
@@ -551,8 +620,8 @@ impl<'a> UiContext<'a> {
         return;
       }
 
-      // Use per-pixel clipped rendering
-      self.font.draw_text_clipped(
+      // Use per-pixel clipped rendering with scaling
+      self.font.draw_text_scaled_clipped(
         self.frame,
         self.frame_width,
         self.frame_height,
@@ -560,13 +629,14 @@ impl<'a> UiContext<'a> {
         x as i32,
         y as i32,
         color,
+        self.ui_scale,
         clip.x as i32,
         clip.y as i32,
         clip.width as i32,
         clip.height as i32,
       );
     } else {
-      self.font.draw_text(
+      self.font.draw_text_scaled(
         self.frame,
         self.frame_width,
         self.frame_height,
@@ -574,6 +644,7 @@ impl<'a> UiContext<'a> {
         x as i32,
         y as i32,
         color,
+        self.ui_scale,
       );
     }
   }
@@ -607,8 +678,14 @@ impl<'a> UiContext<'a> {
     self.draw_text(text, x, y, color);
   }
 
-  /// Calculate the pixel size of text.
+  /// Calculate the pixel size of text (accounting for UI scale).
   pub fn text_size(&self, text: &str) -> (u32, u32) {
+    let (w, h) = self.font.text_size(text);
+    (w * self.ui_scale, h * self.ui_scale)
+  }
+
+  /// Calculate the pixel size of text at base scale (ignoring UI scale).
+  pub fn text_size_unscaled(&self, text: &str) -> (u32, u32) {
     self.font.text_size(text)
   }
 
@@ -2304,5 +2381,98 @@ mod tests {
     let (w, h) = ui.text_size("Test");
     assert_eq!(w, 32); // 4 chars * 8px
     assert_eq!(h, 8); // 1 line * 8px
+  }
+
+  // ==========================================================================
+  // DPI/UI Scale Tests
+  // ==========================================================================
+
+  fn create_test_context_scaled(
+    width: u32,
+    height: u32,
+    frame: &mut [u8],
+    scale: u32,
+  ) -> UiContext<'_> {
+    let input = InputState::new();
+    let input_ref: &'static InputState = Box::leak(Box::new(input));
+    let font = super::super::font::create_debug_font();
+    let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
+
+    UiContext::new_scaled(frame, width, height, input_ref, font_ref, scale)
+  }
+
+  #[test]
+  fn ui_context_default_scale_is_1() {
+    let mut frame = vec![0u8; 100 * 100 * 4];
+    let ui = create_test_context(100, 100, &mut frame);
+
+    assert_eq!(ui.ui_scale(), 1, "Default UI scale should be 1");
+  }
+
+  #[test]
+  fn ui_context_scaled_stores_scale() {
+    let mut frame = vec![0u8; 100 * 100 * 4];
+    let ui = create_test_context_scaled(100, 100, &mut frame, 2);
+
+    assert_eq!(ui.ui_scale(), 2, "UI scale should be 2");
+  }
+
+  #[test]
+  fn ui_context_scaled_3x() {
+    let mut frame = vec![0u8; 100 * 100 * 4];
+    let ui = create_test_context_scaled(100, 100, &mut frame, 3);
+
+    assert_eq!(ui.ui_scale(), 3, "UI scale should be 3");
+  }
+
+  #[test]
+  fn text_size_respects_ui_scale_2x() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let ui = create_test_context_scaled(200, 200, &mut frame, 2);
+
+    let (w, h) = ui.text_size("Test");
+    // At 2x scale, text should be 2x larger
+    assert_eq!(w, 64); // 4 chars * 8px * 2 = 64
+    assert_eq!(h, 16); // 1 line * 8px * 2 = 16
+  }
+
+  #[test]
+  fn text_size_respects_ui_scale_1x() {
+    let mut frame = vec![0u8; 100 * 100 * 4];
+    let ui = create_test_context_scaled(100, 100, &mut frame, 1);
+
+    let (w, h) = ui.text_size("Test");
+    // At 1x scale, text should be normal size
+    assert_eq!(w, 32); // 4 chars * 8px = 32
+    assert_eq!(h, 8); // 1 line * 8px = 8
+  }
+
+  #[test]
+  fn draw_text_at_2x_scale_draws_larger() {
+    let mut frame_1x = vec![0u8; 100 * 100 * 4];
+    let mut frame_2x = vec![0u8; 100 * 100 * 4];
+
+    {
+      let mut ui_1x = create_test_context_scaled(100, 100, &mut frame_1x, 1);
+      ui_1x.draw_text("A", 10.0, 10.0, Color::WHITE);
+    }
+    {
+      let mut ui_2x = create_test_context_scaled(100, 100, &mut frame_2x, 2);
+      ui_2x.draw_text("A", 10.0, 10.0, Color::WHITE);
+    }
+
+    // Count non-zero pixels
+    let pixels_1x = frame_1x.iter().filter(|&&p| p != 0).count();
+    let pixels_2x = frame_2x.iter().filter(|&&p| p != 0).count();
+
+    // 2x scale should have approximately 4x the pixels (2x width * 2x height)
+    assert!(pixels_2x > pixels_1x, "2x scale should draw more pixels");
+    // Approximately 4x, give some tolerance for anti-aliasing
+    let ratio = pixels_2x as f64 / pixels_1x as f64;
+    assert!(
+      ratio > 3.0 && ratio < 5.0,
+      "2x scale should have ~4x pixels, got {}",
+      ratio
+    );
   }
 }

@@ -26,6 +26,7 @@ fn main() {
     .window_mode(WindowMode::ResizableAspectRatio)
     .fps(144)
     .physics_hz(60)
+    .ui_scale(None) // Auto-detect from DPI for HiDPI display support
     .with_saved_display_mode() // Load display mode from system.json (not resolution)
     .with_scene(MenuScene::new())
     .build();

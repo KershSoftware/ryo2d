@@ -244,6 +244,12 @@ pub struct EngineConfig {
   pub max_height: Option<u32>,
   /// Path to window icon (PNG). If None, uses embedded Ryo2D logo.
   pub icon_path: Option<std::path::PathBuf>,
+  /// UI scale factor for HiDPI displays.
+  /// - `None` = auto-detect from DPI (rounds scale_factor to nearest integer)
+  /// - `Some(1)` = normal size (default for standard displays)
+  /// - `Some(2)` = double size (good for HiDPI/Retina)
+  /// - etc.
+  pub ui_scale: Option<u32>,
 }
 
 /// Re-export for backward compatibility
@@ -264,6 +270,7 @@ impl Default for EngineConfig {
       max_width: None,
       max_height: None,
       icon_path: None,
+      ui_scale: None, // Auto-detect from DPI
     }
   }
 }
@@ -363,6 +370,10 @@ pub struct Engine {
   pending_open_logger: bool,
   // Pending request to toggle borderless window (set by F5, processed in event loop)
   pending_toggle_borderless: bool,
+  // Current window scale factor (DPI scaling)
+  scale_factor: f64,
+  // Computed UI scale factor (from config or auto-detected from DPI)
+  ui_scale: u32,
 }
 
 impl Engine {
@@ -477,6 +488,19 @@ impl Engine {
 
       // Mark that surface needs reconfiguration on next frame
       self.surface_needs_reconfigure = true;
+    }
+
+    // Apply UI scale change
+    if let Some(scale) = self.window_request.ui_scale {
+      if scale == 0 {
+        // Auto-detect mode: use DPI scale factor
+        self.ui_scale = (self.scale_factor.round() as u32).max(1);
+        self.config.ui_scale = None;
+      } else {
+        // Manual mode: use specified scale
+        self.ui_scale = scale.max(1);
+        self.config.ui_scale = Some(scale);
+      }
     }
 
     // Clear the request after processing
@@ -653,6 +677,9 @@ impl Engine {
       config.debug.show_stats,
     );
 
+    // Extract ui_scale before moving config
+    let initial_ui_scale = config.ui_scale.unwrap_or(1);
+
     Engine {
       config,
       window: None,
@@ -706,6 +733,8 @@ impl Engine {
       pending_open_profiler: false,
       pending_open_logger: false,
       pending_toggle_borderless: false,
+      scale_factor: 1.0,          // Updated when window is created
+      ui_scale: initial_ui_scale, // Updated when window is created if auto
     }
   }
 
@@ -1467,6 +1496,7 @@ impl Engine {
         cursor_request: &mut self.cursor_request,
         time_control: &mut self.time_control,
         profiling_enabled: self.profiling_enabled,
+        scale_factor: self.scale_factor,
       };
 
       // Call user's update function
@@ -2100,8 +2130,14 @@ impl Engine {
     if !render_ui_after_lighting {
       // Render UI directly to frame (will be affected by lighting if enabled)
       if let Some(mut game) = self.game.take() {
-        let mut ui_ctx =
-          UiContext::new(frame, frame_width, frame_height, &self.input, &self.ui_font);
+        let mut ui_ctx = UiContext::new_scaled(
+          frame,
+          frame_width,
+          frame_height,
+          &self.input,
+          &self.ui_font,
+          self.ui_scale,
+        );
 
         game.render_ui(&mut ui_ctx);
 
@@ -2128,12 +2164,13 @@ impl Engine {
       // Clear UI buffer and render UI to it (will be composited after lighting)
       self.ui_buffer.fill(0);
       if let Some(mut game) = self.game.take() {
-        let mut ui_ctx = UiContext::new(
+        let mut ui_ctx = UiContext::new_scaled(
           &mut self.ui_buffer,
           frame_width,
           frame_height,
           &self.input,
           &self.ui_font,
+          self.ui_scale,
         );
 
         game.render_ui(&mut ui_ctx);
@@ -2287,6 +2324,15 @@ impl ApplicationHandler for Engine {
     // Now that the first frame is rendered, show the window
     window.set_visible(true);
 
+    // Store window's DPI scale factor
+    self.scale_factor = window.scale_factor();
+
+    // Compute UI scale from config or auto-detect from DPI
+    self.ui_scale = self.config.ui_scale.unwrap_or_else(|| {
+      // Auto-detect: round scale_factor to nearest integer, minimum 1
+      (self.scale_factor.round() as u32).max(1)
+    });
+
     self.window = Some(window);
     self.renderer = Some(renderer);
     self.sprite_gpu = Some(sprite_gpu);
@@ -2343,6 +2389,7 @@ impl ApplicationHandler for Engine {
           cursor_request: &mut self.cursor_request,
           time_control: &mut self.time_control,
           profiling_enabled: self.profiling_enabled,
+          scale_factor: self.scale_factor,
         };
         game.init(&mut ctx);
         self.game = Some(game);
@@ -2504,6 +2551,17 @@ impl ApplicationHandler for Engine {
       }
       WindowEvent::Focused(focused) => {
         self.game_window_focused = *focused;
+      }
+      WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+        // Track DPI scale factor changes (e.g., moving window between monitors)
+        self.scale_factor = *scale_factor;
+
+        // Update UI scale if auto-detect is enabled
+        if self.config.ui_scale.is_none() {
+          self.ui_scale = (self.scale_factor.round() as u32).max(1);
+        }
+
+        // Resize event will follow automatically, no additional action needed
       }
       _ => {}
     }
@@ -3355,6 +3413,42 @@ impl EngineBuilder {
   /// ```
   pub fn max_height(mut self, max: u32) -> Self {
     self.config.max_height = Some(max);
+    self
+  }
+
+  /// Set the UI scale factor for HiDPI displays.
+  ///
+  /// Controls the size of UI text and elements. Use integer values for
+  /// crisp pixel-art scaling (nearest-neighbor interpolation).
+  ///
+  /// - `None` (default) - Auto-detect from window DPI scale factor
+  /// - `Some(1)` - Normal size (good for standard displays)
+  /// - `Some(2)` - Double size (good for HiDPI/Retina displays)
+  /// - `Some(3)` - Triple size (for very high DPI or large fonts)
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// // Force 2x UI scaling regardless of DPI
+  /// EngineBuilder::new()
+  ///     .title("My Game")
+  ///     .resolution(800, 600)
+  ///     .ui_scale(Some(2))
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  ///
+  /// // Auto-detect from system DPI (default behavior)
+  /// EngineBuilder::new()
+  ///     .title("My Game")
+  ///     .resolution(800, 600)
+  ///     .ui_scale(None)
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn ui_scale(mut self, scale: Option<u32>) -> Self {
+    self.config.ui_scale = scale;
     self
   }
 

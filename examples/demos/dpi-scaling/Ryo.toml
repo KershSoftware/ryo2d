@@ -1,0 +1,12 @@
+[game]
+name = "DPI Scaling Demo"
+version = "0.1.0"
+
+[window]
+title = "Ryo2D DPI Scaling Demo"
+width = 800
+height = 600
+resizable = true
+
+[display]
+mode = "Fit"

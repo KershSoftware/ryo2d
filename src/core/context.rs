@@ -26,6 +26,9 @@ pub struct WindowRequest {
   pub height: Option<u32>,
   /// New display mode (None = no change)
   pub display_mode: Option<DisplayMode>,
+  /// New UI scale factor (None = no change)
+  /// Use Some(0) to reset to auto-detect mode
+  pub ui_scale: Option<u32>,
 }
 
 /// Time control state for game juice effects.
@@ -70,7 +73,10 @@ impl WindowRequest {
 
   /// Check if any change is requested
   pub fn has_changes(&self) -> bool {
-    self.width.is_some() || self.height.is_some() || self.display_mode.is_some()
+    self.width.is_some()
+      || self.height.is_some()
+      || self.display_mode.is_some()
+      || self.ui_scale.is_some()
   }
 
   /// Clear all pending requests
@@ -78,6 +84,7 @@ impl WindowRequest {
     self.width = None;
     self.height = None;
     self.display_mode = None;
+    self.ui_scale = None;
   }
 }
 
@@ -131,6 +138,8 @@ pub struct ContextCore<'a> {
   pub time_control: &'a mut TimeControl,
   /// Whether detailed profiling is enabled (for timing warnings)
   pub profiling_enabled: bool,
+  /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
+  pub scale_factor: f64,
 }
 
 impl<'a> ContextCore<'a> {
@@ -162,6 +171,21 @@ impl<'a> ContextCore<'a> {
   /// Get the screen height in pixels.
   pub fn screen_height(&self) -> f32 {
     self.camera.viewport_size().1
+  }
+
+  /// Get the window's DPI scale factor.
+  ///
+  /// Returns 1.0 for standard displays, 2.0 for HiDPI/Retina displays.
+  /// Use this to determine appropriate UI scaling for readability.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Choose UI scale based on DPI
+  /// let ui_scale = if ctx.scale_factor() >= 2.0 { 2 } else { 1 };
+  /// ```
+  pub fn scale_factor(&self) -> f64 {
+    self.scale_factor
   }
 
   /// Request a display mode change (windowed, fullscreen, borderless).
@@ -204,6 +228,25 @@ impl<'a> ContextCore<'a> {
     self.window_request.width = Some(width);
     self.window_request.height = Some(height);
     self.window_request.display_mode = Some(mode);
+  }
+
+  /// Request a UI scale change.
+  ///
+  /// The change will be applied after the current frame completes.
+  /// Use `None` to reset to auto-detect mode (scale from DPI).
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Force 2x UI scaling
+  /// ctx.request_ui_scale(Some(2));
+  ///
+  /// // Return to auto-detect mode
+  /// ctx.request_ui_scale(None);
+  /// ```
+  pub fn request_ui_scale(&mut self, scale: Option<u32>) {
+    // Use 0 as a sentinel for "auto-detect"
+    self.window_request.ui_scale = Some(scale.unwrap_or(0));
   }
 
   // ===========================================================================
@@ -535,5 +578,50 @@ mod tests {
 
     assert!(!wr.has_changes());
     assert_eq!(tc.time_scale, 1.0);
+  }
+
+  // ==========================================================================
+  // DPI/UI Scale Tests
+  // ==========================================================================
+
+  #[test]
+  fn window_request_default_ui_scale_is_none() {
+    let wr = WindowRequest::default();
+    assert_eq!(wr.ui_scale, None, "Default ui_scale should be None");
+  }
+
+  #[test]
+  fn window_request_ui_scale_manual() {
+    let mut wr = WindowRequest::default();
+    wr.ui_scale = Some(2);
+    assert_eq!(wr.ui_scale, Some(2));
+  }
+
+  #[test]
+  fn window_request_ui_scale_auto_signal() {
+    let mut wr = WindowRequest::default();
+    // 0 signals auto-detect mode
+    wr.ui_scale = Some(0);
+    assert_eq!(wr.ui_scale, Some(0));
+  }
+
+  #[test]
+  fn window_request_has_changes_with_ui_scale() {
+    let mut wr = WindowRequest::default();
+    assert!(!wr.has_changes(), "Default should have no changes");
+
+    wr.ui_scale = Some(2);
+    assert!(wr.has_changes(), "Setting ui_scale should register as a change");
+  }
+
+  #[test]
+  fn window_request_clear_resets_ui_scale() {
+    let mut wr = WindowRequest::default();
+    wr.ui_scale = Some(2);
+    assert!(wr.has_changes());
+
+    wr.clear();
+    assert!(!wr.has_changes());
+    assert_eq!(wr.ui_scale, None);
   }
 }

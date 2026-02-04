@@ -110,7 +110,8 @@ fn pattern_fade_in_panel() {
 #[test]
 fn pattern_slide_in_menu() {
   // Menu slides in from off-screen left
-  let mut slide_tween = TweenVec2::new((-300.0, 100.0), (50.0, 100.0), 0.5).with_ease(Ease::OutCubic);
+  let mut slide_tween =
+    TweenVec2::new((-300.0, 100.0), (50.0, 100.0), 0.5).with_ease(Ease::OutCubic);
 
   // Starts off-screen
   let (x, _y) = slide_tween.value();
@@ -220,16 +221,28 @@ fn pattern_staggered_menu_items() {
   for item in &mut items {
     item.update(0.05);
   }
-  assert!(items[0].value() > -200.0, "First item (no delay) should be animating");
-  assert!(items[1].value() == -200.0, "Second item should still be in delay");
+  assert!(
+    items[0].value() > -200.0,
+    "First item (no delay) should be animating"
+  );
+  assert!(
+    items[1].value() == -200.0,
+    "Second item should still be in delay"
+  );
 
   // After 0.1s more (0.15s total), items 0 and 1 should be animating
   for item in &mut items {
     item.update(0.1);
   }
   assert!(items[0].value() > -200.0, "First item should be animating");
-  assert!(items[1].value() > -200.0, "Second item should now be animating");
-  assert!(items[2].value() == -200.0, "Third item should still be waiting");
+  assert!(
+    items[1].value() > -200.0,
+    "Second item should now be animating"
+  );
+  assert!(
+    items[2].value() == -200.0,
+    "Third item should still be waiting"
+  );
 }
 
 // ============================================================================

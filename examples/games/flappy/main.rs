@@ -47,6 +47,7 @@ fn main() {
     .resolution(400, 600) // Fixed resolution - game uses hardcoded spawn distances
     .fps(144)
     .physics_hz(120)
+    .ui_scale(None) // Auto-detect from DPI for HiDPI display support
     .with_system_state_overrides(); // Apply audio overrides from system.json
 
   // Start with debug scene or menu based on env config

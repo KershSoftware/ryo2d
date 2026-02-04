@@ -87,6 +87,8 @@ pub struct SceneContext<'a> {
   pub time_control: &'a mut TimeControl,
   /// Whether detailed profiling is enabled (for timing warnings)
   pub profiling_enabled: bool,
+  /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
+  pub scale_factor: f64,
 }
 
 impl<'a> SceneContext<'a> {
@@ -114,6 +116,21 @@ impl<'a> SceneContext<'a> {
   /// Get the screen height in pixels.
   pub fn screen_height(&self) -> f32 {
     self.camera.viewport_size().1
+  }
+
+  /// Get the window's DPI scale factor.
+  ///
+  /// Returns 1.0 for standard displays, 2.0 for HiDPI/Retina displays.
+  /// Use this to determine appropriate UI scaling for readability.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Choose UI scale based on DPI
+  /// let ui_scale = if ctx.scale_factor() >= 2.0 { 2 } else { 1 };
+  /// ```
+  pub fn scale_factor(&self) -> f64 {
+    self.scale_factor
   }
 
   /// Request a display mode change (windowed, fullscreen, borderless).
@@ -156,6 +173,28 @@ impl<'a> SceneContext<'a> {
     self.window_request.width = Some(width);
     self.window_request.height = Some(height);
     self.window_request.display_mode = Some(mode);
+  }
+
+  /// Request a UI scale change.
+  ///
+  /// The change will be applied after the current frame completes.
+  ///
+  /// # Arguments
+  ///
+  /// * `scale` - The new UI scale factor, or `None` to auto-detect from DPI
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Force 2x UI scale for HiDPI
+  /// ctx.request_ui_scale(Some(2));
+  ///
+  /// // Reset to auto-detect from DPI
+  /// ctx.request_ui_scale(None);
+  /// ```
+  pub fn request_ui_scale(&mut self, scale: Option<u32>) {
+    // Use 0 to signal auto-detect mode
+    self.window_request.ui_scale = Some(scale.unwrap_or(0));
   }
 
   // ===========================================================================
@@ -1413,6 +1452,7 @@ impl Game for SceneGame {
       cursor_request: ctx.cursor_request,
       time_control: ctx.time_control,
       profiling_enabled: ctx.profiling_enabled,
+      scale_factor: ctx.scale_factor,
     };
 
     // Call on_enter for the initial scene
@@ -1452,6 +1492,7 @@ impl Game for SceneGame {
       cursor_request: ctx.cursor_request,
       time_control: ctx.time_control,
       profiling_enabled: ctx.profiling_enabled,
+      scale_factor: ctx.scale_factor,
     };
 
     // Update any active transitions first

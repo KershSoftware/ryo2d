@@ -130,14 +130,22 @@ impl Scene for PropertyDemo {
     let screen_h = screen_h as f32;
 
     // Dark background
-    ui.draw_rect(Rect::new(0.0, 0.0, screen_w, screen_h), Color::rgb(20, 20, 30));
+    ui.draw_rect(
+      Rect::new(0.0, 0.0, screen_w, screen_h),
+      Color::rgb(20, 20, 30),
+    );
 
     // Title and instructions
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
 
     ui.draw_text("Property Animations Demo", 10.0, 10.0, text_accent);
-    ui.draw_text("Space: Restart | ESC/Backspace: Back", 10.0, 30.0, text_muted);
+    ui.draw_text(
+      "Space: Restart | ESC/Backspace: Back",
+      10.0,
+      30.0,
+      text_muted,
+    );
 
     // ==========================================
     // Left panel (slides in from left)
