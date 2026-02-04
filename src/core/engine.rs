@@ -972,6 +972,22 @@ impl Engine {
     // before rendering (so WorldTransform is current).
     self.world.propagate_transforms();
 
+    // --- Trail System ---
+    // Update trail components: age points, add new positions, remove expired points.
+    for entity in self.world.entities_with::<Trail2D>() {
+      // Skip inactive pooled entities
+      if self.world.has::<super::ecs::Inactive>(entity) {
+        continue;
+      }
+      if let Some(transform) = self.world.get_component::<Transform>(entity) {
+        let (x, y) = (transform.x, transform.y);
+        drop(transform); // Release borrow before mutable borrow
+        if let Some(mut trail) = self.world.get_component_mut::<Trail2D>(entity) {
+          trail.update(x, y, _dt);
+        }
+      }
+    }
+
     // --- Post-Process Effects ---
     // Update timed post-process effects
     self.effects.update(_dt);

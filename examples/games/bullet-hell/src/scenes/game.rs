@@ -1719,7 +1719,7 @@ impl GameScene {
       Velocity::new(velocity_x, velocity_y),
       Bullet::new(velocity_x, velocity_y),
       Trail2D::bullet(Color::rgb(180, 180, 180))
-        .with_length(10)
+        .with_length(30)
         .with_taper(0.0)
         .with_fade(true),
     ));
@@ -1727,7 +1727,7 @@ impl GameScene {
     self.bullets.push(bullet);
   }
 
-  fn update_bullets(&mut self, ctx: &mut SceneContext, dt: f32) {
+  fn update_bullets(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Collect (index, entity) pairs to remove/release
     let mut bullets_to_release: Vec<(usize, Entity)> = Vec::new();
     let bullets_to_process: Vec<_> = self.bullets.iter().copied().enumerate().collect();
@@ -1748,10 +1748,7 @@ impl GameScene {
 
       drop(transform);
 
-      // Update trail with new position
-      if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(bullet_entity) {
-        trail.update(bx, by, dt);
-      }
+      // Trail is automatically updated by the engine's trail system
 
       // Check if out of bounds
       if bx < -50.0 || bx > self.screen_width + 50.0 || by < -50.0 || by > self.screen_height + 50.0
@@ -2129,7 +2126,7 @@ impl Scene for GameScene {
           Velocity::zero(),
           Bullet::new(0.0, 0.0),
           Trail2D::bullet(Color::rgb(180, 180, 180))
-            .with_length(10)
+            .with_length(30)
             .with_taper(0.0)
             .with_fade(true),
         )
