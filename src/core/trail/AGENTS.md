@@ -32,14 +32,24 @@ Automatically records position history for moving entities. Call `update(x, y, d
 Trail2D::new(color, width)       // Create custom trail
   .with_length(max_points)       // Max history (default: 20)
   .with_taper(ratio)             // End width ratio (0.0 = point)
-  .with_fade(bool)               // Alpha fade along trail
+  .with_fade(bool)               // Position-based alpha fade (head to tail)
+  .with_lifetime(seconds)        // Time-based fade + auto-removal
   .with_end_color(color)         // Gradient to end color
   .with_min_distance(pixels)     // Min distance between points
 
-trail.update(x, y, dt);          // Call each frame
 trail.clear();                   // Reset trail
 trail.set_enabled(bool);         // Enable/disable recording
+trail.age_alpha(age)             // Get fade multiplier for point age
 ```
+
+**Fade Modes:**
+| Mode | Method | Description |
+|------|--------|-------------|
+| Position-based | `.with_fade(true)` | Fades from head (opaque) to tail (transparent) based on position |
+| Time-based | `.with_fade(false).with_lifetime(secs)` | Fades based on point age, removes old points automatically |
+| None | `.with_fade(false)` | No fading, solid trail |
+
+**Note:** The engine automatically calls `trail.update()` each frame using the entity's Transform position. Manual calls are only needed for custom positions.
 
 ### Line2D
 
@@ -85,7 +95,7 @@ GPU batch renderer using triangle strips. Handles both Trail2D and Line2D compon
 ### Adding Trails to Entities
 
 ```rust
-// Spawn entity with trail
+// Spawn entity with trail - engine auto-updates using Transform position
 let bullet = world.spawn((
     Transform::new(x, y),
     Velocity::new(500.0, 0.0),
@@ -93,12 +103,14 @@ let bullet = world.spawn((
     Trail2D::bullet(Color::YELLOW),
 ));
 
-// Update trails each frame
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-    for (transform, trail) in ctx.world.query::<(&Transform, &mut Trail2D)>().iter() {
-        trail.update(transform.x, transform.y, dt);
-    }
-}
+// With time-based fade (points fade and are removed after 0.5 seconds)
+let missile = world.spawn((
+    Transform::new(x, y),
+    Trail2D::new(Color::ORANGE, 6.0)
+        .with_length(50)
+        .with_fade(false)
+        .with_lifetime(0.5),
+));
 ```
 
 ### Static Lines/Shapes
@@ -162,7 +174,8 @@ The trail shader (`shaders/core/trail.wgsl`) supports three fragment variants:
 ## Tips for AI Agents
 
 1. **Trail vs Line**: Use `Trail2D` for moving objects (auto-records), `Line2D` for static/explicit shapes
-2. **Update Required**: `Trail2D.update()` must be called each frame to record positions
+2. **Auto-Update**: Engine automatically updates trails using entity's Transform - no manual `update()` needed
 3. **Presets First**: Try presets before customizing (`bullet`, `particle`, `swipe`, `laser`)
-4. **Memory**: Trails use `VecDeque` - old points automatically removed when `max_points` exceeded
-5. **Visibility**: Lines have `visible` flag, Trails have `enabled` flag
+4. **Memory**: Trails use `VecDeque` - old points removed when `max_points` exceeded or `lifetime` reached
+5. **Fade Modes**: Position fade (`.with_fade(true)`) for fast objects, Time fade (`.with_lifetime()`) for slow/stationary
+6. **Visibility**: Lines have `visible` flag, Trails have `enabled` flag
