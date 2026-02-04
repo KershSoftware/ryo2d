@@ -603,3 +603,98 @@ Usage:
       ui.finish_dropdowns();  // Call at end for proper z-order
   }
 ```
+
+## Profiler System
+
+Ryo2D includes a built-in profiler using [puffin](https://github.com/EmbarkStudios/puffin) for hierarchical frame profiling.
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                          Profiler Architecture                            │
+│                                                                           │
+│  puffin (scope collection)                                                │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  profile_scope!("cpu:engine_update")  ← Engine scopes with prefix  │   │
+│  │  profile_scope!("gpu:sprite_batching")                             │   │
+│  │  profile_scope!("player_update")      ← Game scopes (no prefix)    │   │
+│  │                                                                    │   │
+│  │  GlobalProfiler collects timing data per-frame                     │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
+│                          │                                                │
+│                          ▼                                                │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  FrameView (sink)      │  ProfilerWindow subscribes via sink       │   │
+│  │  └► ScopeEntry[]       │  Receives scope data each frame           │   │
+│  │     • name             │                                           │   │
+│  │     • duration_ns      │                                           │   │
+│  │     • depth            │                                           │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
+│                          │                                                │
+│                          ▼                                                │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  ProfilerWindow (separate window)                                  │   │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │   │
+│  │  │  Game Section         ← player_update: 2.1ms                 │  │   │
+│  │  │                         enemy_ai: 1.3ms                      │  │   │
+│  │  │                         physics_sim: 0.8ms                   │  │   │
+│  │  ├──────────────────────────────────────────────────────────────┤  │   │
+│  │  │  Engine - CPU Section ← engine_update: 0.5ms                 │  │   │
+│  │  │                         animation_system: 0.2ms              │  │   │
+│  │  ├──────────────────────────────────────────────────────────────┤  │   │
+│  │  │  Engine - GPU Section ← sprite_batching: 1.1ms               │  │   │
+│  │  │                         lighting_pass: 0.7ms                 │  │   │
+│  │  └──────────────────────────────────────────────────────────────┘  │   │
+│  │                                                                    │   │
+│  │  • CPU pixel buffer rendering (independent of game renderer)       │   │
+│  │  • Mouse hover for scope details                                   │   │
+│  │  • Real-time flamegraph visualization                              │   │
+│  └────────────────────────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────────────────────┘
+
+Scope Categorization:
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  Prefix      │  Category      │  Used By                           │
+  ├─────────────────────────────────────────────────────────────────────┤
+  │  cpu:        │  Engine - CPU  │  Engine internals (physics, ECS)   │
+  │  gpu:        │  Engine - GPU  │  Rendering, batching, shaders      │
+  │  (none)      │  Game          │  Game developer code               │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  Game developers use unprefixed scopes - categorization is automatic:
+    profile_scope!("enemy_ai");      // Shows in "Game" section
+    profile_scope!("spawn_bullets"); // Shows in "Game" section
+
+  Engine uses prefixed scopes for organization:
+    profile_scope!("cpu:physics_step");   // Shows in "Engine - CPU"
+    profile_scope!("gpu:submit_batches"); // Shows in "Engine - GPU"
+
+Enabling Profiling:
+  // In Ryo.toml
+  [debug]
+  puffin_profiler = true
+
+  // Or via CLI
+  ryo2d dev --profiler
+
+  // Compile with feature
+  cargo run --features profiler
+
+Usage in Game Code:
+  use ryo2d::prelude::*;
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+      profile_scope!("game_update");  // Automatic "Game" category
+
+      {
+          profile_scope!("player_movement");
+          self.update_player(ctx, dt);
+      }
+
+      {
+          profile_scope!("enemy_ai");
+          self.update_enemies(ctx, dt);
+      }
+
+      SceneAction::Continue
+  }
+```

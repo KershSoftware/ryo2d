@@ -6,6 +6,7 @@
 //! - 1/2: Add/Remove CPU-heavy entities (physics simulation)
 //! - 3/4: Add/Remove GPU-heavy entities (many sprites)
 //! - 5/6: Add/Remove mixed entities (both CPU and GPU load)
+//! - 7/8: Increase/Decrease work multiplier (CPU work per entity)
 //! - Space: Toggle auto-spawn mode
 //! - R: Reset all entities
 //! - F1: Toggle debug overlay
@@ -71,6 +72,8 @@ struct ProfilerDemoScene {
     mixed_count: usize,
     auto_spawn: bool,
     auto_spawn_timer: f32,
+    /// Work multiplier - increases CPU work per entity (7/8 to adjust)
+    work_multiplier: u32,
 }
 
 impl ProfilerDemoScene {
@@ -85,12 +88,13 @@ impl ProfilerDemoScene {
             mixed_count: 0,
             auto_spawn: false,
             auto_spawn_timer: 0.0,
+            work_multiplier: 1,
         }
     }
 
     fn spawn_cpu(&mut self, ctx: &mut SceneContext, count: usize) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:spawn_cpu");
+        profile_scope!("spawn_cpu");
 
         let mut rng = rand::thread_rng();
         let sprite = SpriteHandle::from_sprite(self.cpu_sprite.clone(), "cpu_sprite");
@@ -115,7 +119,7 @@ impl ProfilerDemoScene {
 
     fn despawn_cpu(&mut self, ctx: &mut SceneContext, count: usize) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:despawn_cpu");
+        profile_scope!("despawn_cpu");
 
         let entities: Vec<_> = ctx.world.entities_with::<CpuHeavy>();
         for entity in entities.into_iter().take(count) {
@@ -125,7 +129,7 @@ impl ProfilerDemoScene {
 
     fn spawn_gpu(&mut self, ctx: &mut SceneContext, count: usize) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:spawn_gpu");
+        profile_scope!("spawn_gpu");
 
         let mut rng = rand::thread_rng();
         let sprite = SpriteHandle::from_sprite(self.gpu_sprite.clone(), "gpu_sprite");
@@ -147,7 +151,7 @@ impl ProfilerDemoScene {
 
     fn despawn_gpu(&mut self, ctx: &mut SceneContext, count: usize) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:despawn_gpu");
+        profile_scope!("despawn_gpu");
 
         let entities: Vec<_> = ctx.world.entities_with::<GpuHeavy>();
         for entity in entities.into_iter().take(count) {
@@ -157,7 +161,7 @@ impl ProfilerDemoScene {
 
     fn spawn_mixed(&mut self, ctx: &mut SceneContext, count: usize) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:spawn_mixed");
+        profile_scope!("spawn_mixed");
 
         let mut rng = rand::thread_rng();
         let sprite = SpriteHandle::from_sprite(self.mixed_sprite.clone(), "mixed_sprite");
@@ -181,7 +185,7 @@ impl ProfilerDemoScene {
 
     fn despawn_mixed(&mut self, ctx: &mut SceneContext, count: usize) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:despawn_mixed");
+        profile_scope!("despawn_mixed");
 
         let entities: Vec<_> = ctx.world.entities_with::<MixedLoad>();
         for entity in entities.into_iter().take(count) {
@@ -191,7 +195,7 @@ impl ProfilerDemoScene {
 
     fn reset_all(&mut self, ctx: &mut SceneContext) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:reset");
+        profile_scope!("reset");
 
         let cpu_entities: Vec<_> = ctx.world.entities_with::<CpuHeavy>();
         let gpu_entities: Vec<_> = ctx.world.entities_with::<GpuHeavy>();
@@ -212,7 +216,7 @@ impl ProfilerDemoScene {
 
     fn update_cpu_entities(&mut self, ctx: &mut SceneContext, dt: f32) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:physics_sim");
+        profile_scope!("physics_sim");
 
         // Expensive physics simulation - lots of trig and calculations
         let entities: Vec<_> = ctx.world.entities_with::<CpuHeavy>();
@@ -233,10 +237,13 @@ impl ProfilerDemoScene {
                     let new_x = cpu.orbit_center.0 + radius * new_angle.cos();
                     let new_y = cpu.orbit_center.1 + radius * new_angle.sin();
 
-                    // Extra CPU work: calculate some useless stuff
-                    let _ = (0..10).fold(0.0f32, |acc, i| {
-                        acc + (new_angle * i as f32).sin() * (new_x * 0.01).cos()
-                    });
+                    // Extra CPU work: scaled by work_multiplier
+                    // Use black_box to prevent compiler from optimizing away
+                    for _ in 0..self.work_multiplier {
+                        std::hint::black_box((0..100).fold(0.0f32, |acc, i| {
+                            acc + (new_angle * i as f32).sin() * (new_x * 0.01).cos()
+                        }));
+                    }
 
                     (new_x, new_y, new_angle, new_bounce)
                 } else {
@@ -258,7 +265,7 @@ impl ProfilerDemoScene {
 
     fn update_gpu_entities(&mut self, ctx: &mut SceneContext, dt: f32) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:gpu_drift");
+        profile_scope!("gpu_drift");
 
         // Minimal CPU work - just drift
         let entities: Vec<_> = ctx.world.entities_with::<GpuHeavy>();
@@ -294,7 +301,7 @@ impl ProfilerDemoScene {
 
     fn update_mixed_entities(&mut self, ctx: &mut SceneContext, dt: f32) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:ai_pathfinding");
+        profile_scope!("ai_pathfinding");
 
         // Simulated AI/pathfinding - moderate CPU work
         let entities: Vec<_> = ctx.world.entities_with::<MixedLoad>();
@@ -320,11 +327,14 @@ impl ProfilerDemoScene {
                         (mixed.target_x, mixed.target_y)
                     };
 
-                    // Simulated pathfinding cost
-                    let _path_cost = (0..5).fold(0.0f32, |acc, i| {
-                        acc + ((t.x + i as f32 * 10.0) * 0.1).sin().abs()
-                            + ((t.y + i as f32 * 10.0) * 0.1).cos().abs()
-                    });
+                    // Simulated pathfinding cost - scaled by work_multiplier
+                    // Use black_box to prevent compiler from optimizing away
+                    for _ in 0..self.work_multiplier {
+                        std::hint::black_box((0..50).fold(0.0f32, |acc, i| {
+                            acc + ((t.x + i as f32 * 10.0) * 0.1).sin().abs()
+                                + ((t.y + i as f32 * 10.0) * 0.1).cos().abs()
+                        }));
+                    }
 
                     let move_x = if dist > 0.0 { dx / dist * mixed.speed * dt } else { 0.0 };
                     let move_y = if dist > 0.0 { dy / dist * mixed.speed * dt } else { 0.0 };
@@ -366,7 +376,7 @@ impl Scene for ProfilerDemoScene {
 
     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:demo_update");
+        profile_scope!("demo_update");
 
         // Handle input
         // CPU entities
@@ -403,6 +413,14 @@ impl Scene for ProfilerDemoScene {
             self.reset_all(ctx);
         }
 
+        // Work multiplier (increases CPU work per entity)
+        if ctx.input.key_pressed(KeyCode::Digit7) {
+            self.work_multiplier = (self.work_multiplier * 2).min(1024);
+        }
+        if ctx.input.key_pressed(KeyCode::Digit8) {
+            self.work_multiplier = (self.work_multiplier / 2).max(1);
+        }
+
         // Auto-spawn mode
         if self.auto_spawn {
             self.auto_spawn_timer += dt;
@@ -425,7 +443,7 @@ impl Scene for ProfilerDemoScene {
 
     fn render_ui(&mut self, ui: &mut UiContext) {
         #[cfg(feature = "profiler")]
-        profile_scope!("cpu:demo_ui");
+        profile_scope!("demo_ui");
 
         let line_height = 18.0;
         let mut y = 10.0;
@@ -434,9 +452,9 @@ impl Scene for ProfilerDemoScene {
         ui.draw_text("PROFILER DEMO", 10.0, y, Color::WHITE);
         y += line_height + 5.0;
 
-        // Counts
+        // Counts with inline controls
         ui.draw_text(
-            &format!("CPU entities: {} (1/2 +/-{})", self.cpu_count, CPU_BATCH),
+            &format!("[1] +{}  [2] -{}  CPU: {}", CPU_BATCH, CPU_BATCH, self.cpu_count),
             10.0,
             y,
             Color::rgb(100, 150, 255),
@@ -444,7 +462,7 @@ impl Scene for ProfilerDemoScene {
         y += line_height;
 
         ui.draw_text(
-            &format!("GPU entities: {} (3/4 +/-{})", self.gpu_count, GPU_BATCH),
+            &format!("[3] +{}  [4] -{}  GPU: {}", GPU_BATCH, GPU_BATCH, self.gpu_count),
             10.0,
             y,
             Color::rgb(150, 255, 100),
@@ -452,7 +470,7 @@ impl Scene for ProfilerDemoScene {
         y += line_height;
 
         ui.draw_text(
-            &format!("Mixed entities: {} (5/6 +/-{})", self.mixed_count, MIXED_BATCH),
+            &format!("[5] +{}  [6] -{}  Mixed: {}", MIXED_BATCH, MIXED_BATCH, self.mixed_count),
             10.0,
             y,
             Color::rgb(255, 180, 100),
@@ -460,11 +478,20 @@ impl Scene for ProfilerDemoScene {
         y += line_height + 5.0;
 
         let total = self.cpu_count + self.gpu_count + self.mixed_count;
-        ui.draw_text(&format!("Total: {}", total), 10.0, y, Color::WHITE);
+        ui.draw_text(&format!("Total entities: {}", total), 10.0, y, Color::WHITE);
         y += line_height + 10.0;
 
-        // Controls
-        ui.draw_text("Controls:", 10.0, y, Color::GRAY);
+        // Work multiplier
+        ui.draw_text(
+            &format!("[7] x2  [8] /2  Work: {}x", self.work_multiplier),
+            10.0,
+            y,
+            Color::rgb(255, 255, 150),
+        );
+        y += line_height + 10.0;
+
+        // Other controls
+        ui.draw_text("Other:", 10.0, y, Color::GRAY);
         y += line_height;
 
         let auto_status = if self.auto_spawn { "ON" } else { "OFF" };

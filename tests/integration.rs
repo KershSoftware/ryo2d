@@ -22,3 +22,6 @@ mod navigation;
 
 #[path = "integration/render_pipeline.rs"]
 mod render_pipeline;
+
+#[path = "integration/profiler.rs"]
+mod profiler;

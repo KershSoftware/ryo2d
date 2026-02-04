@@ -142,6 +142,44 @@ pub fn new_frame() {
 pub use profile_function;
 pub use profile_scope;
 
+/// Scope category for profiler display grouping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeCategory {
+  /// Engine CPU-bound work (prefixed with "cpu:")
+  EngineCpu,
+  /// Engine GPU-bound work (prefixed with "gpu:")
+  EngineGpu,
+  /// Game/user code (no prefix)
+  Game,
+}
+
+impl ScopeCategory {
+  /// Categorize a scope name based on its prefix.
+  ///
+  /// - Names starting with "cpu:" → EngineCpu
+  /// - Names starting with "gpu:" → EngineGpu
+  /// - All other names → Game
+  pub fn from_scope_name(name: &str) -> Self {
+    if name.starts_with("cpu:") {
+      ScopeCategory::EngineCpu
+    } else if name.starts_with("gpu:") {
+      ScopeCategory::EngineGpu
+    } else {
+      ScopeCategory::Game
+    }
+  }
+}
+
+/// Strip the category prefix from a scope name for display.
+///
+/// Returns the name without "cpu:" or "gpu:" prefix.
+pub fn strip_scope_prefix(name: &str) -> &str {
+  name
+    .strip_prefix("cpu:")
+    .or_else(|| name.strip_prefix("gpu:"))
+    .unwrap_or(name)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -164,5 +202,74 @@ mod tests {
   fn test_new_frame_runs() {
     // Verify new_frame doesn't panic
     new_frame();
+  }
+
+  #[test]
+  fn test_scope_category_cpu() {
+    assert_eq!(
+      ScopeCategory::from_scope_name("cpu:engine_update"),
+      ScopeCategory::EngineCpu
+    );
+    assert_eq!(
+      ScopeCategory::from_scope_name("cpu:physics"),
+      ScopeCategory::EngineCpu
+    );
+  }
+
+  #[test]
+  fn test_scope_category_gpu() {
+    assert_eq!(
+      ScopeCategory::from_scope_name("gpu:render_sprites"),
+      ScopeCategory::EngineGpu
+    );
+    assert_eq!(
+      ScopeCategory::from_scope_name("gpu:submit_batches"),
+      ScopeCategory::EngineGpu
+    );
+  }
+
+  #[test]
+  fn test_scope_category_game() {
+    assert_eq!(
+      ScopeCategory::from_scope_name("player_update"),
+      ScopeCategory::Game
+    );
+    assert_eq!(
+      ScopeCategory::from_scope_name("physics_sim"),
+      ScopeCategory::Game
+    );
+    assert_eq!(
+      ScopeCategory::from_scope_name("ai_pathfinding"),
+      ScopeCategory::Game
+    );
+    // Empty and unusual names
+    assert_eq!(ScopeCategory::from_scope_name(""), ScopeCategory::Game);
+    assert_eq!(
+      ScopeCategory::from_scope_name("cpulike_name"),
+      ScopeCategory::Game
+    );
+    assert_eq!(
+      ScopeCategory::from_scope_name("gpuish_scope"),
+      ScopeCategory::Game
+    );
+  }
+
+  #[test]
+  fn test_strip_scope_prefix_cpu() {
+    assert_eq!(strip_scope_prefix("cpu:engine_update"), "engine_update");
+    assert_eq!(strip_scope_prefix("cpu:render"), "render");
+  }
+
+  #[test]
+  fn test_strip_scope_prefix_gpu() {
+    assert_eq!(strip_scope_prefix("gpu:submit_batches"), "submit_batches");
+    assert_eq!(strip_scope_prefix("gpu:draw_sprites"), "draw_sprites");
+  }
+
+  #[test]
+  fn test_strip_scope_prefix_none() {
+    assert_eq!(strip_scope_prefix("player_update"), "player_update");
+    assert_eq!(strip_scope_prefix(""), "");
+    assert_eq!(strip_scope_prefix("cpulike"), "cpulike");
   }
 }

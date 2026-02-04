@@ -17,7 +17,6 @@ mod colors {
   pub const TEXT_DIM: [u8; 4] = [150, 150, 150, 255];
   pub const HEADER_BG: [u8; 4] = [45, 45, 45, 255];
   pub const DIVIDER: [u8; 4] = [60, 60, 60, 255];
-  pub const SECTION_BG: [u8; 4] = [40, 40, 40, 255];
 
   // CPU scope colors (blue/cyan tones)
   pub const CPU_COLORS: [[u8; 4]; 6] = [
@@ -40,8 +39,9 @@ mod colors {
   ];
 
   // Section header colors
-  pub const CPU_HEADER: [u8; 4] = [60, 80, 100, 255];
-  pub const GPU_HEADER: [u8; 4] = [80, 100, 60, 255];
+  pub const ENGINE_CPU_HEADER: [u8; 4] = [60, 80, 100, 255];
+  pub const ENGINE_GPU_HEADER: [u8; 4] = [80, 100, 60, 255];
+  pub const GAME_HEADER: [u8; 4] = [100, 70, 90, 255];
 
   // Legacy scope colors (for scopes without prefix)
   pub const SCOPE_COLORS: [[u8; 4]; 8] = [
@@ -703,21 +703,14 @@ impl ProfilerWindow {
         self.draw_text("To instrument your code:", padding, y, colors::TEXT_DIM);
         y += line_height;
 
-        self.draw_text("1. Add to your functions:", padding, y, colors::TEXT_DIM);
-        y += line_height;
-        self.draw_text("   profile_scope!(\"cpu:name\")", padding + 20, y, colors::CPU_COLORS[0]);
-        y += line_height * 2;
-
-        self.draw_text("2. For GPU scopes:", padding, y, colors::TEXT_DIM);
-        y += line_height;
-        self.draw_text("   profile_scope!(\"gpu:name\")", padding + 20, y, colors::GPU_COLORS[0]);
+        self.draw_text("  profile_scope!(\"name\")", padding + 10, y, colors::SCOPE_COLORS[0]);
         y += line_height * 2;
 
         self.draw_text("Example:", padding, y, colors::TEXT_DIM);
         y += line_height;
         self.draw_text("  fn update() {", padding, y, colors::TEXT_DIM);
         y += line_height;
-        self.draw_text("    profile_scope!(\"cpu:physics\")", padding + 20, y, colors::CPU_COLORS[0]);
+        self.draw_text("    profile_scope!(\"physics\")", padding + 20, y, colors::SCOPE_COLORS[1]);
         y += line_height;
         self.draw_text("    // your code here", padding + 20, y, colors::TEXT_DIM);
         y += line_height;
@@ -756,17 +749,47 @@ impl ProfilerWindow {
 
     let mut current_y = header_height + padding;
 
-    // Draw CPU section if there are CPU scopes
+    // Draw Game section first (user code) - most relevant to game devs
+    if !other_scopes.is_empty() {
+      // Draw section header
+      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::GAME_HEADER);
+      self.draw_text("Game", padding, current_y + 5, colors::TEXT);
+
+      // Calculate and show Game time
+      let game_total_ns: u64 = other_scopes.iter().filter(|s| s.depth == 0).map(|s| s.duration_ns).sum();
+      let game_ms = game_total_ns as f64 / 1_000_000.0;
+      let game_text = format!("{:.2}ms", game_ms);
+      self.draw_text(&game_text, 60, current_y + 5, colors::TEXT_DIM);
+
+      current_y += section_header_height + 2;
+
+      // Draw game scopes (no prefix stripping needed - they don't have prefixes)
+      current_y = self.draw_scope_section(
+        &other_scopes,
+        current_y,
+        padding,
+        max_x,
+        bar_height,
+        bar_spacing,
+        graph_width,
+        frame_duration,
+        &colors::SCOPE_COLORS,
+      );
+
+      current_y += padding;
+    }
+
+    // Draw Engine - CPU section
     if !cpu_scopes.is_empty() {
       // Draw section header
-      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::CPU_HEADER);
-      self.draw_text("CPU", padding, current_y + 5, colors::TEXT);
+      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::ENGINE_CPU_HEADER);
+      self.draw_text("Engine - CPU", padding, current_y + 5, colors::TEXT);
 
       // Calculate and show CPU time
       let cpu_total_ns: u64 = cpu_scopes.iter().filter(|s| s.depth == 0).map(|s| s.duration_ns).sum();
       let cpu_ms = cpu_total_ns as f64 / 1_000_000.0;
       let cpu_text = format!("{:.2}ms", cpu_ms);
-      self.draw_text(&cpu_text, 50, current_y + 5, colors::TEXT_DIM);
+      self.draw_text(&cpu_text, 120, current_y + 5, colors::TEXT_DIM);
 
       current_y += section_header_height + 2;
 
@@ -783,25 +806,25 @@ impl ProfilerWindow {
         &colors::CPU_COLORS,
       );
 
-      current_y += padding; // Space before next section
+      current_y += padding;
     }
 
-    // Draw GPU section if there are GPU scopes
+    // Draw Engine - GPU section
     if !gpu_scopes.is_empty() {
       // Draw section header
-      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::GPU_HEADER);
-      self.draw_text("GPU", padding, current_y + 5, colors::TEXT);
+      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::ENGINE_GPU_HEADER);
+      self.draw_text("Engine - GPU", padding, current_y + 5, colors::TEXT);
 
       // Calculate and show GPU time
       let gpu_total_ns: u64 = gpu_scopes.iter().filter(|s| s.depth == 0).map(|s| s.duration_ns).sum();
       let gpu_ms = gpu_total_ns as f64 / 1_000_000.0;
       let gpu_text = format!("{:.2}ms", gpu_ms);
-      self.draw_text(&gpu_text, 50, current_y + 5, colors::TEXT_DIM);
+      self.draw_text(&gpu_text, 120, current_y + 5, colors::TEXT_DIM);
 
       current_y += section_header_height + 2;
 
       // Draw GPU scopes
-      current_y = self.draw_scope_section(
+      self.draw_scope_section(
         &gpu_scopes,
         current_y,
         padding,
@@ -811,29 +834,6 @@ impl ProfilerWindow {
         graph_width,
         frame_duration,
         &colors::GPU_COLORS,
-      );
-
-      current_y += padding;
-    }
-
-    // Draw uncategorized scopes if any (using legacy colors)
-    if !other_scopes.is_empty() {
-      // Draw section header
-      self.fill_rect(0, current_y, self.width as i32, section_header_height, colors::SECTION_BG);
-      self.draw_text("Other", padding, current_y + 5, colors::TEXT);
-      current_y += section_header_height + 2;
-
-      // Draw other scopes
-      self.draw_scope_section(
-        &other_scopes,
-        current_y,
-        padding,
-        max_x,
-        bar_height,
-        bar_spacing,
-        graph_width,
-        frame_duration,
-        &colors::SCOPE_COLORS,
       );
     }
   }

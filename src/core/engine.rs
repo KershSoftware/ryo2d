@@ -31,7 +31,7 @@ use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
 use super::ui::{BitmapFont, UiContext, create_debug_font};
-use crate::{profile_function, profile_scope};
+use crate::profile_scope;
 
 /// Window resize behavior.
 ///
@@ -782,10 +782,24 @@ impl Engine {
       }
 
       // Capture debug stats before rendering clears them
+      // Count CPU sprites (visible, active entities with Renderable)
+      let cpu_sprite_count = self
+        .renderable_cache
+        .iter()
+        .filter(|(entity, _)| {
+          !self.world.has::<super::ecs::Inactive>(*entity)
+            && self
+              .world
+              .get_component::<Renderable>(*entity)
+              .map(|r| r.visible)
+              .unwrap_or(false)
+        })
+        .count();
+
       self.debug_stats = DebugStats {
         entity_count: self.world.len(),
         draw_calls: self.batch_collector.batch_count() as u32,
-        sprite_count: self.batch_collector.sprite_count() as u32,
+        sprite_count: (cpu_sprite_count + self.batch_collector.sprite_count()) as u32,
       };
     } // render scope ends
     self.smoothed_stats.update(&self.debug_stats);
@@ -981,7 +995,7 @@ impl Engine {
   ///
   /// This runs user game logic and built-in engine systems (physics, movement, camera).
   fn update(&mut self, _dt: f32) {
-    profile_function!();
+    profile_scope!("cpu:engine_update");
 
     // --- Event Bus Management ---
     // Clear events from previous frame
@@ -1254,7 +1268,7 @@ impl Engine {
   ///
   /// This is the "Render System" - it draws all entities with Transform + Renderable
   fn render(&mut self, _alpha: f32) {
-    profile_function!();
+    profile_scope!("cpu:engine_render");
 
     // Clear batch collector for this frame (used for GPU sprite batching)
     self.batch_collector.clear();
@@ -2223,10 +2237,24 @@ impl ApplicationHandler for Engine {
           }
 
           // Capture debug stats before rendering clears them
+          // Count CPU sprites (visible, active entities with Renderable)
+          let cpu_sprite_count = self
+            .renderable_cache
+            .iter()
+            .filter(|(entity, _)| {
+              !self.world.has::<super::ecs::Inactive>(*entity)
+                && self
+                  .world
+                  .get_component::<Renderable>(*entity)
+                  .map(|r| r.visible)
+                  .unwrap_or(false)
+            })
+            .count();
+
           self.debug_stats = DebugStats {
             entity_count: self.world.len(),
             draw_calls: self.batch_collector.batch_count() as u32,
-            sprite_count: self.batch_collector.sprite_count() as u32,
+            sprite_count: (cpu_sprite_count + self.batch_collector.sprite_count()) as u32,
           };
           self.smoothed_stats.update(&self.debug_stats);
 
