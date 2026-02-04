@@ -33,6 +33,8 @@ pub mod config;
 
 // Profiling instrumentation
 pub mod profiler;
+#[cfg(feature = "profiler")]
+pub mod profiler_window;
 
 // Engine orchestration
 pub mod context;

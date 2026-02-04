@@ -6,16 +6,18 @@
 //!
 //! ## Usage
 //!
-//! Enable profiling by adding the feature flag:
+//! Enable profiling with the CLI:
 //!
 //! ```bash
-//! cargo run --features profiler
+//! ryo2d dev --profiler
 //! ```
+//!
+//! Or set `puffin_profiler = true` in your Ryo.toml `[debug]` section.
 //!
 //! In code, use the macros to instrument functions and scopes:
 //!
 //! ```rust,ignore
-//! use ryo2d::core::profiler::{profile_function, profile_scope};
+//! use ryo2d::prelude::*;
 //!
 //! fn my_expensive_function() {
 //!     profile_function!();  // Profiles entire function
@@ -31,15 +33,8 @@
 //!
 //! ## Viewing Profile Data
 //!
-//! When running with `--features profiler`, the engine automatically starts
-//! a puffin HTTP server on port 8585. Connect with puffin_viewer:
-//!
-//! ```bash
-//! cargo install puffin_viewer
-//! puffin_viewer --url 127.0.0.1:8585
-//! ```
-//!
-//! This shows a real-time flamegraph of where time is spent each frame.
+//! When profiling is enabled, a second window opens automatically showing
+//! real-time flamegraphs. No external tools required!
 
 /// Profile an entire function (adds scope with function name).
 ///
@@ -107,12 +102,12 @@ macro_rules! profile_scope {
 /// Initialize the puffin profiler.
 ///
 /// Call this once at engine startup. When `profiler` feature is enabled and
-/// `enabled` is true, this starts the puffin HTTP server. Otherwise, this
-/// is a no-op.
+/// `enabled` is true, this enables puffin scope collection. The profiler
+/// window handles displaying the data.
 ///
 /// # Arguments
 ///
-/// * `enabled` - Whether to actually start the profiler (from Ryo.toml `puffin_profiler` option)
+/// * `enabled` - Whether to enable profiling (from Ryo.toml `puffin_profiler` option)
 #[cfg(feature = "profiler")]
 pub fn init(enabled: bool) {
   if !enabled {
@@ -120,27 +115,7 @@ pub fn init(enabled: bool) {
   }
 
   puffin::set_scopes_on(true);
-
-  // Start HTTP server for puffin_viewer connection
-  match puffin_http::Server::new("0.0.0.0:8585") {
-    Ok(server) => {
-      eprintln!("[Profiler] puffin server started on http://127.0.0.1:8585");
-      eprintln!("[Profiler] Run `puffin_viewer --url 127.0.0.1:8585` to view");
-
-      // Keep server alive by storing it in a static
-      // Using a thread-local to avoid Send/Sync requirements
-      std::thread::spawn(move || {
-        // Keep server reference alive
-        let _server = server;
-        loop {
-          std::thread::sleep(std::time::Duration::from_secs(3600));
-        }
-      });
-    }
-    Err(e) => {
-      eprintln!("[Profiler] Failed to start puffin server: {e}");
-    }
-  }
+  eprintln!("[Profiler] Profiling enabled - profiler window will open");
 }
 
 #[cfg(not(feature = "profiler"))]

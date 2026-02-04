@@ -332,6 +332,13 @@ pub struct Engine {
   time_control: TimeControl,
   // Whether detailed profiling is enabled (per-phase timing, slow frame warnings)
   profiling_enabled: bool,
+  // Profiler window (only when profiler feature is enabled and puffin_profiler=true)
+  #[cfg(feature = "profiler")]
+  profiler_window: Option<super::profiler_window::ProfilerWindow>,
+  // Track focus state of each window separately (game throttles only when ALL lose focus)
+  game_window_focused: bool,
+  #[cfg(feature = "profiler")]
+  profiler_window_focused: bool,
 }
 
 impl Engine {
@@ -599,6 +606,11 @@ impl Engine {
       gilrs,
       time_control: TimeControl::default(),
       profiling_enabled: enable_profiling,
+      #[cfg(feature = "profiler")]
+      profiler_window: None, // Initialized in resumed() when renderer is ready
+      game_window_focused: true,
+      #[cfg(feature = "profiler")]
+      profiler_window_focused: false,
     }
   }
 
@@ -617,6 +629,347 @@ impl Engine {
     event_loop
       .run_app(&mut self)
       .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))
+  }
+
+  /// Run a single frame tick when the game window is not focused.
+  /// This keeps the game logic running.
+  /// If `throttle` is true, caps to 30 FPS and skips rendering.
+  /// If `throttle` is false (profiler has focus), renders at full speed.
+  fn tick_frame(&mut self, throttle: bool) {
+    // Track frame start for frame limiting
+    let frame_start = std::time::Instant::now();
+
+    // Signal profiler that a new frame is starting (needed when profiler has focus)
+    #[cfg(feature = "profiler")]
+    if !throttle {
+      // Track wall-clock frame time for accurate FPS display
+      if let Some(ref mut profiler) = self.profiler_window {
+        profiler.track_frame_time();
+      }
+      super::profiler::new_frame();
+    }
+
+    // Begin frame timing
+    if let Some(time) = &mut self.time {
+      time.begin_frame();
+    }
+
+    // Process gamepad events even when not focused
+    if let Some(ref mut gilrs) = self.gilrs {
+      while let Some(_event) = gilrs.next_event() {
+        // Just drain events to keep gilrs happy
+      }
+    }
+
+    // Get real dt for systems that should use unscaled time
+    let real_dt = self.time.as_ref().map(|t| t.fixed_dt()).unwrap_or(0.0);
+
+    // Update camera shake with real dt
+    self.camera.update_shake(real_dt);
+
+    // Fixed timestep update loop with profile scope
+    {
+      profile_scope!("update");
+      while self
+        .time
+        .as_ref()
+        .map(|t| t.should_update())
+        .unwrap_or(false)
+      {
+        if let Some(time) = &mut self.time {
+          time.time_scale = self.time_control.time_scale;
+          if self.time_control.hitstop_remaining > time.hitstop_remaining {
+            time.hitstop_remaining = self.time_control.hitstop_remaining;
+          }
+        }
+
+        let scaled_dt = self
+          .time
+          .as_ref()
+          .map(|t| t.scaled_fixed_dt())
+          .unwrap_or(0.0);
+        self.update(scaled_dt);
+
+        if let Some(time) = &mut self.time {
+          time.consume_update();
+        }
+      }
+    }
+
+    // Decay hitstop
+    if let Some(time) = &mut self.time {
+      if self.time_control.hitstop_remaining > time.hitstop_remaining {
+        time.hitstop_remaining = self.time_control.hitstop_remaining;
+      }
+      time.update_hitstop(real_dt);
+      self.time_control.hitstop_remaining = time.hitstop_remaining;
+    }
+
+    // When profiler has focus (throttle=false), we need to render directly
+    // because Windows won't deliver RedrawRequested to unfocused game window
+    if !throttle {
+      // Do full render and present (same as RedrawRequested handler)
+      self.do_full_render_and_present();
+
+      // Frame limit to target FPS (Windows doesn't enforce vsync on unfocused windows)
+      let target_frame_time = std::time::Duration::from_secs_f64(1.0 / self.config.target_fps as f64);
+      let elapsed = frame_start.elapsed();
+      if elapsed < target_frame_time {
+        std::thread::sleep(target_frame_time - elapsed);
+      }
+
+      // Render profiler window AFTER sleep so it reads the correct frame duration
+      // (puffin measures from new_frame to new_frame, sleep needs to be included)
+      #[cfg(feature = "profiler")]
+      if let Some(ref mut profiler) = self.profiler_window {
+        profiler.render();
+      }
+    } else {
+      // Cap to 30 FPS when completely unfocused to reduce CPU usage
+      std::thread::sleep(std::time::Duration::from_millis(33));
+    }
+  }
+
+  /// Full render and present pipeline - handles CPU rendering, GPU sprites, trails, lighting.
+  /// Called from both RedrawRequested handler and tick_frame (when profiler has focus).
+  fn do_full_render_and_present(&mut self) {
+    // Render phase
+    {
+      profile_scope!("render");
+
+      // Get interpolation alpha for smooth rendering
+      let alpha = self
+        .time
+        .as_ref()
+        .map(|t| t.interpolation_alpha())
+        .unwrap_or(0.0);
+
+      // CPU render pass
+      self.render(alpha);
+
+      // Call game.render_gpu() to populate GPU sprite batches
+      if let Some(mut game) = self.game.take() {
+        if let (Some(sprite_gpu), Some(renderer)) =
+          (self.sprite_gpu.as_mut(), self.renderer.as_ref())
+        {
+          // Upload debug font texture on first frame (if debug overlays enabled)
+          if !self.debug_font_uploaded
+            && (self.config.debug.show_fps
+              || self.config.debug.show_frame_timing
+              || self.config.debug.show_stats)
+          {
+            debug::upload_debug_font(
+              &self.ui_font,
+              sprite_gpu,
+              renderer.device(),
+              renderer.queue(),
+            );
+            self.debug_font_uploaded = true;
+          }
+
+          let mut gpu_ctx = GpuRenderContext::new(
+            &mut self.batch_collector,
+            sprite_gpu,
+            renderer.device(),
+            renderer.queue(),
+            &self.camera,
+            &self.world,
+          );
+          game.render_gpu(&mut gpu_ctx);
+        }
+        self.game = Some(game);
+      }
+
+      // Capture debug stats before rendering clears them
+      self.debug_stats = DebugStats {
+        entity_count: self.world.len(),
+        draw_calls: self.batch_collector.batch_count() as u32,
+        sprite_count: self.batch_collector.sprite_count() as u32,
+      };
+    } // render scope ends
+    self.smoothed_stats.update(&self.debug_stats);
+
+    // Present phase
+    profile_scope!("present");
+
+    // Take sprite_gpu, lighting, and trail_renderer out to avoid borrow conflicts
+    let mut sprite_gpu = self.sprite_gpu.take();
+    let mut renderer = self.renderer.take();
+    let mut lighting = self.lighting.take();
+    let mut trail_renderer = self.trail_renderer.take();
+
+    // Collect trails and lines from the world
+    if let Some(ref mut trails) = trail_renderer {
+      trails.begin_frame();
+
+      // Add Trail2D components (skip inactive pooled entities)
+      for entity in self.world.entities_with::<Trail2D>() {
+        if self.world.has::<super::ecs::Inactive>(entity) {
+          continue;
+        }
+        if let (Some(trail), Some(transform)) = (
+          self.world.get_component::<Trail2D>(entity),
+          self.world.get_component::<Transform>(entity),
+        ) {
+          trails.add_trail(&trail, &transform);
+        }
+      }
+
+      // Add Line2D components (skip inactive pooled entities)
+      for entity in self.world.entities_with::<Line2D>() {
+        if self.world.has::<super::ecs::Inactive>(entity) {
+          continue;
+        }
+        if let (Some(line), Some(transform)) = (
+          self.world.get_component::<Line2D>(entity),
+          self.world.get_component::<Transform>(entity),
+        ) {
+          trails.add_line(&line, transform.x, transform.y);
+        }
+      }
+    }
+
+    if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
+      // Only use GPU sprite callback if we have batched sprites or trails
+      let has_gpu_sprites = self.batch_collector.sprite_count() > 0;
+      let has_trails = trail_renderer
+        .as_ref()
+        .map(|t| t.vertex_count() > 0)
+        .unwrap_or(false);
+
+      // Collect lights from the world
+      let lights: Vec<_> = self
+        .world
+        .query_mut::<(&Transform, &Light2D)>()
+        .into_iter()
+        .map(|(t, l)| (t.clone(), l.clone()))
+        .collect();
+
+      // Auto-enable lighting when Light2D entities exist
+      if !lights.is_empty()
+        && let Some(ref mut l) = lighting
+        && !l.is_enabled()
+      {
+        l.set_enabled(true);
+      }
+
+      // Update GPU renderer viewport
+      gpu.set_viewport(
+        rend.queue(),
+        rend.game_width() as f32,
+        rend.game_height() as f32,
+      );
+
+      // Prepare camera data for trail rendering
+      let camera_pos = glam::Vec2::new(self.camera.x, self.camera.y);
+      let camera_zoom = self.camera.zoom;
+      let time = self
+        .time
+        .as_ref()
+        .map(|t| t.frame_count as f32 / 60.0)
+        .unwrap_or(0.0);
+
+      // Check if lighting is enabled and should be applied
+      let lighting_enabled = lighting.as_ref().map(|l| l.is_enabled()).unwrap_or(false);
+
+      let result = if has_gpu_sprites || has_trails || lighting_enabled {
+        // Create callback closure that captures gpu, batch_collector, and trail_renderer
+        let batch_collector = &self.batch_collector;
+        let gpu_callback = |queue: &wgpu::Queue,
+                            encoder: &mut wgpu::CommandEncoder,
+                            view: &wgpu::TextureView| {
+          // Render GPU sprites first
+          if has_gpu_sprites {
+            gpu.render_batches(queue, encoder, view, batch_collector);
+          }
+          // Render trails on top of sprites
+          if let Some(ref mut trails) = trail_renderer {
+            trails.render(
+              queue,
+              encoder,
+              view,
+              camera_pos,
+              camera_zoom,
+              time,
+              super::trail::TrailStyle::Solid,
+            );
+          }
+        };
+
+        // Create lighting callback if lighting is enabled
+        if lighting_enabled {
+          let lighting_ref = &lighting;
+          let lighting_callback =
+            move |device: &wgpu::Device,
+                  queue: &wgpu::Queue,
+                  encoder: &mut wgpu::CommandEncoder,
+                  scene_texture: &wgpu::Texture,
+                  output_view: &wgpu::TextureView| {
+              if let Some(ref lighting_renderer) = *lighting_ref {
+                // Render lights to the light accumulation buffer
+                lighting_renderer.render_lights(
+                  device,
+                  queue,
+                  encoder,
+                  lights.iter().map(|(t, l)| (t, l)),
+                  camera_pos,
+                  camera_zoom,
+                );
+
+                // Compose the lit scene from game texture
+                lighting_renderer.compose_from_texture(
+                  device,
+                  queue,
+                  encoder,
+                  scene_texture,
+                  output_view,
+                  time,
+                );
+              }
+            };
+
+          rend.render_with_lighting(
+            Some(&self.effects),
+            Some(gpu_callback),
+            Some(lighting_callback),
+            Some(&self.ui_buffer),
+          )
+        } else {
+          rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback))
+        }
+      } else {
+        rend.render_with_effects(Some(&self.effects))
+      };
+
+      match result {
+        Ok(_) => {}
+        Err(wgpu::SurfaceError::Outdated) => {
+          self.surface_needs_reconfigure = true;
+        }
+        Err(wgpu::SurfaceError::Lost) => {
+          if let Some(ref mut rend) = renderer
+            && let Some(window) = &self.window
+          {
+            let size = window.inner_size();
+            rend.resize(size.width, size.height);
+          }
+        }
+        Err(e) => {
+          eprintln!("Render error: {:?}", e);
+        }
+      }
+    }
+
+    // Put everything back
+    self.sprite_gpu = sprite_gpu;
+    self.renderer = renderer;
+    self.lighting = lighting;
+    self.trail_renderer = trail_renderer;
+
+    // Track first frame
+    if !self.first_frame_rendered {
+      self.first_frame_rendered = true;
+    }
   }
 
   // =============================================================================
@@ -1723,6 +2076,20 @@ impl ApplicationHandler for Engine {
     // Initialize profiler (no-op if `profiler` feature is disabled or puffin_profiler=false)
     super::profiler::init(self.config.debug.puffin_profiler);
 
+    // Create profiler window if puffin profiling is enabled
+    #[cfg(feature = "profiler")]
+    if self.config.debug.puffin_profiler {
+      if let Some(ref renderer) = self.renderer {
+        self.profiler_window = super::profiler_window::ProfilerWindow::new(
+          event_loop,
+          renderer.device_arc(),
+          renderer.queue_arc(),
+          renderer.instance(),
+          renderer.adapter(),
+        );
+      }
+    }
+
     // Call game init if not already initialized
     if !self.initialized {
       if let Some(mut game) = self.game.take() {
@@ -1754,8 +2121,39 @@ impl ApplicationHandler for Engine {
     );
   }
 
-  fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-    // Handle input events
+  #[allow(unused_variables)] // window_id used only when profiler feature is enabled
+  fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+    // Check if this event is for the profiler window
+    #[cfg(feature = "profiler")]
+    {
+      if let Some(ref mut profiler) = self.profiler_window {
+        if window_id == profiler.window_id() {
+          // Handle profiler window events
+          match &event {
+            WindowEvent::CloseRequested => {
+              // Close profiler window but don't exit the app
+              self.profiler_window = None;
+              return;
+            }
+            WindowEvent::RedrawRequested => {
+              profiler.render();
+              return;
+            }
+            WindowEvent::Focused(focused) => {
+              // Track profiler window focus separately
+              self.profiler_window_focused = *focused;
+              return;
+            }
+            _ => {
+              profiler.handle_event(&event);
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    // Handle main window input events
     match &event {
       WindowEvent::KeyboardInput { event, .. } => {
         if let PhysicalKey::Code(key) = event.physical_key {
@@ -1837,6 +2235,9 @@ impl ApplicationHandler for Engine {
           window.request_redraw();
         }
       }
+      WindowEvent::Focused(focused) => {
+        self.game_window_focused = *focused;
+      }
       _ => {}
     }
 
@@ -1847,6 +2248,11 @@ impl ApplicationHandler for Engine {
       }
       WindowEvent::RedrawRequested => {
         // Signal profiler that a new frame is starting (no-op if feature disabled)
+        // Also track wall-clock frame time for profiler display
+        #[cfg(feature = "profiler")]
+        if let Some(ref mut profiler) = self.profiler_window {
+          profiler.track_frame_time();
+        }
         super::profiler::new_frame();
 
         // Handle surface reconfiguration if needed (after display mode change)
@@ -1946,66 +2352,69 @@ impl ApplicationHandler for Engine {
         self.camera.update_shake(real_dt);
 
         // Fixed timestep update loop (includes game logic + physics)
-        profile_scope!("update");
+        // Use a block to limit the profile_scope lifetime
         let mut did_update = false;
-        let update_start = if self.profiling_enabled {
-          Some(std::time::Instant::now())
-        } else {
-          None
-        };
-        while self
-          .time
-          .as_ref()
-          .map(|t| t.should_update())
-          .unwrap_or(false)
         {
-          // Sync time_control to TimeState before each update
-          // This picks up any time_scale or hitstop changes from game code
-          if let Some(time) = &mut self.time {
-            time.time_scale = self.time_control.time_scale;
-            // Only use time_control hitstop if it's greater (allows game to trigger new hitstops)
-            if self.time_control.hitstop_remaining > time.hitstop_remaining {
-              time.hitstop_remaining = self.time_control.hitstop_remaining;
+          profile_scope!("update");
+          let update_start = if self.profiling_enabled {
+            Some(std::time::Instant::now())
+          } else {
+            None
+          };
+          while self
+            .time
+            .as_ref()
+            .map(|t| t.should_update())
+            .unwrap_or(false)
+          {
+            // Sync time_control to TimeState before each update
+            // This picks up any time_scale or hitstop changes from game code
+            if let Some(time) = &mut self.time {
+              time.time_scale = self.time_control.time_scale;
+              // Only use time_control hitstop if it's greater (allows game to trigger new hitstops)
+              if self.time_control.hitstop_remaining > time.hitstop_remaining {
+                time.hitstop_remaining = self.time_control.hitstop_remaining;
+              }
+            }
+
+            // Use scaled dt for game logic (affected by time_scale and hitstop)
+            let scaled_dt = self
+              .time
+              .as_ref()
+              .expect("TimeState should be initialized")
+              .scaled_fixed_dt();
+            self.update(scaled_dt);
+
+            if let Some(time) = &mut self.time {
+              time.consume_update();
+            }
+            // Clear keyboard one-shot events after the FIRST update only.
+            // This prevents key presses from being processed multiple times
+            // when multiple fixed timestep updates run in a single frame,
+            // while preserving mouse state for UI button clicks in render_ui.
+            if !did_update {
+              self.input.consume_keyboard_events();
+              did_update = true;
             }
           }
 
-          // Use scaled dt for game logic (affected by time_scale and hitstop)
-          let scaled_dt = self
-            .time
-            .as_ref()
-            .expect("TimeState should be initialized")
-            .scaled_fixed_dt();
-          self.update(scaled_dt);
-
+          // After all updates: decay hitstop and sync back to time_control
+          // This must happen AFTER the loop so game-triggered hitstops take effect immediately
           if let Some(time) = &mut self.time {
-            time.consume_update();
+            // First sync any final hitstop the game set in the last update
+            if self.time_control.hitstop_remaining > time.hitstop_remaining {
+              time.hitstop_remaining = self.time_control.hitstop_remaining;
+            }
+            // Then decay with real dt
+            time.update_hitstop(real_dt);
+            // Sync back so game can read is_hitstop_active()
+            self.time_control.hitstop_remaining = time.hitstop_remaining;
           }
-          // Clear keyboard one-shot events after the FIRST update only.
-          // This prevents key presses from being processed multiple times
-          // when multiple fixed timestep updates run in a single frame,
-          // while preserving mouse state for UI button clicks in render_ui.
-          if !did_update {
-            self.input.consume_keyboard_events();
-            did_update = true;
+          // Update time includes both game logic and physics
+          if let Some(start) = update_start {
+            self.frame_timings.update = start.elapsed();
           }
-        }
-
-        // After all updates: decay hitstop and sync back to time_control
-        // This must happen AFTER the loop so game-triggered hitstops take effect immediately
-        if let Some(time) = &mut self.time {
-          // First sync any final hitstop the game set in the last update
-          if self.time_control.hitstop_remaining > time.hitstop_remaining {
-            time.hitstop_remaining = self.time_control.hitstop_remaining;
-          }
-          // Then decay with real dt
-          time.update_hitstop(real_dt);
-          // Sync back so game can read is_hitstop_active()
-          self.time_control.hitstop_remaining = time.hitstop_remaining;
-        }
-        // Update time includes both game logic and physics
-        if let Some(start) = update_start {
-          self.frame_timings.update = start.elapsed();
-        }
+        } // update scope ends here
 
         // Check if game wants to quit
         if self.game.as_ref().map(|g| g.should_quit()).unwrap_or(false) {
@@ -2014,69 +2423,72 @@ impl ApplicationHandler for Engine {
         }
 
         // Render with interpolation alpha
-        profile_scope!("render");
-        let render_start = if self.profiling_enabled {
-          Some(std::time::Instant::now())
-        } else {
-          None
-        };
-        let alpha = self
-          .time
-          .as_ref()
-          .map(|t| t.interpolation_alpha())
-          .unwrap_or(0.0);
-        self.render(alpha);
+        // Use a block to limit the profile_scope lifetime
+        {
+          profile_scope!("render");
+          let render_start = if self.profiling_enabled {
+            Some(std::time::Instant::now())
+          } else {
+            None
+          };
+          let alpha = self
+            .time
+            .as_ref()
+            .map(|t| t.interpolation_alpha())
+            .unwrap_or(0.0);
+          self.render(alpha);
 
-        // Call game.render_gpu() to populate GPU sprite batches
-        if let Some(mut game) = self.game.take() {
-          // Get device/queue from renderer for texture uploads
-          if let (Some(sprite_gpu), Some(renderer)) =
-            (self.sprite_gpu.as_mut(), self.renderer.as_ref())
-          {
-            // Upload debug font texture on first frame (if debug overlays enabled)
-            if !self.debug_font_uploaded
-              && (self.config.debug.show_fps
-                || self.config.debug.show_frame_timing
-                || self.config.debug.show_stats)
+          // Call game.render_gpu() to populate GPU sprite batches
+          if let Some(mut game) = self.game.take() {
+            // Get device/queue from renderer for texture uploads
+            if let (Some(sprite_gpu), Some(renderer)) =
+              (self.sprite_gpu.as_mut(), self.renderer.as_ref())
             {
-              debug::upload_debug_font(
-                &self.ui_font,
+              // Upload debug font texture on first frame (if debug overlays enabled)
+              if !self.debug_font_uploaded
+                && (self.config.debug.show_fps
+                  || self.config.debug.show_frame_timing
+                  || self.config.debug.show_stats)
+              {
+                debug::upload_debug_font(
+                  &self.ui_font,
+                  sprite_gpu,
+                  renderer.device(),
+                  renderer.queue(),
+                );
+                self.debug_font_uploaded = true;
+              }
+
+              let mut gpu_ctx = GpuRenderContext::new(
+                &mut self.batch_collector,
                 sprite_gpu,
                 renderer.device(),
                 renderer.queue(),
+                &self.camera,
+                &self.world,
               );
-              self.debug_font_uploaded = true;
+              game.render_gpu(&mut gpu_ctx);
             }
-
-            let mut gpu_ctx = GpuRenderContext::new(
-              &mut self.batch_collector,
-              sprite_gpu,
-              renderer.device(),
-              renderer.queue(),
-              &self.camera,
-              &self.world,
-            );
-            game.render_gpu(&mut gpu_ctx);
+            self.game = Some(game);
           }
-          self.game = Some(game);
-        }
 
-        // Capture debug stats before rendering clears them
-        self.debug_stats = DebugStats {
-          entity_count: self.world.len(),
-          draw_calls: self.batch_collector.batch_count() as u32,
-          sprite_count: self.batch_collector.sprite_count() as u32,
-        };
-        self.smoothed_stats.update(&self.debug_stats);
+          // Capture debug stats before rendering clears them
+          self.debug_stats = DebugStats {
+            entity_count: self.world.len(),
+            draw_calls: self.batch_collector.batch_count() as u32,
+            sprite_count: self.batch_collector.sprite_count() as u32,
+          };
+          self.smoothed_stats.update(&self.debug_stats);
+
+          // Render time includes software rendering + GPU batch collection
+          if let Some(start) = render_start {
+            self.frame_timings.render = start.elapsed();
+          }
+        } // render scope ends here
 
         // Note: Debug overlays (FPS, frame timing) are now rendered via UI context
         // in the UI rendering section below, so they appear on top of everything
         // including lighting effects.
-
-        // Render time includes software rendering + GPU batch collection
-        if let Some(start) = render_start {
-          self.frame_timings.render = start.elapsed();
-        }
 
         // Actually draw to screen with post-processing effects, lighting, and GPU sprites
         // Take sprite_gpu, lighting, and trail_renderer out to avoid borrow conflicts with renderer
@@ -2282,6 +2694,15 @@ impl ApplicationHandler for Engine {
           self.first_frame_rendered = true;
         }
 
+        // Render profiler window directly when game window has focus
+        // (Windows won't deliver RedrawRequested to unfocused profiler window)
+        #[cfg(feature = "profiler")]
+        if self.game_window_focused {
+          if let Some(ref mut profiler) = self.profiler_window {
+            profiler.render();
+          }
+        }
+
         // Calculate total frame time and FPS
         self.frame_timings.total = frame_start.elapsed();
         self.frame_timings.calculate_fps();
@@ -2349,7 +2770,10 @@ impl ApplicationHandler for Engine {
     }
   }
 
-  fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+  fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    // Use Poll mode to keep the event loop running continuously
+    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+
     // Process any pending window configuration requests
     if self.window_request.has_changes()
       && let Some(window) = self.window.clone()
@@ -2357,8 +2781,31 @@ impl ApplicationHandler for Engine {
       self.apply_window_request(&window);
     }
 
-    if let Some(window) = &self.window {
-      window.request_redraw();
+    // When game window doesn't have focus, Windows doesn't deliver RedrawRequested events
+    // So we manually trigger a frame tick to keep the game running
+    // Throttle to 30 FPS only when NO window (game or profiler) has focus
+    if !self.game_window_focused {
+      #[cfg(feature = "profiler")]
+      let throttle = !self.profiler_window_focused;
+      #[cfg(not(feature = "profiler"))]
+      let throttle = true;
+
+      self.tick_frame(throttle);
+    }
+
+    // Only request redraws for windows that have focus
+    // (unfocused windows are handled manually in tick_frame to respect frame limiting)
+    if self.game_window_focused {
+      if let Some(window) = &self.window {
+        window.request_redraw();
+      }
+    }
+
+    #[cfg(feature = "profiler")]
+    if self.profiler_window_focused {
+      if let Some(ref profiler) = self.profiler_window {
+        profiler.request_redraw();
+      }
     }
   }
 }

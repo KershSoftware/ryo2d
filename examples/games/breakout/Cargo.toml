@@ -8,7 +8,20 @@ description = "Breakout demo game built with Ryo2D engine"
 name = "breakout"
 path = "main.rs"
 
+[features]
+default = []
+# Enable puffin profiler (use with `ryo2d dev --profiler`)
+profiler = ["ryo2d/profiler"]
+
 [dependencies]
 # Use path dependency during development
 ryo2d = { path = "../../.." }
 serde = { version = "1.0", features = ["derive"] }
+
+# Optimize dependencies in dev builds for playable performance
+# Your game code stays unoptimized for fast compile times
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.ryo2d]
+opt-level = 2
