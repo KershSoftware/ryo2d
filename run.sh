@@ -6,8 +6,10 @@
 #     ./run.sh                         - Interactive example selection
 #     ./run.sh <example>               - Run specific example (shows mode menu)
 #     ./run.sh <example> --dev         - Run in dev mode with hot-reload
+#     ./run.sh <example> -p            - Run in dev mode with profiler window
 #     ./run.sh <example> --release     - Build and run release (no prompts)
 #     ./run.sh --dev <example>         - Same as --dev
+#     ./run.sh -p <example>            - Same as -p (dev + profiler)
 #     ./run.sh --release <example>     - Same as --release
 #     ./run.sh check               - Fast compilation check (engine only)
 #     ./run.sh check-all           - Check + lint all examples in parallel
@@ -34,6 +36,7 @@ fi
 # Parse arguments
 DEV_MODE=false
 RELEASE_MODE=false
+PROFILER_MODE=false
 COMMAND=""
 
 for arg in "$@"; do
@@ -41,6 +44,9 @@ for arg in "$@"; do
         DEV_MODE=true
     elif [[ "$arg" == "--release" || "$arg" == "-r" ]]; then
         RELEASE_MODE=true
+    elif [[ "$arg" == "-p" ]]; then
+        PROFILER_MODE=true
+        DEV_MODE=true  # Profiler implies dev mode
     elif [[ -z "$COMMAND" ]]; then
         COMMAND="$arg"
     fi
@@ -110,37 +116,43 @@ get_display_names() {
 }
 
 # Function to show run mode menu
+# Returns: 0=release, 1=dev, 2=dev with profiler (via RUN_MODE variable)
 show_run_mode_menu() {
     echo ""
     echo -e "    ${WHITE}[1] Build + Run (release)${NC}"
     echo -e "    ${WHITE}[2] Dev mode (hot-reload)${NC}"
+    echo -e "    ${MAGENTA}[3] Dev mode with profiler${NC}"
     echo ""
     echo -n "Select mode [1]: "
     read -n 1 -r selection
     echo ""
 
-    if [[ "$selection" == "2" ]]; then
-        return 0  # true = dev mode
-    else
-        return 1  # false = build+run mode
-    fi
+    case "$selection" in
+        2)
+            RUN_MODE=1  # dev mode
+            ;;
+        3)
+            RUN_MODE=2  # dev with profiler
+            ;;
+        *)
+            RUN_MODE=0  # release (default)
+            ;;
+    esac
 }
 
 # Function to run an example
+# $1 = example_name
+# $2 = run_mode (0=release, 1=dev, 2=dev+profiler) or "ask" to prompt
 run_example() {
     local example_name="$1"
-    local use_dev_mode="$2"
-    local ask_mode="$3"
+    local run_mode="$2"
     local example_path="$SCRIPT_DIR/examples/$example_name"
     local base_name=$(basename "$example_name")
 
-    # If ask_mode is true, prompt for mode selection
-    if [[ "$ask_mode" == "true" ]]; then
-        if show_run_mode_menu; then
-            use_dev_mode="true"
-        else
-            use_dev_mode="false"
-        fi
+    # If run_mode is "ask", prompt for mode selection
+    if [[ "$run_mode" == "ask" ]]; then
+        show_run_mode_menu
+        run_mode=$RUN_MODE
     fi
 
     echo ""
@@ -150,22 +162,33 @@ run_example() {
     local original_dir="$(pwd)"
     cd "$example_path"
 
-    if [[ "$use_dev_mode" == "true" ]]; then
-        echo -e "${MAGENTA}  Mode: Development (hot-reload enabled)${NC}"
-        echo ""
-        # Skip opt-check since engine examples don't need it
-        cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- dev --skip-opt-check || true
-    else
-        echo -e "${GREEN}  Mode: Build + Run (release)${NC}"
-        echo ""
-        echo -e "${YELLOW}Building...${NC}"
-        if cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- build; then
-            echo -e "${YELLOW}Running...${NC}"
-            cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- run || true
-        else
-            echo -e "${RED}Build failed!${NC}"
-        fi
-    fi
+    case "$run_mode" in
+        1)
+            # Dev mode
+            echo -e "${MAGENTA}  Mode: Development (hot-reload enabled)${NC}"
+            echo ""
+            cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- dev --skip-opt-check || true
+            ;;
+        2)
+            # Dev mode with profiler
+            echo -e "${MAGENTA}  Mode: Development with profiler${NC}"
+            echo -e "${GRAY}        A separate profiler window will open with real-time flamegraphs.${NC}"
+            echo ""
+            cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- dev --skip-opt-check -p || true
+            ;;
+        *)
+            # Release mode (default)
+            echo -e "${GREEN}  Mode: Build + Run (release)${NC}"
+            echo ""
+            echo -e "${YELLOW}Building...${NC}"
+            if cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- build; then
+                echo -e "${YELLOW}Running...${NC}"
+                cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --bin ryo2d -- run || true
+            else
+                echo -e "${RED}Build failed!${NC}"
+            fi
+            ;;
+    esac
 
     cd "$original_dir"
 }
@@ -281,7 +304,7 @@ show_example_list() {
     # Auto-select if only one example
     if [[ $count -eq 1 ]]; then
         echo -e "${GREEN}Auto-selecting only example: ${category_display[0]}${NC}"
-        run_example "${category_examples[0]}" "false" "true"
+        run_example "${category_examples[0]}" "ask"
         return
     fi
 
@@ -315,7 +338,7 @@ show_example_list() {
             if [[ "$selection" =~ ^[0-9]+$ ]]; then
                 local index=$((selection - 1))
                 if [[ $index -ge 0 && $index -lt $count ]]; then
-                    run_example "${category_examples[$index]}" "false" "true"
+                    run_example "${category_examples[$index]}" "ask"
                     return
                 fi
                 echo -e "${RED}Invalid selection: $selection (valid: 1-$count)${NC}"
@@ -605,8 +628,10 @@ case "$COMMAND" in
         echo "    ./run.sh                         - Interactive example selection"
         echo "    ./run.sh <example>               - Run specific example (shows mode menu)"
         echo "    ./run.sh <example> --dev         - Run in dev mode with hot-reload"
+        echo "    ./run.sh <example> -p            - Run in dev mode with profiler window"
         echo "    ./run.sh <example> --release     - Build and run release (no prompts)"
         echo "    ./run.sh --dev <example>         - Same as --dev"
+        echo "    ./run.sh -p <example>            - Same as -p (dev + profiler)"
         echo "    ./run.sh --release <example>     - Same as --release"
         echo "    ./run.sh check               - Fast compilation check (engine only)"
         echo "    ./run.sh check-all           - Check + lint all examples in parallel"
@@ -636,12 +661,14 @@ case "$COMMAND" in
             # Match by full path (demos/example or games/example) or just the name
             base=$(basename "$example")
             if [[ "$example" == "$COMMAND" || "$base" == "$COMMAND" ]]; then
-                if [[ "$DEV_MODE" == "true" ]]; then
-                    run_example "$example" "true" "false"
+                if [[ "$PROFILER_MODE" == "true" ]]; then
+                    run_example "$example" 2  # dev with profiler
+                elif [[ "$DEV_MODE" == "true" ]]; then
+                    run_example "$example" 1  # dev mode
                 elif [[ "$RELEASE_MODE" == "true" ]]; then
-                    run_example "$example" "false" "false"
+                    run_example "$example" 0  # release mode
                 else
-                    run_example "$example" "false" "true"
+                    run_example "$example" "ask"  # prompt for mode
                 fi
                 found=true
                 break
