@@ -184,9 +184,19 @@ The renderer (`renderer.rs`) handles:
 
 ## Future Work
 
-- [ ] Volumetric lights (god rays)
+- [x] Volumetric lights (god rays) ✅ Implemented
+- [x] Atmospheric scattering ✅ Implemented
+- [x] Volumetric spotlight beams ✅ Implemented
+- [ ] **Shadow System** 🚧 In Progress (see TASKS.md)
+  - [x] Hard shadows (shadow volumes) ✅ Implemented
+  - [ ] Drop shadows (sprite-based)
+  - [ ] Blob shadows (character grounding)
+  - [ ] Soft shadows (penumbra)
+  - [ ] Colored shadows
+  - [ ] Contact shadows
+  - [ ] Ambient occlusion
+  - [ ] Ray-marched shadows
 - [ ] Light cookies (textured lights)
-- [ ] Soft shadows (penumbra)
 - [ ] Normal maps for depth-aware lighting
 - [ ] Light layers (selective illumination)
 

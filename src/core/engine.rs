@@ -32,7 +32,7 @@ use super::graphics::{
   SpriteGpuRenderer, TileDirection, WgpuRenderer,
 };
 use super::input::InputState;
-use super::lighting::{Light2D, LightingRenderer};
+use super::lighting::{Light2D, LightOccluder2D, LightingRenderer, generate_shadow_geometry};
 use super::physics::{Collider, PhysicsConfig, RapierPhysicsWorld, RigidBody};
 use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
@@ -1042,6 +1042,18 @@ impl Engine {
         .map(|(t, l)| (t.clone(), l.clone()))
         .collect();
 
+      // Collect occluders for shadow casting
+      let occluders: Vec<_> = self
+        .world
+        .query_mut::<(&Transform, &LightOccluder2D)>()
+        .into_iter()
+        .map(|(t, o)| (t.clone(), o.clone()))
+        .collect();
+
+      // Check if any lights cast shadows and there are occluders
+      let has_shadow_casting_lights = lights.iter().any(|(_, l)| l.casts_shadows());
+      let should_render_shadows = has_shadow_casting_lights && !occluders.is_empty();
+
       // Auto-enable lighting when Light2D entities exist
       if !lights.is_empty()
         && let Some(ref mut l) = lighting
@@ -1120,6 +1132,15 @@ impl Engine {
                   camera_pos,
                   camera_zoom,
                 );
+
+                // Render shadows to subtract from light buffer
+                if should_render_shadows {
+                  let occluder_refs: Vec<(&Transform, &LightOccluder2D)> =
+                    occluders.iter().map(|(t, o)| (t, o)).collect();
+                  let shadow_geometry =
+                    generate_shadow_geometry(lights.iter().map(|(t, l)| (t, l)), &occluder_refs);
+                  lighting_renderer.render_shadows(device, queue, encoder, &shadow_geometry);
+                }
 
                 // Compose the lit scene from game texture
                 lighting_renderer.compose_from_texture(
@@ -2968,6 +2989,18 @@ impl ApplicationHandler for Engine {
             .map(|(t, l)| (t.clone(), l.clone()))
             .collect();
 
+          // Collect occluders for shadow casting
+          let occluders: Vec<_> = self
+            .world
+            .query_mut::<(&Transform, &LightOccluder2D)>()
+            .into_iter()
+            .map(|(t, o)| (t.clone(), o.clone()))
+            .collect();
+
+          // Check if any lights cast shadows and there are occluders
+          let has_shadow_casting_lights = lights.iter().any(|(_, l)| l.casts_shadows());
+          let should_render_shadows = has_shadow_casting_lights && !occluders.is_empty();
+
           // Auto-enable lighting when Light2D entities exist
           if !lights.is_empty()
             && let Some(ref mut l) = lighting
@@ -3049,6 +3082,17 @@ impl ApplicationHandler for Engine {
                       camera_pos,
                       camera_zoom,
                     );
+
+                    // Render shadows to subtract from light buffer
+                    if should_render_shadows {
+                      let occluder_refs: Vec<(&Transform, &LightOccluder2D)> =
+                        occluders.iter().map(|(t, o)| (t, o)).collect();
+                      let shadow_geometry = generate_shadow_geometry(
+                        lights.iter().map(|(t, l)| (t, l)),
+                        &occluder_refs,
+                      );
+                      lighting_renderer.render_shadows(device, queue, encoder, &shadow_geometry);
+                    }
 
                     // Compose the lit scene from game texture (has GPU sprites + CPU content)
                     lighting_renderer.compose_from_texture(

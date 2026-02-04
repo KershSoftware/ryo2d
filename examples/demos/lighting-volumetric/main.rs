@@ -220,9 +220,14 @@ impl VolumetricLightingScene {
     if let Some(entity) = self.spotlight_entity {
       // Update spotlight properties
       if let Some(mut light) = ctx.world.get_mut::<Light2D>(entity) {
-        *light = Light2D::spot(self.light_preset.color(), 400.0, self.spotlight_angle, self.spotlight_direction)
-          .with_intensity(1.2)
-          .with_volumetric();
+        *light = Light2D::spot(
+          self.light_preset.color(),
+          400.0,
+          self.spotlight_angle,
+          self.spotlight_direction,
+        )
+        .with_intensity(1.2)
+        .with_volumetric();
       }
 
       // Update position
@@ -260,7 +265,8 @@ impl VolumetricLightingScene {
     for (i, &entity) in self.torch_entities.iter().enumerate() {
       if let Some(mut light) = ctx.world.get_mut::<Light2D>(entity) {
         let phase = i as f32 * 1.7; // offset each torch
-        let flicker = 0.7 + 0.3 * (self.time * 8.0 + phase).sin() * (self.time * 12.0 + phase * 2.0).cos();
+        let flicker =
+          0.7 + 0.3 * (self.time * 8.0 + phase).sin() * (self.time * 12.0 + phase * 2.0).cos();
         light.set_intensity(flicker);
       }
     }
@@ -291,7 +297,12 @@ impl Scene for VolumetricLightingScene {
     ));
 
     // Create some pillars/obstacles
-    let pillar_positions = [(300.0, 500.0), (500.0, 450.0), (800.0, 480.0), (1000.0, 520.0)];
+    let pillar_positions = [
+      (300.0, 500.0),
+      (500.0, 450.0),
+      (800.0, 480.0),
+      (1000.0, 520.0),
+    ];
 
     for (i, (x, y)) in pillar_positions.iter().enumerate() {
       let height = 150.0 + (i as f32 * 30.0);
@@ -307,7 +318,11 @@ impl Scene for VolumetricLightingScene {
     }
 
     // Create floating platforms
-    let platform_positions = [(200.0, 350.0, 120.0), (600.0, 280.0, 150.0), (1000.0, 320.0, 100.0)];
+    let platform_positions = [
+      (200.0, 350.0, 120.0),
+      (600.0, 280.0, 150.0),
+      (1000.0, 320.0, 100.0),
+    ];
 
     for (i, (x, y, width)) in platform_positions.iter().enumerate() {
       let platform_sprite = ctx.assets.create_sprite(
@@ -322,29 +337,39 @@ impl Scene for VolumetricLightingScene {
     }
 
     // Create the main spotlight (player-controlled)
-    self.spotlight_entity = Some(ctx.world.spawn((
-      Transform::new(self.spotlight_x, 620.0),
-      Light2D::spot(self.light_preset.color(), 400.0, self.spotlight_angle, self.spotlight_direction)
+    self.spotlight_entity = Some(
+      ctx.world.spawn((
+        Transform::new(self.spotlight_x, 620.0),
+        Light2D::spot(
+          self.light_preset.color(),
+          400.0,
+          self.spotlight_angle,
+          self.spotlight_direction,
+        )
         .with_intensity(1.2)
         .with_volumetric(),
-    )));
+      )),
+    );
 
     // Create a visible sprite for the spotlight source
-    let spotlight_base = ctx
-      .assets
-      .create_sprite(Sprite::solid_rect(30, 20, 80, 80, 80, 255), "spotlight_base");
+    let spotlight_base = ctx.assets.create_sprite(
+      Sprite::solid_rect(30, 20, 80, 80, 80, 255),
+      "spotlight_base",
+    );
     ctx.world.spawn((
       Transform::new(self.spotlight_x, 610.0).with_pivot_center(),
       Renderable::sprite(spotlight_base).with_z_order(5),
     ));
 
     // Create the "sun" light source (for god rays)
-    self.sun_entity = Some(ctx.world.spawn((
-      Transform::new(self.sun_x, self.sun_y),
-      Light2D::point(Color::new(255, 250, 220, 255), 300.0)
-        .with_intensity(1.5)
-        .with_god_rays(),
-    )));
+    self.sun_entity = Some(
+      ctx.world.spawn((
+        Transform::new(self.sun_x, self.sun_y),
+        Light2D::point(Color::new(255, 250, 220, 255), 300.0)
+          .with_intensity(1.5)
+          .with_god_rays(),
+      )),
+    );
 
     // Sun visual (bright circle)
     let sun_sprite = ctx
@@ -487,7 +512,10 @@ impl Scene for VolumetricLightingScene {
 
     // Current settings
     ui.label(
-      &format!("Atmosphere: {} (1-6 to change)", self.atmosphere_preset.name()),
+      &format!(
+        "Atmosphere: {} (1-6 to change)",
+        self.atmosphere_preset.name()
+      ),
       10.0,
       40.0,
       highlight,
@@ -501,12 +529,19 @@ impl Scene for VolumetricLightingScene {
       ),
       10.0,
       65.0,
-      if self.god_rays_enabled { highlight } else { gray },
+      if self.god_rays_enabled {
+        highlight
+      } else {
+        gray
+      },
       bg,
     );
 
     ui.label(
-      &format!("God Rays Intensity: {:.1} (Up/Down)", self.god_rays_intensity),
+      &format!(
+        "God Rays Intensity: {:.1} (Up/Down)",
+        self.god_rays_intensity
+      ),
       10.0,
       90.0,
       gray,
@@ -538,7 +573,13 @@ impl Scene for VolumetricLightingScene {
       gray,
       bg,
     );
-    ui.label(&format!("  Position: {:.0} (A/D)", self.spotlight_x), 10.0, 225.0, gray, bg);
+    ui.label(
+      &format!("  Position: {:.0} (A/D)", self.spotlight_x),
+      10.0,
+      225.0,
+      gray,
+      bg,
+    );
 
     // Instructions at bottom
     ui.label("ESC to quit", 10.0, self.screen_h - 30.0, gray, bg);

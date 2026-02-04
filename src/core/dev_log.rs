@@ -101,6 +101,8 @@ struct GlobalLogBuffer {
   start_time: Instant,
   current_frame: u64,
   min_level: LogLevel,
+  /// Whether to also print logs to stdout
+  stdout_enabled: bool,
 }
 
 impl GlobalLogBuffer {
@@ -111,6 +113,7 @@ impl GlobalLogBuffer {
       start_time: Instant::now(),
       current_frame: 0,
       min_level: LogLevel::Trace,
+      stdout_enabled: true, // Default to enabled for classic behavior
     }
   }
 
@@ -127,6 +130,22 @@ impl GlobalLogBuffer {
 
     // Generate ISO timestamp (HH:MM:SS.mmm)
     let iso_timestamp = Self::format_iso_timestamp();
+
+    // Also print to stdout if enabled
+    if self.stdout_enabled {
+      let module_str = module
+        .as_ref()
+        .map(|m| format!("[{}] ", m))
+        .unwrap_or_default();
+      println!(
+        "{} [{}/{}] {}{}",
+        iso_timestamp,
+        level.name(),
+        context.name(),
+        module_str,
+        message
+      );
+    }
 
     let entry = LogEntry {
       level,
@@ -227,6 +246,26 @@ pub fn entry_count() -> usize {
 pub fn clear() {
   if let Ok(mut buffer) = get_buffer().lock() {
     buffer.entries.clear();
+  }
+}
+
+/// Enable or disable stdout output for log messages.
+///
+/// When enabled (default), log messages are printed to stdout in addition
+/// to being stored in the log buffer. This provides classic terminal output
+/// alongside the in-game logger window.
+pub fn set_stdout_enabled(enabled: bool) {
+  if let Ok(mut buffer) = get_buffer().lock() {
+    buffer.stdout_enabled = enabled;
+  }
+}
+
+/// Check if stdout logging is enabled.
+pub fn is_stdout_enabled() -> bool {
+  if let Ok(buffer) = get_buffer().lock() {
+    buffer.stdout_enabled
+  } else {
+    false
   }
 }
 

@@ -9,7 +9,7 @@ mod parallax;
 mod upload;
 
 pub use clear::ClearPass;
-pub use lighting::{LightData, LightingPass};
+pub use lighting::{LightData, LightingPass, OccluderData};
 pub use parallax::{GpuParallaxLayer, ParallaxPass};
 pub use upload::UploadPass;
 

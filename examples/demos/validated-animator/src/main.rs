@@ -86,7 +86,10 @@ impl ValidatedAnimatorDemo {
     let frames: Vec<SpriteHandle> = (0..frame_count)
       .map(|i| {
         let color = Self::state_color(name, i);
-        SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, color.0, color.1, color.2, 255), name)
+        SpriteHandle::from_sprite(
+          Sprite::solid_rect(64, 64, color.0, color.1, color.2, 255),
+          name,
+        )
       })
       .collect();
 
@@ -97,11 +100,11 @@ impl ValidatedAnimatorDemo {
     // Each state has a base color, frames vary in brightness
     let brightness = 180 + ((frame as i32 * 15) % 75) as u8;
     match state {
-      "idle" => (0, brightness, 0),             // Green
-      "walk" => (0, brightness, brightness),    // Cyan
-      "attack" => (brightness, brightness, 0),  // Yellow
+      "idle" => (0, brightness, 0),              // Green
+      "walk" => (0, brightness, brightness),     // Cyan
+      "attack" => (brightness, brightness, 0),   // Yellow
       "hurt" => (brightness, brightness / 2, 0), // Orange
-      "death" => (brightness, 0, 0),            // Red
+      "death" => (brightness, 0, 0),             // Red
       _ => (brightness, brightness, brightness), // White
     }
   }
@@ -191,7 +194,12 @@ impl Scene for ValidatedAnimatorDemo {
       _ => Color::WHITE,
     };
 
-    ui.draw_text("Current State:", SCREEN_WIDTH / 2.0 - 60.0, state_y, Color::WHITE);
+    ui.draw_text(
+      "Current State:",
+      SCREEN_WIDTH / 2.0 - 60.0,
+      state_y,
+      Color::WHITE,
+    );
     ui.draw_text(
       &current.to_uppercase(),
       SCREEN_WIDTH / 2.0 - 30.0,
@@ -214,7 +222,12 @@ impl Scene for ValidatedAnimatorDemo {
 
     // Draw border
     ui.draw_rect(
-      Rect::new(preview_x - 2.0, preview_y - 2.0, preview_size + 4.0, preview_size + 4.0),
+      Rect::new(
+        preview_x - 2.0,
+        preview_y - 2.0,
+        preview_size + 4.0,
+        preview_size + 4.0,
+      ),
       Color::hex(0x444444),
     );
 

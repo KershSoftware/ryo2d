@@ -3,7 +3,8 @@
 //! This renderer collects all lights in the scene and renders them
 //! to an accumulation buffer, which is then used to light the scene.
 
-use super::{AmbientLight, Atmosphere, Light2D};
+use super::shadow::{MAX_SHADOW_VERTICES, ShadowGeometry, ShadowVertex};
+use super::{AmbientLight, Atmosphere, Light2D, LightOccluder2D};
 use crate::core::ecs::{Transform, Vec2};
 use crate::core::shaders::EffectsManager;
 use wgpu::util::DeviceExt;
@@ -98,6 +99,14 @@ pub struct LightingRenderer {
   /// Copy of scene texture for compose shader (workaround for texture sampling issue)
   scene_copy_texture: wgpu::Texture,
   scene_copy_view: wgpu::TextureView,
+
+  // Shadow rendering resources
+  /// Pipeline for rendering shadow geometry
+  shadow_pipeline: wgpu::RenderPipeline,
+  /// Vertex buffer for shadow geometry
+  shadow_vertex_buffer: wgpu::Buffer,
+  /// Bind group layout for shadow rendering
+  shadow_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl LightingRenderer {
@@ -382,6 +391,118 @@ impl LightingRenderer {
     });
     let scene_copy_view = scene_copy_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+    // === Shadow Pipeline Setup ===
+
+    // Shadow bind group layout (same globals as lights)
+    let shadow_bind_group_layout =
+      device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Shadow Bind Group Layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+          binding: 0,
+          visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+          ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+          },
+          count: None,
+        }],
+      });
+
+    // Shadow vertex buffer
+    let shadow_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("Shadow Vertex Buffer"),
+      size: (std::mem::size_of::<ShadowVertex>() * MAX_SHADOW_VERTICES) as u64,
+      usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+      mapped_at_creation: false,
+    });
+
+    // Shadow shader
+    let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+      label: Some("Shadow Shader"),
+      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/core/shadow.wgsl").into()),
+    });
+
+    let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: Some("Shadow Pipeline Layout"),
+      bind_group_layouts: &[&shadow_bind_group_layout],
+      push_constant_ranges: &[],
+    });
+
+    // Shadow pipeline with reverse-subtract blending
+    let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+      label: Some("Shadow Pipeline"),
+      layout: Some(&shadow_pipeline_layout),
+      vertex: wgpu::VertexState {
+        module: &shadow_shader,
+        entry_point: "vs_main",
+        buffers: &[wgpu::VertexBufferLayout {
+          array_stride: std::mem::size_of::<ShadowVertex>() as u64,
+          step_mode: wgpu::VertexStepMode::Vertex,
+          attributes: &[
+            // position: vec2<f32>
+            wgpu::VertexAttribute {
+              offset: 0,
+              shader_location: 0,
+              format: wgpu::VertexFormat::Float32x2,
+            },
+            // light_pos: vec2<f32>
+            wgpu::VertexAttribute {
+              offset: 8,
+              shader_location: 1,
+              format: wgpu::VertexFormat::Float32x2,
+            },
+            // light_radius: f32
+            wgpu::VertexAttribute {
+              offset: 16,
+              shader_location: 2,
+              format: wgpu::VertexFormat::Float32,
+            },
+          ],
+        }],
+        compilation_options: Default::default(),
+      },
+      fragment: Some(wgpu::FragmentState {
+        module: &shadow_shader,
+        entry_point: "fs_main",
+        targets: &[Some(wgpu::ColorTargetState {
+          format: wgpu::TextureFormat::Rgba16Float,
+          // Reverse subtract: dst = dst - src (subtract shadow from light)
+          blend: Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+              src_factor: wgpu::BlendFactor::One,
+              dst_factor: wgpu::BlendFactor::One,
+              operation: wgpu::BlendOperation::ReverseSubtract,
+            },
+            alpha: wgpu::BlendComponent {
+              src_factor: wgpu::BlendFactor::Zero,
+              dst_factor: wgpu::BlendFactor::One,
+              operation: wgpu::BlendOperation::Add,
+            },
+          }),
+          write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+      }),
+      primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        strip_index_format: None,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: None,
+        polygon_mode: wgpu::PolygonMode::Fill,
+        unclipped_depth: false,
+        conservative: false,
+      },
+      depth_stencil: None,
+      multisample: wgpu::MultisampleState {
+        count: 1,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+      },
+      multiview: None,
+      cache: None,
+    });
+
     Self {
       light_texture,
       light_texture_view,
@@ -401,6 +522,9 @@ impl LightingRenderer {
       ui_affected_by_lighting: false, // By default, UI is always visible
       scene_copy_texture,
       scene_copy_view,
+      shadow_pipeline,
+      shadow_vertex_buffer,
+      shadow_bind_group_layout,
     }
   }
 
@@ -659,6 +783,102 @@ impl LightingRenderer {
         render_pass.draw(0..6, 0..instances.len() as u32);
       }
     }
+  }
+
+  /// Render shadows to subtract from the light accumulation buffer.
+  ///
+  /// Call this after `render_lights()` to apply shadow occlusion.
+  ///
+  /// # Arguments
+  /// * `device` - The wgpu device
+  /// * `queue` - The wgpu queue
+  /// * `encoder` - The command encoder
+  /// * `shadow_geometry` - Pre-generated shadow geometry from `generate_shadow_geometry()`
+  pub fn render_shadows(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    shadow_geometry: &ShadowGeometry,
+  ) {
+    if shadow_geometry.is_empty() {
+      return;
+    }
+
+    // Upload shadow vertices
+    queue.write_buffer(
+      &self.shadow_vertex_buffer,
+      0,
+      bytemuck::cast_slice(&shadow_geometry.vertices),
+    );
+
+    // Create bind group for shadow rendering (reuse globals buffer)
+    let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("Shadow Bind Group"),
+      layout: &self.shadow_bind_group_layout,
+      entries: &[wgpu::BindGroupEntry {
+        binding: 0,
+        resource: self.globals_buffer.as_entire_binding(),
+      }],
+    });
+
+    // Render shadows with reverse-subtract blending to cut from light buffer
+    {
+      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Shadow Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &self.light_texture_view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Load, // Keep existing light accumulation
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+      });
+
+      render_pass.set_pipeline(&self.shadow_pipeline);
+      render_pass.set_bind_group(0, &shadow_bind_group, &[]);
+      render_pass.set_vertex_buffer(0, self.shadow_vertex_buffer.slice(..));
+      render_pass.draw(0..shadow_geometry.vertex_count(), 0..1);
+    }
+  }
+
+  /// Convenience method to render lights and shadows together.
+  ///
+  /// # Arguments
+  /// * `device` - The wgpu device
+  /// * `queue` - The wgpu queue
+  /// * `encoder` - The command encoder
+  /// * `lights` - Iterator of (transform, light) pairs
+  /// * `occluders` - Slice of (transform, occluder) pairs for shadow casting
+  /// * `camera_pos` - Camera position for view matrix
+  /// * `camera_zoom` - Camera zoom level
+  pub fn render_lights_with_shadows<'a>(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    lights: impl Iterator<Item = (&'a Transform, &'a Light2D)> + Clone,
+    occluders: &[(&'a Transform, &'a LightOccluder2D)],
+    camera_pos: Vec2,
+    camera_zoom: f32,
+  ) {
+    // First render all lights
+    self.render_lights(
+      device,
+      queue,
+      encoder,
+      lights.clone(),
+      camera_pos,
+      camera_zoom,
+    );
+
+    // Generate and render shadows
+    let shadow_geometry = super::shadow::generate_shadow_geometry(lights, occluders);
+    self.render_shadows(device, queue, encoder, &shadow_geometry);
   }
 
   /// Compose the lit scene by combining the scene texture with the light buffer.

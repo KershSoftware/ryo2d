@@ -67,11 +67,12 @@ impl LightOccluder2D {
   pub fn rect(width: f32, height: f32) -> Self {
     let hw = width / 2.0;
     let hh = height / 2.0;
+    // CCW winding in screen space (Y-down): top-left → bottom-left → bottom-right → top-right
     Self::polygon(vec![
       Vec2::new(-hw, -hh), // Top-left
-      Vec2::new(hw, -hh),  // Top-right
-      Vec2::new(hw, hh),   // Bottom-right
       Vec2::new(-hw, hh),  // Bottom-left
+      Vec2::new(hw, hh),   // Bottom-right
+      Vec2::new(hw, -hh),  // Top-right
     ])
   }
 
@@ -85,11 +86,12 @@ impl LightOccluder2D {
   pub fn rect_offset(x: f32, y: f32, width: f32, height: f32) -> Self {
     let hw = width / 2.0;
     let hh = height / 2.0;
+    // CCW winding in screen space (Y-down)
     Self::polygon(vec![
-      Vec2::new(x - hw, y - hh),
-      Vec2::new(x + hw, y - hh),
-      Vec2::new(x + hw, y + hh),
-      Vec2::new(x - hw, y + hh),
+      Vec2::new(x - hw, y - hh), // Top-left
+      Vec2::new(x - hw, y + hh), // Bottom-left
+      Vec2::new(x + hw, y + hh), // Bottom-right
+      Vec2::new(x + hw, y - hh), // Top-right
     ])
   }
 

@@ -1,0 +1,12 @@
+[package]
+name = "shadows"
+version = "0.1.0"
+edition = "2024"
+description = "2D Shadow casting demo - hard shadows from light occluders"
+
+[[bin]]
+name = "shadows"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../../" }
