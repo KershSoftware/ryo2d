@@ -199,6 +199,14 @@ impl InputState {
     self.keys_repeated.clear();
   }
 
+  /// Consume a specific key press, preventing it from being detected again this frame.
+  ///
+  /// Used by the engine for debug keys (F1-F4) which are processed outside
+  /// the fixed timestep loop and need to fire exactly once.
+  pub(crate) fn consume_key(&mut self, key: KeyCode) {
+    self.keys_pressed.remove(&key);
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Keyboard Input
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1132,5 +1140,28 @@ mod tests {
       (1.0, 2.0),
       "scroll_delta should persist"
     );
+  }
+
+  #[test]
+  fn consume_key_removes_specific_key_only() {
+    let mut input = InputState::new();
+
+    // Press multiple keys
+    input.handle_keyboard(KeyCode::F1, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::F2, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
+
+    // Verify all are pressed
+    assert!(input.key_pressed(KeyCode::F1));
+    assert!(input.key_pressed(KeyCode::F2));
+    assert!(input.key_pressed(KeyCode::Space));
+
+    // Consume only F1
+    input.consume_key(KeyCode::F1);
+
+    // F1 should be consumed, others should remain
+    assert!(!input.key_pressed(KeyCode::F1), "F1 should be consumed");
+    assert!(input.key_pressed(KeyCode::F2), "F2 should remain");
+    assert!(input.key_pressed(KeyCode::Space), "Space should remain");
   }
 }

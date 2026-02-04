@@ -18,6 +18,9 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // Check for --skip-opt-check flag (used by engine run scripts for examples)
   let skip_opt_check = args.iter().any(|a| a == "--skip-opt-check");
 
+  // Check for --profiler / -p flag (enables puffin profiling)
+  let enable_profiler = args.iter().any(|a| a == "--profiler" || a == "-p");
+
   let workspace = discover_workspace()?;
   let project_name = workspace.name();
 
@@ -26,27 +29,49 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     check_dev_profile_optimization(&workspace)?;
   }
 
-  Output::status("Starting", &format!("{} in dev mode...", project_name));
+  if enable_profiler {
+    Output::status(
+      "Starting",
+      &format!("{} in dev mode with profiler...", project_name),
+    );
+    println!("           A separate profiler window will open with real-time flamegraphs.");
+    println!();
+  } else {
+    Output::status("Starting", &format!("{} in dev mode...", project_name));
+  }
 
   // Find workspace root's target directory for shared dependency caching
   let target_dir = find_workspace_target_dir(workspace.root());
 
+  // Build cargo command
+  let mut cmd = Command::new("cargo");
+  cmd.arg("run");
+
+  // Add profiler feature flag if requested
+  if enable_profiler {
+    cmd.arg("--features").arg("profiler");
+    // Also set env var to enable puffin at runtime (overrides Ryo.toml)
+    cmd.env("RYO_PUFFIN_PROFILER", "1");
+  }
+
+  // Use shared target directory for dependency caching
+  cmd.env("CARGO_TARGET_DIR", &target_dir);
+  cmd.current_dir(workspace.root());
+
   // For now, just run cargo run (debug build)
   // Future: Add file watching with notify crate
-  let status = Command::new("cargo")
-    .arg("run")
-    // Use shared target directory for dependency caching
-    .env("CARGO_TARGET_DIR", &target_dir)
-    .current_dir(workspace.root())
-    .status()
-    .map_err(|e| CliError::CommandFailed {
-      command: "cargo run".to_string(),
-      message: e.to_string(),
-    })?;
+  let status = cmd.status().map_err(|e| CliError::CommandFailed {
+    command: "cargo run".to_string(),
+    message: e.to_string(),
+  })?;
 
   if !status.success() {
     let code = status.code().unwrap_or(-1);
     if code != 0 {
+      // Check if the failure was due to missing profiler feature
+      if enable_profiler {
+        print_profiler_feature_help(&workspace);
+      }
       return Err(CliError::BuildFailed(format!(
         "Development build failed with exit code {}",
         code
@@ -55,6 +80,30 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   }
 
   Ok(())
+}
+
+/// Print help for adding the profiler feature if it's missing
+fn print_profiler_feature_help(workspace: &crate::core::config::Workspace) {
+  let cargo_toml_path = workspace.root().join("Cargo.toml");
+
+  // Check if Cargo.toml has the profiler feature defined
+  if let Ok(contents) = fs::read_to_string(&cargo_toml_path) {
+    let has_profiler_feature = contents.contains("profiler")
+      && (contents.contains("[features]") || contents.contains("features ="));
+
+    if !has_profiler_feature {
+      println!();
+      Output::warning("The 'profiler' feature may not be configured in your project.");
+      println!();
+      println!("  Add this to your Cargo.toml to enable profiling:");
+      println!();
+      println!("      [features]");
+      println!("      profiler = [\"ryo2d/profiler\"]");
+      println!();
+      println!("  This forwards the profiler feature to the ryo2d dependency.");
+      println!();
+    }
+  }
 }
 
 /// Check if the project has dev profile optimization configured
@@ -174,6 +223,7 @@ USAGE:
 
 OPTIONS:
     -h, --help          Show this help message
+    -p, --profiler      Enable puffin hierarchical profiler (HTTP server on port 8585)
     --skip-opt-check    Skip the dev profile optimization check
 
 DESCRIPTION:
@@ -184,8 +234,20 @@ DESCRIPTION:
 
     This is the recommended command during development.
 
+PROFILING:
+    Use --profiler to enable the puffin hierarchical profiler:
+
+        ryo2d dev --profiler
+
+    This automatically launches puffin_viewer if installed. If not installed:
+
+        cargo install puffin_viewer
+
+    Alternatively, set `puffin_profiler = true` in your Ryo.toml [debug] section.
+
 EXAMPLE:
-    ryo2d dev
+    ryo2d dev              # Normal development mode
+    ryo2d dev --profiler   # With puffin profiler enabled
 "#
   );
 }

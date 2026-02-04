@@ -342,8 +342,8 @@ mod tests {
     let result = generate(100.0, 80.0, &config, &mut rng);
 
     for &(x, y) in &result.points {
-      assert!(x >= 0.0 && x < 100.0);
-      assert!(y >= 0.0 && y < 80.0);
+      assert!((0.0..100.0).contains(&x));
+      assert!((0.0..80.0).contains(&y));
     }
   }
 

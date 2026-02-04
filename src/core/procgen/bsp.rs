@@ -430,7 +430,7 @@ mod tests {
     let grid = generate(64, 64, &config, &mut rng);
 
     // Should have rooms
-    assert!(grid.regions().len() > 0);
+    assert!(!grid.regions().is_empty());
     assert!(grid.count_type(TileType::Floor) > 0);
   }
 
@@ -479,15 +479,15 @@ mod tests {
     let mut rng = SeededRng::new(12345);
 
     let dungeon = generate(64, 64, &BspConfig::dungeon_preset(), &mut rng);
-    assert!(dungeon.regions().len() > 0);
+    assert!(!dungeon.regions().is_empty());
 
     rng.reset();
     let maze = generate(64, 64, &BspConfig::maze_preset(), &mut rng);
-    assert!(maze.regions().len() > 0);
+    assert!(!maze.regions().is_empty());
 
     rng.reset();
     let halls = generate(64, 64, &BspConfig::halls_preset(), &mut rng);
-    assert!(halls.regions().len() > 0);
+    assert!(!halls.regions().is_empty());
   }
 
   #[test]

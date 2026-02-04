@@ -204,4 +204,7 @@ pub mod prelude {
     RegionsConnected, SeededRng, TileType, WfcConfig, WfcDirection, WfcResult, WfcTile,
     poisson_points,
   };
+
+  // Profiling (macros work as no-ops when `profiler` feature is disabled)
+  pub use crate::core::profiler::{profile_function, profile_scope};
 }

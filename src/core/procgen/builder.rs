@@ -222,7 +222,7 @@ mod tests {
       .bsp(bsp::BspConfig::default())
       .build();
 
-    assert!(result.grid().regions().len() > 0);
+    assert!(!result.grid().regions().is_empty());
   }
 
   #[test]
