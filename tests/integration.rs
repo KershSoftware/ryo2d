@@ -34,3 +34,6 @@ mod knockback;
 
 #[path = "integration/squash_stretch.rs"]
 mod squash_stretch;
+
+#[path = "integration/trail.rs"]
+mod trail;

@@ -463,7 +463,7 @@ impl TrailRenderer {
   /// The trail's points are converted to triangle strip vertices.
   /// If the trail has a texture, it will be rendered with texture mapping.
   pub fn add_trail(&mut self, trail: &Trail2D, _transform: &Transform) {
-    if !self.enabled || trail.point_count() < 2 {
+    if !self.enabled || !trail.is_visible() || trail.point_count() < 2 {
       return;
     }
 
@@ -620,7 +620,7 @@ impl TrailRenderer {
     trail: &Trail2D,
     transform: &Transform,
   ) {
-    if !self.enabled || trail.point_count() < 2 {
+    if !self.enabled || !trail.is_visible() || trail.point_count() < 2 {
       return;
     }
 

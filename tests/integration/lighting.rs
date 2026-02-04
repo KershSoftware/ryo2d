@@ -221,6 +221,304 @@ fn light2d_builder_methods() {
 }
 
 // ============================================================================
+// VOLUMETRIC LIGHTING TESTS
+// ============================================================================
+
+/// Test VolumetricSettings creation and defaults
+#[test]
+fn volumetric_settings_creation() {
+  // Default is disabled
+  let default_settings = VolumetricSettings::default();
+  assert!(!default_settings.enabled);
+  assert!(!default_settings.god_rays);
+
+  // Custom settings
+  let custom = VolumetricSettings::new(0.8, 0.6, 0.4);
+  assert!(custom.enabled);
+  assert!((custom.intensity - 0.8).abs() < 0.001);
+  assert!((custom.density - 0.6).abs() < 0.001);
+  assert!((custom.scattering - 0.4).abs() < 0.001);
+  assert!(!custom.god_rays);
+}
+
+/// Test VolumetricSettings presets
+#[test]
+fn volumetric_settings_presets() {
+  let flashlight = VolumetricSettings::flashlight();
+  assert!(flashlight.enabled);
+  assert!(flashlight.intensity > 0.0);
+  assert!(flashlight.density > 0.0);
+  assert!(!flashlight.god_rays);
+
+  let strong = VolumetricSettings::strong_beam();
+  assert!(strong.enabled);
+  assert!(strong.intensity >= flashlight.intensity);
+
+  let subtle = VolumetricSettings::subtle_beam();
+  assert!(subtle.enabled);
+  assert!(subtle.intensity < flashlight.intensity);
+
+  let god_rays_only = VolumetricSettings::god_rays_only();
+  assert!(god_rays_only.enabled);
+  assert!(god_rays_only.god_rays);
+  assert_eq!(god_rays_only.intensity, 0.0);
+}
+
+/// Test VolumetricSettings builder methods
+#[test]
+fn volumetric_settings_builders() {
+  let settings = VolumetricSettings::enabled()
+    .with_intensity(0.7)
+    .with_density(0.5)
+    .with_scattering(0.3)
+    .with_god_rays();
+
+  assert!(settings.enabled);
+  assert!((settings.intensity - 0.7).abs() < 0.001);
+  assert!((settings.density - 0.5).abs() < 0.001);
+  assert!((settings.scattering - 0.3).abs() < 0.001);
+  assert!(settings.god_rays);
+}
+
+/// Test VolumetricSettings value clamping
+#[test]
+fn volumetric_settings_clamping() {
+  // Values over 1.0 should clamp
+  let over = VolumetricSettings::new(2.0, 1.5, 3.0);
+  assert_eq!(over.intensity, 1.0);
+  assert_eq!(over.density, 1.0);
+  assert_eq!(over.scattering, 1.0);
+
+  // Negative values should clamp to 0.0
+  let under = VolumetricSettings::new(-0.5, -1.0, -0.1);
+  assert_eq!(under.intensity, 0.0);
+  assert_eq!(under.density, 0.0);
+  assert_eq!(under.scattering, 0.0);
+}
+
+/// Test VolumetricSettings GPU packing
+#[test]
+fn volumetric_settings_gpu_packing() {
+  let settings = VolumetricSettings::new(0.5, 0.3, 0.2).with_god_rays();
+  let packed = settings.to_gpu_vec4();
+
+  assert!((packed[0] - 0.5).abs() < 0.001); // intensity
+  assert!((packed[1] - 0.3).abs() < 0.001); // density
+  assert!((packed[2] - 0.2).abs() < 0.001); // scattering
+  assert!((packed[3] - 1.0).abs() < 0.001); // god_rays = true
+
+  // Disabled settings pack to zero
+  let disabled = VolumetricSettings::default();
+  let packed_disabled = disabled.to_gpu_vec4();
+  assert_eq!(packed_disabled[0], 0.0);
+  assert_eq!(packed_disabled[1], 0.0);
+  assert_eq!(packed_disabled[2], 0.0);
+  assert_eq!(packed_disabled[3], 0.0);
+}
+
+/// Test Light2D with volumetric settings
+#[test]
+fn light2d_with_volumetric() {
+  // Point light with volumetric
+  let point = Light2D::point(Color::WHITE, 100.0).with_volumetric();
+  assert!(point.has_volumetric());
+  assert!(!point.contributes_to_god_rays());
+
+  // Flashlight with volumetric (uses flashlight preset)
+  let flashlight = Light2D::flashlight(200.0, 0.0).with_volumetric();
+  assert!(flashlight.has_volumetric());
+  let vol = flashlight.volumetric().unwrap();
+  assert!(vol.intensity > 0.0);
+
+  // Light with god rays
+  let sun = Light2D::point(Color::WHITE, 500.0).with_god_rays();
+  assert!(sun.has_volumetric());
+  assert!(sun.contributes_to_god_rays());
+
+  // Light with both volumetric and god rays
+  let both = Light2D::spot(Color::WHITE, 200.0, 45.0, 0.0).with_volumetric_and_god_rays();
+  assert!(both.has_volumetric());
+  assert!(both.contributes_to_god_rays());
+}
+
+/// Test Light2D with custom volumetric settings
+#[test]
+fn light2d_with_custom_volumetric() {
+  let custom_settings = VolumetricSettings::new(0.9, 0.7, 0.5).with_god_rays();
+
+  let light =
+    Light2D::spot(Color::WHITE, 300.0, 60.0, 45.0).with_volumetric_settings(custom_settings);
+
+  assert!(light.has_volumetric());
+  assert!(light.contributes_to_god_rays());
+
+  let vol = light.volumetric().unwrap();
+  assert!((vol.intensity - 0.9).abs() < 0.001);
+  assert!((vol.density - 0.7).abs() < 0.001);
+  assert!((vol.scattering - 0.5).abs() < 0.001);
+}
+
+/// Test Light2D volumetric modification
+#[test]
+fn light2d_volumetric_modification() {
+  let mut light = Light2D::flashlight(200.0, 0.0);
+  assert!(light.volumetric().is_none());
+
+  // Add volumetric
+  let settings = VolumetricSettings::strong_beam();
+  light.set_volumetric(Some(settings));
+  assert!(light.has_volumetric());
+
+  // Remove volumetric
+  light.set_volumetric(None);
+  assert!(!light.has_volumetric());
+}
+
+// ============================================================================
+// ATMOSPHERE TESTS
+// ============================================================================
+
+/// Test Atmosphere creation and defaults
+#[test]
+fn atmosphere_creation() {
+  let default_atm = Atmosphere::default();
+  assert!(!default_atm.god_rays_enabled);
+  assert_eq!(default_atm.density, 0.0);
+
+  let custom = Atmosphere::new(0.5, Color::new(200, 200, 220, 255));
+  assert!((custom.density - 0.5).abs() < 0.001);
+  assert_eq!(custom.color.r, 200);
+}
+
+/// Test Atmosphere presets
+#[test]
+fn atmosphere_presets() {
+  let clear = Atmosphere::clear();
+  assert_eq!(clear.density, 0.0);
+  assert!(!clear.god_rays_enabled);
+
+  let dusty = Atmosphere::dusty();
+  assert!(dusty.density > 0.0);
+  assert!(dusty.god_rays_enabled);
+
+  let foggy = Atmosphere::foggy();
+  assert!(foggy.density > dusty.density);
+
+  let hazy = Atmosphere::hazy();
+  assert!(hazy.density > 0.0);
+  assert!(hazy.density < dusty.density);
+}
+
+/// Test Atmosphere god rays configuration
+#[test]
+fn atmosphere_god_rays_config() {
+  let atm = Atmosphere::dusty();
+
+  assert!(atm.god_rays_enabled);
+  assert!(atm.god_rays_samples > 0);
+  assert!(atm.god_rays_decay > 0.0 && atm.god_rays_decay < 1.0);
+  assert!(atm.god_rays_intensity > 0.0);
+}
+
+/// Test Atmosphere builder methods
+#[test]
+fn atmosphere_builders() {
+  let atm = Atmosphere::clear()
+    .with_density(0.4)
+    .with_god_rays()
+    .with_god_rays_quality(GodRaysQuality::High);
+
+  assert!((atm.density - 0.4).abs() < 0.001);
+  assert!(atm.god_rays_enabled);
+  assert!(atm.god_rays_samples >= 24); // High quality
+}
+
+/// Test GodRaysQuality presets
+#[test]
+fn god_rays_quality_presets() {
+  let low = GodRaysQuality::Low;
+  let medium = GodRaysQuality::Medium;
+  let high = GodRaysQuality::High;
+
+  assert!(low.samples() < medium.samples());
+  assert!(medium.samples() < high.samples());
+}
+
+// ============================================================================
+// VOLUMETRIC + WORLD INTEGRATION TESTS
+// ============================================================================
+
+/// Test volumetric lights can be spawned and queried
+#[test]
+fn volumetric_lights_in_world() {
+  let mut world = World::new();
+
+  // Spawn lights with various volumetric settings
+  let flashlight = world.spawn((
+    Transform::new(100.0, 100.0),
+    Light2D::flashlight(200.0, 0.0).with_volumetric(),
+  ));
+
+  let sun = world.spawn((
+    Transform::new(0.0, 0.0),
+    Light2D::point(Color::WHITE, 500.0).with_god_rays(),
+  ));
+
+  let normal_light = world.spawn((Transform::new(200.0, 200.0), Light2D::torch(100.0)));
+
+  // Query and verify
+  let light1 = world.get::<Light2D>(flashlight).unwrap();
+  assert!(light1.has_volumetric());
+  assert!(!light1.contributes_to_god_rays());
+
+  let light2 = world.get::<Light2D>(sun).unwrap();
+  assert!(light2.has_volumetric());
+  assert!(light2.contributes_to_god_rays());
+
+  let light3 = world.get::<Light2D>(normal_light).unwrap();
+  assert!(!light3.has_volumetric());
+}
+
+/// Test filtering god ray contributing lights
+#[test]
+fn filter_god_ray_lights() {
+  let mut world = World::new();
+
+  // Mix of lights with and without god rays
+  world.spawn((
+    Transform::new(0.0, 0.0),
+    Light2D::point(Color::WHITE, 500.0).with_god_rays(),
+  ));
+  world.spawn((
+    Transform::new(100.0, 100.0),
+    Light2D::flashlight(200.0, 0.0).with_volumetric(),
+  ));
+  world.spawn((
+    Transform::new(200.0, 200.0),
+    Light2D::point(Color::WHITE, 300.0).with_god_rays(),
+  ));
+  world.spawn((Transform::new(300.0, 300.0), Light2D::torch(100.0)));
+
+  // Count lights that contribute to god rays
+  let god_ray_count = world
+    .query::<&Light2D>()
+    .iter()
+    .filter(|light| light.contributes_to_god_rays())
+    .count();
+
+  assert_eq!(god_ray_count, 2, "Should have 2 god ray lights");
+
+  // Count lights with any volumetric effect
+  let volumetric_count = world
+    .query::<&Light2D>()
+    .iter()
+    .filter(|light| light.has_volumetric())
+    .count();
+
+  assert_eq!(volumetric_count, 3, "Should have 3 volumetric lights");
+}
+
+// ============================================================================
 // LIGHTING + WORLD INTEGRATION TESTS
 // ============================================================================
 

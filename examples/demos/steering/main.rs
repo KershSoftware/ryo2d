@@ -93,10 +93,12 @@ impl SteeringDemoScene {
     let handle = SpriteHandle::from_sprite(sprite, format!("boid_{}", self.boids.len()));
 
     // Trail with boid's color
-    let trail = Trail2D::new(Color::new(r, g, b, 120), 2.0)
-      .with_length(20)
+    // min_distance must be less than distance traveled per frame:
+    // at 120 px/s and 60 FPS = 2 px/frame, so use 1.0 to capture movement
+    let trail = Trail2D::new(Color::new(r, g, b, 200), 3.0)
+      .with_length(25)
       .with_fade(true)
-      .with_min_distance(4.0);
+      .with_min_distance(1.0);
 
     let entity = ctx.world.spawn((
       Boid {
@@ -217,18 +219,30 @@ impl SteeringDemoScene {
         transform.x += new_vel.x * dt;
         transform.y += new_vel.y * dt;
 
-        // Wrap around edges
+        // Wrap around edges - clear trail when wrapping to prevent line across screen
+        let mut wrapped = false;
         if transform.x < 0.0 {
           transform.x += self.screen_w;
+          wrapped = true;
         }
         if transform.x > self.screen_w {
           transform.x -= self.screen_w;
+          wrapped = true;
         }
         if transform.y < 0.0 {
           transform.y += self.screen_h;
+          wrapped = true;
         }
         if transform.y > self.screen_h {
           transform.y -= self.screen_h;
+          wrapped = true;
+        }
+
+        // Clear trail when boid wraps to prevent line shooting across screen
+        if wrapped {
+          if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
+            trail.clear();
+          }
         }
 
         // Update rotation to face velocity
@@ -295,7 +309,7 @@ impl Scene for SteeringDemoScene {
       self.reset(ctx);
     }
 
-    // Toggle trails
+    // Toggle trails - set_enabled() now also controls visibility
     if ctx.input.key_pressed(KeyCode::KeyT) {
       self.show_trails = !self.show_trails;
     }
@@ -371,7 +385,8 @@ impl Scene for SteeringDemoScene {
   }
 
   fn render_background(&mut self, frame: &mut [u8], _width: u32, _height: u32, _camera: &Camera) {
-    // Dark background
+    // Dark background - trails now render ON TOP of CPU content
+    // so opaque backgrounds work correctly
     for pixel in frame.chunks_exact_mut(4) {
       pixel[0] = 20;
       pixel[1] = 25;

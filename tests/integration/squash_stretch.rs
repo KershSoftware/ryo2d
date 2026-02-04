@@ -233,10 +233,7 @@ fn squash_stretch_apply() {
 fn squash_stretch_with_transform_ecs() {
   let mut world = World::new();
 
-  let entity = world.spawn((
-    Transform::new(100.0, 100.0),
-    SquashStretch::new(0.3),
-  ));
+  let entity = world.spawn((Transform::new(100.0, 100.0), SquashStretch::new(0.3)));
 
   assert!(world.get::<Transform>(entity).is_some());
   assert!(world.get::<SquashStretch>(entity).is_some());

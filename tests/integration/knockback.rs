@@ -68,12 +68,18 @@ fn regression_knockback_just_finished_flag() {
   // So the first update should trigger just_finished
   kb.update(0.1);
 
-  assert!(kb.just_finished, "just_finished should be true on the frame knockback completes");
+  assert!(
+    kb.just_finished,
+    "just_finished should be true on the frame knockback completes"
+  );
   assert!(!kb.active, "Should be inactive when finished");
 
   // The flag should clear on the next update (one-shot behavior)
   kb.update(0.1);
-  assert!(!kb.just_finished, "just_finished should clear after one frame");
+  assert!(
+    !kb.just_finished,
+    "just_finished should clear after one frame"
+  );
 }
 
 // ============================================================================

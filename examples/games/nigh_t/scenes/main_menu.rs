@@ -15,7 +15,7 @@ const MAX_INTENSITY: f32 = 2.2;
 
 // Charge/decay rates
 const CHARGE_RATE: f32 = 0.25; // Moderate charge buildup
-const DECAY_RATE: f32 = 3.0;   // Fast snap back when released
+const DECAY_RATE: f32 = 3.0; // Fast snap back when released
 
 /// Main menu scene - atmospheric dark screen with fairy cursor
 pub struct MainMenuScene {
@@ -46,7 +46,7 @@ impl MainMenuScene {
 
   /// Simple pseudo-random based on time (returns 0.0 to 1.0)
   fn random(&self, seed: f32) -> f32 {
-    let x = (self.flicker_time * seed * 12.9898).sin() * 43758.5453;
+    let x = (self.flicker_time * seed * 12.9898).sin() * 43_758.547;
     x.fract().abs()
   }
 
@@ -72,7 +72,11 @@ impl MainMenuScene {
           let g = (220.0 + 35.0 * intensity) as u8;
           let b = 255u8;
           // Fully opaque in the center, fade only at very edge
-          let a = if dist < max_dist * 0.7 { 255 } else { (intensity * 255.0) as u8 };
+          let a = if dist < max_dist * 0.7 {
+            255
+          } else {
+            (intensity * 255.0) as u8
+          };
 
           data[idx] = r;
           data[idx + 1] = g;
@@ -108,8 +112,8 @@ impl Scene for MainMenuScene {
 
     // Get screen center for initial position
     let (width, height) = ctx.screen_size();
-    let center_x = width as f32 / 2.0;
-    let center_y = height as f32 / 2.0;
+    let center_x = width / 2.0;
+    let center_y = height / 2.0;
     self.mouse_x = center_x;
     self.mouse_y = center_y;
 
@@ -117,13 +121,15 @@ impl Scene for MainMenuScene {
     // Use softer falloff (1.5) for more natural look
     let core_sprite = Self::create_core_sprite(ctx.assets);
     let light_color = Color::rgb(180, 220, 255);
-    self.fairy_entity = Some(ctx.world.spawn((
-      Transform::new(center_x, center_y).with_pivot_center(),
-      Renderable::sprite(core_sprite).with_z_order(100),
-      Light2D::point(light_color, BASE_RADIUS)
-        .with_intensity(BASE_INTENSITY)
-        .with_falloff(1.5),
-    )));
+    self.fairy_entity = Some(
+      ctx.world.spawn((
+        Transform::new(center_x, center_y).with_pivot_center(),
+        Renderable::sprite(core_sprite).with_z_order(100),
+        Light2D::point(light_color, BASE_RADIUS)
+          .with_intensity(BASE_INTENSITY)
+          .with_falloff(1.5),
+      )),
+    );
 
     // Spawn secondary glow lights that orbit around for organic irregular shape
     let glow_colors = [
@@ -132,12 +138,14 @@ impl Scene for MainMenuScene {
       Color::rgb(170, 210, 240), // Another variation
     ];
     for (i, color) in glow_colors.iter().enumerate() {
-      self.glow_entities[i] = Some(ctx.world.spawn((
-        Transform::new(center_x, center_y),
-        Light2D::point(*color, BASE_RADIUS * 0.6)
-          .with_intensity(BASE_INTENSITY * 0.4)
-          .with_falloff(1.2),
-      )));
+      self.glow_entities[i] = Some(
+        ctx.world.spawn((
+          Transform::new(center_x, center_y),
+          Light2D::point(*color, BASE_RADIUS * 0.6)
+            .with_intensity(BASE_INTENSITY * 0.4)
+            .with_falloff(1.2),
+        )),
+      );
     }
   }
 
@@ -194,15 +202,23 @@ impl Scene for MainMenuScene {
 
         // Occasional violent jerk at high charge
         let jerk_chance = self.random(6.0);
-        let jerk_x = if jerk_chance < 0.02 * charge_sq { (self.random(7.0) - 0.5) * 40.0 } else { 0.0 };
-        let jerk_y = if jerk_chance < 0.02 * charge_sq { (self.random(8.0) - 0.5) * 40.0 } else { 0.0 };
+        let jerk_x = if jerk_chance < 0.02 * charge_sq {
+          (self.random(7.0) - 0.5) * 40.0
+        } else {
+          0.0
+        };
+        let jerk_y = if jerk_chance < 0.02 * charge_sq {
+          (self.random(8.0) - 0.5) * 40.0
+        } else {
+          0.0
+        };
 
         transform.x = self.mouse_x + bob_x + wobble_x + twitch_x + jerk_x;
         transform.y = self.mouse_y + bob_y + wobble_y + twitch_y + jerk_y;
 
         // Rotation gets unstable at high charge
-        transform.rotation = (self.time * 3.0).sin() * charge_sq * 0.3
-                           + (self.random(9.0) - 0.5) * charge_cube * 0.5;
+        transform.rotation =
+          (self.time * 3.0).sin() * charge_sq * 0.3 + (self.random(9.0) - 0.5) * charge_cube * 0.5;
       }
 
       // Update light intensity and radius
@@ -297,13 +313,7 @@ impl Scene for MainMenuScene {
       Some(Color::new(0, 0, 0, 180)),
     );
 
-    ui.label(
-      "Hold mouse to charge light",
-      10.0,
-      40.0,
-      Color::GRAY,
-      None,
-    );
+    ui.label("Hold mouse to charge light", 10.0, 40.0, Color::GRAY, None);
   }
 
   fn on_exit(&mut self, ctx: &mut SceneContext) {

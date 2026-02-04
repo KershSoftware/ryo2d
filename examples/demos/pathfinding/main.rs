@@ -457,17 +457,12 @@ impl PathfindingDemoScene {
     }
   }
 
-  fn update_trails(&self, ctx: &mut SceneContext, dt: f32) {
+  fn update_trails(&self, ctx: &mut SceneContext, _dt: f32) {
+    // Engine automatically updates trail positions from Transform.
+    // We just need to sync the enabled state for visibility toggle.
     for &entity in &self.agents {
-      let pos = ctx.world.get::<Transform>(entity).map(|t| (t.x, t.y));
-
-      if let Some((x, y)) = pos {
-        if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
-          trail.set_enabled(self.show_trails);
-          if self.show_trails {
-            trail.update(x, y, dt);
-          }
-        }
+      if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
+        trail.set_enabled(self.show_trails);
       }
     }
   }
@@ -589,12 +584,12 @@ impl Scene for PathfindingDemoScene {
   }
 
   fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
-    // Dark background
+    // Dark background - trails now render ON TOP of CPU content
     for pixel in frame.chunks_exact_mut(4) {
-      pixel[0] = 30; // R
-      pixel[1] = 35; // G
-      pixel[2] = 40; // B
-      pixel[3] = 255; // A
+      pixel[0] = 30;
+      pixel[1] = 35;
+      pixel[2] = 40;
+      pixel[3] = 255;
     }
 
     // Draw grid if enabled

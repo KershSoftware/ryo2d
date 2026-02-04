@@ -64,6 +64,7 @@ enum EffectCategory {
   ScreenFlash,
   Crt,
   ChromaticAberration,
+  GodRays,
 }
 
 impl EffectCategory {
@@ -75,6 +76,7 @@ impl EffectCategory {
       PostProcessEffect::ScreenFlash { .. } => Self::ScreenFlash,
       PostProcessEffect::Crt { .. } => Self::Crt,
       PostProcessEffect::ChromaticAberration { .. } => Self::ChromaticAberration,
+      PostProcessEffect::GodRays { .. } => Self::GodRays,
     }
   }
 }
@@ -237,6 +239,68 @@ impl EffectsManager {
   /// Disable chromatic aberration
   pub fn disable_chromatic_aberration(&mut self) {
     self.remove_category(EffectCategory::ChromaticAberration);
+  }
+
+  /// Enable god rays effect
+  ///
+  /// # Arguments
+  /// * `intensity` - Overall effect intensity (0.0 - 2.0)
+  /// * `light_positions` - Screen-space UV positions of lights (0-1 range)
+  pub fn set_god_rays(&mut self, intensity: f32, light_positions: Vec<(f32, f32)>) {
+    let effect = PostProcessEffect::god_rays(intensity, light_positions);
+    self.set_effect(effect);
+  }
+
+  /// Enable god rays with custom settings
+  #[allow(clippy::too_many_arguments)]
+  pub fn set_god_rays_custom(
+    &mut self,
+    intensity: f32,
+    samples: u32,
+    decay: f32,
+    density: f32,
+    threshold: f32,
+    light_positions: Vec<(f32, f32)>,
+  ) {
+    let effect = PostProcessEffect::god_rays_custom(
+      intensity,
+      samples,
+      decay,
+      density,
+      threshold,
+      light_positions,
+    );
+    self.set_effect(effect);
+  }
+
+  /// Update god rays light positions (keeps other settings)
+  ///
+  /// This is more efficient than recreating the effect each frame.
+  pub fn update_god_rays_lights(&mut self, light_positions: Vec<(f32, f32)>) {
+    // Find existing god rays effect and update it
+    for active in &mut self.effects {
+      if let PostProcessEffect::GodRays {
+        light_positions: positions,
+        ..
+      } = &mut active.effect
+      {
+        *positions = light_positions;
+        return;
+      }
+    }
+  }
+
+  /// Disable god rays
+  pub fn disable_god_rays(&mut self) {
+    self.remove_category(EffectCategory::GodRays);
+  }
+
+  /// Check if god rays effect is enabled
+  pub fn has_god_rays(&self) -> bool {
+    self
+      .effects
+      .iter()
+      .any(|a| matches!(a.effect, PostProcessEffect::GodRays { .. }))
   }
 
   // ========== Internal Methods ==========

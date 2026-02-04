@@ -167,7 +167,10 @@ pub mod prelude {
   };
 
   // 2D Lighting system
-  pub use crate::core::lighting::{AmbientLight, Light2D, LightOccluder2D, LightingRenderer};
+  pub use crate::core::lighting::{
+    AmbientLight, Atmosphere, GodRaysQuality, Light2D, LightOccluder2D, LightingRenderer,
+    VolumetricSettings,
+  };
 
   // Post-processing effects
   pub use crate::core::shaders::{EffectTarget, EffectsManager, PostProcessEffect};
