@@ -1,7 +1,10 @@
+use super::super::ecs::Ease;
+
 /// Camera shake state for impact feedback.
 ///
 /// Uses a trauma-based system where trauma accumulates from impacts
-/// and decays over time. Shake intensity is trauma² for better feel.
+/// and decays over time. Shake intensity is controlled by an easing curve
+/// (default: InQuad for punchy feel).
 #[derive(Debug, Clone)]
 pub struct CameraShake {
   /// Current trauma level (0.0 to 1.0, clamped)
@@ -10,6 +13,8 @@ pub struct CameraShake {
   max_offset: f32,
   /// Trauma decay rate per second (default: 1.0)
   decay_rate: f32,
+  /// Easing curve for trauma-to-intensity mapping (default: InQuad)
+  intensity_curve: Ease,
   /// Time accumulator for smooth noise sampling
   noise_time: f32,
   /// Current shake offset in X (pixels)
@@ -24,6 +29,7 @@ impl Default for CameraShake {
       trauma: 0.0,
       max_offset: 10.0,
       decay_rate: 1.0,
+      intensity_curve: Ease::InQuad,
       noise_time: 0.0,
       offset_x: 0.0,
       offset_y: 0.0,
@@ -39,6 +45,28 @@ impl CameraShake {
       decay_rate,
       ..Default::default()
     }
+  }
+
+  /// Set the intensity curve for trauma-to-shake mapping.
+  ///
+  /// The curve controls how trauma translates to shake intensity:
+  /// - `InQuad` (default): Punchy feel, strong at high trauma
+  /// - `Linear`: Direct mapping, shake proportional to trauma
+  /// - `InCubic`/`InQuart`: Even punchier, mostly calm until high trauma
+  /// - `OutQuad`: More shake at low trauma levels
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Very punchy shake - mostly calm, intense at high trauma
+  /// camera.set_shake_curve(Ease::InCubic);
+  ///
+  /// // Linear shake - proportional to trauma
+  /// camera.set_shake_curve(Ease::Linear);
+  /// ```
+  pub fn with_intensity_curve(mut self, curve: Ease) -> Self {
+    self.intensity_curve = curve;
+    self
   }
 
   /// Smooth noise function using layered sine waves.
@@ -62,8 +90,8 @@ impl CameraShake {
     // Advance noise time
     self.noise_time += dt * 10.0;
 
-    // Calculate intensity (trauma squared for better feel)
-    let intensity = self.trauma * self.trauma;
+    // Calculate intensity using the configured curve
+    let intensity = self.intensity_curve.apply(self.trauma);
 
     // Calculate offsets using smooth noise
     self.offset_x = Self::noise(self.noise_time, 0.0) * self.max_offset * intensity;
@@ -71,6 +99,16 @@ impl CameraShake {
 
     // Decay trauma
     self.trauma = (self.trauma - self.decay_rate * dt).max(0.0);
+  }
+
+  /// Set the intensity curve.
+  pub fn set_intensity_curve(&mut self, curve: Ease) {
+    self.intensity_curve = curve;
+  }
+
+  /// Get the current intensity curve.
+  pub fn intensity_curve(&self) -> Ease {
+    self.intensity_curve
   }
 }
 
@@ -244,6 +282,32 @@ impl Camera {
   pub fn configure_shake(&mut self, max_offset: f32, decay_rate: f32) {
     self.shake.max_offset = max_offset;
     self.shake.decay_rate = decay_rate;
+  }
+
+  /// Set the shake intensity curve.
+  ///
+  /// The curve controls how trauma translates to shake intensity:
+  /// - `InQuad` (default): Punchy feel, strong at high trauma
+  /// - `Linear`: Direct mapping, shake proportional to trauma
+  /// - `InCubic`/`InQuart`: Even punchier, mostly calm until high trauma
+  /// - `OutQuad`: More shake at low trauma levels
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Very punchy shake - mostly calm, intense at high trauma
+  /// ctx.camera.set_shake_curve(Ease::InCubic);
+  ///
+  /// // Linear shake - proportional to trauma
+  /// ctx.camera.set_shake_curve(Ease::Linear);
+  /// ```
+  pub fn set_shake_curve(&mut self, curve: Ease) {
+    self.shake.set_intensity_curve(curve);
+  }
+
+  /// Get the current shake intensity curve.
+  pub fn shake_curve(&self) -> Ease {
+    self.shake.intensity_curve()
   }
 
   /// Get the current trauma level (0.0 to 1.0).
@@ -548,5 +612,27 @@ mod tests {
     // Without shake: center is (400, 300)
     assert!((sx - 400.0 - ox).abs() < 0.001);
     assert!((sy - 300.0 - oy).abs() < 0.001);
+  }
+
+  #[test]
+  fn shake_curve_default_is_in_quad() {
+    let cam = Camera::new(800, 600);
+    assert_eq!(cam.shake_curve(), Ease::InQuad);
+  }
+
+  #[test]
+  fn set_shake_curve_changes_curve() {
+    let mut cam = Camera::new(800, 600);
+    cam.set_shake_curve(Ease::Linear);
+    assert_eq!(cam.shake_curve(), Ease::Linear);
+
+    cam.set_shake_curve(Ease::InCubic);
+    assert_eq!(cam.shake_curve(), Ease::InCubic);
+  }
+
+  #[test]
+  fn camera_shake_with_intensity_curve_builder() {
+    let shake = CameraShake::new(15.0, 2.0).with_intensity_curve(Ease::InCubic);
+    assert_eq!(shake.intensity_curve(), Ease::InCubic);
   }
 }
