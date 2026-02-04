@@ -56,14 +56,16 @@ impl TrailPreset {
 enum FadeMode {
   Position, // Fades based on position in trail (head to tail)
   Time,     // Fades based on point age (lifetime)
+  Distance, // Fades based on actual distance in pixels
   None,     // No fade
 }
 
 impl FadeMode {
   fn name(&self) -> &'static str {
     match self {
-      FadeMode::Position => "Position (head-to-tail)",
+      FadeMode::Position => "Position (index-based)",
       FadeMode::Time => "Time (age-based)",
+      FadeMode::Distance => "Distance (pixels)",
       FadeMode::None => "None",
     }
   }
@@ -79,6 +81,7 @@ struct TrailsDemoScene {
   trail_length: usize,
   trail_width: f32,
   lifetime: f32,
+  fade_distance: f32,
   screen_width: f32,
   screen_height: f32,
 }
@@ -94,6 +97,7 @@ impl TrailsDemoScene {
       trail_length: 30,
       trail_width: 6.0,
       lifetime: 0.5,
+      fade_distance: 100.0,
       screen_width: 1024.0,
       screen_height: 768.0,
     }
@@ -120,6 +124,9 @@ impl TrailsDemoScene {
       }
       FadeMode::Time => {
         trail = trail.with_fade(false).with_lifetime(self.lifetime);
+      }
+      FadeMode::Distance => {
+        trail = trail.with_fade(true).with_fade_distance(self.fade_distance);
       }
       FadeMode::None => {
         trail = trail.with_fade(false);
@@ -277,9 +284,10 @@ impl Scene for TrailsDemoScene {
     println!("=== TRAILS DEMO ===");
     println!("Mouse: Control trail");
     println!("1/2/3: Switch preset (Bullet/Laser/Swipe)");
-    println!("Q/W/E: Fade mode (Position/Time/None)");
+    println!("Q/W/D/E: Fade mode (Position/Time/Distance/None)");
     println!("Up/Down: Trail length");
     println!("Left/Right: Trail width");
+    println!("+/-: Lifetime (Time mode) or Fade Distance (Distance mode)");
     println!("Space: Pause orbits");
     println!("R: Reset trails");
     println!("ESC: Exit");
@@ -312,16 +320,24 @@ impl Scene for TrailsDemoScene {
       println!("Preset: Swipe");
     }
 
-    // Fade mode switching
+    // Fade mode switching (Q/W/E/D)
     if ctx.input.key_pressed(KeyCode::KeyQ) {
       self.fade_mode = FadeMode::Position;
       self.recreate_trails(ctx);
-      println!("Fade: Position (head-to-tail gradient)");
+      println!("Fade: Position (index-based gradient)");
     }
     if ctx.input.key_pressed(KeyCode::KeyW) {
       self.fade_mode = FadeMode::Time;
       self.recreate_trails(ctx);
       println!("Fade: Time (age-based, lifetime={:.1}s)", self.lifetime);
+    }
+    if ctx.input.key_pressed(KeyCode::KeyD) {
+      self.fade_mode = FadeMode::Distance;
+      self.recreate_trails(ctx);
+      println!(
+        "Fade: Distance (pixel-based, {:.0}px)",
+        self.fade_distance
+      );
     }
     if ctx.input.key_pressed(KeyCode::KeyE) {
       self.fade_mode = FadeMode::None;
@@ -353,18 +369,31 @@ impl Scene for TrailsDemoScene {
       println!("Width: {:.1}", self.trail_width);
     }
 
-    // Lifetime adjustment (only works in Time fade mode)
+    // +/- adjustment (Lifetime in Time mode, Fade Distance in Distance mode)
     if ctx.input.key_pressed(KeyCode::Equal) || ctx.input.key_pressed(KeyCode::Minus) {
-      if self.fade_mode == FadeMode::Time {
-        if ctx.input.key_pressed(KeyCode::Equal) {
-          self.lifetime = (self.lifetime + 0.1).min(2.0);
-        } else {
-          self.lifetime = (self.lifetime - 0.1).max(0.1);
+      let is_plus = ctx.input.key_pressed(KeyCode::Equal);
+      match self.fade_mode {
+        FadeMode::Time => {
+          if is_plus {
+            self.lifetime = (self.lifetime + 0.1).min(2.0);
+          } else {
+            self.lifetime = (self.lifetime - 0.1).max(0.1);
+          }
+          self.recreate_trails(ctx);
+          println!("Lifetime: {:.1}s", self.lifetime);
         }
-        self.recreate_trails(ctx);
-        println!("Lifetime: {:.1}s", self.lifetime);
-      } else {
-        println!("Lifetime only works in Time fade mode (press W)");
+        FadeMode::Distance => {
+          if is_plus {
+            self.fade_distance = (self.fade_distance + 20.0).min(500.0);
+          } else {
+            self.fade_distance = (self.fade_distance - 20.0).max(20.0);
+          }
+          self.recreate_trails(ctx);
+          println!("Fade Distance: {:.0}px", self.fade_distance);
+        }
+        _ => {
+          println!("+/- adjusts Lifetime (Time mode) or Fade Distance (Distance mode)");
+        }
       }
     }
 
@@ -408,7 +437,7 @@ impl Scene for TrailsDemoScene {
     y += line_height;
 
     ui.draw_text(
-      &format!("Fade: {} (Q/W/E)", self.fade_mode.name()),
+      &format!("Fade: {} (Q/W/D/E)", self.fade_mode.name()),
       10.0,
       y,
       text_gray,
@@ -434,6 +463,16 @@ impl Scene for TrailsDemoScene {
     if self.fade_mode == FadeMode::Time {
       ui.draw_text(
         &format!("Lifetime: {:.1}s (+/-)", self.lifetime),
+        10.0,
+        y,
+        text_gray,
+      );
+      y += line_height;
+    }
+
+    if self.fade_mode == FadeMode::Distance {
+      ui.draw_text(
+        &format!("Fade Dist: {:.0}px (+/-)", self.fade_distance),
         10.0,
         y,
         text_gray,
