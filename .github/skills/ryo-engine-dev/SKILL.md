@@ -123,6 +123,47 @@ Don't export:
 ./run breakout # Test with example
 ```
 
+## Profiler Integration
+
+The engine includes a built-in profiler using puffin:
+
+### Key Files
+- `profiler.rs` - Macros (`profile_function!`, `profile_scope!`) and init
+- `profiler_window.rs` - Standalone flamegraph window (CPU-rendered)
+
+### Adding Profiler Scopes to Engine Systems
+
+```rust
+use crate::profile_scope;
+
+fn my_engine_system(world: &mut World, dt: f32) {
+    profile_scope!("my_system");
+    // ... system work
+}
+```
+
+### Profiler Window Architecture
+
+ProfilerWindow is a separate wgpu window that:
+1. Registers as a puffin sink to receive frame data
+2. Collects scope entries from `FrameView`
+3. CPU-renders colored bars to a pixel buffer
+4. Uploads to GPU texture and presents
+
+Key design decisions:
+- **10 FPS throttle** - Keeps display readable and stable
+- **Scope persistence** - Bars fade slowly instead of flickering
+- **Separate focus tracking** - Game doesn't throttle when profiler is focused
+- **Wall-clock FPS** - Shows actual frame rate, not just work time
+
+### Testing with Profiler
+
+```bash
+./run breakout --features profiler
+# Or:
+ryo2d dev --profiler
+```
+
 ## Tips
 
 - Read relevant `AGENTS.md` before modifying a module

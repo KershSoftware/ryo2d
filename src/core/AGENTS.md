@@ -15,6 +15,8 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `scene.rs` | Scene management, transitions, scene stack |
 | `workspace.rs` | Project discovery, `ryo.toml` configuration, path management |
 | `debug.rs` | Debug visualization (colliders, velocities, origins, FPS) and drawing primitives |
+| `profiler.rs` | Puffin profiling macros (`profile_function!`, `profile_scope!`) |
+| `profiler_window.rs` | Standalone profiler window with real-time flamegraphs |
 | `ecs/` | Entity-Component-System using hecs, object pooling (see `ecs/AGENTS.md`) |
 | `events/` | Event bus for decoupled inter-system communication (see `events/AGENTS.md`) |
 | `animation.rs` | Sprite animation with `Animation`, `Animator`, `AnimationController` |
@@ -475,3 +477,113 @@ fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
 ```
 
 **Integration:** The engine handles `Inactive` filtering for CPU rendering, physics registration, animations, and tweens automatically. Only GPU rendering in `render_gpu()` requires manual filtering.
+
+## Profiler System
+
+The profiler system (`profiler.rs` and `profiler_window.rs`) provides puffin-based hierarchical profiling with a built-in flamegraph viewer.
+
+### Architecture
+
+Two modules work together:
+
+**`profiler.rs`** - Instrumentation layer:
+- `profile_function!()` - Profiles entire function (uses function name)
+- `profile_scope!("name")` - Profiles a named code block
+- `init(enabled)` - Enables puffin scope collection
+- `new_frame()` - Signals frame boundary to puffin
+- Compiles to zero-cost no-ops when `profiler` feature is disabled
+
+**`profiler_window.rs`** - Visualization layer:
+- Standalone wgpu window with CPU-rendered flamegraph
+- Registers as puffin sink to receive frame data
+- Color-coded bars based on scope name hash
+- Hover tooltips showing scope name and duration
+- 10 FPS throttle for stable, readable display
+- Setup instructions when no scopes detected
+
+### Data Flow
+
+```
+Game Code                    Engine                    Profiler Window
+    │                           │                            │
+    │  profile_function!()      │                            │
+    │  profile_scope!()    ────>│ puffin records scope       │
+    │                           │        │                   │
+    │                           │        ▼                   │
+    │                           │ new_frame() ──────────────>│ FrameView sink
+    │                           │                            │ receives frame
+    │                           │                            │      │
+    │                           │                            │      ▼
+    │                           │                            │ collect_puffin_data()
+    │                           │                            │ draw_flamegraph()
+    │                           │                            │ present()
+```
+
+### Engine Integration
+
+The engine manages profiler lifecycle in `engine.rs`:
+
+```rust
+// In resumed() - create profiler window
+if profiler_enabled && renderer_ready {
+    self.profiler_window = ProfilerWindow::new(...);
+}
+
+// In event handling - route events to profiler window
+if event.window_id() == profiler_window.window_id() {
+    profiler_window.handle_event(&event);
+}
+
+// At frame start
+profiler::new_frame();
+profiler_window.track_frame_time();
+
+// After game render
+profiler_window.render();
+```
+
+### Pre-Instrumented Scopes
+
+The engine instruments these systems automatically:
+- `update` - All game logic and fixed timestep work
+- `render` - CPU sprite rendering and batch collection
+- `present` - GPU submission and effects pipeline
+- `physics_step` - Rapier2D physics simulation
+- `scene_push` / `scene_switch` - Scene transitions
+
+### Adding Profiler Scopes
+
+For engine developers adding new systems:
+
+```rust
+use crate::profile_scope;
+
+fn my_system(world: &mut World, dt: f32) {
+    profile_scope!("my_system");
+
+    for (entity, component) in world.query_mut::<&mut MyComponent>() {
+        profile_scope!("process_entity");
+        // ... work
+    }
+}
+```
+
+### Configuration
+
+Via CLI:
+```bash
+ryo2d dev --profiler    # Enables profiler feature and opens window
+```
+
+Via Ryo.toml:
+```toml
+[debug]
+puffin_profiler = true
+```
+
+### Performance Considerations
+
+- Profiler overhead is ~200-400ns per scope when enabled
+- Profiler window renders at 10 FPS to avoid impacting game
+- When `profiler` feature is disabled, all macros compile to nothing
+- Separate focus tracking prevents game throttling when profiler is focused
