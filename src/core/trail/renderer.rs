@@ -299,7 +299,14 @@ impl TrailRenderer {
 
       // Get interpolated properties
       let width = trail.width_at(t);
-      let color = trail.color_at(t);
+      let mut color = trail.color_at(t);
+
+      // Apply age-based alpha fade only when position-based fade is disabled
+      // (to avoid double-fading when both are active)
+      if !trail.fades_alpha() {
+        let age_alpha = trail.age_alpha(point.age);
+        color = Color::new(color.r, color.g, color.b, (color.a as f32 * age_alpha) as u8);
+      }
 
       // Trail points are already in world coordinates (from trail.update(x, y, dt))
       // No need to add transform position
