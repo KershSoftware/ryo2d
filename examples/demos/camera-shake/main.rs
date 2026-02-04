@@ -4,6 +4,7 @@
 //! - Trauma accumulation and decay
 //! - Different intensity levels
 //! - Configurable shake parameters
+//! - Configurable intensity curves
 //!
 //! ## Controls
 //!
@@ -11,6 +12,7 @@
 //! - 2: Medium shake (0.5 trauma) - hits, collisions
 //! - 3: Large shake (0.8 trauma) - explosions
 //! - Space: Maximum shake (1.0 trauma)
+//! - Q/W/E: Intensity curve (Linear / InQuad / InCubic)
 //! - R: Reset trauma to zero
 //! - Up/Down: Adjust max offset (default: 10 pixels)
 //! - Left/Right: Adjust decay rate (default: 1.0/sec)
@@ -30,6 +32,7 @@ struct Player;
 struct CameraShakeDemoScene {
   max_offset: f32,
   decay_rate: f32,
+  intensity_curve: Ease,
 }
 
 impl CameraShakeDemoScene {
@@ -37,6 +40,19 @@ impl CameraShakeDemoScene {
     Self {
       max_offset: 10.0,
       decay_rate: 1.0,
+      intensity_curve: Ease::InQuad,
+    }
+  }
+
+  /// Get a human-readable name for the current curve
+  fn curve_name(&self) -> &'static str {
+    match self.intensity_curve {
+      Ease::Linear => "Linear",
+      Ease::InQuad => "InQuad (default)",
+      Ease::InCubic => "InCubic",
+      Ease::InQuart => "InQuart",
+      Ease::OutQuad => "OutQuad",
+      _ => "Custom",
     }
   }
 
@@ -98,6 +114,7 @@ impl Scene for CameraShakeDemoScene {
     println!("  2: Medium shake (0.5)");
     println!("  3: Large shake (0.8)");
     println!("  Space: Maximum shake (1.0)");
+    println!("  Q/W/E: Curve (Linear/InQuad/InCubic)");
     println!("  R: Reset trauma");
     println!("  Up/Down: Adjust max offset");
     println!("  Left/Right: Adjust decay rate");
@@ -105,6 +122,7 @@ impl Scene for CameraShakeDemoScene {
 
     // Apply initial shake config
     ctx.camera.configure_shake(self.max_offset, self.decay_rate);
+    ctx.camera.set_shake_curve(self.intensity_curve);
 
     // Spawn visual elements
     self.spawn_grid(ctx);
@@ -133,6 +151,23 @@ impl Scene for CameraShakeDemoScene {
     if ctx.input.key_pressed(KeyCode::Space) {
       ctx.camera.add_trauma(1.0);
       println!("Maximum shake: trauma now {:.2}", ctx.camera.trauma());
+    }
+
+    // Change intensity curve
+    if ctx.input.key_pressed(KeyCode::KeyQ) {
+      self.intensity_curve = Ease::Linear;
+      ctx.camera.set_shake_curve(self.intensity_curve);
+      println!("Curve: Linear (proportional shake)");
+    }
+    if ctx.input.key_pressed(KeyCode::KeyW) {
+      self.intensity_curve = Ease::InQuad;
+      ctx.camera.set_shake_curve(self.intensity_curve);
+      println!("Curve: InQuad (default, punchy)");
+    }
+    if ctx.input.key_pressed(KeyCode::KeyE) {
+      self.intensity_curve = Ease::InCubic;
+      ctx.camera.set_shake_curve(self.intensity_curve);
+      println!("Curve: InCubic (very punchy)");
     }
 
     // Reset trauma
@@ -178,10 +213,10 @@ impl Scene for CameraShakeDemoScene {
     // Title
     ui.draw_text("Camera Shake Demo", 10.0, 10.0, text_light);
 
-    // Current trauma level (would need to pass this from update, so we show config instead)
+    // Current config
     let config_text = format!(
-      "Max Offset: {:.0}px | Decay: {:.1}/sec",
-      self.max_offset, self.decay_rate
+      "Max Offset: {:.0}px | Decay: {:.1}/sec | Curve: {}",
+      self.max_offset, self.decay_rate, self.curve_name()
     );
     ui.draw_text(&config_text, 10.0, 30.0, text_accent);
 
@@ -192,7 +227,12 @@ impl Scene for CameraShakeDemoScene {
       50.0,
       text_muted,
     );
-    ui.draw_text("Arrows: Adjust config | ESC: Exit", 10.0, 70.0, text_muted);
+    ui.draw_text(
+      "Q/W/E: Curve | Arrows: Config | ESC: Exit",
+      10.0,
+      70.0,
+      text_muted,
+    );
 
     // Visual indicator area
     let (screen_w, _) = ui.screen_size();
