@@ -24,6 +24,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `audio.rs` | `AudioManager`, sound effects, and music playback (Kira) |
 | `camera.rs` | 2D camera with follow, zoom, coordinate transforms |
 | `collision.rs` | AABB/Circle shapes, `Collider` component, collision detection |
+| `console/` | Developer console with two-phase command system (see skill: `ryo-console`) |
 | `hot_reload.rs` | Background filesystem watcher for dev-time asset hot reloading |
 | `input.rs` | Keyboard, mouse, scroll, and gamepad input state tracking (gilrs) |
 | `cursor.rs` | Mouse cursor customization (style, visibility, confinement) |
@@ -684,3 +685,84 @@ fn on_exit(&mut self, ctx: &mut SceneContext) {
 ### Demo
 
 See `examples/demos/cursor/` for a complete example showcasing all cursor styles and features.
+
+## Developer Console System
+
+The developer console (`console/`) provides a Valve-style overlay for runtime debugging and command execution.
+
+### Architecture
+
+```
+console/
+  mod.rs           - ConsoleState, UI rendering, input handling
+  commands.rs      - CommandRegistry, two-phase command system
+  builtins.rs      - Built-in debug/system commands
+```
+
+### Two-Phase Command System
+
+Game commands use a **declare-then-register** pattern:
+
+1. **Declaration** (startup): Define command name, description, verbose help
+2. **Registration** (scoped): Attach handler within a specific scope (scene, game level)
+3. **Auto-cleanup**: Handlers removed when scope exits, command reverts to noop
+
+This enables commands to appear in help immediately while only being active in appropriate contexts.
+
+### Key Types
+
+**ConsoleState** - UI state:
+- Window position/size, drag state, focus
+- Input buffer, cursor, command history
+- Output lines with colors and timestamps
+- Scroll offset, word wrapping
+
+**CommandRegistry** - Command management:
+- `builtins` - Engine commands (help, clear, debug:fps, etc.)
+- `declared` - Game commands with optional scoped handlers
+- `execute()` - Parse and run commands
+- `clear_scope()` - Remove handlers for a scope
+
+**DeclaredCommand** - Game command:
+```rust
+pub struct DeclaredCommand {
+    pub name: String,
+    pub description: String,
+    pub verbose_description: Option<String>,
+    pub handler: Option<(u64, CommandFn)>,  // (scope_id, handler)
+}
+```
+
+### Integration Points
+
+- **Engine**: Manages ConsoleState and CommandRegistry, handles toggle key (~)
+- **GameContext/SceneContext**: `declare_console_command()`, `register_console_command()`
+- **Scene transitions**: Auto-calls `clear_scope()` when scenes exit
+
+### Usage
+
+```rust
+// Declare in menu scene (available in help immediately)
+ctx.declare_console_command("game:reset", "Reset game state", None);
+
+// Register in game scene (becomes active)
+ctx.register_console_command("game:reset", |args, cmd_ctx| {
+    cmd_ctx.console.print_system("Resetting...");
+    CommandResult::Ok
+});
+// Handler auto-removed when game scene exits
+```
+
+### Configuration
+
+```toml
+# Ryo.toml
+[system]
+console = true  # Enable in both debug and release builds
+
+[project]
+name = "My Game"
+version = "1.0.0"  # Shown in system:version command
+```
+
+**See skill `ryo-console` for complete documentation.**
