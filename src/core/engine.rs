@@ -17,14 +17,10 @@ use super::console::{
   CommandContext, CommandRegistry, CommandResult, ConsoleState, register_builtins,
 };
 use super::ecs::{
-  Entity, Knockback, RenderStyle, Renderable, SpriteShader, SquashStretch, Transform, Velocity,
-  World, WorldTransform, YSort,
+  Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform, YSort,
 };
 use super::error::{EngineError, EngineResult};
-use super::events::{
-  CollisionStarted, CollisionStopped, Events, KnockbackFinished, KnockbackStarted,
-  SquashStretchFinished, SquashStretchStarted,
-};
+use super::events::{CollisionStarted, CollisionStopped, Events};
 use super::game::{Game, GameContext, GpuRenderContext, TimeControl, WindowRequest};
 use super::graphics::{
   BatchCollector, Camera, CompositeTile, GroupedCollider, Sprite, SpriteGpuRenderer, TileDirection,
@@ -35,7 +31,9 @@ use super::lighting::{Light2D, LightOccluder2D, LightingRenderer, generate_shado
 use super::physics::{Collider, PhysicsConfig, RapierPhysicsWorld, RigidBody};
 use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
-use super::systems::{AnimationSystem, TweenSystem};
+use super::systems::{
+  AnimationSystem, KnockbackSystem, SquashStretchSystem, TrailSystem, TweenSystem,
+};
 use super::timing::TimeState;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
 use super::ui::{BitmapFont, Color, UiContext, create_debug_font};
@@ -1100,110 +1098,10 @@ impl Engine {
     TweenSystem::update(&mut self.world, _dt);
 
     // --- Knockback System ---
-    // Update all Knockback components and apply velocity to Transform/Velocity
-    for entity in self.world.entities_with::<Knockback>() {
-      // Skip inactive pooled entities
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-
-      // Check if knockback is active before borrowing mutably
-      let is_active = self
-        .world
-        .get_component::<Knockback>(entity)
-        .is_some_and(|kb| kb.active);
-
-      if !is_active {
-        continue;
-      }
-
-      // Update the knockback component
-      let (just_started, just_finished, velocity) =
-        if let Some(mut kb) = self.world.get_component_mut::<Knockback>(entity) {
-          let was_just_started = kb.just_started;
-          kb.update(_dt);
-          let vel = kb.current_velocity();
-          (was_just_started, kb.just_finished, vel)
-        } else {
-          continue;
-        };
-
-      // Fire events
-      if just_started {
-        self.events.emit(KnockbackStarted { entity });
-      }
-      if just_finished {
-        self.events.emit(KnockbackFinished { entity });
-      }
-
-      // Apply velocity to entity
-      // For entities with Velocity component, update the velocity
-      // For all entities with Transform, apply position change
-      if let Some(mut vel_component) = self.world.get_component_mut::<Velocity>(entity) {
-        // Set velocity to knockback velocity (for physics systems that read Velocity)
-        vel_component.dx = velocity.0;
-        vel_component.dy = velocity.1;
-      }
-
-      // Always apply knockback directly to Transform position
-      // (Velocity component is for physics systems, but knockback should move entity directly)
-      if let Some(mut transform) = self.world.get_component_mut::<Transform>(entity) {
-        transform.x += velocity.0 * _dt;
-        transform.y += velocity.1 * _dt;
-      }
-    }
+    KnockbackSystem::update(&mut self.world, &mut self.events, _dt);
 
     // --- SquashStretch System ---
-    // Update all SquashStretch components and apply scale to Transform
-    for entity in self.world.entities_with::<SquashStretch>() {
-      // Skip inactive pooled entities
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-
-      // Check if squash/stretch is active before borrowing mutably
-      let is_active = self
-        .world
-        .get_component::<SquashStretch>(entity)
-        .is_some_and(|ss| ss.active);
-
-      if !is_active {
-        continue;
-      }
-
-      // Capture base scale from Transform if not yet captured
-      if let (Some(transform), Some(mut ss)) = (
-        self.world.get_component::<Transform>(entity),
-        self.world.get_component_mut::<SquashStretch>(entity),
-      ) {
-        ss.capture_base_scale(transform.scale_x, transform.scale_y);
-      }
-
-      // Update the squash/stretch component and get scale
-      let (just_started, just_finished, scale) =
-        if let Some(mut ss) = self.world.get_component_mut::<SquashStretch>(entity) {
-          let was_just_started = ss.just_started;
-          ss.update(_dt);
-          let scale = ss.current_scale();
-          (was_just_started, ss.just_finished, scale)
-        } else {
-          continue;
-        };
-
-      // Fire events
-      if just_started {
-        self.events.emit(SquashStretchStarted { entity });
-      }
-      if just_finished {
-        self.events.emit(SquashStretchFinished { entity });
-      }
-
-      // Apply scale to Transform
-      if let Some(mut transform) = self.world.get_component_mut::<Transform>(entity) {
-        transform.scale_x = scale.0;
-        transform.scale_y = scale.1;
-      }
-    }
+    SquashStretchSystem::update(&mut self.world, &mut self.events, _dt);
 
     // --- Game Logic Update ---
     // Temporarily take ownership of the game to avoid borrow conflicts
@@ -1246,27 +1144,7 @@ impl Engine {
     self.world.propagate_transforms();
 
     // --- Trail2D System ---
-    // Automatically update trails for entities with both Trail2D and Transform.
-    // Runs after game logic and hierarchy propagation to capture final positions.
-    for entity in self.world.entities_with::<Trail2D>() {
-      // Skip inactive pooled entities
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-
-      // Get the entity's position from Transform
-      let pos = self
-        .world
-        .get_component::<Transform>(entity)
-        .map(|t| (t.x, t.y));
-
-      // Update the trail with the current position
-      if let Some((x, y)) = pos
-        && let Some(mut trail) = self.world.get_component_mut::<Trail2D>(entity)
-      {
-        trail.update(x, y, _dt);
-      }
-    }
+    TrailSystem::update(&mut self.world, _dt);
 
     // --- Post-Process Effects ---
     // Update timed post-process effects
