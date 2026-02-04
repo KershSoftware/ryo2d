@@ -1,0 +1,7 @@
+[project]
+name = "Cursor Demo"
+version = "0.1.0"
+
+[system]
+width = 800
+height = 600

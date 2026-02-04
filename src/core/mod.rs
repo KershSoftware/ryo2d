@@ -8,6 +8,7 @@ pub mod events;
 // Core systems
 pub mod asset;
 pub mod audio;
+pub mod cursor;
 pub mod input;
 pub mod network;
 

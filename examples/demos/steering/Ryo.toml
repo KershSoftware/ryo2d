@@ -1,0 +1,18 @@
+# Steering Demo - Ryo2D Engine Project Configuration
+# Demonstrates steering behaviors: separation, cohesion, alignment (boids)
+
+[project]
+name = "Steering Demo"
+
+[paths]
+entry_point = "main.rs"
+assets = "assets"
+
+[system]
+resolution_width = 1280
+resolution_height = 720
+vsync = true
+fullscreen = false
+
+[info]
+show_fps = true

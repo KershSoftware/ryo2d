@@ -124,6 +124,8 @@ pub struct ContextCore<'a> {
   pub events: &'a mut Events,
   /// Pending window configuration changes (resolution, display mode)
   pub window_request: &'a mut WindowRequest,
+  /// Pending cursor configuration changes (style, visibility, confinement)
+  pub cursor_request: &'a mut crate::core::cursor::CursorRequest,
   /// Time control for slow-mo and hitstop effects
   pub time_control: &'a mut TimeControl,
   /// Whether detailed profiling is enabled (for timing warnings)
@@ -201,6 +203,63 @@ impl<'a> ContextCore<'a> {
     self.window_request.width = Some(width);
     self.window_request.height = Some(height);
     self.window_request.display_mode = Some(mode);
+  }
+
+  // ===========================================================================
+  // Cursor Control
+  // ===========================================================================
+
+  /// Change the mouse cursor style.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Change to crosshair when aiming
+  /// if ctx.input.mouse_down(MouseButton::Right) {
+  ///     ctx.set_cursor(CursorStyle::Crosshair);
+  /// } else {
+  ///     ctx.set_cursor(CursorStyle::Default);
+  /// }
+  /// ```
+  pub fn set_cursor(&mut self, style: crate::core::cursor::CursorStyle) {
+    self.cursor_request.cursor = Some(style);
+  }
+
+  /// Set cursor visibility.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Hide cursor during gameplay
+  /// ctx.set_cursor_visible(false);
+  /// ```
+  pub fn set_cursor_visible(&mut self, visible: bool) {
+    self.cursor_request.visible = Some(visible);
+  }
+
+  /// Show the cursor (shorthand for `set_cursor_visible(true)`).
+  pub fn show_cursor(&mut self) {
+    self.set_cursor_visible(true);
+  }
+
+  /// Hide the cursor (shorthand for `set_cursor_visible(false)`).
+  pub fn hide_cursor(&mut self) {
+    self.set_cursor_visible(false);
+  }
+
+  /// Confine the cursor to the window bounds.
+  ///
+  /// When confined, the cursor cannot leave the window area.
+  /// Useful for games that require the cursor to stay within bounds.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Lock cursor to window during gameplay
+  /// ctx.set_cursor_confined(true);
+  /// ```
+  pub fn set_cursor_confined(&mut self, confined: bool) {
+    self.cursor_request.confined = Some(confined);
   }
 
   // ===========================================================================

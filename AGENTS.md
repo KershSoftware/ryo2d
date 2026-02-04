@@ -156,7 +156,7 @@ When working in a subdirectory, check for a local AGENTS.md for relevant context
 - **Code quality:** Idiomatic Rust, proper error handling, no unwrap in library code
 - **Performance:** Cache-friendly data structures, minimize allocations in hot paths
 - **API design:** Ergonomic, hard to misuse, well-documented
-- **Testing:** Unit tests for core logic, integration tests for systems
+- **Testing:** Unit tests for core logic, integration tests for systems, e2e for complex-but-worth-know-shouldn't-break
 - **Documentation:** Rustdoc for API, mdbook for guides and tutorials
 
 **Code comments should be normal/minimal** - explain intent and non-obvious logic. Complex algorithms get thorough documentation.

@@ -80,6 +80,8 @@ pub struct SceneContext<'a> {
   pub events: &'a mut Events,
   /// Pending window configuration changes (resolution, display mode)
   pub window_request: &'a mut WindowRequest,
+  /// Pending cursor configuration changes (style, visibility, confinement)
+  pub(crate) cursor_request: &'a mut crate::core::cursor::CursorRequest,
   /// Time control for slow-mo and hitstop effects
   pub time_control: &'a mut TimeControl,
   /// Whether detailed profiling is enabled (for timing warnings)
@@ -212,6 +214,106 @@ impl<'a> SceneContext<'a> {
   /// Check if a hitstop is currently active.
   pub fn is_hitstop_active(&self) -> bool {
     self.time_control.hitstop_remaining > 0.0
+  }
+
+  // ===========================================================================
+  // Cursor Control
+  // ===========================================================================
+
+  /// Set the mouse cursor style.
+  ///
+  /// Changes are applied after the current frame completes.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.set_cursor(CursorStyle::Pointer);  // For clickable elements
+  /// ctx.set_cursor(CursorStyle::Crosshair);  // For aiming
+  /// ```
+  pub fn set_cursor(&mut self, style: crate::core::cursor::CursorStyle) {
+    self.cursor_request.cursor = Some(style);
+  }
+
+  /// Set whether the mouse cursor is visible.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.set_cursor_visible(false);  // Hide for first-person games
+  /// ```
+  pub fn set_cursor_visible(&mut self, visible: bool) {
+    self.cursor_request.visible = Some(visible);
+  }
+
+  /// Show the mouse cursor.
+  ///
+  /// Shorthand for `set_cursor_visible(true)`.
+  pub fn show_cursor(&mut self) {
+    self.set_cursor_visible(true);
+  }
+
+  /// Hide the mouse cursor.
+  ///
+  /// Shorthand for `set_cursor_visible(false)`.
+  pub fn hide_cursor(&mut self) {
+    self.set_cursor_visible(false);
+  }
+
+  /// Set whether the mouse cursor is confined to the window.
+  ///
+  /// When confined, the cursor cannot leave the window bounds.
+  /// Useful for first-person games or when using relative mouse input.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.set_cursor_confined(true);  // Lock cursor to window
+  /// ```
+  pub fn set_cursor_confined(&mut self, confined: bool) {
+    self.cursor_request.confined = Some(confined);
+  }
+
+  /// Set a custom cursor from a sprite.
+  ///
+  /// The hotspot is the point within the cursor image that represents
+  /// the actual click position (in pixels from top-left).
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// let crosshair = ctx.assets.load_sprite("crosshair.png")?;
+  /// ctx.set_custom_cursor(&crosshair, 16, 16);  // Hotspot at center of 32x32 cursor
+  /// ```
+  pub fn set_custom_cursor(
+    &mut self,
+    sprite: &crate::core::asset::SpriteHandle,
+    hotspot_x: u16,
+    hotspot_y: u16,
+  ) {
+    sprite.with_sprite(|s| {
+      self.cursor_request.custom_cursor = Some(crate::core::cursor::CustomCursorData {
+        rgba: s.data().to_vec(),
+        width: s.width() as u16,
+        height: s.height() as u16,
+        hotspot_x,
+        hotspot_y,
+        id: sprite.id(),
+      });
+    });
+  }
+
+  /// Set a custom cursor with a hotspot preset.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// let crosshair = ctx.assets.load_sprite("crosshair.png")?;
+  /// ctx.set_custom_cursor_centered(&crosshair);  // Hotspot at center
+  /// ```
+  pub fn set_custom_cursor_centered(&mut self, sprite: &crate::core::asset::SpriteHandle) {
+    let hotspot_x = (sprite.width() / 2) as u16;
+    let hotspot_y = (sprite.height() / 2) as u16;
+    self.set_custom_cursor(sprite, hotspot_x, hotspot_y);
   }
 }
 
@@ -1222,6 +1324,7 @@ impl Game for SceneGame {
       lighting: ctx.lighting,
       events: ctx.events,
       window_request: ctx.window_request,
+      cursor_request: ctx.cursor_request,
       time_control: ctx.time_control,
       profiling_enabled: ctx.profiling_enabled,
     };
@@ -1260,6 +1363,7 @@ impl Game for SceneGame {
       lighting: ctx.lighting,
       events: ctx.events,
       window_request: ctx.window_request,
+      cursor_request: ctx.cursor_request,
       time_control: ctx.time_control,
       profiling_enabled: ctx.profiling_enabled,
     };

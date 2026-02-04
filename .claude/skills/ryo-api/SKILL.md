@@ -779,6 +779,58 @@ pub enum MouseButton {
 
 ---
 
+## Cursor
+
+### CursorStyle
+
+System cursor icons:
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CursorStyle {
+    #[default]
+    Default,           // Standard arrow
+    Text,              // I-beam for text input
+    Crosshair,         // Precise selection
+    Pointer,           // Hand for clickable elements
+    Move,              // Four-way arrows
+    NotAllowed,        // Forbidden indicator
+    Grab,              // Open hand (ready to grab)
+    Grabbing,          // Closed hand (dragging)
+    Wait,              // Busy spinner
+    Progress,          // Arrow with spinner
+    Help,              // Arrow with question mark
+    Cell,              // Table cell selection
+    ZoomIn,            // Magnifying glass (+)
+    ZoomOut,           // Magnifying glass (-)
+    ResizeHorizontal,  // Left-right resize
+    ResizeVertical,    // Up-down resize
+    ResizeNeSw,        // Diagonal NE-SW resize
+    ResizeNwSe,        // Diagonal NW-SE resize
+}
+```
+
+### Cursor Control (via Context)
+
+Available on `GameContext` and `SceneContext`:
+
+```rust
+impl SceneContext {
+    // Change cursor style
+    fn set_cursor(&mut self, style: CursorStyle);
+
+    // Control visibility
+    fn set_cursor_visible(&mut self, visible: bool);
+    fn show_cursor(&mut self);   // Shorthand for set_cursor_visible(true)
+    fn hide_cursor(&mut self);   // Shorthand for set_cursor_visible(false)
+
+    // Confine cursor to window bounds
+    fn set_cursor_confined(&mut self, confined: bool);
+}
+```
+
+---
+
 ## Camera
 
 **CRITICAL:** Camera defaults to position (0, 0), which centers the screen on world origin.

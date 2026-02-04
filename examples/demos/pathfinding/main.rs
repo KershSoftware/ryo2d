@@ -6,6 +6,7 @@
 //! - Path smoothing options
 //! - Real-time path visualization
 //! - Time-sliced pathfinding for many agents
+//! - Agent avoidance using steering behaviors
 //!
 //! ## Controls
 //!
@@ -16,6 +17,7 @@
 //! - 1: No smoothing
 //! - 2: Line-of-sight smoothing
 //! - 3: Spline smoothing
+//! - A: Toggle agent avoidance (steering)
 //! - R: Reset (clear obstacles and respawn agents)
 //! - G: Toggle grid visualization
 //! - T: Toggle movement trails
@@ -61,6 +63,8 @@ struct PathfindingDemoScene {
   destination_marker: Option<Entity>,
   /// Whether trails are enabled
   show_trails: bool,
+  /// Whether agent avoidance is enabled
+  avoid_agents: bool,
 }
 
 impl PathfindingDemoScene {
@@ -84,6 +88,7 @@ impl PathfindingDemoScene {
       last_drag_cell: None,
       destination_marker: None,
       show_trails: true,
+      avoid_agents: false,
     }
   }
 
@@ -323,7 +328,7 @@ impl PathfindingDemoScene {
 
   fn move_agent_along_path(&self, world: &mut World, entity: Entity, dt: f32) {
     // Get current position and path info
-    let (current_pos, waypoint, speed, threshold) = {
+    let (current_pos, waypoint, speed, threshold, radius) = {
       let transform = world.get::<Transform>(entity);
       let agent = world.get::<NavAgent>(entity);
 
@@ -335,9 +340,10 @@ impl PathfindingDemoScene {
             wp.map(|w| (w.x, w.y)),
             a.speed,
             a.arrival_threshold,
+            a.radius,
           )
         }
-        _ => (None, None, 0.0, 0.0),
+        _ => (None, None, 0.0, 0.0, 8.0),
       }
     };
 
@@ -353,7 +359,7 @@ impl PathfindingDemoScene {
       return;
     };
 
-    // Calculate movement
+    // Calculate path direction
     let dx = wx - x;
     let dy = wy - y;
     let dist = (dx * dx + dy * dy).sqrt();
@@ -369,13 +375,35 @@ impl PathfindingDemoScene {
         }
       }
     } else {
-      // Move towards waypoint
-      let move_dist = speed * dt;
-      let ratio = (move_dist / dist).min(1.0);
+      // Calculate base movement direction
+      let path_dir = Vec2::new(dx / dist, dy / dist);
+      let mut velocity = path_dir * speed;
 
+      // Add avoidance steering if enabled
+      if self.avoid_agents {
+        let pos = Vec2::new(x, y);
+
+        // Collect nearby agents
+        let neighbors: Vec<(Vec2, f32)> = self
+          .agents
+          .iter()
+          .filter(|&&e| e != entity)
+          .filter_map(|&e| {
+            let t = world.get::<Transform>(e)?;
+            Some((Vec2::new(t.x, t.y), radius))
+          })
+          .filter(|(p, _)| pos.distance(*p) < 50.0)
+          .collect();
+
+        // Apply separation steering
+        let avoid = steering::separation(pos, radius, &neighbors, 80.0);
+        velocity = (velocity + avoid).clamp_length_max(speed);
+      }
+
+      // Apply movement
       if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-        transform.x += dx * ratio;
-        transform.y += dy * ratio;
+        transform.x += velocity.x * dt;
+        transform.y += velocity.y * dt;
       }
     }
   }
@@ -453,6 +481,7 @@ impl Scene for PathfindingDemoScene {
     println!("  Shift + Right Click: Remove obstacles");
     println!("  Space: Spawn 10 more agents");
     println!("  1/2/3: Change smoothing mode");
+    println!("  A: Toggle agent avoidance");
     println!("  G: Toggle grid | T: Toggle trails");
     println!("  R: Reset | ESC: Exit");
 
@@ -482,6 +511,13 @@ impl Scene for PathfindingDemoScene {
     }
     if ctx.input.key_pressed(KeyCode::KeyT) {
       self.show_trails = !self.show_trails;
+    }
+    if ctx.input.key_pressed(KeyCode::KeyA) {
+      self.avoid_agents = !self.avoid_agents;
+      println!(
+        "Agent avoidance: {}",
+        if self.avoid_agents { "ON" } else { "OFF" }
+      );
     }
 
     // Smoothing modes
@@ -612,11 +648,13 @@ impl Scene for PathfindingDemoScene {
     ui.draw_text("Pathfinding Demo", 10.0, 10.0, text_light);
 
     // Stats
+    let avoidance_str = if self.avoid_agents { "ON" } else { "OFF" };
     let stats = format!(
-      "Agents: {} | Obstacles: {} | Smoothing: {}",
+      "Agents: {} | Obstacles: {} | Smoothing: {} | Avoidance: {}",
       self.agents.len(),
       self.obstacles.len(),
-      self.smoothing_name()
+      self.smoothing_name(),
+      avoidance_str
     );
     ui.draw_text(&stats, 10.0, 30.0, text_accent);
 
@@ -628,7 +666,7 @@ impl Scene for PathfindingDemoScene {
       text_muted,
     );
     ui.draw_text(
-      "Space: +10 Agents | 1/2/3: Smoothing | G: Grid | T: Trails | R: Reset",
+      "Space: +10 Agents | 1/2/3: Smoothing | A: Avoidance | G: Grid | T: Trails | R: Reset",
       10.0,
       66.0,
       text_muted,

@@ -66,14 +66,28 @@ pub const DRONE_FIRST_SPAWN_TIME: f32 = 30.0; // First drone spawns at 30 second
 pub const DRONE_SPAWN_INTERVAL: f32 = 20.0; // Seconds between additional drone spawns
 pub const DRONE_MAX_COUNT: u32 = 3; // Maximum number of drones
 
+// Nebula configuration (floating 3-orb enemy)
+pub const NEBULA_ORB_SIZE: f32 = 16.0;
+pub const NEBULA_SPEED: f32 = 100.0; // Slower, floaty movement
+pub const NEBULA_CHARGE_DURATION: f32 = 1.2; // Time spent charging before firing rockets
+pub const NEBULA_COOLDOWN: f32 = 3.0; // Cooldown after firing
+pub const NEBULA_FIRST_SPAWN_TIME: f32 = 45.0; // First nebula spawns at 45 seconds
+pub const NEBULA_SPAWN_INTERVAL: f32 = 30.0; // Seconds between additional spawns
+pub const NEBULA_MAX_COUNT: u32 = 2; // Maximum number of nebulas
+
+// Rocket configuration (MLRS-style projectile)
+pub const ROCKET_SIZE: f32 = 10.0;
+
 // Z-ordering
 pub const Z_BACKGROUND: i32 = 0;
 pub const Z_PLATFORM: i32 = 5;
 pub const Z_BARRIER: i32 = 6;
 pub const Z_TURRET: i32 = 10;
 pub const Z_DRONE: i32 = 12;
+pub const Z_NEBULA: i32 = 13;
 pub const Z_LASER: i32 = 14;
 pub const Z_BULLET: i32 = 15;
+pub const Z_ROCKET: i32 = 16;
 pub const Z_PLAYER: i32 = 20;
 pub const Z_PARTICLE: i32 = 25;
 pub const Z_UI: i32 = 100;

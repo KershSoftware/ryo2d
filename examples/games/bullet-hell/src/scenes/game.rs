@@ -25,10 +25,19 @@ type BulletBundle = (
   Trail2D,
 );
 
+/// Marker component for nebula orb child entities
+#[derive(Debug, Clone)]
+struct NebulaOrbMarker {
+  parent: Entity,
+  index: usize,
+}
+
 pub struct GameScene {
   player: Option<Entity>,
   turrets: Vec<Entity>,
   drones: Vec<Entity>,
+  nebulas: Vec<Entity>,
+  rockets: Vec<Entity>,
   lasers: Vec<Entity>,
   fading_lasers: Vec<Entity>,
   bullets: Vec<Entity>,
@@ -43,6 +52,8 @@ pub struct GameScene {
   player_sprite: SpriteHandle,
   turret_sprite: SpriteHandle,
   drone_sprite: SpriteHandle,
+  nebula_orb_sprite: SpriteHandle,
+  rocket_sprite: SpriteHandle,
   bullet_sprite: SpriteHandle,
   particle_sprite: SpriteHandle,
   platform_sprite: SpriteHandle,
@@ -58,6 +69,8 @@ pub struct GameScene {
   current_burst_size: u32,
   // Drone spawning
   next_drone_spawn_time: f32,
+  // Nebula spawning
+  next_nebula_spawn_time: f32,
   // Death effect
   death_effect_timer: Option<f32>,
   // Screen dimensions (obtained from engine at runtime)
@@ -94,8 +107,8 @@ impl GameScene {
     let player_sprite =
       Sprite::solid_rect(PLAYER_SIZE as u32, PLAYER_SIZE as u32, 255, 180, 50, 255);
     let turret_sprite = Sprite::load("assets/turret.png").expect("Failed to load turret sprite");
-    // Create a small round bullet programmatically (dark red/maroon)
-    let bullet_sprite = Sprite::solid_circle(BULLET_SIZE as u32, 255, 255, 255, 255);
+    // Create a small round bullet programmatically (bright orange-red)
+    let bullet_sprite = Sprite::solid_circle(BULLET_SIZE as u32, 255, 100, 50, 255);
     let particle_sprite =
       Sprite::load("assets/particle.png").expect("Failed to load particle sprite");
     let platform_sprite =
@@ -105,6 +118,11 @@ impl GameScene {
       Sprite::solid_rect(BARRIER_WIDTH as u32, BARRIER_HEIGHT as u32, 60, 60, 70, 255);
     // Create drone sprite programmatically (purple color)
     let drone_sprite = Sprite::solid_rect(DRONE_SIZE as u32, DRONE_SIZE as u32, 150, 80, 200, 255);
+    // Create nebula orb sprite (forest green)
+    let nebula_orb_sprite =
+      Sprite::solid_circle(NEBULA_ORB_SIZE as u32, 45, 120, 50, 255);
+    // Create rocket sprite (orange/red)
+    let rocket_sprite = Sprite::solid_rect(ROCKET_SIZE as u32, (ROCKET_SIZE * 0.6) as u32, 255, 120, 50, 255);
 
     // Load parallax background layers as sprite handles (for GPU upload)
     let sky_sprite = SpriteHandle::from_sprite(
@@ -192,6 +210,8 @@ impl GameScene {
       player: None,
       turrets: Vec::new(),
       drones: Vec::new(),
+      nebulas: Vec::new(),
+      rockets: Vec::new(),
       lasers: Vec::new(),
       fading_lasers: Vec::new(),
       bullets: Vec::new(),
@@ -205,6 +225,8 @@ impl GameScene {
       player_sprite: SpriteHandle::from_sprite(player_sprite, "player.png"),
       turret_sprite: SpriteHandle::from_sprite(turret_sprite, "turret.png"),
       drone_sprite: SpriteHandle::from_sprite(drone_sprite, "drone"),
+      nebula_orb_sprite: SpriteHandle::from_sprite(nebula_orb_sprite, "nebula_orb"),
+      rocket_sprite: SpriteHandle::from_sprite(rocket_sprite, "rocket"),
       bullet_sprite: SpriteHandle::from_sprite(bullet_sprite, "bullet.png"),
       particle_sprite: SpriteHandle::from_sprite(particle_sprite, "particle.png"),
       platform_sprite: SpriteHandle::from_sprite(platform_sprite, "platform.png"),
@@ -218,6 +240,8 @@ impl GameScene {
       current_burst_size: TURRET_BURST_SIZE,
       // Drone spawning - first drone at 30 seconds
       next_drone_spawn_time: DRONE_FIRST_SPAWN_TIME,
+      // Nebula spawning - spawn immediately for testing (normally NEBULA_FIRST_SPAWN_TIME)
+      next_nebula_spawn_time: 1.0,
       // Death effect not active
       death_effect_timer: None,
       // Screen dimensions - fixed design resolution for consistent gameplay
@@ -371,7 +395,7 @@ impl GameScene {
         Transform::new(0.0, y),
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_TURRET)
-          .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
+          .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
         RigidBody::kinematic(),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Left),
@@ -392,7 +416,7 @@ impl GameScene {
         Transform::new(sw - TURRET_SIZE, y),
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_TURRET)
-          .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
+          .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
         RigidBody::kinematic(),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Right),
@@ -523,8 +547,8 @@ impl GameScene {
         // Apply dissolve shader for spawn effect
         if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
           if just_finished {
-            // Finished spawning - restore normal outline shader (black) and play sound with panning
-            renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
+            // Finished spawning - restore normal outline shader (purple) and play sound with panning
+            renderable.shader = Some(SpriteShader::outline(Color::rgb(200, 140, 255), 2));
             // Pan based on screen position (-1 left, 0 center, 1 right)
             let pan = ((drone_x / self.screen_width) * 2.0 - 1.0).clamp(-1.0, 1.0);
             if let Some(audio) = &mut ctx.audio {
@@ -658,7 +682,7 @@ impl GameScene {
             if flash > 0.5 {
               renderable.shader = Some(SpriteShader::flash(Color::new(255, 200, 200, 255), 0.5));
             } else {
-              renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
+              renderable.shader = Some(SpriteShader::outline(Color::rgb(200, 140, 255), 2));
             }
           }
 
@@ -756,7 +780,7 @@ impl GameScene {
           // Restore normal shader when firing ends
           if finished_firing {
             if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
-              renderable.shader = Some(SpriteShader::outline(Color::rgb(0, 0, 0), 2));
+              renderable.shader = Some(SpriteShader::outline(Color::rgb(200, 140, 255), 2));
             }
           }
         }
@@ -899,6 +923,457 @@ impl GameScene {
     let extend_dist = (screen_w * screen_w + screen_h * screen_h).sqrt() * 2.0;
 
     (x1 + dir_x * extend_dist, y1 + dir_y * extend_dist)
+  }
+
+  fn spawn_nebula(&mut self, ctx: &mut SceneContext) {
+    use crate::constants::{NEBULA_ORB_SIZE, Z_NEBULA};
+    use rand::Rng;
+
+    let mut rng = rand::thread_rng();
+
+    // Spawn nebula in upper area of screen
+    let spawn_x = rng.gen_range(200.0..self.screen_width - 200.0);
+    let spawn_y = rng.gen_range(100.0..self.screen_height * 0.4);
+
+    // Create the nebula component to get orb positions
+    let nebula = Nebula::new(spawn_x, spawn_y);
+    let orb_positions: Vec<Vec2> = nebula
+      .orbs
+      .iter()
+      .map(|orb| orb.position(Vec2::new(spawn_x, spawn_y)))
+      .collect();
+
+    // Create center entity for the nebula (invisible, just holds the component)
+    let nebula_entity = ctx.world.spawn((Transform::new(spawn_x, spawn_y), nebula));
+
+    // Create the 3 orb child entities
+    for (i, orb_pos) in orb_positions.iter().enumerate() {
+      let sprite = self.nebula_orb_sprite.clone();
+
+      ctx.world.spawn((
+        Transform::new(orb_pos.x, orb_pos.y).with_pivot_center(),
+        Renderable::sprite(sprite)
+          .with_z_order(Z_NEBULA)
+          .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(80, 180, 80))),
+        RigidBody::kinematic(),
+        Collider::circle_collider(NEBULA_ORB_SIZE / 2.0),
+        NebulaOrbMarker {
+          parent: nebula_entity,
+          index: i,
+        },
+      ));
+    }
+
+    self.nebulas.push(nebula_entity);
+  }
+
+  fn update_nebulas(&mut self, ctx: &mut SceneContext, dt: f32) {
+    use crate::components::nebula::NEBULA_ROCKETS_PER_SALVO;
+    use crate::components::NebulaState;
+    use crate::constants::{NEBULA_CHARGE_DURATION, NEBULA_COOLDOWN, NEBULA_SPEED};
+
+    // Get player position for rocket targeting (used by spawn_rocket)
+    let _player_pos = self
+      .player
+      .and_then(|e| ctx.world.get::<Transform>(e).map(|t| Vec2::new(t.x, t.y)));
+
+    // Collect all nebula positions for avoidance
+    let nebula_positions: Vec<(Entity, Vec2, f32)> = self
+      .nebulas
+      .iter()
+      .filter_map(|&e| {
+        let t = ctx.world.get::<Transform>(e)?;
+        let n = ctx.world.get::<Nebula>(e)?;
+        Some((e, Vec2::new(t.x, t.y), n.radius))
+      })
+      .collect();
+
+    let nebulas_to_update: Vec<_> = self.nebulas.clone();
+
+    for nebula_entity in nebulas_to_update {
+      let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) else {
+        continue;
+      };
+
+      // Handle spawn animation
+      if nebula.is_spawning() {
+        let just_finished = nebula.update_spawn(dt);
+        let spawn_progress = nebula.spawn_progress();
+        drop(nebula);
+
+        // Update orb dissolve shaders
+        self.update_nebula_orb_shaders(ctx, nebula_entity, spawn_progress, just_finished);
+        continue;
+      }
+
+      // Update orb positions
+      nebula.update_orbs(dt);
+
+      let state = nebula.state;
+      let mut state_timer = nebula.state_timer;
+      state_timer -= dt;
+
+      // Get current position
+      let current_pos = ctx
+        .world
+        .get::<Transform>(nebula_entity)
+        .map(|t| Vec2::new(t.x, t.y))
+        .unwrap_or(Vec2::ZERO);
+
+      drop(nebula);
+
+      match state {
+        NebulaState::Moving => {
+          // Calculate base velocity toward target
+          let nebula = ctx.world.get::<Nebula>(nebula_entity).unwrap();
+          let base_vel = nebula.calculate_base_velocity(current_pos, NEBULA_SPEED);
+          let reached = nebula.reached_target(current_pos);
+          drop(nebula);
+
+          // Apply steering avoidance
+          let neighbors: Vec<(Vec2, f32)> = nebula_positions
+            .iter()
+            .filter(|(e, _, _)| *e != nebula_entity)
+            .map(|(_, pos, radius)| (*pos, *radius))
+            .collect();
+
+          let avoid = steering::separation(current_pos, 40.0, &neighbors, 60.0);
+          let velocity = (base_vel + avoid).clamp_length_max(NEBULA_SPEED);
+
+          // Apply movement
+          if let Some(mut t) = ctx.world.get_mut::<Transform>(nebula_entity) {
+            t.x += velocity.x * dt;
+            t.y += velocity.y * dt;
+          }
+
+          // Update orb world positions
+          self.update_nebula_orb_positions(ctx, nebula_entity);
+
+          if reached || state_timer <= 0.0 {
+            if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+              nebula.state = NebulaState::Charging;
+              nebula.state_timer = NEBULA_CHARGE_DURATION;
+            }
+          } else if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+            nebula.state_timer = state_timer;
+          }
+        }
+
+        NebulaState::Charging => {
+          // Orbs pulse/flash during charge
+          let charge_progress = 1.0 - (state_timer / NEBULA_CHARGE_DURATION).clamp(0.0, 1.0);
+          self.update_nebula_orb_charge_effect(ctx, nebula_entity, charge_progress);
+
+          // Still update orb positions (they float)
+          if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+            nebula.update_orbs(dt);
+          }
+          self.update_nebula_orb_positions(ctx, nebula_entity);
+
+          if state_timer <= 0.0 {
+            if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+              nebula.state = NebulaState::Firing;
+              nebula.rockets_remaining = NEBULA_ROCKETS_PER_SALVO;
+              nebula.rocket_timer = 0.0;
+            }
+          } else if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+            nebula.state_timer = state_timer;
+          }
+        }
+
+        NebulaState::Firing => {
+          // Still update orb positions
+          if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+            nebula.update_orbs(dt);
+          }
+          self.update_nebula_orb_positions(ctx, nebula_entity);
+
+          // Fire rockets
+          let (rockets_remaining, rocket_timer) = {
+            let nebula = ctx.world.get::<Nebula>(nebula_entity).unwrap();
+            (nebula.rockets_remaining, nebula.rocket_timer)
+          };
+
+          let new_timer = rocket_timer - dt;
+
+          if rockets_remaining > 0 && new_timer <= 0.0 {
+            // Fire a rocket
+            let nebula = ctx.world.get::<Nebula>(nebula_entity).unwrap();
+            let top_pos = nebula.top_orb_position(current_pos);
+            drop(nebula);
+
+            self.spawn_rocket(ctx, top_pos, rockets_remaining);
+
+            if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+              nebula.rockets_remaining -= 1;
+              nebula.rocket_timer = crate::components::nebula::NEBULA_ROCKET_INTERVAL;
+            }
+          } else if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+            nebula.rocket_timer = new_timer;
+          }
+
+          // Check if done firing
+          let rockets_left = ctx
+            .world
+            .get::<Nebula>(nebula_entity)
+            .map(|n| n.rockets_remaining)
+            .unwrap_or(0);
+
+          if rockets_left == 0 {
+            if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+              nebula.state = NebulaState::Cooldown;
+              nebula.state_timer = NEBULA_COOLDOWN;
+            }
+            // Reset orb shaders to clean outline (not dissolve)
+            self.update_nebula_orb_shaders(ctx, nebula_entity, 1.0, true);
+          }
+        }
+
+        NebulaState::Cooldown => {
+          // Still update orb positions
+          if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+            nebula.update_orbs(dt);
+          }
+          self.update_nebula_orb_positions(ctx, nebula_entity);
+
+          if state_timer <= 0.0 {
+            if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+              nebula.pick_new_target(current_pos, self.screen_width, self.screen_height);
+              nebula.state = NebulaState::Moving;
+              nebula.state_timer = 5.0; // Max time to reach target
+            }
+          } else if let Some(mut nebula) = ctx.world.get_mut::<Nebula>(nebula_entity) {
+            nebula.state_timer = state_timer;
+          }
+        }
+      }
+    }
+  }
+
+  fn update_nebula_orb_positions(&self, ctx: &mut SceneContext, nebula_entity: Entity) {
+    let Some(nebula) = ctx.world.get::<Nebula>(nebula_entity) else {
+      return;
+    };
+    let center = ctx
+      .world
+      .get::<Transform>(nebula_entity)
+      .map(|t| Vec2::new(t.x, t.y))
+      .unwrap_or(Vec2::ZERO);
+
+    let orb_positions: Vec<Vec2> = nebula.orbs.iter().map(|orb| orb.position(center)).collect();
+    drop(nebula);
+
+    // Find and update orb entities
+    for (marker, transform) in ctx
+      .world
+      .query::<(&NebulaOrbMarker, &mut Transform)>()
+      .iter()
+    {
+      if marker.parent == nebula_entity {
+        if let Some(pos) = orb_positions.get(marker.index) {
+          transform.x = pos.x;
+          transform.y = pos.y;
+        }
+      }
+    }
+  }
+
+  fn update_nebula_orb_shaders(
+    &self,
+    ctx: &mut SceneContext,
+    nebula_entity: Entity,
+    progress: f32,
+    just_finished: bool,
+  ) {
+    for (marker, renderable) in ctx
+      .world
+      .query::<(&NebulaOrbMarker, &mut Renderable)>()
+      .iter()
+    {
+      if marker.parent == nebula_entity {
+        if just_finished {
+          // Glossy glow effect - lighter green glow around forest green orb
+          renderable.shader = Some(SpriteShader::outline(Color::rgb(150, 220, 150), 2));
+        } else {
+          let dissolve = 1.0 - progress;
+          renderable.shader =
+            Some(SpriteShader::dissolve_with_edge(dissolve, Color::rgb(80, 180, 80)));
+        }
+      }
+    }
+  }
+
+  fn update_nebula_orb_charge_effect(
+    &self,
+    ctx: &mut SceneContext,
+    nebula_entity: Entity,
+    charge_progress: f32,
+  ) {
+    let flash_speed = 6.0 + charge_progress * 12.0;
+    let flash = ((charge_progress * flash_speed * std::f32::consts::TAU).sin() * 0.5 + 0.5)
+      .clamp(0.0, 1.0);
+
+    for (marker, renderable) in ctx
+      .world
+      .query::<(&NebulaOrbMarker, &mut Renderable)>()
+      .iter()
+    {
+      if marker.parent == nebula_entity {
+        if flash > 0.5 {
+          // Bright flash during charge
+          renderable.shader = Some(SpriteShader::flash(Color::new(180, 255, 180, 255), 0.7));
+        } else {
+          // Back to glossy glow
+          renderable.shader = Some(SpriteShader::outline(Color::rgb(150, 220, 150), 2));
+        }
+      }
+    }
+  }
+
+  fn spawn_rocket(&mut self, ctx: &mut SceneContext, pos: Vec2, rocket_index: u32) {
+    use crate::components::rocket::ROCKET_LAUNCH_SPREAD;
+    use crate::constants::{ROCKET_SIZE, Z_ROCKET};
+
+    // Offset based on which rocket in the salvo (spread horizontally)
+    let offset_x = (rocket_index as f32 - 1.5) * ROCKET_LAUNCH_SPREAD * 0.3;
+
+    let rocket = Rocket::new(offset_x);
+    let sprite = self.rocket_sprite.clone();
+
+    // Trail for rocket
+    let trail = Trail2D::new(Color::new(255, 150, 50, 180), 4.0)
+      .with_length(30)
+      .with_fade(true)
+      .with_taper(0.8)
+      .with_min_distance(3.0);
+
+    let entity = ctx.world.spawn((
+      Transform::new(pos.x + offset_x, pos.y).with_pivot_center(),
+      Renderable::sprite(sprite)
+        .with_z_order(Z_ROCKET)
+        .with_shader(SpriteShader::outline(Color::rgb(255, 190, 130), 2)),
+      RigidBody::kinematic(),
+      Collider::circle_collider(ROCKET_SIZE / 2.0),
+      rocket,
+      trail,
+    ));
+
+    self.rockets.push(entity);
+
+    // Play launch sound
+    if let Some(audio) = &mut ctx.audio {
+      let _ = audio.play_sound_with("bullet", SoundOptions::new().volume(0.2));
+    }
+  }
+
+  fn update_rockets(&mut self, ctx: &mut SceneContext, dt: f32) {
+    // Get player position for calibration
+    let player_pos = self
+      .player
+      .and_then(|e| ctx.world.get::<Transform>(e).map(|t| Vec2::new(t.x, t.y)))
+      .unwrap_or(Vec2::new(self.screen_width / 2.0, self.screen_height / 2.0));
+
+    let mut rockets_to_remove: Vec<Entity> = Vec::new();
+    let mut player_hit = false;
+
+    for &entity in &self.rockets {
+      // Get rocket component and position
+      let Some(mut rocket) = ctx.world.get_mut::<Rocket>(entity) else {
+        continue;
+      };
+
+      let current_pos = ctx
+        .world
+        .get::<Transform>(entity)
+        .map(|t| Vec2::new(t.x, t.y))
+        .unwrap_or(Vec2::ZERO);
+
+      // Update rocket
+      rocket.update(current_pos, player_pos, dt);
+      let velocity = rocket.velocity;
+      let rotation = rocket.rotation();
+      let is_dangerous = rocket.is_dangerous();
+      drop(rocket);
+
+      // Apply movement
+      if let Some(mut t) = ctx.world.get_mut::<Transform>(entity) {
+        t.x += velocity.x * dt;
+        t.y += velocity.y * dt;
+        t.rotation = rotation;
+      }
+
+      // Update trail
+      let new_pos = ctx
+        .world
+        .get::<Transform>(entity)
+        .map(|t| (t.x, t.y))
+        .unwrap_or((0.0, 0.0));
+      if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
+        trail.update(new_pos.0, new_pos.1, dt);
+      }
+
+      // Check bounds - remove if off screen
+      if new_pos.0 < -50.0
+        || new_pos.0 > self.screen_width + 50.0
+        || new_pos.1 < -50.0
+        || new_pos.1 > self.screen_height + 50.0
+      {
+        rockets_to_remove.push(entity);
+        continue;
+      }
+
+      // Check player collision (only when dangerous)
+      if is_dangerous && !player_hit && !self.player_invincible {
+        let dist = (Vec2::new(new_pos.0, new_pos.1) - player_pos).length();
+        if dist < PLAYER_SIZE / 2.0 + ROCKET_SIZE / 2.0 {
+          player_hit = true;
+          rockets_to_remove.push(entity);
+        }
+      }
+    }
+
+    // Handle player hit
+    if player_hit {
+      self.player_lives = self.player_lives.saturating_sub(1);
+      self.player_invincible = true;
+
+      // Flash player
+      if let Some(player) = self.player {
+        if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player) {
+          renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 100, 100), 1.0));
+        }
+      }
+
+      // Spawn explosion at player
+      let player_explosion_pos = self
+        .player
+        .and_then(|p| ctx.world.get::<Transform>(p).map(|t| (t.x, t.y)));
+      if let Some((x, y)) = player_explosion_pos {
+        self.create_explosion(ctx, x, y);
+      }
+
+      if let Some(audio) = &mut ctx.audio {
+        let _ = audio.play_sound_with("hit", SoundOptions::new().volume(0.5));
+      }
+    }
+
+    // Collect rocket positions for explosions before removing
+    let rocket_positions: Vec<(Entity, f32, f32)> = rockets_to_remove
+      .iter()
+      .filter_map(|&e| {
+        ctx
+          .world
+          .get::<Transform>(e)
+          .map(|t| (e, t.x, t.y))
+      })
+      .collect();
+
+    // Remove rockets and create explosions
+    for (entity, x, y) in rocket_positions {
+      self.create_explosion(ctx, x, y);
+      let _ = ctx.world.despawn(entity);
+      self.rockets.retain(|&e| e != entity);
+    }
   }
 
   fn update_player(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -1634,7 +2109,7 @@ impl GameScene {
         if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(turret_entity) {
           if just_finished {
             // Finished spawning - restore normal outline shader and play sound with panning
-            renderable.shader = Some(SpriteShader::outline(Color::rgb(40, 40, 40), 2));
+            renderable.shader = Some(SpriteShader::outline(Color::rgb(255, 140, 140), 2));
             let pan = match turret_side {
               TurretSide::Left => -0.8,
               TurretSide::Right => 0.8,
@@ -1804,16 +2279,17 @@ impl GameScene {
       Transform::new(x, y).with_anchor(Anchor::Center),
       Renderable::sprite(sprite)
         .with_z_order(Z_BULLET)
-        .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 1)),
+        ,
       // CCD for fast-moving bullets, no gravity
       RigidBody::new().with_ccd().with_gravity_scale(0.0),
       Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
       Velocity::new(velocity_x, velocity_y),
       Bullet::new(velocity_x, velocity_y),
-      Trail2D::bullet(Color::rgb(180, 180, 180))
-        .with_length(30)
-        .with_taper(0.0)
-        .with_fade(true),
+      Trail2D::new(Color::new(255, 140, 30, 230), 3.5)
+        .with_length(25)
+        .with_taper(0.7)
+        .with_fade(true)
+        .with_min_distance(2.0),
     ));
 
     self.bullets.push(bullet);
@@ -2102,6 +2578,14 @@ impl GameScene {
       self.spawn_drone(ctx);
       self.next_drone_spawn_time = self.survival_time + DRONE_SPAWN_INTERVAL;
     }
+
+    // Spawn nebulas based on survival time
+    if (self.nebulas.len() as u32) < NEBULA_MAX_COUNT
+      && self.survival_time >= self.next_nebula_spawn_time
+    {
+      self.spawn_nebula(ctx);
+      self.next_nebula_spawn_time = self.survival_time + NEBULA_SPAWN_INTERVAL;
+    }
   }
 
   fn spawn_additional_turrets(&mut self, ctx: &mut SceneContext, count: u32) {
@@ -2123,7 +2607,7 @@ impl GameScene {
         Transform::new(0.0, y),
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_TURRET)
-          .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
+          .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
         RigidBody::kinematic(),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Left),
@@ -2142,7 +2626,7 @@ impl GameScene {
         Transform::new(sw - TURRET_SIZE, y),
         Renderable::sprite(sprite.clone())
           .with_z_order(Z_TURRET)
-          .with_shader(SpriteShader::outline(Color::rgb(40, 40, 40), 2)),
+          .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
         RigidBody::kinematic(),
         Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
         Turret::new(TurretSide::Right),
@@ -2218,16 +2702,17 @@ impl Scene for GameScene {
           Transform::default(),
           Renderable::sprite(bullet_sprite.clone())
             .with_z_order(Z_BULLET)
-            .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 1)),
+            ,
           // CCD for fast-moving bullets, no gravity
           RigidBody::new().with_ccd().with_gravity_scale(0.0),
           Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
           Velocity::zero(),
           Bullet::new(0.0, 0.0),
-          Trail2D::bullet(Color::rgb(180, 180, 180))
-            .with_length(30)
-            .with_taper(0.0)
-            .with_fade(true),
+          Trail2D::new(Color::new(255, 140, 30, 230), 3.5)
+            .with_length(25)
+            .with_taper(0.7)
+            .with_fade(true)
+            .with_min_distance(2.0),
         )
       },
     ));
@@ -2329,6 +2814,8 @@ impl Scene for GameScene {
     self.update_player(ctx, dt);
     self.update_turrets(ctx, dt);
     self.update_drones(ctx, dt);
+    self.update_nebulas(ctx, dt);
+    self.update_rockets(ctx, dt);
     self.update_laser_tracers(ctx, dt);
     self.update_bullets(ctx, dt);
     self.update_particles(ctx, dt);

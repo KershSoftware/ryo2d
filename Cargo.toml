@@ -40,6 +40,9 @@ members = [
   "examples/demos/ui",
   "examples/demos/pathfinding",
   "examples/demos/procgen",
+  "examples/demos/steering",
+  "examples/demos/trails",
+  "examples/demos/cursor",
 ]
 
 # Example games are standalone projects in examples/ - run them with:
@@ -83,6 +86,7 @@ profiler = ["puffin"]
 
 [dev-dependencies]
 tempfile = "3"
+serial_test = "3"
 
 # Dev builds: optimize dependencies and engine for performance, keep game code light for fast iteration
 # The engine's pixel operations (parallax, sprite blitting) need full optimization

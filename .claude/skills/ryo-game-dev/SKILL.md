@@ -98,6 +98,8 @@ fn main() {
 | `ctx.effects` | `&mut EffectsManager` | Post-processing effects |
 | `ctx.collision_events` | `&[PhysicsCollisionEvent]` | Physics collisions |
 
+**Cursor Methods:** `ctx.set_cursor()`, `ctx.show_cursor()`, `ctx.hide_cursor()`, `ctx.set_cursor_confined()`
+
 ## Essential Patterns
 
 ### Loading Assets
@@ -222,6 +224,33 @@ if let Some(audio) = ctx.audio.as_mut() {
 if let Some(audio) = ctx.audio.as_mut() {
     audio.play_music("bgm.ogg").ok();
     audio.set_music_volume(0.5);
+}
+```
+
+### Cursor
+
+```rust
+// Change cursor style for UI feedback
+ctx.set_cursor(CursorStyle::Pointer);     // For clickable elements
+ctx.set_cursor(CursorStyle::Text);        // For text fields
+ctx.set_cursor(CursorStyle::Crosshair);   // For aiming
+ctx.set_cursor(CursorStyle::Grabbing);    // While dragging
+ctx.set_cursor(CursorStyle::Default);     // Reset to arrow
+
+// Control visibility
+ctx.hide_cursor();  // For first-person/fullscreen games
+ctx.show_cursor();  // Restore cursor
+
+// Lock cursor to window
+ctx.set_cursor_confined(true);   // Confine to window bounds
+ctx.set_cursor_confined(false);  // Allow cursor to leave
+
+// Common pattern: hover detection
+let (mx, my) = ctx.input.mouse_position();
+if button_rect.contains(mx, my) {
+    ctx.set_cursor(CursorStyle::Pointer);
+} else {
+    ctx.set_cursor(CursorStyle::Default);
 }
 ```
 

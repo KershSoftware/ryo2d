@@ -322,6 +322,10 @@ pub struct Engine {
   ui_buffer: Vec<u8>,
   // Pending window configuration changes from game
   window_request: WindowRequest,
+  // Pending cursor configuration changes from game
+  cursor_request: crate::core::cursor::CursorRequest,
+  // Cache of custom cursors by their ID (sprite path)
+  custom_cursor_cache: std::collections::HashMap<String, winit::window::CustomCursor>,
   // Flag indicating surface needs reconfiguration (after display mode change)
   surface_needs_reconfigure: bool,
   // Event bus for decoupled inter-system communication
@@ -457,6 +461,62 @@ impl Engine {
 
     // Clear the request after processing
     self.window_request.clear();
+  }
+
+  /// Apply pending cursor configuration changes from the game.
+  fn apply_cursor_request(&mut self, window: &Arc<Window>, event_loop: &ActiveEventLoop) {
+    use winit::window::CursorGrabMode;
+
+    // Take ownership of the request to avoid borrow issues
+    let request = std::mem::take(&mut self.cursor_request);
+
+    // Custom cursor takes precedence over system cursor
+    if let Some(custom_data) = &request.custom_cursor {
+      // Check cache first
+      if let Some(cached) = self.custom_cursor_cache.get(&custom_data.id) {
+        window.set_cursor(cached.clone());
+      } else {
+        // Create new custom cursor from RGBA data
+        match winit::window::CustomCursor::from_rgba(
+          custom_data.rgba.clone(),
+          custom_data.width,
+          custom_data.height,
+          custom_data.hotspot_x,
+          custom_data.hotspot_y,
+        ) {
+          Ok(source) => {
+            let cursor = event_loop.create_custom_cursor(source);
+            window.set_cursor(cursor.clone());
+            // Cache for future use
+            self.custom_cursor_cache.insert(custom_data.id.clone(), cursor);
+          }
+          Err(e) => {
+            eprintln!("[Cursor] Failed to create custom cursor: {:?}", e);
+          }
+        }
+      }
+    } else if let Some(style) = &request.cursor {
+      // Apply system cursor style
+      window.set_cursor(winit::window::Cursor::Icon(style.to_winit()));
+    }
+
+    // Apply visibility change
+    if let Some(visible) = request.visible {
+      window.set_cursor_visible(visible);
+    }
+
+    // Apply confinement change
+    if let Some(confined) = request.confined {
+      let mode = if confined {
+        CursorGrabMode::Confined
+      } else {
+        CursorGrabMode::None
+      };
+      // Try confined mode, fall back to none if not supported
+      if window.set_cursor_grab(mode).is_err() {
+        let _ = window.set_cursor_grab(CursorGrabMode::None);
+      }
+    }
   }
 
   /// Load a window icon from a file path or use the embedded default logo.
@@ -602,6 +662,8 @@ impl Engine {
       debug_font_uploaded: false,
       ui_buffer: vec![0; ui_buffer_size], // RGBA buffer for UI
       window_request: WindowRequest::default(),
+      cursor_request: crate::core::cursor::CursorRequest::default(),
+      custom_cursor_cache: std::collections::HashMap::new(),
       surface_needs_reconfigure: false,
       events: Events::new(),
       gilrs,
@@ -1124,6 +1186,7 @@ impl Engine {
         lighting: &mut self.lighting,
         events: &mut self.events,
         window_request: &mut self.window_request,
+        cursor_request: &mut self.cursor_request,
         time_control: &mut self.time_control,
         profiling_enabled: self.profiling_enabled,
       };
@@ -1871,6 +1934,7 @@ impl ApplicationHandler for Engine {
           lighting: &mut self.lighting,
           events: &mut self.events,
           window_request: &mut self.window_request,
+          cursor_request: &mut self.cursor_request,
           time_control: &mut self.time_control,
           profiling_enabled: self.profiling_enabled,
         };
@@ -2557,6 +2621,13 @@ impl ApplicationHandler for Engine {
       && let Some(window) = self.window.clone()
     {
       self.apply_window_request(&window);
+    }
+
+    // Process any pending cursor configuration requests
+    if self.cursor_request.has_changes()
+      && let Some(window) = self.window.clone()
+    {
+      self.apply_cursor_request(&window, event_loop);
     }
 
     // When game window doesn't have focus, Windows doesn't deliver RedrawRequested events

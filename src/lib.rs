@@ -60,7 +60,8 @@ pub mod prelude {
   pub use crate::core::ecs::{
     Active, Children, Ease, Entity, Inactive, Material, Parent, Pool, PoolConfig,
     PoolExhaustedPolicy, PoolStats, RenderLayer, RenderMode, RenderStyle, Renderable, ShaderHandle,
-    ShaderParams, SpriteEffect, SpriteShader, Transform, Tween, TweenLoop, Velocity, World,
+    ShaderParams, SpriteEffect, SpriteShader, Transform, Tween, TweenLoop, TweenSequence,
+    Velocity, World,
     WorldTransform,
   };
 
@@ -120,6 +121,7 @@ pub mod prelude {
   };
 
   // Input (re-export KeyCode for convenience)
+  pub use crate::core::cursor::CursorStyle;
   pub use crate::core::input::{GamepadButton, InputState};
   pub use winit::event::MouseButton;
   pub use winit::keyboard::KeyCode;
@@ -188,9 +190,9 @@ pub mod prelude {
 
   // Navigation & Pathfinding
   pub use crate::core::navigation::{
-    CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder, NavigationGrid,
-    Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode, PathResult,
-    PathSmoothing, PathStarted, Pathfinder, PathfinderConfig,
+    steering, CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder,
+    NavigationGrid, Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode,
+    PathResult, PathSmoothing, PathStarted, Pathfinder, PathfinderConfig,
   };
 
   // Procedural Generation

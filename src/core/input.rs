@@ -163,6 +163,7 @@ pub struct InputState {
   left_trigger: f32,
   /// Right trigger value (0.0 to 1.0)
   right_trigger: f32,
+
 }
 
 impl InputState {

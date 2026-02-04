@@ -1,0 +1,12 @@
+[package]
+name = "steering"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ryo2d = { path = "../../../" }
+rand = "0.8"
+
+[[bin]]
+name = "steering"
+path = "main.rs"

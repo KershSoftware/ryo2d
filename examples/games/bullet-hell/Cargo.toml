@@ -20,11 +20,3 @@ ryo2d = { path = "../../.." }
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 puffin = { version = "0.19", optional = true }
-
-# Optimize dependencies in dev builds for playable performance
-# Your game code stays unoptimized for fast compile times
-[profile.dev.package."*"]
-opt-level = 2
-
-[profile.dev.package.ryo2d]
-opt-level = 2

@@ -26,6 +26,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `collision.rs` | AABB/Circle shapes, `Collider` component, collision detection |
 | `hot_reload.rs` | Background filesystem watcher for dev-time asset hot reloading |
 | `input.rs` | Keyboard, mouse, scroll, and gamepad input state tracking (gilrs) |
+| `cursor.rs` | Mouse cursor customization (style, visibility, confinement) |
 | `network/` | Client-server networking, replication, and RPCs (see `network/AGENTS.md`) |
 | `physics.rs` | `RigidBody`, `Acceleration`, gravity, drag (config) |
 | `rapier_physics.rs` | Rapier2D integration, physics world, collision events |
@@ -587,3 +588,99 @@ puffin_profiler = true
 - Profiler window renders at 10 FPS to avoid impacting game
 - When `profiler` feature is disabled, all macros compile to nothing
 - Separate focus tracking prevents game throttling when profiler is focused
+
+## Cursor Customization System
+
+The cursor system (`cursor.rs`) provides control over the mouse cursor appearance and behavior.
+
+### Architecture
+
+Cursor changes use a **deferred request pattern** to avoid borrow conflicts:
+- Game code calls `ctx.set_cursor()`, `ctx.set_cursor_visible()`, etc.
+- Requests are stored in `Engine::cursor_request`
+- Engine applies changes in `about_to_wait()` after all updates complete
+
+### CursorStyle
+
+18 system cursor icons available:
+
+| Style | Description |
+|-------|-------------|
+| `Default` | Standard arrow cursor |
+| `Text` | I-beam for text input |
+| `Crosshair` | Precise selection |
+| `Pointer` | Hand for clickable elements |
+| `Move` | Four-way arrows for dragging |
+| `NotAllowed` | Forbidden/disabled indicator |
+| `Grab` | Open hand (ready to grab) |
+| `Grabbing` | Closed hand (dragging) |
+| `Wait` | Busy spinner |
+| `Progress` | Arrow with spinner |
+| `Help` | Arrow with question mark |
+| `Cell` | Table cell selection |
+| `ZoomIn` / `ZoomOut` | Magnifying glass |
+| `ResizeHorizontal` | Left-right resize |
+| `ResizeVertical` | Up-down resize |
+| `ResizeNeSw` / `ResizeNwSe` | Diagonal resize |
+
+### Context Methods
+
+```rust
+// Change cursor style
+ctx.set_cursor(CursorStyle::Crosshair);
+
+// Control visibility
+ctx.set_cursor_visible(false);  // Hide cursor
+ctx.show_cursor();              // Show cursor
+ctx.hide_cursor();              // Hide cursor
+
+// Confine cursor to window
+ctx.set_cursor_confined(true);  // Lock to window bounds
+```
+
+### Usage Patterns
+
+**Hover-based cursor changes:**
+```rust
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    let (mx, my) = ctx.input.mouse_position();
+
+    if self.button_rect.contains(mx, my) {
+        ctx.set_cursor(CursorStyle::Pointer);
+    } else if self.text_field.contains(mx, my) {
+        ctx.set_cursor(CursorStyle::Text);
+    } else {
+        ctx.set_cursor(CursorStyle::Default);
+    }
+
+    SceneAction::Continue
+}
+```
+
+**Drag operations:**
+```rust
+if ctx.input.mouse_pressed(MouseButton::Left) && self.is_draggable(mx, my) {
+    self.dragging = true;
+    ctx.set_cursor(CursorStyle::Grabbing);
+} else if ctx.input.mouse_released(MouseButton::Left) {
+    self.dragging = false;
+    ctx.set_cursor(CursorStyle::Default);
+}
+```
+
+**First-person/fullscreen games:**
+```rust
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.hide_cursor();
+    ctx.set_cursor_confined(true);
+}
+
+fn on_exit(&mut self, ctx: &mut SceneContext) {
+    ctx.show_cursor();
+    ctx.set_cursor_confined(false);
+}
+```
+
+### Demo
+
+See `examples/demos/cursor/` for a complete example showcasing all cursor styles and features.
