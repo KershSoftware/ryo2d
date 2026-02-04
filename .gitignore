@@ -7,6 +7,7 @@ Cargo.lock
 # Example project build artifacts (standalone projects in examples/)
 examples/**/target/
 examples/**/Cargo.lock
+examples/**/.github/.claude/
 
 # Example project save data (generated at runtime)
 examples/**/data/
