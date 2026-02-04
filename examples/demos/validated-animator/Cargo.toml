@@ -1,0 +1,8 @@
+[package]
+name = "validated-animator"
+version = "0.1.0"
+edition = "2021"
+description = "Demonstrates ValidatedAnimator with enforced state transitions"
+
+[dependencies]
+ryo2d = { path = "../../.." }

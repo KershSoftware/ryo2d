@@ -38,6 +38,7 @@
 use std::collections::HashMap;
 
 use crate::core::asset::SpriteHandle;
+use crate::core::state_machine::StateMachine;
 
 /// How an animation behaves when it reaches the end
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -445,6 +446,190 @@ impl AnimationController {
   }
 }
 
+/// Animation controller with validated state transitions.
+///
+/// Combines [`StateMachine`] validation with [`AnimationController`] playback.
+/// Use this when you need to enforce rules about which animation states can
+/// transition to which others (e.g., fighting games where attack recovery
+/// must return to idle before another attack).
+///
+/// For simpler cases where any animation can transition to any other,
+/// use [`AnimationController`] directly.
+///
+/// # Example
+///
+/// ```ignore
+/// use ryo2d::prelude::*;
+///
+/// let mut anim = ValidatedAnimator::new(idle_anim, "idle")
+///     .with_animation(walk_anim, "walk")
+///     .with_animation(attack_anim, "attack")
+///     .with_animation(hurt_anim, "hurt")
+///     // Define allowed transitions
+///     .with_transition("idle", "walk")
+///     .with_transition("walk", "idle")
+///     .with_transition("idle", "attack")
+///     .with_transition("walk", "attack")
+///     .with_transition("attack", "idle")
+///     // Hurt can be entered from any state
+///     .with_transition_from_any("hurt");
+///
+/// // In game logic
+/// if input.attack_pressed {
+///     anim.set_animation("attack");  // Only works from idle/walk
+/// }
+///
+/// if took_damage {
+///     anim.set_animation("hurt");  // Always allowed
+/// }
+/// ```
+#[derive(Clone)]
+pub struct ValidatedAnimator {
+  fsm: StateMachine<AnimationId>,
+  controller: AnimationController,
+}
+
+impl ValidatedAnimator {
+  /// Create a new validated animator with an initial animation.
+  pub fn new(initial_anim: Animation, initial_id: AnimationId) -> Self {
+    let mut controller = AnimationController::new();
+    controller.add_animation(initial_id, initial_anim);
+    controller.set_state(initial_id);
+
+    Self {
+      fsm: StateMachine::new(initial_id),
+      controller,
+    }
+  }
+
+  /// Add an animation to the controller.
+  pub fn with_animation(mut self, anim: Animation, id: AnimationId) -> Self {
+    self.controller.add_animation(id, anim);
+    self
+  }
+
+  /// Allow a transition from one animation state to another.
+  pub fn with_transition(mut self, from: AnimationId, to: AnimationId) -> Self {
+    self.fsm = self.fsm.with_transition(from, to);
+    self
+  }
+
+  /// Allow bidirectional transitions between two animation states.
+  pub fn with_bidirectional(mut self, a: AnimationId, b: AnimationId) -> Self {
+    self.fsm = self.fsm.with_bidirectional(a, b);
+    self
+  }
+
+  /// Allow a state to be entered from any other state.
+  ///
+  /// Useful for states like "hurt" or "death" that can interrupt anything.
+  pub fn with_transition_from_any(mut self, to: AnimationId) -> Self {
+    self.fsm = self.fsm.with_transition_from_any(to);
+    self
+  }
+
+  /// Attempt to transition to a new animation state.
+  ///
+  /// Returns `true` if the transition was allowed and executed,
+  /// `false` if the transition is not permitted by the defined rules.
+  pub fn set_animation(&mut self, id: AnimationId) -> bool {
+    if self.fsm.transition_to(id).is_ok() {
+      self.controller.set_state(id);
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Force a transition to an animation state, bypassing validation.
+  ///
+  /// Useful for reset/respawn scenarios where normal rules don't apply.
+  pub fn force_animation(&mut self, id: AnimationId) {
+    let _ = self.fsm.force_transition(id);
+    self.controller.set_state(id);
+  }
+
+  /// Queue a transition to occur when the current animation finishes.
+  ///
+  /// Returns `true` if the transition is allowed, `false` otherwise.
+  /// The actual state change happens when the animation completes.
+  pub fn transition_after_finish(&mut self, id: AnimationId) -> bool {
+    if self.fsm.can_transition_to(&id) {
+      self.controller.transition_after_finish(id);
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Get the current animation state.
+  pub fn current(&self) -> AnimationId {
+    *self.fsm.current()
+  }
+
+  /// Get the current sprite handle for rendering.
+  pub fn current_sprite(&self) -> Option<&SpriteHandle> {
+    self.controller.current_sprite()
+  }
+
+  /// Check if the FSM just entered the current state this frame.
+  pub fn just_entered(&self) -> bool {
+    self.fsm.just_entered
+  }
+
+  /// Check if the current animation just finished this frame.
+  pub fn just_finished(&self) -> bool {
+    self.controller.just_finished()
+  }
+
+  /// Check if a transition to a state is allowed.
+  pub fn can_transition_to(&self, id: AnimationId) -> bool {
+    self.fsm.can_transition_to(&id)
+  }
+
+  /// Get time spent in the current animation state (seconds).
+  pub fn time_in_state(&self) -> f32 {
+    self.fsm.time_in_state()
+  }
+
+  /// Pause the animation playback.
+  pub fn pause(&mut self) {
+    self.controller.pause();
+  }
+
+  /// Resume the animation playback.
+  pub fn play(&mut self) {
+    self.controller.play();
+  }
+
+  /// Set playback speed (1.0 = normal, 2.0 = double speed).
+  pub fn set_speed(&mut self, speed: f32) {
+    self.controller.set_speed(speed);
+  }
+
+  /// Reset the current animation to its first frame.
+  pub fn reset(&mut self) {
+    self.controller.reset();
+  }
+
+  /// Update the animator (called by engine each frame).
+  pub fn update(&mut self, dt: f32) {
+    self.fsm.update(dt);
+
+    // Check if controller will transition after finish
+    let prev_state = self.controller.current_state();
+    self.controller.update(dt);
+    let new_state = self.controller.current_state();
+
+    // Sync FSM if controller transitioned (from transition_after_finish)
+    if prev_state != new_state
+      && let Some(new_id) = new_state
+    {
+      let _ = self.fsm.force_transition(new_id);
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -636,5 +821,102 @@ mod tests {
 
     let cloned = controller.clone();
     assert_eq!(cloned.current_state(), Some("idle"));
+  }
+
+  #[test]
+  fn validated_animator_allows_valid_transitions() {
+    let idle = Animation::new("idle", vec![mock_sprite_handle()], 1.0);
+    let walk = Animation::new("walk", vec![mock_sprite_handle()], 1.0);
+
+    let mut anim = ValidatedAnimator::new(idle, "idle")
+      .with_animation(walk, "walk")
+      .with_transition("idle", "walk")
+      .with_transition("walk", "idle");
+
+    assert_eq!(anim.current(), "idle");
+    assert!(anim.set_animation("walk"));
+    assert_eq!(anim.current(), "walk");
+    assert!(anim.set_animation("idle"));
+    assert_eq!(anim.current(), "idle");
+  }
+
+  #[test]
+  fn validated_animator_blocks_invalid_transitions() {
+    let idle = Animation::new("idle", vec![mock_sprite_handle()], 1.0);
+    let walk = Animation::new("walk", vec![mock_sprite_handle()], 1.0);
+    let attack = Animation::new("attack", vec![mock_sprite_handle()], 1.0);
+
+    let mut anim = ValidatedAnimator::new(idle, "idle")
+      .with_animation(walk, "walk")
+      .with_animation(attack, "attack")
+      .with_transition("idle", "walk")
+      .with_transition("idle", "attack")
+      .with_transition("attack", "idle"); // attack must return to idle
+
+    // Go to attack
+    assert!(anim.set_animation("attack"));
+    assert_eq!(anim.current(), "attack");
+
+    // Can't go attack -> walk (not allowed)
+    assert!(!anim.set_animation("walk"));
+    assert_eq!(anim.current(), "attack"); // Still in attack
+
+    // Can go attack -> idle
+    assert!(anim.set_animation("idle"));
+    assert_eq!(anim.current(), "idle");
+  }
+
+  #[test]
+  fn validated_animator_transition_from_any() {
+    let idle = Animation::new("idle", vec![mock_sprite_handle()], 1.0);
+    let walk = Animation::new("walk", vec![mock_sprite_handle()], 1.0);
+    let hurt = Animation::new("hurt", vec![mock_sprite_handle()], 1.0);
+
+    let mut anim = ValidatedAnimator::new(idle, "idle")
+      .with_animation(walk, "walk")
+      .with_animation(hurt, "hurt")
+      .with_transition("idle", "walk")
+      .with_transition_from_any("hurt"); // hurt from anywhere
+
+    // Start walking
+    anim.set_animation("walk");
+    assert_eq!(anim.current(), "walk");
+
+    // Can be hurt from walk (no explicit walk->hurt transition needed)
+    assert!(anim.set_animation("hurt"));
+    assert_eq!(anim.current(), "hurt");
+  }
+
+  #[test]
+  fn validated_animator_force_bypasses_rules() {
+    let idle = Animation::new("idle", vec![mock_sprite_handle()], 1.0);
+    let walk = Animation::new("walk", vec![mock_sprite_handle()], 1.0);
+
+    let mut anim = ValidatedAnimator::new(idle, "idle").with_animation(walk, "walk");
+    // No transitions defined
+
+    // Normal transition fails
+    assert!(!anim.set_animation("walk"));
+    assert_eq!(anim.current(), "idle");
+
+    // Force works
+    anim.force_animation("walk");
+    assert_eq!(anim.current(), "walk");
+  }
+
+  #[test]
+  fn validated_animator_can_transition_to() {
+    let idle = Animation::new("idle", vec![mock_sprite_handle()], 1.0);
+    let walk = Animation::new("walk", vec![mock_sprite_handle()], 1.0);
+    let run = Animation::new("run", vec![mock_sprite_handle()], 1.0);
+
+    let anim = ValidatedAnimator::new(idle, "idle")
+      .with_animation(walk, "walk")
+      .with_animation(run, "run")
+      .with_transition("idle", "walk");
+
+    assert!(anim.can_transition_to("walk"));
+    assert!(!anim.can_transition_to("run"));
+    assert!(!anim.can_transition_to("idle")); // Already in idle
   }
 }

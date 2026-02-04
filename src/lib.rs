@@ -102,6 +102,7 @@ pub mod prelude {
   // Animation system
   pub use crate::core::graphics::{
     Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState,
+    ValidatedAnimator,
   };
 
   // Camera

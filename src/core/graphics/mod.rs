@@ -5,7 +5,7 @@
 //! - [`WgpuRenderer`] - GPU rendering pipeline with letterboxing
 //! - [`SpriteGpuRenderer`] - GPU sprite batching for particles/effects
 //! - [`Camera`] - 2D camera with world/screen transforms
-//! - [`Animation`] / [`Animator`] / [`AnimationController`] - Sprite animation system
+//! - [`Animation`] / [`Animator`] / [`AnimationController`] / [`ValidatedAnimator`] - Sprite animation system
 //! - Tiled rendering for repeating sprites and composite tiles
 //! - [`ParallaxBackground`] - Layered scrolling backgrounds (CPU)
 //! - [`GpuParallaxBackground`] - GPU-accelerated parallax (recommended for large images)
@@ -20,7 +20,7 @@ pub mod sprite_gpu;
 pub mod tile;
 
 pub use animation::{
-  Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState,
+  Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState, ValidatedAnimator,
 };
 pub use camera::{Camera, CameraBounds};
 pub use parallax::{ParallaxBackground, ParallaxBackgroundBuilder, ParallaxLayer, TileMode};
