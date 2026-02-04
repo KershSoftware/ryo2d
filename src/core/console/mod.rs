@@ -682,41 +682,41 @@ impl ConsoleState {
     }
 
     // Up/Down arrows for command history
-    if input.key_pressed(KeyCode::ArrowUp) {
-      if !self.command_history.is_empty() {
-        match self.history_index {
-          None => {
-            // Start browsing history
-            self.saved_input = self.input_buffer.clone();
-            self.history_index = Some(self.command_history.len() - 1);
-            self.input_buffer = self.command_history.last().unwrap().clone();
-          }
-          Some(idx) if idx > 0 => {
-            // Move up in history
-            self.history_index = Some(idx - 1);
-            self.input_buffer = self.command_history[idx - 1].clone();
-          }
-          _ => {}
+    if input.key_pressed(KeyCode::ArrowUp)
+      && !self.command_history.is_empty()
+    {
+      match self.history_index {
+        None => {
+          // Start browsing history
+          self.saved_input = self.input_buffer.clone();
+          self.history_index = Some(self.command_history.len() - 1);
+          self.input_buffer = self.command_history.last().unwrap().clone();
         }
-        self.cursor_pos = self.input_buffer.len();
-        self.cursor_blink_timer = 0.0;
+        Some(idx) if idx > 0 => {
+          // Move up in history
+          self.history_index = Some(idx - 1);
+          self.input_buffer = self.command_history[idx - 1].clone();
+        }
+        _ => {}
       }
+      self.cursor_pos = self.input_buffer.len();
+      self.cursor_blink_timer = 0.0;
     }
 
-    if input.key_pressed(KeyCode::ArrowDown) {
-      if let Some(idx) = self.history_index {
-        if idx + 1 < self.command_history.len() {
-          // Move down in history
-          self.history_index = Some(idx + 1);
-          self.input_buffer = self.command_history[idx + 1].clone();
-        } else {
-          // Exit history browsing, restore saved input
-          self.history_index = None;
-          self.input_buffer = std::mem::take(&mut self.saved_input);
-        }
-        self.cursor_pos = self.input_buffer.len();
-        self.cursor_blink_timer = 0.0;
+    if input.key_pressed(KeyCode::ArrowDown)
+      && let Some(idx) = self.history_index
+    {
+      if idx + 1 < self.command_history.len() {
+        // Move down in history
+        self.history_index = Some(idx + 1);
+        self.input_buffer = self.command_history[idx + 1].clone();
+      } else {
+        // Exit history browsing, restore saved input
+        self.history_index = None;
+        self.input_buffer = std::mem::take(&mut self.saved_input);
       }
+      self.cursor_pos = self.input_buffer.len();
+      self.cursor_blink_timer = 0.0;
     }
 
     // Page Up/Down for scrolling

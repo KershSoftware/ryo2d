@@ -564,7 +564,7 @@ impl ValidatedAnimator {
 
   /// Get the current animation state.
   pub fn current(&self) -> AnimationId {
-    *self.fsm.current()
+    self.fsm.current()
   }
 
   /// Get the current sprite handle for rendering.

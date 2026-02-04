@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use gilrs::Gilrs;
 use winit::application::ApplicationHandler;
@@ -18,8 +17,8 @@ use super::console::{
   CommandContext, CommandRegistry, CommandResult, ConsoleState, register_builtins,
 };
 use super::ecs::{
-  Entity, Knockback, RenderStyle, Renderable, SpriteShader, SquashStretch, Transform, Tween,
-  TweenSequence, Velocity, World, WorldTransform, YSort,
+  Entity, Knockback, RenderStyle, Renderable, SpriteShader, SquashStretch, Transform, Velocity,
+  World, WorldTransform, YSort,
 };
 use super::error::{EngineError, EngineResult};
 use super::events::{
@@ -28,17 +27,18 @@ use super::events::{
 };
 use super::game::{Game, GameContext, GpuRenderContext, TimeControl, WindowRequest};
 use super::graphics::{
-  AnimationController, Animator, BatchCollector, Camera, CompositeTile, GroupedCollider, Sprite,
-  SpriteGpuRenderer, TileDirection, WgpuRenderer,
+  BatchCollector, Camera, CompositeTile, GroupedCollider, Sprite, SpriteGpuRenderer, TileDirection,
+  WgpuRenderer,
 };
 use super::input::InputState;
 use super::lighting::{Light2D, LightOccluder2D, LightingRenderer, generate_shadow_geometry};
 use super::physics::{Collider, PhysicsConfig, RapierPhysicsWorld, RigidBody};
 use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
+use super::systems::{AnimationSystem, TweenSystem};
+use super::timing::TimeState;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
 use super::ui::{BitmapFont, UiContext, create_debug_font};
-use crate::core::dev_log::set_frame;
 use crate::profile_scope;
 use crate::{engine_debug, engine_error, engine_info, engine_warn};
 
@@ -80,152 +80,6 @@ pub enum WindowMode {
   /// the aspect ratio. Rarely used as a default, but can be useful for UI-heavy
   /// games where distortion isn't noticeable.
   ResizableStretch,
-}
-
-/// Tracks timing state for the game loop
-#[derive(Debug)]
-struct TimeState {
-  /// When the current frame started
-  frame_start: Instant,
-  /// Time since last frame (variable)
-  delta_time: Duration,
-  /// Fixed timestep for physics/logic updates
-  fixed_timestep: Duration,
-  /// Accumulator for fixed timestep updates
-  accumulator: Duration,
-  /// Target frame duration for FPS limiting
-  target_frame_time: Duration,
-  /// Frame counter for debugging
-  frame_count: u64,
-  /// Last calculated FPS (updated each second)
-  current_fps: u64,
-  /// Last time we printed debug info
-  last_debug_print: Instant,
-  /// Time scale multiplier (0.0 = frozen, 1.0 = normal, >1.0 = fast)
-  time_scale: f32,
-  /// Remaining hitstop duration in seconds (freeze frame effect)
-  hitstop_remaining: f32,
-}
-
-impl TimeState {
-  fn new(target_fps: u32, physics_hz: u32) -> Self {
-    let now = Instant::now();
-    TimeState {
-      frame_start: now,
-      delta_time: Duration::ZERO,
-      fixed_timestep: Duration::from_secs_f64(1.0 / physics_hz as f64),
-      accumulator: Duration::ZERO,
-      target_frame_time: Duration::from_secs_f64(1.0 / target_fps as f64),
-      frame_count: 0,
-      current_fps: 0,
-      last_debug_print: now,
-      time_scale: 1.0,
-      hitstop_remaining: 0.0,
-    }
-  }
-
-  fn begin_frame(&mut self) {
-    let now = Instant::now();
-    self.delta_time = now.duration_since(self.frame_start);
-    self.frame_start = now;
-
-    // Add delta to accumulator, but cap it to prevent spiral of death
-    // If we fall too far behind, we just drop updates rather than freezing
-    self.accumulator += self.delta_time;
-    let max_accumulator = self.fixed_timestep * 5; // Max 5 physics updates per frame
-    if self.accumulator > max_accumulator {
-      self.accumulator = max_accumulator;
-    }
-
-    self.frame_count += 1;
-    // Update dev_log frame number for log entries
-    set_frame(self.frame_count);
-  }
-
-  fn should_update(&self) -> bool {
-    self.accumulator >= self.fixed_timestep
-  }
-
-  fn consume_update(&mut self) {
-    self.accumulator -= self.fixed_timestep;
-  }
-
-  #[allow(dead_code)]
-  fn dt(&self) -> f32 {
-    self.delta_time.as_secs_f32()
-  }
-
-  fn fixed_dt(&self) -> f32 {
-    self.fixed_timestep.as_secs_f32()
-  }
-
-  /// Get the fixed delta time scaled by time_scale, returning 0.0 during hitstop.
-  ///
-  /// This is used for animations, tweens, and game logic that should be affected
-  /// by slow-mo and hitstop effects.
-  fn scaled_fixed_dt(&self) -> f32 {
-    if self.hitstop_remaining > 0.0 {
-      0.0
-    } else {
-      self.fixed_timestep.as_secs_f32() * self.time_scale
-    }
-  }
-
-  /// Update hitstop timer with real (unscaled) delta time.
-  fn update_hitstop(&mut self, dt: f32) {
-    if self.hitstop_remaining > 0.0 {
-      self.hitstop_remaining = (self.hitstop_remaining - dt).max(0.0);
-    }
-  }
-
-  fn interpolation_alpha(&self) -> f32 {
-    (self.accumulator.as_secs_f32() / self.fixed_timestep.as_secs_f32()).min(1.0)
-  }
-
-  fn print_debug_info(&mut self) -> bool {
-    let now = Instant::now();
-    if now.duration_since(self.last_debug_print) >= Duration::from_secs(1) {
-      self.current_fps = self.frame_count;
-      engine_debug!(
-        module: "GameLoop",
-        "FPS: {}, Delta: {:.2}ms, Fixed DT: {:.2}ms",
-        self.current_fps,
-        self.delta_time.as_secs_f64() * 1000.0,
-        self.fixed_timestep.as_secs_f64() * 1000.0
-      );
-      self.frame_count = 0;
-      self.last_debug_print = now;
-      true // Signal that debug info was printed
-    } else {
-      false
-    }
-  }
-
-  /// Wait precisely until target frame time using hybrid sleep/spin.
-  ///
-  /// This is more accurate than pure `thread::sleep()` which has ~1-15ms
-  /// granularity depending on OS scheduler. We sleep for most of the time
-  /// to save CPU, then spin-wait for the final microseconds for precision.
-  fn wait_for_target_frame_time(&self) {
-    let elapsed = self.frame_start.elapsed();
-    if elapsed >= self.target_frame_time {
-      return; // Already past target, no waiting needed
-    }
-
-    let remaining = self.target_frame_time - elapsed;
-
-    // Sleep for most of the remaining time (save CPU)
-    // Leave 1.5ms margin for spin-waiting to hit exact target
-    let spin_margin = Duration::from_micros(1500);
-    if remaining > spin_margin {
-      std::thread::sleep(remaining - spin_margin);
-    }
-
-    // Spin-wait for precise timing (busy loop but very short)
-    while self.frame_start.elapsed() < self.target_frame_time {
-      std::hint::spin_loop();
-    }
-  }
 }
 
 /// Configuration for the engine
@@ -848,11 +702,9 @@ impl Engine {
         .map(|t| t.should_update())
         .unwrap_or(false)
       {
+        // Sync time_control to TimeState before each update
         if let Some(time) = &mut self.time {
-          time.time_scale = self.time_control.time_scale;
-          if self.time_control.hitstop_remaining > time.hitstop_remaining {
-            time.hitstop_remaining = self.time_control.hitstop_remaining;
-          }
+          time.sync_from_time_control(&self.time_control);
         }
 
         let scaled_dt = self
@@ -868,13 +720,11 @@ impl Engine {
       }
     }
 
-    // Decay hitstop
+    // Decay hitstop and sync back to time_control
     if let Some(time) = &mut self.time {
-      if self.time_control.hitstop_remaining > time.hitstop_remaining {
-        time.hitstop_remaining = self.time_control.hitstop_remaining;
-      }
+      time.sync_from_time_control(&self.time_control);
       time.update_hitstop(real_dt);
-      self.time_control.hitstop_remaining = time.hitstop_remaining;
+      time.sync_to_time_control(&mut self.time_control);
     }
 
     // When profiler has focus (throttle=false), we need to render directly
@@ -1081,7 +931,7 @@ impl Engine {
       let time = self
         .time
         .as_ref()
-        .map(|t| t.frame_count as f32 / 60.0)
+        .map(|t| t.frame_count() as f32 / 60.0)
         .unwrap_or(0.0);
 
       // Check if lighting is enabled and should be applied
@@ -1244,188 +1094,10 @@ impl Engine {
     }
 
     // --- Animation System ---
-    // Update all Animator components (skip inactive pooled entities)
-    for entity in self.world.entities_with::<Animator>() {
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-      if let Some(mut animator) = self.world.get_component_mut::<Animator>(entity) {
-        animator.update(_dt);
-      }
-    }
-
-    // Sync Animator sprites to Renderable (skip inactive pooled entities)
-    for entity in self.world.entities_with::<Animator>() {
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-      let sprite = self
-        .world
-        .get_component::<Animator>(entity)
-        .and_then(|a| a.current_sprite().cloned());
-      if let Some(sprite) = sprite
-        && let Some(mut renderable) = self.world.get_component_mut::<Renderable>(entity)
-      {
-        renderable.sprite = sprite;
-      }
-    }
-
-    // Update all AnimationController components (skip inactive pooled entities)
-    for entity in self.world.entities_with::<AnimationController>() {
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-      if let Some(mut controller) = self.world.get_component_mut::<AnimationController>(entity) {
-        controller.update(_dt);
-      }
-    }
-
-    // Sync AnimationController sprites to Renderable (skip inactive pooled entities)
-    for entity in self.world.entities_with::<AnimationController>() {
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-      let sprite = self
-        .world
-        .get_component::<AnimationController>(entity)
-        .and_then(|c| c.current_sprite().cloned());
-      if let Some(sprite) = sprite
-        && let Some(mut renderable) = self.world.get_component_mut::<Renderable>(entity)
-      {
-        renderable.sprite = sprite;
-      }
-    }
+    AnimationSystem::update(&mut self.world, _dt);
 
     // --- Tween System ---
-    // Update all Tween components and apply to Transform (skip inactive pooled entities)
-    for entity in self.world.entities_with::<Tween>() {
-      // Skip inactive pooled entities
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-
-      // Check if tween is playing before borrowing mutably
-      let should_update = self
-        .world
-        .get_component::<Tween>(entity)
-        .is_some_and(|t| t.playing);
-
-      if !should_update {
-        continue;
-      }
-
-      // Capture color start values from Renderable if tween has color targets and hasn't started
-      let needs_color_capture = self
-        .world
-        .get_component::<Tween>(entity)
-        .is_some_and(|t| t.has_color_targets() && !t.has_started());
-
-      if needs_color_capture
-        && let Some(renderable) = self.world.get_component::<Renderable>(entity)
-      {
-        let alpha = renderable.alpha;
-        let tint = renderable.tint;
-        if let Some(mut tween) = self.world.get_component_mut::<Tween>(entity) {
-          tween.capture_start_renderable(alpha, tint);
-        }
-      }
-
-      // Get transform and tween together for update
-      if let (Some(mut transform), Some(mut tween)) = (
-        self.world.get_component_mut::<Transform>(entity),
-        self.world.get_component_mut::<Tween>(entity),
-      ) {
-        tween.update(_dt, &mut transform);
-      }
-
-      // Apply color/alpha tweening to Renderable
-      if let (Some(tween), Some(mut renderable)) = (
-        self.world.get_component::<Tween>(entity),
-        self.world.get_component_mut::<Renderable>(entity),
-      ) {
-        if let Some(alpha) = tween.current_alpha() {
-          renderable.alpha = alpha;
-        }
-        if let Some(tint) = tween.current_tint() {
-          renderable.tint = tint;
-        }
-      }
-    }
-
-    // --- TweenSequence System ---
-    // Update all TweenSequence components (skip inactive pooled entities)
-    for entity in self.world.entities_with::<TweenSequence>() {
-      // Skip inactive pooled entities
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-
-      // Check if sequence is playing and has a current tween
-      let should_update = self
-        .world
-        .get_component::<TweenSequence>(entity)
-        .is_some_and(|s| s.playing && s.current().is_some());
-
-      if !should_update {
-        continue;
-      }
-
-      // Capture color start values if current tween has color targets and hasn't started
-      let needs_color_capture = self
-        .world
-        .get_component::<TweenSequence>(entity)
-        .is_some_and(|s| {
-          s.current()
-            .is_some_and(|t| t.has_color_targets() && !t.has_started())
-        });
-
-      if needs_color_capture
-        && let Some(renderable) = self.world.get_component::<Renderable>(entity)
-      {
-        let alpha = renderable.alpha;
-        let tint = renderable.tint;
-        if let Some(mut seq) = self.world.get_component_mut::<TweenSequence>(entity)
-          && let Some(tween) = seq.current_mut()
-        {
-          tween.capture_start_renderable(alpha, tint);
-        }
-      }
-
-      // Update the current tween in the sequence
-      let tween_finished = if let (Some(mut transform), Some(mut seq)) = (
-        self.world.get_component_mut::<Transform>(entity),
-        self.world.get_component_mut::<TweenSequence>(entity),
-      ) {
-        if let Some(tween) = seq.current_mut() {
-          tween.update(_dt, &mut transform);
-          tween.just_finished
-        } else {
-          false
-        }
-      } else {
-        false
-      };
-
-      // Apply color/alpha tweening from current tween to Renderable
-      if let (Some(seq), Some(mut renderable)) = (
-        self.world.get_component::<TweenSequence>(entity),
-        self.world.get_component_mut::<Renderable>(entity),
-      ) && let Some(tween) = seq.current()
-      {
-        if let Some(alpha) = tween.current_alpha() {
-          renderable.alpha = alpha;
-        }
-        if let Some(tint) = tween.current_tint() {
-          renderable.tint = tint;
-        }
-      }
-
-      // Advance to next tween if current one finished
-      if tween_finished && let Some(mut seq) = self.world.get_component_mut::<TweenSequence>(entity)
-      {
-        seq.advance();
-      }
-    }
+    TweenSystem::update(&mut self.world, _dt);
 
     // --- Knockback System ---
     // Update all Knockback components and apply velocity to Transform/Velocity
@@ -2798,13 +2470,8 @@ impl ApplicationHandler for Engine {
             .unwrap_or(false)
           {
             // Sync time_control to TimeState before each update
-            // This picks up any time_scale or hitstop changes from game code
             if let Some(time) = &mut self.time {
-              time.time_scale = self.time_control.time_scale;
-              // Only use time_control hitstop if it's greater (allows game to trigger new hitstops)
-              if self.time_control.hitstop_remaining > time.hitstop_remaining {
-                time.hitstop_remaining = self.time_control.hitstop_remaining;
-              }
+              time.sync_from_time_control(&self.time_control);
             }
 
             // Use scaled dt for game logic (affected by time_scale and hitstop)
@@ -2822,16 +2489,10 @@ impl ApplicationHandler for Engine {
           }
 
           // After all updates: decay hitstop and sync back to time_control
-          // This must happen AFTER the loop so game-triggered hitstops take effect immediately
           if let Some(time) = &mut self.time {
-            // First sync any final hitstop the game set in the last update
-            if self.time_control.hitstop_remaining > time.hitstop_remaining {
-              time.hitstop_remaining = self.time_control.hitstop_remaining;
-            }
-            // Then decay with real dt
+            time.sync_from_time_control(&self.time_control);
             time.update_hitstop(real_dt);
-            // Sync back so game can read is_hitstop_active()
-            self.time_control.hitstop_remaining = time.hitstop_remaining;
+            time.sync_to_time_control(&mut self.time_control);
           }
           // Update time includes both game logic and physics
           if let Some(start) = update_start {
@@ -3028,7 +2689,7 @@ impl ApplicationHandler for Engine {
           let time = self
             .time
             .as_ref()
-            .map(|t| t.frame_count as f32 / 60.0)
+            .map(|t| t.frame_count() as f32 / 60.0)
             .unwrap_or(0.0);
 
           // Check if lighting is enabled and should be applied
@@ -3214,7 +2875,7 @@ impl ApplicationHandler for Engine {
           // Update smoothed timings using actual measured FPS (includes vsync/sleep)
           self
             .smoothed_timings
-            .update(&self.frame_timings, time.current_fps);
+            .update(&self.frame_timings, time.current_fps());
 
           let printed_debug = time.print_debug_info();
 
@@ -3982,55 +3643,6 @@ mod tests {
   }
 
   #[test]
-  fn time_state_initializes_correctly() {
-    let time = TimeState::new(60, 120);
-    let expected = 1.0 / 120.0;
-    assert!((time.fixed_dt() - expected).abs() < 0.0001);
-    assert!(!time.should_update()); // No time accumulated yet
-  }
-
-  #[test]
-  fn time_state_accumulator_logic() {
-    let mut time = TimeState::new(60, 60);
-
-    // Simulate adding time
-    time.accumulator = Duration::from_secs_f64(1.0 / 60.0);
-    assert!(time.should_update());
-
-    time.consume_update();
-    assert!(!time.should_update());
-  }
-
-  #[test]
-  fn time_state_caps_accumulator() {
-    let mut time = TimeState::new(60, 60);
-
-    // Simulate a huge frame spike
-    time.delta_time = Duration::from_secs(1); // 1 second!
-    time.accumulator = Duration::ZERO;
-
-    time.begin_frame();
-
-    // Should be capped to 5 * fixed_timestep
-    let max = time.fixed_timestep * 5;
-    assert!(time.accumulator <= max);
-  }
-
-  #[test]
-  fn interpolation_alpha_is_bounded() {
-    let mut time = TimeState::new(60, 60);
-
-    time.accumulator = Duration::ZERO;
-    assert_eq!(time.interpolation_alpha(), 0.0);
-
-    time.accumulator = time.fixed_timestep;
-    assert_eq!(time.interpolation_alpha(), 1.0);
-
-    time.accumulator = time.fixed_timestep * 2; // Over 1.0
-    assert_eq!(time.interpolation_alpha(), 1.0); // Clamped
-  }
-
-  #[test]
   fn window_mode_defaults_to_resizable_aspect_ratio() {
     let mode = WindowMode::default();
     assert_eq!(mode, WindowMode::ResizableAspectRatio);
@@ -4055,95 +3667,6 @@ mod tests {
 
     let builder = EngineBuilder::new().window_mode(WindowMode::ResizableStretch);
     assert_eq!(builder.config.window_mode, WindowMode::ResizableStretch);
-  }
-
-  // ===========================================================================
-  // Time Scale & Hitstop Tests
-  // ===========================================================================
-
-  #[test]
-  fn time_state_initializes_time_scale() {
-    let time = TimeState::new(60, 60);
-    assert_eq!(time.time_scale, 1.0);
-    assert_eq!(time.hitstop_remaining, 0.0);
-  }
-
-  #[test]
-  fn scaled_fixed_dt_returns_normal_at_scale_one() {
-    let time = TimeState::new(60, 60);
-    let expected = 1.0 / 60.0;
-    assert!((time.scaled_fixed_dt() - expected).abs() < 0.0001);
-  }
-
-  #[test]
-  fn scaled_fixed_dt_scales_by_time_scale() {
-    let mut time = TimeState::new(60, 60);
-    time.time_scale = 0.5;
-    let expected = (1.0 / 60.0) * 0.5;
-    assert!((time.scaled_fixed_dt() - expected).abs() < 0.0001);
-  }
-
-  #[test]
-  fn scaled_fixed_dt_returns_zero_during_hitstop() {
-    let mut time = TimeState::new(60, 60);
-    time.hitstop_remaining = 0.05;
-    assert_eq!(time.scaled_fixed_dt(), 0.0);
-  }
-
-  #[test]
-  fn scaled_fixed_dt_ignores_time_scale_during_hitstop() {
-    let mut time = TimeState::new(60, 60);
-    time.time_scale = 2.0;
-    time.hitstop_remaining = 0.05;
-    // Hitstop takes priority
-    assert_eq!(time.scaled_fixed_dt(), 0.0);
-  }
-
-  #[test]
-  fn update_hitstop_decays_remaining() {
-    let mut time = TimeState::new(60, 60);
-    time.hitstop_remaining = 0.1;
-
-    time.update_hitstop(0.03);
-    assert!((time.hitstop_remaining - 0.07).abs() < 0.001);
-
-    time.update_hitstop(0.03);
-    assert!((time.hitstop_remaining - 0.04).abs() < 0.001);
-  }
-
-  #[test]
-  fn update_hitstop_clamps_to_zero() {
-    let mut time = TimeState::new(60, 60);
-    time.hitstop_remaining = 0.05;
-
-    time.update_hitstop(0.1); // More than remaining
-    assert_eq!(time.hitstop_remaining, 0.0);
-  }
-
-  #[test]
-  fn update_hitstop_noop_when_zero() {
-    let mut time = TimeState::new(60, 60);
-    assert_eq!(time.hitstop_remaining, 0.0);
-
-    time.update_hitstop(0.1);
-    assert_eq!(time.hitstop_remaining, 0.0);
-  }
-
-  #[test]
-  fn scaled_fixed_dt_resumes_after_hitstop_ends() {
-    let mut time = TimeState::new(60, 60);
-    time.hitstop_remaining = 0.01;
-
-    // During hitstop
-    assert_eq!(time.scaled_fixed_dt(), 0.0);
-
-    // End hitstop
-    time.update_hitstop(0.02);
-    assert_eq!(time.hitstop_remaining, 0.0);
-
-    // Should now return normal dt
-    let expected = 1.0 / 60.0;
-    assert!((time.scaled_fixed_dt() - expected).abs() < 0.0001);
   }
 
   // ===========================================================================

@@ -195,18 +195,14 @@ impl LoggerWindow {
     if let WindowEvent::KeyboardInput {
       event: key_event, ..
     } = event
+      && key_event.state == winit::event::ElementState::Pressed
+      && let winit::keyboard::PhysicalKey::Code(keycode) = key_event.physical_key
+      && keycode == winit::keyboard::KeyCode::KeyC
     {
-      if key_event.state == winit::event::ElementState::Pressed {
-        if let winit::keyboard::PhysicalKey::Code(keycode) = key_event.physical_key {
-          // Ctrl+C to copy selection
-          if keycode == winit::keyboard::KeyCode::KeyC {
-            let modifiers = self.renderer.modifiers();
-            if modifiers.control_key() {
-              self.copy_selection();
-              return true;
-            }
-          }
-        }
+      let modifiers = self.renderer.modifiers();
+      if modifiers.control_key() {
+        self.copy_selection();
+        return true;
       }
     }
 
@@ -293,12 +289,12 @@ impl LoggerWindow {
         if self.selection.has_selection() {
           // Copy selection instead
           self.copy_selection();
-        } else if let Some(entry_idx) = self.hovered_entry {
-          if entry_idx < self.visible_entries.len() {
-            let entry = &self.visible_entries[entry_idx];
-            let text = self.format_entry_for_copy(entry);
-            self.copy_to_clipboard(&text);
-          }
+        } else if let Some(entry_idx) = self.hovered_entry
+          && entry_idx < self.visible_entries.len()
+        {
+          let entry = &self.visible_entries[entry_idx];
+          let text = self.format_entry_for_copy(entry);
+          self.copy_to_clipboard(&text);
         }
         return true;
       }
@@ -716,8 +712,8 @@ impl LoggerWindow {
 
     // Store visible entries for copy functionality
     self.visible_entries.clear();
-    for idx in start_idx..end_idx {
-      self.visible_entries.push(filtered[idx].clone());
+    for entry in filtered.iter().skip(start_idx).take(end_idx - start_idx) {
+      self.visible_entries.push((*entry).clone());
     }
 
     self.hovered_entry = None;
@@ -778,26 +774,27 @@ impl LoggerWindow {
       self.rendered_lines.push(line_text.clone());
 
       // Draw selection highlight if this line is in the selection range
-      if let Some(((start_line, start_char), (end_line, end_char))) = selection_range {
-        if display_idx >= start_line && display_idx <= end_line {
-          let line_start = if display_idx == start_line {
-            start_char
-          } else {
-            0
-          };
-          let line_end = if display_idx == end_line {
-            end_char
-          } else {
-            line_text.len()
-          };
+      if let Some(((start_line, start_char), (end_line, end_char))) = selection_range
+        && display_idx >= start_line
+        && display_idx <= end_line
+      {
+        let line_start = if display_idx == start_line {
+          start_char
+        } else {
+          0
+        };
+        let line_end = if display_idx == end_line {
+          end_char
+        } else {
+          line_text.len()
+        };
 
-          if line_start < line_end {
-            let sel_x = padding + (line_start as i32 * CHAR_WIDTH);
-            let sel_width = ((line_end - line_start) as i32 * CHAR_WIDTH).min(width - sel_x);
-            self
-              .renderer
-              .fill_rect(sel_x, y, sel_width, line_height, [60, 80, 120, 255]);
-          }
+        if line_start < line_end {
+          let sel_x = padding + (line_start as i32 * CHAR_WIDTH);
+          let sel_width = ((line_end - line_start) as i32 * CHAR_WIDTH).min(width - sel_x);
+          self
+            .renderer
+            .fill_rect(sel_x, y, sel_width, line_height, [60, 80, 120, 255]);
         }
       }
 
@@ -901,9 +898,7 @@ impl LoggerWindow {
       // Thumb color: highlight when dragging or hovering, dim when auto-scrolling
       let thumb_color = if self.dragging_scrollbar {
         [140, 140, 160, 255]
-      } else if hovering_scrollbar {
-        colors::SCROLLBAR_THUMB_HOVER
-      } else if self.auto_scroll {
+      } else if hovering_scrollbar || self.auto_scroll {
         colors::SCROLLBAR_THUMB_HOVER
       } else {
         colors::SCROLLBAR_THUMB

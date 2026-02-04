@@ -43,6 +43,10 @@ pub mod console;
 pub mod dev_log;
 pub mod windows;
 
+// Game systems (extracted from engine for modularity)
+pub mod systems;
+pub mod timing;
+
 // Engine orchestration
 pub mod engine;
 pub mod game;

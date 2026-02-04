@@ -230,10 +230,10 @@ impl CommandRegistry {
   /// Called when a scope ends (e.g., scene exits) to cleanup handlers.
   pub fn clear_scope(&mut self, scope_id: u64) {
     for cmd in self.declared.values_mut() {
-      if let Some((handler_scope, _)) = &cmd.handler {
-        if *handler_scope == scope_id {
-          cmd.handler = None;
-        }
+      if let Some((handler_scope, _)) = &cmd.handler
+        && *handler_scope == scope_id
+      {
+        cmd.handler = None;
       }
     }
   }

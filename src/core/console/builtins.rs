@@ -244,7 +244,7 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
   registry.register("system:version", "Show engine and game version information", |_args, ctx| {
     // Show game info if available
     if let Some(name) = &ctx.game_name {
-      ctx.console.print(format!("{}", name));
+      ctx.console.print(name.to_string());
       if let Some(version) = &ctx.game_version {
         ctx.console.print(format!("  Version: {}", version));
       }
