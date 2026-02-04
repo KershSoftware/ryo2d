@@ -437,30 +437,34 @@ mod tests {
 
   #[test]
   fn time_control_time_scale_clamped_positive() {
-    let mut tc = TimeControl::default();
-    tc.time_scale = -1.0;
     // Note: Clamping is done in the context methods, not in the struct itself
     // This test just verifies the field can be set
+    let tc = TimeControl {
+      time_scale: -1.0,
+      ..Default::default()
+    };
     assert_eq!(tc.time_scale, -1.0);
   }
 
   #[test]
   fn time_control_hitstop_sets_value() {
-    let mut tc = TimeControl::default();
-    tc.hitstop_remaining = 0.05;
+    let tc = TimeControl {
+      hitstop_remaining: 0.05,
+      ..Default::default()
+    };
     assert!((tc.hitstop_remaining - 0.05).abs() < 0.001);
   }
 
   #[test]
   fn time_control_is_hitstop_active() {
     let mut tc = TimeControl::default();
-    assert!(!(tc.hitstop_remaining > 0.0));
+    assert_eq!(tc.hitstop_remaining, 0.0);
 
     tc.hitstop_remaining = 0.05;
     assert!(tc.hitstop_remaining > 0.0);
 
     tc.hitstop_remaining = 0.0;
-    assert!(!(tc.hitstop_remaining > 0.0));
+    assert_eq!(tc.hitstop_remaining, 0.0);
   }
 
   #[test]

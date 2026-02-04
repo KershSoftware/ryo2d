@@ -490,6 +490,7 @@ impl Engine {
     None
   }
 
+  #[allow(clippy::too_many_arguments)]
   fn new(
     config: EngineConfig,
     game: Box<dyn Game>,
