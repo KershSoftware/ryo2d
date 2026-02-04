@@ -856,6 +856,7 @@ impl LightingRenderer {
   /// * `occluders` - Slice of (transform, occluder) pairs for shadow casting
   /// * `camera_pos` - Camera position for view matrix
   /// * `camera_zoom` - Camera zoom level
+  #[allow(clippy::too_many_arguments)]
   pub fn render_lights_with_shadows<'a>(
     &self,
     device: &wgpu::Device,

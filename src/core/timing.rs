@@ -268,9 +268,10 @@ mod tests {
   #[test]
   fn test_sync_from_time_control() {
     let mut time = TimeState::new(60, 120);
-    let mut tc = TimeControl::default();
-    tc.time_scale = 0.5;
-    tc.hitstop_remaining = 0.2;
+    let tc = TimeControl {
+      time_scale: 0.5,
+      hitstop_remaining: 0.2,
+    };
 
     time.sync_from_time_control(&tc);
     assert_eq!(time.time_scale, 0.5);
@@ -282,8 +283,10 @@ mod tests {
     let mut time = TimeState::new(60, 120);
     time.hitstop_remaining = 0.5; // Already higher
 
-    let mut tc = TimeControl::default();
-    tc.hitstop_remaining = 0.2; // Lower value
+    let tc = TimeControl {
+      hitstop_remaining: 0.2, // Lower value
+      ..Default::default()
+    };
 
     time.sync_from_time_control(&tc);
     // Should keep the higher value

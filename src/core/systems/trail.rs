@@ -61,9 +61,11 @@ mod tests {
     let mut world = World::default();
 
     // Create entity with Transform and Trail2D
-    let mut transform = Transform::default();
-    transform.x = 100.0;
-    transform.y = 50.0;
+    let transform = Transform {
+      x: 100.0,
+      y: 50.0,
+      ..Default::default()
+    };
 
     let entity = world.spawn((transform, Trail2D::new(Color::WHITE, 2.0)));
 
@@ -91,9 +93,11 @@ mod tests {
   fn test_trail_system_skips_inactive_entities() {
     let mut world = World::default();
 
-    let mut transform = Transform::default();
-    transform.x = 100.0;
-    transform.y = 50.0;
+    let transform = Transform {
+      x: 100.0,
+      y: 50.0,
+      ..Default::default()
+    };
 
     let entity = world.spawn((transform, Trail2D::new(Color::WHITE, 2.0), Inactive));
 

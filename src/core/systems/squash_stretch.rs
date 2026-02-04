@@ -155,9 +155,11 @@ mod tests {
     let mut events = Events::default();
 
     // Create entity with non-default scale
-    let mut transform = Transform::default();
-    transform.scale_x = 2.0;
-    transform.scale_y = 2.0;
+    let transform = Transform {
+      scale_x: 2.0,
+      scale_y: 2.0,
+      ..Default::default()
+    };
 
     let entity = world.spawn((transform, SquashStretch::new(0.3)));
 

@@ -1444,9 +1444,10 @@ mod tests {
   fn test_color_constants_are_valid() {
     // Just verify the color constants are accessible and reasonable
     assert_eq!(colors::TEXT, Color::WHITE);
-    assert!(colors::BACKGROUND_FOCUSED.a > colors::BACKGROUND_UNFOCUSED.a);
-    assert!(colors::ERROR.r > colors::ERROR.g); // Red > green for error color
-    assert!(colors::COMMAND.b > colors::COMMAND.r); // Blue > red for command color
+    // Use const blocks for compile-time assertions on constants
+    const _: () = assert!(colors::BACKGROUND_FOCUSED.a > colors::BACKGROUND_UNFOCUSED.a);
+    const _: () = assert!(colors::ERROR.r > colors::ERROR.g); // Red > green for error color
+    const _: () = assert!(colors::COMMAND.b > colors::COMMAND.r); // Blue > red for command color
   }
 
   // ============================================================================
@@ -1455,15 +1456,16 @@ mod tests {
 
   #[test]
   fn test_constants_are_reasonable() {
-    assert!(MAX_OUTPUT_LINES > 100);
-    assert!(MAX_COMMAND_HISTORY > 10);
-    assert!(MIN_WIDTH > 0.0);
-    assert!(MIN_HEIGHT > 0.0);
-    assert!(DEFAULT_WIDTH >= MIN_WIDTH);
-    assert!(DEFAULT_HEIGHT >= MIN_HEIGHT);
-    assert!(TITLE_BAR_HEIGHT > 0.0);
-    assert!(INPUT_HEIGHT > 0.0);
-    assert!(SCROLLBAR_WIDTH > 0.0);
-    assert!(SCROLLBAR_MIN_THUMB > 0.0);
+    // Use const blocks for compile-time assertions on constants
+    const _: () = assert!(MAX_OUTPUT_LINES > 100);
+    const _: () = assert!(MAX_COMMAND_HISTORY > 10);
+    const _: () = assert!(MIN_WIDTH > 0.0);
+    const _: () = assert!(MIN_HEIGHT > 0.0);
+    const _: () = assert!(DEFAULT_WIDTH >= MIN_WIDTH);
+    const _: () = assert!(DEFAULT_HEIGHT >= MIN_HEIGHT);
+    const _: () = assert!(TITLE_BAR_HEIGHT > 0.0);
+    const _: () = assert!(INPUT_HEIGHT > 0.0);
+    const _: () = assert!(SCROLLBAR_WIDTH > 0.0);
+    const _: () = assert!(SCROLLBAR_MIN_THUMB > 0.0);
   }
 }

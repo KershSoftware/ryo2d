@@ -747,6 +747,7 @@ mod tests {
     enum DefaultState {
       #[default]
       Initial,
+      #[allow(dead_code)]
       Other,
     }
 

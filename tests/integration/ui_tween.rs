@@ -171,7 +171,7 @@ fn pattern_pulsing_indicator() {
   for _ in 0..10 {
     pulse.update(0.1);
     let value = pulse.value();
-    assert!(value >= 0.79 && value <= 1.21, "Pulse should stay in range");
+    assert!((0.79..=1.21).contains(&value), "Pulse should stay in range");
   }
 
   // Should never finish

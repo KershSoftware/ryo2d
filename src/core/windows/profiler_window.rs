@@ -164,7 +164,7 @@ impl ProfilerWindow {
       let mouse_x = self.renderer.mouse_x() as i32;
       let mouse_y = self.renderer.mouse_y() as i32;
 
-      if mouse_x >= btn_x && mouse_x <= btn_x + btn_width && mouse_y >= 5 && mouse_y <= 25 {
+      if mouse_x >= btn_x && mouse_x <= btn_x + btn_width && (5..=25).contains(&mouse_y) {
         self.paused = !self.paused;
         return true;
       }
