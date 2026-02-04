@@ -1,0 +1,30 @@
+[package]
+name = "nigh_t"
+version = "0.1.0"
+edition = "2024"
+description = "A game built with Ryo2D engine"
+build = "build.rs"
+
+[[bin]]
+name = "nigh_t"
+path = "main.rs"
+
+[dependencies]
+# Ryo2D engine dependency
+ryo2d = { path = "C:/Users/mattb/AppData/Local/ryo2d/engine" }
+
+# Add your game dependencies here
+# serde = { version = "1.0", features = ["derive"] }
+# rand = "0.8"
+
+[build-dependencies]
+# Windows icon embedding (used by build.rs when building via `ryo2d build`)
+winresource = "0.1"
+
+# Optimize dependencies and engine in dev builds for playable performance
+# Your game code stays unoptimized for fast compile times
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.ryo2d]
+opt-level = 2

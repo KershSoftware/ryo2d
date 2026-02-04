@@ -7,7 +7,7 @@ Cargo.lock
 # Example project build artifacts (standalone projects in examples/)
 examples/**/target/
 examples/**/Cargo.lock
-examples/**/.github/.claude/
+examples/**/.github/
 
 # Example project save data (generated at runtime)
 examples/**/data/
@@ -28,6 +28,8 @@ release/
 **/skills/*
 !**/skills/ryo-*/
 !**/skills/ryo-*/**
+# Re-ignore skills in examples (override the above exceptions)
+examples/**/.github/skills/
 !.vscode/settings.json
 
 

@@ -1,0 +1,12 @@
+/target/
+/data/
+/release/
+Cargo.lock
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Track Ryo2D Agent Skills
+!.github/skills/ryo-*/
+!.github/skills/ryo-*/**
