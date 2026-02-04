@@ -7,7 +7,7 @@
 use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::config::save::DisplayMode;
-use super::ecs::{Entity, Knockback, Vec2, World};
+use super::ecs::{Entity, Knockback, SquashAxis, SquashStretch, Vec2, World};
 use super::events::Events;
 use super::graphics::Camera;
 use super::input::InputState;
@@ -330,6 +330,93 @@ impl<'a> ContextCore<'a> {
       self.world.add_component(
         entity,
         Knockback::new(direction, force).with_decay_rate(decay_rate),
+      );
+    }
+  }
+
+  // ===========================================================================
+  // Squash/Stretch
+  // ===========================================================================
+
+  /// Apply a squash effect to an entity (compresses on Y axis, stretches on X).
+  ///
+  /// This is perfect for landing impacts, getting hit from above, or bouncy effects.
+  /// The effect automatically recovers to the entity's base scale.
+  ///
+  /// # Arguments
+  ///
+  /// * `entity` - The entity to squash
+  /// * `intensity` - How much to squash (0.3 = 30% compression)
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // On landing, squash the player
+  /// if just_landed {
+  ///     ctx.squash(player, 0.3);
+  /// }
+  /// ```
+  pub fn squash(&mut self, entity: Entity, intensity: f32) {
+    self.squash_on_axis(entity, intensity, SquashAxis::Y);
+  }
+
+  /// Apply a horizontal squash effect (compresses on X axis, stretches on Y).
+  ///
+  /// This is perfect for wall impacts or horizontal hits.
+  ///
+  /// # Arguments
+  ///
+  /// * `entity` - The entity to squash
+  /// * `intensity` - How much to squash (0.3 = 30% compression)
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // On wall collision, squash horizontally
+  /// ctx.squash_x(player, 0.25);
+  /// ```
+  pub fn squash_x(&mut self, entity: Entity, intensity: f32) {
+    self.squash_on_axis(entity, intensity, SquashAxis::X);
+  }
+
+  /// Apply a squash effect on a specific axis.
+  ///
+  /// # Arguments
+  ///
+  /// * `entity` - The entity to squash
+  /// * `intensity` - How much to squash (0.3 = 30% compression)
+  /// * `axis` - Which axis to compress
+  pub fn squash_on_axis(&mut self, entity: Entity, intensity: f32, axis: SquashAxis) {
+    if let Some(mut ss) = self.world.get_component_mut::<SquashStretch>(entity) {
+      ss.apply_on_axis(intensity, axis);
+    } else {
+      self
+        .world
+        .add_component(entity, SquashStretch::new(intensity).with_axis(axis));
+    }
+  }
+
+  /// Apply a squash effect with custom decay rate.
+  ///
+  /// # Arguments
+  ///
+  /// * `entity` - The entity to squash
+  /// * `intensity` - How much to squash (0.3 = 30% compression)
+  /// * `decay_rate` - How fast to recover (8.0 = snappy, 4.0 = moderate, 2.0 = slow)
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Slow, exaggerated squash for cartoon effect
+  /// ctx.squash_with_decay(player, 0.5, 3.0);
+  /// ```
+  pub fn squash_with_decay(&mut self, entity: Entity, intensity: f32, decay_rate: f32) {
+    if let Some(mut ss) = self.world.get_component_mut::<SquashStretch>(entity) {
+      ss.apply_with_decay(intensity, decay_rate);
+    } else {
+      self.world.add_component(
+        entity,
+        SquashStretch::new(intensity).with_decay_rate(decay_rate),
       );
     }
   }

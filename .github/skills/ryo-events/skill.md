@@ -116,6 +116,22 @@ for event in ctx.events.read::<KnockbackFinished>() {
 }
 ```
 
+### Squash/Stretch Events (Automatic)
+
+The engine emits events when squash/stretch state changes:
+
+```rust
+// React to squash starting (e.g., play impact sound)
+for event in ctx.events.read::<SquashStretchStarted>() {
+    self.play_sound("impact.wav");
+}
+
+// React to squash finishing (entity returned to base scale)
+for event in ctx.events.read::<SquashStretchFinished>() {
+    // Entity has recovered from impact
+}
+```
+
 ### Network Events (Game-Emitted)
 
 When using networking, emit these from your game code:
