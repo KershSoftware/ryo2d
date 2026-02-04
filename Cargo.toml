@@ -84,6 +84,7 @@ default = []
 profiler = ["puffin"]
 
 [dev-dependencies]
+serial_test = "3.3.1"
 tempfile = "3"
 
 # Dev builds: optimize dependencies and engine for performance, keep game code light for fast iteration
