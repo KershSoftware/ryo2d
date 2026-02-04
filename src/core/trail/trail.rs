@@ -52,6 +52,8 @@ pub struct Trail2D {
   time_accumulator: f32,
   /// Emit a point every N seconds (0 = distance-based only)
   emit_interval: f32,
+  /// Maximum lifetime of trail points in seconds (None = no time-based removal)
+  lifetime: Option<f32>,
 }
 
 /// A single point in the trail
@@ -91,6 +93,7 @@ impl Trail2D {
       enabled: true,
       time_accumulator: 0.0,
       emit_interval: 0.0,
+      lifetime: None,
     }
   }
 
@@ -179,6 +182,26 @@ impl Trail2D {
     self
   }
 
+  /// Set the maximum lifetime for trail points.
+  ///
+  /// Points older than this are automatically removed. When combined with
+  /// `fade_alpha`, points will smoothly fade out as they approach the lifetime.
+  ///
+  /// # Arguments
+  /// * `seconds` - Maximum age in seconds before points are removed
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Trail points live for 0.5 seconds then disappear
+  /// let trail = Trail2D::new(Color::YELLOW, 5.0)
+  ///     .with_lifetime(0.5);
+  /// ```
+  pub fn with_lifetime(mut self, seconds: f32) -> Self {
+    self.lifetime = Some(seconds.max(0.01));
+    self
+  }
+
   /// Get the trail color.
   pub fn color(&self) -> Color {
     self.color
@@ -227,7 +250,8 @@ impl Trail2D {
   /// Update the trail with a new position.
   ///
   /// This should be called every frame with the entity's current position.
-  /// Points are automatically added based on distance and time thresholds.
+  /// Points are automatically added based on distance and time thresholds,
+  /// and removed when they exceed the lifetime (if set).
   pub fn update(&mut self, x: f32, y: f32, dt: f32) {
     if !self.enabled {
       return;
@@ -236,6 +260,17 @@ impl Trail2D {
     // Age existing points
     for point in &mut self.points {
       point.age += dt;
+    }
+
+    // Remove points that exceed lifetime
+    if let Some(max_age) = self.lifetime {
+      while self
+        .points
+        .back()
+        .is_some_and(|point| point.age > max_age)
+      {
+        self.points.pop_back();
+      }
     }
 
     // Check if we should add a new point
@@ -264,7 +299,7 @@ impl Trail2D {
       // Add new point at front
       self.points.push_front(TrailPoint::new(x, y));
 
-      // Remove excess points
+      // Remove excess points (max_points limit)
       while self.points.len() > self.max_points {
         self.points.pop_back();
       }
@@ -309,6 +344,29 @@ impl Trail2D {
   /// Get the end width.
   pub fn end_width(&self) -> f32 {
     self.end_width
+  }
+
+  /// Get the lifetime setting.
+  pub fn lifetime(&self) -> Option<f32> {
+    self.lifetime
+  }
+
+  /// Set the lifetime for trail points.
+  ///
+  /// Pass `Some(seconds)` to enable time-based removal, or `None` to disable.
+  pub fn set_lifetime(&mut self, lifetime: Option<f32>) {
+    self.lifetime = lifetime.map(|l| l.max(0.01));
+  }
+
+  /// Get the age-based alpha multiplier for a point.
+  ///
+  /// When lifetime is set, returns a value from 1.0 (new) to 0.0 (about to expire).
+  /// When lifetime is not set, always returns 1.0.
+  pub fn age_alpha(&self, age: f32) -> f32 {
+    match self.lifetime {
+      Some(max_age) => (1.0 - (age / max_age)).clamp(0.0, 1.0),
+      None => 1.0,
+    }
   }
 }
 
@@ -422,5 +480,56 @@ mod tests {
     trail.update(0.0, 0.0, 0.016);
     trail.update(10.0, 0.0, 0.016);
     assert_eq!(trail.point_count(), 0);
+  }
+
+  #[test]
+  fn trail_lifetime_removes_old_points() {
+    let mut trail = Trail2D::new(Color::WHITE, 3.0)
+      .with_lifetime(0.1) // 100ms lifetime
+      .with_min_distance(1.0);
+
+    // Add some points
+    trail.update(0.0, 0.0, 0.0);
+    trail.update(10.0, 0.0, 0.02);
+    trail.update(20.0, 0.0, 0.02);
+    assert_eq!(trail.point_count(), 3);
+
+    // Age points past lifetime
+    trail.update(30.0, 0.0, 0.1); // First point now at 0.14s age
+    // Oldest point should be removed (age > 0.1)
+    assert!(trail.point_count() < 4);
+  }
+
+  #[test]
+  fn trail_lifetime_default_is_none() {
+    let trail = Trail2D::new(Color::WHITE, 3.0);
+    assert!(trail.lifetime().is_none());
+  }
+
+  #[test]
+  fn trail_with_lifetime_builder() {
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_lifetime(0.5);
+    assert_eq!(trail.lifetime(), Some(0.5));
+  }
+
+  #[test]
+  fn trail_age_alpha_with_lifetime() {
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_lifetime(1.0);
+
+    // New point (age 0) = full alpha
+    assert!((trail.age_alpha(0.0) - 1.0).abs() < 0.01);
+    // Half-life point = half alpha
+    assert!((trail.age_alpha(0.5) - 0.5).abs() < 0.01);
+    // Expired point = zero alpha
+    assert!((trail.age_alpha(1.0) - 0.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn trail_age_alpha_without_lifetime() {
+    let trail = Trail2D::new(Color::WHITE, 3.0); // No lifetime
+
+    // Without lifetime, age_alpha always returns 1.0
+    assert!((trail.age_alpha(0.0) - 1.0).abs() < 0.01);
+    assert!((trail.age_alpha(100.0) - 1.0).abs() < 0.01);
   }
 }
