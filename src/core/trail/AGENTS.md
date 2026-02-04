@@ -45,9 +45,14 @@ trail.age_alpha(age)             // Get fade multiplier for point age
 **Fade Modes:**
 | Mode | Method | Description |
 |------|--------|-------------|
-| Position-based | `.with_fade(true)` | Fades from head (opaque) to tail (transparent) based on position |
+| Position-based | `.with_fade(true)` | Fades based on index position (0 to max_points) |
 | Time-based | `.with_fade(false).with_lifetime(secs)` | Fades based on point age, removes old points automatically |
+| Distance-based | `.with_fade_distance(pixels)` | Fades based on actual distance in pixels from head |
 | None | `.with_fade(false)` | No fading, solid trail |
+
+**Position vs Distance fade:**
+- Position fade: fades at array index `i / max_points` - fast objects have stretched fades
+- Distance fade: fades at `distance / fade_distance` - consistent fade regardless of speed
 
 **Note:** The engine automatically calls `trail.update()` each frame using the entity's Transform position. Manual calls are only needed for custom positions.
 
