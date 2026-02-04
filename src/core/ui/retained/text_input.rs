@@ -478,6 +478,7 @@ impl Focusable for TextInputState {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use serial_test::serial;
 
   #[test]
   fn new_creates_empty_state() {
@@ -703,11 +704,13 @@ mod tests {
   // Clipboard tests
   // =========================================================================
   // Note: These tests interact with the system clipboard and must run serially.
-  // They are marked #[ignore] by default to avoid CI issues.
-  // Run with: cargo test clipboard -- --ignored --test-threads=1
+  // They are marked #[ignore] by default to avoid CI issues and use #[serial]
+  // to prevent heap corruption from concurrent clipboard access on Windows.
+  // Run with: cargo test clipboard -- --ignored
 
   #[test]
   #[ignore] // Requires system clipboard access
+  #[serial]
   fn copy_with_selection_copies_to_clipboard() {
     let mut state = TextInputState::with_text("hello world");
     state.cursor = 0;
@@ -723,6 +726,7 @@ mod tests {
 
   #[test]
   #[ignore] // Requires system clipboard access
+  #[serial]
   fn copy_without_selection_returns_false() {
     let state = TextInputState::with_text("hello");
     // No selection (cursor == anchor)
@@ -731,6 +735,7 @@ mod tests {
 
   #[test]
   #[ignore] // Requires system clipboard access
+  #[serial]
   fn cut_removes_selection_and_copies() {
     let mut state = TextInputState::with_text("hello world");
     state.cursor = 6;
@@ -748,6 +753,7 @@ mod tests {
 
   #[test]
   #[ignore] // Requires system clipboard access
+  #[serial]
   fn paste_inserts_text_at_cursor() {
     let mut clipboard = Clipboard::new().unwrap();
     clipboard.set_text("inserted").unwrap();
@@ -763,6 +769,7 @@ mod tests {
 
   #[test]
   #[ignore] // Requires system clipboard access
+  #[serial]
   fn paste_replaces_selection() {
     let mut clipboard = Clipboard::new().unwrap();
     clipboard.set_text("there").unwrap();
@@ -778,6 +785,7 @@ mod tests {
 
   #[test]
   #[ignore] // Requires system clipboard access
+  #[serial]
   fn paste_converts_newlines_to_spaces() {
     let mut clipboard = Clipboard::new().unwrap();
     clipboard.set_text("line1\nline2\r\nline3").unwrap();
