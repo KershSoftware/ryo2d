@@ -46,7 +46,7 @@ pub mod core;
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
   // Core game trait
-  pub use crate::core::game::{Game, GameContext, GpuRenderContext, TimeControl, WindowRequest};
+  pub use crate::core::game::{Game, GameContext, GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
 
   // Scene management
   pub use crate::core::scene::{

@@ -21,7 +21,7 @@ use super::ecs::{
 };
 use super::error::{EngineError, EngineResult};
 use super::events::{CollisionStarted, CollisionStopped, Events};
-use super::game::{Game, GameContext, GpuRenderContext, TimeControl, WindowRequest};
+use super::game::{Game, GameContext, GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
 use super::graphics::{
   BatchCollector, Camera, CompositeTile, Sprite, SpriteGpuRenderer, TileDirection, WgpuRenderer,
 };
@@ -1105,6 +1105,17 @@ impl Engine {
     // --- Game Logic Update ---
     // Temporarily take ownership of the game to avoid borrow conflicts
     if let Some(mut game) = self.game.take() {
+      // Build TimeInfo from current timing state
+      let time_info = TimeInfo {
+        fixed_dt: self.time.as_ref().map(|t| t.fixed_dt()).unwrap_or(1.0 / 60.0),
+        scaled_dt: _dt,
+        real_dt: self.time.as_ref().map(|t| t.dt()).unwrap_or(0.0),
+        render_alpha: self.time.as_ref().map(|t| t.interpolation_alpha()).unwrap_or(0.0),
+        time_scale: self.time_control.time_scale,
+        is_hitstop: self.time_control.hitstop_remaining > 0.0,
+        frame_count: self.time.as_ref().map(|t| t.frame_count()).unwrap_or(0),
+      };
+
       // Create context for the game
       let mut ctx = GameContext {
         world: &mut self.world,
@@ -1118,6 +1129,7 @@ impl Engine {
         window_request: &mut self.window_request,
         cursor_request: &mut self.cursor_request,
         time_control: &mut self.time_control,
+        time: time_info,
         profiling_enabled: self.profiling_enabled,
         scale_factor: self.scale_factor,
         command_registry: &mut self.command_registry,
@@ -1943,6 +1955,17 @@ impl ApplicationHandler for Engine {
     // Call game init if not already initialized
     if !self.initialized {
       if let Some(mut game) = self.game.take() {
+        // TimeInfo for init - no timing data yet, use defaults
+        let time_info = TimeInfo {
+          fixed_dt: self.time.as_ref().map(|t| t.fixed_dt()).unwrap_or(1.0 / 60.0),
+          scaled_dt: 0.0,
+          real_dt: 0.0,
+          render_alpha: 0.0,
+          time_scale: 1.0,
+          is_hitstop: false,
+          frame_count: 0,
+        };
+
         let mut ctx = GameContext {
           world: &mut self.world,
           camera: &mut self.camera,
@@ -1955,6 +1978,7 @@ impl ApplicationHandler for Engine {
           window_request: &mut self.window_request,
           cursor_request: &mut self.cursor_request,
           time_control: &mut self.time_control,
+          time: time_info,
           profiling_enabled: self.profiling_enabled,
           scale_factor: self.scale_factor,
           command_registry: &mut self.command_registry,

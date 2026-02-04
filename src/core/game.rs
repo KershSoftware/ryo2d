@@ -53,6 +53,69 @@ impl Default for TimeControl {
   }
 }
 
+/// Timing information exposed to game code.
+///
+/// Provides access to all timing values for different use cases:
+/// - `fixed_dt`: Unscaled fixed timestep (for physics math unaffected by slow-mo)
+/// - `scaled_dt`: Fixed timestep × time_scale (for gameplay that should slow down)
+/// - `real_dt`: Actual time since last frame (for UI, particles, camera that should stay smooth)
+/// - `render_alpha`: Interpolation factor 0.0-1.0 (for smooth rendering between updates)
+///
+/// # Example
+///
+/// ```ignore
+/// fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+///     let time = ctx.time;
+///
+///     // Physics calculations (unaffected by slow-mo)
+///     let gravity = 9.8 * time.fixed_dt;
+///
+///     // Gameplay (affected by slow-mo)
+///     player.velocity += input * time.scaled_dt;
+///
+///     // UI animations (always smooth, regardless of update rate)
+///     menu.animate(time.real_dt);
+/// }
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct TimeInfo {
+  /// Unscaled fixed timestep in seconds (e.g., 1/60 = 0.01667 at 60hz).
+  ///
+  /// Use for physics calculations that shouldn't be affected by time_scale.
+  pub fixed_dt: f32,
+
+  /// Fixed timestep scaled by time_scale, zero during hitstop.
+  ///
+  /// This is the same value passed as `dt` to `update()`.
+  /// Use for gameplay that should slow down with slow-mo effects.
+  pub scaled_dt: f32,
+
+  /// Actual time since last frame in seconds (variable).
+  ///
+  /// Use for UI animations, particles, and effects that should
+  /// remain smooth regardless of the fixed update rate.
+  pub real_dt: f32,
+
+  /// Interpolation factor between 0.0 and 1.0.
+  ///
+  /// Represents progress between the last fixed update and the next.
+  /// Use for interpolating positions during rendering to achieve
+  /// smooth motion when render FPS exceeds physics rate.
+  ///
+  /// Example: At 60hz physics on a 144hz display, this will be
+  /// ~0.0, ~0.42, ~0.83 across the render frames between updates.
+  pub render_alpha: f32,
+
+  /// Current time scale multiplier (0.0 = frozen, 1.0 = normal, >1.0 = fast).
+  pub time_scale: f32,
+
+  /// Whether the game is currently in hitstop (freeze frame effect).
+  pub is_hitstop: bool,
+
+  /// Current frame number since engine start.
+  pub frame_count: u64,
+}
+
 impl WindowRequest {
   /// Create a new empty window request
   pub fn new() -> Self {
@@ -134,6 +197,8 @@ pub struct GameContext<'a> {
   pub(crate) cursor_request: &'a mut crate::core::cursor::CursorRequest,
   /// Time control for slow-mo and hitstop effects
   pub time_control: &'a mut TimeControl,
+  /// Timing information (fixed dt, scaled dt, real dt, render alpha, etc.)
+  pub time: TimeInfo,
   /// Whether detailed profiling is enabled (for timing warnings)
   pub profiling_enabled: bool,
   /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
@@ -837,5 +902,71 @@ mod tests {
 
     assert!(!wr.has_changes());
     assert_eq!(tc.time_scale, 1.0);
+  }
+
+  // ===========================================================================
+  // TimeInfo Tests
+  // ===========================================================================
+
+  #[test]
+  fn time_info_struct_fields() {
+    let time = TimeInfo {
+      fixed_dt: 1.0 / 60.0,
+      scaled_dt: 1.0 / 120.0,
+      real_dt: 0.017,
+      render_alpha: 0.5,
+      time_scale: 0.5,
+      is_hitstop: false,
+      frame_count: 100,
+    };
+
+    assert!((time.fixed_dt - 1.0 / 60.0).abs() < 0.0001);
+    assert!((time.scaled_dt - 1.0 / 120.0).abs() < 0.0001);
+    assert!((time.real_dt - 0.017).abs() < 0.0001);
+    assert!((time.render_alpha - 0.5).abs() < 0.0001);
+    assert_eq!(time.time_scale, 0.5);
+    assert!(!time.is_hitstop);
+    assert_eq!(time.frame_count, 100);
+  }
+
+  #[test]
+  fn time_info_is_copy() {
+    let time = TimeInfo {
+      fixed_dt: 1.0 / 60.0,
+      scaled_dt: 1.0 / 60.0,
+      real_dt: 0.016,
+      render_alpha: 0.0,
+      time_scale: 1.0,
+      is_hitstop: false,
+      frame_count: 0,
+    };
+
+    // TimeInfo is Copy, so this should work without move
+    let time2 = time;
+    let time3 = time;
+    assert_eq!(time2.frame_count, time3.frame_count);
+  }
+
+  #[test]
+  fn time_info_hitstop_flag() {
+    let time_normal = TimeInfo {
+      fixed_dt: 1.0 / 60.0,
+      scaled_dt: 1.0 / 60.0,
+      real_dt: 0.016,
+      render_alpha: 0.0,
+      time_scale: 1.0,
+      is_hitstop: false,
+      frame_count: 0,
+    };
+
+    let time_hitstop = TimeInfo {
+      is_hitstop: true,
+      scaled_dt: 0.0, // During hitstop, scaled_dt is 0
+      ..time_normal
+    };
+
+    assert!(!time_normal.is_hitstop);
+    assert!(time_hitstop.is_hitstop);
+    assert_eq!(time_hitstop.scaled_dt, 0.0);
   }
 }

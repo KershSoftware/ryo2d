@@ -35,7 +35,7 @@ use super::config::save::DisplayMode;
 use super::console::{CommandRegistry, CommandResult};
 use super::ecs::{Entity, Knockback, SquashAxis, SquashStretch, Vec2, World};
 use super::events::Events;
-use super::game::{TimeControl, WindowRequest};
+use super::game::{TimeControl, TimeInfo, WindowRequest};
 use super::graphics::Camera;
 use super::input::InputState;
 use super::lighting::LightingRenderer;
@@ -86,6 +86,8 @@ pub struct SceneContext<'a> {
   pub(crate) cursor_request: &'a mut crate::core::cursor::CursorRequest,
   /// Time control for slow-mo and hitstop effects
   pub time_control: &'a mut TimeControl,
+  /// Timing information (fixed dt, scaled dt, real dt, render alpha, etc.)
+  pub time: TimeInfo,
   /// Whether detailed profiling is enabled (for timing warnings)
   pub profiling_enabled: bool,
   /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
@@ -1533,6 +1535,7 @@ impl Game for SceneGame {
       window_request: ctx.window_request,
       cursor_request: ctx.cursor_request,
       time_control: ctx.time_control,
+      time: ctx.time,
       profiling_enabled: ctx.profiling_enabled,
       scale_factor: ctx.scale_factor,
       command_registry: ctx.command_registry,
@@ -1575,6 +1578,7 @@ impl Game for SceneGame {
       window_request: ctx.window_request,
       cursor_request: ctx.cursor_request,
       time_control: ctx.time_control,
+      time: ctx.time,
       profiling_enabled: ctx.profiling_enabled,
       scale_factor: ctx.scale_factor,
       command_registry: ctx.command_registry,
