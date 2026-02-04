@@ -463,6 +463,7 @@ impl GameScene {
   }
 
   fn update_drones(&mut self, ctx: &mut SceneContext, dt: f32) {
+    profile_scope!("drones");
     use crate::components::drone::DRONE_AIM_SPEED;
     use crate::components::DroneState;
     use crate::constants::{
@@ -779,6 +780,7 @@ impl GameScene {
 
   /// Update laser tracer entities (moving trails for sweeping laser effect)
   fn update_laser_tracers(&mut self, ctx: &mut SceneContext, dt: f32) {
+    profile_scope!("laser_tracers");
     // Get player position for damage checks
     let player_pos = self
       .player
@@ -900,6 +902,7 @@ impl GameScene {
   }
 
   fn update_player(&mut self, ctx: &mut SceneContext, dt: f32) {
+    profile_scope!("player");
     use crate::components::WallSide;
     use crate::constants::{
       WALL_JUMP_FORCE_X, WALL_JUMP_FORCE_Y, WALL_SLIDE_GRAVITY_SCALE, WALL_SLIDE_MAX_SPEED,
@@ -1566,6 +1569,7 @@ impl GameScene {
   }
 
   fn update_barriers(&mut self, ctx: &mut SceneContext, dt: f32) {
+    profile_scope!("barriers");
     for &barrier_entity in &self.barriers {
       let Some(mut transform) = ctx.world.get_mut::<Transform>(barrier_entity) else {
         continue;
@@ -1589,6 +1593,7 @@ impl GameScene {
   }
 
   fn update_turrets(&mut self, ctx: &mut SceneContext, dt: f32) {
+    profile_scope!("turrets");
     let turrets_to_update: Vec<_> = self.turrets.to_vec();
 
     // First pass: collect turret positions and sides for collision detection
@@ -1815,6 +1820,7 @@ impl GameScene {
   }
 
   fn update_bullets(&mut self, ctx: &mut SceneContext, _dt: f32) {
+    profile_scope!("bullets");
     // Collect (index, entity) pairs to remove/release
     let mut bullets_to_release: Vec<(usize, Entity)> = Vec::new();
     let bullets_to_process: Vec<_> = self.bullets.iter().copied().enumerate().collect();
@@ -2000,6 +2006,7 @@ impl GameScene {
   }
 
   fn update_particles(&mut self, ctx: &mut SceneContext, dt: f32) {
+    profile_scope!("particles");
     let mut particles_to_remove = Vec::new();
 
     for (i, &particle_entity) in self.particles.iter().enumerate() {
@@ -2048,6 +2055,7 @@ impl GameScene {
   }
 
   fn update_progression(&mut self, ctx: &mut SceneContext, dt: f32) {
+    profile_scope!("progression");
     self.time_since_last_progression += dt;
 
     // Check if we should increase difficulty
@@ -2340,6 +2348,7 @@ impl Scene for GameScene {
   }
 
   fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
+    profile_scope!("render_gpu");
     // Upload parallax textures to GPU (only happens once, cached after)
     for sprite in &self.parallax_sprites {
       ctx.upload_sprite(sprite);
@@ -2350,6 +2359,7 @@ impl Scene for GameScene {
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) {
+    profile_scope!("render_ui");
     let (screen_w, screen_h) = ui.screen_size();
 
     // Use cached player state

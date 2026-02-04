@@ -208,3 +208,7 @@ pub mod prelude {
   // Profiling (macros work as no-ops when `profiler` feature is disabled)
   pub use crate::core::profiler::{profile_function, profile_scope};
 }
+
+// Re-export puffin for downstream crates using profile macros
+#[cfg(feature = "profiler")]
+pub use puffin;
