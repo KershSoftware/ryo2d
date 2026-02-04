@@ -17,22 +17,21 @@ use super::console::{
   CommandContext, CommandRegistry, CommandResult, ConsoleState, register_builtins,
 };
 use super::ecs::{
-  Entity, RenderStyle, Renderable, SpriteShader, Transform, Velocity, World, WorldTransform, YSort,
+  Entity, RenderStyle, Renderable, SpriteShader, Transform, World, WorldTransform, YSort,
 };
 use super::error::{EngineError, EngineResult};
 use super::events::{CollisionStarted, CollisionStopped, Events};
 use super::game::{Game, GameContext, GpuRenderContext, TimeControl, WindowRequest};
 use super::graphics::{
-  BatchCollector, Camera, CompositeTile, GroupedCollider, Sprite, SpriteGpuRenderer, TileDirection,
-  WgpuRenderer,
+  BatchCollector, Camera, CompositeTile, Sprite, SpriteGpuRenderer, TileDirection, WgpuRenderer,
 };
 use super::input::InputState;
 use super::lighting::{Light2D, LightOccluder2D, LightingRenderer, generate_shadow_geometry};
-use super::physics::{Collider, PhysicsConfig, RapierPhysicsWorld, RigidBody};
+use super::physics::{PhysicsConfig, RapierPhysicsWorld};
 use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
 use super::systems::{
-  AnimationSystem, KnockbackSystem, SquashStretchSystem, TrailSystem, TweenSystem,
+  AnimationSystem, KnockbackSystem, PhysicsSystem, SquashStretchSystem, TrailSystem, TweenSystem,
 };
 use super::timing::TimeState;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
@@ -1163,101 +1162,13 @@ impl Engine {
       return;
     }
 
-    // Check if world was cleared (generation changed) - this means physics must be reset
-    // because hecs reuses entity IDs, so stale detection via contains() doesn't work
-    let current_generation = self.world.generation();
-    if current_generation != self.last_world_generation {
-      self.physics.clear();
-      self.last_world_generation = current_generation;
-    }
-
-    // Auto-unregister despawned entities from physics
-    // (entities that were registered but no longer exist in the ECS world)
-    // This handles normal gameplay despawning (not world.clear())
-    let stale_physics_entities: Vec<Entity> = self
-      .physics
-      .registered_entities()
-      .filter(|&e| !self.world.contains(e))
-      .collect();
-
-    for entity in stale_physics_entities {
-      self.physics.unregister_entity(entity);
-    }
-
-    // Unregister inactive pooled entities from physics (they should not collide)
-    let inactive_physics_entities: Vec<Entity> = self
-      .physics
-      .registered_entities()
-      .filter(|&e| self.world.has::<super::ecs::Inactive>(e))
-      .collect();
-
-    for entity in inactive_physics_entities {
-      self.physics.unregister_entity(entity);
-    }
-
-    // Auto-register any new physics entities (RigidBody + Collider + Transform)
-    // Skip inactive entities (used by object pooling)
-    let physics_entities: Vec<Entity> = self
-      .world
-      .entities_with::<RigidBody>()
-      .into_iter()
-      .filter(|&e| {
-        !self.physics.is_registered(e)
-          && !self.world.has::<super::ecs::Inactive>(e)
-          && self.world.get_component::<Transform>(e).is_some()
-          && self.world.get_component::<Collider>(e).is_some()
-      })
-      .collect();
-
-    for entity in physics_entities {
-      let transform = self.world.get_component::<Transform>(entity).unwrap();
-      let velocity = self.world.get_component::<Velocity>(entity);
-      let rb = self.world.get_component::<RigidBody>(entity).unwrap();
-      let col = self.world.get_component::<Collider>(entity).unwrap();
-      self
-        .physics
-        .register_entity(entity, &transform, velocity.as_deref(), &rb, &col);
-    }
-
-    // Auto-register entities with GroupedCollider (for composite tiles)
-    // Skip inactive entities (used by object pooling)
-    let grouped_entities: Vec<Entity> = self
-      .world
-      .entities_with::<RigidBody>()
-      .into_iter()
-      .filter(|&e| {
-        !self.physics.is_registered(e)
-          && !self.world.has::<super::ecs::Inactive>(e)
-          && self.world.get_component::<Transform>(e).is_some()
-          && self.world.get_component::<GroupedCollider>(e).is_some()
-      })
-      .collect();
-
-    for entity in grouped_entities {
-      let transform = self.world.get_component::<Transform>(entity).unwrap();
-      let velocity = self.world.get_component::<Velocity>(entity);
-      let rb = self.world.get_component::<RigidBody>(entity).unwrap();
-      let grouped = self.world.get_component::<GroupedCollider>(entity).unwrap();
-      self
-        .physics
-        .register_grouped_entity(entity, &transform, velocity.as_deref(), &rb, &grouped);
-    }
-
-    // Sync ECS changes to Rapier before stepping physics
-    // - Kinematic bodies: game code moves them directly via Transform
-    // - Dynamic bodies: game code may teleport them (e.g., reset position)
-    // - Velocities: game code may apply impulses via Velocity component
-    self.physics.sync_kinematic_from_ecs(&self.world);
-    self.physics.sync_dynamic_from_ecs(&self.world);
-    self.physics.sync_velocities_from_ecs(&self.world);
-
-    // Step the physics simulation
-    profile_scope!("cpu:physics");
-    let gravity = self.config.physics.gravity;
-    self.physics.step(gravity);
-
-    // Sync physics results back to ECS (Transform and Velocity)
-    self.physics.sync_to_ecs(&mut self.world);
+    // Run physics: sync entities, step simulation, sync results back
+    self.last_world_generation = PhysicsSystem::update(
+      &mut self.physics,
+      &mut self.world,
+      self.config.physics.gravity,
+      self.last_world_generation,
+    );
   }
 
   // =============================================================================
