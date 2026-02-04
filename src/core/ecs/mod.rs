@@ -26,7 +26,7 @@ mod y_sort;
 
 pub use active::{Active, Inactive};
 pub use component::Component;
-pub use components::{Mat4, RenderLayer, Transform, Vec2, Vec3, Vec4, Velocity};
+pub use components::{Mat4, PreviousTransform, RenderLayer, Transform, Vec2, Vec3, Vec4, Velocity};
 pub use hecs::Entity;
 pub use hierarchy::{Children, Parent, WorldTransform};
 pub use knockback::Knockback;

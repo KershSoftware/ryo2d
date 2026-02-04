@@ -221,6 +221,18 @@ pub struct Renderable {
   /// When set, a shadow is rendered beneath the sprite at the specified
   /// offset, color, and scale. Useful for platformers, UI, or visual grounding.
   pub drop_shadow: Option<DropShadow>,
+  /// Enable render interpolation for smooth motion.
+  ///
+  /// When true, the entity's position is interpolated between the previous
+  /// and current Transform during rendering. This eliminates micro-stutter
+  /// when the render FPS exceeds the fixed update rate (e.g., 144hz display
+  /// with 60hz physics).
+  ///
+  /// Requires a `PreviousTransform` component to be present (added automatically
+  /// by the engine when interpolation is enabled).
+  ///
+  /// Default: false (pixel-perfect rendering at update positions)
+  pub interpolate: bool,
 }
 
 impl Renderable {
@@ -238,6 +250,7 @@ impl Renderable {
       tint: Color::WHITE,
       shader: None,
       drop_shadow: None,
+      interpolate: false,
     }
   }
 
@@ -258,6 +271,7 @@ impl Renderable {
       tint: Color::WHITE,
       shader: None,
       drop_shadow: None,
+      interpolate: false,
     }
   }
 
@@ -348,6 +362,43 @@ impl Renderable {
   /// Check if this renderable has a drop shadow
   pub fn has_drop_shadow(&self) -> bool {
     self.drop_shadow.is_some()
+  }
+
+  /// Enable render interpolation for smooth motion.
+  ///
+  /// When enabled, the entity's position is interpolated between the previous
+  /// and current Transform during rendering. This eliminates micro-stutter
+  /// when the render FPS exceeds the fixed update rate.
+  ///
+  /// Best for:
+  /// - Smoothly moving characters, projectiles, cameras
+  /// - High refresh rate displays (120hz, 144hz, 240hz)
+  ///
+  /// Not recommended for:
+  /// - Pixel art that should snap to pixel boundaries
+  /// - Static or rarely-moving entities
+  /// - Entities that teleport frequently
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// // Enable interpolation for smooth player movement
+  /// let player = Renderable::sprite(handle).interpolated();
+  ///
+  /// // Or explicitly set it
+  /// let enemy = Renderable::sprite(handle).with_interpolation(true);
+  /// ```
+  pub fn interpolated(mut self) -> Self {
+    self.interpolate = true;
+    self
+  }
+
+  /// Set render interpolation enabled/disabled.
+  ///
+  /// See [`interpolated`](Self::interpolated) for details.
+  pub fn with_interpolation(mut self, enabled: bool) -> Self {
+    self.interpolate = enabled;
+    self
   }
 
   /// Check if this is a single sprite (not tiled)

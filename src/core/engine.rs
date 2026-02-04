@@ -17,7 +17,8 @@ use super::console::{
   CommandContext, CommandRegistry, CommandResult, ConsoleState, register_builtins,
 };
 use super::ecs::{
-  Entity, RenderStyle, Renderable, SpriteShader, Transform, World, WorldTransform, YSort,
+  Entity, PreviousTransform, RenderStyle, Renderable, SpriteShader, Transform, World,
+  WorldTransform, YSort,
 };
 use super::error::{EngineError, EngineResult};
 use super::events::{CollisionStarted, CollisionStopped, Events};
@@ -31,7 +32,8 @@ use super::physics::{PhysicsConfig, RapierPhysicsWorld};
 use super::scene::{Scene, SceneGame};
 use super::shaders::EffectsManager;
 use super::systems::{
-  AnimationSystem, KnockbackSystem, PhysicsSystem, SquashStretchSystem, TrailSystem, TweenSystem,
+  AnimationSystem, InterpolationSystem, KnockbackSystem, PhysicsSystem, SquashStretchSystem,
+  TrailSystem, TweenSystem,
 };
 use super::timing::TimeState;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
@@ -1328,7 +1330,7 @@ impl Engine {
 
       // Use WorldTransform if available (for hierarchical entities),
       // otherwise fall back to local Transform
-      let (x, y, rotation, scale_x, scale_y, pivot_x, pivot_y, offset_x, offset_y) =
+      let (base_x, base_y, base_rotation, base_scale_x, base_scale_y, pivot_x, pivot_y, offset_x, offset_y) =
         if let Some(wt) = self.world.get_component::<WorldTransform>(entity) {
           (
             wt.x,
@@ -1349,6 +1351,37 @@ impl Engine {
         } else {
           continue;
         };
+
+      // Apply render interpolation if enabled
+      let (x, y, rotation, scale_x, scale_y) = if renderable.interpolate {
+        if let Some(prev) = self.world.get_component::<PreviousTransform>(entity) {
+          if prev.skip {
+            // Skip interpolation this frame (just spawned or teleported)
+            (base_x, base_y, base_rotation, base_scale_x, base_scale_y)
+          } else {
+            // Interpolate between previous and current transform
+            let target = Transform {
+              x: base_x,
+              y: base_y,
+              z: 0.0,
+              rotation: base_rotation,
+              scale_x: base_scale_x,
+              scale_y: base_scale_y,
+              pivot_x: 0.0,
+              pivot_y: 0.0,
+              offset_x: 0.0,
+              offset_y: 0.0,
+            };
+            prev.lerp(&target, _alpha)
+          }
+        } else {
+          // No PreviousTransform yet, use current position
+          (base_x, base_y, base_rotation, base_scale_x, base_scale_y)
+        }
+      } else {
+        // Interpolation disabled, use current position
+        (base_x, base_y, base_rotation, base_scale_x, base_scale_y)
+      };
 
       // Apply offset to base position (offset is a pixel-level adjustment after anchor)
       let x = x + offset_x;
@@ -2362,6 +2395,11 @@ impl ApplicationHandler for Engine {
           } else {
             None
           };
+
+          // Snapshot transforms for interpolation BEFORE any updates
+          // This captures the "previous" state that we'll lerp from during rendering
+          InterpolationSystem::snapshot(&mut self.world);
+
           while self
             .time
             .as_ref()

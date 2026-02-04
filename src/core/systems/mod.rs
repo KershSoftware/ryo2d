@@ -4,6 +4,7 @@
 //! and can be updated independently. This makes the code more modular and testable.
 
 mod animation;
+mod interpolation;
 mod knockback;
 mod physics;
 mod squash_stretch;
@@ -11,6 +12,7 @@ mod trail;
 mod tween;
 
 pub use animation::AnimationSystem;
+pub use interpolation::InterpolationSystem;
 pub use knockback::KnockbackSystem;
 pub use physics::PhysicsSystem;
 pub use squash_stretch::SquashStretchSystem;

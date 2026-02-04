@@ -228,6 +228,87 @@ impl Default for Transform {
   }
 }
 
+/// Previous frame's transform, used for render interpolation.
+///
+/// When an entity has `Renderable::interpolate = true`, the renderer will
+/// lerp between `PreviousTransform` and `Transform` based on the interpolation
+/// alpha to achieve smooth motion between fixed timestep updates.
+///
+/// This component is automatically managed by the engine:
+/// - Added when an entity with `interpolate = true` is first rendered
+/// - Updated each frame before the fixed timestep updates
+///
+/// You generally don't need to interact with this component directly.
+/// To disable interpolation for a teleport, use `Transform::skip_interpolation()`.
+#[derive(Debug, Clone)]
+pub struct PreviousTransform {
+  pub x: f32,
+  pub y: f32,
+  pub z: f32,
+  pub rotation: f32,
+  pub scale_x: f32,
+  pub scale_y: f32,
+  /// When true, skip interpolation this frame (for teleports, spawns)
+  pub skip: bool,
+}
+
+impl PreviousTransform {
+  /// Create from a Transform, copying all position/rotation/scale values.
+  pub fn from_transform(t: &Transform) -> Self {
+    PreviousTransform {
+      x: t.x,
+      y: t.y,
+      z: t.z,
+      rotation: t.rotation,
+      scale_x: t.scale_x,
+      scale_y: t.scale_y,
+      skip: false,
+    }
+  }
+
+  /// Copy values from a Transform.
+  pub fn copy_from(&mut self, t: &Transform) {
+    self.x = t.x;
+    self.y = t.y;
+    self.z = t.z;
+    self.rotation = t.rotation;
+    self.scale_x = t.scale_x;
+    self.scale_y = t.scale_y;
+  }
+
+  /// Mark to skip interpolation this frame (e.g., after teleport).
+  pub fn skip_next_frame(&mut self) {
+    self.skip = true;
+  }
+
+  /// Linearly interpolate between this and a target Transform.
+  ///
+  /// Returns (x, y, rotation, scale_x, scale_y) at the given alpha.
+  /// Alpha of 0.0 = this transform, 1.0 = target transform.
+  pub fn lerp(&self, target: &Transform, alpha: f32) -> (f32, f32, f32, f32, f32) {
+    let x = self.x + (target.x - self.x) * alpha;
+    let y = self.y + (target.y - self.y) * alpha;
+    let rotation = self.rotation + (target.rotation - self.rotation) * alpha;
+    let scale_x = self.scale_x + (target.scale_x - self.scale_x) * alpha;
+    let scale_y = self.scale_y + (target.scale_y - self.scale_y) * alpha;
+    (x, y, rotation, scale_x, scale_y)
+  }
+}
+
+impl Default for PreviousTransform {
+  fn default() -> Self {
+    PreviousTransform {
+      x: 0.0,
+      y: 0.0,
+      z: 0.0,
+      rotation: 0.0,
+      scale_x: 1.0,
+      scale_y: 1.0,
+      skip: true, // Skip on first frame (no previous data)
+    }
+  }
+}
+
 /// Movement per second in 2D/3D space
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Velocity {
