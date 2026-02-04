@@ -24,14 +24,13 @@ members = [
   "examples/games/flappy",
   "examples/games/breakout",
   "examples/games/bullet-hell",
+  "examples/games/profiler-demo",
   "examples/demos/networking",
   "examples/demos/anchor-positioning",
   "examples/demos/asset-loading",
   "examples/demos/camera-shake",
   "examples/demos/controller",
   "examples/demos/hierarchy-sprites",
-  "examples/demos/knockback",
-  "examples/demos/squash-stretch",
   "examples/demos/lighting",
   "examples/demos/particles",
   "examples/demos/post-processing",
@@ -41,7 +40,6 @@ members = [
   "examples/demos/ui",
   "examples/demos/pathfinding",
   "examples/demos/procgen",
-  "examples/demos/trails",
 ]
 
 # Example games are standalone projects in examples/ - run them with:
@@ -84,7 +82,6 @@ default = []
 profiler = ["puffin"]
 
 [dev-dependencies]
-serial_test = "3.3.1"
 tempfile = "3"
 
 # Dev builds: optimize dependencies and engine for performance, keep game code light for fast iteration
