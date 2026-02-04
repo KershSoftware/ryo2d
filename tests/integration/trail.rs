@@ -85,7 +85,10 @@ fn set_recording_does_not_affect_visibility() {
 
   // Recording stopped but still visible
   assert!(!trail.is_enabled(), "Recording should be stopped");
-  assert!(trail.is_visible(), "Should still be visible for fade-out effect");
+  assert!(
+    trail.is_visible(),
+    "Should still be visible for fade-out effect"
+  );
 
   // Re-enable recording
   trail.set_recording(true);
@@ -164,7 +167,11 @@ fn points_recorded_only_when_enabled() {
   trail.update(30.0, 30.0, 0.016);
 
   // Count should not increase
-  assert_eq!(trail.point_count(), 2, "Points should not be added when disabled");
+  assert_eq!(
+    trail.point_count(),
+    2,
+    "Points should not be added when disabled"
+  );
 }
 
 /// Points are recorded when using set_recording(true) even if visibility is false
@@ -178,7 +185,11 @@ fn points_recorded_when_recording_enabled() {
   trail.update(0.0, 0.0, 0.016);
   trail.update(10.0, 10.0, 0.016);
 
-  assert_eq!(trail.point_count(), 2, "Points should be recorded even when hidden");
+  assert_eq!(
+    trail.point_count(),
+    2,
+    "Points should be recorded even when hidden"
+  );
   assert!(!trail.is_visible(), "Trail should still be hidden");
 }
 
@@ -205,7 +216,11 @@ fn min_distance_prevents_clustering() {
   trail.update(5.0, 0.0, 0.016); // Only 5 pixels away - should NOT add
   trail.update(15.0, 0.0, 0.016); // 15 pixels from first - should add
 
-  assert_eq!(trail.point_count(), 2, "Points closer than min_distance should be skipped");
+  assert_eq!(
+    trail.point_count(),
+    2,
+    "Points closer than min_distance should be skipped"
+  );
 }
 
 // ============================================================================
@@ -238,15 +253,9 @@ fn trail_as_ecs_component() {
 fn multiple_entities_with_trails() {
   let mut world = World::new();
 
-  let e1 = world.spawn((
-    Transform::new(0.0, 0.0),
-    Trail2D::new(Color::RED, 3.0),
-  ));
+  let e1 = world.spawn((Transform::new(0.0, 0.0), Trail2D::new(Color::RED, 3.0)));
 
-  let e2 = world.spawn((
-    Transform::new(100.0, 100.0),
-    Trail2D::new(Color::BLUE, 5.0),
-  ));
+  let e2 = world.spawn((Transform::new(100.0, 100.0), Trail2D::new(Color::BLUE, 5.0)));
 
   // Disable one trail
   {

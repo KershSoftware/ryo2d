@@ -1024,7 +1024,11 @@ impl Engine {
             Some(&self.ui_buffer),
           )
         } else {
-          rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback), Some(trail_callback))
+          rend.render_with_gpu_sprites(
+            Some(&self.effects),
+            Some(gpu_callback),
+            Some(trail_callback),
+          )
         }
       } else {
         rend.render_with_effects(Some(&self.effects))
@@ -2822,7 +2826,11 @@ impl ApplicationHandler for Engine {
                 Some(&self.ui_buffer),
               )
             } else {
-              rend.render_with_gpu_sprites(Some(&self.effects), Some(gpu_callback), Some(trail_callback))
+              rend.render_with_gpu_sprites(
+                Some(&self.effects),
+                Some(gpu_callback),
+                Some(trail_callback),
+              )
             }
           } else {
             rend.render_with_effects(Some(&self.effects))

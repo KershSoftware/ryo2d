@@ -618,10 +618,7 @@ fn test_line_rendering() {
 
   renderer.add_line(&line, 0.0, 0.0);
 
-  assert!(
-    renderer.vertex_count() > 0,
-    "Line should generate vertices"
-  );
+  assert!(renderer.vertex_count() > 0, "Line should generate vertices");
 
   target.clear(&gpu, 0.0, 0.0, 0.0, 1.0);
 
