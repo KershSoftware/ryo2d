@@ -71,7 +71,7 @@ pub mod prelude {
   pub use crate::core::events::{
     AssetLoadFailed, AssetReloaded, ClientConnected, ClientDisconnected, CollisionStarted,
     CollisionStopped, ConnectedToServer, DisconnectReason, DisconnectedFromServer, Events,
-    KnockbackFinished, KnockbackStarted, SquashStretchFinished, SquashStretchStarted,
+    KnockbackFinished, KnockbackStarted, SquashStretchFinished, SquashStretchStarted, StateChanged,
   };
 
   // Physics components
@@ -208,6 +208,11 @@ pub mod prelude {
     ProcgenBuilder, RandomWalkConfig, Region, RegionCreated, RegionMetadata, RegionType,
     RegionsConnected, SeededRng, TileType, WfcConfig, WfcDirection, WfcResult, WfcTile,
     poisson_points,
+  };
+
+  // State Machines
+  pub use crate::core::state_machine::{
+    StateMachine, StateStack, TransitionError, TransitionResult,
   };
 
   // Profiling (macros work as no-ops when `profiler` feature is disabled)

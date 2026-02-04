@@ -1,0 +1,11 @@
+[package]
+name = "state-machine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ryo2d = { path = "../../../" }
+
+[[bin]]
+name = "state-machine"
+path = "main.rs"

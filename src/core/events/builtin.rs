@@ -419,3 +419,85 @@ pub struct SquashStretchFinished {
   /// The entity that finished squash/stretch effect
   pub entity: Entity,
 }
+
+// ============================================================================
+// State Machine Events
+// ============================================================================
+
+/// Emitted when an entity's state machine transitions to a new state.
+///
+/// This is a generic event that can be used with any state type. Subscribe to
+/// `StateChanged<YourStateEnum>` to receive events for that specific state type.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// enum EnemyState {
+///     Patrol,
+///     Alert,
+///     Chase,
+///     Dead,
+/// }
+///
+/// fn update(&mut self, ctx: &mut GameContext) {
+///     // React to enemy state changes
+///     for event in ctx.events.read::<StateChanged<EnemyState>>() {
+///         match event.to {
+///             EnemyState::Alert => {
+///                 // Play alert sound, show exclamation mark
+///                 self.play_sound("alert.wav");
+///             }
+///             EnemyState::Dead => {
+///                 // Spawn loot, update score
+///                 self.spawn_loot(event.entity);
+///             }
+///             _ => {}
+///         }
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateChanged<S>
+where
+  S: Clone + std::fmt::Debug,
+{
+  /// The entity whose state changed
+  pub entity: Entity,
+  /// The previous state
+  pub from: S,
+  /// The new state
+  pub to: S,
+}
+
+impl<S> StateChanged<S>
+where
+  S: Clone + std::fmt::Debug + PartialEq,
+{
+  /// Create a new state changed event.
+  pub fn new(entity: Entity, from: S, to: S) -> Self {
+    Self { entity, from, to }
+  }
+
+  /// Check if this state change involves a specific entity.
+  pub fn involves(&self, entity: Entity) -> bool {
+    self.entity == entity
+  }
+
+  /// Check if the state changed to a specific state.
+  pub fn changed_to(&self, state: &S) -> bool {
+    &self.to == state
+  }
+
+  /// Check if the state changed from a specific state.
+  pub fn changed_from(&self, state: &S) -> bool {
+    &self.from == state
+  }
+
+  /// Check if this is a transition between two specific states.
+  pub fn is_transition(&self, from: &S, to: &S) -> bool {
+    &self.from == from && &self.to == to
+  }
+}

@@ -87,12 +87,83 @@ Three smoothing modes:
 | `LineOfSight` | Skip redundant waypoints | Most games |
 | `Spline` | Catmull-Rom interpolation | Smooth curves |
 
-### NavAgent States
+### NavAgent State Machine
+
+`NavAgent` uses the generic `StateMachine<NavAgentState>` framework internally, providing validated transitions and state tracking:
 
 ```
-Idle → Computing → Moving → Arrived
-                       ↓
-                    Failed
+┌───────┐          ┌───────────┐
+│ Idle  │─────────>│ Computing │
+└───┬───┘          └─────┬─────┘
+    ^                    │
+    │         ┌─────────>v──────────┐
+    │         │      ┌───────┐      │
+    │         │      │Moving │      │
+    │         │      └───┬───┘      │
+    │         │          │          │
+    │    ┌────┴───┐  ┌───v────┐     │
+    └────│ Failed │  │Arrived │     │
+         └────────┘  └────────┘     │
+               ^                    │
+               └────────────────────┘
+```
+
+**State Descriptions:**
+
+| State | Description | Valid Transitions |
+|-------|-------------|-------------------|
+| `Idle` | No target, stationary | → Computing, Moving |
+| `Computing` | Path being calculated | → Moving, Failed |
+| `Moving` | Following computed path | → Arrived, Failed |
+| `Arrived` | Reached destination | → Idle, Computing |
+| `Failed` | Path not found or blocked | → Idle, Computing |
+
+**State Machine Features:**
+
+```rust
+// Check current state
+if agent.state() == NavAgentState::Moving {
+    // Currently navigating
+}
+
+// Check previous state
+if let Some(prev) = agent.previous_state() {
+    println!("Was in {:?}", prev);
+}
+
+// One-frame transition flags
+if agent.just_entered_state() {
+    // First frame in new state - play sound, emit event, etc.
+}
+
+if agent.just_exited_state() {
+    // Just left previous state
+}
+
+// Time tracking
+let time = agent.time_in_state();  // Seconds in current state
+
+// Transition validation
+if agent.can_transition_to(NavAgentState::Moving) {
+    agent.set_path(path);
+}
+
+// Frame update (clears flags, advances time)
+agent.update(dt);
+```
+
+**State Helper Methods:**
+
+```rust
+// Check if actively navigating
+assert!(NavAgentState::Computing.is_active());  // true
+assert!(NavAgentState::Moving.is_active());     // true
+assert!(!NavAgentState::Idle.is_active());      // false
+
+// Check if navigation ended
+assert!(NavAgentState::Arrived.is_finished());  // true
+assert!(NavAgentState::Failed.is_finished());   // true
+assert!(!NavAgentState::Moving.is_finished());  // false
 ```
 
 ### Steering Behaviors

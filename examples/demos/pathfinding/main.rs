@@ -266,7 +266,7 @@ impl PathfindingDemoScene {
         let agent = ctx.world.get::<NavAgent>(entity);
         let target = ctx.world.get::<NavTarget>(entity);
         (
-          agent.map(|a| a.state),
+          agent.map(|a| a.state()),
           target.is_some(),
           target.map(|t| (t.x, t.y)),
         )

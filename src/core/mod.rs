@@ -29,6 +29,9 @@ pub mod navigation;
 // Procedural Generation
 pub mod procgen;
 
+// State Machines
+pub mod state_machine;
+
 // Configuration & persistence
 pub mod config;
 

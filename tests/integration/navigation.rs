@@ -300,7 +300,7 @@ fn time_sliced_pathfinding_cancellation() {
 fn nav_agent_state_machine() {
   let mut agent = NavAgent::new(100.0);
 
-  assert_eq!(agent.state, NavAgentState::Idle);
+  assert_eq!(agent.state(), NavAgentState::Idle);
   assert!(!agent.has_path());
 
   // Set a path
@@ -313,17 +313,17 @@ fn nav_agent_state_machine() {
   );
   agent.set_path(path);
 
-  assert_eq!(agent.state, NavAgentState::Moving);
+  assert_eq!(agent.state(), NavAgentState::Moving);
   assert!(agent.has_path());
 
   // Fail
   agent.fail();
-  assert_eq!(agent.state, NavAgentState::Failed);
+  assert_eq!(agent.state(), NavAgentState::Failed);
   assert!(!agent.has_path());
 
   // Stop and go idle
   agent.stop();
-  assert_eq!(agent.state, NavAgentState::Idle);
+  assert_eq!(agent.state(), NavAgentState::Idle);
 }
 
 /// Test NavAgent with World integration

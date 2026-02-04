@@ -4,9 +4,11 @@
 
 use super::path::{Path, PathSmoothing};
 use crate::core::ecs::Entity;
+use crate::core::state_machine::StateMachine;
+use std::hash::Hash;
 
 /// State of a navigation agent
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum NavAgentState {
   /// Agent has no target and is stationary
   #[default]
@@ -33,10 +35,59 @@ impl NavAgentState {
   }
 }
 
+/// Creates a properly configured state machine for navigation agent states.
+///
+/// Transition graph:
+/// ```text
+/// ┌───────┐          ┌───────────┐
+/// │ Idle  │─────────>│ Computing │
+/// └───┬───┘          └─────┬─────┘
+///     ^                    │
+///     │         ┌─────────>v──────────┐
+///     │         │      ┌───────┐      │
+///     │         │      │Moving │      │
+///     │         │      └───┬───┘      │
+///     │         │          │          │
+///     │    ┌────┴───┐  ┌───v────┐     │
+///     └────│ Failed │  │Arrived │     │
+///          └────────┘  └────────┘     │
+///                ^                    │
+///                └────────────────────┘
+/// ```
+fn create_nav_state_machine() -> StateMachine<NavAgentState> {
+  use NavAgentState::*;
+
+  StateMachine::new(Idle)
+    // Normal navigation flow
+    .with_transition(Idle, Computing) // Start pathfinding
+    .with_transition(Computing, Moving) // Path found
+    .with_transition(Computing, Failed) // No path found
+    .with_transition(Moving, Arrived) // Reached destination
+    .with_transition(Moving, Failed) // Path blocked
+    // Reset transitions (can always go back to idle)
+    .with_transition(Arrived, Idle) // Ready for new target
+    .with_transition(Failed, Idle) // Ready for retry
+    // Allow re-computation from these states
+    .with_transition(Arrived, Computing) // New target while at destination
+    .with_transition(Failed, Computing) // Retry pathfinding
+    // Allow immediate pathfinding from idle
+    .with_transition(Idle, Moving) // Direct path set (skip computing)
+}
+
 /// Navigation agent component
 ///
 /// Attach to entities that need pathfinding. The navigation system will
 /// automatically update position based on the computed path.
+///
+/// # State Machine
+///
+/// The agent uses an internal state machine with validated transitions:
+///
+/// - `Idle` → `Computing` → `Moving` → `Arrived`
+/// - Any state can transition to `Idle` (via `stop()`)
+/// - `Computing` and `Moving` can transition to `Failed`
+///
+/// Invalid transitions are ignored, ensuring consistent agent behavior.
 ///
 /// # Example
 ///
@@ -51,13 +102,18 @@ impl NavAgentState {
 ///
 /// // Set a destination
 /// ctx.world.add_component(entity, NavTarget::position(500.0, 400.0));
+///
+/// // Check agent state
+/// if agent.state() == NavAgentState::Arrived {
+///     println!("Agent reached destination!");
+/// }
 /// ```
 #[derive(Debug, Clone)]
 pub struct NavAgent {
   /// Current path being followed
   pub current_path: Option<Path>,
-  /// Current navigation state
-  pub state: NavAgentState,
+  /// State machine managing navigation state with validated transitions
+  state_machine: StateMachine<NavAgentState>,
   /// Movement speed in pixels per second
   pub speed: f32,
   /// Distance from waypoint to consider "arrived" (default: 4.0)
@@ -80,7 +136,7 @@ impl NavAgent {
   pub fn new(speed: f32) -> Self {
     NavAgent {
       current_path: None,
-      state: NavAgentState::Idle,
+      state_machine: create_nav_state_machine(),
       speed: speed.max(0.0),
       arrival_threshold: 4.0,
       avoid_agents: false,
@@ -109,6 +165,36 @@ impl NavAgent {
     self
   }
 
+  /// Get the current navigation state.
+  pub fn state(&self) -> NavAgentState {
+    *self.state_machine.current()
+  }
+
+  /// Get the previous navigation state, if any transition has occurred.
+  pub fn previous_state(&self) -> Option<NavAgentState> {
+    self.state_machine.previous().copied()
+  }
+
+  /// Check if the agent just entered its current state (true for one frame after transition).
+  pub fn just_entered_state(&self) -> bool {
+    self.state_machine.just_entered
+  }
+
+  /// Check if the agent just exited its previous state (true for one frame after transition).
+  pub fn just_exited_state(&self) -> bool {
+    self.state_machine.just_exited
+  }
+
+  /// Get the time spent in the current state (in seconds).
+  pub fn time_in_state(&self) -> f32 {
+    self.state_machine.time_in_state()
+  }
+
+  /// Check if the agent can transition to a specific state.
+  pub fn can_transition_to(&self, state: NavAgentState) -> bool {
+    self.state_machine.can_transition_to(&state)
+  }
+
   /// Check if agent has an active path
   pub fn has_path(&self) -> bool {
     self
@@ -135,31 +221,81 @@ impl NavAgent {
       .unwrap_or(0.0)
   }
 
-  /// Cancel current navigation
+  /// Cancel current navigation and return to Idle state.
+  ///
+  /// This always succeeds regardless of current state.
   pub fn stop(&mut self) {
     self.current_path = None;
-    self.state = NavAgentState::Idle;
+    // Force transition to Idle (always valid from any state)
+    self
+      .state_machine
+      .force_transition(NavAgentState::Idle)
+      .ok();
     self.pathfinding_request = None;
   }
 
-  /// Set a new path to follow
+  /// Begin computing a path to a target.
+  ///
+  /// Returns `true` if the transition was valid, `false` otherwise.
+  pub fn start_computing(&mut self) -> bool {
+    self
+      .state_machine
+      .transition_to(NavAgentState::Computing)
+      .is_ok()
+  }
+
+  /// Set a new path to follow, transitioning to Moving state.
+  ///
+  /// This will transition from Computing or Idle to Moving.
   pub fn set_path(&mut self, path: Path) {
     self.current_path = Some(path);
-    self.state = NavAgentState::Moving;
+    // Try normal transition first, fall back to force if needed
+    if self
+      .state_machine
+      .transition_to(NavAgentState::Moving)
+      .is_err()
+    {
+      self
+        .state_machine
+        .force_transition(NavAgentState::Moving)
+        .ok();
+    }
     self.pathfinding_request = None;
   }
 
-  /// Mark navigation as failed
-  pub fn fail(&mut self) {
+  /// Mark navigation as failed.
+  ///
+  /// Returns `true` if the transition was valid (from Computing or Moving).
+  pub fn fail(&mut self) -> bool {
     self.current_path = None;
-    self.state = NavAgentState::Failed;
     self.pathfinding_request = None;
+    self
+      .state_machine
+      .transition_to(NavAgentState::Failed)
+      .is_ok()
   }
 
-  /// Mark navigation as arrived
-  pub fn arrive(&mut self) {
-    self.state = NavAgentState::Arrived;
+  /// Mark navigation as arrived at destination.
+  ///
+  /// Returns `true` if the transition was valid (from Moving).
+  pub fn arrive(&mut self) -> bool {
     self.pathfinding_request = None;
+    self
+      .state_machine
+      .transition_to(NavAgentState::Arrived)
+      .is_ok()
+  }
+
+  /// Update the state machine timing (call once per frame).
+  ///
+  /// This updates `time_in_state` and clears `just_entered`/`just_exited` flags.
+  pub fn update(&mut self, dt: f32) {
+    self.state_machine.update(dt);
+  }
+
+  /// Get access to the underlying state machine for advanced usage.
+  pub fn state_machine(&self) -> &StateMachine<NavAgentState> {
+    &self.state_machine
   }
 }
 
@@ -261,7 +397,7 @@ mod tests {
   fn nav_agent_creation() {
     let agent = NavAgent::new(150.0);
     assert_eq!(agent.speed, 150.0);
-    assert_eq!(agent.state, NavAgentState::Idle);
+    assert_eq!(agent.state(), NavAgentState::Idle);
     assert!(!agent.has_path());
   }
 
@@ -295,12 +431,65 @@ mod tests {
   #[test]
   fn nav_agent_stop() {
     let mut agent = NavAgent::new(100.0);
-    agent.state = NavAgentState::Moving;
+    // Use set_path to transition to Moving (creates a minimal path)
+    agent.set_path(Path::empty());
 
     agent.stop();
 
-    assert_eq!(agent.state, NavAgentState::Idle);
+    assert_eq!(agent.state(), NavAgentState::Idle);
     assert!(agent.current_path.is_none());
+  }
+
+  #[test]
+  fn nav_agent_state_transitions() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Start idle
+    assert_eq!(agent.state(), NavAgentState::Idle);
+
+    // Can transition to Computing
+    assert!(agent.start_computing());
+    assert_eq!(agent.state(), NavAgentState::Computing);
+
+    // Can fail from Computing
+    assert!(agent.fail());
+    assert_eq!(agent.state(), NavAgentState::Failed);
+
+    // Can stop from Failed (goes to Idle)
+    agent.stop();
+    assert_eq!(agent.state(), NavAgentState::Idle);
+
+    // Can set path to go directly to Moving
+    agent.set_path(Path::empty());
+    assert_eq!(agent.state(), NavAgentState::Moving);
+
+    // Can arrive from Moving
+    assert!(agent.arrive());
+    assert_eq!(agent.state(), NavAgentState::Arrived);
+  }
+
+  #[test]
+  fn nav_agent_invalid_transitions() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Can't arrive from Idle (not a valid transition)
+    assert!(!agent.arrive());
+    assert_eq!(agent.state(), NavAgentState::Idle);
+
+    // Can't fail from Idle
+    assert!(!agent.fail());
+    assert_eq!(agent.state(), NavAgentState::Idle);
+  }
+
+  #[test]
+  fn nav_agent_time_tracking() {
+    let mut agent = NavAgent::new(100.0);
+
+    agent.update(0.5);
+    assert!((agent.time_in_state() - 0.5).abs() < 0.001);
+
+    agent.start_computing();
+    assert_eq!(agent.time_in_state(), 0.0); // Reset on transition
   }
 
   #[test]
@@ -337,5 +526,372 @@ mod tests {
   fn nav_agent_default() {
     let agent = NavAgent::default();
     assert_eq!(agent.speed, 100.0);
+  }
+
+  // =========================================================================
+  // Extensive State Machine Tests
+  // =========================================================================
+
+  #[test]
+  fn nav_agent_full_navigation_cycle() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Start idle
+    assert_eq!(agent.state(), NavAgentState::Idle);
+
+    // Begin computing path
+    assert!(agent.start_computing());
+    assert_eq!(agent.state(), NavAgentState::Computing);
+
+    // Path found, start moving
+    agent.set_path(Path::empty());
+    assert_eq!(agent.state(), NavAgentState::Moving);
+
+    // Arrive at destination
+    assert!(agent.arrive());
+    assert_eq!(agent.state(), NavAgentState::Arrived);
+
+    // Ready for new target (back to idle)
+    agent.stop();
+    assert_eq!(agent.state(), NavAgentState::Idle);
+  }
+
+  #[test]
+  fn nav_agent_computing_to_failed_to_retry() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Start computing
+    assert!(agent.start_computing());
+    assert_eq!(agent.state(), NavAgentState::Computing);
+
+    // No path found
+    assert!(agent.fail());
+    assert_eq!(agent.state(), NavAgentState::Failed);
+
+    // Retry computing (Failed -> Computing is valid)
+    assert!(agent.start_computing());
+    assert_eq!(agent.state(), NavAgentState::Computing);
+
+    // This time path found
+    agent.set_path(Path::empty());
+    assert_eq!(agent.state(), NavAgentState::Moving);
+  }
+
+  #[test]
+  fn nav_agent_moving_blocked_recovery() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Get to moving state
+    agent.set_path(Path::empty());
+    assert_eq!(agent.state(), NavAgentState::Moving);
+
+    // Path gets blocked
+    assert!(agent.fail());
+    assert_eq!(agent.state(), NavAgentState::Failed);
+
+    // Recover by going back to idle
+    agent.stop();
+    assert_eq!(agent.state(), NavAgentState::Idle);
+
+    // Or recover by retrying
+    agent.set_path(Path::empty());
+    assert!(agent.fail());
+    assert!(agent.start_computing());
+    assert_eq!(agent.state(), NavAgentState::Computing);
+  }
+
+  #[test]
+  fn nav_agent_arrived_to_new_target() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Complete a navigation
+    agent.set_path(Path::empty());
+    agent.arrive();
+    assert_eq!(agent.state(), NavAgentState::Arrived);
+
+    // Immediately start computing for new target (Arrived -> Computing)
+    assert!(agent.start_computing());
+    assert_eq!(agent.state(), NavAgentState::Computing);
+  }
+
+  #[test]
+  fn nav_agent_just_entered_flag() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Just created - should be just_entered
+    assert!(agent.just_entered_state());
+
+    // After update, flag should be cleared
+    agent.update(0.016);
+    assert!(!agent.just_entered_state());
+
+    // Transition to Computing
+    agent.start_computing();
+    assert!(agent.just_entered_state());
+
+    // After update, cleared again
+    agent.update(0.016);
+    assert!(!agent.just_entered_state());
+  }
+
+  #[test]
+  fn nav_agent_just_exited_flag() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Just created - should not be just_exited
+    assert!(!agent.just_exited_state());
+
+    // Transition - should set just_exited
+    agent.start_computing();
+    assert!(agent.just_exited_state());
+
+    // After update, cleared
+    agent.update(0.016);
+    assert!(!agent.just_exited_state());
+  }
+
+  #[test]
+  fn nav_agent_previous_state_tracking() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Initially no previous state
+    assert!(agent.previous_state().is_none());
+
+    // Transition to Computing
+    agent.start_computing();
+    assert_eq!(agent.previous_state(), Some(NavAgentState::Idle));
+
+    // Transition to Moving
+    agent.set_path(Path::empty());
+    assert_eq!(agent.previous_state(), Some(NavAgentState::Computing));
+
+    // Transition to Arrived
+    agent.arrive();
+    assert_eq!(agent.previous_state(), Some(NavAgentState::Moving));
+  }
+
+  #[test]
+  fn nav_agent_can_transition_to_from_idle() {
+    let agent = NavAgent::new(100.0);
+
+    // From Idle, can go to Computing or Moving
+    assert!(agent.can_transition_to(NavAgentState::Computing));
+    assert!(agent.can_transition_to(NavAgentState::Moving));
+
+    // Cannot go to Arrived or Failed from Idle
+    assert!(!agent.can_transition_to(NavAgentState::Arrived));
+    assert!(!agent.can_transition_to(NavAgentState::Failed));
+
+    // Cannot transition to same state
+    assert!(!agent.can_transition_to(NavAgentState::Idle));
+  }
+
+  #[test]
+  fn nav_agent_can_transition_to_from_computing() {
+    let mut agent = NavAgent::new(100.0);
+    agent.start_computing();
+
+    // From Computing, can go to Moving or Failed
+    assert!(agent.can_transition_to(NavAgentState::Moving));
+    assert!(agent.can_transition_to(NavAgentState::Failed));
+
+    // Cannot go to Idle or Arrived from Computing
+    assert!(!agent.can_transition_to(NavAgentState::Idle));
+    assert!(!agent.can_transition_to(NavAgentState::Arrived));
+  }
+
+  #[test]
+  fn nav_agent_can_transition_to_from_moving() {
+    let mut agent = NavAgent::new(100.0);
+    agent.set_path(Path::empty());
+
+    // From Moving, can go to Arrived or Failed
+    assert!(agent.can_transition_to(NavAgentState::Arrived));
+    assert!(agent.can_transition_to(NavAgentState::Failed));
+
+    // Cannot go to Idle or Computing from Moving
+    assert!(!agent.can_transition_to(NavAgentState::Idle));
+    assert!(!agent.can_transition_to(NavAgentState::Computing));
+  }
+
+  #[test]
+  fn nav_agent_can_transition_to_from_arrived() {
+    let mut agent = NavAgent::new(100.0);
+    agent.set_path(Path::empty());
+    agent.arrive();
+
+    // From Arrived, can go to Idle or Computing
+    assert!(agent.can_transition_to(NavAgentState::Idle));
+    assert!(agent.can_transition_to(NavAgentState::Computing));
+
+    // Cannot go to Moving or Failed from Arrived
+    assert!(!agent.can_transition_to(NavAgentState::Moving));
+    assert!(!agent.can_transition_to(NavAgentState::Failed));
+  }
+
+  #[test]
+  fn nav_agent_can_transition_to_from_failed() {
+    let mut agent = NavAgent::new(100.0);
+    agent.start_computing();
+    agent.fail();
+
+    // From Failed, can go to Idle or Computing
+    assert!(agent.can_transition_to(NavAgentState::Idle));
+    assert!(agent.can_transition_to(NavAgentState::Computing));
+
+    // Cannot go to Moving or Arrived from Failed
+    assert!(!agent.can_transition_to(NavAgentState::Moving));
+    assert!(!agent.can_transition_to(NavAgentState::Arrived));
+  }
+
+  #[test]
+  fn nav_agent_stop_from_any_state() {
+    // Test stop from Idle
+    let mut agent = NavAgent::new(100.0);
+    agent.stop();
+    assert_eq!(agent.state(), NavAgentState::Idle);
+
+    // Test stop from Computing
+    let mut agent = NavAgent::new(100.0);
+    agent.start_computing();
+    agent.stop();
+    assert_eq!(agent.state(), NavAgentState::Idle);
+
+    // Test stop from Moving
+    let mut agent = NavAgent::new(100.0);
+    agent.set_path(Path::empty());
+    agent.stop();
+    assert_eq!(agent.state(), NavAgentState::Idle);
+
+    // Test stop from Arrived
+    let mut agent = NavAgent::new(100.0);
+    agent.set_path(Path::empty());
+    agent.arrive();
+    agent.stop();
+    assert_eq!(agent.state(), NavAgentState::Idle);
+
+    // Test stop from Failed
+    let mut agent = NavAgent::new(100.0);
+    agent.start_computing();
+    agent.fail();
+    agent.stop();
+    assert_eq!(agent.state(), NavAgentState::Idle);
+  }
+
+  #[test]
+  fn nav_agent_time_accumulates_correctly() {
+    let mut agent = NavAgent::new(100.0);
+
+    agent.update(0.1);
+    agent.update(0.2);
+    agent.update(0.3);
+
+    assert!((agent.time_in_state() - 0.6).abs() < 0.001);
+  }
+
+  #[test]
+  fn nav_agent_time_resets_on_all_transitions() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Accumulate time in Idle
+    agent.update(1.0);
+    assert!((agent.time_in_state() - 1.0).abs() < 0.001);
+
+    // Transition to Computing - time should reset
+    agent.start_computing();
+    assert_eq!(agent.time_in_state(), 0.0);
+
+    // Accumulate time in Computing
+    agent.update(0.5);
+    assert!((agent.time_in_state() - 0.5).abs() < 0.001);
+
+    // Transition to Moving - time should reset
+    agent.set_path(Path::empty());
+    assert_eq!(agent.time_in_state(), 0.0);
+
+    // Accumulate time in Moving
+    agent.update(0.3);
+    assert!((agent.time_in_state() - 0.3).abs() < 0.001);
+
+    // Transition to Arrived - time should reset
+    agent.arrive();
+    assert_eq!(agent.time_in_state(), 0.0);
+  }
+
+  #[test]
+  fn nav_agent_state_machine_access() {
+    let agent = NavAgent::new(100.0);
+
+    // Can access underlying state machine
+    let sm = agent.state_machine();
+    assert_eq!(sm.current(), &NavAgentState::Idle);
+    assert!(sm.just_entered);
+  }
+
+  #[test]
+  fn nav_agent_set_path_clears_pathfinding_request() {
+    let mut agent = NavAgent::new(100.0);
+    agent.pathfinding_request = Some(42);
+
+    agent.set_path(Path::empty());
+
+    assert!(agent.pathfinding_request.is_none());
+  }
+
+  #[test]
+  fn nav_agent_fail_clears_path_and_request() {
+    let mut agent = NavAgent::new(100.0);
+    agent.set_path(Path::empty());
+    agent.pathfinding_request = Some(42);
+
+    agent.fail();
+
+    assert!(agent.current_path.is_none());
+    assert!(agent.pathfinding_request.is_none());
+  }
+
+  #[test]
+  fn nav_agent_stop_clears_everything() {
+    let mut agent = NavAgent::new(100.0);
+    agent.set_path(Path::empty());
+    agent.pathfinding_request = Some(42);
+
+    agent.stop();
+
+    assert!(agent.current_path.is_none());
+    assert!(agent.pathfinding_request.is_none());
+    assert_eq!(agent.state(), NavAgentState::Idle);
+  }
+
+  #[test]
+  fn nav_agent_direct_path_from_idle() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Can set path directly from Idle (skips Computing)
+    agent.set_path(Path::empty());
+
+    assert_eq!(agent.state(), NavAgentState::Moving);
+    assert_eq!(agent.previous_state(), Some(NavAgentState::Idle));
+  }
+
+  #[test]
+  fn nav_agent_flags_persist_until_update() {
+    let mut agent = NavAgent::new(100.0);
+
+    // Transition
+    agent.start_computing();
+
+    // Flags should be set
+    assert!(agent.just_entered_state());
+    assert!(agent.just_exited_state());
+
+    // Check multiple times - still set until update
+    assert!(agent.just_entered_state());
+    assert!(agent.just_exited_state());
+
+    // After update - cleared
+    agent.update(0.016);
+    assert!(!agent.just_entered_state());
+    assert!(!agent.just_exited_state());
   }
 }

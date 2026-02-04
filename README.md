@@ -73,6 +73,7 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **Scene Management** — Stack-based scenes with transitions
 - **Event Bus** — Decoupled publish-subscribe communication
 - **Object Pooling** — Pre-allocated entity pools for bullets, particles, effects
+- **State Machines** — Generic FSM and state stack for player states, AI, menus
 
 ### Rendering
 - **Sprites** — GPU-batched rendering with z-ordering and per-sprite shaders
