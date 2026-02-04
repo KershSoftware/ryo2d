@@ -234,41 +234,50 @@ impl RapierPhysicsWorld {
     let body_handle = self.rigid_body_set.insert(body);
 
     // Calculate collider offset in meters
-    // If the user explicitly set an offset via with_offset(), use that directly.
-    // Otherwise, auto-center based on pivot point.
+    // Priority:
+    // 1. centered_in() - center within specified bounds using pivot
+    // 2. with_offset() - use explicit offset directly
+    // 3. Auto-center based on collider size and pivot
     let user_set_offset = collider.offset_x != 0.0 || collider.offset_y != 0.0;
 
-    let (offset_x_meters, offset_y_meters) = if user_set_offset {
-      // User explicitly positioned the collider - use their offset directly
-      (
-        collider.offset_x / PIXELS_PER_METER,
-        collider.offset_y / PIXELS_PER_METER,
-      )
-    } else {
-      // No explicit offset - auto-center based on pivot
-      // Rapier colliders are centered on their origin, so we need to offset
-      // based on where the sprite's pivot is:
-      // - pivot (0.5, 0.5) = center: no offset needed (collider already centered)
-      // - pivot (0.0, 0.0) = top-left: offset by half-size to center
-      match collider.shape {
-        ColliderShape::Box { width, height } => {
-          let pivot_offset_x = (0.5 - transform.pivot_x) * width;
-          let pivot_offset_y = (0.5 - transform.pivot_y) * height;
-          (
-            pivot_offset_x / PIXELS_PER_METER,
-            pivot_offset_y / PIXELS_PER_METER,
-          )
+    let (offset_x_meters, offset_y_meters) =
+      if let Some((bounds_w, bounds_h)) = collider.center_in_bounds {
+        // centered_in() was used - center within the specified bounds
+        // This accounts for pivot, so it works for any pivot setting
+        let offset_x = (0.5 - transform.pivot_x) * bounds_w;
+        let offset_y = (0.5 - transform.pivot_y) * bounds_h;
+        (offset_x / PIXELS_PER_METER, offset_y / PIXELS_PER_METER)
+      } else if user_set_offset {
+        // User explicitly positioned the collider via with_offset() - use directly
+        (
+          collider.offset_x / PIXELS_PER_METER,
+          collider.offset_y / PIXELS_PER_METER,
+        )
+      } else {
+        // No explicit positioning - auto-center based on collider size and pivot
+        // Rapier colliders are centered on their origin, so we need to offset
+        // based on where the sprite's pivot is:
+        // - pivot (0.5, 0.5) = center: no offset needed (collider already centered)
+        // - pivot (0.0, 0.0) = top-left: offset by half-size to center
+        match collider.shape {
+          ColliderShape::Box { width, height } => {
+            let pivot_offset_x = (0.5 - transform.pivot_x) * width;
+            let pivot_offset_y = (0.5 - transform.pivot_y) * height;
+            (
+              pivot_offset_x / PIXELS_PER_METER,
+              pivot_offset_y / PIXELS_PER_METER,
+            )
+          }
+          ColliderShape::Circle { radius } => {
+            let pivot_offset_x = (0.5 - transform.pivot_x) * radius * 2.0;
+            let pivot_offset_y = (0.5 - transform.pivot_y) * radius * 2.0;
+            (
+              pivot_offset_x / PIXELS_PER_METER,
+              pivot_offset_y / PIXELS_PER_METER,
+            )
+          }
         }
-        ColliderShape::Circle { radius } => {
-          let pivot_offset_x = (0.5 - transform.pivot_x) * radius * 2.0;
-          let pivot_offset_y = (0.5 - transform.pivot_y) * radius * 2.0;
-          (
-            pivot_offset_x / PIXELS_PER_METER,
-            pivot_offset_y / PIXELS_PER_METER,
-          )
-        }
-      }
-    };
+      };
 
     // Create Rapier collider based on shape
     // All colliders get COLLISION_EVENTS enabled to support event queries
@@ -1092,6 +1101,138 @@ mod tests {
       "Auto-centered collider Y should be ~{}, got {}",
       expected_y,
       collider_y_pixels
+    );
+  }
+
+  /// Test centered_in() with top-left pivot (most common case)
+  #[test]
+  fn centered_in_with_top_left_pivot() {
+    let mut physics = RapierPhysicsWorld::new();
+    let mut world = World::new();
+
+    // 64x64 sprite with top-left pivot, smaller 20px radius collider
+    // centered_in(64, 64) should center the collider at sprite center
+    let entity = world.spawn((
+      Transform::new(100.0, 100.0), // Default pivot (0, 0) = top-left
+      RigidBody::new(),
+      Collider::circle_collider(20.0).centered_in(64.0, 64.0),
+    ));
+
+    {
+      let transform = world.get_component::<Transform>(entity).unwrap();
+      let rb = world.get_component::<RigidBody>(entity).unwrap();
+      let col = world.get_component::<Collider>(entity).unwrap();
+      physics.register_entity(entity, &transform, None, &rb, &col);
+    }
+
+    let rapier_handle = physics.entity_to_collider.get(&entity).unwrap();
+    let rapier_collider = physics.collider_set.get(*rapier_handle).unwrap();
+    let translation = rapier_collider.position().translation;
+
+    let collider_x_pixels = translation.x * PIXELS_PER_METER;
+    let collider_y_pixels = translation.y * PIXELS_PER_METER;
+
+    // With top-left pivot (0, 0) and centered_in(64, 64):
+    // offset = (0.5 - 0) * 64 = 32
+    // collider center = 100 + 32 = 132
+    let expected = 100.0 + 32.0;
+
+    assert!(
+      (collider_x_pixels - expected).abs() < 1.0,
+      "centered_in X should be ~{}, got {}",
+      expected,
+      collider_x_pixels
+    );
+    assert!(
+      (collider_y_pixels - expected).abs() < 1.0,
+      "centered_in Y should be ~{}, got {}",
+      expected,
+      collider_y_pixels
+    );
+  }
+
+  /// Test centered_in() with center pivot
+  #[test]
+  fn centered_in_with_center_pivot() {
+    let mut physics = RapierPhysicsWorld::new();
+    let mut world = World::new();
+
+    // 64x64 sprite with center pivot, smaller collider
+    let entity = world.spawn((
+      Transform::new(100.0, 100.0).with_pivot_center(), // pivot (0.5, 0.5)
+      RigidBody::new(),
+      Collider::circle_collider(20.0).centered_in(64.0, 64.0),
+    ));
+
+    {
+      let transform = world.get_component::<Transform>(entity).unwrap();
+      let rb = world.get_component::<RigidBody>(entity).unwrap();
+      let col = world.get_component::<Collider>(entity).unwrap();
+      physics.register_entity(entity, &transform, None, &rb, &col);
+    }
+
+    let rapier_handle = physics.entity_to_collider.get(&entity).unwrap();
+    let rapier_collider = physics.collider_set.get(*rapier_handle).unwrap();
+    let translation = rapier_collider.position().translation;
+
+    let collider_x_pixels = translation.x * PIXELS_PER_METER;
+    let collider_y_pixels = translation.y * PIXELS_PER_METER;
+
+    // With center pivot (0.5, 0.5) and centered_in(64, 64):
+    // offset = (0.5 - 0.5) * 64 = 0
+    // collider center = 100 + 0 = 100 (same as transform)
+    let expected = 100.0;
+
+    assert!(
+      (collider_x_pixels - expected).abs() < 1.0,
+      "centered_in with center pivot X should be ~{}, got {}",
+      expected,
+      collider_x_pixels
+    );
+    assert!(
+      (collider_y_pixels - expected).abs() < 1.0,
+      "centered_in with center pivot Y should be ~{}, got {}",
+      expected,
+      collider_y_pixels
+    );
+  }
+
+  /// Test that centered_in() takes precedence over with_offset()
+  #[test]
+  fn centered_in_takes_precedence_over_offset() {
+    let mut physics = RapierPhysicsWorld::new();
+    let mut world = World::new();
+
+    // Both centered_in and with_offset set - centered_in should win
+    let entity = world.spawn((
+      Transform::new(100.0, 100.0),
+      RigidBody::new(),
+      Collider::circle_collider(20.0)
+        .with_offset(999.0, 999.0) // This should be ignored
+        .centered_in(64.0, 64.0), // This should be used
+    ));
+
+    {
+      let transform = world.get_component::<Transform>(entity).unwrap();
+      let rb = world.get_component::<RigidBody>(entity).unwrap();
+      let col = world.get_component::<Collider>(entity).unwrap();
+      physics.register_entity(entity, &transform, None, &rb, &col);
+    }
+
+    let rapier_handle = physics.entity_to_collider.get(&entity).unwrap();
+    let rapier_collider = physics.collider_set.get(*rapier_handle).unwrap();
+    let translation = rapier_collider.position().translation;
+
+    let collider_x_pixels = translation.x * PIXELS_PER_METER;
+
+    // Should use centered_in(64, 64) calculation, not with_offset(999, 999)
+    let expected = 100.0 + 32.0; // not 100 + 999
+
+    assert!(
+      (collider_x_pixels - expected).abs() < 1.0,
+      "centered_in should take precedence, expected ~{}, got {}",
+      expected,
+      collider_x_pixels
     );
   }
 }

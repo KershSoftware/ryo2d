@@ -291,7 +291,7 @@ impl GameScene {
         .with_gravity_scale(0.0)
         .with_drag(0.0), // CCD prevents tunneling
       Collider::circle_collider(BALL_SIZE / 2.0)
-        .with_offset(BALL_SIZE / 2.0, BALL_SIZE / 2.0)
+        .centered_in(BALL_SIZE, BALL_SIZE)
         .with_restitution(1.0) // Perfect bounce
         .with_friction(0.0), // No friction
       Renderable::sprite(SpriteHandle::from_sprite(
@@ -327,7 +327,7 @@ impl GameScene {
         .with_gravity_scale(0.0)
         .with_drag(0.0), // CCD prevents tunneling
       Collider::circle_collider(BALL_SIZE / 2.0)
-        .with_offset(BALL_SIZE / 2.0, BALL_SIZE / 2.0)
+        .centered_in(BALL_SIZE, BALL_SIZE)
         .with_restitution(1.0)
         .with_friction(0.0),
       Renderable::sprite(SpriteHandle::from_sprite(

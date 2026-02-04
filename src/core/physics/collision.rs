@@ -188,7 +188,7 @@ pub enum ColliderShape {
 pub struct Collider {
   /// The shape of this collider
   pub shape: ColliderShape,
-  /// Offset from the entity's Transform position
+  /// Offset from the entity's Transform position (used when `center_in_bounds` is None)
   pub offset_x: f32,
   pub offset_y: f32,
   /// Whether this collider is a trigger (no physics response, just events)
@@ -201,6 +201,10 @@ pub struct Collider {
   pub restitution: f32,
   /// Friction: 0.0 = frictionless, higher = more drag
   pub friction: f32,
+  /// If set, center the collider within these bounds (width, height).
+  /// The actual offset is calculated at physics registration time using the transform's pivot.
+  /// This takes precedence over `offset_x`/`offset_y`.
+  pub center_in_bounds: Option<(f32, f32)>,
 }
 
 impl Collider {
@@ -215,6 +219,7 @@ impl Collider {
       mask: u32::MAX,   // Collide with everything by default
       restitution: 0.5, // Moderate bounce
       friction: 0.3,    // Moderate friction
+      center_in_bounds: None,
     }
   }
 
@@ -229,10 +234,39 @@ impl Collider {
       mask: u32::MAX,
       restitution: 0.5, // Moderate bounce
       friction: 0.3,    // Moderate friction
+      center_in_bounds: None,
     }
   }
 
-  /// Set the offset from entity position
+  /// Center this collider within the given bounds (typically sprite dimensions).
+  ///
+  /// This is the recommended way to position colliders on sprites. The actual offset
+  /// is calculated at physics registration time using the transform's pivot, so it
+  /// works correctly regardless of whether your sprite uses top-left or center pivot.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Center a smaller hitbox circle within a 64x64 sprite
+  /// Collider::circle_collider(20.0)
+  ///   .centered_in(64.0, 64.0)
+  ///
+  /// // Center a box collider within a 32x48 sprite
+  /// Collider::box_collider(28.0, 44.0)
+  ///   .centered_in(32.0, 48.0)
+  /// ```
+  pub fn centered_in(mut self, width: f32, height: f32) -> Self {
+    self.center_in_bounds = Some((width, height));
+    self
+  }
+
+  /// Set a raw offset from the entity's transform position.
+  ///
+  /// **Prefer `centered_in()` for most cases** - it handles pivot correctly.
+  ///
+  /// Use this only when you need precise manual control over collider placement,
+  /// such as positioning a hitbox to one side of a character (e.g., sword swing).
+  /// This offset is used directly without any pivot adjustment.
   pub fn with_offset(mut self, x: f32, y: f32) -> Self {
     self.offset_x = x;
     self.offset_y = y;

@@ -48,7 +48,7 @@ impl DebugScene {
       Transform::new(BIRD_START_X, BIRD_START_Y),
       Velocity::new(0.0, 0.0),
       RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling
-      Collider::circle_collider(BIRD_SIZE / 2.0).with_offset(BIRD_SIZE / 2.0, BIRD_SIZE / 2.0),
+      Collider::circle_collider(BIRD_SIZE / 2.0).centered_in(BIRD_SIZE, BIRD_SIZE),
       Renderable::sprite(bird_handle).with_z_order(10),
     ));
     self.bird = Some(bird);

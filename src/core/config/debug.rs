@@ -380,19 +380,48 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
       continue;
     };
 
+    // Calculate collider center position
+    // Priority matches physics (rapier.rs):
+    // 1. centered_in() - center within specified bounds using pivot
+    // 2. with_offset() - use explicit offset directly
+    // 3. Auto-center based on collider size and pivot
+    let user_set_offset = collider.offset_x != 0.0 || collider.offset_y != 0.0;
+
+    let (offset_x, offset_y) = if let Some((bounds_w, bounds_h)) = collider.center_in_bounds {
+      // centered_in() was used - center within specified bounds
+      let offset_x = (0.5 - transform.pivot_x) * bounds_w;
+      let offset_y = (0.5 - transform.pivot_y) * bounds_h;
+      (offset_x, offset_y)
+    } else if user_set_offset {
+      // User explicitly positioned the collider via with_offset()
+      (collider.offset_x, collider.offset_y)
+    } else {
+      // Auto-center based on collider size and pivot
+      match &collider.shape {
+        ColliderShape::Box {
+          width: box_w,
+          height: box_h,
+        } => {
+          let pivot_offset_x = (0.5 - transform.pivot_x) * box_w;
+          let pivot_offset_y = (0.5 - transform.pivot_y) * box_h;
+          (pivot_offset_x, pivot_offset_y)
+        }
+        ColliderShape::Circle { radius } => {
+          let pivot_offset_x = (0.5 - transform.pivot_x) * radius * 2.0;
+          let pivot_offset_y = (0.5 - transform.pivot_y) * radius * 2.0;
+          (pivot_offset_x, pivot_offset_y)
+        }
+      }
+    };
+
+    let center_x = transform.x + offset_x * transform.scale_x;
+    let center_y = transform.y + offset_y * transform.scale_y;
+
     match &collider.shape {
       ColliderShape::Box {
         width: box_w,
         height: box_h,
       } => {
-        // Calculate pivot-aware collider center position (matching Rapier registration)
-        // For center pivot (0.5, 0.5): collider center = transform position
-        // For top-left pivot (0, 0): collider center = transform + half_size
-        let pivot_offset_x = (0.5 - transform.pivot_x) * box_w;
-        let pivot_offset_y = (0.5 - transform.pivot_y) * box_h;
-        let center_x = transform.x + (collider.offset_x + pivot_offset_x) * transform.scale_x;
-        let center_y = transform.y + (collider.offset_y + pivot_offset_y) * transform.scale_y;
-
         // Apply transform scale AND camera zoom to collider dimensions
         let scaled_w = (*box_w * transform.scale_x * camera.zoom) as i32;
         let scaled_h = (*box_h * transform.scale_y * camera.zoom) as i32;
@@ -414,12 +443,6 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
         );
       }
       ColliderShape::Circle { radius } => {
-        // Calculate pivot-aware center position
-        let pivot_offset_x = (0.5 - transform.pivot_x) * radius * 2.0;
-        let pivot_offset_y = (0.5 - transform.pivot_y) * radius * 2.0;
-        let center_x = transform.x + (collider.offset_x + pivot_offset_x) * transform.scale_x;
-        let center_y = transform.y + (collider.offset_y + pivot_offset_y) * transform.scale_y;
-
         let (screen_x, screen_y) = camera.world_to_screen(center_x, center_y);
 
         // Apply average scale for circle (circles don't scale non-uniformly well)

@@ -58,7 +58,7 @@ impl GameScene {
       Velocity::zero(),
       RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling through pipes
       // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
-      Collider::circle_collider(BIRD_SIZE * 0.35).with_offset(BIRD_SIZE / 2.0, BIRD_SIZE / 2.0),
+      Collider::circle_collider(BIRD_SIZE * 0.35).centered_in(BIRD_SIZE, BIRD_SIZE),
       Renderable::sprite(initial_sprite).with_z_order(10),
       controller,
       Bird::new(),
