@@ -130,11 +130,11 @@ At 60 FPS, this adds ~24 microseconds/second (**0.002% of frame time**). Safe to
 - **Benchmarking**: Disable for cleaner measurements
 - **Console-sensitive environments**: Disable to reduce log noise
 
-## Advanced: Puffin Hierarchical Profiling
+## In-Game Profiler Window (F10)
 
-For detailed hierarchical profiling with a real-time flamegraph viewer, Ryo2D supports [puffin](https://github.com/EmbarkStudios/puffin). This provides more detailed call-stack information than the built-in frame timing overlay.
+Ryo2D includes a built-in profiler window that displays a real-time flamegraph directly in your game. Press **F10** to toggle it (requires the `profiler` feature).
 
-### Enabling Puffin
+### Enabling the Profiler
 
 **Recommended: Use the ryo2d CLI**
 
@@ -144,32 +144,56 @@ ryo2d dev --profiler
 ryo2d dev -p
 ```
 
-This automatically compiles with the `profiler` feature and enables the puffin server.
+This compiles with the `profiler` feature enabled.
 
 **Alternative: Ryo.toml configuration**
-
-For persistent profiler configuration, add to your `Ryo.toml`:
 
 ```toml
 [debug]
 puffin_profiler = true
 ```
 
-Then run with:
+Then run with `cargo run --features profiler`.
 
-```bash
-ryo2d dev
-# or: cargo run --features profiler
+### Using the Profiler Window
+
+Once running with the profiler feature, press **F10** to open the profiler window. The window shows:
+
+- **Real-time flamegraph** - Hierarchical view of where time is spent each frame
+- **Scope names** - Function/scope labels on each bar
+- **Frame duration** - Total frame time displayed in the header
+- **Pause/Resume** - Click the pause button to freeze the display for analysis
+
+**Controls:**
+- **Pause/Resume button** - Freeze the flamegraph to analyze a specific frame
+- **Hover** - See exact timing for each scope
+- The window can be opened/closed at any time without affecting your game
+
+### What You'll See
+
+The flamegraph displays nested scopes from the engine and your game code:
+
+```
+┌─────────────────────────────── ENGINE ────────────────────────────────┐
+│ ┌─────────── update ───────────┐ ┌─────── render ───────┐ ┌─present─┐ │
+│ │ ┌─physics─┐ ┌─game_logic─┐   │ │ ┌─sprites─┐ ┌─ui─┐   │ │         │ │
+│ │ │         │ │            │   │ │ │         │ │    │   │ │         │ │
 ```
 
-When enabled, the engine:
-1. Starts a puffin HTTP server on port 8585
-2. Instruments key engine systems (update, render, present, physics, scene transitions)
-3. Prints connection instructions to the console
+- **Wider bars** = more time spent
+- **Nested bars** = child scopes called within parent
+- **ENGINE** = top-level frame scope
 
-### Viewing Profile Data
+### Tips
 
-When using `ryo2d dev --profiler`, the CLI automatically launches `puffin_viewer` if installed.
+- Open the profiler when you notice frame drops to identify the cause
+- The profiler window itself has minimal overhead
+- Works alongside the F1 frame timing overlay for quick comparisons
+- Scope names update correctly even if you open the profiler mid-session
+
+## External Puffin Viewer
+
+For an external profiler window (useful for multi-monitor setups), you can use `puffin_viewer`:
 
 **First-time setup:**
 
@@ -177,18 +201,18 @@ When using `ryo2d dev --profiler`, the CLI automatically launches `puffin_viewer
 cargo install puffin_viewer
 ```
 
-After installation, `puffin_viewer` will auto-launch when you run `ryo2d dev --profiler`.
-
-**Manual launch** (if needed):
+**Launch manually:**
 
 ```bash
 puffin_viewer --url 127.0.0.1:8585
 ```
 
-The viewer shows:
-- **Hierarchical flamegraph** of where time is spent each frame
+When using `ryo2d dev --profiler`, the CLI automatically launches `puffin_viewer` if installed.
+
+The external viewer provides the same flamegraph visualization with additional features:
 - **Frame history** with timeline navigation
 - **Pause/resume** for inspecting specific frames
+- Runs in a separate window
 
 ### Instrumenting Your Own Code
 

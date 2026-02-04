@@ -12,8 +12,70 @@ During development, press these keys to toggle debug visualizations without rest
 | **F2** | Toggle collision boundaries (green outlines) |
 | **F3** | Toggle velocity vectors (cyan arrows) |
 | **F4** | Toggle origin points (yellow crosshairs) |
+| **F5** | Toggle borderless window mode |
+| **F9** | Toggle Logger window |
+| **F10** | Toggle Profiler window (requires `profiler` feature) |
 
 To disable these keys (e.g., for a shipped game), add `disable_debug_keys = true` to your `Ryo.toml`.
+
+## Logger Window (F9)
+
+The Logger window provides a real-time view of engine and game logs directly in your game. Press **F9** to toggle it.
+
+### Features
+
+- **Real-time log streaming** - See logs as they happen
+- **Log level filtering** - Filter by Error, Warn, Info, Debug, Trace
+- **Module filtering** - Filter logs by module name (e.g., "Physics", "Audio")
+- **Text selection** - Click and drag to select text
+- **Copy support** - Ctrl+C to copy selected text, right-click to copy entire line
+- **ISO timestamps** - Each entry shows timestamp and elapsed time since start
+- **Auto-scroll** - Automatically scrolls to new entries (toggleable)
+- **Catch-up** - Opening the logger late still shows all previous log entries
+
+### Log Levels
+
+| Level | Color | Use For |
+|-------|-------|---------|
+| **Error** | Red | Critical failures that need immediate attention |
+| **Warn** | Yellow | Potential issues that don't stop execution |
+| **Info** | White | General information about game state |
+| **Debug** | Cyan | Detailed debugging information |
+| **Trace** | Gray | Very verbose tracing (disabled by default) |
+
+### Filtering Logs
+
+Click the level buttons at the top of the logger window to show/hide specific log levels. Active filters are highlighted.
+
+Use the module filter to focus on specific systems:
+- Type a module name to filter (e.g., "Physics")
+- Clear the filter to see all modules
+
+### Logging from Your Game
+
+Use the logging macros from the prelude:
+
+```rust,ignore
+use ryo2d::prelude::*;
+
+fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    // Standard logging
+    engine_info!("Player position: {:?}", player_pos);
+    engine_warn!("Health low: {}", health);
+    engine_error!("Failed to load asset");
+
+    // Module-tagged logging (shows in module column)
+    engine_info!(module: "Combat", "Damage dealt: {}", damage);
+    engine_debug!(module: "AI", "Enemy state: {:?}", state);
+}
+```
+
+### Tips
+
+- Keep the logger open during development to catch warnings early
+- Use module tags to organize logs from different game systems
+- The logger has minimal performance impact when open
+- Logs persist in memory, so opening the logger late won't miss earlier messages
 
 ## Quick Start
 
