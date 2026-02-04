@@ -264,11 +264,7 @@ impl Trail2D {
 
     // Remove points that exceed lifetime
     if let Some(max_age) = self.lifetime {
-      while self
-        .points
-        .back()
-        .is_some_and(|point| point.age > max_age)
-      {
+      while self.points.back().is_some_and(|point| point.age > max_age) {
         self.points.pop_back();
       }
     }

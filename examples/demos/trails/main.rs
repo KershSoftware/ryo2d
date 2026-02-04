@@ -451,11 +451,21 @@ impl Scene for TrailsDemoScene {
     y += line_height + 10.0;
 
     // Controls
-    ui.draw_text("Space: Pause | R: Reset | +/-: Lifetime", 10.0, y, text_muted);
+    ui.draw_text(
+      "Space: Pause | R: Reset | +/-: Lifetime",
+      10.0,
+      y,
+      text_muted,
+    );
 
     // Paused indicator
     if self.paused {
-      ui.draw_text("PAUSED", self.screen_width / 2.0 - 30.0, self.screen_height / 2.0, Color::rgb(255, 255, 100));
+      ui.draw_text(
+        "PAUSED",
+        self.screen_width / 2.0 - 30.0,
+        self.screen_height / 2.0,
+        Color::rgb(255, 255, 100),
+      );
     }
   }
 }

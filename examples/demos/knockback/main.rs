@@ -112,7 +112,13 @@ impl KnockbackDemoScene {
   }
 
   /// Apply knockback to a specific column
-  fn knockback_column(&self, ctx: &mut SceneContext, column: usize, decay_rate: f32, accumulate: bool) {
+  fn knockback_column(
+    &self,
+    ctx: &mut SceneContext,
+    column: usize,
+    decay_rate: f32,
+    accumulate: bool,
+  ) {
     // Direction: push right
     let direction = Vec2::new(1.0, 0.0);
 
@@ -227,7 +233,9 @@ impl KnockbackDemoScene {
   fn update_flashes(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Process knockback events
     for event in ctx.events.read::<KnockbackStarted>() {
-      self.flash_states.insert(event.entity, FlashState { timer: 0.15 });
+      self
+        .flash_states
+        .insert(event.entity, FlashState { timer: 0.15 });
     }
 
     // Update flash timers
@@ -245,7 +253,11 @@ impl KnockbackDemoScene {
     }
 
     // Apply flash effect (tint white when flashing)
-    for &entity in self.simple_entities.iter().chain(self.physics_entities.iter()) {
+    for &entity in self
+      .simple_entities
+      .iter()
+      .chain(self.physics_entities.iter())
+    {
       if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(entity) {
         if self.flash_states.contains_key(&entity) {
           renderable.tint = Color::rgb(255, 255, 200); // Flash yellow-white
@@ -378,7 +390,12 @@ impl Scene for KnockbackDemoScene {
       50.0,
       text_muted,
     );
-    ui.draw_text("Up/Down: Force | R: Reset | ESC: Exit", 10.0, 70.0, text_muted);
+    ui.draw_text(
+      "Up/Down: Force | R: Reset | ESC: Exit",
+      10.0,
+      70.0,
+      text_muted,
+    );
 
     // Column labels
     let spacing_x = screen_w as f32 / 5.0;

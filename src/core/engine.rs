@@ -712,7 +712,8 @@ impl Engine {
       self.do_full_render_and_present();
 
       // Frame limit to target FPS (Windows doesn't enforce vsync on unfocused windows)
-      let target_frame_time = std::time::Duration::from_secs_f64(1.0 / self.config.target_fps as f64);
+      let target_frame_time =
+        std::time::Duration::from_secs_f64(1.0 / self.config.target_fps as f64);
       let elapsed = frame_start.elapsed();
       if elapsed < target_frame_time {
         std::thread::sleep(target_frame_time - elapsed);
@@ -875,26 +876,25 @@ impl Engine {
       let result = if has_gpu_sprites || has_trails || lighting_enabled {
         // Create callback closure that captures gpu, batch_collector, and trail_renderer
         let batch_collector = &self.batch_collector;
-        let gpu_callback = |queue: &wgpu::Queue,
-                            encoder: &mut wgpu::CommandEncoder,
-                            view: &wgpu::TextureView| {
-          // Render GPU sprites first
-          if has_gpu_sprites {
-            gpu.render_batches(queue, encoder, view, batch_collector);
-          }
-          // Render trails on top of sprites
-          if let Some(ref mut trails) = trail_renderer {
-            trails.render(
-              queue,
-              encoder,
-              view,
-              camera_pos,
-              camera_zoom,
-              time,
-              super::trail::TrailStyle::Solid,
-            );
-          }
-        };
+        let gpu_callback =
+          |queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
+            // Render GPU sprites first
+            if has_gpu_sprites {
+              gpu.render_batches(queue, encoder, view, batch_collector);
+            }
+            // Render trails on top of sprites
+            if let Some(ref mut trails) = trail_renderer {
+              trails.render(
+                queue,
+                encoder,
+                view,
+                camera_pos,
+                camera_zoom,
+                time,
+                super::trail::TrailStyle::Solid,
+              );
+            }
+          };
 
         // Create lighting callback if lighting is enabled
         if lighting_enabled {
@@ -1105,8 +1105,9 @@ impl Engine {
 
         // Apply color/alpha tweening to Renderable if targets are set
         if has_color
-          && let Some(mut renderable) =
-            self.world.get_component_mut::<super::ecs::Renderable>(entity)
+          && let Some(mut renderable) = self
+            .world
+            .get_component_mut::<super::ecs::Renderable>(entity)
         {
           if let Some(alpha) = tween.current_alpha() {
             renderable.alpha = alpha;
@@ -1131,9 +1132,7 @@ impl Engine {
 
     // Emit tween events
     for entity in tween_started_events {
-      self
-        .events
-        .emit(super::events::TweenStarted { entity });
+      self.events.emit(super::events::TweenStarted { entity });
     }
     for (entity, finished) in tween_completed_events {
       self
@@ -1161,7 +1160,9 @@ impl Engine {
       // Get transform and sequence together
       if let (Some(mut transform), Some(mut sequence)) = (
         self.world.get_component_mut::<Transform>(entity),
-        self.world.get_component_mut::<super::ecs::TweenSequence>(entity),
+        self
+          .world
+          .get_component_mut::<super::ecs::TweenSequence>(entity),
       ) {
         sequence.just_finished = false;
 
@@ -1180,8 +1181,9 @@ impl Engine {
 
           // Apply color/alpha to Renderable
           if has_color
-            && let Some(mut renderable) =
-              self.world.get_component_mut::<super::ecs::Renderable>(entity)
+            && let Some(mut renderable) = self
+              .world
+              .get_component_mut::<super::ecs::Renderable>(entity)
           {
             if let Some(alpha) = tween.current_alpha() {
               renderable.alpha = alpha;
@@ -1221,7 +1223,10 @@ impl Engine {
       }
 
       // Get knockback component
-      if let Some(mut knockback) = self.world.get_component_mut::<super::ecs::Knockback>(entity) {
+      if let Some(mut knockback) = self
+        .world
+        .get_component_mut::<super::ecs::Knockback>(entity)
+      {
         // Get velocity before update (to apply this frame)
         let (vel_x, vel_y) = knockback.current_velocity();
 
@@ -1239,8 +1244,9 @@ impl Engine {
         // Apply knockback displacement directly to Transform
         // This works for both simple and physics entities - knockback moves
         // the entity directly rather than going through velocity
-        if let Some(mut transform) =
-          self.world.get_component_mut::<super::ecs::Transform>(entity)
+        if let Some(mut transform) = self
+          .world
+          .get_component_mut::<super::ecs::Transform>(entity)
         {
           transform.x += vel_x * _dt;
           transform.y += vel_y * _dt;
@@ -1250,9 +1256,7 @@ impl Engine {
 
     // Emit knockback events
     for entity in knockback_started_events {
-      self
-        .events
-        .emit(super::events::KnockbackStarted { entity });
+      self.events.emit(super::events::KnockbackStarted { entity });
     }
     for entity in knockback_finished_events {
       self
@@ -1278,7 +1282,10 @@ impl Engine {
         .map(|t| (t.scale_x, t.scale_y));
 
       // Update squash/stretch component
-      if let Some(mut squash) = self.world.get_component_mut::<super::ecs::SquashStretch>(entity) {
+      if let Some(mut squash) = self
+        .world
+        .get_component_mut::<super::ecs::SquashStretch>(entity)
+      {
         // Capture base scale from transform if not already set
         if let Some((sx, sy)) = current_scale {
           squash.capture_base_scale(sx, sy);
@@ -1299,8 +1306,9 @@ impl Engine {
         let (scale_x, scale_y) = squash.current_scale();
 
         // Apply scale to transform
-        if let Some(mut transform) =
-          self.world.get_component_mut::<super::ecs::Transform>(entity)
+        if let Some(mut transform) = self
+          .world
+          .get_component_mut::<super::ecs::Transform>(entity)
         {
           transform.scale_x = scale_x;
           transform.scale_y = scale_y;
@@ -2078,16 +2086,16 @@ impl ApplicationHandler for Engine {
 
     // Create profiler window if puffin profiling is enabled
     #[cfg(feature = "profiler")]
-    if self.config.debug.puffin_profiler {
-      if let Some(ref renderer) = self.renderer {
-        self.profiler_window = super::profiler_window::ProfilerWindow::new(
-          event_loop,
-          renderer.device_arc(),
-          renderer.queue_arc(),
-          renderer.instance(),
-          renderer.adapter(),
-        );
-      }
+    if self.config.debug.puffin_profiler
+      && let Some(ref renderer) = self.renderer
+    {
+      self.profiler_window = super::profiler_window::ProfilerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        renderer.instance(),
+        renderer.adapter(),
+      );
     }
 
     // Call game init if not already initialized
@@ -2122,32 +2130,37 @@ impl ApplicationHandler for Engine {
   }
 
   #[allow(unused_variables)] // window_id used only when profiler feature is enabled
-  fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+  fn window_event(
+    &mut self,
+    event_loop: &ActiveEventLoop,
+    window_id: WindowId,
+    event: WindowEvent,
+  ) {
     // Check if this event is for the profiler window
     #[cfg(feature = "profiler")]
     {
-      if let Some(ref mut profiler) = self.profiler_window {
-        if window_id == profiler.window_id() {
-          // Handle profiler window events
-          match &event {
-            WindowEvent::CloseRequested => {
-              // Close profiler window but don't exit the app
-              self.profiler_window = None;
-              return;
-            }
-            WindowEvent::RedrawRequested => {
-              profiler.render();
-              return;
-            }
-            WindowEvent::Focused(focused) => {
-              // Track profiler window focus separately
-              self.profiler_window_focused = *focused;
-              return;
-            }
-            _ => {
-              profiler.handle_event(&event);
-              return;
-            }
+      if let Some(ref mut profiler) = self.profiler_window
+        && window_id == profiler.window_id()
+      {
+        // Handle profiler window events
+        match &event {
+          WindowEvent::CloseRequested => {
+            // Close profiler window but don't exit the app
+            self.profiler_window = None;
+            return;
+          }
+          WindowEvent::RedrawRequested => {
+            profiler.render();
+            return;
+          }
+          WindowEvent::Focused(focused) => {
+            // Track profiler window focus separately
+            self.profiler_window_focused = *focused;
+            return;
+          }
+          _ => {
+            profiler.handle_event(&event);
+            return;
           }
         }
       }
@@ -2697,10 +2710,10 @@ impl ApplicationHandler for Engine {
         // Render profiler window directly when game window has focus
         // (Windows won't deliver RedrawRequested to unfocused profiler window)
         #[cfg(feature = "profiler")]
-        if self.game_window_focused {
-          if let Some(ref mut profiler) = self.profiler_window {
-            profiler.render();
-          }
+        if self.game_window_focused
+          && let Some(ref mut profiler) = self.profiler_window
+        {
+          profiler.render();
         }
 
         // Calculate total frame time and FPS
@@ -2795,17 +2808,17 @@ impl ApplicationHandler for Engine {
 
     // Only request redraws for windows that have focus
     // (unfocused windows are handled manually in tick_frame to respect frame limiting)
-    if self.game_window_focused {
-      if let Some(window) = &self.window {
-        window.request_redraw();
-      }
+    if self.game_window_focused
+      && let Some(window) = &self.window
+    {
+      window.request_redraw();
     }
 
     #[cfg(feature = "profiler")]
-    if self.profiler_window_focused {
-      if let Some(ref profiler) = self.profiler_window {
-        profiler.request_redraw();
-      }
+    if self.profiler_window_focused
+      && let Some(ref profiler) = self.profiler_window
+    {
+      profiler.request_redraw();
     }
   }
 }
