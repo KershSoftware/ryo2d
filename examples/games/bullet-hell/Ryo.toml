@@ -6,7 +6,7 @@ name = "Bullet Hell"
 
 [info]
 title = "Bullet Hell - Ryo2D"
-show_fps = true
+show_fps = false
 
 [system]
 # Design resolution - game logic uses this fixed size
@@ -14,6 +14,7 @@ show_fps = true
 resolution_width = 1920
 resolution_height = 1080
 display_mode = "windowed"
+vsync = false
 
 [paths]
 # Entry point is in this directory (not in src/)
