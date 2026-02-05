@@ -388,12 +388,11 @@ impl StateMachineDemoScene {
     self.character_x = self.character_x.clamp(50.0, 350.0);
 
     // Update entity position
-    if let Some(entity) = self.character_entity {
-      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
+    if let Some(entity) = self.character_entity
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         transform.x = self.character_x;
         transform.y = self.character_y;
       }
-    }
 
     // Log transition and update tint
     let new_state = *self.character_fsm.current();
@@ -411,12 +410,11 @@ impl StateMachineDemoScene {
     self.game_stack.update(dt);
 
     // Stack controls
-    if input.key_pressed(KeyCode::KeyP) {
-      if self.game_stack.current() != &GameState::Paused {
+    if input.key_pressed(KeyCode::KeyP)
+      && self.game_stack.current() != &GameState::Paused {
         self.game_stack.push(GameState::Paused);
         self.log_stack_action("Push: Paused");
       }
-    }
 
     if input.key_pressed(KeyCode::KeyI) {
       self.game_stack.push(GameState::Inventory);
@@ -439,13 +437,12 @@ impl StateMachineDemoScene {
       }
     }
 
-    if input.key_pressed(KeyCode::Backspace) {
-      if !self.game_stack.is_at_root() {
+    if input.key_pressed(KeyCode::Backspace)
+      && !self.game_stack.is_at_root() {
         let popped = self.game_stack.current().name().to_string();
         self.game_stack.pop();
         self.log_stack_action(&format!("Pop: {}", popped));
       }
-    }
 
     if input.key_pressed(KeyCode::Home) {
       let count = self.game_stack.pop_to_root();

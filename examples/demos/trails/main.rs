@@ -272,8 +272,8 @@ impl TrailsDemoScene {
       return;
     }
 
-    if let Some(entity) = self.textured_entity {
-      if let Some(mut marker) = ctx.world.get_component_mut::<TexturedTrailMarker>(entity) {
+    if let Some(entity) = self.textured_entity
+      && let Some(mut marker) = ctx.world.get_component_mut::<TexturedTrailMarker>(entity) {
         marker.angle += 1.2 * dt;
 
         let center_x = self.screen_width / 2.0;
@@ -297,7 +297,6 @@ impl TrailsDemoScene {
           trail.update(new_x, new_y, dt);
         }
       }
-    }
   }
 
   /// Spawn orbiting trail entities
@@ -409,8 +408,8 @@ impl TrailsDemoScene {
     }
 
     // Recreate textured trail with current settings (if active)
-    if let (Some(entity), Some(mode)) = (self.textured_entity, self.texture_mode) {
-      if let Some(texture) = self.texture_sprite.clone() {
+    if let (Some(entity), Some(mode)) = (self.textured_entity, self.texture_mode)
+      && let Some(texture) = self.texture_sprite.clone() {
         let trail = self
           .create_trail(Color::WHITE)
           .with_texture(texture)
@@ -418,17 +417,15 @@ impl TrailsDemoScene {
           .with_tile_length(32.0);
         ctx.world.add_component(entity, trail);
       }
-    }
   }
 
   /// Reset all trails
   fn reset_trails(&mut self, ctx: &mut SceneContext) {
     // Clear mouse trail
-    if let Some(entity) = self.mouse_entity {
-      if let Some(mut trail) = ctx.world.get_component_mut::<Trail2D>(entity) {
+    if let Some(entity) = self.mouse_entity
+      && let Some(mut trail) = ctx.world.get_component_mut::<Trail2D>(entity) {
         trail.clear();
       }
-    }
 
     // Clear orbit trails
     for entity in &self.orbit_entities {
@@ -438,11 +435,10 @@ impl TrailsDemoScene {
     }
 
     // Clear textured trail
-    if let Some(entity) = self.textured_entity {
-      if let Some(mut trail) = ctx.world.get_component_mut::<Trail2D>(entity) {
+    if let Some(entity) = self.textured_entity
+      && let Some(mut trail) = ctx.world.get_component_mut::<Trail2D>(entity) {
         trail.clear();
       }
-    }
   }
 }
 

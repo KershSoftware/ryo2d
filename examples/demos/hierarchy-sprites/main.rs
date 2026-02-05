@@ -128,12 +128,11 @@ impl Scene for HierarchyScene {
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Toggle rotation with space
-    if ctx.input.key_pressed(KeyCode::Space) {
-      if let Some(ref mut ss) = self.solar_system {
+    if ctx.input.key_pressed(KeyCode::Space)
+      && let Some(ref mut ss) = self.solar_system {
         ss.rotating = !ss.rotating;
         println!("Rotation: {}", if ss.rotating { "ON" } else { "OFF" });
       }
-    }
 
     // Exit on escape
     if ctx.input.key_pressed(KeyCode::Escape) {
@@ -141,8 +140,8 @@ impl Scene for HierarchyScene {
     }
 
     // Update rotations if enabled
-    if let Some(ref ss) = self.solar_system {
-      if ss.rotating {
+    if let Some(ref ss) = self.solar_system
+      && ss.rotating {
         // Rotate the sun (affects entire hierarchy)
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(ss.sun) {
           transform.rotation += SUN_ROTATION * dt;
@@ -163,7 +162,6 @@ impl Scene for HierarchyScene {
           transform.rotation += SATELLITE_ORBIT * dt;
         }
       }
-    }
 
     SceneAction::Continue
   }

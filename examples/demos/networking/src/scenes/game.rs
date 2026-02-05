@@ -92,6 +92,7 @@ impl GameScene {
       port: DEFAULT_PORT,
       max_clients: 2,
       protocol_id: PROTOCOL_ID,
+      ..Default::default()
     })?;
 
     let host_id = server.host_id();
@@ -131,10 +132,7 @@ impl GameScene {
         .map_err(|_| NetworkError::ConnectionError(format!("Invalid address: {}", address)))?
     };
 
-    let client = NetworkClient::connect(NetworkClientConfig {
-      server_addr,
-      protocol_id: PROTOCOL_ID,
-    })?;
+    let client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, PROTOCOL_ID))?;
 
     Ok(Self {
       role: Role::Client,

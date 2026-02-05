@@ -3,9 +3,6 @@
 //! Starts a local matchbox signaling server and exposes it via Cloudflare Tunnel
 //! for testing multiplayer with friends.
 
-// Allow collapsible_if because clippy suggests let-chains which require Rust 2024
-#![allow(clippy::collapsible_if)]
-
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -312,13 +309,12 @@ fn run_netplay_server(port: u16, room: &str) -> CliResult<()> {
         break;
       }
 
-      if let Ok(line) = line {
-        // Look for the tunnel URL in the output
-        if line.contains("trycloudflare.com") {
-          if let Some(url) = extract_url(&line) {
-            return Some(url);
-          }
-        }
+      // Look for the tunnel URL in the output
+      if let Ok(line) = line
+        && line.contains("trycloudflare.com")
+        && let Some(url) = extract_url(&line)
+      {
+        return Some(url);
       }
     }
     None
@@ -482,15 +478,14 @@ fn get_lan_ips() -> Vec<String> {
         "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike '*Loopback*' -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' }).IPAddress",
       ])
       .output()
+      && output.status.success()
     {
-      if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-          let ip = line.trim();
-          // Only accept lines that look like IPv4 addresses
-          if is_valid_ipv4(ip) {
-            ips.push(ip.to_string());
-          }
+      let stdout = String::from_utf8_lossy(&output.stdout);
+      for line in stdout.lines() {
+        let ip = line.trim();
+        // Only accept lines that look like IPv4 addresses
+        if is_valid_ipv4(ip) {
+          ips.push(ip.to_string());
         }
       }
     }
@@ -557,13 +552,13 @@ fn get_wan_ip() -> Option<String> {
   ];
 
   for (cmd, args) in services {
-    if let Ok(output) = Command::new(cmd).args(&args[1..]).output() {
-      if output.status.success() {
-        let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        // Basic IP validation
-        if ip.len() >= 7 && ip.len() <= 15 && ip.chars().all(|c| c.is_ascii_digit() || c == '.') {
-          return Some(ip);
-        }
+    if let Ok(output) = Command::new(cmd).args(&args[1..]).output()
+      && output.status.success()
+    {
+      let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+      // Basic IP validation
+      if ip.len() >= 7 && ip.len() <= 15 && ip.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return Some(ip);
       }
     }
   }
@@ -577,12 +572,11 @@ fn get_wan_ip() -> Option<String> {
         "(Invoke-WebRequest -Uri 'https://api.ipify.org' -UseBasicParsing -TimeoutSec 5).Content",
       ])
       .output()
+      && output.status.success()
     {
-      if output.status.success() {
-        let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if ip.len() >= 7 && ip.len() <= 15 && ip.chars().all(|c| c.is_ascii_digit() || c == '.') {
-          return Some(ip);
-        }
+      let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+      if ip.len() >= 7 && ip.len() <= 15 && ip.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return Some(ip);
       }
     }
   }
@@ -599,17 +593,14 @@ fn find_command(cmd: &str) -> Option<String> {
   #[cfg(windows)]
   {
     // First check if it's in PATH
-    if let Ok(output) = Command::new("where")
-      .arg(cmd)
-      .output()
+    if let Ok(output) = Command::new("where").arg(cmd).output()
+      && output.status.success()
     {
-      if output.status.success() {
-        let path = String::from_utf8_lossy(&output.stdout);
-        if let Some(first_line) = path.lines().next() {
-          let trimmed = first_line.trim();
-          if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-          }
+      let path = String::from_utf8_lossy(&output.stdout);
+      if let Some(first_line) = path.lines().next() {
+        let trimmed = first_line.trim();
+        if !trimmed.is_empty() {
+          return Some(trimmed.to_string());
         }
       }
     }
@@ -633,14 +624,13 @@ fn find_command(cmd: &str) -> Option<String> {
         if let Ok(entries) = std::fs::read_dir(&winget_dir) {
           for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-              if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with("Cloudflare.cloudflared") {
-                  let exe_path = path.join("cloudflared.exe");
-                  if exe_path.exists() {
-                    return Some(exe_path.to_string_lossy().to_string());
-                  }
-                }
+            if path.is_dir()
+              && let Some(name) = path.file_name().and_then(|n| n.to_str())
+              && name.starts_with("Cloudflare.cloudflared")
+            {
+              let exe_path = path.join("cloudflared.exe");
+              if exe_path.exists() {
+                return Some(exe_path.to_string_lossy().to_string());
               }
             }
           }

@@ -169,7 +169,7 @@ impl Scene for EasingShowcase {
     let available_w = screen_w - margin_x * 2.0;
     let available_h = screen_h - margin_top - margin_bottom;
 
-    let rows = (self.boxes.len() + cols - 1) / cols;
+    let rows = self.boxes.len().div_ceil(cols);
     let cell_w = available_w / cols as f32;
     let cell_h = available_h / rows as f32;
 

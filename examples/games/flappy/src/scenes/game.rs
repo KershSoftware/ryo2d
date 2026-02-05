@@ -349,13 +349,11 @@ impl GameScene {
     };
 
     // Switch to hurt animation when dead
-    if !is_alive {
-      if let Some(mut controller) = ctx.world.get_mut::<AnimationController>(bird_entity) {
-        if controller.current_state() != Some("hurt") {
+    if !is_alive
+      && let Some(mut controller) = ctx.world.get_mut::<AnimationController>(bird_entity)
+        && controller.current_state() != Some("hurt") {
           controller.set_state("hurt");
         }
-      }
-    }
   }
 
   fn update_scrolling(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -389,11 +387,10 @@ impl GameScene {
     // Find the rightmost pipe's current x position
     let mut rightmost_x: f32 = 0.0;
     for &pipe_entity in &self.pipes {
-      if let Some(transform) = ctx.world.get::<Transform>(pipe_entity) {
-        if transform.x > rightmost_x {
+      if let Some(transform) = ctx.world.get::<Transform>(pipe_entity)
+        && transform.x > rightmost_x {
           rightmost_x = transform.x;
         }
-      }
     }
 
     // Spawn new pipe when the rightmost pipe has scrolled far enough left
@@ -406,8 +403,8 @@ impl GameScene {
     }
 
     // Update scoring - check if bird passed a pipe
-    if let Some(bird_entity) = self.bird {
-      if let Some(bird_transform) = ctx.world.get::<Transform>(bird_entity) {
+    if let Some(bird_entity) = self.bird
+      && let Some(bird_transform) = ctx.world.get::<Transform>(bird_entity) {
         let bird_x = bird_transform.x;
 
         // Find any pipe pair that hasn't been scored and has been passed
@@ -416,9 +413,9 @@ impl GameScene {
           if let Some(pipe_transform) = ctx.world.get::<Transform>(pipe_entity) {
             let pipe_x = pipe_transform.x;
             // Check if pipe's right edge has passed the bird's position
-            if pipe_x + PIPE_WIDTH < bird_x {
-              if let Some(mut pipe) = ctx.world.get_mut::<Pipe>(pipe_entity) {
-                if !pipe.has_scored {
+            if pipe_x + PIPE_WIDTH < bird_x
+              && let Some(mut pipe) = ctx.world.get_mut::<Pipe>(pipe_entity)
+                && !pipe.has_scored {
                   pipe.has_scored = true;
                   // Only count score once per pipe pair (both top and bottom share same x)
                   if !scored_this_frame {
@@ -426,21 +423,17 @@ impl GameScene {
                     self.score += 1;
                   }
                 }
-              }
-            }
           }
         }
       }
-    }
 
     // Remove pipes that are off screen
     let mut to_remove = Vec::new();
     for &entity in &self.pipes {
-      if let Some(transform) = ctx.world.get::<Transform>(entity) {
-        if transform.x < -PIPE_WIDTH - 100.0 {
+      if let Some(transform) = ctx.world.get::<Transform>(entity)
+        && transform.x < -PIPE_WIDTH - 100.0 {
           to_remove.push(entity);
         }
-      }
     }
     for entity in to_remove {
       let _ = ctx.world.despawn(entity);
@@ -494,11 +487,10 @@ impl Scene for GameScene {
       && (ctx.input.key_pressed(KeyCode::Space) || ctx.input.mouse_pressed(MouseButton::Left))
     {
       self.game_started = true;
-      if let Some(bird_entity) = self.bird {
-        if let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) {
+      if let Some(bird_entity) = self.bird
+        && let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) {
           bird.flap();
         }
-      }
     }
 
     // Update game systems
@@ -509,17 +501,15 @@ impl Scene for GameScene {
     self.check_collisions(ctx);
 
     // Check if bird died - start death timer and play death sound
-    if let Some(bird_entity) = self.bird {
-      if let Some(bird) = ctx.world.get::<Bird>(bird_entity) {
-        if !bird.is_alive && self.death_timer.is_none() {
+    if let Some(bird_entity) = self.bird
+      && let Some(bird) = ctx.world.get::<Bird>(bird_entity)
+        && !bird.is_alive && self.death_timer.is_none() {
           self.death_timer = Some(0.0);
           // Play death sound
           if let Some(audio) = &mut ctx.audio {
             let _ = audio.play_sound_with(DEATH_SOUND, SoundOptions::new().volume(0.2));
           }
         }
-      }
-    }
 
     // Handle death timer
     if let Some(timer) = &mut self.death_timer {

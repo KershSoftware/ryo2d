@@ -299,8 +299,8 @@ impl SpeedControlScene {
   }
 
   fn apply_speed(&self, ctx: &mut SceneContext) {
-    if let Some(entity) = self.entity {
-      if let Some(mut tween) = ctx.world.get_mut::<Tween>(entity) {
+    if let Some(entity) = self.entity
+      && let Some(mut tween) = ctx.world.get_mut::<Tween>(entity) {
         if self.paused {
           tween.pause();
         } else {
@@ -308,7 +308,6 @@ impl SpeedControlScene {
           tween.set_speed(self.speed);
         }
       }
-    }
   }
 }
 
@@ -881,8 +880,8 @@ impl Scene for SequenceScene {
     }
 
     // Restart
-    if ctx.input.key_pressed(KeyCode::Space) {
-      if let Some(entity) = self.entity {
+    if ctx.input.key_pressed(KeyCode::Space)
+      && let Some(entity) = self.entity {
         if let Some(mut seq) = ctx.world.get_mut::<TweenSequence>(entity) {
           seq.restart();
         }
@@ -891,7 +890,6 @@ impl Scene for SequenceScene {
           transform.y = 100.0;
         }
       }
-    }
 
     SceneAction::Continue
   }

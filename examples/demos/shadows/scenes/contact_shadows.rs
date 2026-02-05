@@ -48,6 +48,7 @@ impl ContactShadowsScene {
     }
   }
 
+  #[allow(clippy::too_many_arguments)]
   fn spawn_object(
     ctx: &mut SceneContext,
     x: f32,

@@ -131,12 +131,11 @@ impl Scene for MenuScene {
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Update scrolling background
     for &entity in &self.background_entities {
-      if let Some(scrolling) = ctx.world.get::<Scrolling>(entity) {
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
+      if let Some(scrolling) = ctx.world.get::<Scrolling>(entity)
+        && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
           let new_x = scrolling.update(transform.x, dt);
           transform.x = new_x;
         }
-      }
     }
 
     // Animate bird

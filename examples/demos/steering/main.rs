@@ -239,11 +239,10 @@ impl SteeringDemoScene {
         }
 
         // Clear trail when boid wraps to prevent line shooting across screen
-        if wrapped {
-          if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
+        if wrapped
+          && let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
             trail.clear();
           }
-        }
 
         // Update rotation to face velocity
         transform.rotation = new_vel.y.atan2(new_vel.x);

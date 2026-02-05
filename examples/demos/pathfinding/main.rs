@@ -279,8 +279,8 @@ impl PathfindingDemoScene {
       match state {
         NavAgentState::Idle if has_target => {
           // Need to compute path
-          if let Some((tx, ty)) = target_pos {
-            if let Some(transform) = ctx.world.get::<Transform>(entity) {
+          if let Some((tx, ty)) = target_pos
+            && let Some(transform) = ctx.world.get::<Transform>(entity) {
               let result =
                 self
                   .pathfinder
@@ -308,7 +308,6 @@ impl PathfindingDemoScene {
                 }
               }
             }
-          }
         }
         NavAgentState::Moving => {
           // Follow path
@@ -366,14 +365,13 @@ impl PathfindingDemoScene {
 
     if dist <= threshold {
       // Reached waypoint, advance to next
-      if let Some(mut agent) = world.get_mut::<NavAgent>(entity) {
-        if let Some(ref mut path) = agent.current_path {
+      if let Some(mut agent) = world.get_mut::<NavAgent>(entity)
+        && let Some(ref mut path) = agent.current_path {
           path.advance();
           if path.is_complete() {
             agent.arrive();
           }
         }
-      }
     } else {
       // Calculate base movement direction
       let path_dir = Vec2::new(dx / dist, dy / dist);

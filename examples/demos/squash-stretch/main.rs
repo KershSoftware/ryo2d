@@ -149,11 +149,10 @@ impl SquashStretchDemoScene {
       let mut should_squash = false;
 
       // Update velocity and position
-      if let Some(mut ball) = ctx.world.get_component_mut::<Ball>(entity) {
-        if !ball.on_ground {
+      if let Some(mut ball) = ctx.world.get_component_mut::<Ball>(entity)
+        && !ball.on_ground {
           ball.velocity_y += self.gravity * dt;
         }
-      }
 
       // Get current position and velocity
       let (_current_y, velocity_y) = {

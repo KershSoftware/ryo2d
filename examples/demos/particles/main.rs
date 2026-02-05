@@ -374,13 +374,12 @@ impl ParticlesDemo {
     self.trail_target_y = target_y;
 
     // Update first emitter (comet) position
-    if let Some(&entity) = self.emitters.first() {
-      if let Some(mut transform) = world.get_mut::<Transform>(entity) {
+    if let Some(&entity) = self.emitters.first()
+      && let Some(mut transform) = world.get_mut::<Transform>(entity) {
         // Smooth follow
         transform.x += (target_x - transform.x) * 0.1;
         transform.y += (target_y - transform.y) * 0.1;
       }
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -562,11 +561,10 @@ impl ParticlesDemo {
     let mut to_remove = Vec::new();
 
     for (i, &entity) in self.emitters.iter().enumerate() {
-      if let Some(emitter) = world.get_component::<ParticleEmitter>(entity) {
-        if emitter.is_finished() {
+      if let Some(emitter) = world.get_component::<ParticleEmitter>(entity)
+        && emitter.is_finished() {
           to_remove.push(i);
         }
-      }
     }
 
     // Remove in reverse order to maintain indices
@@ -640,14 +638,13 @@ impl Game for ParticlesDemo {
         None
       };
 
-      if let Some(scene) = new_scene {
-        if scene != self.current_scene {
+      if let Some(scene) = new_scene
+        && scene != self.current_scene {
           self.nav_cooldown = 0.3;
           self.clear_scene(ctx.world);
           self.current_scene = scene;
           self.setup_scene(ctx.world);
         }
-      }
     }
 
     // Scene-specific interactions
@@ -696,7 +693,7 @@ impl Game for ParticlesDemo {
     // Collect particles for rendering
     self
       .particle_system
-      .collect_for_render(gpu.world, gpu.camera, &mut gpu.batch);
+      .collect_for_render(gpu.world, gpu.camera, gpu.batch);
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) {
