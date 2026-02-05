@@ -108,7 +108,10 @@ mod tests {
     let final_x = world.get_component::<Transform>(entity).unwrap().x;
 
     // Entity should have moved right (position increased)
-    assert!(final_x > initial_x, "Entity should move in knockback direction");
+    assert!(
+      final_x > initial_x,
+      "Entity should move in knockback direction"
+    );
   }
 
   #[test]
@@ -126,7 +129,11 @@ mod tests {
 
     // Check that KnockbackStarted event was emitted
     let started_events: Vec<_> = events.read::<KnockbackStarted>().collect();
-    assert_eq!(started_events.len(), 1, "Should emit KnockbackStarted event");
+    assert_eq!(
+      started_events.len(),
+      1,
+      "Should emit KnockbackStarted event"
+    );
   }
 
   #[test]
@@ -159,7 +166,11 @@ mod tests {
     // Create entity with Transform, Velocity, and Knockback
     let entity = world.spawn((
       Transform::default(),
-      Velocity { dx: 0.0, dy: 0.0, dz: 0.0 },
+      Velocity {
+        dx: 0.0,
+        dy: 0.0,
+        dz: 0.0,
+      },
       Knockback::new(Vec2::new(1.0, 0.0), 100.0),
     ));
 

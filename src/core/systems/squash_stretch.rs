@@ -94,7 +94,7 @@ mod tests {
     // Create entity with Transform and active SquashStretch
     // SquashStretch::new() creates an already active effect
     let entity = world.spawn((
-      Transform::default(), // scale_x = 1.0, scale_y = 1.0
+      Transform::default(),    // scale_x = 1.0, scale_y = 1.0
       SquashStretch::new(0.3), // 30% squash intensity, starts active
     ));
 
@@ -146,7 +146,10 @@ mod tests {
 
     let final_scale = world.get_component::<Transform>(entity).unwrap().scale_y;
 
-    assert_eq!(initial_scale, final_scale, "Inactive entity should not be affected");
+    assert_eq!(
+      initial_scale, final_scale,
+      "Inactive entity should not be affected"
+    );
   }
 
   #[test]

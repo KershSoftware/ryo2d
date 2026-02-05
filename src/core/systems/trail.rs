@@ -30,9 +30,7 @@ impl TrailSystem {
       }
 
       // Get the entity's position from Transform
-      let pos = world
-        .get_component::<Transform>(entity)
-        .map(|t| (t.x, t.y));
+      let pos = world.get_component::<Transform>(entity).map(|t| (t.x, t.y));
 
       // Update the trail with the current position
       if let Some((x, y)) = pos

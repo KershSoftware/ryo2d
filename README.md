@@ -21,6 +21,9 @@ I started learning Rust and then I decided to start building a 2D game engine to
 <p align="center">
   <img src="docs/assets/bullet-hell.gif" alt="Bullet Hell" width="500">
 </p>
+<p align="center">
+  <img src="docs/assets/leap.gif" alt="Leap" width="500">
+</p>
 
 ## Quick Start
 

@@ -30,7 +30,9 @@ impl CollisionResponse {
   /// Get the restitution value for bounce responses.
   pub fn restitution(&self) -> f32 {
     match self {
-      CollisionResponse::Bounce { restitution_percent } => *restitution_percent as f32 / 100.0,
+      CollisionResponse::Bounce {
+        restitution_percent,
+      } => *restitution_percent as f32 / 100.0,
       _ => 0.0,
     }
   }

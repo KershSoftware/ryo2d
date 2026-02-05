@@ -143,9 +143,10 @@ impl Scene for SoftShadowsScene {
     )));
 
     // Create a visual for the light source
-    let light_visual = ctx
-      .assets
-      .create_sprite(Sprite::solid_circle(20, 255, 240, 200, 255), "soft_light_source");
+    let light_visual = ctx.assets.create_sprite(
+      Sprite::solid_circle(20, 255, 240, 200, 255),
+      "soft_light_source",
+    );
     ctx.world.spawn((
       Transform::new(self.light_x, self.light_y).with_pivot_center(),
       Renderable::sprite(light_visual).with_z_order(10),
@@ -262,7 +263,13 @@ impl Scene for SoftShadowsScene {
     );
 
     // Presets
-    ui.label("Presets: [5] Hard  [6] Medium  [7] Very Soft", 10.0, 130.0, gray, bg);
+    ui.label(
+      "Presets: [5] Hard  [6] Medium  [7] Very Soft",
+      10.0,
+      130.0,
+      gray,
+      bg,
+    );
 
     // Controls
     ui.label("Controls:", 10.0, 165.0, white, bg);

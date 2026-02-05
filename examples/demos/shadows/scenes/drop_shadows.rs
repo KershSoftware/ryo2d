@@ -130,10 +130,9 @@ impl DropShadowsScene {
     shadow: DropShadow,
   ) -> Entity {
     // Create a simple character-like sprite (head + body)
-    let sprite = ctx.assets.create_sprite(
-      Sprite::solid_rect(32, 48, 100, 150, 200, 255),
-      name,
-    );
+    let sprite = ctx
+      .assets
+      .create_sprite(Sprite::solid_rect(32, 48, 100, 150, 200, 255), name);
 
     ctx.world.spawn((
       Transform::new(x, y).with_pivot(0.5, 1.0), // Pivot at feet
@@ -187,11 +186,11 @@ impl Scene for DropShadowsScene {
     // Spawn demo sprites in a row
     // Different colored boxes to show shadows on various sprites
     let colors = [
-      (220, 80, 80),   // Red
-      (80, 180, 80),   // Green
-      (80, 80, 220),   // Blue
-      (220, 180, 80),  // Yellow
-      (180, 80, 180),  // Purple
+      (220, 80, 80),  // Red
+      (80, 180, 80),  // Green
+      (80, 80, 220),  // Blue
+      (220, 180, 80), // Yellow
+      (180, 80, 180), // Purple
     ];
 
     let start_x = 200.0;
@@ -361,7 +360,13 @@ impl Scene for DropShadowsScene {
     let bg = Some(Color::new(0, 0, 0, 180));
 
     // Scene indicator
-    ui.label("[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray", 10.0, 10.0, highlight, bg);
+    ui.label(
+      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray",
+      10.0,
+      10.0,
+      highlight,
+      bg,
+    );
 
     // Title
     ui.label("Drop Shadows (Artist-Controlled)", 10.0, 40.0, white, bg);
@@ -389,25 +394,40 @@ impl Scene for DropShadowsScene {
     if self.current_preset == ShadowPreset::Custom {
       ui.label("Custom Shadow Controls:", 10.0, 135.0, white, bg);
       ui.label(
-        &format!("  Offset: ({:.1}, {:.1}) [A/D, W/S]",
-          self.custom_params.offset_x,
-          self.custom_params.offset_y),
-        10.0, 155.0, gray, bg,
+        &format!(
+          "  Offset: ({:.1}, {:.1}) [A/D, W/S]",
+          self.custom_params.offset_x, self.custom_params.offset_y
+        ),
+        10.0,
+        155.0,
+        gray,
+        bg,
       );
       ui.label(
         &format!("  Alpha: {} [Q/E]", self.custom_params.alpha),
-        10.0, 175.0, gray, bg,
+        10.0,
+        175.0,
+        gray,
+        bg,
       );
       ui.label(
-        &format!("  Scale: ({:.2}, {:.2}) [Z/C, X/V]",
-          self.custom_params.scale_x,
-          self.custom_params.scale_y),
-        10.0, 195.0, gray, bg,
+        &format!(
+          "  Scale: ({:.2}, {:.2}) [Z/C, X/V]",
+          self.custom_params.scale_x, self.custom_params.scale_y
+        ),
+        10.0,
+        195.0,
+        gray,
+        bg,
       );
     }
 
     // Description
-    let desc_y = if self.current_preset == ShadowPreset::Custom { 230.0 } else { 135.0 };
+    let desc_y = if self.current_preset == ShadowPreset::Custom {
+      230.0
+    } else {
+      135.0
+    };
 
     let description = match self.current_preset {
       ShadowPreset::Default => "Simple offset shadow (4px diagonal)",

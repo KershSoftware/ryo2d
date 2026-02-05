@@ -58,9 +58,10 @@ impl ContactShadowsScene {
     name: &str,
     shadow: ContactShadow,
   ) -> Entity {
-    let sprite = ctx
-      .assets
-      .create_sprite(Sprite::solid_rect(width, height, color.0, color.1, color.2, 255), name);
+    let sprite = ctx.assets.create_sprite(
+      Sprite::solid_rect(width, height, color.0, color.1, color.2, 255),
+      name,
+    );
 
     ctx.world.spawn((
       Transform::new(x, y).with_pivot(0.5, 1.0), // Pivot at bottom center
@@ -133,7 +134,16 @@ impl Scene for ContactShadowsScene {
     ];
 
     for (x, y, w, h, color) in tall_objects {
-      let entity = Self::spawn_object(ctx, x, y, w, h, color, &format!("tall_{}", x as i32), shadow.clone());
+      let entity = Self::spawn_object(
+        ctx,
+        x,
+        y,
+        w,
+        h,
+        color,
+        &format!("tall_{}", x as i32),
+        shadow.clone(),
+      );
       self.objects.push(entity);
     }
 
@@ -144,7 +154,16 @@ impl Scene for ContactShadowsScene {
     ];
 
     for (x, y, w, h, color) in wide_objects {
-      let entity = Self::spawn_object(ctx, x, y, w, h, color, &format!("wide_{}", x as i32), shadow.clone());
+      let entity = Self::spawn_object(
+        ctx,
+        x,
+        y,
+        w,
+        h,
+        color,
+        &format!("wide_{}", x as i32),
+        shadow.clone(),
+      );
       self.objects.push(entity);
     }
 
@@ -156,7 +175,16 @@ impl Scene for ContactShadowsScene {
     ];
 
     for (x, y, w, h, color) in characters {
-      let entity = Self::spawn_object(ctx, x, y, w, h, color, &format!("char_{}", x as i32), shadow.clone());
+      let entity = Self::spawn_object(
+        ctx,
+        x,
+        y,
+        w,
+        h,
+        color,
+        &format!("char_{}", x as i32),
+        shadow.clone(),
+      );
       self.objects.push(entity);
     }
   }
@@ -303,7 +331,13 @@ impl Scene for ContactShadowsScene {
     );
 
     // Presets
-    ui.label("Presets: [7] Sharp  [8] Soft  [9] Default", 10.0, 155.0, gray, bg);
+    ui.label(
+      "Presets: [7] Sharp  [8] Soft  [9] Default",
+      10.0,
+      155.0,
+      gray,
+      bg,
+    );
 
     // Controls
     ui.label("Controls:", 10.0, 190.0, white, bg);

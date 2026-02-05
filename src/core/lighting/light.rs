@@ -334,7 +334,12 @@ impl Light2D {
   /// Get the shadow softness of this light
   pub fn shadow_softness(&self) -> f32 {
     match self {
-      Self::Point { shadow_softness, .. } | Self::Spot { shadow_softness, .. } => *shadow_softness,
+      Self::Point {
+        shadow_softness, ..
+      }
+      | Self::Spot {
+        shadow_softness, ..
+      } => *shadow_softness,
     }
   }
 
@@ -416,7 +421,12 @@ impl Light2D {
   /// Set the shadow color of this light
   pub fn set_shadow_color(&mut self, color: Color) {
     match self {
-      Self::Point { shadow_color: sc, .. } | Self::Spot { shadow_color: sc, .. } => *sc = color,
+      Self::Point {
+        shadow_color: sc, ..
+      }
+      | Self::Spot {
+        shadow_color: sc, ..
+      } => *sc = color,
     }
   }
 

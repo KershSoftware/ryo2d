@@ -299,7 +299,13 @@ impl Scene for HardShadowsScene {
     let bg = Some(Color::new(0, 0, 0, 180));
 
     // Scene indicator
-    ui.label("[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray", 10.0, 10.0, highlight, bg);
+    ui.label(
+      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray",
+      10.0,
+      10.0,
+      highlight,
+      bg,
+    );
 
     // Title
     ui.label("Hard Shadows (Shadow Volumes)", 10.0, 40.0, white, bg);

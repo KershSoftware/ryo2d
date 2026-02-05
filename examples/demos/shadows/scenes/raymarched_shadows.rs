@@ -172,9 +172,10 @@ impl Scene for RaymarchedShadowsScene {
     )));
 
     // Create a visual for the light source
-    let light_visual = ctx
-      .assets
-      .create_sprite(Sprite::solid_circle(20, 255, 220, 150, 255), "rm_light_source");
+    let light_visual = ctx.assets.create_sprite(
+      Sprite::solid_circle(20, 255, 220, 150, 255),
+      "rm_light_source",
+    );
     ctx.world.spawn((
       Transform::new(self.light_x, self.light_y).with_pivot_center(),
       Renderable::sprite(light_visual).with_z_order(10),

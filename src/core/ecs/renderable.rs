@@ -934,7 +934,9 @@ mod tests {
 
   #[test]
   fn blob_shadow_height_scaling() {
-    let mut shadow = BlobShadow::circle(20.0).with_height_scale(true).max_height(100.0);
+    let mut shadow = BlobShadow::circle(20.0)
+      .with_height_scale(true)
+      .max_height(100.0);
 
     // On ground - full size and alpha
     shadow.set_height(0.0);

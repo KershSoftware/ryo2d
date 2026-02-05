@@ -240,6 +240,8 @@ fn generate_ryo_toml(project_name: &str) -> String {
 
 [project]
 name = "{}"
+title = "{}"
+version = "0.0.1"
 
 [paths]
 entry_point = "main.rs"
@@ -264,8 +266,6 @@ fullscreen = false
 master_volume = 0.8
 music_volume = 1.0
 sfx_volume = 1.0
-
-[info]
 # Display FPS counter in corner (user can toggle)
 show_fps = false
 
@@ -293,10 +293,10 @@ show_origins = false
 # logo = "assets/icon.png"
 
 [env]
-# Add your game-specific configuration here
-# debug_mode = false
+# Add your game-specific configurations here; not used by the engine
+# my_custom_variable = false
 "#,
-    display_name, display_name
+    display_name, display_name, display_name
   )
 }
 

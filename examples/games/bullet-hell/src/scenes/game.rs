@@ -2283,7 +2283,9 @@ impl GameScene {
     let sprite = self.bullet_sprite.clone();
     let bullet = ctx.world.spawn((
       Transform::new(x, y).with_anchor(Anchor::Center),
-      Renderable::sprite(sprite).with_z_order(Z_BULLET).interpolated(),
+      Renderable::sprite(sprite)
+        .with_z_order(Z_BULLET)
+        .interpolated(),
       // CCD for fast-moving bullets, no gravity
       RigidBody::new().with_ccd().with_gravity_scale(0.0),
       Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
@@ -2712,7 +2714,9 @@ impl Scene for GameScene {
       move || {
         (
           Transform::default(),
-          Renderable::sprite(bullet_sprite.clone()).with_z_order(Z_BULLET).interpolated(),
+          Renderable::sprite(bullet_sprite.clone())
+            .with_z_order(Z_BULLET)
+            .interpolated(),
           // CCD for fast-moving bullets, no gravity
           RigidBody::new().with_ccd().with_gravity_scale(0.0),
           Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),

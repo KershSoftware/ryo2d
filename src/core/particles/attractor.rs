@@ -370,14 +370,7 @@ impl ParticleAttractor {
 }
 
 /// Find the closest point on a line segment to a given point.
-fn closest_point_on_segment(
-  px: f32,
-  py: f32,
-  ax: f32,
-  ay: f32,
-  bx: f32,
-  by: f32,
-) -> (f32, f32) {
+fn closest_point_on_segment(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> (f32, f32) {
   let abx = bx - ax;
   let aby = by - ay;
   let apx = px - ax;

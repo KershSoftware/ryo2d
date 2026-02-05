@@ -1,7 +1,8 @@
-# Leap - Ryo2D Project Configuration
+# Leap King - Ryo2D Project Configuration
 
 [project]
-name = "Leap"
+name = "Leap King"
+title = "Leap King - Ryo2D"
 
 [paths]
 entry_point = "main.rs"
@@ -27,10 +28,7 @@ borderless = true
 master_volume = 0.8
 music_volume = 1.0
 sfx_volume = 1.0
-
-[info]
-title = "Leap - Ryo2D"
-show_fps = true
+show_fps = false
 
 # ==============================================================================
 # DEVELOPER-ONLY SETTINGS

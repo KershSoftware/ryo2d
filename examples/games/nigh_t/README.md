@@ -1,47 +1,24 @@
 # Nigh_t
 
-A game built with the [Ryo2D](https://github.com/your-username/ryo2d) engine.
+A dark atmospheric demo showcasing the 2D lighting system.
 
-## Building and Running
+## Features Demonstrated
 
-### Development
-
-```bash
-# Run in debug mode (faster compilation, slower runtime)
-cargo run
-
-# Or use the Ryo2D CLI
-ryo2d dev
-```
-
-### Release
-
-```bash
-# Build optimized release
-ryo2d build
-
-# Run the release build
-ryo2d run
-
-# Or distribute the ./release/ folder
-```
-
-## Project Structure
-
-```
-nigh_t/
-├── main.rs          # Game entry point
-├── Cargo.toml       # Rust package configuration
-├── Ryo.toml         # Ryo2D project configuration
-├── assets/          # Game assets (images, audio, etc.)
-├── data/            # Save data (auto-generated)
-└── src/             # Additional source modules (optional)
-```
+- **2D Lighting** - Dynamic point lights with configurable radius, intensity, and falloff
+- **Multiple Light Sources** - Primary light with orbiting secondary glows
+- **Post-Processing** - CRT shader effect
+- **Custom Cursor** - Hidden system cursor with light-based replacement
+- **Procedural Animation** - Organic flickering, wobble, and charge-based instability
 
 ## Controls
 
-Add your game controls here.
+- `Mouse` - Move the fairy light
+- `Hold Left Click` - Charge the light (gets brighter but unstable)
+- `Escape` - Quit
 
-## License
+## Run
 
-Add your license here.
+```bash
+ryo2d dev          # Development mode
+ryo2d build && ryo2d run  # Production build
+```

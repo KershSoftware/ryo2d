@@ -36,10 +36,11 @@
 //! master_volume = 1.0
 //! music_volume = 0.8
 //! sfx_volume = 1.0
+//! show_fps = false
 //! console = true  # Enable developer console (works in debug and release)
 //!
 //! [info]
-//! show_fps = false
+//! title = "My Game"
 //!
 //! [debug]  # Developer debug flags (NOT in system.json)
 //! show_colliders = false
@@ -95,6 +96,8 @@ pub struct Workspace {
 pub struct WorkspaceConfig {
   /// Project name (defaults to directory name)
   pub name: String,
+  /// Window title (from [project].title, defaults to name)
+  pub title: String,
   /// Project version (optional, from [project] section)
   pub version: Option<String>,
   /// Path to entry point relative to workspace root
@@ -105,8 +108,6 @@ pub struct WorkspaceConfig {
   pub assets: PathBuf,
   /// Debug configuration options
   pub debug: DebugConfig,
-  /// Info overlay configuration
-  pub info: InfoConfig,
   /// System defaults for user configuration (from [system] section)
   pub system: SystemDefaults,
   /// Release/distribution configuration (from [release] section)
@@ -168,15 +169,6 @@ impl Default for DebugConfig {
   }
 }
 
-/// Info overlay configuration options.
-///
-/// Controls informational overlays shown during gameplay.
-#[derive(Debug, Clone, Default)]
-pub struct InfoConfig {
-  /// Whether to display FPS counter in corner
-  pub show_fps: bool,
-}
-
 /// Release/distribution configuration options.
 ///
 /// Controls build-time settings for distributing the game.
@@ -189,19 +181,17 @@ pub struct ReleaseConfig {
 
 /// System defaults for user configuration (system.json).
 ///
-/// These values from `[system]` and `[info]` sections in Ryo.toml define the
+/// These values from the `[system]` section in Ryo.toml define the
 /// developer defaults for user-facing settings. When system.json is created,
 /// these values are used. When system.json is loaded, missing fields fall back
 /// to these values.
 ///
-/// **Mapped sections:** `[system]` + `[info]` only
+/// **Mapped section:** `[system]` only
 /// **Not mapped:** `[debug]`, `[project]`, `[paths]`, `[env]` (dev-only)
 ///
-/// Priority chain: system.json (user) > Ryo.toml [system]/[info] (dev) > engine defaults
+/// Priority chain: system.json (user) > Ryo.toml [system] (dev) > engine defaults
 #[derive(Debug, Clone)]
 pub struct SystemDefaults {
-  /// Window title (from [info] section)
-  pub title: String,
   /// Default resolution width
   pub resolution_width: u32,
   /// Default resolution height
@@ -216,7 +206,7 @@ pub struct SystemDefaults {
   pub music_volume: f32,
   /// Default SFX volume (0.0 - 1.0)
   pub sfx_volume: f32,
-  /// Default show FPS setting (from [info] section)
+  /// Default show FPS setting (from [system] section)
   pub show_fps: bool,
   /// Whether to enable the developer console (toggled with backtick key).
   /// Unlike debug settings, this is available in both debug and release builds.
@@ -226,7 +216,6 @@ pub struct SystemDefaults {
 impl Default for SystemDefaults {
   fn default() -> Self {
     SystemDefaults {
-      title: String::from("Ryo2D"),
       resolution_width: 1280,
       resolution_height: 720,
       vsync: true,
@@ -258,6 +247,8 @@ struct RyoToml {
 struct ProjectSection {
   name: Option<String>,
   version: Option<String>,
+  /// Window title (defaults to name if not specified)
+  title: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -280,10 +271,12 @@ struct DebugSection {
   dev_window_keys: Option<bool>,
 }
 
+/// Deprecated: [info] section is no longer used.
+/// title moved to [project], show_fps moved to [system].
+/// Kept for backwards compatibility during parsing.
 #[derive(Debug, Deserialize, Default)]
 struct InfoSection {
   title: Option<String>,
-  show_fps: Option<bool>,
 }
 
 /// Raw TOML [release] section for build/distribution settings
@@ -308,6 +301,8 @@ struct SystemSection {
   master_volume: Option<f32>,
   music_volume: Option<f32>,
   sfx_volume: Option<f32>,
+  /// Whether to display FPS counter (user preference)
+  show_fps: Option<bool>,
   /// Whether to enable the developer console (toggled with backtick key)
   console: Option<bool>,
 }
@@ -427,8 +422,9 @@ impl Workspace {
     let project = raw.project.unwrap_or_default();
     let paths = raw.paths.unwrap_or_default();
     let debug_section = raw.debug.unwrap_or_default();
-    let info_section = raw.info.unwrap_or_default();
     let release_section = raw.release.unwrap_or_default();
+    // [info] section is deprecated - title comes from [project], show_fps from [system]
+    let info_section = raw.info.unwrap_or_default();
 
     // Project name: from config, or directory name
     let name = project.name.unwrap_or_else(|| {
@@ -438,6 +434,12 @@ impl Workspace {
         .unwrap_or("unnamed")
         .to_string()
     });
+
+    // Window title: from [project].title, fall back to [info].title (deprecated), then name
+    let title = project
+      .title
+      .or(info_section.title)
+      .unwrap_or_else(|| name.clone());
 
     // Entry point: from config, or inferred
     let entry_point = match paths.entry_point {
@@ -458,13 +460,17 @@ impl Workspace {
     #[cfg(not(debug_assertions))]
     let dev_window_keys_default = false;
 
+    // System defaults (for system.json generation)
+    // Combines [system] + [info] sections (user-facing settings only)
+    let system_section = raw.system.unwrap_or_default();
+
     let debug = DebugConfig {
       show_colliders: debug_section.show_colliders.unwrap_or(false),
       show_velocities: debug_section.show_velocities.unwrap_or(false),
       show_origins: debug_section.show_origins.unwrap_or(false),
       show_frame_timing: debug_section.show_frame_timing.unwrap_or(false),
-      show_stats: false,                                                // Always off by default
-      show_fps: info_section.show_fps.unwrap_or(false),                 // From [info] section
+      show_stats: false,                                  // Always off by default
+      show_fps: system_section.show_fps.unwrap_or(false), // From [system] section
       disable_debug_keys: debug_section.disable_debug_keys.unwrap_or(false),
       enable_profiling: debug_section.enable_profiling.unwrap_or(true), // Default true in dev
       puffin_profiler: debug_section.puffin_profiler.unwrap_or(false),  // Default false (opt-in)
@@ -474,14 +480,6 @@ impl Workspace {
         .unwrap_or(dev_window_keys_default),
     };
 
-    // Info config
-    let info = InfoConfig {
-      show_fps: info_section.show_fps.unwrap_or(false),
-    };
-
-    // System defaults (for system.json generation)
-    // Combines [system] + [info] sections (user-facing settings only)
-    let system_section = raw.system.unwrap_or_default();
     let engine_defaults = SystemDefaults::default();
 
     // Parse display_mode from string, with fallback to legacy fullscreen/borderless fields
@@ -503,8 +501,6 @@ impl Workspace {
     };
 
     let system = SystemDefaults {
-      // title comes from [info] section, falls back to project name
-      title: info_section.title.unwrap_or_else(|| name.clone()),
       resolution_width: system_section
         .resolution_width
         .unwrap_or(engine_defaults.resolution_width),
@@ -522,8 +518,8 @@ impl Workspace {
       sfx_volume: system_section
         .sfx_volume
         .unwrap_or(engine_defaults.sfx_volume),
-      // show_fps comes from [info] section but maps to system.json
-      show_fps: info_section.show_fps.unwrap_or(engine_defaults.show_fps),
+      // show_fps is a user preference, stored in [system] section
+      show_fps: system_section.show_fps.unwrap_or(engine_defaults.show_fps),
       // console is in [system] section so it works in both debug and release builds
       dev_console: system_section
         .console
@@ -540,12 +536,12 @@ impl Workspace {
 
     Ok(WorkspaceConfig {
       name,
+      title,
       version: project.version,
       entry_point,
       save_data,
       assets,
       debug,
-      info,
       system,
       release,
       env,
@@ -648,12 +644,12 @@ impl Default for WorkspaceConfig {
   fn default() -> Self {
     WorkspaceConfig {
       name: "unnamed".to_string(),
+      title: "Ryo2D".to_string(),
       version: None,
       entry_point: PathBuf::from("src/main.rs"),
       save_data: PathBuf::from("data"),
       assets: PathBuf::from("assets"),
       debug: DebugConfig::default(),
-      info: InfoConfig::default(),
       system: SystemDefaults::default(),
       release: ReleaseConfig::default(),
       env: std::collections::HashMap::new(),
@@ -827,12 +823,6 @@ mod tests {
   }
 
   #[test]
-  fn info_config_defaults_fps_off() {
-    let config = InfoConfig::default();
-    assert!(!config.show_fps);
-  }
-
-  #[test]
   fn workspace_config_system_defaults_included() {
     let config = WorkspaceConfig::default();
     // System defaults should be engine defaults
@@ -851,9 +841,11 @@ mod tests {
   }
 
   #[test]
-  fn workspace_config_info_defaults_included() {
+  fn workspace_config_show_fps_in_system() {
+    // show_fps is now in [system] section, not [info]
     let config = WorkspaceConfig::default();
-    assert!(!config.info.show_fps);
+    assert!(!config.system.show_fps);
+    assert!(!config.debug.show_fps);
   }
 
   #[test]

@@ -472,7 +472,9 @@ impl<'a> SceneContext<'a> {
     description: impl Into<String>,
     verbose_description: Option<impl Into<String>>,
   ) {
-    self.command_registry.declare(name, description, verbose_description);
+    self
+      .command_registry
+      .declare(name, description, verbose_description);
   }
 
   /// Register a handler for a declared game command.
@@ -512,7 +514,9 @@ impl<'a> SceneContext<'a> {
   where
     F: Fn(&[&str], &mut super::console::CommandContext) -> CommandResult + Send + Sync + 'static,
   {
-    self.command_registry.register_handler(name, self.scope_id, handler)
+    self
+      .command_registry
+      .register_handler(name, self.scope_id, handler)
   }
 }
 
@@ -1595,8 +1599,12 @@ impl Game for SceneGame {
       // Check if this action will change scenes (requires scope cleanup)
       let will_change_scene = matches!(
         action,
-        SceneAction::Pop | SceneAction::Switch(_) | SceneAction::Reset(_) |
-        SceneAction::PopWith(_) | SceneAction::SwitchWith(_, _) | SceneAction::ResetWith(_, _)
+        SceneAction::Pop
+          | SceneAction::Switch(_)
+          | SceneAction::Reset(_)
+          | SceneAction::PopWith(_)
+          | SceneAction::SwitchWith(_, _)
+          | SceneAction::ResetWith(_, _)
       );
 
       // Remember old scope if scene will change

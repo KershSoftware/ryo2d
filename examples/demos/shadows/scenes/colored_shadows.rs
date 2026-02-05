@@ -153,9 +153,10 @@ impl Scene for ColoredShadowsScene {
     }
 
     // Create floor
-    let floor = ctx
-      .assets
-      .create_sprite(Sprite::solid_rect(1280, 720, 50, 45, 55, 255), "colored_floor");
+    let floor = ctx.assets.create_sprite(
+      Sprite::solid_rect(1280, 720, 50, 45, 55, 255),
+      "colored_floor",
+    );
     ctx.world.spawn((
       Transform::new(640.0, 360.0).with_pivot_center(),
       Renderable::sprite(floor).with_z_order(0),
@@ -184,9 +185,10 @@ impl Scene for ColoredShadowsScene {
     )));
 
     // Light source visual
-    let light_visual = ctx
-      .assets
-      .create_sprite(Sprite::solid_circle(18, 255, 255, 255, 255), "colored_light_source");
+    let light_visual = ctx.assets.create_sprite(
+      Sprite::solid_circle(18, 255, 255, 255, 255),
+      "colored_light_source",
+    );
     ctx.world.spawn((
       Transform::new(self.light_x, self.light_y).with_pivot_center(),
       Renderable::sprite(light_visual).with_z_order(10),
@@ -295,7 +297,10 @@ impl Scene for ColoredShadowsScene {
 
     // Show RGB values
     ui.label(
-      &format!("RGB: ({}, {}, {})", shadow_color.r, shadow_color.g, shadow_color.b),
+      &format!(
+        "RGB: ({}, {}, {})",
+        shadow_color.r, shadow_color.g, shadow_color.b
+      ),
       10.0,
       95.0,
       gray,
@@ -305,13 +310,35 @@ impl Scene for ColoredShadowsScene {
     // Custom controls
     if self.current_preset == ShadowColorPreset::Custom {
       ui.label("Custom Color Controls:", 10.0, 130.0, white, bg);
-      ui.label("  Q/A: Red +/-", 10.0, 150.0, Color::new(255, 150, 150, 255), bg);
-      ui.label("  W/S: Green +/-", 10.0, 170.0, Color::new(150, 255, 150, 255), bg);
-      ui.label("  E/D: Blue +/-", 10.0, 190.0, Color::new(150, 150, 255, 255), bg);
+      ui.label(
+        "  Q/A: Red +/-",
+        10.0,
+        150.0,
+        Color::new(255, 150, 150, 255),
+        bg,
+      );
+      ui.label(
+        "  W/S: Green +/-",
+        10.0,
+        170.0,
+        Color::new(150, 255, 150, 255),
+        bg,
+      );
+      ui.label(
+        "  E/D: Blue +/-",
+        10.0,
+        190.0,
+        Color::new(150, 150, 255, 255),
+        bg,
+      );
     }
 
     // Controls
-    let ctrl_y = if self.current_preset == ShadowColorPreset::Custom { 225.0 } else { 130.0 };
+    let ctrl_y = if self.current_preset == ShadowColorPreset::Custom {
+      225.0
+    } else {
+      130.0
+    };
     ui.label("Controls:", 10.0, ctrl_y, white, bg);
     ui.label("  Mouse: Move light", 10.0, ctrl_y + 20.0, gray, bg);
     ui.label("  Tab: Cycle shadow colors", 10.0, ctrl_y + 40.0, gray, bg);

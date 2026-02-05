@@ -267,14 +267,20 @@ impl CommandRegistry {
           "Command '{}' has no effect in the current context",
           command_name
         ));
-        ctx.console.print_system(format!("  {}", command.description));
+        ctx
+          .console
+          .print_system(format!("  {}", command.description));
         return CommandResult::Ok;
       }
     }
 
     // Unknown command
-    ctx.console.print_error(format!("Unknown command: '{}'", command_name));
-    ctx.console.print_system("Type 'help' for available commands");
+    ctx
+      .console
+      .print_error(format!("Unknown command: '{}'", command_name));
+    ctx
+      .console
+      .print_system("Type 'help' for available commands");
     CommandResult::Error(format!("Unknown command: {}", command_name))
   }
 
@@ -701,7 +707,10 @@ mod tests {
     let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
 
     assert_eq!(registry.execute("game:reset", &mut ctx), CommandResult::Ok);
-    assert_eq!(registry.execute("game:spawn enemy", &mut ctx), CommandResult::Ok);
+    assert_eq!(
+      registry.execute("game:spawn enemy", &mut ctx),
+      CommandResult::Ok
+    );
 
     // Phase 4: Scene exits, clear scope
     registry.clear_scope(scene_scope);

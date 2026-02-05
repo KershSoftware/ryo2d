@@ -35,6 +35,7 @@ The `replication/` module provides automatic synchronization of game state betwe
 | `builder.rs` | `NetworkEntityBuilder` fluent API |
 | `manager.rs` | `ReplicationManager` - central hub |
 | `messages.rs` | All message types for network transmission |
+| `networked_value.rs` | `NetworkedValue<T>` wrapper for dirty tracking |
 
 ## Key Types
 
@@ -101,6 +102,46 @@ let serialized = SerializedComponent::from_component(&transform)?;
 // Deserialize and apply to entity
 registry.deserialize_and_apply(&serialized, &mut world, entity)?;
 ```
+
+### NetworkedValue<T>
+
+Wrapper preventing silent mutations of replicated values:
+
+```rust
+use ryo2d::prelude::*;
+
+// Create a component with networked values
+#[derive(Component, Clone, Serialize, Deserialize)]
+struct Position {
+    x: NetworkedValue<f32>,
+    y: NetworkedValue<f32>,
+}
+
+// Reading doesn't mark dirty (uses Deref)
+let x = *pos.x;  // or pos.x.get()
+
+// Writing requires explicit methods (marks dirty)
+pos.x.set(new_x);
+pos.y.modify(|y| *y += 10.0);
+
+// Check if any values changed
+if pos.x.is_dirty() || pos.y.is_dirty() {
+    replication.mark_dirty::<Position>(entity);
+}
+
+// Server correction (doesn't mark dirty)
+pos.x.apply_server_correction(server_x);
+
+// Optional: only set if changed
+pos.x.set_if_changed(new_x);  // Returns true if changed
+```
+
+Key features:
+- Implements `Deref` for read access, NOT `DerefMut`
+- `set()` and `modify()` mark the value as dirty
+- `apply_server_correction()` sets value without marking dirty
+- `set_if_changed()` only marks dirty if value actually changed
+- Dirty flag is NOT serialized (fresh on deserialize)
 
 ### DirtyTracker
 

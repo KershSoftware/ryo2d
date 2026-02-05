@@ -30,7 +30,11 @@ impl ParticleEmitter {
       .with_end_size(2.0, 6.0)
       .with_color(Color::new(255, 200, 50, 255), Color::new(255, 50, 0, 0))
       .with_drag(0.5)
-      .with_effect(SpriteEffect::glow_with_intensity(Color::new(255, 150, 50, 255), 4.0, 0.8))
+      .with_effect(SpriteEffect::glow_with_intensity(
+        Color::new(255, 150, 50, 255),
+        4.0,
+        0.8,
+      ))
   }
 
   /// Create a small flame (torch, candle).
@@ -111,7 +115,11 @@ impl ParticleEmitter {
       .with_color(Color::new(255, 200, 100, 255), Color::new(255, 50, 0, 0))
       .with_drag(2.0)
       .with_trail(TrailConfig::new(3.0).with_max_points(8).with_fade(true))
-      .with_effect(SpriteEffect::glow_with_intensity(Color::new(255, 150, 50, 255), 3.0, 0.6))
+      .with_effect(SpriteEffect::glow_with_intensity(
+        Color::new(255, 150, 50, 255),
+        3.0,
+        0.6,
+      ))
   }
 
   /// Create a debris explosion (physical particles).
@@ -154,7 +162,11 @@ impl ParticleEmitter {
       .with_color(Color::new(150, 100, 255, 255), Color::new(50, 200, 255, 0))
       .with_speed(10.0, 30.0)
       .with_drag(1.0)
-      .with_effect(SpriteEffect::glow_with_intensity(Color::new(100, 150, 255, 255), 6.0, 1.0))
+      .with_effect(SpriteEffect::glow_with_intensity(
+        Color::new(100, 150, 255, 255),
+        6.0,
+        1.0,
+      ))
   }
 
   /// Create a healing/buff effect.
@@ -171,7 +183,11 @@ impl ParticleEmitter {
       .with_color(Color::new(100, 255, 150, 255), Color::new(200, 255, 200, 0))
       .with_gravity(0.0, -30.0)
       .with_drag(0.5)
-      .with_effect(SpriteEffect::glow_with_intensity(Color::new(150, 255, 150, 255), 4.0, 0.8))
+      .with_effect(SpriteEffect::glow_with_intensity(
+        Color::new(150, 255, 150, 255),
+        4.0,
+        0.8,
+      ))
   }
 
   // ===========================================================================
@@ -193,7 +209,10 @@ impl ParticleEmitter {
       .with_lifetime(0.5, 1.0)
       .with_size(2.0, 3.0)
       .with_end_size(2.0, 3.0)
-      .with_color(Color::new(180, 200, 255, 200), Color::new(180, 200, 255, 100))
+      .with_color(
+        Color::new(180, 200, 255, 200),
+        Color::new(180, 200, 255, 100),
+      )
       .with_gravity(50.0, 800.0) // Slight angle + fast fall
       .with_trail(
         TrailConfig::new(1.0)
@@ -327,7 +346,11 @@ impl ParticleEmitter {
       .with_color(Color::new(255, 200, 100, 255), Color::new(255, 100, 0, 0))
       .with_speed(0.0, 10.0)
       .with_drag(0.5)
-      .with_effect(SpriteEffect::glow_with_intensity(Color::new(255, 150, 50, 255), 4.0, 0.6))
+      .with_effect(SpriteEffect::glow_with_intensity(
+        Color::new(255, 150, 50, 255),
+        4.0,
+        0.6,
+      ))
   }
 
   /// Create an engine exhaust effect.
@@ -368,10 +391,7 @@ mod tests {
   #[test]
   fn explosion_preset() {
     let emitter = ParticleEmitter::explosion(test_sprite(), 30);
-    assert!(matches!(
-      emitter.mode,
-      EmissionMode::Burst { count: 30 }
-    ));
+    assert!(matches!(emitter.mode, EmissionMode::Burst { count: 30 }));
     assert!(emitter.trail.is_some());
   }
 

@@ -160,6 +160,10 @@ use renet::{ConnectionConfig, DefaultChannel, RenetClient, RenetServer, ServerEv
 
 use super::error::{NetworkError, NetworkResult};
 
+pub mod action;
+pub mod debug;
+pub mod input;
+pub mod prediction;
 pub mod replication;
 pub mod rpc;
 pub mod transport;

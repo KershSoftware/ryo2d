@@ -159,9 +159,9 @@ impl ParticleSystem {
         continue;
       }
       // Get attractor data first
-      let attractor_data = world.get::<ParticleAttractor>(*entity).map(|a| {
-        (a.enabled, a.attractor_type.clone(), a.layer_mask, a.time)
-      });
+      let attractor_data = world
+        .get::<ParticleAttractor>(*entity)
+        .map(|a| (a.enabled, a.attractor_type.clone(), a.layer_mask, a.time));
       let Some((enabled, attractor_type, layer_mask, time)) = attractor_data else {
         continue;
       };
@@ -223,8 +223,7 @@ impl ParticleSystem {
       let mut force_x = 0.0;
       let mut force_y = 0.0;
       for (ax, ay, attractor) in &attractors {
-        let (fx, fy) =
-          attractor.calculate_force(*ax, *ay, p.x, p.y, p.particle.collision_layer);
+        let (fx, fy) = attractor.calculate_force(*ax, *ay, p.x, p.y, p.particle.collision_layer);
         force_x += fx;
         force_y += fy;
       }
@@ -485,7 +484,12 @@ impl ParticleSystem {
         let half_spread = spread / 2.0;
         let angle = direction + rng.gen_range(-half_spread..half_spread);
         let speed = rng.gen_range(*min_speed..=*max_speed);
-        (emitter_x, emitter_y, angle.cos() * speed, angle.sin() * speed)
+        (
+          emitter_x,
+          emitter_y,
+          angle.cos() * speed,
+          angle.sin() * speed,
+        )
       }
     }
   }
@@ -494,12 +498,7 @@ impl ParticleSystem {
   ///
   /// Call this in the render phase to add particles to the batch collector.
   /// The camera is used to convert world positions to screen positions.
-  pub fn collect_for_render(
-    &self,
-    world: &World,
-    camera: &Camera,
-    collector: &mut BatchCollector,
-  ) {
+  pub fn collect_for_render(&self, world: &World, camera: &Camera, collector: &mut BatchCollector) {
     let zoom = camera.zoom;
 
     // Group particles by emitter to get their sprites and effects
@@ -594,8 +593,7 @@ mod tests {
     let mut events = Events::new();
 
     // Create an emitter
-    let emitter =
-      ParticleEmitter::new(test_sprite()).with_mode(EmissionMode::Burst { count: 10 });
+    let emitter = ParticleEmitter::new(test_sprite()).with_mode(EmissionMode::Burst { count: 10 });
 
     let entity = world.spawn((Transform::new(100.0, 100.0), emitter));
 
@@ -645,8 +643,7 @@ mod tests {
     let mut world = World::new();
     let mut events = Events::new();
 
-    let emitter =
-      ParticleEmitter::new(test_sprite()).with_mode(EmissionMode::Burst { count: 20 });
+    let emitter = ParticleEmitter::new(test_sprite()).with_mode(EmissionMode::Burst { count: 20 });
 
     world.spawn((Transform::new(0.0, 0.0), emitter));
     system.update(&mut world, &mut events, 0.016);

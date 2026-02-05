@@ -58,6 +58,7 @@ mod component;
 mod dirty;
 mod manager;
 mod messages;
+mod networked_value;
 mod types;
 
 // Re-export public types
@@ -69,4 +70,5 @@ pub use messages::{
   ComponentBatchMessage, ComponentUpdateMessage, DespawnEntityMessage, FullStateSyncMessage,
   ReplicationMessage, SpawnEntityMessage,
 };
+pub use networked_value::NetworkedValue;
 pub use types::{Authority, NetworkEntity, NetworkId};

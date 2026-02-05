@@ -1,47 +1,33 @@
-# Leap
+# Leap King
 
-A game built with the [Ryo2D](https://github.com/your-username/ryo2d) engine.
+![Leap King Demo](../../../docs/assets/leap.gif)
 
-## Building and Running
+A multiplayer platformer with charge-and-release leap mechanics.
 
-### Development
+## Features Demonstrated
 
-```bash
-# Run in debug mode (faster compilation, slower runtime)
-cargo run
-
-# Or use the Ryo2D CLI
-ryo2d dev
-```
-
-### Release
-
-```bash
-# Build optimized release
-ryo2d build
-
-# Run the release build
-ryo2d run
-
-# Or distribute the ./release/ folder
-```
-
-## Project Structure
-
-```
-leap/
-├── main.rs          # Game entry point
-├── Cargo.toml       # Rust package configuration
-├── Ryo.toml         # Ryo2D project configuration
-├── assets/          # Game assets (images, audio, etc.)
-├── data/            # Save data (auto-generated)
-└── src/             # Additional source modules (optional)
-```
+- **Multiplayer Networking** - Client-server architecture with listen server support
+- **Client-Side Prediction** - Smooth movement despite network latency
+- **Procedural Generation** - Infinite vertical platforms from shared seed
+- **2D Lighting** - Point lights on players and platform lamps
+- **Particle System** - Rain emitter and visual effects
+- **Camera Follow** - Smooth vertical camera tracking
 
 ## Controls
 
-Add your game controls here.
+Slingshot-style aiming: pull in the opposite direction you want to leap.
 
-## License
+- `Hold Space` - Charge leap power
+- `A` / `←` - Pull left to leap **right**
+- `D` / `→` - Pull right to leap **left**
+- `W` / `↑` - Pull up for lower arc
+- `S` / `↓` - Pull down for higher arc
+- `Release Space` - Leap
+- `Escape` - Quit
 
-Add your license here.
+## Run
+
+```bash
+ryo2d dev          # Development mode
+ryo2d build && ryo2d run  # Production build
+```

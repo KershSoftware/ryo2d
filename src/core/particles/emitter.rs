@@ -467,7 +467,9 @@ impl ParticleEmitter {
   pub fn is_finished(&self) -> bool {
     match &self.mode {
       EmissionMode::Burst { .. } => self.burst_fired && self.particle_count == 0,
-      EmissionMode::BurstRepeating { repeats: Some(0), .. } => self.particle_count == 0,
+      EmissionMode::BurstRepeating {
+        repeats: Some(0), ..
+      } => self.particle_count == 0,
       _ => false,
     }
   }

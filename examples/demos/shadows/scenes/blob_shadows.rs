@@ -90,8 +90,7 @@ impl BlobShadowsScene {
       name,
     );
 
-    let blob = BlobShadow::ellipse(shadow_size.0, shadow_size.1)
-      .offset(size as f32); // Below the sprite
+    let blob = BlobShadow::ellipse(shadow_size.0, shadow_size.1).offset(size as f32); // Below the sprite
 
     ctx.world.spawn((
       Transform::new(x, y),
@@ -301,7 +300,13 @@ impl Scene for BlobShadowsScene {
     // Controls
     ui.label("Controls:", 10.0, 105.0, white, bg);
     ui.label("  Space: Make characters jump", 10.0, 125.0, gray, bg);
-    ui.label("  H: Toggle height-based shadow scaling", 10.0, 145.0, gray, bg);
+    ui.label(
+      "  H: Toggle height-based shadow scaling",
+      10.0,
+      145.0,
+      gray,
+      bg,
+    );
     ui.label("  1-6: Switch shadow scenes", 10.0, 165.0, gray, bg);
     ui.label("  ESC: Quit", 10.0, 185.0, gray, bg);
 

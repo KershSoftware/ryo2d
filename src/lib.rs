@@ -46,7 +46,9 @@ pub mod core;
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
   // Core game trait
-  pub use crate::core::game::{Game, GameContext, GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
+  pub use crate::core::game::{
+    Game, GameContext, GpuRenderContext, TimeControl, TimeInfo, WindowRequest,
+  };
 
   // Scene management
   pub use crate::core::scene::{
@@ -155,6 +157,26 @@ pub mod prelude {
   pub use crate::core::network::rpc::{
     ReceivedRpc, Rpc, RpcRegistry, RpcTarget, RpcTypeId, SerializedRpc,
   };
+
+  // Network Input (derive macro + helpers)
+  pub use crate::core::network::input::{
+    InputBuffer, InputProcessor, NetworkInput, NetworkInputTrait, NetworkedInputHandler,
+    SequencedInput,
+  };
+
+  // Network Actions (dual local+network execution)
+  pub use crate::core::network::action::{
+    ActionContext, ActionError, NetworkAction, SerializedAction, apply_received_action,
+    execute_action, execute_action_broadcast, execute_action_server, try_execute_action,
+  };
+
+  // Client-Side Prediction
+  pub use crate::core::network::prediction::{
+    Predicted, PredictionHelper, ServerPositionUpdate, UpdateResult,
+  };
+
+  // NetworkedValue wrapper
+  pub use crate::core::network::replication::NetworkedValue;
 
   // Workspace & config
   pub use crate::core::config::{SystemDefaults, Workspace, WorkspaceConfig};

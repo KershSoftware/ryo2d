@@ -964,14 +964,14 @@ impl Engine {
 
         // Create lighting callback if lighting is enabled
         if lighting_enabled {
-          let lighting_ref = &lighting;
+          let lighting_ref = &mut lighting;
           let lighting_callback =
             move |device: &wgpu::Device,
                   queue: &wgpu::Queue,
                   encoder: &mut wgpu::CommandEncoder,
                   scene_texture: &wgpu::Texture,
                   output_view: &wgpu::TextureView| {
-              if let Some(ref lighting_renderer) = *lighting_ref {
+              if let Some(ref mut lighting_renderer) = *lighting_ref {
                 // Render lights to the light accumulation buffer
                 lighting_renderer.render_lights(
                   device,
@@ -1109,10 +1109,18 @@ impl Engine {
     if let Some(mut game) = self.game.take() {
       // Build TimeInfo from current timing state
       let time_info = TimeInfo {
-        fixed_dt: self.time.as_ref().map(|t| t.fixed_dt()).unwrap_or(1.0 / 60.0),
+        fixed_dt: self
+          .time
+          .as_ref()
+          .map(|t| t.fixed_dt())
+          .unwrap_or(1.0 / 60.0),
         scaled_dt: _dt,
         real_dt: self.time.as_ref().map(|t| t.dt()).unwrap_or(0.0),
-        render_alpha: self.time.as_ref().map(|t| t.interpolation_alpha()).unwrap_or(0.0),
+        render_alpha: self
+          .time
+          .as_ref()
+          .map(|t| t.interpolation_alpha())
+          .unwrap_or(0.0),
         time_scale: self.time_control.time_scale,
         is_hitstop: self.time_control.hitstop_remaining > 0.0,
         frame_count: self.time.as_ref().map(|t| t.frame_count()).unwrap_or(0),
@@ -1330,27 +1338,35 @@ impl Engine {
 
       // Use WorldTransform if available (for hierarchical entities),
       // otherwise fall back to local Transform
-      let (base_x, base_y, base_rotation, base_scale_x, base_scale_y, pivot_x, pivot_y, offset_x, offset_y) =
-        if let Some(wt) = self.world.get_component::<WorldTransform>(entity) {
-          (
-            wt.x,
-            wt.y,
-            wt.rotation,
-            wt.scale_x,
-            wt.scale_y,
-            wt.pivot_x,
-            wt.pivot_y,
-            wt.offset_x,
-            wt.offset_y,
-          )
-        } else if let Some(t) = self.world.get_component::<Transform>(entity) {
-          (
-            t.x, t.y, t.rotation, t.scale_x, t.scale_y, t.pivot_x, t.pivot_y, t.offset_x,
-            t.offset_y,
-          )
-        } else {
-          continue;
-        };
+      let (
+        base_x,
+        base_y,
+        base_rotation,
+        base_scale_x,
+        base_scale_y,
+        pivot_x,
+        pivot_y,
+        offset_x,
+        offset_y,
+      ) = if let Some(wt) = self.world.get_component::<WorldTransform>(entity) {
+        (
+          wt.x,
+          wt.y,
+          wt.rotation,
+          wt.scale_x,
+          wt.scale_y,
+          wt.pivot_x,
+          wt.pivot_y,
+          wt.offset_x,
+          wt.offset_y,
+        )
+      } else if let Some(t) = self.world.get_component::<Transform>(entity) {
+        (
+          t.x, t.y, t.rotation, t.scale_x, t.scale_y, t.pivot_x, t.pivot_y, t.offset_x, t.offset_y,
+        )
+      } else {
+        continue;
+      };
 
       // Apply render interpolation if enabled
       let (x, y, rotation, scale_x, scale_y) = if renderable.interpolate {
@@ -1510,8 +1526,14 @@ impl Engine {
               // Create ellipse sprite for the blob shadow
               let blob_w = (eff_radius_x * 2.0) as u32;
               let blob_h = (eff_radius_y * 2.0) as u32;
-              let blob_sprite =
-                Sprite::solid_ellipse(blob_w, blob_h, blob.color.r, blob.color.g, blob.color.b, 255);
+              let blob_sprite = Sprite::solid_ellipse(
+                blob_w,
+                blob_h,
+                blob.color.r,
+                blob.color.g,
+                blob.color.b,
+                255,
+              );
 
               // Draw with camera zoom
               blob_sprite.draw_rotated_tinted(
@@ -1546,7 +1568,8 @@ impl Engine {
               let contact_x = x - contact_radius_x;
               let contact_y = y + contact.offset_y - contact_radius_y;
 
-              let (contact_screen_x, contact_screen_y) = self.camera.world_to_screen(contact_x, contact_y);
+              let (contact_screen_x, contact_screen_y) =
+                self.camera.world_to_screen(contact_x, contact_y);
 
               // Create ellipse sprite for the contact shadow
               let contact_w = (contact_radius_x * 2.0) as u32;
@@ -2076,7 +2099,11 @@ impl ApplicationHandler for Engine {
       if let Some(mut game) = self.game.take() {
         // TimeInfo for init - no timing data yet, use defaults
         let time_info = TimeInfo {
-          fixed_dt: self.time.as_ref().map(|t| t.fixed_dt()).unwrap_or(1.0 / 60.0),
+          fixed_dt: self
+            .time
+            .as_ref()
+            .map(|t| t.fixed_dt())
+            .unwrap_or(1.0 / 60.0),
           scaled_dt: 0.0,
           real_dt: 0.0,
           render_alpha: 0.0,
@@ -2240,6 +2267,10 @@ impl ApplicationHandler for Engine {
           // For stretch mode, resize the internal buffer to match window
           if self.config.window_mode == WindowMode::ResizableStretch {
             renderer.resize_buffer(new_size.width, new_size.height);
+            // Resize lighting renderer to match new game buffer size
+            if let Some(lighting) = &mut self.lighting {
+              lighting.resize(renderer.device(), new_size.width, new_size.height);
+            }
             // Update camera to match new buffer size
             self.camera = Camera::centered_at(
               new_size.width as f32 / 2.0,
@@ -2749,14 +2780,14 @@ impl ApplicationHandler for Engine {
             // Create lighting callback if lighting is enabled
             if lighting_enabled {
               // Borrow lighting for the callback - we can't move it because it needs to be restored
-              let lighting_ref = &lighting;
+              let lighting_ref = &mut lighting;
               let lighting_callback =
                 move |device: &wgpu::Device,
                       queue: &wgpu::Queue,
                       encoder: &mut wgpu::CommandEncoder,
                       scene_texture: &wgpu::Texture,
                       output_view: &wgpu::TextureView| {
-                  if let Some(ref lighting_renderer) = *lighting_ref {
+                  if let Some(ref mut lighting_renderer) = *lighting_ref {
                     // Render lights to the light accumulation buffer
                     lighting_renderer.render_lights(
                       device,
@@ -3532,7 +3563,6 @@ impl EngineBuilder {
       // Fall back to runtime workspace discovery (development mode)
       let wconfig = workspace.config();
       let debug = &wconfig.debug;
-      let info = &wconfig.info;
       let system = &wconfig.system;
       let release = &wconfig.release;
 
@@ -3540,9 +3570,14 @@ impl EngineBuilder {
       game_name = Some(wconfig.name.clone());
       game_version = wconfig.version.clone();
 
+      // Load window title from [project].title (only if not explicitly set via builder)
+      if config.title == "Ryo2D" {
+        config.title = wconfig.title.clone();
+      }
+
       // Load debug settings
       config.debug.show_colliders = debug.show_colliders;
-      config.debug.show_fps = info.show_fps;
+      config.debug.show_fps = system.show_fps; // From [system] section
       config.debug.show_velocities = debug.show_velocities;
       config.debug.show_origins = debug.show_origins;
       config.debug.show_frame_timing = debug.show_frame_timing;

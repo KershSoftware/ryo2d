@@ -11,8 +11,8 @@ pub mod workspace;
 
 // Workspace types
 pub use workspace::{
-  CONFIG_FILENAME, DebugConfig as WorkspaceDebugConfig, InfoConfig, ReleaseConfig, SystemDefaults,
-  Workspace, WorkspaceConfig,
+  CONFIG_FILENAME, DebugConfig as WorkspaceDebugConfig, ReleaseConfig, SystemDefaults, Workspace,
+  WorkspaceConfig,
 };
 
 // Save system types

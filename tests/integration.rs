@@ -43,3 +43,15 @@ mod y_sort;
 
 #[path = "integration/ui_tween.rs"]
 mod ui_tween;
+
+#[path = "integration/network_input.rs"]
+mod network_input;
+
+#[path = "integration/network_action.rs"]
+mod network_action;
+
+#[path = "integration/input_handler.rs"]
+mod input_handler;
+
+#[path = "integration/prediction.rs"]
+mod prediction;

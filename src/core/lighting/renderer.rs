@@ -617,9 +617,7 @@ impl LightingRenderer {
     // Raymarch shader
     let raymarch_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Raymarch Shadow Shader"),
-      source: wgpu::ShaderSource::Wgsl(
-        include_str!("../shaders/core/raymarch_shadow.wgsl").into(),
-      ),
+      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/core/raymarch_shadow.wgsl").into()),
     });
 
     let raymarch_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1395,7 +1393,7 @@ impl LightingRenderer {
   /// * `output_view` - The output texture view
   /// * `time` - Current time for effects
   pub fn compose_from_texture(
-    &self,
+    &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
@@ -1403,6 +1401,12 @@ impl LightingRenderer {
     output_view: &wgpu::TextureView,
     time: f32,
   ) {
+    // Auto-resize if scene texture dimensions don't match our internal textures
+    let scene_size = scene_texture.size();
+    if scene_size.width != self.width || scene_size.height != self.height {
+      self.resize(device, scene_size.width, scene_size.height);
+    }
+
     // Copy scene texture to our internal scene_copy_texture
     encoder.copy_texture_to_texture(
       wgpu::ImageCopyTexture {

@@ -34,7 +34,9 @@ impl TweenSystem {
       }
 
       // Check if tween is playing before borrowing mutably
-      let should_update = world.get_component::<Tween>(entity).is_some_and(|t| t.playing);
+      let should_update = world
+        .get_component::<Tween>(entity)
+        .is_some_and(|t| t.playing);
 
       if !should_update {
         continue;
@@ -45,9 +47,7 @@ impl TweenSystem {
         .get_component::<Tween>(entity)
         .is_some_and(|t| t.has_color_targets() && !t.has_started());
 
-      if needs_color_capture
-        && let Some(renderable) = world.get_component::<Renderable>(entity)
-      {
+      if needs_color_capture && let Some(renderable) = world.get_component::<Renderable>(entity) {
         let alpha = renderable.alpha;
         let tint = renderable.tint;
         if let Some(mut tween) = world.get_component_mut::<Tween>(entity) {
@@ -103,9 +103,7 @@ impl TweenSystem {
             .is_some_and(|t| t.has_color_targets() && !t.has_started())
         });
 
-      if needs_color_capture
-        && let Some(renderable) = world.get_component::<Renderable>(entity)
-      {
+      if needs_color_capture && let Some(renderable) = world.get_component::<Renderable>(entity) {
         let alpha = renderable.alpha;
         let tint = renderable.tint;
         if let Some(mut seq) = world.get_component_mut::<TweenSequence>(entity)
@@ -145,9 +143,7 @@ impl TweenSystem {
       }
 
       // Advance to next tween if current one finished
-      if tween_finished
-        && let Some(mut seq) = world.get_component_mut::<TweenSequence>(entity)
-      {
+      if tween_finished && let Some(mut seq) = world.get_component_mut::<TweenSequence>(entity) {
         seq.advance();
       }
     }

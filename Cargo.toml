@@ -21,6 +21,7 @@ path = "src/bin/ryo2d.rs"
 [workspace]
 members = [
   ".",
+  "ryo2d-derive",
   "examples/demos/*",
   "examples/games/*",
 ]
@@ -54,6 +55,7 @@ gilrs = "0.11"
 zip = "2"
 noise = "0.9"
 rand = "0.8"
+ryo2d-derive = { path = "ryo2d-derive" }
 
 # Optional profiling dependency (enable with --features profiler)
 puffin = { version = "0.19", optional = true }

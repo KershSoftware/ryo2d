@@ -40,14 +40,7 @@ pub struct ShadowVertex {
 }
 
 impl ShadowVertex {
-  pub fn new(
-    x: f32,
-    y: f32,
-    light_x: f32,
-    light_y: f32,
-    light_radius: f32,
-    softness: f32,
-  ) -> Self {
+  pub fn new(x: f32, y: f32, light_x: f32, light_y: f32, light_radius: f32, softness: f32) -> Self {
     Self::with_color(x, y, light_x, light_y, light_radius, softness, 0x000000FF)
   }
 
@@ -137,14 +130,38 @@ pub fn generate_shadow_geometry<'a>(
           shadow_softness,
           shadow_color,
           ..
-        } => (*radius, true, *angle, *direction, *shadow_softness, *shadow_color),
+        } => (
+          *radius,
+          true,
+          *angle,
+          *direction,
+          *shadow_softness,
+          *shadow_color,
+        ),
       };
-      (Vec2::new(t.x, t.y), radius, is_spot, angle, direction, softness, color)
+      (
+        Vec2::new(t.x, t.y),
+        radius,
+        is_spot,
+        angle,
+        direction,
+        softness,
+        color,
+      )
     })
     .collect();
 
   // For each shadow-casting light
-  for (light_pos, light_radius, is_spot, spot_angle, spot_direction, shadow_softness, shadow_color) in shadow_lights {
+  for (
+    light_pos,
+    light_radius,
+    is_spot,
+    spot_angle,
+    spot_direction,
+    shadow_softness,
+    shadow_color,
+  ) in shadow_lights
+  {
     // For each occluder
     for (occluder_transform, occluder) in occluders {
       if !occluder.is_enabled() {
@@ -265,7 +282,12 @@ fn generate_shadow_quads_for_occluder(
     let ly = light_pos.y;
     let lr = light_radius;
     let ss = shadow_softness;
-    let sc = ShadowVertex::pack_color(shadow_color.r, shadow_color.g, shadow_color.b, shadow_color.a);
+    let sc = ShadowVertex::pack_color(
+      shadow_color.r,
+      shadow_color.g,
+      shadow_color.b,
+      shadow_color.a,
+    );
 
     // Triangle 1
     geometry
@@ -274,20 +296,20 @@ fn generate_shadow_quads_for_occluder(
     geometry
       .vertices
       .push(ShadowVertex::with_color(v1.x, v1.y, lx, ly, lr, ss, sc));
-    geometry
-      .vertices
-      .push(ShadowVertex::with_color(proj1.x, proj1.y, lx, ly, lr, ss, sc));
+    geometry.vertices.push(ShadowVertex::with_color(
+      proj1.x, proj1.y, lx, ly, lr, ss, sc,
+    ));
 
     // Triangle 2
     geometry
       .vertices
       .push(ShadowVertex::with_color(v0.x, v0.y, lx, ly, lr, ss, sc));
-    geometry
-      .vertices
-      .push(ShadowVertex::with_color(proj1.x, proj1.y, lx, ly, lr, ss, sc));
-    geometry
-      .vertices
-      .push(ShadowVertex::with_color(proj0.x, proj0.y, lx, ly, lr, ss, sc));
+    geometry.vertices.push(ShadowVertex::with_color(
+      proj1.x, proj1.y, lx, ly, lr, ss, sc,
+    ));
+    geometry.vertices.push(ShadowVertex::with_color(
+      proj0.x, proj0.y, lx, ly, lr, ss, sc,
+    ));
   }
 }
 

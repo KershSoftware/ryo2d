@@ -25,15 +25,12 @@ Ryo2D uses a two-file configuration system:
 ```toml
 [project]
 name = "My Game"
+title = "My Awesome Game"  # Window title (defaults to name)
 
 [paths]
 entry_point = "src/main.rs"
 save_data = "data"
 assets = "assets"
-
-[info]
-title = "My Awesome Game"
-show_fps = false
 
 [system]  # Defaults for system.json (user-facing)
 resolution_width = 1920
@@ -43,6 +40,7 @@ display_mode = "Windowed"  # "Windowed", "Fullscreen", or "BorderlessFullscreen"
 master_volume = 1.0
 music_volume = 0.8
 sfx_volume = 1.0
+show_fps = false
 
 [debug]  # Dev-only flags (NOT in system.json)
 show_colliders = false
@@ -59,16 +57,15 @@ difficulty = "normal"
 
 | Section | Goes to system.json | Purpose |
 |---------|---------------------|---------|
-| `[project]` | No | Project metadata |
+| `[project]` | No | Project metadata (name, title, version) |
 | `[paths]` | No | Directory structure |
-| `[info]` | Partial (show_fps) | Game info overlay |
-| `[system]` | Yes | User-facing defaults |
+| `[system]` | Yes | User-facing defaults (resolution, audio, show_fps) |
 | `[debug]` | No | Developer debugging |
 | `[env]` | No | Game variables |
 
 ## system.json
 
-Created automatically from `[system]` + `[info]` sections when missing.
+Created automatically from `[system]` section when missing (title from `[info]`).
 Players can edit this file directly.
 
 ```json

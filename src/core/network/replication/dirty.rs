@@ -215,6 +215,23 @@ impl DirtyTracker {
   pub fn tracked_entities(&self) -> impl Iterator<Item = NetworkId> + '_ {
     self.dirty_components.keys().copied()
   }
+
+  /// Check if a specific component is currently marked dirty for an entity.
+  ///
+  /// This checks if the component has been marked dirty since the last
+  /// generation clear, regardless of client acknowledgments.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// let is_dirty = tracker.is_component_dirty(network_id, ComponentTypeId::from_name("Transform"));
+  /// ```
+  pub fn is_component_dirty(&self, network_id: NetworkId, component_id: ComponentTypeId) -> bool {
+    self
+      .dirty_components
+      .get(&network_id)
+      .is_some_and(|components| components.contains_key(&component_id))
+  }
 }
 
 impl Default for DirtyTracker {
@@ -320,5 +337,28 @@ mod tests {
     // Client 2 (at gen 0) also sees it
     assert!(tracker.has_dirty_for_client(1));
     assert!(tracker.has_dirty_for_client(2));
+  }
+
+  #[test]
+  fn is_component_dirty() {
+    let mut tracker = DirtyTracker::new();
+    let net_id = NetworkId::from_raw(1);
+    let transform_id = make_component_id("Transform");
+    let velocity_id = make_component_id("Velocity");
+
+    // Initially nothing is dirty
+    assert!(!tracker.is_component_dirty(net_id, transform_id));
+    assert!(!tracker.is_component_dirty(net_id, velocity_id));
+
+    // Mark transform dirty
+    tracker.mark_dirty(net_id, transform_id);
+
+    // Transform is dirty, velocity is not
+    assert!(tracker.is_component_dirty(net_id, transform_id));
+    assert!(!tracker.is_component_dirty(net_id, velocity_id));
+
+    // Check non-existent entity
+    let other_id = NetworkId::from_raw(999);
+    assert!(!tracker.is_component_dirty(other_id, transform_id));
   }
 }

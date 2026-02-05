@@ -151,9 +151,20 @@ impl ConsoleLine {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DragState {
   None,
-  Dragging { offset_x: f32, offset_y: f32 },
-  Resizing { start_w: f32, start_h: f32, start_mouse_x: f32, start_mouse_y: f32 },
-  ScrollbarDragging { start_scroll_offset: usize, start_mouse_y: f32 },
+  Dragging {
+    offset_x: f32,
+    offset_y: f32,
+  },
+  Resizing {
+    start_w: f32,
+    start_h: f32,
+    start_mouse_x: f32,
+    start_mouse_y: f32,
+  },
+  ScrollbarDragging {
+    start_scroll_offset: usize,
+    start_mouse_y: f32,
+  },
 }
 
 /// Console state and rendering
@@ -397,7 +408,12 @@ impl ConsoleState {
     let thumb_travel = output_height - thumb_height;
     let thumb_y = output_top + thumb_travel * (1.0 - scroll_ratio);
 
-    Some(Rect::new(scrollbar_x, thumb_y, SCROLLBAR_WIDTH, thumb_height))
+    Some(Rect::new(
+      scrollbar_x,
+      thumb_y,
+      SCROLLBAR_WIDTH,
+      thumb_height,
+    ))
   }
 
   /// Calculate max scroll offset
@@ -408,7 +424,11 @@ impl ConsoleState {
   /// Get the maximum text width for word wrapping
   fn max_text_width(&self, has_scrollbar: bool) -> f32 {
     let padding = 8.0;
-    let scrollbar_margin = if has_scrollbar { SCROLLBAR_WIDTH + 12.0 } else { 0.0 };
+    let scrollbar_margin = if has_scrollbar {
+      SCROLLBAR_WIDTH + 12.0
+    } else {
+      0.0
+    };
     self.width - padding * 2.0 - scrollbar_margin
   }
 
@@ -493,7 +513,12 @@ impl ConsoleState {
         // Don't process other input while dragging
         return None;
       }
-      DragState::Resizing { start_w, start_h, start_mouse_x, start_mouse_y } => {
+      DragState::Resizing {
+        start_w,
+        start_h,
+        start_mouse_x,
+        start_mouse_y,
+      } => {
         if input.mouse_down(MouseButton::Left) {
           let delta_x = mouse_x - start_mouse_x;
           let delta_y = mouse_y - start_mouse_y;
@@ -505,7 +530,10 @@ impl ConsoleState {
         // Don't process other input while resizing
         return None;
       }
-      DragState::ScrollbarDragging { start_scroll_offset, start_mouse_y } => {
+      DragState::ScrollbarDragging {
+        start_scroll_offset,
+        start_mouse_y,
+      } => {
         if input.mouse_down(MouseButton::Left) {
           // Calculate scroll based on mouse movement
           let (_, _, output_height, _) = self.output_area();
@@ -517,7 +545,9 @@ impl ConsoleState {
             let delta_y = mouse_y - start_mouse_y;
             // Dragging down = scroll_ratio increases = scroll_offset decreases (toward bottom)
             let scroll_delta = (delta_y / thumb_travel * max_scroll as f32).round() as i32;
-            let new_offset = (start_scroll_offset as i32 - scroll_delta).max(0).min(max_scroll as i32);
+            let new_offset = (start_scroll_offset as i32 - scroll_delta)
+              .max(0)
+              .min(max_scroll as i32);
             self.scroll_offset = new_offset as usize;
           }
         } else {
@@ -682,9 +712,7 @@ impl ConsoleState {
     }
 
     // Up/Down arrows for command history
-    if input.key_pressed(KeyCode::ArrowUp)
-      && !self.command_history.is_empty()
-    {
+    if input.key_pressed(KeyCode::ArrowUp) && !self.command_history.is_empty() {
       match self.history_index {
         None => {
           // Start browsing history
@@ -804,8 +832,14 @@ impl ConsoleState {
     };
 
     // Clamp window position to screen bounds
-    let x = self.x.max(0.0).min((frame_width as f32 - self.width).max(0.0));
-    let y = self.y.max(0.0).min((frame_height as f32 - self.height).max(0.0));
+    let x = self
+      .x
+      .max(0.0)
+      .min((frame_width as f32 - self.width).max(0.0));
+    let y = self
+      .y
+      .max(0.0)
+      .min((frame_height as f32 - self.height).max(0.0));
 
     // Draw window background
     let bg_rect = Rect::new(x, y, self.width, self.height);
@@ -956,7 +990,12 @@ impl ConsoleState {
       let indicator = format!("[{} more lines below]", self.scroll_offset);
       let (indicator_width, _) = ui.text_size(&indicator);
       let indicator_x = x + (self.width - indicator_width as f32) / 2.0;
-      ui.draw_text(&indicator, indicator_x, output_bottom - line_height, colors::SYSTEM);
+      ui.draw_text(
+        &indicator,
+        indicator_x,
+        output_bottom - line_height,
+        colors::SYSTEM,
+      );
     }
   }
 }
@@ -1305,8 +1344,14 @@ mod tests {
   fn test_drag_state_equality() {
     assert_eq!(DragState::None, DragState::None);
 
-    let drag1 = DragState::Dragging { offset_x: 10.0, offset_y: 20.0 };
-    let drag2 = DragState::Dragging { offset_x: 10.0, offset_y: 20.0 };
+    let drag1 = DragState::Dragging {
+      offset_x: 10.0,
+      offset_y: 20.0,
+    };
+    let drag2 = DragState::Dragging {
+      offset_x: 10.0,
+      offset_y: 20.0,
+    };
     assert_eq!(drag1, drag2);
 
     let resize1 = DragState::Resizing {
@@ -1385,7 +1430,10 @@ mod tests {
   fn test_desired_cursor_during_drag() {
     let mut console = ConsoleState::new();
     console.visible = true;
-    console.drag_state = DragState::Dragging { offset_x: 10.0, offset_y: 10.0 };
+    console.drag_state = DragState::Dragging {
+      offset_x: 10.0,
+      offset_y: 10.0,
+    };
 
     let cursor = console.desired_cursor(0.0, 0.0);
     assert_eq!(cursor, Some(CursorStyle::Move));

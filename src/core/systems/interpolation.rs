@@ -69,7 +69,15 @@ impl InterpolationSystem {
       .filter(|&e| !world.has::<Inactive>(e))
       .filter_map(|e| {
         let transform = world.get_component::<Transform>(e)?;
-        Some((e, transform.x, transform.y, transform.z, transform.rotation, transform.scale_x, transform.scale_y))
+        Some((
+          e,
+          transform.x,
+          transform.y,
+          transform.z,
+          transform.rotation,
+          transform.scale_x,
+          transform.scale_y,
+        ))
       })
       .collect();
 

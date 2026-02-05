@@ -396,7 +396,10 @@ impl ParticlesDemo {
       Transform::new(150.0, 250.0),
       ParticleEmitter::new(self.particle_sprite.clone())
         .with_mode(EmissionMode::Continuous { rate: 25.0 })
-        .with_shape(EmissionShape::Circle { radius: 20.0, hollow: false })
+        .with_shape(EmissionShape::Circle {
+          radius: 20.0,
+          hollow: false,
+        })
         .with_lifetime(4.0, 6.0)
         .with_size(4.0, 8.0)
         .with_color(Color::GREEN, Color::new(0, 255, 100, 0))
@@ -409,7 +412,10 @@ impl ParticlesDemo {
       Transform::new(self.screen_width - 150.0, 250.0),
       ParticleEmitter::new(self.particle_sprite.clone())
         .with_mode(EmissionMode::Continuous { rate: 25.0 })
-        .with_shape(EmissionShape::Circle { radius: 20.0, hollow: false })
+        .with_shape(EmissionShape::Circle {
+          radius: 20.0,
+          hollow: false,
+        })
         .with_lifetime(4.0, 6.0)
         .with_size(4.0, 8.0)
         .with_color(Color::CYAN, Color::new(0, 200, 255, 0))
@@ -688,7 +694,9 @@ impl Game for ParticlesDemo {
     gpu.upload_sprite(&self.particle_sprite);
 
     // Collect particles for rendering
-    self.particle_system.collect_for_render(gpu.world, gpu.camera, &mut gpu.batch);
+    self
+      .particle_system
+      .collect_for_render(gpu.world, gpu.camera, &mut gpu.batch);
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) {
@@ -729,8 +737,18 @@ impl Game for ParticlesDemo {
     if self.current_scene == DemoScene::Attractors {
       ui.draw_text("Point (attract)", 130.0, 170.0, Color::GREEN);
       ui.draw_text("Vortex (swirl)", sw as f32 - 220.0, 170.0, Color::CYAN);
-      ui.draw_text("Turbulence", sw as f32 / 2.0 - 40.0, sh as f32 - 130.0, Color::MAGENTA);
-      ui.draw_text("Repel", sw as f32 / 2.0 - 20.0, sh as f32 / 2.0 - 130.0, Color::RED);
+      ui.draw_text(
+        "Turbulence",
+        sw as f32 / 2.0 - 40.0,
+        sh as f32 - 130.0,
+        Color::MAGENTA,
+      );
+      ui.draw_text(
+        "Repel",
+        sw as f32 / 2.0 - 20.0,
+        sh as f32 / 2.0 - 130.0,
+        Color::RED,
+      );
     }
 
     // Scene-specific hints

@@ -512,7 +512,9 @@ impl<'a> GameContext<'a> {
     description: impl Into<String>,
     verbose_description: Option<impl Into<String>>,
   ) {
-    self.command_registry.declare(name, description, verbose_description);
+    self
+      .command_registry
+      .declare(name, description, verbose_description);
   }
 
   /// Register a handler for a declared game command.

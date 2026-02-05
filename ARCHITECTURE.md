@@ -454,10 +454,9 @@ Thread-safe global log buffer with macros:
 
 | Section | Purpose | Runtime |
 |---------|---------|---------|
-| `[project]` | Name, description, version | Build-time |
+| `[project]` | Name, title, version | Build-time |
 | `[paths]` | entry_point, assets, save_data | Build-time |
-| `[system]` | Resolution, vsync, volumes (defaults for system.json) | User-modifiable |
-| `[info]` | Window title, show_fps | Build-time |
+| `[system]` | Resolution, vsync, volumes, show_fps (defaults for system.json) | User-modifiable |
 | `[debug]` | Debug flags, profiler, logger | Dev-only |
 | `[release]` | Icon path | Build-time |
 | `[env]` | Game-specific key-value pairs | Game code |
