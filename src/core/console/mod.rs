@@ -650,6 +650,8 @@ impl ConsoleState {
         self.cursor_pos += filtered.len();
         self.cursor_blink_timer = 0.0;
       }
+      // Consume text so game widgets don't also process it
+      input.consume_text_input();
     }
     self.skip_text_input = false;
 

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::HashSet;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
@@ -129,6 +130,8 @@ pub struct InputState {
   ime_enabled: bool,
   /// Whether IME committed text this frame (used to prevent duplicate input from keyboard events)
   ime_committed_this_frame: bool,
+  /// Whether text_input has been consumed this frame (first reader wins)
+  text_input_consumed: Cell<bool>,
 
   // Gamepad state (first connected gamepad only)
   /// Whether a gamepad is currently connected
@@ -193,6 +196,7 @@ impl InputState {
     // Clear committed text, but keep preedit (it persists until cleared by IME)
     self.text_input.clear();
     self.ime_committed_this_frame = false;
+    self.text_input_consumed.set(false);
     // Clear per-frame gamepad state
     self.gamepad_buttons_pressed.clear();
     self.gamepad_buttons_released.clear();
@@ -480,20 +484,37 @@ impl InputState {
 
   /// Get text that was committed this frame (ready to insert into text fields).
   ///
-  /// Returns an empty string if no text was input this frame.
+  /// The first caller to read text input in a frame gets the text; subsequent
+  /// callers receive an empty string. This prevents duplicate processing when
+  /// multiple systems (game update, UI render, console) all read text input.
+  ///
+  /// Returns an empty string if no text was input or it was already consumed.
   pub fn text_input(&self) -> &str {
-    if self.oneshots_suppressed {
+    if self.oneshots_suppressed || self.text_input_consumed.get() {
       return "";
+    }
+    // Only mark as consumed when there's actual text — reading an empty buffer
+    // on a no-input frame must NOT set consumed, because begin_frame() only runs
+    // on update frames and won't reset it before the next frame's events arrive.
+    if !self.text_input.is_empty() {
+      self.text_input_consumed.set(true);
     }
     &self.text_input
   }
 
-  /// Check if any text was input this frame.
+  /// Check if any text was input this frame (and hasn't been consumed yet).
   pub fn has_text_input(&self) -> bool {
-    if self.oneshots_suppressed {
+    if self.oneshots_suppressed || self.text_input_consumed.get() {
       return false;
     }
     !self.text_input.is_empty()
+  }
+
+  /// Explicitly consume text input, preventing subsequent readers from seeing it.
+  ///
+  /// Call this after reading text input to ensure no other system processes it.
+  pub fn consume_text_input(&self) {
+    self.text_input_consumed.set(true);
   }
 
   /// Get the current IME preedit/composition text (in-progress input).
@@ -541,6 +562,11 @@ impl InputState {
 
   /// Handle IME commit (finalized text ready to insert)
   pub(crate) fn handle_ime_commit(&mut self, text: String) {
+    // On macOS, both KeyboardInput{text} and Ime::Commit fire for the same keypress.
+    // The first IME commit in a frame clears any keyboard-sourced text to prevent duplicates.
+    if !self.ime_committed_this_frame {
+      self.text_input.clear();
+    }
     self.text_input.push_str(&text);
     self.ime_committed_this_frame = true;
     // Preedit should be cleared by winit before commit, but ensure it's clear
@@ -555,6 +581,10 @@ impl InputState {
     // Skip keyboard text input when IME is enabled - let IME handle all text
     // This prevents double input on Windows where both keyboard and IME events fire
     if self.ime_enabled {
+      return;
+    }
+    // Skip if IME already committed text this frame (macOS sends both keyboard and IME events)
+    if self.ime_committed_this_frame {
       return;
     }
     // Only add text if not currently in IME composition mode
