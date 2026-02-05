@@ -5,7 +5,7 @@ name = "Particles Demo"
 resolution_width = 1280
 resolution_height = 720
 vsync = true
-fullscreen = false
+display_mode = "windowed"
 show_fps = true
 
 [debug]

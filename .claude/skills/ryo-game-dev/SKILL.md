@@ -354,7 +354,7 @@ fn clamp_to_screen(&self, transform: &mut Transform) {
 | Concept | Purpose |
 |---------|---------|
 | **Design Resolution** | Fixed internal game coordinates (e.g., 1920x1080) |
-| **Display Mode** | How the game appears on screen (Windowed/Fullscreen/Borderless) |
+| **Display Mode** | How the game appears on screen (Windowed/Exclusive Fullscreen/Borderless Fullscreen) |
 | **Window Size** | Actual window dimensions (can scale independently) |
 
 The player can change display mode without affecting game logic:

@@ -114,7 +114,9 @@ impl Scene for MenuScene {
 
     // Start background music (persists across scenes)
     if let Some(audio) = &mut ctx.audio {
-      let options = MusicOptions::new().volume(0.02).looping(true);
+      audio.set_master_volume(0.02);
+
+      let options = MusicOptions::new().looping(true);
       if let Err(e) = audio.play_music_once("assets/8bit-bg.mp3", options) {
         eprintln!("Failed to play background music: {}", e);
       }
@@ -132,10 +134,11 @@ impl Scene for MenuScene {
     // Update scrolling background
     for &entity in &self.background_entities {
       if let Some(scrolling) = ctx.world.get::<Scrolling>(entity)
-        && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          let new_x = scrolling.update(transform.x, dt);
-          transform.x = new_x;
-        }
+        && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
+      {
+        let new_x = scrolling.update(transform.x, dt);
+        transform.x = new_x;
+      }
     }
 
     // Animate bird preview

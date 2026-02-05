@@ -11,5 +11,5 @@ entry_point = "main.rs"
 resolution_width = 800
 resolution_height = 600
 vsync = true
-fullscreen = false
+display_mode = "windowed"
 show_fps = true

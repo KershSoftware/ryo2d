@@ -8,12 +8,16 @@
 //! # Volume System
 //!
 //! Volumes are multiplicative across three levels:
-//! 1. **Master volume** - Global volume for all audio
-//! 2. **Category volume** - Separate volumes for music and SFX
+//! 1. **Master volume** - Global volume applied to Kira's main track (affects all audio)
+//! 2. **Category volume** - Separate volumes for music and SFX (applied per-sound)
 //! 3. **Sound volume** - Per-sound volume passed to `play_sound`/`play_music`
 //!
 //! Example: If master is 0.5, SFX is 0.5, and a sound is played at 0.5,
 //! the effective volume is 0.5 × 0.5 × 0.5 = 0.125 (12.5%)
+//!
+//! Note: Master volume is applied at the main track level for real-time control
+//! of all audio (including already-playing sounds). Category and sound volumes
+//! are applied per-sound at play time.
 
 use kira::{
   AudioManager as KiraAudioManager, AudioManagerSettings, Decibels, Tween,
@@ -267,11 +271,12 @@ impl MusicHandle {
       .set_volume(amplitude_to_db(volume), Tween::default());
   }
 
-  /// Update the volume based on current category volumes.
+  /// Update the volume based on current music category volume.
   ///
-  /// Call this when master or music category volumes change.
-  pub fn update_category_volume(&mut self, master_volume: f32, music_volume: f32) {
-    let final_volume = master_volume * music_volume * self.reference_volume;
+  /// Call this when music category volume changes.
+  /// Note: master_volume is applied at the main track level, not here.
+  pub fn update_category_volume(&mut self, music_volume: f32) {
+    let final_volume = music_volume * self.reference_volume;
     self.set_volume(final_volume);
   }
 
@@ -336,9 +341,9 @@ impl Drop for MusicHandle {
 /// `master_volume × category_volume × sound_volume`
 ///
 /// Where:
-/// - `master_volume` affects all audio
-/// - `category_volume` is either `sfx_volume` or `music_volume`
-/// - `sound_volume` is the volume passed to `play_sound`/`play_music`
+/// - `master_volume` affects all audio (applied to Kira's main track for real-time control)
+/// - `category_volume` is either `sfx_volume` or `music_volume` (applied per-sound)
+/// - `sound_volume` is the volume passed to `play_sound`/`play_music` (applied per-sound)
 pub struct AudioManager {
   manager: KiraAudioManager,
   /// Cached sound data for quick playback
@@ -380,14 +385,16 @@ impl AudioManager {
     Ok(())
   }
 
-  /// Calculate the effective volume for a sound effect
+  /// Calculate the effective volume for a sound effect.
+  /// Note: master_volume is applied at the main track level, not here.
   fn effective_sfx_volume(&self, sound_volume: f32) -> f32 {
-    self.master_volume * self.sfx_volume * sound_volume
+    self.sfx_volume * sound_volume
   }
 
-  /// Calculate the effective volume for music
+  /// Calculate the effective volume for music.
+  /// Note: master_volume is applied at the main track level, not here.
   fn effective_music_volume(&self, music_volume: f32) -> f32 {
-    self.master_volume * self.music_volume * music_volume
+    self.music_volume * music_volume
   }
 
   // =========================================================================

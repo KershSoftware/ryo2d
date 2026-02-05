@@ -53,7 +53,7 @@ save_data = "data"
 resolution_width = 1920
 resolution_height = 1080
 vsync = true
-fullscreen = false
+display_mode = "windowed"
 
 [debug]  # Developer flags
 show_colliders = false
@@ -105,7 +105,7 @@ SystemField::MasterVolume   // Master volume (0.0 - 1.0)
 SystemField::MusicVolume    // Music volume (0.0 - 1.0)
 SystemField::SfxVolume      // SFX volume (0.0 - 1.0)
 SystemField::Resolution     // Display resolution (width + height)
-SystemField::DisplayMode    // Windowed/fullscreen/borderless
+SystemField::DisplayMode    // Windowed/exclusive fullscreen/borderless fullscreen
 SystemField::Vsync          // VSync preference
 SystemField::ShowFps        // Show FPS counter
 

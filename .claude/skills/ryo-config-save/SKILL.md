@@ -46,7 +46,7 @@ assets = "assets"
 resolution_width = 1920
 resolution_height = 1080
 vsync = true
-display_mode = "Windowed"  # "Windowed", "Fullscreen", or "BorderlessFullscreen"
+display_mode = "windowed"  # "windowed", "exclusive_fullscreen", or "borderless_fullscreen"
 master_volume = 1.0
 music_volume = 0.8
 sfx_volume = 1.0
@@ -86,7 +86,7 @@ Players can edit this file directly.
   "display": {
     "width": 1920,
     "height": 1080,
-    "display_mode": "Windowed",
+    "display_mode": "windowed",
     "vsync": true
   },
   "show_fps": false,
@@ -98,9 +98,9 @@ Players can edit this file directly.
 
 | Value | Description |
 |-------|-------------|
-| `"Windowed"` | Regular window with decorations |
-| `"Fullscreen"` | Exclusive fullscreen (changes display resolution) |
-| `"BorderlessFullscreen"` | Borderless window covering full screen |
+| `"windowed"` | Regular window with decorations |
+| `"exclusive_fullscreen"` | Exclusive fullscreen (changes display resolution) |
+| `"borderless_fullscreen"` | Borderless window covering full screen |
 
 ## Loading Configuration
 
@@ -167,7 +167,7 @@ let settings = save_manager.load_or_create_system(
 // Modify and save
 let mut settings = save_manager.load_system()?;
 settings.master_volume = 0.5;
-settings.display.display_mode = DisplayMode::Fullscreen;
+settings.display.display_mode = DisplayMode::ExclusiveFullscreen;
 save_manager.save_system(&settings)?;
 
 // Custom game settings (string key-value)
@@ -266,14 +266,14 @@ fn apply_display_mode(&mut self, ctx: &mut SceneContext, mode: DisplayMode) {
 const DISPLAY_MODES: &[DisplayMode] = &[
     DisplayMode::Windowed,
     DisplayMode::BorderlessFullscreen,
-    DisplayMode::Fullscreen,
+    DisplayMode::ExclusiveFullscreen,
 ];
 
 fn display_mode_label(mode: DisplayMode) -> &'static str {
     match mode {
         DisplayMode::Windowed => "Windowed",
         DisplayMode::BorderlessFullscreen => "Borderless Fullscreen",
-        DisplayMode::Fullscreen => "Fullscreen",
+        DisplayMode::ExclusiveFullscreen => "Exclusive Fullscreen",
     }
 }
 ```

@@ -31,8 +31,8 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // Convert display_mode to string for embedding
   let display_mode_str = match system.display_mode {
     crate::core::config::DisplayMode::Windowed => "windowed",
-    crate::core::config::DisplayMode::Fullscreen => "fullscreen",
-    crate::core::config::DisplayMode::BorderlessFullscreen => "borderless",
+    crate::core::config::DisplayMode::ExclusiveFullscreen => "exclusive_fullscreen",
+    crate::core::config::DisplayMode::BorderlessFullscreen => "borderless_fullscreen",
   };
 
   // Find workspace root's target directory for shared dependency caching

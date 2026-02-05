@@ -47,20 +47,23 @@ assets = "assets"
 resolution_width = 1280
 resolution_height = 720
 vsync = true
-fullscreen = false
+display_mode = "windowed"
 master_volume = 0.8
 music_volume = 1.0
 sfx_volume = 1.0
-
-# User-facing info display (saved to system.json)
-[info]
 show_fps = false
+console = false
 
 # Developer-only debug settings (NOT saved to system.json)
 [debug]
 show_colliders = false
 show_velocities = false
 show_origins = false
+show_frame_timing = false
+disable_debug_keys = false
+enable_profiler = false
+logger_window = false
+dev_window_keys = true
 ```
 
 ## Section Reference
@@ -88,16 +91,12 @@ These fields are used as defaults when creating `system.json`. Users can overrid
 | `resolution_width` | u32 | `1280` | Window/screen width |
 | `resolution_height` | u32 | `720` | Window/screen height |
 | `vsync` | bool | `true` | VSync enabled |
-| `fullscreen` | bool | `false` | Fullscreen mode |
+| `display_mode` | string | `"windowed"` | Display mode: `"windowed"`, `"exclusive_fullscreen"`, or `"borderless_fullscreen"` |
 | `master_volume` | f32 | `0.8` | Master volume (0.0 - 1.0) |
 | `music_volume` | f32 | `1.0` | Music volume (0.0 - 1.0) |
 | `sfx_volume` | f32 | `1.0` | SFX volume (0.0 - 1.0) |
-
-### [info] — User-Facing Display
-
-| Field | Type | Engine Default | Description |
-|-------|------|----------------|-------------|
 | `show_fps` | bool | `false` | Show FPS counter overlay |
+| `console` | bool | `false` | Enable developer console (backtick key) |
 
 ### [debug] — Developer Only
 
@@ -108,6 +107,13 @@ These are for development only and are **not** saved to `system.json`.
 | `show_colliders` | bool | `false` | Render physics collider outlines |
 | `show_velocities` | bool | `false` | Render velocity vectors |
 | `show_origins` | bool | `false` | Render entity origin points |
+| `show_frame_timing` | bool | `false` | Display frame timing breakdown |
+| `disable_debug_keys` | bool | `false` | Disable F1-F4 debug key toggles |
+| `enable_profiler` | bool | `false` | Open flamegraph profiler window |
+| `logger_window` | bool | `false` | Open logger dev window at startup |
+| `dev_window_keys` | bool | `true`* | Enable dev window hotkeys (F8/F9) |
+
+\* `dev_window_keys` defaults to `true` in debug builds, `false` in release builds.
 
 ## Entry Point Detection
 

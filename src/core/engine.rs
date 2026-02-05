@@ -332,7 +332,7 @@ impl Engine {
           window.set_fullscreen(None);
           window.set_decorations(true); // Restore window title bar
         }
-        DisplayMode::Fullscreen => {
+        DisplayMode::ExclusiveFullscreen => {
           // Exclusive fullscreen - use current monitor's native resolution
           if let Some(monitor) = window.current_monitor()
             && let Some(video_mode) = monitor.video_modes().next()
@@ -1975,7 +1975,7 @@ impl ApplicationHandler for Engine {
       DisplayMode::Windowed => {
         // Already windowed, nothing to do
       }
-      DisplayMode::Fullscreen => {
+      DisplayMode::ExclusiveFullscreen => {
         // Exclusive fullscreen - use current monitor's native resolution
         if let Some(monitor) = window.current_monitor()
           && let Some(video_mode) = monitor.video_modes().next()
@@ -3014,7 +3014,7 @@ impl ApplicationHandler for Engine {
             window.set_decorations(false);
             engine_info!(module: "Window", "Switched to borderless fullscreen");
           }
-          DisplayMode::BorderlessFullscreen | DisplayMode::Fullscreen => {
+          DisplayMode::BorderlessFullscreen | DisplayMode::ExclusiveFullscreen => {
             // Switch to windowed
             self.config.display_mode = DisplayMode::Windowed;
             window.set_fullscreen(None);
@@ -3145,7 +3145,7 @@ impl EngineBuilder {
   /// # Modes
   ///
   /// - [`DisplayMode::Windowed`] - Regular window (default)
-  /// - [`DisplayMode::Fullscreen`] - Exclusive fullscreen (takes over display)
+  /// - [`DisplayMode::ExclusiveFullscreen`] - Exclusive fullscreen (takes over display)
   /// - [`DisplayMode::BorderlessFullscreen`] - Borderless window filling screen
   ///
   /// # Example
@@ -3311,97 +3311,95 @@ impl EngineBuilder {
     self
   }
 
-  /// Apply user preference overrides from system.json.
+  /// Load user preferences from system.json.
   ///
-  /// Loads or creates the system state from the workspace's data directory
-  /// using the proper fallback chain:
+  /// Loads saved player settings from `system.json`, overriding Ryo.toml defaults.
+  /// Use this when you want players to be able to customize and save their preferences.
   ///
-  /// 1. **system.json** (user settings) - highest priority
-  /// 2. **Ryo.toml [system]** (developer defaults) - middle priority
-  /// 3. **Engine defaults** - lowest priority (fallback)
+  /// # Priority Chain
   ///
-  /// If system.json doesn't exist, it will be created from the developer
-  /// defaults in Ryo.toml's [system] section combined with engine defaults.
+  /// 1. **system.json** (user preferences) - loaded by this method
+  /// 2. **Ryo.toml `[system]`** (developer defaults) - auto-applied in build()
+  /// 3. **Engine defaults** - fallback
+  ///
+  /// If system.json doesn't exist, it will be created from Ryo.toml defaults.
   ///
   /// # Field Filtering
   ///
-  /// Use a [`SystemFieldFilter`](super::config::SystemFieldFilter) to control which fields
-  /// are loaded from system.json. Fields not in the filter use Ryo.toml/engine defaults.
+  /// Use a [`UserPreferenceFilter`](super::config::UserPreferenceFilter) to control which
+  /// preferences are loaded. Fields not in the filter use Ryo.toml defaults.
   ///
   /// # Examples
   ///
   /// ```rust,ignore
   /// use ryo2d::prelude::*;
   ///
-  /// // Load all fields (default behavior)
+  /// // Load all user preferences
   /// EngineBuilder::new()
   ///     .title("My Game")
-  ///     .with_system_state_overrides(SystemFieldFilter::all())
+  ///     .with_user_preferences(UserPreferenceFilter::all())
   ///     .with_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   ///
-  /// // Load only volume settings
+  /// // Load only volume preferences (ignore display settings)
   /// EngineBuilder::new()
   ///     .title("My Game")
-  ///     .with_system_state_overrides([SystemField::MasterVolume, SystemField::MusicVolume, SystemField::SfxVolume])
+  ///     .with_user_preferences([UserPreference::MasterVolume, UserPreference::MusicVolume, UserPreference::SfxVolume])
   ///     .with_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   ///
-  /// // Load nothing from system.json (pure Ryo.toml)
+  /// // Don't load any user preferences (use only Ryo.toml defaults)
   /// EngineBuilder::new()
   ///     .title("My Game")
-  ///     .with_system_state_overrides(SystemFieldFilter::none())
+  ///     .with_user_preferences(UserPreferenceFilter::none())
   ///     .with_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
-  pub fn with_system_state_overrides(
+  pub fn with_user_preferences(
     mut self,
-    filter: impl Into<super::config::SystemFieldFilter>,
+    filter: impl Into<super::config::UserPreferenceFilter>,
   ) -> Self {
-    use super::config::SystemField;
+    use super::config::UserPreference;
 
     let filter = filter.into();
 
     if let Ok(workspace) = super::config::Workspace::discover()
       && let Ok(save_manager) = workspace.create_save_manager()
-      && let Ok(mut system_state) = save_manager.load_or_create_system(&workspace.config().system)
+      && let Ok(system_state) = save_manager.load_or_create_system(&workspace.config().system)
     {
-      // Migrate legacy fullscreen field if present
-      system_state.display.migrate_legacy();
-
       // Apply display overrides based on filter
-      if filter.contains(SystemField::Resolution) {
+      if filter.contains(UserPreference::Resolution) {
         self.config.width = system_state.display.width;
         self.config.height = system_state.display.height;
       }
-      if filter.contains(SystemField::DisplayMode) {
+      if filter.contains(UserPreference::DisplayMode) {
         self.config.display_mode = system_state.display.display_mode;
         self.display_mode_set = true;
       }
 
       // Apply show_fps if present and in filter
-      if filter.contains(SystemField::ShowFps)
+      if filter.contains(UserPreference::ShowFps)
         && let Some(show_fps) = system_state.show_fps
       {
         self.config.debug.show_fps = show_fps;
       }
 
       // Apply vsync if in filter
-      if filter.contains(SystemField::Vsync) {
+      if filter.contains(UserPreference::Vsync) {
         self.vsync = system_state.vsync;
       }
 
       // Apply audio volumes based on filter
-      if filter.contains(SystemField::MasterVolume) {
+      if filter.contains(UserPreference::MasterVolume) {
         self.master_volume = system_state.master_volume;
       }
-      if filter.contains(SystemField::MusicVolume) {
+      if filter.contains(UserPreference::MusicVolume) {
         self.music_volume = system_state.music_volume;
       }
-      if filter.contains(SystemField::SfxVolume) {
+      if filter.contains(UserPreference::SfxVolume) {
         self.sfx_volume = system_state.sfx_volume;
       }
     }
@@ -3413,7 +3411,7 @@ impl EngineBuilder {
   /// This is useful for games with a fixed design resolution (e.g., pixel art games)
   /// that still want to respect the user's display mode preference (windowed/fullscreen).
   ///
-  /// Unlike [`with_system_state_overrides`](Self::with_system_state_overrides), this method
+  /// Unlike [`with_user_preferences`](Self::with_user_preferences), this method
   /// does NOT override the game's resolution - only the display mode and audio/vsync settings.
   ///
   /// # Example
@@ -3430,11 +3428,8 @@ impl EngineBuilder {
   pub fn with_saved_display_mode(mut self) -> Self {
     if let Ok(workspace) = super::config::Workspace::discover()
       && let Ok(save_manager) = workspace.create_save_manager()
-      && let Ok(mut system_state) = save_manager.load_or_create_system(&workspace.config().system)
+      && let Ok(system_state) = save_manager.load_or_create_system(&workspace.config().system)
     {
-      // Migrate legacy fullscreen field if present
-      system_state.display.migrate_legacy();
-
       // Apply ONLY display mode - not resolution
       self.config.display_mode = system_state.display.display_mode;
       self.display_mode_set = true;
@@ -3572,8 +3567,8 @@ impl EngineBuilder {
       // Display mode (only if not explicitly set via builder or system.json)
       if !display_mode_set && let Some(mode) = option_env!("RYO_EMBED_DISPLAY_MODE") {
         config.display_mode = match mode.to_lowercase().as_str() {
-          "fullscreen" => DisplayMode::Fullscreen,
-          "borderless" | "borderless_fullscreen" => DisplayMode::BorderlessFullscreen,
+          "exclusive_fullscreen" => DisplayMode::ExclusiveFullscreen,
+          "borderless_fullscreen" => DisplayMode::BorderlessFullscreen,
           _ => DisplayMode::Windowed,
         };
       }
@@ -3618,6 +3613,16 @@ impl EngineBuilder {
       // Load display mode from [system] section (only if not explicitly set)
       if !display_mode_set {
         config.display_mode = system.display_mode;
+      }
+
+      // Load audio volumes from [system] section
+      master_volume = system.master_volume;
+      music_volume = system.music_volume;
+      sfx_volume = system.sfx_volume;
+
+      // Load vsync from [system] section (only if not explicitly set)
+      if vsync.is_none() {
+        vsync = Some(system.vsync);
       }
 
       // Load icon from [release] section if specified and not explicitly set via builder

@@ -248,54 +248,51 @@ entry_point = "main.rs"
 save_data = "data"
 assets = "assets"
 
-# ==============================================================================
+# =============================================================================
 # USER-FACING DEFAULTS
-# Values here are written to system.json on first run.
-# Players can override these in system.json; their changes persist.
-# ==============================================================================
+# Written and prioritized read from system.json when `.with_user_preferences` set
+# =============================================================================
 
 [system]
-# Default window resolution (user can change in system.json)
 resolution_width = 1280
 resolution_height = 720
-# Enable VSync for smoother rendering (recommended)
 vsync = true
-# Start in windowed mode (user preference)
-fullscreen = false
-# Audio volume defaults (0.0 - 1.0)
+display_mode = "windowed"
 master_volume = 0.8
 music_volume = 1.0
 sfx_volume = 1.0
-# Display FPS counter in corner (user can toggle)
 show_fps = false
+console = false
 
-# ==============================================================================
+# =============================================================================
 # DEVELOPER-ONLY SETTINGS
-# These are NOT written to system.json - they're for development.
-# ==============================================================================
+# These are NOT written to system.json - they're for development
+# =============================================================================
 
 [debug]
-# Show collision boundaries for debugging
 show_colliders = false
-# Show velocity vectors (useful for physics debugging)
 show_velocities = false
-# Show entity origin points
 show_origins = false
-# For profiling options (flamegraphs, timing), see: ryo2d dev --profiler
-# or check the profiling docs: https://ryo2d.dev/concepts/profiling.html
+show_frame_timing = false
+disable_debug_keys = false
+enable_profiler = false
+logger_window = false
+dev_window_keys = true
 
-# ==============================================================================
+# =============================================================================
 # RELEASE/DISTRIBUTION SETTINGS
 # Build-time settings for `ryo2d build`
-# ==============================================================================
+# =============================================================================
 
 [release]
-# Custom application icon (PNG). If not specified, uses the default Ryo2D logo.
-# The icon appears in the window title bar, taskbar, and Windows .exe file.
 # logo = "assets/icon.png"
 
+# =============================================================================
+# GAME SPECIFIC SETTINGS
+# Custom game configurations (not tied to engine)
+# =============================================================================
+
 [env]
-# Add your game-specific configurations here; not used by the engine
 # my_custom_variable = false
 "#,
     display_name, display_name, display_name

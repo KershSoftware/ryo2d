@@ -50,10 +50,10 @@ fn main() {
     .fps(144)
     .physics_hz(144)
     .with_scene(MenuScene::new())
-    .with_system_state_overrides([
-      SystemField::MasterVolume,
-      SystemField::MusicVolume,
-      SystemField::SfxVolume,
+    .with_user_preferences([
+      UserPreference::MasterVolume,
+      UserPreference::MusicVolume,
+      UserPreference::SfxVolume,
     ])
     .build();
 

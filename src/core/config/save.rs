@@ -94,15 +94,15 @@ use crate::core::error::{SaveError, SaveResult};
 // System Field Filter
 // ============================================================================
 
-/// Fields that can be filtered for system.json persistence.
+/// User preference fields that can be loaded from system.json.
 ///
-/// Used with [`SystemFieldFilter`] to control which [`SystemState`] fields
-/// are read from `system.json` when using
-/// [`with_system_state_overrides`](crate::core::engine::EngineBuilder::with_system_state_overrides).
+/// Used with [`UserPreferenceFilter`] to control which user preferences
+/// are loaded from `system.json` when using
+/// [`with_user_preferences`](crate::core::engine::EngineBuilder::with_user_preferences).
 ///
-/// Fields not in the filter will fall back to Ryo.toml → engine defaults.
+/// Fields not in the filter will use Ryo.toml `[system]` defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SystemField {
+pub enum UserPreference {
   /// Master volume (0.0 - 1.0)
   MasterVolume,
   /// Music volume (0.0 - 1.0)
@@ -111,7 +111,7 @@ pub enum SystemField {
   SfxVolume,
   /// Display resolution (width + height together)
   Resolution,
-  /// Display mode (windowed, fullscreen, borderless)
+  /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
   DisplayMode,
   /// VSync preference
   Vsync,
@@ -119,25 +119,25 @@ pub enum SystemField {
   ShowFps,
 }
 
-impl SystemField {
-  /// Returns all available system fields.
-  pub fn all() -> &'static [SystemField] {
+impl UserPreference {
+  /// Returns all available user preference fields.
+  pub fn all() -> &'static [UserPreference] {
     &[
-      SystemField::MasterVolume,
-      SystemField::MusicVolume,
-      SystemField::SfxVolume,
-      SystemField::Resolution,
-      SystemField::DisplayMode,
-      SystemField::Vsync,
-      SystemField::ShowFps,
+      UserPreference::MasterVolume,
+      UserPreference::MusicVolume,
+      UserPreference::SfxVolume,
+      UserPreference::Resolution,
+      UserPreference::DisplayMode,
+      UserPreference::Vsync,
+      UserPreference::ShowFps,
     ]
   }
 }
 
-/// Filter controlling which [`SystemState`] fields persist to/from `system.json`.
+/// Filter controlling which user preferences are loaded from `system.json`.
 ///
-/// Used with [`with_system_state_overrides`](crate::core::engine::EngineBuilder::with_system_state_overrides)
-/// to selectively load user preferences from `system.json`.
+/// Used with [`with_user_preferences`](crate::core::engine::EngineBuilder::with_user_preferences)
+/// to selectively load player settings from `system.json`.
 ///
 /// # Examples
 ///
@@ -147,33 +147,33 @@ impl SystemField {
 /// // Load only volume settings from system.json
 /// EngineBuilder::new()
 ///     .title("My Game")
-///     .with_system_state_overrides([SystemField::MasterVolume, SystemField::MusicVolume, SystemField::SfxVolume])
+///     .with_user_preferences([UserPreference::MasterVolume, UserPreference::MusicVolume, UserPreference::SfxVolume])
 ///     .with_scene(GameScene::new())
 ///     .build()
 ///     .run()?;
 ///
-/// // Load all fields (default behavior)
+/// // Load all user preferences (default behavior)
 /// EngineBuilder::new()
-///     .with_system_state_overrides(SystemFieldFilter::all())
+///     .with_user_preferences(UserPreferenceFilter::all())
 ///     .build()
 ///     .run()?;
 ///
-/// // Load nothing from system.json (pure Ryo.toml)
+/// // Load nothing from system.json (use only Ryo.toml defaults)
 /// EngineBuilder::new()
-///     .with_system_state_overrides(SystemFieldFilter::none())
+///     .with_user_preferences(UserPreferenceFilter::none())
 ///     .build()
 ///     .run()?;
 /// ```
 #[derive(Debug, Clone)]
-pub struct SystemFieldFilter {
-  fields: HashSet<SystemField>,
+pub struct UserPreferenceFilter {
+  fields: HashSet<UserPreference>,
 }
 
-impl SystemFieldFilter {
+impl UserPreferenceFilter {
   /// All fields enabled (default behavior, backward compatible).
   pub fn all() -> Self {
     Self {
-      fields: SystemField::all().iter().copied().collect(),
+      fields: UserPreference::all().iter().copied().collect(),
     }
   }
 
@@ -184,15 +184,15 @@ impl SystemFieldFilter {
     }
   }
 
-  /// Only specified fields persist to system.json.
-  pub fn only(fields: impl IntoIterator<Item = SystemField>) -> Self {
+  /// Only specified fields are loaded from system.json.
+  pub fn only(fields: impl IntoIterator<Item = UserPreference>) -> Self {
     Self {
       fields: fields.into_iter().collect(),
     }
   }
 
   /// Check if a field is enabled.
-  pub fn contains(&self, field: SystemField) -> bool {
+  pub fn contains(&self, field: UserPreference) -> bool {
     self.fields.contains(&field)
   }
 
@@ -207,29 +207,29 @@ impl SystemFieldFilter {
   }
 }
 
-impl Default for SystemFieldFilter {
+impl Default for UserPreferenceFilter {
   fn default() -> Self {
     Self::all()
   }
 }
 
 /// Allow creating a filter from an array of fields.
-impl<const N: usize> From<[SystemField; N]> for SystemFieldFilter {
-  fn from(fields: [SystemField; N]) -> Self {
+impl<const N: usize> From<[UserPreference; N]> for UserPreferenceFilter {
+  fn from(fields: [UserPreference; N]) -> Self {
     Self::only(fields)
   }
 }
 
 /// Allow creating a filter from a Vec of fields.
-impl From<Vec<SystemField>> for SystemFieldFilter {
-  fn from(fields: Vec<SystemField>) -> Self {
+impl From<Vec<UserPreference>> for UserPreferenceFilter {
+  fn from(fields: Vec<UserPreference>) -> Self {
     Self::only(fields)
   }
 }
 
 /// Allow creating a filter from a slice of fields.
-impl From<&[SystemField]> for SystemFieldFilter {
-  fn from(fields: &[SystemField]) -> Self {
+impl From<&[UserPreference]> for UserPreferenceFilter {
+  fn from(fields: &[UserPreference]) -> Self {
     Self::only(fields.iter().copied())
   }
 }
@@ -275,7 +275,7 @@ const GAME_EXTENSION: &str = "ryo-save";
 /// # Contents
 ///
 /// - Audio volume levels (master, music, sfx)
-/// - Display settings (resolution, fullscreen, vsync)
+/// - Display settings (resolution, display mode, vsync)
 /// - Optional engine overrides (show_fps)
 /// - Custom key-value storage for game-specific user settings
 ///
@@ -318,7 +318,7 @@ pub enum DisplayMode {
   #[default]
   Windowed,
   /// Exclusive fullscreen (takes over the display)
-  Fullscreen,
+  ExclusiveFullscreen,
   /// Borderless fullscreen window (fills screen, easy alt-tab)
   BorderlessFullscreen,
 }
@@ -328,7 +328,7 @@ impl DisplayMode {
   pub fn all() -> &'static [DisplayMode] {
     &[
       DisplayMode::Windowed,
-      DisplayMode::Fullscreen,
+      DisplayMode::ExclusiveFullscreen,
       DisplayMode::BorderlessFullscreen,
     ]
   }
@@ -337,8 +337,8 @@ impl DisplayMode {
   pub fn display_name(&self) -> &'static str {
     match self {
       DisplayMode::Windowed => "Windowed",
-      DisplayMode::Fullscreen => "Fullscreen",
-      DisplayMode::BorderlessFullscreen => "Borderless",
+      DisplayMode::ExclusiveFullscreen => "Exclusive Fullscreen",
+      DisplayMode::BorderlessFullscreen => "Borderless Fullscreen",
     }
   }
 }
@@ -401,14 +401,11 @@ pub struct DisplaySettings {
   pub width: u32,
   /// Window height
   pub height: u32,
-  /// Display mode (windowed, fullscreen, borderless)
+  /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
   #[serde(default)]
   pub display_mode: DisplayMode,
   /// VSync enabled
   pub vsync: bool,
-  /// Legacy fullscreen field for backward compatibility (ignored if display_mode is set)
-  #[serde(default, skip_serializing)]
-  fullscreen: Option<bool>,
 }
 
 impl Default for DisplaySettings {
@@ -418,21 +415,7 @@ impl Default for DisplaySettings {
       height: 720,
       display_mode: DisplayMode::Windowed,
       vsync: true,
-      fullscreen: None,
     }
-  }
-}
-
-impl DisplaySettings {
-  /// Migrate from old fullscreen bool to new display_mode if needed
-  pub fn migrate_legacy(&mut self) {
-    if let Some(true) = self.fullscreen {
-      // Old fullscreen=true maps to BorderlessFullscreen for better UX
-      if self.display_mode == DisplayMode::Windowed {
-        self.display_mode = DisplayMode::BorderlessFullscreen;
-      }
-    }
-    self.fullscreen = None;
   }
 }
 
@@ -463,7 +446,6 @@ impl SystemState {
         height: defaults.resolution_height,
         display_mode: defaults.display_mode,
         vsync: defaults.vsync,
-        fullscreen: None,
       },
       // show_fps comes from [info] section via SystemDefaults
       show_fps: Some(defaults.show_fps),
@@ -1320,7 +1302,7 @@ mod tests {
       resolution_width: 1920,
       resolution_height: 1080,
       vsync: false,
-      display_mode: DisplayMode::Fullscreen,
+      display_mode: DisplayMode::ExclusiveFullscreen,
       master_volume: 0.5,
       music_volume: 0.7,
       sfx_volume: 0.9,
@@ -1333,7 +1315,7 @@ mod tests {
     assert_eq!(state.display.width, 1920);
     assert_eq!(state.display.height, 1080);
     assert!(!state.display.vsync);
-    assert_eq!(state.display.display_mode, DisplayMode::Fullscreen);
+    assert_eq!(state.display.display_mode, DisplayMode::ExclusiveFullscreen);
     assert_eq!(state.master_volume, 0.5);
     assert_eq!(state.music_volume, 0.7);
     assert_eq!(state.sfx_volume, 0.9);
@@ -1502,98 +1484,98 @@ mod tests {
   }
 
   // ==========================================================================
-  // SystemField and SystemFieldFilter tests
+  // UserPreference and UserPreferenceFilter tests
   // ==========================================================================
 
   #[test]
-  fn system_field_filter_all_contains_all_fields() {
-    let filter = SystemFieldFilter::all();
+  fn user_preference_filter_all_contains_all_fields() {
+    let filter = UserPreferenceFilter::all();
 
-    assert!(filter.contains(SystemField::MasterVolume));
-    assert!(filter.contains(SystemField::MusicVolume));
-    assert!(filter.contains(SystemField::SfxVolume));
-    assert!(filter.contains(SystemField::Resolution));
-    assert!(filter.contains(SystemField::DisplayMode));
-    assert!(filter.contains(SystemField::Vsync));
-    assert!(filter.contains(SystemField::ShowFps));
+    assert!(filter.contains(UserPreference::MasterVolume));
+    assert!(filter.contains(UserPreference::MusicVolume));
+    assert!(filter.contains(UserPreference::SfxVolume));
+    assert!(filter.contains(UserPreference::Resolution));
+    assert!(filter.contains(UserPreference::DisplayMode));
+    assert!(filter.contains(UserPreference::Vsync));
+    assert!(filter.contains(UserPreference::ShowFps));
     assert_eq!(filter.len(), 7);
     assert!(!filter.is_empty());
   }
 
   #[test]
-  fn system_field_filter_none_contains_no_fields() {
-    let filter = SystemFieldFilter::none();
+  fn user_preference_filter_none_contains_no_fields() {
+    let filter = UserPreferenceFilter::none();
 
-    assert!(!filter.contains(SystemField::MasterVolume));
-    assert!(!filter.contains(SystemField::MusicVolume));
-    assert!(!filter.contains(SystemField::SfxVolume));
-    assert!(!filter.contains(SystemField::Resolution));
-    assert!(!filter.contains(SystemField::DisplayMode));
-    assert!(!filter.contains(SystemField::Vsync));
-    assert!(!filter.contains(SystemField::ShowFps));
+    assert!(!filter.contains(UserPreference::MasterVolume));
+    assert!(!filter.contains(UserPreference::MusicVolume));
+    assert!(!filter.contains(UserPreference::SfxVolume));
+    assert!(!filter.contains(UserPreference::Resolution));
+    assert!(!filter.contains(UserPreference::DisplayMode));
+    assert!(!filter.contains(UserPreference::Vsync));
+    assert!(!filter.contains(UserPreference::ShowFps));
     assert_eq!(filter.len(), 0);
     assert!(filter.is_empty());
   }
 
   #[test]
-  fn system_field_filter_only_contains_specified_fields() {
-    let filter = SystemFieldFilter::only([
-      SystemField::MasterVolume,
-      SystemField::MusicVolume,
-      SystemField::SfxVolume,
+  fn user_preference_filter_only_contains_specified_fields() {
+    let filter = UserPreferenceFilter::only([
+      UserPreference::MasterVolume,
+      UserPreference::MusicVolume,
+      UserPreference::SfxVolume,
     ]);
 
-    assert!(filter.contains(SystemField::MasterVolume));
-    assert!(filter.contains(SystemField::MusicVolume));
-    assert!(filter.contains(SystemField::SfxVolume));
-    assert!(!filter.contains(SystemField::Resolution));
-    assert!(!filter.contains(SystemField::DisplayMode));
-    assert!(!filter.contains(SystemField::Vsync));
-    assert!(!filter.contains(SystemField::ShowFps));
+    assert!(filter.contains(UserPreference::MasterVolume));
+    assert!(filter.contains(UserPreference::MusicVolume));
+    assert!(filter.contains(UserPreference::SfxVolume));
+    assert!(!filter.contains(UserPreference::Resolution));
+    assert!(!filter.contains(UserPreference::DisplayMode));
+    assert!(!filter.contains(UserPreference::Vsync));
+    assert!(!filter.contains(UserPreference::ShowFps));
     assert_eq!(filter.len(), 3);
   }
 
   #[test]
-  fn system_field_filter_from_array() {
-    let filter: SystemFieldFilter = [SystemField::Resolution, SystemField::DisplayMode].into();
+  fn user_preference_filter_from_array() {
+    let filter: UserPreferenceFilter = [UserPreference::Resolution, UserPreference::DisplayMode].into();
 
-    assert!(filter.contains(SystemField::Resolution));
-    assert!(filter.contains(SystemField::DisplayMode));
-    assert!(!filter.contains(SystemField::MasterVolume));
+    assert!(filter.contains(UserPreference::Resolution));
+    assert!(filter.contains(UserPreference::DisplayMode));
+    assert!(!filter.contains(UserPreference::MasterVolume));
     assert_eq!(filter.len(), 2);
   }
 
   #[test]
-  fn system_field_filter_from_vec() {
-    let fields = vec![SystemField::Vsync, SystemField::ShowFps];
-    let filter: SystemFieldFilter = fields.into();
+  fn user_preference_filter_from_vec() {
+    let fields = vec![UserPreference::Vsync, UserPreference::ShowFps];
+    let filter: UserPreferenceFilter = fields.into();
 
-    assert!(filter.contains(SystemField::Vsync));
-    assert!(filter.contains(SystemField::ShowFps));
-    assert!(!filter.contains(SystemField::Resolution));
+    assert!(filter.contains(UserPreference::Vsync));
+    assert!(filter.contains(UserPreference::ShowFps));
+    assert!(!filter.contains(UserPreference::Resolution));
     assert_eq!(filter.len(), 2);
   }
 
   #[test]
-  fn system_field_filter_default_is_all() {
-    let filter = SystemFieldFilter::default();
+  fn user_preference_filter_default_is_all() {
+    let filter = UserPreferenceFilter::default();
 
     assert_eq!(filter.len(), 7);
-    assert!(filter.contains(SystemField::MasterVolume));
-    assert!(filter.contains(SystemField::Resolution));
+    assert!(filter.contains(UserPreference::MasterVolume));
+    assert!(filter.contains(UserPreference::Resolution));
   }
 
   #[test]
-  fn system_field_all_returns_all_variants() {
-    let all = SystemField::all();
+  fn user_preference_all_returns_all_variants() {
+    let all = UserPreference::all();
 
     assert_eq!(all.len(), 7);
-    assert!(all.contains(&SystemField::MasterVolume));
-    assert!(all.contains(&SystemField::MusicVolume));
-    assert!(all.contains(&SystemField::SfxVolume));
-    assert!(all.contains(&SystemField::Resolution));
-    assert!(all.contains(&SystemField::DisplayMode));
-    assert!(all.contains(&SystemField::Vsync));
-    assert!(all.contains(&SystemField::ShowFps));
+    assert!(all.contains(&UserPreference::MasterVolume));
+    assert!(all.contains(&UserPreference::MusicVolume));
+    assert!(all.contains(&UserPreference::SfxVolume));
+    assert!(all.contains(&UserPreference::Resolution));
+    assert!(all.contains(&UserPreference::DisplayMode));
+    assert!(all.contains(&UserPreference::Vsync));
+    assert!(all.contains(&UserPreference::ShowFps));
   }
 }

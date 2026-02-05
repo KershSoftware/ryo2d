@@ -21,8 +21,7 @@ assets = "assets"
 
 [system]
 vsync = true
-fullscreen = false
-borderless = false
+display_mode = "windowed"
 master_volume = 0.8
 music_volume = 0.6
 sfx_volume = 1.0

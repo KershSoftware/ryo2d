@@ -193,7 +193,7 @@ impl<'a> ContextCore<'a> {
   /// # Example
   ///
   /// ```ignore
-  /// ctx.request_display_mode(DisplayMode::Fullscreen);
+  /// ctx.request_display_mode(DisplayMode::ExclusiveFullscreen);
   /// ```
   pub fn request_display_mode(&mut self, mode: DisplayMode) {
     self.window_request.display_mode = Some(mode);

@@ -35,8 +35,7 @@ Not all `Ryo.toml` sections are user-facing:
 
 | Section | Maps to system.json? | Purpose |
 |---------|---------------------|---------|
-| `[system]` | ✅ Yes | Display, audio defaults |
-| `[info]` | ✅ Yes | `show_fps` overlay |
+| `[system]` | ✅ Yes | Display, audio, show_fps defaults |
 | `[project]` | ❌ No | Project metadata |
 | `[paths]` | ❌ No | File locations |
 | `[debug]` | ❌ No | Development debugging |
@@ -50,7 +49,7 @@ When no configuration exists, the engine uses these defaults:
 |---------|---------------|
 | Resolution | 1280 × 720 |
 | VSync | `true` |
-| Fullscreen | `false` |
+| Display Mode | `"windowed"` |
 | Master Volume | 0.8 |
 | Music Volume | 1.0 |
 | SFX Volume | 1.0 |
@@ -73,19 +72,18 @@ assets = "assets"
 resolution_width = 1280
 resolution_height = 720
 vsync = true
-fullscreen = false
+display_mode = "windowed"
 master_volume = 0.8
 music_volume = 1.0
 sfx_volume = 1.0
-
-# User-facing info (→ system.json)
-[info]
 show_fps = false
+console = false
 
 # Developer-only (NOT saved to system.json)
 [debug]
-show_fps = false
 show_colliders = false
+show_velocities = false
+show_origins = false
 ```
 
 See [Project Configuration](../getting-started/configuration.md) for full `Ryo.toml` documentation.
@@ -104,7 +102,7 @@ Located at: `{save_dir}/system.json`
   "display": {
     "width": 1920,
     "height": 1080,
-    "fullscreen": true,
+    "display_mode": "windowed",
     "vsync": true
   },
   "vsync": true,
@@ -125,8 +123,8 @@ Located at: `{save_dir}/system.json`
 | `sfx_volume` | `f32` | `1.0` | Sound effects volume (0.0 - 1.0) |
 | `display.width` | `u32` | `1280` | Window width |
 | `display.height` | `u32` | `720` | Window height |
-| `display.fullscreen` | `bool` | `false` | Fullscreen mode |
-| `display.vsync` | `bool` | `true` | VSync enabled (legacy field) |
+| `display.display_mode` | `string` | `"windowed"` | Display mode (`windowed`, `exclusive_fullscreen`, `borderless_fullscreen`) |
+| `display.vsync` | `bool` | `true` | VSync enabled |
 | `vsync` | `bool?` | `None` | VSync preference (overrides display.vsync) |
 | `show_fps` | `bool?` | `None` | Show FPS counter (engine override) |
 | `settings` | `map` | `{}` | Custom key-value storage for game-specific settings |
@@ -253,18 +251,18 @@ Both categories support multiple simultaneous sounds with independent volume con
 
 ## Field Mapping: Ryo.toml → system.json
 
-The `[system]` and `[info]` sections map directly to `system.json` fields:
+The `[system]` section maps directly to `system.json` fields:
 
-| Ryo.toml Section | Ryo.toml Field | system.json Field |
-|------------------|----------------|-------------------|
-| `[system]` | `resolution_width` | `display.width` |
-| `[system]` | `resolution_height` | `display.height` |
-| `[system]` | `vsync` | `display.vsync` / `vsync` |
-| `[system]` | `fullscreen` | `display.fullscreen` |
-| `[system]` | `master_volume` | `master_volume` |
-| `[system]` | `music_volume` | `music_volume` |
-| `[system]` | `sfx_volume` | `sfx_volume` |
-| `[info]` | `show_fps` | `show_fps` |
+| Ryo.toml Field | system.json Field |
+|----------------|-------------------|
+| `resolution_width` | `display.width` |
+| `resolution_height` | `display.height` |
+| `vsync` | `display.vsync` / `vsync` |
+| `display_mode` | `display.display_mode` |
+| `master_volume` | `master_volume` |
+| `music_volume` | `music_volume` |
+| `sfx_volume` | `sfx_volume` |
+| `show_fps` | `show_fps` |
 
 **Not mapped:** `[project]`, `[paths]`, `[debug]`, `[env]` are developer-only and never written to `system.json`.
 
@@ -436,7 +434,7 @@ EngineBuilder::new()
 | `SystemField::MusicVolume` | Music volume (0.0 - 1.0) |
 | `SystemField::SfxVolume` | Sound effects volume (0.0 - 1.0) |
 | `SystemField::Resolution` | Display resolution (width + height together) |
-| `SystemField::DisplayMode` | Windowed, fullscreen, or borderless |
+| `SystemField::DisplayMode` | Windowed, exclusive fullscreen, or borderless fullscreen |
 | `SystemField::Vsync` | VSync preference |
 | `SystemField::ShowFps` | Show FPS counter |
 

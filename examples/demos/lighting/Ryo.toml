@@ -20,8 +20,8 @@ resolution_width = 1280
 resolution_height = 720
 # Enable VSync for smoother rendering (recommended)
 vsync = true
-# Start in windowed mode (user preference)
-fullscreen = false
+# Display mode: "windowed", "exclusive_fullscreen", or "borderless_fullscreen"
+display_mode = "windowed"
 # Audio volume defaults (0.0 - 1.0)
 master_volume = 0.8
 music_volume = 1.0

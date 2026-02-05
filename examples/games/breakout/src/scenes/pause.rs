@@ -92,7 +92,7 @@ impl Scene for PauseScene {
         if let Some(music_ptr) = self.parent_music {
           unsafe {
             if let Some(music) = music_ptr.as_mut() {
-              music.update_category_volume(audio.master_volume(), audio.music_volume());
+              music.update_category_volume(audio.music_volume());
             }
           }
         }

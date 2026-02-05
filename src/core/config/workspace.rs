@@ -34,7 +34,7 @@
 //! resolution_width = 1920
 //! resolution_height = 1080
 //! vsync = true
-//! fullscreen = false
+//! display_mode = "windowed"
 //! master_volume = 1.0
 //! music_volume = 0.8
 //! sfx_volume = 1.0
@@ -196,7 +196,7 @@ pub struct SystemDefaults {
   pub resolution_height: u32,
   /// Default VSync setting
   pub vsync: bool,
-  /// Default display mode (windowed, fullscreen, borderless)
+  /// Default display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
   pub display_mode: super::save::DisplayMode,
   /// Default master volume (0.0 - 1.0)
   pub master_volume: f32,
@@ -282,12 +282,8 @@ struct SystemSection {
   resolution_width: Option<u32>,
   resolution_height: Option<u32>,
   vsync: Option<bool>,
-  /// New display mode field (windowed, fullscreen, borderless_fullscreen)
+  /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
   display_mode: Option<String>,
-  /// Legacy fullscreen field for backward compatibility
-  fullscreen: Option<bool>,
-  /// Borderless window mode (when true and fullscreen=false, creates borderless window)
-  borderless: Option<bool>,
   master_volume: Option<f32>,
   music_volume: Option<f32>,
   sfx_volume: Option<f32>,
@@ -469,20 +465,14 @@ impl Workspace {
 
     let engine_defaults = SystemDefaults::default();
 
-    // Parse display_mode from string, with fallback to legacy fullscreen/borderless fields
+    // Parse display_mode from string
     let display_mode = if let Some(mode_str) = &system_section.display_mode {
       match mode_str.to_lowercase().as_str() {
         "windowed" => super::save::DisplayMode::Windowed,
-        "fullscreen" => super::save::DisplayMode::Fullscreen,
-        "borderless" | "borderless_fullscreen" => super::save::DisplayMode::BorderlessFullscreen,
+        "exclusive_fullscreen" => super::save::DisplayMode::ExclusiveFullscreen,
+        "borderless_fullscreen" => super::save::DisplayMode::BorderlessFullscreen,
         _ => engine_defaults.display_mode,
       }
-    } else if system_section.fullscreen == Some(true) {
-      // Legacy: fullscreen=true maps to BorderlessFullscreen for better UX
-      super::save::DisplayMode::BorderlessFullscreen
-    } else if system_section.borderless == Some(true) {
-      // borderless=true (with fullscreen=false) creates borderless fullscreen window
-      super::save::DisplayMode::BorderlessFullscreen
     } else {
       engine_defaults.display_mode
     };

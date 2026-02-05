@@ -142,20 +142,21 @@ Runtime display mode for window appearance:
 
 ```rust
 pub enum DisplayMode {
-    Windowed,             // Regular window with decorations
-    Fullscreen,           // Exclusive fullscreen (changes display resolution)
-    BorderlessFullscreen, // Borderless window covering full screen
+    Windowed,               // Regular window with decorations
+    ExclusiveFullscreen,    // Exclusive fullscreen (changes display resolution)
+    BorderlessFullscreen,   // Borderless window covering full screen
 }
 
 impl DisplayMode {
-    fn as_str(&self) -> &'static str;  // "Windowed", "Fullscreen", "BorderlessFullscreen"
+    fn display_name(&self) -> &'static str;  // "Windowed", "Exclusive Fullscreen", "Borderless Fullscreen"
+    fn all() -> &'static [DisplayMode];      // All variants for settings menus
 }
 
 // Common display modes for settings menus
 const DISPLAY_MODES: &[DisplayMode] = &[
     DisplayMode::Windowed,
     DisplayMode::BorderlessFullscreen,
-    DisplayMode::Fullscreen,
+    DisplayMode::ExclusiveFullscreen,
 ];
 ```
 
