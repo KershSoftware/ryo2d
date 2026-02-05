@@ -256,6 +256,15 @@ const GAME_EXTENSION: &str = "ryo-save";
 // Tier 1: System State
 // ============================================================================
 
+/// Serialize f32 as a cleanly-rounded f64 to avoid precision artifacts in JSON.
+///
+/// Without this, serde_json converts f32 → f64 naively, producing values like
+/// `0.4000000059604645` instead of `0.4`.
+fn serialize_f32_clean<S: serde::Serializer>(value: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+  let rounded = ((*value as f64) * 100.0).round() / 100.0;
+  serializer.serialize_f64(rounded)
+}
+
 /// User settings and configuration (Tier 1).
 ///
 /// Represents the contents of `system.json`, the player-editable configuration file.
@@ -276,16 +285,20 @@ const GAME_EXTENSION: &str = "ryo-save";
 /// - Audio volume levels (master, music, sfx)
 /// - Display settings (resolution, display mode, vsync)
 /// - Optional engine overrides (show_fps)
-/// - Custom key-value storage for game-specific user settings
+/// - Custom key-value storage for game-specific env variables
 ///
 /// Saved as human-readable JSON to `{save_dir}/system.json`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SystemState {
   /// Master volume (0.0 - 1.0)
+  #[serde(serialize_with = "serialize_f32_clean")]
   pub master_volume: f32,
   /// Music volume (0.0 - 1.0)
+  #[serde(serialize_with = "serialize_f32_clean")]
   pub music_volume: f32,
   /// Sound effects volume (0.0 - 1.0)
+  #[serde(serialize_with = "serialize_f32_clean")]
   pub sfx_volume: f32,
 
   /// Display settings
@@ -302,9 +315,12 @@ pub struct SystemState {
   #[serde(default)]
   pub vsync: Option<bool>,
 
-  /// Custom key-value storage for game-specific settings
+  /// Custom key-value storage for game-specific environment variables.
+  ///
+  /// Seeded from `Ryo.toml [env]` when creating a new `system.json`.
+  /// Values preserve their native types (bool, int, float, string) from TOML/JSON.
   #[serde(default)]
-  pub settings: HashMap<String, String>,
+  pub env: HashMap<String, serde_json::Value>,
 }
 
 /// Display/window mode for the game.
@@ -483,9 +499,8 @@ impl Default for DisplaySettings {
   }
 }
 
-impl SystemState {
-  /// Create with sensible defaults
-  pub fn new() -> Self {
+impl Default for SystemState {
+  fn default() -> Self {
     SystemState {
       master_volume: 0.8,
       music_volume: 1.0,
@@ -493,8 +508,15 @@ impl SystemState {
       display: DisplaySettings::default(),
       show_fps: None,
       vsync: None,
-      settings: HashMap::new(),
+      env: HashMap::new(),
     }
+  }
+}
+
+impl SystemState {
+  /// Create with sensible defaults
+  pub fn new() -> Self {
+    Self::default()
   }
 
   /// Create from SystemDefaults (Ryo.toml [system] + [info] sections).
@@ -514,7 +536,7 @@ impl SystemState {
       // show_fps comes from [info] section via SystemDefaults
       show_fps: Some(defaults.show_fps),
       vsync: None,
-      settings: HashMap::new(),
+      env: defaults.env.clone(),
     }
   }
 
@@ -546,17 +568,45 @@ impl SystemState {
       }
     }
 
+    // Add new env keys from defaults without overwriting existing
+    for (key, value) in &defaults.env {
+      if !self.env.contains_key(key) {
+        self.env.insert(key.clone(), value.clone());
+        changed = true;
+      }
+    }
+
     changed
   }
 
-  /// Set a custom setting key-value pair
-  pub fn set_setting(&mut self, key: impl Into<String>, value: impl Into<String>) {
-    self.settings.insert(key.into(), value.into());
+  /// Set a custom env key-value pair.
+  pub fn set_env(&mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) {
+    self.env.insert(key.into(), value.into());
   }
 
-  /// Get a setting value by key
-  pub fn get_setting(&self, key: &str) -> Option<&str> {
-    self.settings.get(key).map(|s| s.as_str())
+  /// Get an env value by key.
+  pub fn get_env(&self, key: &str) -> Option<&serde_json::Value> {
+    self.env.get(key)
+  }
+
+  /// Get an env value as a string.
+  pub fn get_env_str(&self, key: &str) -> Option<&str> {
+    self.env.get(key).and_then(|v| v.as_str())
+  }
+
+  /// Get an env value as a bool.
+  pub fn get_env_bool(&self, key: &str) -> Option<bool> {
+    self.env.get(key).and_then(|v| v.as_bool())
+  }
+
+  /// Get an env value as an i64.
+  pub fn get_env_i64(&self, key: &str) -> Option<i64> {
+    self.env.get(key).and_then(|v| v.as_i64())
+  }
+
+  /// Get an env value as an f64.
+  pub fn get_env_f64(&self, key: &str) -> Option<f64> {
+    self.env.get(key).and_then(|v| v.as_f64())
   }
 }
 
@@ -755,10 +805,39 @@ impl SaveManager {
 
   /// Save system state as human-editable JSON.
   ///
-  /// Unlike world/game saves, system state is stored as uncompressed JSON
-  /// so users can manually edit settings if needed.
+  /// When `system.json` already exists, only keys present in the existing
+  /// file are updated — preserving the filtered structure created by
+  /// [`load_or_create_system_filtered`](Self::load_or_create_system_filtered).
+  /// When no file exists, writes the full state.
   pub fn save_system(&self, state: &SystemState) -> SaveResult<()> {
     let path = self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION));
+
+    if path.exists() {
+      // Merge: only update keys already present in the file
+      let existing_json = fs::read_to_string(&path)?;
+      if let Ok(serde_json::Value::Object(existing_map)) =
+        serde_json::from_str::<serde_json::Value>(&existing_json)
+      {
+        let new_value = serde_json::to_value(state)
+          .map_err(|e| SaveError::Serialization(e.to_string()))?;
+        if let serde_json::Value::Object(new_map) = new_value {
+          let mut merged = serde_json::Map::new();
+          for (key, _) in &existing_map {
+            if let Some(new_val) = new_map.get(key) {
+              merged.insert(key.clone(), new_val.clone());
+            }
+          }
+          let json = serde_json::to_string_pretty(&serde_json::Value::Object(merged))
+            .map_err(|e| SaveError::Serialization(e.to_string()))?;
+          let mut file = File::create(&path)?;
+          file.write_all(json.as_bytes())?;
+          file.flush()?;
+          return Ok(());
+        }
+      }
+    }
+
+    // No existing file or couldn't parse — write full state
     self.write_json_file(&path, state)
   }
 
@@ -816,6 +895,75 @@ impl SaveManager {
 
     if state.merge_defaults(defaults) {
       // Save updated state with merged fields
+      self.save_system(&state)?;
+    }
+
+    Ok(state)
+  }
+
+  /// Load or create system state, writing only filtered fields to a new file.
+  ///
+  /// Behaves like [`load_or_create_system`](Self::load_or_create_system) when
+  /// system.json already exists. When creating a new file, only the JSON keys
+  /// corresponding to the given filter are written — so a volume-only filter
+  /// produces a system.json with just `master_volume`, `music_volume`, and
+  /// `sfx_volume`.
+  ///
+  /// The returned `SystemState` is always fully populated (from defaults).
+  pub fn load_or_create_system_filtered(
+    &self,
+    defaults: &super::workspace::SystemDefaults,
+    filter: &UserPreferenceFilter,
+  ) -> SaveResult<SystemState> {
+    let path = self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION));
+
+    if path.exists() {
+      // Existing file — load as-is and merge defaults (same as unfiltered)
+      let mut state: SystemState = self.read_json_file(&path)?;
+      if state.merge_defaults(defaults) {
+        self.save_system(&state)?;
+      }
+      return Ok(state);
+    }
+
+    // Build full state from defaults
+    let state = SystemState::from_defaults(defaults);
+
+    // Serialize to JSON Value, then strip keys not requested by the filter
+    let full_value = serde_json::to_value(&state)
+      .map_err(|e| SaveError::Serialization(e.to_string()))?;
+
+    if let serde_json::Value::Object(map) = full_value {
+      let mut filtered = serde_json::Map::new();
+
+      for (key, value) in &map {
+        let dominated_by_filter = match key.as_str() {
+          "master_volume" => filter.contains(UserPreference::MasterVolume),
+          "music_volume" => filter.contains(UserPreference::MusicVolume),
+          "sfx_volume" => filter.contains(UserPreference::SfxVolume),
+          "display" => {
+            filter.contains(UserPreference::Resolution)
+              || filter.contains(UserPreference::DisplayMode)
+              || filter.contains(UserPreference::Vsync)
+          }
+          "vsync" => filter.contains(UserPreference::Vsync),
+          "show_fps" => filter.contains(UserPreference::ShowFps),
+          "env" => !defaults.env.is_empty(),
+          _ => false,
+        };
+
+        if dominated_by_filter {
+          filtered.insert(key.clone(), value.clone());
+        }
+      }
+
+      let filtered_json = serde_json::to_string_pretty(&serde_json::Value::Object(filtered))
+        .map_err(|e| SaveError::Serialization(e.to_string()))?;
+      let mut file = File::create(&path)?;
+      file.write_all(filtered_json.as_bytes())?;
+      file.flush()?;
+    } else {
+      // Fallback: write full state (shouldn't happen for a struct)
       self.save_system(&state)?;
     }
 
@@ -1142,7 +1290,7 @@ mod tests {
     state.music_volume = 0.5;
     state.display.width = 1920;
     state.display.height = 1080;
-    state.set_setting("language", "en");
+    state.set_env("language", serde_json::Value::String("en".into()));
 
     manager.save_system(&state).unwrap();
     assert!(manager.has_system_save());
@@ -1152,7 +1300,7 @@ mod tests {
     assert_eq!(loaded.music_volume, 0.5);
     assert_eq!(loaded.display.width, 1920);
     assert_eq!(loaded.display.height, 1080);
-    assert_eq!(loaded.get_setting("language"), Some("en"));
+    assert_eq!(loaded.get_env_str("language"), Some("en"));
   }
 
   #[test]
@@ -1175,7 +1323,7 @@ mod tests {
     state.master_volume = 0.75;
     state.display.width = 1920;
     state.display.height = 1080;
-    state.set_setting("language", "en");
+    state.set_env("language", serde_json::Value::String("en".into()));
 
     manager.save_system(&state).unwrap();
 
@@ -1187,7 +1335,7 @@ mod tests {
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
     assert_eq!(parsed["master_volume"], 0.75);
     assert_eq!(parsed["display"]["resolution"], "1920x1080");
-    assert_eq!(parsed["settings"]["language"], "en");
+    assert_eq!(parsed["env"]["language"], "en");
 
     // Should be human-readable (contains newlines from pretty-print)
     assert!(content.contains('\n'));
@@ -1359,6 +1507,9 @@ mod tests {
 
   #[test]
   fn system_state_from_defaults_uses_all_fields() {
+    let mut env = HashMap::new();
+    env.insert("difficulty".to_string(), serde_json::json!("hard"));
+
     let defaults = super::super::workspace::SystemDefaults {
       resolution: Some((1920, 1080)),
       vsync: false,
@@ -1368,6 +1519,7 @@ mod tests {
       sfx_volume: 0.9,
       show_fps: true,
       dev_console: false,
+      env,
     };
 
     let state = SystemState::from_defaults(&defaults);
@@ -1380,6 +1532,7 @@ mod tests {
     assert_eq!(state.music_volume, 0.7);
     assert_eq!(state.sfx_volume, 0.9);
     assert_eq!(state.show_fps, Some(true));
+    assert_eq!(state.get_env_str("difficulty"), Some("hard"));
   }
 
   #[test]
@@ -1481,6 +1634,7 @@ mod tests {
       sfx_volume: 0.7,
       show_fps: true,
       dev_console: false,
+      env: HashMap::new(),
     };
 
     assert!(!manager.has_system_save());
@@ -1718,7 +1872,7 @@ mod tests {
       },
       "show_fps": false,
       "vsync": null,
-      "settings": {}
+      "env": {}
     }"#;
     let path = dir.path().join("system.json");
     std::fs::write(&path, legacy_json).unwrap();
@@ -1748,7 +1902,7 @@ mod tests {
       },
       "show_fps": false,
       "vsync": null,
-      "settings": {}
+      "env": {}
     }"#;
     let path = dir.path().join("system.json");
     std::fs::write(&path, legacy_json).unwrap();
@@ -1859,5 +2013,212 @@ mod tests {
     assert!(all.contains(&UserPreference::DisplayMode));
     assert!(all.contains(&UserPreference::Vsync));
     assert!(all.contains(&UserPreference::ShowFps));
+  }
+
+  // ==========================================================================
+  // Env (settings → env rename) tests
+  // ==========================================================================
+
+  #[test]
+  fn env_seeded_from_system_defaults() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let mut env = HashMap::new();
+    env.insert("difficulty".to_string(), serde_json::json!("normal"));
+    env.insert("debug_mode".to_string(), serde_json::json!(false));
+
+    let defaults = super::super::workspace::SystemDefaults {
+      env,
+      ..super::super::workspace::SystemDefaults::default()
+    };
+
+    let state = manager.load_or_create_system(&defaults).unwrap();
+    assert_eq!(state.get_env_str("difficulty"), Some("normal"));
+    assert_eq!(state.get_env_bool("debug_mode"), Some(false));
+
+    // Verify it was saved to disk with "env" key
+    let path = dir.path().join("system.json");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let raw: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(raw["env"]["difficulty"], "normal");
+    assert_eq!(raw["env"]["debug_mode"], false);
+  }
+
+  #[test]
+  fn merge_defaults_adds_new_env_keys_preserves_existing() {
+    let mut state = SystemState::new();
+    state.set_env("language", serde_json::json!("ja"));
+    state.set_env("difficulty", serde_json::json!("easy"));
+
+    let mut env = HashMap::new();
+    env.insert("difficulty".to_string(), serde_json::json!("normal")); // should NOT overwrite
+    env.insert("new_key".to_string(), serde_json::json!(42)); // should be added
+
+    let defaults = super::super::workspace::SystemDefaults {
+      env,
+      ..super::super::workspace::SystemDefaults::default()
+    };
+
+    let changed = state.merge_defaults(&defaults);
+    assert!(changed);
+
+    // Existing keys preserved
+    assert_eq!(state.get_env_str("language"), Some("ja"));
+    assert_eq!(state.get_env_str("difficulty"), Some("easy"));
+    // New key added
+    assert_eq!(state.get_env_i64("new_key"), Some(42));
+  }
+
+  #[test]
+  fn env_roundtrip_through_system_json() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let mut state = SystemState::new();
+    state.set_env("name", serde_json::json!("test"));
+    state.set_env("score", serde_json::json!(100));
+    state.set_env("enabled", serde_json::json!(true));
+    state.set_env("ratio", serde_json::json!(1.5));
+
+    manager.save_system(&state).unwrap();
+    let loaded = manager.load_system().unwrap();
+
+    assert_eq!(loaded.get_env_str("name"), Some("test"));
+    assert_eq!(loaded.get_env_i64("score"), Some(100));
+    assert_eq!(loaded.get_env_bool("enabled"), Some(true));
+    assert_eq!(loaded.get_env_f64("ratio"), Some(1.5));
+  }
+
+  #[test]
+  fn env_resaves_with_env_key_not_settings() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let mut state = SystemState::new();
+    state.set_env("key", serde_json::json!("value"));
+
+    manager.save_system(&state).unwrap();
+
+    let path = dir.path().join("system.json");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let raw: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+    // Should use "env" key, not "settings"
+    assert!(raw.get("env").is_some());
+    assert!(raw.get("settings").is_none());
+    assert_eq!(raw["env"]["key"], "value");
+  }
+
+  // ==========================================================================
+  // Filtered creation + merge-on-save tests
+  // ==========================================================================
+
+  #[test]
+  fn filtered_creation_writes_only_requested_keys() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    let defaults = super::super::workspace::SystemDefaults::default();
+
+    let filter = UserPreferenceFilter::only([
+      UserPreference::MasterVolume,
+      UserPreference::MusicVolume,
+      UserPreference::SfxVolume,
+    ]);
+
+    let state = manager
+      .load_or_create_system_filtered(&defaults, &filter)
+      .unwrap();
+
+    // Returned state is fully populated
+    assert_eq!(state.master_volume, 0.8);
+    assert_eq!(state.display.width, 1280);
+
+    // But file on disk only has volume keys
+    let path = dir.path().join("system.json");
+    let raw: serde_json::Value =
+      serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(raw.get("master_volume").is_some());
+    assert!(raw.get("music_volume").is_some());
+    assert!(raw.get("sfx_volume").is_some());
+    assert!(raw.get("display").is_none());
+    assert!(raw.get("show_fps").is_none());
+    assert!(raw.get("vsync").is_none());
+    assert!(raw.get("env").is_none());
+  }
+
+  #[test]
+  fn save_system_preserves_filtered_structure() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    let defaults = super::super::workspace::SystemDefaults::default();
+
+    // Create a volume-only system.json
+    let filter = UserPreferenceFilter::only([
+      UserPreference::MasterVolume,
+      UserPreference::MusicVolume,
+      UserPreference::SfxVolume,
+    ]);
+    let mut state = manager
+      .load_or_create_system_filtered(&defaults, &filter)
+      .unwrap();
+
+    // Simulate user changing volumes in pause menu
+    state.master_volume = 0.5;
+    state.music_volume = 0.7;
+    manager.save_system(&state).unwrap();
+
+    // File should still only have volume keys (not display, show_fps, etc.)
+    let path = dir.path().join("system.json");
+    let raw: serde_json::Value =
+      serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let master = raw["master_volume"].as_f64().unwrap();
+    let music = raw["music_volume"].as_f64().unwrap();
+    assert!((master - 0.5).abs() < 0.001);
+    assert!((music - 0.7).abs() < 0.001);
+    assert!(raw.get("display").is_none());
+    assert!(raw.get("show_fps").is_none());
+    assert!(raw.get("vsync").is_none());
+  }
+
+  #[test]
+  fn save_system_full_write_when_no_existing_file() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let state = SystemState::new();
+    manager.save_system(&state).unwrap();
+
+    // No existing file → writes all keys
+    let path = dir.path().join("system.json");
+    let raw: serde_json::Value =
+      serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(raw.get("master_volume").is_some());
+    assert!(raw.get("display").is_some());
+    assert!(raw.get("env").is_some());
+  }
+
+  #[test]
+  fn filtered_file_loads_back_with_defaults_for_missing_fields() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    let defaults = super::super::workspace::SystemDefaults::default();
+
+    // Create volume-only file
+    let filter = UserPreferenceFilter::only([
+      UserPreference::MasterVolume,
+      UserPreference::MusicVolume,
+      UserPreference::SfxVolume,
+    ]);
+    manager
+      .load_or_create_system_filtered(&defaults, &filter)
+      .unwrap();
+
+    // Loading the partial file should fill missing fields from serde defaults
+    let loaded = manager.load_system().unwrap();
+    assert_eq!(loaded.master_volume, 0.8); // from file
+    assert_eq!(loaded.display.width, 1280); // from serde default
+    assert_eq!(loaded.display.height, 720);
+    assert!(loaded.show_fps.is_none()); // from serde default
   }
 }

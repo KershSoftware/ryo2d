@@ -3440,7 +3440,8 @@ impl EngineBuilder {
 
     if let Ok(workspace) = super::config::Workspace::discover()
       && let Ok(save_manager) = workspace.create_save_manager()
-      && let Ok(system_state) = save_manager.load_or_create_system(&workspace.config().system)
+      && let Ok(system_state) =
+        save_manager.load_or_create_system_filtered(&workspace.config().system, &filter)
     {
       // Apply display overrides based on filter (only if not explicitly set via .resolution())
       if filter.contains(UserPreference::Resolution) && !self.resolution_set {
@@ -3499,9 +3500,22 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn with_saved_display_mode(mut self) -> Self {
+    use super::config::{UserPreference, UserPreferenceFilter};
+
+    // Everything except Resolution — this method keeps the game's fixed resolution
+    let filter = UserPreferenceFilter::only([
+      UserPreference::DisplayMode,
+      UserPreference::Vsync,
+      UserPreference::ShowFps,
+      UserPreference::MasterVolume,
+      UserPreference::MusicVolume,
+      UserPreference::SfxVolume,
+    ]);
+
     if let Ok(workspace) = super::config::Workspace::discover()
       && let Ok(save_manager) = workspace.create_save_manager()
-      && let Ok(system_state) = save_manager.load_or_create_system(&workspace.config().system)
+      && let Ok(system_state) =
+        save_manager.load_or_create_system_filtered(&workspace.config().system, &filter)
     {
       // Apply ONLY display mode - not resolution
       self.config.display_mode = system_state.display.display_mode;

@@ -19,8 +19,8 @@ assets = "assets"
 vsync = true
 display_mode = "borderless_fullscreen"
 master_volume = 0.8
-show_fps = true
-console = true
+show_fps = false
+console = false
 
 # =============================================================================
 # DEVELOPER-ONLY SETTINGS

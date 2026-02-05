@@ -1,22 +1,18 @@
 # Breakout - Ryo2D Demo
-# This file configures the example project for the Ryo2D engine
 
 [project]
 name = "Breakout"
 title = "Breakout - Ryo2D"
+version = "0.0.1"
 
 [paths]
-# Entry point is in this directory (not in src/)
 entry_point = "main.rs"
-# Save data directory (created on demand)
 save_data = "data"
-# Assets directory
 assets = "assets"
 
 # =============================================================================
 # USER-FACING DEFAULTS
-# These sections are written to system.json when first created.
-# Players can override these in system.json; their changes persist.
+# Written and prioritized read from system.json when `.with_user_preferences` set
 # =============================================================================
 
 [system]
@@ -38,10 +34,10 @@ show_velocities = false
 show_origins = false
 enable_profiler = false
 
-# =============================================================================
-# [env] - Game-specific environment variables
-# =============================================================================
+# ==============================================================================
+# RELEASE/DISTRIBUTION SETTINGS
+# Build-time settings for `ryo2d build`
+# ==============================================================================
 
-[env]
-# Set to true to enable debug mode with level switching (Q/E keys)
-debug_scene = false
+[release]
+# logo = "assets/icon.png"

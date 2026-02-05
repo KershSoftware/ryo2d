@@ -67,6 +67,7 @@
 //! ```
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -207,6 +208,9 @@ pub struct SystemDefaults {
   /// Whether to enable the developer console (toggled with backtick key).
   /// Unlike debug settings, this is available in both debug and release builds.
   pub dev_console: bool,
+  /// Environment variables from `[env]` section, converted to JSON-compatible types.
+  /// Seeded into `SystemState.env` when creating a new `system.json`.
+  pub env: HashMap<String, serde_json::Value>,
 }
 
 impl Default for SystemDefaults {
@@ -220,6 +224,7 @@ impl Default for SystemDefaults {
       sfx_volume: 1.0,
       show_fps: false,
       dev_console: false, // Disabled by default, enable in Ryo.toml [system] section
+      env: HashMap::new(),
     }
   }
 }
@@ -473,6 +478,17 @@ impl Workspace {
       engine_defaults.display_mode
     };
 
+    // Game-specific env: convert toml::Value → serde_json::Value for SystemDefaults
+    let env_json: HashMap<String, serde_json::Value> = raw
+      .env
+      .iter()
+      .filter_map(|(k, v)| {
+        serde_json::to_value(v)
+          .ok()
+          .map(|jv| (k.clone(), jv))
+      })
+      .collect();
+
     let system = SystemDefaults {
       resolution: system_section
         .resolution
@@ -502,9 +518,10 @@ impl Workspace {
       dev_console: system_section
         .console
         .unwrap_or(engine_defaults.dev_console),
+      env: env_json,
     };
 
-    // Game-specific env (pass through as-is)
+    // Game-specific env (pass through as-is for WorkspaceConfig)
     let env = raw.env;
 
     // Release config

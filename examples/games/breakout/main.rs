@@ -42,10 +42,7 @@ use breakout::prelude::*;
 use ryo2d::prelude::*;
 
 fn main() {
-  // Load user preferences from system.json, but NOT resolution
-  // (game uses fixed 1280x720 with hardcoded wall positions)
   let engine = EngineBuilder::new()
-    .title("Breakout - Ryo2D Demo")
     .resolution(1280, 720) // Fixed resolution - game uses hardcoded wall positions
     .fps(144)
     .physics_hz(144)

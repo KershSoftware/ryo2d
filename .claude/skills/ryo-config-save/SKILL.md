@@ -89,7 +89,7 @@ Players can edit this file directly.
     "vsync": true
   },
   "show_fps": false,
-  "settings": {}
+  "env": {}
 }
 ```
 
@@ -167,8 +167,8 @@ settings.master_volume = 0.5;
 settings.display.display_mode = DisplayMode::ExclusiveFullscreen;
 save_manager.save_system(&settings)?;
 
-// Custom game settings (string key-value)
-settings.settings.insert("language".into(), "en".into());
+// Custom game env variables (typed values)
+settings.set_env("language", serde_json::json!("en"));
 ```
 
 ## Tier 2: World State

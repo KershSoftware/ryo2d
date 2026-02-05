@@ -44,10 +44,10 @@ impl PauseScene {
       if let Ok(save_manager) = workspace.create_save_manager() {
         save_manager.load_system().unwrap_or_default()
       } else {
-        SystemState::default()
+        SystemState::new()
       }
     } else {
-      SystemState::default()
+      SystemState::new()
     };
 
     let prev_master_volume = settings.master_volume;

@@ -106,7 +106,7 @@ Located at: `{save_dir}/system.json`
   },
   "vsync": true,
   "show_fps": false,
-  "settings": {
+  "env": {
     "language": "en",
     "difficulty": "normal"
   }
@@ -126,7 +126,7 @@ Located at: `{save_dir}/system.json`
 | `display.vsync` | `bool` | `true` | VSync enabled |
 | `vsync` | `bool?` | `None` | VSync preference (overrides display.vsync) |
 | `show_fps` | `bool?` | `None` | Show FPS counter (engine override) |
-| `settings` | `map` | `{}` | Custom key-value storage for game-specific settings |
+| `env` | `map` | `{}` | Custom key-value storage for game-specific environment variables |
 
 **Note:** These are the engine defaults. Game developers can override them in `Ryo.toml [system]`, and players can override in `system.json`.
 
@@ -365,18 +365,23 @@ impl OptionsMenu {
 }
 ```
 
-## Custom Game Settings
+## Custom Game Env Variables
 
-Use the `settings` HashMap for game-specific configuration:
+Use the `env` HashMap for game-specific configuration:
 
 ```rust
-// Save custom setting
-settings.set_setting("difficulty", "hard");
-settings.set_setting("language", "ja");
+use serde_json::json;
 
-// Load custom setting
-if let Some(difficulty) = settings.get_setting("difficulty") {
+// Save custom env variable
+settings.set_env("difficulty", json!("hard"));
+settings.set_env("language", json!("ja"));
+
+// Load with typed getters
+if let Some(difficulty) = settings.get_env_str("difficulty") {
     println!("Difficulty: {}", difficulty);
+}
+if let Some(debug) = settings.get_env_bool("debug_mode") {
+    println!("Debug: {}", debug);
 }
 ```
 
@@ -464,7 +469,7 @@ This is equivalent to filtering out `Resolution` while keeping all other fields
 1. **Use `Ryo.toml` for developer defaults** - Project paths, default window size, debug flags during development
 2. **Use `system.json` for user preferences** - Audio levels, display settings, keybindings
 3. **Always provide defaults** - Don't require users to have `system.json`
-4. **Document custom settings** - If you use the `settings` HashMap, document the keys
+4. **Document custom env vars** - If you use the `env` HashMap, document the keys
 5. **Validate user input** - When loading `system.json`, clamp values to valid ranges
 
 ## See Also

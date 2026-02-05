@@ -177,7 +177,7 @@ fn legacy_system_json_loads_and_resaves_as_new_format() {
       },
       "show_fps": true,
       "vsync": null,
-      "settings": {}
+      "env": {}
     }"#,
   )
   .unwrap();
