@@ -41,6 +41,10 @@ pub const PLAYER_A_SPAWN_X: f32 = 300.0; // left side
 pub const PLAYER_B_SPAWN_X: f32 = 500.0; // right side
 pub const PLAYER_SPAWN_Y: f32 = SPAWN_PLATFORM_Y - PLAYER_HEIGHT;
 
+// Death and respawn
+pub const DEATH_Y: f32 = SPAWN_PLATFORM_Y + 400.0; // Fall this far below spawn to die
+pub const RESPAWN_DELAY: f32 = 0.8; // Seconds of falling sensation before respawn
+
 // Camera
 pub const CAMERA_DEAD_ZONE: f32 = 100.0;
 pub const CAMERA_LERP_SPEED: f32 = 0.1;

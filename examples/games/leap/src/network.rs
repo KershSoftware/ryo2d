@@ -99,6 +99,20 @@ impl Rpc for GameSeedRpc {
   }
 }
 
+/// Client -> Server: Request to respawn
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RespawnRpc;
+
+impl Rpc for RespawnRpc {
+  fn rpc_id() -> RpcTypeId {
+    RpcTypeId::from_name("RespawnRpc")
+  }
+
+  fn rpc_name() -> &'static str {
+    "RespawnRpc"
+  }
+}
+
 /// Helper to serialize a value to bytes
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, NetworkError> {
   serde_json::to_vec(value).map_err(|e| NetworkError::SendError(e.to_string()))

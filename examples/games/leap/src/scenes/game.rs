@@ -80,6 +80,9 @@ pub struct GameScene {
     // Animation timing
     elapsed_time: f32,
 
+    // Death/respawn
+    respawn_timer: Option<f32>,
+
     // Connection state
     connected: bool,
     waiting_for_player: bool,
@@ -119,6 +122,7 @@ impl GameScene {
             camera_y: PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD,
             broadcast_timer: 0.0,
             elapsed_time: 0.0,
+            respawn_timer: None,
             connected: true,
             waiting_for_player: false,
             received_seed: true,
@@ -162,6 +166,7 @@ impl GameScene {
             camera_y: PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD,
             broadcast_timer: 0.0,
             elapsed_time: 0.0,
+            respawn_timer: None,
             connected: true,
             waiting_for_player: true,
             received_seed: true,
@@ -210,6 +215,7 @@ impl GameScene {
             camera_y: PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD,
             broadcast_timer: 0.0,
             elapsed_time: 0.0,
+            respawn_timer: None,
             connected: false,
             waiting_for_player: true,
             received_seed: false,
@@ -533,11 +539,55 @@ impl GameScene {
         self.local_client_id.and_then(|id| self.players.get(&id).copied())
     }
 
+    fn check_death_and_respawn(&mut self, ctx: &mut SceneContext, dt: f32) {
+        // Check if respawn timer is active
+        if let Some(timer) = self.respawn_timer.as_mut() {
+            *timer -= dt;
+            if *timer <= 0.0 {
+                self.respawn_timer = None;
+                // For clients, send respawn request to server
+                // For host/single player, respawn locally
+                match self.mode {
+                    GameMode::SinglePlayer | GameMode::Host => {
+                        self.respawn_local_player(ctx);
+                    }
+                    GameMode::Client => {
+                        self.send_respawn_request();
+                        // Reset camera immediately so player can see the spawn area
+                        self.camera_y = PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD;
+                    }
+                }
+            }
+            return;
+        }
+
+        // Check if local player has fallen to death
+        let Some(entity) = self.get_local_player_entity() else {
+            return;
+        };
+
+        let Some(transform) = ctx.world.get_component::<Transform>(entity) else {
+            return;
+        };
+
+        // Start respawn timer if player fell below death threshold
+        if transform.y > DEATH_Y {
+            self.respawn_timer = Some(RESPAWN_DELAY);
+        }
+    }
+
     fn respawn_local_player(&mut self, ctx: &mut SceneContext) {
         let Some(entity) = self.get_local_player_entity() else {
             return;
         };
 
+        self.respawn_player(ctx, entity);
+
+        // Reset camera to spawn position (only for local player)
+        self.camera_y = PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD;
+    }
+
+    fn respawn_player(&mut self, ctx: &mut SceneContext, entity: Entity) {
         // Get player slot for spawn position
         let slot = ctx
             .world
@@ -568,9 +618,19 @@ impl GameScene {
             player.grounded = true;
             player.leap_state = LeapState::Idle;
         }
+    }
 
-        // Reset camera to spawn position
-        self.camera_y = PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD;
+    fn send_respawn_request(&mut self) {
+        let Some(client) = self.client.as_mut() else {
+            return;
+        };
+
+        let respawn_rpc = RespawnRpc;
+        if let Ok(serialized) = SerializedRpc::from_rpc(&respawn_rpc, client.client_id(), RpcTarget::Server)
+            && let Ok(bytes) = serialized.to_bytes()
+        {
+            client.send(Channel::ReliableOrdered, &bytes);
+        }
     }
 
     fn handle_input(&mut self, ctx: &mut SceneContext, dt: f32) -> LeapInput {
@@ -901,6 +961,9 @@ impl GameScene {
     }
 
     fn update_single_player(&mut self, ctx: &mut SceneContext, dt: f32) {
+        // Check for death and handle respawn
+        self.check_death_and_respawn(ctx, dt);
+
         let input = self.handle_input(ctx, dt);
 
         if let Some(entity) = self.get_local_player_entity() {
@@ -922,6 +985,9 @@ impl GameScene {
     }
 
     fn update_host(&mut self, ctx: &mut SceneContext, dt: f32) {
+        // Check for death and handle respawn
+        self.check_death_and_respawn(ctx, dt);
+
         let server = self.server.as_mut().unwrap();
         server.update(Duration::from_secs_f32(dt));
 
@@ -954,21 +1020,33 @@ impl GameScene {
 
         // Receive input from clients - collect inputs first to avoid borrow issues
         let mut pending_inputs: Vec<(Entity, LeapInput)> = Vec::new();
+        let mut pending_respawns: Vec<Entity> = Vec::new();
         {
             let server = self.server.as_mut().unwrap();
             for client_id in server.remote_clients().collect::<Vec<_>>() {
                 while let Some(data) = server.receive(client_id, Channel::ReliableOrdered) {
-                    if let Ok(serialized) = SerializedRpc::from_bytes(&data)
-                        && let Ok(rpc) = serialized.into_rpc::<LeapInputRpc>()
-                        && let Some(&entity) = self.players.get(&client_id)
-                    {
-                        pending_inputs.push((entity, rpc.payload.input));
+                    if let Ok(serialized) = SerializedRpc::from_bytes(&data) {
+                        // Try to parse as LeapInputRpc
+                        if let Ok(rpc) = serialized.clone().into_rpc::<LeapInputRpc>()
+                            && let Some(&entity) = self.players.get(&client_id)
+                        {
+                            pending_inputs.push((entity, rpc.payload.input));
+                        }
+                        // Try to parse as RespawnRpc
+                        else if let Ok(_) = serialized.into_rpc::<RespawnRpc>()
+                            && let Some(&entity) = self.players.get(&client_id)
+                        {
+                            pending_respawns.push(entity);
+                        }
                     }
                 }
             }
         }
         for (entity, input) in pending_inputs {
             self.apply_input(ctx, entity, &input, dt);
+        }
+        for entity in pending_respawns {
+            self.respawn_player(ctx, entity);
         }
 
         // Handle local input
@@ -999,6 +1077,9 @@ impl GameScene {
     }
 
     fn update_client(&mut self, ctx: &mut SceneContext, dt: f32) {
+        // Check for death and handle respawn
+        self.check_death_and_respawn(ctx, dt);
+
         let client = self.client.as_mut().unwrap();
         client.update(Duration::from_secs_f32(dt));
 
@@ -1311,7 +1392,15 @@ impl Scene for GameScene {
         if ctx.input.key_pressed(KeyCode::KeyR)
             || ctx.input.gamepad_button_pressed(GamepadButton::Select)
         {
-            self.respawn_local_player(ctx);
+            match self.mode {
+                GameMode::SinglePlayer | GameMode::Host => {
+                    self.respawn_local_player(ctx);
+                }
+                GameMode::Client => {
+                    // Send respawn request to server
+                    self.send_respawn_request();
+                }
+            }
         }
 
         if !self.show_quit_dialog {
