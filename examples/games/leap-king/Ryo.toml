@@ -17,10 +17,10 @@ assets = "assets"
 
 [system]
 vsync = true
-display_mode = "windowed"
+display_mode = "borderless_fullscreen"
 master_volume = 0.8
 show_fps = true
-dev_console = true
+console = true
 
 # =============================================================================
 # DEVELOPER-ONLY SETTINGS
@@ -31,7 +31,7 @@ dev_console = true
 show_colliders = false
 show_velocities = false
 show_origins = false
-enable_profiler = true
+enable_profiler = false
 
 # ==============================================================================
 # RELEASE/DISTRIBUTION SETTINGS

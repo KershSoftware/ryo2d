@@ -18,8 +18,7 @@ assets = "assets"
 [system]
 vsync = false
 display_mode = "windowed"
-show_fps = true
-console = true
+show_fps = false
 
 # =============================================================================
 # DEVELOPER-ONLY SETTINGS
@@ -30,7 +29,7 @@ console = true
 show_colliders = false
 show_velocities = false
 show_origins = false
-enable_profiler = true
+enable_profiler = false
 
 # ==============================================================================
 # RELEASE/DISTRIBUTION SETTINGS

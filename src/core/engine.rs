@@ -3432,8 +3432,8 @@ impl EngineBuilder {
       && let Ok(save_manager) = workspace.create_save_manager()
       && let Ok(system_state) = save_manager.load_or_create_system(&workspace.config().system)
     {
-      // Apply display overrides based on filter
-      if filter.contains(UserPreference::Resolution) {
+      // Apply display overrides based on filter (only if not explicitly set via .resolution())
+      if filter.contains(UserPreference::Resolution) && !self.resolution_set {
         self.config.width = system_state.display.width;
         self.config.height = system_state.display.height;
         self.resolution_set = true;

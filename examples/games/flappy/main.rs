@@ -45,9 +45,7 @@ fn main() {
   let builder = EngineBuilder::new()
     .resolution(400, 600)
     .fps(144)
-    .physics_hz(120)
-    .ui_scale(None) // Auto-detect from DPI for HiDPI display support
-    .with_user_preferences(UserPreferenceFilter::all()); // Apply overrides from system.json
+    .physics_hz(144);
 
   // Start with debug scene or menu based on env config
   let engine = if start_debug {
