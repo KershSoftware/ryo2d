@@ -199,12 +199,13 @@ impl VolumetricLightingScene {
 
       // Add sun position if it exists
       if let Some(sun_entity) = self.sun_entity
-        && let Some(transform) = ctx.world.get_component::<Transform>(sun_entity) {
-          // Convert world position to screen UV (approximate)
-          let uv_x = transform.x / self.screen_w;
-          let uv_y = transform.y / self.screen_h;
-          light_positions.push((uv_x, uv_y));
-        }
+        && let Some(transform) = ctx.world.get_component::<Transform>(sun_entity)
+      {
+        // Convert world position to screen UV (approximate)
+        let uv_x = transform.x / self.screen_w;
+        let uv_y = transform.y / self.screen_h;
+        light_positions.push((uv_x, uv_y));
+      }
 
       if !light_positions.is_empty() {
         let intensity = self.god_rays_intensity * self.atmosphere_preset.god_rays_multiplier();

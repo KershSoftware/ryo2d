@@ -109,10 +109,9 @@ pub enum GameMode {
 #[derive(Default)]
 struct ChargeIndicatorState {
   visible: bool,
-  // Store world position - convert to screen in draw
-  world_x: f32,
-  world_y: f32,
-  camera_y: f32,
+  // Screen position (converted from world via camera in update)
+  screen_x: f32,
+  screen_y: f32,
   charge_pct: f32,
   is_overcharging: bool,
   trajectory_vx: f32,
@@ -207,6 +206,10 @@ pub struct GameScene {
 
   // Client-side prediction helper
   prediction: PredictionHelper,
+
+  // Screen dimensions (set from engine in on_enter)
+  screen_width: f32,
+  screen_height: f32,
 }
 
 impl GameScene {
@@ -235,14 +238,14 @@ impl GameScene {
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
       seed,
-      generator: PlatformGenerator::new(seed),
+      generator: PlatformGenerator::new(seed, 0.0),
       highest_player_y: PLAYER_SPAWN_Y,
       camera_y: PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD,
       camera_fast_lerp: false,
       broadcast_timer: 0.0,
       elapsed_time: 0.0,
       respawn_timer: None,
-      checkpoint_x: PLAYER_A_SPAWN_X,
+      checkpoint_x: 0.0, // Set properly in on_enter when screen_width is known
       checkpoint_y: PLAYER_SPAWN_Y,
       checkpoint_platform: None,
       last_checkpoint_height: 0.0,
@@ -261,6 +264,8 @@ impl GameScene {
       input_delay: 0.2, // Prevent menu button from triggering charge
       charge_indicator: ChargeIndicatorState::default(),
       prediction: PredictionHelper::new(Some(ClientId::from(0u64))),
+      screen_width: 0.0,
+      screen_height: 0.0,
     })
   }
 
@@ -299,14 +304,14 @@ impl GameScene {
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
       seed,
-      generator: PlatformGenerator::new(seed),
+      generator: PlatformGenerator::new(seed, 0.0),
       highest_player_y: PLAYER_SPAWN_Y,
       camera_y: PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD,
       camera_fast_lerp: false,
       broadcast_timer: 0.0,
       elapsed_time: 0.0,
       respawn_timer: None,
-      checkpoint_x: PLAYER_A_SPAWN_X,
+      checkpoint_x: 0.0, // Set properly in on_enter when screen_width is known
       checkpoint_y: PLAYER_SPAWN_Y,
       checkpoint_platform: None,
       last_checkpoint_height: 0.0,
@@ -325,6 +330,8 @@ impl GameScene {
       input_delay: 0.2, // Prevent menu button from triggering charge
       charge_indicator: ChargeIndicatorState::default(),
       prediction: PredictionHelper::new(Some(host_id)),
+      screen_width: 0.0,
+      screen_height: 0.0,
     })
   }
 
@@ -368,14 +375,14 @@ impl GameScene {
       previous_leap_states: HashMap::new(),
       remote_best_heights: HashMap::new(),
       seed: 0, // Will receive from server
-      generator: PlatformGenerator::new(0),
+      generator: PlatformGenerator::new(0, 0.0),
       highest_player_y: PLAYER_SPAWN_Y,
       camera_y: PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD,
       camera_fast_lerp: false,
       broadcast_timer: 0.0,
       elapsed_time: 0.0,
       respawn_timer: None,
-      checkpoint_x: PLAYER_A_SPAWN_X,
+      checkpoint_x: 0.0, // Set properly in on_enter when screen_width is known
       checkpoint_y: PLAYER_SPAWN_Y,
       checkpoint_platform: None,
       last_checkpoint_height: 0.0,
@@ -394,7 +401,19 @@ impl GameScene {
       input_delay: 0.2, // Prevent menu button from triggering charge
       charge_indicator: ChargeIndicatorState::default(),
       prediction: PredictionHelper::new(None), // Will set local_client_id when connected
+      screen_width: 0.0,
+      screen_height: 0.0,
     })
+  }
+
+  /// Compute spawn X position for a player slot, centered on the spawn platform
+  fn spawn_x_for_slot(&self, slot: u8) -> f32 {
+    let center = self.screen_width / 2.0;
+    if slot == 0 {
+      center - PLAYER_SPAWN_OFFSET
+    } else {
+      center + PLAYER_SPAWN_OFFSET
+    }
   }
 
   fn spawn_platform_entity(
@@ -539,43 +558,44 @@ impl GameScene {
       let lamp_data = ctx.world.get_component::<PlatformLamp>(entity).map(|l| *l);
 
       if let Some(lamp) = lamp_data
-        && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
-          let t = self.elapsed_time;
-          let p = lamp.phase;
-          let speed = LAMP_OSCILLATE_SPEED * lamp.speed_mult;
+        && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity)
+      {
+        let t = self.elapsed_time;
+        let p = lamp.phase;
+        let speed = LAMP_OSCILLATE_SPEED * lamp.speed_mult;
 
-          // Horizontal travel range - lamp travels most of platform width
-          let travel_range = (lamp.platform_width - LAMP_OFFSET_X * 2.0) * 0.45;
+        // Horizontal travel range - lamp travels most of platform width
+        let travel_range = (lamp.platform_width - LAMP_OFFSET_X * 2.0) * 0.45;
 
-          // Fairy-like floating motion using Lissajous curves with per-lamp speed
-          // Primary smooth figure-8 motion
-          let fairy_x = (t * speed * 0.7 + p).sin() * (t * speed * 0.3 + p * 0.5).cos();
-          let fairy_y = (t * speed * 0.5 + p * 1.3).sin();
+        // Fairy-like floating motion using Lissajous curves with per-lamp speed
+        // Primary smooth figure-8 motion
+        let fairy_x = (t * speed * 0.7 + p).sin() * (t * speed * 0.3 + p * 0.5).cos();
+        let fairy_y = (t * speed * 0.5 + p * 1.3).sin();
 
-          // Secondary gentle drift overlay
-          let drift_x = (t * speed * 0.15 + p * 2.1).sin() * 0.5
-            + (t * speed * 0.08 + p * 0.7).cos() * 0.3;
-          let drift_y = (t * speed * 0.25 + p * 1.7).cos() * 0.3
-            + (t * speed * 0.12 + p * 2.3).sin() * 0.2;
+        // Secondary gentle drift overlay
+        let drift_x =
+          (t * speed * 0.15 + p * 2.1).sin() * 0.5 + (t * speed * 0.08 + p * 0.7).cos() * 0.3;
+        let drift_y =
+          (t * speed * 0.25 + p * 1.7).cos() * 0.3 + (t * speed * 0.12 + p * 2.3).sin() * 0.2;
 
-          // Horizontal movement scaled to platform width
-          let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
-          let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
+        // Horizontal movement scaled to platform width
+        let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
+        let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
 
-          // Occasional subtle jitter (reduced frequency and intensity)
-          let flicker_seed = ((t * 5.0 * lamp.speed_mult + p * 11.0).sin() * 1000.0).abs() % 1.0;
-          let flicker = if flicker_seed > 0.95 {
-            // Rare quick jitter
-            let jx = ((t * 31.0 + p).sin() * 2.0).signum() * 1.5;
-            let jy = ((t * 37.0 + p).cos() * 2.0).signum() * 1.0;
-            (jx, jy)
-          } else {
-            (0.0, 0.0)
-          };
+        // Occasional subtle jitter (reduced frequency and intensity)
+        let flicker_seed = ((t * 5.0 * lamp.speed_mult + p * 11.0).sin() * 1000.0).abs() % 1.0;
+        let flicker = if flicker_seed > 0.95 {
+          // Rare quick jitter
+          let jx = ((t * 31.0 + p).sin() * 2.0).signum() * 1.5;
+          let jy = ((t * 37.0 + p).cos() * 2.0).signum() * 1.0;
+          (jx, jy)
+        } else {
+          (0.0, 0.0)
+        };
 
-          transform.x = lamp.base_x + offset_x + flicker.0;
-          transform.y = lamp.base_y + offset_y + flicker.1;
-        }
+        transform.x = lamp.base_x + offset_x + flicker.0;
+        transform.y = lamp.base_y + offset_y + flicker.1;
+      }
     }
 
     // Update dust emitter positions to follow their lamps
@@ -583,35 +603,36 @@ impl GameScene {
       let lamp_data = ctx.world.get_component::<PlatformLamp>(*entity).map(|l| *l);
 
       if let Some(lamp) = lamp_data
-        && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(*entity) {
-          let t = self.elapsed_time;
-          let p = lamp.phase;
-          let speed = LAMP_OSCILLATE_SPEED * lamp.speed_mult;
+        && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(*entity)
+      {
+        let t = self.elapsed_time;
+        let p = lamp.phase;
+        let speed = LAMP_OSCILLATE_SPEED * lamp.speed_mult;
 
-          // Horizontal travel range - same as lamps
-          let travel_range = (lamp.platform_width - LAMP_OFFSET_X * 2.0) * 0.45;
+        // Horizontal travel range - same as lamps
+        let travel_range = (lamp.platform_width - LAMP_OFFSET_X * 2.0) * 0.45;
 
-          // Same fairy-like motion as lamps (without jitter)
-          let fairy_x = (t * speed * 0.7 + p).sin() * (t * speed * 0.3 + p * 0.5).cos();
-          let fairy_y = (t * speed * 0.5 + p * 1.3).sin();
+        // Same fairy-like motion as lamps (without jitter)
+        let fairy_x = (t * speed * 0.7 + p).sin() * (t * speed * 0.3 + p * 0.5).cos();
+        let fairy_y = (t * speed * 0.5 + p * 1.3).sin();
 
-          let drift_x = (t * speed * 0.15 + p * 2.1).sin() * 0.5
-            + (t * speed * 0.08 + p * 0.7).cos() * 0.3;
-          let drift_y = (t * speed * 0.25 + p * 1.7).cos() * 0.3
-            + (t * speed * 0.12 + p * 2.3).sin() * 0.2;
+        let drift_x =
+          (t * speed * 0.15 + p * 2.1).sin() * 0.5 + (t * speed * 0.08 + p * 0.7).cos() * 0.3;
+        let drift_y =
+          (t * speed * 0.25 + p * 1.7).cos() * 0.3 + (t * speed * 0.12 + p * 2.3).sin() * 0.2;
 
-          // Horizontal movement scaled to platform width
-          let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
-          let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
+        // Horizontal movement scaled to platform width
+        let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
+        let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
 
-          transform.x = lamp.base_x + offset_x;
-          transform.y = lamp.base_y + offset_y;
-        }
+        transform.x = lamp.base_x + offset_x;
+        transform.y = lamp.base_y + offset_y;
+      }
     }
   }
 
-  fn spawn_spawn_platform(&mut self, ctx: &mut SceneContext) {
-    let x = (SCREEN_WIDTH as f32 - SPAWN_PLATFORM_WIDTH) / 2.0;
+  fn spawn_starting_platform(&mut self, ctx: &mut SceneContext) {
+    let x = (self.screen_width - SPAWN_PLATFORM_WIDTH) / 2.0;
     self.spawn_platform_entity(ctx, x, SPAWN_PLATFORM_Y, SPAWN_PLATFORM_WIDTH, 0, true);
   }
 
@@ -626,11 +647,11 @@ impl GameScene {
     // Use the built-in rain preset with wider coverage
     // Add glow effect so rain is visible even with dark lighting
     let emitter = ParticleEmitter::rain(rain_sprite)
-      .with_mode(EmissionMode::Continuous { rate: 80.0 })
+      .with_mode(EmissionMode::Continuous { rate: 300.0 })
       .with_shape(EmissionShape::Line {
-        start_x: -(SCREEN_WIDTH as f32),
+        start_x: -self.screen_width,
         start_y: -50.0, // Above emitter
-        end_x: SCREEN_WIDTH as f32,
+        end_x: self.screen_width,
         end_y: -50.0,
       })
       .with_z_order(Z_PLATFORM - 1) // Above background, below platforms
@@ -643,8 +664,8 @@ impl GameScene {
     // Position emitter at top of visible camera area
     let rain_entity = ctx.world.spawn((
       Transform::new(
-        SCREEN_WIDTH as f32 / 2.0,
-        self.camera_y - SCREEN_HEIGHT as f32 / 2.0,
+        self.screen_width / 2.0,
+        self.camera_y - self.screen_height / 2.0,
       ),
       emitter,
     ));
@@ -655,10 +676,11 @@ impl GameScene {
   fn update_rain(&mut self, ctx: &mut SceneContext) {
     // Keep rain emitter above the camera
     if let Some(rain_entity) = self.rain_emitter
-      && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(rain_entity) {
-        transform.x = SCREEN_WIDTH as f32 / 2.0;
-        transform.y = self.camera_y - SCREEN_HEIGHT as f32 / 2.0; // Top of visible area
-      }
+      && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(rain_entity)
+    {
+      transform.x = self.screen_width / 2.0;
+      transform.y = self.camera_y - self.screen_height / 2.0; // Top of visible area
+    }
   }
 
   fn update_background(&mut self, ctx: &mut SceneContext) {
@@ -667,8 +689,8 @@ impl GameScene {
     }
 
     // Find the camera's visible range
-    let visible_top = self.camera_y - SCREEN_HEIGHT as f32;
-    let visible_bottom = self.camera_y + SCREEN_HEIGHT as f32;
+    let visible_top = self.camera_y - self.screen_height;
+    let visible_bottom = self.camera_y + self.screen_height;
 
     for &entity in &self.background_tiles {
       if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
@@ -797,10 +819,11 @@ impl GameScene {
   }
 
   fn spawn_player(&mut self, ctx: &mut SceneContext, slot: u8, client_id: ClientId) -> Entity {
-    let (spawn_x, color) = if slot == 0 {
-      (PLAYER_A_SPAWN_X, PLAYER_A_COLOR)
+    let spawn_x = self.spawn_x_for_slot(slot);
+    let color = if slot == 0 {
+      PLAYER_A_COLOR
     } else {
-      (PLAYER_B_SPAWN_X, PLAYER_B_COLOR)
+      PLAYER_B_COLOR
     };
 
     // Determine if this is the local player (already spawned means we can predict)
@@ -965,20 +988,21 @@ impl GameScene {
         .map(|p| p.width);
 
       if let Some(width) = platform_width
-        && let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(old_platform) {
-          let new_sprite = SpriteHandle::from_sprite(
-            Sprite::solid_rect(
-              width as u32,
-              PLATFORM_HEIGHT as u32,
-              PLATFORM_COLOR.0,
-              PLATFORM_COLOR.1,
-              PLATFORM_COLOR.2,
-              255,
-            ),
-            format!("platform_normal_{}", old_platform.id()),
-          );
-          renderable.sprite = new_sprite;
-        }
+        && let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(old_platform)
+      {
+        let new_sprite = SpriteHandle::from_sprite(
+          Sprite::solid_rect(
+            width as u32,
+            PLATFORM_HEIGHT as u32,
+            PLATFORM_COLOR.0,
+            PLATFORM_COLOR.1,
+            PLATFORM_COLOR.2,
+            255,
+          ),
+          format!("platform_normal_{}", old_platform.id()),
+        );
+        renderable.sprite = new_sprite;
+      }
     }
 
     // Find the platform the player is standing on
@@ -1087,11 +1111,7 @@ impl GameScene {
       .map(|p| p.slot)
       .unwrap_or(0);
 
-    let spawn_x = if slot == 0 {
-      PLAYER_A_SPAWN_X
-    } else {
-      PLAYER_B_SPAWN_X
-    };
+    let spawn_x = self.spawn_x_for_slot(slot);
 
     let action = RespawnAction {
       slot,
@@ -1348,7 +1368,7 @@ impl GameScene {
           transform.y += vy * dt;
 
           // Clamp to screen bounds (no wrapping)
-          transform.x = transform.x.clamp(0.0, SCREEN_WIDTH as f32 - PLAYER_WIDTH);
+          transform.x = transform.x.clamp(0.0, self.screen_width - PLAYER_WIDTH);
         }
 
         // Check platform collisions (only when falling)
@@ -1583,9 +1603,10 @@ impl GameScene {
     let mut highest_y = self.highest_player_y;
     for &entity in self.players.values() {
       if let Some(transform) = ctx.world.get_component::<Transform>(entity)
-        && transform.y < highest_y {
-          highest_y = transform.y;
-        }
+        && transform.y < highest_y
+      {
+        highest_y = transform.y;
+      }
     }
     self.highest_player_y = highest_y;
 
@@ -1633,7 +1654,7 @@ impl GameScene {
     // Update camera position (camera_y is the center Y position)
     ctx
       .camera
-      .set_position(SCREEN_WIDTH as f32 / 2.0, self.camera_y);
+      .set_position(self.screen_width / 2.0, self.camera_y);
   }
 
   fn update_single_player(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -1705,14 +1726,14 @@ impl GameScene {
             &init_rpc,
             self.local_client_id.unwrap(),
             RpcTarget::Client(client_id),
-          )
-            && let Ok(bytes) = serialized.to_bytes() {
-              self
-                .server
-                .as_mut()
-                .unwrap()
-                .send(client_id, Channel::ReliableOrdered, &bytes);
-            }
+          ) && let Ok(bytes) = serialized.to_bytes()
+          {
+            self
+              .server
+              .as_mut()
+              .unwrap()
+              .send(client_id, Channel::ReliableOrdered, &bytes);
+          }
 
           // Show connection notification
           self.notifications.push(ConnectionNotification {
@@ -1737,7 +1758,7 @@ impl GameScene {
               self.client_sessions.insert(
                 session_id,
                 SessionData {
-                  checkpoint_x: PLAYER_B_SPAWN_X,
+                  checkpoint_x: self.spawn_x_for_slot(1),
                   checkpoint_y: checkpoint_y - PLAYER_HEIGHT,
                   checkpoint_height: best_height,
                   max_height: best_height,
@@ -1813,14 +1834,14 @@ impl GameScene {
           &init_rpc,
           self.local_client_id.unwrap(),
           RpcTarget::Client(client_id),
-        )
-          && let Ok(bytes) = serialized.to_bytes() {
-            self
-              .server
-              .as_mut()
-              .unwrap()
-              .send(client_id, Channel::ReliableOrdered, &bytes);
-          }
+        ) && let Ok(bytes) = serialized.to_bytes()
+        {
+          self
+            .server
+            .as_mut()
+            .unwrap()
+            .send(client_id, Channel::ReliableOrdered, &bytes);
+        }
 
         // Show reconnect notification
         self.notifications.push(ConnectionNotification {
@@ -1906,9 +1927,10 @@ impl GameScene {
             if let Some(client) = self.client.as_mut()
               && let Ok(serialized) =
                 SerializedRpc::from_rpc(&reconnect_rpc, client_id, RpcTarget::Server)
-                && let Ok(bytes) = serialized.to_bytes() {
-                  client.send(Channel::ReliableOrdered, &bytes);
-                }
+              && let Ok(bytes) = serialized.to_bytes()
+            {
+              client.send(Channel::ReliableOrdered, &bytes);
+            }
           }
         }
         NetworkEvent::Disconnected { .. } => {
@@ -2031,26 +2053,28 @@ impl GameScene {
           // Detect jump (transition to Airborne)
           if !matches!(prev_state, NetworkLeapState::Airborne)
             && matches!(new_state, NetworkLeapState::Airborne)
-            && let Some(audio) = &mut ctx.audio {
-              let options = if let Some((lx, ly)) = local_pos {
-                spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
-              } else {
-                SoundOptions::new().volume(0.05)
-              };
-              let _ = audio.play_sound_with("jump", options);
-            }
+            && let Some(audio) = &mut ctx.audio
+          {
+            let options = if let Some((lx, ly)) = local_pos {
+              spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
+            } else {
+              SoundOptions::new().volume(0.05)
+            };
+            let _ = audio.play_sound_with("jump", options);
+          }
 
           // Detect land (transition to Landing)
           if !matches!(prev_state, NetworkLeapState::Landing { .. })
             && matches!(new_state, NetworkLeapState::Landing { .. })
-            && let Some(audio) = &mut ctx.audio {
-              let options = if let Some((lx, ly)) = local_pos {
-                spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
-              } else {
-                SoundOptions::new().volume(0.05)
-              };
-              let _ = audio.play_sound_with("land", options);
-            }
+            && let Some(audio) = &mut ctx.audio
+          {
+            let options = if let Some((lx, ly)) = local_pos {
+              spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
+            } else {
+              SoundOptions::new().volume(0.05)
+            };
+            let _ = audio.play_sound_with("land", options);
+          }
 
           // Store current state for next comparison
           self
@@ -2081,9 +2105,10 @@ impl GameScene {
     let input_rpc = LeapInputRpc { input };
     if let Ok(serialized) =
       SerializedRpc::from_rpc(&input_rpc, client.client_id(), RpcTarget::Server)
-      && let Ok(bytes) = serialized.to_bytes() {
-        client.send(Channel::ReliableOrdered, &bytes);
-      }
+      && let Ok(bytes) = serialized.to_bytes()
+    {
+      client.send(Channel::ReliableOrdered, &bytes);
+    }
 
     // Run local physics for smooth movement (client-side prediction)
     self.update_physics(ctx, dt);
@@ -2116,26 +2141,27 @@ impl GameScene {
     for (&client_id, &entity) in &self.players {
       if let Some(transform) = ctx.world.get_component::<Transform>(entity)
         && let Some(vel) = ctx.world.get_component::<Velocity>(entity)
-          && let Some(player) = ctx.world.get_component::<Player>(entity) {
-            // Use local max_height for local player, remote_best_heights for others
-            let best_height = if Some(client_id) == local_id {
-              self.max_height
-            } else {
-              *self.remote_best_heights.get(&client_id).unwrap_or(&0.0)
-            };
+        && let Some(player) = ctx.world.get_component::<Player>(entity)
+      {
+        // Use local max_height for local player, remote_best_heights for others
+        let best_height = if Some(client_id) == local_id {
+          self.max_height
+        } else {
+          *self.remote_best_heights.get(&client_id).unwrap_or(&0.0)
+        };
 
-            updates.push(PositionUpdate {
-              client_id,
-              slot: player.slot,
-              x: transform.x,
-              y: transform.y,
-              vx: vel.dx,
-              vy: vel.dy,
-              leap_state: player.leap_state.into(),
-              facing_right: player.facing == Facing::Right,
-              best_height,
-            });
-          }
+        updates.push(PositionUpdate {
+          client_id,
+          slot: player.slot,
+          x: transform.x,
+          y: transform.y,
+          vx: vel.dx,
+          vy: vel.dy,
+          leap_state: player.leap_state.into(),
+          facing_right: player.facing == Facing::Right,
+          best_height,
+        });
+      }
     }
 
     let remote_clients: Vec<_> = server.remote_clients().collect();
@@ -2187,10 +2213,12 @@ impl GameScene {
     let direction = player.facing.sign();
 
     self.charge_indicator.visible = true;
-    // Store world position - convert to screen in draw_charge_indicator
-    self.charge_indicator.world_x = transform.x + PLAYER_WIDTH / 2.0;
-    self.charge_indicator.world_y = transform.y + PLAYER_HEIGHT / 2.0;
-    self.charge_indicator.camera_y = self.camera_y;
+    // Convert world position to screen position via camera
+    let world_x = transform.x + PLAYER_WIDTH / 2.0;
+    let world_y = transform.y + PLAYER_HEIGHT / 2.0;
+    let (sx, sy) = ctx.camera.world_to_screen(world_x, world_y);
+    self.charge_indicator.screen_x = sx;
+    self.charge_indicator.screen_y = sy;
     self.charge_indicator.charge_pct = (charge_time / MAX_CHARGE_TIME).min(1.0);
     self.charge_indicator.is_overcharging = charge_time > OVERCHARGE_THRESHOLD;
     self.charge_indicator.trajectory_vx = force * angle_rad.cos() * direction;
@@ -2202,22 +2230,9 @@ impl GameScene {
       return;
     }
 
-    // Get actual UI screen size (may differ from game's internal resolution)
-    let (sw, sh) = ui.screen_size();
-    let sw = sw as f32;
-    let sh = sh as f32;
-
-    // Convert world position to screen position
-    // The game's internal resolution is SCREEN_WIDTH x SCREEN_HEIGHT
-    // The UI may be rendered at a different resolution (sw x sh)
-    // Camera X is always centered at SCREEN_WIDTH/2
-    let game_screen_x = self.charge_indicator.world_x; // world_x = screen_x when camera_x = SCREEN_WIDTH/2
-    let game_screen_y =
-      self.charge_indicator.world_y - self.charge_indicator.camera_y + SCREEN_HEIGHT as f32 / 2.0;
-
-    // Scale from game resolution to UI resolution
-    let screen_x = game_screen_x * sw / SCREEN_WIDTH as f32;
-    let screen_y = game_screen_y * sh / SCREEN_HEIGHT as f32;
+    // Screen position was already computed from world coords via camera
+    let screen_x = self.charge_indicator.screen_x;
+    let screen_y = self.charge_indicator.screen_y;
 
     // Get direction from velocity
     let vx = self.charge_indicator.trajectory_vx;
@@ -2332,10 +2347,14 @@ impl Scene for GameScene {
   }
 
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
+    self.screen_width = ctx.screen_width();
+    self.screen_height = ctx.screen_height();
+    self.generator = PlatformGenerator::new(self.seed, self.screen_width);
+    self.checkpoint_x = self.spawn_x_for_slot(0);
+
     ctx
       .camera
-      .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
+      .set_position(self.screen_width / 2.0, self.screen_height / 2.0);
 
     // Background color comes from ambient lighting - no separate sprite needed
     // (GPU background sprite was causing rendering artifacts)
@@ -2352,7 +2371,7 @@ impl Scene for GameScene {
         AMBIENT_DARK_INTENSITY,
       ));
       // Dusty atmosphere for visible light beams
-      lighting.set_atmosphere(Atmosphere::hazy());
+      lighting.set_atmosphere(Atmosphere::dusty());
       // Keep UI readable in darkness
       lighting.set_ui_affected_by_lighting(false);
     }
@@ -2373,7 +2392,7 @@ impl Scene for GameScene {
     }
 
     // Spawn spawn platform
-    self.spawn_spawn_platform(ctx);
+    self.spawn_starting_platform(ctx);
 
     // Generate initial platforms above spawn
     self.generate_platforms_as_needed(ctx);
@@ -2488,16 +2507,17 @@ impl Scene for GameScene {
       );
 
       if self.mode == GameMode::Host
-        && let Some(ref lan) = self.lan_ip {
-          let lan_text = format!("{}:{}", lan, DEFAULT_PORT);
-          let (tw, _) = ui.text_size(&lan_text);
-          ui.draw_text(
-            &lan_text,
-            sw as f32 - tw as f32 - 20.0,
-            40.0,
-            Color::new(100, 200, 100, 150),
-          );
-        }
+        && let Some(ref lan) = self.lan_ip
+      {
+        let lan_text = format!("{}:{}", lan, DEFAULT_PORT);
+        let (tw, _) = ui.text_size(&lan_text);
+        ui.draw_text(
+          &lan_text,
+          sw as f32 - tw as f32 - 20.0,
+          40.0,
+          Color::new(100, 200, 100, 150),
+        );
+      }
     }
 
     // Height display (top left)
@@ -2542,10 +2562,12 @@ impl Scene for GameScene {
       );
     }
 
-    // Respawn hint (bottom left)
+    // Respawn hint (bottom right)
+    let respawn_text = "R / Y / Triangle : Respawn";
+    let (rtw, _) = ui.text_size(respawn_text);
     ui.draw_text(
-      "R / Y / Triangle : Respawn",
-      20.0,
+      respawn_text,
+      sw as f32 - rtw as f32 - 20.0,
       sh as f32 - 30.0,
       Color::new(150, 150, 150, 150),
     );

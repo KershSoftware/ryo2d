@@ -19,8 +19,8 @@
 
 use ryo2d::prelude::*;
 use std::f32::consts::PI;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ============================================================================
 // Scene 1: Easing Functions
@@ -300,14 +300,15 @@ impl SpeedControlScene {
 
   fn apply_speed(&self, ctx: &mut SceneContext) {
     if let Some(entity) = self.entity
-      && let Some(mut tween) = ctx.world.get_mut::<Tween>(entity) {
-        if self.paused {
-          tween.pause();
-        } else {
-          tween.resume();
-          tween.set_speed(self.speed);
-        }
+      && let Some(mut tween) = ctx.world.get_mut::<Tween>(entity)
+    {
+      if self.paused {
+        tween.pause();
+      } else {
+        tween.resume();
+        tween.set_speed(self.speed);
       }
+    }
   }
 }
 
@@ -881,15 +882,16 @@ impl Scene for SequenceScene {
 
     // Restart
     if ctx.input.key_pressed(KeyCode::Space)
-      && let Some(entity) = self.entity {
-        if let Some(mut seq) = ctx.world.get_mut::<TweenSequence>(entity) {
-          seq.restart();
-        }
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.x = 100.0;
-          transform.y = 100.0;
-        }
+      && let Some(entity) = self.entity
+    {
+      if let Some(mut seq) = ctx.world.get_mut::<TweenSequence>(entity) {
+        seq.restart();
       }
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
+        transform.x = 100.0;
+        transform.y = 100.0;
+      }
+    }
 
     SceneAction::Continue
   }

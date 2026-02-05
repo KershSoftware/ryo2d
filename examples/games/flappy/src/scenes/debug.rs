@@ -195,24 +195,25 @@ impl DebugScene {
     // Check against ground (still uses regular Collider)
     if !self.is_colliding
       && let Some(ground_entity) = self.ground
-        && let Some(ground_transform) = ctx.world.get::<Transform>(ground_entity)
-          && let Some(ground_collider) = ctx.world.get::<Collider>(ground_entity)
-            && let ColliderShape::Box { width, height } = ground_collider.shape {
-              let box_x = ground_transform.x + ground_collider.offset_x;
-              let box_y = ground_transform.y + ground_collider.offset_y;
+      && let Some(ground_transform) = ctx.world.get::<Transform>(ground_entity)
+      && let Some(ground_collider) = ctx.world.get::<Collider>(ground_entity)
+      && let ColliderShape::Box { width, height } = ground_collider.shape
+    {
+      let box_x = ground_transform.x + ground_collider.offset_x;
+      let box_y = ground_transform.y + ground_collider.offset_y;
 
-              let closest_x = bird_cx.clamp(box_x, box_x + width);
-              let closest_y = bird_cy.clamp(box_y, box_y + height);
+      let closest_x = bird_cx.clamp(box_x, box_x + width);
+      let closest_y = bird_cy.clamp(box_y, box_y + height);
 
-              let dx = bird_cx - closest_x;
-              let dy = bird_cy - closest_y;
-              let dist_sq = dx * dx + dy * dy;
+      let dx = bird_cx - closest_x;
+      let dy = bird_cy - closest_y;
+      let dist_sq = dx * dx + dy * dy;
 
-              if dist_sq < bird_radius * bird_radius {
-                self.is_colliding = true;
-                self.collision_info = "Ground".to_string();
-              }
-            }
+      if dist_sq < bird_radius * bird_radius {
+        self.is_colliding = true;
+        self.collision_info = "Ground".to_string();
+      }
+    }
 
     // Check ceiling
     if !self.is_colliding && bird_cy - bird_radius < 0.0 {
@@ -278,10 +279,11 @@ impl Scene for DebugScene {
 
     // Apply movement to bird transform (kinematic body syncs from ECS)
     if let Some(bird_entity) = self.bird
-      && let Some(mut transform) = ctx.world.get_mut::<Transform>(bird_entity) {
-        transform.x += dx;
-        transform.y += dy;
-      }
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(bird_entity)
+    {
+      transform.x += dx;
+      transform.y += dy;
+    }
 
     // Reset collision state each frame
     self.is_colliding = false;

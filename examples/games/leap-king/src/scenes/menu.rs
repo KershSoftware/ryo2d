@@ -73,6 +73,10 @@ pub struct MenuScene {
   // Fairy lights
   fairy_lights: Vec<(Entity, MenuFairyLight)>,
   elapsed_time: f32,
+
+  // Screen dimensions (set from engine in on_enter)
+  screen_width: f32,
+  screen_height: f32,
 }
 
 impl MenuScene {
@@ -93,6 +97,8 @@ impl MenuScene {
       particle_system: ParticleSystem::new(),
       fairy_lights: Vec::new(),
       elapsed_time: 0.0,
+      screen_width: 0.0,
+      screen_height: 0.0,
     }
   }
 
@@ -135,9 +141,9 @@ impl MenuScene {
     let emitter = ParticleEmitter::rain(rain_sprite)
       .with_mode(EmissionMode::Continuous { rate: 80.0 })
       .with_shape(EmissionShape::Line {
-        start_x: -(SCREEN_WIDTH as f32) / 2.0,
+        start_x: -self.screen_width / 2.0,
         start_y: -50.0, // Above emitter
-        end_x: (SCREEN_WIDTH as f32) / 2.0,
+        end_x: self.screen_width / 2.0,
         end_y: -50.0,
       })
       .with_z_order(Z_PLATFORM - 1) // Above background, below platforms
@@ -150,7 +156,7 @@ impl MenuScene {
     // Position emitter at top of visible area (camera is at screen center)
     let rain_entity = ctx
       .world
-      .spawn((Transform::new(SCREEN_WIDTH as f32 / 2.0, 0.0), emitter));
+      .spawn((Transform::new(self.screen_width / 2.0, 0.0), emitter));
 
     self.rain_emitter = Some(rain_entity);
   }
@@ -209,8 +215,8 @@ impl Scene for MenuScene {
   }
 
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // Clear world from any previous scene (game entities, etc.)
-    ctx.world.clear();
+    self.screen_width = ctx.screen_width();
+    self.screen_height = ctx.screen_height();
 
     // Reset menu state
     self.background_sprite = None;
@@ -222,23 +228,23 @@ impl Scene for MenuScene {
     // Set camera to show the menu area (center of screen in world space)
     ctx
       .camera
-      .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
+      .set_position(self.screen_width / 2.0, self.screen_height / 2.0);
 
     // Set up ambient lighting - bright enough to see rain particles
-    // if let Some(lighting) = ctx.lighting {
-    //   lighting.set_ambient(AmbientLight::new(
-    //     Color::rgb(60, 70, 100), // Brighter blue-gray ambient
-    //     0.6, // High intensity so rain is visible everywhere
-    //   ));
-    //   lighting.set_ui_affected_by_lighting(false);
-    // }
+    if let Some(lighting) = ctx.lighting {
+      lighting.set_ambient(AmbientLight::new(
+        Color::rgb(60, 70, 100), // Brighter blue-gray ambient
+        0.6,                     // High intensity so rain is visible everywhere
+      ));
+      lighting.set_ui_affected_by_lighting(false);
+    }
 
     // Spawn fairy lights at random positions
     let mut rng = rand::thread_rng();
     let fairy_count = 5;
     for _ in 0..fairy_count {
-      let x = rng.gen_range(50.0..(SCREEN_WIDTH as f32 - 50.0));
-      let y = rng.gen_range(100.0..(SCREEN_HEIGHT as f32 - 100.0));
+      let x = rng.gen_range(50.0..(self.screen_width - 50.0));
+      let y = rng.gen_range(100.0..(self.screen_height - 100.0));
       let phase = rng.gen_range(0.0..std::f32::consts::TAU);
 
       let light_data = MenuFairyLight {
@@ -544,8 +550,8 @@ impl Scene for MenuScene {
         screen_x,
         screen_y,
         0.0,
-        SCREEN_WIDTH as f32,
-        SCREEN_HEIGHT as f32,
+        self.screen_width,
+        self.screen_height,
       );
       ctx
         .batch

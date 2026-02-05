@@ -174,6 +174,17 @@ impl Camera {
     self.viewport_height = height as f32;
   }
 
+  /// Reset the camera to its default state, preserving viewport dimensions.
+  ///
+  /// Resets position to origin, zoom to 1.0, and clears any active shake.
+  /// Viewport dimensions are preserved since they come from the window, not the scene.
+  pub fn reset(&mut self) {
+    self.x = 0.0;
+    self.y = 0.0;
+    self.zoom = 1.0;
+    self.shake = CameraShake::default();
+  }
+
   /// Convert world coordinates to screen coordinates
   ///
   /// The camera position represents the center of the view, so:
@@ -634,5 +645,24 @@ mod tests {
   fn camera_shake_with_intensity_curve_builder() {
     let shake = CameraShake::new(15.0, 2.0).with_intensity_curve(Ease::InCubic);
     assert_eq!(shake.intensity_curve(), Ease::InCubic);
+  }
+
+  #[test]
+  fn camera_reset_preserves_viewport() {
+    let mut cam = Camera::new(800, 600);
+    cam.set_position(100.0, 200.0);
+    cam.set_zoom(2.0);
+    cam.add_trauma(0.5);
+    cam.update_shake(0.1);
+
+    cam.reset();
+
+    assert_eq!(cam.x, 0.0);
+    assert_eq!(cam.y, 0.0);
+    assert_eq!(cam.zoom, 1.0);
+    assert_eq!(cam.trauma(), 0.0);
+    assert_eq!(cam.shake_offset(), (0.0, 0.0));
+    // Viewport preserved
+    assert_eq!(cam.viewport_size(), (800.0, 600.0));
   }
 }

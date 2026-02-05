@@ -260,7 +260,10 @@ const GAME_EXTENSION: &str = "ryo-save";
 ///
 /// Without this, serde_json converts f32 → f64 naively, producing values like
 /// `0.4000000059604645` instead of `0.4`.
-fn serialize_f32_clean<S: serde::Serializer>(value: &f32, serializer: S) -> Result<S::Ok, S::Error> {
+fn serialize_f32_clean<S: serde::Serializer>(
+  value: &f32,
+  serializer: S,
+) -> Result<S::Ok, S::Error> {
   let rounded = ((*value as f64) * 100.0).round() / 100.0;
   serializer.serialize_f64(rounded)
 }
@@ -412,10 +415,10 @@ impl Resolution {
 /// Parse a "WxH" resolution string (e.g., "1280x720"). Returns None if malformed.
 pub fn parse_resolution(s: &str) -> Option<(u32, u32)> {
   let parts: Vec<&str> = s.split('x').collect();
-  if parts.len() == 2 {
-    if let (Ok(w), Ok(h)) = (parts[0].trim().parse(), parts[1].trim().parse()) {
-      return Some((w, h));
-    }
+  if parts.len() == 2
+    && let (Ok(w), Ok(h)) = (parts[0].trim().parse(), parts[1].trim().parse())
+  {
+    return Some((w, h));
   }
   None
 }
@@ -469,7 +472,10 @@ impl<'de> Deserialize<'de> for DisplaySettings {
 
     let (width, height) = if let Some(ref res) = helper.resolution {
       parse_resolution(res).unwrap_or_else(|| {
-        eprintln!("[ryo2d] Warning: Malformed resolution '{}' in system.json, using engine defaults", res);
+        eprintln!(
+          "[ryo2d] Warning: Malformed resolution '{}' in system.json, using engine defaults",
+          res
+        );
         (1280, 720)
       })
     } else if let (Some(w), Some(h)) = (helper.width, helper.height) {
@@ -557,15 +563,14 @@ impl SystemState {
 
     // If display matches engine defaults but Ryo.toml specifies a different resolution,
     // update to use Ryo.toml values (one-time migration)
-    if let Some((w, h)) = defaults.resolution {
-      if self.display.width == 1280
-        && self.display.height == 720
-        && (w != 1280 || h != 720)
-      {
-        self.display.width = w;
-        self.display.height = h;
-        changed = true;
-      }
+    if let Some((w, h)) = defaults.resolution
+      && self.display.width == 1280
+      && self.display.height == 720
+      && (w != 1280 || h != 720)
+    {
+      self.display.width = w;
+      self.display.height = h;
+      changed = true;
     }
 
     // Add new env keys from defaults without overwriting existing
@@ -818,8 +823,8 @@ impl SaveManager {
       if let Ok(serde_json::Value::Object(existing_map)) =
         serde_json::from_str::<serde_json::Value>(&existing_json)
       {
-        let new_value = serde_json::to_value(state)
-          .map_err(|e| SaveError::Serialization(e.to_string()))?;
+        let new_value =
+          serde_json::to_value(state).map_err(|e| SaveError::Serialization(e.to_string()))?;
         if let serde_json::Value::Object(new_map) = new_value {
           let mut merged = serde_json::Map::new();
           for (key, _) in &existing_map {
@@ -930,8 +935,8 @@ impl SaveManager {
     let state = SystemState::from_defaults(defaults);
 
     // Serialize to JSON Value, then strip keys not requested by the filter
-    let full_value = serde_json::to_value(&state)
-      .map_err(|e| SaveError::Serialization(e.to_string()))?;
+    let full_value =
+      serde_json::to_value(&state).map_err(|e| SaveError::Serialization(e.to_string()))?;
 
     if let serde_json::Value::Object(map) = full_value {
       let mut filtered = serde_json::Map::new();
@@ -1850,7 +1855,10 @@ mod tests {
     let loaded = manager.load_system().unwrap();
     assert_eq!(loaded.display.width, 1920);
     assert_eq!(loaded.display.height, 1080);
-    assert_eq!(loaded.display.display_mode, DisplayMode::BorderlessFullscreen);
+    assert_eq!(
+      loaded.display.display_mode,
+      DisplayMode::BorderlessFullscreen
+    );
     assert_eq!(loaded.master_volume, 0.42);
   }
 
@@ -1973,7 +1981,8 @@ mod tests {
 
   #[test]
   fn user_preference_filter_from_array() {
-    let filter: UserPreferenceFilter = [UserPreference::Resolution, UserPreference::DisplayMode].into();
+    let filter: UserPreferenceFilter =
+      [UserPreference::Resolution, UserPreference::DisplayMode].into();
 
     assert!(filter.contains(UserPreference::Resolution));
     assert!(filter.contains(UserPreference::DisplayMode));

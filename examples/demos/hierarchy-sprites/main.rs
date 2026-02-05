@@ -129,10 +129,11 @@ impl Scene for HierarchyScene {
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Toggle rotation with space
     if ctx.input.key_pressed(KeyCode::Space)
-      && let Some(ref mut ss) = self.solar_system {
-        ss.rotating = !ss.rotating;
-        println!("Rotation: {}", if ss.rotating { "ON" } else { "OFF" });
-      }
+      && let Some(ref mut ss) = self.solar_system
+    {
+      ss.rotating = !ss.rotating;
+      println!("Rotation: {}", if ss.rotating { "ON" } else { "OFF" });
+    }
 
     // Exit on escape
     if ctx.input.key_pressed(KeyCode::Escape) {
@@ -141,27 +142,28 @@ impl Scene for HierarchyScene {
 
     // Update rotations if enabled
     if let Some(ref ss) = self.solar_system
-      && ss.rotating {
-        // Rotate the sun (affects entire hierarchy)
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(ss.sun) {
-          transform.rotation += SUN_ROTATION * dt;
-        }
-
-        // Rotate all planets (makes them orbit)
-        for (transform, _planet) in ctx.world.query_mut::<(&mut Transform, &Planet)>() {
-          transform.rotation += PLANET_ORBIT * dt;
-        }
-
-        // Rotate all moons (makes them orbit their planets)
-        for (transform, _moon) in ctx.world.query_mut::<(&mut Transform, &Moon)>() {
-          transform.rotation += MOON_ORBIT * dt;
-        }
-
-        // Rotate all satellites
-        for (transform, _sat) in ctx.world.query_mut::<(&mut Transform, &Satellite)>() {
-          transform.rotation += SATELLITE_ORBIT * dt;
-        }
+      && ss.rotating
+    {
+      // Rotate the sun (affects entire hierarchy)
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(ss.sun) {
+        transform.rotation += SUN_ROTATION * dt;
       }
+
+      // Rotate all planets (makes them orbit)
+      for (transform, _planet) in ctx.world.query_mut::<(&mut Transform, &Planet)>() {
+        transform.rotation += PLANET_ORBIT * dt;
+      }
+
+      // Rotate all moons (makes them orbit their planets)
+      for (transform, _moon) in ctx.world.query_mut::<(&mut Transform, &Moon)>() {
+        transform.rotation += MOON_ORBIT * dt;
+      }
+
+      // Rotate all satellites
+      for (transform, _sat) in ctx.world.query_mut::<(&mut Transform, &Satellite)>() {
+        transform.rotation += SATELLITE_ORBIT * dt;
+      }
+    }
 
     SceneAction::Continue
   }

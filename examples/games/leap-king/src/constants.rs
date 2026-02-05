@@ -1,9 +1,5 @@
 //! Game constants
 
-// Screen dimensions
-pub const SCREEN_WIDTH: u32 = 800;
-pub const SCREEN_HEIGHT: u32 = 600;
-
 // Player configuration
 pub const PLAYER_WIDTH: f32 = 24.0;
 pub const PLAYER_HEIGHT: f32 = 32.0;
@@ -40,9 +36,9 @@ pub const SPAWN_PLATFORM_WIDTH: f32 = 300.0;
 pub const SPAWN_PLATFORM_Y: f32 = 500.0;
 
 // Spawn positions (on spawn platform)
-pub const PLAYER_A_SPAWN_X: f32 = 300.0; // left side
-pub const PLAYER_B_SPAWN_X: f32 = 500.0; // right side
 pub const PLAYER_SPAWN_Y: f32 = SPAWN_PLATFORM_Y - PLAYER_HEIGHT;
+/// Horizontal offset from screen center for each player spawn slot
+pub const PLAYER_SPAWN_OFFSET: f32 = 100.0;
 
 // Death and respawn
 pub const DEATH_Y_OFFSET: f32 = 400.0; // Fall this far below checkpoint to die

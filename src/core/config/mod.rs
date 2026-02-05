@@ -17,8 +17,8 @@ pub use workspace::{
 
 // Save system types
 pub use save::{
-  DisplayMode, DisplaySettings, EntitySnapshot, GameSaveData, Resolution, SaveManager,
-  SystemState, UserPreference, UserPreferenceFilter, WorldState, compress_data, decompress_data,
+  DisplayMode, DisplaySettings, EntitySnapshot, GameSaveData, Resolution, SaveManager, SystemState,
+  UserPreference, UserPreferenceFilter, WorldState, compress_data, decompress_data,
   parse_resolution,
 };
 

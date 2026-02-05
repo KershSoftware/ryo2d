@@ -205,9 +205,10 @@ impl SpriteShaderDemo {
 
   fn update_effect_sprite(&self, world: &mut World) {
     if let Some(entity) = self.effect_sprite
-      && let Some(mut renderable) = world.get_component_mut::<Renderable>(entity) {
-        renderable.shader = Some(SpriteShader::BuiltIn(self.create_sprite_effect()));
-      }
+      && let Some(mut renderable) = world.get_component_mut::<Renderable>(entity)
+    {
+      renderable.shader = Some(SpriteShader::BuiltIn(self.create_sprite_effect()));
+    }
   }
 
   fn adjust_param(&mut self, delta: f32) {
@@ -357,16 +358,16 @@ impl Game for SpriteShaderDemo {
     // Update wave time (animated effect)
     if self.current_effect() == DemoEffect::Wave
       && let Some(entity) = self.effect_sprite
-        && let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(entity)
-          && let Some(SpriteShader::BuiltIn(SpriteEffect::Wave {
-            ref mut time,
-            speed,
-            ..
-          })) = renderable.shader
-          {
-            // Apply speed multiplier to time
-            *time = self.time * speed;
-          }
+      && let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(entity)
+      && let Some(SpriteShader::BuiltIn(SpriteEffect::Wave {
+        ref mut time,
+        speed,
+        ..
+      })) = renderable.shader
+    {
+      // Apply speed multiplier to time
+      *time = self.time * speed;
+    }
 
     // Navigate effects (with cooldown to prevent rapid jumps)
     if self.nav_cooldown <= 0.0 {

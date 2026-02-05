@@ -62,7 +62,9 @@ impl UdpServerTransport {
     while let Some(event) = server.get_event() {
       match event {
         ServerEvent::ClientConnected { client_id } => {
-          self.events.push(NetworkEvent::ClientConnected { client_id });
+          self
+            .events
+            .push(NetworkEvent::ClientConnected { client_id });
         }
         ServerEvent::ClientDisconnected { client_id, reason } => {
           self.events.push(NetworkEvent::ClientDisconnected {
@@ -101,7 +103,11 @@ impl UdpServerTransport {
   ///
   /// This method handles the transport-level update which requires
   /// a mutable reference to the RenetServer.
-  pub fn update_with_server(&mut self, dt: Duration, server: &mut RenetServer) -> NetworkResult<()> {
+  pub fn update_with_server(
+    &mut self,
+    dt: Duration,
+    server: &mut RenetServer,
+  ) -> NetworkResult<()> {
     if let Err(e) = self.transport.update(dt, server) {
       eprintln!("Network transport error: {}", e);
     }
@@ -146,7 +152,11 @@ impl UdpClientTransport {
   ///
   /// This method handles the transport-level update which requires
   /// a mutable reference to the RenetClient.
-  pub fn update_with_client(&mut self, dt: Duration, client: &mut RenetClient) -> NetworkResult<()> {
+  pub fn update_with_client(
+    &mut self,
+    dt: Duration,
+    client: &mut RenetClient,
+  ) -> NetworkResult<()> {
     if let Err(e) = self.transport.update(dt, client) {
       eprintln!("Network transport error: {}", e);
     }
@@ -172,7 +182,10 @@ impl ClientTransport for UdpClientTransport {
   }
 
   fn disconnect_reason(&self) -> Option<String> {
-    self.transport.disconnect_reason().map(|r| format!("{:?}", r))
+    self
+      .transport
+      .disconnect_reason()
+      .map(|r| format!("{:?}", r))
   }
 
   fn client_id(&self) -> ClientId {

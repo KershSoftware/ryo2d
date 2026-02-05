@@ -12,7 +12,6 @@ use scenes::MainMenuScene;
 
 fn main() {
   let engine = EngineBuilder::new()
-    .title("Nigh_t")
     .resolution(1920, 1080)
     .display_mode(DisplayMode::BorderlessFullscreen)
     .fps(60)

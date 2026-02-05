@@ -52,7 +52,8 @@ pub mod prelude {
 
   // Scene management
   pub use crate::core::scene::{
-    Scene, SceneAction, SceneContext, SceneGame, SceneManager, SlideDirection, Transition,
+    Scene, SceneAction, SceneCleanup, SceneContext, SceneGame, SceneManager, SlideDirection,
+    Transition,
   };
 
   // Engine builder

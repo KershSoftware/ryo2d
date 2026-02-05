@@ -3606,14 +3606,15 @@ impl EngineBuilder {
 
     if has_embedded {
       // Use compile-time embedded values from Ryo.toml
-      if !resolution_set {
-        if let Some(res) = option_env!("RYO_EMBED_RESOLUTION") {
-          if let Some((w, h)) = super::config::save::parse_resolution(res) {
-            config.width = w;
-            config.height = h;
-          } else {
-            eprintln!("[ryo2d] Warning: Malformed embedded resolution '{}', using engine defaults", res);
-          }
+      if !resolution_set && let Some(res) = option_env!("RYO_EMBED_RESOLUTION") {
+        if let Some((w, h)) = super::config::save::parse_resolution(res) {
+          config.width = w;
+          config.height = h;
+        } else {
+          eprintln!(
+            "[ryo2d] Warning: Malformed embedded resolution '{}', using engine defaults",
+            res
+          );
         }
       }
       if let Some(v) = option_env!("RYO_EMBED_VSYNC") {
@@ -3696,11 +3697,9 @@ impl EngineBuilder {
       disable_debug_keys = debug.disable_debug_keys;
 
       // Load resolution from [system] section if not explicitly set via builder
-      if !resolution_set {
-        if let Some((w, h)) = system.resolution {
-          config.width = w;
-          config.height = h;
-        }
+      if !resolution_set && let Some((w, h)) = system.resolution {
+        config.width = w;
+        config.height = h;
       }
 
       // Load display mode from [system] section (only if not explicitly set)

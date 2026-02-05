@@ -995,7 +995,12 @@ impl ConsoleState {
         let line_color = if self.focused {
           *color
         } else {
-          Color::new(color.r, color.g, color.b, (color.a as u16 * 160 / 255) as u8)
+          Color::new(
+            color.r,
+            color.g,
+            color.b,
+            (color.a as u16 * 160 / 255) as u8,
+          )
         };
         ui.draw_text(text, x + padding, text_y, line_color);
         text_y -= line_height;
@@ -1593,7 +1598,12 @@ mod tests {
   fn test_unfocused_text_preserves_rgb() {
     // When unfocused, only alpha changes — RGB should be preserved
     let color = Color::new(100, 180, 255, 255);
-    let unfocused = Color::new(color.r, color.g, color.b, (color.a as u16 * 160 / 255) as u8);
+    let unfocused = Color::new(
+      color.r,
+      color.g,
+      color.b,
+      (color.a as u16 * 160 / 255) as u8,
+    );
     assert_eq!(unfocused.r, 100);
     assert_eq!(unfocused.g, 180);
     assert_eq!(unfocused.b, 255);

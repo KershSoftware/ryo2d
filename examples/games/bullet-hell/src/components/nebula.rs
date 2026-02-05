@@ -5,7 +5,7 @@
 //! Attacks with MLRS-style rockets that arc up then lock briefly on the player.
 
 use ryo2d::prelude::Vec2;
-use ryo2d::prelude::{rand, Rng};
+use ryo2d::prelude::{Rng, rand};
 
 /// Spawn duration for nebula fade-in effect
 pub const NEBULA_SPAWN_DURATION: f32 = 2.0;

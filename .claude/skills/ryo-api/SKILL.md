@@ -46,6 +46,7 @@ pub trait Scene {
     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction;
     fn fixed_update(&mut self, ctx: &mut SceneContext) {}
     fn render_ui(&mut self, ui: &mut UiContext) {}
+    fn cleanup_on_exit(&self) -> SceneCleanup { SceneCleanup::DEFAULT }
 }
 ```
 
@@ -805,6 +806,7 @@ impl Camera {
     fn follow(&mut self, target_x: f32, target_y: f32, lerp_factor: f32);
     fn snap_to(&mut self, target_x: f32, target_y: f32);
     fn clamp_to_bounds(&mut self, min_x: f32, min_y: f32, max_x: f32, max_y: f32);
+    fn reset(&mut self);                                      // Reset position/zoom/shake, keep viewport
 }
 
 // Screen-style coordinates setup (0,0 = top-left):
@@ -888,6 +890,32 @@ pub enum SceneAction {
     ResetWith(Box<dyn Scene>, Transition),
     Quit,                              // Exit the game
 }
+```
+
+### SceneCleanup
+
+```rust
+// Bitflags controlling automatic state reset on Switch/Reset
+pub struct SceneCleanup(u16);
+
+impl SceneCleanup {
+    const NONE: Self;      // No cleanup
+    const WORLD: Self;     // world.clear()
+    const CAMERA: Self;    // Reset position/zoom/shake (viewport preserved)
+    const EFFECTS: Self;   // Clear post-processing effects
+    const LIGHTING: Self;  // Reset ambient light and atmosphere to defaults
+    const TIME: Self;      // Reset time scale and hitstop
+    const MUSIC: Self;     // Stop music
+    const EVENTS: Self;    // Clear event bus
+    const ALL: Self;       // All flags
+    const DEFAULT: Self;   // All except MUSIC
+
+    fn contains(self, other: Self) -> bool;
+    fn is_empty(self) -> bool;
+}
+
+// Supports BitOr (|), BitAnd (&), Not (!), Sub (-)
+// Example: SceneCleanup::DEFAULT - SceneCleanup::WORLD
 ```
 
 ### Transition

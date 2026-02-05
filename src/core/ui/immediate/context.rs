@@ -2743,7 +2743,10 @@ mod tests {
     assert!(ui.is_hovered(rect), "Should be hovered before occlusion");
 
     ui.set_mouse_occluded();
-    assert!(!ui.is_hovered(rect), "Should not be hovered after occlusion");
+    assert!(
+      !ui.is_hovered(rect),
+      "Should not be hovered after occlusion"
+    );
   }
 
   #[test]
@@ -2755,7 +2758,10 @@ mod tests {
     assert!(ui.is_clicked(rect), "Should be clicked before occlusion");
 
     ui.set_mouse_occluded();
-    assert!(!ui.is_clicked(rect), "Should not be clicked after occlusion");
+    assert!(
+      !ui.is_clicked(rect),
+      "Should not be clicked after occlusion"
+    );
   }
 
   #[test]

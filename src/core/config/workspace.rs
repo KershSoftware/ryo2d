@@ -482,11 +482,7 @@ impl Workspace {
     let env_json: HashMap<String, serde_json::Value> = raw
       .env
       .iter()
-      .filter_map(|(k, v)| {
-        serde_json::to_value(v)
-          .ok()
-          .map(|jv| (k.clone(), jv))
-      })
+      .filter_map(|(k, v)| serde_json::to_value(v).ok().map(|jv| (k.clone(), jv)))
       .collect();
 
     let system = SystemDefaults {
@@ -496,7 +492,10 @@ impl Workspace {
         .and_then(|s| {
           let parsed = super::save::parse_resolution(s);
           if parsed.is_none() {
-            eprintln!("[ryo2d] Warning: Malformed resolution '{}' in Ryo.toml, using engine defaults", s);
+            eprintln!(
+              "[ryo2d] Warning: Malformed resolution '{}' in Ryo.toml, using engine defaults",
+              s
+            );
           }
           parsed
         })

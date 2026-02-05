@@ -210,9 +210,10 @@ impl Scene for BlobShadowsScene {
       // Update all character shadows
       for char in &self.characters {
         if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(char.entity)
-          && let Some(ref mut blob) = renderable.blob_shadow {
-            blob.height_scaling = self.height_scaling_enabled;
-          }
+          && let Some(ref mut blob) = renderable.blob_shadow
+        {
+          blob.height_scaling = self.height_scaling_enabled;
+        }
       }
     }
 
@@ -248,9 +249,10 @@ impl Scene for BlobShadowsScene {
           if self.height_scaling_enabled {
             let height = (char.base_y - transform.y).max(0.0);
             if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(char.entity)
-              && let Some(ref mut blob) = renderable.blob_shadow {
-                blob.set_height(height);
-              }
+              && let Some(ref mut blob) = renderable.blob_shadow
+            {
+              blob.set_height(height);
+            }
           }
         }
       }

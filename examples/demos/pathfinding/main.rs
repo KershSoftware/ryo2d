@@ -280,34 +280,35 @@ impl PathfindingDemoScene {
         NavAgentState::Idle if has_target => {
           // Need to compute path
           if let Some((tx, ty)) = target_pos
-            && let Some(transform) = ctx.world.get::<Transform>(entity) {
-              let result =
-                self
-                  .pathfinder
-                  .find_path(&self.nav_grid, transform.x, transform.y, tx, ty);
+            && let Some(transform) = ctx.world.get::<Transform>(entity)
+          {
+            let result =
+              self
+                .pathfinder
+                .find_path(&self.nav_grid, transform.x, transform.y, tx, ty);
 
-              if let Some(mut agent) = ctx.world.get_mut::<NavAgent>(entity) {
-                match result {
-                  PathResult::Found(mut path) => {
-                    // Apply smoothing
-                    match self.smoothing {
-                      PathSmoothing::None => {}
-                      PathSmoothing::LineOfSight => {
-                        path.smooth_line_of_sight(&self.nav_grid);
-                      }
-                      PathSmoothing::Spline => {
-                        path.smooth_spline(4);
-                      }
+            if let Some(mut agent) = ctx.world.get_mut::<NavAgent>(entity) {
+              match result {
+                PathResult::Found(mut path) => {
+                  // Apply smoothing
+                  match self.smoothing {
+                    PathSmoothing::None => {}
+                    PathSmoothing::LineOfSight => {
+                      path.smooth_line_of_sight(&self.nav_grid);
                     }
-                    agent.set_path(path);
+                    PathSmoothing::Spline => {
+                      path.smooth_spline(4);
+                    }
                   }
-                  PathResult::NoPath | PathResult::InvalidEndpoints => {
-                    agent.fail();
-                  }
-                  _ => {}
+                  agent.set_path(path);
                 }
+                PathResult::NoPath | PathResult::InvalidEndpoints => {
+                  agent.fail();
+                }
+                _ => {}
               }
             }
+          }
         }
         NavAgentState::Moving => {
           // Follow path
@@ -366,12 +367,13 @@ impl PathfindingDemoScene {
     if dist <= threshold {
       // Reached waypoint, advance to next
       if let Some(mut agent) = world.get_mut::<NavAgent>(entity)
-        && let Some(ref mut path) = agent.current_path {
-          path.advance();
-          if path.is_complete() {
-            agent.arrive();
-          }
+        && let Some(ref mut path) = agent.current_path
+      {
+        path.advance();
+        if path.is_complete() {
+          agent.arrive();
         }
+      }
     } else {
       // Calculate base movement direction
       let path_dir = Vec2::new(dx / dist, dy / dist);

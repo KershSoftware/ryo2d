@@ -407,10 +407,9 @@ impl GameScene {
         Turret::new(TurretSide::Left),
       ));
       // Add stagger delay if right side spawns first
-      if !left_first
-        && let Some(mut turret_comp) = ctx.world.get_mut::<Turret>(turret) {
-          turret_comp.spawn_timer += stagger_delay;
-        }
+      if !left_first && let Some(mut turret_comp) = ctx.world.get_mut::<Turret>(turret) {
+        turret_comp.spawn_timer += stagger_delay;
+      }
       self.turrets.push(turret);
     }
 
@@ -427,10 +426,9 @@ impl GameScene {
         Turret::new(TurretSide::Right),
       ));
       // Add stagger delay if left side spawns first
-      if left_first
-        && let Some(mut turret) = ctx.world.get_mut::<Turret>(turret_entity) {
-          turret.spawn_timer += stagger_delay;
-        }
+      if left_first && let Some(mut turret) = ctx.world.get_mut::<Turret>(turret_entity) {
+        turret.spawn_timer += stagger_delay;
+      }
       self.turrets.push(turret_entity);
     }
   }
@@ -493,8 +491,8 @@ impl GameScene {
 
   fn update_drones(&mut self, ctx: &mut SceneContext, dt: f32) {
     profile_scope!("drones");
-    use crate::components::drone::DRONE_AIM_SPEED;
     use crate::components::DroneState;
+    use crate::components::drone::DRONE_AIM_SPEED;
     use crate::constants::{
       DRONE_AIM_DURATION, DRONE_COOLDOWN, DRONE_FIRE_DURATION, DRONE_LASER_WIDTH, DRONE_SPEED,
     };
@@ -784,9 +782,10 @@ impl GameScene {
 
           // Restore normal shader when firing ends
           if finished_firing
-            && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
-              renderable.shader = Some(SpriteShader::outline(Color::rgb(200, 140, 255), 2));
-            }
+            && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity)
+          {
+            renderable.shader = Some(SpriteShader::outline(Color::rgb(200, 140, 255), 2));
+          }
         }
 
         DroneState::Cooldown => {
@@ -840,16 +839,18 @@ impl GameScene {
       drop(transform);
 
       // Check damage against player (only if this tracer damages)
-      if damages && !player_hit
-        && let Some((px, py)) = player_pos {
-          let dx_p = px - current_x;
-          let dy_p = py - current_y;
-          let dist_to_player = (dx_p * dx_p + dy_p * dy_p).sqrt();
+      if damages
+        && !player_hit
+        && let Some((px, py)) = player_pos
+      {
+        let dx_p = px - current_x;
+        let dy_p = py - current_y;
+        let dist_to_player = (dx_p * dx_p + dy_p * dy_p).sqrt();
 
-          if dist_to_player < damage_radius {
-            player_hit = true;
-          }
+        if dist_to_player < damage_radius {
+          player_hit = true;
         }
+      }
 
       // Calculate direction to target
       let dx = target_x - current_x;
@@ -878,19 +879,20 @@ impl GameScene {
     // Apply damage to player if hit
     if player_hit
       && let Some(player_e) = self.player
-        && let Some(mut player) = ctx.world.get_mut::<Player>(player_e) {
-          let was_invincible = player.is_invincible();
-          player.take_damage();
-          self.player_lives = player.lives;
-          self.player_invincible = player.is_invincible();
-          // Camera shake and hurt sound on hit (only if not invincible)
-          if !was_invincible {
-            ctx.camera.add_trauma(0.5);
-            if let Some(audio) = &mut ctx.audio {
-              let _ = audio.play_sound("hurt");
-            }
-          }
+      && let Some(mut player) = ctx.world.get_mut::<Player>(player_e)
+    {
+      let was_invincible = player.is_invincible();
+      player.take_damage();
+      self.player_lives = player.lives;
+      self.player_invincible = player.is_invincible();
+      // Camera shake and hurt sound on hit (only if not invincible)
+      if !was_invincible {
+        ctx.camera.add_trauma(0.5);
+        if let Some(audio) = &mut ctx.audio {
+          let _ = audio.play_sound("hurt");
         }
+      }
+    }
 
     // Remove LaserTracer component from entities that reached target
     // (they become regular fading trails that will be cleaned up when empty)
@@ -971,8 +973,8 @@ impl GameScene {
   }
 
   fn update_nebulas(&mut self, ctx: &mut SceneContext, dt: f32) {
-    use crate::components::nebula::NEBULA_ROCKETS_PER_SALVO;
     use crate::components::NebulaState;
+    use crate::components::nebula::NEBULA_ROCKETS_PER_SALVO;
     use crate::constants::{NEBULA_CHARGE_DURATION, NEBULA_COOLDOWN, NEBULA_SPEED};
 
     // Get player position for rocket targeting (used by spawn_rocket)
@@ -1173,10 +1175,11 @@ impl GameScene {
       .iter()
     {
       if marker.parent == nebula_entity
-        && let Some(pos) = orb_positions.get(marker.index) {
-          transform.x = pos.x;
-          transform.y = pos.y;
-        }
+        && let Some(pos) = orb_positions.get(marker.index)
+      {
+        transform.x = pos.x;
+        transform.y = pos.y;
+      }
     }
   }
 
@@ -1341,9 +1344,10 @@ impl GameScene {
 
       // Flash player
       if let Some(player) = self.player
-        && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player) {
-          renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 100, 100), 1.0));
-        }
+        && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player)
+      {
+        renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 100, 100), 1.0));
+      }
 
       // Spawn explosion at player
       let player_explosion_pos = self
@@ -1512,18 +1516,17 @@ impl GameScene {
     let riding_barrier = self.apply_barrier_riding(ctx, player_entity);
 
     // Apply gravity (skip if riding a barrier - they're supported)
-    if !riding_barrier
-      && let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
-        // Apply gravity - reduced when wall sliding for smoother slide
-        if was_wall_sliding.is_some() && velocity.dy > 0.0 {
-          // Wall sliding: reduced gravity and capped max speed
-          velocity.dy += GRAVITY * WALL_SLIDE_GRAVITY_SCALE * dt;
-          velocity.dy = velocity.dy.min(WALL_SLIDE_MAX_SPEED);
-        } else {
-          // Normal gravity
-          velocity.dy += GRAVITY * dt;
-        }
+    if !riding_barrier && let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
+      // Apply gravity - reduced when wall sliding for smoother slide
+      if was_wall_sliding.is_some() && velocity.dy > 0.0 {
+        // Wall sliding: reduced gravity and capped max speed
+        velocity.dy += GRAVITY * WALL_SLIDE_GRAVITY_SCALE * dt;
+        velocity.dy = velocity.dy.min(WALL_SLIDE_MAX_SPEED);
+      } else {
+        // Normal gravity
+        velocity.dy += GRAVITY * dt;
       }
+    }
 
     // Apply velocity to transform (player is kinematic, so we handle movement manually)
     let Some(velocity) = ctx.world.get::<Velocity>(player_entity) else {
@@ -2241,31 +2244,32 @@ impl GameScene {
 
     // Use bullet pool for zero-allocation spawning
     if let Some(ref mut pool) = self.bullet_pool
-      && let Some(bullet) = pool.acquire(ctx.world) {
-        // Configure the pooled bullet entity
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(bullet) {
-          transform.x = x;
-          transform.y = y;
-          // Reset anchor to center
-          transform.pivot_x = 0.5;
-          transform.pivot_y = 0.5;
-        }
-        // Set velocity for Rapier physics
-        if let Some(mut vel) = ctx.world.get_mut::<Velocity>(bullet) {
-          vel.dx = velocity_x;
-          vel.dy = velocity_y;
-        }
-        if let Some(mut b) = ctx.world.get_mut::<Bullet>(bullet) {
-          b.velocity_x = velocity_x;
-          b.velocity_y = velocity_y;
-        }
-        // Clear trail from previous use
-        if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(bullet) {
-          trail.clear();
-        }
-        self.bullets.push(bullet);
-        return;
+      && let Some(bullet) = pool.acquire(ctx.world)
+    {
+      // Configure the pooled bullet entity
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(bullet) {
+        transform.x = x;
+        transform.y = y;
+        // Reset anchor to center
+        transform.pivot_x = 0.5;
+        transform.pivot_y = 0.5;
       }
+      // Set velocity for Rapier physics
+      if let Some(mut vel) = ctx.world.get_mut::<Velocity>(bullet) {
+        vel.dx = velocity_x;
+        vel.dy = velocity_y;
+      }
+      if let Some(mut b) = ctx.world.get_mut::<Bullet>(bullet) {
+        b.velocity_x = velocity_x;
+        b.velocity_y = velocity_y;
+      }
+      // Clear trail from previous use
+      if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(bullet) {
+        trail.clear();
+      }
+      self.bullets.push(bullet);
+      return;
+    }
 
     // Fallback: direct spawning if pool unavailable
     let sprite = self.bullet_sprite.clone();
@@ -2517,9 +2521,10 @@ impl GameScene {
 
   fn check_game_over(&self, ctx: &mut SceneContext) -> bool {
     if let Some(player_entity) = self.player
-      && let Some(player) = ctx.world.get::<Player>(player_entity) {
-        return !player.is_alive();
-      }
+      && let Some(player) = ctx.world.get::<Player>(player_entity)
+    {
+      return !player.is_alive();
+    }
     false
   }
 
@@ -2606,10 +2611,9 @@ impl GameScene {
         Turret::new(TurretSide::Left),
       ));
       // Add stagger delay if right side spawns first
-      if !left_first
-        && let Some(mut turret) = ctx.world.get_mut::<Turret>(left_turret) {
-          turret.spawn_timer += stagger_delay;
-        }
+      if !left_first && let Some(mut turret) = ctx.world.get_mut::<Turret>(left_turret) {
+        turret.spawn_timer += stagger_delay;
+      }
       self.turrets.push(left_turret);
 
       // Right side turret - flush against right wall
@@ -2624,10 +2628,9 @@ impl GameScene {
         Turret::new(TurretSide::Right),
       ));
       // Add stagger delay if left side spawns first
-      if left_first
-        && let Some(mut turret) = ctx.world.get_mut::<Turret>(right_turret) {
-          turret.spawn_timer += stagger_delay;
-        }
+      if left_first && let Some(mut turret) = ctx.world.get_mut::<Turret>(right_turret) {
+        turret.spawn_timer += stagger_delay;
+      }
       self.turrets.push(right_turret);
     }
   }
@@ -2786,10 +2789,11 @@ impl Scene for GameScene {
 
     // Update player state cache for UI
     if let Some(player_entity) = self.player
-      && let Some(player) = ctx.world.get::<Player>(player_entity) {
-        self.player_lives = player.lives;
-        self.player_invincible = player.is_invincible();
-      }
+      && let Some(player) = ctx.world.get::<Player>(player_entity)
+    {
+      self.player_lives = player.lives;
+      self.player_invincible = player.is_invincible();
+    }
 
     // Handle death effect animation
     if let Some(timer) = self.death_effect_timer {

@@ -273,11 +273,22 @@ impl Scene for MenuScene {
 // SceneAction options:
 // - Continue            Keep running
 // - Push(scene)         Add scene on top (pause current)
-// - Pop                 Return to previous scene  
+// - Pop                 Return to previous scene
 // - Switch(scene)       Replace current scene (NOT "Replace"!)
 // - Reset(scene)        Clear all scenes, push new one
 // - Quit                Exit game
 // All except Continue/Pop/Quit have "With" variants for transitions
+
+// Automatic cleanup on Switch/Reset (no manual world.clear() needed!)
+// Override cleanup_on_exit() to customize:
+impl Scene for MyScene {
+    fn cleanup_on_exit(&self) -> SceneCleanup {
+        SceneCleanup::DEFAULT  // Resets world, camera, effects, lighting, time, events (not music)
+    }
+}
+// SceneCleanup flags: NONE, WORLD, CAMERA, EFFECTS, LIGHTING, TIME, MUSIC, EVENTS, ALL, DEFAULT
+// Combine with | and subtract with -
+// Push/Pop do NOT run cleanup (paused scene keeps its state)
 ```
 
 ## EngineBuilder Options

@@ -17,24 +17,27 @@ pub struct PlatformData {
 /// Procedural platform generator with seeded RNG
 pub struct PlatformGenerator {
   seed: u64,
+  screen_width: f32,
   generated_chunks: HashSet<i32>,
   last_platform_x: f32, // Track last platform X for horizontal continuity
   recent_platforms: Vec<PlatformData>, // Track recent platforms for cross-chunk overlap checks
 }
 
 impl PlatformGenerator {
-  /// Create a new generator with the given seed
-  pub fn new(seed: u64) -> Self {
+  /// Create a new generator with the given seed and screen width
+  pub fn new(seed: u64, screen_width: f32) -> Self {
     // Add spawn platform to recent platforms for overlap checking
+    let spawn_x = screen_width / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0;
     let spawn_platform = PlatformData {
-      x: SCREEN_WIDTH as f32 / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0,
+      x: spawn_x,
       y: SPAWN_PLATFORM_Y,
       width: SPAWN_PLATFORM_WIDTH,
     };
     Self {
       seed,
+      screen_width,
       generated_chunks: HashSet::new(),
-      last_platform_x: SCREEN_WIDTH as f32 / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0,
+      last_platform_x: spawn_x,
       recent_platforms: vec![spawn_platform],
     }
   }
@@ -98,12 +101,13 @@ impl PlatformGenerator {
     last_x: f32,
     last_width: f32,
     existing: &[PlatformData],
+    screen_width: f32,
   ) -> Option<f32> {
     // Try multiple times to find a non-overlapping position
     for _ in 0..30 {
       // Generate candidate X position reachable from last platform
       let offset = rng.gen_range(-MAX_HORIZONTAL_OFFSET..MAX_HORIZONTAL_OFFSET);
-      let candidate_x = (last_x + offset).clamp(0.0, SCREEN_WIDTH as f32 - width);
+      let candidate_x = (last_x + offset).clamp(0.0, screen_width - width);
 
       // Check edge-to-edge gap is jumpable
       let last_right = last_x + last_width;
@@ -129,7 +133,7 @@ impl PlatformGenerator {
     // Fallback: try positions along the screen width to find any valid spot
     let step = 40.0;
     let mut test_x = 0.0;
-    while test_x <= SCREEN_WIDTH as f32 - width {
+    while test_x <= screen_width - width {
       if !Self::overlaps_any(test_x, target_y, width, existing) {
         // Check it's jumpable from last platform
         let last_right = last_x + last_width;
@@ -216,7 +220,15 @@ impl PlatformGenerator {
       all_to_check.extend(&platforms);
 
       // Find X position that doesn't overlap and is jumpable
-      let x = match Self::find_valid_x(&mut rng, width, y, last_x, last_width, &all_to_check) {
+      let x = match Self::find_valid_x(
+        &mut rng,
+        width,
+        y,
+        last_x,
+        last_width,
+        &all_to_check,
+        self.screen_width,
+      ) {
         Some(x) => x,
         None => continue, // Skip this platform if we can't place it
       };
@@ -265,26 +277,26 @@ impl PlatformGenerator {
   /// Clear all generated chunk tracking (for reset)
   pub fn reset(&mut self) {
     self.generated_chunks.clear();
-    self.last_platform_x = SCREEN_WIDTH as f32 / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0;
-    let spawn_platform = PlatformData {
-      x: SCREEN_WIDTH as f32 / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0,
+    let spawn_x = self.screen_width / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0;
+    self.last_platform_x = spawn_x;
+    self.recent_platforms = vec![PlatformData {
+      x: spawn_x,
       y: SPAWN_PLATFORM_Y,
       width: SPAWN_PLATFORM_WIDTH,
-    };
-    self.recent_platforms = vec![spawn_platform];
+    }];
   }
 
   /// Reset with a new seed
   pub fn reset_with_seed(&mut self, seed: u64) {
     self.seed = seed;
     self.generated_chunks.clear();
-    self.last_platform_x = SCREEN_WIDTH as f32 / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0;
-    let spawn_platform = PlatformData {
-      x: SCREEN_WIDTH as f32 / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0,
+    let spawn_x = self.screen_width / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0;
+    self.last_platform_x = spawn_x;
+    self.recent_platforms = vec![PlatformData {
+      x: spawn_x,
       y: SPAWN_PLATFORM_Y,
       width: SPAWN_PLATFORM_WIDTH,
-    };
-    self.recent_platforms = vec![spawn_platform];
+    }];
   }
 }
 
@@ -294,8 +306,8 @@ mod tests {
 
   #[test]
   fn test_deterministic_generation() {
-    let mut gen1 = PlatformGenerator::new(12345);
-    let mut gen2 = PlatformGenerator::new(12345);
+    let mut gen1 = PlatformGenerator::new(12345, 1280.0);
+    let mut gen2 = PlatformGenerator::new(12345, 1280.0);
 
     let chunk1 = gen1.generate_chunk(1).unwrap();
     let chunk2 = gen2.generate_chunk(1).unwrap();
@@ -310,7 +322,7 @@ mod tests {
 
   #[test]
   fn test_no_duplicate_chunks() {
-    let mut generator = PlatformGenerator::new(12345);
+    let mut generator = PlatformGenerator::new(12345, 1280.0);
 
     let first = generator.generate_chunk(1);
     let second = generator.generate_chunk(1);
@@ -321,7 +333,7 @@ mod tests {
 
   #[test]
   fn test_chunk_0_has_platforms() {
-    let mut generator = PlatformGenerator::new(12345);
+    let mut generator = PlatformGenerator::new(12345, 1280.0);
     let chunk0 = generator.generate_chunk(0).unwrap();
     // Chunk 0 should have platforms above the spawn area
     assert!(!chunk0.is_empty());

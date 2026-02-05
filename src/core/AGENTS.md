@@ -12,7 +12,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `engine.rs` | `Engine` struct, game loop, window management |
 | `error.rs` | Unified error types (`EngineError`, `AssetError`, `SaveError`, etc.) |
 | `game.rs` | `Game` trait and `GameContext` for user code |
-| `scene.rs` | Scene management, transitions, scene stack |
+| `scene.rs` | Scene management, transitions, scene stack, automatic cleanup on Switch/Reset |
 | `workspace.rs` | Project discovery, `ryo.toml` configuration, path management |
 | `debug.rs` | Debug visualization (colliders, velocities, origins, FPS) and drawing primitives |
 | `profiler.rs` | Puffin profiling macros (`profile_function!`, `profile_scope!`) |

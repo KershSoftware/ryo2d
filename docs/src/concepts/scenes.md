@@ -69,6 +69,54 @@ The `SceneManager` maintains a stack of scenes:
 - **Switch**: Replaces top scene (exits old, enters new)
 - **Reset**: Clears entire stack, starts with fresh scene
 
+## Automatic Scene Cleanup
+
+When switching or resetting scenes, the engine automatically resets engine state to give the incoming scene a clean slate. This eliminates boilerplate `world.clear()`, camera resets, and lighting cleanup from `on_enter`.
+
+### What Gets Cleaned Up
+
+By default (`SceneCleanup::DEFAULT`), these are reset on Switch/Reset:
+
+| System | Reset Action |
+|--------|-------------|
+| World | `world.clear()` — all entities removed |
+| Camera | Position → origin, zoom → 1.0, shake cleared (viewport preserved) |
+| Effects | All post-processing effects cleared |
+| Lighting | Ambient light and atmosphere reset to defaults |
+| Time | Time scale → 1.0, hitstop cleared |
+| Events | Event bus cleared |
+
+**Music is preserved by default** — it commonly persists across scenes (menu→game, level→level).
+
+### Customizing Cleanup
+
+Override `cleanup_on_exit()` on your Scene to change what gets cleaned up:
+
+```rust
+impl Scene for MyScene {
+    fn cleanup_on_exit(&self) -> SceneCleanup {
+        // Keep world entities alive when leaving this scene
+        SceneCleanup::DEFAULT - SceneCleanup::WORLD
+    }
+}
+```
+
+Common patterns:
+- `SceneCleanup::DEFAULT` — Clean slate, preserve music (default)
+- `SceneCleanup::ALL` — Clean everything including music
+- `SceneCleanup::NONE` — Skip cleanup entirely
+- `SceneCleanup::DEFAULT - SceneCleanup::WORLD` — Keep entities, reset everything else
+- `SceneCleanup::WORLD | SceneCleanup::CAMERA` — Only clear world and camera
+
+### When Cleanup Runs
+
+| Action | Cleanup? | Rationale |
+|--------|:--------:|-----------|
+| Switch | Yes | Replacing scene, clean slate for new one |
+| Reset | Yes | Clearing everything, fresh start |
+| Push | No | Overlay; paused scene needs its state |
+| Pop | No | Resuming scene expects its state intact |
+
 ## Usage with Engine
 
 The simplest way to use scenes is with the `with_scene()` method:
@@ -180,10 +228,9 @@ if want_main_menu {
 
 ## Best Practices
 
-1. **Clean up in `on_exit`**: Despawn entities, stop sounds
-2. **Use `World::clear()`**: For scene transitions that should reset everything
-3. **Keep scenes focused**: Each scene should have a single responsibility
-4. **Pass data between scenes**: Use scene struct fields to transfer state
+1. **Automatic cleanup handles most resets**: World, camera, effects, lighting, and time are automatically reset on Switch/Reset. Override `cleanup_on_exit()` to customize.
+2. **Keep scenes focused**: Each scene should have a single responsibility
+3. **Pass data between scenes**: Use scene struct fields to transfer state
 
 ```rust
 struct GameOverScene {

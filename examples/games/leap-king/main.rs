@@ -16,8 +16,9 @@ use ryo2d::prelude::*;
 
 fn main() {
   let engine = EngineBuilder::new()
-    .resolution(800, 600)
+    .resolution(1280, 720)
     .fps(144)
+    .ui_scale(Some(1))
     .with_scene(MenuScene::new())
     .build();
 

@@ -38,9 +38,108 @@ use super::events::Events;
 use super::game::{TimeControl, TimeInfo, WindowRequest};
 use super::graphics::Camera;
 use super::input::InputState;
-use super::lighting::LightingRenderer;
+use super::lighting::{AmbientLight, Atmosphere, LightingRenderer};
 use super::shaders::EffectsManager;
 use super::ui::UiContext;
+
+// ============================================================================
+// Scene Cleanup
+// ============================================================================
+
+/// Bitflags controlling which engine state is automatically reset during scene transitions.
+///
+/// When a scene exits via `Switch` or `Reset`, the engine runs cleanup based on
+/// the exiting scene's `cleanup_on_exit()` return value. This provides a "clean slate"
+/// for the incoming scene without requiring manual `world.clear()` calls.
+///
+/// # Default Behavior
+///
+/// `SceneCleanup::DEFAULT` resets everything **except music**, since music commonly
+/// persists across scenes (menu→game, level→level).
+///
+/// # Customization
+///
+/// Override `cleanup_on_exit()` on your `Scene` to customize:
+///
+/// ```rust,ignore
+/// fn cleanup_on_exit(&self) -> SceneCleanup {
+///     // Keep world entities alive (e.g., for a shared overworld)
+///     SceneCleanup::DEFAULT - SceneCleanup::WORLD
+/// }
+/// ```
+///
+/// # When Cleanup Runs
+///
+/// | Action | Cleanup? | Rationale |
+/// |--------|:--------:|-----------|
+/// | Switch | Yes | Replacing scene, clean slate for new one |
+/// | Reset  | Yes | Clearing everything, fresh start |
+/// | Push   | No  | Overlay; paused scene needs its state |
+/// | Pop    | No  | Resuming scene expects its state intact |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SceneCleanup(u16);
+
+impl SceneCleanup {
+  /// No cleanup — the incoming scene inherits all existing state.
+  pub const NONE: Self = Self(0);
+  /// Clear all entities from the ECS world.
+  pub const WORLD: Self = Self(1 << 0);
+  /// Reset camera position, zoom, and shake (viewport preserved).
+  pub const CAMERA: Self = Self(1 << 1);
+  /// Clear all post-processing effects.
+  pub const EFFECTS: Self = Self(1 << 2);
+  /// Reset ambient light and atmosphere to defaults.
+  pub const LIGHTING: Self = Self(1 << 3);
+  /// Reset time scale and hitstop to defaults.
+  pub const TIME: Self = Self(1 << 4);
+  /// Stop any playing music.
+  pub const MUSIC: Self = Self(1 << 5);
+  /// Clear the event bus.
+  pub const EVENTS: Self = Self(1 << 6);
+
+  /// All cleanup flags enabled.
+  pub const ALL: Self = Self(0b111_1111);
+  /// All cleanup flags except `MUSIC` — the recommended default.
+  pub const DEFAULT: Self = Self(0b101_1111);
+
+  /// Returns `true` if `self` contains all flags in `other`.
+  pub fn contains(self, other: Self) -> bool {
+    (self.0 & other.0) == other.0
+  }
+
+  /// Returns `true` if no flags are set.
+  pub fn is_empty(self) -> bool {
+    self.0 == 0
+  }
+}
+
+impl std::ops::BitOr for SceneCleanup {
+  type Output = Self;
+  fn bitor(self, rhs: Self) -> Self {
+    Self(self.0 | rhs.0)
+  }
+}
+
+impl std::ops::BitAnd for SceneCleanup {
+  type Output = Self;
+  fn bitand(self, rhs: Self) -> Self {
+    Self(self.0 & rhs.0)
+  }
+}
+
+impl std::ops::Not for SceneCleanup {
+  type Output = Self;
+  fn not(self) -> Self {
+    Self(!self.0)
+  }
+}
+
+impl std::ops::Sub for SceneCleanup {
+  type Output = Self;
+  fn sub(self, rhs: Self) -> Self {
+    Self(self.0 & !rhs.0)
+  }
+}
 
 /// Context passed to scene callbacks, providing access to engine systems.
 ///
@@ -844,6 +943,61 @@ pub trait Scene {
   fn is_physics_paused(&self) -> bool {
     false
   }
+
+  /// Controls which engine state is automatically reset when this scene exits
+  /// via `Switch` or `Reset`.
+  ///
+  /// The default (`SceneCleanup::DEFAULT`) resets world, camera, effects,
+  /// lighting, time, and events — but preserves music.
+  ///
+  /// Override this to customize cleanup behavior:
+  ///
+  /// ```rust,ignore
+  /// fn cleanup_on_exit(&self) -> SceneCleanup {
+  ///     // Keep world entities when switching away
+  ///     SceneCleanup::DEFAULT - SceneCleanup::WORLD
+  /// }
+  /// ```
+  fn cleanup_on_exit(&self) -> SceneCleanup {
+    SceneCleanup::DEFAULT
+  }
+}
+
+/// Execute cleanup actions based on the given flags.
+///
+/// Called automatically by `SceneManager::switch()` and `SceneManager::reset()`
+/// after the exiting scene's `on_exit()` has been called.
+fn execute_cleanup(cleanup: SceneCleanup, ctx: &mut SceneContext) {
+  if cleanup.is_empty() {
+    return;
+  }
+
+  if cleanup.contains(SceneCleanup::WORLD) {
+    ctx.world.clear();
+  }
+  if cleanup.contains(SceneCleanup::CAMERA) {
+    ctx.camera.reset();
+  }
+  if cleanup.contains(SceneCleanup::EFFECTS) {
+    ctx.effects.clear();
+  }
+  if cleanup.contains(SceneCleanup::LIGHTING)
+    && let Some(lighting) = ctx.lighting.as_mut()
+  {
+    lighting.set_ambient(AmbientLight::default());
+    lighting.set_atmosphere(Atmosphere::default());
+  }
+  if cleanup.contains(SceneCleanup::TIME) {
+    *ctx.time_control = TimeControl::default();
+  }
+  if cleanup.contains(SceneCleanup::MUSIC)
+    && let Some(audio) = ctx.audio.as_mut()
+  {
+    audio.stop_music();
+  }
+  if cleanup.contains(SceneCleanup::EVENTS) {
+    ctx.events.clear();
+  }
 }
 
 /// Manages a stack of scenes.
@@ -1052,9 +1206,11 @@ impl SceneManager {
   pub fn switch(&mut self, scene: Box<dyn Scene>, ctx: &mut SceneContext) {
     profile_scope!("cpu:scene_switch");
 
-    // Exit current top
+    // Exit current top and run cleanup
     if let Some(mut current) = self.scenes.pop() {
+      let cleanup = current.cleanup_on_exit();
       current.on_exit(ctx);
+      execute_cleanup(cleanup, ctx);
     }
 
     // Enter new scene
@@ -1086,7 +1242,13 @@ impl SceneManager {
 
   /// Reset with a new scene (clear all, then push).
   pub fn reset(&mut self, scene: Box<dyn Scene>, ctx: &mut SceneContext) {
+    let cleanup = self
+      .scenes
+      .last()
+      .map(|s| s.cleanup_on_exit())
+      .unwrap_or(SceneCleanup::NONE);
     self.clear(ctx);
+    execute_cleanup(cleanup, ctx);
     self.scenes.push(scene);
     if let Some(new_top) = self.scenes.last_mut() {
       new_top.on_enter(ctx);
@@ -1866,5 +2028,63 @@ mod tests {
   fn scene_updates_below_defaults_to_false() {
     let scene = TestScene::new("test");
     assert!(!scene.updates_below());
+  }
+
+  // =========================================================================
+  // SceneCleanup Tests
+  // =========================================================================
+
+  #[test]
+  fn scene_cleanup_default_excludes_music() {
+    assert!(SceneCleanup::DEFAULT.contains(SceneCleanup::WORLD));
+    assert!(SceneCleanup::DEFAULT.contains(SceneCleanup::CAMERA));
+    assert!(SceneCleanup::DEFAULT.contains(SceneCleanup::EFFECTS));
+    assert!(SceneCleanup::DEFAULT.contains(SceneCleanup::LIGHTING));
+    assert!(SceneCleanup::DEFAULT.contains(SceneCleanup::TIME));
+    assert!(!SceneCleanup::DEFAULT.contains(SceneCleanup::MUSIC));
+    assert!(SceneCleanup::DEFAULT.contains(SceneCleanup::EVENTS));
+  }
+
+  #[test]
+  fn scene_cleanup_all_includes_everything() {
+    assert!(SceneCleanup::ALL.contains(SceneCleanup::WORLD));
+    assert!(SceneCleanup::ALL.contains(SceneCleanup::CAMERA));
+    assert!(SceneCleanup::ALL.contains(SceneCleanup::EFFECTS));
+    assert!(SceneCleanup::ALL.contains(SceneCleanup::LIGHTING));
+    assert!(SceneCleanup::ALL.contains(SceneCleanup::TIME));
+    assert!(SceneCleanup::ALL.contains(SceneCleanup::MUSIC));
+    assert!(SceneCleanup::ALL.contains(SceneCleanup::EVENTS));
+  }
+
+  #[test]
+  fn scene_cleanup_none_is_empty() {
+    assert!(SceneCleanup::NONE.is_empty());
+    assert!(!SceneCleanup::DEFAULT.is_empty());
+    assert!(!SceneCleanup::ALL.is_empty());
+  }
+
+  #[test]
+  fn scene_cleanup_subtraction() {
+    let without_world = SceneCleanup::DEFAULT - SceneCleanup::WORLD;
+    assert!(!without_world.contains(SceneCleanup::WORLD));
+    assert!(without_world.contains(SceneCleanup::CAMERA));
+    assert!(without_world.contains(SceneCleanup::EFFECTS));
+    assert!(without_world.contains(SceneCleanup::LIGHTING));
+    assert!(without_world.contains(SceneCleanup::TIME));
+    assert!(without_world.contains(SceneCleanup::EVENTS));
+  }
+
+  #[test]
+  fn scene_cleanup_bitor_combines() {
+    let combined = SceneCleanup::WORLD | SceneCleanup::CAMERA;
+    assert!(combined.contains(SceneCleanup::WORLD));
+    assert!(combined.contains(SceneCleanup::CAMERA));
+    assert!(!combined.contains(SceneCleanup::EFFECTS));
+  }
+
+  #[test]
+  fn scene_cleanup_default_trait_returns_default() {
+    let scene = TestScene::new("test");
+    assert_eq!(scene.cleanup_on_exit(), SceneCleanup::DEFAULT);
   }
 }

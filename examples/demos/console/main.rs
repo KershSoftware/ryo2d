@@ -48,18 +48,12 @@ impl Game for ConsoleDemo {
     ctx.declare_console_command(
       "game:hello",
       "Print a greeting",
-      Some("Usage: game:hello [name]\n\nPrints 'Hello, <name>!' or 'Hello, World!' if no name given."),
+      Some(
+        "Usage: game:hello [name]\n\nPrints 'Hello, <name>!' or 'Hello, World!' if no name given.",
+      ),
     );
-    ctx.declare_console_command(
-      "game:scene1",
-      "Switch to Scene 1 (Hub)",
-      None::<&str>,
-    );
-    ctx.declare_console_command(
-      "game:scene2",
-      "Switch to Scene 2 (Workshop)",
-      None::<&str>,
-    );
+    ctx.declare_console_command("game:scene1", "Switch to Scene 1 (Hub)", None::<&str>);
+    ctx.declare_console_command("game:scene2", "Switch to Scene 2 (Workshop)", None::<&str>);
     ctx.declare_console_command(
       "game:paint",
       "Change background color (Scene 2 only)",
@@ -161,12 +155,14 @@ impl Scene for HubScene {
     // Instructions
     ui.draw_text(
       "Press ~ to open the developer console",
-      30.0, 60.0,
+      30.0,
+      60.0,
       Color::rgb(150, 170, 200),
     );
     ui.draw_text(
       "Try: help game, game:hello, game:scene2",
-      30.0, 85.0,
+      30.0,
+      85.0,
       Color::rgb(120, 140, 170),
     );
 
@@ -184,26 +180,25 @@ impl Scene for HubScene {
     ui.draw_text("Active Commands", 40.0, 210.0, Color::rgb(150, 200, 255));
     ui.draw_text(
       "game:hello — active (permanent)",
-      40.0, 235.0,
+      40.0,
+      235.0,
       Color::rgb(100, 255, 100),
     );
     ui.draw_text(
       "game:scene1 / game:scene2 — active (permanent)",
-      40.0, 255.0,
+      40.0,
+      255.0,
       Color::rgb(100, 255, 100),
     );
     ui.draw_text(
       "game:paint — inactive (Scene 2 only)",
-      40.0, 275.0,
+      40.0,
+      275.0,
       Color::rgb(255, 100, 100),
     );
 
     // Footer
-    ui.draw_text(
-      "Press ESC to exit",
-      30.0, 560.0,
-      Color::rgb(100, 100, 100),
-    );
+    ui.draw_text("Press ESC to exit", 30.0, 560.0, Color::rgb(100, 100, 100));
   }
 
   fn name(&self) -> &str {
@@ -223,7 +218,9 @@ impl Scene for WorkshopScene {
     ctx.register_console_command("game:paint", |args, cmd_ctx| {
       if args.is_empty() {
         cmd_ctx.console.print("Usage: game:paint <color>");
-        cmd_ctx.console.print("Colors: red, green, blue, yellow, purple, reset");
+        cmd_ctx
+          .console
+          .print("Colors: red, green, blue, yellow, purple, reset");
         return CommandResult::Ok;
       }
 
@@ -266,7 +263,9 @@ impl Scene for WorkshopScene {
         }
         other => {
           cmd_ctx.console.print(&format!("Unknown color: {}", other));
-          cmd_ctx.console.print("Colors: red, green, blue, yellow, purple, reset");
+          cmd_ctx
+            .console
+            .print("Colors: red, green, blue, yellow, purple, reset");
         }
       }
 
@@ -311,12 +310,14 @@ impl Scene for WorkshopScene {
     // Instructions
     ui.draw_text(
       "Press ~ to open the developer console",
-      30.0, 60.0,
+      30.0,
+      60.0,
       Color::rgb(150, 200, 170),
     );
     ui.draw_text(
       "Try: game:paint red, game:paint green, game:paint reset",
-      30.0, 85.0,
+      30.0,
+      85.0,
       Color::rgb(120, 170, 140),
     );
 
@@ -334,17 +335,20 @@ impl Scene for WorkshopScene {
     ui.draw_text("Active Commands", 40.0, 210.0, Color::rgb(150, 255, 200));
     ui.draw_text(
       "game:hello — active (permanent)",
-      40.0, 235.0,
+      40.0,
+      235.0,
       Color::rgb(100, 255, 100),
     );
     ui.draw_text(
       "game:scene1 / game:scene2 — active (permanent)",
-      40.0, 255.0,
+      40.0,
+      255.0,
       Color::rgb(100, 255, 100),
     );
     ui.draw_text(
       "game:paint — active (scoped to this scene)",
-      40.0, 275.0,
+      40.0,
+      275.0,
       Color::rgb(100, 255, 100),
     );
 
@@ -354,16 +358,13 @@ impl Scene for WorkshopScene {
     let b = PAINT_B.load(Ordering::Relaxed);
     ui.draw_text(
       &format!("Background: rgb({}, {}, {})", r, g, b),
-      40.0, 295.0,
+      40.0,
+      295.0,
       Color::rgb(200, 200, 200),
     );
 
     // Footer
-    ui.draw_text(
-      "Press ESC to exit",
-      30.0, 560.0,
-      Color::rgb(100, 100, 100),
-    );
+    ui.draw_text("Press ESC to exit", 30.0, 560.0, Color::rgb(100, 100, 100));
   }
 
   fn name(&self) -> &str {

@@ -375,11 +375,12 @@ impl ParticlesDemo {
 
     // Update first emitter (comet) position
     if let Some(&entity) = self.emitters.first()
-      && let Some(mut transform) = world.get_mut::<Transform>(entity) {
-        // Smooth follow
-        transform.x += (target_x - transform.x) * 0.1;
-        transform.y += (target_y - transform.y) * 0.1;
-      }
+      && let Some(mut transform) = world.get_mut::<Transform>(entity)
+    {
+      // Smooth follow
+      transform.x += (target_x - transform.x) * 0.1;
+      transform.y += (target_y - transform.y) * 0.1;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -562,9 +563,10 @@ impl ParticlesDemo {
 
     for (i, &entity) in self.emitters.iter().enumerate() {
       if let Some(emitter) = world.get_component::<ParticleEmitter>(entity)
-        && emitter.is_finished() {
-          to_remove.push(i);
-        }
+        && emitter.is_finished()
+      {
+        to_remove.push(i);
+      }
     }
 
     // Remove in reverse order to maintain indices
@@ -639,12 +641,13 @@ impl Game for ParticlesDemo {
       };
 
       if let Some(scene) = new_scene
-        && scene != self.current_scene {
-          self.nav_cooldown = 0.3;
-          self.clear_scene(ctx.world);
-          self.current_scene = scene;
-          self.setup_scene(ctx.world);
-        }
+        && scene != self.current_scene
+      {
+        self.nav_cooldown = 0.3;
+        self.clear_scene(ctx.world);
+        self.current_scene = scene;
+        self.setup_scene(ctx.world);
+      }
     }
 
     // Scene-specific interactions

@@ -1,6 +1,6 @@
 [package]
 name = "nigh_t"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 
 [[bin]]
@@ -16,4 +16,3 @@ profiler = ["ryo2d/profiler"]
 
 # Add your game dependencies here
 # serde = { version = "1.0", features = ["derive"] }
-# rand = "0.8"

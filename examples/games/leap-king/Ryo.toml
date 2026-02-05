@@ -4,6 +4,7 @@
 name = "Leap King"
 title = "Leap King - Ryo2D"
 version = "0.0.1"
+description = "Leap King - Multiplayer platformer where players leap in arc trajectories"
 
 [paths]
 entry_point = "main.rs"
@@ -20,7 +21,7 @@ vsync = true
 display_mode = "borderless_fullscreen"
 master_volume = 0.8
 show_fps = false
-console = false
+console = true
 
 # =============================================================================
 # DEVELOPER-ONLY SETTINGS
