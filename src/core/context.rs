@@ -136,8 +136,6 @@ pub struct ContextCore<'a> {
   pub cursor_request: &'a mut crate::core::cursor::CursorRequest,
   /// Time control for slow-mo and hitstop effects
   pub time_control: &'a mut TimeControl,
-  /// Whether detailed profiling is enabled (for timing warnings)
-  pub profiling_enabled: bool,
   /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
   pub scale_factor: f64,
 }

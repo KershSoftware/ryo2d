@@ -78,10 +78,15 @@ impl PlatformGenerator {
   }
 
   /// Check if a candidate platform overlaps any existing platform
-  fn overlaps_any(candidate_x: f32, candidate_y: f32, width: f32, existing: &[PlatformData]) -> bool {
-    existing.iter().any(|p| {
-      Self::platforms_overlap(candidate_x, candidate_y, width, p.x, p.y, p.width)
-    })
+  fn overlaps_any(
+    candidate_x: f32,
+    candidate_y: f32,
+    width: f32,
+    existing: &[PlatformData],
+  ) -> bool {
+    existing
+      .iter()
+      .any(|p| Self::platforms_overlap(candidate_x, candidate_y, width, p.x, p.y, p.width))
   }
 
   /// Find a valid X position that doesn't overlap with existing platforms
@@ -232,7 +237,11 @@ impl PlatformGenerator {
 
     // Prune old platforms that are far below current generation
     // Keep platforms within 2 chunk heights of the highest generated platform
-    if let Some(highest) = platforms.iter().map(|p| p.y).min_by(|a, b| a.partial_cmp(b).unwrap()) {
+    if let Some(highest) = platforms
+      .iter()
+      .map(|p| p.y)
+      .min_by(|a, b| a.partial_cmp(b).unwrap())
+    {
       let cutoff_y = highest + CHUNK_HEIGHT * 3.0;
       self.recent_platforms.retain(|p| p.y < cutoff_y);
     }

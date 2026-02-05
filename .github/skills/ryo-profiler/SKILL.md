@@ -67,21 +67,22 @@ These engine systems are automatically profiled:
 
 ## Configuration
 
-### Via CLI (recommended)
+### Via CLI with auto-open (recommended for quick profiling)
 ```bash
 ryo2d dev --profiler
+# or shorthand:
+ryo2d dev -p
 ```
 
-### Via Ryo.toml
+This compiles with the profiler feature and auto-opens the profiler window on launch.
+
+### Via Ryo.toml (recommended for regular development)
 ```toml
 [debug]
-puffin_profiler = true
+enable_profiler = true
 ```
 
-Then run with profiler feature:
-```bash
-cargo run --features profiler
-```
+This compiles with the profiler feature but doesn't auto-open. Press **F10** to open the profiler window when needed. This is ideal for development where you only occasionally need the profiler.
 
 ## Architecture (for engine devs)
 
@@ -117,7 +118,7 @@ cargo run --features profiler
 |------|---------|
 | `src/core/profiler.rs` | Macros, init, new_frame |
 | `src/core/profiler_window.rs` | Windowed flamegraph viewer |
-| `src/core/config/debug.rs` | `puffin_profiler` config option |
+| `src/core/config/debug.rs` | `enable_profiler` config option |
 | `src/cli/commands/dev.rs` | `--profiler` CLI flag handling |
 
 ### How Data Flows
@@ -145,14 +146,20 @@ fn my_system(world: &mut World, dt: f32) {
 
 ### "No profiling data detected"
 
-1. Ensure `--profiler` flag is used or `puffin_profiler = true` in Ryo.toml
+1. Ensure `--profiler` flag is used or `enable_profiler = true` in Ryo.toml
 2. Add `profile_function!()` to your update/render functions
-3. The profiler compiles to no-op without `--features profiler`
+3. The profiler compiles to no-op without the profiler feature
 
-### Profiler window doesn't open
+### Profiler window doesn't auto-open
+
+If using `enable_profiler = true` in Ryo.toml, the profiler window doesn't auto-open by design. Press **F10** to open it when needed.
+
+For auto-open behavior, use `ryo2d dev --profiler` instead.
+
+### Profiler window doesn't open at all
 
 1. Check console for `[Profiler] Window opened` message
-2. Ensure you're using `ryo2d dev --profiler` (not just `cargo run`)
+2. If using Ryo.toml config, ensure the project has the profiler feature in Cargo.toml
 3. Window may be behind main game window
 
 ### Bars are flickering

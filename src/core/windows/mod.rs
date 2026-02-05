@@ -22,7 +22,7 @@
 //!
 //! ```toml
 //! [debug]
-//! puffin_profiler = true  # Enable profiler window (requires --features profiler)
+//! enable_profiler = true  # Enable profiler window (requires --features profiler)
 //! logger_window = true    # Enable logger window
 //! ```
 //!

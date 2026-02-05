@@ -373,13 +373,17 @@ if let Some(difficulty) = settings.get_setting("difficulty") {
 
 ## Engine Override Behavior
 
-When you use `with_system_state_overrides()` on the engine builder, it loads `system.json` and applies overrides:
+When you use `with_system_state_overrides()` on the engine builder, it loads `system.json` and applies overrides. You can control which fields are loaded using a `SystemFieldFilter`.
+
+### Loading All Fields (Default)
 
 ```rust
+use ryo2d::prelude::*;
+
 EngineBuilder::new()
     .resolution(800, 600)
-    .with_system_state_overrides()  // Loads system.json
-    .with_game(MyGame)
+    .with_system_state_overrides(SystemFieldFilter::all())
+    .with_scene(MyScene::new())
     .build()
 ```
 
@@ -388,6 +392,63 @@ This allows:
 - User's `show_fps` to override `Ryo.toml` debug settings
 - User's display settings to override window configuration
 - User's audio volumes to be applied to the AudioManager on startup
+
+### Filtering Fields
+
+For games with a fixed design resolution (like pixel art games), you can filter out resolution while still loading other user preferences:
+
+```rust
+use ryo2d::prelude::*;
+
+// Load audio and display mode, but NOT resolution
+EngineBuilder::new()
+    .resolution(320, 240)  // Fixed pixel art resolution
+    .with_system_state_overrides([
+        SystemField::MasterVolume,
+        SystemField::MusicVolume,
+        SystemField::SfxVolume,
+        SystemField::DisplayMode,
+        SystemField::Vsync,
+        SystemField::ShowFps,
+    ])
+    .with_scene(MyScene::new())
+    .build()
+```
+
+### Available Fields
+
+| Field | Description |
+|-------|-------------|
+| `SystemField::MasterVolume` | Master volume (0.0 - 1.0) |
+| `SystemField::MusicVolume` | Music volume (0.0 - 1.0) |
+| `SystemField::SfxVolume` | Sound effects volume (0.0 - 1.0) |
+| `SystemField::Resolution` | Display resolution (width + height together) |
+| `SystemField::DisplayMode` | Windowed, fullscreen, or borderless |
+| `SystemField::Vsync` | VSync preference |
+| `SystemField::ShowFps` | Show FPS counter |
+
+### Filter Methods
+
+| Method | Description |
+|--------|-------------|
+| `SystemFieldFilter::all()` | All fields enabled (default, backward compatible) |
+| `SystemFieldFilter::none()` | No fields - use only Ryo.toml/engine defaults |
+| `SystemFieldFilter::only([...])` | Only specified fields |
+| `filter.contains(field)` | Check if a field is enabled |
+
+### Alternative: with_saved_display_mode()
+
+For fixed-resolution games that only want to load display mode (not resolution), use `with_saved_display_mode()`:
+
+```rust
+EngineBuilder::new()
+    .resolution(320, 240)  // Fixed resolution
+    .with_saved_display_mode()  // Load display mode + audio + vsync + show_fps
+    .with_scene(MyScene::new())
+    .build()
+```
+
+This is equivalent to filtering out `Resolution` while keeping all other fields
 
 ## Best Practices
 

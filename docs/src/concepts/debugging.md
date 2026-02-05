@@ -87,7 +87,6 @@ show_colliders = true
 show_velocities = false
 show_origins = false
 show_frame_timing = false
-enable_profiling = true     # Enable detailed timing measurements
 disable_debug_keys = false  # Allow F1-F4 debug toggles
 
 [info]
@@ -216,13 +215,8 @@ show_frame_timing = false
 # Display entity/sprite/batch statistics
 show_stats = false
 
-# Enable detailed profiling (per-phase timing, slow frame warnings)
-# When disabled, timing fields show zeros but FPS still works
-enable_profiling = true
-
-# Enable puffin hierarchical profiler (requires --features profiler or `ryo2d dev --profiler`)
-# Starts HTTP server on port 8585 for puffin_viewer connection
-puffin_profiler = false
+# Enable flamegraph profiler window (requires --features profiler or `ryo2d dev --profiler`)
+enable_profiler = false
 
 # Disable F1-F4 debug key toggles (for release builds)
 disable_debug_keys = false
@@ -297,7 +291,7 @@ fn main() {
 
 ### Console Warnings
 
-When `enable_profiling = true` (default), Ryo2D prints helpful warnings to the console:
+In debug builds, Ryo2D prints helpful performance warnings to the console:
 
 **Slow Frame Warnings** (>33ms frames):
 ```
@@ -309,7 +303,7 @@ When `enable_profiling = true` (default), Ryo2D prints helpful warnings to the c
 [Scene] on_enter took 127ms
 ```
 
-Set `enable_profiling = false` to disable these warnings.
+These warnings only appear in debug builds and cannot be disabled.
 
 ## Debug Colors
 

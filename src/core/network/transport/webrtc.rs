@@ -122,7 +122,9 @@ impl WebRtcConfig {
   ///     .with_turn("turn:relay.example.com:3478", "user", "pass");
   /// ```
   pub fn with_turn(mut self, url: &str, username: &str, credential: &str) -> Self {
-    self.ice_servers.push(IceServer::turn(url, username, credential));
+    self
+      .ice_servers
+      .push(IceServer::turn(url, username, credential));
     self
   }
 
@@ -241,7 +243,9 @@ impl WebRtcServerTransport {
           self.peer_to_client.insert(peer_id, client_id);
           self.client_to_peer.insert(client_id, peer_id);
 
-          self.events.push(NetworkEvent::ClientConnected { client_id });
+          self
+            .events
+            .push(NetworkEvent::ClientConnected { client_id });
         }
         PeerState::Disconnected => {
           if let Some(client_id) = self.peer_to_client.remove(&peer_id) {
@@ -304,7 +308,10 @@ impl WebRtcServerTransport {
     let peers: Vec<_> = self.peer_to_client.keys().copied().collect();
 
     for peer_id in peers {
-      self.socket.channel_mut(channel).send(packet.clone(), peer_id);
+      self
+        .socket
+        .channel_mut(channel)
+        .send(packet.clone(), peer_id);
     }
   }
 }
@@ -526,8 +533,11 @@ mod tests {
 
   #[test]
   fn webrtc_config_with_turn_adds_turn_server() {
-    let config = WebRtcConfig::new("ws://localhost:3536", "room")
-      .with_turn("turn:relay.example.com:3478", "user", "pass");
+    let config = WebRtcConfig::new("ws://localhost:3536", "room").with_turn(
+      "turn:relay.example.com:3478",
+      "user",
+      "pass",
+    );
 
     // Should have STUN servers + 1 TURN server
     let turn_servers: Vec<_> = config
@@ -602,8 +612,11 @@ mod tests {
 
   #[test]
   fn webrtc_config_is_clone() {
-    let config = WebRtcConfig::new("ws://localhost:3536", "room")
-      .with_turn("turn:relay.example.com:3478", "user", "pass");
+    let config = WebRtcConfig::new("ws://localhost:3536", "room").with_turn(
+      "turn:relay.example.com:3478",
+      "user",
+      "pass",
+    );
 
     let cloned = config.clone();
 

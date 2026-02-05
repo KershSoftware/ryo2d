@@ -34,13 +34,13 @@ pub fn create_bird_animation_controller() -> AnimationController {
   let flap_anim = Animation::new(
     "flap",
     vec![flap_down.clone(), flap_up.clone()],
-    0.15, // 150ms per frame = ~6.6 FPS flapping
+    BIRD_FLAP_FRAME_TIME,
   );
 
   let hurt_anim = Animation::new(
     "hurt",
     vec![hurt_1.clone(), hurt_2.clone()],
-    0.1, // 100ms per frame = 10 FPS hurt animation
+    BIRD_HURT_FRAME_TIME,
   );
 
   // Build controller

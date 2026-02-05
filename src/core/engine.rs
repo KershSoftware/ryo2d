@@ -115,8 +115,8 @@ impl Default for EngineConfig {
   fn default() -> Self {
     EngineConfig {
       title: String::from("Ryo2D"),
-      width: 800,
-      height: 600,
+      width: 1280,
+      height: 720,
       target_fps: 60,
       physics_hz: 60,
       physics: PhysicsConfig::default(),
@@ -208,8 +208,6 @@ pub struct Engine {
   gilrs: Option<Gilrs>,
   // Time control for slow-mo and hitstop effects (shared with GameContext/SceneContext)
   time_control: TimeControl,
-  // Whether detailed profiling is enabled (per-phase timing, slow frame warnings)
-  profiling_enabled: bool,
   // Profiler window (only when profiler feature is enabled)
   #[cfg(feature = "profiler")]
   profiler_window: Option<super::windows::profiler_window::ProfilerWindow>,
@@ -472,7 +470,6 @@ impl Engine {
     music_volume: f32,
     sfx_volume: f32,
     disable_debug_keys: bool,
-    enable_profiling: bool,
     game_name: Option<String>,
     game_version: Option<String>,
   ) -> Self {
@@ -594,7 +591,6 @@ impl Engine {
       events: Events::new(),
       gilrs,
       time_control: TimeControl::default(),
-      profiling_enabled: enable_profiling,
       #[cfg(feature = "profiler")]
       profiler_window: None, // Initialized in resumed() or on F10 press
       logger_window: None, // Initialized in resumed() or on F9 press
@@ -1140,7 +1136,6 @@ impl Engine {
         cursor_request: &mut self.cursor_request,
         time_control: &mut self.time_control,
         time: time_info,
-        profiling_enabled: self.profiling_enabled,
         scale_factor: self.scale_factor,
         command_registry: &mut self.command_registry,
         scope_id: 0, // Game-level scope (permanent)
@@ -2064,12 +2059,14 @@ impl ApplicationHandler for Engine {
       self.config.physics_hz,
     ));
 
-    // Initialize profiler (no-op if `profiler` feature is disabled or puffin_profiler=false)
-    super::profiler::init(self.config.debug.puffin_profiler);
+    // Initialize profiler (no-op if `profiler` feature is disabled or enable_profiler=false)
+    // This enables puffin scope collection so F10 can open the profiler window later
+    super::profiler::init(self.config.debug.enable_profiler);
 
-    // Create profiler window if puffin profiling is enabled
+    // Auto-open profiler window only when explicitly requested via CLI (-p flag)
+    // When enable_profiler=true in Ryo.toml, the profiler is available via F10 but doesn't auto-open
     #[cfg(feature = "profiler")]
-    if self.config.debug.puffin_profiler
+    if std::env::var("RYO_PROFILER_AUTO_OPEN").is_ok()
       && let Some(ref renderer) = self.renderer
     {
       self.profiler_window = super::windows::profiler_window::ProfilerWindow::new(
@@ -2125,7 +2122,6 @@ impl ApplicationHandler for Engine {
           cursor_request: &mut self.cursor_request,
           time_control: &mut self.time_control,
           time: time_info,
-          profiling_enabled: self.profiling_enabled,
           scale_factor: self.scale_factor,
           command_registry: &mut self.command_registry,
           scope_id: 0, // Game-level scope (permanent)
@@ -2507,11 +2503,7 @@ impl ApplicationHandler for Engine {
         let mut did_update = false;
         {
           profile_scope!("cpu:update");
-          let update_start = if self.profiling_enabled {
-            Some(std::time::Instant::now())
-          } else {
-            None
-          };
+          let update_start = std::time::Instant::now();
 
           // Snapshot transforms for interpolation BEFORE any updates
           // This captures the "previous" state that we'll lerp from during rendering
@@ -2549,9 +2541,7 @@ impl ApplicationHandler for Engine {
             time.sync_to_time_control(&mut self.time_control);
           }
           // Update time includes both game logic and physics
-          if let Some(start) = update_start {
-            self.frame_timings.update = start.elapsed();
-          }
+          self.frame_timings.update = update_start.elapsed();
         } // update scope ends here
 
         // Check if game or console wants to quit
@@ -2566,11 +2556,7 @@ impl ApplicationHandler for Engine {
         // Use a block to limit the profile_scope lifetime
         {
           profile_scope!("cpu:render");
-          let render_start = if self.profiling_enabled {
-            Some(std::time::Instant::now())
-          } else {
-            None
-          };
+          let render_start = std::time::Instant::now();
           let alpha = self
             .time
             .as_ref()
@@ -2635,9 +2621,7 @@ impl ApplicationHandler for Engine {
           self.smoothed_stats.update(&self.debug_stats);
 
           // Render time includes software rendering + GPU batch collection
-          if let Some(start) = render_start {
-            self.frame_timings.render = start.elapsed();
-          }
+          self.frame_timings.render = render_start.elapsed();
         } // render scope ends here
 
         // Note: Debug overlays (FPS, frame timing) are now rendered via UI context
@@ -2647,11 +2631,7 @@ impl ApplicationHandler for Engine {
         // Actually draw to screen with post-processing effects, lighting, and GPU sprites
         // Take sprite_gpu, lighting, and trail_renderer out to avoid borrow conflicts with renderer
         profile_scope!("gpu:present");
-        let present_start = if self.profiling_enabled {
-          Some(std::time::Instant::now())
-        } else {
-          None
-        };
+        let present_start = std::time::Instant::now();
         let mut sprite_gpu = self.sprite_gpu.take();
         let mut renderer = self.renderer.take();
         let mut lighting = self.lighting.take();
@@ -2877,9 +2857,7 @@ impl ApplicationHandler for Engine {
         self.lighting = lighting;
         self.trail_renderer = trail_renderer;
         // Present time = GPU submission + effects pipeline
-        if let Some(start) = present_start {
-          self.frame_timings.present = start.elapsed();
-        }
+        self.frame_timings.present = present_start.elapsed();
 
         // Track first frame for potential future use
         if !self.first_frame_rendered {
@@ -2909,8 +2887,9 @@ impl ApplicationHandler for Engine {
 
         // Debug: Log when a frame takes too long (>33ms = <30fps)
         // Only when profiling is enabled to avoid console spam
+        // Debug: Log when a frame takes too long (>33ms = <30fps)
         #[cfg(debug_assertions)]
-        if self.profiling_enabled {
+        {
           let total_ms = self.frame_timings.total.as_secs_f64() * 1000.0;
           if total_ms > 33.0 {
             engine_warn!(
@@ -2998,7 +2977,7 @@ impl ApplicationHandler for Engine {
     {
       self.pending_open_profiler = false;
       // Enable puffin scope collection if not already enabled
-      // This allows F10 to work even if puffin_profiler wasn't set in config
+      // This allows F10 to work even if enable_profiler wasn't set in config
       puffin::set_scopes_on(true);
       self.profiler_window = super::windows::profiler_window::ProfilerWindow::new(
         event_loop,
@@ -3344,17 +3323,48 @@ impl EngineBuilder {
   /// If system.json doesn't exist, it will be created from the developer
   /// defaults in Ryo.toml's [system] section combined with engine defaults.
   ///
-  /// # Example
+  /// # Field Filtering
+  ///
+  /// Use a [`SystemFieldFilter`](super::config::SystemFieldFilter) to control which fields
+  /// are loaded from system.json. Fields not in the filter use Ryo.toml/engine defaults.
+  ///
+  /// # Examples
   ///
   /// ```rust,ignore
+  /// use ryo2d::prelude::*;
+  ///
+  /// // Load all fields (default behavior)
   /// EngineBuilder::new()
   ///     .title("My Game")
-  ///     .with_system_state_overrides()  // Apply user overrides from system.json
+  ///     .with_system_state_overrides(SystemFieldFilter::all())
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  ///
+  /// // Load only volume settings
+  /// EngineBuilder::new()
+  ///     .title("My Game")
+  ///     .with_system_state_overrides([SystemField::MasterVolume, SystemField::MusicVolume, SystemField::SfxVolume])
+  ///     .with_scene(GameScene::new())
+  ///     .build()
+  ///     .run()?;
+  ///
+  /// // Load nothing from system.json (pure Ryo.toml)
+  /// EngineBuilder::new()
+  ///     .title("My Game")
+  ///     .with_system_state_overrides(SystemFieldFilter::none())
   ///     .with_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
-  pub fn with_system_state_overrides(mut self) -> Self {
+  pub fn with_system_state_overrides(
+    mut self,
+    filter: impl Into<super::config::SystemFieldFilter>,
+  ) -> Self {
+    use super::config::SystemField;
+
+    let filter = filter.into();
+
     if let Ok(workspace) = super::config::Workspace::discover()
       && let Ok(save_manager) = workspace.create_save_manager()
       && let Ok(mut system_state) = save_manager.load_or_create_system(&workspace.config().system)
@@ -3362,22 +3372,38 @@ impl EngineBuilder {
       // Migrate legacy fullscreen field if present
       system_state.display.migrate_legacy();
 
-      // Apply display overrides
-      self.config.width = system_state.display.width;
-      self.config.height = system_state.display.height;
-      self.config.display_mode = system_state.display.display_mode;
-      self.display_mode_set = true;
+      // Apply display overrides based on filter
+      if filter.contains(SystemField::Resolution) {
+        self.config.width = system_state.display.width;
+        self.config.height = system_state.display.height;
+      }
+      if filter.contains(SystemField::DisplayMode) {
+        self.config.display_mode = system_state.display.display_mode;
+        self.display_mode_set = true;
+      }
 
-      // Apply overrides if present
-      if let Some(show_fps) = system_state.show_fps {
+      // Apply show_fps if present and in filter
+      if filter.contains(SystemField::ShowFps)
+        && let Some(show_fps) = system_state.show_fps
+      {
         self.config.debug.show_fps = show_fps;
       }
-      // Store vsync preference to use when creating renderer
-      self.vsync = system_state.vsync;
-      // Store audio volumes to apply after AudioManager creation
-      self.master_volume = system_state.master_volume;
-      self.music_volume = system_state.music_volume;
-      self.sfx_volume = system_state.sfx_volume;
+
+      // Apply vsync if in filter
+      if filter.contains(SystemField::Vsync) {
+        self.vsync = system_state.vsync;
+      }
+
+      // Apply audio volumes based on filter
+      if filter.contains(SystemField::MasterVolume) {
+        self.master_volume = system_state.master_volume;
+      }
+      if filter.contains(SystemField::MusicVolume) {
+        self.music_volume = system_state.music_volume;
+      }
+      if filter.contains(SystemField::SfxVolume) {
+        self.sfx_volume = system_state.sfx_volume;
+      }
     }
     self
   }
@@ -3482,7 +3508,6 @@ impl EngineBuilder {
     let mut sfx_volume = self.sfx_volume;
     let display_mode_set = self.display_mode_set;
     let mut disable_debug_keys = self.disable_debug_keys;
-    let mut enable_profiling = true; // Default to true in dev builds
     let mut game_name: Option<String> = None;
     let mut game_version: Option<String> = None;
 
@@ -3527,11 +3552,8 @@ impl EngineBuilder {
       if let Some(v) = option_env!("RYO_EMBED_DISABLE_DEBUG_KEYS") {
         disable_debug_keys = v.parse().unwrap_or(false);
       }
-      if let Some(v) = option_env!("RYO_EMBED_ENABLE_PROFILING") {
-        enable_profiling = v.parse().unwrap_or(true);
-      }
-      if let Some(v) = option_env!("RYO_EMBED_PUFFIN_PROFILER") {
-        config.debug.puffin_profiler = v.parse().unwrap_or(false);
+      if let Some(v) = option_env!("RYO_EMBED_ENABLE_PROFILER") {
+        config.debug.enable_profiler = v.parse().unwrap_or(false);
       }
       if let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME") {
         master_volume = vol.parse().unwrap_or(0.7);
@@ -3581,12 +3603,11 @@ impl EngineBuilder {
       config.debug.show_velocities = debug.show_velocities;
       config.debug.show_origins = debug.show_origins;
       config.debug.show_frame_timing = debug.show_frame_timing;
-      config.debug.puffin_profiler = debug.puffin_profiler;
+      config.debug.enable_profiler = debug.enable_profiler;
       config.debug.logger_window = debug.logger_window;
       config.debug.dev_window_keys = debug.dev_window_keys;
       config.debug.dev_console = system.dev_console; // From [system] section for release build support
       disable_debug_keys = debug.disable_debug_keys;
-      enable_profiling = debug.enable_profiling;
 
       // Load resolution from [system] section if not explicitly set via builder
       if config.width == 800 && config.height == 600 {
@@ -3608,9 +3629,10 @@ impl EngineBuilder {
       }
     }
 
-    // Runtime env var override for puffin profiler (from `ryo2d dev --profiler`)
-    if std::env::var("RYO_PUFFIN_PROFILER").is_ok() {
-      config.debug.puffin_profiler = true;
+    // Runtime env var override for profiler (from `ryo2d dev --profiler`)
+    // When -p flag is used, ensure enable_profiler is true so puffin scopes are collected
+    if std::env::var("RYO_PROFILER_AUTO_OPEN").is_ok() {
+      config.debug.enable_profiler = true;
     }
 
     // For release builds: check for icon.png next to executable (created by `ryo2d build`)
@@ -3633,7 +3655,6 @@ impl EngineBuilder {
       music_volume,
       sfx_volume,
       disable_debug_keys,
-      enable_profiling,
       game_name,
       game_version,
     )
@@ -3654,8 +3675,8 @@ mod tests {
   fn engine_config_has_sensible_defaults() {
     let config = EngineConfig::default();
     assert_eq!(config.title, "Ryo2D");
-    assert_eq!(config.width, 800);
-    assert_eq!(config.height, 600);
+    assert_eq!(config.width, 1280);
+    assert_eq!(config.height, 720);
     assert_eq!(config.target_fps, 60);
     assert_eq!(config.physics_hz, 60);
   }

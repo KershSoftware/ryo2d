@@ -132,17 +132,17 @@ use ryo2d::prelude::*;
 fn main() {
     let workspace = Workspace::discover().unwrap();
     let config = workspace.config();
-    
+
     // Access configured paths
     let save_dir = workspace.save_data_dir();
     let assets_dir = workspace.root().join(&config.assets);
-    
+
     // Resolution comes from system.json > Ryo.toml > engine defaults
     // No need to hardcode .resolution() in code
     EngineBuilder::new()
         .title(&config.name)
-        .with_system_state_overrides()  // Loads user prefs from system.json
-        .with_game(MyGame { workspace })
+        .with_system_state_overrides(SystemFieldFilter::all())  // Loads user prefs from system.json
+        .with_scene(MyScene::new())
         .build()
         .run()
         .unwrap();

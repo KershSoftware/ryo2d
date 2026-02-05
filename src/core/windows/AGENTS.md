@@ -29,7 +29,7 @@ Each window creates its own:
 **Configuration**: `Ryo.toml`
 ```toml
 [debug]
-puffin_profiler = true
+enable_profiler = true
 ```
 
 A real-time flamegraph profiler showing:

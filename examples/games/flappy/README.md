@@ -15,8 +15,9 @@ A Flappy Bird clone showcasing scrolling and procedural generation.
 
 ## Controls
 
-- `Space` - Flap / Start game
+- `Space` / `Click` - Flap / Start game
 - `Enter` - Start game from menu
+- `Escape` - Return to menu (from game over)
 
 ## Run
 
@@ -24,3 +25,14 @@ A Flappy Bird clone showcasing scrolling and procedural generation.
 ryo2d dev          # Development mode
 ryo2d build && ryo2d run  # Production build
 ```
+
+## Debug Mode
+
+Enable debug mode in `Ryo.toml` to test collision boundaries:
+
+```toml
+[env]
+debug_scene = true
+```
+
+This adds a DEBUG button to the menu and enables the `D` key shortcut. The debug scene lets you move the bird with WASD/arrows to test collision detection.

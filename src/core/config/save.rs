@@ -83,12 +83,156 @@ use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::core::error::{SaveError, SaveResult};
+
+// ============================================================================
+// System Field Filter
+// ============================================================================
+
+/// Fields that can be filtered for system.json persistence.
+///
+/// Used with [`SystemFieldFilter`] to control which [`SystemState`] fields
+/// are read from `system.json` when using
+/// [`with_system_state_overrides`](crate::core::engine::EngineBuilder::with_system_state_overrides).
+///
+/// Fields not in the filter will fall back to Ryo.toml → engine defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SystemField {
+  /// Master volume (0.0 - 1.0)
+  MasterVolume,
+  /// Music volume (0.0 - 1.0)
+  MusicVolume,
+  /// Sound effects volume (0.0 - 1.0)
+  SfxVolume,
+  /// Display resolution (width + height together)
+  Resolution,
+  /// Display mode (windowed, fullscreen, borderless)
+  DisplayMode,
+  /// VSync preference
+  Vsync,
+  /// Show FPS counter
+  ShowFps,
+}
+
+impl SystemField {
+  /// Returns all available system fields.
+  pub fn all() -> &'static [SystemField] {
+    &[
+      SystemField::MasterVolume,
+      SystemField::MusicVolume,
+      SystemField::SfxVolume,
+      SystemField::Resolution,
+      SystemField::DisplayMode,
+      SystemField::Vsync,
+      SystemField::ShowFps,
+    ]
+  }
+}
+
+/// Filter controlling which [`SystemState`] fields persist to/from `system.json`.
+///
+/// Used with [`with_system_state_overrides`](crate::core::engine::EngineBuilder::with_system_state_overrides)
+/// to selectively load user preferences from `system.json`.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// // Load only volume settings from system.json
+/// EngineBuilder::new()
+///     .title("My Game")
+///     .with_system_state_overrides([SystemField::MasterVolume, SystemField::MusicVolume, SystemField::SfxVolume])
+///     .with_scene(GameScene::new())
+///     .build()
+///     .run()?;
+///
+/// // Load all fields (default behavior)
+/// EngineBuilder::new()
+///     .with_system_state_overrides(SystemFieldFilter::all())
+///     .build()
+///     .run()?;
+///
+/// // Load nothing from system.json (pure Ryo.toml)
+/// EngineBuilder::new()
+///     .with_system_state_overrides(SystemFieldFilter::none())
+///     .build()
+///     .run()?;
+/// ```
+#[derive(Debug, Clone)]
+pub struct SystemFieldFilter {
+  fields: HashSet<SystemField>,
+}
+
+impl SystemFieldFilter {
+  /// All fields enabled (default behavior, backward compatible).
+  pub fn all() -> Self {
+    Self {
+      fields: SystemField::all().iter().copied().collect(),
+    }
+  }
+
+  /// No fields - everything uses Ryo.toml/engine defaults.
+  pub fn none() -> Self {
+    Self {
+      fields: HashSet::new(),
+    }
+  }
+
+  /// Only specified fields persist to system.json.
+  pub fn only(fields: impl IntoIterator<Item = SystemField>) -> Self {
+    Self {
+      fields: fields.into_iter().collect(),
+    }
+  }
+
+  /// Check if a field is enabled.
+  pub fn contains(&self, field: SystemField) -> bool {
+    self.fields.contains(&field)
+  }
+
+  /// Check if filter is empty (no fields enabled).
+  pub fn is_empty(&self) -> bool {
+    self.fields.is_empty()
+  }
+
+  /// Returns the number of enabled fields.
+  pub fn len(&self) -> usize {
+    self.fields.len()
+  }
+}
+
+impl Default for SystemFieldFilter {
+  fn default() -> Self {
+    Self::all()
+  }
+}
+
+/// Allow creating a filter from an array of fields.
+impl<const N: usize> From<[SystemField; N]> for SystemFieldFilter {
+  fn from(fields: [SystemField; N]) -> Self {
+    Self::only(fields)
+  }
+}
+
+/// Allow creating a filter from a Vec of fields.
+impl From<Vec<SystemField>> for SystemFieldFilter {
+  fn from(fields: Vec<SystemField>) -> Self {
+    Self::only(fields)
+  }
+}
+
+/// Allow creating a filter from a slice of fields.
+impl From<&[SystemField]> for SystemFieldFilter {
+  fn from(fields: &[SystemField]) -> Self {
+    Self::only(fields.iter().copied())
+  }
+}
 
 // ============================================================================
 // Save File Format
@@ -1355,5 +1499,101 @@ mod tests {
     // Resolution should be updated (migrated from engine defaults)
     assert_eq!(state.display.width, 800);
     assert_eq!(state.display.height, 600);
+  }
+
+  // ==========================================================================
+  // SystemField and SystemFieldFilter tests
+  // ==========================================================================
+
+  #[test]
+  fn system_field_filter_all_contains_all_fields() {
+    let filter = SystemFieldFilter::all();
+
+    assert!(filter.contains(SystemField::MasterVolume));
+    assert!(filter.contains(SystemField::MusicVolume));
+    assert!(filter.contains(SystemField::SfxVolume));
+    assert!(filter.contains(SystemField::Resolution));
+    assert!(filter.contains(SystemField::DisplayMode));
+    assert!(filter.contains(SystemField::Vsync));
+    assert!(filter.contains(SystemField::ShowFps));
+    assert_eq!(filter.len(), 7);
+    assert!(!filter.is_empty());
+  }
+
+  #[test]
+  fn system_field_filter_none_contains_no_fields() {
+    let filter = SystemFieldFilter::none();
+
+    assert!(!filter.contains(SystemField::MasterVolume));
+    assert!(!filter.contains(SystemField::MusicVolume));
+    assert!(!filter.contains(SystemField::SfxVolume));
+    assert!(!filter.contains(SystemField::Resolution));
+    assert!(!filter.contains(SystemField::DisplayMode));
+    assert!(!filter.contains(SystemField::Vsync));
+    assert!(!filter.contains(SystemField::ShowFps));
+    assert_eq!(filter.len(), 0);
+    assert!(filter.is_empty());
+  }
+
+  #[test]
+  fn system_field_filter_only_contains_specified_fields() {
+    let filter = SystemFieldFilter::only([
+      SystemField::MasterVolume,
+      SystemField::MusicVolume,
+      SystemField::SfxVolume,
+    ]);
+
+    assert!(filter.contains(SystemField::MasterVolume));
+    assert!(filter.contains(SystemField::MusicVolume));
+    assert!(filter.contains(SystemField::SfxVolume));
+    assert!(!filter.contains(SystemField::Resolution));
+    assert!(!filter.contains(SystemField::DisplayMode));
+    assert!(!filter.contains(SystemField::Vsync));
+    assert!(!filter.contains(SystemField::ShowFps));
+    assert_eq!(filter.len(), 3);
+  }
+
+  #[test]
+  fn system_field_filter_from_array() {
+    let filter: SystemFieldFilter = [SystemField::Resolution, SystemField::DisplayMode].into();
+
+    assert!(filter.contains(SystemField::Resolution));
+    assert!(filter.contains(SystemField::DisplayMode));
+    assert!(!filter.contains(SystemField::MasterVolume));
+    assert_eq!(filter.len(), 2);
+  }
+
+  #[test]
+  fn system_field_filter_from_vec() {
+    let fields = vec![SystemField::Vsync, SystemField::ShowFps];
+    let filter: SystemFieldFilter = fields.into();
+
+    assert!(filter.contains(SystemField::Vsync));
+    assert!(filter.contains(SystemField::ShowFps));
+    assert!(!filter.contains(SystemField::Resolution));
+    assert_eq!(filter.len(), 2);
+  }
+
+  #[test]
+  fn system_field_filter_default_is_all() {
+    let filter = SystemFieldFilter::default();
+
+    assert_eq!(filter.len(), 7);
+    assert!(filter.contains(SystemField::MasterVolume));
+    assert!(filter.contains(SystemField::Resolution));
+  }
+
+  #[test]
+  fn system_field_all_returns_all_variants() {
+    let all = SystemField::all();
+
+    assert_eq!(all.len(), 7);
+    assert!(all.contains(&SystemField::MasterVolume));
+    assert!(all.contains(&SystemField::MusicVolume));
+    assert!(all.contains(&SystemField::SfxVolume));
+    assert!(all.contains(&SystemField::Resolution));
+    assert!(all.contains(&SystemField::DisplayMode));
+    assert!(all.contains(&SystemField::Vsync));
+    assert!(all.contains(&SystemField::ShowFps));
   }
 }

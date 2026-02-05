@@ -10,7 +10,7 @@
 //! | `show_colliders` | Draw collision boundaries (green outlines) |
 //! | `show_velocities` | Draw velocity vectors on physics entities |
 //! | `show_origins` | Draw entity origin points (transform position) |
-//! | `enable_profiling` | Enable detailed timing measurements |
+//! | `enable_profiler` | Open flamegraph profiler window |
 //!
 //! # Available Info Overlays
 //!
@@ -43,7 +43,8 @@
 //!
 //! # Profiling Workflow
 //!
-//! When `enable_profiling = true` (default in dev), the following data is captured:
+//! Frame timing is always captured with negligible overhead. Use the F1 key or
+//! `show_frame_timing = true` to display timing breakdown:
 //!
 //! | Metric | High Value Indicates |
 //! |--------|---------------------|
@@ -52,15 +53,9 @@
 //! | Render | Too many draw calls, shader complexity, large textures |
 //! | Present | GPU-bound, vsync waiting, driver overhead |
 //!
-//! **What gets gated behind `enable_profiling`:**
-//! - Per-phase frame timing (update/render/present breakdown)
-//! - Scene `on_enter()` timing warnings to console
+//! **Debug build features:**
+//! - Scene `on_enter()` timing warnings to console (>5ms)
 //! - Slow frame warnings to console (>33ms)
-//!
-//! **What stays always available:**
-//! - Basic FPS counting (lightweight)
-//! - Debug overlay rendering (already gated by show_* flags)
-//! - DebugStats collection (entity/sprite/batch counts)
 //!
 //! # Ryo.toml Configuration
 //!
@@ -70,7 +65,7 @@
 //! show_velocities = false
 //! show_origins = false
 //! disable_debug_keys = false
-//! enable_profiling = true   # Enable detailed timing measurements
+//! enable_profiler = true   # Open flamegraph profiler window
 //!
 //! [info]
 //! show_fps = true
@@ -232,10 +227,8 @@ pub struct DebugConfig {
   pub show_velocities: bool,
   /// Whether to draw entity origin points (small crosshairs at transform position)
   pub show_origins: bool,
-  /// Whether to enable detailed profiling measurements (per-phase timing, slow frame warnings)
-  pub enable_profiling: bool,
-  /// Whether to start the puffin profiler HTTP server (requires --features profiler or `ryo2d dev --profiler`)
-  pub puffin_profiler: bool,
+  /// Whether to open the flamegraph profiler window (requires --features profiler or `ryo2d dev --profiler`)
+  pub enable_profiler: bool,
   /// Whether to open the logger dev window at startup (shows engine/game logs in real-time)
   pub logger_window: bool,
   /// Whether to enable dev window hotkeys (F8=profiler, F9=logger).
@@ -256,8 +249,7 @@ impl Default for DebugConfig {
       show_stats: false,
       show_velocities: false,
       show_origins: false,
-      enable_profiling: true, // Enabled by default in dev builds
-      puffin_profiler: false, // Disabled by default (opt-in)
+      enable_profiler: false, // Disabled by default (opt-in)
       logger_window: false,   // Disabled by default (opt-in)
       // Dev window keys (F8/F9) enabled by default in debug builds only
       #[cfg(debug_assertions)]
@@ -1178,8 +1170,8 @@ mod tests {
     assert!(!config.show_stats);
     assert!(!config.show_velocities);
     assert!(!config.show_origins);
-    // enable_profiling defaults to true for dev builds
-    assert!(config.enable_profiling);
+    // enable_profiler defaults to false (opt-in)
+    assert!(!config.enable_profiler);
   }
 
   #[test]

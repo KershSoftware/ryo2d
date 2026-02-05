@@ -12,32 +12,38 @@ save_data = "data"
 # Assets directory
 assets = "assets"
 
-# ==============================================================================
+# =============================================================================
 # USER-FACING DEFAULTS
-# ==============================================================================
+# These sections are written to system.json when first created.
+# Players can override these in system.json; their changes persist.
+# =============================================================================
+
+[info]
+title = "Flappy - Ryo2D"
 
 [system]
-# Flappy uses a portrait orientation (mobile-style)
-resolution_width = 400
-resolution_height = 600
 vsync = true
 fullscreen = false
+borderless = false
 master_volume = 0.8
 music_volume = 1.0
 sfx_volume = 1.0
-
-[info]
-# Display FPS counter in corner
-title = "Flappy - Ryo2D"
 show_fps = true
 
+# =============================================================================
+# DEVELOPER-ONLY SETTINGS
+# These are NOT written to system.json - they're for development.
+# =============================================================================
+
 [debug]
-# Show collision boundaries for debugging
 show_colliders = false
-# Show velocity vectors (useful for physics debugging)
 show_velocities = false
-# Show entity origin points
 show_origins = false
+enable_profiler = false
+
+# =============================================================================
+# [env] - Game-specific environment variables
+# =============================================================================
 
 [env]
 # Game-specific configuration (not engine features)

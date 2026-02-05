@@ -281,6 +281,8 @@ show_colliders = false
 show_velocities = false
 # Show entity origin points
 show_origins = false
+# For profiling options (flamegraphs, timing), see: ryo2d dev --profiler
+# or check the profiling docs: https://ryo2d.dev/concepts/profiling.html
 
 # ==============================================================================
 # RELEASE/DISTRIBUTION SETTINGS

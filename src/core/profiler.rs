@@ -12,7 +12,7 @@
 //! ryo2d dev --profiler
 //! ```
 //!
-//! Or set `puffin_profiler = true` in your Ryo.toml `[debug]` section.
+//! Or set `enable_profiler = true` in your Ryo.toml `[debug]` section.
 //!
 //! In code, use the macros to instrument functions and scopes:
 //!
@@ -110,7 +110,7 @@ macro_rules! profile_scope {
 ///
 /// # Arguments
 ///
-/// * `enabled` - Whether to enable profiling (from Ryo.toml `puffin_profiler` option)
+/// * `enabled` - Whether to enable profiling (from Ryo.toml `enable_profiler` option)
 #[cfg(feature = "profiler")]
 pub fn init(enabled: bool) {
   if !enabled {

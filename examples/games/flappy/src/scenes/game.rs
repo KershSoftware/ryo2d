@@ -58,7 +58,7 @@ impl GameScene {
       Velocity::zero(),
       RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling through pipes
       // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
-      Collider::circle_collider(BIRD_SIZE * 0.35).centered_in(BIRD_SIZE, BIRD_SIZE),
+      Collider::circle_collider(BIRD_SIZE * BIRD_COLLIDER_RATIO).centered_in(BIRD_SIZE, BIRD_SIZE),
       Renderable::sprite(initial_sprite)
         .with_z_order(10)
         .interpolated(),
@@ -192,7 +192,8 @@ impl GameScene {
 
     // Spawn ground border - line at top of ground
     // Use full screen width, z-order 16 puts it on top of ground (15)
-    let border_sprite = Sprite::solid_rect(SCREEN_WIDTH, 2, 80, 50, 30, 80);
+    let (r, g, b, a) = GROUND_BORDER_COLOR;
+    let border_sprite = Sprite::solid_rect(SCREEN_WIDTH, 2, r, g, b, a);
     let border_handle = SpriteHandle::from_sprite(border_sprite, "ground_border");
 
     let border = ctx.world.spawn((
@@ -302,7 +303,7 @@ impl GameScene {
     if let Some(mut transform) = ctx.world.get_mut::<Transform>(bird_entity) {
       // Calculate collision circle bounds (matches the actual Collider component)
       let collider_offset_y = BIRD_SIZE / 2.0; // Circle center offset from transform origin
-      let collider_radius = BIRD_SIZE * 0.35; // Same as Collider::circle_collider(BIRD_SIZE * 0.35)
+      let collider_radius = BIRD_SIZE * BIRD_COLLIDER_RATIO;
       let circle_center_y = transform.y + collider_offset_y;
       let circle_top = circle_center_y - collider_radius;
       let circle_bottom = circle_center_y + collider_radius;

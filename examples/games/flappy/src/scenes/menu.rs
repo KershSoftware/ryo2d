@@ -138,9 +138,9 @@ impl Scene for MenuScene {
         }
     }
 
-    // Animate bird
+    // Animate bird preview
     self.anim_timer += dt;
-    if self.anim_timer >= 0.15 {
+    if self.anim_timer >= BIRD_FLAP_FRAME_TIME {
       self.anim_timer = 0.0;
       self.anim_frame = !self.anim_frame;
     }

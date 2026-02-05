@@ -136,10 +136,8 @@ pub struct DebugConfig {
   pub show_fps: bool,
   /// Whether to disable F1-F4 debug key toggles
   pub disable_debug_keys: bool,
-  /// Whether to enable detailed profiling measurements (per-phase timing, slow frame warnings)
-  pub enable_profiling: bool,
-  /// Whether to start the puffin profiler HTTP server (requires --features profiler)
-  pub puffin_profiler: bool,
+  /// Whether to open the flamegraph profiler window (requires --features profiler)
+  pub enable_profiler: bool,
   /// Whether to open the logger dev window at startup (shows engine/game logs in real-time)
   pub logger_window: bool,
   /// Whether to enable dev window hotkeys (F8=profiler, F9=logger).
@@ -157,8 +155,7 @@ impl Default for DebugConfig {
       show_stats: false,
       show_fps: false,
       disable_debug_keys: false,
-      enable_profiling: true, // Enabled by default in dev builds
-      puffin_profiler: false, // Disabled by default (requires explicit opt-in)
+      enable_profiler: false, // Disabled by default (requires explicit opt-in)
       logger_window: false,   // Disabled by default (requires explicit opt-in)
       // Dev window keys (F8/F9) enabled by default in debug builds only
       #[cfg(debug_assertions)]
@@ -265,8 +262,7 @@ struct DebugSection {
   show_origins: Option<bool>,
   show_frame_timing: Option<bool>,
   disable_debug_keys: Option<bool>,
-  enable_profiling: Option<bool>,
-  puffin_profiler: Option<bool>,
+  enable_profiler: Option<bool>,
   logger_window: Option<bool>,
   dev_window_keys: Option<bool>,
 }
@@ -472,9 +468,8 @@ impl Workspace {
       show_stats: false,                                  // Always off by default
       show_fps: system_section.show_fps.unwrap_or(false), // From [system] section
       disable_debug_keys: debug_section.disable_debug_keys.unwrap_or(false),
-      enable_profiling: debug_section.enable_profiling.unwrap_or(true), // Default true in dev
-      puffin_profiler: debug_section.puffin_profiler.unwrap_or(false),  // Default false (opt-in)
-      logger_window: debug_section.logger_window.unwrap_or(false),      // Default false (opt-in)
+      enable_profiler: debug_section.enable_profiler.unwrap_or(false),
+      logger_window: debug_section.logger_window.unwrap_or(false), // Default false (opt-in)
       dev_window_keys: debug_section
         .dev_window_keys
         .unwrap_or(dev_window_keys_default),
@@ -818,8 +813,8 @@ mod tests {
     assert!(!config.show_origins);
     assert!(!config.show_frame_timing);
     assert!(!config.disable_debug_keys);
-    // enable_profiling defaults to true for dev builds
-    assert!(config.enable_profiling);
+    // enable_profiler defaults to false (opt-in)
+    assert!(!config.enable_profiler);
   }
 
   #[test]
@@ -882,36 +877,18 @@ mod tests {
   }
 
   #[test]
-  fn debug_section_parses_enable_profiling_true() {
+  fn debug_section_parses_enable_profiler() {
     let toml_str = r#"
-      enable_profiling = true
+      enable_profiler = true
     "#;
     let section: DebugSection = toml::from_str(toml_str).unwrap();
-    assert_eq!(section.enable_profiling, Some(true));
+    assert_eq!(section.enable_profiler, Some(true));
   }
 
   #[test]
-  fn debug_section_parses_enable_profiling_false() {
-    let toml_str = r#"
-      enable_profiling = false
-    "#;
-    let section: DebugSection = toml::from_str(toml_str).unwrap();
-    assert_eq!(section.enable_profiling, Some(false));
-  }
-
-  #[test]
-  fn debug_section_defaults_enable_profiling_to_none() {
-    let toml_str = r#"
-      show_colliders = true
-    "#;
-    let section: DebugSection = toml::from_str(toml_str).unwrap();
-    assert_eq!(section.enable_profiling, None);
-  }
-
-  #[test]
-  fn workspace_config_enable_profiling_default_true() {
+  fn workspace_config_enable_profiler_default_false() {
     let config = WorkspaceConfig::default();
-    // enable_profiling should default to true in dev builds
-    assert!(config.debug.enable_profiling);
+    // enable_profiler should default to false (opt-in)
+    assert!(!config.debug.enable_profiler);
   }
 }

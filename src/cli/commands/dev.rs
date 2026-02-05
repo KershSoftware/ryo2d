@@ -18,10 +18,16 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // Check for --skip-opt-check flag (used by engine run scripts for examples)
   let skip_opt_check = args.iter().any(|a| a == "--skip-opt-check");
 
-  // Check for --profiler / -p flag (enables puffin profiling)
-  let enable_profiler = args.iter().any(|a| a == "--profiler" || a == "-p");
+  // Check for --profiler / -p flag (enables puffin profiling with auto-open)
+  let profiler_flag = args.iter().any(|a| a == "--profiler" || a == "-p");
 
   let workspace = discover_workspace()?;
+
+  // Check if Ryo.toml has enable_profiler = true (profiler available but not auto-open)
+  let config_wants_profiler = workspace.config().debug.enable_profiler;
+
+  // Enable profiler feature if either -p flag or Ryo.toml config
+  let enable_profiler_feature = profiler_flag || config_wants_profiler;
   let project_name = workspace.name();
 
   // Check for dev profile optimization (unless skipped)
@@ -29,13 +35,18 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     check_dev_profile_optimization(&workspace)?;
   }
 
-  if enable_profiler {
+  if profiler_flag {
     Output::status(
       "Starting",
       &format!("{} in dev mode with profiler...", project_name),
     );
     println!("           A separate profiler window will open with real-time flamegraphs.");
     println!();
+  } else if config_wants_profiler {
+    Output::status(
+      "Starting",
+      &format!("{} in dev mode (profiler available via F10)...", project_name),
+    );
   } else {
     Output::status("Starting", &format!("{} in dev mode...", project_name));
   }
@@ -47,11 +58,14 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   let mut cmd = Command::new("cargo");
   cmd.arg("run");
 
-  // Add profiler feature flag if requested
-  if enable_profiler {
+  // Add profiler feature flag if requested (via -p flag or Ryo.toml config)
+  if enable_profiler_feature {
     cmd.arg("--features").arg("profiler");
-    // Also set env var to enable puffin at runtime (overrides Ryo.toml)
-    cmd.env("RYO_PUFFIN_PROFILER", "1");
+  }
+
+  // Set auto-open env var only when -p flag is explicitly used
+  if profiler_flag {
+    cmd.env("RYO_PROFILER_AUTO_OPEN", "1");
   }
 
   // Use shared target directory for dependency caching
@@ -69,7 +83,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     let code = status.code().unwrap_or(-1);
     if code != 0 {
       // Check if the failure was due to missing profiler feature
-      if enable_profiler {
+      if enable_profiler_feature {
         print_profiler_feature_help(&workspace);
       }
       return Err(CliError::BuildFailed(format!(
@@ -235,19 +249,16 @@ DESCRIPTION:
     This is the recommended command during development.
 
 PROFILING:
-    Use --profiler to enable the puffin hierarchical profiler:
+    Use --profiler to enable and auto-open the profiler window:
 
         ryo2d dev --profiler
 
-    This automatically launches puffin_viewer if installed. If not installed:
-
-        cargo install puffin_viewer
-
-    Alternatively, set `puffin_profiler = true` in your Ryo.toml [debug] section.
+    Alternatively, set `enable_profiler = true` in your Ryo.toml [debug] section.
+    This enables the profiler feature but doesn't auto-open - press F10 to open.
 
 EXAMPLE:
     ryo2d dev              # Normal development mode
-    ryo2d dev --profiler   # With puffin profiler enabled
+    ryo2d dev --profiler   # With profiler window auto-opened
 "#
   );
 }

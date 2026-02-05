@@ -18,24 +18,16 @@ assets = "assets"
 # Players can override these in system.json; their changes persist.
 # =============================================================================
 
-# [system] - Display and audio settings
+[info]
+title = "Breakout - Ryo2D"
+
 [system]
-# Breakout's design resolution (matches game constants)
-resolution_width = 1280
-resolution_height = 720
-# VSync enabled by default
 vsync = true
-# Start windowed
 fullscreen = false
-# Audio defaults (engine: master=0.8, music=1.0, sfx=1.0)
+borderless = false
 master_volume = 0.8
 music_volume = 0.6
 sfx_volume = 1.0
-
-# [info] - Information overlays (also maps to system.json)
-[info]
-title = "Breakout - Ryo2D"
-# Display FPS counter in corner (user can toggle)
 show_fps = true
 
 # =============================================================================
@@ -44,21 +36,15 @@ show_fps = true
 # =============================================================================
 
 [debug]
-# Show collision boundaries for debugging
 show_colliders = false
-# Show velocity vectors (useful for physics debugging)
 show_velocities = false
-# Show entity origin points
 show_origins = false
-# Enable detailed profiling (per-phase timing, slow frame warnings)
-# Default: true - set to false to disable timing measurements
-# enable_profiling = true
-# Enable puffin hierarchical profiler (or use `ryo2d dev --profiler`)
-# puffin_profiler = false
+enable_profiler = false
 
 # =============================================================================
 # [env] - Game-specific environment variables
 # =============================================================================
+
 [env]
 # Set to true to enable debug mode with level switching (Q/E keys)
 debug_scene = false

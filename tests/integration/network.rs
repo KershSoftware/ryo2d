@@ -88,8 +88,7 @@ fn client_receives_connected_event() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 54321))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 54321)).unwrap();
 
   let mut got_connected_event = false;
 
@@ -120,8 +119,7 @@ fn server_receives_client_connected_event() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 11111))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 11111)).unwrap();
 
   let mut got_client_connected = false;
   let mut connected_client_id = None;
@@ -158,8 +156,7 @@ fn client_sends_message_to_server() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 22222))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 22222)).unwrap();
 
   // Wait for connection first
   let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
@@ -209,8 +206,7 @@ fn server_sends_message_to_client() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 33333))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 33333)).unwrap();
 
   // Wait for connection
   let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
@@ -260,11 +256,9 @@ fn server_broadcasts_to_multiple_clients() {
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
   // Connect two clients
-  let mut client1 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 44444))
-  .unwrap();
+  let mut client1 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 44444)).unwrap();
 
-  let mut client2 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 44444))
-  .unwrap();
+  let mut client2 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 44444)).unwrap();
 
   // Wait for both to connect
   let dt = Duration::from_millis(16);
@@ -347,8 +341,7 @@ fn unreliable_channel_works() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 55555))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 55555)).unwrap();
 
   // Wait for connection
   let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
@@ -402,7 +395,7 @@ fn protocol_id_mismatch_prevents_connection() {
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
   let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 11111)) // Client uses different ID
-  .unwrap();
+    .unwrap();
 
   // Try to connect - should fail due to protocol mismatch
   let dt = Duration::from_millis(16);
@@ -440,8 +433,7 @@ fn client_disconnect_generates_event() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 66666))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 66666)).unwrap();
 
   // Wait for connection
   let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
@@ -563,8 +555,7 @@ fn listen_server_remote_client_connects() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77779))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77779)).unwrap();
 
   // Wait for connection
   let connected =
@@ -591,8 +582,7 @@ fn listen_server_generates_client_connected_event() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77780))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77780)).unwrap();
 
   let mut got_client_connected = false;
 
@@ -627,8 +617,7 @@ fn listen_server_all_clients_includes_host_and_remotes() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77781))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77781)).unwrap();
 
   // Wait for connection
   let connected =
@@ -663,8 +652,7 @@ fn listen_server_sends_to_remote_client() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77782))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77782)).unwrap();
 
   // Wait for connection
   let connected =
@@ -717,8 +705,7 @@ fn listen_server_receives_from_remote_client() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77783))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77783)).unwrap();
 
   // Wait for connection
   let connected =
@@ -773,11 +760,9 @@ fn listen_server_broadcast_to_remotes() {
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
   // Connect two remote clients
-  let mut client1 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77784))
-  .unwrap();
+  let mut client1 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77784)).unwrap();
 
-  let mut client2 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77784))
-  .unwrap();
+  let mut client2 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77784)).unwrap();
 
   // Wait for both to connect
   let dt = Duration::from_millis(16);
@@ -1502,8 +1487,7 @@ fn replication_server_broadcasts_spawn_to_client() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88880))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88880)).unwrap();
 
   // Wait for connection
   let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
@@ -1575,8 +1559,7 @@ fn replication_client_receives_component_updates() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88881))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88881)).unwrap();
 
   // Wait for connection
   let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
@@ -1660,8 +1643,7 @@ fn rpc_client_sends_to_server() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88882))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88882)).unwrap();
 
   // Wait for connection
   let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
@@ -1725,11 +1707,9 @@ fn rpc_server_broadcasts_to_clients() {
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
-  let mut client1 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88883))
-  .unwrap();
+  let mut client1 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88883)).unwrap();
 
-  let mut client2 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88883))
-  .unwrap();
+  let mut client2 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88883)).unwrap();
 
   // Wait for both to connect
   let dt = Duration::from_millis(16);
@@ -1818,8 +1798,7 @@ fn rpc_registry_processes_network_rpcs() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88884))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88884)).unwrap();
 
   // Wait for connection
   let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
@@ -1882,8 +1861,7 @@ fn listen_server_replication_excludes_host_from_network() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88885))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88885)).unwrap();
 
   // Wait for connection
   let connected =
@@ -1939,8 +1917,7 @@ fn serverlike_trait_works_with_network_server() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88886))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88886)).unwrap();
 
   // Wait for connection
   let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
@@ -1973,8 +1950,7 @@ fn serverlike_trait_works_with_listen_server() {
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88887))
-  .unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88887)).unwrap();
 
   // Wait for connection
   let connected =
@@ -2173,8 +2149,11 @@ mod webrtc_transport_tests {
 
   #[test]
   fn webrtc_config_with_turn_works() {
-    let config = WebRtcConfig::new("ws://localhost:3536", "test-room")
-      .with_turn("turn:relay.example.com:3478", "user", "pass");
+    let config = WebRtcConfig::new("ws://localhost:3536", "test-room").with_turn(
+      "turn:relay.example.com:3478",
+      "user",
+      "pass",
+    );
 
     let turn_servers: Vec<_> = config
       .ice_servers

@@ -4,12 +4,12 @@
 # Usage:
 #   .\run              - Interactive example selection
 #   .\run <example>    - Run specific example (e.g., .\run breakout)
-#   .\run <example> --dev      - Run in dev mode with hot-reload
-#   .\run <example> -p         - Run in dev mode with profiler
-#   .\run <example> --release  - Build and run release (no prompts)
-#   .\run --dev <example>      - Same as above
-#   .\run -p <example>         - Dev mode with profiler (defaults to dev)
-#   .\run --release <example>  - Same as above
+#   .\run <example> -d|--dev       - Run in dev mode with hot-reload
+#   .\run <example> -p|--profiler  - Run in dev mode with profiler
+#   .\run <example> -r|--release   - Build and run release (no prompts)
+#   .\run -d|--dev <example>       - Same as above (flag before example)
+#   .\run -p|--profiler <example>  - Same as above (flag before example)
+#   .\run -r|--release <example>   - Same as above (flag before example)
 #   .\run run-demos    - Launch all demos in dev mode (parallel terminals)
 #   .\run kill-demos   - Kill all running demos
 #   .\run check        - Fast compilation check (engine only)
@@ -52,7 +52,7 @@ $ReleaseMode = $release
 $ProfilerMode = $p
 $ExampleName = $Command
 
-# Check if first arg is --dev, --release, or -p
+# Check if first arg is --dev, --release, or -p/--profiler
 if ($Command -eq "--dev" -or $Command -eq "-d") {
     $DevMode = $true
     $ExampleName = $Arg2
@@ -61,19 +61,19 @@ elseif ($Command -eq "--release" -or $Command -eq "-r") {
     $ReleaseMode = $true
     $ExampleName = $Arg2
 }
-elseif ($Command -eq "-p") {
+elseif ($Command -eq "-p" -or $Command -eq "--profiler") {
     $ProfilerMode = $true
     $DevMode = $true  # Profiler implies dev mode
     $ExampleName = $Arg2
 }
-# Check if second arg is --dev, --release, or -p
+# Check if second arg is --dev, --release, or -p/--profiler
 elseif ($Arg2 -eq "--dev" -or $Arg2 -eq "-d") {
     $DevMode = $true
 }
 elseif ($Arg2 -eq "--release" -or $Arg2 -eq "-r") {
     $ReleaseMode = $true
 }
-elseif ($Arg2 -eq "-p") {
+elseif ($Arg2 -eq "-p" -or $Arg2 -eq "--profiler") {
     $ProfilerMode = $true
     $DevMode = $true  # Profiler implies dev mode
 }
@@ -682,14 +682,14 @@ switch ($ExampleName.ToLower()) {
         Write-Host "Ryo2D Development Script" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "Usage:"
-        Write-Host "  ./run                        - Interactive example selection"
-        Write-Host "  ./run <example>              - Run specific example (shows mode menu)"
-        Write-Host "  ./run <example> --dev        - Run in dev mode with hot-reload"
-        Write-Host "  ./run <example> -p           - Run in dev mode with profiler"
-        Write-Host "  ./run <example> --release    - Build and run release (no prompts)"
-        Write-Host "  ./run --dev <example>        - Same as --dev"
-        Write-Host "  ./run -p <example>           - Same as -p (dev with profiler)"
-        Write-Host "  ./run --release <example>    - Same as --release"
+        Write-Host "  ./run                              - Interactive example selection"
+        Write-Host "  ./run <example>                    - Run specific example (shows mode menu)"
+        Write-Host "  ./run <example> -d|--dev           - Run in dev mode with hot-reload"
+        Write-Host "  ./run <example> -p|--profiler      - Run in dev mode with profiler"
+        Write-Host "  ./run <example> -r|--release       - Build and run release (no prompts)"
+        Write-Host "  ./run -d|--dev <example>           - Same as above (flag before example)"
+        Write-Host "  ./run -p|--profiler <example>      - Same as above (flag before example)"
+        Write-Host "  ./run -r|--release <example>       - Same as above (flag before example)"
         Write-Host "  ./run run-demos          - Launch all demos in dev mode (parallel terminals)"
         Write-Host "  ./run kill-demos         - Kill all running demos"
         Write-Host "  ./run check              - Fast compilation check (engine only)"

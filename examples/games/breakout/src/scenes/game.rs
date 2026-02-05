@@ -353,8 +353,8 @@ impl GameScene {
 
     // Calculate spawn chance based on survival time
     // Starts at 0, reaches ~15% chance per block hit at 30s survival
-    let survival_factor = (self.survival_time / 30.0).min(1.0);
-    let spawn_chance = 0.15 * survival_factor;
+    let survival_factor = (self.survival_time / MULTIBALL_SURVIVAL_MAX).min(1.0);
+    let spawn_chance = MULTIBALL_BASE_CHANCE * survival_factor;
 
     // Random check (use score as pseudo-random seed for determinism)
     let pseudo_random = ((self.score as f32 * 7.13 + self.survival_time * 3.17).sin() + 1.0) / 2.0;
@@ -414,7 +414,7 @@ impl GameScene {
       self.multiball_blocks.push(block);
 
       // Set cooldown (5 seconds before another multiball can spawn)
-      self.multiball_cooldown = 5.0;
+      self.multiball_cooldown = MULTIBALL_COOLDOWN;
     }
   }
 
@@ -423,7 +423,7 @@ impl GameScene {
     self.glow_time += dt;
 
     // Faster, more dramatic color pulse: oscillate between gold and bright white
-    let pulse = (self.glow_time * 8.0).sin(); // 8.0 = faster pulse speed
+    let pulse = (self.glow_time * MULTIBALL_GLOW_SPEED).sin();
     let brightness = 0.5 + pulse * 0.5; // 0.0 to 1.0
 
     // Interpolate between deep gold (0xff, 0xaa, 0x00) and bright white (0xff, 0xff, 0xff)
@@ -452,7 +452,7 @@ impl GameScene {
     }
 
     // Pulse health blocks with smooth fade in/out
-    let fade_cycle = (self.glow_time * 2.0).sin(); // Slow fade cycle
+    let fade_cycle = (self.glow_time * HEART_FADE_SPEED).sin();
     let plus_alpha = 0.5 + fade_cycle * 0.5; // 0.0 to 1.0
 
     for (i, &block) in self.heart_blocks.iter().enumerate() {
@@ -673,7 +673,7 @@ impl GameScene {
 
           // Calculate launch velocity with paddle influence
           // Max horizontal component is ~70% of ball speed to ensure upward motion
-          let max_horizontal = BALL_SPEED * 0.7;
+          let max_horizontal = BALL_SPEED * BALL_MAX_HORIZONTAL_RATIO;
           let horizontal = paddle_influence * max_horizontal;
 
           // Calculate vertical component to maintain constant total speed
@@ -792,7 +792,7 @@ impl GameScene {
         if is_heart {
           self.lives += 1;
           // Trigger "+1" fly-by animation
-          self.plus_one_timer = 1.5; // 1.5 seconds animation
+          self.plus_one_timer = PLUS_ONE_DURATION;
         }
 
         // Destroy block
@@ -1112,12 +1112,12 @@ impl Scene for GameScene {
     let move_left = ctx.input.key_down(KeyCode::KeyA)
       || ctx.input.key_down(KeyCode::ArrowLeft)
       || dpad_left
-      || stick_x < -0.2; // Stick deadzone
+      || stick_x < -GAMEPAD_STICK_DEADZONE;
 
     let move_right = ctx.input.key_down(KeyCode::KeyD)
       || ctx.input.key_down(KeyCode::ArrowRight)
       || dpad_right
-      || stick_x > 0.2; // Stick deadzone
+      || stick_x > GAMEPAD_STICK_DEADZONE;
 
     // Apply acceleration or deceleration
     if move_left && !move_right {
@@ -1171,8 +1171,12 @@ impl Scene for GameScene {
         }
 
         // Ensure ball doesn't get stuck going horizontally
-        if vel.dy.abs() < 50.0 {
-          vel.dy = if vel.dy >= 0.0 { 50.0 } else { -50.0 };
+        if vel.dy.abs() < BALL_MIN_VERTICAL_SPEED {
+          vel.dy = if vel.dy >= 0.0 {
+            BALL_MIN_VERTICAL_SPEED
+          } else {
+            -BALL_MIN_VERTICAL_SPEED
+          };
           let speed = (vel.dx * vel.dx + vel.dy * vel.dy).sqrt();
           vel.dx = vel.dx / speed * BALL_SPEED;
           vel.dy = vel.dy / speed * BALL_SPEED;
@@ -1225,7 +1229,7 @@ impl Scene for GameScene {
           if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
             // Reflect and add spin
             vel.dy = -vel.dy.abs(); // Always go up
-            vel.dx += offset * 200.0; // Add horizontal spin
+            vel.dx += offset * PADDLE_SPIN_EFFECT;
 
             // Normalize speed
             let speed = (vel.dx * vel.dx + vel.dy * vel.dy).sqrt();
@@ -1279,7 +1283,7 @@ impl Scene for GameScene {
     // "+1" fly-by animation when gaining a life
     if self.plus_one_timer > 0.0 {
       // Animation: starts at Lives position, moves right and fades out
-      let progress = 1.0 - (self.plus_one_timer / 1.5); // 0.0 to 1.0
+      let progress = 1.0 - (self.plus_one_timer / PLUS_ONE_DURATION);
       let x_offset = 80.0 + progress * 60.0; // Starts at 80, moves right to 140
       let y_offset = 10.0 - progress * 15.0; // Starts at 10, floats up to -5
 

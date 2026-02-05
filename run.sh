@@ -3,14 +3,14 @@
 # For Windows, use run.ps1 instead
 #
 # Usage:
-#     ./run.sh                         - Interactive example selection
-#     ./run.sh <example>               - Run specific example (shows mode menu)
-#     ./run.sh <example> --dev         - Run in dev mode with hot-reload
-#     ./run.sh <example> -p            - Run in dev mode with profiler window
-#     ./run.sh <example> --release     - Build and run release (no prompts)
-#     ./run.sh --dev <example>         - Same as --dev
-#     ./run.sh -p <example>            - Same as -p (dev + profiler)
-#     ./run.sh --release <example>     - Same as --release
+#     ./run.sh                              - Interactive example selection
+#     ./run.sh <example>                    - Run specific example (shows mode menu)
+#     ./run.sh <example> -d|--dev           - Run in dev mode with hot-reload
+#     ./run.sh <example> -p|--profiler      - Run in dev mode with profiler window
+#     ./run.sh <example> -r|--release       - Build and run release (no prompts)
+#     ./run.sh -d|--dev <example>           - Same as above (flag before example)
+#     ./run.sh -p|--profiler <example>      - Same as above (flag before example)
+#     ./run.sh -r|--release <example>       - Same as above (flag before example)
 #     ./run.sh run-demos           - Launch all demos in dev mode (parallel terminals)
 #     ./run.sh kill-demos          - Kill all running demos
 #     ./run.sh check               - Fast compilation check (engine only)
@@ -46,7 +46,7 @@ for arg in "$@"; do
         DEV_MODE=true
     elif [[ "$arg" == "--release" || "$arg" == "-r" ]]; then
         RELEASE_MODE=true
-    elif [[ "$arg" == "-p" ]]; then
+    elif [[ "$arg" == "-p" || "$arg" == "--profiler" ]]; then
         PROFILER_MODE=true
         DEV_MODE=true  # Profiler implies dev mode
     elif [[ -z "$COMMAND" ]]; then
@@ -738,14 +738,14 @@ case "$COMMAND" in
         echo -e "${CYAN}Ryo2D Development Script${NC}"
         echo ""
         echo "Usage:"
-        echo "    ./run.sh                         - Interactive example selection"
-        echo "    ./run.sh <example>               - Run specific example (shows mode menu)"
-        echo "    ./run.sh <example> --dev         - Run in dev mode with hot-reload"
-        echo "    ./run.sh <example> -p            - Run in dev mode with profiler window"
-        echo "    ./run.sh <example> --release     - Build and run release (no prompts)"
-        echo "    ./run.sh --dev <example>         - Same as --dev"
-        echo "    ./run.sh -p <example>            - Same as -p (dev + profiler)"
-        echo "    ./run.sh --release <example>     - Same as --release"
+        echo "    ./run.sh                              - Interactive example selection"
+        echo "    ./run.sh <example>                    - Run specific example (shows mode menu)"
+        echo "    ./run.sh <example> -d|--dev           - Run in dev mode with hot-reload"
+        echo "    ./run.sh <example> -p|--profiler      - Run in dev mode with profiler window"
+        echo "    ./run.sh <example> -r|--release       - Build and run release (no prompts)"
+        echo "    ./run.sh -d|--dev <example>           - Same as above (flag before example)"
+        echo "    ./run.sh -p|--profiler <example>      - Same as above (flag before example)"
+        echo "    ./run.sh -r|--release <example>       - Same as above (flag before example)"
         echo "    ./run.sh run-demos           - Launch all demos in dev mode (parallel terminals)"
         echo "    ./run.sh kill-demos          - Kill all running demos"
         echo "    ./run.sh check               - Fast compilation check (engine only)"

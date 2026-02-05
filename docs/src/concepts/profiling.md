@@ -91,44 +91,16 @@ For a simpler view, enable just the FPS counter:
 show_fps = true
 ```
 
-## Profiling Configuration
+## Frame Timing
 
-By default, Ryo2D captures detailed timing measurements in development builds. You can control this with the `enable_profiling` option:
+Ryo2D always captures detailed frame timing measurements with negligible overhead (~200-400 nanoseconds per frame). Use **F1** to cycle through overlay modes, or configure in `Ryo.toml`.
 
-```toml
-[debug]
-enable_profiling = true   # Default: true in dev builds
-```
+### Debug Build Warnings
 
-### What Gets Gated Behind `enable_profiling`
+In debug builds, Ryo2D automatically prints warnings to help identify performance issues:
 
-When **enabled** (default):
-- Per-phase frame timing (update/render/present breakdown)
-- Scene `on_enter()` timing warnings (>5ms prints to console)
-- Slow frame warnings to console (>33ms frames)
-
-When **disabled**:
-- Timing fields stay at zero (overlay shows zeros for phases)
-- No console warnings for slow frames or scene loads
-- Basic FPS counting still works (lightweight)
-
-### Performance Impact
-
-The profiling overhead is negligible (~200-400 nanoseconds per frame):
-
-| Operation | Cost | Frequency |
-|-----------|------|-----------|
-| `Instant::now()` | ~20-50ns | 4-6 per frame |
-| `elapsed()` | ~20-50ns | 4-6 per frame |
-| Duration assignment | ~1ns | 4-6 per frame |
-
-At 60 FPS, this adds ~24 microseconds/second (**0.002% of frame time**). Safe to leave enabled during development.
-
-### When to Disable Profiling
-
-- **Release builds**: Disable to prevent any console output
-- **Benchmarking**: Disable for cleaner measurements
-- **Console-sensitive environments**: Disable to reduce log noise
+- **Slow frame warnings** - Logged when a frame takes >33ms (below 30 FPS)
+- **Scene load warnings** - Logged when `on_enter()` takes >5ms
 
 ## In-Game Profiler Window (F10)
 
@@ -136,7 +108,7 @@ Ryo2D includes a built-in profiler window that displays a real-time flamegraph d
 
 ### Enabling the Profiler
 
-**Recommended: Use the ryo2d CLI**
+**Option 1: CLI with auto-open (quick profiling)**
 
 ```bash
 ryo2d dev --profiler
@@ -144,20 +116,20 @@ ryo2d dev --profiler
 ryo2d dev -p
 ```
 
-This compiles with the `profiler` feature enabled.
+This compiles with the `profiler` feature and **auto-opens** the profiler window on launch.
 
-**Alternative: Ryo.toml configuration**
+**Option 2: Ryo.toml configuration (regular development)**
 
 ```toml
 [debug]
-puffin_profiler = true
+enable_profiler = true
 ```
 
-Then run with `cargo run --features profiler`.
+This compiles with the `profiler` feature but doesn't auto-open. Press **F10** to open the profiler window when needed. This is ideal when you only occasionally need the profiler.
 
 ### Using the Profiler Window
 
-Once running with the profiler feature, press **F10** to open the profiler window. The window shows:
+Once running with the profiler feature, press **F10** to open the profiler window (or it opens automatically with `-p` flag). The window shows:
 
 - **Real-time flamegraph** - Hierarchical view of where time is spent each frame
 - **Scope names** - Function/scope labels on each bar

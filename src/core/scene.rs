@@ -88,8 +88,6 @@ pub struct SceneContext<'a> {
   pub time_control: &'a mut TimeControl,
   /// Timing information (fixed dt, scaled dt, real dt, render alpha, etc.)
   pub time: TimeInfo,
-  /// Whether detailed profiling is enabled (for timing warnings)
-  pub profiling_enabled: bool,
   /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
   pub scale_factor: f64,
   /// Console command registry for registering custom commands
@@ -1008,16 +1006,12 @@ impl SceneManager {
     self.scenes.push(scene);
     if let Some(new_top) = self.scenes.last_mut() {
       #[cfg(debug_assertions)]
-      let start = if ctx.profiling_enabled {
-        Some(std::time::Instant::now())
-      } else {
-        None
-      };
+      let start = std::time::Instant::now();
 
       new_top.on_enter(ctx);
 
       #[cfg(debug_assertions)]
-      if let Some(start) = start {
+      {
         let elapsed = start.elapsed();
         if elapsed.as_millis() > 5 {
           eprintln!("[Scene] on_enter took {:?}", elapsed);
@@ -1067,16 +1061,12 @@ impl SceneManager {
     self.scenes.push(scene);
     if let Some(new_top) = self.scenes.last_mut() {
       #[cfg(debug_assertions)]
-      let start = if ctx.profiling_enabled {
-        Some(std::time::Instant::now())
-      } else {
-        None
-      };
+      let start = std::time::Instant::now();
 
       new_top.on_enter(ctx);
 
       #[cfg(debug_assertions)]
-      if let Some(start) = start {
+      {
         let elapsed = start.elapsed();
         if elapsed.as_millis() > 5 {
           eprintln!("[Scene] switch on_enter took {:?}", elapsed);
@@ -1540,7 +1530,6 @@ impl Game for SceneGame {
       cursor_request: ctx.cursor_request,
       time_control: ctx.time_control,
       time: ctx.time,
-      profiling_enabled: ctx.profiling_enabled,
       scale_factor: ctx.scale_factor,
       command_registry: ctx.command_registry,
       scope_id: self.current_scope_id,
@@ -1549,16 +1538,12 @@ impl Game for SceneGame {
     // Call on_enter for the initial scene
     if let Some(scene) = self.manager.top_mut() {
       #[cfg(debug_assertions)]
-      let start = if scene_ctx.profiling_enabled {
-        Some(std::time::Instant::now())
-      } else {
-        None
-      };
+      let start = std::time::Instant::now();
 
       scene.on_enter(&mut scene_ctx);
 
       #[cfg(debug_assertions)]
-      if let Some(start) = start {
+      {
         let elapsed = start.elapsed();
         if elapsed.as_millis() > 5 {
           eprintln!("[Scene] initial on_enter took {:?}", elapsed);
@@ -1583,7 +1568,6 @@ impl Game for SceneGame {
       cursor_request: ctx.cursor_request,
       time_control: ctx.time_control,
       time: ctx.time,
-      profiling_enabled: ctx.profiling_enabled,
       scale_factor: ctx.scale_factor,
       command_registry: ctx.command_registry,
       scope_id: self.current_scope_id,

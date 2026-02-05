@@ -534,7 +534,6 @@ impl Scene for MenuScene {
       -20.0,
       Color::DARK_GRAY,
     );
-
   }
 
   fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {

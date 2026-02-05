@@ -580,7 +580,7 @@ ryo2d dev --profiler    # Enables profiler feature and opens window
 Via Ryo.toml:
 ```toml
 [debug]
-puffin_profiler = true
+enable_profiler = true
 ```
 
 ### Performance Considerations

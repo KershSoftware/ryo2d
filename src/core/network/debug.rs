@@ -27,8 +27,6 @@
 //! warn_default_input_field(&input.facing_right, "facing_right");
 //! ```
 
-use std::any::type_name;
-
 use hecs::Entity;
 
 use super::replication::{Replicated, ReplicationManager};
@@ -63,6 +61,8 @@ pub fn warn_if_not_dirty<T: Replicated + 'static>(
   entity: Entity,
   replication: &ReplicationManager,
 ) {
+  use std::any::type_name;
+
   let Some(network_id) = replication.get_network_id(entity) else {
     // Entity not networked, nothing to check
     return;

@@ -125,10 +125,7 @@ pub fn install_skills_to_dir(
 
   if !quiet {
     println!();
-    println!(
-      "Installing Ryo2D Agent Skills for {}:",
-      platform.name()
-    );
+    println!("Installing Ryo2D Agent Skills for {}:", platform.name());
     println!();
     for (name, desc) in AVAILABLE_SKILLS {
       println!("  • {} - {}", name, desc);

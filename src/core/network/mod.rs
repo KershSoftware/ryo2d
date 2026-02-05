@@ -1202,9 +1202,11 @@ mod tests {
     assert!(!config.ice_servers.is_empty()); // Has default STUN servers
 
     let config = config.with_turn("turn:relay.example.com:3478", "user", "pass");
-    assert!(config
-      .ice_servers
-      .iter()
-      .any(|s| s.url.starts_with("turn:")));
+    assert!(
+      config
+        .ice_servers
+        .iter()
+        .any(|s| s.url.starts_with("turn:"))
+    );
   }
 }

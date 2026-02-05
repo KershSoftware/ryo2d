@@ -199,8 +199,6 @@ pub struct GameContext<'a> {
   pub time_control: &'a mut TimeControl,
   /// Timing information (fixed dt, scaled dt, real dt, render alpha, etc.)
   pub time: TimeInfo,
-  /// Whether detailed profiling is enabled (for timing warnings)
-  pub profiling_enabled: bool,
   /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
   pub scale_factor: f64,
   /// Console command registry for registering custom commands

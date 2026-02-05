@@ -95,6 +95,55 @@ save_manager.save_game("slot1", &game_data)?;
 | World | `world_*.sav` | Entity snapshots, compressed |
 | Game | `game_*.sav` | Custom game state, compressed |
 
+### SystemField & SystemFieldFilter
+
+Control which fields are loaded from `system.json` when using `with_system_state_overrides()`:
+
+```rust
+// SystemField enum variants
+SystemField::MasterVolume   // Master volume (0.0 - 1.0)
+SystemField::MusicVolume    // Music volume (0.0 - 1.0)
+SystemField::SfxVolume      // SFX volume (0.0 - 1.0)
+SystemField::Resolution     // Display resolution (width + height)
+SystemField::DisplayMode    // Windowed/fullscreen/borderless
+SystemField::Vsync          // VSync preference
+SystemField::ShowFps        // Show FPS counter
+
+// SystemFieldFilter methods
+SystemFieldFilter::all()    // All fields (default, backward compatible)
+SystemFieldFilter::none()   // No fields (pure Ryo.toml defaults)
+SystemFieldFilter::only([]) // Only specified fields
+filter.contains(field)      // Check if field is enabled
+```
+
+**Usage in EngineBuilder:**
+
+```rust
+// Load only audio settings from system.json
+EngineBuilder::new()
+    .with_system_state_overrides([
+        SystemField::MasterVolume,
+        SystemField::MusicVolume,
+        SystemField::SfxVolume,
+    ])
+    .build();
+
+// Load all fields (default behavior)
+EngineBuilder::new()
+    .with_system_state_overrides(SystemFieldFilter::all())
+    .build();
+
+// Load nothing from system.json
+EngineBuilder::new()
+    .with_system_state_overrides(SystemFieldFilter::none())
+    .build();
+```
+
+**Use cases:**
+- Fixed-resolution games: Filter out `Resolution` to keep design resolution from Ryo.toml
+- Audio-only settings: Filter to only volume fields
+- Pure Ryo.toml: Use `none()` to ignore system.json entirely
+
 ### DebugConfig
 
 Debug visualization flags:
