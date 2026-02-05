@@ -841,16 +841,10 @@ pub trait Scene {
 
   /// Called after frame clear but before entity rendering.
   ///
-  /// Use this for parallax backgrounds and other background layers that
-  /// should appear behind all game entities.
-  ///
-  /// # Example
-  ///
-  /// ```rust,ignore
-  /// fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-  ///     self.background.render(frame, width, height, camera);
-  /// }
-  /// ```
+  /// Use `render_gpu()` with `GpuParallaxBackground` instead for backgrounds.
+  #[deprecated(
+    note = "Use render_gpu() with GpuParallaxBackground instead. This CPU pixel buffer hook will be removed in a future release."
+  )]
   fn render_background(&mut self, _frame: &mut [u8], _width: u32, _height: u32, _camera: &Camera) {}
 
   /// Called after sprite rendering to draw UI elements.
@@ -1499,6 +1493,7 @@ impl SceneManager {
   ///
   /// Called after frame clear but before entity rendering.
   /// Only renders background for the top scene.
+  #[allow(deprecated)]
   pub fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
     if let Some(scene) = self.scenes.last_mut() {
       scene.render_background(frame, width, height, camera);
@@ -1798,6 +1793,7 @@ impl Game for SceneGame {
     self.manager.render_ui(ui);
   }
 
+  #[allow(deprecated)]
   fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
     self.manager.render_background(frame, width, height, camera);
   }

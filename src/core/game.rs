@@ -720,13 +720,10 @@ pub trait Game {
   /// This is called after the frame buffer is cleared but before any
   /// entities (sprites, tiles, etc.) are rendered.
   ///
-  /// # Example
-  ///
-  /// ```ignore
-  /// fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-  ///     self.background.render(frame, width, height, camera);
-  /// }
-  /// ```
+  /// Use `render_gpu()` with `GpuParallaxBackground` instead for backgrounds.
+  #[deprecated(
+    note = "Use render_gpu() with GpuParallaxBackground instead. This CPU pixel buffer hook will be removed in a future release."
+  )]
   fn render_background(&mut self, _frame: &mut [u8], _width: u32, _height: u32, _camera: &Camera) {}
 
   /// Called to populate GPU sprite batches for high-performance rendering.

@@ -1,3 +1,5 @@
+#![allow(deprecated)] // Internal usage of deprecated types within this module is expected.
+
 //! Parallax background system for layered scrolling backgrounds.
 //!
 //! This module provides a system-based approach to parallax backgrounds,
@@ -52,6 +54,7 @@ pub enum TileMode {
 ///
 /// Each layer has a sprite, scroll speed, z-order, and optional y-offset.
 /// Layers with lower z-order are drawn first (behind layers with higher z-order).
+#[deprecated(note = "Use GpuParallaxLayer instead. CPU parallax will be removed in a future release.")]
 #[derive(Debug, Clone)]
 pub struct ParallaxLayer {
   /// The sprite to render for this layer
@@ -135,6 +138,7 @@ impl ParallaxLayer {
 ///
 /// The background manages multiple layers that scroll at different speeds
 /// relative to the camera, creating a sense of depth.
+#[deprecated(note = "Use GpuParallaxBackground instead. CPU parallax will be removed in a future release.")]
 #[derive(Debug, Clone)]
 pub struct ParallaxBackground {
   /// The layers in this background, sorted by z-order.
@@ -348,6 +352,7 @@ impl ParallaxBackground {
 ///     .layer(dunes_sprite, 0.5, -60)
 ///     .build();
 /// ```
+#[deprecated(note = "Use GpuParallaxBuilder instead. CPU parallax will be removed in a future release.")]
 #[derive(Debug)]
 pub struct ParallaxBackgroundBuilder {
   background: ParallaxBackground,

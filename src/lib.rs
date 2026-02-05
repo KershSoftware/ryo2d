@@ -113,6 +113,7 @@ pub mod prelude {
   pub use crate::core::graphics::Camera;
 
   // Parallax backgrounds
+  #[allow(deprecated)]
   pub use crate::core::graphics::{
     ParallaxBackground, ParallaxBackgroundBuilder, ParallaxLayer, TileMode,
   };

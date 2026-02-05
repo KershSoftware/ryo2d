@@ -23,6 +23,7 @@ pub use animation::{
   Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState, ValidatedAnimator,
 };
 pub use camera::{Camera, CameraBounds};
+#[allow(deprecated)]
 pub use parallax::{ParallaxBackground, ParallaxBackgroundBuilder, ParallaxLayer, TileMode};
 pub use parallax_gpu::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
 pub use renderer::WgpuRenderer;
