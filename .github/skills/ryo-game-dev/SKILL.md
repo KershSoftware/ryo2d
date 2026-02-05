@@ -247,7 +247,8 @@ struct MenuScene;
 
 impl Scene for MenuScene {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
-        // Setup when scene becomes active
+        // Spawn entities, configure camera, load sounds
+        // (Sprite/asset loading can go in new() instead)
     }
 
     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {

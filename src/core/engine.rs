@@ -499,6 +499,7 @@ impl Engine {
     disable_debug_keys: bool,
     game_name: Option<String>,
     game_version: Option<String>,
+    console_commands: Vec<(String, String, Option<String>)>,
   ) -> Self {
     let world = World::new();
     let camera = Camera::centered_at(
@@ -576,6 +577,11 @@ impl Engine {
     let console_state = ConsoleState::new();
     let mut command_registry = CommandRegistry::new();
     register_builtins(&mut command_registry);
+
+    // Apply pre-declared console commands from EngineBuilder
+    for (name, description, verbose) in console_commands {
+      command_registry.declare(name, description, verbose);
+    }
 
     Engine {
       config,
@@ -3135,6 +3141,32 @@ impl ApplicationHandler for Engine {
   }
 }
 
+/// Helper for declaring console commands in [`EngineBuilder::with_console_commands`].
+pub struct ConsoleCommandDeclarer<'a> {
+  commands: &'a mut Vec<(String, String, Option<String>)>,
+}
+
+impl ConsoleCommandDeclarer<'_> {
+  /// Declare a console command with a name and description.
+  pub fn declare(&mut self, name: impl Into<String>, description: impl Into<String>) {
+    self.commands.push((name.into(), description.into(), None));
+  }
+
+  /// Declare a console command with a name, description, and verbose help text.
+  pub fn declare_verbose(
+    &mut self,
+    name: impl Into<String>,
+    description: impl Into<String>,
+    verbose_description: impl Into<String>,
+  ) {
+    self.commands.push((
+      name.into(),
+      description.into(),
+      Some(verbose_description.into()),
+    ));
+  }
+}
+
 /// Builder pattern for Engine configuration
 pub struct EngineBuilder {
   config: EngineConfig,
@@ -3149,6 +3181,8 @@ pub struct EngineBuilder {
   display_mode_set: bool,
   /// Whether to disable F1-F4 debug key toggles
   disable_debug_keys: bool,
+  /// Pre-declared console commands (name, description, verbose_description)
+  console_commands: Vec<(String, String, Option<String>)>,
 }
 
 impl EngineBuilder {
@@ -3163,6 +3197,7 @@ impl EngineBuilder {
       resolution_set: false,
       display_mode_set: false,
       disable_debug_keys: false,
+      console_commands: Vec::new(),
     }
   }
 
@@ -3542,6 +3577,45 @@ impl EngineBuilder {
     self
   }
 
+  /// Declare console commands at engine startup.
+  ///
+  /// Commands declared here are available immediately when the engine starts,
+  /// before any scene's `on_enter` runs. This is the recommended place for
+  /// game-wide commands like `game:reset`, `game:godmode`, or `game:debug`.
+  ///
+  /// Scene-specific commands can still be declared via
+  /// [`SceneContext::declare_console_command`] in `on_enter`.
+  ///
+  /// To attach a handler to a declared command, use
+  /// [`SceneContext::register_console_command`] in a scene's `on_enter`.
+  /// Handlers are automatically cleaned up when the scene exits.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("My Game")
+  ///     .with_console_commands(|cmd| {
+  ///         cmd.declare("game:reset", "Reset the game to initial state");
+  ///         cmd.declare("game:godmode", "Toggle invincibility");
+  ///         cmd.declare_verbose(
+  ///             "game:spawn",
+  ///             "Spawn an entity",
+  ///             "Usage: game:spawn <enemy|item> [x] [y]",
+  ///         );
+  ///     })
+  ///     .with_scene(MenuScene::new())
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn with_console_commands(mut self, f: impl FnOnce(&mut ConsoleCommandDeclarer)) -> Self {
+    let mut declarer = ConsoleCommandDeclarer {
+      commands: &mut self.console_commands,
+    };
+    f(&mut declarer);
+    self
+  }
+
   /// Set the game implementation that will run on this engine.
   ///
   /// Use this for simple games or quick prototypes where you don't need
@@ -3760,6 +3834,7 @@ impl EngineBuilder {
       disable_debug_keys,
       game_name,
       game_version,
+      self.console_commands,
     )
   }
 }
@@ -3934,5 +4009,68 @@ mod tests {
   fn engine_builder_vsync_defaults_to_none() {
     let builder = EngineBuilder::new();
     assert_eq!(builder.vsync, None);
+  }
+
+  // ===========================================================================
+  // Console Command Declaration Tests
+  // ===========================================================================
+
+  #[test]
+  fn engine_builder_console_commands_empty_by_default() {
+    let builder = EngineBuilder::new();
+    assert!(builder.console_commands.is_empty());
+  }
+
+  #[test]
+  fn engine_builder_with_console_commands_declares_simple() {
+    let builder = EngineBuilder::new().with_console_commands(|cmd| {
+      cmd.declare("game:reset", "Reset the game");
+    });
+    assert_eq!(builder.console_commands.len(), 1);
+    assert_eq!(builder.console_commands[0].0, "game:reset");
+    assert_eq!(builder.console_commands[0].1, "Reset the game");
+    assert!(builder.console_commands[0].2.is_none());
+  }
+
+  #[test]
+  fn engine_builder_with_console_commands_declares_verbose() {
+    let builder = EngineBuilder::new().with_console_commands(|cmd| {
+      cmd.declare_verbose("game:spawn", "Spawn an entity", "Usage: game:spawn <type> [x] [y]");
+    });
+    assert_eq!(builder.console_commands.len(), 1);
+    assert_eq!(builder.console_commands[0].0, "game:spawn");
+    assert_eq!(builder.console_commands[0].1, "Spawn an entity");
+    assert_eq!(
+      builder.console_commands[0].2.as_deref(),
+      Some("Usage: game:spawn <type> [x] [y]")
+    );
+  }
+
+  #[test]
+  fn engine_builder_with_console_commands_multiple() {
+    let builder = EngineBuilder::new().with_console_commands(|cmd| {
+      cmd.declare("game:reset", "Reset the game");
+      cmd.declare("game:godmode", "Toggle invincibility");
+      cmd.declare_verbose("game:spawn", "Spawn an entity", "Usage: game:spawn <type>");
+    });
+    assert_eq!(builder.console_commands.len(), 3);
+    assert_eq!(builder.console_commands[0].0, "game:reset");
+    assert_eq!(builder.console_commands[1].0, "game:godmode");
+    assert_eq!(builder.console_commands[2].0, "game:spawn");
+  }
+
+  #[test]
+  fn engine_builder_with_console_commands_chains_with_other_builder_methods() {
+    let builder = EngineBuilder::new()
+      .title("Test Game")
+      .resolution(800, 600)
+      .with_console_commands(|cmd| {
+        cmd.declare("game:reset", "Reset");
+      })
+      .fps(60);
+    assert_eq!(builder.config.title, "Test Game");
+    assert_eq!(builder.config.width, 800);
+    assert_eq!(builder.console_commands.len(), 1);
+    assert_eq!(builder.config.target_fps, 60);
   }
 }

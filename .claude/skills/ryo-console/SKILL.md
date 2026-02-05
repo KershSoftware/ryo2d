@@ -51,18 +51,25 @@ Game commands use a declare-then-register pattern for clean lifecycle management
 
 ### Phase 1: Declaration (Startup)
 
-Declare commands early (in `on_enter` of first scene or `init` of Game):
+Declare game-wide commands on the engine builder (recommended):
 
 ```rust
-fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // Declare command - appears in help immediately
-    ctx.declare_console_command(
-        "game:reset",
-        "Reset the game to initial state",
-        Some("Resets all game state including score, player position, and enemies. Only available during gameplay."),
-    );
-}
+EngineBuilder::new()
+    .title("My Game")
+    .with_console_commands(|cmd| {
+        cmd.declare("game:reset", "Reset the game to initial state");
+        cmd.declare_verbose(
+            "game:godmode",
+            "Toggle invincibility",
+            "Makes the player immune to all damage until toggled off.",
+        );
+    })
+    .with_scene(MenuScene::new())
+    .build()
+    .run()?;
 ```
+
+Scene-specific commands can also be declared via `ctx.declare_console_command()` in `on_enter`.
 
 Parameters:
 - `name` - Command name (use `game:` prefix for game commands)
@@ -150,16 +157,14 @@ pub fn take_reset_request() -> bool {
     RESET_REQUESTED.swap(false, Ordering::SeqCst)
 }
 
-// menu.rs - Declare command
-impl Scene for MenuScene {
-    fn on_enter(&mut self, ctx: &mut SceneContext) {
-        ctx.declare_console_command(
-            "game:reset",
-            "Reset the game to initial state",
-            Some("Resets score, player, and enemies. Only works during gameplay."),
-        );
-    }
-}
+// main.rs - Declare command at engine level
+EngineBuilder::new()
+    .with_console_commands(|cmd| {
+        cmd.declare("game:reset", "Reset the game to initial state");
+    })
+    .with_scene(MenuScene::new())
+    .build()
+    .run()?;
 
 // game.rs - Register handler
 impl Scene for GameScene {

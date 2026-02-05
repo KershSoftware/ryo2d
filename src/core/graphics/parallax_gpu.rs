@@ -14,26 +14,16 @@
 //! # Example
 //!
 //! ```ignore
-//! // In your game's init
-//! let mut parallax = GpuParallaxBackground::new();
-//!
-//! // Add layers (textures must be uploaded via render_gpu callback)
-//! parallax.add_layer(
-//!     GpuParallaxLayer::new("sky", 1920, 1080, 0.0, -100)
-//! );
-//! parallax.add_layer(
-//!     GpuParallaxLayer::new("mountains", 1920, 1080, 0.3, -80)
+//! // In your game's init:
+//! let parallax = GpuParallaxBuilder::new()
+//!     .static_layer(&sky_sprite, -100)
+//!     .layer(&mountains_sprite, 0.3, -80)
 //!         .with_tile_mode(TileMode::InfiniteScroll)
 //!         .with_auto_scroll(10.0)
-//! );
+//!     .build();
 //!
-//! // In your game's render_gpu callback
+//! // In your game's render_gpu callback — textures upload automatically:
 //! fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
-//!     // Upload textures (only needed once)
-//!     ctx.upload_sprite(&self.sky_sprite);
-//!     ctx.upload_sprite(&self.mountains_sprite);
-//!
-//!     // Render parallax layers
 //!     self.parallax.render(ctx);
 //! }
 //! ```
@@ -46,7 +36,7 @@ use crate::core::graphics::sprite_gpu::SpriteInstance;
 /// A parallax layer configured for GPU rendering.
 ///
 /// Similar to the CPU `ParallaxLayer` but optimized for GPU instancing.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GpuParallaxLayer {
   /// Texture ID (from SpriteHandle.id())
   pub texture_id: String,
@@ -67,10 +57,15 @@ pub struct GpuParallaxLayer {
   scale: f32,
   /// Tint color (RGBA)
   tint: [u8; 4],
+  /// Sprite handle for automatic GPU upload (None when created via from_id)
+  sprite_handle: Option<SpriteHandle>,
 }
 
 impl GpuParallaxLayer {
-  /// Create a new GPU parallax layer from a sprite handle
+  /// Create a new GPU parallax layer from a sprite handle.
+  ///
+  /// The sprite handle is stored internally for automatic GPU texture upload
+  /// during rendering — no need to manually call `upload_sprite()`.
   pub fn new(sprite: &SpriteHandle, scroll_speed: f32, z_order: i32) -> Self {
     sprite.with_sprite(|s| Self {
       texture_id: sprite.id(),
@@ -83,10 +78,14 @@ impl GpuParallaxLayer {
       sprite_height: s.height(),
       scale: 1.0,
       tint: [255, 255, 255, 255],
+      sprite_handle: Some(sprite.clone()),
     })
   }
 
-  /// Create from explicit texture ID and dimensions
+  /// Create from explicit texture ID and dimensions.
+  ///
+  /// When using this constructor, you must manually upload the texture
+  /// via `ctx.upload_sprite()` before rendering.
   pub fn from_id(
     texture_id: impl Into<String>,
     width: u32,
@@ -105,6 +104,7 @@ impl GpuParallaxLayer {
       sprite_height: height,
       scale: 1.0,
       tint: [255, 255, 255, 255],
+      sprite_handle: None,
     }
   }
 
@@ -282,15 +282,19 @@ impl GpuParallaxBackground {
   /// Render the parallax background using GPU rendering.
   ///
   /// This should be called from your `render_gpu` callback.
-  /// Make sure to upload all layer textures before calling this.
+  /// Layers created with [`GpuParallaxLayer::new()`] have their textures
+  /// uploaded automatically. Layers created with [`GpuParallaxLayer::from_id()`]
+  /// require manual upload via `ctx.upload_sprite()` before this call.
   pub fn render(&self, ctx: &mut GpuRenderContext) {
     let screen_width = ctx.screen_width();
     let screen_height = ctx.screen_height();
     let camera_x = ctx.camera().x;
 
     for layer in &self.layers {
-      // Skip if texture not uploaded
-      if !ctx.has_texture(&layer.texture_id) {
+      // Auto-upload texture if sprite handle is available
+      if let Some(ref handle) = layer.sprite_handle {
+        ctx.upload_sprite(handle);
+      } else if !ctx.has_texture(&layer.texture_id) {
         continue;
       }
 
@@ -303,10 +307,10 @@ impl GpuParallaxBackground {
     }
   }
 
-  /// Upload all layer textures to the GPU.
+  /// Upload additional textures to the GPU.
   ///
-  /// Call this once during initialization or when layers change.
-  /// You need to provide the sprite handles for each layer.
+  /// This is only needed for layers created with [`GpuParallaxLayer::from_id()`].
+  /// Layers created with [`GpuParallaxLayer::new()`] upload automatically during render.
   pub fn upload_textures(&self, ctx: &mut GpuRenderContext, sprites: &[&SpriteHandle]) {
     for sprite in sprites {
       ctx.upload_sprite(sprite);

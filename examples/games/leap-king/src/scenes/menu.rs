@@ -236,20 +236,9 @@ impl MenuScene {
 }
 
 impl Scene for MenuScene {
-  fn name(&self) -> &str {
-    "MenuScene"
-  }
-
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     self.screen_width = ctx.screen_width();
     self.screen_height = ctx.screen_height();
-
-    // Reset menu state
-    self.background_sprite = None;
-    self.rain_emitter = None;
-    self.rain_sprite = None;
-    self.fairy_lights.clear();
-    self.elapsed_time = 0.0;
 
     // Set camera to show the menu area (center of screen in world space)
     ctx
@@ -407,7 +396,7 @@ impl Scene for MenuScene {
       }
     }
 
-    // Activation (Enter, Space, or gamepad A)
+    // Activation (Enter, Space, or gamepad A/X)
     let activate = ctx.input.key_pressed(KeyCode::Enter)
       || ctx.input.key_pressed(KeyCode::Space)
       || ctx.input.gamepad_button_pressed(GamepadButton::South)
@@ -696,7 +685,7 @@ impl Scene for MenuScene {
 
     // Controls hint
     ui.draw_text_anchored(
-      "Navigate: Arrows/D-Pad | Select: Enter/A",
+      "Navigate: Arrows/D-Pad/Joysticks | Select: Enter/A/X",
       Anchor::BottomCenter,
       0.0,
       -40.0,
@@ -705,7 +694,7 @@ impl Scene for MenuScene {
 
     // ESC hint
     ui.draw_text_anchored(
-      "ESC/B to quit",
+      "ESC/B/Circle to quit",
       Anchor::BottomCenter,
       0.0,
       -20.0,

@@ -176,7 +176,9 @@ if ! cargo build --release --bin ryo2d; then
 fi
 
 echo ""
-status "Creating" "installation directory $INSTALL_DIR"
+if [ ! -d "$INSTALL_DIR" ]; then
+    status "Creating" "installation directory $INSTALL_DIR"
+fi
 mkdir -p "$INSTALL_DIR"
 
 source_binary="$SCRIPT_DIR/target/release/ryo2d"

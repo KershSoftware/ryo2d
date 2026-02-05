@@ -9,7 +9,6 @@ use super::GameScene;
 pub struct MenuScene {
   best_time: f32,
   background: GpuParallaxBackground,
-  parallax_sprites: Vec<SpriteHandle>,
 }
 
 impl Default for MenuScene {
@@ -46,61 +45,38 @@ impl MenuScene {
       "desert_dunefront",
     );
 
-    // Store sprite handles for GPU upload
-    let parallax_sprites = vec![
-      sky_sprite.clone(),
-      moon_sprite.clone(),
-      cloud_sprite.clone(),
-      mountain_sprite.clone(),
-      dune_mid_sprite.clone(),
-      dune_front_sprite.clone(),
-    ];
-
-    // Build GPU-accelerated parallax background with desert layers
-    let mut background = GpuParallaxBackground::new();
-
     // Scale factor to fit 1000px sprites to 1080px screen height
     let scale = 1080.0 / 1000.0;
 
-    // Static sky layer
-    background.add_layer(GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale));
-
-    // Auto-scrolling layers with infinite scroll (2x speed)
-    background.add_layer(
-      GpuParallaxLayer::new(&moon_sprite, 0.0, -90)
-        .with_scale(scale)
-        .with_auto_scroll(10.0)
-        .with_tile_mode(TileMode::InfiniteScroll),
-    );
-    background.add_layer(
-      GpuParallaxLayer::new(&cloud_sprite, 0.0, -80)
-        .with_scale(scale)
-        .with_auto_scroll(30.0)
-        .with_tile_mode(TileMode::InfiniteScroll),
-    );
-    background.add_layer(
-      GpuParallaxLayer::new(&mountain_sprite, 0.0, -60)
-        .with_scale(scale)
-        .with_auto_scroll(60.0)
-        .with_tile_mode(TileMode::InfiniteScroll),
-    );
-    background.add_layer(
-      GpuParallaxLayer::new(&dune_mid_sprite, 0.0, -40)
-        .with_scale(scale)
-        .with_auto_scroll(100.0)
-        .with_tile_mode(TileMode::InfiniteScroll),
-    );
-    background.add_layer(
-      GpuParallaxLayer::new(&dune_front_sprite, 0.0, -20)
-        .with_scale(scale)
-        .with_auto_scroll(160.0)
-        .with_tile_mode(TileMode::InfiniteScroll),
-    );
+    // Build GPU-accelerated parallax background with desert layers
+    let background = GpuParallaxBuilder::new()
+      .static_layer(&sky_sprite, -100)
+      .with_scale(scale)
+      .layer(&moon_sprite, 0.0, -90)
+      .with_scale(scale)
+      .with_auto_scroll(10.0)
+      .with_tile_mode(TileMode::InfiniteScroll)
+      .layer(&cloud_sprite, 0.0, -80)
+      .with_scale(scale)
+      .with_auto_scroll(30.0)
+      .with_tile_mode(TileMode::InfiniteScroll)
+      .layer(&mountain_sprite, 0.0, -60)
+      .with_scale(scale)
+      .with_auto_scroll(60.0)
+      .with_tile_mode(TileMode::InfiniteScroll)
+      .layer(&dune_mid_sprite, 0.0, -40)
+      .with_scale(scale)
+      .with_auto_scroll(100.0)
+      .with_tile_mode(TileMode::InfiniteScroll)
+      .layer(&dune_front_sprite, 0.0, -20)
+      .with_scale(scale)
+      .with_auto_scroll(160.0)
+      .with_tile_mode(TileMode::InfiniteScroll)
+      .build();
 
     Self {
       best_time: load_best_time(),
       background,
-      parallax_sprites,
     }
   }
 }
@@ -149,17 +125,7 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_background(&mut self, _frame: &mut [u8], _width: u32, _height: u32, _camera: &Camera) {
-    // Parallax rendering moved to render_gpu for GPU acceleration
-  }
-
   fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
-    // Upload parallax textures to GPU (only happens once, cached after)
-    for sprite in &self.parallax_sprites {
-      ctx.upload_sprite(sprite);
-    }
-
-    // Render parallax background using GPU instancing
     self.background.render(ctx);
   }
 

@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+static CONSOLE_RESPAWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 use ryo2d::prelude::*;
 
@@ -2469,6 +2472,13 @@ impl Scene for GameScene {
 
     // Rain audio is already playing from menu scene (persists between scenes)
 
+    // Register console command handler (auto-cleaned on scene exit)
+    ctx.register_console_command("game:respawn", |_args, cmd_ctx| {
+      CONSOLE_RESPAWN_REQUESTED.store(true, Ordering::SeqCst);
+      cmd_ctx.console.print_system("Respawning at checkpoint...");
+      CommandResult::Ok
+    });
+
     // Load jump and land sound effects
     if let Some(audio) = &mut ctx.audio {
       let _ = audio.load_sound("jump", "assets/jump.mp3");
@@ -2558,11 +2568,11 @@ impl Scene for GameScene {
       return SceneAction::Continue;
     }
 
-    // R or Y/Triangle (North button) to respawn
+    // R or Y/Triangle (North button) or console command to respawn
     if ctx.input.key_pressed(KeyCode::KeyR)
       || ctx.input.gamepad_button_pressed(GamepadButton::North)
+      || CONSOLE_RESPAWN_REQUESTED.swap(false, Ordering::SeqCst)
     {
-      // Use execute_respawn for proper local+network sync
       self.execute_respawn(ctx);
     }
 

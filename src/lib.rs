@@ -57,7 +57,7 @@ pub mod prelude {
   };
 
   // Engine builder
-  pub use crate::core::engine::{EngineBuilder, WindowMode};
+  pub use crate::core::engine::{ConsoleCommandDeclarer, EngineBuilder, WindowMode};
 
   // ECS types
   pub use crate::core::ecs::{

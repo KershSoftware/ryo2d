@@ -12,12 +12,14 @@ Every scene implements the `Scene` trait with lifecycle hooks:
 impl Scene for GameplayScene {
     fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Called when this scene becomes active
-        // Set up entities, load assets, start music
+        // Spawn entities, configure camera, set up lighting, load sounds
+        // (Asset loading like Sprite::load() can go in new() instead)
     }
 
     fn on_exit(&mut self, ctx: &mut SceneContext) {
         // Called when scene is removed from stack
-        // Clean up, save state if needed
+        // Automatic cleanup handles world/camera/effects/lighting on Switch/Reset
+        // Only needed for scene-specific teardown like saving state
     }
 
     fn on_pause(&mut self, ctx: &mut SceneContext) {

@@ -59,8 +59,6 @@ pub struct GameScene {
   barrier_sprite: SpriteHandle,
   // GPU-accelerated parallax background
   background: GpuParallaxBackground,
-  // Sprite handles for parallax layers (needed for GPU upload)
-  parallax_sprites: Vec<SpriteHandle>,
   // Progression tracking
   difficulty_level: u32,
   time_since_last_progression: f32,
@@ -155,58 +153,35 @@ impl GameScene {
       "desert_dunefront",
     );
 
-    // Store sprite handles for GPU upload
-    let parallax_sprites = vec![
-      sky_sprite.clone(),
-      moon_sprite.clone(),
-      cloud_sprite.clone(),
-      mountain_sprite.clone(),
-      dune_mid_sprite.clone(),
-      dune_front_sprite.clone(),
-    ];
-
-    // Build GPU-accelerated parallax background with desert layers
-    // Uses instanced rendering for much better performance with large images
-    let mut background = GpuParallaxBackground::new();
-
     // Scale factor to fit 1000px sprites to 1080px screen height
     let scale = 1080.0 / 1000.0;
 
-    // Static sky layer (doesn't scroll) - fills entire screen
-    background.add_layer(GpuParallaxLayer::new(&sky_sprite, 0.0, -100).with_scale(scale));
-
-    // Auto-scrolling layers with infinite scroll for seamless wrapping
+    // Build GPU-accelerated parallax background with desert layers
     // Speeds must match menu.rs for seamless scene transition
-    background.add_layer(
-      GpuParallaxLayer::new(&moon_sprite, 0.0, -90)
-        .with_scale(scale)
-        .with_auto_scroll(10.0)
-        .with_tile_mode(TileMode::InfiniteScroll),
-    );
-    background.add_layer(
-      GpuParallaxLayer::new(&cloud_sprite, 0.0, -80)
-        .with_scale(scale)
-        .with_auto_scroll(30.0)
-        .with_tile_mode(TileMode::InfiniteScroll),
-    );
-    background.add_layer(
-      GpuParallaxLayer::new(&mountain_sprite, 0.0, -60)
-        .with_scale(scale)
-        .with_auto_scroll(60.0)
-        .with_tile_mode(TileMode::InfiniteScroll),
-    );
-    background.add_layer(
-      GpuParallaxLayer::new(&dune_mid_sprite, 0.0, -40)
-        .with_scale(scale)
-        .with_auto_scroll(100.0)
-        .with_tile_mode(TileMode::InfiniteScroll),
-    );
-    background.add_layer(
-      GpuParallaxLayer::new(&dune_front_sprite, 0.0, -20)
-        .with_scale(scale)
-        .with_auto_scroll(160.0)
-        .with_tile_mode(TileMode::InfiniteScroll),
-    );
+    let background = GpuParallaxBuilder::new()
+      .static_layer(&sky_sprite, -100)
+      .with_scale(scale)
+      .layer(&moon_sprite, 0.0, -90)
+      .with_scale(scale)
+      .with_auto_scroll(10.0)
+      .with_tile_mode(TileMode::InfiniteScroll)
+      .layer(&cloud_sprite, 0.0, -80)
+      .with_scale(scale)
+      .with_auto_scroll(30.0)
+      .with_tile_mode(TileMode::InfiniteScroll)
+      .layer(&mountain_sprite, 0.0, -60)
+      .with_scale(scale)
+      .with_auto_scroll(60.0)
+      .with_tile_mode(TileMode::InfiniteScroll)
+      .layer(&dune_mid_sprite, 0.0, -40)
+      .with_scale(scale)
+      .with_auto_scroll(100.0)
+      .with_tile_mode(TileMode::InfiniteScroll)
+      .layer(&dune_front_sprite, 0.0, -20)
+      .with_scale(scale)
+      .with_auto_scroll(160.0)
+      .with_tile_mode(TileMode::InfiniteScroll)
+      .build();
 
     // Load current display mode setting
     let display_mode_idx = Self::load_current_display_mode_index();
@@ -237,7 +212,6 @@ impl GameScene {
       platform_sprite: SpriteHandle::from_sprite(platform_sprite, "platform.png"),
       barrier_sprite: SpriteHandle::from_sprite(barrier_sprite, "barrier"),
       background,
-      parallax_sprites,
       // Progression starts at level 0
       difficulty_level: 0,
       time_since_last_progression: 0.0,
@@ -2840,18 +2814,8 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_background(&mut self, _frame: &mut [u8], _width: u32, _height: u32, _camera: &Camera) {
-    // Parallax rendering moved to render_gpu for GPU acceleration
-  }
-
   fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
     profile_scope!("sprites");
-    // Upload parallax textures to GPU (only happens once, cached after)
-    for sprite in &self.parallax_sprites {
-      ctx.upload_sprite(sprite);
-    }
-
-    // Render parallax background using GPU instancing
     self.background.render(ctx);
   }
 

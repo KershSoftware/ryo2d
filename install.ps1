@@ -145,8 +145,10 @@ finally {
 }
 
 Write-Host ""
-Write-Status "Creating" "installation directory $InstallDir"
-New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+if (-not (Test-Path $InstallDir)) {
+  Write-Status "Creating" "installation directory $InstallDir"
+}
+$null = New-Item -ItemType Directory -Path $InstallDir -Force
 
 $sourceBinary = Join-Path $ScriptDir "target\release\ryo2d.exe"
 Write-Status "Installing" "ryo2d.exe to $InstallDir"
@@ -158,7 +160,7 @@ Write-Status "Installing" "ryo2d engine source to $(Split-Path $InstallDir)\engi
 if (Test-Path $engineDir) {
   Remove-Item $engineDir -Recurse -Force
 }
-New-Item -ItemType Directory -Path $engineDir -Force | Out-Null
+$null = New-Item -ItemType Directory -Path $engineDir -Force
 
 # Copy essential engine files
 $filesToCopy = @("src", "Cargo.toml", "LICENSE", "README.md")

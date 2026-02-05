@@ -78,7 +78,6 @@
 │              │                                                            │
 │              ▼                                                            │
 │   4. render(alpha)                 Variable rate rendering                │
-│      • game.render_background()                                           │
 │      • game.render()                                                      │
 │      • game.render_gpu()                                                  │
 │      • game.render_ui()                                                   │

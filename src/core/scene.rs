@@ -781,19 +781,18 @@ pub enum SceneAction {
 pub trait Scene {
   /// Called when this scene becomes the active scene.
   ///
-  /// Use this to:
-  /// - Initialize scene-specific entities
-  /// - Set up the camera
-  /// - Load assets
-  /// - Play background music
+  /// Use this for anything that needs [`SceneContext`] — spawning entities,
+  /// configuring the camera, setting up lighting, loading sounds, etc.
+  ///
+  /// Asset loading (sprites, fonts) that doesn't need `SceneContext` can go
+  /// in `new()` instead since `Sprite::load()` is pure file I/O.
   fn on_enter(&mut self, _ctx: &mut SceneContext) {}
 
   /// Called when this scene is removed from the stack.
   ///
-  /// Use this to:
-  /// - Clean up entities
-  /// - Stop music
-  /// - Save state if needed
+  /// Automatic cleanup (world, camera, effects, lighting, time, events) runs
+  /// after this on Switch/Reset — see [`SceneCleanup`]. Use `on_exit` only
+  /// for scene-specific teardown like saving state.
   fn on_exit(&mut self, _ctx: &mut SceneContext) {}
 
   /// Called when another scene is pushed on top of this one.

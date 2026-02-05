@@ -124,6 +124,18 @@ EngineBuilder::new()
     .build()
     .run()
     .unwrap();
+
+// Declare console commands at engine level
+EngineBuilder::new()
+    .title("Game Title")
+    .with_console_commands(|cmd| {
+        cmd.declare("game:reset", "Reset the game");
+        cmd.declare_verbose("game:spawn", "Spawn entity", "Usage: game:spawn <type>");
+    })
+    .with_scene(MenuScene::new())
+    .build()
+    .run()
+    .unwrap();
 ```
 
 ### WindowMode
