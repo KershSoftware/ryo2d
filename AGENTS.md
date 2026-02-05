@@ -71,6 +71,7 @@ When you run `ryo2d init`, Agent Skills are automatically installed to `.github/
 | `ryo-events` | Event bus for decoupled inter-system communication |
 | `ryo-game-dev` | Game development patterns, ECS, scenes, input |
 | `ryo-network` | Multiplayer networking - client-server, replication, RPCs |
+| `ryo-particles` | Particle system - emitters, attractors, collisions, presets |
 | `ryo-physics` | Rapier2D physics integration |
 | `ryo-procgen` | Procedural generation - dungeons, caves, terrain |
 | `ryo-renderer` | GPU rendering and shaders |
@@ -141,6 +142,7 @@ This project uses **nested AGENTS.md files** in subdirectories where additional 
 | `src/core/network/AGENTS.md` | Networking module architecture and usage |
 | `src/core/network/replication/AGENTS.md` | Entity/component replication system |
 | `src/core/network/rpc/AGENTS.md` | Remote procedure call system |
+| `src/core/particles/AGENTS.md` | Particle system components and presets |
 | `src/cli/AGENTS.md` | CLI tool commands and design principles |
 | `docs/AGENTS.md` | Documentation system (mdbook + rustdoc) |
 | `.github/skills/` | AI skill definitions for specialized tasks |

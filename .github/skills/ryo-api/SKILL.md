@@ -1322,3 +1322,230 @@ let d = v1.dot(v2);
 let v = v1 + v2;
 let v = v1 * 2.0;
 ```
+
+---
+
+## Particle System
+
+### ParticleEmitter
+
+```rust
+pub struct ParticleEmitter {
+    pub mode: EmissionMode,
+    pub shape: EmissionShape,
+    pub sprite: SpriteHandle,
+    pub enabled: bool,
+    pub lifetime_min: f32,
+    pub lifetime_max: f32,
+    pub size_min: f32,
+    pub size_max: f32,
+    pub size_end_min: f32,
+    pub size_end_max: f32,
+    pub color_start: Color,
+    pub color_end: Color,
+    pub speed_min: f32,
+    pub speed_max: f32,
+    pub rotation_min: f32,
+    pub rotation_max: f32,
+    pub angular_velocity_min: f32,
+    pub angular_velocity_max: f32,
+    pub gravity: (f32, f32),
+    pub drag: f32,
+    pub z_order: i32,
+    pub effect: Option<SpriteEffect>,
+    pub trail: Option<TrailConfig>,
+    pub collision: Option<CollisionConfig>,
+    pub max_particles: u32,
+}
+
+impl ParticleEmitter {
+    // Constructors
+    fn new(sprite: SpriteHandle) -> Self;
+
+    // Presets
+    fn fire(sprite: SpriteHandle) -> Self;
+    fn flame_small(sprite: SpriteHandle) -> Self;
+    fn smoke(sprite: SpriteHandle) -> Self;
+    fn smoke_thick(sprite: SpriteHandle) -> Self;
+    fn explosion(sprite: SpriteHandle, count: u32) -> Self;
+    fn explosion_debris(sprite: SpriteHandle, count: u32) -> Self;
+    fn magic(sprite: SpriteHandle) -> Self;
+    fn magic_heal(sprite: SpriteHandle) -> Self;
+    fn rain(sprite: SpriteHandle) -> Self;
+    fn snow(sprite: SpriteHandle) -> Self;
+    fn sparks(sprite: SpriteHandle) -> Self;
+    fn dust(sprite: SpriteHandle) -> Self;
+    fn confetti(sprite: SpriteHandle) -> Self;
+    fn bubbles(sprite: SpriteHandle) -> Self;
+    fn comet_trail(sprite: SpriteHandle) -> Self;
+    fn exhaust(sprite: SpriteHandle) -> Self;
+
+    // Builder methods
+    fn with_mode(self, mode: EmissionMode) -> Self;
+    fn with_shape(self, shape: EmissionShape) -> Self;
+    fn with_lifetime(self, min: f32, max: f32) -> Self;
+    fn with_size(self, min: f32, max: f32) -> Self;
+    fn with_end_size(self, min: f32, max: f32) -> Self;
+    fn with_color(self, start: Color, end: Color) -> Self;
+    fn with_speed(self, min: f32, max: f32) -> Self;
+    fn with_rotation(self, min: f32, max: f32) -> Self;
+    fn with_angular_velocity(self, min: f32, max: f32) -> Self;
+    fn with_gravity(self, x: f32, y: f32) -> Self;
+    fn with_drag(self, drag: f32) -> Self;
+    fn with_z_order(self, z: i32) -> Self;
+    fn with_effect(self, effect: SpriteEffect) -> Self;
+    fn with_trail(self, config: TrailConfig) -> Self;
+    fn with_collision(self, config: CollisionConfig) -> Self;
+    fn with_max_particles(self, max: u32) -> Self;
+    fn one_shot(self) -> Self;
+
+    // Runtime control
+    fn set_enabled(&mut self, enabled: bool);
+    fn reset(&mut self);
+    fn burst(&mut self, count: u32);
+    fn is_finished(&self) -> bool;
+}
+```
+
+### EmissionMode
+
+```rust
+pub enum EmissionMode {
+    Continuous { rate: f32 },                          // Particles per second
+    Burst { count: u32 },                              // Single burst
+    BurstRepeating { count: u32, interval: f32, repeats: Option<u32> },
+}
+```
+
+### EmissionShape
+
+```rust
+pub enum EmissionShape {
+    Point,
+    Line { start_x: f32, start_y: f32, end_x: f32, end_y: f32 },
+    Circle { radius: f32, hollow: bool },
+    Rectangle { width: f32, height: f32 },
+    Cone { direction: f32, spread: f32, min_speed: f32, max_speed: f32 },
+}
+```
+
+### ParticleAttractor
+
+```rust
+pub struct ParticleAttractor {
+    pub attractor_type: AttractorType,
+    pub layer_mask: u32,
+    pub enabled: bool,
+}
+
+impl ParticleAttractor {
+    fn new(attractor_type: AttractorType) -> Self;
+    fn point(strength: f32, radius: f32) -> Self;
+    fn gravity_well(strength: f32, radius: f32) -> Self;
+    fn line(start_x: f32, start_y: f32, end_x: f32, end_y: f32, strength: f32, radius: f32) -> Self;
+    fn area(width: f32, height: f32, force_x: f32, force_y: f32) -> Self;
+    fn vortex(strength: f32, radius: f32) -> Self;
+    fn spiral(strength: f32, radius: f32, inward_pull: f32) -> Self;
+    fn turbulence(strength: f32, scale: f32, speed: f32) -> Self;
+    fn with_layer_mask(self, mask: u32) -> Self;
+    fn with_enabled(self, enabled: bool) -> Self;
+    fn calculate_force(&self, attractor_x: f32, attractor_y: f32, particle_x: f32, particle_y: f32, particle_layer: u32) -> (f32, f32);
+}
+```
+
+### AttractorType
+
+```rust
+pub enum AttractorType {
+    Point { strength: f32, radius: f32, falloff: f32 },
+    Line { start_x: f32, start_y: f32, end_x: f32, end_y: f32, strength: f32, radius: f32 },
+    Area { width: f32, height: f32, force_x: f32, force_y: f32 },
+    Vortex { strength: f32, radius: f32, inward_pull: f32 },
+    Turbulence { strength: f32, scale: f32, speed: f32 },
+}
+```
+
+### CollisionConfig
+
+```rust
+pub struct CollisionConfig {
+    pub radius: f32,
+    pub collision_mask: u32,
+    pub response: CollisionResponse,
+}
+
+impl CollisionConfig {
+    fn new(radius: f32, response: CollisionResponse) -> Self;
+    fn bouncy(radius: f32, restitution: f32) -> Self;
+    fn sticky(radius: f32) -> Self;
+    fn deadly(radius: f32) -> Self;
+    fn event(radius: f32) -> Self;
+    fn with_mask(self, mask: u32) -> Self;
+}
+
+pub enum CollisionResponse {
+    Die,
+    Bounce { restitution: f32 },
+    Stick,
+    Event,
+}
+```
+
+### TrailConfig (for particles)
+
+```rust
+pub struct TrailConfig {
+    pub color: Option<Color>,
+    pub width: f32,
+    pub end_width: f32,
+    pub max_points: usize,
+    pub min_distance: f32,
+    pub fade: bool,
+}
+
+impl TrailConfig {
+    fn new(width: f32) -> Self;
+    fn with_color(self, color: Color) -> Self;
+    fn with_end_width(self, end_width: f32) -> Self;
+    fn with_max_points(self, max_points: usize) -> Self;
+    fn with_min_distance(self, min_distance: f32) -> Self;
+    fn with_fade(self, fade: bool) -> Self;
+}
+```
+
+### ParticleCollision Event
+
+```rust
+pub struct ParticleCollision {
+    pub particle_entity: Entity,
+    pub collider_entity: Entity,
+    pub position: (f32, f32),
+    pub normal: (f32, f32),
+}
+```
+
+### Particle
+
+```rust
+pub struct Particle {
+    pub lifetime: f32,
+    pub max_lifetime: f32,
+    pub velocity_x: f32,
+    pub velocity_y: f32,
+    pub angular_velocity: f32,
+    pub rotation: f32,
+    pub size: f32,
+    pub start_size: f32,
+    pub end_size: f32,
+    pub color: Color,
+    pub start_color: Color,
+    pub end_color: Color,
+    pub drag: f32,
+    pub emitter_entity: Entity,
+}
+
+impl Particle {
+    fn lifetime_ratio(&self) -> f32;
+    fn is_dead(&self) -> bool;
+}
+```

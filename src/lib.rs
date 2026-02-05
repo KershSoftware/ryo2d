@@ -182,6 +182,12 @@ pub mod prelude {
     Line2D, TextureMode, Trail2D, TrailPoint, TrailRenderer, TrailStyle,
   };
 
+  // Particle system
+  pub use crate::core::particles::{
+    AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape, Particle,
+    ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem, TrailConfig,
+  };
+
   // GPU sprite batching (for high-performance particle systems)
   pub use crate::core::graphics::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
 

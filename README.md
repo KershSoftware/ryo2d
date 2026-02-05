@@ -82,6 +82,7 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **Parallax** — Layered scrolling backgrounds with infinite scroll
 - **2D Lighting** — Point lights, spotlights, ambient light, shadow casting
 - **Trails** — Motion path rendering with fade and taper effects
+- **Particles** — GPU-batched particle system with emitters, attractors, and presets
 - **Post-Processing** — Shader pipeline (CRT, vignette, chromatic aberration, etc.)
 
 ### Physics & Collision
