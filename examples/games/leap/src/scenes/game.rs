@@ -647,6 +647,9 @@ impl GameScene {
             None => return input,
         };
 
+        // Start with current facing direction
+        input.facing_right = player.facing == Facing::Right;
+
         // Check for charge button (Space or gamepad South/A button)
         let charge_button_down = ctx.input.key_down(KeyCode::Space)
             || ctx.input.gamepad_button_down(GamepadButton::South);
@@ -697,15 +700,11 @@ impl GameScene {
 
                 // Horizontal aim changes facing (inverted - pull back to aim)
                 // Press left to aim RIGHT, press right to aim LEFT
-                if aim_left
-                    && let Some(mut p) = ctx.world.get_component_mut::<Player>(entity)
-                {
-                    p.facing = Facing::Right;
+                if aim_left {
+                    input.facing_right = true;
                 }
-                if aim_right
-                    && let Some(mut p) = ctx.world.get_component_mut::<Player>(entity)
-                {
-                    p.facing = Facing::Left;
+                if aim_right {
+                    input.facing_right = false;
                 }
             } else {
                 // Released charge button - trigger leap
@@ -722,6 +721,13 @@ impl GameScene {
         let mut player = match ctx.world.get_component_mut::<Player>(entity) {
             Some(p) => p,
             None => return,
+        };
+
+        // Update facing direction from input
+        player.facing = if input.facing_right {
+            Facing::Right
+        } else {
+            Facing::Left
         };
 
         match player.leap_state {

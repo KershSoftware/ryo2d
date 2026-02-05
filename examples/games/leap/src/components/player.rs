@@ -159,6 +159,7 @@ pub struct LeapInput {
     pub release: bool,
     pub charge_time: f32,
     pub aim_delta: f32, // Change in aim this frame
+    pub facing_right: bool, // Which direction player is facing
 }
 
 impl Default for LeapInput {
@@ -169,6 +170,7 @@ impl Default for LeapInput {
             release: false,
             charge_time: 0.0,
             aim_delta: 0.0,
+            facing_right: true,
         }
     }
 }
