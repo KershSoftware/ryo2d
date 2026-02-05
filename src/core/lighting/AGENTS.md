@@ -182,20 +182,71 @@ The renderer (`renderer.rs`) handles:
 
 **Artist-Friendly** - Colors use 0-255 RGB, not 0.0-1.0. Radius in pixels, not abstract units.
 
+## Shadow System
+
+The lighting system supports multiple shadow types:
+
+### Shadow Volumes (Hard Shadows)
+```rust
+Light2D::point(color, radius).with_shadows()
+```
+Projects occluder geometry away from lights using GPU-rendered shadow volumes.
+
+### Soft Shadows
+```rust
+Light2D::point(color, radius).with_soft_shadows(0.5)
+```
+Adds penumbra/blur to shadow edges for more natural lighting.
+
+### Colored Shadows
+```rust
+Light2D::point(color, radius).with_shadows().with_shadow_color(Color::new(50, 20, 80, 255))
+```
+Tint shadows with color for atmospheric effects (stained glass, sunset, etc.).
+
+### Ray-marched Shadows
+```rust
+Light2D::point(color, radius).with_raymarched_shadows(32)
+```
+Per-pixel ray casting for accurate shadows. Sample count (4-64) trades quality vs performance.
+
+### Sprite-Based Shadows
+
+**Drop Shadows** - Artist-controlled offset shadows:
+```rust
+Renderable::sprite(handle).with_drop_shadow(DropShadow::below(8.0))
+```
+
+**Blob Shadows** - Elliptical grounding shadows:
+```rust
+Renderable::sprite(handle).with_blob_shadow(BlobShadow::ellipse(20.0, 10.0))
+```
+
+**Contact Shadows** - Darkening at object bases:
+```rust
+Renderable::sprite(handle).with_contact_shadow(ContactShadow::new().radius(8.0))
+```
+
+### Ambient Occlusion (Post-Process)
+```rust
+ctx.effects.set_ambient_occlusion(0.3, 16.0);
+```
+Screen-space corner/crevice darkening as a post-process effect.
+
 ## Future Work
 
 - [x] Volumetric lights (god rays) ✅ Implemented
 - [x] Atmospheric scattering ✅ Implemented
 - [x] Volumetric spotlight beams ✅ Implemented
-- [ ] **Shadow System** 🚧 In Progress (see TASKS.md)
-  - [x] Hard shadows (shadow volumes) ✅ Implemented
-  - [ ] Drop shadows (sprite-based)
-  - [ ] Blob shadows (character grounding)
-  - [ ] Soft shadows (penumbra)
-  - [ ] Colored shadows
-  - [ ] Contact shadows
-  - [ ] Ambient occlusion
-  - [ ] Ray-marched shadows
+- [x] **Shadow System** ✅ Complete
+  - [x] Hard shadows (shadow volumes)
+  - [x] Drop shadows (sprite-based)
+  - [x] Blob shadows (character grounding)
+  - [x] Soft shadows (penumbra)
+  - [x] Colored shadows
+  - [x] Contact shadows
+  - [x] Ambient occlusion (post-process)
+  - [x] Ray-marched shadows (per-pixel)
 - [ ] Light cookies (textured lights)
 - [ ] Normal maps for depth-aware lighting
 - [ ] Light layers (selective illumination)

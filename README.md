@@ -80,7 +80,8 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **Animation** — Sprite sheets, state machine controllers, 24 easing functions
 - **Tweening** — Smooth interpolation of position, rotation, scale
 - **Parallax** — Layered scrolling backgrounds with infinite scroll
-- **2D Lighting** — Point lights, spotlights, ambient light, shadow casting
+- **2D Lighting** — Point lights, spotlights, volumetric effects, atmospheric scattering
+- **Shadow System** — Hard shadows, soft shadows, ray-marched shadows, drop/blob/contact shadows, ambient occlusion
 - **Trails** — Motion path rendering with fade and taper effects
 - **Particles** — GPU-batched particle system with emitters, attractors, and presets
 - **Post-Processing** — Shader pipeline (CRT, vignette, chromatic aberration, etc.)

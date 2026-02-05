@@ -24,6 +24,7 @@
 - [Sprites & Rendering](./concepts/sprites.md)
 - [Tiled Rendering](./concepts/tiled-rendering.md)
 - [Animation System](./concepts/animation.md)
+- [Lighting System](./concepts/lighting.md)
 - [Post-Processing Effects](./concepts/post-processing.md)
 - [Per-Sprite Shaders](./concepts/sprite-shaders.md)
 - [Asset Management](./concepts/assets.md)

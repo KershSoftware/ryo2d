@@ -15,8 +15,27 @@ This module provides the post-processing effect pipeline for Ryo2D.
 
 | Directory | Purpose |
 |-----------|---------|
-| `core/` | Core rendering shaders (fullscreen quad vertex shader) |
+| `core/` | Core rendering shaders (sprites, lights, shadows) |
 | `post-process/` | Effect fragment shaders (one per effect type) |
+
+### Core Shaders
+
+| File | Purpose |
+|------|---------|
+| `light.wgsl` | Point light and spotlight rendering |
+| `shadow.wgsl` | Shadow volume geometry rendering (hard/soft/colored shadows) |
+| `raymarch_shadow.wgsl` | Per-pixel ray-marched shadows |
+
+### Shadow Shaders
+
+**shadow.wgsl** - Renders shadow volumes with reverse-subtract blending:
+- Vertex shader transforms occluder geometry projected from light
+- Fragment shader applies distance-based intensity and color
+
+**raymarch_shadow.wgsl** - Per-pixel ray casting:
+- Storage buffer holds up to 64 occluder edges
+- Fragment shader tests ray-edge intersections
+- Configurable sample count for quality/performance tradeoff
 
 ## Architecture
 
