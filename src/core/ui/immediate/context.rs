@@ -93,6 +93,9 @@ pub struct UiContext<'a> {
   focused_dropdown_id: u32,
   /// UI scale factor for HiDPI displays (1 = normal, 2 = double size, etc.)
   ui_scale: u32,
+  /// Whether the mouse is occluded by an overlay (e.g. developer console).
+  /// When true, `is_hovered`, `is_held`, and `is_clicked` all return false.
+  mouse_occluded: bool,
 }
 
 impl<'a> UiContext<'a> {
@@ -118,6 +121,7 @@ impl<'a> UiContext<'a> {
       click_consumed: false,
       focused_dropdown_id: 0,
       ui_scale: 1,
+      mouse_occluded: false,
     }
   }
 
@@ -147,6 +151,7 @@ impl<'a> UiContext<'a> {
       click_consumed: false,
       focused_dropdown_id: 0,
       ui_scale: ui_scale.max(1),
+      mouse_occluded: false,
     }
   }
 
@@ -173,6 +178,7 @@ impl<'a> UiContext<'a> {
       click_consumed: false,
       focused_dropdown_id: 0,
       ui_scale: 1,
+      mouse_occluded: false,
     }
   }
 
@@ -200,6 +206,7 @@ impl<'a> UiContext<'a> {
       click_consumed: false,
       focused_dropdown_id: 0,
       ui_scale: ui_scale.max(1),
+      mouse_occluded: false,
     }
   }
 
@@ -260,6 +267,14 @@ impl<'a> UiContext<'a> {
   /// Consume the escape key for this frame, preventing other widgets from responding.
   pub fn consume_escape(&mut self) {
     self.escape_consumed = true;
+  }
+
+  /// Mark the mouse as occluded by an overlay (e.g. developer console).
+  ///
+  /// When set, `is_hovered`, `is_held`, and `is_clicked` all return false,
+  /// preventing widgets underneath the overlay from responding to the mouse.
+  pub fn set_mouse_occluded(&mut self) {
+    self.mouse_occluded = true;
   }
 
   /// Check if any dropdown is currently open.
@@ -752,8 +767,9 @@ impl<'a> UiContext<'a> {
   /// Check if a rectangle is being clicked this frame.
   ///
   /// Returns `true` if the mouse button was just pressed while over the rectangle.
+  /// Returns `false` if the mouse is occluded by an overlay.
   pub fn is_clicked(&self, rect: Rect) -> bool {
-    if !self.input.mouse_pressed(MouseButton::Left) {
+    if self.mouse_occluded || !self.input.mouse_pressed(MouseButton::Left) {
       return false;
     }
     let (mx, my) = self.input.mouse_position();
@@ -761,14 +777,21 @@ impl<'a> UiContext<'a> {
   }
 
   /// Check if a rectangle is being hovered.
+  ///
+  /// Returns `false` if the mouse is occluded by an overlay.
   pub fn is_hovered(&self, rect: Rect) -> bool {
+    if self.mouse_occluded {
+      return false;
+    }
     let (mx, my) = self.input.mouse_position();
     rect.contains(mx, my)
   }
 
   /// Check if a rectangle is being held (mouse down while hovering).
+  ///
+  /// Returns `false` if the mouse is occluded by an overlay.
   pub fn is_held(&self, rect: Rect) -> bool {
-    if !self.input.mouse_down(MouseButton::Left) {
+    if self.mouse_occluded || !self.input.mouse_down(MouseButton::Left) {
       return false;
     }
     let (mx, my) = self.input.mouse_position();
@@ -2690,5 +2713,103 @@ mod tests {
       "2x scale should have ~4x pixels, got {}",
       ratio
     );
+  }
+
+  // =========================================================================
+  // Mouse Occlusion Tests
+  // =========================================================================
+
+  fn create_test_context_with_hover(
+    width: u32,
+    height: u32,
+    frame: &mut [u8],
+    hover_x: f32,
+    hover_y: f32,
+  ) -> UiContext<'_> {
+    let mut input = InputState::new();
+    input.handle_mouse_move(hover_x as f64, hover_y as f64);
+    let input_ref: &'static InputState = Box::leak(Box::new(input));
+    let font = super::super::font::create_debug_font();
+    let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
+    UiContext::new(frame, width, height, input_ref, font_ref)
+  }
+
+  #[test]
+  fn mouse_occluded_blocks_hover() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_hover(200, 200, &mut frame, 50.0, 50.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    assert!(ui.is_hovered(rect), "Should be hovered before occlusion");
+
+    ui.set_mouse_occluded();
+    assert!(!ui.is_hovered(rect), "Should not be hovered after occlusion");
+  }
+
+  #[test]
+  fn mouse_occluded_blocks_click() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    assert!(ui.is_clicked(rect), "Should be clicked before occlusion");
+
+    ui.set_mouse_occluded();
+    assert!(!ui.is_clicked(rect), "Should not be clicked after occlusion");
+  }
+
+  #[test]
+  fn mouse_occluded_blocks_held() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    // Use click helper — mouse_pressed implies mouse_down
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    assert!(ui.is_held(rect), "Should be held before occlusion");
+
+    ui.set_mouse_occluded();
+    assert!(!ui.is_held(rect), "Should not be held after occlusion");
+  }
+
+  #[test]
+  fn mouse_occluded_prevents_button_click() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    ui.set_mouse_occluded();
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    let clicked = ui.button("Test", rect);
+
+    assert!(!clicked, "Button should not register click when occluded");
+    // click_consumed should still be false (button didn't fire)
+    assert!(
+      !ui.click_consumed(),
+      "Click should not be consumed by occluded button"
+    );
+  }
+
+  #[test]
+  fn mouse_not_occluded_by_default() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let ui = create_test_context_with_hover(200, 200, &mut frame, 50.0, 50.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    assert!(
+      ui.is_hovered(rect),
+      "Mouse should not be occluded by default"
+    );
+  }
+
+  #[test]
+  fn mouse_occluded_does_not_affect_rects_outside_mouse() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_hover(200, 200, &mut frame, 50.0, 50.0);
+
+    ui.set_mouse_occluded();
+
+    // Rect that doesn't contain the mouse — is_hovered is false regardless
+    let far_rect = Rect::new(150.0, 150.0, 30.0, 30.0);
+    assert!(!ui.is_hovered(far_rect));
   }
 }

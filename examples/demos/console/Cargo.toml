@@ -1,0 +1,11 @@
+[package]
+name = "console-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ryo2d = { path = "../../.." }
+
+[[bin]]
+name = "console-demo"
+path = "main.rs"

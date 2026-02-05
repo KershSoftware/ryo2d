@@ -1,0 +1,6 @@
+[project]
+name = "Console Demo"
+version = "0.1.0"
+
+[system]
+console = true

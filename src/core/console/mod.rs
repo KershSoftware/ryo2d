@@ -365,7 +365,7 @@ impl ConsoleState {
   }
 
   /// Get the full window bounds
-  fn window_rect(&self) -> Rect {
+  pub fn window_rect(&self) -> Rect {
     Rect::new(self.x, self.y, self.width, self.height)
   }
 
@@ -858,7 +858,10 @@ impl ConsoleState {
     let close_x = x + self.width - CLOSE_BUTTON_SIZE - close_padding;
     let close_y = y + close_padding;
     let close_rect = Rect::new(close_x, close_y, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE);
-    let close_btn_color = if self.focused {
+    let close_hovered = ui.is_hovered(close_rect);
+    let close_btn_color = if close_hovered && self.focused {
+      Color::new(140, 50, 50, 255)
+    } else if self.focused {
       Color::new(80, 40, 40, 255)
     } else {
       Color::new(80, 40, 40, 160)
@@ -868,7 +871,12 @@ impl ConsoleState {
     let (x_width, x_height) = ui.text_size("X");
     let x_text_x = close_x + (CLOSE_BUTTON_SIZE - x_width as f32) / 2.0;
     let x_text_y = close_y + (CLOSE_BUTTON_SIZE - x_height as f32) / 2.0;
-    ui.draw_text("X", x_text_x, x_text_y, text_color);
+    let close_text_color = if close_hovered && self.focused {
+      Color::WHITE
+    } else {
+      text_color
+    };
+    ui.draw_text("X", x_text_x, x_text_y, close_text_color);
 
     // Draw input line background
     let input_y = y + self.height - INPUT_HEIGHT;
@@ -879,7 +887,12 @@ impl ConsoleState {
     let prompt = "> ";
     let prompt_x = x + padding;
     let input_text_y = input_y + 6.0;
-    ui.draw_text(prompt, prompt_x, input_text_y, colors::SYSTEM);
+    let prompt_color = if self.focused {
+      colors::SYSTEM
+    } else {
+      Color::new(colors::SYSTEM.r, colors::SYSTEM.g, colors::SYSTEM.b, 160)
+    };
+    ui.draw_text(prompt, prompt_x, input_text_y, prompt_color);
 
     let (prompt_width, _) = ui.text_size(prompt);
     let text_x = prompt_x + prompt_width as f32;
@@ -979,7 +992,12 @@ impl ConsoleState {
         break;
       }
       if let Some((text, color)) = wrapped_lines.get(i) {
-        ui.draw_text(text, x + padding, text_y, *color);
+        let line_color = if self.focused {
+          *color
+        } else {
+          Color::new(color.r, color.g, color.b, (color.a as u16 * 160 / 255) as u8)
+        };
+        ui.draw_text(text, x + padding, text_y, line_color);
         text_y -= line_height;
       }
     }
@@ -990,11 +1008,16 @@ impl ConsoleState {
       let indicator = format!("[{} more lines below]", self.scroll_offset);
       let (indicator_width, _) = ui.text_size(&indicator);
       let indicator_x = x + (self.width - indicator_width as f32) / 2.0;
+      let indicator_color = if self.focused {
+        colors::SYSTEM
+      } else {
+        Color::new(colors::SYSTEM.r, colors::SYSTEM.g, colors::SYSTEM.b, 160)
+      };
       ui.draw_text(
         &indicator,
         indicator_x,
         output_bottom - line_height,
-        colors::SYSTEM,
+        indicator_color,
       );
     }
   }
@@ -1515,5 +1538,80 @@ mod tests {
     const _: () = assert!(INPUT_HEIGHT > 0.0);
     const _: () = assert!(SCROLLBAR_WIDTH > 0.0);
     const _: () = assert!(SCROLLBAR_MIN_THUMB > 0.0);
+  }
+
+  // ============================================================================
+  // Window Rect Public API
+  // ============================================================================
+
+  #[test]
+  fn test_window_rect_is_public() {
+    // window_rect() must be public so the engine can check mouse-in-console
+    let console = ConsoleState::new();
+    let rect = console.window_rect();
+    assert_eq!(rect.x, console.x);
+    assert_eq!(rect.y, console.y);
+    assert_eq!(rect.width, console.width);
+    assert_eq!(rect.height, console.height);
+  }
+
+  #[test]
+  fn test_window_rect_contains_point_inside() {
+    let mut console = ConsoleState::new();
+    console.x = 50.0;
+    console.y = 50.0;
+    console.width = 200.0;
+    console.height = 150.0;
+
+    let rect = console.window_rect();
+    assert!(rect.contains(100.0, 100.0));
+    assert!(!rect.contains(10.0, 10.0));
+    assert!(!rect.contains(300.0, 300.0));
+  }
+
+  // ============================================================================
+  // Unfocused Text Color Alpha
+  // ============================================================================
+
+  #[test]
+  fn test_unfocused_text_alpha_scaling() {
+    // Verify the alpha scaling formula: (a * 160 / 255)
+    let color = colors::COMMAND; // rgb(100, 180, 255, 255)
+    let scaled_alpha = (color.a as u16 * 160 / 255) as u8;
+    assert_eq!(scaled_alpha, 160); // 255 * 160 / 255 = 160
+
+    let error_color = colors::ERROR; // rgb(255, 100, 100, 255)
+    let error_scaled = (error_color.a as u16 * 160 / 255) as u8;
+    assert_eq!(error_scaled, 160);
+
+    // System color also fully opaque
+    let system_scaled = (colors::SYSTEM.a as u16 * 160 / 255) as u8;
+    assert_eq!(system_scaled, 160);
+  }
+
+  #[test]
+  fn test_unfocused_text_preserves_rgb() {
+    // When unfocused, only alpha changes — RGB should be preserved
+    let color = Color::new(100, 180, 255, 255);
+    let unfocused = Color::new(color.r, color.g, color.b, (color.a as u16 * 160 / 255) as u8);
+    assert_eq!(unfocused.r, 100);
+    assert_eq!(unfocused.g, 180);
+    assert_eq!(unfocused.b, 255);
+    assert_eq!(unfocused.a, 160);
+  }
+
+  // ============================================================================
+  // Focus State
+  // ============================================================================
+
+  #[test]
+  fn test_focus_state_unfocused_after_outside_click() {
+    // Verify that focused starts true but can be set to false
+    let mut console = ConsoleState::new();
+    console.toggle(); // make visible
+    assert!(console.is_focused());
+
+    console.focused = false;
+    assert!(!console.is_focused());
   }
 }

@@ -1922,6 +1922,16 @@ impl Engine {
           self.ui_scale,
         );
 
+        // When the console is visible and the mouse is over it, block all mouse
+        // interaction (hover, click, hold) so game UI underneath can't respond.
+        if self.console_state.visible {
+          let (mx, my) = self.input.mouse_position();
+          if self.console_state.window_rect().contains(mx, my) {
+            ui_ctx.set_mouse_occluded();
+            ui_ctx.consume_click();
+          }
+        }
+
         game.render_ui(&mut ui_ctx);
 
         // Render debug overlays on top of game UI (always visible)
