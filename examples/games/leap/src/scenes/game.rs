@@ -553,8 +553,8 @@ impl GameScene {
                     }
                     GameMode::Client => {
                         self.send_respawn_request();
-                        // Reset camera immediately so player can see the spawn area
-                        self.camera_y = PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD;
+                        // Also respawn locally for immediate feedback
+                        self.respawn_local_player(ctx);
                     }
                 }
             }
@@ -1417,8 +1417,9 @@ impl Scene for GameScene {
                     self.respawn_local_player(ctx);
                 }
                 GameMode::Client => {
-                    // Send respawn request to server
+                    // Send respawn request to server and respawn locally
                     self.send_respawn_request();
+                    self.respawn_local_player(ctx);
                 }
             }
         }
