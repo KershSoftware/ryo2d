@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use gilrs::Gilrs;
 use winit::application::ApplicationHandler;
-use winit::event::{Ime, WindowEvent};
+use winit::event::{Ime, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -718,6 +718,7 @@ impl Engine {
     // Fixed timestep update loop with profile scope
     {
       profile_scope!("cpu:update");
+      let mut first_update = true;
       while self
         .time
         .as_ref()
@@ -736,10 +737,16 @@ impl Engine {
           .unwrap_or(0.0);
         self.update(scaled_dt);
 
+        if first_update {
+          self.input.suppress_oneshots();
+          first_update = false;
+        }
+
         if let Some(time) = &mut self.time {
           time.consume_update();
         }
       }
+      self.input.unsuppress_oneshots();
     }
 
     // Decay hitstop and sync back to time_control
@@ -1903,38 +1910,54 @@ impl Engine {
     // on top of trails, GPU sprites, lighting, and post-processing effects.
     self.ui_buffer.fill(0);
     if let Some(mut game) = self.game.take() {
-      let mut ui_ctx = UiContext::new_scaled(
-        &mut self.ui_buffer,
-        frame_width,
-        frame_height,
-        &self.input,
-        &self.ui_font,
-        self.ui_scale,
-      );
-
-      game.render_ui(&mut ui_ctx);
-
-      // Render debug overlays on top of game UI (always visible)
-      // Render order: stats (top) -> FPS -> frame timing (bottom)
-      if self.config.debug.show_stats {
-        debug::render_stats(&mut ui_ctx, &self.smoothed_stats, frame_height);
-      }
-      if self.config.debug.show_fps {
-        debug::render_fps_counter(
-          &mut ui_ctx,
-          self.smoothed_timings.fps as u64,
+      let click_consumed;
+      let escape_consumed;
+      {
+        let mut ui_ctx = UiContext::new_scaled(
+          &mut self.ui_buffer,
+          frame_width,
           frame_height,
-          self.config.debug.show_frame_timing,
+          &self.input,
+          &self.ui_font,
+          self.ui_scale,
         );
-      }
-      if self.config.debug.show_frame_timing {
-        debug::render_frame_timing(&mut ui_ctx, &self.smoothed_timings, frame_height);
-      }
 
-      // Render developer console on top of everything
-      self
-        .console_state
-        .render(&mut ui_ctx, frame_width, frame_height);
+        game.render_ui(&mut ui_ctx);
+
+        // Render debug overlays on top of game UI (always visible)
+        // Render order: stats (top) -> FPS -> frame timing (bottom)
+        if self.config.debug.show_stats {
+          debug::render_stats(&mut ui_ctx, &self.smoothed_stats, frame_height);
+        }
+        if self.config.debug.show_fps {
+          debug::render_fps_counter(
+            &mut ui_ctx,
+            self.smoothed_timings.fps as u64,
+            frame_height,
+            self.config.debug.show_frame_timing,
+          );
+        }
+        if self.config.debug.show_frame_timing {
+          debug::render_frame_timing(&mut ui_ctx, &self.smoothed_timings, frame_height);
+        }
+
+        // Render developer console on top of everything
+        self
+          .console_state
+          .render(&mut ui_ctx, frame_width, frame_height);
+
+        click_consumed = ui_ctx.click_consumed();
+        escape_consumed = ui_ctx.escape_consumed();
+      } // ui_ctx drops here, releasing &self.input borrow
+
+      // Propagate UI consumption to InputState so consumed events
+      // don't leak to the next frame's update
+      if click_consumed {
+        self.input.consume_mouse_press(MouseButton::Left);
+      }
+      if escape_consumed {
+        self.input.consume_key_press(KeyCode::Escape);
+      }
 
       self.game = Some(game);
     }
@@ -2536,6 +2559,7 @@ impl ApplicationHandler for Engine {
           // This captures the "previous" state that we'll lerp from during rendering
           InterpolationSystem::snapshot(&mut self.world);
 
+          let mut first_update = true;
           while self
             .time
             .as_ref()
@@ -2555,11 +2579,17 @@ impl ApplicationHandler for Engine {
               .scaled_fixed_dt();
             self.update(scaled_dt);
 
+            if first_update {
+              self.input.suppress_oneshots();
+              first_update = false;
+            }
+
             if let Some(time) = &mut self.time {
               time.consume_update();
             }
             did_update = true;
           }
+          self.input.unsuppress_oneshots();
 
           // After all updates: decay hitstop and sync back to time_control
           if let Some(time) = &mut self.time {

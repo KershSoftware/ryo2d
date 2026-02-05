@@ -167,6 +167,11 @@ pub struct InputState {
   left_trigger: f32,
   /// Right trigger value (0.0 to 1.0)
   right_trigger: f32,
+
+  /// When true, one-shot input queries return false/empty.
+  /// Used by the engine to prevent events from firing in subsequent
+  /// fixed timestep updates after the first.
+  oneshots_suppressed: bool,
 }
 
 impl InputState {
@@ -191,6 +196,23 @@ impl InputState {
     // Clear per-frame gamepad state
     self.gamepad_buttons_pressed.clear();
     self.gamepad_buttons_released.clear();
+    // Reset oneshot suppression for the new frame
+    self.oneshots_suppressed = false;
+  }
+
+  /// Suppress one-shot input queries (pressed/released/text).
+  ///
+  /// When suppressed, one-shot queries return false/empty so that events
+  /// only fire in the first fixed timestep update, not subsequent ones.
+  pub(crate) fn suppress_oneshots(&mut self) {
+    self.oneshots_suppressed = true;
+  }
+
+  /// Restore one-shot input queries after suppression.
+  ///
+  /// Called before render so that `render_ui()` can still see one-shot events.
+  pub(crate) fn unsuppress_oneshots(&mut self) {
+    self.oneshots_suppressed = false;
   }
 
   /// Clear only keyboard one-shot events (pressed/released/repeated).
@@ -232,6 +254,9 @@ impl InputState {
   /// }
   /// ```
   pub fn key_pressed_and_consume(&mut self, key: KeyCode) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     self.keys_pressed.remove(&key)
   }
 
@@ -254,6 +279,9 @@ impl InputState {
   /// }
   /// ```
   pub fn mouse_pressed_and_consume(&mut self, button: MouseButton) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     self.mouse_buttons_pressed.remove(&button)
   }
 
@@ -266,6 +294,9 @@ impl InputState {
   ///
   /// Returns `true` if the button was pressed (and is now consumed), `false` otherwise.
   pub fn gamepad_button_pressed_and_consume(&mut self, button: GamepadButton) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     self.gamepad_buttons_pressed.remove(&button)
   }
 
@@ -299,11 +330,17 @@ impl InputState {
 
   /// Returns true if the key was just pressed this frame
   pub fn key_pressed(&self, key: KeyCode) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     self.keys_pressed.contains(&key)
   }
 
   /// Returns true if the key was just released this frame
   pub fn key_released(&self, key: KeyCode) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     self.keys_released.contains(&key)
   }
 
@@ -312,6 +349,9 @@ impl InputState {
   /// Use this for text editing keys like arrows, backspace, delete that
   /// should repeat when held down.
   pub fn key_repeat(&self, key: KeyCode) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     self.keys_repeated.contains(&key)
   }
 
@@ -345,11 +385,17 @@ impl InputState {
 
   /// Returns true if the mouse button was just pressed this frame
   pub fn mouse_pressed(&self, button: MouseButton) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     self.mouse_buttons_pressed.contains(&button)
   }
 
   /// Returns true if the mouse button was just released this frame
   pub fn mouse_released(&self, button: MouseButton) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     self.mouse_buttons_released.contains(&button)
   }
 
@@ -436,11 +482,17 @@ impl InputState {
   ///
   /// Returns an empty string if no text was input this frame.
   pub fn text_input(&self) -> &str {
+    if self.oneshots_suppressed {
+      return "";
+    }
     &self.text_input
   }
 
   /// Check if any text was input this frame.
   pub fn has_text_input(&self) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     !self.text_input.is_empty()
   }
 
@@ -532,11 +584,17 @@ impl InputState {
 
   /// Returns true if the gamepad button was just pressed this frame.
   pub fn gamepad_button_pressed(&self, button: GamepadButton) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     self.gamepad_buttons_pressed.contains(&button)
   }
 
   /// Returns true if the gamepad button was just released this frame.
   pub fn gamepad_button_released(&self, button: GamepadButton) -> bool {
+    if self.oneshots_suppressed {
+      return false;
+    }
     self.gamepad_buttons_released.contains(&button)
   }
 
@@ -1442,5 +1500,162 @@ mod tests {
       input.key_down(KeyCode::ControlLeft),
       "modifier should persist (key still held)"
     );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Oneshot Suppression Tests
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  #[test]
+  fn oneshot_suppression_blocks_pressed_events() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    input.gamepad_buttons_pressed.insert(GamepadButton::South);
+
+    input.suppress_oneshots();
+
+    assert!(!input.key_pressed(KeyCode::Escape));
+    assert!(!input.mouse_pressed(MouseButton::Left));
+    assert!(!input.gamepad_button_pressed(GamepadButton::South));
+  }
+
+  #[test]
+  fn oneshot_suppression_blocks_released_events() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::Escape, ElementState::Released);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Released);
+    input.gamepad_buttons_released.insert(GamepadButton::South);
+
+    input.suppress_oneshots();
+
+    assert!(!input.key_released(KeyCode::Escape));
+    assert!(!input.mouse_released(MouseButton::Left));
+    assert!(!input.gamepad_button_released(GamepadButton::South));
+  }
+
+  #[test]
+  fn oneshot_suppression_blocks_key_repeat() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::ArrowLeft, ElementState::Pressed);
+
+    assert!(input.key_repeat(KeyCode::ArrowLeft));
+
+    input.suppress_oneshots();
+
+    assert!(!input.key_repeat(KeyCode::ArrowLeft));
+
+    input.unsuppress_oneshots();
+    assert!(input.key_repeat(KeyCode::ArrowLeft));
+  }
+
+  #[test]
+  fn oneshot_suppression_blocks_text_input() {
+    let mut input = InputState::new();
+    input.handle_text_input("hello");
+
+    assert!(input.has_text_input());
+    assert_eq!(input.text_input(), "hello");
+
+    input.suppress_oneshots();
+
+    assert!(!input.has_text_input());
+    assert_eq!(input.text_input(), "");
+  }
+
+  #[test]
+  fn oneshot_suppression_does_not_affect_down_state() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    input.gamepad_buttons_down.insert(GamepadButton::South);
+
+    input.suppress_oneshots();
+
+    assert!(input.key_down(KeyCode::KeyW));
+    assert!(input.mouse_down(MouseButton::Left));
+    assert!(input.gamepad_button_down(GamepadButton::South));
+  }
+
+  #[test]
+  fn suppressed_and_consume_does_not_remove_event() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    input.gamepad_buttons_pressed.insert(GamepadButton::South);
+
+    input.suppress_oneshots();
+
+    // _and_consume should return false WITHOUT removing events
+    assert!(!input.key_pressed_and_consume(KeyCode::Escape));
+    assert!(!input.mouse_pressed_and_consume(MouseButton::Left));
+    assert!(!input.gamepad_button_pressed_and_consume(GamepadButton::South));
+
+    // After unsuppressing, the events should still be there
+    input.unsuppress_oneshots();
+    assert!(input.key_pressed(KeyCode::Escape));
+    assert!(input.mouse_pressed(MouseButton::Left));
+    assert!(input.gamepad_button_pressed(GamepadButton::South));
+  }
+
+  #[test]
+  fn unsuppress_restores_oneshot_visibility() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
+
+    input.suppress_oneshots();
+    assert!(!input.key_pressed(KeyCode::Space));
+
+    input.unsuppress_oneshots();
+    assert!(input.key_pressed(KeyCode::Space));
+  }
+
+  #[test]
+  fn begin_frame_resets_suppression() {
+    let mut input = InputState::new();
+    input.suppress_oneshots();
+
+    input.begin_frame();
+    input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
+
+    // After begin_frame, suppression should be cleared
+    assert!(input.key_pressed(KeyCode::Space));
+  }
+
+  #[test]
+  fn fixed_timestep_simulation() {
+    let mut input = InputState::new();
+
+    // Simulate: key pressed before frame starts
+    input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+
+    // First update sees the events
+    assert!(input.key_pressed(KeyCode::Escape));
+    assert!(input.mouse_pressed(MouseButton::Left));
+
+    // Engine suppresses after first update
+    input.suppress_oneshots();
+
+    // Second update does NOT see them
+    assert!(!input.key_pressed(KeyCode::Escape));
+    assert!(!input.mouse_pressed(MouseButton::Left));
+
+    // Third update does NOT see them
+    assert!(!input.key_pressed(KeyCode::Escape));
+    assert!(!input.mouse_pressed(MouseButton::Left));
+
+    // Engine unsuppresses before render
+    input.unsuppress_oneshots();
+
+    // render_ui CAN see them
+    assert!(input.key_pressed(KeyCode::Escape));
+    assert!(input.mouse_pressed(MouseButton::Left));
+
+    // Continuous state works throughout
+    assert!(input.key_down(KeyCode::Escape));
+    assert!(input.mouse_down(MouseButton::Left));
   }
 }

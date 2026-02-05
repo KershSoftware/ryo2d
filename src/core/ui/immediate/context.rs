@@ -252,6 +252,16 @@ impl<'a> UiContext<'a> {
     self.click_consumed
   }
 
+  /// Consume the mouse click for this frame, preventing other widgets from responding.
+  pub fn consume_click(&mut self) {
+    self.click_consumed = true;
+  }
+
+  /// Consume the escape key for this frame, preventing other widgets from responding.
+  pub fn consume_escape(&mut self) {
+    self.escape_consumed = true;
+  }
+
   /// Check if any dropdown is currently open.
   ///
   /// Useful for knowing whether to handle scene-level input.
@@ -771,7 +781,10 @@ impl<'a> UiContext<'a> {
   pub fn button(&mut self, text: &str, rect: Rect) -> bool {
     let hovered = self.is_hovered(rect);
     let held = self.is_held(rect);
-    let clicked = self.is_clicked(rect);
+    let clicked = !self.click_consumed && self.is_clicked(rect);
+    if clicked {
+      self.click_consumed = true;
+    }
 
     // Use theme colors if available, otherwise use defaults
     let (bg_color, border_color, text_color) = if let Some(theme) = self.theme {
@@ -832,7 +845,10 @@ impl<'a> UiContext<'a> {
   ) -> bool {
     let hovered = self.is_hovered(rect);
     let held = self.is_held(rect);
-    let clicked = self.is_clicked(rect);
+    let clicked = !self.click_consumed && self.is_clicked(rect);
+    if clicked {
+      self.click_consumed = true;
+    }
 
     let bg_color = if held {
       pressed_bg
@@ -1039,7 +1055,10 @@ impl<'a> UiContext<'a> {
   /// * `label` - Optional label text to display next to the checkbox
   pub fn checkbox(&mut self, rect: Rect, checked: &mut bool, label: Option<&str>) -> bool {
     let hovered = self.is_hovered(rect);
-    let clicked = self.is_clicked(rect);
+    let clicked = !self.click_consumed && self.is_clicked(rect);
+    if clicked {
+      self.click_consumed = true;
+    }
 
     // Get colors from theme or use defaults
     let (bg_color, border_color, checkmark_color) = if let Some(theme) = self.theme {
@@ -1102,7 +1121,10 @@ impl<'a> UiContext<'a> {
   /// * `on` - Mutable reference to the toggle state
   pub fn toggle(&mut self, rect: Rect, on: &mut bool) -> bool {
     let hovered = self.is_hovered(rect);
-    let clicked = self.is_clicked(rect);
+    let clicked = !self.click_consumed && self.is_clicked(rect);
+    if clicked {
+      self.click_consumed = true;
+    }
 
     // Get colors from theme or use defaults
     let (track_color, knob_color) = if let Some(theme) = self.theme {
@@ -1196,10 +1218,11 @@ impl<'a> UiContext<'a> {
     let text_x = rect.x + pad_x;
 
     // Handle focus on click
-    let clicked = self.is_clicked(rect);
+    let clicked = !self.click_consumed && self.is_clicked(rect);
     let hovered = self.is_hovered(rect);
 
     if clicked {
+      self.click_consumed = true;
       state.set_focused(true);
 
       // Calculate which character was clicked and position cursor there
@@ -1216,7 +1239,8 @@ impl<'a> UiContext<'a> {
         state.set_cursor_char(char_index.min(text_char_count), false);
       }
     } else if self.input.mouse_pressed(MouseButton::Left) && !hovered {
-      // Click outside unfocuses
+      // Click outside always unfocuses, even if click was consumed by another widget.
+      // This prevents dual-focus when clicking between text inputs rendered in any order.
       state.set_focused(false);
     }
 
@@ -2222,6 +2246,7 @@ impl<'a> UiContext<'a> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use winit::event::ElementState;
 
   fn create_test_context(width: u32, height: u32, frame: &mut [u8]) -> UiContext<'_> {
     let input = InputState::new();
@@ -2381,6 +2406,197 @@ mod tests {
     let (w, h) = ui.text_size("Test");
     assert_eq!(w, 32); // 4 chars * 8px
     assert_eq!(h, 8); // 1 line * 8px
+  }
+
+  // ==========================================================================
+  // Click Consumption Tests
+  // ==========================================================================
+
+  /// Create a test context with a mouse click at the given position.
+  fn create_test_context_with_click(
+    width: u32,
+    height: u32,
+    frame: &mut [u8],
+    click_x: f32,
+    click_y: f32,
+  ) -> UiContext<'_> {
+    let mut input = InputState::new();
+    input.handle_mouse_move(click_x as f64, click_y as f64);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    let input_ref: &'static InputState = Box::leak(Box::new(input));
+    let font = super::super::font::create_debug_font();
+    let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
+    UiContext::new(frame, width, height, input_ref, font_ref)
+  }
+
+  #[test]
+  fn button_consumes_click() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    let clicked = ui.button("Test", rect);
+
+    assert!(clicked, "Button should register click");
+    assert!(ui.click_consumed(), "Click should be consumed after button");
+  }
+
+  #[test]
+  fn second_button_does_not_fire_after_consumed() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    let first = ui.button("First", rect);
+    let second = ui.button("Second", rect);
+
+    assert!(first, "First button should fire");
+    assert!(!second, "Second overlapping button should NOT fire");
+  }
+
+  #[test]
+  fn button_styled_consumes_click() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    let clicked = ui.button_styled(
+      "Test",
+      rect,
+      Color::BLACK,
+      Color::GRAY,
+      Color::WHITE,
+      Color::WHITE,
+    );
+
+    assert!(clicked);
+    assert!(ui.click_consumed());
+  }
+
+  #[test]
+  fn checkbox_consumes_click() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    let mut checked = false;
+    let toggled = ui.checkbox(rect, &mut checked, None);
+
+    assert!(toggled, "Checkbox should register click");
+    assert!(checked, "Checkbox should be checked");
+    assert!(ui.click_consumed(), "Click should be consumed");
+  }
+
+  #[test]
+  fn toggle_consumes_click() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    let mut on = false;
+    let toggled = ui.toggle(rect, &mut on);
+
+    assert!(toggled, "Toggle should register click");
+    assert!(on, "Toggle should be on");
+    assert!(ui.click_consumed(), "Click should be consumed");
+  }
+
+  #[test]
+  fn text_input_consumes_click() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    let mut state = TextInputState::new();
+    ui.text_input(&mut state, rect, "placeholder", 0.016);
+
+    assert!(state.is_focused(), "Text input should be focused");
+    assert!(ui.click_consumed(), "Click should be consumed");
+  }
+
+  #[test]
+  fn consume_click_prevents_button() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    ui.consume_click();
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    let clicked = ui.button("Test", rect);
+
+    assert!(!clicked, "Button should not fire after consume_click");
+  }
+
+  #[test]
+  fn consume_escape_sets_flag() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context(200, 200, &mut frame);
+
+    assert!(!ui.escape_consumed());
+    ui.consume_escape();
+    assert!(ui.escape_consumed());
+  }
+
+  #[test]
+  fn checkbox_not_toggled_when_click_consumed() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 50.0);
+
+    // First widget consumes the click
+    ui.consume_click();
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 100.0);
+    let mut checked = false;
+    let toggled = ui.checkbox(rect, &mut checked, None);
+
+    assert!(!toggled, "Checkbox should not toggle when click consumed");
+    assert!(!checked, "Checkbox state should be unchanged");
+  }
+
+  #[test]
+  fn text_input_unfocuses_even_when_click_consumed() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    // Click at position outside the text input rect
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 180.0, 180.0);
+
+    let rect = Rect::new(10.0, 10.0, 100.0, 30.0);
+    let mut state = TextInputState::new();
+    state.set_focused(true);
+
+    // First, consume the click (simulating another widget handled it)
+    ui.consume_click();
+
+    // Text input should STILL unfocus — clicking outside always unfocuses,
+    // regardless of consumption. This prevents dual-focus when clicking
+    // between text inputs rendered in any order.
+    ui.text_input(&mut state, rect, "placeholder", 0.016);
+    assert!(
+      !state.is_focused(),
+      "Text input should unfocus when clicked outside, even if click was consumed"
+    );
+  }
+
+  #[test]
+  fn clicking_second_text_input_unfocuses_first() {
+    // Simulate two text inputs where field B is rendered before field A.
+    // Clicking on field B should focus B and unfocus A.
+    let mut frame = vec![0u8; 400 * 200 * 4];
+    // Click at position inside field B (right side)
+    let mut ui = create_test_context_with_click(400, 200, &mut frame, 250.0, 20.0);
+
+    let rect_a = Rect::new(10.0, 10.0, 150.0, 30.0);
+    let rect_b = Rect::new(200.0, 10.0, 150.0, 30.0);
+
+    let mut state_a = TextInputState::new();
+    let mut state_b = TextInputState::new();
+    state_a.set_focused(true); // A was previously focused
+
+    // Render B first (it gets the click), then A
+    ui.text_input(&mut state_b, rect_b, "Field B", 0.016);
+    ui.text_input(&mut state_a, rect_a, "Field A", 0.016);
+
+    assert!(state_b.is_focused(), "Field B should be focused");
+    assert!(!state_a.is_focused(), "Field A should be unfocused");
   }
 
   // ==========================================================================
