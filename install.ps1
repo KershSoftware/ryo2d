@@ -152,17 +152,6 @@ $sourceBinary = Join-Path $ScriptDir "target\release\ryo2d.exe"
 Write-Status "Installing" "ryo2d.exe to $InstallDir"
 Copy-Item $sourceBinary $BinaryPath -Force
 
-# Copy skills directory for install-skills command
-$sourceSkills = Join-Path $ScriptDir ".github\skills"
-$targetSkills = Join-Path (Split-Path $InstallDir) "skills"
-if (Test-Path $sourceSkills) {
-  Write-Status "Installing" "Agent Skills to $(Split-Path $InstallDir)\skills"
-  if (Test-Path $targetSkills) {
-    Remove-Item $targetSkills -Recurse -Force
-  }
-  Copy-Item $sourceSkills $targetSkills -Recurse -Force
-}
-
 # Install engine source for game projects to reference
 $engineDir = Join-Path (Split-Path $InstallDir) "engine"
 Write-Status "Installing" "ryo2d engine source to $(Split-Path $InstallDir)\engine"

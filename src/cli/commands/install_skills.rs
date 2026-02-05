@@ -33,67 +33,142 @@ impl SkillsPlatform {
   }
 }
 
-/// Available skills to install
-const AVAILABLE_SKILLS: &[(&str, &str)] = &[
+/// Embedded skills: (name, description, SKILL.md content)
+const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
   (
-    "ryo-api",
-    "Complete API reference for ryo2d::prelude - all types, methods, and signatures",
+    "general-debug",
+    "Systematic logic error isolation",
+    include_str!("../../../.github/skills/general-debug/SKILL.md"),
+  ),
+  (
+    "general-security",
+    "Auditing for unsafe code and secrets",
+    include_str!("../../../.github/skills/general-security/SKILL.md"),
+  ),
+  (
+    "general-syntax",
+    "Basic syntax error resolution",
+    include_str!("../../../.github/skills/general-syntax/SKILL.md"),
+  ),
+  (
+    "lint-hunter",
+    "Debugging compiler errors and tracing lifetimes",
+    include_str!("../../../.github/skills/lint-hunter/SKILL.md"),
+  ),
+  (
+    "pest-specialist",
+    "Generating PEG parsers with pest",
+    include_str!("../../../.github/skills/pest-specialist/SKILL.md"),
+  ),
+  (
+    "ron-specialist",
+    "Managing configuration and serialization",
+    include_str!("../../../.github/skills/ron-specialist/SKILL.md"),
+  ),
+  (
+    "router",
+    "Analyzing user intent and delegating tasks",
+    include_str!("../../../.github/skills/router/SKILL.md"),
+  ),
+  (
+    "rust-core",
+    "Implementing idiomatic, safe, and performant Rust code",
+    include_str!("../../../.github/skills/rust-core/SKILL.md"),
   ),
   (
     "ryo-animation",
     "Sprite animations, Animator component, AnimationController state machines",
+    include_str!("../../../.github/skills/ryo-animation/SKILL.md"),
+  ),
+  (
+    "ryo-api",
+    "Complete API reference for ryo2d::prelude - all types, methods, and signatures",
+    include_str!("../../../.github/skills/ryo-api/SKILL.md"),
   ),
   (
     "ryo-audio",
     "Sound effects and music with Kira audio backend",
+    include_str!("../../../.github/skills/ryo-audio/SKILL.md"),
   ),
   (
     "ryo-cli",
     "Using the ryo2d CLI for building, running, and developing games",
+    include_str!("../../../.github/skills/ryo-cli/SKILL.md"),
   ),
   (
     "ryo-config-save",
     "Project configuration (Ryo.toml), user settings (system.json), and the 3-tier save system",
+    include_str!("../../../.github/skills/ryo-config-save/SKILL.md"),
+  ),
+  (
+    "ryo-console",
+    "Developer console system - commands, registration, debugging overlays",
+    include_str!("../../../.github/skills/ryo-console/SKILL.md"),
   ),
   (
     "ryo-controller",
     "Gamepad/controller input handling with gilrs - buttons, sticks, triggers",
+    include_str!("../../../.github/skills/ryo-controller/SKILL.md"),
   ),
   (
     "ryo-ecs-internals",
     "Working on the hecs wrapper, adding components, and ECS patterns",
+    include_str!("../../../.github/skills/ryo-ecs-internals/SKILL.md"),
   ),
   (
     "ryo-engine-dev",
     "Working on the Ryo2D engine - architecture, systems, public API",
+    include_str!("../../../.github/skills/ryo-engine-dev/SKILL.md"),
   ),
   (
     "ryo-events",
     "Event bus system for decoupled inter-system communication",
+    include_str!("../../../.github/skills/ryo-events/SKILL.md"),
   ),
   (
     "ryo-game-dev",
     "Building games with Ryo2D engine - ECS, entities, scenes, input",
+    include_str!("../../../.github/skills/ryo-game-dev/SKILL.md"),
+  ),
+  (
+    "ryo-lighting",
+    "2D lighting system - lights, shadows, ambient occlusion, volumetric effects",
+    include_str!("../../../.github/skills/ryo-lighting/SKILL.md"),
   ),
   (
     "ryo-network",
     "Multiplayer networking - client-server, replication, RPCs, WebRTC NAT traversal",
+    include_str!("../../../.github/skills/ryo-network/SKILL.md"),
+  ),
+  (
+    "ryo-particles",
+    "Particle system - emitters, attractors, collisions, presets for visual effects",
+    include_str!("../../../.github/skills/ryo-particles/SKILL.md"),
   ),
   (
     "ryo-physics",
     "Rapier2D physics integration - colliders, rigid bodies, events",
+    include_str!("../../../.github/skills/ryo-physics/SKILL.md"),
   ),
   (
     "ryo-procgen",
     "Procedural generation framework for dungeons, caves, terrain, and more",
+    include_str!("../../../.github/skills/ryo-procgen/SKILL.md"),
+  ),
+  (
+    "ryo-profiler",
+    "Profiling Ryo2D games and engine - puffin integration, profiler window, performance analysis",
+    include_str!("../../../.github/skills/ryo-profiler/SKILL.md"),
   ),
   (
     "ryo-renderer",
     "Working on the wgpu renderer, shaders, and GPU batching",
+    include_str!("../../../.github/skills/ryo-renderer/SKILL.md"),
   ),
   (
     "ryo-ui",
     "Hybrid UI system for HUDs, menus, settings screens, and in-game interfaces",
+    include_str!("../../../.github/skills/ryo-ui/SKILL.md"),
   ),
 ];
 
@@ -127,28 +202,22 @@ pub fn install_skills_to_dir(
     println!();
     println!("Installing Ryo2D Agent Skills for {}:", platform.name());
     println!();
-    for (name, desc) in AVAILABLE_SKILLS {
+    for (name, desc, _) in EMBEDDED_SKILLS {
       println!("  • {} - {}", name, desc);
     }
     println!();
   }
 
-  // Install all skills
-  let skills_to_install: Vec<&str> = AVAILABLE_SKILLS.iter().map(|(name, _)| *name).collect();
-
   // Create skills directory
   fs::create_dir_all(&skills_dir)
     .map_err(|e| CliError::Other(format!("Failed to create skills directory: {}", e)))?;
 
-  // Get engine skills directory (bundled with ryo2d)
-  let engine_skills_dir = get_engine_skills_dir()?;
-
-  // Install selected skills
-  for skill_name in skills_to_install {
+  // Install all embedded skills
+  for (name, _, content) in EMBEDDED_SKILLS {
     if !quiet {
-      Output::status("Installing", skill_name);
+      Output::status("Installing", name);
     }
-    install_skill(&engine_skills_dir, &skills_dir, skill_name)?;
+    install_skill(&skills_dir, name, content)?;
   }
 
   // Update .gitignore
@@ -210,68 +279,18 @@ fn prompt_platform_selection() -> CliResult<SkillsPlatform> {
   }
 }
 
-/// Get the engine's skills directory
-fn get_engine_skills_dir() -> CliResult<PathBuf> {
-  // Priority order:
-  // 1. Installed location (next to binary) - for production installs
-  // 2. Development location (CARGO_MANIFEST_DIR) - for cargo run
-
-  // Try relative to binary location (for installed ryo2d)
-  if let Ok(exe) = std::env::current_exe()
-    && let Some(parent) = exe.parent()
-  {
-    // Windows: %LOCALAPPDATA%\ryo2d\bin\ryo2d.exe -> %LOCALAPPDATA%\ryo2d\skills
-    // Unix: ~/.ryo2d/bin/ryo2d -> ~/.ryo2d/skills
-    let bundled = parent.parent().map(|p| p.join("skills"));
-    if let Some(path) = bundled
-      && path.exists()
-    {
-      return Ok(path);
-    }
-
-    // Fallback: check directly next to binary (old behavior)
-    let bundled = parent.join("skills");
-    if bundled.exists() {
-      return Ok(bundled);
-    }
-  }
-
-  // Try to locate ryo2d workspace (for development)
-  if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-    let dev_skills = PathBuf::from(manifest_dir).join(".github").join("skills");
-    if dev_skills.exists() {
-      return Ok(dev_skills);
-    }
-  }
-
-  Err(CliError::Other(
-    "Could not locate Ryo2D skills directory. Please reinstall ryo2d using the install script."
-      .to_string(),
-  ))
-}
-
-/// Install a single skill
-fn install_skill(engine_skills_dir: &Path, target_dir: &Path, skill_name: &str) -> CliResult<()> {
-  let source = engine_skills_dir.join(skill_name);
+/// Install a single skill from embedded content
+fn install_skill(target_dir: &Path, skill_name: &str, content: &str) -> CliResult<()> {
   let target = target_dir.join(skill_name);
-
-  if !source.exists() {
-    return Err(CliError::Other(format!(
-      "Skill '{}' not found in engine directory",
-      skill_name
-    )));
-  }
 
   // Create target skill directory
   fs::create_dir_all(&target)
     .map_err(|e| CliError::Other(format!("Failed to create skill directory: {}", e)))?;
 
-  // Copy SKILL.md
-  let source_skill_md = source.join("SKILL.md");
+  // Write SKILL.md from embedded content
   let target_skill_md = target.join("SKILL.md");
-
-  fs::copy(&source_skill_md, &target_skill_md)
-    .map_err(|e| CliError::Other(format!("Failed to copy SKILL.md for {}: {}", skill_name, e)))?;
+  fs::write(&target_skill_md, content)
+    .map_err(|e| CliError::Other(format!("Failed to write SKILL.md for {}: {}", skill_name, e)))?;
 
   Ok(())
 }

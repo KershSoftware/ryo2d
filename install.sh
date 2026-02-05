@@ -184,15 +184,6 @@ status "Installing" "ryo2d to $INSTALL_DIR"
 cp "$source_binary" "$BINARY_PATH"
 chmod +x "$BINARY_PATH"
 
-# Copy skills directory for install-skills command
-source_skills="$SCRIPT_DIR/.github/skills"
-target_skills="$HOME/.ryo2d/skills"
-if [ -d "$source_skills" ]; then
-    status "Installing" "Agent Skills to ~/.ryo2d/skills"
-    rm -rf "$target_skills"
-    cp -r "$source_skills" "$target_skills"
-fi
-
 # Install engine source for game projects to reference
 engine_dir="$HOME/.ryo2d/engine"
 status "Installing" "ryo2d engine source to ~/.ryo2d/engine"
