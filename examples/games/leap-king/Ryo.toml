@@ -36,12 +36,9 @@ show_fps = false
 # ==============================================================================
 
 [debug]
-# Show collision boundaries for debugging
-show_colliders = false
-# Show velocity vectors (useful for physics debugging)
-show_velocities = false
-# Show entity origin points
-show_origins = false
+show_colliders = true
+show_velocities = true
+show_origins = true
 
 # ==============================================================================
 # RELEASE/DISTRIBUTION SETTINGS

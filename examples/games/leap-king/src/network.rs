@@ -4,7 +4,7 @@ use ryo2d::core::network::action::{ActionContext, NetworkAction};
 use ryo2d::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{LeapInput, LeapState, Player, PlayerVelocity};
+use crate::components::{LeapInput, LeapState, Player};
 
 /// Client -> Server: Player leap input
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,9 +160,9 @@ impl NetworkAction for RespawnAction {
     }
 
     // Reset velocity
-    if let Some(mut vel) = ctx.world.get_component_mut::<PlayerVelocity>(entity) {
-      vel.x = 0.0;
-      vel.y = 0.0;
+    if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+      vel.dx = 0.0;
+      vel.dy = 0.0;
     }
 
     // Reset player state

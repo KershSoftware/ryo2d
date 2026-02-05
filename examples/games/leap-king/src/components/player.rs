@@ -112,19 +112,6 @@ impl Player {
   }
 }
 
-/// Player velocity (custom because we handle physics manually)
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PlayerVelocity {
-  pub x: f32,
-  pub y: f32,
-}
-
-impl PlayerVelocity {
-  pub fn zero() -> Self {
-    Self { x: 0.0, y: 0.0 }
-  }
-}
-
 /// Platform marker component
 #[derive(Debug, Clone, Copy)]
 pub struct Platform {

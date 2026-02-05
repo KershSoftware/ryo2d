@@ -11,7 +11,7 @@
 //! - Arrow keys or WASD or controller joysticks: Aim while charging
 //! - ESC or controller Start: Menu/Quit
 
-use leap::prelude::*;
+use leap_king::prelude::*;
 use ryo2d::prelude::*;
 
 fn main() {

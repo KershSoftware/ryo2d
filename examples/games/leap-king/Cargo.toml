@@ -1,16 +1,16 @@
 [package]
-name = "leap"
+name = "leap-king"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 description = "Leap King - Multiplayer platformer where players leap in arc trajectories"
 build = "build.rs"
 
 [[bin]]
-name = "leap"
+name = "leap-king"
 path = "main.rs"
 
 [lib]
-name = "leap"
+name = "leap_king"
 path = "src/lib.rs"
 
 [features]

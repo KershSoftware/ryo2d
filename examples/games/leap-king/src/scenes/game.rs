@@ -538,44 +538,44 @@ impl GameScene {
     for entity in lamp_entities {
       let lamp_data = ctx.world.get_component::<PlatformLamp>(entity).map(|l| *l);
 
-      if let Some(lamp) = lamp_data
-        && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity)
-      {
-        let t = self.elapsed_time;
-        let p = lamp.phase;
-        let speed = LAMP_OSCILLATE_SPEED * lamp.speed_mult;
+      if let Some(lamp) = lamp_data {
+        if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+          let t = self.elapsed_time;
+          let p = lamp.phase;
+          let speed = LAMP_OSCILLATE_SPEED * lamp.speed_mult;
 
-        // Horizontal travel range - lamp travels most of platform width
-        let travel_range = (lamp.platform_width - LAMP_OFFSET_X * 2.0) * 0.45;
+          // Horizontal travel range - lamp travels most of platform width
+          let travel_range = (lamp.platform_width - LAMP_OFFSET_X * 2.0) * 0.45;
 
-        // Fairy-like floating motion using Lissajous curves with per-lamp speed
-        // Primary smooth figure-8 motion
-        let fairy_x = (t * speed * 0.7 + p).sin() * (t * speed * 0.3 + p * 0.5).cos();
-        let fairy_y = (t * speed * 0.5 + p * 1.3).sin();
+          // Fairy-like floating motion using Lissajous curves with per-lamp speed
+          // Primary smooth figure-8 motion
+          let fairy_x = (t * speed * 0.7 + p).sin() * (t * speed * 0.3 + p * 0.5).cos();
+          let fairy_y = (t * speed * 0.5 + p * 1.3).sin();
 
-        // Secondary gentle drift overlay
-        let drift_x = (t * speed * 0.15 + p * 2.1).sin() * 0.5
-          + (t * speed * 0.08 + p * 0.7).cos() * 0.3;
-        let drift_y = (t * speed * 0.25 + p * 1.7).cos() * 0.3
-          + (t * speed * 0.12 + p * 2.3).sin() * 0.2;
+          // Secondary gentle drift overlay
+          let drift_x = (t * speed * 0.15 + p * 2.1).sin() * 0.5
+            + (t * speed * 0.08 + p * 0.7).cos() * 0.3;
+          let drift_y = (t * speed * 0.25 + p * 1.7).cos() * 0.3
+            + (t * speed * 0.12 + p * 2.3).sin() * 0.2;
 
-        // Horizontal movement scaled to platform width
-        let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
-        let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
+          // Horizontal movement scaled to platform width
+          let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
+          let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
 
-        // Occasional subtle jitter (reduced frequency and intensity)
-        let flicker_seed = ((t * 5.0 * lamp.speed_mult + p * 11.0).sin() * 1000.0).abs() % 1.0;
-        let flicker = if flicker_seed > 0.95 {
-          // Rare quick jitter
-          let jx = ((t * 31.0 + p).sin() * 2.0).signum() * 1.5;
-          let jy = ((t * 37.0 + p).cos() * 2.0).signum() * 1.0;
-          (jx, jy)
-        } else {
-          (0.0, 0.0)
-        };
+          // Occasional subtle jitter (reduced frequency and intensity)
+          let flicker_seed = ((t * 5.0 * lamp.speed_mult + p * 11.0).sin() * 1000.0).abs() % 1.0;
+          let flicker = if flicker_seed > 0.95 {
+            // Rare quick jitter
+            let jx = ((t * 31.0 + p).sin() * 2.0).signum() * 1.5;
+            let jy = ((t * 37.0 + p).cos() * 2.0).signum() * 1.0;
+            (jx, jy)
+          } else {
+            (0.0, 0.0)
+          };
 
-        transform.x = lamp.base_x + offset_x + flicker.0;
-        transform.y = lamp.base_y + offset_y + flicker.1;
+          transform.x = lamp.base_x + offset_x + flicker.0;
+          transform.y = lamp.base_y + offset_y + flicker.1;
+        }
       }
     }
 
@@ -583,31 +583,31 @@ impl GameScene {
     for entity in &self.lamp_dust_emitters {
       let lamp_data = ctx.world.get_component::<PlatformLamp>(*entity).map(|l| *l);
 
-      if let Some(lamp) = lamp_data
-        && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(*entity)
-      {
-        let t = self.elapsed_time;
-        let p = lamp.phase;
-        let speed = LAMP_OSCILLATE_SPEED * lamp.speed_mult;
+      if let Some(lamp) = lamp_data {
+        if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(*entity) {
+          let t = self.elapsed_time;
+          let p = lamp.phase;
+          let speed = LAMP_OSCILLATE_SPEED * lamp.speed_mult;
 
-        // Horizontal travel range - same as lamps
-        let travel_range = (lamp.platform_width - LAMP_OFFSET_X * 2.0) * 0.45;
+          // Horizontal travel range - same as lamps
+          let travel_range = (lamp.platform_width - LAMP_OFFSET_X * 2.0) * 0.45;
 
-        // Same fairy-like motion as lamps (without jitter)
-        let fairy_x = (t * speed * 0.7 + p).sin() * (t * speed * 0.3 + p * 0.5).cos();
-        let fairy_y = (t * speed * 0.5 + p * 1.3).sin();
+          // Same fairy-like motion as lamps (without jitter)
+          let fairy_x = (t * speed * 0.7 + p).sin() * (t * speed * 0.3 + p * 0.5).cos();
+          let fairy_y = (t * speed * 0.5 + p * 1.3).sin();
 
-        let drift_x = (t * speed * 0.15 + p * 2.1).sin() * 0.5
-          + (t * speed * 0.08 + p * 0.7).cos() * 0.3;
-        let drift_y = (t * speed * 0.25 + p * 1.7).cos() * 0.3
-          + (t * speed * 0.12 + p * 2.3).sin() * 0.2;
+          let drift_x = (t * speed * 0.15 + p * 2.1).sin() * 0.5
+            + (t * speed * 0.08 + p * 0.7).cos() * 0.3;
+          let drift_y = (t * speed * 0.25 + p * 1.7).cos() * 0.3
+            + (t * speed * 0.12 + p * 2.3).sin() * 0.2;
 
-        // Horizontal movement scaled to platform width
-        let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
-        let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
+          // Horizontal movement scaled to platform width
+          let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
+          let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
 
-        transform.x = lamp.base_x + offset_x;
-        transform.y = lamp.base_y + offset_y;
+          transform.x = lamp.base_x + offset_x;
+          transform.y = lamp.base_y + offset_y;
+        }
       }
     }
   }
@@ -656,11 +656,11 @@ impl GameScene {
 
   fn update_rain(&mut self, ctx: &mut SceneContext) {
     // Keep rain emitter above the camera
-    if let Some(rain_entity) = self.rain_emitter
-      && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(rain_entity)
-    {
-      transform.x = SCREEN_WIDTH as f32 / 2.0;
-      transform.y = self.camera_y - SCREEN_HEIGHT as f32 / 2.0; // Top of visible area
+    if let Some(rain_entity) = self.rain_emitter {
+      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(rain_entity) {
+        transform.x = SCREEN_WIDTH as f32 / 2.0;
+        transform.y = self.camera_y - SCREEN_HEIGHT as f32 / 2.0; // Top of visible area
+      }
     }
   }
 
@@ -832,7 +832,7 @@ impl GameScene {
       .with_z_order(Z_PLAYER),
       Collider::box_collider(PLAYER_WIDTH, PLAYER_HEIGHT),
       Player::new(slot),
-      PlayerVelocity::zero(),
+      Velocity::zero(),
       predicted,
     ));
 
@@ -959,23 +959,30 @@ impl GameScene {
     player_bottom: f32,
   ) -> Option<(f32, f32)> {
     // Revert old checkpoint platform to normal color (if it exists and isn't spawn platform)
-    if let Some(old_platform) = self.checkpoint_platform
-      && let Some(platform) = ctx.world.get_component::<Platform>(old_platform)
-      && !platform.is_spawn
-      && let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(old_platform)
-    {
-      let new_sprite = SpriteHandle::from_sprite(
-        Sprite::solid_rect(
-          platform.width as u32,
-          PLATFORM_HEIGHT as u32,
-          PLATFORM_COLOR.0,
-          PLATFORM_COLOR.1,
-          PLATFORM_COLOR.2,
-          255,
-        ),
-        format!("platform_normal_{}", old_platform.id()),
-      );
-      renderable.sprite = new_sprite;
+    if let Some(old_platform) = self.checkpoint_platform {
+      // Get platform info first (releases borrow before mutable borrow)
+      let platform_width = ctx
+        .world
+        .get_component::<Platform>(old_platform)
+        .filter(|p| !p.is_spawn)
+        .map(|p| p.width);
+
+      if let Some(width) = platform_width {
+        if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(old_platform) {
+          let new_sprite = SpriteHandle::from_sprite(
+            Sprite::solid_rect(
+              width as u32,
+              PLATFORM_HEIGHT as u32,
+              PLATFORM_COLOR.0,
+              PLATFORM_COLOR.1,
+              PLATFORM_COLOR.2,
+              255,
+            ),
+            format!("platform_normal_{}", old_platform.id()),
+          );
+          renderable.sprite = new_sprite;
+        }
+      }
     }
 
     // Find the platform the player is standing on
@@ -1152,7 +1159,7 @@ impl GameScene {
     let stick_x = ctx.input.left_stick_x();
     let stick_y = ctx.input.left_stick_y();
     let stick_magnitude = (stick_x * stick_x + stick_y * stick_y).sqrt();
-    let stick_active = stick_magnitude > 0.15; // Lower deadzone for better diagonal response
+    let stick_active = stick_magnitude > 0.1; // Low deadzone for responsive diagonal input
 
     // Collect input values
     let mut charging = false;
@@ -1180,8 +1187,9 @@ impl GameScene {
           let norm_x = stick_x / stick_magnitude;
 
           // Horizontal: pull left = launch right, pull right = launch left
-          // Lower threshold for better diagonal response
-          if norm_x.abs() > 0.2 {
+          // Very low threshold - even slight horizontal bias sets direction
+          // This makes bottom-left/bottom-right corners much more forgiving
+          if norm_x.abs() > 0.05 {
             facing_right = norm_x < 0.0; // Pull left (negative) = face right
           }
 
@@ -1266,9 +1274,9 @@ impl GameScene {
 
           drop(player);
 
-          if let Some(mut vel) = ctx.world.get_component_mut::<PlayerVelocity>(entity) {
-            vel.x = vx;
-            vel.y = vy;
+          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+            vel.dx = vx;
+            vel.dy = vy;
           }
 
           if let Some(mut p) = ctx.world.get_component_mut::<Player>(entity) {
@@ -1320,15 +1328,15 @@ impl GameScene {
       }
 
       // Apply gravity
-      if let Some(mut vel) = ctx.world.get_component_mut::<PlayerVelocity>(entity) {
-        vel.y += GRAVITY * dt;
+      if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+        vel.dy += GRAVITY * dt;
       }
 
       // Get velocity
       let vel = ctx
         .world
-        .get_component::<PlayerVelocity>(entity)
-        .map(|v| (v.x, v.y));
+        .get_component::<Velocity>(entity)
+        .map(|v| (v.dx, v.dy));
 
       if let Some((vx, vy)) = vel {
         // Store previous Y for sweep collision
@@ -1414,9 +1422,9 @@ impl GameScene {
         transform.y = plat_top - PLAYER_HEIGHT;
       }
 
-      if let Some(mut vel) = ctx.world.get_component_mut::<PlayerVelocity>(player_entity) {
-        vel.x = 0.0;
-        vel.y = 0.0;
+      if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(player_entity) {
+        vel.dx = 0.0;
+        vel.dy = 0.0;
       }
 
       if let Some(mut player) = ctx.world.get_component_mut::<Player>(player_entity) {
@@ -1443,18 +1451,22 @@ impl GameScene {
     }
 
     // Collect player data to avoid borrow issues
-    let player_data: Vec<(Entity, f32, f32, f32, bool)> = self
+    // Include offset_x and scale_x for accurate visual collision
+    let player_data: Vec<(Entity, f32, f32, f32, f32, f32, f32, bool)> = self
       .players
       .values()
       .filter_map(|&entity| {
         let transform = ctx.world.get_component::<Transform>(entity)?;
-        let vel = ctx.world.get_component::<PlayerVelocity>(entity)?;
+        let vel = ctx.world.get_component::<Velocity>(entity)?;
         let player = ctx.world.get_component::<Player>(entity)?;
         Some((
           entity,
           transform.x,
           transform.y,
-          vel.y,
+          transform.offset_x,
+          transform.scale_x,
+          transform.scale_y,
+          vel.dy,
           player.leap_state.is_airborne(),
         ))
       })
@@ -1463,19 +1475,26 @@ impl GameScene {
     // Check each pair of players
     for i in 0..player_data.len() {
       for j in (i + 1)..player_data.len() {
-        let (entity_a, ax, ay, avy, a_airborne) = player_data[i];
-        let (entity_b, bx, by, bvy, b_airborne) = player_data[j];
+        let (entity_a, ax, ay, a_offset_x, a_scale_x, a_scale_y, avy, a_airborne) = player_data[i];
+        let (entity_b, bx, by, b_offset_x, b_scale_x, b_scale_y, bvy, b_airborne) = player_data[j];
 
-        // Check bounding box overlap
-        let a_left = ax;
-        let a_right = ax + PLAYER_WIDTH;
+        // Calculate visual bounds accounting for offset and scale
+        // When squishing, the sprite gets wider but stays centered, so offset by half the extra width
+        let a_visual_width = PLAYER_WIDTH * a_scale_x;
+        let a_visual_height = PLAYER_HEIGHT * a_scale_y;
+        let a_width_offset = (a_visual_width - PLAYER_WIDTH) / 2.0;
+        let a_left = ax + a_offset_x - a_width_offset;
+        let a_right = a_left + a_visual_width;
         let a_top = ay;
-        let a_bottom = ay + PLAYER_HEIGHT;
+        let a_bottom = ay + a_visual_height;
 
-        let b_left = bx;
-        let b_right = bx + PLAYER_WIDTH;
+        let b_visual_width = PLAYER_WIDTH * b_scale_x;
+        let b_visual_height = PLAYER_HEIGHT * b_scale_y;
+        let b_width_offset = (b_visual_width - PLAYER_WIDTH) / 2.0;
+        let b_left = bx + b_offset_x - b_width_offset;
+        let b_right = b_left + b_visual_width;
         let b_top = by;
-        let b_bottom = by + PLAYER_HEIGHT;
+        let b_bottom = by + b_visual_height;
 
         // Check horizontal overlap
         let h_overlap = a_right > b_left && a_left < b_right;
@@ -1494,8 +1513,8 @@ impl GameScene {
         // Player A landing on B's head
         if a_airborne && avy > 0.0 && a_bottom <= b_top + HEAD_BOUNCE_ZONE && a_bottom >= b_top {
           // A is landing on B's head - bounce A up
-          if let Some(mut vel) = ctx.world.get_component_mut::<PlayerVelocity>(entity_a) {
-            vel.y = HEAD_BOUNCE_VELOCITY;
+          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity_a) {
+            vel.dy = HEAD_BOUNCE_VELOCITY;
           }
           // Play a subtle sound
           if let Some(audio) = &mut ctx.audio {
@@ -1507,8 +1526,8 @@ impl GameScene {
         // Player B landing on A's head
         if b_airborne && bvy > 0.0 && b_bottom <= a_top + HEAD_BOUNCE_ZONE && b_bottom >= a_top {
           // B is landing on A's head - bounce B up
-          if let Some(mut vel) = ctx.world.get_component_mut::<PlayerVelocity>(entity_b) {
-            vel.y = HEAD_BOUNCE_VELOCITY;
+          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity_b) {
+            vel.dy = HEAD_BOUNCE_VELOCITY;
           }
           if let Some(audio) = &mut ctx.audio {
             let _ = audio.play_sound_with("land", SoundOptions::new().volume(0.03));
@@ -1519,9 +1538,9 @@ impl GameScene {
         // Subtle horizontal push when overlapping (only if not a head bounce situation)
         // Only push if there's more horizontal than vertical overlap (side collision)
         if h_overlap_amount < v_overlap_amount * 2.0 {
-          // Determine push direction based on center positions
-          let a_center = ax + PLAYER_WIDTH / 2.0;
-          let b_center = bx + PLAYER_WIDTH / 2.0;
+          // Determine push direction based on visual center positions
+          let a_center = (a_left + a_right) / 2.0;
+          let b_center = (b_left + b_right) / 2.0;
 
           // Push away from each other using knockback component
           let (dir_a, dir_b) = if a_center < b_center {
@@ -1533,8 +1552,11 @@ impl GameScene {
           };
 
           // Apply knockback to player A
-          if let Some(mut kb) = ctx.world.get_component_mut::<Knockback>(entity_a) {
-            kb.apply(dir_a, PLAYER_PUSH_FORCE);
+          let has_kb_a = ctx.world.get_component::<Knockback>(entity_a).is_some();
+          if has_kb_a {
+            if let Some(mut kb) = ctx.world.get_component_mut::<Knockback>(entity_a) {
+              kb.apply(dir_a, PLAYER_PUSH_FORCE);
+            }
           } else {
             let _ = ctx.world.insert_one(
               entity_a,
@@ -1543,8 +1565,11 @@ impl GameScene {
           }
 
           // Apply knockback to player B
-          if let Some(mut kb) = ctx.world.get_component_mut::<Knockback>(entity_b) {
-            kb.apply(dir_b, PLAYER_PUSH_FORCE);
+          let has_kb_b = ctx.world.get_component::<Knockback>(entity_b).is_some();
+          if has_kb_b {
+            if let Some(mut kb) = ctx.world.get_component_mut::<Knockback>(entity_b) {
+              kb.apply(dir_b, PLAYER_PUSH_FORCE);
+            }
           } else {
             let _ = ctx.world.insert_one(
               entity_b,
@@ -1560,10 +1585,10 @@ impl GameScene {
     // Find highest player Y
     let mut highest_y = self.highest_player_y;
     for &entity in self.players.values() {
-      if let Some(transform) = ctx.world.get_component::<Transform>(entity)
-        && transform.y < highest_y
-      {
-        highest_y = transform.y;
+      if let Some(transform) = ctx.world.get_component::<Transform>(entity) {
+        if transform.y < highest_y {
+          highest_y = transform.y;
+        }
       }
     }
     self.highest_player_y = highest_y;
@@ -1684,13 +1709,14 @@ impl GameScene {
             &init_rpc,
             self.local_client_id.unwrap(),
             RpcTarget::Client(client_id),
-          ) && let Ok(bytes) = serialized.to_bytes()
-          {
-            self
-              .server
-              .as_mut()
-              .unwrap()
-              .send(client_id, Channel::ReliableOrdered, &bytes);
+          ) {
+            if let Ok(bytes) = serialized.to_bytes() {
+              self
+                .server
+                .as_mut()
+                .unwrap()
+                .send(client_id, Channel::ReliableOrdered, &bytes);
+            }
           }
 
           // Show connection notification
@@ -1754,16 +1780,16 @@ impl GameScene {
         while let Some(data) = server.receive(client_id, Channel::ReliableOrdered) {
           if let Ok(serialized) = SerializedRpc::from_bytes(&data) {
             // Try to parse as LeapInputRpc
-            if let Ok(rpc) = serialized.clone().into_rpc::<LeapInputRpc>()
-              && let Some(&entity) = self.players.get(&client_id)
-            {
-              pending_inputs.push((entity, rpc.payload.input));
+            if let Ok(rpc) = serialized.clone().into_rpc::<LeapInputRpc>() {
+              if let Some(&entity) = self.players.get(&client_id) {
+                pending_inputs.push((entity, rpc.payload.input));
+              }
             }
             // Try to parse as RespawnRpc
-            else if serialized.clone().into_rpc::<RespawnRpc>().is_ok()
-              && let Some(&entity) = self.players.get(&client_id)
-            {
-              pending_respawns.push(entity);
+            else if serialized.clone().into_rpc::<RespawnRpc>().is_ok() {
+              if let Some(&entity) = self.players.get(&client_id) {
+                pending_respawns.push(entity);
+              }
             }
             // Try to parse as SessionReconnectRpc
             else if let Ok(rpc) = serialized.into_rpc::<SessionReconnectRpc>() {
@@ -1792,13 +1818,14 @@ impl GameScene {
           &init_rpc,
           self.local_client_id.unwrap(),
           RpcTarget::Client(client_id),
-        ) && let Ok(bytes) = serialized.to_bytes()
-        {
-          self
-            .server
-            .as_mut()
-            .unwrap()
-            .send(client_id, Channel::ReliableOrdered, &bytes);
+        ) {
+          if let Ok(bytes) = serialized.to_bytes() {
+            self
+              .server
+              .as_mut()
+              .unwrap()
+              .send(client_id, Channel::ReliableOrdered, &bytes);
+          }
         }
 
         // Show reconnect notification
@@ -1882,12 +1909,14 @@ impl GameScene {
             let reconnect_rpc = SessionReconnectRpc {
               session_id: self.session_id,
             };
-            if let Some(client) = self.client.as_mut()
-              && let Ok(serialized) =
+            if let Some(client) = self.client.as_mut() {
+              if let Ok(serialized) =
                 SerializedRpc::from_rpc(&reconnect_rpc, client_id, RpcTarget::Server)
-              && let Ok(bytes) = serialized.to_bytes()
-            {
-              client.send(Channel::ReliableOrdered, &bytes);
+              {
+                if let Ok(bytes) = serialized.to_bytes() {
+                  client.send(Channel::ReliableOrdered, &bytes);
+                }
+              }
             }
           }
         }
@@ -1981,9 +2010,9 @@ impl GameScene {
       {
         UpdateResult::Applied | UpdateResult::Spawned => {
           // Remote player or first spawn - also update velocity and game state
-          if let Some(mut vel) = ctx.world.get_component_mut::<PlayerVelocity>(entity) {
-            vel.x = update.vx;
-            vel.y = update.vy;
+          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+            vel.dx = update.vx;
+            vel.dy = update.vy;
           }
           if let Some(mut player) = ctx.world.get_component_mut::<Player>(entity) {
             player.leap_state = update.leap_state.into();
@@ -2011,27 +2040,29 @@ impl GameScene {
           // Detect jump (transition to Airborne)
           if !matches!(prev_state, NetworkLeapState::Airborne)
             && matches!(new_state, NetworkLeapState::Airborne)
-            && let Some(audio) = &mut ctx.audio
           {
-            let options = if let Some((lx, ly)) = local_pos {
-              spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
-            } else {
-              SoundOptions::new().volume(0.05)
-            };
-            let _ = audio.play_sound_with("jump", options);
+            if let Some(audio) = &mut ctx.audio {
+              let options = if let Some((lx, ly)) = local_pos {
+                spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
+              } else {
+                SoundOptions::new().volume(0.05)
+              };
+              let _ = audio.play_sound_with("jump", options);
+            }
           }
 
           // Detect land (transition to Landing)
           if !matches!(prev_state, NetworkLeapState::Landing { .. })
             && matches!(new_state, NetworkLeapState::Landing { .. })
-            && let Some(audio) = &mut ctx.audio
           {
-            let options = if let Some((lx, ly)) = local_pos {
-              spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
-            } else {
-              SoundOptions::new().volume(0.05)
-            };
-            let _ = audio.play_sound_with("land", options);
+            if let Some(audio) = &mut ctx.audio {
+              let options = if let Some((lx, ly)) = local_pos {
+                spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
+              } else {
+                SoundOptions::new().volume(0.05)
+              };
+              let _ = audio.play_sound_with("land", options);
+            }
           }
 
           // Store current state for next comparison
@@ -2063,9 +2094,10 @@ impl GameScene {
     let input_rpc = LeapInputRpc { input };
     if let Ok(serialized) =
       SerializedRpc::from_rpc(&input_rpc, client.client_id(), RpcTarget::Server)
-      && let Ok(bytes) = serialized.to_bytes()
     {
-      client.send(Channel::ReliableOrdered, &bytes);
+      if let Ok(bytes) = serialized.to_bytes() {
+        client.send(Channel::ReliableOrdered, &bytes);
+      }
     }
 
     // Run local physics for smooth movement (client-side prediction)
@@ -2097,28 +2129,29 @@ impl GameScene {
     let local_id = self.local_client_id;
 
     for (&client_id, &entity) in &self.players {
-      if let Some(transform) = ctx.world.get_component::<Transform>(entity)
-        && let Some(vel) = ctx.world.get_component::<PlayerVelocity>(entity)
-        && let Some(player) = ctx.world.get_component::<Player>(entity)
-      {
-        // Use local max_height for local player, remote_best_heights for others
-        let best_height = if Some(client_id) == local_id {
-          self.max_height
-        } else {
-          *self.remote_best_heights.get(&client_id).unwrap_or(&0.0)
-        };
+      if let Some(transform) = ctx.world.get_component::<Transform>(entity) {
+        if let Some(vel) = ctx.world.get_component::<Velocity>(entity) {
+          if let Some(player) = ctx.world.get_component::<Player>(entity) {
+            // Use local max_height for local player, remote_best_heights for others
+            let best_height = if Some(client_id) == local_id {
+              self.max_height
+            } else {
+              *self.remote_best_heights.get(&client_id).unwrap_or(&0.0)
+            };
 
-        updates.push(PositionUpdate {
-          client_id,
-          slot: player.slot,
-          x: transform.x,
-          y: transform.y,
-          vx: vel.x,
-          vy: vel.y,
-          leap_state: player.leap_state.into(),
-          facing_right: player.facing == Facing::Right,
-          best_height,
-        });
+            updates.push(PositionUpdate {
+              client_id,
+              slot: player.slot,
+              x: transform.x,
+              y: transform.y,
+              vx: vel.dx,
+              vy: vel.dy,
+              leap_state: player.leap_state.into(),
+              facing_right: player.facing == Facing::Right,
+              best_height,
+            });
+          }
+        }
       }
     }
 
@@ -2471,17 +2504,17 @@ impl Scene for GameScene {
         Color::new(255, 255, 255, 100),
       );
 
-      if self.mode == GameMode::Host
-        && let Some(ref lan) = self.lan_ip
-      {
-        let lan_text = format!("{}:{}", lan, DEFAULT_PORT);
-        let (tw, _) = ui.text_size(&lan_text);
-        ui.draw_text(
-          &lan_text,
-          sw as f32 - tw as f32 - 20.0,
-          40.0,
-          Color::new(100, 200, 100, 150),
-        );
+      if self.mode == GameMode::Host {
+        if let Some(ref lan) = self.lan_ip {
+          let lan_text = format!("{}:{}", lan, DEFAULT_PORT);
+          let (tw, _) = ui.text_size(&lan_text);
+          ui.draw_text(
+            &lan_text,
+            sw as f32 - tw as f32 - 20.0,
+            40.0,
+            Color::new(100, 200, 100, 150),
+          );
+        }
       }
     }
 
