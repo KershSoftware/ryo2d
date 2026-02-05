@@ -65,6 +65,7 @@ enum EffectCategory {
   Crt,
   ChromaticAberration,
   GodRays,
+  AmbientOcclusion,
 }
 
 impl EffectCategory {
@@ -77,6 +78,7 @@ impl EffectCategory {
       PostProcessEffect::Crt { .. } => Self::Crt,
       PostProcessEffect::ChromaticAberration { .. } => Self::ChromaticAberration,
       PostProcessEffect::GodRays { .. } => Self::GodRays,
+      PostProcessEffect::AmbientOcclusion { .. } => Self::AmbientOcclusion,
     }
   }
 }
@@ -301,6 +303,40 @@ impl EffectsManager {
       .effects
       .iter()
       .any(|a| matches!(a.effect, PostProcessEffect::GodRays { .. }))
+  }
+
+  /// Enable ambient occlusion effect
+  ///
+  /// # Arguments
+  /// * `intensity` - How dark corners get (0.0 - 1.0)
+  /// * `radius` - Sampling radius in pixels (1.0 - 64.0)
+  pub fn set_ambient_occlusion(&mut self, intensity: f32, radius: f32) {
+    let effect = PostProcessEffect::ambient_occlusion(intensity, radius);
+    self.set_effect(effect);
+  }
+
+  /// Enable ambient occlusion effect with custom settings
+  ///
+  /// # Arguments
+  /// * `intensity` - How dark corners get (0.0 - 1.0)
+  /// * `radius` - Sampling radius in pixels (1.0 - 64.0)
+  /// * `bias` - Edge detection threshold (0.001 - 0.5)
+  pub fn set_ambient_occlusion_custom(&mut self, intensity: f32, radius: f32, bias: f32) {
+    let effect = PostProcessEffect::ambient_occlusion_custom(intensity, radius, bias);
+    self.set_effect(effect);
+  }
+
+  /// Disable ambient occlusion
+  pub fn disable_ambient_occlusion(&mut self) {
+    self.remove_category(EffectCategory::AmbientOcclusion);
+  }
+
+  /// Check if ambient occlusion effect is enabled
+  pub fn has_ambient_occlusion(&self) -> bool {
+    self
+      .effects
+      .iter()
+      .any(|a| matches!(a.effect, PostProcessEffect::AmbientOcclusion { .. }))
   }
 
   // ========== Internal Methods ==========

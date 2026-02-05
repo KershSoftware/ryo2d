@@ -88,6 +88,19 @@ pub enum PostProcessEffect {
     /// Format: [(x, y), ...] where each position is a light
     light_positions: Vec<(f32, f32)>,
   },
+
+  /// Ambient occlusion effect
+  ///
+  /// Darkens corners and crevices based on edge detection.
+  /// Works by detecting edges in 8 directions and darkening where edges converge.
+  AmbientOcclusion {
+    /// How dark corners get (0.0 = none, 1.0 = fully black)
+    intensity: f32,
+    /// Sampling radius in pixels (1.0 - 64.0)
+    radius: f32,
+    /// Edge detection threshold (0.001 - 0.5)
+    bias: f32,
+  },
 }
 
 impl PostProcessEffect {
@@ -223,6 +236,33 @@ impl PostProcessEffect {
     }
   }
 
+  /// Create ambient occlusion effect with default bias
+  ///
+  /// # Arguments
+  /// * `intensity` - How dark corners get (0.0 - 1.0)
+  /// * `radius` - Sampling radius in pixels (1.0 - 64.0)
+  pub fn ambient_occlusion(intensity: f32, radius: f32) -> Self {
+    Self::AmbientOcclusion {
+      intensity: intensity.clamp(0.0, 1.0),
+      radius: radius.clamp(1.0, 64.0),
+      bias: 0.05,
+    }
+  }
+
+  /// Create ambient occlusion effect with custom settings
+  ///
+  /// # Arguments
+  /// * `intensity` - How dark corners get (0.0 - 1.0)
+  /// * `radius` - Sampling radius in pixels (1.0 - 64.0)
+  /// * `bias` - Edge detection threshold (0.001 - 0.5)
+  pub fn ambient_occlusion_custom(intensity: f32, radius: f32, bias: f32) -> Self {
+    Self::AmbientOcclusion {
+      intensity: intensity.clamp(0.0, 1.0),
+      radius: radius.clamp(1.0, 64.0),
+      bias: bias.clamp(0.001, 0.5),
+    }
+  }
+
   /// Get the shader name for this effect
   pub fn shader_name(&self) -> &'static str {
     match self {
@@ -233,6 +273,7 @@ impl PostProcessEffect {
       Self::Crt { .. } => "crt",
       Self::ChromaticAberration { .. } => "chromatic_aberration",
       Self::GodRays { .. } => "god_rays",
+      Self::AmbientOcclusion { .. } => "ambient_occlusion",
     }
   }
 
@@ -252,6 +293,7 @@ impl PostProcessEffect {
         light_positions,
         ..
       } => *intensity > 0.001 && !light_positions.is_empty(),
+      Self::AmbientOcclusion { intensity, .. } => *intensity > 0.001,
     }
   }
 }
@@ -320,6 +362,11 @@ impl EffectParams {
         [0.0, 0.0, 0.0, 1.0],
         [*intensity, *samples as f32, *decay, *density],
       ),
+      PostProcessEffect::AmbientOcclusion {
+        intensity,
+        radius,
+        bias,
+      } => ([0.0, 0.0, 0.0, 1.0], [*intensity, *radius, *bias, 0.0]),
     };
 
     Self {

@@ -66,4 +66,5 @@ pub mod post_process_shaders {
   pub const CRT: &str = include_str!("post-process/crt.wgsl");
   pub const CHROMATIC_ABERRATION: &str = include_str!("post-process/chromatic_aberration.wgsl");
   pub const GOD_RAYS: &str = include_str!("post-process/god_rays.wgsl");
+  pub const AMBIENT_OCCLUSION: &str = include_str!("post-process/ambient_occlusion.wgsl");
 }

@@ -33,6 +33,7 @@ pub struct PostProcessPipeline {
   crt_pipeline: Option<EffectPipeline>,
   chromatic_aberration_pipeline: Option<EffectPipeline>,
   god_rays_pipeline: Option<EffectPipeline>,
+  ambient_occlusion_pipeline: Option<EffectPipeline>,
 
   // Uniform buffer for effect parameters
   uniform_buffer: wgpu::Buffer,
@@ -210,6 +211,7 @@ impl PostProcessPipeline {
       crt_pipeline: None,
       chromatic_aberration_pipeline: None,
       god_rays_pipeline: None,
+      ambient_occlusion_pipeline: None,
       uniform_buffer,
       god_rays_uniform_buffer,
       bind_group_layout,
@@ -447,6 +449,15 @@ impl PostProcessPipeline {
           self.god_rays_pipeline = Some(self.create_god_rays_pipeline(device));
         }
       }
+      PostProcessEffect::AmbientOcclusion { .. } => {
+        if self.ambient_occlusion_pipeline.is_none() {
+          self.ambient_occlusion_pipeline = Some(self.create_effect_pipeline(
+            device,
+            "Ambient Occlusion",
+            post_process_shaders::AMBIENT_OCCLUSION,
+          ));
+        }
+      }
     }
   }
 
@@ -468,6 +479,9 @@ impl PostProcessPipeline {
           .pipeline
       }
       PostProcessEffect::GodRays { .. } => &self.god_rays_pipeline.as_ref().unwrap().pipeline,
+      PostProcessEffect::AmbientOcclusion { .. } => {
+        &self.ambient_occlusion_pipeline.as_ref().unwrap().pipeline
+      }
     }
   }
 

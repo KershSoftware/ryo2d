@@ -178,6 +178,12 @@ impl Scene for ContactShadowsScene {
     if ctx.input.key_pressed(KeyCode::Digit5) {
       return SceneAction::Switch(Box::new(super::ColoredShadowsScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit6) {
+      // Already on this scene, but keeping consistent pattern
+    }
+    if ctx.input.key_pressed(KeyCode::Digit7) {
+      return SceneAction::Switch(Box::new(super::AmbientOcclusionScene::new()));
+    }
 
     if ctx.input.key_pressed(KeyCode::Escape) {
       return SceneAction::Quit;
@@ -254,7 +260,7 @@ impl Scene for ContactShadowsScene {
 
     // Scene indicator
     ui.label(
-      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact",
+      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO",
       10.0,
       10.0,
       highlight,
