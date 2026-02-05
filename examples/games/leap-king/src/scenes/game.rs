@@ -139,7 +139,6 @@ pub struct GameScene {
   lamp_dust_emitters: Vec<Entity>,
   background_tiles: Vec<Entity>,
   bg_tile_height: f32,
-  background_sprite: Option<SpriteHandle>,
   rain_emitter: Option<Entity>,
   rain_sprite: Option<SpriteHandle>,
   dust_sprite: Option<SpriteHandle>,
@@ -228,7 +227,6 @@ impl GameScene {
       lamp_dust_emitters: Vec::new(),
       background_tiles: Vec::new(),
       bg_tile_height: 0.0,
-      background_sprite: None,
       rain_emitter: None,
       rain_sprite: None,
       dust_sprite: None,
@@ -272,6 +270,7 @@ impl GameScene {
       port: DEFAULT_PORT,
       max_clients: 2,
       protocol_id: PROTOCOL_ID,
+      transport: TransportConfig::Udp,
     })?;
 
     let host_id = server.host_id();
@@ -292,7 +291,6 @@ impl GameScene {
       lamp_dust_emitters: Vec::new(),
       background_tiles: Vec::new(),
       bg_tile_height: 0.0,
-      background_sprite: None,
       rain_emitter: None,
       rain_sprite: None,
       dust_sprite: None,
@@ -343,8 +341,9 @@ impl GameScene {
     };
 
     let client = NetworkClient::connect(NetworkClientConfig {
-      server_addr,
+      server_addr: Some(server_addr),
       protocol_id: PROTOCOL_ID,
+      transport: TransportConfig::Udp,
     })?;
 
     Ok(Self {
@@ -361,7 +360,6 @@ impl GameScene {
       lamp_dust_emitters: Vec::new(),
       background_tiles: Vec::new(),
       bg_tile_height: 0.0,
-      background_sprite: None,
       rain_emitter: None,
       rain_sprite: None,
       dust_sprite: None,
@@ -456,18 +454,20 @@ impl GameScene {
     platform_width: f32,
     chunk_y: i32,
   ) {
-    // Use chunk-based seed to determine left or right placement and phase
+    // Use chunk-based seed for random values
     let chunk_seed = self
       .seed
       .wrapping_add(chunk_y as u64 * 7919 + self.platform_lamps.len() as u64);
-    let on_left = chunk_seed.is_multiple_of(2);
-    let phase = (chunk_seed % 628) as f32 / 100.0; // Random phase 0 to ~2π
 
-    let lamp_x = if on_left {
-      platform_x + LAMP_OFFSET_X
-    } else {
-      platform_x + platform_width - LAMP_OFFSET_X
-    };
+    // Random phase 0 to ~2π for unique movement patterns
+    let phase = (chunk_seed % 628) as f32 / 100.0;
+
+    // Random speed multiplier 0.6 to 1.4 for varied movement speeds
+    let speed_seed = chunk_seed.wrapping_mul(31337);
+    let speed_mult = 0.6 + ((speed_seed % 80) as f32 / 100.0);
+
+    // Lamp starts at center of platform
+    let lamp_x = platform_x + platform_width / 2.0;
     let lamp_y = platform_y + LAMP_OFFSET_Y;
 
     // Outer glow light (dimmer, larger) - with soft shadows
@@ -479,7 +479,7 @@ impl GameScene {
         LAMP_LIGHT_INTENSITY,
       )
       .with_soft_shadows(LAMP_SHADOW_SOFTNESS),
-      PlatformLamp::new(lamp_x, lamp_y, phase),
+      PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult),
     ));
     self.platform_lamps.push(outer_lamp);
 
@@ -491,7 +491,7 @@ impl GameScene {
         LAMP_INNER_RADIUS,
         LAMP_INNER_INTENSITY,
       ),
-      PlatformLamp::new(lamp_x, lamp_y, phase),
+      PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult),
     ));
     self.platform_lamps.push(inner_lamp);
 
@@ -523,7 +523,7 @@ impl GameScene {
           )
           .with_gravity(0.0, -5.0) // Gentle upward drift
           .with_drag(2.0),
-        PlatformLamp::new(lamp_x, lamp_y, phase), // Track with lamp
+        PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult),
       ));
       self.lamp_dust_emitters.push(dust_emitter);
     }
@@ -543,25 +543,28 @@ impl GameScene {
       {
         let t = self.elapsed_time;
         let p = lamp.phase;
+        let speed = LAMP_OSCILLATE_SPEED * lamp.speed_mult;
 
-        // Fairy-like floating motion using Lissajous curves
-        // Primary smooth figure-8 motion with wider horizontal range
-        let fairy_x = (t * LAMP_OSCILLATE_SPEED * 0.7 + p).sin()
-          * (t * LAMP_OSCILLATE_SPEED * 0.3 + p * 0.5).cos();
-        let fairy_y = (t * LAMP_OSCILLATE_SPEED * 0.5 + p * 1.3).sin();
+        // Horizontal travel range - lamp travels most of platform width
+        let travel_range = (lamp.platform_width - LAMP_OFFSET_X * 2.0) * 0.45;
 
-        // Secondary gentle drift overlay - stronger horizontal drift
-        let drift_x = (t * LAMP_OSCILLATE_SPEED * 0.15 + p * 2.1).sin() * 0.5
-          + (t * LAMP_OSCILLATE_SPEED * 0.08 + p * 0.7).cos() * 0.3;
-        let drift_y = (t * LAMP_OSCILLATE_SPEED * 0.25 + p * 1.7).cos() * 0.3
-          + (t * LAMP_OSCILLATE_SPEED * 0.9 + p * 2.3).sin() * 0.2;
+        // Fairy-like floating motion using Lissajous curves with per-lamp speed
+        // Primary smooth figure-8 motion
+        let fairy_x = (t * speed * 0.7 + p).sin() * (t * speed * 0.3 + p * 0.5).cos();
+        let fairy_y = (t * speed * 0.5 + p * 1.3).sin();
 
-        // Horizontal movement is 3x larger to sweep across platform
-        let offset_x = LAMP_OSCILLATE_RADIUS * (fairy_x * 0.8 + drift_x) * 3.0;
+        // Secondary gentle drift overlay
+        let drift_x = (t * speed * 0.15 + p * 2.1).sin() * 0.5
+          + (t * speed * 0.08 + p * 0.7).cos() * 0.3;
+        let drift_y = (t * speed * 0.25 + p * 1.7).cos() * 0.3
+          + (t * speed * 0.12 + p * 2.3).sin() * 0.2;
+
+        // Horizontal movement scaled to platform width
+        let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
         let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
 
         // Occasional subtle jitter (reduced frequency and intensity)
-        let flicker_seed = ((t * 5.0 + p * 11.0).sin() * 1000.0).abs() % 1.0;
+        let flicker_seed = ((t * 5.0 * lamp.speed_mult + p * 11.0).sin() * 1000.0).abs() % 1.0;
         let flicker = if flicker_seed > 0.95 {
           // Rare quick jitter
           let jx = ((t * 31.0 + p).sin() * 2.0).signum() * 1.5;
@@ -585,19 +588,22 @@ impl GameScene {
       {
         let t = self.elapsed_time;
         let p = lamp.phase;
+        let speed = LAMP_OSCILLATE_SPEED * lamp.speed_mult;
+
+        // Horizontal travel range - same as lamps
+        let travel_range = (lamp.platform_width - LAMP_OFFSET_X * 2.0) * 0.45;
 
         // Same fairy-like motion as lamps (without jitter)
-        let fairy_x = (t * LAMP_OSCILLATE_SPEED * 0.7 + p).sin()
-          * (t * LAMP_OSCILLATE_SPEED * 0.3 + p * 0.5).cos();
-        let fairy_y = (t * LAMP_OSCILLATE_SPEED * 0.5 + p * 1.3).sin();
+        let fairy_x = (t * speed * 0.7 + p).sin() * (t * speed * 0.3 + p * 0.5).cos();
+        let fairy_y = (t * speed * 0.5 + p * 1.3).sin();
 
-        let drift_x = (t * LAMP_OSCILLATE_SPEED * 0.15 + p * 2.1).sin() * 0.5
-          + (t * LAMP_OSCILLATE_SPEED * 0.08 + p * 0.7).cos() * 0.3;
-        let drift_y = (t * LAMP_OSCILLATE_SPEED * 0.25 + p * 1.7).cos() * 0.3
-          + (t * LAMP_OSCILLATE_SPEED * 0.9 + p * 2.3).sin() * 0.2;
+        let drift_x = (t * speed * 0.15 + p * 2.1).sin() * 0.5
+          + (t * speed * 0.08 + p * 0.7).cos() * 0.3;
+        let drift_y = (t * speed * 0.25 + p * 1.7).cos() * 0.3
+          + (t * speed * 0.12 + p * 2.3).sin() * 0.2;
 
-        // Horizontal movement is 3x larger to sweep across platform
-        let offset_x = LAMP_OSCILLATE_RADIUS * (fairy_x * 0.8 + drift_x) * 3.0;
+        // Horizontal movement scaled to platform width
+        let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
         let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
 
         transform.x = lamp.base_x + offset_x;
@@ -2315,19 +2321,8 @@ impl Scene for GameScene {
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
-    // Create background sprite for GPU rendering (allows rain to be visible)
-    // Background follows camera and is rendered via GPU batch
-    self.background_sprite = Some(ctx.assets.create_sprite(
-      Sprite::solid_rect(
-        SCREEN_WIDTH * 2,  // Extra width for camera movement
-        SCREEN_HEIGHT * 2, // Extra height for camera movement
-        8,                 // Very dark blue-gray (darker than menu for cave atmosphere)
-        8,
-        14,
-        255,
-      ),
-      "game_background",
-    ));
+    // Background color comes from ambient lighting - no separate sprite needed
+    // (GPU background sprite was causing rendering artifacts)
 
     // Set up atmospheric lighting
     if let Some(lighting) = ctx.lighting {
@@ -2630,25 +2625,6 @@ impl Scene for GameScene {
   }
 
   fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
-    // Render background first (lowest z-order) - follows camera
-    if let Some(ref bg_sprite) = self.background_sprite {
-      ctx.upload_sprite(bg_sprite);
-      // Center background on camera position
-      let bg_x = ctx.camera.x - SCREEN_WIDTH as f32;
-      let bg_y = ctx.camera.y - SCREEN_HEIGHT as f32;
-      let (screen_x, screen_y) = ctx.camera.world_to_screen(bg_x, bg_y);
-      let bg_instance = SpriteInstance::new().with_transform(
-        screen_x,
-        screen_y,
-        0.0,
-        (SCREEN_WIDTH * 2) as f32,
-        (SCREEN_HEIGHT * 2) as f32,
-      );
-      ctx
-        .batch
-        .add(bg_sprite.id(), false, bg_instance, Z_BACKGROUND);
-    }
-
     // Upload particle sprite textures
     if let Some(ref sprite) = self.rain_sprite {
       ctx.upload_sprite(sprite);

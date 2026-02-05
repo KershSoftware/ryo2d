@@ -535,13 +535,6 @@ impl Scene for MenuScene {
       Color::DARK_GRAY,
     );
 
-    // Debug: particle count
-    ui.draw_text(
-      &format!("Particles: {}", self.particle_system.particle_count()),
-      10.0,
-      10.0,
-      Color::GREEN,
-    );
   }
 
   fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {

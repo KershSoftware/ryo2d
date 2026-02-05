@@ -185,15 +185,19 @@ pub struct PlayerLight {
 pub struct PlatformLamp {
   pub base_x: f32,
   pub base_y: f32,
-  pub phase: f32, // Random phase offset for variety
+  pub phase: f32,          // Random phase offset for variety
+  pub platform_width: f32, // Width of platform for horizontal travel
+  pub speed_mult: f32,     // Individual speed multiplier (0.5 - 1.5)
 }
 
 impl PlatformLamp {
-  pub fn new(x: f32, y: f32, phase: f32) -> Self {
+  pub fn new(x: f32, y: f32, phase: f32, platform_width: f32, speed_mult: f32) -> Self {
     Self {
       base_x: x,
       base_y: y,
       phase,
+      platform_width,
+      speed_mult,
     }
   }
 }
