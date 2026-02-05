@@ -152,7 +152,7 @@ impl Scene for HardShadowsScene {
     if let Some(lighting) = ctx.lighting {
       lighting.set_ui_affected_by_lighting(false);
       // Dark ambient for dramatic shadows
-      lighting.set_ambient(AmbientLight::new(Color::new(15, 15, 25, 255), 0.08));
+      lighting.set_ambient(AmbientLight::new(Color::new(15, 15, 25, 255), 0.05));
     }
 
     // Create floor
@@ -231,6 +231,9 @@ impl Scene for HardShadowsScene {
     if ctx.input.key_pressed(KeyCode::Digit7) {
       return SceneAction::Switch(Box::new(super::AmbientOcclusionScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit8) {
+      return SceneAction::Switch(Box::new(super::RaymarchedShadowsScene::new()));
+    }
 
     // Quit on Escape
     if ctx.input.key_pressed(KeyCode::Escape) {
@@ -296,7 +299,7 @@ impl Scene for HardShadowsScene {
     let bg = Some(Color::new(0, 0, 0, 180));
 
     // Scene indicator
-    ui.label("[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO", 10.0, 10.0, highlight, bg);
+    ui.label("[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray", 10.0, 10.0, highlight, bg);
 
     // Title
     ui.label("Hard Shadows (Shadow Volumes)", 10.0, 40.0, white, bg);

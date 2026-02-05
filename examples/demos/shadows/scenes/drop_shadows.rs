@@ -245,6 +245,9 @@ impl Scene for DropShadowsScene {
     if ctx.input.key_pressed(KeyCode::Digit7) {
       return SceneAction::Switch(Box::new(super::AmbientOcclusionScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit8) {
+      return SceneAction::Switch(Box::new(super::RaymarchedShadowsScene::new()));
+    }
 
     // Quit on Escape
     if ctx.input.key_pressed(KeyCode::Escape) {
@@ -358,7 +361,7 @@ impl Scene for DropShadowsScene {
     let bg = Some(Color::new(0, 0, 0, 180));
 
     // Scene indicator
-    ui.label("[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO", 10.0, 10.0, highlight, bg);
+    ui.label("[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray", 10.0, 10.0, highlight, bg);
 
     // Title
     ui.label("Drop Shadows (Artist-Controlled)", 10.0, 40.0, white, bg);

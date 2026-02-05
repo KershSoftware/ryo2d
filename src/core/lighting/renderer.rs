@@ -12,6 +12,9 @@ use wgpu::util::DeviceExt;
 /// Maximum number of lights that can be rendered per frame
 pub const MAX_LIGHTS: usize = 256;
 
+/// Maximum number of occluder edges for ray-marched shadows
+pub const MAX_RAYMARCH_EDGES: usize = 64;
+
 /// Per-light GPU data (must match the shader struct)
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -48,6 +51,28 @@ pub struct LightingParams {
   pub time_resolution: [f32; 4],
   /// Atmosphere fog color (RGB) + unused (A)
   pub atmosphere_color: [f32; 4],
+}
+
+/// Parameters for ray-marched shadow rendering
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct RaymarchParams {
+  /// Light position (x, y), radius (z), samples (w)
+  light_params: [f32; 4],
+  /// Shadow color (RGB) and intensity (A)
+  shadow_color: [f32; 4],
+  /// Number of edges (x), softness (y), unused (z, w)
+  edge_params: [f32; 4],
+  /// Padding for alignment
+  _padding: [f32; 4],
+}
+
+/// An occluder edge for ray-marched shadows
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct RaymarchEdge {
+  /// Start point (x, y), end point (z, w)
+  points: [f32; 4],
 }
 
 /// The lighting renderer manages GPU resources for 2D lighting.
@@ -107,6 +132,16 @@ pub struct LightingRenderer {
   shadow_vertex_buffer: wgpu::Buffer,
   /// Bind group layout for shadow rendering
   shadow_bind_group_layout: wgpu::BindGroupLayout,
+
+  // Ray-marched shadow resources
+  /// Pipeline for ray-marched shadows
+  raymarch_pipeline: wgpu::RenderPipeline,
+  /// Uniform buffer for raymarch parameters
+  raymarch_params_buffer: wgpu::Buffer,
+  /// Storage buffer for occluder edges
+  raymarch_edge_buffer: wgpu::Buffer,
+  /// Bind group layout for raymarch shadows
+  raymarch_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl LightingRenderer {
@@ -515,6 +550,135 @@ impl LightingRenderer {
       cache: None,
     });
 
+    // === Ray-march Shadow Pipeline Setup ===
+
+    // Ray-march bind group layout
+    let raymarch_bind_group_layout =
+      device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Raymarch Shadow Bind Group Layout"),
+        entries: &[
+          // Globals uniform
+          wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+              ty: wgpu::BufferBindingType::Uniform,
+              has_dynamic_offset: false,
+              min_binding_size: None,
+            },
+            count: None,
+          },
+          // Raymarch params uniform
+          wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+              ty: wgpu::BufferBindingType::Uniform,
+              has_dynamic_offset: false,
+              min_binding_size: None,
+            },
+            count: None,
+          },
+          // Edge storage buffer
+          wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+              ty: wgpu::BufferBindingType::Storage { read_only: true },
+              has_dynamic_offset: false,
+              min_binding_size: None,
+            },
+            count: None,
+          },
+        ],
+      });
+
+    // Raymarch params buffer
+    let raymarch_params = RaymarchParams {
+      light_params: [0.0; 4],
+      shadow_color: [0.0, 0.0, 0.0, 1.0],
+      edge_params: [0.0; 4],
+      _padding: [0.0; 4],
+    };
+    let raymarch_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+      label: Some("Raymarch Params Buffer"),
+      contents: bytemuck::cast_slice(&[raymarch_params]),
+      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    // Raymarch edge buffer
+    let raymarch_edge_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("Raymarch Edge Buffer"),
+      size: (std::mem::size_of::<RaymarchEdge>() * MAX_RAYMARCH_EDGES) as u64,
+      usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+      mapped_at_creation: false,
+    });
+
+    // Raymarch shader
+    let raymarch_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+      label: Some("Raymarch Shadow Shader"),
+      source: wgpu::ShaderSource::Wgsl(
+        include_str!("../shaders/core/raymarch_shadow.wgsl").into(),
+      ),
+    });
+
+    let raymarch_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: Some("Raymarch Shadow Pipeline Layout"),
+      bind_group_layouts: &[&raymarch_bind_group_layout],
+      push_constant_ranges: &[],
+    });
+
+    // Raymarch pipeline with reverse-subtract blending (same as shadow pipeline)
+    let raymarch_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+      label: Some("Raymarch Shadow Pipeline"),
+      layout: Some(&raymarch_pipeline_layout),
+      vertex: wgpu::VertexState {
+        module: &raymarch_shader,
+        entry_point: "vs_main",
+        buffers: &[],
+        compilation_options: Default::default(),
+      },
+      fragment: Some(wgpu::FragmentState {
+        module: &raymarch_shader,
+        entry_point: "fs_main",
+        targets: &[Some(wgpu::ColorTargetState {
+          format: wgpu::TextureFormat::Rgba16Float,
+          // Reverse subtract: dst = dst - src (subtract shadow from light)
+          blend: Some(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+              src_factor: wgpu::BlendFactor::One,
+              dst_factor: wgpu::BlendFactor::One,
+              operation: wgpu::BlendOperation::ReverseSubtract,
+            },
+            alpha: wgpu::BlendComponent {
+              src_factor: wgpu::BlendFactor::Zero,
+              dst_factor: wgpu::BlendFactor::One,
+              operation: wgpu::BlendOperation::Add,
+            },
+          }),
+          write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+      }),
+      primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        strip_index_format: None,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: None,
+        polygon_mode: wgpu::PolygonMode::Fill,
+        unclipped_depth: false,
+        conservative: false,
+      },
+      depth_stencil: None,
+      multisample: wgpu::MultisampleState {
+        count: 1,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+      },
+      multiview: None,
+      cache: None,
+    });
+
     Self {
       light_texture,
       light_texture_view,
@@ -537,6 +701,10 @@ impl LightingRenderer {
       shadow_pipeline,
       shadow_vertex_buffer,
       shadow_bind_group_layout,
+      raymarch_pipeline,
+      raymarch_params_buffer,
+      raymarch_edge_buffer,
+      raymarch_bind_group_layout,
     }
   }
 
@@ -858,6 +1026,128 @@ impl LightingRenderer {
     }
   }
 
+  /// Render ray-marched shadows for a single light.
+  ///
+  /// This is an alternative to geometry-based shadows that uses per-pixel
+  /// ray casting for more accurate shadow rendering in complex scenes.
+  #[allow(clippy::too_many_arguments)]
+  pub fn render_raymarched_shadow(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    light_pos: Vec2,
+    light_radius: f32,
+    samples: u32,
+    shadow_softness: f32,
+    shadow_color: crate::core::ui::Color,
+    occluders: &[(&Transform, &LightOccluder2D)],
+  ) {
+    // Collect edges from occluders within light radius
+    let mut edges: Vec<RaymarchEdge> = Vec::with_capacity(MAX_RAYMARCH_EDGES);
+
+    for (transform, occluder) in occluders {
+      if !occluder.is_enabled() {
+        continue;
+      }
+
+      // Quick distance check
+      let dist = ((transform.x - light_pos.x).powi(2) + (transform.y - light_pos.y).powi(2)).sqrt();
+      if dist > light_radius * 2.0 {
+        continue;
+      }
+
+      // Transform vertices to world space
+      let world_vertices =
+        occluder.transform_vertices(transform.x, transform.y, transform.rotation);
+
+      // Add edges
+      for i in 0..world_vertices.len() {
+        if edges.len() >= MAX_RAYMARCH_EDGES {
+          break;
+        }
+
+        let v0 = world_vertices[i];
+        let v1 = world_vertices[(i + 1) % world_vertices.len()];
+
+        edges.push(RaymarchEdge {
+          points: [v0.x, v0.y, v1.x, v1.y],
+        });
+      }
+
+      if edges.len() >= MAX_RAYMARCH_EDGES {
+        break;
+      }
+    }
+
+    if edges.is_empty() {
+      return; // No edges to cast shadows from
+    }
+
+    // Update raymarch params
+    let params = RaymarchParams {
+      light_params: [light_pos.x, light_pos.y, light_radius, samples as f32],
+      shadow_color: [
+        shadow_color.r as f32 / 255.0,
+        shadow_color.g as f32 / 255.0,
+        shadow_color.b as f32 / 255.0,
+        1.0,
+      ],
+      edge_params: [edges.len() as f32, shadow_softness, 0.0, 0.0],
+      _padding: [0.0; 4],
+    };
+    queue.write_buffer(
+      &self.raymarch_params_buffer,
+      0,
+      bytemuck::cast_slice(&[params]),
+    );
+
+    // Upload edges
+    queue.write_buffer(&self.raymarch_edge_buffer, 0, bytemuck::cast_slice(&edges));
+
+    // Create bind group
+    let raymarch_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("Raymarch Shadow Bind Group"),
+      layout: &self.raymarch_bind_group_layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: self.globals_buffer.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: self.raymarch_params_buffer.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: self.raymarch_edge_buffer.as_entire_binding(),
+        },
+      ],
+    });
+
+    // Render raymarch shadows
+    {
+      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Raymarch Shadow Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &self.light_texture_view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Load, // Keep existing light accumulation
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+      });
+
+      render_pass.set_pipeline(&self.raymarch_pipeline);
+      render_pass.set_bind_group(0, &raymarch_bind_group, &[]);
+      render_pass.draw(0..6, 0..1); // Single quad covering the light area
+    }
+  }
+
   /// Convenience method to render lights and shadows together.
   ///
   /// # Arguments
@@ -889,9 +1179,37 @@ impl LightingRenderer {
       camera_zoom,
     );
 
-    // Generate and render shadows
-    let shadow_geometry = super::shadow::generate_shadow_geometry(lights, occluders);
+    // Separate lights into regular shadows and raymarched shadows
+    let mut raymarch_lights: Vec<(&Transform, &Light2D)> = Vec::new();
+    let regular_lights = lights.clone().filter(|(t, l)| {
+      if l.uses_raymarched_shadows() {
+        raymarch_lights.push((*t, *l));
+        false
+      } else {
+        true
+      }
+    });
+
+    // Generate and render regular shadow volumes
+    let shadow_geometry = super::shadow::generate_shadow_geometry(regular_lights, occluders);
     self.render_shadows(device, queue, encoder, &shadow_geometry);
+
+    // Render ray-marched shadows for lights that use them
+    for (transform, light) in raymarch_lights {
+      if let Some(samples) = light.raymarch_samples() {
+        self.render_raymarched_shadow(
+          device,
+          queue,
+          encoder,
+          Vec2::new(transform.x, transform.y),
+          light.radius(),
+          samples,
+          light.shadow_softness(),
+          light.shadow_color(),
+          occluders,
+        );
+      }
+    }
   }
 
   /// Compose the lit scene by combining the scene texture with the light buffer.

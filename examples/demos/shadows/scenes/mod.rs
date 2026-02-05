@@ -8,6 +8,7 @@ mod colored_shadows;
 mod contact_shadows;
 mod drop_shadows;
 mod hard_shadows;
+mod raymarched_shadows;
 mod soft_shadows;
 
 pub use ambient_occlusion::AmbientOcclusionScene;
@@ -16,4 +17,5 @@ pub use colored_shadows::ColoredShadowsScene;
 pub use contact_shadows::ContactShadowsScene;
 pub use drop_shadows::DropShadowsScene;
 pub use hard_shadows::HardShadowsScene;
+pub use raymarched_shadows::RaymarchedShadowsScene;
 pub use soft_shadows::SoftShadowsScene;

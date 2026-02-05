@@ -97,6 +97,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Output shadow color
     // Alpha from shadow_color can be used to modulate overall shadow strength
+    // Multiply by 10.0 to ensure full light subtraction regardless of light intensity
     let alpha_mod = in.shadow_color.a;
-    return vec4<f32>(shadow_intensity * color_mask * alpha_mod, 1.0);
+    return vec4<f32>(shadow_intensity * color_mask * alpha_mod * 10.0, 1.0);
 }
