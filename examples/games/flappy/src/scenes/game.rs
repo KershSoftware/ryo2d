@@ -1,6 +1,5 @@
 //! Game Scene - Main gameplay
 
-use rand::Rng;
 use ryo2d::prelude::*;
 
 use super::GameOverScene;

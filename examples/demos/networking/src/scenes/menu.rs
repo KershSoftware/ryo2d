@@ -1,7 +1,6 @@
 //! Menu scene with lobby creation/joining
 
 use crate::constants::*;
-use rand::Rng;
 use ryo2d::prelude::*;
 
 use super::GameScene;
@@ -9,9 +8,9 @@ use super::GameScene;
 /// Generate a random 5-character room code
 fn generate_room_code() -> String {
   const CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let mut rng = rand::rng();
+  let mut rng = rand::thread_rng();
   (0..ROOM_CODE_LENGTH)
-    .map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
+    .map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
     .collect()
 }
 

@@ -15,7 +15,6 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use rand::Rng;
 use ryo2d::prelude::*;
 
 #[cfg(feature = "profiler")]

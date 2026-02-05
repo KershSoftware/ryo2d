@@ -39,7 +39,7 @@ show_fps = true
 show_colliders = false
 show_velocities = false
 show_origins = false
-enable_profiler = false
+enable_profiler = true
 
 # =============================================================================
 # [env] - Game-specific environment variables

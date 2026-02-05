@@ -261,4 +261,8 @@ pub mod prelude {
   pub use crate::game_info;
   pub use crate::game_trace;
   pub use crate::game_warn;
+
+  // Common utilities re-exported for convenience
+  pub use rand;
+  pub use rand::Rng;
 }

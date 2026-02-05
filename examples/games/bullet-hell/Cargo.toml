@@ -11,12 +11,9 @@ name = "bullet-hell"
 path = "main.rs"
 
 [features]
-default = []
-# Enable puffin profiler (use with `ryo2d dev --profiler`)
-profiler = ["ryo2d/profiler", "dep:puffin"]
+# Enable puffin profiler (use with `ryo2d dev -p`)
+profiler = ["ryo2d/profiler"]
 
 [dependencies]
 ryo2d = { path = "../../.." }
-rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
-puffin = { version = "0.19", optional = true }

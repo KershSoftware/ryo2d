@@ -9,10 +9,7 @@ name = "profile-and-log"
 path = "main.rs"
 
 [features]
-default = []
-profiler = ["ryo2d/profiler", "dep:puffin"]
+profiler = ["ryo2d/profiler"]
 
 [dependencies]
 ryo2d = { path = "../../.." }
-puffin = { version = "0.19", optional = true }
-rand = "0.8"

@@ -1,17 +1,15 @@
 [package]
 name = "flappy"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [features]
-default = []
-# Enable puffin profiler (use with `ryo2d dev --profiler`)
+# Enable puffin profiler (use with `ryo2d dev -p`)
 profiler = ["ryo2d/profiler"]
 
 [dependencies]
 ryo2d = { path = "../../../" }
 serde = { version = "1.0", features = ["derive"] }
-rand = "0.8"
 
 [[bin]]
 name = "flappy"

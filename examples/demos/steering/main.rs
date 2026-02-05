@@ -17,7 +17,6 @@
 //! - R: Reset simulation
 //! - Escape: Exit
 
-use rand::Rng;
 use ryo2d::prelude::*;
 
 const INITIAL_BOIDS: usize = 50;

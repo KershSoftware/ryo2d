@@ -1,6 +1,6 @@
 //! Drone enemy component - flies diagonally and fires lasers
 
-use rand::Rng;
+use ryo2d::prelude::{rand, Rng};
 
 /// Spawn duration for drone fade-in effect
 pub const DRONE_SPAWN_DURATION: f32 = 2.5;

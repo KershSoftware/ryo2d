@@ -1,6 +1,5 @@
 //! Menu scene with single player, host, and join options
 
-use rand::Rng;
 use ryo2d::prelude::*;
 
 use crate::constants::*;
@@ -10,9 +9,9 @@ use super::GameScene;
 /// Generate a random 5-character room code
 fn generate_room_code() -> String {
   const CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let mut rng = rand::rng();
+  let mut rng = rand::thread_rng();
   (0..ROOM_CODE_LENGTH)
-    .map(|_| CHARS[rng.random_range(0..CHARS.len())] as char)
+    .map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
     .collect()
 }
 
@@ -235,12 +234,12 @@ impl Scene for MenuScene {
     // }
 
     // Spawn fairy lights at random positions
-    let mut rng = rand::rng();
+    let mut rng = rand::thread_rng();
     let fairy_count = 5;
     for _ in 0..fairy_count {
-      let x = rng.random_range(50.0..(SCREEN_WIDTH as f32 - 50.0));
-      let y = rng.random_range(100.0..(SCREEN_HEIGHT as f32 - 100.0));
-      let phase = rng.random_range(0.0..std::f32::consts::TAU);
+      let x = rng.gen_range(50.0..(SCREEN_WIDTH as f32 - 50.0));
+      let y = rng.gen_range(100.0..(SCREEN_HEIGHT as f32 - 100.0));
+      let phase = rng.gen_range(0.0..std::f32::consts::TAU);
 
       let light_data = MenuFairyLight {
         base_x: x,

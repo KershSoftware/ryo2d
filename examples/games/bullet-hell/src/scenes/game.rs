@@ -4,7 +4,6 @@ use crate::components::*;
 use crate::save::save_best_time;
 use crate::shared;
 use crate::*;
-use rand::Rng;
 use ryo2d::prelude::*;
 
 use super::{GameOverScene, MenuScene};
@@ -929,7 +928,6 @@ impl GameScene {
 
   fn spawn_nebula(&mut self, ctx: &mut SceneContext) {
     use crate::constants::{NEBULA_ORB_SIZE, Z_NEBULA};
-    use rand::Rng;
 
     let mut rng = rand::thread_rng();
 
