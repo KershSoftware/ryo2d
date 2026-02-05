@@ -1,25 +1,40 @@
-# Bullet Hell - Ryo2D Demo
-# This demo showcases GPU sprite batching with hundreds of bullets and particles
+# Bullet Hell - Ryo2D Project Configuration
 
 [project]
 name = "Bullet Hell"
 title = "Bullet Hell - Ryo2D"
 version = "0.1.0"
 
-[system]
-show_fps = true
-# Design resolution - game logic uses this fixed size
-# Window can be scaled larger/smaller, engine handles letterboxing
-resolution = "1920x1080"
-display_mode = "windowed"
-vsync = false
-console = true
-
 [paths]
-# Entry point is in this directory (not in src/)
-entry = "main.rs"
+entry_point = "main.rs"
+save_data = "data"
+assets = "assets"
+
+# =============================================================================
+# USER-FACING DEFAULTS
+# Written and prioritized read from system.json when `.with_user_preferences` set
+# =============================================================================
+
+[system]
+vsync = true
+display_mode = "borderless_fullscreen"
+show_fps = true
+
+# =============================================================================
+# DEVELOPER-ONLY SETTINGS
+# These are NOT written to system.json - they're for development
+# =============================================================================
 
 [debug]
 show_colliders = false
 show_velocities = false
 show_origins = false
+enable_profiler = false
+
+# ==============================================================================
+# RELEASE/DISTRIBUTION SETTINGS
+# Build-time settings for `ryo2d build`
+# ==============================================================================
+
+[release]
+# logo = "assets/icon.png"

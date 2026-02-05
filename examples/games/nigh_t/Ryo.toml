@@ -1,44 +1,34 @@
 # Nigh_t - Ryo2D Project Configuration
 
 [project]
-name = "Nigh_t"
+name = "Night_t"
+title = "Night_t - Ryo2D"
+version = "0.0.1"
 
 [paths]
 entry_point = "main.rs"
 save_data = "data"
 assets = "assets"
 
-# ==============================================================================
+# =============================================================================
 # USER-FACING DEFAULTS
-# Values here are written to system.json on first run.
-# Players can override these in system.json; their changes persist.
-# ==============================================================================
+# Written and prioritized read from system.json when `.with_user_preferences` set
+# =============================================================================
 
 [system]
-# Default window resolution (user can change in system.json)
-resolution = "1280x720"
-# Enable VSync for smoother rendering (recommended)
 vsync = true
-# Display mode: "windowed", "exclusive_fullscreen", or "borderless_fullscreen"
-display_mode = "windowed"
-# Audio volume defaults (0.0 - 1.0)
-master_volume = 0.8
-music_volume = 1.0
-sfx_volume = 1.0
-show_fps = false
+display_mode = "borderless_fullscreen"
 
-# ==============================================================================
+# =============================================================================
 # DEVELOPER-ONLY SETTINGS
-# These are NOT written to system.json - they're for development.
-# ==============================================================================
+# These are NOT written to system.json - they're for development
+# =============================================================================
 
 [debug]
-# Show collision boundaries for debugging
 show_colliders = false
-# Show velocity vectors (useful for physics debugging)
 show_velocities = false
-# Show entity origin points
 show_origins = false
+enable_profiler = false
 
 # ==============================================================================
 # RELEASE/DISTRIBUTION SETTINGS
@@ -46,10 +36,4 @@ show_origins = false
 # ==============================================================================
 
 [release]
-# Custom application icon (PNG). If not specified, uses the default Ryo2D logo.
-# The icon appears in the window title bar, taskbar, and Windows .exe file.
 # logo = "assets/icon.png"
-
-[env]
-# Add your game-specific configuration here
-# debug_mode = false

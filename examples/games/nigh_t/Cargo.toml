@@ -2,8 +2,6 @@
 name = "nigh_t"
 version = "0.1.0"
 edition = "2024"
-description = "A dark atmospheric game built with Ryo2D engine"
-build = "build.rs"
 
 [[bin]]
 name = "nigh_t"
@@ -19,7 +17,3 @@ profiler = ["ryo2d/profiler"]
 # Add your game dependencies here
 # serde = { version = "1.0", features = ["derive"] }
 # rand = "0.8"
-
-[build-dependencies]
-# Windows icon embedding (used by build.rs when building via `ryo2d build`)
-winresource = "0.1"
