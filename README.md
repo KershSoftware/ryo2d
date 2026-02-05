@@ -54,6 +54,7 @@ When you run `ryo2d init`, you'll be prompted to install **Agent Skills**—doma
 | `ryo2d dev` | Development mode with hot-reload |
 | `ryo2d export` | Package release into distributable zip |
 | `ryo2d install-skills` | Add Agent Skills to existing project |
+| `ryo2d netplay` | Test multiplayer with friends over internet |
 
 ## Dev Build Performance
 
@@ -118,8 +119,10 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 
 ### Networking
 - **Client-Server** — Dedicated and listen server modes
+- **Transport Layer** — UDP (LAN) or WebRTC (internet with NAT traversal)
 - **Replication** — Automatic entity/component synchronization
 - **RPCs** — Remote procedure calls with targeting
+- **Netplay Testing** — `ryo2d netplay` for quick multiplayer testing
 
 ### Persistence
 - **Save System** — 3-tier saves (system, world, game) with compression

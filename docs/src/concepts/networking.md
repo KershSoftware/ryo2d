@@ -1,15 +1,17 @@
 # Networking
 
-ryo2d includes multiplayer networking powered by [renet](https://github.com/lucaspoffo/renet), a reliable UDP networking library designed for games.
+ryo2d includes multiplayer networking powered by [renet](https://github.com/lucaspoffo/renet), a reliable UDP networking library designed for games, with optional WebRTC support via [matchbox](https://github.com/johanhelsing/matchbox) for NAT traversal.
 
 ## Overview
 
 The networking system provides:
 - **Client-server architecture** - Dedicated or player-hosted servers
 - **Listen server mode** - Host plays while serving remote clients
+- **Transport abstraction** - UDP (LAN) or WebRTC (internet with NAT traversal)
 - **Multiple channels** - Unreliable, reliable ordered, and reliable unordered
 - **Connection events** - Know when players connect and disconnect
 - **Protocol versioning** - Prevent mismatched clients from connecting
+- **Quick testing** - `ryo2d netplay` CLI for instant multiplayer testing
 
 ## Quick Start
 
@@ -29,6 +31,7 @@ impl Game for ServerGame {
             port: 5000,
             max_clients: 4,
             protocol_id: 12345,
+            ..Default::default()  // Uses UDP transport
         };
 
         match NetworkServer::new(config) {
@@ -84,10 +87,8 @@ struct ClientGame {
 impl Game for ClientGame {
     fn init(&mut self, _ctx: &mut GameContext) {
         let server_addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-        let config = NetworkClientConfig {
-            server_addr,
-            protocol_id: 12345, // Must match server
-        };
+        // Use helper constructor for UDP connections
+        let config = NetworkClientConfig::udp(server_addr, 12345);
 
         match NetworkClient::connect(config) {
             Ok(client) => {
@@ -149,6 +150,7 @@ impl Game for CoopGame {
             port: 5000,
             max_clients: 3, // 3 remote + 1 host = 4 players
             protocol_id: 12345,
+            ..Default::default()
         };
 
         match ListenServer::new(config) {
@@ -349,13 +351,10 @@ The `protocol_id` prevents incompatible clients from connecting:
 ```rust
 let server_config = NetworkServerConfig {
     protocol_id: 12345, // Your game's version identifier
-    // ...
+    ..Default::default()
 };
 
-let client_config = NetworkClientConfig {
-    protocol_id: 12345, // Must match server
-    // ...
-};
+let client_config = NetworkClientConfig::udp(server_addr, 12345); // Must match server
 ```
 
 **Best practice:** Use a hash of your network protocol version. When you change message formats, change the protocol ID to prevent old clients from connecting to new servers.
@@ -532,8 +531,9 @@ impl Game for ChatServer {
             port: 5000,
             max_clients: 8,
             protocol_id: 1,
+            ..Default::default()
         };
-        self.server = NetworkServer::new(config).ok();
+        self.server = ListenServer::new(config).ok();
 
         // Host is "Player 0"
         self.player_names.insert(LOCAL_HOST_ID, "Host".to_string());
@@ -594,6 +594,98 @@ impl ChatServer {
     }
 }
 ```
+
+## Transport Selection
+
+ryo2d supports two transport options:
+
+| Transport | Use Case | NAT Traversal | Latency |
+|-----------|----------|---------------|---------|
+| **UDP** (default) | LAN games, development | No | Lowest |
+| **WebRTC** | Internet multiplayer | Yes (STUN/TURN) | Low |
+
+### UDP Transport (Default)
+
+UDP is the default and requires no configuration changes:
+
+```rust
+// UDP is used automatically
+let config = NetworkServerConfig {
+    port: 5000,
+    max_clients: 4,
+    protocol_id: 12345,
+    ..Default::default()
+};
+```
+
+### WebRTC Transport (Internet)
+
+For internet multiplayer with NAT traversal, enable the `matchbox` feature and configure WebRTC:
+
+```toml
+# Cargo.toml
+[dependencies]
+ryo2d = { version = "0.1", features = ["matchbox"] }
+```
+
+```rust
+use ryo2d::prelude::*;
+
+// Server with WebRTC
+let config = NetworkServerConfig {
+    max_clients: 4,
+    protocol_id: 12345,
+    transport: TransportConfig::WebRtc(WebRtcConfig::new(
+        "wss://signaling.example.com",
+        "my-game-room",
+    )),
+    ..Default::default()
+};
+
+// Client with WebRTC
+let config = NetworkClientConfig {
+    protocol_id: 12345,
+    transport: TransportConfig::WebRtc(WebRtcConfig::new(
+        "wss://signaling.example.com",
+        "my-game-room",
+    )),
+    ..Default::default()
+};
+```
+
+### WebRTC with TURN Fallback
+
+For players behind strict NATs (corporate networks, some mobile carriers), add a TURN server:
+
+```rust
+let webrtc = WebRtcConfig::new("wss://signaling.example.com", "room-abc")
+    .with_turn("turn:relay.example.com:3478", "username", "credential");
+
+let config = NetworkServerConfig {
+    transport: TransportConfig::WebRtc(webrtc),
+    ..Default::default()
+};
+```
+
+## Quick Testing with Netplay
+
+The `ryo2d netplay` CLI command provides instant multiplayer testing:
+
+```bash
+# Start a server with public URL (via Cloudflare Tunnel)
+ryo2d netplay --server
+
+# Connect to a server
+ryo2d netplay --client <tunnel-url>
+
+# Custom port
+ryo2d netplay --server --port 7777
+```
+
+This automatically:
+1. Creates a Cloudflare Quick Tunnel for public access
+2. Displays connection URLs for remote players
+3. Shows WebRTC config snippets for your game code
 
 ## Security Notes
 

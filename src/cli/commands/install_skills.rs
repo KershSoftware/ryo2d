@@ -77,7 +77,7 @@ const AVAILABLE_SKILLS: &[(&str, &str)] = &[
   ),
   (
     "ryo-network",
-    "Multiplayer networking with Ryo2D - client-server, replication, RPCs",
+    "Multiplayer networking - client-server, replication, RPCs, WebRTC NAT traversal",
   ),
   (
     "ryo-physics",

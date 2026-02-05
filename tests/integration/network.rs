@@ -54,6 +54,7 @@ fn server_starts_and_accepts_connections() {
     port,
     max_clients: 4,
     protocol_id: 12345,
+    ..Default::default()
   };
   let mut server = NetworkServer::new(config).expect("Failed to create server");
   assert!(server.is_running());
@@ -61,10 +62,7 @@ fn server_starts_and_accepts_connections() {
 
   // Connect client
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let client_config = NetworkClientConfig {
-    server_addr,
-    protocol_id: 12345,
-  };
+  let client_config = NetworkClientConfig::udp(server_addr, 12345);
   let mut client = NetworkClient::connect(client_config).expect("Failed to create client");
 
   // Wait for connection
@@ -85,14 +83,12 @@ fn client_receives_connected_event() {
     port,
     max_clients: 4,
     protocol_id: 54321,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 54321,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 54321))
   .unwrap();
 
   let mut got_connected_event = false;
@@ -119,14 +115,12 @@ fn server_receives_client_connected_event() {
     port,
     max_clients: 4,
     protocol_id: 11111,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 11111,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 11111))
   .unwrap();
 
   let mut got_client_connected = false;
@@ -159,14 +153,12 @@ fn client_sends_message_to_server() {
     port,
     max_clients: 4,
     protocol_id: 22222,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 22222,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 22222))
   .unwrap();
 
   // Wait for connection first
@@ -212,14 +204,12 @@ fn server_sends_message_to_client() {
     port,
     max_clients: 4,
     protocol_id: 33333,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 33333,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 33333))
   .unwrap();
 
   // Wait for connection
@@ -263,22 +253,17 @@ fn server_broadcasts_to_multiple_clients() {
     port,
     max_clients: 4,
     protocol_id: 44444,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
   // Connect two clients
-  let mut client1 = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 44444,
-  })
+  let mut client1 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 44444))
   .unwrap();
 
-  let mut client2 = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 44444,
-  })
+  let mut client2 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 44444))
   .unwrap();
 
   // Wait for both to connect
@@ -357,14 +342,12 @@ fn unreliable_channel_works() {
     port,
     max_clients: 4,
     protocol_id: 55555,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 55555,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 55555))
   .unwrap();
 
   // Wait for connection
@@ -413,14 +396,12 @@ fn protocol_id_mismatch_prevents_connection() {
     port,
     max_clients: 4,
     protocol_id: 99999, // Server uses this ID
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 11111, // Client uses different ID
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 11111)) // Client uses different ID
   .unwrap();
 
   // Try to connect - should fail due to protocol mismatch
@@ -454,14 +435,12 @@ fn client_disconnect_generates_event() {
     port,
     max_clients: 4,
     protocol_id: 66666,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 66666,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 66666))
   .unwrap();
 
   // Wait for connection
@@ -543,6 +522,7 @@ fn listen_server_creates_successfully() {
     port,
     max_clients: 4,
     protocol_id: 77777,
+    ..Default::default()
   };
 
   let server = ListenServer::new(config).expect("Failed to create listen server");
@@ -561,6 +541,7 @@ fn listen_server_host_id_is_local_host_id() {
     port,
     max_clients: 4,
     protocol_id: 77778,
+    ..Default::default()
   })
   .unwrap();
 
@@ -577,14 +558,12 @@ fn listen_server_remote_client_connects() {
     port,
     max_clients: 4,
     protocol_id: 77779,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 77779,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77779))
   .unwrap();
 
   // Wait for connection
@@ -607,14 +586,12 @@ fn listen_server_generates_client_connected_event() {
     port,
     max_clients: 4,
     protocol_id: 77780,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 77780,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77780))
   .unwrap();
 
   let mut got_client_connected = false;
@@ -645,14 +622,12 @@ fn listen_server_all_clients_includes_host_and_remotes() {
     port,
     max_clients: 4,
     protocol_id: 77781,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 77781,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77781))
   .unwrap();
 
   // Wait for connection
@@ -683,14 +658,12 @@ fn listen_server_sends_to_remote_client() {
     port,
     max_clients: 4,
     protocol_id: 77782,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 77782,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77782))
   .unwrap();
 
   // Wait for connection
@@ -739,14 +712,12 @@ fn listen_server_receives_from_remote_client() {
     port,
     max_clients: 4,
     protocol_id: 77783,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 77783,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77783))
   .unwrap();
 
   // Wait for connection
@@ -795,22 +766,17 @@ fn listen_server_broadcast_to_remotes() {
     port,
     max_clients: 4,
     protocol_id: 77784,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
   // Connect two remote clients
-  let mut client1 = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 77784,
-  })
+  let mut client1 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77784))
   .unwrap();
 
-  let mut client2 = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 77784,
-  })
+  let mut client2 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 77784))
   .unwrap();
 
   // Wait for both to connect
@@ -886,6 +852,7 @@ fn listen_server_receive_from_host_returns_none() {
     port,
     max_clients: 4,
     protocol_id: 77785,
+    ..Default::default()
   })
   .unwrap();
 
@@ -1530,14 +1497,12 @@ fn replication_server_broadcasts_spawn_to_client() {
     port,
     max_clients: 4,
     protocol_id: 88880,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 88880,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88880))
   .unwrap();
 
   // Wait for connection
@@ -1605,14 +1570,12 @@ fn replication_client_receives_component_updates() {
     port,
     max_clients: 4,
     protocol_id: 88881,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 88881,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88881))
   .unwrap();
 
   // Wait for connection
@@ -1692,14 +1655,12 @@ fn rpc_client_sends_to_server() {
     port,
     max_clients: 4,
     protocol_id: 88882,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 88882,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88882))
   .unwrap();
 
   // Wait for connection
@@ -1758,21 +1719,16 @@ fn rpc_server_broadcasts_to_clients() {
     port,
     max_clients: 4,
     protocol_id: 88883,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
-  let mut client1 = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 88883,
-  })
+  let mut client1 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88883))
   .unwrap();
 
-  let mut client2 = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 88883,
-  })
+  let mut client2 = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88883))
   .unwrap();
 
   // Wait for both to connect
@@ -1857,14 +1813,12 @@ fn rpc_registry_processes_network_rpcs() {
     port,
     max_clients: 4,
     protocol_id: 88884,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 88884,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88884))
   .unwrap();
 
   // Wait for connection
@@ -1923,14 +1877,12 @@ fn listen_server_replication_excludes_host_from_network() {
     port,
     max_clients: 4,
     protocol_id: 88885,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 88885,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88885))
   .unwrap();
 
   // Wait for connection
@@ -1982,14 +1934,12 @@ fn serverlike_trait_works_with_network_server() {
     port,
     max_clients: 4,
     protocol_id: 88886,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 88886,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88886))
   .unwrap();
 
   // Wait for connection
@@ -2018,14 +1968,12 @@ fn serverlike_trait_works_with_listen_server() {
     port,
     max_clients: 4,
     protocol_id: 88887,
+    ..Default::default()
   })
   .unwrap();
 
   let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-  let mut client = NetworkClient::connect(NetworkClientConfig {
-    server_addr,
-    protocol_id: 88887,
-  })
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 88887))
   .unwrap();
 
   // Wait for connection
@@ -2082,4 +2030,186 @@ fn multiple_entities_replicate_correctly() {
   for (entity, network_id) in entities.iter().zip(network_ids.iter()) {
     assert_eq!(manager.get_entity(*network_id), Some(*entity));
   }
+}
+
+// =============================================================================
+// Transport Layer Tests
+// =============================================================================
+
+#[test]
+fn transport_config_defaults_to_udp() {
+  let config = TransportConfig::default();
+  assert!(matches!(config, TransportConfig::Udp));
+}
+
+#[test]
+fn server_config_uses_default_udp_transport() {
+  let config = NetworkServerConfig::default();
+  assert!(matches!(config.transport, TransportConfig::Udp));
+}
+
+#[test]
+fn server_with_explicit_udp_transport_works() {
+  let port = get_test_port();
+
+  let config = NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 90001,
+    transport: TransportConfig::Udp,
+  };
+
+  let server = NetworkServer::new(config);
+  assert!(server.is_ok());
+  assert!(server.unwrap().is_running());
+}
+
+#[test]
+fn server_and_client_communicate_with_udp_transport() {
+  let port = get_test_port();
+
+  // Create server with explicit UDP transport
+  let server_config = NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 90002,
+    transport: TransportConfig::Udp,
+  };
+  let mut server = NetworkServer::new(server_config).expect("Failed to create server");
+
+  // Create client with UDP transport
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let client_config = NetworkClientConfig::udp(server_addr, 90002);
+  let mut client = NetworkClient::connect(client_config).expect("Failed to create client");
+
+  // Wait for connection
+  let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
+    client.is_connected() && server.connected_count() == 1
+  });
+
+  assert!(connected, "UDP transport connection failed");
+  assert!(client.is_connected());
+  assert_eq!(server.connected_count(), 1);
+}
+
+#[test]
+fn listen_server_uses_default_udp_transport() {
+  let port = get_test_port();
+
+  let config = NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 90003,
+    transport: TransportConfig::Udp,
+  };
+
+  let server = ListenServer::new(config);
+  assert!(server.is_ok());
+  assert!(server.unwrap().is_running());
+}
+
+#[test]
+fn udp_transport_handles_message_exchange() {
+  let port = get_test_port();
+
+  let server_config = NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id: 90004,
+    transport: TransportConfig::Udp,
+  };
+  let mut server = NetworkServer::new(server_config).unwrap();
+
+  let server_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, 90004)).unwrap();
+
+  // Wait for connection
+  let connected = run_updates_until(&mut server, &mut client, 2000, |server, client| {
+    client.is_connected() && server.connected_count() == 1
+  });
+  assert!(connected);
+
+  // Get client ID and send message
+  let client_ids: Vec<_> = server.clients().collect();
+  let client_id = client_ids[0];
+
+  let message = b"UDP transport test message!";
+  server.send(client_id, Channel::ReliableOrdered, message);
+
+  // Wait for client to receive
+  let mut received_message = None;
+  let dt = Duration::from_millis(16);
+
+  for _ in 0..100 {
+    server.update(dt);
+    client.update(dt);
+
+    if let Some(data) = client.receive(Channel::ReliableOrdered) {
+      received_message = Some(data);
+      break;
+    }
+
+    thread::sleep(Duration::from_millis(10));
+  }
+
+  assert!(received_message.is_some(), "UDP message not received");
+  assert_eq!(received_message.unwrap(), message.to_vec());
+}
+
+// WebRTC transport tests are feature-gated and require a running signaling server
+// They are better suited for manual/E2E testing rather than CI
+#[cfg(feature = "matchbox")]
+mod webrtc_transport_tests {
+  use super::*;
+
+  #[test]
+  fn webrtc_config_creates_correctly() {
+    let config = WebRtcConfig::new("ws://localhost:3536", "test-room");
+
+    assert_eq!(config.signaling_url, "ws://localhost:3536");
+    assert_eq!(config.room_id, "test-room");
+    assert!(!config.ice_servers.is_empty()); // Has default STUN servers
+  }
+
+  #[test]
+  fn webrtc_config_with_turn_works() {
+    let config = WebRtcConfig::new("ws://localhost:3536", "test-room")
+      .with_turn("turn:relay.example.com:3478", "user", "pass");
+
+    let turn_servers: Vec<_> = config
+      .ice_servers
+      .iter()
+      .filter(|s| s.url.starts_with("turn:"))
+      .collect();
+
+    assert_eq!(turn_servers.len(), 1);
+    assert_eq!(turn_servers[0].username.as_deref(), Some("user"));
+    assert_eq!(turn_servers[0].credential.as_deref(), Some("pass"));
+  }
+
+  #[test]
+  fn transport_config_webrtc_variant_works() {
+    let webrtc_config = WebRtcConfig::new("ws://localhost:3536", "room");
+    let transport = TransportConfig::WebRtc(webrtc_config);
+
+    assert!(matches!(transport, TransportConfig::WebRtc(_)));
+  }
+
+  #[test]
+  fn server_config_accepts_webrtc_transport() {
+    let webrtc_config = WebRtcConfig::new("ws://localhost:3536", "room");
+    let config = NetworkServerConfig {
+      port: 0, // Not used for WebRTC
+      max_clients: 4,
+      protocol_id: 12345,
+      transport: TransportConfig::WebRtc(webrtc_config),
+    };
+
+    // Just verify config creation doesn't panic
+    assert!(matches!(config.transport, TransportConfig::WebRtc(_)));
+  }
+
+  // Note: Full WebRTC integration tests require a running signaling server
+  // and are better suited for E2E tests rather than unit/integration tests.
+  // See tests/e2e/network.rs for WebRTC E2E tests.
 }

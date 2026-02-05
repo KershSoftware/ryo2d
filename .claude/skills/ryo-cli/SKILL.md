@@ -20,6 +20,7 @@ ryo2d run              # Run production build
 ryo2d dev              # Development mode with hot reload
 ryo2d export           # Package release into distributable zip
 ryo2d install-skills   # Add Agent Skills to existing project
+ryo2d netplay          # Tools for testing multiplayer with friends
 ```
 
 ## Project Structure
@@ -142,10 +143,32 @@ This optimizes **dependencies** (physics, rendering) while keeping game code uno
 - `ryo2d dev` warns and offers to add it if missing
 - First build after adding is slower (recompiling deps), then fast
 
+## Netplay Testing
+
+Test multiplayer with friends over the internet without manual server setup:
+
+```bash
+ryo2d netplay start             # Start temp signaling server
+ryo2d netplay start --room xyz  # Custom room name
+ryo2d netplay ip                # Show your LAN and WAN IPs
+```
+
+`netplay start` does the following:
+1. Installs `matchbox_server` (if needed)
+2. Installs `cloudflared` (if needed, prompts Y/n)
+3. Starts local matchbox signaling server
+4. Creates Cloudflare Tunnel for internet access
+5. Displays connection info and code snippet
+
+The tunnel URL is **temporary** - it changes each run and stops when you Ctrl+C.
+
+For production games, deploy your own signaling server (see `docs/matchbox-server-deploy.md`).
+
 ## Tips
 
 - Run CLI from project root (where `Ryo.toml` is)
 - Use `ryo2d dev` for fast iteration
 - Asset hot reload works in dev mode (no recompile needed)
 - For engine dev, use `./run` scripts from repo root
+- Use `ryo2d netplay` for quick multiplayer testing
 

@@ -10,6 +10,11 @@
 //! - [`ListenServer`] - Player-hosted server (host plays while serving)
 //! - [`NetworkClient`] - Connects to either server type
 //!
+//! # Transport Types
+//!
+//! - **UDP** (default) - Direct UDP sockets, lowest latency for LAN
+//! - **WebRTC** (requires `matchbox` feature) - NAT traversal for internet games
+//!
 //! # Replication
 //!
 //! The [`replication`] submodule provides automatic entity/component
@@ -17,7 +22,7 @@
 //!
 //! # Quick Start
 //!
-//! ## Dedicated Server
+//! ## Dedicated Server (LAN)
 //!
 //! ```no_run
 //! use ryo2d::prelude::*;
@@ -27,6 +32,7 @@
 //!     port: 5000,
 //!     max_clients: 16,
 //!     protocol_id: 12345,
+//!     ..Default::default()  // Uses UDP transport
 //! };
 //! let mut server = NetworkServer::new(config).unwrap();
 //!
@@ -47,6 +53,34 @@
 //! }
 //! ```
 //!
+//! ## Internet Server (WebRTC)
+//!
+//! For games that need NAT traversal (requires `matchbox` feature).
+//! You must run your own signaling server: `cargo install matchbox_server && matchbox_server`
+//!
+//! ```ignore
+//! use ryo2d::prelude::*;
+//!
+//! // Local development (matchbox_server on localhost:3536)
+//! let config = NetworkServerConfig {
+//!     transport: TransportConfig::WebRtc(WebRtcConfig::new(
+//!         "ws://localhost:3536",
+//!         "my-game-room",
+//!     )),
+//!     ..Default::default()
+//! };
+//!
+//! // Production (your deployed signaling server)
+//! let config = NetworkServerConfig {
+//!     transport: TransportConfig::WebRtc(WebRtcConfig::new(
+//!         "wss://match.yourgame.com",
+//!         "lobby-abc123",
+//!     )),
+//!     ..Default::default()
+//! };
+//! let mut server = NetworkServer::new(config).unwrap();
+//! ```
+//!
 //! ## Listen Server (Player-Hosted)
 //!
 //! For casual co-op games where one player hosts:
@@ -59,6 +93,7 @@
 //!     port: 5000,
 //!     max_clients: 3, // 3 remote + host = 4 players
 //!     protocol_id: 12345,
+//!     ..Default::default()
 //! };
 //! let mut server = ListenServer::new(config).unwrap();
 //!
@@ -95,10 +130,7 @@
 //! use std::time::Duration;
 //!
 //! let server_addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-//! let config = NetworkClientConfig {
-//!     server_addr,
-//!     protocol_id: 12345, // Must match server
-//! };
+//! let config = NetworkClientConfig::udp(server_addr, 12345);
 //! let mut client = NetworkClient::connect(config).unwrap();
 //!
 //! // Game loop
@@ -121,22 +153,27 @@
 //! }
 //! ```
 
-use std::net::{SocketAddr, UdpSocket};
-use std::time::{Duration, SystemTime};
+use std::net::SocketAddr;
+use std::time::Duration;
 
 use renet::{ConnectionConfig, DefaultChannel, RenetClient, RenetServer, ServerEvent};
-use renet_netcode::{
-  ClientAuthentication, NetcodeClientTransport, NetcodeServerTransport, ServerAuthentication,
-  ServerConfig,
-};
 
 use super::error::{NetworkError, NetworkResult};
 
 pub mod replication;
 pub mod rpc;
+pub mod transport;
+
+use transport::{ClientTransport, ServerTransport};
 
 // Re-export ClientId for convenience
 pub use renet::ClientId;
+
+// Re-export transport types
+pub use transport::TransportConfig;
+
+#[cfg(feature = "matchbox")]
+pub use transport::{IceServer, WebRtcConfig};
 
 /// Trait for abstracting over different server types.
 ///
@@ -246,9 +283,11 @@ pub enum NetworkEvent {
 }
 
 /// Configuration for creating a network server
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NetworkServerConfig {
   /// Port to listen on (default: 5000)
+  ///
+  /// Only used for UDP transport. WebRTC uses signaling server instead.
   pub port: u16,
 
   /// Maximum number of simultaneous clients (default: 16)
@@ -257,59 +296,84 @@ pub struct NetworkServerConfig {
   /// Protocol ID - must match between client and server (default: 0)
   /// Use different IDs for different game versions to prevent mismatches.
   pub protocol_id: u64,
+
+  /// Transport configuration (default: UDP)
+  ///
+  /// Use `TransportConfig::Udp` for LAN games (lowest latency).
+  /// Use `TransportConfig::WebRtc(...)` for internet games (NAT traversal).
+  pub transport: TransportConfig,
 }
 
-impl Default for NetworkServerConfig {
-  fn default() -> Self {
+impl NetworkServerConfig {
+  /// Create a new server config with default values.
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Set custom default values (used by Default impl).
+  fn with_defaults() -> Self {
     Self {
       port: 5000,
       max_clients: 16,
       protocol_id: 0,
+      transport: TransportConfig::Udp,
     }
   }
 }
 
+/// Internal enum for server transport implementations.
+enum ServerTransportImpl {
+  Udp(transport::udp::UdpServerTransport),
+  #[cfg(feature = "matchbox")]
+  WebRtc(transport::webrtc::WebRtcServerTransport),
+}
+
 /// A network server that manages client connections
 ///
-/// Wraps renet's `RenetServer` and `NetcodeServerTransport` with a
-/// simpler API. Create one server per game session.
+/// Wraps renet's `RenetServer` with a transport abstraction that supports
+/// both UDP (LAN) and WebRTC (internet with NAT traversal).
 pub struct NetworkServer {
   server: RenetServer,
-  transport: NetcodeServerTransport,
+  transport: ServerTransportImpl,
   events: Vec<NetworkEvent>,
 }
 
 impl NetworkServer {
   /// Create and start a new server
   ///
-  /// Binds to `0.0.0.0:{port}` to accept connections from any interface.
+  /// For UDP transport, binds to `0.0.0.0:{port}` to accept connections.
+  /// For WebRTC transport, connects to the signaling server.
   ///
   /// # Errors
   ///
   /// Returns `NetworkError::InitError` if socket binding or transport
   /// creation fails.
   pub fn new(config: NetworkServerConfig) -> NetworkResult<Self> {
-    let server_addr: SocketAddr = format!("0.0.0.0:{}", config.port)
-      .parse()
-      .map_err(|e| NetworkError::InitError(format!("Invalid address: {}", e)))?;
-
-    let socket = UdpSocket::bind(server_addr)
-      .map_err(|e| NetworkError::InitError(format!("Failed to bind socket: {}", e)))?;
-
-    let current_time = SystemTime::now()
-      .duration_since(SystemTime::UNIX_EPOCH)
-      .unwrap_or(Duration::ZERO);
-
-    let server_config = ServerConfig {
-      current_time,
-      max_clients: config.max_clients,
-      protocol_id: config.protocol_id,
-      public_addresses: vec![server_addr],
-      authentication: ServerAuthentication::Unsecure,
+    let config = if config.port == 0 && config.max_clients == 0 {
+      // Use defaults if config appears to be uninitialized
+      NetworkServerConfig {
+        transport: config.transport,
+        ..NetworkServerConfig::with_defaults()
+      }
+    } else {
+      config
     };
 
-    let transport = NetcodeServerTransport::new(server_config, socket)
-      .map_err(|e| NetworkError::InitError(format!("Failed to create transport: {}", e)))?;
+    let transport = match config.transport {
+      TransportConfig::Udp => {
+        let udp = transport::udp::UdpServerTransport::new(
+          config.port,
+          config.max_clients,
+          config.protocol_id,
+        )?;
+        ServerTransportImpl::Udp(udp)
+      }
+      #[cfg(feature = "matchbox")]
+      TransportConfig::WebRtc(ref webrtc_config) => {
+        let webrtc = transport::webrtc::WebRtcServerTransport::new(webrtc_config)?;
+        ServerTransportImpl::WebRtc(webrtc)
+      }
+    };
 
     let connection_config = ConnectionConfig::default();
     let server = RenetServer::new(connection_config);
@@ -328,30 +392,53 @@ impl NetworkServer {
   pub fn update(&mut self, dt: Duration) {
     self.server.update(dt);
 
-    if let Err(e) = self.transport.update(dt, &mut self.server) {
-      // Transport errors are logged but don't crash the server
-      eprintln!("Network transport error: {}", e);
+    match &mut self.transport {
+      ServerTransportImpl::Udp(udp) => {
+        if let Err(e) = udp.update_with_server(dt, &mut self.server) {
+          eprintln!("Network transport error: {}", e);
+        }
+        // Collect events from UDP transport
+        self.events.extend(udp.drain_events());
+      }
+      #[cfg(feature = "matchbox")]
+      ServerTransportImpl::WebRtc(webrtc) => {
+        if let Err(e) = webrtc.update(dt) {
+          eprintln!("Network transport error: {}", e);
+        }
+        // Collect events from WebRTC transport
+        self.events.extend(webrtc.drain_events());
+      }
     }
 
-    // Collect server events
-    while let Some(event) = self.server.get_event() {
-      match event {
-        ServerEvent::ClientConnected { client_id } => {
-          self
-            .events
-            .push(NetworkEvent::ClientConnected { client_id });
-        }
-        ServerEvent::ClientDisconnected { client_id, reason } => {
-          self.events.push(NetworkEvent::ClientDisconnected {
-            client_id,
-            reason: format!("{:?}", reason),
-          });
+    // For UDP, also collect renet server events
+    if matches!(self.transport, ServerTransportImpl::Udp(_)) {
+      while let Some(event) = self.server.get_event() {
+        match event {
+          ServerEvent::ClientConnected { client_id } => {
+            self
+              .events
+              .push(NetworkEvent::ClientConnected { client_id });
+          }
+          ServerEvent::ClientDisconnected { client_id, reason } => {
+            self.events.push(NetworkEvent::ClientDisconnected {
+              client_id,
+              reason: format!("{:?}", reason),
+            });
+          }
         }
       }
     }
 
     // Send outgoing packets
-    self.transport.send_packets(&mut self.server);
+    match &mut self.transport {
+      ServerTransportImpl::Udp(udp) => {
+        udp.send_packets(&mut self.server);
+      }
+      #[cfg(feature = "matchbox")]
+      ServerTransportImpl::WebRtc(_) => {
+        // WebRTC sends packets directly in its send methods
+      }
+    }
   }
 
   /// Get pending network events
@@ -365,16 +452,40 @@ impl NetworkServer {
   ///
   /// The message is queued and sent during the next `update()` call.
   pub fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]) {
-    self
-      .server
-      .send_message(client_id, DefaultChannel::from(channel), data.to_vec());
+    match &mut self.transport {
+      ServerTransportImpl::Udp(_) => {
+        self
+          .server
+          .send_message(client_id, DefaultChannel::from(channel), data.to_vec());
+      }
+      #[cfg(feature = "matchbox")]
+      ServerTransportImpl::WebRtc(webrtc) => {
+        let channel_idx = match channel {
+          Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
+          Channel::Unreliable => 1,
+        };
+        webrtc.send(client_id, channel_idx, data);
+      }
+    }
   }
 
   /// Broadcast a message to all connected clients
   pub fn broadcast(&mut self, channel: Channel, data: &[u8]) {
-    self
-      .server
-      .broadcast_message(DefaultChannel::from(channel), data.to_vec());
+    match &mut self.transport {
+      ServerTransportImpl::Udp(_) => {
+        self
+          .server
+          .broadcast_message(DefaultChannel::from(channel), data.to_vec());
+      }
+      #[cfg(feature = "matchbox")]
+      ServerTransportImpl::WebRtc(webrtc) => {
+        let channel_idx = match channel {
+          Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
+          Channel::Unreliable => 1,
+        };
+        webrtc.broadcast(channel_idx, data);
+      }
+    }
   }
 
   /// Broadcast a message to all clients except one
@@ -394,33 +505,67 @@ impl NetworkServer {
   /// Returns `None` if no message is available on the specified channel.
   /// Call repeatedly until `None` to drain all messages.
   pub fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>> {
-    self
-      .server
-      .receive_message(client_id, DefaultChannel::from(channel))
-      .map(|bytes| bytes.to_vec())
+    match &mut self.transport {
+      ServerTransportImpl::Udp(_) => self
+        .server
+        .receive_message(client_id, DefaultChannel::from(channel))
+        .map(|bytes| bytes.to_vec()),
+      #[cfg(feature = "matchbox")]
+      ServerTransportImpl::WebRtc(webrtc) => {
+        let channel_idx = match channel {
+          Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
+          Channel::Unreliable => 1,
+        };
+        webrtc.receive(client_id, channel_idx)
+      }
+    }
   }
 
   /// Get an iterator over all connected client IDs
   pub fn clients(&self) -> impl Iterator<Item = ClientId> + '_ {
-    self.server.clients_id_iter()
+    match &self.transport {
+      ServerTransportImpl::Udp(_) => {
+        Box::new(self.server.clients_id_iter()) as Box<dyn Iterator<Item = ClientId>>
+      }
+      #[cfg(feature = "matchbox")]
+      ServerTransportImpl::WebRtc(webrtc) => {
+        Box::new(webrtc.clients()) as Box<dyn Iterator<Item = ClientId>>
+      }
+    }
   }
 
   /// Disconnect a specific client
   pub fn disconnect(&mut self, client_id: ClientId) {
-    self.server.disconnect(client_id);
+    match &self.transport {
+      ServerTransportImpl::Udp(_) => {
+        self.server.disconnect(client_id);
+      }
+      #[cfg(feature = "matchbox")]
+      ServerTransportImpl::WebRtc(_) => {
+        // WebRTC doesn't have a direct disconnect method per-peer
+        // The peer will be removed when they disconnect
+      }
+    }
   }
 
   /// Check if the server is running
   ///
   /// Returns `true` if the server was successfully created.
   pub fn is_running(&self) -> bool {
-    // Server is always running if it was successfully created
-    true
+    match &self.transport {
+      ServerTransportImpl::Udp(udp) => udp.is_ready(),
+      #[cfg(feature = "matchbox")]
+      ServerTransportImpl::WebRtc(webrtc) => webrtc.is_ready(),
+    }
   }
 
   /// Get the number of connected clients
   pub fn connected_count(&self) -> usize {
-    self.server.connected_clients()
+    match &self.transport {
+      ServerTransportImpl::Udp(_) => self.server.connected_clients(),
+      #[cfg(feature = "matchbox")]
+      ServerTransportImpl::WebRtc(webrtc) => webrtc.clients().count(),
+    }
   }
 }
 
@@ -450,20 +595,54 @@ impl ServerLike for NetworkServer {
 /// Configuration for connecting to a network server
 #[derive(Debug, Clone)]
 pub struct NetworkClientConfig {
-  /// Server address to connect to
-  pub server_addr: SocketAddr,
+  /// Server address to connect to (for UDP transport)
+  pub server_addr: Option<SocketAddr>,
 
   /// Protocol ID - must match the server (default: 0)
   pub protocol_id: u64,
+
+  /// Transport configuration
+  pub transport: TransportConfig,
+}
+
+impl NetworkClientConfig {
+  /// Create a UDP client configuration.
+  ///
+  /// This is the simplest option for LAN games.
+  pub fn udp(server_addr: SocketAddr, protocol_id: u64) -> Self {
+    Self {
+      server_addr: Some(server_addr),
+      protocol_id,
+      transport: TransportConfig::Udp,
+    }
+  }
+
+  /// Create a WebRTC client configuration.
+  ///
+  /// Use this for internet games that need NAT traversal.
+  #[cfg(feature = "matchbox")]
+  pub fn webrtc(config: transport::WebRtcConfig) -> Self {
+    Self {
+      server_addr: None,
+      protocol_id: 0,
+      transport: TransportConfig::WebRtc(config),
+    }
+  }
+}
+
+/// Internal enum for client transport implementations.
+enum ClientTransportImpl {
+  Udp(transport::udp::UdpClientTransport),
+  #[cfg(feature = "matchbox")]
+  WebRtc(transport::webrtc::WebRtcClientTransport),
 }
 
 /// A network client that connects to a server
 ///
-/// Wraps renet's `RenetClient` and `NetcodeClientTransport` with a
-/// simpler API. Create one client per game session.
+/// Supports both UDP (LAN) and WebRTC (internet with NAT traversal) transports.
 pub struct NetworkClient {
   client: RenetClient,
-  transport: NetcodeClientTransport,
+  transport: ClientTransportImpl,
   events: Vec<NetworkEvent>,
   was_connected: bool,
 }
@@ -479,26 +658,20 @@ impl NetworkClient {
   ///
   /// Returns `NetworkError::ConnectionError` if socket creation fails.
   pub fn connect(config: NetworkClientConfig) -> NetworkResult<Self> {
-    // Bind to any available port
-    let socket = UdpSocket::bind("0.0.0.0:0")
-      .map_err(|e| NetworkError::ConnectionError(format!("Failed to bind socket: {}", e)))?;
-
-    let current_time = SystemTime::now()
-      .duration_since(SystemTime::UNIX_EPOCH)
-      .unwrap_or(Duration::ZERO);
-
-    // Generate a random client ID
-    let client_id = rand_u64();
-
-    let authentication = ClientAuthentication::Unsecure {
-      protocol_id: config.protocol_id,
-      client_id,
-      server_addr: config.server_addr,
-      user_data: None,
+    let transport = match config.transport {
+      TransportConfig::Udp => {
+        let server_addr = config.server_addr.ok_or_else(|| {
+          NetworkError::ConnectionError("UDP transport requires server_addr".to_string())
+        })?;
+        let udp = transport::udp::UdpClientTransport::new(server_addr, config.protocol_id)?;
+        ClientTransportImpl::Udp(udp)
+      }
+      #[cfg(feature = "matchbox")]
+      TransportConfig::WebRtc(ref webrtc_config) => {
+        let webrtc = transport::webrtc::WebRtcClientTransport::new(webrtc_config)?;
+        ClientTransportImpl::WebRtc(webrtc)
+      }
     };
-
-    let transport = NetcodeClientTransport::new(current_time, authentication, socket)
-      .map_err(|e| NetworkError::ConnectionError(format!("Failed to create transport: {}", e)))?;
 
     let connection_config = ConnectionConfig::default();
     let client = RenetClient::new(connection_config);
@@ -518,29 +691,49 @@ impl NetworkClient {
   pub fn update(&mut self, dt: Duration) {
     self.client.update(dt);
 
-    if let Err(e) = self.transport.update(dt, &mut self.client) {
-      eprintln!("Network transport error: {}", e);
-    }
+    match &mut self.transport {
+      ClientTransportImpl::Udp(udp) => {
+        if let Err(e) = udp.update_with_client(dt, &mut self.client) {
+          eprintln!("Network transport error: {}", e);
+        }
 
-    // Check for connection state changes
-    let is_connected = self.client.is_connected();
+        // Check for connection state changes
+        let is_connected = self.client.is_connected();
 
-    if is_connected && !self.was_connected {
-      self.events.push(NetworkEvent::Connected);
-    } else if !is_connected && self.was_connected {
-      let reason = self
-        .transport
-        .disconnect_reason()
-        .map(|r| format!("{:?}", r))
-        .unwrap_or_else(|| "Unknown".to_string());
-      self.events.push(NetworkEvent::Disconnected { reason });
-    }
+        if is_connected && !self.was_connected {
+          self.events.push(NetworkEvent::Connected);
+        } else if !is_connected && self.was_connected {
+          let reason = udp
+            .disconnect_reason()
+            .unwrap_or_else(|| "Unknown".to_string());
+          self.events.push(NetworkEvent::Disconnected { reason });
+        }
 
-    self.was_connected = is_connected;
+        self.was_connected = is_connected;
 
-    // Send outgoing packets
-    if let Err(e) = self.transport.send_packets(&mut self.client) {
-      eprintln!("Network send error: {}", e);
+        // Send outgoing packets
+        let _ = udp.send_packets(&mut self.client);
+      }
+      #[cfg(feature = "matchbox")]
+      ClientTransportImpl::WebRtc(webrtc) => {
+        if let Err(e) = webrtc.update(dt) {
+          eprintln!("Network transport error: {}", e);
+        }
+
+        // Check for connection state changes
+        let is_connected = webrtc.is_connected();
+
+        if is_connected && !self.was_connected {
+          self.events.push(NetworkEvent::Connected);
+        } else if !is_connected && self.was_connected {
+          let reason = webrtc
+            .disconnect_reason()
+            .unwrap_or_else(|| "Unknown".to_string());
+          self.events.push(NetworkEvent::Disconnected { reason });
+        }
+
+        self.was_connected = is_connected;
+      }
     }
   }
 
@@ -555,9 +748,21 @@ impl NetworkClient {
   ///
   /// The message is queued and sent during the next `update()` call.
   pub fn send(&mut self, channel: Channel, data: &[u8]) {
-    self
-      .client
-      .send_message(DefaultChannel::from(channel), data.to_vec());
+    match &mut self.transport {
+      ClientTransportImpl::Udp(_) => {
+        self
+          .client
+          .send_message(DefaultChannel::from(channel), data.to_vec());
+      }
+      #[cfg(feature = "matchbox")]
+      ClientTransportImpl::WebRtc(webrtc) => {
+        let channel_idx = match channel {
+          Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
+          Channel::Unreliable => 1,
+        };
+        webrtc.send(channel_idx, data);
+      }
+    }
   }
 
   /// Receive a message from the server
@@ -565,43 +770,74 @@ impl NetworkClient {
   /// Returns `None` if no message is available on the specified channel.
   /// Call repeatedly until `None` to drain all messages.
   pub fn receive(&mut self, channel: Channel) -> Option<Vec<u8>> {
-    self
-      .client
-      .receive_message(DefaultChannel::from(channel))
-      .map(|bytes| bytes.to_vec())
+    match &mut self.transport {
+      ClientTransportImpl::Udp(_) => self
+        .client
+        .receive_message(DefaultChannel::from(channel))
+        .map(|bytes| bytes.to_vec()),
+      #[cfg(feature = "matchbox")]
+      ClientTransportImpl::WebRtc(webrtc) => {
+        let channel_idx = match channel {
+          Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
+          Channel::Unreliable => 1,
+        };
+        webrtc.receive(channel_idx)
+      }
+    }
   }
 
   /// Check if connected to the server
   pub fn is_connected(&self) -> bool {
-    self.client.is_connected()
+    match &self.transport {
+      ClientTransportImpl::Udp(_) => self.client.is_connected(),
+      #[cfg(feature = "matchbox")]
+      ClientTransportImpl::WebRtc(webrtc) => webrtc.is_connected(),
+    }
   }
 
   /// Check if currently connecting to the server
   pub fn is_connecting(&self) -> bool {
-    self.client.is_connecting()
+    match &self.transport {
+      ClientTransportImpl::Udp(_) => self.client.is_connecting(),
+      #[cfg(feature = "matchbox")]
+      ClientTransportImpl::WebRtc(webrtc) => webrtc.is_connecting(),
+    }
   }
 
   /// Check if disconnected from the server
   pub fn is_disconnected(&self) -> bool {
-    self.client.is_disconnected()
+    match &self.transport {
+      ClientTransportImpl::Udp(_) => self.client.is_disconnected(),
+      #[cfg(feature = "matchbox")]
+      ClientTransportImpl::WebRtc(webrtc) => !webrtc.is_connected() && !webrtc.is_connecting(),
+    }
   }
 
   /// Disconnect from the server
   pub fn disconnect(&mut self) {
-    self.transport.disconnect();
+    match &mut self.transport {
+      ClientTransportImpl::Udp(udp) => udp.disconnect(),
+      #[cfg(feature = "matchbox")]
+      ClientTransportImpl::WebRtc(webrtc) => webrtc.disconnect(),
+    }
   }
 
   /// Get the disconnect reason if disconnected
   pub fn disconnect_reason(&self) -> Option<String> {
-    self
-      .transport
-      .disconnect_reason()
-      .map(|r| format!("{:?}", r))
+    match &self.transport {
+      ClientTransportImpl::Udp(udp) => udp.disconnect_reason(),
+      #[cfg(feature = "matchbox")]
+      ClientTransportImpl::WebRtc(webrtc) => webrtc.disconnect_reason(),
+    }
   }
 
   /// Get the client's unique ID
   pub fn client_id(&self) -> ClientId {
-    self.transport.client_id()
+    match &self.transport {
+      ClientTransportImpl::Udp(udp) => udp.client_id(),
+      #[cfg(feature = "matchbox")]
+      ClientTransportImpl::WebRtc(webrtc) => webrtc.client_id(),
+    }
   }
 }
 
@@ -625,6 +861,7 @@ impl NetworkClient {
 ///     port: 5000,
 ///     max_clients: 4,
 ///     protocol_id: 12345,
+///     ..Default::default()
 /// };
 /// let mut server = ListenServer::new(config).unwrap();
 ///
@@ -809,23 +1046,6 @@ impl ServerLike for ListenServer {
   }
 }
 
-/// Generate a random u64 using system randomness
-fn rand_u64() -> u64 {
-  use std::collections::hash_map::RandomState;
-  use std::hash::{BuildHasher, Hasher};
-
-  // Use RandomState which uses system randomness
-  let state = RandomState::new();
-  let mut hasher = state.build_hasher();
-  hasher.write_u64(
-    SystemTime::now()
-      .duration_since(SystemTime::UNIX_EPOCH)
-      .unwrap_or(Duration::ZERO)
-      .as_nanos() as u64,
-  );
-  hasher.finish()
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -849,9 +1069,17 @@ mod tests {
   #[test]
   fn server_config_default() {
     let config = NetworkServerConfig::default();
+    assert_eq!(config.port, 0); // Default is 0, but new() fills in 5000
+    assert!(matches!(config.transport, TransportConfig::Udp));
+  }
+
+  #[test]
+  fn server_config_with_defaults() {
+    let config = NetworkServerConfig::with_defaults();
     assert_eq!(config.port, 5000);
     assert_eq!(config.max_clients, 16);
     assert_eq!(config.protocol_id, 0);
+    assert!(matches!(config.transport, TransportConfig::Udp));
   }
 
   #[test]
@@ -869,12 +1097,28 @@ mod tests {
   }
 
   #[test]
+  fn transport_config_default_is_udp() {
+    let config = TransportConfig::default();
+    assert!(matches!(config, TransportConfig::Udp));
+  }
+
+  #[test]
+  fn client_config_udp() {
+    let addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+    let config = NetworkClientConfig::udp(addr, 12345);
+    assert_eq!(config.server_addr, Some(addr));
+    assert_eq!(config.protocol_id, 12345);
+    assert!(matches!(config.transport, TransportConfig::Udp));
+  }
+
+  #[test]
   fn listen_server_host_id() {
     // Note: This test creates a real server, so it needs a free port
     let config = NetworkServerConfig {
       port: 19000,
       max_clients: 4,
       protocol_id: 12345,
+      transport: TransportConfig::Udp,
     };
 
     if let Ok(server) = ListenServer::new(config) {
@@ -889,6 +1133,7 @@ mod tests {
       port: 19001,
       max_clients: 4,
       protocol_id: 12345,
+      transport: TransportConfig::Udp,
     };
 
     if let Ok(server) = ListenServer::new(config) {
@@ -904,6 +1149,7 @@ mod tests {
       port: 19002,
       max_clients: 4,
       protocol_id: 12345,
+      transport: TransportConfig::Udp,
     };
 
     if let Ok(server) = ListenServer::new(config) {
@@ -919,6 +1165,7 @@ mod tests {
       port: 19003,
       max_clients: 4,
       protocol_id: 12345,
+      transport: TransportConfig::Udp,
     };
 
     if let Ok(server) = ListenServer::new(config) {
@@ -934,10 +1181,26 @@ mod tests {
       port: 19004,
       max_clients: 4,
       protocol_id: 12345,
+      transport: TransportConfig::Udp,
     };
 
     if let Ok(server) = ListenServer::new(config) {
       assert!(server.is_running());
     }
+  }
+
+  #[cfg(feature = "matchbox")]
+  #[test]
+  fn webrtc_config_builder() {
+    let config = WebRtcConfig::new("wss://signal.example.com", "room-123");
+    assert_eq!(config.signaling_url, "wss://signal.example.com");
+    assert_eq!(config.room_id, "room-123");
+    assert!(!config.ice_servers.is_empty()); // Has default STUN servers
+
+    let config = config.with_turn("turn:relay.example.com:3478", "user", "pass");
+    assert!(config
+      .ice_servers
+      .iter()
+      .any(|s| s.url.starts_with("turn:")));
   }
 }

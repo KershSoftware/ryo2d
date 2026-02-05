@@ -118,10 +118,7 @@ struct HeadlessClient {
 
 impl HeadlessClient {
   fn new(server_addr: SocketAddr, protocol_id: u64) -> Result<Self, NetworkError> {
-    let client = NetworkClient::connect(NetworkClientConfig {
-      server_addr,
-      protocol_id,
-    })?;
+    let client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, protocol_id))?;
 
     let mut replication = ReplicationManager::new_client();
     replication.register::<Transform>();
@@ -266,6 +263,7 @@ impl HeadlessServer {
       port,
       max_clients: 8,
       protocol_id,
+      ..Default::default()
     })?;
 
     let mut replication = ReplicationManager::new_server();
@@ -1019,6 +1017,7 @@ impl HeadlessListenServer {
       port,
       max_clients: 8,
       protocol_id,
+      ..Default::default()
     })?;
 
     let mut replication = ReplicationManager::new_server();

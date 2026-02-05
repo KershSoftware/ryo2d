@@ -29,17 +29,78 @@ Ryo2D provides a **client-server networking system** designed for casual co-op g
              │                                             │
              ▼                                             ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                            Renet Transport                                  │
-│  ┌───────────────────────┐                 ┌───────────────────────┐        │
-│  │  RenetServer          │                 │  RenetClient          │        │
-│  │  + NetcodeTransport   │◄───── UDP ─────►│  + NetcodeTransport   │        │
-│  └───────────────────────┘                 └───────────────────────┘        │
+│                         Transport Abstraction Layer                         │
+│  ┌───────────────────────────────┐     ┌───────────────────────────────┐    │
+│  │        UDP (default)          │     │     WebRTC (matchbox feat)    │    │
+│  │   • Lowest latency            │     │   • NAT traversal (STUN)      │    │
+│  │   • LAN / direct connect      │     │   • TURN relay fallback       │    │
+│  │   • renet Netcode             │     │   • Internet multiplayer      │    │
+│  └───────────────────────────────┘     └───────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Transport Layer
 
+The transport layer provides a unified abstraction over different network backends, allowing games to switch between UDP (LAN) and WebRTC (internet with NAT traversal) with minimal code changes.
+
+### Transport Configuration
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         TransportConfig                                     │
+│                                                                             │
+│  ┌─────────────────────────────┐    ┌─────────────────────────────────┐     │
+│  │    TransportConfig::Udp    │    │  TransportConfig::WebRtc(...)   │     │
+│  │        (default)           │    │    (matchbox feature)           │     │
+│  │                            │    │                                 │     │
+│  │  • Direct UDP sockets      │    │  • STUN hole punching           │     │
+│  │  • Lowest latency          │    │  • Optional TURN relay          │     │
+│  │  • No NAT traversal        │    │  • Requires signaling server    │     │
+│  │  • Best for LAN/dev        │    │  • Best for internet play       │     │
+│  └─────────────────────────────┘    └─────────────────────────────────┘     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Scenario | Transport | Why |
+|----------|-----------|-----|
+| LAN party / development | UDP (default) | Lowest latency, simplest setup |
+| Internet multiplayer | WebRTC | NAT traversal via STUN |
+| Strict NAT / mobile | WebRTC + TURN | Guaranteed connectivity via relay |
+
+### UDP Transport (Default)
+
 Built on [renet](https://github.com/lucaspoffo/renet), a reliable UDP networking library.
+
+- UDP-based with netcode.io authentication
+- Protocol IDs must match between server/client (version mismatch prevention)
+- Non-blocking I/O (game loop friendly)
+- Unsecure mode for LAN/casual games (encryption available if needed)
+
+### WebRTC Transport (Optional)
+
+Enabled with the `matchbox` feature flag. Uses [matchbox_socket](https://github.com/johanhelsing/matchbox) for WebRTC.
+
+- **STUN** - NAT hole punching for peer-to-peer connections
+- **TURN** - Relay fallback for symmetric NAT environments
+- **Signaling Server** - Required for peer discovery (`matchbox_server`)
+
+WebRtcConfig example:
+```rust
+let config = WebRtcConfig::new("wss://signaling.example.com", "room-id")
+    .with_turn("turn:relay.example.com:3478", "user", "pass");
+```
+
+### Quick Testing with `ryo2d netplay`
+
+For testing internet multiplayer without deploying infrastructure:
+
+```bash
+ryo2d netplay start            # Start temp signaling server + tunnel
+ryo2d netplay start --room xyz # Custom room name
+ryo2d netplay ip               # Show LAN/WAN IPs
+```
+
+This uses Cloudflare Tunnel for temporary internet exposure. **Not for production** - deploy your own signaling server for shipped games.
 
 ### Channels
 
@@ -50,13 +111,6 @@ Three channels with different delivery guarantees:
 | **Unreliable** | None | None | Position updates, frequent state (can miss packets) |
 | **ReliableOrdered** | Guaranteed | FIFO | Spawns, despawns, RPCs, critical events |
 | **ReliableUnordered** | Guaranteed | None | Independent events that don't need ordering |
-
-### Protocol
-
-- UDP-based with netcode.io authentication
-- Protocol IDs must match between server/client (version mismatch prevention)
-- Non-blocking I/O (game loop friendly)
-- Unsecure mode for LAN/casual games (encryption available if needed)
 
 ## Connection Layer
 
@@ -380,6 +434,11 @@ Server: process_incoming()
 src/core/network/
 ├── mod.rs                 # NetworkServer, ListenServer, NetworkClient, Channel
 ├── AGENTS.md              # Module documentation
+├── transport/
+│   ├── mod.rs             # TransportConfig, ServerTransport/ClientTransport traits
+│   ├── udp.rs             # UDP transport (renet Netcode)
+│   ├── webrtc.rs          # WebRTC transport (matchbox) [matchbox feature]
+│   └── AGENTS.md          # Transport layer documentation
 ├── replication/
 │   ├── mod.rs             # Exports
 │   ├── types.rs           # NetworkId, NetworkEntity, Authority
@@ -401,3 +460,4 @@ src/core/network/
 - [Networking Guide](docs/src/concepts/networking.md) - Getting started with multiplayer
 - [Replication Guide](docs/src/concepts/replication.md) - Entity synchronization details
 - [RPC Guide](docs/src/concepts/rpc.md) - Remote procedure calls
+- [Matchbox Server Deployment](docs/matchbox-server-deploy.md) - Deploy signaling server for WebRTC

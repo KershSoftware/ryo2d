@@ -7,6 +7,7 @@ mod dev;
 mod export;
 mod init;
 pub mod install_skills;
+mod netplay;
 mod run;
 
 use std::env;
@@ -114,6 +115,7 @@ pub fn run_cli() -> CliResult<()> {
     "dev" => dev::execute(&args[2..]),
     "export" => export::execute(&args[2..]),
     "install-skills" => install_skills::execute(&args[2..]),
+    "netplay" => netplay::execute(&args[2..]),
     "help" | "--help" | "-h" => {
       print_help();
       Ok(())
@@ -145,6 +147,7 @@ COMMANDS
     dev             Development mode (build + run with watching)
     export          Package release into distributable zip
     install-skills  Install Agent Skills for AI assistants
+    netplay         Start a signaling server for netplay testing
     help            Show this help message
     version         Show version information
 

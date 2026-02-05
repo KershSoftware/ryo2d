@@ -58,9 +58,13 @@ rand = "0.8"
 # Optional profiling dependency (enable with --features profiler)
 puffin = { version = "0.19", optional = true }
 
+# Optional WebRTC transport for NAT traversal (enable with --features matchbox)
+matchbox_socket = { version = "0.10", optional = true, features = ["ggrs"] }
+
 [features]
 default = []
 profiler = ["puffin"]
+matchbox = ["matchbox_socket"]
 
 [dev-dependencies]
 tempfile = "3"

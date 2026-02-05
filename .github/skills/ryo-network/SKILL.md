@@ -13,7 +13,7 @@ You help users build multiplayer games using Ryo2D's networking system. You unde
 
 ## Architecture Overview
 
-Ryo2D uses **renet** for reliable UDP networking with a host-authoritative model:
+Ryo2D uses **renet** for reliable networking with a host-authoritative model. Supports both UDP (LAN) and WebRTC (internet with NAT traversal):
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -30,7 +30,11 @@ Ryo2D uses **renet** for reliable UDP networking with a host-authoritative model
             │                                 │
             ▼                                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                       Renet (UDP)                           │
+│                    Transport Layer                          │
+│  ┌───────────────────┐        ┌───────────────────────┐     │
+│  │   UDP (default)   │        │  WebRTC (matchbox)    │     │
+│  │   LAN / direct    │        │  NAT traversal        │     │
+│  └───────────────────┘        └───────────────────────┘     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -372,6 +376,57 @@ The `protocol_id` acts as a version check:
 const PROTOCOL_ID: u64 = 0x4D594741_4D450001; // "MYGAME" + version
 ```
 
+## Transport Selection
+
+| Scenario | Transport | Config |
+|----------|-----------|--------|
+| LAN / development | UDP (default) | `NetworkServerConfig::default()` |
+| Internet play | WebRTC | `TransportConfig::WebRtc(...)` |
+| Strict NAT | WebRTC + TURN | `WebRtcConfig::new(...).with_turn(...)` |
+
+### UDP (Default - LAN)
+
+```rust
+// Server
+let config = NetworkServerConfig::default();  // Uses UDP
+let server = NetworkServer::new(config)?;
+
+// Client
+let config = NetworkClientConfig::udp("192.168.1.100:7777".parse()?, 0x12345678);
+let client = NetworkClient::connect(config)?;
+```
+
+### WebRTC (Internet - requires `matchbox` feature)
+
+```rust
+// Enable in Cargo.toml: ryo2d = { features = ["matchbox"] }
+
+// Server
+let config = NetworkServerConfig {
+    transport: TransportConfig::WebRtc(WebRtcConfig::new(
+        "wss://signaling.example.com",
+        "my-game-room",
+    )),
+    ..Default::default()
+};
+
+// Client
+let config = NetworkClientConfig::webrtc(WebRtcConfig::new(
+    "wss://signaling.example.com",
+    "my-game-room",
+));
+```
+
+### Testing Netplay
+
+Use the CLI for quick testing with friends:
+
+```bash
+ryo2d netplay start             # Start temp signaling server
+ryo2d netplay start --room xyz  # Custom room name
+ryo2d netplay ip                # Show LAN/WAN IPs
+```
+
 ## Notes
 
 1. **Call update() every frame** - Required for network processing
@@ -381,3 +436,4 @@ const PROTOCOL_ID: u64 = 0x4D594741_4D450001; // "MYGAME" + version
 5. **Use Unreliable for frequent data** - Positions, non-critical state
 6. **Use ReliableOrdered for events** - Spawns, RPCs, important state
 7. **Host ID is always 0** - For ListenServer
+8. **WebRTC needs signaling** - Use `ryo2d netplay start` for testing

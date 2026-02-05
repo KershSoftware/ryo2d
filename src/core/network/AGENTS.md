@@ -4,6 +4,7 @@
 
 The `network/` module provides client-server networking for multiplayer games using **renet** as the underlying transport layer. It includes:
 - Low-level networking (`NetworkServer`, `NetworkClient`, `ListenServer`)
+- Transport abstraction (`transport/` submodule) - UDP and WebRTC
 - Automatic state replication (`replication/` submodule)
 - Remote procedure calls (`rpc/` submodule)
 
@@ -25,11 +26,12 @@ The `network/` module provides client-server networking for multiplayer games us
             │                                 │
             ▼                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                       Renet Layer                               │
-│  ┌─────────────────┐              ┌─────────────────┐           │
-│  │ RenetServer     │              │ RenetClient     │           │
-│  │ + Transport     │◄────────────►│ + Transport     │           │
-│  └─────────────────┘     UDP      └─────────────────┘           │
+│                     Transport Layer                             │
+│  ┌─────────────────────────┐    ┌─────────────────────────┐     │
+│  │     UDP (default)       │    │  WebRTC (matchbox feat) │     │
+│  │  renet Netcode          │    │  matchbox_socket        │     │
+│  │  LAN / direct connect   │    │  NAT traversal (STUN)   │     │
+│  └─────────────────────────┘    └─────────────────────────┘     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -38,11 +40,15 @@ The `network/` module provides client-server networking for multiplayer games us
 | Path | Purpose |
 |------|---------|
 | `mod.rs` | Core networking types, `ServerLike` trait |
+| `transport/` | Transport abstraction layer (UDP, WebRTC) |
 | `replication/` | Automatic entity/component synchronization |
 | `rpc/` | Remote procedure call system |
 | `AGENTS.md` | This documentation |
 
-See `replication/AGENTS.md` and `rpc/AGENTS.md` for detailed documentation of those submodules.
+See submodule AGENTS.md files for detailed documentation:
+- `transport/AGENTS.md` - Transport layer and NAT traversal
+- `replication/AGENTS.md` - Entity/component synchronization
+- `rpc/AGENTS.md` - Remote procedure calls
 
 ## Key Types
 
