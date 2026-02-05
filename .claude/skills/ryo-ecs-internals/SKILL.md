@@ -20,8 +20,15 @@ You help developers work on the ECS layer.
 ```
 src/core/ecs/
 ├── mod.rs          # Public exports
+├── active.rs       # Active/Inactive marker components for pooling
 ├── component.rs    # Component trait
-├── components.rs   # Built-in components
+├── components.rs   # Built-in components (Transform, Velocity)
+├── hierarchy.rs    # Parent/child relationships
+├── knockback.rs    # Knockback component (decay-based force)
+├── squash_stretch.rs # SquashStretch component (impact deformation)
+├── pool.rs         # Object pooling system
+├── renderable.rs   # Renderable component
+├── tween.rs        # Tweening system
 └── world.rs        # World wrapper
 ```
 
@@ -141,4 +148,95 @@ for entity in world.entities_with::<Velocity>() {
 - Generational entities prevent use-after-free
 - Keep components small (data only)
 - Despawn entities after iteration
+
+## Object Pooling System
+
+The pooling system (`pool.rs` and `active.rs`) provides pre-allocated entity pools for high-frequency spawning.
+
+### Active/Inactive Markers
+
+```rust
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Active;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Inactive;
+```
+
+Engine systems automatically skip `Inactive` entities in:
+- CPU rendering
+- Physics registration/simulation
+- Animation systems (Animator, AnimationController)
+- Tween updates
+
+### Pool Implementation
+
+```rust
+pub struct Pool<B> {
+    available: Vec<Entity>,           // Ready for reuse
+    active: Vec<Entity>,              // Currently in use
+    config: PoolConfig,
+    factory: Box<dyn Fn() -> B>,      // Creates component bundles
+    world_generation: u64,            // For scene-change detection
+    stats: PoolStats,
+}
+
+impl<B: DynamicBundle> Pool<B> {
+    fn new(world: &mut World, config: PoolConfig, factory: impl Fn() -> B + 'static) -> Self;
+    fn acquire(&mut self, world: &mut World) -> Option<Entity>;
+    fn release(&mut self, world: &mut World, entity: Entity);
+    fn release_all(&mut self, world: &mut World);
+    fn active_iter(&self) -> impl Iterator<Item = Entity>;
+    fn stats(&self) -> PoolStats;
+}
+```
+
+**Key implementation detail:** When spawning entities for the pool, we spawn the user's bundle first, then add `Inactive` separately with `insert_one()`. This avoids nested tuple issues with hecs's `DynamicBundle`:
+
+```rust
+// Correct - spawn bundle, then add Inactive
+let entity = world.spawn(bundle);
+let _ = world.insert_one(entity, Inactive);
+
+// Wrong - nested tuple ((Transform, ...), Inactive)
+let entity = world.spawn((bundle, Inactive));
+```
+
+### World Generation Tracking
+
+Pools track `world.generation()` to detect scene clears:
+
+```rust
+fn check_world_valid(&mut self, world: &World) {
+    if world.generation() != self.world_generation {
+        // World was cleared - invalidate pool
+        self.available.clear();
+        self.active.clear();
+        self.world_generation = world.generation();
+    }
+}
+```
+
+### Exhaustion Policies
+
+```rust
+pub enum PoolExhaustedPolicy {
+    Expand,         // Spawn more (default)
+    ReturnNone,     // Return None
+    RecycleOldest,  // Force-release oldest active
+}
+```
+
+### Stats Tracking
+
+```rust
+pub struct PoolStats {
+    pub total_spawned: usize,
+    pub current_available: usize,
+    pub current_active: usize,
+    pub peak_active: usize,
+    pub acquires: usize,
+    pub releases: usize,
+    pub expansions: usize,
+}
 

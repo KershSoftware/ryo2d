@@ -24,7 +24,8 @@ release/
 *~
 **/TASKS.md
 **/RESEARCH.md
-.claude
+.claude/CLAUDE.md
+.claude/settings.local.json
 **/skills/*
 !**/skills/ryo-*/
 !**/skills/ryo-*/**

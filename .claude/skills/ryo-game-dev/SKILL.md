@@ -98,8 +98,6 @@ fn main() {
 | `ctx.effects` | `&mut EffectsManager` | Post-processing effects |
 | `ctx.collision_events` | `&[PhysicsCollisionEvent]` | Physics collisions |
 
-**Cursor Methods:** `ctx.set_cursor()`, `ctx.show_cursor()`, `ctx.hide_cursor()`, `ctx.set_cursor_confined()`
-
 ## Essential Patterns
 
 ### Loading Assets
@@ -224,33 +222,6 @@ if let Some(audio) = ctx.audio.as_mut() {
 if let Some(audio) = ctx.audio.as_mut() {
     audio.play_music("bgm.ogg").ok();
     audio.set_music_volume(0.5);
-}
-```
-
-### Cursor
-
-```rust
-// Change cursor style for UI feedback
-ctx.set_cursor(CursorStyle::Pointer);     // For clickable elements
-ctx.set_cursor(CursorStyle::Text);        // For text fields
-ctx.set_cursor(CursorStyle::Crosshair);   // For aiming
-ctx.set_cursor(CursorStyle::Grabbing);    // While dragging
-ctx.set_cursor(CursorStyle::Default);     // Reset to arrow
-
-// Control visibility
-ctx.hide_cursor();  // For first-person/fullscreen games
-ctx.show_cursor();  // Restore cursor
-
-// Lock cursor to window
-ctx.set_cursor_confined(true);   // Confine to window bounds
-ctx.set_cursor_confined(false);  // Allow cursor to leave
-
-// Common pattern: hover detection
-let (mx, my) = ctx.input.mouse_position();
-if button_rect.contains(mx, my) {
-    ctx.set_cursor(CursorStyle::Pointer);
-} else {
-    ctx.set_cursor(CursorStyle::Default);
 }
 ```
 
@@ -458,7 +429,6 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Transform` | Position, rotation, scale |
 | `Velocity` | Movement direction and speed |
 | `Renderable` | Sprite and rendering options |
-| `PreviousTransform` | Previous frame transform (for interpolation) |
 | `RigidBody` | Physics body (dynamic, kinematic, fixed) |
 | `Collider` | Collision shape (circle, rect, capsule) |
 | `Animator` | Sprite animation state |
@@ -466,43 +436,6 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Parent` / `Children` | Entity hierarchy |
 | `NavAgent` | Navigation and pathfinding |
 | `Trail2D` | Motion trails behind entities |
-
-## Render Interpolation
-
-When render FPS exceeds physics update rate, enable interpolation for smooth motion:
-
-```rust
-// Enable interpolation - smooths motion between physics steps
-ctx.world.spawn((
-    Transform::new(x, y),
-    Velocity::new(100.0, 0.0),
-    Renderable::sprite(sprite).interpolated(),  // <-- opt-in
-));
-
-// Good for: balls, bullets, player, scrolling backgrounds
-// Skip for: static entities, short-lived particles, UI
-```
-
-### Handling Teleports
-
-After instantly moving an entity, skip interpolation to prevent sliding:
-
-```rust
-transform.x = new_x;
-transform.y = new_y;
-InterpolationSystem::skip_interpolation(&mut ctx.world, entity);
-```
-
-### Timing Values
-
-Access timing info via `ctx.time`:
-
-```rust
-ctx.time.fixed_dt;      // Fixed timestep (1/60)
-ctx.time.render_alpha;  // Interpolation factor (0.0-1.0)
-ctx.time.time_scale;    // Current time scale
-ctx.time.is_hitstop;    // True during hitstop
-```
 
 ## Navigation & Pathfinding
 

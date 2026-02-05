@@ -303,6 +303,8 @@ struct SystemSection {
   display_mode: Option<String>,
   /// Legacy fullscreen field for backward compatibility
   fullscreen: Option<bool>,
+  /// Borderless window mode (when true and fullscreen=false, creates borderless window)
+  borderless: Option<bool>,
   master_volume: Option<f32>,
   music_volume: Option<f32>,
   sfx_volume: Option<f32>,
@@ -482,7 +484,7 @@ impl Workspace {
     let system_section = raw.system.unwrap_or_default();
     let engine_defaults = SystemDefaults::default();
 
-    // Parse display_mode from string, with fallback to legacy fullscreen field
+    // Parse display_mode from string, with fallback to legacy fullscreen/borderless fields
     let display_mode = if let Some(mode_str) = &system_section.display_mode {
       match mode_str.to_lowercase().as_str() {
         "windowed" => super::save::DisplayMode::Windowed,
@@ -492,6 +494,9 @@ impl Workspace {
       }
     } else if system_section.fullscreen == Some(true) {
       // Legacy: fullscreen=true maps to BorderlessFullscreen for better UX
+      super::save::DisplayMode::BorderlessFullscreen
+    } else if system_section.borderless == Some(true) {
+      // borderless=true (with fullscreen=false) creates borderless fullscreen window
       super::save::DisplayMode::BorderlessFullscreen
     } else {
       engine_defaults.display_mode

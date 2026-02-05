@@ -14,10 +14,12 @@ You help users use the `ryo2d` CLI for managing game projects.
 Run from a game project directory (containing `Ryo.toml`):
 
 ```bash
-ryo2d build    # Production build (cargo build --release)
-ryo2d run      # Run production build
-ryo2d dev      # Development mode with hot reload
-ryo2d init     # Create new project (planned)
+ryo2d init <name>      # Create new project
+ryo2d build            # Production build (cargo build --release)
+ryo2d run              # Run production build
+ryo2d dev              # Development mode with hot reload
+ryo2d export           # Package release into distributable zip
+ryo2d install-skills   # Add Agent Skills to existing project
 ```
 
 ## Project Structure
@@ -59,10 +61,37 @@ show_fps = true
 cd my_game
 ryo2d dev          # Fast iteration with hot reload
 
+# With profiler window for performance analysis
+ryo2d dev --profiler
+# or shorthand:
+ryo2d dev -p
+
 # When ready for release testing
 ryo2d build
 ryo2d run
 ```
+
+## Profiler Flag
+
+`ryo2d dev --profiler` (or `-p`) enables the built-in profiler:
+
+1. Compiles with `--features profiler`
+2. Sets `RYO_PUFFIN_PROFILER=1` environment variable
+3. Opens a second window showing real-time flamegraphs
+
+Add `profile_function!()` to your update/render to see data:
+
+```rust
+fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    profile_function!();
+    // ... your code
+}
+```
+
+The profiler window shows:
+- FPS and frame work time
+- Color-coded scope bars (hover for details)
+- Setup hints if no scopes detected
 
 ## Engine Development
 
