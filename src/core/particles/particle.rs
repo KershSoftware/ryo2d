@@ -184,8 +184,10 @@ mod tests {
 
   #[test]
   fn particle_lifetime_ratio() {
-    let mut p = Particle::default();
-    p.max_lifetime = 2.0;
+    let mut p = Particle {
+      max_lifetime: 2.0,
+      ..Default::default()
+    };
 
     p.lifetime = 0.0;
     assert!((p.lifetime_ratio() - 0.0).abs() < 0.001);
@@ -200,12 +202,14 @@ mod tests {
 
   #[test]
   fn particle_visual_interpolation() {
-    let mut p = Particle::default();
-    p.max_lifetime = 1.0;
-    p.start_size = 10.0;
-    p.end_size = 20.0;
-    p.start_color = Color::WHITE;
-    p.end_color = Color::new(255, 0, 0, 0);
+    let mut p = Particle {
+      max_lifetime: 1.0,
+      start_size: 10.0,
+      end_size: 20.0,
+      start_color: Color::WHITE,
+      end_color: Color::new(255, 0, 0, 0),
+      ..Default::default()
+    };
 
     p.lifetime = 0.0;
     p.update_visuals();
@@ -222,9 +226,11 @@ mod tests {
 
   #[test]
   fn particle_simulate_gravity() {
-    let mut p = Particle::default();
-    p.velocity_y = 0.0;
-    p.gravity_scale = 1.0;
+    let mut p = Particle {
+      velocity_y: 0.0,
+      gravity_scale: 1.0,
+      ..Default::default()
+    };
 
     p.simulate(1.0, 0.0, 100.0);
     assert!((p.velocity_y - 100.0).abs() < 0.001);
@@ -232,9 +238,11 @@ mod tests {
 
   #[test]
   fn particle_simulate_drag() {
-    let mut p = Particle::default();
-    p.velocity_x = 100.0;
-    p.drag = 0.5;
+    let mut p = Particle {
+      velocity_x: 100.0,
+      drag: 0.5,
+      ..Default::default()
+    };
 
     p.simulate(1.0, 0.0, 0.0);
     assert!((p.velocity_x - 50.0).abs() < 0.001);

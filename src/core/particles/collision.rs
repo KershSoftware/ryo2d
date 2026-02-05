@@ -3,9 +3,10 @@
 //! Defines how particles interact with world colliders.
 
 /// How a particle responds to collision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CollisionResponse {
   /// Particle is destroyed on collision.
+  #[default]
   Die,
   /// Particle bounces off the surface.
   Bounce {
@@ -16,12 +17,6 @@ pub enum CollisionResponse {
   Stick,
   /// Particle passes through but emits a ParticleCollision event.
   Event,
-}
-
-impl Default for CollisionResponse {
-  fn default() -> Self {
-    CollisionResponse::Die
-  }
 }
 
 impl CollisionResponse {

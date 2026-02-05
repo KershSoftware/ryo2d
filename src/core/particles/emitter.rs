@@ -37,9 +37,10 @@ impl Default for EmissionMode {
 }
 
 /// Shape from which particles are spawned.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum EmissionShape {
   /// Emit from a single point (the emitter's position).
+  #[default]
   Point,
   /// Emit from a line segment.
   Line {
@@ -75,12 +76,6 @@ pub enum EmissionShape {
     /// Maximum initial speed
     max_speed: f32,
   },
-}
-
-impl Default for EmissionShape {
-  fn default() -> Self {
-    EmissionShape::Point
-  }
 }
 
 /// Configuration for particle trails.

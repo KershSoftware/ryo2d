@@ -184,7 +184,7 @@ pub mod prelude {
 
   // Particle system
   pub use crate::core::particles::{
-    AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape, Particle,
+    AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape,
     ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem, TrailConfig,
   };
 
