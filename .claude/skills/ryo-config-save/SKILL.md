@@ -11,14 +11,24 @@ You help game developers configure their projects and implement save/load functi
 
 ## Configuration Hierarchy
 
-Ryo2D uses a two-file configuration system:
+**Runtime code is always king.** Explicit `EngineBuilder` calls and runtime API methods always take precedence over configuration files.
 
 | File | Purpose | Who Edits | Format |
 |------|---------|-----------|--------|
 | `Ryo.toml` | Developer defaults, debug flags | Game developer | TOML |
 | `data/system.json` | User preferences | Player | JSON |
 
-**Priority chain:** `system.json` > `Ryo.toml [system]` > engine defaults
+### Without `with_system_state_overrides()`
+
+**Priority:** `code` > `Ryo.toml [system]` > `engine defaults`
+
+system.json is **not loaded** unless you call `with_system_state_overrides()`.
+
+### With `with_system_state_overrides(filter)`
+
+**Priority:** `code` > `system.json (filtered)` > `Ryo.toml [system]` > `engine defaults`
+
+Use `SystemFieldFilter` to control which fields are loaded from system.json.
 
 ## Ryo.toml Structure
 

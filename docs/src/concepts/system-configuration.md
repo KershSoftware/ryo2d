@@ -1,20 +1,33 @@
 # System Configuration
 
-Ryo2D uses a 3-tier configuration system that cleanly separates developer defaults from user preferences:
-
-```
-system.json (user) > Ryo.toml [system] (developer) > Engine Defaults
-```
+Ryo2D uses a layered configuration system that separates developer defaults from user preferences, with runtime code always taking priority.
 
 ## Configuration Precedence
 
+**Runtime code is always king.** Explicit `EngineBuilder` calls and runtime API methods always take precedence over configuration files.
+
+### Without `with_system_state_overrides()`
+
+```
+Code (highest) > Ryo.toml [system] > Engine Defaults (lowest)
+```
+
+If you don't call `with_system_state_overrides()`, system.json is **not loaded at all**.
+
+### With `with_system_state_overrides(filter)`
+
+```
+Code (highest) > system.json (filtered) > Ryo.toml [system] > Engine Defaults (lowest)
+```
+
 | Source | Purpose | Who Controls It |
 |--------|---------|-----------------|
+| **Runtime Code** | Explicit builder/API calls | Game developers (code) |
+| **system.json** | Runtime preferences (when loaded) | Players |
+| **Ryo.toml [system]** | Design-time defaults | Game developers (config) |
 | **Engine Defaults** | Hardcoded fallback | Engine developers |
-| **Ryo.toml [system]** | Design-time defaults | Game developers |
-| **system.json** | Runtime preferences | Players |
 
-**Important:** `system.json` only overrides fields that are explicitly present. Missing fields fall back through the chain.
+**Important:** `system.json` is only loaded when `with_system_state_overrides()` is called. Missing fields fall back through the chain.
 
 ## Section Mapping
 

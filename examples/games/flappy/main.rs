@@ -46,7 +46,9 @@ fn main() {
     .title("Flappy - Ryo2D Demo")
     .resolution(400, 600) // Fixed resolution - game uses hardcoded positions
     .fps(144)
-    .physics_hz(144);
+    .physics_hz(120)
+    .ui_scale(None) // Auto-detect from DPI for HiDPI display support
+    .with_system_state_overrides(SystemFieldFilter::all()); // Apply overrides from system.json
 
   // Start with debug scene or menu based on env config
   let engine = if start_debug {

@@ -4,17 +4,28 @@ Ryo2D uses a `Ryo.toml` configuration file to define project settings. This file
 
 ## Configuration Hierarchy
 
-Ryo2D uses a 3-tier configuration system:
+**Runtime code is always king.** Explicit `EngineBuilder` calls and runtime API methods always take precedence over configuration files.
+
+### Without `with_system_state_overrides()`
 
 ```
-system.json (user prefs) > Ryo.toml [system] (dev defaults) > Engine Defaults
+Code (highest) > Ryo.toml [system] > Engine Defaults (lowest)
+```
+
+If you don't call `with_system_state_overrides()`, system.json is **not loaded**.
+
+### With `with_system_state_overrides(filter)`
+
+```
+Code (highest) > system.json (filtered) > Ryo.toml [system] > Engine Defaults (lowest)
 ```
 
 | Source | Purpose | Location |
 |--------|---------|----------|
-| **Engine defaults** | Hardcoded fallback values | Built into engine |
+| **Runtime Code** | Explicit builder/API calls | Your game code |
+| **system.json** | User preferences (when loaded) | `{save_dir}/system.json` |
 | **Ryo.toml [system]** | Developer-specified defaults | Project root |
-| **system.json** | User preferences (options menu) | `{save_dir}/system.json` |
+| **Engine defaults** | Hardcoded fallback values | Built into engine |
 
 **Key insight:** `[system]` and `[info]` sections define what goes into `system.json`. Other sections (`[project]`, `[paths]`, `[debug]`, `[env]`) are developer-only and never saved to user config.
 

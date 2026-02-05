@@ -201,17 +201,57 @@ use ryo2d::prelude::*;
 
 ## Configuration Hierarchy
 
+**Runtime code is always king.** Explicit `EngineBuilder` calls and runtime API methods always take precedence over configuration files.
+
+### Without `with_system_state_overrides()`
+
 ```
-Engine Defaults
+Engine Defaults (lowest)
       ▼
 Ryo.toml [system] section
       ▼
-system.json (user preferences)
-      ▼
-Runtime overrides
+Runtime Code (highest)
 ```
 
-**Priority:** Later values override earlier ones.
+If you don't call `with_system_state_overrides()`, system.json is **not loaded at all**. Only Ryo.toml and engine defaults are used.
+
+### With `with_system_state_overrides(filter)`
+
+```
+Engine Defaults (lowest)
+      ▼
+Ryo.toml [system] section
+      ▼
+system.json (filtered fields)
+      ▼
+Runtime Code (highest)
+```
+
+When you call `with_system_state_overrides()`, the engine loads system.json and applies the filtered fields. You can control which fields are loaded via `SystemFieldFilter`.
+
+### Examples
+
+```rust
+// WITHOUT overrides: code > Ryo.toml > defaults
+// system.json is IGNORED, .resolution(800, 600) wins
+EngineBuilder::new()
+    .resolution(800, 600)
+    .build();
+
+// WITH overrides: code > system.json > Ryo.toml > defaults
+// If user has resolution in system.json, it's used (unless code overrides)
+EngineBuilder::new()
+    .with_system_state_overrides(SystemFieldFilter::all())
+    .build();
+
+// Mixed: code overrides resolution, but user's audio settings are loaded
+EngineBuilder::new()
+    .resolution(800, 600)  // This wins over any config
+    .with_system_state_overrides(SystemFieldFilter::all())
+    .build();
+```
+
+**Key insight:** If a developer explicitly sets `.resolution(800, 600)` in code, that value is used regardless of what's in Ryo.toml or system.json.
 
 ## Notes for AI Agents
 
