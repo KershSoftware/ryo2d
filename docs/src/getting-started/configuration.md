@@ -44,8 +44,7 @@ assets = "assets"
 
 # User-facing defaults (saved to system.json)
 [system]
-resolution_width = 1280
-resolution_height = 720
+resolution = "1280x720"
 vsync = true
 display_mode = "windowed"
 master_volume = 0.8
@@ -88,8 +87,7 @@ These fields are used as defaults when creating `system.json`. Users can overrid
 
 | Field | Type | Engine Default | Description |
 |-------|------|----------------|-------------|
-| `resolution_width` | u32 | `1280` | Window/screen width |
-| `resolution_height` | u32 | `720` | Window/screen height |
+| `resolution` | String | `"1280x720"` | "WxH" string (e.g., "1280x720") |
 | `vsync` | bool | `true` | VSync enabled |
 | `display_mode` | string | `"windowed"` | Display mode: `"windowed"`, `"exclusive_fullscreen"`, or `"borderless_fullscreen"` |
 | `master_volume` | f32 | `0.8` | Master volume (0.0 - 1.0) |

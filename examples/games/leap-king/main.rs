@@ -16,10 +16,8 @@ use ryo2d::prelude::*;
 
 fn main() {
   let engine = EngineBuilder::new()
-    .title("Leap King - Multiplayer Platformer")
     .resolution(800, 600)
-    .fps(60)
-    .physics_hz(60)
+    .fps(144)
     .with_scene(MenuScene::new())
     .build();
 

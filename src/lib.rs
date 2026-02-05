@@ -185,6 +185,7 @@ pub mod prelude {
   pub use crate::core::config::{
     DisplayMode, DisplaySettings, EntitySnapshot, GameSaveData, Resolution, SaveManager,
     SystemState, UserPreference, UserPreferenceFilter, WorldState, compress_data, decompress_data,
+    parse_resolution,
   };
 
   // UI system

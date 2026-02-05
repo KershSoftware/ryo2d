@@ -12,8 +12,7 @@ save_data = "data"
 assets = "assets"
 
 [system]
-resolution_width = 1280
-resolution_height = 720
+resolution = "1280x720"
 vsync = true
 display_mode = "windowed"
 master_volume = 0.8

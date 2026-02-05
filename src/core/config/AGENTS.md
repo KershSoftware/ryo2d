@@ -33,7 +33,7 @@ let config = workspace.config();
 
 // System defaults from [system] section
 let defaults = &config.system;
-println!("Resolution: {}x{}", defaults.resolution_width, defaults.resolution_height);
+println!("Resolution: {}", defaults.resolution);
 ```
 
 ### WorkspaceConfig
@@ -50,8 +50,7 @@ assets = "assets"
 save_data = "data"
 
 [system]  # Defaults for system.json
-resolution_width = 1920
-resolution_height = 1080
+resolution = "1920x1080"
 vsync = true
 display_mode = "windowed"
 

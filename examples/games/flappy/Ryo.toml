@@ -1,4 +1,4 @@
-# Flappy - Ryo2D Demo
+# Flappy - Ryo2D Project Configuration
 
 [project]
 name = "Flappy"
@@ -31,6 +31,14 @@ show_colliders = false
 show_velocities = false
 show_origins = false
 enable_profiler = true
+
+# ==============================================================================
+# RELEASE/DISTRIBUTION SETTINGS
+# Build-time settings for `ryo2d build`
+# ==============================================================================
+
+[release]
+# logo = "assets/icon.png"
 
 # =============================================================================
 # GAME SPECIFIC SETTINGS

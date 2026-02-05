@@ -47,12 +47,11 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     .env("CARGO_TARGET_DIR", &target_dir)
     // [system] section values
     .env(
-      "RYO_EMBED_RESOLUTION_WIDTH",
-      system.resolution_width.to_string(),
-    )
-    .env(
-      "RYO_EMBED_RESOLUTION_HEIGHT",
-      system.resolution_height.to_string(),
+      "RYO_EMBED_RESOLUTION",
+      system
+        .resolution
+        .map(|(w, h)| format!("{}x{}", w, h))
+        .unwrap_or_else(|| "1280x720".to_string()),
     )
     .env("RYO_EMBED_VSYNC", system.vsync.to_string())
     .env("RYO_EMBED_DISPLAY_MODE", display_mode_str)

@@ -190,10 +190,8 @@ pub struct ReleaseConfig {
 /// Priority chain: system.json (user) > Ryo.toml [system] (dev) > engine defaults
 #[derive(Debug, Clone)]
 pub struct SystemDefaults {
-  /// Default resolution width
-  pub resolution_width: u32,
-  /// Default resolution height
-  pub resolution_height: u32,
+  /// Resolution as (width, height). None = not set, use engine defaults (1280x720).
+  pub resolution: Option<(u32, u32)>,
   /// Default VSync setting
   pub vsync: bool,
   /// Default display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
@@ -214,8 +212,7 @@ pub struct SystemDefaults {
 impl Default for SystemDefaults {
   fn default() -> Self {
     SystemDefaults {
-      resolution_width: 1280,
-      resolution_height: 720,
+      resolution: None,
       vsync: true,
       display_mode: super::save::DisplayMode::Windowed,
       master_volume: 0.8,
@@ -279,8 +276,7 @@ struct ReleaseSection {
 /// Raw TOML [system] section for user-facing defaults
 #[derive(Debug, Deserialize, Default)]
 struct SystemSection {
-  resolution_width: Option<u32>,
-  resolution_height: Option<u32>,
+  resolution: Option<String>,
   vsync: Option<bool>,
   /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
   display_mode: Option<String>,
@@ -478,12 +474,17 @@ impl Workspace {
     };
 
     let system = SystemDefaults {
-      resolution_width: system_section
-        .resolution_width
-        .unwrap_or(engine_defaults.resolution_width),
-      resolution_height: system_section
-        .resolution_height
-        .unwrap_or(engine_defaults.resolution_height),
+      resolution: system_section
+        .resolution
+        .as_deref()
+        .and_then(|s| {
+          let parsed = super::save::parse_resolution(s);
+          if parsed.is_none() {
+            eprintln!("[ryo2d] Warning: Malformed resolution '{}' in Ryo.toml, using engine defaults", s);
+          }
+          parsed
+        })
+        .or(engine_defaults.resolution),
       vsync: system_section.vsync.unwrap_or(engine_defaults.vsync),
       display_mode,
       master_volume: system_section
@@ -760,9 +761,8 @@ mod tests {
   fn system_defaults_engine_values() {
     let defaults = SystemDefaults::default();
 
-    // Engine defaults: 1280x720
-    assert_eq!(defaults.resolution_width, 1280);
-    assert_eq!(defaults.resolution_height, 720);
+    // Engine defaults: no resolution set (falls back to 1280x720)
+    assert_eq!(defaults.resolution, None);
     // VSync on, windowed
     assert!(defaults.vsync);
     assert_eq!(defaults.display_mode, DisplayMode::Windowed);
@@ -779,8 +779,7 @@ mod tests {
     let defaults = SystemDefaults::default();
     let cloned = defaults.clone();
 
-    assert_eq!(cloned.resolution_width, defaults.resolution_width);
-    assert_eq!(cloned.resolution_height, defaults.resolution_height);
+    assert_eq!(cloned.resolution, defaults.resolution);
     assert_eq!(cloned.vsync, defaults.vsync);
     assert_eq!(cloned.display_mode, defaults.display_mode);
     assert_eq!(cloned.master_volume, defaults.master_volume);
@@ -804,9 +803,8 @@ mod tests {
   #[test]
   fn workspace_config_system_defaults_included() {
     let config = WorkspaceConfig::default();
-    // System defaults should be engine defaults
-    assert_eq!(config.system.resolution_width, 1280);
-    assert_eq!(config.system.resolution_height, 720);
+    // System defaults should be engine defaults (no resolution set)
+    assert_eq!(config.system.resolution, None);
     assert_eq!(config.system.master_volume, 0.8);
     assert!(!config.system.show_fps);
   }
@@ -874,5 +872,64 @@ mod tests {
     let config = WorkspaceConfig::default();
     // enable_profiler should default to false (opt-in)
     assert!(!config.debug.enable_profiler);
+  }
+
+  // ==========================================================================
+  // SystemSection resolution string parsing tests
+  // ==========================================================================
+
+  #[test]
+  fn system_section_parses_resolution_string() {
+    let toml_str = r#"
+      resolution = "800x600"
+      vsync = true
+    "#;
+    let section: SystemSection = toml::from_str(toml_str).unwrap();
+    assert_eq!(section.resolution, Some("800x600".to_string()));
+  }
+
+  #[test]
+  fn system_section_resolution_absent_is_none() {
+    let toml_str = r#"
+      vsync = true
+    "#;
+    let section: SystemSection = toml::from_str(toml_str).unwrap();
+    assert_eq!(section.resolution, None);
+  }
+
+  #[test]
+  fn system_defaults_resolution_none_when_not_set() {
+    let defaults = SystemDefaults::default();
+    assert_eq!(defaults.resolution, None);
+  }
+
+  #[test]
+  fn system_defaults_resolution_parsed_from_toml() {
+    // Simulate what Workspace::discover does: parse SystemSection then merge
+    let section: SystemSection = toml::from_str(r#"resolution = "1920x1080""#).unwrap();
+    let engine_defaults = SystemDefaults::default();
+
+    let resolved = section
+      .resolution
+      .as_deref()
+      .and_then(super::super::save::parse_resolution)
+      .or(engine_defaults.resolution);
+
+    assert_eq!(resolved, Some((1920, 1080)));
+  }
+
+  #[test]
+  fn system_defaults_malformed_resolution_falls_back() {
+    let section: SystemSection = toml::from_str(r#"resolution = "garbage""#).unwrap();
+    let engine_defaults = SystemDefaults::default();
+
+    let resolved = section
+      .resolution
+      .as_deref()
+      .and_then(super::super::save::parse_resolution)
+      .or(engine_defaults.resolution);
+
+    // Malformed string produces None, engine_defaults.resolution is also None
+    assert_eq!(resolved, None);
   }
 }

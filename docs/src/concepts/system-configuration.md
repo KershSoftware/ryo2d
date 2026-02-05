@@ -69,8 +69,7 @@ assets = "assets"
 
 # User-facing defaults (→ system.json)
 [system]
-resolution_width = 1280
-resolution_height = 720
+resolution = "1280x720"
 vsync = true
 display_mode = "windowed"
 master_volume = 0.8
@@ -255,8 +254,7 @@ The `[system]` section maps directly to `system.json` fields:
 
 | Ryo.toml Field | system.json Field |
 |----------------|-------------------|
-| `resolution_width` | `display.width` |
-| `resolution_height` | `display.height` |
+| `resolution` | `display.resolution` |
 | `vsync` | `display.vsync` / `vsync` |
 | `display_mode` | `display.display_mode` |
 | `master_volume` | `master_volume` |

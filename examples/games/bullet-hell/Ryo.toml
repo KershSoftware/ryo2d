@@ -10,8 +10,7 @@ version = "0.1.0"
 show_fps = true
 # Design resolution - game logic uses this fixed size
 # Window can be scaled larger/smaller, engine handles letterboxing
-resolution_width = 1920
-resolution_height = 1080
+resolution = "1920x1080"
 display_mode = "windowed"
 vsync = false
 console = true

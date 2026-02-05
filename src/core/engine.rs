@@ -3127,6 +3127,8 @@ pub struct EngineBuilder {
   master_volume: f32,
   music_volume: f32,
   sfx_volume: f32,
+  /// Tracks whether resolution was explicitly set via .resolution() (prevents build() from overwriting)
+  resolution_set: bool,
   /// Tracks whether display_mode was explicitly set (prevents build() from overwriting)
   display_mode_set: bool,
   /// Whether to disable F1-F4 debug key toggles
@@ -3142,6 +3144,7 @@ impl EngineBuilder {
       master_volume: 1.0,
       music_volume: 0.8,
       sfx_volume: 1.0,
+      resolution_set: false,
       display_mode_set: false,
       disable_debug_keys: false,
     }
@@ -3155,6 +3158,7 @@ impl EngineBuilder {
   pub fn resolution(mut self, width: u32, height: u32) -> Self {
     self.config.width = width;
     self.config.height = height;
+    self.resolution_set = true;
     self
   }
 
@@ -3432,6 +3436,7 @@ impl EngineBuilder {
       if filter.contains(UserPreference::Resolution) {
         self.config.width = system_state.display.width;
         self.config.height = system_state.display.height;
+        self.resolution_set = true;
       }
       if filter.contains(UserPreference::DisplayMode) {
         self.config.display_mode = system_state.display.display_mode;
@@ -3560,6 +3565,7 @@ impl EngineBuilder {
     let mut master_volume = self.master_volume;
     let mut music_volume = self.music_volume;
     let mut sfx_volume = self.sfx_volume;
+    let resolution_set = self.resolution_set;
     let display_mode_set = self.display_mode_set;
     let mut disable_debug_keys = self.disable_debug_keys;
     let mut game_name: Option<String> = None;
@@ -3572,16 +3578,18 @@ impl EngineBuilder {
     // 4. Engine defaults (lowest) - already in EngineConfig::default()
 
     // Check for embedded values (set when built via `ryo2d build`)
-    let has_embedded = option_env!("RYO_EMBED_RESOLUTION_WIDTH").is_some();
+    let has_embedded = option_env!("RYO_EMBED_RESOLUTION").is_some();
 
     if has_embedded {
       // Use compile-time embedded values from Ryo.toml
-      if config.width == 800 && config.height == 600 {
-        if let Some(w) = option_env!("RYO_EMBED_RESOLUTION_WIDTH") {
-          config.width = w.parse().unwrap_or(800);
-        }
-        if let Some(h) = option_env!("RYO_EMBED_RESOLUTION_HEIGHT") {
-          config.height = h.parse().unwrap_or(600);
+      if !resolution_set {
+        if let Some(res) = option_env!("RYO_EMBED_RESOLUTION") {
+          if let Some((w, h)) = super::config::save::parse_resolution(res) {
+            config.width = w;
+            config.height = h;
+          } else {
+            eprintln!("[ryo2d] Warning: Malformed embedded resolution '{}', using engine defaults", res);
+          }
         }
       }
       if let Some(v) = option_env!("RYO_EMBED_VSYNC") {
@@ -3664,9 +3672,11 @@ impl EngineBuilder {
       disable_debug_keys = debug.disable_debug_keys;
 
       // Load resolution from [system] section if not explicitly set via builder
-      if config.width == 800 && config.height == 600 {
-        config.width = system.resolution_width;
-        config.height = system.resolution_height;
+      if !resolution_set {
+        if let Some((w, h)) = system.resolution {
+          config.width = w;
+          config.height = h;
+        }
       }
 
       // Load display mode from [system] section (only if not explicitly set)

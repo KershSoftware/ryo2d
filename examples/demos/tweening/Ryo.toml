@@ -9,8 +9,7 @@ entry_point = "main.rs"
 assets = "assets"
 
 [system]
-resolution_width = 1024
-resolution_height = 768
+resolution = "1024x768"
 vsync = true
 display_mode = "windowed"
 show_fps = true

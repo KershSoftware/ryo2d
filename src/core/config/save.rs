@@ -28,8 +28,7 @@
 //! save_data = "saves"  # Custom save directory
 //!
 //! [system]  # Defaults for system.json when first created
-//! resolution_width = 1920
-//! resolution_height = 1080
+//! resolution = "1920x1080"
 //! vsync = true
 //! master_volume = 0.8
 //! ```
@@ -46,7 +45,7 @@
 //!
 //! // Or manually load/save:
 //! let mut settings = save_manager.load_system()?;
-//! settings.display.width = 1920;
+//! settings.display.width = 1920; // or set via resolution string
 //! settings.master_volume = 0.75;
 //! save_manager.save_system(&settings)?;
 //! ```
@@ -394,18 +393,83 @@ impl Resolution {
   }
 }
 
+/// Parse a "WxH" resolution string (e.g., "1280x720"). Returns None if malformed.
+pub fn parse_resolution(s: &str) -> Option<(u32, u32)> {
+  let parts: Vec<&str> = s.split('x').collect();
+  if parts.len() == 2 {
+    if let (Ok(w), Ok(h)) = (parts[0].trim().parse(), parts[1].trim().parse()) {
+      return Some((w, h));
+    }
+  }
+  None
+}
+
 /// Display configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Serializes resolution as a single `"resolution": "WxH"` string.
+/// Deserializes from both the new format and legacy `"width"/"height"` fields.
+#[derive(Debug, Clone)]
 pub struct DisplaySettings {
   /// Window width
   pub width: u32,
   /// Window height
   pub height: u32,
   /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
-  #[serde(default)]
   pub display_mode: DisplayMode,
   /// VSync enabled
   pub vsync: bool,
+}
+
+impl Serialize for DisplaySettings {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeStruct;
+    let mut state = serializer.serialize_struct("DisplaySettings", 3)?;
+    state.serialize_field("resolution", &format!("{}x{}", self.width, self.height))?;
+    state.serialize_field("display_mode", &self.display_mode)?;
+    state.serialize_field("vsync", &self.vsync)?;
+    state.end()
+  }
+}
+
+impl<'de> Deserialize<'de> for DisplaySettings {
+  fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    #[derive(Deserialize)]
+    struct Helper {
+      resolution: Option<String>,
+      // Legacy fields for backward compat with old system.json
+      width: Option<u32>,
+      height: Option<u32>,
+      #[serde(default)]
+      display_mode: DisplayMode,
+      #[serde(default = "default_vsync")]
+      vsync: bool,
+    }
+
+    fn default_vsync() -> bool {
+      true
+    }
+
+    let helper = Helper::deserialize(deserializer)?;
+
+    let (width, height) = if let Some(ref res) = helper.resolution {
+      parse_resolution(res).unwrap_or_else(|| {
+        eprintln!("[ryo2d] Warning: Malformed resolution '{}' in system.json, using engine defaults", res);
+        (1280, 720)
+      })
+    } else if let (Some(w), Some(h)) = (helper.width, helper.height) {
+      // Legacy format
+      (w, h)
+    } else {
+      (1280, 720)
+    };
+
+    Ok(DisplaySettings {
+      width,
+      height,
+      display_mode: helper.display_mode,
+      vsync: helper.vsync,
+    })
+  }
 }
 
 impl Default for DisplaySettings {
@@ -442,8 +506,8 @@ impl SystemState {
       music_volume: defaults.music_volume,
       sfx_volume: defaults.sfx_volume,
       display: DisplaySettings {
-        width: defaults.resolution_width,
-        height: defaults.resolution_height,
+        width: defaults.resolution.map(|(w, _)| w).unwrap_or(1280),
+        height: defaults.resolution.map(|(_, h)| h).unwrap_or(720),
         display_mode: defaults.display_mode,
         vsync: defaults.vsync,
       },
@@ -467,22 +531,19 @@ impl SystemState {
     // - If a field is missing/None and defaults has a value, apply it
     // - Return true if anything changed
 
-    // For now, we ensure display settings match if they were at engine defaults
-    // This handles the case where system.json was created before [system] existed
-    let engine_defaults = super::workspace::SystemDefaults::default();
-
     let mut changed = false;
 
-    // If display matches old engine defaults but Ryo.toml has different values,
+    // If display matches engine defaults but Ryo.toml specifies a different resolution,
     // update to use Ryo.toml values (one-time migration)
-    if self.display.width == engine_defaults.resolution_width
-      && self.display.height == engine_defaults.resolution_height
-      && (defaults.resolution_width != engine_defaults.resolution_width
-        || defaults.resolution_height != engine_defaults.resolution_height)
-    {
-      self.display.width = defaults.resolution_width;
-      self.display.height = defaults.resolution_height;
-      changed = true;
+    if let Some((w, h)) = defaults.resolution {
+      if self.display.width == 1280
+        && self.display.height == 720
+        && (w != 1280 || h != 720)
+      {
+        self.display.width = w;
+        self.display.height = h;
+        changed = true;
+      }
     }
 
     changed
@@ -1125,7 +1186,7 @@ mod tests {
     // Should be valid JSON
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
     assert_eq!(parsed["master_volume"], 0.75);
-    assert_eq!(parsed["display"]["width"], 1920);
+    assert_eq!(parsed["display"]["resolution"], "1920x1080");
     assert_eq!(parsed["settings"]["language"], "en");
 
     // Should be human-readable (contains newlines from pretty-print)
@@ -1299,8 +1360,7 @@ mod tests {
   #[test]
   fn system_state_from_defaults_uses_all_fields() {
     let defaults = super::super::workspace::SystemDefaults {
-      resolution_width: 1920,
-      resolution_height: 1080,
+      resolution: Some((1920, 1080)),
       vsync: false,
       display_mode: DisplayMode::ExclusiveFullscreen,
       master_volume: 0.5,
@@ -1361,8 +1421,7 @@ mod tests {
 
     // Developer wants different resolution in Ryo.toml
     let dev_defaults = super::super::workspace::SystemDefaults {
-      resolution_width: 800,
-      resolution_height: 600,
+      resolution: Some((800, 600)),
       ..engine_defaults
     };
 
@@ -1384,8 +1443,7 @@ mod tests {
 
     // Developer has different defaults
     let dev_defaults = super::super::workspace::SystemDefaults {
-      resolution_width: 800,
-      resolution_height: 600,
+      resolution: Some((800, 600)),
       ..engine_defaults
     };
 
@@ -1415,8 +1473,7 @@ mod tests {
     let manager = SaveManager::new(dir.path()).unwrap();
 
     let defaults = super::super::workspace::SystemDefaults {
-      resolution_width: 1024,
-      resolution_height: 768,
+      resolution: Some((1024, 768)),
       vsync: true,
       display_mode: DisplayMode::Windowed,
       master_volume: 0.9,
@@ -1470,8 +1527,7 @@ mod tests {
 
     // Developer later changes resolution in Ryo.toml
     let dev_defaults = super::super::workspace::SystemDefaults {
-      resolution_width: 800,
-      resolution_height: 600,
+      resolution: Some((800, 600)),
       ..engine_defaults
     };
 
@@ -1481,6 +1537,232 @@ mod tests {
     // Resolution should be updated (migrated from engine defaults)
     assert_eq!(state.display.width, 800);
     assert_eq!(state.display.height, 600);
+  }
+
+  // ==========================================================================
+  // parse_resolution tests
+  // ==========================================================================
+
+  #[test]
+  fn parse_resolution_valid_strings() {
+    assert_eq!(parse_resolution("1280x720"), Some((1280, 720)));
+    assert_eq!(parse_resolution("800x600"), Some((800, 600)));
+    assert_eq!(parse_resolution("1920x1080"), Some((1920, 1080)));
+    assert_eq!(parse_resolution("3840x2160"), Some((3840, 2160)));
+    assert_eq!(parse_resolution("320x240"), Some((320, 240)));
+  }
+
+  #[test]
+  fn parse_resolution_with_whitespace() {
+    assert_eq!(parse_resolution(" 800 x 600 "), Some((800, 600)));
+    assert_eq!(parse_resolution("1280 x 720"), Some((1280, 720)));
+  }
+
+  #[test]
+  fn parse_resolution_malformed_returns_none() {
+    assert_eq!(parse_resolution(""), None);
+    assert_eq!(parse_resolution("1280"), None);
+    assert_eq!(parse_resolution("1280x"), None);
+    assert_eq!(parse_resolution("x720"), None);
+    assert_eq!(parse_resolution("1280x720x60"), None);
+    assert_eq!(parse_resolution("widexhigh"), None);
+    assert_eq!(parse_resolution("1280*720"), None);
+    assert_eq!(parse_resolution("-1x720"), None);
+  }
+
+  // ==========================================================================
+  // DisplaySettings serde tests
+  // ==========================================================================
+
+  #[test]
+  fn display_settings_serializes_resolution_string() {
+    let settings = DisplaySettings {
+      width: 1920,
+      height: 1080,
+      display_mode: DisplayMode::Windowed,
+      vsync: true,
+    };
+
+    let json = serde_json::to_string(&settings).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(parsed["resolution"], "1920x1080");
+    // Should NOT have separate width/height fields
+    assert!(parsed.get("width").is_none());
+    assert!(parsed.get("height").is_none());
+  }
+
+  #[test]
+  fn display_settings_deserializes_resolution_string() {
+    let json = r#"{"resolution": "800x600", "display_mode": "windowed", "vsync": false}"#;
+    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+
+    assert_eq!(settings.width, 800);
+    assert_eq!(settings.height, 600);
+    assert!(!settings.vsync);
+    assert_eq!(settings.display_mode, DisplayMode::Windowed);
+  }
+
+  #[test]
+  fn display_settings_roundtrip_serde() {
+    let original = DisplaySettings {
+      width: 2560,
+      height: 1440,
+      display_mode: DisplayMode::BorderlessFullscreen,
+      vsync: true,
+    };
+
+    let json = serde_json::to_string(&original).unwrap();
+    let deserialized: DisplaySettings = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(deserialized.width, original.width);
+    assert_eq!(deserialized.height, original.height);
+    assert_eq!(deserialized.display_mode, original.display_mode);
+    assert_eq!(deserialized.vsync, original.vsync);
+  }
+
+  #[test]
+  fn display_settings_deserializes_legacy_width_height() {
+    // Old system.json format with separate width/height fields
+    let json = r#"{"width": 1600, "height": 900, "display_mode": "windowed", "vsync": true}"#;
+    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+
+    assert_eq!(settings.width, 1600);
+    assert_eq!(settings.height, 900);
+  }
+
+  #[test]
+  fn display_settings_resolution_takes_priority_over_legacy() {
+    // If both resolution string and legacy width/height exist, resolution wins
+    let json = r#"{"resolution": "1920x1080", "width": 800, "height": 600, "display_mode": "windowed", "vsync": true}"#;
+    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+
+    assert_eq!(settings.width, 1920);
+    assert_eq!(settings.height, 1080);
+  }
+
+  #[test]
+  fn display_settings_malformed_resolution_falls_back_to_defaults() {
+    let json = r#"{"resolution": "not_valid", "display_mode": "windowed", "vsync": true}"#;
+    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+
+    // Falls back to engine defaults
+    assert_eq!(settings.width, 1280);
+    assert_eq!(settings.height, 720);
+  }
+
+  #[test]
+  fn display_settings_missing_resolution_falls_back_to_defaults() {
+    let json = r#"{"display_mode": "windowed", "vsync": true}"#;
+    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+
+    assert_eq!(settings.width, 1280);
+    assert_eq!(settings.height, 720);
+  }
+
+  #[test]
+  fn display_settings_vsync_defaults_true() {
+    let json = r#"{"resolution": "800x600", "display_mode": "windowed"}"#;
+    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+
+    assert!(settings.vsync);
+  }
+
+  // ==========================================================================
+  // Integration: system.json save/load roundtrip with new format
+  // ==========================================================================
+
+  #[test]
+  fn system_state_save_load_roundtrip_new_resolution_format() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    let mut state = SystemState::new();
+    state.display.width = 1920;
+    state.display.height = 1080;
+    state.display.display_mode = DisplayMode::BorderlessFullscreen;
+    state.master_volume = 0.42;
+
+    manager.save_system(&state).unwrap();
+
+    // Verify JSON on disk uses resolution string
+    let path = dir.path().join("system.json");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let raw: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(raw["display"]["resolution"], "1920x1080");
+    assert!(raw["display"].get("width").is_none());
+
+    // Load it back and verify values roundtrip
+    let loaded = manager.load_system().unwrap();
+    assert_eq!(loaded.display.width, 1920);
+    assert_eq!(loaded.display.height, 1080);
+    assert_eq!(loaded.display.display_mode, DisplayMode::BorderlessFullscreen);
+    assert_eq!(loaded.master_volume, 0.42);
+  }
+
+  #[test]
+  fn system_state_loads_legacy_system_json() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    // Write a legacy-format system.json directly to disk
+    let legacy_json = r#"{
+      "master_volume": 0.75,
+      "music_volume": 1.0,
+      "sfx_volume": 1.0,
+      "display": {
+        "width": 1600,
+        "height": 900,
+        "display_mode": "windowed",
+        "vsync": true
+      },
+      "show_fps": false,
+      "vsync": null,
+      "settings": {}
+    }"#;
+    let path = dir.path().join("system.json");
+    std::fs::write(&path, legacy_json).unwrap();
+
+    // Load should parse legacy width/height fields
+    let loaded = manager.load_system().unwrap();
+    assert_eq!(loaded.display.width, 1600);
+    assert_eq!(loaded.display.height, 900);
+    assert_eq!(loaded.master_volume, 0.75);
+  }
+
+  #[test]
+  fn system_state_legacy_resaves_as_new_format() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+
+    // Write legacy format
+    let legacy_json = r#"{
+      "master_volume": 0.8,
+      "music_volume": 1.0,
+      "sfx_volume": 1.0,
+      "display": {
+        "width": 1600,
+        "height": 900,
+        "display_mode": "windowed",
+        "vsync": true
+      },
+      "show_fps": false,
+      "vsync": null,
+      "settings": {}
+    }"#;
+    let path = dir.path().join("system.json");
+    std::fs::write(&path, legacy_json).unwrap();
+
+    // Load and re-save
+    let loaded = manager.load_system().unwrap();
+    manager.save_system(&loaded).unwrap();
+
+    // Verify it was re-saved in new format
+    let content = std::fs::read_to_string(&path).unwrap();
+    let raw: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(raw["display"]["resolution"], "1600x900");
+    assert!(raw["display"].get("width").is_none());
+    assert!(raw["display"].get("height").is_none());
   }
 
   // ==========================================================================

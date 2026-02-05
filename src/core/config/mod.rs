@@ -19,6 +19,7 @@ pub use workspace::{
 pub use save::{
   DisplayMode, DisplaySettings, EntitySnapshot, GameSaveData, Resolution, SaveManager,
   SystemState, UserPreference, UserPreferenceFilter, WorldState, compress_data, decompress_data,
+  parse_resolution,
 };
 
 // Debug utilities (re-export with prefix to avoid conflict with workspace::DebugConfig)

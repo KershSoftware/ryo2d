@@ -2,8 +2,7 @@
 name = "Sprite Shaders Demo"
 
 [system]
-resolution_width = 800
-resolution_height = 600
+resolution = "800x600"
 vsync = true
 display_mode = "windowed"
 show_fps = false

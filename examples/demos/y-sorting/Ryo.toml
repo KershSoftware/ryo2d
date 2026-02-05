@@ -17,8 +17,7 @@ assets = "assets"
 [system]
 # Default window resolution (user can change in system.json)
 # Using small resolution with integer scaling for pixel-perfect look
-resolution_width = 320
-resolution_height = 240
+resolution = "320x240"
 # Enable VSync for smoother rendering (recommended)
 vsync = true
 # Display mode: "windowed", "exclusive_fullscreen", or "borderless_fullscreen"

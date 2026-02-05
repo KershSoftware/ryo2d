@@ -254,8 +254,7 @@ assets = "assets"
 # =============================================================================
 
 [system]
-resolution_width = 1280
-resolution_height = 720
+resolution = "1280x720"
 vsync = true
 display_mode = "windowed"
 master_volume = 0.8
@@ -319,7 +318,7 @@ impl Scene for GameScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     // Initialize your game here
     // Spawn entities, load assets, etc.
-    
+
     // Example: Spawn a simple colored square at center
     let sprite = ctx.assets.create_sprite(
       Sprite::solid_rect(64, 64, 0, 255, 255, 255),
@@ -333,7 +332,7 @@ impl Scene for GameScene {
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     // Update game logic here
-    
+
     // Example: Quit on Escape
     if ctx.input.key_pressed(KeyCode::Escape) {
       return SceneAction::Quit;
@@ -356,9 +355,7 @@ impl Scene for GameScene {
 
 fn main() {
   let engine = EngineBuilder::new()
-    .title("My Ryo2D Game")
     .resolution(1280, 720)
-    .fps(60)
     .with_scene(GameScene)
     .build();
 

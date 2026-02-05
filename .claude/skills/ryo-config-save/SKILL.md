@@ -43,8 +43,7 @@ save_data = "data"
 assets = "assets"
 
 [system]  # Defaults for system.json (user-facing)
-resolution_width = 1920
-resolution_height = 1080
+resolution = "1920x1080"
 vsync = true
 display_mode = "windowed"  # "windowed", "exclusive_fullscreen", or "borderless_fullscreen"
 master_volume = 1.0
@@ -117,9 +116,7 @@ println!("Assets: {:?}", config.assets);
 
 // Access system defaults from [system] section
 let defaults = &config.system;
-println!("Default resolution: {}x{}", 
-    defaults.resolution_width, 
-    defaults.resolution_height);
+println!("Default resolution: {}", defaults.resolution);
 
 // Access debug flags from [debug] section
 if config.debug.show_colliders {

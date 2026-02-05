@@ -55,3 +55,6 @@ mod input_handler;
 
 #[path = "integration/prediction.rs"]
 mod prediction;
+
+#[path = "integration/config_resolution.rs"]
+mod config_resolution;
