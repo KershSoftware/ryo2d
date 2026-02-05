@@ -43,8 +43,7 @@ fn main() {
     .unwrap_or(false);
 
   let builder = EngineBuilder::new()
-    .title("Flappy - Ryo2D Demo")
-    .resolution(400, 600) // Fixed resolution - game uses hardcoded positions
+    .resolution(400, 600)
     .fps(144)
     .physics_hz(120)
     .ui_scale(None) // Auto-detect from DPI for HiDPI display support

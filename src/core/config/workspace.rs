@@ -22,6 +22,8 @@
 //! ```toml
 //! [project]
 //! name = "My Game"
+//! title = "My Game - The Adventure"  # Window title (optional, defaults to name)
+//! description = "An amazing game"    # Optional description for tooling
 //!
 //! [paths]
 //! entry_point = "src/main.rs"
@@ -38,9 +40,6 @@
 //! sfx_volume = 1.0
 //! show_fps = false
 //! console = true  # Enable developer console (works in debug and release)
-//!
-//! [info]
-//! title = "My Game"
 //!
 //! [debug]  # Developer debug flags (NOT in system.json)
 //! show_colliders = false
@@ -98,6 +97,8 @@ pub struct WorkspaceConfig {
   pub name: String,
   /// Window title (from [project].title, defaults to name)
   pub title: String,
+  /// Project description (optional, for tooling)
+  pub description: Option<String>,
   /// Project version (optional, from [project] section)
   pub version: Option<String>,
   /// Path to entry point relative to workspace root
@@ -233,7 +234,6 @@ struct RyoToml {
   paths: Option<PathsSection>,
   system: Option<SystemSection>,
   debug: Option<DebugSection>,
-  info: Option<InfoSection>,
   release: Option<ReleaseSection>,
   /// Game-specific environment variables (arbitrary key-value pairs)
   #[serde(default)]
@@ -246,6 +246,8 @@ struct ProjectSection {
   version: Option<String>,
   /// Window title (defaults to name if not specified)
   title: Option<String>,
+  /// Project description (optional, for tooling)
+  description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -265,14 +267,6 @@ struct DebugSection {
   enable_profiler: Option<bool>,
   logger_window: Option<bool>,
   dev_window_keys: Option<bool>,
-}
-
-/// Deprecated: [info] section is no longer used.
-/// title moved to [project], show_fps moved to [system].
-/// Kept for backwards compatibility during parsing.
-#[derive(Debug, Deserialize, Default)]
-struct InfoSection {
-  title: Option<String>,
 }
 
 /// Raw TOML [release] section for build/distribution settings
@@ -419,8 +413,6 @@ impl Workspace {
     let paths = raw.paths.unwrap_or_default();
     let debug_section = raw.debug.unwrap_or_default();
     let release_section = raw.release.unwrap_or_default();
-    // [info] section is deprecated - title comes from [project], show_fps from [system]
-    let info_section = raw.info.unwrap_or_default();
 
     // Project name: from config, or directory name
     let name = project.name.unwrap_or_else(|| {
@@ -431,11 +423,11 @@ impl Workspace {
         .to_string()
     });
 
-    // Window title: from [project].title, fall back to [info].title (deprecated), then name
-    let title = project
-      .title
-      .or(info_section.title)
-      .unwrap_or_else(|| name.clone());
+    // Window title: from [project].title, fall back to name
+    let title = project.title.unwrap_or_else(|| name.clone());
+
+    // Project description (optional)
+    let description = project.description;
 
     // Entry point: from config, or inferred
     let entry_point = match paths.entry_point {
@@ -532,6 +524,7 @@ impl Workspace {
     Ok(WorkspaceConfig {
       name,
       title,
+      description,
       version: project.version,
       entry_point,
       save_data,
@@ -640,6 +633,7 @@ impl Default for WorkspaceConfig {
     WorkspaceConfig {
       name: "unnamed".to_string(),
       title: "Ryo2D".to_string(),
+      description: None,
       version: None,
       entry_point: PathBuf::from("src/main.rs"),
       save_data: PathBuf::from("data"),

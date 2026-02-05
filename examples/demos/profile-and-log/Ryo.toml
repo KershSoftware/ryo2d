@@ -6,8 +6,6 @@ description = "Demo for the Ryo2D profiler and logger windows"
 title = "Profile and Log Demo"
 width = 1280
 height = 720
-
-[info]
 show_fps = true
 
 [debug]

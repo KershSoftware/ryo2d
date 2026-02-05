@@ -3,13 +3,11 @@
 
 [project]
 name = "Bullet Hell"
+title = "Bullet Hell - Ryo2D"
 version = "0.1.0"
 
-[info]
-title = "Bullet Hell - Ryo2D"
-show_fps = true
-
 [system]
+show_fps = true
 # Design resolution - game logic uses this fixed size
 # Window can be scaled larger/smaller, engine handles letterboxing
 resolution_width = 1920

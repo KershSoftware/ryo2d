@@ -13,6 +13,4 @@ resolution_width = 1280
 resolution_height = 720
 vsync = true
 fullscreen = false
-
-[info]
 show_fps = true

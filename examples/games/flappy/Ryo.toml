@@ -3,6 +3,7 @@
 
 [project]
 name = "Flappy"
+title = "Flappy - Ryo2D"
 
 [paths]
 # Entry point is in this directory (not in src/)
@@ -17,9 +18,6 @@ assets = "assets"
 # These sections are written to system.json when first created.
 # Players can override these in system.json; their changes persist.
 # =============================================================================
-
-[info]
-title = "Flappy - Ryo2D"
 
 [system]
 vsync = true
