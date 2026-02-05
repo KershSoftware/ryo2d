@@ -1139,8 +1139,15 @@ impl GameScene {
             self.generate_platforms_as_needed(ctx);
         }
 
-        // Process position updates
+        // Process position updates for REMOTE players only
+        // Local player uses client-side prediction for smooth movement
+        let local_id = self.local_client_id;
         for update in position_updates {
+            // Skip local player - we predict locally
+            if Some(update.client_id) == local_id {
+                continue;
+            }
+
             let entity = if let Some(&e) = self.players.get(&update.client_id) {
                 e
             } else {
@@ -1169,8 +1176,13 @@ impl GameScene {
 
         self.waiting_for_player = self.players.len() < 2;
 
-        // Send local input to server
+        // Handle local input and apply it locally (client-side prediction)
         let input = self.handle_input(ctx, dt);
+        if let Some(entity) = self.get_local_player_entity() {
+            self.apply_input(ctx, entity, &input, dt);
+        }
+
+        // Send input to server
         let client = self.client.as_mut().unwrap();
         let input_rpc = LeapInputRpc { input };
         if let Ok(serialized) = SerializedRpc::from_rpc(&input_rpc, client.client_id(), RpcTarget::Server)
@@ -1178,6 +1190,9 @@ impl GameScene {
         {
             client.send(Channel::ReliableOrdered, &bytes);
         }
+
+        // Run local physics for smooth movement (client-side prediction)
+        self.update_physics(ctx, dt);
 
         self.generate_platforms_as_needed(ctx);
         self.update_camera(ctx);
