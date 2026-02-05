@@ -45,7 +45,10 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   } else if config_wants_profiler {
     Output::status(
       "Starting",
-      &format!("{} in dev mode (profiler available via F10)...", project_name),
+      &format!(
+        "{} in dev mode (profiler available via F10)...",
+        project_name
+      ),
     );
   } else {
     Output::status("Starting", &format!("{} in dev mode...", project_name));

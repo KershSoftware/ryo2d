@@ -5,8 +5,8 @@
 
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -144,12 +144,12 @@ fn generate_room_name() -> String {
   use std::time::SystemTime;
 
   let adjectives = [
-    "quick", "brave", "calm", "eager", "fancy", "happy", "jolly", "keen",
-    "lively", "merry", "noble", "proud", "quiet", "rapid", "sharp", "swift",
+    "quick", "brave", "calm", "eager", "fancy", "happy", "jolly", "keen", "lively", "merry",
+    "noble", "proud", "quiet", "rapid", "sharp", "swift",
   ];
   let nouns = [
-    "fox", "wolf", "bear", "hawk", "lion", "tiger", "eagle", "falcon",
-    "dragon", "phoenix", "knight", "wizard", "rogue", "archer", "mage", "sage",
+    "fox", "wolf", "bear", "hawk", "lion", "tiger", "eagle", "falcon", "dragon", "phoenix",
+    "knight", "wizard", "rogue", "archer", "mage", "sage",
   ];
 
   let state = RandomState::new();
@@ -194,7 +194,9 @@ fn run_netplay_server(port: u16, room: &str) -> CliResult<()> {
       #[cfg(target_os = "macos")]
       println!("      Install: brew install cloudflared");
       #[cfg(target_os = "linux")]
-      println!("      Install: See https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/");
+      println!(
+        "      Install: See https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/"
+      );
       println!();
     }
 
@@ -337,32 +339,72 @@ fn run_netplay_server(port: u16, room: &str) -> CliResult<()> {
 
   if let Some(url) = tunnel_url {
     // Convert http to wss for WebSocket
-    let ws_url = url.replace("https://", "wss://").replace("http://", "ws://");
+    let ws_url = url
+      .replace("https://", "wss://")
+      .replace("http://", "ws://");
 
     println!();
-    println!("  ╔════════════════════════════════════════════════════════════════════════════════╗");
-    println!("  ║                      NETPLAY TEST SERVER READY (temporary)                     ║");
-    println!("  ╠════════════════════════════════════════════════════════════════════════════════╣");
-    println!("  ║                                                                                ║");
-    println!("  ║  Share this with friends:                                                      ║");
-    println!("  ║                                                                                ║");
+    println!(
+      "  ╔════════════════════════════════════════════════════════════════════════════════╗"
+    );
+    println!(
+      "  ║                      NETPLAY TEST SERVER READY (temporary)                     ║"
+    );
+    println!(
+      "  ╠════════════════════════════════════════════════════════════════════════════════╣"
+    );
+    println!(
+      "  ║                                                                                ║"
+    );
+    println!(
+      "  ║  Share this with friends:                                                      ║"
+    );
+    println!(
+      "  ║                                                                                ║"
+    );
     println!("  ║    URL:  {:<69} ║", ws_url);
     println!("  ║    Room: {:<69} ║", room_name);
-    println!("  ║                                                                                ║");
-    println!("  ╠════════════════════════════════════════════════════════════════════════════════╣");
-    println!("  ║  Code for your game:                                                           ║");
-    println!("  ║                                                                                ║");
-    println!("  ║    let config = NetworkServerConfig {{                                          ║");
-    println!("  ║        transport: TransportConfig::WebRtc(WebRtcConfig::new(                   ║");
+    println!(
+      "  ║                                                                                ║"
+    );
+    println!(
+      "  ╠════════════════════════════════════════════════════════════════════════════════╣"
+    );
+    println!(
+      "  ║  Code for your game:                                                           ║"
+    );
+    println!(
+      "  ║                                                                                ║"
+    );
+    println!(
+      "  ║    let config = NetworkServerConfig {{                                          ║"
+    );
+    println!(
+      "  ║        transport: TransportConfig::WebRtc(WebRtcConfig::new(                   ║"
+    );
     println!("  ║{:<79} ║", format!("            \"{}\",", ws_url));
     println!("  ║{:<79} ║", format!("            \"{}\",", room_name));
-    println!("  ║        )),                                                                     ║");
-    println!("  ║        ..Default::default()                                                    ║");
-    println!("  ║    }};                                                                          ║");
-    println!("  ║                                                                                ║");
-    println!("  ╠════════════════════════════════════════════════════════════════════════════════╣");
-    println!("  ║  Ctrl+C to stop (tunnel closes, URL stops working)                             ║");
-    println!("  ╚════════════════════════════════════════════════════════════════════════════════╝");
+    println!(
+      "  ║        )),                                                                     ║"
+    );
+    println!(
+      "  ║        ..Default::default()                                                    ║"
+    );
+    println!(
+      "  ║    }};                                                                          ║"
+    );
+    println!(
+      "  ║                                                                                ║"
+    );
+    println!(
+      "  ╠════════════════════════════════════════════════════════════════════════════════╣"
+    );
+    println!(
+      "  ║  Ctrl+C to stop (tunnel closes, URL stops working)                             ║"
+    );
+    println!(
+      "  ╚════════════════════════════════════════════════════════════════════════════════╝"
+    );
     println!();
 
     // Wait for Ctrl+C (process termination)
@@ -546,8 +588,14 @@ fn is_valid_ipv4(s: &str) -> bool {
 fn get_wan_ip() -> Option<String> {
   // Try multiple services in case one is down
   let services = [
-    ("curl", vec!["curl", "-s", "-m", "5", "https://api.ipify.org"]),
-    ("curl", vec!["curl", "-s", "-m", "5", "https://icanhazip.com"]),
+    (
+      "curl",
+      vec!["curl", "-s", "-m", "5", "https://api.ipify.org"],
+    ),
+    (
+      "curl",
+      vec!["curl", "-s", "-m", "5", "https://icanhazip.com"],
+    ),
     ("curl", vec!["curl", "-s", "-m", "5", "https://ifconfig.me"]),
   ];
 
@@ -683,7 +731,13 @@ fn install_cloudflared() -> bool {
     // Try winget first
     if command_exists("winget") {
       let status = Command::new("winget")
-        .args(["install", "--id", "Cloudflare.cloudflared", "--accept-source-agreements", "--accept-package-agreements"])
+        .args([
+          "install",
+          "--id",
+          "Cloudflare.cloudflared",
+          "--accept-source-agreements",
+          "--accept-package-agreements",
+        ])
         .status();
 
       if status.map(|s| s.success()).unwrap_or(false) {
@@ -724,7 +778,9 @@ fn install_cloudflared() -> bool {
     // Linux is more complex, just point to docs
     Output::error("Automatic installation not supported on Linux.");
     println!("  Please install manually:");
-    println!("  https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/");
+    println!(
+      "  https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/"
+    );
     false
   }
 
