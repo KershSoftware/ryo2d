@@ -1139,20 +1139,25 @@ impl GameScene {
             self.generate_platforms_as_needed(ctx);
         }
 
-        // Process position updates for REMOTE players only
-        // Local player uses client-side prediction for smooth movement
+        // Process position updates
+        // Local player uses client-side prediction - only spawn, don't update position
         let local_id = self.local_client_id;
         for update in position_updates {
-            // Skip local player - we predict locally
-            if Some(update.client_id) == local_id {
-                continue;
-            }
+            let is_local = Some(update.client_id) == local_id;
+            let already_spawned = self.players.contains_key(&update.client_id);
 
+            // Spawn player if not yet spawned
             let entity = if let Some(&e) = self.players.get(&update.client_id) {
                 e
             } else {
                 self.spawn_player(ctx, update.slot, update.client_id)
             };
+
+            // Skip position updates for local player (we predict locally)
+            // But we still needed to spawn them above
+            if is_local && already_spawned {
+                continue;
+            }
 
             if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
                 transform.x = update.x;
