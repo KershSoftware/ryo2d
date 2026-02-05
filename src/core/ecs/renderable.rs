@@ -155,6 +155,264 @@ impl DropShadow {
   }
 }
 
+/// Configuration for a blob shadow effect beneath a sprite.
+///
+/// Blob shadows are simple circular or elliptical shadows placed at the
+/// entity's feet. They're commonly used in platformers and top-down games
+/// to provide visual grounding without matching the sprite's exact shape.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// // Simple circular blob shadow
+/// let sprite = Renderable::sprite(handle).with_blob_shadow(BlobShadow::default());
+///
+/// // Elliptical shadow for a wider character
+/// let sprite = Renderable::sprite(handle).with_blob_shadow(
+///     BlobShadow::ellipse(32.0, 12.0)
+/// );
+///
+/// // Shadow that scales with "height" (for jumping)
+/// let sprite = Renderable::sprite(handle).with_blob_shadow(
+///     BlobShadow::circle(20.0).with_height_scale(true)
+/// );
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlobShadow {
+  /// Horizontal radius of the shadow ellipse
+  pub radius_x: f32,
+  /// Vertical radius of the shadow ellipse (smaller = more squashed)
+  pub radius_y: f32,
+  /// Vertical offset from sprite position (positive = below)
+  pub offset_y: f32,
+  /// Shadow color (default: semi-transparent black)
+  pub color: Color,
+  /// Current "height" factor for dynamic shadows (0.0 = on ground, 1.0 = max height)
+  /// When height > 0, shadow shrinks and becomes more transparent
+  pub height: f32,
+  /// Maximum height value for scaling calculations
+  pub max_height: f32,
+  /// Whether to scale shadow based on height (for jumping characters)
+  pub height_scaling: bool,
+}
+
+impl Default for BlobShadow {
+  fn default() -> Self {
+    Self {
+      radius_x: 16.0,
+      radius_y: 8.0,
+      offset_y: 0.0,
+      color: Color::new(0, 0, 0, 100),
+      height: 0.0,
+      max_height: 100.0,
+      height_scaling: false,
+    }
+  }
+}
+
+impl BlobShadow {
+  /// Create a new blob shadow with default settings
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Create a circular blob shadow
+  pub fn circle(radius: f32) -> Self {
+    Self {
+      radius_x: radius,
+      radius_y: radius * 0.5, // Slightly squashed by default
+      ..Default::default()
+    }
+  }
+
+  /// Create an elliptical blob shadow
+  pub fn ellipse(radius_x: f32, radius_y: f32) -> Self {
+    Self {
+      radius_x,
+      radius_y,
+      ..Default::default()
+    }
+  }
+
+  /// Set the shadow radii
+  pub fn radii(mut self, x: f32, y: f32) -> Self {
+    self.radius_x = x.max(1.0);
+    self.radius_y = y.max(1.0);
+    self
+  }
+
+  /// Set the vertical offset from sprite position
+  pub fn offset(mut self, offset_y: f32) -> Self {
+    self.offset_y = offset_y;
+    self
+  }
+
+  /// Set the shadow color
+  pub fn color(mut self, color: Color) -> Self {
+    self.color = color;
+    self
+  }
+
+  /// Enable height-based scaling (shadow shrinks when entity is "in the air")
+  pub fn with_height_scale(mut self, enabled: bool) -> Self {
+    self.height_scaling = enabled;
+    self
+  }
+
+  /// Set the maximum height for scaling calculations
+  pub fn max_height(mut self, max: f32) -> Self {
+    self.max_height = max.max(1.0);
+    self
+  }
+
+  /// Set the current height (0.0 = on ground)
+  pub fn set_height(&mut self, height: f32) {
+    self.height = height.max(0.0);
+  }
+
+  /// Get the effective radius accounting for height scaling
+  pub fn effective_radius(&self) -> (f32, f32) {
+    if !self.height_scaling || self.height <= 0.0 {
+      return (self.radius_x, self.radius_y);
+    }
+
+    // Shadow shrinks as height increases
+    let height_factor = (1.0 - (self.height / self.max_height).min(1.0)).max(0.2);
+    (self.radius_x * height_factor, self.radius_y * height_factor)
+  }
+
+  /// Get the effective alpha accounting for height scaling
+  pub fn effective_alpha(&self) -> f32 {
+    let base_alpha = self.color.a as f32 / 255.0;
+
+    if !self.height_scaling || self.height <= 0.0 {
+      return base_alpha;
+    }
+
+    // Shadow fades as height increases
+    let height_factor = (1.0 - (self.height / self.max_height).min(1.0)).max(0.1);
+    base_alpha * height_factor
+  }
+}
+
+/// Configuration for a contact shadow effect at the base of a sprite.
+///
+/// Contact shadows are small, dark shadows that appear at the contact point
+/// between an object and the surface it's resting on. They're darkest right
+/// at the contact point and fade radially outward, simulating ambient occlusion.
+///
+/// Unlike blob shadows (which are larger and more diffuse), contact shadows are
+/// concentrated at the feet/base of objects and create visual grounding.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ryo2d::prelude::*;
+///
+/// // Simple contact shadow at sprite base
+/// let sprite = Renderable::sprite(handle).with_contact_shadow(ContactShadow::default());
+///
+/// // Wider contact shadow for a large object
+/// let sprite = Renderable::sprite(handle).with_contact_shadow(
+///     ContactShadow::new().radius(12.0).intensity(0.8)
+/// );
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContactShadow {
+  /// Radius of the contact shadow (how far it spreads)
+  pub radius: f32,
+  /// Shadow intensity/darkness (0.0 = invisible, 1.0 = fully opaque black)
+  pub intensity: f32,
+  /// Vertical offset from sprite position (positive = below)
+  pub offset_y: f32,
+  /// Shadow color (default: black)
+  pub color: Color,
+  /// Falloff curve (1.0 = linear, 2.0 = quadratic/sharper, 0.5 = softer)
+  pub falloff: f32,
+}
+
+impl Default for ContactShadow {
+  fn default() -> Self {
+    Self {
+      radius: 8.0,
+      intensity: 0.6,
+      offset_y: 0.0,
+      color: Color::BLACK,
+      falloff: 2.0, // Sharp falloff by default for concentrated contact point
+    }
+  }
+}
+
+impl ContactShadow {
+  /// Create a new contact shadow with default settings
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Set the shadow radius
+  pub fn radius(mut self, radius: f32) -> Self {
+    self.radius = radius.max(1.0);
+    self
+  }
+
+  /// Set the shadow intensity (0.0 = invisible, 1.0 = fully opaque)
+  pub fn intensity(mut self, intensity: f32) -> Self {
+    self.intensity = intensity.clamp(0.0, 1.0);
+    self
+  }
+
+  /// Set the vertical offset from sprite position
+  pub fn offset(mut self, offset_y: f32) -> Self {
+    self.offset_y = offset_y;
+    self
+  }
+
+  /// Set the shadow color
+  pub fn color(mut self, color: Color) -> Self {
+    self.color = color;
+    self
+  }
+
+  /// Set the falloff curve (1.0 = linear, 2.0 = sharp, 0.5 = soft)
+  pub fn falloff(mut self, falloff: f32) -> Self {
+    self.falloff = falloff.clamp(0.1, 4.0);
+    self
+  }
+
+  /// Create a sharp contact shadow (concentrated at contact point)
+  pub fn sharp(radius: f32) -> Self {
+    Self {
+      radius,
+      intensity: 0.7,
+      falloff: 3.0,
+      ..Default::default()
+    }
+  }
+
+  /// Create a soft contact shadow (more diffuse)
+  pub fn soft(radius: f32) -> Self {
+    Self {
+      radius,
+      intensity: 0.4,
+      falloff: 1.0,
+      ..Default::default()
+    }
+  }
+
+  /// Get the alpha at a given distance from center (for rendering)
+  pub fn alpha_at_distance(&self, distance: f32) -> f32 {
+    if distance >= self.radius {
+      return 0.0;
+    }
+
+    let normalized = distance / self.radius;
+    let falloff_value = (1.0 - normalized).powf(self.falloff);
+    self.intensity * falloff_value
+  }
+}
+
 /// Hints for how the renderer should handle this entity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RenderMode {
@@ -221,6 +479,18 @@ pub struct Renderable {
   /// When set, a shadow is rendered beneath the sprite at the specified
   /// offset, color, and scale. Useful for platformers, UI, or visual grounding.
   pub drop_shadow: Option<DropShadow>,
+  /// Optional blob shadow effect
+  ///
+  /// When set, a simple elliptical shadow is rendered beneath the sprite.
+  /// Useful for characters in platformers or top-down games.
+  /// If both drop_shadow and blob_shadow are set, both are rendered.
+  pub blob_shadow: Option<BlobShadow>,
+  /// Optional contact shadow effect
+  ///
+  /// When set, a small concentrated shadow is rendered at the contact point
+  /// (base of sprite), simulating ambient occlusion. Contact shadows are
+  /// darker at the center and fade radially outward.
+  pub contact_shadow: Option<ContactShadow>,
   /// Enable render interpolation for smooth motion.
   ///
   /// When true, the entity's position is interpolated between the previous
@@ -250,6 +520,8 @@ impl Renderable {
       tint: Color::WHITE,
       shader: None,
       drop_shadow: None,
+      blob_shadow: None,
+      contact_shadow: None,
       interpolate: false,
     }
   }
@@ -271,6 +543,8 @@ impl Renderable {
       tint: Color::WHITE,
       shader: None,
       drop_shadow: None,
+      blob_shadow: None,
+      contact_shadow: None,
       interpolate: false,
     }
   }
@@ -362,6 +636,63 @@ impl Renderable {
   /// Check if this renderable has a drop shadow
   pub fn has_drop_shadow(&self) -> bool {
     self.drop_shadow.is_some()
+  }
+
+  /// Set a blob shadow effect
+  ///
+  /// Blob shadows are simple elliptical shadows rendered beneath the sprite.
+  /// Useful for characters in platformers or top-down games.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// use ryo2d::prelude::*;
+  ///
+  /// // Simple blob shadow
+  /// let sprite = Renderable::sprite(handle).with_blob_shadow(BlobShadow::default());
+  ///
+  /// // Custom elliptical shadow
+  /// let sprite = Renderable::sprite(handle).with_blob_shadow(
+  ///     BlobShadow::ellipse(24.0, 10.0).color(Color::new(0, 0, 0, 80))
+  /// );
+  /// ```
+  pub fn with_blob_shadow(mut self, shadow: BlobShadow) -> Self {
+    self.blob_shadow = Some(shadow);
+    self
+  }
+
+  /// Check if this renderable has a blob shadow
+  pub fn has_blob_shadow(&self) -> bool {
+    self.blob_shadow.is_some()
+  }
+
+  /// Add a contact shadow effect to this renderable.
+  ///
+  /// Contact shadows are small, concentrated shadows at the contact point
+  /// (base of sprite), simulating ambient occlusion. They're darkest at the
+  /// center and fade radially outward.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// use ryo2d::prelude::*;
+  ///
+  /// // Simple contact shadow
+  /// let sprite = Renderable::sprite(handle).with_contact_shadow(ContactShadow::default());
+  ///
+  /// // Sharp contact shadow for heavy objects
+  /// let sprite = Renderable::sprite(handle).with_contact_shadow(
+  ///     ContactShadow::sharp(10.0)
+  /// );
+  /// ```
+  pub fn with_contact_shadow(mut self, shadow: ContactShadow) -> Self {
+    self.contact_shadow = Some(shadow);
+    self
+  }
+
+  /// Check if this renderable has a contact shadow
+  pub fn has_contact_shadow(&self) -> bool {
+    self.contact_shadow.is_some()
   }
 
   /// Enable render interpolation for smooth motion.
@@ -557,5 +888,82 @@ mod tests {
     let r = Renderable::sprite(test_handle()).with_drop_shadow(DropShadow::default());
     assert!(r.has_drop_shadow());
     assert!(r.drop_shadow.is_some());
+  }
+
+  #[test]
+  fn blob_shadow_defaults() {
+    let shadow = BlobShadow::default();
+    assert_eq!(shadow.radius_x, 16.0);
+    assert_eq!(shadow.radius_y, 8.0);
+    assert_eq!(shadow.offset_y, 0.0);
+    assert_eq!(shadow.color, Color::new(0, 0, 0, 100));
+    assert_eq!(shadow.height, 0.0);
+    assert!(!shadow.height_scaling);
+  }
+
+  #[test]
+  fn blob_shadow_circle() {
+    let shadow = BlobShadow::circle(20.0);
+    assert_eq!(shadow.radius_x, 20.0);
+    assert_eq!(shadow.radius_y, 10.0); // Squashed by default
+  }
+
+  #[test]
+  fn blob_shadow_ellipse() {
+    let shadow = BlobShadow::ellipse(30.0, 15.0);
+    assert_eq!(shadow.radius_x, 30.0);
+    assert_eq!(shadow.radius_y, 15.0);
+  }
+
+  #[test]
+  fn blob_shadow_builder() {
+    let shadow = BlobShadow::new()
+      .radii(24.0, 12.0)
+      .offset(10.0)
+      .color(Color::new(50, 50, 50, 150))
+      .with_height_scale(true)
+      .max_height(200.0);
+
+    assert_eq!(shadow.radius_x, 24.0);
+    assert_eq!(shadow.radius_y, 12.0);
+    assert_eq!(shadow.offset_y, 10.0);
+    assert_eq!(shadow.color, Color::new(50, 50, 50, 150));
+    assert!(shadow.height_scaling);
+    assert_eq!(shadow.max_height, 200.0);
+  }
+
+  #[test]
+  fn blob_shadow_height_scaling() {
+    let mut shadow = BlobShadow::circle(20.0).with_height_scale(true).max_height(100.0);
+
+    // On ground - full size and alpha
+    shadow.set_height(0.0);
+    let (rx, ry) = shadow.effective_radius();
+    assert_eq!(rx, 20.0);
+    assert_eq!(ry, 10.0);
+    assert!((shadow.effective_alpha() - (100.0 / 255.0)).abs() < 0.01);
+
+    // Half height - reduced size and alpha
+    shadow.set_height(50.0);
+    let (rx, ry) = shadow.effective_radius();
+    assert_eq!(rx, 10.0); // 50% of original
+    assert_eq!(ry, 5.0);
+
+    // At max height - minimum size (0.2 factor)
+    shadow.set_height(100.0);
+    let (rx, ry) = shadow.effective_radius();
+    assert_eq!(rx, 4.0); // 20% of original
+    assert_eq!(ry, 2.0);
+  }
+
+  #[test]
+  fn renderable_with_blob_shadow() {
+    let r = Renderable::sprite(test_handle());
+    assert!(!r.has_blob_shadow());
+    assert!(r.blob_shadow.is_none());
+
+    let r = Renderable::sprite(test_handle()).with_blob_shadow(BlobShadow::default());
+    assert!(r.has_blob_shadow());
+    assert!(r.blob_shadow.is_some());
   }
 }

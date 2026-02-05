@@ -212,9 +212,21 @@ impl Scene for HardShadowsScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Scene switching handled by main - check for switch request
+    // Scene switching
     if ctx.input.key_pressed(KeyCode::Digit2) {
       return SceneAction::Switch(Box::new(super::DropShadowsScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit3) {
+      return SceneAction::Switch(Box::new(super::BlobShadowsScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit4) {
+      return SceneAction::Switch(Box::new(super::SoftShadowsScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit5) {
+      return SceneAction::Switch(Box::new(super::ColoredShadowsScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit6) {
+      return SceneAction::Switch(Box::new(super::ContactShadowsScene::new()));
     }
 
     // Quit on Escape
@@ -281,7 +293,7 @@ impl Scene for HardShadowsScene {
     let bg = Some(Color::new(0, 0, 0, 180));
 
     // Scene indicator
-    ui.label("[1] Hard Shadows  [2] Drop Shadows", 10.0, 10.0, highlight, bg);
+    ui.label("[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact", 10.0, 10.0, highlight, bg);
 
     // Title
     ui.label("Hard Shadows (Shadow Volumes)", 10.0, 40.0, white, bg);

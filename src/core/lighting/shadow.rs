@@ -16,6 +16,7 @@
 
 use crate::core::ecs::{Transform, Vec2};
 use crate::core::lighting::{Light2D, LightOccluder2D};
+use crate::core::ui::Color;
 
 /// Maximum number of shadow vertices per frame (4 vertices per quad)
 pub const MAX_SHADOW_VERTICES: usize = 8192;
@@ -30,18 +31,48 @@ pub struct ShadowVertex {
   pub light_pos: [f32; 2],
   /// Light radius (for falloff calculation)
   pub light_radius: f32,
+  /// Shadow softness (0.0 = hard, 1.0 = very soft)
+  pub softness: f32,
+  /// Shadow color (packed RGBA as u32, unpacked in shader)
+  pub shadow_color: u32,
   /// Padding for alignment
-  pub _padding: [f32; 3],
+  pub _padding: u32,
 }
 
 impl ShadowVertex {
-  pub fn new(x: f32, y: f32, light_x: f32, light_y: f32, light_radius: f32) -> Self {
+  pub fn new(
+    x: f32,
+    y: f32,
+    light_x: f32,
+    light_y: f32,
+    light_radius: f32,
+    softness: f32,
+  ) -> Self {
+    Self::with_color(x, y, light_x, light_y, light_radius, softness, 0x000000FF)
+  }
+
+  pub fn with_color(
+    x: f32,
+    y: f32,
+    light_x: f32,
+    light_y: f32,
+    light_radius: f32,
+    softness: f32,
+    shadow_color: u32,
+  ) -> Self {
     Self {
       position: [x, y],
       light_pos: [light_x, light_y],
       light_radius,
-      _padding: [0.0; 3],
+      softness,
+      shadow_color,
+      _padding: 0,
     }
+  }
+
+  /// Pack RGBA color components into a u32
+  pub fn pack_color(r: u8, g: u8, b: u8, a: u8) -> u32 {
+    (r as u32) | ((g as u32) << 8) | ((b as u32) << 16) | ((a as u32) << 24)
   }
 }
 
@@ -92,21 +123,28 @@ pub fn generate_shadow_geometry<'a>(
   let shadow_lights: Vec<_> = lights
     .filter(|(_, light)| light.casts_shadows())
     .map(|(t, l)| {
-      let (radius, is_spot, angle, direction) = match l {
-        Light2D::Point { radius, .. } => (*radius, false, 360.0, 0.0),
+      let (radius, is_spot, angle, direction, softness, color) = match l {
+        Light2D::Point {
+          radius,
+          shadow_softness,
+          shadow_color,
+          ..
+        } => (*radius, false, 360.0, 0.0, *shadow_softness, *shadow_color),
         Light2D::Spot {
           radius,
           angle,
           direction,
+          shadow_softness,
+          shadow_color,
           ..
-        } => (*radius, true, *angle, *direction),
+        } => (*radius, true, *angle, *direction, *shadow_softness, *shadow_color),
       };
-      (Vec2::new(t.x, t.y), radius, is_spot, angle, direction)
+      (Vec2::new(t.x, t.y), radius, is_spot, angle, direction, softness, color)
     })
     .collect();
 
   // For each shadow-casting light
-  for (light_pos, light_radius, is_spot, spot_angle, spot_direction) in shadow_lights {
+  for (light_pos, light_radius, is_spot, spot_angle, spot_direction, shadow_softness, shadow_color) in shadow_lights {
     // For each occluder
     for (occluder_transform, occluder) in occluders {
       if !occluder.is_enabled() {
@@ -140,6 +178,8 @@ pub fn generate_shadow_geometry<'a>(
         is_spot,
         spot_angle,
         spot_direction,
+        shadow_softness,
+        shadow_color,
       );
     }
   }
@@ -148,6 +188,7 @@ pub fn generate_shadow_geometry<'a>(
 }
 
 /// Generate shadow quads for a single occluder relative to a light.
+#[allow(clippy::too_many_arguments)]
 fn generate_shadow_quads_for_occluder(
   geometry: &mut ShadowGeometry,
   vertices: &[Vec2],
@@ -156,6 +197,8 @@ fn generate_shadow_quads_for_occluder(
   is_spot: bool,
   spot_angle: f32,
   spot_direction: f32,
+  shadow_softness: f32,
+  shadow_color: Color,
 ) {
   if vertices.len() < 3 {
     return;
@@ -221,28 +264,30 @@ fn generate_shadow_quads_for_occluder(
     let lx = light_pos.x;
     let ly = light_pos.y;
     let lr = light_radius;
+    let ss = shadow_softness;
+    let sc = ShadowVertex::pack_color(shadow_color.r, shadow_color.g, shadow_color.b, shadow_color.a);
 
     // Triangle 1
     geometry
       .vertices
-      .push(ShadowVertex::new(v0.x, v0.y, lx, ly, lr));
+      .push(ShadowVertex::with_color(v0.x, v0.y, lx, ly, lr, ss, sc));
     geometry
       .vertices
-      .push(ShadowVertex::new(v1.x, v1.y, lx, ly, lr));
+      .push(ShadowVertex::with_color(v1.x, v1.y, lx, ly, lr, ss, sc));
     geometry
       .vertices
-      .push(ShadowVertex::new(proj1.x, proj1.y, lx, ly, lr));
+      .push(ShadowVertex::with_color(proj1.x, proj1.y, lx, ly, lr, ss, sc));
 
     // Triangle 2
     geometry
       .vertices
-      .push(ShadowVertex::new(v0.x, v0.y, lx, ly, lr));
+      .push(ShadowVertex::with_color(v0.x, v0.y, lx, ly, lr, ss, sc));
     geometry
       .vertices
-      .push(ShadowVertex::new(proj1.x, proj1.y, lx, ly, lr));
+      .push(ShadowVertex::with_color(proj1.x, proj1.y, lx, ly, lr, ss, sc));
     geometry
       .vertices
-      .push(ShadowVertex::new(proj0.x, proj0.y, lx, ly, lr));
+      .push(ShadowVertex::with_color(proj0.x, proj0.y, lx, ly, lr, ss, sc));
   }
 }
 

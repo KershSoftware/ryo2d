@@ -6,6 +6,33 @@ use std::path::{Path, PathBuf};
 
 use super::{CliError, CliResult, Output};
 
+/// AI assistant platform for skills installation
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SkillsPlatform {
+  /// Claude Code - installs to .claude/skills/
+  Claude,
+  /// GitHub Copilot - installs to .github/skills/
+  Copilot,
+}
+
+impl SkillsPlatform {
+  /// Get the relative path for skills directory
+  pub fn skills_path(&self) -> PathBuf {
+    match self {
+      SkillsPlatform::Claude => PathBuf::from(".claude").join("skills"),
+      SkillsPlatform::Copilot => PathBuf::from(".github").join("skills"),
+    }
+  }
+
+  /// Get display name
+  pub fn name(&self) -> &'static str {
+    match self {
+      SkillsPlatform::Claude => "Claude",
+      SkillsPlatform::Copilot => "Copilot",
+    }
+  }
+}
+
 /// Available skills to install
 const AVAILABLE_SKILLS: &[(&str, &str)] = &[
   (
@@ -82,28 +109,26 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   let workspace = super::discover_workspace()?;
   let project_dir = workspace.root();
 
-  install_skills_to_dir(project_dir, false)
+  // Prompt for platform selection
+  let platform = prompt_platform_selection()?;
+
+  install_skills_to_dir(project_dir, platform, false)
 }
 
 /// Install all skills to a project directory
-pub fn install_skills_to_dir(project_dir: &Path, quiet: bool) -> CliResult<()> {
-  // Detect IDE/Editor
-  let ide = detect_ide(project_dir);
-  let skills_dir = match ide {
-    Some(Ide::VsCode) => project_dir.join(".github").join("skills"),
-    Some(Ide::Claude) => project_dir.join(".github").join("skills"),
-    None => {
-      if !quiet {
-        Output::warning("No supported IDE detected (VS Code, Claude)");
-        Output::status("Using", ".github/skills/ (VS Code/Claude format)");
-      }
-      project_dir.join(".github").join("skills")
-    }
-  };
+pub fn install_skills_to_dir(
+  project_dir: &Path,
+  platform: SkillsPlatform,
+  quiet: bool,
+) -> CliResult<()> {
+  let skills_dir = project_dir.join(platform.skills_path());
 
   if !quiet {
     println!();
-    println!("Installing Ryo2D Agent Skills:");
+    println!(
+      "Installing Ryo2D Agent Skills for {}:",
+      platform.name()
+    );
     println!();
     for (name, desc) in AVAILABLE_SKILLS {
       println!("  • {} - {}", name, desc);
@@ -130,7 +155,7 @@ pub fn install_skills_to_dir(project_dir: &Path, quiet: bool) -> CliResult<()> {
   }
 
   // Update .gitignore
-  update_gitignore(project_dir)?;
+  update_gitignore(project_dir, platform)?;
 
   if !quiet {
     println!();
@@ -145,27 +170,9 @@ pub fn install_skills_to_dir(project_dir: &Path, quiet: bool) -> CliResult<()> {
   Ok(())
 }
 
-/// Detect which IDE/Editor is being used
-#[derive(Debug)]
-#[allow(dead_code)]
-enum Ide {
-  VsCode,
-  Claude,
-}
-
-fn detect_ide(project_dir: &Path) -> Option<Ide> {
-  // Check for VS Code
-  if project_dir.join(".vscode").exists() {
-    return Some(Ide::VsCode);
-  }
-
-  // For now, assume VS Code/Claude format (they use the same .github/skills/)
-  // In future, we could detect other IDEs like Cursor, Zed, etc.
-  None
-}
-
-/// Prompt user if they want to install skills (yes/no)
-pub fn prompt_install_skills() -> CliResult<bool> {
+/// Prompt user if they want to install skills and which platform
+/// Returns None if user declines, Some(platform) if they want to install
+pub fn prompt_install_skills() -> CliResult<Option<SkillsPlatform>> {
   print!("Install Agent Skills for AI assistants? (Y/n): ");
   io::stdout().flush().map_err(CliError::Io)?;
 
@@ -173,7 +180,37 @@ pub fn prompt_install_skills() -> CliResult<bool> {
   io::stdin().read_line(&mut input).map_err(CliError::Io)?;
 
   let response = input.trim().to_lowercase();
-  Ok(response.is_empty() || response.starts_with('y'))
+  if !response.is_empty() && !response.starts_with('y') {
+    return Ok(None);
+  }
+
+  // User wants skills, ask which platform
+  let platform = prompt_platform_selection()?;
+  Ok(Some(platform))
+}
+
+/// Prompt user to select AI assistant platform
+fn prompt_platform_selection() -> CliResult<SkillsPlatform> {
+  println!();
+  println!("Select your AI assistant:");
+  println!("  1) Claude    (.claude/skills)");
+  println!("  2) Copilot   (.github/skills)");
+  println!();
+  print!("Choice (1/2): ");
+  io::stdout().flush().map_err(CliError::Io)?;
+
+  let mut input = String::new();
+  io::stdin().read_line(&mut input).map_err(CliError::Io)?;
+
+  let choice = input.trim();
+  match choice {
+    "1" | "claude" | "Claude" => Ok(SkillsPlatform::Claude),
+    "2" | "copilot" | "Copilot" | "" => Ok(SkillsPlatform::Copilot),
+    _ => {
+      Output::warning("Invalid choice, defaulting to Copilot");
+      Ok(SkillsPlatform::Copilot)
+    }
+  }
 }
 
 /// Get the engine's skills directory
@@ -243,7 +280,7 @@ fn install_skill(engine_skills_dir: &Path, target_dir: &Path, skill_name: &str) 
 }
 
 /// Update .gitignore to track ryo-* skills
-fn update_gitignore(project_dir: &Path) -> CliResult<()> {
+fn update_gitignore(project_dir: &Path, platform: SkillsPlatform) -> CliResult<()> {
   let gitignore_path = project_dir.join(".gitignore");
 
   // Read existing .gitignore or create new
@@ -254,8 +291,15 @@ fn update_gitignore(project_dir: &Path) -> CliResult<()> {
     String::new()
   };
 
-  // Check if skills are already tracked
-  if gitignore_content.contains("!.github/skills/ryo-*/") {
+  // Determine the skills path pattern based on platform
+  let skills_pattern = match platform {
+    SkillsPlatform::Claude => ".claude/skills",
+    SkillsPlatform::Copilot => ".github/skills",
+  };
+
+  // Check if skills are already tracked for this platform
+  let check_pattern = format!("!{}/ryo-*/", skills_pattern);
+  if gitignore_content.contains(&check_pattern) {
     return Ok(()); // Already configured
   }
 
@@ -265,8 +309,8 @@ fn update_gitignore(project_dir: &Path) -> CliResult<()> {
   }
 
   gitignore_content.push_str("\n# Track Ryo2D Agent Skills\n");
-  gitignore_content.push_str("!.github/skills/ryo-*/\n");
-  gitignore_content.push_str("!.github/skills/ryo-*/**\n");
+  gitignore_content.push_str(&format!("!{}/ryo-*/\n", skills_pattern));
+  gitignore_content.push_str(&format!("!{}/ryo-*/**\n", skills_pattern));
 
   fs::write(&gitignore_path, gitignore_content)
     .map_err(|e| CliError::Other(format!("Failed to update .gitignore: {}", e)))?;
@@ -286,16 +330,19 @@ USAGE:
 
 DESCRIPTION:
     Installs all Ryo2D Agent Skills into your project so AI assistants
-    (like GitHub Copilot, Claude) can better help you develop your game.
+    can better help you develop your game.
 
-    Skills are installed to .github/skills/ (VS Code/Claude format).
-    All 15 skills are installed automatically.
+    You'll be prompted to choose your AI assistant:
+      - Claude:  installs to .claude/skills/
+      - Copilot: installs to .github/skills/
+
+    All skills are installed automatically.
 
 OPTIONS:
     -h, --help    Show this help message
 
 EXAMPLES:
-    # Install all skills
+    # Install all skills (will prompt for platform)
     ryo2d install-skills
 "#
   );

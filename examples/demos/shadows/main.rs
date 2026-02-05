@@ -6,10 +6,14 @@
 //!
 //! - **[1] Hard Shadows**: Real-time shadow volumes from light occluders
 //! - **[2] Drop Shadows**: Artist-controlled offset shadows for sprites
+//! - **[3] Blob Shadows**: Simple elliptical shadows beneath entities
+//! - **[4] Soft Shadows**: Shadows with gradual edge fade
+//! - **[5] Colored Shadows**: Tinted shadows for atmospheric effects
+//! - **[6] Contact Shadows**: Concentrated shadows at object contact points
 //!
 //! ## Controls
 //!
-//! Press **1** or **2** to switch between shadow type demos.
+//! Press **1-6** to switch between shadow type demos.
 //! Press **ESC** to quit.
 //!
 //! See each scene for specific controls.

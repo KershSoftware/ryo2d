@@ -50,6 +50,10 @@ pub enum Light2D {
     falloff: f32,
     /// Whether this light casts shadows
     cast_shadows: bool,
+    /// Shadow edge softness (0.0 = hard/crisp, 1.0 = very soft/blurred)
+    shadow_softness: f32,
+    /// Shadow color (default black, can be tinted for colored shadows)
+    shadow_color: Color,
     /// Volumetric lighting settings (visible beams, god rays)
     volumetric: Option<VolumetricSettings>,
   },
@@ -72,6 +76,10 @@ pub enum Light2D {
     softness: f32,
     /// Whether this light casts shadows
     cast_shadows: bool,
+    /// Shadow edge softness (0.0 = hard/crisp, 1.0 = very soft/blurred)
+    shadow_softness: f32,
+    /// Shadow color (default black, can be tinted for colored shadows)
+    shadow_color: Color,
     /// Volumetric lighting settings (visible beams, god rays)
     volumetric: Option<VolumetricSettings>,
   },
@@ -90,6 +98,8 @@ impl Light2D {
       intensity: 1.0,
       falloff: 2.0, // Quadratic falloff is most natural
       cast_shadows: false,
+      shadow_softness: 0.0,
+      shadow_color: Color::BLACK,
       volumetric: None,
     }
   }
@@ -102,6 +112,8 @@ impl Light2D {
       intensity: intensity.max(0.0),
       falloff: 2.0,
       cast_shadows: false,
+      shadow_softness: 0.0,
+      shadow_color: Color::BLACK,
       volumetric: None,
     }
   }
@@ -120,6 +132,8 @@ impl Light2D {
       intensity: intensity.max(0.0),
       falloff: falloff.clamp(0.1, 10.0),
       cast_shadows,
+      shadow_softness: 0.0,
+      shadow_color: Color::BLACK,
       volumetric: None,
     }
   }
@@ -141,6 +155,8 @@ impl Light2D {
       direction,
       softness: 0.1,
       cast_shadows: false,
+      shadow_softness: 0.0,
+      shadow_color: Color::BLACK,
       volumetric: None,
     }
   }
@@ -162,6 +178,8 @@ impl Light2D {
       direction,
       softness: 0.1,
       cast_shadows: false,
+      shadow_softness: 0.0,
+      shadow_color: Color::BLACK,
       volumetric: None,
     }
   }
@@ -187,6 +205,8 @@ impl Light2D {
       direction,
       softness: softness.clamp(0.0, 1.0),
       cast_shadows,
+      shadow_softness: 0.0,
+      shadow_color: Color::BLACK,
       volumetric: None,
     }
   }
@@ -286,6 +306,65 @@ impl Light2D {
   pub fn with_shadows(mut self) -> Self {
     self.set_cast_shadows(true);
     self
+  }
+
+  /// Builder method to enable soft shadows with specified softness
+  ///
+  /// Soft shadows have blurred/feathered edges instead of hard crisp edges.
+  /// This creates a more realistic look as real light sources have area.
+  ///
+  /// # Arguments
+  /// * `softness` - Shadow edge softness (0.0 = hard, 1.0 = very soft)
+  pub fn with_soft_shadows(mut self, softness: f32) -> Self {
+    self.set_cast_shadows(true);
+    self.set_shadow_softness(softness);
+    self
+  }
+
+  /// Get the shadow softness of this light
+  pub fn shadow_softness(&self) -> f32 {
+    match self {
+      Self::Point { shadow_softness, .. } | Self::Spot { shadow_softness, .. } => *shadow_softness,
+    }
+  }
+
+  /// Set the shadow softness of this light
+  pub fn set_shadow_softness(&mut self, softness: f32) {
+    let s = softness.clamp(0.0, 1.0);
+    match self {
+      Self::Point {
+        shadow_softness, ..
+      }
+      | Self::Spot {
+        shadow_softness, ..
+      } => *shadow_softness = s,
+    }
+  }
+
+  /// Builder method to set colored shadows
+  ///
+  /// Colored shadows can create atmospheric effects like stained glass,
+  /// sunset lighting, or artistic stylization.
+  ///
+  /// # Arguments
+  /// * `color` - The shadow tint color (alpha controls shadow opacity)
+  pub fn with_shadow_color(mut self, color: Color) -> Self {
+    self.set_shadow_color(color);
+    self
+  }
+
+  /// Get the shadow color of this light
+  pub fn shadow_color(&self) -> Color {
+    match self {
+      Self::Point { shadow_color, .. } | Self::Spot { shadow_color, .. } => *shadow_color,
+    }
+  }
+
+  /// Set the shadow color of this light
+  pub fn set_shadow_color(&mut self, color: Color) {
+    match self {
+      Self::Point { shadow_color: sc, .. } | Self::Spot { shadow_color: sc, .. } => *sc = color,
+    }
   }
 
   /// Builder method to set intensity

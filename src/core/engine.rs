@@ -1492,6 +1492,92 @@ impl Engine {
             });
           }
 
+          // Render blob shadow before main sprite (if present)
+          if let Some(blob) = &renderable.blob_shadow {
+            // Get effective radius and alpha (accounts for height scaling)
+            let (eff_radius_x, eff_radius_y) = blob.effective_radius();
+            let blob_alpha = blob.effective_alpha() * alpha;
+
+            // Skip if shadow is too small or transparent
+            if eff_radius_x >= 1.0 && eff_radius_y >= 1.0 && blob_alpha > 0.01 {
+              // Calculate blob shadow position (centered below sprite, with offset)
+              // Use the sprite's base position (not the rotated draw position)
+              let blob_x = x - eff_radius_x;
+              let blob_y = y + blob.offset_y - eff_radius_y;
+
+              let (blob_screen_x, blob_screen_y) = self.camera.world_to_screen(blob_x, blob_y);
+
+              // Create ellipse sprite for the blob shadow
+              let blob_w = (eff_radius_x * 2.0) as u32;
+              let blob_h = (eff_radius_y * 2.0) as u32;
+              let blob_sprite =
+                Sprite::solid_ellipse(blob_w, blob_h, blob.color.r, blob.color.g, blob.color.b, 255);
+
+              // Draw with camera zoom
+              blob_sprite.draw_rotated_tinted(
+                frame,
+                frame_width,
+                frame_height,
+                blob_screen_x as i32,
+                blob_screen_y as i32,
+                self.camera.zoom,
+                self.camera.zoom,
+                0.0, // No rotation for blob shadows
+                false,
+                false,
+                blob_alpha,
+                Color::WHITE,
+              );
+            }
+          }
+
+          // Render contact shadow before main sprite (if present)
+          // Contact shadows are small concentrated shadows at the contact point
+          if let Some(contact) = &renderable.contact_shadow {
+            let contact_alpha = contact.intensity * alpha;
+
+            // Skip if shadow is too small or transparent
+            if contact.radius >= 1.0 && contact_alpha > 0.01 {
+              // Contact shadow is positioned at the base of the sprite
+              // Using a squashed ellipse (width = radius, height = radius/2)
+              let contact_radius_x = contact.radius;
+              let contact_radius_y = contact.radius * 0.4; // More squashed than blob shadows
+
+              let contact_x = x - contact_radius_x;
+              let contact_y = y + contact.offset_y - contact_radius_y;
+
+              let (contact_screen_x, contact_screen_y) = self.camera.world_to_screen(contact_x, contact_y);
+
+              // Create ellipse sprite for the contact shadow
+              let contact_w = (contact_radius_x * 2.0) as u32;
+              let contact_h = (contact_radius_y * 2.0) as u32;
+              let contact_sprite = Sprite::solid_ellipse(
+                contact_w.max(2),
+                contact_h.max(2),
+                contact.color.r,
+                contact.color.g,
+                contact.color.b,
+                255,
+              );
+
+              // Draw with camera zoom
+              contact_sprite.draw_rotated_tinted(
+                frame,
+                frame_width,
+                frame_height,
+                contact_screen_x as i32,
+                contact_screen_y as i32,
+                self.camera.zoom,
+                self.camera.zoom,
+                0.0, // No rotation for contact shadows
+                false,
+                false,
+                contact_alpha,
+                Color::WHITE,
+              );
+            }
+          }
+
           // Check if sprite has a shader effect to apply
           if let Some(SpriteShader::BuiltIn(effect)) = &renderable.shader {
             // Apply CPU-based shader effect

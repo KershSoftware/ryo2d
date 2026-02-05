@@ -48,9 +48,9 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   println!();
 
   // Prompt to install skills
-  if super::install_skills::prompt_install_skills()? {
+  if let Some(platform) = super::install_skills::prompt_install_skills()? {
     println!();
-    super::install_skills::install_skills_to_dir(project_dir, false)?;
+    super::install_skills::install_skills_to_dir(project_dir, platform, false)?;
   }
 
   println!();

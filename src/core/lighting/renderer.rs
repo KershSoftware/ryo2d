@@ -458,6 +458,18 @@ impl LightingRenderer {
               shader_location: 2,
               format: wgpu::VertexFormat::Float32,
             },
+            // softness: f32
+            wgpu::VertexAttribute {
+              offset: 20,
+              shader_location: 3,
+              format: wgpu::VertexFormat::Float32,
+            },
+            // shadow_color: u32 (packed RGBA)
+            wgpu::VertexAttribute {
+              offset: 24,
+              shader_location: 4,
+              format: wgpu::VertexFormat::Uint32,
+            },
           ],
         }],
         compilation_options: Default::default(),

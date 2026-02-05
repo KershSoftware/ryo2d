@@ -105,6 +105,58 @@ impl Sprite {
     }
   }
 
+  /// Create a solid-colored ellipse sprite with anti-aliased edges.
+  ///
+  /// The sprite will be `width x height` pixels, with an ellipse filling it.
+  /// Useful for blob shadows and other oval shapes.
+  ///
+  /// Note: All pixels (including transparent ones) have the same RGB color to prevent
+  /// black fringing during bilinear interpolation in rotated/scaled rendering.
+  pub fn solid_ellipse(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Self {
+    // Initialize all pixels with the target color to prevent fringing
+    let mut data = vec![0u8; (width * height * 4) as usize];
+    for pixel in data.chunks_exact_mut(4) {
+      pixel[0] = r;
+      pixel[1] = g;
+      pixel[2] = b;
+      pixel[3] = 0; // Alpha will be set per-pixel below
+    }
+
+    let radius_x = width as f32 / 2.0;
+    let radius_y = height as f32 / 2.0;
+    let center_x = radius_x;
+    let center_y = radius_y;
+
+    for y in 0..height {
+      for x in 0..width {
+        let dx = (x as f32 + 0.5 - center_x) / radius_x;
+        let dy = (y as f32 + 0.5 - center_y) / radius_y;
+        let dist = (dx * dx + dy * dy).sqrt();
+
+        // Anti-aliased edge (dist is normalized, so 1.0 = edge)
+        let edge_width = 1.0 / radius_x.min(radius_y); // Thinner AA for larger ellipses
+        let alpha = if dist <= 1.0 - edge_width {
+          a as f32
+        } else if dist <= 1.0 + edge_width {
+          // Smooth falloff at edge
+          a as f32 * ((1.0 + edge_width - dist) / (2.0 * edge_width))
+        } else {
+          0.0
+        };
+
+        let idx = ((y * width + x) * 4) as usize;
+        data[idx + 3] = alpha as u8;
+      }
+    }
+
+    Sprite {
+      data,
+      width,
+      height,
+      is_opaque: false,
+    }
+  }
+
   /// Load a sprite from an image file (PNG, JPEG, SVG, etc.)
   ///
   /// SVG files are rasterized at their native size. Use `load_svg_scaled`
