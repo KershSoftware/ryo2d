@@ -45,6 +45,13 @@ impl MenuItem {
   }
 }
 
+/// Host mode: LAN (UDP) or Internet (WebRTC)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostMode {
+  Lan,
+  Internet,
+}
+
 /// Fairy light data for menu background
 #[derive(Debug, Clone, Copy)]
 struct MenuFairyLight {
@@ -56,9 +63,13 @@ struct MenuFairyLight {
 pub struct MenuScene {
   room_code_input: TextInputState,
   address_input: TextInputState,
+  signal_url_input: TextInputState,
   error_message: Option<String>,
   last_dt: f32,
   pending_scene: Option<Box<dyn Scene>>,
+
+  // Host mode toggle
+  host_mode: HostMode,
 
   // Navigation
   selected: MenuItem,
@@ -83,12 +94,16 @@ impl MenuScene {
   pub fn new() -> Self {
     let mut address_input = TextInputState::new();
     address_input.set_text(DEFAULT_ADDRESS);
+    let mut signal_url_input = TextInputState::new();
+    signal_url_input.set_text(DEFAULT_SIGNAL_URL);
     Self {
       room_code_input: TextInputState::new(),
       address_input,
+      signal_url_input,
       error_message: None,
       last_dt: 0.016,
       pending_scene: None,
+      host_mode: HostMode::Lan,
       selected: MenuItem::SinglePlayer,
       input_cooldown: 0.0,
       background_sprite: None,
@@ -174,7 +189,18 @@ impl MenuScene {
 
   fn try_create_room(&mut self) {
     let room_code = generate_room_code();
-    match GameScene::new_host(room_code.clone()) {
+    let result = match self.host_mode {
+      HostMode::Lan => GameScene::new_host(room_code),
+      HostMode::Internet => {
+        let signal_url = self.signal_url_input.text().trim().to_string();
+        if signal_url.is_empty() {
+          self.error_message = Some("Enter signal server URL".to_string());
+          return;
+        }
+        GameScene::new_host_webrtc(room_code, &signal_url)
+      }
+    };
+    match result {
       Ok(scene) => {
         self.pending_scene = Some(Box::new(scene));
       }
@@ -339,7 +365,9 @@ impl Scene for MenuScene {
     }
 
     // Check if text inputs are focused
-    let text_input_focused = self.room_code_input.is_focused() || self.address_input.is_focused();
+    let text_input_focused = self.room_code_input.is_focused()
+      || self.address_input.is_focused()
+      || self.signal_url_input.is_focused();
 
     // Navigation (only when text inputs not focused)
     if !text_input_focused && self.input_cooldown <= 0.0 {
@@ -355,10 +383,27 @@ impl Scene for MenuScene {
         || ctx.input.gamepad_button_pressed(GamepadButton::DPadDown)
         || ctx.input.left_stick_y() < -0.5;
 
+      // Left/right navigation (toggle host mode when on CreateRoom)
+      let nav_left = ctx.input.key_pressed(KeyCode::ArrowLeft)
+        || ctx.input.key_pressed(KeyCode::KeyA)
+        || ctx.input.gamepad_button_pressed(GamepadButton::DPadLeft)
+        || ctx.input.left_stick_x() < -0.5;
+
+      let nav_right = ctx.input.key_pressed(KeyCode::ArrowRight)
+        || ctx.input.key_pressed(KeyCode::KeyD)
+        || ctx.input.gamepad_button_pressed(GamepadButton::DPadRight)
+        || ctx.input.left_stick_x() > 0.5;
+
       if nav_up {
         self.navigate_up();
       } else if nav_down {
         self.navigate_down();
+      } else if self.selected == MenuItem::CreateRoom && (nav_left || nav_right) {
+        self.host_mode = match self.host_mode {
+          HostMode::Lan => HostMode::Internet,
+          HostMode::Internet => HostMode::Lan,
+        };
+        self.input_cooldown = 0.15;
       }
     }
 
@@ -435,8 +480,93 @@ impl Scene for MenuScene {
       self.try_single_player();
     }
 
-    // Create Room button
-    let create_rect = Rect::new(button_x, center_y - 30.0, button_width, button_height);
+    // Host mode toggle (LAN / Internet) - above Create Room
+    let toggle_y = center_y - 18.0;
+    let toggle_width = 90.0;
+    let toggle_height = 24.0;
+    let toggle_gap = 24.0;
+    let total_toggle_width = toggle_width * 2.0 + toggle_gap;
+    let toggle_x = center_x - total_toggle_width / 2.0;
+
+    let lan_rect = Rect::new(toggle_x, toggle_y, toggle_width, toggle_height);
+    let internet_rect = Rect::new(
+      toggle_x + toggle_width + toggle_gap,
+      toggle_y,
+      toggle_width,
+      toggle_height,
+    );
+
+    let active_color = highlight_color;
+    let inactive_color = Color::new(60, 60, 70, 255);
+
+    // Draw arrow indicator on the active toggle when CreateRoom is selected
+    let show_toggle_arrow = self.selected == MenuItem::CreateRoom;
+
+    // LAN toggle button
+    if self.host_mode == HostMode::Lan {
+      ui.draw_rect(lan_rect, active_color);
+      if show_toggle_arrow {
+        ui.label(
+          ">",
+          lan_rect.x - 16.0,
+          lan_rect.y + toggle_height / 2.0 - 4.0,
+          highlight_color,
+          None,
+        );
+      }
+    } else {
+      ui.draw_rect(lan_rect, inactive_color);
+    }
+    if ui.button("LAN", lan_rect) {
+      self.host_mode = HostMode::Lan;
+    }
+
+    // Internet toggle button
+    if self.host_mode == HostMode::Internet {
+      ui.draw_rect(internet_rect, active_color);
+      if show_toggle_arrow {
+        ui.label(
+          ">",
+          internet_rect.x - 16.0,
+          internet_rect.y + toggle_height / 2.0 - 4.0,
+          highlight_color,
+          None,
+        );
+      }
+    } else {
+      ui.draw_rect(internet_rect, inactive_color);
+    }
+    if ui.button("Internet", internet_rect) {
+      self.host_mode = HostMode::Internet;
+    }
+
+    // Signal URL input (only visible in Internet mode)
+    let mut extra_offset = 0.0;
+    if self.host_mode == HostMode::Internet {
+      let signal_input_y = center_y + 14.0;
+      let signal_input_width = 240.0;
+      let signal_input_rect = Rect::new(
+        center_x - signal_input_width / 2.0,
+        signal_input_y,
+        signal_input_width,
+        28.0,
+      );
+      ui.text_input(
+        &mut self.signal_url_input,
+        signal_input_rect,
+        "wss://...trycloudflare.com",
+        dt,
+      );
+      extra_offset = 37.0;
+    }
+
+    // Create Room button (below toggle or signal URL input)
+    let create_rect = Rect::new(
+      button_x,
+      center_y + 14.0 + extra_offset,
+      button_width,
+      button_height,
+    );
     let create_selected = self.selected == MenuItem::CreateRoom;
     if create_selected {
       ui.draw_rect(
@@ -456,32 +586,54 @@ impl Scene for MenuScene {
         None,
       );
     }
-    if ui.button("Create Room", create_rect) {
+    let create_label = match self.host_mode {
+      HostMode::Lan => "Create Room (LAN)",
+      HostMode::Internet => "Create Room (Net)",
+    };
+    if ui.button(create_label, create_rect) {
       self.try_create_room();
     }
 
     // Separator
-    ui.draw_text_anchored("- or join -", Anchor::Center, 0.0, 25.0, Color::GRAY);
+    ui.draw_text_anchored(
+      "- or join -",
+      Anchor::Center,
+      0.0,
+      69.0 + extra_offset,
+      Color::GRAY,
+    );
 
     // Join section - Room Code
-    ui.draw_text_anchored("Room Code:", Anchor::Center, -80.0, 55.0, Color::WHITE);
+    ui.draw_text_anchored(
+      "Room Code:",
+      Anchor::Center,
+      -80.0,
+      99.0 + extra_offset,
+      Color::WHITE,
+    );
 
     let code_input_width = 100.0;
     let code_input_rect = Rect::new(
       center_x - 80.0 - code_input_width / 2.0,
-      center_y + 75.0,
+      center_y + 119.0 + extra_offset,
       code_input_width,
       32.0,
     );
     ui.text_input(&mut self.room_code_input, code_input_rect, "XXXXX", dt);
 
     // Join section - Server Address
-    ui.draw_text_anchored("Address:", Anchor::Center, 80.0, 55.0, Color::WHITE);
+    ui.draw_text_anchored(
+      "Address:",
+      Anchor::Center,
+      80.0,
+      99.0 + extra_offset,
+      Color::WHITE,
+    );
 
     let addr_input_width = 160.0;
     let addr_input_rect = Rect::new(
       center_x + 80.0 - addr_input_width / 2.0,
-      center_y + 75.0,
+      center_y + 119.0 + extra_offset,
       addr_input_width,
       32.0,
     );
@@ -492,8 +644,22 @@ impl Scene for MenuScene {
       dt,
     );
 
+    // Hint for join: address format
+    ui.draw_text_anchored(
+      "Use ws:// or wss:// URL for internet, IP for LAN",
+      Anchor::Center,
+      0.0,
+      162.0 + extra_offset,
+      Color::new(100, 180, 255, 150),
+    );
+
     // Join button
-    let join_rect = Rect::new(button_x, center_y + 125.0, button_width, button_height);
+    let join_rect = Rect::new(
+      button_x,
+      center_y + 180.0 + extra_offset,
+      button_width,
+      button_height,
+    );
     let join_selected = self.selected == MenuItem::JoinRoom;
     if join_selected {
       ui.draw_rect(
@@ -519,7 +685,13 @@ impl Scene for MenuScene {
 
     // Error message
     if let Some(ref err) = self.error_message {
-      ui.draw_text_anchored(err, Anchor::Center, 0.0, 190.0, Color::RED);
+      ui.draw_text_anchored(
+        err,
+        Anchor::Center,
+        0.0,
+        234.0 + extra_offset,
+        Color::RED,
+      );
     }
 
     // Controls hint

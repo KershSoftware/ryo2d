@@ -129,6 +129,9 @@ pub struct GameScene {
   // Host IP (for display)
   lan_ip: Option<String>,
 
+  // Signal server URL (for WebRTC/Internet play display)
+  signal_url: Option<String>,
+
   // Entity tracking
   players: HashMap<ClientId, Entity>,
   player_lights: HashMap<ClientId, Entity>,
@@ -222,6 +225,7 @@ impl GameScene {
       server: None,
       client: None,
       lan_ip: None,
+      signal_url: None,
       players: HashMap::new(),
       player_lights: HashMap::new(),
       local_client_id: Some(ClientId::from(0u64)),
@@ -288,6 +292,7 @@ impl GameScene {
       server: Some(server),
       client: None,
       lan_ip,
+      signal_url: None,
       players: HashMap::new(),
       player_lights: HashMap::new(),
       local_client_id: Some(host_id),
@@ -335,23 +340,102 @@ impl GameScene {
     })
   }
 
-  /// Create client game
+  /// Create host (server) game over WebRTC
+  pub fn new_host_webrtc(room_code: String, signal_url: &str) -> Result<Self, NetworkError> {
+    let server = ListenServer::new(NetworkServerConfig {
+      max_clients: 2,
+      protocol_id: PROTOCOL_ID,
+      transport: TransportConfig::WebRtc(WebRtcConfig::new(signal_url, &room_code)),
+      ..Default::default()
+    })?;
+
+    let host_id = server.host_id();
+    let seed: u64 = rand::random();
+
+    Ok(Self {
+      mode: GameMode::Host,
+      room_code,
+      server: Some(server),
+      client: None,
+      lan_ip: None,
+      signal_url: Some(signal_url.to_string()),
+      players: HashMap::new(),
+      player_lights: HashMap::new(),
+      local_client_id: Some(host_id),
+      platforms: Vec::new(),
+      platform_lamps: Vec::new(),
+      lamp_dust_emitters: Vec::new(),
+      background_tiles: Vec::new(),
+      bg_tile_height: 0.0,
+      rain_emitter: None,
+      rain_sprite: None,
+      dust_sprite: None,
+      particle_system: ParticleSystem::new(),
+      sounds_loaded: false,
+      previous_leap_states: HashMap::new(),
+      remote_best_heights: HashMap::new(),
+      seed,
+      generator: PlatformGenerator::new(seed, 0.0),
+      highest_player_y: PLAYER_SPAWN_Y,
+      camera_y: PLAYER_SPAWN_Y - CAMERA_LOOK_AHEAD,
+      camera_fast_lerp: false,
+      broadcast_timer: 0.0,
+      elapsed_time: 0.0,
+      respawn_timer: None,
+      checkpoint_x: 0.0,
+      checkpoint_y: PLAYER_SPAWN_Y,
+      checkpoint_platform: None,
+      last_checkpoint_height: 0.0,
+      current_height: 0.0,
+      max_height: 0.0,
+      connected: true,
+      received_seed: true,
+      session_id: 0,
+      client_sessions: HashMap::new(),
+      client_to_session: HashMap::new(),
+      notifications: Vec::new(),
+      show_quit_dialog: false,
+      quit_dialog_selection: 1,
+      quit_input_cooldown: 0.0,
+      pending_quit: false,
+      input_delay: 0.2,
+      charge_indicator: ChargeIndicatorState::default(),
+      prediction: PredictionHelper::new(Some(host_id)),
+      screen_width: 0.0,
+      screen_height: 0.0,
+    })
+  }
+
+  /// Create client game (auto-detects WebRTC vs UDP from address format)
   pub fn new_client(room_code: &str, address: &str) -> Result<Self, NetworkError> {
-    let server_addr: SocketAddr = if address.contains(':') {
-      address
-        .parse()
-        .map_err(|_| NetworkError::ConnectionError(format!("Invalid address: {}", address)))?
+    let is_webrtc = address.starts_with("ws://") || address.starts_with("wss://");
+
+    let client = if is_webrtc {
+      NetworkClient::connect(NetworkClientConfig::webrtc(WebRtcConfig::new(
+        address, room_code,
+      )))?
     } else {
-      format!("{}:{}", address, DEFAULT_PORT)
-        .parse()
-        .map_err(|_| NetworkError::ConnectionError(format!("Invalid address: {}", address)))?
+      let server_addr: SocketAddr = if address.contains(':') {
+        address
+          .parse()
+          .map_err(|_| NetworkError::ConnectionError(format!("Invalid address: {}", address)))?
+      } else {
+        format!("{}:{}", address, DEFAULT_PORT)
+          .parse()
+          .map_err(|_| NetworkError::ConnectionError(format!("Invalid address: {}", address)))?
+      };
+      NetworkClient::connect(NetworkClientConfig {
+        server_addr: Some(server_addr),
+        protocol_id: PROTOCOL_ID,
+        transport: TransportConfig::Udp,
+      })?
     };
 
-    let client = NetworkClient::connect(NetworkClientConfig {
-      server_addr: Some(server_addr),
-      protocol_id: PROTOCOL_ID,
-      transport: TransportConfig::Udp,
-    })?;
+    let signal_url = if is_webrtc {
+      Some(address.to_string())
+    } else {
+      None
+    };
 
     Ok(Self {
       mode: GameMode::Client,
@@ -359,6 +443,7 @@ impl GameScene {
       server: None,
       client: Some(client),
       lan_ip: None,
+      signal_url,
       players: HashMap::new(),
       player_lights: HashMap::new(),
       local_client_id: None,
@@ -2506,17 +2591,26 @@ impl Scene for GameScene {
         Color::new(255, 255, 255, 100),
       );
 
-      if self.mode == GameMode::Host
-        && let Some(ref lan) = self.lan_ip
-      {
-        let lan_text = format!("{}:{}", lan, DEFAULT_PORT);
-        let (tw, _) = ui.text_size(&lan_text);
-        ui.draw_text(
-          &lan_text,
-          sw as f32 - tw as f32 - 20.0,
-          40.0,
-          Color::new(100, 200, 100, 150),
-        );
+      if self.mode == GameMode::Host {
+        if let Some(ref signal) = self.signal_url {
+          let signal_text = format!("Signal: {}", signal);
+          let (tw, _) = ui.text_size(&signal_text);
+          ui.draw_text(
+            &signal_text,
+            sw as f32 - tw as f32 - 20.0,
+            40.0,
+            Color::new(100, 180, 255, 150),
+          );
+        } else if let Some(ref lan) = self.lan_ip {
+          let lan_text = format!("{}:{}", lan, DEFAULT_PORT);
+          let (tw, _) = ui.text_size(&lan_text);
+          ui.draw_text(
+            &lan_text,
+            sw as f32 - tw as f32 - 20.0,
+            40.0,
+            Color::new(100, 200, 100, 150),
+          );
+        }
       }
     }
 

@@ -62,6 +62,8 @@ pub const PROTOCOL_ID: u64 = 0x4C454150_47414D45; // "LEAPGAME"
 pub const ROOM_CODE_LENGTH: usize = 5;
 pub const DEFAULT_ADDRESS: &str = "127.0.0.1:7778";
 pub const POSITION_BROADCAST_RATE: f32 = 1.0 / 20.0; // 20 Hz
+pub const DEFAULT_SIGNAL_PORT: u16 = 3536;
+pub const DEFAULT_SIGNAL_URL: &str = "ws://127.0.0.1:3536";
 
 // Colors (RGB)
 pub const PLAYER_A_COLOR: (u8, u8, u8) = (66, 200, 135); // Teal
