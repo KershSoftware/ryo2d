@@ -47,7 +47,7 @@ fn main() {
     .fps(144)
     .physics_hz(120)
     .ui_scale(None) // Auto-detect from DPI for HiDPI display support
-    .with_system_state_overrides(SystemFieldFilter::all()); // Apply overrides from system.json
+    .with_user_preferences(UserPreferenceFilter::all()); // Apply overrides from system.json
 
   // Start with debug scene or menu based on env config
   let engine = if start_debug {

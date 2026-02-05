@@ -131,6 +131,33 @@ impl Default for EngineConfig {
   }
 }
 
+/// Determines whether manual frame limiting should be applied.
+///
+/// Frame limiting is applied when:
+/// - Presentation doesn't already block (i.e., not using Fifo/VSync mode)
+/// - VSync is not explicitly disabled (vsync=false means uncapped FPS)
+///
+/// # Arguments
+/// * `presentation_blocks` - Whether the GPU presentation blocks until vsync (Fifo mode)
+/// * `vsync` - VSync preference: None (default), Some(true) (on), Some(false) (off/uncapped)
+///
+/// # Returns
+/// `true` if manual frame limiting should be applied, `false` otherwise
+fn should_apply_frame_limiting(presentation_blocks: bool, vsync: Option<bool>) -> bool {
+  // Don't limit if presentation already blocks (Fifo mode handles timing)
+  if presentation_blocks {
+    return false;
+  }
+
+  // Don't limit if vsync is explicitly disabled (user wants uncapped FPS)
+  if vsync == Some(false) {
+    return false;
+  }
+
+  // Apply frame limiting for all other cases
+  true
+}
+
 /// The main engine struct
 pub struct Engine {
   config: EngineConfig,
@@ -2925,17 +2952,18 @@ impl ApplicationHandler for Engine {
             );
           }
 
-          // Frame limiting: only apply manual limiting if presentation doesn't already block.
-          // When vsync uses Fifo mode, the GPU blocks until vsync - adding sleep would
-          // cause double-waiting and prevent hitting target framerate.
-          // For Mailbox/Immediate modes, we use hybrid sleep/spin for precise timing.
+          // Frame limiting: only apply manual limiting if presentation doesn't already block
+          // AND vsync is not explicitly disabled.
+          // - Fifo mode: GPU blocks until vsync, no manual limiting needed
+          // - Mailbox/Immediate with vsync on or unset: manual limiting to target_fps
+          // - Immediate with vsync=false: uncapped FPS (no limiting)
           let presentation_blocks = self
             .renderer
             .as_ref()
             .map(|r| r.presentation_blocks())
             .unwrap_or(false);
 
-          if !presentation_blocks {
+          if should_apply_frame_limiting(presentation_blocks, self.vsync) {
             time.wait_for_target_frame_time();
           }
         }
@@ -3439,7 +3467,8 @@ impl EngineBuilder {
         self.config.debug.show_fps = show_fps;
       }
       // Store vsync preference to use when creating renderer
-      self.vsync = system_state.vsync;
+      // Falls back to display.vsync when root vsync is None
+      self.vsync = system_state.vsync.or(Some(system_state.display.vsync));
       // Store audio volumes to apply after AudioManager creation
       self.master_volume = system_state.master_volume;
       self.music_volume = system_state.music_volume;
@@ -3800,5 +3829,41 @@ mod tests {
       OverlayMode::from_flags(false, true, true),
       OverlayMode::FullStats
     );
+  }
+
+  // ===========================================================================
+  // Frame Limiting / VSync Tests
+  // ===========================================================================
+
+  #[test]
+  fn frame_limiting_applied_when_vsync_not_set() {
+    // Default behavior: limit to target_fps when vsync is not configured
+    assert!(should_apply_frame_limiting(false, None));
+  }
+
+  #[test]
+  fn frame_limiting_applied_when_vsync_on() {
+    // VSync on with Mailbox mode: still apply frame limiting
+    assert!(should_apply_frame_limiting(false, Some(true)));
+  }
+
+  #[test]
+  fn frame_limiting_skipped_when_vsync_off() {
+    // VSync explicitly off: uncapped FPS, no frame limiting
+    assert!(!should_apply_frame_limiting(false, Some(false)));
+  }
+
+  #[test]
+  fn frame_limiting_skipped_when_presentation_blocks() {
+    // Fifo mode blocks on presentation: no manual limiting needed
+    assert!(!should_apply_frame_limiting(true, None));
+    assert!(!should_apply_frame_limiting(true, Some(true)));
+    assert!(!should_apply_frame_limiting(true, Some(false)));
+  }
+
+  #[test]
+  fn engine_builder_vsync_defaults_to_none() {
+    let builder = EngineBuilder::new();
+    assert_eq!(builder.vsync, None);
   }
 }
