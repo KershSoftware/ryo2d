@@ -130,6 +130,8 @@ pub struct InputState {
   ime_enabled: bool,
   /// Whether IME committed text this frame (used to prevent duplicate input from keyboard events)
   ime_committed_this_frame: bool,
+  /// Bytes of text_input that came from handle_text_input (keyboard) this frame
+  keyboard_text_len: usize,
   /// Whether text_input has been consumed this frame (first reader wins)
   text_input_consumed: Cell<bool>,
 
@@ -196,6 +198,7 @@ impl InputState {
     // Clear committed text, but keep preedit (it persists until cleared by IME)
     self.text_input.clear();
     self.ime_committed_this_frame = false;
+    self.keyboard_text_len = 0;
     self.text_input_consumed.set(false);
     // Clear per-frame gamepad state
     self.gamepad_buttons_pressed.clear();
@@ -217,6 +220,16 @@ impl InputState {
   /// Called before render so that `render_ui()` can still see one-shot events.
   pub(crate) fn unsuppress_oneshots(&mut self) {
     self.oneshots_suppressed = false;
+  }
+
+  /// Clean up input state that should not persist across renders.
+  ///
+  /// Called every frame after render_ui completes (unconditionally, unlike
+  /// `begin_frame` which only runs on update frames). Clears `keys_repeated`
+  /// so that held-key actions (backspace, arrow keys) don't fire multiple
+  /// times when render_ui runs on consecutive no-update frames.
+  pub(crate) fn post_render_cleanup(&mut self) {
+    self.keys_repeated.clear();
   }
 
   /// Clear only keyboard one-shot events (pressed/released/repeated).
@@ -563,9 +576,12 @@ impl InputState {
   /// Handle IME commit (finalized text ready to insert)
   pub(crate) fn handle_ime_commit(&mut self, text: String) {
     // On macOS, both KeyboardInput{text} and Ime::Commit fire for the same keypress.
-    // The first IME commit in a frame clears any keyboard-sourced text to prevent duplicates.
-    if !self.ime_committed_this_frame {
-      self.text_input.clear();
+    // Remove only the keyboard-sourced portion (tracked by keyboard_text_len) so we
+    // don't accidentally drop text from a *different* key that arrived in the same frame.
+    if self.keyboard_text_len > 0 {
+      let keep = self.text_input.len().saturating_sub(self.keyboard_text_len);
+      self.text_input.truncate(keep);
+      self.keyboard_text_len = 0;
     }
     self.text_input.push_str(&text);
     self.ime_committed_this_frame = true;
@@ -583,13 +599,10 @@ impl InputState {
     if self.ime_enabled {
       return;
     }
-    // Skip if IME already committed text this frame (macOS sends both keyboard and IME events)
-    if self.ime_committed_this_frame {
-      return;
-    }
     // Only add text if not currently in IME composition mode
     if self.ime_preedit.is_empty() {
       self.text_input.push_str(text);
+      self.keyboard_text_len += text.len();
     }
   }
 

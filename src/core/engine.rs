@@ -3008,6 +3008,11 @@ impl ApplicationHandler for Engine {
           }
         }
 
+        // Clear key repeat state every frame so held-key actions (backspace,
+        // arrows) don't fire multiple times across consecutive no-update frames
+        // when render_ui processes them on each frame.
+        self.input.post_render_cleanup();
+
         // Clear all per-frame input state at the END of the frame, but ONLY if
         // we ran at least one update. This preserves input events for the next
         // frame when the fixed timestep accumulator isn't ready yet.
