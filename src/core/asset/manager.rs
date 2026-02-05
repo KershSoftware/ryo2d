@@ -30,6 +30,7 @@ use crate::core::error::{AssetError, AssetResult};
 use crate::core::graphics::Sprite;
 
 use super::hot_reload::{HotReloadEvent, HotReloadWatcher};
+#[allow(unused_imports)] // engine_info only used in debug builds
 use crate::{engine_error, engine_info, engine_warn};
 
 /// A handle to a loaded sprite asset
