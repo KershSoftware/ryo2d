@@ -3,6 +3,9 @@
 //! Starts a local matchbox signaling server and exposes it via Cloudflare Tunnel
 //! for testing multiplayer with friends.
 
+// Allow collapsible_if because clippy suggests let-chains which require Rust 2024
+#![allow(clippy::collapsible_if)]
+
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -538,7 +541,7 @@ fn is_valid_ipv4(s: &str) -> bool {
     return false;
   }
   parts.iter().all(|part| {
-    part.len() >= 1
+    !part.is_empty()
       && part.len() <= 3
       && part.chars().all(|c| c.is_ascii_digit())
       && part.parse::<u8>().is_ok()

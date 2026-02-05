@@ -308,10 +308,8 @@ mod tests {
     let server_addr: SocketAddr = "127.0.0.1:19997".parse().unwrap();
     let transport = UdpClientTransport::new(server_addr, 12345).unwrap();
 
-    // Client ID should be generated (non-zero is very likely with random)
-    let client_id = transport.client_id();
-    // Can't guarantee non-zero but very unlikely to be 0
-    assert!(client_id > 0 || client_id == 0); // Always true, just checking it runs
+    // Client ID should be generated - just verify it doesn't panic
+    let _client_id = transport.client_id();
   }
 
   #[test]
