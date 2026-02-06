@@ -183,6 +183,8 @@ impl NetworkAction for RespawnAction {
 pub struct GameInitRpc {
   pub seed: u64,
   pub session_id: u64,
+  /// The server-assigned client ID (WebRTC clients need this to know their identity)
+  pub client_id: u64,
   pub checkpoint_x: Option<f32>,
   pub checkpoint_y: Option<f32>,
   pub checkpoint_height: Option<f32>,

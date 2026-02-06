@@ -1890,10 +1890,11 @@ impl GameScene {
           // Spawn player B
           self.spawn_player(ctx, 1, client_id);
 
-          // Send game init with seed and session
+          // Send game init with seed, session, and server-assigned client ID
           let init_rpc = GameInitRpc {
             seed: self.seed,
             session_id,
+            client_id,
             checkpoint_x: None,
             checkpoint_y: None,
             checkpoint_height: None,
@@ -2002,6 +2003,7 @@ impl GameScene {
         let init_rpc = GameInitRpc {
           seed: self.seed,
           session_id,
+          client_id,
           checkpoint_x: Some(session_data.checkpoint_x),
           checkpoint_y: Some(session_data.checkpoint_y),
           checkpoint_height: Some(session_data.checkpoint_height),
@@ -2138,6 +2140,7 @@ impl GameScene {
             received_init = Some(GameInitRpc {
               seed: rpc.payload.seed,
               session_id: 0,
+              client_id: 0,
               checkpoint_x: None,
               checkpoint_y: None,
               checkpoint_height: None,
@@ -2156,6 +2159,14 @@ impl GameScene {
 
     // Process game init if received
     if let Some(init) = received_init {
+      // Use the server-assigned client ID so we match position updates
+      if init.client_id != 0 {
+        self.local_client_id = Some(ClientId::from(init.client_id));
+        self
+          .prediction
+          .set_local_client_id(Some(ClientId::from(init.client_id)));
+      }
+
       self.seed = init.seed;
       self.generator.reset_with_seed(self.seed);
       self.received_seed = true;
