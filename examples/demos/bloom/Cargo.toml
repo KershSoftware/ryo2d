@@ -1,0 +1,12 @@
+[package]
+name = "bloom-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Bloom post-processing effect demo for Ryo2D engine"
+
+[[bin]]
+name = "bloom-demo"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }

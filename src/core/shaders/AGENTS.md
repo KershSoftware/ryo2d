@@ -69,6 +69,9 @@ Enum of all supported effects with their parameters:
 - `ScreenFlash { color, intensity }` - One-shot damage/power-up flash
 - `Crt { scanline_intensity, curvature, rgb_offset }` - Retro CRT look
 - `ChromaticAberration { offset, radial }` - RGB color fringing
+- `GodRays { intensity, samples, decay, density, weight, threshold, light_positions }` - Radial light shafts
+- `AmbientOcclusion { intensity, radius, bias }` - Corner/crevice darkening
+- `Bloom { threshold, intensity, radius, blur_passes }` - Bright area glow (multi-pass)
 
 ### `EffectParams` (effects.rs)
 
@@ -136,6 +139,30 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 | ScreenFlash | flash color | x = intensity | x=time, y=width, z=height |
 | CRT | (unused) | x=scanlines, y=curvature, z=rgb_offset | x=time, y=width, z=height |
 | ChromaticAberration | (unused) | x=offset, y=radial(0/1) | x=time, y=width, z=height |
+| GodRays | (unused) | x=intensity, y=samples, z=decay, w=density | x=time, y=width, z=height |
+| AmbientOcclusion | (unused) | x=intensity, y=radius, z=bias | x=time, y=width, z=height |
+| Bloom | (unused) | x=threshold, y=intensity, z=radius, w=blur_passes | x=time, y=width, z=height |
+
+**Note:** GodRays uses a larger 128-byte `GodRaysParams` uniform struct (not `EffectParams`). Bloom is multi-pass — see below.
+
+### Multi-Pass Effects
+
+**Bloom** is the first multi-pass effect. Unlike single-pass effects that run one shader per ping-pong slot, bloom runs three internal passes using a dedicated `bloom_texture` as scratch space:
+
+```
+Input in buffer X (scene)
+1. Extract bright pixels:  X -> bloom_texture
+2. For each blur_pass:
+   a. Blur H:  bloom_texture -> Y (output buffer, used as temp)
+   b. Blur V:  Y -> bloom_texture
+3. Composite:  X (scene) + bloom_texture (blurred bloom) -> Y
+Output in buffer Y
+```
+
+Bloom consumes one slot in the A/B ping-pong chain. Its three pipelines use different bind group layouts:
+- **Extract**: standard layout (1 texture + sampler + uniform)
+- **Blur**: standard layout (direction controlled by `params.w`: 0.0=H, 1.0=V)
+- **Composite**: custom layout (2 textures + sampler + uniform) via `bloom_composite_bind_group_layout`
 
 ## Adding a New Effect
 

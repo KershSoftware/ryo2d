@@ -35,7 +35,7 @@ Built-in Passes (in dependency order):
 │ trail      │ Motion trail rendering                        │
 │ lighting   │ 2D lighting with shadows                      │
 │ ui         │ User interface overlay (render_ui)            │
-│ effects    │ Post-processing (CRT, vignette, etc.)         │
+│ effects    │ Post-processing (bloom, CRT, vignette, etc.)  │
 │ present    │ Final output to swapchain                     │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -156,9 +156,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 ## Post-Processing
 
+9 built-in effects applied via `ctx.effects`:
+
 ```rust
-ctx.effects.set_effect(PostProcessEffect::ScreenShake { intensity: 0.5 });
-ctx.effects.fade_to_black(1.0);
+ctx.effects.set_fade(0.5);
+ctx.effects.set_vignette(0.3);
+ctx.effects.enable_crt();
+ctx.effects.set_chromatic_aberration(0.005);
+ctx.effects.set_god_rays(0.8, vec![(0.5, 0.3)]);
+ctx.effects.set_ambient_occlusion(0.3, 16.0);
+ctx.effects.set_bloom(1.0);  // multi-pass: extract -> blur -> composite
+ctx.effects.flash(Color::RED, Duration::from_millis(100));
+ctx.effects.set_sepia(0.5);
 ```
 
 ## Synchronization

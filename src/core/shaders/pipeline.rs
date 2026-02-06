@@ -35,6 +35,15 @@ pub struct PostProcessPipeline {
   god_rays_pipeline: Option<EffectPipeline>,
   ambient_occlusion_pipeline: Option<EffectPipeline>,
 
+  // Bloom pipelines (multi-pass: extract -> blur -> composite)
+  bloom_extract_pipeline: Option<EffectPipeline>,
+  bloom_blur_pipeline: Option<EffectPipeline>,
+  bloom_composite_pipeline: Option<EffectPipeline>,
+
+  // Bloom scratch texture (holds extracted/blurred bloom data)
+  bloom_texture: wgpu::Texture,
+  bloom_view: wgpu::TextureView,
+
   // Uniform buffer for effect parameters
   uniform_buffer: wgpu::Buffer,
 
@@ -46,6 +55,9 @@ pub struct PostProcessPipeline {
 
   // Bind group layout for god rays (larger uniform)
   god_rays_bind_group_layout: wgpu::BindGroupLayout,
+
+  // Bind group layout for bloom composite (2 textures + sampler + uniform)
+  bloom_composite_bind_group_layout: wgpu::BindGroupLayout,
 
   // Dimensions
   width: u32,
@@ -198,6 +210,71 @@ impl PostProcessPipeline {
       usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
+    // Create bloom scratch texture
+    let bloom_texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Bloom Scratch Texture"),
+      size: wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format,
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+      view_formats: &[],
+    });
+    let bloom_view = bloom_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Bloom composite bind group layout: 2 textures + sampler + uniform
+    let bloom_composite_bind_group_layout =
+      device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Bloom Composite Bind Group Layout"),
+        entries: &[
+          // Scene texture (binding 0)
+          wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+              multisampled: false,
+              view_dimension: wgpu::TextureViewDimension::D2,
+              sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            },
+            count: None,
+          },
+          // Bloom texture (binding 1)
+          wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+              multisampled: false,
+              view_dimension: wgpu::TextureViewDimension::D2,
+              sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            },
+            count: None,
+          },
+          // Sampler (binding 2)
+          wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+          },
+          // Uniform buffer (binding 3)
+          wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+              ty: wgpu::BufferBindingType::Uniform,
+              has_dynamic_offset: false,
+              min_binding_size: None,
+            },
+            count: None,
+          },
+        ],
+      });
+
     Self {
       texture_a,
       texture_b,
@@ -212,10 +289,16 @@ impl PostProcessPipeline {
       chromatic_aberration_pipeline: None,
       god_rays_pipeline: None,
       ambient_occlusion_pipeline: None,
+      bloom_extract_pipeline: None,
+      bloom_blur_pipeline: None,
+      bloom_composite_pipeline: None,
+      bloom_texture,
+      bloom_view,
       uniform_buffer,
       god_rays_uniform_buffer,
       bind_group_layout,
       god_rays_bind_group_layout,
+      bloom_composite_bind_group_layout,
       width,
       height,
       format,
@@ -263,6 +346,25 @@ impl PostProcessPipeline {
     self.view_b = self
       .texture_b
       .create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Recreate bloom scratch texture
+    self.bloom_texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Bloom Scratch Texture"),
+      size: wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: self.format,
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+      view_formats: &[],
+    });
+    self.bloom_view = self
+      .bloom_texture
+      .create_view(&wgpu::TextureViewDescriptor::default());
   }
 
   /// Apply a chain of effects to the source in texture A.
@@ -288,6 +390,12 @@ impl PostProcessPipeline {
     let mut use_a_as_input = true;
 
     for (effect, time) in effects {
+      // Bloom is a multi-pass effect — handle it separately
+      if matches!(effect, PostProcessEffect::Bloom { .. }) {
+        use_a_as_input = self.apply_bloom_effect(device, queue, encoder, effect, *time, use_a_as_input);
+        continue;
+      }
+
       // Get the pipeline (guaranteed to exist after ensure_pipeline_exists)
       let pipeline = self.get_pipeline(effect);
 
@@ -458,6 +566,25 @@ impl PostProcessPipeline {
           ));
         }
       }
+      PostProcessEffect::Bloom { .. } => {
+        if self.bloom_extract_pipeline.is_none() {
+          self.bloom_extract_pipeline = Some(self.create_effect_pipeline(
+            device,
+            "Bloom Extract",
+            post_process_shaders::BLOOM_EXTRACT,
+          ));
+        }
+        if self.bloom_blur_pipeline.is_none() {
+          self.bloom_blur_pipeline = Some(self.create_effect_pipeline(
+            device,
+            "Bloom Blur",
+            post_process_shaders::BLOOM_BLUR,
+          ));
+        }
+        if self.bloom_composite_pipeline.is_none() {
+          self.bloom_composite_pipeline = Some(self.create_bloom_composite_pipeline(device));
+        }
+      }
     }
   }
 
@@ -481,6 +608,10 @@ impl PostProcessPipeline {
       PostProcessEffect::GodRays { .. } => &self.god_rays_pipeline.as_ref().unwrap().pipeline,
       PostProcessEffect::AmbientOcclusion { .. } => {
         &self.ambient_occlusion_pipeline.as_ref().unwrap().pipeline
+      }
+      // Bloom uses multi-pass rendering and is handled by apply_bloom_effect()
+      PostProcessEffect::Bloom { .. } => {
+        unreachable!("Bloom uses apply_bloom_effect(), not get_pipeline()")
       }
     }
   }
@@ -559,6 +690,306 @@ impl PostProcessPipeline {
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
       label: Some("God Rays Pipeline"),
+      layout: Some(&pipeline_layout),
+      vertex: wgpu::VertexState {
+        module: &shader,
+        entry_point: "vs_main",
+        buffers: &[],
+        compilation_options: Default::default(),
+      },
+      fragment: Some(wgpu::FragmentState {
+        module: &shader,
+        entry_point: "fs_main",
+        targets: &[Some(wgpu::ColorTargetState {
+          format: self.format,
+          blend: Some(wgpu::BlendState::REPLACE),
+          write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+      }),
+      primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        strip_index_format: None,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: None,
+        polygon_mode: wgpu::PolygonMode::Fill,
+        unclipped_depth: false,
+        conservative: false,
+      },
+      depth_stencil: None,
+      multisample: wgpu::MultisampleState {
+        count: 1,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+      },
+      multiview: None,
+      cache: None,
+    });
+
+    EffectPipeline { pipeline }
+  }
+
+  /// Apply the multi-pass bloom effect.
+  ///
+  /// Flow: extract bright pixels -> blur H/V loop -> composite with scene.
+  /// Returns the new `use_a_as_input` value for the caller's ping-pong state.
+  fn apply_bloom_effect(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    effect: &PostProcessEffect,
+    time: f32,
+    use_a_as_input: bool,
+  ) -> bool {
+    let PostProcessEffect::Bloom {
+      blur_passes,
+      threshold,
+      intensity,
+      radius,
+      ..
+    } = effect
+    else {
+      return use_a_as_input;
+    };
+
+    let extract_pipeline = &self.bloom_extract_pipeline.as_ref().unwrap().pipeline;
+    let blur_pipeline = &self.bloom_blur_pipeline.as_ref().unwrap().pipeline;
+    let composite_pipeline = &self.bloom_composite_pipeline.as_ref().unwrap().pipeline;
+
+    // Input buffer = scene, output buffer = composite destination
+    let (scene_view, output_view) = if use_a_as_input {
+      (&self.view_a, &self.view_b)
+    } else {
+      (&self.view_b, &self.view_a)
+    };
+
+    // --- Pass 1: Extract bright pixels (scene -> bloom_texture) ---
+    let extract_params = EffectParams {
+      color: [0.0, 0.0, 0.0, 1.0],
+      params: [*threshold, *intensity, *radius, *blur_passes as f32],
+      time_resolution: [time, self.width as f32, self.height as f32, 0.0],
+      _padding: [0.0; 4],
+    };
+    queue.write_buffer(
+      &self.uniform_buffer,
+      0,
+      bytemuck::cast_slice(&[extract_params]),
+    );
+
+    let extract_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("Bloom Extract Bind Group"),
+      layout: &self.bind_group_layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: wgpu::BindingResource::TextureView(scene_view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: wgpu::BindingResource::Sampler(&self.sampler),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: self.uniform_buffer.as_entire_binding(),
+        },
+      ],
+    });
+
+    {
+      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Bloom Extract Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &self.bloom_view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+      });
+      render_pass.set_pipeline(extract_pipeline);
+      render_pass.set_bind_group(0, &extract_bind_group, &[]);
+      render_pass.draw(0..6, 0..1);
+    }
+
+    // --- Pass 2: Blur loop (bloom_texture <-> output_view as temp) ---
+    for _ in 0..*blur_passes {
+      // Horizontal blur: bloom_texture -> output_view (used as temp)
+      let h_params = EffectParams {
+        color: [0.0, 0.0, 0.0, 1.0],
+        params: [*threshold, *intensity, *radius, 0.0], // w=0.0 = horizontal
+        time_resolution: [time, self.width as f32, self.height as f32, 0.0],
+        _padding: [0.0; 4],
+      };
+      queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[h_params]));
+
+      let h_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Bloom Blur H Bind Group"),
+        layout: &self.bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&self.bloom_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&self.sampler),
+          },
+          wgpu::BindGroupEntry {
+            binding: 2,
+            resource: self.uniform_buffer.as_entire_binding(),
+          },
+        ],
+      });
+
+      {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+          label: Some("Bloom Blur H Pass"),
+          color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: output_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+              load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+              store: wgpu::StoreOp::Store,
+            },
+          })],
+          depth_stencil_attachment: None,
+          occlusion_query_set: None,
+          timestamp_writes: None,
+        });
+        render_pass.set_pipeline(blur_pipeline);
+        render_pass.set_bind_group(0, &h_bind_group, &[]);
+        render_pass.draw(0..6, 0..1);
+      }
+
+      // Vertical blur: output_view (temp) -> bloom_texture
+      let v_params = EffectParams {
+        color: [0.0, 0.0, 0.0, 1.0],
+        params: [*threshold, *intensity, *radius, 1.0], // w=1.0 = vertical
+        time_resolution: [time, self.width as f32, self.height as f32, 0.0],
+        _padding: [0.0; 4],
+      };
+      queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[v_params]));
+
+      let v_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Bloom Blur V Bind Group"),
+        layout: &self.bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(output_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&self.sampler),
+          },
+          wgpu::BindGroupEntry {
+            binding: 2,
+            resource: self.uniform_buffer.as_entire_binding(),
+          },
+        ],
+      });
+
+      {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+          label: Some("Bloom Blur V Pass"),
+          color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &self.bloom_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+              load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+              store: wgpu::StoreOp::Store,
+            },
+          })],
+          depth_stencil_attachment: None,
+          occlusion_query_set: None,
+          timestamp_writes: None,
+        });
+        render_pass.set_pipeline(blur_pipeline);
+        render_pass.set_bind_group(0, &v_bind_group, &[]);
+        render_pass.draw(0..6, 0..1);
+      }
+    }
+
+    // --- Pass 3: Composite (scene + bloom_texture -> output_view) ---
+    let composite_params = EffectParams {
+      color: [0.0, 0.0, 0.0, 1.0],
+      params: [*threshold, *intensity, *radius, *blur_passes as f32],
+      time_resolution: [time, self.width as f32, self.height as f32, 0.0],
+      _padding: [0.0; 4],
+    };
+    queue.write_buffer(
+      &self.uniform_buffer,
+      0,
+      bytemuck::cast_slice(&[composite_params]),
+    );
+
+    let composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("Bloom Composite Bind Group"),
+      layout: &self.bloom_composite_bind_group_layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: wgpu::BindingResource::TextureView(scene_view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: wgpu::BindingResource::TextureView(&self.bloom_view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: wgpu::BindingResource::Sampler(&self.sampler),
+        },
+        wgpu::BindGroupEntry {
+          binding: 3,
+          resource: self.uniform_buffer.as_entire_binding(),
+        },
+      ],
+    });
+
+    {
+      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Bloom Composite Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: output_view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+      });
+      render_pass.set_pipeline(composite_pipeline);
+      render_pass.set_bind_group(0, &composite_bind_group, &[]);
+      render_pass.draw(0..6, 0..1);
+    }
+
+    // Bloom consumed one slot: input X -> output Y, flip the ping-pong
+    !use_a_as_input
+  }
+
+  /// Create the bloom composite pipeline (uses custom 2-texture bind group layout)
+  fn create_bloom_composite_pipeline(&self, device: &wgpu::Device) -> EffectPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+      label: Some("Bloom Composite Shader"),
+      source: wgpu::ShaderSource::Wgsl(post_process_shaders::BLOOM_COMPOSITE.into()),
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: Some("Bloom Composite Pipeline Layout"),
+      bind_group_layouts: &[&self.bloom_composite_bind_group_layout],
+      push_constant_ranges: &[],
+    });
+
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+      label: Some("Bloom Composite Pipeline"),
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,

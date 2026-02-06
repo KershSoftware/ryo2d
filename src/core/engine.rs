@@ -132,8 +132,8 @@ impl Default for EngineConfig {
       max_height: None,
       icon_path: None,
       ui_scale: None, // Auto-detect from DPI
-      target_background_fps: 30,
-      background_rendering: false,
+      target_background_fps: 0,
+      background_rendering: true,
     }
   }
 }
@@ -810,9 +810,8 @@ impl Engine {
 
       // Cap to target_background_fps when completely unfocused (0 = uncapped)
       if self.config.target_background_fps > 0 {
-        let target_frame_time = std::time::Duration::from_secs_f64(
-          1.0 / self.config.target_background_fps as f64,
-        );
+        let target_frame_time =
+          std::time::Duration::from_secs_f64(1.0 / self.config.target_background_fps as f64);
         let elapsed = frame_start.elapsed();
         if elapsed < target_frame_time {
           std::thread::sleep(target_frame_time - elapsed);
@@ -3939,8 +3938,8 @@ mod tests {
   #[test]
   fn engine_config_background_defaults() {
     let config = EngineConfig::default();
-    assert_eq!(config.target_background_fps, 30);
-    assert!(!config.background_rendering);
+    assert_eq!(config.target_background_fps, 0);
+    assert!(config.background_rendering);
   }
 
   #[test]

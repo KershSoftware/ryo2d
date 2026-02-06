@@ -110,6 +110,70 @@ ctx.effects.set_chromatic_aberration(0.003, true);  // radial from center
 ctx.effects.set_chromatic_aberration(0.01, false);  // uniform direction
 ```
 
+### God Rays
+
+Radial light beams emanating from bright light sources.
+
+```rust
+// Simple: intensity + light positions in screen UV space (0-1)
+ctx.effects.set_god_rays(0.8, vec![(0.5, 0.3)]);
+
+// Custom: intensity, samples, decay, density, threshold, positions
+ctx.effects.set_god_rays_custom(1.0, 32, 0.96, 1.0, 0.5, vec![(0.5, 0.3)]);
+
+// Update light positions each frame (efficient, keeps other settings)
+ctx.effects.update_god_rays_lights(vec![(light_x, light_y)]);
+
+// Disable
+ctx.effects.disable_god_rays();
+```
+
+### Ambient Occlusion
+
+Darkens corners and crevices based on edge detection.
+
+```rust
+// Simple: intensity (0-1) and sampling radius in pixels (1-64)
+ctx.effects.set_ambient_occlusion(0.3, 16.0);
+
+// Custom: intensity, radius, edge detection bias (0.001-0.5)
+ctx.effects.set_ambient_occlusion_custom(0.3, 16.0, 0.05);
+
+// Disable
+ctx.effects.disable_ambient_occlusion();
+```
+
+### Bloom
+
+Extracts bright areas and blurs them to create a soft glow. This is a multi-pass effect.
+
+```rust
+// Simple: just set intensity (0.0-5.0)
+ctx.effects.set_bloom(1.0);
+
+// Full control over all parameters
+ctx.effects.set_bloom_custom(
+    0.7,  // threshold (0.0-1.0) — brightness cutoff for extraction
+    1.5,  // intensity (0.0-5.0) — glow strength
+    5.0,  // radius (1.0-20.0) — blur spread in pixels
+    2,    // blur_passes (1-5) — quality (each pass = H+V Gaussian blur)
+);
+
+// Disable
+ctx.effects.disable_bloom();
+```
+
+**Parameter guide:**
+- **threshold** controls which pixels glow. Lower values = more of the scene blooms
+- **intensity** controls how bright the glow is. Values above 2.0 give a strong neon look
+- **radius** controls how far the glow spreads. Higher = softer, dreamier
+- **blur_passes** controls quality. 1 is fast but grainy, 3+ is smooth
+
+**Common presets:**
+- Subtle highlight glow: `set_bloom_custom(0.8, 0.6, 3.0, 1)`
+- Dreamy soft focus: `set_bloom_custom(0.5, 1.2, 12.0, 3)`
+- Neon glow: `set_bloom_custom(0.3, 2.5, 6.0, 2)`
+
 ## Effect Stacking
 
 Multiple effects can be active simultaneously. They're applied in the order they were set.
@@ -121,7 +185,7 @@ ctx.effects.set_color_tint(Color::new(200, 180, 160, 255), 0.2);
 ctx.effects.set_crt(0.2, 0.01, 0.001);
 ```
 
-**Performance note:** Each active effect adds a GPU render pass. For most games, 2-4 simultaneous effects have negligible performance impact.
+**Performance note:** Each active effect adds a GPU render pass. Bloom is a multi-pass effect (extract + blur passes + composite), so it costs more than single-pass effects. For most games, 2-4 simultaneous effects have negligible performance impact.
 
 ## Managing Effects
 
@@ -142,7 +206,17 @@ ctx.effects.clear();
 
 ### Disabling Individual Effects
 
-Setting an effect to zero intensity effectively disables it:
+Some effects have dedicated disable methods:
+
+```rust
+ctx.effects.disable_crt();
+ctx.effects.disable_chromatic_aberration();
+ctx.effects.disable_god_rays();
+ctx.effects.disable_ambient_occlusion();
+ctx.effects.disable_bloom();
+```
+
+For others, setting intensity to zero effectively disables them:
 
 ```rust
 ctx.effects.set_fade(0.0);      // No fade

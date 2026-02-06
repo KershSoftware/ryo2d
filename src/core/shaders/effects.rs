@@ -101,6 +101,21 @@ pub enum PostProcessEffect {
     /// Edge detection threshold (0.001 - 0.5)
     bias: f32,
   },
+
+  /// Bloom / glow effect
+  ///
+  /// Extracts bright areas of the scene and blurs them to create a soft glow.
+  /// This is a multi-pass effect (extract -> blur -> composite).
+  Bloom {
+    /// Brightness threshold for extraction (0.0 - 1.0)
+    threshold: f32,
+    /// Glow strength (0.0 - 5.0)
+    intensity: f32,
+    /// Blur spread in pixels (1.0 - 20.0)
+    radius: f32,
+    /// Number of blur passes for quality (1 - 5, each pass = H+V blur)
+    blur_passes: u32,
+  },
 }
 
 impl PostProcessEffect {
@@ -263,6 +278,35 @@ impl PostProcessEffect {
     }
   }
 
+  /// Create a bloom effect with default settings
+  ///
+  /// # Arguments
+  /// * `intensity` - Glow strength (0.0 - 5.0)
+  pub fn bloom(intensity: f32) -> Self {
+    Self::Bloom {
+      threshold: 0.7,
+      intensity: intensity.clamp(0.0, 5.0),
+      radius: 5.0,
+      blur_passes: 2,
+    }
+  }
+
+  /// Create a bloom effect with custom settings
+  ///
+  /// # Arguments
+  /// * `threshold` - Brightness cutoff (0.0 - 1.0)
+  /// * `intensity` - Glow strength (0.0 - 5.0)
+  /// * `radius` - Blur spread (1.0 - 20.0)
+  /// * `blur_passes` - Quality level (1 - 5, each pass = H+V blur)
+  pub fn bloom_custom(threshold: f32, intensity: f32, radius: f32, blur_passes: u32) -> Self {
+    Self::Bloom {
+      threshold: threshold.clamp(0.0, 1.0),
+      intensity: intensity.clamp(0.0, 5.0),
+      radius: radius.clamp(1.0, 20.0),
+      blur_passes: blur_passes.clamp(1, 5),
+    }
+  }
+
   /// Get the shader name for this effect
   pub fn shader_name(&self) -> &'static str {
     match self {
@@ -274,6 +318,7 @@ impl PostProcessEffect {
       Self::ChromaticAberration { .. } => "chromatic_aberration",
       Self::GodRays { .. } => "god_rays",
       Self::AmbientOcclusion { .. } => "ambient_occlusion",
+      Self::Bloom { .. } => "bloom",
     }
   }
 
@@ -294,6 +339,7 @@ impl PostProcessEffect {
         ..
       } => *intensity > 0.001 && !light_positions.is_empty(),
       Self::AmbientOcclusion { intensity, .. } => *intensity > 0.001,
+      Self::Bloom { intensity, .. } => *intensity > 0.001,
     }
   }
 }
@@ -367,6 +413,15 @@ impl EffectParams {
         radius,
         bias,
       } => ([0.0, 0.0, 0.0, 1.0], [*intensity, *radius, *bias, 0.0]),
+      PostProcessEffect::Bloom {
+        threshold,
+        intensity,
+        radius,
+        blur_passes,
+      } => (
+        [0.0, 0.0, 0.0, 1.0],
+        [*threshold, *intensity, *radius, *blur_passes as f32],
+      ),
     };
 
     Self {
@@ -509,6 +564,46 @@ mod tests {
   fn god_rays_effect_inactive_without_lights() {
     let effect = PostProcessEffect::god_rays(0.8, vec![]);
     assert!(!effect.is_active());
+  }
+
+  #[test]
+  fn bloom_clamps_parameters() {
+    let effect = PostProcessEffect::bloom_custom(2.0, 10.0, 50.0, 10);
+    if let PostProcessEffect::Bloom {
+      threshold,
+      intensity,
+      radius,
+      blur_passes,
+    } = effect
+    {
+      assert!((threshold - 1.0).abs() < 0.001);
+      assert!((intensity - 5.0).abs() < 0.001);
+      assert!((radius - 20.0).abs() < 0.001);
+      assert_eq!(blur_passes, 5);
+    } else {
+      panic!("Expected Bloom variant");
+    }
+  }
+
+  #[test]
+  fn bloom_is_active_when_nonzero() {
+    assert!(PostProcessEffect::bloom(1.0).is_active());
+    assert!(!PostProcessEffect::bloom(0.0).is_active());
+  }
+
+  #[test]
+  fn bloom_shader_name() {
+    assert_eq!(PostProcessEffect::bloom(1.0).shader_name(), "bloom");
+  }
+
+  #[test]
+  fn bloom_params_packing() {
+    let effect = PostProcessEffect::bloom_custom(0.7, 1.5, 5.0, 2);
+    let params = EffectParams::from_effect(&effect, 0.0, 1920, 1080);
+    assert!((params.params[0] - 0.7).abs() < 0.001); // threshold
+    assert!((params.params[1] - 1.5).abs() < 0.001); // intensity
+    assert!((params.params[2] - 5.0).abs() < 0.001); // radius
+    assert!((params.params[3] - 2.0).abs() < 0.001); // blur_passes
   }
 
   #[test]

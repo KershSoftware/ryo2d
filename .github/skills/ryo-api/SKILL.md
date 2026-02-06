@@ -1003,11 +1003,57 @@ pub enum Anchor {
 
 ```rust
 impl EffectsManager {
-    fn add_effect(&mut self, effect: PostProcessEffect);
-    fn remove_effect(&mut self, name: &str);
-    fn set_enabled(&mut self, name: &str, enabled: bool);
-    fn is_enabled(&self, name: &str) -> bool;
+    fn update(&mut self, dt: f32);
+    fn active_effects(&self) -> impl Iterator<Item = &PostProcessEffect>;
+    fn has_active_effects(&self) -> bool;
     fn clear(&mut self);
+    fn time(&self) -> f32;
+
+    // Fade
+    fn set_fade(&mut self, progress: f32);                        // 0.0-1.0
+    fn set_fade_color(&mut self, progress: f32, color: Color);
+
+    // Color tint
+    fn set_color_tint(&mut self, color: Color, intensity: f32);
+    fn set_sepia(&mut self, intensity: f32);
+
+    // Vignette
+    fn set_vignette(&mut self, intensity: f32);
+    fn set_vignette_custom(&mut self, intensity: f32, radius: f32, softness: f32);
+
+    // Screen flash (timed, auto-decays)
+    fn flash(&mut self, color: Color, duration: Duration);
+    fn flash_secs(&mut self, color: Color, duration_secs: f32);
+    fn flash_white(&mut self, duration: Duration);
+    fn flash_red(&mut self, duration: Duration);
+
+    // CRT
+    fn enable_crt(&mut self);
+    fn enable_crt_custom(&mut self, scanline_intensity: f32, curvature: f32, rgb_offset: f32);
+    fn disable_crt(&mut self);
+
+    // Chromatic aberration
+    fn set_chromatic_aberration(&mut self, offset: f32);
+    fn disable_chromatic_aberration(&mut self);
+
+    // God rays
+    fn set_god_rays(&mut self, intensity: f32, light_positions: Vec<(f32, f32)>);
+    fn set_god_rays_custom(&mut self, intensity: f32, samples: u32, decay: f32, density: f32, threshold: f32, light_positions: Vec<(f32, f32)>);
+    fn update_god_rays_lights(&mut self, light_positions: Vec<(f32, f32)>);
+    fn disable_god_rays(&mut self);
+    fn has_god_rays(&self) -> bool;
+
+    // Ambient occlusion
+    fn set_ambient_occlusion(&mut self, intensity: f32, radius: f32);
+    fn set_ambient_occlusion_custom(&mut self, intensity: f32, radius: f32, bias: f32);
+    fn disable_ambient_occlusion(&mut self);
+    fn has_ambient_occlusion(&self) -> bool;
+
+    // Bloom
+    fn set_bloom(&mut self, intensity: f32);                      // 0.0-5.0
+    fn set_bloom_custom(&mut self, threshold: f32, intensity: f32, radius: f32, blur_passes: u32);
+    fn disable_bloom(&mut self);
+    fn has_bloom(&self) -> bool;
 }
 ```
 
@@ -1015,12 +1061,15 @@ impl EffectsManager {
 
 ```rust
 pub enum PostProcessEffect {
-    Bloom { intensity: f32, threshold: f32 },
-    Vignette { intensity: f32, radius: f32 },
-    ChromaticAberration { intensity: f32 },
-    Pixelate { pixel_size: u32 },
-    Grayscale { intensity: f32 },
-    Custom { shader: ShaderHandle, params: ShaderParams },
+    Fade { progress: f32, color: Color },
+    ColorTint { color: Color, intensity: f32 },
+    Vignette { intensity: f32, radius: f32, softness: f32 },
+    ScreenFlash { color: Color, intensity: f32 },
+    Crt { scanline_intensity: f32, curvature: f32, rgb_offset: f32 },
+    ChromaticAberration { offset: f32, radial: bool },
+    GodRays { intensity: f32, samples: u32, decay: f32, density: f32, weight: f32, threshold: f32, light_positions: Vec<(f32, f32)> },
+    AmbientOcclusion { intensity: f32, radius: f32, bias: f32 },
+    Bloom { threshold: f32, intensity: f32, radius: f32, blur_passes: u32 },
 }
 ```
 

@@ -67,4 +67,7 @@ pub mod post_process_shaders {
   pub const CHROMATIC_ABERRATION: &str = include_str!("post-process/chromatic_aberration.wgsl");
   pub const GOD_RAYS: &str = include_str!("post-process/god_rays.wgsl");
   pub const AMBIENT_OCCLUSION: &str = include_str!("post-process/ambient_occlusion.wgsl");
+  pub const BLOOM_EXTRACT: &str = include_str!("post-process/bloom_extract.wgsl");
+  pub const BLOOM_BLUR: &str = include_str!("post-process/bloom_blur.wgsl");
+  pub const BLOOM_COMPOSITE: &str = include_str!("post-process/bloom_composite.wgsl");
 }

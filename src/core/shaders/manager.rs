@@ -66,6 +66,7 @@ enum EffectCategory {
   ChromaticAberration,
   GodRays,
   AmbientOcclusion,
+  Bloom,
 }
 
 impl EffectCategory {
@@ -79,6 +80,7 @@ impl EffectCategory {
       PostProcessEffect::ChromaticAberration { .. } => Self::ChromaticAberration,
       PostProcessEffect::GodRays { .. } => Self::GodRays,
       PostProcessEffect::AmbientOcclusion { .. } => Self::AmbientOcclusion,
+      PostProcessEffect::Bloom { .. } => Self::Bloom,
     }
   }
 }
@@ -339,6 +341,46 @@ impl EffectsManager {
       .any(|a| matches!(a.effect, PostProcessEffect::AmbientOcclusion { .. }))
   }
 
+  /// Enable bloom effect with default settings
+  ///
+  /// # Arguments
+  /// * `intensity` - Glow strength (0.0 - 5.0)
+  pub fn set_bloom(&mut self, intensity: f32) {
+    let effect = PostProcessEffect::bloom(intensity);
+    self.set_effect(effect);
+  }
+
+  /// Enable bloom effect with custom settings
+  ///
+  /// # Arguments
+  /// * `threshold` - Brightness cutoff (0.0 - 1.0)
+  /// * `intensity` - Glow strength (0.0 - 5.0)
+  /// * `radius` - Blur spread (1.0 - 20.0)
+  /// * `blur_passes` - Quality level (1 - 5, each pass = H+V blur)
+  pub fn set_bloom_custom(
+    &mut self,
+    threshold: f32,
+    intensity: f32,
+    radius: f32,
+    blur_passes: u32,
+  ) {
+    let effect = PostProcessEffect::bloom_custom(threshold, intensity, radius, blur_passes);
+    self.set_effect(effect);
+  }
+
+  /// Disable bloom effect
+  pub fn disable_bloom(&mut self) {
+    self.remove_category(EffectCategory::Bloom);
+  }
+
+  /// Check if bloom effect is enabled
+  pub fn has_bloom(&self) -> bool {
+    self
+      .effects
+      .iter()
+      .any(|a| matches!(a.effect, PostProcessEffect::Bloom { .. }))
+  }
+
   // ========== Internal Methods ==========
 
   /// Set a persistent effect (replaces any existing effect of the same category)
@@ -443,6 +485,34 @@ mod tests {
 
     manager.clear();
     assert!(!manager.has_active_effects());
+  }
+
+  #[test]
+  fn set_bloom_adds_effect() {
+    let mut manager = EffectsManager::new();
+    manager.set_bloom(1.0);
+    assert!(manager.has_bloom());
+    assert!(manager.has_active_effects());
+  }
+
+  #[test]
+  fn disable_bloom_removes_effect() {
+    let mut manager = EffectsManager::new();
+    manager.set_bloom(1.0);
+    manager.disable_bloom();
+    assert!(!manager.has_bloom());
+  }
+
+  #[test]
+  fn bloom_replaces_existing_bloom() {
+    let mut manager = EffectsManager::new();
+    manager.set_bloom(1.0);
+    manager.set_bloom_custom(0.5, 2.0, 10.0, 3);
+    let count = manager
+      .active_effects()
+      .filter(|e| matches!(e, PostProcessEffect::Bloom { .. }))
+      .count();
+    assert_eq!(count, 1);
   }
 
   #[test]
