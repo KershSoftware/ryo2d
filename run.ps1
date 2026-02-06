@@ -13,7 +13,7 @@
 #   .\run run-demos    - Launch all demos in dev mode (parallel terminals)
 #   .\run kill-demos   - Kill all running demos
 #   .\run check        - Fast compilation check (engine only)
-#   .\run check-all    - Check + lint all examples in parallel
+#   .\run check:all    - Check + lint all examples in parallel
 #   .\run lint         - Linting with clippy (engine only)
 #   .\run test         - Run unit + integration tests
 #   .\run test:unit    - Run unit tests only
@@ -500,7 +500,7 @@ switch ($ExampleName.ToLower()) {
             Write-Host "Report: target/llvm-cov/all/index.html" -ForegroundColor DarkGray
         }
     }
-    "check-all" {
+    "check:all" {
         Write-Host ""
         Write-Host "=== Checking All Examples ===" -ForegroundColor Cyan
         Write-Host ""
@@ -693,7 +693,7 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./run run-demos          - Launch all demos in dev mode (parallel terminals)"
         Write-Host "  ./run kill-demos         - Kill all running demos"
         Write-Host "  ./run check              - Fast compilation check (engine only)"
-        Write-Host "  ./run check-all          - Check + lint all examples in parallel"
+        Write-Host "  ./run check:all          - Check + lint all examples in parallel"
         Write-Host "  ./run lint               - Linting with clippy (engine only)"
         Write-Host "  ./run test               - Run unit + integration tests (default)"
         Write-Host "  ./run test:unit          - Run unit tests only"

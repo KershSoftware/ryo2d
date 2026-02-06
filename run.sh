@@ -14,7 +14,7 @@
 #     ./run.sh run-demos           - Launch all demos in dev mode (parallel terminals)
 #     ./run.sh kill-demos          - Kill all running demos
 #     ./run.sh check               - Fast compilation check (engine only)
-#     ./run.sh check-all           - Check + lint all examples in parallel
+#     ./run.sh check:all           - Check + lint all examples in parallel
 #     ./run.sh lint                - Linting with clippy (engine only)
 #     ./run.sh test                - Run unit + integration tests
 #     ./run.sh test:unit           - Run unit tests only
@@ -638,7 +638,7 @@ case "$COMMAND" in
     check)
         cargo check
         ;;
-    check-all)
+    check:all)
         check_all_examples
         ;;
     lint)
@@ -749,7 +749,7 @@ case "$COMMAND" in
         echo "    ./run.sh run-demos           - Launch all demos in dev mode (parallel terminals)"
         echo "    ./run.sh kill-demos          - Kill all running demos"
         echo "    ./run.sh check               - Fast compilation check (engine only)"
-        echo "    ./run.sh check-all           - Check + lint all examples in parallel"
+        echo "    ./run.sh check:all           - Check + lint all examples in parallel"
         echo "    ./run.sh lint                - Linting with clippy (engine only)"
         echo "    ./run.sh test                - Run unit + integration tests (default)"
         echo "    ./run.sh test:unit           - Run unit tests only"

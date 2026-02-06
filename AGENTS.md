@@ -106,7 +106,7 @@ Suggested sources for game assets:
 ./run              # Interactive example selection menu
 ./run <example>    # Run specific example (e.g., ./run breakout)
 ./run check        # Fast compilation check (engine only)
-./run check-all    # Check + lint ALL examples in parallel
+./run check:all    # Check + lint ALL examples in parallel
 ./run lint         # Run clippy with strict warnings (engine only)
 ./run test         # Run all tests
 ./run coverage     # Generate code coverage report
@@ -115,7 +115,7 @@ Suggested sources for game assets:
 
 **Engine Quality Checks:**
 - `check` - Fast syntax and type checking (engine workspace only)
-- `check-all` - Parallel check + clippy on engine AND all examples with summary table
+- `check:all` - Parallel check + clippy on engine AND all examples with summary table
 - `lint` - Clippy linting with `-D warnings` (fail on warnings)
 - `test` - All unit tests
 - `coverage` - Code coverage report using cargo-llvm-cov
