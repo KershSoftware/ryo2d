@@ -105,18 +105,16 @@ Suggested sources for game assets:
 ```powershell
 ./run              # Interactive example selection menu
 ./run <example>    # Run specific example (e.g., ./run breakout)
-./run check        # Fast compilation check (engine only)
-./run check:all    # Check + lint ALL examples in parallel
-./run lint         # Run clippy with strict warnings (engine only)
+./run check        # Compilation check (engine + all examples)
+./run lint         # Run clippy (engine + all examples)
 ./run test         # Run all tests
 ./run coverage     # Generate code coverage report
 ./run help         # Show available commands
 ```
 
-**Engine Quality Checks:**
-- `check` - Fast syntax and type checking (engine workspace only)
-- `check:all` - Parallel check + clippy on engine AND all examples with summary table
-- `lint` - Clippy linting with `-D warnings` (fail on warnings)
+**Quality Checks:**
+- `check` - Compilation check across entire workspace (engine + all examples)
+- `lint` - Clippy linting across entire workspace
 - `test` - All unit tests
 - `coverage` - Code coverage report using cargo-llvm-cov
 

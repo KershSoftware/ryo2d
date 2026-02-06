@@ -13,9 +13,8 @@
 #     ./run.sh -r|--release <example>       - Same as above (flag before example)
 #     ./run.sh run-demos           - Launch all demos in dev mode (parallel terminals)
 #     ./run.sh kill-demos          - Kill all running demos
-#     ./run.sh check               - Fast compilation check (engine only)
-#     ./run.sh check:all           - Check + lint all examples in parallel
-#     ./run.sh lint                - Linting with clippy (engine only)
+#     ./run.sh check               - Compilation check (engine + all examples)
+#     ./run.sh lint                - Linting with clippy (engine + all examples)
 #     ./run.sh test                - Run unit + integration tests
 #     ./run.sh test:unit           - Run unit tests only
 #     ./run.sh test:integration    - Run integration tests only
@@ -367,173 +366,6 @@ show_example_list() {
     esac
 }
 
-# Function to check all examples in parallel
-check_all_examples() {
-    echo ""
-    echo -e "${CYAN}=== Checking All Examples ===${NC}"
-    echo ""
-
-    examples=()
-    while IFS= read -r line; do
-        examples+=("$line")
-    done < <(get_examples)
-    display_names=()
-    while IFS= read -r line; do
-        display_names+=("$line")
-    done < <(get_display_names)
-
-    local count=${#examples[@]}
-
-    if [[ $count -eq 0 ]]; then
-        echo -e "${RED}No examples found.${NC}"
-        exit 1
-    fi
-
-    echo -e "${GRAY}Found $count examples + engine workspace${NC}"
-    echo -e "${GRAY}Running cargo check and clippy in parallel...${NC}"
-    echo ""
-
-    # Create temp directory for output
-    local temp_dir=$(mktemp -d)
-    trap "rm -rf $temp_dir" EXIT
-
-    # Array to track background jobs
-    local pids=()
-    local targets=()
-
-    # Start engine check first
-    {
-        cargo check --manifest-path "$SCRIPT_DIR/Cargo.toml" > "$temp_dir/engine_check.out" 2>&1
-        echo $? > "$temp_dir/engine_check.status"
-
-        cargo clippy --manifest-path "$SCRIPT_DIR/Cargo.toml" -- -D warnings > "$temp_dir/engine_lint.out" 2>&1
-        echo $? > "$temp_dir/engine_lint.status"
-    } &
-    pids+=($!)
-    targets+=("engine")
-    echo -e "  ${GRAY}Started: Engine (workspace)${NC}"
-
-    # Start checks for each example
-    for ((i=0; i<count; i++)); do
-        local example="${examples[$i]}"
-        local display="${display_names[$i]}"
-        local example_path="$SCRIPT_DIR/examples/$example"
-        local safe_name=$(echo "$example" | tr '/' '_')
-
-        {
-            cargo check --manifest-path "$example_path/Cargo.toml" > "$temp_dir/${safe_name}_check.out" 2>&1
-            echo $? > "$temp_dir/${safe_name}_check.status"
-
-            cargo clippy --manifest-path "$example_path/Cargo.toml" -- -D warnings > "$temp_dir/${safe_name}_lint.out" 2>&1
-            echo $? > "$temp_dir/${safe_name}_lint.status"
-        } &
-        pids+=($!)
-        targets+=("$example")
-        echo -e "  ${GRAY}Started: $display${NC}"
-    done
-
-    echo ""
-    echo -e "${GRAY}Waiting for all jobs to complete...${NC}"
-
-    # Wait for all jobs
-    for pid in "${pids[@]}"; do
-        wait $pid 2>/dev/null || true
-    done
-
-    # Collect and display results
-    echo ""
-    echo -e "${CYAN}=== Summary ===${NC}"
-    echo ""
-    printf "${WHITE}%-35s %-10s %-10s${NC}\n" "Project" "Check" "Clippy"
-    printf "${GRAY}%-35s %-10s %-10s${NC}\n" "-------" "-----" "------"
-
-    local failed_checks=()
-    local failed_lints=()
-    local all_passed=true
-
-    # Engine results
-    local engine_check_status=$(cat "$temp_dir/engine_check.status" 2>/dev/null || echo "1")
-    local engine_lint_status=$(cat "$temp_dir/engine_lint.status" 2>/dev/null || echo "1")
-
-    if [[ "$engine_check_status" -eq 0 ]]; then
-        local check_result="${GREEN}PASS${NC}"
-    else
-        local check_result="${RED}FAIL${NC}"
-        failed_checks+=("Engine (workspace)|$temp_dir/engine_check.out")
-        all_passed=false
-    fi
-
-    if [[ "$engine_lint_status" -eq 0 ]]; then
-        local lint_result="${GREEN}PASS${NC}"
-    else
-        local lint_result="${YELLOW}FAIL${NC}"
-        failed_lints+=("Engine (workspace)|$temp_dir/engine_lint.out")
-        all_passed=false
-    fi
-
-    printf "%-35s " "Engine (workspace)"
-    echo -e "$check_result       $lint_result"
-
-    # Example results
-    for ((i=0; i<count; i++)); do
-        local example="${examples[$i]}"
-        local display="${display_names[$i]}"
-        local safe_name=$(echo "$example" | tr '/' '_')
-
-        local check_status=$(cat "$temp_dir/${safe_name}_check.status" 2>/dev/null || echo "1")
-        local lint_status=$(cat "$temp_dir/${safe_name}_lint.status" 2>/dev/null || echo "1")
-
-        if [[ "$check_status" -eq 0 ]]; then
-            local check_result="${GREEN}PASS${NC}"
-        else
-            local check_result="${RED}FAIL${NC}"
-            failed_checks+=("$display|$temp_dir/${safe_name}_check.out")
-            all_passed=false
-        fi
-
-        if [[ "$lint_status" -eq 0 ]]; then
-            local lint_result="${GREEN}PASS${NC}"
-        else
-            local lint_result="${YELLOW}FAIL${NC}"
-            failed_lints+=("$display|$temp_dir/${safe_name}_lint.out")
-            all_passed=false
-        fi
-
-        printf "%-35s " "$display"
-        echo -e "$check_result       $lint_result"
-    done
-
-    # Show errors if any
-    if [[ ${#failed_checks[@]} -gt 0 || ${#failed_lints[@]} -gt 0 ]]; then
-        echo ""
-        echo -e "${RED}=== Errors ===${NC}"
-
-        for fail in "${failed_checks[@]}"; do
-            local name="${fail%%|*}"
-            local file="${fail##*|}"
-            echo ""
-            echo -e "${RED}[$name] Compilation errors:${NC}"
-            echo -e "${GRAY}$(cat "$file")${NC}"
-        done
-
-        for fail in "${failed_lints[@]}"; do
-            local name="${fail%%|*}"
-            local file="${fail##*|}"
-            echo ""
-            echo -e "${YELLOW}[$name] Clippy warnings/errors:${NC}"
-            echo -e "${GRAY}$(cat "$file")${NC}"
-        done
-
-        echo ""
-        local total_failed=$((${#failed_checks[@]} + ${#failed_lints[@]}))
-        echo -e "${RED}Check completed with $total_failed failure(s).${NC}"
-        exit 1
-    else
-        echo ""
-        echo -e "${GREEN}All checks passed!${NC}"
-    fi
-}
-
 # Execute the appropriate command
 case "$COMMAND" in
     "")
@@ -636,13 +468,10 @@ case "$COMMAND" in
         fi
         ;;
     check)
-        cargo check
-        ;;
-    check:all)
-        check_all_examples
+        cargo check --workspace
         ;;
     lint)
-        cargo clippy
+        cargo clippy --workspace
         ;;
     test)
         # Default: run unit tests + integration tests
@@ -748,9 +577,8 @@ case "$COMMAND" in
         echo "    ./run.sh -r|--release <example>       - Same as above (flag before example)"
         echo "    ./run.sh run-demos           - Launch all demos in dev mode (parallel terminals)"
         echo "    ./run.sh kill-demos          - Kill all running demos"
-        echo "    ./run.sh check               - Fast compilation check (engine only)"
-        echo "    ./run.sh check:all           - Check + lint all examples in parallel"
-        echo "    ./run.sh lint                - Linting with clippy (engine only)"
+        echo "    ./run.sh check               - Compilation check (engine + all examples)"
+        echo "    ./run.sh lint                - Linting with clippy (engine + all examples)"
         echo "    ./run.sh test                - Run unit + integration tests (default)"
         echo "    ./run.sh test:unit           - Run unit tests only"
         echo "    ./run.sh test:integration    - Run integration tests only"

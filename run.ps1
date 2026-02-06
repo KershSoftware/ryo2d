@@ -12,9 +12,8 @@
 #   .\run -r|--release <example>   - Same as above (flag before example)
 #   .\run run-demos    - Launch all demos in dev mode (parallel terminals)
 #   .\run kill-demos   - Kill all running demos
-#   .\run check        - Fast compilation check (engine only)
-#   .\run check:all    - Check + lint all examples in parallel
-#   .\run lint         - Linting with clippy (engine only)
+#   .\run check        - Compilation check (engine + all examples)
+#   .\run lint         - Linting with clippy (engine + all examples)
 #   .\run test         - Run unit + integration tests
 #   .\run test:unit    - Run unit tests only
 #   .\run test:integration - Run integration tests only
@@ -413,10 +412,10 @@ switch ($ExampleName.ToLower()) {
         }
     }
     "check" {
-        cargo check
+        cargo check --workspace
     }
     "lint" {
-        cargo clippy
+        cargo clippy --workspace
     }
     "test" {
         # Default: run unit tests + integration tests
@@ -500,162 +499,6 @@ switch ($ExampleName.ToLower()) {
             Write-Host "Report: target/llvm-cov/all/index.html" -ForegroundColor DarkGray
         }
     }
-    "check:all" {
-        Write-Host ""
-        Write-Host "=== Checking All Examples ===" -ForegroundColor Cyan
-        Write-Host ""
-
-        $examples = Get-Examples
-        if ($examples.Count -eq 0) {
-            Write-Host "No examples found." -ForegroundColor Red
-            exit 1
-        }
-
-        # Also check the engine itself
-        $checkTargets = @(
-            [PSCustomObject]@{
-                Name = "engine"
-                DisplayName = "Engine (workspace)"
-                Path = $PSScriptRoot
-            }
-        )
-        $checkTargets += $examples
-
-        Write-Host "Found $($examples.Count) examples + engine workspace" -ForegroundColor DarkGray
-        Write-Host "Running cargo check and clippy in parallel..." -ForegroundColor DarkGray
-        Write-Host ""
-
-        # Create temp directory for output files
-        $tempDir = Join-Path $env:TEMP "ryo2d-check-all-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-
-        # Start parallel jobs for each target
-        $jobs = @()
-        foreach ($target in $checkTargets) {
-            $job = Start-Job -ScriptBlock {
-                param($targetPath, $targetName, $tempDir, $cargoPath)
-
-                # Ensure cargo is in PATH
-                if (-not ($env:PATH -split [IO.Path]::PathSeparator -contains $cargoPath)) {
-                    $env:PATH = "$cargoPath$([IO.Path]::PathSeparator)$env:PATH"
-                }
-
-                $result = @{
-                    Name = $targetName
-                    CheckPassed = $false
-                    LintPassed = $false
-                    CheckOutput = ""
-                    LintOutput = ""
-                }
-
-                # Run cargo check
-                $checkOutput = & cargo check --manifest-path "$targetPath/Cargo.toml" 2>&1 | Out-String
-                $result.CheckPassed = ($LASTEXITCODE -eq 0)
-                $result.CheckOutput = $checkOutput
-
-                # Run cargo clippy
-                $lintOutput = & cargo clippy --manifest-path "$targetPath/Cargo.toml" -- -D warnings 2>&1 | Out-String
-                $result.LintPassed = ($LASTEXITCODE -eq 0)
-                $result.LintOutput = $lintOutput
-
-                return $result
-            } -ArgumentList $target.Path, $target.Name, $tempDir, $cargoPath
-
-            $jobs += @{
-                Job = $job
-                Target = $target
-            }
-
-            Write-Host "  Started: $($target.DisplayName)" -ForegroundColor DarkGray
-        }
-
-        Write-Host ""
-        Write-Host "Waiting for all jobs to complete..." -ForegroundColor DarkGray
-
-        # Collect results
-        $results = @()
-        $failedChecks = @()
-        $failedLints = @()
-
-        foreach ($jobInfo in $jobs) {
-            $result = Receive-Job -Job $jobInfo.Job -Wait
-            Remove-Job -Job $jobInfo.Job
-
-            $target = $jobInfo.Target
-            $checkStatus = if ($result.CheckPassed) { "+" } else { "X" }
-            $lintStatus = if ($result.LintPassed) { "+" } else { "X" }
-
-            $results += @{
-                Name = $target.Name
-                DisplayName = $target.DisplayName
-                CheckPassed = $result.CheckPassed
-                LintPassed = $result.LintPassed
-                CheckOutput = $result.CheckOutput
-                LintOutput = $result.LintOutput
-            }
-
-            if (-not $result.CheckPassed) {
-                $failedChecks += @{
-                    Name = $target.DisplayName
-                    Output = $result.CheckOutput
-                }
-            }
-            if (-not $result.LintPassed) {
-                $failedLints += @{
-                    Name = $target.DisplayName
-                    Output = $result.LintOutput
-                }
-            }
-        }
-
-        # Clean up temp directory
-        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-
-        # Display summary
-        Write-Host ""
-        Write-Host "=== Summary ===" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host ("{0,-30} {1,-10} {2,-10}" -f "Project", "Check", "Clippy") -ForegroundColor White
-        Write-Host ("{0,-30} {1,-10} {2,-10}" -f "-------", "-----", "------") -ForegroundColor DarkGray
-
-        foreach ($r in $results) {
-            $checkColor = if ($r.CheckPassed) { "Green" } else { "Red" }
-            $lintColor = if ($r.LintPassed) { "Green" } else { "Red" }
-            $checkSymbol = if ($r.CheckPassed) { "PASS" } else { "FAIL" }
-            $lintSymbol = if ($r.LintPassed) { "PASS" } else { "FAIL" }
-
-            Write-Host ("{0,-30} " -f $r.DisplayName) -NoNewline
-            Write-Host ("{0,-10} " -f $checkSymbol) -ForegroundColor $checkColor -NoNewline
-            Write-Host ("{0,-10}" -f $lintSymbol) -ForegroundColor $lintColor
-        }
-
-        # Show errors if any
-        if ($failedChecks.Count -gt 0 -or $failedLints.Count -gt 0) {
-            Write-Host ""
-            Write-Host "=== Errors ===" -ForegroundColor Red
-
-            foreach ($fail in $failedChecks) {
-                Write-Host ""
-                Write-Host "[$($fail.Name)] Compilation errors:" -ForegroundColor Red
-                Write-Host $fail.Output -ForegroundColor DarkGray
-            }
-
-            foreach ($fail in $failedLints) {
-                Write-Host ""
-                Write-Host "[$($fail.Name)] Clippy warnings/errors:" -ForegroundColor Yellow
-                Write-Host $fail.Output -ForegroundColor DarkGray
-            }
-
-            Write-Host ""
-            $totalFailed = ($failedChecks.Count + $failedLints.Count)
-            Write-Host "Check completed with $totalFailed failure(s)." -ForegroundColor Red
-            exit 1
-        }
-        else {
-            Write-Host ""
-            Write-Host "All checks passed!" -ForegroundColor Green
-        }
-    }
     "watch" {
         # Watch mode - runs first example by default
         $examples = Get-Examples
@@ -692,9 +535,8 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./run -r|--release <example>       - Same as above (flag before example)"
         Write-Host "  ./run run-demos          - Launch all demos in dev mode (parallel terminals)"
         Write-Host "  ./run kill-demos         - Kill all running demos"
-        Write-Host "  ./run check              - Fast compilation check (engine only)"
-        Write-Host "  ./run check:all          - Check + lint all examples in parallel"
-        Write-Host "  ./run lint               - Linting with clippy (engine only)"
+        Write-Host "  ./run check              - Compilation check (engine + all examples)"
+        Write-Host "  ./run lint               - Linting with clippy (engine + all examples)"
         Write-Host "  ./run test               - Run unit + integration tests (default)"
         Write-Host "  ./run test:unit          - Run unit tests only"
         Write-Host "  ./run test:integration   - Run integration tests only"
