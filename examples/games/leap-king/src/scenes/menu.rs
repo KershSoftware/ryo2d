@@ -75,8 +75,6 @@ pub struct MenuScene {
   selected: MenuItem,
   input_cooldown: f32, // Prevent rapid navigation
 
-  // GPU-rendered background and rain
-  background_sprite: Option<SpriteHandle>,
   rain_emitter: Option<Entity>,
   rain_sprite: Option<SpriteHandle>,
   particle_system: ParticleSystem,
@@ -106,7 +104,6 @@ impl MenuScene {
       host_mode: HostMode::Lan,
       selected: MenuItem::SinglePlayer,
       input_cooldown: 0.0,
-      background_sprite: None,
       rain_emitter: None,
       rain_sprite: None,
       particle_system: ParticleSystem::new(),
@@ -697,22 +694,6 @@ impl Scene for MenuScene {
   }
 
   fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
-    // Render background first (lowest z-order)
-    if let Some(ref bg_sprite) = self.background_sprite {
-      ctx.upload_sprite(bg_sprite);
-      let (screen_x, screen_y) = ctx.camera.world_to_screen(0.0, 0.0);
-      let bg_instance = SpriteInstance::new().with_transform(
-        screen_x,
-        screen_y,
-        0.0,
-        self.screen_width,
-        self.screen_height,
-      );
-      ctx
-        .batch
-        .add(bg_sprite.id(), false, bg_instance, Z_BACKGROUND);
-    }
-
     // Upload rain sprite texture and collect particles
     if let Some(ref sprite) = self.rain_sprite {
       ctx.upload_sprite(sprite);

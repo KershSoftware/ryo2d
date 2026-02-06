@@ -2532,9 +2532,6 @@ impl Scene for GameScene {
       .camera
       .set_position(self.screen_width / 2.0, self.screen_height / 2.0);
 
-    // Background color comes from ambient lighting - no separate sprite needed
-    // (GPU background sprite was causing rendering artifacts)
-
     // Set up atmospheric lighting
     if let Some(lighting) = ctx.lighting {
       // Dark cave ambient - will transition as player climbs
