@@ -551,6 +551,14 @@ impl<'a> GameContext<'a> {
     // Game-level scope uses scope_id = 0 (permanent, never cleaned up)
     self.command_registry.register_handler(name, 0, handler)
   }
+
+  /// Remove a built-in console command by name.
+  ///
+  /// This allows games to override or disable reserved engine commands.
+  /// Returns `true` if the command existed and was removed.
+  pub fn remove_builtin_console_command(&mut self, name: &str) -> bool {
+    self.command_registry.remove_builtin(name)
+  }
 }
 
 /// Context for GPU sprite rendering.

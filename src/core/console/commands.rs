@@ -104,6 +104,72 @@ pub struct CommandContext<'a> {
   pub game_version: Option<String>,
 }
 
+/// Builder for configuring console commands at the engine level.
+///
+/// Passed to the closure in [`EngineBuilder::with_console_commands`] to allow
+/// declaring game commands and removing built-in commands before the engine starts.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// EngineBuilder::new()
+///     .with_console_commands(|cmd| {
+///         cmd.declare("game:reset", "Reset the game to initial state");
+///         cmd.declare("game:godmode", "Toggle invincibility");
+///         cmd.declare_verbose(
+///             "game:spawn",
+///             "Spawn an entity",
+///             "Usage: game:spawn <enemy|item> [x] [y]",
+///         );
+///         cmd.remove_builtin("system:ip:wan");
+///     })
+///     .with_scene(GameScene::new())
+///     .build()
+///     .run()?;
+/// ```
+#[derive(Debug, Default)]
+pub struct ConsoleCommandBuilder {
+  /// Commands to declare (name, description, verbose_description)
+  pub(crate) declarations: Vec<(String, String, Option<String>)>,
+  /// Built-in commands to remove
+  pub(crate) removals: Vec<String>,
+}
+
+impl ConsoleCommandBuilder {
+  /// Declare a game command with a name and description.
+  ///
+  /// The command is registered as inactive (noop) until a handler is attached
+  /// via [`CommandRegistry::register_handler`] in a game or scene context.
+  pub fn declare(&mut self, name: impl Into<String>, description: impl Into<String>) {
+    self
+      .declarations
+      .push((name.into(), description.into(), None));
+  }
+
+  /// Declare a game command with a verbose help description.
+  ///
+  /// The verbose description is shown when the user types `help <command>`.
+  pub fn declare_verbose(
+    &mut self,
+    name: impl Into<String>,
+    description: impl Into<String>,
+    verbose: impl Into<String>,
+  ) {
+    self
+      .declarations
+      .push((name.into(), description.into(), Some(verbose.into())));
+  }
+
+  /// Remove a built-in console command by name.
+  ///
+  /// This allows games to disable reserved engine commands
+  /// (e.g., `system:ip:lan`, `debug:fps`). After removal, you can
+  /// re-declare the command as a game command with custom behavior.
+  pub fn remove_builtin(&mut self, name: impl Into<String>) {
+    self.removals.push(name.into());
+  }
+}
+
 /// Registry of console commands
 ///
 /// Manages both built-in engine commands and declared game commands.
@@ -216,13 +282,21 @@ impl CommandRegistry {
     }
   }
 
-  /// Unregister the handler for a specific command
+  /// Unregister the handler for a declared game command.
   ///
-  /// Returns the command to noop state.
+  /// Returns the command to noop state (still visible in help but has no effect).
   pub fn unregister_handler(&mut self, name: &str) {
     if let Some(cmd) = self.declared.get_mut(name) {
       cmd.handler = None;
     }
+  }
+
+  /// Remove a built-in command entirely.
+  ///
+  /// This allows games to override or disable reserved engine commands.
+  /// Returns `true` if the command existed and was removed.
+  pub fn remove_builtin(&mut self, name: &str) -> bool {
+    self.builtins.remove(name).is_some()
   }
 
   /// Clear all handlers registered with the given scope ID
@@ -815,5 +889,88 @@ mod tests {
     // Clearing scope 2 should deactivate it
     registry.clear_scope(scope2);
     assert!(!registry.get_command_info("game:action").unwrap().is_active);
+  }
+
+  #[test]
+  fn test_remove_builtin_existing() {
+    let mut registry = CommandRegistry::new();
+    registry.register("test:cmd", "A test command", |_args, _ctx| {
+      CommandResult::Ok
+    });
+
+    assert!(registry.has_command("test:cmd"));
+    assert!(registry.remove_builtin("test:cmd"));
+    assert!(!registry.has_command("test:cmd"));
+    assert!(registry.get_command_info("test:cmd").is_none());
+  }
+
+  #[test]
+  fn test_remove_builtin_nonexistent() {
+    let mut registry = CommandRegistry::new();
+    assert!(!registry.remove_builtin("nonexistent"));
+  }
+
+  #[test]
+  fn test_remove_builtin_does_not_affect_declared() {
+    let mut registry = CommandRegistry::new();
+    registry.declare("game:test", "A game command", None::<&str>);
+    registry.register_handler("game:test", 1, |_args, _ctx| CommandResult::Ok);
+
+    // remove_builtin should not remove declared commands
+    assert!(!registry.remove_builtin("game:test"));
+    assert!(registry.has_command("game:test"));
+    assert!(registry.get_command_info("game:test").unwrap().is_active);
+  }
+
+  #[test]
+  fn test_remove_builtin_then_redeclare_as_game_command() {
+    let mut registry = CommandRegistry::new();
+    registry.register("system:test", "Built-in test", |_args, _ctx| {
+      CommandResult::Ok
+    });
+
+    // Remove the builtin
+    assert!(registry.remove_builtin("system:test"));
+    assert!(!registry.has_command("system:test"));
+
+    // Re-declare as a game command with custom behavior
+    registry.declare("system:test", "Overridden test command", None::<&str>);
+    registry.register_handler("system:test", 1, |_args, ctx| {
+      ctx.console.print("Custom handler!");
+      CommandResult::Ok
+    });
+
+    assert!(registry.has_command("system:test"));
+    let info = registry.get_command_info("system:test").unwrap();
+    assert_eq!(info.description, "Overridden test command");
+    assert!(info.is_active);
+  }
+
+  #[test]
+  fn test_remove_builtin_reduces_count() {
+    let mut registry = CommandRegistry::new();
+    registry.register("cmd1", "Command 1", |_args, _ctx| CommandResult::Ok);
+    registry.register("cmd2", "Command 2", |_args, _ctx| CommandResult::Ok);
+    assert_eq!(registry.len(), 2);
+
+    registry.remove_builtin("cmd1");
+    assert_eq!(registry.len(), 1);
+    assert!(!registry.has_command("cmd1"));
+    assert!(registry.has_command("cmd2"));
+  }
+
+  #[test]
+  fn test_execute_removed_builtin_returns_error() {
+    let mut registry = CommandRegistry::new();
+    registry.register("test", "Test command", |_args, _ctx| CommandResult::Ok);
+    registry.remove_builtin("test");
+
+    let mut console = ConsoleState::new();
+    let mut debug_config = DebugConfig::default();
+    let mut time_scale = 1.0;
+    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+
+    let result = registry.execute("test", &mut ctx);
+    assert!(matches!(result, CommandResult::Error(_)));
   }
 }

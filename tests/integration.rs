@@ -58,3 +58,6 @@ mod prediction;
 
 #[path = "integration/config_resolution.rs"]
 mod config_resolution;
+
+#[path = "integration/console.rs"]
+mod console;

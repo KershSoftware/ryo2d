@@ -289,8 +289,12 @@ fn install_skill(target_dir: &Path, skill_name: &str, content: &str) -> CliResul
 
   // Write SKILL.md from embedded content
   let target_skill_md = target.join("SKILL.md");
-  fs::write(&target_skill_md, content)
-    .map_err(|e| CliError::Other(format!("Failed to write SKILL.md for {}: {}", skill_name, e)))?;
+  fs::write(&target_skill_md, content).map_err(|e| {
+    CliError::Other(format!(
+      "Failed to write SKILL.md for {}: {}",
+      skill_name, e
+    ))
+  })?;
 
   Ok(())
 }

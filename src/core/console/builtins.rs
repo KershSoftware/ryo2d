@@ -3,6 +3,8 @@
 //! Commands use a category:command format (e.g., `debug:fps`, `system:timescale`).
 //! Root-level commands (help, clear, quit, exit) don't require a category.
 
+use std::net::UdpSocket;
+
 use super::commands::{CommandRegistry, CommandResult};
 
 /// Register all built-in commands with the registry
@@ -113,6 +115,12 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
         ctx
           .console
           .print("  system:version       - Show engine version information");
+        ctx
+          .console
+          .print("  system:ip:lan        - Show local LAN IP address");
+        ctx
+          .console
+          .print("  system:ip:wan        - Show public WAN IP address");
 
         // Dynamically list game: commands
         let mut game_commands: Vec<_> = ctx
@@ -347,4 +355,161 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
       CommandResult::Ok
     },
   );
+
+  // LAN IP command
+  registry.register(
+    "system:ip:lan",
+    "Show local LAN IP address",
+    |_args, ctx| {
+      match get_lan_ip() {
+        Some(ip) => ctx.console.print(format!("LAN IP: {}", ip)),
+        None => ctx.console.print_error("Could not determine LAN IP"),
+      }
+      CommandResult::Ok
+    },
+  );
+
+  // WAN IP command
+  registry.register(
+    "system:ip:wan",
+    "Show public WAN IP address",
+    |_args, ctx| {
+      ctx.console.print_system("Fetching WAN IP...");
+      match get_wan_ip() {
+        Some(ip) => ctx.console.print(format!("WAN IP: {}", ip)),
+        None => ctx
+          .console
+          .print_error("Could not determine WAN IP (no internet?)"),
+      }
+      CommandResult::Ok
+    },
+  );
+}
+
+/// Get the local LAN IP by connecting a UDP socket to a public address
+fn get_lan_ip() -> Option<String> {
+  let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+  socket.connect("8.8.8.8:80").ok()?;
+  let local_addr = socket.local_addr().ok()?;
+  Some(local_addr.ip().to_string())
+}
+
+/// Get the public WAN IP via a plain HTTP request to api.ipify.org
+fn get_wan_ip() -> Option<String> {
+  use std::io::{Read, Write};
+  use std::net::{TcpStream, ToSocketAddrs};
+  use std::time::Duration;
+
+  let timeout = Duration::from_secs(5);
+
+  // Resolve via DNS then connect with timeout
+  let addr = "api.ipify.org:80".to_socket_addrs().ok()?.next()?;
+  let mut stream = TcpStream::connect_timeout(&addr, timeout).ok()?;
+  stream.set_read_timeout(Some(timeout)).ok()?;
+
+  let request = "GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n";
+  stream.write_all(request.as_bytes()).ok()?;
+
+  let mut response = String::new();
+  stream.read_to_string(&mut response).ok()?;
+
+  // Parse IP from HTTP response body (after headers)
+  let body = response.split("\r\n\r\n").nth(1)?;
+  let ip = body.trim().to_string();
+
+  // Basic validation: should look like an IP address
+  if !ip.is_empty() && ip.len() <= 45 {
+    Some(ip)
+  } else {
+    None
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::config::DebugConfig;
+
+  fn make_test_context<'a>(
+    console: &'a mut super::super::ConsoleState,
+    debug_config: &'a mut DebugConfig,
+    time_scale: &'a mut f32,
+  ) -> super::super::commands::CommandContext<'a> {
+    super::super::commands::CommandContext {
+      console,
+      debug_config,
+      quit_requested: false,
+      time_scale,
+      commands: Vec::new(),
+      game_name: None,
+      game_version: None,
+    }
+  }
+
+  #[test]
+  fn test_builtins_register_ip_commands() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+
+    assert!(registry.has_command("system:ip:lan"));
+    assert!(registry.has_command("system:ip:wan"));
+  }
+
+  #[test]
+  fn test_ip_lan_command_executes() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+
+    let mut console = super::super::ConsoleState::new();
+    let mut debug_config = DebugConfig::default();
+    let mut time_scale = 1.0;
+    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+
+    // Should always return Ok (prints error message on failure, doesn't return Error)
+    let result = registry.execute("system:ip:lan", &mut ctx);
+    assert_eq!(result, super::super::commands::CommandResult::Ok);
+  }
+
+  #[test]
+  fn test_ip_wan_command_executes() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+
+    let mut console = super::super::ConsoleState::new();
+    let mut debug_config = DebugConfig::default();
+    let mut time_scale = 1.0;
+    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+
+    // Should always return Ok regardless of network availability
+    let result = registry.execute("system:ip:wan", &mut ctx);
+    assert_eq!(result, super::super::commands::CommandResult::Ok);
+  }
+
+  #[test]
+  fn test_get_lan_ip_returns_valid_format() {
+    // This test requires network access but should work in most environments
+    if let Some(ip) = get_lan_ip() {
+      // Should be a valid IPv4 address
+      assert!(ip.contains('.'));
+      assert!(ip.len() <= 15);
+      // Should not be 0.0.0.0 or empty
+      assert_ne!(ip, "0.0.0.0");
+      assert!(!ip.is_empty());
+    }
+    // If None, it just means no network — that's fine for CI
+  }
+
+  #[test]
+  fn test_ip_commands_can_be_removed() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+
+    assert!(registry.has_command("system:ip:lan"));
+    assert!(registry.remove_builtin("system:ip:lan"));
+    assert!(!registry.has_command("system:ip:lan"));
+
+    assert!(registry.has_command("system:ip:wan"));
+    assert!(registry.remove_builtin("system:ip:wan"));
+    assert!(!registry.has_command("system:ip:wan"));
+  }
 }

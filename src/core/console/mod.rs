@@ -39,7 +39,9 @@ mod builtins;
 mod commands;
 
 pub use builtins::register_builtins;
-pub use commands::{CommandContext, CommandFn, CommandInfo, CommandRegistry, CommandResult};
+pub use commands::{
+  CommandContext, CommandFn, CommandInfo, CommandRegistry, CommandResult, ConsoleCommandBuilder,
+};
 
 use std::collections::VecDeque;
 

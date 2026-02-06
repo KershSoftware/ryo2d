@@ -615,6 +615,14 @@ impl<'a> SceneContext<'a> {
       .command_registry
       .register_handler(name, self.scope_id, handler)
   }
+
+  /// Remove a built-in console command by name.
+  ///
+  /// This allows games to override or disable reserved engine commands.
+  /// Returns `true` if the command existed and was removed.
+  pub fn remove_builtin_console_command(&mut self, name: &str) -> bool {
+    self.command_registry.remove_builtin(name)
+  }
 }
 
 // ============================================================================

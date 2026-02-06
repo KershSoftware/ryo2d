@@ -57,7 +57,7 @@ pub mod prelude {
   };
 
   // Engine builder
-  pub use crate::core::engine::{ConsoleCommandDeclarer, EngineBuilder, WindowMode};
+  pub use crate::core::engine::{EngineBuilder, WindowMode};
 
   // ECS types
   pub use crate::core::ecs::{
@@ -256,7 +256,9 @@ pub mod prelude {
   pub use crate::core::profiler::{profile_function, profile_scope};
 
   // Developer Console
-  pub use crate::core::console::{CommandContext, CommandRegistry, CommandResult, ConsoleState};
+  pub use crate::core::console::{
+    CommandContext, CommandRegistry, CommandResult, ConsoleCommandBuilder, ConsoleState,
+  };
 
   // Logging macros for game code
   pub use crate::game_debug;
