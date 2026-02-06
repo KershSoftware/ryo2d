@@ -219,6 +219,11 @@ pub struct GameScene {
 
   // Mouse drag state for click-and-drag slingshot control
   mouse_drag_start: Option<(f32, f32)>,
+
+  // Ping measurement (client only)
+  ping_ms: Option<u32>,
+  ping_timer: f32,
+  ping_send_time: Option<std::time::Instant>,
 }
 
 impl GameScene {
@@ -277,6 +282,9 @@ impl GameScene {
       screen_width: 0.0,
       screen_height: 0.0,
       mouse_drag_start: None,
+      ping_ms: None,
+      ping_timer: 0.0,
+      ping_send_time: None,
     })
   }
 
@@ -345,6 +353,9 @@ impl GameScene {
       screen_width: 0.0,
       screen_height: 0.0,
       mouse_drag_start: None,
+      ping_ms: None,
+      ping_timer: 0.0,
+      ping_send_time: None,
     })
   }
 
@@ -412,6 +423,9 @@ impl GameScene {
       screen_width: 0.0,
       screen_height: 0.0,
       mouse_drag_start: None,
+      ping_ms: None,
+      ping_timer: 0.0,
+      ping_send_time: None,
     })
   }
 
@@ -498,6 +512,9 @@ impl GameScene {
       screen_width: 0.0,
       screen_height: 0.0,
       mouse_drag_start: None,
+      ping_ms: None,
+      ping_timer: 0.0,
+      ping_send_time: None,
     })
   }
 
@@ -1967,6 +1984,7 @@ impl GameScene {
     let mut pending_inputs: Vec<(Entity, LeapInput)> = Vec::new();
     let mut pending_respawns: Vec<Entity> = Vec::new();
     let mut pending_reconnects: Vec<(ClientId, u64)> = Vec::new();
+    let mut pending_pongs: Vec<(ClientId, u32)> = Vec::new();
     {
       let server = self.server.as_mut().unwrap();
       for client_id in server.remote_clients().collect::<Vec<_>>() {
@@ -1985,11 +2003,32 @@ impl GameScene {
               }
             }
             // Try to parse as SessionReconnectRpc
-            else if let Ok(rpc) = serialized.into_rpc::<SessionReconnectRpc>() {
+            else if let Ok(rpc) = serialized.clone().into_rpc::<SessionReconnectRpc>() {
               pending_reconnects.push((client_id, rpc.payload.session_id));
+            }
+            // Try to parse as PingRpc - echo back as PongRpc
+            else if let Ok(rpc) = serialized.into_rpc::<PingRpc>() {
+              pending_pongs.push((client_id, rpc.payload.token));
             }
           }
         }
+      }
+    }
+
+    // Send pong responses
+    for (client_id, token) in pending_pongs {
+      let pong = PongRpc { token };
+      if let Ok(serialized) = SerializedRpc::from_rpc(
+        &pong,
+        self.local_client_id.unwrap(),
+        RpcTarget::Client(client_id),
+      ) && let Ok(bytes) = serialized.to_bytes()
+      {
+        self
+          .server
+          .as_mut()
+          .unwrap()
+          .send(client_id, Channel::ReliableOrdered, &bytes);
       }
     }
 
@@ -2057,6 +2096,25 @@ impl GameScene {
 
     // Update particle system
     self.particle_system.update(ctx.world, ctx.events, dt);
+
+    // Track remote players' best heights on the host side
+    let local_id = self.local_client_id;
+    for (&client_id, &entity) in &self.players {
+      if Some(client_id) == local_id {
+        continue;
+      }
+      if let Some(transform) = ctx.world.get_component::<Transform>(entity)
+        && let Some(player) = ctx.world.get_component::<Player>(entity)
+      {
+        let height = ((PLAYER_SPAWN_Y - transform.y) / HEIGHT_SCALE).max(0.0);
+        if player.grounded {
+          let best = self.remote_best_heights.entry(client_id).or_insert(0.0);
+          if height > *best {
+            *best = height;
+          }
+        }
+      }
+    }
 
     // Broadcast positions
     self.broadcast_timer += dt;
@@ -2128,7 +2186,7 @@ impl GameScene {
     {
       let client = self.client.as_mut().unwrap();
 
-      // Check for game init/seed (reliable)
+      // Check for game init/seed/pong (reliable)
       while let Some(data) = client.receive(Channel::ReliableOrdered) {
         if let Ok(serialized) = SerializedRpc::from_bytes(&data) {
           // Try new GameInitRpc first
@@ -2136,7 +2194,7 @@ impl GameScene {
             received_init = Some(rpc.payload);
           }
           // Fall back to old GameSeedRpc for backwards compatibility
-          else if let Ok(rpc) = serialized.into_rpc::<GameSeedRpc>() {
+          else if let Ok(rpc) = serialized.clone().into_rpc::<GameSeedRpc>() {
             received_init = Some(GameInitRpc {
               seed: rpc.payload.seed,
               session_id: 0,
@@ -2145,6 +2203,12 @@ impl GameScene {
               checkpoint_y: None,
               checkpoint_height: None,
             });
+          }
+          // Pong response for ping measurement
+          else if serialized.into_rpc::<PongRpc>().is_ok() {
+            if let Some(sent_at) = self.ping_send_time.take() {
+              self.ping_ms = Some(sent_at.elapsed().as_millis() as u32);
+            }
           }
         }
       }
@@ -2289,12 +2353,28 @@ impl GameScene {
 
     // Send input to server
     let client = self.client.as_mut().unwrap();
+    let client_id = client.client_id();
     let input_rpc = LeapInputRpc { input };
-    if let Ok(serialized) =
-      SerializedRpc::from_rpc(&input_rpc, client.client_id(), RpcTarget::Server)
+    if let Ok(serialized) = SerializedRpc::from_rpc(&input_rpc, client_id, RpcTarget::Server)
       && let Ok(bytes) = serialized.to_bytes()
     {
       client.send(Channel::ReliableOrdered, &bytes);
+    }
+
+    // Send ping every second
+    self.ping_timer += dt;
+    if self.ping_timer >= 1.0 {
+      self.ping_timer = 0.0;
+      let ping = PingRpc {
+        token: self.ping_ms.unwrap_or(0),
+      };
+      if let Ok(serialized) = SerializedRpc::from_rpc(&ping, client_id, RpcTarget::Server)
+        && let Ok(bytes) = serialized.to_bytes()
+      {
+        let client = self.client.as_mut().unwrap();
+        client.send(Channel::ReliableOrdered, &bytes);
+        self.ping_send_time = Some(std::time::Instant::now());
+      }
     }
 
     // Run local physics for smooth movement (client-side prediction)
@@ -2697,6 +2777,8 @@ impl Scene for GameScene {
         Color::new(255, 255, 255, 100),
       );
 
+      let right_y = 40.0;
+
       if self.mode == GameMode::Host {
         if let Some(ref signal) = self.signal_url {
           let signal_text = format!("Signal: {}", signal);
@@ -2704,7 +2786,7 @@ impl Scene for GameScene {
           ui.draw_text(
             &signal_text,
             sw as f32 - tw as f32 - 20.0,
-            40.0,
+            right_y,
             Color::new(100, 180, 255, 150),
           );
         } else if let Some(ref lan) = self.lan_ip {
@@ -2713,9 +2795,25 @@ impl Scene for GameScene {
           ui.draw_text(
             &lan_text,
             sw as f32 - tw as f32 - 20.0,
-            40.0,
+            right_y,
             Color::new(100, 200, 100, 150),
           );
+        }
+      }
+
+      // Ping display for client (under room code)
+      if self.mode == GameMode::Client {
+        if let Some(ping) = self.ping_ms {
+          let ping_text = format!("Ping {}ms", ping);
+          let (tw, _) = ui.text_size(&ping_text);
+          let ping_color = if ping < 80 {
+            Color::new(100, 200, 100, 150)
+          } else if ping < 150 {
+            Color::new(200, 200, 100, 150)
+          } else {
+            Color::new(200, 100, 100, 150)
+          };
+          ui.draw_text(&ping_text, sw as f32 - tw as f32 - 20.0, right_y, ping_color);
         }
       }
     }
@@ -2728,32 +2826,31 @@ impl Scene for GameScene {
     let max_text = format!("Best: {:.0}m", self.max_height);
     ui.draw_text(&max_text, 20.0, 45.0, Color::new(150, 150, 150, 200));
 
-    // Show remote player's best height in red (top right) - multiplayer only
+    // Show rival's best height below local best - multiplayer only
     if self.mode != GameMode::SinglePlayer {
-      // Find the remote player's best height (the one that's not us)
       let local_id = self.local_client_id;
       for (client_id, &best_height) in &self.remote_best_heights {
         if Some(*client_id) != local_id && best_height > 0.0 {
-          let (sw, _) = ui.screen_size();
-          let remote_text = format!("Rival: {:.0}m", best_height);
+          let rival_text = format!("Rival: {:.0}m", best_height);
           ui.draw_text(
-            &remote_text,
-            sw as f32 - 120.0,
+            &rival_text,
             20.0,
+            70.0,
             Color::rgb(PLAYER_B_COLOR.0, PLAYER_B_COLOR.1, PLAYER_B_COLOR.2),
           );
-          break; // Only show one rival
+          break;
         }
       }
     }
 
-    // Checkpoint indicator
+    // Checkpoint indicator (shift down if rival text is showing)
     if self.last_checkpoint_height > 0.0 {
+      let checkpoint_y = if self.mode != GameMode::SinglePlayer { 95.0 } else { 70.0 };
       let checkpoint_text = format!("Checkpoint: {:.0}m", self.last_checkpoint_height);
       ui.draw_text(
         &checkpoint_text,
         20.0,
-        70.0,
+        checkpoint_y,
         Color::rgb(
           CHECKPOINT_PLATFORM_COLOR.0,
           CHECKPOINT_PLATFORM_COLOR.1,

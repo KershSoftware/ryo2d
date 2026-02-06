@@ -225,6 +225,38 @@ pub struct SessionData {
   pub max_height: f32,
 }
 
+/// Client -> Server: Ping request (echoed back as pong)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PingRpc {
+  pub token: u32,
+}
+
+impl Rpc for PingRpc {
+  fn rpc_id() -> RpcTypeId {
+    RpcTypeId::from_name("PingRpc")
+  }
+
+  fn rpc_name() -> &'static str {
+    "PingRpc"
+  }
+}
+
+/// Server -> Client: Pong response (echoes ping token)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PongRpc {
+  pub token: u32,
+}
+
+impl Rpc for PongRpc {
+  fn rpc_id() -> RpcTypeId {
+    RpcTypeId::from_name("PongRpc")
+  }
+
+  fn rpc_name() -> &'static str {
+    "PongRpc"
+  }
+}
+
 /// Helper to serialize a value to bytes
 pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, NetworkError> {
   serde_json::to_vec(value).map_err(|e| NetworkError::SendError(e.to_string()))
