@@ -1248,9 +1248,9 @@ impl<'a> UiContext<'a> {
       self.click_consumed = true;
       state.set_focused(true);
 
-      // Calculate which character was clicked and position cursor there
+      // Calculate which character was clicked, accounting for scroll offset
       let mouse_x = self.input.mouse_x();
-      let relative_x = mouse_x - text_x;
+      let relative_x = mouse_x - text_x + state.scroll_offset();
 
       if relative_x <= 0.0 {
         // Click before text - position at start
@@ -1341,6 +1341,10 @@ impl<'a> UiContext<'a> {
     self.push_clip(text_area);
 
     let char_width = self.font.char_width() as f32;
+
+    // Ensure cursor is visible (adjusts scroll offset for overflow)
+    state.ensure_cursor_visible(text_width, char_width);
+    let scroll = state.scroll_offset();
     let text = state.text();
 
     // Draw selection highlight if any
@@ -1348,7 +1352,7 @@ impl<'a> UiContext<'a> {
       // Calculate pixel positions for selection
       let start_chars = text[..sel_start].chars().count();
       let end_chars = text[..sel_end].chars().count();
-      let sel_x = text_x + start_chars as f32 * char_width;
+      let sel_x = text_x + start_chars as f32 * char_width - scroll;
       let sel_width = (end_chars - start_chars) as f32 * char_width;
       let sel_rect = Rect::new(sel_x, text_y, sel_width, self.font.char_height() as f32);
       self.draw_rect(sel_rect, selection_color);
@@ -1358,14 +1362,14 @@ impl<'a> UiContext<'a> {
     if text.is_empty() {
       self.draw_text(placeholder, text_x, text_y, placeholder_color);
     } else {
-      // Draw the text content
-      self.draw_text(text, text_x, text_y, text_color);
+      // Draw the text content, shifted by scroll offset
+      self.draw_text(text, text_x - scroll, text_y, text_color);
 
       // Draw IME preedit text at cursor if composing
       let preedit = self.input.ime_preedit();
       if !preedit.is_empty() {
         let cursor_chars = text[..state.cursor()].chars().count();
-        let preedit_x = text_x + cursor_chars as f32 * char_width;
+        let preedit_x = text_x + cursor_chars as f32 * char_width - scroll;
         // Draw preedit with underline-style indicator
         self.draw_text(preedit, preedit_x, text_y, text_color);
         // Draw underline for preedit text
@@ -1387,7 +1391,7 @@ impl<'a> UiContext<'a> {
       let cursor_chars = text[..state.cursor()].chars().count();
       // Account for preedit text when positioning cursor
       let preedit_chars = self.input.ime_preedit().chars().count();
-      let cursor_x = text_x + (cursor_chars + preedit_chars) as f32 * char_width;
+      let cursor_x = text_x + (cursor_chars + preedit_chars) as f32 * char_width - scroll;
       let cursor_rect = Rect::new(cursor_x, text_y, 2.0, self.font.char_height() as f32);
       self.draw_rect(cursor_rect, cursor_color);
     }

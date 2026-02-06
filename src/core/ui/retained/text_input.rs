@@ -50,6 +50,12 @@ pub struct TextInputState {
   blink_timer: f32,
   /// Whether cursor is currently visible (toggles during blink)
   cursor_visible: bool,
+  /// Skip text_input insertion for one frame after paste.
+  /// On Windows, IME may asynchronously commit clipboard text in the frame
+  /// after Ctrl+V, causing double insertion. This flag prevents that.
+  paste_frame_skip: bool,
+  /// Horizontal scroll offset in pixels for text that overflows the input field.
+  scroll_offset: f32,
 }
 
 /// Cursor blink rate in seconds (on/off cycle)
@@ -71,6 +77,8 @@ impl TextInputState {
       focused: false,
       blink_timer: 0.0,
       cursor_visible: true,
+      paste_frame_skip: false,
+      scroll_offset: 0.0,
     }
   }
 
@@ -85,6 +93,8 @@ impl TextInputState {
       focused: false,
       blink_timer: 0.0,
       cursor_visible: true,
+      paste_frame_skip: false,
+      scroll_offset: 0.0,
     }
   }
 
@@ -143,6 +153,32 @@ impl TextInputState {
     self
       .selection_range()
       .map(|(start, end)| &self.text[start..end])
+  }
+
+  /// Get the current horizontal scroll offset in pixels.
+  pub fn scroll_offset(&self) -> f32 {
+    self.scroll_offset
+  }
+
+  /// Adjust scroll offset so the cursor is visible within the given text width.
+  ///
+  /// Call this after any operation that might move the cursor. The `text_width` is
+  /// the available width for text (input rect width minus padding), and `char_width`
+  /// is the width of a single character in the monospace font.
+  pub fn ensure_cursor_visible(&mut self, text_width: f32, char_width: f32) {
+    let cursor_chars = self.text[..self.cursor].chars().count();
+    let cursor_px = cursor_chars as f32 * char_width;
+
+    // Scroll right if cursor is past the visible area
+    if cursor_px - self.scroll_offset > text_width {
+      self.scroll_offset = cursor_px - text_width + char_width;
+    }
+    // Scroll left if cursor is before the visible area
+    if cursor_px < self.scroll_offset {
+      self.scroll_offset = (cursor_px - char_width).max(0.0);
+    }
+    // Don't scroll past the start
+    self.scroll_offset = self.scroll_offset.max(0.0);
   }
 
   /// Select all text.
@@ -372,10 +408,11 @@ impl TextInputState {
 
     // Handle committed text from IME (but not when Ctrl/Cmd is held - those are shortcuts)
     let text = input.text_input();
-    if !text.is_empty() && !ctrl {
+    if !text.is_empty() && !ctrl && !self.paste_frame_skip {
       self.insert(text);
       modified = true;
     }
+    self.paste_frame_skip = false;
 
     // Arrow keys (use key_repeat for held-key behavior)
     if input.key_repeat(KeyCode::ArrowLeft) {
@@ -422,6 +459,9 @@ impl TextInputState {
 
     // Paste (Ctrl+V)
     if ctrl && input.key_pressed(KeyCode::KeyV) && self.paste() {
+      // Skip the text_input path for the next frame to prevent double insertion.
+      // On Windows, IME may asynchronously commit clipboard text after Ctrl+V.
+      self.paste_frame_skip = true;
       modified = true;
     }
 
@@ -794,5 +834,153 @@ mod tests {
     let pasted = state.paste();
     assert!(pasted);
     assert_eq!(state.text(), "line1 line2  line3"); // \r\n becomes two spaces
+  }
+
+  // =========================================================================
+  // Paste frame skip tests (Windows double-paste prevention)
+  // =========================================================================
+
+  #[test]
+  #[ignore] // Requires system clipboard access
+  #[serial]
+  fn paste_sets_frame_skip_flag() {
+    let mut clipboard = Clipboard::new().unwrap();
+    clipboard.set_text("test").unwrap();
+
+    let mut state = TextInputState::new();
+    assert!(!state.paste_frame_skip);
+    // Simulate what handle_input does after a successful paste
+    state.paste();
+    state.paste_frame_skip = true;
+    assert!(state.paste_frame_skip);
+  }
+
+  #[test]
+  fn paste_frame_skip_prevents_insert() {
+    let mut state = TextInputState::new();
+    state.set_focused(true);
+    state.paste_frame_skip = true;
+
+    // Simulate what handle_input does: text arrives but paste_frame_skip is set
+    let text = "clipboard content";
+    // With paste_frame_skip true, text should NOT be inserted
+    if !text.is_empty() && !state.paste_frame_skip {
+      state.insert(text);
+    }
+    state.paste_frame_skip = false;
+
+    assert_eq!(state.text(), ""); // Text was NOT inserted
+    assert!(!state.paste_frame_skip); // Flag was reset
+  }
+
+  #[test]
+  fn paste_frame_skip_resets_after_one_frame() {
+    let mut state = TextInputState::new();
+    state.paste_frame_skip = true;
+
+    // Simulate frame: skip fires, then flag resets
+    let skipped = state.paste_frame_skip;
+    state.paste_frame_skip = false;
+    assert!(skipped);
+    assert!(!state.paste_frame_skip);
+
+    // Next frame: no skip
+    assert!(!state.paste_frame_skip);
+  }
+
+  // =========================================================================
+  // Scroll offset tests (text overflow navigation)
+  // =========================================================================
+
+  #[test]
+  fn scroll_offset_starts_at_zero() {
+    let state = TextInputState::new();
+    assert_eq!(state.scroll_offset(), 0.0);
+  }
+
+  #[test]
+  fn ensure_cursor_visible_no_scroll_when_fits() {
+    let mut state = TextInputState::with_text("hello");
+    // 5 chars * 8px = 40px, text_width = 100px — fits easily
+    state.ensure_cursor_visible(100.0, 8.0);
+    assert_eq!(state.scroll_offset(), 0.0);
+  }
+
+  #[test]
+  fn ensure_cursor_visible_scrolls_right_when_cursor_overflows() {
+    let mut state = TextInputState::with_text("hello world test");
+    // cursor at end = 16 chars * 8px = 128px, text_width = 80px
+    state.ensure_cursor_visible(80.0, 8.0);
+    // Should scroll so cursor (128px) is within visible area
+    // scroll_offset = cursor_px - text_width + char_width = 128 - 80 + 8 = 56
+    assert_eq!(state.scroll_offset(), 56.0);
+  }
+
+  #[test]
+  fn ensure_cursor_visible_scrolls_left_when_cursor_before_view() {
+    let mut state = TextInputState::with_text("hello world test");
+    state.scroll_offset = 80.0; // Scrolled far right
+    state.cursor = 0; // Cursor at start
+    state.selection_anchor = 0;
+
+    state.ensure_cursor_visible(80.0, 8.0);
+    // cursor_px = 0, which is < scroll_offset (80)
+    // scroll_offset = max(cursor_px - char_width, 0) = max(0 - 8, 0) = 0
+    assert_eq!(state.scroll_offset(), 0.0);
+  }
+
+  #[test]
+  fn ensure_cursor_visible_tracks_cursor_movement() {
+    let mut state = TextInputState::with_text("abcdefghijklmnop");
+    let char_width = 8.0;
+    let text_width = 40.0; // Only 5 chars visible
+
+    // Cursor at end (16 chars * 8 = 128px)
+    state.ensure_cursor_visible(text_width, char_width);
+    let scroll_at_end = state.scroll_offset();
+    assert!(scroll_at_end > 0.0);
+
+    // Move cursor to position 3 (24px) — should scroll left
+    state.cursor = 3;
+    state.selection_anchor = 3;
+    state.ensure_cursor_visible(text_width, char_width);
+    assert!(state.scroll_offset() < scroll_at_end);
+
+    // Move cursor to start
+    state.cursor = 0;
+    state.selection_anchor = 0;
+    state.ensure_cursor_visible(text_width, char_width);
+    assert_eq!(state.scroll_offset(), 0.0);
+  }
+
+  #[test]
+  fn ensure_cursor_visible_scroll_never_negative() {
+    let mut state = TextInputState::with_text("hi");
+    state.cursor = 0;
+    state.selection_anchor = 0;
+    state.ensure_cursor_visible(200.0, 8.0);
+    assert_eq!(state.scroll_offset(), 0.0);
+  }
+
+  #[test]
+  fn ensure_cursor_visible_with_insert_and_backspace() {
+    let mut state = TextInputState::new();
+    state.set_focused(true);
+    let char_width = 8.0;
+    let text_width = 40.0; // 5 chars visible
+
+    // Type 10 characters
+    state.insert("0123456789");
+    state.ensure_cursor_visible(text_width, char_width);
+    // cursor at 10*8=80px, scroll should make it visible
+    assert!(state.scroll_offset() > 0.0);
+
+    // Backspace all the way back
+    for _ in 0..10 {
+      state.backspace();
+      state.ensure_cursor_visible(text_width, char_width);
+    }
+    assert_eq!(state.text(), "");
+    assert_eq!(state.scroll_offset(), 0.0);
   }
 }

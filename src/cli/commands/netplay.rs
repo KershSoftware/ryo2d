@@ -54,7 +54,6 @@ NOTE:
 
 EXAMPLES:
     ryo2d netplay start
-    ryo2d netplay start --room my-game-lobby
     ryo2d netplay ip
 
 Run 'ryo2d netplay <COMMAND> --help' for more information.
@@ -67,37 +66,14 @@ Run 'ryo2d netplay <COMMAND> --help' for more information.
 // =============================================================================
 
 fn execute_start(args: &[String]) -> CliResult<()> {
-  let mut room: Option<String> = None;
-  let mut port = 3536u16;
-
-  let mut i = 0;
-  while i < args.len() {
-    match args[i].as_str() {
-      "--help" | "-h" => {
-        print_start_help();
-        return Ok(());
-      }
-      "--room" | "-r" => {
-        i += 1;
-        if i < args.len() {
-          room = Some(args[i].clone());
-        }
-      }
-      "--port" | "-p" => {
-        i += 1;
-        if i < args.len() {
-          port = args[i].parse().unwrap_or(3536);
-        }
-      }
-      _ => {}
+  for arg in args {
+    if arg == "--help" || arg == "-h" {
+      print_start_help();
+      return Ok(());
     }
-    i += 1;
   }
 
-  // Generate random room name if not provided
-  let room = room.unwrap_or_else(generate_room_name);
-
-  run_netplay_server(port, &room)
+  run_netplay_server()
 }
 
 fn print_start_help() {
@@ -106,12 +82,7 @@ fn print_start_help() {
 ryo2d netplay start - Start a TEMPORARY signaling server for testing
 
 USAGE:
-    ryo2d netplay start [OPTIONS]
-
-OPTIONS:
-    -r, --room <NAME>    Room name for matchmaking (default: random)
-    -p, --port <PORT>    Local port for matchbox server (default: 3536)
-    -h, --help           Show this help message
+    ryo2d netplay start
 
 DESCRIPTION:
     Creates a temporary tunnel for testing multiplayer with friends over the
@@ -129,47 +100,12 @@ REQUIREMENTS:
       Windows:   winget install Cloudflare.cloudflared
       macOS:     brew install cloudflared
       Linux:     See Cloudflare docs for your distro
-
-EXAMPLES:
-    ryo2d netplay start
-    ryo2d netplay start --room my-game-lobby
 "#
   );
 }
 
-/// Generate a random room name like "quick-fox-42"
-fn generate_room_name() -> String {
-  use std::collections::hash_map::RandomState;
-  use std::hash::{BuildHasher, Hasher};
-  use std::time::SystemTime;
-
-  let adjectives = [
-    "quick", "brave", "calm", "eager", "fancy", "happy", "jolly", "keen", "lively", "merry",
-    "noble", "proud", "quiet", "rapid", "sharp", "swift",
-  ];
-  let nouns = [
-    "fox", "wolf", "bear", "hawk", "lion", "tiger", "eagle", "falcon", "dragon", "phoenix",
-    "knight", "wizard", "rogue", "archer", "mage", "sage",
-  ];
-
-  let state = RandomState::new();
-  let mut hasher = state.build_hasher();
-  hasher.write_u64(
-    SystemTime::now()
-      .duration_since(SystemTime::UNIX_EPOCH)
-      .unwrap_or(Duration::ZERO)
-      .as_nanos() as u64,
-  );
-  let hash = hasher.finish();
-
-  let adj = adjectives[(hash % adjectives.len() as u64) as usize];
-  let noun = nouns[((hash >> 8) % nouns.len() as u64) as usize];
-  let num = (hash >> 16) % 100;
-
-  format!("{}-{}-{}", adj, noun, num)
-}
-
-fn run_netplay_server(port: u16, room: &str) -> CliResult<()> {
+fn run_netplay_server() -> CliResult<()> {
+  let port = 3536u16;
   Output::status("Netplay", "Starting signaling server for testing...");
 
   // Check requirements and show install instructions if missing
@@ -301,7 +237,6 @@ fn run_netplay_server(port: u16, room: &str) -> CliResult<()> {
   let reader = BufReader::new(stderr);
 
   let mut tunnel_url: Option<String> = None;
-  let room_name = room.to_string();
 
   // Spawn a thread to read cloudflared output
   let running_clone = running.clone();
@@ -357,42 +292,12 @@ fn run_netplay_server(port: u16, room: &str) -> CliResult<()> {
       "  ║                                                                                ║"
     );
     println!(
-      "  ║  Share this with friends:                                                      ║"
+      "  ║  Share this URL with friends:                                                  ║"
     );
     println!(
       "  ║                                                                                ║"
     );
-    println!("  ║    URL:  {:<69} ║", ws_url);
-    println!("  ║    Room: {:<69} ║", room_name);
-    println!(
-      "  ║                                                                                ║"
-    );
-    println!(
-      "  ╠════════════════════════════════════════════════════════════════════════════════╣"
-    );
-    println!(
-      "  ║  Code for your game:                                                           ║"
-    );
-    println!(
-      "  ║                                                                                ║"
-    );
-    println!(
-      "  ║    let config = NetworkServerConfig {{                                          ║"
-    );
-    println!(
-      "  ║        transport: TransportConfig::WebRtc(WebRtcConfig::new(                   ║"
-    );
-    println!("  ║{:<79} ║", format!("            \"{}\",", ws_url));
-    println!("  ║{:<79} ║", format!("            \"{}\",", room_name));
-    println!(
-      "  ║        )),                                                                     ║"
-    );
-    println!(
-      "  ║        ..Default::default()                                                    ║"
-    );
-    println!(
-      "  ║    }};                                                                          ║"
-    );
+    println!("  ║    {:<75} ║", ws_url);
     println!(
       "  ║                                                                                ║"
     );

@@ -575,6 +575,16 @@ impl InputState {
 
   /// Handle IME commit (finalized text ready to insert)
   pub(crate) fn handle_ime_commit(&mut self, text: String) {
+    // When Ctrl/Cmd is held, the IME commit is likely from a keyboard shortcut
+    // (e.g. Ctrl+V paste on Windows). Skip it — the app handles shortcuts directly.
+    let ctrl_held = self.keys_down.contains(&KeyCode::ControlLeft)
+      || self.keys_down.contains(&KeyCode::ControlRight)
+      || self.keys_down.contains(&KeyCode::SuperLeft)
+      || self.keys_down.contains(&KeyCode::SuperRight);
+    if ctrl_held {
+      return;
+    }
+
     // On macOS, both KeyboardInput{text} and Ime::Commit fire for the same keypress.
     // Remove only the keyboard-sourced portion (tracked by keyboard_text_len) so we
     // don't accidentally drop text from a *different* key that arrived in the same frame.
@@ -1953,6 +1963,52 @@ mod tests {
     input.handle_text_input("y");
     input.handle_ime_commit("y".to_string());
     assert_eq!(input.text_input(), "y");
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // IME Ctrl Guard Tests
+  // On Windows, IME may commit clipboard text during Ctrl+V. The guard in
+  // handle_ime_commit skips commits when Ctrl/Cmd is held.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /// IME commit is blocked when Ctrl is held (e.g. Ctrl+V paste on Windows).
+  #[test]
+  fn ime_commit_blocked_when_ctrl_held() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::ControlLeft, ElementState::Pressed);
+    input.handle_ime_commit("clipboard text".to_string());
+
+    assert_eq!(input.text_input(), "");
+  }
+
+  /// IME commit is blocked when Cmd/Super is held (e.g. Cmd+V on macOS).
+  #[test]
+  fn ime_commit_blocked_when_super_held() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::SuperLeft, ElementState::Pressed);
+    input.handle_ime_commit("clipboard text".to_string());
+
+    assert_eq!(input.text_input(), "");
+  }
+
+  /// IME commit works normally when no modifier is held.
+  #[test]
+  fn ime_commit_allowed_without_modifiers() {
+    let mut input = InputState::new();
+    input.handle_ime_commit("hello".to_string());
+
+    assert_eq!(input.text_input(), "hello");
+  }
+
+  /// IME commit works after Ctrl is released.
+  #[test]
+  fn ime_commit_allowed_after_ctrl_released() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::ControlLeft, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::ControlLeft, ElementState::Released);
+    input.handle_ime_commit("hello".to_string());
+
+    assert_eq!(input.text_input(), "hello");
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
