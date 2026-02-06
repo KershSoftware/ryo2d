@@ -17,11 +17,13 @@ assets = "assets"
 # =============================================================================
 
 [system]
-vsync = true
+vsync = false
 display_mode = "borderless_fullscreen"
 master_volume = 0.8
 show_fps = false
 console = true
+target_background_fps = 0
+background_rendering = true
 
 # =============================================================================
 # DEVELOPER-ONLY SETTINGS
