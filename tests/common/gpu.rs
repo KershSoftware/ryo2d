@@ -3,7 +3,7 @@
 //! Provides GPU initialization without requiring a window, enabling
 //! automated testing of rendering and GPU-based systems.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Headless GPU context for e2e testing.
 ///
@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// # Example
 ///
 /// ```ignore
-/// let gpu = TestGpu::new()?;
+/// let gpu = TestGpu::shared()?;
 /// let target = gpu.create_target(100, 100);
 /// // ... render to target ...
 /// let pixels = pollster::block_on(target.read_pixels(&gpu));
@@ -24,12 +24,25 @@ pub struct TestGpu {
   pub format: wgpu::TextureFormat,
 }
 
+/// Shared GPU instance to avoid concurrent initialization deadlocks on Windows.
+static SHARED_GPU: OnceLock<Option<TestGpu>> = OnceLock::new();
+
 impl TestGpu {
+  /// Get a shared headless GPU context.
+  ///
+  /// Initializes the GPU once and reuses it across all tests, avoiding
+  /// concurrent GPU initialization which deadlocks on Windows.
+  ///
+  /// Returns `None` if no GPU adapter is available (e.g., in CI without GPU).
+  pub fn shared() -> Option<&'static Self> {
+    SHARED_GPU.get_or_init(|| Self::new()).as_ref()
+  }
+
   /// Create a headless GPU context.
   ///
   /// Returns `None` if no GPU adapter is available (e.g., in CI without GPU).
-  /// Tests should handle this gracefully and skip when GPU is unavailable.
-  pub fn new() -> Option<Self> {
+  /// Prefer `shared()` in tests to avoid concurrent initialization deadlocks.
+  fn new() -> Option<Self> {
     pollster::block_on(Self::new_async())
   }
 
@@ -269,6 +282,6 @@ mod tests {
   fn test_gpu_creation() {
     // This test verifies the basic structure works
     // It may return None in CI without GPU, which is fine
-    let _gpu = TestGpu::new();
+    let _gpu = TestGpu::shared();
   }
 }

@@ -15,7 +15,7 @@ use ryo2d::prelude::*;
 /// Test that TrailRenderer can be created with headless GPU
 #[test]
 fn test_trail_renderer_creation() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_trail_renderer_creation: no GPU available");
     return;
   };
@@ -33,7 +33,7 @@ fn test_trail_renderer_creation() {
 /// Test that enabled state can be toggled
 #[test]
 fn test_trail_renderer_enable_disable() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_trail_renderer_enable_disable: no GPU available");
     return;
   };
@@ -60,7 +60,7 @@ fn test_trail_renderer_enable_disable() {
 /// Test that TrailRenderer can be resized
 #[test]
 fn test_trail_renderer_resize() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_trail_renderer_resize: no GPU available");
     return;
   };
@@ -82,7 +82,7 @@ fn test_trail_renderer_resize() {
 /// Test that begin_frame clears accumulated vertices
 #[test]
 fn test_begin_frame_clears_vertices() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_begin_frame_clears_vertices: no GPU available");
     return;
   };
@@ -116,7 +116,7 @@ fn test_begin_frame_clears_vertices() {
 /// Test that invisible trails don't add vertices
 #[test]
 fn test_invisible_trail_no_vertices() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_invisible_trail_no_vertices: no GPU available");
     return;
   };
@@ -148,7 +148,7 @@ fn test_invisible_trail_no_vertices() {
 /// Test that disabled trails (via set_enabled) don't add vertices
 #[test]
 fn test_disabled_trail_no_vertices() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_disabled_trail_no_vertices: no GPU available");
     return;
   };
@@ -179,7 +179,7 @@ fn test_disabled_trail_no_vertices() {
 /// Test that a single trail with sufficient points generates vertices
 #[test]
 fn test_single_trail_generates_vertices() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_single_trail_generates_vertices: no GPU available");
     return;
   };
@@ -211,7 +211,7 @@ fn test_single_trail_generates_vertices() {
 /// trails would connect to each other due to missing degenerate triangles.
 #[test]
 fn test_multiple_trails_degenerate_separation() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_multiple_trails_degenerate_separation: no GPU available");
     return;
   };
@@ -251,7 +251,7 @@ fn test_multiple_trails_degenerate_separation() {
 /// Test that trails with insufficient points (<2) don't add vertices
 #[test]
 fn test_insufficient_points_no_vertices() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_insufficient_points_no_vertices: no GPU available");
     return;
   };
@@ -283,7 +283,7 @@ fn test_insufficient_points_no_vertices() {
 /// Test that render doesn't crash with empty vertex buffer
 #[test]
 fn test_render_empty_trails() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_render_empty_trails: no GPU available");
     return;
   };
@@ -319,7 +319,7 @@ fn test_render_empty_trails() {
 /// Test that disabled renderer skips render
 #[test]
 fn test_render_when_disabled() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_render_when_disabled: no GPU available");
     return;
   };
@@ -380,7 +380,7 @@ fn test_render_when_disabled() {
 /// Test that trails render visible output
 #[test]
 fn test_render_produces_visible_output() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_render_produces_visible_output: no GPU available");
     return;
   };
@@ -436,7 +436,7 @@ fn test_render_produces_visible_output() {
 /// Test different trail styles render without crashing
 #[test]
 fn test_render_all_styles() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_render_all_styles: no GPU available");
     return;
   };
@@ -493,7 +493,7 @@ fn test_render_all_styles() {
 /// disabled via set_enabled(false).
 #[test]
 fn regression_visibility_check_in_add_trail() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping regression_visibility_check_in_add_trail: no GPU available");
     return;
   };
@@ -533,7 +533,7 @@ fn regression_visibility_check_in_add_trail() {
 /// where separate trails would appear connected by a line across the screen.
 #[test]
 fn regression_no_cross_trail_connections() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping regression_no_cross_trail_connections: no GPU available");
     return;
   };
@@ -596,7 +596,7 @@ fn regression_no_cross_trail_connections() {
 /// Test that Line2D renders without crashing
 #[test]
 fn test_line_rendering() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_line_rendering: no GPU available");
     return;
   };
@@ -645,7 +645,7 @@ fn test_line_rendering() {
 /// Test that invisible lines don't add vertices
 #[test]
 fn test_invisible_line_no_vertices() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_invisible_line_no_vertices: no GPU available");
     return;
   };

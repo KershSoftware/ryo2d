@@ -10,7 +10,7 @@ use crate::common::gpu::TestGpu;
 /// Returns early if no GPU is available (CI without GPU).
 #[test]
 fn test_headless_gpu_creation() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_headless_gpu_creation: no GPU available");
     return;
   };
@@ -32,7 +32,7 @@ fn test_headless_gpu_creation() {
 /// Test that we can create render targets of various sizes.
 #[test]
 fn test_render_target_creation() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_render_target_creation: no GPU available");
     return;
   };
@@ -62,7 +62,7 @@ fn test_render_target_creation() {
 /// Test that we can read pixels back from a cleared render target.
 #[test]
 fn test_pixel_readback() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_pixel_readback: no GPU available");
     return;
   };
@@ -89,7 +89,7 @@ fn test_pixel_readback() {
 /// Test that different clear colors produce correct pixel values.
 #[test]
 fn test_clear_colors() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_clear_colors: no GPU available");
     return;
   };
@@ -161,7 +161,7 @@ fn test_clear_colors() {
 /// Test that corner pixels are correctly addressed.
 #[test]
 fn test_pixel_addressing() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_pixel_addressing: no GPU available");
     return;
   };

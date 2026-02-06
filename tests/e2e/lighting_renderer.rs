@@ -152,7 +152,7 @@ impl SrgbRenderTarget {
 /// Test that LightingRenderer can be created with headless GPU
 #[test]
 fn test_lighting_renderer_creation() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_lighting_renderer_creation: no GPU available");
     return;
   };
@@ -179,7 +179,7 @@ fn test_lighting_renderer_creation() {
 /// Test that ambient light can be configured
 #[test]
 fn test_lighting_renderer_ambient_config() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_lighting_renderer_ambient_config: no GPU available");
     return;
   };
@@ -202,7 +202,7 @@ fn test_lighting_renderer_ambient_config() {
 /// Test that LightingRenderer can be resized
 #[test]
 fn test_lighting_renderer_resize() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_lighting_renderer_resize: no GPU available");
     return;
   };
@@ -221,7 +221,7 @@ fn test_lighting_renderer_resize() {
 /// Test that enabled state can be toggled
 #[test]
 fn test_lighting_renderer_enable_disable() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_lighting_renderer_enable_disable: no GPU available");
     return;
   };
@@ -256,7 +256,7 @@ fn test_lighting_renderer_enable_disable() {
 /// directly to compose() rather than a texture reference.
 #[test]
 fn test_compose_receives_pixel_data() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_compose_receives_pixel_data: no GPU available");
     return;
   };
@@ -338,7 +338,7 @@ fn test_compose_receives_pixel_data() {
 /// Test that compose with ambient light produces visible output
 #[test]
 fn test_compose_with_ambient() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_compose_with_ambient: no GPU available");
     return;
   };
@@ -426,7 +426,7 @@ fn test_compose_with_ambient() {
 /// Test that compose with zero ambient produces dark output
 #[test]
 fn test_compose_with_zero_ambient() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_compose_with_zero_ambient: no GPU available");
     return;
   };
@@ -514,7 +514,7 @@ fn test_compose_with_zero_ambient() {
 /// Test that render_lights doesn't crash with empty light list
 #[test]
 fn test_render_lights_empty() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_render_lights_empty: no GPU available");
     return;
   };
@@ -548,7 +548,7 @@ fn test_render_lights_empty() {
 /// Test that render_lights works with actual light data
 #[test]
 fn test_render_lights_with_data() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_render_lights_with_data: no GPU available");
     return;
   };
@@ -587,7 +587,7 @@ fn test_render_lights_with_data() {
 /// Test that disabled renderer skips render_lights
 #[test]
 fn test_render_lights_when_disabled() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_render_lights_when_disabled: no GPU available");
     return;
   };
@@ -638,7 +638,7 @@ fn test_render_lights_when_disabled() {
 /// The fix ensures the lit scene is copied to texture_a before effect chain starts.
 #[test]
 fn test_lighting_plus_effects_produces_visible_output() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_lighting_plus_effects_produces_visible_output: no GPU available");
     return;
   };
@@ -747,7 +747,7 @@ fn test_lighting_plus_effects_produces_visible_output() {
 /// Test that multiple effects can be chained after lighting
 #[test]
 fn test_lighting_with_multiple_effects() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_lighting_with_multiple_effects: no GPU available");
     return;
   };
@@ -815,7 +815,7 @@ fn test_lighting_with_multiple_effects() {
 /// Test that volumetric lights can be rendered without panic
 #[test]
 fn test_render_volumetric_lights() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_render_volumetric_lights: no GPU available");
     return;
   };
@@ -864,7 +864,7 @@ fn test_render_volumetric_lights() {
 /// Unit tests verify the volumetric data packing is correct.
 #[test]
 fn test_volumetric_spotlight_beam() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_volumetric_spotlight_beam: no GPU available");
     return;
   };
@@ -967,7 +967,7 @@ fn test_god_rays_params_gpu_alignment() {
 /// Test god rays effect with lighting integration
 #[test]
 fn test_god_rays_with_lighting() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_god_rays_with_lighting: no GPU available");
     return;
   };
@@ -1048,7 +1048,7 @@ fn test_god_rays_with_lighting() {
 /// correctly alongside the volumetric feature.
 #[test]
 fn test_non_volumetric_lights_unchanged() {
-  let Some(gpu) = TestGpu::new() else {
+  let Some(gpu) = TestGpu::shared() else {
     eprintln!("Skipping test_non_volumetric_lights_unchanged: no GPU available");
     return;
   };
