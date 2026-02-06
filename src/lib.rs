@@ -43,6 +43,11 @@
 pub mod cli;
 pub mod core;
 
+// Re-export puffin so that profile_scope!/profile_function! macros resolve
+// the `::puffin` path in downstream crates without requiring a direct dependency.
+#[cfg(feature = "profiler")]
+pub use puffin;
+
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
   // Core game trait

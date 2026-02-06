@@ -17,9 +17,6 @@
 
 use ryo2d::prelude::*;
 
-#[cfg(feature = "profiler")]
-use puffin::profile_scope;
-
 const SCREEN_WIDTH: u32 = 1280;
 const SCREEN_HEIGHT: u32 = 720;
 
