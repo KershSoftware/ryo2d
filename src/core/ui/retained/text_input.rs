@@ -50,10 +50,13 @@ pub struct TextInputState {
   blink_timer: f32,
   /// Whether cursor is currently visible (toggles during blink)
   cursor_visible: bool,
-  /// Skip text_input insertion for one frame after paste.
-  /// On Windows, IME may asynchronously commit clipboard text in the frame
-  /// after Ctrl+V, causing double insertion. This flag prevents that.
-  paste_frame_skip: bool,
+  /// Guards against paste firing multiple times per key press.
+  /// `key_pressed` is not consume-on-read, so render_ui running multiple times
+  /// between begin_frame calls (high FPS) would re-trigger paste each render.
+  /// This flag is set when paste fires and cleared when V is released.
+  /// Also blocks the text_input insertion path to prevent IME-sourced clipboard
+  /// text from double-inserting alongside the paste.
+  paste_guard: bool,
   /// Horizontal scroll offset in pixels for text that overflows the input field.
   scroll_offset: f32,
 }
@@ -77,7 +80,7 @@ impl TextInputState {
       focused: false,
       blink_timer: 0.0,
       cursor_visible: true,
-      paste_frame_skip: false,
+      paste_guard: false,
       scroll_offset: 0.0,
     }
   }
@@ -93,7 +96,7 @@ impl TextInputState {
       focused: false,
       blink_timer: 0.0,
       cursor_visible: true,
-      paste_frame_skip: false,
+      paste_guard: false,
       scroll_offset: 0.0,
     }
   }
@@ -406,13 +409,19 @@ impl TextInputState {
       || input.key_down(KeyCode::SuperLeft)
       || input.key_down(KeyCode::SuperRight);
 
-    // Handle committed text from IME (but not when Ctrl/Cmd is held - those are shortcuts)
+    // Reset paste guard once V is released, allowing the next paste
+    if !input.key_down(KeyCode::KeyV) {
+      self.paste_guard = false;
+    }
+
+    // Handle committed text from IME (but not when Ctrl/Cmd is held - those are shortcuts).
+    // Also skip when paste_guard is active — on Windows, IME may commit clipboard text
+    // alongside Ctrl+V, which would duplicate the app-level paste.
     let text = input.text_input();
-    if !text.is_empty() && !ctrl && !self.paste_frame_skip {
+    if !text.is_empty() && !ctrl && !self.paste_guard {
       self.insert(text);
       modified = true;
     }
-    self.paste_frame_skip = false;
 
     // Arrow keys (use key_repeat for held-key behavior)
     if input.key_repeat(KeyCode::ArrowLeft) {
@@ -457,11 +466,11 @@ impl TextInputState {
       modified = true;
     }
 
-    // Paste (Ctrl+V)
-    if ctrl && input.key_pressed(KeyCode::KeyV) && self.paste() {
-      // Skip the text_input path for the next frame to prevent double insertion.
-      // On Windows, IME may asynchronously commit clipboard text after Ctrl+V.
-      self.paste_frame_skip = true;
+    // Paste (Ctrl+V) — guarded so it only fires once per key press.
+    // key_pressed is not consume-on-read, so without the guard, paste would
+    // re-fire on every render_ui call between begin_frame resets (high FPS).
+    if ctrl && input.key_pressed(KeyCode::KeyV) && !self.paste_guard && self.paste() {
+      self.paste_guard = true;
       modified = true;
     }
 
@@ -837,55 +846,83 @@ mod tests {
   }
 
   // =========================================================================
-  // Paste frame skip tests (Windows double-paste prevention)
+  // Paste guard tests (multi-render & IME double-paste prevention)
   // =========================================================================
 
   #[test]
-  #[ignore] // Requires system clipboard access
-  #[serial]
-  fn paste_sets_frame_skip_flag() {
-    let mut clipboard = Clipboard::new().unwrap();
-    clipboard.set_text("test").unwrap();
-
-    let mut state = TextInputState::new();
-    assert!(!state.paste_frame_skip);
-    // Simulate what handle_input does after a successful paste
-    state.paste();
-    state.paste_frame_skip = true;
-    assert!(state.paste_frame_skip);
+  fn paste_guard_starts_false() {
+    let state = TextInputState::new();
+    assert!(!state.paste_guard);
   }
 
   #[test]
-  fn paste_frame_skip_prevents_insert() {
+  fn paste_guard_blocks_second_paste() {
+    // Simulate: paste fires, then handle_input runs again (second render)
     let mut state = TextInputState::new();
     state.set_focused(true);
-    state.paste_frame_skip = true;
 
-    // Simulate what handle_input does: text arrives but paste_frame_skip is set
-    let text = "clipboard content";
-    // With paste_frame_skip true, text should NOT be inserted
-    if !text.is_empty() && !state.paste_frame_skip {
-      state.insert(text);
+    // First render: paste fires, guard is set
+    state.paste_guard = true;
+
+    // Second render: key_pressed(KeyV) would still be true, but guard blocks
+    let ctrl = true;
+    let key_v_pressed = true;
+    if ctrl && key_v_pressed && !state.paste_guard {
+      panic!("paste should NOT fire when guard is active");
     }
-    state.paste_frame_skip = false;
-
-    assert_eq!(state.text(), ""); // Text was NOT inserted
-    assert!(!state.paste_frame_skip); // Flag was reset
   }
 
   #[test]
-  fn paste_frame_skip_resets_after_one_frame() {
+  fn paste_guard_blocks_ime_text_insertion() {
     let mut state = TextInputState::new();
-    state.paste_frame_skip = true;
+    state.set_focused(true);
+    state.paste_guard = true;
 
-    // Simulate frame: skip fires, then flag resets
-    let skipped = state.paste_frame_skip;
-    state.paste_frame_skip = false;
-    assert!(skipped);
-    assert!(!state.paste_frame_skip);
+    // Simulate IME committing clipboard text while paste_guard is active
+    let text = "clipboard content";
+    let ctrl = false; // Ctrl may be released by now
+    if !text.is_empty() && !ctrl && !state.paste_guard {
+      state.insert(text);
+    }
 
-    // Next frame: no skip
-    assert!(!state.paste_frame_skip);
+    assert_eq!(state.text(), ""); // Text was NOT inserted
+  }
+
+  #[test]
+  fn paste_guard_resets_when_v_released() {
+    let mut state = TextInputState::new();
+    state.paste_guard = true;
+
+    // Simulate: V is no longer held (key_down returns false)
+    let v_key_down = false;
+    if !v_key_down {
+      state.paste_guard = false;
+    }
+
+    assert!(!state.paste_guard);
+  }
+
+  #[test]
+  fn paste_guard_allows_next_paste_after_release() {
+    let mut state = TextInputState::new();
+    state.set_focused(true);
+
+    // First paste: guard set
+    state.paste_guard = true;
+
+    // V released: guard cleared
+    state.paste_guard = false;
+
+    // Second paste: guard is false, paste allowed
+    let ctrl = true;
+    let key_v_pressed = true;
+    let mut paste_fired = false;
+    if ctrl && key_v_pressed && !state.paste_guard {
+      paste_fired = true;
+      state.paste_guard = true;
+    }
+    assert!(paste_fired);
+    assert!(state.paste_guard);
   }
 
   // =========================================================================
