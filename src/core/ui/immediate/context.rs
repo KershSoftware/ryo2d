@@ -1261,6 +1261,20 @@ impl<'a> UiContext<'a> {
         let text_char_count = state.text().chars().count();
         state.set_cursor_char(char_index.min(text_char_count), false);
       }
+    } else if state.is_focused()
+      && self.input.mouse_down(MouseButton::Left)
+      && !self.input.mouse_pressed(MouseButton::Left)
+    {
+      // Drag-to-select: mouse held after initial click, extend selection
+      let mouse_x = self.input.mouse_x();
+      let relative_x = mouse_x - text_x + state.scroll_offset();
+      let char_index = if relative_x <= 0.0 {
+        0
+      } else {
+        let idx = (relative_x / char_width).round() as usize;
+        idx.min(state.text().chars().count())
+      };
+      state.set_cursor_char(char_index, true); // true = extend selection from anchor
     } else if self.input.mouse_pressed(MouseButton::Left) && !hovered {
       // Click outside always unfocuses, even if click was consumed by another widget.
       // This prevents dual-focus when clicking between text inputs rendered in any order.
