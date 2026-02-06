@@ -40,12 +40,13 @@
 //! ```
 
 use std::collections::HashMap;
+use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
 use matchbox_socket::{MultipleChannels, PeerId, PeerState, WebRtcSocket};
 use renet::{ClientId, RenetClient, RenetServer};
 
-use crate::core::error::NetworkResult;
+use crate::core::error::{NetworkError, NetworkResult};
 use crate::core::network::NetworkEvent;
 
 use super::{ClientTransport, ServerTransport};
@@ -212,13 +213,28 @@ impl WebRtcServerTransport {
     let url = config.build_signaling_url();
 
     // Create the WebRTC socket
-    // Note: We use pollster::block_on since Matchbox is async but renet is sync
-    let (socket, _loop_fut) = pollster::block_on(async {
-      WebRtcSocket::builder(&url)
-        .add_reliable_channel()
-        .add_unreliable_channel()
-        .build()
+    // Note: We use pollster::block_on since Matchbox is async but renet is sync.
+    // Matchbox's build() can panic on connection failure, so we catch that.
+    let result = panic::catch_unwind(|| {
+      pollster::block_on(async {
+        WebRtcSocket::builder(&url)
+          .add_reliable_channel()
+          .add_unreliable_channel()
+          .build()
+      })
     });
+
+    let (socket, _loop_fut) = result.map_err(|e| {
+      let msg = e
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| e.downcast_ref::<&str>().copied())
+        .unwrap_or("unknown error");
+      NetworkError::ConnectionError(format!(
+        "Failed to connect to signaling server '{}': {}",
+        url, msg
+      ))
+    })?;
 
     Ok(Self {
       socket,
@@ -231,9 +247,17 @@ impl WebRtcServerTransport {
   }
 
   /// Poll the socket for new events.
-  fn poll_socket(&mut self) {
+  fn poll_socket(&mut self) -> NetworkResult<()> {
+    // Matchbox can panic internally on signaling server failures,
+    // so we catch panics and convert them to errors.
+    let peers = panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers()))
+      .map_err(|e| {
+        let msg = panic_message(&e);
+        NetworkError::ConnectionError(format!("WebRTC signaling failed: {}", msg))
+      })?;
+
     // Process peer state changes
-    for (peer_id, state) in self.socket.update_peers() {
+    for (peer_id, state) in peers {
       match state {
         PeerState::Connected => {
           // Assign a new client ID
@@ -263,6 +287,8 @@ impl WebRtcServerTransport {
     if !self.is_connected {
       self.is_connected = true;
     }
+
+    Ok(())
   }
 
   /// Get the PeerId for a ClientId.
@@ -318,8 +344,7 @@ impl WebRtcServerTransport {
 
 impl ServerTransport for WebRtcServerTransport {
   fn update(&mut self, _dt: Duration) -> NetworkResult<()> {
-    self.poll_socket();
-    Ok(())
+    self.poll_socket()
   }
 
   fn send_packets(&mut self, _server: &mut RenetServer) {
@@ -366,12 +391,27 @@ impl WebRtcClientTransport {
     let client_id: ClientId = rand_u64();
 
     // Create the WebRTC socket
-    let (socket, _loop_fut) = pollster::block_on(async {
-      WebRtcSocket::builder(&url)
-        .add_reliable_channel()
-        .add_unreliable_channel()
-        .build()
+    // Matchbox's build() can panic on connection failure, so we catch that.
+    let result = panic::catch_unwind(|| {
+      pollster::block_on(async {
+        WebRtcSocket::builder(&url)
+          .add_reliable_channel()
+          .add_unreliable_channel()
+          .build()
+      })
     });
+
+    let (socket, _loop_fut) = result.map_err(|e| {
+      let msg = e
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| e.downcast_ref::<&str>().copied())
+        .unwrap_or("unknown error");
+      NetworkError::ConnectionError(format!(
+        "Failed to connect to signaling server '{}': {}",
+        url, msg
+      ))
+    })?;
 
     Ok(Self {
       socket,
@@ -384,8 +424,18 @@ impl WebRtcClientTransport {
   }
 
   /// Poll the socket for new events.
-  fn poll_socket(&mut self) {
-    for (peer_id, state) in self.socket.update_peers() {
+  fn poll_socket(&mut self) -> NetworkResult<()> {
+    // Matchbox can panic internally on signaling server failures,
+    // so we catch panics and convert them to errors.
+    let peers = panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers()))
+      .map_err(|e| {
+        let msg = panic_message(&e);
+        self.is_disconnected = true;
+        self.disconnect_reason = Some(format!("WebRTC signaling failed: {}", msg));
+        NetworkError::ConnectionError(format!("WebRTC signaling failed: {}", msg))
+      })?;
+
+    for (peer_id, state) in peers {
       match state {
         PeerState::Connected => {
           // In a client-server model, the first peer we connect to is the server
@@ -404,6 +454,8 @@ impl WebRtcClientTransport {
         }
       }
     }
+
+    Ok(())
   }
 
   /// Send data to the server on a channel.
@@ -440,8 +492,7 @@ impl WebRtcClientTransport {
 
 impl ClientTransport for WebRtcClientTransport {
   fn update(&mut self, _dt: Duration) -> NetworkResult<()> {
-    self.poll_socket();
-    Ok(())
+    self.poll_socket()
   }
 
   fn send_packets(&mut self, _client: &mut RenetClient) -> NetworkResult<()> {
@@ -484,6 +535,15 @@ fn rand_u64() -> u64 {
       .as_nanos() as u64,
   );
   hasher.finish()
+}
+
+/// Extract a message from a caught panic payload.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> &str {
+  payload
+    .downcast_ref::<String>()
+    .map(|s| s.as_str())
+    .or_else(|| payload.downcast_ref::<&str>().copied())
+    .unwrap_or("signaling connection closed")
 }
 
 // =============================================================================
