@@ -107,6 +107,10 @@ pub struct EngineConfig {
   /// - `Some(2)` = double size (good for HiDPI/Retina)
   /// - etc.
   pub ui_scale: Option<u32>,
+  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 30.
+  pub target_background_fps: u32,
+  /// Whether to continue rendering when the window is unfocused. Default: false.
+  pub background_rendering: bool,
 }
 
 /// Re-export for backward compatibility
@@ -128,6 +132,8 @@ impl Default for EngineConfig {
       max_height: None,
       icon_path: None,
       ui_scale: None, // Auto-detect from DPI
+      target_background_fps: 30,
+      background_rendering: false,
     }
   }
 }
@@ -797,8 +803,21 @@ impl Engine {
         logger.render();
       }
     } else {
-      // Cap to 30 FPS when completely unfocused to reduce CPU usage
-      std::thread::sleep(std::time::Duration::from_millis(33));
+      // Optionally render when unfocused
+      if self.config.background_rendering {
+        self.do_full_render_and_present();
+      }
+
+      // Cap to target_background_fps when completely unfocused (0 = uncapped)
+      if self.config.target_background_fps > 0 {
+        let target_frame_time = std::time::Duration::from_secs_f64(
+          1.0 / self.config.target_background_fps as f64,
+        );
+        let elapsed = frame_start.elapsed();
+        if elapsed < target_frame_time {
+          std::thread::sleep(target_frame_time - elapsed);
+        }
+      }
     }
   }
 
@@ -3196,6 +3215,18 @@ impl EngineBuilder {
     self
   }
 
+  /// Set the target FPS when the window is unfocused. 0 = uncapped.
+  pub fn background_fps(mut self, fps: u32) -> Self {
+    self.config.target_background_fps = fps;
+    self
+  }
+
+  /// Set whether to continue rendering when the window is unfocused.
+  pub fn background_rendering(mut self, enabled: bool) -> Self {
+    self.config.background_rendering = enabled;
+    self
+  }
+
   pub fn physics_hz(mut self, hz: u32) -> Self {
     self.config.physics_hz = hz;
     self
@@ -3768,6 +3799,10 @@ impl EngineBuilder {
         vsync = Some(system.vsync);
       }
 
+      // Load background settings from [system] section
+      config.target_background_fps = system.target_background_fps;
+      config.background_rendering = system.background_rendering;
+
       // Load icon from [release] section if specified and not explicitly set via builder
       if config.icon_path.is_none()
         && let Some(logo_path) = &release.logo
@@ -3895,6 +3930,35 @@ mod tests {
 
     let builder = EngineBuilder::new().window_mode(WindowMode::ResizableStretch);
     assert_eq!(builder.config.window_mode, WindowMode::ResizableStretch);
+  }
+
+  // ===========================================================================
+  // Background FPS / Rendering Tests
+  // ===========================================================================
+
+  #[test]
+  fn engine_config_background_defaults() {
+    let config = EngineConfig::default();
+    assert_eq!(config.target_background_fps, 30);
+    assert!(!config.background_rendering);
+  }
+
+  #[test]
+  fn engine_builder_sets_background_fps() {
+    let builder = EngineBuilder::new().background_fps(10);
+    assert_eq!(builder.config.target_background_fps, 10);
+  }
+
+  #[test]
+  fn engine_builder_sets_background_fps_uncapped() {
+    let builder = EngineBuilder::new().background_fps(0);
+    assert_eq!(builder.config.target_background_fps, 0);
+  }
+
+  #[test]
+  fn engine_builder_sets_background_rendering() {
+    let builder = EngineBuilder::new().background_rendering(true);
+    assert!(builder.config.background_rendering);
   }
 
   // ===========================================================================

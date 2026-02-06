@@ -208,6 +208,10 @@ pub struct SystemDefaults {
   /// Whether to enable the developer console (toggled with backtick key).
   /// Unlike debug settings, this is available in both debug and release builds.
   pub dev_console: bool,
+  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 30.
+  pub target_background_fps: u32,
+  /// Whether to continue rendering when the window is unfocused. Default: false.
+  pub background_rendering: bool,
   /// Environment variables from `[env]` section, converted to JSON-compatible types.
   /// Seeded into `SystemState.env` when creating a new `system.json`.
   pub env: HashMap<String, serde_json::Value>,
@@ -224,6 +228,8 @@ impl Default for SystemDefaults {
       sfx_volume: 1.0,
       show_fps: false,
       dev_console: false, // Disabled by default, enable in Ryo.toml [system] section
+      target_background_fps: 30,
+      background_rendering: false,
       env: HashMap::new(),
     }
   }
@@ -292,6 +298,10 @@ struct SystemSection {
   show_fps: Option<bool>,
   /// Whether to enable the developer console (toggled with backtick key)
   console: Option<bool>,
+  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 30.
+  target_background_fps: Option<u32>,
+  /// Whether to continue rendering when the window is unfocused (default: false)
+  background_rendering: Option<bool>,
 }
 
 impl Workspace {
@@ -517,6 +527,12 @@ impl Workspace {
       dev_console: system_section
         .console
         .unwrap_or(engine_defaults.dev_console),
+      target_background_fps: system_section
+        .target_background_fps
+        .unwrap_or(engine_defaults.target_background_fps),
+      background_rendering: system_section
+        .background_rendering
+        .unwrap_or(engine_defaults.background_rendering),
       env: env_json,
     };
 

@@ -1524,6 +1524,8 @@ mod tests {
       sfx_volume: 0.9,
       show_fps: true,
       dev_console: false,
+      target_background_fps: 30,
+      background_rendering: false,
       env,
     };
 
@@ -1639,6 +1641,8 @@ mod tests {
       sfx_volume: 0.7,
       show_fps: true,
       dev_console: false,
+      target_background_fps: 30,
+      background_rendering: false,
       env: HashMap::new(),
     };
 
