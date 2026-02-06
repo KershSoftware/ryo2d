@@ -167,6 +167,56 @@ pub struct PlayerLight {
   pub player_entity: Entity,
 }
 
+/// Moving platform component — oscillates left/right sinusoidally
+#[derive(Debug, Clone, Copy)]
+pub struct MovingPlatform {
+  pub left_bound: f32,  // min X (left edge of platform)
+  pub right_bound: f32, // max X (left edge of platform)
+  pub speed: f32,       // radians/sec
+  pub phase: f32,       // random phase offset
+}
+
+impl MovingPlatform {
+  /// Create a new moving platform with edge-of-screen clamping.
+  /// `origin_x` is the initial left-edge X from generation.
+  /// Travel distance equals the platform's own `width`.
+  pub fn new(origin_x: f32, width: f32, screen_width: f32, speed: f32, phase: f32) -> Self {
+    let half = width / 2.0;
+    let mut left_bound = origin_x - half;
+    let mut right_bound = origin_x + half;
+
+    // Clamp to screen edges, redistributing overflow
+    if left_bound < 0.0 {
+      right_bound -= left_bound; // add overflow to right
+      left_bound = 0.0;
+    }
+    let max_x = screen_width - width;
+    if right_bound > max_x {
+      left_bound -= right_bound - max_x; // add overflow to left
+      right_bound = max_x;
+    }
+    left_bound = left_bound.max(0.0);
+    // Ensure right >= left
+    if right_bound < left_bound {
+      right_bound = left_bound;
+    }
+
+    Self {
+      left_bound,
+      right_bound,
+      speed,
+      phase,
+    }
+  }
+
+  /// Compute the platform's left-edge X at a given time
+  pub fn x_at(&self, time: f32) -> f32 {
+    let mid = (self.left_bound + self.right_bound) / 2.0;
+    let half_range = (self.right_bound - self.left_bound) / 2.0;
+    mid + half_range * (time * self.speed + self.phase).sin()
+  }
+}
+
 /// Component for platform lamps with oscillation data
 #[derive(Debug, Clone, Copy)]
 pub struct PlatformLamp {
@@ -175,6 +225,7 @@ pub struct PlatformLamp {
   pub phase: f32,          // Random phase offset for variety
   pub platform_width: f32, // Width of platform for horizontal travel
   pub speed_mult: f32,     // Individual speed multiplier (0.5 - 1.5)
+  pub platform_entity: Option<Entity>, // Track which platform this lamp belongs to
 }
 
 impl PlatformLamp {
@@ -185,7 +236,13 @@ impl PlatformLamp {
       phase,
       platform_width,
       speed_mult,
+      platform_entity: None,
     }
+  }
+
+  pub fn with_platform_entity(mut self, entity: Entity) -> Self {
+    self.platform_entity = Some(entity);
+    self
   }
 }
 

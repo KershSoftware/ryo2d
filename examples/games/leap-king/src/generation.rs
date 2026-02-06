@@ -12,6 +12,7 @@ pub struct PlatformData {
   pub x: f32,
   pub y: f32,
   pub width: f32,
+  pub moving: bool,
 }
 
 /// Procedural platform generator with seeded RNG
@@ -21,6 +22,8 @@ pub struct PlatformGenerator {
   generated_chunks: HashSet<i32>,
   last_platform_x: f32, // Track last platform X for horizontal continuity
   recent_platforms: Vec<PlatformData>, // Track recent platforms for cross-chunk overlap checks
+  total_platforms_generated: u32,
+  next_moving_at: u32,
 }
 
 impl PlatformGenerator {
@@ -32,13 +35,20 @@ impl PlatformGenerator {
       x: spawn_x,
       y: SPAWN_PLATFORM_Y,
       width: SPAWN_PLATFORM_WIDTH,
+      moving: false,
     };
+    // Compute first moving platform interval from seed
+    let mut init_rng = SeededRng::new(seed.wrapping_add(0x4D4F5645));
+    let next_moving_at =
+      init_rng.gen_range(MOVING_PLATFORM_INTERVAL_MIN..=MOVING_PLATFORM_INTERVAL_MAX);
     Self {
       seed,
       screen_width,
       generated_chunks: HashSet::new(),
       last_platform_x: spawn_x,
       recent_platforms: vec![spawn_platform],
+      total_platforms_generated: 0,
+      next_moving_at,
     }
   }
 
@@ -233,7 +243,18 @@ impl PlatformGenerator {
         None => continue, // Skip this platform if we can't place it
       };
 
-      platforms.push(PlatformData { x, y, width });
+      self.total_platforms_generated += 1;
+      let moving = self.total_platforms_generated == self.next_moving_at;
+      if moving {
+        self.next_moving_at = self.total_platforms_generated
+          + rng.gen_range(MOVING_PLATFORM_INTERVAL_MIN..=MOVING_PLATFORM_INTERVAL_MAX);
+      }
+      platforms.push(PlatformData {
+        x,
+        y,
+        width,
+        moving,
+      });
       last_y = y;
       last_x = x;
       last_width = width;
@@ -283,7 +304,12 @@ impl PlatformGenerator {
       x: spawn_x,
       y: SPAWN_PLATFORM_Y,
       width: SPAWN_PLATFORM_WIDTH,
+      moving: false,
     }];
+    self.total_platforms_generated = 0;
+    let mut init_rng = SeededRng::new(self.seed.wrapping_add(0x4D4F5645));
+    self.next_moving_at =
+      init_rng.gen_range(MOVING_PLATFORM_INTERVAL_MIN..=MOVING_PLATFORM_INTERVAL_MAX);
   }
 
   /// Reset with a new seed
@@ -296,7 +322,12 @@ impl PlatformGenerator {
       x: spawn_x,
       y: SPAWN_PLATFORM_Y,
       width: SPAWN_PLATFORM_WIDTH,
+      moving: false,
     }];
+    self.total_platforms_generated = 0;
+    let mut init_rng = SeededRng::new(seed.wrapping_add(0x4D4F5645));
+    self.next_moving_at =
+      init_rng.gen_range(MOVING_PLATFORM_INTERVAL_MIN..=MOVING_PLATFORM_INTERVAL_MAX);
   }
 }
 
@@ -317,6 +348,7 @@ mod tests {
       assert_eq!(p1.x, p2.x);
       assert_eq!(p1.y, p2.y);
       assert_eq!(p1.width, p2.width);
+      assert_eq!(p1.moving, p2.moving);
     }
   }
 

@@ -34,6 +34,9 @@ pub const MAX_HORIZONTAL_OFFSET: f32 = 250.0; // Max X distance between consecut
 pub const MAX_JUMPABLE_GAP: f32 = 200.0; // Max edge-to-edge gap that's still jumpable
 pub const PLATFORM_SPACING: f32 = 10.0; // Minimum gap between platforms on same Y level
 pub const SPAWN_PLATFORM_WIDTH: f32 = 300.0;
+pub const MOVING_PLATFORM_INTERVAL_MIN: u32 = 10;
+pub const MOVING_PLATFORM_INTERVAL_MAX: u32 = 15;
+pub const MOVING_PLATFORM_SPEED: f32 = 1.2; // radians/sec, sinusoidal
 pub const SPAWN_PLATFORM_Y: f32 = 500.0;
 
 // Spawn positions (on spawn platform)
@@ -70,6 +73,7 @@ pub const DEFAULT_SIGNAL_URL: &str = "ws://127.0.0.1:3536";
 pub const PLAYER_A_COLOR: (u8, u8, u8) = (66, 200, 135); // Teal
 pub const PLAYER_B_COLOR: (u8, u8, u8) = (245, 130, 66); // Orange
 pub const PLATFORM_COLOR: (u8, u8, u8) = (100, 100, 120); // Gray-blue
+pub const MOVING_PLATFORM_COLOR: (u8, u8, u8) = (100, 110, 140); // Blue-ish tint
 pub const SPAWN_PLATFORM_COLOR: (u8, u8, u8) = (80, 120, 80); // Green-gray
 pub const BACKGROUND_COLOR: (u8, u8, u8) = (0, 0, 0); // Pure black
 pub const CHARGE_INDICATOR_COLOR: (u8, u8, u8) = (140, 140, 130); // Muted grey

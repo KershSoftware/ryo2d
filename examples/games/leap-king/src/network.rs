@@ -33,7 +33,15 @@ pub struct PositionUpdate {
   pub vy: f32,
   pub leap_state: NetworkLeapState,
   pub facing_right: bool,
+  pub grounded: bool,
   pub best_height: f32,
+  /// Host's checkpoint state (synced to clients so respawns agree)
+  pub checkpoint_center_x: f32,
+  pub checkpoint_platform_width: f32,
+  pub checkpoint_y: f32,
+  /// Host's elapsed time for deterministic moving platform sync
+  #[serde(default)]
+  pub host_elapsed_time: f32,
 }
 
 /// Network-friendly leap state (simplified for serialization)
