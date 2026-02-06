@@ -216,6 +216,9 @@ pub struct GameScene {
   // Screen dimensions (set from engine in on_enter)
   screen_width: f32,
   screen_height: f32,
+
+  // Mouse drag state for click-and-drag slingshot control
+  mouse_drag_start: Option<(f32, f32)>,
 }
 
 impl GameScene {
@@ -273,6 +276,7 @@ impl GameScene {
       prediction: PredictionHelper::new(Some(ClientId::from(0u64))),
       screen_width: 0.0,
       screen_height: 0.0,
+      mouse_drag_start: None,
     })
   }
 
@@ -340,6 +344,7 @@ impl GameScene {
       prediction: PredictionHelper::new(Some(host_id)),
       screen_width: 0.0,
       screen_height: 0.0,
+      mouse_drag_start: None,
     })
   }
 
@@ -406,6 +411,7 @@ impl GameScene {
       prediction: PredictionHelper::new(Some(host_id)),
       screen_width: 0.0,
       screen_height: 0.0,
+      mouse_drag_start: None,
     })
   }
 
@@ -491,6 +497,7 @@ impl GameScene {
       prediction: PredictionHelper::new(None), // Will set local_client_id when connected
       screen_width: 0.0,
       screen_height: 0.0,
+      mouse_drag_start: None,
     })
   }
 
@@ -1238,6 +1245,87 @@ impl GameScene {
 
     // Start with current facing direction
     let mut facing_right = player.facing == Facing::Right;
+
+    // --- Mouse input (click-and-drag slingshot) ---
+    if !self.show_quit_dialog {
+      // Clear drag if player can't charge (airborne, landing, etc.)
+      if self.mouse_drag_start.is_some()
+        && !player.leap_state.can_leap()
+        && !player.leap_state.is_charging()
+      {
+        self.mouse_drag_start = None;
+      }
+
+      // Start drag on click when player is idle
+      if ctx.input.mouse_pressed(MouseButton::Left)
+        && player.leap_state.can_leap()
+        && self.input_delay <= 0.0
+      {
+        self.mouse_drag_start = Some((ctx.input.mouse_x(), ctx.input.mouse_y()));
+      }
+
+      if let Some((start_x, start_y)) = self.mouse_drag_start {
+        let mx = ctx.input.mouse_x();
+        let my = ctx.input.mouse_y();
+        let drag_dx = mx - start_x;
+        let drag_dy = my - start_y;
+        let drag_dist = (drag_dx * drag_dx + drag_dy * drag_dy).sqrt();
+
+        if !ctx.input.mouse_down(MouseButton::Left) {
+          // Released mouse — fire the leap
+          self.mouse_drag_start = None;
+
+          let release_facing = if drag_dist > MOUSE_DRAG_DEADZONE && drag_dx.abs() > 5.0 {
+            drag_dx < 0.0 // Slingshot: drag left = face right
+          } else {
+            facing_right
+          };
+
+          return LeapInput::builder()
+            .charging(false)
+            .facing_right(release_facing)
+            .release(player.leap_state.is_charging())
+            .aim_angle(player.leap_state.aim_angle())
+            .charge_time(player.leap_state.charge_time())
+            .build();
+        }
+
+        // Still holding — continue charging with mouse aim
+        let desired_angle = if drag_dist > MOUSE_DRAG_DEADZONE {
+          // Slingshot: pulling down = higher arc, horizontal = flatter
+          let effective_dy = drag_dy.max(0.0);
+          effective_dy
+            .atan2(drag_dx.abs().max(0.001))
+            .to_degrees()
+            .clamp(MIN_AIM_ANGLE, MAX_AIM_ANGLE)
+        } else {
+          DEFAULT_AIM_ANGLE
+        };
+
+        let current_angle = if player.leap_state.is_charging() {
+          player.leap_state.aim_angle()
+        } else {
+          DEFAULT_AIM_ANGLE
+        };
+
+        let mouse_facing = if drag_dist > MOUSE_DRAG_DEADZONE && drag_dx.abs() > 5.0 {
+          drag_dx < 0.0 // Slingshot: drag left = face right
+        } else {
+          facing_right
+        };
+
+        return LeapInput::builder()
+          .charging(true)
+          .facing_right(mouse_facing)
+          .aim_angle(if player.leap_state.is_charging() {
+            current_angle
+          } else {
+            desired_angle
+          })
+          .aim_delta(desired_angle - current_angle)
+          .build();
+      }
+    }
 
     // Check for charge button (Space or gamepad South/A button)
     // Ignore if input_delay is active (prevents menu selection from triggering charge)

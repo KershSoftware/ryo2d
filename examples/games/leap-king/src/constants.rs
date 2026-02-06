@@ -19,6 +19,7 @@ pub const MIN_AIM_ANGLE: f32 = 45.0_f32; // degrees from horizontal (higher = mo
 pub const MAX_AIM_ANGLE: f32 = 85.0_f32; // degrees from horizontal
 pub const DEFAULT_AIM_ANGLE: f32 = 70.0_f32; // degrees - favors high arc
 pub const AIM_SPEED: f32 = 120.0; // degrees per second
+pub const MOUSE_DRAG_DEADZONE: f32 = 10.0; // Minimum drag distance (pixels) before direction registers
 
 // Platform configuration - tighter gaps for reliable jumping
 pub const CHUNK_HEIGHT: f32 = 400.0;

@@ -674,13 +674,7 @@ impl Scene for MenuScene {
 
     // Error message
     if let Some(ref err) = self.error_message {
-      ui.draw_text_anchored(
-        err,
-        Anchor::Center,
-        0.0,
-        234.0 + extra_offset,
-        Color::RED,
-      );
+      ui.draw_text_anchored(err, Anchor::Center, 0.0, 234.0 + extra_offset, Color::RED);
     }
 
     // Controls hint
