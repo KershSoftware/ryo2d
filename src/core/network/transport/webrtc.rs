@@ -41,6 +41,7 @@
 
 use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use matchbox_socket::{MultipleChannels, PeerId, PeerState, WebRtcSocket};
@@ -193,6 +194,8 @@ impl IceServer {
 /// direct connections using STUN/TURN.
 pub struct WebRtcServerTransport {
   socket: WebRtcSocket<MultipleChannels>,
+  /// Background thread driving the signaling message loop
+  _message_loop: JoinHandle<()>,
   /// Maps Matchbox PeerIds to renet ClientIds
   peer_to_client: HashMap<PeerId, ClientId>,
   /// Maps renet ClientIds to Matchbox PeerIds
@@ -212,32 +215,31 @@ impl WebRtcServerTransport {
   pub fn new(config: &WebRtcConfig) -> NetworkResult<Self> {
     let url = config.build_signaling_url();
 
-    // Create the WebRTC socket
-    // Note: We use pollster::block_on since Matchbox is async but renet is sync.
-    // Matchbox's build() can panic on connection failure, so we catch that.
-    let result = panic::catch_unwind(|| {
-      pollster::block_on(async {
-        WebRtcSocket::builder(&url)
-          .add_reliable_channel()
-          .add_unreliable_channel()
-          .build()
-      })
-    });
-
-    let (socket, _loop_fut) = result.map_err(|e| {
-      let msg = e
-        .downcast_ref::<String>()
-        .map(|s| s.as_str())
-        .or_else(|| e.downcast_ref::<&str>().copied())
-        .unwrap_or("unknown error");
+    // Create the WebRTC socket.
+    // build() is sync but can panic on invalid config, so we catch that.
+    let (socket, loop_fut) = panic::catch_unwind(|| {
+      WebRtcSocket::builder(&url)
+        .add_reliable_channel()
+        .add_unreliable_channel()
+        .build()
+    })
+    .map_err(|e| {
+      let msg = panic_message(&e);
       NetworkError::ConnectionError(format!(
         "Failed to connect to signaling server '{}': {}",
         url, msg
       ))
     })?;
 
+    // The message loop future MUST be driven for signaling to work.
+    // Spawn it on a background thread — it completes when the socket is dropped.
+    let message_loop = thread::spawn(move || {
+      let _ = pollster::block_on(loop_fut);
+    });
+
     Ok(Self {
       socket,
+      _message_loop: message_loop,
       peer_to_client: HashMap::new(),
       client_to_peer: HashMap::new(),
       next_client_id: 1, // Start at 1, 0 is reserved for LOCAL_HOST_ID
@@ -368,6 +370,8 @@ impl ServerTransport for WebRtcServerTransport {
 /// connection with the server (host).
 pub struct WebRtcClientTransport {
   socket: WebRtcSocket<MultipleChannels>,
+  /// Background thread driving the signaling message loop
+  _message_loop: JoinHandle<()>,
   /// The server's PeerId once connected
   server_peer: Option<PeerId>,
   /// Our client ID (assigned locally for now)
@@ -390,31 +394,31 @@ impl WebRtcClientTransport {
     // Generate a random client ID
     let client_id: ClientId = rand_u64();
 
-    // Create the WebRTC socket
-    // Matchbox's build() can panic on connection failure, so we catch that.
-    let result = panic::catch_unwind(|| {
-      pollster::block_on(async {
-        WebRtcSocket::builder(&url)
-          .add_reliable_channel()
-          .add_unreliable_channel()
-          .build()
-      })
-    });
-
-    let (socket, _loop_fut) = result.map_err(|e| {
-      let msg = e
-        .downcast_ref::<String>()
-        .map(|s| s.as_str())
-        .or_else(|| e.downcast_ref::<&str>().copied())
-        .unwrap_or("unknown error");
+    // Create the WebRTC socket.
+    // build() is sync but can panic on invalid config, so we catch that.
+    let (socket, loop_fut) = panic::catch_unwind(|| {
+      WebRtcSocket::builder(&url)
+        .add_reliable_channel()
+        .add_unreliable_channel()
+        .build()
+    })
+    .map_err(|e| {
+      let msg = panic_message(&e);
       NetworkError::ConnectionError(format!(
         "Failed to connect to signaling server '{}': {}",
         url, msg
       ))
     })?;
 
+    // The message loop future MUST be driven for signaling to work.
+    // Spawn it on a background thread — it completes when the socket is dropped.
+    let message_loop = thread::spawn(move || {
+      let _ = pollster::block_on(loop_fut);
+    });
+
     Ok(Self {
       socket,
+      _message_loop: message_loop,
       server_peer: None,
       client_id,
       is_connected: false,
@@ -743,8 +747,10 @@ mod tests {
   fn webrtc_client_transport_is_connecting_initially() {
     // We can't easily test without a signaling server, but we can verify
     // the state logic methods
+    let (socket, handle) = create_mock_socket();
     let transport = WebRtcClientTransport {
-      socket: create_mock_socket(),
+      socket,
+      _message_loop: handle,
       server_peer: None,
       client_id: 12345,
       is_connected: false,
@@ -758,8 +764,10 @@ mod tests {
 
   #[test]
   fn webrtc_client_transport_is_ready_when_connecting() {
+    let (socket, handle) = create_mock_socket();
     let transport = WebRtcClientTransport {
-      socket: create_mock_socket(),
+      socket,
+      _message_loop: handle,
       server_peer: None,
       client_id: 12345,
       is_connected: false,
@@ -773,8 +781,10 @@ mod tests {
 
   #[test]
   fn webrtc_client_transport_client_id_returns_assigned_id() {
+    let (socket, handle) = create_mock_socket();
     let transport = WebRtcClientTransport {
-      socket: create_mock_socket(),
+      socket,
+      _message_loop: handle,
       server_peer: None,
       client_id: 99999,
       is_connected: false,
@@ -791,8 +801,10 @@ mod tests {
 
   #[test]
   fn webrtc_server_transport_starts_with_no_clients() {
+    let (socket, handle) = create_mock_socket();
     let transport = WebRtcServerTransport {
-      socket: create_mock_socket(),
+      socket,
+      _message_loop: handle,
       peer_to_client: HashMap::new(),
       client_to_peer: HashMap::new(),
       next_client_id: 1,
@@ -806,8 +818,10 @@ mod tests {
 
   #[test]
   fn webrtc_server_transport_events_starts_empty() {
+    let (socket, handle) = create_mock_socket();
     let mut transport = WebRtcServerTransport {
-      socket: create_mock_socket(),
+      socket,
+      _message_loop: handle,
       peer_to_client: HashMap::new(),
       client_to_peer: HashMap::new(),
       next_client_id: 1,
@@ -821,8 +835,10 @@ mod tests {
 
   #[test]
   fn webrtc_server_transport_not_ready_initially() {
+    let (socket, handle) = create_mock_socket();
     let transport = WebRtcServerTransport {
-      socket: create_mock_socket(),
+      socket,
+      _message_loop: handle,
       peer_to_client: HashMap::new(),
       client_to_peer: HashMap::new(),
       next_client_id: 1,
@@ -839,14 +855,14 @@ mod tests {
 
   /// Create a mock WebRTC socket for testing.
   /// This connects to a non-existent server but allows us to test struct creation.
-  fn create_mock_socket() -> WebRtcSocket<MultipleChannels> {
-    // Use a URL that won't connect but allows socket creation
-    let (socket, _) = pollster::block_on(async {
-      WebRtcSocket::builder("ws://127.0.0.1:1")
-        .add_reliable_channel()
-        .add_unreliable_channel()
-        .build()
+  fn create_mock_socket() -> (WebRtcSocket<MultipleChannels>, JoinHandle<()>) {
+    let (socket, loop_fut) = WebRtcSocket::builder("ws://127.0.0.1:1")
+      .add_reliable_channel()
+      .add_unreliable_channel()
+      .build();
+    let handle = thread::spawn(move || {
+      let _ = pollster::block_on(loop_fut);
     });
-    socket
+    (socket, handle)
   }
 }
