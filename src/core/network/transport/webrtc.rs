@@ -322,10 +322,10 @@ impl WebRtcServerTransport {
   /// Receive data from a specific peer on a channel.
   pub fn receive(&mut self, client_id: ClientId, channel: usize) -> Option<Vec<u8>> {
     // Check buffer first
-    if let Some(queue) = self.receive_buffers.get_mut(&(client_id, channel)) {
-      if let Some(msg) = queue.pop_front() {
-        return Some(msg);
-      }
+    if let Some(queue) = self.receive_buffers.get_mut(&(client_id, channel))
+      && let Some(msg) = queue.pop_front()
+    {
+      return Some(msg);
     }
 
     // Drain socket into per-client buffers (matchbox drains all messages at once)

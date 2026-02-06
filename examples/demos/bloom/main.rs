@@ -96,7 +96,7 @@ impl BloomDemo {
       for col in 0..12 {
         let (r, g, b) = dark_colors[(row + col) % dark_colors.len()];
         let sprite = Sprite::solid_rect(80, 80, r, g, b, 255);
-        let handle = ctx.assets.create_sprite(sprite, &format!("bg_{}_{}", row, col));
+        let handle = ctx.assets.create_sprite(sprite, format!("bg_{}_{}", row, col));
         let entity = ctx.world.spawn((
           Transform::new(col as f32 * 80.0, row as f32 * 80.0),
           Renderable::sprite(handle).with_z_order(0),
@@ -120,7 +120,7 @@ impl BloomDemo {
     for (i, &(r, g, b)) in bright_colors.iter().enumerate() {
       let size = 40 + i as u32 * 6;
       let sprite = Sprite::solid_rect(size, size, r, g, b, 255);
-      let handle = ctx.assets.create_sprite(sprite, &format!("bright_{}", i));
+      let handle = ctx.assets.create_sprite(sprite, format!("bright_{}", i));
 
       let angle = (i as f32 / bright_colors.len() as f32) * std::f32::consts::TAU;
       let dist = 120.0;
@@ -144,7 +144,7 @@ impl BloomDemo {
     ];
     for (i, &(r, g, b)) in orbit_colors.iter().enumerate() {
       let sprite = Sprite::solid_rect(12, 12, r, g, b, 255);
-      let handle = ctx.assets.create_sprite(sprite, &format!("orbit_{}", i));
+      let handle = ctx.assets.create_sprite(sprite, format!("orbit_{}", i));
       let entity = ctx.world.spawn((
         Transform::new(cx, cy),
         Renderable::sprite(handle).with_z_order(3),

@@ -63,7 +63,7 @@ impl Game for ConsoleDemo {
     // Register PERMANENT handlers (scope 0) for commands that work everywhere
     ctx.register_console_command("game:hello", |args, cmd_ctx| {
       let name = if args.is_empty() { "World" } else { args[0] };
-      cmd_ctx.console.print(&format!("Hello, {}!", name));
+      cmd_ctx.console.print(format!("Hello, {}!", name));
       CommandResult::Ok
     });
 
@@ -90,8 +90,8 @@ impl Game for ConsoleDemo {
     self.scenes.update(ctx, dt);
   }
 
-  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-    self.scenes.render_background(frame, width, height, camera);
+  fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+    self.scenes.render_gpu(gpu);
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) {
@@ -132,6 +132,7 @@ impl Scene for HubScene {
     SceneAction::Continue
   }
 
+  #[allow(deprecated)]
   fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
     // Dark blue background
     let r: u8 = 20;
@@ -262,7 +263,7 @@ impl Scene for WorkshopScene {
           cmd_ctx.console.print("Background reset to default");
         }
         other => {
-          cmd_ctx.console.print(&format!("Unknown color: {}", other));
+          cmd_ctx.console.print(format!("Unknown color: {}", other));
           cmd_ctx
             .console
             .print("Colors: red, green, blue, yellow, purple, reset");
@@ -287,6 +288,7 @@ impl Scene for WorkshopScene {
     SceneAction::Continue
   }
 
+  #[allow(deprecated)]
   fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
     let r = PAINT_R.load(Ordering::Relaxed);
     let g = PAINT_G.load(Ordering::Relaxed);

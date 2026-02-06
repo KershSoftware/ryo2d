@@ -10,8 +10,8 @@
 #   .\run -d|--dev <example>       - Same as above (flag before example)
 #   .\run -p|--profiler <example>  - Same as above (flag before example)
 #   .\run -r|--release <example>   - Same as above (flag before example)
-#   .\run run-demos    - Launch all demos in dev mode (parallel terminals)
-#   .\run kill-demos   - Kill all running demos
+#   .\run demos:run-all    - Launch all demos in dev mode (parallel terminals)
+#   .\run demos:kill-all   - Kill all running demos
 #   .\run check        - Compilation check (engine + all examples)
 #   .\run lint         - Linting with clippy (engine + all examples)
 #   .\run test         - Run unit + integration tests
@@ -336,7 +336,7 @@ switch ($ExampleName.ToLower()) {
     "" {
         Show-CategoryMenu
     }
-    "run-demos" {
+    "demos:run-all" {
         # Kill any existing demos first
         $pidFile = Join-Path $PSScriptRoot ".demo-pids"
         if (Test-Path $pidFile) {
@@ -383,9 +383,9 @@ switch ($ExampleName.ToLower()) {
         $pids | Out-File -FilePath $pidFile
 
         Write-Host ""
-        Write-Host "All demos launched in dev mode. Run './run kill-demos' to close them." -ForegroundColor Cyan
+        Write-Host "All demos launched in dev mode. Run './run demos:kill-all' to close them." -ForegroundColor Cyan
     }
-    "kill-demos" {
+    "demos:kill-all" {
         $pidFile = Join-Path $PSScriptRoot ".demo-pids"
         if (-not (Test-Path $pidFile)) {
             Write-Host "No running demos found." -ForegroundColor Yellow
@@ -533,8 +533,8 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./run -d|--dev <example>           - Same as above (flag before example)"
         Write-Host "  ./run -p|--profiler <example>      - Same as above (flag before example)"
         Write-Host "  ./run -r|--release <example>       - Same as above (flag before example)"
-        Write-Host "  ./run run-demos          - Launch all demos in dev mode (parallel terminals)"
-        Write-Host "  ./run kill-demos         - Kill all running demos"
+        Write-Host "  ./run demos:run-all      - Launch all demos in dev mode (parallel terminals)"
+        Write-Host "  ./run demos:kill-all     - Kill all running demos"
         Write-Host "  ./run check              - Compilation check (engine + all examples)"
         Write-Host "  ./run lint               - Linting with clippy (engine + all examples)"
         Write-Host "  ./run test               - Run unit + integration tests (default)"

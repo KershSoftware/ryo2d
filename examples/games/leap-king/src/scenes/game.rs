@@ -533,6 +533,7 @@ impl GameScene {
     }
   }
 
+  #[allow(clippy::too_many_arguments)]
   fn spawn_platform_entity(
     &mut self,
     ctx: &mut SceneContext,
@@ -1270,15 +1271,15 @@ impl GameScene {
     }
 
     // Notify server so it can reset the player on its end
-    if self.mode == GameMode::Client {
-      if let Some(client) = self.client.as_mut() {
-        let rpc = RespawnRpc;
-        if let Ok(serialized) =
-          SerializedRpc::from_rpc(&rpc, client.client_id(), RpcTarget::Server)
-          && let Ok(bytes) = serialized.to_bytes()
-        {
-          client.send(Channel::ReliableOrdered, &bytes);
-        }
+    if self.mode == GameMode::Client
+      && let Some(client) = self.client.as_mut()
+    {
+      let rpc = RespawnRpc;
+      if let Ok(serialized) =
+        SerializedRpc::from_rpc(&rpc, client.client_id(), RpcTarget::Server)
+        && let Ok(bytes) = serialized.to_bytes()
+      {
+        client.send(Channel::ReliableOrdered, &bytes);
       }
     }
 
@@ -1683,17 +1684,11 @@ impl GameScene {
         && let Some(plat_entity) = lamp.platform_entity
         && let Some(plat_transform) = ctx.world.get_component::<Transform>(plat_entity)
         && let Some(plat) = ctx.world.get_component::<Platform>(plat_entity)
+        && ctx.world.get_component::<MovingPlatform>(plat_entity).is_some()
       {
-        // Only update if the platform is actually moving
-        if ctx
-          .world
-          .get_component::<MovingPlatform>(plat_entity)
-          .is_some()
-        {
-          let new_base_x = plat_transform.x + plat.width / 2.0;
-          if let Some(mut lamp_mut) = ctx.world.get_component_mut::<PlatformLamp>(entity) {
-            lamp_mut.base_x = new_base_x;
-          }
+        let new_base_x = plat_transform.x + plat.width / 2.0;
+        if let Some(mut lamp_mut) = ctx.world.get_component_mut::<PlatformLamp>(entity) {
+          lamp_mut.base_x = new_base_x;
         }
       }
     }
@@ -1705,16 +1700,11 @@ impl GameScene {
         && let Some(plat_entity) = lamp.platform_entity
         && let Some(plat_transform) = ctx.world.get_component::<Transform>(plat_entity)
         && let Some(plat) = ctx.world.get_component::<Platform>(plat_entity)
+        && ctx.world.get_component::<MovingPlatform>(plat_entity).is_some()
       {
-        if ctx
-          .world
-          .get_component::<MovingPlatform>(plat_entity)
-          .is_some()
-        {
-          let new_base_x = plat_transform.x + plat.width / 2.0;
-          if let Some(mut lamp_mut) = ctx.world.get_component_mut::<PlatformLamp>(entity) {
-            lamp_mut.base_x = new_base_x;
-          }
+        let new_base_x = plat_transform.x + plat.width / 2.0;
+        if let Some(mut lamp_mut) = ctx.world.get_component_mut::<PlatformLamp>(entity) {
+          lamp_mut.base_x = new_base_x;
         }
       }
     }
@@ -2420,10 +2410,10 @@ impl GameScene {
             });
           }
           // Pong response for ping measurement
-          else if serialized.into_rpc::<PongRpc>().is_ok() {
-            if let Some(sent_at) = self.ping_send_time.take() {
-              self.ping_ms = Some(sent_at.elapsed().as_millis() as u32);
-            }
+          else if serialized.into_rpc::<PongRpc>().is_ok()
+            && let Some(sent_at) = self.ping_send_time.take()
+          {
+            self.ping_ms = Some(sent_at.elapsed().as_millis() as u32);
           }
         }
       }
@@ -3038,19 +3028,19 @@ impl Scene for GameScene {
       }
 
       // Ping display for client (under room code)
-      if self.mode == GameMode::Client {
-        if let Some(ping) = self.ping_ms {
-          let ping_text = format!("Ping {}ms", ping);
-          let (tw, _) = ui.text_size(&ping_text);
-          let ping_color = if ping < 80 {
-            Color::new(100, 200, 100, 150)
-          } else if ping < 150 {
-            Color::new(200, 200, 100, 150)
-          } else {
-            Color::new(200, 100, 100, 150)
-          };
-          ui.draw_text(&ping_text, sw as f32 - tw as f32 - 20.0, right_y, ping_color);
-        }
+      if self.mode == GameMode::Client
+        && let Some(ping) = self.ping_ms
+      {
+        let ping_text = format!("Ping {}ms", ping);
+        let (tw, _) = ui.text_size(&ping_text);
+        let ping_color = if ping < 80 {
+          Color::new(100, 200, 100, 150)
+        } else if ping < 150 {
+          Color::new(200, 200, 100, 150)
+        } else {
+          Color::new(200, 100, 100, 150)
+        };
+        ui.draw_text(&ping_text, sw as f32 - tw as f32 - 20.0, right_y, ping_color);
       }
     }
 

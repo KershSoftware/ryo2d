@@ -11,8 +11,8 @@
 #     ./run.sh -d|--dev <example>           - Same as above (flag before example)
 #     ./run.sh -p|--profiler <example>      - Same as above (flag before example)
 #     ./run.sh -r|--release <example>       - Same as above (flag before example)
-#     ./run.sh run-demos           - Launch all demos in dev mode (parallel terminals)
-#     ./run.sh kill-demos          - Kill all running demos
+#     ./run.sh demos:run-all       - Launch all demos in dev mode (parallel terminals)
+#     ./run.sh demos:kill-all      - Kill all running demos
 #     ./run.sh check               - Compilation check (engine + all examples)
 #     ./run.sh lint                - Linting with clippy (engine + all examples)
 #     ./run.sh test                - Run unit + integration tests
@@ -371,7 +371,7 @@ case "$COMMAND" in
     "")
         show_category_menu
         ;;
-    run-demos)
+    demos:run-all)
         PID_FILE="$SCRIPT_DIR/.demo-pids"
 
         # Kill any existing demos first
@@ -440,9 +440,9 @@ case "$COMMAND" in
         done
 
         echo ""
-        echo -e "${CYAN}All demos launched in dev mode. Run './run.sh kill-demos' to close them.${NC}"
+        echo -e "${CYAN}All demos launched in dev mode. Run './run.sh demos:kill-all' to close them.${NC}"
         ;;
-    kill-demos)
+    demos:kill-all)
         PID_FILE="$SCRIPT_DIR/.demo-pids"
 
         if [[ ! -f "$PID_FILE" ]]; then
@@ -575,8 +575,8 @@ case "$COMMAND" in
         echo "    ./run.sh -d|--dev <example>           - Same as above (flag before example)"
         echo "    ./run.sh -p|--profiler <example>      - Same as above (flag before example)"
         echo "    ./run.sh -r|--release <example>       - Same as above (flag before example)"
-        echo "    ./run.sh run-demos           - Launch all demos in dev mode (parallel terminals)"
-        echo "    ./run.sh kill-demos          - Kill all running demos"
+        echo "    ./run.sh demos:run-all       - Launch all demos in dev mode (parallel terminals)"
+        echo "    ./run.sh demos:kill-all      - Kill all running demos"
         echo "    ./run.sh check               - Compilation check (engine + all examples)"
         echo "    ./run.sh lint                - Linting with clippy (engine + all examples)"
         echo "    ./run.sh test                - Run unit + integration tests (default)"

@@ -327,9 +327,9 @@ impl NetworkServerConfig {
 
 /// Internal enum for server transport implementations.
 enum ServerTransportImpl {
-  Udp(transport::udp::UdpServerTransport),
+  Udp(Box<transport::udp::UdpServerTransport>),
   #[cfg(feature = "matchbox")]
-  WebRtc(transport::webrtc::WebRtcServerTransport),
+  WebRtc(Box<transport::webrtc::WebRtcServerTransport>),
 }
 
 /// A network server that manages client connections
@@ -370,12 +370,12 @@ impl NetworkServer {
           config.max_clients,
           config.protocol_id,
         )?;
-        ServerTransportImpl::Udp(udp)
+        ServerTransportImpl::Udp(Box::new(udp))
       }
       #[cfg(feature = "matchbox")]
       TransportConfig::WebRtc(ref webrtc_config) => {
         let webrtc = transport::webrtc::WebRtcServerTransport::new(webrtc_config)?;
-        ServerTransportImpl::WebRtc(webrtc)
+        ServerTransportImpl::WebRtc(Box::new(webrtc))
       }
     };
 
@@ -636,9 +636,9 @@ impl NetworkClientConfig {
 
 /// Internal enum for client transport implementations.
 enum ClientTransportImpl {
-  Udp(transport::udp::UdpClientTransport),
+  Udp(Box<transport::udp::UdpClientTransport>),
   #[cfg(feature = "matchbox")]
-  WebRtc(transport::webrtc::WebRtcClientTransport),
+  WebRtc(Box<transport::webrtc::WebRtcClientTransport>),
 }
 
 /// A network client that connects to a server
@@ -668,12 +668,12 @@ impl NetworkClient {
           NetworkError::ConnectionError("UDP transport requires server_addr".to_string())
         })?;
         let udp = transport::udp::UdpClientTransport::new(server_addr, config.protocol_id)?;
-        ClientTransportImpl::Udp(udp)
+        ClientTransportImpl::Udp(Box::new(udp))
       }
       #[cfg(feature = "matchbox")]
       TransportConfig::WebRtc(ref webrtc_config) => {
         let webrtc = transport::webrtc::WebRtcClientTransport::new(webrtc_config)?;
-        ClientTransportImpl::WebRtc(webrtc)
+        ClientTransportImpl::WebRtc(Box::new(webrtc))
       }
     };
 
