@@ -39,7 +39,7 @@
 //!     .with_turn("turn:relay.example.com:3478", "username", "password");
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::panic::{self, AssertUnwindSafe};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -206,6 +206,9 @@ pub struct WebRtcServerTransport {
   events: Vec<NetworkEvent>,
   /// Whether the socket is connected to the signaling server
   is_connected: bool,
+  /// Buffered received messages per (client, channel) to avoid dropping
+  /// messages when matchbox drains the channel on receive().
+  receive_buffers: HashMap<(ClientId, usize), VecDeque<Vec<u8>>>,
 }
 
 impl WebRtcServerTransport {
@@ -245,6 +248,7 @@ impl WebRtcServerTransport {
       next_client_id: 1, // Start at 1, 0 is reserved for LOCAL_HOST_ID
       events: Vec::new(),
       is_connected: false,
+      receive_buffers: HashMap::new(),
     })
   }
 
@@ -317,17 +321,28 @@ impl WebRtcServerTransport {
 
   /// Receive data from a specific peer on a channel.
   pub fn receive(&mut self, client_id: ClientId, channel: usize) -> Option<Vec<u8>> {
-    let peer_id = self.client_to_peer.get(&client_id)?;
-
-    // Try to receive from the socket
-    // Note: Matchbox doesn't filter by peer, so we need to check all messages
-    for (from_peer, data) in self.socket.channel_mut(channel).receive() {
-      if from_peer == *peer_id {
-        return Some(data.to_vec());
+    // Check buffer first
+    if let Some(queue) = self.receive_buffers.get_mut(&(client_id, channel)) {
+      if let Some(msg) = queue.pop_front() {
+        return Some(msg);
       }
     }
 
-    None
+    // Drain socket into per-client buffers (matchbox drains all messages at once)
+    for (from_peer, data) in self.socket.channel_mut(channel).receive() {
+      if let Some(&client) = self.peer_to_client.get(&from_peer) {
+        self
+          .receive_buffers
+          .entry((client, channel))
+          .or_default()
+          .push_back(data.to_vec());
+      }
+    }
+
+    self
+      .receive_buffers
+      .get_mut(&(client_id, channel))?
+      .pop_front()
   }
 
   /// Broadcast data to all connected peers.
@@ -382,6 +397,9 @@ pub struct WebRtcClientTransport {
   is_disconnected: bool,
   /// Disconnect reason
   disconnect_reason: Option<String>,
+  /// Buffered received messages per channel to avoid dropping
+  /// messages when matchbox drains the channel on receive().
+  receive_buffers: [VecDeque<Vec<u8>>; 2],
 }
 
 impl WebRtcClientTransport {
@@ -424,6 +442,7 @@ impl WebRtcClientTransport {
       is_connected: false,
       is_disconnected: false,
       disconnect_reason: None,
+      receive_buffers: [VecDeque::new(), VecDeque::new()],
     })
   }
 
@@ -472,15 +491,20 @@ impl WebRtcClientTransport {
 
   /// Receive data from the server on a channel.
   pub fn receive(&mut self, channel: usize) -> Option<Vec<u8>> {
-    let server_peer = self.server_peer?;
+    // Check buffer first
+    if let Some(msg) = self.receive_buffers[channel].pop_front() {
+      return Some(msg);
+    }
 
+    // Drain socket into buffer (matchbox drains all messages at once)
+    let server_peer = self.server_peer?;
     for (from_peer, data) in self.socket.channel_mut(channel).receive() {
       if from_peer == server_peer {
-        return Some(data.to_vec());
+        self.receive_buffers[channel].push_back(data.to_vec());
       }
     }
 
-    None
+    self.receive_buffers[channel].pop_front()
   }
 
   /// Check if connected to the server.
@@ -756,6 +780,7 @@ mod tests {
       is_connected: false,
       is_disconnected: false,
       disconnect_reason: None,
+      receive_buffers: [VecDeque::new(), VecDeque::new()],
     };
 
     assert!(transport.is_connecting());
@@ -773,6 +798,7 @@ mod tests {
       is_connected: false,
       is_disconnected: false,
       disconnect_reason: None,
+      receive_buffers: [VecDeque::new(), VecDeque::new()],
     };
 
     // Should be ready when connecting (not yet connected or disconnected)
@@ -790,6 +816,7 @@ mod tests {
       is_connected: false,
       is_disconnected: false,
       disconnect_reason: None,
+      receive_buffers: [VecDeque::new(), VecDeque::new()],
     };
 
     assert_eq!(transport.client_id(), 99999);
@@ -810,6 +837,7 @@ mod tests {
       next_client_id: 1,
       events: Vec::new(),
       is_connected: false,
+      receive_buffers: HashMap::new(),
     };
 
     let clients: Vec<_> = transport.clients().collect();
@@ -827,6 +855,7 @@ mod tests {
       next_client_id: 1,
       events: Vec::new(),
       is_connected: false,
+      receive_buffers: HashMap::new(),
     };
 
     let events = transport.drain_events();
@@ -844,6 +873,7 @@ mod tests {
       next_client_id: 1,
       events: Vec::new(),
       is_connected: false,
+      receive_buffers: HashMap::new(),
     };
 
     assert!(!transport.is_ready());
