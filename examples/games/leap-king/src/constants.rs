@@ -50,7 +50,8 @@ pub const RESPAWN_DELAY: f32 = 0.8; // Seconds of falling sensation before respa
 
 // Height tracking and checkpoints
 pub const HEIGHT_SCALE: f32 = 10.0; // Pixels per height unit (lower = faster height gain)
-pub const CHECKPOINT_INTERVAL: f32 = 150.0; // Height units between checkpoints
+pub const CHECKPOINT_INTERVAL: f32 = 150.0; // Height units between first checkpoints
+pub const CHECKPOINT_INTERVAL_GROWTH: f32 = 25.0; // Each checkpoint adds this to the interval
 pub const FIRST_CHECKPOINT_HEIGHT: f32 = 50.0; // Minimum height before first checkpoint
 pub const CHECKPOINT_PLATFORM_COLOR: (u8, u8, u8) = (80, 120, 80); // Green like spawn platform
 
@@ -125,8 +126,13 @@ pub const PLAYER_BLOB_SHADOW_HEIGHT: f32 = 6.0;
 // Platform occluder
 pub const PLATFORM_OCCLUDER_HEIGHT: f32 = 10.0;
 
+// Wall bounce
+pub const WALL_BOUNCE_FACTOR: f32 = 0.4; // Reflect 40% of horizontal velocity on wall hit
+
 // Player collision
 pub const PLAYER_PUSH_FORCE: f32 = 80.0; // Subtle horizontal push when overlapping
 pub const PLAYER_PUSH_DECAY: f32 = 8.0; // Fast decay for subtle effect
 pub const HEAD_BOUNCE_VELOCITY: f32 = -350.0; // Upward velocity when bouncing off head
 pub const HEAD_BOUNCE_ZONE: f32 = 8.0; // Pixels from top of player that count as "head"
+pub const AIR_KNOCKBACK_HORIZONTAL: f32 = 200.0; // Horizontal push when two airborne players collide
+pub const AIR_KNOCKBACK_VERTICAL: f32 = -80.0; // Small upward bump on air collision

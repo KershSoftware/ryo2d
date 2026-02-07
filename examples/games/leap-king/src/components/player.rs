@@ -222,9 +222,9 @@ impl MovingPlatform {
 pub struct PlatformLamp {
   pub base_x: f32,
   pub base_y: f32,
-  pub phase: f32,          // Random phase offset for variety
-  pub platform_width: f32, // Width of platform for horizontal travel
-  pub speed_mult: f32,     // Individual speed multiplier (0.5 - 1.5)
+  pub phase: f32,                      // Random phase offset for variety
+  pub platform_width: f32,             // Width of platform for horizontal travel
+  pub speed_mult: f32,                 // Individual speed multiplier (0.5 - 1.5)
   pub platform_entity: Option<Entity>, // Track which platform this lamp belongs to
 }
 

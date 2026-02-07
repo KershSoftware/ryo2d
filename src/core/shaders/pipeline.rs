@@ -392,7 +392,8 @@ impl PostProcessPipeline {
     for (effect, time) in effects {
       // Bloom is a multi-pass effect — handle it separately
       if matches!(effect, PostProcessEffect::Bloom { .. }) {
-        use_a_as_input = self.apply_bloom_effect(device, queue, encoder, effect, *time, use_a_as_input);
+        use_a_as_input =
+          self.apply_bloom_effect(device, queue, encoder, effect, *time, use_a_as_input);
         continue;
       }
 

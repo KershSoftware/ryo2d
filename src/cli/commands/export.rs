@@ -47,18 +47,14 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // Generate datestamp (YYYYMMDD)
   let datestamp = chrono_free_datestamp();
 
-  // Build zip filename: {project-name}-v{version}-{datestamp} or {project-name}-{datestamp}
-  let zip_filename = match version {
-    Some(v) => format!(
-      "{}-v{}-{}.zip",
-      sanitize_filename(project_name),
-      v,
-      datestamp
-    ),
-    None => format!("{}-{}.zip", sanitize_filename(project_name), datestamp),
+  // Build zip base name: {project-name}-v{version}-{datestamp} or {project-name}-{datestamp}
+  let base_name = match version {
+    Some(v) => format!("{}-v{}-{}", sanitize_filename(project_name), v, datestamp),
+    None => format!("{}-{}", sanitize_filename(project_name), datestamp),
   };
 
-  let zip_path = workspace.root().join(&zip_filename);
+  let zip_path = next_available_zip_path(workspace.root(), &base_name);
+  let zip_filename = zip_path.file_name().unwrap().to_string_lossy();
 
   Output::status("Exporting", &format!("{}...", zip_filename));
 
@@ -126,6 +122,24 @@ fn chrono_free_datestamp() -> String {
   let year = if m <= 2 { y + 1 } else { y };
 
   format!("{:04}{:02}{:02}", year, m, d)
+}
+
+/// Find next available zip path, appending -001, -002, etc. if the base name already exists
+fn next_available_zip_path(root: &Path, base_name: &str) -> std::path::PathBuf {
+  let initial = root.join(format!("{}.zip", base_name));
+  if !initial.exists() {
+    return initial;
+  }
+
+  for i in 1..=999 {
+    let path = root.join(format!("{}-{:03}.zip", base_name, i));
+    if !path.exists() {
+      return path;
+    }
+  }
+
+  // Fallback: overwrite the base file
+  initial
 }
 
 /// Sanitize project name for use in filename
@@ -238,6 +252,9 @@ DESCRIPTION:
     3. If no version found, the -v{{version}} part is omitted
 
     Datestamp format: YYYYMMDD
+
+    If a zip with the same name already exists, an incremental suffix
+    is appended: -001, -002, etc.
 
 PREREQUISITES:
     Run 'ryo2d build' first to create the release bundle.

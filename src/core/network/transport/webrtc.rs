@@ -256,8 +256,8 @@ impl WebRtcServerTransport {
   fn poll_socket(&mut self) -> NetworkResult<()> {
     // Matchbox can panic internally on signaling server failures,
     // so we catch panics and convert them to errors.
-    let peers = panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers()))
-      .map_err(|e| {
+    let peers =
+      panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers())).map_err(|e| {
         let msg = panic_message(&e);
         NetworkError::ConnectionError(format!("WebRTC signaling failed: {}", msg))
       })?;
@@ -450,8 +450,8 @@ impl WebRtcClientTransport {
   fn poll_socket(&mut self) -> NetworkResult<()> {
     // Matchbox can panic internally on signaling server failures,
     // so we catch panics and convert them to errors.
-    let peers = panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers()))
-      .map_err(|e| {
+    let peers =
+      panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers())).map_err(|e| {
         let msg = panic_message(&e);
         self.is_disconnected = true;
         self.disconnect_reason = Some(format!("WebRTC signaling failed: {}", msg));

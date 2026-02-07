@@ -96,7 +96,9 @@ impl BloomDemo {
       for col in 0..12 {
         let (r, g, b) = dark_colors[(row + col) % dark_colors.len()];
         let sprite = Sprite::solid_rect(80, 80, r, g, b, 255);
-        let handle = ctx.assets.create_sprite(sprite, format!("bg_{}_{}", row, col));
+        let handle = ctx
+          .assets
+          .create_sprite(sprite, format!("bg_{}_{}", row, col));
         let entity = ctx.world.spawn((
           Transform::new(col as f32 * 80.0, row as f32 * 80.0),
           Renderable::sprite(handle).with_z_order(0),
@@ -174,7 +176,8 @@ impl BloomDemo {
       if let Some(mut t) = ctx.world.get_component_mut::<Transform>(entity) {
         let speed = 1.0 + (i as f32) * 0.25;
         let r = 60.0 + (i as f32) * 22.0;
-        let angle = self.time * speed + (i as f32 / self.orbiting_sprites.len() as f32) * std::f32::consts::TAU;
+        let angle = self.time * speed
+          + (i as f32 / self.orbiting_sprites.len() as f32) * std::f32::consts::TAU;
         t.x = cx + angle.cos() * r;
         t.y = cy + angle.sin() * r;
       }
@@ -185,9 +188,12 @@ impl BloomDemo {
     ctx.effects.clear();
 
     if self.intensity > 0.001 {
-      ctx
-        .effects
-        .set_bloom_custom(self.threshold, self.intensity, self.radius, self.blur_passes);
+      ctx.effects.set_bloom_custom(
+        self.threshold,
+        self.intensity,
+        self.radius,
+        self.blur_passes,
+      );
     }
   }
 
@@ -292,7 +298,12 @@ impl Game for BloomDemo {
 
     // Description
     for (i, line) in preset.description().lines().enumerate() {
-      ui.draw_text(line, 10.0, 58.0 + i as f32 * 15.0, Color::rgb(200, 200, 200));
+      ui.draw_text(
+        line,
+        10.0,
+        58.0 + i as f32 * 15.0,
+        Color::rgb(200, 200, 200),
+      );
     }
 
     // Live parameter readout
