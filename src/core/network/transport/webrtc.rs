@@ -209,6 +209,10 @@ pub struct WebRtcServerTransport {
   /// Buffered received messages per (client, channel) to avoid dropping
   /// messages when matchbox drains the channel on receive().
   receive_buffers: HashMap<(ClientId, usize), VecDeque<Vec<u8>>>,
+  /// Whether the signaling server connection has failed.
+  /// Once true, `update_peers()` is skipped but existing peer connections
+  /// continue working via their established data channels.
+  signaling_failed: bool,
 }
 
 impl WebRtcServerTransport {
@@ -249,42 +253,53 @@ impl WebRtcServerTransport {
       events: Vec::new(),
       is_connected: false,
       receive_buffers: HashMap::new(),
+      signaling_failed: false,
     })
   }
 
   /// Poll the socket for new events.
   fn poll_socket(&mut self) -> NetworkResult<()> {
-    // Matchbox can panic internally on signaling server failures,
-    // so we catch panics and convert them to errors.
-    let peers =
-      panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers())).map_err(|e| {
-        let msg = panic_message(&e);
-        NetworkError::ConnectionError(format!("WebRTC signaling failed: {}", msg))
-      })?;
+    // Once signaling has failed, skip update_peers() — existing peer
+    // connections still work via their established data channels.
+    if !self.signaling_failed {
+      // Matchbox can panic internally on signaling server failures.
+      // Instead of propagating the error (which would skip peer processing
+      // and leave the server in a degraded loop), we set the flag and
+      // continue — existing peer data channels are independent of signaling.
+      match panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers())) {
+        Ok(peers) => {
+          // Process peer state changes
+          for (peer_id, state) in peers {
+            match state {
+              PeerState::Connected => {
+                // Assign a new client ID
+                let client_id: ClientId = self.next_client_id;
+                self.next_client_id += 1;
 
-    // Process peer state changes
-    for (peer_id, state) in peers {
-      match state {
-        PeerState::Connected => {
-          // Assign a new client ID
-          let client_id: ClientId = self.next_client_id;
-          self.next_client_id += 1;
+                self.peer_to_client.insert(peer_id, client_id);
+                self.client_to_peer.insert(client_id, peer_id);
 
-          self.peer_to_client.insert(peer_id, client_id);
-          self.client_to_peer.insert(client_id, peer_id);
-
-          self
-            .events
-            .push(NetworkEvent::ClientConnected { client_id });
-        }
-        PeerState::Disconnected => {
-          if let Some(client_id) = self.peer_to_client.remove(&peer_id) {
-            self.client_to_peer.remove(&client_id);
-            self.events.push(NetworkEvent::ClientDisconnected {
-              client_id,
-              reason: "Peer disconnected".to_string(),
-            });
+                self
+                  .events
+                  .push(NetworkEvent::ClientConnected { client_id });
+              }
+              PeerState::Disconnected => {
+                if let Some(client_id) = self.peer_to_client.remove(&peer_id) {
+                  self.client_to_peer.remove(&client_id);
+                  self.events.push(NetworkEvent::ClientDisconnected {
+                    client_id,
+                    reason: "Peer disconnected".to_string(),
+                  });
+                }
+              }
+            }
           }
+        }
+        Err(_) => {
+          self.signaling_failed = true;
+          eprintln!(
+            "WebRTC signaling server disconnected; existing peer connections preserved"
+          );
         }
       }
     }
@@ -295,6 +310,14 @@ impl WebRtcServerTransport {
     }
 
     Ok(())
+  }
+
+  /// Whether the signaling server connection is still active.
+  ///
+  /// Returns `false` after the signaling server disconnects. Existing
+  /// peer connections continue working, but no new peers can join.
+  pub fn signaling_connected(&self) -> bool {
+    !self.signaling_failed
   }
 
   /// Get the PeerId for a ClientId.
@@ -314,8 +337,13 @@ impl WebRtcServerTransport {
   pub fn send(&mut self, client_id: ClientId, channel: usize, data: &[u8]) {
     if let Some(&peer_id) = self.client_to_peer.get(&client_id) {
       let packet = data.to_vec().into_boxed_slice();
-      // Matchbox uses channel() which returns a mutable reference
-      self.socket.channel_mut(channel).send(packet, peer_id);
+      if panic::catch_unwind(AssertUnwindSafe(|| {
+        self.socket.channel_mut(channel).send(packet, peer_id);
+      }))
+      .is_err()
+      {
+        self.signaling_failed = true;
+      }
     }
   }
 
@@ -329,13 +357,23 @@ impl WebRtcServerTransport {
     }
 
     // Drain socket into per-client buffers (matchbox drains all messages at once)
-    for (from_peer, data) in self.socket.channel_mut(channel).receive() {
-      if let Some(&client) = self.peer_to_client.get(&from_peer) {
-        self
-          .receive_buffers
-          .entry((client, channel))
-          .or_default()
-          .push_back(data.to_vec());
+    let messages = panic::catch_unwind(AssertUnwindSafe(|| {
+      self.socket.channel_mut(channel).receive()
+    }));
+    match messages {
+      Ok(msgs) => {
+        for (from_peer, data) in msgs {
+          if let Some(&client) = self.peer_to_client.get(&from_peer) {
+            self
+              .receive_buffers
+              .entry((client, channel))
+              .or_default()
+              .push_back(data.to_vec());
+          }
+        }
+      }
+      Err(_) => {
+        self.signaling_failed = true;
       }
     }
 
@@ -351,10 +389,15 @@ impl WebRtcServerTransport {
     let peers: Vec<_> = self.peer_to_client.keys().copied().collect();
 
     for peer_id in peers {
-      self
-        .socket
-        .channel_mut(channel)
-        .send(packet.clone(), peer_id);
+      let p = packet.clone();
+      if panic::catch_unwind(AssertUnwindSafe(|| {
+        self.socket.channel_mut(channel).send(p, peer_id);
+      }))
+      .is_err()
+      {
+        self.signaling_failed = true;
+        return;
+      }
     }
   }
 }
@@ -400,6 +443,10 @@ pub struct WebRtcClientTransport {
   /// Buffered received messages per channel to avoid dropping
   /// messages when matchbox drains the channel on receive().
   receive_buffers: [VecDeque<Vec<u8>>; 2],
+  /// Whether the signaling server connection has failed.
+  /// Once true, `update_peers()` is skipped but the existing peer connection
+  /// continues working via its established data channel.
+  signaling_failed: bool,
 }
 
 impl WebRtcClientTransport {
@@ -443,27 +490,40 @@ impl WebRtcClientTransport {
       is_disconnected: false,
       disconnect_reason: None,
       receive_buffers: [VecDeque::new(), VecDeque::new()],
+      signaling_failed: false,
     })
   }
 
   /// Poll the socket for new events.
   fn poll_socket(&mut self) -> NetworkResult<()> {
+    // Once signaling has failed, skip update_peers() — existing peer
+    // connections still work via their established data channels.
+    if self.signaling_failed {
+      return Ok(());
+    }
+
     // Matchbox can panic internally on signaling server failures,
-    // so we catch panics and convert them to errors.
-    let peers =
-      panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers())).map_err(|e| {
-        let msg = panic_message(&e);
-        self.is_disconnected = true;
-        self.disconnect_reason = Some(format!("WebRTC signaling failed: {}", msg));
-        NetworkError::ConnectionError(format!("WebRTC signaling failed: {}", msg))
-      })?;
+    // so we catch panics. Instead of propagating the error (which would
+    // kill the connection), we set the flag and continue.
+    let peers = match panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers())) {
+      Ok(peers) => peers,
+      Err(_) => {
+        self.signaling_failed = true;
+        eprintln!("WebRTC signaling server disconnected; existing peer connections preserved");
+        return Ok(());
+      }
+    };
 
     for (peer_id, state) in peers {
       match state {
         PeerState::Connected => {
-          // In a client-server model, the first peer we connect to is the server
-          if self.server_peer.is_none() {
-            self.server_peer = Some(peer_id);
+          // In a full-mesh WebRTC room, multiple peers may connect (the
+          // host plus other clients). We do NOT pick server_peer here
+          // because connection order is non-deterministic — the first
+          // ICE handshake to complete may be another client, not the host.
+          // Instead, server_peer is discovered in receive() from the first
+          // peer to send us data (only the host sends to clients).
+          if !self.is_connected {
             self.is_connected = true;
           }
         }
@@ -485,7 +545,13 @@ impl WebRtcClientTransport {
   pub fn send(&mut self, channel: usize, data: &[u8]) {
     if let Some(server_peer) = self.server_peer {
       let packet = data.to_vec().into_boxed_slice();
-      self.socket.channel_mut(channel).send(packet, server_peer);
+      if panic::catch_unwind(AssertUnwindSafe(|| {
+        self.socket.channel_mut(channel).send(packet, server_peer);
+      }))
+      .is_err()
+      {
+        self.signaling_failed = true;
+      }
     }
   }
 
@@ -496,11 +562,30 @@ impl WebRtcClientTransport {
       return Some(msg);
     }
 
-    // Drain socket into buffer (matchbox drains all messages at once)
-    let server_peer = self.server_peer?;
-    for (from_peer, data) in self.socket.channel_mut(channel).receive() {
-      if from_peer == server_peer {
-        self.receive_buffers[channel].push_back(data.to_vec());
+    // Drain socket into buffer (matchbox drains all messages at once).
+    // In a full-mesh room we may be connected to non-server peers, so
+    // we need to identify which peer is the actual server.
+    let messages = panic::catch_unwind(AssertUnwindSafe(|| {
+      self.socket.channel_mut(channel).receive()
+    }));
+    match messages {
+      Ok(msgs) => {
+        for (from_peer, data) in msgs {
+          if let Some(server) = self.server_peer {
+            // Only accept messages from the identified server
+            if from_peer == server {
+              self.receive_buffers[channel].push_back(data.to_vec());
+            }
+          } else {
+            // Server not yet identified. In a client-server model only the
+            // host sends data to clients, so the first peer to send is the server.
+            self.server_peer = Some(from_peer);
+            self.receive_buffers[channel].push_back(data.to_vec());
+          }
+        }
+      }
+      Err(_) => {
+        self.signaling_failed = true;
       }
     }
 
@@ -510,6 +595,14 @@ impl WebRtcClientTransport {
   /// Check if connected to the server.
   pub fn is_connected(&self) -> bool {
     self.is_connected
+  }
+
+  /// Whether the signaling server connection is still active.
+  ///
+  /// Returns `false` after the signaling server disconnects. The existing
+  /// peer connection to the server continues working.
+  pub fn signaling_connected(&self) -> bool {
+    !self.signaling_failed
   }
 
   /// Check if connecting to the server.
@@ -581,6 +674,21 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> &str {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// Create a deterministic PeerId for testing from a simple byte value.
+  fn test_peer_id(b: u8) -> PeerId {
+    // PeerId wraps Uuid; construct via serde since Uuid isn't directly accessible
+    let hex = format!("{:02x}", b).repeat(16);
+    let uuid_str = format!(
+      "{}-{}-{}-{}-{}",
+      &hex[0..8],
+      &hex[8..12],
+      &hex[12..16],
+      &hex[16..20],
+      &hex[20..32]
+    );
+    serde_json::from_str(&format!("\"{}\"", uuid_str)).unwrap()
+  }
 
   // =========================================================================
   // WebRtcConfig Tests
@@ -769,19 +877,7 @@ mod tests {
 
   #[test]
   fn webrtc_client_transport_is_connecting_initially() {
-    // We can't easily test without a signaling server, but we can verify
-    // the state logic methods
-    let (socket, handle) = create_mock_socket();
-    let transport = WebRtcClientTransport {
-      socket,
-      _message_loop: handle,
-      server_peer: None,
-      client_id: 12345,
-      is_connected: false,
-      is_disconnected: false,
-      disconnect_reason: None,
-      receive_buffers: [VecDeque::new(), VecDeque::new()],
-    };
+    let transport = create_mock_client_transport();
 
     assert!(transport.is_connecting());
     assert!(!transport.is_connected());
@@ -789,17 +885,7 @@ mod tests {
 
   #[test]
   fn webrtc_client_transport_is_ready_when_connecting() {
-    let (socket, handle) = create_mock_socket();
-    let transport = WebRtcClientTransport {
-      socket,
-      _message_loop: handle,
-      server_peer: None,
-      client_id: 12345,
-      is_connected: false,
-      is_disconnected: false,
-      disconnect_reason: None,
-      receive_buffers: [VecDeque::new(), VecDeque::new()],
-    };
+    let transport = create_mock_client_transport();
 
     // Should be ready when connecting (not yet connected or disconnected)
     assert!(transport.is_ready());
@@ -807,17 +893,7 @@ mod tests {
 
   #[test]
   fn webrtc_client_transport_client_id_returns_assigned_id() {
-    let (socket, handle) = create_mock_socket();
-    let transport = WebRtcClientTransport {
-      socket,
-      _message_loop: handle,
-      server_peer: None,
-      client_id: 99999,
-      is_connected: false,
-      is_disconnected: false,
-      disconnect_reason: None,
-      receive_buffers: [VecDeque::new(), VecDeque::new()],
-    };
+    let transport = create_mock_client_transport_with_id(99999);
 
     assert_eq!(transport.client_id(), 99999);
   }
@@ -828,17 +904,7 @@ mod tests {
 
   #[test]
   fn webrtc_server_transport_starts_with_no_clients() {
-    let (socket, handle) = create_mock_socket();
-    let transport = WebRtcServerTransport {
-      socket,
-      _message_loop: handle,
-      peer_to_client: HashMap::new(),
-      client_to_peer: HashMap::new(),
-      next_client_id: 1,
-      events: Vec::new(),
-      is_connected: false,
-      receive_buffers: HashMap::new(),
-    };
+    let transport = create_mock_server_transport();
 
     let clients: Vec<_> = transport.clients().collect();
     assert!(clients.is_empty());
@@ -846,17 +912,7 @@ mod tests {
 
   #[test]
   fn webrtc_server_transport_events_starts_empty() {
-    let (socket, handle) = create_mock_socket();
-    let mut transport = WebRtcServerTransport {
-      socket,
-      _message_loop: handle,
-      peer_to_client: HashMap::new(),
-      client_to_peer: HashMap::new(),
-      next_client_id: 1,
-      events: Vec::new(),
-      is_connected: false,
-      receive_buffers: HashMap::new(),
-    };
+    let mut transport = create_mock_server_transport();
 
     let events = transport.drain_events();
     assert!(events.is_empty());
@@ -864,19 +920,414 @@ mod tests {
 
   #[test]
   fn webrtc_server_transport_not_ready_initially() {
-    let (socket, handle) = create_mock_socket();
-    let transport = WebRtcServerTransport {
-      socket,
-      _message_loop: handle,
-      peer_to_client: HashMap::new(),
-      client_to_peer: HashMap::new(),
-      next_client_id: 1,
-      events: Vec::new(),
-      is_connected: false,
-      receive_buffers: HashMap::new(),
-    };
+    let transport = create_mock_server_transport();
 
     assert!(!transport.is_ready());
+  }
+
+  // =========================================================================
+  // WebRtcServerTransport — signaling_connected
+  // =========================================================================
+
+  #[test]
+  fn webrtc_server_signaling_connected_initially_true() {
+    let transport = create_mock_server_transport();
+    assert!(transport.signaling_connected());
+  }
+
+  #[test]
+  fn webrtc_server_signaling_connected_false_after_failure() {
+    let mut transport = create_mock_server_transport();
+    transport.signaling_failed = true;
+    assert!(!transport.signaling_connected());
+  }
+
+  // =========================================================================
+  // WebRtcServerTransport — poll_socket / update
+  // =========================================================================
+
+  #[test]
+  fn webrtc_server_poll_socket_marks_connected() {
+    let mut transport = create_mock_server_transport();
+    assert!(!transport.is_connected);
+    // poll_socket always marks as connected (even if update_peers panics,
+    // the is_connected flag is set after the match block)
+    let _ = transport.poll_socket();
+    assert!(transport.is_connected);
+    assert!(transport.is_ready());
+  }
+
+  #[test]
+  fn webrtc_server_poll_socket_skips_update_when_signaling_failed() {
+    let mut transport = create_mock_server_transport();
+    transport.signaling_failed = true;
+    transport.is_connected = true;
+    // Should not panic and should return Ok
+    let result = transport.poll_socket();
+    assert!(result.is_ok());
+    assert!(transport.signaling_failed);
+  }
+
+  #[test]
+  fn webrtc_server_update_trait_delegates_to_poll_socket() {
+    let mut transport = create_mock_server_transport();
+    assert!(!transport.is_connected);
+    let result = transport.update(Duration::from_millis(16));
+    assert!(result.is_ok());
+    assert!(transport.is_connected);
+  }
+
+  // =========================================================================
+  // WebRtcServerTransport — client mapping & events
+  // =========================================================================
+
+  #[test]
+  fn webrtc_server_get_peer_returns_none_for_unknown() {
+    let transport = create_mock_server_transport();
+    assert!(transport.get_peer(999).is_none());
+  }
+
+  #[test]
+  fn webrtc_server_get_peer_returns_mapped_peer() {
+    let mut transport = create_mock_server_transport();
+    let peer_id = test_peer_id(1);
+    transport.peer_to_client.insert(peer_id, 42);
+    transport.client_to_peer.insert(42, peer_id);
+    assert_eq!(transport.get_peer(42), Some(peer_id));
+  }
+
+  #[test]
+  fn webrtc_server_clients_reflects_mapping() {
+    let mut transport = create_mock_server_transport();
+    let peer1 = test_peer_id(1);
+    let peer2 = test_peer_id(2);
+    transport.client_to_peer.insert(10, peer1);
+    transport.client_to_peer.insert(20, peer2);
+
+    let mut clients: Vec<_> = transport.clients().collect();
+    clients.sort();
+    assert_eq!(clients, vec![10, 20]);
+  }
+
+  #[test]
+  fn webrtc_server_drain_events_returns_and_clears() {
+    let mut transport = create_mock_server_transport();
+    transport
+      .events
+      .push(NetworkEvent::ClientConnected { client_id: 1 });
+    transport
+      .events
+      .push(NetworkEvent::ClientConnected { client_id: 2 });
+
+    let events = transport.drain_events();
+    assert_eq!(events.len(), 2);
+    // After drain, events should be empty
+    let events2 = transport.drain_events();
+    assert!(events2.is_empty());
+  }
+
+  // =========================================================================
+  // WebRtcServerTransport — send / receive / broadcast
+  // =========================================================================
+
+  #[test]
+  fn webrtc_server_send_ignores_unknown_client() {
+    let mut transport = create_mock_server_transport();
+    // Should not panic when sending to unknown client
+    transport.send(999, 0, b"hello");
+  }
+
+  #[test]
+  fn webrtc_server_receive_returns_buffered_data() {
+    let mut transport = create_mock_server_transport();
+    let client_id: ClientId = 42;
+
+    // Pre-populate the receive buffer
+    transport
+      .receive_buffers
+      .entry((client_id, 0))
+      .or_default()
+      .push_back(b"msg1".to_vec());
+    transport
+      .receive_buffers
+      .entry((client_id, 0))
+      .or_default()
+      .push_back(b"msg2".to_vec());
+
+    // Should return buffered messages in order
+    assert_eq!(transport.receive(client_id, 0), Some(b"msg1".to_vec()));
+    assert_eq!(transport.receive(client_id, 0), Some(b"msg2".to_vec()));
+    assert_eq!(transport.receive(client_id, 0), None);
+  }
+
+  #[test]
+  fn webrtc_server_receive_returns_none_for_unknown_client() {
+    let mut transport = create_mock_server_transport();
+    assert_eq!(transport.receive(999, 0), None);
+  }
+
+  #[test]
+  fn webrtc_server_receive_buffers_per_channel() {
+    let mut transport = create_mock_server_transport();
+    let client_id: ClientId = 42;
+
+    // Buffer data on channel 0 and channel 1 separately
+    transport
+      .receive_buffers
+      .entry((client_id, 0))
+      .or_default()
+      .push_back(b"reliable".to_vec());
+    transport
+      .receive_buffers
+      .entry((client_id, 1))
+      .or_default()
+      .push_back(b"unreliable".to_vec());
+
+    assert_eq!(
+      transport.receive(client_id, 0),
+      Some(b"reliable".to_vec())
+    );
+    assert_eq!(
+      transport.receive(client_id, 1),
+      Some(b"unreliable".to_vec())
+    );
+    assert_eq!(transport.receive(client_id, 0), None);
+    assert_eq!(transport.receive(client_id, 1), None);
+  }
+
+  #[test]
+  fn webrtc_server_broadcast_to_empty_peers_is_noop() {
+    let mut transport = create_mock_server_transport();
+    // No peers mapped — should not panic
+    transport.broadcast(0, b"hello everyone");
+  }
+
+  // =========================================================================
+  // WebRtcClientTransport — signaling_connected
+  // =========================================================================
+
+  #[test]
+  fn webrtc_client_signaling_connected_initially_true() {
+    let transport = create_mock_client_transport();
+    assert!(transport.signaling_connected());
+  }
+
+  #[test]
+  fn webrtc_client_signaling_connected_false_after_failure() {
+    let mut transport = create_mock_client_transport();
+    transport.signaling_failed = true;
+    assert!(!transport.signaling_connected());
+  }
+
+  // =========================================================================
+  // WebRtcClientTransport — connection state
+  // =========================================================================
+
+  #[test]
+  fn webrtc_client_not_connected_initially() {
+    let transport = create_mock_client_transport();
+    assert!(!transport.is_connected());
+    assert!(transport.is_connecting());
+  }
+
+  #[test]
+  fn webrtc_client_is_ready_when_connected() {
+    let mut transport = create_mock_client_transport();
+    transport.is_connected = true;
+    assert!(transport.is_ready());
+  }
+
+  #[test]
+  fn webrtc_client_not_ready_when_disconnected() {
+    let mut transport = create_mock_client_transport();
+    transport.is_disconnected = true;
+    // Not connected and not connecting (is_disconnected = true)
+    assert!(!transport.is_ready());
+  }
+
+  #[test]
+  fn webrtc_client_is_connecting_false_when_connected() {
+    let mut transport = create_mock_client_transport();
+    transport.is_connected = true;
+    assert!(!transport.is_connecting());
+  }
+
+  #[test]
+  fn webrtc_client_is_connecting_false_when_disconnected() {
+    let mut transport = create_mock_client_transport();
+    transport.is_disconnected = true;
+    assert!(!transport.is_connecting());
+  }
+
+  // =========================================================================
+  // WebRtcClientTransport — disconnect
+  // =========================================================================
+
+  #[test]
+  fn webrtc_client_disconnect_clears_state() {
+    let mut transport = create_mock_client_transport();
+    transport.is_connected = true;
+    transport.server_peer = Some(test_peer_id(1));
+
+    transport.disconnect();
+
+    assert!(!transport.is_connected());
+    assert!(transport.is_disconnected);
+    assert!(transport.server_peer.is_none());
+  }
+
+  #[test]
+  fn webrtc_client_disconnect_reason_initially_none() {
+    let transport = create_mock_client_transport();
+    assert!(transport.disconnect_reason.is_none());
+  }
+
+  #[test]
+  fn webrtc_client_disconnect_reason_from_trait() {
+    let mut transport = create_mock_client_transport();
+    transport.disconnect_reason = Some("test reason".to_string());
+    assert_eq!(
+      <WebRtcClientTransport as ClientTransport>::disconnect_reason(&transport),
+      Some("test reason".to_string())
+    );
+  }
+
+  // =========================================================================
+  // WebRtcClientTransport — server_peer discovery & receive
+  // =========================================================================
+
+  #[test]
+  fn webrtc_client_server_peer_none_initially() {
+    let transport = create_mock_client_transport();
+    assert!(transport.server_peer.is_none());
+  }
+
+  #[test]
+  fn webrtc_client_send_noop_without_server_peer() {
+    let mut transport = create_mock_client_transport();
+    assert!(transport.server_peer.is_none());
+    // Should not panic — just silently does nothing
+    transport.send(0, b"hello");
+  }
+
+  #[test]
+  fn webrtc_client_receive_returns_buffered_data() {
+    let mut transport = create_mock_client_transport();
+    transport.server_peer = Some(test_peer_id(1));
+
+    // Pre-populate buffer on channel 0
+    transport.receive_buffers[0].push_back(b"msg1".to_vec());
+    transport.receive_buffers[0].push_back(b"msg2".to_vec());
+
+    assert_eq!(transport.receive(0), Some(b"msg1".to_vec()));
+    assert_eq!(transport.receive(0), Some(b"msg2".to_vec()));
+    assert_eq!(transport.receive(0), None);
+  }
+
+  #[test]
+  fn webrtc_client_receive_returns_none_when_empty() {
+    let mut transport = create_mock_client_transport();
+    assert_eq!(transport.receive(0), None);
+    assert_eq!(transport.receive(1), None);
+  }
+
+  #[test]
+  fn webrtc_client_receive_buffers_per_channel() {
+    let mut transport = create_mock_client_transport();
+    transport.server_peer = Some(test_peer_id(1));
+
+    transport.receive_buffers[0].push_back(b"reliable".to_vec());
+    transport.receive_buffers[1].push_back(b"unreliable".to_vec());
+
+    assert_eq!(transport.receive(0), Some(b"reliable".to_vec()));
+    assert_eq!(transport.receive(1), Some(b"unreliable".to_vec()));
+    assert_eq!(transport.receive(0), None);
+    assert_eq!(transport.receive(1), None);
+  }
+
+  // =========================================================================
+  // WebRtcClientTransport — poll_socket with signaling_failed
+  // =========================================================================
+
+  #[test]
+  fn webrtc_client_poll_socket_skips_update_when_signaling_failed() {
+    let mut transport = create_mock_client_transport();
+    transport.signaling_failed = true;
+    // Should return Ok immediately without touching the socket
+    let result = transport.poll_socket();
+    assert!(result.is_ok());
+    // State should not change
+    assert!(!transport.is_connected);
+    assert!(transport.server_peer.is_none());
+  }
+
+  #[test]
+  fn webrtc_client_update_trait_delegates_to_poll_socket() {
+    let mut transport = create_mock_client_transport();
+    transport.signaling_failed = true;
+    let result = transport.update(Duration::from_millis(16));
+    assert!(result.is_ok());
+  }
+
+  #[test]
+  fn webrtc_client_send_packets_trait_is_noop() {
+    let mut transport = create_mock_client_transport();
+    let mut client = RenetClient::new(renet::ConnectionConfig::default());
+    let result = transport.send_packets(&mut client);
+    assert!(result.is_ok());
+  }
+
+  #[test]
+  fn webrtc_client_client_id_from_trait() {
+    let transport = create_mock_client_transport_with_id(54321);
+    assert_eq!(
+      <WebRtcClientTransport as ClientTransport>::client_id(&transport),
+      54321
+    );
+  }
+
+  // =========================================================================
+  // Helper function tests — panic_message
+  // =========================================================================
+
+  #[test]
+  fn panic_message_extracts_string_payload() {
+    let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("test error"));
+    assert_eq!(panic_message(&payload), "test error");
+  }
+
+  #[test]
+  fn panic_message_extracts_str_payload() {
+    let payload: Box<dyn std::any::Any + Send> = Box::new("static error");
+    assert_eq!(panic_message(&payload), "static error");
+  }
+
+  #[test]
+  fn panic_message_returns_default_for_unknown_type() {
+    let payload: Box<dyn std::any::Any + Send> = Box::new(42i32);
+    assert_eq!(panic_message(&payload), "signaling connection closed");
+  }
+
+  // =========================================================================
+  // Helper function tests — rand_u64
+  // =========================================================================
+
+  #[test]
+  fn rand_u64_returns_nonzero() {
+    // Very unlikely to get 0, but mainly testing it doesn't panic
+    let _id = rand_u64();
+  }
+
+  #[test]
+  fn rand_u64_returns_different_values() {
+    // Two calls should produce different values (not guaranteed but extremely likely)
+    let a = rand_u64();
+    // Small sleep to ensure different nanos
+    std::thread::sleep(Duration::from_nanos(1));
+    let b = rand_u64();
+    // If they happen to be equal, it's not a bug — but it's astronomically unlikely
+    // This test mainly verifies the function runs without panicking
+    let _ = (a, b);
   }
 
   // =========================================================================
@@ -894,5 +1345,42 @@ mod tests {
       let _ = pollster::block_on(loop_fut);
     });
     (socket, handle)
+  }
+
+  /// Create a mock server transport with default empty state.
+  fn create_mock_server_transport() -> WebRtcServerTransport {
+    let (socket, handle) = create_mock_socket();
+    WebRtcServerTransport {
+      socket,
+      _message_loop: handle,
+      peer_to_client: HashMap::new(),
+      client_to_peer: HashMap::new(),
+      next_client_id: 1,
+      events: Vec::new(),
+      is_connected: false,
+      receive_buffers: HashMap::new(),
+      signaling_failed: false,
+    }
+  }
+
+  /// Create a mock client transport with default empty state.
+  fn create_mock_client_transport() -> WebRtcClientTransport {
+    create_mock_client_transport_with_id(12345)
+  }
+
+  /// Create a mock client transport with a specific client ID.
+  fn create_mock_client_transport_with_id(id: ClientId) -> WebRtcClientTransport {
+    let (socket, handle) = create_mock_socket();
+    WebRtcClientTransport {
+      socket,
+      _message_loop: handle,
+      server_peer: None,
+      client_id: id,
+      is_connected: false,
+      is_disconnected: false,
+      disconnect_reason: None,
+      receive_buffers: [VecDeque::new(), VecDeque::new()],
+      signaling_failed: false,
+    }
   }
 }

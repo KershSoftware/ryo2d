@@ -14,6 +14,7 @@ pub struct PlatformData {
   pub width: f32,
   pub moving: bool,
   pub platform_index: u32,
+  pub is_checkpoint: bool,
 }
 
 /// Procedural platform generator with seeded RNG
@@ -38,6 +39,7 @@ impl PlatformGenerator {
       width: SPAWN_PLATFORM_WIDTH,
       moving: false,
       platform_index: 0,
+      is_checkpoint: false,
     };
     // Compute first moving platform interval from seed
     let mut init_rng = SeededRng::new(seed.wrapping_add(0x4D4F5645));
@@ -168,6 +170,36 @@ impl PlatformGenerator {
     None
   }
 
+  /// Convert a checkpoint height threshold (in height units) to a world Y for the platform top.
+  fn checkpoint_threshold_to_y(threshold: f32) -> f32 {
+    // Height display: height = (PLAYER_SPAWN_Y - player_y) / HEIGHT_SCALE
+    // Player on platform: player_y = platform_y - PLAYER_HEIGHT
+    // Substituting: height = (PLAYER_SPAWN_Y - platform_y + PLAYER_HEIGHT) / HEIGHT_SCALE
+    //                      = (SPAWN_PLATFORM_Y - platform_y) / HEIGHT_SCALE
+    // So: platform_y = SPAWN_PLATFORM_Y - threshold * HEIGHT_SCALE
+    SPAWN_PLATFORM_Y - threshold * HEIGHT_SCALE
+  }
+
+  /// Collect all checkpoint platform Y positions that fall within [top_y, bottom_y].
+  /// Note: top_y < bottom_y since Y decreases going up in world space.
+  fn checkpoint_ys_in_range(top_y: f32, bottom_y: f32) -> Vec<f32> {
+    let mut result = Vec::new();
+    let mut threshold = FIRST_CHECKPOINT_HEIGHT;
+    let mut interval = CHECKPOINT_INTERVAL;
+    loop {
+      let cp_y = Self::checkpoint_threshold_to_y(threshold);
+      if cp_y < top_y {
+        break; // Past the top of the range (higher in world)
+      }
+      if cp_y <= bottom_y && cp_y >= top_y {
+        result.push(cp_y);
+      }
+      threshold += interval;
+      interval += CHECKPOINT_INTERVAL_GROWTH;
+    }
+    result
+  }
+
   /// Generate platforms for a specific chunk
   /// Returns None if chunk was already generated
   pub fn generate_chunk(&mut self, chunk_index: i32) -> Option<Vec<PlatformData>> {
@@ -257,10 +289,26 @@ impl PlatformGenerator {
         width,
         moving,
         platform_index: self.total_platforms_generated,
+        is_checkpoint: false,
       });
       last_y = y;
       last_x = x;
       last_width = width;
+    }
+
+    // Insert guaranteed checkpoint platforms at exact threshold positions.
+    // These are wide, centered, non-moving platforms that serve as respawn points.
+    let checkpoint_x = self.screen_width / 2.0 - SPAWN_PLATFORM_WIDTH / 2.0;
+    for cp_y in Self::checkpoint_ys_in_range(chunk_top, chunk_bottom) {
+      self.total_platforms_generated += 1;
+      platforms.push(PlatformData {
+        x: checkpoint_x,
+        y: cp_y,
+        width: SPAWN_PLATFORM_WIDTH,
+        moving: false,
+        platform_index: self.total_platforms_generated,
+        is_checkpoint: true,
+      });
     }
 
     // Remember last X for next chunk
@@ -309,6 +357,7 @@ impl PlatformGenerator {
       width: SPAWN_PLATFORM_WIDTH,
       moving: false,
       platform_index: 0,
+      is_checkpoint: false,
     }];
     self.total_platforms_generated = 0;
     let mut init_rng = SeededRng::new(self.seed.wrapping_add(0x4D4F5645));
@@ -328,6 +377,7 @@ impl PlatformGenerator {
       width: SPAWN_PLATFORM_WIDTH,
       moving: false,
       platform_index: 0,
+      is_checkpoint: false,
     }];
     self.total_platforms_generated = 0;
     let mut init_rng = SeededRng::new(seed.wrapping_add(0x4D4F5645));
@@ -355,6 +405,7 @@ mod tests {
       assert_eq!(p1.width, p2.width);
       assert_eq!(p1.moving, p2.moving);
       assert_eq!(p1.platform_index, p2.platform_index);
+      assert_eq!(p1.is_checkpoint, p2.is_checkpoint);
     }
   }
 

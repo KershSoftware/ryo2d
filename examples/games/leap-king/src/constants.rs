@@ -41,8 +41,13 @@ pub const SPAWN_PLATFORM_Y: f32 = 500.0;
 
 // Spawn positions (on spawn platform)
 pub const PLAYER_SPAWN_Y: f32 = SPAWN_PLATFORM_Y - PLAYER_HEIGHT;
-/// Horizontal offset from screen center for each player spawn slot
-pub const PLAYER_SPAWN_OFFSET: f32 = 100.0;
+/// Horizontal spawn offsets from spawn platform left edge for each player slot
+pub const PLAYER_SPAWN_OFFSETS: [f32; 4] = [
+  PLAYER_WIDTH / 2.0,                                       // Slot 0: left
+  SPAWN_PLATFORM_WIDTH - PLAYER_WIDTH - PLAYER_WIDTH / 2.0, // Slot 1: right
+  SPAWN_PLATFORM_WIDTH * 0.33 - PLAYER_WIDTH / 2.0,         // Slot 2: left-center
+  SPAWN_PLATFORM_WIDTH * 0.67 - PLAYER_WIDTH / 2.0,         // Slot 3: right-center
+];
 
 // Death and respawn
 pub const DEATH_Y_OFFSET: f32 = 400.0; // Fall this far below checkpoint to die
@@ -54,6 +59,7 @@ pub const CHECKPOINT_INTERVAL: f32 = 150.0; // Height units between first checkp
 pub const CHECKPOINT_INTERVAL_GROWTH: f32 = 25.0; // Each checkpoint adds this to the interval
 pub const FIRST_CHECKPOINT_HEIGHT: f32 = 50.0; // Minimum height before first checkpoint
 pub const CHECKPOINT_PLATFORM_COLOR: (u8, u8, u8) = (80, 120, 80); // Green like spawn platform
+pub const FUTURE_CHECKPOINT_COLOR: (u8, u8, u8) = (200, 180, 50); // Yellow for next checkpoint
 
 // Camera
 pub const CAMERA_DEAD_ZONE: f32 = 100.0;
@@ -72,8 +78,12 @@ pub const DEFAULT_SIGNAL_PORT: u16 = 3536;
 pub const DEFAULT_SIGNAL_URL: &str = "ws://127.0.0.1:3536";
 
 // Colors (RGB)
-pub const PLAYER_A_COLOR: (u8, u8, u8) = (66, 200, 135); // Teal
-pub const PLAYER_B_COLOR: (u8, u8, u8) = (245, 130, 66); // Orange
+pub const PLAYER_COLORS: [(u8, u8, u8); 4] = [
+  (66, 200, 135),  // Slot 0: Teal
+  (245, 130, 66),  // Slot 1: Orange
+  (160, 100, 220), // Slot 2: Purple
+  (230, 200, 60),  // Slot 3: Yellow
+];
 pub const PLATFORM_COLOR: (u8, u8, u8) = (100, 100, 120); // Gray-blue
 pub const MOVING_PLATFORM_COLOR: (u8, u8, u8) = (100, 110, 140); // Blue-ish tint
 pub const SPAWN_PLATFORM_COLOR: (u8, u8, u8) = (80, 120, 80); // Green-gray

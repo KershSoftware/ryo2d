@@ -437,7 +437,7 @@ impl Scene for MenuScene {
     let button_width = 200.0;
     let button_height = 40.0;
     let button_x = center_x - button_width / 2.0;
-    let highlight_color = Color::rgb(PLAYER_A_COLOR.0, PLAYER_A_COLOR.1, PLAYER_A_COLOR.2);
+    let highlight_color = Color::rgb(PLAYER_COLORS[0].0, PLAYER_COLORS[0].1, PLAYER_COLORS[0].2);
 
     // Single Player button
     let single_rect = Rect::new(button_x, center_y - 80.0, button_width, button_height);

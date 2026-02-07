@@ -118,6 +118,7 @@ pub struct Platform {
   pub width: f32,
   pub chunk_y: i32, // Which chunk this platform belongs to
   pub is_spawn: bool,
+  pub is_checkpoint: bool,
 }
 
 impl Platform {
@@ -126,6 +127,16 @@ impl Platform {
       width,
       chunk_y,
       is_spawn: false,
+      is_checkpoint: false,
+    }
+  }
+
+  pub fn checkpoint(width: f32, chunk_y: i32) -> Self {
+    Self {
+      width,
+      chunk_y,
+      is_spawn: false,
+      is_checkpoint: true,
     }
   }
 
@@ -134,6 +145,7 @@ impl Platform {
       width: SPAWN_PLATFORM_WIDTH,
       chunk_y: 0,
       is_spawn: true,
+      is_checkpoint: false,
     }
   }
 }

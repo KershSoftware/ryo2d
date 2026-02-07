@@ -571,6 +571,19 @@ impl NetworkServer {
       ServerTransportImpl::WebRtc(webrtc) => webrtc.clients().count(),
     }
   }
+
+  /// Whether the signaling server connection is still active (WebRTC only).
+  ///
+  /// Returns `true` for UDP transports (no signaling server).
+  /// For WebRTC, returns `false` after the signaling server disconnects.
+  /// Existing peer connections continue working, but no new peers can join.
+  pub fn signaling_connected(&self) -> bool {
+    match &self.transport {
+      ServerTransportImpl::Udp(_) => true,
+      #[cfg(feature = "matchbox")]
+      ServerTransportImpl::WebRtc(webrtc) => webrtc.signaling_connected(),
+    }
+  }
 }
 
 impl ServerLike for NetworkServer {
@@ -841,6 +854,19 @@ impl NetworkClient {
       ClientTransportImpl::Udp(udp) => udp.client_id(),
       #[cfg(feature = "matchbox")]
       ClientTransportImpl::WebRtc(webrtc) => webrtc.client_id(),
+    }
+  }
+
+  /// Whether the signaling server connection is still active (WebRTC only).
+  ///
+  /// Returns `true` for UDP transports (no signaling server).
+  /// For WebRTC, returns `false` after the signaling server disconnects.
+  /// The existing peer connection to the server continues working.
+  pub fn signaling_connected(&self) -> bool {
+    match &self.transport {
+      ClientTransportImpl::Udp(_) => true,
+      #[cfg(feature = "matchbox")]
+      ClientTransportImpl::WebRtc(webrtc) => webrtc.signaling_connected(),
     }
   }
 }

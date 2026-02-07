@@ -193,9 +193,16 @@ pub struct GameInitRpc {
   pub session_id: u64,
   /// The server-assigned client ID (WebRTC clients need this to know their identity)
   pub client_id: u64,
+  /// Server-assigned player slot (0-3)
+  #[serde(default = "default_slot")]
+  pub slot: u8,
   pub checkpoint_x: Option<f32>,
   pub checkpoint_y: Option<f32>,
   pub checkpoint_height: Option<f32>,
+}
+
+fn default_slot() -> u8 {
+  1
 }
 
 impl Rpc for GameInitRpc {
