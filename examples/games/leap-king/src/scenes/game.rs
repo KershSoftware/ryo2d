@@ -2880,8 +2880,89 @@ impl GameScene {
           self.remote_slots.insert(update.client_id, update.slot);
         }
         UpdateResult::StoredForReconciliation => {
-          // Local player - we're predicting, don't apply server position
-          // (reconciliation would happen here if we had input buffering)
+          // Local player — reconcile predicted state with server authority.
+          // Read the client's current predicted state to compare.
+          let (client_grounded, client_airborne) = ctx
+            .world
+            .get_component::<Player>(entity)
+            .map(|p| (p.grounded, p.leap_state.is_airborne()))
+            .unwrap_or((false, false));
+
+          let server_grounded = update.grounded;
+          let server_airborne = matches!(update.leap_state, NetworkLeapState::Airborne);
+
+          // Critical state correction: host says we're airborne but client
+          // thinks we're grounded (e.g. knocked off a platform by another
+          // player). Trust the server — snap position, velocity, and state.
+          if server_airborne && client_grounded {
+            if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+              transform.x = update.x;
+              transform.y = update.y;
+            }
+            if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+              vel.dx = update.vx;
+              vel.dy = update.vy;
+            }
+            if let Some(mut player) = ctx.world.get_component_mut::<Player>(entity) {
+              player.leap_state = update.leap_state.into();
+              player.grounded = update.grounded;
+            }
+          }
+          // State correction: host says we're grounded but client thinks
+          // we're airborne (e.g. we landed on host but client hasn't detected
+          // the landing yet). Snap to server.
+          else if server_grounded && client_airborne {
+            if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+              transform.x = update.x;
+              transform.y = update.y;
+            }
+            if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+              vel.dx = update.vx;
+              vel.dy = update.vy;
+            }
+            if let Some(mut player) = ctx.world.get_component_mut::<Player>(entity) {
+              player.leap_state = update.leap_state.into();
+              player.grounded = update.grounded;
+            }
+          }
+          // Position drift correction: same state but positions diverged
+          // significantly. Lerp toward the server position to prevent
+          // gradual drift without jarring snaps.
+          else {
+            let client_pos = ctx
+              .world
+              .get_component::<Transform>(entity)
+              .map(|t| (t.x, t.y));
+            if let Some((cx, cy)) = client_pos {
+              let dx = update.x - cx;
+              let dy = update.y - cy;
+              let dist_sq = dx * dx + dy * dy;
+              // Large discrepancy (>48px, ~1.5 player heights): snap
+              if dist_sq > 48.0 * 48.0 {
+                if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+                  transform.x = update.x;
+                  transform.y = update.y;
+                }
+                if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+                  vel.dx = update.vx;
+                  vel.dy = update.vy;
+                }
+              }
+              // Moderate discrepancy (>8px): smooth correction
+              else if dist_sq > 8.0 * 8.0 {
+                let blend = 0.3; // Blend 30% toward server each update (20Hz)
+                if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+                  transform.x += dx * blend;
+                  transform.y += dy * blend;
+                }
+                // Also nudge velocity toward server to prevent re-diverging
+                if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+                  vel.dx += (update.vx - vel.dx) * blend;
+                  vel.dy += (update.vy - vel.dy) * blend;
+                }
+              }
+            }
+          }
         }
         UpdateResult::Skipped => {}
       }
@@ -2948,7 +3029,10 @@ impl GameScene {
     // Run local physics for smooth movement (client-side prediction)
     self.update_moving_platforms(ctx);
     self.update_physics(ctx, dt);
-    self.check_player_collisions(ctx);
+    // NOTE: Player-to-player collisions are NOT run on the client.
+    // The host is authoritative for all collision results — running them here
+    // against dead-reckoned remote positions produces different outcomes than
+    // the host, causing permanent desync (especially on moving platforms).
 
     self.generate_platforms_as_needed(ctx);
     self.update_camera(ctx);
