@@ -2112,11 +2112,16 @@ impl GameScene {
   /// Check for player-to-player collisions
   /// - Subtle horizontal push when players overlap
   /// - Head bounce when landing on another player
-  fn check_player_collisions(&mut self, ctx: &mut SceneContext) {
+  /// Returns true if any collision was detected (used by host to trigger
+  /// an immediate position broadcast so clients learn about the collision
+  /// without waiting for the next 20Hz tick).
+  fn check_player_collisions(&mut self, ctx: &mut SceneContext) -> bool {
     // Only check in multiplayer with 2+ players
     if self.players.len() < 2 {
-      return;
+      return false;
     }
+
+    let mut any_collision = false;
 
     // Collect player data to avoid borrow issues
     let player_data: Vec<(Entity, AABB, f32, bool)> = self
@@ -2172,6 +2177,7 @@ impl GameScene {
           if let Some(audio) = &mut ctx.audio {
             let _ = audio.play_sound_with("land", SoundOptions::new().volume(0.03));
           }
+          any_collision = true;
           continue; // Don't apply push collision for head bounce
         }
 
@@ -2184,6 +2190,7 @@ impl GameScene {
           if let Some(audio) = &mut ctx.audio {
             let _ = audio.play_sound_with("land", SoundOptions::new().volume(0.03));
           }
+          any_collision = true;
           continue;
         }
 
@@ -2205,6 +2212,7 @@ impl GameScene {
             vel.dx = AIR_KNOCKBACK_HORIZONTAL * -push_dir;
             vel.dy = vel.dy.min(AIR_KNOCKBACK_VERTICAL);
           }
+          any_collision = true;
           continue;
         }
 
@@ -2249,9 +2257,11 @@ impl GameScene {
               Knockback::new(dir_b, PLAYER_PUSH_FORCE).with_decay_rate(PLAYER_PUSH_DECAY),
             );
           }
+          any_collision = true;
         }
       }
     }
+    any_collision
   }
 
   fn generate_platforms_as_needed(&mut self, ctx: &mut SceneContext) {
@@ -2579,7 +2589,7 @@ impl GameScene {
 
     self.update_moving_platforms(ctx);
     self.update_physics(ctx, dt);
-    self.check_player_collisions(ctx);
+    let had_collision = self.check_player_collisions(ctx);
     self.generate_platforms_as_needed(ctx);
     self.update_camera(ctx);
     self.update_rain(ctx);
@@ -2613,9 +2623,11 @@ impl GameScene {
       }
     }
 
-    // Broadcast positions
+    // Broadcast positions — immediately after collisions so clients learn
+    // about velocity/state changes without waiting for the next 20Hz tick.
+    // Otherwise fall back to the normal 20Hz broadcast rate.
     self.broadcast_timer += dt;
-    if self.broadcast_timer >= POSITION_BROADCAST_RATE {
+    if had_collision || self.broadcast_timer >= POSITION_BROADCAST_RATE {
       self.broadcast_timer = 0.0;
       self.broadcast_positions(ctx);
     }
