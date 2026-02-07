@@ -5,7 +5,7 @@
 //! - Collision detection algorithms
 //! - Collision results and events
 
-use crate::core::ecs::Entity;
+use crate::core::ecs::{Entity, Transform};
 
 /// Axis-Aligned Bounding Box
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -333,6 +333,60 @@ impl Collider {
         radius,
       )),
       _ => None,
+    }
+  }
+
+  /// Compute the world-space AABB for this collider given its entity's transform.
+  ///
+  /// Accounts for `center_in_bounds`, explicit offset, pivot, transform scale,
+  /// and transform offset — matching the same priority logic used by the physics
+  /// system and debug renderer.
+  pub fn world_aabb(&self, transform: &Transform) -> AABB {
+    let user_set_offset = self.offset_x != 0.0 || self.offset_y != 0.0;
+
+    let (offset_x, offset_y) = if let Some((bounds_w, bounds_h)) = self.center_in_bounds {
+      let ox = (0.5 - transform.pivot_x) * bounds_w;
+      let oy = (0.5 - transform.pivot_y) * bounds_h;
+      (ox, oy)
+    } else if user_set_offset {
+      (self.offset_x, self.offset_y)
+    } else {
+      match &self.shape {
+        ColliderShape::Box {
+          width: w,
+          height: h,
+        } => {
+          let ox = (0.5 - transform.pivot_x) * w;
+          let oy = (0.5 - transform.pivot_y) * h;
+          (ox, oy)
+        }
+        ColliderShape::Circle { radius } => {
+          let ox = (0.5 - transform.pivot_x) * radius * 2.0;
+          let oy = (0.5 - transform.pivot_y) * radius * 2.0;
+          (ox, oy)
+        }
+      }
+    };
+
+    let base_x = transform.x + transform.offset_x;
+    let base_y = transform.y + transform.offset_y;
+    let center_x = base_x + offset_x * transform.scale_x;
+    let center_y = base_y + offset_y * transform.scale_y;
+
+    match &self.shape {
+      ColliderShape::Box {
+        width: w,
+        height: h,
+      } => {
+        let scaled_w = w * transform.scale_x;
+        let scaled_h = h * transform.scale_y;
+        AABB::centered(center_x, center_y, scaled_w, scaled_h)
+      }
+      ColliderShape::Circle { radius } => {
+        let avg_scale = (transform.scale_x + transform.scale_y) / 2.0;
+        let scaled_r = radius * avg_scale;
+        AABB::centered(center_x, center_y, scaled_r * 2.0, scaled_r * 2.0)
+      }
     }
   }
 }
@@ -759,5 +813,72 @@ mod tests {
     };
     let mtv2 = collision2.mtv();
     assert_eq!(mtv2, (0.0, 3.0)); // Resolves on smaller (Y) axis
+  }
+
+  #[test]
+  fn world_aabb_default_pivot_and_scale() {
+    // Default pivot (0,0 = top-left), default scale (1,1)
+    // Auto-center: offset = (0.5 - 0.0) * size = half-size
+    // center = (100 + 12, 200 + 16) = (112, 216)
+    // AABB centered at (112, 216) with size (24, 32)
+    let collider = Collider::box_collider(24.0, 32.0);
+    let transform = Transform::new(100.0, 200.0);
+    let aabb = collider.world_aabb(&transform);
+
+    assert_eq!(aabb.width(), 24.0);
+    assert_eq!(aabb.height(), 32.0);
+    assert_eq!(aabb.center(), (112.0, 216.0));
+  }
+
+  #[test]
+  fn world_aabb_non_uniform_scale() {
+    let collider = Collider::box_collider(24.0, 32.0);
+    let mut transform = Transform::new(100.0, 200.0);
+    transform.scale_x = 2.0;
+    transform.scale_y = 0.5;
+
+    let aabb = collider.world_aabb(&transform);
+
+    // Auto-center offset = (12, 16), scaled by (2, 0.5) → (24, 8)
+    // center = (100 + 24, 200 + 8) = (124, 208)
+    // Dimensions: (24*2, 32*0.5) = (48, 16)
+    assert_eq!(aabb.width(), 48.0);
+    assert_eq!(aabb.height(), 16.0);
+    assert_eq!(aabb.center(), (124.0, 208.0));
+  }
+
+  #[test]
+  fn world_aabb_scale_with_offset_y() {
+    // The squish case: scale_y < 1, offset_y keeps feet grounded
+    let collider = Collider::box_collider(24.0, 32.0);
+    let mut transform = Transform::new(100.0, 200.0);
+    transform.scale_y = 0.5;
+    transform.offset_y = 16.0; // shift down to keep feet at 232
+
+    let aabb = collider.world_aabb(&transform);
+
+    // base_y = 200 + 16 = 216
+    // Auto-center offset_y = 0.5 * 32 = 16, scaled by 0.5 → 8
+    // center_y = 216 + 8 = 224
+    // height = 32 * 0.5 = 16
+    // So top = 224 - 8 = 216, bottom = 224 + 8 = 232
+    assert_eq!(aabb.height(), 16.0);
+    assert_eq!(aabb.min_y, 216.0);
+    assert_eq!(aabb.max_y, 232.0);
+  }
+
+  #[test]
+  fn world_aabb_circle_with_scale() {
+    let collider = Collider::circle_collider(10.0);
+    let mut transform = Transform::new(50.0, 50.0);
+    transform.scale_x = 2.0;
+    transform.scale_y = 1.0;
+
+    let aabb = collider.world_aabb(&transform);
+
+    // avg_scale = (2+1)/2 = 1.5, scaled_r = 15
+    // diameter = 30
+    assert_eq!(aabb.width(), 30.0);
+    assert_eq!(aabb.height(), 30.0);
   }
 }
