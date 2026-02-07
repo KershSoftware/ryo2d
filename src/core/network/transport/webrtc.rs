@@ -40,7 +40,7 @@
 //! ```
 
 use std::collections::{HashMap, VecDeque};
-use std::panic::{self, AssertUnwindSafe};
+use std::panic;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -264,17 +264,11 @@ impl WebRtcServerTransport {
     // Once signaling has failed, skip update_peers() — existing peer
     // connections still work via their established data channels.
     if !self.signaling_failed {
-      // Matchbox can panic internally on signaling server failures.
-      // Instead of propagating the error (which would skip peer processing
-      // and leave the server in a degraded loop), we set the flag and
-      // continue — existing peer data channels are independent of signaling.
-      match panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers())) {
+      match self.socket.try_update_peers() {
         Ok(peers) => {
-          // Process peer state changes
           for (peer_id, state) in peers {
             match state {
               PeerState::Connected => {
-                // Assign a new client ID
                 let client_id: ClientId = self.next_client_id;
                 self.next_client_id += 1;
 
@@ -306,7 +300,6 @@ impl WebRtcServerTransport {
       }
     }
 
-    // Mark as connected once we've successfully polled
     if !self.is_connected {
       self.is_connected = true;
     }
@@ -339,13 +332,7 @@ impl WebRtcServerTransport {
   pub fn send(&mut self, client_id: ClientId, channel: usize, data: &[u8]) {
     if let Some(&peer_id) = self.client_to_peer.get(&client_id) {
       let packet = data.to_vec().into_boxed_slice();
-      if panic::catch_unwind(AssertUnwindSafe(|| {
-        self.socket.channel_mut(channel).send(packet, peer_id);
-      }))
-      .is_err()
-      {
-        self.signaling_failed = true;
-      }
+      self.socket.channel_mut(channel).send(packet, peer_id);
     }
   }
 
@@ -359,23 +346,13 @@ impl WebRtcServerTransport {
     }
 
     // Drain socket into per-client buffers (matchbox drains all messages at once)
-    let messages = panic::catch_unwind(AssertUnwindSafe(|| {
-      self.socket.channel_mut(channel).receive()
-    }));
-    match messages {
-      Ok(msgs) => {
-        for (from_peer, data) in msgs {
-          if let Some(&client) = self.peer_to_client.get(&from_peer) {
-            self
-              .receive_buffers
-              .entry((client, channel))
-              .or_default()
-              .push_back(data.to_vec());
-          }
-        }
-      }
-      Err(_) => {
-        self.signaling_failed = true;
+    for (from_peer, data) in self.socket.channel_mut(channel).receive() {
+      if let Some(&client) = self.peer_to_client.get(&from_peer) {
+        self
+          .receive_buffers
+          .entry((client, channel))
+          .or_default()
+          .push_back(data.to_vec());
       }
     }
 
@@ -391,15 +368,10 @@ impl WebRtcServerTransport {
     let peers: Vec<_> = self.peer_to_client.keys().copied().collect();
 
     for peer_id in peers {
-      let p = packet.clone();
-      if panic::catch_unwind(AssertUnwindSafe(|| {
-        self.socket.channel_mut(channel).send(p, peer_id);
-      }))
-      .is_err()
-      {
-        self.signaling_failed = true;
-        return;
-      }
+      self
+        .socket
+        .channel_mut(channel)
+        .send(packet.clone(), peer_id);
     }
   }
 }
@@ -498,16 +470,11 @@ impl WebRtcClientTransport {
 
   /// Poll the socket for new events.
   fn poll_socket(&mut self) -> NetworkResult<()> {
-    // Once signaling has failed, skip update_peers() — existing peer
-    // connections still work via their established data channels.
     if self.signaling_failed {
       return Ok(());
     }
 
-    // Matchbox can panic internally on signaling server failures,
-    // so we catch panics. Instead of propagating the error (which would
-    // kill the connection), we set the flag and continue.
-    let peers = match panic::catch_unwind(AssertUnwindSafe(|| self.socket.update_peers())) {
+    let peers = match self.socket.try_update_peers() {
       Ok(peers) => peers,
       Err(_) => {
         self.signaling_failed = true;
@@ -547,13 +514,7 @@ impl WebRtcClientTransport {
   pub fn send(&mut self, channel: usize, data: &[u8]) {
     if let Some(server_peer) = self.server_peer {
       let packet = data.to_vec().into_boxed_slice();
-      if panic::catch_unwind(AssertUnwindSafe(|| {
-        self.socket.channel_mut(channel).send(packet, server_peer);
-      }))
-      .is_err()
-      {
-        self.signaling_failed = true;
-      }
+      self.socket.channel_mut(channel).send(packet, server_peer);
     }
   }
 
@@ -567,27 +528,17 @@ impl WebRtcClientTransport {
     // Drain socket into buffer (matchbox drains all messages at once).
     // In a full-mesh room we may be connected to non-server peers, so
     // we need to identify which peer is the actual server.
-    let messages = panic::catch_unwind(AssertUnwindSafe(|| {
-      self.socket.channel_mut(channel).receive()
-    }));
-    match messages {
-      Ok(msgs) => {
-        for (from_peer, data) in msgs {
-          if let Some(server) = self.server_peer {
-            // Only accept messages from the identified server
-            if from_peer == server {
-              self.receive_buffers[channel].push_back(data.to_vec());
-            }
-          } else {
-            // Server not yet identified. In a client-server model only the
-            // host sends data to clients, so the first peer to send is the server.
-            self.server_peer = Some(from_peer);
-            self.receive_buffers[channel].push_back(data.to_vec());
-          }
+    for (from_peer, data) in self.socket.channel_mut(channel).receive() {
+      if let Some(server) = self.server_peer {
+        // Only accept messages from the identified server
+        if from_peer == server {
+          self.receive_buffers[channel].push_back(data.to_vec());
         }
-      }
-      Err(_) => {
-        self.signaling_failed = true;
+      } else {
+        // Server not yet identified. In a client-server model only the
+        // host sends data to clients, so the first peer to send is the server.
+        self.server_peer = Some(from_peer);
+        self.receive_buffers[channel].push_back(data.to_vec());
       }
     }
 

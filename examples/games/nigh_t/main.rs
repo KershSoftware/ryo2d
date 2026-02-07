@@ -13,9 +13,7 @@ use scenes::MainMenuScene;
 fn main() {
   let engine = EngineBuilder::new()
     .resolution(1920, 1080)
-    .display_mode(DisplayMode::BorderlessFullscreen)
-    .fps(60)
-    .ui_scale(None) // Auto-detect from DPI for HiDPI display support
+    .fps(144)
     .with_scene(MainMenuScene::new())
     .build();
 

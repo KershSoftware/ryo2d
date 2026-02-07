@@ -18,7 +18,6 @@ fn main() {
   let engine = EngineBuilder::new()
     .resolution(1280, 720)
     .fps(144)
-    .ui_scale(Some(1))
     .with_console_commands(|cmd| {
       cmd.declare("game:respawn", "Respawn the player at the last checkpoint.");
     })

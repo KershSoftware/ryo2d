@@ -131,7 +131,7 @@ impl Default for EngineConfig {
       max_width: None,
       max_height: None,
       icon_path: None,
-      ui_scale: None, // Auto-detect from DPI
+      ui_scale: Some(1), // Normal size (good for standard displays)
       target_background_fps: 0,
       background_rendering: true,
     }
@@ -3341,8 +3341,8 @@ impl EngineBuilder {
   /// Controls the size of UI text and elements. Use integer values for
   /// crisp pixel-art scaling (nearest-neighbor interpolation).
   ///
-  /// - `None` (default) - Auto-detect from window DPI scale factor
-  /// - `Some(1)` - Normal size (good for standard displays)
+  /// - `None`- Auto-detect from window DPI scale factor (auto-detect should be default in the future once engine UI components are improved)
+  /// - `Some(1)` (default) - Normal size (good for standard displays)
   /// - `Some(2)` - Double size (good for HiDPI/Retina displays)
   /// - `Some(3)` - Triple size (for very high DPI or large fonts)
   ///
@@ -3358,7 +3358,7 @@ impl EngineBuilder {
   ///     .build()
   ///     .run()?;
   ///
-  /// // Auto-detect from system DPI (default behavior)
+  /// // Auto-detect from system DPI
   /// EngineBuilder::new()
   ///     .title("My Game")
   ///     .resolution(800, 600)

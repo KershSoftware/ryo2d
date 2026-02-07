@@ -174,10 +174,13 @@ async fn message_loop<M: Messenger>(
         select! {
             _  = &mut timeout => {
                 if requests_sender.unbounded_send(PeerRequest::KeepAlive).is_err() {
-                    // socket dropped
-                    break Ok(());
-                }
-                if let Some(interval) = keep_alive_interval {
+                    // Ryo2D patch: the signaling requests channel closed (signaling
+                    // server disconnected).  Don't break — existing peer data
+                    // channels are independent of signaling.  Just stop sending
+                    // keepalives by switching to a future that never resolves.
+                    debug!("Signaling keepalive channel closed; disabling keepalives");
+                    timeout = Either::Right(std::future::pending()).fuse();
+                } else if let Some(interval) = keep_alive_interval {
                     timeout = Either::Left(Delay::new(interval)).fuse();
                 } else {
                     error!("no keep alive timeout, please file a bug");
