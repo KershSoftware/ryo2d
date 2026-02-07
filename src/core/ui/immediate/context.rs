@@ -96,6 +96,10 @@ pub struct UiContext<'a> {
   /// Whether the mouse is occluded by an overlay (e.g. developer console).
   /// When true, `is_hovered`, `is_held`, and `is_clicked` all return false.
   mouse_occluded: bool,
+  /// Real frame delta time (seconds) for UI animations (cursor blink, scroll momentum).
+  /// Set by the engine from the actual frame time so render-phase animations stay
+  /// correct regardless of the fixed-timestep update rate.
+  dt: f32,
 }
 
 impl<'a> UiContext<'a> {
@@ -122,6 +126,7 @@ impl<'a> UiContext<'a> {
       focused_dropdown_id: 0,
       ui_scale: 1,
       mouse_occluded: false,
+      dt: 0.0,
     }
   }
 
@@ -152,6 +157,7 @@ impl<'a> UiContext<'a> {
       focused_dropdown_id: 0,
       ui_scale: ui_scale.max(1),
       mouse_occluded: false,
+      dt: 0.0,
     }
   }
 
@@ -179,6 +185,7 @@ impl<'a> UiContext<'a> {
       focused_dropdown_id: 0,
       ui_scale: 1,
       mouse_occluded: false,
+      dt: 0.0,
     }
   }
 
@@ -207,6 +214,7 @@ impl<'a> UiContext<'a> {
       focused_dropdown_id: 0,
       ui_scale: ui_scale.max(1),
       mouse_occluded: false,
+      dt: 0.0,
     }
   }
 
@@ -225,6 +233,20 @@ impl<'a> UiContext<'a> {
   /// Get the screen dimensions.
   pub fn screen_size(&self) -> (u32, u32) {
     (self.frame_width, self.frame_height)
+  }
+
+  /// Get the frame delta time used for UI animations (cursor blink, scroll momentum).
+  pub fn dt(&self) -> f32 {
+    self.dt
+  }
+
+  /// Set the frame delta time for UI animations.
+  ///
+  /// Called by the engine with the real frame dt so render-phase animations
+  /// (cursor blink, scroll momentum) stay correct regardless of the
+  /// fixed-timestep update rate.
+  pub fn set_dt(&mut self, dt: f32) {
+    self.dt = dt;
   }
 
   // =========================================================================
@@ -1227,10 +1249,11 @@ impl<'a> UiContext<'a> {
     state: &mut TextInputState,
     rect: Rect,
     placeholder: &str,
-    dt: f32,
+    #[allow(unused_variables)] dt: f32,
   ) -> bool {
-    // Update blink timer
-    state.update_blink(dt);
+    // Update blink timer using the real frame dt (not the user-passed dt which
+    // may be the fixed-timestep dt, causing too-fast blink at high render FPS)
+    state.update_blink(self.dt);
 
     // Get padding for click position calculation
     let (pad_x, _pad_y) = self

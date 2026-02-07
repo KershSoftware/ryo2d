@@ -1951,6 +1951,10 @@ impl Engine {
           self.ui_scale,
         );
 
+        // Set real frame dt for UI animations (cursor blink, scroll momentum)
+        let frame_dt = self.time.as_ref().map(|t| t.dt()).unwrap_or(1.0 / 60.0);
+        ui_ctx.set_dt(frame_dt);
+
         // When the console is visible and the mouse is over it, block all mouse
         // interaction (hover, click, hold) so game UI underneath can't respond.
         if self.console_state.visible {
