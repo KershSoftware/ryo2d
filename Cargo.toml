@@ -2,8 +2,7 @@
 name = "ryo2d"
 version = "0.0.1"
 edition = "2024"
-description = "A simple, scriptable 2D game engine"
-documentation = "https://docs.rs/ryo2d"
+description = "An agent-first 2D game engine"
 readme = "README.md"
 license = "MIT"
 build = "src/build.rs"
@@ -93,3 +92,10 @@ debug = true
 [profile.profiling]
 inherits = "release"
 debug = true
+
+# Patched matchbox_socket: survive signaling server disconnection.
+# The upstream breaks the message loop when signaling errors, killing P2P data
+# channels. Our patch keeps the message loop alive so established WebRTC
+# connections continue working after the signaling server drops.
+[patch.crates-io]
+matchbox_socket = { path = "patches/matchbox_socket" }

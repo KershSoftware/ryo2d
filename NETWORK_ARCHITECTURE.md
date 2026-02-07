@@ -2,13 +2,16 @@
 
 ## Overview
 
-Ryo2D provides a **client-server networking system** designed for casual co-op games. The architecture prioritizes simplicity and ease of use over competitive FPS features like client-side prediction.
+Ryo2D provides a **client-server networking system** designed for casual co-op games. The architecture prioritizes simplicity and ease of use while providing the building blocks for responsive multiplayer.
 
 **Key Design Decisions:**
 - Host-authoritative model (server owns truth)
 - Listen Server support (player hosts while playing)
 - Generation-based delta replication (efficient bandwidth)
 - Type-safe RPC system (compile-time checked events)
+- NetworkAction pattern (dual local + network execution)
+- Client-side prediction with server reconciliation
+- Signaling-resilient WebRTC (P2P survives signaling server loss)
 - User-managed networking (game code controls lifecycle)
 
 ## High-Level Architecture
@@ -50,13 +53,13 @@ The transport layer provides a unified abstraction over different network backen
 │                         TransportConfig                                     │
 │                                                                             │
 │  ┌─────────────────────────────┐    ┌─────────────────────────────────┐     │
-│  │    TransportConfig::Udp    │    │  TransportConfig::WebRtc(...)   │     │
-│  │        (default)           │    │    (matchbox feature)           │     │
-│  │                            │    │                                 │     │
-│  │  • Direct UDP sockets      │    │  • STUN hole punching           │     │
-│  │  • Lowest latency          │    │  • Optional TURN relay          │     │
-│  │  • No NAT traversal        │    │  • Requires signaling server    │     │
-│  │  • Best for LAN/dev        │    │  • Best for internet play       │     │
+│  │    TransportConfig::Udp     │    │  TransportConfig::WebRtc(...)   │     │
+│  │        (default)            │    │    (matchbox feature)           │     │
+│  │                             │    │                                 │     │
+│  │  • Direct UDP sockets       │    │  • STUN hole punching           │     │
+│  │  • Lowest latency           │    │  • Optional TURN relay          │     │
+│  │  • No NAT traversal         │    │  • Requires signaling server    │     │
+│  │  • Best for LAN/dev         │    │  • Best for internet play       │     │
 │  └─────────────────────────────┘    └─────────────────────────────────┘     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -78,17 +81,46 @@ Built on [renet](https://github.com/lucaspoffo/renet), a reliable UDP networking
 
 ### WebRTC Transport (Optional)
 
-Enabled with the `matchbox` feature flag. Uses [matchbox_socket](https://github.com/johanhelsing/matchbox) for WebRTC.
+Enabled with the `matchbox` feature flag. Uses a **locally patched** [matchbox_socket](https://github.com/johanhelsing/matchbox) (`patches/matchbox_socket/`) for WebRTC.
 
 - **STUN** - NAT hole punching for peer-to-peer connections
 - **TURN** - Relay fallback for symmetric NAT environments
-- **Signaling Server** - Required for peer discovery (`matchbox_server`)
+- **Signaling Server** - Required for initial peer discovery (`matchbox_server`)
+- **Survives signaling disconnect** - Once WebRTC peer connections are established, the game continues if the signaling server drops (no new players can join, but existing sessions are unaffected)
 
 WebRtcConfig example:
 ```rust
 let config = WebRtcConfig::new("wss://signaling.example.com", "room-id")
     .with_turn("turn:relay.example.com:3478", "user", "pass");
 ```
+
+#### Signaling Resilience
+
+The signaling server is only needed for the initial WebRTC handshake. Once peers are connected via data channels, communication is fully peer-to-peer.
+
+```
+Signaling Server alive:      Signaling Server dead:
+┌──────────────┐             ┌──────────────┐
+│   Signaling  │             │   Signaling  │
+│   Server     │             │   Server X   │
+└──────┬───────┘             └──────────────┘
+       │ (new player
+       │  handshakes)         Existing P2P connections
+       │                      continue working:
+┌──────┴───────┐             ┌──────────────┐
+│  Player A ◄──────────────► │  Player B    │
+│              │  WebRTC P2P │              │
+└──────────────┘             └──────────────┘
+```
+
+**How it works:**
+
+The upstream matchbox_socket kills the internal message loop (which drives data channel I/O) when the signaling WebSocket errors. Our patch in `patches/matchbox_socket/src/webrtc_socket/socket.rs` removes the `break` from `run_socket()`'s select loop on signaling errors, so the message loop continues driving established data channels.
+
+Additionally:
+- The server builder uses `reconnect_attempts(None)` to retry signaling indefinitely, staying available for new players as long as signaling is reachable
+- Both transports track a `signaling_failed` flag and wrap socket operations in `catch_unwind` for defense-in-depth
+- `signaling_connected()` is exposed on `NetworkServer` and `NetworkClient` so game code can show UI warnings (e.g., "no new players can join")
 
 ### Quick Testing with `ryo2d netplay`
 
@@ -170,6 +202,15 @@ Abstracts over server types for generic game code:
 | `ClientDisconnected { client_id, reason }` | Client left (server) |
 | `Connected` | Successfully connected (client) |
 | `Disconnected { reason }` | Lost connection (client) |
+
+### Signaling State (WebRTC only)
+
+| Method | Returns | Meaning |
+|--------|---------|---------|
+| `server.signaling_connected()` | `bool` | `false` = signaling server lost, no new players can join |
+| `client.signaling_connected()` | `bool` | `false` = signaling server lost (peer connection still works) |
+
+Always returns `true` for UDP transport (no signaling server involved).
 
 ## Replication System
 
@@ -323,6 +364,72 @@ RpcRegistry
 └── GameEventRpc → handle_game_event(&mut World, &ReceivedRpc<GameEventRpc>)
 ```
 
+## NetworkAction System
+
+Actions that execute both locally (for immediate feedback) and over the network (for synchronization). Prevents the common bug of implementing local logic but forgetting the network side, or vice versa.
+
+### When to Use
+
+| Use NetworkAction | Use RPC |
+|-------------------|---------|
+| Actions that modify world state on both sides | One-directional messages (server → client notifications) |
+| Respawn, teleport, ability activation | Chat messages, score updates |
+| Anything needing immediate local feedback + server sync | Events that only the server processes |
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                      NetworkAction Flow                                  │
+│                                                                          │
+│  execute_action(action, ctx, server)                                     │
+│       │                                                                  │
+│       ├─► action.apply(ctx)           // Execute locally (immediate)     │
+│       └─► serialize + send to server  // Send for remote execution       │
+│                                                                          │
+│  Server receives:                                                        │
+│       └─► action.apply(server_ctx)    // Execute on server world         │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### Core Types
+
+| Type | Purpose |
+|------|---------|
+| **NetworkAction** | Trait: `action_id()`, `action_name()`, `apply(&self, ctx)` |
+| **ActionContext** | Provides `&mut World` to the action's `apply` method |
+| **execute_action** | Run locally + send to server |
+| **execute_action_broadcast** | Run locally + broadcast to all clients |
+| **apply_received_action** | Process an action received from the network |
+
+## Client-Side Prediction
+
+Smooth client experience by predicting entity positions locally while waiting for server authority.
+
+### Core Types
+
+| Type | Purpose |
+|------|---------|
+| **Predicted** | Component marking entities for client-side prediction |
+| **PredictionHelper** | Processes server updates, applying corrections with smoothing |
+| **ServerPositionUpdate** | Server-authoritative position data |
+
+### How It Works
+
+```
+Client Input ──► Local Prediction (immediate movement)
+                         │
+Server Update ──► Compare with prediction
+                         │
+                  ┌──────┴──────┐
+                  │ Close match │ → Accept (smooth, no visible correction)
+                  │ Big delta   │ → Snap/lerp to server position
+                  │ Force flag  │ → Immediate correction (respawn, teleport)
+                  └─────────────┘
+```
+
+`Predicted::force_correction()` forces the client to accept the server position without smoothing — used for respawns, teleports, and other discontinuous movements.
+
 ## Integration Pattern
 
 Networking is **user-managed** (unlike engine-managed systems like audio):
@@ -433,6 +540,10 @@ Server: process_incoming()
 ```
 src/core/network/
 ├── mod.rs                 # NetworkServer, ListenServer, NetworkClient, Channel
+├── action.rs              # NetworkAction trait (dual local+network execution)
+├── debug.rs               # Network debug overlays
+├── input.rs               # Networked input handling
+├── prediction.rs          # Client-side prediction (Predicted component)
 ├── AGENTS.md              # Module documentation
 ├── transport/
 │   ├── mod.rs             # TransportConfig, ServerTransport/ClientTransport traits
@@ -447,12 +558,15 @@ src/core/network/
 │   ├── builder.rs         # NetworkEntityBuilder
 │   ├── manager.rs         # ReplicationManager
 │   ├── messages.rs        # All message types
+│   ├── networked_value.rs # NetworkedValue for single-value sync
 │   └── AGENTS.md          # Replication documentation
 └── rpc/
     ├── mod.rs             # Exports
     ├── types.rs           # Rpc trait, RpcTypeId, RpcTarget
     ├── registry.rs        # RpcRegistry
     └── AGENTS.md          # RPC documentation
+
+patches/matchbox_socket/   # Patched matchbox_socket (signaling resilience)
 ```
 
 ## See Also

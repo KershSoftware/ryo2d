@@ -223,9 +223,11 @@ impl WebRtcServerTransport {
     let url = config.build_signaling_url();
 
     // Create the WebRTC socket.
+    // Server retries signaling indefinitely so it stays available for new players.
     // build() is sync but can panic on invalid config, so we catch that.
     let (socket, loop_fut) = panic::catch_unwind(|| {
       WebRtcSocket::builder(&url)
+        .reconnect_attempts(None)
         .add_reliable_channel()
         .add_unreliable_channel()
         .build()

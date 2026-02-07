@@ -1333,7 +1333,10 @@ impl GameScene {
     }
 
     // Revert old yellow checkpoint platform to its normal color
-    if let Some(old_entity) = self.future_checkpoint_platform {
+    // Skip if it's now the current checkpoint (already colored green)
+    if let Some(old_entity) = self.future_checkpoint_platform
+      && cp.platform_entity != Some(old_entity)
+    {
       let platform_width = ctx
         .world
         .get_component::<Platform>(old_entity)
