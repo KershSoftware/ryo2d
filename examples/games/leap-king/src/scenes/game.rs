@@ -2282,6 +2282,12 @@ impl GameScene {
     for event in events {
       match event {
         NetworkEvent::ClientConnected { client_id } => {
+          // Reject if server is full
+          if self.players.len() >= MAX_PLAYERS {
+            self.server.as_mut().unwrap().disconnect(client_id);
+            continue;
+          }
+
           // Generate new session ID for this client
           let session_id: u64 = rand::random();
           self.client_to_session.insert(client_id, session_id);
@@ -3226,31 +3232,20 @@ impl Scene for GameScene {
         Color::new(255, 255, 255, 100),
       );
 
-      let right_y = 40.0;
+      let mut right_y = 40.0;
 
-      if self.mode == GameMode::Host {
-        if let Some(ref signal) = self.signal_url {
-          let signal_text = format!("Signal: {}", signal);
-          let (tw, _) = ui.text_size(&signal_text);
-          ui.draw_text(
-            &signal_text,
-            sw as f32 - tw as f32 - 20.0,
-            right_y,
-            Color::new(100, 180, 255, 150),
-          );
-        } else if let Some(ref lan) = self.lan_ip {
-          let lan_text = format!("{}:{}", lan, DEFAULT_PORT);
-          let (tw, _) = ui.text_size(&lan_text);
-          ui.draw_text(
-            &lan_text,
-            sw as f32 - tw as f32 - 20.0,
-            right_y,
-            Color::new(100, 200, 100, 150),
-          );
-        }
-      }
+      // Player count (both host and client)
+      let player_text = format!("Players: {}/{}", self.players.len(), MAX_PLAYERS);
+      let (tw, _) = ui.text_size(&player_text);
+      ui.draw_text(
+        &player_text,
+        sw as f32 - tw as f32 - 20.0,
+        right_y,
+        Color::new(200, 200, 200, 150),
+      );
+      right_y += 20.0;
 
-      // Ping display for client (under room code)
+      // Ping display for client
       if self.mode == GameMode::Client
         && let Some(ping) = self.ping_ms
       {

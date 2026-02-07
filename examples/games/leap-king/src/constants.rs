@@ -62,6 +62,7 @@ pub const CAMERA_LERP_SPEED: f32 = 0.1;
 pub const CAMERA_LOOK_AHEAD: f32 = 200.0;
 
 // Networking
+pub const MAX_PLAYERS: usize = 4;
 pub const DEFAULT_PORT: u16 = 7778;
 pub const PROTOCOL_ID: u64 = 0x4C454150_47414D45; // "LEAPGAME"
 pub const ROOM_CODE_LENGTH: usize = 5;
