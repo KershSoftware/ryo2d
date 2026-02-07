@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -53,14 +53,6 @@ fn save_session_id(room_code: &str, session_id: u64) {
     let _ = fs::create_dir_all(parent);
   }
   let _ = fs::write(path, session_id.to_string());
-}
-
-/// Get the local LAN IP address
-fn get_lan_ip() -> Option<String> {
-  let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-  socket.connect("8.8.8.8:80").ok()?;
-  let local_addr = socket.local_addr().ok()?;
-  Some(local_addr.ip().to_string())
 }
 
 /// Linear interpolation for u8 values
@@ -128,12 +120,6 @@ pub struct GameScene {
   // Networking
   server: Option<ListenServer>,
   client: Option<NetworkClient>,
-
-  // Host IP (for display)
-  lan_ip: Option<String>,
-
-  // Signal server URL (for WebRTC/Internet play display)
-  signal_url: Option<String>,
 
   // Entity tracking
   players: HashMap<ClientId, Entity>,
@@ -237,8 +223,6 @@ impl GameScene {
       room_code: String::new(),
       server: None,
       client: None,
-      lan_ip: None,
-      signal_url: None,
       players: HashMap::new(),
       player_lights: HashMap::new(),
       local_client_id: Some(ClientId::from(0u64)),
@@ -296,13 +280,12 @@ impl GameScene {
   pub fn new_host(room_code: String) -> Result<Self, NetworkError> {
     let server = ListenServer::new(NetworkServerConfig {
       port: DEFAULT_PORT,
-      max_clients: 2,
+      max_clients: MAX_PLAYERS - 1,
       protocol_id: PROTOCOL_ID,
       transport: TransportConfig::Udp,
     })?;
 
     let host_id = server.host_id();
-    let lan_ip = get_lan_ip();
     let seed: u64 = rand::random();
 
     Ok(Self {
@@ -310,8 +293,6 @@ impl GameScene {
       room_code,
       server: Some(server),
       client: None,
-      lan_ip,
-      signal_url: None,
       players: HashMap::new(),
       player_lights: HashMap::new(),
       local_client_id: Some(host_id),
@@ -368,7 +349,7 @@ impl GameScene {
   /// Create host (server) game over WebRTC
   pub fn new_host_webrtc(room_code: String, signal_url: &str) -> Result<Self, NetworkError> {
     let server = ListenServer::new(NetworkServerConfig {
-      max_clients: 2,
+      max_clients: MAX_PLAYERS - 1,
       protocol_id: PROTOCOL_ID,
       transport: TransportConfig::WebRtc(WebRtcConfig::new(signal_url, &room_code)),
       ..Default::default()
@@ -382,8 +363,6 @@ impl GameScene {
       room_code,
       server: Some(server),
       client: None,
-      lan_ip: None,
-      signal_url: Some(signal_url.to_string()),
       players: HashMap::new(),
       player_lights: HashMap::new(),
       local_client_id: Some(host_id),
@@ -462,19 +441,11 @@ impl GameScene {
       })?
     };
 
-    let signal_url = if is_webrtc {
-      Some(address.to_string())
-    } else {
-      None
-    };
-
     Ok(Self {
       mode: GameMode::Client,
       room_code: room_code.to_string(),
       server: None,
       client: Some(client),
-      lan_ip: None,
-      signal_url,
       players: HashMap::new(),
       player_lights: HashMap::new(),
       local_client_id: None,
