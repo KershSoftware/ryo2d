@@ -46,7 +46,7 @@ use hecs::Entity;
 use renet::ClientId;
 use serde::{Deserialize, Serialize};
 
-use crate::core::ecs::{Transform, World};
+use crate::core::ecs::{Transform, Velocity, World};
 
 /// Marker component for client-side predicted entities.
 ///
@@ -360,6 +360,59 @@ impl PredictionHelper {
   pub fn set_local_client_id(&mut self, client_id: Option<ClientId>) {
     self.local_client_id = client_id;
   }
+
+  /// Dead-reckon all remote predicted entities by extrapolating their
+  /// position using their current [`Velocity`].
+  ///
+  /// Call this each frame on the client to smooth remote player movement
+  /// between server position updates. When the next update arrives,
+  /// [`handle_position_update`](Self::handle_position_update) snaps to the
+  /// authoritative position, correcting any accumulated drift.
+  ///
+  /// Only affects entities that have [`Predicted`], [`Transform`], and
+  /// [`Velocity`] components and are **not** owned by the local client.
+  ///
+  /// Game-specific forces (gravity, friction, etc.) should be applied to
+  /// remote entity velocities *before* calling this method.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Apply game-specific gravity to airborne remote entities first
+  /// for &entity in &remote_entities {
+  ///     if is_airborne(entity) {
+  ///         vel.dy += GRAVITY * dt;
+  ///     }
+  /// }
+  /// // Then let the engine extrapolate positions
+  /// prediction.dead_reckon_remotes(&mut world, dt);
+  /// ```
+  pub fn dead_reckon_remotes(&self, world: &mut World, dt: f32) {
+    let Some(local_id) = self.local_client_id else {
+      return;
+    };
+
+    // Collect remote entities to avoid borrow conflicts
+    let remotes: Vec<Entity> = world
+      .entities_with::<Predicted>()
+      .into_iter()
+      .filter(|&e| {
+        world
+          .get_component::<Predicted>(e)
+          .is_some_and(|p| p.owner != local_id && p.spawned)
+      })
+      .collect();
+
+    for entity in remotes {
+      if let Some(vel) = world.get_component::<Velocity>(entity) {
+        let (vx, vy) = (vel.dx, vel.dy);
+        if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+          transform.x += vx * dt;
+          transform.y += vy * dt;
+        }
+      }
+    }
+  }
 }
 
 impl Default for PredictionHelper {
@@ -521,5 +574,65 @@ mod tests {
 
     let transform = world.get_component::<Transform>(entity).unwrap();
     assert_eq!(transform.x, 100.0);
+  }
+
+  #[test]
+  fn dead_reckon_moves_remote_entity() {
+    let mut world = World::new();
+    // Remote entity (owner 2) with velocity
+    let remote = world.spawn((
+      Transform::new(100.0, 200.0),
+      Predicted::new_spawned(ClientId::from(2u64)),
+      Velocity {
+        dx: 60.0,
+        dy: -120.0,
+        dz: 0.0,
+      },
+    ));
+    // Local entity (owner 1) with velocity — should NOT move
+    let local = world.spawn((
+      Transform::new(0.0, 0.0),
+      Predicted::new_spawned(ClientId::from(1u64)),
+      Velocity {
+        dx: 999.0,
+        dy: 999.0,
+        dz: 0.0,
+      },
+    ));
+
+    let helper = PredictionHelper::new(Some(ClientId::from(1u64)));
+    helper.dead_reckon_remotes(&mut world, 0.1); // 100ms step
+
+    // Remote entity should have moved
+    let rt = world.get_component::<Transform>(remote).unwrap();
+    assert!((rt.x - 106.0).abs() < 0.01);
+    assert!((rt.y - 188.0).abs() < 0.01);
+
+    // Local entity should be untouched
+    let lt = world.get_component::<Transform>(local).unwrap();
+    assert_eq!(lt.x, 0.0);
+    assert_eq!(lt.y, 0.0);
+  }
+
+  #[test]
+  fn dead_reckon_skips_unspawned() {
+    let mut world = World::new();
+    // Remote entity that hasn't received first update (not spawned)
+    let entity = world.spawn((
+      Transform::new(0.0, 0.0),
+      Predicted::new(ClientId::from(2u64)), // new() = not spawned
+      Velocity {
+        dx: 100.0,
+        dy: 0.0,
+        dz: 0.0,
+      },
+    ));
+
+    let helper = PredictionHelper::new(Some(ClientId::from(1u64)));
+    helper.dead_reckon_remotes(&mut world, 0.1);
+
+    // Should not have moved — entity isn't spawned yet
+    let t = world.get_component::<Transform>(entity).unwrap();
+    assert_eq!(t.x, 0.0);
   }
 }

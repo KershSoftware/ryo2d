@@ -13,6 +13,7 @@ pub struct PlatformData {
   pub y: f32,
   pub width: f32,
   pub moving: bool,
+  pub platform_index: u32,
 }
 
 /// Procedural platform generator with seeded RNG
@@ -36,6 +37,7 @@ impl PlatformGenerator {
       y: SPAWN_PLATFORM_Y,
       width: SPAWN_PLATFORM_WIDTH,
       moving: false,
+      platform_index: 0,
     };
     // Compute first moving platform interval from seed
     let mut init_rng = SeededRng::new(seed.wrapping_add(0x4D4F5645));
@@ -254,6 +256,7 @@ impl PlatformGenerator {
         y,
         width,
         moving,
+        platform_index: self.total_platforms_generated,
       });
       last_y = y;
       last_x = x;
@@ -305,6 +308,7 @@ impl PlatformGenerator {
       y: SPAWN_PLATFORM_Y,
       width: SPAWN_PLATFORM_WIDTH,
       moving: false,
+      platform_index: 0,
     }];
     self.total_platforms_generated = 0;
     let mut init_rng = SeededRng::new(self.seed.wrapping_add(0x4D4F5645));
@@ -323,6 +327,7 @@ impl PlatformGenerator {
       y: SPAWN_PLATFORM_Y,
       width: SPAWN_PLATFORM_WIDTH,
       moving: false,
+      platform_index: 0,
     }];
     self.total_platforms_generated = 0;
     let mut init_rng = SeededRng::new(seed.wrapping_add(0x4D4F5645));
@@ -349,6 +354,7 @@ mod tests {
       assert_eq!(p1.y, p2.y);
       assert_eq!(p1.width, p2.width);
       assert_eq!(p1.moving, p2.moving);
+      assert_eq!(p1.platform_index, p2.platform_index);
     }
   }
 
