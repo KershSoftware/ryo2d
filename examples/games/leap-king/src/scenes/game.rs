@@ -185,6 +185,8 @@ pub struct GameScene {
 
   // Animation timing
   elapsed_time: f32,
+  /// Last authoritative elapsed_time received from host (clients only)
+  host_elapsed_time: f32,
 
   // Death/respawn
   respawn_timer: Option<f32>,
@@ -270,6 +272,7 @@ impl GameScene {
       camera_fast_lerp: false,
       broadcast_timer: 0.0,
       elapsed_time: 0.0,
+      host_elapsed_time: 0.0,
       respawn_timer: None,
       player_checkpoints: HashMap::new(),
       future_checkpoint_platform: None,
@@ -338,6 +341,7 @@ impl GameScene {
       camera_fast_lerp: false,
       broadcast_timer: 0.0,
       elapsed_time: 0.0,
+      host_elapsed_time: 0.0,
       respawn_timer: None,
       player_checkpoints: HashMap::new(),
       future_checkpoint_platform: None,
@@ -406,6 +410,7 @@ impl GameScene {
       camera_fast_lerp: false,
       broadcast_timer: 0.0,
       elapsed_time: 0.0,
+      host_elapsed_time: 0.0,
       respawn_timer: None,
       player_checkpoints: HashMap::new(),
       future_checkpoint_platform: None,
@@ -487,6 +492,7 @@ impl GameScene {
       camera_fast_lerp: false,
       broadcast_timer: 0.0,
       elapsed_time: 0.0,
+      host_elapsed_time: 0.0,
       respawn_timer: None,
       player_checkpoints: HashMap::new(),
       future_checkpoint_platform: None,
@@ -791,6 +797,7 @@ impl GameScene {
     // Add glow effect so rain is visible even with dark lighting
     let emitter = ParticleEmitter::rain(rain_sprite)
       .with_mode(EmissionMode::Continuous { rate: 300.0 })
+      .with_lifetime(2.5, 3.0) // Long enough to fall the full screen height
       .with_shape(EmissionShape::Line {
         start_x: -self.screen_width,
         start_y: -50.0, // Above emitter
@@ -2414,6 +2421,7 @@ impl GameScene {
             checkpoint_x: None,
             checkpoint_y: None,
             checkpoint_height: None,
+            elapsed_time: self.elapsed_time,
           };
           if let Ok(serialized) = SerializedRpc::from_rpc(
             &init_rpc,
@@ -2551,6 +2559,7 @@ impl GameScene {
           checkpoint_x: Some(session_data.checkpoint_x),
           checkpoint_y: Some(session_data.checkpoint_y),
           checkpoint_height: Some(session_data.checkpoint_height),
+          elapsed_time: self.elapsed_time,
         };
         if let Ok(serialized) = SerializedRpc::from_rpc(
           &init_rpc,
@@ -2715,6 +2724,7 @@ impl GameScene {
               checkpoint_x: None,
               checkpoint_y: None,
               checkpoint_height: None,
+              elapsed_time: 0.0,
             });
           }
           // Pong response for ping measurement
@@ -2766,6 +2776,12 @@ impl GameScene {
       self.spawn_starting_platform(ctx);
       self.generate_platforms_as_needed(ctx);
 
+      // Sync elapsed_time from host so moving platforms start at correct phase
+      if init.elapsed_time > 0.0 {
+        self.elapsed_time = init.elapsed_time;
+        self.host_elapsed_time = init.elapsed_time;
+      }
+
       // Save session ID for future reconnects
       if init.session_id != 0 {
         self.session_id = init.session_id;
@@ -2789,10 +2805,12 @@ impl GameScene {
 
     // Process position updates using PredictionHelper
     for update in position_updates {
-      // Sync elapsed time from host for deterministic moving platform positions
-      // Use max() to prevent backward jumps from out-of-order packets
-      if update.host_elapsed_time > 0.0 {
-        self.elapsed_time = self.elapsed_time.max(update.host_elapsed_time);
+      // Sync elapsed time from host for deterministic moving platform positions.
+      // Replace local time with host's authoritative value (skip out-of-order packets
+      // that would move time backward).
+      if update.host_elapsed_time > self.host_elapsed_time {
+        self.host_elapsed_time = update.host_elapsed_time;
+        self.elapsed_time = update.host_elapsed_time;
       }
 
       // Sync checkpoint state from host — only apply for local player's update
@@ -3035,8 +3053,11 @@ impl GameScene {
     }
     self.prediction.dead_reckon_remotes(ctx.world, dt);
 
-    // Advance elapsed_time AFTER network sync so host's authoritative time is used
-    self.elapsed_time += dt;
+    // Interpolate elapsed_time between host ticks for smooth platform motion.
+    // host_elapsed_time is the last authoritative value; we add local dt to it
+    // but cap so we never drift more than one broadcast interval ahead.
+    self.elapsed_time = (self.elapsed_time + dt)
+      .min(self.host_elapsed_time + POSITION_BROADCAST_RATE);
 
     // Run local physics for smooth movement (client-side prediction)
     self.update_moving_platforms(ctx);

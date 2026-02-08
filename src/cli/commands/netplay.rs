@@ -189,7 +189,7 @@ fn run_netplay_server() -> CliResult<()> {
   let mut matchbox = Command::new(&matchbox_cmd)
     .env("RUST_LOG", "warn")
     .stdout(Stdio::null())
-    .stderr(Stdio::null())
+    .stderr(Stdio::piped())
     .spawn()
     .map_err(|e| CliError::CommandFailed {
       command: matchbox_cmd.clone(),
@@ -202,9 +202,29 @@ fn run_netplay_server() -> CliResult<()> {
   // Check if it's still running
   match matchbox.try_wait() {
     Ok(Some(status)) => {
+      // Read stderr to get the actual error message
+      let mut detail = String::new();
+      if let Some(stderr) = matchbox.stderr.take() {
+        let mut reader = BufReader::new(stderr);
+        let _ = reader.read_line(&mut detail);
+      }
+      let detail = detail.trim();
+
+      let message = if detail.contains("AddrInUse") || detail.contains("already in use") {
+        format!(
+          "Port {} is already in use. A matchbox_server may still be running from a previous session.\n\
+           Try: taskkill /F /IM matchbox_server.exe (Windows) or killall matchbox_server (Unix)",
+          port
+        )
+      } else if detail.is_empty() {
+        format!("Exited immediately with status: {}", status)
+      } else {
+        format!("Exited immediately: {}", detail)
+      };
+
       return Err(CliError::CommandFailed {
         command: matchbox_cmd,
-        message: format!("Exited immediately with status: {}", status),
+        message,
       });
     }
     Ok(None) => {} // Still running, good

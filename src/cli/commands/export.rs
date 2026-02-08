@@ -94,7 +94,7 @@ fn read_version_from_toml(path: &Path, section: &str) -> Option<String> {
     .map(String::from)
 }
 
-/// Generate datestamp without external crate (YYYYMMDD format)
+/// Generate datestamp without external crate (YYYYMMDD format, local time)
 fn chrono_free_datestamp() -> String {
   use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -104,9 +104,12 @@ fn chrono_free_datestamp() -> String {
 
   let secs = duration.as_secs();
 
+  // Apply local timezone offset so the datestamp reflects local time
+  let local_secs = (secs as i64 + local_utc_offset_secs()) as u64;
+
   // Calculate date from unix timestamp
   // Days since epoch
-  let days = secs / 86400;
+  let days = local_secs / 86400;
 
   // Algorithm to convert days since epoch to year/month/day
   // Based on Howard Hinnant's date algorithms
@@ -122,6 +125,64 @@ fn chrono_free_datestamp() -> String {
   let year = if m <= 2 { y + 1 } else { y };
 
   format!("{:04}{:02}{:02}", year, m, d)
+}
+
+/// Returns the local timezone's UTC offset in seconds.
+fn local_utc_offset_secs() -> i64 {
+  #[cfg(windows)]
+  {
+    #[repr(C)]
+    struct TimeZoneInformation {
+      bias: i32,
+      _rest: [u8; 168],
+    }
+    unsafe extern "system" {
+      fn GetTimeZoneInformation(tz: *mut TimeZoneInformation) -> u32;
+    }
+    let mut tz = TimeZoneInformation {
+      bias: 0,
+      _rest: [0; 168],
+    };
+    // SAFETY: GetTimeZoneInformation writes into the provided struct
+    unsafe {
+      GetTimeZoneInformation(&mut tz);
+    }
+    // Bias is in minutes west of UTC (e.g. EST = 300), we need seconds east
+    -(tz.bias as i64) * 60
+  }
+
+  #[cfg(not(windows))]
+  {
+    // On Unix, libc::localtime_r gives us tm_gmtoff
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .unwrap_or_default()
+      .as_secs() as i64;
+
+    unsafe extern "C" {
+      fn localtime_r(time: *const i64, result: *mut libc_tm) -> *mut libc_tm;
+    }
+    #[repr(C)]
+    struct libc_tm {
+      tm_sec: i32,
+      tm_min: i32,
+      tm_hour: i32,
+      tm_mday: i32,
+      tm_mon: i32,
+      tm_year: i32,
+      tm_wday: i32,
+      tm_yday: i32,
+      tm_isdst: i32,
+      tm_gmtoff: i64,
+      _tm_zone: *const u8,
+    }
+    let mut tm = unsafe { std::mem::zeroed::<libc_tm>() };
+    unsafe {
+      localtime_r(&secs, &mut tm);
+    }
+    tm.tm_gmtoff
+  }
 }
 
 /// Find next available zip path, appending -001, -002, etc. if the base name already exists

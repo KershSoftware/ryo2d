@@ -199,6 +199,9 @@ pub struct GameInitRpc {
   pub checkpoint_x: Option<f32>,
   pub checkpoint_y: Option<f32>,
   pub checkpoint_height: Option<f32>,
+  /// Host's current elapsed_time so client starts with correct platform phases
+  #[serde(default)]
+  pub elapsed_time: f32,
 }
 
 fn default_slot() -> u8 {
