@@ -28,9 +28,6 @@ release/
 **/RESEARCH.md
 .claude/CLAUDE.md
 .claude/settings.local.json
-**/skills/*
-!**/skills/ryo-*/
-!**/skills/ryo-*/**
 # Re-ignore skills in examples (override the above exceptions)
 examples/**/.github/skills/
 !.vscode/settings.json

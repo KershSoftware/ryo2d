@@ -36,139 +36,99 @@ impl SkillsPlatform {
 /// Embedded skills: (name, description, SKILL.md content)
 const EMBEDDED_SKILLS: &[(&str, &str, &str)] = &[
   (
-    "general-debug",
-    "Systematic logic error isolation",
-    include_str!("../../../.github/skills/general-debug/SKILL.md"),
-  ),
-  (
-    "general-security",
-    "Auditing for unsafe code and secrets",
-    include_str!("../../../.github/skills/general-security/SKILL.md"),
-  ),
-  (
-    "general-syntax",
-    "Basic syntax error resolution",
-    include_str!("../../../.github/skills/general-syntax/SKILL.md"),
-  ),
-  (
-    "lint-hunter",
-    "Debugging compiler errors and tracing lifetimes",
-    include_str!("../../../.github/skills/lint-hunter/SKILL.md"),
-  ),
-  (
-    "pest-specialist",
-    "Generating PEG parsers with pest",
-    include_str!("../../../.github/skills/pest-specialist/SKILL.md"),
-  ),
-  (
-    "ron-specialist",
-    "Managing configuration and serialization",
-    include_str!("../../../.github/skills/ron-specialist/SKILL.md"),
-  ),
-  (
-    "router",
-    "Analyzing user intent and delegating tasks",
-    include_str!("../../../.github/skills/router/SKILL.md"),
-  ),
-  (
-    "rust-core",
-    "Implementing idiomatic, safe, and performant Rust code",
-    include_str!("../../../.github/skills/rust-core/SKILL.md"),
-  ),
-  (
     "ryo-animation",
     "Sprite animations, Animator component, AnimationController state machines",
-    include_str!("../../../.github/skills/ryo-animation/SKILL.md"),
+    include_str!("../skills/ryo-animation.md"),
   ),
   (
     "ryo-api",
     "Complete API reference for ryo2d::prelude - all types, methods, and signatures",
-    include_str!("../../../.github/skills/ryo-api/SKILL.md"),
+    include_str!("../skills/ryo-api.md"),
   ),
   (
     "ryo-audio",
     "Sound effects and music with Kira audio backend",
-    include_str!("../../../.github/skills/ryo-audio/SKILL.md"),
+    include_str!("../skills/ryo-audio.md"),
   ),
   (
     "ryo-cli",
     "Using the ryo2d CLI for building, running, and developing games",
-    include_str!("../../../.github/skills/ryo-cli/SKILL.md"),
+    include_str!("../skills/ryo-cli.md"),
   ),
   (
     "ryo-config-save",
     "Project configuration (Ryo.toml), user settings (system.json), and the 3-tier save system",
-    include_str!("../../../.github/skills/ryo-config-save/SKILL.md"),
+    include_str!("../skills/ryo-config-save.md"),
   ),
   (
     "ryo-console",
     "Developer console system - commands, registration, debugging overlays",
-    include_str!("../../../.github/skills/ryo-console/SKILL.md"),
+    include_str!("../skills/ryo-console.md"),
   ),
   (
     "ryo-controller",
     "Gamepad/controller input handling with gilrs - buttons, sticks, triggers",
-    include_str!("../../../.github/skills/ryo-controller/SKILL.md"),
+    include_str!("../skills/ryo-controller.md"),
   ),
   (
     "ryo-ecs-internals",
     "Working on the hecs wrapper, adding components, and ECS patterns",
-    include_str!("../../../.github/skills/ryo-ecs-internals/SKILL.md"),
+    include_str!("../skills/ryo-ecs-internals.md"),
   ),
   (
     "ryo-engine-dev",
     "Working on the Ryo2D engine - architecture, systems, public API",
-    include_str!("../../../.github/skills/ryo-engine-dev/SKILL.md"),
+    include_str!("../skills/ryo-engine-dev.md"),
   ),
   (
     "ryo-events",
     "Event bus system for decoupled inter-system communication",
-    include_str!("../../../.github/skills/ryo-events/SKILL.md"),
+    include_str!("../skills/ryo-events.md"),
   ),
   (
     "ryo-game-dev",
     "Building games with Ryo2D engine - ECS, entities, scenes, input",
-    include_str!("../../../.github/skills/ryo-game-dev/SKILL.md"),
+    include_str!("../skills/ryo-game-dev.md"),
   ),
   (
     "ryo-lighting",
     "2D lighting system - lights, shadows, ambient occlusion, volumetric effects",
-    include_str!("../../../.github/skills/ryo-lighting/SKILL.md"),
+    include_str!("../skills/ryo-lighting.md"),
   ),
   (
     "ryo-network",
     "Multiplayer networking - client-server, replication, RPCs, WebRTC NAT traversal",
-    include_str!("../../../.github/skills/ryo-network/SKILL.md"),
+    include_str!("../skills/ryo-network.md"),
   ),
   (
     "ryo-particles",
     "Particle system - emitters, attractors, collisions, presets for visual effects",
-    include_str!("../../../.github/skills/ryo-particles/SKILL.md"),
+    include_str!("../skills/ryo-particles.md"),
   ),
   (
     "ryo-physics",
     "Rapier2D physics integration - colliders, rigid bodies, events",
-    include_str!("../../../.github/skills/ryo-physics/SKILL.md"),
+    include_str!("../skills/ryo-physics.md"),
   ),
   (
     "ryo-procgen",
     "Procedural generation framework for dungeons, caves, terrain, and more",
-    include_str!("../../../.github/skills/ryo-procgen/SKILL.md"),
+    include_str!("../skills/ryo-procgen.md"),
   ),
   (
     "ryo-profiler",
     "Profiling Ryo2D games and engine - puffin integration, profiler window, performance analysis",
-    include_str!("../../../.github/skills/ryo-profiler/SKILL.md"),
+    include_str!("../skills/ryo-profiler.md"),
   ),
   (
     "ryo-renderer",
     "Working on the wgpu renderer, shaders, and GPU batching",
-    include_str!("../../../.github/skills/ryo-renderer/SKILL.md"),
+    include_str!("../skills/ryo-renderer.md"),
   ),
   (
     "ryo-ui",
     "Hybrid UI system for HUDs, menus, settings screens, and in-game interfaces",
-    include_str!("../../../.github/skills/ryo-ui/SKILL.md"),
+    include_str!("../skills/ryo-ui.md"),
   ),
 ];
 
