@@ -107,9 +107,9 @@ pub struct EngineConfig {
   /// - `Some(2)` = double size (good for HiDPI/Retina)
   /// - etc.
   pub ui_scale: Option<u32>,
-  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 30.
+  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 0.
   pub target_background_fps: u32,
-  /// Whether to continue rendering when the window is unfocused. Default: false.
+  /// Whether to continue rendering when the window is unfocused. Default: true.
   pub background_rendering: bool,
 }
 

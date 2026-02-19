@@ -18,6 +18,7 @@ use ryo2d::prelude::*;
 fn main() {
   let engine = EngineBuilder::new()
     .title("Netplay - Multiplayer Demo")
+    .resolution(800, 600)
     .fps(60)
     .physics_hz(60)
     .with_scene(MenuScene::new())

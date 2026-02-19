@@ -249,12 +249,24 @@ impl Scene for InteractiveDemo {
       if button.is_hovered() && ctx.input.mouse_released(MouseButton::Left) {
         self.click_count += 1;
 
-        // Find an inactive notification slot
-        if let Some(notif) = self.notifications.iter_mut().find(|n| !n.active) {
-          let rect = button.current_rect();
-          let (cx, cy) = rect.center();
-          notif.show(&format!("Clicked! ({})", self.click_count), cx, cy);
-        }
+        // Find an inactive notification slot, or recycle the oldest active one
+        let idx = self
+          .notifications
+          .iter()
+          .position(|n| !n.active)
+          .unwrap_or_else(|| {
+            // Pool full — recycle the one closest to finishing (lowest alpha)
+            self
+              .notifications
+              .iter()
+              .enumerate()
+              .min_by(|(_, a), (_, b)| a.alpha.value().partial_cmp(&b.alpha.value()).unwrap())
+              .map(|(i, _)| i)
+              .unwrap_or(0)
+          });
+        let rect = button.current_rect();
+        let (cx, cy) = rect.center();
+        self.notifications[idx].show(&format!("Clicked! ({})", self.click_count), cx, cy);
       }
 
       // Track hover changes for indicator

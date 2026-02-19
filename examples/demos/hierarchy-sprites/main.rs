@@ -200,6 +200,7 @@ impl Scene for HierarchyScene {
 fn main() {
   let engine = EngineBuilder::new()
     .title("Hierarchy Sprites Demo - Ryo2D")
+    .resolution(800, 600)
     .window_mode(WindowMode::ResizableIntegerScale) // Pixel-perfect scaling
     .fps(60)
     .physics_hz(60)

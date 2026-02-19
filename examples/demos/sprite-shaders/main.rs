@@ -580,6 +580,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
 fn main() {
   EngineBuilder::new()
     .title("Sprite Shaders Demo")
+    .resolution(800, 600)
     .with_game(SpriteShaderDemo::new())
     .build()
     .run()

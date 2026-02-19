@@ -293,9 +293,7 @@ impl WebRtcServerTransport {
         }
         Err(_) => {
           self.signaling_failed = true;
-          eprintln!(
-            "WebRTC signaling server disconnected; existing peer connections preserved"
-          );
+          eprintln!("WebRTC signaling server disconnected; existing peer connections preserved");
         }
       }
     }
@@ -1036,10 +1034,7 @@ mod tests {
       .or_default()
       .push_back(b"unreliable".to_vec());
 
-    assert_eq!(
-      transport.receive(client_id, 0),
-      Some(b"reliable".to_vec())
-    );
+    assert_eq!(transport.receive(client_id, 0), Some(b"reliable".to_vec()));
     assert_eq!(
       transport.receive(client_id, 1),
       Some(b"unreliable".to_vec())

@@ -355,6 +355,7 @@ impl Game for BloomDemo {
 fn main() {
   EngineBuilder::new()
     .title("Bloom Effect Demo")
+    .resolution(960, 640)
     .window_mode(WindowMode::ResizableAspectRatio)
     .with_game(BloomDemo::new())
     .build()

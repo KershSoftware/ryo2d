@@ -208,22 +208,38 @@ impl WfcConfig {
       .with_tile(floor_wall_bottom)
   }
 
-  /// Create a simple binary tileset (floor/wall)
+  /// Create a simple tileset that produces clustered floor/wall regions
+  ///
+  /// Uses three tiles: floor, wall, and a border transition tile.
+  /// Floor and wall cannot be directly adjacent — they must be separated
+  /// by a border, which forces coherent regions instead of random noise.
   pub fn simple_preset() -> Self {
     const FLOOR: u32 = 0;
     const WALL: u32 = 1;
+    const BORDER: u32 = 2;
 
+    // Floor clusters together, can only touch floor or border
     let floor = WfcTile::new(FLOOR, TileType::Floor)
+      .with_weight(3.0)
+      .allow_self_adjacent()
+      .allow_all_directions(BORDER);
+
+    // Wall clusters together, can only touch wall or border
+    let wall = WfcTile::new(WALL, TileType::Wall)
       .with_weight(2.0)
       .allow_self_adjacent()
+      .allow_all_directions(BORDER);
+
+    // Border is always exactly 1 cell thick (no self-adjacency)
+    let border = WfcTile::new(BORDER, TileType::Door)
+      .with_weight(1.0)
+      .allow_all_directions(FLOOR)
       .allow_all_directions(WALL);
 
-    let wall = WfcTile::new(WALL, TileType::Wall)
-      .with_weight(1.0)
-      .allow_self_adjacent()
-      .allow_all_directions(FLOOR);
-
-    WfcConfig::new().with_tile(floor).with_tile(wall)
+    WfcConfig::new()
+      .with_tile(floor)
+      .with_tile(wall)
+      .with_tile(border)
   }
 }
 
@@ -298,7 +314,7 @@ pub fn generate(
     }
 
     // Find cell with lowest entropy (not collapsed)
-    let min_entropy_idx = find_min_entropy_cell(&cells, width);
+    let min_entropy_idx = find_min_entropy_cell(&cells, width, rng);
 
     match min_entropy_idx {
       None => {
@@ -336,7 +352,7 @@ pub fn generate(
   }
 }
 
-fn find_min_entropy_cell(cells: &[WfcCell], _width: u32) -> Option<usize> {
+fn find_min_entropy_cell(cells: &[WfcCell], _width: u32, rng: &mut SeededRng) -> Option<usize> {
   let mut min_entropy = usize::MAX;
   let mut min_indices: Vec<usize> = Vec::new();
 
@@ -364,11 +380,14 @@ fn find_min_entropy_cell(cells: &[WfcCell], _width: u32) -> Option<usize> {
     }
   }
 
-  // Return random cell among those with minimum entropy
   if min_indices.is_empty() {
     None
+  } else if min_indices.len() == 1 {
+    Some(min_indices[0])
   } else {
-    Some(min_indices[0]) // Could randomize, but determinism is simpler
+    // Randomize among tied cells to avoid directional bias
+    let pick = rng.gen_range(0..min_indices.len());
+    Some(min_indices[pick])
   }
 }
 

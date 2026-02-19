@@ -176,11 +176,12 @@ impl Camera {
 
   /// Reset the camera to its default state, preserving viewport dimensions.
   ///
-  /// Resets position to origin, zoom to 1.0, and clears any active shake.
+  /// Resets position to viewport center (so world origin is at screen top-left),
+  /// zoom to 1.0, and clears any active shake.
   /// Viewport dimensions are preserved since they come from the window, not the scene.
   pub fn reset(&mut self) {
-    self.x = 0.0;
-    self.y = 0.0;
+    self.x = self.viewport_width / 2.0;
+    self.y = self.viewport_height / 2.0;
     self.zoom = 1.0;
     self.shake = CameraShake::default();
   }
@@ -657,12 +658,34 @@ mod tests {
 
     cam.reset();
 
-    assert_eq!(cam.x, 0.0);
-    assert_eq!(cam.y, 0.0);
+    assert_eq!(cam.x, 400.0);
+    assert_eq!(cam.y, 300.0);
     assert_eq!(cam.zoom, 1.0);
     assert_eq!(cam.trauma(), 0.0);
     assert_eq!(cam.shake_offset(), (0.0, 0.0));
     // Viewport preserved
     assert_eq!(cam.viewport_size(), (800.0, 600.0));
+  }
+
+  /// Regression: camera.reset() must re-center at viewport center so that
+  /// world (0,0) maps to screen top-left — matching the engine's initial
+  /// Camera::centered_at(w/2, h/2) convention. Previously reset() set
+  /// position to (0,0) which made world origin appear at screen center
+  /// after scene transitions.
+  #[test]
+  fn camera_reset_recenters_to_viewport_center() {
+    let mut cam = Camera::centered_at(640.0, 360.0, 1280, 720);
+    cam.set_position(999.0, 999.0);
+    cam.reset();
+
+    // After reset, world (0,0) should map to screen (0,0)
+    let (sx, sy) = cam.world_to_screen(0.0, 0.0);
+    assert_eq!(sx, 0.0);
+    assert_eq!(sy, 0.0);
+
+    // And screen center should be world center
+    let (sx, sy) = cam.world_to_screen(640.0, 360.0);
+    assert_eq!(sx, 640.0);
+    assert_eq!(sy, 360.0);
   }
 }

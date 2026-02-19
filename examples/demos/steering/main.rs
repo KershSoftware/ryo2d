@@ -436,6 +436,7 @@ impl Scene for SteeringDemoScene {
 fn main() {
   let engine = EngineBuilder::new()
     .title("Steering Demo - Ryo2D")
+    .resolution(1280, 720)
     .with_scene(SteeringDemoScene::new())
     .build();
 

@@ -23,8 +23,8 @@ pub struct PlatformGenerator {
   screen_width: f32,
   generated_chunks: HashSet<i32>,
   generated_checkpoint_ys: HashSet<i32>, // Prevent duplicate checkpoint platforms at chunk boundaries
-  last_platform_x: f32, // Track last platform X for horizontal continuity
-  recent_platforms: Vec<PlatformData>, // Track recent platforms for cross-chunk overlap checks
+  last_platform_x: f32,                  // Track last platform X for horizontal continuity
+  recent_platforms: Vec<PlatformData>,   // Track recent platforms for cross-chunk overlap checks
   total_platforms_generated: u32,
   next_moving_at: u32,
 }

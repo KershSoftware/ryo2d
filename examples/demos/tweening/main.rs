@@ -1276,6 +1276,7 @@ impl Scene for ColorAlphaScene {
 fn main() {
   let engine = EngineBuilder::new()
     .title("Tweening Demo - Ryo2D")
+    .resolution(1024, 768)
     .window_mode(WindowMode::ResizableAspectRatio)
     .fps(60)
     .physics_hz(60)

@@ -256,6 +256,7 @@ impl Scene for AnchorDemoScene {
 fn main() {
   let engine = EngineBuilder::new()
     .title("Anchor Positioning Demo - Ryo2D")
+    .resolution(800, 600)
     .window_mode(WindowMode::ResizableIntegerScale)
     .fps(60)
     .physics_hz(60)

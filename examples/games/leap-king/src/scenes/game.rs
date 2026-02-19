@@ -524,7 +524,9 @@ impl GameScene {
   /// Returns the lowest unused slot 0-3
   fn next_available_slot(&self) -> u8 {
     let used: std::collections::HashSet<u8> = self.client_slots.values().copied().collect();
-    (0..MAX_PLAYERS as u8).find(|s| !used.contains(s)).unwrap_or(0)
+    (0..MAX_PLAYERS as u8)
+      .find(|s| !used.contains(s))
+      .unwrap_or(0)
   }
 
   /// Compute spawn X position for a player slot, relative to the centered spawn platform
@@ -1112,7 +1114,8 @@ impl GameScene {
 
     // Host/SinglePlayer: check each player independently for checkpoint progression
     let local_id = self.local_client_id;
-    let player_entries: Vec<(ClientId, Entity)> = self.players.iter().map(|(&k, &v)| (k, v)).collect();
+    let player_entries: Vec<(ClientId, Entity)> =
+      self.players.iter().map(|(&k, &v)| (k, v)).collect();
 
     for (client_id, entity) in player_entries {
       let (player_y, is_grounded) = {
@@ -1184,9 +1187,7 @@ impl GameScene {
     old_platform: Option<Entity>,
   ) -> Option<(f32, f32, f32, Entity)> {
     // Revert old checkpoint platform to normal color (if it exists and isn't spawn platform)
-    if mark_visual
-      && let Some(old_plat) = old_platform
-    {
+    if mark_visual && let Some(old_plat) = old_platform {
       let platform_width = ctx
         .world
         .get_component::<Platform>(old_plat)
@@ -1234,7 +1235,12 @@ impl GameScene {
       let is_closer = best.as_ref().is_none_or(|b| dist < (b.1 - target_y).abs());
       if is_closer {
         let center_x = platform_transform.x + platform.width / 2.0;
-        best = Some((platform_entity, platform_transform.y, center_x, platform.width));
+        best = Some((
+          platform_entity,
+          platform_transform.y,
+          center_x,
+          platform.width,
+        ));
       }
     }
 
@@ -1398,9 +1404,8 @@ impl GameScene {
 
     // Compute 4 candidate positions scaled proportionally to the checkpoint platform width
     let scale = cp.platform_width / SPAWN_PLATFORM_WIDTH;
-    let positions: [f32; 4] = std::array::from_fn(|i| {
-      platform_left + PLAYER_SPAWN_OFFSETS[i] * scale
-    });
+    let positions: [f32; 4] =
+      std::array::from_fn(|i| platform_left + PLAYER_SPAWN_OFFSETS[i] * scale);
 
     let idx = (slot as usize).min(positions.len() - 1);
     let preferred_x = positions[idx];
@@ -3056,8 +3061,8 @@ impl GameScene {
     // Interpolate elapsed_time between host ticks for smooth platform motion.
     // host_elapsed_time is the last authoritative value; we add local dt to it
     // but cap so we never drift more than one broadcast interval ahead.
-    self.elapsed_time = (self.elapsed_time + dt)
-      .min(self.host_elapsed_time + POSITION_BROADCAST_RATE);
+    self.elapsed_time =
+      (self.elapsed_time + dt).min(self.host_elapsed_time + POSITION_BROADCAST_RATE);
 
     // Run local physics for smooth movement (client-side prediction)
     self.update_moving_platforms(ctx);
@@ -3105,7 +3110,10 @@ impl GameScene {
         };
 
         let default_cp = PlayerCheckpoint::new(self.screen_width);
-        let cp = self.player_checkpoints.get(&client_id).unwrap_or(&default_cp);
+        let cp = self
+          .player_checkpoints
+          .get(&client_id)
+          .unwrap_or(&default_cp);
         updates.push(PositionUpdate {
           client_id,
           slot: player.slot,

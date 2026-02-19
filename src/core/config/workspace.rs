@@ -208,9 +208,9 @@ pub struct SystemDefaults {
   /// Whether to enable the developer console (toggled with backtick key).
   /// Unlike debug settings, this is available in both debug and release builds.
   pub dev_console: bool,
-  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 30.
+  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 0.
   pub target_background_fps: u32,
-  /// Whether to continue rendering when the window is unfocused. Default: false.
+  /// Whether to continue rendering when the window is unfocused. Default: true.
   pub background_rendering: bool,
   /// Environment variables from `[env]` section, converted to JSON-compatible types.
   /// Seeded into `SystemState.env` when creating a new `system.json`.
@@ -228,8 +228,8 @@ impl Default for SystemDefaults {
       sfx_volume: 1.0,
       show_fps: false,
       dev_console: false, // Disabled by default, enable in Ryo.toml [system] section
-      target_background_fps: 30,
-      background_rendering: false,
+      target_background_fps: 0,
+      background_rendering: true,
       env: HashMap::new(),
     }
   }
@@ -298,9 +298,9 @@ struct SystemSection {
   show_fps: Option<bool>,
   /// Whether to enable the developer console (toggled with backtick key)
   console: Option<bool>,
-  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 30.
+  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 0.
   target_background_fps: Option<u32>,
-  /// Whether to continue rendering when the window is unfocused (default: false)
+  /// Whether to continue rendering when the window is unfocused (default: true)
   background_rendering: Option<bool>,
 }
 

@@ -5,7 +5,6 @@
 //! Controls:
 //! - 1-6: Switch algorithm (BSP, Cellular, Noise, Walk, Poisson, WFC)
 //! - Space: Regenerate with new seed
-//! - S: Regenerate with same seed
 //! - G: Toggle grid overlay
 //! - Arrow keys: Pan camera
 //! - Escape: Exit
@@ -156,10 +155,6 @@ impl ProcgenScene {
     self.seed = SeededRng::from_entropy().seed();
     self.generate();
   }
-
-  fn regenerate(&mut self) {
-    self.generate();
-  }
 }
 
 impl Scene for ProcgenScene {
@@ -198,10 +193,6 @@ impl Scene for ProcgenScene {
     if ctx.input.key_pressed(KeyCode::Space) {
       self.new_seed();
     }
-    if ctx.input.key_pressed(KeyCode::KeyS) {
-      self.regenerate();
-    }
-
     // Toggle grid
     if ctx.input.key_pressed(KeyCode::KeyG) {
       self.show_grid = !self.show_grid;
@@ -337,7 +328,7 @@ impl Scene for ProcgenScene {
 
     // Controls
     ui.draw_text(
-      "1-6: Algorithm | Space: New Seed | S: Reseed | G: Grid | Arrows: Pan",
+      "1-6: Algorithm | Space: New Seed | G: Grid | Arrows: Pan",
       10.0,
       58.0,
       text_muted,
