@@ -333,9 +333,6 @@ pub struct NavTarget {
   pub follow_entity: Option<Entity>,
   /// Re-path if target moves more than this distance
   pub repath_threshold: f32,
-  /// Generation of the path request (for deduplication)
-  #[allow(dead_code)]
-  pub(crate) request_generation: u64,
 }
 
 impl NavTarget {
@@ -347,7 +344,6 @@ impl NavTarget {
       dynamic_target: false,
       follow_entity: None,
       repath_threshold: 32.0,
-      request_generation: 0,
     }
   }
 
@@ -359,7 +355,6 @@ impl NavTarget {
       dynamic_target: true,
       follow_entity: Some(entity),
       repath_threshold: 32.0,
-      request_generation: 0,
     }
   }
 

@@ -256,10 +256,6 @@ mod tests {
       }
     }
 
-    #[allow(dead_code)]
-    fn was_executed(&self) -> bool {
-      self.executed.load(std::sync::atomic::Ordering::SeqCst)
-    }
   }
 
   impl RenderPass for TestPass {

@@ -48,7 +48,7 @@ struct TrailGlobals {
 
 /// Cached GPU texture for a trail
 struct CachedTexture {
-  #[allow(dead_code)]
+  #[expect(dead_code, reason = "texture kept alive for GPU bind group lifetime")]
   texture: wgpu::Texture,
   bind_group: wgpu::BindGroup,
 }
@@ -86,7 +86,7 @@ pub struct TrailRenderer {
   globals_buffer: wgpu::Buffer,
 
   /// Bind group layout for non-textured trails (globals only)
-  #[allow(dead_code)]
+  #[expect(dead_code, reason = "layout kept alive for shader validation")]
   bind_group_layout: wgpu::BindGroupLayout,
 
   /// Bind group layout for textured trails (texture + sampler)

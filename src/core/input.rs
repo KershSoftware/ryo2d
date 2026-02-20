@@ -232,18 +232,6 @@ impl InputState {
     self.keys_repeated.clear();
   }
 
-  /// Clear only keyboard one-shot events (pressed/released/repeated).
-  ///
-  /// Note: This function is no longer called in the main frame loop because
-  /// UI widgets need keyboard events to persist until render_ui completes.
-  /// Kept for potential future use and tested for correctness.
-  #[allow(dead_code)]
-  pub(crate) fn consume_keyboard_events(&mut self) {
-    self.keys_pressed.clear();
-    self.keys_released.clear();
-    self.keys_repeated.clear();
-  }
-
   /// Consume a specific key press, preventing it from being detected again this frame.
   ///
   /// Used by the engine for debug keys (F1-F4) which are processed outside
@@ -1193,10 +1181,7 @@ mod tests {
     );
     assert!(input.mouse_down(MouseButton::Left), "Button should be held");
 
-    // After first update, only consume keyboard events (engine behavior)
-    input.consume_keyboard_events();
-
-    // Mouse pressed should STILL be visible for UI rendering
+    // Mouse pressed should persist until begin_frame
     assert!(
       input.mouse_pressed(MouseButton::Left),
       "Mouse pressed should persist for render_ui"
@@ -1282,61 +1267,6 @@ mod tests {
     assert!(
       !input.key_released(KeyCode::Space),
       "Second update should NOT see key_released"
-    );
-  }
-
-  #[test]
-  fn consume_keyboard_events_only_clears_keyboard() {
-    let mut input = InputState::new();
-
-    // Set up both keyboard and mouse input
-    input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
-    input.handle_keyboard(KeyCode::Space, ElementState::Released);
-    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
-    input.handle_mouse_move(100.0, 200.0);
-    input.handle_scroll(MouseScrollDelta::LineDelta(1.0, 2.0));
-
-    // Verify all input is present
-    assert!(input.key_pressed(KeyCode::Escape));
-    assert!(input.key_released(KeyCode::Space));
-    assert!(input.mouse_pressed(MouseButton::Left));
-    assert_eq!(input.mouse_delta(), (100.0, 200.0));
-    assert_eq!(input.scroll_delta(), (1.0, 2.0));
-
-    // Consume only keyboard events
-    input.consume_keyboard_events();
-
-    // Keyboard one-shot events should be cleared
-    assert!(
-      !input.key_pressed(KeyCode::Escape),
-      "key_pressed should be cleared"
-    );
-    assert!(
-      !input.key_released(KeyCode::Space),
-      "key_released should be cleared"
-    );
-
-    // But keyboard held state should persist
-    assert!(input.key_down(KeyCode::Escape), "key_down should persist");
-
-    // Mouse and scroll should be PRESERVED (for UI rendering)
-    assert!(
-      input.mouse_pressed(MouseButton::Left),
-      "mouse_pressed should persist"
-    );
-    assert!(
-      input.mouse_down(MouseButton::Left),
-      "mouse_down should persist"
-    );
-    assert_eq!(
-      input.mouse_delta(),
-      (100.0, 200.0),
-      "mouse_delta should persist"
-    );
-    assert_eq!(
-      input.scroll_delta(),
-      (1.0, 2.0),
-      "scroll_delta should persist"
     );
   }
 
@@ -1489,10 +1419,8 @@ mod tests {
 
   /// Regression test: keyboard events must persist for the entire frame.
   ///
-  /// Previously, consume_keyboard_events() was called after game update() but
-  /// before render_ui(), causing UI widgets (text input, dropdowns) to never
-  /// see keyboard events. The fix ensures keyboard events persist until
-  /// begin_frame() is called at frame end.
+  /// Keyboard events persist until begin_frame() is called, so that
+  /// UI widgets (text input, dropdowns) can see them during render_ui().
   ///
   /// Frame flow should be:
   /// 1. Events received -> key_pressed() returns true

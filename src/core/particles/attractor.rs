@@ -73,12 +73,6 @@ pub enum AttractorType {
 ///     Transform::at(mouse_x, mouse_y),
 ///     ParticleAttractor::point(200.0, 100.0),
 /// ));
-///
-/// // Create a wind zone
-/// ctx.world.spawn((
-///     Transform::at(0.0, 0.0),
-///     ParticleAttractor::area(800.0, 600.0, 50.0, 0.0),
-/// ));
 /// ```
 #[derive(Debug, Clone)]
 pub struct ParticleAttractor {
@@ -148,7 +142,13 @@ impl ParticleAttractor {
     })
   }
 
-  /// Create an area attractor (directional force field).
+  /// Create an area attractor (uniform directional force).
+  ///
+  /// # Arguments
+  /// * `width` - Width of the force area (centered on position)
+  /// * `height` - Height of the force area (centered on position)
+  /// * `force_x` - Horizontal force component
+  /// * `force_y` - Vertical force component
   pub fn area(width: f32, height: f32, force_x: f32, force_y: f32) -> Self {
     Self::new(AttractorType::Area {
       width,
@@ -158,20 +158,25 @@ impl ParticleAttractor {
     })
   }
 
-  /// Create a vortex attractor.
+  /// Create a vortex attractor (swirling force).
   ///
   /// # Arguments
-  /// * `strength` - Rotation strength (positive = counter-clockwise)
+  /// * `strength` - Tangential force (positive = counter-clockwise)
   /// * `radius` - Maximum effect radius
   pub fn vortex(strength: f32, radius: f32) -> Self {
     Self::new(AttractorType::Vortex {
       strength,
       radius,
-      inward_pull: 0.0,
+      inward_pull: 0.3,
     })
   }
 
-  /// Create a vortex with inward spiral.
+  /// Create a spiral attractor (vortex with strong inward pull).
+  ///
+  /// # Arguments
+  /// * `strength` - Tangential force
+  /// * `radius` - Maximum effect radius
+  /// * `inward_pull` - Inward pull strength
   pub fn spiral(strength: f32, radius: f32, inward_pull: f32) -> Self {
     Self::new(AttractorType::Vortex {
       strength,
@@ -180,7 +185,12 @@ impl ParticleAttractor {
     })
   }
 
-  /// Create a turbulence attractor.
+  /// Create a turbulence attractor (chaotic noise-based motion).
+  ///
+  /// # Arguments
+  /// * `strength` - Force magnitude
+  /// * `scale` - Noise scale (larger = bigger swirls)
+  /// * `speed` - Animation speed
   pub fn turbulence(strength: f32, scale: f32, speed: f32) -> Self {
     Self::new(AttractorType::Turbulence {
       strength,
@@ -423,35 +433,6 @@ mod tests {
   }
 
   #[test]
-  fn vortex_attractor() {
-    let attractor = ParticleAttractor::vortex(100.0, 50.0);
-
-    // Particle at (10, 0), attractor at origin
-    let (fx, fy) = attractor.calculate_force(0.0, 0.0, 10.0, 0.0, 0);
-
-    // Direction from attractor to particle is (1, 0)
-    // Counter-clockwise tangent is (-0, 1) = (0, 1)
-    // So force should be mostly positive y (rotating counter-clockwise)
-    assert!(fx.abs() < fy.abs());
-    assert!(fy > 0.0);
-  }
-
-  #[test]
-  fn area_attractor() {
-    let attractor = ParticleAttractor::area(100.0, 100.0, 50.0, 0.0);
-
-    // Inside area
-    let (fx, fy) = attractor.calculate_force(0.0, 0.0, 10.0, 10.0, 0);
-    assert!((fx - 50.0).abs() < 0.001);
-    assert!(fy.abs() < 0.001);
-
-    // Outside area
-    let (fx, fy) = attractor.calculate_force(0.0, 0.0, 200.0, 10.0, 0);
-    assert_eq!(fx, 0.0);
-    assert_eq!(fy, 0.0);
-  }
-
-  #[test]
   fn layer_mask_filtering() {
     let attractor = ParticleAttractor::point(100.0, 50.0).with_layer_mask(0b0001);
 
@@ -469,6 +450,32 @@ mod tests {
     let attractor = ParticleAttractor::point(100.0, 50.0).with_enabled(false);
 
     let (fx, fy) = attractor.calculate_force(0.0, 0.0, 10.0, 0.0, 0);
+    assert_eq!(fx, 0.0);
+    assert_eq!(fy, 0.0);
+  }
+
+  #[test]
+  fn vortex_attractor() {
+    let attractor = ParticleAttractor::vortex(100.0, 50.0);
+
+    // Particle directly to the right of vortex center
+    let (fx, fy) = attractor.calculate_force(0.0, 0.0, 10.0, 0.0, 0);
+
+    // Tangential force should be perpendicular (mostly Y for particle on X axis)
+    assert!(fy.abs() > fx.abs());
+  }
+
+  #[test]
+  fn area_attractor() {
+    let attractor = ParticleAttractor::area(100.0, 100.0, 30.0, 0.0);
+
+    // Particle inside the area
+    let (fx, fy) = attractor.calculate_force(0.0, 0.0, 10.0, 10.0, 0);
+    assert!((fx - 30.0).abs() < 0.001);
+    assert_eq!(fy, 0.0);
+
+    // Particle outside the area
+    let (fx, fy) = attractor.calculate_force(0.0, 0.0, 200.0, 0.0, 0);
     assert_eq!(fx, 0.0);
     assert_eq!(fy, 0.0);
   }

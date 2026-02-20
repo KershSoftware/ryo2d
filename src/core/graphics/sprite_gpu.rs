@@ -255,7 +255,7 @@ impl SpriteGlobals {
 }
 
 /// Texture cache entry
-#[allow(dead_code)] // Fields used for cache management
+#[expect(dead_code, reason = "fields kept alive for GPU cache management")]
 struct CachedTexture {
   texture: wgpu::Texture,
   view: wgpu::TextureView,
@@ -265,7 +265,7 @@ struct CachedTexture {
 }
 
 /// GPU-based sprite renderer with per-sprite shader effects
-#[allow(dead_code)] // Some fields reserved for future use
+#[expect(dead_code, reason = "some fields reserved for future shader pipeline use")]
 pub struct SpriteGpuRenderer {
   // Shader pipelines (one per effect type + base)
   base_pipeline: wgpu::RenderPipeline,

@@ -4,7 +4,8 @@
 //!
 //! Features:
 //! - Dynamic point light attached to a swinging lamp
-//! - Light occluders casting shadows
+//! - Light occluders casting shadows (rect, line, and circle shapes)
+//! - Line occluders for thin fence/wire shadow casting
 //! - Various shapes to demonstrate lighting effects
 //! - Pendulum physics simulation
 
@@ -247,6 +248,25 @@ impl Scene for LightingScene {
       Transform::new(640.0, 450.0).with_pivot_center(),
       Renderable::sprite(pillar_sprite).with_z_order(5),
       LightOccluder2D::rect(40.0, 200.0),
+    ));
+
+    // Line occluders — thin fence/wire segments that cast sharp shadows
+    // Horizontal fence on the left side
+    ctx.world.spawn((
+      Transform::new(0.0, 0.0),
+      LightOccluder2D::line(Vec2::new(120.0, 480.0), Vec2::new(320.0, 480.0), 3.0),
+    ));
+
+    // Diagonal wire from upper-left toward center
+    ctx.world.spawn((
+      Transform::new(0.0, 0.0),
+      LightOccluder2D::line(Vec2::new(150.0, 200.0), Vec2::new(400.0, 350.0), 2.0),
+    ));
+
+    // Angled railing on the right side
+    ctx.world.spawn((
+      Transform::new(0.0, 0.0),
+      LightOccluder2D::line(Vec2::new(950.0, 350.0), Vec2::new(1150.0, 500.0), 3.0),
     ));
   }
 

@@ -82,10 +82,6 @@ pub struct ReplicationManager {
   /// Maps local Entity to NetworkId
   entity_to_network: HashMap<Entity, NetworkId>,
 
-  /// Sequence counter for component updates
-  #[allow(dead_code)]
-  sequence: u32,
-
   /// Registered component TypeIds for iteration
   registered_types: Vec<TypeId>,
 }
@@ -99,7 +95,6 @@ impl ReplicationManager {
       dirty_tracker: DirtyTracker::new(),
       network_to_entity: HashMap::new(),
       entity_to_network: HashMap::new(),
-      sequence: 0,
       registered_types: Vec::new(),
     }
   }
@@ -112,7 +107,6 @@ impl ReplicationManager {
       dirty_tracker: DirtyTracker::new(),
       network_to_entity: HashMap::new(),
       entity_to_network: HashMap::new(),
-      sequence: 0,
       registered_types: Vec::new(),
     }
   }

@@ -78,75 +78,6 @@ pub enum EmissionShape {
   },
 }
 
-/// Configuration for particle trails.
-#[derive(Debug, Clone)]
-pub struct TrailConfig {
-  /// Trail color (None = inherit from particle)
-  pub color: Option<Color>,
-  /// Trail width at head
-  pub width: f32,
-  /// Trail width at tail
-  pub end_width: f32,
-  /// Maximum number of trail points
-  pub max_points: usize,
-  /// Minimum distance between trail points
-  pub min_distance: f32,
-  /// Whether trail fades to transparent
-  pub fade: bool,
-}
-
-impl Default for TrailConfig {
-  fn default() -> Self {
-    Self {
-      color: None,
-      width: 3.0,
-      end_width: 0.0,
-      max_points: 10,
-      min_distance: 2.0,
-      fade: true,
-    }
-  }
-}
-
-impl TrailConfig {
-  /// Create a new trail config with specified width.
-  pub fn new(width: f32) -> Self {
-    Self {
-      width,
-      ..Default::default()
-    }
-  }
-
-  /// Set trail color (None = inherit from particle).
-  pub fn with_color(mut self, color: Color) -> Self {
-    self.color = Some(color);
-    self
-  }
-
-  /// Set trail end width for tapering.
-  pub fn with_end_width(mut self, end_width: f32) -> Self {
-    self.end_width = end_width;
-    self
-  }
-
-  /// Set maximum trail points.
-  pub fn with_max_points(mut self, max_points: usize) -> Self {
-    self.max_points = max_points;
-    self
-  }
-
-  /// Set minimum distance between points.
-  pub fn with_min_distance(mut self, min_distance: f32) -> Self {
-    self.min_distance = min_distance;
-    self
-  }
-
-  /// Set whether trail fades.
-  pub fn with_fade(mut self, fade: bool) -> Self {
-    self.fade = fade;
-    self
-  }
-}
 
 /// Particle emitter component.
 ///
@@ -256,8 +187,6 @@ pub struct ParticleEmitter {
   // =========================================================================
   // Features
   // =========================================================================
-  /// Optional trail configuration
-  pub trail: Option<TrailConfig>,
   /// Optional collision configuration (imported from collision.rs)
   pub collision: Option<super::collision::CollisionConfig>,
   /// Maximum particles this emitter can have alive at once
@@ -304,7 +233,6 @@ impl ParticleEmitter {
       drag: 0.0,
       z_order: 0,
       effect: None,
-      trail: None,
       collision: None,
       max_particles: 1000,
       emission_accumulator: 0.0,
@@ -405,12 +333,6 @@ impl ParticleEmitter {
   /// Set sprite effect (glow, dissolve, etc.).
   pub fn with_effect(mut self, effect: SpriteEffect) -> Self {
     self.effect = Some(effect);
-    self
-  }
-
-  /// Enable particle trails.
-  pub fn with_trail(mut self, config: TrailConfig) -> Self {
-    self.trail = Some(config);
     self
   }
 

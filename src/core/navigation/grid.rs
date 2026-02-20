@@ -310,16 +310,6 @@ impl NavigationGrid {
     }
   }
 
-  /// Check if any blocking entities have changed position
-  pub fn needs_rebuild(&self, world: &World) -> bool {
-    for &entity in &self.blocking_entities {
-      // If entity no longer exists or has moved, need rebuild
-      if world.get_component::<Transform>(entity).is_none() {
-        return true;
-      }
-    }
-    false
-  }
 }
 
 /// Builder for creating NavigationGrid with a fluent API

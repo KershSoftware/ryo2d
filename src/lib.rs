@@ -117,14 +117,9 @@ pub mod prelude {
   // Camera
   pub use crate::core::graphics::Camera;
 
-  // Parallax backgrounds
-  #[allow(deprecated)]
-  pub use crate::core::graphics::{
-    ParallaxBackground, ParallaxBackgroundBuilder, ParallaxLayer, TileMode,
-  };
-
-  // GPU-accelerated parallax (recommended for large images)
+  // Parallax backgrounds (GPU-accelerated)
   pub use crate::core::graphics::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
+  pub use crate::core::graphics::TileMode;
 
   // Assets
   pub use crate::core::asset::{
@@ -219,7 +214,7 @@ pub mod prelude {
   // Particle system
   pub use crate::core::particles::{
     AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape,
-    ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem, TrailConfig,
+    ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem,
   };
 
   // GPU sprite batching (for high-performance particle systems)

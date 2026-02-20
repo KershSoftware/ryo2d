@@ -128,26 +128,6 @@ impl ShaderParams {
     self.params.get(name).copied().unwrap_or(default)
   }
 
-  /// Check if a parameter exists
-  pub fn has(&self, name: &str) -> bool {
-    self.params.contains_key(name)
-  }
-
-  /// Iterate over all parameters
-  pub fn iter(&self) -> impl Iterator<Item = (&String, &f32)> {
-    self.params.iter()
-  }
-
-  /// Number of parameters
-  pub fn len(&self) -> usize {
-    self.params.len()
-  }
-
-  /// Check if empty
-  pub fn is_empty(&self) -> bool {
-    self.params.is_empty()
-  }
-
   /// Convert to a uniform buffer format (16 float array for GPU)
   ///
   /// Parameters are laid out in alphabetical order by name.
@@ -306,14 +286,6 @@ impl SpriteShader {
 
   /// Get the built-in effect if this is one
   pub fn as_builtin(&self) -> Option<&SpriteEffect> {
-    match self {
-      Self::BuiltIn(effect) => Some(effect),
-      _ => None,
-    }
-  }
-
-  /// Get mutable access to the built-in effect
-  pub fn as_builtin_mut(&mut self) -> Option<&mut SpriteEffect> {
     match self {
       Self::BuiltIn(effect) => Some(effect),
       _ => None,

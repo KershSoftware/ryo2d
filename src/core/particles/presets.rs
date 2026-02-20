@@ -3,7 +3,7 @@
 //! Ready-to-use emitter configurations for common effects.
 
 use super::collision::CollisionConfig;
-use super::emitter::{EmissionMode, EmissionShape, ParticleEmitter, TrailConfig};
+use super::emitter::{EmissionMode, EmissionShape, ParticleEmitter};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::SpriteEffect;
 use crate::core::ui::Color;
@@ -114,7 +114,6 @@ impl ParticleEmitter {
       .with_speed(100.0, 300.0)
       .with_color(Color::new(255, 200, 100, 255), Color::new(255, 50, 0, 0))
       .with_drag(2.0)
-      .with_trail(TrailConfig::new(3.0).with_max_points(8).with_fade(true))
       .with_effect(SpriteEffect::glow_with_intensity(
         Color::new(255, 150, 50, 255),
         3.0,
@@ -214,12 +213,6 @@ impl ParticleEmitter {
         Color::new(180, 200, 255, 100),
       )
       .with_gravity(50.0, 800.0) // Slight angle + fast fall
-      .with_trail(
-        TrailConfig::new(1.0)
-          .with_max_points(5)
-          .with_fade(false)
-          .with_color(Color::new(180, 200, 255, 150)),
-      )
   }
 
   /// Create a snow effect.
@@ -265,7 +258,6 @@ impl ParticleEmitter {
       .with_color(Color::new(255, 255, 200, 255), Color::new(255, 150, 50, 0))
       .with_gravity(0.0, 300.0)
       .with_drag(0.3)
-      .with_trail(TrailConfig::new(2.0).with_max_points(5))
       .with_collision(CollisionConfig::bouncy(1.0, 0.7))
   }
 
@@ -392,13 +384,11 @@ mod tests {
   fn explosion_preset() {
     let emitter = ParticleEmitter::explosion(test_sprite(), 30);
     assert!(matches!(emitter.mode, EmissionMode::Burst { count: 30 }));
-    assert!(emitter.trail.is_some());
   }
 
   #[test]
   fn sparks_preset() {
     let emitter = ParticleEmitter::sparks(test_sprite());
     assert!(emitter.collision.is_some());
-    assert!(emitter.trail.is_some());
   }
 }

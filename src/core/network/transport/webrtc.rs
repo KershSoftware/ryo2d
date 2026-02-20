@@ -313,12 +313,6 @@ impl WebRtcServerTransport {
     !self.signaling_failed
   }
 
-  /// Get the PeerId for a ClientId.
-  #[allow(dead_code)]
-  pub fn get_peer(&self, client_id: ClientId) -> Option<PeerId> {
-    self.client_to_peer.get(&client_id).copied()
-  }
-
   /// Get all connected client IDs.
   pub fn clients(&self) -> impl Iterator<Item = ClientId> + '_ {
     self.client_to_peer.keys().copied()

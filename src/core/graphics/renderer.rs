@@ -26,7 +26,6 @@ use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
 /// Handles wgpu rendering of a software pixel buffer to screen.
 pub struct WgpuRenderer {
-  #[allow(dead_code)] // Kept for creating new surfaces (e.g., profiler window)
   instance: wgpu::Instance,
   adapter: wgpu::Adapter,
   surface: wgpu::Surface<'static>,
@@ -39,7 +38,7 @@ pub struct WgpuRenderer {
   sampler: wgpu::Sampler,
   // Staging texture for CPU pixel buffer (used for alpha-blending onto game texture)
   cpu_texture: wgpu::Texture,
-  #[allow(dead_code)] // View is used indirectly through cpu_bind_group
+  #[expect(dead_code, reason = "view kept alive for cpu_bind_group GPU lifetime")]
   cpu_texture_view: wgpu::TextureView,
   cpu_bind_group: wgpu::BindGroup,
   // Dedicated UI texture (separate from cpu_texture to avoid write_texture ordering issues)
@@ -1544,7 +1543,7 @@ impl WgpuRenderer {
 ///
 /// This is a pure function used for testing viewport math without GPU context.
 /// Returns (scale_x, scale_y, offset_x, offset_y) for the fullscreen quad shader.
-#[allow(dead_code)]
+#[cfg(test)]
 fn calculate_viewport_scale(
   game_width: u32,
   game_height: u32,

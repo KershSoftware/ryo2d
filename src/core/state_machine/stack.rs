@@ -72,8 +72,6 @@ where
   pub just_pushed: bool,
   /// True for one frame after popping a state
   pub just_popped: bool,
-  /// The state that was just popped (available for one frame)
-  popped_state: Option<S>,
 }
 
 impl<S> fmt::Debug for StateStack<S>
@@ -113,7 +111,6 @@ where
       total_time: 0.0,
       just_pushed: true,
       just_popped: false,
-      popped_state: None,
     }
   }
 
@@ -167,11 +164,6 @@ where
     }
   }
 
-  /// Get the state that was just popped (available for one frame after pop).
-  pub fn popped(&self) -> Option<&S> {
-    self.popped_state.as_ref()
-  }
-
   /// Check if the current state matches the given state.
   pub fn is(&self, state: &S) -> bool {
     self.current() == state
@@ -220,7 +212,7 @@ where
     self.time_in_state = 0.0;
     self.just_pushed = true;
     self.just_popped = false;
-    self.popped_state = None;
+
     true
   }
 
@@ -255,7 +247,6 @@ where
     self.time_in_state = 0.0;
     self.just_pushed = false;
     self.just_popped = true;
-    self.popped_state = popped.clone();
     popped
   }
 
@@ -289,7 +280,6 @@ where
       self.time_in_state = 0.0;
       self.just_pushed = false;
       self.just_popped = true;
-      self.popped_state = None; // Multiple pops, no single popped state
     }
 
     count
@@ -306,7 +296,7 @@ where
       self.time_in_state = 0.0;
       self.just_pushed = false;
       self.just_popped = true;
-      self.popped_state = None;
+  
     }
 
     count
@@ -330,7 +320,6 @@ where
       self.time_in_state = 0.0;
       self.just_pushed = true;
       self.just_popped = true;
-      self.popped_state = Some(old.clone());
       return Some(old);
     }
 
@@ -339,7 +328,6 @@ where
     self.time_in_state = 0.0;
     self.just_pushed = true;
     self.just_popped = true;
-    self.popped_state = popped.clone();
     popped
   }
 
@@ -353,7 +341,7 @@ where
     self.total_time = 0.0;
     self.just_pushed = true;
     self.just_popped = false;
-    self.popped_state = None;
+
   }
 
   /// Update the state stack (call once per frame).
@@ -366,7 +354,7 @@ where
   pub fn update(&mut self, dt: f32) {
     self.just_pushed = false;
     self.just_popped = false;
-    self.popped_state = None;
+
     self.time_in_state += dt;
     self.total_time += dt;
   }
@@ -440,7 +428,6 @@ mod tests {
     assert_eq!(stack.current(), &TestState::Playing);
     assert_eq!(stack.depth(), 2);
     assert!(stack.just_popped);
-    assert_eq!(stack.popped(), Some(&TestState::Paused));
   }
 
   #[test]
@@ -596,7 +583,6 @@ mod tests {
 
     assert!(!stack.just_pushed);
     assert!(!stack.just_popped);
-    assert!(stack.popped().is_none());
   }
 
   #[test]

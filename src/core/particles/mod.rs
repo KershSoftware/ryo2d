@@ -73,7 +73,7 @@ mod presets;
 
 pub use attractor::{AttractorType, ParticleAttractor};
 pub use collision::{CollisionConfig, CollisionResponse, ParticleCollision};
-pub use emitter::{EmissionMode, EmissionShape, ParticleEmitter, TrailConfig};
+pub use emitter::{EmissionMode, EmissionShape, ParticleEmitter};
 pub use particle::Particle;
 
 use crate::core::ecs::{Inactive, Transform, World};
@@ -557,17 +557,6 @@ impl ParticleSystem {
   pub fn clear_emitter(&mut self, entity: Entity) {
     self.particles.retain(|p| p.emitter_entity != entity);
   }
-}
-
-/// Update particle trails.
-///
-/// This is a separate function to be called if trails are enabled.
-/// It updates Trail2D components that are attached to particle emitters.
-pub fn update_particle_trails(world: &mut World, _dt: f32) {
-  // For now, particle trails would need to be implemented differently
-  // since individual particles don't have their own Entity/Trail2D.
-  // This is a placeholder for future trail-per-particle support.
-  let _ = world;
 }
 
 #[cfg(test)]

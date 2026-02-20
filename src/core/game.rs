@@ -204,7 +204,7 @@ pub struct GameContext<'a> {
   /// Console command registry for registering custom commands
   pub(crate) command_registry: &'a mut CommandRegistry,
   /// Unique scope ID for this context (0 = game level, permanent)
-  #[allow(dead_code)]
+  #[expect(dead_code, reason = "reserved for future console command scope cleanup")]
   pub(crate) scope_id: u64,
 }
 

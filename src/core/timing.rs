@@ -85,7 +85,6 @@ impl TimeState {
   }
 
   /// Get the variable delta time (time since last frame).
-  #[allow(dead_code)]
   pub fn dt(&self) -> f32 {
     self.delta_time.as_secs_f32()
   }
