@@ -313,7 +313,7 @@ impl ReplicationManager {
     let mut sync = FullStateSyncMessage::new(self.dirty_tracker.generation());
 
     for (&network_id, &entity) in &self.network_to_entity {
-      if let Some(network_entity) = world.get_component::<NetworkEntity>(entity) {
+      if let Some(network_entity) = world.get::<NetworkEntity>(entity) {
         let spawn_msg =
           SpawnEntityMessage::new(network_id, network_entity.owner, network_entity.authority);
 
@@ -350,7 +350,7 @@ impl ReplicationManager {
     // Send spawn messages
     for network_id in self.dirty_tracker.spawned_entities() {
       if let Some(&entity) = self.network_to_entity.get(&network_id)
-        && let Some(network_entity) = world.get_component::<NetworkEntity>(entity)
+        && let Some(network_entity) = world.get::<NetworkEntity>(entity)
       {
         let spawn_msg =
           SpawnEntityMessage::new(network_id, network_entity.owner, network_entity.authority);

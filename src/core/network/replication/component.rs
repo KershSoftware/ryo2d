@@ -248,9 +248,9 @@ impl ComponentRegistry {
         })?;
 
         // Add or replace the component on the entity
-        if world.get_component::<T>(entity).is_some() {
+        if world.get::<T>(entity).is_some() {
           // Entity has this component, need to update it
-          if let Some(mut comp) = world.get_component_mut::<T>(entity) {
+          if let Some(mut comp) = world.get_mut::<T>(entity) {
             *comp = component;
           }
         } else {
@@ -266,7 +266,7 @@ impl ComponentRegistry {
     self.entity_serializers.insert(
       component_id,
       Box::new(|world, entity| {
-        let component = world.get_component::<T>(entity)?;
+        let component = world.get::<T>(entity)?;
         SerializedComponent::from_component(&*component).ok()
       }),
     );

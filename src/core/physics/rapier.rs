@@ -509,13 +509,13 @@ impl RapierPhysicsWorld {
         let vy_pixels = vel.y * PIXELS_PER_METER;
 
         // Update Transform
-        if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+        if let Some(mut transform) = world.get_mut::<Transform>(entity) {
           transform.x = x_pixels;
           transform.y = y_pixels;
         }
 
         // Update Velocity
-        if let Some(mut velocity) = world.get_component_mut::<Velocity>(entity) {
+        if let Some(mut velocity) = world.get_mut::<Velocity>(entity) {
           velocity.dx = vx_pixels;
           velocity.dy = vy_pixels;
         }
@@ -530,7 +530,7 @@ impl RapierPhysicsWorld {
     for (&entity, &body_handle) in &self.entity_to_body {
       if let Some(body) = self.rigid_body_set.get_mut(body_handle)
         && body.is_kinematic()
-        && let Some(transform) = world.get_component::<Transform>(entity)
+        && let Some(transform) = world.get::<Transform>(entity)
       {
         let x_meters = transform.x / PIXELS_PER_METER;
         let y_meters = transform.y / PIXELS_PER_METER;
@@ -547,7 +547,7 @@ impl RapierPhysicsWorld {
     for (&entity, &body_handle) in &self.entity_to_body {
       if let Some(body) = self.rigid_body_set.get_mut(body_handle)
         && body.is_dynamic()
-        && let Some(transform) = world.get_component::<Transform>(entity)
+        && let Some(transform) = world.get::<Transform>(entity)
       {
         let x_meters = transform.x / PIXELS_PER_METER;
         let y_meters = transform.y / PIXELS_PER_METER;
@@ -563,7 +563,7 @@ impl RapierPhysicsWorld {
     for (&entity, &body_handle) in &self.entity_to_body {
       if let Some(body) = self.rigid_body_set.get_mut(body_handle)
         && !body.is_kinematic()
-        && let Some(velocity) = world.get_component::<Velocity>(entity)
+        && let Some(velocity) = world.get::<Velocity>(entity)
       {
         let vx_meters = velocity.dx / PIXELS_PER_METER;
         let vy_meters = velocity.dy / PIXELS_PER_METER;
@@ -707,10 +707,10 @@ mod tests {
 
     // Register with physics
     {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let velocity = world.get_component::<Velocity>(entity);
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let col = world.get_component::<Collider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let velocity = world.get::<Velocity>(entity);
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let col = world.get::<Collider>(entity).unwrap();
       physics.register_entity(entity, &transform, velocity.as_deref(), &rb, &col);
     }
 
@@ -730,9 +730,9 @@ mod tests {
     ));
 
     {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let col = world.get_component::<Collider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let col = world.get::<Collider>(entity).unwrap();
       physics.register_entity(entity, &transform, None, &rb, &col);
     }
 
@@ -755,10 +755,10 @@ mod tests {
     ));
 
     {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let velocity = world.get_component::<Velocity>(entity);
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let col = world.get_component::<Collider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let velocity = world.get::<Velocity>(entity);
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let col = world.get::<Collider>(entity).unwrap();
       physics.register_entity(entity, &transform, velocity.as_deref(), &rb, &col);
     }
 
@@ -767,7 +767,7 @@ mod tests {
     physics.sync_to_ecs(&mut world);
 
     // Entity should have fallen
-    let transform = world.get_component::<Transform>(entity).unwrap();
+    let transform = world.get::<Transform>(entity).unwrap();
     assert!(transform.y > 100.0, "Entity should fall due to gravity");
   }
 
@@ -783,9 +783,9 @@ mod tests {
     ));
 
     {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let col = world.get_component::<Collider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let col = world.get::<Collider>(entity).unwrap();
       physics.register_entity(entity, &transform, None, &rb, &col);
     }
 
@@ -794,7 +794,7 @@ mod tests {
     physics.sync_to_ecs(&mut world);
 
     // Kinematic body should not move
-    let transform = world.get_component::<Transform>(entity).unwrap();
+    let transform = world.get::<Transform>(entity).unwrap();
     assert!(
       (transform.y - 100.0).abs() < 0.01,
       "Kinematic body should not fall"
@@ -823,16 +823,16 @@ mod tests {
 
     // Register both
     {
-      let t = world.get_component::<Transform>(ball).unwrap();
-      let v = world.get_component::<Velocity>(ball);
-      let rb = world.get_component::<RigidBody>(ball).unwrap();
-      let col = world.get_component::<Collider>(ball).unwrap();
+      let t = world.get::<Transform>(ball).unwrap();
+      let v = world.get::<Velocity>(ball);
+      let rb = world.get::<RigidBody>(ball).unwrap();
+      let col = world.get::<Collider>(ball).unwrap();
       physics.register_entity(ball, &t, v.as_deref(), &rb, &col);
     }
     {
-      let t = world.get_component::<Transform>(floor).unwrap();
-      let rb = world.get_component::<RigidBody>(floor).unwrap();
-      let col = world.get_component::<Collider>(floor).unwrap();
+      let t = world.get::<Transform>(floor).unwrap();
+      let rb = world.get::<RigidBody>(floor).unwrap();
+      let col = world.get::<Collider>(floor).unwrap();
       physics.register_entity(floor, &t, None, &rb, &col);
     }
 
@@ -843,7 +843,7 @@ mod tests {
     physics.sync_to_ecs(&mut world);
 
     // Ball should have landed on floor (not fallen through)
-    let ball_transform = world.get_component::<Transform>(ball).unwrap();
+    let ball_transform = world.get::<Transform>(ball).unwrap();
     assert!(
       ball_transform.y < 200.0,
       "Ball should be stopped by floor, not fall through. Y = {}",
@@ -873,16 +873,16 @@ mod tests {
 
     // Register both entities
     {
-      let t = world.get_component::<Transform>(ball).unwrap();
-      let v = world.get_component::<Velocity>(ball);
-      let rb = world.get_component::<RigidBody>(ball).unwrap();
-      let col = world.get_component::<Collider>(ball).unwrap();
+      let t = world.get::<Transform>(ball).unwrap();
+      let v = world.get::<Velocity>(ball);
+      let rb = world.get::<RigidBody>(ball).unwrap();
+      let col = world.get::<Collider>(ball).unwrap();
       physics.register_entity(ball, &t, v.as_deref(), &rb, &col);
     }
     {
-      let t = world.get_component::<Transform>(floor).unwrap();
-      let rb = world.get_component::<RigidBody>(floor).unwrap();
-      let col = world.get_component::<Collider>(floor).unwrap();
+      let t = world.get::<Transform>(floor).unwrap();
+      let rb = world.get::<RigidBody>(floor).unwrap();
+      let col = world.get::<Collider>(floor).unwrap();
       physics.register_entity(floor, &t, None, &rb, &col);
     }
 
@@ -935,15 +935,15 @@ mod tests {
     ));
 
     {
-      let t = world.get_component::<Transform>(e1).unwrap();
-      let rb = world.get_component::<RigidBody>(e1).unwrap();
-      let col = world.get_component::<Collider>(e1).unwrap();
+      let t = world.get::<Transform>(e1).unwrap();
+      let rb = world.get::<RigidBody>(e1).unwrap();
+      let col = world.get::<Collider>(e1).unwrap();
       physics.register_entity(e1, &t, None, &rb, &col);
     }
     {
-      let t = world.get_component::<Transform>(e2).unwrap();
-      let rb = world.get_component::<RigidBody>(e2).unwrap();
-      let col = world.get_component::<Collider>(e2).unwrap();
+      let t = world.get::<Transform>(e2).unwrap();
+      let rb = world.get::<RigidBody>(e2).unwrap();
+      let col = world.get::<Collider>(e2).unwrap();
       physics.register_entity(e2, &t, None, &rb, &col);
     }
 
@@ -966,9 +966,9 @@ mod tests {
       Collider::box_collider(10.0, 10.0),
     ));
     {
-      let t = world.get_component::<Transform>(e3).unwrap();
-      let rb = world.get_component::<RigidBody>(e3).unwrap();
-      let col = world.get_component::<Collider>(e3).unwrap();
+      let t = world.get::<Transform>(e3).unwrap();
+      let rb = world.get::<RigidBody>(e3).unwrap();
+      let col = world.get::<Collider>(e3).unwrap();
       physics.register_entity(e3, &t, None, &rb, &col);
     }
     assert_eq!(physics.body_count(), 1);
@@ -1020,9 +1020,9 @@ mod tests {
     ));
 
     {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let col = world.get_component::<Collider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let col = world.get::<Collider>(entity).unwrap();
       physics.register_entity(entity, &transform, None, &rb, &col);
     }
 
@@ -1072,9 +1072,9 @@ mod tests {
     ));
 
     {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let col = world.get_component::<Collider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let col = world.get::<Collider>(entity).unwrap();
       physics.register_entity(entity, &transform, None, &rb, &col);
     }
 
@@ -1119,9 +1119,9 @@ mod tests {
     ));
 
     {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let col = world.get_component::<Collider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let col = world.get::<Collider>(entity).unwrap();
       physics.register_entity(entity, &transform, None, &rb, &col);
     }
 
@@ -1165,9 +1165,9 @@ mod tests {
     ));
 
     {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let col = world.get_component::<Collider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let col = world.get::<Collider>(entity).unwrap();
       physics.register_entity(entity, &transform, None, &rb, &col);
     }
 
@@ -1213,9 +1213,9 @@ mod tests {
     ));
 
     {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let col = world.get_component::<Collider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let col = world.get::<Collider>(entity).unwrap();
       physics.register_entity(entity, &transform, None, &rb, &col);
     }
 

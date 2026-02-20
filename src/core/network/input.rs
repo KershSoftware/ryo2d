@@ -243,7 +243,7 @@ use hecs::Entity;
 ///     }
 ///
 ///     fn apply_input(&self, world: &mut World, entity: Entity, input: &Self::Input, dt: f32) {
-///         if let Some(mut player) = world.get_component_mut::<Player>(entity) {
+///         if let Some(mut player) = world.get_mut::<Player>(entity) {
 ///             player.charging = input.charging;
 ///             player.facing_right = input.facing_right;
 ///             // Apply movement...
@@ -429,7 +429,7 @@ mod tests {
     }
 
     fn apply_input(&self, world: &mut World, entity: Entity, input: &Self::Input, _dt: f32) {
-      if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = world.get_mut::<Transform>(entity) {
         transform.x += *input as f32;
       }
     }
@@ -464,7 +464,7 @@ mod tests {
     assert_eq!(sequenced.input, 42);
 
     // Check that input was applied (prediction)
-    let transform = world.get_component::<Transform>(entity).unwrap();
+    let transform = world.get::<Transform>(entity).unwrap();
     assert_eq!(transform.x, 42.0);
   }
 
@@ -484,7 +484,7 @@ mod tests {
     let _ = processor.process_client_frame(&mut world, &input_state, 0.016, 0.0);
 
     // Input should NOT be applied locally
-    let transform = world.get_component::<Transform>(entity).unwrap();
+    let transform = world.get::<Transform>(entity).unwrap();
     assert_eq!(transform.x, 0.0);
   }
 
@@ -506,7 +506,7 @@ mod tests {
     }
 
     // Simulate server correction: reset position and acknowledge seq 1
-    if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+    if let Some(mut transform) = world.get_mut::<Transform>(entity) {
       transform.x = 100.0; // Server says we're at 100
     }
 
@@ -514,7 +514,7 @@ mod tests {
     processor.reconcile(&mut world, 1, 0.016);
 
     // Should be 100 + 42 + 42 = 184
-    let transform = world.get_component::<Transform>(entity).unwrap();
+    let transform = world.get::<Transform>(entity).unwrap();
     assert_eq!(transform.x, 184.0);
   }
 

@@ -35,7 +35,7 @@ impl TweenSystem {
 
       // Check if tween is playing before borrowing mutably
       let should_update = world
-        .get_component::<Tween>(entity)
+        .get::<Tween>(entity)
         .is_some_and(|t| t.playing);
 
       if !should_update {
@@ -44,29 +44,29 @@ impl TweenSystem {
 
       // Capture color start values from Renderable if tween has color targets and hasn't started
       let needs_color_capture = world
-        .get_component::<Tween>(entity)
+        .get::<Tween>(entity)
         .is_some_and(|t| t.has_color_targets() && !t.has_started());
 
-      if needs_color_capture && let Some(renderable) = world.get_component::<Renderable>(entity) {
+      if needs_color_capture && let Some(renderable) = world.get::<Renderable>(entity) {
         let alpha = renderable.alpha;
         let tint = renderable.tint;
-        if let Some(mut tween) = world.get_component_mut::<Tween>(entity) {
+        if let Some(mut tween) = world.get_mut::<Tween>(entity) {
           tween.capture_start_renderable(alpha, tint);
         }
       }
 
       // Get transform and tween together for update
       if let (Some(mut transform), Some(mut tween)) = (
-        world.get_component_mut::<Transform>(entity),
-        world.get_component_mut::<Tween>(entity),
+        world.get_mut::<Transform>(entity),
+        world.get_mut::<Tween>(entity),
       ) {
         tween.update(dt, &mut transform);
       }
 
       // Apply color/alpha tweening to Renderable
       if let (Some(tween), Some(mut renderable)) = (
-        world.get_component::<Tween>(entity),
-        world.get_component_mut::<Renderable>(entity),
+        world.get::<Tween>(entity),
+        world.get_mut::<Renderable>(entity),
       ) {
         if let Some(alpha) = tween.current_alpha() {
           renderable.alpha = alpha;
@@ -88,7 +88,7 @@ impl TweenSystem {
 
       // Check if sequence is playing and has a current tween
       let should_update = world
-        .get_component::<TweenSequence>(entity)
+        .get::<TweenSequence>(entity)
         .is_some_and(|s| s.playing && s.current().is_some());
 
       if !should_update {
@@ -97,16 +97,16 @@ impl TweenSystem {
 
       // Capture color start values if current tween has color targets and hasn't started
       let needs_color_capture = world
-        .get_component::<TweenSequence>(entity)
+        .get::<TweenSequence>(entity)
         .is_some_and(|s| {
           s.current()
             .is_some_and(|t| t.has_color_targets() && !t.has_started())
         });
 
-      if needs_color_capture && let Some(renderable) = world.get_component::<Renderable>(entity) {
+      if needs_color_capture && let Some(renderable) = world.get::<Renderable>(entity) {
         let alpha = renderable.alpha;
         let tint = renderable.tint;
-        if let Some(mut seq) = world.get_component_mut::<TweenSequence>(entity)
+        if let Some(mut seq) = world.get_mut::<TweenSequence>(entity)
           && let Some(tween) = seq.current_mut()
         {
           tween.capture_start_renderable(alpha, tint);
@@ -115,8 +115,8 @@ impl TweenSystem {
 
       // Update the current tween in the sequence
       let tween_finished = if let (Some(mut transform), Some(mut seq)) = (
-        world.get_component_mut::<Transform>(entity),
-        world.get_component_mut::<TweenSequence>(entity),
+        world.get_mut::<Transform>(entity),
+        world.get_mut::<TweenSequence>(entity),
       ) {
         if let Some(tween) = seq.current_mut() {
           tween.update(dt, &mut transform);
@@ -130,8 +130,8 @@ impl TweenSystem {
 
       // Apply color/alpha tweening from current tween to Renderable
       if let (Some(seq), Some(mut renderable)) = (
-        world.get_component::<TweenSequence>(entity),
-        world.get_component_mut::<Renderable>(entity),
+        world.get::<TweenSequence>(entity),
+        world.get_mut::<Renderable>(entity),
       ) && let Some(tween) = seq.current()
       {
         if let Some(alpha) = tween.current_alpha() {
@@ -143,7 +143,7 @@ impl TweenSystem {
       }
 
       // Advance to next tween if current one finished
-      if tween_finished && let Some(mut seq) = world.get_component_mut::<TweenSequence>(entity) {
+      if tween_finished && let Some(mut seq) = world.get_mut::<TweenSequence>(entity) {
         seq.advance();
       }
     }

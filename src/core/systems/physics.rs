@@ -73,16 +73,16 @@ impl PhysicsSystem {
       .filter(|&e| {
         !physics.is_registered(e)
           && !world.has::<Inactive>(e)
-          && world.get_component::<Transform>(e).is_some()
-          && world.get_component::<Collider>(e).is_some()
+          && world.get::<Transform>(e).is_some()
+          && world.get::<Collider>(e).is_some()
       })
       .collect();
 
     for entity in new_entities {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let velocity = world.get_component::<Velocity>(entity);
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let col = world.get_component::<Collider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let velocity = world.get::<Velocity>(entity);
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let col = world.get::<Collider>(entity).unwrap();
       physics.register_entity(entity, &transform, velocity.as_deref(), &rb, &col);
     }
 
@@ -93,16 +93,16 @@ impl PhysicsSystem {
       .filter(|&e| {
         !physics.is_registered(e)
           && !world.has::<Inactive>(e)
-          && world.get_component::<Transform>(e).is_some()
-          && world.get_component::<GroupedCollider>(e).is_some()
+          && world.get::<Transform>(e).is_some()
+          && world.get::<GroupedCollider>(e).is_some()
       })
       .collect();
 
     for entity in grouped_entities {
-      let transform = world.get_component::<Transform>(entity).unwrap();
-      let velocity = world.get_component::<Velocity>(entity);
-      let rb = world.get_component::<RigidBody>(entity).unwrap();
-      let grouped = world.get_component::<GroupedCollider>(entity).unwrap();
+      let transform = world.get::<Transform>(entity).unwrap();
+      let velocity = world.get::<Velocity>(entity);
+      let rb = world.get::<RigidBody>(entity).unwrap();
+      let grouped = world.get::<GroupedCollider>(entity).unwrap();
       physics.register_grouped_entity(entity, &transform, velocity.as_deref(), &rb, &grouped);
     }
 

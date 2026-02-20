@@ -482,7 +482,7 @@ impl<'a> SceneContext<'a> {
     force: f32,
     decay_rate: f32,
   ) {
-    if let Some(mut kb) = self.world.get_component_mut::<Knockback>(entity) {
+    if let Some(mut kb) = self.world.get_mut::<Knockback>(entity) {
       kb.apply_with_decay(direction, force, decay_rate);
     } else {
       self.world.add_component(
@@ -518,7 +518,7 @@ impl<'a> SceneContext<'a> {
 
   /// Apply a squash effect on a specific axis.
   pub fn squash_on_axis(&mut self, entity: Entity, intensity: f32, axis: SquashAxis) {
-    if let Some(mut ss) = self.world.get_component_mut::<SquashStretch>(entity) {
+    if let Some(mut ss) = self.world.get_mut::<SquashStretch>(entity) {
       ss.apply_on_axis(intensity, axis);
     } else {
       self
@@ -535,7 +535,7 @@ impl<'a> SceneContext<'a> {
   /// * `intensity` - How much to squash (0.3 = 30% compression)
   /// * `decay_rate` - How fast to recover (8.0 = snappy, 4.0 = moderate, 2.0 = slow)
   pub fn squash_with_decay(&mut self, entity: Entity, intensity: f32, decay_rate: f32) {
-    if let Some(mut ss) = self.world.get_component_mut::<SquashStretch>(entity) {
+    if let Some(mut ss) = self.world.get_mut::<SquashStretch>(entity) {
       ss.apply_with_decay(intensity, decay_rate);
     } else {
       self.world.add_component(

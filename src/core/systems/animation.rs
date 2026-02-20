@@ -33,7 +33,7 @@ impl AnimationSystem {
       if world.has::<Inactive>(entity) {
         continue;
       }
-      if let Some(mut animator) = world.get_component_mut::<Animator>(entity) {
+      if let Some(mut animator) = world.get_mut::<Animator>(entity) {
         animator.update(dt);
       }
     }
@@ -46,10 +46,10 @@ impl AnimationSystem {
         continue;
       }
       let sprite = world
-        .get_component::<Animator>(entity)
+        .get::<Animator>(entity)
         .and_then(|a| a.current_sprite().cloned());
       if let Some(sprite) = sprite
-        && let Some(mut renderable) = world.get_component_mut::<Renderable>(entity)
+        && let Some(mut renderable) = world.get_mut::<Renderable>(entity)
       {
         renderable.sprite = sprite;
       }
@@ -62,7 +62,7 @@ impl AnimationSystem {
       if world.has::<Inactive>(entity) {
         continue;
       }
-      if let Some(mut controller) = world.get_component_mut::<AnimationController>(entity) {
+      if let Some(mut controller) = world.get_mut::<AnimationController>(entity) {
         controller.update(dt);
       }
     }
@@ -75,10 +75,10 @@ impl AnimationSystem {
         continue;
       }
       let sprite = world
-        .get_component::<AnimationController>(entity)
+        .get::<AnimationController>(entity)
         .and_then(|c| c.current_sprite().cloned());
       if let Some(sprite) = sprite
-        && let Some(mut renderable) = world.get_component_mut::<Renderable>(entity)
+        && let Some(mut renderable) = world.get_mut::<Renderable>(entity)
       {
         renderable.sprite = sprite;
       }

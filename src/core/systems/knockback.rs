@@ -31,7 +31,7 @@ impl KnockbackSystem {
 
       // Check if knockback is active before borrowing mutably
       let is_active = world
-        .get_component::<Knockback>(entity)
+        .get::<Knockback>(entity)
         .is_some_and(|kb| kb.active);
 
       if !is_active {
@@ -40,7 +40,7 @@ impl KnockbackSystem {
 
       // Update the knockback component
       let (just_started, just_finished, velocity) =
-        if let Some(mut kb) = world.get_component_mut::<Knockback>(entity) {
+        if let Some(mut kb) = world.get_mut::<Knockback>(entity) {
           let was_just_started = kb.just_started;
           kb.update(dt);
           let vel = kb.current_velocity();
@@ -60,7 +60,7 @@ impl KnockbackSystem {
       // Apply velocity to entity
       // For entities with Velocity component, update the velocity
       // For all entities with Transform, apply position change
-      if let Some(mut vel_component) = world.get_component_mut::<Velocity>(entity) {
+      if let Some(mut vel_component) = world.get_mut::<Velocity>(entity) {
         // Set velocity to knockback velocity (for physics systems that read Velocity)
         vel_component.dx = velocity.0;
         vel_component.dy = velocity.1;
@@ -68,7 +68,7 @@ impl KnockbackSystem {
 
       // Always apply knockback directly to Transform position
       // (Velocity component is for physics systems, but knockback should move entity directly)
-      if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = world.get_mut::<Transform>(entity) {
         transform.x += velocity.0 * dt;
         transform.y += velocity.1 * dt;
       }
@@ -100,12 +100,12 @@ mod tests {
       Knockback::new(Vec2::new(1.0, 0.0), 100.0), // Push right at 100 px/s
     ));
 
-    let initial_x = world.get_component::<Transform>(entity).unwrap().x;
+    let initial_x = world.get::<Transform>(entity).unwrap().x;
 
     // Update the system
     KnockbackSystem::update(&mut world, &mut events, 0.1); // 100ms
 
-    let final_x = world.get_component::<Transform>(entity).unwrap().x;
+    let final_x = world.get::<Transform>(entity).unwrap().x;
 
     // Entity should have moved right (position increased)
     assert!(
@@ -148,11 +148,11 @@ mod tests {
       Inactive,
     ));
 
-    let initial_x = world.get_component::<Transform>(entity).unwrap().x;
+    let initial_x = world.get::<Transform>(entity).unwrap().x;
 
     KnockbackSystem::update(&mut world, &mut events, 0.1);
 
-    let final_x = world.get_component::<Transform>(entity).unwrap().x;
+    let final_x = world.get::<Transform>(entity).unwrap().x;
 
     // Entity should not have moved (inactive)
     assert_eq!(initial_x, final_x, "Inactive entity should not be affected");
@@ -176,7 +176,7 @@ mod tests {
 
     KnockbackSystem::update(&mut world, &mut events, 0.016);
 
-    let velocity = world.get_component::<Velocity>(entity).unwrap();
+    let velocity = world.get::<Velocity>(entity).unwrap();
 
     // Velocity should be set to knockback velocity
     assert!(velocity.dx > 0.0, "Velocity should be updated by knockback");

@@ -478,6 +478,7 @@ impl World {
   /// Get a shared reference to a component (compatibility method)
   ///
   /// This is equivalent to `get`. Provided for API compatibility.
+  #[deprecated(since = "0.1.0", note = "use `get` instead")]
   #[inline]
   pub fn get_component<T: hecs::Component>(&self, entity: Entity) -> Option<hecs::Ref<'_, T>> {
     self.get::<T>(entity)
@@ -486,6 +487,7 @@ impl World {
   /// Get a mutable reference to a component (compatibility method)
   ///
   /// This is equivalent to `get_mut`. Provided for API compatibility.
+  #[deprecated(since = "0.1.0", note = "use `get_mut` instead")]
   #[inline]
   pub fn get_component_mut<T: hecs::Component>(
     &self,
@@ -606,7 +608,7 @@ mod tests {
 
     world.add_component(entity, Position { x: 10.0, y: 20.0 });
 
-    let pos = world.get_component::<Position>(entity).unwrap();
+    let pos = world.get::<Position>(entity).unwrap();
     assert_eq!(pos.x, 10.0);
     assert_eq!(pos.y, 20.0);
   }
@@ -616,7 +618,7 @@ mod tests {
     let mut world = World::new();
     let entity = world.spawn_empty();
 
-    assert!(world.get_component::<Position>(entity).is_none());
+    assert!(world.get::<Position>(entity).is_none());
   }
 
   #[test]
@@ -627,12 +629,12 @@ mod tests {
     world.add_component(entity, Position { x: 0.0, y: 0.0 });
 
     {
-      let mut pos = world.get_component_mut::<Position>(entity).unwrap();
+      let mut pos = world.get_mut::<Position>(entity).unwrap();
       pos.x = 100.0;
       pos.y = 200.0;
     }
 
-    let pos = world.get_component::<Position>(entity).unwrap();
+    let pos = world.get::<Position>(entity).unwrap();
     assert_eq!(pos.x, 100.0);
     assert_eq!(pos.y, 200.0);
   }
@@ -651,8 +653,8 @@ mod tests {
       },
     );
 
-    let pos = world.get_component::<Position>(entity).unwrap();
-    let health = world.get_component::<Health>(entity).unwrap();
+    let pos = world.get::<Position>(entity).unwrap();
+    let health = world.get::<Health>(entity).unwrap();
 
     assert_eq!(pos.x, 5.0);
     assert_eq!(health.current, 100);
@@ -708,8 +710,8 @@ mod tests {
       pos.y += 5.0;
     });
 
-    let pos1 = world.get_component::<Position>(e1).unwrap();
-    let pos2 = world.get_component::<Position>(e2).unwrap();
+    let pos1 = world.get::<Position>(e1).unwrap();
+    let pos2 = world.get::<Position>(e2).unwrap();
 
     assert_eq!(pos1.x, 5.0);
     assert_eq!(pos2.x, 15.0);
@@ -731,10 +733,10 @@ mod tests {
     assert!(world.contains(new_entity));
 
     // The old handle returns None, not the new entity's position
-    assert!(world.get_component::<Position>(old_entity).is_none());
+    assert!(world.get::<Position>(old_entity).is_none());
 
     // New handle works correctly
-    let pos = world.get_component::<Position>(new_entity).unwrap();
+    let pos = world.get::<Position>(new_entity).unwrap();
     assert_eq!(pos.x, 10.0);
   }
 
@@ -750,8 +752,8 @@ mod tests {
       },
     ));
 
-    let pos = world.get_component::<Position>(entity).unwrap();
-    let health = world.get_component::<Health>(entity).unwrap();
+    let pos = world.get::<Position>(entity).unwrap();
+    let health = world.get::<Health>(entity).unwrap();
 
     assert_eq!(pos.x, 100.0);
     assert_eq!(health.current, 50);
@@ -910,7 +912,7 @@ mod tests {
 
     world.propagate_transforms();
 
-    let wt = world.get_component::<WorldTransform>(e).unwrap();
+    let wt = world.get::<WorldTransform>(e).unwrap();
     assert_eq!(wt.x, 10.0);
     assert_eq!(wt.y, 20.0);
     assert_eq!(wt.rotation, 0.0);
@@ -953,12 +955,12 @@ mod tests {
     world.propagate_transforms();
 
     // Parent's world transform equals local transform (no parent)
-    let parent_wt = world.get_component::<WorldTransform>(parent).unwrap();
+    let parent_wt = world.get::<WorldTransform>(parent).unwrap();
     assert_eq!(parent_wt.x, 100.0);
     assert_eq!(parent_wt.y, 50.0);
 
     // Child's world transform is parent + local
-    let child_wt = world.get_component::<WorldTransform>(child).unwrap();
+    let child_wt = world.get::<WorldTransform>(child).unwrap();
     assert_eq!(child_wt.x, 110.0);
     assert_eq!(child_wt.y, 55.0);
   }
@@ -999,7 +1001,7 @@ mod tests {
 
     world.propagate_transforms();
 
-    let child_wt = world.get_component::<WorldTransform>(child).unwrap();
+    let child_wt = world.get::<WorldTransform>(child).unwrap();
     // After 90° rotation: (10, 0) -> (0, 10)
     // Plus parent offset: (100 + 0, 100 + 10) = (100, 110)
     assert!((child_wt.x - 100.0).abs() < 0.01);

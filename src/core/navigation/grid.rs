@@ -298,8 +298,8 @@ impl NavigationGrid {
     let entities: Vec<Entity> = world.entities_with::<Collider>();
 
     for entity in entities {
-      let transform_data = world.get_component::<Transform>(entity).map(|t| (t.x, t.y));
-      let collider = world.get_component::<Collider>(entity);
+      let transform_data = world.get::<Transform>(entity).map(|t| (t.x, t.y));
+      let collider = world.get::<Collider>(entity);
 
       if let (Some((x, y)), Some(col)) = (transform_data, collider) {
         // Only block non-trigger colliders

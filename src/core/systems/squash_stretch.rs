@@ -31,7 +31,7 @@ impl SquashStretchSystem {
 
       // Check if squash/stretch is active before borrowing mutably
       let is_active = world
-        .get_component::<SquashStretch>(entity)
+        .get::<SquashStretch>(entity)
         .is_some_and(|ss| ss.active);
 
       if !is_active {
@@ -40,15 +40,15 @@ impl SquashStretchSystem {
 
       // Capture base scale from Transform if not yet captured
       if let (Some(transform), Some(mut ss)) = (
-        world.get_component::<Transform>(entity),
-        world.get_component_mut::<SquashStretch>(entity),
+        world.get::<Transform>(entity),
+        world.get_mut::<SquashStretch>(entity),
       ) {
         ss.capture_base_scale(transform.scale_x, transform.scale_y);
       }
 
       // Update the squash/stretch component and get scale
       let (just_started, just_finished, scale) =
-        if let Some(mut ss) = world.get_component_mut::<SquashStretch>(entity) {
+        if let Some(mut ss) = world.get_mut::<SquashStretch>(entity) {
           let was_just_started = ss.just_started;
           ss.update(dt);
           let scale = ss.current_scale();
@@ -66,7 +66,7 @@ impl SquashStretchSystem {
       }
 
       // Apply scale to Transform
-      if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = world.get_mut::<Transform>(entity) {
         transform.scale_x = scale.0;
         transform.scale_y = scale.1;
       }
@@ -98,11 +98,11 @@ mod tests {
       SquashStretch::new(0.3), // 30% squash intensity, starts active
     ));
 
-    let initial_scale_y = world.get_component::<Transform>(entity).unwrap().scale_y;
+    let initial_scale_y = world.get::<Transform>(entity).unwrap().scale_y;
 
     SquashStretchSystem::update(&mut world, &mut events, 0.016);
 
-    let final_scale_y = world.get_component::<Transform>(entity).unwrap().scale_y;
+    let final_scale_y = world.get::<Transform>(entity).unwrap().scale_y;
 
     // Scale should have changed (squashed on Y axis means scale_y < 1.0)
     assert_ne!(
@@ -140,11 +140,11 @@ mod tests {
       Inactive, // Inactive marker component
     ));
 
-    let initial_scale = world.get_component::<Transform>(entity).unwrap().scale_y;
+    let initial_scale = world.get::<Transform>(entity).unwrap().scale_y;
 
     SquashStretchSystem::update(&mut world, &mut events, 0.016);
 
-    let final_scale = world.get_component::<Transform>(entity).unwrap().scale_y;
+    let final_scale = world.get::<Transform>(entity).unwrap().scale_y;
 
     assert_eq!(
       initial_scale, final_scale,
@@ -172,7 +172,7 @@ mod tests {
     }
 
     // After effect completes, scale should return to base (2.0)
-    let final_scale = world.get_component::<Transform>(entity).unwrap().scale_y;
+    let final_scale = world.get::<Transform>(entity).unwrap().scale_y;
     assert!(
       (final_scale - 2.0).abs() < 0.1,
       "Scale should return to base after effect completes"

@@ -327,6 +327,16 @@ impl Camera {
     self.shake.trauma
   }
 
+  /// Instantly clear all screen shake trauma and offsets.
+  ///
+  /// Unlike [`reset`], this only affects the shake state — camera position
+  /// and zoom are preserved.
+  pub fn reset_trauma(&mut self) {
+    self.shake.trauma = 0.0;
+    self.shake.offset_x = 0.0;
+    self.shake.offset_y = 0.0;
+  }
+
   /// Get the current shake offset in pixels.
   ///
   /// Returns (offset_x, offset_y). Useful for custom rendering that needs
@@ -646,6 +656,26 @@ mod tests {
   fn camera_shake_with_intensity_curve_builder() {
     let shake = CameraShake::new(15.0, 2.0).with_intensity_curve(Ease::InCubic);
     assert_eq!(shake.intensity_curve(), Ease::InCubic);
+  }
+
+  #[test]
+  fn reset_trauma_clears_shake_preserves_position() {
+    let mut cam = Camera::new(800, 600);
+    cam.set_position(100.0, 200.0);
+    cam.set_zoom(2.0);
+    cam.add_trauma(0.8);
+    cam.update_shake(0.1);
+
+    assert!(cam.trauma() > 0.0);
+
+    cam.reset_trauma();
+
+    assert_eq!(cam.trauma(), 0.0);
+    assert_eq!(cam.shake_offset(), (0.0, 0.0));
+    // Position and zoom preserved (unlike full reset)
+    assert_eq!(cam.x, 100.0);
+    assert_eq!(cam.y, 200.0);
+    assert_eq!(cam.zoom, 2.0);
   }
 
   #[test]

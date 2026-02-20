@@ -31,10 +31,10 @@ impl InterpolationSystem {
       .filter(|&e| {
         !world.has::<Inactive>(e)
           && world
-            .get_component::<Renderable>(e)
+            .get::<Renderable>(e)
             .is_some_and(|r| r.interpolate)
           && !world.has::<PreviousTransform>(e)
-          && world.get_component::<Transform>(e).is_some()
+          && world.get::<Transform>(e).is_some()
       })
       .collect();
 
@@ -42,7 +42,7 @@ impl InterpolationSystem {
     let to_add: Vec<_> = needs_previous
       .into_iter()
       .filter_map(|entity| {
-        let t = world.get_component::<Transform>(entity)?;
+        let t = world.get::<Transform>(entity)?;
         Some((entity, t.x, t.y, t.z, t.rotation, t.scale_x, t.scale_y))
       })
       .collect();
@@ -68,7 +68,7 @@ impl InterpolationSystem {
       .into_iter()
       .filter(|&e| !world.has::<Inactive>(e))
       .filter_map(|e| {
-        let transform = world.get_component::<Transform>(e)?;
+        let transform = world.get::<Transform>(e)?;
         Some((
           e,
           transform.x,
@@ -83,7 +83,7 @@ impl InterpolationSystem {
 
     // Now apply the updates
     for (entity, x, y, z, rotation, scale_x, scale_y) in updates {
-      if let Some(mut prev) = world.get_component_mut::<PreviousTransform>(entity) {
+      if let Some(mut prev) = world.get_mut::<PreviousTransform>(entity) {
         // If skip was set, just copy current position (no interpolation this frame)
         // Then clear the skip flag
         if prev.skip {
@@ -116,7 +116,7 @@ impl InterpolationSystem {
   /// * `world` - The ECS world
   /// * `entity` - The entity to skip interpolation for
   pub fn skip_interpolation(world: &mut World, entity: crate::core::ecs::Entity) {
-    if let Some(mut prev) = world.get_component_mut::<PreviousTransform>(entity) {
+    if let Some(mut prev) = world.get_mut::<PreviousTransform>(entity) {
       prev.skip = true;
     }
   }
@@ -158,7 +158,7 @@ mod tests {
     assert!(world.has::<PreviousTransform>(entity));
 
     // PreviousTransform should match Transform
-    let prev = world.get_component::<PreviousTransform>(entity).unwrap();
+    let prev = world.get::<PreviousTransform>(entity).unwrap();
     assert_eq!(prev.x, 100.0);
     assert_eq!(prev.y, 200.0);
   }
@@ -192,7 +192,7 @@ mod tests {
     InterpolationSystem::snapshot(&mut world);
 
     // Move the entity
-    if let Some(mut t) = world.get_component_mut::<Transform>(entity) {
+    if let Some(mut t) = world.get_mut::<Transform>(entity) {
       t.x = 150.0;
       t.y = 250.0;
     }
@@ -200,7 +200,7 @@ mod tests {
     // Second snapshot updates PreviousTransform
     InterpolationSystem::snapshot(&mut world);
 
-    let prev = world.get_component::<PreviousTransform>(entity).unwrap();
+    let prev = world.get::<PreviousTransform>(entity).unwrap();
     assert_eq!(prev.x, 150.0);
     assert_eq!(prev.y, 250.0);
   }
@@ -220,7 +220,7 @@ mod tests {
     InterpolationSystem::skip_interpolation(&mut world, entity);
 
     // Move entity
-    if let Some(mut t) = world.get_component_mut::<Transform>(entity) {
+    if let Some(mut t) = world.get_mut::<Transform>(entity) {
       t.x = 500.0;
       t.y = 600.0;
     }
@@ -228,7 +228,7 @@ mod tests {
     // Snapshot should copy position and clear skip flag
     InterpolationSystem::snapshot(&mut world);
 
-    let prev = world.get_component::<PreviousTransform>(entity).unwrap();
+    let prev = world.get::<PreviousTransform>(entity).unwrap();
     assert_eq!(prev.x, 500.0);
     assert_eq!(prev.y, 600.0);
     assert!(!prev.skip);

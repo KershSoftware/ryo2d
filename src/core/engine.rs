@@ -896,7 +896,7 @@ impl Engine {
           !self.world.has::<super::ecs::Inactive>(*entity)
             && self
               .world
-              .get_component::<Renderable>(*entity)
+              .get::<Renderable>(*entity)
               .map(|r| r.visible)
               .unwrap_or(false)
         })
@@ -930,8 +930,8 @@ impl Engine {
             continue;
           }
           if let (Some(trail), Some(transform)) = (
-            self.world.get_component::<Trail2D>(entity),
-            self.world.get_component::<Transform>(entity),
+            self.world.get::<Trail2D>(entity),
+            self.world.get::<Transform>(entity),
           ) {
             // Use add_trail_with_device for texture caching support
             trails.add_trail_with_device(rend.device(), rend.queue(), &trail, &transform);
@@ -944,8 +944,8 @@ impl Engine {
             continue;
           }
           if let (Some(line), Some(transform)) = (
-            self.world.get_component::<Line2D>(entity),
-            self.world.get_component::<Transform>(entity),
+            self.world.get::<Line2D>(entity),
+            self.world.get::<Transform>(entity),
           ) {
             trails.add_line(&line, transform.x, transform.y);
           }
@@ -1286,18 +1286,18 @@ impl Engine {
         continue;
       }
 
-      let Some(renderable) = self.world.get_component::<Renderable>(entity) else {
+      let Some(renderable) = self.world.get::<Renderable>(entity) else {
         continue;
       };
 
-      let Some(y_sort) = self.world.get_component::<YSort>(entity) else {
+      let Some(y_sort) = self.world.get::<YSort>(entity) else {
         continue;
       };
 
       // Get Y position from WorldTransform or Transform
-      let y = if let Some(wt) = self.world.get_component::<WorldTransform>(entity) {
+      let y = if let Some(wt) = self.world.get::<WorldTransform>(entity) {
         wt.y
-      } else if let Some(t) = self.world.get_component::<Transform>(entity) {
+      } else if let Some(t) = self.world.get::<Transform>(entity) {
         t.y
       } else {
         continue;
@@ -1347,7 +1347,7 @@ impl Engine {
       self.y_sort_entities.clear();
 
       for entity in self.world.entities_with_two::<Transform, Renderable>() {
-        if let Some(renderable) = self.world.get_component::<Renderable>(entity) {
+        if let Some(renderable) = self.world.get::<Renderable>(entity) {
           self.renderable_cache.push((entity, renderable.z_order));
 
           // Track entities with YSort component for per-frame Y-based sorting
@@ -1403,7 +1403,7 @@ impl Engine {
         continue;
       }
 
-      let Some(renderable) = self.world.get_component::<Renderable>(entity) else {
+      let Some(renderable) = self.world.get::<Renderable>(entity) else {
         continue;
       };
 
@@ -1423,7 +1423,7 @@ impl Engine {
         pivot_y,
         offset_x,
         offset_y,
-      ) = if let Some(wt) = self.world.get_component::<WorldTransform>(entity) {
+      ) = if let Some(wt) = self.world.get::<WorldTransform>(entity) {
         (
           wt.x,
           wt.y,
@@ -1435,7 +1435,7 @@ impl Engine {
           wt.offset_x,
           wt.offset_y,
         )
-      } else if let Some(t) = self.world.get_component::<Transform>(entity) {
+      } else if let Some(t) = self.world.get::<Transform>(entity) {
         (
           t.x, t.y, t.rotation, t.scale_x, t.scale_y, t.pivot_x, t.pivot_y, t.offset_x, t.offset_y,
         )
@@ -1445,7 +1445,7 @@ impl Engine {
 
       // Apply render interpolation if enabled
       let (x, y, rotation, scale_x, scale_y) = if renderable.interpolate {
-        if let Some(prev) = self.world.get_component::<PreviousTransform>(entity) {
+        if let Some(prev) = self.world.get::<PreviousTransform>(entity) {
           if prev.skip {
             // Skip interpolation this frame (just spawned or teleported)
             (base_x, base_y, base_rotation, base_scale_x, base_scale_y)
@@ -1479,7 +1479,7 @@ impl Engine {
       let y = y + offset_y;
 
       // Apply YSort depth scaling if present
-      let (scale_x, scale_y) = if let Some(y_sort) = self.world.get_component::<YSort>(entity) {
+      let (scale_x, scale_y) = if let Some(y_sort) = self.world.get::<YSort>(entity) {
         let (depth_scale_x, depth_scale_y) = y_sort.calculate_depth_scale(y);
         (scale_x * depth_scale_x, scale_y * depth_scale_y)
       } else {
@@ -1851,10 +1851,10 @@ impl Engine {
     // === Render CompositeTile components ===
     // These are multi-part tiles with static and tiled sections
     for entity in self.world.entities_with_two::<Transform, CompositeTile>() {
-      let Some(transform) = self.world.get_component::<Transform>(entity) else {
+      let Some(transform) = self.world.get::<Transform>(entity) else {
         continue;
       };
-      let Some(composite) = self.world.get_component::<CompositeTile>(entity) else {
+      let Some(composite) = self.world.get::<CompositeTile>(entity) else {
         continue;
       };
 
@@ -2724,7 +2724,7 @@ impl ApplicationHandler for Engine {
               !self.world.has::<super::ecs::Inactive>(*entity)
                 && self
                   .world
-                  .get_component::<Renderable>(*entity)
+                  .get::<Renderable>(*entity)
                   .map(|r| r.visible)
                   .unwrap_or(false)
             })
@@ -2765,8 +2765,8 @@ impl ApplicationHandler for Engine {
                 continue;
               }
               if let (Some(trail), Some(transform)) = (
-                self.world.get_component::<Trail2D>(entity),
-                self.world.get_component::<Transform>(entity),
+                self.world.get::<Trail2D>(entity),
+                self.world.get::<Transform>(entity),
               ) {
                 // Use add_trail_with_device for texture caching support
                 trails.add_trail_with_device(rend.device(), rend.queue(), &trail, &transform);
@@ -2779,8 +2779,8 @@ impl ApplicationHandler for Engine {
                 continue;
               }
               if let (Some(line), Some(transform)) = (
-                self.world.get_component::<Line2D>(entity),
-                self.world.get_component::<Transform>(entity),
+                self.world.get::<Line2D>(entity),
+                self.world.get::<Transform>(entity),
               ) {
                 trails.add_line(&line, transform.x, transform.y);
               }

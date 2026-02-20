@@ -390,7 +390,7 @@ impl<'a> ContextCore<'a> {
   /// ctx.knockback(player, knockback_dir, 400.0);
   /// ```
   pub fn knockback(&mut self, entity: Entity, direction: Vec2, force: f32) {
-    if let Some(mut kb) = self.world.get_component_mut::<Knockback>(entity) {
+    if let Some(mut kb) = self.world.get_mut::<Knockback>(entity) {
       kb.apply(direction, force);
     } else {
       self
@@ -427,7 +427,7 @@ impl<'a> ContextCore<'a> {
     force: f32,
     decay_rate: f32,
   ) {
-    if let Some(mut kb) = self.world.get_component_mut::<Knockback>(entity) {
+    if let Some(mut kb) = self.world.get_mut::<Knockback>(entity) {
       kb.apply_with_decay(direction, force, decay_rate);
     } else {
       self.world.add_component(
@@ -490,7 +490,7 @@ impl<'a> ContextCore<'a> {
   /// * `intensity` - How much to squash (0.3 = 30% compression)
   /// * `axis` - Which axis to compress
   pub fn squash_on_axis(&mut self, entity: Entity, intensity: f32, axis: SquashAxis) {
-    if let Some(mut ss) = self.world.get_component_mut::<SquashStretch>(entity) {
+    if let Some(mut ss) = self.world.get_mut::<SquashStretch>(entity) {
       ss.apply_on_axis(intensity, axis);
     } else {
       self
@@ -514,7 +514,7 @@ impl<'a> ContextCore<'a> {
   /// ctx.squash_with_decay(player, 0.5, 3.0);
   /// ```
   pub fn squash_with_decay(&mut self, entity: Entity, intensity: f32, decay_rate: f32) {
-    if let Some(mut ss) = self.world.get_component_mut::<SquashStretch>(entity) {
+    if let Some(mut ss) = self.world.get_mut::<SquashStretch>(entity) {
       ss.apply_with_decay(intensity, decay_rate);
     } else {
       self.world.add_component(

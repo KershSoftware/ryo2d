@@ -30,11 +30,11 @@ impl TrailSystem {
       }
 
       // Get the entity's position from Transform
-      let pos = world.get_component::<Transform>(entity).map(|t| (t.x, t.y));
+      let pos = world.get::<Transform>(entity).map(|t| (t.x, t.y));
 
       // Update the trail with the current position
       if let Some((x, y)) = pos
-        && let Some(mut trail) = world.get_component_mut::<Trail2D>(entity)
+        && let Some(mut trail) = world.get_mut::<Trail2D>(entity)
       {
         trail.update(x, y, dt);
       }
@@ -69,14 +69,14 @@ mod tests {
 
     // Trail should start empty
     let initial_points = world
-      .get_component::<Trail2D>(entity)
+      .get::<Trail2D>(entity)
       .map(|t| t.point_count())
       .unwrap_or(0);
 
     TrailSystem::update(&mut world, 0.016);
 
     let final_points = world
-      .get_component::<Trail2D>(entity)
+      .get::<Trail2D>(entity)
       .map(|t| t.point_count())
       .unwrap_or(0);
 
@@ -102,7 +102,7 @@ mod tests {
     TrailSystem::update(&mut world, 0.016);
 
     let points = world
-      .get_component::<Trail2D>(entity)
+      .get::<Trail2D>(entity)
       .map(|t| t.point_count())
       .unwrap_or(0);
 
@@ -120,7 +120,7 @@ mod tests {
     TrailSystem::update(&mut world, 0.016);
 
     let points = world
-      .get_component::<Trail2D>(entity)
+      .get::<Trail2D>(entity)
       .map(|t| t.point_count())
       .unwrap_or(0);
 
@@ -138,7 +138,7 @@ mod tests {
     TrailSystem::update(&mut world, 0.016);
 
     // Move the entity
-    if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+    if let Some(mut transform) = world.get_mut::<Transform>(entity) {
       transform.x = 50.0;
       transform.y = 50.0;
     }
@@ -147,7 +147,7 @@ mod tests {
     TrailSystem::update(&mut world, 0.016);
 
     let points = world
-      .get_component::<Trail2D>(entity)
+      .get::<Trail2D>(entity)
       .map(|t| t.point_count())
       .unwrap_or(0);
 

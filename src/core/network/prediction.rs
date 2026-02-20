@@ -253,9 +253,9 @@ impl PredictionHelper {
     update: &ServerPositionUpdate,
   ) -> UpdateResult {
     // Get the Predicted component
-    let Some(mut predicted) = world.get_component_mut::<Predicted>(entity) else {
+    let Some(mut predicted) = world.get_mut::<Predicted>(entity) else {
       // No Predicted component - just apply update directly
-      if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = world.get_mut::<Transform>(entity) {
         transform.x = update.x;
         transform.y = update.y;
       }
@@ -273,7 +273,7 @@ impl PredictionHelper {
       drop(predicted); // Release borrow
 
       // Apply the update
-      if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = world.get_mut::<Transform>(entity) {
         transform.x = update.x;
         transform.y = update.y;
       }
@@ -286,7 +286,7 @@ impl PredictionHelper {
       predicted.acknowledge(update.sequence);
       drop(predicted);
 
-      if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = world.get_mut::<Transform>(entity) {
         transform.x = update.x;
         transform.y = update.y;
       }
@@ -302,7 +302,7 @@ impl PredictionHelper {
 
     // Remote entity - apply directly
     drop(predicted);
-    if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+    if let Some(mut transform) = world.get_mut::<Transform>(entity) {
       transform.x = update.x;
       transform.y = update.y;
     }
@@ -315,7 +315,7 @@ impl PredictionHelper {
   /// must be applied without client-side prediction interference.
   pub fn force_correction(&self, world: &mut World, entity: Entity, update: &ServerPositionUpdate) {
     // Mark for forced correction
-    if let Some(mut predicted) = world.get_component_mut::<Predicted>(entity) {
+    if let Some(mut predicted) = world.get_mut::<Predicted>(entity) {
       predicted.force_correction();
     }
 
@@ -327,12 +327,12 @@ impl PredictionHelper {
   ///
   /// Use this for spawning new entities or when you need direct control.
   pub fn apply_direct(&self, world: &mut World, entity: Entity, update: &ServerPositionUpdate) {
-    if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+    if let Some(mut transform) = world.get_mut::<Transform>(entity) {
       transform.x = update.x;
       transform.y = update.y;
     }
 
-    if let Some(mut predicted) = world.get_component_mut::<Predicted>(entity) {
+    if let Some(mut predicted) = world.get_mut::<Predicted>(entity) {
       predicted.acknowledge(update.sequence);
       if !predicted.spawned {
         predicted.mark_spawned();
@@ -344,7 +344,7 @@ impl PredictionHelper {
   ///
   /// Returns true if the entity is local and has unacknowledged inputs.
   pub fn needs_reconciliation(&self, world: &World, entity: Entity, current_sequence: u32) -> bool {
-    let Some(predicted) = world.get_component::<Predicted>(entity) else {
+    let Some(predicted) = world.get::<Predicted>(entity) else {
       return false;
     };
 
@@ -398,15 +398,15 @@ impl PredictionHelper {
       .into_iter()
       .filter(|&e| {
         world
-          .get_component::<Predicted>(e)
+          .get::<Predicted>(e)
           .is_some_and(|p| p.owner != local_id && p.spawned)
       })
       .collect();
 
     for entity in remotes {
-      if let Some(vel) = world.get_component::<Velocity>(entity) {
+      if let Some(vel) = world.get::<Velocity>(entity) {
         let (vx, vy) = (vel.dx, vel.dy);
-        if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+        if let Some(mut transform) = world.get_mut::<Transform>(entity) {
           transform.x += vx * dt;
           transform.y += vy * dt;
         }
@@ -470,11 +470,11 @@ mod tests {
 
     assert_eq!(result, UpdateResult::Spawned);
 
-    let transform = world.get_component::<Transform>(entity).unwrap();
+    let transform = world.get::<Transform>(entity).unwrap();
     assert_eq!(transform.x, 100.0);
     assert_eq!(transform.y, 200.0);
 
-    let predicted = world.get_component::<Predicted>(entity).unwrap();
+    let predicted = world.get::<Predicted>(entity).unwrap();
     assert!(predicted.is_spawned());
   }
 
@@ -488,7 +488,7 @@ mod tests {
     helper.handle_position_update(&mut world, entity, &update1);
 
     // Set local position (prediction)
-    if let Some(mut t) = world.get_component_mut::<Transform>(entity) {
+    if let Some(mut t) = world.get_mut::<Transform>(entity) {
       t.x = 150.0;
     }
 
@@ -499,7 +499,7 @@ mod tests {
     assert_eq!(result, UpdateResult::StoredForReconciliation);
 
     // Position should NOT have changed (reconciliation handles it)
-    let transform = world.get_component::<Transform>(entity).unwrap();
+    let transform = world.get::<Transform>(entity).unwrap();
     assert_eq!(transform.x, 150.0); // Still the predicted value
   }
 
@@ -518,7 +518,7 @@ mod tests {
 
     assert_eq!(result, UpdateResult::Applied);
 
-    let transform = world.get_component::<Transform>(entity).unwrap();
+    let transform = world.get::<Transform>(entity).unwrap();
     assert_eq!(transform.x, 150.0);
     assert_eq!(transform.y, 250.0);
   }
@@ -533,7 +533,7 @@ mod tests {
     helper.handle_position_update(&mut world, entity, &update1);
 
     // Set local position
-    if let Some(mut t) = world.get_component_mut::<Transform>(entity) {
+    if let Some(mut t) = world.get_mut::<Transform>(entity) {
       t.x = 999.0;
     }
 
@@ -542,7 +542,7 @@ mod tests {
     helper.force_correction(&mut world, entity, &update2);
 
     // Position should be corrected
-    let transform = world.get_component::<Transform>(entity).unwrap();
+    let transform = world.get::<Transform>(entity).unwrap();
     assert_eq!(transform.x, 50.0);
     assert_eq!(transform.y, 50.0);
   }
@@ -572,7 +572,7 @@ mod tests {
 
     assert_eq!(result, UpdateResult::Applied);
 
-    let transform = world.get_component::<Transform>(entity).unwrap();
+    let transform = world.get::<Transform>(entity).unwrap();
     assert_eq!(transform.x, 100.0);
   }
 
@@ -604,12 +604,12 @@ mod tests {
     helper.dead_reckon_remotes(&mut world, 0.1); // 100ms step
 
     // Remote entity should have moved
-    let rt = world.get_component::<Transform>(remote).unwrap();
+    let rt = world.get::<Transform>(remote).unwrap();
     assert!((rt.x - 106.0).abs() < 0.01);
     assert!((rt.y - 188.0).abs() < 0.01);
 
     // Local entity should be untouched
-    let lt = world.get_component::<Transform>(local).unwrap();
+    let lt = world.get::<Transform>(local).unwrap();
     assert_eq!(lt.x, 0.0);
     assert_eq!(lt.y, 0.0);
   }
@@ -632,7 +632,7 @@ mod tests {
     helper.dead_reckon_remotes(&mut world, 0.1);
 
     // Should not have moved — entity isn't spawned yet
-    let t = world.get_component::<Transform>(entity).unwrap();
+    let t = world.get::<Transform>(entity).unwrap();
     assert_eq!(t.x, 0.0);
   }
 }

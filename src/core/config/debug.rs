@@ -397,10 +397,10 @@ pub mod colors {
 pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World, camera: &Camera) {
   // Render standard Collider components
   for entity in world.entities_with_two::<Transform, Collider>() {
-    let Some(transform) = world.get_component::<Transform>(entity) else {
+    let Some(transform) = world.get::<Transform>(entity) else {
       continue;
     };
-    let Some(collider) = world.get_component::<Collider>(entity) else {
+    let Some(collider) = world.get::<Collider>(entity) else {
       continue;
     };
 
@@ -447,10 +447,10 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
 
   // Render GroupedCollider components (used by composite tiles)
   for entity in world.entities_with_two::<Transform, GroupedCollider>() {
-    let Some(transform) = world.get_component::<Transform>(entity) else {
+    let Some(transform) = world.get::<Transform>(entity) else {
       continue;
     };
-    let Some(grouped) = world.get_component::<GroupedCollider>(entity) else {
+    let Some(grouped) = world.get::<GroupedCollider>(entity) else {
       continue;
     };
 
@@ -494,10 +494,10 @@ pub fn render_velocities(
   const VELOCITY_SCALE: f32 = 0.1; // Scale factor for visualizing velocity
 
   for entity in world.entities_with_two::<Transform, Velocity>() {
-    let Some(transform) = world.get_component::<Transform>(entity) else {
+    let Some(transform) = world.get::<Transform>(entity) else {
       continue;
     };
-    let Some(velocity) = world.get_component::<Velocity>(entity) else {
+    let Some(velocity) = world.get::<Velocity>(entity) else {
       continue;
     };
 
@@ -530,7 +530,7 @@ pub fn render_origins(frame: &mut [u8], width: u32, height: u32, world: &World, 
   const CROSS_SIZE: i32 = 4;
 
   for entity in world.entities_with::<Transform>() {
-    let Some(transform) = world.get_component::<Transform>(entity) else {
+    let Some(transform) = world.get::<Transform>(entity) else {
       continue;
     };
 
