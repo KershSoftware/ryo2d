@@ -130,19 +130,8 @@ impl Scene for MenuScene {
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let (screen_w, _screen_h) = ui.screen_size();
-
-    let center_x = screen_w as f32 / 2.0;
-
     // Title
-    let title = "BULLET HELL";
-    let (title_w, _) = ui.text_size(title);
-    ui.draw_text(
-      title,
-      center_x - title_w as f32 / 2.0,
-      150.0,
-      Color::rgb(255, 50, 50),
-    );
+    ui.draw_text_anchored("BULLET HELL", Anchor::TopCenter, 0.0, 150.0, Color::rgb(255, 50, 50));
 
     // Controls - Keyboard
     let keyboard_controls = vec![
@@ -169,39 +158,30 @@ impl Scene for MenuScene {
 
     let mut y = 250.0;
     for (line, color) in keyboard_controls {
-      let (line_w, _) = ui.text_size(line);
-      ui.draw_text(line, center_x - line_w as f32 / 2.0, y, color);
+      ui.draw_text_anchored(line, Anchor::TopCenter, 0.0, y, color);
       y += 22.0;
     }
 
     // Best time
     if self.best_time > 0.0 {
       let best_text = format!("Best Time: {:.1}s", self.best_time);
-      let (best_w, _) = ui.text_size(&best_text);
-      ui.draw_text(
-        &best_text,
-        center_x - best_w as f32 / 2.0,
-        y + 20.0,
-        Color::rgb(255, 215, 0),
-      );
+      ui.draw_text_anchored(&best_text, Anchor::TopCenter, 0.0, y + 20.0, Color::rgb(255, 215, 0));
     }
 
     // Start prompt
-    let prompt = "Press SPACE / A to Start";
-    let (prompt_w, _) = ui.text_size(prompt);
-    ui.draw_text(
-      prompt,
-      center_x - prompt_w as f32 / 2.0,
+    ui.draw_text_anchored(
+      "Press SPACE / A to Start",
+      Anchor::TopCenter,
+      0.0,
       520.0,
       Color::rgb(100, 255, 100),
     );
 
     // Quit hint
-    let quit_hint = "ESC to Quit";
-    let (quit_w, _) = ui.text_size(quit_hint);
-    ui.draw_text(
-      quit_hint,
-      center_x - quit_w as f32 / 2.0,
+    ui.draw_text_anchored(
+      "ESC to Quit",
+      Anchor::TopCenter,
+      0.0,
       550.0,
       Color::rgb(150, 150, 150),
     );

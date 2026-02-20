@@ -545,12 +545,11 @@ impl Scene for GameScene {
 
     // Pre-game instructions
     if !self.game_started {
-      let (screen_w, screen_h) = ui.screen_size();
-      let text = "Press SPACE or CLICK to start";
-      let (text_w, _) = ui.text_size(text);
-      ui.draw_text(
-        text,
-        screen_w as f32 / 2.0 - text_w as f32 / 2.0,
+      let (_, screen_h) = ui.screen_size();
+      ui.draw_text_anchored(
+        "Press SPACE or CLICK to start",
+        Anchor::TopCenter,
+        0.0,
         screen_h as f32 / 2.0,
         Color::WHITE,
       );

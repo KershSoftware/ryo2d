@@ -2851,14 +2851,7 @@ impl Scene for GameScene {
 
     // Hit indicator
     if invincible {
-      let hit_text = "HIT!";
-      let (hit_w, _) = ui.text_size(hit_text);
-      ui.draw_text(
-        hit_text,
-        screen_w as f32 / 2.0 - hit_w as f32 / 2.0,
-        200.0,
-        Color::rgb(255, 50, 50),
-      );
+      ui.draw_text_anchored("HIT!", Anchor::TopCenter, 0.0, 200.0, Color::rgb(255, 50, 50));
     }
 
     // Pause menu
@@ -3146,14 +3139,7 @@ impl GameScene {
       );
 
       // Settings title
-      let title = "SETTINGS";
-      let (title_w, _) = ui.text_size(title);
-      ui.draw_text(
-        title,
-        center_x - title_w as f32 / 2.0,
-        modal_y + 20.0,
-        Color::WHITE,
-      );
+      ui.draw_text_anchored("SETTINGS", Anchor::TopCenter, 0.0, modal_y + 20.0, Color::WHITE);
 
       // Display mode options
       let mode_y = modal_y + 55.0;
@@ -3247,24 +3233,16 @@ impl GameScene {
       }
 
       // Settings navigation hint
-      let hint = "D-Pad: Navigate | A: Select | B: Back";
-      let (hint_w, _) = ui.text_size(hint);
-      ui.draw_text(
-        hint,
-        center_x - hint_w as f32 / 2.0,
+      ui.draw_text_anchored(
+        "D-Pad: Navigate | A: Select | B: Back",
+        Anchor::TopCenter,
+        0.0,
         modal_y + modal_h + 10.0,
         Color::rgb(150, 150, 150),
       );
     } else {
       // Main pause menu
-      let title = "PAUSED";
-      let (title_w, _) = ui.text_size(title);
-      ui.draw_text(
-        title,
-        center_x - title_w as f32 / 2.0,
-        center_y - 100.0,
-        Color::WHITE,
-      );
+      ui.draw_text_anchored("PAUSED", Anchor::TopCenter, 0.0, center_y - 100.0, Color::WHITE);
 
       let btn_w = 200.0;
       let btn_h = 40.0;
@@ -3349,11 +3327,10 @@ impl GameScene {
       }
 
       // Instructions
-      let hint = "D-Pad/Arrows: Navigate | A/Enter: Select | B/ESC: Resume";
-      let (hint_w, _) = ui.text_size(hint);
-      ui.draw_text(
-        hint,
-        center_x - hint_w as f32 / 2.0,
+      ui.draw_text_anchored(
+        "D-Pad/Arrows: Navigate | A/Enter: Select | B/ESC: Resume",
+        Anchor::TopCenter,
+        0.0,
         center_y + 170.0,
         Color::rgb(150, 150, 150),
       );

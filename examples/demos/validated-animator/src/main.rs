@@ -355,14 +355,15 @@ impl Scene for ValidatedAnimatorDemo {
   }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-  EngineBuilder::new()
+fn main() {
+  let engine = EngineBuilder::new()
     .title("Ryo2D Validated Animator Demo")
     .resolution(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)
     .window_mode(WindowMode::ResizableAspectRatio)
     .with_scene(ValidatedAnimatorDemo::new())
-    .build()
-    .run()?;
+    .build();
 
-  Ok(())
+  if let Err(e) = engine.run() {
+    eprintln!("Engine error: {}", e);
+  }
 }

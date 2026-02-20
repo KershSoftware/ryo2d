@@ -113,8 +113,8 @@ impl TrailsDemoScene {
       trail_width: 6.0,
       lifetime: 0.5,
       fade_distance: 100.0,
-      screen_width: 1024.0,
-      screen_height: 768.0,
+      screen_width: 0.0,
+      screen_height: 0.0,
     }
   }
 

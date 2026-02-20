@@ -8,14 +8,15 @@ mod scenes;
 use ryo2d::prelude::*;
 use scenes::MainMenu;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-  EngineBuilder::new()
+fn main() {
+  let engine = EngineBuilder::new()
     .title("Ryo2D UI Animations Demo")
     .resolution(800, 600)
     .window_mode(WindowMode::ResizableAspectRatio)
     .with_scene(MainMenu::new())
-    .build()
-    .run()?;
+    .build();
 
-  Ok(())
+  if let Err(e) = engine.run() {
+    eprintln!("Engine error: {}", e);
+  }
 }

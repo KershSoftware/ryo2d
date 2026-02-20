@@ -472,6 +472,5 @@ fn main() {
 
   if let Err(e) = engine.run() {
     eprintln!("Engine error: {}", e);
-    std::process::exit(1);
   }
 }

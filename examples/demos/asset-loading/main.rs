@@ -183,9 +183,7 @@ impl Scene for LoadingDemoScene {
     let screen_h = screen_h as f32;
 
     // Title
-    let title = "Asset Loading Demo";
-    let (title_w, _) = ui.text_size(title);
-    ui.draw_text(title, center_x - title_w as f32 / 2.0, 20.0, Color::WHITE);
+    ui.draw_text_anchored("Asset Loading Demo", Anchor::TopCenter, 0.0, 20.0, Color::WHITE);
 
     match self.state {
       DemoState::Ready => {
@@ -205,11 +203,10 @@ impl Scene for LoadingDemoScene {
 impl LoadingDemoScene {
   fn render_ready_state(&mut self, ui: &mut UiContext, center_x: f32, screen_h: f32) {
     // Instructions
-    let instructions = "Click the button to start loading assets";
-    let (text_w, _) = ui.text_size(instructions);
-    ui.draw_text(
-      instructions,
-      center_x - text_w as f32 / 2.0,
+    ui.draw_text_anchored(
+      "Click the button to start loading assets",
+      Anchor::TopCenter,
+      0.0,
       100.0,
       Color::LIGHT_GRAY,
     );
@@ -253,13 +250,7 @@ impl LoadingDemoScene {
       _ => "...",
     };
     let loading_text = format!("Loading{}", dots);
-    let (text_w, _) = ui.text_size(&loading_text);
-    ui.draw_text(
-      &loading_text,
-      center_x - text_w as f32 / 2.0,
-      120.0,
-      Color::WHITE,
-    );
+    ui.draw_text_anchored(&loading_text, Anchor::TopCenter, 0.0, 120.0, Color::WHITE);
 
     // Progress bar
     let bar_w = 400.0;
@@ -281,10 +272,10 @@ impl LoadingDemoScene {
 
     // Progress text
     let progress_text = format!("{}/{} ({:.0}%)", completed, total, percentage * 100.0);
-    let (text_w, _) = ui.text_size(&progress_text);
-    ui.draw_text(
+    ui.draw_text_anchored(
       &progress_text,
-      center_x - text_w as f32 / 2.0,
+      Anchor::TopCenter,
+      0.0,
       bar_y + bar_h + 10.0,
       Color::LIGHT_GRAY,
     );
@@ -298,10 +289,10 @@ impl LoadingDemoScene {
         .next()
         .unwrap_or(current_path);
       let current_text = format!("Loading: {}", filename);
-      let (text_w, _) = ui.text_size(&current_text);
-      ui.draw_text(
+      ui.draw_text_anchored(
         &current_text,
-        center_x - text_w as f32 / 2.0,
+        Anchor::TopCenter,
+        0.0,
         bar_y + bar_h + 35.0,
         Color::GRAY,
       );
@@ -311,13 +302,7 @@ impl LoadingDemoScene {
   fn render_complete_state(&mut self, ui: &mut UiContext, center_x: f32, screen_h: f32) {
     // Success message
     let success_text = format!("Loaded {} assets!", self.loaded_sprites.len());
-    let (text_w, _) = ui.text_size(&success_text);
-    ui.draw_text(
-      &success_text,
-      center_x - text_w as f32 / 2.0,
-      60.0,
-      Color::GREEN,
-    );
+    ui.draw_text_anchored(&success_text, Anchor::TopCenter, 0.0, 60.0, Color::GREEN);
 
     // Display loaded sprites in a grid
     let start_x = 50.0;

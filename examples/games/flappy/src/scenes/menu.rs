@@ -177,14 +177,7 @@ impl Scene for MenuScene {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Title
-    let title = "FLAPPY";
-    let (title_w, _) = ui.text_size(title);
-    ui.draw_text(
-      title,
-      screen_w as f32 / 2.0 - title_w as f32 / 2.0,
-      100.0,
-      Color::WHITE,
-    );
+    ui.draw_text_anchored("FLAPPY", Anchor::TopCenter, 0.0, 100.0, Color::WHITE);
 
     // High score (upper right)
     if self.high_score > 0 {
@@ -245,10 +238,10 @@ impl Scene for MenuScene {
     } else {
       "Press SPACE or CLICK to flap"
     };
-    let (text_w, _) = ui.text_size(instructions);
-    ui.draw_text(
+    ui.draw_text_anchored(
       instructions,
-      screen_w as f32 / 2.0 - text_w as f32 / 2.0,
+      Anchor::TopCenter,
+      0.0,
       screen_h as f32 - 100.0,
       Color::rgb(100, 100, 100),
     );

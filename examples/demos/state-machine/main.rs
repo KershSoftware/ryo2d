@@ -183,8 +183,8 @@ impl StateMachineDemoScene {
 
       game_stack,
 
-      screen_w: 800.0,
-      screen_h: 600.0,
+      screen_w: 0.0,
+      screen_h: 0.0,
       ground_y: 450.0,
 
       fsm_log: vec!["Started in Idle".to_string()],

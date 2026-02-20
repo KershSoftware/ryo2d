@@ -50,8 +50,8 @@ impl TimeControlDemoScene {
       balls: Vec::new(),
       rotating_square: None,
       pulsing_circle: None,
-      screen_w: 800.0,
-      screen_h: 600.0,
+      screen_w: 0.0,
+      screen_h: 0.0,
     }
   }
 

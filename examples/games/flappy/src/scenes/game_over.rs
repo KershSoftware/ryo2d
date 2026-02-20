@@ -68,44 +68,24 @@ impl Scene for GameOverScene {
     );
 
     // Game Over title
-    let title = "GAME OVER";
-    let (title_w, _) = ui.text_size(title);
-    ui.draw_text(
-      title,
-      screen_w as f32 / 2.0 - title_w as f32 / 2.0,
-      150.0,
-      Color::WHITE,
-    );
+    ui.draw_text_anchored("GAME OVER", Anchor::TopCenter, 0.0, 150.0, Color::WHITE);
 
     // Score display
     let score_text = format!("Score: {}", self.score);
-    let (score_w, _) = ui.text_size(&score_text);
-    ui.draw_text(
-      &score_text,
-      screen_w as f32 / 2.0 - score_w as f32 / 2.0,
-      220.0,
-      Color::WHITE,
-    );
+    ui.draw_text_anchored(&score_text, Anchor::TopCenter, 0.0, 220.0, Color::WHITE);
 
     // High score
     if self.is_new_high_score {
-      let high_text = "NEW HIGH SCORE!";
-      let (high_w, _) = ui.text_size(high_text);
-      ui.draw_text(
-        high_text,
-        screen_w as f32 / 2.0 - high_w as f32 / 2.0,
+      ui.draw_text_anchored(
+        "NEW HIGH SCORE!",
+        Anchor::TopCenter,
+        0.0,
         270.0,
         Color::rgb(255, 215, 0), // Gold
       );
     } else {
       let high_text = format!("High Score: {}", self.high_score);
-      let (high_w, _) = ui.text_size(&high_text);
-      ui.draw_text(
-        &high_text,
-        screen_w as f32 / 2.0 - high_w as f32 / 2.0,
-        270.0,
-        Color::rgb(200, 200, 200),
-      );
+      ui.draw_text_anchored(&high_text, Anchor::TopCenter, 0.0, 270.0, Color::rgb(200, 200, 200));
     }
 
     // Restart button
@@ -123,11 +103,10 @@ impl Scene for GameOverScene {
     }
 
     // Keyboard hints
-    let hint = "SPACE to restart  |  ESC for menu";
-    let (hint_w, _) = ui.text_size(hint);
-    ui.draw_text(
-      hint,
-      screen_w as f32 / 2.0 - hint_w as f32 / 2.0,
+    ui.draw_text_anchored(
+      "SPACE to restart  |  ESC for menu",
+      Anchor::TopCenter,
+      0.0,
       500.0,
       Color::rgb(150, 150, 150),
     );

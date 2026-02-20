@@ -51,8 +51,8 @@ impl EasingScene {
       rotation_entity: None,
       scale_entity: None,
       loop_mode: TweenLoop::PingPong,
-      screen_w: 1024.0,
-      screen_h: 768.0,
+      screen_w: 0.0,
+      screen_h: 0.0,
     }
   }
 
@@ -294,8 +294,8 @@ impl SpeedControlScene {
       entity: None,
       speed: 1.0,
       paused: false,
-      screen_w: 1024.0,
-      screen_h: 768.0,
+      screen_w: 0.0,
+      screen_h: 0.0,
     }
   }
 
@@ -463,8 +463,8 @@ impl CallbacksScene {
       start_count: Arc::new(AtomicUsize::new(0)),
       update_count: Arc::new(AtomicUsize::new(0)),
       complete_count: Arc::new(AtomicUsize::new(0)),
-      screen_w: 1024.0,
-      screen_h: 768.0,
+      screen_w: 0.0,
+      screen_h: 0.0,
     }
   }
 
@@ -611,8 +611,8 @@ impl CombinedEffectsScene {
   fn new() -> Self {
     Self {
       entities: Vec::new(),
-      screen_w: 1024.0,
-      screen_h: 768.0,
+      screen_w: 0.0,
+      screen_h: 0.0,
     }
   }
 
@@ -814,8 +814,8 @@ impl SequenceScene {
   fn new() -> Self {
     Self {
       entity: None,
-      screen_w: 1024.0,
-      screen_h: 768.0,
+      screen_w: 0.0,
+      screen_h: 0.0,
     }
   }
 
@@ -956,8 +956,8 @@ impl ColorAlphaScene {
   fn new() -> Self {
     Self {
       entities: Vec::new(),
-      screen_w: 1024.0,
-      screen_h: 768.0,
+      screen_w: 0.0,
+      screen_h: 0.0,
     }
   }
 
