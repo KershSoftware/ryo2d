@@ -286,7 +286,7 @@ impl Scene for TimeControlDemoScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let text_light = Color::rgb(220, 220, 220);
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
@@ -318,6 +318,7 @@ impl Scene for TimeControlDemoScene {
       80.0,
       text_warning,
     );
+    SceneAction::Continue
   }
 }
 

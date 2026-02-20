@@ -202,7 +202,7 @@ impl Scene for ThemeDemo {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Get current theme for colors
@@ -460,5 +460,6 @@ impl Scene for ThemeDemo {
     // Theme file path info
     let path_text = format!("Theme file: {}", Self::get_theme_path().display());
     ui.draw_text_anchored(&path_text, Anchor::BottomRight, -10.0, -10.0, muted_color);
+    SceneAction::Continue
   }
 }

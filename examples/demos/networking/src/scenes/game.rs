@@ -635,7 +635,7 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (sw, sh) = ui.screen_size();
 
     // NOTE: Don't draw background here - it covers game sprites!
@@ -784,6 +784,7 @@ impl Scene for GameScene {
         self.show_quit_dialog = false;
       }
     }
+    SceneAction::Continue
   }
 }
 

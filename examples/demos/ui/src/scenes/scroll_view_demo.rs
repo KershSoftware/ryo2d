@@ -69,7 +69,7 @@ impl Scene for ScrollViewDemo {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let dt = self.last_dt;
     let padding = 8.0; // Consistent padding for all scroll views
 
@@ -251,5 +251,6 @@ impl Scene for ScrollViewDemo {
       debug_y + 18.0,
       Color::LIGHT_GRAY,
     );
+    SceneAction::Continue
   }
 }

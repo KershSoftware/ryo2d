@@ -129,7 +129,7 @@ impl Scene for MenuScene {
     self.background.render(ctx);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, _screen_h) = ui.screen_size();
 
     let center_x = screen_w as f32 / 2.0;
@@ -205,5 +205,6 @@ impl Scene for MenuScene {
       550.0,
       Color::rgb(150, 150, 150),
     );
+    SceneAction::Continue
   }
 }

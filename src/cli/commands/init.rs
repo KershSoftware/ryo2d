@@ -341,7 +341,7 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Draw UI here
     ui.label(
       "My Ryo2D Game",
@@ -350,6 +350,7 @@ impl Scene for GameScene {
       Color::WHITE,
       Some(Color::new(0, 0, 0, 180)),
     );
+    SceneAction::Continue
   }
 }
 

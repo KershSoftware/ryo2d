@@ -38,7 +38,7 @@ impl Scene for LayoutDemo {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Background
@@ -311,5 +311,6 @@ impl Scene for LayoutDemo {
       -10.0,
       Color::rgb(80, 80, 100),
     );
+    SceneAction::Continue
   }
 }

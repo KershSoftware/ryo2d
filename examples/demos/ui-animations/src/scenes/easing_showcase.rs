@@ -125,7 +125,7 @@ impl Scene for EasingShowcase {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
     let screen_w = screen_w as f32;
     let screen_h = screen_h as f32;
@@ -212,5 +212,6 @@ impl Scene for EasingShowcase {
       let pct_x = cell_x + (cell_w - pct_w as f32) / 2.0;
       ui.draw_text(&pct_text, pct_x, track_y + 15.0, Color::GRAY);
     }
+    SceneAction::Continue
   }
 }

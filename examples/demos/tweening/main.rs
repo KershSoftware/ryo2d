@@ -223,7 +223,7 @@ impl Scene for EasingScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
     let screen_w = screen_w as f32;
     let screen_h = screen_h as f32;
@@ -272,6 +272,7 @@ impl Scene for EasingScene {
       bottom_y,
       Color::rgb(100, 180, 255),
     );
+    SceneAction::Continue
   }
 }
 
@@ -405,7 +406,7 @@ impl Scene for SpeedControlScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
@@ -438,6 +439,7 @@ impl Scene for SpeedControlScene {
     };
 
     ui.draw_text(&format!("Status: {}", status), 10.0, 130.0, status_color);
+    SceneAction::Continue
   }
 }
 
@@ -549,7 +551,7 @@ impl Scene for CallbacksScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
@@ -588,6 +590,7 @@ impl Scene for CallbacksScene {
       180.0,
       text_muted,
     );
+    SceneAction::Continue
   }
 }
 
@@ -745,7 +748,7 @@ impl Scene for CombinedEffectsScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
@@ -790,6 +793,7 @@ impl Scene for CombinedEffectsScene {
       center_y + 160.0,
       text_muted,
     );
+    SceneAction::Continue
   }
 }
 
@@ -896,7 +900,7 @@ impl Scene for SequenceScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
@@ -931,6 +935,7 @@ impl Scene for SequenceScene {
       center_y + 20.0,
       text_muted,
     );
+    SceneAction::Continue
   }
 }
 
@@ -1240,7 +1245,7 @@ impl Scene for ColorAlphaScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
     let text_white = Color::rgb(240, 240, 240);
@@ -1266,6 +1271,7 @@ impl Scene for ColorAlphaScene {
 
     ui.draw_text("Darken", 180.0, 390.0, text_white);
     ui.draw_text("Full Combo (all properties)", 500.0, 390.0, text_white);
+    SceneAction::Continue
   }
 }
 

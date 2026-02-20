@@ -353,7 +353,7 @@ impl Scene for DropShadowsScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let white = Color::WHITE;
     let gray = Color::new(180, 180, 180, 255);
     let highlight = Color::new(255, 255, 100, 255);
@@ -449,5 +449,6 @@ impl Scene for DropShadowsScene {
 
     // ESC hint
     ui.label("ESC: Quit", 10.0, self.screen_h - 30.0, gray, bg);
+    SceneAction::Continue
   }
 }

@@ -123,7 +123,7 @@ impl Scene for ControllerDemo {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Title
     ui.draw_text("Controller Input Demo", 20.0, 20.0, Color::WHITE);
 
@@ -379,6 +379,7 @@ impl Scene for ControllerDemo {
       SCREEN_HEIGHT - 30.0,
       Color::hex(0x666666),
     );
+    SceneAction::Continue
   }
 }
 

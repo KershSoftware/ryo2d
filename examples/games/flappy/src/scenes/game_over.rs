@@ -58,7 +58,7 @@ impl Scene for GameOverScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Semi-transparent overlay
@@ -131,5 +131,6 @@ impl Scene for GameOverScene {
       500.0,
       Color::rgb(150, 150, 150),
     );
+    SceneAction::Continue
   }
 }

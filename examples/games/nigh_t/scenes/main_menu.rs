@@ -303,7 +303,7 @@ impl Scene for MainMenuScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Title text
     ui.label(
       "NIGH_T",
@@ -314,6 +314,7 @@ impl Scene for MainMenuScene {
     );
 
     ui.label("Hold mouse to charge light", 10.0, 40.0, Color::GRAY, None);
+    SceneAction::Continue
   }
 
   fn on_exit(&mut self, ctx: &mut SceneContext) {

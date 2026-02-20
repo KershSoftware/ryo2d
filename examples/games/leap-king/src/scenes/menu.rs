@@ -415,7 +415,7 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let dt = self.last_dt;
     let (sw, sh) = ui.screen_size();
     let center_x = sw as f32 / 2.0;
@@ -691,6 +691,7 @@ impl Scene for MenuScene {
       -20.0,
       Color::DARK_GRAY,
     );
+    SceneAction::Continue
   }
 
   fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {

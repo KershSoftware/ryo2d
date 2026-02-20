@@ -308,7 +308,7 @@ impl Scene for CursorDemoScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let mx = self.mouse_x;
     let my = self.mouse_y;
 
@@ -487,5 +487,6 @@ impl Scene for CursorDemoScene {
       self.screen_h - 25.0,
       Color::rgb(100, 100, 100),
     );
+    SceneAction::Continue
   }
 }

@@ -149,7 +149,7 @@ impl Scene for HubScene {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Title
     ui.draw_text("Scene 1 — Hub", 30.0, 20.0, Color::WHITE);
 
@@ -200,6 +200,7 @@ impl Scene for HubScene {
 
     // Footer
     ui.draw_text("Press ESC to exit", 30.0, 560.0, Color::rgb(100, 100, 100));
+    SceneAction::Continue
   }
 
   fn name(&self) -> &str {
@@ -305,7 +306,7 @@ impl Scene for WorkshopScene {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Title
     ui.draw_text("Scene 2 — Workshop", 30.0, 20.0, Color::WHITE);
 
@@ -367,6 +368,7 @@ impl Scene for WorkshopScene {
 
     // Footer
     ui.draw_text("Press ESC to exit", 30.0, 560.0, Color::rgb(100, 100, 100));
+    SceneAction::Continue
   }
 
   fn name(&self) -> &str {

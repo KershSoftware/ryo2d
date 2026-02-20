@@ -1265,7 +1265,7 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, _screen_h) = ui.screen_size();
 
     // Score (top right)
@@ -1375,6 +1375,7 @@ impl Scene for GameScene {
         Color::new(200, 200, 200, 180),
       );
     }
+    SceneAction::Continue
   }
 
   fn name(&self) -> &str {

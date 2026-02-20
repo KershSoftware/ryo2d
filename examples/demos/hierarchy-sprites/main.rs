@@ -174,7 +174,7 @@ impl Scene for HierarchyScene {
     // No custom rendering needed here.
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Display controls and rotation status
     ui.draw_text("Controls:", 10.0, 10.0, Color::WHITE);
     ui.draw_text("  SPACE - Toggle rotation", 10.0, 30.0, Color::WHITE);
@@ -194,6 +194,7 @@ impl Scene for HierarchyScene {
       };
       ui.draw_text(status_text, 10.0, 80.0, status_color);
     }
+    SceneAction::Continue
   }
 }
 

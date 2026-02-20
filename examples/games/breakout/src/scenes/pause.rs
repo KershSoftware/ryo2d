@@ -183,7 +183,7 @@ impl Scene for PauseScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Dim overlay
@@ -314,6 +314,7 @@ impl Scene for PauseScene {
     if ui.button("QUIT TO DESKTOP", quit_desktop_rect) {
       self.quit_desktop_clicked = true;
     }
+    SceneAction::Continue
   }
 
   fn is_transparent(&self) -> bool {

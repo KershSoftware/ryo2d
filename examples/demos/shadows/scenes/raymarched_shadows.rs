@@ -246,7 +246,7 @@ impl Scene for RaymarchedShadowsScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let white = Color::WHITE;
     let gray = Color::new(180, 180, 180, 255);
     let highlight = Color::new(255, 255, 100, 255);
@@ -318,5 +318,6 @@ impl Scene for RaymarchedShadowsScene {
       gray,
       bg,
     );
+    SceneAction::Continue
   }
 }

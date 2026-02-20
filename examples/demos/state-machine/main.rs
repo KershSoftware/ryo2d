@@ -487,7 +487,7 @@ impl Scene for StateMachineDemoScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let white = Color::rgb(240, 240, 240);
     let gray = Color::rgb(150, 150, 150);
     let dark_gray = Color::rgb(80, 80, 80);
@@ -607,6 +607,7 @@ impl Scene for StateMachineDemoScene {
     // Title bar
     // =========================================================================
     ui.draw_text("ESC: Exit", self.screen_w - 80.0, 10.0, dark_gray);
+    SceneAction::Continue
   }
 }
 

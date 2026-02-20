@@ -173,7 +173,7 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Title
@@ -252,6 +252,7 @@ impl Scene for MenuScene {
       screen_h as f32 - 100.0,
       Color::rgb(100, 100, 100),
     );
+    SceneAction::Continue
   }
 }
 

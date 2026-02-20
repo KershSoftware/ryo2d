@@ -317,7 +317,7 @@ impl Scene for DebugScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, _screen_h) = ui.screen_size();
 
     // Title
@@ -347,5 +347,6 @@ impl Scene for DebugScene {
 
     // Draw detailed collision info
     ui.draw_text(&self.collision_info, 10.0, 70.0, Color::rgb(200, 200, 200));
+    SceneAction::Continue
   }
 }

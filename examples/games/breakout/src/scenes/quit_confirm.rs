@@ -83,7 +83,7 @@ impl Scene for QuitConfirmScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Dim overlay
@@ -122,6 +122,7 @@ impl Scene for QuitConfirmScene {
     if ui.button("NO (N/B)", no_rect) {
       self.no_clicked = true;
     }
+    SceneAction::Continue
   }
 
   fn is_transparent(&self) -> bool {

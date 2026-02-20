@@ -177,7 +177,7 @@ impl Scene for LoadingDemoScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
     let center_x = screen_w as f32 / 2.0;
     let screen_h = screen_h as f32;
@@ -198,6 +198,7 @@ impl Scene for LoadingDemoScene {
         self.render_complete_state(ui, center_x, screen_h);
       }
     }
+    SceneAction::Continue
   }
 }
 

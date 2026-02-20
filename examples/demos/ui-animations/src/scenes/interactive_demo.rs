@@ -286,7 +286,7 @@ impl Scene for InteractiveDemo {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
     let screen_w = screen_w as f32;
     let screen_h = screen_h as f32;
@@ -363,5 +363,6 @@ impl Scene for InteractiveDemo {
       520.0,
       text_muted,
     );
+    SceneAction::Continue
   }
 }

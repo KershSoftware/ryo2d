@@ -386,7 +386,7 @@ impl Scene for LightingScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     ui.label(
       "Lighting Demo",
       10.0,
@@ -458,6 +458,7 @@ impl Scene for LightingScene {
       Color::new(200, 200, 200, 255),
       Some(Color::new(0, 0, 0, 160)),
     );
+    SceneAction::Continue
   }
 }
 

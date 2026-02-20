@@ -63,7 +63,7 @@ impl Scene for TextInputDemo {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let dt = self.last_dt;
 
     // Get screen dimensions
@@ -260,5 +260,6 @@ impl Scene for TextInputDemo {
       debug_y,
       Color::WHITE,
     );
+    SceneAction::Continue
   }
 }

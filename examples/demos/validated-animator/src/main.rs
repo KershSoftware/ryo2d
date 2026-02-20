@@ -178,7 +178,7 @@ impl Scene for ValidatedAnimatorDemo {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Title
     ui.draw_text("Validated Animator Demo", 20.0, 20.0, Color::WHITE);
 
@@ -351,6 +351,7 @@ impl Scene for ValidatedAnimatorDemo {
       };
       ui.draw_text(&msg, SCREEN_WIDTH / 2.0 - 80.0, state_y + 180.0, color);
     }
+    SceneAction::Continue
   }
 }
 

@@ -190,7 +190,7 @@ impl Scene for AnchorDemoScene {
     // Sprites are rendered automatically by the engine
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
     let screen_w = screen_w as f32;
     let screen_h = screen_h as f32;
@@ -250,6 +250,7 @@ impl Scene for AnchorDemoScene {
       );
       ui.draw_text(&offset_text, 10.0, info_y + 20.0, Color::GREEN);
     }
+    SceneAction::Continue
   }
 }
 

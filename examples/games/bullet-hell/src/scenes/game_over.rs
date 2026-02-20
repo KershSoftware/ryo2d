@@ -43,7 +43,7 @@ impl Scene for GameOverScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Clear to dark red background
@@ -108,5 +108,6 @@ impl Scene for GameOverScene {
       480.0,
       Color::rgb(150, 150, 150),
     );
+    SceneAction::Continue
   }
 }

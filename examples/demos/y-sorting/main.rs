@@ -620,7 +620,7 @@ impl Scene for YSortingScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Minimal HUD
     let status = if self.depth_scale_enabled {
       "SPACE: Scale ON"
@@ -639,6 +639,7 @@ impl Scene for YSortingScene {
       },
       Some(Color::new(0, 0, 0, 180)),
     );
+    SceneAction::Continue
   }
 }
 

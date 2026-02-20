@@ -42,7 +42,7 @@ impl Scene for DropdownDemo {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Title
     ui.draw_text("Dropdown Widget Demo", 20.0, 15.0, Color::WHITE);
     ui.draw_text(
@@ -189,5 +189,6 @@ impl Scene for DropdownDemo {
 
     // Draw dropdown lists on top of all other content
     ui.finish_dropdowns();
+    SceneAction::Continue
   }
 }

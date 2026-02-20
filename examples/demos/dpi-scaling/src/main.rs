@@ -63,7 +63,7 @@ impl Scene for DpiScalingScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (width, height) = ui.screen_size();
     let current_scale = ui.ui_scale();
 
@@ -200,6 +200,7 @@ impl Scene for DpiScalingScene {
       footer_y,
       Color::GRAY,
     );
+    SceneAction::Continue
   }
 }
 

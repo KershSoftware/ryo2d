@@ -68,7 +68,7 @@ impl Scene for MainMenu {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
     let center_x = screen_w as f32 / 2.0;
 
@@ -153,5 +153,6 @@ impl Scene for MainMenu {
       -10.0,
       Color::rgb(60, 60, 80),
     );
+    SceneAction::Continue
   }
 }

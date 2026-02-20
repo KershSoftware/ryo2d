@@ -128,7 +128,7 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Background
@@ -197,6 +197,7 @@ impl Scene for MenuScene {
       -30.0,
       Color::DARK_GRAY,
     );
+    SceneAction::Continue
   }
 
   fn name(&self) -> &str {

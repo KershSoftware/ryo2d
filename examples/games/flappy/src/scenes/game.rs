@@ -539,7 +539,7 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Draw score
     ui.draw_text(&self.score.to_string(), SCORE_X, SCORE_Y, Color::WHITE);
 
@@ -555,5 +555,6 @@ impl Scene for GameScene {
         Color::WHITE,
       );
     }
+    SceneAction::Continue
   }
 }

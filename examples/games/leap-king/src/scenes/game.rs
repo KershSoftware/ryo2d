@@ -3468,7 +3468,7 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (sw, sh) = ui.screen_size();
 
     // Room info (top right)
@@ -3681,6 +3681,7 @@ impl Scene for GameScene {
         self.show_quit_dialog = false;
       }
     }
+    SceneAction::Continue
   }
 
   fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {

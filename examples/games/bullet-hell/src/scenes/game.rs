@@ -2819,7 +2819,7 @@ impl Scene for GameScene {
     self.background.render(ctx);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     profile_scope!("ui");
     let (screen_w, screen_h) = ui.screen_size();
 
@@ -2865,6 +2865,7 @@ impl Scene for GameScene {
     if self.is_paused {
       self.render_pause_menu(ui, screen_w as f32, screen_h as f32);
     }
+    SceneAction::Continue
   }
 
   fn is_physics_paused(&self) -> bool {

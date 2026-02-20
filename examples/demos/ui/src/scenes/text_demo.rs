@@ -73,7 +73,7 @@ impl Scene for TextDemo {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Background
@@ -191,5 +191,6 @@ impl Scene for TextDemo {
       wrapped_h as f32,
     );
     ui.draw_text_wrapped_centered(text, text_rect, Color::WHITE);
+    SceneAction::Continue
   }
 }

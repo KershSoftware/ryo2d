@@ -869,7 +869,9 @@ pub trait Scene {
   ///     }
   /// }
   /// ```
-  fn render_ui(&mut self, _ui: &mut UiContext) {}
+  fn render_ui(&mut self, _ui: &mut UiContext) -> SceneAction {
+    SceneAction::Continue
+  }
 
   /// Called for GPU-accelerated rendering (optional).
   ///
@@ -1476,9 +1478,9 @@ impl SceneManager {
   /// Render UI for all visible scenes.
   ///
   /// Called after sprite rendering. Renders from bottom to top.
-  pub fn render_ui(&mut self, ui: &mut UiContext) {
+  pub fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     if self.scenes.is_empty() {
-      return;
+      return SceneAction::Continue;
     }
 
     // Find the first scene that's not transparent (render from there)
@@ -1490,10 +1492,15 @@ impl SceneManager {
       }
     }
 
-    // Render UI from bottom-up
+    // Render UI from bottom-up, keeping the top scene's action
+    let mut action = SceneAction::Continue;
     for i in render_from..self.scenes.len() {
-      self.scenes[i].render_ui(ui);
+      let scene_action = self.scenes[i].render_ui(ui);
+      if i == self.scenes.len() - 1 {
+        action = scene_action;
+      }
     }
+    action
   }
 
   /// Render background for the active scene.
@@ -1649,6 +1656,8 @@ pub struct SceneGame {
   next_scope_id: u64,
   /// Current scene's scope ID (for command handler cleanup)
   current_scope_id: u64,
+  /// Action returned by the top scene's render_ui, to be processed next update
+  pending_ui_action: Option<SceneAction>,
 }
 
 impl SceneGame {
@@ -1660,6 +1669,7 @@ impl SceneGame {
       quit_requested: false,
       next_scope_id: 1, // Start at 1 (0 is reserved for game-level permanent scope)
       current_scope_id: 0, // Will be set on first on_enter
+      pending_ui_action: None,
     }
   }
 
@@ -1737,6 +1747,42 @@ impl Game for SceneGame {
       scope_id: self.current_scope_id,
     };
 
+    // Process any action returned by render_ui before the regular update
+    if let Some(action) = self.pending_ui_action.take() {
+      let will_change_scene = matches!(
+        action,
+        SceneAction::Pop
+          | SceneAction::Switch(_)
+          | SceneAction::Reset(_)
+          | SceneAction::PopWith(_)
+          | SceneAction::SwitchWith(_, _)
+          | SceneAction::ResetWith(_, _)
+      );
+
+      let old_scope_id = if will_change_scene {
+        Some(self.current_scope_id)
+      } else {
+        None
+      };
+
+      if will_change_scene {
+        self.current_scope_id = self.next_scope_id;
+        self.next_scope_id += 1;
+        scene_ctx.scope_id = self.current_scope_id;
+      }
+
+      let should_continue = self.manager.handle_action(action, &mut scene_ctx);
+
+      if let Some(old_scope) = old_scope_id {
+        scene_ctx.command_registry.clear_scope(old_scope);
+      }
+
+      if !should_continue {
+        self.quit_requested = true;
+        return;
+      }
+    }
+
     // Update any active transitions first
     self.manager.update_transition(dt, &mut scene_ctx);
 
@@ -1797,7 +1843,10 @@ impl Game for SceneGame {
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) {
-    self.manager.render_ui(ui);
+    let action = self.manager.render_ui(ui);
+    if !matches!(action, SceneAction::Continue) {
+      self.pending_ui_action = Some(action);
+    }
   }
 
   #[allow(deprecated)]

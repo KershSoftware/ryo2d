@@ -493,7 +493,7 @@ impl Scene for DemoScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     #[cfg(feature = "profiler")]
     profile_scope!("demo_ui");
 
@@ -574,5 +574,6 @@ impl Scene for DemoScene {
     y += line_height;
 
     ui.draw_text("F10: Profiler window", 10.0, y, Color::GRAY);
+    SceneAction::Continue
   }
 }

@@ -501,7 +501,7 @@ impl Scene for VolumetricLightingScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let white = Color::WHITE;
     let gray = Color::new(180, 180, 180, 255);
     let highlight = Color::new(255, 255, 100, 255);
@@ -593,6 +593,7 @@ impl Scene for VolumetricLightingScene {
     ui.label("- Atmosphere presets", right_x, 95.0, gray, bg);
     ui.label("- Light color presets", right_x, 115.0, gray, bg);
     ui.label("- Shadow occluders", right_x, 135.0, gray, bg);
+    SceneAction::Continue
   }
 }
 

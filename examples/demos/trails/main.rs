@@ -615,7 +615,7 @@ impl Scene for TrailsDemoScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let line_height = 16.0;
     let mut y = 10.0;
     let text_white = Color::WHITE;
@@ -709,6 +709,7 @@ impl Scene for TrailsDemoScene {
         Color::rgb(255, 255, 100),
       );
     }
+    SceneAction::Continue
   }
 }
 
