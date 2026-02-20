@@ -31,16 +31,6 @@ impl MenuScene {
       music: None,
     }
   }
-
-  /// Create a new menu scene with music from previous scene for crossfading
-  pub fn with_prev_music(prev_music: Option<MusicHandle>) -> Self {
-    Self {
-      high_score: load_high_score(),
-      start_clicked: false,
-      escape_was_released: false,
-      music: prev_music,
-    }
-  }
 }
 
 impl Default for MenuScene {
@@ -109,7 +99,7 @@ impl Scene for MenuScene {
       // Take music handle to pass to game for crossfading
       let music = self.music.take();
       return SceneAction::SwitchWith(
-        Box::new(GameScene::with_prev_music(self.high_score, music)),
+        Box::new(GameScene::new(self.high_score, music)),
         Transition::fade(Duration::from_millis(300)),
       );
     }

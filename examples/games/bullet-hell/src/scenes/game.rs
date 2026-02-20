@@ -6,7 +6,7 @@ use crate::shared;
 use crate::*;
 use ryo2d::prelude::*;
 
-use super::{GameOverScene, MenuScene};
+use super::{GameOverScene, PauseScene};
 
 // Fixed design resolution - game logic always uses these values
 // Display settings only affect window scaling, not gameplay
@@ -73,28 +73,8 @@ pub struct GameScene {
   // Screen dimensions (obtained from engine at runtime)
   screen_width: f32,
   screen_height: f32,
-  // Pause menu state
-  is_paused: bool,
-  settings_open: bool,
-  selected_display_mode_idx: usize,
-  quit_to_menu: bool,
-  quit_to_desktop: bool,
-  // Flag to apply settings (set in render_ui, processed in update)
-  apply_settings: bool,
-  // Controller navigation for pause menu (0=Resume, 1=Settings, 2=Quit Menu, 3=Quit Desktop)
-  pause_menu_focus: usize,
-  // Controller navigation for settings menu (0-2 = display modes, 3=Apply, 4=Back)
-  settings_menu_focus: usize,
-  // Skip one frame of input after unpausing to prevent button press from affecting gameplay
-  unpause_input_cooldown: bool,
   // Object pool for bullets (high-frequency spawning)
   bullet_pool: Option<Pool<BulletBundle>>,
-}
-
-impl Default for GameScene {
-  fn default() -> Self {
-    Self::new()
-  }
 }
 
 impl GameScene {
@@ -183,9 +163,6 @@ impl GameScene {
       .with_tile_mode(TileMode::InfiniteScroll)
       .build();
 
-    // Load current display mode setting
-    let display_mode_idx = Self::load_current_display_mode_index();
-
     Self {
       player: None,
       turrets: Vec::new(),
@@ -226,41 +203,9 @@ impl GameScene {
       // Screen dimensions - fixed design resolution for consistent gameplay
       screen_width: DESIGN_WIDTH,
       screen_height: DESIGN_HEIGHT,
-      // Pause menu state
-      is_paused: false,
-      settings_open: false,
-      selected_display_mode_idx: display_mode_idx,
-      quit_to_menu: false,
-      quit_to_desktop: false,
-      apply_settings: false,
-      pause_menu_focus: 0,
-      settings_menu_focus: 0,
-      unpause_input_cooldown: false,
       // Bullet pool initialized in on_enter
       bullet_pool: None,
     }
-  }
-
-  /// Load current display mode from system.json
-  fn load_current_display_mode_index() -> usize {
-    let Ok(workspace) = Workspace::discover() else {
-      return 0; // Fallback: Windowed
-    };
-
-    let Ok(save_manager) = workspace.create_save_manager() else {
-      return 0;
-    };
-
-    let system_state = save_manager
-      .load_or_create_system(&workspace.config().system)
-      .unwrap_or_else(|_| SystemState::from_defaults(&workspace.config().system));
-
-    // Find display mode index
-    let modes = DisplayMode::all();
-    modes
-      .iter()
-      .position(|m| *m == system_state.display.display_mode)
-      .unwrap_or(0) // Default to Windowed if not found
   }
 
   fn spawn_player(&mut self, ctx: &mut SceneContext) {
@@ -1356,12 +1301,6 @@ impl GameScene {
     use crate::constants::{
       WALL_JUMP_FORCE_X, WALL_JUMP_FORCE_Y, WALL_SLIDE_GRAVITY_SCALE, WALL_SLIDE_MAX_SPEED,
     };
-
-    // Skip one frame of input after unpausing to prevent A/X button from causing jump
-    if self.unpause_input_cooldown {
-      self.unpause_input_cooldown = false;
-      return;
-    }
 
     let Some(player_entity) = self.player else {
       return;
@@ -2705,53 +2644,16 @@ impl Scene for GameScene {
       return SceneAction::Switch(Box::new(GameScene::new()));
     }
 
-    // Handle pause toggle (keyboard or gamepad Start button)
-    // Use consume to prevent the same input from triggering multiple actions
+    // Pause: push overlay scene
     if ctx.input.key_pressed_and_consume(KeyCode::Escape)
       || ctx
         .input
         .gamepad_button_pressed_and_consume(GamepadButton::Start)
     {
-      if self.settings_open {
-        self.settings_open = false;
-      } else {
-        self.is_paused = !self.is_paused;
-        if self.is_paused {
-          self.pause_menu_focus = 0; // Reset focus when opening pause menu
-        }
-      }
+      return SceneAction::Push(Box::new(PauseScene::new()));
     }
 
-    // Handle pause menu controller navigation
-    if self.is_paused {
-      self.handle_pause_menu_navigation(ctx);
-    }
-
-    // Check if user wants to quit to menu
-    if self.quit_to_menu {
-      self.quit_to_menu = false;
-      return SceneAction::Switch(Box::new(MenuScene::new()));
-    }
-
-    // Check if user wants to quit to desktop
-    if self.quit_to_desktop {
-      return SceneAction::Quit;
-    }
-
-    // Apply display mode if requested
-    if self.apply_settings {
-      self.apply_settings = false;
-      let modes = DisplayMode::all();
-      let display_mode = modes[self.selected_display_mode_idx];
-      ctx.request_display_mode(display_mode);
-    }
-
-    // If paused, skip game logic (including parallax animation)
-    if self.is_paused {
-      return SceneAction::Continue;
-    }
-
-    // Update parallax background (only when not paused)
+    // Update parallax background
     // Update shared parallax time (persists between menu and game)
     let parallax_time = shared::add_parallax_time(dt);
     self.background.set_elapsed_time(parallax_time);
@@ -2821,7 +2723,6 @@ impl Scene for GameScene {
 
   fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     profile_scope!("ui");
-    let (screen_w, screen_h) = ui.screen_size();
 
     // Use cached player state
     let lives = self.player_lives;
@@ -2854,15 +2755,7 @@ impl Scene for GameScene {
       ui.draw_text_anchored("HIT!", Anchor::TopCenter, 0.0, 200.0, Color::rgb(255, 50, 50));
     }
 
-    // Pause menu
-    if self.is_paused {
-      self.render_pause_menu(ui, screen_w as f32, screen_h as f32);
-    }
     SceneAction::Continue
-  }
-
-  fn is_physics_paused(&self) -> bool {
-    self.is_paused
   }
 }
 
@@ -2969,371 +2862,4 @@ impl GameScene {
     false
   }
 
-  /// Handle controller/keyboard navigation in the pause menu
-  /// Uses input consumption to prevent inputs from cascading between nested menus
-  fn handle_pause_menu_navigation(&mut self, ctx: &mut SceneContext) {
-    if self.settings_open {
-      // Settings layout:
-      // Row 1: Display modes (0=Windowed, 1=Borderless, 2=Fullscreen)
-      // Row 2: Apply (3), Back (4)
-
-      // Up/Down: Move between rows
-      if (ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::DPadDown)
-        || ctx.input.key_pressed_and_consume(KeyCode::ArrowDown))
-        && self.settings_menu_focus < 3
-      {
-        // From display modes row, go to Apply/Back row
-        self.settings_menu_focus = 3;
-      }
-      if (ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::DPadUp)
-        || ctx.input.key_pressed_and_consume(KeyCode::ArrowUp))
-        && self.settings_menu_focus >= 3
-      {
-        // From Apply/Back row, go to display modes row
-        self.settings_menu_focus = 1; // Go to center (Borderless)
-      }
-
-      // Left/Right: Move within rows
-      if ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::DPadLeft)
-        || ctx.input.key_pressed_and_consume(KeyCode::ArrowLeft)
-      {
-        if self.settings_menu_focus < 3 && self.settings_menu_focus > 0 {
-          // Navigate left through display modes
-          self.settings_menu_focus -= 1;
-        } else if self.settings_menu_focus == 4 {
-          // From Back to Apply
-          self.settings_menu_focus = 3;
-        }
-      }
-      if ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::DPadRight)
-        || ctx.input.key_pressed_and_consume(KeyCode::ArrowRight)
-      {
-        if self.settings_menu_focus < 2 {
-          // Navigate right through display modes
-          self.settings_menu_focus += 1;
-        } else if self.settings_menu_focus == 3 {
-          // From Apply to Back
-          self.settings_menu_focus = 4;
-        }
-      }
-
-      // A button (South) or Enter to select
-      // Consume to prevent cascading to pause menu when closing settings
-      if ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::South)
-        || ctx.input.key_pressed_and_consume(KeyCode::Enter)
-      {
-        match self.settings_menu_focus {
-          0..=2 => {
-            // Select display mode
-            self.selected_display_mode_idx = self.settings_menu_focus;
-          }
-          3 => {
-            // Apply button
-            self.apply_settings = true;
-            self.settings_open = false;
-          }
-          4 => {
-            // Back button
-            self.settings_open = false;
-          }
-          _ => {}
-        }
-      }
-
-      // B button (East) to go back
-      if ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::East)
-      {
-        self.settings_open = false;
-      }
-    } else {
-      // Main pause menu navigation (4 items: Resume, Settings, Quit Menu, Quit Desktop)
-      let max_items = 4;
-
-      // D-pad or keyboard navigation
-      if ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::DPadDown)
-        || ctx.input.key_pressed_and_consume(KeyCode::ArrowDown)
-      {
-        self.pause_menu_focus = (self.pause_menu_focus + 1) % max_items;
-      }
-      if ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::DPadUp)
-        || ctx.input.key_pressed_and_consume(KeyCode::ArrowUp)
-      {
-        self.pause_menu_focus = (self.pause_menu_focus + max_items - 1) % max_items;
-      }
-
-      // A button (South) or Enter to select
-      if ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::South)
-        || ctx.input.key_pressed_and_consume(KeyCode::Enter)
-      {
-        match self.pause_menu_focus {
-          0 => {
-            self.is_paused = false; // Resume
-            self.unpause_input_cooldown = true;
-          }
-          1 => {
-            self.settings_open = true; // Settings
-            self.settings_menu_focus = 0; // Reset focus to first item
-          }
-          2 => self.quit_to_menu = true,    // Quit to Menu
-          3 => self.quit_to_desktop = true, // Quit to Desktop
-          _ => {}
-        }
-      }
-
-      // B button (East) to resume (same as Resume)
-      if ctx
-        .input
-        .gamepad_button_pressed_and_consume(GamepadButton::East)
-      {
-        self.is_paused = false;
-        self.unpause_input_cooldown = true;
-      }
-    }
-  }
-
-  fn render_pause_menu(&mut self, ui: &mut UiContext, screen_w: f32, screen_h: f32) {
-    // Darken background
-    ui.draw_rect(
-      Rect::new(0.0, 0.0, screen_w, screen_h),
-      Color::new(0, 0, 0, 180),
-    );
-
-    let center_x = screen_w / 2.0;
-    let center_y = screen_h / 2.0;
-
-    if self.settings_open {
-      // Settings modal - simplified to just display mode
-      // Game uses fixed 1920x1080 design resolution, window can be freely resized
-      let modal_w = 400.0;
-      let modal_h = 180.0;
-      let modal_x = center_x - modal_w / 2.0;
-      let modal_y = center_y - modal_h / 2.0;
-
-      // Modal background
-      ui.draw_rect(
-        Rect::new(modal_x, modal_y, modal_w, modal_h),
-        Color::rgb(40, 40, 50),
-      );
-      ui.draw_rect_outline(
-        Rect::new(modal_x, modal_y, modal_w, modal_h),
-        Color::rgb(100, 100, 120),
-        2.0,
-      );
-
-      // Settings title
-      ui.draw_text_anchored("SETTINGS", Anchor::TopCenter, 0.0, modal_y + 20.0, Color::WHITE);
-
-      // Display mode options
-      let mode_y = modal_y + 55.0;
-      ui.draw_text(
-        "Display Mode:",
-        modal_x + 20.0,
-        mode_y,
-        Color::rgb(180, 180, 180),
-      );
-
-      let modes = DisplayMode::all();
-      let settings_focus = self.settings_menu_focus;
-      for (i, mode) in modes.iter().enumerate() {
-        let btn_x = modal_x + 20.0 + i as f32 * 120.0;
-        let btn_y = mode_y + 25.0;
-        let btn_rect = Rect::new(btn_x, btn_y, 110.0, 28.0);
-
-        let is_selected = i == self.selected_display_mode_idx;
-        let is_focused = settings_focus == i;
-        let (bg, hover, pressed) = if is_selected {
-          (
-            Color::rgb(60, 100, 60),
-            Color::rgb(70, 110, 70),
-            Color::rgb(50, 90, 50),
-          )
-        } else {
-          (
-            Color::rgb(50, 50, 60),
-            Color::rgb(60, 60, 70),
-            Color::rgb(40, 40, 50),
-          )
-        };
-
-        // Draw focus outline for controller navigation
-        if is_focused {
-          ui.draw_rect_outline(btn_rect, Color::rgb(255, 220, 100), 2.0);
-        }
-
-        if ui.button_styled(
-          mode.display_name(),
-          btn_rect,
-          bg,
-          hover,
-          pressed,
-          Color::WHITE,
-        ) {
-          self.selected_display_mode_idx = i;
-        }
-      }
-
-      // Apply and Back buttons
-      let btn_y = modal_y + modal_h - 50.0;
-      let apply_rect = Rect::new(center_x - 110.0, btn_y, 100.0, 35.0);
-      let back_rect = Rect::new(center_x + 10.0, btn_y, 100.0, 35.0);
-
-      // Focus outline for Apply button
-      if settings_focus == 3 {
-        ui.draw_rect_outline(apply_rect, Color::rgb(255, 220, 100), 2.0);
-      }
-
-      if ui.button_styled(
-        "Apply",
-        apply_rect,
-        Color::rgb(50, 80, 50),
-        Color::rgb(60, 100, 60),
-        Color::rgb(40, 70, 40),
-        Color::WHITE,
-      ) {
-        // Save display mode to system.json for next launch
-        let display_mode = modes[self.selected_display_mode_idx];
-        crate::save::save_display_mode(display_mode);
-        // Flag to apply changes at runtime (processed in update)
-        self.apply_settings = true;
-        self.settings_open = false;
-      }
-
-      // Focus outline for Back button
-      if settings_focus == 4 {
-        ui.draw_rect_outline(back_rect, Color::rgb(255, 220, 100), 2.0);
-      }
-
-      if ui.button_styled(
-        "Back",
-        back_rect,
-        Color::rgb(70, 50, 50),
-        Color::rgb(90, 60, 60),
-        Color::rgb(60, 40, 40),
-        Color::WHITE,
-      ) {
-        self.settings_open = false;
-      }
-
-      // Settings navigation hint
-      ui.draw_text_anchored(
-        "D-Pad: Navigate | A: Select | B: Back",
-        Anchor::TopCenter,
-        0.0,
-        modal_y + modal_h + 10.0,
-        Color::rgb(150, 150, 150),
-      );
-    } else {
-      // Main pause menu
-      ui.draw_text_anchored("PAUSED", Anchor::TopCenter, 0.0, center_y - 100.0, Color::WHITE);
-
-      let btn_w = 200.0;
-      let btn_h = 40.0;
-      let btn_x = center_x - btn_w / 2.0;
-      let focus = self.pause_menu_focus;
-
-      // Helper to get button colors (brighter, with focus highlight)
-      let get_btn_colors = |base_r: u8, base_g: u8, base_b: u8, is_focused: bool| {
-        if is_focused {
-          // Focused: bright yellow outline effect via brighter colors
-          (
-            Color::rgb(base_r + 60, base_g + 60, base_b + 30), // bg (brighter)
-            Color::rgb(base_r + 80, base_g + 80, base_b + 40), // hover
-            Color::rgb(base_r + 40, base_g + 40, base_b + 20), // pressed
-          )
-        } else {
-          // Normal: brighter than before
-          (
-            Color::rgb(base_r + 30, base_g + 30, base_b + 30), // bg
-            Color::rgb(base_r + 50, base_g + 50, base_b + 50), // hover
-            Color::rgb(base_r + 20, base_g + 20, base_b + 20), // pressed
-          )
-        }
-      };
-
-      // Resume button (green tint)
-      let resume_rect = Rect::new(btn_x, center_y - 50.0, btn_w, btn_h);
-      let (bg, hover, pressed) = get_btn_colors(40, 70, 40, focus == 0);
-      if focus == 0 {
-        ui.draw_rect_outline(resume_rect, Color::rgb(255, 220, 100), 2.0);
-      }
-      if ui.button_styled("Resume", resume_rect, bg, hover, pressed, Color::WHITE) {
-        self.is_paused = false;
-        self.unpause_input_cooldown = true;
-      }
-
-      // Settings button (blue tint)
-      let settings_rect = Rect::new(btn_x, center_y, btn_w, btn_h);
-      let (bg, hover, pressed) = get_btn_colors(40, 40, 70, focus == 1);
-      if focus == 1 {
-        ui.draw_rect_outline(settings_rect, Color::rgb(255, 220, 100), 2.0);
-      }
-      if ui.button_styled("Settings", settings_rect, bg, hover, pressed, Color::WHITE) {
-        self.settings_open = true;
-        self.settings_menu_focus = 0; // Reset focus to first item
-      }
-
-      // Quit to Menu button (orange tint)
-      let quit_menu_rect = Rect::new(btn_x, center_y + 50.0, btn_w, btn_h);
-      let (bg, hover, pressed) = get_btn_colors(70, 50, 30, focus == 2);
-      if focus == 2 {
-        ui.draw_rect_outline(quit_menu_rect, Color::rgb(255, 220, 100), 2.0);
-      }
-      if ui.button_styled(
-        "Quit to Menu",
-        quit_menu_rect,
-        bg,
-        hover,
-        pressed,
-        Color::WHITE,
-      ) {
-        self.is_paused = false;
-        self.unpause_input_cooldown = true;
-        self.quit_to_menu = true;
-      }
-
-      // Quit to Desktop button (red tint)
-      let quit_desktop_rect = Rect::new(btn_x, center_y + 100.0, btn_w, btn_h);
-      let (bg, hover, pressed) = get_btn_colors(70, 40, 40, focus == 3);
-      if focus == 3 {
-        ui.draw_rect_outline(quit_desktop_rect, Color::rgb(255, 220, 100), 2.0);
-      }
-      if ui.button_styled(
-        "Quit to Desktop",
-        quit_desktop_rect,
-        bg,
-        hover,
-        pressed,
-        Color::WHITE,
-      ) {
-        self.quit_to_desktop = true;
-      }
-
-      // Instructions
-      ui.draw_text_anchored(
-        "D-Pad/Arrows: Navigate | A/Enter: Select | B/ESC: Resume",
-        Anchor::TopCenter,
-        0.0,
-        center_y + 170.0,
-        Color::rgb(150, 150, 150),
-      );
-    }
-  }
 }

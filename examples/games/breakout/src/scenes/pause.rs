@@ -23,18 +23,11 @@ pub struct PauseScene {
   prev_master_volume: f32,
   prev_music_volume: f32,
   prev_sfx_volume: f32,
-  /// Reference to the parent scene's music for real-time volume updates
-  parent_music: Option<*mut MusicHandle>,
 }
 
 impl PauseScene {
   /// Create a new pause scene
   pub fn new(score: u32, high_score: u32) -> Self {
-    Self::with_music(score, high_score, None)
-  }
-
-  /// Create a new pause scene with a reference to the parent's music
-  pub fn with_music(score: u32, high_score: u32, parent_music: Option<&mut MusicHandle>) -> Self {
     // Try to load existing settings, or use defaults
     let settings = if let Ok(workspace) = Workspace::discover() {
       if let Ok(save_manager) = workspace.create_save_manager() {
@@ -59,7 +52,6 @@ impl PauseScene {
       prev_master_volume,
       prev_music_volume,
       prev_sfx_volume,
-      parent_music: parent_music.map(|m| m as *mut MusicHandle),
     }
   }
 }
@@ -80,15 +72,6 @@ impl Scene for PauseScene {
         audio.set_master_volume(self.settings.master_volume);
         audio.set_music_volume(self.settings.music_volume);
         audio.set_sfx_volume(self.settings.sfx_volume);
-
-        // Update playing music in real-time if we have a reference to it
-        if let Some(music_ptr) = self.parent_music {
-          unsafe {
-            if let Some(music) = music_ptr.as_mut() {
-              music.update_category_volume(audio.music_volume());
-            }
-          }
-        }
       }
       // Update previous values
       self.prev_master_volume = self.settings.master_volume;

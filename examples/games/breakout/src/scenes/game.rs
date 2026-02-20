@@ -78,44 +78,8 @@ pub struct GameScene {
 }
 
 impl GameScene {
-  /// Create a new game scene
-  pub fn new(high_score: u32) -> Self {
-    Self {
-      score: 0,
-      high_score,
-      lives: STARTING_LIVES,
-      level: 1,
-      game_started: false,
-      game_over: false,
-      game_won: false,
-      paddle: None,
-      balls: Vec::new(),
-      blocks: Vec::new(),
-      walls: Vec::new(),
-      death_zone: None,
-      blocks_remaining: 0,
-      ball_counter: 0,
-      multiball_blocks: Vec::new(),
-      glow_time: 0.0,
-      survival_time: 0.0,
-      multiball_cooldown: 0.0,
-      heart_blocks: Vec::new(),
-      last_heart_milestone: 0,
-      paddle_velocity: 0.0,
-      needs_respawn: false,
-      escape_was_released: true,
-      music: None,
-      prev_music: None,
-      debug_mode: false,
-      level_switch_q_released: true,
-      level_switch_e_released: true,
-      plus_one_timer: 0.0,
-      background: None,
-    }
-  }
-
-  /// Create a new game scene with music from previous scene for crossfading
-  pub fn with_prev_music(high_score: u32, prev_music: Option<MusicHandle>) -> Self {
+  /// Create a new game scene, optionally with music from a previous scene for crossfading
+  pub fn new(high_score: u32, prev_music: Option<MusicHandle>) -> Self {
     Self {
       score: 0,
       high_score,
@@ -1016,10 +980,9 @@ impl Scene for GameScene {
           .gamepad_button_pressed_and_consume(GamepadButton::Start))
     {
       self.escape_was_released = false;
-      return SceneAction::Push(Box::new(PauseScene::with_music(
+      return SceneAction::Push(Box::new(PauseScene::new(
         self.score,
         self.high_score,
-        self.music.as_mut(),
       )));
     }
 
