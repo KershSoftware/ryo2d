@@ -505,7 +505,7 @@ impl Scene for YSortingScene {
     let mut player_y = 0.0;
 
     if let Some(player) = self.player
-      && let Some(transform) = ctx.world.get_component::<Transform>(player)
+      && let Some(transform) = ctx.world.get::<Transform>(player)
     {
       player_x = transform.x;
       player_y = transform.y;
@@ -561,8 +561,8 @@ impl Scene for YSortingScene {
     for &wanderer in &self.wanderers {
       // Get current state
       let (x, y, dir, timer, speed) = {
-        let transform = ctx.world.get_component::<Transform>(wanderer);
-        let wander = ctx.world.get_component::<Wanderer>(wanderer);
+        let transform = ctx.world.get::<Transform>(wanderer);
+        let wander = ctx.world.get::<Wanderer>(wanderer);
 
         if let (Some(t), Some(w)) = (transform, wander) {
           (t.x, t.y, w.direction, w.change_timer, w.speed)

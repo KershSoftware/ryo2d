@@ -148,7 +148,7 @@ impl KnockbackDemoScene {
       // For non-accumulating, check if entity has knockback first
       let has_knockback = ctx.world.has::<Knockback>(entity);
       if has_knockback {
-        if let Some(mut kb) = ctx.world.get_component_mut::<Knockback>(entity) {
+        if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity) {
           kb.accumulate = false;
           kb.apply_with_decay(direction, self.force, decay_rate);
         }
@@ -177,7 +177,7 @@ impl KnockbackDemoScene {
       .filter_map(|&entity| {
         ctx
           .world
-          .get_component::<Transform>(entity)
+          .get::<Transform>(entity)
           .map(|t| (entity, t.x, t.y))
       })
       .collect();
@@ -196,14 +196,14 @@ impl KnockbackDemoScene {
     // Reset simple entities
     for &entity in &self.simple_entities {
       if let (Some(simple), Some(mut transform)) = (
-        ctx.world.get_component::<SimpleEntity>(entity),
-        ctx.world.get_component_mut::<Transform>(entity),
+        ctx.world.get::<SimpleEntity>(entity),
+        ctx.world.get_mut::<Transform>(entity),
       ) {
         transform.x = simple.start_x;
         transform.y = simple.start_y;
       }
       // Stop any active knockback
-      if let Some(mut kb) = ctx.world.get_component_mut::<Knockback>(entity) {
+      if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity) {
         kb.stop();
       }
     }
@@ -211,19 +211,19 @@ impl KnockbackDemoScene {
     // Reset physics entities
     for &entity in &self.physics_entities {
       if let (Some(physics), Some(mut transform)) = (
-        ctx.world.get_component::<PhysicsEntity>(entity),
-        ctx.world.get_component_mut::<Transform>(entity),
+        ctx.world.get::<PhysicsEntity>(entity),
+        ctx.world.get_mut::<Transform>(entity),
       ) {
         transform.x = physics.start_x;
         transform.y = physics.start_y;
       }
       // Reset velocity
-      if let Some(mut velocity) = ctx.world.get_component_mut::<Velocity>(entity) {
+      if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(entity) {
         velocity.dx = 0.0;
         velocity.dy = 0.0;
       }
       // Stop any active knockback
-      if let Some(mut kb) = ctx.world.get_component_mut::<Knockback>(entity) {
+      if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity) {
         kb.stop();
       }
     }
@@ -258,7 +258,7 @@ impl KnockbackDemoScene {
       .iter()
       .chain(self.physics_entities.iter())
     {
-      if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(entity) {
+      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(entity) {
         if self.flash_states.contains_key(&entity) {
           renderable.tint = Color::rgb(255, 255, 200); // Flash yellow-white
         } else {

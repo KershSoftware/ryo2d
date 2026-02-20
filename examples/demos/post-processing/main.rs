@@ -143,7 +143,7 @@ impl PostProcessingDemo {
     let cx = self.screen_width / 2.0;
     let cy = self.screen_height / 2.0;
     for (i, &entity) in self.rotating_sprites.iter().enumerate() {
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         let angle = self.time * 0.5 + (i as f32 / 3.0) * std::f32::consts::TAU;
         let radius = 150.0;
         transform.x = cx + angle.cos() * radius;

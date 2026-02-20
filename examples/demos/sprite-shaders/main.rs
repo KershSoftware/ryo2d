@@ -212,7 +212,7 @@ impl SpriteShaderDemo {
 
   fn update_effect_sprite(&self, world: &mut World) {
     if let Some(entity) = self.effect_sprite
-      && let Some(mut renderable) = world.get_component_mut::<Renderable>(entity)
+      && let Some(mut renderable) = world.get_mut::<Renderable>(entity)
     {
       renderable.shader = Some(SpriteShader::BuiltIn(self.create_sprite_effect()));
     }
@@ -372,7 +372,7 @@ impl Scene for SpriteShaderDemo {
     // Update wave time (animated effect)
     if self.current_effect() == DemoEffect::Wave
       && let Some(entity) = self.effect_sprite
-      && let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(entity)
+      && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(entity)
       && let Some(SpriteShader::BuiltIn(SpriteEffect::Wave {
         ref mut time,
         speed,

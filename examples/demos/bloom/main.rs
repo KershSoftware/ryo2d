@@ -171,7 +171,7 @@ impl BloomDemo {
 
     // Rotate bright center sprites slowly
     for (i, &entity) in self.bright_sprites.iter().enumerate() {
-      if let Some(mut t) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut t) = ctx.world.get_mut::<Transform>(entity) {
         let base_angle = (i as f32 / self.bright_sprites.len() as f32) * std::f32::consts::TAU;
         let angle = base_angle + self.time * 0.3;
         let dist = 120.0 + (self.time * 0.8 + i as f32).sin() * 20.0;
@@ -183,7 +183,7 @@ impl BloomDemo {
 
     // Fast orbiting particles at varying radii
     for (i, &entity) in self.orbiting_sprites.iter().enumerate() {
-      if let Some(mut t) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut t) = ctx.world.get_mut::<Transform>(entity) {
         let speed = 1.0 + (i as f32) * 0.25;
         let r = 60.0 + (i as f32) * 22.0;
         let angle = self.time * speed

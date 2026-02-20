@@ -273,7 +273,7 @@ impl TrailsDemoScene {
     }
 
     if let Some(entity) = self.textured_entity
-      && let Some(mut marker) = ctx.world.get_component_mut::<TexturedTrailMarker>(entity)
+      && let Some(mut marker) = ctx.world.get_mut::<TexturedTrailMarker>(entity)
     {
       marker.angle += 1.2 * dt;
 
@@ -288,13 +288,13 @@ impl TrailsDemoScene {
 
       drop(marker);
 
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         transform.x = new_x;
         transform.y = new_y;
       }
 
       // Update trail with new position
-      if let Some(mut trail) = ctx.world.get_component_mut::<Trail2D>(entity) {
+      if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
         trail.update(new_x, new_y, dt);
       }
     }
@@ -346,7 +346,7 @@ impl TrailsDemoScene {
     }
 
     for entity in &self.orbit_entities {
-      if let Some(mut orbit) = ctx.world.get_component_mut::<OrbitTrail>(*entity) {
+      if let Some(mut orbit) = ctx.world.get_mut::<OrbitTrail>(*entity) {
         orbit.angle += orbit.speed * dt;
 
         let new_x = orbit.center_x + orbit.angle.cos() * orbit.radius;
@@ -354,13 +354,13 @@ impl TrailsDemoScene {
 
         drop(orbit);
 
-        if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(*entity) {
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(*entity) {
           transform.x = new_x;
           transform.y = new_y;
         }
 
         // Update trail with new position
-        if let Some(mut trail) = ctx.world.get_component_mut::<Trail2D>(*entity) {
+        if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(*entity) {
           trail.update(new_x, new_y, dt);
         }
       }
@@ -372,13 +372,13 @@ impl TrailsDemoScene {
     if let Some(entity) = self.mouse_entity {
       let (mx, my) = ctx.input.mouse_position();
 
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         transform.x = mx;
         transform.y = my;
       }
 
       // Update trail with new position
-      if let Some(mut trail) = ctx.world.get_component_mut::<Trail2D>(entity) {
+      if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
         trail.update(mx, my, dt);
       }
     }
@@ -425,21 +425,21 @@ impl TrailsDemoScene {
   fn reset_trails(&mut self, ctx: &mut SceneContext) {
     // Clear mouse trail
     if let Some(entity) = self.mouse_entity
-      && let Some(mut trail) = ctx.world.get_component_mut::<Trail2D>(entity)
+      && let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity)
     {
       trail.clear();
     }
 
     // Clear orbit trails
     for entity in &self.orbit_entities {
-      if let Some(mut trail) = ctx.world.get_component_mut::<Trail2D>(*entity) {
+      if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(*entity) {
         trail.clear();
       }
     }
 
     // Clear textured trail
     if let Some(entity) = self.textured_entity
-      && let Some(mut trail) = ctx.world.get_component_mut::<Trail2D>(entity)
+      && let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity)
     {
       trail.clear();
     }

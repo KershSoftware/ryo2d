@@ -583,6 +583,7 @@ impl Scene for PathfindingDemoScene {
     SceneAction::Continue
   }
 
+  #[allow(deprecated)]
   fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
     // Dark background - trails now render ON TOP of CPU content
     for pixel in frame.chunks_exact_mut(4) {

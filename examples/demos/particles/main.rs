@@ -795,7 +795,7 @@ impl ParticlesDemo {
     let mut to_remove = Vec::new();
 
     for (i, &entity) in self.emitters.iter().enumerate() {
-      if let Some(emitter) = world.get_component::<ParticleEmitter>(entity)
+      if let Some(emitter) = world.get::<ParticleEmitter>(entity)
         && emitter.is_finished()
       {
         to_remove.push(i);

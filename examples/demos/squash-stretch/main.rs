@@ -99,12 +99,12 @@ impl SquashStretchDemoScene {
   /// Drop all balls
   fn drop_balls(&self, ctx: &mut SceneContext) {
     for &entity in &self.balls {
-      if let Some(mut ball) = ctx.world.get_component_mut::<Ball>(entity) {
+      if let Some(mut ball) = ctx.world.get_mut::<Ball>(entity) {
         ball.velocity_y = 0.0;
         ball.on_ground = false;
       }
       // Move ball up a bit to give it room to fall
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         transform.y = 150.0;
       }
     }
@@ -113,24 +113,24 @@ impl SquashStretchDemoScene {
   /// Reset all balls to starting positions
   fn reset_balls(&self, ctx: &mut SceneContext) {
     for &entity in &self.balls {
-      if let Some(ball) = ctx.world.get_component::<Ball>(entity) {
+      if let Some(ball) = ctx.world.get::<Ball>(entity) {
         let start_x = ball.start_x;
         let start_y = ball.start_y;
         drop(ball);
 
-        if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
           transform.x = start_x;
           transform.y = start_y;
           transform.scale_x = 1.0;
           transform.scale_y = 1.0;
         }
       }
-      if let Some(mut ball) = ctx.world.get_component_mut::<Ball>(entity) {
+      if let Some(mut ball) = ctx.world.get_mut::<Ball>(entity) {
         ball.velocity_y = 0.0;
         ball.on_ground = false;
       }
       // Stop any active squash effect
-      if let Some(mut ss) = ctx.world.get_component_mut::<SquashStretch>(entity) {
+      if let Some(mut ss) = ctx.world.get_mut::<SquashStretch>(entity) {
         ss.stop();
       }
     }
@@ -149,7 +149,7 @@ impl SquashStretchDemoScene {
       let mut should_squash = false;
 
       // Update velocity and position
-      if let Some(mut ball) = ctx.world.get_component_mut::<Ball>(entity)
+      if let Some(mut ball) = ctx.world.get_mut::<Ball>(entity)
         && !ball.on_ground
       {
         ball.velocity_y += self.gravity * dt;
@@ -157,8 +157,8 @@ impl SquashStretchDemoScene {
 
       // Get current position and velocity
       let (_current_y, velocity_y) = {
-        let ball = ctx.world.get_component::<Ball>(entity);
-        let transform = ctx.world.get_component::<Transform>(entity);
+        let ball = ctx.world.get::<Ball>(entity);
+        let transform = ctx.world.get::<Transform>(entity);
         match (ball, transform) {
           (Some(b), Some(t)) => (t.y, b.velocity_y),
           _ => continue,
@@ -166,7 +166,7 @@ impl SquashStretchDemoScene {
       };
 
       // Update position
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         transform.y += velocity_y * dt;
 
         // Check ground collision
@@ -179,7 +179,7 @@ impl SquashStretchDemoScene {
       // Handle landing
       if should_squash {
         let should_apply_squash = {
-          if let Some(mut ball) = ctx.world.get_component_mut::<Ball>(entity) {
+          if let Some(mut ball) = ctx.world.get_mut::<Ball>(entity) {
             if !ball.on_ground {
               ball.on_ground = true;
               ball.velocity_y = 0.0;
@@ -281,13 +281,13 @@ impl Scene for SquashStretchDemoScene {
 
     // Log events
     for event in ctx.events.read::<SquashStretchStarted>() {
-      if let Some(ball) = ctx.world.get_component::<Ball>(event.entity) {
+      if let Some(ball) = ctx.world.get::<Ball>(event.entity) {
         println!("{} ball squashed!", ball.label);
       }
     }
 
     for event in ctx.events.read::<SquashStretchFinished>() {
-      if let Some(ball) = ctx.world.get_component::<Ball>(event.entity) {
+      if let Some(ball) = ctx.world.get::<Ball>(event.entity) {
         println!("{} ball recovered", ball.label);
       }
     }

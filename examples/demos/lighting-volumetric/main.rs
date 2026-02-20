@@ -199,7 +199,7 @@ impl VolumetricLightingScene {
 
       // Add sun position if it exists
       if let Some(sun_entity) = self.sun_entity
-        && let Some(transform) = ctx.world.get_component::<Transform>(sun_entity)
+        && let Some(transform) = ctx.world.get::<Transform>(sun_entity)
       {
         // Convert world position to screen UV (approximate)
         let uv_x = transform.x / self.screen_w;

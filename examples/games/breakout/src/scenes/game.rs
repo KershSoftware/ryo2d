@@ -72,6 +72,9 @@ pub struct GameScene {
   // "+1" life animation
   /// Time remaining for "+1" animation (0 = not showing)
   plus_one_timer: f32,
+
+  // Background entity (full-screen solid color, z_order = -10)
+  background: Option<Entity>,
 }
 
 impl GameScene {
@@ -107,6 +110,7 @@ impl GameScene {
       level_switch_q_released: true,
       level_switch_e_released: true,
       plus_one_timer: 0.0,
+      background: None,
     }
   }
 
@@ -142,6 +146,7 @@ impl GameScene {
       level_switch_q_released: true,
       level_switch_e_released: true,
       plus_one_timer: 0.0,
+      background: None,
     }
   }
 
@@ -370,7 +375,7 @@ impl GameScene {
       .filter(|&&b| {
         ctx
           .world
-          .get_component::<Block>(b)
+          .get::<Block>(b)
           .map(|block| !block.is_multiball && !block.is_heart && block.hits == 1)
           .unwrap_or(false)
       })
@@ -386,7 +391,7 @@ impl GameScene {
     let block = available_blocks[idx];
 
     // Mark as multiball - ONLY proceed if we successfully set the flag
-    let flag_set = if let Some(mut block_comp) = ctx.world.get_component_mut::<Block>(block) {
+    let flag_set = if let Some(mut block_comp) = ctx.world.get_mut::<Block>(block) {
       block_comp.is_multiball = true;
       true
     } else {
@@ -396,7 +401,7 @@ impl GameScene {
     // Only change visuals and track if the flag was actually set
     if flag_set {
       // Change sprite to gold with border (will be animated with glow pulse each frame)
-      if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
+      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(block) {
         renderable.sprite = SpriteHandle::from_sprite(
           Self::bordered_rect(
             BLOCK_WIDTH as u32,
@@ -436,7 +441,7 @@ impl GameScene {
     let border_g = (0x55 as f32 + (0x80 - 0x55) as f32 * brightness) as u8;
     let border_b = (0x00 as f32 + 0x80 as f32 * brightness) as u8;
     for (i, &block) in self.multiball_blocks.iter().enumerate() {
-      if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
+      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(block) {
         renderable.sprite = SpriteHandle::from_sprite(
           Self::bordered_rect(
             BLOCK_WIDTH as u32,
@@ -456,7 +461,7 @@ impl GameScene {
     let plus_alpha = 0.5 + fade_cycle * 0.5; // 0.0 to 1.0
 
     for (i, &block) in self.heart_blocks.iter().enumerate() {
-      if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
+      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(block) {
         renderable.sprite = SpriteHandle::from_sprite(
           Self::health_block_sprite(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, plus_alpha),
           format!("health_glow_{}", i),
@@ -481,7 +486,7 @@ impl GameScene {
         .filter(|&&b| {
           ctx
             .world
-            .get_component::<Block>(b)
+            .get::<Block>(b)
             .map(|block| !block.is_multiball && !block.is_heart)
             .unwrap_or(false)
         })
@@ -498,12 +503,12 @@ impl GameScene {
       let block = available_blocks[idx];
 
       // Mark as heart block
-      if let Some(mut block_comp) = ctx.world.get_component_mut::<Block>(block) {
+      if let Some(mut block_comp) = ctx.world.get_mut::<Block>(block) {
         block_comp.is_heart = true;
       }
 
       // Change sprite to heart block
-      if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
+      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(block) {
         renderable.sprite = SpriteHandle::from_sprite(
           Self::health_block_sprite(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, 1.0),
           format!("heart_block_{}", current_milestone),
@@ -660,13 +665,13 @@ impl GameScene {
   fn launch_ball(&mut self, ctx: &mut SceneContext) {
     // Launch the first frozen ball (should only be one at game start)
     for &ball in &self.balls {
-      if let Some(mut ball_comp) = ctx.world.get_component_mut::<Ball>(ball)
+      if let Some(mut ball_comp) = ctx.world.get_mut::<Ball>(ball)
         && ball_comp.frozen
       {
         ball_comp.frozen = false;
 
         // Set initial velocity - angle influenced by paddle movement
-        if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
+        if let Some(mut vel) = ctx.world.get_mut::<Velocity>(ball) {
           // Paddle velocity influences horizontal launch angle
           // Normalize paddle velocity to -1..1 range, then apply influence factor
           let paddle_influence = (self.paddle_velocity / PADDLE_SPEED) * PADDLE_LAUNCH_INFLUENCE;
@@ -698,7 +703,7 @@ impl GameScene {
     // Reset paddle to center and stop its velocity
     self.paddle_velocity = 0.0;
     if let Some(paddle) = self.paddle
-      && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(paddle)
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(paddle)
     {
       transform.x = SCREEN_WIDTH as f32 / 2.0 - PADDLE_WIDTH / 2.0;
     }
@@ -734,8 +739,8 @@ impl GameScene {
   fn handle_block_hit(&mut self, ctx: &mut SceneContext, ball: Entity, block: Entity) {
     // Bounce the ball off the block
     if let (Some(ball_transform), Some(block_transform)) = (
-      ctx.world.get_component::<Transform>(ball),
-      ctx.world.get_component::<Transform>(block),
+      ctx.world.get::<Transform>(ball),
+      ctx.world.get::<Transform>(block),
     ) {
       // Determine bounce direction based on collision position
       let ball_cx = ball_transform.x + BALL_SIZE / 2.0;
@@ -749,7 +754,7 @@ impl GameScene {
       let overlap_x = (BALL_SIZE / 2.0 + BLOCK_WIDTH / 2.0) - dx;
       let overlap_y = (BALL_SIZE / 2.0 + BLOCK_HEIGHT / 2.0) - dy;
 
-      if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
+      if let Some(mut vel) = ctx.world.get_mut::<Velocity>(ball) {
         // Reflect based on which axis has less penetration
         if overlap_x < overlap_y {
           vel.dx = -vel.dx; // Side hit - reflect horizontally
@@ -762,12 +767,12 @@ impl GameScene {
     // Get block position FIRST (before any mutation) for multiball spawn
     let block_position = ctx
       .world
-      .get_component::<Transform>(block)
+      .get::<Transform>(block)
       .map(|t| (t.x + BLOCK_WIDTH / 2.0, t.y + BLOCK_HEIGHT)); // center_x, bottom_y
 
     // Extract data from block component
     let block_info = {
-      if let Some(mut block_comp) = ctx.world.get_component_mut::<Block>(block) {
+      if let Some(mut block_comp) = ctx.world.get_mut::<Block>(block) {
         block_comp.hits = block_comp.hits.saturating_sub(1);
         Some((
           block_comp.points,
@@ -821,7 +826,7 @@ impl GameScene {
         // Update block appearance to show damage
         let (r, g, b, _a) = color.dimmed();
         let border = (r / 3, g / 3, b / 3);
-        if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(block) {
+        if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(block) {
           renderable.sprite = SpriteHandle::from_sprite(
             Self::bordered_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, border),
             "block_damaged",
@@ -853,6 +858,7 @@ impl GameScene {
       self.multiball_blocks.clear();
       self.walls.clear();
       self.death_zone = None;
+      self.background = None;
 
       // Reset multiball cooldown for new level (keep survival time as reward)
       self.multiball_cooldown = 0.0;
@@ -910,6 +916,18 @@ impl Scene for GameScene {
       }
     }
 
+    // Spawn background entity (replaces render_background solid fill)
+    // Color matches menu scene: RGB(20, 20, 35)
+    let bg = ctx.world.spawn((
+      Transform::new(0.0, 0.0),
+      Renderable::sprite(SpriteHandle::from_sprite(
+        Sprite::solid_rect(SCREEN_WIDTH, SCREEN_HEIGHT, 20, 20, 35, 255),
+        "game_background",
+      ))
+      .with_z_order(-10),
+    ));
+    self.background = Some(bg);
+
     self.spawn_walls(ctx);
     self.spawn_paddle(ctx);
     self.spawn_ball(ctx);
@@ -928,19 +946,6 @@ impl Scene for GameScene {
   fn on_resume(&mut self, _ctx: &mut SceneContext) {
     // Wait for escape release before allowing pause again
     self.escape_was_released = false;
-  }
-
-  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
-    // Fill with same background color as menu scene (RGB 20, 20, 35)
-    for y in 0..height {
-      for x in 0..width {
-        let idx = ((y * width + x) * 4) as usize;
-        frame[idx] = 20; // R
-        frame[idx + 1] = 20; // G
-        frame[idx + 2] = 35; // B
-        frame[idx + 3] = 255; // A
-      }
-    }
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
@@ -1062,7 +1067,16 @@ impl Scene for GameScene {
         return SceneAction::Continue;
       }
 
-      // Re-enter to spawn new level
+      // Re-enter to spawn new level (also re-spawn background cleared by world.clear())
+      let bg = ctx.world.spawn((
+        Transform::new(0.0, 0.0),
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_rect(SCREEN_WIDTH, SCREEN_HEIGHT, 20, 20, 35, 255),
+          "game_background",
+        ))
+        .with_z_order(-10),
+      ));
+      self.background = Some(bg);
       self.spawn_walls(ctx);
       self.spawn_paddle(ctx);
       self.spawn_ball(ctx);
@@ -1138,7 +1152,7 @@ impl Scene for GameScene {
 
     // Apply velocity to paddle position
     if let Some(paddle) = self.paddle
-      && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(paddle)
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(paddle)
     {
       transform.x += self.paddle_velocity * dt;
 
@@ -1154,7 +1168,7 @@ impl Scene for GameScene {
 
     // Ball physics - maintain constant speed for all balls
     for &ball in &self.balls {
-      if let Some(ball_comp) = ctx.world.get_component::<Ball>(ball) {
+      if let Some(ball_comp) = ctx.world.get::<Ball>(ball) {
         if ball_comp.frozen {
           continue;
         }
@@ -1162,7 +1176,7 @@ impl Scene for GameScene {
         continue;
       }
 
-      if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
+      if let Some(mut vel) = ctx.world.get_mut::<Velocity>(ball) {
         // Normalize velocity to maintain constant speed
         let speed = (vel.dx * vel.dx + vel.dy * vel.dy).sqrt();
         if speed > 0.0 && (speed - BALL_SPEED).abs() > 1.0 {
@@ -1219,14 +1233,14 @@ impl Scene for GameScene {
         }
 
         if let (Some(ball_transform), Some(paddle_transform)) = (
-          ctx.world.get_component::<Transform>(ball),
-          ctx.world.get_component::<Transform>(other),
+          ctx.world.get::<Transform>(ball),
+          ctx.world.get::<Transform>(other),
         ) {
           let ball_center = ball_transform.x + BALL_SIZE / 2.0;
           let paddle_center = paddle_transform.x + PADDLE_WIDTH / 2.0;
           let offset = (ball_center - paddle_center) / (PADDLE_WIDTH / 2.0);
 
-          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(ball) {
+          if let Some(mut vel) = ctx.world.get_mut::<Velocity>(ball) {
             // Reflect and add spin
             vel.dy = -vel.dy.abs(); // Always go up
             vel.dx += offset * PADDLE_SPIN_EFFECT;

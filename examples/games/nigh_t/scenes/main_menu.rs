@@ -182,7 +182,7 @@ impl Scene for MainMenuScene {
 
     // Update fairy
     if let Some(entity) = self.fairy_entity {
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         // Base gentle bob (reduces as charge increases - fairy getting unstable)
         let bob_stability = 1.0 - self.charge * 0.8;
         let bob_x = (self.time * 4.0).sin() * 2.0 * bob_stability;
@@ -222,7 +222,7 @@ impl Scene for MainMenuScene {
       }
 
       // Update light intensity and radius
-      if let Some(mut light) = ctx.world.get_component_mut::<Light2D>(entity) {
+      if let Some(mut light) = ctx.world.get_mut::<Light2D>(entity) {
         // Erratic flickering - more intense when uncharged, smoother when charged
         let flicker_base = self.random(3.0);
         let flicker_strength = 0.3 * (1.0 - self.charge * 0.7); // Less flicker when charged
@@ -273,12 +273,12 @@ impl Scene for MainMenuScene {
         let offset_x = angle.cos() * (dist + wobble);
         let offset_y = angle.sin() * (dist + wobble * 0.7);
 
-        if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(*entity) {
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(*entity) {
           transform.x = fairy_x + offset_x;
           transform.y = fairy_y + offset_y;
         }
 
-        if let Some(mut light) = ctx.world.get_component_mut::<Light2D>(*entity) {
+        if let Some(mut light) = ctx.world.get_mut::<Light2D>(*entity) {
           // Secondary lights also scale with charge
           let base_intensity = BASE_INTENSITY * 0.4;
           let max_intensity = MAX_INTENSITY * 0.5;

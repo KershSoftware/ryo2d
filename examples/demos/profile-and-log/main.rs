@@ -257,8 +257,8 @@ impl DemoScene {
     for entity in entities {
       // Get component data
       let (new_x, new_y, new_angle, new_bounce) = {
-        let cpu = ctx.world.get_component::<CpuHeavy>(entity);
-        let transform = ctx.world.get_component::<Transform>(entity);
+        let cpu = ctx.world.get::<CpuHeavy>(entity);
+        let transform = ctx.world.get::<Transform>(entity);
 
         if let (Some(cpu), Some(_t)) = (cpu, transform) {
           // Complex orbital motion with bounce
@@ -285,11 +285,11 @@ impl DemoScene {
       };
 
       // Update components
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         transform.x = new_x;
         transform.y = new_y;
       }
-      if let Some(mut cpu) = ctx.world.get_component_mut::<CpuHeavy>(entity) {
+      if let Some(mut cpu) = ctx.world.get_mut::<CpuHeavy>(entity) {
         cpu.angle = new_angle;
         cpu.bounce_phase = new_bounce;
       }
@@ -305,12 +305,12 @@ impl DemoScene {
 
     for entity in entities {
       let drift = {
-        let gpu = ctx.world.get_component::<GpuHeavy>(entity);
+        let gpu = ctx.world.get::<GpuHeavy>(entity);
         gpu.map(|g| (g.drift_x, g.drift_y))
       };
 
       if let Some((dx, dy)) = drift
-        && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity)
+        && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
       {
         transform.x += dx * dt;
         transform.y += dy * dt;
@@ -342,8 +342,8 @@ impl DemoScene {
 
     for entity in entities {
       let update = {
-        let mixed = ctx.world.get_component::<MixedLoad>(entity);
-        let transform = ctx.world.get_component::<Transform>(entity);
+        let mixed = ctx.world.get::<MixedLoad>(entity);
+        let transform = ctx.world.get::<Transform>(entity);
 
         if let (Some(mixed), Some(t)) = (mixed, transform) {
           let dx = mixed.target_x - t.x;
@@ -388,11 +388,11 @@ impl DemoScene {
       };
 
       if let Some((move_x, move_y, new_target_x, new_target_y, need_new_target)) = update {
-        if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
           transform.x += move_x;
           transform.y += move_y;
         }
-        if let Some(mut mixed) = ctx.world.get_component_mut::<MixedLoad>(entity) {
+        if let Some(mut mixed) = ctx.world.get_mut::<MixedLoad>(entity) {
           mixed.think_timer -= dt;
           if need_new_target {
             mixed.target_x = new_target_x;

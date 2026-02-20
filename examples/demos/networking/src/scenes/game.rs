@@ -359,7 +359,7 @@ impl GameScene {
       };
 
       // Update position
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         transform.x = update.x;
         transform.y = update.y;
       }
@@ -372,12 +372,12 @@ impl GameScene {
     // Get player grounded state
     let grounded = ctx
       .world
-      .get_component::<Player>(entity)
+      .get::<Player>(entity)
       .map(|p| p.grounded)
       .unwrap_or(false);
 
     // Apply horizontal movement
-    if let Some(mut vel) = ctx.world.get_component_mut::<PlayerVelocity>(entity) {
+    if let Some(mut vel) = ctx.world.get_mut::<PlayerVelocity>(entity) {
       vel.x = move_x * PLAYER_SPEED;
 
       // Jump if grounded
@@ -389,7 +389,7 @@ impl GameScene {
     // Update grounded state if jumped
     if jump
       && grounded
-      && let Some(mut player) = ctx.world.get_component_mut::<Player>(entity)
+      && let Some(mut player) = ctx.world.get_mut::<Player>(entity)
     {
       player.grounded = false;
     }
@@ -401,19 +401,19 @@ impl GameScene {
 
     for entity in player_entities {
       // Apply gravity
-      if let Some(mut vel) = ctx.world.get_component_mut::<PlayerVelocity>(entity) {
+      if let Some(mut vel) = ctx.world.get_mut::<PlayerVelocity>(entity) {
         vel.y += GRAVITY * dt;
       }
 
       // Get velocity for position update
       let vel = ctx
         .world
-        .get_component::<PlayerVelocity>(entity)
+        .get::<PlayerVelocity>(entity)
         .map(|v| (v.x, v.y));
 
       if let Some((vx, vy)) = vel {
         // Update position
-        if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
           transform.x += vx * dt;
           transform.y += vy * dt;
 
@@ -439,7 +439,7 @@ impl GameScene {
         // Set grounded and stop velocity if on platform
         let on_platform = ctx
           .world
-          .get_component::<Transform>(entity)
+          .get::<Transform>(entity)
           .map(|t| {
             let player_bottom = t.y + PLAYER_HEIGHT;
             let platform_top = PLATFORM_Y;
@@ -452,10 +452,10 @@ impl GameScene {
           .unwrap_or(false);
 
         if on_platform && vy > 0.0 {
-          if let Some(mut vel) = ctx.world.get_component_mut::<PlayerVelocity>(entity) {
+          if let Some(mut vel) = ctx.world.get_mut::<PlayerVelocity>(entity) {
             vel.y = 0.0;
           }
-          if let Some(mut player) = ctx.world.get_component_mut::<Player>(entity) {
+          if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
             player.grounded = true;
           }
         }
@@ -478,8 +478,8 @@ impl GameScene {
     // Collect position data first
     let mut updates: Vec<(ClientId, PositionUpdate)> = Vec::new();
     for (&client_id, &entity) in &self.players {
-      if let Some(transform) = ctx.world.get_component::<Transform>(entity)
-        && let Some(player) = ctx.world.get_component::<Player>(entity)
+      if let Some(transform) = ctx.world.get::<Transform>(entity)
+        && let Some(player) = ctx.world.get::<Player>(entity)
       {
         updates.push((
           client_id,
@@ -506,7 +506,7 @@ impl GameScene {
 
   fn check_player_collision(&mut self, ctx: &mut SceneContext, a: Entity, b: Entity) {
     let (ax, ay) = {
-      let t = ctx.world.get_component::<Transform>(a);
+      let t = ctx.world.get::<Transform>(a);
       match t {
         Some(t) => (t.x, t.y),
         None => return,
@@ -514,7 +514,7 @@ impl GameScene {
     };
 
     let (bx, by) = {
-      let t = ctx.world.get_component::<Transform>(b);
+      let t = ctx.world.get::<Transform>(b);
       match t {
         Some(t) => (t.x, t.y),
         None => return,
@@ -539,24 +539,24 @@ impl GameScene {
         // Vertical collision (jumping on head)
         if ay < by {
           // A is on top of B
-          if let Some(mut t) = ctx.world.get_component_mut::<Transform>(a) {
+          if let Some(mut t) = ctx.world.get_mut::<Transform>(a) {
             t.y = by - PLAYER_HEIGHT;
           }
-          if let Some(mut v) = ctx.world.get_component_mut::<PlayerVelocity>(a) {
+          if let Some(mut v) = ctx.world.get_mut::<PlayerVelocity>(a) {
             v.y = 0.0;
           }
-          if let Some(mut p) = ctx.world.get_component_mut::<Player>(a) {
+          if let Some(mut p) = ctx.world.get_mut::<Player>(a) {
             p.grounded = true;
           }
         } else {
           // B is on top of A
-          if let Some(mut t) = ctx.world.get_component_mut::<Transform>(b) {
+          if let Some(mut t) = ctx.world.get_mut::<Transform>(b) {
             t.y = ay - PLAYER_HEIGHT;
           }
-          if let Some(mut v) = ctx.world.get_component_mut::<PlayerVelocity>(b) {
+          if let Some(mut v) = ctx.world.get_mut::<PlayerVelocity>(b) {
             v.y = 0.0;
           }
-          if let Some(mut p) = ctx.world.get_component_mut::<Player>(b) {
+          if let Some(mut p) = ctx.world.get_mut::<Player>(b) {
             p.grounded = true;
           }
         }
@@ -564,17 +564,17 @@ impl GameScene {
         // Horizontal collision (push apart)
         let push = min_overlap_x / 2.0 + 1.0;
         if ax < bx {
-          if let Some(mut t) = ctx.world.get_component_mut::<Transform>(a) {
+          if let Some(mut t) = ctx.world.get_mut::<Transform>(a) {
             t.x -= push;
           }
-          if let Some(mut t) = ctx.world.get_component_mut::<Transform>(b) {
+          if let Some(mut t) = ctx.world.get_mut::<Transform>(b) {
             t.x += push;
           }
         } else {
-          if let Some(mut t) = ctx.world.get_component_mut::<Transform>(a) {
+          if let Some(mut t) = ctx.world.get_mut::<Transform>(a) {
             t.x += push;
           }
-          if let Some(mut t) = ctx.world.get_component_mut::<Transform>(b) {
+          if let Some(mut t) = ctx.world.get_mut::<Transform>(b) {
             t.x -= push;
           }
         }

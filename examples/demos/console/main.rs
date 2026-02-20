@@ -132,23 +132,6 @@ impl Scene for HubScene {
     SceneAction::Continue
   }
 
-  #[allow(deprecated)]
-  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
-    // Dark blue background
-    let r: u8 = 20;
-    let g: u8 = 30;
-    let b: u8 = 60;
-    for y in 0..height {
-      for x in 0..width {
-        let idx = ((y * width + x) * 4) as usize;
-        frame[idx] = r;
-        frame[idx + 1] = g;
-        frame[idx + 2] = b;
-        frame[idx + 3] = 255;
-      }
-    }
-  }
-
   fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Title
     ui.draw_text("Scene 1 — Hub", 30.0, 20.0, Color::WHITE);

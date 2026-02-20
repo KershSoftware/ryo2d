@@ -381,17 +381,6 @@ impl Scene for SteeringDemoScene {
     SceneAction::Continue
   }
 
-  fn render_background(&mut self, frame: &mut [u8], _width: u32, _height: u32, _camera: &Camera) {
-    // Dark background - trails now render ON TOP of CPU content
-    // so opaque backgrounds work correctly
-    for pixel in frame.chunks_exact_mut(4) {
-      pixel[0] = 20;
-      pixel[1] = 25;
-      pixel[2] = 35;
-      pixel[3] = 255;
-    }
-  }
-
   fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let text_light = Color::rgb(220, 220, 220);
     let text_accent = Color::rgb(130, 180, 255);

@@ -221,6 +221,7 @@ impl Scene for ProcgenScene {
     SceneAction::Continue
   }
 
+  #[allow(deprecated)]
   fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
     // Clear to dark gray
     for pixel in frame.chunks_exact_mut(4) {

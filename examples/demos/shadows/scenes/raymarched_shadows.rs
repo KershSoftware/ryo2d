@@ -98,7 +98,7 @@ impl RaymarchedShadowsScene {
     let mut nearest_dist = f32::MAX;
 
     for (idx, &entity) in self.placed_occluders.iter().enumerate() {
-      if let Some(transform) = ctx.world.get_component::<Transform>(entity) {
+      if let Some(transform) = ctx.world.get::<Transform>(entity) {
         let dx = transform.x - x;
         let dy = transform.y - y;
         let dist = dx * dx + dy * dy;
