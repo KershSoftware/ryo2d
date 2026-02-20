@@ -208,7 +208,7 @@ pub struct SystemDefaults {
   /// Whether to enable the developer console (toggled with backtick key).
   /// Unlike debug settings, this is available in both debug and release builds.
   pub dev_console: bool,
-  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 0.
+  /// Target FPS when the window is unfocused. 0 = use target_fps. Default: 0.
   pub target_background_fps: u32,
   /// Whether to continue rendering when the window is unfocused. Default: true.
   pub background_rendering: bool,
@@ -298,7 +298,7 @@ struct SystemSection {
   show_fps: Option<bool>,
   /// Whether to enable the developer console (toggled with backtick key)
   console: Option<bool>,
-  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 0.
+  /// Target FPS when the window is unfocused. 0 = use target_fps. Default: 0.
   target_background_fps: Option<u32>,
   /// Whether to continue rendering when the window is unfocused (default: true)
   background_rendering: Option<bool>,

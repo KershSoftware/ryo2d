@@ -21,7 +21,7 @@ use ryo2d::prelude::*;
 fn main() {
   let engine = EngineBuilder::new()
     .resolution(1920, 1080)
-    .fps(144)
+    .target_fps(144)
     .physics_hz(144)
     .with_scene(MenuScene::new())
     .build();

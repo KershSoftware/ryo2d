@@ -39,7 +39,7 @@ fn main() {
   let engine = EngineBuilder::new()
     .title("Profile and Log Demo")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
-    .fps(144)
+    .target_fps(144)
     .with_scene(DemoScene::new())
     .build();
 

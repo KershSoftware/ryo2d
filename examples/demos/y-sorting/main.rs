@@ -647,7 +647,7 @@ fn main() {
     .title("Y-Sorting Demo - Zelda Style")
     .resolution(GAME_WIDTH, GAME_HEIGHT)
     .window_mode(WindowMode::ResizableIntegerScale)
-    .fps(60)
+    .target_fps(60)
     .with_scene(YSortingScene::new())
     .build();
 

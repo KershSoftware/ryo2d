@@ -481,7 +481,7 @@ fn main() {
     .title("Procedural Generation Demo - Ryo2D")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .fps(60)
+    .target_fps(60)
     .with_scene(ProcgenScene::new())
     .build();
 

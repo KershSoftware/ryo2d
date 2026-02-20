@@ -13,7 +13,7 @@ use scenes::MainMenuScene;
 fn main() {
   let engine = EngineBuilder::new()
     .resolution(1920, 1080)
-    .fps(144)
+    .target_fps(144)
     .with_scene(MainMenuScene::new())
     .build();
 

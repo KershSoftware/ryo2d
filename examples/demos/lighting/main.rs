@@ -445,7 +445,7 @@ fn main() {
   let engine = EngineBuilder::new()
     .title("Lighting Demo - Pendulum Lamp")
     .resolution(1280, 720)
-    .fps(60)
+    .target_fps(60)
     .with_scene(LightingScene::new())
     .build();
 

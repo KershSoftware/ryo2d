@@ -326,7 +326,7 @@ fn main() {
     .title("Time Control Demo - Ryo2D")
     .resolution(800, 600)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .fps(60)
+    .target_fps(60)
     .physics_hz(60)
     .with_scene(TimeControlDemoScene::new())
     .build();

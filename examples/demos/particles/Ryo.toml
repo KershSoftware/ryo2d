@@ -2,9 +2,6 @@
 name = "Particles Demo"
 
 [system]
-resolution = "1280x720"
-vsync = true
-display_mode = "windowed"
 show_fps = true
 
 [debug]

@@ -43,7 +43,7 @@ The engine handles applying velocity to transforms automatically.
 
 ```rust
 EngineBuilder::new()
-    .fps(60)           // Target frame rate
+    .target_fps(60)    // Target frame rate
     .physics_hz(60)    // Fixed update rate
 ```
 

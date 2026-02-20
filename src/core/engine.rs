@@ -107,7 +107,7 @@ pub struct EngineConfig {
   /// - `Some(2)` = double size (good for HiDPI/Retina)
   /// - etc.
   pub ui_scale: Option<u32>,
-  /// Target FPS when the window is unfocused. 0 = uncapped. Default: 0.
+  /// Target FPS when the window is unfocused. 0 = use target_fps. Default: 0.
   pub target_background_fps: u32,
   /// Whether to continue rendering when the window is unfocused. Default: true.
   pub background_rendering: bool,
@@ -142,11 +142,15 @@ impl Default for EngineConfig {
 ///
 /// Frame limiting is applied when:
 /// - Presentation doesn't already block (i.e., not using Fifo/VSync mode)
-/// - VSync is not explicitly disabled (vsync=false means uncapped FPS)
+/// - VSync is not explicitly disabled (vsync=false means the developer wants uncapped FPS)
+///
+/// When vsync is on or unset, software frame limiting caps at `target_fps` to prevent
+/// wasting CPU/GPU. When vsync is explicitly off, the developer has opted into uncapped
+/// rendering for maximum performance.
 ///
 /// # Arguments
 /// * `presentation_blocks` - Whether the GPU presentation blocks until vsync (Fifo mode)
-/// * `vsync` - VSync preference: None (default), Some(true) (on), Some(false) (off/uncapped)
+/// * `vsync` - VSync preference: None (default), Some(true) (on), Some(false) (off)
 ///
 /// # Returns
 /// `true` if manual frame limiting should be applied, `false` otherwise
@@ -156,12 +160,12 @@ fn should_apply_frame_limiting(presentation_blocks: bool, vsync: Option<bool>) -
     return false;
   }
 
-  // Don't limit if vsync is explicitly disabled (user wants uncapped FPS)
+  // VSync explicitly off: developer wants uncapped FPS, no software limiting
   if vsync == Some(false) {
     return false;
   }
 
-  // Apply frame limiting for all other cases
+  // VSync on or default: software-limit to target_fps
   true
 }
 
@@ -778,9 +782,12 @@ impl Engine {
       // Do full render and present (same as RedrawRequested handler)
       self.do_full_render_and_present();
 
-      // Print GameLoop debug info (same as RedrawRequested handler)
+      // Update frame timings and smoothed overlay values
+      self.frame_timings.total = frame_start.elapsed();
+
+      self.smoothed_timings.update(&self.frame_timings);
       if let Some(time) = &mut self.time {
-        time.print_debug_info();
+        time.tick_fps_counter();
       }
 
       // Frame limit to target FPS (Windows doesn't enforce vsync on unfocused windows)
@@ -808,14 +815,24 @@ impl Engine {
         self.do_full_render_and_present();
       }
 
-      // Cap to target_background_fps when completely unfocused (0 = uncapped)
-      if self.config.target_background_fps > 0 {
-        let target_frame_time =
-          std::time::Duration::from_secs_f64(1.0 / self.config.target_background_fps as f64);
-        let elapsed = frame_start.elapsed();
-        if elapsed < target_frame_time {
-          std::thread::sleep(target_frame_time - elapsed);
-        }
+      // Update frame timings and smoothed overlay values (keeps FPS overlay alive while unfocused)
+      self.frame_timings.total = frame_start.elapsed();
+
+      self.smoothed_timings.update(&self.frame_timings);
+      if let Some(time) = &mut self.time {
+        time.tick_fps_counter();
+      }
+
+      // Cap FPS when completely unfocused: use target_background_fps if set, else target_fps
+      let bg_fps = if self.config.target_background_fps > 0 {
+        self.config.target_background_fps
+      } else {
+        self.config.target_fps
+      };
+      let target_frame_time = std::time::Duration::from_secs_f64(1.0 / bg_fps as f64);
+      let elapsed = frame_start.elapsed();
+      if elapsed < target_frame_time {
+        std::thread::sleep(target_frame_time - elapsed);
       }
     }
   }
@@ -2981,9 +2998,8 @@ impl ApplicationHandler for Engine {
           logger.render();
         }
 
-        // Calculate total frame time and FPS
+        // Calculate total frame time
         self.frame_timings.total = frame_start.elapsed();
-        self.frame_timings.calculate_fps();
 
         // Debug: Log when a frame takes too long (>33ms = <30fps)
         // Only when profiling is enabled to avoid console spam
@@ -3005,12 +3021,10 @@ impl ApplicationHandler for Engine {
 
         // Debug output and frame limiting
         if let Some(time) = &mut self.time {
-          // Update smoothed timings using actual measured FPS (includes vsync/sleep)
-          self
-            .smoothed_timings
-            .update(&self.frame_timings, time.current_fps());
+          // Update smoothed timings for overlay display
+          self.smoothed_timings.update(&self.frame_timings);
 
-          let printed_debug = time.print_debug_info();
+          let printed_debug = time.tick_fps_counter();
 
           // Print frame timing to console periodically (once per second) if enabled
           // This supplements the on-screen overlay for games using GPU sprites
@@ -3025,11 +3039,10 @@ impl ApplicationHandler for Engine {
             );
           }
 
-          // Frame limiting: only apply manual limiting if presentation doesn't already block
-          // AND vsync is not explicitly disabled.
-          // - Fifo mode: GPU blocks until vsync, no manual limiting needed
-          // - Mailbox/Immediate with vsync on or unset: manual limiting to target_fps
-          // - Immediate with vsync=false: uncapped FPS (no limiting)
+          // Frame limiting: software-cap to target_fps when appropriate.
+          // - Fifo mode: GPU already blocks, skip
+          // - VSync off: developer wants uncapped, skip
+          // - VSync on/default with non-blocking present: limit to target_fps
           let presentation_blocks = self
             .renderer
             .as_ref()
@@ -3175,10 +3188,16 @@ pub struct EngineBuilder {
   master_volume: f32,
   music_volume: f32,
   sfx_volume: f32,
-  /// Tracks whether resolution was explicitly set via .resolution() (prevents build() from overwriting)
+  /// Tracks whether resolution was set by builder or user preferences (prevents Ryo.toml override)
   resolution_set: bool,
-  /// Tracks whether display_mode was explicitly set (prevents build() from overwriting)
+  /// Tracks whether display_mode was set by builder or user preferences (prevents Ryo.toml override)
   display_mode_set: bool,
+  /// Whether user preferences loaded resolution (blocks builder .resolution() override)
+  resolution_user_pref: bool,
+  /// Whether user preferences loaded display_mode (blocks builder .display_mode() override)
+  display_mode_user_pref: bool,
+  /// Whether user preferences loaded vsync (blocks builder .vsync() override)
+  vsync_user_pref: bool,
   /// Whether to disable F1-F4 debug key toggles
   disable_debug_keys: bool,
   /// Console command configuration (declarations and removals)
@@ -3196,6 +3215,9 @@ impl EngineBuilder {
       sfx_volume: 1.0,
       resolution_set: false,
       display_mode_set: false,
+      resolution_user_pref: false,
+      display_mode_user_pref: false,
+      vsync_user_pref: false,
       disable_debug_keys: false,
       console_builder: None,
     }
@@ -3207,18 +3229,20 @@ impl EngineBuilder {
   }
 
   pub fn resolution(mut self, width: u32, height: u32) -> Self {
-    self.config.width = width;
-    self.config.height = height;
+    if !self.resolution_user_pref {
+      self.config.width = width;
+      self.config.height = height;
+    }
     self.resolution_set = true;
     self
   }
 
-  pub fn fps(mut self, fps: u32) -> Self {
+  pub fn target_fps(mut self, fps: u32) -> Self {
     self.config.target_fps = fps;
     self
   }
 
-  /// Set the target FPS when the window is unfocused. 0 = uncapped.
+  /// Set the target FPS when the window is unfocused. 0 = use target_fps.
   pub fn background_fps(mut self, fps: u32) -> Self {
     self.config.target_background_fps = fps;
     self
@@ -3227,6 +3251,20 @@ impl EngineBuilder {
   /// Set whether to continue rendering when the window is unfocused.
   pub fn background_rendering(mut self, enabled: bool) -> Self {
     self.config.background_rendering = enabled;
+    self
+  }
+
+  /// Set whether VSync is enabled.
+  ///
+  /// - `true` - VSync on (Mailbox with Fifo fallback, no tearing)
+  /// - `false` - VSync off (Immediate mode, may tear but lowest latency)
+  ///
+  /// Default: `true` (VSync on). Overridden by user preferences if
+  /// [`with_user_preferences`](Self::with_user_preferences) includes `UserPreference::Vsync`.
+  pub fn vsync(mut self, enabled: bool) -> Self {
+    if !self.vsync_user_pref {
+      self.vsync = Some(enabled);
+    }
     self
   }
 
@@ -3285,7 +3323,9 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn display_mode(mut self, mode: DisplayMode) -> Self {
-    self.config.display_mode = mode;
+    if !self.display_mode_user_pref {
+      self.config.display_mode = mode;
+    }
     self.display_mode_set = true;
     self
   }
@@ -3496,15 +3536,17 @@ impl EngineBuilder {
       && let Ok(system_state) =
         save_manager.load_or_create_system_filtered(&workspace.config().system, &filter)
     {
-      // Apply display overrides based on filter (only if not explicitly set via .resolution())
-      if filter.contains(UserPreference::Resolution) && !self.resolution_set {
+      // User preferences have highest priority - always override builder calls
+      if filter.contains(UserPreference::Resolution) {
         self.config.width = system_state.display.width;
         self.config.height = system_state.display.height;
         self.resolution_set = true;
+        self.resolution_user_pref = true;
       }
       if filter.contains(UserPreference::DisplayMode) {
         self.config.display_mode = system_state.display.display_mode;
         self.display_mode_set = true;
+        self.display_mode_user_pref = true;
       }
 
       // Apply show_fps if present and in filter
@@ -3514,9 +3556,10 @@ impl EngineBuilder {
         self.config.debug.show_fps = show_fps;
       }
 
-      // Apply vsync if in filter
+      // Apply vsync if in filter (use display.vsync as fallback when root vsync is None)
       if filter.contains(UserPreference::Vsync) {
-        self.vsync = system_state.vsync;
+        self.vsync = system_state.vsync.or(Some(system_state.display.vsync));
+        self.vsync_user_pref = true;
       }
 
       // Apply audio volumes based on filter
@@ -3529,62 +3572,6 @@ impl EngineBuilder {
       if filter.contains(UserPreference::SfxVolume) {
         self.sfx_volume = system_state.sfx_volume;
       }
-    }
-    self
-  }
-
-  /// Apply only display mode from system.json, keeping fixed resolution.
-  ///
-  /// This is useful for games with a fixed design resolution (e.g., pixel art games)
-  /// that still want to respect the user's display mode preference (windowed/fullscreen).
-  ///
-  /// Unlike [`with_user_preferences`](Self::with_user_preferences), this method
-  /// does NOT override the game's resolution - only the display mode and audio/vsync settings.
-  ///
-  /// # Example
-  ///
-  /// ```rust,ignore
-  /// EngineBuilder::new()
-  ///     .title("Pixel Art Game")
-  ///     .resolution(320, 240)  // Fixed design resolution
-  ///     .with_saved_display_mode()  // Load windowed/fullscreen from user settings
-  ///     .with_scene(GameScene::new())
-  ///     .build()
-  ///     .run()?;
-  /// ```
-  pub fn with_saved_display_mode(mut self) -> Self {
-    use super::config::{UserPreference, UserPreferenceFilter};
-
-    // Everything except Resolution — this method keeps the game's fixed resolution
-    let filter = UserPreferenceFilter::only([
-      UserPreference::DisplayMode,
-      UserPreference::Vsync,
-      UserPreference::ShowFps,
-      UserPreference::MasterVolume,
-      UserPreference::MusicVolume,
-      UserPreference::SfxVolume,
-    ]);
-
-    if let Ok(workspace) = super::config::Workspace::discover()
-      && let Ok(save_manager) = workspace.create_save_manager()
-      && let Ok(system_state) =
-        save_manager.load_or_create_system_filtered(&workspace.config().system, &filter)
-    {
-      // Apply ONLY display mode - not resolution
-      self.config.display_mode = system_state.display.display_mode;
-      self.display_mode_set = true;
-
-      // Apply overrides if present
-      if let Some(show_fps) = system_state.show_fps {
-        self.config.debug.show_fps = show_fps;
-      }
-      // Store vsync preference to use when creating renderer
-      // Falls back to display.vsync when root vsync is None
-      self.vsync = system_state.vsync.or(Some(system_state.display.vsync));
-      // Store audio volumes to apply after AudioManager creation
-      self.master_volume = system_state.master_volume;
-      self.music_volume = system_state.music_volume;
-      self.sfx_volume = system_state.sfx_volume;
     }
     self
   }
@@ -3680,11 +3667,12 @@ impl EngineBuilder {
     let mut game_name: Option<String> = None;
     let mut game_version: Option<String> = None;
 
-    // Priority chain for configuration:
-    // 1. Explicit builder calls (highest) - already in self.config
-    // 2. Embedded values from `ryo2d build` (compile-time)
-    // 3. Runtime workspace discovery (Ryo.toml)
-    // 4. Engine defaults (lowest) - already in EngineConfig::default()
+    // Priority chain for configuration (highest to lowest):
+    // 1. User preferences from system.json (via .with_user_preferences()) - already applied
+    // 2. Explicit builder calls (.resolution(), .vsync(), .target_fps()) - already applied
+    // 3. Embedded values from `ryo2d build` (compile-time)
+    // 4. Runtime workspace discovery (Ryo.toml)
+    // 5. Engine defaults - already in EngineConfig::default()
 
     // Check for embedded values (set when built via `ryo2d build`)
     let has_embedded = option_env!("RYO_EMBED_RESOLUTION").is_some();
@@ -3702,7 +3690,9 @@ impl EngineBuilder {
           );
         }
       }
-      if let Some(v) = option_env!("RYO_EMBED_VSYNC") {
+      if vsync.is_none()
+        && let Some(v) = option_env!("RYO_EMBED_VSYNC")
+      {
         vsync = Some(v.parse().unwrap_or(true));
       }
       if let Some(fps) = option_env!("RYO_EMBED_SHOW_FPS") {
@@ -3833,6 +3823,9 @@ impl EngineBuilder {
       }
     }
 
+    // Engine-wide default: vsync on (if no source set it)
+    let vsync = vsync.or(Some(true));
+
     Engine::new(
       config,
       game,
@@ -3883,7 +3876,7 @@ mod tests {
 
   #[test]
   fn engine_builder_sets_fps() {
-    let builder = EngineBuilder::new().fps(144);
+    let builder = EngineBuilder::new().target_fps(144);
     assert_eq!(builder.config.target_fps, 144);
   }
 
@@ -3898,7 +3891,7 @@ mod tests {
     let builder = EngineBuilder::new()
       .title("Chained")
       .resolution(640, 480)
-      .fps(30)
+      .target_fps(30)
       .physics_hz(50);
 
     assert_eq!(builder.config.title, "Chained");
@@ -4031,13 +4024,13 @@ mod tests {
 
   #[test]
   fn frame_limiting_skipped_when_vsync_off() {
-    // VSync explicitly off: uncapped FPS, no frame limiting
+    // VSync explicitly off: developer wants uncapped FPS
     assert!(!should_apply_frame_limiting(false, Some(false)));
   }
 
   #[test]
   fn frame_limiting_skipped_when_presentation_blocks() {
-    // Fifo mode blocks on presentation: no manual limiting needed
+    // Fifo mode blocks on presentation: no manual limiting needed regardless of vsync setting
     assert!(!should_apply_frame_limiting(true, None));
     assert!(!should_apply_frame_limiting(true, Some(true)));
     assert!(!should_apply_frame_limiting(true, Some(false)));
@@ -4045,8 +4038,42 @@ mod tests {
 
   #[test]
   fn engine_builder_vsync_defaults_to_none() {
+    // Builder starts with None; build() applies engine default (true) if no source sets it
     let builder = EngineBuilder::new();
     assert_eq!(builder.vsync, None);
+  }
+
+  #[test]
+  fn engine_builder_sets_vsync() {
+    let builder = EngineBuilder::new().vsync(false);
+    assert_eq!(builder.vsync, Some(false));
+
+    let builder = EngineBuilder::new().vsync(true);
+    assert_eq!(builder.vsync, Some(true));
+  }
+
+  #[test]
+  fn engine_builder_vsync_user_pref_blocks_builder() {
+    // Simulate: user_pref set vsync to false, then builder tries to set true
+    let mut builder = EngineBuilder::new();
+    builder.vsync = Some(false);
+    builder.vsync_user_pref = true;
+    builder = builder.vsync(true); // Should be blocked
+    assert_eq!(builder.vsync, Some(false));
+  }
+
+  #[test]
+  fn engine_builder_resolution_user_pref_blocks_builder() {
+    // Simulate: user_pref set resolution, then builder tries to override
+    let mut builder = EngineBuilder::new();
+    builder.config.width = 1920;
+    builder.config.height = 1080;
+    builder.resolution_user_pref = true;
+    builder = builder.resolution(800, 600); // Should be blocked
+    assert_eq!(builder.config.width, 1920);
+    assert_eq!(builder.config.height, 1080);
+    // But resolution_set should still be true (for Ryo.toml gating)
+    assert!(builder.resolution_set);
   }
 
   // ===========================================================================
@@ -4136,7 +4163,7 @@ mod tests {
       .with_console_commands(|cmd| {
         cmd.declare("game:reset", "Reset");
       })
-      .fps(60);
+      .target_fps(60);
     assert_eq!(builder.config.title, "Test Game");
     assert_eq!(builder.config.width, 800);
     assert_eq!(

@@ -615,7 +615,7 @@ fn main() {
     .title("State Machine Demo - Ryo2D")
     .resolution(800, 600)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .fps(60)
+    .target_fps(60)
     .with_scene(StateMachineDemoScene::new())
     .build();
 

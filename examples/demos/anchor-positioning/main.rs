@@ -258,7 +258,7 @@ fn main() {
     .title("Anchor Positioning Demo - Ryo2D")
     .resolution(800, 600)
     .window_mode(WindowMode::ResizableIntegerScale)
-    .fps(60)
+    .target_fps(60)
     .physics_hz(60)
     .with_scene(AnchorDemoScene::new())
     .build();

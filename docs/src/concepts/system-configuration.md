@@ -450,20 +450,6 @@ EngineBuilder::new()
 | `SystemFieldFilter::only([...])` | Only specified fields |
 | `filter.contains(field)` | Check if a field is enabled |
 
-### Alternative: with_saved_display_mode()
-
-For fixed-resolution games that only want to load display mode (not resolution), use `with_saved_display_mode()`:
-
-```rust
-EngineBuilder::new()
-    .resolution(320, 240)  // Fixed resolution
-    .with_saved_display_mode()  // Load display mode + audio + vsync + show_fps
-    .with_scene(MyScene::new())
-    .build()
-```
-
-This is equivalent to filtering out `Resolution` while keeping all other fields
-
 ## Best Practices
 
 1. **Use `Ryo.toml` for developer defaults** - Project paths, default window size, debug flags during development

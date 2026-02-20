@@ -61,7 +61,7 @@ fn main() {
     EngineBuilder::new()
         .title("Moving Player")
         .resolution(800, 600)
-        .fps(60)
+        .target_fps(60)
         .with_game(MyGame::new())
         .build()
         .run()

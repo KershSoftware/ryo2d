@@ -308,7 +308,7 @@ EngineBuilder::new()
 EngineBuilder::new()
     .title("My Game")
     .resolution(1920, 1080)           // Override resolution
-    .fps(120)                         // Override FPS
+    .target_fps(120)                  // Override FPS
     .physics_hz(240)                  // Physics update rate
     .window_mode(WindowMode::ResizableAspectRatio)
     .with_game(MyGame::default())
@@ -329,7 +329,7 @@ EngineBuilder::new()
     .title("My Game")
     .resolution(1920, 1080)  // Fixed design resolution - game logic uses this
     .window_mode(WindowMode::ResizableAspectRatio)  // Window can scale
-    .fps(144)
+    .target_fps(144)
     .with_scene(MenuScene::new())
     .build()
     .run()

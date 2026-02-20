@@ -117,7 +117,7 @@ EngineBuilder::new()
 EngineBuilder::new()
     .title("Game Title")
     .resolution(1280, 720)            // Override window size
-    .fps(60)                          // Override target FPS
+    .target_fps(60)                   // Override target FPS
     .physics_hz(120)                  // Physics update rate
     .window_mode(WindowMode::Fixed)   // Window behavior
     .with_game(MyGame::default())

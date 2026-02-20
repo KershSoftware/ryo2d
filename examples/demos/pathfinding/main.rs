@@ -674,7 +674,7 @@ fn main() {
     .title("Pathfinding Demo - Ryo2D")
     .resolution(1024, 768)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .fps(60)
+    .target_fps(60)
     .physics_hz(60)
     .with_scene(PathfindingDemoScene::new())
     .build();

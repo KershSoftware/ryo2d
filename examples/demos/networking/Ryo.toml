@@ -2,13 +2,8 @@
 # Two players battle on a single platform
 
 [game]
-name = "Networking"
+name = "Networking - Multiplayer Demo"
 version = "0.1.0"
-
-[system]
-resolution = [800, 600]
-fps = 60
-physics_hz = 60
 
 [env]
 debug_scene = false

@@ -600,7 +600,7 @@ fn main() {
   let engine = EngineBuilder::new()
     .title("Volumetric Lighting Demo - Ryo2D")
     .resolution(1280, 720)
-    .fps(60)
+    .target_fps(60)
     .with_scene(VolumetricLightingScene::new())
     .build();
 

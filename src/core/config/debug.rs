@@ -288,19 +288,8 @@ pub struct FrameTimings {
   pub render: Duration,
   /// Time spent presenting to screen (GPU sync)
   pub present: Duration,
-  /// Total frame time
+  /// Total work time (excludes sleep/vsync wait)
   pub total: Duration,
-  /// Calculated FPS from total time
-  pub fps: u32,
-}
-
-impl FrameTimings {
-  /// Calculate FPS from total frame time
-  pub fn calculate_fps(&mut self) {
-    if self.total.as_secs_f32() > 0.0 {
-      self.fps = (1.0 / self.total.as_secs_f32()) as u32;
-    }
-  }
 }
 
 /// Smoothed frame timing values for stable overlay display.
@@ -315,12 +304,14 @@ pub struct SmoothedFrameTimings {
   pub render_ms: f64,
   /// Smoothed present time in milliseconds
   pub present_ms: f64,
-  /// Smoothed total time in milliseconds
+  /// Smoothed total work time in milliseconds (excludes sleep/vsync wait)
   pub total_ms: f64,
-  /// Smoothed FPS value (from actual measured FPS, not instantaneous)
+  /// Smoothed FPS from wall-clock frame-to-frame time (includes sleep/vsync)
   pub fps: f64,
   /// Smoothing factor (0.0 = no change, 1.0 = instant update)
   alpha: f64,
+  /// Tracks wall-clock time between update() calls for real FPS measurement
+  last_update: Option<Instant>,
 }
 
 impl Default for SmoothedFrameTimings {
@@ -332,16 +323,18 @@ impl Default for SmoothedFrameTimings {
       total_ms: 0.0,
       fps: 0.0,
       alpha: 0.02, // Smooth over ~50 frames for stable display
+      last_update: None,
     }
   }
 }
 
 impl SmoothedFrameTimings {
-  /// Update smoothed values from raw frame timings and actual measured FPS.
+  /// Update smoothed values from raw frame timings.
   ///
-  /// Note: `actual_fps` should come from the time module's measured FPS,
-  /// not from instantaneous frame time (which excludes vsync/sleep).
-  pub fn update(&mut self, raw: &FrameTimings, actual_fps: u64) {
+  /// Work-time fields (update, render, present, total) come from `FrameTimings`.
+  /// FPS is measured from wall-clock time between consecutive `update()` calls,
+  /// so it includes sleep/vsync wait and reflects actual rendered frames per second.
+  pub fn update(&mut self, raw: &FrameTimings) {
     let update_ms = raw.update.as_secs_f64() * 1000.0;
     let render_ms = raw.render.as_secs_f64() * 1000.0;
     let present_ms = raw.present.as_secs_f64() * 1000.0;
@@ -352,8 +345,17 @@ impl SmoothedFrameTimings {
     self.render_ms = self.alpha * render_ms + (1.0 - self.alpha) * self.render_ms;
     self.present_ms = self.alpha * present_ms + (1.0 - self.alpha) * self.present_ms;
     self.total_ms = self.alpha * total_ms + (1.0 - self.alpha) * self.total_ms;
-    // Use actual measured FPS from time module (includes vsync/frame limiting)
-    self.fps = self.alpha * (actual_fps as f64) + (1.0 - self.alpha) * self.fps;
+
+    // FPS from real wall-clock time between frames (includes sleep/vsync)
+    let now = Instant::now();
+    if let Some(last) = self.last_update {
+      let real_dt = now.duration_since(last).as_secs_f64();
+      if real_dt > 0.0 {
+        let instantaneous_fps = 1.0 / real_dt;
+        self.fps = self.alpha * instantaneous_fps + (1.0 - self.alpha) * self.fps;
+      }
+    }
+    self.last_update = Some(now);
   }
 }
 

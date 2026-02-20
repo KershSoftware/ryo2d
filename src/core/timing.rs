@@ -119,8 +119,8 @@ impl TimeState {
     (self.accumulator.as_secs_f32() / self.fixed_timestep.as_secs_f32()).min(1.0)
   }
 
-  /// Print debug timing info if a second has passed. Returns true if printed.
-  pub fn print_debug_info(&mut self) -> bool {
+  /// Update the FPS counter and log debug timing info once per second. Returns true if updated.
+  pub fn tick_fps_counter(&mut self) -> bool {
     let now = Instant::now();
     if now.duration_since(self.last_debug_print) >= Duration::from_secs(1) {
       self.current_fps = self.frame_count;
