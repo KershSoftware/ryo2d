@@ -15,10 +15,6 @@ pub struct PauseScene {
   high_score: u32,
   /// Wait for escape to be released before accepting input
   escape_was_released: bool,
-  /// Pending actions from button clicks (set in render_ui, consumed in update)
-  resume_clicked: bool,
-  quit_clicked: bool,
-  quit_desktop_clicked: bool,
   /// System state for volume controls
   settings: SystemState,
   /// Track if we need to save settings
@@ -58,9 +54,6 @@ impl PauseScene {
       score,
       high_score,
       escape_was_released: false,
-      resume_clicked: false,
-      quit_clicked: false,
-      quit_desktop_clicked: false,
       settings,
       settings_changed: false,
       prev_master_volume,
@@ -112,38 +105,6 @@ impl Scene for PauseScene {
       && !ctx.input.gamepad_button_down(GamepadButton::East)
     {
       self.escape_was_released = true;
-    }
-
-    // Check for button clicks from previous render_ui
-    if self.resume_clicked {
-      self.resume_clicked = false;
-
-      // Save settings if changed
-      if self.settings_changed {
-        if let Ok(workspace) = Workspace::discover()
-          && let Ok(save_manager) = workspace.create_save_manager()
-        {
-          let _ = save_manager.save_system(&self.settings);
-        }
-        self.settings_changed = false; // Clear after saving
-      }
-
-      return SceneAction::Pop;
-    }
-
-    if self.quit_clicked {
-      self.quit_clicked = false;
-      save_high_score(self.high_score);
-      return SceneAction::ResetWith(
-        Box::new(MenuScene::new()),
-        Transition::fade(Duration::from_millis(300)),
-      );
-    }
-
-    if self.quit_desktop_clicked {
-      self.quit_desktop_clicked = false;
-      save_high_score(self.high_score);
-      return SceneAction::Quit;
     }
 
     // Resume on Enter/A (always) or Escape/Start/B (only after released once)
@@ -300,19 +261,33 @@ impl Scene for PauseScene {
     // Resume button
     let resume_rect = Rect::new(panel_x + 70.0, buttons_y_start, 200.0, 40.0);
     if ui.button("RESUME", resume_rect) {
-      self.resume_clicked = true;
+      // Save settings if changed
+      if self.settings_changed {
+        if let Ok(workspace) = Workspace::discover()
+          && let Ok(save_manager) = workspace.create_save_manager()
+        {
+          let _ = save_manager.save_system(&self.settings);
+        }
+        self.settings_changed = false;
+      }
+      return SceneAction::Pop;
     }
 
     // Quit to menu button
     let quit_rect = Rect::new(panel_x + 70.0, buttons_y_start + 50.0, 200.0, 40.0);
     if ui.button("QUIT TO MENU", quit_rect) {
-      self.quit_clicked = true;
+      save_high_score(self.high_score);
+      return SceneAction::ResetWith(
+        Box::new(MenuScene::new()),
+        Transition::fade(Duration::from_millis(300)),
+      );
     }
 
     // Quit to desktop button
     let quit_desktop_rect = Rect::new(panel_x + 70.0, buttons_y_start + 100.0, 200.0, 40.0);
     if ui.button("QUIT TO DESKTOP", quit_desktop_rect) {
-      self.quit_desktop_clicked = true;
+      save_high_score(self.high_score);
+      return SceneAction::Quit;
     }
     SceneAction::Continue
   }

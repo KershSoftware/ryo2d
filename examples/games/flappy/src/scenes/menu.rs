@@ -49,8 +49,6 @@ impl PreloadedAssets {
 
 pub struct MenuScene {
   high_score: u32,
-  start_clicked: bool,
-  debug_clicked: bool,
   debug_enabled: bool,
   bird_flap_up: Sprite,
   bird_flap_down: Sprite,
@@ -80,8 +78,6 @@ impl MenuScene {
 
     Self {
       high_score: load_high_score(),
-      start_clicked: false,
-      debug_clicked: false,
       debug_enabled,
       bird_flap_up,
       bird_flap_down,
@@ -149,21 +145,16 @@ impl Scene for MenuScene {
       self.anim_frame = !self.anim_frame;
     }
 
-    // Start game on Space, Enter, or button click
-    if ctx.input.key_pressed(KeyCode::Space)
-      || ctx.input.key_pressed(KeyCode::Enter)
-      || self.start_clicked
-    {
-      self.start_clicked = false;
+    // Start game on Space or Enter
+    if ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::Enter) {
       return SceneAction::SwitchWith(
         Box::new(GameScene::new(self.high_score)),
         Transition::fade(Duration::from_millis(300)),
       );
     }
 
-    // Debug mode on D key or debug button click (only if enabled)
-    if self.debug_enabled && (ctx.input.key_pressed(KeyCode::KeyD) || self.debug_clicked) {
-      self.debug_clicked = false;
+    // Debug mode on D key (only if enabled)
+    if self.debug_enabled && ctx.input.key_pressed(KeyCode::KeyD) {
       return SceneAction::SwitchWith(
         Box::new(DebugScene::new()),
         Transition::fade(Duration::from_millis(300)),
@@ -209,7 +200,10 @@ impl Scene for MenuScene {
     let button_y = screen_h as f32 / 2.0;
 
     if ui.button("START", Rect::new(button_x, button_y, button_w, button_h)) {
-      self.start_clicked = true;
+      return SceneAction::SwitchWith(
+        Box::new(GameScene::new(self.high_score)),
+        Transition::fade(Duration::from_millis(300)),
+      );
     }
 
     // Debug button (smaller, below start) - only if debug mode enabled
@@ -228,7 +222,10 @@ impl Scene for MenuScene {
           debug_button_h,
         ),
       ) {
-        self.debug_clicked = true;
+        return SceneAction::SwitchWith(
+          Box::new(DebugScene::new()),
+          Transition::fade(Duration::from_millis(300)),
+        );
       }
     }
 

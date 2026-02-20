@@ -10,8 +10,6 @@ pub struct GameOverScene {
   score: u32,
   high_score: u32,
   is_new_high_score: bool,
-  restart_clicked: bool,
-  menu_clicked: bool,
 }
 
 impl GameOverScene {
@@ -20,8 +18,6 @@ impl GameOverScene {
       score,
       high_score,
       is_new_high_score,
-      restart_clicked: false,
-      menu_clicked: false,
     }
   }
 }
@@ -35,11 +31,7 @@ impl Scene for GameOverScene {
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     // Space or Enter to restart
-    if self.restart_clicked
-      || ctx.input.key_pressed(KeyCode::Space)
-      || ctx.input.key_pressed(KeyCode::Enter)
-    {
-      self.restart_clicked = false;
+    if ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::Enter) {
       return SceneAction::SwitchWith(
         Box::new(super::GameScene::new(self.high_score)),
         Transition::fade(Duration::from_millis(300)),
@@ -47,8 +39,7 @@ impl Scene for GameOverScene {
     }
 
     // Escape to return to menu
-    if self.menu_clicked || ctx.input.key_pressed(KeyCode::Escape) {
-      self.menu_clicked = false;
+    if ctx.input.key_pressed(KeyCode::Escape) {
       return SceneAction::SwitchWith(
         Box::new(MenuScene::new()),
         Transition::fade(Duration::from_millis(300)),
@@ -94,12 +85,18 @@ impl Scene for GameOverScene {
     let button_x = screen_w as f32 / 2.0 - button_w / 2.0;
 
     if ui.button("RESTART", Rect::new(button_x, 350.0, button_w, button_h)) {
-      self.restart_clicked = true;
+      return SceneAction::SwitchWith(
+        Box::new(super::GameScene::new(self.high_score)),
+        Transition::fade(Duration::from_millis(300)),
+      );
     }
 
     // Menu button
     if ui.button("MENU", Rect::new(button_x, 420.0, button_w, button_h)) {
-      self.menu_clicked = true;
+      return SceneAction::SwitchWith(
+        Box::new(MenuScene::new()),
+        Transition::fade(Duration::from_millis(300)),
+      );
     }
 
     // Keyboard hints

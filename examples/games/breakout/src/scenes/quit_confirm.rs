@@ -8,9 +8,6 @@ use ryo2d::prelude::*;
 pub struct QuitConfirmScene {
   /// Wait for escape to be released before accepting input
   escape_was_released: bool,
-  /// Pending actions from button clicks (set in render_ui, consumed in update)
-  yes_clicked: bool,
-  no_clicked: bool,
 }
 
 impl QuitConfirmScene {
@@ -18,8 +15,6 @@ impl QuitConfirmScene {
   pub fn new() -> Self {
     Self {
       escape_was_released: false,
-      yes_clicked: false,
-      no_clicked: false,
     }
   }
 }
@@ -42,17 +37,6 @@ impl Scene for QuitConfirmScene {
       && !ctx.input.gamepad_button_down(GamepadButton::East)
     {
       self.escape_was_released = true;
-    }
-
-    // Check for button clicks from previous render_ui
-    if self.yes_clicked {
-      self.yes_clicked = false;
-      return SceneAction::Quit;
-    }
-
-    if self.no_clicked {
-      self.no_clicked = false;
-      return SceneAction::Pop;
     }
 
     // N or B to cancel (B only after released once)
@@ -114,13 +98,13 @@ impl Scene for QuitConfirmScene {
     // Yes button
     let yes_rect = Rect::new(panel_x + 30.0, panel_y + 100.0, 140.0, 40.0);
     if ui.button("YES (Y/A)", yes_rect) {
-      self.yes_clicked = true;
+      return SceneAction::Quit;
     }
 
     // No button
     let no_rect = Rect::new(panel_x + 180.0, panel_y + 100.0, 140.0, 40.0);
     if ui.button("NO (N/B)", no_rect) {
-      self.no_clicked = true;
+      return SceneAction::Pop;
     }
     SceneAction::Continue
   }
