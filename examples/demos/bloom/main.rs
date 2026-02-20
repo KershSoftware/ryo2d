@@ -69,6 +69,10 @@ struct BloomDemo {
   radius: f32,
   blur_passes: u32,
   time: f32,
+
+  // Screen dimensions (set in on_enter)
+  screen_width: f32,
+  screen_height: f32,
 }
 
 impl BloomDemo {
@@ -84,23 +88,32 @@ impl BloomDemo {
       radius,
       blur_passes,
       time: 0.0,
+      screen_width: 0.0,
+      screen_height: 0.0,
     }
   }
 
   /// Build a scene with a mix of dark and bright elements so bloom is clearly visible.
-  fn build_scene(&mut self, ctx: &mut GameContext) {
+  fn build_scene(&mut self, ctx: &mut SceneContext) {
+    let cx = self.screen_width / 2.0;
+    let cy = self.screen_height / 2.0;
+
     // Dark background grid — these should NOT bloom
     let dark_colors: [(u8, u8, u8); 4] = [(30, 30, 50), (40, 30, 50), (30, 40, 50), (35, 35, 55)];
 
-    for row in 0..8 {
-      for col in 0..12 {
+    let tile_size = 80.0;
+    let cols = (self.screen_width / tile_size).ceil() as usize;
+    let rows = (self.screen_height / tile_size).ceil() as usize;
+
+    for row in 0..rows {
+      for col in 0..cols {
         let (r, g, b) = dark_colors[(row + col) % dark_colors.len()];
         let sprite = Sprite::solid_rect(80, 80, r, g, b, 255);
         let handle = ctx
           .assets
           .create_sprite(sprite, format!("bg_{}_{}", row, col));
         let entity = ctx.world.spawn((
-          Transform::new(col as f32 * 80.0, row as f32 * 80.0),
+          Transform::new(col as f32 * tile_size, row as f32 * tile_size),
           Renderable::sprite(handle).with_z_order(0),
         ));
         self.bg_tiles.push(entity);
@@ -115,9 +128,6 @@ impl BloomDemo {
       (255, 100, 200), // hot pink
       (140, 255, 100), // lime green
     ];
-
-    let cx = 480.0;
-    let cy = 320.0;
 
     for (i, &(r, g, b)) in bright_colors.iter().enumerate() {
       let size = 40 + i as u32 * 6;
@@ -155,9 +165,9 @@ impl BloomDemo {
     }
   }
 
-  fn animate(&mut self, ctx: &mut GameContext) {
-    let cx = 480.0;
-    let cy = 320.0;
+  fn animate(&mut self, ctx: &mut SceneContext) {
+    let cx = self.screen_width / 2.0;
+    let cy = self.screen_height / 2.0;
 
     // Rotate bright center sprites slowly
     for (i, &entity) in self.bright_sprites.iter().enumerate() {
@@ -184,7 +194,7 @@ impl BloomDemo {
     }
   }
 
-  fn apply_bloom(&self, ctx: &mut GameContext) {
+  fn apply_bloom(&self, ctx: &mut SceneContext) {
     ctx.effects.clear();
 
     if self.intensity > 0.001 {
@@ -206,7 +216,8 @@ impl BloomDemo {
     self.blur_passes = blur_passes;
   }
 
-  fn handle_input(&mut self, ctx: &mut GameContext) {
+  /// Returns true if the user pressed Escape to quit.
+  fn handle_input(&mut self, ctx: &mut SceneContext) -> bool {
     // Preset switching: 1-6
     if ctx.input.key_pressed(KeyCode::Digit1) {
       self.switch_preset(0);
@@ -262,27 +273,32 @@ impl BloomDemo {
       self.current_preset = 5; // Switch to Custom
     }
 
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      std::process::exit(0);
-    }
+    ctx.input.key_pressed(KeyCode::Escape)
   }
 }
 
-impl Game for BloomDemo {
-  fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for BloomDemo {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let (width, height) = ctx.screen_size();
+    self.screen_width = width;
+    self.screen_height = height;
+
     self.build_scene(ctx);
     // Start on "Subtle" so bloom is visible immediately
     self.switch_preset(1);
   }
 
-  fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     self.time += dt;
-    self.handle_input(ctx);
+    if self.handle_input(ctx) {
+      return SceneAction::Quit;
+    }
     self.animate(ctx);
     self.apply_bloom(ctx);
+    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let preset = &PRESETS[self.current_preset];
 
     // Title
@@ -349,16 +365,20 @@ impl Game for BloomDemo {
       Color::rgb(180, 180, 180),
     );
     ui.draw_text("ESC: Quit", 10.0, cy + 45.0, Color::rgb(180, 180, 180));
+
+    SceneAction::Continue
   }
 }
 
 fn main() {
-  EngineBuilder::new()
+  let engine = EngineBuilder::new()
     .title("Bloom Effect Demo")
     .resolution(960, 640)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_game(BloomDemo::new())
-    .build()
-    .run()
-    .expect("Failed to run engine");
+    .with_scene(BloomDemo::new())
+    .build();
+
+  if let Err(e) = engine.run() {
+    eprintln!("Engine error: {}", e);
+  }
 }

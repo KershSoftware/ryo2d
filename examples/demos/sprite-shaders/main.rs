@@ -131,6 +131,10 @@ struct SpriteShaderDemo {
   // Colors for cycling
   effect_colors: Vec<Color>,
   current_color_index: usize,
+
+  // Screen dimensions (set in on_enter)
+  screen_width: f32,
+  screen_height: f32,
 }
 
 impl SpriteShaderDemo {
@@ -168,6 +172,9 @@ impl SpriteShaderDemo {
         Color::GREEN,
       ],
       current_color_index: 0,
+
+      screen_width: 0.0,
+      screen_height: 0.0,
     }
   }
 
@@ -301,15 +308,22 @@ impl SpriteShaderDemo {
   }
 }
 
-impl Game for SpriteShaderDemo {
-  fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for SpriteShaderDemo {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let (width, height) = ctx.screen_size();
+    self.screen_width = width;
+    self.screen_height = height;
+
+    let cx = width / 2.0;
+    let cy = height / 2.0;
+
     // Create a colorful test sprite
     let sprite = create_test_sprite();
     let handle = ctx.assets.create_sprite(sprite.clone(), "test_sprite");
     let handle2 = ctx.assets.create_sprite(sprite, "test_sprite_2");
 
     // Left side: normal sprite (no effect)
-    let mut normal_transform = Transform::new(200.0, 300.0);
+    let mut normal_transform = Transform::new(cx - cx / 2.0, cy);
     normal_transform.scale_x = 3.0;
     normal_transform.scale_y = 3.0;
     self.normal_sprite = Some(ctx.world.spawn((
@@ -318,7 +332,7 @@ impl Game for SpriteShaderDemo {
     )));
 
     // Right side: sprite with effect
-    let mut effect_transform = Transform::new(550.0, 300.0);
+    let mut effect_transform = Transform::new(cx + cx / 2.0, cy);
     effect_transform.scale_x = 3.0;
     effect_transform.scale_y = 3.0;
     self.effect_sprite = Some(
@@ -331,7 +345,7 @@ impl Game for SpriteShaderDemo {
     );
   }
 
-  fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     self.time += dt;
 
     // Update navigation cooldown
@@ -416,11 +430,13 @@ impl Game for SpriteShaderDemo {
 
     // Quit
     if ctx.input.key_pressed(KeyCode::Escape) {
-      std::process::exit(0);
+      return SceneAction::Quit;
     }
+
+    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let effect = self.current_effect();
 
     // Title
@@ -502,6 +518,8 @@ impl Game for SpriteShaderDemo {
       570.0,
       Color::WHITE,
     );
+
+    SceneAction::Continue
   }
 }
 
@@ -578,11 +596,13 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
 }
 
 fn main() {
-  EngineBuilder::new()
+  let engine = EngineBuilder::new()
     .title("Sprite Shaders Demo")
     .resolution(800, 600)
-    .with_game(SpriteShaderDemo::new())
-    .build()
-    .run()
-    .expect("Failed to run demo");
+    .with_scene(SpriteShaderDemo::new())
+    .build();
+
+  if let Err(e) = engine.run() {
+    eprintln!("Engine error: {}", e);
+  }
 }

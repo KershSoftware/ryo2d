@@ -115,19 +115,19 @@ struct ParticlesDemo {
 
 impl ParticlesDemo {
   fn new() -> Self {
-    // Create a temporary placeholder sprite - will be replaced in init
+    // Create a temporary placeholder sprite - will be replaced in on_enter
     let placeholder = Sprite::solid_circle(8, 255, 255, 255, 255);
     Self {
       current_scene: DemoScene::Fire,
       particle_sprite: SpriteHandle::from_sprite(placeholder, "placeholder"),
-      screen_width: 800.0,
-      screen_height: 600.0,
+      screen_width: 0.0,
+      screen_height: 0.0,
       nav_cooldown: 0.0,
       particle_system: ParticleSystem::new(),
       emitters: Vec::new(),
       attractors: Vec::new(),
-      trail_target_x: 400.0,
-      trail_target_y: 300.0,
+      trail_target_x: 0.0,
+      trail_target_y: 0.0,
     }
   }
 
@@ -810,8 +810,8 @@ impl ParticlesDemo {
   }
 }
 
-impl Game for ParticlesDemo {
-  fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for ParticlesDemo {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
     println!("Particle System Demo");
     println!();
     println!("Controls:");
@@ -825,6 +825,8 @@ impl Game for ParticlesDemo {
     let (width, height) = ctx.screen_size();
     self.screen_width = width;
     self.screen_height = height;
+    self.trail_target_x = width / 2.0;
+    self.trail_target_y = height / 2.0;
 
     // Center camera for screen-style coordinates (0,0 = top-left)
     ctx.camera.set_position(width / 2.0, height / 2.0);
@@ -837,7 +839,7 @@ impl Game for ParticlesDemo {
     self.setup_scene(ctx.world);
   }
 
-  fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Navigation cooldown
     if self.nav_cooldown > 0.0 {
       self.nav_cooldown -= dt;
@@ -918,8 +920,10 @@ impl Game for ParticlesDemo {
 
     // Quit on Escape
     if ctx.input.key_pressed(KeyCode::Escape) {
-      std::process::exit(0);
+      return SceneAction::Quit;
     }
+
+    SceneAction::Continue
   }
 
   fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
@@ -932,7 +936,7 @@ impl Game for ParticlesDemo {
       .collect_for_render(gpu.world, gpu.camera, gpu.batch);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (sw, sh) = ui.screen_size();
 
     // Scene title
@@ -1010,18 +1014,22 @@ impl Game for ParticlesDemo {
       }
       _ => {}
     }
+
+    SceneAction::Continue
   }
 }
 
 fn main() {
-  EngineBuilder::new()
+  let engine = EngineBuilder::new()
     .title("Particle System Demo")
     .resolution(1280, 720)
     .target_fps(144)
     .physics_hz(144)
     .vsync(false)
-    .with_game(ParticlesDemo::new())
-    .build()
-    .run()
-    .expect("Failed to run particle demo");
+    .with_scene(ParticlesDemo::new())
+    .build();
+
+  if let Err(e) = engine.run() {
+    eprintln!("Engine error: {}", e);
+  }
 }

@@ -54,6 +54,10 @@ struct PostProcessingDemo {
 
   // Animation
   time: f32,
+
+  // Screen dimensions (set in on_enter)
+  screen_width: f32,
+  screen_height: f32,
 }
 
 impl PostProcessingDemo {
@@ -68,10 +72,15 @@ impl PostProcessingDemo {
       vignette_softness: 0.5,
       chromatic_strength: 0.005,
       time: 0.0,
+      screen_width: 0.0,
+      screen_height: 0.0,
     }
   }
 
-  fn create_colorful_scene(&mut self, ctx: &mut GameContext) {
+  fn create_colorful_scene(&mut self, ctx: &mut SceneContext) {
+    let cx = self.screen_width / 2.0;
+    let cy = self.screen_height / 2.0;
+
     // Create a grid of colorful rectangles in the background
     let colors = [
       (255, 100, 100), // Red
@@ -84,8 +93,8 @@ impl PostProcessingDemo {
 
     let grid_size = 4;
     let spacing = 120.0;
-    let start_x = 200.0;
-    let start_y = 100.0;
+    let start_x = cx - (grid_size as f32 * spacing) / 2.0 + spacing / 2.0;
+    let start_y = cy - (grid_size as f32 * spacing) / 2.0 + spacing / 2.0;
 
     for row in 0..grid_size {
       for col in 0..grid_size {
@@ -122,7 +131,7 @@ impl PostProcessingDemo {
       let radius = 150.0;
 
       let entity = ctx.world.spawn((
-        Transform::new(400.0 + angle.cos() * radius, 300.0 + angle.sin() * radius),
+        Transform::new(cx + angle.cos() * radius, cy + angle.sin() * radius),
         Renderable::sprite(handle).with_z_order(1),
       ));
 
@@ -130,19 +139,21 @@ impl PostProcessingDemo {
     }
   }
 
-  fn update_rotating_sprites(&mut self, ctx: &mut GameContext) {
+  fn update_rotating_sprites(&mut self, ctx: &mut SceneContext) {
+    let cx = self.screen_width / 2.0;
+    let cy = self.screen_height / 2.0;
     for (i, &entity) in self.rotating_sprites.iter().enumerate() {
       if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
         let angle = self.time * 0.5 + (i as f32 / 3.0) * std::f32::consts::TAU;
         let radius = 150.0;
-        transform.x = 400.0 + angle.cos() * radius;
-        transform.y = 300.0 + angle.sin() * radius;
+        transform.x = cx + angle.cos() * radius;
+        transform.y = cy + angle.sin() * radius;
         transform.rotation = self.time * 2.0;
       }
     }
   }
 
-  fn apply_current_effect(&self, ctx: &mut GameContext) {
+  fn apply_current_effect(&self, ctx: &mut SceneContext) {
     // Apply the selected effect
     // Note: Don't clear effects for ScreenFlash mode, as we want timed flashes to decay
     match self.current_effect {
@@ -182,7 +193,7 @@ impl PostProcessingDemo {
     }
   }
 
-  fn handle_input(&mut self, ctx: &mut GameContext) {
+  fn handle_input(&mut self, ctx: &mut SceneContext) {
     // Switch effects with number keys
     if ctx.input.key_pressed(KeyCode::Digit1) {
       self.current_effect = DemoEffect::None;
@@ -256,8 +267,8 @@ impl PostProcessingDemo {
   }
 }
 
-impl Game for PostProcessingDemo {
-  fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for PostProcessingDemo {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
     println!("=== Post-Processing Effects Demo ===");
     println!("Press 1-7 to switch effects");
     println!("Use arrow keys to adjust parameters");
@@ -265,10 +276,14 @@ impl Game for PostProcessingDemo {
     println!("Press ESC to quit");
     println!();
 
+    let (width, height) = ctx.screen_size();
+    self.screen_width = width;
+    self.screen_height = height;
+
     self.create_colorful_scene(ctx);
   }
 
-  fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     self.time += dt;
 
     // Handle input
@@ -282,11 +297,13 @@ impl Game for PostProcessingDemo {
 
     // Exit on ESC
     if ctx.input.key_pressed(KeyCode::Escape) {
-      std::process::exit(0);
+      return SceneAction::Quit;
     }
+
+    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Title
     ui.draw_text("POST-PROCESSING EFFECTS DEMO", 10.0, 10.0, Color::WHITE);
 
@@ -378,16 +395,20 @@ impl Game for PostProcessingDemo {
       controls_y + 60.0,
       Color::rgb(180, 180, 180),
     );
+
+    SceneAction::Continue
   }
 }
 
 fn main() {
-  EngineBuilder::new()
+  let engine = EngineBuilder::new()
     .title("Post-Processing Effects Demo")
     .resolution(800, 600)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_game(PostProcessingDemo::new())
-    .build()
-    .run()
-    .expect("Failed to run engine");
+    .with_scene(PostProcessingDemo::new())
+    .build();
+
+  if let Err(e) = engine.run() {
+    eprintln!("Engine error: {}", e);
+  }
 }
