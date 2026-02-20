@@ -19,6 +19,7 @@ assets = "assets"
 vsync = false
 display_mode = "windowed"
 show_fps = false
+master_volume = 0.6
 
 # =============================================================================
 # DEVELOPER-ONLY SETTINGS

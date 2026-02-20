@@ -114,7 +114,8 @@ impl Scene for MenuScene {
 
     // Start background music (persists across scenes)
     if let Some(audio) = &mut ctx.audio {
-      audio.set_master_volume(0.02);
+      audio.set_music_volume(0.3);
+      audio.set_sfx_volume(0.5);
 
       let options = MusicOptions::new().looping(true);
       if let Err(e) = audio.play_music_once("assets/8bit-bg.mp3", options) {
