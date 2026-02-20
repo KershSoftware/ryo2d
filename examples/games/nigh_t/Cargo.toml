@@ -13,6 +13,3 @@ ryo2d = { path = "../../.." }
 
 [features]
 profiler = ["ryo2d/profiler"]
-
-# Add your game dependencies here
-# serde = { version = "1.0", features = ["derive"] }

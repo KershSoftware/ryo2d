@@ -27,7 +27,7 @@ pub struct MainMenuScene {
   mouse_y: f32,
   /// Charge level from holding mouse (0.0 to 1.0)
   charge: f32,
-  /// Random seed for flickering
+  /// Fast-running time accumulator used as input to the flicker pseudo-RNG
   flicker_time: f32,
 }
 
@@ -50,7 +50,7 @@ impl MainMenuScene {
     x.fract().abs()
   }
 
-  /// Create a tiny bright core sprite (no transparency to avoid artifacts)
+  /// Create a tiny bright core sprite: fully opaque center, fading edge.
   fn create_core_sprite(assets: &mut AssetManager) -> SpriteHandle {
     let size = 6u32;
     let mut data = vec![0u8; (size * size * 4) as usize];
@@ -63,7 +63,6 @@ impl MainMenuScene {
         let dy = y as f32 - center + 0.5;
         let dist = (dx * dx + dy * dy).sqrt();
 
-        // Tight bright core - fully opaque, no semi-transparent edges
         let max_dist = center;
         if dist < max_dist {
           let intensity = 1.0 - (dist / max_dist).powi(2);
@@ -88,12 +87,6 @@ impl MainMenuScene {
 
     let sprite = Sprite::from_rgba(data, size, size);
     assets.create_sprite(sprite, "fairy_core")
-  }
-}
-
-impl Default for MainMenuScene {
-  fn default() -> Self {
-    Self::new()
   }
 }
 
@@ -201,17 +194,9 @@ impl Scene for MainMenuScene {
         let twitch_y = (self.random(2.0) - 0.5) * charge_cube * 25.0;
 
         // Occasional violent jerk at high charge
-        let jerk_chance = self.random(6.0);
-        let jerk_x = if jerk_chance < 0.02 * charge_sq {
-          (self.random(7.0) - 0.5) * 40.0
-        } else {
-          0.0
-        };
-        let jerk_y = if jerk_chance < 0.02 * charge_sq {
-          (self.random(8.0) - 0.5) * 40.0
-        } else {
-          0.0
-        };
+        let do_jerk = self.random(6.0) < 0.02 * charge_sq;
+        let jerk_x = if do_jerk { (self.random(7.0) - 0.5) * 40.0 } else { 0.0 };
+        let jerk_y = if do_jerk { (self.random(8.0) - 0.5) * 40.0 } else { 0.0 };
 
         transform.x = self.mouse_x + bob_x + wobble_x + twitch_x + jerk_x;
         transform.y = self.mouse_y + bob_y + wobble_y + twitch_y + jerk_y;

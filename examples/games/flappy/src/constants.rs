@@ -41,5 +41,4 @@ pub const CEILING_Y: f32 = 0.0;
 pub const GROUND_Y: f32 = SCREEN_HEIGHT as f32 - GROUND_HEIGHT;
 
 // Scoring
-pub const SCORE_X: f32 = SCREEN_WIDTH as f32 / 2.0;
 pub const SCORE_Y: f32 = 50.0;

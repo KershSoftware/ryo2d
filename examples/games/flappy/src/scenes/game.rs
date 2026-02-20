@@ -540,8 +540,8 @@ impl Scene for GameScene {
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    // Draw score
-    ui.draw_text(&self.score.to_string(), SCORE_X, SCORE_Y, Color::WHITE);
+    // Draw score centered at top
+    ui.draw_text_anchored(&self.score.to_string(), Anchor::TopCenter, 0.0, SCORE_Y, Color::WHITE);
 
     // Pre-game instructions
     if !self.game_started {

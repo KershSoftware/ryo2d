@@ -123,7 +123,10 @@ impl Scene for MenuScene {
     self.spawn_background(ctx);
   }
 
-  fn on_exit(&mut self, _ctx: &mut SceneContext) {
+  fn on_exit(&mut self, ctx: &mut SceneContext) {
+    for &entity in &self.background_entities {
+      let _ = ctx.world.despawn(entity);
+    }
     self.background_entities.clear();
   }
 
