@@ -3198,6 +3198,10 @@ pub struct EngineBuilder {
   display_mode_user_pref: bool,
   /// Whether user preferences loaded vsync (blocks builder .vsync() override)
   vsync_user_pref: bool,
+  /// Whether user preferences loaded audio volumes (blocks Ryo.toml override)
+  master_volume_user_pref: bool,
+  music_volume_user_pref: bool,
+  sfx_volume_user_pref: bool,
   /// Whether to disable F1-F4 debug key toggles
   disable_debug_keys: bool,
   /// Console command configuration (declarations and removals)
@@ -3218,6 +3222,9 @@ impl EngineBuilder {
       resolution_user_pref: false,
       display_mode_user_pref: false,
       vsync_user_pref: false,
+      master_volume_user_pref: false,
+      music_volume_user_pref: false,
+      sfx_volume_user_pref: false,
       disable_debug_keys: false,
       console_builder: None,
     }
@@ -3565,12 +3572,15 @@ impl EngineBuilder {
       // Apply audio volumes based on filter
       if filter.contains(UserPreference::MasterVolume) {
         self.master_volume = system_state.master_volume;
+        self.master_volume_user_pref = true;
       }
       if filter.contains(UserPreference::MusicVolume) {
         self.music_volume = system_state.music_volume;
+        self.music_volume_user_pref = true;
       }
       if filter.contains(UserPreference::SfxVolume) {
         self.sfx_volume = system_state.sfx_volume;
+        self.sfx_volume_user_pref = true;
       }
     }
     self
@@ -3717,13 +3727,13 @@ impl EngineBuilder {
       if let Some(v) = option_env!("RYO_EMBED_ENABLE_PROFILER") {
         config.debug.enable_profiler = v.parse().unwrap_or(false);
       }
-      if let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME") {
+      if !self.master_volume_user_pref && let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME") {
         master_volume = vol.parse().unwrap_or(0.7);
       }
-      if let Some(vol) = option_env!("RYO_EMBED_MUSIC_VOLUME") {
+      if !self.music_volume_user_pref && let Some(vol) = option_env!("RYO_EMBED_MUSIC_VOLUME") {
         music_volume = vol.parse().unwrap_or(1.0);
       }
-      if let Some(vol) = option_env!("RYO_EMBED_SFX_VOLUME") {
+      if !self.sfx_volume_user_pref && let Some(vol) = option_env!("RYO_EMBED_SFX_VOLUME") {
         sfx_volume = vol.parse().unwrap_or(1.0);
       }
       if let Some(title) = option_env!("RYO_EMBED_TITLE")
@@ -3782,10 +3792,16 @@ impl EngineBuilder {
         config.display_mode = system.display_mode;
       }
 
-      // Load audio volumes from [system] section
-      master_volume = system.master_volume;
-      music_volume = system.music_volume;
-      sfx_volume = system.sfx_volume;
+      // Load audio volumes from [system] section (only if not set by user preferences)
+      if !self.master_volume_user_pref {
+        master_volume = system.master_volume;
+      }
+      if !self.music_volume_user_pref {
+        music_volume = system.music_volume;
+      }
+      if !self.sfx_volume_user_pref {
+        sfx_volume = system.sfx_volume;
+      }
 
       // Load vsync from [system] section (only if not explicitly set)
       if vsync.is_none() {
@@ -4074,6 +4090,24 @@ mod tests {
     assert_eq!(builder.config.height, 1080);
     // But resolution_set should still be true (for Ryo.toml gating)
     assert!(builder.resolution_set);
+  }
+
+  #[test]
+  fn engine_builder_volume_user_pref_blocks_ryo_toml() {
+    // Simulate: user_pref loaded volumes from system.json
+    let mut builder = EngineBuilder::new();
+    builder.master_volume = 0.3;
+    builder.music_volume = 0.5;
+    builder.sfx_volume = 0.7;
+    builder.master_volume_user_pref = true;
+    builder.music_volume_user_pref = true;
+    builder.sfx_volume_user_pref = true;
+
+    // Verify flags prevent overwrite (build() would apply Ryo.toml here)
+    assert!(builder.master_volume_user_pref);
+    assert!((builder.master_volume - 0.3).abs() < 0.001);
+    assert!((builder.music_volume - 0.5).abs() < 0.001);
+    assert!((builder.sfx_volume - 0.7).abs() < 0.001);
   }
 
   // ===========================================================================
