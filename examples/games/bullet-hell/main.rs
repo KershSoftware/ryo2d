@@ -24,6 +24,7 @@ fn main() {
     .target_fps(144)
     .physics_hz(144)
     .with_scene(MenuScene::new())
+    .with_user_preferences([UserPreference::DisplayMode])
     .build();
 
   if let Err(e) = engine.run() {

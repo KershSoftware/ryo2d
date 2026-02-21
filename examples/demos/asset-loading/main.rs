@@ -183,7 +183,13 @@ impl Scene for LoadingDemoScene {
     let screen_h = screen_h as f32;
 
     // Title
-    ui.draw_text_anchored("Asset Loading Demo", Anchor::TopCenter, 0.0, 20.0, Color::WHITE);
+    ui.draw_text_anchored(
+      "Asset Loading Demo",
+      Anchor::TopCenter,
+      0.0,
+      20.0,
+      Color::WHITE,
+    );
 
     match self.state {
       DemoState::Ready => {

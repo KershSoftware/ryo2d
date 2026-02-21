@@ -122,7 +122,13 @@ impl Scene for MainMenu {
 
       // Description text below each button
       let desc_y = y + button_height + desc_gap;
-      ui.draw_text_anchored(description, Anchor::TopCenter, 0.0, desc_y, Color::rgb(100, 100, 120));
+      ui.draw_text_anchored(
+        description,
+        Anchor::TopCenter,
+        0.0,
+        desc_y,
+        Color::rgb(100, 100, 120),
+      );
     }
 
     // Footer

@@ -541,12 +541,24 @@ impl Scene for GameScene {
 
   fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Draw score centered at top
-    ui.draw_text_anchored(&self.score.to_string(), Anchor::TopCenter, 0.0, SCORE_Y, Color::WHITE);
+    ui.draw_text_anchored(
+      &self.score.to_string(),
+      Anchor::TopCenter,
+      0.0,
+      SCORE_Y,
+      Color::WHITE,
+    );
 
     // High score (upper right)
     if self.high_score > 0 {
       let high_score_text = format!("Best: {}", self.high_score);
-      ui.draw_text_anchored(&high_score_text, Anchor::TopRight, -16.0, 16.0, Color::rgb(80, 80, 80));
+      ui.draw_text_anchored(
+        &high_score_text,
+        Anchor::TopRight,
+        -16.0,
+        16.0,
+        Color::rgb(80, 80, 80),
+      );
     }
 
     // Pre-game instructions

@@ -30,9 +30,7 @@ impl InterpolationSystem {
       .into_iter()
       .filter(|&e| {
         !world.has::<Inactive>(e)
-          && world
-            .get::<Renderable>(e)
-            .is_some_and(|r| r.interpolate)
+          && world.get::<Renderable>(e).is_some_and(|r| r.interpolate)
           && !world.has::<PreviousTransform>(e)
           && world.get::<Transform>(e).is_some()
       })

@@ -309,7 +309,6 @@ impl NavigationGrid {
       }
     }
   }
-
 }
 
 /// Builder for creating NavigationGrid with a fluent API

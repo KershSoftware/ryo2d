@@ -26,7 +26,7 @@ impl PauseScene {
   pub fn new() -> Self {
     Self {
       settings_open: false,
-      selected_display_mode_idx: load_current_display_mode_index(),
+      selected_display_mode_idx: 0,
       pause_menu_focus: 0,
       settings_menu_focus: 0,
       apply_settings: false,
@@ -38,6 +38,14 @@ impl PauseScene {
 }
 
 impl Scene for PauseScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let modes = DisplayMode::all();
+    self.selected_display_mode_idx = modes
+      .iter()
+      .position(|m| *m == ctx.display_mode())
+      .unwrap_or(0);
+  }
+
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     // Process flags set by mouse clicks in render_ui
     if self.apply_settings {
@@ -50,7 +58,7 @@ impl Scene for PauseScene {
       return SceneAction::Pop;
     }
     if self.quit_to_menu {
-      return SceneAction::Switch(Box::new(MenuScene::new()));
+      return SceneAction::Reset(Box::new(MenuScene::new()));
     }
     if self.quit_to_desktop {
       return SceneAction::Quit;
@@ -212,13 +220,13 @@ impl PauseScene {
       || ctx.input.key_pressed_and_consume(KeyCode::Enter)
     {
       match self.pause_menu_focus {
-        0 => return SceneAction::Pop,                                    // Resume
+        0 => return SceneAction::Pop, // Resume
         1 => {
           self.settings_open = true;
           self.settings_menu_focus = 0;
         }
-        2 => return SceneAction::Switch(Box::new(MenuScene::new())),     // Quit to Menu
-        3 => return SceneAction::Quit,                                   // Quit to Desktop
+        2 => return SceneAction::Switch(Box::new(MenuScene::new())), // Quit to Menu
+        3 => return SceneAction::Quit,                               // Quit to Desktop
         _ => {}
       }
     }
@@ -275,7 +283,13 @@ impl PauseScene {
     );
 
     // Title
-    ui.draw_text_anchored("SETTINGS", Anchor::TopCenter, 0.0, modal_y + 20.0, Color::WHITE);
+    ui.draw_text_anchored(
+      "SETTINGS",
+      Anchor::TopCenter,
+      0.0,
+      modal_y + 20.0,
+      Color::WHITE,
+    );
 
     // Display mode options
     let mode_y = modal_y + 55.0;
@@ -375,7 +389,13 @@ impl PauseScene {
   }
 
   fn render_main_menu(&mut self, ui: &mut UiContext, center_x: f32, center_y: f32) {
-    ui.draw_text_anchored("PAUSED", Anchor::TopCenter, 0.0, center_y - 100.0, Color::WHITE);
+    ui.draw_text_anchored(
+      "PAUSED",
+      Anchor::TopCenter,
+      0.0,
+      center_y - 100.0,
+      Color::WHITE,
+    );
 
     let btn_w = 200.0;
     let btn_h = 40.0;
@@ -467,24 +487,3 @@ impl PauseScene {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Load current display mode index from system.json
-fn load_current_display_mode_index() -> usize {
-  let Ok(workspace) = Workspace::discover() else {
-    return 0;
-  };
-
-  let Ok(save_manager) = workspace.create_save_manager() else {
-    return 0;
-  };
-
-  let system_state = save_manager
-    .load_or_create_system(&workspace.config().system)
-    .unwrap_or_else(|_| SystemState::from_defaults(&workspace.config().system));
-
-  let modes = DisplayMode::all();
-  modes
-    .iter()
-    .position(|m| *m == system_state.display.display_mode)
-    .unwrap_or(0)
-}

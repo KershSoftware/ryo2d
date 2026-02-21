@@ -131,7 +131,13 @@ impl Scene for MenuScene {
 
   fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Title
-    ui.draw_text_anchored("BULLET HELL", Anchor::TopCenter, 0.0, 150.0, Color::rgb(255, 50, 50));
+    ui.draw_text_anchored(
+      "BULLET HELL",
+      Anchor::TopCenter,
+      0.0,
+      150.0,
+      Color::rgb(255, 50, 50),
+    );
 
     // Controls - Keyboard
     let keyboard_controls = vec![
@@ -165,7 +171,13 @@ impl Scene for MenuScene {
     // Best time
     if self.best_time > 0.0 {
       let best_text = format!("Best Time: {:.1}s", self.best_time);
-      ui.draw_text_anchored(&best_text, Anchor::TopCenter, 0.0, y + 20.0, Color::rgb(255, 215, 0));
+      ui.draw_text_anchored(
+        &best_text,
+        Anchor::TopCenter,
+        0.0,
+        y + 20.0,
+        Color::rgb(255, 215, 0),
+      );
     }
 
     // Start prompt

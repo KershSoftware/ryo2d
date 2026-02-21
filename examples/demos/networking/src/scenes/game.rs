@@ -406,10 +406,7 @@ impl GameScene {
       }
 
       // Get velocity for position update
-      let vel = ctx
-        .world
-        .get::<PlayerVelocity>(entity)
-        .map(|v| (v.x, v.y));
+      let vel = ctx.world.get::<PlayerVelocity>(entity).map(|v| (v.x, v.y));
 
       if let Some((vx, vy)) = vel {
         // Update position

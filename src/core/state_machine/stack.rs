@@ -296,7 +296,6 @@ where
       self.time_in_state = 0.0;
       self.just_pushed = false;
       self.just_popped = true;
-  
     }
 
     count
@@ -341,7 +340,6 @@ where
     self.total_time = 0.0;
     self.just_pushed = true;
     self.just_popped = false;
-
   }
 
   /// Update the state stack (call once per frame).

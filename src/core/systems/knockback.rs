@@ -30,9 +30,7 @@ impl KnockbackSystem {
       }
 
       // Check if knockback is active before borrowing mutably
-      let is_active = world
-        .get::<Knockback>(entity)
-        .is_some_and(|kb| kb.active);
+      let is_active = world.get::<Knockback>(entity).is_some_and(|kb| kb.active);
 
       if !is_active {
         continue;

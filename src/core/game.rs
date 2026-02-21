@@ -201,10 +201,15 @@ pub struct GameContext<'a> {
   pub time: TimeInfo,
   /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
   pub scale_factor: f64,
+  /// Current display mode (windowed, borderless, fullscreen)
+  pub display_mode: DisplayMode,
   /// Console command registry for registering custom commands
   pub(crate) command_registry: &'a mut CommandRegistry,
   /// Unique scope ID for this context (0 = game level, permanent)
-  #[expect(dead_code, reason = "reserved for future console command scope cleanup")]
+  #[expect(
+    dead_code,
+    reason = "reserved for future console command scope cleanup"
+  )]
   pub(crate) scope_id: u64,
 }
 

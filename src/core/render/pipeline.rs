@@ -255,7 +255,6 @@ mod tests {
         executed: std::sync::atomic::AtomicBool::new(false),
       }
     }
-
   }
 
   impl RenderPass for TestPass {

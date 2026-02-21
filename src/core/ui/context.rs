@@ -221,12 +221,54 @@ impl<'a> UiContext<'a> {
     self.draw_text(text, x, y, color);
   }
 
-  /// Draw centered text within a rectangle.
+  /// Draw centered text within a rectangle. Wraps automatically if text is wider than rect.
   pub fn draw_text_centered(&mut self, text: &str, rect: Rect, color: Color) {
     let (text_w, text_h) = self.font.text_size(text);
+    if text_w as f32 > rect.width {
+      let max_width = rect.width as u32;
+      let line_height = self.font.char_height() as f32;
+      let line_spacing = 2.0;
+      let lines = self.wrap_text_simple(text, max_width);
+      let total_height = lines.len() as f32 * line_height
+        + (lines.len().saturating_sub(1)) as f32 * line_spacing;
+      let start_y = rect.y + (rect.height - total_height) / 2.0;
+      for (i, line) in lines.iter().enumerate() {
+        let line_width = self.font.text_width(line) as f32;
+        let line_x = rect.x + (rect.width - line_width) / 2.0;
+        let line_y = start_y + i as f32 * (line_height + line_spacing);
+        self.draw_text(line, line_x, line_y, color);
+      }
+      return;
+    }
     let x = rect.x + (rect.width - text_w as f32) / 2.0;
     let y = rect.y + (rect.height - text_h as f32) / 2.0;
     self.draw_text(text, x, y, color);
+  }
+
+  /// Simple word wrapping for text that exceeds max_width.
+  fn wrap_text_simple(&self, text: &str, max_width: u32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    for word in text.split_whitespace() {
+      let test = if current_line.is_empty() {
+        word.to_string()
+      } else {
+        format!("{} {}", current_line, word)
+      };
+      if self.font.text_width(&test) <= max_width {
+        current_line = test;
+      } else if current_line.is_empty() {
+        // Single word wider than max — just add it
+        lines.push(word.to_string());
+      } else {
+        lines.push(current_line);
+        current_line = word.to_string();
+      }
+    }
+    if !current_line.is_empty() {
+      lines.push(current_line);
+    }
+    lines
   }
 
   /// Calculate the pixel size of text.

@@ -234,9 +234,7 @@ impl PhysicsWorld {
     for entity in entities {
       // Extract values from refs to avoid holding borrows across iterations
       let transform_data = world.get::<Transform>(entity).map(|t| (t.x, t.y));
-      let collider_data = world
-        .get::<Collider>(entity)
-        .map(|c| (*c).clone());
+      let collider_data = world.get::<Collider>(entity).map(|c| (*c).clone());
 
       if let (Some((x, y)), Some(collider)) = (transform_data, collider_data) {
         self.spatial_hash.insert_collider(entity, &collider, x, y);
@@ -253,21 +251,13 @@ impl PhysicsWorld {
     for (entity_a, entity_b) in pairs {
       // Extract values to avoid holding multiple RefCell borrows simultaneously
       let a_data = {
-        let pos = world
-          .get::<Transform>(entity_a)
-          .map(|t| (t.x, t.y));
-        let col = world
-          .get::<Collider>(entity_a)
-          .map(|c| (*c).clone());
+        let pos = world.get::<Transform>(entity_a).map(|t| (t.x, t.y));
+        let col = world.get::<Collider>(entity_a).map(|c| (*c).clone());
         pos.zip(col)
       };
       let b_data = {
-        let pos = world
-          .get::<Transform>(entity_b)
-          .map(|t| (t.x, t.y));
-        let col = world
-          .get::<Collider>(entity_b)
-          .map(|c| (*c).clone());
+        let pos = world.get::<Transform>(entity_b).map(|t| (t.x, t.y));
+        let col = world.get::<Collider>(entity_b).map(|c| (*c).clone());
         pos.zip(col)
       };
 

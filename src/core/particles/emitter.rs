@@ -78,7 +78,6 @@ pub enum EmissionShape {
   },
 }
 
-
 /// Particle emitter component.
 ///
 /// Attach to an entity with a Transform to create a particle effect at that location.

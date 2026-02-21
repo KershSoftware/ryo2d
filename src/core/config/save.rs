@@ -45,7 +45,7 @@
 //!
 //! // Or manually load/save:
 //! let mut settings = save_manager.load_system()?;
-//! settings.display.width = 1920; // or set via resolution string
+//! settings.width = 1920;
 //! settings.master_volume = 0.75;
 //! save_manager.save_system(&settings)?;
 //! ```
@@ -260,12 +260,9 @@ const GAME_EXTENSION: &str = "ryo-save";
 ///
 /// Without this, serde_json converts f32 → f64 naively, producing values like
 /// `0.4000000059604645` instead of `0.4`.
-fn serialize_f32_clean<S: serde::Serializer>(
-  value: &f32,
-  serializer: S,
-) -> Result<S::Ok, S::Error> {
-  let rounded = ((*value as f64) * 100.0).round() / 100.0;
-  serializer.serialize_f64(rounded)
+/// Round an f32 to 2 decimal places for clean JSON output.
+fn clean_f32(value: f32) -> f64 {
+  ((value as f64) * 100.0).round() / 100.0
 }
 
 /// User settings and configuration (Tier 1).
@@ -291,38 +288,35 @@ fn serialize_f32_clean<S: serde::Serializer>(
 /// - Custom key-value storage for game-specific env variables
 ///
 /// Saved as human-readable JSON to `{save_dir}/system.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone)]
 pub struct SystemState {
   /// Master volume (0.0 - 1.0)
-  #[serde(serialize_with = "serialize_f32_clean")]
   pub master_volume: f32,
   /// Music volume (0.0 - 1.0)
-  #[serde(serialize_with = "serialize_f32_clean")]
   pub music_volume: f32,
   /// Sound effects volume (0.0 - 1.0)
-  #[serde(serialize_with = "serialize_f32_clean")]
   pub sfx_volume: f32,
 
-  /// Display settings
-  pub display: DisplaySettings,
+  /// Window width
+  pub width: u32,
+  /// Window height
+  pub height: u32,
+  /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
+  pub display_mode: DisplayMode,
 
-  /// Show FPS counter (engine override, optional)
-  #[serde(default)]
-  pub show_fps: Option<bool>,
-
-  /// VSync preference (overrides display.vsync when present)
+  /// VSync preference
   /// - None: Use Mailbox with fallback to Immediate (best performance, no tearing)
   /// - Some(true): Use Mailbox with fallback to Fifo (vsync on)
   /// - Some(false): Use Immediate (vsync off, may tear)
-  #[serde(default)]
   pub vsync: Option<bool>,
+
+  /// Show FPS counter (engine override, optional)
+  pub show_fps: Option<bool>,
 
   /// Custom key-value storage for game-specific environment variables.
   ///
   /// Seeded from `Ryo.toml [env]` when creating a new `system.json`.
   /// Values preserve their native types (bool, int, float, string) from TOML/JSON.
-  #[serde(default)]
   pub env: HashMap<String, serde_json::Value>,
 }
 
@@ -423,53 +417,77 @@ pub fn parse_resolution(s: &str) -> Option<(u32, u32)> {
   None
 }
 
-/// Display configuration
-///
-/// Serializes resolution as a single `"resolution": "WxH"` string.
-/// Deserializes from both the new format and legacy `"width"/"height"` fields.
-#[derive(Debug, Clone)]
-pub struct DisplaySettings {
-  /// Window width
-  pub width: u32,
-  /// Window height
-  pub height: u32,
-  /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
-  pub display_mode: DisplayMode,
-  /// VSync enabled
-  pub vsync: bool,
-}
-
-impl Serialize for DisplaySettings {
+impl Serialize for SystemState {
   fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-    use serde::ser::SerializeStruct;
-    let mut state = serializer.serialize_struct("DisplaySettings", 3)?;
-    state.serialize_field("resolution", &format!("{}x{}", self.width, self.height))?;
-    state.serialize_field("display_mode", &self.display_mode)?;
-    state.serialize_field("vsync", &self.vsync)?;
-    state.end()
+    use serde::ser::SerializeMap;
+    // Count fields: volumes(3) + resolution + display_mode + vsync + show_fps + env
+    let mut map = serializer.serialize_map(None)?;
+    map.serialize_entry("master_volume", &clean_f32(self.master_volume))?;
+    map.serialize_entry("music_volume", &clean_f32(self.music_volume))?;
+    map.serialize_entry("sfx_volume", &clean_f32(self.sfx_volume))?;
+    map.serialize_entry("resolution", &format!("{}x{}", self.width, self.height))?;
+    map.serialize_entry("display_mode", &self.display_mode)?;
+    map.serialize_entry("vsync", &self.vsync)?;
+    if self.show_fps.is_some() {
+      map.serialize_entry("show_fps", &self.show_fps)?;
+    }
+    if !self.env.is_empty() {
+      map.serialize_entry("env", &self.env)?;
+    }
+    map.end()
   }
 }
 
-impl<'de> Deserialize<'de> for DisplaySettings {
+impl<'de> Deserialize<'de> for SystemState {
   fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    /// Helper for backward-compatible deserialization (supports old nested `display` format)
     #[derive(Deserialize)]
     struct Helper {
+      #[serde(default = "default_master_volume")]
+      master_volume: f32,
+      #[serde(default = "default_music_volume")]
+      music_volume: f32,
+      #[serde(default = "default_sfx_volume")]
+      sfx_volume: f32,
+      // Flat format fields
       resolution: Option<String>,
-      // Legacy fields for backward compat with old system.json
+      width: Option<u32>,
+      height: Option<u32>,
+      display_mode: Option<DisplayMode>,
+      #[serde(default)]
+      vsync: Option<bool>,
+      #[serde(default)]
+      show_fps: Option<bool>,
+      #[serde(default)]
+      env: HashMap<String, serde_json::Value>,
+      // Legacy nested format
+      display: Option<LegacyDisplay>,
+    }
+
+    #[derive(Deserialize)]
+    struct LegacyDisplay {
+      resolution: Option<String>,
       width: Option<u32>,
       height: Option<u32>,
       #[serde(default)]
       display_mode: DisplayMode,
-      #[serde(default = "default_vsync")]
-      vsync: bool,
+      #[serde(default)]
+      vsync: Option<bool>,
     }
 
-    fn default_vsync() -> bool {
-      true
+    fn default_master_volume() -> f32 {
+      0.8
+    }
+    fn default_music_volume() -> f32 {
+      1.0
+    }
+    fn default_sfx_volume() -> f32 {
+      1.0
     }
 
     let helper = Helper::deserialize(deserializer)?;
 
+    // Resolve resolution: flat fields take priority, then legacy nested display
     let (width, height) = if let Some(ref res) = helper.resolution {
       parse_resolution(res).unwrap_or_else(|| {
         eprintln!(
@@ -479,29 +497,44 @@ impl<'de> Deserialize<'de> for DisplaySettings {
         (1280, 720)
       })
     } else if let (Some(w), Some(h)) = (helper.width, helper.height) {
-      // Legacy format
       (w, h)
+    } else if let Some(ref display) = helper.display {
+      if let Some(ref res) = display.resolution {
+        parse_resolution(res).unwrap_or((1280, 720))
+      } else if let (Some(w), Some(h)) = (display.width, display.height) {
+        (w, h)
+      } else {
+        (1280, 720)
+      }
     } else {
       (1280, 720)
     };
 
-    Ok(DisplaySettings {
+    // Resolve display_mode: flat takes priority, then legacy nested
+    let display_mode = helper.display_mode.unwrap_or_else(|| {
+      helper
+        .display
+        .as_ref()
+        .map(|d| d.display_mode)
+        .unwrap_or_default()
+    });
+
+    // Resolve vsync: flat takes priority, then legacy nested
+    let vsync = helper
+      .vsync
+      .or_else(|| helper.display.as_ref().and_then(|d| d.vsync));
+
+    Ok(SystemState {
+      master_volume: helper.master_volume,
+      music_volume: helper.music_volume,
+      sfx_volume: helper.sfx_volume,
       width,
       height,
-      display_mode: helper.display_mode,
-      vsync: helper.vsync,
+      display_mode,
+      vsync,
+      show_fps: helper.show_fps,
+      env: helper.env,
     })
-  }
-}
-
-impl Default for DisplaySettings {
-  fn default() -> Self {
-    DisplaySettings {
-      width: 1280,
-      height: 720,
-      display_mode: DisplayMode::Windowed,
-      vsync: true,
-    }
   }
 }
 
@@ -511,9 +544,11 @@ impl Default for SystemState {
       master_volume: 0.8,
       music_volume: 1.0,
       sfx_volume: 1.0,
-      display: DisplaySettings::default(),
-      show_fps: None,
+      width: 1280,
+      height: 720,
+      display_mode: DisplayMode::Windowed,
       vsync: None,
+      show_fps: None,
       env: HashMap::new(),
     }
   }
@@ -533,15 +568,11 @@ impl SystemState {
       master_volume: defaults.master_volume,
       music_volume: defaults.music_volume,
       sfx_volume: defaults.sfx_volume,
-      display: DisplaySettings {
-        width: defaults.resolution.map(|(w, _)| w).unwrap_or(1280),
-        height: defaults.resolution.map(|(_, h)| h).unwrap_or(720),
-        display_mode: defaults.display_mode,
-        vsync: defaults.vsync,
-      },
-      // show_fps comes from [info] section via SystemDefaults
+      width: defaults.resolution.map(|(w, _)| w).unwrap_or(1280),
+      height: defaults.resolution.map(|(_, h)| h).unwrap_or(720),
+      display_mode: defaults.display_mode,
+      vsync: Some(defaults.vsync),
       show_fps: Some(defaults.show_fps),
-      vsync: None,
       env: defaults.env.clone(),
     }
   }
@@ -564,12 +595,12 @@ impl SystemState {
     // If display matches engine defaults but Ryo.toml specifies a different resolution,
     // update to use Ryo.toml values (one-time migration)
     if let Some((w, h)) = defaults.resolution
-      && self.display.width == 1280
-      && self.display.height == 720
+      && self.width == 1280
+      && self.height == 720
       && (w != 1280 || h != 720)
     {
-      self.display.width = w;
-      self.display.height = h;
+      self.width = w;
+      self.height = h;
       changed = true;
     }
 
@@ -827,9 +858,30 @@ impl SaveManager {
           serde_json::to_value(state).map_err(|e| SaveError::Serialization(e.to_string()))?;
         if let serde_json::Value::Object(new_map) = new_value {
           let mut merged = serde_json::Map::new();
+          // Migrate legacy nested `display` to flat keys
+          let has_legacy_display = existing_map.contains_key("display");
           for (key, _) in &existing_map {
-            if let Some(new_val) = new_map.get(key) {
+            if key == "display" {
+              // Replace legacy nested display with flat keys
+              for flat_key in ["resolution", "display_mode", "vsync"] {
+                if let Some(val) = new_map.get(flat_key) {
+                  merged.insert(flat_key.to_string(), val.clone());
+                }
+              }
+            } else if let Some(new_val) = new_map.get(key) {
               merged.insert(key.clone(), new_val.clone());
+            }
+          }
+          // Also include new flat keys that weren't in the old file
+          // (in case existing file was missing some keys)
+          if !has_legacy_display {
+            for key in ["resolution", "display_mode", "vsync"] {
+              if !merged.contains_key(key)
+                && existing_map.contains_key(key)
+                && let Some(val) = new_map.get(key)
+              {
+                merged.insert(key.to_string(), val.clone());
+              }
             }
           }
           let json = serde_json::to_string_pretty(&serde_json::Value::Object(merged))
@@ -942,22 +994,18 @@ impl SaveManager {
       let mut filtered = serde_json::Map::new();
 
       for (key, value) in &map {
-        let dominated_by_filter = match key.as_str() {
+        let include = match key.as_str() {
           "master_volume" => filter.contains(UserPreference::MasterVolume),
           "music_volume" => filter.contains(UserPreference::MusicVolume),
           "sfx_volume" => filter.contains(UserPreference::SfxVolume),
-          "display" => {
-            filter.contains(UserPreference::Resolution)
-              || filter.contains(UserPreference::DisplayMode)
-              || filter.contains(UserPreference::Vsync)
-          }
+          "resolution" => filter.contains(UserPreference::Resolution),
+          "display_mode" => filter.contains(UserPreference::DisplayMode),
           "vsync" => filter.contains(UserPreference::Vsync),
           "show_fps" => filter.contains(UserPreference::ShowFps),
           "env" => !defaults.env.is_empty(),
           _ => false,
         };
-
-        if dominated_by_filter {
+        if include {
           filtered.insert(key.clone(), value.clone());
         }
       }
@@ -1293,8 +1341,8 @@ mod tests {
     let mut state = SystemState::new();
     state.master_volume = 0.75;
     state.music_volume = 0.5;
-    state.display.width = 1920;
-    state.display.height = 1080;
+    state.width = 1920;
+    state.height = 1080;
     state.set_env("language", serde_json::Value::String("en".into()));
 
     manager.save_system(&state).unwrap();
@@ -1303,8 +1351,8 @@ mod tests {
     let loaded = manager.load_system().unwrap();
     assert_eq!(loaded.master_volume, 0.75);
     assert_eq!(loaded.music_volume, 0.5);
-    assert_eq!(loaded.display.width, 1920);
-    assert_eq!(loaded.display.height, 1080);
+    assert_eq!(loaded.width, 1920);
+    assert_eq!(loaded.height, 1080);
     assert_eq!(loaded.get_env_str("language"), Some("en"));
   }
 
@@ -1326,8 +1374,8 @@ mod tests {
 
     let mut state = SystemState::new();
     state.master_volume = 0.75;
-    state.display.width = 1920;
-    state.display.height = 1080;
+    state.width = 1920;
+    state.height = 1080;
     state.set_env("language", serde_json::Value::String("en".into()));
 
     manager.save_system(&state).unwrap();
@@ -1339,7 +1387,7 @@ mod tests {
     // Should be valid JSON
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
     assert_eq!(parsed["master_volume"], 0.75);
-    assert_eq!(parsed["display"]["resolution"], "1920x1080");
+    assert_eq!(parsed["resolution"], "1920x1080");
     assert_eq!(parsed["env"]["language"], "en");
 
     // Should be human-readable (contains newlines from pretty-print)
@@ -1531,10 +1579,10 @@ mod tests {
 
     let state = SystemState::from_defaults(&defaults);
 
-    assert_eq!(state.display.width, 1920);
-    assert_eq!(state.display.height, 1080);
-    assert!(!state.display.vsync);
-    assert_eq!(state.display.display_mode, DisplayMode::ExclusiveFullscreen);
+    assert_eq!(state.width, 1920);
+    assert_eq!(state.height, 1080);
+    assert_eq!(state.vsync, Some(false));
+    assert_eq!(state.display_mode, DisplayMode::ExclusiveFullscreen);
     assert_eq!(state.master_volume, 0.5);
     assert_eq!(state.music_volume, 0.7);
     assert_eq!(state.sfx_volume, 0.9);
@@ -1549,10 +1597,10 @@ mod tests {
     let state = SystemState::from_defaults(&defaults);
 
     // Engine defaults: 1280x720, vsync=true, windowed mode
-    assert_eq!(state.display.width, 1280);
-    assert_eq!(state.display.height, 720);
-    assert!(state.display.vsync);
-    assert_eq!(state.display.display_mode, DisplayMode::Windowed);
+    assert_eq!(state.width, 1280);
+    assert_eq!(state.height, 720);
+    assert_eq!(state.vsync, Some(true));
+    assert_eq!(state.display_mode, DisplayMode::Windowed);
     // Engine defaults: master=0.8, music=1.0, sfx=1.0
     assert_eq!(state.master_volume, 0.8);
     assert_eq!(state.music_volume, 1.0);
@@ -1576,8 +1624,8 @@ mod tests {
 
     // State with engine default resolution
     let mut state = SystemState::from_defaults(&engine_defaults);
-    assert_eq!(state.display.width, 1280);
-    assert_eq!(state.display.height, 720);
+    assert_eq!(state.width, 1280);
+    assert_eq!(state.height, 720);
 
     // Developer wants different resolution in Ryo.toml
     let dev_defaults = super::super::workspace::SystemDefaults {
@@ -1588,8 +1636,8 @@ mod tests {
     // Merge should update resolution since it was at engine defaults
     let changed = state.merge_defaults(&dev_defaults);
     assert!(changed);
-    assert_eq!(state.display.width, 800);
-    assert_eq!(state.display.height, 600);
+    assert_eq!(state.width, 800);
+    assert_eq!(state.height, 600);
   }
 
   #[test]
@@ -1598,8 +1646,8 @@ mod tests {
 
     // User modified their resolution (not at engine defaults)
     let mut state = SystemState::new();
-    state.display.width = 1600;
-    state.display.height = 900;
+    state.width = 1600;
+    state.height = 900;
 
     // Developer has different defaults
     let dev_defaults = super::super::workspace::SystemDefaults {
@@ -1610,17 +1658,17 @@ mod tests {
     // Merge should NOT change user's custom resolution
     let changed = state.merge_defaults(&dev_defaults);
     assert!(!changed);
-    assert_eq!(state.display.width, 1600);
-    assert_eq!(state.display.height, 900);
+    assert_eq!(state.width, 1600);
+    assert_eq!(state.height, 900);
   }
 
   #[test]
-  fn display_settings_default_uses_engine_defaults() {
-    let settings = DisplaySettings::default();
-    assert_eq!(settings.width, 1280);
-    assert_eq!(settings.height, 720);
-    assert!(settings.vsync);
-    assert_eq!(settings.display_mode, DisplayMode::Windowed);
+  fn system_state_default_uses_engine_defaults() {
+    let state = SystemState::default();
+    assert_eq!(state.width, 1280);
+    assert_eq!(state.height, 720);
+    assert_eq!(state.vsync, None);
+    assert_eq!(state.display_mode, DisplayMode::Windowed);
   }
 
   // ==========================================================================
@@ -1651,8 +1699,8 @@ mod tests {
     let state = manager.load_or_create_system(&defaults).unwrap();
 
     assert!(manager.has_system_save());
-    assert_eq!(state.display.width, 1024);
-    assert_eq!(state.display.height, 768);
+    assert_eq!(state.width, 1024);
+    assert_eq!(state.height, 768);
     assert_eq!(state.master_volume, 0.9);
     assert_eq!(state.show_fps, Some(true));
   }
@@ -1665,8 +1713,8 @@ mod tests {
     // Create initial state with custom values
     let mut initial = SystemState::new();
     initial.master_volume = 0.42;
-    initial.display.width = 1600;
-    initial.display.height = 900;
+    initial.width = 1600;
+    initial.height = 900;
     manager.save_system(&initial).unwrap();
 
     // load_or_create should load existing, not overwrite
@@ -1674,8 +1722,8 @@ mod tests {
     let state = manager.load_or_create_system(&defaults).unwrap();
 
     assert_eq!(state.master_volume, 0.42);
-    assert_eq!(state.display.width, 1600);
-    assert_eq!(state.display.height, 900);
+    assert_eq!(state.width, 1600);
+    assert_eq!(state.height, 900);
   }
 
   #[test]
@@ -1698,8 +1746,8 @@ mod tests {
     let state = manager.load_or_create_system(&dev_defaults).unwrap();
 
     // Resolution should be updated (migrated from engine defaults)
-    assert_eq!(state.display.width, 800);
-    assert_eq!(state.display.height, 600);
+    assert_eq!(state.width, 800);
+    assert_eq!(state.height, 600);
   }
 
   // ==========================================================================
@@ -1734,49 +1782,47 @@ mod tests {
   }
 
   // ==========================================================================
-  // DisplaySettings serde tests
+  // SystemState flat display field serde tests
   // ==========================================================================
 
   #[test]
-  fn display_settings_serializes_resolution_string() {
-    let settings = DisplaySettings {
-      width: 1920,
-      height: 1080,
-      display_mode: DisplayMode::Windowed,
-      vsync: true,
-    };
+  fn system_state_serializes_resolution_as_string() {
+    let mut state = SystemState::default();
+    state.width = 1920;
+    state.height = 1080;
 
-    let json = serde_json::to_string(&settings).unwrap();
+    let json = serde_json::to_string(&state).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
     assert_eq!(parsed["resolution"], "1920x1080");
-    // Should NOT have separate width/height fields
+    // No nested display object
+    assert!(parsed.get("display").is_none());
+    // No separate width/height fields in JSON
     assert!(parsed.get("width").is_none());
     assert!(parsed.get("height").is_none());
   }
 
   #[test]
-  fn display_settings_deserializes_resolution_string() {
+  fn system_state_deserializes_flat_format() {
     let json = r#"{"resolution": "800x600", "display_mode": "windowed", "vsync": false}"#;
-    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+    let state: SystemState = serde_json::from_str(json).unwrap();
 
-    assert_eq!(settings.width, 800);
-    assert_eq!(settings.height, 600);
-    assert!(!settings.vsync);
-    assert_eq!(settings.display_mode, DisplayMode::Windowed);
+    assert_eq!(state.width, 800);
+    assert_eq!(state.height, 600);
+    assert_eq!(state.vsync, Some(false));
+    assert_eq!(state.display_mode, DisplayMode::Windowed);
   }
 
   #[test]
-  fn display_settings_roundtrip_serde() {
-    let original = DisplaySettings {
-      width: 2560,
-      height: 1440,
-      display_mode: DisplayMode::BorderlessFullscreen,
-      vsync: true,
-    };
+  fn system_state_roundtrip_serde() {
+    let mut original = SystemState::default();
+    original.width = 2560;
+    original.height = 1440;
+    original.display_mode = DisplayMode::BorderlessFullscreen;
+    original.vsync = Some(true);
 
     let json = serde_json::to_string(&original).unwrap();
-    let deserialized: DisplaySettings = serde_json::from_str(&json).unwrap();
+    let deserialized: SystemState = serde_json::from_str(&json).unwrap();
 
     assert_eq!(deserialized.width, original.width);
     assert_eq!(deserialized.height, original.height);
@@ -1785,50 +1831,80 @@ mod tests {
   }
 
   #[test]
-  fn display_settings_deserializes_legacy_width_height() {
-    // Old system.json format with separate width/height fields
-    let json = r#"{"width": 1600, "height": 900, "display_mode": "windowed", "vsync": true}"#;
-    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+  fn system_state_deserializes_legacy_nested_display() {
+    // Old system.json with nested display object
+    let json = r#"{
+      "master_volume": 0.8,
+      "display": {
+        "resolution": "1600x900",
+        "display_mode": "windowed",
+        "vsync": true
+      }
+    }"#;
+    let state: SystemState = serde_json::from_str(json).unwrap();
 
-    assert_eq!(settings.width, 1600);
-    assert_eq!(settings.height, 900);
+    assert_eq!(state.width, 1600);
+    assert_eq!(state.height, 900);
+    assert_eq!(state.display_mode, DisplayMode::Windowed);
+    assert_eq!(state.vsync, Some(true));
   }
 
   #[test]
-  fn display_settings_resolution_takes_priority_over_legacy() {
-    // If both resolution string and legacy width/height exist, resolution wins
-    let json = r#"{"resolution": "1920x1080", "width": 800, "height": 600, "display_mode": "windowed", "vsync": true}"#;
-    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+  fn system_state_flat_fields_take_priority_over_legacy_nested() {
+    // If both flat and nested exist, flat wins
+    let json = r#"{
+      "resolution": "1920x1080",
+      "display_mode": "borderless_fullscreen",
+      "vsync": false,
+      "display": {
+        "resolution": "800x600",
+        "display_mode": "windowed",
+        "vsync": true
+      }
+    }"#;
+    let state: SystemState = serde_json::from_str(json).unwrap();
 
-    assert_eq!(settings.width, 1920);
-    assert_eq!(settings.height, 1080);
+    assert_eq!(state.width, 1920);
+    assert_eq!(state.height, 1080);
+    assert_eq!(state.display_mode, DisplayMode::BorderlessFullscreen);
+    assert_eq!(state.vsync, Some(false));
   }
 
   #[test]
-  fn display_settings_malformed_resolution_falls_back_to_defaults() {
-    let json = r#"{"resolution": "not_valid", "display_mode": "windowed", "vsync": true}"#;
-    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+  fn system_state_deserializes_legacy_width_height() {
+    let json = r#"{"width": 1600, "height": 900, "display_mode": "windowed"}"#;
+    let state: SystemState = serde_json::from_str(json).unwrap();
 
-    // Falls back to engine defaults
-    assert_eq!(settings.width, 1280);
-    assert_eq!(settings.height, 720);
+    assert_eq!(state.width, 1600);
+    assert_eq!(state.height, 900);
   }
 
   #[test]
-  fn display_settings_missing_resolution_falls_back_to_defaults() {
-    let json = r#"{"display_mode": "windowed", "vsync": true}"#;
-    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+  fn system_state_resolution_takes_priority_over_legacy_width_height() {
+    let json =
+      r#"{"resolution": "1920x1080", "width": 800, "height": 600, "display_mode": "windowed"}"#;
+    let state: SystemState = serde_json::from_str(json).unwrap();
 
-    assert_eq!(settings.width, 1280);
-    assert_eq!(settings.height, 720);
+    assert_eq!(state.width, 1920);
+    assert_eq!(state.height, 1080);
   }
 
   #[test]
-  fn display_settings_vsync_defaults_true() {
-    let json = r#"{"resolution": "800x600", "display_mode": "windowed"}"#;
-    let settings: DisplaySettings = serde_json::from_str(json).unwrap();
+  fn system_state_malformed_resolution_falls_back_to_defaults() {
+    let json = r#"{"resolution": "not_valid", "display_mode": "windowed"}"#;
+    let state: SystemState = serde_json::from_str(json).unwrap();
 
-    assert!(settings.vsync);
+    assert_eq!(state.width, 1280);
+    assert_eq!(state.height, 720);
+  }
+
+  #[test]
+  fn system_state_missing_resolution_falls_back_to_defaults() {
+    let json = r#"{"display_mode": "windowed"}"#;
+    let state: SystemState = serde_json::from_str(json).unwrap();
+
+    assert_eq!(state.width, 1280);
+    assert_eq!(state.height, 720);
   }
 
   // ==========================================================================
@@ -1841,28 +1917,25 @@ mod tests {
     let manager = SaveManager::new(dir.path()).unwrap();
 
     let mut state = SystemState::new();
-    state.display.width = 1920;
-    state.display.height = 1080;
-    state.display.display_mode = DisplayMode::BorderlessFullscreen;
+    state.width = 1920;
+    state.height = 1080;
+    state.display_mode = DisplayMode::BorderlessFullscreen;
     state.master_volume = 0.42;
 
     manager.save_system(&state).unwrap();
 
-    // Verify JSON on disk uses resolution string
+    // Verify JSON on disk uses flat resolution string
     let path = dir.path().join("system.json");
     let content = std::fs::read_to_string(&path).unwrap();
     let raw: serde_json::Value = serde_json::from_str(&content).unwrap();
-    assert_eq!(raw["display"]["resolution"], "1920x1080");
-    assert!(raw["display"].get("width").is_none());
+    assert_eq!(raw["resolution"], "1920x1080");
+    assert!(raw.get("display").is_none());
 
     // Load it back and verify values roundtrip
     let loaded = manager.load_system().unwrap();
-    assert_eq!(loaded.display.width, 1920);
-    assert_eq!(loaded.display.height, 1080);
-    assert_eq!(
-      loaded.display.display_mode,
-      DisplayMode::BorderlessFullscreen
-    );
+    assert_eq!(loaded.width, 1920);
+    assert_eq!(loaded.height, 1080);
+    assert_eq!(loaded.display_mode, DisplayMode::BorderlessFullscreen);
     assert_eq!(loaded.master_volume, 0.42);
   }
 
@@ -1891,8 +1964,8 @@ mod tests {
 
     // Load should parse legacy width/height fields
     let loaded = manager.load_system().unwrap();
-    assert_eq!(loaded.display.width, 1600);
-    assert_eq!(loaded.display.height, 900);
+    assert_eq!(loaded.width, 1600);
+    assert_eq!(loaded.height, 900);
     assert_eq!(loaded.master_volume, 0.75);
   }
 
@@ -1923,12 +1996,11 @@ mod tests {
     let loaded = manager.load_system().unwrap();
     manager.save_system(&loaded).unwrap();
 
-    // Verify it was re-saved in new format
+    // Verify it was re-saved in flat format (no nested display)
     let content = std::fs::read_to_string(&path).unwrap();
     let raw: serde_json::Value = serde_json::from_str(&content).unwrap();
-    assert_eq!(raw["display"]["resolution"], "1600x900");
-    assert!(raw["display"].get("width").is_none());
-    assert!(raw["display"].get("height").is_none());
+    assert_eq!(raw["resolution"], "1600x900");
+    assert!(raw.get("display").is_none());
   }
 
   // ==========================================================================
@@ -2145,7 +2217,7 @@ mod tests {
 
     // Returned state is fully populated
     assert_eq!(state.master_volume, 0.8);
-    assert_eq!(state.display.width, 1280);
+    assert_eq!(state.width, 1280);
 
     // But file on disk only has volume keys
     let path = dir.path().join("system.json");
@@ -2154,7 +2226,8 @@ mod tests {
     assert!(raw.get("master_volume").is_some());
     assert!(raw.get("music_volume").is_some());
     assert!(raw.get("sfx_volume").is_some());
-    assert!(raw.get("display").is_none());
+    assert!(raw.get("resolution").is_none());
+    assert!(raw.get("display_mode").is_none());
     assert!(raw.get("show_fps").is_none());
     assert!(raw.get("vsync").is_none());
     assert!(raw.get("env").is_none());
@@ -2181,7 +2254,7 @@ mod tests {
     state.music_volume = 0.7;
     manager.save_system(&state).unwrap();
 
-    // File should still only have volume keys (not display, show_fps, etc.)
+    // File should still only have volume keys (not display fields, show_fps, etc.)
     let path = dir.path().join("system.json");
     let raw: serde_json::Value =
       serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -2189,7 +2262,8 @@ mod tests {
     let music = raw["music_volume"].as_f64().unwrap();
     assert!((master - 0.5).abs() < 0.001);
     assert!((music - 0.7).abs() < 0.001);
-    assert!(raw.get("display").is_none());
+    assert!(raw.get("resolution").is_none());
+    assert!(raw.get("display_mode").is_none());
     assert!(raw.get("show_fps").is_none());
     assert!(raw.get("vsync").is_none());
   }
@@ -2207,8 +2281,9 @@ mod tests {
     let raw: serde_json::Value =
       serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert!(raw.get("master_volume").is_some());
-    assert!(raw.get("display").is_some());
-    assert!(raw.get("env").is_some());
+    assert!(raw.get("resolution").is_some());
+    assert!(raw.get("display_mode").is_some());
+    assert!(raw.get("vsync").is_some());
   }
 
   #[test]
@@ -2230,8 +2305,8 @@ mod tests {
     // Loading the partial file should fill missing fields from serde defaults
     let loaded = manager.load_system().unwrap();
     assert_eq!(loaded.master_volume, 0.8); // from file
-    assert_eq!(loaded.display.width, 1280); // from serde default
-    assert_eq!(loaded.display.height, 720);
+    assert_eq!(loaded.width, 1280); // from serde default
+    assert_eq!(loaded.height, 720);
     assert!(loaded.show_fps.is_none()); // from serde default
   }
 }

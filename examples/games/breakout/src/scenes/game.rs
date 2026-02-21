@@ -980,10 +980,7 @@ impl Scene for GameScene {
           .gamepad_button_pressed_and_consume(GamepadButton::Start))
     {
       self.escape_was_released = false;
-      return SceneAction::Push(Box::new(PauseScene::new(
-        self.score,
-        self.high_score,
-      )));
+      return SceneAction::Push(Box::new(PauseScene::new(self.score, self.high_score)));
     }
 
     // Check for game over

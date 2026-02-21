@@ -720,6 +720,10 @@ impl<'a> UiContext<'a> {
   /// Draw centered text within a rectangle.
   pub fn draw_text_centered(&mut self, text: &str, rect: Rect, color: Color) {
     let (text_w, text_h) = self.font.text_size(text);
+    if text_w as f32 > rect.width {
+      self.draw_text_wrapped_centered(text, rect, color);
+      return;
+    }
     let x = rect.x + (rect.width - text_w as f32) / 2.0;
     let y = rect.y + (rect.height - text_h as f32) / 2.0;
     self.draw_text(text, x, y, color);
@@ -770,14 +774,16 @@ impl<'a> UiContext<'a> {
     let max_width = rect.width as u32;
     let lines = self.font.wrap_text(text, max_width);
     let line_height = self.font.char_height() as f32;
-    let total_height = lines.len() as f32 * line_height;
+    let line_spacing = 2.0;
+    let total_height =
+      lines.len() as f32 * line_height + (lines.len().saturating_sub(1)) as f32 * line_spacing;
 
     let start_y = rect.y + (rect.height - total_height) / 2.0;
 
     for (i, line) in lines.iter().enumerate() {
       let line_width = self.font.text_width(line) as f32;
       let line_x = rect.x + (rect.width - line_width) / 2.0;
-      let line_y = start_y + (i as f32 * line_height);
+      let line_y = start_y + i as f32 * (line_height + line_spacing);
       self.draw_text(line, line_x, line_y, color);
     }
   }

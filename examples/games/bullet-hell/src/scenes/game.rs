@@ -796,21 +796,8 @@ impl GameScene {
     }
 
     // Apply damage to player if hit
-    if player_hit
-      && let Some(player_e) = self.player
-      && let Some(mut player) = ctx.world.get_mut::<Player>(player_e)
-    {
-      let was_invincible = player.is_invincible();
-      player.take_damage();
-      self.player_lives = player.lives;
-      self.player_invincible = player.is_invincible();
-      // Camera shake and hurt sound on hit (only if not invincible)
-      if !was_invincible {
-        ctx.camera.add_trauma(0.5);
-        if let Some(audio) = &mut ctx.audio {
-          let _ = audio.play_sound("hurt");
-        }
-      }
+    if player_hit {
+      self.apply_player_damage(ctx);
     }
 
     // Remove LaserTracer component from entities that reached target
@@ -1258,15 +1245,7 @@ impl GameScene {
 
     // Handle player hit
     if player_hit {
-      self.player_lives = self.player_lives.saturating_sub(1);
-      self.player_invincible = true;
-
-      // Flash player
-      if let Some(player) = self.player
-        && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player)
-      {
-        renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 100, 100), 1.0));
-      }
+      self.apply_player_damage(ctx);
 
       // Spawn explosion at player
       let player_explosion_pos = self
@@ -1274,10 +1253,6 @@ impl GameScene {
         .and_then(|p| ctx.world.get::<Transform>(p).map(|t| (t.x, t.y)));
       if let Some((x, y)) = player_explosion_pos {
         self.create_explosion(ctx, x, y);
-      }
-
-      if let Some(audio) = &mut ctx.audio {
-        let _ = audio.play_sound_with("hit", SoundOptions::new().volume(0.5));
       }
     }
 
@@ -2288,28 +2263,7 @@ impl GameScene {
 
     if dist_sq < collision_dist * collision_dist {
       drop(player_transform);
-      let was_invincible = ctx
-        .world
-        .get::<Player>(player_entity)
-        .map(|p| p.is_invincible())
-        .unwrap_or(false);
-
-      if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
-        player.take_damage();
-      }
-
-      // Apply effects only if not invincible
-      if !was_invincible {
-        // Apply flash shader effect when hit
-        if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_entity) {
-          renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 0, 0), 0.7));
-        }
-        // Camera shake and hurt sound on hit
-        ctx.camera.add_trauma(0.5);
-        if let Some(audio) = &mut ctx.audio {
-          let _ = audio.play_sound("hurt");
-        }
-      }
+      self.apply_player_damage(ctx);
       return true;
     }
 
@@ -2752,7 +2706,13 @@ impl Scene for GameScene {
 
     // Hit indicator
     if invincible {
-      ui.draw_text_anchored("HIT!", Anchor::TopCenter, 0.0, 200.0, Color::rgb(255, 50, 50));
+      ui.draw_text_anchored(
+        "HIT!",
+        Anchor::TopCenter,
+        0.0,
+        200.0,
+        Color::rgb(255, 50, 50),
+      );
     }
 
     SceneAction::Continue
@@ -2846,6 +2806,33 @@ impl GameScene {
     }
   }
 
+  /// Apply damage to the player: flash, camera shake, and hurt sound.
+  /// Returns true if damage was actually applied (player was not invincible).
+  fn apply_player_damage(&mut self, ctx: &mut SceneContext) -> bool {
+    let Some(player_e) = self.player else {
+      return false;
+    };
+    let Some(mut player) = ctx.world.get_mut::<Player>(player_e) else {
+      return false;
+    };
+    let was_invincible = player.is_invincible();
+    player.take_damage();
+    self.player_lives = player.lives;
+    self.player_invincible = player.is_invincible();
+    drop(player);
+
+    if !was_invincible {
+      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_e) {
+        renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 100, 100), 1.0));
+      }
+      ctx.camera.add_trauma(0.5);
+      if let Some(audio) = &mut ctx.audio {
+        let _ = audio.play_sound("hurt");
+      }
+    }
+    !was_invincible
+  }
+
   /// Check if a pixel in the heart pattern has an empty neighbor
   fn has_empty_neighbor(pattern: &[[u8; 9]; 8], row: usize, col: usize) -> bool {
     let directions: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
@@ -2861,5 +2848,4 @@ impl GameScene {
     }
     false
   }
-
 }

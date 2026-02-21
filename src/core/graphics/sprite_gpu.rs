@@ -265,7 +265,10 @@ struct CachedTexture {
 }
 
 /// GPU-based sprite renderer with per-sprite shader effects
-#[expect(dead_code, reason = "some fields reserved for future shader pipeline use")]
+#[expect(
+  dead_code,
+  reason = "some fields reserved for future shader pipeline use"
+)]
 pub struct SpriteGpuRenderer {
   // Shader pipelines (one per effect type + base)
   base_pipeline: wgpu::RenderPipeline,

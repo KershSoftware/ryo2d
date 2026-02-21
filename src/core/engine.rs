@@ -1216,6 +1216,7 @@ impl Engine {
         time_control: &mut self.time_control,
         time: time_info,
         scale_factor: self.scale_factor,
+        display_mode: self.config.display_mode,
         command_registry: &mut self.command_registry,
         scope_id: 0, // Game-level scope (permanent)
       };
@@ -2233,6 +2234,7 @@ impl ApplicationHandler for Engine {
           time_control: &mut self.time_control,
           time: time_info,
           scale_factor: self.scale_factor,
+          display_mode: self.config.display_mode,
           command_registry: &mut self.command_registry,
           scope_id: 0, // Game-level scope (permanent)
         };
@@ -3545,13 +3547,13 @@ impl EngineBuilder {
     {
       // User preferences have highest priority - always override builder calls
       if filter.contains(UserPreference::Resolution) {
-        self.config.width = system_state.display.width;
-        self.config.height = system_state.display.height;
+        self.config.width = system_state.width;
+        self.config.height = system_state.height;
         self.resolution_set = true;
         self.resolution_user_pref = true;
       }
       if filter.contains(UserPreference::DisplayMode) {
-        self.config.display_mode = system_state.display.display_mode;
+        self.config.display_mode = system_state.display_mode;
         self.display_mode_set = true;
         self.display_mode_user_pref = true;
       }
@@ -3565,7 +3567,7 @@ impl EngineBuilder {
 
       // Apply vsync if in filter (use display.vsync as fallback when root vsync is None)
       if filter.contains(UserPreference::Vsync) {
-        self.vsync = system_state.vsync.or(Some(system_state.display.vsync));
+        self.vsync = system_state.vsync;
         self.vsync_user_pref = true;
       }
 
@@ -3727,13 +3729,19 @@ impl EngineBuilder {
       if let Some(v) = option_env!("RYO_EMBED_ENABLE_PROFILER") {
         config.debug.enable_profiler = v.parse().unwrap_or(false);
       }
-      if !self.master_volume_user_pref && let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME") {
+      if !self.master_volume_user_pref
+        && let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME")
+      {
         master_volume = vol.parse().unwrap_or(0.7);
       }
-      if !self.music_volume_user_pref && let Some(vol) = option_env!("RYO_EMBED_MUSIC_VOLUME") {
+      if !self.music_volume_user_pref
+        && let Some(vol) = option_env!("RYO_EMBED_MUSIC_VOLUME")
+      {
         music_volume = vol.parse().unwrap_or(1.0);
       }
-      if !self.sfx_volume_user_pref && let Some(vol) = option_env!("RYO_EMBED_SFX_VOLUME") {
+      if !self.sfx_volume_user_pref
+        && let Some(vol) = option_env!("RYO_EMBED_SFX_VOLUME")
+      {
         sfx_volume = vol.parse().unwrap_or(1.0);
       }
       if let Some(title) = option_env!("RYO_EMBED_TITLE")

@@ -195,8 +195,16 @@ impl Scene for MainMenuScene {
 
         // Occasional violent jerk at high charge
         let do_jerk = self.random(6.0) < 0.02 * charge_sq;
-        let jerk_x = if do_jerk { (self.random(7.0) - 0.5) * 40.0 } else { 0.0 };
-        let jerk_y = if do_jerk { (self.random(8.0) - 0.5) * 40.0 } else { 0.0 };
+        let jerk_x = if do_jerk {
+          (self.random(7.0) - 0.5) * 40.0
+        } else {
+          0.0
+        };
+        let jerk_y = if do_jerk {
+          (self.random(8.0) - 0.5) * 40.0
+        } else {
+          0.0
+        };
 
         transform.x = self.mouse_x + bob_x + wobble_x + twitch_x + jerk_x;
         transform.y = self.mouse_y + bob_y + wobble_y + twitch_y + jerk_y;

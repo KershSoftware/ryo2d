@@ -189,6 +189,8 @@ pub struct SceneContext<'a> {
   pub time: TimeInfo,
   /// Current window DPI scale factor (1.0 = standard, 2.0 = HiDPI/Retina)
   pub scale_factor: f64,
+  /// Current display mode (windowed, borderless, fullscreen)
+  pub display_mode: DisplayMode,
   /// Console command registry for registering custom commands
   pub(crate) command_registry: &'a mut CommandRegistry,
   /// Unique scope ID for this context (used for command handler cleanup)
@@ -235,6 +237,19 @@ impl<'a> SceneContext<'a> {
   /// ```
   pub fn scale_factor(&self) -> f64 {
     self.scale_factor
+  }
+
+  /// Get the current display mode.
+  ///
+  /// Returns the engine's active display mode (windowed, borderless, fullscreen).
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// let mode = ctx.display_mode();
+  /// ```
+  pub fn display_mode(&self) -> DisplayMode {
+    self.display_mode
   }
 
   /// Request a display mode change (windowed, fullscreen, borderless).
@@ -1517,10 +1532,23 @@ impl SceneManager {
   /// Render GPU content for the active scene.
   ///
   /// Called during GPU rendering phase for instanced sprite rendering.
-  /// Only renders GPU content for the top scene.
+  /// Renders from bottom to top, respecting `is_transparent()`.
   pub fn render_gpu(&mut self, ctx: &mut super::game::GpuRenderContext) {
-    if let Some(scene) = self.scenes.last_mut() {
-      scene.render_gpu(ctx);
+    if self.scenes.is_empty() {
+      return;
+    }
+
+    // Find the first scene that's not transparent (render from there)
+    let mut render_from = self.scenes.len() - 1;
+    for i in (0..self.scenes.len()).rev() {
+      render_from = i;
+      if i == 0 || !self.scenes[i].is_transparent() {
+        break;
+      }
+    }
+
+    for i in render_from..self.scenes.len() {
+      self.scenes[i].render_gpu(ctx);
     }
   }
 
@@ -1705,6 +1733,7 @@ impl Game for SceneGame {
       time_control: ctx.time_control,
       time: ctx.time,
       scale_factor: ctx.scale_factor,
+      display_mode: ctx.display_mode,
       command_registry: ctx.command_registry,
       scope_id: self.current_scope_id,
     };
@@ -1743,6 +1772,7 @@ impl Game for SceneGame {
       time_control: ctx.time_control,
       time: ctx.time,
       scale_factor: ctx.scale_factor,
+      display_mode: ctx.display_mode,
       command_registry: ctx.command_registry,
       scope_id: self.current_scope_id,
     };

@@ -76,7 +76,13 @@ impl Scene for GameOverScene {
       );
     } else {
       let high_text = format!("High Score: {}", self.high_score);
-      ui.draw_text_anchored(&high_text, Anchor::TopCenter, 0.0, 270.0, Color::rgb(200, 200, 200));
+      ui.draw_text_anchored(
+        &high_text,
+        Anchor::TopCenter,
+        0.0,
+        270.0,
+        Color::rgb(200, 200, 200),
+      );
     }
 
     // Restart button

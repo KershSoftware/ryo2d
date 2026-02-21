@@ -53,11 +53,23 @@ impl Scene for GameOverScene {
     );
 
     // Game Over title
-    ui.draw_text_anchored("GAME OVER", Anchor::TopCenter, 0.0, 200.0, Color::rgb(255, 50, 50));
+    ui.draw_text_anchored(
+      "GAME OVER",
+      Anchor::TopCenter,
+      0.0,
+      200.0,
+      Color::rgb(255, 50, 50),
+    );
 
     // Survival time
     let time_text = format!("Survived: {:.1}s", self.survival_time);
-    ui.draw_text_anchored(&time_text, Anchor::TopCenter, 0.0, 280.0, Color::rgb(255, 255, 255));
+    ui.draw_text_anchored(
+      &time_text,
+      Anchor::TopCenter,
+      0.0,
+      280.0,
+      Color::rgb(255, 255, 255),
+    );
 
     // Best time
     let is_new_record = self.survival_time >= self.best_time && self.best_time > 0.0;

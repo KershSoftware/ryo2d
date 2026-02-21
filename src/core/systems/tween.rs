@@ -34,9 +34,7 @@ impl TweenSystem {
       }
 
       // Check if tween is playing before borrowing mutably
-      let should_update = world
-        .get::<Tween>(entity)
-        .is_some_and(|t| t.playing);
+      let should_update = world.get::<Tween>(entity).is_some_and(|t| t.playing);
 
       if !should_update {
         continue;
@@ -96,12 +94,10 @@ impl TweenSystem {
       }
 
       // Capture color start values if current tween has color targets and hasn't started
-      let needs_color_capture = world
-        .get::<TweenSequence>(entity)
-        .is_some_and(|s| {
-          s.current()
-            .is_some_and(|t| t.has_color_targets() && !t.has_started())
-        });
+      let needs_color_capture = world.get::<TweenSequence>(entity).is_some_and(|s| {
+        s.current()
+          .is_some_and(|t| t.has_color_targets() && !t.has_started())
+      });
 
       if needs_color_capture && let Some(renderable) = world.get::<Renderable>(entity) {
         let alpha = renderable.alpha;

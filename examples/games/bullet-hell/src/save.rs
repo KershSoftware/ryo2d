@@ -56,7 +56,7 @@ pub fn save_display_mode(display_mode: DisplayMode) {
     .unwrap_or_else(|_| SystemState::from_defaults(&workspace.config().system));
 
   // Update display mode only (resolution is fixed by game design)
-  system_state.display.display_mode = display_mode;
+  system_state.display_mode = display_mode;
 
   // Save back to system.json
   let _ = save_manager.save_system(&system_state);

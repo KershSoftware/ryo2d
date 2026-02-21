@@ -118,8 +118,8 @@ pub mod prelude {
   pub use crate::core::graphics::Camera;
 
   // Parallax backgrounds (GPU-accelerated)
-  pub use crate::core::graphics::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
   pub use crate::core::graphics::TileMode;
+  pub use crate::core::graphics::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
 
   // Assets
   pub use crate::core::asset::{
@@ -185,8 +185,8 @@ pub mod prelude {
 
   // Save system
   pub use crate::core::config::{
-    DisplayMode, DisplaySettings, EntitySnapshot, GameSaveData, Resolution, SaveManager,
-    SystemState, UserPreference, UserPreferenceFilter, WorldState, compress_data, decompress_data,
+    DisplayMode, EntitySnapshot, GameSaveData, Resolution, SaveManager, SystemState,
+    UserPreference, UserPreferenceFilter, WorldState, compress_data, decompress_data,
     parse_resolution,
   };
 
