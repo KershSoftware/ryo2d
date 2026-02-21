@@ -109,17 +109,6 @@ impl CameraShakeDemoScene {
 
 impl Scene for CameraShakeDemoScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    println!("Camera Shake Demo initialized!");
-    println!("  1: Small shake (0.2)");
-    println!("  2: Medium shake (0.5)");
-    println!("  3: Large shake (0.8)");
-    println!("  Space: Maximum shake (1.0)");
-    println!("  Q/W/E: Curve (Linear/InQuad/InCubic)");
-    println!("  R: Reset trauma");
-    println!("  Up/Down: Adjust max offset");
-    println!("  Left/Right: Adjust decay rate");
-    println!("  ESC: Exit");
-
     // Apply initial shake config
     ctx.camera.configure_shake(self.max_offset, self.decay_rate);
     ctx.camera.set_shake_curve(self.intensity_curve);
@@ -138,67 +127,55 @@ impl Scene for CameraShakeDemoScene {
     // Trigger different shake intensities
     if ctx.input.key_pressed(KeyCode::Digit1) {
       ctx.camera.add_trauma(0.2);
-      println!("Small shake: trauma now {:.2}", ctx.camera.trauma());
     }
     if ctx.input.key_pressed(KeyCode::Digit2) {
       ctx.camera.add_trauma(0.5);
-      println!("Medium shake: trauma now {:.2}", ctx.camera.trauma());
     }
     if ctx.input.key_pressed(KeyCode::Digit3) {
       ctx.camera.add_trauma(0.8);
-      println!("Large shake: trauma now {:.2}", ctx.camera.trauma());
     }
     if ctx.input.key_pressed(KeyCode::Space) {
       ctx.camera.add_trauma(1.0);
-      println!("Maximum shake: trauma now {:.2}", ctx.camera.trauma());
     }
 
     // Change intensity curve
     if ctx.input.key_pressed(KeyCode::KeyQ) {
       self.intensity_curve = Ease::Linear;
       ctx.camera.set_shake_curve(self.intensity_curve);
-      println!("Curve: Linear (proportional shake)");
     }
     if ctx.input.key_pressed(KeyCode::KeyW) {
       self.intensity_curve = Ease::InQuad;
       ctx.camera.set_shake_curve(self.intensity_curve);
-      println!("Curve: InQuad (default, punchy)");
     }
     if ctx.input.key_pressed(KeyCode::KeyE) {
       self.intensity_curve = Ease::InCubic;
       ctx.camera.set_shake_curve(self.intensity_curve);
-      println!("Curve: InCubic (very punchy)");
     }
 
     // Reset trauma
     if ctx.input.key_pressed(KeyCode::KeyR) {
       // Set trauma to 0 by configuring with same params (clears internal state)
       ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-      println!("Trauma reset");
     }
 
     // Adjust max offset
     if ctx.input.key_pressed(KeyCode::ArrowUp) {
       self.max_offset = (self.max_offset + 2.0).min(50.0);
       ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-      println!("Max offset: {:.1} pixels", self.max_offset);
     }
     if ctx.input.key_pressed(KeyCode::ArrowDown) {
       self.max_offset = (self.max_offset - 2.0).max(2.0);
       ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-      println!("Max offset: {:.1} pixels", self.max_offset);
     }
 
     // Adjust decay rate
     if ctx.input.key_pressed(KeyCode::ArrowRight) {
       self.decay_rate = (self.decay_rate + 0.2).min(5.0);
       ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-      println!("Decay rate: {:.1}/sec", self.decay_rate);
     }
     if ctx.input.key_pressed(KeyCode::ArrowLeft) {
       self.decay_rate = (self.decay_rate - 0.2).max(0.2);
       ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-      println!("Decay rate: {:.1}/sec", self.decay_rate);
     }
 
     SceneAction::Continue
