@@ -272,24 +272,17 @@ impl Scene for WorkshopScene {
     SceneAction::Continue
   }
 
-  #[allow(deprecated)]
-  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+    // Painted background (set via game:paint console command)
     let r = PAINT_R.load(Ordering::Relaxed);
     let g = PAINT_G.load(Ordering::Relaxed);
     let b = PAINT_B.load(Ordering::Relaxed);
+    let (w, h) = ui.screen_size();
+    ui.draw_rect(
+      Rect::new(0.0, 0.0, w as f32, h as f32),
+      Color::rgb(r, g, b),
+    );
 
-    for y in 0..height {
-      for x in 0..width {
-        let idx = ((y * width + x) * 4) as usize;
-        frame[idx] = r;
-        frame[idx + 1] = g;
-        frame[idx + 2] = b;
-        frame[idx + 3] = 255;
-      }
-    }
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Title
     ui.draw_text("Scene 2 — Workshop", 30.0, 20.0, Color::WHITE);
 
