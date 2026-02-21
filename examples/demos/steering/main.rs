@@ -427,7 +427,7 @@ fn main() {
   let engine = EngineBuilder::new()
     .title("Steering Demo - Ryo2D")
     .resolution(1280, 720)
-    .with_scene(SteeringDemoScene::new())
+    .start_scene(SteeringDemoScene::new())
     .build();
 
   if let Err(e) = engine.run() {

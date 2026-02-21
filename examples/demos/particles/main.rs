@@ -1026,7 +1026,7 @@ fn main() {
     .target_fps(144)
     .physics_hz(144)
     .vsync(false)
-    .with_scene(ParticlesDemo::new())
+    .start_scene(ParticlesDemo::new())
     .build();
 
   if let Err(e) = engine.run() {

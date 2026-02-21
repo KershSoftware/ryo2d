@@ -599,7 +599,7 @@ fn main() {
   let engine = EngineBuilder::new()
     .title("Sprite Shaders Demo")
     .resolution(800, 600)
-    .with_scene(SpriteShaderDemo::new())
+    .start_scene(SpriteShaderDemo::new())
     .build();
 
   if let Err(e) = engine.run() {

@@ -22,7 +22,7 @@ fn main() {
   EngineBuilder::new()
     .title("Cursor Demo")
     .resolution(800, 600)
-    .with_scene(CursorDemoScene::new())
+    .start_scene(CursorDemoScene::new())
     .build()
     .run()
     .unwrap();

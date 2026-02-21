@@ -13,7 +13,7 @@ fn main() {
     .title("Asset Loading Demo")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
     .show_fps(true)
-    .with_scene(LoadingDemoScene::new())
+    .start_scene(LoadingDemoScene::new())
     .build();
 
   if let Err(e) = engine.run() {

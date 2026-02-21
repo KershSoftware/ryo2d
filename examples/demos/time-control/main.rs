@@ -329,7 +329,7 @@ fn main() {
     .window_mode(WindowMode::ResizableAspectRatio)
     .target_fps(60)
     .physics_hz(60)
-    .with_scene(TimeControlDemoScene::new())
+    .start_scene(TimeControlDemoScene::new())
     .build();
 
   if let Err(e) = engine.run() {

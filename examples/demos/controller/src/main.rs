@@ -535,7 +535,7 @@ fn main() {
     .title("Ryo2D Controller Demo")
     .resolution(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_scene(ControllerDemo::new())
+    .start_scene(ControllerDemo::new())
     .build();
 
   if let Err(e) = engine.run() {

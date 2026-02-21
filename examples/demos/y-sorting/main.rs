@@ -649,7 +649,7 @@ fn main() {
     .resolution(GAME_WIDTH, GAME_HEIGHT)
     .window_mode(WindowMode::ResizableIntegerScale)
     .target_fps(60)
-    .with_scene(YSortingScene::new())
+    .start_scene(YSortingScene::new())
     .build();
 
   if let Err(e) = engine.run() {

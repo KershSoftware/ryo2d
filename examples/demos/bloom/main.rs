@@ -375,7 +375,7 @@ fn main() {
     .title("Bloom Effect Demo")
     .resolution(960, 640)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_scene(BloomDemo::new())
+    .start_scene(BloomDemo::new())
     .build();
 
   if let Err(e) = engine.run() {

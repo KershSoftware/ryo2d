@@ -360,7 +360,7 @@ fn main() {
     .title("Ryo2D Validated Animator Demo")
     .resolution(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_scene(ValidatedAnimatorDemo::new())
+    .start_scene(ValidatedAnimatorDemo::new())
     .build();
 
   if let Err(e) = engine.run() {

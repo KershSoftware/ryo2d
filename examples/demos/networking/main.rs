@@ -19,7 +19,7 @@ fn main() {
   let engine = EngineBuilder::new()
     .title("Netplay - Multiplayer Demo")
     .resolution(800, 600)
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build();
 
   if let Err(e) = engine.run() {

@@ -467,7 +467,7 @@ fn main() {
     .title("Lighting Demo - Pendulum Lamp")
     .resolution(1280, 720)
     .target_fps(60)
-    .with_scene(LightingScene::new())
+    .start_scene(LightingScene::new())
     .build();
 
   if let Err(e) = engine.run() {

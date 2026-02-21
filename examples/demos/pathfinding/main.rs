@@ -645,7 +645,7 @@ fn main() {
     .window_mode(WindowMode::ResizableAspectRatio)
     .target_fps(60)
     .physics_hz(60)
-    .with_scene(PathfindingDemoScene::new())
+    .start_scene(PathfindingDemoScene::new())
     .build();
 
   if let Err(e) = engine.run() {

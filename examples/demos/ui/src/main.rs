@@ -13,7 +13,7 @@ fn main() {
     .title("Ryo2D UI Demo")
     .resolution(1024, 768)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_scene(MainMenu::new())
+    .start_scene(MainMenu::new())
     .build();
 
   if let Err(e) = engine.run() {

@@ -602,7 +602,7 @@ fn main() {
     .title("Volumetric Lighting Demo - Ryo2D")
     .resolution(1280, 720)
     .target_fps(60)
-    .with_scene(VolumetricLightingScene::new())
+    .start_scene(VolumetricLightingScene::new())
     .build();
 
   if let Err(e) = engine.run() {

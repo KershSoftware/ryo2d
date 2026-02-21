@@ -21,94 +21,56 @@ static PAINT_G: AtomicU8 = AtomicU8::new(70);
 static PAINT_B: AtomicU8 = AtomicU8::new(40);
 
 fn main() {
-  let demo = ConsoleDemo {
-    scenes: SceneGame::new(Box::new(HubScene)),
-  };
-
   EngineBuilder::new()
     .title("Console Demo")
     .resolution(800, 600)
-    .with_game(demo)
+    .start_scene(HubScene)
     .build()
     .run()
     .unwrap();
 }
 
 // ============================================================================
-// ConsoleDemo — thin Game wrapper around SceneGame
+// Shared console command setup
 // ============================================================================
 
-struct ConsoleDemo {
-  scenes: SceneGame,
-}
+/// Declare all commands and register the shared handlers.
+/// Declarations are global and idempotent; handlers are scoped to the active scene.
+fn register_shared_commands(ctx: &mut SceneContext) {
+  // Declare ALL commands up front (visible in help immediately)
+  ctx.declare_console_command(
+    "game:hello",
+    "Print a greeting",
+    Some(
+      "Usage: game:hello [name]\n\nPrints 'Hello, <name>!' or 'Hello, World!' if no name given.",
+    ),
+  );
+  ctx.declare_console_command("game:scene1", "Switch to Scene 1 (Hub)", None::<&str>);
+  ctx.declare_console_command("game:scene2", "Switch to Scene 2 (Workshop)", None::<&str>);
+  ctx.declare_console_command(
+    "game:paint",
+    "Change background color (Scene 2 only)",
+    Some("Usage: game:paint <color>\n\nColors: red, green, blue, yellow, purple, reset\nOnly has effect in Scene 2."),
+  );
 
-impl Game for ConsoleDemo {
-  fn init(&mut self, ctx: &mut GameContext) {
-    // Declare ALL commands up front (visible in help immediately)
-    ctx.declare_console_command(
-      "game:hello",
-      "Print a greeting",
-      Some(
-        "Usage: game:hello [name]\n\nPrints 'Hello, <name>!' or 'Hello, World!' if no name given.",
-      ),
-    );
-    ctx.declare_console_command("game:scene1", "Switch to Scene 1 (Hub)", None::<&str>);
-    ctx.declare_console_command("game:scene2", "Switch to Scene 2 (Workshop)", None::<&str>);
-    ctx.declare_console_command(
-      "game:paint",
-      "Change background color (Scene 2 only)",
-      Some("Usage: game:paint <color>\n\nColors: red, green, blue, yellow, purple, reset\nOnly has effect in Scene 2."),
-    );
+  // Register handlers that work in every scene (scoped, re-registered on each enter)
+  ctx.register_console_command("game:hello", |args, cmd_ctx| {
+    let name = if args.is_empty() { "World" } else { args[0] };
+    cmd_ctx.console.print(format!("Hello, {}!", name));
+    CommandResult::Ok
+  });
 
-    // Register PERMANENT handlers (scope 0) for commands that work everywhere
-    ctx.register_console_command("game:hello", |args, cmd_ctx| {
-      let name = if args.is_empty() { "World" } else { args[0] };
-      cmd_ctx.console.print(format!("Hello, {}!", name));
-      CommandResult::Ok
-    });
+  ctx.register_console_command("game:scene1", |_args, cmd_ctx| {
+    SCENE_REQUEST.store(1, Ordering::Relaxed);
+    cmd_ctx.console.print("Switching to Scene 1...");
+    CommandResult::Ok
+  });
 
-    ctx.register_console_command("game:scene1", |_args, cmd_ctx| {
-      SCENE_REQUEST.store(1, Ordering::Relaxed);
-      cmd_ctx.console.print("Switching to Scene 1...");
-      CommandResult::Ok
-    });
-
-    ctx.register_console_command("game:scene2", |_args, cmd_ctx| {
-      SCENE_REQUEST.store(2, Ordering::Relaxed);
-      cmd_ctx.console.print("Switching to Scene 2...");
-      CommandResult::Ok
-    });
-
-    // Note: game:paint is declared but NOT registered here.
-    // It will be registered as a scoped handler in Scene 2's on_enter.
-
-    // Delegate to SceneGame for scene setup
-    self.scenes.init(ctx);
-  }
-
-  fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-    self.scenes.update(ctx, dt);
-  }
-
-  fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
-    self.scenes.render_gpu(gpu);
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) {
-    self.scenes.render_ui(ui);
-  }
-
-  fn get_overlay(&self) -> Option<(f32, [u8; 4])> {
-    self.scenes.get_overlay()
-  }
-
-  fn is_physics_paused(&self) -> bool {
-    self.scenes.is_physics_paused()
-  }
-
-  fn should_quit(&self) -> bool {
-    self.scenes.should_quit()
-  }
+  ctx.register_console_command("game:scene2", |_args, cmd_ctx| {
+    SCENE_REQUEST.store(2, Ordering::Relaxed);
+    cmd_ctx.console.print("Switching to Scene 2...");
+    CommandResult::Ok
+  });
 }
 
 // ============================================================================
@@ -118,6 +80,10 @@ impl Game for ConsoleDemo {
 struct HubScene;
 
 impl Scene for HubScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    register_shared_commands(ctx);
+  }
+
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     // Check for scene switch request from console command
     let req = SCENE_REQUEST.swap(0, Ordering::Relaxed);
@@ -199,6 +165,9 @@ struct WorkshopScene;
 
 impl Scene for WorkshopScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // Register shared commands (hello, scene1, scene2)
+    register_shared_commands(ctx);
+
     // Register scoped handler for game:paint (auto-cleaned on scene exit)
     ctx.register_console_command("game:paint", |args, cmd_ctx| {
       if args.is_empty() {
@@ -332,9 +301,6 @@ impl Scene for WorkshopScene {
     );
 
     // Color display
-    let r = PAINT_R.load(Ordering::Relaxed);
-    let g = PAINT_G.load(Ordering::Relaxed);
-    let b = PAINT_B.load(Ordering::Relaxed);
     ui.draw_text(
       &format!("Background: rgb({}, {}, {})", r, g, b),
       40.0,

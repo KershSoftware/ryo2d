@@ -14,7 +14,7 @@ fn main() {
   let engine = EngineBuilder::new()
     .resolution(1920, 1080)
     .target_fps(144)
-    .with_scene(MainMenuScene::new())
+    .start_scene(MainMenuScene::new())
     .build();
 
   if let Err(e) = engine.run() {

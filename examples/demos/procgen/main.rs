@@ -365,7 +365,7 @@ fn main() {
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
     .window_mode(WindowMode::ResizableAspectRatio)
     .target_fps(60)
-    .with_scene(ProcgenScene::new())
+    .start_scene(ProcgenScene::new())
     .build();
 
   if let Err(e) = engine.run() {

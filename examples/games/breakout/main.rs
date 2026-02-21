@@ -46,7 +46,7 @@ fn main() {
     .resolution(1280, 720)
     .target_fps(144)
     .physics_hz(144)
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .with_user_preferences([
       UserPreference::MasterVolume,
       UserPreference::MusicVolume,

@@ -28,7 +28,7 @@ fn main() {
     .title("Shadow Demo - Ryo2D")
     .resolution(1280, 720)
     .target_fps(60)
-    .with_scene(HardShadowsScene::new())
+    .start_scene(HardShadowsScene::new())
     .build();
 
   if let Err(e) = engine.run() {

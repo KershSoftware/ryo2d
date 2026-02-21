@@ -40,7 +40,7 @@ fn main() {
     .title("Profile and Log Demo")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
     .target_fps(144)
-    .with_scene(DemoScene::new())
+    .start_scene(DemoScene::new())
     .build();
 
   if let Err(e) = engine.run() {

@@ -49,9 +49,9 @@ fn main() {
 
   // Start with debug scene or menu based on env config
   let engine = if start_debug {
-    builder.with_scene(DebugScene::new()).build()
+    builder.start_scene(DebugScene::new()).build()
   } else {
-    builder.with_scene(MenuScene::new()).build()
+    builder.start_scene(MenuScene::new()).build()
   };
 
   if let Err(e) = engine.run() {

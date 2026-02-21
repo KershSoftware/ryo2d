@@ -21,7 +21,7 @@ fn main() {
     .with_console_commands(|cmd| {
       cmd.declare("game:respawn", "Respawn the player at the last checkpoint.");
     })
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build();
 
   if let Err(e) = engine.run() {

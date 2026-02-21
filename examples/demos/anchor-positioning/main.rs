@@ -261,7 +261,7 @@ fn main() {
     .window_mode(WindowMode::ResizableIntegerScale)
     .target_fps(60)
     .physics_hz(60)
-    .with_scene(AnchorDemoScene::new())
+    .start_scene(AnchorDemoScene::new())
     .build();
 
   if let Err(e) = engine.run() {

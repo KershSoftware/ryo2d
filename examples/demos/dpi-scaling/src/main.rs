@@ -229,7 +229,7 @@ fn main() {
     .resolution(800, 600)
     .window_mode(WindowMode::ResizableAspectRatio)
     .ui_scale(None) // Auto-detect from DPI
-    .with_scene(DpiScalingScene::new())
+    .start_scene(DpiScalingScene::new())
     .build();
 
   if let Err(e) = engine.run() {

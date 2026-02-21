@@ -405,7 +405,7 @@ fn main() {
     .title("Post-Processing Effects Demo")
     .resolution(800, 600)
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_scene(PostProcessingDemo::new())
+    .start_scene(PostProcessingDemo::new())
     .build();
 
   if let Err(e) = engine.run() {
