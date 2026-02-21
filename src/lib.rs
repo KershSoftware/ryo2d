@@ -61,6 +61,9 @@ pub mod prelude {
     Transition,
   };
 
+  // Resources
+  pub use crate::core::resources::Resources;
+
   // Engine builder
   pub use crate::core::engine::{EngineBuilder, WindowMode};
 

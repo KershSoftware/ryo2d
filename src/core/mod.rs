@@ -51,4 +51,5 @@ pub mod timing;
 // Engine orchestration
 pub mod engine;
 pub mod game;
+pub mod resources;
 pub mod scene;
