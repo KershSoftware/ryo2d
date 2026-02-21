@@ -176,6 +176,8 @@ pub struct Engine {
   renderer: Option<WgpuRenderer>,
   time: Option<TimeState>,
   input: InputState,
+  // Typed resource map for cross-scene shared state
+  resources: super::resources::Resources,
   // ECS World
   world: World,
   // Camera for world-to-screen transformations
@@ -513,6 +515,7 @@ impl Engine {
     game_name: Option<String>,
     game_version: Option<String>,
     console_builder: Option<ConsoleCommandBuilder>,
+    resources: super::resources::Resources,
   ) -> Self {
     let world = World::new();
     let camera = Camera::centered_at(
@@ -605,6 +608,7 @@ impl Engine {
       renderer: None,
       time: None,
       input: InputState::new(),
+      resources,
       world,
       camera,
       assets,
@@ -1205,6 +1209,7 @@ impl Engine {
 
       // Create context for the game
       let mut ctx = GameContext {
+        resources: &mut self.resources,
         world: &mut self.world,
         camera: &mut self.camera,
         input: &mut self.input,
@@ -2215,6 +2220,7 @@ impl ApplicationHandler for Engine {
         };
 
         let mut ctx = GameContext {
+          resources: &mut self.resources,
           world: &mut self.world,
           camera: &mut self.camera,
           input: &mut self.input,
@@ -3859,6 +3865,7 @@ impl EngineBuilder {
       game_name,
       game_version,
       console_builder,
+      super::resources::Resources::new(),
     )
   }
 }

@@ -157,6 +157,8 @@ impl WindowRequest {
 /// This is your "toolkit" for building games - it contains everything
 /// you need to create entities, handle input, and control the camera.
 pub struct GameContext<'a> {
+  /// Typed resource map for cross-scene shared state
+  pub resources: &'a mut super::resources::Resources,
   /// The ECS world containing all entities and components
   pub world: &'a mut World,
   /// The camera for world-to-screen transformations

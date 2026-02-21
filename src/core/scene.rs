@@ -146,6 +146,12 @@ impl std::ops::Sub for SceneCleanup {
 ///
 /// Similar to `GameContext` but designed for scene-based architecture.
 pub struct SceneContext<'a> {
+  /// Typed resource map for cross-scene shared state.
+  ///
+  /// Resources persist across all scene transitions and are not affected
+  /// by `SceneCleanup`. Use for data that multiple scenes need to share
+  /// (scores, settings, game progress, etc.).
+  pub resources: &'a mut super::resources::Resources,
   /// The ECS world containing all entities and components
   pub world: &'a mut World,
   /// The camera for world-to-screen transformations
@@ -1723,6 +1729,7 @@ impl Game for SceneGame {
 
     // Convert GameContext to SceneContext and call on_enter for initial scene
     let mut scene_ctx = SceneContext {
+      resources: ctx.resources,
       world: ctx.world,
       camera: ctx.camera,
       input: ctx.input,
@@ -1762,6 +1769,7 @@ impl Game for SceneGame {
   fn update(&mut self, ctx: &mut GameContext, dt: f32) {
     // Convert GameContext to SceneContext
     let mut scene_ctx = SceneContext {
+      resources: ctx.resources,
       world: ctx.world,
       camera: ctx.camera,
       input: ctx.input,
