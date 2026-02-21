@@ -7,15 +7,16 @@
 //! ```no_run
 //! use ryo2d::prelude::*;
 //!
-//! struct MyGame;
+//! struct MyScene;
 //!
-//! impl Game for MyGame {
-//!     fn init(&mut self, ctx: &mut GameContext) {
+//! impl Scene for MyScene {
+//!     fn on_enter(&mut self, ctx: &mut SceneContext) {
 //!         // Set up your game world
 //!     }
 //!
-//!     fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+//!     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
 //!         // Game logic runs here
+//!         SceneAction::Continue
 //!     }
 //! }
 //!
@@ -23,7 +24,7 @@
 //!     EngineBuilder::new()
 //!         .title("My Game")
 //!         .resolution(800, 600)
-//!         .with_game(MyGame)
+//!         .start_scene(MyScene)
 //!         .build()
 //!         .run()
 //!         .unwrap();
@@ -38,7 +39,7 @@
 //! - **Components** are data attached to entities (Transform, Velocity, Renderable)
 //! - **Systems** process entities with specific components (handled by the engine)
 //!
-//! You implement the [`core::game::Game`] trait to define your game's behavior.
+//! You implement the [`core::scene::Scene`] trait to define your game's behavior.
 
 pub mod cli;
 pub mod core;
@@ -50,15 +51,12 @@ pub use puffin;
 
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
-  // Core game trait
-  pub use crate::core::game::{
-    Game, GameContext, GpuRenderContext, TimeControl, TimeInfo, WindowRequest,
-  };
+  // Core game types
+  pub use crate::core::game::{GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
 
   // Scene management
   pub use crate::core::scene::{
-    Scene, SceneAction, SceneCleanup, SceneContext, SceneGame, SceneManager, SlideDirection,
-    Transition,
+    Scene, SceneAction, SceneCleanup, SceneContext, SceneManager, SlideDirection, Transition,
   };
 
   // Resources

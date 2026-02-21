@@ -23,14 +23,14 @@ use super::ecs::{
 };
 use super::error::{EngineError, EngineResult};
 use super::events::{CollisionStarted, CollisionStopped, Events};
-use super::game::{Game, GameContext, GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
+use super::game::{GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
 use super::graphics::{
   BatchCollector, Camera, CompositeTile, Sprite, SpriteGpuRenderer, TileDirection, WgpuRenderer,
 };
 use super::input::InputState;
 use super::lighting::{Light2D, LightOccluder2D, LightingRenderer, generate_shadow_geometry};
 use super::physics::{PhysicsConfig, RapierPhysicsWorld};
-use super::scene::{Scene, SceneGame};
+use super::scene::{Scene, SceneAction, SceneContext, SceneManager};
 use super::shaders::EffectsManager;
 use super::systems::{
   AnimationSystem, InterpolationSystem, KnockbackSystem, PhysicsSystem, SquashStretchSystem,
@@ -188,10 +188,12 @@ pub struct Engine {
   audio: Option<AudioManager>,
   // Post-process effects manager
   effects: EffectsManager,
-  // User-defined game logic (Option to allow taking ownership temporarily)
-  game: Option<Box<dyn Game>>,
-  // Whether init has been called
-  initialized: bool,
+  // Scene management
+  scene_manager: SceneManager,
+  scene_quit_requested: bool,
+  next_scope_id: u64,
+  current_scope_id: u64,
+  pending_ui_action: Option<SceneAction>,
   // Whether the first frame has been rendered (used to show window)
   first_frame_rendered: bool,
   // Cached sorted list of Renderable component entities
@@ -246,7 +248,7 @@ pub struct Engine {
   events: Events,
   // Gamepad input library (gilrs)
   gilrs: Option<Gilrs>,
-  // Time control for slow-mo and hitstop effects (shared with GameContext/SceneContext)
+  // Time control for slow-mo and hitstop effects (shared with SceneContext)
   time_control: TimeControl,
   // Profiler window (only when profiler feature is enabled)
   #[cfg(feature = "profiler")]
@@ -506,7 +508,7 @@ impl Engine {
   #[allow(clippy::too_many_arguments)]
   fn new(
     config: EngineConfig,
-    game: Box<dyn Game>,
+    initial_scene: Box<dyn Scene>,
     vsync: Option<bool>,
     master_volume: f32,
     music_volume: f32,
@@ -614,8 +616,11 @@ impl Engine {
       assets,
       audio,
       effects: EffectsManager::new(),
-      game: Some(game),
-      initialized: false,
+      scene_manager: SceneManager::with_scene(initial_scene),
+      scene_quit_requested: false,
+      next_scope_id: 1,
+      current_scope_id: 0,
+      pending_ui_action: None,
       first_frame_rendered: false,
       renderable_cache: Vec::new(),
       render_cache_dirty: true,
@@ -860,8 +865,9 @@ impl Engine {
       // CPU render pass
       self.render(alpha);
 
-      // Call game.render_gpu() to populate GPU sprite batches
-      if let Some(mut game) = self.game.take() {
+      // Call scene_manager.render_gpu() to populate GPU sprite batches
+      {
+        let mut scene_manager = std::mem::take(&mut self.scene_manager);
         if let (Some(sprite_gpu), Some(renderer)) =
           (self.sprite_gpu.as_mut(), self.renderer.as_ref())
         {
@@ -888,9 +894,9 @@ impl Engine {
             &self.camera,
             &self.world,
           );
-          game.render_gpu(&mut gpu_ctx);
+          scene_manager.render_gpu(&mut gpu_ctx);
         }
-        self.game = Some(game);
+        self.scene_manager = scene_manager;
       }
 
       // Capture debug stats before rendering clears them
@@ -1185,9 +1191,11 @@ impl Engine {
     // --- SquashStretch System ---
     SquashStretchSystem::update(&mut self.world, &mut self.events, _dt);
 
-    // --- Game Logic Update ---
-    // Temporarily take ownership of the game to avoid borrow conflicts
-    if let Some(mut game) = self.game.take() {
+    // --- Scene Update ---
+    // Temporarily take scene_manager out to avoid borrow conflicts
+    {
+      let mut scene_manager = std::mem::take(&mut self.scene_manager);
+
       // Build TimeInfo from current timing state
       let time_info = TimeInfo {
         fixed_dt: self
@@ -1207,8 +1215,7 @@ impl Engine {
         frame_count: self.time.as_ref().map(|t| t.frame_count()).unwrap_or(0),
       };
 
-      // Create context for the game
-      let mut ctx = GameContext {
+      let mut scene_ctx = SceneContext {
         resources: &mut self.resources,
         world: &mut self.world,
         camera: &mut self.camera,
@@ -1225,14 +1232,95 @@ impl Engine {
         scale_factor: self.scale_factor,
         display_mode: self.config.display_mode,
         command_registry: &mut self.command_registry,
-        scope_id: 0, // Game-level scope (permanent)
+        scope_id: self.current_scope_id,
       };
 
-      // Call user's update function
-      game.update(&mut ctx, _dt);
+      // Process any action returned by render_ui before the regular update
+      if let Some(action) = self.pending_ui_action.take() {
+        let will_change_scene = matches!(
+          action,
+          SceneAction::Pop
+            | SceneAction::PopReturn(_)
+            | SceneAction::Switch(_)
+            | SceneAction::Reset(_)
+            | SceneAction::PopWith(_)
+            | SceneAction::PopReturnWith(_, _)
+            | SceneAction::SwitchWith(_, _)
+            | SceneAction::ResetWith(_, _)
+        );
 
-      // Put the game back
-      self.game = Some(game);
+        let old_scope_id = if will_change_scene {
+          Some(self.current_scope_id)
+        } else {
+          None
+        };
+
+        if will_change_scene {
+          self.current_scope_id = self.next_scope_id;
+          self.next_scope_id += 1;
+          scene_ctx.scope_id = self.current_scope_id;
+        }
+
+        let should_continue = scene_manager.handle_action(action, &mut scene_ctx);
+
+        if let Some(old_scope) = old_scope_id {
+          scene_ctx.command_registry.clear_scope(old_scope);
+        }
+
+        if !should_continue {
+          self.scene_quit_requested = true;
+          self.scene_manager = scene_manager;
+          return;
+        }
+      }
+
+      // Update any active transitions first
+      scene_manager.update_transition(_dt, &mut scene_ctx);
+
+      // Only update scenes if not in the middle of a transition
+      if !scene_manager.is_transitioning() {
+        let action = scene_manager.update(&mut scene_ctx, _dt);
+
+        // Check if this action will change scenes (requires scope cleanup)
+        let will_change_scene = matches!(
+          action,
+          SceneAction::Pop
+            | SceneAction::PopReturn(_)
+            | SceneAction::Switch(_)
+            | SceneAction::Reset(_)
+            | SceneAction::PopWith(_)
+            | SceneAction::PopReturnWith(_, _)
+            | SceneAction::SwitchWith(_, _)
+            | SceneAction::ResetWith(_, _)
+        );
+
+        // Remember old scope if scene will change
+        let old_scope_id = if will_change_scene {
+          Some(self.current_scope_id)
+        } else {
+          None
+        };
+
+        // Generate new scope for incoming scene
+        if will_change_scene {
+          self.current_scope_id = self.next_scope_id;
+          self.next_scope_id += 1;
+          scene_ctx.scope_id = self.current_scope_id;
+        }
+
+        let should_continue = scene_manager.handle_action(action, &mut scene_ctx);
+
+        // Clean up old scope's command handlers
+        if let Some(old_scope) = old_scope_id {
+          scene_ctx.command_registry.clear_scope(old_scope);
+        }
+
+        if !should_continue {
+          self.scene_quit_requested = true;
+        }
+      }
+
+      self.scene_manager = scene_manager;
 
       // Mark render cache dirty if any entities were spawned or despawned
       if self.world.take_entities_changed() {
@@ -1255,11 +1343,7 @@ impl Engine {
 
     // --- Physics System (Rapier2D) ---
     // Check if physics should be paused
-    let physics_paused = self
-      .game
-      .as_ref()
-      .map(|g| g.is_physics_paused())
-      .unwrap_or(false);
+    let physics_paused = self.scene_manager.is_physics_paused();
 
     // Skip physics simulation if game requests pause
     if physics_paused {
@@ -1951,11 +2035,12 @@ impl Engine {
     }
 
     // --- UI & FPS Counter ---
-    // Call game's render_ui with UiContext for immediate-mode UI
+    // Call scene_manager.render_ui with UiContext for immediate-mode UI
     // UI is always rendered to a separate buffer and composited last, ensuring it appears
     // on top of trails, GPU sprites, lighting, and post-processing effects.
     self.ui_buffer.fill(0);
-    if let Some(mut game) = self.game.take() {
+    {
+      let mut scene_manager = std::mem::take(&mut self.scene_manager);
       let click_consumed;
       let escape_consumed;
       {
@@ -1982,7 +2067,10 @@ impl Engine {
           }
         }
 
-        game.render_ui(&mut ui_ctx);
+        let action = scene_manager.render_ui(&mut ui_ctx);
+        if !matches!(action, SceneAction::Continue) {
+          self.pending_ui_action = Some(action);
+        }
 
         // Render debug overlays on top of game UI (always visible)
         // Render order: stats (top) -> FPS -> frame timing (bottom)
@@ -2019,15 +2107,19 @@ impl Engine {
         self.input.consume_key_press(KeyCode::Escape);
       }
 
-      self.game = Some(game);
+      self.scene_manager = scene_manager;
     }
 
     // --- Screen Overlay (for transitions) ---
-    if let Some(game) = &self.game
-      && let Some((alpha, color)) = game.get_overlay()
-      && alpha > 0.001
     {
-      blend_overlay(frame, color, alpha);
+      let alpha = self.scene_manager.transition_overlay_alpha();
+      if alpha > 0.001 {
+        let color = self
+          .scene_manager
+          .transition_overlay_color()
+          .unwrap_or([0, 0, 0, 255]);
+        blend_overlay(frame, color, alpha);
+      }
     }
 
     // Note: UI compositing for non-lit UI is now done on GPU in render_with_lighting
@@ -2201,47 +2293,54 @@ impl ApplicationHandler for Engine {
       );
     }
 
-    // Call game init if not already initialized
-    if !self.initialized {
-      if let Some(mut game) = self.game.take() {
-        // TimeInfo for init - no timing data yet, use defaults
-        let time_info = TimeInfo {
-          fixed_dt: self
-            .time
-            .as_ref()
-            .map(|t| t.fixed_dt())
-            .unwrap_or(1.0 / 60.0),
-          scaled_dt: 0.0,
-          real_dt: 0.0,
-          render_alpha: 0.0,
-          time_scale: 1.0,
-          is_hitstop: false,
-          frame_count: 0,
-        };
+    // Call on_enter for the initial scene
+    {
+      // Assign scope ID for the initial scene
+      self.current_scope_id = self.next_scope_id;
+      self.next_scope_id += 1;
 
-        let mut ctx = GameContext {
-          resources: &mut self.resources,
-          world: &mut self.world,
-          camera: &mut self.camera,
-          input: &mut self.input,
-          assets: &mut self.assets,
-          audio: &mut self.audio,
-          effects: &mut self.effects,
-          lighting: &mut self.lighting,
-          events: &mut self.events,
-          window_request: &mut self.window_request,
-          cursor_request: &mut self.cursor_request,
-          time_control: &mut self.time_control,
-          time: time_info,
-          scale_factor: self.scale_factor,
-          display_mode: self.config.display_mode,
-          command_registry: &mut self.command_registry,
-          scope_id: 0, // Game-level scope (permanent)
-        };
-        game.init(&mut ctx);
-        self.game = Some(game);
+      let mut scene_manager = std::mem::take(&mut self.scene_manager);
+
+      // TimeInfo for init - no timing data yet, use defaults
+      let time_info = TimeInfo {
+        fixed_dt: self
+          .time
+          .as_ref()
+          .map(|t| t.fixed_dt())
+          .unwrap_or(1.0 / 60.0),
+        scaled_dt: 0.0,
+        real_dt: 0.0,
+        render_alpha: 0.0,
+        time_scale: 1.0,
+        is_hitstop: false,
+        frame_count: 0,
+      };
+
+      let mut scene_ctx = SceneContext {
+        resources: &mut self.resources,
+        world: &mut self.world,
+        camera: &mut self.camera,
+        input: &mut self.input,
+        assets: &mut self.assets,
+        audio: &mut self.audio,
+        effects: &mut self.effects,
+        lighting: &mut self.lighting,
+        events: &mut self.events,
+        window_request: &mut self.window_request,
+        cursor_request: &mut self.cursor_request,
+        time_control: &mut self.time_control,
+        time: time_info,
+        scale_factor: self.scale_factor,
+        display_mode: self.config.display_mode,
+        command_registry: &mut self.command_registry,
+        scope_id: self.current_scope_id,
+      };
+
+      if let Some(scene) = scene_manager.top_mut() {
+        scene.on_enter(&mut scene_ctx);
       }
-      self.initialized = true;
+
+      self.scene_manager = scene_manager;
       // Entities were spawned during init, rebuild render cache
       self.render_cache_dirty = true;
     }
@@ -2663,10 +2762,8 @@ impl ApplicationHandler for Engine {
           self.frame_timings.update = update_start.elapsed();
         } // update scope ends here
 
-        // Check if game or console wants to quit
-        if self.game.as_ref().map(|g| g.should_quit()).unwrap_or(false)
-          || self.console_quit_requested
-        {
+        // Check if scene or console wants to quit
+        if self.scene_quit_requested || self.console_quit_requested {
           event_loop.exit();
           return;
         }
@@ -2683,8 +2780,9 @@ impl ApplicationHandler for Engine {
             .unwrap_or(0.0);
           self.render(alpha);
 
-          // Call game.render_gpu() to populate GPU sprite batches
-          if let Some(mut game) = self.game.take() {
+          // Call scene_manager.render_gpu() to populate GPU sprite batches
+          {
+            let mut scene_manager = std::mem::take(&mut self.scene_manager);
             // Get device/queue from renderer for texture uploads
             if let (Some(sprite_gpu), Some(renderer)) =
               (self.sprite_gpu.as_mut(), self.renderer.as_ref())
@@ -2712,9 +2810,9 @@ impl ApplicationHandler for Engine {
                 &self.camera,
                 &self.world,
               );
-              game.render_gpu(&mut gpu_ctx);
+              scene_manager.render_gpu(&mut gpu_ctx);
             }
-            self.game = Some(game);
+            self.scene_manager = scene_manager;
           }
 
           // Capture debug stats before rendering clears them
@@ -3189,7 +3287,7 @@ impl ApplicationHandler for Engine {
 /// Builder pattern for Engine configuration
 pub struct EngineBuilder {
   config: EngineConfig,
-  game: Option<Box<dyn Game>>,
+  initial_scene: Option<Box<dyn Scene>>,
   vsync: Option<bool>,
   master_volume: f32,
   music_volume: f32,
@@ -3219,7 +3317,7 @@ impl EngineBuilder {
   pub fn new() -> Self {
     EngineBuilder {
       config: EngineConfig::default(),
-      game: None,
+      initial_scene: None,
       vsync: None,
       master_volume: 1.0,
       music_volume: 0.8,
@@ -3307,7 +3405,7 @@ impl EngineBuilder {
   ///     .title("Pixel Art Game")
   ///     .resolution(320, 240)
   ///     .window_mode(WindowMode::ResizableIntegerScale)
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
@@ -3333,7 +3431,7 @@ impl EngineBuilder {
   ///     .title("My Game")
   ///     .resolution(1920, 1080)
   ///     .display_mode(DisplayMode::BorderlessFullscreen)
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
@@ -3359,7 +3457,7 @@ impl EngineBuilder {
   ///     .resolution(320, 240)
   ///     .max_width(1280)  // Don't scale wider than 1280px
   ///     .window_mode(WindowMode::ResizableAspectRatio)
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
@@ -3382,7 +3480,7 @@ impl EngineBuilder {
   ///     .resolution(320, 240)
   ///     .max_height(960)  // Don't scale taller than 960px
   ///     .window_mode(WindowMode::ResizableAspectRatio)
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
@@ -3409,7 +3507,7 @@ impl EngineBuilder {
   ///     .title("My Game")
   ///     .resolution(800, 600)
   ///     .ui_scale(Some(2))
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   ///
@@ -3418,7 +3516,7 @@ impl EngineBuilder {
   ///     .title("My Game")
   ///     .resolution(800, 600)
   ///     .ui_scale(None)
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
@@ -3438,7 +3536,7 @@ impl EngineBuilder {
   /// EngineBuilder::new()
   ///     .title("My Game")
   ///     .icon("assets/icon.png")
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
@@ -3458,7 +3556,7 @@ impl EngineBuilder {
   /// EngineBuilder::new()
   ///     .title("Debug Game")
   ///     .show_colliders(true)
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
@@ -3518,7 +3616,7 @@ impl EngineBuilder {
   /// EngineBuilder::new()
   ///     .title("My Game")
   ///     .with_user_preferences(UserPreferenceFilter::all())
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   ///
@@ -3526,7 +3624,7 @@ impl EngineBuilder {
   /// EngineBuilder::new()
   ///     .title("My Game")
   ///     .with_user_preferences([UserPreference::MasterVolume, UserPreference::MusicVolume, UserPreference::SfxVolume])
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   ///
@@ -3534,7 +3632,7 @@ impl EngineBuilder {
   /// EngineBuilder::new()
   ///     .title("My Game")
   ///     .with_user_preferences(UserPreferenceFilter::none())
-  ///     .with_scene(GameScene::new())
+  ///     .start_scene(GameScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
@@ -3594,49 +3692,6 @@ impl EngineBuilder {
     self
   }
 
-  /// Set the game implementation that will run on this engine.
-  ///
-  /// Use this for simple games or quick prototypes where you don't need
-  /// scene management. For games with multiple screens (menu, gameplay,
-  /// pause), use [`with_scene`](Self::with_scene) instead.
-  ///
-  /// # Example
-  ///
-  /// ```rust,ignore
-  /// EngineBuilder::new()
-  ///     .title("Simple Game")
-  ///     .with_game(MyGame::new())
-  ///     .build()
-  ///     .run()?;
-  /// ```
-  pub fn with_game(mut self, game: impl Game + 'static) -> Self {
-    self.game = Some(Box::new(game));
-    self
-  }
-
-  /// Set the initial scene that will run on this engine.
-  ///
-  /// Use this for games that need scene management (menus, pause screens,
-  /// level transitions). Scenes can push/pop other scenes, enabling
-  /// complex game flows.
-  ///
-  /// For simple games without scene transitions, you can use
-  /// [`with_game`](Self::with_game) instead.
-  ///
-  /// # Example
-  ///
-  /// ```rust,ignore
-  /// EngineBuilder::new()
-  ///     .title("Scene-Based Game")
-  ///     .with_scene(MenuScene::new())
-  ///     .build()
-  ///     .run()?;
-  /// ```
-  pub fn with_scene(mut self, scene: impl Scene + 'static) -> Self {
-    self.game = Some(Box::new(SceneGame::new(Box::new(scene))));
-    self
-  }
-
   /// Register a typed resource that will be available to all scenes.
   ///
   /// Resources persist across scene transitions and are accessible via
@@ -3652,7 +3707,7 @@ impl EngineBuilder {
   /// EngineBuilder::new()
   ///     .resource(Score::default())
   ///     .resource(Settings::load())
-  ///     .start_scene(Box::new(MenuScene))
+  ///     .start_scene(MenuScene)
   ///     .build()
   ///     .run()?;
   /// ```
@@ -3671,12 +3726,12 @@ impl EngineBuilder {
   /// ```rust,ignore
   /// EngineBuilder::new()
   ///     .title("My Game")
-  ///     .start_scene(Box::new(MenuScene::new()))
+  ///     .start_scene(MenuScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
   pub fn start_scene(mut self, scene: impl Scene + 'static) -> Self {
-    self.game = Some(Box::new(SceneGame::new(Box::new(scene))));
+    self.initial_scene = Some(Box::new(scene));
     self
   }
 
@@ -3700,7 +3755,7 @@ impl EngineBuilder {
   ///         );
   ///         cmd.remove_builtin("system:ip:wan");
   ///     })
-  ///     .with_scene(MyScene::new())
+  ///     .start_scene(MyScene::new())
   ///     .build()
   ///     .run()?;
   /// ```
@@ -3712,8 +3767,8 @@ impl EngineBuilder {
   }
 
   pub fn build(self) -> Engine {
-    let game = self.game.expect(
-      "EngineBuilder requires a game or scene - call .with_game() or .with_scene() before .build()",
+    let initial_scene = self.initial_scene.expect(
+      "EngineBuilder requires a scene - call .start_scene() before .build()",
     );
 
     let mut config = self.config;
@@ -3901,7 +3956,7 @@ impl EngineBuilder {
 
     Engine::new(
       config,
-      game,
+      initial_scene,
       vsync,
       master_volume,
       music_volume,
