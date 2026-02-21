@@ -130,9 +130,9 @@ function Get-Examples {
 # Returns: 0 = release, 1 = dev, 2 = dev with profiler
 function Show-RunModeMenu {
     Write-Host ""
-    Write-Host "  [1] Build + Run (release)" -ForegroundColor White
-    Write-Host "  [2] Dev mode (hot-reload)" -ForegroundColor White
-    Write-Host "  [3] Dev mode with profiler" -ForegroundColor Magenta
+    Write-Host "  [1] Dev mode (hot-reload)" -ForegroundColor White
+    Write-Host "  [2] Dev mode with profiler" -ForegroundColor Magenta
+    Write-Host "  [3] Build + Run (release)" -ForegroundColor White
     Write-Host ""
     Write-Host "Select mode [1]: " -NoNewline
     $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
@@ -140,9 +140,9 @@ function Show-RunModeMenu {
     Write-Host $selection
 
     switch ($selection) {
-        "2" { return 1 }  # Dev mode
-        "3" { return 2 }  # Dev with profiler
-        default { return 0 }  # Release
+        "2" { return 2 }  # Dev with profiler
+        "3" { return 0 }  # Release
+        default { return 1 }  # Dev mode
     }
 }
 

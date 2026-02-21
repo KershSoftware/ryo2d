@@ -221,77 +221,56 @@ impl Scene for ProcgenScene {
     SceneAction::Continue
   }
 
-  #[allow(deprecated)]
-  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
-    // Clear to dark gray
-    for pixel in frame.chunks_exact_mut(4) {
-      pixel[0] = 30;
-      pixel[1] = 30;
-      pixel[2] = 35;
-      pixel[3] = 255;
-    }
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+    let (screen_w, screen_h) = ui.screen_size();
+    let w = screen_w as f32;
+    let h = screen_h as f32;
 
-    // Render grid
+    // Background
+    ui.draw_rect(Rect::new(0.0, 0.0, w, h), Color::rgb(30, 30, 35));
+
+    // Render grid tiles
     if let Some(ref grid) = self.grid {
-      let offset_x =
-        ((width as f32 - GRID_SIZE as f32 * CELL_SIZE as f32) / 2.0 - self.camera_x) as i32;
-      let offset_y =
-        ((height as f32 - GRID_SIZE as f32 * CELL_SIZE as f32) / 2.0 - self.camera_y) as i32;
+      let cell = CELL_SIZE as f32;
+      let ox = (w - GRID_SIZE as f32 * cell) / 2.0 - self.camera_x;
+      let oy = (h - GRID_SIZE as f32 * cell) / 2.0 - self.camera_y;
 
       for (gx, gy, tile) in grid.iter() {
-        let px = offset_x + gx * CELL_SIZE as i32;
-        let py = offset_y + gy * CELL_SIZE as i32;
-
-        let color = tile_color(tile);
-        draw_rect(frame, width, height, px, py, CELL_SIZE, CELL_SIZE, color);
+        let px = ox + gx as f32 * cell;
+        let py = oy + gy as f32 * cell;
+        ui.draw_rect(Rect::new(px, py, cell, cell), tile_color(tile));
       }
 
-      // Draw grid overlay
+      // Grid overlay
       if self.show_grid {
+        let grid_color = Color::new(100, 100, 100, 100);
+        let grid_len = GRID_SIZE as f32 * cell;
         for gy in 0..=GRID_SIZE {
-          let py = offset_y + gy as i32 * CELL_SIZE as i32;
-          draw_line_h(
-            frame,
-            width,
-            height,
-            offset_x,
-            py,
-            GRID_SIZE * CELL_SIZE,
-            Color::new(100, 100, 100, 100),
-          );
+          let py = oy + gy as f32 * cell;
+          ui.draw_rect(Rect::new(ox, py, grid_len, 1.0), grid_color);
         }
         for gx in 0..=GRID_SIZE {
-          let px = offset_x + gx as i32 * CELL_SIZE as i32;
-          draw_line_v(
-            frame,
-            width,
-            height,
-            px,
-            offset_y,
-            GRID_SIZE * CELL_SIZE,
-            Color::new(100, 100, 100, 100),
-          );
+          let px = ox + gx as f32 * cell;
+          ui.draw_rect(Rect::new(px, oy, 1.0, grid_len), grid_color);
         }
       }
 
-      // Draw region centers
+      // Region centers (dot markers)
       for region in grid.regions() {
         let (cx, cy) = region.center;
-        let px = offset_x + cx * CELL_SIZE as i32 + CELL_SIZE as i32 / 2;
-        let py = offset_y + cy * CELL_SIZE as i32 + CELL_SIZE as i32 / 2;
-        draw_circle(frame, width, height, px, py, 4, Color::hex(0xFF0000));
+        let px = ox + cx as f32 * cell + cell / 2.0 - 4.0;
+        let py = oy + cy as f32 * cell + cell / 2.0 - 4.0;
+        ui.draw_rect(Rect::new(px, py, 8.0, 8.0), Color::hex(0xFF0000));
       }
 
-      // Draw poisson points
+      // Poisson points (dot markers)
       for &(x, y) in &self.poisson_points {
-        let px = offset_x + x as i32;
-        let py = offset_y + y as i32;
-        draw_circle(frame, width, height, px, py, 5, Color::hex(0x00FF00));
+        let px = ox + x - 4.0;
+        let py = oy + y - 4.0;
+        ui.draw_rect(Rect::new(px, py, 8.0, 8.0), Color::hex(0x00FF00));
       }
     }
-  }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let text_light = Color::rgb(220, 220, 220);
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
@@ -377,104 +356,6 @@ fn tile_color(tile: TileType) -> Color {
     TileType::Custom(3) => Color::hex(0x228B22), // Forest
     TileType::Custom(4) => Color::hex(0xFFFFFF), // Snow
     TileType::Custom(_) => Color::hex(0xFF00FF), // Unknown
-  }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_rect(
-  frame: &mut [u8],
-  width: u32,
-  height: u32,
-  x: i32,
-  y: i32,
-  w: u32,
-  h: u32,
-  color: Color,
-) {
-  for py in y.max(0)..(y + h as i32).min(height as i32) {
-    for px in x.max(0)..(x + w as i32).min(width as i32) {
-      let idx = ((py as u32 * width + px as u32) * 4) as usize;
-      if idx + 3 < frame.len() {
-        frame[idx] = color.r;
-        frame[idx + 1] = color.g;
-        frame[idx + 2] = color.b;
-        frame[idx + 3] = color.a;
-      }
-    }
-  }
-}
-
-fn draw_circle(
-  frame: &mut [u8],
-  width: u32,
-  height: u32,
-  cx: i32,
-  cy: i32,
-  radius: i32,
-  color: Color,
-) {
-  for py in (cy - radius).max(0)..(cy + radius).min(height as i32) {
-    for px in (cx - radius).max(0)..(cx + radius).min(width as i32) {
-      let dx = px - cx;
-      let dy = py - cy;
-      if dx * dx + dy * dy <= radius * radius {
-        let idx = ((py as u32 * width + px as u32) * 4) as usize;
-        if idx + 3 < frame.len() {
-          frame[idx] = color.r;
-          frame[idx + 1] = color.g;
-          frame[idx + 2] = color.b;
-          frame[idx + 3] = color.a;
-        }
-      }
-    }
-  }
-}
-
-fn draw_line_h(
-  frame: &mut [u8],
-  width: u32,
-  height: u32,
-  x: i32,
-  y: i32,
-  length: u32,
-  color: Color,
-) {
-  if y < 0 || y >= height as i32 {
-    return;
-  }
-  for px in x.max(0)..(x + length as i32).min(width as i32) {
-    let idx = ((y as u32 * width + px as u32) * 4) as usize;
-    if idx + 3 < frame.len() {
-      // Alpha blend
-      let alpha = color.a as f32 / 255.0;
-      frame[idx] = (frame[idx] as f32 * (1.0 - alpha) + color.r as f32 * alpha) as u8;
-      frame[idx + 1] = (frame[idx + 1] as f32 * (1.0 - alpha) + color.g as f32 * alpha) as u8;
-      frame[idx + 2] = (frame[idx + 2] as f32 * (1.0 - alpha) + color.b as f32 * alpha) as u8;
-    }
-  }
-}
-
-fn draw_line_v(
-  frame: &mut [u8],
-  width: u32,
-  height: u32,
-  x: i32,
-  y: i32,
-  length: u32,
-  color: Color,
-) {
-  if x < 0 || x >= width as i32 {
-    return;
-  }
-  for py in y.max(0)..(y + length as i32).min(height as i32) {
-    let idx = ((py as u32 * width + x as u32) * 4) as usize;
-    if idx + 3 < frame.len() {
-      // Alpha blend
-      let alpha = color.a as f32 / 255.0;
-      frame[idx] = (frame[idx] as f32 * (1.0 - alpha) + color.r as f32 * alpha) as u8;
-      frame[idx + 1] = (frame[idx + 1] as f32 * (1.0 - alpha) + color.g as f32 * alpha) as u8;
-      frame[idx + 2] = (frame[idx + 2] as f32 * (1.0 - alpha) + color.b as f32 * alpha) as u8;
-    }
   }
 }
 

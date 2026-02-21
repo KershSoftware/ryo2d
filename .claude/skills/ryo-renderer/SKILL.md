@@ -95,16 +95,15 @@ pipeline.remove_pass("trail");
 
 ## Background Rendering
 
-Games use `render_background()` for parallax and background layers:
+Games render parallax and background layers via the GPU path:
 
 ```rust
-fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-    // Draw directly to frame buffer before entity rendering
-    self.background.render(frame, width, height, camera);
+fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+    self.background.render(gpu);
 }
 ```
 
-Called after frame clear but before entity rendering - ensures backgrounds are behind all sprites.
+Parallax layers render behind all game entities via the GPU pipeline.
 
 ## GPU Batching
 

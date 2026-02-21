@@ -95,9 +95,9 @@ let background = ParallaxBackground::builder(screen_w, screen_h)
     .layer(dunes_sprite, 0.5, -60)           // 50% camera speed
     .build();
 
-// Render in render_background callback
-fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-    self.background.render(frame, width, height, camera);
+// Render in render_gpu callback
+fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+    self.background.render(gpu);
 }
 ```
 

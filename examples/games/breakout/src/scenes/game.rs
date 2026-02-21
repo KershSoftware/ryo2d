@@ -880,7 +880,7 @@ impl Scene for GameScene {
       }
     }
 
-    // Spawn background entity (replaces render_background solid fill)
+    // Spawn background entity (solid color fill)
     // Color matches menu scene: RGB(20, 20, 35)
     let bg = ctx.world.spawn((
       Transform::new(0.0, 0.0),

@@ -1389,14 +1389,6 @@ impl Engine {
       pixel[3] = 0x00; // A: 0 (transparent)
     }
 
-    // --- Render Background Layers (Parallax, etc.) ---
-    // Call game's render_background before entity rendering
-    #[allow(deprecated)]
-    if let Some(mut game) = self.game.take() {
-      game.render_background(frame, frame_width, frame_height, &self.camera);
-      self.game = Some(game);
-    }
-
     // --- Render All Entities (CPU Path) ---
     for &(entity, _) in &self.renderable_cache {
       // Skip inactive entities (used by object pooling)

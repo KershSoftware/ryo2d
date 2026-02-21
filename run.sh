@@ -120,9 +120,9 @@ get_display_names() {
 # Returns: 0=release, 1=dev, 2=dev with profiler (via RUN_MODE variable)
 show_run_mode_menu() {
     echo ""
-    echo -e "    ${WHITE}[1] Build + Run (release)${NC}"
-    echo -e "    ${WHITE}[2] Dev mode (hot-reload)${NC}"
-    echo -e "    ${MAGENTA}[3] Dev mode with profiler${NC}"
+    echo -e "    ${WHITE}[1] Dev mode (hot-reload)${NC}"
+    echo -e "    ${MAGENTA}[2] Dev mode with profiler${NC}"
+    echo -e "    ${WHITE}[3] Build + Run (release)${NC}"
     echo ""
     echo -n "Select mode [1]: "
     read -n 1 -r selection
@@ -130,13 +130,13 @@ show_run_mode_menu() {
 
     case "$selection" in
         2)
-            RUN_MODE=1  # dev mode
-            ;;
-        3)
             RUN_MODE=2  # dev with profiler
             ;;
+        3)
+            RUN_MODE=0  # release
+            ;;
         *)
-            RUN_MODE=0  # release (default)
+            RUN_MODE=1  # dev mode (default)
             ;;
     esac
 }

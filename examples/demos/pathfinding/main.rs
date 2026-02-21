@@ -583,59 +583,26 @@ impl Scene for PathfindingDemoScene {
     SceneAction::Continue
   }
 
-  #[allow(deprecated)]
-  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, _camera: &Camera) {
-    // Dark background - trails now render ON TOP of CPU content
-    for pixel in frame.chunks_exact_mut(4) {
-      pixel[0] = 30;
-      pixel[1] = 35;
-      pixel[2] = 40;
-      pixel[3] = 255;
-    }
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+    let (width, height) = ui.screen_size();
+    let w = width as f32;
+    let h = height as f32;
 
-    // Draw grid if enabled
+    // Grid overlay
     if self.show_grid {
-      let grid_color = [50, 55, 60, 255];
-
-      // Vertical lines
+      let grid_color = Color::rgb(50, 55, 60);
       let mut x = 0.0;
-      while x < width as f32 {
-        let px = x as u32;
-        if px < width {
-          for y in 0..height {
-            let idx = ((y * width + px) * 4) as usize;
-            if idx + 3 < frame.len() {
-              frame[idx] = grid_color[0];
-              frame[idx + 1] = grid_color[1];
-              frame[idx + 2] = grid_color[2];
-              frame[idx + 3] = grid_color[3];
-            }
-          }
-        }
+      while x < w {
+        ui.draw_rect(Rect::new(x, 0.0, 1.0, h), grid_color);
         x += CELL_SIZE;
       }
-
-      // Horizontal lines
       let mut y = 0.0;
-      while y < height as f32 {
-        let py = y as u32;
-        if py < height {
-          for px in 0..width {
-            let idx = ((py * width + px) * 4) as usize;
-            if idx + 3 < frame.len() {
-              frame[idx] = grid_color[0];
-              frame[idx + 1] = grid_color[1];
-              frame[idx + 2] = grid_color[2];
-              frame[idx + 3] = grid_color[3];
-            }
-          }
-        }
+      while y < h {
+        ui.draw_rect(Rect::new(0.0, y, w, 1.0), grid_color);
         y += CELL_SIZE;
       }
     }
-  }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let text_light = Color::rgb(220, 220, 220);
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);

@@ -206,7 +206,7 @@ A system-based approach (not ECS components) because:
 
 ### Usage Pattern
 
-Games use the builder API and `render_background()` callback:
+Games use the builder API and render via `render_gpu()`:
 
 ```rust
 // In scene init:
@@ -218,9 +218,9 @@ self.background = ParallaxBackground::builder(screen_w as u32, screen_h as u32)
     .layer(dunes_front_sprite, 0.8, -40)         // 80% camera speed
     .build();
 
-// In render_background callback:
-fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-    self.background.render(frame, width, height, camera);
+// In render_gpu callback:
+fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+    self.background.render(gpu);
 }
 ```
 
@@ -237,7 +237,7 @@ let base_offset = parallax_offset_x % sprite_width;
 // Draw tiles from -sprite_width to cover seamless scrolling
 ```
 
-**Integration:** The engine calls `game.render_background()` after clearing the frame buffer but before entity rendering. This ensures parallax layers appear behind all game entities.
+**Integration:** Parallax layers render via the GPU path in `render_gpu()`, which draws behind all game entities.
 
 ## GPU Sprite Rendering System
 

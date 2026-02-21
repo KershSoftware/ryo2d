@@ -861,14 +861,6 @@ pub trait Scene {
   /// * `alpha` - Interpolation alpha for smooth rendering (0.0 to 1.0)
   fn render(&mut self, _ctx: &mut SceneContext, _alpha: f32) {}
 
-  /// Called after frame clear but before entity rendering.
-  ///
-  /// Use `render_gpu()` with `GpuParallaxBackground` instead for backgrounds.
-  #[deprecated(
-    note = "Use render_gpu() with GpuParallaxBackground instead. This CPU pixel buffer hook will be removed in a future release."
-  )]
-  fn render_background(&mut self, _frame: &mut [u8], _width: u32, _height: u32, _camera: &Camera) {}
-
   /// Called after sprite rendering to draw UI elements.
   ///
   /// Use this for HUD elements, debug overlays, and in-game UI.
@@ -1518,17 +1510,6 @@ impl SceneManager {
     action
   }
 
-  /// Render background for the active scene.
-  ///
-  /// Called after frame clear but before entity rendering.
-  /// Only renders background for the top scene.
-  #[allow(deprecated)]
-  pub fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-    if let Some(scene) = self.scenes.last_mut() {
-      scene.render_background(frame, width, height, camera);
-    }
-  }
-
   /// Render GPU content for the active scene.
   ///
   /// Called during GPU rendering phase for instanced sprite rendering.
@@ -1877,11 +1858,6 @@ impl Game for SceneGame {
     if !matches!(action, SceneAction::Continue) {
       self.pending_ui_action = Some(action);
     }
-  }
-
-  #[allow(deprecated)]
-  fn render_background(&mut self, frame: &mut [u8], width: u32, height: u32, camera: &Camera) {
-    self.manager.render_background(frame, width, height, camera);
   }
 
   fn render_gpu(&mut self, ctx: &mut super::game::GpuRenderContext) {
