@@ -3212,6 +3212,7 @@ pub struct EngineBuilder {
   disable_debug_keys: bool,
   /// Console command configuration (declarations and removals)
   console_builder: Option<ConsoleCommandBuilder>,
+  resources: super::resources::Resources,
 }
 
 impl EngineBuilder {
@@ -3233,6 +3234,7 @@ impl EngineBuilder {
       sfx_volume_user_pref: false,
       disable_debug_keys: false,
       console_builder: None,
+      resources: super::resources::Resources::new(),
     }
   }
 
@@ -3635,6 +3637,49 @@ impl EngineBuilder {
     self
   }
 
+  /// Register a typed resource that will be available to all scenes.
+  ///
+  /// Resources persist across scene transitions and are accessible via
+  /// `ctx.resources` in any scene callback. Use this for shared game
+  /// state like scores, settings, or player data.
+  ///
+  /// Multiple resources of different types can be registered. Each type
+  /// can only have one instance — inserting the same type twice overwrites.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .resource(Score::default())
+  ///     .resource(Settings::load())
+  ///     .start_scene(Box::new(MenuScene))
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn resource(mut self, value: impl std::any::Any) -> Self {
+    self.resources.insert(value);
+    self
+  }
+
+  /// Set the initial scene that will run when the engine starts.
+  ///
+  /// This is the primary way to launch a game. The scene's `on_enter`
+  /// will be called after engine initialization completes.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// EngineBuilder::new()
+  ///     .title("My Game")
+  ///     .start_scene(Box::new(MenuScene::new()))
+  ///     .build()
+  ///     .run()?;
+  /// ```
+  pub fn start_scene(mut self, scene: impl Scene + 'static) -> Self {
+    self.game = Some(Box::new(SceneGame::new(Box::new(scene))));
+    self
+  }
+
   /// Configure console commands at the engine level.
   ///
   /// Use this to declare game commands and/or remove built-in commands
@@ -3865,7 +3910,7 @@ impl EngineBuilder {
       game_name,
       game_version,
       console_builder,
-      super::resources::Resources::new(),
+      self.resources,
     )
   }
 }
