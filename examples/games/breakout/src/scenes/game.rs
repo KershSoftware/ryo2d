@@ -907,7 +907,7 @@ impl Scene for GameScene {
     // Pause logic handled by PauseScene
   }
 
-  fn on_resume(&mut self, _ctx: &mut SceneContext) {
+  fn on_resume(&mut self, _ctx: &mut SceneContext, _returned: Option<Box<dyn std::any::Any>>) {
     // Wait for escape release before allowing pause again
     self.escape_was_released = false;
   }

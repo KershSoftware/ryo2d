@@ -25,6 +25,7 @@
 //! }
 //! ```
 
+use std::any::Any;
 use std::time::Duration;
 
 use crate::profile_scope;
@@ -765,6 +766,10 @@ pub enum SceneAction {
   Reset(Box<dyn Scene>),
   /// Reset with a transition effect
   ResetWith(Box<dyn Scene>, Transition),
+  /// Pop and return typed data to the scene below
+  PopReturn(Box<dyn Any>),
+  /// Pop with data and a transition effect
+  PopReturnWith(Box<dyn Any>, Transition),
   /// Exit the game
   Quit,
 }
@@ -828,7 +833,11 @@ pub trait Scene {
   ///
   /// The scene above was popped, so this scene resumes.
   /// Use this to resume music, timers, etc.
-  fn on_resume(&mut self, _ctx: &mut SceneContext) {}
+  ///
+  /// If the popped scene used `SceneAction::PopReturn`, the returned data
+  /// is passed in `returned`. Use `returned.and_then(|d| d.downcast().ok())`
+  /// to extract typed data.
+  fn on_resume(&mut self, _ctx: &mut SceneContext, _returned: Option<Box<dyn Any>>) {}
 
   /// Called every fixed timestep while this scene is active.
   ///
@@ -1061,6 +1070,7 @@ struct TransitionState {
 enum PendingAction {
   Push(Box<dyn Scene>),
   Pop,
+  PopReturn(Box<dyn Any>),
   Switch(Box<dyn Scene>),
   Reset(Box<dyn Scene>),
 }
@@ -1070,6 +1080,7 @@ impl std::fmt::Debug for PendingAction {
     match self {
       PendingAction::Push(_) => write!(f, "Push(...)"),
       PendingAction::Pop => write!(f, "Pop"),
+      PendingAction::PopReturn(_) => write!(f, "PopReturn(...)"),
       PendingAction::Switch(_) => write!(f, "Switch(...)"),
       PendingAction::Reset(_) => write!(f, "Reset(...)"),
     }
@@ -1190,13 +1201,13 @@ impl SceneManager {
   /// The new top scene (if any) will have `on_resume()` called.
   ///
   /// Returns the popped scene, or None if stack was empty.
-  pub fn pop(&mut self, ctx: &mut SceneContext) -> Option<Box<dyn Scene>> {
+  pub fn pop(&mut self, ctx: &mut SceneContext, returned: Option<Box<dyn Any>>) -> Option<Box<dyn Scene>> {
     if let Some(mut scene) = self.scenes.pop() {
       scene.on_exit(ctx);
 
       // Resume the new top scene
       if let Some(new_top) = self.scenes.last_mut() {
-        new_top.on_resume(ctx);
+        new_top.on_resume(ctx, returned);
         // Skip the next update so the resumed scene doesn't process
         // stale input (e.g., the Escape that caused the pop)
         self.skip_next_update = true;
@@ -1325,7 +1336,11 @@ impl SceneManager {
         true
       }
       SceneAction::Pop => {
-        self.pop(ctx);
+        self.pop(ctx, None);
+        !self.scenes.is_empty()
+      }
+      SceneAction::PopReturn(data) => {
+        self.pop(ctx, Some(data));
         !self.scenes.is_empty()
       }
       SceneAction::Switch(scene) => {
@@ -1343,6 +1358,10 @@ impl SceneManager {
       }
       SceneAction::PopWith(transition) => {
         self.start_transition(transition, PendingAction::Pop);
+        true
+      }
+      SceneAction::PopReturnWith(data, transition) => {
+        self.start_transition(transition, PendingAction::PopReturn(data));
         true
       }
       SceneAction::SwitchWith(scene, transition) => {
@@ -1448,7 +1467,10 @@ impl SceneManager {
         self.push(scene, ctx);
       }
       PendingAction::Pop => {
-        self.pop(ctx);
+        self.pop(ctx, None);
+      }
+      PendingAction::PopReturn(data) => {
+        self.pop(ctx, Some(data));
       }
       PendingAction::Switch(scene) => {
         self.switch(scene, ctx);
@@ -1763,9 +1785,11 @@ impl Game for SceneGame {
       let will_change_scene = matches!(
         action,
         SceneAction::Pop
+          | SceneAction::PopReturn(_)
           | SceneAction::Switch(_)
           | SceneAction::Reset(_)
           | SceneAction::PopWith(_)
+          | SceneAction::PopReturnWith(_, _)
           | SceneAction::SwitchWith(_, _)
           | SceneAction::ResetWith(_, _)
       );
@@ -1805,9 +1829,11 @@ impl Game for SceneGame {
       let will_change_scene = matches!(
         action,
         SceneAction::Pop
+          | SceneAction::PopReturn(_)
           | SceneAction::Switch(_)
           | SceneAction::Reset(_)
           | SceneAction::PopWith(_)
+          | SceneAction::PopReturnWith(_, _)
           | SceneAction::SwitchWith(_, _)
           | SceneAction::ResetWith(_, _)
       );
@@ -1935,7 +1961,7 @@ mod tests {
       self.paused = true;
     }
 
-    fn on_resume(&mut self, _ctx: &mut SceneContext) {
+    fn on_resume(&mut self, _ctx: &mut SceneContext, _returned: Option<Box<dyn Any>>) {
       self.resumed = true;
     }
 
