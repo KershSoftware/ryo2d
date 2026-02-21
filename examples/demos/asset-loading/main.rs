@@ -9,14 +9,16 @@ const SCREEN_WIDTH: u32 = 600;
 const SCREEN_HEIGHT: u32 = 400;
 
 fn main() {
-  EngineBuilder::new()
+  let engine = EngineBuilder::new()
     .title("Asset Loading Demo")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
     .show_fps(true)
     .with_scene(LoadingDemoScene::new())
-    .build()
-    .run()
-    .expect("Engine error");
+    .build();
+
+  if let Err(e) = engine.run() {
+    eprintln!("Engine error: {}", e);
+  }
 }
 
 /// Demo states
@@ -103,16 +105,12 @@ impl Scene for LoadingDemoScene {
           ctx.assets.start_loading(assets.clone());
 
           self.state = DemoState::Loading;
-          println!("Started loading {} assets...", assets.len());
         }
       }
 
       DemoState::Loading => {
         // Process async loads every frame (normal real-world usage)
-        let completed = ctx.assets.process_async_loads();
-        if completed > 0 {
-          println!("Loaded {} asset(s)", completed);
-        }
+        ctx.assets.process_async_loads();
 
         // Get actual progress from AssetManager
         self.actual_progress = ctx.assets.loading_progress();
@@ -126,24 +124,11 @@ impl Scene for LoadingDemoScene {
         {
           self.reveal_timer = 0.0;
           self.ui_shown_count += 1;
-          let assets = Self::assets_to_load();
-          if self.ui_shown_count <= assets.len() {
-            let path = assets[self.ui_shown_count - 1];
-            let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-            println!(
-              "UI: Showing {}/{}: {}",
-              self.ui_shown_count,
-              assets.len(),
-              filename
-            );
-          }
         }
 
         // Complete when UI has caught up to actual progress and all assets are loaded
         if ctx.assets.is_loading_complete() && self.ui_shown_count >= self.actual_progress.completed
         {
-          println!("All assets loaded!");
-
           // Collect the loaded sprites
           self.loaded_sprites.clear();
           for path in Self::assets_to_load() {
