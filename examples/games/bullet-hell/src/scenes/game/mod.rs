@@ -14,7 +14,7 @@ const DESIGN_WIDTH: f32 = 1920.0;
 const DESIGN_HEIGHT: f32 = 1080.0;
 
 /// Bundle type for pooled bullets
-type BulletBundle = (
+pub(super) type BulletBundle = (
   Transform,
   Renderable,
   RigidBody,
@@ -26,55 +26,55 @@ type BulletBundle = (
 
 /// Marker component for nebula orb child entities
 #[derive(Debug, Clone)]
-struct NebulaOrbMarker {
-  parent: Entity,
-  index: usize,
+pub(super) struct NebulaOrbMarker {
+  pub(super) parent: Entity,
+  pub(super) index: usize,
 }
 
 pub struct GameScene {
-  player: Option<Entity>,
-  turrets: Vec<Entity>,
-  drones: Vec<Entity>,
-  nebulas: Vec<Entity>,
-  rockets: Vec<Entity>,
-  lasers: Vec<Entity>,
-  fading_lasers: Vec<Entity>,
-  bullets: Vec<Entity>,
-  particles: Vec<Entity>,
-  platforms: Vec<Entity>,
-  barriers: Vec<Entity>,
-  survival_time: f32,
+  pub(super) player: Option<Entity>,
+  pub(super) turrets: Vec<Entity>,
+  pub(super) drones: Vec<Entity>,
+  pub(super) nebulas: Vec<Entity>,
+  pub(super) rockets: Vec<Entity>,
+  pub(super) lasers: Vec<Entity>,
+  pub(super) fading_lasers: Vec<Entity>,
+  pub(super) bullets: Vec<Entity>,
+  pub(super) particles: Vec<Entity>,
+  pub(super) platforms: Vec<Entity>,
+  pub(super) barriers: Vec<Entity>,
+  pub(super) survival_time: f32,
   #[allow(dead_code)]
-  best_time: f32,
-  player_lives: u32,
-  player_invincible: bool,
-  player_sprite: SpriteHandle,
-  turret_sprite: SpriteHandle,
-  drone_sprite: SpriteHandle,
-  nebula_orb_sprite: SpriteHandle,
-  rocket_sprite: SpriteHandle,
-  bullet_sprite: SpriteHandle,
-  particle_sprite: SpriteHandle,
-  platform_sprite: SpriteHandle,
-  barrier_sprite: SpriteHandle,
+  pub(super) best_time: f32,
+  pub(super) player_lives: u32,
+  pub(super) player_invincible: bool,
+  pub(super) player_sprite: SpriteHandle,
+  pub(super) turret_sprite: SpriteHandle,
+  pub(super) drone_sprite: SpriteHandle,
+  pub(super) nebula_orb_sprite: SpriteHandle,
+  pub(super) rocket_sprite: SpriteHandle,
+  pub(super) bullet_sprite: SpriteHandle,
+  pub(super) particle_sprite: SpriteHandle,
+  pub(super) platform_sprite: SpriteHandle,
+  pub(super) barrier_sprite: SpriteHandle,
   // GPU-accelerated parallax background
-  background: GpuParallaxBackground,
+  pub(super) background: GpuParallaxBackground,
   // Progression tracking
-  difficulty_level: u32,
-  time_since_last_progression: f32,
-  current_turret_speed: f32,
-  current_burst_size: u32,
+  pub(super) difficulty_level: u32,
+  pub(super) time_since_last_progression: f32,
+  pub(super) current_turret_speed: f32,
+  pub(super) current_burst_size: u32,
   // Drone spawning
-  next_drone_spawn_time: f32,
+  pub(super) next_drone_spawn_time: f32,
   // Nebula spawning
-  next_nebula_spawn_time: f32,
+  pub(super) next_nebula_spawn_time: f32,
   // Death effect
-  death_effect_timer: Option<f32>,
+  pub(super) death_effect_timer: Option<f32>,
   // Screen dimensions (obtained from engine at runtime)
-  screen_width: f32,
-  screen_height: f32,
+  pub(super) screen_width: f32,
+  pub(super) screen_height: f32,
   // Object pool for bullets (high-frequency spawning)
-  bullet_pool: Option<Pool<BulletBundle>>,
+  pub(super) bullet_pool: Option<Pool<BulletBundle>>,
 }
 
 impl GameScene {
