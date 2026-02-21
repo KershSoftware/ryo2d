@@ -38,22 +38,18 @@ impl Scene for DpiScalingScene {
     if ctx.input.key_pressed(KeyCode::Digit1) {
       self.ui_scale = Some(1);
       ctx.request_ui_scale(Some(1));
-      println!("UI Scale: 1x (forced)");
     }
     if ctx.input.key_pressed(KeyCode::Digit2) {
       self.ui_scale = Some(2);
       ctx.request_ui_scale(Some(2));
-      println!("UI Scale: 2x (forced)");
     }
     if ctx.input.key_pressed(KeyCode::Digit3) {
       self.ui_scale = Some(3);
       ctx.request_ui_scale(Some(3));
-      println!("UI Scale: 3x (forced)");
     }
     if ctx.input.key_pressed(KeyCode::KeyA) {
       self.ui_scale = None;
       ctx.request_ui_scale(None);
-      println!("UI Scale: Auto-detect");
     }
 
     if ctx.input.key_pressed(KeyCode::Escape) {
@@ -227,15 +223,16 @@ impl Scene for DpiScalingScene {
   }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-  EngineBuilder::new()
+fn main() {
+  let engine = EngineBuilder::new()
     .title("Ryo2D DPI Scaling Demo")
     .resolution(800, 600)
     .window_mode(WindowMode::ResizableAspectRatio)
     .ui_scale(None) // Auto-detect from DPI
     .with_scene(DpiScalingScene::new())
-    .build()
-    .run()?;
+    .build();
 
-  Ok(())
+  if let Err(e) = engine.run() {
+    eprintln!("Engine error: {}", e);
+  }
 }

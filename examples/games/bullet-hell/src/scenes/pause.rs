@@ -14,12 +14,6 @@ pub struct PauseScene {
   settings_menu_focus: usize,
   /// Flag set in render_ui (mouse click) and processed in update (needs SceneContext)
   apply_settings: bool,
-  /// Flag set in render_ui (mouse click on Resume)
-  resume_requested: bool,
-  /// Flag set in render_ui (mouse click on Quit to Menu)
-  quit_to_menu: bool,
-  /// Flag set in render_ui (mouse click on Quit to Desktop)
-  quit_to_desktop: bool,
 }
 
 impl PauseScene {
@@ -30,9 +24,6 @@ impl PauseScene {
       pause_menu_focus: 0,
       settings_menu_focus: 0,
       apply_settings: false,
-      resume_requested: false,
-      quit_to_menu: false,
-      quit_to_desktop: false,
     }
   }
 }
@@ -54,16 +45,6 @@ impl Scene for PauseScene {
       let display_mode = modes[self.selected_display_mode_idx];
       ctx.request_display_mode(display_mode);
     }
-    if self.resume_requested {
-      return SceneAction::Pop;
-    }
-    if self.quit_to_menu {
-      return SceneAction::Reset(Box::new(MenuScene::new()));
-    }
-    if self.quit_to_desktop {
-      return SceneAction::Quit;
-    }
-
     // Escape / Start: close settings submenu or resume game
     if ctx.input.key_pressed_and_consume(KeyCode::Escape)
       || ctx
@@ -83,8 +64,7 @@ impl Scene for PauseScene {
 
   fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
-    self.render_pause_menu(ui, screen_w as f32, screen_h as f32);
-    SceneAction::Continue
+    self.render_pause_menu(ui, screen_w as f32, screen_h as f32)
   }
 
   fn is_transparent(&self) -> bool {
@@ -248,7 +228,7 @@ impl PauseScene {
 // ---------------------------------------------------------------------------
 
 impl PauseScene {
-  fn render_pause_menu(&mut self, ui: &mut UiContext, screen_w: f32, screen_h: f32) {
+  fn render_pause_menu(&mut self, ui: &mut UiContext, screen_w: f32, screen_h: f32) -> SceneAction {
     // Darken background
     ui.draw_rect(
       Rect::new(0.0, 0.0, screen_w, screen_h),
@@ -260,8 +240,9 @@ impl PauseScene {
 
     if self.settings_open {
       self.render_settings(ui, center_x, center_y);
+      SceneAction::Continue
     } else {
-      self.render_main_menu(ui, center_x, center_y);
+      self.render_main_menu(ui, center_x, center_y)
     }
   }
 
@@ -388,7 +369,7 @@ impl PauseScene {
     );
   }
 
-  fn render_main_menu(&mut self, ui: &mut UiContext, center_x: f32, center_y: f32) {
+  fn render_main_menu(&mut self, ui: &mut UiContext, center_x: f32, center_y: f32) -> SceneAction {
     ui.draw_text_anchored(
       "PAUSED",
       Anchor::TopCenter,
@@ -425,7 +406,7 @@ impl PauseScene {
       ui.draw_rect_outline(resume_rect, Color::rgb(255, 220, 100), 2.0);
     }
     if ui.button_styled("Resume", resume_rect, bg, hover, pressed, Color::WHITE) {
-      self.resume_requested = true;
+      return SceneAction::Pop;
     }
 
     // Settings
@@ -453,7 +434,7 @@ impl PauseScene {
       pressed,
       Color::WHITE,
     ) {
-      self.quit_to_menu = true;
+      return SceneAction::Reset(Box::new(MenuScene::new()));
     }
 
     // Quit to Desktop
@@ -470,7 +451,7 @@ impl PauseScene {
       pressed,
       Color::WHITE,
     ) {
-      self.quit_to_desktop = true;
+      return SceneAction::Quit;
     }
 
     // Instructions
@@ -481,6 +462,8 @@ impl PauseScene {
       center_y + 170.0,
       Color::rgb(150, 150, 150),
     );
+
+    SceneAction::Continue
   }
 }
 

@@ -530,14 +530,15 @@ impl ControllerDemo {
   }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-  EngineBuilder::new()
+fn main() {
+  let engine = EngineBuilder::new()
     .title("Ryo2D Controller Demo")
     .resolution(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)
     .window_mode(WindowMode::ResizableAspectRatio)
     .with_scene(ControllerDemo::new())
-    .build()
-    .run()?;
+    .build();
 
-  Ok(())
+  if let Err(e) = engine.run() {
+    eprintln!("Engine error: {}", e);
+  }
 }
