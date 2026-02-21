@@ -17,60 +17,48 @@ use ryo2d::prelude::*;
 
 ---
 
-## Core Traits
-
-### Game
-
-The main trait for single-scene games:
-
-```rust
-pub trait Game {
-    fn init(&mut self, ctx: &mut GameContext) {}
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {}
-    fn fixed_update(&mut self, ctx: &mut GameContext) {}
-    fn render_ui(&mut self, ui: &mut UiContext) {}
-    fn on_exit(&mut self, ctx: &mut GameContext) {}
-}
-```
+## Core Trait
 
 ### Scene
 
-For multi-scene games with state transitions:
+The main trait for all games. Every game uses scenes:
 
 ```rust
 pub trait Scene {
     fn on_enter(&mut self, ctx: &mut SceneContext) {}
     fn on_exit(&mut self, ctx: &mut SceneContext) {}
     fn on_pause(&mut self, ctx: &mut SceneContext) {}
-    fn on_resume(&mut self, ctx: &mut SceneContext) {}
+    fn on_resume(&mut self, ctx: &mut SceneContext, returned: Option<Box<dyn Any>>) {}
     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction;
     fn fixed_update(&mut self, ctx: &mut SceneContext) {}
-    fn render_ui(&mut self, ui: &mut UiContext) {}
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction { SceneAction::Continue }
     fn cleanup_on_exit(&self) -> SceneCleanup { SceneCleanup::DEFAULT }
 }
 ```
+
+**Note:** `on_resume` receives an optional `Box<dyn Any>` containing data returned by a popped scene via `SceneAction::PopReturn`.
 
 ---
 
 ## Context Types
 
-### GameContext
+### SceneContext
 
-Available in `Game` trait methods:
+Available in `Scene` trait methods:
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `resources` | `&mut Resources` | Typed resource map for cross-scene shared state |
 | `world` | `&mut World` | ECS world for spawning/querying entities |
 | `camera` | `&mut Camera` | Camera position, zoom, viewport |
-| `input` | `&InputState` | Keyboard and mouse input |
+| `input` | `&mut InputState` | Keyboard and mouse input |
 | `assets` | `&mut AssetManager` | Load/create sprites and assets |
 | `audio` | `&mut Option<AudioManager>` | Play sounds and music |
 | `effects` | `&mut EffectsManager` | Post-processing effects |
-| `collision_events` | `&[PhysicsCollisionEvent]` | Physics collision events this frame |
-
-### SceneContext
-
-Available in `Scene` trait methods (same fields as GameContext).
+| `lighting` | `&mut Option<LightingRenderer>` | 2D lighting (None if disabled) |
+| `events` | `&mut Events` | Event bus for decoupled communication |
+| `time_control` | `&mut TimeControl` | Time scale and hitstop |
+| `time` | `TimeInfo` | Timing values (fixed dt, scaled dt, etc.) |
 
 ### UiContext
 
@@ -107,8 +95,7 @@ Only use these methods to override the config file.
 // Minimal - uses Ryo.toml configuration
 EngineBuilder::new()
     .title("Game Title")              // Window title
-    .with_game(MyGame::default())     // Single-scene game
-    .with_scene(MenuScene)            // OR multi-scene game
+    .start_scene(MenuScene::new())    // Initial scene
     .build()
     .run()
     .unwrap();
@@ -120,19 +107,20 @@ EngineBuilder::new()
     .target_fps(60)                   // Override target FPS
     .physics_hz(120)                  // Physics update rate
     .window_mode(WindowMode::Fixed)   // Window behavior
-    .with_game(MyGame::default())
+    .start_scene(GameScene::new())
     .build()
     .run()
     .unwrap();
 
-// Declare console commands at engine level
+// Register shared resources and declare console commands
 EngineBuilder::new()
     .title("Game Title")
+    .resource(GameSettings::default())  // Shared via ctx.resources
     .with_console_commands(|cmd| {
         cmd.declare("game:reset", "Reset the game");
         cmd.declare_verbose("game:spawn", "Spawn entity", "Usage: game:spawn <type>");
     })
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build()
     .run()
     .unwrap();
@@ -196,7 +184,7 @@ impl Resolution {
 Request display changes at runtime (applied next frame):
 
 ```rust
-// In SceneContext / GameContext
+// In SceneContext
 impl SceneContext {
     fn request_display_mode(&mut self, mode: DisplayMode);
     fn request_resolution(&mut self, width: u32, height: u32);
@@ -900,6 +888,8 @@ pub enum SceneAction {
     SwitchWith(Box<dyn Scene>, Transition),
     Reset(Box<dyn Scene>),             // Clear all scenes, push new one
     ResetWith(Box<dyn Scene>, Transition),
+    PopReturn(Box<dyn Any>),           // Pop and return data to scene below
+    PopReturnWith(Box<dyn Any>, Transition),
     Quit,                              // Exit the game
 }
 ```

@@ -8,7 +8,7 @@ Ryo2D is a lightweight 2D game engine designed for simplicity and ease of use. I
 
 ## Features
 
-- **Simple API** - Implement the `Game` trait and you're ready to go
+- **Simple API** - Implement the `Scene` trait and you're ready to go
 - **Entity-Component-System** - Flexible entity management with composable components
 - **Camera System** - 2D camera with zoom, follow, and world-to-screen transforms
 - **Sprite Rendering** - Load images, create solid colors, animated sprites
@@ -20,16 +20,16 @@ Ryo2D is a lightweight 2D game engine designed for simplicity and ease of use. I
 ```rust
 use ryo2d::prelude::*;
 
-struct MyGame;
+struct MyScene;
 
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
-        let player = ctx.world.spawn();
-        ctx.world.add_component(player, Transform::new(100.0, 100.0));
+impl Scene for MyScene {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+        ctx.world.spawn((Transform::new(100.0, 100.0),));
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Your game logic here
+        SceneAction::Continue
     }
 }
 
@@ -37,7 +37,7 @@ fn main() {
     EngineBuilder::new()
         .title("My Game")
         .resolution(800, 600)
-        .with_game(MyGame)
+        .start_scene(MyScene)
         .build()
         .run()
         .unwrap();

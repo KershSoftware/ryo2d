@@ -157,7 +157,7 @@ fn main() {
     EngineBuilder::new()
         .title(&config.name)
         .with_system_state_overrides(SystemFieldFilter::all())  // Loads user prefs from system.json
-        .with_scene(MyScene::new())
+        .start_scene(MyScene::new())
         .build()
         .run()
         .unwrap();
@@ -170,7 +170,7 @@ During gameplay, access the current screen dimensions through the context:
 
 ```rust
 impl Scene for MyScene {
-    fn update(&mut self, ctx: &mut SceneContext) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Get current screen dimensions
         let (width, height) = ctx.screen_size();
         
@@ -181,9 +181,10 @@ impl Scene for MyScene {
         // Use for positioning, spawning, etc.
         let center_x = w / 2.0;
         let center_y = h / 2.0;
+        SceneAction::Continue
     }
     
-    fn render_ui(&mut self, ui: &mut UiContext) {
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         // Also available in UI context
         let (w, h) = ui.screen_size();
     }

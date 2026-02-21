@@ -82,7 +82,7 @@ fn send_jump(&self, client: &mut NetworkClient) {
 ### Server: Process Incoming RPCs
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Receive RPCs from clients
     for client_id in self.server.clients().collect::<Vec<_>>() {
         while let Some(data) = self.server.receive(client_id, Channel::ReliableOrdered) {
@@ -94,6 +94,7 @@ fn update(&mut self, ctx: &mut GameContext, dt: f32) {
             }
         }
     }
+    SceneAction::Continue
 }
 ```
 
@@ -317,8 +318,8 @@ struct GameServer {
     input_sequences: HashMap<ClientId, u32>,
 }
 
-impl Game for GameServer {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for GameServer {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // ... server setup ...
 
         // Register input handler
@@ -328,7 +329,7 @@ impl Game for GameServer {
         });
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         self.server.update(Duration::from_secs_f32(dt));
 
         // Process RPCs manually for access to game state
@@ -337,6 +338,7 @@ impl Game for GameServer {
                 self.handle_client_rpc(&mut ctx.world, client_id, &data);
             }
         }
+        SceneAction::Continue
     }
 }
 
@@ -394,8 +396,8 @@ struct GameClient {
     input_sequence: u32,
 }
 
-impl Game for GameClient {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for GameClient {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // ... client setup ...
 
         // Register event handler
@@ -418,7 +420,7 @@ impl Game for GameClient {
         });
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         self.client.update(Duration::from_secs_f32(dt));
 
         // Send input to server
@@ -430,6 +432,7 @@ impl Game for GameClient {
                 let _ = self.rpc_registry.dispatch(&mut ctx.world, &serialized);
             }
         }
+        SceneAction::Continue
     }
 }
 

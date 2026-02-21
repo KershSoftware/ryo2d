@@ -64,7 +64,7 @@ EngineBuilder::new()
             "Makes the player immune to all damage until toggled off.",
         );
     })
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build()
     .run()?;
 ```
@@ -162,7 +162,7 @@ EngineBuilder::new()
     .with_console_commands(|cmd| {
         cmd.declare("game:reset", "Reset the game to initial state");
     })
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build()
     .run()?;
 

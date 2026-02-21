@@ -15,7 +15,7 @@ You are the switchboard. Parse the user's request and route to the most capable 
 
 ### Game Development with Ryo2D
 
-Keywords: "game", "spawn entity", "player", "enemy", "score", "level", "Game trait"
+Keywords: "game", "spawn entity", "player", "enemy", "score", "level", "Scene trait"
 
 | Keywords | Skill |
 |----------|-------|

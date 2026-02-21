@@ -150,7 +150,7 @@ Use `check_collision` to test if two colliders overlap:
 ```rust
 use ryo2d::prelude::*;
 
-fn update(&mut self, ctx: &mut GameContext) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Get positions and colliders
     let player_pos = ctx.world.get_component::<Transform>(self.player);
     let player_col = ctx.world.get_component::<Collider>(self.player);
@@ -170,6 +170,7 @@ fn update(&mut self, ctx: &mut GameContext) {
             self.handle_enemy_hit();
         }
     }
+    SceneAction::Continue
 }
 ```
 
@@ -215,8 +216,8 @@ struct BouncingBall {
     walls: Vec<Entity>,
 }
 
-impl Game for BouncingBall {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for BouncingBall {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Create ball with physics
         self.ball = ctx.world.spawn();
         ctx.world.add_component(self.ball, Transform::new(100.0, 100.0));
@@ -241,7 +242,7 @@ impl Game for BouncingBall {
         }
     }
 
-    fn update(&mut self, ctx: &mut GameContext) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Get ball data
         let ball_pos = ctx.world.get_component::<Transform>(self.ball)
             .map(|t| (t.x, t.y));
@@ -276,6 +277,7 @@ impl Game for BouncingBall {
                 }
             }
         }
+        SceneAction::Continue
     }
 }
 ```

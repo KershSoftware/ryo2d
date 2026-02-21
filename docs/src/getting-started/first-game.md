@@ -2,55 +2,51 @@
 
 In this tutorial, we'll create a simple game with a player that moves around the screen.
 
-## Choosing Your Architecture
+## Architecture
 
-Ryo2D offers two approaches for structuring your game:
+Every Ryo2D game uses the `Scene` trait. Scenes represent distinct states of your game (menu, gameplay, pause, etc.). Even simple single-screen games use a scene.
 
-| Approach | Best For | Entry Point |
-|----------|----------|-------------|
-| **Game trait** | Simple games, tutorials, prototypes | `with_game()` |
-| **Scene trait** | Multi-screen games (menus, pause, levels) | `with_scene()` |
-
-This tutorial uses the simpler `Game` trait. For scene-based architecture, see [Scene Management](../concepts/scenes.md).
+For more complex scene management (push, pop, transitions), see [Scene Management](../concepts/scenes.md).
 
 ## Setting Up the Game Struct
 
 ```rust
 use ryo2d::prelude::*;
 
-struct MyGame {
+struct MyScene {
     player: Option<Entity>,
 }
 
-impl MyGame {
+impl MyScene {
     fn new() -> Self {
-        MyGame { player: None }
+        MyScene { player: None }
     }
 }
 ```
 
 ## Spawning a Player
 
-In `init()`, we create an entity and attach components:
+In `on_enter()`, we create an entity and attach components:
 
 ```rust
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyScene {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Create a player entity with all components
         let sprite = Sprite::solid_rect(32, 32, 0x40, 0xc0, 0xff, 0xff);
         let sprite_handle = SpriteHandle::from_sprite(sprite, "player");
-        
+
         let player = ctx.world.spawn((
             Transform::new(400.0, 300.0),
             Velocity::zero(),
             Renderable::sprite(sprite_handle),
         ));
-        
+
         self.player = Some(player);
     }
-    
-    fn update(&mut self, _ctx: &mut GameContext, _dt: f32) {
+
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // Coming next...
+        SceneAction::Continue
     }
 }
 ```
@@ -60,7 +56,7 @@ impl Game for MyGame {
 Now let's make the player move with WASD:
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     if let Some(player) = self.player {
         if let Some(mut velocity) = ctx.world.get_component_mut::<Velocity>(player) {
             let speed = 200.0;
@@ -81,6 +77,7 @@ fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
             }
         }
     }
+    SceneAction::Continue
 }
 ```
 
@@ -93,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     EngineBuilder::new()
         .title("My First Game")
         .resolution(800, 600)
-        .with_game(MyGame::new())  // Use with_game() for Game trait
+        .start_scene(MyScene::new())
         .build()
         .run()?;
     Ok(())
@@ -112,18 +109,13 @@ Once you're comfortable with the basics, consider:
 - **[Physics System](../concepts/physics.md)** - For collision detection and physics simulation
 - **[Asset Loading](../concepts/asset-loading.md)** - For loading sprites, sounds, and other resources
 
-### Quick Comparison: Game vs Scene
+### Multi-Scene Games
+
+For games with menus, pause screens, and level transitions, scenes can push/pop other scenes:
 
 ```rust
-// Simple approach: Game trait
 EngineBuilder::new()
-    .with_game(MyGame::new())
-    .build()
-    .run()?;
-
-// Scene-based approach: for multi-screen games
-EngineBuilder::new()
-    .with_scene(MenuScene::new())  // Scenes can push/pop other scenes
+    .start_scene(MenuScene::new())
     .build()
     .run()?;
 ```

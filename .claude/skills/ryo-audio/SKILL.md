@@ -24,15 +24,15 @@ if let Some(audio) = ctx.audio.as_mut() {
 
 ## Loading Sounds
 
-Load in `init()`, store handles:
+Load in `on_enter()`, store handles:
 
 ```rust
-struct MyGame {
+struct MyScene {
     jump_sound: Option<SoundHandle>,
     bg_music: Option<MusicHandle>,
 }
 
-fn init(&mut self, ctx: &mut GameContext) {
+fn on_enter(&mut self, ctx: &mut SceneContext) {
     if let Some(audio) = ctx.audio.as_mut() {
         self.jump_sound = audio.load_sound("sounds/jump.wav").ok();
         self.bg_music = audio.load_music("music/theme.ogg").ok();
@@ -105,7 +105,7 @@ for event in ctx.collisions_started() {
 ### Pause Menu
 
 ```rust
-fn pause_game(&mut self, ctx: &mut GameContext) {
+fn pause_game(&mut self, ctx: &mut SceneContext) {
     if let Some(audio) = ctx.audio.as_mut() {
         audio.set_music_volume(0.3);  // Lower during pause
     }
@@ -121,7 +121,7 @@ fn pause_game(&mut self, ctx: &mut GameContext) {
 ## Tips
 
 - Always check `if let Some(audio) = ctx.audio.as_mut()`
-- Load sounds in `init()`, store handles in game struct
+- Load sounds in `on_enter()`, store handles in scene struct
 - Add slight pitch variation to repeated sounds
 - Fade music during scene transitions
 - Lower music volume during pause/dialogs

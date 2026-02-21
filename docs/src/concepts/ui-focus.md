@@ -40,7 +40,7 @@ struct MyScene {
     role: DropdownState,
 }
 
-fn render_ui(&mut self, ui: &mut UiContext, dt: f32) {
+fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Draw widgets
     ui.text_input(&mut self.username, rect1, "Username", dt);
     ui.text_input(&mut self.password, rect2, "Password", dt);
@@ -229,7 +229,7 @@ struct LoginScene {
     submit_focused: bool,
 }
 
-fn render_ui(&mut self, ui: &mut UiContext, dt: f32) {
+fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Username field
     let username_rect = Rect::new(100.0, 100.0, 200.0, 30.0);
     if self.username.is_focused() {

@@ -15,8 +15,8 @@ impl MyGame {
     }
 }
 
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Create player
         let player = ctx.world.spawn();
         ctx.world.add_component(player, Transform::new(400.0, 300.0));
@@ -45,7 +45,7 @@ impl Game for MyGame {
         ctx.camera.set_position(400.0, 300.0);
     }
 
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // Player movement
         if let Some(player) = self.player {
             if let Some(mut velocity) = ctx.world.get_component_mut::<Velocity>(player) {
@@ -68,11 +68,13 @@ impl Game for MyGame {
         }
 
         // Scroll wheel zoom
+        // Scroll wheel zoom
         let scroll = ctx.input.scroll_delta();
         if scroll.1 != 0.0 {
             let new_zoom = ctx.camera.zoom + scroll.1 * 0.1;
             ctx.camera.set_zoom(new_zoom);
         }
+        SceneAction::Continue
     }
 }
 
@@ -81,7 +83,7 @@ fn main() {
         .title("Camera Follow")
         .resolution(800, 600)
         .target_fps(60)
-        .with_game(MyGame::new())
+        .start_scene(MyGame::new())
         .build()
         .run()
         .unwrap();

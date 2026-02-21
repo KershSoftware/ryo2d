@@ -16,7 +16,7 @@ Consider a game where enemies can die. When an enemy dies, several things need t
 
 ```rust
 // Tightly coupled - combat knows about everything
-fn kill_enemy(&mut self, enemy: Entity, ctx: &mut GameContext) {
+fn kill_enemy(&mut self, enemy: Entity, ctx: &mut SceneContext) {
     ctx.world.despawn(enemy);
     self.audio.play("death.wav");           // Knows about audio
     self.score += 100;                       // Knows about scoring
@@ -30,21 +30,21 @@ fn kill_enemy(&mut self, enemy: Entity, ctx: &mut GameContext) {
 
 ```rust
 // Combat only cares about combat
-fn kill_enemy(&mut self, enemy: Entity, ctx: &mut GameContext) {
+fn kill_enemy(&mut self, enemy: Entity, ctx: &mut SceneContext) {
     let pos = ctx.world.get_component::<Transform>(enemy).map(|t| (t.x, t.y));
     ctx.world.despawn(enemy);
     ctx.events.emit(EnemyDied { entity: enemy, position: pos, score: 100 });
 }
 
 // Audio reacts independently
-fn update_audio(&mut self, ctx: &mut GameContext) {
+fn update_audio(&mut self, ctx: &mut SceneContext) {
     for _ in ctx.events.read::<EnemyDied>() {
         self.play("death.wav");
     }
 }
 
 // Scoring reacts independently
-fn update_score(&mut self, ctx: &mut GameContext) {
+fn update_score(&mut self, ctx: &mut SceneContext) {
     for event in ctx.events.read::<EnemyDied>() {
         self.score += event.score;
     }
@@ -79,13 +79,14 @@ struct LevelCompleted {
 Use `ctx.events.emit()` to publish an event:
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     if player_health <= 0 {
         ctx.events.emit(PlayerDied {
             entity: self.player,
             cause: "lava".into(),
         });
     }
+    SceneAction::Continue
 }
 ```
 
@@ -94,11 +95,12 @@ fn update(&mut self, ctx: &mut GameContext, dt: f32) {
 Use `ctx.events.read::<EventType>()` to get an iterator over all events of that type:
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     for event in ctx.events.read::<PlayerDied>() {
         println!("Player died from: {}", event.cause);
         self.show_game_over_screen();
     }
+    SceneAction::Continue
 }
 ```
 
@@ -143,7 +145,7 @@ The physics system emits `CollisionStarted` and `CollisionStopped`:
 ```rust
 use ryo2d::prelude::*;
 
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // React when collisions begin
     for event in ctx.events.read::<CollisionStarted>() {
         if event.involves(self.player) {
@@ -158,6 +160,7 @@ fn update(&mut self, ctx: &mut GameContext, dt: f32) {
             self.player_left_trigger();
         }
     }
+    SceneAction::Continue
 }
 ```
 
@@ -230,7 +233,7 @@ for event in ctx.events.read::<EnemyHit>() {
 Events make achievement tracking clean:
 
 ```rust
-fn check_achievements(&mut self, ctx: &mut GameContext) {
+fn check_achievements(&mut self, ctx: &mut SceneContext) {
     // Track kills
     for _ in ctx.events.read::<EnemyDied>() {
         self.total_kills += 1;

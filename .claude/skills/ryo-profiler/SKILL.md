@@ -35,7 +35,7 @@ The built-in profiler window (`profiler_window.rs`) provides:
 ```rust
 use ryo2d::prelude::*;
 
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     profile_function!();  // Profile entire function
 
     {

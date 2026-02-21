@@ -340,16 +340,18 @@ DTrace requires partial SIP (System Integrity Protection) disable for full funct
 
 ```rust,ignore
 // Bad: Creating/destroying entities every frame
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     for _ in 0..100 {
         ctx.world.spawn(...);  // Allocation overhead
     }
+    SceneAction::Continue
 }
 
 // Good: Use object pooling for frequently spawned entities
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     let bullet = self.bullet_pool.acquire(ctx.world);
     // Reuse existing entity, just update components
+    SceneAction::Continue
 }
 ```
 
@@ -379,10 +381,11 @@ Collider::aabb(width, height);  // Fast
 
 ```rust,ignore
 // Bad: Re-querying every frame
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     for entity in ctx.world.entities_with::<Enemy>() {
         // Query runs every frame
     }
+    SceneAction::Continue
 }
 
 // Good: Cache entity lists when possible

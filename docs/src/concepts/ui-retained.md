@@ -32,7 +32,7 @@ impl MyScene {
 }
 
 impl Scene for MyScene {
-    fn render_ui(&mut self, ui: &mut UiContext, dt: f32) {
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         let rect = Rect::new(100.0, 100.0, 200.0, 30.0);
         
         // Returns true if text changed this frame
@@ -99,7 +99,7 @@ struct MyScene {
 }
 
 impl Scene for MyScene {
-    fn render_ui(&mut self, ui: &mut UiContext, dt: f32) {
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         let view_rect = Rect::new(20.0, 50.0, 300.0, 400.0);
         let content_height = 800.0; // Total height of all content
         
@@ -153,7 +153,7 @@ struct MyScene {
 }
 
 impl Scene for MyScene {
-    fn render_ui(&mut self, ui: &mut UiContext, dt: f32) {
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         let options = ["Easy", "Medium", "Hard"];
         let rect = Rect::new(100.0, 100.0, 200.0, 30.0);
         
@@ -217,7 +217,7 @@ struct MyScene {
 }
 
 // 3. Usage in render_ui
-fn render_ui(&mut self, ui: &mut UiContext, dt: f32) {
+fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Handle input, update state, draw visuals
     let rect = Rect::new(100.0, 100.0, 200.0, 30.0);
     

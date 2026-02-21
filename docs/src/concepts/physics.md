@@ -135,7 +135,7 @@ Collider::box_collider(32.0, 48.0)
 When objects collide, the engine generates events you can query:
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // React when objects START touching (most common)
     for event in ctx.collisions_started() {
         println!("Collision started between {:?} and {:?}", 
@@ -152,6 +152,7 @@ fn update(&mut self, ctx: &mut GameContext) {
     for event in ctx.collisions_stopped() {
         println!("Collision ended");
     }
+    SceneAction::Continue
 }
 ```
 
@@ -160,7 +161,7 @@ fn update(&mut self, ctx: &mut GameContext) {
 ### Handling Triggers (Sensors)
 
 ```rust
-fn handle_player_collision(&mut self, other: Entity, ctx: &mut GameContext) {
+fn handle_player_collision(&mut self, other: Entity, ctx: &mut SceneContext) {
     // Check if player touched a coin
     if self.coins.contains(&other) {
         ctx.world.despawn(other).ok();
@@ -186,7 +187,7 @@ fn handle_player_collision(&mut self, other: Entity, ctx: &mut GameContext) {
 For dynamic bodies, you can apply physics forces:
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Jump: apply an instant impulse
     if ctx.input.key_pressed(KeyCode::Space) && self.grounded {
         if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(self.player) {
@@ -203,6 +204,7 @@ fn update(&mut self, ctx: &mut GameContext) {
     if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(self.player) {
         vel.dx = move_x;
     }
+    SceneAction::Continue
 }
 ```
 
@@ -261,8 +263,8 @@ struct BreakoutGame {
     score: u32,
 }
 
-impl Game for BreakoutGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for BreakoutGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Ball - bouncy, affected by physics
         let ball_sprite = ctx.assets.create_sprite(Sprite::solid_rect(16, 16, 255, 255, 255, 255));
         self.ball = ctx.world.spawn((
@@ -292,7 +294,7 @@ impl Game for BreakoutGame {
         self.spawn_bricks(ctx);
     }
     
-    fn update(&mut self, ctx: &mut GameContext) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Paddle movement
         let mut paddle_vel = 0.0;
         if ctx.input.key_down(KeyCode::ArrowLeft) { paddle_vel = -400.0; }
@@ -308,9 +310,10 @@ impl Game for BreakoutGame {
                 self.check_brick_hit(event.entity_a, event.entity_b, ctx);
             }
         }
+        SceneAction::Continue
     }
     
-    fn check_brick_hit(&mut self, a: Entity, b: Entity, ctx: &mut GameContext) {
+    fn check_brick_hit(&mut self, a: Entity, b: Entity, ctx: &mut SceneContext) {
         // Is one of them the ball?
         if a != self.ball && b != self.ball { return; }
         

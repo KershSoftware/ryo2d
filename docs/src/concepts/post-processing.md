@@ -7,7 +7,7 @@ Ryo2D includes a flexible post-processing system for applying visual effects to 
 ```rust
 use ryo2d::prelude::*;
 
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Fade the screen to black (for scene transitions)
     ctx.effects.set_fade(0.5);  // 50% faded
     
@@ -16,6 +16,7 @@ fn update(&mut self, ctx: &mut GameContext, dt: f32) {
     
     // Add a subtle vignette
     ctx.effects.set_vignette(0.3);
+    SceneAction::Continue
 }
 ```
 
@@ -233,7 +234,7 @@ struct MyGame {
     transitioning: bool,
 }
 
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     if self.transitioning {
         self.fade_progress += dt * 2.0;  // Fade over 0.5 seconds
         if self.fade_progress >= 1.0 {
@@ -249,13 +250,14 @@ fn update(&mut self, ctx: &mut GameContext, dt: f32) {
     }
     
     ctx.effects.set_fade(self.fade_progress);
+    SceneAction::Continue
 }
 ```
 
 ### Damage Feedback
 
 ```rust
-fn on_player_hit(&mut self, ctx: &mut GameContext) {
+fn on_player_hit(&mut self, ctx: &mut SceneContext) {
     ctx.effects.flash(Color::RED, Duration::from_millis(100));
     // Also play sound, shake camera, etc.
 }
@@ -264,12 +266,12 @@ fn on_player_hit(&mut self, ctx: &mut GameContext) {
 ### Environmental Mood
 
 ```rust
-fn enter_underwater_zone(&mut self, ctx: &mut GameContext) {
+fn enter_underwater_zone(&mut self, ctx: &mut SceneContext) {
     ctx.effects.set_color_tint(Color::new(100, 150, 200, 255), 0.3);
     ctx.effects.set_vignette(0.2);
 }
 
-fn exit_underwater_zone(&mut self, ctx: &mut GameContext) {
+fn exit_underwater_zone(&mut self, ctx: &mut SceneContext) {
     ctx.effects.clear();
 }
 ```
@@ -277,7 +279,7 @@ fn exit_underwater_zone(&mut self, ctx: &mut GameContext) {
 ### Retro Game Style
 
 ```rust
-fn init(&mut self, ctx: &mut GameContext) {
+fn on_enter(&mut self, ctx: &mut SceneContext) {
     // Always-on retro effects
     ctx.effects.set_crt(0.25, 0.015, 0.001);
 }

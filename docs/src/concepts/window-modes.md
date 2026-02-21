@@ -23,7 +23,7 @@ EngineBuilder::new()
     .title("My Game")
     .resolution(800, 600)
     .window_mode(WindowMode::ResizableAspectRatio) // default
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build()
     .run()?;
 ```
@@ -45,7 +45,7 @@ EngineBuilder::new()
     .max_width(1280)   // Don't scale wider than 1280px
     .max_height(960)   // Don't scale taller than 960px
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_scene(GameScene::new())
+    .start_scene(GameScene::new())
     .build()
     .run()?;
 ```
@@ -60,7 +60,7 @@ Window cannot be resized or maximized by the user.
 EngineBuilder::new()
     .resolution(640, 480)
     .window_mode(WindowMode::Fixed)
-    .with_scene(GameScene::new())
+    .start_scene(GameScene::new())
     .build()
     .run()?;
 ```
@@ -79,7 +79,7 @@ Game viewport scales in integer multiples (1×, 2×, 3×, 4×) only. Maintains p
 EngineBuilder::new()
     .resolution(320, 240)
     .window_mode(WindowMode::ResizableIntegerScale)
-    .with_scene(GameScene::new())
+    .start_scene(GameScene::new())
     .build()
     .run()?;
 ```
@@ -100,7 +100,7 @@ EngineBuilder::new()
     .resolution(320, 240)
     .max_width(960)    // Allow up to 3× scaling
     .window_mode(WindowMode::ResizableIntegerScale)
-    .with_scene(GameScene::new())
+    .start_scene(GameScene::new())
     .build()
     .run()?;
 ```
@@ -113,7 +113,7 @@ Game viewport stretches to fill the entire window. **May distort aspect ratio.**
 EngineBuilder::new()
     .resolution(800, 600)
     .window_mode(WindowMode::ResizableStretch)
-    .with_scene(GameScene::new())
+    .start_scene(GameScene::new())
     .build()
     .run()?;
 ```
@@ -175,7 +175,7 @@ Use `ResizableIntegerScale` for pixel art games:
 EngineBuilder::new()
     .resolution(320, 240)
     .window_mode(WindowMode::ResizableIntegerScale)
-    .with_scene(GameScene::new())
+    .start_scene(GameScene::new())
     .build()
     .run()?;
 ```
@@ -204,7 +204,7 @@ let mode = match config.string("window.mode").as_deref() {
 
 EngineBuilder::new()
     .window_mode(mode)
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build()
     .run()?;
 ```
@@ -217,7 +217,7 @@ Combine with fullscreen APIs (future feature):
 EngineBuilder::new()
     .window_mode(WindowMode::ResizableAspectRatio)
     .fullscreen(true) // Not yet implemented
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build()
     .run()?;
 ```

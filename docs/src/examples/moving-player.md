@@ -15,8 +15,8 @@ impl MyGame {
     }
 }
 
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Create player entity
         let player = ctx.world.spawn();
         
@@ -33,7 +33,7 @@ impl Game for MyGame {
         self.player = Some(player);
     }
 
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         if let Some(player) = self.player {
             if let Some(mut velocity) = ctx.world.get_component_mut::<Velocity>(player) {
                 let speed = 200.0;
@@ -54,6 +54,7 @@ impl Game for MyGame {
                 }
             }
         }
+        SceneAction::Continue
     }
 }
 
@@ -62,7 +63,7 @@ fn main() {
         .title("Moving Player")
         .resolution(800, 600)
         .target_fps(60)
-        .with_game(MyGame::new())
+        .start_scene(MyGame::new())
         .build()
         .run()
         .unwrap();
@@ -71,7 +72,7 @@ fn main() {
 
 ## How It Works
 
-1. **`init()`** - Creates a player entity with Transform, Velocity, and Renderable
+1. **`on_enter()`** - Creates a player entity with Transform, Velocity, and Renderable
 2. **`update()`** - Reads keyboard input and sets velocity
 3. **Movement System** - The engine automatically applies velocity to transform
 

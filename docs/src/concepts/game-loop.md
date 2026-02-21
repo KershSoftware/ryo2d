@@ -28,12 +28,13 @@ ryo2d uses a **fixed timestep** game loop pattern, which is the industry standar
 
 ## Your Update Function
 
-Your `Game::update()` receives a fixed `dt` value (e.g., 1/60 = 0.01667 seconds):
+Your `Scene::update()` receives a fixed `dt` value (e.g., 1/60 = 0.01667 seconds):
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // dt is always the same value (fixed timestep)
     // Use it for movement: position += velocity * dt
+    SceneAction::Continue
 }
 ```
 
@@ -97,7 +98,7 @@ InterpolationSystem::skip_interpolation(&mut ctx.world, entity);
 The `TimeInfo` struct provides all timing values for advanced use cases:
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Access timing info
     let time = ctx.time;
 
@@ -108,5 +109,6 @@ fn update(&mut self, ctx: &mut GameContext, dt: f32) {
     time.time_scale;    // Current time scale
     time.is_hitstop;    // True during hitstop
     time.frame_count;   // Total frames elapsed
+    SceneAction::Continue
 }
 ```

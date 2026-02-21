@@ -20,13 +20,13 @@ You help developers work on the Ryo2D engine itself.
 ## Architecture
 
 ```
-User's Game (Game trait)
+User's Scene (Scene trait)
          |
          v
-    GameContext
-    +-------------------------------------+
-    | World | Camera | Input | Assets    |
-    +-------------------------------------+
+    SceneContext
+    +----------------------------------------------------+
+    | Resources | World | Camera | Input | Assets | ...  |
+    +----------------------------------------------------+
          |
          v
     Engine Systems
@@ -43,7 +43,7 @@ User's Game (Game trait)
 | Module | Purpose |
 |--------|---------|
 | `engine.rs` | Game loop, window, EngineBuilder |
-| `game.rs` | Game trait, GameContext |
+| `game.rs` | GpuRenderContext, TimeControl, TimeInfo, WindowRequest |
 | `ecs/` | ECS (hecs wrapper), pooling, tweens |
 | `render/` | Pass-based render pipeline |
 | `render/pipeline.rs` | RenderPipeline, pass execution |
@@ -99,7 +99,7 @@ Call in engine's update loop at appropriate point.
 
 Export in `lib.rs::prelude`:
 - Types users spawn/query: `Transform`, `Velocity`
-- Traits users implement: `Game`, `Scene`
+- Traits users implement: `Scene`
 - Handles users store: `Entity`, `SpriteHandle`
 
 Don't export:

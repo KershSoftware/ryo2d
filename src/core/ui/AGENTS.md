@@ -98,7 +98,7 @@ fn render_ui(&mut self, ui: &mut UiContext) {
 - Characters are blitted with alpha blending
 
 ### Integration Point
-The engine calls `game.render_ui(&mut UiContext)` **after** sprite rendering but **before** debug overlays. This ensures UI is always on top of game content.
+The engine calls `scene.render_ui(&mut UiContext)` **after** sprite rendering but **before** debug overlays. This ensures UI is always on top of game content.
 
 ## Notes for AI Agents
 

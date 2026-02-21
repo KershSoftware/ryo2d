@@ -33,7 +33,7 @@ struct EnemySpawned { entity: Entity, wave: u32 }
 ### Emitting Events
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     if player_health <= 0 {
         ctx.events.emit(PlayerDied { entity: self.player });
     }
@@ -158,21 +158,21 @@ match server.poll() {
 ctx.events.emit(EnemyDied { entity: enemy, score: 100 });
 
 // Audio system reads
-fn update_audio(&mut self, ctx: &mut GameContext) {
+fn update_audio(&mut self, ctx: &mut SceneContext) {
     for _ in ctx.events.read::<EnemyDied>() {
         self.play_sound("enemy_death.wav");
     }
 }
 
 // Score system reads (same event)
-fn update_score(&mut self, ctx: &mut GameContext) {
+fn update_score(&mut self, ctx: &mut SceneContext) {
     for event in ctx.events.read::<EnemyDied>() {
         self.score += event.score;
     }
 }
 
 // Particle system reads (same event)
-fn update_particles(&mut self, ctx: &mut GameContext) {
+fn update_particles(&mut self, ctx: &mut SceneContext) {
     for event in ctx.events.read::<EnemyDied>() {
         self.spawn_explosion(event.entity);
     }
@@ -184,7 +184,7 @@ fn update_particles(&mut self, ctx: &mut GameContext) {
 Events can trigger other events:
 
 ```rust
-fn update_powerups(&mut self, ctx: &mut GameContext) {
+fn update_powerups(&mut self, ctx: &mut SceneContext) {
     for event in ctx.events.read::<CollisionStarted>() {
         if event.involves(self.player) {
             let other = event.other(self.player).unwrap();
@@ -205,7 +205,7 @@ fn update_powerups(&mut self, ctx: &mut GameContext) {
 ```rust
 struct AchievementUnlocked { id: &'static str }
 
-fn check_achievements(&mut self, ctx: &mut GameContext) {
+fn check_achievements(&mut self, ctx: &mut SceneContext) {
     let kills = ctx.events.count::<EnemyDied>();
     if kills >= 10 && !self.has_achievement("mass_destruction") {
         self.unlock("mass_destruction");

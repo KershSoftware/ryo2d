@@ -393,7 +393,7 @@ ui.point_in_clip(x, y)        // Point within current clip
 ### HUD with Health/Score
 
 ```rust
-fn render_ui(&mut self, ui: &mut UiContext) {
+fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let (sw, _) = ui.screen_size();
     
     // Health bar top-left
@@ -437,7 +437,7 @@ if self.paused {
 ### Settings Form
 
 ```rust
-fn render_ui(&mut self, ui: &mut UiContext) {
+fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let mut vbox = VBox::new(50.0, 50.0, 15.0);
     
     // Text inputs

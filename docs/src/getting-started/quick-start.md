@@ -16,15 +16,16 @@ Create a new Rust project and add this to `src/main.rs`:
 ```rust
 use ryo2d::prelude::*;
 
-struct MyGame;
+struct MyScene;
 
-impl Game for MyGame {
-    fn init(&mut self, _ctx: &mut GameContext) {
+impl Scene for MyScene {
+    fn on_enter(&mut self, _ctx: &mut SceneContext) {
         println!("Game initialized!");
     }
 
-    fn update(&mut self, _ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // Game logic runs here
+        SceneAction::Continue
     }
 }
 
@@ -32,7 +33,7 @@ fn main() {
     EngineBuilder::new()
         .title("My First Game")
         .resolution(800, 600)
-        .with_game(MyGame)
+        .start_scene(MyScene)
         .build()
         .run()
         .unwrap();

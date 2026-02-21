@@ -58,7 +58,7 @@ Use the logging macros from the prelude:
 ```rust,ignore
 use ryo2d::prelude::*;
 
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Standard logging
     engine_info!("Player position: {:?}", player_pos);
     engine_warn!("Health low: {}", health);
@@ -67,6 +67,7 @@ fn update(&mut self, ctx: &mut GameContext, dt: f32) {
     // Module-tagged logging (shows in module column)
     engine_info!(module: "Combat", "Damage dealt: {}", damage);
     engine_debug!(module: "AI", "Enemy state: {:?}", state);
+    SceneAction::Continue
 }
 ```
 
@@ -101,7 +102,7 @@ EngineBuilder::new()
     .show_colliders(true)
     .show_fps(true)
     .show_frame_timing(false)
-    .with_scene(GameScene::new())
+    .start_scene(GameScene::new())
     .build()
     .run()?;
 ```
@@ -358,7 +359,7 @@ For game-specific debug visualization, you can use the debug module's drawing pr
 use ryo2d::core::debug;
 
 impl Scene for GameScene {
-    fn render_ui(&mut self, ui: &mut UiContext) {
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         // Your custom debug rendering here
         // The engine's debug module provides low-level drawing functions
     }

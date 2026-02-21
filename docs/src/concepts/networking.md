@@ -25,8 +25,8 @@ struct ServerGame {
     server: Option<NetworkServer>,
 }
 
-impl Game for ServerGame {
-    fn init(&mut self, _ctx: &mut GameContext) {
+impl Scene for ServerGame {
+    fn on_enter(&mut self, _ctx: &mut SceneContext) {
         let config = NetworkServerConfig {
             port: 5000,
             max_clients: 4,
@@ -43,7 +43,7 @@ impl Game for ServerGame {
         }
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         let Some(server) = &mut self.server else { return };
 
         // Update networking each frame
@@ -69,6 +69,7 @@ impl Game for ServerGame {
                 println!("Received {} bytes from {}", data.len(), client_id);
             }
         }
+        SceneAction::Continue
     }
 }
 ```
@@ -84,8 +85,8 @@ struct ClientGame {
     client: Option<NetworkClient>,
 }
 
-impl Game for ClientGame {
-    fn init(&mut self, _ctx: &mut GameContext) {
+impl Scene for ClientGame {
+    fn on_enter(&mut self, _ctx: &mut SceneContext) {
         let server_addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
         // Use helper constructor for UDP connections
         let config = NetworkClientConfig::udp(server_addr, 12345);
@@ -99,7 +100,7 @@ impl Game for ClientGame {
         }
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         let Some(client) = &mut self.client else { return };
 
         client.update(Duration::from_secs_f32(dt));
@@ -125,6 +126,7 @@ impl Game for ClientGame {
         if ctx.input.key_pressed(KeyCode::Space) {
             client.send(Channel::ReliableOrdered, b"jump");
         }
+        SceneAction::Continue
     }
 }
 ```
@@ -144,8 +146,8 @@ struct CoopGame {
     remote_players: HashMap<ClientId, Player>,
 }
 
-impl Game for CoopGame {
-    fn init(&mut self, _ctx: &mut GameContext) {
+impl Scene for CoopGame {
+    fn on_enter(&mut self, _ctx: &mut SceneContext) {
         let config = NetworkServerConfig {
             port: 5000,
             max_clients: 3, // 3 remote + 1 host = 4 players
@@ -162,7 +164,7 @@ impl Game for CoopGame {
         }
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         let Some(server) = &mut self.server else { return };
 
         server.update(Duration::from_secs_f32(dt));
@@ -195,6 +197,7 @@ impl Game for CoopGame {
 
         // Host player input handled directly - no network overhead!
         self.host_player.handle_input(&ctx.input);
+        SceneAction::Continue
     }
 }
 ```
@@ -458,11 +461,12 @@ match NetworkClient::connect(config) {
 
 ### 1. Call update() every frame
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Always update networking, even when paused
     if let Some(server) = &mut self.server {
         server.update(Duration::from_secs_f32(dt));
     }
+    SceneAction::Continue
 }
 ```
 
@@ -525,8 +529,8 @@ struct ChatServer {
     messages: Vec<ChatMessage>,
 }
 
-impl Game for ChatServer {
-    fn init(&mut self, _ctx: &mut GameContext) {
+impl Scene for ChatServer {
+    fn on_enter(&mut self, _ctx: &mut SceneContext) {
         let config = NetworkServerConfig {
             port: 5000,
             max_clients: 8,
@@ -539,7 +543,7 @@ impl Game for ChatServer {
         self.player_names.insert(LOCAL_HOST_ID, "Host".to_string());
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         let Some(server) = &mut self.server else { return };
         server.update(Duration::from_secs_f32(dt));
 
@@ -582,6 +586,7 @@ impl Game for ChatServer {
                 }
             }
         }
+        SceneAction::Continue
     }
 }
 

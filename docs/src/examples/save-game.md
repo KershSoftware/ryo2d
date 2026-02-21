@@ -206,8 +206,8 @@ struct MyRPGGame {
     last_autosave: std::time::Instant,
 }
 
-impl Game for MyRPGGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyRPGGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Initialize save system from workspace
         if let Ok(workspace) = Workspace::discover() {
             if let Ok(save_system) = GameSaveSystem::new(&workspace) {
@@ -224,7 +224,7 @@ impl Game for MyRPGGame {
         self.last_autosave = std::time::Instant::now();
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Update play time
         self.progress.total_play_time = self.session_start.elapsed().as_secs();
 
@@ -258,6 +258,7 @@ impl Game for MyRPGGame {
                 self.last_autosave = std::time::Instant::now();
             }
         }
+        SceneAction::Continue
     }
 }
 

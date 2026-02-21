@@ -33,8 +33,8 @@ struct MyServer {
     replication: ReplicationManager,
 }
 
-impl Game for MyServer {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyServer {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Create replication manager
         self.replication = ReplicationManager::new_server();
 
@@ -52,7 +52,7 @@ impl Game for MyServer {
         );
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         self.server.update(Duration::from_secs_f32(dt));
 
         // Handle new clients
@@ -65,6 +65,7 @@ impl Game for MyServer {
 
         // Broadcast all changes to clients
         self.replication.broadcast_updates(&ctx.world, &mut self.server);
+        SceneAction::Continue
     }
 }
 ```
@@ -77,8 +78,8 @@ struct MyClient {
     replication: ReplicationManager,
 }
 
-impl Game for MyClient {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyClient {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         self.replication = ReplicationManager::new_client();
 
         // Register the SAME components as server
@@ -86,13 +87,14 @@ impl Game for MyClient {
         self.replication.register::<Velocity>();
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         self.client.update(Duration::from_secs_f32(dt));
 
         // Process incoming replication messages
         self.replication.process_incoming(&mut ctx.world, &mut self.client);
 
         // Entities are now updated! Render them normally.
+        SceneAction::Continue
     }
 }
 ```
@@ -317,8 +319,8 @@ struct MultiplayerGame {
     players: HashMap<ClientId, Entity>,
 }
 
-impl Game for MultiplayerGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MultiplayerGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Start server
         let config = NetworkServerConfig {
             port: 5000,
@@ -343,7 +345,7 @@ impl Game for MultiplayerGame {
         }
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         let Some(server) = &mut self.server else { return };
         server.update(Duration::from_secs_f32(dt));
 
@@ -393,6 +395,7 @@ impl Game for MultiplayerGame {
 
         // Broadcast all updates
         self.replication.broadcast_updates(&ctx.world, server);
+        SceneAction::Continue
     }
 }
 ```
@@ -476,9 +479,10 @@ if let Some(entity) = replication.get_entity(network_id) {
 ### 5. Call broadcast_updates Every Frame
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Even if nothing changed, this advances the generation
     self.replication.broadcast_updates(&ctx.world, &mut self.server);
+    SceneAction::Continue
 }
 ```
 

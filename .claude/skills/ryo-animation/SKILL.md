@@ -81,7 +81,7 @@ let player = ctx.world.spawn((
 ### State Transitions
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     if let Some(mut ctrl) = ctx.world.get_component_mut::<AnimationController>(self.player) {
         if ctx.input.key_down(KeyCode::KeyD) {
             ctrl.set_state("walk");

@@ -187,7 +187,7 @@ Effective volumes:
 Control volumes programmatically through `AudioManager`:
 
 ```rust
-// Access audio through GameContext or SceneContext
+// Access audio through SceneContext or SceneContext
 if let Some(audio) = ctx.audio {
     // Master volume (affects everything)
     audio.set_master_volume(0.75);
@@ -270,7 +270,7 @@ During gameplay, access the current screen dimensions through the context:
 
 ```rust
 impl Scene for MyScene {
-    fn update(&mut self, ctx: &mut SceneContext) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Get current screen dimensions
         let (width, height) = ctx.screen_size();
         let w = ctx.screen_width();
@@ -278,9 +278,10 @@ impl Scene for MyScene {
         
         // Use for dynamic positioning
         let center = (w / 2.0, h / 2.0);
+        SceneAction::Continue
     }
     
-    fn render_ui(&mut self, ui: &mut UiContext) {
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         // Also available in UI rendering
         let (w, h) = ui.screen_size();
     }
@@ -397,7 +398,7 @@ use ryo2d::prelude::*;
 EngineBuilder::new()
     .resolution(800, 600)
     .with_system_state_overrides(SystemFieldFilter::all())
-    .with_scene(MyScene::new())
+    .start_scene(MyScene::new())
     .build()
 ```
 
@@ -425,7 +426,7 @@ EngineBuilder::new()
         SystemField::Vsync,
         SystemField::ShowFps,
     ])
-    .with_scene(MyScene::new())
+    .start_scene(MyScene::new())
     .build()
 ```
 

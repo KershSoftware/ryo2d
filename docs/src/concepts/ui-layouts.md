@@ -17,7 +17,7 @@ All containers work with the immediate-mode UI system. Call `.next()` to get a `
 Places widgets left-to-right with configurable spacing:
 
 ```rust,ignore
-fn render_ui(&mut self, ui: &mut UiContext) {
+fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Create a row starting at (20, 100) with 8px spacing
     let mut row = HBox::new(20.0, 100.0, 8.0);
 
@@ -279,7 +279,7 @@ Z-ordering in immediate-mode UI is handled by **draw order**:
 3. Modal overlays draw last (on top of everything)
 
 ```rust,ignore
-fn render_ui(&mut self, ui: &mut UiContext) {
+fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // 1. Background
     ui.draw_rect(bg_rect, bg_color);
 

@@ -113,7 +113,7 @@ EmissionShape::Cone {
 For explosions and impacts that should play once:
 
 ```rust
-fn explode(ctx: &mut GameContext, x: f32, y: f32) {
+fn explode(ctx: &mut SceneContext, x: f32, y: f32) {
     ctx.world.spawn((
         Transform::new(x, y),
         ParticleEmitter::explosion(sprite, 30),
@@ -239,8 +239,8 @@ struct ParticleDemo {
     particle_sprite: SpriteHandle,
 }
 
-impl Game for ParticleDemo {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for ParticleDemo {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         self.particle_sprite = ctx.assets.load_sprite("particle.png");
 
         // Fire effect
@@ -256,7 +256,7 @@ impl Game for ParticleDemo {
         ));
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Spawn explosion on click
         if ctx.input.mouse_just_pressed(MouseButton::Left) {
             let (mx, my) = ctx.input.mouse_position();
@@ -265,6 +265,7 @@ impl Game for ParticleDemo {
                 ParticleEmitter::explosion(self.particle_sprite.clone(), 40),
             ));
         }
+        SceneAction::Continue
     }
 }
 ```

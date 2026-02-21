@@ -268,8 +268,8 @@ fn display_mode_label(mode: DisplayMode) -> &'static str {
 ### Autosave
 
 ```rust
-impl Game for MyGame {
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+impl Scene for MyScene {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         self.autosave_timer += dt;
         if self.autosave_timer >= 60.0 {
             self.autosave_timer = 0.0;

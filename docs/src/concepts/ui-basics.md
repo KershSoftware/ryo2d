@@ -16,7 +16,7 @@ This approach is perfect for game UIs that change frequently and need to be simp
 Your game receives a `UiContext` in the `render_ui` callback:
 
 ```rust,ignore
-fn render_ui(&mut self, ui: &mut UiContext) {
+fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Draw UI elements here
 }
 ```
@@ -217,7 +217,7 @@ Font atlases should be a grid of characters in row-major order starting from ASC
 ## Complete Example
 
 ```rust,ignore
-fn render_ui(&mut self, ui: &mut UiContext) {
+fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Health bar in top-left
     ui.draw_progress_bar_with_border(
         Rect::new(10.0, 10.0, 200.0, 20.0),

@@ -46,7 +46,7 @@ Collider::circle(32.0).as_sensor()  // Sensor - detects but no physics response
 ## Collision Events
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Objects that just started touching
     for event in ctx.collisions_started() {
         if event.involves(self.player) {

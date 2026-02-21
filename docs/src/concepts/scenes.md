@@ -27,9 +27,10 @@ impl Scene for GameplayScene {
         // Pause music, timers, etc.
     }
 
-    fn on_resume(&mut self, ctx: &mut SceneContext) {
+    fn on_resume(&mut self, ctx: &mut SceneContext, returned: Option<Box<dyn Any>>) {
         // Called when this scene becomes active again
         // Resume music, timers, etc.
+        // If the popped scene used PopReturn, `returned` contains the data
     }
 
     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
@@ -48,6 +49,7 @@ The `update()` method returns a `SceneAction` to tell the manager what to do:
 | `Continue` | Keep running this scene (default) |
 | `Push(scene)` | Add new scene on top, current pauses |
 | `Pop` | Remove this scene, resume one below |
+| `PopReturn(data)` | Pop and return data to scene below (via `on_resume`) |
 | `Switch(scene)` | Replace this scene with a new one |
 | `Reset(scene)` | Clear all scenes, start fresh |
 | `Quit` | Exit the game |
@@ -121,7 +123,7 @@ Common patterns:
 
 ## Usage with Engine
 
-The simplest way to use scenes is with the `with_scene()` method:
+Use `start_scene()` to set the initial scene:
 
 ```rust
 use ryo2d::prelude::*;
@@ -151,15 +153,11 @@ impl Scene for MenuScene {
 fn main() {
     EngineBuilder::new()
         .title("Scene Demo")
-        .with_scene(MenuScene)  // Direct scene support!
+        .start_scene(MenuScene)
         .build()
         .run()
         .unwrap();
 }
-```
-
-> **Note:** You can also use `with_game(SceneGame::new(Box::new(scene)))` if you need 
-> direct access to the `SceneManager`, but `with_scene()` is cleaner for most cases.
 ```
 
 ## Transparent Scenes (Overlays)
@@ -254,4 +252,3 @@ See the [rustdoc API documentation](../api/scene.html) for complete details on:
 - `SceneManager` methods
 - `SceneAction` variants
 - `SceneContext` fields
-- `SceneGame` adapter

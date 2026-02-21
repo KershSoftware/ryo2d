@@ -83,7 +83,7 @@ ryo2d run
 Add `profile_function!()` to your update/render to see data:
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     profile_function!();
     // ... your code
 }

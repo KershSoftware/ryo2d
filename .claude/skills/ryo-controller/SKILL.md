@@ -115,7 +115,7 @@ let (raw_rx, raw_ry) = ctx.input.right_stick_raw();
 ### Combined Keyboard + Gamepad Movement
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     let mut move_x = 0.0;
     let mut move_y = 0.0;
 

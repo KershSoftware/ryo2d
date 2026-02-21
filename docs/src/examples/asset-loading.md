@@ -14,8 +14,8 @@ struct BasicGame {
     enemy_sprite: Option<SpriteHandle>,
 }
 
-impl Game for BasicGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for BasicGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Load sprites and store handles
         self.player_sprite = ctx.assets.load_sprite("sprites/player.png").ok();
         self.enemy_sprite = ctx.assets.load_sprite("sprites/enemy.png").ok();
@@ -28,8 +28,9 @@ impl Game for BasicGame {
         }
     }
     
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // Game logic...
+        SceneAction::Continue
     }
 }
 ```
@@ -76,8 +77,8 @@ struct RegistryGame {
     sprites: SpriteRegistry,
 }
 
-impl Game for RegistryGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for RegistryGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         ctx.assets.set_base_path("assets");
         
         // Load all game sprites
@@ -105,7 +106,7 @@ impl Game for RegistryGame {
         }
     }
     
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // Spawn enemies using registry
         if ctx.input.key_pressed(KeyCode::KeyE) {
             let enemy = ctx.world.spawn();
@@ -115,6 +116,7 @@ impl Game for RegistryGame {
                 ctx.world.add_component(enemy, Renderable::sprite(sprite));
             }
         }
+        SceneAction::Continue
     }
 }
 ```
@@ -168,8 +170,8 @@ impl RobustGame {
     }
 }
 
-impl Game for RobustGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for RobustGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Create a magenta "missing texture" placeholder
         let placeholder_sprite = Sprite::solid_rect(32, 32, 255, 0, 255, 255);
         self.placeholder = Some(ctx.assets.create_sprite(
@@ -188,8 +190,8 @@ impl Game for RobustGame {
             ctx.world.add_component(player, Renderable::sprite(sprite));
         }
     }
-    
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {}
+
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction { SceneAction::Continue }
 }
 ```
 
@@ -211,7 +213,7 @@ struct LevelGame {
 }
 
 impl LevelGame {
-    fn load_level(&mut self, ctx: &mut GameContext, level: usize) {
+    fn load_level(&mut self, ctx: &mut SceneContext, level: usize) {
         // Clear current level assets
         self.assets.sprites.clear();
         
@@ -240,12 +242,12 @@ impl LevelGame {
     }
 }
 
-impl Game for LevelGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for LevelGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         self.load_level(ctx, 1);
     }
     
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // Level transitions
         if ctx.input.key_pressed(KeyCode::KeyN) {
             let next = self.current_level + 1;
@@ -256,6 +258,7 @@ impl Game for LevelGame {
             let prev = self.current_level - 1;
             self.load_level(ctx, prev);
         }
+        SceneAction::Continue
     }
 }
 ```
@@ -273,8 +276,8 @@ struct DevGame {
     reload_count: usize,
 }
 
-impl Game for DevGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for DevGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         ctx.assets.set_base_path("assets");
         
         // Enable hot reload in debug builds only
@@ -298,7 +301,7 @@ impl Game for DevGame {
         self.load_sprites(ctx);
     }
     
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // Process hot reloads
         let reloaded = ctx.assets.process_reloads();
         if reloaded > 0 {
@@ -322,11 +325,12 @@ impl Game for DevGame {
             self.sprites.clear();
             self.load_sprites(ctx);
         }
+        SceneAction::Continue
     }
 }
 
 impl DevGame {
-    fn load_sprites(&mut self, ctx: &mut GameContext) {
+    fn load_sprites(&mut self, ctx: &mut SceneContext) {
         let to_load = [
             ("player", "sprites/player.png"),
             ("enemy", "sprites/enemy.png"),
@@ -360,8 +364,8 @@ struct AnimatedGame {
     walk_animation: Option<AnimatedSprite>,
 }
 
-impl Game for AnimatedGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for AnimatedGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Load the sprite sheet
         match ctx.assets.load_sprite("sprites/player_walk.png") {
             Ok(sheet) => {
@@ -383,11 +387,12 @@ impl Game for AnimatedGame {
         }
     }
     
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Update animation
         if let Some(anim) = &mut self.walk_animation {
             anim.update(dt);
         }
+        SceneAction::Continue
     }
 }
 ```
@@ -436,12 +441,12 @@ impl LoadingGame {
     }
 }
 
-impl Game for LoadingGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for LoadingGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         ctx.assets.set_base_path("assets");
     }
     
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         if self.is_loading {
             // Load one asset per frame to prevent hitching
             if self.loading_index < self.assets_to_load.len() {
@@ -468,6 +473,7 @@ impl Game for LoadingGame {
         } else {
             // Normal game logic
         }
+        SceneAction::Continue
     }
 }
 ```
@@ -520,8 +526,8 @@ impl AsyncGame {
     }
 }
 
-impl Game for AsyncGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for AsyncGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Create placeholder first
         let placeholder = Sprite::solid_rect(64, 64, 128, 128, 128, 255);
         self.placeholder = Some(ctx.assets.create_sprite(placeholder, "placeholder"));
@@ -532,7 +538,7 @@ impl Game for AsyncGame {
         self.request_sprite(ctx.assets, "background", "backgrounds/parallax.png");
     }
     
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // IMPORTANT: Process async loads each frame
         let completed = ctx.assets.process_async_loads();
         if completed > 0 {
@@ -567,6 +573,7 @@ impl Game for AsyncGame {
             let count = ctx.assets.pending_load_count();
             println!("Still loading {} assets...", count);
         }
+        SceneAction::Continue
     }
 }
 ```
@@ -592,13 +599,13 @@ impl StreamingWorld {
     }
 }
 
-impl Game for StreamingWorld {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for StreamingWorld {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         self.player_chunk = (0, 0);
         self.load_radius = 2;
     }
     
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // Process any pending chunk loads
         ctx.assets.process_async_loads();
         
@@ -654,6 +661,7 @@ impl Game for StreamingWorld {
         
         // Periodically garbage collect
         ctx.assets.gc_sprites();
+        SceneAction::Continue
     }
 }
 ```

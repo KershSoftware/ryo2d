@@ -7,7 +7,7 @@ metadata:
 
 # Ryo2D Game Developer
 
-You help users build complete games using the Ryo2D engine. You understand the ECS architecture, the Game/Scene trait lifecycle, and common game patterns.
+You help users build complete games using the Ryo2D engine. You understand the ECS architecture, the Scene trait lifecycle, and common game patterns.
 
 **For complete API signatures, see the `ryo-api` skill.**
 
@@ -27,27 +27,27 @@ This optimizes dependencies while keeping your code fast to compile. New project
 ```rust
 use ryo2d::prelude::*;
 
-struct MyGame {
+struct MyScene {
     player: Option<Entity>,
     score: u32,
 }
 
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyScene {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // IMPORTANT: Center camera so world coords match screen coords (0,0 = top-left)
         // Resolution comes from Ryo.toml, get it from camera viewport
         let (vw, vh) = ctx.camera.viewport_size();
         ctx.camera.set_position(vw / 2.0, vh / 2.0);
-        
+
         // Load a sprite from assets folder
         let sprite = ctx.assets.load_sprite("player.png").unwrap();
-        
+
         // Or create a colored rectangle
         let sprite = ctx.assets.create_sprite(
             Sprite::solid_rect(32, 32, 255, 0, 0, 255),
             "red-square"
         );
-        
+
         // Spawn player entity at screen center (640, 360 for 1280x720)
         self.player = Some(ctx.world.spawn((
             Transform::new(vw / 2.0, vh / 2.0),
@@ -56,15 +56,17 @@ impl Game for MyGame {
         )));
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Handle input, update game state
         if ctx.input.key_pressed(KeyCode::Escape) {
-            // Exit game
+            return SceneAction::Quit;
         }
+        SceneAction::Continue
     }
 
-    fn render_ui(&mut self, ui: &mut UiContext) {
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         ui.label(&format!("Score: {}", self.score), 10.0, 10.0, Color::WHITE, None);
+        SceneAction::Continue
     }
 }
 
@@ -72,31 +74,25 @@ fn main() {
     // Resolution/FPS come from Ryo.toml - don't set .resolution() here!
     EngineBuilder::new()
         .title("My Game")
-        .with_game(MyGame { player: None, score: 0 })
+        .start_scene(MyScene { player: None, score: 0 })
         .build()
         .run()
         .unwrap();
 }
 ```
 
-## Game vs Scene
-
-| Use | When |
-|-----|------|
-| `Game` trait | Single-screen games, simple projects |
-| `Scene` trait | Menu systems, multiple game states, level transitions |
-
-## GameContext Fields
+## SceneContext Fields
 
 | Field | Type | Purpose |
 |-------|------|---------|
+| `ctx.resources` | `&mut Resources` | Cross-scene shared state |
 | `ctx.world` | `&mut World` | ECS world - spawn/query entities |
 | `ctx.camera` | `&mut Camera` | Camera position, zoom, viewport |
-| `ctx.input` | `&InputState` | Keyboard/mouse state |
+| `ctx.input` | `&mut InputState` | Keyboard/mouse state |
 | `ctx.assets` | `&mut AssetManager` | Load sprites, sounds |
 | `ctx.audio` | `&mut Option<AudioManager>` | Play sounds/music |
 | `ctx.effects` | `&mut EffectsManager` | Post-processing effects |
-| `ctx.collision_events` | `&[PhysicsCollisionEvent]` | Physics collisions |
+| `ctx.events` | `&mut Events` | Event bus for decoupled communication |
 
 ## Essential Patterns
 
@@ -261,13 +257,14 @@ impl Scene for MenuScene {
         SceneAction::Continue
     }
 
-    fn render_ui(&mut self, ui: &mut UiContext) {
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         // Get screen size (returns u32, cast to f32 for positioning)
         let (sw, sh) = ui.screen_size();
         let screen_w = sw as f32;
         let screen_h = sh as f32;
         
         ui.label("Press ENTER to start", screen_w / 2.0 - 80.0, screen_h / 2.0, Color::WHITE, None);
+        SceneAction::Continue
     }
 }
 
@@ -275,6 +272,7 @@ impl Scene for MenuScene {
 // - Continue            Keep running
 // - Push(scene)         Add scene on top (pause current)
 // - Pop                 Return to previous scene
+// - PopReturn(data)     Pop and return data to scene below (via on_resume)
 // - Switch(scene)       Replace current scene (NOT "Replace"!)
 // - Reset(scene)        Clear all scenes, push new one
 // - Quit                Exit game
@@ -298,8 +296,16 @@ impl Scene for MyScene {
 // Minimal - uses Ryo.toml for resolution, fps, etc.
 EngineBuilder::new()
     .title("My Game")
-    .with_game(MyGame::default())  // OR
-    .with_scene(MenuScene)         // for multi-scene
+    .start_scene(MenuScene::new())
+    .build()
+    .run()
+    .unwrap();
+
+// With shared resources
+EngineBuilder::new()
+    .title("My Game")
+    .resource(GameSettings::default())  // Accessible via ctx.resources
+    .start_scene(MenuScene::new())
     .build()
     .run()
     .unwrap();
@@ -311,7 +317,7 @@ EngineBuilder::new()
     .target_fps(120)                  // Override FPS
     .physics_hz(240)                  // Physics update rate
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_game(MyGame::default())
+    .start_scene(GameScene::new())
     .build()
     .run()
     .unwrap();
@@ -330,7 +336,7 @@ EngineBuilder::new()
     .resolution(1920, 1080)  // Fixed design resolution - game logic uses this
     .window_mode(WindowMode::ResizableAspectRatio)  // Window can scale
     .target_fps(144)
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build()
     .run()
     .unwrap();
@@ -410,7 +416,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 For clamping entities to screen, **sprite origin is TOP-LEFT**:
 
 ```rust
-// In your Scene or Game struct, store screen bounds
+// In your Scene struct, store screen bounds
 struct GameScene {
     screen_w: f32,
     screen_h: f32,

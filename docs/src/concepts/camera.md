@@ -22,13 +22,14 @@ ctx.camera.set_zoom(1.5);
 Smooth camera follow with lerp:
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     if let Some(player) = self.player {
         if let Some(transform) = ctx.world.get_component::<Transform>(player) {
             // 0.1 = smoothness (lower = smoother, higher = snappier)
             ctx.camera.follow(transform.x, transform.y, 0.1);
         }
     }
+    SceneAction::Continue
 }
 ```
 

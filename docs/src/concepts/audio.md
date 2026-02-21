@@ -22,8 +22,8 @@ struct MyGame {
     audio: Option<AudioManager>,
 }
 
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Initialize audio
         match AudioManager::new() {
             Ok(mut audio) => {
@@ -38,13 +38,14 @@ impl Game for MyGame {
         }
     }
 
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         if let Some(audio) = &mut self.audio {
             // Play sound on key press
             if ctx.input.key_pressed(KeyCode::Space) {
                 let _ = audio.play_sound("jump");
             }
         }
+        SceneAction::Continue
     }
 }
 ```
@@ -447,9 +448,9 @@ match audio.play_sound("missing") {
 
 ## Best Practices
 
-### 1. Load sounds in `init()`
+### 1. Load sounds in `on_enter()`
 ```rust
-fn init(&mut self, ctx: &mut GameContext) {
+fn on_enter(&mut self, ctx: &mut SceneContext) {
     // Load all sounds upfront for instant playback
     self.audio.load_sound("jump", "assets/jump.wav");
     self.audio.load_sound("land", "assets/land.wav");
@@ -500,8 +501,8 @@ impl AudioDemo {
     }
 }
 
-impl Game for AudioDemo {
-    fn init(&mut self, _ctx: &mut GameContext) {
+impl Scene for AudioDemo {
+    fn on_enter(&mut self, _ctx: &mut SceneContext) {
         if let Ok(mut audio) = AudioManager::new() {
             // Load sound effects
             let _ = audio.load_sound("blip", "assets/blip.wav");
@@ -515,8 +516,8 @@ impl Game for AudioDemo {
         }
     }
 
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
-        let Some(audio) = &mut self.audio else { return };
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+        let Some(audio) = &mut self.audio else { return SceneAction::Continue };
 
         // Play sound on click
         if ctx.input.mouse_pressed(MouseButton::Left) {
@@ -543,6 +544,7 @@ impl Game for AudioDemo {
                 }
             }
         }
+        SceneAction::Continue
     }
 }
 ```

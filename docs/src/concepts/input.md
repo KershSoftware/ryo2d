@@ -1,11 +1,11 @@
 # Input Handling
 
-ryo2d provides keyboard and mouse input through the `GameContext`.
+ryo2d provides keyboard and mouse input through the `SceneContext`.
 
 ## Keyboard
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Is key currently held down?
     if ctx.input.key_down(KeyCode::Space) {
         // Fires every frame while held
@@ -20,6 +20,7 @@ fn update(&mut self, ctx: &mut GameContext, dt: f32) {
     if ctx.input.key_released(KeyCode::Escape) {
         // Fires once on release
     }
+    SceneAction::Continue
 }
 ```
 

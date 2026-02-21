@@ -114,7 +114,7 @@ ParticleAttractor::turbulence(30.0, 50.0, 1.0)  // strength, scale, speed
 ## One-Shot Effects
 
 ```rust
-fn explode(ctx: &mut GameContext, x: f32, y: f32) {
+fn explode(ctx: &mut SceneContext, x: f32, y: f32) {
     ctx.world.spawn((
         Transform::new(x, y),
         ParticleEmitter::explosion(sprite, 50),
@@ -142,7 +142,7 @@ if emitter.is_finished() {
 ### Mouse-Following Attractor
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     let (mx, my) = ctx.input.mouse_position();
     if let Some(mut t) = ctx.world.get_component_mut::<Transform>(self.attractor) {
         t.x = mx;
@@ -164,7 +164,7 @@ ctx.world.spawn((
 ### Hit Effect
 
 ```rust
-fn on_hit(ctx: &mut GameContext, x: f32, y: f32) {
+fn on_hit(ctx: &mut SceneContext, x: f32, y: f32) {
     ctx.world.spawn((
         Transform::new(x, y),
         ParticleEmitter::sparks(spark_sprite)

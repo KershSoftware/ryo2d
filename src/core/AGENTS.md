@@ -11,7 +11,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `mod.rs` | Public exports for core modules |
 | `engine.rs` | `Engine` struct, game loop, window management |
 | `error.rs` | Unified error types (`EngineError`, `AssetError`, `SaveError`, etc.) |
-| `game.rs` | `Game` trait and `GameContext` for user code |
+| `game.rs` | `GpuRenderContext`, `TimeControl`, `TimeInfo`, `WindowRequest` |
 | `scene.rs` | Scene management, transitions, scene stack, automatic cleanup on Switch/Reset |
 | `workspace.rs` | Project discovery, `ryo.toml` configuration, path management |
 | `debug.rs` | Debug visualization (colliders, velocities, origins, FPS) and drawing primitives |
@@ -50,7 +50,6 @@ Within `core/`, modules reference each other using `super::`:
 // Inside core/engine.rs
 use super::asset::AssetManager;
 use super::camera::Camera;
-use super::game::Game;
 use super::input::InputState;
 ```
 
@@ -59,13 +58,13 @@ From outside `core/` (like from `lib.rs`), use `crate::core::`:
 ```rust
 // Inside lib.rs
 pub use crate::core::engine::EngineBuilder;
-pub use crate::core::game::{Game, GameContext};
+pub use crate::core::game::{GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
 pub use crate::core::asset::{AssetManager, SpriteHandle};
 ```
 
 ## Design Philosophy
 
-**Engine Owns the Loop** - User code never calls render or update directly. The `Game` trait provides callbacks that the engine invokes at the right time.
+**Engine Owns the Loop** - User code never calls render or update directly. The `Scene` trait provides callbacks that the engine invokes at the right time.
 
 **ECS for Entity Management** - Game objects are entities with attached components. The engine provides built-in components (`Transform`, `Velocity`, `SpriteRenderer`, `RigidBody`, `Collider`) and users can add their own.
 
@@ -77,11 +76,14 @@ pub use crate::core::asset::{AssetManager, SpriteHandle};
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        GameContext                          │
-│  ┌─────────┐ ┌────────┐ ┌────────────┐ ┌──────────────────┐ │
-│  │  World  │ │ Camera │ │ InputState │ │  AssetManager    │ │
-│  │  (ECS)  │ │        │ │            │ │                  │ │
-│  └─────────┘ └────────┘ └────────────┘ └──────────────────┘ │
+│                       SceneContext                           │
+│  ┌───────────┐ ┌─────────┐ ┌────────┐ ┌────────────┐       │
+│  │ Resources │ │  World  │ │ Camera │ │ InputState │       │
+│  │           │ │  (ECS)  │ │        │ │            │       │
+│  └───────────┘ └─────────┘ └────────┘ └────────────┘       │
+│  ┌──────────────────┐ ┌────────────────────────────────┐    │
+│  │  AssetManager    │ │  Events, Effects, Lighting ... │    │
+│  └──────────────────┘ └────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -342,7 +344,7 @@ let (offset_x, offset_y) = ctx.camera.shake_offset();
 
 ## Time Scale & Hitstop System
 
-The time control system (`engine.rs`, `game.rs`) provides slow-motion and freeze-frame effects for game juice.
+The time control system (`engine.rs`) provides slow-motion and freeze-frame effects for game juice.
 
 ### Architecture
 - **Time scale**: Multiplier applied to game dt (0.0=frozen, 1.0=normal, 2.0=fast)
@@ -736,7 +738,7 @@ pub struct DeclaredCommand {
 ### Integration Points
 
 - **Engine**: Manages ConsoleState and CommandRegistry, handles toggle key (~)
-- **GameContext/SceneContext**: `declare_console_command()`, `register_console_command()`
+- **SceneContext**: `declare_console_command()`, `register_console_command()`
 - **Scene transitions**: Auto-calls `clear_scope()` when scenes exit
 
 ### Usage

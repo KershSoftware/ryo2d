@@ -72,7 +72,7 @@ let client = NetworkClient::connect(NetworkClientConfig {
 **Critical:** Both server and client need `update()` called every frame.
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Update network
     if let Some(server) = &mut self.server {
         server.update(Duration::from_secs_f32(dt));

@@ -73,7 +73,7 @@ Errors automatically convert up the hierarchy, so you can use `?` freely:
 ```rust
 use ryo2d::prelude::*;
 
-fn setup_game(ctx: &mut GameContext) -> EngineResult<()> {
+fn setup_game(ctx: &mut SceneContext) -> EngineResult<()> {
     // AssetError converts to EngineError automatically
     let player = ctx.assets.load_sprite("player.png")?;
     
@@ -146,7 +146,7 @@ fn main() {
     let result = EngineBuilder::new()
         .title("My Game")
         .resolution(800, 600)
-        .with_game(MyGame)
+        .start_scene(MyGame)
         .build()
         .run();
 
@@ -164,8 +164,8 @@ fn main() {
 Return `Result` from functions that can fail:
 
 ```rust
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         if let Err(e) = self.load_level(ctx) {
             eprintln!("Failed to load level: {}", e);
             // Handle gracefully or set error state
@@ -174,7 +174,7 @@ impl Game for MyGame {
 }
 
 impl MyGame {
-    fn load_level(&mut self, ctx: &mut GameContext) -> AssetResult<()> {
+    fn load_level(&mut self, ctx: &mut SceneContext) -> AssetResult<()> {
         self.tileset = ctx.assets.load_sprite("tiles.png")?;
         self.player = ctx.assets.load_sprite("player.png")?;
         Ok(())

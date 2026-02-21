@@ -38,8 +38,8 @@ struct MyGame {
     physics_world: PhysicsWorld,
 }
 
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Create entities with colliders (as usual)
         let ball = ctx.world.spawn();
         ctx.world.add_component(ball, Transform::new(100.0, 100.0));
@@ -50,7 +50,7 @@ impl Game for MyGame {
         ctx.world.add_component(wall, Collider::box_collider(400.0, 32.0));
     }
 
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // Step 1: Rebuild spatial hash from current positions
         self.physics_world.update(ctx.world);
         
@@ -65,6 +65,7 @@ impl Game for MyGame {
             // Get minimum translation vector to separate
             let (mtv_x, mtv_y) = collision.mtv();
         }
+        SceneAction::Continue
     }
 }
 ```

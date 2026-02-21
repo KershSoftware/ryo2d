@@ -21,8 +21,8 @@ struct MyGame {
     player_sprite: Option<SpriteHandle>,
 }
 
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Load a sprite through the asset manager
         match ctx.assets.load_sprite("assets/sprites/player.png") {
             Ok(sprite) => {
@@ -34,18 +34,19 @@ impl Game for MyGame {
         }
     }
 
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // Use the sprite...
+        SceneAction::Continue
     }
 }
 ```
 
 ## AssetManager
 
-The `AssetManager` is the central hub for all asset operations. It's available through `GameContext`:
+The `AssetManager` is the central hub for all asset operations. It's available through `SceneContext`:
 
 ```rust
-fn init(&mut self, ctx: &mut GameContext) {
+fn on_enter(&mut self, ctx: &mut SceneContext) {
     // Access asset manager through context
     let sprite = ctx.assets.load_sprite("player.png")?;
 }
@@ -136,7 +137,7 @@ println!("Freed {} unused sprites", freed);
 - Periodically during loading screens
 
 ```rust
-fn on_scene_change(&mut self, ctx: &mut GameContext) {
+fn on_scene_change(&mut self, ctx: &mut SceneContext) {
     // Clear our local handles
     self.sprites.clear();
     
@@ -214,7 +215,7 @@ The `with_sprite()` method is preferred because it makes the lock scope explicit
 Handles make sharing assets natural:
 
 ```rust
-fn spawn_enemies(&mut self, ctx: &mut GameContext, count: usize) {
+fn spawn_enemies(&mut self, ctx: &mut SceneContext, count: usize) {
     // Load the sprite once
     let enemy_sprite = ctx.assets.load_sprite("enemy.png").unwrap();
     
@@ -243,13 +244,13 @@ struct MyGame {
     boss_sprite: Option<SpriteHandle>,
 }
 
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyGame {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Request async load - returns immediately
         self.boss_texture = Some(ctx.assets.load_sprite_async("boss_4k.png"));
     }
     
-    fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
         // IMPORTANT: Process async loads each frame
         ctx.assets.process_async_loads();
         
@@ -270,6 +271,7 @@ impl Game for MyGame {
                 }
             }
         }
+        SceneAction::Continue
     }
 }
 ```
@@ -357,7 +359,7 @@ During development, you can modify asset files and see changes instantly without
 ### Enabling Hot Reload
 
 ```rust
-fn init(&mut self, ctx: &mut GameContext) {
+fn on_enter(&mut self, ctx: &mut SceneContext) {
     // Watch directories for file changes
     if let Err(e) = ctx.assets.enable_hot_reload(vec!["assets/sprites", "assets/textures"]) {
         eprintln!("Hot reload not available: {}", e);
@@ -373,7 +375,7 @@ fn init(&mut self, ctx: &mut GameContext) {
 Call `process_reloads()` each frame to apply pending changes:
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     // Check for and apply any asset changes
     let reloaded = ctx.assets.process_reloads();
     if reloaded > 0 {
@@ -381,6 +383,7 @@ fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
     }
     
     // ... rest of update
+    SceneAction::Continue
 }
 ```
 
@@ -430,7 +433,7 @@ Hot reload enables rapid iteration:
 
 ```rust
 // A typical development setup
-fn init(&mut self, ctx: &mut GameContext) {
+fn on_enter(&mut self, ctx: &mut SceneContext) {
     // Only enable in debug builds
     #[cfg(debug_assertions)]
     {
@@ -448,7 +451,7 @@ Asset operations can fail. Handle errors gracefully:
 ```rust
 use ryo2d::prelude::*;
 
-fn load_assets(&mut self, ctx: &mut GameContext) {
+fn load_assets(&mut self, ctx: &mut SceneContext) {
     match ctx.assets.load_sprite("player.png") {
         Ok(sprite) => {
             self.player_sprite = Some(sprite);
@@ -478,27 +481,29 @@ fn load_assets(&mut self, ctx: &mut GameContext) {
 
 ## Performance Tips
 
-### Load During Init
+### Load During on_enter
 
-Load assets during `init()` or loading screens, not during gameplay:
+Load assets during `on_enter()` or loading screens, not during gameplay:
 
 ```rust
 // Good: Load once during init
-fn init(&mut self, ctx: &mut GameContext) {
+fn on_enter(&mut self, ctx: &mut SceneContext) {
     self.sprites.insert("player", ctx.assets.load_sprite("player.png")?);
     self.sprites.insert("enemy", ctx.assets.load_sprite("enemy.png")?);
 }
 
-fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     // Just use the cached handles
     let sprite = self.sprites.get("player").unwrap();
+    SceneAction::Continue
 }
 ```
 
 ```rust
 // Bad: Loading every frame!
-fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     let sprite = ctx.assets.load_sprite("player.png")?; // Disk I/O check each frame!
+    SceneAction::Continue
 }
 ```
 
@@ -519,7 +524,7 @@ ctx.world.add_component(entity, Renderable::sprite(sprite));
 For many assets, consider a loading phase:
 
 ```rust
-fn load_level(&mut self, ctx: &mut GameContext, level: &str) -> AssetResult<()> {
+fn load_level(&mut self, ctx: &mut SceneContext, level: &str) -> AssetResult<()> {
     let sprite_files = ["ground.png", "wall.png", "spike.png", "coin.png", "door.png"];
     
     for file in sprite_files {
@@ -538,15 +543,16 @@ Don't GC every frame - it iterates all cached assets:
 
 ```rust
 // Good: GC at natural transition points
-fn on_level_complete(&mut self, ctx: &mut GameContext) {
+fn on_level_complete(&mut self, ctx: &mut SceneContext) {
     self.level_sprites.clear(); // Release our handles
     ctx.assets.gc_sprites();    // Clean up
     self.load_next_level(ctx);
 }
 
 // Bad: GC every frame
-fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     ctx.assets.gc_sprites(); // Unnecessary work each frame!
+    SceneAction::Continue
 }
 ```
 
@@ -636,8 +642,8 @@ impl AssetDemo {
     }
 }
 
-impl Game for AssetDemo {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for AssetDemo {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // Set up base path
         ctx.assets.set_base_path("assets");
         
@@ -674,7 +680,7 @@ impl Game for AssetDemo {
         ));
     }
     
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Process hot reloads
         let reloaded = ctx.assets.process_reloads();
         if reloaded > 0 {
@@ -699,11 +705,12 @@ impl Game for AssetDemo {
         // Print cache stats on F1
         if ctx.input.key_pressed(KeyCode::F1) {
             let stats = ctx.assets.stats();
-            println!("Cache: {} sprites, {} total refs", 
-                stats.sprites_cached, 
+            println!("Cache: {} sprites, {} total refs",
+                stats.sprites_cached,
                 stats.sprites_total_refs
             );
         }
+        SceneAction::Continue
     }
 }
 
@@ -711,7 +718,7 @@ fn main() {
     EngineBuilder::new()
         .title("Asset Management Demo")
         .resolution(800, 600)
-        .with_game(AssetDemo::new())
+        .start_scene(AssetDemo::new())
         .build()
         .run()
         .unwrap();
