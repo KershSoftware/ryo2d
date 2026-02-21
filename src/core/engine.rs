@@ -379,6 +379,8 @@ impl Engine {
           }
         }
         DisplayMode::BorderlessFullscreen => {
+          // Clear maximized state first (see F5 toggle comment for rationale)
+          window.set_maximized(false);
           // Borderless fullscreen - fill screen without mode change
           window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(
             window.current_monitor(),
@@ -3123,8 +3125,12 @@ impl ApplicationHandler for Engine {
           DisplayMode::Windowed => {
             // Switch to borderless fullscreen
             self.config.display_mode = DisplayMode::BorderlessFullscreen;
+            // Clear maximized state first — winit's WM_NCCALCSIZE on Windows
+            // constrains the client area to the work area (monitor minus taskbar)
+            // when the window is maximized, which prevents the fullscreen
+            // transition from using the full monitor dimensions.
+            window.set_maximized(false);
             window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
-            window.set_decorations(false);
             engine_info!(module: "Window", "Switched to borderless fullscreen");
           }
           DisplayMode::BorderlessFullscreen | DisplayMode::ExclusiveFullscreen => {
