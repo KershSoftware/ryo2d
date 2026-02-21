@@ -36,6 +36,9 @@ examples/**/.github/skills/
 # Demo runner
 .demo-pids
 
+# Git worktrees
+.worktrees/
+
 # OS
 .DS_Store
 Thumbs.db
