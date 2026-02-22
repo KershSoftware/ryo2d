@@ -38,6 +38,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `sprite_gpu.rs` | GPU sprite batching system with per-sprite shaders and effects |
 | `parallax.rs` | Parallax scrolling background system with layered sprites |
 | `tile.rs` | Tiled rendering (`TiledSprite`, `CompositeTile`) and `GroupedCollider` |
+| `tilemap/` | Tilemap system: grid storage, chunks, collision, Tiled import, auto-tiling (see `tilemap/AGENTS.md`) |
 | `shaders/` | WGSL shader files for GPU rendering (sprite effects, post-processing) |
 | `lighting/` | 2D lighting system with point lights, spotlights, and shadows (see `lighting/AGENTS.md`) |
 | `ui/` | Immediate-mode UI system for HUDs and overlays (see `ui/AGENTS.md`) |
