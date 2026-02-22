@@ -16,9 +16,9 @@ pub mod network;
 pub mod graphics;
 pub mod lighting;
 pub mod particles;
-pub mod tilemap;
 pub mod render;
 pub mod shaders;
+pub mod tilemap;
 pub mod trail;
 pub mod ui;
 

@@ -220,11 +220,10 @@ pub mod prelude {
 
   // Tilemap system
   pub use crate::core::tilemap::{
-    AutoTileMode, AutoTileSet, compute_bitmask_full, compute_bitmask_minimal,
-    ChunkCoord, ChunkState, CollisionRect, TileAnimation, TileId, TileProperties,
-    Tilemap, TilemapError, TilemapLayer, TilemapManager, TilemapOrientation, Tileset,
-    TiledObject, TiledShape, TiledValue, load_tiled_map,
-    generate_collision_rects, generate_collision_rects_region,
+    AutoTileMode, AutoTileSet, ChunkCoord, ChunkState, CollisionRect, TileAnimation, TileId,
+    TileProperties, TiledObject, TiledShape, TiledValue, Tilemap, TilemapError, TilemapLayer,
+    TilemapManager, TilemapOrientation, Tileset, compute_bitmask_full, compute_bitmask_minimal,
+    generate_collision_rects, generate_collision_rects_region, load_tiled_map,
   };
 
   // GPU sprite batching (for high-performance particle systems)

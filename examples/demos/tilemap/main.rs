@@ -126,7 +126,7 @@ impl TilemapDemoScene {
   /// Create a solid-color sprite for a tile type.
   fn tile_sprite(tile_id: TileId) -> SpriteHandle {
     let (r, g, b) = match tile_id {
-      TILE_GROUND => (90, 65, 45),   // brown earth
+      TILE_GROUND => (90, 65, 45),    // brown earth
       TILE_PLATFORM => (70, 130, 70), // mossy green
       _ => (180, 180, 180),           // grey fallback
     };
@@ -183,7 +183,9 @@ impl Scene for TilemapDemoScene {
     // Position camera at the center of the map
     let map_pixel_w = (MAP_WIDTH * TILE_SIZE) as f32;
     let map_pixel_h = (MAP_HEIGHT * TILE_SIZE) as f32;
-    ctx.camera.set_position(map_pixel_w / 2.0, map_pixel_h / 2.0);
+    ctx
+      .camera
+      .set_position(map_pixel_w / 2.0, map_pixel_h / 2.0);
 
     // Build and register tilemap
     let tilemap = Self::build_tilemap();
@@ -236,24 +238,24 @@ impl Scene for TilemapDemoScene {
       self.hover_tile = ctx.tilemap.world_to_tile(entity, wx, wy);
 
       // Place solid ground tile with left click
-      if ctx.input.mouse_pressed(MouseButton::Left) {
-        if let Some((tx, ty)) = self.hover_tile {
-          ctx.tilemap.set_tile(entity, 0, tx, ty, Some(TILE_GROUND));
-          self.rebuild_visuals(ctx);
-          if let Some(tilemap) = ctx.tilemap.get_tilemap(entity) {
-            self.collision_rects = generate_collision_rects(tilemap);
-          }
+      if ctx.input.mouse_pressed(MouseButton::Left)
+        && let Some((tx, ty)) = self.hover_tile
+      {
+        ctx.tilemap.set_tile(entity, 0, tx, ty, Some(TILE_GROUND));
+        self.rebuild_visuals(ctx);
+        if let Some(tilemap) = ctx.tilemap.get_tilemap(entity) {
+          self.collision_rects = generate_collision_rects(tilemap);
         }
       }
 
       // Clear tile with right click
-      if ctx.input.mouse_pressed(MouseButton::Right) {
-        if let Some((tx, ty)) = self.hover_tile {
-          ctx.tilemap.set_tile(entity, 0, tx, ty, None);
-          self.rebuild_visuals(ctx);
-          if let Some(tilemap) = ctx.tilemap.get_tilemap(entity) {
-            self.collision_rects = generate_collision_rects(tilemap);
-          }
+      if ctx.input.mouse_pressed(MouseButton::Right)
+        && let Some((tx, ty)) = self.hover_tile
+      {
+        ctx.tilemap.set_tile(entity, 0, tx, ty, None);
+        self.rebuild_visuals(ctx);
+        if let Some(tilemap) = ctx.tilemap.get_tilemap(entity) {
+          self.collision_rects = generate_collision_rects(tilemap);
         }
       }
     }
@@ -327,10 +329,7 @@ impl Scene for TilemapDemoScene {
       let indicator_size = 8.0;
       let ix = panel_x - 12.0;
       let iy = y_pos + 2.0;
-      ui.draw_rect(
-        Rect::new(ix, iy, indicator_size, indicator_size),
-        red_tint,
-      );
+      ui.draw_rect(Rect::new(ix, iy, indicator_size, indicator_size), red_tint);
     }
 
     // Controls
