@@ -1,0 +1,12 @@
+[package]
+name = "demo-tilemap"
+version = "0.1.0"
+edition = "2024"
+description = "Tilemap system demo - programmatic tilemap creation, queries, and collision"
+
+[[bin]]
+name = "demo-tilemap"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }
