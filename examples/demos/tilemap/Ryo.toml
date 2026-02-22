@@ -1,0 +1,9 @@
+[project]
+name = "Tilemap Demo"
+version = "0.1.0"
+
+[window]
+title = "Tilemap Demo - Ryo2D"
+width = 800
+height = 600
+resizable = true
