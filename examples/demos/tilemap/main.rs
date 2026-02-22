@@ -11,9 +11,8 @@
 //!
 //! - Arrow keys: Pan the camera
 //! - Mouse hover: Show tile coordinates and info
-//! - 1: Place a solid tile at the hovered position
-//! - 2: Clear the tile at the hovered position
-//! - R: Regenerate collision rectangles (after editing)
+//! - Left click: Place a solid tile at the hovered position
+//! - Right click: Clear the tile at the hovered position
 //! - Escape: Exit
 
 use std::collections::HashMap;
@@ -236,26 +235,25 @@ impl Scene for TilemapDemoScene {
     if let Some(entity) = self.map_entity {
       self.hover_tile = ctx.tilemap.world_to_tile(entity, wx, wy);
 
-      // Place solid ground tile with 1
-      if ctx.input.key_pressed(KeyCode::Digit1) {
+      // Place solid ground tile with left click
+      if ctx.input.mouse_pressed(MouseButton::Left) {
         if let Some((tx, ty)) = self.hover_tile {
           ctx.tilemap.set_tile(entity, 0, tx, ty, Some(TILE_GROUND));
           self.rebuild_visuals(ctx);
+          if let Some(tilemap) = ctx.tilemap.get_tilemap(entity) {
+            self.collision_rects = generate_collision_rects(tilemap);
+          }
         }
       }
 
-      // Clear tile with 2
-      if ctx.input.key_pressed(KeyCode::Digit2) {
+      // Clear tile with right click
+      if ctx.input.mouse_pressed(MouseButton::Right) {
         if let Some((tx, ty)) = self.hover_tile {
           ctx.tilemap.set_tile(entity, 0, tx, ty, None);
           self.rebuild_visuals(ctx);
-        }
-      }
-
-      // Regenerate collision rects with R
-      if ctx.input.key_pressed(KeyCode::KeyR) {
-        if let Some(tilemap) = ctx.tilemap.get_tilemap(entity) {
-          self.collision_rects = generate_collision_rects(tilemap);
+          if let Some(tilemap) = ctx.tilemap.get_tilemap(entity) {
+            self.collision_rects = generate_collision_rects(tilemap);
+          }
         }
       }
     }
@@ -337,12 +335,11 @@ impl Scene for TilemapDemoScene {
 
     // Controls
     ui.draw_text(
-      "Arrows: Pan | 1: Place tile | 2: Clear tile",
+      "Arrows: Pan | LMB: Place tile | RMB: Clear tile | ESC: Exit",
       10.0,
       90.0,
       muted,
     );
-    ui.draw_text("R: Regen collisions | ESC: Exit", 10.0, 106.0, muted);
 
     SceneAction::Continue
   }
