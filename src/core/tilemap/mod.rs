@@ -6,11 +6,13 @@
 pub mod chunk;
 pub mod collision;
 pub mod layer;
+pub mod manager;
 pub mod tileset;
 pub mod tilemap;
 
 pub use chunk::{ChunkCoord, ChunkState, CHUNK_SIZE, chunk_tile_range, chunk_visible, chunks_along_axis};
 pub use collision::{CollisionRect, generate_collision_rects, generate_collision_rects_region};
 pub use layer::TilemapLayer;
+pub use manager::TilemapManager;
 pub use tilemap::{Tilemap, TilemapOrientation};
 pub use tileset::{TileAnimation, TileId, TileProperties, Tileset};
