@@ -247,10 +247,7 @@ impl Scene for WorkshopScene {
     let g = PAINT_G.load(Ordering::Relaxed);
     let b = PAINT_B.load(Ordering::Relaxed);
     let (w, h) = ui.screen_size();
-    ui.draw_rect(
-      Rect::new(0.0, 0.0, w as f32, h as f32),
-      Color::rgb(r, g, b),
-    );
+    ui.draw_rect(Rect::new(0.0, 0.0, w as f32, h as f32), Color::rgb(r, g, b));
 
     // Title
     ui.draw_text("Scene 2 — Workshop", 30.0, 20.0, Color::WHITE);

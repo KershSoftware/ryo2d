@@ -3767,9 +3767,9 @@ impl EngineBuilder {
   }
 
   pub fn build(self) -> Engine {
-    let initial_scene = self.initial_scene.expect(
-      "EngineBuilder requires a scene - call .start_scene() before .build()",
-    );
+    let initial_scene = self
+      .initial_scene
+      .expect("EngineBuilder requires a scene - call .start_scene() before .build()");
 
     let mut config = self.config;
     let mut vsync = self.vsync;

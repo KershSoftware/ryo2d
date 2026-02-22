@@ -27,13 +27,13 @@ fn full_prediction_workflow() {
   assert_eq!(result, UpdateResult::Spawned);
 
   // Verify position
-  let pos = world.get_component::<Transform>(entity).unwrap();
+  let pos = world.get::<Transform>(entity).unwrap();
   assert_eq!(pos.x, 100.0);
   assert_eq!(pos.y, 100.0);
   drop(pos);
 
   // Step 2: Client predicts movement
-  if let Some(mut t) = world.get_component_mut::<Transform>(entity) {
+  if let Some(mut t) = world.get_mut::<Transform>(entity) {
     t.x = 120.0; // Client thinks we moved to 120
   }
 
@@ -43,7 +43,7 @@ fn full_prediction_workflow() {
   assert_eq!(result, UpdateResult::StoredForReconciliation);
 
   // Position should still be predicted value (reconciliation happens elsewhere)
-  let pos = world.get_component::<Transform>(entity).unwrap();
+  let pos = world.get::<Transform>(entity).unwrap();
   assert_eq!(pos.x, 120.0);
 }
 
@@ -67,7 +67,7 @@ fn remote_players_always_apply() {
     let result = helper.handle_position_update(&mut world, entity, &update);
     assert_eq!(result, UpdateResult::Applied);
 
-    let pos = world.get_component::<Transform>(entity).unwrap();
+    let pos = world.get::<Transform>(entity).unwrap();
     assert_eq!(pos.x, i as f32 * 10.0);
   }
 }
@@ -81,7 +81,7 @@ fn respawn_forces_correction() {
   let helper = PredictionHelper::new(Some(local_id));
 
   // Move somewhere
-  if let Some(mut t) = world.get_component_mut::<Transform>(entity) {
+  if let Some(mut t) = world.get_mut::<Transform>(entity) {
     t.x = 500.0;
     t.y = 500.0;
   }
@@ -91,7 +91,7 @@ fn respawn_forces_correction() {
   helper.force_correction(&mut world, entity, &spawn_update);
 
   // Should be at spawn point, not predicted position
-  let pos = world.get_component::<Transform>(entity).unwrap();
+  let pos = world.get::<Transform>(entity).unwrap();
   assert_eq!(pos.x, 0.0);
   assert_eq!(pos.y, 0.0);
 }

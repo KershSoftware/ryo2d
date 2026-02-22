@@ -35,7 +35,7 @@ impl NetworkedInputHandler for MovementHandler {
   }
 
   fn apply_input(&self, world: &mut World, entity: Entity, input: &Self::Input, dt: f32) {
-    if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+    if let Some(mut transform) = world.get_mut::<Transform>(entity) {
       transform.x += input.move_x * self.move_speed * dt;
       transform.y += input.move_y * self.move_speed * dt;
     }
@@ -65,7 +65,7 @@ fn handler_gather_and_apply() {
 
   handler.apply_input(&mut world, entity, &input, 1.0);
 
-  let transform = world.get_component::<Transform>(entity).unwrap();
+  let transform = world.get::<Transform>(entity).unwrap();
   assert_eq!(transform.x, 100.0);
 }
 
@@ -89,7 +89,7 @@ fn processor_multiple_frames() {
   }
 
   // Position should be 10 * 60 = 600
-  let transform = world.get_component::<Transform>(entity).unwrap();
+  let transform = world.get::<Transform>(entity).unwrap();
   assert_eq!(transform.x, 600.0);
 
   // Should have 10 pending inputs
@@ -114,13 +114,13 @@ fn processor_reconciliation_scenario() {
   }
 
   // Client thinks position is 50
-  let transform = world.get_component::<Transform>(entity).unwrap();
+  let transform = world.get::<Transform>(entity).unwrap();
   assert_eq!(transform.x, 50.0);
   drop(transform);
 
   // Server correction: "actually you're at 45 after frame 3"
   // (maybe server had different collision result)
-  if let Some(mut t) = world.get_component_mut::<Transform>(entity) {
+  if let Some(mut t) = world.get_mut::<Transform>(entity) {
     t.x = 45.0;
   }
 
@@ -128,7 +128,7 @@ fn processor_reconciliation_scenario() {
   processor.reconcile(&mut world, 3, 1.0);
 
   // Should be 45 + 10 + 10 = 65
-  let transform = world.get_component::<Transform>(entity).unwrap();
+  let transform = world.get::<Transform>(entity).unwrap();
   assert_eq!(transform.x, 65.0);
 }
 

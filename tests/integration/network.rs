@@ -1035,10 +1035,10 @@ fn network_entity_builder_creates_server_owned_entity() {
   world.add_component(entity, Transform::new(50.0, 75.0));
 
   // Verify entity was created
-  assert!(world.get_component::<Transform>(entity).is_some());
-  assert!(world.get_component::<NetworkEntity>(entity).is_some());
+  assert!(world.get::<Transform>(entity).is_some());
+  assert!(world.get::<NetworkEntity>(entity).is_some());
 
-  let network_entity = world.get_component::<NetworkEntity>(entity).unwrap();
+  let network_entity = world.get::<NetworkEntity>(entity).unwrap();
   assert_eq!(network_entity.authority, Authority::Server);
   assert_eq!(network_entity.owner, 0);
 }
@@ -1058,7 +1058,7 @@ fn network_entity_builder_creates_client_owned_entity() {
   // Add component after spawning
   world.add_component(entity, Transform::new(100.0, 200.0));
 
-  let network_entity = world.get_component::<NetworkEntity>(entity).unwrap();
+  let network_entity = world.get::<NetworkEntity>(entity).unwrap();
   assert_eq!(network_entity.authority, Authority::Client(client_id));
   assert_eq!(network_entity.owner, client_id);
 }
@@ -1096,7 +1096,7 @@ fn replication_manager_despawns_entities() {
   manager.despawn_networked(&mut world, entity);
 
   // Entity should be gone from world
-  assert!(world.get_component::<Transform>(entity).is_none());
+  assert!(world.get::<Transform>(entity).is_none());
 
   // Network ID mapping should be removed
   assert!(manager.get_entity(network_id).is_none());
@@ -1114,7 +1114,7 @@ fn replication_manager_marks_components_dirty() {
   world.add_component(entity, Velocity::new(1.0, 2.0));
 
   // Modify and mark dirty
-  if let Some(mut transform) = world.get_component_mut::<Transform>(entity) {
+  if let Some(mut transform) = world.get_mut::<Transform>(entity) {
     transform.x = 100.0;
   }
   manager.mark_dirty::<Transform>(entity);
@@ -1579,7 +1579,7 @@ fn replication_client_receives_component_updates() {
   server_world.add_component(entity, Transform::new(0.0, 0.0));
 
   // Modify the transform
-  if let Some(mut transform) = server_world.get_component_mut::<Transform>(entity) {
+  if let Some(mut transform) = server_world.get_mut::<Transform>(entity) {
     transform.x = 500.0;
     transform.y = 600.0;
   }
@@ -1893,8 +1893,8 @@ fn listen_server_replication_excludes_host_from_network() {
   world.add_component(remote_entity, Transform::new(200.0, 200.0));
 
   // Verify both entities exist
-  assert!(world.get_component::<Transform>(host_entity).is_some());
-  assert!(world.get_component::<Transform>(remote_entity).is_some());
+  assert!(world.get::<Transform>(host_entity).is_some());
+  assert!(world.get::<Transform>(remote_entity).is_some());
 
   // Verify host is correctly identified
   assert!(server.is_host(server.host_id()));

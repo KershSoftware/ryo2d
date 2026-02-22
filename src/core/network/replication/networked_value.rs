@@ -11,7 +11,7 @@
 //!
 //! ```ignore
 //! // Bug: change is not replicated!
-//! if let Some(mut pos) = world.get_component_mut::<Position>(entity) {
+//! if let Some(mut pos) = world.get_mut::<Position>(entity) {
 //!     pos.x += 10.0;  // Forgot to call mark_dirty!
 //! }
 //! ```
@@ -28,7 +28,7 @@
 //! }
 //!
 //! // Modification is tracked
-//! if let Some(mut pos) = world.get_component_mut::<Position>(entity) {
+//! if let Some(mut pos) = world.get_mut::<Position>(entity) {
 //!     pos.x.set(pos.x.get() + 10.0);  // Marks dirty automatically
 //!     // Or use modify:
 //!     pos.y.modify(|y| *y += 5.0);

@@ -169,18 +169,18 @@
 //! ```rust,ignore
 //! fn update(&mut self, ctx: &mut GameContext, dt: f32) {
 //!     // Make a light follow the player
-//!     if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(self.player_light) {
+//!     if let Some(mut transform) = ctx.world.get_mut::<Transform>(self.player_light) {
 //!         transform.x = self.player_x;
 //!         transform.y = self.player_y;
 //!     }
 //!
 //!     // Rotate a spotlight
-//!     if let Some(mut light) = ctx.world.get_component_mut::<Light2D>(self.searchlight) {
+//!     if let Some(mut light) = ctx.world.get_mut::<Light2D>(self.searchlight) {
 //!         light.set_direction(self.time * 45.0); // 45 degrees per second
 //!     }
 //!
 //!     // Flicker a torch
-//!     if let Some(mut light) = ctx.world.get_component_mut::<Light2D>(self.torch) {
+//!     if let Some(mut light) = ctx.world.get_mut::<Light2D>(self.torch) {
 //!         let flicker = 0.8 + 0.2 * (self.time * 10.0).sin();
 //!         light.set_intensity(flicker);
 //!     }

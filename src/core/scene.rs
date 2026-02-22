@@ -1207,7 +1207,11 @@ impl SceneManager {
   /// The new top scene (if any) will have `on_resume()` called.
   ///
   /// Returns the popped scene, or None if stack was empty.
-  pub fn pop(&mut self, ctx: &mut SceneContext, returned: Option<Box<dyn Any>>) -> Option<Box<dyn Scene>> {
+  pub fn pop(
+    &mut self,
+    ctx: &mut SceneContext,
+    returned: Option<Box<dyn Any>>,
+  ) -> Option<Box<dyn Scene>> {
     if let Some(mut scene) = self.scenes.pop() {
       scene.on_exit(ctx);
 

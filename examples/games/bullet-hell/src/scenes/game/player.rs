@@ -249,7 +249,11 @@ impl GameScene {
     }
   }
 
-  pub(super) fn check_player_platform_collision(&mut self, ctx: &mut SceneContext, player_entity: Entity) {
+  pub(super) fn check_player_platform_collision(
+    &mut self,
+    ctx: &mut SceneContext,
+    player_entity: Entity,
+  ) {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
@@ -315,7 +319,11 @@ impl GameScene {
     }
   }
 
-  pub(super) fn check_player_barrier_collision(&mut self, ctx: &mut SceneContext, player_entity: Entity) {
+  pub(super) fn check_player_barrier_collision(
+    &mut self,
+    ctx: &mut SceneContext,
+    player_entity: Entity,
+  ) {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
@@ -555,7 +563,11 @@ impl GameScene {
     None
   }
 
-  pub(super) fn check_player_turret_collision(&mut self, ctx: &mut SceneContext, player_entity: Entity) {
+  pub(super) fn check_player_turret_collision(
+    &mut self,
+    ctx: &mut SceneContext,
+    player_entity: Entity,
+  ) {
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
       return;
     };
@@ -608,7 +620,11 @@ impl GameScene {
     }
   }
 
-  pub(super) fn check_player_drone_collision(&mut self, ctx: &mut SceneContext, player_entity: Entity) {
+  pub(super) fn check_player_drone_collision(
+    &mut self,
+    ctx: &mut SceneContext,
+    player_entity: Entity,
+  ) {
     use crate::constants::DRONE_SIZE;
 
     let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {

@@ -48,7 +48,7 @@
 //!     fn apply(&self, ctx: &mut ActionContext) {
 //!         if let Some(entity) = ctx.get_player_entity(self.slot) {
 //!             // Reset position
-//!             if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+//!             if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
 //!                 transform.x = self.spawn_x;
 //!                 transform.y = self.spawn_y;
 //!             }

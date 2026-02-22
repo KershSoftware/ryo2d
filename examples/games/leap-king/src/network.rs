@@ -162,25 +162,25 @@ impl NetworkAction for RespawnAction {
     };
 
     // Reset position
-    if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+    if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
       transform.x = self.spawn_x;
       transform.y = self.spawn_y;
     }
 
     // Reset velocity
-    if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+    if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
       vel.dx = 0.0;
       vel.dy = 0.0;
     }
 
     // Reset player state
-    if let Some(mut player) = ctx.world.get_component_mut::<Player>(entity) {
+    if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
       player.grounded = true;
       player.leap_state = LeapState::Idle;
     }
 
     // Force prediction correction so client accepts server position
-    if let Some(mut predicted) = ctx.world.get_component_mut::<Predicted>(entity) {
+    if let Some(mut predicted) = ctx.world.get_mut::<Predicted>(entity) {
       predicted.force_correction();
     }
   }

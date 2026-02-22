@@ -696,10 +696,10 @@ impl GameScene {
     let lamp_entities: Vec<Entity> = self.platform_lamps.clone();
 
     for entity in lamp_entities {
-      let lamp_data = ctx.world.get_component::<PlatformLamp>(entity).map(|l| *l);
+      let lamp_data = ctx.world.get::<PlatformLamp>(entity).map(|l| *l);
 
       if let Some(lamp) = lamp_data
-        && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity)
+        && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
       {
         let t = self.elapsed_time;
         let p = lamp.phase;
@@ -741,10 +741,10 @@ impl GameScene {
 
     // Update dust emitter positions to follow their lamps
     for entity in &self.lamp_dust_emitters {
-      let lamp_data = ctx.world.get_component::<PlatformLamp>(*entity).map(|l| *l);
+      let lamp_data = ctx.world.get::<PlatformLamp>(*entity).map(|l| *l);
 
       if let Some(lamp) = lamp_data
-        && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(*entity)
+        && let Some(mut transform) = ctx.world.get_mut::<Transform>(*entity)
       {
         let t = self.elapsed_time;
         let p = lamp.phase;
@@ -828,7 +828,7 @@ impl GameScene {
   fn update_rain(&mut self, ctx: &mut SceneContext) {
     // Keep rain emitter above the camera
     if let Some(rain_entity) = self.rain_emitter
-      && let Some(mut transform) = ctx.world.get_component_mut::<Transform>(rain_entity)
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(rain_entity)
     {
       transform.x = self.screen_width / 2.0;
       transform.y = self.camera_y - self.screen_height / 2.0; // Top of visible area
@@ -845,7 +845,7 @@ impl GameScene {
     let visible_bottom = self.camera_y + self.screen_height;
 
     for &entity in &self.background_tiles {
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         // If tile is below visible area, move it up
         if transform.y > visible_bottom {
           // Move up by total height of all tiles
@@ -885,7 +885,7 @@ impl GameScene {
         continue;
       };
 
-      let Some(player_transform) = ctx.world.get_component::<Transform>(player_entity) else {
+      let Some(player_transform) = ctx.world.get::<Transform>(player_entity) else {
         continue;
       };
 
@@ -893,7 +893,7 @@ impl GameScene {
       let light_x = player_transform.x + PLAYER_WIDTH / 2.0;
       let light_y = player_transform.y + PLAYER_HEIGHT / 2.0;
 
-      if let Some(mut light_transform) = ctx.world.get_component_mut::<Transform>(light_entity) {
+      if let Some(mut light_transform) = ctx.world.get_mut::<Transform>(light_entity) {
         light_transform.x = light_x;
         light_transform.y = light_y;
       }
@@ -905,7 +905,7 @@ impl GameScene {
     let time = self.elapsed_time;
 
     for &entity in self.players.values() {
-      let Some(player) = ctx.world.get_component::<Player>(entity) else {
+      let Some(player) = ctx.world.get::<Player>(entity) else {
         continue;
       };
 
@@ -958,7 +958,7 @@ impl GameScene {
         (1.0, 1.0, 0.0)
       };
 
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         transform.scale_x = scale_x;
         transform.scale_y = scale_y;
         // Visual lean effect (doesn't affect collision)
@@ -1072,7 +1072,7 @@ impl GameScene {
       return;
     };
 
-    let Some(transform) = ctx.world.get_component::<Transform>(entity) else {
+    let Some(transform) = ctx.world.get::<Transform>(entity) else {
       return;
     };
 
@@ -1090,10 +1090,10 @@ impl GameScene {
     // Update local player's height display
     if let Some(entity) = self.get_local_player_entity() {
       let (player_y, is_grounded) = {
-        let Some(transform) = ctx.world.get_component::<Transform>(entity) else {
+        let Some(transform) = ctx.world.get::<Transform>(entity) else {
           return;
         };
-        let Some(player) = ctx.world.get_component::<Player>(entity) else {
+        let Some(player) = ctx.world.get::<Player>(entity) else {
           return;
         };
         (transform.y, player.grounded)
@@ -1119,10 +1119,10 @@ impl GameScene {
 
     for (client_id, entity) in player_entries {
       let (player_y, is_grounded) = {
-        let Some(transform) = ctx.world.get_component::<Transform>(entity) else {
+        let Some(transform) = ctx.world.get::<Transform>(entity) else {
           continue;
         };
-        let Some(player) = ctx.world.get_component::<Player>(entity) else {
+        let Some(player) = ctx.world.get::<Player>(entity) else {
           continue;
         };
         (transform.y, player.grounded)
@@ -1190,12 +1190,12 @@ impl GameScene {
     if mark_visual && let Some(old_plat) = old_platform {
       let platform_width = ctx
         .world
-        .get_component::<Platform>(old_plat)
+        .get::<Platform>(old_plat)
         .filter(|p| !p.is_spawn)
         .map(|p| p.width);
 
       if let Some(width) = platform_width
-        && let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(old_plat)
+        && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(old_plat)
       {
         // Checkpoint platforms revert to normal gray (they can't be moving)
         let new_sprite = SpriteHandle::from_sprite(
@@ -1217,10 +1217,10 @@ impl GameScene {
     let max_dist = MIN_VERTICAL_GAP; // Don't match checkpoint platforms from different thresholds
     let mut best: Option<(Entity, f32, f32, f32)> = None; // (entity, y, center_x, width)
     for &platform_entity in &self.platforms {
-      let Some(platform_transform) = ctx.world.get_component::<Transform>(platform_entity) else {
+      let Some(platform_transform) = ctx.world.get::<Transform>(platform_entity) else {
         continue;
       };
-      let Some(platform) = ctx.world.get_component::<Platform>(platform_entity) else {
+      let Some(platform) = ctx.world.get::<Platform>(platform_entity) else {
         continue;
       };
 
@@ -1247,9 +1247,7 @@ impl GameScene {
     let (plat_entity, plat_top, center_x, plat_width) = best?;
 
     // Color it green for local player
-    if mark_visual
-      && let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(plat_entity)
-    {
+    if mark_visual && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(plat_entity) {
       let new_sprite = SpriteHandle::from_sprite(
         Sprite::solid_rect(
           plat_width as u32,
@@ -1321,10 +1319,10 @@ impl GameScene {
       if cp.platform_entity == Some(platform_entity) {
         continue;
       }
-      let Some(transform) = ctx.world.get_component::<Transform>(platform_entity) else {
+      let Some(transform) = ctx.world.get::<Transform>(platform_entity) else {
         continue;
       };
-      let Some(platform) = ctx.world.get_component::<Platform>(platform_entity) else {
+      let Some(platform) = ctx.world.get::<Platform>(platform_entity) else {
         continue;
       };
       if !platform.is_checkpoint {
@@ -1352,12 +1350,12 @@ impl GameScene {
     {
       let platform_width = ctx
         .world
-        .get_component::<Platform>(old_entity)
+        .get::<Platform>(old_entity)
         .filter(|p| p.is_checkpoint)
         .map(|p| p.width);
 
       if let Some(width) = platform_width
-        && let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(old_entity)
+        && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(old_entity)
       {
         let new_sprite = SpriteHandle::from_sprite(
           Sprite::solid_rect(
@@ -1376,8 +1374,8 @@ impl GameScene {
 
     // Color new future checkpoint platform yellow
     if let Some(new_entity) = new_entity
-      && let Some(platform) = ctx.world.get_component::<Platform>(new_entity)
-      && let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(new_entity)
+      && let Some(platform) = ctx.world.get::<Platform>(new_entity)
+      && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(new_entity)
     {
       let new_sprite = SpriteHandle::from_sprite(
         Sprite::solid_rect(
@@ -1418,14 +1416,11 @@ impl GameScene {
     // Helper: check if a position overlaps any other player
     let overlaps = |x: f32| -> bool {
       for (&_cid, &other_entity) in &self.players {
-        let other_slot = ctx
-          .world
-          .get_component::<Player>(other_entity)
-          .map(|p| p.slot);
+        let other_slot = ctx.world.get::<Player>(other_entity).map(|p| p.slot);
         if other_slot == Some(slot) {
           continue;
         }
-        if let Some(other_transform) = ctx.world.get_component::<Transform>(other_entity)
+        if let Some(other_transform) = ctx.world.get::<Transform>(other_entity)
           && x < other_transform.x + PLAYER_WIDTH
           && x + PLAYER_WIDTH > other_transform.x
         {
@@ -1458,11 +1453,7 @@ impl GameScene {
       return;
     };
 
-    let slot = ctx
-      .world
-      .get_component::<Player>(entity)
-      .map(|p| p.slot)
-      .unwrap_or(0);
+    let slot = ctx.world.get::<Player>(entity).map(|p| p.slot).unwrap_or(0);
 
     let cp = self.local_checkpoint();
     let spawn_x = self.checkpoint_spawn_x(ctx, slot, &cp);
@@ -1472,15 +1463,15 @@ impl GameScene {
     // Do NOT use RespawnAction (which calls force_correction) — the prediction
     // system preserves local positions for the local entity, so the respawn sticks
     // until the server catches up.
-    if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+    if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
       transform.x = spawn_x;
       transform.y = spawn_y;
     }
-    if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+    if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
       vel.dx = 0.0;
       vel.dy = 0.0;
     }
-    if let Some(mut player) = ctx.world.get_component_mut::<Player>(entity) {
+    if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
       player.grounded = true;
       player.leap_state = LeapState::Idle;
     }
@@ -1503,11 +1494,7 @@ impl GameScene {
 
   /// Respawn a player entity (used by server when receiving respawn requests)
   fn respawn_player(&mut self, ctx: &mut SceneContext, entity: Entity, client_id: ClientId) {
-    let slot = ctx
-      .world
-      .get_component::<Player>(entity)
-      .map(|p| p.slot)
-      .unwrap_or(0);
+    let slot = ctx.world.get::<Player>(entity).map(|p| p.slot).unwrap_or(0);
 
     let cp = self
       .player_checkpoints
@@ -1547,7 +1534,7 @@ impl GameScene {
     };
 
     // Get current player state
-    let player = match ctx.world.get_component::<Player>(entity) {
+    let player = match ctx.world.get::<Player>(entity) {
       Some(p) => *p,
       None => return default_input(),
     };
@@ -1739,7 +1726,7 @@ impl GameScene {
   }
 
   fn apply_input(&mut self, ctx: &mut SceneContext, entity: Entity, input: &LeapInput, dt: f32) {
-    let mut player = match ctx.world.get_component_mut::<Player>(entity) {
+    let mut player = match ctx.world.get_mut::<Player>(entity) {
       Some(p) => p,
       None => return,
     };
@@ -1775,12 +1762,12 @@ impl GameScene {
 
           drop(player);
 
-          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+          if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
             vel.dx = vx;
             vel.dy = vy;
           }
 
-          if let Some(mut p) = ctx.world.get_component_mut::<Player>(entity) {
+          if let Some(mut p) = ctx.world.get_mut::<Player>(entity) {
             p.leap_state = LeapState::Airborne;
             p.grounded = false;
           }
@@ -1821,7 +1808,7 @@ impl GameScene {
       .filter_map(|&entity| {
         ctx
           .world
-          .get_component::<MovingPlatform>(entity)
+          .get::<MovingPlatform>(entity)
           .map(|m| (entity, *m))
       })
       .collect();
@@ -1837,7 +1824,7 @@ impl GameScene {
     for (plat_entity, moving) in &moving_platforms {
       let old_x = ctx
         .world
-        .get_component::<Transform>(*plat_entity)
+        .get::<Transform>(*plat_entity)
         .map(|t| t.x)
         .unwrap_or(0.0);
 
@@ -1845,19 +1832,19 @@ impl GameScene {
       let delta_x = new_x - old_x;
 
       // Update platform position
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(*plat_entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(*plat_entity) {
         transform.x = new_x;
       }
 
       // Get platform dimensions for rider check
       let plat_width = ctx
         .world
-        .get_component::<Platform>(*plat_entity)
+        .get::<Platform>(*plat_entity)
         .map(|p| p.width)
         .unwrap_or(0.0);
       let plat_top = ctx
         .world
-        .get_component::<Transform>(*plat_entity)
+        .get::<Transform>(*plat_entity)
         .map(|t| t.y)
         .unwrap_or(0.0);
 
@@ -1866,14 +1853,14 @@ impl GameScene {
         for &player_entity in &player_entities {
           let is_grounded = ctx
             .world
-            .get_component::<Player>(player_entity)
+            .get::<Player>(player_entity)
             .map(|p| p.grounded)
             .unwrap_or(false);
           if !is_grounded {
             continue;
           }
 
-          if let Some(pt) = ctx.world.get_component::<Transform>(player_entity) {
+          if let Some(pt) = ctx.world.get::<Transform>(player_entity) {
             let player_left = pt.x;
             let player_right = pt.x + PLAYER_WIDTH;
             let player_bottom = pt.y + PLAYER_HEIGHT;
@@ -1886,7 +1873,7 @@ impl GameScene {
             if on_platform {
               // Drop the immutable borrow before taking mutable
               drop(pt);
-              if let Some(mut pt_mut) = ctx.world.get_component_mut::<Transform>(player_entity) {
+              if let Some(mut pt_mut) = ctx.world.get_mut::<Transform>(player_entity) {
                 pt_mut.x = (pt_mut.x + delta_x).clamp(0.0, self.screen_width - PLAYER_WIDTH);
               }
             }
@@ -1898,18 +1885,15 @@ impl GameScene {
     // Update lamp base_x for lamps on moving platforms
     let lamp_entities: Vec<Entity> = self.platform_lamps.clone();
     for entity in lamp_entities {
-      let lamp_data = ctx.world.get_component::<PlatformLamp>(entity).map(|l| *l);
+      let lamp_data = ctx.world.get::<PlatformLamp>(entity).map(|l| *l);
       if let Some(lamp) = lamp_data
         && let Some(plat_entity) = lamp.platform_entity
-        && let Some(plat_transform) = ctx.world.get_component::<Transform>(plat_entity)
-        && let Some(plat) = ctx.world.get_component::<Platform>(plat_entity)
-        && ctx
-          .world
-          .get_component::<MovingPlatform>(plat_entity)
-          .is_some()
+        && let Some(plat_transform) = ctx.world.get::<Transform>(plat_entity)
+        && let Some(plat) = ctx.world.get::<Platform>(plat_entity)
+        && ctx.world.get::<MovingPlatform>(plat_entity).is_some()
       {
         let new_base_x = plat_transform.x + plat.width / 2.0;
-        if let Some(mut lamp_mut) = ctx.world.get_component_mut::<PlatformLamp>(entity) {
+        if let Some(mut lamp_mut) = ctx.world.get_mut::<PlatformLamp>(entity) {
           lamp_mut.base_x = new_base_x;
         }
       }
@@ -1917,18 +1901,15 @@ impl GameScene {
 
     // Update dust emitter base_x too
     for &entity in &self.lamp_dust_emitters {
-      let lamp_data = ctx.world.get_component::<PlatformLamp>(entity).map(|l| *l);
+      let lamp_data = ctx.world.get::<PlatformLamp>(entity).map(|l| *l);
       if let Some(lamp) = lamp_data
         && let Some(plat_entity) = lamp.platform_entity
-        && let Some(plat_transform) = ctx.world.get_component::<Transform>(plat_entity)
-        && let Some(plat) = ctx.world.get_component::<Platform>(plat_entity)
-        && ctx
-          .world
-          .get_component::<MovingPlatform>(plat_entity)
-          .is_some()
+        && let Some(plat_transform) = ctx.world.get::<Transform>(plat_entity)
+        && let Some(plat) = ctx.world.get::<Platform>(plat_entity)
+        && ctx.world.get::<MovingPlatform>(plat_entity).is_some()
       {
         let new_base_x = plat_transform.x + plat.width / 2.0;
-        if let Some(mut lamp_mut) = ctx.world.get_component_mut::<PlatformLamp>(entity) {
+        if let Some(mut lamp_mut) = ctx.world.get_mut::<PlatformLamp>(entity) {
           lamp_mut.base_x = new_base_x;
         }
       }
@@ -1949,7 +1930,7 @@ impl GameScene {
       // Check if airborne
       let is_airborne = ctx
         .world
-        .get_component::<Player>(entity)
+        .get::<Player>(entity)
         .map(|p| p.leap_state.is_airborne())
         .unwrap_or(false);
 
@@ -1957,15 +1938,15 @@ impl GameScene {
       // Knockback or moving platforms can push a player off an edge while
       // they remain flagged as grounded, causing them to float.
       if !is_airborne {
-        if let Some(transform) = ctx.world.get_component::<Transform>(entity) {
+        if let Some(transform) = ctx.world.get::<Transform>(entity) {
           let player_left = transform.x;
           let player_right = transform.x + PLAYER_WIDTH;
           let player_bottom = transform.y + PLAYER_HEIGHT;
 
           let mut supported = false;
           for &plat_entity in &self.platforms {
-            if let Some(pt) = ctx.world.get_component::<Transform>(plat_entity)
-              && let Some(plat) = ctx.world.get_component::<Platform>(plat_entity)
+            if let Some(pt) = ctx.world.get::<Transform>(plat_entity)
+              && let Some(plat) = ctx.world.get::<Platform>(plat_entity)
             {
               let plat_left = pt.x;
               let plat_right = pt.x + plat.width;
@@ -1982,7 +1963,7 @@ impl GameScene {
           }
 
           if !supported {
-            if let Some(mut player) = ctx.world.get_component_mut::<Player>(entity) {
+            if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
               player.grounded = false;
               player.leap_state = LeapState::Airborne;
             }
@@ -1996,27 +1977,24 @@ impl GameScene {
       }
 
       // Apply gravity
-      if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+      if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
         vel.dy += GRAVITY * dt;
       }
 
       // Get velocity
-      let vel = ctx
-        .world
-        .get_component::<Velocity>(entity)
-        .map(|v| (v.dx, v.dy));
+      let vel = ctx.world.get::<Velocity>(entity).map(|v| (v.dx, v.dy));
 
       if let Some((vx, vy)) = vel {
         // Store previous Y for sweep collision
         let prev_y = ctx
           .world
-          .get_component::<Transform>(entity)
+          .get::<Transform>(entity)
           .map(|t| t.y)
           .unwrap_or(0.0);
 
         // Update position
         let mut wall_hit = false;
-        if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
           transform.x += vx * dt;
           transform.y += vy * dt;
 
@@ -2031,7 +2009,7 @@ impl GameScene {
         }
 
         // Bounce off walls — reflect horizontal velocity so player doesn't slide down
-        if wall_hit && let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+        if wall_hit && let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
           vel.dx = -vel.dx * WALL_BOUNCE_FACTOR;
         }
 
@@ -2044,7 +2022,7 @@ impl GameScene {
   }
 
   fn check_platform_landing(&mut self, ctx: &mut SceneContext, player_entity: Entity, prev_y: f32) {
-    let player_transform = match ctx.world.get_component::<Transform>(player_entity) {
+    let player_transform = match ctx.world.get::<Transform>(player_entity) {
       Some(t) => (t.x, t.y),
       None => return,
     };
@@ -2059,12 +2037,12 @@ impl GameScene {
     let mut best_landing: Option<(f32, Entity)> = None;
 
     for &platform_entity in &self.platforms {
-      let platform = match ctx.world.get_component::<Platform>(platform_entity) {
+      let platform = match ctx.world.get::<Platform>(platform_entity) {
         Some(p) => *p,
         None => continue,
       };
 
-      let plat_transform = match ctx.world.get_component::<Transform>(platform_entity) {
+      let plat_transform = match ctx.world.get::<Transform>(platform_entity) {
         Some(t) => (t.x, t.y),
         None => continue,
       };
@@ -2098,16 +2076,16 @@ impl GameScene {
 
     // Apply the landing if we found one
     if let Some((plat_top, _)) = best_landing {
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(player_entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
         transform.y = plat_top - PLAYER_HEIGHT;
       }
 
-      if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(player_entity) {
+      if let Some(mut vel) = ctx.world.get_mut::<Velocity>(player_entity) {
         vel.dx = 0.0;
         vel.dy = 0.0;
       }
 
-      if let Some(mut player) = ctx.world.get_component_mut::<Player>(player_entity) {
+      if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
         player.grounded = true;
         player.leap_state = LeapState::Landing {
           timer: LANDING_RECOVERY_TIME,
@@ -2124,9 +2102,9 @@ impl GameScene {
   /// Check for player-to-player collisions
   /// - Subtle horizontal push when players overlap
   /// - Head bounce when landing on another player
-  /// Returns true if any collision was detected (used by host to trigger
-  /// an immediate position broadcast so clients learn about the collision
-  /// without waiting for the next 20Hz tick).
+  ///   Returns true if any collision was detected (used by host to trigger
+  ///   an immediate position broadcast so clients learn about the collision
+  ///   without waiting for the next 20Hz tick).
   fn check_player_collisions(&mut self, ctx: &mut SceneContext) -> bool {
     // Only check in multiplayer with 2+ players
     if self.players.len() < 2 {
@@ -2140,10 +2118,10 @@ impl GameScene {
       .players
       .values()
       .filter_map(|&entity| {
-        let transform = ctx.world.get_component::<Transform>(entity)?;
-        let collider = ctx.world.get_component::<Collider>(entity)?;
-        let vel = ctx.world.get_component::<Velocity>(entity)?;
-        let player = ctx.world.get_component::<Player>(entity)?;
+        let transform = ctx.world.get::<Transform>(entity)?;
+        let collider = ctx.world.get::<Collider>(entity)?;
+        let vel = ctx.world.get::<Velocity>(entity)?;
+        let player = ctx.world.get::<Player>(entity)?;
         let aabb = collider.world_aabb(&transform);
         Some((entity, aabb, vel.dy, player.leap_state.is_airborne()))
       })
@@ -2182,7 +2160,7 @@ impl GameScene {
         // Player A landing on B's head
         if a_airborne && avy > 0.0 && a_bottom <= b_top + HEAD_BOUNCE_ZONE && a_bottom >= b_top {
           // A is landing on B's head - bounce A up
-          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity_a) {
+          if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity_a) {
             vel.dy = HEAD_BOUNCE_VELOCITY;
           }
           // Play a subtle sound
@@ -2196,7 +2174,7 @@ impl GameScene {
         // Player B landing on A's head
         if b_airborne && bvy > 0.0 && b_bottom <= a_top + HEAD_BOUNCE_ZONE && b_bottom >= a_top {
           // B is landing on A's head - bounce B up
-          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity_b) {
+          if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity_b) {
             vel.dy = HEAD_BOUNCE_VELOCITY;
           }
           if let Some(audio) = &mut ctx.audio {
@@ -2216,11 +2194,11 @@ impl GameScene {
             1.0
           };
 
-          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity_a) {
+          if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity_a) {
             vel.dx = AIR_KNOCKBACK_HORIZONTAL * push_dir;
             vel.dy = vel.dy.min(AIR_KNOCKBACK_VERTICAL);
           }
-          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity_b) {
+          if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity_b) {
             vel.dx = AIR_KNOCKBACK_HORIZONTAL * -push_dir;
             vel.dy = vel.dy.min(AIR_KNOCKBACK_VERTICAL);
           }
@@ -2245,9 +2223,9 @@ impl GameScene {
           };
 
           // Apply knockback to player A
-          let has_kb_a = ctx.world.get_component::<Knockback>(entity_a).is_some();
+          let has_kb_a = ctx.world.get::<Knockback>(entity_a).is_some();
           if has_kb_a {
-            if let Some(mut kb) = ctx.world.get_component_mut::<Knockback>(entity_a) {
+            if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity_a) {
               kb.apply(dir_a, PLAYER_PUSH_FORCE);
             }
           } else {
@@ -2258,9 +2236,9 @@ impl GameScene {
           }
 
           // Apply knockback to player B
-          let has_kb_b = ctx.world.get_component::<Knockback>(entity_b).is_some();
+          let has_kb_b = ctx.world.get::<Knockback>(entity_b).is_some();
           if has_kb_b {
-            if let Some(mut kb) = ctx.world.get_component_mut::<Knockback>(entity_b) {
+            if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity_b) {
               kb.apply(dir_b, PLAYER_PUSH_FORCE);
             }
           } else {
@@ -2280,7 +2258,7 @@ impl GameScene {
     // Find highest player Y
     let mut highest_y = self.highest_player_y;
     for &entity in self.players.values() {
-      if let Some(transform) = ctx.world.get_component::<Transform>(entity)
+      if let Some(transform) = ctx.world.get::<Transform>(entity)
         && transform.y < highest_y
       {
         highest_y = transform.y;
@@ -2314,7 +2292,7 @@ impl GameScene {
   fn update_camera(&mut self, ctx: &mut SceneContext) {
     // Follow local player - camera looks ABOVE the player so they can see where to jump
     let player_y = match self.get_local_player_entity() {
-      Some(entity) => ctx.world.get_component::<Transform>(entity).map(|t| t.y),
+      Some(entity) => ctx.world.get::<Transform>(entity).map(|t| t.y),
       None => None,
     };
 
@@ -2623,8 +2601,8 @@ impl GameScene {
       if Some(client_id) == local_id {
         continue;
       }
-      if let Some(transform) = ctx.world.get_component::<Transform>(entity)
-        && let Some(player) = ctx.world.get_component::<Player>(entity)
+      if let Some(transform) = ctx.world.get::<Transform>(entity)
+        && let Some(player) = ctx.world.get::<Player>(entity)
       {
         self.remote_slots.insert(client_id, player.slot);
         let height = ((PLAYER_SPAWN_Y - transform.y) / HEIGHT_SCALE).max(0.0);
@@ -2849,11 +2827,11 @@ impl GameScene {
       {
         UpdateResult::Applied | UpdateResult::Spawned => {
           // Remote player or first spawn - also update velocity and game state
-          if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+          if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
             vel.dx = update.vx;
             vel.dy = update.vy;
           }
-          if let Some(mut player) = ctx.world.get_component_mut::<Player>(entity) {
+          if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
             player.leap_state = update.leap_state.into();
             player.grounded = update.grounded;
             player.facing = if update.facing_right {
@@ -2874,7 +2852,7 @@ impl GameScene {
           // Get local player position for spatial audio
           let local_pos = self
             .get_local_player_entity()
-            .and_then(|e| ctx.world.get_component::<Transform>(e))
+            .and_then(|e| ctx.world.get::<Transform>(e))
             .map(|t| (t.x, t.y));
 
           // Detect jump (transition to Airborne)
@@ -2919,43 +2897,27 @@ impl GameScene {
           // Read the client's current predicted state to compare.
           let (client_grounded, client_airborne) = ctx
             .world
-            .get_component::<Player>(entity)
+            .get::<Player>(entity)
             .map(|p| (p.grounded, p.leap_state.is_airborne()))
             .unwrap_or((false, false));
 
           let server_grounded = update.grounded;
           let server_airborne = matches!(update.leap_state, NetworkLeapState::Airborne);
 
-          // Critical state correction: host says we're airborne but client
-          // thinks we're grounded (e.g. knocked off a platform by another
-          // player). Trust the server — snap position, velocity, and state.
-          if server_airborne && client_grounded {
-            if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+          // Critical state correction: server and client disagree on
+          // grounded/airborne state (e.g. knocked off a platform by another
+          // player, or landed on host but client hasn't detected it yet).
+          // Trust the server — snap position, velocity, and state.
+          if (server_airborne && client_grounded) || (server_grounded && client_airborne) {
+            if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
               transform.x = update.x;
               transform.y = update.y;
             }
-            if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+            if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
               vel.dx = update.vx;
               vel.dy = update.vy;
             }
-            if let Some(mut player) = ctx.world.get_component_mut::<Player>(entity) {
-              player.leap_state = update.leap_state.into();
-              player.grounded = update.grounded;
-            }
-          }
-          // State correction: host says we're grounded but client thinks
-          // we're airborne (e.g. we landed on host but client hasn't detected
-          // the landing yet). Snap to server.
-          else if server_grounded && client_airborne {
-            if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
-              transform.x = update.x;
-              transform.y = update.y;
-            }
-            if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
-              vel.dx = update.vx;
-              vel.dy = update.vy;
-            }
-            if let Some(mut player) = ctx.world.get_component_mut::<Player>(entity) {
+            if let Some(mut player) = ctx.world.get_mut::<Player>(entity) {
               player.leap_state = update.leap_state.into();
               player.grounded = update.grounded;
             }
@@ -2964,21 +2926,18 @@ impl GameScene {
           // significantly. Lerp toward the server position to prevent
           // gradual drift without jarring snaps.
           else {
-            let client_pos = ctx
-              .world
-              .get_component::<Transform>(entity)
-              .map(|t| (t.x, t.y));
+            let client_pos = ctx.world.get::<Transform>(entity).map(|t| (t.x, t.y));
             if let Some((cx, cy)) = client_pos {
               let dx = update.x - cx;
               let dy = update.y - cy;
               let dist_sq = dx * dx + dy * dy;
               // Large discrepancy (>48px, ~1.5 player heights): snap
               if dist_sq > 48.0 * 48.0 {
-                if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+                if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
                   transform.x = update.x;
                   transform.y = update.y;
                 }
-                if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+                if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
                   vel.dx = update.vx;
                   vel.dy = update.vy;
                 }
@@ -2986,12 +2945,12 @@ impl GameScene {
               // Moderate discrepancy (>8px): smooth correction
               else if dist_sq > 8.0 * 8.0 {
                 let blend = 0.3; // Blend 30% toward server each update (20Hz)
-                if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(entity) {
+                if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
                   transform.x += dx * blend;
                   transform.y += dy * blend;
                 }
                 // Also nudge velocity toward server to prevent re-diverging
-                if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+                if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
                   vel.dx += (update.vx - vel.dx) * blend;
                   vel.dy += (update.vy - vel.dy) * blend;
                 }
@@ -3049,9 +3008,9 @@ impl GameScene {
       }
       if ctx
         .world
-        .get_component::<Player>(entity)
+        .get::<Player>(entity)
         .is_some_and(|p| p.leap_state.is_airborne())
-        && let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity)
+        && let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity)
       {
         vel.dy += GRAVITY * dt;
       }
@@ -3098,9 +3057,9 @@ impl GameScene {
     let local_id = self.local_client_id;
 
     for (&client_id, &entity) in &self.players {
-      if let Some(transform) = ctx.world.get_component::<Transform>(entity)
-        && let Some(vel) = ctx.world.get_component::<Velocity>(entity)
-        && let Some(player) = ctx.world.get_component::<Player>(entity)
+      if let Some(transform) = ctx.world.get::<Transform>(entity)
+        && let Some(vel) = ctx.world.get::<Velocity>(entity)
+        && let Some(player) = ctx.world.get::<Player>(entity)
       {
         // Use local max_height for local player, remote_best_heights for others
         let best_height = if Some(client_id) == local_id {
@@ -3159,7 +3118,7 @@ impl GameScene {
       None => return,
     };
 
-    let player = match ctx.world.get_component::<Player>(entity) {
+    let player = match ctx.world.get::<Player>(entity) {
       Some(p) => p,
       None => return,
     };
@@ -3168,7 +3127,7 @@ impl GameScene {
       return;
     }
 
-    let transform = match ctx.world.get_component::<Transform>(entity) {
+    let transform = match ctx.world.get::<Transform>(entity) {
       Some(t) => t,
       None => return,
     };

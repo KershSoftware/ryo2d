@@ -82,6 +82,12 @@ pub struct GameScene {
   pub(super) bullet_pool: Option<Pool<BulletBundle>>,
 }
 
+impl Default for GameScene {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl GameScene {
   pub fn new() -> Self {
     // Load sprites
@@ -212,7 +218,6 @@ impl GameScene {
       bullet_pool: None,
     }
   }
-
 }
 
 impl Scene for GameScene {

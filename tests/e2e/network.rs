@@ -216,8 +216,8 @@ impl HeadlessClient {
     // Try to deserialize as known types
     if serialized.type_id == Transform::component_id() {
       if let Ok(transform) = serialized.clone().into_component::<Transform>() {
-        if self.world.get_component::<Transform>(entity).is_some() {
-          if let Some(mut t) = self.world.get_component_mut::<Transform>(entity) {
+        if self.world.get::<Transform>(entity).is_some() {
+          if let Some(mut t) = self.world.get_mut::<Transform>(entity) {
             *t = transform;
           }
         } else {
@@ -227,8 +227,8 @@ impl HeadlessClient {
     } else if serialized.type_id == PlayerPosition::component_id()
       && let Ok(pos) = serialized.clone().into_component::<PlayerPosition>()
     {
-      if self.world.get_component::<PlayerPosition>(entity).is_some() {
-        if let Some(mut p) = self.world.get_component_mut::<PlayerPosition>(entity) {
+      if self.world.get::<PlayerPosition>(entity).is_some() {
+        if let Some(mut p) = self.world.get_mut::<PlayerPosition>(entity) {
           *p = pos;
         }
       } else {
@@ -351,7 +351,7 @@ impl HeadlessServer {
   /// Move a player and mark dirty
   fn move_player(&mut self, client_id: ClientId, dx: f32, dy: f32) {
     if let Some(&entity) = self.player_entities.get(&client_id) {
-      if let Some(mut pos) = self.world.get_component_mut::<PlayerPosition>(entity) {
+      if let Some(mut pos) = self.world.get_mut::<PlayerPosition>(entity) {
         pos.x += dx;
         pos.y += dy;
       }
@@ -492,7 +492,7 @@ fn e2e_client_a_movement_propagates_to_client_b() {
 
       // Check if client B sees the updated position
       if let Some(entity) = clients[1].get_entity(network_id)
-        && let Some(pos) = clients[1].world.get_component::<PlayerPosition>(entity)
+        && let Some(pos) = clients[1].world.get::<PlayerPosition>(entity)
       {
         // Initial was 100.0 * client_id, moved by 50.0
         return pos.x > 100.0;
@@ -508,10 +508,7 @@ fn e2e_client_a_movement_propagates_to_client_b() {
 
   // Verify the position on client B
   let entity_b = client_b.get_entity(network_id).unwrap();
-  let pos_b = client_b
-    .world
-    .get_component::<PlayerPosition>(entity_b)
-    .unwrap();
+  let pos_b = client_b.world.get::<PlayerPosition>(entity_b).unwrap();
   assert!(pos_b.x >= 150.0, "Position should reflect the movement");
 }
 
@@ -576,10 +573,7 @@ fn e2e_late_join_receives_full_state() {
   let network_id = server.replication.get_network_id(player_entity).unwrap();
 
   if let Some(entity) = client_b.get_entity(network_id) {
-    let pos = client_b
-      .world
-      .get_component::<PlayerPosition>(entity)
-      .unwrap();
+    let pos = client_b.world.get::<PlayerPosition>(entity).unwrap();
     // Position should include the movement (initial was 100*id, moved by 999)
     assert!(
       pos.x > 500.0,
@@ -914,7 +908,7 @@ fn e2e_multiple_rapid_updates_arrive_in_order() {
     let network_id = server.replication.get_network_id(player_entity).unwrap();
 
     if let Some(entity) = clients[0].get_entity(network_id)
-      && let Some(pos) = clients[0].world.get_component::<PlayerPosition>(entity)
+      && let Some(pos) = clients[0].world.get::<PlayerPosition>(entity)
     {
       // Initial was 100*id + 100, moved 10*10 = 100
       return pos.x >= 200.0;
@@ -1098,7 +1092,7 @@ impl HeadlessListenServer {
 
   fn move_player(&mut self, client_id: ClientId, dx: f32, dy: f32) {
     if let Some(&entity) = self.player_entities.get(&client_id) {
-      if let Some(mut pos) = self.world.get_component_mut::<PlayerPosition>(entity) {
+      if let Some(mut pos) = self.world.get_mut::<PlayerPosition>(entity) {
         pos.x += dx;
         pos.y += dy;
       }
@@ -1216,7 +1210,7 @@ fn e2e_listen_server_host_movement_reaches_remote() {
       client.process_replication();
 
       if let Some(entity) = client.get_entity(host_network_id)
-        && let Some(pos) = client.world.get_component::<PlayerPosition>(entity)
+        && let Some(pos) = client.world.get::<PlayerPosition>(entity)
       {
         // Host started at 50*0=0, moved by 500
         if pos.x >= 400.0 {

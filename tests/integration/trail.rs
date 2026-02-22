@@ -238,12 +238,12 @@ fn trail_as_ecs_component() {
 
   // Can retrieve and modify
   {
-    let mut trail = world.get_component_mut::<Trail2D>(entity).unwrap();
+    let mut trail = world.get_mut::<Trail2D>(entity).unwrap();
     trail.set_enabled(false);
   }
 
   // Changes persist
-  let trail = world.get_component::<Trail2D>(entity).unwrap();
+  let trail = world.get::<Trail2D>(entity).unwrap();
   assert!(!trail.is_enabled());
   assert!(!trail.is_visible());
 }
@@ -259,13 +259,13 @@ fn multiple_entities_with_trails() {
 
   // Disable one trail
   {
-    let mut trail = world.get_component_mut::<Trail2D>(e1).unwrap();
+    let mut trail = world.get_mut::<Trail2D>(e1).unwrap();
     trail.set_enabled(false);
   }
 
   // Check they're independent
-  let t1 = world.get_component::<Trail2D>(e1).unwrap();
-  let t2 = world.get_component::<Trail2D>(e2).unwrap();
+  let t1 = world.get::<Trail2D>(e1).unwrap();
+  let t2 = world.get::<Trail2D>(e2).unwrap();
 
   assert!(!t1.is_enabled(), "First trail should be disabled");
   assert!(t2.is_enabled(), "Second trail should still be enabled");

@@ -7,6 +7,7 @@ use ryo2d::prelude::*;
 
 use super::MenuScene;
 
+#[derive(Default)]
 pub struct PauseScene {
   settings_open: bool,
   selected_display_mode_idx: usize,

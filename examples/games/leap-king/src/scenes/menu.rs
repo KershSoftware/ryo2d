@@ -314,7 +314,7 @@ impl Scene for MenuScene {
     // Animate fairy lights
     let t = self.elapsed_time;
     for (entity, light) in &self.fairy_lights {
-      if let Some(mut transform) = ctx.world.get_component_mut::<Transform>(*entity) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(*entity) {
         let p = light.phase;
 
         // Fairy-like floating motion using Lissajous curves

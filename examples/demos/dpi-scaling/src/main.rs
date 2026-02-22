@@ -184,26 +184,17 @@ impl Scene for DpiScalingScene {
     let mut bx = 40.0;
 
     // Small reference box (always 16x16 visual pixels)
-    ui.draw_rect(
-      Rect::new(bx, box_y, 16.0, 16.0),
-      Color::rgb(255, 100, 100),
-    );
+    ui.draw_rect(Rect::new(bx, box_y, 16.0, 16.0), Color::rgb(255, 100, 100));
     ui.draw_text("16px", bx + 16.0 + gap, box_y + 4.0, Color::LIGHT_GRAY);
     bx += 16.0 + gap + label_px + spacing;
 
     // Medium reference box (always 32x32 visual pixels)
-    ui.draw_rect(
-      Rect::new(bx, box_y, 32.0, 32.0),
-      Color::rgb(100, 255, 100),
-    );
+    ui.draw_rect(Rect::new(bx, box_y, 32.0, 32.0), Color::rgb(100, 255, 100));
     ui.draw_text("32px", bx + 32.0 + gap, box_y + 12.0, Color::LIGHT_GRAY);
     bx += 32.0 + gap + label_px + spacing;
 
     // Large reference box (always 64x64 visual pixels)
-    ui.draw_rect(
-      Rect::new(bx, box_y, 64.0, 64.0),
-      Color::rgb(100, 100, 255),
-    );
+    ui.draw_rect(Rect::new(bx, box_y, 64.0, 64.0), Color::rgb(100, 100, 255));
     ui.draw_text("64px", bx + 64.0 + gap, box_y + 28.0, Color::LIGHT_GRAY);
 
     // Footer with hint
