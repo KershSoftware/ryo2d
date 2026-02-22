@@ -220,6 +220,7 @@ pub mod prelude {
 
   // Tilemap system
   pub use crate::core::tilemap::{
+    AutoTileMode, AutoTileSet, compute_bitmask_full, compute_bitmask_minimal,
     ChunkCoord, ChunkState, CollisionRect, TileAnimation, TileId, TileProperties,
     Tilemap, TilemapError, TilemapLayer, TilemapManager, TilemapOrientation, Tileset,
     TiledObject, TiledShape, TiledValue, load_tiled_map,
