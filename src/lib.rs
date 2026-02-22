@@ -218,6 +218,14 @@ pub mod prelude {
     ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem,
   };
 
+  // Tilemap system
+  pub use crate::core::tilemap::{
+    ChunkCoord, ChunkState, CollisionRect, TileAnimation, TileId, TileProperties,
+    Tilemap, TilemapError, TilemapLayer, TilemapManager, TilemapOrientation, Tileset,
+    TiledObject, TiledShape, TiledValue, load_tiled_map,
+    generate_collision_rects, generate_collision_rects_region,
+  };
+
   // GPU sprite batching (for high-performance particle systems)
   pub use crate::core::graphics::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
 

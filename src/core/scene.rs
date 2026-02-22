@@ -186,6 +186,8 @@ pub struct SceneContext<'a> {
   /// }
   /// ```
   pub events: &'a mut Events,
+  /// Tilemap manager for loading, spawning, and querying tilemaps
+  pub tilemap: &'a mut super::tilemap::TilemapManager,
   /// Pending window configuration changes (resolution, display mode)
   pub window_request: &'a mut WindowRequest,
   /// Pending cursor configuration changes (style, visibility, confinement)

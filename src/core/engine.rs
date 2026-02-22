@@ -246,6 +246,8 @@ pub struct Engine {
   surface_needs_reconfigure: bool,
   // Event bus for decoupled inter-system communication
   events: Events,
+  // Tilemap manager for loading, spawning, and querying tilemaps
+  tilemap: crate::core::tilemap::TilemapManager,
   // Gamepad input library (gilrs)
   gilrs: Option<Gilrs>,
   // Time control for slow-mo and hitstop effects (shared with SceneContext)
@@ -647,6 +649,7 @@ impl Engine {
       custom_cursor_cache: std::collections::HashMap::new(),
       surface_needs_reconfigure: false,
       events: Events::new(),
+      tilemap: crate::core::tilemap::TilemapManager::new(),
       gilrs,
       time_control: TimeControl::default(),
       #[cfg(feature = "profiler")]
@@ -1225,6 +1228,7 @@ impl Engine {
         effects: &mut self.effects,
         lighting: &mut self.lighting,
         events: &mut self.events,
+        tilemap: &mut self.tilemap,
         window_request: &mut self.window_request,
         cursor_request: &mut self.cursor_request,
         time_control: &mut self.time_control,
@@ -2326,6 +2330,7 @@ impl ApplicationHandler for Engine {
         effects: &mut self.effects,
         lighting: &mut self.lighting,
         events: &mut self.events,
+        tilemap: &mut self.tilemap,
         window_request: &mut self.window_request,
         cursor_request: &mut self.cursor_request,
         time_control: &mut self.time_control,
