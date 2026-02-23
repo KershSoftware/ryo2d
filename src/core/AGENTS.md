@@ -39,6 +39,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `parallax.rs` | Parallax scrolling background system with layered sprites |
 | `tile.rs` | Tiled rendering (`TiledSprite`, `CompositeTile`) and `GroupedCollider` |
 | `tilemap/` | Tilemap system: grid storage, chunks, collision, Tiled import, auto-tiling (see `tilemap/AGENTS.md`) |
+| `skeleton/` | Skeletal animation: bone hierarchies, keyframe animation, blending, state machine controller (see `skeleton/AGENTS.md`) |
 | `shaders/` | WGSL shader files for GPU rendering (sprite effects, post-processing) |
 | `lighting/` | 2D lighting system with point lights, spotlights, and shadows (see `lighting/AGENTS.md`) |
 | `ui/` | Immediate-mode UI system for HUDs and overlays (see `ui/AGENTS.md`) |
@@ -77,11 +78,11 @@ pub use crate::core::asset::{AssetManager, SpriteHandle};
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                       SceneContext                           │
-│  ┌───────────┐ ┌─────────┐ ┌────────┐ ┌────────────┐       │
-│  │ Resources │ │  World  │ │ Camera │ │ InputState │       │
-│  │           │ │  (ECS)  │ │        │ │            │       │
-│  └───────────┘ └─────────┘ └────────┘ └────────────┘       │
+│                       SceneContext                          │
+│  ┌───────────┐ ┌─────────┐ ┌────────┐ ┌────────────┐        │
+│  │ Resources │ │  World  │ │ Camera │ │ InputState │        │
+│  │           │ │  (ECS)  │ │        │ │            │        │
+│  └───────────┘ └─────────┘ └────────┘ └────────────┘        │
 │  ┌──────────────────┐ ┌────────────────────────────────┐    │
 │  │  AssetManager    │ │  Events, Effects, Lighting ... │    │
 │  └──────────────────┘ └────────────────────────────────┘    │

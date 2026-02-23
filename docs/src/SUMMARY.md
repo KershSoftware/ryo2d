@@ -24,6 +24,7 @@
 - [Sprites & Rendering](./concepts/sprites.md)
 - [Tiled Rendering](./concepts/tiled-rendering.md)
 - [Animation System](./concepts/animation.md)
+- [Skeletal Animation](./concepts/skeletal-animation.md)
 - [Lighting System](./concepts/lighting.md)
 - [Post-Processing Effects](./concepts/post-processing.md)
 - [Per-Sprite Shaders](./concepts/sprite-shaders.md)
@@ -52,6 +53,7 @@
 - [Moving Player](./examples/moving-player.md)
 - [Camera Follow](./examples/camera-follow.md)
 - [Sprite Animations](./examples/animations.md)
+- [Skeletal Animation](./examples/skeletal-animation.md)
 - [Asset Loading Patterns](./examples/asset-loading.md)
 - [Save Game System](./examples/save-game.md)
 

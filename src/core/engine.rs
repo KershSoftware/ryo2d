@@ -33,8 +33,8 @@ use super::physics::{PhysicsConfig, RapierPhysicsWorld};
 use super::scene::{Scene, SceneAction, SceneContext, SceneManager};
 use super::shaders::EffectsManager;
 use super::systems::{
-  AnimationSystem, InterpolationSystem, KnockbackSystem, PhysicsSystem, SquashStretchSystem,
-  TrailSystem, TweenSystem,
+  AnimationSystem, InterpolationSystem, KnockbackSystem, PhysicsSystem, SkeletonSystem,
+  SquashStretchSystem, TrailSystem, TweenSystem,
 };
 use super::timing::TimeState;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
@@ -1187,6 +1187,9 @@ impl Engine {
 
     // --- Tween System ---
     TweenSystem::update(&mut self.world, _dt);
+
+    // --- Skeletal Animation System ---
+    SkeletonSystem::update(&mut self.world, _dt);
 
     // --- Knockback System ---
     KnockbackSystem::update(&mut self.world, &mut self.events, _dt);
