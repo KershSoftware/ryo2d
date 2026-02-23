@@ -15,6 +15,7 @@ This folder contains game systems extracted from `engine.rs` for modularity and 
 | `knockback.rs` | Apply knockback forces to entities |
 | `squash_stretch.rs` | Apply squash/stretch scale effects |
 | `trail.rs` | Update Trail2D motion trails |
+| `skeleton.rs` | Update skeletal animation (animators, controllers, poses, world transforms) |
 | `physics.rs` | Sync ECS with Rapier physics world |
 
 ## System Pattern
@@ -161,6 +162,28 @@ Applies scale deformation for impact feedback.
 SquashStretchSystem::update(&mut world, &mut events, dt);
 ```
 
+## SkeletonSystem
+
+Updates skeletal animation each frame in five phases.
+
+**Components handled:**
+- `SkeletalAnimator` - Playback time advancement
+- `SkeletalController` - FSM state machine + crossfade blending
+- `Skeleton` - Pose storage and world-space bone transforms
+
+**Behavior:**
+1. Advance `SkeletalAnimator` playback time
+2. Advance `SkeletalController` state machines (FSM + blend weight)
+3. Sample `SkeletalAnimator` animations into `Skeleton.pose`
+4. Sample `SkeletalController` blended poses into `Skeleton.pose`
+5. Recompute `Skeleton.world_transforms` from entity's `Transform`
+
+```rust
+SkeletonSystem::update(&mut world, dt);
+```
+
+**Note:** If an entity has both `SkeletalAnimator` and `SkeletalController`, the controller's pose wins (it runs after the animator phase).
+
 ## TrailSystem
 
 Records entity positions for motion trail effects.
@@ -225,6 +248,7 @@ fn update(&mut self, dt: f32) {
 
   // 2. Animation systems
   AnimationSystem::update(&mut self.world, dt);
+  SkeletonSystem::update(&mut self.world, dt);
   TweenSystem::update(&mut self.world, dt);
 
   // 3. Effect systems

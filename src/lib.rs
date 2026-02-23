@@ -212,6 +212,13 @@ pub mod prelude {
     Line2D, TextureMode, Trail2D, TrailPoint, TrailRenderer, TrailStyle,
   };
 
+  // Skeletal animation
+  pub use crate::core::skeleton::{
+    BoneDef, BoneTransform, BoneWorldTransform, Pose, Skeleton, SkeletonDef,
+    SkeletalAnimation, SkeletalAnimator, SkeletalBlender, SkeletalController,
+    skeleton_debug_lines,
+  };
+
   // Particle system
   pub use crate::core::particles::{
     AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape,
