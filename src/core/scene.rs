@@ -40,6 +40,7 @@ use super::game::{TimeControl, TimeInfo, WindowRequest};
 use super::graphics::Camera;
 use super::input::InputState;
 use super::lighting::{AmbientLight, Atmosphere, LightingRenderer};
+use super::raycast::GpuRaycastRenderer;
 use super::shaders::EffectsManager;
 use super::ui::UiContext;
 
@@ -97,11 +98,13 @@ impl SceneCleanup {
   pub const MUSIC: Self = Self(1 << 5);
   /// Clear the event bus.
   pub const EVENTS: Self = Self(1 << 6);
+  /// Disable the raycasting renderer and drop the world map.
+  pub const RAYCAST: Self = Self(1 << 7);
 
   /// All cleanup flags enabled.
-  pub const ALL: Self = Self(0b111_1111);
+  pub const ALL: Self = Self(0b1111_1111);
   /// All cleanup flags except `MUSIC` — the recommended default.
-  pub const DEFAULT: Self = Self(0b101_1111);
+  pub const DEFAULT: Self = Self(0b1101_1111);
 
   /// Returns `true` if `self` contains all flags in `other`.
   pub fn contains(self, other: Self) -> bool {
@@ -167,6 +170,8 @@ pub struct SceneContext<'a> {
   pub effects: &'a mut EffectsManager,
   /// 2D lighting renderer for controlling ambient light and dynamic lights (None if lighting disabled)
   pub lighting: &'a mut Option<LightingRenderer>,
+  /// GPU raycasting renderer (None if not initialized)
+  pub raycast: &'a mut Option<GpuRaycastRenderer>,
   /// Event bus for decoupled communication between systems.
   ///
   /// Use `events.emit()` to publish events and `events.read()` to subscribe.
@@ -441,6 +446,20 @@ impl<'a> SceneContext<'a> {
     self.cursor_request.confined = Some(confined);
   }
 
+  /// Lock the cursor in place for FPS-style mouse look.
+  ///
+  /// When locked, the cursor is held in place and hidden. Raw mouse motion
+  /// is reported through `input.mouse_delta()`. Call with `false` to release.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// ctx.set_cursor_locked(true);  // FPS-style mouse look
+  /// ```
+  pub fn set_cursor_locked(&mut self, locked: bool) {
+    self.cursor_request.locked = Some(locked);
+  }
+
   /// Set a custom cursor from a sprite.
   ///
   /// The hotspot is the point within the cursor image that represents
@@ -646,6 +665,30 @@ impl<'a> SceneContext<'a> {
   /// Returns `true` if the command existed and was removed.
   pub fn remove_builtin_console_command(&mut self, name: &str) -> bool {
     self.command_registry.remove_builtin(name)
+  }
+
+  /// Enable raycasting mode. Call this in `on_enter()` after setting up the `RaycastWorld`.
+  /// The renderer will use GPU raycasting instead of the normal 2D pipeline.
+  pub fn enable_raycast(&mut self) {
+    if let Some(r) = self.raycast.as_mut() {
+      r.set_enabled(true);
+    } else {
+      eprintln!("warning: enable_raycast() called but no GpuRaycastRenderer is available");
+    }
+  }
+
+  /// Disable raycasting mode, returning to normal 2D rendering.
+  pub fn disable_raycast(&mut self) {
+    if let Some(r) = self.raycast.as_mut() {
+      r.set_enabled(false);
+    } else {
+      eprintln!("warning: disable_raycast() called but no GpuRaycastRenderer is available");
+    }
+  }
+
+  /// Get the GPU raycasting renderer for uploading textures and data.
+  pub fn raycast_renderer(&mut self) -> Option<&mut GpuRaycastRenderer> {
+    self.raycast.as_mut()
   }
 }
 
@@ -1024,6 +1067,12 @@ fn execute_cleanup(cleanup: SceneCleanup, ctx: &mut SceneContext) {
   }
   if cleanup.contains(SceneCleanup::EVENTS) {
     ctx.events.clear();
+  }
+  if cleanup.contains(SceneCleanup::RAYCAST)
+    && let Some(raycast) = ctx.raycast.as_mut()
+  {
+    raycast.set_enabled(false);
+    raycast.drop_world();
   }
 }
 

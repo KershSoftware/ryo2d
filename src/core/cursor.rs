@@ -142,6 +142,11 @@ pub(crate) struct CursorRequest {
   pub visible: Option<bool>,
   /// Whether to confine cursor to window (None = no change)
   pub confined: Option<bool>,
+  /// Whether to lock cursor in place for FPS-style input (None = no change)
+  ///
+  /// When locked, the cursor is hidden and held in place. Raw mouse motion
+  /// is reported via `mouse_delta()` instead of position-based deltas.
+  pub locked: Option<bool>,
 }
 
 impl CursorRequest {
@@ -150,6 +155,7 @@ impl CursorRequest {
       || self.custom_cursor.is_some()
       || self.visible.is_some()
       || self.confined.is_some()
+      || self.locked.is_some()
   }
 }
 
@@ -177,6 +183,67 @@ mod tests {
     // Reset to default (no changes)
     req = CursorRequest::default();
     assert!(!req.has_changes());
+  }
+
+  #[test]
+  fn cursor_request_locked_triggers_changes() {
+    let mut req = CursorRequest::default();
+    assert!(!req.has_changes());
+
+    req.locked = Some(true);
+    assert!(req.has_changes());
+
+    req = CursorRequest::default();
+    req.locked = Some(false);
+    assert!(req.has_changes());
+  }
+
+  #[test]
+  fn cursor_request_confined_triggers_changes() {
+    let mut req = CursorRequest::default();
+    req.confined = Some(true);
+    assert!(req.has_changes());
+  }
+
+  #[test]
+  fn cursor_request_default_has_no_fields_set() {
+    let req = CursorRequest::default();
+    assert!(req.cursor.is_none());
+    assert!(req.custom_cursor.is_none());
+    assert!(req.visible.is_none());
+    assert!(req.confined.is_none());
+    assert!(req.locked.is_none());
+  }
+
+  #[test]
+  fn cursor_request_all_fields_trigger_changes() {
+    // Each field individually should trigger has_changes
+    let mut req = CursorRequest::default();
+    req.cursor = Some(CursorStyle::Crosshair);
+    assert!(req.has_changes());
+
+    let mut req = CursorRequest::default();
+    req.visible = Some(true);
+    assert!(req.has_changes());
+
+    let mut req = CursorRequest::default();
+    req.confined = Some(false);
+    assert!(req.has_changes());
+
+    let mut req = CursorRequest::default();
+    req.locked = Some(true);
+    assert!(req.has_changes());
+
+    let mut req = CursorRequest::default();
+    req.custom_cursor = Some(CustomCursorData {
+      rgba: vec![0; 16],
+      width: 2,
+      height: 2,
+      hotspot_x: 0,
+      hotspot_y: 0,
+      id: "test".into(),
+    });
+    assert!(req.has_changes());
   }
 
   #[test]

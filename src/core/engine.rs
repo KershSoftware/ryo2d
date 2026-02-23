@@ -30,6 +30,10 @@ use super::graphics::{
 use super::input::InputState;
 use super::lighting::{Light2D, LightOccluder2D, LightingRenderer, generate_shadow_geometry};
 use super::physics::{PhysicsConfig, RapierPhysicsWorld};
+use super::raycast::{
+  CameraUniform, GpuRaycastRenderer, LightInstance, RaycastCamera, RaycastLight, RaycastSprite,
+  SpriteInstance as RaycastSpriteInstance,
+};
 use super::scene::{Scene, SceneAction, SceneContext, SceneManager};
 use super::shaders::EffectsManager;
 use super::systems::{
@@ -220,6 +224,8 @@ pub struct Engine {
   lighting: Option<LightingRenderer>,
   // Trail/line renderer for motion trails and procedural lines
   trail_renderer: Option<TrailRenderer>,
+  // GPU raycasting renderer
+  raycast_renderer: Option<GpuRaycastRenderer>,
   // Frame timing breakdown for profiling (current frame, in-progress)
   frame_timings: FrameTimings,
   // Smoothed frame timings for stable overlay display
@@ -242,6 +248,8 @@ pub struct Engine {
   cursor_request: crate::core::cursor::CursorRequest,
   // Cache of custom cursors by their ID (sprite path)
   custom_cursor_cache: std::collections::HashMap<String, winit::window::CustomCursor>,
+  // Whether the cursor is currently locked (FPS-style, using raw mouse motion)
+  cursor_locked: bool,
   // Flag indicating surface needs reconfiguration (after display mode change)
   surface_needs_reconfigure: bool,
   // Event bus for decoupled inter-system communication
@@ -461,8 +469,23 @@ impl Engine {
       window.set_cursor_visible(visible);
     }
 
-    // Apply confinement change
-    if let Some(confined) = request.confined {
+    // Apply lock change (FPS-style: cursor confined + hidden, raw motion via DeviceEvent)
+    if let Some(locked) = request.locked {
+      if locked {
+        // Use Confined mode (ClipCursor on Windows) to reliably prevent cursor
+        // from escaping to other monitors. Raw mouse deltas come from
+        // DeviceEvent::MouseMotion which works regardless of grab mode.
+        let _ = window.set_cursor_grab(CursorGrabMode::Confined);
+        window.set_cursor_visible(false);
+        self.cursor_locked = true;
+      } else {
+        let _ = window.set_cursor_grab(CursorGrabMode::None);
+        window.set_cursor_visible(true);
+        self.cursor_locked = false;
+      }
+    }
+    // Apply confinement change (only if not handling lock)
+    else if let Some(confined) = request.confined {
       let mode = if confined {
         CursorGrabMode::Confined
       } else {
@@ -634,8 +657,9 @@ impl Engine {
       vsync,
       sprite_gpu: None, // Initialized when renderer is created
       batch_collector: BatchCollector::new(),
-      lighting: None,       // Initialized when renderer is created
-      trail_renderer: None, // Initialized when renderer is created
+      lighting: None,         // Initialized when renderer is created
+      trail_renderer: None,   // Initialized when renderer is created
+      raycast_renderer: None, // Initialized when renderer is created
       frame_timings: FrameTimings::default(),
       smoothed_timings: SmoothedFrameTimings::default(),
       overlay_mode: initial_overlay_mode,
@@ -647,6 +671,7 @@ impl Engine {
       window_request: WindowRequest::default(),
       cursor_request: crate::core::cursor::CursorRequest::default(),
       custom_cursor_cache: std::collections::HashMap::new(),
+      cursor_locked: false,
       surface_needs_reconfigure: false,
       events: Events::new(),
       tilemap: crate::core::tilemap::TilemapManager::new(),
@@ -933,6 +958,7 @@ impl Engine {
     let mut renderer = self.renderer.take();
     let mut lighting = self.lighting.take();
     let mut trail_renderer = self.trail_renderer.take();
+    let mut raycast_renderer = self.raycast_renderer.take();
 
     if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
       // Collect trails and lines from the world (inside renderer block for device/queue access)
@@ -1026,7 +1052,23 @@ impl Engine {
       // Check if lighting is enabled and should be applied
       let lighting_enabled = lighting.as_ref().map(|l| l.is_enabled()).unwrap_or(false);
 
-      let result = if has_gpu_sprites || has_trails || lighting_enabled {
+      // Check if raycasting is active
+      let raycast_enabled = raycast_renderer
+        .as_ref()
+        .map(|r| r.is_enabled())
+        .unwrap_or(false);
+
+      let result = if raycast_enabled {
+        // GPU raycasting path - bypasses CPU pixel buffer entirely
+        sync_and_render_raycast(
+          &self.world,
+          raycast_renderer.as_mut().unwrap(),
+          rend,
+          &self.effects,
+          &self.ui_buffer,
+          time,
+        )
+      } else if has_gpu_sprites || has_trails || lighting_enabled {
         // Create GPU sprite callback (backgrounds, parallax - renders BEFORE CPU content)
         let batch_collector = &self.batch_collector;
         let gpu_callback =
@@ -1135,6 +1177,7 @@ impl Engine {
     self.renderer = renderer;
     self.lighting = lighting;
     self.trail_renderer = trail_renderer;
+    self.raycast_renderer = raycast_renderer;
 
     // Track first frame
     if !self.first_frame_rendered {
@@ -1230,6 +1273,7 @@ impl Engine {
         audio: &mut self.audio,
         effects: &mut self.effects,
         lighting: &mut self.lighting,
+        raycast: &mut self.raycast_renderer,
         events: &mut self.events,
         tilemap: &mut self.tilemap,
         window_request: &mut self.window_request,
@@ -2154,6 +2198,110 @@ fn blend_overlay(frame: &mut [u8], color: [u8; 4], alpha: f32) {
 }
 
 // =============================================================================
+// Raycast render helper
+// =============================================================================
+
+/// Sync raycast ECS data to GPU and render the raycasting scene.
+///
+/// Shared render path used by both focused and unfocused frame rendering.
+fn sync_and_render_raycast(
+  world: &World,
+  raycast: &mut GpuRaycastRenderer,
+  rend: &mut WgpuRenderer,
+  effects: &EffectsManager,
+  ui_buffer: &[u8],
+  time: f32,
+) -> Result<(), wgpu::SurfaceError> {
+  // Flush pending textures and map data to GPU
+  raycast.flush_pending(rend.device(), rend.queue());
+
+  // Sync camera from ECS entities
+  let mut cam_pos = [0.0_f32; 2];
+  for entity in world.entities_with::<RaycastCamera>() {
+    if let (Some(transform), Some(camera)) = (
+      world.get::<Transform>(entity),
+      world.get::<RaycastCamera>(entity),
+    ) {
+      cam_pos = [transform.x, transform.y];
+      let cam = CameraUniform {
+        pos: cam_pos,
+        dir: [camera.direction.0, camera.direction.1],
+        plane: [camera.plane.0, camera.plane.1],
+        screen_size: [rend.game_width() as f32, rend.game_height() as f32],
+        height: camera.height,
+        time,
+        _pad: [0.0; 2],
+      };
+      raycast.update_camera(rend.queue(), &cam);
+      break;
+    }
+  }
+
+  // Sync sprites from ECS entities
+  let mut sprites: Vec<RaycastSpriteInstance> = Vec::new();
+  for entity in world.entities_with::<RaycastSprite>() {
+    if let (Some(transform), Some(sprite)) = (
+      world.get::<Transform>(entity),
+      world.get::<RaycastSprite>(entity),
+    ) {
+      sprites.push(RaycastSpriteInstance {
+        pos: [transform.x, transform.y],
+        scale: [sprite.scale.0, sprite.scale.1],
+        texture_id: sprite.texture_id,
+        v_offset: sprite.v_offset,
+        _pad: [0.0; 2],
+      });
+    }
+  }
+  // Sort sprites back-to-front so alpha blending works correctly
+  sprites.sort_by(|a, b| {
+    let da = (a.pos[0] - cam_pos[0]).powi(2) + (a.pos[1] - cam_pos[1]).powi(2);
+    let db = (b.pos[0] - cam_pos[0]).powi(2) + (b.pos[1] - cam_pos[1]).powi(2);
+    db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+  });
+  raycast.update_sprites(rend.queue(), &sprites);
+
+  // Sync lights from ECS entities
+  let mut ray_lights: Vec<LightInstance> = Vec::new();
+  for entity in world.entities_with::<RaycastLight>() {
+    if let (Some(transform), Some(light)) = (
+      world.get::<Transform>(entity),
+      world.get::<RaycastLight>(entity),
+    ) {
+      ray_lights.push(LightInstance {
+        pos: [transform.x, transform.y],
+        radius: light.radius,
+        intensity: light.intensity,
+        color: [light.color.0, light.color.1, light.color.2],
+        _pad: 0.0,
+      });
+    }
+  }
+  raycast.update_lights(rend.queue(), &ray_lights);
+
+  // Reborrow as immutable for render callbacks
+  let raycast = &*raycast;
+  let raycast_wall_cb = |device: &wgpu::Device,
+                         _queue: &wgpu::Queue,
+                         encoder: &mut wgpu::CommandEncoder,
+                         view: &wgpu::TextureView| {
+    raycast.render_walls(device, encoder, view);
+  };
+  let raycast_sprite_cb = |device: &wgpu::Device,
+                           _queue: &wgpu::Queue,
+                           encoder: &mut wgpu::CommandEncoder,
+                           view: &wgpu::TextureView| {
+    raycast.render_sprites(device, encoder, view);
+  };
+  rend.render_raycast(
+    Some(effects),
+    raycast_wall_cb,
+    Some(raycast_sprite_cb),
+    Some(ui_buffer),
+  )
+}
+
+// =============================================================================
 // Window Event Handler
 // =============================================================================
 
@@ -2242,6 +2390,14 @@ impl ApplicationHandler for Engine {
       renderer.game_texture_format(),
     );
 
+    // Create GPU raycasting renderer (disabled by default, enabled via SceneContext)
+    let raycast_renderer = GpuRaycastRenderer::new(
+      renderer.device(),
+      self.config.width,
+      self.config.height,
+      renderer.game_texture_format(),
+    );
+
     // Present the first frame immediately to prevent white flash on startup
     // The renderer's pixel buffer is pre-filled with warm cream background
     let _ = renderer.render();
@@ -2263,6 +2419,7 @@ impl ApplicationHandler for Engine {
     self.sprite_gpu = Some(sprite_gpu);
     self.lighting = Some(lighting);
     self.trail_renderer = Some(trail_renderer);
+    self.raycast_renderer = Some(raycast_renderer);
     self.time = Some(TimeState::new(
       self.config.target_fps,
       self.config.physics_hz,
@@ -2332,6 +2489,7 @@ impl ApplicationHandler for Engine {
         audio: &mut self.audio,
         effects: &mut self.effects,
         lighting: &mut self.lighting,
+        raycast: &mut self.raycast_renderer,
         events: &mut self.events,
         tilemap: &mut self.tilemap,
         window_request: &mut self.window_request,
@@ -2450,10 +2608,13 @@ impl ApplicationHandler for Engine {
         self.input.handle_mouse_button(*button, *state);
       }
       WindowEvent::CursorMoved { position, .. } => {
-        // Transform window coordinates to game coordinates
-        // If None, cursor is in black bars (letterbox area) - don't update mouse position
-        if let Some((game_x, game_y)) = self.window_to_game_coords(position.x, position.y) {
-          self.input.handle_mouse_move(game_x as f64, game_y as f64);
+        // When cursor is locked, deltas come from DeviceEvent::MouseMotion instead
+        if !self.cursor_locked {
+          // Transform window coordinates to game coordinates
+          // If None, cursor is in black bars (letterbox area) - don't update mouse position
+          if let Some((game_x, game_y)) = self.window_to_game_coords(position.x, position.y) {
+            self.input.handle_mouse_move(game_x as f64, game_y as f64);
+          }
         }
       }
       WindowEvent::MouseWheel { delta, .. } => {
@@ -2485,6 +2646,10 @@ impl ApplicationHandler for Engine {
             // Resize lighting renderer to match new game buffer size
             if let Some(lighting) = &mut self.lighting {
               lighting.resize(renderer.device(), new_size.width, new_size.height);
+            }
+            // Resize raycast renderer depth texture to match new buffer size
+            if let Some(ref mut raycast) = self.raycast_renderer {
+              raycast.resize(renderer.device(), new_size.width, new_size.height);
             }
             // Update camera to match new buffer size
             self.camera = Camera::centered_at(
@@ -2861,6 +3026,7 @@ impl ApplicationHandler for Engine {
         let mut renderer = self.renderer.take();
         let mut lighting = self.lighting.take();
         let mut trail_renderer = self.trail_renderer.take();
+        let mut raycast_renderer = self.raycast_renderer.take();
 
         if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
           // Collect trails and lines from the world (inside renderer block for device/queue access)
@@ -2954,7 +3120,23 @@ impl ApplicationHandler for Engine {
           // Check if lighting is enabled and should be applied
           let lighting_enabled = lighting.as_ref().map(|l| l.is_enabled()).unwrap_or(false);
 
-          let result = if has_gpu_sprites || has_trails || lighting_enabled {
+          // Check if raycasting is active
+          let raycast_enabled = raycast_renderer
+            .as_ref()
+            .map(|r| r.is_enabled())
+            .unwrap_or(false);
+
+          let result = if raycast_enabled {
+            // GPU raycasting path - bypasses CPU pixel buffer entirely
+            sync_and_render_raycast(
+              &self.world,
+              raycast_renderer.as_mut().unwrap(),
+              rend,
+              &self.effects,
+              &self.ui_buffer,
+              time,
+            )
+          } else if has_gpu_sprites || has_trails || lighting_enabled {
             // Create GPU sprite callback (backgrounds, parallax - renders BEFORE CPU content)
             let batch_collector = &self.batch_collector;
             let gpu_callback = |queue: &wgpu::Queue,
@@ -3070,17 +3252,19 @@ impl ApplicationHandler for Engine {
               self.renderer = renderer;
               self.lighting = lighting;
               self.trail_renderer = trail_renderer;
+              self.raycast_renderer = raycast_renderer;
               event_loop.exit();
               return;
             }
           }
         }
 
-        // Put sprite_gpu, renderer, lighting, and trail_renderer back
+        // Put sprite_gpu, renderer, lighting, trail_renderer, and raycast_renderer back
         self.sprite_gpu = sprite_gpu;
         self.renderer = renderer;
         self.lighting = lighting;
         self.trail_renderer = trail_renderer;
+        self.raycast_renderer = raycast_renderer;
         // Present time = GPU submission + effects pipeline
         self.frame_timings.present = present_start.elapsed();
 
@@ -3175,6 +3359,20 @@ impl ApplicationHandler for Engine {
         }
       }
       _ => {}
+    }
+  }
+
+  fn device_event(
+    &mut self,
+    _event_loop: &ActiveEventLoop,
+    _device_id: winit::event::DeviceId,
+    event: winit::event::DeviceEvent,
+  ) {
+    // When cursor is locked, use raw mouse motion for delta input
+    if self.cursor_locked
+      && let winit::event::DeviceEvent::MouseMotion { delta } = event
+    {
+      self.input.handle_raw_mouse_motion(delta.0, delta.1);
     }
   }
 

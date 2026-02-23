@@ -89,6 +89,7 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **Shadow System** — Hard shadows, soft shadows, ray-marched shadows, drop/blob/contact shadows, ambient occlusion
 - **Trails** — Motion path rendering with fade and taper effects
 - **Particles** — GPU-batched particle system with emitters, attractors, and presets
+- **Raycasting** — GPU-accelerated pseudo-3D rendering (Wolfenstein/Build engine style)
 - **Post-Processing** — Shader pipeline (CRT, vignette, chromatic aberration, etc.)
 
 ### Physics & Collision

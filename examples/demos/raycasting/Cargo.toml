@@ -1,0 +1,12 @@
+[package]
+name = "raycasting"
+version = "0.1.0"
+edition = "2024"
+description = "GPU raycasting pseudo-3D demo"
+
+[[bin]]
+name = "raycasting"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../../" }

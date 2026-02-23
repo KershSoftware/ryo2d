@@ -233,6 +233,13 @@ pub mod prelude {
     generate_collision_rects, generate_collision_rects_region, load_tiled_map,
   };
 
+  // Raycasting (pseudo-3D)
+  pub use crate::core::raycast::{
+    CameraUniform, DoorSpeed, DoorState, GpuRaycastRenderer, MapCell, MapFlags, MapInfoUniform,
+    RaycastCamera, RaycastDoor, RaycastLight, RaycastSprite, RaycastWorld, camera_follow_system,
+    door_system,
+  };
+
   // GPU sprite batching (for high-performance particle systems)
   pub use crate::core::graphics::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
 

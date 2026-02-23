@@ -1520,6 +1520,229 @@ impl WgpuRenderer {
     Ok(())
   }
 
+  /// Render with GPU raycasting, optional sprite overlay, and post-processing.
+  ///
+  /// The raycasting path bypasses the CPU pixel buffer entirely. The GPU raycaster
+  /// writes directly to the game texture, then sprites are overlaid, UI is composited,
+  /// effects are applied, and the result is presented to screen.
+  ///
+  /// # Render Order
+  /// 1. `raycast_callback` renders walls/floors/ceilings to game texture
+  /// 2. `sprite_callback` renders billboard sprites on top (if provided)
+  /// 3. UI buffer is composited on top (if provided)
+  /// 4. Post-processing effects are applied (if any)
+  /// 5. Final result is rendered to screen with letterboxing
+  pub fn render_raycast<R, S>(
+    &mut self,
+    effects: Option<&EffectsManager>,
+    raycast_callback: R,
+    sprite_callback: Option<S>,
+    ui_buffer: Option<&[u8]>,
+  ) -> Result<(), wgpu::SurfaceError>
+  where
+    R: FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    S: FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+  {
+    // Get surface texture
+    let output = self.surface.get_current_texture()?;
+    let view = output
+      .texture
+      .create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Create command encoder
+    let mut encoder = self
+      .device
+      .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Raycast Render Encoder"),
+      });
+
+    // Step 1: Raycast renders walls/floors/ceilings directly to game texture
+    raycast_callback(&self.device, &self.queue, &mut encoder, &self.texture_view);
+
+    // Step 2: Sprites render on top (billboard sprites with depth testing)
+    if let Some(callback) = sprite_callback {
+      callback(&self.device, &self.queue, &mut encoder, &self.texture_view);
+    }
+
+    // Check if we have active effects to apply
+    let has_effects = effects.map(|e| e.has_active_effects()).unwrap_or(false);
+
+    // Apply post-processing if we have effects
+    let use_post_process = if has_effects {
+      if let (Some(effects_mgr), Some(post_process)) = (effects, self.post_process.as_mut()) {
+        let active: Vec<_> = effects_mgr
+          .active_effects()
+          .map(|e| (e, effects_mgr.time()))
+          .collect();
+
+        if !active.is_empty() {
+          // Copy game texture to post-process texture A first
+          encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+              texture: &self.texture,
+              mip_level: 0,
+              origin: wgpu::Origin3d::ZERO,
+              aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+              texture: post_process.texture_a(),
+              mip_level: 0,
+              origin: wgpu::Origin3d::ZERO,
+              aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+              width: self.game_width,
+              height: self.game_height,
+              depth_or_array_layers: 1,
+            },
+          );
+
+          // Apply effects chain
+          let output_buffer =
+            post_process.apply_effects(&self.device, &self.queue, &mut encoder, &active);
+
+          Some(output_buffer)
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+
+    // Check if we have UI to overlay
+    let has_ui_overlay = ui_buffer
+      .as_ref()
+      .map(|buf| buf.iter().any(|&b| b != 0))
+      .unwrap_or(false);
+
+    // If we have UI overlay, upload UI to dedicated ui_texture for blending
+    if has_ui_overlay && let Some(ui_data) = ui_buffer {
+      self.queue.write_texture(
+        wgpu::ImageCopyTexture {
+          texture: &self.ui_texture,
+          mip_level: 0,
+          origin: wgpu::Origin3d::ZERO,
+          aspect: wgpu::TextureAspect::All,
+        },
+        ui_data,
+        wgpu::ImageDataLayout {
+          offset: 0,
+          bytes_per_row: Some(4 * self.game_width),
+          rows_per_image: Some(self.game_height),
+        },
+        wgpu::Extent3d {
+          width: self.game_width,
+          height: self.game_height,
+          depth_or_array_layers: 1,
+        },
+      );
+    }
+
+    // Final render pass to screen
+    {
+      // Create bind group for the appropriate source texture
+      let final_bind_group = if let Some(output_buffer) = use_post_process {
+        let post_process = self.post_process.as_ref().unwrap();
+        let output_view = post_process.get_output_view(output_buffer);
+
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("Post-Process Output Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(output_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        })
+      } else {
+        // Use game texture directly (raycaster wrote to it)
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("Game Texture Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(&self.texture_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        })
+      };
+
+      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Render Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &view,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            // Clear to black (letterbox color)
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+      });
+
+      // Draw the scene
+      render_pass.set_pipeline(&self.render_pipeline);
+      render_pass.set_bind_group(0, &final_bind_group, &[]);
+      render_pass.draw(0..6, 0..1);
+
+      // If we have UI overlay, draw it on top with alpha blending
+      if has_ui_overlay {
+        let ui_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some("UI Overlay Bind Group"),
+          layout: &self.bind_group_layout,
+          entries: &[
+            wgpu::BindGroupEntry {
+              binding: 0,
+              resource: wgpu::BindingResource::TextureView(&self.ui_texture_view),
+            },
+            wgpu::BindGroupEntry {
+              binding: 1,
+              resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+              binding: 2,
+              resource: self.uniform_buffer.as_entire_binding(),
+            },
+          ],
+        });
+
+        render_pass.set_pipeline(&self.blend_pipeline);
+        render_pass.set_bind_group(0, &ui_bind_group, &[]);
+        render_pass.draw(0..6, 0..1);
+      }
+    }
+
+    // Submit commands
+    self.queue.submit(std::iter::once(encoder.finish()));
+    output.present();
+
+    Ok(())
+  }
+
   /// Set the window mode.
   pub fn set_window_mode(&mut self, mode: WindowMode) {
     self.window_mode = mode;

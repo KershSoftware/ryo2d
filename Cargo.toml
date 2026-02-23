@@ -33,7 +33,9 @@ bytemuck = { version = "1.21", features = ["derive"] }
 crossbeam-channel = "0.5"
 flate2 = "1.1"
 glam = "0.31"
+bitflags = "2"
 hecs = { version = "0.11", features = ["macros"] }
+half = { version = "2", features = ["bytemuck"] }
 image = "0.25"
 kira = "0.11"
 notify = "7"

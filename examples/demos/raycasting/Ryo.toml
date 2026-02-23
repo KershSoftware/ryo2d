@@ -1,0 +1,7 @@
+[project]
+name = "Raycasting Demo"
+
+[system]
+vsync = true
+display_mode = "borderless_fullscreen"
+show_fps = true

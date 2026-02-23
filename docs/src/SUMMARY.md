@@ -26,6 +26,7 @@
 - [Animation System](./concepts/animation.md)
 - [Skeletal Animation](./concepts/skeletal-animation.md)
 - [Lighting System](./concepts/lighting.md)
+- [Raycasting](./concepts/raycast.md)
 - [Post-Processing Effects](./concepts/post-processing.md)
 - [Per-Sprite Shaders](./concepts/sprite-shaders.md)
 - [Asset Management](./concepts/assets.md)

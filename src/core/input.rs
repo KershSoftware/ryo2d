@@ -454,6 +454,12 @@ impl InputState {
     self.mouse_y = new_y;
   }
 
+  /// Handle raw mouse motion (from DeviceEvent when cursor is locked).
+  pub(crate) fn handle_raw_mouse_motion(&mut self, dx: f64, dy: f64) {
+    self.mouse_delta_x += dx as f32;
+    self.mouse_delta_y += dy as f32;
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Mouse Scroll
   // ─────────────────────────────────────────────────────────────────────────────
@@ -943,6 +949,39 @@ mod tests {
     input.handle_mouse_move(10.0, 20.0);
     input.handle_mouse_move(15.0, 25.0);
     assert_eq!(input.mouse_delta(), (15.0, 25.0)); // Total delta from origin
+  }
+
+  #[test]
+  fn raw_mouse_motion_adds_to_delta() {
+    let mut input = InputState::new();
+    input.handle_raw_mouse_motion(5.0, -3.0);
+    assert_eq!(input.mouse_delta(), (5.0, -3.0));
+
+    // Accumulates with additional raw motion
+    input.handle_raw_mouse_motion(2.0, 1.0);
+    assert_eq!(input.mouse_delta(), (7.0, -2.0));
+  }
+
+  #[test]
+  fn raw_mouse_motion_cleared_by_begin_frame() {
+    let mut input = InputState::new();
+    input.handle_raw_mouse_motion(10.0, 20.0);
+    assert_eq!(input.mouse_delta(), (10.0, 20.0));
+
+    input.begin_frame();
+    assert_eq!(input.mouse_delta(), (0.0, 0.0));
+  }
+
+  #[test]
+  fn raw_mouse_motion_does_not_affect_position() {
+    let mut input = InputState::new();
+    input.handle_mouse_move(100.0, 200.0); // set position
+    input.begin_frame();
+
+    // Raw motion adds to delta but does NOT change mouse position
+    input.handle_raw_mouse_motion(50.0, 50.0);
+    assert_eq!(input.mouse_delta(), (50.0, 50.0));
+    assert_eq!(input.mouse_position(), (100.0, 200.0));
   }
 
   #[test]

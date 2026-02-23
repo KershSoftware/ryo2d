@@ -42,6 +42,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `skeleton/` | Skeletal animation: bone hierarchies, keyframe animation, blending, state machine controller (see `skeleton/AGENTS.md`) |
 | `shaders/` | WGSL shader files for GPU rendering (sprite effects, post-processing) |
 | `lighting/` | 2D lighting system with point lights, spotlights, and shadows (see `lighting/AGENTS.md`) |
+| `raycast/` | GPU-accelerated pseudo-3D raycasting renderer (see `raycast/AGENTS.md`) |
 | `ui/` | Immediate-mode UI system for HUDs and overlays (see `ui/AGENTS.md`) |
 
 ## Import Patterns

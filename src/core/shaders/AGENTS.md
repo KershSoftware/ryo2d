@@ -25,6 +25,8 @@ This module provides the post-processing effect pipeline for Ryo2D.
 | `light.wgsl` | Point light and spotlight rendering |
 | `shadow.wgsl` | Shadow volume geometry rendering (hard/soft/colored shadows) |
 | `raymarch_shadow.wgsl` | Per-pixel ray-marched shadows |
+| `raycast.wgsl` | DDA wall raycasting — textured walls, floors, ceilings, doors, dynamic lights, fog |
+| `raycast_sprite.wgsl` | Instanced billboard sprite rendering with depth testing against wall pass |
 
 ### Shadow Shaders
 
