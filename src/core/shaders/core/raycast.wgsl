@@ -121,20 +121,110 @@ fn get_light_level(packed: vec3<u32>) -> f32 {
     return unpack2x16float(packed.z).x;
 }
 // ---------------------------------------------------------------------------
-// Lighting helper
+// Lighting helpers
 // ---------------------------------------------------------------------------
 
-fn apply_lights(base_color: vec4<f32>, world_pos: vec2<f32>) -> vec4<f32> {
-    var color = base_color;
-    for (var i: u32 = 0u; i < light_info.count; i = i + 1u) {
-        let light = lights[i];
-        let dist = distance(world_pos, light.pos);
-        if dist < light.radius {
-            let attenuation = light.intensity * (1.0 - dist / light.radius);
-            color = vec4<f32>(color.rgb + light.color * attenuation, color.a);
+// DDA shadow ray: marches FROM the light TO the surface.
+// Returns true if a solid wall blocks the path.
+fn is_occluded(surface_pos: vec2<f32>, light_pos: vec2<f32>) -> bool {
+    // March from the light (always in open space) toward the surface
+    let dir = surface_pos - light_pos;
+    let total_dist = length(dir);
+    if total_dist < 0.01 {
+        return false;
+    }
+    let ray = dir / total_dist;
+    let abs_ray = abs(ray);
+    let safe_ray = vec2<f32>(
+        select(ray.x, 1e-8, abs_ray.x < 1e-8),
+        select(ray.y, 1e-8, abs_ray.y < 1e-8)
+    );
+
+    var map_pos = vec2<i32>(floor(light_pos));
+    // Nudge surface toward light to resolve cell boundary ambiguity:
+    // inner wall faces (e.g. x=28.0) map to interior cell, not the wall cell
+    let dst_cell = vec2<i32>(floor(surface_pos + ray * -0.01));
+
+    // Same cell — no wall between them
+    if map_pos.x == dst_cell.x && map_pos.y == dst_cell.y {
+        return false;
+    }
+
+    let delta_dist = abs(vec2<f32>(1.0) / safe_ray);
+
+    var step_dir: vec2<i32>;
+    var side_dist: vec2<f32>;
+
+    if safe_ray.x < 0.0 {
+        step_dir.x = -1;
+        side_dist.x = (light_pos.x - f32(map_pos.x)) * delta_dist.x;
+    } else {
+        step_dir.x = 1;
+        side_dist.x = (f32(map_pos.x) + 1.0 - light_pos.x) * delta_dist.x;
+    }
+    if safe_ray.y < 0.0 {
+        step_dir.y = -1;
+        side_dist.y = (light_pos.y - f32(map_pos.y)) * delta_dist.y;
+    } else {
+        step_dir.y = 1;
+        side_dist.y = (f32(map_pos.y) + 1.0 - light_pos.y) * delta_dist.y;
+    }
+
+    // March from light toward surface
+    for (var i: u32 = 0u; i < 64u; i = i + 1u) {
+        if side_dist.x < side_dist.y {
+            side_dist.x += delta_dist.x;
+            map_pos.x += step_dir.x;
+        } else {
+            side_dist.y += delta_dist.y;
+            map_pos.y += step_dir.y;
+        }
+
+        // Out of bounds
+        if map_pos.x < 0 || map_pos.y < 0 ||
+           u32(map_pos.x) >= map_info.dimensions.x ||
+           u32(map_pos.y) >= map_info.dimensions.y {
+            return true;
+        }
+
+        // Wall check BEFORE destination check — blocks outer wall faces correctly
+        let cell = read_cell(map_pos.x, map_pos.y);
+        let wall_tex = get_wall_texture(cell);
+        let flags = get_flags(cell);
+        if wall_tex > 0u && (flags & (FLAG_DOOR | FLAG_THIN_WALL)) == 0u {
+            return true;
+        }
+
+        // Reached the surface's cell — no obstruction
+        if map_pos.x == dst_cell.x && map_pos.y == dst_cell.y {
+            return false;
         }
     }
-    return color;
+    return false;
+}
+
+fn apply_lights(base_color: vec3<f32>, ambient: f32, world_pos: vec2<f32>, vert_offset: f32) -> vec3<f32> {
+    var light_contrib = vec3<f32>(0.0);
+    for (var i: u32 = 0u; i < light_info.count; i = i + 1u) {
+        let light = lights[i];
+        let dist_2d = distance(world_pos, light.pos);
+        // Approximate 3D distance using vertical offset from light height
+        let dist = sqrt(dist_2d * dist_2d + vert_offset * vert_offset);
+        if dist < light.radius {
+            // Shadow ray: check if a wall blocks the path from light to surface
+            if is_occluded(world_pos, light.pos) {
+                continue;
+            }
+            let norm = dist / light.radius;
+            // Smooth S-curve falloff: tapers gradually at the edge instead of hard cutoff
+            let atten = light.intensity * (1.0 - smoothstep(0.0, 1.0, norm));
+            light_contrib += light.color * atten;
+        }
+    }
+    // Reconstruct surface color from ambient-darkened base, then add dynamic light
+    // This lets lights properly illuminate dark areas (adds to ambient, not scales it)
+    let surface = base_color / max(ambient, 0.05);
+    return min(base_color + surface * light_contrib, vec3<f32>(1.0));
 }
 
 // ---------------------------------------------------------------------------
@@ -364,9 +454,9 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
         // Per-tile light level
         wall_color = wall_color * cell_light;
 
-        // Dynamic point lights
-        let lit = apply_lights(vec4<f32>(wall_color, 1.0), world_hit);
-        wall_color = lit.rgb;
+        // Dynamic point lights (with vertical attenuation)
+        let vert_world = mix(ceil_h, floor_h, wall_frac);
+        wall_color = apply_lights(wall_color, cell_light, world_hit, vert_world - 0.5);
 
         // Distance fog
         final_color = apply_fog(wall_color, perp_wall_dist);
@@ -413,8 +503,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
 
             floor_color = floor_color * floor_light;
 
-            let lit = apply_lights(vec4<f32>(floor_color, 1.0), floor_world);
-            floor_color = lit.rgb;
+            floor_color = apply_lights(floor_color, floor_light, floor_world, -0.5);
 
             final_color = apply_fog(floor_color, floor_dist);
         } else {
@@ -465,8 +554,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
 
                 ceil_color = ceil_color * ceil_light;
 
-                let lit = apply_lights(vec4<f32>(ceil_color, 1.0), ceil_world);
-                ceil_color = lit.rgb;
+                ceil_color = apply_lights(ceil_color, ceil_light, ceil_world, 0.5);
 
                 final_color = apply_fog(ceil_color, ceil_dist);
             } else {

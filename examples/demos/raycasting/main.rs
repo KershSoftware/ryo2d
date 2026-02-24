@@ -11,6 +11,7 @@
 //! - E: Open nearby doors
 //! - Escape: Quit
 
+#[allow(dead_code)]
 mod textures;
 
 use std::path::Path;
@@ -117,11 +118,24 @@ impl Scene for RaycastDemo {
       }
     }
 
-    // Dark zone with reduced lighting
-    for y in 20..28 {
-      for x in 20..28 {
-        let cell = world.get_mut(x, y).unwrap();
-        cell.light_level = 0.2;
+    // Dark room -- enclosed room with torches in corners
+    for x in 19..=28 {
+      *world.get_mut(x, 19).unwrap() = MapCell::wall(2);
+      *world.get_mut(x, 28).unwrap() = MapCell::wall(2);
+    }
+    for y in 19..=28 {
+      *world.get_mut(19, y).unwrap() = MapCell::wall(2);
+      *world.get_mut(28, y).unwrap() = MapCell::wall(2);
+    }
+    // Doorway on the west wall
+    let door_cell = world.get_mut(19, 24).unwrap();
+    door_cell.wall_texture = 0;
+    door_cell.floor_texture = 1;
+    door_cell.ceiling_texture = 2;
+    // Dark lighting for entire room (walls + interior)
+    for y in 19..=28 {
+      for x in 19..=28 {
+        world.get_mut(x, y).unwrap().light_level = 0.15;
       }
     }
 
@@ -202,23 +216,23 @@ impl Scene for RaycastDemo {
     ctx.world.spawn(barrel(20.0, 5.0));
     ctx.world.spawn(barrel(6.0, 18.0));
 
-    // Spawn lights in the dark zone
+    // Spawn lights in dark room corners (NW and SE, diagonal)
     ctx.world.spawn((
-      Transform::new(23.0, 23.0),
-      RaycastLight::new(5.0, (1.0, 0.78, 0.39), 1.5),
+      Transform::new(20.5, 20.5),
+      RaycastLight::new(6.0, (1.0, 0.78, 0.39), 1.5),
     ));
     ctx.world.spawn((
-      Transform::new(25.0, 25.0),
-      RaycastLight::new(4.0, (0.39, 0.59, 1.0), 1.0),
+      Transform::new(27.5, 27.5),
+      RaycastLight::new(6.0, (0.39, 0.59, 1.0), 1.2),
     ));
 
-    // Spawn torch sprites near the lights in the dark zone
+    // Spawn torch sprites at the light positions
     ctx
       .world
-      .spawn((Transform::new(23.0, 23.0), RaycastSprite::new(1)));
+      .spawn((Transform::new(20.5, 20.5), RaycastSprite::new(1)));
     ctx
       .world
-      .spawn((Transform::new(25.0, 25.0), RaycastSprite::new(1)));
+      .spawn((Transform::new(27.5, 27.5), RaycastSprite::new(1)));
 
     // Spawn door entity (y=12 has a door, y=8 and y=20 are open doorways)
     let door1 = ctx
