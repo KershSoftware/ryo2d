@@ -83,7 +83,7 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **Sprites** — GPU-batched rendering with z-ordering and per-sprite shaders
 - **Animation** — Sprite sheets, state machine controllers, 24 easing functions
 - **Skeletal Animation** — Bone hierarchies, per-bone keyframe tracks, crossfade blending, FSM controllers
-- **Tweening** — Smooth interpolation of position, rotation, scale
+- **Tweening** — Transform tweens, generic property tweens, sequences, 24 easing functions
 - **Parallax** — Layered scrolling backgrounds with infinite scroll
 - **2D Lighting** — Point lights, spotlights, volumetric effects, atmospheric scattering
 - **Shadow System** — Hard shadows, soft shadows, ray-marched shadows, drop/blob/contact shadows, ambient occlusion

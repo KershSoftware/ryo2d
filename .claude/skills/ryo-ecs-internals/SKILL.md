@@ -28,7 +28,9 @@ src/core/ecs/
 ├── squash_stretch.rs # SquashStretch component (impact deformation)
 ├── pool.rs         # Object pooling system
 ├── renderable.rs   # Renderable component
-├── tween.rs        # Tweening system
+├── tween.rs        # Tweening system (Tween, TweenSequence)
+├── property_tween.rs # Generic property tweening (PropertyTween<T>)
+├── lerp.rs         # Lerp trait for generic interpolation
 └── world.rs        # World wrapper
 ```
 

@@ -24,6 +24,7 @@
 - [Sprites & Rendering](./concepts/sprites.md)
 - [Tiled Rendering](./concepts/tiled-rendering.md)
 - [Animation System](./concepts/animation.md)
+- [Tweening System](./concepts/tweening.md)
 - [Skeletal Animation](./concepts/skeletal-animation.md)
 - [Lighting System](./concepts/lighting.md)
 - [Raycasting](./concepts/raycast.md)

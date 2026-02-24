@@ -451,6 +451,7 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Collider` | Collision shape (circle, rect, capsule) |
 | `Animator` | Sprite animation state |
 | `Tween` | Smooth interpolation of Transform properties |
+| `PropertyTween<T>` | Generic value tweening (f32, Vec2, Color, custom Lerp types) |
 | `Parent` / `Children` | Entity hierarchy |
 | `NavAgent` | Navigation and pathfinding |
 | `Trail2D` | Motion trails behind entities |

@@ -1,18 +1,24 @@
-//! Tween system for updating Tween and TweenSequence components.
+//! Tween system for updating Tween, TweenSequence, and PropertyTween components.
 //!
 //! This system handles:
 //! - Updating tween progress and interpolation
 //! - Applying tweened values to Transform (position, scale, rotation)
 //! - Applying tweened values to Renderable (alpha, tint)
 //! - Managing tween sequences (advancing to next tween when current finishes)
+//! - Driving generic property tweens (f32, Vec2, Color)
 
-use crate::core::ecs::{Inactive, Renderable, Transform, Tween, TweenSequence, World};
+use glam::Vec2;
+
+use crate::core::ecs::{
+  Entity, Inactive, Lerp, PropertyTween, Renderable, Transform, Tween, TweenSequence, World,
+};
 use crate::core::events::{Events, TweenCompleted, TweenStarted};
+use crate::core::ui::Color;
 
-/// System for updating tweens and tween sequences.
+/// System for updating tweens, tween sequences, and property tweens.
 ///
-/// Handles both single `Tween` components and `TweenSequence` components,
-/// applying interpolated values to Transform and Renderable.
+/// Handles `Tween`, `TweenSequence`, and `PropertyTween<T>` components,
+/// applying interpolated values to Transform, Renderable, and generic properties.
 pub struct TweenSystem;
 
 impl TweenSystem {
@@ -24,6 +30,7 @@ impl TweenSystem {
   pub fn update(world: &mut World, events: &mut Events, dt: f32) {
     Self::update_tweens(world, events, dt);
     Self::update_tween_sequences(world, events, dt);
+    Self::update_property_tweens(world, events, dt);
   }
 
   /// Update all Tween components and apply to Transform/Renderable.
@@ -184,6 +191,60 @@ impl TweenSystem {
       }
     }
   }
+
+  /// Update all PropertyTween components (f32, Vec2, Color).
+  ///
+  /// Since `PropertyTween<T>` is generic, we query for each concrete type separately.
+  fn update_property_tweens(world: &mut World, events: &mut Events, dt: f32) {
+    // f32 property tweens
+    for entity in world.entities_with::<PropertyTween<f32>>() {
+      if world.has::<Inactive>(entity) {
+        continue;
+      }
+      if let Some(mut tween) = world.get_mut::<PropertyTween<f32>>(entity) {
+        drive_property_tween(entity, &mut *tween, events, dt);
+      }
+    }
+
+    // Vec2 property tweens
+    for entity in world.entities_with::<PropertyTween<Vec2>>() {
+      if world.has::<Inactive>(entity) {
+        continue;
+      }
+      if let Some(mut tween) = world.get_mut::<PropertyTween<Vec2>>(entity) {
+        drive_property_tween(entity, &mut *tween, events, dt);
+      }
+    }
+
+    // Color property tweens
+    for entity in world.entities_with::<PropertyTween<Color>>() {
+      if world.has::<Inactive>(entity) {
+        continue;
+      }
+      if let Some(mut tween) = world.get_mut::<PropertyTween<Color>>(entity) {
+        drive_property_tween(entity, &mut *tween, events, dt);
+      }
+    }
+  }
+}
+
+/// Drive a single property tween forward by `dt`, emitting lifecycle events.
+fn drive_property_tween<T: Lerp>(
+  entity: Entity,
+  tween: &mut PropertyTween<T>,
+  events: &mut Events,
+  dt: f32,
+) {
+  tween.update(dt);
+  if tween.just_started() {
+    events.emit(TweenStarted { entity });
+  }
+  if tween.just_finished() {
+    events.emit(TweenCompleted {
+      entity,
+      finished: !tween.playing(),
+    });
+  }
 }
 
 #[cfg(test)]
@@ -315,6 +376,90 @@ mod tests {
       completed.len(),
       0,
       "Looping sequence should not emit TweenCompleted"
+    );
+  }
+
+  #[test]
+  fn test_property_tween_emits_started_event() {
+    let mut world = World::default();
+    let mut events = Events::default();
+
+    world.spawn((PropertyTween::new(0.0_f32, 100.0, 1.0),));
+
+    TweenSystem::update(&mut world, &mut events, 0.016);
+
+    let started: Vec<_> = events.read::<TweenStarted>().collect();
+    assert_eq!(
+      started.len(),
+      1,
+      "Should emit TweenStarted for PropertyTween"
+    );
+  }
+
+  #[test]
+  fn test_property_tween_emits_completed_event() {
+    let mut world = World::default();
+    let mut events = Events::default();
+
+    world.spawn((PropertyTween::new(0.0_f32, 100.0, 0.1),));
+
+    // Run past duration
+    TweenSystem::update(&mut world, &mut events, 0.2);
+
+    let completed: Vec<_> = events.read::<TweenCompleted>().collect();
+    assert_eq!(
+      completed.len(),
+      1,
+      "Should emit TweenCompleted for PropertyTween"
+    );
+    assert!(completed[0].finished);
+  }
+
+  #[test]
+  fn test_property_tween_vec2_emits_events() {
+    let mut world = World::default();
+    let mut events = Events::default();
+
+    world.spawn((PropertyTween::new(Vec2::ZERO, Vec2::new(100.0, 50.0), 0.1),));
+
+    TweenSystem::update(&mut world, &mut events, 0.016);
+    let started: Vec<_> = events.read::<TweenStarted>().collect();
+    assert_eq!(
+      started.len(),
+      1,
+      "Vec2 PropertyTween should emit TweenStarted"
+    );
+
+    events.clear();
+    TweenSystem::update(&mut world, &mut events, 0.2);
+    let completed: Vec<_> = events.read::<TweenCompleted>().collect();
+    assert_eq!(
+      completed.len(),
+      1,
+      "Vec2 PropertyTween should emit TweenCompleted"
+    );
+  }
+
+  #[test]
+  fn test_property_tween_color_emits_events() {
+    let mut world = World::default();
+    let mut events = Events::default();
+
+    world.spawn((PropertyTween::new(Color::RED, Color::BLUE, 0.1),));
+
+    TweenSystem::update(&mut world, &mut events, 0.2);
+
+    let started: Vec<_> = events.read::<TweenStarted>().collect();
+    let completed: Vec<_> = events.read::<TweenCompleted>().collect();
+    assert_eq!(
+      started.len(),
+      1,
+      "Color PropertyTween should emit TweenStarted"
+    );
+    assert_eq!(
+      completed.len(),
+      1,
+      "Color PropertyTween should emit TweenCompleted"
     );
   }
 

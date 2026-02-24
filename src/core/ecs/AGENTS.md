@@ -15,7 +15,9 @@ This folder implements the Entity-Component-System (ECS) layer using the **hecs*
 | `hierarchy.rs` | Parent/child relationships, `WorldTransform` |
 | `pool.rs` | Object pooling: `Pool`, `PoolConfig`, `PoolExhaustedPolicy` |
 | `renderable.rs` | `Renderable` component for sprites |
-| `tween.rs` | Tweening system: `Tween`, `Ease`, `TweenLoop` |
+| `tween.rs` | Tweening system: `Tween`, `TweenSequence`, `Ease`, `TweenLoop` |
+| `property_tween.rs` | Generic property tweening: `PropertyTween<T>` |
+| `lerp.rs` | `Lerp` trait with impls for f32, Vec2, Color, Rect |
 | `knockback.rs` | Knockback system: decay-based directional force |
 | `squash_stretch.rs` | Squash/stretch system: impact deformation effects |
 | `world.rs` | `World` wrapper around `hecs::World` with compatibility API |
@@ -225,6 +227,87 @@ world.spawn((
 ```
 
 **Engine Integration:** The engine updates all `Tween` components automatically after the animation system, applying interpolated values to the entity's `Transform`.
+
+### TweenCallback
+
+Callbacks receive eased progress (0.0–1.0):
+
+```rust
+pub type TweenCallback = Arc<dyn Fn(f32) + Send + Sync>;
+```
+
+All three callbacks (`on_start`, `on_update`, `on_complete`) receive the eased progress value. `on_start` receives `0.0`, `on_complete` receives `1.0`.
+
+```rust
+Tween::to_position(100.0, 100.0, 1.0)
+    .on_start(|_progress| println!("started"))
+    .on_update(|progress| println!("progress: {progress}"))
+    .on_complete(|_| println!("done"));
+```
+
+## Lerp Trait
+
+The `Lerp` trait (`lerp.rs`) provides generic interpolation used by `PropertyTween<T>` and `UiTween<T>`:
+
+```rust
+pub trait Lerp: Clone + Send + Sync + 'static {
+    fn lerp(start: &Self, end: &Self, t: f32) -> Self;
+}
+```
+
+**Built-in impls:** `f32`, `(f32, f32)`, `Vec2`, `Color`, `Rect`
+
+Users can implement `Lerp` for custom types to use with `PropertyTween<T>`.
+
+## PropertyTween\<T\> - Generic Value Tweening
+
+The `PropertyTween<T>` component (`property_tween.rs`) interpolates any `Lerp`-implementing type between start and end values. Unlike `Tween` (which auto-applies to `Transform`), `PropertyTween<T>` is a **value tween** — the user reads `.value()` each frame and applies it.
+
+### Construction
+
+```rust
+// Tween a float from 0 to 100 over 1 second
+PropertyTween::new(0.0f32, 100.0, 1.0)
+
+// Tween a Vec2
+PropertyTween::new(Vec2::ZERO, Vec2::new(10.0, 5.0), 2.0)
+
+// Tween a Color
+PropertyTween::new(Color::RED, Color::BLUE, 0.5)
+```
+
+### Builder API (mirrors Tween)
+
+```rust
+PropertyTween::new(0.0f32, 100.0, 1.0)
+    .with_easing(Ease::OutQuad)
+    .with_delay(0.5)
+    .with_loop(TweenLoop::PingPong)
+    .with_speed(2.0)
+    .on_start(|_| println!("started"))
+    .on_update(|progress| println!("{progress}"))
+    .on_complete(|_| println!("done"))
+```
+
+### Reading Values
+
+```rust
+if let Some(tween) = ctx.world.get_component::<PropertyTween<f32>>(entity) {
+    let current = tween.value();    // Current interpolated value
+    let progress = tween.progress(); // Raw 0.0-1.0 progress
+}
+```
+
+### Runtime Control
+
+```rust
+.pause(), .resume(), .stop(), .restart()
+.retarget(new_end)  // Change destination mid-flight
+```
+
+### Engine Integration
+
+The `PropertyTweenSystem` automatically drives `PropertyTween<f32>`, `PropertyTween<Vec2>`, and `PropertyTween<Color>` each frame. It emits `TweenStarted` and `TweenCompleted` events (same types as `Tween`). For custom `Lerp` types, call `tween.update(dt)` manually.
 
 ## Knockback System
 

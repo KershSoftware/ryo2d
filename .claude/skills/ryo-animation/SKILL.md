@@ -178,6 +178,17 @@ ctx.world.spawn((
 ));
 ```
 
+### Callbacks
+
+Tween callbacks receive the eased progress (0.0–1.0):
+
+```rust
+Tween::to_position(100.0, 100.0, 1.0)
+    .on_start(|_progress| println!("started"))      // receives 0.0
+    .on_update(|progress| println!("at {progress}")) // receives eased 0.0-1.0
+    .on_complete(|_| println!("done"));              // receives 1.0
+```
+
 ### Easing Functions
 
 | Category | Options |
@@ -210,13 +221,62 @@ if let Some(tween) = ctx.world.get_component::<Tween>(entity) {
 }
 ```
 
+## PropertyTween\<T\> — Generic Value Tweening
+
+For animating **arbitrary values** (not just Transform), use `PropertyTween<T>`. It interpolates any `Lerp`-implementing type. You read `.value()` each frame.
+
+### Quick Examples
+
+```rust
+// Tween a float (health, opacity, score display)
+let entity = ctx.world.spawn((
+    PropertyTween::new(0.0f32, 100.0, 2.0)
+        .with_easing(Ease::OutQuad),
+));
+
+// Tween a Vec2 (custom position, offset)
+let entity = ctx.world.spawn((
+    PropertyTween::new(Vec2::ZERO, Vec2::new(400.0, 300.0), 1.5)
+        .with_loop(TweenLoop::PingPong),
+));
+
+// Tween a Color
+let entity = ctx.world.spawn((
+    PropertyTween::new(Color::RED, Color::BLUE, 1.0),
+));
+```
+
+### Reading Values
+
+```rust
+if let Some(tween) = ctx.world.get_component::<PropertyTween<f32>>(entity) {
+    let value = tween.value();      // Current interpolated value
+    let progress = tween.progress(); // Raw 0.0-1.0
+}
+```
+
+### Runtime Control
+
+```rust
+tween.pause();
+tween.resume();
+tween.stop();           // Freezes at current value
+tween.restart();        // Replays from start
+tween.retarget(50.0);   // Change destination mid-flight
+```
+
+### Auto-Driven Types
+
+The engine automatically updates `PropertyTween<f32>`, `PropertyTween<Vec2>`, and `PropertyTween<Color>`. For custom `Lerp` types, call `tween.update(dt)` manually.
+
 ## Tips
 
 - Use `Animator` for decorative animations (coins, flames, water)
 - Use `AnimationController` for player/enemy characters with states
 - Use `Tween` for position/rotation/scale animations (UI, effects, movement)
+- Use `PropertyTween<T>` for animating arbitrary values (health bars, opacity, colors)
 - `set_state_then()` is perfect for attack/hurt animations that return to idle
 - Flip sprites with `renderable.flip_x` rather than separate left/right animations
 - The engine auto-syncs animation frames to `Renderable`
-- The engine auto-updates `Tween` and applies to `Transform`
+- The engine auto-updates `Tween`, `PropertyTween<f32/Vec2/Color>` each frame
 

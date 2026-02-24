@@ -68,10 +68,10 @@ pub mod prelude {
   // ECS types
   pub use crate::core::ecs::{
     Active, BlobShadow, Children, ContactShadow, DropShadow, Ease, Entity, Inactive, Knockback,
-    Material, Parent, Pool, PoolConfig, PoolExhaustedPolicy, PoolStats, PreviousTransform,
-    RenderLayer, RenderMode, RenderStyle, Renderable, ShaderHandle, ShaderParams, SpriteEffect,
-    SpriteShader, SquashAxis, SquashStretch, Transform, Tween, TweenLoop, TweenSequence, Velocity,
-    World, WorldTransform, YSort,
+    Lerp, Material, Parent, Pool, PoolConfig, PoolExhaustedPolicy, PoolStats, PreviousTransform,
+    PropertyTween, RenderLayer, RenderMode, RenderStyle, Renderable, ShaderHandle, ShaderParams,
+    SpriteEffect, SpriteShader, SquashAxis, SquashStretch, Transform, Tween, TweenLoop,
+    TweenSequence, Velocity, World, WorldTransform, YSort,
   };
 
   // Math types (from glam)
@@ -194,7 +194,7 @@ pub mod prelude {
   // UI system
   pub use crate::core::ui::{
     Anchor, BitmapFont, Color, DropdownState, FocusTrap, Focusable, HAlign, HBox, HotReloadTheme,
-    Lerp, Rect, ScrollViewState, Stack, TextInputState, Theme, ThemeError, TweenColor, TweenFloat,
+    Rect, ScrollViewState, Stack, TextInputState, Theme, ThemeError, TweenColor, TweenFloat,
     TweenRect, TweenVec2, UiContext, UiTween, UiTweenLoop, VAlign, VBox, create_debug_font,
   };
 

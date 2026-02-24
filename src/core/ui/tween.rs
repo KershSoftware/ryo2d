@@ -40,51 +40,9 @@ pub use crate::core::ecs::Ease;
 
 use super::{Color, Rect};
 
-/// Trait for types that can be linearly interpolated.
-pub trait Lerp: Clone {
-  /// Linearly interpolate between two values.
-  ///
-  /// When `t = 0.0`, returns `start`.
-  /// When `t = 1.0`, returns `end`.
-  fn lerp(start: &Self, end: &Self, t: f32) -> Self;
-}
-
-impl Lerp for f32 {
-  fn lerp(start: &Self, end: &Self, t: f32) -> Self {
-    start + (end - start) * t
-  }
-}
-
-impl Lerp for (f32, f32) {
-  fn lerp(start: &Self, end: &Self, t: f32) -> Self {
-    (
-      f32::lerp(&start.0, &end.0, t),
-      f32::lerp(&start.1, &end.1, t),
-    )
-  }
-}
-
-impl Lerp for Color {
-  fn lerp(start: &Self, end: &Self, t: f32) -> Self {
-    Color::new(
-      f32::lerp(&(start.r as f32), &(end.r as f32), t).round() as u8,
-      f32::lerp(&(start.g as f32), &(end.g as f32), t).round() as u8,
-      f32::lerp(&(start.b as f32), &(end.b as f32), t).round() as u8,
-      f32::lerp(&(start.a as f32), &(end.a as f32), t).round() as u8,
-    )
-  }
-}
-
-impl Lerp for Rect {
-  fn lerp(start: &Self, end: &Self, t: f32) -> Self {
-    Rect::new(
-      f32::lerp(&start.x, &end.x, t),
-      f32::lerp(&start.y, &end.y, t),
-      f32::lerp(&start.width, &end.width, t),
-      f32::lerp(&start.height, &end.height, t),
-    )
-  }
-}
+// Lerp trait and impls (f32, (f32,f32), Color, Rect, Vec2) live in the shared
+// ECS module so they can be used by both UI tweens and ECS property tweens.
+pub use crate::core::ecs::Lerp;
 
 /// Loop behavior for UI tweens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -101,7 +59,7 @@ pub enum UiTweenLoop {
 }
 
 /// Type alias for tween callbacks.
-pub type UiTweenCallback = Arc<dyn Fn() + Send + Sync>;
+pub type UiTweenCallback = Arc<dyn Fn(f32) + Send + Sync>;
 
 /// Generic UI tween for interpolating values over time.
 ///
@@ -117,7 +75,7 @@ pub type UiTweenCallback = Arc<dyn Fn() + Send + Sync>;
 /// ```ignore
 /// let mut tween = UiTween::new(0.0, 100.0, 0.5)
 ///     .with_ease(Ease::OutQuad)
-///     .on_complete(|| println!("Done!"));
+///     .on_complete(|_| println!("Done!"));
 ///
 /// // Each frame:
 /// tween.update(dt);
@@ -185,7 +143,7 @@ impl<T: Lerp> UiTween<T> {
   /// For looping tweens, this is only called once at the very beginning.
   pub fn on_start<F>(mut self, callback: F) -> Self
   where
-    F: Fn() + Send + Sync + 'static,
+    F: Fn(f32) + Send + Sync + 'static,
   {
     self.on_start = Some(Arc::new(callback));
     self
@@ -197,7 +155,7 @@ impl<T: Lerp> UiTween<T> {
   /// a cycle completes. For `Times(n)`, it's called after each iteration.
   pub fn on_complete<F>(mut self, callback: F) -> Self
   where
-    F: Fn() + Send + Sync + 'static,
+    F: Fn(f32) + Send + Sync + 'static,
   {
     self.on_complete = Some(Arc::new(callback));
     self
@@ -225,7 +183,7 @@ impl<T: Lerp> UiTween<T> {
       if !self.started {
         self.started = true;
         if let Some(ref cb) = self.on_start {
-          cb();
+          cb(0.0);
         }
       }
 
@@ -235,7 +193,7 @@ impl<T: Lerp> UiTween<T> {
       if !self.started {
         self.started = true;
         if let Some(ref cb) = self.on_start {
-          cb();
+          cb(0.0);
         }
       }
       self.elapsed += dt;
@@ -265,20 +223,20 @@ impl<T: Lerp> UiTween<T> {
         UiTweenLoop::Once => {
           self.playing = false;
           if let Some(ref cb) = self.on_complete {
-            cb();
+            cb(1.0);
           }
         }
         UiTweenLoop::Loop => {
           self.elapsed -= self.duration;
           if let Some(ref cb) = self.on_complete {
-            cb();
+            cb(1.0);
           }
         }
         UiTweenLoop::PingPong => {
           self.elapsed -= self.duration;
           self.ping_pong_reverse = !self.ping_pong_reverse;
           if let Some(ref cb) = self.on_complete {
-            cb();
+            cb(1.0);
           }
         }
         UiTweenLoop::Times(n) => {
@@ -289,7 +247,7 @@ impl<T: Lerp> UiTween<T> {
             self.elapsed -= self.duration;
           }
           if let Some(ref cb) = self.on_complete {
-            cb();
+            cb(1.0);
           }
         }
       }
@@ -392,8 +350,8 @@ impl<T: Lerp + std::fmt::Debug> std::fmt::Debug for UiTween<T> {
       .field("easing", &self.easing)
       .field("loop_mode", &self.loop_mode)
       .field("playing", &self.playing)
-      .field("on_start", &self.on_start.as_ref().map(|_| "Fn()"))
-      .field("on_complete", &self.on_complete.as_ref().map(|_| "Fn()"))
+      .field("on_start", &self.on_start.as_ref().map(|_| "Fn(f32)"))
+      .field("on_complete", &self.on_complete.as_ref().map(|_| "Fn(f32)"))
       .finish()
   }
 }
@@ -602,7 +560,7 @@ mod tests {
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = completed.clone();
 
-    let mut tween = TweenFloat::new(0.0, 100.0, 1.0).on_complete(move || {
+    let mut tween = TweenFloat::new(0.0, 100.0, 1.0).on_complete(move |_| {
       completed_clone.store(true, Ordering::SeqCst);
     });
 
@@ -620,7 +578,7 @@ mod tests {
     let started = Arc::new(AtomicBool::new(false));
     let started_clone = started.clone();
 
-    let mut tween = TweenFloat::new(0.0, 100.0, 1.0).on_start(move || {
+    let mut tween = TweenFloat::new(0.0, 100.0, 1.0).on_start(move |_| {
       started_clone.store(true, Ordering::SeqCst);
     });
 
@@ -744,7 +702,7 @@ mod tests {
 
     let mut tween = TweenFloat::new(0.0, 100.0, 1.0)
       .with_loop(UiTweenLoop::Loop)
-      .on_start(move || {
+      .on_start(move |_| {
         count_clone.fetch_add(1, Ordering::SeqCst);
       });
 
@@ -767,7 +725,7 @@ mod tests {
 
     let mut tween = TweenFloat::new(0.0, 100.0, 0.5)
       .with_loop(UiTweenLoop::Times(3))
-      .on_complete(move || {
+      .on_complete(move |_| {
         count_clone.fetch_add(1, Ordering::SeqCst);
       });
 

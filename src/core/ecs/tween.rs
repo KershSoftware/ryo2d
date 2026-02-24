@@ -268,7 +268,7 @@ impl Ease {
 ///
 /// Callbacks are `Arc`-wrapped to allow cloning the Tween while sharing the callback.
 /// Use `Fn` (not `FnMut`) since callbacks may be called multiple times for looping tweens.
-pub type TweenCallback = Arc<dyn Fn() + Send + Sync>;
+pub type TweenCallback = Arc<dyn Fn(f32) + Send + Sync>;
 
 /// Helper function for bounce easing
 fn out_bounce(t: f32) -> f32 {
@@ -432,9 +432,9 @@ impl std::fmt::Debug for Tween {
       .field("playing", &self.playing)
       .field("just_started", &self.just_started)
       .field("just_finished", &self.just_finished)
-      .field("on_start", &self.on_start.as_ref().map(|_| "Fn()"))
-      .field("on_update", &self.on_update.as_ref().map(|_| "Fn()"))
-      .field("on_complete", &self.on_complete.as_ref().map(|_| "Fn()"))
+      .field("on_start", &self.on_start.as_ref().map(|_| "Fn(f32)"))
+      .field("on_update", &self.on_update.as_ref().map(|_| "Fn(f32)"))
+      .field("on_complete", &self.on_complete.as_ref().map(|_| "Fn(f32)"))
       .finish()
   }
 }
@@ -577,7 +577,7 @@ impl Tween {
   /// For looping tweens, this is only called once at the very beginning.
   pub fn on_start<F>(mut self, callback: F) -> Self
   where
-    F: Fn() + Send + Sync + 'static,
+    F: Fn(f32) + Send + Sync + 'static,
   {
     self.on_start = Some(Arc::new(callback));
     self
@@ -588,7 +588,7 @@ impl Tween {
   /// Note: This is called frequently, keep the callback lightweight.
   pub fn on_update<F>(mut self, callback: F) -> Self
   where
-    F: Fn() + Send + Sync + 'static,
+    F: Fn(f32) + Send + Sync + 'static,
   {
     self.on_update = Some(Arc::new(callback));
     self
@@ -600,7 +600,7 @@ impl Tween {
   /// a cycle completes. For `Times(n)`, it's called after the final iteration.
   pub fn on_complete<F>(mut self, callback: F) -> Self
   where
-    F: Fn() + Send + Sync + 'static,
+    F: Fn(f32) + Send + Sync + 'static,
   {
     self.on_complete = Some(Arc::new(callback));
     self
@@ -738,7 +738,7 @@ impl Tween {
         self.capture_start(transform);
         self.just_started = true;
         if let Some(ref cb) = self.on_start {
-          cb();
+          cb(0.0);
         }
       }
 
@@ -749,7 +749,7 @@ impl Tween {
         self.capture_start(transform);
         self.just_started = true;
         if let Some(ref cb) = self.on_start {
-          cb();
+          cb(0.0);
         }
       }
       self.elapsed += dt;
@@ -791,7 +791,7 @@ impl Tween {
 
     // Call on_update callback
     if let Some(ref cb) = self.on_update {
-      cb();
+      cb(eased);
     }
 
     // Handle completion
@@ -826,7 +826,7 @@ impl Tween {
       if self.just_finished
         && let Some(ref cb) = self.on_complete
       {
-        cb();
+        cb(1.0);
       }
     }
   }
@@ -1421,7 +1421,7 @@ mod tests {
     let started = Arc::new(AtomicBool::new(false));
     let started_clone = started.clone();
 
-    let mut t = Tween::to_position(100.0, 0.0, 1.0).on_start(move || {
+    let mut t = Tween::to_position(100.0, 0.0, 1.0).on_start(move |_| {
       started_clone.store(true, Ordering::SeqCst);
     });
     let mut transform = Transform::new(0.0, 0.0);
@@ -1441,7 +1441,7 @@ mod tests {
     let count = Arc::new(AtomicUsize::new(0));
     let count_clone = count.clone();
 
-    let mut t = Tween::to_position(100.0, 0.0, 1.0).on_start(move || {
+    let mut t = Tween::to_position(100.0, 0.0, 1.0).on_start(move |_| {
       count_clone.fetch_add(1, Ordering::SeqCst);
     });
     let mut transform = Transform::new(0.0, 0.0);
@@ -1461,7 +1461,7 @@ mod tests {
     let count = Arc::new(AtomicUsize::new(0));
     let count_clone = count.clone();
 
-    let mut t = Tween::to_position(100.0, 0.0, 1.0).on_update(move || {
+    let mut t = Tween::to_position(100.0, 0.0, 1.0).on_update(move |_| {
       count_clone.fetch_add(1, Ordering::SeqCst);
     });
     let mut transform = Transform::new(0.0, 0.0);
@@ -1481,7 +1481,7 @@ mod tests {
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = completed.clone();
 
-    let mut t = Tween::to_position(100.0, 0.0, 1.0).on_complete(move || {
+    let mut t = Tween::to_position(100.0, 0.0, 1.0).on_complete(move |_| {
       completed_clone.store(true, Ordering::SeqCst);
     });
     let mut transform = Transform::new(0.0, 0.0);
@@ -1503,7 +1503,7 @@ mod tests {
 
     let mut t = Tween::to_position(100.0, 0.0, 0.5)
       .with_loop(TweenLoop::Times(3))
-      .on_complete(move || {
+      .on_complete(move |_| {
         count_clone.fetch_add(1, Ordering::SeqCst);
       });
     let mut transform = Transform::new(0.0, 0.0);
@@ -1539,7 +1539,7 @@ mod tests {
 
     let mut t = Tween::to_position(100.0, 0.0, 1.0)
       .with_delay(0.5)
-      .on_start(move || {
+      .on_start(move |_| {
         started_clone.store(true, Ordering::SeqCst);
       });
     let mut transform = Transform::new(0.0, 0.0);

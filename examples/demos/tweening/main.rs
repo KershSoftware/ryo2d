@@ -10,16 +10,18 @@
 //! 4. **Combined Effects** - Position + scale + rotation combinations
 //! 5. **Sequences** - TweenSequence for chained animations
 //! 6. **Color & Alpha** - Alpha fade, tint colors, and combined color effects
+//! 7. **PropertyTween** - Generic value tweens (f32 health bar, Vec2 position, callback progress)
 //!
 //! ## Controls
 //!
-//! - 1-6: Switch scenes
+//! - 1-7: Switch scenes
 //! - Space: Restart tweens (scene-specific)
 //! - Escape: Exit
 
 use ryo2d::prelude::*;
 use std::f32::consts::PI;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ============================================================================
@@ -191,6 +193,9 @@ impl Scene for EasingScene {
     if ctx.input.key_pressed(KeyCode::Digit6) {
       return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit7) {
+      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
+    }
 
     // Loop mode controls (Q/W/E/R)
     let mut mode_changed = false;
@@ -238,7 +243,7 @@ impl Scene for EasingScene {
     ui.draw_text(&mode_text, 10.0, 30.0, text_light);
 
     ui.draw_text(
-      "2-6: Scenes | Space: Restart | ESC: Exit",
+      "2-7: Scenes | Space: Restart | ESC: Exit",
       10.0,
       50.0,
       text_muted,
@@ -363,6 +368,9 @@ impl Scene for SpeedControlScene {
     if ctx.input.key_pressed(KeyCode::Digit6) {
       return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit7) {
+      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
+    }
 
     // Speed control
     let mut changed = false;
@@ -412,7 +420,7 @@ impl Scene for SpeedControlScene {
     let text_light = Color::rgb(220, 220, 220);
 
     ui.draw_text("[2] Speed Control", 10.0, 10.0, text_accent);
-    ui.draw_text("1,3-6: Other scenes | ESC: Exit", 10.0, 30.0, text_muted);
+    ui.draw_text("1,3-7: Other scenes | ESC: Exit", 10.0, 30.0, text_muted);
 
     ui.draw_text(
       "Speed: Q=0.25x W=0.5x E=1x R=2x T=4x",
@@ -490,13 +498,13 @@ impl CallbacksScene {
         Tween::to_position(self.screen_w - 100.0, center_y, 2.0)
           .with_easing(Ease::OutCubic)
           .with_loop(TweenLoop::Times(3))
-          .on_start(move || {
+          .on_start(move |_| {
             start_clone.fetch_add(1, Ordering::SeqCst);
           })
-          .on_update(move || {
+          .on_update(move |_| {
             update_clone.fetch_add(1, Ordering::SeqCst);
           })
-          .on_complete(move || {
+          .on_complete(move |_| {
             complete_clone.fetch_add(1, Ordering::SeqCst);
           }),
       )),
@@ -539,6 +547,9 @@ impl Scene for CallbacksScene {
     if ctx.input.key_pressed(KeyCode::Digit6) {
       return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit7) {
+      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
+    }
 
     // Restart
     if ctx.input.key_pressed(KeyCode::Space) {
@@ -558,7 +569,7 @@ impl Scene for CallbacksScene {
 
     ui.draw_text("[3] Callbacks", 10.0, 10.0, text_accent);
     ui.draw_text(
-      "1-2,4-6: Other scenes | Space: Restart | ESC: Exit",
+      "1-2,4-7: Other scenes | Space: Restart | ESC: Exit",
       10.0,
       30.0,
       text_muted,
@@ -738,6 +749,9 @@ impl Scene for CombinedEffectsScene {
     if ctx.input.key_pressed(KeyCode::Digit6) {
       return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit7) {
+      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
+    }
 
     // Restart
     if ctx.input.key_pressed(KeyCode::Space) {
@@ -755,7 +769,7 @@ impl Scene for CombinedEffectsScene {
 
     ui.draw_text("[4] Combined Effects", 10.0, 10.0, text_accent);
     ui.draw_text(
-      "1-3,5-6: Other scenes | Space: Restart | ESC: Exit",
+      "1-3,5-7: Other scenes | Space: Restart | ESC: Exit",
       10.0,
       30.0,
       text_muted,
@@ -883,6 +897,9 @@ impl Scene for SequenceScene {
     if ctx.input.key_pressed(KeyCode::Digit6) {
       return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit7) {
+      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
+    }
 
     // Restart
     if ctx.input.key_pressed(KeyCode::Space)
@@ -907,7 +924,7 @@ impl Scene for SequenceScene {
 
     ui.draw_text("[5] Tween Sequences", 10.0, 10.0, text_accent);
     ui.draw_text(
-      "1-4,6: Other scenes | Space: Restart | ESC: Exit",
+      "1-4,6-7: Other scenes | Space: Restart | ESC: Exit",
       10.0,
       30.0,
       text_muted,
@@ -1235,6 +1252,9 @@ impl Scene for ColorAlphaScene {
     if ctx.input.key_pressed(KeyCode::Digit5) {
       return SceneAction::Switch(Box::new(SequenceScene::new()));
     }
+    if ctx.input.key_pressed(KeyCode::Digit7) {
+      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
+    }
 
     // Restart all
     if ctx.input.key_pressed(KeyCode::Space) {
@@ -1252,7 +1272,7 @@ impl Scene for ColorAlphaScene {
 
     ui.draw_text("[6] Color & Alpha Tweening", 10.0, 10.0, text_accent);
     ui.draw_text(
-      "1-5: Other scenes | Space: Restart | ESC: Exit",
+      "1-5,7: Other scenes | Space: Restart | ESC: Exit",
       10.0,
       30.0,
       text_muted,
@@ -1271,6 +1291,234 @@ impl Scene for ColorAlphaScene {
 
     ui.draw_text("Darken", 180.0, 390.0, text_white);
     ui.draw_text("Full Combo (all properties)", 500.0, 390.0, text_white);
+    SceneAction::Continue
+  }
+}
+
+// ============================================================================
+// Scene 7: PropertyTween (generic value tweens)
+// ============================================================================
+
+#[derive(Debug)]
+struct HealthBarTag;
+
+#[derive(Debug)]
+struct MovingDotTag;
+
+struct PropertyTweenScene {
+  health_bar_entity: Option<Entity>,
+  moving_dot_entity: Option<Entity>,
+  callback_entity: Option<Entity>,
+  callback_progress: Arc<Mutex<f32>>,
+  screen_w: f32,
+  screen_h: f32,
+}
+
+impl PropertyTweenScene {
+  fn new() -> Self {
+    Self {
+      health_bar_entity: None,
+      moving_dot_entity: None,
+      callback_entity: None,
+      callback_progress: Arc::new(Mutex::new(0.0)),
+      screen_w: 0.0,
+      screen_h: 0.0,
+    }
+  }
+
+  fn spawn_demos(&mut self, ctx: &mut SceneContext) {
+    // Reset callback progress
+    *self.callback_progress.lock().unwrap() = 0.0;
+
+    // Demo 1: PropertyTween<f32> — Health bar width
+    // The tween interpolates 0..200 (width in pixels). We read .value() each
+    // frame and set the entity's scale_x to stretch a 1-pixel-wide bar.
+    let bar_sprite = Sprite::solid_rect(200, 20, 80, 200, 80, 255);
+    let bar_handle = SpriteHandle::from_sprite(bar_sprite, "health_bar");
+
+    let bar_y = 200.0;
+    self.health_bar_entity = Some(
+      ctx.world.spawn((
+        HealthBarTag,
+        Transform::new(100.0, bar_y),
+        Renderable::sprite(bar_handle).with_z_order(10),
+        PropertyTween::new(0.0_f32, 1.0, 2.0)
+          .with_easing(Ease::OutQuad)
+          .with_loop(TweenLoop::PingPong),
+      )),
+    );
+
+    // Demo 2: PropertyTween<Vec2> — Position
+    let dot_sprite = Sprite::solid_circle(15, 100, 150, 255, 255);
+    let dot_handle = SpriteHandle::from_sprite(dot_sprite, "moving_dot");
+
+    self.moving_dot_entity = Some(
+      ctx.world.spawn((
+        MovingDotTag,
+        Transform::new(100.0, 400.0).with_pivot_center(),
+        Renderable::sprite(dot_handle).with_z_order(10),
+        PropertyTween::new(
+          Vec2::new(100.0, 400.0),
+          Vec2::new(self.screen_w - 100.0, 400.0),
+          3.0,
+        )
+        .with_easing(Ease::InOutCubic)
+        .with_loop(TweenLoop::PingPong),
+      )),
+    );
+
+    // Demo 3: PropertyTween<f32> with on_update callback — Progress indicator
+    let p = self.callback_progress.clone();
+    let progress_tween = PropertyTween::new(0.0_f32, 1.0, 3.0)
+      .with_easing(Ease::InOutSine)
+      .with_loop(TweenLoop::PingPong)
+      .on_update(move |progress| {
+        *p.lock().unwrap() = progress;
+      });
+
+    // Spawn a small marker entity to host the callback tween
+    self.callback_entity = Some(ctx.world.spawn((progress_tween,)));
+  }
+
+  fn cleanup(&mut self, ctx: &mut SceneContext) {
+    if let Some(entity) = self.health_bar_entity.take() {
+      let _ = ctx.world.despawn(entity);
+    }
+    if let Some(entity) = self.moving_dot_entity.take() {
+      let _ = ctx.world.despawn(entity);
+    }
+    if let Some(entity) = self.callback_entity.take() {
+      let _ = ctx.world.despawn(entity);
+    }
+  }
+}
+
+impl Scene for PropertyTweenScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let (screen_w, screen_h) = ctx.screen_size();
+    self.screen_w = screen_w;
+    self.screen_h = screen_h;
+    self.spawn_demos(ctx);
+  }
+
+  fn on_exit(&mut self, ctx: &mut SceneContext) {
+    self.cleanup(ctx);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if ctx.input.key_pressed(KeyCode::Escape) {
+      return SceneAction::Quit;
+    }
+
+    // Scene switching
+    if ctx.input.key_pressed(KeyCode::Digit1) {
+      return SceneAction::Switch(Box::new(EasingScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit2) {
+      return SceneAction::Switch(Box::new(SpeedControlScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit3) {
+      return SceneAction::Switch(Box::new(CallbacksScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit4) {
+      return SceneAction::Switch(Box::new(CombinedEffectsScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit5) {
+      return SceneAction::Switch(Box::new(SequenceScene::new()));
+    }
+    if ctx.input.key_pressed(KeyCode::Digit6) {
+      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
+    }
+
+    // Demo 1: Read PropertyTween<f32> value and drive scale_x
+    if let Some(entity) = self.health_bar_entity {
+      let scale = ctx
+        .world
+        .get::<PropertyTween<f32>>(entity)
+        .map(|t| t.value());
+      if let Some(s) = scale {
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
+          transform.scale_x = s;
+        }
+      }
+    }
+
+    // Demo 2: Read PropertyTween<Vec2> value and drive position
+    if let Some(entity) = self.moving_dot_entity {
+      let pos = ctx
+        .world
+        .get::<PropertyTween<Vec2>>(entity)
+        .map(|t| t.value());
+      if let Some(p) = pos {
+        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
+          transform.x = p.x;
+          transform.y = p.y;
+        }
+      }
+    }
+
+    // Restart with Space
+    if ctx.input.key_pressed(KeyCode::Space) {
+      self.cleanup(ctx);
+      self.spawn_demos(ctx);
+    }
+
+    SceneAction::Continue
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+    let text_accent = Color::rgb(130, 180, 255);
+    let text_muted = Color::rgb(160, 160, 160);
+    let text_light = Color::rgb(220, 220, 220);
+
+    ui.draw_text("[7] PropertyTween", 10.0, 10.0, text_accent);
+    ui.draw_text(
+      "1-6: Other scenes | Space: Restart | ESC: Exit",
+      10.0,
+      30.0,
+      text_muted,
+    );
+
+    // Demo 1 label
+    ui.draw_text(
+      "PropertyTween<f32> - Health bar width",
+      100.0,
+      150.0,
+      text_light,
+    );
+    ui.draw_text(
+      "Tweens 0.0 -> 1.0, used as scale_x",
+      100.0,
+      170.0,
+      text_muted,
+    );
+
+    // Demo 2 label
+    ui.draw_text("PropertyTween<Vec2> - Position", 100.0, 350.0, text_light);
+    ui.draw_text(
+      "Tweens between two Vec2 positions (ping-pong)",
+      100.0,
+      370.0,
+      text_muted,
+    );
+
+    // Demo 3: Callback progress display
+    let progress = *self.callback_progress.lock().unwrap();
+    let pct = (progress * 100.0) as u32;
+
+    ui.draw_text("on_update callback with progress", 100.0, 500.0, text_light);
+
+    let progress_text = format!("Progress: {}%", pct);
+    ui.draw_text(&progress_text, 100.0, 530.0, Color::GREEN);
+
+    // Draw a simple text-based progress bar
+    let filled = (progress * 20.0) as usize;
+    let bar: String = (0..20)
+      .map(|i| if i < filled { '#' } else { '-' })
+      .collect();
+    let bar_text = format!("[{}]", bar);
+    ui.draw_text(&bar_text, 100.0, 550.0, Color::rgb(200, 200, 100));
+
     SceneAction::Continue
   }
 }

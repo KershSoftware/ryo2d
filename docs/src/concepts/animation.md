@@ -283,6 +283,7 @@ The animation system is fully integrated into the engine:
 
 ## See Also
 
+- [Tweening System](./tweening.md) - Smooth interpolation of values over time (position, color, arbitrary types)
 - [Sprites & Rendering](./sprites.md) - How sprites work in Ryo2D
 - [Asset Management](./assets.md) - Loading and caching sprite assets
 - [ECS Architecture](./ecs.md) - Understanding components and entities

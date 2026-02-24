@@ -669,6 +669,68 @@ pub enum TweenLoop {
 }
 ```
 
+### TweenCallback
+
+```rust
+pub type TweenCallback = Arc<dyn Fn(f32) + Send + Sync>;
+```
+
+Callbacks receive eased progress (0.0–1.0). `on_start` gets `0.0`, `on_complete` gets `1.0`.
+
+### Lerp
+
+Trait for generic interpolation:
+
+```rust
+pub trait Lerp: Clone + Send + Sync + 'static {
+    fn lerp(start: &Self, end: &Self, t: f32) -> Self;
+}
+```
+
+Built-in impls: `f32`, `(f32, f32)`, `Vec2`, `Color`, `Rect`
+
+### PropertyTween\<T: Lerp\>
+
+Generic component for interpolating any `Lerp` type:
+
+```rust
+pub struct PropertyTween<T: Lerp> { /* internal state */ }
+
+impl<T: Lerp> PropertyTween<T> {
+    // Constructor
+    fn new(start: T, end: T, duration: f32) -> Self;
+
+    // Builder methods (mirrors Tween)
+    fn with_easing(self, easing: Ease) -> Self;
+    fn with_delay(self, delay: f32) -> Self;
+    fn with_loop(self, loop_mode: TweenLoop) -> Self;
+    fn with_speed(self, speed: f32) -> Self;
+    fn on_start(self, cb: impl Fn(f32) + Send + Sync + 'static) -> Self;
+    fn on_update(self, cb: impl Fn(f32) + Send + Sync + 'static) -> Self;
+    fn on_complete(self, cb: impl Fn(f32) + Send + Sync + 'static) -> Self;
+
+    // Reading state
+    fn value(&self) -> T;           // Current interpolated value
+    fn progress(&self) -> f32;      // Raw 0.0-1.0
+    fn playing(&self) -> bool;
+    fn is_finished(&self) -> bool;
+    fn just_started(&self) -> bool;
+    fn just_finished(&self) -> bool;
+
+    // Runtime control
+    fn pause(&mut self);
+    fn resume(&mut self);
+    fn stop(&mut self);             // Freezes at current value
+    fn restart(&mut self);
+    fn retarget(&mut self, new_end: T);  // Change destination mid-flight
+
+    // Manual update (for custom Lerp types not auto-driven)
+    fn update(&mut self, dt: f32);
+}
+```
+
+Auto-driven types: `PropertyTween<f32>`, `PropertyTween<Vec2>`, `PropertyTween<Color>`. Others need manual `update(dt)`.
+
 ### AnimationController
 
 State machine for complex animation logic:

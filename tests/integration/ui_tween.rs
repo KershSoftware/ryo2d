@@ -257,7 +257,7 @@ fn pattern_chained_animations() {
   let phase2_started = Arc::new(AtomicBool::new(false));
   let phase2_clone = phase2_started.clone();
 
-  let mut phase1 = TweenFloat::new(0.0, 100.0, 0.5).on_complete(move || {
+  let mut phase1 = TweenFloat::new(0.0, 100.0, 0.5).on_complete(move |_| {
     phase2_clone.store(true, Ordering::SeqCst);
   });
 
@@ -280,7 +280,7 @@ fn pattern_loop_counter() {
 
   let mut tween = TweenFloat::new(0.0, 100.0, 0.2)
     .with_loop(UiTweenLoop::Loop)
-    .on_complete(move || {
+    .on_complete(move |_| {
       loop_clone.fetch_add(1, Ordering::SeqCst);
     });
 
