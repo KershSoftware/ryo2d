@@ -29,7 +29,9 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
         max_distance: 32.0,
         fog_density: 0.04,
         fog_color: [0.05, 0.05, 0.1],
-        _pad: 0.0,
+        diminish_factor: 0.06,            // camera-distance light falloff
+        ambient_color: [0.6, 0.65, 0.8],  // global ambient tint
+        ambient_intensity: 0.04,           // global ambient brightness
     });
 
     // Upload textures (index 0 = unused, 1+ = actual textures)
@@ -119,21 +121,53 @@ ctx.world.spawn((Transform::new(10.0, 5.0), sprite));
 
 ## Lights
 
-Dynamic point lights affect both walls and floors. Useful for torches, lamps, and other light sources:
+The raycasting renderer uses a six-layer lighting pipeline applied per-pixel: bilinear lightmap ambient, global ambient, dynamic point lights with shadow rays, camera-distance diminishing, and distance fog. Sprites share the same light buffer for environmental consistency.
+
+### Dynamic Point Lights
+
+Point lights affect walls, floors, ceilings, and sprites. Each light has a world-space height and configurable falloff curve:
 
 ```rust
+// Basic light (defaults: height=0.5, falloff=2.0 quadratic)
 ctx.world.spawn((
     Transform::new(23.0, 23.0),
     RaycastLight::new(5.0, (1.0, 0.78, 0.39), 1.5),
     //                radius  RGB colour       intensity
 ));
+
+// Light with custom height and falloff
+let mut light = RaycastLight::new(4.0, (1.0, 0.9, 0.7), 1.0);
+light.height = 0.8;   // near ceiling (0.0=floor, 0.5=mid, 1.0=ceiling)
+light.falloff = 3.0;   // cubic falloff (tighter pool than quadratic)
+ctx.world.spawn((Transform::new(18.5, 24.0), light));
 ```
 
-Cells also have a `light_level` field (0.0 to 1.0) for baked per-tile ambient lighting:
+Falloff curves: `1.0` = linear, `2.0` = quadratic (default, soft spread), `3.0` = cubic (tight pool).
+
+### Lightmap Ambient
+
+Each cell has a `light_level` field (0.0 to 1.0) that controls ambient brightness. These values are uploaded as an R8Unorm texture and bilinear-sampled, producing smooth transitions across tile boundaries instead of hard edges:
 
 ```rust
+// Dark room
 let cell = world.get_mut(x, y).unwrap();
-cell.light_level = 0.2; // dark area
+cell.light_level = 0.15;
+
+// Transition zone (gradual ramp)
+cell.light_level = 0.7;
+```
+
+### Global Ambient and Diminishing
+
+`MapInfoUniform` controls global ambient light (prevents pure black) and camera-distance diminishing (Doom-style depth darkening):
+
+```rust
+rc.set_map_info(MapInfoUniform {
+    // ...
+    diminish_factor: 0.06,            // 0.0=none, higher=more depth darkening
+    ambient_color: [0.6, 0.65, 0.8],  // blue tint for cave/outdoor feel
+    ambient_intensity: 0.04,           // prevents pure black without flattening contrast
+});
 ```
 
 ## Doors
@@ -187,9 +221,11 @@ Distance fog is controlled by `MapInfoUniform`:
 ```rust
 rc.set_map_info(MapInfoUniform {
     dimensions: [32, 32],
-    max_distance: 32.0,     // max ray distance
-    fog_density: 0.04,      // higher = more fog
-    fog_color: [0.05, 0.05, 0.1], // dark blue fog
-    _pad: 0.0,
+    max_distance: 32.0,              // max ray distance
+    fog_density: 0.04,               // higher = more fog
+    fog_color: [0.05, 0.05, 0.1],   // dark blue fog
+    diminish_factor: 0.06,
+    ambient_color: [0.6, 0.65, 0.8],
+    ambient_intensity: 0.04,
 });
 ```

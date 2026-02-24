@@ -2310,7 +2310,9 @@ fn sync_and_render_raycast(
         radius: light.radius,
         intensity: light.intensity,
         color: [light.color.0, light.color.1, light.color.2],
-        _pad: 0.0,
+        height: light.height,
+        falloff: light.falloff,
+        _pad: [0.0; 3],
       });
     }
   }

@@ -39,6 +39,9 @@ pub struct GpuRaycastRenderer {
   floor_textures: Option<TextureArrayHandle>,
   sprite_textures: Option<TextureArrayHandle>,
   sampler: wgpu::Sampler,
+  lightmap_texture: wgpu::Texture,
+  lightmap_texture_view: wgpu::TextureView,
+  lightmap_sampler: wgpu::Sampler,
   width: u32,
   height: u32,
   sprite_count: u32,
@@ -68,11 +71,39 @@ impl GpuRaycastRenderer {
       ..Default::default()
     });
 
+    let lightmap_texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Raycast Lightmap Texture"),
+      size: wgpu::Extent3d {
+        width: 256,
+        height: 256,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::R8Unorm,
+      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+      view_formats: &[],
+    });
+    let lightmap_texture_view =
+      lightmap_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let lightmap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+      label: Some("Raycast Lightmap Sampler"),
+      address_mode_u: wgpu::AddressMode::ClampToEdge,
+      address_mode_v: wgpu::AddressMode::ClampToEdge,
+      address_mode_w: wgpu::AddressMode::ClampToEdge,
+      mag_filter: wgpu::FilterMode::Linear,
+      min_filter: wgpu::FilterMode::Linear,
+      mipmap_filter: wgpu::FilterMode::Nearest,
+      ..Default::default()
+    });
+
     let (depth_texture, depth_texture_view) = Self::create_depth_texture(device, width, height);
 
     let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
       label: Some("Raycast Camera Buffer"),
-      size: 48,
+      size: std::mem::size_of::<CameraUniform>() as u64,
       usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
       mapped_at_creation: false,
     });
@@ -86,14 +117,14 @@ impl GpuRaycastRenderer {
 
     let map_info_buffer = device.create_buffer(&wgpu::BufferDescriptor {
       label: Some("Raycast MapInfo Buffer"),
-      size: 32,
+      size: std::mem::size_of::<MapInfoUniform>() as u64,
       usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
       mapped_at_creation: false,
     });
 
     let light_buffer = device.create_buffer(&wgpu::BufferDescriptor {
       label: Some("Raycast Light Buffer"),
-      size: (MAX_LIGHTS * 32) as u64,
+      size: (MAX_LIGHTS * std::mem::size_of::<LightInstance>()) as u64,
       usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
       mapped_at_creation: false,
     });
@@ -107,7 +138,7 @@ impl GpuRaycastRenderer {
 
     let sprite_buffer = device.create_buffer(&wgpu::BufferDescriptor {
       label: Some("Raycast Sprite Buffer"),
-      size: (MAX_SPRITES * 32) as u64,
+      size: (MAX_SPRITES * std::mem::size_of::<SpriteInstance>()) as u64,
       usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
       mapped_at_creation: false,
     });
@@ -192,6 +223,24 @@ impl GpuRaycastRenderer {
             },
             count: None,
           },
+          // Binding 8: lightmap texture (R8Unorm, filterable)
+          wgpu::BindGroupLayoutEntry {
+            binding: 8,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+              multisampled: false,
+              view_dimension: wgpu::TextureViewDimension::D2,
+              sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            },
+            count: None,
+          },
+          // Binding 9: lightmap sampler (linear filtering)
+          wgpu::BindGroupLayoutEntry {
+            binding: 9,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+          },
         ],
       });
 
@@ -242,6 +291,57 @@ impl GpuRaycastRenderer {
               multisampled: false,
               view_dimension: wgpu::TextureViewDimension::D2,
               sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            },
+            count: None,
+          },
+          // Binding 5: light buffer (storage, read-only)
+          wgpu::BindGroupLayoutEntry {
+            binding: 5,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+              ty: wgpu::BufferBindingType::Storage { read_only: true },
+              has_dynamic_offset: false,
+              min_binding_size: None,
+            },
+            count: None,
+          },
+          // Binding 6: light count (uniform)
+          wgpu::BindGroupLayoutEntry {
+            binding: 6,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+              ty: wgpu::BufferBindingType::Uniform,
+              has_dynamic_offset: false,
+              min_binding_size: None,
+            },
+            count: None,
+          },
+          // Binding 7: lightmap texture
+          wgpu::BindGroupLayoutEntry {
+            binding: 7,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+              multisampled: false,
+              view_dimension: wgpu::TextureViewDimension::D2,
+              sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            },
+            count: None,
+          },
+          // Binding 8: lightmap sampler (linear filtering)
+          wgpu::BindGroupLayoutEntry {
+            binding: 8,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+          },
+          // Binding 9: map info (uniform) — for dimensions, diminishing, ambient
+          wgpu::BindGroupLayoutEntry {
+            binding: 9,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+              ty: wgpu::BufferBindingType::Uniform,
+              has_dynamic_offset: false,
+              min_binding_size: None,
             },
             count: None,
           },
@@ -370,6 +470,9 @@ impl GpuRaycastRenderer {
       floor_textures: None,
       sprite_textures: None,
       sampler,
+      lightmap_texture,
+      lightmap_texture_view,
+      lightmap_sampler,
       width,
       height,
       sprite_count: 0,
@@ -379,7 +482,9 @@ impl GpuRaycastRenderer {
         max_distance: 64.0,
         fog_density: 0.03,
         fog_color: [0.1, 0.1, 0.15],
-        _pad: 0.0,
+        diminish_factor: 0.0,
+        ambient_color: [1.0, 1.0, 1.0],
+        ambient_intensity: 0.0,
       },
       cached_wall_bind_group: None,
       cached_sprite_bind_group: None,
@@ -479,17 +584,41 @@ impl GpuRaycastRenderer {
     queue: &wgpu::Queue,
     texture_mgr: &TextureManager,
   ) {
+    // Always upload map info (48 bytes, allows runtime ambient/diminishing changes)
+    queue.write_buffer(
+      &self.map_info_buffer,
+      0,
+      bytemuck::cast_slice(&[self.map_info]),
+    );
+
     // Upload world map data only when changed
     if let Some(ref mut world) = self.world
       && world.is_dirty()
     {
       let gpu_data = world.pack_for_gpu();
       queue.write_buffer(&self.map_buffer, 0, bytemuck::cast_slice(&gpu_data));
-      queue.write_buffer(
-        &self.map_info_buffer,
-        0,
-        bytemuck::cast_slice(&[self.map_info]),
+
+      let lightmap_data = world.generate_lightmap();
+      queue.write_texture(
+        wgpu::ImageCopyTexture {
+          texture: &self.lightmap_texture,
+          mip_level: 0,
+          origin: wgpu::Origin3d::ZERO,
+          aspect: wgpu::TextureAspect::All,
+        },
+        &lightmap_data,
+        wgpu::ImageDataLayout {
+          offset: 0,
+          bytes_per_row: Some(world.width() as u32), // 1 byte per pixel for R8Unorm
+          rows_per_image: None,
+        },
+        wgpu::Extent3d {
+          width: world.width() as u32,
+          height: world.height() as u32,
+          depth_or_array_layers: 1,
+        },
       );
+
       world.clear_dirty();
     }
 
@@ -540,6 +669,14 @@ impl GpuRaycastRenderer {
             binding: 7,
             resource: self.light_count_buffer.as_entire_binding(),
           },
+          wgpu::BindGroupEntry {
+            binding: 8,
+            resource: wgpu::BindingResource::TextureView(&self.lightmap_texture_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 9,
+            resource: wgpu::BindingResource::Sampler(&self.lightmap_sampler),
+          },
         ],
       }));
     }
@@ -572,6 +709,26 @@ impl GpuRaycastRenderer {
           wgpu::BindGroupEntry {
             binding: 4,
             resource: wgpu::BindingResource::TextureView(&self.depth_texture_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 5,
+            resource: self.light_buffer.as_entire_binding(),
+          },
+          wgpu::BindGroupEntry {
+            binding: 6,
+            resource: self.light_count_buffer.as_entire_binding(),
+          },
+          wgpu::BindGroupEntry {
+            binding: 7,
+            resource: wgpu::BindingResource::TextureView(&self.lightmap_texture_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 8,
+            resource: wgpu::BindingResource::Sampler(&self.lightmap_sampler),
+          },
+          wgpu::BindGroupEntry {
+            binding: 9,
+            resource: self.map_info_buffer.as_entire_binding(),
           },
         ],
       }));

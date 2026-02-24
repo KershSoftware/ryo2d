@@ -116,6 +116,10 @@ pub struct RaycastLight {
   pub intensity: f32,
   /// Whether the light randomly flickers.
   pub flicker: bool,
+  /// World-space height of the light (0.5 = mid-wall).
+  pub height: f32,
+  /// Falloff exponent (1.0 = linear, 2.0 = quadratic, 3.0 = cubic).
+  pub falloff: f32,
 }
 
 impl RaycastLight {
@@ -126,6 +130,8 @@ impl RaycastLight {
       color,
       intensity,
       flicker: false,
+      height: 0.5,
+      falloff: 2.0,
     }
   }
 }
@@ -405,5 +411,7 @@ mod tests {
     assert_eq!(light.color, (1.0, 0.8, 0.6));
     assert_eq!(light.intensity, 2.0);
     assert!(!light.flicker);
+    assert_eq!(light.height, 0.5);
+    assert_eq!(light.falloff, 2.0);
   }
 }

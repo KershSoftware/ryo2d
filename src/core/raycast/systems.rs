@@ -59,7 +59,7 @@ pub struct CameraUniform {
 
 /// Map metadata uploaded as a GPU uniform buffer.
 ///
-/// Total size: 32 bytes (8 × 4 bytes).
+/// Total size: 48 bytes (12 × 4 bytes).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MapInfoUniform {
@@ -71,8 +71,12 @@ pub struct MapInfoUniform {
   pub fog_density: f32,
   /// Fog colour (r, g, b).
   pub fog_color: [f32; 3],
-  /// Padding to reach 32 bytes.
-  pub _pad: f32,
+  /// Distance diminishing factor (0.0 = none, 0.1 = subtle, 0.3 = strong).
+  pub diminish_factor: f32,
+  /// Global ambient light colour (r, g, b).
+  pub ambient_color: [f32; 3],
+  /// Global ambient light intensity (0.0..1.0).
+  pub ambient_intensity: f32,
 }
 
 /// Per-sprite instance data for GPU instanced rendering.
@@ -99,7 +103,7 @@ pub struct SpriteInstance {
 
 /// Per-light instance data for GPU lighting passes.
 ///
-/// Total size: 32 bytes (8 × 4 bytes).
+/// Total size: 48 bytes (12 × f32).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightInstance {
@@ -111,8 +115,12 @@ pub struct LightInstance {
   pub intensity: f32,
   /// Light colour (r, g, b).
   pub color: [f32; 3],
-  /// Padding to reach 32 bytes.
-  pub _pad: f32,
+  /// World-space height (0.5 = mid-wall).
+  pub height: f32,
+  /// Falloff exponent (1.0 = linear, 2.0 = quadratic, 3.0 = cubic).
+  pub falloff: f32,
+  /// Padding to reach 48 bytes.
+  pub _pad: [f32; 3],
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +177,7 @@ mod tests {
 
   #[test]
   fn map_info_uniform_size() {
-    assert_eq!(std::mem::size_of::<MapInfoUniform>(), 32);
+    assert_eq!(std::mem::size_of::<MapInfoUniform>(), 48);
   }
 
   #[test]
@@ -179,6 +187,6 @@ mod tests {
 
   #[test]
   fn light_instance_size() {
-    assert_eq!(std::mem::size_of::<LightInstance>(), 32);
+    assert_eq!(std::mem::size_of::<LightInstance>(), 48);
   }
 }

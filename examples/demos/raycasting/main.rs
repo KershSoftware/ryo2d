@@ -96,6 +96,25 @@ impl Scene for RaycastDemo {
       }
     }
 
+    // Dim corridor around the north passage (x=15, y=6..14)
+    for y in 6..=14 {
+      for x in 13..=17 {
+        if let Some(cell) = world.get_mut(x, y)
+          && cell.wall_texture == 0
+        {
+          cell.light_level = 0.4;
+        }
+      }
+      // Transition zone
+      for &x in &[12, 18] {
+        if let Some(cell) = world.get_mut(x, y)
+          && cell.wall_texture == 0
+        {
+          cell.light_level = 0.7;
+        }
+      }
+    }
+
     // Graduated height variation -- steps instead of a uniform platform
     for y in 20..25 {
       for x in 3..8 {
@@ -147,7 +166,9 @@ impl Scene for RaycastDemo {
       max_distance: 32.0,
       fog_density: 0.04,
       fog_color: [0.05, 0.05, 0.1],
-      _pad: 0.0,
+      diminish_factor: 0.06,
+      ambient_color: [0.6, 0.65, 0.8],
+      ambient_intensity: 0.04,
     });
 
     // Load textures via TextureManager
@@ -213,7 +234,7 @@ impl Scene for RaycastDemo {
       (Transform::new(x, y), s)
     };
     ctx.world.spawn(barrel(10.0, 5.0));
-    ctx.world.spawn(barrel(20.0, 5.0));
+    ctx.world.spawn(barrel(21.5, 21.5));
     ctx.world.spawn(barrel(6.0, 18.0));
 
     // Spawn lights in dark room corners (NW and SE, diagonal)
@@ -221,10 +242,11 @@ impl Scene for RaycastDemo {
       Transform::new(20.5, 20.5),
       RaycastLight::new(6.0, (1.0, 0.78, 0.39), 1.5),
     ));
-    ctx.world.spawn((
-      Transform::new(27.5, 27.5),
-      RaycastLight::new(6.0, (0.39, 0.59, 1.0), 1.2),
-    ));
+    {
+      let mut cool_light = RaycastLight::new(6.0, (0.39, 0.59, 1.0), 1.2);
+      cool_light.falloff = 3.0; // cubic falloff — tighter pool vs warm light's quadratic
+      ctx.world.spawn((Transform::new(27.5, 27.5), cool_light));
+    }
 
     // Spawn torch sprites at the light positions
     ctx
@@ -233,6 +255,13 @@ impl Scene for RaycastDemo {
     ctx
       .world
       .spawn((Transform::new(27.5, 27.5), RaycastSprite::new(1)));
+
+    // Light spilling from the corridor into the dark room entrance
+    {
+      let mut doorway_light = RaycastLight::new(4.0, (1.0, 0.9, 0.7), 1.0);
+      doorway_light.falloff = 3.0; // cubic — tight pool of light
+      ctx.world.spawn((Transform::new(18.5, 24.0), doorway_light));
+    }
 
     // Spawn door entity (y=12 has a door, y=8 and y=20 are open doorways)
     let door1 = ctx
@@ -452,7 +481,8 @@ fn main() {
   let engine = EngineBuilder::new()
     .title("Raycasting Demo")
     .resolution(1920, 1080)
-    .target_fps(60)
+    .target_fps(144)
+    .vsync(true)
     .start_scene(RaycastDemo::new())
     .build();
 

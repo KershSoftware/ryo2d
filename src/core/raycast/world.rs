@@ -282,6 +282,16 @@ impl RaycastWorld {
   pub fn clear_dirty(&mut self) {
     self.dirty = false;
   }
+
+  /// Generate lightmap data for GPU upload as R8Unorm texture.
+  /// Returns a Vec<u8> of width x height values.
+  pub fn generate_lightmap(&self) -> Vec<u8> {
+    self
+      .cells
+      .iter()
+      .map(|cell| (cell.light_level.clamp(0.0, 1.0) * 255.0) as u8)
+      .collect()
+  }
 }
 
 #[cfg(test)]

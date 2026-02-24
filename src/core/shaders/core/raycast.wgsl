@@ -34,7 +34,9 @@ struct MapInfo {
     max_distance: f32,
     fog_density: f32,
     fog_color: vec3<f32>,
-    _pad: f32,
+    diminish_factor: f32,
+    ambient_color: vec3<f32>,
+    ambient_intensity: f32,
 }
 
 struct LightInstance {
@@ -42,7 +44,11 @@ struct LightInstance {
     radius: f32,
     intensity: f32,
     color: vec3<f32>,
-    _pad: f32,
+    height: f32,
+    falloff: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
 struct LightCount {
@@ -70,6 +76,8 @@ struct FragmentOutput {
 @group(0) @binding(5) var tex_sampler: sampler;
 @group(0) @binding(6) var<storage, read> lights: array<LightInstance>;
 @group(0) @binding(7) var<uniform> light_info: LightCount;
+@group(0) @binding(8) var lightmap: texture_2d<f32>;
+@group(0) @binding(9) var lightmap_sampler: sampler;
 
 // ---------------------------------------------------------------------------
 // Map cell unpacking
@@ -120,6 +128,15 @@ fn get_door_state(packed: vec3<u32>) -> f32 {
 fn get_light_level(packed: vec3<u32>) -> f32 {
     return unpack2x16float(packed.z).x;
 }
+// ---------------------------------------------------------------------------
+// Lightmap sampling
+// ---------------------------------------------------------------------------
+
+fn sample_lightmap(world_pos: vec2<f32>) -> f32 {
+    let uv = world_pos / vec2<f32>(f32(map_info.dimensions.x), f32(map_info.dimensions.y));
+    return textureSample(lightmap, lightmap_sampler, uv).r;
+}
+
 // ---------------------------------------------------------------------------
 // Lighting helpers
 // ---------------------------------------------------------------------------
@@ -209,15 +226,16 @@ fn apply_lights(base_color: vec3<f32>, ambient: f32, world_pos: vec2<f32>, vert_
         let light = lights[i];
         let dist_2d = distance(world_pos, light.pos);
         // Approximate 3D distance using vertical offset from light height
-        let dist = sqrt(dist_2d * dist_2d + vert_offset * vert_offset);
+        let vert_diff = vert_offset - (light.height - 0.5);
+        let dist = sqrt(dist_2d * dist_2d + vert_diff * vert_diff);
         if dist < light.radius {
             // Shadow ray: check if a wall blocks the path from light to surface
             if is_occluded(world_pos, light.pos) {
                 continue;
             }
             let norm = dist / light.radius;
-            // Smooth S-curve falloff: tapers gradually at the edge instead of hard cutoff
-            let atten = light.intensity * (1.0 - smoothstep(0.0, 1.0, norm));
+            // Configurable falloff: pow() exponent controls attenuation curve
+            let atten = light.intensity * pow(max(1.0 - norm, 0.0), light.falloff);
             light_contrib += light.color * atten;
         }
     }
@@ -395,19 +413,19 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
     }
     perp_wall_dist = max(perp_wall_dist, 0.001);
 
+    // World position of the hit point (for lighting calculations)
+    let world_hit = camera.pos + safe_ray * perp_wall_dist;
+
     // Cell properties
     let floor_h = get_floor_height(cell);
     let ceil_h = get_ceiling_height(cell);
-    let cell_light = get_light_level(cell);
+    let cell_light = sample_lightmap(world_hit);
     let wall_tex_id = get_wall_texture(cell);
 
     // Wall strip vertical bounds on screen
     let line_height = screen_h / perp_wall_dist;
     let wall_top = -line_height * (ceil_h - camera.height) + screen_h * 0.5;
     let wall_bottom = line_height * (camera.height - floor_h) + screen_h * 0.5;
-
-    // World position of the hit point (for lighting calculations)
-    let world_hit = camera.pos + safe_ray * perp_wall_dist;
 
     // -------------------------------------------------------------------
     // Classify pixel: wall, floor, or ceiling
@@ -454,9 +472,19 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
         // Per-tile light level
         wall_color = wall_color * cell_light;
 
+        // Global ambient: ensure surfaces are never darker than ambient minimum
+        let wall_global_ambient = map_info.ambient_color * map_info.ambient_intensity;
+        wall_color = max(wall_color, tex_color.rgb * wall_global_ambient);
+
         // Dynamic point lights (with vertical attenuation)
         let vert_world = mix(ceil_h, floor_h, wall_frac);
         wall_color = apply_lights(wall_color, cell_light, world_hit, vert_world - 0.5);
+
+        // Light diminishing: surfaces darken with distance from camera
+        if map_info.diminish_factor > 0.0 {
+            let diminish = 1.0 / (1.0 + perp_wall_dist * map_info.diminish_factor);
+            wall_color = wall_color * diminish;
+        }
 
         // Distance fog
         final_color = apply_fog(wall_color, perp_wall_dist);
@@ -481,7 +509,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
 
             let floor_cell = read_cell(floor_map_x, floor_map_y);
             let floor_tex_id = get_floor_texture(floor_cell);
-            let floor_light = get_light_level(floor_cell);
+            let floor_light = sample_lightmap(floor_world);
 
             // Texture coords from world-space fractional part
             let frac_f = floor_world - floor(floor_world);
@@ -489,6 +517,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
             let fty = clamp(i32(frac_f.y * f32(floor_tex_dims.y)), 0, i32(floor_tex_dims.y) - 1);
 
             var floor_color: vec3<f32>;
+            var floor_tex_color: vec3<f32>;
             if floor_tex_id > 0u {
                 let tc = textureLoad(
                     floor_textures,
@@ -497,13 +526,25 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
                     0
                 );
                 floor_color = tc.rgb;
+                floor_tex_color = tc.rgb;
             } else {
                 floor_color = vec3<f32>(0.3, 0.3, 0.3);
+                floor_tex_color = floor_color;
             }
 
             floor_color = floor_color * floor_light;
 
+            // Global ambient: ensure surfaces are never darker than ambient minimum
+            let floor_global_ambient = map_info.ambient_color * map_info.ambient_intensity;
+            floor_color = max(floor_color, floor_tex_color * floor_global_ambient);
+
             floor_color = apply_lights(floor_color, floor_light, floor_world, -0.5);
+
+            // Light diminishing: surfaces darken with distance from camera
+            if map_info.diminish_factor > 0.0 {
+                let diminish = 1.0 / (1.0 + floor_dist * map_info.diminish_factor);
+                floor_color = floor_color * diminish;
+            }
 
             final_color = apply_fog(floor_color, floor_dist);
         } else {
@@ -533,13 +574,14 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
 
                 let ceil_cell = read_cell(ceil_map_x, ceil_map_y);
                 let ceil_tex_id = get_ceiling_texture(ceil_cell);
-                let ceil_light = get_light_level(ceil_cell);
+                let ceil_light = sample_lightmap(ceil_world);
 
                 let frac_c = ceil_world - floor(ceil_world);
                 let ctx_val = clamp(i32(frac_c.x * f32(floor_tex_dims.x)), 0, i32(floor_tex_dims.x) - 1);
                 let cty_val = clamp(i32(frac_c.y * f32(floor_tex_dims.y)), 0, i32(floor_tex_dims.y) - 1);
 
                 var ceil_color: vec3<f32>;
+                var ceil_tex_color: vec3<f32>;
                 if ceil_tex_id > 0u {
                     let tc = textureLoad(
                         floor_textures,
@@ -548,13 +590,25 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
                         0
                     );
                     ceil_color = tc.rgb;
+                    ceil_tex_color = tc.rgb;
                 } else {
                     ceil_color = vec3<f32>(0.4, 0.4, 0.4);
+                    ceil_tex_color = ceil_color;
                 }
 
                 ceil_color = ceil_color * ceil_light;
 
+                // Global ambient: ensure surfaces are never darker than ambient minimum
+                let ceil_global_ambient = map_info.ambient_color * map_info.ambient_intensity;
+                ceil_color = max(ceil_color, ceil_tex_color * ceil_global_ambient);
+
                 ceil_color = apply_lights(ceil_color, ceil_light, ceil_world, 0.5);
+
+                // Light diminishing: surfaces darken with distance from camera
+                if map_info.diminish_factor > 0.0 {
+                    let diminish = 1.0 / (1.0 + ceil_dist * map_info.diminish_factor);
+                    ceil_color = ceil_color * diminish;
+                }
 
                 final_color = apply_fog(ceil_color, ceil_dist);
             } else {

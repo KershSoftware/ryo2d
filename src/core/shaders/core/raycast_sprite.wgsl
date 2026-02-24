@@ -26,11 +26,38 @@ struct SpriteData {
     _pad: vec2<f32>,
 }
 
+struct LightInstance {
+    pos: vec2<f32>,
+    radius: f32,
+    intensity: f32,
+    color: vec3<f32>,
+    height: f32,
+    falloff: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+}
+
+struct LightCount {
+    count: u32,
+}
+
+struct MapInfo {
+    dimensions: vec2<u32>,
+    max_distance: f32,
+    fog_density: f32,
+    fog_color: vec3<f32>,
+    diminish_factor: f32,
+    ambient_color: vec3<f32>,
+    ambient_intensity: f32,
+}
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) tex_coord: vec2<f32>,
     @location(1) sprite_depth: f32,
     @location(2) @interpolate(flat) texture_id: u32,
+    @location(3) sprite_world_pos: vec2<f32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +69,11 @@ struct VertexOutput {
 @group(0) @binding(2) var sprite_textures: texture_2d_array<f32>;
 @group(0) @binding(3) var tex_sampler: sampler;
 @group(0) @binding(4) var depth_texture: texture_2d<f32>;
+@group(0) @binding(5) var<storage, read> lights: array<LightInstance>;
+@group(0) @binding(6) var<uniform> light_info: LightCount;
+@group(0) @binding(7) var lightmap: texture_2d<f32>;
+@group(0) @binding(8) var lightmap_sampler: sampler;
+@group(0) @binding(9) var<uniform> map_info: MapInfo;
 
 // ---------------------------------------------------------------------------
 // Vertex shader
@@ -72,6 +104,7 @@ fn vs_main(
         out.tex_coord = vec2<f32>(0.0, 0.0);
         out.sprite_depth = 0.0;
         out.texture_id = 0u;
+        out.sprite_world_pos = vec2<f32>(0.0, 0.0);
         return out;
     }
 
@@ -138,6 +171,7 @@ fn vs_main(
     out.tex_coord = uv;
     out.sprite_depth = transform_y;
     out.texture_id = sprite.texture_id;
+    out.sprite_world_pos = sprite.pos;
     return out;
 }
 
@@ -173,8 +207,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Distance darkening
-    let dim = 1.0 / (1.0 + in.sprite_depth * 0.15);
+    // Sample lightmap for ambient
+    let lm_uv = in.sprite_world_pos / vec2<f32>(f32(map_info.dimensions.x), f32(map_info.dimensions.y));
+    let ambient = textureSample(lightmap, lightmap_sampler, lm_uv).r;
 
-    return vec4<f32>(color.rgb * dim, 1.0);
+    // Apply ambient to sprite
+    var lit_color = color.rgb * ambient;
+
+    // Global ambient floor
+    let global_ambient = map_info.ambient_color * map_info.ambient_intensity;
+    lit_color = max(lit_color, color.rgb * global_ambient);
+
+    // Dynamic point lights (no shadow rays for sprites — too expensive, minimal visual benefit)
+    var light_contrib = vec3<f32>(0.0);
+    for (var i: u32 = 0u; i < light_info.count; i = i + 1u) {
+        let light = lights[i];
+        let dist = distance(in.sprite_world_pos, light.pos);
+        if dist < light.radius {
+            let norm = dist / light.radius;
+            let atten = light.intensity * pow(max(1.0 - norm, 0.0), light.falloff);
+            light_contrib += light.color * atten;
+        }
+    }
+    let surface = lit_color / max(ambient, 0.05);
+    lit_color = min(lit_color + surface * light_contrib, vec3<f32>(1.0));
+
+    // Light diminishing: surfaces darken with distance from camera
+    if map_info.diminish_factor > 0.0 {
+        let diminish = 1.0 / (1.0 + in.sprite_depth * map_info.diminish_factor);
+        lit_color = lit_color * diminish;
+    }
+
+    return vec4<f32>(lit_color, 1.0);
 }

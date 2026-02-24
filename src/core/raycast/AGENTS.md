@@ -15,7 +15,8 @@ ECS World (entities with Transform + RaycastCamera/Sprite/Light/Door)
        ├─ Camera sync  ──► CameraUniform ──► GPU camera buffer
        ├─ Sprite sync   ──► SpriteInstance[] ──► GPU sprite buffer (sorted back-to-front)
        ├─ Light sync    ──► LightInstance[] ──► GPU light buffer
-       └─ World map     ──► pack_for_gpu()  ──► GPU map storage buffer
+       ├─ World map     ──► pack_for_gpu()  ──► GPU map storage buffer
+       └─ Lightmap      ──► generate_lightmap() ──► R8Unorm texture (bilinear sampled)
               │
               ▼
   GpuRaycastRenderer
@@ -47,7 +48,7 @@ ECS World (entities with Transform + RaycastCamera/Sprite/Light/Door)
 
 - **RaycastCamera** — Direction vector, FOV plane, eye height. Attached to one entity with a `Transform`.
 - **RaycastSprite** — Texture ID, scale, vertical offset. Billboard rendered in world space.
-- **RaycastLight** — Radius, RGB colour, intensity. Dynamic point lighting.
+- **RaycastLight** — Radius, RGB colour, intensity, height, falloff exponent. Dynamic point lighting with configurable attenuation curves.
 - **RaycastDoor** — Map position, state machine (Closed→Opening→Open→Closing), speed, auto-close timer.
 
 ### World Map (`world.rs`)
@@ -62,9 +63,9 @@ ECS World (entities with Transform + RaycastCamera/Sprite/Light/Door)
 | Struct | Size | Purpose |
 |--------|------|---------|
 | `CameraUniform` | 48B | Camera pos, dir, plane, screen size, height, time |
-| `MapInfoUniform` | 32B | Map dimensions, max distance, fog density/colour |
+| `MapInfoUniform` | 48B | Map dimensions, max distance, fog density/colour, diminish factor, ambient colour/intensity |
 | `SpriteInstance` | 32B | Per-sprite pos, scale, texture ID, vertical offset |
-| `LightInstance` | 32B | Per-light pos, radius, intensity, colour |
+| `LightInstance` | 48B | Per-light pos, radius, intensity, colour, height, falloff exponent |
 
 ### GPU Renderer (`gpu.rs`)
 
@@ -75,7 +76,7 @@ ECS World (entities with Transform + RaycastCamera/Sprite/Light/Door)
 ## GPU Data Pipeline
 
 1. **Texture upload** — `queue_wall_textures()` / `queue_floor_textures()` / `queue_sprite_textures()` store raw RGBA data.
-2. **flush_pending()** — Creates `texture_2d_array` resources, uploads map data when dirty, rebuilds cached bind groups.
+2. **flush_pending()** — Creates `texture_2d_array` resources, uploads map data and lightmap texture when dirty, rebuilds cached bind groups.
 3. **ECS sync** — Engine helper `sync_and_render_raycast()` collects camera, sprites (sorted back-to-front), and lights from ECS, writes to GPU buffers.
 4. **Render** — Wall pass renders fullscreen quad with DDA raycasting; sprite pass renders instanced billboards.
 
@@ -86,7 +87,7 @@ ECS World (entities with Transform + RaycastCamera/Sprite/Light/Door)
 - Per-pixel DDA ray marching through the 2D tile map
 - Textured walls, floors, ceilings
 - Door handling (ray passes through open portion)
-- Dynamic point lights, per-tile light levels, distance fog
+- Six-layer lighting: bilinear lightmap ambient → global ambient → dynamic point lights (with 3D height and configurable falloff) → shadow rays → camera-distance diminishing → distance fog
 - Outputs: colour to game texture, depth to R32Float texture
 
 ### Sprite Pass (`shaders/core/raycast_sprite.wgsl`)
@@ -94,7 +95,7 @@ ECS World (entities with Transform + RaycastCamera/Sprite/Light/Door)
 - Camera-space projection of world-space positions
 - Alpha testing with discard
 - Depth testing against wall depth buffer
-- Distance darkening
+- Full dynamic lighting pipeline: lightmap ambient → global ambient → point lights → diminishing (shared light buffer with wall pass)
 
 ## Usage Pattern
 
@@ -128,5 +129,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 
 - The `MapCell::pack()` layout must stay in sync with the unpack functions in `raycast.wgsl`. See cross-reference comments in both files.
 - `SpriteInstance` field order matters for WGSL alignment — `vec2<f32>` fields must be on 8-byte boundaries.
+- `LightInstance` uses `_pad0: f32, _pad1: f32, _pad2: f32` padding in WGSL (NOT `vec3<f32>`) because `vec3<f32>` has 16-byte alignment which would cause array stride mismatch with the Rust struct.
 - Sprites are sorted back-to-front by distance from camera before GPU upload. The GPU sprite pass uses alpha blending, not depth testing between sprites.
+- The lightmap is an R8Unorm texture (not R32Float) because R32Float requires the `FLOAT32_FILTERABLE` feature for bilinear sampling. R8Unorm is always filterable and 256 brightness levels is sufficient.
 - `PORTAL` and `TRANSPARENT` flags are defined but not yet implemented in the shader.

@@ -1436,10 +1436,10 @@ impl Scene for PropertyTweenScene {
         .world
         .get::<PropertyTween<f32>>(entity)
         .map(|t| t.value());
-      if let Some(s) = scale {
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.scale_x = s;
-        }
+      if let Some(s) = scale
+        && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
+      {
+        transform.scale_x = s;
       }
     }
 
@@ -1449,11 +1449,11 @@ impl Scene for PropertyTweenScene {
         .world
         .get::<PropertyTween<Vec2>>(entity)
         .map(|t| t.value());
-      if let Some(p) = pos {
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.x = p.x;
-          transform.y = p.y;
-        }
+      if let Some(p) = pos
+        && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
+      {
+        transform.x = p.x;
+        transform.y = p.y;
       }
     }
 
