@@ -56,7 +56,8 @@ pub mod prelude {
 
   // Scene management
   pub use crate::core::scene::{
-    Scene, SceneAction, SceneCleanup, SceneContext, SceneManager, SlideDirection, Transition,
+    downcast_return, Scene, SceneAction, SceneCleanup, SceneContext, SceneManager, SlideDirection,
+    Transition,
   };
 
   // Resources

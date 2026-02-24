@@ -226,23 +226,84 @@ if want_main_menu {
 }
 ```
 
-## Best Practices
+## Passing Data Between Scenes
 
-1. **Automatic cleanup handles most resets**: World, camera, effects, lighting, and time are automatically reset on Switch/Reset. Override `cleanup_on_exit()` to customize.
-2. **Keep scenes focused**: Each scene should have a single responsibility
-3. **Pass data between scenes**: Use scene struct fields to transfer state
+Three mechanisms exist for different use cases:
+
+### Which Pattern Should I Use?
+
+| Situation | Pattern | Example |
+|-----------|---------|---------|
+| New scene needs initialization config | **Constructor params** | `GameScene::new(difficulty, level)` |
+| Modal/dialog returning a result | **PopReturn** | Level picker returns selected level |
+| Data shared across many scenes | **Resources** | Player score, settings, save state |
+
+### Constructor Parameters (Scene-Owned Data)
+
+Pass data through the scene's constructor. The scene owns this data.
 
 ```rust
 struct GameOverScene {
     final_score: u32,
+    high_score: u32,
 }
 
-impl GameOverScene {
-    fn new(score: u32) -> Self {
-        Self { final_score: score }
+// In gameplay scene:
+SceneAction::Switch(Box::new(GameOverScene {
+    final_score: self.score,
+    high_score: self.high_score,
+}))
+```
+
+Best for one-time, scene-specific data. Keep parameter counts small (1-3).
+
+### PopReturn (Child → Parent Data Flow)
+
+Return typed data when popping a scene. The parent receives it in `on_resume`.
+
+```rust
+// In level select scene — return the chosen level
+SceneAction::PopReturn(Box::new(selected_level as u32))
+
+// In parent scene — receive the result
+fn on_resume(&mut self, _ctx: &mut SceneContext, returned: Option<Box<dyn Any>>) {
+    if let Some(level) = downcast_return::<u32>(returned) {
+        self.current_level = level;
     }
 }
 ```
+
+Best for modal interactions: pickers, dialogs, confirmation screens.
+
+### Resources (Cross-Scene Shared State)
+
+Store typed data that persists across all scene transitions.
+
+```rust
+// Store before switching scenes
+ctx.resources.insert(GameProgress { level: 3, score: 1000 });
+
+// Read from any scene
+if let Some(progress) = ctx.resource::<GameProgress>() {
+    println!("Level: {}", progress.level);
+}
+
+// Modify from any scene
+if let Some(progress) = ctx.resource_mut::<GameProgress>() {
+    progress.score += bonus;
+}
+```
+
+Resources are **not** affected by `SceneCleanup` — they survive Switch, Reset, and all transitions. One value per concrete type.
+
+Best for: player state, settings, save data, anything multiple scenes need to read/write.
+
+## Best Practices
+
+1. **Automatic cleanup handles most resets**: World, camera, effects, lighting, and time are automatically reset on Switch/Reset. Override `cleanup_on_exit()` to customize.
+2. **Keep scenes focused**: Each scene should have a single responsibility.
+3. **Prefer Resources over threading data through constructors**: If more than 2 scenes need the same data, put it in Resources.
+4. **Use `downcast_return` for PopReturn**: Avoids nested `if let` chains.
 
 ## API Reference
 

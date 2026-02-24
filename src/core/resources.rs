@@ -71,6 +71,12 @@ impl Resources {
       .expect("type mismatch in Resources::get_or_insert_with (should be unreachable)")
   }
 
+  /// Returns a mutable reference to the resource of type `T`, inserting
+  /// `T::default()` if none exists.
+  pub fn get_or_default<T: Any + Default>(&mut self) -> &mut T {
+    self.get_or_insert_with(T::default)
+  }
+
   /// Removes and returns the resource of type `T`, or `None` if it was not
   /// present.
   pub fn remove<T: Any>(&mut self) -> Option<T> {
@@ -184,5 +190,20 @@ mod tests {
   fn default_creates_empty() {
     let res = Resources::default();
     assert!(!res.contains::<u32>());
+  }
+
+  #[test]
+  fn get_or_default_creates_default_when_missing() {
+    let mut res = Resources::new();
+    let val: &mut u32 = res.get_or_default();
+    assert_eq!(*val, 0);
+  }
+
+  #[test]
+  fn get_or_default_returns_existing() {
+    let mut res = Resources::new();
+    res.insert(42u32);
+    let val: &mut u32 = res.get_or_default();
+    assert_eq!(*val, 42);
   }
 }

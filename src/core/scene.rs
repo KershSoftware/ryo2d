@@ -338,6 +338,54 @@ impl<'a> SceneContext<'a> {
   }
 
   // ===========================================================================
+  // Resource Access (Convenience)
+  // ===========================================================================
+
+  /// Get a shared reference to a resource by type.
+  ///
+  /// Shorthand for `ctx.resources.get::<T>()`.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// if let Some(progress) = ctx.resource::<GameProgress>() {
+  ///     println!("Level: {}", progress.level);
+  /// }
+  /// ```
+  pub fn resource<T: Any>(&self) -> Option<&T> {
+    self.resources.get::<T>()
+  }
+
+  /// Get an exclusive reference to a resource by type.
+  ///
+  /// Shorthand for `ctx.resources.get_mut::<T>()`.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// if let Some(progress) = ctx.resource_mut::<GameProgress>() {
+  ///     progress.score += 100;
+  /// }
+  /// ```
+  pub fn resource_mut<T: Any>(&mut self) -> Option<&mut T> {
+    self.resources.get_mut::<T>()
+  }
+
+  /// Get an exclusive reference to a resource, inserting `T::default()` if missing.
+  ///
+  /// Shorthand for `ctx.resources.get_or_default::<T>()`.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// let settings = ctx.resource_or_default::<GameSettings>();
+  /// settings.volume = 0.8;
+  /// ```
+  pub fn resource_or_default<T: Any + Default>(&mut self) -> &mut T {
+    self.resources.get_or_default::<T>()
+  }
+
+  // ===========================================================================
   // Time Control (Game Juice)
   // ===========================================================================
 
@@ -852,6 +900,23 @@ pub enum SceneAction {
   PopReturnWith(Box<dyn Any>, Transition),
   /// Exit the game
   Quit,
+}
+
+/// Convenience helper for extracting typed data from `on_resume`'s returned parameter.
+///
+/// Combines the `Option` unwrap and `Any` downcast into a single call.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// fn on_resume(&mut self, _ctx: &mut SceneContext, returned: Option<Box<dyn Any>>) {
+///     if let Some(level) = downcast_return::<u32>(returned) {
+///         self.selected_level = level;
+///     }
+/// }
+/// ```
+pub fn downcast_return<T: Any>(returned: Option<Box<dyn Any>>) -> Option<T> {
+  returned.and_then(|data| data.downcast::<T>().ok().map(|b| *b))
 }
 
 /// Trait for implementing game scenes.
@@ -1982,5 +2047,29 @@ mod tests {
   fn scene_cleanup_default_trait_returns_default() {
     let scene = TestScene::new("test");
     assert_eq!(scene.cleanup_on_exit(), SceneCleanup::DEFAULT);
+  }
+
+  // =========================================================================
+  // downcast_return Tests
+  // =========================================================================
+
+  #[test]
+  fn downcast_return_some_correct_type() {
+    let data: Option<Box<dyn Any>> = Some(Box::new(42u32));
+    let result = downcast_return::<u32>(data);
+    assert_eq!(result, Some(42u32));
+  }
+
+  #[test]
+  fn downcast_return_some_wrong_type() {
+    let data: Option<Box<dyn Any>> = Some(Box::new(42u32));
+    let result = downcast_return::<String>(data);
+    assert_eq!(result, None);
+  }
+
+  #[test]
+  fn downcast_return_none() {
+    let result = downcast_return::<u32>(None);
+    assert_eq!(result, None);
   }
 }
