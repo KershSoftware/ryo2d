@@ -598,6 +598,35 @@ impl GpuRaycastRenderer {
       let gpu_data = world.pack_for_gpu();
       queue.write_buffer(&self.map_buffer, 0, bytemuck::cast_slice(&gpu_data));
 
+      // Resize lightmap texture to match map dimensions (UV [0,1] must span exactly
+      // the valid texel data, otherwise most of the map samples from uninitialized
+      // texels which are zero per the WebGPU spec, producing incorrect lighting).
+      let map_w = world.width() as u32;
+      let map_h = world.height() as u32;
+      let tex_size = self.lightmap_texture.size();
+      if tex_size.width != map_w || tex_size.height != map_h {
+        self.lightmap_texture = device.create_texture(&wgpu::TextureDescriptor {
+          label: Some("Raycast Lightmap Texture"),
+          size: wgpu::Extent3d {
+            width: map_w,
+            height: map_h,
+            depth_or_array_layers: 1,
+          },
+          mip_level_count: 1,
+          sample_count: 1,
+          dimension: wgpu::TextureDimension::D2,
+          format: wgpu::TextureFormat::R8Unorm,
+          usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+          view_formats: &[],
+        });
+        self.lightmap_texture_view = self
+          .lightmap_texture
+          .create_view(&wgpu::TextureViewDescriptor::default());
+        // Bind groups reference the texture view — must be rebuilt
+        self.cached_wall_bind_group = None;
+        self.cached_sprite_bind_group = None;
+      }
+
       let lightmap_data = world.generate_lightmap();
       queue.write_texture(
         wgpu::ImageCopyTexture {
@@ -609,12 +638,12 @@ impl GpuRaycastRenderer {
         &lightmap_data,
         wgpu::ImageDataLayout {
           offset: 0,
-          bytes_per_row: Some(world.width() as u32), // 1 byte per pixel for R8Unorm
+          bytes_per_row: Some(map_w), // 1 byte per pixel for R8Unorm
           rows_per_image: None,
         },
         wgpu::Extent3d {
-          width: world.width() as u32,
-          height: world.height() as u32,
+          width: map_w,
+          height: map_h,
           depth_or_array_layers: 1,
         },
       );

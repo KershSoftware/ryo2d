@@ -111,6 +111,27 @@ impl Scene for RaycastDemo {
       }
     }
 
+    // Small pitch-dark room (no light sources — pure darkness)
+    for x in 9..=13 {
+      *world.get_mut(x, 2).unwrap() = MapCell::wall(2);
+      *world.get_mut(x, 6).unwrap() = MapCell::wall(2);
+    }
+    for y in 2..=6 {
+      *world.get_mut(9, y).unwrap() = MapCell::wall(2);
+      *world.get_mut(13, y).unwrap() = MapCell::wall(2);
+    }
+    // Doorway on the south wall
+    let dark_door = world.get_mut(11, 6).unwrap();
+    dark_door.wall_texture = 0;
+    dark_door.floor_texture = 1;
+    dark_door.ceiling_texture = 2;
+    // Near-zero lighting for the entire room (walls + interior)
+    for y in 2..=6 {
+      for x in 9..=13 {
+        world.get_mut(x, y).unwrap().light_level = 0.02;
+      }
+    }
+
     // Graduated height variation -- steps instead of a uniform platform
     for y in 20..25 {
       for x in 3..8 {
