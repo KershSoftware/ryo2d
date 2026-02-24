@@ -1,0 +1,12 @@
+[package]
+name = "inventory"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ryo2d = { path = "../../../" }
+rand = "0.8"
+
+[[bin]]
+name = "inventory"
+path = "main.rs"

@@ -35,6 +35,7 @@
 - [Collision Detection](./concepts/collision.md)
 - [Spatial Partitioning](./concepts/spatial.md)
 - [Particle System](./concepts/particles.md)
+- [Inventory System](./concepts/inventory.md)
 - [Audio System](./concepts/audio.md)
 - [Networking](./concepts/networking.md)
   - [Network Replication](./concepts/replication.md)

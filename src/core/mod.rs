@@ -48,6 +48,9 @@ pub mod console;
 pub mod dev_log;
 pub mod windows;
 
+// Inventory & Item System
+pub mod inventory;
+
 // Game systems (extracted from engine for modularity)
 pub mod systems;
 pub mod timing;

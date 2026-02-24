@@ -44,6 +44,7 @@ This folder contains all core engine functionality. Everything here is "part of 
 | `texture/` | Centralized GPU texture management: loading, atlas slicing, texture arrays, generational handles (see `texture/AGENTS.md`) |
 | `lighting/` | 2D lighting system with point lights, spotlights, and shadows (see `lighting/AGENTS.md`) |
 | `raycast/` | GPU-accelerated pseudo-3D raycasting renderer (see `raycast/AGENTS.md`) |
+| `inventory/` | Inventory & item system: registry, containers, equipment, loot (see `inventory/AGENTS.md`) |
 | `ui/` | Immediate-mode UI system for HUDs and overlays (see `ui/AGENTS.md`) |
 
 ## Import Patterns

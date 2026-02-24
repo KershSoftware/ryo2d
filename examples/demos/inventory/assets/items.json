@@ -1,0 +1,92 @@
+[
+  {
+    "name": "iron_sword",
+    "display_name": "Iron Sword",
+    "description": "A trusty iron blade",
+    "max_stack": 1,
+    "tags": ["weapon"],
+    "data_type": "combat_stats",
+    "data": { "damage": 8, "defense": 0, "color": [139, 90, 43] }
+  },
+  {
+    "name": "battle_axe",
+    "display_name": "Battle Axe",
+    "description": "A heavy two-handed axe",
+    "max_stack": 1,
+    "tags": ["weapon"],
+    "data_type": "combat_stats",
+    "data": { "damage": 14, "defense": 0, "color": [160, 60, 30] }
+  },
+  {
+    "name": "magic_staff",
+    "display_name": "Magic Staff",
+    "description": "A staff imbued with arcane power",
+    "max_stack": 1,
+    "tags": ["weapon"],
+    "data_type": "combat_stats",
+    "data": { "damage": 10, "defense": 2, "color": [140, 50, 200] }
+  },
+  {
+    "name": "leather_armor",
+    "display_name": "Leather Armor",
+    "description": "Light but reliable protection",
+    "max_stack": 1,
+    "tags": ["armor"],
+    "data_type": "combat_stats",
+    "data": { "damage": 0, "defense": 5, "color": [210, 180, 120] }
+  },
+  {
+    "name": "chain_mail",
+    "display_name": "Chain Mail",
+    "description": "Interlocking metal rings",
+    "max_stack": 1,
+    "tags": ["armor"],
+    "data_type": "combat_stats",
+    "data": { "damage": 0, "defense": 10, "color": [192, 192, 210] }
+  },
+  {
+    "name": "plate_armor",
+    "display_name": "Plate Armor",
+    "description": "Heavy plate forged from finest steel",
+    "max_stack": 1,
+    "tags": ["armor"],
+    "data_type": "combat_stats",
+    "data": { "damage": 0, "defense": 16, "color": [220, 190, 60] }
+  },
+  {
+    "name": "cloth_cap",
+    "display_name": "Cloth Cap",
+    "description": "A simple cloth cap",
+    "max_stack": 1,
+    "tags": ["helmet"],
+    "data_type": "combat_stats",
+    "data": { "damage": 0, "defense": 2, "color": [80, 160, 60] }
+  },
+  {
+    "name": "iron_helm",
+    "display_name": "Iron Helm",
+    "description": "Solid iron headgear",
+    "max_stack": 1,
+    "tags": ["helmet"],
+    "data_type": "combat_stats",
+    "data": { "damage": 0, "defense": 6, "color": [150, 150, 160] }
+  },
+  {
+    "name": "golden_crown",
+    "display_name": "Golden Crown",
+    "description": "A crown fit for royalty",
+    "max_stack": 1,
+    "tags": ["helmet"],
+    "data_type": "combat_stats",
+    "data": { "damage": 0, "defense": 4, "color": [240, 220, 50] }
+  },
+  {
+    "name": "health_potion",
+    "display_name": "Health Potion",
+    "description": "Restores vitality",
+    "max_stack": 10,
+    "tags": ["consumable"],
+    "data_type": "combat_stats",
+    "data": { "damage": 0, "defense": 0, "color": [220, 50, 50] }
+  }
+]

@@ -141,6 +141,7 @@ This project uses **nested AGENTS.md files** in subdirectories where additional 
 | `src/core/network/replication/AGENTS.md` | Entity/component replication system |
 | `src/core/network/rpc/AGENTS.md` | Remote procedure call system |
 | `src/core/particles/AGENTS.md` | Particle system components and presets |
+| `src/core/inventory/AGENTS.md` | Inventory & item system |
 | `src/cli/AGENTS.md` | CLI tool commands and design principles |
 | `docs/AGENTS.md` | Documentation system (mdbook + rustdoc) |
 | `.github/skills/` | AI skill definitions for specialized tasks |

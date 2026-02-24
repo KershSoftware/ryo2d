@@ -121,6 +121,7 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 ### Gameplay Systems
 - **Pathfinding** — A* with nav agents and grid-based navigation
 - **Procedural Generation** — BSP dungeons, cellular automata, WFC, noise
+- **Inventory System** — Item registry, slot-based containers, equipment, loot tables
 
 ### Networking
 - **Client-Server** — Dedicated and listen server modes

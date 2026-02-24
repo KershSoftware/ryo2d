@@ -24,6 +24,7 @@
 use std::path::PathBuf;
 
 use crate::core::ecs::Entity;
+use crate::core::inventory::ItemId;
 use crate::core::network::ClientId;
 
 // ============================================================================
@@ -500,4 +501,45 @@ where
   pub fn is_transition(&self, from: &S, to: &S) -> bool {
     &self.from == from && &self.to == to
   }
+}
+
+// ============================================================================
+// Inventory Events
+// ============================================================================
+
+/// Emitted when an item is picked up from the world.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemPickedUp {
+  pub entity: Entity,
+  pub item_id: ItemId,
+  pub quantity: u32,
+}
+
+/// Emitted when an item is dropped into the world.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemDropped {
+  pub entity: Entity,
+  pub item_id: ItemId,
+  pub quantity: u32,
+}
+
+/// Emitted when inventory contents change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryChanged {
+  pub item_id: ItemId,
+  pub new_total: u32,
+}
+
+/// Emitted when an item is equipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemEquipped {
+  pub slot: usize,
+  pub item_id: ItemId,
+}
+
+/// Emitted when an item is unequipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemUnequipped {
+  pub slot: usize,
+  pub item_id: ItemId,
 }

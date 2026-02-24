@@ -56,8 +56,8 @@ pub mod prelude {
 
   // Scene management
   pub use crate::core::scene::{
-    downcast_return, Scene, SceneAction, SceneCleanup, SceneContext, SceneManager, SlideDirection,
-    Transition,
+    Scene, SceneAction, SceneCleanup, SceneContext, SceneManager, SlideDirection, Transition,
+    downcast_return,
   };
 
   // Resources
@@ -82,7 +82,8 @@ pub mod prelude {
   pub use crate::core::events::{
     AssetLoadFailed, AssetReloaded, ClientConnected, ClientDisconnected, CollisionStarted,
     CollisionStopped, ConnectedToServer, DisconnectReason, DisconnectedFromServer, Events,
-    KnockbackFinished, KnockbackStarted, SquashStretchFinished, SquashStretchStarted, StateChanged,
+    InventoryChanged, ItemDropped, ItemEquipped, ItemPickedUp, ItemUnequipped, KnockbackFinished,
+    KnockbackStarted, SquashStretchFinished, SquashStretchStarted, StateChanged,
   };
 
   // Physics components
@@ -254,8 +255,8 @@ pub mod prelude {
   // Error types (centralized)
   pub use crate::core::error::{
     AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,
-    HotReloadResult, NetworkError, NetworkResult, ReplicationError, ReplicationResult, SaveError,
-    SaveResult, SpriteError, SpriteResult,
+    HotReloadResult, InventoryError, InventoryResult, NetworkError, NetworkResult,
+    ReplicationError, ReplicationResult, SaveError, SaveResult, SpriteError, SpriteResult,
   };
 
   // Navigation & Pathfinding
@@ -273,6 +274,12 @@ pub mod prelude {
     ProcgenBuilder, RandomWalkConfig, Region, RegionCreated, RegionMetadata, RegionType,
     RegionsConnected, SeededRng, TileType, WfcConfig, WfcDirection, WfcResult, WfcTile,
     poisson_points,
+  };
+
+  // Inventory & Item System
+  pub use crate::core::inventory::{
+    EquipValidator, Equipment, Inventory, ItemData, ItemDrop, ItemId, ItemRegistry, ItemStack,
+    ItemTemplate, ItemTemplateBuilder, LootEntry, LootTable, pickup_item, spawn_item_drop,
   };
 
   // State Machines
