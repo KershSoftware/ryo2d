@@ -53,8 +53,10 @@ pub struct CameraUniform {
   pub height: f32,
   /// Time since start in seconds (for animated effects).
   pub time: f32,
+  /// Vertical pitch for horizon shift.
+  pub pitch: f32,
   /// Padding to reach 48 bytes.
-  pub _pad: [f32; 2],
+  pub _pad: f32,
 }
 
 /// Map metadata uploaded as a GPU uniform buffer.

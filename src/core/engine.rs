@@ -2267,7 +2267,8 @@ fn sync_and_render_raycast(
         screen_size: [rend.game_width() as f32, rend.game_height() as f32],
         height: camera.height,
         time,
-        _pad: [0.0; 2],
+        pitch: camera.pitch,
+        _pad: 0.0,
       };
       raycast.update_camera(rend.queue(), &cam);
       break;

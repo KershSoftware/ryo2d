@@ -15,7 +15,8 @@ struct Camera {
     screen_size: vec2<f32>,
     height: f32,
     time: f32,
-    _pad: vec2<f32>,
+    pitch: f32,
+    _pad: f32,
 }
 
 struct SpriteData {
@@ -113,8 +114,9 @@ fn vs_main(
     let sprite_height = abs(screen_h / transform_y) * sprite.scale.y;
     let sprite_width = abs(screen_h / transform_y) * sprite.scale.x;
 
-    // Vertical center accounting for camera height and sprite vertical offset
-    let v_center = screen_h * 0.5 + (camera.height - 0.5 - sprite.v_offset) * screen_h / transform_y;
+    // Vertical center accounting for pitch, camera height, and sprite vertical offset
+    let horizon = screen_h * 0.5 + camera.pitch * screen_h;
+    let v_center = horizon + (camera.height - 0.5 - sprite.v_offset) * screen_h / transform_y;
 
     // Quad bounds in pixel space
     let left = sprite_screen_x - sprite_width * 0.5;

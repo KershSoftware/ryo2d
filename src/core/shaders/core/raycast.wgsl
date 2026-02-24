@@ -26,7 +26,8 @@ struct Camera {
     screen_size: vec2<f32>,
     height: f32,
     time: f32,
-    _pad: vec2<f32>,
+    pitch: f32,
+    _pad: f32,
 }
 
 struct MapInfo {
@@ -299,6 +300,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
     // Pixel coordinates (0..screen_w, 0..screen_h)
     let screen_x = in.tex_coord.x * screen_w;
     let screen_y = in.tex_coord.y * screen_h;
+    let horizon = screen_h * 0.5 + camera.pitch * screen_h;
 
     // Camera-space X coordinate: -1 (left) to +1 (right)
     let camera_x = 2.0 * screen_x / screen_w - 1.0;
@@ -395,7 +397,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
     // No wall hit - sky/ground fallback
     // -------------------------------------------------------------------
     if !hit {
-        if screen_y < screen_h * 0.5 {
+        if screen_y < horizon {
             return FragmentOutput(vec4<f32>(0.53, 0.81, 0.92, 1.0), vec4<f32>(map_info.max_distance, 0.0, 0.0, 1.0)); // sky blue
         } else {
             return FragmentOutput(vec4<f32>(0.2, 0.2, 0.2, 1.0), vec4<f32>(map_info.max_distance, 0.0, 0.0, 1.0));    // dark gray ground
@@ -424,8 +426,8 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
 
     // Wall strip vertical bounds on screen
     let line_height = screen_h / perp_wall_dist;
-    let wall_top = -line_height * (ceil_h - camera.height) + screen_h * 0.5;
-    let wall_bottom = line_height * (camera.height - floor_h) + screen_h * 0.5;
+    let wall_top = -line_height * (ceil_h - camera.height) + horizon;
+    let wall_bottom = line_height * (camera.height - floor_h) + horizon;
 
     // -------------------------------------------------------------------
     // Classify pixel: wall, floor, or ceiling
@@ -493,7 +495,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
 
         // Distance from camera plane to this floor pixel
         let floor_dist = (camera.height - floor_h) * screen_h
-                         / (screen_y - screen_h * 0.5);
+                         / (screen_y - horizon);
         depth_value = floor_dist;
 
         // World position of this floor pixel
@@ -553,7 +555,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
     } else {
         // ---- CEILING ----
 
-        let denom = screen_h * 0.5 - screen_y;
+        let denom = horizon - screen_y;
         if abs(denom) < 0.001 {
             final_color = map_info.fog_color;
             depth_value = map_info.max_distance;

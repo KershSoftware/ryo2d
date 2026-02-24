@@ -23,11 +23,9 @@ struct RaycastDemo {
   player_x: f32,
   player_y: f32,
   player_angle: f32,
+  player_pitch: f32,
   camera_entity: Option<Entity>,
   door_entities: Vec<Entity>,
-  frame_count: u32,
-  fps_timer: f32,
-  fps_display: u32,
 }
 
 impl RaycastDemo {
@@ -36,11 +34,9 @@ impl RaycastDemo {
       player_x: 4.5,
       player_y: 4.5,
       player_angle: 0.0,
+      player_pitch: 0.0,
       camera_entity: None,
       door_entities: Vec::new(),
-      frame_count: 0,
-      fps_timer: 0.0,
-      fps_display: 0,
     }
   }
 }
@@ -271,21 +267,14 @@ impl Scene for RaycastDemo {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Track FPS
-    self.frame_count += 1;
-    self.fps_timer += dt;
-    if self.fps_timer >= 1.0 {
-      self.fps_display = self.frame_count;
-      self.frame_count = 0;
-      self.fps_timer -= 1.0;
-    }
-
     let move_speed = 3.0 * dt;
     let turn_speed = 2.0 * dt;
+    let mouse_sensitivity = 0.003;
 
     // Mouse look
-    let (mouse_dx, _) = ctx.input.mouse_delta();
-    self.player_angle += mouse_dx * 0.003;
+    let (mouse_dx, mouse_dy) = ctx.input.mouse_delta();
+    self.player_angle += mouse_dx * mouse_sensitivity;
+    self.player_pitch = (self.player_pitch - mouse_dy * mouse_sensitivity).clamp(-0.7, 0.7);
 
     // Keyboard turning
     if ctx.input.key_down(KeyCode::ArrowLeft) {
@@ -426,6 +415,7 @@ impl Scene for RaycastDemo {
       }
       if let Some(mut camera) = ctx.world.get_mut::<RaycastCamera>(entity) {
         camera.set_angle(self.player_angle);
+        camera.set_pitch(self.player_pitch);
       }
     }
 
@@ -458,18 +448,17 @@ impl Scene for RaycastDemo {
       crosshair_color,
     );
 
-    // FPS and position display
     let text_color = Color::new(255, 255, 255, 220);
-    ui.draw_text(&format!("FPS: {}", self.fps_display), 8.0, 8.0, text_color);
     ui.draw_text(
       &format!(
-        "Pos: ({:.1}, {:.1})  Angle: {:.1}°",
+        "Pos: ({:.1}, {:.1})  Angle: {:.1}°  Pitch: {:.1}°",
         self.player_x,
         self.player_y,
-        self.player_angle.to_degrees()
+        self.player_angle.to_degrees(),
+        self.player_pitch.to_degrees()
       ),
       8.0,
-      22.0,
+      8.0,
       text_color,
     );
 

@@ -20,6 +20,10 @@ pub struct RaycastCamera {
   pub plane: (f32, f32),
   /// Vertical eye height in the cell (0.5 = eye level).
   pub height: f32,
+  /// Vertical pitch offset in radians (0.0 = level, positive = look up).
+  pub pitch: f32,
+  /// Maximum allowed pitch magnitude in radians.
+  pub max_pitch: f32,
 }
 
 impl RaycastCamera {
@@ -32,6 +36,8 @@ impl RaycastCamera {
       direction: (1.0, 0.0),
       plane: (0.0, plane_len),
       height: 0.5,
+      pitch: 0.0,
+      max_pitch: std::f32::consts::FRAC_PI_4, // 45 degrees
     }
   }
 
@@ -54,6 +60,21 @@ impl RaycastCamera {
   pub fn rotate(&mut self, delta: f32) {
     let new_angle = self.angle() + delta;
     self.set_angle(new_angle);
+  }
+
+  /// Set vertical pitch in radians, clamped to `±max_pitch`.
+  pub fn set_pitch(&mut self, pitch: f32) {
+    self.pitch = pitch.clamp(-self.max_pitch, self.max_pitch);
+  }
+
+  /// Get the current pitch in radians.
+  pub fn pitch(&self) -> f32 {
+    self.pitch
+  }
+
+  /// Adjust pitch by `delta` radians, clamped to `±max_pitch`.
+  pub fn adjust_pitch(&mut self, delta: f32) {
+    self.set_pitch(self.pitch + delta);
   }
 
   /// Compute the length of the camera plane vector.
@@ -413,5 +434,44 @@ mod tests {
     assert!(!light.flicker);
     assert_eq!(light.height, 0.5);
     assert_eq!(light.falloff, 2.0);
+  }
+
+  #[test]
+  fn camera_pitch_default() {
+    let cam = RaycastCamera::new(66.0);
+    assert!((cam.pitch - 0.0).abs() < EPSILON);
+    assert!((cam.max_pitch - PI / 4.0).abs() < EPSILON);
+  }
+
+  #[test]
+  fn camera_pitch_clamp() {
+    let mut cam = RaycastCamera::new(66.0);
+    cam.set_pitch(1.0); // exceeds default max_pitch of PI/4 (~0.785)
+    assert!((cam.pitch - cam.max_pitch).abs() < EPSILON);
+    cam.set_pitch(-1.0);
+    assert!((cam.pitch - (-cam.max_pitch)).abs() < EPSILON);
+  }
+
+  #[test]
+  fn camera_adjust_pitch() {
+    let mut cam = RaycastCamera::new(66.0);
+    cam.adjust_pitch(0.3);
+    assert!((cam.pitch - 0.3).abs() < EPSILON);
+    cam.adjust_pitch(0.3);
+    assert!((cam.pitch - 0.6).abs() < EPSILON);
+    // Should clamp at positive max_pitch
+    cam.adjust_pitch(1.0);
+    assert!((cam.pitch - cam.max_pitch).abs() < EPSILON);
+    // Should clamp at negative max_pitch
+    cam.adjust_pitch(-3.0);
+    assert!((cam.pitch - (-cam.max_pitch)).abs() < EPSILON);
+  }
+
+  #[test]
+  fn camera_custom_max_pitch() {
+    let mut cam = RaycastCamera::new(66.0);
+    cam.max_pitch = PI / 6.0; // 30 degrees
+    cam.set_pitch(1.0);
+    assert!((cam.pitch - PI / 6.0).abs() < EPSILON);
   }
 }
