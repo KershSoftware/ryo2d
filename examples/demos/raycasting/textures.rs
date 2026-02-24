@@ -1,8 +1,7 @@
 //! Procedural texture generation for the raycasting demo.
 
-/// Generate a 64x64 RGBA checkerboard texture.
-pub fn checkerboard(color_a: [u8; 4], color_b: [u8; 4], cell_size: u32) -> Vec<u8> {
-  let size = 64u32;
+/// Generate an RGBA checkerboard texture at the given size.
+pub fn checkerboard(color_a: [u8; 4], color_b: [u8; 4], cell_size: u32, size: u32) -> Vec<u8> {
   let mut data = vec![0u8; (size * size * 4) as usize];
   for y in 0..size {
     for x in 0..size {
@@ -15,9 +14,8 @@ pub fn checkerboard(color_a: [u8; 4], color_b: [u8; 4], cell_size: u32) -> Vec<u
   data
 }
 
-/// Generate a 64x64 RGBA brick pattern.
-pub fn bricks(mortar: [u8; 4], brick: [u8; 4]) -> Vec<u8> {
-  let size = 64u32;
+/// Generate an RGBA brick pattern at the given size.
+pub fn bricks(mortar: [u8; 4], brick: [u8; 4], size: u32) -> Vec<u8> {
   let mut data = vec![0u8; (size * size * 4) as usize];
   let brick_h = 8u32;
   let brick_w = 16u32;
@@ -43,9 +41,8 @@ pub fn bricks(mortar: [u8; 4], brick: [u8; 4]) -> Vec<u8> {
   data
 }
 
-/// Generate a 64x64 RGBA solid color texture.
-pub fn solid(color: [u8; 4]) -> Vec<u8> {
-  let size = 64u32;
+/// Generate an RGBA solid color texture at the given size.
+pub fn solid(color: [u8; 4], size: u32) -> Vec<u8> {
   let mut data = vec![0u8; (size * size * 4) as usize];
   for pixel in data.chunks_exact_mut(4) {
     pixel.copy_from_slice(&color);
@@ -53,49 +50,47 @@ pub fn solid(color: [u8; 4]) -> Vec<u8> {
   data
 }
 
-/// Generate a 64x64 RGBA barrel/cylinder sprite.
+/// Generate an RGBA barrel/cylinder sprite at the given size.
 ///
 /// Draws a rectangular barrel with cylindrical left-right shading,
 /// a dark metal band across the middle, and slight bulge highlights
 /// to suggest a 3D cylinder viewed from the side.
-pub fn barrel(body: [u8; 3], band: [u8; 3]) -> Vec<u8> {
-  let size = 64u32;
+pub fn barrel(body: [u8; 3], band: [u8; 3], size: u32) -> Vec<u8> {
   let mut data = vec![0u8; (size * size * 4) as usize];
-  let margin = 4u32; // transparent border around the barrel
+  let s = size as f32 / 64.0;
+  let margin = (4.0 * s) as u32;
   let left = margin;
   let right = size - margin;
-  let top = 2u32; // nearly full height
-  let bottom = size - 2;
+  let top = (2.0 * s) as u32;
+  let bottom = size - (2.0 * s) as u32;
   let half_w = (right - left) as f32 / 2.0;
   let center_x = (left + right) as f32 / 2.0;
+  let band_thickness = (3.0 * s).max(1.0);
+  let plank_spacing = (14.0 * s).max(2.0) as u32;
 
   for y in 0..size {
     for x in 0..size {
       let idx = ((y * size + x) * 4) as usize;
 
       if x < left || x >= right || y < top || y >= bottom {
-        data[idx + 3] = 0; // transparent outside barrel rect
+        data[idx + 3] = 0;
         continue;
       }
 
       let dx = x as f32 + 0.5 - center_x;
-      // Cylindrical shading: darker at left/right edges
-      let norm_x = dx / half_w; // -1..1
+      let norm_x = dx / half_w;
       let shade = 1.0 - norm_x * norm_x * 0.55;
 
-      // Metal bands: two thin bands near top/bottom, one wider in middle
-      let band_mid = (y as f32 - size as f32 * 0.5).abs() < 3.0;
-      let band_top = y >= top && y < top + 3;
-      let band_bot = y >= bottom - 3 && y < bottom;
+      let band_mid = (y as f32 - size as f32 * 0.5).abs() < band_thickness;
+      let band_top = y >= top && y < top + band_thickness as u32;
+      let band_bot = y >= bottom - band_thickness as u32 && y < bottom;
       let in_band = band_mid || band_top || band_bot;
 
-      // Slight vertical plank lines
-      let plank = (x - left).is_multiple_of(14) && !in_band;
+      let plank = plank_spacing > 0 && (x - left).is_multiple_of(plank_spacing) && !in_band;
 
       let base = if in_band {
         band
       } else if plank {
-        // Darken plank seams slightly
         [
           (body[0] as f32 * 0.7) as u8,
           (body[1] as f32 * 0.7) as u8,
@@ -114,14 +109,23 @@ pub fn barrel(body: [u8; 3], band: [u8; 3]) -> Vec<u8> {
   data
 }
 
-/// Generate a 64x64 RGBA torch sprite.
+/// Generate an RGBA torch sprite at the given size.
 ///
 /// Draws a small wooden handle at the bottom with a flame shape on top.
 /// Most of the texture is transparent so the sprite doesn't look blocky.
-pub fn torch(handle: [u8; 3], flame: [u8; 3]) -> Vec<u8> {
-  let size = 64u32;
+pub fn torch(handle: [u8; 3], flame: [u8; 3], size: u32) -> Vec<u8> {
   let mut data = vec![0u8; (size * size * 4) as usize];
-  let cx = size as f32 / 2.0;
+  let s = size as f32;
+  let cx = s / 2.0;
+
+  // All positions expressed as fractions of size
+  let handle_top = (s * 44.0 / 64.0) as u32;
+  let handle_bot = (s * 62.0 / 64.0) as u32;
+  let handle_half_w = s * 3.0 / 64.0;
+  let flame_top = (s * 8.0 / 64.0) as u32;
+  let flame_bot = (s * 46.0 / 64.0) as u32;
+  let flame_span = (flame_bot - flame_top) as f32;
+  let flame_max_w = s * 10.0 / 64.0;
 
   for y in 0..size {
     for x in 0..size {
@@ -129,9 +133,8 @@ pub fn torch(handle: [u8; 3], flame: [u8; 3]) -> Vec<u8> {
       let fx = x as f32 + 0.5;
       let fy = y as f32 + 0.5;
 
-      // Handle: narrow rectangle at the bottom (y 44..62, 3px wide)
-      if (44..62).contains(&y) && (x as f32 - cx).abs() < 3.0 {
-        let shade = 0.7 + 0.3 * (1.0 - (fx - cx).abs() / 3.0);
+      if y >= handle_top && y < handle_bot && (fx - cx).abs() < handle_half_w {
+        let shade = 0.7 + 0.3 * (1.0 - (fx - cx).abs() / handle_half_w);
         data[idx] = (handle[0] as f32 * shade) as u8;
         data[idx + 1] = (handle[1] as f32 * shade) as u8;
         data[idx + 2] = (handle[2] as f32 * shade) as u8;
@@ -139,20 +142,16 @@ pub fn torch(handle: [u8; 3], flame: [u8; 3]) -> Vec<u8> {
         continue;
       }
 
-      // Flame: teardrop shape from y=8 to y=46
-      if (8..46).contains(&y) {
-        let t = (fy - 8.0) / 38.0; // 0 at top, 1 at bottom
-        // Wider at bottom, narrow at top
-        let max_half_w = 10.0 * (t * 0.6 + 0.4).sqrt();
+      if y >= flame_top && y < flame_bot {
+        let t = (fy - flame_top as f32) / flame_span;
+        let max_half_w = flame_max_w * (t * 0.6 + 0.4).sqrt();
         let dx = (fx - cx).abs();
         if dx < max_half_w {
-          let edge = dx / max_half_w; // 0=center, 1=edge
-          // Color gradient: white-yellow core, orange-red edge
+          let edge = dx / max_half_w;
           let core = 1.0 - edge * edge;
           let r = (flame[0] as f32 + (255.0 - flame[0] as f32) * core).clamp(0.0, 255.0);
           let g = (flame[1] as f32 * (0.5 + 0.5 * core)).clamp(0.0, 255.0);
           let b = (flame[2] as f32 * core * 0.5).clamp(0.0, 255.0);
-          // Alpha fades at edges
           let alpha = ((1.0 - edge) * 255.0).clamp(0.0, 255.0);
           data[idx] = r as u8;
           data[idx + 1] = g as u8;
@@ -162,16 +161,14 @@ pub fn torch(handle: [u8; 3], flame: [u8; 3]) -> Vec<u8> {
         }
       }
 
-      // Everything else: transparent
       data[idx + 3] = 0;
     }
   }
   data
 }
 
-/// Generate a 64x64 RGBA noisy stone texture.
-pub fn stone(base: [u8; 3]) -> Vec<u8> {
-  let size = 64u32;
+/// Generate an RGBA noisy stone texture at the given size.
+pub fn stone(base: [u8; 3], size: u32) -> Vec<u8> {
   let mut data = vec![0u8; (size * size * 4) as usize];
   // Simple hash-based noise
   for y in 0..size {
@@ -201,30 +198,28 @@ mod tests {
 
   #[test]
   fn checkerboard_size() {
-    let tex = checkerboard([255, 255, 255, 255], [0, 0, 0, 255], 8);
+    let tex = checkerboard([255, 255, 255, 255], [0, 0, 0, 255], 8, 64);
     assert_eq!(tex.len(), 64 * 64 * 4);
   }
 
   #[test]
   fn checkerboard_pattern() {
-    let tex = checkerboard([255, 0, 0, 255], [0, 255, 0, 255], 32);
-    // Top-left pixel should be color_a (red)
+    let tex = checkerboard([255, 0, 0, 255], [0, 255, 0, 255], 32, 64);
     assert_eq!(&tex[0..4], &[255, 0, 0, 255]);
-    // Pixel at (32, 0) should be color_b (green)
     let idx = (32 * 4) as usize;
     assert_eq!(&tex[idx..idx + 4], &[0, 255, 0, 255]);
   }
 
   #[test]
   fn bricks_size() {
-    let tex = bricks([128, 128, 128, 255], [180, 60, 30, 255]);
+    let tex = bricks([128, 128, 128, 255], [180, 60, 30, 255], 64);
     assert_eq!(tex.len(), 64 * 64 * 4);
   }
 
   #[test]
   fn solid_uniform() {
     let color = [42, 128, 200, 255];
-    let tex = solid(color);
+    let tex = solid(color, 64);
     assert_eq!(tex.len(), 64 * 64 * 4);
     for pixel in tex.chunks_exact(4) {
       assert_eq!(pixel, &color);
@@ -233,7 +228,7 @@ mod tests {
 
   #[test]
   fn stone_size_and_alpha() {
-    let tex = stone([128, 128, 128]);
+    let tex = stone([128, 128, 128], 64);
     assert_eq!(tex.len(), 64 * 64 * 4);
     for pixel in tex.chunks_exact(4) {
       assert_eq!(pixel[3], 255);
@@ -242,7 +237,7 @@ mod tests {
 
   #[test]
   fn barrel_size_and_transparency() {
-    let tex = barrel([139, 90, 43], [100, 65, 30]);
+    let tex = barrel([139, 90, 43], [100, 65, 30], 64);
     assert_eq!(tex.len(), 64 * 64 * 4);
     assert_eq!(tex[3], 0);
     let center_idx = (32 * 64 + 32) * 4;
@@ -251,7 +246,7 @@ mod tests {
 
   #[test]
   fn torch_size_and_shape() {
-    let tex = torch([100, 70, 40], [255, 180, 50]);
+    let tex = torch([100, 70, 40], [255, 180, 50], 64);
     assert_eq!(tex.len(), 64 * 64 * 4);
     assert_eq!(tex[3], 0);
     let handle_idx = (50 * 64 + 32) * 4;

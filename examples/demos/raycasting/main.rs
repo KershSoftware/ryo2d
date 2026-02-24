@@ -13,6 +13,9 @@
 
 mod textures;
 
+use std::path::Path;
+
+use image::GenericImageView;
 use ryo2d::prelude::*;
 
 struct RaycastDemo {
@@ -134,37 +137,35 @@ impl Scene for RaycastDemo {
     });
 
     // Load textures via TextureManager
+    // Note: the raycasting shader subtracts 1 from texture indices (0 = no texture),
+    // so map index 1 → array layer 0, map index 2 → array layer 1, etc.
     let (wall_array, floor_array, sprite_array) = {
       let mut tex = ctx.textures();
 
-      // Wall textures: index 0 = unused (air), 1 = bricks, 2 = stone
+      // Wall textures: map index 1 = exterior bricks, 2 = interior bricks
       let wall_handles = vec![
-        tex.from_rgba(textures::solid([0, 0, 0, 255]), 64, 64),
-        tex.from_rgba(
-          textures::bricks([80, 80, 80, 255], [160, 60, 40, 255]),
-          64,
-          64,
-        ),
-        tex.from_rgba(textures::stone([140, 140, 140]), 64, 64),
+        tex.load(Path::new("assets/wall_brick_exterior.png")),
+        tex.load(Path::new("assets/wall_brick_interior.png")),
       ];
       let wall_array = tex.create_array(&wall_handles);
 
-      // Floor textures: 0 = unused, 1 = checker, 2 = stone
+      // Floor/ceiling textures: map index 1 = wood floor, 2 = metal ceiling
       let floor_handles = vec![
-        tex.from_rgba(textures::solid([40, 40, 40, 255]), 64, 64),
-        tex.from_rgba(
-          textures::checkerboard([60, 60, 60, 255], [100, 100, 100, 255], 8),
-          64,
-          64,
-        ),
-        tex.from_rgba(textures::stone([100, 100, 110]), 64, 64),
+        tex.load(Path::new("assets/floor_wood.png")),
+        tex.load(Path::new("assets/ceiling_metal.png")),
       ];
       let floor_array = tex.create_array(&floor_handles);
 
-      // Sprite textures: 0 = barrel, 1 = torch
+      // Sprite textures: index 0 = barrel (rotated wood planks), 1 = torch
+      let barrel_img = image::open("assets/sprite_barrel.png")
+        .expect("Failed to load barrel texture")
+        .rotate90();
+      let (bw, bh) = barrel_img.dimensions();
+      let barrel_data = barrel_img.into_rgba8().into_raw();
+
       let sprite_handles = vec![
-        tex.from_rgba(textures::barrel([139, 90, 43], [100, 65, 30]), 64, 64),
-        tex.from_rgba(textures::torch([100, 70, 40], [255, 180, 50]), 64, 64),
+        tex.from_rgba(barrel_data, bw, bh),
+        tex.from_rgba(textures::torch([100, 70, 40], [255, 180, 50], bw), bw, bh),
       ];
       let sprite_array = tex.create_array(&sprite_handles);
 
