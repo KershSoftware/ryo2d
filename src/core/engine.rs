@@ -40,6 +40,7 @@ use super::systems::{
   AnimationSystem, InterpolationSystem, KnockbackSystem, PhysicsSystem, SkeletonSystem,
   SquashStretchSystem, TrailSystem, TweenSystem,
 };
+use super::texture::TextureManager;
 use super::timing::TimeState;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
 use super::ui::{BitmapFont, Color, UiContext, create_debug_font};
@@ -226,6 +227,8 @@ pub struct Engine {
   trail_renderer: Option<TrailRenderer>,
   // GPU raycasting renderer
   raycast_renderer: Option<GpuRaycastRenderer>,
+  // Centralized texture manager for GPU texture arrays
+  texture_manager: TextureManager,
   // Frame timing breakdown for profiling (current frame, in-progress)
   frame_timings: FrameTimings,
   // Smoothed frame timings for stable overlay display
@@ -660,6 +663,7 @@ impl Engine {
       lighting: None,         // Initialized when renderer is created
       trail_renderer: None,   // Initialized when renderer is created
       raycast_renderer: None, // Initialized when renderer is created
+      texture_manager: TextureManager::new(),
       frame_timings: FrameTimings::default(),
       smoothed_timings: SmoothedFrameTimings::default(),
       overlay_mode: initial_overlay_mode,
@@ -910,6 +914,7 @@ impl Engine {
               sprite_gpu,
               renderer.device(),
               renderer.queue(),
+              &mut self.texture_manager,
             );
             self.debug_font_uploaded = true;
           }
@@ -917,6 +922,7 @@ impl Engine {
           let mut gpu_ctx = GpuRenderContext::new(
             &mut self.batch_collector,
             sprite_gpu,
+            &mut self.texture_manager,
             renderer.device(),
             renderer.queue(),
             &self.camera,
@@ -1067,6 +1073,7 @@ impl Engine {
           &self.effects,
           &self.ui_buffer,
           time,
+          &self.texture_manager,
         )
       } else if has_gpu_sprites || has_trails || lighting_enabled {
         // Create GPU sprite callback (backgrounds, parallax - renders BEFORE CPU content)
@@ -1264,6 +1271,11 @@ impl Engine {
         frame_count: self.time.as_ref().map(|t| t.frame_count()).unwrap_or(0),
       };
 
+      let (renderer_device, renderer_queue) = {
+        let r = self.renderer.as_ref().unwrap();
+        (r.device(), r.queue())
+      };
+
       let mut scene_ctx = SceneContext {
         resources: &mut self.resources,
         world: &mut self.world,
@@ -1274,6 +1286,9 @@ impl Engine {
         effects: &mut self.effects,
         lighting: &mut self.lighting,
         raycast: &mut self.raycast_renderer,
+        texture_manager: &mut self.texture_manager,
+        device: renderer_device,
+        queue: renderer_queue,
         events: &mut self.events,
         tilemap: &mut self.tilemap,
         window_request: &mut self.window_request,
@@ -2211,9 +2226,10 @@ fn sync_and_render_raycast(
   effects: &EffectsManager,
   ui_buffer: &[u8],
   time: f32,
+  texture_mgr: &TextureManager,
 ) -> Result<(), wgpu::SurfaceError> {
   // Flush pending textures and map data to GPU
-  raycast.flush_pending(rend.device(), rend.queue());
+  raycast.flush_pending(rend.device(), rend.queue(), texture_mgr);
 
   // Sync camera from ECS entities
   let mut cam_pos = [0.0_f32; 2];
@@ -2480,6 +2496,11 @@ impl ApplicationHandler for Engine {
         frame_count: 0,
       };
 
+      let (renderer_device, renderer_queue) = {
+        let r = self.renderer.as_ref().unwrap();
+        (r.device(), r.queue())
+      };
+
       let mut scene_ctx = SceneContext {
         resources: &mut self.resources,
         world: &mut self.world,
@@ -2490,6 +2511,9 @@ impl ApplicationHandler for Engine {
         effects: &mut self.effects,
         lighting: &mut self.lighting,
         raycast: &mut self.raycast_renderer,
+        texture_manager: &mut self.texture_manager,
+        device: renderer_device,
+        queue: renderer_queue,
         events: &mut self.events,
         tilemap: &mut self.tilemap,
         window_request: &mut self.window_request,
@@ -2971,6 +2995,7 @@ impl ApplicationHandler for Engine {
                   sprite_gpu,
                   renderer.device(),
                   renderer.queue(),
+                  &mut self.texture_manager,
                 );
                 self.debug_font_uploaded = true;
               }
@@ -2978,6 +3003,7 @@ impl ApplicationHandler for Engine {
               let mut gpu_ctx = GpuRenderContext::new(
                 &mut self.batch_collector,
                 sprite_gpu,
+                &mut self.texture_manager,
                 renderer.device(),
                 renderer.queue(),
                 &self.camera,
@@ -3135,6 +3161,7 @@ impl ApplicationHandler for Engine {
               &self.effects,
               &self.ui_buffer,
               time,
+              &self.texture_manager,
             )
           } else if has_gpu_sprites || has_trails || lighting_enabled {
             // Create GPU sprite callback (backgrounds, parallax - renders BEFORE CPU content)

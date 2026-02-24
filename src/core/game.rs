@@ -7,6 +7,7 @@ use super::asset::SpriteHandle;
 use super::config::save::DisplayMode;
 use super::ecs::World;
 use super::graphics::{BatchCollector, SpriteGpuRenderer};
+use super::texture::TextureManager;
 
 /// Pending window configuration change requested by the game.
 ///
@@ -173,6 +174,8 @@ pub struct GpuRenderContext<'a> {
   pub batch: &'a mut BatchCollector,
   /// The GPU sprite renderer (for uploading textures)
   gpu_renderer: &'a mut SpriteGpuRenderer,
+  /// The texture manager (owns GPU textures)
+  texture_mgr: &'a mut TextureManager,
   /// Device for GPU operations
   device: &'a wgpu::Device,
   /// Queue for GPU operations
@@ -188,6 +191,7 @@ impl<'a> GpuRenderContext<'a> {
   pub fn new(
     batch: &'a mut BatchCollector,
     gpu_renderer: &'a mut SpriteGpuRenderer,
+    texture_mgr: &'a mut TextureManager,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     camera: &'a super::graphics::Camera,
@@ -196,6 +200,7 @@ impl<'a> GpuRenderContext<'a> {
     Self {
       batch,
       gpu_renderer,
+      texture_mgr,
       device,
       queue,
       camera,
@@ -210,7 +215,7 @@ impl<'a> GpuRenderContext<'a> {
   pub fn upload_sprite(&mut self, sprite: &SpriteHandle) {
     self
       .gpu_renderer
-      .upload_sprite(self.device, self.queue, sprite);
+      .upload_sprite(self.device, self.queue, sprite, self.texture_mgr);
   }
 
   /// Check if a sprite texture is already uploaded

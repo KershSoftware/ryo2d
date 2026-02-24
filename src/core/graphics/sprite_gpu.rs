@@ -36,6 +36,7 @@ use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
 use crate::core::ecs::{Material, SpriteEffect, SpriteShader};
+use crate::core::texture::{TextureHandle, TextureManager};
 use crate::core::ui::Color;
 
 /// Per-instance data for GPU sprite rendering
@@ -254,16 +255,6 @@ impl SpriteGlobals {
   }
 }
 
-/// Texture cache entry
-#[expect(dead_code, reason = "fields kept alive for GPU cache management")]
-struct CachedTexture {
-  texture: wgpu::Texture,
-  view: wgpu::TextureView,
-  bind_group: wgpu::BindGroup,
-  width: u32,
-  height: u32,
-}
-
 /// GPU-based sprite renderer with per-sprite shader effects
 #[expect(
   dead_code,
@@ -289,8 +280,9 @@ pub struct SpriteGpuRenderer {
   // Vertex buffer (quad)
   vertex_buffer: wgpu::Buffer,
 
-  // Texture cache
-  texture_cache: HashMap<String, CachedTexture>,
+  // Texture cache (bind groups keyed by handle, string ID → handle mapping)
+  bind_group_cache: HashMap<TextureHandle, wgpu::BindGroup>,
+  id_to_handle: HashMap<String, TextureHandle>,
 
   // Timing
   time: f32,
@@ -562,7 +554,8 @@ impl SpriteGpuRenderer {
       instance_buffer,
       instance_capacity: Self::MAX_INSTANCES,
       vertex_buffer,
-      texture_cache: HashMap::new(),
+      bind_group_cache: HashMap::new(),
+      id_to_handle: HashMap::new(),
       time: 0.0,
     }
   }
@@ -579,6 +572,7 @@ impl SpriteGpuRenderer {
   }
 
   /// Upload a sprite texture to GPU (cached by id)
+  #[allow(clippy::too_many_arguments)]
   pub fn upload_texture(
     &mut self,
     device: &wgpu::Device,
@@ -587,47 +581,14 @@ impl SpriteGpuRenderer {
     width: u32,
     height: u32,
     data: &[u8],
+    texture_mgr: &mut TextureManager,
   ) {
-    if self.texture_cache.contains_key(id) {
-      return; // Already cached
+    if self.id_to_handle.contains_key(id) {
+      return;
     }
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some(id),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
-      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-      view_formats: &[],
-    });
-
-    queue.write_texture(
-      wgpu::ImageCopyTexture {
-        texture: &texture,
-        mip_level: 0,
-        origin: wgpu::Origin3d::ZERO,
-        aspect: wgpu::TextureAspect::All,
-      },
-      data,
-      wgpu::ImageDataLayout {
-        offset: 0,
-        bytes_per_row: Some(4 * width),
-        rows_per_image: Some(height),
-      },
-      wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-    );
-
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let handle = texture_mgr.from_rgba(data.to_vec(), width, height, device, queue);
+    let view = texture_mgr.get_view(handle).unwrap();
 
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
       label: Some("Sprite Sampler"),
@@ -646,7 +607,7 @@ impl SpriteGpuRenderer {
       entries: &[
         wgpu::BindGroupEntry {
           binding: 0,
-          resource: wgpu::BindingResource::TextureView(&view),
+          resource: wgpu::BindingResource::TextureView(view),
         },
         wgpu::BindGroupEntry {
           binding: 1,
@@ -655,21 +616,16 @@ impl SpriteGpuRenderer {
       ],
     });
 
-    self.texture_cache.insert(
-      id.to_string(),
-      CachedTexture {
-        texture,
-        view,
-        bind_group,
-        width,
-        height,
-      },
-    );
+    self.id_to_handle.insert(id.to_string(), handle);
+    self.bind_group_cache.insert(handle, bind_group);
   }
 
   /// Get a cached texture's bind group
   pub fn get_texture_bind_group(&self, id: &str) -> Option<&wgpu::BindGroup> {
-    self.texture_cache.get(id).map(|t| &t.bind_group)
+    self
+      .id_to_handle
+      .get(id)
+      .and_then(|h| self.bind_group_cache.get(h))
   }
 
   /// Render sprites to a render pass
@@ -700,7 +656,7 @@ impl SpriteGpuRenderer {
         continue;
       }
 
-      if !self.texture_cache.contains_key(*texture_id) {
+      if !self.id_to_handle.contains_key(*texture_id) {
         batch_info.push((0, 0));
         continue;
       }
@@ -739,7 +695,10 @@ impl SpriteGpuRenderer {
         continue;
       }
 
-      let Some(cached) = self.texture_cache.get(*texture_id) else {
+      let Some(handle) = self.id_to_handle.get(*texture_id) else {
+        continue;
+      };
+      let Some(bind_group) = self.bind_group_cache.get(handle) else {
         continue;
       };
 
@@ -750,7 +709,7 @@ impl SpriteGpuRenderer {
         render_pass.set_pipeline(&self.base_pipeline);
       }
 
-      render_pass.set_bind_group(1, &cached.bind_group, &[]);
+      render_pass.set_bind_group(1, bind_group, &[]);
 
       // Use buffer slice starting at this batch's offset
       let end_offset = offset + instance_count as u64 * instance_size;
@@ -811,7 +770,7 @@ impl SpriteGpuRenderer {
       }
 
       // Skip batches without cached textures
-      if !self.texture_cache.contains_key(&key.texture_id) {
+      if !self.id_to_handle.contains_key(&key.texture_id) {
         batch_offsets.push((0, 0));
         continue;
       }
@@ -852,7 +811,10 @@ impl SpriteGpuRenderer {
         continue;
       }
 
-      let Some(cached) = self.texture_cache.get(&key.texture_id) else {
+      let Some(handle) = self.id_to_handle.get(&key.texture_id) else {
+        continue;
+      };
+      let Some(bind_group) = self.bind_group_cache.get(handle) else {
         continue;
       };
 
@@ -863,7 +825,7 @@ impl SpriteGpuRenderer {
         render_pass.set_pipeline(&self.base_pipeline);
       }
 
-      render_pass.set_bind_group(1, &cached.bind_group, &[]);
+      render_pass.set_bind_group(1, bind_group, &[]);
 
       // Use buffer slice starting at this batch's offset
       let end_offset = offset + instance_count as u64 * instance_size;
@@ -881,25 +843,35 @@ impl SpriteGpuRenderer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     sprite: &crate::core::asset::SpriteHandle,
+    texture_mgr: &mut TextureManager,
   ) {
     let id = sprite.id();
-    if self.texture_cache.contains_key(&id) {
-      return; // Already cached
+    if self.id_to_handle.contains_key(&id) {
+      return;
     }
 
     sprite.with_sprite(|s| {
-      self.upload_texture(device, queue, &id, s.width(), s.height(), s.data());
+      self.upload_texture(
+        device,
+        queue,
+        &id,
+        s.width(),
+        s.height(),
+        s.data(),
+        texture_mgr,
+      );
     });
   }
 
   /// Check if a texture is already cached
   pub fn has_texture(&self, id: &str) -> bool {
-    self.texture_cache.contains_key(id)
+    self.id_to_handle.contains_key(id)
   }
 
   /// Clear the texture cache
   pub fn clear_cache(&mut self) {
-    self.texture_cache.clear();
+    self.bind_group_cache.clear();
+    self.id_to_handle.clear();
   }
 }
 

@@ -20,6 +20,7 @@ pub mod raycast;
 pub mod render;
 pub mod shaders;
 pub mod skeleton;
+pub mod texture;
 pub mod tilemap;
 pub mod trail;
 pub mod ui;

@@ -8,7 +8,7 @@
 use glam::Vec2;
 
 use crate::core::ecs::{Inactive, Transform, World};
-use crate::core::skeleton::{Pose, Skeleton, SkeletalAnimator, SkeletalController};
+use crate::core::skeleton::{Pose, SkeletalAnimator, SkeletalController, Skeleton};
 
 /// System for updating skeletal animation.
 ///
@@ -90,9 +90,7 @@ impl SkeletonSystem {
       if world.has::<Inactive>(entity) {
         continue;
       }
-      let new_pose = world
-        .get::<SkeletalController>(entity)
-        .map(|c| c.sample());
+      let new_pose = world.get::<SkeletalController>(entity).map(|c| c.sample());
 
       if let Some(pose) = new_pose
         && let Some(mut skeleton) = world.get_mut::<Skeleton>(entity)
@@ -143,7 +141,7 @@ mod tests {
     use crate::core::ecs::{Ease, Transform};
     use crate::core::graphics::LoopMode;
     use crate::core::skeleton::{
-      BoneTransform, Skeleton, SkeletalAnimation, SkeletalController, SkeletonDef,
+      BoneTransform, SkeletalAnimation, SkeletalController, Skeleton, SkeletonDef,
     };
 
     let def = Arc::new(
@@ -155,8 +153,11 @@ mod tests {
       SkeletalAnimation::builder("idle", 1.0, def.clone())
         .loop_mode(LoopMode::Loop)
         .track("root", |t| {
-          t.at(0.0, BoneTransform::rotation(0.0), Ease::Linear)
-            .at(1.0, BoneTransform::rotation(1.0), Ease::Linear)
+          t.at(0.0, BoneTransform::rotation(0.0), Ease::Linear).at(
+            1.0,
+            BoneTransform::rotation(1.0),
+            Ease::Linear,
+          )
         })
         .build(),
     );
@@ -165,11 +166,7 @@ mod tests {
       SkeletalController::new(idle, "idle", def.clone()).with_default_blend_duration(0.0);
 
     let mut world = World::default();
-    let entity = world.spawn((
-      Transform::new(100.0, 200.0),
-      Skeleton::new(def),
-      controller,
-    ));
+    let entity = world.spawn((Transform::new(100.0, 200.0), Skeleton::new(def), controller));
 
     SkeletonSystem::update(&mut world, 0.5);
 

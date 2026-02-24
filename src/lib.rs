@@ -214,9 +214,8 @@ pub mod prelude {
 
   // Skeletal animation
   pub use crate::core::skeleton::{
-    BoneDef, BoneTransform, BoneWorldTransform, Pose, Skeleton, SkeletonDef,
-    SkeletalAnimation, SkeletalAnimator, SkeletalBlender, SkeletalController,
-    skeleton_debug_lines,
+    BoneDef, BoneTransform, BoneWorldTransform, Pose, SkeletalAnimation, SkeletalAnimator,
+    SkeletalBlender, SkeletalController, Skeleton, SkeletonDef, skeleton_debug_lines,
   };
 
   // Particle system
@@ -238,6 +237,11 @@ pub mod prelude {
     CameraUniform, DoorSpeed, DoorState, GpuRaycastRenderer, MapCell, MapFlags, MapInfoUniform,
     RaycastCamera, RaycastDoor, RaycastLight, RaycastSprite, RaycastWorld, camera_follow_system,
     door_system,
+  };
+
+  // Texture management
+  pub use crate::core::texture::{
+    TextureArrayHandle, TextureContext, TextureHandle, TextureManager,
   };
 
   // GPU sprite batching (for high-performance particle systems)

@@ -5,6 +5,7 @@
 
 use super::systems::{CameraUniform, LightInstance, MapInfoUniform, SpriteInstance};
 use super::world::RaycastWorld;
+use crate::core::texture::{TextureArrayHandle, TextureManager};
 
 /// Maximum number of sprite instances per frame.
 pub const MAX_SPRITES: usize = 1024;
@@ -34,21 +35,15 @@ pub struct GpuRaycastRenderer {
   sprite_buffer: wgpu::Buffer,
   depth_texture: wgpu::Texture,
   depth_texture_view: wgpu::TextureView,
-  wall_texture_array: Option<wgpu::Texture>,
-  wall_texture_array_view: Option<wgpu::TextureView>,
-  floor_texture_array: Option<wgpu::Texture>,
-  floor_texture_array_view: Option<wgpu::TextureView>,
-  sprite_texture_array: Option<wgpu::Texture>,
-  sprite_texture_array_view: Option<wgpu::TextureView>,
+  wall_textures: Option<TextureArrayHandle>,
+  floor_textures: Option<TextureArrayHandle>,
+  sprite_textures: Option<TextureArrayHandle>,
   sampler: wgpu::Sampler,
   width: u32,
   height: u32,
   sprite_count: u32,
   world: Option<RaycastWorld>,
   map_info: MapInfoUniform,
-  pending_wall_tex: Option<(Vec<Vec<u8>>, u32, u32)>,
-  pending_floor_tex: Option<(Vec<Vec<u8>>, u32, u32)>,
-  pending_sprite_tex: Option<(Vec<Vec<u8>>, u32, u32)>,
   cached_wall_bind_group: Option<wgpu::BindGroup>,
   cached_sprite_bind_group: Option<wgpu::BindGroup>,
   enabled: bool,
@@ -371,12 +366,9 @@ impl GpuRaycastRenderer {
       sprite_buffer,
       depth_texture,
       depth_texture_view,
-      wall_texture_array: None,
-      wall_texture_array_view: None,
-      floor_texture_array: None,
-      floor_texture_array_view: None,
-      sprite_texture_array: None,
-      sprite_texture_array_view: None,
+      wall_textures: None,
+      floor_textures: None,
+      sprite_textures: None,
       sampler,
       width,
       height,
@@ -389,9 +381,6 @@ impl GpuRaycastRenderer {
         fog_color: [0.1, 0.1, 0.15],
         _pad: 0.0,
       },
-      pending_wall_tex: None,
-      pending_floor_tex: None,
-      pending_sprite_tex: None,
       cached_wall_bind_group: None,
       cached_sprite_bind_group: None,
       enabled: false,
@@ -465,40 +454,31 @@ impl GpuRaycastRenderer {
     self.map_info = info;
   }
 
-  /// Queue wall textures for GPU upload. Each Vec<u8> is RGBA data.
-  pub fn queue_wall_textures(&mut self, images: Vec<Vec<u8>>, width: u32, height: u32) {
-    self.pending_wall_tex = Some((images, width, height));
+  /// Set wall textures from a TextureManager array handle.
+  pub fn set_wall_textures(&mut self, handle: TextureArrayHandle) {
+    self.wall_textures = Some(handle);
+    self.cached_wall_bind_group = None;
   }
 
-  /// Queue floor/ceiling textures for GPU upload.
-  pub fn queue_floor_textures(&mut self, images: Vec<Vec<u8>>, width: u32, height: u32) {
-    self.pending_floor_tex = Some((images, width, height));
+  /// Set floor textures from a TextureManager array handle.
+  pub fn set_floor_textures(&mut self, handle: TextureArrayHandle) {
+    self.floor_textures = Some(handle);
+    self.cached_wall_bind_group = None;
   }
 
-  /// Queue sprite textures for GPU upload.
-  pub fn queue_sprite_textures(&mut self, images: Vec<Vec<u8>>, width: u32, height: u32) {
-    self.pending_sprite_tex = Some((images, width, height));
+  /// Set sprite textures from a TextureManager array handle.
+  pub fn set_sprite_textures(&mut self, handle: TextureArrayHandle) {
+    self.sprite_textures = Some(handle);
+    self.cached_sprite_bind_group = None;
   }
 
   /// Flush all pending data to GPU. Called by engine before rendering.
-  pub fn flush_pending(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-    // Create textures from pending raw data
-    if let Some((images, w, h)) = self.pending_wall_tex.take() {
-      let refs: Vec<&[u8]> = images.iter().map(|v| v.as_slice()).collect();
-      let (tex, view) = Self::create_texture_array(device, queue, &refs, w, h, "Wall Textures");
-      self.set_wall_textures(tex, view);
-    }
-    if let Some((images, w, h)) = self.pending_floor_tex.take() {
-      let refs: Vec<&[u8]> = images.iter().map(|v| v.as_slice()).collect();
-      let (tex, view) = Self::create_texture_array(device, queue, &refs, w, h, "Floor Textures");
-      self.set_floor_textures(tex, view);
-    }
-    if let Some((images, w, h)) = self.pending_sprite_tex.take() {
-      let refs: Vec<&[u8]> = images.iter().map(|v| v.as_slice()).collect();
-      let (tex, view) = Self::create_texture_array(device, queue, &refs, w, h, "Sprite Textures");
-      self.set_sprite_textures(tex, view);
-    }
-
+  pub fn flush_pending(
+    &mut self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture_mgr: &TextureManager,
+  ) {
     // Upload world map data only when changed
     if let Some(ref mut world) = self.world
       && world.is_dirty()
@@ -516,8 +496,12 @@ impl GpuRaycastRenderer {
     // Rebuild cached bind groups when invalidated
     if self.cached_wall_bind_group.is_none()
       && let (Some(wall_view), Some(floor_view)) = (
-        self.wall_texture_array_view.as_ref(),
-        self.floor_texture_array_view.as_ref(),
+        self
+          .wall_textures
+          .and_then(|h| texture_mgr.get_array_view(h)),
+        self
+          .floor_textures
+          .and_then(|h| texture_mgr.get_array_view(h)),
       )
     {
       self.cached_wall_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -561,7 +545,9 @@ impl GpuRaycastRenderer {
     }
 
     if self.cached_sprite_bind_group.is_none()
-      && let Some(sprite_view) = self.sprite_texture_array_view.as_ref()
+      && let Some(sprite_view) = self
+        .sprite_textures
+        .and_then(|h| texture_mgr.get_array_view(h))
     {
       self.cached_sprite_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Raycast Sprite Bind Group (cached)"),
@@ -633,88 +619,6 @@ impl GpuRaycastRenderer {
         bytemuck::cast_slice(&lights[..count]),
       );
     }
-  }
-
-  /// Create a texture_2d_array from a set of RGBA8 images.
-  pub fn create_texture_array(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    images: &[&[u8]],
-    width: u32,
-    height: u32,
-    label: &str,
-  ) -> (wgpu::Texture, wgpu::TextureView) {
-    let layer_count = images.len() as u32;
-
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some(label),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: layer_count,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
-      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-      view_formats: &[],
-    });
-
-    let bytes_per_row = 4 * width;
-    for (i, image_data) in images.iter().enumerate() {
-      queue.write_texture(
-        wgpu::ImageCopyTexture {
-          texture: &texture,
-          mip_level: 0,
-          origin: wgpu::Origin3d {
-            x: 0,
-            y: 0,
-            z: i as u32,
-          },
-          aspect: wgpu::TextureAspect::All,
-        },
-        image_data,
-        wgpu::ImageDataLayout {
-          offset: 0,
-          bytes_per_row: Some(bytes_per_row),
-          rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-          width,
-          height,
-          depth_or_array_layers: 1,
-        },
-      );
-    }
-
-    let view = texture.create_view(&wgpu::TextureViewDescriptor {
-      dimension: Some(wgpu::TextureViewDimension::D2Array),
-      ..Default::default()
-    });
-
-    (texture, view)
-  }
-
-  /// Set the wall texture array.
-  pub fn set_wall_textures(&mut self, texture: wgpu::Texture, view: wgpu::TextureView) {
-    self.wall_texture_array = Some(texture);
-    self.wall_texture_array_view = Some(view);
-    self.cached_wall_bind_group = None;
-  }
-
-  /// Set the floor/ceiling texture array.
-  pub fn set_floor_textures(&mut self, texture: wgpu::Texture, view: wgpu::TextureView) {
-    self.floor_texture_array = Some(texture);
-    self.floor_texture_array_view = Some(view);
-    self.cached_wall_bind_group = None;
-  }
-
-  /// Set the sprite texture array.
-  pub fn set_sprite_textures(&mut self, texture: wgpu::Texture, view: wgpu::TextureView) {
-    self.sprite_texture_array = Some(texture);
-    self.sprite_texture_array_view = Some(view);
-    self.cached_sprite_bind_group = None;
   }
 
   /// Render the wall (DDA raycasting) pass.

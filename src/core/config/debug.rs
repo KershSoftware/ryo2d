@@ -887,6 +887,7 @@ pub fn set_pixel(frame: &mut [u8], width: u32, height: u32, x: i32, y: i32, colo
 // ============================================================================
 
 use crate::core::graphics::{BatchCollector, SpriteGpuRenderer, SpriteInstance};
+use crate::core::texture::TextureManager;
 use crate::core::ui::BitmapFont;
 
 /// Debug overlay texture ID constant
@@ -901,6 +902,7 @@ pub fn upload_debug_font(
   gpu: &mut SpriteGpuRenderer,
   device: &wgpu::Device,
   queue: &wgpu::Queue,
+  texture_mgr: &mut TextureManager,
 ) {
   gpu.upload_texture(
     device,
@@ -909,6 +911,7 @@ pub fn upload_debug_font(
     font.atlas_width(),
     font.atlas_height(),
     font.atlas_data(),
+    texture_mgr,
   );
 }
 

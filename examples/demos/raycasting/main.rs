@@ -124,11 +124,7 @@ impl Scene for RaycastDemo {
 
     // Set up the raycast renderer
     let rc = ctx.raycast_renderer().unwrap();
-
-    // Store the world
     rc.set_world(world);
-
-    // Set map info
     rc.set_map_info(MapInfoUniform {
       dimensions: [32, 32],
       max_distance: 32.0,
@@ -137,38 +133,49 @@ impl Scene for RaycastDemo {
       _pad: 0.0,
     });
 
-    // Queue procedural textures for GPU upload
-    // Wall textures: index 0 = unused (air), 1 = bricks, 2 = stone
-    rc.queue_wall_textures(
-      vec![
-        textures::solid([0, 0, 0, 255]), // 0: unused/black
-        textures::bricks([80, 80, 80, 255], [160, 60, 40, 255]), // 1: red bricks
-        textures::stone([140, 140, 140]), // 2: grey stone
-      ],
-      64,
-      64,
-    );
+    // Load textures via TextureManager
+    let (wall_array, floor_array, sprite_array) = {
+      let mut tex = ctx.textures();
 
-    // Floor textures: 0 = unused, 1 = checker, 2 = stone
-    rc.queue_floor_textures(
-      vec![
-        textures::solid([40, 40, 40, 255]), // 0: dark grey
-        textures::checkerboard([60, 60, 60, 255], [100, 100, 100, 255], 8), // 1: checker
-        textures::stone([100, 100, 110]),   // 2: blue-grey stone
-      ],
-      64,
-      64,
-    );
+      // Wall textures: index 0 = unused (air), 1 = bricks, 2 = stone
+      let wall_handles = vec![
+        tex.from_rgba(textures::solid([0, 0, 0, 255]), 64, 64),
+        tex.from_rgba(
+          textures::bricks([80, 80, 80, 255], [160, 60, 40, 255]),
+          64,
+          64,
+        ),
+        tex.from_rgba(textures::stone([140, 140, 140]), 64, 64),
+      ];
+      let wall_array = tex.create_array(&wall_handles);
 
-    // Sprite textures: 0 = barrel, 1 = torch
-    rc.queue_sprite_textures(
-      vec![
-        textures::barrel([139, 90, 43], [100, 65, 30]), // 0: brown barrel
-        textures::torch([100, 70, 40], [255, 180, 50]), // 1: torch with flame
-      ],
-      64,
-      64,
-    );
+      // Floor textures: 0 = unused, 1 = checker, 2 = stone
+      let floor_handles = vec![
+        tex.from_rgba(textures::solid([40, 40, 40, 255]), 64, 64),
+        tex.from_rgba(
+          textures::checkerboard([60, 60, 60, 255], [100, 100, 100, 255], 8),
+          64,
+          64,
+        ),
+        tex.from_rgba(textures::stone([100, 100, 110]), 64, 64),
+      ];
+      let floor_array = tex.create_array(&floor_handles);
+
+      // Sprite textures: 0 = barrel, 1 = torch
+      let sprite_handles = vec![
+        tex.from_rgba(textures::barrel([139, 90, 43], [100, 65, 30]), 64, 64),
+        tex.from_rgba(textures::torch([100, 70, 40], [255, 180, 50]), 64, 64),
+      ];
+      let sprite_array = tex.create_array(&sprite_handles);
+
+      (wall_array, floor_array, sprite_array)
+    };
+
+    // Assign texture arrays to raycast renderer
+    let rc = ctx.raycast_renderer().unwrap();
+    rc.set_wall_textures(wall_array);
+    rc.set_floor_textures(floor_array);
+    rc.set_sprite_textures(sprite_array);
 
     // Enable raycasting
     ctx.enable_raycast();

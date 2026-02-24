@@ -42,6 +42,7 @@ use super::input::InputState;
 use super::lighting::{AmbientLight, Atmosphere, LightingRenderer};
 use super::raycast::GpuRaycastRenderer;
 use super::shaders::EffectsManager;
+use super::texture::{TextureContext, TextureManager};
 use super::ui::UiContext;
 
 // ============================================================================
@@ -172,6 +173,12 @@ pub struct SceneContext<'a> {
   pub lighting: &'a mut Option<LightingRenderer>,
   /// GPU raycasting renderer (None if not initialized)
   pub raycast: &'a mut Option<GpuRaycastRenderer>,
+  /// Centralized GPU texture manager
+  pub(crate) texture_manager: &'a mut TextureManager,
+  /// GPU device reference (needed for TextureContext)
+  pub(crate) device: &'a wgpu::Device,
+  /// GPU queue reference (needed for TextureContext)
+  pub(crate) queue: &'a wgpu::Queue,
   /// Event bus for decoupled communication between systems.
   ///
   /// Use `events.emit()` to publish events and `events.read()` to subscribe.
@@ -689,6 +696,14 @@ impl<'a> SceneContext<'a> {
   /// Get the GPU raycasting renderer for uploading textures and data.
   pub fn raycast_renderer(&mut self) -> Option<&mut GpuRaycastRenderer> {
     self.raycast.as_mut()
+  }
+
+  /// Get a texture management context for loading and managing GPU textures.
+  ///
+  /// Returns a `TextureContext` that provides ergonomic texture loading
+  /// without manually passing device/queue references.
+  pub fn textures(&mut self) -> TextureContext<'_> {
+    TextureContext::new(self.texture_manager, self.device, self.queue)
   }
 }
 
