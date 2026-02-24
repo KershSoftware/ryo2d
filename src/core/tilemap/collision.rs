@@ -255,7 +255,7 @@ mod tests {
   fn greedy_merge_two_separate_tiles() {
     // 3x3 grid with solid at (0,0) and (2,2)
     let mut solid = vec![false; 9];
-    solid[0 * 3 + 0] = true;
+    solid[0] = true;
     solid[2 * 3 + 2] = true;
     let rects = greedy_merge(&solid, 3, 3);
     assert_eq!(rects.len(), 2);
@@ -286,7 +286,7 @@ mod tests {
     // X . .
     // X X X
     let mut solid = vec![false; 9];
-    solid[0 * 3 + 0] = true; // (0,0)
+    solid[0] = true; // (0,0)
     solid[1 * 3 + 0] = true; // (0,1)
     solid[2 * 3 + 0] = true; // (0,2)
     solid[2 * 3 + 1] = true; // (1,2)

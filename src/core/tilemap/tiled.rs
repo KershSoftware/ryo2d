@@ -865,6 +865,7 @@ mod tests {
       _ => panic!("expected Int"),
     }
     match &obj.properties["speed"] {
+      #[allow(clippy::approx_constant)]
       TiledValue::Float(f) => assert!((f - 3.14).abs() < 1e-6),
       _ => panic!("expected Float"),
     }

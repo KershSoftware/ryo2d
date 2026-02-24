@@ -318,6 +318,11 @@ impl WebRtcServerTransport {
     self.client_to_peer.keys().copied()
   }
 
+  /// Look up the underlying `PeerId` for a connected client.
+  pub fn get_peer(&self, client_id: ClientId) -> Option<PeerId> {
+    self.client_to_peer.get(&client_id).copied()
+  }
+
   /// Send data to a specific peer on a channel.
   ///
   /// Channel 0 is reliable, channel 1 is unreliable.
