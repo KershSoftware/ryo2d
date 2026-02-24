@@ -82,7 +82,7 @@ impl Default for Knockback {
       direction_y: 0.0,
       force: 0.0,
       strength: 0.0,
-      decay_rate: 4.0,
+      decay_rate: Self::DEFAULT_DECAY_RATE,
       active: false,
       just_started: false,
       just_finished: false,
@@ -92,6 +92,9 @@ impl Default for Knockback {
 }
 
 impl Knockback {
+  /// Default decay rate (~0.25s full decay)
+  pub const DEFAULT_DECAY_RATE: f32 = 4.0;
+
   /// Create a new knockback with the given direction and force.
   ///
   /// The direction will be normalized automatically.
@@ -118,7 +121,7 @@ impl Knockback {
       direction_y: dir_y,
       force,
       strength: 1.0,
-      decay_rate: 4.0,
+      decay_rate: Self::DEFAULT_DECAY_RATE,
       active: true,
       just_started: true,
       just_finished: false,
@@ -152,7 +155,7 @@ impl Knockback {
       direction_y: angle.sin(),
       force,
       strength: 1.0,
-      decay_rate: 4.0,
+      decay_rate: Self::DEFAULT_DECAY_RATE,
       active: true,
       just_started: true,
       just_finished: false,

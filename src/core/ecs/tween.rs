@@ -883,6 +883,8 @@ pub struct TweenSequence {
   pub just_finished: bool,
   /// Loop the entire sequence
   pub loop_sequence: bool,
+  /// Playback speed multiplier (default: 1.0)
+  pub speed: f32,
 }
 
 impl Default for TweenSequence {
@@ -900,6 +902,7 @@ impl TweenSequence {
       playing: true,
       just_finished: false,
       loop_sequence: false,
+      speed: 1.0,
     }
   }
 
@@ -921,6 +924,20 @@ impl TweenSequence {
   pub fn with_loop(mut self) -> Self {
     self.loop_sequence = true;
     self
+  }
+
+  /// Set the playback speed multiplier for the entire sequence.
+  ///
+  /// This multiplies the delta time passed to child tweens.
+  /// `2.0` = double speed, `0.5` = half speed.
+  pub fn with_speed(mut self, speed: f32) -> Self {
+    self.speed = speed;
+    self
+  }
+
+  /// Set the playback speed at runtime.
+  pub fn set_speed(&mut self, speed: f32) {
+    self.speed = speed;
   }
 
   /// Get the current tween (if any).
@@ -1715,6 +1732,25 @@ mod tests {
 
     seq.resume();
     assert!(seq.playing);
+  }
+
+  #[test]
+  fn test_tween_sequence_speed_default() {
+    let seq = TweenSequence::new();
+    assert_eq!(seq.speed, 1.0);
+  }
+
+  #[test]
+  fn test_tween_sequence_with_speed() {
+    let seq = TweenSequence::new().with_speed(2.0);
+    assert_eq!(seq.speed, 2.0);
+  }
+
+  #[test]
+  fn test_tween_sequence_set_speed() {
+    let mut seq = TweenSequence::new();
+    seq.set_speed(0.5);
+    assert_eq!(seq.speed, 0.5);
   }
 
   #[test]

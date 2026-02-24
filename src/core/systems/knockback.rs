@@ -157,6 +157,16 @@ mod tests {
   }
 
   #[test]
+  fn test_knockback_default_decay_rate() {
+    let kb = Knockback::new(Vec2::new(1.0, 0.0), 100.0);
+    assert_eq!(
+      kb.decay_rate(),
+      Knockback::DEFAULT_DECAY_RATE,
+      "Default decay rate should match constant"
+    );
+  }
+
+  #[test]
   fn test_knockback_updates_velocity_component() {
     let mut world = World::default();
     let mut events = Events::default();

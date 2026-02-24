@@ -514,6 +514,20 @@ impl<'a> SceneContext<'a> {
   // Knockback
   // ===========================================================================
 
+  /// Apply knockback to an entity with default decay rate.
+  ///
+  /// Pushes the entity in the given direction with the specified force.
+  /// Uses the default decay rate of 4.0 (~0.25s full decay).
+  ///
+  /// # Arguments
+  ///
+  /// * `entity` - The entity to knock back
+  /// * `direction` - Direction to push (will be normalized)
+  /// * `force` - Initial force/speed in pixels per second
+  pub fn knockback(&mut self, entity: Entity, direction: Vec2, force: f32) {
+    self.knockback_with_decay(entity, direction, force, Knockback::DEFAULT_DECAY_RATE);
+  }
+
   /// Apply knockback to an entity with custom decay rate.
   ///
   /// Knockback pushes an entity in a direction with an initial force that

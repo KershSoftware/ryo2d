@@ -1236,7 +1236,7 @@ impl Engine {
     AnimationSystem::update(&mut self.world, _dt);
 
     // --- Tween System ---
-    TweenSystem::update(&mut self.world, _dt);
+    TweenSystem::update(&mut self.world, &mut self.events, _dt);
 
     // --- Skeletal Animation System ---
     SkeletonSystem::update(&mut self.world, _dt);
