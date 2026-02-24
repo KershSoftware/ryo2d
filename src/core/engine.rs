@@ -174,6 +174,27 @@ fn should_apply_frame_limiting(presentation_blocks: bool, vsync: Option<bool>) -
   true
 }
 
+/// Determine cursor grab mode and visibility when window focus changes.
+///
+/// Returns `Some((grab_mode, visible))` if the cursor state should change,
+/// or `None` if no action is needed (cursor isn't locked).
+fn cursor_grab_for_focus(
+  cursor_locked: bool,
+  focused: bool,
+) -> Option<(winit::window::CursorGrabMode, bool)> {
+  use winit::window::CursorGrabMode;
+  if !cursor_locked {
+    return None;
+  }
+  if focused {
+    // Regained focus: re-lock cursor
+    Some((CursorGrabMode::Confined, false))
+  } else {
+    // Lost focus: release cursor so user can interact with other windows
+    Some((CursorGrabMode::None, true))
+  }
+}
+
 /// The main engine struct
 pub struct Engine {
   config: EngineConfig,
@@ -2698,6 +2719,15 @@ impl ApplicationHandler for Engine {
       }
       WindowEvent::Focused(focused) => {
         self.game_window_focused = *focused;
+
+        // Release/restore cursor grab on focus change so the mouse isn't
+        // trapped when the user Alt-Tabs or presses the Windows key.
+        if let Some((grab, visible)) = cursor_grab_for_focus(self.cursor_locked, *focused)
+          && let Some(window) = &self.window
+        {
+          let _ = window.set_cursor_grab(grab);
+          window.set_cursor_visible(visible);
+        }
       }
       WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
         // Track DPI scale factor changes (e.g., moving window between monitors)
@@ -4551,5 +4581,42 @@ mod tests {
       1
     );
     assert_eq!(builder.config.target_fps, 60);
+  }
+
+  // ===========================================================================
+  // Cursor Focus Tests
+  // ===========================================================================
+
+  #[test]
+  fn cursor_grab_for_focus_no_action_when_not_locked() {
+    // When cursor isn't locked, focus changes should not affect grab state
+    assert_eq!(cursor_grab_for_focus(false, true), None);
+    assert_eq!(cursor_grab_for_focus(false, false), None);
+  }
+
+  #[test]
+  fn cursor_grab_for_focus_releases_on_focus_lost() {
+    use winit::window::CursorGrabMode;
+    // When cursor is locked and window loses focus, release grab and show cursor
+    let result = cursor_grab_for_focus(true, false);
+    assert_eq!(result, Some((CursorGrabMode::None, true)));
+  }
+
+  #[test]
+  fn cursor_grab_for_focus_restores_on_focus_gained() {
+    use winit::window::CursorGrabMode;
+    // When cursor is locked and window regains focus, re-confine and hide cursor
+    let result = cursor_grab_for_focus(true, true);
+    assert_eq!(result, Some((CursorGrabMode::Confined, false)));
+  }
+
+  #[test]
+  fn cursor_grab_for_focus_visibility_matches_grab() {
+    // visible=true when released (user can see cursor outside app)
+    // visible=false when confined (FPS-style hidden cursor)
+    let (_, visible_unfocused) = cursor_grab_for_focus(true, false).unwrap();
+    let (_, visible_focused) = cursor_grab_for_focus(true, true).unwrap();
+    assert!(visible_unfocused);
+    assert!(!visible_focused);
   }
 }
