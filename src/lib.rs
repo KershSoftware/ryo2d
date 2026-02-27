@@ -211,7 +211,8 @@ pub mod prelude {
 
   // Trail and Line rendering
   pub use crate::core::trail::{
-    Line2D, TextureMode, Trail2D, TrailPoint, TrailRenderer, TrailStyle,
+    Line2D, LineCap, LineJoin, TextureMode, Trail2D, TrailEffect, TrailPoint, TrailRenderer,
+    TrailStyle,
   };
 
   // Skeletal animation

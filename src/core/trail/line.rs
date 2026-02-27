@@ -29,6 +29,7 @@
 //! );
 //! ```
 
+use super::{LineCap, LineJoin, TrailStyle};
 use crate::core::ecs::Vec2;
 use crate::core::ui::Color;
 
@@ -54,6 +55,12 @@ pub struct Line2D {
   closed: bool,
   /// Z-order for rendering
   z_order: i32,
+  /// Rendering style for this line
+  style: TrailStyle,
+  /// How endpoints are drawn
+  cap: LineCap,
+  /// How segments connect at corners
+  join: LineJoin,
 }
 
 impl Line2D {
@@ -73,6 +80,9 @@ impl Line2D {
       visible: true,
       closed: false,
       z_order: 0,
+      style: TrailStyle::Solid,
+      cap: LineCap::Butt,
+      join: LineJoin::None,
     }
   }
 
@@ -344,6 +354,54 @@ impl Line2D {
     self.z_order = z_order;
   }
 
+  /// Set the rendering style for this line.
+  pub fn with_style(mut self, style: TrailStyle) -> Self {
+    self.style = style;
+    self
+  }
+
+  /// Set the line cap style for endpoints.
+  pub fn with_cap(mut self, cap: LineCap) -> Self {
+    self.cap = cap;
+    self
+  }
+
+  /// Set the line join style for corners.
+  pub fn with_join(mut self, join: LineJoin) -> Self {
+    self.join = join;
+    self
+  }
+
+  /// Get the rendering style.
+  pub fn style(&self) -> TrailStyle {
+    self.style
+  }
+
+  /// Set the rendering style.
+  pub fn set_style(&mut self, style: TrailStyle) {
+    self.style = style;
+  }
+
+  /// Get the line cap style.
+  pub fn cap(&self) -> LineCap {
+    self.cap
+  }
+
+  /// Set the line cap style.
+  pub fn set_cap(&mut self, cap: LineCap) {
+    self.cap = cap;
+  }
+
+  /// Get the line join style.
+  pub fn join(&self) -> LineJoin {
+    self.join
+  }
+
+  /// Set the line join style.
+  pub fn set_join(&mut self, join: LineJoin) {
+    self.join = join;
+  }
+
   /// Get the number of points.
   pub fn point_count(&self) -> usize {
     self.points.len()
@@ -519,5 +577,50 @@ mod tests {
     let rect = Line2D::rect(0.0, 0.0, 100.0, 50.0, Color::GREEN, 2.0);
     assert_eq!(rect.point_count(), 4);
     assert!(rect.is_closed());
+  }
+
+  // ========== Line2D Style/Cap/Join Tests ==========
+
+  #[test]
+  fn line_default_style_is_solid() {
+    let line = Line2D::default();
+    assert_eq!(line.style(), TrailStyle::Solid);
+  }
+
+  #[test]
+  fn line_with_style() {
+    let line = Line2D::default().with_style(TrailStyle::Glow);
+    assert_eq!(line.style(), TrailStyle::Glow);
+  }
+
+  #[test]
+  fn line_set_style() {
+    let mut line = Line2D::default();
+    line.set_style(TrailStyle::Soft);
+    assert_eq!(line.style(), TrailStyle::Soft);
+  }
+
+  #[test]
+  fn line_default_cap_is_butt() {
+    let line = Line2D::default();
+    assert_eq!(line.cap(), LineCap::Butt);
+  }
+
+  #[test]
+  fn line_with_cap() {
+    let line = Line2D::default().with_cap(LineCap::Round);
+    assert_eq!(line.cap(), LineCap::Round);
+  }
+
+  #[test]
+  fn line_default_join_is_none() {
+    let line = Line2D::default();
+    assert_eq!(line.join(), LineJoin::None);
+  }
+
+  #[test]
+  fn line_with_join() {
+    let line = Line2D::default().with_join(LineJoin::Miter);
+    assert_eq!(line.join(), LineJoin::Miter);
   }
 }

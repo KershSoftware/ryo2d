@@ -176,4 +176,6 @@ mod trail;
 
 pub use line::Line2D;
 pub use renderer::{MAX_TRAIL_VERTICES, TrailRenderer, TrailStyle};
-pub use trail::{MAX_TRAIL_POINTS, TextureMode, Trail2D, TrailPoint};
+pub use trail::{
+  LineCap, LineJoin, MAX_TRAIL_POINTS, TextureMode, Trail2D, TrailEffect, TrailPoint,
+};

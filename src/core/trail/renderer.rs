@@ -2,7 +2,7 @@
 //!
 //! Renders trails and lines efficiently using GPU instancing and batching.
 
-use super::{Line2D, TextureMode, Trail2D, TrailPoint};
+use super::{Line2D, LineCap, LineJoin, TextureMode, Trail2D, TrailEffect, TrailPoint};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Transform, Vec2};
 use crate::core::ui::Color;
@@ -32,8 +32,13 @@ struct TrailVertex {
   position: [f32; 2],
   /// RGBA color (normalized)
   color: [f32; 4],
-  /// UV coordinates (x = along trail 0-1, y = across trail -0.5 to 0.5)
+  /// UV coordinates (x = along trail 0-1, y = across trail 0-1)
   uv: [f32; 2],
+  /// Effect parameters: [type_and_style, param1, param2, param3]
+  /// type_and_style encodes effect type (bits 0-3) and style (bits 4-5)
+  effect_params: [f32; 4],
+  /// Normalized perpendicular direction for GPU displacement effects
+  perpendicular: [f32; 2],
 }
 
 /// Global uniforms for trail rendering
@@ -65,19 +70,10 @@ struct TexturedBatch {
 
 /// GPU-accelerated trail and line renderer.
 pub struct TrailRenderer {
-  /// Render pipeline for solid trails (no texture)
-  solid_pipeline: wgpu::RenderPipeline,
-  /// Render pipeline for soft trails (no texture)
-  soft_pipeline: wgpu::RenderPipeline,
-  /// Render pipeline for glow trails (no texture)
-  glow_pipeline: wgpu::RenderPipeline,
-
-  /// Render pipeline for textured solid trails
-  textured_solid_pipeline: wgpu::RenderPipeline,
-  /// Render pipeline for textured soft trails
-  textured_soft_pipeline: wgpu::RenderPipeline,
-  /// Render pipeline for textured glow trails
-  textured_glow_pipeline: wgpu::RenderPipeline,
+  /// Render pipeline for non-textured trails (uber-shader)
+  pipeline: wgpu::RenderPipeline,
+  /// Render pipeline for textured trails (uber-shader)
+  textured_pipeline: wgpu::RenderPipeline,
 
   /// Vertex buffer
   vertex_buffer: wgpu::Buffer,
@@ -260,6 +256,18 @@ impl TrailRenderer {
           offset: 24,
           shader_location: 2,
         },
+        // effect_params
+        wgpu::VertexAttribute {
+          format: wgpu::VertexFormat::Float32x4,
+          offset: 32,
+          shader_location: 3,
+        },
+        // perpendicular
+        wgpu::VertexAttribute {
+          format: wgpu::VertexFormat::Float32x2,
+          offset: 48,
+          shader_location: 4,
+        },
       ],
     };
 
@@ -307,40 +315,17 @@ impl TrailRenderer {
       })
     };
 
-    let solid_pipeline =
-      create_pipeline(&pipeline_layout, &shader, "fs_main", "Trail Solid Pipeline");
-    let soft_pipeline =
-      create_pipeline(&pipeline_layout, &shader, "fs_soft", "Trail Soft Pipeline");
-    let glow_pipeline =
-      create_pipeline(&pipeline_layout, &shader, "fs_glow", "Trail Glow Pipeline");
-
-    // Create textured pipelines
-    let textured_solid_pipeline = create_pipeline(
+    let pipeline = create_pipeline(&pipeline_layout, &shader, "fs_main", "Trail Pipeline");
+    let textured_pipeline = create_pipeline(
       &textured_pipeline_layout,
       &textured_shader,
       "fs_main",
-      "Trail Textured Solid Pipeline",
-    );
-    let textured_soft_pipeline = create_pipeline(
-      &textured_pipeline_layout,
-      &textured_shader,
-      "fs_soft",
-      "Trail Textured Soft Pipeline",
-    );
-    let textured_glow_pipeline = create_pipeline(
-      &textured_pipeline_layout,
-      &textured_shader,
-      "fs_glow",
-      "Trail Textured Glow Pipeline",
+      "Trail Textured Pipeline",
     );
 
     Self {
-      solid_pipeline,
-      soft_pipeline,
-      glow_pipeline,
-      textured_solid_pipeline,
-      textured_soft_pipeline,
-      textured_glow_pipeline,
+      pipeline,
+      textured_pipeline,
       vertex_buffer,
       globals_buffer,
       bind_group_layout,
@@ -480,8 +465,13 @@ impl TrailRenderer {
     let points = trail.points();
     let point_count = points.len();
 
-    // Need 2 vertices per point for triangle strip
-    if vertices.len() + point_count * 2 > MAX_TRAIL_VERTICES {
+    // Estimate total vertices: 2 per point (strip) + caps overhead
+    let cap_overhead = match trail.cap() {
+      LineCap::Butt => 0,
+      LineCap::Round => 2 * (8 * 2 + 3), // 2 caps, each ~8 segments * 2 verts + degenerate
+      LineCap::Square => 2 * 4,          // 2 caps, 4 vertices each
+    };
+    if vertices.len() + point_count * 2 + cap_overhead > MAX_TRAIL_VERTICES {
       return; // Buffer full
     }
 
@@ -491,7 +481,11 @@ impl TrailRenderer {
     // Track if we need to add a degenerate at the start of this trail
     let needs_degenerate = !vertices.is_empty();
 
+    // Pre-compute effect params once for all vertices in this trail
+    let effect_params = build_effect_params(trail.effect(), trail.style());
+
     // Add degenerate triangle to separate from previous trail (part 1: duplicate last vertex)
+    // Must be an exact copy so GPU displacement moves it identically to the source vertex.
     if needs_degenerate {
       let last = *vertices.last().unwrap();
       vertices.push(last);
@@ -557,7 +551,10 @@ impl TrailRenderer {
 
       let half_width = width / 2.0;
 
-      // Calculate UV.x based on texture mode
+      // Calculate UV.x based on texture mode or effect presence.
+      // For GPU effects, use distance-based UV instead of index-based.
+      // Index-based t shifts every frame as new points are added, causing the displacement
+      // pattern to "slide" along the trail. Distance-based UV is stable per-point.
       let uv_x = if has_texture {
         match trail.texture_mode() {
           TextureMode::Stretch => t,
@@ -567,16 +564,25 @@ impl TrailRenderer {
             dist / trail.tile_length()
           }
         }
+      } else if trail.effect().is_some() {
+        // Distance-based: normalize by total trail length for a stable 0..1 range
+        let dist = distances.get(i).copied().unwrap_or(0.0);
+        let total = distances.last().copied().unwrap_or(1.0).max(0.001);
+        dist / total
       } else {
         t
       };
 
       // Add degenerate at start of trail (part 2: duplicate first vertex of new trail)
+      // Must use same effect_params and perpendicular as the real first-left vertex so GPU
+      // displacement moves them identically, keeping the bridge triangle zero-area.
       if i == 0 && needs_degenerate {
         vertices.push(TrailVertex {
           position: [world_x + px * half_width, world_y + py * half_width],
           color: color_to_array(color),
           uv: [uv_x, 0.0],
+          effect_params,
+          perpendicular: [px, py],
         });
       }
 
@@ -585,6 +591,8 @@ impl TrailRenderer {
         position: [world_x + px * half_width, world_y + py * half_width],
         color: color_to_array(color),
         uv: [uv_x, 0.0],
+        effect_params,
+        perpendicular: [px, py],
       });
 
       // Right vertex (UV.y = 1)
@@ -592,9 +600,197 @@ impl TrailRenderer {
         position: [world_x - px * half_width, world_y - py * half_width],
         color: color_to_array(color),
         uv: [uv_x, 1.0],
+        effect_params,
+        perpendicular: [px, py],
       });
 
       prev_point = Some(point);
+    }
+
+    // Generate cap geometry at endpoints if cap != Butt
+    let cap = trail.cap();
+    if cap != LineCap::Butt && point_count >= 2 {
+      // Tail cap (oldest point, last in the VecDeque) — appended first since
+      // the strip ends at the tail. The outward direction is AWAY from the trail
+      // (from second-to-last toward last point).
+      {
+        let tail = &points[point_count - 1];
+        let prev = &points[point_count - 2];
+        let tdx = tail.x - prev.x;
+        let tdy = tail.y - prev.y;
+        let tlen = (tdx * tdx + tdy * tdy).sqrt().max(0.001);
+        let dir_x = tdx / tlen;
+        let dir_y = tdy / tlen;
+        // Perpendicular at the tail
+        let tpx = -dir_y;
+        let tpy = dir_x;
+
+        let t_tail = 1.0;
+        let tail_width = trail.width_at(t_tail);
+        let tail_half_width = tail_width / 2.0;
+        let tail_color = if trail.fade_distance().is_some() {
+          let dist = distances.get(point_count - 1).copied().unwrap_or(0.0);
+          let dist_t = if let Some(max_dist) = trail.fade_distance() {
+            (dist / max_dist).clamp(0.0, 1.0)
+          } else {
+            0.0
+          };
+          trail.color_at(dist_t)
+        } else {
+          trail.color_at(t_tail)
+        };
+
+        let tail_uv_x = if has_texture {
+          match trail.texture_mode() {
+            TextureMode::Stretch => t_tail,
+            TextureMode::Tile => {
+              let dist = distances.get(point_count - 1).copied().unwrap_or(0.0);
+              dist / trail.tile_length()
+            }
+          }
+        } else {
+          t_tail
+        };
+
+        match cap {
+          LineCap::Round => {
+            generate_round_cap(
+              vertices,
+              tail.x,
+              tail.y,
+              dir_x,
+              dir_y,
+              tpx,
+              tpy,
+              tail_half_width,
+              color_to_array(tail_color),
+              tail_uv_x,
+              effect_params,
+            );
+          }
+          LineCap::Square => {
+            generate_square_cap(
+              vertices,
+              tail.x,
+              tail.y,
+              dir_x,
+              dir_y,
+              tpx,
+              tpy,
+              tail_half_width,
+              color_to_array(tail_color),
+              tail_uv_x,
+              effect_params,
+            );
+          }
+          LineCap::Butt => {} // Already handled by early return
+        }
+      }
+
+      // Head cap (newest point, first in the VecDeque)
+      // The outward direction is AWAY from the trail (opposite of the first segment direction)
+      {
+        let head = &points[0];
+        let next = &points[1];
+        let hdx = next.x - head.x;
+        let hdy = next.y - head.y;
+        let hlen = (hdx * hdx + hdy * hdy).sqrt().max(0.001);
+        // Direction away from the trail at the head (opposite of segment direction)
+        let dir_x = -hdx / hlen;
+        let dir_y = -hdy / hlen;
+        // Perpendicular at the head
+        let hpx = -hdy / hlen;
+        let hpy = hdx / hlen;
+
+        let t_head = 0.0;
+        let head_width = trail.width_at(t_head);
+        let head_half_width = head_width / 2.0;
+        let head_color = trail.color_at(t_head);
+
+        let head_uv_x = if has_texture {
+          match trail.texture_mode() {
+            TextureMode::Stretch => t_head,
+            TextureMode::Tile => 0.0,
+          }
+        } else {
+          t_head
+        };
+
+        match cap {
+          LineCap::Round => {
+            generate_round_cap(
+              vertices,
+              head.x,
+              head.y,
+              dir_x,
+              dir_y,
+              hpx,
+              hpy,
+              head_half_width,
+              color_to_array(head_color),
+              head_uv_x,
+              effect_params,
+            );
+          }
+          LineCap::Square => {
+            // For square cap at the head, we need a degenerate separator first
+            // since the square cap naturally continues the strip but the head
+            // is not the end of the strip
+            if !vertices.is_empty() {
+              let last = *vertices.last().unwrap();
+              vertices.push(last);
+            }
+            let ext_x = head.x + dir_x * head_half_width;
+            let ext_y = head.y + dir_y * head_half_width;
+            // Degenerate: duplicate first vertex
+            vertices.push(TrailVertex {
+              position: [ext_x + hpx * head_half_width, ext_y + hpy * head_half_width],
+              color: color_to_array(head_color),
+              uv: [head_uv_x, 0.0],
+              effect_params,
+              perpendicular: [hpx, hpy],
+            });
+            // Left
+            vertices.push(TrailVertex {
+              position: [ext_x + hpx * head_half_width, ext_y + hpy * head_half_width],
+              color: color_to_array(head_color),
+              uv: [head_uv_x, 0.0],
+              effect_params,
+              perpendicular: [hpx, hpy],
+            });
+            // Right
+            vertices.push(TrailVertex {
+              position: [ext_x - hpx * head_half_width, ext_y - hpy * head_half_width],
+              color: color_to_array(head_color),
+              uv: [head_uv_x, 1.0],
+              effect_params,
+              perpendicular: [hpx, hpy],
+            });
+            // Connect back to head position
+            vertices.push(TrailVertex {
+              position: [
+                head.x + hpx * head_half_width,
+                head.y + hpy * head_half_width,
+              ],
+              color: color_to_array(head_color),
+              uv: [head_uv_x, 0.0],
+              effect_params,
+              perpendicular: [hpx, hpy],
+            });
+            vertices.push(TrailVertex {
+              position: [
+                head.x - hpx * head_half_width,
+                head.y - hpy * head_half_width,
+              ],
+              color: color_to_array(head_color),
+              uv: [head_uv_x, 1.0],
+              effect_params,
+              perpendicular: [hpx, hpy],
+            });
+          }
+          LineCap::Butt => {}
+        }
+      }
     }
 
     // If textured, record the batch info (sprite_id will be set during render)
@@ -651,15 +847,48 @@ impl TrailRenderer {
     let points = line.points();
     let point_count = points.len();
 
-    // Need 2 vertices per point for triangle strip
-    if self.vertices.len() + point_count * 2 > MAX_TRAIL_VERTICES {
+    // Estimate total vertices: 2 per point (strip) + caps + joins overhead
+    let cap_overhead = match line.cap() {
+      LineCap::Butt => 0,
+      LineCap::Round => 2 * (8 * 2 + 3), // 2 caps, each ~8 segments * 2 verts + degenerate
+      LineCap::Square => 2 * 4,          // 2 caps, 4 vertices each
+    };
+    let join_overhead = match line.join() {
+      LineJoin::None => 0,
+      LineJoin::Bevel | LineJoin::Miter => point_count.saturating_sub(2) * 6,
+      LineJoin::Round => point_count.saturating_sub(2) * 20,
+    };
+    if self.vertices.len() + point_count * 2 + cap_overhead + join_overhead > MAX_TRAIL_VERTICES {
       return; // Buffer full
     }
+
+    // Lines don't have effects, so only encode the style
+    let effect_params = build_effect_params(None, line.style());
+
+    let join = line.join();
+    let cap = line.cap();
 
     // Add degenerate triangle to separate from previous line
     if !self.vertices.is_empty() {
       let last = *self.vertices.last().unwrap();
       self.vertices.push(last);
+    }
+
+    // Pre-compute per-segment perpendiculars for join geometry
+    // segment_perps[i] = perpendicular for segment from point[i] to point[i+1]
+    let mut segment_perps: Vec<(f32, f32)> = Vec::with_capacity(point_count);
+    for i in 0..point_count {
+      let (dx, dy) = if i + 1 < point_count {
+        let next = points[i + 1];
+        (next.x - points[i].x, next.y - points[i].y)
+      } else if i > 0 {
+        // Last point: use direction from previous
+        (points[i].x - points[i - 1].x, points[i].y - points[i - 1].y)
+      } else {
+        (1.0, 0.0)
+      };
+      let len = (dx * dx + dy * dy).sqrt().max(0.001);
+      segment_perps.push((-dy / len, dx / len));
     }
 
     let mut prev_point: Option<Vec2> = None;
@@ -698,22 +927,255 @@ impl TrailRenderer {
           position: [world_x + px * half_width, world_y + py * half_width],
           color: color_to_array(color),
           uv: [t, 0.0],
+          effect_params,
+          perpendicular: [0.0, 0.0],
         });
       }
 
-      // Left vertex
-      self.vertices.push(TrailVertex {
-        position: [world_x + px * half_width, world_y + py * half_width],
-        color: color_to_array(color),
-        uv: [t, 0.0],
-      });
+      // Handle interior join points — all join types use inline vertex pairs
+      // embedded directly in the strip. No separate/deferred geometry needed.
+      let is_interior_join = join != LineJoin::None && i > 0 && i < point_count - 1;
+      let mut join_handled = false;
 
-      // Right vertex
-      self.vertices.push(TrailVertex {
-        position: [world_x - px * half_width, world_y - py * half_width],
-        color: color_to_array(color),
-        uv: [t, 1.0],
-      });
+      if is_interior_join {
+        let (ppx, ppy) = segment_perps[i - 1];
+        let (npx, npy) = segment_perps[i];
+        let cross = ppx * npy - ppy * npx;
+        let perp_dot = ppx * npx + ppy * npy;
+        let needs_join = perp_dot < 0.999;
+        let color_arr = color_to_array(color);
+
+        if needs_join {
+          // Determine inside/outside based on turn direction.
+          // cross < 0 in screen coords (Y-down) means left turn → outside is +perp side.
+          // cross > 0 means right turn → outside is -perp side.
+          //
+          // IMPORTANT: Vertex pairs must always emit in the same order as normal
+          // vertices: +perp side (UV.y=0) FIRST, -perp side (UV.y=1) SECOND.
+          // This preserves strip winding. The outside_sign tells us which
+          // geometric side is "outside" for positioning the join shape.
+          let outside_sign: f32 = if cross < 0.0 { 1.0 } else { -1.0 };
+
+          // Helper: emit a full-width vertex pair in correct strip order
+          // (+perp first UV.y=0, -perp second UV.y=1)
+          let emit_pair =
+            |verts: &mut Vec<TrailVertex>, px: f32, py: f32, t: f32, ep: [f32; 4]| {
+              verts.push(TrailVertex {
+                position: [world_x + px * half_width, world_y + py * half_width],
+                color: color_arr, uv: [t, 0.0], effect_params: ep,
+                perpendicular: [px, py],
+              });
+              verts.push(TrailVertex {
+                position: [world_x - px * half_width, world_y - py * half_width],
+                color: color_arr, uv: [t, 1.0], effect_params: ep,
+                perpendicular: [px, py],
+              });
+            };
+
+          match join {
+            LineJoin::Miter => {
+              let mx = ppx + npx;
+              let my = ppy + npy;
+              let mlen = (mx * mx + my * my).sqrt();
+              let mut use_miter = false;
+
+              if mlen > 0.001 {
+                let mnx = mx / mlen;
+                let mny = my / mlen;
+                let dot = mnx * ppx + mny * ppy;
+                if dot.abs() > 0.001 {
+                  let miter_length = 1.0 / dot;
+                  if miter_length.abs() <= 4.0 {
+                    use_miter = true;
+                    join_handled = true;
+
+                    let spike_x = world_x + outside_sign * mnx * half_width * miter_length;
+                    let spike_y = world_y + outside_sign * mny * half_width * miter_length;
+
+                    // Determine which slot the spike goes in based on outside direction
+                    // outside_sign=+1 → spike is on +perp side → UV.y=0 (first vertex)
+                    // outside_sign=-1 → spike is on -perp side → UV.y=1 (second vertex)
+                    let spike_uv_y = if outside_sign > 0.0 { 0.0 } else { 1.0 };
+                    let inside_uv_y = if outside_sign > 0.0 { 1.0 } else { 0.0 };
+                    let inside_sign = -outside_sign;
+
+                    // Pair 1: incoming perp
+                    if outside_sign > 0.0 {
+                      // Spike is +perp side (first), inside is -perp side (second)
+                      self.vertices.push(TrailVertex {
+                        position: [spike_x, spike_y],
+                        color: color_arr, uv: [t, spike_uv_y], effect_params,
+                        perpendicular: [mnx, mny],
+                      });
+                      self.vertices.push(TrailVertex {
+                        position: [
+                          world_x + inside_sign * ppx * half_width,
+                          world_y + inside_sign * ppy * half_width,
+                        ],
+                        color: color_arr, uv: [t, inside_uv_y], effect_params,
+                        perpendicular: [ppx, ppy],
+                      });
+                    } else {
+                      // Inside is +perp side (first), spike is -perp side (second)
+                      self.vertices.push(TrailVertex {
+                        position: [
+                          world_x + inside_sign * ppx * half_width,
+                          world_y + inside_sign * ppy * half_width,
+                        ],
+                        color: color_arr, uv: [t, inside_uv_y], effect_params,
+                        perpendicular: [ppx, ppy],
+                      });
+                      self.vertices.push(TrailVertex {
+                        position: [spike_x, spike_y],
+                        color: color_arr, uv: [t, spike_uv_y], effect_params,
+                        perpendicular: [mnx, mny],
+                      });
+                    }
+                    // Pair 2: outgoing perp
+                    if outside_sign > 0.0 {
+                      self.vertices.push(TrailVertex {
+                        position: [spike_x, spike_y],
+                        color: color_arr, uv: [t, spike_uv_y], effect_params,
+                        perpendicular: [mnx, mny],
+                      });
+                      self.vertices.push(TrailVertex {
+                        position: [
+                          world_x + inside_sign * npx * half_width,
+                          world_y + inside_sign * npy * half_width,
+                        ],
+                        color: color_arr, uv: [t, inside_uv_y], effect_params,
+                        perpendicular: [npx, npy],
+                      });
+                    } else {
+                      self.vertices.push(TrailVertex {
+                        position: [
+                          world_x + inside_sign * npx * half_width,
+                          world_y + inside_sign * npy * half_width,
+                        ],
+                        color: color_arr, uv: [t, inside_uv_y], effect_params,
+                        perpendicular: [npx, npy],
+                      });
+                      self.vertices.push(TrailVertex {
+                        position: [spike_x, spike_y],
+                        color: color_arr, uv: [t, spike_uv_y], effect_params,
+                        perpendicular: [mnx, mny],
+                      });
+                    }
+                  }
+                }
+              }
+              // Miter limit exceeded — fall back to bevel
+              if !use_miter {
+                join_handled = true;
+                emit_pair(&mut self.vertices, ppx, ppy, t, effect_params);
+                emit_pair(&mut self.vertices, npx, npy, t, effect_params);
+              }
+            }
+            LineJoin::Bevel => {
+              join_handled = true;
+              emit_pair(&mut self.vertices, ppx, ppy, t, effect_params);
+              emit_pair(&mut self.vertices, npx, npy, t, effect_params);
+            }
+            LineJoin::Round => {
+              join_handled = true;
+              let segments = ROUND_JOIN_SEGMENTS;
+
+              // Determine rotation direction for the outside arc
+              let (start_ox, start_oy, end_ox, end_oy) = if cross < 0.0 {
+                (ppx, ppy, npx, npy) // +perp is outside (left turn)
+              } else {
+                (-ppx, -ppy, -npx, -npy) // -perp is outside
+              };
+              let start_cross_end = start_ox * end_oy - start_oy * end_ox;
+              let dot_se = (start_ox * end_ox + start_oy * end_oy).clamp(-1.0, 1.0);
+              let total_angle = dot_se.acos();
+              let inside_sign = -outside_sign;
+
+              for k in 0..=segments {
+                let frac = k as f32 / segments as f32;
+                let angle = total_angle * frac;
+                let cos_a = angle.cos();
+                let sin_a = angle.sin();
+
+                let (rot_ox, rot_oy) = if start_cross_end >= 0.0 {
+                  (
+                    start_ox * cos_a - start_oy * sin_a,
+                    start_oy * cos_a + start_ox * sin_a,
+                  )
+                } else {
+                  (
+                    start_ox * cos_a + start_oy * sin_a,
+                    start_oy * cos_a - start_ox * sin_a,
+                  )
+                };
+
+                // Inside: interpolate between incoming and outgoing perps
+                let in_px = ppx + (npx - ppx) * frac;
+                let in_py = ppy + (npy - ppy) * frac;
+
+                // Always emit +perp side (UV.y=0) first, -perp side (UV.y=1) second
+                if outside_sign > 0.0 {
+                  // Outside arc is +perp side (first), inside is -perp side (second)
+                  self.vertices.push(TrailVertex {
+                    position: [
+                      world_x + rot_ox * half_width,
+                      world_y + rot_oy * half_width,
+                    ],
+                    color: color_arr, uv: [t, 0.0], effect_params,
+                    perpendicular: [rot_ox, rot_oy],
+                  });
+                  self.vertices.push(TrailVertex {
+                    position: [
+                      world_x + inside_sign * in_px * half_width,
+                      world_y + inside_sign * in_py * half_width,
+                    ],
+                    color: color_arr, uv: [t, 1.0], effect_params,
+                    perpendicular: [in_px, in_py],
+                  });
+                } else {
+                  // Inside is +perp side (first), outside arc is -perp side (second)
+                  self.vertices.push(TrailVertex {
+                    position: [
+                      world_x + inside_sign * in_px * half_width,
+                      world_y + inside_sign * in_py * half_width,
+                    ],
+                    color: color_arr, uv: [t, 0.0], effect_params,
+                    perpendicular: [in_px, in_py],
+                  });
+                  self.vertices.push(TrailVertex {
+                    position: [
+                      world_x + rot_ox * half_width,
+                      world_y + rot_oy * half_width,
+                    ],
+                    color: color_arr, uv: [t, 1.0], effect_params,
+                    perpendicular: [rot_ox, rot_oy],
+                  });
+                }
+              }
+            }
+            LineJoin::None => {} // Already handled by early check
+          }
+        }
+      }
+
+      // Normal vertices: non-join points, or join with insignificant angle
+      if !join_handled {
+        let color_arr = color_to_array(color);
+        self.vertices.push(TrailVertex {
+          position: [world_x + px * half_width, world_y + py * half_width],
+          color: color_arr,
+          uv: [t, 0.0],
+          effect_params,
+          perpendicular: [px, py],
+        });
+        self.vertices.push(TrailVertex {
+          position: [world_x - px * half_width, world_y - py * half_width],
+          color: color_arr,
+          uv: [t, 1.0],
+          effect_params,
+          perpendicular: [px, py],
+        });
+      }
 
       prev_point = Some(*point);
     }
@@ -741,14 +1203,139 @@ impl TrailRenderer {
         position: [world_x + px * half_width, world_y + py * half_width],
         color: color_to_array(color),
         uv: [1.0, 0.0],
+        effect_params,
+        perpendicular: [px, py],
       });
 
       self.vertices.push(TrailVertex {
         position: [world_x - px * half_width, world_y - py * half_width],
         color: color_to_array(color),
         uv: [1.0, 1.0],
+        effect_params,
+        perpendicular: [px, py],
       });
     }
+
+    // Generate cap geometry at endpoints (only for non-closed lines)
+    if cap != LineCap::Butt && !line.is_closed() && point_count >= 2 {
+      // End cap (last point) — appended to the strip naturally
+      {
+        let end_pt = points[point_count - 1];
+        let prev_pt = points[point_count - 2];
+        let edx = end_pt.x - prev_pt.x;
+        let edy = end_pt.y - prev_pt.y;
+        let elen = (edx * edx + edy * edy).sqrt().max(0.001);
+        let dir_x = edx / elen;
+        let dir_y = edy / elen;
+        let epx = -edy / elen;
+        let epy = edx / elen;
+
+        let t_end = 1.0;
+        let end_width = line.width_at(t_end);
+        let end_half_width = end_width / 2.0;
+        let end_color = line.color_at(t_end);
+        let end_world_x = end_pt.x + offset_x;
+        let end_world_y = end_pt.y + offset_y;
+
+        match cap {
+          LineCap::Round => {
+            generate_round_cap(
+              &mut self.vertices,
+              end_world_x,
+              end_world_y,
+              dir_x,
+              dir_y,
+              epx,
+              epy,
+              end_half_width,
+              color_to_array(end_color),
+              t_end,
+              effect_params,
+            );
+          }
+          LineCap::Square => {
+            generate_square_cap(
+              &mut self.vertices,
+              end_world_x,
+              end_world_y,
+              dir_x,
+              dir_y,
+              epx,
+              epy,
+              end_half_width,
+              color_to_array(end_color),
+              t_end,
+              effect_params,
+            );
+          }
+          LineCap::Butt => {}
+        }
+      }
+
+      // Start cap (first point)
+      {
+        let start_pt = points[0];
+        let next_pt = points[1];
+        let sdx = next_pt.x - start_pt.x;
+        let sdy = next_pt.y - start_pt.y;
+        let slen = (sdx * sdx + sdy * sdy).sqrt().max(0.001);
+        // Direction away from the trail at the start
+        let dir_x = -sdx / slen;
+        let dir_y = -sdy / slen;
+        let spx = -sdy / slen;
+        let spy = sdx / slen;
+
+        let t_start = 0.0;
+        let start_width = line.width_at(t_start);
+        let start_half_width = start_width / 2.0;
+        let start_color = line.color_at(t_start);
+        let start_world_x = start_pt.x + offset_x;
+        let start_world_y = start_pt.y + offset_y;
+
+        match cap {
+          LineCap::Round => {
+            generate_round_cap(
+              &mut self.vertices,
+              start_world_x,
+              start_world_y,
+              dir_x,
+              dir_y,
+              spx,
+              spy,
+              start_half_width,
+              color_to_array(start_color),
+              t_start,
+              effect_params,
+            );
+          }
+          LineCap::Square => {
+            // Square cap at start needs degenerate separator since it's not at
+            // the end of the strip
+            if !self.vertices.is_empty() {
+              let last = *self.vertices.last().unwrap();
+              self.vertices.push(last);
+            }
+            let ext_x = start_world_x + dir_x * start_half_width;
+            let ext_y = start_world_y + dir_y * start_half_width;
+            vertices_push_square_cap_head(
+              &mut self.vertices,
+              ext_x,
+              ext_y,
+              start_world_x,
+              start_world_y,
+              spx,
+              spy,
+              start_half_width,
+              color_to_array(start_color),
+              t_start,
+              effect_params,
+            );
+          }
+          LineCap::Butt => {}
+        }
+      }
+    }
+
   }
 
   /// Render all accumulated trails and lines.
@@ -761,7 +1348,7 @@ impl TrailRenderer {
     camera_pos: Vec2,
     camera_zoom: f32,
     time: f32,
-    style: TrailStyle,
+    _style: TrailStyle,
   ) {
     if !self.enabled || (self.vertices.is_empty() && self.textured_vertices.is_empty()) {
       return;
@@ -789,18 +1376,9 @@ impl TrailRenderer {
     };
     queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
 
-    // Select pipelines
-    let pipeline = match style {
-      TrailStyle::Solid => &self.solid_pipeline,
-      TrailStyle::Soft => &self.soft_pipeline,
-      TrailStyle::Glow => &self.glow_pipeline,
-    };
-
-    let textured_pipeline = match style {
-      TrailStyle::Solid => &self.textured_solid_pipeline,
-      TrailStyle::Soft => &self.textured_soft_pipeline,
-      TrailStyle::Glow => &self.textured_glow_pipeline,
-    };
+    // Select pipelines (uber-shaders handle style via per-vertex effect_params)
+    let pipeline = &self.pipeline;
+    let textured_pipeline = &self.textured_pipeline;
 
     // Render non-textured trails
     if !self.vertices.is_empty() {
@@ -910,6 +1488,318 @@ fn color_to_array(color: Color) -> [f32; 4] {
     color.a as f32 / 255.0,
   ]
 }
+
+/// Encode effect type and style into a single f32 value.
+/// Bits 0-3: effect type (0=none, 1=lightning, 2=noise, 3=scroll, 4=ribbon)
+/// Bits 4-5: style (0=solid, 1=soft, 2=glow)
+fn encode_type_and_style(effect_type: u32, style: u32) -> f32 {
+  (effect_type | (style << 4)) as f32
+}
+
+/// Get the effect type index for a TrailEffect.
+fn effect_type_index(effect: Option<&TrailEffect>) -> u32 {
+  match effect {
+    None => 0,
+    Some(TrailEffect::Lightning { .. }) => 1,
+    Some(TrailEffect::Noise { .. }) => 2,
+    Some(TrailEffect::UvScroll { .. }) => 3,
+    Some(TrailEffect::Ribbon { .. }) => 4,
+  }
+}
+
+/// Get the style index for a TrailStyle.
+fn style_index(style: TrailStyle) -> u32 {
+  match style {
+    TrailStyle::Solid => 0,
+    TrailStyle::Soft => 1,
+    TrailStyle::Glow => 2,
+  }
+}
+
+/// Build the effect_params array for a trail vertex.
+fn build_effect_params(effect: Option<&TrailEffect>, style: TrailStyle) -> [f32; 4] {
+  let type_and_style = encode_type_and_style(effect_type_index(effect), style_index(style));
+  match effect {
+    None => [type_and_style, 0.0, 0.0, 0.0],
+    Some(TrailEffect::Lightning {
+      jitter,
+      speed,
+      detail,
+    }) => [type_and_style, *jitter, *speed, *detail as f32],
+    Some(TrailEffect::Noise {
+      frequency,
+      amplitude,
+      speed,
+    }) => [type_and_style, *frequency, *amplitude, *speed],
+    Some(TrailEffect::UvScroll { speed }) => [type_and_style, *speed, 0.0, 0.0],
+    Some(TrailEffect::Ribbon {
+      amplitude,
+      frequency,
+      speed,
+    }) => [type_and_style, *amplitude, *frequency, *speed],
+  }
+}
+
+// =====================================================================
+// Line Cap Geometry Generation
+// =====================================================================
+
+/// Number of segments for round caps
+const ROUND_CAP_SEGMENTS: u32 = 8;
+
+/// Calculate the number of vertices produced by a round cap (triangle fan as strip).
+///
+/// A round cap emits a triangle fan of `segments` triangles as a degenerate-separated
+/// triangle strip. Each triangle is 3 vertices + 1 degenerate separator (except the last).
+/// Plus 2 degenerates to separate from the main strip.
+///
+/// Simplified: center + (segments + 1) rim vertices, emitted as strip.
+/// For a fan of N triangles as a strip: 2 + 2*N vertices (center/rim alternating).
+/// Plus 2 degenerate separator vertices from main strip.
+#[allow(dead_code)]
+pub fn cap_vertices_for_round(segments: u32) -> usize {
+  // Degenerate separator (2) + fan as strip (2 + 2*segments)
+  2 + 2 + 2 * segments as usize
+}
+
+/// Calculate the number of extra vertices produced by a square cap per endpoint.
+///
+/// Square cap extends by half_width and adds 2 vertices (left + right)
+/// plus 2 degenerate separator vertices from main strip.
+#[allow(dead_code)]
+pub fn cap_vertices_for_square() -> usize {
+  // 2 extra vertices for the extended endpoint (appended directly to the strip)
+  2
+}
+
+/// Generate round cap geometry at an endpoint, appending to the vertex buffer.
+///
+/// # Parameters
+/// - `vertices`: vertex buffer to append to
+/// - `cx, cy`: center position of the cap (the endpoint)
+/// - `dx, dy`: direction AWAY from the trail (outward from this endpoint)
+/// - `px, py`: perpendicular direction at the endpoint
+/// - `half_width`: half the trail width at this endpoint
+/// - `color`: color array for the cap vertices
+/// - `uv_x`: UV.x coordinate at this endpoint
+/// - `effect_params`: effect parameters for the cap vertices
+#[allow(clippy::too_many_arguments)]
+fn generate_round_cap(
+  vertices: &mut Vec<TrailVertex>,
+  cx: f32,
+  cy: f32,
+  dx: f32,
+  dy: f32,
+  px: f32,
+  py: f32,
+  half_width: f32,
+  color: [f32; 4],
+  uv_x: f32,
+  effect_params: [f32; 4],
+) {
+  let segments = ROUND_CAP_SEGMENTS;
+
+  // Add degenerate separator from main strip
+  if !vertices.is_empty() {
+    let last = *vertices.last().unwrap();
+    vertices.push(last);
+  }
+
+  // The semicircle sweeps from +perpendicular to -perpendicular,
+  // going through the outward direction (dx, dy).
+  // We parameterize the angle from -PI/2 to +PI/2 relative to the outward direction.
+  //
+  // Start angle: the +perpendicular side (left edge of trail at this endpoint)
+  // End angle: the -perpendicular side (right edge of trail at this endpoint)
+
+  // Generate triangle fan as a triangle strip: center, rim0, center, rim1, center, rim2, ...
+
+  // Degenerate: duplicate first vertex of fan
+  if !vertices.is_empty() {
+    vertices.push(TrailVertex {
+      position: [cx, cy],
+      color,
+      uv: [uv_x, 0.5],
+      effect_params,
+      perpendicular: [0.0, 0.0],
+    });
+  }
+
+  for i in 0..=segments {
+    let angle = std::f32::consts::PI * (i as f32 / segments as f32);
+
+    // Rotate the +perpendicular direction by angle around the outward direction
+    // Start at +perp (angle=0), sweep through outward dir (angle=PI/2), end at -perp (angle=PI)
+    let cos_a = angle.cos();
+    let sin_a = angle.sin();
+
+    // rim = center + cos(angle) * perp * half_width + sin(angle) * outward * half_width
+    let rim_x = cx + (px * cos_a + dx * sin_a) * half_width;
+    let rim_y = cy + (py * cos_a + dy * sin_a) * half_width;
+
+    // Determine UV.y based on position in the fan
+    let uv_y = 1.0 - (i as f32 / segments as f32);
+
+    // Center vertex
+    vertices.push(TrailVertex {
+      position: [cx, cy],
+      color,
+      uv: [uv_x, 0.5],
+      effect_params,
+      perpendicular: [0.0, 0.0],
+    });
+
+    // Rim vertex
+    vertices.push(TrailVertex {
+      position: [rim_x, rim_y],
+      color,
+      uv: [uv_x, uv_y],
+      effect_params,
+      perpendicular: [px, py],
+    });
+  }
+}
+
+/// Generate square cap geometry at an endpoint, appending to the vertex buffer.
+///
+/// Simply extends the trail by `half_width` beyond the endpoint.
+/// These 2 vertices are appended directly to the existing triangle strip
+/// (no degenerate needed since they continue the strip naturally).
+///
+/// # Parameters
+/// - `vertices`: vertex buffer to append to
+/// - `cx, cy`: center position of the cap (the endpoint)
+/// - `dx, dy`: direction AWAY from the trail (outward from this endpoint)
+/// - `px, py`: perpendicular direction at the endpoint
+/// - `half_width`: half the trail width at this endpoint
+/// - `color`: color array for the cap vertices
+/// - `uv_x`: UV.x coordinate at this endpoint
+/// - `effect_params`: effect parameters for the cap vertices
+#[allow(clippy::too_many_arguments)]
+fn generate_square_cap(
+  vertices: &mut Vec<TrailVertex>,
+  cx: f32,
+  cy: f32,
+  dx: f32,
+  dy: f32,
+  px: f32,
+  py: f32,
+  half_width: f32,
+  color: [f32; 4],
+  uv_x: f32,
+  effect_params: [f32; 4],
+) {
+  // Extend position by half_width in the outward direction
+  let ext_x = cx + dx * half_width;
+  let ext_y = cy + dy * half_width;
+
+  // Left vertex
+  vertices.push(TrailVertex {
+    position: [ext_x + px * half_width, ext_y + py * half_width],
+    color,
+    uv: [uv_x, 0.0],
+    effect_params,
+    perpendicular: [px, py],
+  });
+
+  // Right vertex
+  vertices.push(TrailVertex {
+    position: [ext_x - px * half_width, ext_y - py * half_width],
+    color,
+    uv: [uv_x, 1.0],
+    effect_params,
+    perpendicular: [px, py],
+  });
+}
+
+/// Helper for square cap at the head/start of a line (emits a separate quad
+/// connecting the extended position back to the head position).
+#[allow(clippy::too_many_arguments)]
+fn vertices_push_square_cap_head(
+  vertices: &mut Vec<TrailVertex>,
+  ext_x: f32,
+  ext_y: f32,
+  head_x: f32,
+  head_y: f32,
+  px: f32,
+  py: f32,
+  half_width: f32,
+  color: [f32; 4],
+  uv_x: f32,
+  effect_params: [f32; 4],
+) {
+  // Degenerate: duplicate first vertex
+  vertices.push(TrailVertex {
+    position: [ext_x + px * half_width, ext_y + py * half_width],
+    color,
+    uv: [uv_x, 0.0],
+    effect_params,
+    perpendicular: [px, py],
+  });
+  // Left at extended position
+  vertices.push(TrailVertex {
+    position: [ext_x + px * half_width, ext_y + py * half_width],
+    color,
+    uv: [uv_x, 0.0],
+    effect_params,
+    perpendicular: [px, py],
+  });
+  // Right at extended position
+  vertices.push(TrailVertex {
+    position: [ext_x - px * half_width, ext_y - py * half_width],
+    color,
+    uv: [uv_x, 1.0],
+    effect_params,
+    perpendicular: [px, py],
+  });
+  // Left at head position
+  vertices.push(TrailVertex {
+    position: [head_x + px * half_width, head_y + py * half_width],
+    color,
+    uv: [uv_x, 0.0],
+    effect_params,
+    perpendicular: [px, py],
+  });
+  // Right at head position
+  vertices.push(TrailVertex {
+    position: [head_x - px * half_width, head_y - py * half_width],
+    color,
+    uv: [uv_x, 1.0],
+    effect_params,
+    perpendicular: [px, py],
+  });
+}
+
+// =====================================================================
+// Line Join Geometry Generation
+// =====================================================================
+
+/// Calculate the number of extra vertices produced by a bevel join at a corner.
+#[allow(dead_code)]
+pub fn bevel_join_extra_vertices_per_corner() -> usize {
+  // Bevel join: degenerate separator (2) + triangle (3 vertices as strip: center, outer1, outer2)
+  // Actually emitted as: degen(2) + center + outer1 + center + outer2 = 6 vertices
+  // But we use a simpler approach: 3 vertices for triangle fan strip
+  6
+}
+
+/// Calculate the miter limit angle - the angle below which miter falls back to bevel.
+///
+/// `miter_limit` is the maximum miter length as a multiple of half_width.
+/// Returns the critical half-angle in radians.
+#[allow(dead_code)]
+pub fn compute_miter_limit_angle(miter_limit: f32) -> f32 {
+  // miter_length = 1 / sin(half_angle)
+  // So limit_angle = asin(1 / miter_limit)
+  if miter_limit <= 1.0 {
+    std::f32::consts::FRAC_PI_2
+  } else {
+    (1.0 / miter_limit).asin()
+  }
+}
+
+/// Number of segments for round joins
+const ROUND_JOIN_SEGMENTS: u32 = 6;
 
 #[cfg(test)]
 mod tests {
@@ -1030,8 +1920,10 @@ mod tests {
     // position: [f32; 2] = 8 bytes
     // color: [f32; 4] = 16 bytes
     // uv: [f32; 2] = 8 bytes
-    // Total: 32 bytes
-    assert_eq!(std::mem::size_of::<TrailVertex>(), 32);
+    // effect_params: [f32; 4] = 16 bytes
+    // perpendicular: [f32; 2] = 8 bytes
+    // Total: 56 bytes
+    assert_eq!(std::mem::size_of::<TrailVertex>(), 56);
   }
 
   #[test]
@@ -1041,5 +1933,689 @@ mod tests {
     // resolution_time: [f32; 4] = 16 bytes
     // Total: 80 bytes
     assert_eq!(std::mem::size_of::<TrailGlobals>(), 80);
+  }
+
+  #[test]
+  fn effect_type_style_encoding() {
+    // No effect + Solid = 0 + (0 << 4) = 0
+    let none_solid = encode_type_and_style(0, 0);
+    assert!((none_solid - 0.0).abs() < 0.01);
+
+    // Lightning + Glow = 1 + (2 << 4) = 33
+    let lightning_glow = encode_type_and_style(1, 2);
+    assert!((lightning_glow - 33.0).abs() < 0.01);
+
+    // Noise + Soft = 2 + (1 << 4) = 18
+    let noise_soft = encode_type_and_style(2, 1);
+    assert!((noise_soft - 18.0).abs() < 0.01);
+
+    // UvScroll + Solid = 3 + (0 << 4) = 3
+    let scroll_solid = encode_type_and_style(3, 0);
+    assert!((scroll_solid - 3.0).abs() < 0.01);
+
+    // Ribbon + Glow = 4 + (2 << 4) = 36
+    let ribbon_glow = encode_type_and_style(4, 2);
+    assert!((ribbon_glow - 36.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn build_effect_params_none() {
+    let params = build_effect_params(None, TrailStyle::Solid);
+    assert!((params[0] - 0.0).abs() < 0.01); // type=0, style=0
+    assert!((params[1] - 0.0).abs() < 0.01);
+    assert!((params[2] - 0.0).abs() < 0.01);
+    assert!((params[3] - 0.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn build_effect_params_lightning() {
+    let effect = TrailEffect::Lightning {
+      jitter: 15.0,
+      speed: 8.0,
+      detail: 3,
+    };
+    let params = build_effect_params(Some(&effect), TrailStyle::Glow);
+    // type=1, style=2 -> 1 + (2<<4) = 33
+    assert!((params[0] - 33.0).abs() < 0.01);
+    assert!((params[1] - 15.0).abs() < 0.01); // jitter
+    assert!((params[2] - 8.0).abs() < 0.01); // speed
+    assert!((params[3] - 3.0).abs() < 0.01); // detail
+  }
+
+  #[test]
+  fn build_effect_params_noise() {
+    let effect = TrailEffect::Noise {
+      frequency: 3.0,
+      amplitude: 10.0,
+      speed: 2.0,
+    };
+    let params = build_effect_params(Some(&effect), TrailStyle::Soft);
+    // type=2, style=1 -> 2 + (1<<4) = 18
+    assert!((params[0] - 18.0).abs() < 0.01);
+    assert!((params[1] - 3.0).abs() < 0.01); // frequency
+    assert!((params[2] - 10.0).abs() < 0.01); // amplitude
+    assert!((params[3] - 2.0).abs() < 0.01); // speed
+  }
+
+  #[test]
+  fn build_effect_params_uv_scroll() {
+    let effect = TrailEffect::UvScroll { speed: 1.5 };
+    let params = build_effect_params(Some(&effect), TrailStyle::Solid);
+    // type=3, style=0 -> 3
+    assert!((params[0] - 3.0).abs() < 0.01);
+    assert!((params[1] - 1.5).abs() < 0.01); // speed
+  }
+
+  #[test]
+  fn build_effect_params_ribbon() {
+    let effect = TrailEffect::Ribbon {
+      amplitude: 10.0,
+      frequency: 3.0,
+      speed: 2.0,
+    };
+    let params = build_effect_params(Some(&effect), TrailStyle::Glow);
+    // type=4, style=2 -> 4 + (2<<4) = 36
+    assert!((params[0] - 36.0).abs() < 0.01);
+    assert!((params[1] - 10.0).abs() < 0.01); // amplitude
+    assert!((params[2] - 3.0).abs() < 0.01); // frequency
+    assert!((params[3] - 2.0).abs() < 0.01); // speed
+  }
+
+  // ========== Line Cap Tests ==========
+
+  #[test]
+  fn round_cap_vertex_count() {
+    // Round cap with 8 segments: degenerate(2) + center/rim pairs (2 + 2*8 = 18)
+    // Total: 20 vertices per cap
+    assert_eq!(cap_vertices_for_round(8), 20);
+  }
+
+  #[test]
+  fn square_cap_vertex_count() {
+    // Square cap: 2 vertices per endpoint (extends the strip naturally)
+    assert_eq!(cap_vertices_for_square(), 2);
+  }
+
+  #[test]
+  fn round_cap_generates_vertices() {
+    let mut vertices = Vec::new();
+    let effect_params = [0.0; 4];
+    let color = [1.0, 1.0, 1.0, 1.0];
+
+    generate_round_cap(
+      &mut vertices,
+      100.0,
+      100.0, // center
+      1.0,
+      0.0, // direction (right)
+      0.0,
+      -1.0, // perpendicular (up)
+      5.0,  // half_width
+      color,
+      0.5,
+      effect_params,
+    );
+
+    // Should generate vertices: (segments+1) * 2 for center/rim pairs
+    // No degenerate since buffer was empty
+    let expected = 2 * (ROUND_CAP_SEGMENTS as usize + 1);
+    assert_eq!(vertices.len(), expected);
+  }
+
+  #[test]
+  fn round_cap_with_existing_vertices_adds_degenerate() {
+    let mut vertices = vec![TrailVertex {
+      position: [0.0, 0.0],
+      color: [1.0, 1.0, 1.0, 1.0],
+      uv: [0.0, 0.0],
+      effect_params: [0.0; 4],
+      perpendicular: [0.0, 0.0],
+    }];
+
+    let before_len = vertices.len();
+
+    generate_round_cap(
+      &mut vertices,
+      100.0,
+      100.0,
+      1.0,
+      0.0,
+      0.0,
+      -1.0,
+      5.0,
+      [1.0; 4],
+      0.5,
+      [0.0; 4],
+    );
+
+    // Should have degenerate(1) + degenerate_first_fan(1) + (segments+1)*2 pairs
+    let expected_new = 1 + 1 + 2 * (ROUND_CAP_SEGMENTS as usize + 1);
+    assert_eq!(vertices.len(), before_len + expected_new);
+  }
+
+  #[test]
+  fn round_cap_rim_vertices_at_correct_radius() {
+    let mut vertices = Vec::new();
+    let half_width = 10.0;
+
+    generate_round_cap(
+      &mut vertices,
+      0.0,
+      0.0, // center at origin
+      1.0,
+      0.0, // direction right
+      0.0,
+      1.0, // perpendicular up
+      half_width,
+      [1.0; 4],
+      0.0,
+      [0.0; 4],
+    );
+
+    // All rim vertices (odd indices) should be approximately half_width from center
+    for (idx, v) in vertices.iter().enumerate() {
+      if idx % 2 == 1 {
+        // Rim vertex
+        let dist = (v.position[0] * v.position[0] + v.position[1] * v.position[1]).sqrt();
+        assert!(
+          (dist - half_width).abs() < 0.1,
+          "Rim vertex at index {} has distance {} from center, expected {}",
+          idx,
+          dist,
+          half_width
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn square_cap_generates_vertices() {
+    let mut vertices = Vec::new();
+    let effect_params = [0.0; 4];
+    let color = [1.0, 1.0, 1.0, 1.0];
+
+    generate_square_cap(
+      &mut vertices,
+      100.0,
+      100.0, // center
+      1.0,
+      0.0, // direction (right)
+      0.0,
+      -1.0, // perpendicular (up)
+      5.0,  // half_width
+      color,
+      0.5,
+      effect_params,
+    );
+
+    // Square cap always generates exactly 2 vertices
+    assert_eq!(vertices.len(), 2);
+  }
+
+  #[test]
+  fn square_cap_extends_by_half_width() {
+    let mut vertices = Vec::new();
+    let half_width = 5.0;
+
+    generate_square_cap(
+      &mut vertices,
+      100.0,
+      100.0, // center
+      1.0,
+      0.0, // direction (right)
+      0.0,
+      -1.0, // perpendicular (up)
+      half_width,
+      [1.0; 4],
+      0.5,
+      [0.0; 4],
+    );
+
+    // The extended position should be at (100 + 5, 100) = (105, 100)
+    // Left vertex: (105, 100 - 5) = (105, 95)
+    // Right vertex: (105, 100 + 5) = (105, 105)
+    assert!((vertices[0].position[0] - 105.0).abs() < 0.01);
+    assert!((vertices[1].position[0] - 105.0).abs() < 0.01);
+  }
+
+  // ========== Line Join Tests ==========
+
+  #[test]
+  fn miter_limit_angle() {
+    // Miter limit of 4.0: falls back to bevel at very acute angles
+    let limit = compute_miter_limit_angle(4.0);
+    assert!(limit > 0.0);
+    assert!(limit < std::f32::consts::PI);
+  }
+
+  #[test]
+  fn miter_limit_angle_at_one() {
+    // Miter limit of 1.0: should be PI/2 (90 degrees)
+    let limit = compute_miter_limit_angle(1.0);
+    assert!((limit - std::f32::consts::FRAC_PI_2).abs() < 0.01);
+  }
+
+  /// Helper: simulate inline join vertex generation for a 3-point V-shape.
+  /// Returns the vertices produced by the join logic at the corner point.
+  /// This mirrors the inline join code in add_line() without needing a GPU.
+  fn simulate_join_vertices(
+    join: LineJoin,
+    p0: (f32, f32),
+    p1: (f32, f32),
+    p2: (f32, f32),
+    half_width: f32,
+  ) -> Vec<TrailVertex> {
+    let mut vertices = Vec::new();
+    let color_arr = [1.0_f32; 4];
+    let effect_params = [0.0_f32; 4];
+    let t = 0.5;
+
+    // Compute segment perpendiculars (same as add_line)
+    let dx0 = p1.0 - p0.0;
+    let dy0 = p1.1 - p0.1;
+    let len0 = (dx0 * dx0 + dy0 * dy0).sqrt();
+    let ppx = -dy0 / len0;
+    let ppy = dx0 / len0;
+
+    let dx1 = p2.0 - p1.0;
+    let dy1 = p2.1 - p1.1;
+    let len1 = (dx1 * dx1 + dy1 * dy1).sqrt();
+    let npx = -dy1 / len1;
+    let npy = dx1 / len1;
+
+    let cross = ppx * npy - ppy * npx;
+    let world_x = p1.0;
+    let world_y = p1.1;
+
+    let outside_sign: f32 = if cross < 0.0 { 1.0 } else { -1.0 };
+
+    match join {
+      LineJoin::Miter => {
+        let mx = ppx + npx;
+        let my = ppy + npy;
+        let mlen = (mx * mx + my * my).sqrt();
+        if mlen > 0.001 {
+          let mnx = mx / mlen;
+          let mny = my / mlen;
+          let dot = mnx * ppx + mny * ppy;
+          if dot.abs() > 0.001 {
+            let miter_length = 1.0 / dot;
+            if miter_length.abs() <= 4.0 {
+              let spike_x = world_x + outside_sign * mnx * half_width * miter_length;
+              let spike_y = world_y + outside_sign * mny * half_width * miter_length;
+              let spike_uv_y = if outside_sign > 0.0 { 0.0 } else { 1.0 };
+              let inside_uv_y = if outside_sign > 0.0 { 1.0 } else { 0.0 };
+              let inside_sign = -outside_sign;
+
+              // Two pairs, each with spike + inside, ordered by UV.y
+              for (px, py) in [(ppx, ppy), (npx, npy)] {
+                if outside_sign > 0.0 {
+                  vertices.push(TrailVertex {
+                    position: [spike_x, spike_y],
+                    color: color_arr, uv: [t, spike_uv_y], effect_params,
+                    perpendicular: [mnx, mny],
+                  });
+                  vertices.push(TrailVertex {
+                    position: [
+                      world_x + inside_sign * px * half_width,
+                      world_y + inside_sign * py * half_width,
+                    ],
+                    color: color_arr, uv: [t, inside_uv_y], effect_params,
+                    perpendicular: [px, py],
+                  });
+                } else {
+                  vertices.push(TrailVertex {
+                    position: [
+                      world_x + inside_sign * px * half_width,
+                      world_y + inside_sign * py * half_width,
+                    ],
+                    color: color_arr, uv: [t, inside_uv_y], effect_params,
+                    perpendicular: [px, py],
+                  });
+                  vertices.push(TrailVertex {
+                    position: [spike_x, spike_y],
+                    color: color_arr, uv: [t, spike_uv_y], effect_params,
+                    perpendicular: [mnx, mny],
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+      LineJoin::Bevel => {
+        for (px, py) in [(ppx, ppy), (npx, npy)] {
+          vertices.push(TrailVertex {
+            position: [world_x + px * half_width, world_y + py * half_width],
+            color: color_arr, uv: [t, 0.0], effect_params,
+            perpendicular: [px, py],
+          });
+          vertices.push(TrailVertex {
+            position: [world_x - px * half_width, world_y - py * half_width],
+            color: color_arr, uv: [t, 1.0], effect_params,
+            perpendicular: [px, py],
+          });
+        }
+      }
+      LineJoin::Round => {
+        let segments = ROUND_JOIN_SEGMENTS;
+        let (start_ox, start_oy, end_ox, end_oy) = if cross < 0.0 {
+          (ppx, ppy, npx, npy)
+        } else {
+          (-ppx, -ppy, -npx, -npy)
+        };
+        let start_cross_end = start_ox * end_oy - start_oy * end_ox;
+        let dot_se = (start_ox * end_ox + start_oy * end_oy).clamp(-1.0, 1.0);
+        let total_angle = dot_se.acos();
+        let inside_sign = -outside_sign;
+
+        for k in 0..=segments {
+          let frac = k as f32 / segments as f32;
+          let angle = total_angle * frac;
+          let cos_a = angle.cos();
+          let sin_a = angle.sin();
+
+          let (rot_ox, rot_oy) = if start_cross_end >= 0.0 {
+            (
+              start_ox * cos_a - start_oy * sin_a,
+              start_oy * cos_a + start_ox * sin_a,
+            )
+          } else {
+            (
+              start_ox * cos_a + start_oy * sin_a,
+              start_oy * cos_a - start_ox * sin_a,
+            )
+          };
+
+          let in_px = ppx + (npx - ppx) * frac;
+          let in_py = ppy + (npy - ppy) * frac;
+
+          if outside_sign > 0.0 {
+            vertices.push(TrailVertex {
+              position: [world_x + rot_ox * half_width, world_y + rot_oy * half_width],
+              color: color_arr, uv: [t, 0.0], effect_params,
+              perpendicular: [rot_ox, rot_oy],
+            });
+            vertices.push(TrailVertex {
+              position: [
+                world_x + inside_sign * in_px * half_width,
+                world_y + inside_sign * in_py * half_width,
+              ],
+              color: color_arr, uv: [t, 1.0], effect_params,
+              perpendicular: [in_px, in_py],
+            });
+          } else {
+            vertices.push(TrailVertex {
+              position: [
+                world_x + inside_sign * in_px * half_width,
+                world_y + inside_sign * in_py * half_width,
+              ],
+              color: color_arr, uv: [t, 0.0], effect_params,
+              perpendicular: [in_px, in_py],
+            });
+            vertices.push(TrailVertex {
+              position: [world_x + rot_ox * half_width, world_y + rot_oy * half_width],
+              color: color_arr, uv: [t, 1.0], effect_params,
+              perpendicular: [rot_ox, rot_oy],
+            });
+          }
+        }
+      }
+      LineJoin::None => {}
+    }
+    vertices
+  }
+
+  // ---- Vertex ordering tests ----
+  // All join types must emit pairs with UV.y=0 first, UV.y=1 second
+  // to match normal vertex pair ordering and prevent strip twisting.
+
+  #[test]
+  fn miter_join_vertex_ordering() {
+    // 90-degree L-shape: right then up
+    let verts = simulate_join_vertices(
+      LineJoin::Miter,
+      (0.0, 0.0),   // left
+      (100.0, 0.0),  // corner
+      (100.0, -100.0), // up
+      10.0,
+    );
+    assert_eq!(verts.len(), 4, "Miter join emits 2 pairs = 4 vertices");
+    // Every pair: first vertex UV.y=0, second UV.y=1
+    for pair in verts.chunks(2) {
+      assert_eq!(pair[0].uv[1], 0.0, "First vertex in pair must have UV.y=0");
+      assert_eq!(pair[1].uv[1], 1.0, "Second vertex in pair must have UV.y=1");
+    }
+  }
+
+  #[test]
+  fn bevel_join_vertex_ordering() {
+    let verts = simulate_join_vertices(
+      LineJoin::Bevel,
+      (0.0, 0.0),
+      (100.0, 0.0),
+      (100.0, -100.0),
+      10.0,
+    );
+    assert_eq!(verts.len(), 4, "Bevel join emits 2 pairs = 4 vertices");
+    for pair in verts.chunks(2) {
+      assert_eq!(pair[0].uv[1], 0.0, "First vertex in pair must have UV.y=0");
+      assert_eq!(pair[1].uv[1], 1.0, "Second vertex in pair must have UV.y=1");
+    }
+  }
+
+  #[test]
+  fn round_join_vertex_ordering() {
+    let verts = simulate_join_vertices(
+      LineJoin::Round,
+      (0.0, 0.0),
+      (100.0, 0.0),
+      (100.0, -100.0),
+      10.0,
+    );
+    let expected = 2 * (ROUND_JOIN_SEGMENTS as usize + 1);
+    assert_eq!(verts.len(), expected, "Round join emits (segments+1) pairs");
+    for pair in verts.chunks(2) {
+      assert_eq!(pair[0].uv[1], 0.0, "First vertex in pair must have UV.y=0");
+      assert_eq!(pair[1].uv[1], 1.0, "Second vertex in pair must have UV.y=1");
+    }
+  }
+
+  // ---- Vertex ordering with opposite turn direction ----
+
+  #[test]
+  fn miter_join_vertex_ordering_right_turn() {
+    // Right turn (opposite winding)
+    let verts = simulate_join_vertices(
+      LineJoin::Miter,
+      (0.0, 0.0),
+      (100.0, 0.0),
+      (100.0, 100.0), // down instead of up
+      10.0,
+    );
+    assert_eq!(verts.len(), 4);
+    for pair in verts.chunks(2) {
+      assert_eq!(pair[0].uv[1], 0.0);
+      assert_eq!(pair[1].uv[1], 1.0);
+    }
+  }
+
+  #[test]
+  fn bevel_join_vertex_ordering_right_turn() {
+    let verts = simulate_join_vertices(
+      LineJoin::Bevel,
+      (0.0, 0.0),
+      (100.0, 0.0),
+      (100.0, 100.0),
+      10.0,
+    );
+    assert_eq!(verts.len(), 4);
+    for pair in verts.chunks(2) {
+      assert_eq!(pair[0].uv[1], 0.0);
+      assert_eq!(pair[1].uv[1], 1.0);
+    }
+  }
+
+  #[test]
+  fn round_join_vertex_ordering_right_turn() {
+    let verts = simulate_join_vertices(
+      LineJoin::Round,
+      (0.0, 0.0),
+      (100.0, 0.0),
+      (100.0, 100.0),
+      10.0,
+    );
+    let expected = 2 * (ROUND_JOIN_SEGMENTS as usize + 1);
+    assert_eq!(verts.len(), expected);
+    for pair in verts.chunks(2) {
+      assert_eq!(pair[0].uv[1], 0.0);
+      assert_eq!(pair[1].uv[1], 1.0);
+    }
+  }
+
+  // ---- Miter spike geometry tests ----
+
+  #[test]
+  fn miter_spike_extends_outward() {
+    // V-shape opening upward: arms go up-left and up-right from bottom apex
+    let angle_rad = 35.0_f32.to_radians();
+    let arm = 120.0;
+    let dx = (angle_rad / 2.0).sin() * arm;
+    let dy = (angle_rad / 2.0).cos() * arm;
+    let verts = simulate_join_vertices(
+      LineJoin::Miter,
+      (100.0 - dx, 200.0 - dy), // left arm tip (up-left)
+      (100.0, 200.0),            // apex
+      (100.0 + dx, 200.0 - dy), // right arm tip (up-right)
+      15.0,
+    );
+    assert_eq!(verts.len(), 4);
+    // Spike should extend BELOW the apex (higher Y = outside of V)
+    let spike_y = verts[0].position[1].max(verts[1].position[1]);
+    assert!(
+      spike_y > 200.0,
+      "Miter spike should extend below apex (y > 200), got {}",
+      spike_y
+    );
+  }
+
+  #[test]
+  fn miter_spike_length_matches_formula() {
+    // 90-degree corner: miter_length should be 1/cos(45°) ≈ 1.414
+    let verts = simulate_join_vertices(
+      LineJoin::Miter,
+      (0.0, 0.0),
+      (100.0, 0.0),
+      (100.0, -100.0),
+      10.0,
+    );
+    assert_eq!(verts.len(), 4);
+    // Find the spike vertex (the one furthest from center)
+    let center = (100.0_f32, 0.0_f32);
+    let max_dist = verts.iter().map(|v| {
+      let dx = v.position[0] - center.0;
+      let dy = v.position[1] - center.1;
+      (dx * dx + dy * dy).sqrt()
+    }).fold(0.0_f32, f32::max);
+    // Expected: half_width * miter_length = 10.0 * 1.414 ≈ 14.14
+    assert!(
+      (max_dist - 14.14).abs() < 0.5,
+      "Spike distance should be ~14.14, got {}",
+      max_dist
+    );
+  }
+
+  // ---- Bevel geometry tests ----
+
+  #[test]
+  fn bevel_join_uses_both_perpendiculars() {
+    let verts = simulate_join_vertices(
+      LineJoin::Bevel,
+      (0.0, 0.0),
+      (100.0, 0.0),
+      (100.0, -100.0),
+      10.0,
+    );
+    // Pair 1 uses incoming perp, pair 2 uses outgoing perp
+    let perp1 = verts[0].perpendicular;
+    let perp2 = verts[2].perpendicular;
+    // They should be different (incoming vs outgoing)
+    assert!(
+      (perp1[0] - perp2[0]).abs() > 0.01 || (perp1[1] - perp2[1]).abs() > 0.01,
+      "Bevel pairs should use different perpendiculars"
+    );
+  }
+
+  // ---- Round geometry tests ----
+
+  #[test]
+  fn round_join_no_vertices_for_collinear() {
+    // Collinear points: no angle between perpendiculars
+    let verts = simulate_join_vertices(
+      LineJoin::Round,
+      (0.0, 0.0),
+      (100.0, 0.0),
+      (200.0, 0.0), // straight line
+      10.0,
+    );
+    // All vertices should be at the same distance from center (no arc needed)
+    // With collinear segments, perps are identical → total_angle ≈ 0
+    // The loop still runs but all vertices collapse to the same positions
+    for pair in verts.chunks(2) {
+      let d0 = ((pair[0].position[0] - 100.0).powi(2) + (pair[0].position[1]).powi(2)).sqrt();
+      let d1 = ((pair[1].position[0] - 100.0).powi(2) + (pair[1].position[1]).powi(2)).sqrt();
+      assert!((d0 - 10.0).abs() < 0.1, "All round join vertices should be at half_width");
+      assert!((d1 - 10.0).abs() < 0.1, "All round join vertices should be at half_width");
+    }
+  }
+
+  #[test]
+  fn round_join_outside_arc_at_correct_radius() {
+    let hw = 10.0;
+    let verts = simulate_join_vertices(
+      LineJoin::Round,
+      (0.0, 0.0),
+      (100.0, 0.0),
+      (100.0, -100.0),
+      hw,
+    );
+    let center = (100.0, 0.0);
+    // Check outside arc vertices (every other vertex in each pair).
+    // Inside vertices use linearly interpolated perps so may be shorter.
+    for pair in verts.chunks(2) {
+      // For this geometry (left turn, outside_sign=+1), the outside arc is first (UV.y=0)
+      let outside = &pair[0];
+      let dist = ((outside.position[0] - center.0).powi(2)
+        + (outside.position[1] - center.1).powi(2))
+      .sqrt();
+      assert!(
+        (dist - hw).abs() < 0.5,
+        "Outside arc vertex should be ~{} from center, got {}",
+        hw, dist
+      );
+    }
+  }
+
+
+  #[test]
+  fn square_cap_head_helper_generates_vertices() {
+    let mut vertices = Vec::new();
+
+    vertices_push_square_cap_head(
+      &mut vertices,
+      95.0,
+      100.0, // extended position
+      100.0,
+      100.0, // head position
+      0.0,
+      -1.0, // perpendicular
+      5.0,  // half_width
+      [1.0; 4],
+      0.0,
+      [0.0; 4],
+    );
+
+    // Should generate 5 vertices: degenerate + left_ext + right_ext + left_head + right_head
+    assert_eq!(vertices.len(), 5);
   }
 }

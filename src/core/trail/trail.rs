@@ -18,6 +18,7 @@
 //! ));
 //! ```
 
+use super::TrailStyle;
 use crate::core::asset::SpriteHandle;
 use crate::core::ui::Color;
 use std::collections::VecDeque;
@@ -30,6 +31,72 @@ pub enum TextureMode {
   Stretch,
   /// Tile the texture along the trail (texture repeats based on trail length)
   Tile,
+}
+
+/// How line endpoints are drawn
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineCap {
+  /// Flat cut at endpoint (current behavior, zero overhead)
+  #[default]
+  Butt,
+  /// Semicircle at endpoints (~8 extra triangles per cap)
+  Round,
+  /// Extends by half-width beyond endpoint (2 extra vertices per cap)
+  Square,
+}
+
+/// How line segments connect at corners
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineJoin {
+  /// No join handling (current behavior, fast)
+  #[default]
+  None,
+  /// Sharp corner with miter limit (default 4.0)
+  Miter,
+  /// Flat diagonal cut at corner (1 extra triangle per corner)
+  Bevel,
+  /// Smooth rounded corner (4-8 extra triangles per corner)
+  Round,
+}
+
+/// GPU-driven trail/line effects applied in the vertex/fragment shader.
+///
+/// Effects are composable with any `TrailStyle` and work on both
+/// Trail2D and Line2D components.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrailEffect {
+  /// Jagged electrical arc displacement
+  Lightning {
+    /// Max displacement in pixels
+    jitter: f32,
+    /// Re-randomization rate (Hz)
+    speed: f32,
+    /// Noise octaves (1-4, higher = more detailed)
+    detail: u32,
+  },
+  /// Perlin noise displacement for organic movement (fire, smoke, wind)
+  Noise {
+    /// Spatial frequency of the noise
+    frequency: f32,
+    /// Max displacement in pixels
+    amplitude: f32,
+    /// Animation scroll speed
+    speed: f32,
+  },
+  /// Scrolling UV coordinates along the trail length
+  UvScroll {
+    /// Scroll speed in UV units per second
+    speed: f32,
+  },
+  /// Sine wave ribbon displacement
+  Ribbon {
+    /// Wave height in pixels
+    amplitude: f32,
+    /// Waves per trail length
+    frequency: f32,
+    /// Animation speed
+    speed: f32,
+  },
 }
 
 /// Maximum number of points a trail can store
@@ -76,6 +143,14 @@ pub struct Trail2D {
   texture_mode: TextureMode,
   /// Pixels of texture per tile (only used when texture_mode is Tile)
   tile_length: f32,
+  /// Rendering style for this trail
+  style: TrailStyle,
+  /// Optional GPU effect applied to this trail
+  effect: Option<TrailEffect>,
+  /// How endpoints are drawn
+  cap: LineCap,
+  /// How segments connect at corners
+  join: LineJoin,
 }
 
 /// A single point in the trail
@@ -121,6 +196,10 @@ impl Trail2D {
       texture: None,
       texture_mode: TextureMode::Stretch,
       tile_length: 64.0,
+      style: TrailStyle::Solid,
+      effect: None,
+      cap: LineCap::Butt,
+      join: LineJoin::None,
     }
   }
 
@@ -182,6 +261,49 @@ impl Trail2D {
       .with_fade(true) // Enable fade for gradient effect
       .with_lifetime(fade_time)
       .with_min_distance(1.0)
+  }
+
+  /// Create a lightning/electrical arc trail.
+  ///
+  /// Glowing trail with jagged GPU-driven displacement.
+  pub fn lightning(color: Color, width: f32) -> Self {
+    Self::new(color, width)
+      .with_length(30)
+      .with_style(TrailStyle::Glow)
+      .with_effect(TrailEffect::Lightning {
+        jitter: 15.0,
+        speed: 8.0,
+        detail: 3,
+      })
+      .with_cap(LineCap::Round)
+  }
+
+  /// Create a fire/smoke trail.
+  ///
+  /// Soft trail with noise-based displacement and fade to transparent.
+  pub fn fire(color: Color, width: f32) -> Self {
+    Self::new(color, width)
+      .with_length(30)
+      .with_style(TrailStyle::Soft)
+      .with_effect(TrailEffect::Noise {
+        frequency: 3.0,
+        amplitude: 10.0,
+        speed: 2.0,
+      })
+      .with_end_color(Color::new(color.r, color.g / 2, 0, 0))
+      .with_taper(0.0)
+  }
+
+  /// Create an energy beam trail.
+  ///
+  /// Glowing trail with scrolling UV for animated texture effects.
+  pub fn energy(color: Color, width: f32) -> Self {
+    Self::new(color, width)
+      .with_length(50)
+      .with_style(TrailStyle::Glow)
+      .with_effect(TrailEffect::UvScroll { speed: 1.5 })
+      .with_end_width(width) // No taper
+      .with_fade(false)
   }
 
   /// Set the maximum number of points in the trail.
@@ -647,6 +769,70 @@ impl Trail2D {
   pub fn set_tile_length(&mut self, length: f32) {
     self.tile_length = length.max(1.0);
   }
+
+  /// Set the rendering style for this trail.
+  pub fn with_style(mut self, style: TrailStyle) -> Self {
+    self.style = style;
+    self
+  }
+
+  /// Set a GPU effect for this trail.
+  pub fn with_effect(mut self, effect: TrailEffect) -> Self {
+    self.effect = Some(effect);
+    self
+  }
+
+  /// Set the line cap style for endpoints.
+  pub fn with_cap(mut self, cap: LineCap) -> Self {
+    self.cap = cap;
+    self
+  }
+
+  /// Set the line join style for corners.
+  pub fn with_join(mut self, join: LineJoin) -> Self {
+    self.join = join;
+    self
+  }
+
+  /// Get the rendering style.
+  pub fn style(&self) -> TrailStyle {
+    self.style
+  }
+
+  /// Set the rendering style.
+  pub fn set_style(&mut self, style: TrailStyle) {
+    self.style = style;
+  }
+
+  /// Get the GPU effect, if any.
+  pub fn effect(&self) -> Option<&TrailEffect> {
+    self.effect.as_ref()
+  }
+
+  /// Set or clear the GPU effect.
+  pub fn set_effect(&mut self, effect: Option<TrailEffect>) {
+    self.effect = effect;
+  }
+
+  /// Get the line cap style.
+  pub fn cap(&self) -> LineCap {
+    self.cap
+  }
+
+  /// Set the line cap style.
+  pub fn set_cap(&mut self, cap: LineCap) {
+    self.cap = cap;
+  }
+
+  /// Get the line join style.
+  pub fn join(&self) -> LineJoin {
+    self.join
+  }
+
+  /// Set the line join style.
+  pub fn set_join(&mut self, join: LineJoin) {
+    self.join = join;
+  }
 }
 
 impl Default for Trail2D {
@@ -915,5 +1101,182 @@ mod tests {
   #[test]
   fn trail_texture_mode_default_is_stretch() {
     assert_eq!(TextureMode::default(), TextureMode::Stretch);
+  }
+
+  // ========== New Type Tests ==========
+
+  #[test]
+  fn line_cap_defaults_to_butt() {
+    assert_eq!(LineCap::default(), LineCap::Butt);
+  }
+
+  #[test]
+  fn line_join_defaults_to_none() {
+    assert_eq!(LineJoin::default(), LineJoin::None);
+  }
+
+  #[test]
+  fn trail_effect_lightning_clone() {
+    let effect = TrailEffect::Lightning {
+      jitter: 15.0,
+      speed: 8.0,
+      detail: 3,
+    };
+    let cloned = effect;
+    assert_eq!(effect, cloned);
+  }
+
+  #[test]
+  fn trail_effect_noise_partial_eq() {
+    let a = TrailEffect::Noise {
+      frequency: 2.0,
+      amplitude: 10.0,
+      speed: 1.5,
+    };
+    let b = TrailEffect::Noise {
+      frequency: 2.0,
+      amplitude: 10.0,
+      speed: 1.5,
+    };
+    assert_eq!(a, b);
+  }
+
+  #[test]
+  fn trail_effect_uv_scroll() {
+    let effect = TrailEffect::UvScroll { speed: 1.5 };
+    if let TrailEffect::UvScroll { speed } = effect {
+      assert!((speed - 1.5).abs() < 0.01);
+    } else {
+      panic!("Wrong variant");
+    }
+  }
+
+  #[test]
+  fn trail_effect_ribbon() {
+    let effect = TrailEffect::Ribbon {
+      amplitude: 10.0,
+      frequency: 3.0,
+      speed: 2.0,
+    };
+    if let TrailEffect::Ribbon {
+      amplitude,
+      frequency,
+      speed,
+    } = effect
+    {
+      assert!((amplitude - 10.0).abs() < 0.01);
+      assert!((frequency - 3.0).abs() < 0.01);
+      assert!((speed - 2.0).abs() < 0.01);
+    } else {
+      panic!("Wrong variant");
+    }
+  }
+
+  // ========== Trail2D Style/Effect/Cap/Join Tests ==========
+
+  #[test]
+  fn trail_default_style_is_solid() {
+    let trail = Trail2D::new(Color::WHITE, 3.0);
+    assert_eq!(trail.style(), TrailStyle::Solid);
+  }
+
+  #[test]
+  fn trail_with_style() {
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_style(TrailStyle::Glow);
+    assert_eq!(trail.style(), TrailStyle::Glow);
+  }
+
+  #[test]
+  fn trail_set_style() {
+    let mut trail = Trail2D::new(Color::WHITE, 3.0);
+    trail.set_style(TrailStyle::Soft);
+    assert_eq!(trail.style(), TrailStyle::Soft);
+  }
+
+  #[test]
+  fn trail_default_effect_is_none() {
+    let trail = Trail2D::new(Color::WHITE, 3.0);
+    assert!(trail.effect().is_none());
+  }
+
+  #[test]
+  fn trail_with_effect() {
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_effect(TrailEffect::Lightning {
+      jitter: 15.0,
+      speed: 8.0,
+      detail: 3,
+    });
+    assert!(trail.effect().is_some());
+  }
+
+  #[test]
+  fn trail_set_effect_none() {
+    let mut trail =
+      Trail2D::new(Color::WHITE, 3.0).with_effect(TrailEffect::UvScroll { speed: 1.0 });
+    trail.set_effect(None);
+    assert!(trail.effect().is_none());
+  }
+
+  #[test]
+  fn trail_default_cap_is_butt() {
+    let trail = Trail2D::new(Color::WHITE, 3.0);
+    assert_eq!(trail.cap(), LineCap::Butt);
+  }
+
+  #[test]
+  fn trail_with_cap() {
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_cap(LineCap::Round);
+    assert_eq!(trail.cap(), LineCap::Round);
+  }
+
+  #[test]
+  fn trail_default_join_is_none() {
+    let trail = Trail2D::new(Color::WHITE, 3.0);
+    assert_eq!(trail.join(), LineJoin::None);
+  }
+
+  #[test]
+  fn trail_with_join() {
+    let trail = Trail2D::new(Color::WHITE, 3.0).with_join(LineJoin::Bevel);
+    assert_eq!(trail.join(), LineJoin::Bevel);
+  }
+
+  // ========== New Preset Tests ==========
+
+  #[test]
+  fn lightning_preset() {
+    let trail = Trail2D::lightning(Color::CYAN, 6.0);
+    assert_eq!(trail.style(), TrailStyle::Glow);
+    assert!(trail.effect().is_some());
+    assert_eq!(trail.cap(), LineCap::Round);
+    if let Some(TrailEffect::Lightning { .. }) = trail.effect() {
+      // Correct variant
+    } else {
+      panic!("Expected Lightning effect");
+    }
+  }
+
+  #[test]
+  fn fire_preset() {
+    let trail = Trail2D::fire(Color::new(255, 120, 20, 255), 16.0);
+    assert_eq!(trail.style(), TrailStyle::Soft);
+    assert!(trail.effect().is_some());
+    if let Some(TrailEffect::Noise { .. }) = trail.effect() {
+      // Correct variant
+    } else {
+      panic!("Expected Noise effect");
+    }
+  }
+
+  #[test]
+  fn energy_preset() {
+    let trail = Trail2D::energy(Color::WHITE, 12.0);
+    assert_eq!(trail.style(), TrailStyle::Glow);
+    assert!(trail.effect().is_some());
+    if let Some(TrailEffect::UvScroll { .. }) = trail.effect() {
+      // Correct variant
+    } else {
+      panic!("Expected UvScroll effect");
+    }
   }
 }

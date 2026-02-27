@@ -27,6 +27,9 @@ Automatically records position history for moving entities. Call `update(x, y, d
 | `Trail2D::swipe(color, width)` | Sword slashes | Wide, tapers to point |
 | `Trail2D::laser(color, width)` | Laser beams | Consistent width, no fade |
 | `Trail2D::fading_laser(color, width, fade_time)` | Laser fade-out effects | Time-based fade for ghost effects |
+| `Trail2D::lightning(color, width)` | Electrical arcs | Glow + Lightning effect + Round cap |
+| `Trail2D::fire(color, width)` | Flame/smoke | Soft + Noise effect + tapered + color fade |
+| `Trail2D::energy(color, width)` | Energy beams | Glow + UvScroll effect + no taper |
 
 **Key Methods:**
 ```rust
@@ -37,6 +40,10 @@ Trail2D::new(color, width)       // Create custom trail
   .with_lifetime(seconds)        // Time-based fade + auto-removal
   .with_end_color(color)         // Gradient to end color
   .with_min_distance(pixels)     // Min distance between points
+  .with_style(TrailStyle)          // Per-trail rendering style
+  .with_effect(TrailEffect)        // GPU displacement effect
+  .with_cap(LineCap)               // Endpoint cap style
+  .with_join(LineJoin)             // Corner join style (Line2D primarily)
 
 trail.clear();                   // Reset trail
 trail.set_enabled(bool);         // Enable/disable recording (aging continues when disabled)
@@ -81,6 +88,13 @@ Line2D::quadratic_bezier(start, control, end, color, width, segments)
 Line2D::bezier(start, c1, c2, end, color, width, segments)  // Cubic
 ```
 
+**Key Methods:**
+```rust
+  .with_style(TrailStyle)          // Per-line rendering style
+  .with_cap(LineCap)               // Endpoint cap style
+  .with_join(LineJoin)             // Corner join style
+```
+
 **Dynamic Lines:**
 ```rust
 let mut line = Line2D::default();
@@ -100,6 +114,55 @@ GPU batch renderer using triangle strips. Handles both Trail2D and Line2D compon
 | `TrailStyle::Solid` | Sharp edges, uniform color |
 | `TrailStyle::Soft` | Soft, fading edges |
 | `TrailStyle::Glow` | Glowing effect with bright core |
+
+### GPU Effects (TrailEffect)
+
+GPU-driven effects applied via vertex shader displacement. Set per-trail with `.with_effect()`.
+
+| Effect | Parameters | Description |
+|--------|-----------|-------------|
+| `Lightning { jitter, speed, detail }` | jitter: max displacement px, speed: re-randomization Hz, detail: noise octaves (1-4) | Jagged electrical arc displacement |
+| `Noise { frequency, amplitude, speed }` | frequency: spatial freq, amplitude: max displacement px, speed: animation scroll | Smooth organic distortion |
+| `UvScroll { speed }` | speed: UV units/sec | Scrolling texture animation |
+| `Ribbon { amplitude, frequency, speed }` | amplitude: wave height px, frequency: waves per length, speed: animation speed | Sine wave ribbon undulation |
+
+**Usage example:**
+```rust
+let bolt = Trail2D::new(Color::CYAN, 6.0)
+    .with_style(TrailStyle::Glow)
+    .with_effect(TrailEffect::Lightning { jitter: 20.0, speed: 8.0, detail: 3 })
+    .with_cap(LineCap::Round);
+```
+
+### Per-Trail Style
+
+Each Trail2D/Line2D stores its own `TrailStyle`. Set with `.with_style()`:
+- `TrailStyle::Solid` - Sharp edges, SDF anti-aliased (default)
+- `TrailStyle::Soft` - Fading edges
+- `TrailStyle::Glow` - Bright core with falloff
+
+Previously, style was a global parameter on the renderer. Now it's per-vertex data, allowing mixed styles in a single draw call.
+
+### Line Caps (LineCap)
+
+Endpoint geometry for trails and lines. Set with `.with_cap()`:
+
+| Cap | Description |
+|-----|-------------|
+| `Butt` (default) | Flat cut at endpoint |
+| `Round` | Semicircle at endpoints (~8 triangles per cap) |
+| `Square` | Extends by half-width beyond endpoint |
+
+### Line Joins (LineJoin)
+
+Corner geometry for polylines (primarily Line2D). Set with `.with_join()`:
+
+| Join | Description |
+|------|-------------|
+| `None` (default) | No join handling (fastest) |
+| `Miter` | Sharp corners (miter limit 4.0, falls back to bevel) |
+| `Bevel` | Flat diagonal cut at corners |
+| `Round` | Smooth rounded corners |
 
 ## Usage Patterns
 
@@ -205,7 +268,10 @@ The `TrailRenderer` is instantiated by the engine and renders all `Trail2D` and 
 
 ## Performance Notes
 
-- **Batching**: All trails/lines rendered in single draw call
+- **Batching**: All trails/lines rendered in single draw call per texture group
+- **Vertex Size**: 56 bytes per vertex (up from 32) to accommodate style/effect data
+- **Pipelines**: 2 render pipelines (down from 6) - textured and untextured
+- **Mixed Rendering**: Mixed styles and effects render in a single draw call per texture group
 - **Vertex Limit**: 65,536 vertices per frame (shared across all trails/lines)
 - **Point Count**: More points = more vertices = higher GPU cost
 - **Min Distance**: Use `with_min_distance()` to prevent clustering on fast objects
@@ -220,18 +286,23 @@ pub const MAX_TRAIL_VERTICES: usize = 65536; // Max vertices per frame
 
 ## Shader
 
-The trail shader (`shaders/core/trail.wgsl`) supports three fragment variants:
-- Solid: `color` passthrough
-- Soft: Edge fade using UV coordinates
-- Glow: Bright core with falloff
+The trail system uses 2 uber-shaders (`shaders/core/trail.wgsl` and `trail_textured.wgsl`) that handle:
+- Per-vertex style branching (Solid/Soft/Glow) with SDF anti-aliasing
+- GPU effects: Lightning, Noise, UV Scroll, Ribbon (vertex shader displacement)
+- Effect parameters packed into vertex data (56-byte vertex format)
+
+Previously 6 pipelines (3 styles x 2 texture modes). Now 2 pipelines (textured + untextured).
 
 ## Tips for AI Agents
 
 1. **Trail vs Line**: Use `Trail2D` for moving objects (auto-records), `Line2D` for static/explicit shapes
 2. **Auto-Update**: Engine automatically updates trails using entity's Transform - no manual `update()` needed
-3. **Presets First**: Try presets before customizing (`bullet`, `particle`, `swipe`, `laser`, `fading_laser`)
+3. **Presets First**: Try presets before customizing (`bullet`, `particle`, `swipe`, `laser`, `fading_laser`, `lightning`, `fire`, `energy`)
 4. **Memory**: Trails use `VecDeque` - old points removed when `max_points` exceeded or `lifetime` reached
 5. **Fade Modes**: Position fade (`.with_fade(true)`) for fast objects, Time fade (`.with_lifetime()`) for slow/stationary
 6. **Visibility**: Lines have `visible` flag, Trails have `enabled` flag
 7. **Fade-Out Effects**: Use `fading_laser` + `populate_line()` + `set_enabled(false)` for ghost/fade effects
 8. **No Transform OK**: Trails without Transform still render - useful for standalone fade-out effects
+9. **Effects**: Use presets (`lightning`, `fire`, `energy`) before building custom effects
+10. **Style per-trail**: Each trail/line stores its own style — no need to change the global renderer style
+11. **Caps/Joins**: Use `LineCap::Round` + `LineJoin::Round` for polished visuals on Line2D shapes
