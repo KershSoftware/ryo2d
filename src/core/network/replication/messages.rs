@@ -12,10 +12,11 @@ use renet::ClientId;
 /// All replication message types.
 ///
 /// Messages are sent over appropriate channels based on their reliability needs:
-/// - Spawns/Despawns → ReliableOrdered (must not be lost)
-/// - Component updates → Unreliable (frequent, can miss some)
+/// - Spawns/Despawns → ReplicationReliable (must not be lost)
+/// - Component batches and refreshes → ReplicationUnreliable (frequent; the
+///   server re-sends batches until the client's `Ack` arrives on the same channel)
 /// - RPCs → ReliableOrdered (game events)
-/// - Full state sync → ReliableOrdered (new client init)
+/// - Full state sync → ReplicationReliable (new client init)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ReplicationMessage {
   /// Spawn a new networked entity

@@ -96,8 +96,12 @@ pub struct ReplicationManager {
   /// `broadcast_updates` calls between full refreshes; 0 disables them
   refresh_interval: u64,
 
-  /// Client: generation of the newest change batch applied
-  newest_batch_generation: Option<u64>,
+  /// Client: generation of the newest change batch applied, even partly
+  newest_applied: Option<u64>,
+
+  /// Client: generation of the newest change batch applied in full (every
+  /// entity in it was known); this is what gets acknowledged
+  newest_complete: Option<u64>,
 }
 
 impl ReplicationManager {
@@ -111,7 +115,8 @@ impl ReplicationManager {
       entity_to_network: HashMap::new(),
       registered_types: Vec::new(),
       refresh_interval: DEFAULT_REFRESH_INTERVAL,
-      newest_batch_generation: None,
+      newest_applied: None,
+      newest_complete: None,
     }
   }
 
@@ -125,7 +130,8 @@ impl ReplicationManager {
       entity_to_network: HashMap::new(),
       registered_types: Vec::new(),
       refresh_interval: DEFAULT_REFRESH_INTERVAL,
-      newest_batch_generation: None,
+      newest_applied: None,
+      newest_complete: None,
     }
   }
 
@@ -500,15 +506,15 @@ impl ReplicationManager {
       }
     }
 
-    let newest_before = self.newest_batch_generation;
+    let complete_before = self.newest_complete;
     while let Some(data) = client.receive(Channel::ReplicationUnreliable) {
       if let Ok(msg) = ReplicationMessage::from_bytes(&data) {
         self.handle_message(world, msg);
       }
     }
 
-    if let Some(generation) = self.newest_batch_generation
-      && Some(generation) != newest_before
+    if let Some(generation) = self.newest_complete
+      && Some(generation) != complete_before
       && let Ok(bytes) = ReplicationMessage::Ack(AckMessage { generation }).to_bytes()
     {
       client.send(Channel::ReplicationUnreliable, &bytes);
@@ -518,7 +524,7 @@ impl ReplicationManager {
   /// Whether a batch is at least as new as the newest change batch applied.
   fn is_current(&self, generation: u64) -> bool {
     self
-      .newest_batch_generation
+      .newest_applied
       .is_none_or(|newest| generation >= newest)
   }
 
@@ -536,10 +542,15 @@ impl ReplicationManager {
       }
       ReplicationMessage::ComponentBatch(batch) => {
         if self.is_current(batch.generation) {
+          // Apply every update, even after one misses its entity
+          let mut complete = true;
           for update in &batch.updates {
-            self.apply_component_update(world, update);
+            complete &= self.apply_component_update(world, update);
           }
-          self.newest_batch_generation = Some(batch.generation);
+          self.newest_applied = Some(batch.generation);
+          if complete {
+            self.newest_complete = Some(batch.generation);
+          }
         }
       }
       ReplicationMessage::ComponentRefresh(batch) => {
@@ -559,6 +570,10 @@ impl ReplicationManager {
           self.despawn_by_network_id(world, network_id);
         }
 
+        // A (re)connect: the server's generations may start over
+        self.newest_applied = None;
+        self.newest_complete = None;
+
         // Spawn all entities from sync
         for spawn in &sync.entities {
           let _ = self.spawn_from_message(world, spawn);
@@ -570,15 +585,17 @@ impl ReplicationManager {
     }
   }
 
-  /// Apply a component update to an entity.
-  fn apply_component_update(&mut self, world: &mut World, update: &ComponentUpdateMessage) {
+  /// Apply a component update to an entity; `false` if the entity isn't
+  /// known yet (its spawn hasn't arrived).
+  fn apply_component_update(&mut self, world: &mut World, update: &ComponentUpdateMessage) -> bool {
     let Some(&entity) = self.network_to_entity.get(&update.network_id) else {
-      return;
+      return false;
     };
 
     let _ = self
       .registry
       .deserialize_and_apply(&update.component, world, entity);
+    true
   }
 
   /// Get stats about the replication state.
@@ -1007,6 +1024,75 @@ mod tests {
       Some(Health(50))
     );
     assert_eq!(net.acks(), vec![5]);
+  }
+
+  #[test]
+  fn full_state_sync_resets_batch_tracking() {
+    let (server, world, network_id) = server_with_health();
+    let mut client = ReplicationManager::new_client();
+    client.register::<Health>();
+    let mut client_world = World::new();
+    let mut net = FakeClient::default();
+    net.deliver(
+      Channel::ReplicationReliable,
+      &ReplicationMessage::SpawnEntity(server.spawn_message(&world, network_id).unwrap()),
+    );
+    net.deliver(
+      Channel::ReplicationUnreliable,
+      &ReplicationMessage::ComponentBatch(health_batch(network_id, 10, 500)),
+    );
+    client.process_incoming(&mut client_world, &mut net);
+    assert_eq!(net.acks(), vec![500]);
+
+    // The server restarted: a fresh full sync, then batches from generation 3
+    net.deliver(
+      Channel::ReplicationReliable,
+      &ReplicationMessage::FullStateSync(server.build_full_state_sync(&world)),
+    );
+    net.deliver(
+      Channel::ReplicationUnreliable,
+      &ReplicationMessage::ComponentBatch(health_batch(network_id, 33, 3)),
+    );
+    client.process_incoming(&mut client_world, &mut net);
+
+    let entity = client.get_entity(network_id).unwrap();
+    assert_eq!(
+      client_world.get::<Health>(entity).map(|h| (*h).clone()),
+      Some(Health(33))
+    );
+    assert_eq!(net.acks(), vec![500, 3]);
+  }
+
+  #[test]
+  fn batches_with_unknown_entities_are_not_acknowledged() {
+    let (server, world, network_id) = server_with_health();
+    let mut client = ReplicationManager::new_client();
+    client.register::<Health>();
+    let mut client_world = World::new();
+    let mut net = FakeClient::default();
+    net.deliver(
+      Channel::ReplicationUnreliable,
+      &ReplicationMessage::ComponentBatch(health_batch(network_id, 50, 5)),
+    );
+    client.process_incoming(&mut client_world, &mut net);
+    assert!(net.acks().is_empty());
+
+    net.deliver(
+      Channel::ReplicationReliable,
+      &ReplicationMessage::SpawnEntity(server.spawn_message(&world, network_id).unwrap()),
+    );
+    net.deliver(
+      Channel::ReplicationUnreliable,
+      &ReplicationMessage::ComponentBatch(health_batch(network_id, 60, 6)),
+    );
+    client.process_incoming(&mut client_world, &mut net);
+
+    let entity = client.get_entity(network_id).unwrap();
+    assert_eq!(
+      client_world.get::<Health>(entity).map(|h| (*h).clone()),
+      Some(Health(60))
+    );
+    assert_eq!(net.acks(), vec![6]);
   }
 
   #[test]
