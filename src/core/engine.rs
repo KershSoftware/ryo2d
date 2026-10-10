@@ -912,6 +912,134 @@ impl Engine {
     }
   }
 
+  /// Finish GPU-dependent setup once a renderer exists (window or offscreen).
+  ///
+  /// Creates the sprite, lighting, trail and raycast renderers, the frame
+  /// clock and the profiler, then enters the initial scene.
+  pub(crate) fn init_gpu(&mut self, renderer: WgpuRenderer, scale_factor: f64) {
+    // Create GPU sprite renderer using the game texture format (not surface format)
+    let sprite_gpu = SpriteGpuRenderer::new(
+      renderer.device(),
+      renderer.queue(),
+      renderer.game_texture_format(),
+    );
+
+    // Create 2D lighting renderer (disabled by default, enabled when Light2D entities exist)
+    let lighting = LightingRenderer::new(
+      renderer.device(),
+      self.config.width,
+      self.config.height,
+      renderer.game_texture_format(),
+    );
+
+    // Create trail/line renderer for motion trails and procedural lines
+    let trail_renderer = TrailRenderer::new(
+      renderer.device(),
+      self.config.width,
+      self.config.height,
+      renderer.game_texture_format(),
+    );
+
+    // Create GPU raycasting renderer (disabled by default, enabled via SceneContext)
+    let raycast_renderer = GpuRaycastRenderer::new(
+      renderer.device(),
+      self.config.width,
+      self.config.height,
+      renderer.game_texture_format(),
+    );
+
+    self.scale_factor = scale_factor;
+
+    // Compute UI scale from config or auto-detect from DPI
+    self.ui_scale = self.config.ui_scale.unwrap_or_else(|| {
+      // Auto-detect: round scale_factor to nearest integer, minimum 1
+      (self.scale_factor.round() as u32).max(1)
+    });
+
+    self.renderer = Some(renderer);
+    self.sprite_gpu = Some(sprite_gpu);
+    self.lighting = Some(lighting);
+    self.trail_renderer = Some(trail_renderer);
+    self.raycast_renderer = Some(raycast_renderer);
+    self.time = Some(TimeState::new(
+      self.config.target_fps,
+      self.config.physics_hz,
+    ));
+
+    // Initialize profiler (no-op if `profiler` feature is disabled or enable_profiler=false)
+    // This enables puffin scope collection so F10 can open the profiler window later
+    super::profiler::init(self.config.debug.enable_profiler);
+
+    // Call on_enter for the initial scene
+    {
+      // Assign scope ID for the initial scene
+      self.current_scope_id = self.next_scope_id;
+      self.next_scope_id += 1;
+
+      let mut scene_manager = std::mem::take(&mut self.scene_manager);
+
+      // TimeInfo for init - no timing data yet, use defaults
+      let time_info = TimeInfo {
+        fixed_dt: self
+          .time
+          .as_ref()
+          .map(|t| t.fixed_dt())
+          .unwrap_or(1.0 / 60.0),
+        scaled_dt: 0.0,
+        real_dt: 0.0,
+        render_alpha: 0.0,
+        time_scale: 1.0,
+        is_hitstop: false,
+        frame_count: 0,
+      };
+
+      let (renderer_device, renderer_queue) = {
+        let r = self.renderer.as_ref().unwrap();
+        (r.device(), r.queue())
+      };
+
+      let mut scene_ctx = SceneContext {
+        resources: &mut self.resources,
+        world: &mut self.world,
+        camera: &mut self.camera,
+        input: &mut self.input,
+        assets: &mut self.assets,
+        audio: &mut self.audio,
+        effects: &mut self.effects,
+        lighting: &mut self.lighting,
+        raycast: &mut self.raycast_renderer,
+        texture_manager: &mut self.texture_manager,
+        device: renderer_device,
+        queue: renderer_queue,
+        events: &mut self.events,
+        tilemap: &mut self.tilemap,
+        window_request: &mut self.window_request,
+        cursor_request: &mut self.cursor_request,
+        time_control: &mut self.time_control,
+        time: time_info,
+        scale_factor: self.scale_factor,
+        display_mode: self.config.display_mode,
+        command_registry: &mut self.command_registry,
+        scope_id: self.current_scope_id,
+      };
+
+      if let Some(scene) = scene_manager.top_mut() {
+        scene.on_enter(&mut scene_ctx);
+      }
+
+      self.scene_manager = scene_manager;
+      // Entities were spawned during init, rebuild render cache
+      self.render_cache_dirty = true;
+    }
+
+    engine_info!(module: "Init", "Engine initialized successfully!");
+    engine_info!(
+      module: "Init",
+      "Game loop using fixed timestep: {}Hz updates",
+      self.config.physics_hz
+    );
+  }
+
   /// Full render and present pipeline - handles CPU rendering, GPU sprites, trails, lighting.
   /// Called from both RedrawRequested handler and tick_frame (when profiler has focus).
   /// Advance the capture schedule after a frame reached the screen.
@@ -2459,37 +2587,6 @@ impl ApplicationHandler for Engine {
       self.vsync,
     ));
 
-    // Create GPU sprite renderer using the game texture format (not surface format)
-    let sprite_gpu = SpriteGpuRenderer::new(
-      renderer.device(),
-      renderer.queue(),
-      renderer.game_texture_format(),
-    );
-
-    // Create 2D lighting renderer (disabled by default, enabled when Light2D entities exist)
-    let lighting = LightingRenderer::new(
-      renderer.device(),
-      self.config.width,
-      self.config.height,
-      renderer.game_texture_format(),
-    );
-
-    // Create trail/line renderer for motion trails and procedural lines
-    let trail_renderer = TrailRenderer::new(
-      renderer.device(),
-      self.config.width,
-      self.config.height,
-      renderer.game_texture_format(),
-    );
-
-    // Create GPU raycasting renderer (disabled by default, enabled via SceneContext)
-    let raycast_renderer = GpuRaycastRenderer::new(
-      renderer.device(),
-      self.config.width,
-      self.config.height,
-      renderer.game_texture_format(),
-    );
-
     // Present the first frame immediately to prevent white flash on startup
     // The renderer's pixel buffer is pre-filled with warm cream background
     let _ = renderer.render();
@@ -2497,29 +2594,9 @@ impl ApplicationHandler for Engine {
     // Now that the first frame is rendered, show the window
     window.set_visible(true);
 
-    // Store window's DPI scale factor
-    self.scale_factor = window.scale_factor();
-
-    // Compute UI scale from config or auto-detect from DPI
-    self.ui_scale = self.config.ui_scale.unwrap_or_else(|| {
-      // Auto-detect: round scale_factor to nearest integer, minimum 1
-      (self.scale_factor.round() as u32).max(1)
-    });
-
+    let scale_factor = window.scale_factor();
     self.window = Some(window);
-    self.renderer = Some(renderer);
-    self.sprite_gpu = Some(sprite_gpu);
-    self.lighting = Some(lighting);
-    self.trail_renderer = Some(trail_renderer);
-    self.raycast_renderer = Some(raycast_renderer);
-    self.time = Some(TimeState::new(
-      self.config.target_fps,
-      self.config.physics_hz,
-    ));
-
-    // Initialize profiler (no-op if `profiler` feature is disabled or enable_profiler=false)
-    // This enables puffin scope collection so F10 can open the profiler window later
-    super::profiler::init(self.config.debug.enable_profiler);
+    self.init_gpu(renderer, scale_factor);
 
     // Auto-open profiler window only when explicitly requested via CLI (-p flag)
     // When enable_profiler=true in Ryo.toml, the profiler is available via F10 but doesn't auto-open
@@ -2550,75 +2627,6 @@ impl ApplicationHandler for Engine {
         adapter,
       );
     }
-
-    // Call on_enter for the initial scene
-    {
-      // Assign scope ID for the initial scene
-      self.current_scope_id = self.next_scope_id;
-      self.next_scope_id += 1;
-
-      let mut scene_manager = std::mem::take(&mut self.scene_manager);
-
-      // TimeInfo for init - no timing data yet, use defaults
-      let time_info = TimeInfo {
-        fixed_dt: self
-          .time
-          .as_ref()
-          .map(|t| t.fixed_dt())
-          .unwrap_or(1.0 / 60.0),
-        scaled_dt: 0.0,
-        real_dt: 0.0,
-        render_alpha: 0.0,
-        time_scale: 1.0,
-        is_hitstop: false,
-        frame_count: 0,
-      };
-
-      let (renderer_device, renderer_queue) = {
-        let r = self.renderer.as_ref().unwrap();
-        (r.device(), r.queue())
-      };
-
-      let mut scene_ctx = SceneContext {
-        resources: &mut self.resources,
-        world: &mut self.world,
-        camera: &mut self.camera,
-        input: &mut self.input,
-        assets: &mut self.assets,
-        audio: &mut self.audio,
-        effects: &mut self.effects,
-        lighting: &mut self.lighting,
-        raycast: &mut self.raycast_renderer,
-        texture_manager: &mut self.texture_manager,
-        device: renderer_device,
-        queue: renderer_queue,
-        events: &mut self.events,
-        tilemap: &mut self.tilemap,
-        window_request: &mut self.window_request,
-        cursor_request: &mut self.cursor_request,
-        time_control: &mut self.time_control,
-        time: time_info,
-        scale_factor: self.scale_factor,
-        display_mode: self.config.display_mode,
-        command_registry: &mut self.command_registry,
-        scope_id: self.current_scope_id,
-      };
-
-      if let Some(scene) = scene_manager.top_mut() {
-        scene.on_enter(&mut scene_ctx);
-      }
-
-      self.scene_manager = scene_manager;
-      // Entities were spawned during init, rebuild render cache
-      self.render_cache_dirty = true;
-    }
-
-    engine_info!(module: "Init", "Engine initialized successfully!");
-    engine_info!(
-      module: "Init",
-      "Game loop using fixed timestep: {}Hz updates",
-      self.config.physics_hz
-    );
   }
 
   #[allow(unused_variables)] // window_id used only when profiler feature is enabled
