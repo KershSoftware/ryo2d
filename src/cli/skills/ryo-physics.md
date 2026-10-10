@@ -141,5 +141,6 @@ if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
 - Read **CollisionStopped** events for exit events (leaving trigger zones)
 - **Kinematic** bodies are great for moving platforms
 - Despawn collected items in a separate loop to avoid iterator invalidation
-- Events are cleared every frame - read them in the frame they fire
+- Events last one fixed update - read them in the update they arrive
+- Collision events come from the most recent physics step, which runs after your scene's `update`, so a contact shows up in the next update together with the positions physics produced. Each is delivered once, even while physics is paused (`is_physics_paused`)
 

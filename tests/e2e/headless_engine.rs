@@ -421,3 +421,55 @@ fn lines_render_when_lighting_is_on() {
     "line missing under lighting: on {on_line:?}, beside {beside:?}"
   );
 }
+
+/// Counts every `CollisionStarted` it reads and pauses physics after the first.
+struct PauseOnHit {
+  started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+  paused: bool,
+}
+
+impl Scene for PauseOnHit {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    // A falling body overlapping a kinematic floor
+    ctx.world.spawn((
+      Transform::new(100.0, 100.0),
+      RigidBody::new(),
+      Collider::box_collider(20.0, 20.0),
+    ));
+    ctx.world.spawn((
+      Transform::new(100.0, 105.0),
+      RigidBody::kinematic(),
+      Collider::box_collider(80.0, 20.0),
+    ));
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let seen = ctx.events.read::<CollisionStarted>().count();
+    if seen > 0 {
+      self
+        .started
+        .fetch_add(seen, std::sync::atomic::Ordering::SeqCst);
+      self.paused = true;
+    }
+    SceneAction::Continue
+  }
+
+  fn is_physics_paused(&self) -> bool {
+    self.paused
+  }
+}
+
+#[test]
+fn paused_physics_does_not_repeat_collision_events() {
+  let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+  let Some(mut engine) = engine(PauseOnHit {
+    started: started.clone(),
+    paused: false,
+  }) else {
+    return;
+  };
+
+  engine.step_frames(10).unwrap();
+
+  assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

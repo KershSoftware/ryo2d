@@ -1774,9 +1774,9 @@ impl Engine {
     // Clear events from previous frame
     self.events.clear();
 
-    // Emit collision events from the physics system (from previous frame's physics step)
-    // These are now available via ctx.events.read::<CollisionStarted>()
-    for event in self.physics.get_collision_events() {
+    // Emit the collisions from the most recent physics step (it runs at the end of
+    // each update), once: draining stops a paused simulation re-emitting them
+    for event in self.physics.drain_collision_events() {
       if event.is_started() {
         self.events.emit(CollisionStarted {
           entity_a: event.entity_a,
