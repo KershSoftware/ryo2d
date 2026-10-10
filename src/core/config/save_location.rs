@@ -86,10 +86,93 @@ pub(crate) fn compiled_release_save_dir() -> Option<PathBuf> {
     .clone()
 }
 
+/// Folders `ryo2d build` puts beside the game binary.
+const BUNDLE_DIRS: [&str; 3] = ["assets", "levels", "data"];
+
+/// The folder a release build should run from: its executable's folder, when
+/// that holds the bundle's `assets/`, `levels/` or `data/` and isn't already
+/// the working directory. `None` for dev builds.
+pub(crate) fn bundle_dir_to_enter(is_release: bool, exe_dir: &Path, cwd: &Path) -> Option<PathBuf> {
+  if !is_release || exe_dir == cwd {
+    return None;
+  }
+  BUNDLE_DIRS
+    .iter()
+    .any(|dir| exe_dir.join(dir).is_dir())
+    .then(|| exe_dir.to_path_buf())
+}
+
+/// Run this release build from its bundle folder, so relative paths (assets,
+/// levels) resolve wherever the game was launched from.
+pub(crate) fn enter_bundle_dir() {
+  let is_release = compiled_embedded_value("RYO_EMBED_RESOLUTION").is_some();
+  let (Ok(exe), Ok(cwd)) = (std::env::current_exe(), std::env::current_dir()) else {
+    return;
+  };
+  let Some(exe_dir) = exe.parent() else {
+    return;
+  };
+  if let Some(dir) = bundle_dir_to_enter(is_release, exe_dir, &cwd)
+    && let Err(e) = std::env::set_current_dir(&dir)
+  {
+    eprintln!(
+      "[ryo2d] Warning: Couldn't run from the game folder {} ({e})",
+      dir.display()
+    );
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use std::path::PathBuf;
+
+  fn folder_with(dirs: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for name in dirs {
+      std::fs::create_dir(dir.path().join(name)).unwrap();
+    }
+    dir
+  }
+
+  #[test]
+  fn dev_builds_stay_in_their_working_directory() {
+    let bundle = folder_with(&["assets"]);
+    assert_eq!(
+      bundle_dir_to_enter(false, bundle.path(), Path::new("/home/me")),
+      None
+    );
+  }
+
+  #[test]
+  fn release_builds_enter_their_bundle_folder() {
+    for marker in ["assets", "levels", "data"] {
+      let bundle = folder_with(&[marker]);
+      assert_eq!(
+        bundle_dir_to_enter(true, bundle.path(), Path::new("/home/me")),
+        Some(bundle.path().to_path_buf()),
+        "{marker}/ marks a bundle"
+      );
+    }
+  }
+
+  #[test]
+  fn release_builds_already_in_their_folder_stay() {
+    let bundle = folder_with(&["assets"]);
+    assert_eq!(
+      bundle_dir_to_enter(true, bundle.path(), bundle.path()),
+      None
+    );
+  }
+
+  #[test]
+  fn target_release_folders_are_not_bundles() {
+    let target = folder_with(&["deps", "build", ".fingerprint"]);
+    assert_eq!(
+      bundle_dir_to_enter(true, target.path(), Path::new("/projects/hopper")),
+      None
+    );
+  }
 
   fn embedded(
     values: &'static [(&'static str, &'static str)],

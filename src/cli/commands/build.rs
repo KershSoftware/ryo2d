@@ -291,10 +291,12 @@ fn create_release_bundle(
     copy_dir_recursive(&levels_dir, &dest_levels)?;
   }
 
-  // Create empty data directory (for save files)
-  let data_dir = release_dir.join("data");
-  fs::create_dir_all(&data_dir)
-    .map_err(|e| CliError::Other(format!("Failed to create data directory: {}", e)))?;
+  // Portable builds keep save data beside the game
+  if workspace.config().release.portable {
+    let data_dir = release_dir.join("data");
+    fs::create_dir_all(&data_dir)
+      .map_err(|e| CliError::Other(format!("Failed to create data directory: {}", e)))?;
+  }
 
   // Note: Ryo.toml is NOT included in release bundles
   // Configuration values are compiled into the binary at build time

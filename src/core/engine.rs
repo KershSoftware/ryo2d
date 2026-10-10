@@ -3875,6 +3875,10 @@ impl EngineBuilder {
 
   /// Apply every configuration source in priority order, without creating the engine.
   fn resolve(self, headless: bool) -> ResolvedBuild {
+    // Release bundles resolve assets and levels relative to their own folder
+    if !headless {
+      super::config::save_location::enter_bundle_dir();
+    }
     let workspace = super::config::Workspace::discover().ok();
     self.resolve_in(workspace.as_ref(), headless)
   }
