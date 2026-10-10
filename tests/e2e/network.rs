@@ -1406,3 +1406,91 @@ fn replication_manager_client_acknowledges_changes() {
     .expect("client should have its player entity");
   assert!(world.get::<PlayerPosition>(player).is_some());
 }
+
+#[test]
+fn a_large_backlog_reaches_a_client_over_udp() {
+  const COUNT: usize = 1500;
+  let port = get_test_port();
+  let protocol_id = 100093;
+  let server_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+  let mut server = HeadlessServer::new(port, protocol_id).expect("Failed to create server");
+  server.replication.set_refresh_interval(0);
+  let entities: Vec<Entity> = (0..COUNT)
+    .map(|_| {
+      server.replication.spawn_networked(
+        &mut server.world,
+        NetworkEntityBuilder::new()
+          .server_owned()
+          .with_component(PlayerPosition { x: 0.0, y: 0.0 }),
+      )
+    })
+    .collect();
+  let network_ids: Vec<NetworkId> = entities
+    .iter()
+    .map(|&entity| server.replication.get_network_id(entity).unwrap())
+    .collect();
+
+  let mut net_client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, protocol_id))
+    .expect("Failed to create client");
+  let mut replication = ReplicationManager::new_client();
+  replication.register::<Transform>();
+  replication.register::<PlayerPosition>();
+  let mut world = World::new();
+
+  let dt = Duration::from_millis(16);
+  let step = |server: &mut HeadlessServer,
+              net_client: &mut NetworkClient,
+              replication: &mut ReplicationManager,
+              world: &mut World| {
+    server.update(dt);
+    net_client.update(dt);
+    server.process_events();
+    server.broadcast_updates();
+    replication.process_incoming(world, net_client);
+    thread::sleep(Duration::from_millis(5));
+  };
+
+  let start = std::time::Instant::now();
+  while start.elapsed() < Duration::from_secs(5)
+    && !network_ids
+      .iter()
+      .all(|&id| replication.get_entity(id).is_some())
+  {
+    step(&mut server, &mut net_client, &mut replication, &mut world);
+  }
+  assert!(
+    network_ids
+      .iter()
+      .all(|&id| replication.get_entity(id).is_some()),
+    "client should know every entity"
+  );
+
+  for (i, &entity) in entities.iter().enumerate() {
+    if let Some(mut position) = server.world.get_mut::<PlayerPosition>(entity) {
+      *position = PlayerPosition {
+        x: i as f32,
+        y: 1.0,
+      };
+    }
+    server.replication.mark_dirty::<PlayerPosition>(entity);
+  }
+
+  let stale = |replication: &ReplicationManager, world: &World| {
+    network_ids
+      .iter()
+      .filter(|&&id| {
+        replication
+          .get_entity(id)
+          .and_then(|entity| world.get::<PlayerPosition>(entity))
+          .is_none_or(|position| position.y != 1.0)
+      })
+      .count()
+  };
+  let start = std::time::Instant::now();
+  while start.elapsed() < Duration::from_secs(5) && stale(&replication, &world) > 0 {
+    step(&mut server, &mut net_client, &mut replication, &mut world);
+  }
+  let remaining = stale(&replication, &world);
+  assert_eq!(remaining, 0, "{remaining} of {COUNT} entities still stale");
+}

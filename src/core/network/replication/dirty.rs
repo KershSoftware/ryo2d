@@ -3,12 +3,54 @@
 //! Tracks which components have changed since the last network sync,
 //! enabling delta updates instead of full state transmission.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use renet::ClientId;
 
 use super::component::ComponentTypeId;
 use super::types::NetworkId;
+
+/// Most unacknowledged change batches remembered per client. An ack for an
+/// older batch is ignored; its components stay pending and are sent again.
+pub const MAX_IN_FLIGHT_BATCHES: usize = 128;
+
+/// A component change a client hasn't acknowledged yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingComponent {
+  /// The entity
+  pub network_id: NetworkId,
+  /// The component type
+  pub component_id: ComponentTypeId,
+  /// Generation of the component's newest change
+  pub change: u64,
+}
+
+/// One component's delivery state for one client.
+#[derive(Debug, Default, Clone, Copy)]
+struct ComponentDelivery {
+  /// Newest change generation the client acknowledged
+  acked: Option<u64>,
+  /// Generation of the broadcast that last sent it
+  last_sent: Option<u64>,
+}
+
+/// A change batch sent to a client and not acknowledged yet.
+#[derive(Debug)]
+struct SentBatch {
+  generation: u64,
+  components: Vec<PendingComponent>,
+}
+
+/// What one client has been sent and has acknowledged.
+#[derive(Debug, Default)]
+struct ClientDelivery {
+  /// Every change at or before this generation already reached the client
+  /// (its full-state sync, or `acknowledge_client`)
+  baseline: Option<u64>,
+  components: HashMap<NetworkId, HashMap<ComponentTypeId, ComponentDelivery>>,
+  in_flight: VecDeque<SentBatch>,
+  newest_ack: Option<u64>,
+}
 
 /// Tracks which components have changed since last sync.
 ///
@@ -27,13 +69,13 @@ use super::types::NetworkId;
 /// // Mark a component as dirty
 /// tracker.mark_dirty(network_id, ComponentTypeId::from_name("Transform"));
 ///
-/// // Check what's dirty for a client
-/// for (id, components) in tracker.get_dirty_for_client(client_id) {
-///     // Send updates for these components
-/// }
+/// // Components the client hasn't acknowledged yet
+/// let pending = tracker.pending_for_client(client_id);
+/// // ... send them in a change batch, then remember what it carried
+/// tracker.record_sent(client_id, pending);
 ///
-/// // Acknowledge that client received updates
-/// tracker.acknowledge_client(client_id);
+/// // Later, the client acknowledges the batch by its generation
+/// tracker.record_ack(client_id, tracker.generation());
 /// ```
 #[derive(Debug)]
 pub struct DirtyTracker {
@@ -43,8 +85,8 @@ pub struct DirtyTracker {
   /// Maps NetworkId -> (ComponentTypeId -> generation when marked dirty)
   dirty_components: HashMap<NetworkId, HashMap<ComponentTypeId, u64>>,
 
-  /// Last acknowledged generation per client
-  client_generations: HashMap<ClientId, u64>,
+  /// What each client has been sent and has acknowledged
+  clients: HashMap<ClientId, ClientDelivery>,
 
   /// Entities that were spawned (need full sync)
   spawned_entities: HashSet<NetworkId>,
@@ -59,7 +101,7 @@ impl DirtyTracker {
     Self {
       generation: 0,
       dirty_components: HashMap::new(),
-      client_generations: HashMap::new(),
+      clients: HashMap::new(),
       spawned_entities: HashSet::new(),
       despawned_entities: HashSet::new(),
     }
@@ -108,86 +150,185 @@ impl DirtyTracker {
   pub fn mark_despawned(&mut self, network_id: NetworkId) {
     self.despawned_entities.insert(network_id);
     self.dirty_components.remove(&network_id);
+    self.forget_delivery(network_id);
   }
 
   /// Clear dirty flags for a specific entity.
   pub fn clear_entity(&mut self, network_id: NetworkId) {
     self.dirty_components.remove(&network_id);
+    self.forget_delivery(network_id);
   }
 
-  /// Register a new client.
-  ///
-  /// New clients are NOT added to `client_generations` yet, which means
-  /// `client_generation()` returns `None` and they see ALL dirty components.
-  /// Call `acknowledge_client()` after sending a full state sync.
-  pub fn register_client(&mut self, _client_id: ClientId) {
-    // Don't insert yet - client will receive everything until acknowledged
+  /// Drop every client's delivery state for an entity, so a reused id and
+  /// generation can't look delivered.
+  fn forget_delivery(&mut self, network_id: NetworkId) {
+    for client in self.clients.values_mut() {
+      client.components.remove(&network_id);
+    }
+  }
+
+  /// Register a new client. Until its full-state sync is recorded it is sent
+  /// every tracked change. Registering an existing client keeps its state.
+  pub fn register_client(&mut self, client_id: ClientId) {
+    self.clients.entry(client_id).or_default();
   }
 
   /// Remove a disconnected client.
   pub fn remove_client(&mut self, client_id: ClientId) {
-    self.client_generations.remove(&client_id);
+    self.clients.remove(&client_id);
   }
 
-  /// Get the last acknowledged generation for a client.
-  ///
-  /// Returns `None` for clients that have never been registered,
-  /// indicating they should receive all dirty updates.
+  /// The newest change batch generation the client acknowledged (or the
+  /// generation [`acknowledge_client`](Self::acknowledge_client) marked it at).
   pub fn client_generation(&self, client_id: ClientId) -> Option<u64> {
-    self.client_generations.get(&client_id).copied()
+    self
+      .clients
+      .get(&client_id)
+      .and_then(|client| client.newest_ack)
   }
 
-  /// Acknowledge that a client has received updates up to current generation.
+  /// Treat a client as having every change marked so far, for state sent by
+  /// other means. Replication tracks delivery itself from acknowledgements;
+  /// calling this stops changes the client may not have from being re-sent.
   pub fn acknowledge_client(&mut self, client_id: ClientId) {
-    self.client_generations.insert(client_id, self.generation);
+    let newest_ack = self.client_generation(client_id).max(Some(self.generation));
+    self.clients.insert(
+      client_id,
+      ClientDelivery {
+        baseline: Some(self.generation),
+        newest_ack,
+        ..Default::default()
+      },
+    );
   }
 
-  /// Record that a client applied every change up to `generation`.
-  ///
-  /// Keeps the newest acknowledgement, and clamps one beyond the current
-  /// generation (a client can't have seen changes that weren't sent yet).
+  /// Record that a client was sent a full-state sync built in the current
+  /// generation: changes from earlier generations are covered; changes in
+  /// this one may have been marked after the sync was built, so stay pending.
+  pub fn record_full_sync(&mut self, client_id: ClientId) {
+    let newest_ack = self.client_generation(client_id);
+    self.clients.insert(
+      client_id,
+      ClientDelivery {
+        baseline: self.generation.checked_sub(1),
+        newest_ack,
+        ..Default::default()
+      },
+    );
+  }
+
+  /// Components whose newest change the client hasn't acknowledged: never
+  /// sent first, then least recently sent, then oldest change - so a backlog
+  /// sent in budgeted batches reaches every component before re-sending any.
+  pub fn pending_for_client(&self, client_id: ClientId) -> Vec<PendingComponent> {
+    let client = self.clients.get(&client_id);
+    let baseline = client.and_then(|client| client.baseline);
+    let mut pending = Vec::new();
+    for (&network_id, components) in &self.dirty_components {
+      let delivered = client.and_then(|client| client.components.get(&network_id));
+      for (&component_id, &change) in components {
+        let state = delivered
+          .and_then(|delivered| delivered.get(&component_id))
+          .copied()
+          .unwrap_or_default();
+        if baseline
+          .max(state.acked)
+          .is_none_or(|covered| change > covered)
+        {
+          pending.push((
+            state.last_sent,
+            PendingComponent {
+              network_id,
+              component_id,
+              change,
+            },
+          ));
+        }
+      }
+    }
+    pending.sort_unstable_by_key(|(last_sent, p)| {
+      (*last_sent, p.change, p.network_id.0, p.component_id.0)
+    });
+    pending.into_iter().map(|(_, p)| p).collect()
+  }
+
+  /// Record a change batch sent to a client in the current generation.
+  pub fn record_sent(&mut self, client_id: ClientId, components: Vec<PendingComponent>) {
+    let generation = self.generation;
+    let client = self.clients.entry(client_id).or_default();
+    for p in &components {
+      client
+        .components
+        .entry(p.network_id)
+        .or_default()
+        .entry(p.component_id)
+        .or_default()
+        .last_sent = Some(generation);
+    }
+    client.in_flight.push_back(SentBatch {
+      generation,
+      components,
+    });
+    while client.in_flight.len() > MAX_IN_FLIGHT_BATCHES {
+      client.in_flight.pop_front();
+    }
+  }
+
+  /// Record that a client applied the change batch sent in `generation`: the
+  /// changes it carried are delivered. Acks for a batch that isn't in flight
+  /// (never sent, already acknowledged, evicted, or from the future) are
+  /// ignored.
   pub fn record_ack(&mut self, client_id: ClientId, generation: u64) {
-    let generation = generation.min(self.generation);
-    let acked = self
-      .client_generations
-      .entry(client_id)
-      .or_insert(generation);
-    *acked = (*acked).max(generation);
+    let Some(client) = self.clients.get_mut(&client_id) else {
+      return;
+    };
+    let Some(index) = client
+      .in_flight
+      .iter()
+      .position(|batch| batch.generation == generation)
+    else {
+      return;
+    };
+    let Some(batch) = client.in_flight.remove(index) else {
+      return;
+    };
+    for p in batch.components {
+      // Skip components despawned since the batch was sent
+      let tracked = self
+        .dirty_components
+        .get(&p.network_id)
+        .is_some_and(|components| components.contains_key(&p.component_id));
+      if !tracked {
+        continue;
+      }
+      let state = client
+        .components
+        .entry(p.network_id)
+        .or_default()
+        .entry(p.component_id)
+        .or_default();
+      state.acked = state.acked.max(Some(p.change));
+    }
+    client.newest_ack = client.newest_ack.max(Some(generation));
   }
 
   /// Get dirty components for a specific client.
   ///
-  /// Returns entities and their dirty components that have changed
-  /// since the client's last acknowledged generation.
-  /// Unregistered clients receive ALL dirty components.
+  /// Returns entities and their components whose newest change the client
+  /// hasn't acknowledged yet. Unregistered clients receive ALL dirty
+  /// components.
   pub fn get_dirty_for_client(
     &self,
     client_id: ClientId,
   ) -> Vec<(NetworkId, Vec<ComponentTypeId>)> {
-    let client_gen = self.client_generation(client_id);
-
-    self
-      .dirty_components
-      .iter()
-      .filter_map(|(&network_id, components)| {
-        let dirty: Vec<ComponentTypeId> = match client_gen {
-          // Unregistered client: return all dirty components
-          None => components.keys().copied().collect(),
-          // Registered client: only return components dirty since their last ack
-          Some(acked_gen) => components
-            .iter()
-            .filter(|&(_, component_gen)| *component_gen > acked_gen)
-            .map(|(&id, _)| id)
-            .collect(),
-        };
-
-        if dirty.is_empty() {
-          None
-        } else {
-          Some((network_id, dirty))
-        }
-      })
-      .collect()
+    let mut grouped: HashMap<NetworkId, Vec<ComponentTypeId>> = HashMap::new();
+    for p in self.pending_for_client(client_id) {
+      grouped
+        .entry(p.network_id)
+        .or_default()
+        .push(p.component_id);
+    }
+    grouped.into_iter().collect()
   }
 
   /// Get entities spawned this generation.
@@ -212,16 +353,7 @@ impl DirtyTracker {
 
   /// Check if any entity has dirty components for a client.
   pub fn has_dirty_for_client(&self, client_id: ClientId) -> bool {
-    match self.client_generation(client_id) {
-      // Unregistered client: has dirty if any components are tracked
-      None => !self.dirty_components.is_empty(),
-      // Registered client: check if any component is newer than their ack
-      Some(client_gen) => self.dirty_components.values().any(|components| {
-        components
-          .values()
-          .any(|generation| *generation > client_gen)
-      }),
-    }
+    !self.pending_for_client(client_id).is_empty()
   }
 
   /// Get all network IDs being tracked.
@@ -375,16 +507,154 @@ mod tests {
     assert!(!tracker.is_component_dirty(other_id, transform_id));
   }
 
+  fn pending_ids(tracker: &DirtyTracker, client: ClientId) -> Vec<(NetworkId, ComponentTypeId)> {
+    tracker
+      .pending_for_client(client)
+      .iter()
+      .map(|p| (p.network_id, p.component_id))
+      .collect()
+  }
+
   #[test]
-  fn acks_never_go_backwards_or_past_the_present() {
+  fn an_ack_delivers_exactly_the_batch_it_names() {
     let mut tracker = DirtyTracker::new();
-    for _ in 0..10 {
+    let (a, b) = (NetworkId::from_raw(1), NetworkId::from_raw(2));
+    let health = make_component_id("Health");
+    tracker.register_client(1);
+    tracker.mark_dirty(a, health);
+    let sent = tracker.pending_for_client(1);
+    tracker.record_sent(1, sent); // batch 0 carries a
+    tracker.next_generation();
+    tracker.mark_dirty(b, health);
+    let sent = tracker.pending_for_client(1);
+    assert_eq!(sent.first().map(|p| p.network_id), Some(b)); // never sent goes first
+    tracker.record_sent(1, sent); // batch 1 carries b and a
+    tracker.next_generation();
+
+    tracker.record_ack(1, 0);
+
+    assert_eq!(pending_ids(&tracker, 1), vec![(b, health)]);
+    assert_eq!(tracker.client_generation(1), Some(0));
+  }
+
+  #[test]
+  fn acks_for_batches_never_sent_are_ignored() {
+    let mut tracker = DirtyTracker::new();
+    let a = NetworkId::from_raw(1);
+    let health = make_component_id("Health");
+    tracker.register_client(1);
+    tracker.mark_dirty(a, health);
+
+    tracker.record_ack(1, 0);
+    tracker.record_ack(1, u64::MAX);
+
+    assert_eq!(pending_ids(&tracker, 1), vec![(a, health)]);
+    assert_eq!(tracker.client_generation(1), None);
+  }
+
+  #[test]
+  fn a_newer_change_is_pending_after_an_older_one_was_acknowledged() {
+    let mut tracker = DirtyTracker::new();
+    let a = NetworkId::from_raw(1);
+    let health = make_component_id("Health");
+    tracker.register_client(1);
+    tracker.mark_dirty(a, health);
+    let sent = tracker.pending_for_client(1);
+    tracker.record_sent(1, sent);
+    tracker.next_generation();
+    tracker.record_ack(1, 0);
+    assert!(pending_ids(&tracker, 1).is_empty());
+
+    tracker.mark_dirty(a, health);
+
+    assert_eq!(pending_ids(&tracker, 1), vec![(a, health)]);
+  }
+
+  #[test]
+  fn a_full_sync_covers_changes_before_it_but_not_during_it() {
+    let mut tracker = DirtyTracker::new();
+    let (a, b) = (NetworkId::from_raw(1), NetworkId::from_raw(2));
+    let health = make_component_id("Health");
+    tracker.mark_dirty(a, health); // generation 0
+    tracker.next_generation();
+    tracker.register_client(1);
+    tracker.record_full_sync(1); // built during generation 1
+    tracker.mark_dirty(b, health); // generation 1, possibly after the sync was built
+
+    assert_eq!(pending_ids(&tracker, 1), vec![(b, health)]);
+  }
+
+  #[test]
+  fn registering_again_keeps_a_clients_sync() {
+    let mut tracker = DirtyTracker::new();
+    let a = NetworkId::from_raw(1);
+    let health = make_component_id("Health");
+    tracker.mark_dirty(a, health);
+    tracker.next_generation();
+    tracker.register_client(1);
+    tracker.record_full_sync(1);
+
+    tracker.register_client(1);
+
+    assert!(pending_ids(&tracker, 1).is_empty());
+  }
+
+  #[test]
+  fn never_sent_components_go_before_resends() {
+    let mut tracker = DirtyTracker::new();
+    let (a, b) = (NetworkId::from_raw(1), NetworkId::from_raw(2));
+    let health = make_component_id("Health");
+    tracker.register_client(1);
+    tracker.mark_dirty(a, health);
+    tracker.mark_dirty(b, health);
+    let only_a: Vec<PendingComponent> = tracker
+      .pending_for_client(1)
+      .into_iter()
+      .filter(|p| p.network_id == a)
+      .collect();
+    tracker.record_sent(1, only_a);
+    tracker.next_generation();
+
+    assert_eq!(pending_ids(&tracker, 1), vec![(b, health), (a, health)]);
+  }
+
+  #[test]
+  fn despawning_forgets_delivery_state() {
+    let mut tracker = DirtyTracker::new();
+    let a = NetworkId::from_raw(1);
+    let health = make_component_id("Health");
+    tracker.register_client(1);
+    tracker.mark_dirty(a, health);
+    let sent = tracker.pending_for_client(1);
+    tracker.record_sent(1, sent);
+    tracker.record_ack(1, 0);
+    tracker.mark_despawned(a);
+
+    // The same id and generation again must not look delivered
+    tracker.mark_dirty(a, health);
+
+    assert_eq!(pending_ids(&tracker, 1), vec![(a, health)]);
+  }
+
+  #[test]
+  fn only_the_newest_batches_are_remembered() {
+    let mut tracker = DirtyTracker::new();
+    let a = NetworkId::from_raw(1);
+    let health = make_component_id("Health");
+    tracker.register_client(1);
+    for _ in 0..=MAX_IN_FLIGHT_BATCHES {
+      tracker.mark_dirty(a, health);
+      let sent = tracker.pending_for_client(1);
+      tracker.record_sent(1, sent);
       tracker.next_generation();
     }
-    tracker.record_ack(1, 5);
-    tracker.record_ack(1, 3);
-    assert_eq!(tracker.client_generation(1), Some(5));
-    tracker.record_ack(1, 999);
-    assert_eq!(tracker.client_generation(1), Some(10));
+
+    tracker.record_ack(1, 0); // evicted
+    assert_eq!(tracker.client_generation(1), None);
+    tracker.record_ack(1, MAX_IN_FLIGHT_BATCHES as u64);
+    assert_eq!(
+      tracker.client_generation(1),
+      Some(MAX_IN_FLIGHT_BATCHES as u64)
+    );
   }
 }

@@ -64,6 +64,27 @@ impl ReplicationMessage {
   }
 }
 
+/// The length of a value's wire encoding (as [`ReplicationMessage::to_bytes`]
+/// writes it), measured without allocating.
+pub(crate) fn encoded_len<T: Serialize>(value: &T) -> usize {
+  struct Counter(usize);
+
+  impl std::io::Write for Counter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+      self.0 += buf.len();
+      Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+      Ok(())
+    }
+  }
+
+  let mut counter = Counter(0);
+  let _ = serde_json::to_writer(&mut counter, value);
+  counter.0
+}
+
 /// Message to spawn a new networked entity.
 ///
 /// Sent from server to clients when a new networked entity is created.

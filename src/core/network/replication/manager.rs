@@ -14,7 +14,7 @@ use super::component::{ComponentRegistry, ComponentTypeId, Replicated, Serialize
 use super::dirty::DirtyTracker;
 use super::messages::{
   AckMessage, ComponentBatchMessage, ComponentUpdateMessage, DespawnEntityMessage,
-  FullStateSyncMessage, ReplicationMessage, SpawnEntityMessage,
+  FullStateSyncMessage, ReplicationMessage, SpawnEntityMessage, encoded_len,
 };
 use super::types::{NetworkEntity, NetworkId};
 use crate::core::ecs::World;
@@ -74,6 +74,12 @@ pub const DEFAULT_REFRESH_INTERVAL: u64 = 300;
 /// Most component updates per refresh message, keeping messages small.
 pub const REFRESH_BATCH_SIZE: usize = 64;
 
+/// Most encoded bytes of component updates in one change batch - well under
+/// renet's per-tick send budget (60 KB per connection), which silently drops
+/// a larger unreliable message. A bigger backlog goes out over several
+/// broadcasts.
+pub const MAX_BATCH_BYTES: usize = 16 * 1024;
+
 pub struct ReplicationManager {
   /// Server or client role
   role: ReplicationRole,
@@ -99,9 +105,8 @@ pub struct ReplicationManager {
   /// Client: generation of the newest change batch applied, even partly
   newest_applied: Option<u64>,
 
-  /// Client: generation of the newest change batch applied in full (every
-  /// entity in it was known); this is what gets acknowledged
-  newest_complete: Option<u64>,
+  /// Client: complete change batches applied since the last process_incoming, to acknowledge
+  pending_acks: Vec<u64>,
 }
 
 impl ReplicationManager {
@@ -116,7 +121,7 @@ impl ReplicationManager {
       registered_types: Vec::new(),
       refresh_interval: DEFAULT_REFRESH_INTERVAL,
       newest_applied: None,
-      newest_complete: None,
+      pending_acks: Vec::new(),
     }
   }
 
@@ -131,7 +136,7 @@ impl ReplicationManager {
       registered_types: Vec::new(),
       refresh_interval: DEFAULT_REFRESH_INTERVAL,
       newest_applied: None,
-      newest_complete: None,
+      pending_acks: Vec::new(),
     }
   }
 
@@ -212,18 +217,26 @@ impl ReplicationManager {
     // Spawn with NetworkEntity component
     let entity = world.spawn((network_entity,));
 
-    // Apply each serialized component
-    for serialized in &msg.components {
-      self
-        .registry
-        .deserialize_and_apply(serialized, world, entity)?;
-    }
-
-    // Register mapping
+    // Map first: the entity stays known even if a component fails to apply,
+    // so later updates for it count as handled
     self.network_to_entity.insert(msg.network_id, entity);
     self.entity_to_network.insert(entity, msg.network_id);
 
-    Ok(entity)
+    // Apply each serialized component, reporting the first failure
+    let mut first_error = None;
+    for serialized in &msg.components {
+      if let Err(error) = self
+        .registry
+        .deserialize_and_apply(serialized, world, entity)
+      {
+        first_error.get_or_insert(error);
+      }
+    }
+
+    match first_error {
+      Some(error) => Err(error),
+      None => Ok(entity),
+    }
   }
 
   /// Despawn a networked entity (server only).
@@ -300,28 +313,25 @@ impl ReplicationManager {
 
   // ========== Server: Sending Updates ==========
 
-  /// Collect dirty component updates for a client.
+  /// Collect an update for every component the client hasn't acknowledged.
+  ///
+  /// Unbudgeted: [`broadcast_updates`](Self::broadcast_updates) caps each
+  /// batch at [`MAX_BATCH_BYTES`], this returns them all.
   pub fn collect_dirty_updates(
     &self,
     world: &World,
     client_id: ClientId,
   ) -> Vec<ComponentUpdateMessage> {
-    let mut updates = Vec::new();
-
-    for (network_id, dirty_components) in self.dirty_tracker.get_dirty_for_client(client_id) {
-      let Some(entity) = self.network_to_entity.get(&network_id) else {
-        continue;
-      };
-
-      for component_id in dirty_components {
-        // Try to serialize each dirty component
-        if let Some(serialized) = self.serialize_component(world, *entity, component_id) {
-          updates.push(ComponentUpdateMessage::new(network_id, serialized));
-        }
-      }
-    }
-
-    updates
+    self
+      .dirty_tracker
+      .pending_for_client(client_id)
+      .into_iter()
+      .filter_map(|pending| {
+        let entity = *self.network_to_entity.get(&pending.network_id)?;
+        let serialized = self.serialize_component(world, entity, pending.component_id)?;
+        Some(ComponentUpdateMessage::new(pending.network_id, serialized))
+      })
+      .collect()
   }
 
   /// Serialize a specific component from an entity.
@@ -388,21 +398,30 @@ impl ReplicationManager {
   }
 
   /// Send full state to a newly connected client.
-  pub fn send_full_state<S: ServerLike>(&self, world: &World, server: &mut S, client_id: ClientId) {
+  ///
+  /// The client starts from this sync and isn't sent the change history
+  /// before it; only changes marked afterwards are replicated to it.
+  pub fn send_full_state<S: ServerLike>(
+    &mut self,
+    world: &World,
+    server: &mut S,
+    client_id: ClientId,
+  ) {
     let sync = self.build_full_state_sync(world);
     let msg = ReplicationMessage::FullStateSync(sync);
 
     if let Ok(bytes) = msg.to_bytes() {
       server.send(client_id, Channel::ReplicationReliable, &bytes);
+      self.dirty_tracker.record_full_sync(client_id);
     }
   }
 
   /// Re-send every replicated component's current value every `interval`
   /// calls to [`broadcast_updates`](Self::broadcast_updates); `0` disables it.
   ///
-  /// Deltas go out on the unreliable channel and aren't re-sent when a packet
-  /// is lost, so a periodic refresh bounds how long a client can show a stale
-  /// value. Default: [`DEFAULT_REFRESH_INTERVAL`].
+  /// Changes are re-sent until acknowledged; the refresh is a safety net
+  /// behind that, bounding how long a client can show a stale value.
+  /// Default: [`DEFAULT_REFRESH_INTERVAL`].
   pub fn set_refresh_interval(&mut self, interval: u64) {
     self.refresh_interval = interval;
   }
@@ -454,19 +473,38 @@ impl ReplicationManager {
       }
     }
 
-    // Send component updates per client
+    // One budgeted change batch per client: never-sent changes first, then
+    // re-sends, until acknowledged
     for &client_id in &remote_clients {
-      let updates = self.collect_dirty_updates(world, client_id);
-      if !updates.is_empty() {
-        let batch = ComponentBatchMessage {
-          updates,
-          generation: self.dirty_tracker.generation(),
+      let mut updates = Vec::new();
+      let mut carried = Vec::new();
+      let mut size = 0;
+      for pending in self.dirty_tracker.pending_for_client(client_id) {
+        let Some(&entity) = self.network_to_entity.get(&pending.network_id) else {
+          continue;
         };
-        let msg = ReplicationMessage::ComponentBatch(batch);
-
-        if let Ok(bytes) = msg.to_bytes() {
-          server.send(client_id, Channel::ReplicationUnreliable, &bytes);
+        let Some(serialized) = self.serialize_component(world, entity, pending.component_id) else {
+          continue;
+        };
+        let update = ComponentUpdateMessage::new(pending.network_id, serialized);
+        let update_size = encoded_len(&update);
+        if !updates.is_empty() && size + update_size > MAX_BATCH_BYTES {
+          break;
         }
+        size += update_size;
+        updates.push(update);
+        carried.push(pending);
+      }
+      if updates.is_empty() {
+        continue;
+      }
+      let msg = ReplicationMessage::ComponentBatch(ComponentBatchMessage {
+        updates,
+        generation: self.dirty_tracker.generation(),
+      });
+      if let Ok(bytes) = msg.to_bytes() {
+        server.send(client_id, Channel::ReplicationUnreliable, &bytes);
+        self.dirty_tracker.record_sent(client_id, carried);
       }
     }
 
@@ -497,8 +535,8 @@ impl ReplicationManager {
 
   // ========== Client: Receiving Updates ==========
 
-  /// Process incoming replication messages (client), then acknowledge the newest
-  /// change batch applied so the server stops re-sending it.
+  /// Process incoming replication messages (client), then acknowledge every
+  /// complete change batch applied so the server stops re-sending it.
   pub fn process_incoming<C: ClientLike>(&mut self, world: &mut World, client: &mut C) {
     while let Some(data) = client.receive(Channel::ReplicationReliable) {
       if let Ok(msg) = ReplicationMessage::from_bytes(&data) {
@@ -506,18 +544,16 @@ impl ReplicationManager {
       }
     }
 
-    let complete_before = self.newest_complete;
     while let Some(data) = client.receive(Channel::ReplicationUnreliable) {
       if let Ok(msg) = ReplicationMessage::from_bytes(&data) {
         self.handle_message(world, msg);
       }
     }
 
-    if let Some(generation) = self.newest_complete
-      && Some(generation) != complete_before
-      && let Ok(bytes) = ReplicationMessage::Ack(AckMessage { generation }).to_bytes()
-    {
-      client.send(Channel::ReplicationUnreliable, &bytes);
+    for generation in std::mem::take(&mut self.pending_acks) {
+      if let Ok(bytes) = ReplicationMessage::Ack(AckMessage { generation }).to_bytes() {
+        client.send(Channel::ReplicationUnreliable, &bytes);
+      }
     }
   }
 
@@ -549,7 +585,7 @@ impl ReplicationManager {
           }
           self.newest_applied = Some(batch.generation);
           if complete {
-            self.newest_complete = Some(batch.generation);
+            self.pending_acks.push(batch.generation);
           }
         }
       }
@@ -570,9 +606,10 @@ impl ReplicationManager {
           self.despawn_by_network_id(world, network_id);
         }
 
-        // A (re)connect: the server's generations may start over
-        self.newest_applied = None;
-        self.newest_complete = None;
+        // Older batches than the sync are ignored; a restarted server's
+        // generations start over with its sync
+        self.newest_applied = Some(sync.generation);
+        self.pending_acks.clear();
 
         // Spawn all entities from sync
         for spawn in &sync.entities {
@@ -678,6 +715,55 @@ mod tests {
     fn component_name() -> &'static str {
       "Health"
     }
+  }
+
+  #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+  struct Label(String);
+
+  impl Replicated for Label {
+    fn component_id() -> ComponentTypeId {
+      ComponentTypeId::from_name("Label")
+    }
+
+    fn component_name() -> &'static str {
+      "Label"
+    }
+  }
+
+  /// A server whose `count` networked entities each carry a ~200-byte `Label`,
+  /// all marked dirty, with client 1 registered (no full-state sync).
+  fn server_with_backlog(count: usize) -> (ReplicationManager, World, RecordingServer) {
+    let mut server = ReplicationManager::new_server();
+    server.register::<Label>();
+    server.set_refresh_interval(0);
+    let mut world = World::new();
+    for i in 0..count {
+      let entity = server.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
+      world
+        .insert_one(entity, Label(format!("{i:0>200}")))
+        .unwrap();
+      server.mark_dirty::<Label>(entity);
+    }
+    let net = RecordingServer {
+      clients: vec![1],
+      ..Default::default()
+    };
+    server.register_client(1);
+    (server, world, net)
+  }
+
+  /// Network ids in the batch sent by the most recent broadcast, if any.
+  fn last_batch_ids(net: &RecordingServer, batches_before: usize) -> Option<Vec<NetworkId>> {
+    let batches = sent_batches(net);
+    (batches.len() > batches_before).then(|| {
+      batches
+        .last()
+        .unwrap()
+        .updates
+        .iter()
+        .map(|u| u.network_id)
+        .collect()
+    })
   }
 
   /// A server world with one networked entity carrying `Health(42)`.
@@ -886,6 +972,160 @@ mod tests {
       )],
       generation,
     }
+  }
+
+  #[test]
+  fn a_late_joiner_starts_from_its_full_state_sync() {
+    let (mut server, world, network_id) = server_with_health();
+    let entity = server.get_entity(network_id).unwrap();
+    server.mark_dirty::<Health>(entity);
+    let mut net = RecordingServer::default();
+    server.broadcast_updates(&world, &mut net); // nobody connected yet
+    net.clients = vec![1];
+    server.register_client(1);
+    server.send_full_state(&world, &mut net, 1);
+
+    server.broadcast_updates(&world, &mut net);
+
+    assert!(sent_batches(&net).is_empty());
+  }
+
+  #[test]
+  fn a_large_backlog_goes_out_in_budgeted_batches() {
+    let (mut server, world, mut net) = server_with_backlog(200);
+    let mut seen = std::collections::HashSet::new();
+
+    for _ in 0..50 {
+      let before = sent_batches(&net).len();
+      server.broadcast_updates(&world, &mut net);
+      let Some(ids) = last_batch_ids(&net, before) else {
+        break;
+      };
+      let (_, _, bytes) = net.sent.last().unwrap();
+      assert!(ids.len() < 200);
+      assert!(
+        bytes.len() <= MAX_BATCH_BYTES + 256,
+        "batch of {} bytes",
+        bytes.len()
+      );
+      seen.extend(ids);
+      let generation = sent_batches(&net).last().unwrap().generation;
+      let ack = ReplicationMessage::Ack(AckMessage { generation })
+        .to_bytes()
+        .unwrap();
+      net.deliver(1, Channel::ReplicationUnreliable, ack);
+    }
+
+    assert_eq!(seen.len(), 200);
+    let before = sent_batches(&net).len();
+    server.broadcast_updates(&world, &mut net);
+    assert_eq!(
+      sent_batches(&net).len(),
+      before,
+      "nothing left once all are acknowledged"
+    );
+  }
+
+  #[test]
+  fn every_pending_component_is_sent_before_any_is_resent() {
+    let (mut server, world, mut net) = server_with_backlog(200);
+    let mut seen = std::collections::HashSet::new();
+
+    while seen.len() < 200 {
+      let before = sent_batches(&net).len();
+      server.broadcast_updates(&world, &mut net);
+      let ids = last_batch_ids(&net, before).expect("a batch every broadcast while pending");
+      // The last batch may top itself up with re-sends, but only once every
+      // component has been sent
+      let resent = ids.iter().filter(|id| seen.contains(*id)).count();
+      seen.extend(ids);
+      assert!(
+        resent == 0 || seen.len() == 200,
+        "{resent} components re-sent before every component was sent once"
+      );
+    }
+  }
+
+  #[test]
+  fn client_acknowledges_every_complete_batch() {
+    let (server, world, network_id) = server_with_health();
+    let spawn = server.spawn_message(&world, network_id).unwrap();
+    let mut client = ReplicationManager::new_client();
+    client.register::<Health>();
+    let mut client_world = World::new();
+    let mut net = FakeClient::default();
+    net.deliver(
+      Channel::ReplicationReliable,
+      &ReplicationMessage::SpawnEntity(spawn),
+    );
+    net.deliver(
+      Channel::ReplicationUnreliable,
+      &ReplicationMessage::ComponentBatch(health_batch(network_id, 50, 5)),
+    );
+    net.deliver(
+      Channel::ReplicationUnreliable,
+      &ReplicationMessage::ComponentBatch(health_batch(network_id, 60, 6)),
+    );
+
+    client.process_incoming(&mut client_world, &mut net);
+
+    assert_eq!(net.acks(), vec![5, 6]);
+  }
+
+  #[test]
+  fn batches_older_than_the_full_state_sync_are_ignored() {
+    let (mut server, world, network_id) = server_with_health();
+    for _ in 0..10 {
+      server.dirty_tracker_mut().next_generation();
+    }
+    let sync = server.build_full_state_sync(&world); // generation 10
+    let mut client = ReplicationManager::new_client();
+    client.register::<Health>();
+    let mut client_world = World::new();
+    let mut net = FakeClient::default();
+    net.deliver(
+      Channel::ReplicationReliable,
+      &ReplicationMessage::FullStateSync(sync),
+    );
+    net.deliver(
+      Channel::ReplicationUnreliable,
+      &ReplicationMessage::ComponentBatch(health_batch(network_id, 9, 9)),
+    );
+    net.deliver(
+      Channel::ReplicationUnreliable,
+      &ReplicationMessage::ComponentBatch(health_batch(network_id, 10, 10)),
+    );
+
+    client.process_incoming(&mut client_world, &mut net);
+
+    let entity = client.get_entity(network_id).unwrap();
+    assert_eq!(
+      client_world.get::<Health>(entity).map(|h| (*h).clone()),
+      Some(Health(10))
+    );
+    assert_eq!(net.acks(), vec![10]);
+  }
+
+  #[test]
+  fn a_spawn_with_an_unregistered_component_still_maps_the_entity() {
+    let (server, world, network_id) = server_with_health();
+    let spawn = server.spawn_message(&world, network_id).unwrap();
+    let mut client = ReplicationManager::new_client(); // Health not registered
+    let mut client_world = World::new();
+    let mut net = FakeClient::default();
+    net.deliver(
+      Channel::ReplicationReliable,
+      &ReplicationMessage::SpawnEntity(spawn),
+    );
+    net.deliver(
+      Channel::ReplicationUnreliable,
+      &ReplicationMessage::ComponentBatch(health_batch(network_id, 50, 5)),
+    );
+
+    client.process_incoming(&mut client_world, &mut net);
+
+    assert!(client.get_entity(network_id).is_some());
+    assert_eq!(net.acks(), vec![5]);
   }
 
   #[test]
