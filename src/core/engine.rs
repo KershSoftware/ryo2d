@@ -592,6 +592,7 @@ impl Engine {
     game_version: Option<String>,
     console_builder: Option<ConsoleCommandBuilder>,
     resources: super::resources::Resources,
+    headless: bool,
   ) -> Self {
     let world = World::new();
     let camera = Camera::centered_at(
@@ -608,27 +609,29 @@ impl Engine {
 
     // Enable hot reload in debug builds if a workspace with assets directory exists
     #[cfg(debug_assertions)]
-    {
-      if let Ok(workspace) = super::config::Workspace::discover() {
-        let assets_dir = workspace.assets_dir();
-        if assets_dir.exists()
-          && let Err(e) = assets.enable_hot_reload(vec![assets_dir])
-        {
-          engine_warn!(module: "HotReload", "Failed to enable: {}", e);
-        }
+    if !headless && let Ok(workspace) = super::config::Workspace::discover() {
+      let assets_dir = workspace.assets_dir();
+      if assets_dir.exists()
+        && let Err(e) = assets.enable_hot_reload(vec![assets_dir])
+      {
+        engine_warn!(module: "HotReload", "Failed to enable: {}", e);
       }
     }
 
     // Try to initialize audio (gracefully handle no audio device)
-    let mut audio = match AudioManager::new() {
-      Ok(manager) => Some(manager),
-      Err(e) => {
-        engine_warn!(
-          module: "Audio",
-          "Could not initialize audio: {}. Continuing without sound.",
-          e
-        );
-        None
+    let mut audio = if headless {
+      None
+    } else {
+      match AudioManager::new() {
+        Ok(manager) => Some(manager),
+        Err(e) => {
+          engine_warn!(
+            module: "Audio",
+            "Could not initialize audio: {}. Continuing without sound.",
+            e
+          );
+          None
+        }
       }
     };
 
@@ -640,20 +643,33 @@ impl Engine {
     }
 
     // Initialize gamepad input (gracefully handle no gamepad support)
-    let gilrs = match Gilrs::new() {
-      Ok(g) => {
-        engine_info!(module: "Gamepad", "Initialized successfully");
-        Some(g)
-      }
-      Err(e) => {
-        engine_warn!(
-          module: "Gamepad",
-          "Could not initialize gamepad support: {}. Continuing without gamepads.",
-          e
-        );
-        None
+    let gilrs = if headless {
+      None
+    } else {
+      match Gilrs::new() {
+        Ok(g) => {
+          engine_info!(module: "Gamepad", "Initialized successfully");
+          Some(g)
+        }
+        Err(e) => {
+          engine_warn!(
+            module: "Gamepad",
+            "Could not initialize gamepad support: {}. Continuing without gamepads.",
+            e
+          );
+          None
+        }
       }
     };
+
+    let mut config = config;
+    if headless {
+      // Wall-clock overlays would make headless frames differ run to run
+      config.debug.show_fps = false;
+      config.debug.show_frame_timing = false;
+      config.debug.show_stats = false;
+      config.debug.logger_window = false;
+    }
 
     // Compute initial overlay mode from config before moving it
     let initial_overlay_mode = OverlayMode::from_flags(
@@ -678,7 +694,11 @@ impl Engine {
       }
     }
 
-    let (capture_config, capture_warnings) = AutoCaptureConfig::from_env();
+    let (capture_config, capture_warnings) = if headless {
+      (AutoCaptureConfig::default(), Vec::new())
+    } else {
+      AutoCaptureConfig::from_env()
+    };
     for warning in &capture_warnings {
       eprintln!("[capture] {warning}");
       engine_warn!(module: "Capture", "{}", warning);
@@ -1195,6 +1215,40 @@ impl Engine {
       if elapsed < target_frame_time {
         std::thread::sleep(target_frame_time - elapsed);
       }
+    }
+  }
+
+  /// The fixed logic timestep (60 Hz until `init_gpu` creates the clock).
+  pub(crate) fn fixed_timestep(&self) -> std::time::Duration {
+    self
+      .time
+      .as_ref()
+      .map(TimeState::fixed_timestep)
+      .unwrap_or_else(|| std::time::Duration::from_secs_f64(1.0 / 60.0))
+  }
+
+  pub(crate) fn game_size(&self) -> (u32, u32) {
+    (self.config.width, self.config.height)
+  }
+
+  pub(crate) fn world(&self) -> &World {
+    &self.world
+  }
+
+  pub(crate) fn world_mut(&mut self) -> &mut World {
+    &mut self.world
+  }
+
+  pub(crate) fn input_mut(&mut self) -> &mut InputState {
+    &mut self.input
+  }
+
+  pub(crate) fn read_frame(&self) -> crate::core::error::CaptureResult<image::RgbaImage> {
+    match &self.renderer {
+      Some(renderer) => renderer.read_frame(),
+      None => Err(crate::core::error::CaptureError::Readback(
+        "renderer not initialized".to_string(),
+      )),
     }
   }
 
@@ -3386,6 +3440,8 @@ pub struct EngineBuilder {
   /// Console command configuration (declarations and removals)
   console_builder: Option<ConsoleCommandBuilder>,
   resources: super::resources::Resources,
+  /// Filter passed to `with_user_preferences`, applied when the engine is built
+  user_preferences: Option<super::config::UserPreferenceFilter>,
 }
 
 impl EngineBuilder {
@@ -3408,6 +3464,7 @@ impl EngineBuilder {
       disable_debug_keys: false,
       console_builder: None,
       resources: super::resources::Resources::new(),
+      user_preferences: None,
     }
   }
 
@@ -3715,9 +3772,13 @@ impl EngineBuilder {
     mut self,
     filter: impl Into<super::config::UserPreferenceFilter>,
   ) -> Self {
-    use super::config::UserPreference;
+    // Read when the engine is built, so headless builds can skip it entirely
+    self.user_preferences = Some(filter.into());
+    self
+  }
 
-    let filter = filter.into();
+  fn apply_user_preferences(mut self, filter: super::config::UserPreferenceFilter) -> Self {
+    use super::config::UserPreference;
 
     if let Ok(workspace) = super::config::Workspace::discover()
       && let Ok(save_manager) = workspace.create_save_manager()
@@ -3841,7 +3902,25 @@ impl EngineBuilder {
     self
   }
 
+  /// Build the engine (consumes the builder).
   pub fn build(self) -> Engine {
+    self.build_engine(false)
+  }
+
+  /// Build an engine for `testing::HeadlessEngine`: no audio, gamepads, hot
+  /// reload, user preferences, capture env vars or wall-clock overlays.
+  pub(crate) fn build_headless(self) -> Engine {
+    self.build_engine(true)
+  }
+
+  fn build_engine(mut self, headless: bool) -> Engine {
+    // User preferences have highest priority; headless runs never read them
+    if let Some(filter) = self.user_preferences.take()
+      && !headless
+    {
+      self = self.apply_user_preferences(filter);
+    }
+
     let initial_scene = self
       .initial_scene
       .expect("EngineBuilder requires a scene - call .start_scene() before .build()");
@@ -4041,6 +4120,7 @@ impl EngineBuilder {
       game_version,
       console_builder,
       self.resources,
+      headless,
     )
   }
 }
@@ -4054,6 +4134,36 @@ impl Default for EngineBuilder {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  struct EmptyScene;
+
+  impl Scene for EmptyScene {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+  }
+
+  #[test]
+  fn user_preferences_are_deferred_until_build() {
+    let builder =
+      EngineBuilder::new().with_user_preferences(crate::core::config::UserPreferenceFilter::all());
+    assert!(builder.user_preferences.is_some());
+    assert!(!builder.resolution_user_pref);
+  }
+
+  #[test]
+  fn headless_build_has_no_audio_gamepads_or_wall_clock_overlays() {
+    let engine = EngineBuilder::new()
+      .show_fps(true)
+      .start_scene(EmptyScene)
+      .build_headless();
+
+    assert!(engine.audio.is_none());
+    assert!(engine.gilrs.is_none());
+    assert!(!engine.config.debug.show_fps);
+    assert!(!engine.config.debug.show_frame_timing);
+    assert!(!engine.config.debug.show_stats);
+  }
 
   #[test]
   fn engine_config_has_sensible_defaults() {
