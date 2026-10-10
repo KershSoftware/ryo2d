@@ -9,6 +9,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::asset::AssetManager;
 use super::audio::AudioManager;
+use super::capture::{AutoCaptureConfig, CaptureReport, CaptureState, CaptureTarget};
 use super::config::{
   self as debug, DebugConfig, DebugStats, DisplayMode, FrameTimings, OverlayMode,
   SmoothedDebugStats, SmoothedFrameTimings,
@@ -310,6 +311,8 @@ pub struct Engine {
   command_registry: CommandRegistry,
   // Whether console requested quit
   console_quit_requested: bool,
+  // Frame capture scheduling (RYO_CAPTURE_*, F12, debug:capture)
+  capture: CaptureState,
   // Game name (from Ryo.toml [project] section)
   game_name: Option<String>,
   // Game version (from Ryo.toml [project] section)
@@ -653,6 +656,12 @@ impl Engine {
       }
     }
 
+    let (capture_config, capture_warnings) = AutoCaptureConfig::from_env();
+    for warning in &capture_warnings {
+      eprintln!("[capture] {warning}");
+      engine_warn!(module: "Capture", "{}", warning);
+    }
+
     Engine {
       config,
       window: None,
@@ -718,6 +727,7 @@ impl Engine {
       console_state,
       command_registry,
       console_quit_requested: false,
+      capture: CaptureState::new(capture_config),
       game_name,
       game_version,
     }
@@ -738,9 +748,18 @@ impl Engine {
 
     let event_loop = EventLoop::new().map_err(|e| EngineError::Window(format!("{}", e)))?;
 
-    event_loop
+    let result = event_loop
       .run_app(&mut self)
-      .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))
+      .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)));
+
+    // Make sure in-flight captures are on disk before the process exits
+    let reports = self.capture.finish();
+    self.report_captures(reports);
+    if self.capture.exit_with_failure() {
+      std::process::exit(1);
+    }
+
+    result
   }
 
   /// Print startup banner to console with useful info.
@@ -760,6 +779,7 @@ impl Engine {
     println!("  F9     Logger");
     #[cfg(feature = "profiler")]
     println!("  F10    Profiler");
+    println!("  F12    Capture frame");
     println!();
   }
 
@@ -903,6 +923,38 @@ impl Engine {
 
   /// Full render and present pipeline - handles CPU rendering, GPU sprites, trails, lighting.
   /// Called from both RedrawRequested handler and tick_frame (when profiler has focus).
+  /// Advance the capture schedule after a frame reached the screen.
+  fn on_frame_presented(&mut self) {
+    let result = self
+      .renderer
+      .as_mut()
+      .and_then(WgpuRenderer::take_capture_result);
+    let reports = self.capture.on_presented(result);
+    self.report_captures(reports);
+  }
+
+  /// Log capture outcomes to stdout/stderr, the dev log and the console.
+  fn report_captures(&mut self, reports: Vec<CaptureReport>) {
+    for report in reports {
+      match report {
+        CaptureReport::Written { frame, path } => {
+          let message = format!("frame {frame} → {}", path.display());
+          println!("[capture] {message}");
+          engine_info!(module: "Capture", "{}", message);
+          self
+            .console_state
+            .print_system(format!("Captured {message}"));
+        }
+        CaptureReport::Failed { frame, error } => {
+          let message = format!("FAILED frame {frame}: {error}");
+          eprintln!("[capture] {message}");
+          engine_warn!(module: "Capture", "{}", message);
+          self.console_state.print_error(format!("Capture {message}"));
+        }
+      }
+    }
+  }
+
   fn do_full_render_and_present(&mut self) {
     // Render phase
     {
@@ -987,7 +1039,12 @@ impl Engine {
     let mut trail_renderer = self.trail_renderer.take();
     let mut raycast_renderer = self.raycast_renderer.take();
 
+    let mut presented = false;
     if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
+      if let Some(path) = self.capture.path_for_next_frame() {
+        rend.request_capture(path);
+      }
+
       // Collect trails and lines from the world (inside renderer block for device/queue access)
       if let Some(ref mut trails) = trail_renderer {
         trails.begin_frame();
@@ -1182,7 +1239,7 @@ impl Engine {
       };
 
       match result {
-        Ok(_) => {}
+        Ok(_) => presented = true,
         Err(wgpu::SurfaceError::Outdated) => {
           self.surface_needs_reconfigure = true;
         }
@@ -1210,6 +1267,10 @@ impl Engine {
     // Track first frame
     if !self.first_frame_rendered {
       self.first_frame_rendered = true;
+    }
+
+    if presented {
+      self.on_frame_presented();
     }
   }
 
@@ -2848,6 +2909,12 @@ impl ApplicationHandler for Engine {
             }
             self.input.consume_key(KeyCode::F10);
           }
+
+          // F12: Capture the next frame to a PNG
+          if self.input.key_pressed(KeyCode::F12) {
+            self.capture.request(CaptureTarget::Default);
+            self.input.consume_key(KeyCode::F12);
+          }
         }
 
         // Process gamepad events
@@ -3087,7 +3154,12 @@ impl ApplicationHandler for Engine {
         let mut trail_renderer = self.trail_renderer.take();
         let mut raycast_renderer = self.raycast_renderer.take();
 
+        let mut presented = false;
         if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
+          if let Some(path) = self.capture.path_for_next_frame() {
+            rend.request_capture(path);
+          }
+
           // Collect trails and lines from the world (inside renderer block for device/queue access)
           if let Some(ref mut trails) = trail_renderer {
             trails.begin_frame();
@@ -3290,7 +3362,7 @@ impl ApplicationHandler for Engine {
           };
 
           match result {
-            Ok(_) => {}
+            Ok(_) => presented = true,
             Err(wgpu::SurfaceError::Outdated) => {
               // Surface needs reconfiguration (display mode changed, window resized, etc.)
               // This is recoverable - the next frame will work after resize event
@@ -3325,6 +3397,9 @@ impl ApplicationHandler for Engine {
         self.lighting = lighting;
         self.trail_renderer = trail_renderer;
         self.raycast_renderer = raycast_renderer;
+        if presented {
+          self.on_frame_presented();
+        }
         // Present time = GPU submission + effects pipeline
         self.frame_timings.present = present_start.elapsed();
 
@@ -3439,6 +3514,14 @@ impl ApplicationHandler for Engine {
   fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
     // Use Poll mode to keep the event loop running continuously
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+
+    // Report finished captures and honour RYO_CAPTURE_EXIT
+    let reports = self.capture.poll_writes();
+    self.report_captures(reports);
+    if self.capture.exit_requested() {
+      event_loop.exit();
+      return;
+    }
 
     // Process any pending window configuration requests
     if self.window_request.has_changes()

@@ -31,15 +31,16 @@
 //! | F3 | Toggle velocity vectors |
 //! | F4 | Toggle origin points |
 //!
-//! **Dev Window Keys (F8-F9)** - Dev-only by default, requires `dev_window_keys = true` in release:
+//! **Dev Keys (F9, F10, F12)** - Dev-only by default, requires `dev_window_keys = true` in release:
 //!
 //! | Key | Action |
 //! |-----|--------|
-//! | F8 | Toggle profiler window (requires `profiler` feature) |
 //! | F9 | Toggle logger window |
+//! | F10 | Toggle profiler window (requires `profiler` feature) |
+//! | F12 | Capture the next frame to `captures/` (or `RYO_CAPTURE_DIR`) |
 //!
 //! Set `disable_debug_keys = true` in `[debug]` to disable F1-F4 toggles.
-//! Set `dev_window_keys = true` in `[debug]` to enable F8-F9 in release builds.
+//! Set `dev_window_keys = true` in `[debug]` to enable F9, F10 and F12 in release builds.
 //!
 //! # Profiling Workflow
 //!
@@ -231,7 +232,7 @@ pub struct DebugConfig {
   pub enable_profiler: bool,
   /// Whether to open the logger dev window at startup (shows engine/game logs in real-time)
   pub logger_window: bool,
-  /// Whether to enable dev window hotkeys (F8=profiler, F9=logger).
+  /// Whether to enable dev hotkeys (F9=logger, F10=profiler, F12=frame capture).
   /// Defaults to true in debug builds, false in release builds.
   /// Set to true in release builds to enable dev tools for testing.
   pub dev_window_keys: bool,
