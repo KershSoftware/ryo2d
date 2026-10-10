@@ -265,6 +265,10 @@ const GAME_EXTENSION: &str = "ryo-save";
 /// Without this, serde_json converts f32 → f64 naively, producing values like
 /// `0.4000000059604645` instead of `0.4`.
 /// Round an f32 to 2 decimal places for clean JSON output.
+fn clean_f32(value: f32) -> f64 {
+  ((value as f64) * 100.0).round() / 100.0
+}
+
 /// A `SystemState` as the JSON object `system.json` stores.
 fn system_state_map(state: &SystemState) -> SaveResult<serde_json::Map<String, serde_json::Value>> {
   match serde_json::to_value(state).map_err(|e| SaveError::Serialization(e.to_string()))? {
@@ -273,10 +277,6 @@ fn system_state_map(state: &SystemState) -> SaveResult<serde_json::Map<String, s
       "system state did not serialize to a JSON object".to_string(),
     )),
   }
-}
-
-fn clean_f32(value: f32) -> f64 {
-  ((value as f64) * 100.0).round() / 100.0
 }
 
 /// User settings and configuration (Tier 1).
@@ -859,7 +859,8 @@ impl SaveManager {
           existing_map.clone(),
         )) {
           Ok(loaded) => system_state_map(&loaded)?,
-          Err(_) => serde_json::Map::new(),
+          // Unparsable file: treat every key as unchanged so its shape is kept
+          Err(_) => new_map.clone(),
         };
 
         let mut merged = serde_json::Map::new();
@@ -1948,6 +1949,41 @@ mod tests {
   }
 
   #[test]
+  fn save_system_keeps_the_shape_of_an_unparsable_file() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(dir.path(), r#"{"master_volume": 0.5, "vsync": "yes"}"#);
+
+    let mut state = SystemState::new();
+    state.width = 1920;
+    state.height = 1080;
+    manager.save_system(&state).unwrap();
+
+    let raw = read_system_json(dir.path());
+    assert!(raw.get("master_volume").is_some());
+    assert!(raw.get("vsync").is_some());
+    assert!(raw.get("resolution").is_none());
+    assert!(raw.get("display_mode").is_none());
+  }
+
+  #[test]
+  fn filtered_creation_returns_the_state_as_stored() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    let defaults = super::super::workspace::SystemDefaults {
+      resolution: Some((800, 600)),
+      ..Default::default()
+    };
+    let filter = UserPreferenceFilter::only([UserPreference::MasterVolume]);
+
+    let state = manager
+      .load_or_create_system_filtered(&defaults, &filter)
+      .unwrap();
+
+    assert_eq!((state.width, state.height), (1280, 720));
+  }
+
+  #[test]
   fn full_file_from_previous_version_round_trips() {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
@@ -2439,7 +2475,7 @@ mod tests {
       .load_or_create_system_filtered(&defaults, &filter)
       .unwrap();
 
-    // Returned state is fully populated
+    // Returned state is what the file loads as (engine defaults for absent keys)
     assert_eq!(state.master_volume, 0.8);
     assert_eq!(state.width, 1280);
 
