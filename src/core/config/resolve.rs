@@ -298,7 +298,12 @@ impl ProjectLayer {
         warn_malformed("RYO_EMBED_RESOLUTION", resolution);
         None
       }),
-      display_mode: lookup("RYO_EMBED_DISPLAY_MODE").map(parse_display_mode),
+      display_mode: lookup("RYO_EMBED_DISPLAY_MODE").and_then(|mode| {
+        DisplayMode::from_config_name(mode).or_else(|| {
+          warn_malformed("RYO_EMBED_DISPLAY_MODE", mode);
+          None
+        })
+      }),
       vsync: parse_embedded(&lookup, "RYO_EMBED_VSYNC"),
       master_volume: parse_embedded(&lookup, "RYO_EMBED_MASTER_VOLUME"),
       music_volume: parse_embedded(&lookup, "RYO_EMBED_MUSIC_VOLUME"),
@@ -399,14 +404,6 @@ fn parse_embedded<'a, T: std::str::FromStr>(
     warn_malformed(name, raw);
     None
   })
-}
-
-fn parse_display_mode(mode: &str) -> DisplayMode {
-  match mode.to_lowercase().as_str() {
-    "exclusive_fullscreen" => DisplayMode::ExclusiveFullscreen,
-    "borderless_fullscreen" => DisplayMode::BorderlessFullscreen,
-    _ => DisplayMode::Windowed,
-  }
 }
 
 fn warn_malformed(name: &str, value: &str) {
@@ -691,11 +688,13 @@ logo = "art/logo.png"
     let layer = ProjectLayer::from_embedded(|name| match name {
       "RYO_EMBED_MASTER_VOLUME" => Some("loud"),
       "RYO_EMBED_RESOLUTION" => Some("huge"),
+      "RYO_EMBED_DISPLAY_MODE" => Some("sideways"),
       other => embedded(other),
     })
     .unwrap();
     assert_eq!(layer.master_volume, None);
     assert_eq!(layer.resolution, None);
+    assert_eq!(layer.display_mode, None);
     assert_eq!(layer.music_volume, Some(0.4));
     assert_eq!(layer.disable_debug_keys, Some(true));
   }

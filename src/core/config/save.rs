@@ -336,6 +336,16 @@ pub enum DisplayMode {
 }
 
 impl DisplayMode {
+  /// Parses a config-file name (case-insensitive); `None` if unrecognized.
+  pub(crate) fn from_config_name(name: &str) -> Option<DisplayMode> {
+    match name.to_lowercase().as_str() {
+      "windowed" => Some(DisplayMode::Windowed),
+      "exclusive_fullscreen" => Some(DisplayMode::ExclusiveFullscreen),
+      "borderless_fullscreen" => Some(DisplayMode::BorderlessFullscreen),
+      _ => None,
+    }
+  }
+
   /// Returns all available display modes for UI selection
   pub fn all() -> &'static [DisplayMode] {
     &[

@@ -478,12 +478,7 @@ impl Workspace {
 
     // Parse display_mode from string
     let display_mode = if let Some(mode_str) = &system_section.display_mode {
-      match mode_str.to_lowercase().as_str() {
-        "windowed" => super::save::DisplayMode::Windowed,
-        "exclusive_fullscreen" => super::save::DisplayMode::ExclusiveFullscreen,
-        "borderless_fullscreen" => super::save::DisplayMode::BorderlessFullscreen,
-        _ => engine_defaults.display_mode,
-      }
+      super::save::DisplayMode::from_config_name(mode_str).unwrap_or(engine_defaults.display_mode)
     } else {
       engine_defaults.display_mode
     };
