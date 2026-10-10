@@ -529,3 +529,29 @@ fn move_agent(&self, world: &mut World, entity: Entity, dt: f32) {
 | `steering::cohesion()` | Move toward group center |
 | `steering::alignment()` | Match group velocity |
 
+## Visual Tests
+
+Test what your scenes draw with `ryo2d::testing::HeadlessEngine` — no window, deterministic steps, pixels out:
+
+```rust
+use ryo2d::prelude::*;
+use ryo2d::testing::HeadlessEngine;
+
+#[test]
+fn player_is_drawn_at_spawn() {
+  let Some(mut engine) = HeadlessEngine::new_or_skip(
+    EngineBuilder::new().resolution(320, 180).start_scene(Level::default()),
+  ) else { return }; // no GPU: skip
+
+  engine.step_frames(5).unwrap();
+  engine.tap_key(KeyCode::Space); // press_key / release_key / press_mouse / mouse_move too
+  engine.step_frames(10).unwrap();
+
+  let frame = engine.frame().unwrap(); // RgbaImage, game resolution
+  assert_eq!(frame.get_pixel(160, 90).0, [255, 0, 0, 255]);
+}
+```
+
+- One fixed update per step; same scene + steps + input → identical frames (seed your RNG).
+- Headless: no audio (`ctx.audio` is `None`), no gamepads, no user preferences; `Ryo.toml` is honoured.
+- Save a failing frame with `engine.frame().unwrap().save("failed.png")`.

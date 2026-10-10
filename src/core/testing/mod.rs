@@ -26,8 +26,11 @@
 //! Headless runs have no audio (`ctx.audio` is `None`), no gamepads, no hot
 //! reload and no dev windows; they never read or write `system.json` user
 //! preferences, ignore `RYO_CAPTURE_*`, and keep the FPS, frame-timing and
-//! stats overlays off. `Ryo.toml` is honoured as in a normal build. Seed any
-//! randomness your scene uses if you compare frames exactly.
+//! stats overlays off. `Ryo.toml` is honoured as in a normal build. Input
+//! injected with `press_key`/`tap_key`/`press_mouse`/`mouse_move` goes through
+//! the same handlers as window events; the engine's own debug keys (F1-F5, F9,
+//! F10, F12) are inert headless. Seed any randomness your scene uses if you
+//! compare frames exactly.
 
 mod gpu;
 

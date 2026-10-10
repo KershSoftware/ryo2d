@@ -175,3 +175,7 @@ ryo2d dev --profiler
 ## Verifying Rendering Changes
 
 Use frame capture (`src/core/capture/`) instead of guessing: run an example with `RYO_CAPTURE_FRAMES=<n> RYO_CAPTURE_EXIT=1 RYO_CAPTURE_DIR=<abs dir>` and inspect the PNG. Capture before and after a renderer change to prove it.
+
+## Headless Engine Tests
+
+Regression tests for rendering go in `tests/e2e/` using `ryo2d::testing::HeadlessEngine` (see `src/core/testing/AGENTS.md`). Write the failing pixel assertion first, then fix.
