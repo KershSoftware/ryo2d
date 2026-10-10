@@ -22,6 +22,7 @@ fn make_context<'a>(console: &'a mut ConsoleState, time_scale: &'a mut f32) -> C
     console,
     debug_config: Box::leak(Box::new(DebugConfig::default())),
     quit_requested: false,
+    capture_requested: None,
     time_scale,
     commands: Vec::new(),
     game_name: None,

@@ -2978,6 +2978,7 @@ impl ApplicationHandler for Engine {
               console: &mut self.console_state,
               debug_config: &mut self.config.debug,
               quit_requested: false,
+              capture_requested: None,
               time_scale: &mut self.time_control.time_scale,
               commands,
               game_name: self.game_name.clone(),
@@ -2989,6 +2990,9 @@ impl ApplicationHandler for Engine {
             // Handle quit request from console
             if matches!(result, CommandResult::Quit) || cmd_ctx.quit_requested {
               self.console_quit_requested = true;
+            }
+            if let Some(target) = cmd_ctx.capture_requested.take() {
+              self.capture.request(target);
             }
           }
 

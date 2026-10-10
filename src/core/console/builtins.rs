@@ -4,8 +4,10 @@
 //! Root-level commands (help, clear, quit, exit) don't require a category.
 
 use std::net::UdpSocket;
+use std::path::PathBuf;
 
 use super::commands::{CommandRegistry, CommandResult};
+use crate::core::capture::CaptureTarget;
 
 /// Register all built-in commands with the registry
 pub fn register_builtins(registry: &mut CommandRegistry) {
@@ -210,6 +212,22 @@ pub fn register_builtins(registry: &mut CommandRegistry) {
     }
     CommandResult::Ok
   });
+
+  // Frame capture (F12 does the same with the default path)
+  registry.register(
+    "debug:capture",
+    "Save the next frame as a PNG (debug:capture [path])",
+    |args, ctx| {
+      let target = if args.is_empty() {
+        CaptureTarget::Default
+      } else {
+        CaptureTarget::Path(PathBuf::from(args.join(" ")))
+      };
+      ctx.capture_requested = Some(target);
+      ctx.console.print("Capturing next frame...");
+      CommandResult::Ok
+    },
+  );
 
   // Stats command - show current debug stats (F1 cycles through overlays)
   registry.register(
@@ -439,11 +457,44 @@ mod tests {
       console,
       debug_config,
       quit_requested: false,
+      capture_requested: None,
       time_scale,
       commands: Vec::new(),
       game_name: None,
       game_version: None,
     }
+  }
+
+  #[test]
+  fn test_capture_command_uses_default_target() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+    let mut console = super::super::ConsoleState::new();
+    let mut debug_config = DebugConfig::default();
+    let mut time_scale = 1.0;
+    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+
+    let result = registry.execute("debug:capture", &mut ctx);
+
+    assert_eq!(result, CommandResult::Ok);
+    assert_eq!(ctx.capture_requested, Some(CaptureTarget::Default));
+  }
+
+  #[test]
+  fn test_capture_command_accepts_path_with_spaces() {
+    let mut registry = CommandRegistry::new();
+    register_builtins(&mut registry);
+    let mut console = super::super::ConsoleState::new();
+    let mut debug_config = DebugConfig::default();
+    let mut time_scale = 1.0;
+    let mut ctx = make_test_context(&mut console, &mut debug_config, &mut time_scale);
+
+    registry.execute("debug:capture shots/my shot.png", &mut ctx);
+
+    assert_eq!(
+      ctx.capture_requested,
+      Some(CaptureTarget::Path(PathBuf::from("shots/my shot.png")))
+    );
   }
 
   #[test]

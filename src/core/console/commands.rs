@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use super::ConsoleState;
+use crate::core::capture::CaptureTarget;
 use crate::core::config::DebugConfig;
 
 /// Result of executing a console command
@@ -94,6 +95,8 @@ pub struct CommandContext<'a> {
   pub debug_config: &'a mut DebugConfig,
   /// Request to quit the application
   pub quit_requested: bool,
+  /// Frame capture requested by `debug:capture` (handled by the engine)
+  pub capture_requested: Option<CaptureTarget>,
   /// Current time scale (mutable for `timescale` command)
   pub time_scale: &'a mut f32,
   /// List of all commands (for help)
@@ -436,6 +439,7 @@ mod tests {
       console,
       debug_config,
       quit_requested: false,
+      capture_requested: None,
       time_scale,
       commands: Vec::new(),
       game_name: None,
