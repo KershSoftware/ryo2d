@@ -3440,8 +3440,8 @@ pub struct EngineBuilder {
   /// Console command configuration (declarations and removals)
   console_builder: Option<ConsoleCommandBuilder>,
   resources: super::resources::Resources,
-  /// Filter passed to `with_user_preferences`, applied when the engine is built
-  user_preferences: Option<super::config::UserPreferenceFilter>,
+  /// Filters passed to `with_user_preferences`, applied in call order when the engine is built
+  user_preferences: Vec<super::config::UserPreferenceFilter>,
 }
 
 impl EngineBuilder {
@@ -3464,7 +3464,7 @@ impl EngineBuilder {
       disable_debug_keys: false,
       console_builder: None,
       resources: super::resources::Resources::new(),
-      user_preferences: None,
+      user_preferences: Vec::new(),
     }
   }
 
@@ -3773,7 +3773,7 @@ impl EngineBuilder {
     filter: impl Into<super::config::UserPreferenceFilter>,
   ) -> Self {
     // Read when the engine is built, so headless builds can skip it entirely
-    self.user_preferences = Some(filter.into());
+    self.user_preferences.push(filter.into());
     self
   }
 
@@ -3915,10 +3915,11 @@ impl EngineBuilder {
 
   fn build_engine(mut self, headless: bool) -> Engine {
     // User preferences have highest priority; headless runs never read them
-    if let Some(filter) = self.user_preferences.take()
-      && !headless
-    {
-      self = self.apply_user_preferences(filter);
+    let filters = std::mem::take(&mut self.user_preferences);
+    if !headless {
+      for filter in filters {
+        self = self.apply_user_preferences(filter);
+      }
     }
 
     let initial_scene = self
@@ -4147,8 +4148,50 @@ mod tests {
   fn user_preferences_are_deferred_until_build() {
     let builder =
       EngineBuilder::new().with_user_preferences(crate::core::config::UserPreferenceFilter::all());
-    assert!(builder.user_preferences.is_some());
+    assert_eq!(builder.user_preferences.len(), 1);
     assert!(!builder.resolution_user_pref);
+  }
+
+  #[test]
+  fn repeated_user_preferences_calls_keep_every_filter_in_order() {
+    use crate::core::config::{UserPreference, UserPreferenceFilter};
+
+    let builder = EngineBuilder::new()
+      .with_user_preferences(UserPreferenceFilter::none())
+      .with_user_preferences(UserPreferenceFilter::all());
+    assert_eq!(builder.user_preferences.len(), 2);
+    assert!(!builder.user_preferences[0].contains(UserPreference::Vsync));
+    assert!(builder.user_preferences[1].contains(UserPreference::Vsync));
+  }
+
+  #[test]
+  fn headless_engine_new_scrubs_wall_clock_overlays() {
+    let mut config = EngineConfig::default();
+    config.debug.show_fps = true;
+    config.debug.show_frame_timing = true;
+    config.debug.show_stats = true;
+    config.debug.logger_window = true;
+
+    let engine = Engine::new(
+      config,
+      Box::new(EmptyScene),
+      None,
+      1.0,
+      1.0,
+      1.0,
+      false,
+      None,
+      None,
+      None,
+      super::super::resources::Resources::new(),
+      true,
+    );
+
+    assert!(!engine.config.debug.show_fps);
+    assert!(!engine.config.debug.show_frame_timing);
+    assert!(!engine.config.debug.show_stats);
+    assert!(!engine.config.debug.logger_window);
+    assert_eq!(engine.overlay_mode, OverlayMode::Off);
   }
 
   #[test]
