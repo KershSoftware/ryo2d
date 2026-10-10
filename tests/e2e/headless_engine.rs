@@ -360,3 +360,64 @@ fn invalid_resolution_is_an_error_not_a_panic() {
     );
   }
 }
+
+/// A white horizontal line across the middle of the screen, optionally under a bright light.
+struct LineScene {
+  with_light: bool,
+}
+
+impl Scene for LineScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    if self.with_light {
+      ctx.world.spawn((
+        Transform::new(160.0, 90.0),
+        Light2D::point(Color::rgb(255, 255, 255), 400.0).with_intensity(2.0),
+      ));
+    }
+    let line = Line2D::new(
+      vec![Vec2::new(40.0, 90.0), Vec2::new(280.0, 90.0)],
+      Color::rgb(255, 255, 255),
+      8.0,
+    );
+    ctx.world.spawn((Transform::new(0.0, 0.0), line));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+/// Brightness of the line's centre minus the background 20px above it.
+fn line_contrast(engine: &HeadlessEngine) -> (i32, [u8; 4], [u8; 4]) {
+  let frame = engine.frame().unwrap();
+  let on_line = frame.get_pixel(160, 90).0;
+  let beside = frame.get_pixel(160, 70).0;
+  let sum = |p: [u8; 4]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
+  (sum(on_line) - sum(beside), on_line, beside)
+}
+
+#[test]
+fn lines_render_without_lighting() {
+  let Some(mut engine) = engine(LineScene { with_light: false }) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let (contrast, on_line, beside) = line_contrast(&engine);
+  assert!(
+    contrast > 150,
+    "line missing: on {on_line:?}, beside {beside:?}"
+  );
+}
+
+#[test]
+fn lines_render_when_lighting_is_on() {
+  let Some(mut engine) = engine(LineScene { with_light: true }) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let (contrast, on_line, beside) = line_contrast(&engine);
+  assert!(
+    contrast > 150,
+    "line missing under lighting: on {on_line:?}, beside {beside:?}"
+  );
+}

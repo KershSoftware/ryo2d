@@ -1205,14 +1205,16 @@ impl WgpuRenderer {
   /// This is the most comprehensive render method that supports the full pipeline:
   /// 1. CPU pixel buffer is uploaded to game texture
   /// 2. GPU sprite callback renders on top
-  /// 3. Lighting callback processes the scene (render_lights + compose)
-  /// 4. UI buffer is composited on top of lit scene (if provided)
-  /// 5. Post-processing effects are applied
-  /// 6. Final result is rendered to screen with letterboxing
+  /// 3. Trail callback draws trails and lines on top of the CPU content
+  /// 4. Lighting callback processes the scene (render_lights + compose), so trails are lit
+  /// 5. UI buffer is composited on top of lit scene (if provided)
+  /// 6. Post-processing effects are applied
+  /// 7. Final result is rendered to screen with letterboxing
   ///
   /// # Arguments
   /// - `effects`: Optional post-processing effects manager
   /// - `gpu_sprite_callback`: Optional callback for rendering GPU sprites
+  /// - `trail_callback`: Optional callback for rendering trails and lines
   /// - `lighting_callback`: Optional callback for lighting. Receives (device, queue, encoder,
   ///   scene_view, output_view). Should render lights and compose to output_view.
   /// - `ui_buffer`: Optional UI buffer to composite after lighting. Should be RGBA, same dimensions
@@ -1224,15 +1226,17 @@ impl WgpuRenderer {
   /// - output_view: Texture A from post-process pipeline (write lit result here)
   /// - After callback, texture A becomes the source for effects/final render
   /// - If ui_buffer is provided, it's alpha-blended onto the lit scene
-  pub fn render_with_lighting<F, L>(
+  pub fn render_with_lighting<F, T, L>(
     &mut self,
     effects: Option<&EffectsManager>,
     gpu_sprite_callback: Option<F>,
+    trail_callback: Option<T>,
     lighting_callback: Option<L>,
     ui_buffer: Option<&[u8]>,
   ) -> Result<(), wgpu::SurfaceError>
   where
     F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    T: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
     L: FnOnce(
       &wgpu::Device,
       &wgpu::Queue,
@@ -1317,6 +1321,11 @@ impl WgpuRenderer {
       blend_pass.set_pipeline(&self.game_blend_pipeline);
       blend_pass.set_bind_group(0, &self.cpu_bind_group, &[]);
       blend_pass.draw(0..6, 0..1);
+    }
+
+    // Trails and lines go on top of CPU content and before lighting, so they are lit
+    if let Some(callback) = trail_callback {
+      callback(&self.queue, &mut encoder, &self.texture_view);
     }
 
     // Track whether lighting was applied (changes the source texture)

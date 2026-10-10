@@ -1696,6 +1696,7 @@ impl Engine {
           rend.render_with_lighting(
             Some(&self.effects),
             Some(gpu_callback),
+            Some(trail_callback),
             Some(lighting_callback),
             Some(&self.ui_buffer),
           )
