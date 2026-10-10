@@ -2526,26 +2526,28 @@ impl ApplicationHandler for Engine {
     #[cfg(feature = "profiler")]
     if std::env::var("RYO_PROFILER_AUTO_OPEN").is_ok()
       && let Some(ref renderer) = self.renderer
+      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
     {
       self.profiler_window = super::windows::profiler_window::ProfilerWindow::new(
         event_loop,
         renderer.device_arc(),
         renderer.queue_arc(),
-        renderer.instance(),
-        renderer.adapter(),
+        instance,
+        adapter,
       );
     }
 
     // Create logger window if enabled
     if self.config.debug.logger_window
       && let Some(ref renderer) = self.renderer
+      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
     {
       self.logger_window = super::windows::logger_window::LoggerWindow::new(
         event_loop,
         renderer.device_arc(),
         renderer.queue_arc(),
-        renderer.instance(),
-        renderer.adapter(),
+        instance,
+        adapter,
       );
     }
 
@@ -3547,6 +3549,7 @@ impl ApplicationHandler for Engine {
     if self.pending_open_profiler
       && self.profiler_window.is_none()
       && let Some(ref renderer) = self.renderer
+      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
     {
       self.pending_open_profiler = false;
       // Enable puffin scope collection if not already enabled
@@ -3556,22 +3559,23 @@ impl ApplicationHandler for Engine {
         event_loop,
         renderer.device_arc(),
         renderer.queue_arc(),
-        renderer.instance(),
-        renderer.adapter(),
+        instance,
+        adapter,
       );
     }
 
     if self.pending_open_logger
       && self.logger_window.is_none()
       && let Some(ref renderer) = self.renderer
+      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
     {
       self.pending_open_logger = false;
       self.logger_window = super::windows::logger_window::LoggerWindow::new(
         event_loop,
         renderer.device_arc(),
         renderer.queue_arc(),
-        renderer.instance(),
-        renderer.adapter(),
+        instance,
+        adapter,
       );
     }
 

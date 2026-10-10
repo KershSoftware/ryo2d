@@ -27,14 +27,69 @@ use crate::core::engine::WindowMode;
 use crate::core::error::{CaptureError, CaptureResult};
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
+/// Where finished frames go: the window surface or an offscreen texture.
+enum PresentTarget {
+  Surface {
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+  },
+  Offscreen {
+    texture: wgpu::Texture,
+  },
+}
+
+impl PresentTarget {
+  /// The view to draw this frame into, plus the surface texture to present afterwards.
+  fn acquire(
+    &self,
+  ) -> Result<(Option<wgpu::SurfaceTexture>, wgpu::TextureView), wgpu::SurfaceError> {
+    match self {
+      PresentTarget::Surface { surface, .. } => {
+        let output = surface.get_current_texture()?;
+        let view = output
+          .texture
+          .create_view(&wgpu::TextureViewDescriptor::default());
+        Ok((Some(output), view))
+      }
+      PresentTarget::Offscreen { texture } => Ok((
+        None,
+        texture.create_view(&wgpu::TextureViewDescriptor::default()),
+      )),
+    }
+  }
+
+  fn format(&self) -> wgpu::TextureFormat {
+    match self {
+      PresentTarget::Surface { config, .. } => config.format,
+      PresentTarget::Offscreen { texture } => texture.format(),
+    }
+  }
+}
+
+/// Construction inputs that differ between window and offscreen renderers.
+struct RendererParts {
+  instance: Option<wgpu::Instance>,
+  adapter: Option<wgpu::Adapter>,
+  device: Arc<wgpu::Device>,
+  queue: Arc<wgpu::Queue>,
+  target: PresentTarget,
+  window_size: (u32, u32),
+  presentation_blocks: bool,
+  game_width: u32,
+  game_height: u32,
+  window_mode: WindowMode,
+  max_width: Option<u32>,
+  max_height: Option<u32>,
+}
+
 /// Handles wgpu rendering of a software pixel buffer to screen.
 pub struct WgpuRenderer {
-  instance: wgpu::Instance,
-  adapter: wgpu::Adapter,
-  surface: wgpu::Surface<'static>,
+  // Only set for window renderers (dev windows create extra surfaces from them)
+  instance: Option<wgpu::Instance>,
+  adapter: Option<wgpu::Adapter>,
+  target: PresentTarget,
   device: std::sync::Arc<wgpu::Device>,
   queue: std::sync::Arc<wgpu::Queue>,
-  config: wgpu::SurfaceConfiguration,
   // The game texture (GPU sprites render here first, then CPU content blended on top)
   texture: wgpu::Texture,
   texture_view: wgpu::TextureView,
@@ -199,6 +254,39 @@ impl WgpuRenderer {
       desired_maximum_frame_latency: 2,
     };
     surface.configure(&device, &config);
+    Self::from_parts(RendererParts {
+      instance: Some(instance),
+      adapter: Some(adapter),
+      device,
+      queue,
+      target: PresentTarget::Surface { surface, config },
+      window_size: (size.width, size.height),
+      presentation_blocks: present_mode == wgpu::PresentMode::Fifo,
+      game_width,
+      game_height,
+      window_mode,
+      max_width,
+      max_height,
+    })
+  }
+
+  /// Build the textures, pipelines and buffers shared by every target type.
+  fn from_parts(parts: RendererParts) -> Self {
+    let RendererParts {
+      instance,
+      adapter,
+      device,
+      queue,
+      target,
+      window_size,
+      presentation_blocks,
+      game_width,
+      game_height,
+      window_mode,
+      max_width,
+      max_height,
+    } = parts;
+    let target_format = target.format();
 
     // Create the game texture (where we upload our pixel buffer)
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -388,7 +476,7 @@ impl WgpuRenderer {
         module: &shader,
         entry_point: "fs_main",
         targets: &[Some(wgpu::ColorTargetState {
-          format: surface_format,
+          format: target_format,
           blend: Some(wgpu::BlendState::REPLACE),
           write_mask: wgpu::ColorWrites::ALL,
         })],
@@ -427,7 +515,7 @@ impl WgpuRenderer {
         module: &shader,
         entry_point: "fs_main",
         targets: &[Some(wgpu::ColorTargetState {
-          format: surface_format,
+          format: target_format,
           blend: Some(wgpu::BlendState::ALPHA_BLENDING),
           write_mask: wgpu::ColorWrites::ALL,
         })],
@@ -531,16 +619,12 @@ impl WgpuRenderer {
       wgpu::TextureFormat::Rgba8UnormSrgb,
     );
 
-    // Fifo mode blocks until vsync - no manual frame limiting needed
-    let presentation_blocks = present_mode == wgpu::PresentMode::Fifo;
-
     let mut renderer = WgpuRenderer {
       instance,
       adapter,
-      surface,
       device,
       queue,
-      config,
+      target,
       texture,
       texture_view,
       sampler,
@@ -557,8 +641,8 @@ impl WgpuRenderer {
       uniform_buffer,
       game_width,
       game_height,
-      window_width: size.width,
-      window_height: size.height,
+      window_width: window_size.0,
+      window_height: window_size.1,
       window_mode,
       max_width,
       max_height,
@@ -628,18 +712,18 @@ impl WgpuRenderer {
     std::sync::Arc::clone(&self.queue)
   }
 
-  /// Get a reference to the wgpu adapter.
+  /// Get a reference to the wgpu adapter (window renderers only).
   ///
   /// Used for creating additional surfaces (e.g., profiler window).
-  pub fn adapter(&self) -> &wgpu::Adapter {
-    &self.adapter
+  pub fn adapter(&self) -> Option<&wgpu::Adapter> {
+    self.adapter.as_ref()
   }
 
-  /// Get a reference to the wgpu instance.
+  /// Get a reference to the wgpu instance (window renderers only).
   ///
   /// Used for creating additional surfaces (e.g., profiler window).
-  pub fn instance(&self) -> &wgpu::Instance {
-    &self.instance
+  pub fn instance(&self) -> Option<&wgpu::Instance> {
+    self.instance.as_ref()
   }
 
   /// Get the main game texture view.
@@ -649,9 +733,9 @@ impl WgpuRenderer {
     &self.texture_view
   }
 
-  /// Get the surface format.
+  /// Get the format frames are presented in (surface or offscreen texture).
   pub fn surface_format(&self) -> wgpu::TextureFormat {
-    self.config.format
+    self.target.format()
   }
 
   /// Get the format of the game texture (where GPU sprites render to)
@@ -659,16 +743,21 @@ impl WgpuRenderer {
     wgpu::TextureFormat::Rgba8UnormSrgb
   }
 
-  /// Resize the surface when window size changes.
+  /// Resize the surface when window size changes (no-op for offscreen targets).
   pub fn resize(&mut self, new_width: u32, new_height: u32) {
-    if new_width > 0 && new_height > 0 {
-      self.window_width = new_width;
-      self.window_height = new_height;
-      self.config.width = new_width;
-      self.config.height = new_height;
-      self.surface.configure(&self.device, &self.config);
-      self.update_viewport_transform();
+    if new_width == 0 || new_height == 0 {
+      return;
     }
+    let PresentTarget::Surface { surface, config } = &mut self.target else {
+      // Offscreen targets always match the game resolution
+      return;
+    };
+    config.width = new_width;
+    config.height = new_height;
+    surface.configure(&self.device, config);
+    self.window_width = new_width;
+    self.window_height = new_height;
+    self.update_viewport_transform();
   }
 
   /// Resize the internal pixel buffer (for stretch mode).
@@ -885,10 +974,7 @@ impl WgpuRenderer {
     );
 
     // Get surface texture
-    let output = self.surface.get_current_texture()?;
-    let view = output
-      .texture
-      .create_view(&wgpu::TextureViewDescriptor::default());
+    let (output, view) = self.target.acquire()?;
     let capture_path = self.prepare_capture();
 
     // Create command encoder
@@ -1052,7 +1138,9 @@ impl WgpuRenderer {
 
     // Submit commands
     self.queue.submit(std::iter::once(encoder.finish()));
-    output.present();
+    if let Some(output) = output {
+      output.present();
+    }
     self.finish_capture(capture_path);
 
     Ok(())
@@ -1121,10 +1209,7 @@ impl WgpuRenderer {
     );
 
     // Get surface texture
-    let output = self.surface.get_current_texture()?;
-    let view = output
-      .texture
-      .create_view(&wgpu::TextureViewDescriptor::default());
+    let (output, view) = self.target.acquire()?;
     let capture_path = self.prepare_capture();
 
     // Create command encoder
@@ -1365,7 +1450,9 @@ impl WgpuRenderer {
 
     // Submit commands
     self.queue.submit(std::iter::once(encoder.finish()));
-    output.present();
+    if let Some(output) = output {
+      output.present();
+    }
     self.finish_capture(capture_path);
 
     Ok(())
@@ -1395,10 +1482,7 @@ impl WgpuRenderer {
     S: FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
   {
     // Get surface texture
-    let output = self.surface.get_current_texture()?;
-    let view = output
-      .texture
-      .create_view(&wgpu::TextureViewDescriptor::default());
+    let (output, view) = self.target.acquire()?;
     let capture_path = self.prepare_capture();
 
     // Create command encoder
@@ -1515,7 +1599,9 @@ impl WgpuRenderer {
 
     // Submit commands
     self.queue.submit(std::iter::once(encoder.finish()));
-    output.present();
+    if let Some(output) = output {
+      output.present();
+    }
     self.finish_capture(capture_path);
 
     Ok(())
@@ -1553,7 +1639,7 @@ impl WgpuRenderer {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         // Must match the surface format: the final-composite pipelines target it
-        format: self.config.format,
+        format: self.target.format(),
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
       }));
