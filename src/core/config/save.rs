@@ -488,14 +488,7 @@ impl RawSystemFile {
   /// The saved resolution: flat `resolution`, then flat `width`/`height`, then legacy `display`.
   fn resolution(&self) -> Option<(u32, u32)> {
     if let Some(res) = &self.resolution {
-      let parsed = parse_resolution(res);
-      if parsed.is_none() {
-        eprintln!(
-          "[ryo2d] Warning: Malformed resolution '{}' in system.json, ignoring it",
-          res
-        );
-      }
-      return parsed;
+      return parse_resolution(res);
     }
     if let (Some(w), Some(h)) = (self.width, self.height) {
       return Some((w, h));
@@ -504,6 +497,18 @@ impl RawSystemFile {
     match &display.resolution {
       Some(res) => parse_resolution(res),
       None => display.width.zip(display.height),
+    }
+  }
+
+  /// Warn about a malformed flat `resolution`; call once per file load.
+  fn warn_if_resolution_malformed(&self) {
+    if let Some(res) = &self.resolution
+      && parse_resolution(res).is_none()
+    {
+      eprintln!(
+        "[ryo2d] Warning: Malformed resolution '{}' in system.json, ignoring it",
+        res
+      );
     }
   }
 
@@ -552,7 +557,9 @@ impl RawSystemFile {
 
 impl<'de> Deserialize<'de> for SystemState {
   fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-    RawSystemFile::deserialize(deserializer).map(RawSystemFile::into_state)
+    let raw = RawSystemFile::deserialize(deserializer)?;
+    raw.warn_if_resolution_malformed();
+    Ok(raw.into_state())
   }
 }
 
@@ -938,16 +945,6 @@ impl SaveManager {
     Ok(state)
   }
 
-  /// The player preferences present in `system.json`, or `None` when there's no file.
-  pub(crate) fn load_stored_preferences(&self) -> SaveResult<Option<StoredPreferences>> {
-    let path = self.system_path();
-    if !path.exists() {
-      return Ok(None);
-    }
-    let raw: RawSystemFile = self.read_json_file(&path)?;
-    Ok(Some(raw.stored_preferences()))
-  }
-
   /// Read the saved preferences, or seed a new `system.json` from `seed`.
   ///
   /// - No file: writes the keys of `seed` that are in `filter` (plus `env` when
@@ -962,14 +959,22 @@ impl SaveManager {
     filter: &UserPreferenceFilter,
     defaults: &super::workspace::SystemDefaults,
   ) -> SaveResult<Option<StoredPreferences>> {
-    let Some(prefs) = self.load_stored_preferences()? else {
+    let path = self.system_path();
+    if !path.exists() {
       self.write_filtered_system(seed, filter, !seed.env.is_empty())?;
       return Ok(None);
-    };
+    }
 
-    let mut state = self.load_system()?;
-    if state.merge_defaults(defaults) {
-      self.save_system(&state)?;
+    let raw: RawSystemFile = self.read_json_file(&path)?;
+    raw.warn_if_resolution_malformed();
+    let prefs = raw.stored_preferences();
+    let mut state = raw.into_state();
+    // Best effort: the preferences are already loaded, so a failed write
+    // (e.g. a read-only file) mustn't discard them.
+    if state.merge_defaults(defaults)
+      && let Err(e) = self.save_system(&state)
+    {
+      eprintln!("[ryo2d] Warning: Couldn't add new [env] keys to system.json ({e})");
     }
     Ok(Some(prefs))
   }
@@ -1761,6 +1766,18 @@ mod tests {
     std::fs::write(dir.join("system.json"), json).unwrap();
   }
 
+  /// The stored preferences, read through the loader the engine uses
+  /// (default defaults, so nothing is merged or written).
+  fn stored_preferences(manager: &SaveManager) -> Option<StoredPreferences> {
+    manager
+      .load_preferences_or_seed(
+        &SystemState::new(),
+        &UserPreferenceFilter::all(),
+        &super::super::workspace::SystemDefaults::default(),
+      )
+      .unwrap()
+  }
+
   fn read_system_json(dir: &std::path::Path) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(dir.join("system.json")).unwrap()).unwrap()
   }
@@ -1774,7 +1791,7 @@ mod tests {
       r#"{"master_volume": 0.5, "resolution": "1600x900"}"#,
     );
 
-    let prefs = manager.load_stored_preferences().unwrap().unwrap();
+    let prefs = stored_preferences(&manager).unwrap();
 
     assert_eq!(prefs.master_volume, Some(0.5));
     assert_eq!(prefs.resolution, Some((1600, 900)));
@@ -1789,7 +1806,8 @@ mod tests {
   fn stored_preferences_are_none_without_a_file() {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
-    assert_eq!(manager.load_stored_preferences().unwrap(), None);
+    // No file: nothing is stored (the call seeds a new one)
+    assert_eq!(stored_preferences(&manager), None);
   }
 
   #[test]
@@ -1801,7 +1819,7 @@ mod tests {
       r#"{"display": {"width": 1920, "height": 1080, "display_mode": "borderless_fullscreen", "vsync": false}}"#,
     );
 
-    let prefs = manager.load_stored_preferences().unwrap().unwrap();
+    let prefs = stored_preferences(&manager).unwrap();
 
     assert_eq!(prefs.resolution, Some((1920, 1080)));
     assert_eq!(prefs.display_mode, Some(DisplayMode::BorderlessFullscreen));
@@ -1814,7 +1832,7 @@ mod tests {
     let manager = SaveManager::new(dir.path()).unwrap();
     write_system_json(dir.path(), r#"{"resolution": "big", "master_volume": 0.5}"#);
 
-    let prefs = manager.load_stored_preferences().unwrap().unwrap();
+    let prefs = stored_preferences(&manager).unwrap();
 
     assert_eq!(prefs.resolution, None);
     assert_eq!(prefs.master_volume, Some(0.5));
@@ -1892,6 +1910,32 @@ mod tests {
     assert_eq!(raw["env"]["difficulty"], "hard");
     assert_eq!(raw["master_volume"], 0.5);
     assert!(raw.get("resolution").is_none());
+  }
+
+  #[test]
+  fn a_failed_env_merge_write_keeps_the_loaded_preferences() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(dir.path(), r#"{"master_volume": 0.5}"#);
+    let path = dir.path().join("system.json");
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&path, perms).unwrap();
+    if std::fs::OpenOptions::new().write(true).open(&path).is_ok() {
+      return; // running as a user the read-only flag doesn't bind (e.g. root)
+    }
+    let mut env = HashMap::new();
+    env.insert("difficulty".to_string(), serde_json::json!("hard"));
+    let defaults = super::super::workspace::SystemDefaults {
+      env,
+      ..super::super::workspace::SystemDefaults::default()
+    };
+
+    let prefs = manager
+      .load_preferences_or_seed(&SystemState::new(), &UserPreferenceFilter::all(), &defaults)
+      .unwrap();
+
+    assert_eq!(prefs.and_then(|p| p.master_volume), Some(0.5));
   }
 
   #[test]
@@ -1983,7 +2027,7 @@ mod tests {
 }"#;
     write_system_json(dir.path(), previous);
 
-    let prefs = manager.load_stored_preferences().unwrap().unwrap();
+    let prefs = stored_preferences(&manager).unwrap();
     assert_eq!(prefs.resolution, Some((1280, 720)));
     assert_eq!(prefs.vsync, Some(true));
     assert_eq!(prefs.show_fps, Some(false));

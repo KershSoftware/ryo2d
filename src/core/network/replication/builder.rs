@@ -31,8 +31,8 @@ type ComponentInserter = Box<dyn FnOnce(&mut World, Entity) + Send + Sync>;
 ///     .with_component(Velocity::new(5.0, 0.0));
 /// ```
 pub struct NetworkEntityBuilder {
-  /// The network ID (auto-generated if not specified)
-  network_id: Option<NetworkId>,
+  /// The network ID (generated in `new`, replaced by `with_network_id`)
+  network_id: NetworkId,
 
   /// Entity owner
   owner: ClientId,
@@ -56,7 +56,7 @@ impl NetworkEntityBuilder {
   /// - Authority is server
   pub fn new() -> Self {
     Self {
-      network_id: None,
+      network_id: NetworkId::new(),
       owner: 0,
       authority: Authority::Server,
       components: Vec::new(),
@@ -69,7 +69,7 @@ impl NetworkEntityBuilder {
   /// Normally you should let the system generate IDs.
   /// Only use this when reconstructing entities from network messages.
   pub fn with_network_id(mut self, id: NetworkId) -> Self {
-    self.network_id = Some(id);
+    self.network_id = id;
     self
   }
 
@@ -127,9 +127,9 @@ impl NetworkEntityBuilder {
     self
   }
 
-  /// Get the network ID, generating one if needed.
+  /// Get the network ID the entity will spawn with.
   pub fn network_id(&self) -> NetworkId {
-    self.network_id.unwrap_or_default()
+    self.network_id
   }
 
   /// Get the owner.
@@ -223,6 +223,18 @@ mod tests {
     let builder = NetworkEntityBuilder::new();
     assert_eq!(builder.owner(), 0);
     assert_eq!(builder.authority(), Authority::Server);
+  }
+
+  #[test]
+  fn builder_network_id_is_stable_and_matches_the_spawned_entity() {
+    let builder = NetworkEntityBuilder::new();
+    let id = builder.network_id();
+    assert_eq!(builder.network_id(), id);
+
+    let mut manager = super::super::manager::ReplicationManager::new_server();
+    let mut world = World::new();
+    let entity = manager.spawn_networked(&mut world, builder);
+    assert_eq!(manager.get_network_id(entity), Some(id));
   }
 
   #[test]

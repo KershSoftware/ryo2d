@@ -9,7 +9,8 @@ use super::resolve::compiled_embedded_value;
 ///
 /// Valid names are non-empty relative paths of normal components (e.g.
 /// `"MyGame"` or `"MyStudio/MyGame"`), without characters Windows rejects and
-/// without components ending in `.` or a space.
+/// without components ending in `.` or a space or naming a reserved Windows
+/// device (`CON`, `NUL`, `COM1`, ..., with or without an extension).
 pub(crate) fn valid_save_folder(name: &str) -> bool {
   const FORBIDDEN: &[char] = &['<', '>', ':', '"', '|', '?', '*', '\\'];
   if name.trim().is_empty()
@@ -22,11 +23,30 @@ pub(crate) fn valid_save_folder(name: &str) -> bool {
   Path::new(name)
     .components()
     .all(|component| match component {
-      Component::Normal(part) => part
-        .to_str()
-        .is_some_and(|part| !part.ends_with('.') && !part.ends_with(' ')),
+      Component::Normal(part) => part.to_str().is_some_and(|part| {
+        !part.ends_with('.') && !part.ends_with(' ') && !is_reserved_name(part)
+      }),
       _ => false,
     })
+}
+
+/// Whether `part` is a Windows device name, which can't be created as a file or folder.
+fn is_reserved_name(part: &str) -> bool {
+  let stem = part.split('.').next().unwrap_or(part).to_ascii_uppercase();
+  if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+    return true;
+  }
+  let numbered = stem
+    .strip_prefix("COM")
+    .or_else(|| stem.strip_prefix("LPT"));
+  numbered.is_some_and(|n| matches!(n.as_bytes(), [b'1'..=b'9']))
+}
+
+/// This executable's path with symlinks resolved, as macOS can report the
+/// path of the link a game was launched through.
+fn game_exe() -> Option<PathBuf> {
+  let exe = std::env::current_exe().ok()?;
+  Some(std::fs::canonicalize(&exe).unwrap_or(exe))
 }
 
 /// The save directory of a release build, or `None` for a dev build.
@@ -70,8 +90,7 @@ pub(crate) fn compiled_release_save_dir() -> Option<PathBuf> {
   DIR
     .get_or_init(|| {
       compiled_embedded_value("RYO_EMBED_RESOLUTION")?;
-      let game_dir = std::env::current_exe()
-        .ok()
+      let game_dir = game_exe()
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
         .or_else(|| {
           let cwd = std::env::current_dir().ok()?;
@@ -111,7 +130,7 @@ pub(crate) fn bundle_dir_to_enter(is_release: bool, exe_dir: &Path, cwd: &Path) 
 /// levels) resolve wherever the game was launched from.
 pub(crate) fn enter_bundle_dir() {
   let is_release = compiled_embedded_value("RYO_EMBED_RESOLUTION").is_some();
-  let (Ok(exe), Ok(cwd)) = (std::env::current_exe(), std::env::current_dir()) else {
+  let (Some(exe), Ok(cwd)) = (game_exe(), std::env::current_dir()) else {
     return;
   };
   let Some(exe_dir) = exe.parent() else {
@@ -260,6 +279,18 @@ mod tests {
   }
 
   #[test]
+  fn portable_without_a_save_folder_saves_beside_the_game() {
+    let lookup = embedded(&[
+      ("RYO_EMBED_RESOLUTION", "1280x720"),
+      ("RYO_EMBED_PORTABLE", "true"),
+    ]);
+    assert_eq!(
+      release_save_dir(lookup, &game_dir(), os_data()),
+      Some(game_dir().join("data"))
+    );
+  }
+
+  #[test]
   fn invalid_save_folder_falls_back_beside_the_game() {
     let lookup = embedded(&[
       ("RYO_EMBED_RESOLUTION", "1280x720"),
@@ -279,6 +310,8 @@ mod tests {
       "MyStudio/MyGame",
       "ゲーム",
       "game-2_final",
+      "Console",
+      "Comet",
     ] {
       assert!(valid_save_folder(name), "{name:?} should be accepted");
     }
@@ -295,6 +328,10 @@ mod tests {
       "trailing.",
       "trailing ",
       "tab\tname",
+      "CON",
+      "nul",
+      "Studio/aux",
+      "com1.dat",
     ] {
       assert!(!valid_save_folder(name), "{name:?} should be rejected");
     }

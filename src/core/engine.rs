@@ -3858,6 +3858,10 @@ impl EngineBuilder {
   }
 
   /// Build the engine (consumes the builder).
+  ///
+  /// In a `ryo2d build` release the process switches to the game's folder
+  /// during this call, so relative paths are resolved against that folder
+  /// afterwards. Resolve command-line file arguments before calling it.
   pub fn build(self) -> Engine {
     self.build_engine(false)
   }
@@ -4075,6 +4079,33 @@ mod tests {
     }
     let workspace = crate::core::config::Workspace::from_path(dir.path()).unwrap();
     (dir, workspace)
+  }
+
+  #[test]
+  fn an_empty_preference_filter_still_creates_system_json() {
+    let (dir, ws) = temp_workspace("", None);
+    let _ = EngineBuilder::new()
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::none())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert!(dir.path().join("data/system.json").exists());
+  }
+
+  #[test]
+  fn builder_only_fields_survive_resolve() {
+    let r = EngineBuilder::new()
+      .target_fps(144)
+      .physics_hz(120)
+      .window_mode(WindowMode::Fixed)
+      .max_width(1000)
+      .ui_scale(Some(2))
+      .start_scene(EmptyScene)
+      .resolve_in(None, false);
+    assert_eq!(r.config.target_fps, 144);
+    assert_eq!(r.config.physics_hz, 120);
+    assert_eq!(r.config.window_mode, WindowMode::Fixed);
+    assert_eq!(r.config.max_width, Some(1000));
+    assert_eq!(r.config.ui_scale, Some(2));
   }
 
   #[test]

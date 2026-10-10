@@ -129,13 +129,18 @@ fn folder_from_project_name(name: &str) -> String {
 fn checked_save_folder(config: &crate::core::config::WorkspaceConfig) -> CliResult<String> {
   let folder = release_save_folder(config);
   if crate::core::config::save_location::valid_save_folder(&folder) {
-    Ok(folder)
-  } else {
-    Err(CliError::BuildFailed(format!(
-      "Invalid save folder \"{folder}\" (from [release] save_folder or [project] name). \
-       Use a relative name like \"MyStudio/MyGame\" without \"..\", a drive or any of <>:\"|?*\\"
-    )))
+    return Ok(folder);
   }
+  let source = if config.release.save_folder.is_some() {
+    "[release] save_folder".to_string()
+  } else {
+    "[project] name; set [release] save_folder to choose another".to_string()
+  };
+  Err(CliError::BuildFailed(format!(
+    "Invalid save folder \"{folder}\" (from {source}). \
+     Use a relative name like \"MyStudio/MyGame\" without \"..\", a drive, any of <>:\"|?*\\ \
+     or a reserved Windows name (CON, PRN, AUX, NUL, COM1-9, LPT1-9)"
+  )))
 }
 
 /// Ryo.toml values passed to the release build; the engine reads them with
@@ -588,6 +593,55 @@ mod tests {
     names.sort_unstable();
     expected.sort_unstable();
     assert_eq!(names, expected);
+  }
+
+  #[test]
+  fn embedded_display_title_and_volumes_round_trip() {
+    use crate::core::config::DisplayMode;
+    let mut config = WorkspaceConfig {
+      title: "Hopper".to_string(),
+      ..Default::default()
+    };
+    config.system.display_mode = DisplayMode::BorderlessFullscreen;
+    config.system.resolution = Some((800, 600));
+    config.system.master_volume = 0.3;
+    config.system.music_volume = 0.4;
+    config.system.sfx_volume = 0.5;
+
+    let env = embedded_config_env(&config, None);
+    let layer = ProjectLayer::from_embedded(|name| {
+      env
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.as_str())
+    })
+    .unwrap();
+
+    assert_eq!(layer.display_mode, Some(DisplayMode::BorderlessFullscreen));
+    assert_eq!(layer.resolution, Some((800, 600)));
+    assert_eq!(layer.title.as_deref(), Some("Hopper"));
+    assert_eq!(layer.master_volume, Some(0.3));
+    assert_eq!(layer.music_volume, Some(0.4));
+    assert_eq!(layer.sfx_volume, Some(0.5));
+  }
+
+  #[test]
+  fn invalid_save_folder_error_names_where_it_came_from() {
+    let mut config = WorkspaceConfig::default();
+    config.release.save_folder = Some("../escape".to_string());
+    let Err(CliError::BuildFailed(message)) = checked_save_folder(&config) else {
+      panic!("expected an invalid save folder error");
+    };
+    assert!(message.contains("[release] save_folder"), "{message}");
+    assert!(message.contains("reserved"), "{message}");
+
+    config.release.save_folder = None;
+    config.name = "CON".to_string();
+    let Err(CliError::BuildFailed(message)) = checked_save_folder(&config) else {
+      panic!("expected an invalid save folder error");
+    };
+    assert!(message.contains("[project] name"), "{message}");
+    assert!(message.contains("set [release] save_folder"), "{message}");
   }
 
   #[test]

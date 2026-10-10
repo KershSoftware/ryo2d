@@ -220,7 +220,20 @@ pub(crate) fn resolve_settings(
     }
   }
 
+  s.master_volume = sanitize_volume(s.master_volume, DEFAULT_MASTER_VOLUME);
+  s.music_volume = sanitize_volume(s.music_volume, DEFAULT_MUSIC_VOLUME);
+  s.sfx_volume = sanitize_volume(s.sfx_volume, DEFAULT_SFX_VOLUME);
+
   s
+}
+
+/// Clamp a volume to `0.0..=1.0`; NaN and infinities fall back to `default`.
+fn sanitize_volume(volume: f32, default: f32) -> f32 {
+  if volume.is_finite() {
+    volume.clamp(0.0, 1.0)
+  } else {
+    default
+  }
 }
 
 /// Overwrite `target` when a layer provides a value.
@@ -362,6 +375,22 @@ fn warn_malformed(name: &str, value: &str) {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn out_of_range_volumes_are_clamped_and_non_finite_ones_default() {
+    let project = ProjectLayer {
+      master_volume: Some(f32::NAN),
+      music_volume: Some(3.0),
+      sfx_volume: Some(-1.0),
+      ..ProjectLayer::default()
+    };
+
+    let s = resolve_settings(&project, &BuilderOverrides::default(), None);
+
+    assert_eq!(s.master_volume, DEFAULT_MASTER_VOLUME);
+    assert_eq!(s.music_volume, 1.0);
+    assert_eq!(s.sfx_volume, 0.0);
+  }
 
   fn builder_with_everything() -> BuilderOverrides {
     BuilderOverrides {
