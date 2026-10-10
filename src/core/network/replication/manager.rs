@@ -308,18 +308,34 @@ impl ReplicationManager {
       .serialize_from_entity(component_id, world, entity)
   }
 
+  /// The spawn message for a networked entity, carrying the current state of
+  /// every registered component it has, or `None` if it isn't networked.
+  ///
+  /// Spawns travel on the reliable channel, so a client never sees an entity
+  /// without its initial state.
+  pub fn spawn_message(&self, world: &World, network_id: NetworkId) -> Option<SpawnEntityMessage> {
+    let entity = *self.network_to_entity.get(&network_id)?;
+    let network_entity = world.get::<NetworkEntity>(entity)?;
+    let mut msg =
+      SpawnEntityMessage::new(network_id, network_entity.owner, network_entity.authority);
+    msg.components = self
+      .registry
+      .registered_types()
+      .filter_map(|component_id| {
+        self
+          .registry
+          .serialize_from_entity(component_id, world, entity)
+      })
+      .collect();
+    Some(msg)
+  }
+
   /// Build a full state sync message for a new client.
   pub fn build_full_state_sync(&self, world: &World) -> FullStateSyncMessage {
     let mut sync = FullStateSyncMessage::new(self.dirty_tracker.generation());
 
-    for (&network_id, &entity) in &self.network_to_entity {
-      if let Some(network_entity) = world.get::<NetworkEntity>(entity) {
-        let spawn_msg =
-          SpawnEntityMessage::new(network_id, network_entity.owner, network_entity.authority);
-
-        // Serialize all replicated components on this entity
-        // (Full implementation would iterate registered types)
-
+    for &network_id in self.network_to_entity.keys() {
+      if let Some(spawn_msg) = self.spawn_message(world, network_id) {
         sync.add_entity(spawn_msg);
       }
     }
@@ -349,11 +365,7 @@ impl ReplicationManager {
 
     // Send spawn messages
     for network_id in self.dirty_tracker.spawned_entities() {
-      if let Some(&entity) = self.network_to_entity.get(&network_id)
-        && let Some(network_entity) = world.get::<NetworkEntity>(entity)
-      {
-        let spawn_msg =
-          SpawnEntityMessage::new(network_id, network_entity.owner, network_entity.authority);
+      if let Some(spawn_msg) = self.spawn_message(world, network_id) {
         let msg = ReplicationMessage::SpawnEntity(spawn_msg);
 
         if let Ok(bytes) = msg.to_bytes() {
@@ -525,6 +537,66 @@ mod tests {
     assert_eq!(despawned_id, Some(network_id));
     assert!(!manager.is_networked(entity));
     assert!(manager.get_entity(network_id).is_none());
+  }
+
+  #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+  struct Health(u32);
+
+  impl Replicated for Health {
+    fn component_id() -> ComponentTypeId {
+      ComponentTypeId::from_name("Health")
+    }
+
+    fn component_name() -> &'static str {
+      "Health"
+    }
+  }
+
+  /// A server world with one networked entity carrying `Health(42)`.
+  fn server_with_health() -> (ReplicationManager, World, NetworkId) {
+    let mut server = ReplicationManager::new_server();
+    server.register::<Health>();
+    let mut world = World::new();
+    let entity = server.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
+    world.insert_one(entity, Health(42)).unwrap();
+    let network_id = server.get_network_id(entity).unwrap();
+    (server, world, network_id)
+  }
+
+  #[test]
+  fn full_state_sync_carries_component_state() {
+    let (server, world, network_id) = server_with_health();
+
+    let sync = server.build_full_state_sync(&world);
+
+    let mut client = ReplicationManager::new_client();
+    client.register::<Health>();
+    let mut client_world = World::new();
+    client.handle_message(&mut client_world, ReplicationMessage::FullStateSync(sync));
+
+    let entity = client.get_entity(network_id).unwrap();
+    assert_eq!(
+      client_world.get::<Health>(entity).map(|h| (*h).clone()),
+      Some(Health(42))
+    );
+  }
+
+  #[test]
+  fn spawn_messages_carry_component_state() {
+    let (server, world, network_id) = server_with_health();
+
+    let spawn = server.spawn_message(&world, network_id).unwrap();
+
+    let mut client = ReplicationManager::new_client();
+    client.register::<Health>();
+    let mut client_world = World::new();
+    let entity = client
+      .spawn_from_message(&mut client_world, &spawn)
+      .unwrap();
+    assert_eq!(
+      client_world.get::<Health>(entity).map(|h| (*h).clone()),
+      Some(Health(42))
+    );
   }
 
   #[test]
