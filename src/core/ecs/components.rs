@@ -235,8 +235,9 @@ impl Default for Transform {
 /// alpha to achieve smooth motion between fixed timestep updates.
 ///
 /// This component is automatically managed by the engine:
-/// - Added when an entity with `interpolate = true` is first rendered
-/// - Updated each frame before the fixed timestep updates
+/// - Added to entities whose `Renderable::interpolate` is true by the engine's
+///   once-per-frame snapshot, which runs before the fixed timestep updates
+/// - Refreshed by that snapshot every frame
 ///
 /// You generally don't need to interact with this component directly.
 /// To disable interpolation for a teleport, use `Transform::skip_interpolation()`.

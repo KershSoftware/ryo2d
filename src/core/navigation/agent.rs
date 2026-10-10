@@ -76,8 +76,9 @@ fn create_nav_state_machine() -> StateMachine<NavAgentState> {
 
 /// Navigation agent component
 ///
-/// Attach to entities that need pathfinding. The navigation system will
-/// automatically update position based on the computed path.
+/// Attach to entities that need pathfinding. Nothing in the engine loop
+/// drives it: game code runs the `Pathfinder`, moves the entity's `Transform`
+/// along `current_path`, and updates the agent's state (see the module docs).
 ///
 /// # State Machine
 ///

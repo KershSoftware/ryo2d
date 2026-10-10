@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::component::SerializedComponent;
 use super::types::{Authority, NetworkId};
+use crate::core::network::rpc::RpcTarget;
 use renet::ClientId;
 
 /// All replication message types.
@@ -226,22 +227,6 @@ pub struct RpcMessage {
 
   /// Target of the RPC
   pub target: RpcTarget,
-}
-
-/// Target for an RPC message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RpcTarget {
-  /// Send to server only (client → server)
-  Server,
-
-  /// Send to a specific client (server → client)
-  Client(ClientId),
-
-  /// Broadcast to all clients (server → all)
-  Broadcast,
-
-  /// Broadcast to all clients except one (server → all except sender)
-  BroadcastExcept(ClientId),
 }
 
 impl RpcMessage {
