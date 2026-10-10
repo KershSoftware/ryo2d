@@ -1012,99 +1012,21 @@ impl WgpuRenderer {
     }
 
     // Final render pass to screen
-    {
-      // Create bind group for the appropriate source texture
-      let final_bind_group = if let Some(output_buffer) = use_post_process {
-        let post_process = self.post_process.as_ref().unwrap();
-        let output_view = post_process.get_output_view(output_buffer);
-
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("Post-Process Output Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(output_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
-            },
-          ],
-        })
-      } else {
-        // Clone isn't available, so recreate the bind group
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("Game Texture Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(&self.texture_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
-            },
-          ],
-        })
-      };
-
-      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Render Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &view,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            // Clear to black (letterbox color)
-            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        occlusion_query_set: None,
-        timestamp_writes: None,
-      });
-
-      render_pass.set_pipeline(&self.render_pipeline);
-      render_pass.set_bind_group(0, &final_bind_group, &[]);
-      // Draw fullscreen quad (6 vertices, generated in shader)
-      render_pass.draw(0..6, 0..1);
-
-      // If we have UI overlay, draw it on top with alpha blending
-      if has_ui_overlay {
-        let ui_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("UI Overlay Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(&self.ui_texture_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
-            },
-          ],
-        });
-
-        render_pass.set_pipeline(&self.blend_pipeline);
-        render_pass.set_bind_group(0, &ui_bind_group, &[]);
-        render_pass.draw(0..6, 0..1);
-      }
-    }
+    let source_view = match use_post_process {
+      Some(output_buffer) => self
+        .post_process
+        .as_ref()
+        .map(|pp| pp.get_output_view(output_buffer))
+        .unwrap_or(&self.texture_view),
+      None => &self.texture_view,
+    };
+    self.draw_final_composite(
+      &mut encoder,
+      &view,
+      source_view,
+      has_ui_overlay,
+      &self.uniform_buffer,
+    );
 
     // Submit commands
     self.queue.submit(std::iter::once(encoder.finish()));
@@ -1397,121 +1319,22 @@ impl WgpuRenderer {
     }
 
     // Final render pass to screen
-    {
-      // Create bind group for the appropriate source texture
-      let final_bind_group = if let Some(output_buffer) = use_post_process {
-        let post_process = self.post_process.as_ref().unwrap();
-        let output_view = post_process.get_output_view(output_buffer);
-
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("Post-Process Output Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(output_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
-            },
-          ],
-        })
-      } else if lighting_applied {
-        // Use lit scene from temporary texture
-        let lit_view = lit_texture_view.as_ref().unwrap();
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("Lit Scene Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(lit_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
-            },
-          ],
-        })
-      } else {
-        // Use original game texture
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("Game Texture Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(&self.texture_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
-            },
-          ],
-        })
-      };
-
-      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Render Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &view,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            // Clear to black (letterbox color)
-            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        occlusion_query_set: None,
-        timestamp_writes: None,
-      });
-
-      // Draw the scene
-      render_pass.set_pipeline(&self.render_pipeline);
-      render_pass.set_bind_group(0, &final_bind_group, &[]);
-      render_pass.draw(0..6, 0..1);
-
-      // If we have UI overlay, draw it on top with alpha blending
-      if has_ui_overlay {
-        // Create bind group for UI texture (ui_texture holds UI data after upload)
-        let ui_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("UI Overlay Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(&self.ui_texture_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
-            },
-          ],
-        });
-
-        render_pass.set_pipeline(&self.blend_pipeline);
-        render_pass.set_bind_group(0, &ui_bind_group, &[]);
-        render_pass.draw(0..6, 0..1);
-      }
-    }
+    let source_view = match (use_post_process, lit_texture_view.as_ref()) {
+      (Some(output_buffer), _) => self
+        .post_process
+        .as_ref()
+        .map(|pp| pp.get_output_view(output_buffer))
+        .unwrap_or(&self.texture_view),
+      (None, Some(lit_view)) => lit_view,
+      (None, None) => &self.texture_view,
+    };
+    self.draw_final_composite(
+      &mut encoder,
+      &view,
+      source_view,
+      has_ui_overlay,
+      &self.uniform_buffer,
+    );
 
     // Submit commands
     self.queue.submit(std::iter::once(encoder.finish()));
@@ -1642,105 +1465,97 @@ impl WgpuRenderer {
     }
 
     // Final render pass to screen
-    {
-      // Create bind group for the appropriate source texture
-      let final_bind_group = if let Some(output_buffer) = use_post_process {
-        let post_process = self.post_process.as_ref().unwrap();
-        let output_view = post_process.get_output_view(output_buffer);
-
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("Post-Process Output Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(output_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
-            },
-          ],
-        })
-      } else {
-        // Use game texture directly (raycaster wrote to it)
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("Game Texture Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(&self.texture_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
-            },
-          ],
-        })
-      };
-
-      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Render Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &view,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            // Clear to black (letterbox color)
-            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        occlusion_query_set: None,
-        timestamp_writes: None,
-      });
-
-      // Draw the scene
-      render_pass.set_pipeline(&self.render_pipeline);
-      render_pass.set_bind_group(0, &final_bind_group, &[]);
-      render_pass.draw(0..6, 0..1);
-
-      // If we have UI overlay, draw it on top with alpha blending
-      if has_ui_overlay {
-        let ui_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some("UI Overlay Bind Group"),
-          layout: &self.bind_group_layout,
-          entries: &[
-            wgpu::BindGroupEntry {
-              binding: 0,
-              resource: wgpu::BindingResource::TextureView(&self.ui_texture_view),
-            },
-            wgpu::BindGroupEntry {
-              binding: 1,
-              resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            wgpu::BindGroupEntry {
-              binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
-            },
-          ],
-        });
-
-        render_pass.set_pipeline(&self.blend_pipeline);
-        render_pass.set_bind_group(0, &ui_bind_group, &[]);
-        render_pass.draw(0..6, 0..1);
-      }
-    }
+    let source_view = match use_post_process {
+      Some(output_buffer) => self
+        .post_process
+        .as_ref()
+        .map(|pp| pp.get_output_view(output_buffer))
+        .unwrap_or(&self.texture_view),
+      None => &self.texture_view,
+    };
+    self.draw_final_composite(
+      &mut encoder,
+      &view,
+      source_view,
+      has_ui_overlay,
+      &self.uniform_buffer,
+    );
 
     // Submit commands
     self.queue.submit(std::iter::once(encoder.finish()));
     output.present();
 
     Ok(())
+  }
+
+  /// Draw the final frame (scene source + optional UI overlay) into `target`.
+  ///
+  /// `uniform` selects the viewport transform: the letterboxing uniform for the
+  /// window surface, or the identity uniform for game-resolution captures.
+  fn draw_final_composite(
+    &self,
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    source: &wgpu::TextureView,
+    has_ui_overlay: bool,
+    uniform: &wgpu::Buffer,
+  ) {
+    let source_bind_group = self.composite_bind_group("Final Source Bind Group", source, uniform);
+    let ui_bind_group = has_ui_overlay
+      .then(|| self.composite_bind_group("UI Overlay Bind Group", &self.ui_texture_view, uniform));
+
+    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+      label: Some("Final Composite Pass"),
+      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+        view: target,
+        resolve_target: None,
+        ops: wgpu::Operations {
+          // Clear to black (letterbox color)
+          load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+          store: wgpu::StoreOp::Store,
+        },
+      })],
+      depth_stencil_attachment: None,
+      occlusion_query_set: None,
+      timestamp_writes: None,
+    });
+
+    render_pass.set_pipeline(&self.render_pipeline);
+    render_pass.set_bind_group(0, &source_bind_group, &[]);
+    render_pass.draw(0..6, 0..1);
+
+    if let Some(ui_bind_group) = &ui_bind_group {
+      render_pass.set_pipeline(&self.blend_pipeline);
+      render_pass.set_bind_group(0, ui_bind_group, &[]);
+      render_pass.draw(0..6, 0..1);
+    }
+  }
+
+  /// Bind group sampling `view` with the given viewport uniform.
+  fn composite_bind_group(
+    &self,
+    label: &str,
+    view: &wgpu::TextureView,
+    uniform: &wgpu::Buffer,
+  ) -> wgpu::BindGroup {
+    self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some(label),
+      layout: &self.bind_group_layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: wgpu::BindingResource::TextureView(view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: wgpu::BindingResource::Sampler(&self.sampler),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: uniform.as_entire_binding(),
+        },
+      ],
+    })
   }
 
   /// Set the window mode.
