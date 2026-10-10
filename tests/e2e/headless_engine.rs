@@ -166,3 +166,137 @@ fn headless_ignores_user_preferences_and_fps_overlay() {
     plain.frame().unwrap().as_raw()
   );
 }
+
+/// Paints input state into the top-left 4 cells of a 4x1 strip:
+/// [0] Space held, [1] Space just pressed, [2] Space just released, [3] left mouse held.
+/// Also draws a 4x4 marker at the mouse position.
+#[derive(Default)]
+struct InputProbe {
+  held: bool,
+  pressed: bool,
+  released: bool,
+  mouse_down: bool,
+  mouse: (f32, f32),
+}
+
+impl Scene for InputProbe {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    self.held = ctx.input.key_down(KeyCode::Space);
+    self.pressed = ctx.input.key_pressed(KeyCode::Space);
+    self.released = ctx.input.key_released(KeyCode::Space);
+    self.mouse_down = ctx.input.mouse_down(MouseButton::Left);
+    self.mouse = ctx.input.mouse_position();
+    SceneAction::Continue
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+    for (i, on) in [self.held, self.pressed, self.released, self.mouse_down]
+      .into_iter()
+      .enumerate()
+    {
+      if on {
+        ui.draw_rect(
+          Rect::new(i as f32 * 10.0, 0.0, 10.0, 10.0),
+          Color::rgb(255, 255, 255),
+        );
+      }
+    }
+    ui.draw_rect(
+      Rect::new(self.mouse.0, self.mouse.1, 4.0, 4.0),
+      Color::rgb(255, 0, 255),
+    );
+    SceneAction::Continue
+  }
+}
+
+/// Which of the four indicator cells are lit in the current frame.
+fn cells(engine: &HeadlessEngine) -> [bool; 4] {
+  let frame = engine.frame().unwrap();
+  [0, 1, 2, 3].map(|i| frame.get_pixel(i * 10 + 5, 5).0 == [255, 255, 255, 255])
+}
+
+#[test]
+fn press_key_is_just_pressed_once() {
+  let Some(mut engine) = engine(InputProbe::default()) else {
+    return;
+  };
+
+  engine.press_key(KeyCode::Space);
+  engine.step().unwrap();
+  assert_eq!(cells(&engine), [true, true, false, false]);
+  engine.step().unwrap();
+  assert_eq!(cells(&engine), [true, false, false, false]);
+}
+
+#[test]
+fn release_key_is_just_released_once() {
+  let Some(mut engine) = engine(InputProbe::default()) else {
+    return;
+  };
+  engine.press_key(KeyCode::Space);
+  engine.step_frames(2).unwrap();
+
+  engine.release_key(KeyCode::Space);
+  engine.step().unwrap();
+  assert_eq!(cells(&engine), [false, false, true, false]);
+  engine.step().unwrap();
+  assert_eq!(cells(&engine), [false, false, false, false]);
+}
+
+#[test]
+fn tap_key_presses_for_one_step() {
+  let Some(mut engine) = engine(InputProbe::default()) else {
+    return;
+  };
+
+  engine.tap_key(KeyCode::Space);
+  engine.step().unwrap();
+  assert_eq!(cells(&engine), [true, true, false, false]);
+  engine.step().unwrap();
+  assert_eq!(cells(&engine), [false, false, true, false]);
+}
+
+#[test]
+fn mouse_move_and_button_reach_the_scene() {
+  let Some(mut engine) = engine(InputProbe::default()) else {
+    return;
+  };
+
+  engine.mouse_move(200.0, 100.0);
+  engine.press_mouse(MouseButton::Left);
+  engine.step().unwrap();
+  let frame = engine.frame().unwrap();
+  assert_eq!(frame.get_pixel(201, 101).0, [255, 0, 255, 255]);
+  assert!(cells(&engine)[3]);
+
+  engine.release_mouse(MouseButton::Left);
+  engine.step().unwrap();
+  assert!(!cells(&engine)[3]);
+}
+
+#[test]
+fn engine_debug_keys_are_inert_headless() {
+  let Some(mut tapped) = engine(Squares) else {
+    return;
+  };
+  let Some(mut plain) = engine(Squares) else {
+    return;
+  };
+  let captures_existed = std::path::Path::new("captures").exists();
+
+  tapped.tap_key(KeyCode::F1); // would cycle the FPS/timing overlays on
+  tapped.step_frames(2).unwrap();
+  tapped.tap_key(KeyCode::F12); // would write captures/frame-*.png
+  tapped.step_frames(2).unwrap();
+  plain.step_frames(4).unwrap();
+
+  let wrote_capture = !captures_existed && std::path::Path::new("captures").exists();
+  if wrote_capture {
+    let _ = std::fs::remove_dir_all("captures");
+  }
+  assert!(!wrote_capture, "F12 wrote a capture in a headless run");
+  assert_eq!(
+    tapped.frame().unwrap().as_raw(),
+    plain.frame().unwrap().as_raw()
+  );
+}

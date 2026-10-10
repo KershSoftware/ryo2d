@@ -32,7 +32,7 @@
 mod gpu;
 
 use image::RgbaImage;
-use winit::event::ElementState;
+use winit::event::{ElementState, MouseButton};
 use winit::keyboard::KeyCode;
 
 use crate::core::ecs::World;
@@ -147,5 +147,51 @@ impl HeadlessEngine {
   /// The ECS world, for spawning or changing entities between steps.
   pub fn world_mut(&mut self) -> &mut World {
     self.engine.world_mut()
+  }
+
+  /// Hold `key` down from the next step until [`release_key`](Self::release_key).
+  pub fn press_key(&mut self, key: KeyCode) {
+    self
+      .engine
+      .input_mut()
+      .handle_keyboard(key, ElementState::Pressed);
+  }
+
+  /// Release `key`; the next step sees it as just released.
+  pub fn release_key(&mut self, key: KeyCode) {
+    self
+      .engine
+      .input_mut()
+      .handle_keyboard(key, ElementState::Released);
+  }
+
+  /// Press `key` for the next step only; it is released after that step.
+  pub fn tap_key(&mut self, key: KeyCode) {
+    self.press_key(key);
+    self.pending_releases.push(key);
+  }
+
+  /// Hold a mouse button down from the next step.
+  pub fn press_mouse(&mut self, button: MouseButton) {
+    self
+      .engine
+      .input_mut()
+      .handle_mouse_button(button, ElementState::Pressed);
+  }
+
+  /// Release a mouse button.
+  pub fn release_mouse(&mut self, button: MouseButton) {
+    self
+      .engine
+      .input_mut()
+      .handle_mouse_button(button, ElementState::Released);
+  }
+
+  /// Move the mouse to `(x, y)` in game coordinates.
+  pub fn mouse_move(&mut self, x: f32, y: f32) {
+    self
+      .engine
+      .input_mut()
+      .handle_mouse_move(f64::from(x), f64::from(y));
   }
 }

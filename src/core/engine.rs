@@ -669,6 +669,7 @@ impl Engine {
       config.debug.show_frame_timing = false;
       config.debug.show_stats = false;
       config.debug.logger_window = false;
+      config.debug.dev_window_keys = false;
     }
 
     // Compute initial overlay mode from config before moving it
@@ -741,7 +742,7 @@ impl Engine {
       overlay_mode: initial_overlay_mode,
       debug_stats: DebugStats::default(),
       smoothed_stats: SmoothedDebugStats::default(),
-      debug_keys_enabled: !disable_debug_keys,
+      debug_keys_enabled: !disable_debug_keys && !headless,
       debug_font_uploaded: false,
       ui_buffer: vec![0; ui_buffer_size], // RGBA buffer for UI
       window_request: WindowRequest::default(),
