@@ -330,6 +330,17 @@ pub(crate) enum PresentOutcome {
   Fatal(String),
 }
 
+/// Result of one engine frame (logic + render).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FrameOutcome {
+  Presented,
+  Skipped,
+  /// The scene or console asked to quit; nothing was rendered
+  Quit,
+  /// Rendering failed fatally
+  Fatal(String),
+}
+
 impl Engine {
   // =============================================================================
   // Coordinate Transformations & Utilities
@@ -783,6 +794,270 @@ impl Engine {
     println!("  F10    Profiler");
     println!("  F12    Capture frame");
     println!();
+  }
+
+  /// Run one frame of game logic and rendering.
+  ///
+  /// Shared by the window loop (`dt = None`, wall-clock time) and headless runs
+  /// (`dt = Some(fixed_timestep)`, exactly one fixed update per frame).
+  pub(crate) fn step_frame(&mut self, dt: Option<std::time::Duration>) -> FrameOutcome {
+    // Reset frame timings
+    self.frame_timings = FrameTimings::default();
+
+    if let Some(time) = &mut self.time {
+      match dt {
+        Some(dt) => time.advance(dt),
+        None => time.begin_frame(),
+      }
+    }
+
+    // Handle debug key toggles (F1-F4)
+    // These are consumed immediately to prevent double-firing if no update runs this frame
+    if self.debug_keys_enabled {
+      // F1: Cycle overlay mode
+      if self.input.key_pressed(KeyCode::F1) {
+        self.overlay_mode = self.overlay_mode.next();
+        let (show_fps, show_frame_timing, show_stats) = self.overlay_mode.to_flags();
+        self.config.debug.show_fps = show_fps;
+        self.config.debug.show_frame_timing = show_frame_timing;
+        self.config.debug.show_stats = show_stats;
+        self.input.consume_key(KeyCode::F1);
+      }
+      // F2: Toggle collision boundaries
+      if self.input.key_pressed(KeyCode::F2) {
+        self.config.debug.show_colliders = !self.config.debug.show_colliders;
+        self.input.consume_key(KeyCode::F2);
+      }
+      // F3: Toggle velocity vectors
+      if self.input.key_pressed(KeyCode::F3) {
+        self.config.debug.show_velocities = !self.config.debug.show_velocities;
+        self.input.consume_key(KeyCode::F3);
+      }
+      // F4: Toggle origin points
+      if self.input.key_pressed(KeyCode::F4) {
+        self.config.debug.show_origins = !self.config.debug.show_origins;
+        self.input.consume_key(KeyCode::F4);
+      }
+      // F5: Toggle borderless window
+      if self.input.key_pressed(KeyCode::F5) {
+        self.pending_toggle_borderless = true;
+        self.input.consume_key(KeyCode::F5);
+      }
+    }
+
+    // Dev console toggle (backtick/grave key)
+    if self.config.debug.dev_console && self.input.key_pressed(KeyCode::Backquote) {
+      self.console_state.toggle();
+      self.input.consume_key(KeyCode::Backquote);
+    }
+
+    // Handle dev window keys (F9-F10)
+    // These are separate from debug_keys_enabled and controlled by dev_window_keys
+    if self.config.debug.dev_window_keys {
+      // F9: Toggle logger window
+      if self.input.key_pressed(KeyCode::F9) {
+        if self.logger_window.is_some() {
+          // Close the window
+          self.logger_window = None;
+          self.logger_window_focused = false;
+        } else {
+          // Request to open (will be created in event loop where we have ActiveEventLoop)
+          self.pending_open_logger = true;
+        }
+        self.input.consume_key(KeyCode::F9);
+      }
+
+      // F10: Toggle profiler window
+      #[cfg(feature = "profiler")]
+      if self.input.key_pressed(KeyCode::F10) {
+        if self.profiler_window.is_some() {
+          // Close the window
+          self.profiler_window = None;
+          self.profiler_window_focused = false;
+        } else {
+          // Request to open (will be created in event loop where we have ActiveEventLoop)
+          self.pending_open_profiler = true;
+        }
+        self.input.consume_key(KeyCode::F10);
+      }
+
+      // F12: Capture the next frame to a PNG
+      if self.input.key_pressed(KeyCode::F12) {
+        self.capture.request(CaptureTarget::Default);
+        self.input.consume_key(KeyCode::F12);
+      }
+    }
+
+    // Process gamepad events
+    if let Some(ref mut gilrs) = self.gilrs {
+      // Check for newly connected gamepads
+      for (id, gamepad) in gilrs.gamepads() {
+        if gamepad.is_connected() {
+          self
+            .input
+            .try_set_active_gamepad(id, gamepad.name().to_string());
+        }
+      }
+
+      // Process all pending events
+      while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
+        match event {
+          gilrs::EventType::Connected => {
+            if let Some(gamepad) = gilrs.connected_gamepad(id) {
+              self
+                .input
+                .handle_gamepad_connected(id, gamepad.name().to_string());
+            }
+          }
+          gilrs::EventType::Disconnected => {
+            self.input.handle_gamepad_disconnected(id);
+          }
+          gilrs::EventType::ButtonPressed(button, _) => {
+            self.input.handle_gamepad_button(id, button, true);
+          }
+          gilrs::EventType::ButtonReleased(button, _) => {
+            self.input.handle_gamepad_button(id, button, false);
+          }
+          gilrs::EventType::ButtonChanged(button, value, _) => {
+            // For analog buttons like triggers
+            self.input.handle_gamepad_trigger(id, button, value);
+          }
+          gilrs::EventType::AxisChanged(axis, value, _) => {
+            self.input.handle_gamepad_axis(id, axis, value);
+          }
+          _ => {}
+        }
+      }
+    }
+
+    // Get real dt for systems that should use unscaled time (shake, hitstop decay, UI)
+    let real_dt = self.time.as_ref().map(|t| t.fixed_dt()).unwrap_or(0.0);
+
+    // Update camera shake with real (unscaled) dt
+    self.camera.update_shake(real_dt);
+
+    // Update developer console (cursor blink, etc.)
+    self.console_state.update(real_dt);
+
+    // Handle console input when visible
+    if self.console_state.visible {
+      // Console handles its own input and returns command if submitted
+      if let Some(command_str) = self.console_state.handle_input(&mut self.input) {
+        // Execute the command
+        let commands = self.command_registry.command_info_list();
+        let mut cmd_ctx = CommandContext {
+          console: &mut self.console_state,
+          debug_config: &mut self.config.debug,
+          quit_requested: false,
+          capture_requested: None,
+          time_scale: &mut self.time_control.time_scale,
+          commands,
+          game_name: self.game_name.clone(),
+          game_version: self.game_version.clone(),
+        };
+
+        let result = self.command_registry.execute(&command_str, &mut cmd_ctx);
+
+        // Handle quit request from console
+        if matches!(result, CommandResult::Quit) || cmd_ctx.quit_requested {
+          self.console_quit_requested = true;
+        }
+        if let Some(target) = cmd_ctx.capture_requested.take() {
+          self.capture.request(target);
+        }
+      }
+
+      // Only consume keyboard input when console is FOCUSED
+      // This allows playing the game with the console open but unfocused
+      if self.console_state.is_focused() {
+        self.input.clear_keyboard_state();
+      }
+    }
+
+    // Update cursor based on console state (resize handle hover, etc.)
+    // This runs even when console is closed to reset the cursor properly
+    let (mouse_x, mouse_y) = self.input.mouse_position();
+    if let Some(cursor_style) = self.console_state.desired_cursor(mouse_x, mouse_y) {
+      self.cursor_request.cursor = Some(cursor_style);
+    }
+
+    // Fixed timestep update loop (includes game logic + physics)
+    // Use a block to limit the profile_scope lifetime
+    let mut did_update = false;
+    {
+      profile_scope!("cpu:update");
+      let update_start = std::time::Instant::now();
+
+      // Snapshot transforms for interpolation BEFORE any updates
+      // This captures the "previous" state that we'll lerp from during rendering
+      InterpolationSystem::snapshot(&mut self.world);
+
+      let mut first_update = true;
+      while self
+        .time
+        .as_ref()
+        .map(|t| t.should_update())
+        .unwrap_or(false)
+      {
+        // Sync time_control to TimeState before each update
+        if let Some(time) = &mut self.time {
+          time.sync_from_time_control(&self.time_control);
+        }
+
+        // Use scaled dt for game logic (affected by time_scale and hitstop)
+        let scaled_dt = self
+          .time
+          .as_ref()
+          .expect("TimeState should be initialized")
+          .scaled_fixed_dt();
+        self.update(scaled_dt);
+
+        if first_update {
+          self.input.suppress_oneshots();
+          first_update = false;
+        }
+
+        if let Some(time) = &mut self.time {
+          time.consume_update();
+        }
+        did_update = true;
+      }
+      self.input.unsuppress_oneshots();
+
+      // After all updates: decay hitstop and sync back to time_control
+      if let Some(time) = &mut self.time {
+        time.sync_from_time_control(&self.time_control);
+        time.update_hitstop(real_dt);
+        time.sync_to_time_control(&mut self.time_control);
+      }
+      // Update time includes both game logic and physics
+      self.frame_timings.update = update_start.elapsed();
+    } // update scope ends here
+
+    // Check if scene or console wants to quit
+    if self.scene_quit_requested || self.console_quit_requested {
+      return FrameOutcome::Quit;
+    }
+
+    let outcome = match self.present_frame() {
+      PresentOutcome::Fatal(error) => return FrameOutcome::Fatal(error),
+      PresentOutcome::Presented => FrameOutcome::Presented,
+      PresentOutcome::Skipped => FrameOutcome::Skipped,
+    };
+
+    // Clear key repeat state every frame so held-key actions (backspace,
+    // arrows) don't fire multiple times across consecutive no-update frames
+    // when render_ui processes them on each frame.
+    self.input.post_render_cleanup();
+
+    // Clear all per-frame input state at the END of the frame, but ONLY if
+    // we ran at least one update. This preserves input events for the next
+    // frame when the fixed timestep accumulator isn't ready yet.
+    if did_update {
+      self.input.begin_frame();
+    }
+
+    outcome
   }
 
   /// Run a single frame tick when the game window is not focused.
@@ -2850,249 +3125,13 @@ impl ApplicationHandler for Engine {
           }
         }
 
-        // Reset frame timings
-        self.frame_timings = FrameTimings::default();
         let frame_start = std::time::Instant::now();
-
-        if let Some(time) = &mut self.time {
-          time.begin_frame();
-        }
-
-        // Handle debug key toggles (F1-F4)
-        // These are consumed immediately to prevent double-firing if no update runs this frame
-        if self.debug_keys_enabled {
-          // F1: Cycle overlay mode
-          if self.input.key_pressed(KeyCode::F1) {
-            self.overlay_mode = self.overlay_mode.next();
-            let (show_fps, show_frame_timing, show_stats) = self.overlay_mode.to_flags();
-            self.config.debug.show_fps = show_fps;
-            self.config.debug.show_frame_timing = show_frame_timing;
-            self.config.debug.show_stats = show_stats;
-            self.input.consume_key(KeyCode::F1);
-          }
-          // F2: Toggle collision boundaries
-          if self.input.key_pressed(KeyCode::F2) {
-            self.config.debug.show_colliders = !self.config.debug.show_colliders;
-            self.input.consume_key(KeyCode::F2);
-          }
-          // F3: Toggle velocity vectors
-          if self.input.key_pressed(KeyCode::F3) {
-            self.config.debug.show_velocities = !self.config.debug.show_velocities;
-            self.input.consume_key(KeyCode::F3);
-          }
-          // F4: Toggle origin points
-          if self.input.key_pressed(KeyCode::F4) {
-            self.config.debug.show_origins = !self.config.debug.show_origins;
-            self.input.consume_key(KeyCode::F4);
-          }
-          // F5: Toggle borderless window
-          if self.input.key_pressed(KeyCode::F5) {
-            self.pending_toggle_borderless = true;
-            self.input.consume_key(KeyCode::F5);
-          }
-        }
-
-        // Dev console toggle (backtick/grave key)
-        if self.config.debug.dev_console && self.input.key_pressed(KeyCode::Backquote) {
-          self.console_state.toggle();
-          self.input.consume_key(KeyCode::Backquote);
-        }
-
-        // Handle dev window keys (F9-F10)
-        // These are separate from debug_keys_enabled and controlled by dev_window_keys
-        if self.config.debug.dev_window_keys {
-          // F9: Toggle logger window
-          if self.input.key_pressed(KeyCode::F9) {
-            if self.logger_window.is_some() {
-              // Close the window
-              self.logger_window = None;
-              self.logger_window_focused = false;
-            } else {
-              // Request to open (will be created in event loop where we have ActiveEventLoop)
-              self.pending_open_logger = true;
-            }
-            self.input.consume_key(KeyCode::F9);
-          }
-
-          // F10: Toggle profiler window
-          #[cfg(feature = "profiler")]
-          if self.input.key_pressed(KeyCode::F10) {
-            if self.profiler_window.is_some() {
-              // Close the window
-              self.profiler_window = None;
-              self.profiler_window_focused = false;
-            } else {
-              // Request to open (will be created in event loop where we have ActiveEventLoop)
-              self.pending_open_profiler = true;
-            }
-            self.input.consume_key(KeyCode::F10);
-          }
-
-          // F12: Capture the next frame to a PNG
-          if self.input.key_pressed(KeyCode::F12) {
-            self.capture.request(CaptureTarget::Default);
-            self.input.consume_key(KeyCode::F12);
-          }
-        }
-
-        // Process gamepad events
-        if let Some(ref mut gilrs) = self.gilrs {
-          // Check for newly connected gamepads
-          for (id, gamepad) in gilrs.gamepads() {
-            if gamepad.is_connected() {
-              self
-                .input
-                .try_set_active_gamepad(id, gamepad.name().to_string());
-            }
-          }
-
-          // Process all pending events
-          while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
-            match event {
-              gilrs::EventType::Connected => {
-                if let Some(gamepad) = gilrs.connected_gamepad(id) {
-                  self
-                    .input
-                    .handle_gamepad_connected(id, gamepad.name().to_string());
-                }
-              }
-              gilrs::EventType::Disconnected => {
-                self.input.handle_gamepad_disconnected(id);
-              }
-              gilrs::EventType::ButtonPressed(button, _) => {
-                self.input.handle_gamepad_button(id, button, true);
-              }
-              gilrs::EventType::ButtonReleased(button, _) => {
-                self.input.handle_gamepad_button(id, button, false);
-              }
-              gilrs::EventType::ButtonChanged(button, value, _) => {
-                // For analog buttons like triggers
-                self.input.handle_gamepad_trigger(id, button, value);
-              }
-              gilrs::EventType::AxisChanged(axis, value, _) => {
-                self.input.handle_gamepad_axis(id, axis, value);
-              }
-              _ => {}
-            }
-          }
-        }
-
-        // Get real dt for systems that should use unscaled time (shake, hitstop decay, UI)
-        let real_dt = self.time.as_ref().map(|t| t.fixed_dt()).unwrap_or(0.0);
-
-        // Update camera shake with real (unscaled) dt
-        self.camera.update_shake(real_dt);
-
-        // Update developer console (cursor blink, etc.)
-        self.console_state.update(real_dt);
-
-        // Handle console input when visible
-        if self.console_state.visible {
-          // Console handles its own input and returns command if submitted
-          if let Some(command_str) = self.console_state.handle_input(&mut self.input) {
-            // Execute the command
-            let commands = self.command_registry.command_info_list();
-            let mut cmd_ctx = CommandContext {
-              console: &mut self.console_state,
-              debug_config: &mut self.config.debug,
-              quit_requested: false,
-              capture_requested: None,
-              time_scale: &mut self.time_control.time_scale,
-              commands,
-              game_name: self.game_name.clone(),
-              game_version: self.game_version.clone(),
-            };
-
-            let result = self.command_registry.execute(&command_str, &mut cmd_ctx);
-
-            // Handle quit request from console
-            if matches!(result, CommandResult::Quit) || cmd_ctx.quit_requested {
-              self.console_quit_requested = true;
-            }
-            if let Some(target) = cmd_ctx.capture_requested.take() {
-              self.capture.request(target);
-            }
-          }
-
-          // Only consume keyboard input when console is FOCUSED
-          // This allows playing the game with the console open but unfocused
-          if self.console_state.is_focused() {
-            self.input.clear_keyboard_state();
-          }
-        }
-
-        // Update cursor based on console state (resize handle hover, etc.)
-        // This runs even when console is closed to reset the cursor properly
-        let (mouse_x, mouse_y) = self.input.mouse_position();
-        if let Some(cursor_style) = self.console_state.desired_cursor(mouse_x, mouse_y) {
-          self.cursor_request.cursor = Some(cursor_style);
-        }
-
-        // Fixed timestep update loop (includes game logic + physics)
-        // Use a block to limit the profile_scope lifetime
-        let mut did_update = false;
-        {
-          profile_scope!("cpu:update");
-          let update_start = std::time::Instant::now();
-
-          // Snapshot transforms for interpolation BEFORE any updates
-          // This captures the "previous" state that we'll lerp from during rendering
-          InterpolationSystem::snapshot(&mut self.world);
-
-          let mut first_update = true;
-          while self
-            .time
-            .as_ref()
-            .map(|t| t.should_update())
-            .unwrap_or(false)
-          {
-            // Sync time_control to TimeState before each update
-            if let Some(time) = &mut self.time {
-              time.sync_from_time_control(&self.time_control);
-            }
-
-            // Use scaled dt for game logic (affected by time_scale and hitstop)
-            let scaled_dt = self
-              .time
-              .as_ref()
-              .expect("TimeState should be initialized")
-              .scaled_fixed_dt();
-            self.update(scaled_dt);
-
-            if first_update {
-              self.input.suppress_oneshots();
-              first_update = false;
-            }
-
-            if let Some(time) = &mut self.time {
-              time.consume_update();
-            }
-            did_update = true;
-          }
-          self.input.unsuppress_oneshots();
-
-          // After all updates: decay hitstop and sync back to time_control
-          if let Some(time) = &mut self.time {
-            time.sync_from_time_control(&self.time_control);
-            time.update_hitstop(real_dt);
-            time.sync_to_time_control(&mut self.time_control);
-          }
-          // Update time includes both game logic and physics
-          self.frame_timings.update = update_start.elapsed();
-        } // update scope ends here
-
-        // Check if scene or console wants to quit
-        if self.scene_quit_requested || self.console_quit_requested {
-          event_loop.exit();
-          return;
-        }
-
-        match self.present_frame() {
-          PresentOutcome::Fatal(_) => {
+        match self.step_frame(None) {
+          FrameOutcome::Quit | FrameOutcome::Fatal(_) => {
             event_loop.exit();
             return;
           }
-          PresentOutcome::Presented | PresentOutcome::Skipped => {}
+          FrameOutcome::Presented | FrameOutcome::Skipped => {}
         }
 
         // Render profiler window directly when game window has focus
@@ -3166,18 +3205,6 @@ impl ApplicationHandler for Engine {
           if should_apply_frame_limiting(presentation_blocks, self.vsync) {
             time.wait_for_target_frame_time();
           }
-        }
-
-        // Clear key repeat state every frame so held-key actions (backspace,
-        // arrows) don't fire multiple times across consecutive no-update frames
-        // when render_ui processes them on each frame.
-        self.input.post_render_cleanup();
-
-        // Clear all per-frame input state at the END of the frame, but ONLY if
-        // we ran at least one update. This preserves input events for the next
-        // frame when the fixed timestep accumulator isn't ready yet.
-        if did_update {
-          self.input.begin_frame();
         }
       }
       _ => {}
