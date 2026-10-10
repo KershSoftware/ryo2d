@@ -369,6 +369,60 @@ fn inventory_add_full() {
 }
 
 #[test]
+fn inventory_add_full_leaves_inventory_unchanged() {
+  let (registry, _, potion, _) = setup_registry();
+  let mut inv = Inventory::new(1);
+  inv.add(ItemStack::new(potion, 8), &registry).unwrap();
+  let result = inv.add(ItemStack::new(potion, 5), &registry);
+  assert!(matches!(
+    result,
+    Err(InventoryError::InventoryFull { remainder: 3 })
+  ));
+  assert_eq!(inv.count(potion), 8);
+}
+
+#[test]
+fn inventory_add_partial_returns_leftover() {
+  let (registry, _, potion, _) = setup_registry();
+  let mut inv = Inventory::new(1);
+  inv.add(ItemStack::new(potion, 8), &registry).unwrap();
+  let leftover = inv
+    .add_partial(ItemStack::new(potion, 5), &registry)
+    .expect("3 potions should not fit");
+  assert_eq!(leftover.item_id(), potion);
+  assert_eq!(leftover.quantity(), 3);
+  assert_eq!(inv.count(potion), 10);
+}
+
+#[test]
+fn inventory_add_partial_all_fit() {
+  let (registry, _, potion, _) = setup_registry();
+  let mut inv = Inventory::new(5);
+  assert!(
+    inv
+      .add_partial(ItemStack::new(potion, 5), &registry)
+      .is_none()
+  );
+  assert_eq!(inv.count(potion), 5);
+}
+
+#[test]
+fn inventory_add_partial_keeps_instance_data_on_leftover() {
+  let (registry, sword, _, _) = setup_registry();
+  let mut inv = Inventory::new(1);
+  inv.add(ItemStack::new(sword, 1), &registry).unwrap();
+  let stats = WeaponStats {
+    damage: 10.0,
+    attack_speed: 1.5,
+  };
+  let leftover = inv
+    .add_partial(ItemStack::new(sword, 1).with_data(stats), &registry)
+    .expect("inventory is full");
+  assert!(leftover.instance_data().is_some());
+  assert_eq!(inv.count(sword), 1);
+}
+
+#[test]
 fn inventory_remove() {
   let (registry, _, potion, _) = setup_registry();
   let mut inv = Inventory::new(5);
@@ -489,6 +543,19 @@ fn inventory_transfer() {
   Inventory::transfer(&mut from, 0, &mut to, None, 3, &registry).unwrap();
   assert_eq!(from.count(potion), 2);
   assert_eq!(to.count(potion), 3);
+}
+
+#[test]
+fn inventory_transfer_rejected_does_not_duplicate() {
+  let (registry, _, potion, _) = setup_registry();
+  let mut from = Inventory::new(5);
+  let mut to = Inventory::new(1);
+  from.add(ItemStack::new(potion, 5), &registry).unwrap();
+  to.add(ItemStack::new(potion, 8), &registry).unwrap();
+  let result = Inventory::transfer(&mut from, 0, &mut to, None, 5, &registry);
+  assert!(result.is_err());
+  assert_eq!(from.count(potion), 5);
+  assert_eq!(to.count(potion), 8);
 }
 
 // ============================================================================

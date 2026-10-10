@@ -46,80 +46,108 @@ impl Inventory {
 
   /// Add an [`ItemStack`] to the inventory, respecting stacking rules.
   ///
+  /// All-or-nothing: if the full quantity cannot be placed, the inventory is
+  /// left unchanged and [`InventoryError::InventoryFull`] reports how many
+  /// items would not fit. Use [`add_partial`](Self::add_partial) to place as
+  /// many as fit instead.
+  ///
+  /// Placement follows the rules described on [`add_partial`](Self::add_partial).
+  pub fn add(&mut self, stack: ItemStack, registry: &ItemRegistry) -> Result<(), InventoryError> {
+    let quantity = stack.quantity();
+    let room = self.room_for(&stack, Self::max_stack_of(&stack, registry));
+    if room < quantity {
+      return Err(InventoryError::InventoryFull {
+        remainder: quantity - room,
+      });
+    }
+
+    self.add_partial(stack, registry);
+    Ok(())
+  }
+
+  /// Add as much of an [`ItemStack`] as fits, returning whatever did not.
+  ///
   /// The method follows this logic:
   /// 1. Look up the item's `max_stack` from the registry (defaults to 1 if
   ///    the template is not found).
   /// 2. For stackable items (`max_stack > 1`) **without** per-instance data,
   ///    fill existing partial stacks of the same `item_id` up to `max_stack`.
   /// 3. Place any remaining quantity into the first available empty slot(s).
-  /// 4. If the full quantity cannot be placed, return
-  ///    [`InventoryError::InventoryFull`] with the unplaced remainder.
+  /// 4. Return the unplaced remainder, or `None` if everything was placed.
   ///
   /// Non-stackable items (`max_stack == 1`) always go directly to empty slots.
   ///
   /// **Note:** Items with [`instance_data`](ItemStack::instance_data) are never
   /// merged into existing stacks — they always occupy their own slot to preserve
-  /// per-instance state (e.g. enchantments, durability).
-  pub fn add(&mut self, stack: ItemStack, registry: &ItemRegistry) -> Result<(), InventoryError> {
+  /// per-instance state (e.g. enchantments, durability). If no slot is free,
+  /// the original stack is returned with its data intact.
+  pub fn add_partial(&mut self, stack: ItemStack, registry: &ItemRegistry) -> Option<ItemStack> {
     let item_id = stack.item_id();
     let mut remaining = stack.quantity();
-    let has_instance_data = stack.instance_data().is_some();
+    let max_stack = Self::max_stack_of(&stack, registry);
 
-    // Look up max_stack from registry; default to 1 if template not found.
-    let max_stack = registry.get(item_id).map(|t| t.max_stack()).unwrap_or(1);
+    // Items with instance data are placed as a single stack to preserve data.
+    if stack.instance_data().is_some() {
+      return match self.slots.iter().position(|s| s.is_none()) {
+        Some(idx) => {
+          self.slots[idx] = Some(stack);
+          None
+        }
+        None => Some(stack),
+      };
+    }
 
-    // Step 1: For stackable items without instance data, try to fill existing partial stacks.
-    if max_stack > 1 && !has_instance_data {
-      for slot in self.slots.iter_mut() {
+    // Fill existing partial stacks first.
+    if max_stack > 1 {
+      for existing in self.slots.iter_mut().flatten() {
         if remaining == 0 {
           break;
         }
-        if let Some(existing) = slot
-          && existing.item_id() == item_id
-        {
-          let space = max_stack.saturating_sub(existing.quantity());
-          if space > 0 {
-            let to_add = remaining.min(space);
-            existing.set_quantity(existing.quantity() + to_add);
-            remaining -= to_add;
-          }
+        if existing.item_id() == item_id {
+          let to_add = remaining.min(max_stack.saturating_sub(existing.quantity()));
+          existing.set_quantity(existing.quantity() + to_add);
+          remaining -= to_add;
         }
       }
     }
 
-    // Step 2: Place remaining quantity into empty slots.
-    // Items with instance data are placed as a single stack to preserve data.
-    if has_instance_data && remaining > 0 {
-      let empty_slot = self.slots.iter().position(|s| s.is_none());
-      match empty_slot {
-        Some(idx) => {
-          self.slots[idx] = Some(stack);
-        }
-        None => {
-          return Err(InventoryError::InventoryFull {
-            remainder: remaining,
-          });
-        }
-      }
-    } else {
-      while remaining > 0 {
-        let empty_slot = self.slots.iter().position(|s| s.is_none());
-        match empty_slot {
-          Some(idx) => {
-            let to_place = remaining.min(max_stack);
-            self.slots[idx] = Some(ItemStack::new(item_id, to_place));
-            remaining -= to_place;
-          }
-          None => {
-            return Err(InventoryError::InventoryFull {
-              remainder: remaining,
-            });
-          }
+    // Place the rest into empty slots.
+    while remaining > 0 {
+      let Some(idx) = self.slots.iter().position(|s| s.is_none()) else {
+        return Some(ItemStack::new(item_id, remaining));
+      };
+      let to_place = remaining.min(max_stack);
+      self.slots[idx] = Some(ItemStack::new(item_id, to_place));
+      remaining -= to_place;
+    }
+
+    None
+  }
+
+  /// `max_stack` for the stack's template, or 1 if it isn't registered.
+  fn max_stack_of(stack: &ItemStack, registry: &ItemRegistry) -> u32 {
+    registry
+      .get(stack.item_id())
+      .map(|t| t.max_stack())
+      .unwrap_or(1)
+  }
+
+  /// How many items of `stack` could be placed without exceeding capacity.
+  fn room_for(&self, stack: &ItemStack, max_stack: u32) -> u32 {
+    let empty = u32::try_from(self.empty_slots()).unwrap_or(u32::MAX);
+    if stack.instance_data().is_some() {
+      return if empty > 0 { stack.quantity() } else { 0 };
+    }
+
+    let mut room = empty.saturating_mul(max_stack);
+    if max_stack > 1 {
+      for existing in self.slots.iter().flatten() {
+        if existing.item_id() == stack.item_id() {
+          room = room.saturating_add(max_stack.saturating_sub(existing.quantity()));
         }
       }
     }
-
-    Ok(())
+    room
   }
 
   /// Remove `quantity` items from the given slot.
