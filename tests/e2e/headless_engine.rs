@@ -2,7 +2,7 @@
 
 use ryo2d::core::config::UserPreferenceFilter;
 use ryo2d::prelude::*;
-use ryo2d::testing::{HeadlessEngine, StepOutcome};
+use ryo2d::testing::{HeadlessEngine, HeadlessError, StepOutcome};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
 const GREEN: [u8; 4] = [0, 255, 0, 255];
@@ -139,8 +139,13 @@ fn step_after_quit_stays_quit() {
 
 #[test]
 fn headless_ignores_user_preferences_and_fps_overlay() {
+  let data_dir = std::path::Path::new("data");
   let prefs = std::path::Path::new("data/system.json");
+  let dir_existed = data_dir.exists();
   let existed = prefs.exists();
+  if existed {
+    eprintln!("note: data/system.json already exists; skipping the file-created check");
+  }
   let Some(mut with_prefs) = HeadlessEngine::new_or_skip(
     EngineBuilder::new()
       .resolution(320, 180)
@@ -152,7 +157,10 @@ fn headless_ignores_user_preferences_and_fps_overlay() {
   };
   let created = !existed && prefs.exists();
   if created {
-    let _ = std::fs::remove_dir_all("data");
+    let _ = std::fs::remove_file(prefs);
+    if !dir_existed {
+      let _ = std::fs::remove_dir(data_dir);
+    }
   }
   assert!(!created, "headless build created data/system.json");
 
@@ -299,4 +307,56 @@ fn engine_debug_keys_are_inert_headless() {
     tapped.frame().unwrap().as_raw(),
     plain.frame().unwrap().as_raw()
   );
+}
+
+/// Requests UI scale 2 and draws a rect sized by the live UI scale, since
+/// `draw_rect` coordinates are not scaled by the engine (only text is).
+struct WantsUiScale;
+
+impl Scene for WantsUiScale {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.request_ui_scale(Some(2));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+    let side = 10.0 * ui.ui_scale() as f32;
+    ui.draw_rect(Rect::new(0.0, 0.0, side, side), Color::rgb(0, 255, 255));
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn requested_ui_scale_applies_headless() {
+  let Some(mut engine) = engine(WantsUiScale) else {
+    return;
+  };
+
+  engine.step_frames(3).unwrap();
+
+  assert_eq!(
+    engine.frame().unwrap().get_pixel(15, 15).0,
+    [0, 255, 255, 255]
+  );
+}
+
+#[test]
+fn invalid_resolution_is_an_error_not_a_panic() {
+  for (width, height) in [(0, 180), (320, 0), (8193, 180), (320, 8193)] {
+    let result = HeadlessEngine::new(
+      EngineBuilder::new()
+        .resolution(width, height)
+        .start_scene(Squares),
+    );
+    assert!(
+      matches!(
+        result,
+        Err(HeadlessError::Render(_)) | Err(HeadlessError::NoGpu)
+      ),
+      "{width}x{height} should be rejected"
+    );
+  }
 }

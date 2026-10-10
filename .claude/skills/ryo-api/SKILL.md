@@ -1691,3 +1691,18 @@ impl Particle {
     fn is_dead(&self) -> bool;
 }
 ```
+
+## Testing (`ryo2d::testing`)
+
+| Item | Signature / purpose |
+|------|---------------------|
+| `HeadlessEngine::new(builder)` | `-> Result<HeadlessEngine, HeadlessError>` — engine without a window |
+| `HeadlessEngine::new_or_skip(builder)` | `-> Option<HeadlessEngine>` — `None` when no GPU (tests `return` early) |
+| `step()` / `step_frames(n)` | `-> Result<StepOutcome, HeadlessError>` — one fixed update + render per step |
+| `frame()` | `-> Result<RgbaImage, HeadlessError>` — last frame at game resolution |
+| `frame_count()` | presented frames |
+| `world()` / `world_mut()` | ECS world between steps |
+| `press_key` / `release_key` / `tap_key` | keyboard input (`KeyCode`) |
+| `press_mouse` / `release_mouse` / `mouse_move(x, y)` | mouse input (game coordinates) |
+| `StepOutcome` | `Running` \| `Quit` |
+| `HeadlessError` | `NoGpu` \| `Render(String)` \| `Capture(CaptureError)` |

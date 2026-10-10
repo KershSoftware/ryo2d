@@ -547,4 +547,5 @@ fn player_is_drawn_at_spawn() {
 
 - One fixed update per step; same scene + steps + input → identical frames (seed your RNG).
 - Headless: no audio (`ctx.audio` is `None`), no gamepads, no user preferences; `Ryo.toml` is honoured.
+- Particle emitters use an unseeded thread RNG, so don't compare frames containing particles byte-for-byte.
 - Save a failing frame with `engine.frame().unwrap().save("failed.png")`.

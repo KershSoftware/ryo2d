@@ -411,6 +411,28 @@ impl Engine {
     }
   }
 
+  /// Apply a pending UI scale request, if any.
+  fn apply_ui_scale_request(&mut self) {
+    if let Some(scale) = self.window_request.ui_scale.take() {
+      if scale == 0 {
+        // Auto-detect mode: use DPI scale factor
+        self.ui_scale = (self.scale_factor.round() as u32).max(1);
+        self.config.ui_scale = None;
+      } else {
+        // Manual mode: use specified scale
+        self.ui_scale = scale.max(1);
+        self.config.ui_scale = Some(scale);
+      }
+    }
+  }
+
+  /// Apply the window requests that still make sense without a window.
+  /// Only UI scale does; resolution and display mode requests are ignored.
+  pub(crate) fn apply_headless_requests(&mut self) {
+    self.apply_ui_scale_request();
+    self.window_request.clear();
+  }
+
   /// Apply pending window configuration changes from the game.
   fn apply_window_request(&mut self, window: &Arc<Window>) {
     // Apply resolution change
@@ -457,18 +479,7 @@ impl Engine {
       self.surface_needs_reconfigure = true;
     }
 
-    // Apply UI scale change
-    if let Some(scale) = self.window_request.ui_scale {
-      if scale == 0 {
-        // Auto-detect mode: use DPI scale factor
-        self.ui_scale = (self.scale_factor.round() as u32).max(1);
-        self.config.ui_scale = None;
-      } else {
-        // Manual mode: use specified scale
-        self.ui_scale = scale.max(1);
-        self.config.ui_scale = Some(scale);
-      }
-    }
+    self.apply_ui_scale_request();
 
     // Clear the request after processing
     self.window_request.clear();
@@ -1703,9 +1714,12 @@ impl Engine {
       match result {
         Ok(_) => outcome = PresentOutcome::Presented,
         Err(wgpu::SurfaceError::Outdated) => {
+          // Surface needs reconfiguration (display mode changed, window resized, etc.);
+          // recoverable — the next frame works after the resize event.
           self.surface_needs_reconfigure = true;
         }
         Err(wgpu::SurfaceError::Lost) => {
+          // Surface was lost, try to reconfigure.
           if let Some(ref mut rend) = renderer
             && let Some(window) = &self.window
           {
@@ -3729,7 +3743,8 @@ impl EngineBuilder {
   ///
   /// # Priority Chain
   ///
-  /// 1. **system.json** (user preferences) - loaded by this method
+  /// 1. **system.json** (user preferences) - read when the engine is built (`build()`),
+  ///    never in headless builds
   /// 2. **Ryo.toml `[system]`** (developer defaults) - auto-applied in build()
   /// 3. **Engine defaults** - fallback
   ///

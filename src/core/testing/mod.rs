@@ -31,6 +31,8 @@
 //! the same handlers as window events; the engine's own debug keys (F1-F5, F9,
 //! F10, F12) are inert headless. Seed any randomness your scene uses if you
 //! compare frames exactly.
+//! Particle emitters use an unseeded thread RNG, so don't compare frames
+//! containing particles byte-for-byte.
 
 mod gpu;
 
@@ -45,9 +47,13 @@ use crate::core::graphics::WgpuRenderer;
 pub use crate::core::error::HeadlessError;
 pub use gpu::shared_gpu;
 
+/// Largest supported render target side, in pixels.
+const MAX_DIMENSION: u32 = 8192;
+
 /// Whether the scene is still running after a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepOutcome {
+  /// The scene is still running
   Running,
   /// The scene (or console) asked to quit; further steps do nothing
   Quit,
@@ -63,10 +69,19 @@ pub struct HeadlessEngine {
 
 impl HeadlessEngine {
   /// Build the engine headless and enter its initial scene.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the builder has no start scene (`EngineBuilder::start_scene`).
   pub fn new(builder: EngineBuilder) -> Result<Self, HeadlessError> {
     let (device, queue) = shared_gpu()?;
     let mut engine = builder.build_headless();
     let (width, height) = engine.game_size();
+    if !(1..=MAX_DIMENSION).contains(&width) || !(1..=MAX_DIMENSION).contains(&height) {
+      return Err(HeadlessError::Render(format!(
+        "invalid resolution {width}x{height} (each side must be 1..={MAX_DIMENSION})"
+      )));
+    }
     engine.init_gpu(
       WgpuRenderer::new_offscreen(device, queue, width, height),
       1.0,
@@ -99,6 +114,7 @@ impl HeadlessEngine {
     }
     let dt = self.engine.fixed_timestep();
     let outcome = self.engine.step_frame(Some(dt));
+    self.engine.apply_headless_requests();
     for key in self.pending_releases.drain(..) {
       self
         .engine
@@ -135,6 +151,8 @@ impl HeadlessEngine {
   }
 
   /// The last presented frame (scene + UI) at game resolution, origin top-left.
+  ///
+  /// Returns an error if no frame has been presented yet.
   pub fn frame(&self) -> Result<RgbaImage, HeadlessError> {
     if self.presented == 0 {
       return Err(HeadlessError::Render("no frame presented yet".to_string()));
