@@ -228,14 +228,14 @@ impl ParticleAttractor {
     attractor_y: f32,
     particle_x: f32,
     particle_y: f32,
-    _particle_layer: u32,
+    particle_layer: u32,
   ) -> (f32, f32) {
     if !self.enabled {
       return (0.0, 0.0);
     }
 
     // Check layer mask
-    if self.layer_mask != 0 && (_particle_layer & self.layer_mask) == 0 {
+    if self.layer_mask != 0 && (particle_layer & self.layer_mask) == 0 {
       return (0.0, 0.0);
     }
 

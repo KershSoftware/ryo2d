@@ -72,7 +72,7 @@ pub struct Particle {
   // =========================================================================
   /// Whether this particle has a trail attached
   pub has_trail: bool,
-  /// Collision layer bitmask (for filtering)
+  /// Layer bits from the emitter (`ParticleEmitter::with_layer`), matched against attractor masks
   pub collision_layer: u32,
   /// Current animation frame (for animated particles)
   pub frame: u32,

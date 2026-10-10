@@ -179,6 +179,6 @@ fn on_hit(ctx: &mut SceneContext, x: f32, y: f32) {
 - **Transform Required**: Emitters and attractors need `Transform` component
 - **One-Shots**: Check `is_finished()` to despawn completed burst emitters
 - **Performance**: Keep `max_particles` reasonable (100-500 typical)
-- **Layer Masks**: Use `with_layer_mask()` on attractors to filter affected particles
+- **Layer Masks**: Give emitters a layer with `with_layer(0b10)` and attractors a matching `with_layer_mask(0b10)`; a masked attractor ignores particles from emitters without a shared layer bit (the default layer is 0)
 - **Drag**: Use drag to naturally limit particle lifetime
 - **Trails**: Use sparingly - trails add vertex overhead

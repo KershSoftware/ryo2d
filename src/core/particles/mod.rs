@@ -342,6 +342,7 @@ impl ParticleSystem {
         emitter.angular_velocity_max,
         emitter.drag,
         emitter.gravity,
+        emitter.layer,
       ))
     };
 
@@ -364,6 +365,7 @@ impl ParticleSystem {
       angular_vel_max,
       drag,
       gravity,
+      layer,
     )) = spawn_info
     else {
       return;
@@ -391,6 +393,8 @@ impl ParticleSystem {
       // Rotation
       particle.rotation = rng.gen_range(rotation_min..=rotation_max);
       particle.angular_velocity = rng.gen_range(angular_vel_min..=angular_vel_max);
+
+      particle.collision_layer = layer;
 
       // Physics
       particle.drag = drag;
@@ -567,6 +571,38 @@ mod tests {
 
   fn test_sprite() -> SpriteHandle {
     SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 255, 255, 255), "test.png")
+  }
+
+  /// One motionless particle at the origin and a strong point attractor 100px to its right.
+  fn particle_near_attractor(emitter_layer: u32, attractor_mask: u32) -> f32 {
+    let mut system = ParticleSystem::new();
+    let mut world = World::new();
+    let mut events = Events::new();
+    let emitter = ParticleEmitter::new(test_sprite())
+      .with_mode(EmissionMode::Burst { count: 1 })
+      .with_speed(0.0, 0.0)
+      .with_lifetime(10.0, 10.0)
+      .with_layer(emitter_layer);
+    world.spawn((Transform::new(0.0, 0.0), emitter));
+    world.spawn((
+      Transform::new(100.0, 0.0),
+      ParticleAttractor::point(500.0, 1000.0).with_layer_mask(attractor_mask),
+    ));
+
+    system.update(&mut world, &mut events, 0.016);
+    system.update(&mut world, &mut events, 0.016);
+
+    system.particles[0].particle.velocity_x
+  }
+
+  #[test]
+  fn layered_attractor_pulls_particles_on_its_layer() {
+    assert!(particle_near_attractor(0b10, 0b10) > 0.0);
+  }
+
+  #[test]
+  fn layered_attractor_ignores_particles_on_other_layers() {
+    assert_eq!(particle_near_attractor(0b01, 0b10), 0.0);
   }
 
   #[test]

@@ -188,6 +188,11 @@ pub struct ParticleEmitter {
   // =========================================================================
   /// Optional collision configuration (imported from collision.rs)
   pub collision: Option<super::collision::CollisionConfig>,
+  /// Layer bits given to every particle this emitter spawns.
+  ///
+  /// Attractors with a non-zero `layer_mask` only affect particles whose layer
+  /// shares a bit with the mask. 0 (the default) is affected only by unmasked attractors.
+  pub layer: u32,
   /// Maximum particles this emitter can have alive at once
   pub max_particles: u32,
 
@@ -233,6 +238,7 @@ impl ParticleEmitter {
       z_order: 0,
       effect: None,
       collision: None,
+      layer: 0,
       max_particles: 1000,
       emission_accumulator: 0.0,
       burst_timer: 0.0,
@@ -336,6 +342,12 @@ impl ParticleEmitter {
   }
 
   /// Set collision configuration.
+  /// Set the layer bits for spawned particles (matched against attractor layer masks).
+  pub fn with_layer(mut self, layer: u32) -> Self {
+    self.layer = layer;
+    self
+  }
+
   pub fn with_collision(mut self, config: super::collision::CollisionConfig) -> Self {
     self.collision = Some(config);
     self

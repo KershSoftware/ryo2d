@@ -12,5 +12,5 @@ Particles go into the GPU sprite batch, so they draw with GPU sprites, before tr
 ## Gotchas
 
 - **One-shot cleanup** - nothing despawns finished emitters. Check `is_finished()` and despawn.
-- **Attractor layer masks don't work** - `Particle.collision_layer` is always 0 and never set, so any non-zero `with_layer_mask()` stops the attractor affecting every particle. Leave masks at the default 0.
+- **Layer masks need emitter layers** - an attractor's `with_layer_mask(mask)` only affects particles whose emitter set `with_layer(bits)` with a shared bit. Emitters default to layer 0, which only unmasked attractors (mask 0) affect.
 - **Collisions are not implemented** - `with_collision()` is stored, but `ParticleSystem::update` does no collision detection and never emits `ParticleCollision` (placeholder in `mod.rs`).
