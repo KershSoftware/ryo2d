@@ -974,15 +974,12 @@ impl SaveManager {
     filter: &UserPreferenceFilter,
     defaults: &super::workspace::SystemDefaults,
   ) -> SaveResult<Option<StoredPreferences>> {
-    let path = self.system_path();
-    if !path.exists() {
+    let Some(prefs) = self.load_stored_preferences()? else {
       self.write_filtered_system(seed, filter, !seed.env.is_empty())?;
       return Ok(None);
-    }
+    };
 
-    let raw: RawSystemFile = self.read_json_file(&path)?;
-    let prefs = raw.stored_preferences();
-    let mut state = raw.into_state();
+    let mut state = self.load_system()?;
     if state.merge_defaults(defaults) {
       self.save_system(&state)?;
     }

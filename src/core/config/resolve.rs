@@ -29,30 +29,6 @@ pub(crate) const DEFAULT_MUSIC_VOLUME: f32 = 1.0;
 pub(crate) const DEFAULT_SFX_VOLUME: f32 = 1.0;
 const DEFAULT_TITLE: &str = "Ryo2D";
 
-/// Environment variables `ryo2d build` embeds. `RYO_EMBED_RESOLUTION` is always
-/// set by `ryo2d build` and marks a binary built that way.
-pub(crate) const EMBEDDED_KEYS: &[&str] = &[
-  "RYO_EMBED_RESOLUTION",
-  "RYO_EMBED_VSYNC",
-  "RYO_EMBED_DISPLAY_MODE",
-  "RYO_EMBED_MASTER_VOLUME",
-  "RYO_EMBED_MUSIC_VOLUME",
-  "RYO_EMBED_SFX_VOLUME",
-  "RYO_EMBED_CONSOLE",
-  "RYO_EMBED_TITLE",
-  "RYO_EMBED_SHOW_FPS",
-  "RYO_EMBED_SHOW_COLLIDERS",
-  "RYO_EMBED_SHOW_VELOCITIES",
-  "RYO_EMBED_SHOW_ORIGINS",
-  "RYO_EMBED_SHOW_FRAME_TIMING",
-  "RYO_EMBED_DISABLE_DEBUG_KEYS",
-  "RYO_EMBED_ENABLE_PROFILER",
-  "RYO_EMBED_DEV_WINDOW_KEYS",
-  "RYO_EMBED_LOGGER_WINDOW",
-  "RYO_EMBED_BACKGROUND_FPS",
-  "RYO_EMBED_BACKGROUND_RENDERING",
-];
-
 /// Settings set through `EngineBuilder` calls; `None` = not set.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct BuilderOverrides {
@@ -325,66 +301,34 @@ impl ProjectLayer {
   }
 }
 
-/// Values embedded into this binary at compile time, in [`EMBEDDED_KEYS`] order.
-const COMPILED_EMBEDDED: &[(&str, Option<&str>)] = &[
-  ("RYO_EMBED_RESOLUTION", option_env!("RYO_EMBED_RESOLUTION")),
-  ("RYO_EMBED_VSYNC", option_env!("RYO_EMBED_VSYNC")),
-  (
-    "RYO_EMBED_DISPLAY_MODE",
-    option_env!("RYO_EMBED_DISPLAY_MODE"),
-  ),
-  (
-    "RYO_EMBED_MASTER_VOLUME",
-    option_env!("RYO_EMBED_MASTER_VOLUME"),
-  ),
-  (
-    "RYO_EMBED_MUSIC_VOLUME",
-    option_env!("RYO_EMBED_MUSIC_VOLUME"),
-  ),
-  ("RYO_EMBED_SFX_VOLUME", option_env!("RYO_EMBED_SFX_VOLUME")),
-  ("RYO_EMBED_CONSOLE", option_env!("RYO_EMBED_CONSOLE")),
-  ("RYO_EMBED_TITLE", option_env!("RYO_EMBED_TITLE")),
-  ("RYO_EMBED_SHOW_FPS", option_env!("RYO_EMBED_SHOW_FPS")),
-  (
-    "RYO_EMBED_SHOW_COLLIDERS",
-    option_env!("RYO_EMBED_SHOW_COLLIDERS"),
-  ),
-  (
-    "RYO_EMBED_SHOW_VELOCITIES",
-    option_env!("RYO_EMBED_SHOW_VELOCITIES"),
-  ),
-  (
-    "RYO_EMBED_SHOW_ORIGINS",
-    option_env!("RYO_EMBED_SHOW_ORIGINS"),
-  ),
-  (
-    "RYO_EMBED_SHOW_FRAME_TIMING",
-    option_env!("RYO_EMBED_SHOW_FRAME_TIMING"),
-  ),
-  (
-    "RYO_EMBED_DISABLE_DEBUG_KEYS",
-    option_env!("RYO_EMBED_DISABLE_DEBUG_KEYS"),
-  ),
-  (
-    "RYO_EMBED_ENABLE_PROFILER",
-    option_env!("RYO_EMBED_ENABLE_PROFILER"),
-  ),
-  (
-    "RYO_EMBED_DEV_WINDOW_KEYS",
-    option_env!("RYO_EMBED_DEV_WINDOW_KEYS"),
-  ),
-  (
-    "RYO_EMBED_LOGGER_WINDOW",
-    option_env!("RYO_EMBED_LOGGER_WINDOW"),
-  ),
-  (
-    "RYO_EMBED_BACKGROUND_FPS",
-    option_env!("RYO_EMBED_BACKGROUND_FPS"),
-  ),
-  (
-    "RYO_EMBED_BACKGROUND_RENDERING",
-    option_env!("RYO_EMBED_BACKGROUND_RENDERING"),
-  ),
+/// Environment variables `ryo2d build` embeds, paired with their compile-time
+/// values. `RYO_EMBED_RESOLUTION` is always set by `ryo2d build` and marks a
+/// binary built that way. Each key is written once so the name and the
+/// `option_env!` argument can't drift apart.
+macro_rules! compiled_embedded {
+  ($($key:literal),* $(,)?) => { &[$(($key, option_env!($key))),*] };
+}
+
+pub(crate) const COMPILED_EMBEDDED: &[(&str, Option<&str>)] = compiled_embedded![
+  "RYO_EMBED_RESOLUTION",
+  "RYO_EMBED_VSYNC",
+  "RYO_EMBED_DISPLAY_MODE",
+  "RYO_EMBED_MASTER_VOLUME",
+  "RYO_EMBED_MUSIC_VOLUME",
+  "RYO_EMBED_SFX_VOLUME",
+  "RYO_EMBED_CONSOLE",
+  "RYO_EMBED_TITLE",
+  "RYO_EMBED_SHOW_FPS",
+  "RYO_EMBED_SHOW_COLLIDERS",
+  "RYO_EMBED_SHOW_VELOCITIES",
+  "RYO_EMBED_SHOW_ORIGINS",
+  "RYO_EMBED_SHOW_FRAME_TIMING",
+  "RYO_EMBED_DISABLE_DEBUG_KEYS",
+  "RYO_EMBED_ENABLE_PROFILER",
+  "RYO_EMBED_DEV_WINDOW_KEYS",
+  "RYO_EMBED_LOGGER_WINDOW",
+  "RYO_EMBED_BACKGROUND_FPS",
+  "RYO_EMBED_BACKGROUND_RENDERING",
 ];
 
 /// A value embedded into this binary by `ryo2d build`.
@@ -700,9 +644,12 @@ logo = "art/logo.png"
   }
 
   #[test]
-  fn compiled_table_lists_exactly_the_embedded_keys() {
-    let compiled: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
-    assert_eq!(compiled, EMBEDDED_KEYS);
+  fn compiled_table_has_unique_embed_keys() {
+    let keys: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
+    let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
+    assert_eq!(keys.len(), 19);
+    assert_eq!(unique.len(), keys.len());
+    assert!(keys.iter().all(|key| key.starts_with("RYO_EMBED_")));
     assert_eq!(compiled_embedded_value("RYO_EMBED_NOT_A_KEY"), None);
   }
 
