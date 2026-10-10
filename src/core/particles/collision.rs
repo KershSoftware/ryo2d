@@ -1,6 +1,8 @@
 //! Particle collision configuration
 //!
-//! Defines how particles interact with world colliders.
+//! Defines how particles interact with world colliders: entities with a `Transform` and a
+//! non-trigger `Collider` whose layer shares a bit with [`CollisionConfig::collision_mask`].
+//! Particles ignore the collider on their own emitter's entity.
 
 /// How a particle responds to collision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -13,9 +15,11 @@ pub enum CollisionResponse {
     /// Velocity retention (0.0 = stop, 1.0 = perfect bounce)
     restitution_percent: u8,
   },
-  /// Particle stops at the collision point.
+  /// Particle stops where it hit and stays there until its lifetime ends.
   Stick,
-  /// Particle passes through but emits a ParticleCollision event.
+  /// Particle passes through and emits a [`ParticleCollision`] when it goes from touching no
+  /// collider to touching one. Moving straight from one collider into an overlapping or adjacent
+  /// one does not notify again.
   Event,
 }
 
@@ -38,6 +42,12 @@ impl CollisionResponse {
   }
 }
 
+/// Minimum impact speed along the surface normal, in pixels/second, for a bounce to emit a
+/// [`ParticleCollision`] event. Filters out tiny hops; a particle resting on a surface emits
+/// nothing anyway, because bounce events fire only when a particle goes from touching no
+/// collider to touching one. Also exported from `ryo2d::prelude`.
+pub const MIN_BOUNCE_EVENT_SPEED: f32 = 20.0;
+
 /// Configuration for particle collisions.
 #[derive(Debug, Clone)]
 pub struct CollisionConfig {
@@ -47,6 +57,8 @@ pub struct CollisionConfig {
   pub collision_mask: u32,
   /// How to respond to collisions
   pub response: CollisionResponse,
+  /// Emit a [`ParticleCollision`] on impact for any response (see [`CollisionConfig::with_events`])
+  pub send_events: bool,
 }
 
 impl Default for CollisionConfig {
@@ -55,6 +67,7 @@ impl Default for CollisionConfig {
       radius: 4.0,
       collision_mask: u32::MAX,
       response: CollisionResponse::Die,
+      send_events: false,
     }
   }
 }
@@ -80,12 +93,24 @@ impl CollisionConfig {
     self
   }
 
+  /// Emit a [`ParticleCollision`] event on impact, for any response.
+  ///
+  /// `Die` and `Stick` emit once per particle. `Bounce` emits when the particle hits a collider
+  /// it was not already touching last update, at an impact speed along the surface normal of at
+  /// least [`MIN_BOUNCE_EVENT_SPEED`]. `CollisionResponse::Event` always emits when a particle
+  /// goes from touching no collider to touching one, with or without this.
+  pub fn with_events(mut self) -> Self {
+    self.send_events = true;
+    self
+  }
+
   /// Create a config that makes particles die on collision.
   pub fn die_on_hit(radius: f32) -> Self {
     Self {
       radius,
       collision_mask: u32::MAX,
       response: CollisionResponse::Die,
+      send_events: false,
     }
   }
 
@@ -95,6 +120,7 @@ impl CollisionConfig {
       radius,
       collision_mask: u32::MAX,
       response: CollisionResponse::bounce(restitution),
+      send_events: false,
     }
   }
 
@@ -104,22 +130,29 @@ impl CollisionConfig {
       radius,
       collision_mask: u32::MAX,
       response: CollisionResponse::Stick,
+      send_events: false,
     }
   }
 }
 
-/// Event emitted when a particle collides (when response is Event).
+/// Event emitted when a particle hits a collider.
+///
+/// [`CollisionResponse::Event`] always emits it when a particle goes from touching no collider to
+/// touching one. Other responses emit it only when the config opts in with
+/// [`CollisionConfig::with_events`].
 #[derive(Debug, Clone)]
 pub struct ParticleCollision {
   /// Entity that owns the emitter
   pub emitter_entity: hecs::Entity,
-  /// Position of collision
+  /// The entity whose collider was hit
+  pub collider_entity: hecs::Entity,
+  /// Particle position when the contact was detected
   pub position_x: f32,
   pub position_y: f32,
-  /// Normal of the surface hit
+  /// Unit normal of the surface hit, pointing towards the particle
   pub normal_x: f32,
   pub normal_y: f32,
-  /// Velocity of particle at collision
+  /// Particle velocity before the collision response
   pub velocity_x: f32,
   pub velocity_y: f32,
 }

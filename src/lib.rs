@@ -225,7 +225,7 @@ pub mod prelude {
   // Particle system
   pub use crate::core::particles::{
     AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape,
-    ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem,
+    MIN_BOUNCE_EVENT_SPEED, ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem,
   };
 
   // Tilemap system

@@ -91,15 +91,49 @@ ParticleAttractor::turbulence(30.0, 50.0, 1.0)  // strength, scale, speed
 
 ## Collisions
 
+Particles collide with entities that have `Transform` + `Collider` (trigger colliders are ignored). Each particle is a circle of the given radius. Particles ignore the collider on their own emitter's entity.
+
+Collisions are checked at particle positions once per update, so very fast particles can pass through thin colliders. Use thicker colliders or lower speeds.
+
 ```rust
 // Bouncing particles
 .with_collision(CollisionConfig::bouncy(2.0, 0.7))  // radius, restitution
 
-// Stick on contact
+// Stick on contact (frozen until its lifetime ends)
 .with_collision(CollisionConfig::sticky(2.0))
 
 // Die on contact
-.with_collision(CollisionConfig::deadly(2.0))
+.with_collision(CollisionConfig::die_on_hit(2.0))
+
+// Full form: only colliders whose layer shares a bit with the mask
+.with_collision(
+    CollisionConfig::new(2.0)
+        .with_mask(0b10)  // matched against Collider::layer (default: all layers)
+        .with_response(CollisionResponse::Event),
+)
+
+// Opt in to ParticleCollision events for any response
+.with_collision(CollisionConfig::die_on_hit(2.0).with_events())
+```
+
+| Response | Behaviour | `ParticleCollision` events |
+|----------|-----------|----------------------------|
+| `CollisionResponse::Die` | Particle is removed | Once, with `.with_events()` |
+| `CollisionResponse::bounce(0.7)` (`Bounce`) | Reflects off the surface with restitution | With `.with_events()`, when it goes from touching no collider to touching one, at impact speed >= `MIN_BOUNCE_EVENT_SPEED` (20 px/s, in the prelude); a particle resting on a surface stays quiet |
+| `CollisionResponse::Stick` | Stops and stays until its lifetime ends | Once, with `.with_events()` |
+| `CollisionResponse::Event` | Passes through | Always, when it goes from touching no collider to touching one |
+
+Touching is tracked per particle, not per collider: a particle that moves straight from one collider into an overlapping or adjacent one (or slides along a floor into a wall) doesn't notify again. Bouncing particles still bounce off every collider they overlap.
+
+Read events after `particle_system.update(...)`:
+
+```rust
+for hit in ctx.events.read::<ParticleCollision>() {
+    // hit.emitter_entity, hit.collider_entity
+    // hit.position_x, hit.position_y  - particle position at contact
+    // hit.normal_x, hit.normal_y      - surface normal, pointing at the particle
+    // hit.velocity_x, hit.velocity_y  - velocity before the response
+}
 ```
 
 ## Particle Trails
@@ -182,3 +216,4 @@ fn on_hit(ctx: &mut GameContext, x: f32, y: f32) {
 - **Layer Masks**: Give emitters a layer with `with_layer(0b10)` and attractors a matching `with_layer_mask(0b10)`; a masked attractor ignores particles from emitters without a shared layer bit (the default layer is 0)
 - **Drag**: Use drag to naturally limit particle lifetime
 - **Trails**: Use sparingly - trails add vertex overhead
+- **Collisions**: Fast particles can tunnel through thin colliders (positions are checked once per update); use thicker colliders or lower speeds

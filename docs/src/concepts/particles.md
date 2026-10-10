@@ -180,7 +180,7 @@ ctx.world.spawn((
 
 ## Particle Collisions
 
-Enable particles to interact with the world:
+Particles collide with entities that have a `Transform` and a `Collider` (trigger colliders are ignored). Each particle is a circle of the configured radius, and particles ignore the collider on their own emitter's entity. Collisions are checked at particle positions once per update, so very fast particles can pass through thin colliders; use thicker colliders or lower speeds.
 
 ```rust
 // Bouncing sparks
@@ -191,19 +191,31 @@ ParticleEmitter::sparks(sprite)
 ParticleEmitter::new(sprite)
     .with_collision(CollisionConfig::sticky(2.0))
 
-// Particles that die on contact
+// Particles that die on contact, reporting each hit
 ParticleEmitter::new(sprite)
-    .with_collision(CollisionConfig::deadly(2.0))
+    .with_collision(CollisionConfig::die_on_hit(2.0).with_events())
+
+// Pass through colliders on layer bit 0b10 only, notified when a particle starts touching one
+ParticleEmitter::new(sprite)
+    .with_collision(
+        CollisionConfig::new(2.0)
+            .with_mask(0b10)  // matched against Collider::layer
+            .with_response(CollisionResponse::Event),
+    )
 ```
 
 ### Collision Responses
 
-| Response | Description |
-|----------|-------------|
-| `Bounce` | Reflect off surfaces with restitution |
-| `Stick` | Stop moving on contact |
-| `Die` | Remove particle on contact |
-| `Event` | Emit `ParticleCollision` event for custom handling |
+| Response | Description | Events |
+|----------|-------------|--------|
+| `Bounce` | Reflect off surfaces with restitution | With `with_events()`, when it goes from touching no collider to touching one, at impact speed >= `MIN_BOUNCE_EVENT_SPEED` (20 px/s, in the prelude) |
+| `Stick` | Stop on contact and stay until the lifetime ends | Once, with `with_events()` |
+| `Die` | Remove particle on contact | Once, with `with_events()` |
+| `Event` | Pass through | Always, when it goes from touching no collider to touching one |
+
+Touching is tracked per particle, not per collider: a particle that moves straight from one collider into an overlapping or adjacent one (or slides along a floor into a wall) doesn't notify again. Bouncing particles still bounce off every collider they overlap.
+
+`ParticleCollision` carries `emitter_entity`, `collider_entity`, the particle position (`position_x`/`position_y`), the surface normal (`normal_x`/`normal_y`) and the velocity before the response (`velocity_x`/`velocity_y`). Read it with `ctx.events.read::<ParticleCollision>()` after updating the particle system.
 
 ## Particle Trails
 
@@ -276,7 +288,7 @@ impl Scene for ParticleDemo {
 - **Drag**: Use drag to naturally limit particle lifetime
 - **Trails**: Use sparingly - trails add vertex overhead
 - **Attractors**: Use `with_layer_mask()` to limit which particles are affected
-- **Collisions**: Only enable when needed - spatial queries are expensive
+- **Collisions**: Each colliding particle is tested against every `Collider` once per update (no spatial index). That's fine for hundreds of particles against dozens of colliders; enable collisions only on emitters that need them
 - **One-Shots**: Despawn finished one-shot emitters to free resources
 
 ## Next Steps

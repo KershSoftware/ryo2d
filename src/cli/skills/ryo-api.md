@@ -1558,26 +1558,38 @@ pub enum AttractorType {
 ### CollisionConfig
 
 ```rust
+// Particles collide with Transform + Collider entities
+// (triggers and the particle's own emitter entity are ignored)
 pub struct CollisionConfig {
-    pub radius: f32,
-    pub collision_mask: u32,
-    pub response: CollisionResponse,
+    pub radius: f32,                  // particle circle radius
+    pub collision_mask: u32,          // matched against Collider::layer (default u32::MAX)
+    pub response: CollisionResponse,  // default Die
+    pub send_events: bool,            // default false; set by with_events()
 }
 
 impl CollisionConfig {
-    fn new(radius: f32, response: CollisionResponse) -> Self;
+    fn new(radius: f32) -> Self;      // Die, all layers, no events
+    fn die_on_hit(radius: f32) -> Self;
     fn bouncy(radius: f32, restitution: f32) -> Self;
     fn sticky(radius: f32) -> Self;
-    fn deadly(radius: f32) -> Self;
-    fn event(radius: f32) -> Self;
     fn with_mask(self, mask: u32) -> Self;
+    fn with_response(self, response: CollisionResponse) -> Self;
+    fn with_events(self) -> Self;     // emit ParticleCollision on impact for any response
 }
 
+// Minimum impact speed along the normal (px/s) for a bounce event; in ryo2d::prelude
+pub const MIN_BOUNCE_EVENT_SPEED: f32 = 20.0;
+
 pub enum CollisionResponse {
-    Die,
-    Bounce { restitution: f32 },
-    Stick,
-    Event,
+    Die,                                 // default; removed on contact
+    Bounce { restitution_percent: u8 },  // build with CollisionResponse::bounce(0.7)
+    Stick,                               // frozen until its lifetime ends
+    Event,                               // passes through; always emits on not-touching -> touching
+}
+
+impl CollisionResponse {
+    fn bounce(restitution: f32) -> Self;
+    fn restitution(&self) -> f32;
 }
 ```
 
@@ -1606,11 +1618,18 @@ impl TrailConfig {
 ### ParticleCollision Event
 
 ```rust
+// Event response: always. Die/Stick: once, with with_events().
+// Bounce: on not-touching -> touching at >= MIN_BOUNCE_EVENT_SPEED, with with_events().
+// Touching is per particle: moving straight into an overlapping/adjacent collider doesn't re-notify.
 pub struct ParticleCollision {
-    pub particle_entity: Entity,
+    pub emitter_entity: Entity,
     pub collider_entity: Entity,
-    pub position: (f32, f32),
-    pub normal: (f32, f32),
+    pub position_x: f32,   // particle position at contact
+    pub position_y: f32,
+    pub normal_x: f32,     // unit surface normal, pointing at the particle
+    pub normal_y: f32,
+    pub velocity_x: f32,   // velocity before the response
+    pub velocity_y: f32,
 }
 ```
 
