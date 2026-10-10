@@ -265,7 +265,7 @@ console = false
 
 # =============================================================================
 # DEVELOPER-ONLY SETTINGS
-# These are NOT written to system.json - they're for development
+# These are NOT written to system.json. `ryo2d build` embeds them into release builds too.
 # =============================================================================
 
 [debug]
@@ -276,7 +276,7 @@ show_frame_timing = false
 disable_debug_keys = false
 enable_profiler = false
 logger_window = false
-dev_window_keys = true
+# dev_window_keys = true  # F9/F10/F12 dev windows; also enables them in release builds
 
 # =============================================================================
 # RELEASE/DISTRIBUTION SETTINGS

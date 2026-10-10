@@ -31,13 +31,18 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   // This allows all examples to share compiled dependencies
   let target_dir = find_workspace_target_dir(workspace.root());
 
+  let embedded = embedded_config_env(config, workspace.dev_window_keys_setting());
+  for warning in release_tool_warnings(&embedded) {
+    Output::warning(&warning);
+  }
+
   // Run cargo build --release with embedded config values from [system] and [info]
   let status = Command::new("cargo")
     .arg("build")
     .arg("--release")
     // Use shared target directory for dependency caching
     .env("CARGO_TARGET_DIR", &target_dir)
-    .envs(embedded_config_env(config))
+    .envs(embedded)
     // [release] section values - icon path for Windows .exe embedding
     .env("RYO_EMBED_ICON", &icon_path)
     .current_dir(workspace.root())
@@ -61,10 +66,41 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   Ok(())
 }
 
+/// Warnings for developer tools the embedded config would ship to players.
+fn release_tool_warnings(env: &[(&'static str, String)]) -> Vec<String> {
+  const TOOLS: [(&str, &str, &str); 3] = [
+    (
+      "RYO_EMBED_DEV_WINDOW_KEYS",
+      "[debug] dev_window_keys = true",
+      "F9/F10/F12 developer windows will work in this release build",
+    ),
+    (
+      "RYO_EMBED_LOGGER_WINDOW",
+      "[debug] logger_window = true",
+      "the logger window will open in this release build",
+    ),
+    (
+      "RYO_EMBED_ENABLE_PROFILER",
+      "[debug] enable_profiler = true",
+      "the profiler window will open in this release build",
+    ),
+  ];
+  TOOLS
+    .iter()
+    .filter(|(name, _, _)| {
+      env
+        .iter()
+        .any(|(key, value)| key == name && value == "true")
+    })
+    .map(|(_, setting, effect)| format!("{setting}: {effect}"))
+    .collect()
+}
+
 /// Ryo.toml values passed to the release build; the engine reads them with
 /// `option_env!` (see `core::config::resolve::COMPILED_EMBEDDED`).
 fn embedded_config_env(
   config: &crate::core::config::WorkspaceConfig,
+  dev_window_keys: Option<bool>,
 ) -> Vec<(&'static str, String)> {
   let system = &config.system;
   let debug = &config.debug;
@@ -109,7 +145,7 @@ fn embedded_config_env(
     ),
     (
       "RYO_EMBED_DEV_WINDOW_KEYS",
-      debug.dev_window_keys.to_string(),
+      dev_window_keys.unwrap_or(false).to_string(),
     ),
     ("RYO_EMBED_LOGGER_WINDOW", debug.logger_window.to_string()),
     (
@@ -416,7 +452,7 @@ mod tests {
 
   #[test]
   fn embedded_env_covers_every_key_the_engine_reads() {
-    let mut names: Vec<&str> = embedded_config_env(&WorkspaceConfig::default())
+    let mut names: Vec<&str> = embedded_config_env(&WorkspaceConfig::default(), None)
       .into_iter()
       .map(|(name, _)| name)
       .collect();
@@ -436,7 +472,7 @@ mod tests {
     config.system.target_background_fps = 15;
     config.system.background_rendering = false;
 
-    let env = embedded_config_env(&config);
+    let env = embedded_config_env(&config, Some(true));
     let layer = ProjectLayer::from_embedded(|name| {
       env
         .iter()
@@ -451,6 +487,49 @@ mod tests {
     assert_eq!(layer.logger_window, Some(true));
     assert_eq!(layer.background_fps, Some(15));
     assert_eq!(layer.background_rendering, Some(false));
+  }
+
+  fn embedded_dev_window_keys(toml: &str) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Ryo.toml"), toml).unwrap();
+    let workspace = crate::core::config::Workspace::from_path(dir.path()).unwrap();
+    embedded_config_env(workspace.config(), workspace.dev_window_keys_setting())
+      .into_iter()
+      .find(|(key, _)| *key == "RYO_EMBED_DEV_WINDOW_KEYS")
+      .map(|(_, value)| value)
+      .unwrap()
+  }
+
+  #[test]
+  fn absent_dev_window_keys_embeds_false() {
+    assert_eq!(
+      embedded_dev_window_keys("[project]\nname = \"g\"\n\n[debug]\nshow_fps = true\n"),
+      "false"
+    );
+  }
+
+  #[test]
+  fn explicit_dev_window_keys_is_embedded() {
+    assert_eq!(
+      embedded_dev_window_keys("[project]\nname = \"g\"\n\n[debug]\ndev_window_keys = true\n"),
+      "true"
+    );
+  }
+
+  #[test]
+  fn release_tool_warnings_name_each_enabled_key() {
+    let env = |v: &str| {
+      vec![
+        ("RYO_EMBED_DEV_WINDOW_KEYS", v.to_string()),
+        ("RYO_EMBED_LOGGER_WINDOW", v.to_string()),
+        ("RYO_EMBED_ENABLE_PROFILER", v.to_string()),
+        ("RYO_EMBED_VSYNC", "true".to_string()),
+      ]
+    };
+    let warnings = release_tool_warnings(&env("true"));
+    assert_eq!(warnings.len(), 3);
+    assert!(warnings[0].contains("dev_window_keys"));
+    assert!(release_tool_warnings(&env("false")).is_empty());
   }
 
   #[test]

@@ -90,6 +90,8 @@ pub struct Workspace {
   root: PathBuf,
   /// Parsed configuration
   config: WorkspaceConfig,
+  /// `[debug] dev_window_keys` as written in Ryo.toml, if present
+  dev_window_keys_setting: Option<bool>,
 }
 
 /// Configuration loaded from `ryo.toml`.
@@ -396,10 +398,12 @@ impl Workspace {
       EngineError::WorkspaceError(format!("Failed to parse {}: {}", config_name, e))
     })?;
 
+    let dev_window_keys_setting = raw.debug.as_ref().and_then(|d| d.dev_window_keys);
     let config = Self::build_config(root, raw)?;
     Ok(Workspace {
       root: root.to_path_buf(),
       config,
+      dev_window_keys_setting,
     })
   }
 
@@ -410,6 +414,7 @@ impl Workspace {
     Ok(Workspace {
       root: root.to_path_buf(),
       config,
+      dev_window_keys_setting: None,
     })
   }
 
@@ -570,6 +575,11 @@ impl Workspace {
     // No entry point found - return default (may not exist)
     // This is okay for library-only projects
     Ok(PathBuf::from("src/main.rs"))
+  }
+
+  /// The `[debug] dev_window_keys` value Ryo.toml sets explicitly, if any.
+  pub(crate) fn dev_window_keys_setting(&self) -> Option<bool> {
+    self.dev_window_keys_setting
   }
 
   /// Get the workspace root directory.
