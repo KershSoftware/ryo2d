@@ -102,6 +102,11 @@ Players can edit this file directly.
 
 `Workspace::save_location()` returns the folder; the engine logs it at startup. `ryo2d run` launches the release bundle like a player would, so a non-portable game saves into your real OS folder.
 
+- The save folder is where players' saves live: set `[release] save_folder` before your first release. Changing it - or `[project] name` while it's unset - moves to a new, empty folder.
+- A default folder name from `[project] name` has `/` and characters Windows rejects replaced with `-`. An explicit `save_folder` is used as written (`Studio/Game` nests).
+- Games built with older engine versions saved to `data/` beside the game; set `portable = true` to keep using those saves when shipping an update.
+- The folder persists across `ryo2d build`s; delete its `system.json` to pick up new `[system]` defaults when testing with `ryo2d run`.
+
 ## Loading Configuration
 
 ```rust

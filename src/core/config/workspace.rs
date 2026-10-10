@@ -109,7 +109,8 @@ pub struct WorkspaceConfig {
   pub version: Option<String>,
   /// Path to entry point relative to workspace root
   pub entry_point: PathBuf,
-  /// Path to save data directory relative to workspace root
+  /// Path to save data directory relative to workspace root. This is the
+  /// dev-build save folder; release builds use [`Workspace::save_location`].
   pub save_data: PathBuf,
   /// Path to assets directory relative to workspace root
   pub assets: PathBuf,
@@ -673,7 +674,8 @@ impl Workspace {
 
   /// Create a `SaveManager` configured for this workspace.
   ///
-  /// The save manager will use the workspace's save data directory.
+  /// The save manager will use [`save_location`](Self::save_location): the OS
+  /// user folder in release builds, `[paths] save_data` in dev builds.
   /// The directory will be created if it doesn't exist.
   ///
   /// # Example
