@@ -55,15 +55,24 @@ impl TimeState {
     }
   }
 
-  /// Begin a new frame, updating delta time and accumulator.
+  /// Begin a new frame using wall-clock time since the previous frame.
   pub fn begin_frame(&mut self) {
     let now = Instant::now();
-    self.delta_time = now.duration_since(self.frame_start);
+    let dt = now.duration_since(self.frame_start);
     self.frame_start = now;
+    self.advance(dt);
+  }
+
+  /// Begin a new frame that lasted `dt`.
+  ///
+  /// Headless runs pass exactly [`fixed_timestep`](Self::fixed_timestep) so
+  /// each frame runs one fixed update, independent of the wall clock.
+  pub fn advance(&mut self, dt: Duration) {
+    self.delta_time = dt;
 
     // Add delta to accumulator, but cap it to prevent spiral of death
     // If we fall too far behind, we just drop updates rather than freezing
-    self.accumulator += self.delta_time;
+    self.accumulator += dt;
     let max_accumulator = self.fixed_timestep * 5; // Max 5 physics updates per frame
     if self.accumulator > max_accumulator {
       self.accumulator = max_accumulator;
@@ -72,6 +81,11 @@ impl TimeState {
     self.frame_count += 1;
     // Update dev_log frame number for log entries
     set_frame(self.frame_count);
+  }
+
+  /// The fixed timestep used for logic and physics updates.
+  pub fn fixed_timestep(&self) -> Duration {
+    self.fixed_timestep
   }
 
   /// Check if we have enough accumulated time for a fixed update.
@@ -317,5 +331,58 @@ mod tests {
     // Clamped to 1.0
     time.accumulator = time.fixed_timestep * 2;
     assert_eq!(time.interpolation_alpha(), 1.0);
+  }
+}
+
+#[cfg(test)]
+mod advance_tests {
+  use super::*;
+
+  #[test]
+  fn one_fixed_step_runs_exactly_one_update() {
+    let mut time = TimeState::new(60, 60);
+    let step = time.fixed_timestep();
+
+    time.advance(step);
+
+    assert!(time.should_update());
+    time.consume_update();
+    assert!(!time.should_update());
+    assert_eq!(time.interpolation_alpha(), 0.0);
+  }
+
+  #[test]
+  fn partial_steps_accumulate() {
+    let mut time = TimeState::new(60, 60);
+    let step = time.fixed_timestep();
+    let half = step / 2;
+
+    time.advance(half);
+    assert!(!time.should_update());
+    time.advance(step - half);
+    assert!(time.should_update());
+  }
+
+  #[test]
+  fn accumulator_is_capped_at_five_steps() {
+    let mut time = TimeState::new(60, 60);
+    let step = time.fixed_timestep();
+
+    time.advance(step * 100);
+
+    let mut updates = 0;
+    while time.should_update() {
+      time.consume_update();
+      updates += 1;
+    }
+    assert_eq!(updates, 5);
+  }
+
+  #[test]
+  fn advance_counts_frames() {
+    let mut time = TimeState::new(60, 60);
+    time.advance(Duration::ZERO);
+    time.advance(Duration::ZERO);
+    assert_eq!(time.frame_count(), 2);
   }
 }
