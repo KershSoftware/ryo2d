@@ -285,7 +285,7 @@ pub struct ParticleSystem {
   /// Colliders gathered this update (reused to avoid per-frame allocation)
   colliders: Vec<ParticleCollider>,
   /// Random number generator
-  rng: Option<rand::rngs::ThreadRng>,
+  rng: rand::rngs::ThreadRng,
 }
 
 impl ParticleSystem {
@@ -294,7 +294,7 @@ impl ParticleSystem {
     Self {
       particles: Vec::with_capacity(10000),
       colliders: Vec::new(),
-      rng: Some(rand::thread_rng()),
+      rng: rand::thread_rng(),
     }
   }
 
@@ -631,7 +631,7 @@ impl ParticleSystem {
       return;
     };
 
-    let rng = self.rng.as_mut().unwrap();
+    let rng = &mut self.rng;
 
     // Spawn particles
     for _ in 0..spawn_count {
@@ -866,6 +866,21 @@ mod tests {
   #[test]
   fn layered_attractor_ignores_particles_on_other_layers() {
     assert_eq!(particle_near_attractor(0b01, 0b10), 0.0);
+  }
+
+  #[test]
+  fn default_particle_system_spawns_particles() {
+    let mut system = ParticleSystem::default();
+    let mut world = World::new();
+    let mut events = Events::new();
+    world.spawn((
+      Transform::new(0.0, 0.0),
+      ParticleEmitter::new(test_sprite()).with_mode(EmissionMode::Burst { count: 3 }),
+    ));
+
+    system.update(&mut world, &mut events, 0.016);
+
+    assert_eq!(system.particles.len(), 3);
   }
 
   #[test]
