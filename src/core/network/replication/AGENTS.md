@@ -6,13 +6,14 @@
 - **JSON serialization** - Chosen for simplicity and debuggability; binary (e.g. bincode) is a possible future optimization
 - **Generation-based dirty tracking** - Changes are tagged with a generation, so each client only receives changes since its last acknowledgment
 - **ListenServer optimization** - `ServerLike::is_host()` lets replication skip serializing for the host player
-- **Spawns carry initial state** - `spawn_message()` serializes every registered component the entity has, for both spawn broadcasts and `send_full_state`, so a client (including a late joiner) never sees an entity without its state. Later changes go out as unreliable deltas (acknowledged on send, not on receipt), so every `refresh_interval` broadcasts (default 60, `set_refresh_interval(0)` disables) the server re-sends every replicated component's current value in batches of `REFRESH_BATCH_SIZE`; a lost delta is corrected by the next refresh
+- **Spawns carry initial state** - `spawn_message()` serializes every registered component the entity has, for both spawn broadcasts and `send_full_state`, so a client (including a late joiner) never sees an entity without its state. Later changes go out as unreliable batches that are re-sent until the client acknowledges them (`DirtyTracker::record_ack`); as a safety net, every `refresh_interval` broadcasts (`DEFAULT_REFRESH_INTERVAL` = 300, `set_refresh_interval(0)` disables) the server re-sends every replicated component's current value in batches of `REFRESH_BATCH_SIZE` as `ComponentRefresh` messages, which are never acknowledged
 
 ## Integration Requirements
 
 - On client connect: `register_client(id)`, then `send_full_state(&world, &mut server, id)`. On disconnect: `remove_client(id)`
 - `NetworkedValue::is_dirty()` does NOT notify the manager. You still have to call `replication.mark_dirty::<T>(entity)`
-- Client `process_incoming()` drains ALL `ReliableOrdered` and `Unreliable` messages and silently drops anything that isn't a `ReplicationMessage`. If the client also reads RPCs/raw messages on those channels, one side loses them
+- Replication uses only `Channel::ReplicationReliable` / `ReplicationUnreliable`; game code owns the default channels
+- Clients call `process_incoming` each update (it sends the acks); servers call `broadcast_updates` (it reads them)
 
 ## Notes for AI Agents
 

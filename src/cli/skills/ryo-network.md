@@ -121,6 +121,8 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
 | `Unreliable` | Best-effort | Position updates, frequent state |
 | `ReliableOrdered` | Delivery + FIFO order | Spawns, RPCs, chat |
 | `ReliableUnordered` | Delivery, any order | Independent one-off events |
+| `ReplicationReliable` | Delivery + FIFO order | Reserved for replication; don't send game messages on it |
+| `ReplicationUnreliable` | Best-effort | Reserved for replication; don't send game messages on it |
 
 ```rust
 // Send unreliable (position updates)
@@ -211,7 +213,7 @@ replication.register_client(client_id);
 replication.send_full_state(&world, &mut server, client_id);
 ```
 
-Spawn messages (and full-state syncs) carry the current value of every registered component the entity has when `broadcast_updates()` runs: `with_component` values are there from the start, and replicated components added later with `add_component` must be added before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`. A lost delta isn't re-sent, so the server also re-sends every replicated component's current value periodically (every 60 `broadcast_updates()` calls by default, about once a second; tune with `replication.set_refresh_interval(n)`, `0` turns it off).
+Spawn messages (and full-state syncs) carry the current value of every registered component the entity has when `broadcast_updates()` runs: `with_component` values are there from the start, and replicated components added later with `add_component` must be added before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`. Changes are re-sent to each client until it acknowledges them (`process_incoming()` acknowledges automatically), so a lost packet is recovered on the next broadcast. As a safety net the server also re-sends every replicated component's current value every 300 `broadcast_updates()` calls by default (about 5 s; tune with `replication.set_refresh_interval(n)`, `0` turns it off).
 
 ### 4. Broadcast Updates
 
@@ -226,7 +228,7 @@ replication.broadcast_updates(&world, &mut server);
 replication.process_incoming(&mut world, &mut client);
 ```
 
-Call `broadcast_updates()` every frame. `process_incoming()` drains all `ReliableOrdered` and `Unreliable` messages on the client and drops anything that isn't replication data, so don't also read RPCs from those channels on the same client.
+Call `broadcast_updates()` every frame. `process_incoming()` takes any `ClientLike` (e.g. `NetworkClient`) and reads only the reserved `ReplicationReliable` / `ReplicationUnreliable` channels, so the default channels stay yours for RPCs and game messages.
 
 ## Remote Procedure Calls (RPCs)
 

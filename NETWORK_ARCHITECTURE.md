@@ -136,13 +136,15 @@ This uses Cloudflare Tunnel for temporary internet exposure. **Not for productio
 
 ### Channels
 
-Three channels with different delivery guarantees:
+Three game channels with different delivery guarantees, plus two reserved for replication:
 
 | Channel | Delivery | Ordering | Use Case |
 |---------|----------|----------|----------|
 | **Unreliable** | None | None | Position updates, frequent state (can miss packets) |
 | **ReliableOrdered** | Guaranteed | FIFO | Spawns, despawns, RPCs, critical events |
 | **ReliableUnordered** | Guaranteed | None | Independent events that don't need ordering |
+| **ReplicationReliable** | Guaranteed | FIFO | Reserved: spawns, despawns, full-state syncs |
+| **ReplicationUnreliable** | None | None | Reserved: change batches, refreshes, acks |
 
 ## Connection Layer
 
@@ -288,11 +290,13 @@ Benefits:
 
 | Message | Channel | Purpose |
 |---------|---------|---------|
-| `SpawnEntityMessage` | ReliableOrdered | Create entity with initial components |
-| `DespawnEntityMessage` | ReliableOrdered | Remove entity |
-| `ComponentUpdateMessage` | Unreliable | Single component delta |
-| `ComponentBatchMessage` | Unreliable | Multiple component deltas (efficient) |
-| `FullStateSyncMessage` | ReliableOrdered | Complete state for new clients |
+| `SpawnEntityMessage` | ReplicationReliable | Create entity with initial components |
+| `DespawnEntityMessage` | ReplicationReliable | Remove entity |
+| `ComponentUpdateMessage` | ReplicationUnreliable | Single component delta |
+| `ComponentBatchMessage` | ReplicationUnreliable | Multiple component deltas (efficient) |
+| `FullStateSyncMessage` | ReplicationReliable | Complete state for new clients |
+
+Component changes are acknowledged: clients ack the newest batch they applied (`process_incoming`), and the server re-sends everything changed since each client's last ack, with a periodic full refresh as a safety net.
 
 ### Built-in Replicated Components
 

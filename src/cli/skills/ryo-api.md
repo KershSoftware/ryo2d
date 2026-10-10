@@ -1435,6 +1435,12 @@ pub trait ServerLike {
     fn clients(&self) -> Box<dyn Iterator<Item = ClientId> + '_>;
     fn is_host(&self, client_id: ClientId) -> bool;
 }
+
+// Client-side counterpart (implemented by NetworkClient; taken by process_incoming)
+pub trait ClientLike {
+    fn send(&mut self, channel: Channel, data: &[u8]);
+    fn receive(&mut self, channel: Channel) -> Option<Vec<u8>>;
+}
 ```
 
 ### Configuration
@@ -1461,6 +1467,8 @@ pub enum Channel {
     Unreliable,          // Best-effort, no ordering
     ReliableOrdered,     // Guaranteed delivery + order
     ReliableUnordered,   // Guaranteed delivery, any order
+    ReplicationReliable,   // Reserved for ReplicationManager - don't use for game messages
+    ReplicationUnreliable, // Reserved for ReplicationManager - don't use for game messages
 }
 
 pub type ClientId = u64;   // renet::ClientId
@@ -1498,7 +1506,9 @@ impl ReplicationManager {
     fn mark_dirty<T: Replicated>(&mut self, entity: Entity);
     fn broadcast_updates(&mut self, world: &World, server: &mut impl ServerLike);
     fn send_full_state(&self, world: &World, server: &mut impl ServerLike, client: ClientId);
-    fn process_incoming(&mut self, world: &mut World, client: &mut NetworkClient);
+    fn process_incoming(&mut self, world: &mut World, client: &mut impl ClientLike);  // also sends acks
+    fn client_acked_generation(&self, client_id: ClientId) -> Option<u64>;
+    fn set_refresh_interval(&mut self, interval: u64);  // broadcasts between full refreshes; default 300, 0 disables
     fn get_entity(&self, network_id: NetworkId) -> Option<Entity>;
 }
 
