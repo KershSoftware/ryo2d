@@ -1524,7 +1524,7 @@ fn replication_server_broadcasts_spawn_to_client() {
     server.update(dt);
     client.update(dt);
 
-    if let Some(data) = client.receive(Channel::ReliableOrdered) {
+    if let Some(data) = client.receive(Channel::ReplicationReliable) {
       received_data = Some(data);
       break;
     }
@@ -1597,13 +1597,13 @@ fn replication_client_receives_component_updates() {
     client.update(dt);
 
     // Check reliable channel for spawns
-    if let Some(data) = client.receive(Channel::ReliableOrdered) {
+    if let Some(data) = client.receive(Channel::ReplicationReliable) {
       received_data = Some(data);
       break;
     }
 
     // Check unreliable channel for component updates
-    if let Some(data) = client.receive(Channel::Unreliable) {
+    if let Some(data) = client.receive(Channel::ReplicationUnreliable) {
       received_data = Some(data);
       break;
     }

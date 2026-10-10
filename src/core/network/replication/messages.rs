@@ -35,6 +35,20 @@ pub enum ReplicationMessage {
 
   /// Remote procedure call
   Rpc(RpcMessage),
+
+  /// Periodic full refresh of every replicated component. Applied like a change
+  /// batch but never acknowledged.
+  ComponentRefresh(ComponentBatchMessage),
+
+  /// Client to server: the newest change batch generation the client has applied
+  Ack(AckMessage),
+}
+
+/// Client to server acknowledgement of applied change batches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AckMessage {
+  /// Generation of the newest change batch the client has applied
+  pub generation: u64,
 }
 
 impl ReplicationMessage {

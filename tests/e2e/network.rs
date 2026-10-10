@@ -147,14 +147,14 @@ impl HeadlessClient {
   /// Process all incoming replication messages
   fn process_replication(&mut self) {
     // Process reliable channel (spawns, despawns, full state)
-    while let Some(data) = self.client.receive(Channel::ReliableOrdered) {
+    while let Some(data) = self.client.receive(Channel::ReplicationReliable) {
       if let Ok(msg) = ReplicationMessage::from_bytes(&data) {
         self.handle_replication_message(msg);
       }
     }
 
     // Process unreliable channel (component updates)
-    while let Some(data) = self.client.receive(Channel::Unreliable) {
+    while let Some(data) = self.client.receive(Channel::ReplicationUnreliable) {
       if let Ok(msg) = ReplicationMessage::from_bytes(&data) {
         self.handle_replication_message(msg);
       }
@@ -169,7 +169,7 @@ impl HeadlessClient {
       ReplicationMessage::DespawnEntity(despawn) => {
         self.handle_despawn(despawn);
       }
-      ReplicationMessage::ComponentBatch(batch) => {
+      ReplicationMessage::ComponentBatch(batch) | ReplicationMessage::ComponentRefresh(batch) => {
         for update in batch.updates {
           self.handle_component_update(update);
         }
@@ -1263,13 +1263,18 @@ fn replication_channels_carry_messages_both_ways() {
     .expect("server should see the client");
 
   client.send(Channel::ReplicationReliable, b"up-r");
-  client.send(Channel::ReplicationUnreliable, b"up-u");
   server.send(client_id, Channel::ReplicationReliable, b"down-r");
-  server.send(client_id, Channel::ReplicationUnreliable, b"down-u");
 
   let mut got: [Option<Vec<u8>>; 4] = [None, None, None, None];
   let start = std::time::Instant::now();
   while start.elapsed() < timeout && got.iter().any(Option::is_none) {
+    // Unreliable payloads can be dropped, so re-send until they arrive
+    if got[1].is_none() {
+      client.send(Channel::ReplicationUnreliable, b"up-u");
+    }
+    if got[3].is_none() {
+      server.send(client_id, Channel::ReplicationUnreliable, b"down-u");
+    }
     server.update(dt);
     client.update(dt);
     got[0] = got[0]
@@ -1291,4 +1296,113 @@ fn replication_channels_carry_messages_both_ways() {
   assert_eq!(got[1].as_deref(), Some(&b"up-u"[..]));
   assert_eq!(got[2].as_deref(), Some(&b"down-r"[..]));
   assert_eq!(got[3].as_deref(), Some(&b"down-u"[..]));
+}
+
+#[test]
+fn game_messages_survive_replication() {
+  let port = get_test_port();
+  let protocol_id = 100091;
+  let server_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+  let mut server = HeadlessServer::new(port, protocol_id).expect("Failed to create server");
+  let mut client = HeadlessClient::new(server_addr, protocol_id).expect("Failed to create client");
+
+  let dt = Duration::from_millis(16);
+  let start = std::time::Instant::now();
+  let timeout = Duration::from_secs(3);
+  let mut sent = false;
+  let mut to_client = false;
+  let mut chat = false;
+  let mut to_server = false;
+
+  while start.elapsed() < timeout && !(to_client && chat && to_server) {
+    server.update(dt);
+    client.update(dt);
+    server.process_events();
+    server.broadcast_updates();
+    client.process_replication();
+
+    if client.is_connected() {
+      let client_id = client.client_id();
+      if !sent && server.clients().any(|id| id == client_id) {
+        sent = true;
+        server
+          .server
+          .send(client_id, Channel::ReliableOrdered, b"chat");
+      }
+      // Unreliable payloads can be dropped, so re-send until they arrive
+      if sent && !to_client {
+        server
+          .server
+          .send(client_id, Channel::Unreliable, b"to-client");
+      }
+      if sent && !to_server {
+        client.client.send(Channel::Unreliable, b"to-server");
+      }
+
+      while let Some(data) = client.client.receive(Channel::Unreliable) {
+        to_client |= data == b"to-client";
+      }
+      while let Some(data) = client.client.receive(Channel::ReliableOrdered) {
+        chat |= data == b"chat";
+      }
+      while let Some(data) = server.server.receive(client_id, Channel::Unreliable) {
+        to_server |= data == b"to-server";
+      }
+    }
+    thread::sleep(Duration::from_millis(5));
+  }
+
+  assert!(to_client, "unreliable game message should reach the client");
+  assert!(chat, "reliable game message should reach the client");
+  assert!(to_server, "unreliable game message should reach the server");
+}
+
+#[test]
+fn replication_manager_client_acknowledges_changes() {
+  let port = get_test_port();
+  let protocol_id = 100092;
+  let server_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+  let mut server = HeadlessServer::new(port, protocol_id).expect("Failed to create server");
+  let mut net_client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, protocol_id))
+    .expect("Failed to create client");
+  let mut replication = ReplicationManager::new_client();
+  replication.register::<Transform>();
+  replication.register::<PlayerPosition>();
+  let mut world = World::new();
+
+  let dt = Duration::from_millis(16);
+  let start = std::time::Instant::now();
+  let timeout = Duration::from_secs(3);
+  let mut acked = None;
+  let mut moved = false;
+
+  while start.elapsed() < timeout && acked.is_none() {
+    server.update(dt);
+    net_client.update(dt);
+    server.process_events();
+    // Spawns aren't acknowledged; a component change gives the client a batch to ack
+    if !moved && server.get_player_entity(net_client.client_id()).is_some() {
+      server.move_player(net_client.client_id(), 1.0, 0.0);
+      moved = true;
+    }
+    server.broadcast_updates();
+    replication.process_incoming(&mut world, &mut net_client);
+
+    if net_client.is_connected() {
+      acked = server
+        .replication
+        .client_acked_generation(net_client.client_id());
+    }
+    thread::sleep(Duration::from_millis(5));
+  }
+
+  assert!(acked.is_some(), "server should receive an acknowledgement");
+  let player = server
+    .get_player_entity(net_client.client_id())
+    .and_then(|entity| server.replication.get_network_id(entity))
+    .and_then(|network_id| replication.get_entity(network_id))
+    .expect("client should have its player entity");
+  assert!(world.get::<PlayerPosition>(player).is_some());
 }

@@ -142,6 +142,19 @@ impl DirtyTracker {
     self.client_generations.insert(client_id, self.generation);
   }
 
+  /// Record that a client applied every change up to `generation`.
+  ///
+  /// Keeps the newest acknowledgement, and clamps one beyond the current
+  /// generation (a client can't have seen changes that weren't sent yet).
+  pub fn record_ack(&mut self, client_id: ClientId, generation: u64) {
+    let generation = generation.min(self.generation);
+    let acked = self
+      .client_generations
+      .entry(client_id)
+      .or_insert(generation);
+    *acked = (*acked).max(generation);
+  }
+
   /// Get dirty components for a specific client.
   ///
   /// Returns entities and their dirty components that have changed
@@ -360,5 +373,18 @@ mod tests {
     // Check non-existent entity
     let other_id = NetworkId::from_raw(999);
     assert!(!tracker.is_component_dirty(other_id, transform_id));
+  }
+
+  #[test]
+  fn acks_never_go_backwards_or_past_the_present() {
+    let mut tracker = DirtyTracker::new();
+    for _ in 0..10 {
+      tracker.next_generation();
+    }
+    tracker.record_ack(1, 5);
+    tracker.record_ack(1, 3);
+    assert_eq!(tracker.client_generation(1), Some(5));
+    tracker.record_ack(1, 999);
+    assert_eq!(tracker.client_generation(1), Some(10));
   }
 }
