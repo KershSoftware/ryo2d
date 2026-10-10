@@ -319,6 +319,17 @@ pub struct Engine {
   game_version: Option<String>,
 }
 
+/// Result of rendering and presenting one frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PresentOutcome {
+  /// The frame reached the screen (or offscreen target)
+  Presented,
+  /// Nothing was presented (surface outdated/lost, or no renderer yet)
+  Skipped,
+  /// Rendering failed in a way the window loop treats as fatal
+  Fatal(String),
+}
+
 impl Engine {
   // =============================================================================
   // Coordinate Transformations & Utilities
@@ -855,7 +866,7 @@ impl Engine {
     // because Windows won't deliver RedrawRequested to unfocused game window
     if !throttle {
       // Do full render and present (same as RedrawRequested handler)
-      self.do_full_render_and_present();
+      let _ = self.present_frame();
 
       // Update frame timings and smoothed overlay values
       self.frame_timings.total = frame_start.elapsed();
@@ -887,7 +898,7 @@ impl Engine {
     } else {
       // Optionally render when unfocused
       if self.config.background_rendering {
-        self.do_full_render_and_present();
+        let _ = self.present_frame();
       }
 
       // Update frame timings and smoothed overlay values (keeps FPS overlay alive while unfocused)
@@ -1040,8 +1051,6 @@ impl Engine {
     );
   }
 
-  /// Full render and present pipeline - handles CPU rendering, GPU sprites, trails, lighting.
-  /// Called from both RedrawRequested handler and tick_frame (when profiler has focus).
   /// Advance the capture schedule after a frame reached the screen.
   fn on_frame_presented(&mut self) {
     let result = self
@@ -1074,10 +1083,12 @@ impl Engine {
     }
   }
 
-  fn do_full_render_and_present(&mut self) {
+  /// Render and present one frame — the single present path for window and headless runs.
+  fn present_frame(&mut self) -> PresentOutcome {
     // Render phase
     {
       profile_scope!("cpu:render");
+      let render_start = std::time::Instant::now();
 
       // Get interpolation alpha for smooth rendering
       let alpha = self
@@ -1145,11 +1156,13 @@ impl Engine {
         draw_calls: self.batch_collector.batch_count() as u32,
         sprite_count: (cpu_sprite_count + self.batch_collector.sprite_count()) as u32,
       };
+      self.frame_timings.render = render_start.elapsed();
     } // render scope ends
     self.smoothed_stats.update(&self.debug_stats);
 
     // Present phase
     profile_scope!("gpu:present");
+    let present_start = std::time::Instant::now();
 
     // Take sprite_gpu, lighting, and trail_renderer out to avoid borrow conflicts
     let mut sprite_gpu = self.sprite_gpu.take();
@@ -1158,7 +1171,7 @@ impl Engine {
     let mut trail_renderer = self.trail_renderer.take();
     let mut raycast_renderer = self.raycast_renderer.take();
 
-    let mut presented = false;
+    let mut outcome = PresentOutcome::Skipped;
     if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
       if let Some(path) = self.capture.path_for_next_frame() {
         rend.request_capture(path);
@@ -1358,7 +1371,7 @@ impl Engine {
       };
 
       match result {
-        Ok(_) => presented = true,
+        Ok(_) => outcome = PresentOutcome::Presented,
         Err(wgpu::SurfaceError::Outdated) => {
           self.surface_needs_reconfigure = true;
         }
@@ -1372,6 +1385,7 @@ impl Engine {
         }
         Err(e) => {
           engine_error!(module: "Render", "Render error: {:?}", e);
+          outcome = PresentOutcome::Fatal(format!("{e:?}"));
         }
       }
     }
@@ -1388,9 +1402,12 @@ impl Engine {
       self.first_frame_rendered = true;
     }
 
-    if presented {
+    self.frame_timings.present = present_start.elapsed();
+
+    if outcome == PresentOutcome::Presented {
       self.on_frame_presented();
     }
+    outcome
   }
 
   // =============================================================================
@@ -3070,347 +3087,12 @@ impl ApplicationHandler for Engine {
           return;
         }
 
-        // Render with interpolation alpha
-        // Use a block to limit the profile_scope lifetime
-        {
-          profile_scope!("cpu:render");
-          let render_start = std::time::Instant::now();
-          let alpha = self
-            .time
-            .as_ref()
-            .map(|t| t.interpolation_alpha())
-            .unwrap_or(0.0);
-          self.render(alpha);
-
-          // Call scene_manager.render_gpu() to populate GPU sprite batches
-          {
-            let mut scene_manager = std::mem::take(&mut self.scene_manager);
-            // Get device/queue from renderer for texture uploads
-            if let (Some(sprite_gpu), Some(renderer)) =
-              (self.sprite_gpu.as_mut(), self.renderer.as_ref())
-            {
-              // Upload debug font texture on first frame (if debug overlays enabled)
-              if !self.debug_font_uploaded
-                && (self.config.debug.show_fps
-                  || self.config.debug.show_frame_timing
-                  || self.config.debug.show_stats)
-              {
-                debug::upload_debug_font(
-                  &self.ui_font,
-                  sprite_gpu,
-                  renderer.device(),
-                  renderer.queue(),
-                  &mut self.texture_manager,
-                );
-                self.debug_font_uploaded = true;
-              }
-
-              let mut gpu_ctx = GpuRenderContext::new(
-                &mut self.batch_collector,
-                sprite_gpu,
-                &mut self.texture_manager,
-                renderer.device(),
-                renderer.queue(),
-                &self.camera,
-                &self.world,
-              );
-              scene_manager.render_gpu(&mut gpu_ctx);
-            }
-            self.scene_manager = scene_manager;
+        match self.present_frame() {
+          PresentOutcome::Fatal(_) => {
+            event_loop.exit();
+            return;
           }
-
-          // Capture debug stats before rendering clears them
-          // Count CPU sprites (visible, active entities with Renderable)
-          let cpu_sprite_count = self
-            .renderable_cache
-            .iter()
-            .filter(|(entity, _)| {
-              !self.world.has::<super::ecs::Inactive>(*entity)
-                && self
-                  .world
-                  .get::<Renderable>(*entity)
-                  .map(|r| r.visible)
-                  .unwrap_or(false)
-            })
-            .count();
-
-          self.debug_stats = DebugStats {
-            entity_count: self.world.len(),
-            draw_calls: self.batch_collector.batch_count() as u32,
-            sprite_count: (cpu_sprite_count + self.batch_collector.sprite_count()) as u32,
-          };
-          self.smoothed_stats.update(&self.debug_stats);
-
-          // Render time includes software rendering + GPU batch collection
-          self.frame_timings.render = render_start.elapsed();
-        } // render scope ends here
-
-        // Note: Debug overlays (FPS, frame timing) are now rendered via UI context
-        // in the UI rendering section below, so they appear on top of everything
-        // including lighting effects.
-
-        // Actually draw to screen with post-processing effects, lighting, and GPU sprites
-        // Take sprite_gpu, lighting, and trail_renderer out to avoid borrow conflicts with renderer
-        profile_scope!("gpu:present");
-        let present_start = std::time::Instant::now();
-        let mut sprite_gpu = self.sprite_gpu.take();
-        let mut renderer = self.renderer.take();
-        let mut lighting = self.lighting.take();
-        let mut trail_renderer = self.trail_renderer.take();
-        let mut raycast_renderer = self.raycast_renderer.take();
-
-        let mut presented = false;
-        if let (Some(rend), Some(gpu)) = (&mut renderer, &mut sprite_gpu) {
-          if let Some(path) = self.capture.path_for_next_frame() {
-            rend.request_capture(path);
-          }
-
-          // Collect trails and lines from the world (inside renderer block for device/queue access)
-          if let Some(ref mut trails) = trail_renderer {
-            trails.begin_frame();
-
-            // Add Trail2D components (skip inactive pooled entities)
-            for entity in self.world.entities_with::<Trail2D>() {
-              if self.world.has::<super::ecs::Inactive>(entity) {
-                continue;
-              }
-              if let (Some(trail), Some(transform)) = (
-                self.world.get::<Trail2D>(entity),
-                self.world.get::<Transform>(entity),
-              ) {
-                // Use add_trail_with_device for texture caching support
-                trails.add_trail_with_device(rend.device(), rend.queue(), &trail, &transform);
-              }
-            }
-
-            // Add Line2D components (skip inactive pooled entities)
-            for entity in self.world.entities_with::<Line2D>() {
-              if self.world.has::<super::ecs::Inactive>(entity) {
-                continue;
-              }
-              if let (Some(line), Some(transform)) = (
-                self.world.get::<Line2D>(entity),
-                self.world.get::<Transform>(entity),
-              ) {
-                trails.add_line(&line, transform.x, transform.y);
-              }
-            }
-          }
-          // Only use GPU sprite callback if we have batched sprites or trails
-          let has_gpu_sprites = self.batch_collector.sprite_count() > 0;
-          let has_trails = trail_renderer
-            .as_ref()
-            .map(|t| t.vertex_count() > 0)
-            .unwrap_or(false);
-
-          // Collect lights from the world
-          let lights: Vec<_> = self
-            .world
-            .query_mut::<(&Transform, &Light2D)>()
-            .into_iter()
-            .map(|(t, l)| (t.clone(), l.clone()))
-            .collect();
-
-          // Collect occluders for shadow casting
-          let occluders: Vec<_> = self
-            .world
-            .query_mut::<(&Transform, &LightOccluder2D)>()
-            .into_iter()
-            .map(|(t, o)| (t.clone(), o.clone()))
-            .collect();
-
-          // Check if any lights cast shadows and there are occluders
-          let has_shadow_casting_lights = lights.iter().any(|(_, l)| l.casts_shadows());
-          let should_render_shadows = has_shadow_casting_lights && !occluders.is_empty();
-
-          // Auto-enable lighting when Light2D entities exist
-          if !lights.is_empty()
-            && let Some(ref mut l) = lighting
-            && !l.is_enabled()
-          {
-            l.set_enabled(true);
-          }
-
-          // Update god rays effect with positions from lights that contribute
-          if let Some(ref l) = lighting {
-            let cam_pos = glam::Vec2::new(self.camera.x, self.camera.y);
-            l.update_god_rays(&mut self.effects, &lights, cam_pos, self.camera.zoom);
-          }
-
-          // Update GPU renderer viewport
-          gpu.set_viewport(
-            rend.queue(),
-            rend.game_width() as f32,
-            rend.game_height() as f32,
-          );
-
-          // Prepare camera data for trail rendering
-          let camera_pos = glam::Vec2::new(self.camera.x, self.camera.y);
-          let camera_zoom = self.camera.zoom;
-          let time = self
-            .time
-            .as_ref()
-            .map(|t| t.frame_count() as f32 / 60.0)
-            .unwrap_or(0.0);
-
-          // Check if lighting is enabled and should be applied
-          let lighting_enabled = lighting.as_ref().map(|l| l.is_enabled()).unwrap_or(false);
-
-          // Check if raycasting is active
-          let raycast_enabled = raycast_renderer
-            .as_ref()
-            .map(|r| r.is_enabled())
-            .unwrap_or(false);
-
-          let result = if raycast_enabled {
-            // GPU raycasting path - bypasses CPU pixel buffer entirely
-            sync_and_render_raycast(
-              &self.world,
-              raycast_renderer.as_mut().unwrap(),
-              rend,
-              &self.effects,
-              &self.ui_buffer,
-              time,
-              &self.texture_manager,
-            )
-          } else if has_gpu_sprites || has_trails || lighting_enabled {
-            // Create GPU sprite callback (backgrounds, parallax - renders BEFORE CPU content)
-            let batch_collector = &self.batch_collector;
-            let gpu_callback = |queue: &wgpu::Queue,
-                                encoder: &mut wgpu::CommandEncoder,
-                                view: &wgpu::TextureView| {
-              if has_gpu_sprites {
-                gpu.render_batches(queue, encoder, view, batch_collector);
-              }
-            };
-
-            // Create trail callback (renders AFTER CPU content so backgrounds don't cover trails)
-            let trail_callback = |queue: &wgpu::Queue,
-                                  encoder: &mut wgpu::CommandEncoder,
-                                  view: &wgpu::TextureView| {
-              if let Some(ref mut trails) = trail_renderer {
-                trails.render(
-                  queue,
-                  encoder,
-                  view,
-                  camera_pos,
-                  camera_zoom,
-                  time,
-                  super::trail::TrailStyle::Solid,
-                );
-              }
-            };
-
-            // Create lighting callback if lighting is enabled
-            if lighting_enabled {
-              // Borrow lighting for the callback - we can't move it because it needs to be restored
-              let lighting_ref = &mut lighting;
-              let lighting_callback =
-                move |device: &wgpu::Device,
-                      queue: &wgpu::Queue,
-                      encoder: &mut wgpu::CommandEncoder,
-                      scene_texture: &wgpu::Texture,
-                      output_view: &wgpu::TextureView| {
-                  if let Some(ref mut lighting_renderer) = *lighting_ref {
-                    // Render lights to the light accumulation buffer
-                    lighting_renderer.render_lights(
-                      device,
-                      queue,
-                      encoder,
-                      lights.iter().map(|(t, l)| (t, l)),
-                      camera_pos,
-                      camera_zoom,
-                    );
-
-                    // Render shadows to subtract from light buffer
-                    if should_render_shadows {
-                      let occluder_refs: Vec<(&Transform, &LightOccluder2D)> =
-                        occluders.iter().map(|(t, o)| (t, o)).collect();
-                      let shadow_geometry = generate_shadow_geometry(
-                        lights.iter().map(|(t, l)| (t, l)),
-                        &occluder_refs,
-                      );
-                      lighting_renderer.render_shadows(device, queue, encoder, &shadow_geometry);
-                    }
-
-                    // Compose the lit scene from game texture (has GPU sprites + CPU content)
-                    lighting_renderer.compose_from_texture(
-                      device,
-                      queue,
-                      encoder,
-                      scene_texture,
-                      output_view,
-                      time,
-                    );
-                  }
-                };
-
-              // Pass ui_buffer for compositing after lighting
-              // If UI was rendered directly to frame, ui_buffer will be zeros (no effect)
-              // If UI was rendered separately, it will be composited on top of lit scene
-              rend.render_with_lighting(
-                Some(&self.effects),
-                Some(gpu_callback),
-                Some(lighting_callback),
-                Some(&self.ui_buffer),
-              )
-            } else {
-              rend.render_with_gpu_sprites(
-                Some(&self.effects),
-                Some(gpu_callback),
-                Some(trail_callback),
-                Some(&self.ui_buffer),
-              )
-            }
-          } else {
-            rend.render_with_effects(Some(&self.effects), Some(&self.ui_buffer))
-          };
-
-          match result {
-            Ok(_) => presented = true,
-            Err(wgpu::SurfaceError::Outdated) => {
-              // Surface needs reconfiguration (display mode changed, window resized, etc.)
-              // This is recoverable - the next frame will work after resize event
-              self.surface_needs_reconfigure = true;
-            }
-            Err(wgpu::SurfaceError::Lost) => {
-              // Surface was lost, try to reconfigure
-              if let Some(ref mut rend) = renderer
-                && let Some(window) = &self.window
-              {
-                let size = window.inner_size();
-                rend.resize(size.width, size.height);
-              }
-            }
-            Err(e) => {
-              engine_error!(module: "Render", "Render error: {:?}", e);
-              // Put back before exiting
-              self.sprite_gpu = sprite_gpu;
-              self.renderer = renderer;
-              self.lighting = lighting;
-              self.trail_renderer = trail_renderer;
-              self.raycast_renderer = raycast_renderer;
-              event_loop.exit();
-              return;
-            }
-          }
-        }
-
-        // Put sprite_gpu, renderer, lighting, trail_renderer, and raycast_renderer back
-        self.sprite_gpu = sprite_gpu;
-        self.renderer = renderer;
-        self.lighting = lighting;
-        self.trail_renderer = trail_renderer;
-        self.raycast_renderer = raycast_renderer;
-        if presented {
-          self.on_frame_presented();
-        }
-        // Present time = GPU submission + effects pipeline
-        self.frame_timings.present = present_start.elapsed();
-
-        // Track first frame for potential future use
-        if !self.first_frame_rendered {
-          self.first_frame_rendered = true;
+          PresentOutcome::Presented | PresentOutcome::Skipped => {}
         }
 
         // Render profiler window directly when game window has focus
