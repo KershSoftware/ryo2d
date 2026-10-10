@@ -150,29 +150,19 @@ impl Default for EngineConfig {
 /// - Presentation doesn't already block (i.e., not using Fifo/VSync mode)
 /// - VSync is not explicitly disabled (vsync=false means the developer wants uncapped FPS)
 ///
-/// When vsync is on or unset, software frame limiting caps at `target_fps` to prevent
-/// wasting CPU/GPU. When vsync is explicitly off, the developer has opted into uncapped
-/// rendering for maximum performance.
+/// When vsync is on, software frame limiting caps at `target_fps` to prevent wasting
+/// CPU/GPU. When vsync is off, the developer has opted into uncapped rendering for
+/// maximum performance.
 ///
 /// # Arguments
 /// * `presentation_blocks` - Whether the GPU presentation blocks until vsync (Fifo mode)
-/// * `vsync` - VSync preference: None (default), Some(true) (on), Some(false) (off)
+/// * `vsync` - The resolved VSync setting
 ///
 /// # Returns
 /// `true` if manual frame limiting should be applied, `false` otherwise
-fn should_apply_frame_limiting(presentation_blocks: bool, vsync: Option<bool>) -> bool {
-  // Don't limit if presentation already blocks (Fifo mode handles timing)
-  if presentation_blocks {
-    return false;
-  }
-
-  // VSync explicitly off: developer wants uncapped FPS, no software limiting
-  if vsync == Some(false) {
-    return false;
-  }
-
-  // VSync on or default: software-limit to target_fps
-  true
+fn should_apply_frame_limiting(presentation_blocks: bool, vsync: bool) -> bool {
+  // Presentation that blocks (Fifo) already handles timing; vsync off means uncapped
+  !presentation_blocks && vsync
 }
 
 /// Determine cursor grab mode and visibility when window focus changes.
@@ -238,7 +228,7 @@ pub struct Engine {
   // Cached window size to avoid redundant resize calls
   last_window_size: (u32, u32),
   // VSync preference from system.json (None = use engine default)
-  vsync: Option<bool>,
+  vsync: bool,
   // GPU sprite renderer for entities with Material/shader effects
   sprite_gpu: Option<SpriteGpuRenderer>,
   // Batch collector for GPU sprite rendering (reused each frame)
@@ -594,7 +584,7 @@ impl Engine {
   fn new(
     config: EngineConfig,
     initial_scene: Box<dyn Scene>,
-    vsync: Option<bool>,
+    vsync: bool,
     master_volume: f32,
     music_volume: f32,
     sfx_volume: f32,
@@ -2964,7 +2954,7 @@ impl ApplicationHandler for Engine {
       self.config.window_mode,
       self.config.max_width,
       self.config.max_height,
-      self.vsync,
+      Some(self.vsync),
     ));
 
     // Present the first frame immediately to prevent white flash on startup
@@ -3958,28 +3948,17 @@ impl EngineBuilder {
     config.debug.dev_window_keys = settings.dev_window_keys;
     config.debug.dev_console = settings.dev_console;
 
-    // Runtime env var override for profiler (from `ryo2d dev --profiler`)
-    // When -p flag is used, ensure enable_profiler is true so puffin scopes are collected
-    if std::env::var("RYO_PROFILER_AUTO_OPEN").is_ok() {
-      config.debug.enable_profiler = true;
-    }
-
-    // For release builds: check for icon.png next to executable (created by `ryo2d build`)
-    // If not found, load_window_icon() will use the embedded default Ryo2D logo
-    if config.icon_path.is_none()
-      && let Ok(exe_path) = std::env::current_exe()
-      && let Some(exe_dir) = exe_path.parent()
-    {
-      let icon_path = exe_dir.join("icon.png");
-      if icon_path.exists() {
-        config.icon_path = Some(icon_path);
-      }
-    }
+    let exe = std::env::current_exe().ok();
+    apply_launch_overrides(
+      &mut config,
+      std::env::var("RYO_PROFILER_AUTO_OPEN").is_ok(),
+      exe.as_deref().and_then(std::path::Path::parent),
+    );
 
     ResolvedBuild {
       config,
       initial_scene,
-      vsync: Some(settings.vsync),
+      vsync: settings.vsync,
       master_volume: settings.master_volume,
       music_volume: settings.music_volume,
       sfx_volume: settings.sfx_volume,
@@ -3996,7 +3975,7 @@ impl EngineBuilder {
 struct ResolvedBuild {
   config: EngineConfig,
   initial_scene: Box<dyn Scene>,
-  vsync: Option<bool>,
+  vsync: bool,
   master_volume: f32,
   music_volume: f32,
   sfx_volume: f32,
@@ -4010,6 +3989,28 @@ struct ResolvedBuild {
 impl Default for EngineBuilder {
   fn default() -> Self {
     Self::new()
+  }
+}
+
+/// Settings that come from how the game was launched, applied after layering.
+///
+/// - `profiler_requested` (`ryo2d dev --profiler` sets `RYO_PROFILER_AUTO_OPEN`)
+///   turns the profiler on so puffin scopes are collected.
+/// - With no icon configured, an `icon.png` beside the executable (put there by
+///   `ryo2d build`) is used; otherwise the embedded Ryo2D logo is.
+fn apply_launch_overrides(
+  config: &mut EngineConfig,
+  profiler_requested: bool,
+  exe_dir: Option<&std::path::Path>,
+) {
+  if profiler_requested {
+    config.debug.enable_profiler = true;
+  }
+  if config.icon_path.is_none()
+    && let Some(icon_path) = exe_dir.map(|dir| dir.join("icon.png"))
+    && icon_path.exists()
+  {
+    config.icon_path = Some(icon_path);
   }
 }
 
@@ -4109,6 +4110,42 @@ mod tests {
   }
 
   #[test]
+  fn profiler_flag_turns_the_profiler_on() {
+    let mut config = EngineConfig::default();
+    apply_launch_overrides(&mut config, true, None);
+    assert!(config.debug.enable_profiler);
+
+    let mut config = EngineConfig::default();
+    apply_launch_overrides(&mut config, false, None);
+    assert!(!config.debug.enable_profiler);
+  }
+
+  #[test]
+  fn icon_beside_the_game_is_used_when_none_is_set() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("icon.png"), b"png").unwrap();
+
+    let mut config = EngineConfig::default();
+    apply_launch_overrides(&mut config, false, Some(dir.path()));
+    assert_eq!(config.icon_path, Some(dir.path().join("icon.png")));
+
+    let mut config = EngineConfig {
+      icon_path: Some(std::path::PathBuf::from("assets/custom.png")),
+      ..EngineConfig::default()
+    };
+    apply_launch_overrides(&mut config, false, Some(dir.path()));
+    assert_eq!(
+      config.icon_path,
+      Some(std::path::PathBuf::from("assets/custom.png"))
+    );
+
+    let empty = tempfile::tempdir().unwrap();
+    let mut config = EngineConfig::default();
+    apply_launch_overrides(&mut config, false, Some(empty.path()));
+    assert_eq!(config.icon_path, None);
+  }
+
+  #[test]
   fn missing_preference_keys_fall_through_to_builder_and_project() {
     let (_dir, ws) = temp_workspace(
       "[system]\nmaster_volume = 0.3\nvsync = true\n",
@@ -4123,7 +4160,7 @@ mod tests {
       .resolve_in(Some(&ws), false);
     assert_eq!((r.config.width, r.config.height), (800, 600));
     assert_eq!(r.config.display_mode, DisplayMode::BorderlessFullscreen);
-    assert_eq!(r.vsync, Some(false));
+    assert!(!r.vsync);
     assert_eq!(r.master_volume, 0.3);
     assert!(r.config.debug.show_fps);
   }
@@ -4285,7 +4322,7 @@ mod tests {
     assert_eq!(r.master_volume, 0.2);
     assert_eq!((r.config.width, r.config.height), (1600, 900));
     // Vsync isn't in either filter: the last builder call wins
-    assert_eq!(r.vsync, Some(true));
+    assert!(r.vsync);
   }
 
   #[test]
@@ -4397,7 +4434,7 @@ mod tests {
     let engine = Engine::new(
       config,
       Box::new(EmptyScene),
-      None,
+      true,
       1.0,
       1.0,
       1.0,
@@ -4538,29 +4575,22 @@ mod tests {
   // ===========================================================================
 
   #[test]
-  fn frame_limiting_applied_when_vsync_not_set() {
-    // Default behavior: limit to target_fps when vsync is not configured
-    assert!(should_apply_frame_limiting(false, None));
-  }
-
-  #[test]
   fn frame_limiting_applied_when_vsync_on() {
     // VSync on with Mailbox mode: still apply frame limiting
-    assert!(should_apply_frame_limiting(false, Some(true)));
+    assert!(should_apply_frame_limiting(false, true));
   }
 
   #[test]
   fn frame_limiting_skipped_when_vsync_off() {
     // VSync explicitly off: developer wants uncapped FPS
-    assert!(!should_apply_frame_limiting(false, Some(false)));
+    assert!(!should_apply_frame_limiting(false, false));
   }
 
   #[test]
   fn frame_limiting_skipped_when_presentation_blocks() {
     // Fifo mode blocks on presentation: no manual limiting needed regardless of vsync setting
-    assert!(!should_apply_frame_limiting(true, None));
-    assert!(!should_apply_frame_limiting(true, Some(true)));
-    assert!(!should_apply_frame_limiting(true, Some(false)));
+    assert!(!should_apply_frame_limiting(true, true));
+    assert!(!should_apply_frame_limiting(true, false));
   }
 
   // ===========================================================================
