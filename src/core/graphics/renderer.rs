@@ -6,6 +6,7 @@
 //! 3. Applies post-processing effects (optional)
 //! 4. Renders the texture to screen with proper letterboxing/scaling
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Default background color for the game framebuffer.
@@ -21,7 +22,9 @@ pub const DEFAULT_BACKGROUND_COLOR: wgpu::Color = wgpu::Color {
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+use crate::core::capture::{CapturedFrame, read_texture_rgba};
 use crate::core::engine::WindowMode;
+use crate::core::error::{CaptureError, CaptureResult};
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
 /// Handles wgpu rendering of a software pixel buffer to screen.
@@ -72,6 +75,14 @@ pub struct WgpuRenderer {
   // Whether presentation blocks until vsync (Fifo mode)
   // When true, manual frame limiting should be skipped to avoid double-waiting
   presentation_blocks: bool,
+  // Identity viewport uniform (no letterboxing) for game-resolution passes
+  identity_uniform_buffer: wgpu::Buffer,
+  // Offscreen target for frame capture, created on first capture
+  capture_texture: Option<wgpu::Texture>,
+  // Destination for the capture requested for the next presented frame
+  pending_capture: Option<PathBuf>,
+  // Result of the latest capture, collected by the engine
+  capture_result: Option<CaptureResult<CapturedFrame>>,
 }
 
 /// Viewport uniform data sent to shader
@@ -554,6 +565,10 @@ impl WgpuRenderer {
       pixel_buffer,
       post_process: Some(post_process),
       presentation_blocks,
+      identity_uniform_buffer,
+      capture_texture: None,
+      pending_capture: None,
+      capture_result: None,
     };
 
     // Initialize viewport transform
@@ -707,6 +722,9 @@ impl WgpuRenderer {
     });
 
     self.update_viewport_transform();
+
+    // Recreated at the new size on the next capture
+    self.capture_texture = None;
   }
 
   /// Update the viewport uniform based on current window mode and sizes.
@@ -871,6 +889,7 @@ impl WgpuRenderer {
     let view = output
       .texture
       .create_view(&wgpu::TextureViewDescriptor::default());
+    let capture_path = self.prepare_capture();
 
     // Create command encoder
     let mut encoder = self
@@ -1027,10 +1046,14 @@ impl WgpuRenderer {
       has_ui_overlay,
       &self.uniform_buffer,
     );
+    if capture_path.is_some() {
+      self.encode_capture_pass(&mut encoder, source_view, has_ui_overlay);
+    }
 
     // Submit commands
     self.queue.submit(std::iter::once(encoder.finish()));
     output.present();
+    self.finish_capture(capture_path);
 
     Ok(())
   }
@@ -1102,6 +1125,7 @@ impl WgpuRenderer {
     let view = output
       .texture
       .create_view(&wgpu::TextureViewDescriptor::default());
+    let capture_path = self.prepare_capture();
 
     // Create command encoder
     let mut encoder = self
@@ -1335,10 +1359,14 @@ impl WgpuRenderer {
       has_ui_overlay,
       &self.uniform_buffer,
     );
+    if capture_path.is_some() {
+      self.encode_capture_pass(&mut encoder, source_view, has_ui_overlay);
+    }
 
     // Submit commands
     self.queue.submit(std::iter::once(encoder.finish()));
     output.present();
+    self.finish_capture(capture_path);
 
     Ok(())
   }
@@ -1371,6 +1399,7 @@ impl WgpuRenderer {
     let view = output
       .texture
       .create_view(&wgpu::TextureViewDescriptor::default());
+    let capture_path = self.prepare_capture();
 
     // Create command encoder
     let mut encoder = self
@@ -1480,12 +1509,90 @@ impl WgpuRenderer {
       has_ui_overlay,
       &self.uniform_buffer,
     );
+    if capture_path.is_some() {
+      self.encode_capture_pass(&mut encoder, source_view, has_ui_overlay);
+    }
 
     // Submit commands
     self.queue.submit(std::iter::once(encoder.finish()));
     output.present();
+    self.finish_capture(capture_path);
 
     Ok(())
+  }
+
+  /// Capture the next presented frame to `path` at game resolution.
+  ///
+  /// Replaces any pending request. Collect the outcome with
+  /// [`take_capture_result`](Self::take_capture_result) after rendering.
+  pub fn request_capture(&mut self, path: PathBuf) {
+    self.pending_capture = Some(path);
+  }
+
+  /// Take the result of the latest capture, if one ran since the last call.
+  pub fn take_capture_result(&mut self) -> Option<CaptureResult<CapturedFrame>> {
+    self.capture_result.take()
+  }
+
+  /// Take the pending request and make sure the capture texture matches the game resolution.
+  fn prepare_capture(&mut self) -> Option<PathBuf> {
+    let path = self.pending_capture.take()?;
+    let up_to_date = self
+      .capture_texture
+      .as_ref()
+      .is_some_and(|t| t.width() == self.game_width && t.height() == self.game_height);
+    if !up_to_date {
+      self.capture_texture = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Frame Capture Texture"),
+        size: wgpu::Extent3d {
+          width: self.game_width,
+          height: self.game_height,
+          depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        // Must match the surface format: the final-composite pipelines target it
+        format: self.config.format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+      }));
+    }
+    Some(path)
+  }
+
+  /// Draw the final composite into the capture texture (no letterbox).
+  fn encode_capture_pass(
+    &self,
+    encoder: &mut wgpu::CommandEncoder,
+    source: &wgpu::TextureView,
+    has_ui_overlay: bool,
+  ) {
+    if let Some(texture) = &self.capture_texture {
+      let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+      self.draw_final_composite(
+        encoder,
+        &view,
+        source,
+        has_ui_overlay,
+        &self.identity_uniform_buffer,
+      );
+    }
+  }
+
+  /// Read the capture texture back once the frame's commands were submitted.
+  fn finish_capture(&mut self, path: Option<PathBuf>) {
+    let Some(path) = path else {
+      return;
+    };
+    let result = match &self.capture_texture {
+      Some(texture) => read_texture_rgba(&self.device, &self.queue, texture)
+        .map(|image| CapturedFrame { image, path }),
+      None => Err(CaptureError::Readback(
+        "capture texture missing".to_string(),
+      )),
+    };
+    self.capture_result = Some(result);
   }
 
   /// Draw the final frame (scene source + optional UI overlay) into `target`.
