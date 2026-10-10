@@ -14,6 +14,7 @@ Particles go into the GPU sprite batch, so they draw with GPU sprites, before tr
 - **One-shot cleanup** - nothing despawns finished emitters. Check `is_finished()` and despawn.
 - **Layer masks need emitter layers** - an attractor's `with_layer_mask(mask)` only affects particles whose emitter set `with_layer(bits)` with a shared bit. Emitters default to layer 0, which only unmasked attractors (mask 0) affect.
 - **Disabled or `Inactive` emitters** - their live particles lose gravity and collisions (the per-emitter lookup only holds active, enabled emitters).
+- **Randomness** - spawn variation comes from the system's `StdRng`: `new()`/`default()` seed it from entropy, `with_seed(n)` makes it reproducible for a given engine version (headless frame comparisons, replays).
 
 ## Collisions
 

@@ -83,7 +83,8 @@ use crate::core::events::Events;
 use crate::core::graphics::{BatchCollector, Camera, SpriteInstance};
 use crate::core::physics::{Collider, ColliderShape};
 use hecs::Entity;
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 /// Internal particle data stored per-emitter.
 #[derive(Debug)]
@@ -278,23 +279,42 @@ fn candidate_colliders<'a>(
 /// - Collision detection (optional)
 /// - Trail updates (optional)
 /// - GPU batch collection for rendering
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ParticleSystem {
   /// All active particles, grouped by emitter entity
   particles: Vec<ParticleData>,
   /// Colliders gathered this update (reused to avoid per-frame allocation)
   colliders: Vec<ParticleCollider>,
-  /// Random number generator
-  rng: rand::rngs::ThreadRng,
+  /// Random number generator for spawn variation
+  rng: StdRng,
+}
+
+impl Default for ParticleSystem {
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 impl ParticleSystem {
-  /// Create a new particle system.
+  /// Create a new particle system with a random seed.
   pub fn new() -> Self {
+    Self::with_rng(StdRng::from_entropy())
+  }
+
+  /// Create a particle system whose spawn variation (lifetimes, sizes,
+  /// directions, speeds) comes from `seed`.
+  ///
+  /// The same seed and the same updates give the same particles on a given
+  /// engine version - use it for headless visual tests and replays.
+  pub fn with_seed(seed: u64) -> Self {
+    Self::with_rng(StdRng::seed_from_u64(seed))
+  }
+
+  fn with_rng(rng: StdRng) -> Self {
     Self {
       particles: Vec::with_capacity(10000),
       colliders: Vec::new(),
-      rng: rand::thread_rng(),
+      rng,
     }
   }
 
@@ -689,7 +709,7 @@ impl ParticleSystem {
     emitter_y: f32,
     speed_min: f32,
     speed_max: f32,
-    rng: &mut rand::rngs::ThreadRng,
+    rng: &mut StdRng,
   ) -> (f32, f32, f32, f32) {
     match shape {
       EmissionShape::Point => {
@@ -866,6 +886,37 @@ mod tests {
   #[test]
   fn layered_attractor_ignores_particles_on_other_layers() {
     assert_eq!(particle_near_attractor(0b01, 0b10), 0.0);
+  }
+
+  fn spawned_motion(seed: u64) -> Vec<(f32, f32, f32)> {
+    let mut system = ParticleSystem::with_seed(seed);
+    let mut world = World::new();
+    let mut events = Events::new();
+    world.spawn((
+      Transform::new(0.0, 0.0),
+      ParticleEmitter::new(test_sprite())
+        .with_mode(EmissionMode::Burst { count: 5 })
+        .with_speed(10.0, 50.0)
+        .with_lifetime(1.0, 3.0),
+    ));
+    system.update(&mut world, &mut events, 0.016);
+    system
+      .particles
+      .iter()
+      .map(|p| {
+        (
+          p.particle.velocity_x,
+          p.particle.velocity_y,
+          p.particle.max_lifetime,
+        )
+      })
+      .collect()
+  }
+
+  #[test]
+  fn seeded_particle_systems_spawn_identical_particles() {
+    assert_eq!(spawned_motion(7), spawned_motion(7));
+    assert_ne!(spawned_motion(7), spawned_motion(8));
   }
 
   #[test]

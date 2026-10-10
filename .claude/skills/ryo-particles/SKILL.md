@@ -217,3 +217,4 @@ fn on_hit(ctx: &mut SceneContext, x: f32, y: f32) {
 - **Drag**: Use drag to naturally limit particle lifetime
 - **Trails**: Use sparingly - trails add vertex overhead
 - **Collisions**: Fast particles can tunnel through thin colliders (positions are checked once per update); use thicker colliders or lower speeds
+- **Deterministic particles**: `ParticleSystem::with_seed(n)` gives the same particles for the same updates (headless visual tests, replays); `new()` is randomly seeded
