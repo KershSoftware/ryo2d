@@ -30,14 +30,15 @@ Frame rendering is hard-coded in `engine.rs` / `graphics/renderer.rs` (`WgpuRend
 3. CPU pixel buffer (Renderable sprites) alpha-blended on top
 4. Trails and lines (so lighting applies to them)
 5. Lighting (render_lights + compose) - if enabled
-6. UI composited on top of the lit scene
-7. Post-processing effects (bloom, CRT, vignette, etc.)
-8. Present to screen with letterboxing
+6. Trails and lines with `with_lighting(false)`, at full brightness on the lit scene
+7. UI composited on top of the lit scene
+8. Post-processing effects (bloom, CRT, vignette, etc.)
+9. Present to screen with letterboxing
 ```
 
 ### RenderPass / RenderPipeline (not wired in)
 
-`RenderPipeline` (`src/core/render/`) is a pass-based, topologically sorted pipeline, but **the engine never builds or executes it**. Adding or disabling passes does not change what the game renders. Only `ClearPass`, `ParallaxPass`, `UploadPass` and `LightingPass` exist; the other `pass_ids` are constants only.
+`RenderPipeline` (`src/core/render/`, import from `ryo2d::core::render` - it isn't in the prelude) is a pass-based, topologically sorted pipeline, but **the engine never builds or executes it**. Adding or disabling passes does not change what the game renders. Only `ClearPass`, `ParallaxPass`, `UploadPass` and `LightingPass` exist; the other `pass_ids` are constants only.
 
 ### RenderPass Trait
 

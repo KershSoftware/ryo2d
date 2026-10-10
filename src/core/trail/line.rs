@@ -61,6 +61,8 @@ pub struct Line2D {
   cap: LineCap,
   /// How segments connect at corners
   join: LineJoin,
+  /// Whether scene lighting applies (false: full brightness over the lit scene)
+  lighting: bool,
 }
 
 impl Line2D {
@@ -83,6 +85,7 @@ impl Line2D {
       style: TrailStyle::Solid,
       cap: LineCap::Butt,
       join: LineJoin::None,
+      lighting: true,
     }
   }
 
@@ -395,6 +398,26 @@ impl Line2D {
   /// Get the line join style.
   pub fn join(&self) -> LineJoin {
     self.join
+  }
+
+  /// Set whether scene lighting applies (default `true`).
+  ///
+  /// With `false` the line is drawn at full brightness on top of the lit scene
+  /// (before post-processing), e.g. for glowing lasers in the dark. Without
+  /// lighting the setting has no effect.
+  pub fn with_lighting(mut self, enabled: bool) -> Self {
+    self.lighting = enabled;
+    self
+  }
+
+  /// Whether scene lighting applies to this line.
+  pub fn lighting(&self) -> bool {
+    self.lighting
+  }
+
+  /// Set whether scene lighting applies to this line.
+  pub fn set_lighting(&mut self, enabled: bool) {
+    self.lighting = enabled;
   }
 
   /// Set the line join style.

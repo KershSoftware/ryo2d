@@ -36,7 +36,7 @@ User's Scene (Scene trait)
          v
     Frame render (graphics/renderer.rs)
     Clear -> GPU sprites -> CPU sprites -> Trails/Lines -> Lighting
-         -> UI -> Post-process effects -> Present
+         -> Unlit trails/lines -> UI -> Post-process effects -> Present
 ```
 
 `RenderPipeline` (`render/`) exists but is not wired into the engine; see `src/core/render/AGENTS.md`.

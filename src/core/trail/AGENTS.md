@@ -6,7 +6,7 @@
 - **`Transform` is required** for both `Trail2D` and `Line2D`. Without one, the engine neither ages nor renders them (`engine.rs` collects only entities with both components).
 - `Trail2D` points are absolute world positions (the `Transform` only feeds recording). `Line2D` points are offsets from the entity's `Transform`.
 - **Render order:** GPU sprites → trails/lines → post-process effects → UI. Trails/lines are not z-sorted (`Line2D::z_order` is unused by the renderer).
-- **Lighting:** trails/lines are drawn after the CPU content and before lighting, so they are lit like sprites (dark in unlit areas). There is no per-trail "unshaded" opt-out yet. Regression test: `lines_render_when_lighting_is_on` in `tests/e2e/headless_engine.rs`.
+- **Lighting:** trails/lines are drawn after the CPU content and before lighting, so they are lit like sprites (dark in unlit areas). `with_lighting(false)` on a `Trail2D`/`Line2D` opts out: `TrailRenderer` builds those into a separate geometry group (swapped in around the shared geometry code) that `render_unlit` draws onto the lit scene after lighting and before post-processing; without lighting both groups draw together. Regression tests in `tests/e2e/headless_engine.rs`: `lines_render_when_lighting_is_on`, `unlit_lines_stay_bright_in_the_dark`, `unlit_lines_render_without_lighting`.
 
 ## Laser Fade-Out Effects
 

@@ -1644,7 +1644,7 @@ impl Engine {
         // Create trail callback (renders AFTER CPU content so backgrounds don't cover trails)
         let trail_callback =
           |queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
-            if let Some(ref mut trails) = trail_renderer {
+            if let Some(ref trails) = trail_renderer {
               trails.render(
                 queue,
                 encoder,
@@ -1654,6 +1654,18 @@ impl Engine {
                 time,
                 super::trail::TrailStyle::Solid,
               );
+              // Without lighting, trails that skip it draw in the same place
+              if !lighting_enabled {
+                trails.render_unlit(queue, encoder, view, camera_pos, camera_zoom, time);
+              }
+            }
+          };
+
+        // Trails and lines with `with_lighting(false)` draw onto the lit scene
+        let unlit_trail_callback =
+          |queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
+            if let Some(ref trails) = trail_renderer {
+              trails.render_unlit(queue, encoder, view, camera_pos, camera_zoom, time);
             }
           };
 
@@ -1702,6 +1714,7 @@ impl Engine {
             Some(&self.effects),
             Some(gpu_callback),
             Some(trail_callback),
+            Some(unlit_trail_callback),
             Some(lighting_callback),
             Some(&self.ui_buffer),
           )

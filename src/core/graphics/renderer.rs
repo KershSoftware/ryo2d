@@ -1207,14 +1207,17 @@ impl WgpuRenderer {
   /// 2. GPU sprite callback renders on top
   /// 3. Trail callback draws trails and lines on top of the CPU content
   /// 4. Lighting callback processes the scene (render_lights + compose), so trails are lit
-  /// 5. UI buffer is composited on top of lit scene (if provided)
-  /// 6. Post-processing effects are applied
-  /// 7. Final result is rendered to screen with letterboxing
+  /// 5. Unlit trail callback draws trails and lines that skip lighting onto the lit scene
+  /// 6. UI buffer is composited on top of lit scene (if provided)
+  /// 7. Post-processing effects are applied
+  /// 8. Final result is rendered to screen with letterboxing
   ///
   /// # Arguments
   /// - `effects`: Optional post-processing effects manager
   /// - `gpu_sprite_callback`: Optional callback for rendering GPU sprites
   /// - `trail_callback`: Optional callback for rendering trails and lines
+  /// - `unlit_trail_callback`: Optional callback for trails and lines that skip lighting;
+  ///   receives the lit scene's view (or the game texture's when no lighting ran)
   /// - `lighting_callback`: Optional callback for lighting. Receives (device, queue, encoder,
   ///   scene_view, output_view). Should render lights and compose to output_view.
   /// - `ui_buffer`: Optional UI buffer to composite after lighting. Should be RGBA, same dimensions
@@ -1226,17 +1229,20 @@ impl WgpuRenderer {
   /// - output_view: Texture A from post-process pipeline (write lit result here)
   /// - After callback, texture A becomes the source for effects/final render
   /// - If ui_buffer is provided, it's alpha-blended onto the lit scene
-  pub fn render_with_lighting<F, T, L>(
+  #[allow(clippy::too_many_arguments)]
+  pub fn render_with_lighting<F, T, U, L>(
     &mut self,
     effects: Option<&EffectsManager>,
     gpu_sprite_callback: Option<F>,
     trail_callback: Option<T>,
+    unlit_trail_callback: Option<U>,
     lighting_callback: Option<L>,
     ui_buffer: Option<&[u8]>,
   ) -> Result<(), wgpu::SurfaceError>
   where
     F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
     T: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    U: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
     L: FnOnce(
       &wgpu::Device,
       &wgpu::Queue,
@@ -1365,6 +1371,12 @@ impl WgpuRenderer {
       } else {
         (false, None, None)
       };
+
+    // Trails and lines that skip lighting go on top of the lit scene, before effects
+    if let Some(callback) = unlit_trail_callback {
+      let target = lit_texture_view.as_ref().unwrap_or(&self.texture_view);
+      callback(&self.queue, &mut encoder, target);
+    }
 
     // Check if we have active effects to apply
     let has_effects = effects.map(|e| e.has_active_effects()).unwrap_or(false);

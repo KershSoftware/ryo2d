@@ -473,3 +473,87 @@ fn paused_physics_does_not_repeat_collision_events() {
 
   assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+/// A pitch-dark scene with one normal line (y=60) and one unlit line (y=120).
+struct DarkLines;
+
+impl Scene for DarkLines {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    if let Some(lighting) = ctx.lighting.as_mut() {
+      lighting.set_ambient(AmbientLight::dark());
+    }
+    // A tiny light far from the lines, so lighting is on but they stay dark
+    ctx.world.spawn((
+      Transform::new(310.0, 5.0),
+      Light2D::point(Color::rgb(255, 255, 255), 4.0),
+    ));
+    let white_line = |y: f32| {
+      Line2D::new(
+        vec![Vec2::new(40.0, y), Vec2::new(280.0, y)],
+        Color::rgb(255, 255, 255),
+        8.0,
+      )
+    };
+    ctx
+      .world
+      .spawn((Transform::new(0.0, 0.0), white_line(60.0)));
+    ctx.world.spawn((
+      Transform::new(0.0, 0.0),
+      white_line(120.0).with_lighting(false),
+    ));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn unlit_lines_stay_bright_in_the_dark() {
+  let Some(mut engine) = engine(DarkLines) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+
+  let frame = engine.frame().unwrap();
+  let brightness = |p: [u8; 4]| i32::from(p[0]) + i32::from(p[1]) + i32::from(p[2]);
+  let lit = frame.get_pixel(160, 60).0;
+  let unlit = frame.get_pixel(160, 120).0;
+  assert!(brightness(lit) < 60, "lit line should be dark: {lit:?}");
+  assert!(
+    brightness(unlit) > 600,
+    "unlit line should be bright: {unlit:?}"
+  );
+}
+
+/// A white unlit line across the middle of the screen, in a scene without lights.
+struct UnlitLineNoLights;
+
+impl Scene for UnlitLineNoLights {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let line = Line2D::new(
+      vec![Vec2::new(40.0, 90.0), Vec2::new(280.0, 90.0)],
+      Color::rgb(255, 255, 255),
+      8.0,
+    )
+    .with_lighting(false);
+    ctx.world.spawn((Transform::new(0.0, 0.0), line));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn unlit_lines_render_without_lighting() {
+  let Some(mut engine) = engine(UnlitLineNoLights) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let (contrast, on_line, beside) = line_contrast(&engine);
+  assert!(
+    contrast > 150,
+    "unlit line missing without lighting: on {on_line:?}, beside {beside:?}"
+  );
+}

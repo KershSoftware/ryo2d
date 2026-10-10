@@ -166,7 +166,7 @@ lighting.set_atmosphere(
 ## Tips
 
 - Lights need `Transform` component for position
-- Trails and lines render before lighting, so lighting (and shadows) apply to them
+- Trails and lines render before lighting, so lighting (and shadows) apply to them. `.with_lighting(false)` on a `Trail2D`/`Line2D` draws it at full brightness on top of the lit scene instead (glowing lasers, magic); post-processing still applies
 - Occluder vertices are local space, transformed by entity's Transform
 - Shadow intensity multiplied by 10x to ensure full light subtraction
 - Ambient light fills shadowed areas - set to 0 for pitch black shadows
