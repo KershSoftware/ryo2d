@@ -65,6 +65,7 @@ difficulty = "normal"
 ## system.json
 
 Created on first run from the game's resolved settings (builder > Ryo.toml > defaults), holding only the keys in the `with_user_preferences` filter (plus `env` when Ryo.toml has `[env]`); never created without `with_user_preferences`.
+After the first run, `data/system.json` holds the filtered settings and overrides later builder or `[system]` changes - delete it in dev to re-seed.
 Players can edit this file directly.
 
 ```json
