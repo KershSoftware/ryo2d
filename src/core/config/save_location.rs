@@ -70,8 +70,18 @@ pub(crate) fn compiled_release_save_dir() -> Option<PathBuf> {
   DIR
     .get_or_init(|| {
       compiled_embedded_value("RYO_EMBED_RESOLUTION")?;
-      let exe = std::env::current_exe().ok()?;
-      release_save_dir(compiled_embedded_value, exe.parent()?, dirs::data_dir())
+      let game_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .or_else(|| {
+          let cwd = std::env::current_dir().ok()?;
+          eprintln!(
+            "[ryo2d] Warning: Couldn't find the game's folder, using {}",
+            cwd.display()
+          );
+          Some(cwd)
+        })?;
+      release_save_dir(compiled_embedded_value, &game_dir, dirs::data_dir())
     })
     .clone()
 }

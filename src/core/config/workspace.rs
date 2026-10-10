@@ -770,6 +770,9 @@ impl WorkspaceConfig {
 
 #[cfg(test)]
 mod tests {
+  use super::*;
+  use crate::core::config::save::DisplayMode;
+  use std::env;
 
   #[test]
   fn dev_save_location_is_inside_the_workspace() {
@@ -788,9 +791,6 @@ mod tests {
 
     assert_eq!(ws.save_location(), dir.path().join("saves"));
   }
-  use super::*;
-  use crate::core::config::save::DisplayMode;
-  use std::env;
 
   #[test]
   fn release_section_reads_portable_and_save_folder() {
