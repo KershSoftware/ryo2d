@@ -211,7 +211,7 @@ replication.register_client(client_id);
 replication.send_full_state(&world, &mut server, client_id);
 ```
 
-Spawn messages (and full-state syncs) carry the current value of every registered component the entity has when `broadcast_updates()` runs: `with_component` values are there from the start, and replicated components added later with `add_component` must be added before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`.
+Spawn messages (and full-state syncs) carry the current value of every registered component the entity has when `broadcast_updates()` runs: `with_component` values are there from the start, and replicated components added later with `add_component` must be added before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`. A lost delta isn't re-sent, so the server also re-sends every replicated component's current value periodically (every 60 `broadcast_updates()` calls by default, about once a second; tune with `replication.set_refresh_interval(n)`, `0` turns it off).
 
 ### 4. Broadcast Updates
 

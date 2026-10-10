@@ -6,7 +6,7 @@
 - **JSON serialization** - Chosen for simplicity and debuggability; binary (e.g. bincode) is a possible future optimization
 - **Generation-based dirty tracking** - Changes are tagged with a generation, so each client only receives changes since its last acknowledgment
 - **ListenServer optimization** - `ServerLike::is_host()` lets replication skip serializing for the host player
-- **Spawns carry initial state** - `spawn_message()` serializes every registered component the entity has, for both spawn broadcasts and `send_full_state`, so a client (including a late joiner) never sees an entity without its state. Later changes still go out as unreliable deltas: a lost delta isn't resent until that component changes again
+- **Spawns carry initial state** - `spawn_message()` serializes every registered component the entity has, for both spawn broadcasts and `send_full_state`, so a client (including a late joiner) never sees an entity without its state. Later changes go out as unreliable deltas (acknowledged on send, not on receipt), so every `refresh_interval` broadcasts (default 60, `set_refresh_interval(0)` disables) the server re-sends every replicated component's current value in batches of `REFRESH_BATCH_SIZE`; a lost delta is corrected by the next refresh
 
 ## Integration Requirements
 

@@ -66,6 +66,13 @@ pub enum ReplicationRole {
 /// // Process incoming messages (requires client instance)
 /// // replication.process_incoming(&mut world, &mut client);
 /// ```
+/// Default number of `broadcast_updates` calls between full refreshes
+/// (about one second at 60 updates per second).
+pub const DEFAULT_REFRESH_INTERVAL: u64 = 60;
+
+/// Most component updates per refresh message, keeping messages small.
+pub const REFRESH_BATCH_SIZE: usize = 64;
+
 pub struct ReplicationManager {
   /// Server or client role
   role: ReplicationRole,
@@ -84,6 +91,9 @@ pub struct ReplicationManager {
 
   /// Registered component TypeIds for iteration
   registered_types: Vec<TypeId>,
+
+  /// `broadcast_updates` calls between full refreshes; 0 disables them
+  refresh_interval: u64,
 }
 
 impl ReplicationManager {
@@ -96,6 +106,7 @@ impl ReplicationManager {
       network_to_entity: HashMap::new(),
       entity_to_network: HashMap::new(),
       registered_types: Vec::new(),
+      refresh_interval: DEFAULT_REFRESH_INTERVAL,
     }
   }
 
@@ -108,6 +119,7 @@ impl ReplicationManager {
       network_to_entity: HashMap::new(),
       entity_to_network: HashMap::new(),
       registered_types: Vec::new(),
+      refresh_interval: DEFAULT_REFRESH_INTERVAL,
     }
   }
 
@@ -329,6 +341,22 @@ impl ReplicationManager {
     Some(msg)
   }
 
+  /// The current value of every registered component on every networked entity.
+  fn collect_all_updates(&self, world: &World) -> Vec<ComponentUpdateMessage> {
+    let mut updates = Vec::new();
+    for (&network_id, &entity) in &self.network_to_entity {
+      for component_id in self.registry.registered_types() {
+        if let Some(serialized) = self
+          .registry
+          .serialize_from_entity(component_id, world, entity)
+        {
+          updates.push(ComponentUpdateMessage::new(network_id, serialized));
+        }
+      }
+    }
+    updates
+  }
+
   /// Build a full state sync message for a new client.
   pub fn build_full_state_sync(&self, world: &World) -> FullStateSyncMessage {
     let mut sync = FullStateSyncMessage::new(self.dirty_tracker.generation());
@@ -350,6 +378,16 @@ impl ReplicationManager {
     if let Ok(bytes) = msg.to_bytes() {
       server.send(client_id, Channel::ReliableOrdered, &bytes);
     }
+  }
+
+  /// Re-send every replicated component's current value every `interval`
+  /// calls to [`broadcast_updates`](Self::broadcast_updates); `0` disables it.
+  ///
+  /// Deltas go out on the unreliable channel and aren't re-sent when a packet
+  /// is lost, so a periodic refresh bounds how long a client can show a stale
+  /// value. Default: [`DEFAULT_REFRESH_INTERVAL`].
+  pub fn set_refresh_interval(&mut self, interval: u64) {
+    self.refresh_interval = interval;
   }
 
   /// Broadcast all pending updates to clients.
@@ -401,6 +439,27 @@ impl ReplicationManager {
       }
 
       self.dirty_tracker.acknowledge_client(client_id);
+    }
+
+    // Periodic refresh: bounds how long a lost delta can leave a client stale
+    let generation = self.dirty_tracker.generation();
+    if self.refresh_interval > 0
+      && generation > 0
+      && generation.is_multiple_of(self.refresh_interval)
+      && !remote_clients.is_empty()
+    {
+      let updates = self.collect_all_updates(world);
+      for chunk in updates.chunks(REFRESH_BATCH_SIZE) {
+        let msg = ReplicationMessage::ComponentBatch(ComponentBatchMessage {
+          updates: chunk.to_vec(),
+          generation,
+        });
+        if let Ok(bytes) = msg.to_bytes() {
+          for &client_id in &remote_clients {
+            server.send(client_id, Channel::Unreliable, &bytes);
+          }
+        }
+      }
     }
 
     // Advance generation
@@ -616,6 +675,126 @@ mod tests {
       client_world.get::<Health>(entity).map(|h| (*h).clone()),
       Some(Health(42))
     );
+  }
+
+  /// A server that records everything it sends.
+  #[derive(Default)]
+  struct RecordingServer {
+    clients: Vec<ClientId>,
+    sent: Vec<(ClientId, Channel, Vec<u8>)>,
+  }
+
+  impl ServerLike for RecordingServer {
+    fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]) {
+      self.sent.push((client_id, channel, data.to_vec()));
+    }
+
+    fn broadcast(&mut self, channel: Channel, data: &[u8]) {
+      for client_id in self.clients.clone() {
+        self.send(client_id, channel, data);
+      }
+    }
+
+    fn receive(&mut self, _client_id: ClientId, _channel: Channel) -> Option<Vec<u8>> {
+      None
+    }
+
+    fn clients(&self) -> Box<dyn Iterator<Item = ClientId> + '_> {
+      Box::new(self.clients.iter().copied())
+    }
+
+    fn is_host(&self, _client_id: ClientId) -> bool {
+      false
+    }
+  }
+
+  /// Unreliable component batches the server sent.
+  fn sent_batches(net: &RecordingServer) -> Vec<ComponentBatchMessage> {
+    net
+      .sent
+      .iter()
+      .filter(|(_, channel, _)| *channel == Channel::Unreliable)
+      .filter_map(
+        |(_, _, bytes)| match ReplicationMessage::from_bytes(bytes) {
+          Ok(ReplicationMessage::ComponentBatch(batch)) => Some(batch),
+          _ => None,
+        },
+      )
+      .collect()
+  }
+
+  /// Health values in the unreliable batches the server sent.
+  fn sent_health(net: &RecordingServer) -> Vec<Health> {
+    sent_batches(net)
+      .into_iter()
+      .flat_map(|batch| batch.updates)
+      .filter_map(|update| update.component.into_component::<Health>().ok())
+      .collect()
+  }
+
+  #[test]
+  fn periodic_refresh_resends_unchanged_components() {
+    let (mut server, world, network_id) = server_with_health();
+    let mut net = RecordingServer {
+      clients: vec![1],
+      ..Default::default()
+    };
+    server.register_client(1);
+    // A change whose delta is "lost": never marked dirty, so no delta carries it
+    let entity = server.get_entity(network_id).unwrap();
+    *world.get_mut::<Health>(entity).unwrap() = Health(5);
+
+    for _ in 0..120 {
+      server.broadcast_updates(&world, &mut net);
+    }
+
+    assert_eq!(sent_health(&net), vec![Health(5)]);
+  }
+
+  #[test]
+  fn refresh_can_be_disabled() {
+    let (mut server, world, _) = server_with_health();
+    server.set_refresh_interval(0);
+    let mut net = RecordingServer {
+      clients: vec![1],
+      ..Default::default()
+    };
+    server.register_client(1);
+
+    for _ in 0..120 {
+      server.broadcast_updates(&world, &mut net);
+    }
+
+    assert!(sent_health(&net).is_empty());
+  }
+
+  #[test]
+  fn refresh_is_split_into_bounded_batches() {
+    let mut server = ReplicationManager::new_server();
+    server.register::<Health>();
+    server.set_refresh_interval(1);
+    let mut world = World::new();
+    for i in 0..300 {
+      let entity = server.spawn_networked(&mut world, NetworkEntityBuilder::new());
+      world.insert_one(entity, Health(i)).unwrap();
+    }
+    let mut net = RecordingServer {
+      clients: vec![1],
+      ..Default::default()
+    };
+    server.register_client(1);
+
+    // Generation 0 sends spawns; generation 1 is the first refresh
+    server.broadcast_updates(&world, &mut net);
+    server.broadcast_updates(&world, &mut net);
+
+    let batches = sent_batches(&net);
+    assert!(
+      batches
+        .iter()
+        .all(|b| b.updates.len() <= REFRESH_BATCH_SIZE)
+    );
+    assert_eq!(batches.iter().map(|b| b.updates.len()).sum::<usize>(), 300);
   }
 
   #[test]
