@@ -25,7 +25,6 @@ impl ItemData for WeaponStats {
   }
 }
 
-#[allow(dead_code)] // Used by later inventory tests (equipment, loot)
 #[derive(Clone, Debug, PartialEq)]
 struct ArmorStats {
   defense: f64,
@@ -469,6 +468,83 @@ fn inventory_remove_preserves_instance_data() {
     .downcast_ref::<WeaponStats>()
     .unwrap();
   assert_eq!(data.damage, 25.0);
+}
+
+fn brewed_potion(potion: ItemId, quantity: u32) -> ItemStack {
+  ItemStack::new(potion, quantity).with_data(ArmorStats { defense: 7.0 })
+}
+
+fn has_data(stack: &ItemStack) -> bool {
+  stack.instance_data().is_some()
+}
+
+#[test]
+fn plain_items_do_not_merge_into_a_stack_with_data() {
+  let (registry, _, potion, _) = setup_registry();
+  let mut inv = Inventory::new(5);
+  inv.add(brewed_potion(potion, 1), &registry).unwrap();
+
+  inv.add(ItemStack::new(potion, 2), &registry).unwrap();
+
+  let first = inv.get(0).unwrap();
+  assert_eq!(first.quantity(), 1);
+  assert!(has_data(first));
+  let second = inv.get(1).unwrap();
+  assert_eq!(second.quantity(), 2);
+  assert!(!has_data(second));
+}
+
+#[test]
+fn space_in_a_stack_with_data_is_not_room_for_plain_items() {
+  let (registry, _, potion, _) = setup_registry();
+  let mut inv = Inventory::new(1);
+  inv.add(brewed_potion(potion, 1), &registry).unwrap();
+
+  let result = inv.add(ItemStack::new(potion, 1), &registry);
+
+  assert!(matches!(result, Err(InventoryError::InventoryFull { remainder: 1 })));
+  assert_eq!(inv.get(0).unwrap().quantity(), 1);
+}
+
+#[test]
+fn partial_remove_keeps_instance_data_on_both_parts() {
+  let (registry, _, potion, _) = setup_registry();
+  let mut inv = Inventory::new(5);
+  inv.add(brewed_potion(potion, 3), &registry).unwrap();
+
+  let removed = inv.remove(0, 1).unwrap();
+
+  assert_eq!(removed.quantity(), 1);
+  assert!(has_data(&removed));
+  assert_eq!(inv.get(0).unwrap().quantity(), 2);
+  assert!(has_data(inv.get(0).unwrap()));
+}
+
+#[test]
+fn transfer_into_a_slot_does_not_mix_plain_and_data_stacks() {
+  let (registry, _, potion, _) = setup_registry();
+
+  // Plain items into a slot holding a stack with data
+  let mut from = Inventory::new(2);
+  from.add(ItemStack::new(potion, 2), &registry).unwrap();
+  let mut to = Inventory::new(2);
+  to.add(brewed_potion(potion, 1), &registry).unwrap();
+  let result = Inventory::transfer(&mut from, 0, &mut to, Some(0), 2, &registry);
+  assert!(result.is_err());
+  assert_eq!(from.get(0).unwrap().quantity(), 2);
+  assert!(!has_data(from.get(0).unwrap()));
+  assert_eq!(to.get(0).unwrap().quantity(), 1);
+
+  // A stack with data into a slot holding plain items
+  let mut from = Inventory::new(2);
+  from.add(brewed_potion(potion, 1), &registry).unwrap();
+  let mut to = Inventory::new(2);
+  to.add(ItemStack::new(potion, 2), &registry).unwrap();
+  let result = Inventory::transfer(&mut from, 0, &mut to, Some(0), 1, &registry);
+  assert!(result.is_err());
+  assert!(has_data(from.get(0).unwrap()));
+  assert_eq!(to.get(0).unwrap().quantity(), 2);
+  assert!(!has_data(to.get(0).unwrap()));
 }
 
 #[test]

@@ -71,7 +71,8 @@ impl Inventory {
   /// 1. Look up the item's `max_stack` from the registry (defaults to 1 if
   ///    the template is not found).
   /// 2. For stackable items (`max_stack > 1`) **without** per-instance data,
-  ///    fill existing partial stacks of the same `item_id` up to `max_stack`.
+  ///    fill existing partial stacks of the same `item_id` that also have no
+  ///    per-instance data, up to `max_stack`.
   /// 3. Place any remaining quantity into the first available empty slot(s).
   /// 4. Return the unplaced remainder, or `None` if everything was placed.
   ///
@@ -103,7 +104,7 @@ impl Inventory {
         if remaining == 0 {
           break;
         }
-        if existing.item_id() == item_id {
+        if can_merge(existing, &stack) {
           let to_add = remaining.min(max_stack.saturating_sub(existing.quantity()));
           existing.set_quantity(existing.quantity() + to_add);
           remaining -= to_add;
@@ -142,7 +143,7 @@ impl Inventory {
     let mut room = empty.saturating_mul(max_stack);
     if max_stack > 1 {
       for existing in self.slots.iter().flatten() {
-        if existing.item_id() == stack.item_id() {
+        if can_merge(existing, stack) {
           room = room.saturating_add(max_stack.saturating_sub(existing.quantity()));
         }
       }
@@ -152,8 +153,9 @@ impl Inventory {
 
   /// Remove `quantity` items from the given slot.
   ///
-  /// Returns an [`ItemStack`] representing the removed items. If the entire
-  /// slot is consumed, the slot is set to `None`.
+  /// Returns an [`ItemStack`] representing the removed items, carrying the
+  /// slot's [`instance_data`](ItemStack::instance_data) if it has any. If the
+  /// entire slot is consumed, the slot is set to `None`.
   ///
   /// # Errors
   ///
@@ -169,12 +171,9 @@ impl Inventory {
       });
     }
 
-    let current_qty = {
-      let stack = self.slots[slot]
-        .as_ref()
-        .ok_or(InventoryError::SlotEmpty { slot })?;
-      stack.quantity()
-    };
+    let entry = &mut self.slots[slot];
+    let stack = entry.as_mut().ok_or(InventoryError::SlotEmpty { slot })?;
+    let current_qty = stack.quantity();
 
     if quantity > current_qty {
       return Err(InventoryError::InvalidQuantity(quantity));
@@ -182,17 +181,14 @@ impl Inventory {
 
     if quantity == current_qty {
       // Consume the entire slot, preserving instance_data.
-      let stack = self.slots[slot].take().unwrap();
-      Ok(stack)
-    } else {
-      // Partial removal — reduce the slot quantity and return a plain sub-stack.
-      let item_id = self.slots[slot].as_ref().unwrap().item_id();
-      self.slots[slot]
-        .as_mut()
-        .unwrap()
-        .set_quantity(current_qty - quantity);
-      Ok(ItemStack::new(item_id, quantity))
+      return entry.take().ok_or(InventoryError::SlotEmpty { slot });
     }
+
+    // Partial removal: both parts keep the stack's instance_data
+    let mut removed = stack.clone();
+    removed.set_quantity(quantity);
+    stack.set_quantity(current_qty - quantity);
+    Ok(removed)
   }
 
   /// Return a reference to the [`ItemStack`] in the given slot, if occupied.
@@ -360,33 +356,25 @@ impl Inventory {
             slot,
             capacity: to.capacity,
           }),
-          Some(existing) => {
-            if existing.is_some() {
-              // Slot occupied — try stacking if same item.
-              let existing_stack = existing.as_ref().unwrap();
-              if existing_stack.item_id() == removed.item_id() {
-                let max_stack = registry
-                  .get(removed.item_id())
-                  .map(|t| t.max_stack())
-                  .unwrap_or(1);
-                let new_qty = existing_stack.quantity() + removed.quantity();
-                if new_qty <= max_stack {
-                  to.slots[slot].as_mut().unwrap().set_quantity(new_qty);
-                  Ok(())
-                } else {
-                  Err(InventoryError::InventoryFull {
-                    remainder: removed.quantity(),
-                  })
-                }
-              } else {
-                Err(InventoryError::InventoryFull {
-                  remainder: removed.quantity(),
-                })
+          Some(None) => {
+            // Slot empty — place directly.
+            to.slots[slot] = Some(removed.clone());
+            Ok(())
+          }
+          Some(Some(_)) => {
+            // Slot occupied — stack only onto a compatible stack with room.
+            let max_stack = Self::max_stack_of(&removed, registry);
+            match to.slots[slot].as_mut() {
+              Some(existing)
+                if can_merge(existing, &removed)
+                  && existing.quantity() + removed.quantity() <= max_stack =>
+              {
+                existing.set_quantity(existing.quantity() + removed.quantity());
+                Ok(())
               }
-            } else {
-              // Slot empty — place directly.
-              to.slots[slot] = Some(removed.clone());
-              Ok(())
+              _ => Err(InventoryError::InventoryFull {
+                remainder: removed.quantity(),
+              }),
             }
           }
         }
@@ -398,22 +386,25 @@ impl Inventory {
     if result.is_err() {
       // Restore the removed items to the source, preserving instance_data.
       let qty = removed.quantity();
-      match from.slots.get(from_slot) {
+      match from.slots.get_mut(from_slot) {
         Some(Some(existing)) => {
-          // Slot has something — add back quantity.
-          let new_qty = existing.quantity() + qty;
-          from.slots[from_slot]
-            .as_mut()
-            .unwrap()
-            .set_quantity(new_qty);
+          // Partial removal — add the quantity back.
+          existing.set_quantity(existing.quantity() + qty);
         }
-        _ => {
+        Some(entry) => {
           // Slot was emptied — restore original stack with instance_data intact.
-          from.slots[from_slot] = Some(removed);
+          *entry = Some(removed);
         }
+        None => {}
       }
     }
 
     result
   }
+}
+
+/// Two stacks can merge only when they hold the same item and neither carries
+/// per-instance data (merging would copy or drop that data).
+fn can_merge(a: &ItemStack, b: &ItemStack) -> bool {
+  a.item_id() == b.item_id() && a.instance_data().is_none() && b.instance_data().is_none()
 }
