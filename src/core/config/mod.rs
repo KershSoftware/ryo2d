@@ -8,6 +8,7 @@
 pub mod debug;
 pub(crate) mod resolve;
 pub mod save;
+pub(crate) mod save_location;
 pub mod workspace;
 
 // Workspace types

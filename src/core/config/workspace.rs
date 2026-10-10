@@ -179,6 +179,12 @@ pub struct ReleaseConfig {
   /// Path to custom application icon (PNG), relative to workspace root.
   /// If None, the Ryo2D default logo is used.
   pub logo: Option<PathBuf>,
+  /// Keep save data in `data/` beside the game instead of the OS user data
+  /// folder (`[release] portable`, default `false`).
+  pub portable: bool,
+  /// Folder under the OS user data folder for this game's saves
+  /// (`[release] save_folder`); `None` uses `[project] name`.
+  pub save_folder: Option<String>,
 }
 
 /// System defaults for user configuration (system.json).
@@ -283,6 +289,10 @@ struct DebugSection {
 struct ReleaseSection {
   /// Path to custom application icon (PNG). If not specified, uses Ryo2D default.
   logo: Option<String>,
+  /// Keep save data beside the game instead of the OS user data folder.
+  portable: Option<bool>,
+  /// Per-game folder name under the OS user data folder.
+  save_folder: Option<String>,
 }
 
 /// Raw TOML [system] section for user-facing defaults
@@ -541,6 +551,8 @@ impl Workspace {
     // Release config
     let release = ReleaseConfig {
       logo: release_section.logo.map(PathBuf::from),
+      portable: release_section.portable.unwrap_or(false),
+      save_folder: release_section.save_folder,
     };
 
     Ok(WorkspaceConfig {
@@ -739,6 +751,28 @@ mod tests {
   use super::*;
   use crate::core::config::save::DisplayMode;
   use std::env;
+
+  #[test]
+  fn release_section_reads_portable_and_save_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+      dir.path().join("Ryo.toml"),
+      "[release]\nportable = true\nsave_folder = \"Studio/Game\"\n",
+    )
+    .unwrap();
+    let ws = Workspace::from_path(dir.path()).unwrap();
+    assert!(ws.config().release.portable);
+    assert_eq!(
+      ws.config().release.save_folder.as_deref(),
+      Some("Studio/Game")
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Ryo.toml"), "").unwrap();
+    let ws = Workspace::from_path(dir.path()).unwrap();
+    assert!(!ws.config().release.portable);
+    assert_eq!(ws.config().release.save_folder, None);
+  }
 
   #[test]
   fn workspace_config_defaults() {

@@ -24,6 +24,9 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   let config = workspace.config();
   let release = &config.release;
 
+  // Fail before compiling if the save folder name can't be used on every OS
+  checked_save_folder(config)?;
+
   // Resolve icon path: custom from [release].logo, or default Ryo2D logo
   let icon_path = resolve_icon_path(&workspace, release.logo.as_ref())?;
 
@@ -96,6 +99,28 @@ fn release_tool_warnings(env: &[(&'static str, String)]) -> Vec<String> {
     .collect()
 }
 
+/// The per-game save folder name: `[release] save_folder`, else `[project] name`.
+fn release_save_folder(config: &crate::core::config::WorkspaceConfig) -> String {
+  config
+    .release
+    .save_folder
+    .clone()
+    .unwrap_or_else(|| config.name.clone())
+}
+
+/// [`release_save_folder`], rejected before building when it can't name a folder.
+fn checked_save_folder(config: &crate::core::config::WorkspaceConfig) -> CliResult<String> {
+  let folder = release_save_folder(config);
+  if crate::core::config::save_location::valid_save_folder(&folder) {
+    Ok(folder)
+  } else {
+    Err(CliError::BuildFailed(format!(
+      "Invalid save folder \"{folder}\" (from [release] save_folder or [project] name). \
+       Use a relative name like \"MyStudio/MyGame\" without \"..\", a drive or any of <>:\"|?*\\"
+    )))
+  }
+}
+
 /// Ryo.toml values passed to the release build; the engine reads them with
 /// `option_env!` (see `core::config::resolve::COMPILED_EMBEDDED`).
 fn embedded_config_env(
@@ -156,6 +181,8 @@ fn embedded_config_env(
       "RYO_EMBED_BACKGROUND_RENDERING",
       system.background_rendering.to_string(),
     ),
+    ("RYO_EMBED_PORTABLE", config.release.portable.to_string()),
+    ("RYO_EMBED_SAVE_FOLDER", release_save_folder(config)),
   ]
 }
 
@@ -449,6 +476,52 @@ mod tests {
   use super::*;
   use crate::core::config::WorkspaceConfig;
   use crate::core::config::resolve::{COMPILED_EMBEDDED, ProjectLayer};
+
+  fn embedded_value(env: &[(&'static str, String)], key: &str) -> String {
+    env
+      .iter()
+      .find(|(name, _)| *name == key)
+      .map(|(_, value)| value.clone())
+      .unwrap()
+  }
+
+  #[test]
+  fn save_folder_defaults_to_the_project_name() {
+    let config = WorkspaceConfig {
+      name: "Star Hopper".to_string(),
+      ..Default::default()
+    };
+    let env = embedded_config_env(&config, None);
+    assert_eq!(embedded_value(&env, "RYO_EMBED_SAVE_FOLDER"), "Star Hopper");
+    assert_eq!(embedded_value(&env, "RYO_EMBED_PORTABLE"), "false");
+  }
+
+  #[test]
+  fn save_folder_override_and_portable_are_embedded() {
+    let mut config = WorkspaceConfig::default();
+    config.release.save_folder = Some("Studio/Hopper".to_string());
+    config.release.portable = true;
+    let env = embedded_config_env(&config, None);
+    assert_eq!(
+      embedded_value(&env, "RYO_EMBED_SAVE_FOLDER"),
+      "Studio/Hopper"
+    );
+    assert_eq!(embedded_value(&env, "RYO_EMBED_PORTABLE"), "true");
+  }
+
+  #[test]
+  fn invalid_save_folder_stops_the_build() {
+    let mut config = WorkspaceConfig::default();
+    config.release.save_folder = Some("../escape".to_string());
+    assert!(matches!(
+      checked_save_folder(&config),
+      Err(CliError::BuildFailed(_))
+    ));
+
+    config.release.save_folder = None;
+    config.name = "Hopper".to_string();
+    assert!(matches!(checked_save_folder(&config), Ok(ref folder) if folder == "Hopper"));
+  }
 
   #[test]
   fn embedded_env_covers_every_key_the_engine_reads() {
