@@ -151,7 +151,7 @@ impl UserPreference {
 /// EngineBuilder::new()
 ///     .title("My Game")
 ///     .with_user_preferences([UserPreference::MasterVolume, UserPreference::MusicVolume, UserPreference::SfxVolume])
-///     .with_scene(GameScene::new())
+///     .start_scene(GameScene::new())
 ///     .build()
 ///     .run()?;
 ///
