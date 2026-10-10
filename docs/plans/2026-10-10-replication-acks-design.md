@@ -46,3 +46,16 @@ Malformed messages on the replication channels are ignored (as today). An ack fo
 - **Re-send until acknowledged over reliable delivery:** reliable channels stall behind a lost packet; re-sending the *current* value of every unacknowledged change keeps latency low and never delivers stale intermediate states.
 - **One batch per client per broadcast:** renet's whole-or-nothing delivery of large unreliable messages means acknowledging a generation is always safe.
 - **Refreshes don't count as acks:** otherwise a refresh arriving after a lost change batch would mark that batch as delivered.
+
+## Revision after final review (owner decision, 2026-10-10)
+
+The final review found that renet drops any unreliable message larger than the bytes left in the tick's send budget (60 KB by default per connection, replication channels last in priority) — silently. One unbounded change batch per client therefore stalls a late joiner, or a client that hitched while many components changed, forever: the batch never arrives, is never acknowledged and only grows. The protocol changes to budgeted batches with per-component delivery tracking:
+
+- **Baseline from the full-state sync.** `send_full_state` records that the client has every change up to the previous generation, so a new client doesn't receive the world's change history.
+- **Per-component delivery tracking.** Per client, the server tracks which value of each component the client has acknowledged and which batches are in flight (with the components and change generations they carried). A component is pending while its latest change is newer than what the client acknowledged (or the baseline).
+- **Budgeted batches.** Each broadcast sends each client one `ComponentBatch` of its pending components, oldest changes first, capped by update count and an estimated byte size well under the per-tick budget (at least one update per batch). A large backlog is delivered over several broadcasts.
+- **Acks name batches.** The client acknowledges every complete batch it applies (one `Ack` per batch); the server marks exactly that batch's components delivered (at the change generation they carried). An ack for a batch the server isn't tracking (unknown or future generation) is ignored.
+- **Bounded refresh.** The periodic refresh is spread across broadcasts (one bounded chunk per broadcast, in a stable order) instead of sending every chunk at once.
+- **Compact component data.** `SerializedComponent::data` (UTF-8 JSON) goes on the wire as a JSON string instead of an array of byte numbers (about 4x smaller).
+- **Robustness:** a spawn whose component type isn't registered still maps the entity (unknown components skipped with a warning), so its later updates don't block acknowledgements; a full-state sync sets the client's newest applied generation to the sync's generation, so older batches arriving after it are ignored.
+- `Channel` and `ReplicationMessage` become `#[non_exhaustive]`.
