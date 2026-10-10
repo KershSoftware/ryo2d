@@ -320,9 +320,47 @@ pub enum InventoryError {
 /// Result type for inventory operations
 pub type InventoryResult<T> = Result<T, InventoryError>;
 
+/// Errors that can occur while capturing a frame
+#[derive(Error, Debug)]
+pub enum CaptureError {
+  /// The texture's format can't be converted to RGBA8
+  #[error("Texture format {0:?} is not supported for capture")]
+  UnsupportedFormat(wgpu::TextureFormat),
+
+  /// Copying or mapping the texture on the GPU failed
+  #[error("GPU readback failed: {0}")]
+  Readback(String),
+
+  /// The output directory could not be created
+  #[error("Failed to create capture directory {path}: {source}")]
+  CreateDir {
+    path: PathBuf,
+    source: std::io::Error,
+  },
+
+  /// Encoding or writing the PNG failed
+  #[error("Failed to write {path}: {source}")]
+  Write {
+    path: PathBuf,
+    source: image::ImageError,
+  },
+}
+
+/// Result type for capture operations
+pub type CaptureResult<T> = Result<T, CaptureError>;
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn capture_error_display() {
+    let err = CaptureError::UnsupportedFormat(wgpu::TextureFormat::R8Unorm);
+    assert_eq!(
+      format!("{}", err),
+      "Texture format R8Unorm is not supported for capture"
+    );
+  }
 
   #[test]
   fn asset_error_display() {

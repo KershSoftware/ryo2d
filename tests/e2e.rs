@@ -15,6 +15,9 @@ mod engine_lifecycle;
 #[path = "e2e/gpu_basics.rs"]
 mod gpu_basics;
 
+#[path = "e2e/capture_readback.rs"]
+mod capture_readback;
+
 #[path = "e2e/lighting_renderer.rs"]
 mod lighting_renderer;
 

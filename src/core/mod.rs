@@ -44,6 +44,7 @@ pub mod config;
 pub mod profiler;
 
 // Development tools - logging, dev windows, and console
+pub mod capture;
 pub mod console;
 pub mod dev_log;
 pub mod windows;
