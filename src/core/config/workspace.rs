@@ -92,6 +92,8 @@ pub struct Workspace {
   config: WorkspaceConfig,
   /// `[debug] dev_window_keys` as written in Ryo.toml, if present
   dev_window_keys_setting: Option<bool>,
+  /// Save directory of a release build (`ryo2d build`); `None` in dev
+  release_save_dir: Option<PathBuf>,
 }
 
 /// Configuration loaded from `ryo.toml`.
@@ -320,15 +322,17 @@ impl Workspace {
   ///
   /// Searches the current directory and up to 3 parent directories.
   /// If no config file is found, uses the current directory as workspace root
-  /// with default settings.
+  /// with default settings. In a release build made by `ryo2d build`, save
+  /// data goes to the OS user data folder (see [`save_location`](Self::save_location)).
   ///
   /// # Errors
   ///
   /// Returns an error if the current directory cannot be determined.
   pub fn discover() -> Result<Self, EngineError> {
     let cwd = std::env::current_dir().map_err(|e| EngineError::WorkspaceError(e.to_string()))?;
-
-    Self::discover_from(&cwd)
+    let mut workspace = Self::discover_from(&cwd)?;
+    workspace.release_save_dir = super::save_location::compiled_release_save_dir();
+    Ok(workspace)
   }
 
   /// Discover workspace starting from a specific directory.
@@ -414,6 +418,7 @@ impl Workspace {
       root: root.to_path_buf(),
       config,
       dev_window_keys_setting,
+      release_save_dir: None,
     })
   }
 
@@ -425,6 +430,7 @@ impl Workspace {
       root: root.to_path_buf(),
       config,
       dev_window_keys_setting: None,
+      release_save_dir: None,
     })
   }
 
@@ -614,11 +620,25 @@ impl Workspace {
     self.root.join(&self.config.entry_point)
   }
 
-  /// Get the absolute path to the save data directory.
+  /// Where save data lives, without creating it.
+  ///
+  /// Release builds (`ryo2d build`) use the OS user data folder - `%APPDATA%`,
+  /// `~/Library/Application Support` or `~/.local/share`, plus
+  /// `[release] save_folder` or `[project] name` - or `data/` beside the game
+  /// when `[release] portable = true`. Dev builds use `[paths] save_data`
+  /// under the workspace root.
+  pub fn save_location(&self) -> PathBuf {
+    self
+      .release_save_dir
+      .clone()
+      .unwrap_or_else(|| self.root.join(&self.config.save_data))
+  }
+
+  /// Get the absolute path to the save data directory ([`save_location`](Self::save_location)).
   ///
   /// Creates the directory if it doesn't exist.
   pub fn save_data_dir(&self) -> Result<PathBuf, EngineError> {
-    let path = self.root.join(&self.config.save_data);
+    let path = self.save_location();
     if !path.exists() {
       fs::create_dir_all(&path).map_err(|e| {
         EngineError::WorkspaceError(format!("Failed to create save data directory: {}", e))
@@ -641,12 +661,14 @@ impl Workspace {
   ///
   /// This updates the workspace configuration in memory. The change is not
   /// persisted to `ryo.toml` but affects all subsequent save operations.
+  /// This replaces the release save location too.
   ///
   /// # Arguments
   ///
   /// * `path` - New path for save data. If relative, it's relative to workspace root.
   pub fn set_save_data_path(&mut self, path: impl Into<PathBuf>) {
     self.config.save_data = path.into();
+    self.release_save_dir = None;
   }
 
   /// Create a `SaveManager` configured for this workspace.
@@ -748,6 +770,24 @@ impl WorkspaceConfig {
 
 #[cfg(test)]
 mod tests {
+
+  #[test]
+  fn dev_save_location_is_inside_the_workspace() {
+    let ws = Workspace::discover().unwrap();
+    assert!(ws.save_location().starts_with(ws.root()));
+  }
+
+  #[test]
+  fn set_save_data_path_replaces_the_release_location() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::from_path(dir.path()).unwrap();
+    ws.release_save_dir = Some(PathBuf::from("/users/me/data/Hopper"));
+    assert_eq!(ws.save_location(), PathBuf::from("/users/me/data/Hopper"));
+
+    ws.set_save_data_path("saves");
+
+    assert_eq!(ws.save_location(), dir.path().join("saves"));
+  }
   use super::*;
   use crate::core::config::save::DisplayMode;
   use std::env;

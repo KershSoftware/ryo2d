@@ -618,6 +618,11 @@ impl Engine {
     let initial_size = (config.width, config.height);
     let ui_buffer_size = (config.width * config.height * 4) as usize;
 
+    // Tell players and developers where settings and saves are kept
+    if !headless && let Ok(workspace) = super::config::Workspace::discover() {
+      engine_info!(module: "Save", "Save data: {}", workspace.save_location().display());
+    }
+
     // Enable hot reload in debug builds if a workspace with assets directory exists
     #[cfg(debug_assertions)]
     if !headless && let Ok(workspace) = super::config::Workspace::discover() {
