@@ -87,6 +87,10 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use super::resolve::{
+  DEFAULT_MASTER_VOLUME, DEFAULT_MUSIC_VOLUME, DEFAULT_RESOLUTION, DEFAULT_SFX_VOLUME,
+  StoredPreferences,
+};
 use crate::core::error::{SaveError, SaveResult};
 
 // ============================================================================
@@ -261,6 +265,16 @@ const GAME_EXTENSION: &str = "ryo-save";
 /// Without this, serde_json converts f32 → f64 naively, producing values like
 /// `0.4000000059604645` instead of `0.4`.
 /// Round an f32 to 2 decimal places for clean JSON output.
+/// A `SystemState` as the JSON object `system.json` stores.
+fn system_state_map(state: &SystemState) -> SaveResult<serde_json::Map<String, serde_json::Value>> {
+  match serde_json::to_value(state).map_err(|e| SaveError::Serialization(e.to_string()))? {
+    serde_json::Value::Object(map) => Ok(map),
+    _ => Err(SaveError::Serialization(
+      "system state did not serialize to a JSON object".to_string(),
+    )),
+  }
+}
+
 fn clean_f32(value: f32) -> f64 {
   ((value as f64) * 100.0).round() / 100.0
 }
@@ -448,114 +462,112 @@ impl Serialize for SystemState {
   }
 }
 
-impl<'de> Deserialize<'de> for SystemState {
-  fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-    /// Helper for backward-compatible deserialization (supports old nested `display` format)
-    #[derive(Deserialize)]
-    struct Helper {
-      #[serde(default = "default_master_volume")]
-      master_volume: f32,
-      #[serde(default = "default_music_volume")]
-      music_volume: f32,
-      #[serde(default = "default_sfx_volume")]
-      sfx_volume: f32,
-      // Flat format fields
-      resolution: Option<String>,
-      width: Option<u32>,
-      height: Option<u32>,
-      display_mode: Option<DisplayMode>,
-      #[serde(default)]
-      vsync: Option<bool>,
-      #[serde(default)]
-      show_fps: Option<bool>,
-      #[serde(default)]
-      env: HashMap<String, serde_json::Value>,
-      // Legacy nested format
-      display: Option<LegacyDisplay>,
-    }
+/// `system.json` as stored on disk: every key optional, legacy nested `display` supported.
+#[derive(Deserialize)]
+struct RawSystemFile {
+  master_volume: Option<f32>,
+  music_volume: Option<f32>,
+  sfx_volume: Option<f32>,
+  resolution: Option<String>,
+  width: Option<u32>,
+  height: Option<u32>,
+  display_mode: Option<DisplayMode>,
+  vsync: Option<bool>,
+  show_fps: Option<bool>,
+  #[serde(default)]
+  env: HashMap<String, serde_json::Value>,
+  display: Option<LegacyDisplay>,
+}
 
-    #[derive(Deserialize)]
-    struct LegacyDisplay {
-      resolution: Option<String>,
-      width: Option<u32>,
-      height: Option<u32>,
-      #[serde(default)]
-      display_mode: DisplayMode,
-      #[serde(default)]
-      vsync: Option<bool>,
-    }
+#[derive(Deserialize)]
+struct LegacyDisplay {
+  resolution: Option<String>,
+  width: Option<u32>,
+  height: Option<u32>,
+  display_mode: Option<DisplayMode>,
+  vsync: Option<bool>,
+}
 
-    fn default_master_volume() -> f32 {
-      0.8
-    }
-    fn default_music_volume() -> f32 {
-      1.0
-    }
-    fn default_sfx_volume() -> f32 {
-      1.0
-    }
-
-    let helper = Helper::deserialize(deserializer)?;
-
-    // Resolve resolution: flat fields take priority, then legacy nested display
-    let (width, height) = if let Some(ref res) = helper.resolution {
-      parse_resolution(res).unwrap_or_else(|| {
+impl RawSystemFile {
+  /// The saved resolution: flat `resolution`, then flat `width`/`height`, then legacy `display`.
+  fn resolution(&self) -> Option<(u32, u32)> {
+    if let Some(res) = &self.resolution {
+      let parsed = parse_resolution(res);
+      if parsed.is_none() {
         eprintln!(
-          "[ryo2d] Warning: Malformed resolution '{}' in system.json, using engine defaults",
+          "[ryo2d] Warning: Malformed resolution '{}' in system.json, ignoring it",
           res
         );
-        (1280, 720)
-      })
-    } else if let (Some(w), Some(h)) = (helper.width, helper.height) {
-      (w, h)
-    } else if let Some(ref display) = helper.display {
-      if let Some(ref res) = display.resolution {
-        parse_resolution(res).unwrap_or((1280, 720))
-      } else if let (Some(w), Some(h)) = (display.width, display.height) {
-        (w, h)
-      } else {
-        (1280, 720)
       }
-    } else {
-      (1280, 720)
-    };
+      return parsed;
+    }
+    if let (Some(w), Some(h)) = (self.width, self.height) {
+      return Some((w, h));
+    }
+    let display = self.display.as_ref()?;
+    match &display.resolution {
+      Some(res) => parse_resolution(res),
+      None => display.width.zip(display.height),
+    }
+  }
 
-    // Resolve display_mode: flat takes priority, then legacy nested
-    let display_mode = helper.display_mode.unwrap_or_else(|| {
-      helper
-        .display
-        .as_ref()
-        .map(|d| d.display_mode)
-        .unwrap_or_default()
-    });
+  fn display_mode(&self) -> Option<DisplayMode> {
+    self
+      .display_mode
+      .or_else(|| self.display.as_ref().and_then(|d| d.display_mode))
+  }
 
-    // Resolve vsync: flat takes priority, then legacy nested
-    let vsync = helper
+  fn vsync(&self) -> Option<bool> {
+    self
       .vsync
-      .or_else(|| helper.display.as_ref().and_then(|d| d.vsync));
+      .or_else(|| self.display.as_ref().and_then(|d| d.vsync))
+  }
 
-    Ok(SystemState {
-      master_volume: helper.master_volume,
-      music_volume: helper.music_volume,
-      sfx_volume: helper.sfx_volume,
+  fn stored_preferences(&self) -> StoredPreferences {
+    StoredPreferences {
+      resolution: self.resolution(),
+      display_mode: self.display_mode(),
+      vsync: self.vsync(),
+      master_volume: self.master_volume,
+      music_volume: self.music_volume,
+      sfx_volume: self.sfx_volume,
+      show_fps: self.show_fps,
+    }
+  }
+
+  /// Fill absent keys with engine defaults.
+  fn into_state(self) -> SystemState {
+    let (width, height) = self.resolution().unwrap_or(DEFAULT_RESOLUTION);
+    let display_mode = self.display_mode().unwrap_or_default();
+    let vsync = self.vsync();
+    SystemState {
+      master_volume: self.master_volume.unwrap_or(DEFAULT_MASTER_VOLUME),
+      music_volume: self.music_volume.unwrap_or(DEFAULT_MUSIC_VOLUME),
+      sfx_volume: self.sfx_volume.unwrap_or(DEFAULT_SFX_VOLUME),
       width,
       height,
       display_mode,
       vsync,
-      show_fps: helper.show_fps,
-      env: helper.env,
-    })
+      show_fps: self.show_fps,
+      env: self.env,
+    }
+  }
+}
+
+impl<'de> Deserialize<'de> for SystemState {
+  fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    RawSystemFile::deserialize(deserializer).map(RawSystemFile::into_state)
   }
 }
 
 impl Default for SystemState {
   fn default() -> Self {
     SystemState {
-      master_volume: 0.8,
-      music_volume: 1.0,
-      sfx_volume: 1.0,
-      width: 1280,
-      height: 720,
+      master_volume: DEFAULT_MASTER_VOLUME,
+      music_volume: DEFAULT_MUSIC_VOLUME,
+      sfx_volume: DEFAULT_SFX_VOLUME,
+      width: DEFAULT_RESOLUTION.0,
+      height: DEFAULT_RESOLUTION.1,
       display_mode: DisplayMode::Windowed,
       vsync: None,
       show_fps: None,
@@ -587,41 +599,18 @@ impl SystemState {
     }
   }
 
-  /// Merge missing fields from defaults.
+  /// Add `env` keys from `defaults` that this state doesn't have yet.
   ///
-  /// This is used when loading an existing system.json that may be missing
-  /// fields added in newer versions. Missing fields are filled from the
-  /// provided defaults.
-  ///
-  /// Returns true if any fields were updated.
+  /// Existing values, including a saved resolution, are never changed.
+  /// Returns true if any key was added.
   pub fn merge_defaults(&mut self, defaults: &super::workspace::SystemDefaults) -> bool {
-    // Currently all fields have values, but this method exists for future
-    // fields that may be added. The pattern is:
-    // - If a field is missing/None and defaults has a value, apply it
-    // - Return true if anything changed
-
     let mut changed = false;
-
-    // If display matches engine defaults but Ryo.toml specifies a different resolution,
-    // update to use Ryo.toml values (one-time migration)
-    if let Some((w, h)) = defaults.resolution
-      && self.width == 1280
-      && self.height == 720
-      && (w != 1280 || h != 720)
-    {
-      self.width = w;
-      self.height = h;
-      changed = true;
-    }
-
-    // Add new env keys from defaults without overwriting existing
     for (key, value) in &defaults.env {
       if !self.env.contains_key(key) {
         self.env.insert(key.clone(), value.clone());
         changed = true;
       }
     }
-
     changed
   }
 
@@ -851,56 +840,48 @@ impl SaveManager {
 
   /// Save system state as human-editable JSON.
   ///
-  /// When `system.json` already exists, only keys present in the existing
-  /// file are updated — preserving the filtered structure created by
-  /// [`load_or_create_system_filtered`](Self::load_or_create_system_filtered).
-  /// When no file exists, writes the full state.
+  /// When `system.json` already exists, keys already in the file are updated,
+  /// and a key missing from the file is added only when its value differs from
+  /// what the file loads as - so a file written with a narrow
+  /// [`UserPreferenceFilter`] keeps its shape until the player changes a
+  /// setting it doesn't hold yet. When no file exists, writes the full state.
   pub fn save_system(&self, state: &SystemState) -> SaveResult<()> {
-    let path = self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION));
+    let path = self.system_path();
 
     if path.exists() {
-      // Merge: only update keys already present in the file
       let existing_json = fs::read_to_string(&path)?;
       if let Ok(serde_json::Value::Object(existing_map)) =
         serde_json::from_str::<serde_json::Value>(&existing_json)
       {
-        let new_value =
-          serde_json::to_value(state).map_err(|e| SaveError::Serialization(e.to_string()))?;
-        if let serde_json::Value::Object(new_map) = new_value {
-          let mut merged = serde_json::Map::new();
-          // Migrate legacy nested `display` to flat keys
-          let has_legacy_display = existing_map.contains_key("display");
-          for (key, _) in &existing_map {
-            if key == "display" {
-              // Replace legacy nested display with flat keys
-              for flat_key in ["resolution", "display_mode", "vsync"] {
-                if let Some(val) = new_map.get(flat_key) {
-                  merged.insert(flat_key.to_string(), val.clone());
-                }
-              }
-            } else if let Some(new_val) = new_map.get(key) {
-              merged.insert(key.clone(), new_val.clone());
-            }
-          }
-          // Also include new flat keys that weren't in the old file
-          // (in case existing file was missing some keys)
-          if !has_legacy_display {
-            for key in ["resolution", "display_mode", "vsync"] {
-              if !merged.contains_key(key)
-                && existing_map.contains_key(key)
-                && let Some(val) = new_map.get(key)
-              {
-                merged.insert(key.to_string(), val.clone());
+        let new_map = system_state_map(state)?;
+        // What the file loads as today, with engine defaults for absent keys
+        let baseline = match serde_json::from_value::<SystemState>(serde_json::Value::Object(
+          existing_map.clone(),
+        )) {
+          Ok(loaded) => system_state_map(&loaded)?,
+          Err(_) => serde_json::Map::new(),
+        };
+
+        let mut merged = serde_json::Map::new();
+        for key in existing_map.keys() {
+          if key == "display" {
+            // Replace legacy nested display with flat keys
+            for flat_key in ["resolution", "display_mode", "vsync"] {
+              if let Some(val) = new_map.get(flat_key) {
+                merged.insert(flat_key.to_string(), val.clone());
               }
             }
+          } else if let Some(new_val) = new_map.get(key) {
+            merged.insert(key.clone(), new_val.clone());
           }
-          let json = serde_json::to_string_pretty(&serde_json::Value::Object(merged))
-            .map_err(|e| SaveError::Serialization(e.to_string()))?;
-          let mut file = File::create(&path)?;
-          file.write_all(json.as_bytes())?;
-          file.flush()?;
-          return Ok(());
         }
+        for (key, new_val) in &new_map {
+          if !merged.contains_key(key) && baseline.get(key) != Some(new_val) {
+            merged.insert(key.clone(), new_val.clone());
+          }
+        }
+
+        return self.write_system_map(merged);
       }
     }
 
@@ -912,7 +893,7 @@ impl SaveManager {
   ///
   /// Returns default state if no save file exists.
   pub fn load_system(&self) -> SaveResult<SystemState> {
-    let path = self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION));
+    let path = self.system_path();
     if !path.exists() {
       return Ok(SystemState::new());
     }
@@ -948,7 +929,7 @@ impl SaveManager {
     &self,
     defaults: &super::workspace::SystemDefaults,
   ) -> SaveResult<SystemState> {
-    let path = self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION));
+    let path = self.system_path();
 
     if !path.exists() {
       // Create new system.json from Ryo.toml [system] defaults
@@ -968,77 +949,116 @@ impl SaveManager {
     Ok(state)
   }
 
+  /// The player preferences present in `system.json`, or `None` when there's no file.
+  pub(crate) fn load_stored_preferences(&self) -> SaveResult<Option<StoredPreferences>> {
+    let path = self.system_path();
+    if !path.exists() {
+      return Ok(None);
+    }
+    let raw: RawSystemFile = self.read_json_file(&path)?;
+    Ok(Some(raw.stored_preferences()))
+  }
+
+  /// Read the saved preferences, or seed a new `system.json` from `seed`.
+  ///
+  /// - No file: writes the keys of `seed` that are in `filter` (plus `env` when
+  ///   `seed.env` isn't empty) and returns `Ok(None)` - the seed already is
+  ///   what the game resolved, so there is nothing to override.
+  /// - File present: adds `env` keys from `defaults` it doesn't have yet and
+  ///   returns the preferences it holds.
+  /// - Unparsable file: returns the error and leaves the file untouched.
+  pub(crate) fn load_preferences_or_seed(
+    &self,
+    seed: &SystemState,
+    filter: &UserPreferenceFilter,
+    defaults: &super::workspace::SystemDefaults,
+  ) -> SaveResult<Option<StoredPreferences>> {
+    let path = self.system_path();
+    if !path.exists() {
+      self.write_filtered_system(seed, filter, !seed.env.is_empty())?;
+      return Ok(None);
+    }
+
+    let raw: RawSystemFile = self.read_json_file(&path)?;
+    let prefs = raw.stored_preferences();
+    let mut state = raw.into_state();
+    if state.merge_defaults(defaults) {
+      self.save_system(&state)?;
+    }
+    Ok(Some(prefs))
+  }
+
+  /// Write a new `system.json` holding only the keys in `filter` (plus `env` when `include_env`).
+  fn write_filtered_system(
+    &self,
+    state: &SystemState,
+    filter: &UserPreferenceFilter,
+    include_env: bool,
+  ) -> SaveResult<()> {
+    let filtered = system_state_map(state)?
+      .into_iter()
+      .filter(|(key, _)| match key.as_str() {
+        "master_volume" => filter.contains(UserPreference::MasterVolume),
+        "music_volume" => filter.contains(UserPreference::MusicVolume),
+        "sfx_volume" => filter.contains(UserPreference::SfxVolume),
+        "resolution" => filter.contains(UserPreference::Resolution),
+        "display_mode" => filter.contains(UserPreference::DisplayMode),
+        "vsync" => filter.contains(UserPreference::Vsync),
+        "show_fps" => filter.contains(UserPreference::ShowFps),
+        "env" => include_env,
+        _ => false,
+      })
+      .collect();
+    self.write_system_map(filtered)
+  }
+
+  fn system_path(&self) -> PathBuf {
+    self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION))
+  }
+
+  fn write_system_map(&self, map: serde_json::Map<String, serde_json::Value>) -> SaveResult<()> {
+    let json = serde_json::to_string_pretty(&serde_json::Value::Object(map))
+      .map_err(|e| SaveError::Serialization(e.to_string()))?;
+    let mut file = File::create(self.system_path())?;
+    file.write_all(json.as_bytes())?;
+    file.flush()?;
+    Ok(())
+  }
+
   /// Load or create system state, writing only filtered fields to a new file.
   ///
   /// Behaves like [`load_or_create_system`](Self::load_or_create_system) when
   /// system.json already exists. When creating a new file, only the JSON keys
-  /// corresponding to the given filter are written — so a volume-only filter
-  /// produces a system.json with just `master_volume`, `music_volume`, and
-  /// `sfx_volume`.
+  /// in `filter` are written (plus `env` when `defaults.env` isn't empty) - so a
+  /// volume-only filter produces a system.json with just `master_volume`,
+  /// `music_volume`, and `sfx_volume`.
   ///
-  /// The returned `SystemState` is always fully populated (from defaults).
+  /// Returns the state as it loads from disk: keys the file doesn't hold get
+  /// engine defaults.
   pub fn load_or_create_system_filtered(
     &self,
     defaults: &super::workspace::SystemDefaults,
     filter: &UserPreferenceFilter,
   ) -> SaveResult<SystemState> {
-    let path = self.save_dir.join(format!("system.{}", SYSTEM_EXTENSION));
-
-    if path.exists() {
-      // Existing file — load as-is and merge defaults (same as unfiltered)
-      let mut state: SystemState = self.read_json_file(&path)?;
+    if self.system_path().exists() {
+      let mut state = self.load_system()?;
       if state.merge_defaults(defaults) {
         self.save_system(&state)?;
       }
       return Ok(state);
     }
 
-    // Build full state from defaults
-    let state = SystemState::from_defaults(defaults);
-
-    // Serialize to JSON Value, then strip keys not requested by the filter
-    let full_value =
-      serde_json::to_value(&state).map_err(|e| SaveError::Serialization(e.to_string()))?;
-
-    if let serde_json::Value::Object(map) = full_value {
-      let mut filtered = serde_json::Map::new();
-
-      for (key, value) in &map {
-        let include = match key.as_str() {
-          "master_volume" => filter.contains(UserPreference::MasterVolume),
-          "music_volume" => filter.contains(UserPreference::MusicVolume),
-          "sfx_volume" => filter.contains(UserPreference::SfxVolume),
-          "resolution" => filter.contains(UserPreference::Resolution),
-          "display_mode" => filter.contains(UserPreference::DisplayMode),
-          "vsync" => filter.contains(UserPreference::Vsync),
-          "show_fps" => filter.contains(UserPreference::ShowFps),
-          "env" => !defaults.env.is_empty(),
-          _ => false,
-        };
-        if include {
-          filtered.insert(key.clone(), value.clone());
-        }
-      }
-
-      let filtered_json = serde_json::to_string_pretty(&serde_json::Value::Object(filtered))
-        .map_err(|e| SaveError::Serialization(e.to_string()))?;
-      let mut file = File::create(&path)?;
-      file.write_all(filtered_json.as_bytes())?;
-      file.flush()?;
-    } else {
-      // Fallback: write full state (shouldn't happen for a struct)
-      self.save_system(&state)?;
-    }
-
-    Ok(state)
+    self.write_filtered_system(
+      &SystemState::from_defaults(defaults),
+      filter,
+      !defaults.env.is_empty(),
+    )?;
+    self.load_system()
   }
 
   /// Check if system state exists.
   pub fn has_system_save(&self) -> bool {
-    self
-      .save_dir
-      .join(format!("system.{}", SYSTEM_EXTENSION))
-      .exists()
+    self.system_path().exists()
   }
 
   // ==========================================================================
@@ -1629,25 +1649,18 @@ mod tests {
   }
 
   #[test]
-  fn system_state_merge_defaults_migrates_resolution() {
+  fn merge_defaults_keeps_a_saved_720p_resolution() {
     let engine_defaults = super::super::workspace::SystemDefaults::default();
-
-    // State with engine default resolution
     let mut state = SystemState::from_defaults(&engine_defaults);
-    assert_eq!(state.width, 1280);
-    assert_eq!(state.height, 720);
-
-    // Developer wants different resolution in Ryo.toml
     let dev_defaults = super::super::workspace::SystemDefaults {
       resolution: Some((800, 600)),
       ..engine_defaults
     };
 
-    // Merge should update resolution since it was at engine defaults
     let changed = state.merge_defaults(&dev_defaults);
-    assert!(changed);
-    assert_eq!(state.width, 800);
-    assert_eq!(state.height, 600);
+
+    assert!(!changed);
+    assert_eq!((state.width, state.height), (1280, 720));
   }
 
   #[test]
@@ -1737,27 +1750,228 @@ mod tests {
   }
 
   #[test]
-  fn load_or_create_system_merges_missing_fields() {
+  fn load_or_create_system_keeps_a_saved_720p_resolution() {
     let dir = tempdir().unwrap();
     let manager = SaveManager::new(dir.path()).unwrap();
-
-    // Create state with engine default resolution
     let engine_defaults = super::super::workspace::SystemDefaults::default();
-    let initial = SystemState::from_defaults(&engine_defaults);
-    manager.save_system(&initial).unwrap();
-
-    // Developer later changes resolution in Ryo.toml
+    manager
+      .save_system(&SystemState::from_defaults(&engine_defaults))
+      .unwrap();
     let dev_defaults = super::super::workspace::SystemDefaults {
       resolution: Some((800, 600)),
       ..engine_defaults
     };
 
-    // load_or_create should merge the new defaults
     let state = manager.load_or_create_system(&dev_defaults).unwrap();
 
-    // Resolution should be updated (migrated from engine defaults)
-    assert_eq!(state.width, 800);
-    assert_eq!(state.height, 600);
+    assert_eq!((state.width, state.height), (1280, 720));
+  }
+
+  // ==========================================================================
+  // Stored preferences, seeding and missing-key saves
+  // ==========================================================================
+
+  fn write_system_json(dir: &std::path::Path, json: &str) {
+    std::fs::write(dir.join("system.json"), json).unwrap();
+  }
+
+  fn read_system_json(dir: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(dir.join("system.json")).unwrap()).unwrap()
+  }
+
+  #[test]
+  fn stored_preferences_report_only_present_keys() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(
+      dir.path(),
+      r#"{"master_volume": 0.5, "resolution": "1600x900"}"#,
+    );
+
+    let prefs = manager.load_stored_preferences().unwrap().unwrap();
+
+    assert_eq!(prefs.master_volume, Some(0.5));
+    assert_eq!(prefs.resolution, Some((1600, 900)));
+    assert_eq!(prefs.music_volume, None);
+    assert_eq!(prefs.sfx_volume, None);
+    assert_eq!(prefs.display_mode, None);
+    assert_eq!(prefs.vsync, None);
+    assert_eq!(prefs.show_fps, None);
+  }
+
+  #[test]
+  fn stored_preferences_are_none_without_a_file() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    assert_eq!(manager.load_stored_preferences().unwrap(), None);
+  }
+
+  #[test]
+  fn stored_preferences_read_legacy_nested_display() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(
+      dir.path(),
+      r#"{"display": {"width": 1920, "height": 1080, "display_mode": "borderless_fullscreen", "vsync": false}}"#,
+    );
+
+    let prefs = manager.load_stored_preferences().unwrap().unwrap();
+
+    assert_eq!(prefs.resolution, Some((1920, 1080)));
+    assert_eq!(prefs.display_mode, Some(DisplayMode::BorderlessFullscreen));
+    assert_eq!(prefs.vsync, Some(false));
+  }
+
+  #[test]
+  fn stored_preferences_ignore_a_malformed_resolution() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(dir.path(), r#"{"resolution": "big", "master_volume": 0.5}"#);
+
+    let prefs = manager.load_stored_preferences().unwrap().unwrap();
+
+    assert_eq!(prefs.resolution, None);
+    assert_eq!(prefs.master_volume, Some(0.5));
+  }
+
+  #[test]
+  fn seeding_writes_the_filtered_keys_of_the_seed_state() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    let mut seed = SystemState::new();
+    seed.width = 800;
+    seed.height = 600;
+    seed.master_volume = 0.3;
+    seed.vsync = Some(false);
+    let filter =
+      UserPreferenceFilter::only([UserPreference::Resolution, UserPreference::MasterVolume]);
+
+    let prefs = manager
+      .load_preferences_or_seed(
+        &seed,
+        &filter,
+        &super::super::workspace::SystemDefaults::default(),
+      )
+      .unwrap();
+
+    assert_eq!(prefs, None);
+    let raw = read_system_json(dir.path());
+    assert_eq!(raw["resolution"], "800x600");
+    assert_eq!(raw["master_volume"], 0.3);
+    assert!(raw.get("vsync").is_none());
+    assert!(raw.get("display_mode").is_none());
+    assert!(raw.get("env").is_none());
+  }
+
+  #[test]
+  fn an_existing_file_is_not_reseeded() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(dir.path(), r#"{"master_volume": 0.5}"#);
+    let mut seed = SystemState::new();
+    seed.master_volume = 0.3;
+
+    let prefs = manager
+      .load_preferences_or_seed(
+        &seed,
+        &UserPreferenceFilter::all(),
+        &super::super::workspace::SystemDefaults::default(),
+      )
+      .unwrap()
+      .unwrap();
+
+    assert_eq!(prefs.master_volume, Some(0.5));
+    let raw = read_system_json(dir.path());
+    assert_eq!(raw["master_volume"], 0.5);
+    assert!(raw.get("resolution").is_none());
+  }
+
+  #[test]
+  fn new_env_keys_are_merged_into_an_existing_file() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(dir.path(), r#"{"master_volume": 0.5}"#);
+    let mut env = HashMap::new();
+    env.insert("difficulty".to_string(), serde_json::json!("hard"));
+    let defaults = super::super::workspace::SystemDefaults {
+      env,
+      ..super::super::workspace::SystemDefaults::default()
+    };
+
+    manager
+      .load_preferences_or_seed(&SystemState::new(), &UserPreferenceFilter::all(), &defaults)
+      .unwrap();
+
+    let raw = read_system_json(dir.path());
+    assert_eq!(raw["env"]["difficulty"], "hard");
+    assert_eq!(raw["master_volume"], 0.5);
+    assert!(raw.get("resolution").is_none());
+  }
+
+  #[test]
+  fn malformed_file_is_an_error_and_left_alone() {
+    for contents in ["not json", r#"{"vsync": "yes"}"#] {
+      let dir = tempdir().unwrap();
+      let manager = SaveManager::new(dir.path()).unwrap();
+      write_system_json(dir.path(), contents);
+
+      let result = manager.load_preferences_or_seed(
+        &SystemState::new(),
+        &UserPreferenceFilter::all(),
+        &super::super::workspace::SystemDefaults::default(),
+      );
+
+      assert!(result.is_err(), "{contents} should not parse");
+      assert_eq!(
+        std::fs::read_to_string(dir.path().join("system.json")).unwrap(),
+        contents
+      );
+    }
+  }
+
+  #[test]
+  fn save_system_writes_a_changed_key_missing_from_the_file() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(dir.path(), r#"{"master_volume": 0.5}"#);
+
+    let mut state = manager.load_system().unwrap();
+    state.width = 1920;
+    state.height = 1080;
+    manager.save_system(&state).unwrap();
+
+    let raw = read_system_json(dir.path());
+    assert_eq!(raw["resolution"], "1920x1080");
+    assert_eq!(raw["master_volume"], 0.5);
+    assert!(raw.get("display_mode").is_none());
+    assert!(raw.get("vsync").is_none());
+  }
+
+  #[test]
+  fn full_file_from_previous_version_round_trips() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    let previous = r#"{
+  "master_volume": 0.6,
+  "music_volume": 0.7,
+  "sfx_volume": 0.9,
+  "resolution": "1280x720",
+  "display_mode": "windowed",
+  "vsync": true,
+  "show_fps": false
+}"#;
+    write_system_json(dir.path(), previous);
+
+    let prefs = manager.load_stored_preferences().unwrap().unwrap();
+    assert_eq!(prefs.resolution, Some((1280, 720)));
+    assert_eq!(prefs.vsync, Some(true));
+    assert_eq!(prefs.show_fps, Some(false));
+
+    manager
+      .save_system(&manager.load_system().unwrap())
+      .unwrap();
+    let expected: serde_json::Value = serde_json::from_str(previous).unwrap();
+    assert_eq!(read_system_json(dir.path()), expected);
   }
 
   // ==========================================================================

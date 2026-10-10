@@ -223,9 +223,9 @@ impl Default for SystemDefaults {
       resolution: None,
       vsync: true,
       display_mode: super::save::DisplayMode::Windowed,
-      master_volume: 0.8,
-      music_volume: 1.0,
-      sfx_volume: 1.0,
+      master_volume: super::resolve::DEFAULT_MASTER_VOLUME,
+      music_volume: super::resolve::DEFAULT_MUSIC_VOLUME,
+      sfx_volume: super::resolve::DEFAULT_SFX_VOLUME,
       show_fps: false,
       dev_console: false, // Disabled by default, enable in Ryo.toml [system] section
       target_background_fps: 0,
