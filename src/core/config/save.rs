@@ -1939,6 +1939,40 @@ mod tests {
   }
 
   #[test]
+  fn env_merge_flattens_a_legacy_file_without_losing_settings() {
+    let dir = tempdir().unwrap();
+    let manager = SaveManager::new(dir.path()).unwrap();
+    write_system_json(
+      dir.path(),
+      r#"{"master_volume": 0.5, "display": {"width": 1920, "height": 1080, "display_mode": "borderless_fullscreen", "vsync": false}}"#,
+    );
+    let mut env = HashMap::new();
+    env.insert("difficulty".to_string(), serde_json::json!("hard"));
+    let defaults = super::super::workspace::SystemDefaults {
+      env,
+      ..super::super::workspace::SystemDefaults::default()
+    };
+
+    let prefs = manager
+      .load_preferences_or_seed(&SystemState::new(), &UserPreferenceFilter::all(), &defaults)
+      .unwrap()
+      .unwrap();
+
+    // The preferences come from the legacy layout...
+    assert_eq!(prefs.resolution, Some((1920, 1080)));
+    assert_eq!(prefs.display_mode, Some(DisplayMode::BorderlessFullscreen));
+    assert_eq!(prefs.vsync, Some(false));
+    // ...and the rewrite adds env in the flat layout with the same values
+    let raw = read_system_json(dir.path());
+    assert!(raw.get("display").is_none());
+    assert_eq!(raw["resolution"], "1920x1080");
+    assert_eq!(raw["display_mode"], "borderless_fullscreen");
+    assert_eq!(raw["vsync"], false);
+    assert_eq!(raw["master_volume"], 0.5);
+    assert_eq!(raw["env"]["difficulty"], "hard");
+  }
+
+  #[test]
   fn malformed_file_is_an_error_and_left_alone() {
     for contents in ["not json", r#"{"vsync": "yes"}"#] {
       let dir = tempdir().unwrap();

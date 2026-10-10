@@ -741,10 +741,23 @@ mod tests {
   }
 
   #[test]
-  fn build_script_tracks_every_embedded_key() {
+  fn build_script_tracks_exactly_the_embedded_keys() {
+    // The quoted names inside src/build.rs's EMBEDDED_KEYS array
     let script = include_str!("../../build.rs");
-    for (key, _) in COMPILED_EMBEDDED {
-      assert!(script.contains(key), "src/build.rs doesn't track {key}");
-    }
+    let list = script
+      .split_once("const EMBEDDED_KEYS: &[&str] = &[")
+      .and_then(|(_, rest)| rest.split_once("];"))
+      .map(|(list, _)| list)
+      .expect("src/build.rs declares EMBEDDED_KEYS");
+    let mut tracked: Vec<&str> = list
+      .lines()
+      .map(str::trim)
+      .filter(|line| !line.starts_with("//"))
+      .filter_map(|line| line.strip_prefix('"')?.split_once('"').map(|(key, _)| key))
+      .collect();
+    let mut compiled: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
+    tracked.sort_unstable();
+    compiled.sort_unstable();
+    assert_eq!(tracked, compiled);
   }
 }
