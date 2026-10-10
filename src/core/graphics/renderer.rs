@@ -19,6 +19,7 @@ pub const DEFAULT_BACKGROUND_COLOR: wgpu::Color = wgpu::Color {
   b: 0.0473, // sRGB 35 -> linear
   a: 1.0,
 };
+use image::RgbaImage;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -268,6 +269,59 @@ impl WgpuRenderer {
       max_width,
       max_height,
     })
+  }
+
+  /// Create a renderer that draws into an offscreen texture instead of a window.
+  ///
+  /// The target is `width × height` (the game resolution), so frames are never
+  /// letterboxed. Read them back with [`read_frame`](Self::read_frame).
+  pub fn new_offscreen(
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    width: u32,
+    height: u32,
+  ) -> Self {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+      label: Some("Offscreen Target"),
+      size: wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+      view_formats: &[],
+    });
+    Self::from_parts(RendererParts {
+      instance: None,
+      adapter: None,
+      device,
+      queue,
+      target: PresentTarget::Offscreen { texture },
+      window_size: (width, height),
+      presentation_blocks: false,
+      game_width: width,
+      game_height: height,
+      window_mode: WindowMode::default(),
+      max_width: None,
+      max_height: None,
+    })
+  }
+
+  /// Read the last frame drawn to an offscreen target.
+  ///
+  /// Window renderers can't read their surface back; use
+  /// [`request_capture`](Self::request_capture) instead.
+  pub fn read_frame(&self) -> CaptureResult<RgbaImage> {
+    match &self.target {
+      PresentTarget::Offscreen { texture } => read_texture_rgba(&self.device, &self.queue, texture),
+      PresentTarget::Surface { .. } => Err(CaptureError::Readback(
+        "window surfaces can't be read back; use request_capture".to_string(),
+      )),
+    }
   }
 
   /// Build the textures, pipelines and buffers shared by every target type.

@@ -18,6 +18,9 @@ mod gpu_basics;
 #[path = "e2e/capture_readback.rs"]
 mod capture_readback;
 
+#[path = "e2e/offscreen_renderer.rs"]
+mod offscreen_renderer;
+
 #[path = "e2e/lighting_renderer.rs"]
 mod lighting_renderer;
 
