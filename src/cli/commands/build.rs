@@ -22,18 +22,10 @@ pub fn execute(args: &[String]) -> CliResult<()> {
 
   // Read Ryo.toml config to embed at compile time
   let config = workspace.config();
-  let system = &config.system;
   let release = &config.release;
 
   // Resolve icon path: custom from [release].logo, or default Ryo2D logo
   let icon_path = resolve_icon_path(&workspace, release.logo.as_ref())?;
-
-  // Convert display_mode to string for embedding
-  let display_mode_str = match system.display_mode {
-    crate::core::config::DisplayMode::Windowed => "windowed",
-    crate::core::config::DisplayMode::ExclusiveFullscreen => "exclusive_fullscreen",
-    crate::core::config::DisplayMode::BorderlessFullscreen => "borderless_fullscreen",
-  };
 
   // Find workspace root's target directory for shared dependency caching
   // This allows all examples to share compiled dependencies
@@ -45,41 +37,7 @@ pub fn execute(args: &[String]) -> CliResult<()> {
     .arg("--release")
     // Use shared target directory for dependency caching
     .env("CARGO_TARGET_DIR", &target_dir)
-    // [system] section values
-    .env(
-      "RYO_EMBED_RESOLUTION",
-      system
-        .resolution
-        .map(|(w, h)| format!("{}x{}", w, h))
-        .unwrap_or_else(|| "1280x720".to_string()),
-    )
-    .env("RYO_EMBED_VSYNC", system.vsync.to_string())
-    .env("RYO_EMBED_DISPLAY_MODE", display_mode_str)
-    .env("RYO_EMBED_MASTER_VOLUME", system.master_volume.to_string())
-    .env("RYO_EMBED_MUSIC_VOLUME", system.music_volume.to_string())
-    .env("RYO_EMBED_SFX_VOLUME", system.sfx_volume.to_string())
-    .env("RYO_EMBED_CONSOLE", system.dev_console.to_string())
-    // [project] section values
-    .env("RYO_EMBED_TITLE", &config.title)
-    // [system] section values continued
-    .env("RYO_EMBED_SHOW_FPS", system.show_fps.to_string())
-    // [debug] section values
-    .env(
-      "RYO_EMBED_SHOW_COLLIDERS",
-      config.debug.show_colliders.to_string(),
-    )
-    .env(
-      "RYO_EMBED_SHOW_VELOCITIES",
-      config.debug.show_velocities.to_string(),
-    )
-    .env(
-      "RYO_EMBED_SHOW_ORIGINS",
-      config.debug.show_origins.to_string(),
-    )
-    .env(
-      "RYO_EMBED_SHOW_FRAME_TIMING",
-      config.debug.show_frame_timing.to_string(),
-    )
+    .envs(embedded_config_env(config))
     // [release] section values - icon path for Windows .exe embedding
     .env("RYO_EMBED_ICON", &icon_path)
     .current_dir(workspace.root())
@@ -101,6 +59,68 @@ pub fn execute(args: &[String]) -> CliResult<()> {
   Output::success(&format!("release build of {}", project_name));
 
   Ok(())
+}
+
+/// Ryo.toml values passed to the release build; the engine reads them with
+/// `option_env!` (see `core::config::resolve::COMPILED_EMBEDDED`).
+fn embedded_config_env(
+  config: &crate::core::config::WorkspaceConfig,
+) -> Vec<(&'static str, String)> {
+  let system = &config.system;
+  let debug = &config.debug;
+  let display_mode = match system.display_mode {
+    crate::core::config::DisplayMode::Windowed => "windowed",
+    crate::core::config::DisplayMode::ExclusiveFullscreen => "exclusive_fullscreen",
+    crate::core::config::DisplayMode::BorderlessFullscreen => "borderless_fullscreen",
+  };
+  vec![
+    (
+      "RYO_EMBED_RESOLUTION",
+      system
+        .resolution
+        .map(|(w, h)| format!("{}x{}", w, h))
+        .unwrap_or_else(|| "1280x720".to_string()),
+    ),
+    ("RYO_EMBED_VSYNC", system.vsync.to_string()),
+    ("RYO_EMBED_DISPLAY_MODE", display_mode.to_string()),
+    ("RYO_EMBED_MASTER_VOLUME", system.master_volume.to_string()),
+    ("RYO_EMBED_MUSIC_VOLUME", system.music_volume.to_string()),
+    ("RYO_EMBED_SFX_VOLUME", system.sfx_volume.to_string()),
+    ("RYO_EMBED_CONSOLE", system.dev_console.to_string()),
+    ("RYO_EMBED_TITLE", config.title.clone()),
+    ("RYO_EMBED_SHOW_FPS", system.show_fps.to_string()),
+    ("RYO_EMBED_SHOW_COLLIDERS", debug.show_colliders.to_string()),
+    (
+      "RYO_EMBED_SHOW_VELOCITIES",
+      debug.show_velocities.to_string(),
+    ),
+    ("RYO_EMBED_SHOW_ORIGINS", debug.show_origins.to_string()),
+    (
+      "RYO_EMBED_SHOW_FRAME_TIMING",
+      debug.show_frame_timing.to_string(),
+    ),
+    (
+      "RYO_EMBED_DISABLE_DEBUG_KEYS",
+      debug.disable_debug_keys.to_string(),
+    ),
+    (
+      "RYO_EMBED_ENABLE_PROFILER",
+      debug.enable_profiler.to_string(),
+    ),
+    (
+      "RYO_EMBED_DEV_WINDOW_KEYS",
+      debug.dev_window_keys.to_string(),
+    ),
+    ("RYO_EMBED_LOGGER_WINDOW", debug.logger_window.to_string()),
+    (
+      "RYO_EMBED_BACKGROUND_FPS",
+      system.target_background_fps.to_string(),
+    ),
+    (
+      "RYO_EMBED_BACKGROUND_RENDERING",
+      system.background_rendering.to_string(),
+    ),
+  ]
 }
 
 /// Create a distributable release bundle
@@ -386,4 +406,58 @@ EXAMPLE:
     # You can distribute this entire folder
 "#
   );
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::config::WorkspaceConfig;
+  use crate::core::config::resolve::{COMPILED_EMBEDDED, ProjectLayer};
+
+  #[test]
+  fn embedded_env_covers_every_key_the_engine_reads() {
+    let mut names: Vec<&str> = embedded_config_env(&WorkspaceConfig::default())
+      .into_iter()
+      .map(|(name, _)| name)
+      .collect();
+    let mut expected: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
+    names.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(names, expected);
+  }
+
+  #[test]
+  fn embedded_debug_and_background_settings_reach_the_engine() {
+    let mut config = WorkspaceConfig::default();
+    config.debug.disable_debug_keys = true;
+    config.debug.enable_profiler = true;
+    config.debug.dev_window_keys = true;
+    config.debug.logger_window = true;
+    config.system.target_background_fps = 15;
+    config.system.background_rendering = false;
+
+    let env = embedded_config_env(&config);
+    let layer = ProjectLayer::from_embedded(|name| {
+      env
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.as_str())
+    })
+    .unwrap();
+
+    assert_eq!(layer.disable_debug_keys, Some(true));
+    assert_eq!(layer.enable_profiler, Some(true));
+    assert_eq!(layer.dev_window_keys, Some(true));
+    assert_eq!(layer.logger_window, Some(true));
+    assert_eq!(layer.background_fps, Some(15));
+    assert_eq!(layer.background_rendering, Some(false));
+  }
+
+  #[test]
+  fn build_script_tracks_every_embedded_key() {
+    let script = include_str!("../../build.rs");
+    for (key, _) in COMPILED_EMBEDDED {
+      assert!(script.contains(key), "src/build.rs doesn't track {key}");
+    }
+  }
 }
