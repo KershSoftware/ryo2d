@@ -200,6 +200,10 @@ fn embedded_config_env(
     ),
     ("RYO_EMBED_PORTABLE", config.release.portable.to_string()),
     ("RYO_EMBED_SAVE_FOLDER", release_save_folder(config)),
+    (
+      "RYO_EMBED_ENV",
+      serde_json::to_string(&system.env).unwrap_or_else(|_| "{}".to_string()),
+    ),
   ]
 }
 
@@ -654,6 +658,32 @@ mod tests {
     assert_eq!(warnings.len(), 3);
     assert!(warnings[0].contains("dev_window_keys"));
     assert!(release_tool_warnings(&env("false")).is_empty());
+  }
+
+  #[test]
+  fn env_section_is_embedded_and_read_back() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+      dir.path().join("Ryo.toml"),
+      "[env]\ndifficulty = \"hard\"\nlives = 3\nhard_mode = true\nspeed = 1.5\n",
+    )
+    .unwrap();
+    let workspace = crate::core::config::Workspace::from_path(dir.path()).unwrap();
+    let env = embedded_config_env(workspace.config(), None);
+
+    let shipped = crate::core::config::Workspace::from_embedded(dir.path(), |name| {
+      env
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.as_str())
+    })
+    .unwrap();
+
+    let config = shipped.config();
+    assert_eq!(config.env_str("difficulty"), Some("hard"));
+    assert_eq!(config.env_int("lives"), Some(3));
+    assert_eq!(config.env_bool("hard_mode"), Some(true));
+    assert_eq!(config.env_float("speed"), Some(1.5));
   }
 
   #[test]

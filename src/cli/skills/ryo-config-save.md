@@ -60,7 +60,7 @@ difficulty = "normal"
 | `[paths]` | No | Directory structure |
 | `[system]` | Yes | User-facing defaults (resolution, audio, show_fps) |
 | `[debug]` | No | Developer debugging |
-| `[env]` | No | Game variables |
+| `[env]` | Seeds its `env` (with `with_user_preferences`) | Game variables; shipped with release builds |
 
 ## system.json
 
@@ -106,6 +106,7 @@ Players can edit this file directly.
 - A default folder name from `[project] name` has `/` and characters Windows rejects replaced with `-`. An explicit `save_folder` is used as written (`Studio/Game` nests).
 - Games built with older engine versions saved to `data/` beside the game; set `portable = true` to keep using those saves when shipping an update.
 - The folder persists across `ryo2d build`s; delete its `system.json` to pick up new `[system]` defaults when testing with `ryo2d run`.
+- Release builds read the Ryo.toml values embedded by `ryo2d build` (including `[env]`) and never a Ryo.toml on disk, so `Workspace::discover().config()` matches between `ryo2d run` and a shipped game.
 
 ## Loading Configuration
 
@@ -233,7 +234,7 @@ save_manager.delete_game("slot1")?;
 1. **Use `load_or_create_system`** - Handles the fallback chain correctly
 2. **Keep system.json player-editable** - It's JSON for a reason
 3. **Debug flags in [debug]** - Never expose to players
-4. **Use [env] for game variables** - Easy to tweak during development
+4. **Use [env] for game variables** - Easy to tweak during development; `ryo2d build` ships them, so set dev-only switches (e.g. `debug_scene`) to `false` before release
 5. **World saves for checkpoints** - Quick snapshots of game state
 6. **Game saves for progress** - Structured data you control
 

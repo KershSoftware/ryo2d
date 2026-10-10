@@ -26,6 +26,7 @@ const EMBEDDED_KEYS: &[&str] = &[
   "RYO_EMBED_BACKGROUND_RENDERING",
   "RYO_EMBED_PORTABLE",
   "RYO_EMBED_SAVE_FOLDER",
+  "RYO_EMBED_ENV",
 ];
 
 fn main() {

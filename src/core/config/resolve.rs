@@ -305,7 +305,8 @@ impl ProjectLayer {
 /// values. `RYO_EMBED_RESOLUTION` is always set by `ryo2d build` and marks a
 /// binary built that way. Each key is written once so the name and the
 /// `option_env!` argument can't drift apart. `RYO_EMBED_PORTABLE` and
-/// `RYO_EMBED_SAVE_FOLDER` are read by `save_location`, not the settings layers.
+/// `RYO_EMBED_SAVE_FOLDER` are read by `save_location`, and `RYO_EMBED_ENV` (a
+/// JSON object) by `Workspace::from_embedded`, not the settings layers.
 macro_rules! compiled_embedded {
   ($($key:literal),* $(,)?) => { &[$(($key, option_env!($key))),*] };
 }
@@ -332,6 +333,7 @@ pub(crate) const COMPILED_EMBEDDED: &[(&str, Option<&str>)] = compiled_embedded!
   "RYO_EMBED_BACKGROUND_RENDERING",
   "RYO_EMBED_PORTABLE",
   "RYO_EMBED_SAVE_FOLDER",
+  "RYO_EMBED_ENV",
 ];
 
 /// A value embedded into this binary by `ryo2d build`.
@@ -650,7 +652,7 @@ logo = "art/logo.png"
   fn compiled_table_has_unique_embed_keys() {
     let keys: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
     let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
-    assert_eq!(keys.len(), 21);
+    assert_eq!(keys.len(), 22);
     assert_eq!(unique.len(), keys.len());
     assert!(keys.iter().all(|key| key.starts_with("RYO_EMBED_")));
     assert_eq!(compiled_embedded_value("RYO_EMBED_NOT_A_KEY"), None);

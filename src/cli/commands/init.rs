@@ -292,6 +292,7 @@ logger_window = false
 # =============================================================================
 # GAME SPECIFIC SETTINGS
 # Custom game configurations (not tied to engine)
+# `ryo2d build` ships these with the game - keep dev-only switches false before release
 # =============================================================================
 
 [env]

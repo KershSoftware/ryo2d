@@ -22,6 +22,8 @@ See skill `ryo-config-save` for Ryo.toml layout and the save API.
 
 `save_location.rs` (pure, unit-tested) decides release paths (`valid_save_folder`, `release_save_dir`, `compiled_release_save_dir`, `bundle_dir_to_enter`, `enter_bundle_dir`). `Workspace::discover()` applies the release save dir (OS user folder + `[release] save_folder`/`[project] name`, or `data/` beside the game when portable); `from_path`/`discover_from` stay dev-style; `set_save_data_path` replaces it. `EngineBuilder::resolve` calls `enter_bundle_dir()` so release bundles run from their own folder. Embedded keys `RYO_EMBED_PORTABLE`/`RYO_EMBED_SAVE_FOLDER` feed it.
 
+In release builds `Workspace::discover()` builds its config from embedded values (`Workspace::from_embedded`: `[system]`, `[debug]`, title, `[release]`, and `[env]` via the `RYO_EMBED_ENV` JSON) and never reads a Ryo.toml on disk, so `ryo2d run` matches a shipped game.
+
 ## Gotchas
 
 - Two `DebugConfig` structs: `workspace.rs` (TOML parsing) and `debug.rs` (runtime). A new debug flag needs both plus fields in `resolve.rs` (`ProjectLayer`, `ResolvedSettings`, and `BuilderOverrides` if it has a setter), the copy in `EngineBuilder::resolve_in`, and an `RYO_EMBED_*` key

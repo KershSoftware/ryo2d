@@ -331,9 +331,75 @@ impl Workspace {
   /// Returns an error if the current directory cannot be determined.
   pub fn discover() -> Result<Self, EngineError> {
     let cwd = std::env::current_dir().map_err(|e| EngineError::WorkspaceError(e.to_string()))?;
-    let mut workspace = Self::discover_from(&cwd)?;
+    let mut workspace = match Self::from_embedded(&cwd, super::resolve::compiled_embedded_value) {
+      Some(release) => release,
+      None => Self::discover_from(&cwd)?,
+    };
     workspace.release_save_dir = super::save_location::compiled_release_save_dir();
     Ok(workspace)
+  }
+
+  /// The workspace of a release build (`ryo2d build`): the Ryo.toml values
+  /// embedded at build time, rooted at `root`. `None` for dev builds.
+  ///
+  /// Ryo.toml files on disk are ignored, so `ryo2d run` sees exactly what a
+  /// shipped game sees.
+  pub(crate) fn from_embedded<'a>(
+    root: &Path,
+    lookup: impl Fn(&str) -> Option<&'a str>,
+  ) -> Option<Self> {
+    let layer = super::resolve::ProjectLayer::from_embedded(&lookup)?;
+    let mut config = WorkspaceConfig::default();
+
+    if let Some(title) = layer.title {
+      config.title = title;
+    }
+
+    let system = &mut config.system;
+    if layer.resolution.is_some() {
+      system.resolution = layer.resolution;
+    }
+    set(&mut system.vsync, layer.vsync);
+    set(&mut system.display_mode, layer.display_mode);
+    set(&mut system.master_volume, layer.master_volume);
+    set(&mut system.music_volume, layer.music_volume);
+    set(&mut system.sfx_volume, layer.sfx_volume);
+    set(&mut system.show_fps, layer.show_fps);
+    set(&mut system.dev_console, layer.dev_console);
+    set(&mut system.target_background_fps, layer.background_fps);
+    set(&mut system.background_rendering, layer.background_rendering);
+
+    let debug = &mut config.debug;
+    set(&mut debug.show_fps, layer.show_fps);
+    set(&mut debug.show_colliders, layer.show_colliders);
+    set(&mut debug.show_velocities, layer.show_velocities);
+    set(&mut debug.show_origins, layer.show_origins);
+    set(&mut debug.show_frame_timing, layer.show_frame_timing);
+    set(&mut debug.disable_debug_keys, layer.disable_debug_keys);
+    set(&mut debug.enable_profiler, layer.enable_profiler);
+    set(&mut debug.logger_window, layer.logger_window);
+    set(&mut debug.dev_window_keys, layer.dev_window_keys);
+
+    config.release.portable = lookup("RYO_EMBED_PORTABLE") == Some("true");
+    config.release.save_folder = lookup("RYO_EMBED_SAVE_FOLDER").map(str::to_string);
+
+    let env = embedded_env(lookup("RYO_EMBED_ENV"));
+    config.env = env
+      .iter()
+      .filter_map(|(key, value)| {
+        serde_json::from_value::<toml::Value>(value.clone())
+          .ok()
+          .map(|value| (key.clone(), value))
+      })
+      .collect();
+    config.system.env = env;
+
+    Some(Workspace {
+      root: root.to_path_buf(),
+      config,
+      dev_window_keys_setting: layer.dev_window_keys,
+      release_save_dir: None,
+    })
   }
 
   /// Discover workspace starting from a specific directory.
@@ -770,6 +836,24 @@ impl WorkspaceConfig {
   }
 }
 
+/// Overwrite `target` when an embedded value is present.
+fn set<T>(target: &mut T, value: Option<T>) {
+  if let Some(value) = value {
+    *target = value;
+  }
+}
+
+/// `[env]` as embedded by `ryo2d build` (a JSON object); empty when absent or malformed.
+fn embedded_env(raw: Option<&str>) -> HashMap<String, serde_json::Value> {
+  let Some(raw) = raw else {
+    return HashMap::new();
+  };
+  serde_json::from_str(raw).unwrap_or_else(|e| {
+    eprintln!("[ryo2d] Warning: Malformed embedded [env] ({e}), ignoring it");
+    HashMap::new()
+  })
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -814,6 +898,76 @@ mod tests {
     let ws = Workspace::from_path(dir.path()).unwrap();
     assert!(!ws.config().release.portable);
     assert_eq!(ws.config().release.save_folder, None);
+  }
+
+  fn embedded_release(name: &str) -> Option<&'static str> {
+    match name {
+      "RYO_EMBED_RESOLUTION" => Some("800x600"),
+      "RYO_EMBED_TITLE" => Some("Hopper"),
+      "RYO_EMBED_MASTER_VOLUME" => Some("0.3"),
+      "RYO_EMBED_DISPLAY_MODE" => Some("borderless_fullscreen"),
+      "RYO_EMBED_SHOW_COLLIDERS" => Some("true"),
+      "RYO_EMBED_PORTABLE" => Some("true"),
+      "RYO_EMBED_SAVE_FOLDER" => Some("Studio/Hopper"),
+      "RYO_EMBED_ENV" => Some(r#"{"difficulty":"hard","debug_scene":false,"lives":3}"#),
+      _ => None,
+    }
+  }
+
+  #[test]
+  fn release_workspace_reads_embedded_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::from_embedded(dir.path(), embedded_release).unwrap();
+    let config = ws.config();
+    assert_eq!(config.env_str("difficulty"), Some("hard"));
+    assert_eq!(config.env_bool("debug_scene"), Some(false));
+    assert_eq!(config.env_int("lives"), Some(3));
+    assert_eq!(
+      config.system.env.get("difficulty"),
+      Some(&serde_json::json!("hard"))
+    );
+    assert_eq!(config.system.resolution, Some((800, 600)));
+    assert_eq!(config.system.master_volume, 0.3);
+    assert_eq!(
+      config.system.display_mode,
+      DisplayMode::BorderlessFullscreen
+    );
+    assert_eq!(config.title, "Hopper");
+    assert!(config.debug.show_colliders);
+    assert!(config.release.portable);
+    assert_eq!(config.release.save_folder.as_deref(), Some("Studio/Hopper"));
+    assert_eq!(ws.root(), dir.path());
+  }
+
+  #[test]
+  fn release_workspace_ignores_ryo_toml_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+      dir.path().join("Ryo.toml"),
+      "[env]\ndifficulty = \"easy\"\n",
+    )
+    .unwrap();
+    let ws = Workspace::from_embedded(dir.path(), embedded_release).unwrap();
+    assert_eq!(ws.config().env_str("difficulty"), Some("hard"));
+  }
+
+  #[test]
+  fn dev_builds_have_no_embedded_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(Workspace::from_embedded(dir.path(), |_| None).is_none());
+  }
+
+  #[test]
+  fn malformed_embedded_env_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::from_embedded(dir.path(), |name| match name {
+      "RYO_EMBED_ENV" => Some("not json"),
+      other => embedded_release(other),
+    })
+    .unwrap();
+    assert!(ws.config().env.is_empty());
+    assert!(ws.config().system.env.is_empty());
+    assert_eq!(ws.config().system.resolution, Some((800, 600)));
   }
 
   #[test]
