@@ -99,13 +99,30 @@ fn release_tool_warnings(env: &[(&'static str, String)]) -> Vec<String> {
     .collect()
 }
 
-/// The per-game save folder name: `[release] save_folder`, else `[project] name`.
+/// The per-game save folder name: `[release] save_folder` as written, else
+/// `[project] name` turned into a single folder name.
 fn release_save_folder(config: &crate::core::config::WorkspaceConfig) -> String {
   config
     .release
     .save_folder
     .clone()
-    .unwrap_or_else(|| config.name.clone())
+    .unwrap_or_else(|| folder_from_project_name(&config.name))
+}
+
+/// Make a project name one folder: path separators, control characters and
+/// `<>:"|?*` become `-`, then surrounding whitespace and trailing dots go.
+fn folder_from_project_name(name: &str) -> String {
+  let replaced: String = name
+    .chars()
+    .map(|c| {
+      if c.is_control() || "/\\<>:\"|?*".contains(c) {
+        '-'
+      } else {
+        c
+      }
+    })
+    .collect();
+  replaced.trim().trim_end_matches(['.', ' ']).to_string()
 }
 
 /// [`release_save_folder`], rejected before building when it can't name a folder.
@@ -509,6 +526,38 @@ mod tests {
       "Studio/Hopper"
     );
     assert_eq!(embedded_value(&env, "RYO_EMBED_PORTABLE"), "true");
+  }
+
+  #[test]
+  fn project_names_become_a_single_folder() {
+    assert_eq!(
+      folder_from_project_name("Squash/Stretch Demo"),
+      "Squash-Stretch Demo"
+    );
+    assert_eq!(folder_from_project_name("Game: Remix"), "Game- Remix");
+    assert_eq!(folder_from_project_name("Breakout"), "Breakout");
+    assert_eq!(folder_from_project_name("  Hopper. . "), "Hopper");
+  }
+
+  #[test]
+  fn default_save_folder_is_sanitized_but_explicit_is_not() {
+    let mut config = WorkspaceConfig {
+      name: "Squash/Stretch Demo".to_string(),
+      ..Default::default()
+    };
+    assert_eq!(
+      checked_save_folder(&config).ok().as_deref(),
+      Some("Squash-Stretch Demo")
+    );
+    config.release.save_folder = Some("Studio/Game".to_string());
+    let env = embedded_config_env(&config, None);
+    assert_eq!(embedded_value(&env, "RYO_EMBED_SAVE_FOLDER"), "Studio/Game");
+    config.release.save_folder = None;
+    config.name = "..".to_string();
+    assert!(matches!(
+      checked_save_folder(&config),
+      Err(CliError::BuildFailed(_))
+    ));
   }
 
   #[test]
