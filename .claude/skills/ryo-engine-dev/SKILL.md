@@ -171,3 +171,7 @@ ryo2d dev --profiler
 - Keep public API minimal
 - Performance matters in hot paths
 - Document public types with rustdoc
+
+## Verifying Rendering Changes
+
+Use frame capture (`src/core/capture/`) instead of guessing: run an example with `RYO_CAPTURE_FRAMES=<n> RYO_CAPTURE_EXIT=1 RYO_CAPTURE_DIR=<abs dir>` and inspect the PNG. Capture before and after a renderer change to prove it.

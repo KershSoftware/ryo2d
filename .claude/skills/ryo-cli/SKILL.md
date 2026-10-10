@@ -172,3 +172,18 @@ For production games, deploy your own signaling server (see `docs/matchbox-serve
 - For engine dev, use `./run` scripts from repo root
 - Use `ryo2d netplay` for quick multiplayer testing
 
+## Frame Capture
+
+Save frames as PNGs to check rendering without watching the window. Works with `ryo2d dev`, `ryo2d run`, `./run` and `cargo run` (the game inherits the environment):
+
+| Variable | Meaning |
+|----------|---------|
+| `RYO_CAPTURE_FRAMES=60,120` | Presented-frame numbers to capture |
+| `RYO_CAPTURE_DIR=captures` | Output directory (default `captures/`) |
+| `RYO_CAPTURE_EXIT=1` | Quit after the last capture; exit code 1 if one failed |
+
+Files are named `frame-000060.png` at game resolution (no letterboxing). In dev builds, F12 or the console command `debug:capture [path]` saves the next frame.
+
+```bash
+RYO_CAPTURE_FRAMES=120 RYO_CAPTURE_EXIT=1 ryo2d dev
+```
