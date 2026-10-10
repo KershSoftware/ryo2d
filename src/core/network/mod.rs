@@ -287,7 +287,7 @@ pub enum NetworkEvent {
 }
 
 /// Configuration for creating a network server
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct NetworkServerConfig {
   /// Port to listen on (default: 5000)
   ///
@@ -313,9 +313,11 @@ impl NetworkServerConfig {
   pub fn new() -> Self {
     Self::default()
   }
+}
 
-  /// Set custom default values (used by Default impl).
-  fn with_defaults() -> Self {
+impl Default for NetworkServerConfig {
+  /// Port 5000, 16 clients, protocol ID 0, UDP.
+  fn default() -> Self {
     Self {
       port: 5000,
       max_clients: 16,
@@ -353,16 +355,6 @@ impl NetworkServer {
   /// Returns `NetworkError::InitError` if socket binding or transport
   /// creation fails.
   pub fn new(config: NetworkServerConfig) -> NetworkResult<Self> {
-    let config = if config.port == 0 && config.max_clients == 0 {
-      // Use defaults if config appears to be uninitialized
-      NetworkServerConfig {
-        transport: config.transport,
-        ..NetworkServerConfig::with_defaults()
-      }
-    } else {
-      config
-    };
-
     let transport = match config.transport {
       TransportConfig::Udp => {
         let udp = transport::udp::UdpServerTransport::new(
@@ -1099,13 +1091,29 @@ mod tests {
   #[test]
   fn server_config_default() {
     let config = NetworkServerConfig::default();
-    assert_eq!(config.port, 0); // Default is 0, but new() fills in 5000
+    assert_eq!(config.port, 5000);
+    assert_eq!(config.max_clients, 16);
     assert!(matches!(config.transport, TransportConfig::Udp));
   }
 
   #[test]
-  fn server_config_with_defaults() {
-    let config = NetworkServerConfig::with_defaults();
+  fn partial_server_configs_keep_the_documented_defaults() {
+    let config = NetworkServerConfig {
+      port: 7777,
+      ..Default::default()
+    };
+    assert_eq!(config.max_clients, 16);
+
+    let config = NetworkServerConfig {
+      max_clients: 4,
+      ..Default::default()
+    };
+    assert_eq!(config.port, 5000);
+  }
+
+  #[test]
+  fn server_config_new_uses_defaults() {
+    let config = NetworkServerConfig::new();
     assert_eq!(config.port, 5000);
     assert_eq!(config.max_clients, 16);
     assert_eq!(config.protocol_id, 0);
