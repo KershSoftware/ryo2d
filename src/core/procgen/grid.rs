@@ -424,6 +424,10 @@ pub struct GenerationResult {
   pub algorithm: String,
   /// Generation time in milliseconds
   pub duration_ms: u64,
+  /// Outcome of the last WFC step, or `None` if the pipeline had no WFC step.
+  ///
+  /// On `Contradiction` or `IterationLimit` the grid is only partly collapsed.
+  pub wfc_result: Option<super::wfc::WfcResult>,
 }
 
 impl GenerationResult {
@@ -433,12 +437,18 @@ impl GenerationResult {
       seed,
       algorithm: algorithm.into(),
       duration_ms: 0,
+      wfc_result: None,
     }
   }
 
   pub fn with_duration(mut self, duration_ms: u64) -> Self {
     self.duration_ms = duration_ms;
     self
+  }
+
+  /// Outcome of the last WFC step, or `None` if the pipeline had no WFC step.
+  pub fn wfc_result(&self) -> Option<super::wfc::WfcResult> {
+    self.wfc_result
   }
 
   /// Get a reference to the grid

@@ -392,7 +392,7 @@ let duration = result.duration_ms;  // u64
 ## Performance Tips
 
 1. **Use appropriate grid sizes** - 64x64 to 256x256 is typical
-2. **Limit WFC iterations** - Set `max_iterations` to prevent long runs
+2. **Limit WFC iterations** - Set `max_iterations` to prevent long runs, and check `result.wfc_result()`: `Some(WfcResult::IterationLimit)` or `Some(WfcResult::Contradiction)` means the grid is only partly collapsed (regenerate with another seed)
 3. **Cellular iterations** - 4-7 iterations usually sufficient
 4. **Poisson min_distance** - Larger distance = fewer points = faster
 5. **BSP split_depth** - Higher depth = more rooms = slower

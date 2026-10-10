@@ -131,6 +131,7 @@ impl ProcgenBuilder {
     let mut rng = SeededRng::new(seed);
     let mut grid = GenerationGrid::new(self.width, self.height);
     let mut algorithm_name = String::from("Pipeline");
+    let mut wfc_result = None;
 
     for step in self.steps {
       match step {
@@ -161,8 +162,9 @@ impl ProcgenBuilder {
           algorithm_name = String::from("RandomWalk");
         }
         GenerationStep::Wfc(config) => {
-          let (new_grid, _result) = wfc::generate(self.width, self.height, &config, &mut rng);
+          let (new_grid, result) = wfc::generate(self.width, self.height, &config, &mut rng);
           grid = new_grid;
+          wfc_result = Some(result);
           algorithm_name = String::from("WFC");
         }
         GenerationStep::ConnectMst(config) => {
@@ -183,7 +185,10 @@ impl ProcgenBuilder {
 
     let duration = start.elapsed();
 
-    GenerationResult::new(grid, seed, algorithm_name).with_duration(duration.as_millis() as u64)
+    let mut result =
+      GenerationResult::new(grid, seed, algorithm_name).with_duration(duration.as_millis() as u64);
+    result.wfc_result = wfc_result;
+    result
   }
 }
 
@@ -214,6 +219,43 @@ pub fn poisson_points(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn wfc_success_is_reported() {
+    let result = ProcgenBuilder::new(16, 16)
+      .with_seed(7)
+      .wfc(wfc::WfcConfig::simple_preset())
+      .build();
+    assert_eq!(result.wfc_result(), Some(wfc::WfcResult::Success));
+  }
+
+  #[test]
+  fn wfc_iteration_limit_is_reported() {
+    let result = ProcgenBuilder::new(16, 16)
+      .with_seed(7)
+      .wfc(wfc::WfcConfig::simple_preset().with_max_iterations(1))
+      .build();
+    assert_eq!(result.wfc_result(), Some(wfc::WfcResult::IterationLimit));
+  }
+
+  #[test]
+  fn wfc_contradiction_is_reported() {
+    // No tiles: every cell starts with no possibilities
+    let result = ProcgenBuilder::new(8, 8)
+      .with_seed(7)
+      .wfc(wfc::WfcConfig::new())
+      .build();
+    assert_eq!(result.wfc_result(), Some(wfc::WfcResult::Contradiction));
+  }
+
+  #[test]
+  fn pipelines_without_wfc_have_no_wfc_result() {
+    let result = ProcgenBuilder::new(32, 32)
+      .with_seed(12345)
+      .bsp(bsp::BspConfig::default())
+      .build();
+    assert_eq!(result.wfc_result(), None);
+  }
 
   #[test]
   fn basic_pipeline() {
