@@ -4,12 +4,14 @@
 //! `RYO_CAPTURE_*` environment variables, the F12 dev key, or the
 //! `debug:capture` console command.
 
+mod config;
 mod readback;
 
 use std::path::PathBuf;
 
 use image::RgbaImage;
 
+pub use config::{AutoCaptureConfig, DEFAULT_CAPTURE_DIR};
 pub use readback::read_texture_rgba;
 
 /// A frame read back from the GPU, ready to be written.
