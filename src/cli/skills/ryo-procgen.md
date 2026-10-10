@@ -106,8 +106,10 @@ let result = ProcgenBuilder::new(128, 128)
 - `NoiseConfig::island_preset()` - Island with water edges
 - `NoiseConfig::cave_preset()` - Binary floor/wall noise
 
-**Heightmap generation:**
+**Heightmap generation** (`generate_heightmap` is not in the prelude; import it from `ryo2d::core::procgen`):
 ```rust
+use ryo2d::core::procgen::generate_heightmap;
+
 let mut rng = SeededRng::new(12345);
 let heightmap = generate_heightmap(128, 128, &NoiseConfig::default(), &mut rng);
 // heightmap is Vec<f32> with values 0.0-1.0
@@ -146,8 +148,12 @@ for (x, y) in points.iter() {
 }
 ```
 
-**Variants:**
+**Variants** (`poisson_circle` and `poisson_masked` are not in the prelude; import them from `ryo2d::core::procgen`):
 ```rust
+use ryo2d::core::procgen::{poisson_circle, poisson_masked};
+
+let mut rng = SeededRng::new(12345);
+
 // Points within a circle
 let points = poisson_circle(center_x, center_y, radius, &config, &mut rng);
 
@@ -336,9 +342,13 @@ let result = ProcgenBuilder::new(64, 64)
 ### Island Terrain
 
 ```rust
-let mut rng = SeededRng::new(12345);
-let config = NoiseConfig::island_preset();
-let mut grid = noise::generate(64, 64, &config, &mut rng);
+use ryo2d::core::procgen::apply_island_gradient;
+
+let result = ProcgenBuilder::new(64, 64)
+    .with_seed(12345)
+    .noise(NoiseConfig::island_preset())
+    .build();
+let mut grid = result.into_grid();
 apply_island_gradient(&mut grid, 0.3);  // Water at edges
 ```
 

@@ -22,6 +22,24 @@ ctx.world.spawn((
 ));
 ```
 
+## Driving the System
+
+The engine never runs particles. The scene owns a `ParticleSystem`, updates it and submits it to the GPU batch (see `examples/demos/particles/main.rs`):
+
+```rust
+// In the scene struct: particle_system: ParticleSystem::new(), particle_sprite: SpriteHandle
+
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    self.particle_system.update(ctx.world, ctx.events, dt);
+    SceneAction::Continue
+}
+
+fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+    gpu.upload_sprite(&self.particle_sprite);  // each particle sprite
+    self.particle_system.collect_for_render(gpu.world, gpu.camera, gpu.batch);
+}
+```
+
 ## Built-in Presets
 
 | Preset | Use Case |
@@ -136,28 +154,21 @@ for hit in ctx.events.read::<ParticleCollision>() {
 }
 ```
 
-## Particle Trails
-
-```rust
-.with_trail(TrailConfig::new(3.0)
-    .with_max_points(10)
-    .with_fade(true)
-    .with_color(Color::YELLOW))
-```
-
 ## One-Shot Effects
 
 ```rust
-fn explode(ctx: &mut GameContext, x: f32, y: f32) {
+fn explode(ctx: &mut SceneContext, x: f32, y: f32) {
     ctx.world.spawn((
         Transform::new(x, y),
         ParticleEmitter::explosion(sprite, 50),
     ));
 }
 
-// Cleanup when done
-if emitter.is_finished() {
-    ctx.world.despawn(entity);
+// Cleanup when done (nothing despawns finished emitters automatically)
+let finished = ctx.world.get::<ParticleEmitter>(entity)
+    .is_some_and(|e| e.is_finished());
+if finished {
+    let _ = ctx.world.despawn(entity);
 }
 ```
 
@@ -176,12 +187,13 @@ if emitter.is_finished() {
 ### Mouse-Following Attractor
 
 ```rust
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     let (mx, my) = ctx.input.mouse_position();
-    if let Some(mut t) = ctx.world.get_component_mut::<Transform>(self.attractor) {
+    if let Some(mut t) = ctx.world.get_mut::<Transform>(self.attractor) {
         t.x = mx;
         t.y = my;
     }
+    SceneAction::Continue
 }
 ```
 
@@ -198,7 +210,7 @@ ctx.world.spawn((
 ### Hit Effect
 
 ```rust
-fn on_hit(ctx: &mut GameContext, x: f32, y: f32) {
+fn on_hit(ctx: &mut SceneContext, x: f32, y: f32) {
     ctx.world.spawn((
         Transform::new(x, y),
         ParticleEmitter::sparks(spark_sprite)
@@ -215,6 +227,5 @@ fn on_hit(ctx: &mut GameContext, x: f32, y: f32) {
 - **Performance**: Keep `max_particles` reasonable (100-500 typical)
 - **Layer Masks**: Give emitters a layer with `with_layer(0b10)` and attractors a matching `with_layer_mask(0b10)`; a masked attractor ignores particles from emitters without a shared layer bit (the default layer is 0)
 - **Drag**: Use drag to naturally limit particle lifetime
-- **Trails**: Use sparingly - trails add vertex overhead
 - **Collisions**: Fast particles can tunnel through thin colliders (positions are checked once per update); use thicker colliders or lower speeds
 - **Deterministic particles**: `ParticleSystem::with_seed(n)` gives the same particles for the same updates (headless visual tests, replays); `new()` is randomly seeded

@@ -29,9 +29,14 @@ pub trait Scene {
     fn on_exit(&mut self, ctx: &mut SceneContext) {}
     fn on_pause(&mut self, ctx: &mut SceneContext) {}
     fn on_resume(&mut self, ctx: &mut SceneContext, returned: Option<Box<dyn Any>>) {}
-    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction;
-    fn fixed_update(&mut self, ctx: &mut SceneContext) {}
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction;  // Fixed timestep
+    fn render(&mut self, ctx: &mut SceneContext, alpha: f32) {}            // Custom rendering (alpha = interpolation)
     fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction { SceneAction::Continue }
+    fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {}                // GPU-batched rendering
+    fn is_transparent(&self) -> bool { false }     // Render scenes below this one too
+    fn updates_below(&self) -> bool { false }      // Keep updating scenes below this one
+    fn name(&self) -> &str { /* type name */ }
+    fn is_physics_paused(&self) -> bool { false }
     fn cleanup_on_exit(&self) -> SceneCleanup { SceneCleanup::DEFAULT }
 }
 ```
@@ -58,22 +63,44 @@ Available in `Scene` trait methods:
 | `lighting` | `&mut Option<LightingRenderer>` | 2D lighting (None if disabled) |
 | `events` | `&mut Events` | Event bus for decoupled communication |
 | `time_control` | `&mut TimeControl` | Time scale and hitstop |
-| `time` | `TimeInfo` | Timing values (fixed dt, scaled dt, etc.) |
+| `time` | `TimeInfo` | Timing values (`fixed_dt`, `scaled_dt`, `real_dt`, `render_alpha`, `time_scale`) |
+| `raycast` | `&mut Option<GpuRaycastRenderer>` | Pseudo-3D raycasting renderer (None if not initialized) |
+| `tilemap` | `&mut TilemapManager` | Load, spawn and query tilemaps |
+| `window_request` | `&mut WindowRequest` | Pending resolution / display mode changes |
+| `scale_factor` | `f64` | Window DPI scale (1.0 standard, 2.0 HiDPI) |
+| `display_mode` | `DisplayMode` | Current display mode |
+
+Helpers: `screen_size() -> (f32, f32)`, `screen_width()`, `screen_height()`, `resource::<T>() -> Option<&T>`, `resource_mut::<T>()`, `resource_or_default::<T>() -> &mut T`.
 
 ### UiContext
 
-Available in `render_ui`:
+Available in `render_ui`. Positions are screen pixels; shapes take a `Rect`:
 
 ```rust
 impl UiContext {
     // Text
-    fn label(&mut self, text: &str, x: f32, y: f32, color: Color, bg: Option<Color>);
-    fn label_shadow(&mut self, text: &str, x: f32, y: f32, color: Color, shadow: Color);
-    
+    fn draw_text(&mut self, text: &str, x: f32, y: f32, color: Color);
+    fn draw_text_anchored(&mut self, text: &str, anchor: Anchor, offset_x: f32, offset_y: f32, color: Color);
+    fn draw_text_centered(&mut self, text: &str, rect: Rect, color: Color);
+    fn label(&mut self, text: &str, x: f32, y: f32, text_color: Color, bg_color: Option<Color>);
+    fn text_size(&self, text: &str) -> (u32, u32);
+
     // Shapes
-    fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color);
-    fn rect_outline(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color, thickness: f32);
-    
+    fn draw_rect(&mut self, rect: Rect, color: Color);
+    fn draw_rect_outline(&mut self, rect: Rect, color: Color, thickness: f32);
+    fn draw_panel(&mut self, rect: Rect, bg_color: Color, border_color: Option<Color>);
+
+    // Sprites
+    fn draw_sprite_handle(&mut self, handle: &SpriteHandle, x: f32, y: f32);
+    fn draw_sprite_handle_scaled(&mut self, handle: &SpriteHandle, x: f32, y: f32, scale: f32);
+
+    // Widgets
+    fn button(&mut self, text: &str, rect: Rect) -> bool;   // true when clicked
+    fn slider(&mut self, rect: Rect, value: &mut f32, min: f32, max: f32) -> bool;
+    fn is_clicked(&self, rect: Rect) -> bool;
+    fn is_hovered(&self, rect: Rect) -> bool;
+    fn is_held(&self, rect: Rect) -> bool;
+
     // Layout helpers
     fn screen_size(&self) -> (u32, u32);  // Returns (width, height) as u32
 }
@@ -82,7 +109,11 @@ impl UiContext {
 let (sw, sh) = ui.screen_size();
 let screen_w = sw as f32;  // Cast to f32 for positioning
 let screen_h = sh as f32;
+ui.draw_rect(Rect::new(10.0, 10.0, 200.0, 20.0), Color::BLACK);
+ui.draw_text("Score: 0", 14.0, 14.0, Color::WHITE);
 ```
+
+See the `ryo-ui` skill for the full widget set (progress bars, dropdowns, scroll views, text input, themes).
 
 ---
 
@@ -126,6 +157,8 @@ EngineBuilder::new()
     .unwrap();
 ```
 
+Other builder methods: `background_fps(u32)`, `background_rendering(bool)`, `vsync(bool)`, `display_mode(DisplayMode)`, `max_width(u32)`, `max_height(u32)`, `ui_scale(Option<u32>)`, `icon(path)`, `show_colliders(bool)`, `show_fps(bool)`, `show_velocities(bool)`, `show_origins(bool)`, `with_user_preferences(filter)`. `run()` returns `EngineResult<()>`.
+
 ### WindowMode
 
 ```rust
@@ -150,7 +183,7 @@ pub enum DisplayMode {
 
 impl DisplayMode {
     fn display_name(&self) -> &'static str;  // "Windowed", "Exclusive Fullscreen", "Borderless Fullscreen"
-    fn all() -> &'static [DisplayMode];      // All variants for settings menus
+    fn all() -> &'static [DisplayMode];      // All variants, in declaration order (Windowed, Exclusive, Borderless)
 }
 
 // Common display modes for settings menus
@@ -172,10 +205,11 @@ pub struct Resolution {
 }
 
 impl Resolution {
-    fn new(width: u32, height: u32) -> Self;
+    const fn new(width: u32, height: u32) -> Self;
+    fn display_name(&self) -> String;  // "1280x720"
 
-    // Common 16:9 resolutions
-    fn common() -> Vec<Resolution>;  // Returns [1280x720, 1600x900, 1920x1080, 2560x1440, 3840x2160]
+    // Common resolutions
+    fn common() -> &'static [Resolution];  // 1280x720, 1366x768, 1600x900, 1920x1080, 2560x1440, 3840x2160
 }
 ```
 
@@ -188,6 +222,8 @@ Request display changes at runtime (applied next frame):
 impl SceneContext {
     fn request_display_mode(&mut self, mode: DisplayMode);
     fn request_resolution(&mut self, width: u32, height: u32);
+    fn request_display_change(&mut self, width: u32, height: u32, mode: DisplayMode);
+    fn request_ui_scale(&mut self, scale: Option<u32>);  // None = auto-detect from DPI
 }
 ```
 
@@ -213,12 +249,14 @@ pub struct Transform {
     pub rotation: f32,  // Radians
     pub scale_x: f32,   // X scale
     pub scale_y: f32,   // Y scale
-    pub pivot_x: f32,   // Pivot X (0.0=left, 0.5=center, 1.0=right), defaults to 0.5
-    pub pivot_y: f32,   // Pivot Y (0.0=top, 0.5=center, 1.0=bottom), defaults to 0.5
+    pub pivot_x: f32,   // Pivot X (0.0=left, 0.5=center, 1.0=right), defaults to 0.0
+    pub pivot_y: f32,   // Pivot Y (0.0=top, 0.5=center, 1.0=bottom), defaults to 0.0
+    pub offset_x: f32,  // Pixel offset applied after pivot, defaults to 0.0
+    pub offset_y: f32,
 }
 
 impl Transform {
-    fn new(x: f32, y: f32) -> Self;              // z defaults to 0.0, pivot defaults to center
+    fn new(x: f32, y: f32) -> Self;              // z = 0.0, pivot = (0, 0) top-left
     fn new_3d(x: f32, y: f32, z: f32) -> Self;   // Explicit z
     fn from_vec2(pos: Vec2) -> Self;
     fn from_vec3(pos: Vec3) -> Self;
@@ -229,9 +267,12 @@ impl Transform {
     fn with_scale(self, scale_x: f32, scale_y: f32) -> Self;
     fn with_uniform_scale(self, scale: f32) -> Self;
     fn with_pivot(self, pivot_x: f32, pivot_y: f32) -> Self;  // Custom pivot point
+    fn with_anchor(self, anchor: Anchor) -> Self;  // Pivot from an Anchor (e.g. Anchor::BottomCenter)
+    fn with_offset(self, offset_x: f32, offset_y: f32) -> Self;  // Pixel offset after pivot
     fn with_pivot_center(self) -> Self;          // Pivot at (0.5, 0.5) - centered rotation
     fn with_pivot_top_center(self) -> Self;      // Pivot at (0.5, 0.0) - pendulums
     fn with_pivot_bottom_center(self) -> Self;   // Pivot at (0.5, 1.0) - standing objects
+    // Also: with_pivot_top_left / top_right / center_left / center_right / bottom_left / bottom_right
 }
 ```
 
@@ -275,20 +316,37 @@ impl Velocity {
 ```rust
 pub struct Renderable {
     pub sprite: SpriteHandle,
-    pub z_order: i32,
+    pub style: RenderStyle,       // Single (default) or Tiled
+    pub mode: RenderMode,         // Auto (default), Cpu, Gpu
     pub visible: bool,
+    pub z_order: i32,
     pub flip_x: bool,
     pub flip_y: bool,
-    pub tint: Option<Color>,
+    pub alpha: f32,               // 1.0 = opaque
+    pub tint: Color,              // WHITE = no tint
+    pub shader: Option<SpriteShader>,
+    pub drop_shadow: Option<DropShadow>,
+    pub blob_shadow: Option<BlobShadow>,
+    pub contact_shadow: Option<ContactShadow>,
+    pub interpolate: bool,
 }
 
 impl Renderable {
     fn sprite(handle: SpriteHandle) -> Self;
+    fn tiled(sprite: SpriteHandle, direction: TileDirection, target_size: f32) -> Self;
+    fn with_visible(self, visible: bool) -> Self;   // with_visible(false) to hide
     fn with_z_order(self, z: i32) -> Self;
+    fn with_mode(self, mode: RenderMode) -> Self;
     fn with_flip_x(self, flip: bool) -> Self;
     fn with_flip_y(self, flip: bool) -> Self;
+    fn with_alpha(self, alpha: f32) -> Self;
     fn with_tint(self, color: Color) -> Self;
-    fn hidden(self) -> Self;
+    fn with_shader(self, shader: SpriteShader) -> Self;
+    fn with_drop_shadow(self, shadow: DropShadow) -> Self;
+    fn with_blob_shadow(self, shadow: BlobShadow) -> Self;
+    fn with_contact_shadow(self, shadow: ContactShadow) -> Self;
+    fn interpolated(self) -> Self;                  // Smooth rendering between fixed updates
+    fn with_interpolation(self, enabled: bool) -> Self;
 }
 ```
 
@@ -299,7 +357,11 @@ pub enum RenderLayer {
     Background,  // z_order: -1000
     Default,     // z_order: 0
     Foreground,  // z_order: 1000
-    UI,          // z_order: 10000
+    UI,          // z_order: 2000
+}
+
+impl RenderLayer {
+    fn as_z_order(self) -> i32;
 }
 ```
 
@@ -318,17 +380,36 @@ pub struct Children(pub Vec<Entity>);
 
 ```rust
 pub struct RigidBody {
-    pub body_type: RigidBodyType,
+    pub mass: f32,
     pub gravity_scale: f32,
-    pub linear_damping: f32,
-    pub angular_damping: f32,
-    pub fixed_rotation: bool,
+    pub drag: f32,
+    pub is_kinematic: bool,
+    pub ccd_enabled: bool,
 }
 
 impl RigidBody {
-    fn dynamic() -> Self;      // Affected by forces
+    fn new() -> Self;          // Dynamic: affected by forces (also Default)
     fn kinematic() -> Self;    // Moved by code, affects others
-    fn fixed() -> Self;        // Static, immovable
+    fn with_mass(self, mass: f32) -> Self;
+    fn with_gravity_scale(self, scale: f32) -> Self;
+    fn with_drag(self, drag: f32) -> Self;
+    fn with_ccd(self) -> Self;  // Continuous collision detection for fast bodies
+}
+```
+
+A static (immovable) body is just a `Collider` without a `RigidBody`.
+
+### PhysicsConfig
+
+```rust
+pub struct PhysicsConfig {
+    pub gravity: (f32, f32),  // Default (0.0, 980.0): +y is down
+}
+
+impl PhysicsConfig {
+    fn new() -> Self;
+    fn with_gravity(gx: f32, gy: f32) -> Self;
+    fn zero_gravity() -> Self;
 }
 ```
 
@@ -337,18 +418,27 @@ impl RigidBody {
 ```rust
 pub struct Collider {
     pub shape: ColliderShape,
-    pub is_sensor: bool,
-    pub friction: f32,
-    pub restitution: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub is_trigger: bool,
+    pub layer: u32,        // Default 1
+    pub mask: u32,         // Default u32::MAX
+    pub restitution: f32,  // Default 0.5
+    pub friction: f32,     // Default 0.3
+    pub center_in_bounds: Option<(f32, f32)>,
 }
 
 impl Collider {
-    fn circle(radius: f32) -> Self;
-    fn rect(width: f32, height: f32) -> Self;
-    fn capsule(half_height: f32, radius: f32) -> Self;
-    fn sensor(self) -> Self;  // Triggers events but no physics
-    fn with_friction(self, friction: f32) -> Self;
+    fn box_collider(width: f32, height: f32) -> Self;
+    fn circle_collider(radius: f32) -> Self;
+    fn centered_in(self, width: f32, height: f32) -> Self;  // Center on a sprite of this size
+    fn with_offset(self, x: f32, y: f32) -> Self;
+    fn as_trigger(self) -> Self;  // Triggers events but no physical response
+    fn with_layer(self, layer: u32) -> Self;
+    fn with_mask(self, mask: u32) -> Self;
     fn with_restitution(self, bounce: f32) -> Self;
+    fn with_friction(self, friction: f32) -> Self;
+    fn should_collide_with(&self, other: &Collider) -> bool;
 }
 ```
 
@@ -356,9 +446,8 @@ impl Collider {
 
 ```rust
 pub enum ColliderShape {
+    Box { width: f32, height: f32 },
     Circle { radius: f32 },
-    Rect { width: f32, height: f32 },
-    Capsule { half_height: f32, radius: f32 },
 }
 ```
 
@@ -369,11 +458,14 @@ pub struct PhysicsCollisionEvent {
     pub entity_a: Entity,
     pub entity_b: Entity,
     pub event_type: CollisionEventType,
+    pub is_sensor: bool,
 }
 
 impl PhysicsCollisionEvent {
     fn involves(&self, entity: Entity) -> bool;
-    fn other_entity(&self, entity: Entity) -> Entity;
+    fn other(&self, entity: Entity) -> Option<Entity>;  // The other entity, if `entity` is part of this event
+    fn is_started(&self) -> bool;
+    fn is_stopped(&self) -> bool;
 }
 
 pub enum CollisionEventType {
@@ -381,6 +473,8 @@ pub enum CollisionEventType {
     Stopped,
 }
 ```
+
+Scenes receive these through the event bus as `CollisionStarted` / `CollisionStopped { entity_a, entity_b }` (both have `involves(entity)` and `other(entity) -> Option<Entity>`): `for e in ctx.events.read::<CollisionStarted>() { ... }`.
 
 ---
 
@@ -402,6 +496,7 @@ impl Sprite {
     // Solid shapes
     fn solid_rect(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Self;
     fn solid_circle(diameter: u32, r: u8, g: u8, b: u8, a: u8) -> Self;
+    fn solid_ellipse(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Self;
     
     // Load from file
     fn load<P: AsRef<Path>>(path: P) -> SpriteResult<Self>;
@@ -412,6 +507,7 @@ impl Sprite {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn data(&self) -> &[u8];
+    fn scaled(&self, scale: f32) -> Self;
 }
 ```
 
@@ -472,6 +568,9 @@ pub struct LoadingProgress {
 impl LoadingProgress {
     fn percentage(&self) -> f32;      // 0.0 to 1.0
     fn current_asset(&self) -> &str;  // Filename of current asset (or "")
+    fn is_loading(&self) -> bool;
+    fn is_complete(&self) -> bool;
+    fn has_failures(&self) -> bool;
 }
 ```
 
@@ -510,6 +609,7 @@ impl AsyncSpriteHandle {
     fn state(&self) -> LoadingState;
     fn is_loading(&self) -> bool;
     fn is_loaded(&self) -> bool;
+    fn is_complete(&self) -> bool;  // Loaded or failed
     fn is_failed(&self) -> bool;
     fn get(&self) -> Option<SpriteHandle>;
     fn get_or(&self, fallback: &SpriteHandle) -> SpriteHandle;
@@ -517,7 +617,7 @@ impl AsyncSpriteHandle {
 
 pub enum LoadingState {
     Loading,
-    Loaded(SpriteHandle),
+    Loaded,
     Failed(String),
 }
 ```
@@ -528,52 +628,52 @@ pub enum LoadingState {
 
 ### Animator
 
-```rust
-pub struct Animator {
-    pub animations: HashMap<AnimationId, Animation>,
-    pub current: Option<AnimationId>,
-    pub frame: usize,
-    pub timer: f32,
-    pub state: PlaybackState,
-}
+Simple component that plays one animation; the engine advances it each frame.
 
+```rust
 impl Animator {
-    fn new() -> Self;
-    fn add(self, id: impl Into<AnimationId>, animation: Animation) -> Self;
-    fn with_default(self, id: impl Into<AnimationId>) -> Self;
-    fn play(&mut self, id: impl Into<AnimationId>);
-    fn stop(&mut self);
+    fn new(animation: Animation) -> Self;
+    fn set_animation(&mut self, animation: Animation);
+    fn play(&mut self);
     fn pause(&mut self);
-    fn resume(&mut self);
-    fn current_frame(&self) -> Option<SpriteHandle>;
+    fn stop(&mut self);
+    fn reset(&mut self);
+    fn set_speed(&mut self, speed: f32);
+    fn speed(&self) -> f32;
+    fn is_playing(&self) -> bool;
+    fn just_finished(&self) -> bool;
+    fn current_sprite(&self) -> Option<&SpriteHandle>;
+    fn current_frame_index(&self) -> usize;
+    fn animation_name(&self) -> &str;
+    fn update(&mut self, dt: f32);
 }
 ```
 
 ### Animation
 
 ```rust
-pub struct Animation {
-    pub frames: Vec<SpriteHandle>,
-    pub frame_duration: f32,
-    pub loop_mode: LoopMode,
-}
-
 impl Animation {
-    fn new(frames: Vec<SpriteHandle>, fps: f32) -> Self;
+    fn new(name: impl Into<String>, frames: Vec<SpriteHandle>, frame_duration: f32) -> Self;  // seconds per frame
+    fn with_frame_durations(name: impl Into<String>, frames: Vec<SpriteHandle>, durations: Vec<f32>) -> Self;
     fn with_loop_mode(self, mode: LoopMode) -> Self;
+    fn name(&self) -> &str;
+    fn duration(&self) -> f32;
+    fn frame_count(&self) -> usize;
+    fn frame(&self, index: usize) -> Option<&SpriteHandle>;
+    fn loop_mode(&self) -> LoopMode;
 }
 
 pub enum LoopMode {
     Once,
-    Loop,
+    Loop,        // Default
     PingPong,
+    Times(u32),
 }
 
 pub enum PlaybackState {
     Playing,
     Paused,
     Stopped,
-    Finished,
 }
 ```
 
@@ -589,12 +689,16 @@ pub struct Tween {
     pub target_rotation: Option<f32>,
     pub target_scale_x: Option<f32>,
     pub target_scale_y: Option<f32>,
+    pub target_alpha: Option<f32>,   // Animates Renderable::alpha
+    pub target_tint: Option<Color>,  // Animates Renderable::tint
 
     pub duration: f32,      // Seconds
     pub delay: f32,         // Seconds before starting
     pub easing: Ease,       // Easing function
     pub loop_mode: TweenLoop,
+    pub speed: f32,           // Playback speed multiplier (default 1.0)
     pub playing: bool,
+    pub just_started: bool,   // True for one frame when it begins
     pub just_finished: bool,  // True for one frame on completion
 }
 
@@ -605,6 +709,10 @@ impl Tween {
     fn to_rotation(rotation: f32, duration: f32) -> Self;
     fn to_scale(scale_x: f32, scale_y: f32, duration: f32) -> Self;
     fn to_uniform_scale(scale: f32, duration: f32) -> Self;
+    fn fade_to(alpha: f32, duration: f32) -> Self;
+    fn fade_out(duration: f32) -> Self;
+    fn fade_in(duration: f32) -> Self;
+    fn tint_to(tint: Color, duration: f32) -> Self;
 
     // Builder methods
     fn to_x(self, x: f32) -> Self;
@@ -612,9 +720,15 @@ impl Tween {
     fn to_rotation_value(self, rotation: f32) -> Self;
     fn to_scale_x(self, scale_x: f32) -> Self;
     fn to_scale_y(self, scale_y: f32) -> Self;
+    fn to_alpha(self, alpha: f32) -> Self;
+    fn to_tint(self, tint: Color) -> Self;
     fn with_easing(self, easing: Ease) -> Self;
     fn with_delay(self, delay: f32) -> Self;
     fn with_loop(self, loop_mode: TweenLoop) -> Self;
+    fn with_speed(self, speed: f32) -> Self;
+    fn on_start(self, cb: impl Fn(f32) + Send + Sync + 'static) -> Self;
+    fn on_update(self, cb: impl Fn(f32) + Send + Sync + 'static) -> Self;
+    fn on_complete(self, cb: impl Fn(f32) + Send + Sync + 'static) -> Self;
 
     // Control
     fn pause(&mut self);
@@ -731,26 +845,40 @@ impl<T: Lerp> PropertyTween<T> {
 
 Auto-driven types: `PropertyTween<f32>`, `PropertyTween<Vec2>`, `PropertyTween<Color>`. Others need manual `update(dt)`.
 
-### AnimationController
+### TweenSequence
 
-State machine for complex animation logic:
+Component that plays `Tween`s one after another:
 
 ```rust
-pub struct AnimationController {
-    states: HashMap<String, AnimationState>,
-    transitions: Vec<Transition>,
-    current_state: String,
-}
+TweenSequence::new()
+    .then(Tween::to_position(100.0, 0.0, 0.5))
+    .then(Tween::fade_out(0.3))
+    .with_loop();   // Optional: repeat the whole sequence
+// Also: then_all(iter), with_speed(f32), pause/resume/stop/restart, is_finished(), len(), current_index()
+```
 
+### AnimationController
+
+Component that switches between named animations (`AnimationId` is `&'static str`):
+
+```rust
 impl AnimationController {
-    fn new(initial_state: &str) -> Self;
-    fn add_state(self, name: &str, animation: Animation) -> Self;
-    fn add_transition(self, from: &str, to: &str, condition: TransitionCondition) -> Self;
-    fn set_trigger(&mut self, trigger: &str);
-    fn set_bool(&mut self, name: &str, value: bool);
-    fn set_float(&mut self, name: &str, value: f32);
+    fn new() -> Self;
+    fn add_animation(&mut self, id: AnimationId, animation: Animation);
+    fn set_state(&mut self, state: AnimationId);
+    fn transition_after_finish(&mut self, state: AnimationId);  // Switch when the current animation finishes
+    fn current_state(&self) -> Option<AnimationId>;
+    fn just_finished(&self) -> bool;
+    fn current_sprite(&self) -> Option<&SpriteHandle>;
+    fn play(&mut self);
+    fn pause(&mut self);
+    fn reset(&mut self);
+    fn set_speed(&mut self, speed: f32);
+    fn update(&mut self, dt: f32);
 }
 ```
+
+`ValidatedAnimator` is the same idea with an explicit transition graph (`new(initial_anim, initial_id)`, `with_animation`, `with_transition(from, to)`, `with_bidirectional`, `with_transition_from_any`, `set_animation(id) -> bool`, `force_animation(id)`); see the `ryo-animation` skill.
 
 ---
 
@@ -758,45 +886,60 @@ impl AnimationController {
 
 ### AudioManager
 
+Reached via `ctx.audio: &mut Option<AudioManager>` (`None` if no audio device).
+
 ```rust
 impl AudioManager {
-    // Sound effects (short, can overlap)
-    fn play_sound<P: AsRef<Path>>(&mut self, path: P) -> AudioResult<SoundHandle>;
-    fn play_sound_with<P: AsRef<Path>>(&mut self, path: P, options: SoundOptions) -> AudioResult<SoundHandle>;
-    
-    // Music (long, one at a time per track)
-    fn play_music<P: AsRef<Path>>(&mut self, path: P) -> AudioResult<MusicHandle>;
-    fn play_music_with<P: AsRef<Path>>(&mut self, path: P, options: MusicOptions) -> AudioResult<MusicHandle>;
-    
-    // Volume control
+    // Sound effects (short, can overlap): load once by name, then play by name
+    fn load_sound(&mut self, name: &str, path: impl AsRef<Path>) -> AudioResult<()>;
+    fn play_sound(&mut self, name: &str) -> AudioResult<SoundHandle>;
+    fn play_sound_with(&mut self, name: &str, options: SoundOptions) -> AudioResult<SoundHandle>;
+    fn has_sound(&self, name: &str) -> bool;
+    fn unload_sound(&mut self, name: &str);
+    fn clear_sounds(&mut self);
+
+    // Music (streamed from file)
+    fn play_music(&mut self, path: impl AsRef<Path>) -> AudioResult<MusicHandle>;
+    fn play_music_with(&mut self, path: impl AsRef<Path>, options: MusicOptions) -> AudioResult<MusicHandle>;
+    fn play_music_once(&mut self, path: impl AsRef<Path>, options: MusicOptions) -> AudioResult<bool>;  // No-op if music already playing
+    fn crossfade_music(&mut self, current: &mut MusicHandle, new_path: impl AsRef<Path>, fade_duration: Duration) -> AudioResult<MusicHandle>;
+    fn is_music_playing(&self) -> bool;
+    fn current_music(&mut self) -> Option<&mut MusicHandle>;
+    fn stop_music(&mut self);
+    fn stop_music_fade(&mut self, duration: Duration);
+
+    // Volume control (0.0 - 1.0)
     fn set_master_volume(&mut self, volume: f32);
     fn set_music_volume(&mut self, volume: f32);
     fn set_sfx_volume(&mut self, volume: f32);
     fn master_volume(&self) -> f32;
     fn music_volume(&self) -> f32;
     fn sfx_volume(&self) -> f32;
-    
-    // Music control
-    fn stop_music(&mut self);
-    fn pause_music(&mut self);
-    fn resume_music(&mut self);
 }
 ```
+
+`SoundHandle`: `stop`, `pause`, `resume`, `set_volume`, `set_panning`, `set_playback_rate`, `is_playing`, `is_finished`.
+`MusicHandle`: `stop`, `pause`, `resume`, `set_volume`, `set_panning`, `set_playback_rate`, `is_playing`, `fade_to(volume, Duration)`, `fade_out(Duration)`, `fade_out_and_stop(Duration)`.
 
 ### SoundOptions / MusicOptions
 
 ```rust
 pub struct SoundOptions {
-    pub volume: f32,      // 0.0 - 1.0
-    pub pitch: f32,       // 1.0 = normal
-    pub panning: f32,     // -1.0 left, 0.0 center, 1.0 right
+    pub volume: f32,         // 0.0 - 1.0 (default 1.0)
+    pub panning: f32,        // -1.0 left, 0.0 center, 1.0 right
+    pub playback_rate: f32,  // 1.0 = normal
 }
+// Builders: SoundOptions::new().volume(0.5).panning(-1.0).playback_rate(1.2)
 
 pub struct MusicOptions {
     pub volume: f32,
-    pub looping: bool,
-    pub fade_in: Option<f32>,  // Seconds
+    pub panning: f32,
+    pub playback_rate: f32,
+    pub looping: bool,                       // Default true
+    pub fade_in: Option<Duration>,
+    pub fade_out_on_drop: Option<Duration>,
 }
+// Builders: MusicOptions::new().volume(0.6).looping(false).fade_in(d).fade_out_on_drop(d).once()
 ```
 
 ---
@@ -818,7 +961,23 @@ impl InputState {
     fn mouse_released(&self, button: MouseButton) -> bool;
     fn mouse_position(&self) -> (f32, f32);       // Screen coordinates
     fn mouse_delta(&self) -> (f32, f32);          // Movement since last frame
-    fn scroll_delta(&self) -> f32;                // Mouse wheel
+    fn scroll_delta(&self) -> (f32, f32);         // Mouse wheel (x, y)
+    fn mouse_x(&self) -> f32;
+    fn mouse_y(&self) -> f32;
+
+    // Consuming (prevents double-handling when stacking UI/scenes)
+    fn key_pressed_and_consume(&mut self, key: KeyCode) -> bool;
+    fn mouse_pressed_and_consume(&mut self, button: MouseButton) -> bool;
+
+    // Text entry
+    fn text_input(&self) -> &str;                 // Characters typed this frame
+
+    // Gamepad (see the ryo-controller skill)
+    fn gamepad_connected(&self) -> bool;
+    fn gamepad_button_down(&self, button: GamepadButton) -> bool;
+    fn gamepad_button_pressed(&self, button: GamepadButton) -> bool;
+    fn left_stick(&self) -> (f32, f32);           // Deadzone applied
+    fn right_stick(&self) -> (f32, f32);
 }
 ```
 
@@ -831,13 +990,16 @@ Common keys:
 - Special: `KeyCode::Space`, `Escape`, `Enter`, `Tab`, `Backspace`
 - Modifiers: `KeyCode::ShiftLeft`, `ControlLeft`, `AltLeft`
 
-### MouseButton
+### MouseButton (from winit)
 
 ```rust
 pub enum MouseButton {
     Left,
     Right,
     Middle,
+    Back,
+    Forward,
+    Other(u16),
 }
 ```
 
@@ -845,37 +1007,50 @@ pub enum MouseButton {
 
 ## Camera
 
-**CRITICAL:** Camera defaults to position (0, 0), which centers the screen on world origin.
-For screen-style coordinates (0,0 = top-left), center the camera at half the viewport size.
+**CRITICAL:** `position` is the center of the view. The engine's `ctx.camera` starts at half the viewport size,
+so world (0, 0) is the screen top-left (screen-style coordinates). A camera built with `Camera::new` starts at (0, 0),
+which puts the world origin at screen center. Scenes that want a centered origin must call `set_position(0.0, 0.0)`.
 
 ```rust
+pub struct Camera {
+    pub x: f32,      // View center in world space
+    pub y: f32,
+    pub zoom: f32,   // 1.0 = normal (set_zoom clamps to 0.1..=10.0)
+    // viewport size is private: use viewport_size()
+}
+
 impl Camera {
     fn new(viewport_width: u32, viewport_height: u32) -> Self;
     fn centered_at(x: f32, y: f32, viewport_width: u32, viewport_height: u32) -> Self;
-    
+
     fn set_position(&mut self, x: f32, y: f32);
-    fn position(&self) -> (f32, f32);
     fn set_zoom(&mut self, zoom: f32);
-    fn zoom(&self) -> f32;
     fn viewport_size(&self) -> (f32, f32);        // (width, height)
-    
+
     fn screen_to_world(&self, screen_x: f32, screen_y: f32) -> (f32, f32);
     fn world_to_screen(&self, world_x: f32, world_y: f32) -> (f32, f32);
-    
-    fn visible_bounds(&self) -> CameraBounds;     // World-space AABB
-    fn is_visible(&self, x: f32, y: f32, w: f32, h: f32) -> bool;
-    
+
+    fn visible_bounds(&self) -> CameraBounds;     // World-space AABB { left, right, top, bottom }
+    fn is_visible(&self, world_x: f32, world_y: f32, width: f32, height: f32) -> bool;
+
     fn follow(&mut self, target_x: f32, target_y: f32, lerp_factor: f32);
     fn snap_to(&mut self, target_x: f32, target_y: f32);
-    fn clamp_to_bounds(&mut self, min_x: f32, min_y: f32, max_x: f32, max_y: f32);
-    fn reset(&mut self);                                      // Reset position/zoom/shake, keep viewport
+    fn clamp_to_bounds(&mut self, world_min_x: f32, world_min_y: f32, world_max_x: f32, world_max_y: f32);
+    fn reset(&mut self);                          // Position to viewport center, zoom 1.0, clear shake; keep viewport
+
+    // Shake (trauma-based)
+    fn add_trauma(&mut self, amount: f32);        // 0.0-1.0, accumulates
+    fn configure_shake(&mut self, max_offset: f32, decay_rate: f32);
+    fn trauma(&self) -> f32;
+    fn reset_trauma(&mut self);
 }
 
-// Screen-style coordinates setup (0,0 = top-left):
+// Centered-origin setup (world (0,0) = screen center):
+ctx.camera.set_position(0.0, 0.0);
+
+// Screen-style coordinates (default in scenes; 0,0 = top-left):
 let (vw, vh) = ctx.camera.viewport_size();
 ctx.camera.set_position(vw / 2.0, vh / 2.0);
-// Now world (0, 0) = screen top-left
-// world (vw, vh) = screen bottom-right
 ```
 
 ---
@@ -884,31 +1059,46 @@ ctx.camera.set_position(vw / 2.0, vh / 2.0);
 
 ```rust
 impl World {
-    // Spawning
-    fn spawn<C: ComponentBundle>(&mut self, components: C) -> Entity;
-    fn despawn(&mut self, entity: Entity) -> bool;
-    
-    // Component access
-    fn get_component<T: Component>(&self, entity: Entity) -> Option<&T>;
-    fn get_component_mut<T: Component>(&mut self, entity: Entity) -> Option<&mut T>;
-    fn has_component<T: Component>(&self, entity: Entity) -> bool;
-    fn add_component<T: Component>(&mut self, entity: Entity, component: T);
-    fn remove_component<T: Component>(&mut self, entity: Entity);
-    
+    // Spawning (components are a tuple; hecs::DynamicBundle)
+    fn spawn(&mut self, components: impl DynamicBundle) -> Entity;
+    fn spawn_empty(&mut self) -> Entity;
+    fn despawn(&mut self, entity: Entity) -> Result<(), NoSuchEntity>;
+    fn clear(&mut self);                                   // Remove all entities
+
+    // Component access (returns hecs::Ref / RefMut guards that deref to &T / &mut T)
+    fn get<T: Component>(&self, entity: Entity) -> Option<Ref<'_, T>>;
+    fn get_mut<T: Component>(&self, entity: Entity) -> Option<RefMut<'_, T>>;  // Takes &self
+    fn has<T: Component>(&self, entity: Entity) -> bool;
+    fn insert_one<T: Component>(&mut self, entity: Entity, component: T) -> Result<(), NoSuchEntity>;
+    fn insert(&mut self, entity: Entity, components: impl DynamicBundle) -> Result<(), NoSuchEntity>;
+    fn remove_one<T: Component>(&mut self, entity: Entity) -> Result<T, ComponentError>;
+    // Aliases: get_component / get_component_mut (deprecated), has_component, add_component
+
     // Querying
-    fn query<Q: Query>(&self) -> QueryIter<Q>;
-    fn query_mut<Q: Query>(&mut self) -> QueryIterMut<Q>;
-    
+    fn query<Q: Query>(&self) -> QueryBorrow<'_, Q>;       // call .iter()
+    fn query_mut<Q: Query>(&mut self) -> QueryMut<'_, Q>;  // is itself an iterator
+    fn entities_with<T: Component>(&self) -> Vec<Entity>;
+    fn entities(&self) -> Vec<Entity>;
+
     // Entity checks
-    fn is_alive(&self, entity: Entity) -> bool;
-    fn entity_count(&self) -> usize;
+    fn contains(&self, entity: Entity) -> bool;            // Is this entity alive?
+    fn len(&self) -> u32;                                  // Entity count
+    fn is_empty(&self) -> bool;
+
+    // Hierarchy
+    fn spawn_child(&mut self, parent: Entity, components: impl DynamicBundle + Send + Sync) -> Entity;
+    fn set_parent(&mut self, child: Entity, new_parent: Entity) -> Result<(), NoSuchEntity>;
+    fn unparent(&mut self, child: Entity) -> Result<(), NoSuchEntity>;
+    fn despawn_recursive(&mut self, entity: Entity) -> Result<(), NoSuchEntity>;
+    fn parent(&self, entity: Entity) -> Option<Entity>;
+    fn children(&self, entity: Entity) -> Vec<Entity>;
 }
 ```
 
 ### Query Examples
 
 **IMPORTANT:** Query iteration returns components directly, NOT `(entity, components)`.
-The query type must match the destructuring pattern exactly.
+The query type must match the destructuring pattern exactly. To get entity IDs, include `Entity` in the query tuple: `query::<(Entity, &Transform)>()`.
 
 ```rust
 // Single component - note: just (transform,) not (entity, transform)
@@ -927,8 +1117,11 @@ for (transform, maybe_vel) in ctx.world.query::<(&Transform, Option<&Velocity>)>
     if let Some(vel) = maybe_vel { /* has velocity */ }
 }
 
-// To get entity with components, use get_component on a stored entity:
-if let Some(transform) = ctx.world.get_component::<Transform>(self.player_entity) {
+// Entity IDs: include Entity in the query tuple
+for (entity, transform) in ctx.world.query::<(Entity, &Transform)>().iter() { }
+
+// To get a component from a stored entity, use get / get_mut:
+if let Some(transform) = ctx.world.get::<Transform>(self.player_entity) {
     // Access transform.x, transform.y, etc.
 }
 ```
@@ -954,6 +1147,10 @@ pub enum SceneAction {
     PopReturnWith(Box<dyn Any>, Transition),
     Quit,                              // Exit the game
 }
+
+// In on_resume, unwrap data sent by PopReturn:
+// if let Some(score) = downcast_return::<u32>(returned) { ... }
+pub fn downcast_return<T: Any>(returned: Option<Box<dyn Any>>) -> Option<T>;
 ```
 
 ### SceneCleanup
@@ -971,6 +1168,7 @@ impl SceneCleanup {
     const TIME: Self;      // Reset time scale and hitstop
     const MUSIC: Self;     // Stop music
     const EVENTS: Self;    // Clear event bus
+    const RAYCAST: Self;   // Disable raycast renderer and drop its world map
     const ALL: Self;       // All flags
     const DEFAULT: Self;   // All except MUSIC
 
@@ -987,8 +1185,16 @@ impl SceneCleanup {
 ```rust
 pub enum Transition {
     None,
-    Fade { duration: f32, color: Color },
-    Slide { duration: f32, direction: SlideDirection },
+    Fade { duration: Duration, color: [u8; 4] },   // RGBA; duration is per half (out, then in)
+    Slide { duration: Duration, direction: SlideDirection },
+}
+
+impl Transition {
+    fn fade(duration: Duration) -> Self;                          // Fade through black
+    fn fade_white(duration: Duration) -> Self;
+    fn fade_color(duration: Duration, r: u8, g: u8, b: u8) -> Self;
+    fn slide(duration: Duration, direction: SlideDirection) -> Self;
+    fn duration(&self) -> Duration;                               // Total (fade = out + in)
 }
 
 pub enum SlideDirection {
@@ -1023,11 +1229,33 @@ impl Color {
     const CYAN: Color;
     const MAGENTA: Color;
     const TRANSPARENT: Color;
-    
-    fn new(r: u8, g: u8, b: u8, a: u8) -> Self;
-    fn rgb(r: u8, g: u8, b: u8) -> Self;
-    fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self;
-    fn from_hex(hex: u32) -> Self;
+    const GRAY: Color;
+    const DARK_GRAY: Color;
+    const LIGHT_GRAY: Color;
+    // UI presets: HEALTH_RED, MANA_BLUE, STAMINA_GREEN, XP_GOLD, PANEL_BG, PANEL_BORDER
+
+    const fn new(r: u8, g: u8, b: u8, a: u8) -> Self;
+    const fn rgb(r: u8, g: u8, b: u8) -> Self;                  // Opaque
+    const fn hex(value: u32) -> Self;                           // 0xRRGGBB (opaque) or 0xRRGGBBAA
+    const fn with_alpha(self, a: u8) -> Self;
+    const fn to_array(self) -> [u8; 4];
+}
+```
+
+### Rect
+
+```rust
+pub struct Rect { pub x: f32, pub y: f32, pub width: f32, pub height: f32 }
+
+impl Rect {
+    const fn new(x: f32, y: f32, width: f32, height: f32) -> Self;
+    fn centered_at(cx: f32, cy: f32, width: f32, height: f32) -> Self;
+    fn right(&self) -> f32;
+    fn bottom(&self) -> f32;
+    fn center(&self) -> (f32, f32);
+    fn contains(&self, px: f32, py: f32) -> bool;
+    fn shrink(&self, padding: f32) -> Self;
+    fn expand(&self, padding: f32) -> Self;
 }
 ```
 
@@ -1044,6 +1272,10 @@ pub enum Anchor {
     BottomLeft,
     BottomCenter,
     BottomRight,
+}
+
+impl Anchor {
+    fn to_pivot(self) -> (f32, f32);  // e.g. BottomCenter -> (0.5, 1.0)
 }
 ```
 
@@ -1137,6 +1369,8 @@ pub type AssetResult<T> = Result<T, AssetError>;
 pub type AudioResult<T> = Result<T, AudioError>;
 pub type SpriteResult<T> = Result<T, SpriteError>;
 pub type SaveResult<T> = Result<T, SaveError>;
+pub type NetworkResult<T> = Result<T, NetworkError>;
+// Also: HotReloadResult, ReplicationResult, InventoryResult
 ```
 
 ---
@@ -1153,9 +1387,12 @@ impl NetworkServer {
     fn events(&mut self) -> impl Iterator<Item = NetworkEvent>;
     fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]);
     fn broadcast(&mut self, channel: Channel, data: &[u8]);
+    fn broadcast_except(&mut self, exclude: ClientId, channel: Channel, data: &[u8]);
     fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>>;
     fn clients(&self) -> impl Iterator<Item = ClientId>;
-    fn disconnect_client(&mut self, client_id: ClientId);
+    fn disconnect(&mut self, client_id: ClientId);
+    fn is_running(&self) -> bool;
+    fn connected_count(&self) -> usize;
 }
 
 // Player-hosted server (host plays while serving)
@@ -1165,7 +1402,9 @@ impl ListenServer {
     fn events(&mut self) -> impl Iterator<Item = NetworkEvent>;
     fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]);
     fn broadcast(&mut self, channel: Channel, data: &[u8]);
+    fn broadcast_except(&mut self, exclude: ClientId, channel: Channel, data: &[u8]);
     fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>>;
+    fn disconnect(&mut self, client_id: ClientId);
     fn host_id(&self) -> ClientId;           // Host's virtual ID (always 0)
     fn is_host(&self, id: ClientId) -> bool;
     fn all_clients(&self) -> impl Iterator<Item = ClientId>;     // Host + remotes
@@ -1182,7 +1421,19 @@ impl NetworkClient {
     fn receive(&mut self, channel: Channel) -> Option<Vec<u8>>;
     fn client_id(&self) -> ClientId;
     fn is_connected(&self) -> bool;
+    fn is_connecting(&self) -> bool;
+    fn is_disconnected(&self) -> bool;
     fn disconnect(&mut self);
+    fn disconnect_reason(&self) -> Option<String>;
+}
+
+// Shared by NetworkServer and ListenServer (used by ReplicationManager)
+pub trait ServerLike {
+    fn send(&mut self, client_id: ClientId, channel: Channel, data: &[u8]);
+    fn broadcast(&mut self, channel: Channel, data: &[u8]);
+    fn receive(&mut self, client_id: ClientId, channel: Channel) -> Option<Vec<u8>>;
+    fn clients(&self) -> Box<dyn Iterator<Item = ClientId> + '_>;
+    fn is_host(&self, client_id: ClientId) -> bool;
 }
 ```
 
@@ -1193,37 +1444,45 @@ pub struct NetworkServerConfig {
     pub port: u16,
     pub max_clients: usize,
     pub protocol_id: u64,
+    pub transport: TransportConfig,   // Udp (default) or WebRtc (matchbox feature)
 }
 
 pub struct NetworkClientConfig {
-    pub server_addr: SocketAddr,
+    pub server_addr: Option<SocketAddr>,
     pub protocol_id: u64,
+    pub transport: TransportConfig,
+}
+
+impl NetworkClientConfig {
+    fn udp(server_addr: SocketAddr, protocol_id: u64) -> Self;
 }
 
 pub enum Channel {
-    Unreliable,        // Best-effort, no ordering
-    ReliableOrdered,   // Guaranteed delivery + order
+    Unreliable,          // Best-effort, no ordering
+    ReliableOrdered,     // Guaranteed delivery + order
+    ReliableUnordered,   // Guaranteed delivery, any order
 }
 
-pub type ClientId = u64;
+pub type ClientId = u64;   // renet::ClientId
+pub const LOCAL_HOST_ID: ClientId = 0;
 ```
 
 ### Events
 
 ```rust
 pub enum NetworkEvent {
-    Connected,
-    Disconnected { reason: DisconnectReason },
-    ClientConnected { client_id: ClientId },
-    ClientDisconnected { client_id: ClientId, reason: DisconnectReason },
+    Connected,                                                  // Client side
+    Disconnected { reason: String },                            // Client side
+    ClientConnected { client_id: ClientId },                    // Server side
+    ClientDisconnected { client_id: ClientId, reason: String }, // Server side
 }
 
+// Used by the ECS events DisconnectedFromServer / ClientDisconnected
 pub enum DisconnectReason {
-    Requested,
+    Unknown,
+    ServerClosed,
     Timeout,
     Kicked,
-    ServerFull,
-    ProtocolMismatch,
 }
 ```
 
@@ -1235,10 +1494,10 @@ impl ReplicationManager {
     fn new_client() -> Self;
     fn register<T: Replicated>(&mut self);
     fn spawn_networked(&mut self, world: &mut World, builder: NetworkEntityBuilder) -> Entity;
-    fn despawn_networked(&mut self, world: &mut World, entity: Entity);
+    fn despawn_networked(&mut self, world: &mut World, entity: Entity) -> Option<NetworkId>;
     fn mark_dirty<T: Replicated>(&mut self, entity: Entity);
     fn broadcast_updates(&mut self, world: &World, server: &mut impl ServerLike);
-    fn send_full_state(&mut self, world: &World, server: &mut impl ServerLike, client: ClientId);
+    fn send_full_state(&self, world: &World, server: &mut impl ServerLike, client: ClientId);
     fn process_incoming(&mut self, world: &mut World, client: &mut NetworkClient);
     fn get_entity(&self, network_id: NetworkId) -> Option<Entity>;
 }
@@ -1275,10 +1534,10 @@ pub enum RpcTarget {
 }
 
 impl SerializedRpc {
-    fn from_rpc<T: Rpc>(rpc: &T, sender: ClientId, target: RpcTarget) -> Result<Self, NetworkError>;
-    fn from_bytes(data: &[u8]) -> Result<Self, NetworkError>;
-    fn to_bytes(&self) -> Result<Vec<u8>, NetworkError>;
-    fn into_rpc<T: Rpc>(self) -> Result<ReceivedRpc<T>, NetworkError>;
+    fn from_rpc<T: Rpc>(rpc: &T, sender: ClientId, target: RpcTarget) -> Result<Self, serde_json::Error>;
+    fn from_bytes(data: &[u8]) -> Result<Self, serde_json::Error>;
+    fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error>;
+    fn into_rpc<T: Rpc>(self) -> Result<ReceivedRpc<T>, serde_json::Error>;
 }
 
 pub struct ReceivedRpc<T: Rpc> {
@@ -1296,6 +1555,8 @@ pub enum NetworkError {
     SendError(String),
     ReceiveError(String),
     TransportError(String),
+    NotConnected,
+    NotRunning,
 }
 ```
 
@@ -1308,7 +1569,6 @@ pub enum NetworkError {
 ```rust
 pub struct NavAgent {
     pub current_path: Option<Path>,
-    pub state: NavAgentState,
     pub speed: f32,
     pub arrival_threshold: f32,
     pub avoid_agents: bool,
@@ -1321,12 +1581,14 @@ impl NavAgent {
     fn with_arrival_threshold(self, threshold: f32) -> Self;
     fn with_avoidance(self, radius: f32) -> Self;  // Enables avoid_agents
     fn with_smoothing(self, smoothing: PathSmoothing) -> Self;
+    fn state(&self) -> NavAgentState;
     fn has_path(&self) -> bool;
     fn destination(&self) -> Option<(f32, f32)>;
+    fn remaining_distance(&self) -> f32;
     fn set_path(&mut self, path: Path);
     fn stop(&mut self);
-    fn arrive(&mut self);
-    fn fail(&mut self);
+    fn arrive(&mut self) -> bool;
+    fn fail(&mut self) -> bool;
 }
 ```
 
@@ -1353,12 +1615,16 @@ impl NavAgentState {
 pub struct NavTarget {
     pub x: f32,
     pub y: f32,
+    pub dynamic_target: bool,         // Re-path as the target moves
     pub follow_entity: Option<Entity>,
+    pub repath_threshold: f32,        // Re-path if the target moved farther than this
 }
 
 impl NavTarget {
     fn position(x: f32, y: f32) -> Self;
     fn follow(entity: Entity) -> Self;
+    fn with_dynamic(self, dynamic: bool) -> Self;
+    fn with_repath_threshold(self, threshold: f32) -> Self;
 }
 ```
 
@@ -1411,12 +1677,13 @@ pub mod steering {
 pub struct NavigationGrid { /* ... */ }
 
 impl NavigationGrid {
-    fn new(width: f32, height: f32, cell_size: f32) -> Self;
-    fn world_to_grid(&self, x: f32, y: f32) -> GridCoord;
+    fn new(world_width: f32, world_height: f32, cell_size: f32) -> Self;
+    fn world_to_grid(&self, world_x: f32, world_y: f32) -> GridCoord;
     fn grid_to_world(&self, coord: GridCoord) -> (f32, f32);
     fn is_walkable(&self, coord: GridCoord) -> bool;
-    fn set(&mut self, coord: GridCoord, state: CellState);
-    fn block_rect(&mut self, x: f32, y: f32, w: f32, h: f32);
+    fn get(&self, coord: GridCoord) -> CellState;
+    fn set(&mut self, coord: GridCoord, state: CellState);   // CellState: Walkable | Blocked | Difficult(cost)
+    fn block_rect(&mut self, min_x: f32, min_y: f32, max_x: f32, max_y: f32);  // World-space corners
     fn line_of_sight(&self, from: GridCoord, to: GridCoord) -> bool;
 }
 ```
@@ -1429,8 +1696,8 @@ pub struct Pathfinder { /* ... */ }
 impl Pathfinder {
     fn new() -> Self;
     fn with_config(config: PathfinderConfig) -> Self;
-    fn find_path(&mut self, grid: &NavigationGrid, x1: f32, y1: f32, x2: f32, y2: f32) -> PathResult;
-    fn start_pathfinding(...) -> (u64, PathResult);  // For time-slicing
+    fn find_path(&self, grid: &NavigationGrid, start_x: f32, start_y: f32, goal_x: f32, goal_y: f32) -> PathResult;
+    fn start_pathfinding(&mut self, grid: &NavigationGrid, start_x: f32, start_y: f32, goal_x: f32, goal_y: f32) -> (u64, PathResult);  // For time-slicing
     fn continue_pathfinding(&mut self, grid: &NavigationGrid, request_id: u64) -> PathResult;
 }
 
@@ -1439,6 +1706,7 @@ pub enum PathResult {
     NoPath,
     InvalidEndpoints,
     InProgress,
+    TooExpensive,
 }
 ```
 
@@ -1495,8 +1763,8 @@ pub struct ParticleEmitter {
     pub drag: f32,
     pub z_order: i32,
     pub effect: Option<SpriteEffect>,
-    pub trail: Option<TrailConfig>,
     pub collision: Option<CollisionConfig>,
+    pub layer: u32,                 // Attractor layer (matched against ParticleAttractor::layer_mask)
     pub max_particles: u32,
 }
 
@@ -1536,7 +1804,7 @@ impl ParticleEmitter {
     fn with_drag(self, drag: f32) -> Self;
     fn with_z_order(self, z: i32) -> Self;
     fn with_effect(self, effect: SpriteEffect) -> Self;
-    fn with_trail(self, config: TrailConfig) -> Self;
+    fn with_layer(self, layer: u32) -> Self;
     fn with_collision(self, config: CollisionConfig) -> Self;
     fn with_max_particles(self, max: u32) -> Self;
     fn one_shot(self) -> Self;
@@ -1645,28 +1913,6 @@ impl CollisionResponse {
 }
 ```
 
-### TrailConfig (for particles)
-
-```rust
-pub struct TrailConfig {
-    pub color: Option<Color>,
-    pub width: f32,
-    pub end_width: f32,
-    pub max_points: usize,
-    pub min_distance: f32,
-    pub fade: bool,
-}
-
-impl TrailConfig {
-    fn new(width: f32) -> Self;
-    fn with_color(self, color: Color) -> Self;
-    fn with_end_width(self, end_width: f32) -> Self;
-    fn with_max_points(self, max_points: usize) -> Self;
-    fn with_min_distance(self, min_distance: f32) -> Self;
-    fn with_fade(self, fade: bool) -> Self;
-}
-```
-
 ### ParticleCollision Event
 
 ```rust
@@ -1687,6 +1933,8 @@ pub struct ParticleCollision {
 
 ### Particle
 
+Per-particle state (managed by `ParticleSystem`; you rarely touch it directly):
+
 ```rust
 pub struct Particle {
     pub lifetime: f32,
@@ -1701,8 +1949,12 @@ pub struct Particle {
     pub color: Color,
     pub start_color: Color,
     pub end_color: Color,
+    pub mass: f32,
     pub drag: f32,
-    pub emitter_entity: Entity,
+    pub gravity_scale: f32,
+    pub has_trail: bool,
+    pub collision_layer: u32,
+    pub frame: u32,
 }
 
 impl Particle {
@@ -1710,6 +1962,10 @@ impl Particle {
     fn is_dead(&self) -> bool;
 }
 ```
+
+`ParticleSystem::new()` / `ParticleSystem::with_seed(seed: u64)` (reproducible particles) drive emitters; also `particle_count()`, `clear()`, `clear_emitter(entity)`.
+
+---
 
 ## Testing (`ryo2d::testing`)
 

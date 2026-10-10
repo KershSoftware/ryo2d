@@ -33,12 +33,16 @@ console = true  # Works in both debug and release builds
 | `help [cmd]` | | List commands or show detailed help |
 | `clear` | | Clear console output |
 | `quit` / `exit` | | Exit game |
-| `debug:fps` | F1 | Toggle FPS counter |
-| `debug:stats` | F2 | Toggle detailed stats overlay |
-| `debug:timing` | F3 | Toggle frame timing graph |
-| `debug:colliders` | F4 | Toggle collision shape visualization |
+| `debug:fps` | F1 (cycles overlays) | Toggle FPS counter |
+| `debug:stats` | F1 (cycles overlays) | Toggle detailed stats overlay |
+| `debug:timing` | F1 (cycles overlays) | Toggle frame timing breakdown |
+| `debug:colliders` | F2 | Toggle collision shape visualization |
+| `debug:velocities` | F3 | Toggle velocity vectors |
+| `debug:origins` | F4 | Toggle entity origin points |
+| `debug:capture [path]` | F12 | Save the next frame as a PNG |
 | `system:version` | | Show engine and game version |
-| `system:timescale <n>` | | Set game time scale (0.1-10.0) |
+| `system:timescale <n>` | | Set game time scale (0.0-10.0) |
+| `system:ip:lan` / `system:ip:wan` | | Show local / public IP address |
 
 Category commands list related commands:
 - `debug` - List all debug commands
@@ -64,7 +68,7 @@ EngineBuilder::new()
             "Makes the player immune to all damage until toggled off.",
         );
     })
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build()
     .run()?;
 ```
@@ -118,6 +122,8 @@ type CommandFn = Box<dyn Fn(&[&str], &mut CommandContext) -> CommandResult + Sen
 |-------|------|---------|
 | `console` | `&mut ConsoleState` | Print output to console |
 | `debug_config` | `&mut DebugConfig` | Toggle debug flags |
+| `quit_requested` | `bool` | Set to request game exit |
+| `capture_requested` | `Option<CaptureTarget>` | Set to request a frame capture |
 | `time_scale` | `&mut f32` | Adjust game speed |
 | `commands` | `Vec<CommandInfo>` | List of all commands |
 | `game_name` | `Option<String>` | Game name from Ryo.toml |
@@ -162,7 +168,7 @@ EngineBuilder::new()
     .with_console_commands(|cmd| {
         cmd.declare("game:reset", "Reset the game to initial state");
     })
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build()
     .run()?;
 
@@ -220,8 +226,12 @@ version = "1.0.0"
 The `system:version` command will show:
 
 ```
-Ryo2D Engine v0.0.1 (Dev)
-My Game v1.0.0
+My Game
+  Version: 1.0.0
+
+Ryo2D Game Engine
+  Engine: 0.0.1
+  Build:  Dev
 ```
 
 ## Architecture

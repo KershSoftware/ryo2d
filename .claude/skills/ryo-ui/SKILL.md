@@ -34,8 +34,9 @@ Build game UI using the hybrid immediate/retained mode system.
 Color::WHITE, Color::BLACK, Color::RED, Color::GREEN, Color::BLUE
 Color::hex(0xFF8000)          // RGB
 Color::hex(0xFF800080)        // RGBA
-Color::rgba(255, 128, 0, 128)
-color.with_alpha(0.5)         // Returns new color
+Color::rgb(255, 128, 0)
+Color::new(255, 128, 0, 128)   // RGBA
+color.with_alpha(128)         // u8 alpha (0-255), returns new color
 ```
 
 ### Rect
@@ -64,17 +65,17 @@ Anchor::BottomLeft, Anchor::BottomCenter, Anchor::BottomRight
 Centralized styling with optional hot-reload:
 
 ```rust
-// Use default theme
-let theme = Theme::default();
-
-// Light theme
+let theme = Theme::default();   // or Theme::dark()
 let theme = Theme::light();
+let theme = Theme::load("assets/theme.ron")?;   // RON file
 
-// Hot-reload from RON file (debug builds only)
-let theme = HotReloadTheme::new("assets/theme.ron");
+// Hot-reload from RON file (created with defaults if missing; reloads in debug builds only)
+let hot = HotReloadTheme::new("assets/theme.ron")?;
+hot.poll_reload();
+let theme = hot.get();
 ```
 
-Widgets automatically use theme styles when available. All widget styles configurable:
+`UiContext::with_theme(..)` builds a context that uses a theme. The `UiContext` passed to `render_ui()` has no theme set, so `draw_themed_*` there use default colors. All widget styles configurable:
 `ButtonStyle`, `PanelStyle`, `ProgressBarStyle`, `SliderStyle`, `CheckboxStyle`, 
 `ToggleStyle`, `TextInputStyle`, `LabelStyle`, `ScrollbarStyle`, `TooltipStyle`
 
@@ -88,12 +89,12 @@ Widgets automatically use theme styles when available. All widget styles configu
 ui.draw_text("Hello", x, y, Color::WHITE);
 ui.draw_text_anchored("Score: 100", Anchor::TopRight, -10.0, 10.0, Color::YELLOW);
 ui.draw_text_centered("Title", rect, Color::WHITE);
-ui.draw_text_wrapped("Long text...", x, y, max_width, Color::WHITE);
+ui.draw_text_wrapped("Long text...", x, y, max_width, Color::WHITE);  // max_width: u32
 ui.draw_text_wrapped_centered("Long text...", rect, Color::WHITE);
 
 // Text measurement
 let (w, h) = ui.text_size("Hello");
-let lines = ui.wrap_text("Long text...", max_width);
+let lines = ui.wrap_text("Long text...", max_width);  // Vec<String>
 let (w, h) = ui.wrapped_text_size("Long text...", max_width);
 ```
 
@@ -134,8 +135,8 @@ if ui.button("Start Game", Rect::new(100.0, 200.0, 150.0, 40.0)) {
     self.start_game();
 }
 
-// With custom style
-if ui.button_styled("Custom", rect, &button_style) { ... }
+// With custom colors
+if ui.button_styled("Custom", rect, normal_bg, hover_bg, pressed_bg, text_color) { ... }
 ```
 
 ### Slider
@@ -178,7 +179,7 @@ username: TextInputState,
 username: TextInputState::with_text("default"),
 
 // In render_ui()
-if ui.text_input(&mut self.username, rect, "Username") {
+if ui.text_input(&mut self.username, rect, "Username", ui.dt()) {
     // Text changed
 }
 
@@ -214,7 +215,7 @@ ui.finish_dropdowns();
 scroll: ScrollViewState,
 
 // Vertical scrolling
-ui.scroll_view(&mut self.scroll, visible_rect, content_height, |ui, offset| {
+ui.scroll_view(&mut self.scroll, visible_rect, content_height, ui.dt(), |ui, offset| {
     for (i, item) in items.iter().enumerate() {
         let y = i as f32 * 30.0 - offset;
         ui.draw_text(item, 10.0, y, Color::WHITE);
@@ -222,7 +223,7 @@ ui.scroll_view(&mut self.scroll, visible_rect, content_height, |ui, offset| {
 });
 
 // Horizontal scrolling
-ui.scroll_view_horizontal(&mut self.scroll, rect, content_width, |ui, offset| {
+ui.scroll_view_horizontal(&mut self.scroll, rect, content_width, ui.dt(), |ui, offset| {
     // Draw content with x offset
 });
 ```
@@ -234,15 +235,11 @@ ui.scroll_view_horizontal(&mut self.scroll, rect, content_width, |ui, offset| {
 ### HBox (Horizontal Layout)
 
 ```rust
-let mut hbox = HBox::new(start_x, start_y, spacing);
-hbox.set_vertical_align(VAlign::Center);
+let mut hbox = HBox::new(start_x, start_y, spacing).with_valign(VAlign::Center);
 
-// Get next widget position
-let rect = Rect::new(hbox.next(80.0), y, 80.0, 30.0);
-ui.button("One", rect);
-
-let rect = Rect::new(hbox.next(80.0), y, 80.0, 30.0);
-ui.button("Two", rect);
+// next(width, height) returns the Rect for the next widget
+ui.button("One", hbox.next(80.0, 30.0));
+ui.button("Two", hbox.next(80.0, 30.0));
 
 // Get total bounds
 let bounds = hbox.bounds();
@@ -251,30 +248,27 @@ let bounds = hbox.bounds();
 ### VBox (Vertical Layout)
 
 ```rust
-let mut vbox = VBox::new(start_x, start_y, spacing);
-vbox.set_horizontal_align(HAlign::Center);
+let mut vbox = VBox::new(start_x, start_y, spacing).with_halign(HAlign::Center);
 
-let y = vbox.next(30.0);  // 30.0 = height of this widget
-ui.button("Option 1", Rect::new(x, y, 200.0, 30.0));
+// next(width, height) returns the Rect for the next widget
+ui.button("Option 1", vbox.next(200.0, 30.0));
 ```
 
 ### Stack (Overlay/Layered)
 
 ```rust
 let (sw, sh) = ui.screen_size();
-let mut stack = Stack::new(Rect::new(0.0, 0.0, sw as f32, sh as f32));
+let stack = Stack::new(0.0, 0.0, sw as f32, sh as f32);  // or Stack::from_rect(rect)
 
-// Split and align within stack
-let header = stack.split_top(50.0);
-let footer = stack.split_bottom(30.0);
-let sidebar = stack.split_left(200.0);
-let content = stack.remaining();
+// Split into two rects
+let (header, body) = stack.split_vertical(50.0);       // top height
+let (sidebar, content) = stack.split_horizontal(200.0); // left width
 
 // Centered element
 let button_rect = stack.centered(200.0, 50.0);
 
 // Aligned element
-let panel = stack.aligned(Anchor::TopRight, 150.0, 100.0);
+let panel = stack.aligned(150.0, 100.0, HAlign::Right, VAlign::Top);
 
 // Padded region
 let padded = stack.padded(20.0);
@@ -361,7 +355,7 @@ if trap.is_capturing() { ... }
 ```rust
 if self.show_modal {
     // Dim background and clear clips
-    ui.draw_modal_overlay(Color::rgba(0, 0, 0, 180));
+    ui.draw_modal_overlay(Color::new(0, 0, 0, 180));
     
     // Draw modal content
     let modal_rect = Rect::centered_at(sw/2.0, sh/2.0, 300.0, 200.0);
@@ -394,8 +388,6 @@ ui.point_in_clip(x, y)        // Point within current clip
 
 ```rust
 fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let (sw, _) = ui.screen_size();
-    
     // Health bar top-left
     ui.draw_themed_progress_bar(
         Rect::new(10.0, 10.0, 200.0, 20.0),
@@ -407,6 +399,8 @@ fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         &format!("Score: {}", self.score),
         Anchor::TopRight, -10.0, 10.0, Color::YELLOW,
     );
+
+    SceneAction::Continue
 }
 ```
 
@@ -415,20 +409,19 @@ fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
 ```rust
 if self.paused {
     let (sw, sh) = ui.screen_size();
-    ui.draw_modal_overlay(Color::rgba(0, 0, 0, 180));
+    ui.draw_modal_overlay(Color::new(0, 0, 0, 180));
     
     let mut vbox = VBox::new(sw as f32 / 2.0 - 75.0, sh as f32 / 2.0 - 60.0, 10.0);
     
-    ui.draw_text_centered("PAUSED", 
-        Rect::new(0.0, vbox.next(40.0) - 60.0, sw as f32, 40.0), Color::WHITE);
+    ui.draw_text_centered("PAUSED", vbox.next(150.0, 40.0), Color::WHITE);
     
-    if ui.button("Resume", Rect::new(vbox.x(), vbox.next(40.0), 150.0, 40.0)) {
+    if ui.button("Resume", vbox.next(150.0, 40.0)) {
         self.paused = false;
     }
-    if ui.button("Settings", Rect::new(vbox.x(), vbox.next(40.0), 150.0, 40.0)) {
+    if ui.button("Settings", vbox.next(150.0, 40.0)) {
         self.show_settings = true;
     }
-    if ui.button("Quit", Rect::new(vbox.x(), vbox.next(40.0), 150.0, 40.0)) {
+    if ui.button("Quit", vbox.next(150.0, 40.0)) {
         self.quit = true;
     }
 }
@@ -441,15 +434,15 @@ fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     let mut vbox = VBox::new(50.0, 50.0, 15.0);
     
     // Text inputs
-    let y = vbox.next(30.0);
+    let y = vbox.next(200.0, 30.0).y;
     ui.draw_text("Username:", 50.0, y + 5.0, Color::WHITE);
-    ui.text_input(&mut self.username, Rect::new(150.0, y, 200.0, 30.0), "");
+    ui.text_input(&mut self.username, Rect::new(150.0, y, 200.0, 30.0), "", ui.dt());
     
-    let y = vbox.next(30.0);
+    let y = vbox.next(200.0, 30.0).y;
     ui.draw_text("Volume:", 50.0, y + 5.0, Color::WHITE);
     ui.slider(Rect::new(150.0, y, 200.0, 20.0), &mut self.volume, 0.0, 100.0);
     
-    let y = vbox.next(30.0);
+    let y = vbox.next(200.0, 30.0).y;
     ui.draw_text("Difficulty:", 50.0, y + 5.0, Color::WHITE);
     ui.dropdown(&mut self.difficulty, Rect::new(150.0, y, 150.0, 30.0), 
         &["Easy", "Normal", "Hard"]);
@@ -459,6 +452,8 @@ fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     
     // IMPORTANT: Draw dropdowns last
     ui.finish_dropdowns();
+
+    SceneAction::Continue
 }
 ```
 

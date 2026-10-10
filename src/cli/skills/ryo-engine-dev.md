@@ -20,41 +20,44 @@ You help developers work on the Ryo2D engine itself.
 ## Architecture
 
 ```
-User's Game (Game trait)
+User's Scene (Scene trait)
          |
          v
-    GameContext
-    +-------------------------------------+
-    | World | Camera | Input | Assets    |
-    +-------------------------------------+
+    SceneContext
+    +----------------------------------------------------+
+    | Resources | World | Camera | Input | Assets | ...  |
+    +----------------------------------------------------+
          |
          v
-    Engine Systems
-    Animation -> Physics -> Collision -> Tweens
+    Engine Systems (engine.rs update)
+    Animation -> Tweens -> Skeleton -> Knockback -> SquashStretch
+         -> Scene update -> Hierarchy -> Trails -> Physics (Rapier)
          |
          v
-    RenderPipeline (pass-based)
-    Clear -> Parallax -> CpuSprite -> Upload -> GpuSprite
-         -> Trail -> Lighting -> UI -> Effects -> Present
+    Frame render (graphics/renderer.rs)
+    Clear -> GPU sprites -> CPU sprites -> Trails/Lines -> Lighting
+         -> UI -> Post-process effects -> Present
 ```
+
+`RenderPipeline` (`render/`) exists but is not wired into the engine; see `src/core/render/AGENTS.md`.
 
 ## Module Organization
 
 | Module | Purpose |
 |--------|---------|
 | `engine.rs` | Game loop, window, EngineBuilder |
-| `game.rs` | Game trait, GameContext |
+| `game.rs` | GpuRenderContext, TimeControl, TimeInfo, WindowRequest |
 | `ecs/` | ECS (hecs wrapper), pooling, tweens |
-| `render/` | Pass-based render pipeline |
+| `render/` | Pass-based render pipeline (not wired into the engine) |
 | `render/pipeline.rs` | RenderPipeline, pass execution |
 | `render/pass.rs` | RenderPass trait |
-| `render/passes/` | Built-in passes (clear, upload, lighting, etc.) |
-| `graphics/` | wgpu setup, GPU sprite batching |
-| `rapier_physics.rs` | Rapier2D integration |
-| `animation.rs` | Animation system |
-| `asset.rs` | AssetManager |
+| `render/passes/` | Pass implementations (clear, parallax, upload, lighting) |
+| `graphics/` | wgpu renderer, GPU sprite batching, camera, sprite animation |
+| `physics/` | Rapier2D integration, colliders |
+| `systems/` | Per-frame engine systems (animation, tween, physics, ...) |
+| `asset/` | AssetManager, hot reload |
 | `audio.rs` | Kira audio |
-| `camera.rs` | 2D camera with shake |
+| `graphics/camera.rs` | 2D camera with shake |
 | `scene.rs` | Scene management |
 | `ui/` | Hybrid immediate/retained UI |
 | `lighting/` | 2D lighting system |
@@ -85,9 +88,7 @@ pub use crate::core::ecs::Health;
 
 ```rust
 fn update_poison_system(world: &mut World, dt: f32) {
-    for (entity, (mut health, poison)) in
-        world.query_mut::<(&mut Health, &Poison)>()
-    {
+    for (health, poison) in world.query_mut::<(&mut Health, &Poison)>() {
         health.current -= poison.damage_per_second * dt;
     }
 }
@@ -99,7 +100,7 @@ Call in engine's update loop at appropriate point.
 
 Export in `lib.rs::prelude`:
 - Types users spawn/query: `Transform`, `Velocity`
-- Traits users implement: `Game`, `Scene`
+- Traits users implement: `Scene`
 - Handles users store: `Entity`, `SpriteHandle`
 
 Don't export:
@@ -129,7 +130,7 @@ The engine includes a built-in profiler using puffin:
 
 ### Key Files
 - `profiler.rs` - Macros (`profile_function!`, `profile_scope!`) and init
-- `profiler_window.rs` - Standalone flamegraph window (CPU-rendered)
+- `windows/profiler_window.rs` - Standalone flamegraph window (CPU-rendered)
 
 ### Adding Profiler Scopes to Engine Systems
 
@@ -159,7 +160,7 @@ Key design decisions:
 ### Testing with Profiler
 
 ```bash
-./run breakout --features profiler
+./run breakout -p
 # Or:
 ryo2d dev --profiler
 ```

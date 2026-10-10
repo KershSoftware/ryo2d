@@ -17,7 +17,7 @@ Run from a game project directory (containing `Ryo.toml`):
 ryo2d init <name>      # Create new project
 ryo2d build            # Production build (cargo build --release)
 ryo2d run              # Run production build
-ryo2d dev              # Development mode with hot reload
+ryo2d dev              # Development mode (debug build, asset hot reload)
 ryo2d export           # Package release into distributable zip
 ryo2d install-skills   # Add Agent Skills to existing project
 ryo2d netplay          # Tools for testing multiplayer with friends
@@ -29,12 +29,11 @@ ryo2d netplay          # Tools for testing multiplayer with friends
 my_game/
 ├── Ryo.toml           # Project configuration
 ├── Cargo.toml         # Rust dependencies
-├── src/
-│   └── main.rs
-└── assets/
-    ├── sprites/
-    ├── sounds/
-    └── music/
+├── main.rs            # Game entry point
+├── build.rs           # Build script (Windows icon embedding)
+├── src/               # Additional modules (optional)
+├── data/              # Save data (auto-generated at runtime)
+└── assets/            # Game assets (sprites, sounds, music, ...)
 ```
 
 ## Ryo.toml
@@ -65,7 +64,7 @@ show_colliders = false
 
 ```bash
 cd my_game
-ryo2d dev          # Fast iteration with hot reload
+ryo2d dev          # Fast iteration (debug build, asset hot reload)
 
 # With profiler window for performance analysis
 ryo2d dev --profiler
@@ -82,8 +81,8 @@ ryo2d run
 `ryo2d dev --profiler` (or `-p`) enables the built-in profiler:
 
 1. Compiles with `--features profiler`
-2. Sets `RYO_PUFFIN_PROFILER=1` environment variable
-3. Opens a second window showing real-time flamegraphs
+2. Sets `RYO_PROFILER_AUTO_OPEN=1` so the profiler window opens at startup
+3. Shows a second window with real-time flamegraphs
 
 Add `profile_function!()` to your update/render to see data:
 
@@ -91,6 +90,7 @@ Add `profile_function!()` to your update/render to see data:
 fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     profile_function!();
     // ... your code
+    SceneAction::Continue
 }
 ```
 
@@ -150,7 +150,6 @@ Test multiplayer with friends over the internet without manual server setup:
 
 ```bash
 ryo2d netplay start             # Start temp signaling server
-ryo2d netplay start --room xyz  # Custom room name
 ryo2d netplay ip                # Show your LAN and WAN IPs
 ```
 
@@ -163,7 +162,7 @@ ryo2d netplay ip                # Show your LAN and WAN IPs
 
 The tunnel URL is **temporary** - it changes each run and stops when you Ctrl+C.
 
-For production games, deploy your own signaling server (see `docs/matchbox-server-deploy.md`).
+For production games, deploy your own signaling server (see `docs/src/concepts/matchbox-server-deploy.md` in the engine repo).
 
 ## Tips
 

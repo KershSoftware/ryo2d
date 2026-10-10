@@ -22,13 +22,18 @@ src/core/ecs/
 ├── mod.rs          # Public exports
 ├── active.rs       # Active/Inactive marker components for pooling
 ├── component.rs    # Component trait
-├── components.rs   # Built-in components (Transform, Velocity)
+├── components.rs   # Built-in components (Transform, PreviousTransform, Velocity)
 ├── hierarchy.rs    # Parent/child relationships
 ├── knockback.rs    # Knockback component (decay-based force)
 ├── squash_stretch.rs # SquashStretch component (impact deformation)
 ├── pool.rs         # Object pooling system
 ├── renderable.rs   # Renderable component
-├── tween.rs        # Tweening system
+├── sprite_effects.rs # Per-sprite SpriteEffect
+├── material.rs     # SpriteShader / Material
+├── y_sort.rs       # YSort component
+├── tween.rs        # Tweening system (Tween, TweenSequence)
+├── property_tween.rs # Generic property tweening (PropertyTween<T>)
+├── lerp.rs         # Lerp trait for generic interpolation
 └── world.rs        # World wrapper
 ```
 
@@ -47,41 +52,48 @@ pub struct World {
 
 impl World {
     pub fn spawn<T: hecs::DynamicBundle>(&mut self, components: T) -> Entity;
-    pub fn despawn(&mut self, entity: Entity) -> bool;
-    pub fn get_component<T: Component>(&self, entity: Entity) -> Option<hecs::Ref<T>>;
-    pub fn get_component_mut<T: Component>(&self, entity: Entity) -> Option<hecs::RefMut<T>>;
-    pub fn add_component<T: Component>(&mut self, entity: Entity, component: T);
-    pub fn has_component<T: Component>(&self, entity: Entity) -> bool;
-    pub fn query<Q: hecs::Query>(&self) -> hecs::QueryBorrow<Q>;
-    pub fn query_mut<Q: hecs::Query>(&mut self) -> hecs::QueryMut<Q>;
+    pub fn despawn(&mut self, entity: Entity) -> Result<(), hecs::NoSuchEntity>;
+    pub fn get<T: hecs::Component>(&self, entity: Entity) -> Option<hecs::Ref<'_, T>>;
+    pub fn get_mut<T: hecs::Component>(&self, entity: Entity) -> Option<hecs::RefMut<'_, T>>;
+    // get_component / get_component_mut: deprecated aliases of get / get_mut
+    pub fn add_component<T: hecs::Component>(&mut self, entity: Entity, component: T);
+    pub fn has_component<T: hecs::Component>(&self, entity: Entity) -> bool;
+    pub fn query<Q: hecs::Query>(&self) -> hecs::QueryBorrow<'_, Q>;
+    pub fn query_mut<Q: hecs::Query>(&mut self) -> hecs::QueryMut<'_, Q>;
+    pub fn entities_with<T: hecs::Component>(&self) -> Vec<Entity>;
+    pub fn clear(&mut self);          // despawns everything, bumps generation()
 }
+
+// get/get_mut/has/insert_one/remove_one are the short forms of the *_component methods.
 ```
 
 ## Core Components
 
 ```rust
-pub struct Transform { pub position: Vec2, pub rotation: f32, pub scale: Vec2 }
-pub struct Velocity { pub x: f32, pub y: f32 }
-pub struct Renderable { pub sprite: SpriteHandle, pub flip_x: bool, pub z_order: i32 }
+pub struct Transform { pub x: f32, pub y: f32, pub z: f32, pub rotation: f32, pub scale_x: f32, pub scale_y: f32, /* + pivot_x/y, offset_x/y */ }
+pub struct Velocity { pub dx: f32, pub dy: f32, pub dz: f32 }
+pub struct Renderable { pub sprite: SpriteHandle, pub visible: bool, pub z_order: i32, pub flip_x: bool, pub flip_y: bool, pub alpha: f32, pub tint: Color, /* + style, mode, shader, shadows */ }
 pub struct Parent(pub Entity);
 pub struct Children(pub Vec<Entity>);
 ```
 
 ## Query Patterns
 
+hecs 0.11: iterators yield only the query item. Put `Entity` in the tuple to get IDs.
+
 ```rust
-// Immutable
-for (entity, (transform, velocity)) in world.query::<(&Transform, &Velocity)>().iter() {
+// Immutable (query() returns a borrow - call .iter())
+for (entity, transform, velocity) in world.query::<(Entity, &Transform, &Velocity)>().iter() {
     // read-only access
 }
 
-// Mutable
-for (entity, (mut transform, velocity)) in world.query_mut::<(&mut Transform, &Velocity)>() {
-    transform.position.x += velocity.x * dt;
+// Mutable (query_mut() returns the iterator directly)
+for (transform, velocity) in world.query_mut::<(&mut Transform, &Velocity)>() {
+    transform.x += velocity.dx * dt;
 }
 
 // Optional components
-for (entity, (transform, maybe_sprite)) in world.query::<(&Transform, Option<&Renderable>)>().iter() {
+for (transform, maybe_sprite) in world.query::<(&Transform, Option<&Renderable>)>().iter() {
     if let Some(sprite) = maybe_sprite { /* ... */ }
 }
 ```
@@ -107,19 +119,17 @@ Components must be `Send + Sync + 'static`.
 Systems run each frame:
 
 ```rust
-// Update animators
-for (entity, (mut animator, mut renderable)) in
-    world.query_mut::<(&mut Animator, &mut Renderable)>()
-{
-    animator.update(dt);
-    renderable.sprite = animator.current_frame().clone();
+// Update animators (skipping Inactive pooled entities)
+for entity in world.entities_with::<Animator>() {
+    if world.has::<Inactive>(entity) { continue; }
+    if let Some(mut animator) = world.get_mut::<Animator>(entity) {
+        animator.update(dt);
+    }
 }
 
 // Apply velocities
-for (entity, (mut transform, velocity)) in
-    world.query_mut::<(&mut Transform, &Velocity)>()
-{
-    transform.position.x += velocity.x * dt;
+for (transform, velocity) in world.query_mut::<(&mut Transform, &Velocity)>() {
+    transform.x += velocity.dx * dt;
 }
 ```
 
@@ -127,17 +137,17 @@ for (entity, (mut transform, velocity)) in
 
 - Entities with same components share an archetype
 - Iteration is contiguous in memory
-- Use batch queries over individual `get_component()` calls
+- Use batch queries over individual `get()` calls
 
 ```rust
 // Good - single query
-for (entity, (mut t, v)) in world.query_mut::<(&mut Transform, &Velocity)>() {
-    t.position.x += v.x;
+for (t, v) in world.query_mut::<(&mut Transform, &Velocity)>() {
+    t.x += v.dx;
 }
 
 // Avoid - per-entity lookups
-for entity in world.entities_with::<Velocity>() {
-    if let Some(mut t) = world.get_component_mut::<Transform>(entity) { /* ... */ }
+for entity in world.entities_with::<Velocity>() {   // allocates a Vec
+    if let Some(mut t) = world.get_mut::<Transform>(entity) { /* ... */ }
 }
 ```
 
@@ -147,7 +157,7 @@ for entity in world.entities_with::<Velocity>() {
 - Prefer `query_mut()` for batch processing
 - Generational entities prevent use-after-free
 - Keep components small (data only)
-- Despawn entities after iteration
+- Despawn entities after iteration (collect IDs first, then despawn)
 
 ## Object Pooling System
 
@@ -172,23 +182,26 @@ Engine systems automatically skip `Inactive` entities in:
 ### Pool Implementation
 
 ```rust
-pub struct Pool<B> {
+pub struct Pool<B: DynamicBundle + Clone> {
     available: Vec<Entity>,           // Ready for reuse
     active: Vec<Entity>,              // Currently in use
     config: PoolConfig,
-    factory: Box<dyn Fn() -> B>,      // Creates component bundles
+    factory: Box<dyn Fn() -> B + Send + Sync>,  // Creates component bundles
     world_generation: u64,            // For scene-change detection
     stats: PoolStats,
 }
 
-impl<B: DynamicBundle> Pool<B> {
-    fn new(world: &mut World, config: PoolConfig, factory: impl Fn() -> B + 'static) -> Self;
+impl<B: DynamicBundle + Clone + Send + Sync + 'static> Pool<B> {
+    fn new<F: Fn() -> B + Send + Sync + 'static>(world: &mut World, config: PoolConfig, factory: F) -> Self;
     fn acquire(&mut self, world: &mut World) -> Option<Entity>;
-    fn release(&mut self, world: &mut World, entity: Entity);
+    fn release(&mut self, world: &mut World, entity: Entity) -> bool;
     fn release_all(&mut self, world: &mut World);
-    fn active_iter(&self) -> impl Iterator<Item = Entity>;
-    fn stats(&self) -> PoolStats;
+    fn active_iter(&self) -> impl Iterator<Item = &Entity>;
+    fn stats(&self) -> &PoolStats;
 }
+
+// PoolConfig::default().with_capacity(n).with_max_capacity(n)
+//     .with_expand_batch_size(n).with_exhausted_policy(policy)
 ```
 
 **Key implementation detail:** When spawning entities for the pool, we spawn the user's bundle first, then add `Inactive` separately with `insert_one()`. This avoids nested tuple issues with hecs's `DynamicBundle`:
@@ -207,7 +220,7 @@ let entity = world.spawn((bundle, Inactive));
 Pools track `world.generation()` to detect scene clears:
 
 ```rust
-fn check_world_valid(&mut self, world: &World) {
+fn check_generation(&mut self, world: &World) {
     if world.generation() != self.world_generation {
         // World was cleared - invalidate pool
         self.available.clear();

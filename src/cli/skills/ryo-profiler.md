@@ -22,7 +22,7 @@ A second window opens showing real-time flamegraphs.
 
 ## Profiler Window Features
 
-The built-in profiler window (`profiler_window.rs`) provides:
+The built-in profiler window (`windows/profiler_window.rs`) provides:
 
 - **Real-time flamegraph** - Color-coded scope bars showing time spent
 - **FPS and frame time display** - Shows actual FPS and work time per frame
@@ -35,7 +35,7 @@ The built-in profiler window (`profiler_window.rs`) provides:
 ```rust
 use ryo2d::prelude::*;
 
-fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     profile_function!();  // Profile entire function
 
     {
@@ -47,6 +47,8 @@ fn update(&mut self, ctx: &mut GameContext, dt: f32) {
         profile_scope!("ai_update");
         // AI work...
     }
+
+    SceneAction::Continue
 }
 ```
 
@@ -58,12 +60,14 @@ These engine systems are automatically profiled:
 
 | Scope | What it measures |
 |-------|-----------------|
-| `update` | Game logic + fixed timestep |
-| `render` | CPU sprite rendering |
-| `present` | GPU submission + effects |
-| `physics_step` | Rapier2D simulation |
-| `scene_push` | Scene push transitions |
-| `scene_switch` | Scene switch transitions |
+| `cpu:update` | Game logic + fixed timestep |
+| `cpu:engine_update` | Built-in systems and scene update |
+| `cpu:render` | CPU sprite rendering |
+| `cpu:engine_render` | Engine render path |
+| `gpu:present` | GPU submission + effects |
+| `cpu:physics` | Rapier2D simulation |
+| `cpu:scene_push` | Scene push transitions |
+| `cpu:scene_switch` | Scene switch transitions |
 
 ## Configuration
 
@@ -82,7 +86,7 @@ This compiles with the profiler feature and auto-opens the profiler window on la
 enable_profiler = true
 ```
 
-This compiles with the profiler feature but doesn't auto-open. Press **F10** to open the profiler window when needed. This is ideal for development where you only occasionally need the profiler.
+This compiles with the profiler feature but doesn't auto-open. Press **F10** to open the profiler window when needed (F10 requires `dev_window_keys`, which defaults to on in debug builds only). This is ideal for development where you only occasionally need the profiler.
 
 ## Architecture (for engine devs)
 
@@ -117,7 +121,7 @@ This compiles with the profiler feature but doesn't auto-open. Press **F10** to 
 | File | Purpose |
 |------|---------|
 | `src/core/profiler.rs` | Macros, init, new_frame |
-| `src/core/profiler_window.rs` | Windowed flamegraph viewer |
+| `src/core/windows/profiler_window.rs` | Windowed flamegraph viewer |
 | `src/core/config/debug.rs` | `enable_profiler` config option |
 | `src/cli/commands/dev.rs` | `--profiler` CLI flag handling |
 
@@ -179,6 +183,4 @@ Profiling overhead is negligible when enabled:
 
 ## See Also
 
-- [Profiling Guide](../../docs/src/concepts/profiling.md) - Full user documentation
-- [Debugging Guide](../../docs/src/concepts/debugging.md) - Debug overlays
 - `src/core/AGENTS.md` - Core module architecture

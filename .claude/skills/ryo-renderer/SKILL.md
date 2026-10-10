@@ -22,34 +22,33 @@ You help developers work on the rendering system.
 
 ## Rendering Pipeline
 
-The engine uses a **pass-based render pipeline** where each phase is a `RenderPass`. Passes declare dependencies and execute in topological order.
+Frame rendering is hard-coded in `engine.rs` / `graphics/renderer.rs` (`WgpuRenderer::render_with_gpu_sprites` and the lighting variant). Order, back to front:
 
 ```
-Built-in Passes (in dependency order):
-┌─────────────────────────────────────────────────────────────┐
-│ clear      │ Clear pixel buffer to background color        │
-│ parallax   │ GPU-rendered parallax background layers       │
-│ cpu_sprite │ Software sprite rendering (Renderable)        │
-│ upload     │ Upload CPU pixel buffer to GPU texture        │
-│ gpu_sprite │ Batched GPU sprite rendering (render_gpu)     │
-│ trail      │ Motion trail rendering                        │
-│ lighting   │ 2D lighting with shadows                      │
-│ ui         │ User interface overlay (render_ui)            │
-│ effects    │ Post-processing (bloom, CRT, vignette, etc.)  │
-│ present    │ Final output to swapchain                     │
-└─────────────────────────────────────────────────────────────┘
+1. Clear game texture
+2. render_gpu() sprites (incl. parallax) - behind CPU content
+3. CPU pixel buffer (Renderable sprites) alpha-blended on top
+4. Trails and lines (so lighting applies to them)
+5. Lighting (render_lights + compose) - if enabled
+6. UI composited on top of the lit scene
+7. Post-processing effects (bloom, CRT, vignette, etc.)
+8. Present to screen with letterboxing
 ```
+
+### RenderPass / RenderPipeline (not wired in)
+
+`RenderPipeline` (`src/core/render/`) is a pass-based, topologically sorted pipeline, but **the engine never builds or executes it**. Adding or disabling passes does not change what the game renders. Only `ClearPass`, `ParallaxPass`, `UploadPass` and `LightingPass` exist; the other `pass_ids` are constants only.
 
 ### RenderPass Trait
 
 ```rust
 pub trait RenderPass: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn dependencies(&self) -> &[&'static str] { &[] }
+    fn id(&self) -> RenderPassId;  // &'static str
+    fn dependencies(&self) -> &[RenderPassId] { &[] }
     fn execute(&mut self, ctx: &mut RenderContext);
-    fn should_execute(&self, ctx: &RenderContext) -> bool { true }
+    fn should_execute(&self, _ctx: &RenderContext) -> bool { true }
     fn is_enabled(&self) -> bool { true }
-    fn set_enabled(&mut self, enabled: bool) {}
+    fn set_enabled(&mut self, _enabled: bool) {}
 }
 ```
 
@@ -63,6 +62,7 @@ pub struct RenderContext<'a> {
     pub queue: &'a wgpu::Queue,
     pub encoder: &'a mut wgpu::CommandEncoder,
     pub game_texture: &'a wgpu::Texture,
+    pub game_texture_view: &'a wgpu::TextureView,
     pub scratch_a: Option<&'a wgpu::Texture>,  // Ping-pong buffers
     pub scratch_b: Option<&'a wgpu::Texture>,
     pub pixel_buffer: &'a mut [u8],            // CPU buffer
@@ -77,7 +77,7 @@ pub struct RenderContext<'a> {
 ### Pipeline Configuration
 
 ```rust
-// Disable a pass at runtime
+// Disable a pass (returns false if no such pass)
 pipeline.set_enabled("lighting", false);
 
 // Add custom pass (inserted by dependency order)
@@ -91,7 +91,7 @@ pipeline.remove_pass("trail");
 
 **CPU (default)**: Software blitting, good for <1000 sprites
 
-**GPU (opt-in)**: Batched instanced rendering, for 1000+ sprites (particles, bullets)
+**GPU (opt-in)**: Batched instanced rendering, for 1000+ sprites (particles, bullets). GPU sprites always draw behind CPU-rendered entities; `z_order` only orders GPU batches among themselves.
 
 ## Background Rendering
 
@@ -129,29 +129,34 @@ Located in `src/core/shaders/`:
 
 | File | Purpose |
 |------|---------|
-| `sprite.wgsl` | Basic sprite rendering |
-| `sprite_effects.wgsl` | Per-sprite effects |
-| `post_process.wgsl` | Screen-wide effects |
+| `core/sprite.wgsl` | Sprite rendering, including per-sprite effects |
+| `core/light.wgsl`, `shadow.wgsl`, `raymarch_shadow.wgsl` | Lighting and shadows |
+| `core/trail.wgsl`, `trail_textured.wgsl` | Trails |
+| `post-process/*.wgsl` | Screen-wide effects (one file per effect) |
 
 Basic structure:
 
 ```wgsl
 @vertex
-fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
+fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     // Transform vertex
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(sprite_texture, sprite_sampler, in.tex_coord);
+fn fs_base(in: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(sprite_texture, sprite_sampler, in.uv) * in.tint;
 }
 ```
 
 ## Adding Effects
 
-1. Add to `SpriteEffect` enum in `ecs/components.rs`
-2. Update shader in `shaders/sprite_effects.wgsl`
+Per-sprite effect:
+
+1. Add to `SpriteEffect` enum in `ecs/sprite_effects.rs`
+2. Update shader in `shaders/core/sprite.wgsl`
 3. Pass uniforms from Rust
+
+Post-process effect: see `src/core/shaders/AGENTS.md` (`effects.rs`, `post-process/<name>.wgsl`, `pipeline.rs`, `manager.rs`).
 
 ## Post-Processing
 

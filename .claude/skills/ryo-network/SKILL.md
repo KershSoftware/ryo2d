@@ -56,15 +56,16 @@ let server = ListenServer::new(NetworkServerConfig {
     port: 7777,
     max_clients: 4,
     protocol_id: 0x12345678,
+    ..Default::default()  // UDP transport
 })?;
 
 let host_id = server.host_id();  // Host's virtual client ID
 
 // Client connects
-let client = NetworkClient::connect(NetworkClientConfig {
-    server_addr: "127.0.0.1:7777".parse()?,
-    protocol_id: 0x12345678,  // Must match!
-})?;
+let client = NetworkClient::connect(NetworkClientConfig::udp(
+    "127.0.0.1:7777".parse()?,
+    0x12345678,  // protocol_id - must match!
+))?;
 ```
 
 ## Update Loop Pattern
@@ -72,13 +73,14 @@ let client = NetworkClient::connect(NetworkClientConfig {
 **Critical:** Both server and client need `update()` called every frame.
 
 ```rust
-fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Update network
     if let Some(server) = &mut self.server {
         server.update(Duration::from_secs_f32(dt));
 
-        // Process events
-        for event in server.events() {
+        // Process events (collect first: events() borrows the server mutably)
+        let events: Vec<_> = server.events().collect();
+        for event in events {
             match event {
                 NetworkEvent::ClientConnected { client_id } => {
                     self.spawn_player(ctx, client_id);
@@ -94,7 +96,8 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     if let Some(client) = &mut self.client {
         client.update(Duration::from_secs_f32(dt));
 
-        for event in client.events() {
+        let events: Vec<_> = client.events().collect();
+        for event in events {
             match event {
                 NetworkEvent::Connected => {
                     self.connected = true;
@@ -106,6 +109,8 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
             }
         }
     }
+
+    SceneAction::Continue
 }
 ```
 
@@ -115,6 +120,7 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
 |---------|-----------|---------|
 | `Unreliable` | Best-effort | Position updates, frequent state |
 | `ReliableOrdered` | Delivery + FIFO order | Spawns, RPCs, chat |
+| `ReliableUnordered` | Delivery, any order | Independent one-off events |
 
 ```rust
 // Send unreliable (position updates)
@@ -191,12 +197,19 @@ replication.register::<PlayerPosition>();
 ```rust
 let entity = replication.spawn_networked(
     &mut world,
-    NetworkEntityBuilder::new()
-        .client_owned(client_id)  // Client controls this entity
-        .with_component(Transform::new(x, y))
-        .with_component(PlayerPosition { x, y })
+    NetworkEntityBuilder::new().client_owned(client_id),  // Client controls this entity
 );
+
+// spawn_networked only attaches the network identity - add components yourself
+world.add_component(entity, Transform::new(x, y));
+world.add_component(entity, PlayerPosition { x, y });
+
+// When a client connects, bring it up to date
+replication.register_client(client_id);
+replication.send_full_state(&world, &mut server, client_id);
 ```
+
+Spawn messages (and full-state syncs) carry the current value of every registered component the entity has, so add its components right after spawning, before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`.
 
 ### 4. Broadcast Updates
 
@@ -210,6 +223,8 @@ replication.broadcast_updates(&world, &mut server);
 // Client processes incoming
 replication.process_incoming(&mut world, &mut client);
 ```
+
+Call `broadcast_updates()` every frame. `process_incoming()` drains all `ReliableOrdered` and `Unreliable` messages on the client and drops anything that isn't replication data, so don't also read RPCs from those channels on the same client.
 
 ## Remote Procedure Calls (RPCs)
 
@@ -327,7 +342,7 @@ for event in events {
 fn broadcast_positions(&mut self) {
     let mut updates = Vec::new();
     for (&client_id, &entity) in &self.players {
-        if let Some(t) = self.world.get_component::<Transform>(entity) {
+        if let Some(t) = self.world.get::<Transform>(entity) {
             updates.push(PositionUpdate { client_id, x: t.x, y: t.y });
         }
     }
@@ -343,7 +358,7 @@ while let Some(data) = client.receive(Channel::Unreliable) {
     let updates: Vec<PositionUpdate> = deserialize(&data)?;
     for update in updates {
         if let Some(entity) = self.players.get(&update.client_id) {
-            if let Some(mut t) = world.get_component_mut::<Transform>(*entity) {
+            if let Some(mut t) = world.get_mut::<Transform>(*entity) {
                 t.x = update.x;
                 t.y = update.y;
             }
@@ -423,7 +438,6 @@ Use the CLI for quick testing with friends:
 
 ```bash
 ryo2d netplay start             # Start temp signaling server
-ryo2d netplay start --room xyz  # Custom room name
 ryo2d netplay ip                # Show LAN/WAN IPs
 ```
 

@@ -124,8 +124,8 @@ let entity = ctx.world.spawn((
     Transform::new(x, y),
     Velocity::zero(),
     Renderable::sprite(sprite_handle),
-    RigidBody::dynamic(),
-    Collider::circle(16.0),
+    RigidBody::new(),
+    Collider::circle_collider(16.0),
 ));
 
 // Store for later reference
@@ -150,13 +150,13 @@ let (wx, wy) = ctx.camera.screen_to_world(mx, my);
 
 ```rust
 // Get component from a stored entity
-if let Some(transform) = ctx.world.get_component::<Transform>(entity) {
+if let Some(transform) = ctx.world.get::<Transform>(entity) {
     let x = transform.x;  // Direct field access (not .position.x!)
     let y = transform.y;
 }
 
 // Modify component
-if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
     vel.dx = 100.0;  // Fields are dx, dy, dz (not x, y, z!)
     vel.dy = -50.0;
 }
@@ -185,17 +185,14 @@ ctx.world.despawn(entity);
 
 ```rust
 // In update()
-for event in ctx.collision_events.iter() {
-    if event.event_type == CollisionEventType::Started {
-        if event.involves(self.player.unwrap()) {
-            let other = event.other_entity(self.player.unwrap());
-            
-            if ctx.world.has_component::<Enemy>(other) {
-                self.take_damage();
-            } else if ctx.world.has_component::<Coin>(other) {
-                self.score += 10;
-                ctx.world.despawn(other);
-            }
+let player = self.player.unwrap();
+for event in ctx.events.read::<CollisionStarted>() {
+    if let Some(other) = event.other(player) {
+        if ctx.world.has_component::<Enemy>(other) {
+            self.take_damage();
+        } else if ctx.world.has_component::<Coin>(other) {
+            self.score += 10;
+            ctx.world.despawn(other).ok();
         }
     }
 }
@@ -204,20 +201,24 @@ for event in ctx.collision_events.iter() {
 ### Audio
 
 ```rust
-// Sound effects
+// Sound effects: load once by name (e.g. in on_enter), then play by name
 if let Some(audio) = ctx.audio.as_mut() {
-    audio.play_sound("jump.wav").ok();
-    audio.play_sound_with("explosion.wav", SoundOptions {
+    audio.load_sound("jump", "assets/jump.wav").ok();
+    audio.load_sound("explosion", "assets/explosion.wav").ok();
+}
+if let Some(audio) = ctx.audio.as_mut() {
+    audio.play_sound("jump").ok();
+    audio.play_sound_with("explosion", SoundOptions {
         volume: 0.8,
-        pitch: 1.2,
+        playback_rate: 1.2,
         panning: 0.0,
     }).ok();
 }
 
-// Music
+// Music (streamed from a path; returns a MusicHandle)
 if let Some(audio) = ctx.audio.as_mut() {
-    audio.play_music("bgm.ogg").ok();
-    audio.set_music_volume(0.5);
+    audio.set_music_volume(0.5);  // applies to music started afterwards
+    self.music = audio.play_music("assets/bgm.ogg").ok();
 }
 ```
 
@@ -225,7 +226,7 @@ if let Some(audio) = ctx.audio.as_mut() {
 
 ```rust
 // Follow player
-if let Some(t) = ctx.world.get_component::<Transform>(self.player.unwrap()) {
+if let Some(t) = ctx.world.get::<Transform>(self.player.unwrap()) {
     ctx.camera.set_position(t.x, t.y);  // Direct x, y fields
 }
 
@@ -282,10 +283,10 @@ impl Scene for MenuScene {
 // Override cleanup_on_exit() to customize:
 impl Scene for MyScene {
     fn cleanup_on_exit(&self) -> SceneCleanup {
-        SceneCleanup::DEFAULT  // Resets world, camera, effects, lighting, time, events (not music)
+        SceneCleanup::DEFAULT  // Resets world, camera, effects, lighting, time, events, raycast (not music)
     }
 }
-// SceneCleanup flags: NONE, WORLD, CAMERA, EFFECTS, LIGHTING, TIME, MUSIC, EVENTS, ALL, DEFAULT
+// SceneCleanup flags: NONE, WORLD, CAMERA, EFFECTS, LIGHTING, TIME, MUSIC, EVENTS, RAYCAST, ALL, DEFAULT
 // Combine with | and subtract with -
 // Push/Pop do NOT run cleanup (paused scene keeps its state)
 ```
@@ -447,8 +448,8 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Transform` | Position, rotation, scale |
 | `Velocity` | Movement direction and speed |
 | `Renderable` | Sprite and rendering options |
-| `RigidBody` | Physics body (dynamic, kinematic, fixed) |
-| `Collider` | Collision shape (circle, rect, capsule) |
+| `RigidBody` | Physics body (dynamic or kinematic) |
+| `Collider` | Collision shape (circle or box) |
 | `Animator` | Sprite animation state |
 | `Tween` | Smooth interpolation of Transform properties |
 | `PropertyTween<T>` | Generic value tweening (f32, Vec2, Color, custom Lerp types) |

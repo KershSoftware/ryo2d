@@ -17,7 +17,7 @@ The event bus allows systems to communicate without direct dependencies:
 
 - **emit()** - Publish an event (any system)
 - **read()** - Subscribe to events (any system, same frame)
-- Events live for one frame, then cleared automatically
+- Events live for one fixed-timestep update, then are cleared automatically (a scene `Switch`/`Reset` also clears them)
 
 ## Basic Usage
 
@@ -33,7 +33,7 @@ struct EnemySpawned { entity: Entity, wave: u32 }
 ### Emitting Events
 
 ```rust
-fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     if player_health <= 0 {
         ctx.events.emit(PlayerDied { entity: self.player });
     }
@@ -43,6 +43,8 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
         delta: 100,
         new_total: self.score
     });
+
+    SceneAction::Continue
 }
 ```
 
@@ -76,7 +78,7 @@ use ryo2d::prelude::*;
 for event in ctx.events.read::<CollisionStarted>() {
     if event.involves(self.player) {
         let other = event.other(self.player).unwrap();
-        self.handle_player_hit(other, ctx);
+        self.handle_player_hit(other);
     }
 }
 
@@ -104,7 +106,7 @@ The engine emits events when knockback state changes:
 ```rust
 // React to knockback starting (e.g., flash the entity)
 for event in ctx.events.read::<KnockbackStarted>() {
-    if let Some(mut renderable) = ctx.world.get_component_mut::<Renderable>(event.entity) {
+    if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(event.entity) {
         renderable.tint = Color::WHITE;  // Flash white on hit
     }
 }
@@ -138,14 +140,16 @@ When using networking, emit these from your game code:
 
 ```rust
 // In your server/host code when handling ListenServer events
-match server.poll() {
-    NetworkEvent::ClientConnected(id) => {
-        ctx.events.emit(ClientConnected { client_id: id });
+for event in server.events() {
+    match event {
+        NetworkEvent::ClientConnected { client_id } => {
+            ctx.events.emit(ClientConnected { client_id });
+        }
+        NetworkEvent::ClientDisconnected { client_id, .. } => {
+            ctx.events.emit(ClientDisconnected { client_id });
+        }
+        _ => {}
     }
-    NetworkEvent::ClientDisconnected(id) => {
-        ctx.events.emit(ClientDisconnected { client_id: id });
-    }
-    _ => {}
 }
 ```
 
@@ -181,11 +185,12 @@ fn update_particles(&mut self, ctx: &mut SceneContext) {
 
 ### Chained Events
 
-Events can trigger other events:
+Events can trigger other events. `read()` borrows the bus, so collect first, then emit:
 
 ```rust
 fn update_powerups(&mut self, ctx: &mut SceneContext) {
-    for event in ctx.events.read::<CollisionStarted>() {
+    let hits: Vec<CollisionStarted> = ctx.events.read::<CollisionStarted>().copied().collect();
+    for event in hits {
         if event.involves(self.player) {
             let other = event.other(self.player).unwrap();
             if self.is_powerup(other) {
@@ -193,7 +198,7 @@ fn update_powerups(&mut self, ctx: &mut SceneContext) {
                 ctx.events.emit(PowerUpCollected {
                     kind: self.get_powerup_kind(other)
                 });
-                ctx.world.despawn(other);
+                ctx.world.despawn(other).ok();
             }
         }
     }
@@ -214,26 +219,13 @@ fn check_achievements(&mut self, ctx: &mut SceneContext) {
 }
 ```
 
-## Migration from Old Collision API
-
-```rust
-// OLD (deprecated)
-for event in ctx.collisions_started() {
-    if event.involves(player) { ... }
-}
-
-// NEW (recommended)
-for event in ctx.events.read::<CollisionStarted>() {
-    if event.involves(player) { ... }
-}
-```
-
 ## Performance Tips
 
-1. **Events are per-frame** - Don't store references to events
+1. **Events are per-update** - Don't store references to events; copy what you need
 2. **Reading is cheap** - Multiple reads of same type OK
 3. **Keep events small** - Store Entity IDs, not full data
-4. **Use has() for checks** - Faster than `read().next().is_some()`
+4. **Use has() for checks** - Cheaper than `read().next().is_some()`
+5. **Emit while reading** - `read()` borrows the bus; collect the events first if you need to `emit()` in the loop
 
 ## Event vs Direct Calls
 

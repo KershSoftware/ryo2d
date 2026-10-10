@@ -7,7 +7,7 @@ metadata:
 
 # Ryo2D Game Developer
 
-You help users build complete games using the Ryo2D engine. You understand the ECS architecture, the Game/Scene trait lifecycle, and common game patterns.
+You help users build complete games using the Ryo2D engine. You understand the ECS architecture, the Scene trait lifecycle, and common game patterns.
 
 **For complete API signatures, see the `ryo-api` skill.**
 
@@ -27,27 +27,27 @@ This optimizes dependencies while keeping your code fast to compile. New project
 ```rust
 use ryo2d::prelude::*;
 
-struct MyGame {
+struct MyScene {
     player: Option<Entity>,
     score: u32,
 }
 
-impl Game for MyGame {
-    fn init(&mut self, ctx: &mut GameContext) {
+impl Scene for MyScene {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
         // IMPORTANT: Center camera so world coords match screen coords (0,0 = top-left)
         // Resolution comes from Ryo.toml, get it from camera viewport
         let (vw, vh) = ctx.camera.viewport_size();
         ctx.camera.set_position(vw / 2.0, vh / 2.0);
-        
+
         // Load a sprite from assets folder
         let sprite = ctx.assets.load_sprite("player.png").unwrap();
-        
+
         // Or create a colored rectangle
         let sprite = ctx.assets.create_sprite(
             Sprite::solid_rect(32, 32, 255, 0, 0, 255),
             "red-square"
         );
-        
+
         // Spawn player entity at screen center (640, 360 for 1280x720)
         self.player = Some(ctx.world.spawn((
             Transform::new(vw / 2.0, vh / 2.0),
@@ -56,15 +56,17 @@ impl Game for MyGame {
         )));
     }
 
-    fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
         // Handle input, update game state
         if ctx.input.key_pressed(KeyCode::Escape) {
-            // Exit game
+            return SceneAction::Quit;
         }
+        SceneAction::Continue
     }
 
-    fn render_ui(&mut self, ui: &mut UiContext) {
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         ui.label(&format!("Score: {}", self.score), 10.0, 10.0, Color::WHITE, None);
+        SceneAction::Continue
     }
 }
 
@@ -72,31 +74,25 @@ fn main() {
     // Resolution/FPS come from Ryo.toml - don't set .resolution() here!
     EngineBuilder::new()
         .title("My Game")
-        .with_game(MyGame { player: None, score: 0 })
+        .start_scene(MyScene { player: None, score: 0 })
         .build()
         .run()
         .unwrap();
 }
 ```
 
-## Game vs Scene
-
-| Use | When |
-|-----|------|
-| `Game` trait | Single-screen games, simple projects |
-| `Scene` trait | Menu systems, multiple game states, level transitions |
-
-## GameContext Fields
+## SceneContext Fields
 
 | Field | Type | Purpose |
 |-------|------|---------|
+| `ctx.resources` | `&mut Resources` | Cross-scene shared state |
 | `ctx.world` | `&mut World` | ECS world - spawn/query entities |
 | `ctx.camera` | `&mut Camera` | Camera position, zoom, viewport |
-| `ctx.input` | `&InputState` | Keyboard/mouse state |
+| `ctx.input` | `&mut InputState` | Keyboard/mouse state |
 | `ctx.assets` | `&mut AssetManager` | Load sprites, sounds |
 | `ctx.audio` | `&mut Option<AudioManager>` | Play sounds/music |
 | `ctx.effects` | `&mut EffectsManager` | Post-processing effects |
-| `ctx.collision_events` | `&[PhysicsCollisionEvent]` | Physics collisions |
+| `ctx.events` | `&mut Events` | Event bus for decoupled communication |
 
 ## Essential Patterns
 
@@ -128,8 +124,8 @@ let entity = ctx.world.spawn((
     Transform::new(x, y),
     Velocity::zero(),
     Renderable::sprite(sprite_handle),
-    RigidBody::dynamic(),
-    Collider::circle(16.0),
+    RigidBody::new(),
+    Collider::circle_collider(16.0),
 ));
 
 // Store for later reference
@@ -154,13 +150,13 @@ let (wx, wy) = ctx.camera.screen_to_world(mx, my);
 
 ```rust
 // Get component from a stored entity
-if let Some(transform) = ctx.world.get_component::<Transform>(entity) {
+if let Some(transform) = ctx.world.get::<Transform>(entity) {
     let x = transform.x;  // Direct field access (not .position.x!)
     let y = transform.y;
 }
 
 // Modify component
-if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(entity) {
+if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
     vel.dx = 100.0;  // Fields are dx, dy, dz (not x, y, z!)
     vel.dy = -50.0;
 }
@@ -189,17 +185,14 @@ ctx.world.despawn(entity);
 
 ```rust
 // In update()
-for event in ctx.collision_events.iter() {
-    if event.event_type == CollisionEventType::Started {
-        if event.involves(self.player.unwrap()) {
-            let other = event.other_entity(self.player.unwrap());
-            
-            if ctx.world.has_component::<Enemy>(other) {
-                self.take_damage();
-            } else if ctx.world.has_component::<Coin>(other) {
-                self.score += 10;
-                ctx.world.despawn(other);
-            }
+let player = self.player.unwrap();
+for event in ctx.events.read::<CollisionStarted>() {
+    if let Some(other) = event.other(player) {
+        if ctx.world.has_component::<Enemy>(other) {
+            self.take_damage();
+        } else if ctx.world.has_component::<Coin>(other) {
+            self.score += 10;
+            ctx.world.despawn(other).ok();
         }
     }
 }
@@ -208,20 +201,24 @@ for event in ctx.collision_events.iter() {
 ### Audio
 
 ```rust
-// Sound effects
+// Sound effects: load once by name (e.g. in on_enter), then play by name
 if let Some(audio) = ctx.audio.as_mut() {
-    audio.play_sound("jump.wav").ok();
-    audio.play_sound_with("explosion.wav", SoundOptions {
+    audio.load_sound("jump", "assets/jump.wav").ok();
+    audio.load_sound("explosion", "assets/explosion.wav").ok();
+}
+if let Some(audio) = ctx.audio.as_mut() {
+    audio.play_sound("jump").ok();
+    audio.play_sound_with("explosion", SoundOptions {
         volume: 0.8,
-        pitch: 1.2,
+        playback_rate: 1.2,
         panning: 0.0,
     }).ok();
 }
 
-// Music
+// Music (streamed from a path; returns a MusicHandle)
 if let Some(audio) = ctx.audio.as_mut() {
-    audio.play_music("bgm.ogg").ok();
-    audio.set_music_volume(0.5);
+    audio.set_music_volume(0.5);  // applies to music started afterwards
+    self.music = audio.play_music("assets/bgm.ogg").ok();
 }
 ```
 
@@ -229,7 +226,7 @@ if let Some(audio) = ctx.audio.as_mut() {
 
 ```rust
 // Follow player
-if let Some(t) = ctx.world.get_component::<Transform>(self.player.unwrap()) {
+if let Some(t) = ctx.world.get::<Transform>(self.player.unwrap()) {
     ctx.camera.set_position(t.x, t.y);  // Direct x, y fields
 }
 
@@ -261,13 +258,14 @@ impl Scene for MenuScene {
         SceneAction::Continue
     }
 
-    fn render_ui(&mut self, ui: &mut UiContext) {
+    fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
         // Get screen size (returns u32, cast to f32 for positioning)
         let (sw, sh) = ui.screen_size();
         let screen_w = sw as f32;
         let screen_h = sh as f32;
         
         ui.label("Press ENTER to start", screen_w / 2.0 - 80.0, screen_h / 2.0, Color::WHITE, None);
+        SceneAction::Continue
     }
 }
 
@@ -275,6 +273,7 @@ impl Scene for MenuScene {
 // - Continue            Keep running
 // - Push(scene)         Add scene on top (pause current)
 // - Pop                 Return to previous scene
+// - PopReturn(data)     Pop and return data to scene below (via on_resume)
 // - Switch(scene)       Replace current scene (NOT "Replace"!)
 // - Reset(scene)        Clear all scenes, push new one
 // - Quit                Exit game
@@ -284,10 +283,10 @@ impl Scene for MenuScene {
 // Override cleanup_on_exit() to customize:
 impl Scene for MyScene {
     fn cleanup_on_exit(&self) -> SceneCleanup {
-        SceneCleanup::DEFAULT  // Resets world, camera, effects, lighting, time, events (not music)
+        SceneCleanup::DEFAULT  // Resets world, camera, effects, lighting, time, events, raycast (not music)
     }
 }
-// SceneCleanup flags: NONE, WORLD, CAMERA, EFFECTS, LIGHTING, TIME, MUSIC, EVENTS, ALL, DEFAULT
+// SceneCleanup flags: NONE, WORLD, CAMERA, EFFECTS, LIGHTING, TIME, MUSIC, EVENTS, RAYCAST, ALL, DEFAULT
 // Combine with | and subtract with -
 // Push/Pop do NOT run cleanup (paused scene keeps its state)
 ```
@@ -298,8 +297,16 @@ impl Scene for MyScene {
 // Minimal - uses Ryo.toml for resolution, fps, etc.
 EngineBuilder::new()
     .title("My Game")
-    .with_game(MyGame::default())  // OR
-    .with_scene(MenuScene)         // for multi-scene
+    .start_scene(MenuScene::new())
+    .build()
+    .run()
+    .unwrap();
+
+// With shared resources
+EngineBuilder::new()
+    .title("My Game")
+    .resource(GameSettings::default())  // Accessible via ctx.resources
+    .start_scene(MenuScene::new())
     .build()
     .run()
     .unwrap();
@@ -311,7 +318,7 @@ EngineBuilder::new()
     .target_fps(120)                  // Override FPS
     .physics_hz(240)                  // Physics update rate
     .window_mode(WindowMode::ResizableAspectRatio)
-    .with_game(MyGame::default())
+    .start_scene(GameScene::new())
     .build()
     .run()
     .unwrap();
@@ -330,7 +337,7 @@ EngineBuilder::new()
     .resolution(1920, 1080)  // Fixed design resolution - game logic uses this
     .window_mode(WindowMode::ResizableAspectRatio)  // Window can scale
     .target_fps(144)
-    .with_scene(MenuScene::new())
+    .start_scene(MenuScene::new())
     .build()
     .run()
     .unwrap();
@@ -410,7 +417,7 @@ fn on_enter(&mut self, ctx: &mut SceneContext) {
 For clamping entities to screen, **sprite origin is TOP-LEFT**:
 
 ```rust
-// In your Scene or Game struct, store screen bounds
+// In your Scene struct, store screen bounds
 struct GameScene {
     screen_w: f32,
     screen_h: f32,
@@ -441,10 +448,11 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Transform` | Position, rotation, scale |
 | `Velocity` | Movement direction and speed |
 | `Renderable` | Sprite and rendering options |
-| `RigidBody` | Physics body (dynamic, kinematic, fixed) |
-| `Collider` | Collision shape (circle, rect, capsule) |
+| `RigidBody` | Physics body (dynamic or kinematic) |
+| `Collider` | Collision shape (circle or box) |
 | `Animator` | Sprite animation state |
 | `Tween` | Smooth interpolation of Transform properties |
+| `PropertyTween<T>` | Generic value tweening (f32, Vec2, Color, custom Lerp types) |
 | `Parent` / `Children` | Entity hierarchy |
 | `NavAgent` | Navigation and pathfinding |
 | `Trail2D` | Motion trails behind entities |

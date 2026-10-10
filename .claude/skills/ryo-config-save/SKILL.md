@@ -73,12 +73,9 @@ Players can edit this file directly.
   "master_volume": 0.8,
   "music_volume": 1.0,
   "sfx_volume": 1.0,
-  "display": {
-    "width": 1920,
-    "height": 1080,
-    "display_mode": "windowed",
-    "vsync": true
-  },
+  "resolution": "1920x1080",
+  "display_mode": "windowed",
+  "vsync": true,
   "show_fps": false,
   "env": {}
 }
@@ -123,7 +120,7 @@ println!("Assets: {:?}", config.assets);
 
 // Access system defaults from [system] section
 let defaults = &config.system;
-println!("Default resolution: {}", defaults.resolution);
+println!("Default resolution: {:?}", defaults.resolution);  // Option<(u32, u32)>
 
 // Access debug flags from [debug] section
 if config.debug.show_colliders {
@@ -168,10 +165,10 @@ let settings = save_manager.load_or_create_system(
     &workspace.config().system
 )?;
 
-// Modify and save
+// Modify and save (resolution is settings.width / settings.height)
 let mut settings = save_manager.load_system()?;
 settings.master_volume = 0.5;
-settings.display.display_mode = DisplayMode::ExclusiveFullscreen;
+settings.display_mode = DisplayMode::ExclusiveFullscreen;
 save_manager.save_system(&settings)?;
 
 // Custom game env variables (typed values)
@@ -180,15 +177,23 @@ settings.set_env("language", serde_json::json!("en"));
 
 ## Tier 2: World State
 
-ECS world snapshots - entities and serializable components.
+`WorldState` is a container of `EntitySnapshot`s (component data serialized to bytes, keyed by component name). The engine does not capture a `World` into it automatically: you fill it yourself, and rebuild entities from it after loading.
 
 ```rust
-// Save world to slot
-save_manager.save_world("autosave", &ctx.world)?;
+// use std::collections::HashMap;
+// Build a snapshot (serialize the components you care about yourself)
+let mut state = WorldState::new();
+state.set_metadata("level", "forest");
+state.add_entity(EntitySnapshot { id: 1, components: HashMap::new() });
 
-// Load world from slot
-let loaded_world = save_manager.load_world("autosave")?;
-*ctx.world = loaded_world;
+// Save to slot
+save_manager.save_world("autosave", &state)?;
+
+// Load from slot
+let loaded: WorldState = save_manager.load_world("autosave")?;
+for snapshot in &loaded.entities {
+    // Recreate the entity from snapshot.components
+}
 
 // List available world saves
 let slots = save_manager.list_world_saves()?;
@@ -197,7 +202,7 @@ for slot in slots {
 }
 ```
 
-**Note:** Only components implementing `Serialize` + `Deserialize` are saved.
+**Note:** For most games, `save_game` with your own serializable struct (Tier 3) is simpler than world snapshots.
 
 ## Tier 3: Game Data
 
@@ -222,8 +227,8 @@ let progress = PlayerProgress {
 // Save to slot (compressed)
 save_manager.save_game("slot1", &progress)?;
 
-// Load from slot
-let loaded: PlayerProgress = save_manager.load_game("slot1")?;
+// Load from slot (returned in a GameSaveData wrapper: .data, .timestamp, .play_time, ...)
+let loaded: PlayerProgress = save_manager.load_game("slot1")?.data;
 
 // Delete a save
 save_manager.delete_game("slot1")?;
@@ -246,7 +251,8 @@ save_manager.delete_game("slot1")?;
 fn render_settings(&mut self, ui: &mut UiContext, save_manager: &SaveManager) {
     let mut settings = save_manager.load_system().unwrap_or_default();
 
-    if ui.slider("Master Volume", &mut settings.master_volume, 0.0..=1.0) {
+    let track = Rect::new(100.0, 100.0, 200.0, 20.0);
+    if ui.slider(track, &mut settings.master_volume, 0.0, 1.0) {
         save_manager.save_system(&settings).ok();
     }
 }
@@ -258,12 +264,14 @@ For runtime display mode changes, use `WindowRequest`:
 
 ```rust
 // In your scene/game
-fn apply_display_mode(&mut self, ctx: &mut SceneContext, mode: DisplayMode) {
-    // Request display mode change (applied next frame)
+fn apply_display_mode(&mut self, ctx: &mut SceneContext, save_manager: &SaveManager, mode: DisplayMode) {
+    // Request display mode change (applied after the current frame)
     ctx.request_display_mode(mode);
 
     // Save preference
-    save_display_mode(mode);
+    let mut settings = save_manager.load_system().unwrap_or_default();
+    settings.display_mode = mode;
+    save_manager.save_system(&settings).ok();
 }
 
 // Display mode options for settings menu
@@ -286,19 +294,22 @@ fn display_mode_label(mode: DisplayMode) -> &'static str {
 
 ```rust
 impl Scene for MyScene {
-    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    fn update(&mut self, _ctx: &mut SceneContext, dt: f32) -> SceneAction {
         self.autosave_timer += dt;
         if self.autosave_timer >= 60.0 {
             self.autosave_timer = 0.0;
             if let Some(ref save_manager) = self.save_manager {
-                save_manager.save_world("autosave", &ctx.world).ok();
+                save_manager.save_game("autosave", &self.progress).ok();
             }
         }
+        SceneAction::Continue
     }
 }
 ```
 
 ### Multiple Save Slots
+
+`self.world` here is a `WorldState` you maintain (see Tier 2).
 
 ```rust
 fn save_to_slot(&self, slot: u8) -> SaveResult<()> {
@@ -311,7 +322,7 @@ fn save_to_slot(&self, slot: u8) -> SaveResult<()> {
 fn load_from_slot(&mut self, slot: u8) -> SaveResult<()> {
     let slot_name = format!("slot{}", slot);
     self.world = self.save_manager.load_world(&slot_name)?;
-    self.progress = self.save_manager.load_game(&slot_name)?;
+    self.progress = self.save_manager.load_game(&slot_name)?.data;
     Ok(())
 }
 ```

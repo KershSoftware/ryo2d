@@ -75,7 +75,7 @@ if ctx.input.gamepad_button_released(GamepadButton::East) {
 
 ### Analog Sticks
 
-Values range from -1.0 to 1.0 with deadzone applied:
+Values range from -1.0 to 1.0 with deadzone applied. Stick Y is positive when pushed **up**, the opposite of screen Y (which grows downward):
 
 ```rust
 // Get both axes as tuple
@@ -125,9 +125,9 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     if ctx.input.key_down(KeyCode::KeyW) { move_y -= 1.0; }
     if ctx.input.key_down(KeyCode::KeyS) { move_y += 1.0; }
 
-    // Gamepad stick (additive)
+    // Gamepad stick (additive; stick Y is up-positive, so negate it)
     move_x += ctx.input.left_stick_x();
-    move_y += ctx.input.left_stick_y();
+    move_y -= ctx.input.left_stick_y();
 
     // Gamepad D-pad (additive)
     if ctx.input.gamepad_button_down(GamepadButton::DPadLeft) { move_x -= 1.0; }
@@ -143,10 +143,12 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     }
 
     // Apply movement
-    if let Some(mut vel) = ctx.world.get_component_mut::<Velocity>(self.player) {
+    if let Some(mut vel) = ctx.world.get_mut::<Velocity>(self.player) {
         vel.dx = move_x * PLAYER_SPEED;
         vel.dy = move_y * PLAYER_SPEED;
     }
+
+    SceneAction::Continue
 }
 ```
 
@@ -181,7 +183,7 @@ let (aim_x, aim_y) = ctx.input.right_stick();
 
 // Only aim if stick is moved
 if aim_x.abs() > 0.1 || aim_y.abs() > 0.1 {
-    let angle = aim_y.atan2(aim_x);
+    let angle = (-aim_y).atan2(aim_x);  // negate: stick Y is up-positive
     self.aim_direction = angle;
 }
 ```
@@ -229,7 +231,7 @@ The deadzone is applied radially (to the combined x,y magnitude), not per-axis, 
 Controllers can be connected/disconnected during gameplay:
 
 ```rust
-// Check if controller was just connected
+// Check whether a controller is connected (poll each frame; it is state, not an event)
 if ctx.input.gamepad_connected() {
     // Show "Controller connected" message
     self.show_notification(&format!("Controller: {}", ctx.input.gamepad_name()));
