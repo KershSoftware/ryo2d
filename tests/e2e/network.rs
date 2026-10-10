@@ -1227,3 +1227,68 @@ fn e2e_listen_server_host_movement_reaches_remote() {
 
   assert!(propagated, "Host movement should reach remote client");
 }
+
+#[test]
+fn replication_channels_carry_messages_both_ways() {
+  let port = get_test_port();
+  let protocol_id = 100090;
+  let server_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+  let mut server = NetworkServer::new(NetworkServerConfig {
+    port,
+    max_clients: 4,
+    protocol_id,
+    ..Default::default()
+  })
+  .expect("Failed to create server");
+  let mut client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, protocol_id))
+    .expect("Failed to create client");
+
+  let dt = Duration::from_millis(16);
+  let start = std::time::Instant::now();
+  let timeout = Duration::from_secs(3);
+
+  while start.elapsed() < timeout {
+    server.update(dt);
+    client.update(dt);
+    if client.is_connected() && server.clients().count() == 1 {
+      break;
+    }
+    thread::sleep(Duration::from_millis(5));
+  }
+  assert!(client.is_connected(), "client should connect");
+  let client_id = server
+    .clients()
+    .next()
+    .expect("server should see the client");
+
+  client.send(Channel::ReplicationReliable, b"up-r");
+  client.send(Channel::ReplicationUnreliable, b"up-u");
+  server.send(client_id, Channel::ReplicationReliable, b"down-r");
+  server.send(client_id, Channel::ReplicationUnreliable, b"down-u");
+
+  let mut got: [Option<Vec<u8>>; 4] = [None, None, None, None];
+  let start = std::time::Instant::now();
+  while start.elapsed() < timeout && got.iter().any(Option::is_none) {
+    server.update(dt);
+    client.update(dt);
+    got[0] = got[0]
+      .take()
+      .or_else(|| server.receive(client_id, Channel::ReplicationReliable));
+    got[1] = got[1]
+      .take()
+      .or_else(|| server.receive(client_id, Channel::ReplicationUnreliable));
+    got[2] = got[2]
+      .take()
+      .or_else(|| client.receive(Channel::ReplicationReliable));
+    got[3] = got[3]
+      .take()
+      .or_else(|| client.receive(Channel::ReplicationUnreliable));
+    thread::sleep(Duration::from_millis(5));
+  }
+
+  assert_eq!(got[0].as_deref(), Some(&b"up-r"[..]));
+  assert_eq!(got[1].as_deref(), Some(&b"up-u"[..]));
+  assert_eq!(got[2].as_deref(), Some(&b"down-r"[..]));
+  assert_eq!(got[3].as_deref(), Some(&b"down-u"[..]));
+}

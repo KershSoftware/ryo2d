@@ -143,7 +143,7 @@ pub mod prelude {
 
   // Networking
   pub use crate::core::network::{
-    Channel, ClientId, LOCAL_HOST_ID, ListenServer, NetworkClient, NetworkClientConfig,
+    Channel, ClientId, ClientLike, LOCAL_HOST_ID, ListenServer, NetworkClient, NetworkClientConfig,
     NetworkEvent, NetworkServer, NetworkServerConfig, ServerLike, TransportConfig,
   };
 

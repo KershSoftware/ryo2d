@@ -230,6 +230,8 @@ impl WebRtcServerTransport {
         .reconnect_attempts(None)
         .add_reliable_channel()
         .add_unreliable_channel()
+        .add_reliable_channel()
+        .add_unreliable_channel()
         .build()
     })
     .map_err(|e| {
@@ -326,7 +328,8 @@ impl WebRtcServerTransport {
 
   /// Send data to a specific peer on a channel.
   ///
-  /// Channel 0 is reliable, channel 1 is unreliable.
+  /// Channel 0 is reliable, 1 is unreliable, 2 is replication reliable and
+  /// 3 is replication unreliable.
   pub fn send(&mut self, client_id: ClientId, channel: usize, data: &[u8]) {
     if let Some(&peer_id) = self.client_to_peer.get(&client_id) {
       let packet = data.to_vec().into_boxed_slice();
@@ -414,7 +417,7 @@ pub struct WebRtcClientTransport {
   disconnect_reason: Option<String>,
   /// Buffered received messages per channel to avoid dropping
   /// messages when matchbox drains the channel on receive().
-  receive_buffers: [VecDeque<Vec<u8>>; 2],
+  receive_buffers: [VecDeque<Vec<u8>>; 4],
   /// Whether the signaling server connection has failed.
   /// Once true, `update_peers()` is skipped but the existing peer connection
   /// continues working via its established data channel.
@@ -435,6 +438,8 @@ impl WebRtcClientTransport {
     // build() is sync but can panic on invalid config, so we catch that.
     let (socket, loop_fut) = panic::catch_unwind(|| {
       WebRtcSocket::builder(&url)
+        .add_reliable_channel()
+        .add_unreliable_channel()
         .add_reliable_channel()
         .add_unreliable_channel()
         .build()
@@ -461,7 +466,7 @@ impl WebRtcClientTransport {
       is_connected: false,
       is_disconnected: false,
       disconnect_reason: None,
-      receive_buffers: [VecDeque::new(), VecDeque::new()],
+      receive_buffers: [(); 4].map(|_| VecDeque::new()),
       signaling_failed: false,
     })
   }
@@ -1288,6 +1293,8 @@ mod tests {
     let (socket, loop_fut) = WebRtcSocket::builder("ws://127.0.0.1:1")
       .add_reliable_channel()
       .add_unreliable_channel()
+      .add_reliable_channel()
+      .add_unreliable_channel()
       .build();
     let handle = thread::spawn(move || {
       let _ = pollster::block_on(loop_fut);
@@ -1327,7 +1334,7 @@ mod tests {
       is_connected: false,
       is_disconnected: false,
       disconnect_reason: None,
-      receive_buffers: [VecDeque::new(), VecDeque::new()],
+      receive_buffers: [(); 4].map(|_| VecDeque::new()),
       signaling_failed: false,
     }
   }

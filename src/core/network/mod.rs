@@ -227,7 +227,8 @@ pub const LOCAL_HOST_ID: ClientId = 0;
 
 /// Channel types for message delivery
 ///
-/// These map to renet's DefaultChannel variants but provide a cleaner API.
+/// The first three map to renet's DefaultChannel variants; the replication channels
+/// are reserved for the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Channel {
   /// Best-effort delivery, no ordering guarantees.
@@ -244,15 +245,60 @@ pub enum Channel {
   /// Messages are guaranteed to arrive but may be reordered.
   /// Use for independent events that don't depend on order.
   ReliableUnordered,
+
+  /// Reserved for [`ReplicationManager`](replication::ReplicationManager): spawns,
+  /// despawns and full-state syncs. Don't send game messages on it.
+  ReplicationReliable,
+
+  /// Reserved for [`ReplicationManager`](replication::ReplicationManager): component
+  /// changes, refreshes and acknowledgements. Don't send game messages on it.
+  ReplicationUnreliable,
 }
 
-impl From<Channel> for DefaultChannel {
+/// The renet channel ID for a `Channel` (renet's defaults plus the replication channels).
+impl From<Channel> for u8 {
   fn from(channel: Channel) -> Self {
     match channel {
-      Channel::Unreliable => DefaultChannel::Unreliable,
-      Channel::ReliableOrdered => DefaultChannel::ReliableOrdered,
-      Channel::ReliableUnordered => DefaultChannel::ReliableUnordered,
+      Channel::Unreliable => DefaultChannel::Unreliable.into(),
+      Channel::ReliableUnordered => DefaultChannel::ReliableUnordered.into(),
+      Channel::ReliableOrdered => DefaultChannel::ReliableOrdered.into(),
+      Channel::ReplicationReliable => 3,
+      Channel::ReplicationUnreliable => 4,
     }
+  }
+}
+
+/// The renet connection config every server and client uses: renet's three default
+/// channels plus the two replication channels, in both directions.
+pub(crate) fn connection_config() -> ConnectionConfig {
+  let mut channels = DefaultChannel::config();
+  channels.push(renet::ChannelConfig {
+    channel_id: Channel::ReplicationReliable.into(),
+    max_memory_usage_bytes: 5 * 1024 * 1024,
+    send_type: renet::SendType::ReliableOrdered {
+      resend_time: std::time::Duration::from_millis(300),
+    },
+  });
+  channels.push(renet::ChannelConfig {
+    channel_id: Channel::ReplicationUnreliable.into(),
+    max_memory_usage_bytes: 5 * 1024 * 1024,
+    send_type: renet::SendType::Unreliable,
+  });
+  ConnectionConfig {
+    server_channels_config: channels.clone(),
+    client_channels_config: channels,
+    ..ConnectionConfig::default()
+  }
+}
+
+/// The matchbox (WebRTC) channel index for a `Channel`.
+#[cfg(feature = "matchbox")]
+fn webrtc_channel(channel: Channel) -> usize {
+  match channel {
+    Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
+    Channel::Unreliable => 1,
+    Channel::ReplicationReliable => 2,
+    Channel::ReplicationUnreliable => 3,
   }
 }
 
@@ -371,7 +417,7 @@ impl NetworkServer {
       }
     };
 
-    let connection_config = ConnectionConfig::default();
+    let connection_config = connection_config();
     let server = RenetServer::new(connection_config);
 
     Ok(Self {
@@ -452,14 +498,11 @@ impl NetworkServer {
       ServerTransportImpl::Udp(_) => {
         self
           .server
-          .send_message(client_id, DefaultChannel::from(channel), data.to_vec());
+          .send_message(client_id, u8::from(channel), data.to_vec());
       }
       #[cfg(feature = "matchbox")]
       ServerTransportImpl::WebRtc(webrtc) => {
-        let channel_idx = match channel {
-          Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
-          Channel::Unreliable => 1,
-        };
+        let channel_idx = webrtc_channel(channel);
         webrtc.send(client_id, channel_idx, data);
       }
     }
@@ -471,14 +514,11 @@ impl NetworkServer {
       ServerTransportImpl::Udp(_) => {
         self
           .server
-          .broadcast_message(DefaultChannel::from(channel), data.to_vec());
+          .broadcast_message(u8::from(channel), data.to_vec());
       }
       #[cfg(feature = "matchbox")]
       ServerTransportImpl::WebRtc(webrtc) => {
-        let channel_idx = match channel {
-          Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
-          Channel::Unreliable => 1,
-        };
+        let channel_idx = webrtc_channel(channel);
         webrtc.broadcast(channel_idx, data);
       }
     }
@@ -504,14 +544,11 @@ impl NetworkServer {
     match &mut self.transport {
       ServerTransportImpl::Udp(_) => self
         .server
-        .receive_message(client_id, DefaultChannel::from(channel))
+        .receive_message(client_id, u8::from(channel))
         .map(|bytes| bytes.to_vec()),
       #[cfg(feature = "matchbox")]
       ServerTransportImpl::WebRtc(webrtc) => {
-        let channel_idx = match channel {
-          Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
-          Channel::Unreliable => 1,
-        };
+        let channel_idx = webrtc_channel(channel);
         webrtc.receive(client_id, channel_idx)
       }
     }
@@ -682,7 +719,7 @@ impl NetworkClient {
       }
     };
 
-    let connection_config = ConnectionConfig::default();
+    let connection_config = connection_config();
     let client = RenetClient::new(connection_config);
 
     Ok(Self {
@@ -759,16 +796,11 @@ impl NetworkClient {
   pub fn send(&mut self, channel: Channel, data: &[u8]) {
     match &mut self.transport {
       ClientTransportImpl::Udp(_) => {
-        self
-          .client
-          .send_message(DefaultChannel::from(channel), data.to_vec());
+        self.client.send_message(u8::from(channel), data.to_vec());
       }
       #[cfg(feature = "matchbox")]
       ClientTransportImpl::WebRtc(webrtc) => {
-        let channel_idx = match channel {
-          Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
-          Channel::Unreliable => 1,
-        };
+        let channel_idx = webrtc_channel(channel);
         webrtc.send(channel_idx, data);
       }
     }
@@ -782,14 +814,11 @@ impl NetworkClient {
     match &mut self.transport {
       ClientTransportImpl::Udp(_) => self
         .client
-        .receive_message(DefaultChannel::from(channel))
+        .receive_message(u8::from(channel))
         .map(|bytes| bytes.to_vec()),
       #[cfg(feature = "matchbox")]
       ClientTransportImpl::WebRtc(webrtc) => {
-        let channel_idx = match channel {
-          Channel::ReliableOrdered | Channel::ReliableUnordered => 0,
-          Channel::Unreliable => 1,
-        };
+        let channel_idx = webrtc_channel(channel);
         webrtc.receive(channel_idx)
       }
     }
@@ -1068,24 +1097,70 @@ impl ServerLike for ListenServer {
   }
 }
 
+/// The client side of a connection - the counterpart of [`ServerLike`], so code like
+/// [`ReplicationManager::process_incoming`](replication::ReplicationManager::process_incoming)
+/// works with a [`NetworkClient`] or a test double.
+pub trait ClientLike {
+  /// Send a message to the server.
+  fn send(&mut self, channel: Channel, data: &[u8]);
+
+  /// Receive a message from the server, or `None` when none is waiting.
+  fn receive(&mut self, channel: Channel) -> Option<Vec<u8>>;
+}
+
+impl ClientLike for NetworkClient {
+  fn send(&mut self, channel: Channel, data: &[u8]) {
+    NetworkClient::send(self, channel, data);
+  }
+
+  fn receive(&mut self, channel: Channel) -> Option<Vec<u8>> {
+    NetworkClient::receive(self, channel)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
 
+  const ALL_CHANNELS: [Channel; 5] = [
+    Channel::Unreliable,
+    Channel::ReliableUnordered,
+    Channel::ReliableOrdered,
+    Channel::ReplicationReliable,
+    Channel::ReplicationUnreliable,
+  ];
+
   #[test]
-  fn channel_conversion() {
-    assert!(matches!(
-      DefaultChannel::from(Channel::Unreliable),
-      DefaultChannel::Unreliable
-    ));
-    assert!(matches!(
-      DefaultChannel::from(Channel::ReliableOrdered),
-      DefaultChannel::ReliableOrdered
-    ));
-    assert!(matches!(
-      DefaultChannel::from(Channel::ReliableUnordered),
-      DefaultChannel::ReliableUnordered
-    ));
+  fn channel_ids_are_distinct_and_match_renet_defaults() {
+    assert_eq!(
+      u8::from(Channel::Unreliable),
+      u8::from(DefaultChannel::Unreliable)
+    );
+    assert_eq!(
+      u8::from(Channel::ReliableUnordered),
+      u8::from(DefaultChannel::ReliableUnordered)
+    );
+    assert_eq!(
+      u8::from(Channel::ReliableOrdered),
+      u8::from(DefaultChannel::ReliableOrdered)
+    );
+    let ids: std::collections::HashSet<u8> = ALL_CHANNELS.into_iter().map(u8::from).collect();
+    assert_eq!(ids.len(), ALL_CHANNELS.len());
+  }
+
+  #[test]
+  fn connection_config_carries_the_replication_channels_both_ways() {
+    let config = connection_config();
+    for list in [
+      &config.server_channels_config,
+      &config.client_channels_config,
+    ] {
+      let mut ids: Vec<u8> = list.iter().map(|c| c.channel_id).collect();
+      ids.sort_unstable();
+      let mut expected: Vec<u8> = ALL_CHANNELS.into_iter().map(u8::from).collect();
+      expected.sort_unstable();
+      assert_eq!(ids, expected);
+    }
   }
 
   #[test]
