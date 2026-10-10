@@ -3461,6 +3461,9 @@ impl EngineBuilder {
     self
   }
 
+  /// Set the logical resolution. Overrides Ryo.toml.
+  ///
+  /// A saved preference overrides this when the `with_user_preferences` filter includes it.
   pub fn resolution(mut self, width: u32, height: u32) -> Self {
     self.overrides.resolution = Some((width, height));
     self
@@ -3472,12 +3475,16 @@ impl EngineBuilder {
   }
 
   /// Set the target FPS when the window is unfocused. 0 = use target_fps.
+  ///
+  /// Overrides Ryo.toml.
   pub fn background_fps(mut self, fps: u32) -> Self {
     self.overrides.background_fps = Some(fps);
     self
   }
 
   /// Set whether to continue rendering when the window is unfocused.
+  ///
+  /// Overrides Ryo.toml.
   pub fn background_rendering(mut self, enabled: bool) -> Self {
     self.overrides.background_rendering = Some(enabled);
     self
@@ -3488,8 +3495,8 @@ impl EngineBuilder {
   /// - `true` - VSync on (Mailbox with Fifo fallback, no tearing)
   /// - `false` - VSync off (Immediate mode, may tear but lowest latency)
   ///
-  /// Default: `true` (VSync on). Overridden by user preferences if
-  /// [`with_user_preferences`](Self::with_user_preferences) includes `UserPreference::Vsync`.
+  /// Default: `true`. Overrides Ryo.toml; a saved `vsync` in system.json overrides this when the
+  /// [`with_user_preferences`](Self::with_user_preferences) filter includes `UserPreference::Vsync`.
   pub fn vsync(mut self, enabled: bool) -> Self {
     self.overrides.vsync = Some(enabled);
     self
@@ -3531,6 +3538,8 @@ impl EngineBuilder {
   /// Set the display mode (windowed, fullscreen, or borderless).
   ///
   /// Controls whether the game runs in a window or takes over the screen.
+  /// Overrides Ryo.toml. A saved preference overrides this when the
+  /// `with_user_preferences` filter includes it.
   ///
   /// # Modes
   ///
@@ -3659,7 +3668,7 @@ impl EngineBuilder {
   /// Enable or disable collision boundary debug visualization.
   ///
   /// When enabled, renders bright green outlines around all colliders
-  /// to help debug collision detection issues.
+  /// to help debug collision detection issues. Overrides Ryo.toml.
   ///
   /// # Example
   ///
@@ -3688,7 +3697,7 @@ impl EngineBuilder {
 
   /// Enable or disable velocity vector visualization.
   ///
-  /// When enabled, renders cyan arrows showing entity velocities.
+  /// When enabled, renders cyan arrows showing entity velocities. Overrides Ryo.toml.
   pub fn show_velocities(mut self, enabled: bool) -> Self {
     self.overrides.show_velocities = Some(enabled);
     self
@@ -3696,7 +3705,7 @@ impl EngineBuilder {
 
   /// Enable or disable entity origin visualization.
   ///
-  /// When enabled, renders yellow crosshairs at entity transform positions.
+  /// When enabled, renders yellow crosshairs at entity transform positions. Overrides Ryo.toml.
   pub fn show_origins(mut self, enabled: bool) -> Self {
     self.overrides.show_origins = Some(enabled);
     self
@@ -3704,22 +3713,19 @@ impl EngineBuilder {
 
   /// Load user preferences from system.json.
   ///
-  /// Loads saved player settings from `system.json`, overriding Ryo.toml defaults.
-  /// Use this when you want players to be able to customize and save their preferences.
-  ///
-  /// # Priority Chain
-  ///
-  /// 1. **system.json** (user preferences) - read when the engine is built (`build()`),
-  ///    never in headless builds
-  /// 2. **Ryo.toml `[system]`** (developer defaults) - auto-applied in build()
-  /// 3. **Engine defaults** - fallback
-  ///
-  /// If system.json doesn't exist, it will be created from Ryo.toml defaults.
+  /// Lets players customize and save their preferences. Startup settings resolve in one
+  /// order, each layer overriding only what it sets: engine defaults → `Ryo.toml` (dev) or
+  /// the values `ryo2d build` embedded from it (release) → `EngineBuilder` calls → saved
+  /// player preferences in `system.json` (only keys present in the file and in the
+  /// `with_user_preferences` filter). Without `with_user_preferences`, `system.json` is
+  /// never read. A new `system.json` is seeded from the resolved settings. Headless builds
+  /// never read or write it, and repeated calls combine their filters.
   ///
   /// # Field Filtering
   ///
-  /// Use a [`UserPreferenceFilter`](super::config::UserPreferenceFilter) to control which
-  /// preferences are loaded. Fields not in the filter use Ryo.toml defaults.
+  /// Use a [`UserPreferenceFilter`](super::config::UserPreferenceFilter) to choose which saved
+  /// preferences may override the game's settings; keys outside the filter, or missing from
+  /// the file, keep their builder / Ryo.toml / default values.
   ///
   /// # Examples
   ///
@@ -3742,7 +3748,7 @@ impl EngineBuilder {
   ///     .build()
   ///     .run()?;
   ///
-  /// // Don't load any user preferences (use only Ryo.toml defaults)
+  /// // Don't apply any saved preferences (system.json is still created)
   /// EngineBuilder::new()
   ///     .title("My Game")
   ///     .with_user_preferences(UserPreferenceFilter::none())

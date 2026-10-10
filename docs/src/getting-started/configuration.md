@@ -4,25 +4,15 @@ Ryo2D uses a `Ryo.toml` configuration file to define project settings. This file
 
 ## Configuration Hierarchy
 
-**Runtime code is always king.** Explicit `EngineBuilder` calls and runtime API methods always take precedence over configuration files.
-
-### Without `with_system_state_overrides()`
+Startup settings resolve in one order, each layer overriding only what it sets: engine defaults → `Ryo.toml` (dev) or the values `ryo2d build` embedded from it (release) → `EngineBuilder` calls → saved player preferences in `system.json` (only keys present in the file and in the `with_user_preferences` filter). Without `with_user_preferences`, `system.json` is never read. A new `system.json` is seeded from the resolved settings.
 
 ```
-Code (highest) > Ryo.toml [system] > Engine Defaults (lowest)
-```
-
-If you don't call `with_system_state_overrides()`, system.json is **not loaded**.
-
-### With `with_system_state_overrides(filter)`
-
-```
-Code (highest) > system.json (filtered) > Ryo.toml [system] > Engine Defaults (lowest)
+Engine defaults < Ryo.toml / embedded values < EngineBuilder calls < system.json (filtered)
 ```
 
 | Source | Purpose | Location |
 |--------|---------|----------|
-| **Runtime Code** | Explicit builder/API calls | Your game code |
+| **Builder calls** | Explicit `EngineBuilder` calls | Your game code |
 | **system.json** | User preferences (when loaded) | `{save_dir}/system.json` |
 | **Ryo.toml [system]** | Developer-specified defaults | Project root |
 | **Engine defaults** | Hardcoded fallback values | Built into engine |
@@ -152,11 +142,11 @@ fn main() {
     let save_dir = workspace.save_data_dir();
     let assets_dir = workspace.root().join(&config.assets);
 
-    // Resolution comes from system.json > Ryo.toml > engine defaults
+    // Resolution resolves as engine defaults < Ryo.toml < builder calls < saved system.json preference
     // No need to hardcode .resolution() in code
     EngineBuilder::new()
         .title(&config.name)
-        .with_system_state_overrides(SystemFieldFilter::all())  // Loads user prefs from system.json
+        .with_user_preferences(UserPreferenceFilter::all())  // Loads user prefs from system.json
         .start_scene(MyScene::new())
         .build()
         .run()

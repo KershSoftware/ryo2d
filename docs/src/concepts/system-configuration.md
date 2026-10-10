@@ -1,33 +1,23 @@
 # System Configuration
 
-Ryo2D uses a layered configuration system that separates developer defaults from user preferences, with runtime code always taking priority.
+Ryo2D uses a layered configuration system that separates developer defaults from user preferences, with saved player preferences applied last.
 
 ## Configuration Precedence
 
-**Runtime code is always king.** Explicit `EngineBuilder` calls and runtime API methods always take precedence over configuration files.
-
-### Without `with_system_state_overrides()`
+Startup settings resolve in one order, each layer overriding only what it sets: engine defaults → `Ryo.toml` (dev) or the values `ryo2d build` embedded from it (release) → `EngineBuilder` calls → saved player preferences in `system.json` (only keys present in the file and in the `with_user_preferences` filter). Without `with_user_preferences`, `system.json` is never read. A new `system.json` is seeded from the resolved settings.
 
 ```
-Code (highest) > Ryo.toml [system] > Engine Defaults (lowest)
-```
-
-If you don't call `with_system_state_overrides()`, system.json is **not loaded at all**.
-
-### With `with_system_state_overrides(filter)`
-
-```
-Code (highest) > system.json (filtered) > Ryo.toml [system] > Engine Defaults (lowest)
+Engine defaults < Ryo.toml / embedded values < EngineBuilder calls < system.json (filtered)
 ```
 
 | Source | Purpose | Who Controls It |
 |--------|---------|-----------------|
-| **Runtime Code** | Explicit builder/API calls | Game developers (code) |
+| **Builder calls** | Explicit `EngineBuilder` calls | Game developers (code) |
 | **system.json** | Runtime preferences (when loaded) | Players |
 | **Ryo.toml [system]** | Design-time defaults | Game developers (config) |
 | **Engine Defaults** | Hardcoded fallback | Engine developers |
 
-**Important:** `system.json` is only loaded when `with_system_state_overrides()` is called. Missing fields fall back through the chain.
+**Important:** `system.json` is only loaded when `with_user_preferences()` is called. Keys missing from system.json are not preferences; the builder, Ryo.toml and defaults apply.
 
 ## Section Mapping
 
@@ -136,7 +126,7 @@ The `vsync` field controls the rendering present mode with smart fallbacks:
 
 | Value | Behavior | Fallback Chain |
 |-------|----------|----------------|
-| Not set | Best performance + no tearing | Mailbox → Immediate |
+| Not set | On (`true`) | Mailbox → Fifo |
 | `true` | Traditional VSync | Mailbox → Fifo |
 | `false` | Maximum performance (may tear) | Immediate |
 
@@ -388,16 +378,16 @@ if let Some(debug) = settings.get_env_bool("debug_mode") {
 
 ## Engine Override Behavior
 
-When you use `with_system_state_overrides()` on the engine builder, it loads `system.json` and applies overrides. You can control which fields are loaded using a `SystemFieldFilter`.
+When you use `with_user_preferences()` on the engine builder, it loads `system.json` and applies overrides. You can control which fields are loaded using a `UserPreferenceFilter`.
 
-### Loading All Fields (Default)
+### Loading All Fields
 
 ```rust
 use ryo2d::prelude::*;
 
 EngineBuilder::new()
     .resolution(800, 600)
-    .with_system_state_overrides(SystemFieldFilter::all())
+    .with_user_preferences(UserPreferenceFilter::all())
     .start_scene(MyScene::new())
     .build()
 ```
@@ -418,13 +408,13 @@ use ryo2d::prelude::*;
 // Load audio and display mode, but NOT resolution
 EngineBuilder::new()
     .resolution(320, 240)  // Fixed pixel art resolution
-    .with_system_state_overrides([
-        SystemField::MasterVolume,
-        SystemField::MusicVolume,
-        SystemField::SfxVolume,
-        SystemField::DisplayMode,
-        SystemField::Vsync,
-        SystemField::ShowFps,
+    .with_user_preferences([
+        UserPreference::MasterVolume,
+        UserPreference::MusicVolume,
+        UserPreference::SfxVolume,
+        UserPreference::DisplayMode,
+        UserPreference::Vsync,
+        UserPreference::ShowFps,
     ])
     .start_scene(MyScene::new())
     .build()
@@ -434,21 +424,21 @@ EngineBuilder::new()
 
 | Field | Description |
 |-------|-------------|
-| `SystemField::MasterVolume` | Master volume (0.0 - 1.0) |
-| `SystemField::MusicVolume` | Music volume (0.0 - 1.0) |
-| `SystemField::SfxVolume` | Sound effects volume (0.0 - 1.0) |
-| `SystemField::Resolution` | Display resolution (width + height together) |
-| `SystemField::DisplayMode` | Windowed, exclusive fullscreen, or borderless fullscreen |
-| `SystemField::Vsync` | VSync preference |
-| `SystemField::ShowFps` | Show FPS counter |
+| `UserPreference::MasterVolume` | Master volume (0.0 - 1.0) |
+| `UserPreference::MusicVolume` | Music volume (0.0 - 1.0) |
+| `UserPreference::SfxVolume` | Sound effects volume (0.0 - 1.0) |
+| `UserPreference::Resolution` | Display resolution (width + height together) |
+| `UserPreference::DisplayMode` | Windowed, exclusive fullscreen, or borderless fullscreen |
+| `UserPreference::Vsync` | VSync preference |
+| `UserPreference::ShowFps` | Show FPS counter |
 
 ### Filter Methods
 
 | Method | Description |
 |--------|-------------|
-| `SystemFieldFilter::all()` | All fields enabled (default, backward compatible) |
-| `SystemFieldFilter::none()` | No fields - use only Ryo.toml/engine defaults |
-| `SystemFieldFilter::only([...])` | Only specified fields |
+| `UserPreferenceFilter::all()` | All fields enabled |
+| `UserPreferenceFilter::none()` | No fields - no saved preference overrides the game's settings |
+| `UserPreferenceFilter::only([...])` | Only specified fields |
 | `filter.contains(field)` | Check if a field is enabled |
 
 ## Best Practices

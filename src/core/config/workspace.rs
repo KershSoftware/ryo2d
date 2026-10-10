@@ -15,7 +15,8 @@
 //! | `Ryo.toml` | Developer defaults, debug flags | Game developer |
 //! | `system.json` | User preferences (resolution, audio) | Player |
 //!
-//! **Priority chain:** `system.json` > `Ryo.toml [system]` > engine defaults
+//! **Priority chain:** engine defaults → `Ryo.toml` → `EngineBuilder` calls → saved `system.json`
+//! preferences (see `EngineBuilder::with_user_preferences`).
 //!
 //! # Ryo.toml Structure
 //!
@@ -181,14 +182,12 @@ pub struct ReleaseConfig {
 /// System defaults for user configuration (system.json).
 ///
 /// These values from the `[system]` section in Ryo.toml define the
-/// developer defaults for user-facing settings. When system.json is created,
-/// these values are used. When system.json is loaded, missing fields fall back
-/// to these values.
+/// developer defaults for user-facing settings. Builder calls and saved system.json
+/// preferences override them (see `EngineBuilder::with_user_preferences`). They seed a new
+/// system.json in dev builds.
 ///
 /// **Mapped section:** `[system]` only
 /// **Not mapped:** `[debug]`, `[project]`, `[paths]`, `[env]` (dev-only)
-///
-/// Priority chain: system.json (user) > Ryo.toml [system] (dev) > engine defaults
 #[derive(Debug, Clone)]
 pub struct SystemDefaults {
   /// Resolution as (width, height). None = not set, use engine defaults (1280x720).

@@ -222,7 +222,7 @@ impl<'a> SceneContext<'a> {
   /// Get the current screen/viewport dimensions.
   ///
   /// Returns `(width, height)` in pixels. This reflects the game's
-  /// logical resolution (from system.json > Ryo.toml > engine defaults).
+  /// logical resolution (resolved at startup: saved preference > builder > Ryo.toml > engine default).
   ///
   /// # Example
   ///

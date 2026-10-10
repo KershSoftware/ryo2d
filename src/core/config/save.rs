@@ -8,15 +8,14 @@
 //!
 //! # Configuration Hierarchy
 //!
-//! System state (Tier 1) follows a priority chain:
+//! Startup settings resolve in one order, each layer overriding only what it sets: engine
+//! defaults → `Ryo.toml` (dev) or the values `ryo2d build` embedded from it (release) →
+//! `EngineBuilder` calls → saved player preferences in `system.json` (only keys present in
+//! the file and in the `with_user_preferences` filter). Without `with_user_preferences`,
+//! `system.json` is never read. A new `system.json` is seeded from the resolved settings.
 //!
-//! 1. **system.json** (user settings) - highest priority, player edits
-//! 2. **Ryo.toml [system]** (dev defaults) - developer-defined defaults
-//! 3. **Engine defaults** - hardcoded fallbacks
-//!
-//! Use [`SaveManager::load_or_create_system`] to automatically handle this chain:
-//! - Creates system.json from Ryo.toml [system] + engine defaults if missing
-//! - Merges missing fields when loading existing files
+//! Use [`SaveManager::load_or_create_system`] to read or create the file directly from a
+//! game; the engine resolves startup settings itself.
 //!
 //! # Configuration Files
 //!
@@ -103,7 +102,8 @@ use crate::core::error::{SaveError, SaveResult};
 /// are loaded from `system.json` when using
 /// [`with_user_preferences`](crate::core::engine::EngineBuilder::with_user_preferences).
 ///
-/// Fields not in the filter will use Ryo.toml `[system]` defaults.
+/// Preferences not in the filter, or missing from system.json, keep their builder / Ryo.toml /
+/// default values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UserPreference {
   /// Master volume (0.0 - 1.0)
@@ -155,13 +155,13 @@ impl UserPreference {
 ///     .build()
 ///     .run()?;
 ///
-/// // Load all user preferences (default behavior)
+/// // Apply all saved preferences
 /// EngineBuilder::new()
 ///     .with_user_preferences(UserPreferenceFilter::all())
 ///     .build()
 ///     .run()?;
 ///
-/// // Load nothing from system.json (use only Ryo.toml defaults)
+/// // Apply no saved preferences
 /// EngineBuilder::new()
 ///     .with_user_preferences(UserPreferenceFilter::none())
 ///     .build()
@@ -173,14 +173,14 @@ pub struct UserPreferenceFilter {
 }
 
 impl UserPreferenceFilter {
-  /// All fields enabled (default behavior, backward compatible).
+  /// All fields enabled.
   pub fn all() -> Self {
     Self {
       fields: UserPreference::all().iter().copied().collect(),
     }
   }
 
-  /// No fields - everything uses Ryo.toml/engine defaults.
+  /// No fields - no saved preference overrides the game's settings.
   pub fn none() -> Self {
     Self {
       fields: HashSet::new(),
@@ -284,15 +284,11 @@ fn system_state_map(state: &SystemState) -> SaveResult<serde_json::Map<String, s
 /// Represents the contents of `system.json`, the player-editable configuration file.
 /// This is separate from `Ryo.toml` which contains developer settings.
 ///
-/// # Configuration Hierarchy
-///
-/// ```text
-/// system.json (user) > Ryo.toml [system] (dev) > engine defaults
-/// ```
-///
-/// When `system.json` doesn't exist, it's created from `Ryo.toml`'s `[system]` section
-/// combined with engine defaults. Use [`SaveManager::load_or_create_system`] to handle
-/// this automatically.
+/// The engine reads it at startup (see
+/// [`EngineBuilder::with_user_preferences`](crate::core::engine::EngineBuilder::with_user_preferences)):
+/// saved preferences override builder calls and Ryo.toml, and a new file is seeded from the
+/// resolved settings. Keys missing from the file load as engine defaults here but are not
+/// treated as preferences at startup.
 ///
 /// # Contents
 ///
@@ -901,19 +897,11 @@ impl SaveManager {
     self.read_json_file(&path)
   }
 
-  /// Load or create system state with proper fallback chain.
+  /// Load or create system state.
   ///
-  /// This is the primary method for loading user configuration with the
-  /// correct priority chain:
-  ///
-  /// 1. **system.json** (user settings) - highest priority
-  /// 2. **Ryo.toml [system]** (developer defaults) - middle priority
-  /// 3. **Engine defaults** - lowest priority (fallback)
-  ///
-  /// Behavior:
-  /// - If system.json doesn't exist, creates it from Ryo.toml [system] + engine defaults
-  /// - If system.json exists but is missing fields, merges from Ryo.toml [system]
-  /// - Returns the loaded/created state
+  /// Creates system.json from `defaults` (Ryo.toml `[system]`) when it doesn't exist;
+  /// otherwise loads it and adds new `env` keys from `defaults`. Saved values are never
+  /// replaced.
   ///
   /// # Arguments
   ///

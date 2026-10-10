@@ -317,7 +317,7 @@ EngineBuilder::new()
     .unwrap();
 ```
 
-**Note:** Prefer using `Ryo.toml` for configuration. EngineBuilder methods override the config file.
+**Note:** Prefer using `Ryo.toml` for configuration. EngineBuilder methods override the config file. A saved player preference in system.json overrides a builder call when `with_user_preferences` includes it.
 
 ## Fixed Design Resolution Pattern
 

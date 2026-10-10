@@ -89,7 +89,7 @@ let screen_h = sh as f32;
 ## Engine Builder
 
 **Note:** Resolution, FPS, and other settings come from `Ryo.toml` by default.
-Only use these methods to override the config file.
+Only use these methods to override the config file. A saved player preference in system.json overrides a builder call when `with_user_preferences` includes it.
 
 ```rust
 // Minimal - uses Ryo.toml configuration

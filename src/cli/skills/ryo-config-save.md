@@ -18,7 +18,7 @@ Ryo2D uses a two-file configuration system:
 | `Ryo.toml` | Developer defaults, debug flags | Game developer | TOML |
 | `data/system.json` | User preferences | Player | JSON |
 
-**Priority chain:** `system.json` > `Ryo.toml [system]` > engine defaults
+**Priority chain:** saved `system.json` preferences (only keys present, only with `with_user_preferences`) > `EngineBuilder` calls > `Ryo.toml` (dev) / embedded values (release) > engine defaults
 
 ## Ryo.toml Structure
 
@@ -64,7 +64,7 @@ difficulty = "normal"
 
 ## system.json
 
-Created automatically from `[system]` section when missing (title from `[info]`).
+Created on first run from the game's resolved settings (builder > Ryo.toml > defaults), holding only the keys in the `with_user_preferences` filter.
 Players can edit this file directly.
 
 ```json
