@@ -349,6 +349,22 @@ pub enum CaptureError {
 /// Result type for capture operations
 pub type CaptureResult<T> = Result<T, CaptureError>;
 
+/// Errors from running the engine headless (`ryo2d::testing`)
+#[derive(Error, Debug)]
+pub enum HeadlessError {
+  /// No GPU adapter is available on this machine
+  #[error("no GPU adapter available")]
+  NoGpu,
+
+  /// Rendering a frame failed
+  #[error("render failed: {0}")]
+  Render(String),
+
+  /// Reading a frame back failed
+  #[error(transparent)]
+  Capture(#[from] CaptureError),
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

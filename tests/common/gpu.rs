@@ -38,47 +38,15 @@ impl TestGpu {
     SHARED_GPU.get_or_init(|| Self::new()).as_ref()
   }
 
-  /// Create a headless GPU context.
+  /// Create a headless GPU context on the engine's shared device.
   ///
   /// Returns `None` if no GPU adapter is available (e.g., in CI without GPU).
-  /// Prefer `shared()` in tests to avoid concurrent initialization deadlocks.
+  /// Prefer `shared()` in tests.
   fn new() -> Option<Self> {
-    pollster::block_on(Self::new_async())
-  }
-
-  async fn new_async() -> Option<Self> {
-    // Create wgpu instance
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-      backends: wgpu::Backends::all(),
-      ..Default::default()
-    });
-
-    // Request adapter WITHOUT a surface - this is the key for headless rendering
-    let adapter = instance
-      .request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::default(),
-        compatible_surface: None, // No window needed!
-        force_fallback_adapter: false,
-      })
-      .await?;
-
-    // Request device and queue
-    let (device, queue) = adapter
-      .request_device(
-        &wgpu::DeviceDescriptor {
-          label: Some("TestGpu Device"),
-          required_features: wgpu::Features::empty(),
-          required_limits: wgpu::Limits::default(),
-          memory_hints: Default::default(),
-        },
-        None,
-      )
-      .await
-      .ok()?;
-
+    let (device, queue) = ryo2d::testing::shared_gpu().ok()?;
     Some(Self {
-      device: Arc::new(device),
-      queue: Arc::new(queue),
+      device,
+      queue,
       format: wgpu::TextureFormat::Rgba8Unorm,
     })
   }
