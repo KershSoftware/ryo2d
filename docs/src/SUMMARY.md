@@ -49,7 +49,6 @@
 - [System Configuration](./concepts/system-configuration.md)
 - [Profiling & Performance](./concepts/profiling.md)
 - [Debugging](./concepts/debugging.md)
-- [Frame Capture](./concepts/frame-capture.md)
 - [Error Handling](./concepts/error-handling.md)
 
 # Examples
