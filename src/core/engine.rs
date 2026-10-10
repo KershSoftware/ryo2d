@@ -3439,6 +3439,8 @@ pub struct EngineBuilder {
   sfx_volume: f32,
   /// Tracks whether resolution was set by builder or user preferences (prevents Ryo.toml override)
   resolution_set: bool,
+  // Whether show_fps came from the builder or a user preference (blocks Ryo.toml/embedded)
+  show_fps_set: bool,
   /// Tracks whether display_mode was set by builder or user preferences (prevents Ryo.toml override)
   display_mode_set: bool,
   /// Whether user preferences loaded resolution (blocks builder .resolution() override)
@@ -3470,6 +3472,7 @@ impl EngineBuilder {
       music_volume: 0.8,
       sfx_volume: 1.0,
       resolution_set: false,
+      show_fps_set: false,
       display_mode_set: false,
       resolution_user_pref: false,
       display_mode_user_pref: false,
@@ -3715,9 +3718,12 @@ impl EngineBuilder {
 
   /// Enable or disable FPS counter display.
   ///
-  /// When enabled, renders an FPS counter in the top-left corner.
+  /// When enabled, renders an FPS counter in the top-left corner. Overrides
+  /// `Ryo.toml`; a saved user preference (see
+  /// [`with_user_preferences`](Self::with_user_preferences)) overrides this.
   pub fn show_fps(mut self, enabled: bool) -> Self {
     self.config.debug.show_fps = enabled;
+    self.show_fps_set = true;
     self
   }
 
@@ -3820,6 +3826,7 @@ impl EngineBuilder {
         && let Some(show_fps) = system_state.show_fps
       {
         self.config.debug.show_fps = show_fps;
+        self.show_fps_set = true;
       }
 
       // Apply vsync if in filter (use display.vsync as fallback when root vsync is None)
@@ -3930,7 +3937,26 @@ impl EngineBuilder {
     self.build_engine(true)
   }
 
-  fn build_engine(mut self, headless: bool) -> Engine {
+  fn build_engine(self, headless: bool) -> Engine {
+    let resolved = self.resolve(headless);
+    Engine::new(
+      resolved.config,
+      resolved.initial_scene,
+      resolved.vsync,
+      resolved.master_volume,
+      resolved.music_volume,
+      resolved.sfx_volume,
+      resolved.disable_debug_keys,
+      resolved.game_name,
+      resolved.game_version,
+      resolved.console_builder,
+      resolved.resources,
+      headless,
+    )
+  }
+
+  /// Apply every configuration source in priority order, without creating the engine.
+  fn resolve(mut self, headless: bool) -> ResolvedBuild {
     // User preferences have highest priority; headless runs never read them
     let filters = std::mem::take(&mut self.user_preferences);
     if !headless {
@@ -3949,6 +3975,7 @@ impl EngineBuilder {
     let mut music_volume = self.music_volume;
     let mut sfx_volume = self.sfx_volume;
     let resolution_set = self.resolution_set;
+    let show_fps_set = self.show_fps_set;
     let display_mode_set = self.display_mode_set;
     let mut disable_debug_keys = self.disable_debug_keys;
     let console_builder = self.console_builder;
@@ -3983,7 +4010,7 @@ impl EngineBuilder {
       {
         vsync = Some(v.parse().unwrap_or(true));
       }
-      if let Some(fps) = option_env!("RYO_EMBED_SHOW_FPS") {
+      if !show_fps_set && let Some(fps) = option_env!("RYO_EMBED_SHOW_FPS") {
         config.debug.show_fps = fps.parse().unwrap_or(false);
       }
       // [debug] section embedded values
@@ -4055,7 +4082,9 @@ impl EngineBuilder {
 
       // Load debug settings
       config.debug.show_colliders = debug.show_colliders;
-      config.debug.show_fps = system.show_fps; // From [system] section
+      if !show_fps_set {
+        config.debug.show_fps = system.show_fps; // From [system] section
+      }
       config.debug.show_velocities = debug.show_velocities;
       config.debug.show_origins = debug.show_origins;
       config.debug.show_frame_timing = debug.show_frame_timing;
@@ -4126,7 +4155,7 @@ impl EngineBuilder {
     // Engine-wide default: vsync on (if no source set it)
     let vsync = vsync.or(Some(true));
 
-    Engine::new(
+    ResolvedBuild {
       config,
       initial_scene,
       vsync,
@@ -4137,10 +4166,24 @@ impl EngineBuilder {
       game_name,
       game_version,
       console_builder,
-      self.resources,
-      headless,
-    )
+      resources: self.resources,
+    }
   }
+}
+
+/// Engine settings after every configuration source has been applied.
+struct ResolvedBuild {
+  config: EngineConfig,
+  initial_scene: Box<dyn Scene>,
+  vsync: Option<bool>,
+  master_volume: f32,
+  music_volume: f32,
+  sfx_volume: f32,
+  disable_debug_keys: bool,
+  game_name: Option<String>,
+  game_version: Option<String>,
+  console_builder: Option<ConsoleCommandBuilder>,
+  resources: super::resources::Resources,
 }
 
 impl Default for EngineBuilder {
@@ -4159,6 +4202,25 @@ mod tests {
     fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
       SceneAction::Continue
     }
+  }
+
+  #[test]
+  fn builder_show_fps_survives_workspace_config() {
+    let resolved = EngineBuilder::new()
+      .show_fps(true)
+      .start_scene(EmptyScene)
+      .resolve(false);
+    assert!(resolved.config.debug.show_fps);
+  }
+
+  #[test]
+  fn workspace_show_fps_applies_without_builder_call() {
+    // A stale config value that didn't come from `.show_fps()` is still
+    // replaced by the workspace's [system] show_fps (false in this repo).
+    let mut builder = EngineBuilder::new().start_scene(EmptyScene);
+    builder.config.debug.show_fps = true;
+    let resolved = builder.resolve(false);
+    assert!(!resolved.config.debug.show_fps);
   }
 
   #[test]
