@@ -14,4 +14,4 @@ Saves the final composed frame (scene + UI) as a PNG at game resolution. Spec: `
 - The capture texture uses the **surface** format (the final-composite pipelines target it), so readback must handle BGRA.
 - "Frame N" counts presented frames only; a frame lost to `SurfaceError` is retried with the same number.
 - Both present paths in `engine.rs` (`do_full_render_and_present` and `RedrawRequested`) must call `path_for_next_frame` before rendering and `on_frame_presented` after `Ok`.
-- With `RYO_CAPTURE_EXIT=1`, `run()` joins in-flight writes and exits with code 1 if a scheduled capture failed.
+- In-flight writes are joined in `ApplicationHandler::exiting` (not after `run_app`: on macOS, Cmd+Q exits the process without returning). Scheduled frames never presented are reported as failures there; with `RYO_CAPTURE_EXIT=1` any scheduled failure exits with code 1.

@@ -133,9 +133,20 @@ impl CaptureState {
     self.collect_writes(false)
   }
 
-  /// Wait for every in-flight write (call before the process exits).
+  /// Wait for every in-flight write and report scheduled frames that were
+  /// never presented (call when the event loop exits).
   pub fn finish(&mut self) -> Vec<CaptureReport> {
-    self.collect_writes(true)
+    let mut reports = self.collect_writes(true);
+    let missed = self.config.frames[self.next_scheduled..].to_vec();
+    self.next_scheduled = self.config.frames.len();
+    for frame in missed {
+      reports.push(self.failed(
+        frame,
+        true,
+        "game exited before this frame was presented".to_string(),
+      ));
+    }
+    reports
   }
 
   /// True once `RYO_CAPTURE_EXIT` is set and every scheduled capture is done.
@@ -327,6 +338,22 @@ mod tests {
       reports.as_slice(),
       [CaptureReport::Failed { frame: 1, .. }]
     ));
+  }
+
+  #[test]
+  fn finish_reports_scheduled_frames_never_presented() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = CaptureState::new(config(&[1, 5], dir.path(), true));
+    let path = state.path_for_next_frame().unwrap();
+    state.on_presented(captured(path.clone()));
+
+    let reports = state.finish();
+
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0], CaptureReport::Written { frame: 1, path });
+    assert!(matches!(reports[1], CaptureReport::Failed { frame: 5, .. }));
+    assert!(state.exit_with_failure());
+    assert!(state.finish().is_empty(), "missed frames are reported once");
   }
 
   #[test]

@@ -748,18 +748,9 @@ impl Engine {
 
     let event_loop = EventLoop::new().map_err(|e| EngineError::Window(format!("{}", e)))?;
 
-    let result = event_loop
+    event_loop
       .run_app(&mut self)
-      .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)));
-
-    // Make sure in-flight captures are on disk before the process exits
-    let reports = self.capture.finish();
-    self.report_captures(reports);
-    if self.capture.exit_with_failure() {
-      std::process::exit(1);
-    }
-
-    result
+      .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))
   }
 
   /// Print startup banner to console with useful info.
@@ -3512,6 +3503,16 @@ impl ApplicationHandler for Engine {
       && let winit::event::DeviceEvent::MouseMotion { delta } = event
     {
       self.input.handle_raw_mouse_motion(delta.0, delta.1);
+    }
+  }
+
+  fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+    // Last event on every exit path. On macOS, Cmd+Q exits the process right
+    // after this without returning from `run_app`, so captures are flushed here.
+    let reports = self.capture.finish();
+    self.report_captures(reports);
+    if self.capture.exit_with_failure() {
+      std::process::exit(1);
     }
   }
 
