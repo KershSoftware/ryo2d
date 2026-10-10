@@ -160,9 +160,8 @@ impl ReplicationManager {
     let network_entity = builder.build_network_entity();
     let network_id = network_entity.network_id;
 
-    // Spawn the entity with just the NetworkEntity component
-    // Components will be added by the caller
     let entity = world.spawn((network_entity,));
+    builder.insert_components(world, entity);
 
     // Register the mapping
     self.network_to_entity.insert(network_id, entity);
@@ -561,6 +560,26 @@ mod tests {
     world.insert_one(entity, Health(42)).unwrap();
     let network_id = server.get_network_id(entity).unwrap();
     (server, world, network_id)
+  }
+
+  #[test]
+  fn builder_components_land_on_the_spawned_entity() {
+    let mut server = ReplicationManager::new_server();
+    server.register::<Health>();
+    let mut world = World::new();
+
+    let entity = server.spawn_networked(
+      &mut world,
+      NetworkEntityBuilder::new().with_component(Health(7)),
+    );
+
+    assert_eq!(
+      world.get::<Health>(entity).map(|h| (*h).clone()),
+      Some(Health(7))
+    );
+    let network_id = server.get_network_id(entity).unwrap();
+    let spawn = server.spawn_message(&world, network_id).unwrap();
+    assert_eq!(spawn.components.len(), 1);
   }
 
   #[test]

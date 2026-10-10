@@ -197,19 +197,21 @@ replication.register::<PlayerPosition>();
 ```rust
 let entity = replication.spawn_networked(
     &mut world,
-    NetworkEntityBuilder::new().client_owned(client_id),  // Client controls this entity
+    NetworkEntityBuilder::new()
+        .client_owned(client_id) // Client controls this entity
+        .with_component(Transform::new(x, y))
+        .with_component(PlayerPosition { x, y }),
 );
 
-// spawn_networked only attaches the network identity - add components yourself
-world.add_component(entity, Transform::new(x, y));
-world.add_component(entity, PlayerPosition { x, y });
+// Non-replicated components (sprites, colliders) are added as usual
+// with world.add_component(entity, ...)
 
 // When a client connects, bring it up to date
 replication.register_client(client_id);
 replication.send_full_state(&world, &mut server, client_id);
 ```
 
-Spawn messages (and full-state syncs) carry the current value of every registered component the entity has, so add its components right after spawning, before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`.
+Spawn messages (and full-state syncs) carry the current value of every registered component the entity has when `broadcast_updates()` runs: `with_component` values are there from the start, and replicated components added later with `add_component` must be added before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`.
 
 ### 4. Broadcast Updates
 

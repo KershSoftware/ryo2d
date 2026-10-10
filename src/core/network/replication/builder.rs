@@ -4,8 +4,14 @@
 
 use renet::ClientId;
 
+use hecs::Entity;
+
 use super::component::{Replicated, SerializedComponent};
 use super::types::{Authority, NetworkEntity, NetworkId};
+use crate::core::ecs::World;
+
+/// Inserts one builder component into the spawned entity.
+type ComponentInserter = Box<dyn FnOnce(&mut World, Entity) + Send + Sync>;
 
 /// Builder for creating networked entities.
 ///
@@ -24,7 +30,6 @@ use super::types::{Authority, NetworkEntity, NetworkId};
 ///     .with_component(Transform::new(100.0, 200.0))
 ///     .with_component(Velocity::new(5.0, 0.0));
 /// ```
-#[derive(Debug)]
 pub struct NetworkEntityBuilder {
   /// The network ID (auto-generated if not specified)
   network_id: Option<NetworkId>,
@@ -38,8 +43,8 @@ pub struct NetworkEntityBuilder {
   /// Serialized components to attach
   components: Vec<SerializedComponent>,
 
-  /// Component data for spawning (type-erased)
-  spawn_data: Vec<Box<dyn std::any::Any + Send + Sync>>,
+  /// Inserts the components given to `with_component` when the entity spawns
+  inserters: Vec<ComponentInserter>,
 }
 
 impl NetworkEntityBuilder {
@@ -55,7 +60,7 @@ impl NetworkEntityBuilder {
       owner: 0,
       authority: Authority::Server,
       components: Vec::new(),
-      spawn_data: Vec::new(),
+      inserters: Vec::new(),
     }
   }
 
@@ -96,16 +101,20 @@ impl NetworkEntityBuilder {
 
   /// Add a replicated component.
   ///
-  /// The component is serialized for network transmission and stored
-  /// for local entity spawning.
+  /// `ReplicationManager::spawn_networked` inserts it into the spawned entity,
+  /// and the entity's spawn message carries its value to clients.
   pub fn with_component<T: Replicated + 'static>(mut self, component: T) -> Self {
     // Serialize for network transmission
     if let Ok(serialized) = SerializedComponent::from_component(&component) {
       self.components.push(serialized);
     }
 
-    // Store for local spawning
-    self.spawn_data.push(Box::new(component));
+    // Insert into the entity when it spawns
+    self
+      .inserters
+      .push(Box::new(move |world: &mut World, entity| {
+        world.add_component(entity, component);
+      }));
 
     self
   }
@@ -152,20 +161,32 @@ impl NetworkEntityBuilder {
     }
   }
 
-  /// Consume the builder and return all spawn data.
+  /// Consume the builder, returning the network entity and the serialized
+  /// form of every component given to it.
   ///
-  /// Returns (NetworkEntity, spawn_data) where spawn_data contains
-  /// the boxed component values.
-  pub fn build(self) -> (NetworkEntity, Vec<Box<dyn std::any::Any + Send + Sync>>) {
-    let network_id = self.network_id.unwrap_or_default();
+  /// To spawn the entity with its components, pass the builder to
+  /// `ReplicationManager::spawn_networked` instead.
+  pub fn build(self) -> (NetworkEntity, Vec<SerializedComponent>) {
+    (self.build_network_entity(), self.components)
+  }
 
-    let network_entity = NetworkEntity {
-      network_id,
-      owner: self.owner,
-      authority: self.authority,
-    };
+  /// Insert the components given to [`with_component`](Self::with_component)
+  /// into `entity` (called by `ReplicationManager::spawn_networked`).
+  pub(crate) fn insert_components(self, world: &mut World, entity: Entity) {
+    for insert in self.inserters {
+      insert(world, entity);
+    }
+  }
+}
 
-    (network_entity, self.spawn_data)
+impl std::fmt::Debug for NetworkEntityBuilder {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("NetworkEntityBuilder")
+      .field("network_id", &self.network_id)
+      .field("owner", &self.owner)
+      .field("authority", &self.authority)
+      .field("components", &self.components.len())
+      .finish()
   }
 }
 
@@ -231,10 +252,10 @@ mod tests {
       .client_owned(3)
       .with_component(TestComponent { value: 100 });
 
-    let (network_entity, spawn_data) = builder.build();
+    let (network_entity, components) = builder.build();
 
     assert_eq!(network_entity.owner, 3);
     assert_eq!(network_entity.authority, Authority::Client(3));
-    assert_eq!(spawn_data.len(), 1);
+    assert_eq!(components.len(), 1);
   }
 }
