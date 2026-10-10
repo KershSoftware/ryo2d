@@ -464,6 +464,8 @@ impl ParticleSystem {
           let was_touching = p.touching;
           p.touching = false;
           let mut dead = false;
+          // One bounce event per update, even when a corner touches two colliders
+          let mut bounce_event_sent = false;
           // Bounce resolves every overlapping collider in turn (a particle resting on a floor
           // must still hit a wall); the other responses stop at the first contact.
           for collider in candidate_colliders(&self.colliders, p.emitter_entity, config) {
@@ -486,9 +488,11 @@ impl ParticleSystem {
                   // Entry only: a particle resting on a surface stays touching and stays quiet
                   if config.send_events
                     && !was_touching
+                    && !bounce_event_sent
                     && -speed_along_normal >= MIN_BOUNCE_EVENT_SPEED
                   {
                     events.emit(p.collision_event(&contact));
+                    bounce_event_sent = true;
                   }
                   let impulse = (1.0 + config.response.restitution()) * speed_along_normal;
                   p.particle.velocity_x -= impulse * nx;
@@ -1078,6 +1082,29 @@ mod tests {
     fn collisions(&self) -> Vec<ParticleCollision> {
       self.events.read::<ParticleCollision>().cloned().collect()
     }
+  }
+
+  #[test]
+  fn a_corner_hit_sends_one_bounce_event() {
+    let config = CollisionConfig::bouncy(RADIUS, 0.5).with_events();
+    let mut scene = FallScene::with_motion(config, Collider::box_collider(200.0, 20.0), 0.0, DT);
+    // A wall rising from the floor, its left face at x = 150
+    scene.world.spawn((
+      Transform::new(160.0, 50.0).with_pivot_center(),
+      Collider::box_collider(20.0, 200.0),
+    ));
+    scene.step();
+    // Heading into the corner fast enough to touch floor and wall in one update
+    let top = scene.top;
+    let p = &mut scene.system.particles[0];
+    p.x = 147.0;
+    p.y = top - 3.0;
+    p.particle.velocity_x = 120.0;
+    p.particle.velocity_y = 120.0;
+
+    scene.step();
+
+    assert_eq!(scene.collisions().len(), 1);
   }
 
   #[test]
