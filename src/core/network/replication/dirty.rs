@@ -178,6 +178,11 @@ impl DirtyTracker {
     self.clients.remove(&client_id);
   }
 
+  /// Forget every client for which `keep` returns false.
+  pub fn retain_clients(&mut self, keep: impl Fn(ClientId) -> bool) {
+    self.clients.retain(|&id, _| keep(id));
+  }
+
   /// The newest change batch generation the client acknowledged (or the
   /// generation [`acknowledge_client`](Self::acknowledge_client) marked it at).
   pub fn client_generation(&self, client_id: ClientId) -> Option<u64> {

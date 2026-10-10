@@ -1516,33 +1516,39 @@ fn replication_server_broadcasts_spawn_to_client() {
   // Send full state to client (no Result, just call it)
   server_replication.send_full_state(&server_world, &mut server, client_id);
 
-  // Wait for client to receive
-  let mut received_data = None;
+  // Wait for the marker and the entity's spawn
+  let mut received = Vec::new();
   let dt = Duration::from_millis(16);
 
   for _ in 0..100 {
     server.update(dt);
     client.update(dt);
 
-    if let Some(data) = client.receive(Channel::ReplicationReliable) {
-      received_data = Some(data);
+    while let Some(data) = client.receive(Channel::ReplicationReliable) {
+      received.push(data);
+    }
+    if received.len() >= 2 {
       break;
     }
 
     thread::sleep(Duration::from_millis(10));
   }
 
-  assert!(received_data.is_some(), "Client did not receive spawn data");
+  assert_eq!(received.len(), 2, "Client did not receive the full state");
 
-  // Parse the message
-  let msg = ReplicationMessage::from_bytes(&received_data.unwrap()).unwrap();
-
-  if let ReplicationMessage::FullStateSync(sync) = msg {
-    assert_eq!(sync.entities.len(), 1);
-    assert_eq!(sync.entities[0].network_id, network_id);
-    assert_eq!(sync.entities[0].authority, Authority::Server);
+  let marker = ReplicationMessage::from_bytes(&received[0]).unwrap();
+  if let ReplicationMessage::FullStateSync(sync) = marker {
+    assert!(sync.entities.is_empty());
   } else {
     panic!("Expected FullStateSync message");
+  }
+
+  let spawn = ReplicationMessage::from_bytes(&received[1]).unwrap();
+  if let ReplicationMessage::SpawnEntity(spawn) = spawn {
+    assert_eq!(spawn.network_id, network_id);
+    assert_eq!(spawn.authority, Authority::Server);
+  } else {
+    panic!("Expected SpawnEntity message");
   }
 }
 

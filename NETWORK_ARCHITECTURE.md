@@ -294,9 +294,9 @@ Benefits:
 | `DespawnEntityMessage` | ReplicationReliable | Remove entity |
 | `ComponentUpdateMessage` | ReplicationUnreliable | Single component delta |
 | `ComponentBatchMessage` | ReplicationUnreliable | Multiple component deltas (efficient) |
-| `FullStateSyncMessage` | ReplicationReliable | Complete state for new clients |
+| `FullStateSyncMessage` | ReplicationReliable | Marker for new clients: reset state; the entities follow as `SpawnEntityMessage`s |
 
-Component changes are acknowledged: clients ack the newest batch they applied (`process_incoming`), and the server re-sends everything changed since each client's last ack, with a periodic full refresh as a safety net. Changes are sent in size-limited batches (never-sent components first), so a large backlog takes several broadcasts, and the refresh is spread over broadcasts in bounded messages.
+Component changes are acknowledged: clients ack each complete batch they applied (`process_incoming`), and the server re-sends each component until a batch carrying its newest change is acknowledged, with a periodic full refresh as a safety net. Changes are sent in size-limited batches (never-sent components first), so a large backlog takes several broadcasts, and the refresh is spread over broadcasts in bounded messages.
 
 ### Built-in Replicated Components
 

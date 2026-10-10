@@ -220,8 +220,20 @@ impl ReplicationManager {
       authority: msg.authority,
     };
 
-    // Spawn with NetworkEntity component
-    let entity = world.spawn((network_entity,));
+    // A repeated spawn (a full-state sync followed by the spawn broadcast)
+    // updates the entity already mapped instead of orphaning it
+    let existing = self
+      .network_to_entity
+      .get(&msg.network_id)
+      .copied()
+      .filter(|&entity| world.contains(entity));
+    let entity = match existing {
+      Some(entity) => {
+        let _ = world.insert_one(entity, network_entity);
+        entity
+      }
+      None => world.spawn((network_entity,)),
+    };
 
     // Map first: the entity stays known even if a component fails to apply,
     // so later updates for it count as handled
@@ -391,19 +403,35 @@ impl ReplicationManager {
   ///
   /// The client starts from this sync and isn't sent the change history
   /// before it; only changes marked afterwards are replicated to it.
+  ///
+  /// The state goes out as a [`FullStateSync`](ReplicationMessage::FullStateSync)
+  /// marker (generation, no entities) followed by one `SpawnEntity` per
+  /// networked entity, so each message stays small, which matters for
+  /// WebRTC's 64 KB message limit. A single entity's spawn must itself fit.
   pub fn send_full_state<S: ServerLike>(
     &mut self,
     world: &World,
     server: &mut S,
     client_id: ClientId,
   ) {
-    let sync = self.build_full_state_sync(world);
-    let msg = ReplicationMessage::FullStateSync(sync);
+    let marker =
+      ReplicationMessage::FullStateSync(FullStateSyncMessage::new(self.dirty_tracker.generation()));
+    let Ok(bytes) = marker.to_bytes() else {
+      return;
+    };
+    server.send(client_id, Channel::ReplicationReliable, &bytes);
 
-    if let Ok(bytes) = msg.to_bytes() {
-      server.send(client_id, Channel::ReplicationReliable, &bytes);
-      self.dirty_tracker.record_full_sync(client_id);
+    let network_ids: Vec<NetworkId> = self.network_to_entity.keys().copied().collect();
+    for network_id in network_ids {
+      let Some(spawn_msg) = self.spawn_message(world, network_id) else {
+        continue;
+      };
+      if let Ok(bytes) = ReplicationMessage::SpawnEntity(spawn_msg).to_bytes() {
+        server.send(client_id, Channel::ReplicationReliable, &bytes);
+      }
     }
+
+    self.dirty_tracker.record_full_sync(client_id);
   }
 
   /// Re-send every replicated component's current value every `interval`
@@ -428,6 +456,10 @@ impl ReplicationManager {
   pub fn broadcast_updates<S: ServerLike>(&mut self, world: &World, server: &mut S) {
     // Collect client IDs first to avoid borrow issues
     let clients: Vec<ClientId> = server.clients().collect();
+    // A client the transport no longer lists has disconnected
+    self
+      .dirty_tracker
+      .retain_clients(|id| clients.contains(&id));
     let remote_clients: Vec<ClientId> = clients
       .iter()
       .filter(|&&id| !server.is_host(id))
@@ -1487,5 +1519,117 @@ mod tests {
 
     assert_eq!(stats.networked_entities, 0);
     assert_eq!(stats.generation, 0);
+  }
+
+  #[test]
+  fn a_repeated_spawn_reuses_the_entity() {
+    let (server, mut world, network_id) = server_with_health();
+    let entity = server.get_entity(network_id).unwrap();
+    world.insert_one(entity, Health(1)).unwrap();
+    let sync = server.build_full_state_sync(&world);
+    world.insert_one(entity, Health(2)).unwrap();
+    let spawn = server.spawn_message(&world, network_id).unwrap();
+
+    let mut client = ReplicationManager::new_client();
+    client.register::<Health>();
+    let mut client_world = World::new();
+    let mut net = FakeClient::default();
+    net.deliver(
+      Channel::ReplicationReliable,
+      &ReplicationMessage::FullStateSync(sync),
+    );
+    net.deliver(
+      Channel::ReplicationReliable,
+      &ReplicationMessage::SpawnEntity(spawn),
+    );
+    client.process_incoming(&mut client_world, &mut net);
+
+    let networked = client_world
+      .query::<&NetworkEntity>()
+      .iter()
+      .filter(|ne| ne.network_id == network_id)
+      .count();
+    assert_eq!(networked, 1);
+    let client_entity = client.get_entity(network_id).unwrap();
+    assert_eq!(
+      client_world
+        .get::<Health>(client_entity)
+        .map(|h| (*h).clone()),
+      Some(Health(2))
+    );
+  }
+
+  #[test]
+  fn the_full_state_goes_out_as_one_message_per_entity() {
+    let (mut server, world, mut net) = server_with_backlog(300);
+
+    server.send_full_state(&world, &mut net, 1);
+
+    let messages: Vec<ReplicationMessage> = net
+      .sent
+      .iter()
+      .filter(|(_, channel, _)| *channel == Channel::ReplicationReliable)
+      .map(|(_, _, bytes)| ReplicationMessage::from_bytes(bytes).unwrap())
+      .collect();
+    assert_eq!(messages.len(), 301);
+    match &messages[0] {
+      ReplicationMessage::FullStateSync(sync) => {
+        assert!(sync.entities.is_empty());
+        assert_eq!(sync.generation, server.dirty_tracker.generation());
+      }
+      other => panic!("expected FullStateSync first, got {other:?}"),
+    }
+    assert!(
+      messages[1..]
+        .iter()
+        .all(|m| matches!(m, ReplicationMessage::SpawnEntity(_)))
+    );
+    assert!(net.sent.iter().all(|(_, _, bytes)| bytes.len() < 2048));
+
+    let mut client = ReplicationManager::new_client();
+    client.register::<Label>();
+    let mut client_world = World::new();
+    let mut fake = FakeClient::default();
+    for (_, channel, bytes) in &net.sent {
+      fake
+        .incoming
+        .entry(*channel)
+        .or_default()
+        .push_back(bytes.clone());
+    }
+    client.process_incoming(&mut client_world, &mut fake);
+
+    for entity in server.network_to_entity.values() {
+      let id = server.get_network_id(*entity).unwrap();
+      assert!(client.get_entity(id).is_some());
+    }
+    assert_eq!(client.network_to_entity.len(), 300);
+  }
+
+  #[test]
+  fn departed_clients_are_forgotten() {
+    let (mut server, world, network_id) = server_with_health();
+    let entity = server.get_entity(network_id).unwrap();
+    let mut net = RecordingServer {
+      clients: vec![1, 2],
+      ..Default::default()
+    };
+    server.register_client(1);
+    server.register_client(2);
+    server.mark_dirty::<Health>(entity);
+    server.broadcast_updates(&world, &mut net);
+    let ack = ReplicationMessage::Ack(AckMessage { generation: 0 })
+      .to_bytes()
+      .unwrap();
+    net.deliver(1, Channel::ReplicationUnreliable, ack.clone());
+    net.deliver(2, Channel::ReplicationUnreliable, ack);
+    server.broadcast_updates(&world, &mut net);
+    assert_eq!(server.client_acked_generation(2), Some(0));
+
+    net.clients = vec![1];
+    server.broadcast_updates(&world, &mut net);
+
+    assert_eq!(server.client_acked_generation(2), None);
+    assert_eq!(server.client_acked_generation(1), Some(0));
   }
 }

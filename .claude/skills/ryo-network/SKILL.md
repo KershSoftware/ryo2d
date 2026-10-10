@@ -213,7 +213,7 @@ replication.register_client(client_id);
 replication.send_full_state(&world, &mut server, client_id);
 ```
 
-Spawn messages (and full-state syncs) carry the current value of every registered component the entity has when `broadcast_updates()` runs: `with_component` values are there from the start, and replicated components added later with `add_component` must be added before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`. Changes are re-sent to each client until it acknowledges them (`process_incoming()` acknowledges automatically), so a lost packet is recovered on the next broadcast. Changes go out in size-limited batches (`MAX_BATCH_BYTES`, never-sent components first), so a large backlog arrives over several broadcasts; a new client starts from its full-state sync (call `send_full_state` on connect, as shown above). As a safety net the server also re-sends every replicated component's current value every 300 `broadcast_updates()` calls by default (about 5 s; tune with `replication.set_refresh_interval(n)`, `0` turns it off), spread over several broadcasts in messages of at most `MAX_REFRESH_BYTES`.
+Spawn messages (and full-state syncs) carry the current value of every registered component the entity has when `broadcast_updates()` runs: `with_component` values are there from the start, and replicated components added later with `add_component` must be added before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`. Changes are re-sent to each client until it acknowledges them (`process_incoming()` acknowledges automatically), so a lost packet is recovered on the next broadcast. Changes go out in size-limited batches (`MAX_BATCH_BYTES`, never-sent components first), so a large backlog arrives over several broadcasts (about 16 KB of changes per client per `broadcast_updates()`); a new client starts from its full-state sync (call `send_full_state` on connect, as shown above). As a safety net the server also re-sends every replicated component's current value every 300 `broadcast_updates()` calls by default (about 5 s; tune with `replication.set_refresh_interval(n)`, `0` turns it off), spread over several broadcasts in messages of at most `MAX_REFRESH_BYTES`.
 
 ### 4. Broadcast Updates
 
@@ -227,6 +227,10 @@ replication.broadcast_updates(&world, &mut server);
 // Client processes incoming
 replication.process_incoming(&mut world, &mut client);
 ```
+
+On disconnect, call `replication.remove_client(client_id)` to free that client's replication state at once; otherwise it is dropped on the next `broadcast_updates()`.
+
+Limits: each component update must fit in one message, under renet's per-tick budget (about 60 KB per connection, shared with game traffic) and under WebRTC's 64 KB message limit, so keep replicated components small. The same applies to each entity's spawn (the full state is sent as one message per entity).
 
 Call `broadcast_updates()` every frame. `process_incoming()` takes any `ClientLike` (e.g. `NetworkClient`) and reads only the reserved `ReplicationReliable` / `ReplicationUnreliable` channels, so the default channels stay yours for RPCs and game messages.
 
@@ -388,6 +392,7 @@ match ListenServer::new(config) {
 The `protocol_id` acts as a version check:
 - Server and client must have matching IDs
 - Use different IDs for incompatible game versions
+- Builds from engine versions with a different replication protocol can't talk to each other, so change `protocol_id` when you upgrade the engine
 - Mismatched clients silently fail to connect
 
 ```rust
