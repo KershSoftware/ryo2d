@@ -1,8 +1,13 @@
-//! Render Pipeline System
+//! Render Pipeline System (experimental, not used by the engine)
 //!
-//! This module provides a configurable render pipeline where each rendering
-//! phase is encapsulated in a `RenderPass`. Passes can be added, removed,
-//! or reordered at runtime.
+//! **Status:** the engine never builds or executes a `RenderPipeline` - frame
+//! rendering is hard-coded in `engine.rs` and `graphics/renderer.rs`, so passes
+//! configured here don't change what a game draws. Only `ClearPass`,
+//! `ParallaxPass`, `UploadPass` and `LightingPass` exist. The module is kept for a
+//! future pass-based renderer and isn't part of the prelude.
+//!
+//! The design: each rendering phase is encapsulated in a `RenderPass`; passes
+//! can be added, removed, or reordered at runtime.
 //!
 //! # Architecture
 //!
@@ -33,14 +38,14 @@
 //! # Example
 //!
 //! ```ignore
-//! // Create default 2D pipeline
-//! let mut pipeline = RenderPipeline::default_2d();
+//! use ryo2d::core::render::{RenderPipeline, passes::ClearPass};
 //!
-//! // Disable lighting pass
-//! pipeline.set_enabled("lighting", false);
-//!
-//! // Add custom pass after sprites
+//! let mut pipeline = RenderPipeline::new();
+//! pipeline.add_pass(ClearPass::new());
 //! pipeline.add_pass(MyCustomPass::new());
+//!
+//! // Disable a pass without removing it
+//! pipeline.set_enabled("clear", false);
 //!
 //! // Execute pipeline
 //! pipeline.execute(&mut render_context);
@@ -55,7 +60,8 @@ pub use context::{RenderContext, TextureSlot};
 pub use pass::{RenderPass, RenderPassId};
 pub use pipeline::RenderPipeline;
 
-/// Default pass IDs used by the engine
+/// Pass IDs for the planned passes. Only `CLEAR`, `PARALLAX`, `UPLOAD` and
+/// `LIGHTING` have implementations (see [`passes`]).
 pub mod pass_ids {
   pub const CLEAR: &str = "clear";
   pub const PARALLAX: &str = "parallax";
