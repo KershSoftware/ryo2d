@@ -1,171 +1,38 @@
 # AGENTS.md - Graphics Module
 
-## Overview
-
-The `graphics/` module contains all rendering-related systems: sprites, animation, camera, tiled rendering, and GPU batching.
-
-## File Structure
-
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Module exports and re-exports |
-| `sprite.rs` | `Sprite`, `AnimatedSprite` - sprite data and CPU blitting |
-| `renderer.rs` | `WgpuRenderer` - GPU rendering pipeline with letterboxing |
-| `sprite_gpu.rs` | `SpriteGpuRenderer`, `BatchCollector` - GPU sprite batching |
-| `camera.rs` | `Camera` - 2D camera with zoom and world/screen transforms |
-| `animation.rs` | `Animation`, `Animator`, `AnimationController` |
-| `tile.rs` | `TiledSprite`, `CompositeTile`, `GroupedCollider` |
-| `parallax.rs` | `ParallaxBackground`, `ParallaxLayer`, `TileMode` |
-
-## Key Types
-
-### Sprite
-
-Raw sprite data with CPU blitting:
-
-```rust
-// Load from file (via AssetManager)
-let sprite = Sprite::load("player.png")?;
-
-// Create programmatically
-let rect = Sprite::solid_rect(32, 32, 255, 0, 0, 255);
-
-// Draw to frame buffer
-sprite.draw(frame, width, height, x, y);
-sprite.draw_scaled(frame, width, height, x, y, scale);
-sprite.draw_rotated(frame, width, height, x, y, angle);
-```
-
-### Camera
-
-2D camera for world-to-screen coordinate transforms:
-
-```rust
-// Follow a target smoothly
-camera.follow(target_x, target_y, 0.1);
-
-// Zoom in/out
-camera.set_zoom(2.0);
-
-// Convert coordinates
-let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
-let (world_x, world_y) = camera.screen_to_world(screen_x, screen_y);
-```
-
-### Animation System
-
-Three-tier animation API:
-
-```rust
-// 1. Animation - frame sequence definition
-let walk = Animation::new("walk", frames, 0.1)
-    .with_loop_mode(LoopMode::Loop);
-
-// 2. Animator - simple component
-let animator = Animator::new(walk);
-
-// 3. AnimationController - state machine
-let mut controller = AnimationController::new();
-controller.add_animation("idle", idle_anim);
-controller.add_animation("walk", walk_anim);
-controller.set_state("idle");
-```
-
-### Tiled Rendering
-
-For repeating sprites and composite tiles:
-
-```rust
-// Composite tile (e.g., pipe with cap + body)
-let (composite, collider) = CompositeTileBuilder::new()
-    .cap(cap_sprite, 0.0, 0.0)
-    .body_tiled(body_sprite, 0.0, 32.0, TileDirection::Down, 128.0)
-    .build_with_collider();
-```
-
-### Parallax Background
-
-Layered scrolling backgrounds for depth effect:
-
-```rust
-// Build parallax background with fluent API
-let background = ParallaxBackground::builder(screen_w, screen_h)
-    .static_layer(sky_sprite, -100)          // Doesn't scroll
-    .layer(mountains_sprite, 0.2, -80)       // 20% camera speed
-    .layer(dunes_sprite, 0.5, -60)           // 50% camera speed
-    .build();
-
-// Render in render_gpu callback
-fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
-    self.background.render(gpu);
-}
-```
-
-**TileMode options:**
-- `TileMode::None` - Static, non-tiling sprite
-- `TileMode::Horizontal` - Tile across screen width
-- `TileMode::InfiniteScroll` - Seamless endless scrolling
-
-### GPU Sprite Batching
-
-For high-performance particle systems:
-
-```rust
-fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
-    gpu.upload_sprite(&self.particle_sprite);
-
-    for particle in &self.particles {
-        let instance = SpriteInstance::new()
-            .with_position(particle.x, particle.y)
-            .with_rotation(particle.angle);
-        gpu.batch.add(sprite_id, false, instance, 0);
-    }
-}
-```
-
-## Import Patterns
-
-From within this module (sibling files):
-```rust
-use super::sprite::Sprite;
-use super::camera::Camera;
-```
-
-From other core modules:
-```rust
-use crate::core::graphics::{Camera, Sprite, Animation};
-use crate::core::graphics::{BatchCollector, SpriteInstance};
-```
-
-From game code via prelude:
-```rust
-use ryo2d::prelude::*;
-// Camera, Sprite, Animation, Animator, etc. available
-```
-
-## Architecture
+## Rendering Paths
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     CPU Rendering Path                       │
-│  Sprite.draw() → frame buffer → WgpuRenderer → screen       │
-└─────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────┐
-│                     GPU Rendering Path                       │
-│  SpriteInstance → BatchCollector → SpriteGpuRenderer → GPU  │
-└─────────────────────────────────────────────────────────────┘
+CPU path:  Sprite.draw() → pixel buffer → WgpuRenderer → screen
+GPU path:  SpriteInstance → BatchCollector → SpriteGpuRenderer → GPU
 ```
 
-**When to use GPU path:**
-- 1000+ sprites (particles, bullets)
-- Per-sprite shader effects
-- CPU blitting becomes bottleneck
+**When to use the GPU path:** 1000+ sprites (particles, bullets), per-sprite shader effects, or when CPU blitting becomes the bottleneck. Most games use the CPU path. GPU is opt-in via `render_gpu()`.
+
+**Compositing order** (`WgpuRenderer::render_with_gpu_sprites`):
+1. `render_gpu()` sprites (incl. parallax) draw into the game texture first.
+2. The CPU pixel buffer (cleared to transparent each frame) is alpha-blended on top.
+3. Trails, lighting, post-processing, then UI follow.
+
+So GPU sprites always sit **behind** CPU-rendered entities. `z_order` only orders GPU batches among themselves.
+
+## GPU Sprite Batching
+
+- `BatchCollector` groups instances by `BatchKey` (texture ID + has-effects). Each batch's z is the **minimum** `z_order` of its instances, and batches are sorted by it. Within a batch, instances draw in insertion order.
+- **Synchronization**: all instance data is written to the instance buffer **before** the render pass begins, so the GPU never reads a buffer still being written. Each batch gets its own offset, and the pass binds `instance_buffer.slice(offset..end)`.
+
+## Parallax
+
+- A builder-driven system (`GpuParallaxBackground`), not ECS components: layers are one cohesive visual, and render-time tiling is cheaper than spawning duplicate entities.
+- Rendered from `render_gpu()`, so it draws behind all CPU-rendered game entities.
+
+## Camera Shake
+
+- Trauma-based. Offset = smooth noise × `max_offset` × `intensity_curve(trauma)`, where the default curve `Ease::InQuad` gives trauma².
+- The engine calls `update_shake()` with **unscaled** dt, so shake keeps working during slow-mo/hitstop.
+- The offset is applied automatically in `world_to_screen()`. `screen_to_world()` does NOT remove it.
 
 ## Notes for AI Agents
 
-1. **CPU vs GPU rendering** - Most games use CPU path; GPU path for particles/effects
-2. **Camera is separate from rendering** - Just handles coordinate transforms
-3. **Animation updates automatically** - Engine updates Animator/AnimationController each frame
-4. **Tiles are composable** - Use CompositeTileBuilder for complex multi-part structures
-5. **Shader paths use `../shaders/`** - Graphics files reference shaders in sibling folder
+1. **Camera is separate from rendering**: it only handles coordinate transforms.
+2. **Animation updates automatically**: `systems/animation.rs` updates `Animator`/`AnimationController` each frame.

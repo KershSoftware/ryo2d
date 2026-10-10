@@ -1,140 +1,14 @@
 # AGENTS.md - Render Pipeline System
 
-## Overview
+## Status
 
-This folder contains the configurable render pipeline system. The pipeline orchestrates multiple render passes that each perform one phase of rendering (clear, sprites, lighting, effects, etc.).
+**`RenderPipeline` is not wired into the engine.** `engine.rs` never builds or executes it. The pipeline is only re-exported from `lib.rs`, and actual frame rendering is hard-coded in `engine.rs` / `graphics/renderer.rs`. Changing passes here does not change what the game renders.
 
-## Module Structure
+Only four passes exist (`passes/`): `ClearPass`, `ParallaxPass`, `UploadPass`, `LightingPass`. The other `pass_ids` (`cpu_sprite`, `gpu_sprite`, `trail`, `ui`, `effects`, `present`) are ID constants with no implementation. There is also no `RenderPipeline::default_2d()`, despite the `mod.rs` rustdoc.
 
-| Module | Purpose |
-|--------|---------|
-| `mod.rs` | Public exports and pass ID constants |
-| `pass.rs` | `RenderPass` trait definition |
-| `pipeline.rs` | `RenderPipeline` orchestrator |
-| `context.rs` | `RenderContext` with shared render state |
-| `passes/` | Built-in pass implementations (see `passes/AGENTS.md`) |
+## Ordering Gotchas
 
-## Architecture
-
-```text
-Game code describes intent
-    │
-    ▼
-Engine extracts intent into render data
-    │
-    ▼
-RenderPipeline plans passes
-    │
-    ├── ClearPass: Clear buffers
-    ├── ParallaxPass: GPU parallax layers
-    ├── CpuSpritePass: Software sprite rendering
-    ├── UploadPass: CPU buffer → GPU texture
-    ├── GpuSpritePass: Batched GPU sprites
-    ├── TrailPass: Motion trails
-    ├── LightingPass: 2D lighting
-    ├── UiPass: User interface
-    ├── EffectsPass: Post-processing
-    └── PresentPass: Final output
-    │
-    ▼
-Swapchain shows the result
-```
-
-## Key Types
-
-### RenderPass Trait
-
-Defines a single phase of rendering:
-
-```rust
-pub trait RenderPass: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn dependencies(&self) -> &[&'static str] { &[] }
-    fn execute(&mut self, ctx: &mut RenderContext);
-    fn should_execute(&self, ctx: &RenderContext) -> bool { true }
-    fn is_enabled(&self) -> bool { true }
-    fn set_enabled(&mut self, enabled: bool) {}
-}
-```
-
-### RenderPipeline
-
-Orchestrates passes with dependency ordering:
-
-- `add_pass()` - Add a pass (auto-sorted by dependencies)
-- `remove_pass()` - Remove a pass by ID
-- `set_enabled()` - Enable/disable a pass at runtime
-- `execute()` - Run all enabled passes in order
-
-### RenderContext
-
-Shared state available to all passes:
-
-- Frame buffer access
-- GPU resources (textures, pipelines)
-- Camera and viewport info
-- Texture slots for multi-pass rendering
-
-## Pass IDs
-
-Standard pass IDs from `pass_ids` module:
-
-| ID | Purpose |
-|----|---------|
-| `clear` | Clear frame buffer |
-| `parallax` | GPU parallax backgrounds |
-| `cpu_sprite` | Software sprite rendering |
-| `upload` | CPU buffer → GPU texture |
-| `gpu_sprite` | Batched GPU sprites |
-| `trail` | Motion trail effects |
-| `lighting` | 2D lighting system |
-| `ui` | User interface rendering |
-| `effects` | Post-processing effects |
-| `present` | Final swapchain present |
-
-## Creating Custom Passes
-
-```rust
-struct MyCustomPass {
-    enabled: bool,
-}
-
-impl RenderPass for MyCustomPass {
-    fn id(&self) -> &'static str { "my_custom" }
-
-    fn dependencies(&self) -> &[&'static str] {
-        &["gpu_sprite"]  // Run after GPU sprites
-    }
-
-    fn execute(&mut self, ctx: &mut RenderContext) {
-        // Access frame buffer, GPU resources, etc.
-    }
-
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, enabled: bool) { self.enabled = enabled; }
-}
-```
-
-## Usage in Engine
-
-The engine creates and manages the default pipeline:
-
-```rust
-let mut pipeline = RenderPipeline::default_2d();
-
-// Disable lighting for performance
-pipeline.set_enabled("lighting", false);
-
-// Add custom pass
-pipeline.add_pass(MyCustomPass::new());
-
-// Each frame
-pipeline.execute(&mut render_context);
-```
-
-## Design Notes
-
-- **Dependency-based ordering**: Passes declare what must run before them, not explicit order
-- **Runtime toggling**: Passes can be enabled/disabled without rebuilding the pipeline
-- **Custom passes**: Games can add their own passes for special effects
-- **Zero-overhead disabled**: Disabled passes skip all work including dependency checks
+- Passes declare dependencies, not explicit indices. Order is a topological sort (Kahn's) with deterministic ID-based tie-breaking. Don't rely on tie order: declare every real dependency.
+- **Missing dependencies are silently ignored.** With only the built-in passes, `upload` (depends on missing `cpu_sprite`) and `lighting` (depends on missing `gpu_sprite`) become roots, giving the order `clear → parallax → lighting → upload`.
+- `add_pass()` **panics** on a duplicate ID. A dependency **cycle panics** when the order is next computed (`execute()`/`pass_ids()`), not at `add_pass()`.
+- Disabled passes still take part in ordering. They are only skipped at execute time (as are passes whose `should_execute()` returns false).

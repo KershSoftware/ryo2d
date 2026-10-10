@@ -12,72 +12,6 @@
 4. **Production Quality** - Real games with real performance, not a toy engine
 5. **Agent Skills** - Should always be included to improve efficiency and pattern repetition for game development (and engine development if applicable)
 
-### How It Works
-
-1. **Install globally** - Run `./install.ps1` (Windows) or `./install.sh` (Unix/Mac) from the engine repo
-2. **Create anywhere** - Run `ryo2d init my-game` from any directory to scaffold a new game
-3. **Build with agents** - Open the project in VS Code/Claude and use agentic mode to develop
-4. **Ship it** - `ryo2d build` creates a production bundle
-
-The engine installs Agent Skills automatically during `init`, giving your AI assistant domain-specific knowledge about the engine's APIs, patterns, and best practices.
-
----
-
-## Architecture
-
-**Entity-Component-System (hecs)** with Rapier2D physics integration. Hybrid CPU/GPU rendering with wgpu backend. Event-driven input and collision systems.
-
-| Layer | Technology | Purpose |
-|-------|------------|---------|
-| ECS | hecs | Entity management, component storage |
-| Physics | Rapier2D | Collision detection, rigid body simulation |
-| Rendering | wgpu | GPU sprite batching, post-processing shaders |
-| Audio | Kira | Sound effects, music playback |
-| Windowing | winit | Cross-platform window management |
-
----
-
-## CLI Tool (`ryo2d`)
-
-The CLI manages game projects:
-
-```bash
-ryo2d init <name>       # Create a new game project
-ryo2d build             # Build production release bundle
-ryo2d run               # Run the production build
-ryo2d dev               # Development mode with hot-reload
-ryo2d export            # Package release into distributable zip
-ryo2d install-skills    # Install Agent Skills to existing project
-```
-
-**Workspace-aware:** The CLI discovers `Ryo.toml` to find the project root.
-
----
-
-## Agent Skills
-
-When you run `ryo2d init`, Agent Skills are automatically installed to `.github/skills/`. These give AI assistants domain-specific knowledge about the engine without needing access to engine source code.
-
-| Skill | Purpose |
-|-------|---------|
-| `ryo-api` | **Complete API reference** - all types, methods, signatures |
-| `ryo-animation` | Sprite animations and state machines |
-| `ryo-audio` | Sound effects and music |
-| `ryo-cli` | CLI tool usage |
-| `ryo-config-save` | Configuration and save system |
-| `ryo-controller` | Gamepad/controller input - buttons, sticks, triggers |
-| `ryo-ecs-internals` | ECS implementation details |
-| `ryo-engine-dev` | For engine contributors |
-| `ryo-events` | Event bus for decoupled inter-system communication |
-| `ryo-game-dev` | Game development patterns, ECS, scenes, input |
-| `ryo-network` | Multiplayer networking - client-server, replication, RPCs |
-| `ryo-particles` | Particle system - emitters, attractors, collisions, presets |
-| `ryo-physics` | Rapier2D physics integration |
-| `ryo-procgen` | Procedural generation - dungeons, caves, terrain |
-| `ryo-renderer` | GPU rendering and shaders |
-| `ryo-ui` | Hybrid UI system for HUDs, menus, and interfaces |
-| `ryo-ecs-internals` | ECS implementation details |
-
 The `ryo-api` skill is the canonical reference - other skills reference it for complete signatures.
 
 ---
@@ -112,12 +46,6 @@ Suggested sources for game assets:
 ./run help         # Show available commands
 ```
 
-**Quality Checks:**
-- `check` - Compilation check across entire workspace (engine + all examples)
-- `lint` - Clippy linting across entire workspace
-- `test` - All unit tests
-- `coverage` - Code coverage report using cargo-llvm-cov
-
 **Example Workflow:**
 1. When working on game projects → use `ryo2d build/run/dev` from the project directory
 2. When working on the engine and validating with example projects → use `./run <project>` scripts from the repository root (this will build and run the built game)
@@ -128,25 +56,7 @@ OR
 
 ## Nested AGENTS.md Files
 
-This project uses **nested AGENTS.md files** in subdirectories where additional context is helpful. Each nested file explains the purpose and conventions of that specific area.
-
-| Location | Purpose |
-|----------|---------|
-| `AGENTS.md` (root) | Project overview, phases, architecture |
-| `src/AGENTS.md` | Source code structure and module responsibilities |
-| `src/core/AGENTS.md` | Core engine module organization and import patterns |
-| `src/core/ecs/AGENTS.md` | ECS implementation patterns and design decisions |
-| `src/core/events/AGENTS.md` | Event bus system for decoupled communication |
-| `src/core/network/AGENTS.md` | Networking module architecture and usage |
-| `src/core/network/replication/AGENTS.md` | Entity/component replication system |
-| `src/core/network/rpc/AGENTS.md` | Remote procedure call system |
-| `src/core/particles/AGENTS.md` | Particle system components and presets |
-| `src/core/inventory/AGENTS.md` | Inventory & item system |
-| `src/cli/AGENTS.md` | CLI tool commands and design principles |
-| `docs/AGENTS.md` | Documentation system (mdbook + rustdoc) |
-| `.github/skills/` | AI skill definitions for specialized tasks |
-
-When working in a subdirectory, check for a local AGENTS.md for relevant context.
+Subdirectories carry their own AGENTS.md with module-specific conventions and design decisions - read the nearest one when working in that area.
 
 ---
 
@@ -168,17 +78,8 @@ Unless explicitly told so, always confirm committing and the commit message with
 
 ## Notes for AI Agents
 
-When assisting with this project:
-
-1. **Write production-quality code** - proper error handling, no shortcuts
-2. **Keep code comments minimal** - normal commenting practices, document intent
-3. **Prioritize performance** - avoid allocations in hot paths, use appropriate data structures
-4. **Validate changes** - run `cargo test`, `cargo clippy`, verify no regressions
-5. **Progress incrementally** - don't jump ahead in the task list
-6. **Run the full check suite** - `cargo check`, `cargo clippy`, `cargo test`
-7. **Consider API ergonomics** - make the engine pleasant to use
-8. **Simplicity but flexibility is key** - aim for similar simplicity in the API
-9. **Use established crates** where appropriate - don't reinvent the wheel
+- **Progress incrementally** - don't jump ahead in the task list
+- **Before finishing** - run `cargo check`, `cargo clippy`, `cargo test` and verify no regressions
 
 ### Commit Message Guidelines
 
