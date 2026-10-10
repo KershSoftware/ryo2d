@@ -3431,34 +3431,16 @@ impl ApplicationHandler for Engine {
 
 /// Builder pattern for Engine configuration
 pub struct EngineBuilder {
+  /// Builder-only settings (target FPS, physics, window mode, ...). Settings
+  /// other sources can also set live in `overrides`.
   config: EngineConfig,
+  /// Settings set by builder calls, layered over project values in `resolve`
+  overrides: super::config::resolve::BuilderOverrides,
   initial_scene: Option<Box<dyn Scene>>,
-  vsync: Option<bool>,
-  master_volume: f32,
-  music_volume: f32,
-  sfx_volume: f32,
-  /// Tracks whether resolution was set by builder or user preferences (prevents Ryo.toml override)
-  resolution_set: bool,
-  // Whether show_fps came from the builder or a user preference (blocks Ryo.toml/embedded)
-  show_fps_set: bool,
-  /// Tracks whether display_mode was set by builder or user preferences (prevents Ryo.toml override)
-  display_mode_set: bool,
-  /// Whether user preferences loaded resolution (blocks builder .resolution() override)
-  resolution_user_pref: bool,
-  /// Whether user preferences loaded display_mode (blocks builder .display_mode() override)
-  display_mode_user_pref: bool,
-  /// Whether user preferences loaded vsync (blocks builder .vsync() override)
-  vsync_user_pref: bool,
-  /// Whether user preferences loaded audio volumes (blocks Ryo.toml override)
-  master_volume_user_pref: bool,
-  music_volume_user_pref: bool,
-  sfx_volume_user_pref: bool,
-  /// Whether to disable F1-F4 debug key toggles
-  disable_debug_keys: bool,
   /// Console command configuration (declarations and removals)
   console_builder: Option<ConsoleCommandBuilder>,
   resources: super::resources::Resources,
-  /// Filters passed to `with_user_preferences`, applied in call order when the engine is built
+  /// Filters passed to `with_user_preferences`, combined when the engine is built
   user_preferences: Vec<super::config::UserPreferenceFilter>,
 }
 
@@ -3466,21 +3448,8 @@ impl EngineBuilder {
   pub fn new() -> Self {
     EngineBuilder {
       config: EngineConfig::default(),
+      overrides: Default::default(),
       initial_scene: None,
-      vsync: None,
-      master_volume: 1.0,
-      music_volume: 0.8,
-      sfx_volume: 1.0,
-      resolution_set: false,
-      show_fps_set: false,
-      display_mode_set: false,
-      resolution_user_pref: false,
-      display_mode_user_pref: false,
-      vsync_user_pref: false,
-      master_volume_user_pref: false,
-      music_volume_user_pref: false,
-      sfx_volume_user_pref: false,
-      disable_debug_keys: false,
       console_builder: None,
       resources: super::resources::Resources::new(),
       user_preferences: Vec::new(),
@@ -3488,16 +3457,12 @@ impl EngineBuilder {
   }
 
   pub fn title(mut self, title: impl Into<String>) -> Self {
-    self.config.title = title.into();
+    self.overrides.title = Some(title.into());
     self
   }
 
   pub fn resolution(mut self, width: u32, height: u32) -> Self {
-    if !self.resolution_user_pref {
-      self.config.width = width;
-      self.config.height = height;
-    }
-    self.resolution_set = true;
+    self.overrides.resolution = Some((width, height));
     self
   }
 
@@ -3508,13 +3473,13 @@ impl EngineBuilder {
 
   /// Set the target FPS when the window is unfocused. 0 = use target_fps.
   pub fn background_fps(mut self, fps: u32) -> Self {
-    self.config.target_background_fps = fps;
+    self.overrides.background_fps = Some(fps);
     self
   }
 
   /// Set whether to continue rendering when the window is unfocused.
   pub fn background_rendering(mut self, enabled: bool) -> Self {
-    self.config.background_rendering = enabled;
+    self.overrides.background_rendering = Some(enabled);
     self
   }
 
@@ -3526,9 +3491,7 @@ impl EngineBuilder {
   /// Default: `true` (VSync on). Overridden by user preferences if
   /// [`with_user_preferences`](Self::with_user_preferences) includes `UserPreference::Vsync`.
   pub fn vsync(mut self, enabled: bool) -> Self {
-    if !self.vsync_user_pref {
-      self.vsync = Some(enabled);
-    }
+    self.overrides.vsync = Some(enabled);
     self
   }
 
@@ -3587,10 +3550,7 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn display_mode(mut self, mode: DisplayMode) -> Self {
-    if !self.display_mode_user_pref {
-      self.config.display_mode = mode;
-    }
-    self.display_mode_set = true;
+    self.overrides.display_mode = Some(mode);
     self
   }
 
@@ -3692,7 +3652,7 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn icon(mut self, path: impl Into<std::path::PathBuf>) -> Self {
-    self.config.icon_path = Some(path.into());
+    self.overrides.icon = Some(path.into());
     self
   }
 
@@ -3712,7 +3672,7 @@ impl EngineBuilder {
   ///     .run()?;
   /// ```
   pub fn show_colliders(mut self, enabled: bool) -> Self {
-    self.config.debug.show_colliders = enabled;
+    self.overrides.show_colliders = Some(enabled);
     self
   }
 
@@ -3722,8 +3682,7 @@ impl EngineBuilder {
   /// `Ryo.toml`; a saved user preference (see
   /// [`with_user_preferences`](Self::with_user_preferences)) overrides this.
   pub fn show_fps(mut self, enabled: bool) -> Self {
-    self.config.debug.show_fps = enabled;
-    self.show_fps_set = true;
+    self.overrides.show_fps = Some(enabled);
     self
   }
 
@@ -3731,7 +3690,7 @@ impl EngineBuilder {
   ///
   /// When enabled, renders cyan arrows showing entity velocities.
   pub fn show_velocities(mut self, enabled: bool) -> Self {
-    self.config.debug.show_velocities = enabled;
+    self.overrides.show_velocities = Some(enabled);
     self
   }
 
@@ -3739,7 +3698,7 @@ impl EngineBuilder {
   ///
   /// When enabled, renders yellow crosshairs at entity transform positions.
   pub fn show_origins(mut self, enabled: bool) -> Self {
-    self.config.debug.show_origins = enabled;
+    self.overrides.show_origins = Some(enabled);
     self
   }
 
@@ -3797,58 +3756,6 @@ impl EngineBuilder {
   ) -> Self {
     // Read when the engine is built, so headless builds can skip it entirely
     self.user_preferences.push(filter.into());
-    self
-  }
-
-  fn apply_user_preferences(mut self, filter: super::config::UserPreferenceFilter) -> Self {
-    use super::config::UserPreference;
-
-    if let Ok(workspace) = super::config::Workspace::discover()
-      && let Ok(save_manager) = workspace.create_save_manager()
-      && let Ok(system_state) =
-        save_manager.load_or_create_system_filtered(&workspace.config().system, &filter)
-    {
-      // User preferences have highest priority - always override builder calls
-      if filter.contains(UserPreference::Resolution) {
-        self.config.width = system_state.width;
-        self.config.height = system_state.height;
-        self.resolution_set = true;
-        self.resolution_user_pref = true;
-      }
-      if filter.contains(UserPreference::DisplayMode) {
-        self.config.display_mode = system_state.display_mode;
-        self.display_mode_set = true;
-        self.display_mode_user_pref = true;
-      }
-
-      // Apply show_fps if present and in filter
-      if filter.contains(UserPreference::ShowFps)
-        && let Some(show_fps) = system_state.show_fps
-      {
-        self.config.debug.show_fps = show_fps;
-        self.show_fps_set = true;
-      }
-
-      // Apply vsync if in filter (use display.vsync as fallback when root vsync is None)
-      if filter.contains(UserPreference::Vsync) {
-        self.vsync = system_state.vsync;
-        self.vsync_user_pref = true;
-      }
-
-      // Apply audio volumes based on filter
-      if filter.contains(UserPreference::MasterVolume) {
-        self.master_volume = system_state.master_volume;
-        self.master_volume_user_pref = true;
-      }
-      if filter.contains(UserPreference::MusicVolume) {
-        self.music_volume = system_state.music_volume;
-        self.music_volume_user_pref = true;
-      }
-      if filter.contains(UserPreference::SfxVolume) {
-        self.sfx_volume = system_state.sfx_volume;
-        self.sfx_volume_user_pref = true;
-      }
-    }
     self
   }
 
@@ -3956,183 +3863,68 @@ impl EngineBuilder {
   }
 
   /// Apply every configuration source in priority order, without creating the engine.
-  fn resolve(mut self, headless: bool) -> ResolvedBuild {
-    // User preferences have highest priority; headless runs never read them
-    let filters = std::mem::take(&mut self.user_preferences);
-    if !headless {
-      for filter in filters {
-        self = self.apply_user_preferences(filter);
-      }
-    }
+  fn resolve(self, headless: bool) -> ResolvedBuild {
+    let workspace = super::config::Workspace::discover().ok();
+    self.resolve_in(workspace.as_ref(), headless)
+  }
+
+  /// [`resolve`](Self::resolve) against an explicit workspace (`None` = no project files).
+  ///
+  /// Order: engine defaults → embedded values (release) or Ryo.toml (dev) →
+  /// builder calls → saved preferences present in system.json and in the
+  /// `with_user_preferences` filters. Headless builds never touch system.json.
+  fn resolve_in(
+    self,
+    workspace: Option<&super::config::Workspace>,
+    headless: bool,
+  ) -> ResolvedBuild {
+    use super::config::resolve::{ProjectLayer, compiled_embedded_value, resolve_settings};
 
     let initial_scene = self
       .initial_scene
       .expect("EngineBuilder requires a scene - call .start_scene() before .build()");
 
-    let mut config = self.config;
-    let mut vsync = self.vsync;
-    let mut master_volume = self.master_volume;
-    let mut music_volume = self.music_volume;
-    let mut sfx_volume = self.sfx_volume;
-    let resolution_set = self.resolution_set;
-    let show_fps_set = self.show_fps_set;
-    let display_mode_set = self.display_mode_set;
-    let mut disable_debug_keys = self.disable_debug_keys;
-    let console_builder = self.console_builder;
-    let mut game_name: Option<String> = None;
-    let mut game_version: Option<String> = None;
+    let (project, game_name, game_version) = match (
+      ProjectLayer::from_embedded(compiled_embedded_value),
+      workspace,
+    ) {
+      (Some(embedded), _) => (embedded, None, None),
+      (None, Some(ws)) => (
+        ProjectLayer::from_workspace(ws),
+        Some(ws.config().name.clone()),
+        ws.config().version.clone(),
+      ),
+      (None, None) => (ProjectLayer::default(), None, None),
+    };
 
-    // Priority chain for configuration (highest to lowest):
-    // 1. User preferences from system.json (via .with_user_preferences()) - already applied
-    // 2. Explicit builder calls (.resolution(), .vsync(), .target_fps()) - already applied
-    // 3. Embedded values from `ryo2d build` (compile-time)
-    // 4. Runtime workspace discovery (Ryo.toml)
-    // 5. Engine defaults - already in EngineConfig::default()
-
-    // Check for embedded values (set when built via `ryo2d build`)
-    let has_embedded = option_env!("RYO_EMBED_RESOLUTION").is_some();
-
-    if has_embedded {
-      // Use compile-time embedded values from Ryo.toml
-      if !resolution_set && let Some(res) = option_env!("RYO_EMBED_RESOLUTION") {
-        if let Some((w, h)) = super::config::save::parse_resolution(res) {
-          config.width = w;
-          config.height = h;
-        } else {
-          eprintln!(
-            "[ryo2d] Warning: Malformed embedded resolution '{}', using engine defaults",
-            res
-          );
-        }
-      }
-      if vsync.is_none()
-        && let Some(v) = option_env!("RYO_EMBED_VSYNC")
-      {
-        vsync = Some(v.parse().unwrap_or(true));
-      }
-      if !show_fps_set && let Some(fps) = option_env!("RYO_EMBED_SHOW_FPS") {
-        config.debug.show_fps = fps.parse().unwrap_or(false);
-      }
-      // [debug] section embedded values
-      if let Some(v) = option_env!("RYO_EMBED_SHOW_COLLIDERS") {
-        config.debug.show_colliders = v.parse().unwrap_or(false);
-      }
-      if let Some(v) = option_env!("RYO_EMBED_SHOW_VELOCITIES") {
-        config.debug.show_velocities = v.parse().unwrap_or(false);
-      }
-      if let Some(v) = option_env!("RYO_EMBED_SHOW_ORIGINS") {
-        config.debug.show_origins = v.parse().unwrap_or(false);
-      }
-      if let Some(v) = option_env!("RYO_EMBED_SHOW_FRAME_TIMING") {
-        config.debug.show_frame_timing = v.parse().unwrap_or(false);
-      }
-      if let Some(v) = option_env!("RYO_EMBED_DISABLE_DEBUG_KEYS") {
-        disable_debug_keys = v.parse().unwrap_or(false);
-      }
-      if let Some(v) = option_env!("RYO_EMBED_ENABLE_PROFILER") {
-        config.debug.enable_profiler = v.parse().unwrap_or(false);
-      }
-      if !self.master_volume_user_pref
-        && let Some(vol) = option_env!("RYO_EMBED_MASTER_VOLUME")
-      {
-        master_volume = vol.parse().unwrap_or(0.7);
-      }
-      if !self.music_volume_user_pref
-        && let Some(vol) = option_env!("RYO_EMBED_MUSIC_VOLUME")
-      {
-        music_volume = vol.parse().unwrap_or(1.0);
-      }
-      if !self.sfx_volume_user_pref
-        && let Some(vol) = option_env!("RYO_EMBED_SFX_VOLUME")
-      {
-        sfx_volume = vol.parse().unwrap_or(1.0);
-      }
-      if let Some(title) = option_env!("RYO_EMBED_TITLE")
-        && config.title == "Ryo2D"
-      {
-        config.title = title.to_string();
-      }
-      // Display mode (only if not explicitly set via builder or system.json)
-      if !display_mode_set && let Some(mode) = option_env!("RYO_EMBED_DISPLAY_MODE") {
-        config.display_mode = match mode.to_lowercase().as_str() {
-          "exclusive_fullscreen" => DisplayMode::ExclusiveFullscreen,
-          "borderless_fullscreen" => DisplayMode::BorderlessFullscreen,
-          _ => DisplayMode::Windowed,
-        };
-      }
-      // Developer console (from [system] section)
-      if let Some(v) = option_env!("RYO_EMBED_CONSOLE") {
-        config.debug.dev_console = v.parse().unwrap_or(false);
-      }
-    } else if let Ok(workspace) = super::config::Workspace::discover() {
-      // Fall back to runtime workspace discovery (development mode)
-      let wconfig = workspace.config();
-      let debug = &wconfig.debug;
-      let system = &wconfig.system;
-      let release = &wconfig.release;
-
-      // Load game info from [project] section
-      game_name = Some(wconfig.name.clone());
-      game_version = wconfig.version.clone();
-
-      // Load window title from [project].title (only if not explicitly set via builder)
-      if config.title == "Ryo2D" {
-        config.title = wconfig.title.clone();
-      }
-
-      // Load debug settings
-      config.debug.show_colliders = debug.show_colliders;
-      if !show_fps_set {
-        config.debug.show_fps = system.show_fps; // From [system] section
-      }
-      config.debug.show_velocities = debug.show_velocities;
-      config.debug.show_origins = debug.show_origins;
-      config.debug.show_frame_timing = debug.show_frame_timing;
-      config.debug.enable_profiler = debug.enable_profiler;
-      config.debug.logger_window = debug.logger_window;
-      config.debug.dev_window_keys = debug.dev_window_keys;
-      config.debug.dev_console = system.dev_console; // From [system] section for release build support
-      disable_debug_keys = debug.disable_debug_keys;
-
-      // Load resolution from [system] section if not explicitly set via builder
-      if !resolution_set && let Some((w, h)) = system.resolution {
-        config.width = w;
-        config.height = h;
-      }
-
-      // Load display mode from [system] section (only if not explicitly set)
-      if !display_mode_set {
-        config.display_mode = system.display_mode;
-      }
-
-      // Load audio volumes from [system] section (only if not set by user preferences)
-      if !self.master_volume_user_pref {
-        master_volume = system.master_volume;
-      }
-      if !self.music_volume_user_pref {
-        music_volume = system.music_volume;
-      }
-      if !self.sfx_volume_user_pref {
-        sfx_volume = system.sfx_volume;
-      }
-
-      // Load vsync from [system] section (only if not explicitly set)
-      if vsync.is_none() {
-        vsync = Some(system.vsync);
-      }
-
-      // Load background settings from [system] section
-      config.target_background_fps = system.target_background_fps;
-      config.background_rendering = system.background_rendering;
-
-      // Load icon from [release] section if specified and not explicitly set via builder
-      if config.icon_path.is_none()
-        && let Some(logo_path) = &release.logo
-      {
-        // Make path absolute relative to workspace root
-        config.icon_path = Some(workspace.root().join(logo_path));
+    let mut settings = resolve_settings(&project, &self.overrides, None);
+    if !headless
+      && !self.user_preferences.is_empty()
+      && let Some(ws) = workspace
+    {
+      let filter = combined_filter(&self.user_preferences);
+      if let Some(prefs) = load_user_preferences(ws, &filter, &settings) {
+        settings = resolve_settings(&project, &self.overrides, Some((&prefs, &filter)));
       }
     }
+
+    let mut config = self.config;
+    config.title = settings.title;
+    config.width = settings.resolution.0;
+    config.height = settings.resolution.1;
+    config.display_mode = settings.display_mode;
+    config.target_background_fps = settings.background_fps;
+    config.background_rendering = settings.background_rendering;
+    config.icon_path = settings.icon;
+    config.debug.show_fps = settings.show_fps;
+    config.debug.show_colliders = settings.show_colliders;
+    config.debug.show_velocities = settings.show_velocities;
+    config.debug.show_origins = settings.show_origins;
+    config.debug.show_frame_timing = settings.show_frame_timing;
+    config.debug.enable_profiler = settings.enable_profiler;
+    config.debug.logger_window = settings.logger_window;
+    config.debug.dev_window_keys = settings.dev_window_keys;
+    config.debug.dev_console = settings.dev_console;
 
     // Runtime env var override for profiler (from `ryo2d dev --profiler`)
     // When -p flag is used, ensure enable_profiler is true so puffin scopes are collected
@@ -4152,20 +3944,17 @@ impl EngineBuilder {
       }
     }
 
-    // Engine-wide default: vsync on (if no source set it)
-    let vsync = vsync.or(Some(true));
-
     ResolvedBuild {
       config,
       initial_scene,
-      vsync,
-      master_volume,
-      music_volume,
-      sfx_volume,
-      disable_debug_keys,
+      vsync: Some(settings.vsync),
+      master_volume: settings.master_volume,
+      music_volume: settings.music_volume,
+      sfx_volume: settings.sfx_volume,
+      disable_debug_keys: settings.disable_debug_keys,
       game_name,
       game_version,
-      console_builder,
+      console_builder: self.console_builder,
       resources: self.resources,
     }
   }
@@ -4192,6 +3981,48 @@ impl Default for EngineBuilder {
   }
 }
 
+/// Every preference any `with_user_preferences` call asked for.
+fn combined_filter(
+  filters: &[super::config::UserPreferenceFilter],
+) -> super::config::UserPreferenceFilter {
+  use super::config::{UserPreference, UserPreferenceFilter};
+  UserPreferenceFilter::only(
+    UserPreference::all()
+      .iter()
+      .copied()
+      .filter(|pref| filters.iter().any(|filter| filter.contains(*pref))),
+  )
+}
+
+/// Saved preferences, seeding `system.json` from `seed` when it doesn't exist.
+/// Errors are reported and treated as "no saved preferences".
+fn load_user_preferences(
+  workspace: &super::config::Workspace,
+  filter: &super::config::UserPreferenceFilter,
+  seed: &super::config::resolve::ResolvedSettings,
+) -> Option<super::config::resolve::StoredPreferences> {
+  let defaults = &workspace.config().system;
+  let result = workspace
+    .create_save_manager()
+    .map_err(|e| e.to_string())
+    .and_then(|manager| {
+      manager
+        .load_preferences_or_seed(
+          &seed.to_system_state(defaults.env.clone()),
+          filter,
+          defaults,
+        )
+        .map_err(|e| e.to_string())
+    });
+  match result {
+    Ok(prefs) => prefs,
+    Err(e) => {
+      eprintln!("[ryo2d] Warning: Couldn't load user preferences ({e}), using project settings");
+      None
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -4204,23 +4035,208 @@ mod tests {
     }
   }
 
-  #[test]
-  fn builder_show_fps_survives_workspace_config() {
-    let resolved = EngineBuilder::new()
-      .show_fps(true)
-      .start_scene(EmptyScene)
-      .resolve(false);
-    assert!(resolved.config.debug.show_fps);
+  fn temp_workspace(
+    ryo_toml: &str,
+    system_json: Option<&str>,
+  ) -> (tempfile::TempDir, crate::core::config::Workspace) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Ryo.toml"), ryo_toml).unwrap();
+    if let Some(json) = system_json {
+      std::fs::create_dir_all(dir.path().join("data")).unwrap();
+      std::fs::write(dir.path().join("data/system.json"), json).unwrap();
+    }
+    let workspace = crate::core::config::Workspace::from_path(dir.path()).unwrap();
+    (dir, workspace)
   }
 
   #[test]
-  fn workspace_show_fps_applies_without_builder_call() {
-    // A stale config value that didn't come from `.show_fps()` is still
-    // replaced by the workspace's [system] show_fps (false in this repo).
-    let mut builder = EngineBuilder::new().start_scene(EmptyScene);
-    builder.config.debug.show_fps = true;
-    let resolved = builder.resolve(false);
-    assert!(!resolved.config.debug.show_fps);
+  fn missing_preference_keys_fall_through_to_builder_and_project() {
+    let (_dir, ws) = temp_workspace(
+      "[system]\nmaster_volume = 0.3\nvsync = true\n",
+      Some(r#"{"show_fps": true}"#),
+    );
+    let r = EngineBuilder::new()
+      .resolution(800, 600)
+      .display_mode(DisplayMode::BorderlessFullscreen)
+      .vsync(false)
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert_eq!((r.config.width, r.config.height), (800, 600));
+    assert_eq!(r.config.display_mode, DisplayMode::BorderlessFullscreen);
+    assert_eq!(r.vsync, Some(false));
+    assert_eq!(r.master_volume, 0.3);
+    assert!(r.config.debug.show_fps);
+  }
+
+  #[test]
+  fn saved_preference_beats_builder() {
+    let (_dir, ws) = temp_workspace("", Some(r#"{"resolution": "1600x900"}"#));
+    let r = EngineBuilder::new()
+      .resolution(800, 600)
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert_eq!((r.config.width, r.config.height), (1600, 900));
+  }
+
+  #[test]
+  fn saved_720p_survives_a_different_ryo_toml_resolution() {
+    let (dir, ws) = temp_workspace(
+      "[system]\nresolution = \"1920x1080\"\n",
+      Some(r#"{"resolution": "1280x720"}"#),
+    );
+    let r = EngineBuilder::new()
+      .with_user_preferences([crate::core::config::UserPreference::Resolution])
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert_eq!((r.config.width, r.config.height), (1280, 720));
+    let raw = std::fs::read_to_string(dir.path().join("data/system.json")).unwrap();
+    assert!(raw.contains("1280x720"));
+  }
+
+  #[test]
+  fn first_run_seeds_system_json_from_builder_and_project() {
+    let (dir, ws) = temp_workspace("[system]\nmaster_volume = 0.3\n", None);
+    let r = EngineBuilder::new()
+      .resolution(800, 600)
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert_eq!((r.config.width, r.config.height), (800, 600));
+    let raw: serde_json::Value =
+      serde_json::from_str(&std::fs::read_to_string(dir.path().join("data/system.json")).unwrap())
+        .unwrap();
+    assert_eq!(raw["resolution"], "800x600");
+    assert_eq!(raw["master_volume"], 0.3);
+  }
+
+  #[test]
+  fn builder_debug_and_background_settings_survive_ryo_toml() {
+    let (_dir, ws) = temp_workspace(
+      "[debug]\nshow_colliders = false\nshow_velocities = false\nshow_origins = false\n\
+       [system]\ntarget_background_fps = 5\nbackground_rendering = true\n",
+      None,
+    );
+    let r = EngineBuilder::new()
+      .show_colliders(true)
+      .show_velocities(true)
+      .show_origins(true)
+      .background_fps(30)
+      .background_rendering(false)
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert!(r.config.debug.show_colliders);
+    assert!(r.config.debug.show_velocities);
+    assert!(r.config.debug.show_origins);
+    assert_eq!(r.config.target_background_fps, 30);
+    assert!(!r.config.background_rendering);
+  }
+
+  #[test]
+  fn ryo_toml_settings_apply_without_builder_calls() {
+    let (_dir, ws) = temp_workspace(
+      "[project]\ntitle = \"From Toml\"\n[debug]\nshow_colliders = true\ndisable_debug_keys = true\n\
+       [system]\nshow_fps = true\ntarget_background_fps = 5\n",
+      None,
+    );
+    let r = EngineBuilder::new()
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert_eq!(r.config.title, "From Toml");
+    assert!(r.config.debug.show_colliders);
+    assert!(r.config.debug.show_fps);
+    assert!(r.disable_debug_keys);
+    assert_eq!(r.config.target_background_fps, 5);
+  }
+
+  #[test]
+  fn builder_title_beats_ryo_toml_even_when_it_is_the_engine_default() {
+    let (_dir, ws) = temp_workspace("[project]\ntitle = \"From Toml\"\n", None);
+    let r = EngineBuilder::new()
+      .title("Ryo2D")
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert_eq!(r.config.title, "Ryo2D");
+  }
+
+  #[test]
+  fn headless_resolve_never_reads_or_creates_system_json() {
+    let (dir, ws) = temp_workspace("", None);
+    EngineBuilder::new()
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), true);
+    assert!(!dir.path().join("data/system.json").exists());
+
+    let (_dir, ws) = temp_workspace("", Some(r#"{"resolution": "1920x1080"}"#));
+    let r = EngineBuilder::new()
+      .resolution(320, 180)
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), true);
+    assert_eq!((r.config.width, r.config.height), (320, 180));
+  }
+
+  #[test]
+  fn unreadable_system_json_is_ignored_and_left_alone() {
+    let (dir, ws) = temp_workspace("", Some("not json"));
+    let r = EngineBuilder::new()
+      .resolution(800, 600)
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert_eq!((r.config.width, r.config.height), (800, 600));
+    assert_eq!(
+      std::fs::read_to_string(dir.path().join("data/system.json")).unwrap(),
+      "not json"
+    );
+  }
+
+  #[test]
+  fn unusable_save_dir_falls_back_to_project_settings() {
+    // The save directory path is an existing file, so it can't be created
+    let (_dir, ws) = temp_workspace(
+      "[paths]\nsave_data = \"Ryo.toml\"\n[system]\nmaster_volume = 0.3\n",
+      None,
+    );
+    let r = EngineBuilder::new()
+      .resolution(800, 600)
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert_eq!((r.config.width, r.config.height), (800, 600));
+    assert_eq!(r.master_volume, 0.3);
+  }
+
+  #[test]
+  fn repeated_builder_calls_and_filters() {
+    use crate::core::config::UserPreference;
+    let (_dir, ws) = temp_workspace(
+      "",
+      Some(r#"{"master_volume": 0.2, "resolution": "1600x900", "vsync": false}"#),
+    );
+    let r = EngineBuilder::new()
+      .vsync(false)
+      .vsync(true)
+      .with_user_preferences([UserPreference::MasterVolume])
+      .with_user_preferences([UserPreference::Resolution])
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert_eq!(r.master_volume, 0.2);
+    assert_eq!((r.config.width, r.config.height), (1600, 900));
+    // Vsync isn't in either filter: the last builder call wins
+    assert_eq!(r.vsync, Some(true));
+  }
+
+  #[test]
+  fn builder_show_fps_survives_workspace_config() {
+    let (_dir, ws) = temp_workspace("[system]\nshow_fps = false\n", None);
+    let resolved = EngineBuilder::new()
+      .show_fps(true)
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), false);
+    assert!(resolved.config.debug.show_fps);
   }
 
   #[test]
@@ -4228,7 +4244,75 @@ mod tests {
     let builder =
       EngineBuilder::new().with_user_preferences(crate::core::config::UserPreferenceFilter::all());
     assert_eq!(builder.user_preferences.len(), 1);
-    assert!(!builder.resolution_user_pref);
+    assert_eq!(builder.overrides, Default::default());
+  }
+
+  #[test]
+  fn engine_builder_sets_title() {
+    let builder = EngineBuilder::new().title("Test Game");
+    assert_eq!(builder.overrides.title.as_deref(), Some("Test Game"));
+  }
+
+  #[test]
+  fn engine_builder_sets_resolution() {
+    let builder = EngineBuilder::new().resolution(1920, 1080);
+    assert_eq!(builder.overrides.resolution, Some((1920, 1080)));
+  }
+
+  #[test]
+  fn engine_builder_chains() {
+    let builder = EngineBuilder::new()
+      .title("Chained")
+      .resolution(640, 480)
+      .target_fps(30)
+      .physics_hz(50);
+
+    assert_eq!(builder.overrides.title.as_deref(), Some("Chained"));
+    assert_eq!(builder.overrides.resolution, Some((640, 480)));
+    assert_eq!(builder.config.target_fps, 30);
+    assert_eq!(builder.config.physics_hz, 50);
+  }
+
+  #[test]
+  fn engine_builder_sets_background_fps() {
+    let builder = EngineBuilder::new().background_fps(10);
+    assert_eq!(builder.overrides.background_fps, Some(10));
+  }
+
+  #[test]
+  fn engine_builder_sets_background_fps_uncapped() {
+    let builder = EngineBuilder::new().background_fps(0);
+    assert_eq!(builder.overrides.background_fps, Some(0));
+  }
+
+  #[test]
+  fn engine_builder_sets_background_rendering() {
+    let builder = EngineBuilder::new().background_rendering(true);
+    assert_eq!(builder.overrides.background_rendering, Some(true));
+  }
+
+  #[test]
+  fn engine_builder_debug_keys_enabled_by_default() {
+    let resolved = EngineBuilder::new()
+      .start_scene(EmptyScene)
+      .resolve_in(None, false);
+    assert!(!resolved.disable_debug_keys);
+  }
+
+  #[test]
+  fn engine_builder_vsync_defaults_to_none() {
+    // Not set by the builder; resolve() applies the engine default (true)
+    let builder = EngineBuilder::new();
+    assert_eq!(builder.overrides.vsync, None);
+  }
+
+  #[test]
+  fn engine_builder_sets_vsync() {
+    let builder = EngineBuilder::new().vsync(false);
+    assert_eq!(builder.overrides.vsync, Some(false));
+
+    let builder = EngineBuilder::new().vsync(true);
+    assert_eq!(builder.overrides.vsync, Some(true));
   }
 
   #[test]
@@ -4298,19 +4382,6 @@ mod tests {
   }
 
   #[test]
-  fn engine_builder_sets_title() {
-    let builder = EngineBuilder::new().title("Test Game");
-    assert_eq!(builder.config.title, "Test Game");
-  }
-
-  #[test]
-  fn engine_builder_sets_resolution() {
-    let builder = EngineBuilder::new().resolution(1920, 1080);
-    assert_eq!(builder.config.width, 1920);
-    assert_eq!(builder.config.height, 1080);
-  }
-
-  #[test]
   fn engine_builder_sets_fps() {
     let builder = EngineBuilder::new().target_fps(144);
     assert_eq!(builder.config.target_fps, 144);
@@ -4320,21 +4391,6 @@ mod tests {
   fn engine_builder_sets_physics_hz() {
     let builder = EngineBuilder::new().physics_hz(120);
     assert_eq!(builder.config.physics_hz, 120);
-  }
-
-  #[test]
-  fn engine_builder_chains() {
-    let builder = EngineBuilder::new()
-      .title("Chained")
-      .resolution(640, 480)
-      .target_fps(30)
-      .physics_hz(50);
-
-    assert_eq!(builder.config.title, "Chained");
-    assert_eq!(builder.config.width, 640);
-    assert_eq!(builder.config.height, 480);
-    assert_eq!(builder.config.target_fps, 30);
-    assert_eq!(builder.config.physics_hz, 50);
   }
 
   #[test]
@@ -4375,33 +4431,9 @@ mod tests {
     assert!(config.background_rendering);
   }
 
-  #[test]
-  fn engine_builder_sets_background_fps() {
-    let builder = EngineBuilder::new().background_fps(10);
-    assert_eq!(builder.config.target_background_fps, 10);
-  }
-
-  #[test]
-  fn engine_builder_sets_background_fps_uncapped() {
-    let builder = EngineBuilder::new().background_fps(0);
-    assert_eq!(builder.config.target_background_fps, 0);
-  }
-
-  #[test]
-  fn engine_builder_sets_background_rendering() {
-    let builder = EngineBuilder::new().background_rendering(true);
-    assert!(builder.config.background_rendering);
-  }
-
   // ===========================================================================
   // Debug Keys Tests
   // ===========================================================================
-
-  #[test]
-  fn engine_builder_debug_keys_enabled_by_default() {
-    let builder = EngineBuilder::new();
-    assert!(!builder.disable_debug_keys);
-  }
 
   #[test]
   fn overlay_mode_syncs_to_debug_config_flags() {
@@ -4470,64 +4502,6 @@ mod tests {
     assert!(!should_apply_frame_limiting(true, None));
     assert!(!should_apply_frame_limiting(true, Some(true)));
     assert!(!should_apply_frame_limiting(true, Some(false)));
-  }
-
-  #[test]
-  fn engine_builder_vsync_defaults_to_none() {
-    // Builder starts with None; build() applies engine default (true) if no source sets it
-    let builder = EngineBuilder::new();
-    assert_eq!(builder.vsync, None);
-  }
-
-  #[test]
-  fn engine_builder_sets_vsync() {
-    let builder = EngineBuilder::new().vsync(false);
-    assert_eq!(builder.vsync, Some(false));
-
-    let builder = EngineBuilder::new().vsync(true);
-    assert_eq!(builder.vsync, Some(true));
-  }
-
-  #[test]
-  fn engine_builder_vsync_user_pref_blocks_builder() {
-    // Simulate: user_pref set vsync to false, then builder tries to set true
-    let mut builder = EngineBuilder::new();
-    builder.vsync = Some(false);
-    builder.vsync_user_pref = true;
-    builder = builder.vsync(true); // Should be blocked
-    assert_eq!(builder.vsync, Some(false));
-  }
-
-  #[test]
-  fn engine_builder_resolution_user_pref_blocks_builder() {
-    // Simulate: user_pref set resolution, then builder tries to override
-    let mut builder = EngineBuilder::new();
-    builder.config.width = 1920;
-    builder.config.height = 1080;
-    builder.resolution_user_pref = true;
-    builder = builder.resolution(800, 600); // Should be blocked
-    assert_eq!(builder.config.width, 1920);
-    assert_eq!(builder.config.height, 1080);
-    // But resolution_set should still be true (for Ryo.toml gating)
-    assert!(builder.resolution_set);
-  }
-
-  #[test]
-  fn engine_builder_volume_user_pref_blocks_ryo_toml() {
-    // Simulate: user_pref loaded volumes from system.json
-    let mut builder = EngineBuilder::new();
-    builder.master_volume = 0.3;
-    builder.music_volume = 0.5;
-    builder.sfx_volume = 0.7;
-    builder.master_volume_user_pref = true;
-    builder.music_volume_user_pref = true;
-    builder.sfx_volume_user_pref = true;
-
-    // Verify flags prevent overwrite (build() would apply Ryo.toml here)
-    assert!(builder.master_volume_user_pref);
-    assert!((builder.master_volume - 0.3).abs() < 0.001);
-    assert!((builder.music_volume - 0.5).abs() < 0.001);
-    assert!((builder.sfx_volume - 0.7).abs() < 0.001);
   }
 
   // ===========================================================================
@@ -4618,8 +4592,8 @@ mod tests {
         cmd.declare("game:reset", "Reset");
       })
       .target_fps(60);
-    assert_eq!(builder.config.title, "Test Game");
-    assert_eq!(builder.config.width, 800);
+    assert_eq!(builder.overrides.title.as_deref(), Some("Test Game"));
+    assert_eq!(builder.overrides.resolution, Some((800, 600)));
     assert_eq!(
       builder.console_builder.as_ref().unwrap().declarations.len(),
       1
