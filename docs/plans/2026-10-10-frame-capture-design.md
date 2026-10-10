@@ -6,7 +6,7 @@ Engine-level frame capture: save the final composed frame (scene + UI, at game r
 
 **Motivation:** a trails-vs-lighting regression (`d9fbbba`) could not be reproduced or verified automatically — `WgpuRenderer` needs a window surface and the engine had no way to get pixels out. Frame capture gives agents eyes on real engine output.
 
-**Scope (sub-project 1 of 3):** capture core, env-var auto-capture, F12 hotkey, `capture` console command.
+**Scope (sub-project 1 of 3):** capture core, env-var auto-capture, F12 hotkey, `debug:capture` console command.
 
 - Sub-project 2 (separate spec): headless rendering (offscreen present target + `HeadlessEngine` test harness) and unifying the engine's duplicated present paths. It reuses this spec's readback and final-composite pieces.
 - Sub-project 3: the trails-vs-lighting fix, test-first on top of 1 and 2.
@@ -17,7 +17,7 @@ Engine-level frame capture: save the final composed frame (scene + UI, at game r
 - `RYO_CAPTURE_FRAMES=120 RYO_CAPTURE_EXIT=1` on any example writes `captures/frame-000120.png` matching what is on screen (minus letterboxing) and exits.
 - Output is independent of window size and DPI (game resolution).
 - Zero per-frame cost when no capture is pending.
-- F12 (dev) and `capture [path]` (console) save the current frame.
+- F12 (dev) and `debug:capture [path]` (console) save the current frame.
 
 ## Architecture
 
@@ -25,9 +25,11 @@ Engine-level frame capture: save the final composed frame (scene + UI, at game r
 
 ```
 src/core/capture/
-├── mod.rs       — CaptureRequest, PNG writer (background thread), re-exports
+├── mod.rs       — CapturedFrame, CaptureTarget, re-exports
 ├── readback.rs  — read_texture_rgba(): texture → tightly packed RGBA8
-└── config.rs    — AutoCapture: RYO_CAPTURE_* parsing and frame schedule
+├── config.rs    — AutoCaptureConfig: RYO_CAPTURE_* parsing
+├── writer.rs    — PNG writer (sync + background thread), default file names
+└── state.rs     — CaptureState: presented-frame counter, schedule, manual requests, in-flight writes
 ```
 
 Exposed as `ryo2d::core::capture` (not in the prelude — dev tooling). `CaptureError` lives in `src/core/error.rs` with the other error enums.
@@ -37,8 +39,9 @@ Exposed as `ryo2d::core::capture` (not in the prelude — dev tooling). `Capture
 | Unit | Knows about | Does not know about |
 |------|-------------|---------------------|
 | `readback` | wgpu device/queue/texture | windows, engine, files |
-| `config` (`AutoCapture`) | env vars, frame numbers | GPU, files |
-| `mod` (writer) | RGBA image, paths, `image` crate | GPU, engine |
+| `config` (`AutoCaptureConfig`) | env vars, frame numbers | GPU, files |
+| `writer` | RGBA image, paths, `image` crate | GPU, engine |
+| `state` (`CaptureState`) | frame counter, schedule, manual requests, writes | GPU, windows |
 | `WgpuRenderer` | one pending capture path; drawing the final composite | when or why to capture |
 | `Engine` | frame counter, schedule, F12, console, exit | GPU details |
 
@@ -63,7 +66,7 @@ pub fn read_texture_rgba(
 
 ### Final composite helper
 
-The final pass (game/post-process source + optional UI overlay, fullscreen quad with the letterbox uniform) is currently duplicated in `render_with_effects`, `render_with_gpu_sprites` and `render_with_lighting`. It becomes one private helper:
+The final pass (game/post-process source + optional UI overlay, fullscreen quad with the letterbox uniform) is currently duplicated in the three surface-presenting paths: `render_with_gpu_sprites` (which `render`/`render_with_effects` delegate to), `render_with_lighting` and `render_raycast`. It becomes one private helper:
 
 ```rust
 fn draw_final_composite(
@@ -74,7 +77,7 @@ fn draw_final_composite(
 );
 ```
 
-All three render paths call it for the surface pass. This is a behavior-preserving extraction that the capture pass needs; it also removes one source of drift between paths.
+All three paths call it for the surface pass. This is a behavior-preserving extraction that the capture pass needs; it also removes one source of drift between paths.
 
 ### Capture pass
 
@@ -110,7 +113,7 @@ Read once in `EngineBuilder::build()`. Honoured in dev **and** release builds (o
 
 - Invalid `RYO_CAPTURE_FRAMES` values (non-numeric, `0`, empty list) produce one warning and disable auto-capture; the game runs normally. Duplicates are ignored and the list is sorted.
 - Any other `RYO_CAPTURE_EXIT` value produces one warning and is treated as off.
-- `RYO_CAPTURE_DIR` also applies to F12 and argument-less `capture`, even when `RYO_CAPTURE_FRAMES` is unset.
+- `RYO_CAPTURE_DIR` also applies to F12 and argument-less `debug:capture`, even when `RYO_CAPTURE_FRAMES` is unset.
 - `RYO_CAPTURE_EXIT` without `RYO_CAPTURE_FRAMES` has no effect.
 
 ### F12 hotkey
@@ -119,7 +122,7 @@ Handled next to F9/F10 and gated by `config.debug.dev_window_keys` (on in dev, o
 
 ### Console command
 
-Built-in `capture [path]`. Sets `CommandContext::capture_requested: Option<PathBuf>` (same pattern as `quit_requested`); with no argument it uses the default directory and name. A relative path is resolved against the working directory. The console prints the destination when the capture is written.
+Built-in `debug:capture [path]` (namespaced like the other `debug:` commands). Sets `CommandContext::capture_requested: Option<CaptureTarget>` (same pattern as `quit_requested`); with no argument it uses the default directory and name. A relative path is resolved against the working directory. The console prints the destination when the capture is written.
 
 ### File naming and feedback
 
@@ -157,14 +160,15 @@ Capture errors are never fatal: they are logged and the game continues (except f
 - Schedule logic: next frame due, "all done" detection for exit.
 - File naming (`frame-000060.png`), default dir vs `RYO_CAPTURE_DIR`.
 - `strip_row_padding` and `bgra_to_rgba_in_place` on synthetic buffers.
+- PNG round trip: write via the writer, reload with `image`, compare (no GPU needed).
 
 **GPU e2e (`tests/e2e/`, skipped without a GPU via `TestGpu::shared()`):**
-- Render known colours into a 37-px-wide offscreen texture (forces row padding) in `Rgba8UnormSrgb` and `Bgra8UnormSrgb`; `read_texture_rgba` returns exact expected pixels.
-- PNG round trip: write via the writer, reload with `image`, compare.
+- Upload known pixels into a 37-px-wide texture (forces row padding) in `Rgba8UnormSrgb` and `Bgra8UnormSrgb`; `read_texture_rgba` returns exact expected pixels.
+- An unsupported format (`R8Unorm`) returns `CaptureError::UnsupportedFormat`.
 
 **Known gap:** the capture pass inside `WgpuRenderer` needs a window surface and is not covered automatically until sub-project 2. Manual acceptance until then:
 - `RYO_CAPTURE_FRAMES=120 RYO_CAPTURE_EXIT=1` on the trails demo writes a PNG matching the screen and exits with code 0.
-- F12 and `capture` work in a dev run; `capture /tmp/x.png` writes to that path.
+- F12 and `debug:capture` work in a dev run; `debug:capture /tmp/x.png` writes to that path.
 - A capture of the trails demo with a `Light2D` present shows no trails (the known bug), providing sub-project 3's red evidence.
 
 ## Documentation
