@@ -229,7 +229,10 @@ pub const LOCAL_HOST_ID: ClientId = 0;
 ///
 /// The first three map to renet's DefaultChannel variants; the replication channels
 /// are reserved for the engine.
+///
+/// New variants may be added; match with a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Channel {
   /// Best-effort delivery, no ordering guarantees.
   /// Use for frequently-updated data like position updates where

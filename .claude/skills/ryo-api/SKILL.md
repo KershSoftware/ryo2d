@@ -1505,10 +1505,10 @@ impl ReplicationManager {
     fn despawn_networked(&mut self, world: &mut World, entity: Entity) -> Option<NetworkId>;
     fn mark_dirty<T: Replicated>(&mut self, entity: Entity);
     fn broadcast_updates(&mut self, world: &World, server: &mut impl ServerLike);
-    fn send_full_state(&self, world: &World, server: &mut impl ServerLike, client: ClientId);
+    fn send_full_state(&mut self, world: &World, server: &mut impl ServerLike, client: ClientId);
     fn process_incoming(&mut self, world: &mut World, client: &mut impl ClientLike);  // also sends acks
     fn client_acked_generation(&self, client_id: ClientId) -> Option<u64>;
-    fn set_refresh_interval(&mut self, interval: u64);  // broadcasts between full refreshes; default 300, 0 disables
+    fn set_refresh_interval(&mut self, interval: u64);  // broadcasts between full refreshes; default 300, 0 disables; refresh is spread over broadcasts in MAX_REFRESH_BYTES messages, changes go in MAX_BATCH_BYTES batches
     fn get_entity(&self, network_id: NetworkId) -> Option<Entity>;
 }
 

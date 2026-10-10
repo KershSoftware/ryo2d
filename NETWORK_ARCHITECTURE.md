@@ -296,7 +296,7 @@ Benefits:
 | `ComponentBatchMessage` | ReplicationUnreliable | Multiple component deltas (efficient) |
 | `FullStateSyncMessage` | ReplicationReliable | Complete state for new clients |
 
-Component changes are acknowledged: clients ack the newest batch they applied (`process_incoming`), and the server re-sends everything changed since each client's last ack, with a periodic full refresh as a safety net.
+Component changes are acknowledged: clients ack the newest batch they applied (`process_incoming`), and the server re-sends everything changed since each client's last ack, with a periodic full refresh as a safety net. Changes are sent in size-limited batches (never-sent components first), so a large backlog takes several broadcasts, and the refresh is spread over broadcasts in bounded messages.
 
 ### Built-in Replicated Components
 

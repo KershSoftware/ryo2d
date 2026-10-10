@@ -106,8 +106,54 @@ pub trait Replicated: Component + Serialize + DeserializeOwned + Clone {
 pub struct SerializedComponent {
   /// The component type identifier.
   pub type_id: ComponentTypeId,
-  /// Serialized component data (JSON for now, could be binary).
+  /// Serialized component data (JSON text; sent as a string).
+  #[serde(with = "data_encoding")]
   pub data: Vec<u8>,
+}
+
+/// `SerializedComponent::data` on the wire: JSON text as a string, about a
+/// quarter the size of a byte array; non-UTF-8 data falls back to bytes.
+/// Both forms are accepted when reading.
+mod data_encoding {
+  use serde::de::{self, SeqAccess, Visitor};
+  use serde::{Deserializer, Serializer};
+
+  pub fn serialize<S: Serializer>(data: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+    match std::str::from_utf8(data) {
+      Ok(text) => serializer.serialize_str(text),
+      Err(_) => serializer.serialize_bytes(data),
+    }
+  }
+
+  pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    struct DataVisitor;
+
+    impl<'de> Visitor<'de> for DataVisitor {
+      type Value = Vec<u8>;
+
+      fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("component data as a string or byte array")
+      }
+
+      fn visit_str<E: de::Error>(self, text: &str) -> Result<Vec<u8>, E> {
+        Ok(text.as_bytes().to_vec())
+      }
+
+      fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<Vec<u8>, E> {
+        Ok(bytes.to_vec())
+      }
+
+      fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
+        let mut data = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(byte) = seq.next_element()? {
+          data.push(byte);
+        }
+        Ok(data)
+      }
+    }
+
+    deserializer.deserialize_any(DataVisitor)
+  }
 }
 
 impl SerializedComponent {
@@ -346,6 +392,27 @@ impl Default for ComponentRegistry {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn component_data_travels_as_json_text() {
+    let component = SerializedComponent {
+      type_id: ComponentTypeId(7),
+      data: br#"{"hp":42}"#.to_vec(),
+    };
+
+    let json = serde_json::to_string(&component).unwrap();
+
+    assert_eq!(json, r#"{"type_id":7,"data":"{\"hp\":42}"}"#);
+    let back: SerializedComponent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.data, component.data);
+  }
+
+  #[test]
+  fn component_data_still_reads_the_byte_array_form() {
+    let back: SerializedComponent =
+      serde_json::from_str(r#"{"type_id":7,"data":[123,125]}"#).unwrap();
+    assert_eq!(back.data, b"{}".to_vec());
+  }
 
   #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
   struct TestComponent {

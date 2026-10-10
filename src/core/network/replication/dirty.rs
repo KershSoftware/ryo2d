@@ -571,6 +571,23 @@ mod tests {
   }
 
   #[test]
+  fn an_ack_marks_the_change_the_batch_carried() {
+    let mut tracker = DirtyTracker::new();
+    let a = NetworkId::from_raw(1);
+    let health = make_component_id("Health");
+    tracker.register_client(1);
+    tracker.mark_dirty(a, health);
+    let sent = tracker.pending_for_client(1);
+    tracker.record_sent(1, sent); // batch 0 carries the first change
+    tracker.next_generation();
+    tracker.mark_dirty(a, health); // a newer change the batch did not carry
+
+    tracker.record_ack(1, 0);
+
+    assert_eq!(pending_ids(&tracker, 1), vec![(a, health)]);
+  }
+
+  #[test]
   fn a_full_sync_covers_changes_before_it_but_not_during_it() {
     let mut tracker = DirtyTracker::new();
     let (a, b) = (NetworkId::from_raw(1), NetworkId::from_raw(2));

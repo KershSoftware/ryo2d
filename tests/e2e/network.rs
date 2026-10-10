@@ -1305,7 +1305,12 @@ fn game_messages_survive_replication() {
   let server_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
   let mut server = HeadlessServer::new(port, protocol_id).expect("Failed to create server");
-  let mut client = HeadlessClient::new(server_addr, protocol_id).expect("Failed to create client");
+  let mut net_client = NetworkClient::connect(NetworkClientConfig::udp(server_addr, protocol_id))
+    .expect("Failed to create client");
+  let mut replication = ReplicationManager::new_client();
+  replication.register::<Transform>();
+  replication.register::<PlayerPosition>();
+  let mut world = World::new();
 
   let dt = Duration::from_millis(16);
   let start = std::time::Instant::now();
@@ -1317,13 +1322,13 @@ fn game_messages_survive_replication() {
 
   while start.elapsed() < timeout && !(to_client && chat && to_server) {
     server.update(dt);
-    client.update(dt);
+    net_client.update(dt);
     server.process_events();
     server.broadcast_updates();
-    client.process_replication();
+    replication.process_incoming(&mut world, &mut net_client);
 
-    if client.is_connected() {
-      let client_id = client.client_id();
+    if net_client.is_connected() {
+      let client_id = net_client.client_id();
       if !sent && server.clients().any(|id| id == client_id) {
         sent = true;
         server
@@ -1337,13 +1342,13 @@ fn game_messages_survive_replication() {
           .send(client_id, Channel::Unreliable, b"to-client");
       }
       if sent && !to_server {
-        client.client.send(Channel::Unreliable, b"to-server");
+        net_client.send(Channel::Unreliable, b"to-server");
       }
 
-      while let Some(data) = client.client.receive(Channel::Unreliable) {
+      while let Some(data) = net_client.receive(Channel::Unreliable) {
         to_client |= data == b"to-client";
       }
-      while let Some(data) = client.client.receive(Channel::ReliableOrdered) {
+      while let Some(data) = net_client.receive(Channel::ReliableOrdered) {
         chat |= data == b"chat";
       }
       while let Some(data) = server.server.receive(client_id, Channel::Unreliable) {

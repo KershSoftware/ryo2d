@@ -17,7 +17,10 @@ use renet::ClientId;
 ///   server re-sends batches until the client's `Ack` arrives on the same channel)
 /// - RPCs → ReliableOrdered (game events)
 /// - Full state sync → ReplicationReliable (new client init)
+///
+/// New variants may be added; match with a wildcard arm.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum ReplicationMessage {
   /// Spawn a new networked entity
   SpawnEntity(SpawnEntityMessage),

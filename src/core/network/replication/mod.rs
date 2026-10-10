@@ -65,7 +65,7 @@ mod types;
 pub use builder::NetworkEntityBuilder;
 pub use component::{ComponentRegistry, ComponentTypeId, Replicated, SerializedComponent};
 pub use dirty::{DirtyTracker, MAX_IN_FLIGHT_BATCHES, PendingComponent};
-pub use manager::{MAX_BATCH_BYTES, ReplicationManager};
+pub use manager::{MAX_BATCH_BYTES, MAX_REFRESH_BYTES, ReplicationManager};
 pub use messages::{
   AckMessage, ComponentBatchMessage, ComponentUpdateMessage, DespawnEntityMessage,
   FullStateSyncMessage, ReplicationMessage, SpawnEntityMessage,

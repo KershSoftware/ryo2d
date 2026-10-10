@@ -4,7 +4,7 @@
 //! handling entity spawning, despawning, component updates, and full state sync.
 
 use std::any::TypeId;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use hecs::Entity;
 use renet::ClientId;
@@ -29,6 +29,21 @@ pub enum ReplicationRole {
   /// Client: receives updates, applies them to local world
   Client,
 }
+
+/// Default number of `broadcast_updates` calls between full refreshes
+/// (about five seconds at 60 updates per second - a safety net, as clients
+/// acknowledge changes).
+pub const DEFAULT_REFRESH_INTERVAL: u64 = 300;
+
+/// Most encoded bytes of component values per refresh message. A refresh
+/// cycle sends one per broadcast until every component has been refreshed.
+pub const MAX_REFRESH_BYTES: usize = 8 * 1024;
+
+/// Most encoded bytes of component updates in one change batch - well under
+/// renet's per-tick send budget (60 KB per connection), which silently drops
+/// a larger unreliable message. A bigger backlog goes out over several
+/// broadcasts.
+pub const MAX_BATCH_BYTES: usize = 16 * 1024;
 
 /// The replication manager coordinates all network entity synchronization.
 ///
@@ -66,20 +81,6 @@ pub enum ReplicationRole {
 /// // Process incoming messages (requires client instance)
 /// // replication.process_incoming(&mut world, &mut client);
 /// ```
-/// Default number of `broadcast_updates` calls between full refreshes
-/// (about five seconds at 60 updates per second - a safety net, as clients
-/// acknowledge changes).
-pub const DEFAULT_REFRESH_INTERVAL: u64 = 300;
-
-/// Most component updates per refresh message, keeping messages small.
-pub const REFRESH_BATCH_SIZE: usize = 64;
-
-/// Most encoded bytes of component updates in one change batch - well under
-/// renet's per-tick send budget (60 KB per connection), which silently drops
-/// a larger unreliable message. A bigger backlog goes out over several
-/// broadcasts.
-pub const MAX_BATCH_BYTES: usize = 16 * 1024;
-
 pub struct ReplicationManager {
   /// Server or client role
   role: ReplicationRole,
@@ -102,6 +103,9 @@ pub struct ReplicationManager {
   /// `broadcast_updates` calls between full refreshes; 0 disables them
   refresh_interval: u64,
 
+  /// Server: components still to refresh in the current refresh cycle
+  refresh_queue: VecDeque<(NetworkId, ComponentTypeId)>,
+
   /// Client: generation of the newest change batch applied, even partly
   newest_applied: Option<u64>,
 
@@ -120,6 +124,7 @@ impl ReplicationManager {
       entity_to_network: HashMap::new(),
       registered_types: Vec::new(),
       refresh_interval: DEFAULT_REFRESH_INTERVAL,
+      refresh_queue: VecDeque::new(),
       newest_applied: None,
       pending_acks: Vec::new(),
     }
@@ -135,6 +140,7 @@ impl ReplicationManager {
       entity_to_network: HashMap::new(),
       registered_types: Vec::new(),
       refresh_interval: DEFAULT_REFRESH_INTERVAL,
+      refresh_queue: VecDeque::new(),
       newest_applied: None,
       pending_acks: Vec::new(),
     }
@@ -368,22 +374,6 @@ impl ReplicationManager {
     Some(msg)
   }
 
-  /// The current value of every registered component on every networked entity.
-  fn collect_all_updates(&self, world: &World) -> Vec<ComponentUpdateMessage> {
-    let mut updates = Vec::new();
-    for (&network_id, &entity) in &self.network_to_entity {
-      for component_id in self.registry.registered_types() {
-        if let Some(serialized) = self
-          .registry
-          .serialize_from_entity(component_id, world, entity)
-        {
-          updates.push(ComponentUpdateMessage::new(network_id, serialized));
-        }
-      }
-    }
-    updates
-  }
-
   /// Build a full state sync message for a new client.
   pub fn build_full_state_sync(&self, world: &World) -> FullStateSyncMessage {
     let mut sync = FullStateSyncMessage::new(self.dirty_tracker.generation());
@@ -420,10 +410,13 @@ impl ReplicationManager {
   /// calls to [`broadcast_updates`](Self::broadcast_updates); `0` disables it.
   ///
   /// Changes are re-sent until acknowledged; the refresh is a safety net
-  /// behind that, bounding how long a client can show a stale value.
+  /// behind that, bounding how long a client can show a stale value. A
+  /// refresh cycle is spread over broadcasts, one message of at most
+  /// [`MAX_REFRESH_BYTES`] each; changing the interval ends a running cycle.
   /// Default: [`DEFAULT_REFRESH_INTERVAL`].
   pub fn set_refresh_interval(&mut self, interval: u64) {
     self.refresh_interval = interval;
+    self.refresh_queue.clear();
   }
 
   /// Broadcast all pending updates to clients.
@@ -508,17 +501,51 @@ impl ReplicationManager {
       }
     }
 
-    // Periodic refresh: bounds how long a lost delta can leave a client stale
+    // Periodic refresh, a safety net: a cycle starts every `refresh_interval`
+    // broadcasts (never while one is running) and sends one bounded message
+    // per broadcast
     let generation = self.dirty_tracker.generation();
-    if self.refresh_interval > 0
+    if self.refresh_queue.is_empty()
+      && self.refresh_interval > 0
       && generation > 0
       && generation.is_multiple_of(self.refresh_interval)
       && !remote_clients.is_empty()
     {
-      let updates = self.collect_all_updates(world);
-      for chunk in updates.chunks(REFRESH_BATCH_SIZE) {
+      self.refresh_queue = self
+        .network_to_entity
+        .keys()
+        .flat_map(|&network_id| {
+          self
+            .registry
+            .registered_types()
+            .map(move |component_id| (network_id, component_id))
+        })
+        .collect();
+    }
+    if !remote_clients.is_empty() {
+      let mut updates = Vec::new();
+      let mut size = 0;
+      while let Some(&(network_id, component_id)) = self.refresh_queue.front() {
+        let update = self
+          .network_to_entity
+          .get(&network_id)
+          .and_then(|&entity| self.serialize_component(world, entity, component_id))
+          .map(|serialized| ComponentUpdateMessage::new(network_id, serialized));
+        let Some(update) = update else {
+          self.refresh_queue.pop_front();
+          continue;
+        };
+        let update_size = encoded_len(&update);
+        if !updates.is_empty() && size + update_size > MAX_REFRESH_BYTES {
+          break;
+        }
+        self.refresh_queue.pop_front();
+        size += update_size;
+        updates.push(update);
+      }
+      if !updates.is_empty() {
         let msg = ReplicationMessage::ComponentRefresh(ComponentBatchMessage {
-          updates: chunk.to_vec(),
+          updates,
           generation,
         });
         if let Ok(bytes) = msg.to_bytes() {
@@ -1166,10 +1193,10 @@ mod tests {
   }
 
   #[test]
-  fn refresh_is_split_into_bounded_batches() {
+  fn refresh_is_spread_over_broadcasts_in_bounded_messages() {
     let mut server = ReplicationManager::new_server();
     server.register::<Health>();
-    server.set_refresh_interval(1);
+    server.set_refresh_interval(50);
     let mut world = World::new();
     for i in 0..300 {
       let entity = server.spawn_networked(&mut world, NetworkEntityBuilder::new());
@@ -1181,17 +1208,67 @@ mod tests {
     };
     server.register_client(1);
 
-    // Generation 0 sends spawns; generation 1 is the first refresh
-    server.broadcast_updates(&world, &mut net);
+    for _ in 0..60 {
+      server.broadcast_updates(&world, &mut net);
+    }
+
+    let refreshes: Vec<&Vec<u8>> = net
+      .sent
+      .iter()
+      .filter(|(_, _, bytes)| {
+        matches!(
+          ReplicationMessage::from_bytes(bytes),
+          Ok(ReplicationMessage::ComponentRefresh(_))
+        )
+      })
+      .map(|(_, _, bytes)| bytes)
+      .collect();
+    assert!(
+      refreshes.len() > 1,
+      "a 300-component refresh takes several messages"
+    );
+    assert!(
+      refreshes
+        .iter()
+        .all(|bytes| bytes.len() <= MAX_REFRESH_BYTES + 256)
+    );
+    let generations: std::collections::HashSet<u64> =
+      sent_refreshes(&net).iter().map(|b| b.generation).collect();
+    assert_eq!(
+      generations.len(),
+      refreshes.len(),
+      "one refresh message per broadcast"
+    );
+    let mut healths: Vec<u32> = health_in(sent_refreshes(&net))
+      .into_iter()
+      .map(|h| h.0)
+      .collect();
+    healths.sort_unstable();
+    assert_eq!(healths, (0..300).collect::<Vec<_>>());
+  }
+
+  #[test]
+  fn an_update_larger_than_the_budget_goes_out_alone() {
+    let mut server = ReplicationManager::new_server();
+    server.register::<Label>();
+    server.set_refresh_interval(0);
+    let mut world = World::new();
+    let entity = server.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
+    world
+      .insert_one(entity, Label("x".repeat(MAX_BATCH_BYTES)))
+      .unwrap();
+    server.mark_dirty::<Label>(entity);
+    let mut net = RecordingServer {
+      clients: vec![1],
+      ..Default::default()
+    };
+    server.register_client(1);
+
     server.broadcast_updates(&world, &mut net);
 
-    let batches = sent_refreshes(&net);
-    assert!(
-      batches
-        .iter()
-        .all(|b| b.updates.len() <= REFRESH_BATCH_SIZE)
-    );
-    assert_eq!(batches.iter().map(|b| b.updates.len()).sum::<usize>(), 300);
+    let batches = sent_batches(&net);
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].updates.len(), 1);
   }
 
   #[test]
