@@ -25,8 +25,10 @@ pub struct TimeState {
   accumulator: Duration,
   /// Target frame duration for FPS limiting
   target_frame_time: Duration,
-  /// Frame counter for debugging
+  /// Frames since the engine started (never reset)
   frame_count: u64,
+  /// Frames since the FPS counter last updated
+  fps_frames: u64,
   /// Last calculated FPS (updated each second)
   current_fps: u64,
   /// Last time we printed debug info
@@ -48,6 +50,7 @@ impl TimeState {
       accumulator: Duration::ZERO,
       target_frame_time: Duration::from_secs_f64(1.0 / target_fps as f64),
       frame_count: 0,
+      fps_frames: 0,
       current_fps: 0,
       last_debug_print: now,
       time_scale: 1.0,
@@ -79,6 +82,7 @@ impl TimeState {
     }
 
     self.frame_count += 1;
+    self.fps_frames += 1;
     // Update dev_log frame number for log entries
     set_frame(self.frame_count);
   }
@@ -136,7 +140,7 @@ impl TimeState {
   pub fn tick_fps_counter(&mut self) -> bool {
     let now = Instant::now();
     if now.duration_since(self.last_debug_print) >= Duration::from_secs(1) {
-      self.current_fps = self.frame_count;
+      self.current_fps = self.fps_frames;
       engine_debug!(
         module: "GameLoop",
         "FPS: {}, Delta: {:.2}ms, Fixed DT: {:.2}ms",
@@ -144,7 +148,7 @@ impl TimeState {
         self.delta_time.as_secs_f64() * 1000.0,
         self.fixed_timestep.as_secs_f64() * 1000.0
       );
-      self.frame_count = 0;
+      self.fps_frames = 0;
       self.last_debug_print = now;
       true
     } else {
@@ -227,6 +231,21 @@ mod tests {
     assert_eq!(time.time_scale, 1.0);
     assert_eq!(time.hitstop_remaining, 0.0);
     assert_eq!(time.frame_count, 0);
+  }
+
+  #[test]
+  fn frame_count_keeps_counting_past_the_fps_window() {
+    let mut time = TimeState::new(60, 60);
+    time.advance(Duration::from_millis(16));
+    time.advance(Duration::from_millis(16));
+    // Close the once-per-second FPS window
+    time.last_debug_print = Instant::now() - Duration::from_secs(2);
+
+    assert!(time.tick_fps_counter());
+    assert_eq!(time.current_fps(), 2);
+
+    time.advance(Duration::from_millis(16));
+    assert_eq!(time.frame_count(), 3);
   }
 
   #[test]
