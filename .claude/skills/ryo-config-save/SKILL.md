@@ -92,6 +92,16 @@ Players can edit this file directly.
 | `"exclusive_fullscreen"` | Exclusive fullscreen (changes display resolution) |
 | `"borderless_fullscreen"` | Borderless window covering full screen |
 
+## Where saves live
+
+| Build | Save folder (system.json, game and world saves) |
+|---|---|
+| Dev (`ryo2d dev`, `cargo run`) | `[paths] save_data` under the project (default `data/`) |
+| Release (`ryo2d build`) | OS user data folder: `%APPDATA%`, `~/Library/Application Support` or `~/.local/share`, plus `[release] save_folder` (default `[project] name`) |
+| Release with `[release] portable = true` | `data/` beside the game |
+
+`Workspace::save_location()` returns the folder; the engine logs it at startup. `ryo2d run` launches the release bundle like a player would, so a non-portable game saves into your real OS folder.
+
 ## Loading Configuration
 
 ```rust

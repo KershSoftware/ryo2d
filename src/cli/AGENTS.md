@@ -4,6 +4,7 @@
 
 - **Workspace-aware** - Resolve the project root with `discover_workspace()` (wraps `Workspace::discover()`, which finds `Ryo.toml`). Never use raw cwd paths
 - **Wrap Cargo, don't reimplement it** - `build` → `cargo build --release`; `dev` → `cargo run`; `run` executes the built binary
+- **Build validates first** - `build` validates the `[release]` save folder name before compiling, and creates `release/data/` only in portable mode
 - **Output** - Use the `Output::status/success/warning/error` helpers (Cargo-style right-aligned labels, no color)
 
 ## Skills

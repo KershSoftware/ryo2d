@@ -285,6 +285,8 @@ logger_window = false
 
 [release]
 # logo = "assets/icon.png"
+# portable = false                 # true: keep saves in data/ beside the game instead of the OS user folder
+# save_folder = "MyStudio/MyGame"  # folder under the OS user data folder (default: [project] name)
 
 # =============================================================================
 # GAME SPECIFIC SETTINGS

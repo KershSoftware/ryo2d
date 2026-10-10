@@ -41,20 +41,25 @@ my_game/
 
 ```toml
 [project]
-name = "My Game"
+name = "my_game"
+title = "My Game"
 version = "0.1.0"
 
-[window]
-title = "My Game"
-width = 1280
-height = 720
-
-[physics]
-hz = 120
+[system]
+resolution = "1280x720"
 
 [debug]
-show_fps = true
+show_colliders = false
+
+[release]
+# logo = "assets/icon.png"
+# portable = false
+# save_folder = "MyStudio/MyGame"
 ```
+
+## Release bundle
+
+`ryo2d build` writes `release/` with the game binary, `assets/`, `levels/` and `icon.png` (plus `data/` when `[release] portable = true`). The game runs from that folder wherever it's launched from, and saves to the OS user data folder unless portable - see the `ryo-config-save` skill.
 
 ## Development Workflow
 
@@ -121,11 +126,7 @@ When working ON the engine (not a game), use root scripts:
 
 ## Configuration Priority
 
-Settings cascade (highest to lowest priority):
-
-1. `system.json` (user preferences)
-2. `Ryo.toml` (project defaults)
-3. Engine defaults
+Startup settings resolve in one order, each layer overriding only what it sets: engine defaults -> `Ryo.toml` (dev) or the values `ryo2d build` embedded from it (release) -> `EngineBuilder` calls -> saved player preferences in `system.json` (only with `with_user_preferences`).
 
 ## Dev Build Performance
 
