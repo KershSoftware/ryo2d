@@ -6,6 +6,7 @@
 //! - Debug visualization and frame timing utilities
 
 pub mod debug;
+pub(crate) mod resolve;
 pub mod save;
 pub mod workspace;
 
