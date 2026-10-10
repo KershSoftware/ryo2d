@@ -91,9 +91,14 @@ const BUNDLE_DIRS: [&str; 3] = ["assets", "levels", "data"];
 
 /// The folder a release build should run from: its executable's folder, when
 /// that holds the bundle's `assets/`, `levels/` or `data/` and isn't already
-/// the working directory. `None` for dev builds.
+/// the working directory. `None` for dev builds. Cargo target folders (with a
+/// `deps/` folder or `.cargo-lock`) are never bundles, even once a portable
+/// game has created `data/` in them.
 pub(crate) fn bundle_dir_to_enter(is_release: bool, exe_dir: &Path, cwd: &Path) -> Option<PathBuf> {
   if !is_release || exe_dir == cwd {
+    return None;
+  }
+  if exe_dir.join("deps").is_dir() || exe_dir.join(".cargo-lock").exists() {
     return None;
   }
   BUNDLE_DIRS
@@ -161,6 +166,15 @@ mod tests {
     let bundle = folder_with(&["assets"]);
     assert_eq!(
       bundle_dir_to_enter(true, bundle.path(), bundle.path()),
+      None
+    );
+  }
+
+  #[test]
+  fn cargo_target_folders_with_data_are_not_bundles() {
+    let target = folder_with(&["deps", "build", "data"]);
+    assert_eq!(
+      bundle_dir_to_enter(true, target.path(), Path::new("/projects/hopper")),
       None
     );
   }
