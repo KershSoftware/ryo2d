@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ryo2d = { path = "../../../" }
+demo-kit = { path = "../../demo-kit" }
 rand = "0.8"
 
 [[bin]]

@@ -6,18 +6,10 @@
 //! - Alignment: Match velocity with nearby boids
 //! - Flee: Escape from predator (mouse position when held)
 //!
-//! ## Controls
 //!
-//! - Hold Left Mouse: Spawn predator at cursor (boids flee)
-//! - Space: Add 10 more boids
-//! - 1/2/3: Adjust separation weight (-, reset, +)
-//! - 4/5/6: Adjust cohesion weight (-, reset, +)
-//! - 7/8/9: Adjust alignment weight (-, reset, +)
-//! - T: Toggle trails
-//! - R: Reset simulation
-//! - Escape: Exit
+//! Runs on the demo-kit shell; the weights and trails are settings.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 const INITIAL_BOIDS: usize = 50;
 const BOID_SPEED: f32 = 120.0;
@@ -258,36 +250,32 @@ impl SteeringDemoScene {
       }
     }
   }
-
-  fn reset(&mut self, ctx: &mut SceneContext) {
-    // Despawn all boids
-    for entity in self.boids.drain(..) {
-      let _ = ctx.world.despawn(entity);
-    }
-
-    // Despawn predator
-    self.despawn_predator(ctx);
-
-    // Reset weights
-    self.separation_weight = 1.5;
-    self.cohesion_weight = 1.0;
-    self.alignment_weight = 1.0;
-
-    // Respawn
-    self.spawn_initial_boids(ctx);
-  }
 }
 
-impl Scene for SteeringDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    println!("Steering Behaviors Demo");
-    println!("  Hold LMB: Spawn predator (boids flee)");
-    println!("  Space: Add 10 boids");
-    println!("  1/2/3: Separation weight (-/reset/+)");
-    println!("  4/5/6: Cohesion weight (-/reset/+)");
-    println!("  7/8/9: Alignment weight (-/reset/+)");
-    println!("  T: Toggle trails | R: Reset | ESC: Exit");
+impl DemoPage for SteeringDemoScene {
+  fn name(&self) -> &str {
+    "Boids"
+  }
 
+  fn description(&self) -> &str {
+    "Boids steer by separation, cohesion and alignment, and flee a predator you hold with the mouse"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.float("Separation", &mut self.separation_weight, 0.0..=5.0, 0.5);
+    s.float("Cohesion", &mut self.cohesion_weight, 0.0..=5.0, 0.5);
+    s.float("Alignment", &mut self.alignment_weight, 0.0..=5.0, 0.5);
+    s.toggle("Trails", &mut self.show_trails);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::key(KeyCode::Space, "Add 10 boids"),
+      Control::mouse("Hold left button: predator"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (vw, vh) = ctx.camera.viewport_size();
     self.screen_w = vw;
     self.screen_h = vh;
@@ -296,22 +284,7 @@ impl Scene for SteeringDemoScene {
     self.spawn_initial_boids(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Exit
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Reset
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.reset(ctx);
-    }
-
-    // Toggle trails - set_enabled() now also controls visibility
-    if ctx.input.key_pressed(KeyCode::KeyT) {
-      self.show_trails = !self.show_trails;
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Spawn more boids
     if ctx.input.key_pressed(KeyCode::Space) {
       let mut rng = rand::thread_rng();
@@ -321,40 +294,6 @@ impl Scene for SteeringDemoScene {
         self.spawn_boid(ctx, x, y);
       }
       println!("Total boids: {}", self.boids.len());
-    }
-
-    // Weight adjustments
-    // Separation: 1/2/3
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      self.separation_weight = (self.separation_weight - 0.5).max(0.0);
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      self.separation_weight = 1.5;
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      self.separation_weight = (self.separation_weight + 0.5).min(5.0);
-    }
-
-    // Cohesion: 4/5/6
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      self.cohesion_weight = (self.cohesion_weight - 0.5).max(0.0);
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      self.cohesion_weight = 1.0;
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      self.cohesion_weight = (self.cohesion_weight + 0.5).min(5.0);
-    }
-
-    // Alignment: 7/8/9
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      self.alignment_weight = (self.alignment_weight - 0.5).max(0.0);
-    }
-    if ctx.input.key_pressed(KeyCode::Digit8) {
-      self.alignment_weight = 1.0;
-    }
-    if ctx.input.key_pressed(KeyCode::Digit9) {
-      self.alignment_weight = (self.alignment_weight + 0.5).min(5.0);
     }
 
     // Predator - spawn on mouse hold, despawn on release
@@ -378,60 +317,26 @@ impl Scene for SteeringDemoScene {
     // Update boids
     self.update_boids(ctx, dt);
     self.update_trails(ctx, dt);
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let text_light = Color::rgb(220, 220, 220);
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
     let text_accent = Color::rgb(130, 180, 255);
-    let text_muted = Color::rgb(160, 160, 160);
     let text_warn = Color::rgb(255, 150, 100);
 
-    // Title
-    ui.draw_text("Steering Behaviors (Boids)", 10.0, 10.0, text_light);
-
-    // Stats
     let stats = format!("Boids: {}", self.boids.len());
-    ui.draw_text(&stats, 10.0, 30.0, text_accent);
-
-    // Weights
-    let weights = format!(
-      "Sep: {:.1} | Coh: {:.1} | Ali: {:.1}",
-      self.separation_weight, self.cohesion_weight, self.alignment_weight
-    );
-    ui.draw_text(&weights, 10.0, 50.0, text_accent);
+    ui.draw_text(&stats, 10.0, area.y + 8.0, text_accent);
 
     // Predator indicator
     if self.predator.is_some() {
-      ui.draw_text("PREDATOR ACTIVE", 10.0, 70.0, text_warn);
+      ui.draw_text("PREDATOR ACTIVE", 10.0, area.y + 28.0, text_warn);
     }
-
-    // Controls
-    ui.draw_text(
-      "LMB: Predator | Space: +10 Boids | T: Trails | R: Reset",
-      10.0,
-      90.0,
-      text_muted,
-    );
-    ui.draw_text(
-      "1/2/3: Sep | 4/5/6: Coh | 7/8/9: Ali (weights)",
-      10.0,
-      106.0,
-      text_muted,
-    );
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Steering Demo - Ryo2D")
+  Demo::new("Steering")
     .resolution(1280, 720)
-    .start_scene(SteeringDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .page(SteeringDemoScene::new)
+    .run();
 }

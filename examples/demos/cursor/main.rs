@@ -1,31 +1,19 @@
 //! Cursor Demo - Ryo2D Example
 //!
-//! Demonstrates the cursor customization system:
+//! Demonstrates the cursor customization system on the demo-kit shell:
 //! - Different system cursor styles
 //! - Custom sprite cursors
 //! - Cursor visibility control
 //! - Cursor confinement to window
 //! - Interactive click area with spark effects
-//!
-//! ## Controls
-//!
-//! - Mouse over buttons to change cursor style
-//! - Click "Custom Cursor" button to toggle custom cursor
-//! - Click in the interactive area to see spark effects
-//! - V: Toggle cursor visibility
-//! - C: Toggle cursor confinement
-//! - Escape: Exit
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 fn main() {
-  EngineBuilder::new()
-    .title("Cursor Demo")
+  Demo::new("Cursor")
     .resolution(800, 600)
-    .start_scene(CursorDemoScene::new())
-    .build()
-    .run()
-    .unwrap();
+    .page(CursorDemoScene::new)
+    .run();
 }
 
 struct CursorButton {
@@ -64,12 +52,8 @@ struct Spark {
 struct CursorDemoScene {
   buttons: Vec<CursorButton>,
   current_style: CursorStyle,
-  cursor_visible: bool,
-  cursor_confined: bool,
   custom_cursor_enabled: bool,
   custom_cursor_sprite: Option<SpriteHandle>,
-  screen_w: f32,
-  screen_h: f32,
   mouse_x: f32,
   mouse_y: f32,
   // Interactive area
@@ -78,6 +62,13 @@ struct CursorDemoScene {
   sparks: Vec<Spark>,
   // Custom cursor toggle button
   custom_btn_rect: Rect,
+  status_rect: Rect,
+  // Settings
+  cursor_visible: bool,
+  cursor_confined: bool,
+  // Last values handed to the engine
+  applied_visible: bool,
+  applied_confined: bool,
 }
 
 impl CursorDemoScene {
@@ -85,18 +76,19 @@ impl CursorDemoScene {
     Self {
       buttons: Vec::new(),
       current_style: CursorStyle::Default,
-      cursor_visible: true,
-      cursor_confined: false,
       custom_cursor_enabled: false,
       custom_cursor_sprite: None,
-      screen_w: 0.0,
-      screen_h: 0.0,
       mouse_x: 0.0,
       mouse_y: 0.0,
       click_area: Rect::new(480.0, 100.0, 280.0, 200.0),
       click_markers: Vec::new(),
       sparks: Vec::new(),
       custom_btn_rect: Rect::new(480.0, 320.0, 280.0, 40.0),
+      status_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+      cursor_visible: true,
+      cursor_confined: false,
+      applied_visible: true,
+      applied_confined: false,
     }
   }
 
@@ -120,28 +112,33 @@ impl CursorDemoScene {
       ("Resize V", CursorStyle::ResizeVertical),
     ];
 
-    let button_width = 100.0;
-    let button_height = 30.0;
-    let padding = 8.0;
-    let start_x = 30.0;
-    let start_y = 80.0;
-    let columns = 4;
-
-    for (i, (label, style)) in styles.iter().enumerate() {
-      let col = i % columns;
-      let row = i / columns;
-      let x = start_x + (button_width + padding) * col as f32;
-      let y = start_y + (button_height + padding) * row as f32;
-
+    for (label, style) in styles {
       self.buttons.push(CursorButton {
         label,
-        style: *style,
-        x,
-        y,
-        width: button_width,
-        height: button_height,
+        style,
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 30.0,
       });
     }
+  }
+
+  /// Place the widgets inside the shell's content area
+  fn layout(&mut self, area: Rect) {
+    let padding = 8.0;
+    let columns = 4;
+    let start_x = area.x + 20.0;
+    let start_y = area.y + 8.0;
+    for (i, button) in self.buttons.iter_mut().enumerate() {
+      button.x = start_x + (button.width + padding) * (i % columns) as f32;
+      button.y = start_y + (button.height + padding) * (i / columns) as f32;
+    }
+    let rows = self.buttons.len().div_ceil(columns) as f32;
+    let below = start_y + rows * 38.0 + 6.0;
+    self.click_area = Rect::new(start_x, below, 424.0, 100.0);
+    self.custom_btn_rect = Rect::new(start_x, below + 108.0, 424.0, 34.0);
+    self.status_rect = Rect::new(start_x, below + 150.0, 424.0, 100.0);
   }
 
   /// Create a custom crosshair cursor sprite
@@ -215,20 +212,40 @@ impl CursorDemoScene {
   }
 }
 
-impl Scene for CursorDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    self.screen_w = ctx.screen_width();
-    self.screen_h = ctx.screen_height();
+impl DemoPage for CursorDemoScene {
+  fn name(&self) -> &str {
+    "Cursor"
+  }
+
+  fn description(&self) -> &str {
+    "Hover the buttons to change the cursor style; click the area for sparks"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.toggle("Visible", &mut self.cursor_visible);
+    s.toggle("Confined", &mut self.cursor_confined);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::mouse(
+      "Hover the buttons to change the cursor, click the area for sparks",
+    )]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     self.create_buttons();
 
     // Create custom cursor sprite
     self.custom_cursor_sprite = Some(self.create_custom_cursor_sprite(ctx.assets));
 
-    // Set initial cursor
+    // Set initial cursor; visibility and confinement are engine state that
+    // scene cleanup does not reset, so a rebuilt page restores the defaults here
     ctx.set_cursor(CursorStyle::Default);
+    ctx.set_cursor_visible(self.cursor_visible);
+    ctx.set_cursor_confined(self.cursor_confined);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Store mouse position for render_ui
     let (mx, my) = ctx.input.mouse_position();
     self.mouse_x = mx;
@@ -237,21 +254,14 @@ impl Scene for CursorDemoScene {
     // Update particles
     self.update_particles(dt);
 
-    // Toggle visibility with V
-    if ctx.input.key_pressed(KeyCode::KeyV) {
-      self.cursor_visible = !self.cursor_visible;
+    // Cursor visibility and confinement are engine state, so keep them in step
+    if self.cursor_visible != self.applied_visible {
+      self.applied_visible = self.cursor_visible;
       ctx.set_cursor_visible(self.cursor_visible);
     }
-
-    // Toggle confinement with C
-    if ctx.input.key_pressed(KeyCode::KeyC) {
-      self.cursor_confined = !self.cursor_confined;
+    if self.cursor_confined != self.applied_confined {
+      self.applied_confined = self.cursor_confined;
       ctx.set_cursor_confined(self.cursor_confined);
-    }
-
-    // Exit with Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
     }
 
     // Check click on custom cursor toggle button
@@ -304,22 +314,12 @@ impl Scene for CursorDemoScene {
         ctx.set_cursor(CursorStyle::Default);
       }
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    self.layout(content_area(ui));
     let mx = self.mouse_x;
     let my = self.mouse_y;
-
-    // Title
-    ui.draw_text("Cursor Demo", 30.0, 20.0, Color::WHITE);
-    ui.draw_text(
-      "Hover over buttons to change cursor style",
-      30.0,
-      45.0,
-      Color::rgb(150, 150, 150),
-    );
 
     // Draw style buttons
     for button in &self.buttons {
@@ -435,58 +435,49 @@ impl Scene for CursorDemoScene {
     );
 
     // Status panel
-    let panel_y = 380.0;
-    let panel_rect = Rect::new(30.0, panel_y, 400.0, 120.0);
-    ui.draw_rect(panel_rect, Color::rgb(30, 34, 42));
-    ui.draw_rect_outline(panel_rect, Color::rgb(60, 65, 75), 1.0);
+    let panel = self.status_rect;
+    let panel_y = panel.y;
+    let panel_x = panel.x + 10.0;
+    ui.draw_rect(panel, Color::rgb(30, 34, 42));
+    ui.draw_rect_outline(panel, Color::rgb(60, 65, 75), 1.0);
 
-    ui.draw_text("Status", 40.0, panel_y + 10.0, Color::rgb(150, 200, 255));
+    ui.draw_text("Status", panel_x, panel_y + 8.0, Color::rgb(150, 200, 255));
 
     let style_text = if self.custom_cursor_enabled {
       "Current: Custom Sprite Cursor".to_string()
     } else {
       format!("Current Style: {:?}", self.current_style)
     };
-    ui.draw_text(&style_text, 40.0, panel_y + 30.0, Color::WHITE);
+    ui.draw_text(&style_text, panel_x, panel_y + 26.0, Color::WHITE);
 
     let visible_text = format!(
-      "Visible: {} (press V)",
-      if self.cursor_visible { "Yes" } else { "No" }
+      "Visible: {}",
+      if self.cursor_visible { "On" } else { "Off" }
     );
     let visible_color = if self.cursor_visible {
       Color::rgb(100, 255, 100)
     } else {
       Color::rgb(255, 100, 100)
     };
-    ui.draw_text(&visible_text, 40.0, panel_y + 50.0, visible_color);
+    ui.draw_text(&visible_text, panel_x, panel_y + 44.0, visible_color);
 
     let confined_text = format!(
-      "Confined: {} (press C)",
-      if self.cursor_confined { "Yes" } else { "No" }
+      "Confined: {}",
+      if self.cursor_confined { "On" } else { "Off" }
     );
     let confined_color = if self.cursor_confined {
       Color::rgb(255, 200, 100)
     } else {
       Color::rgb(150, 150, 150)
     };
-    ui.draw_text(&confined_text, 40.0, panel_y + 70.0, confined_color);
+    ui.draw_text(&confined_text, panel_x, panel_y + 62.0, confined_color);
 
-    // Mouse coordinates in corner
     let coords_text = format!("Mouse: ({:.0}, {:.0})", mx, my);
     ui.draw_text(
       &coords_text,
-      self.screen_w - 150.0,
-      10.0,
+      panel_x,
+      panel_y + 80.0,
       Color::rgb(200, 200, 200),
     );
-
-    // Instructions
-    ui.draw_text(
-      "Press ESC to exit",
-      30.0,
-      self.screen_h - 25.0,
-      Color::rgb(100, 100, 100),
-    );
-    SceneAction::Continue
   }
 }

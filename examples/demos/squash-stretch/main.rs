@@ -6,38 +6,35 @@
 //! - Vertical squash (landing) vs horizontal squash (wall hits)
 //! - Events (SquashStretchStarted, SquashStretchFinished)
 //!
-//! ## Controls
 //!
-//! - 1: Subtle squash (intensity: 0.15)
-//! - 2: Normal squash (intensity: 0.3)
-//! - 3: Exaggerated squash (intensity: 0.5)
-//! - Q: Snappy recovery (decay: 12.0)
-//! - W: Normal recovery (decay: 8.0)
-//! - E: Slow recovery (decay: 4.0)
-//! - Space: Drop all balls (trigger landing squash)
-//! - R: Reset all balls
-//! - Escape: Exit
+//! Runs on the demo-kit shell; intensity and recovery are settings.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 /// Ball entity data
 #[derive(Debug)]
 struct Ball {
-  start_x: f32,
-  start_y: f32,
   velocity_y: f32,
   on_ground: bool,
   label: &'static str,
 }
 
+/// Intensity levels: (label, squash amount)
+const INTENSITIES: [(&str, f32); 3] = [("Subtle", 0.15), ("Normal", 0.3), ("Exaggerated", 0.5)];
+const INTENSITY_LABELS: [&str; 3] = [INTENSITIES[0].0, INTENSITIES[1].0, INTENSITIES[2].0];
+
+/// Recovery speeds: (label, decay rate)
+const RECOVERIES: [(&str, f32); 3] = [("Snappy", 12.0), ("Normal", 8.0), ("Slow", 4.0)];
+const RECOVERY_LABELS: [&str; 3] = [RECOVERIES[0].0, RECOVERIES[1].0, RECOVERIES[2].0];
+
 /// Demo scene
 struct SquashStretchDemoScene {
   /// Ball entities organized by row
   balls: Vec<Entity>,
-  /// Current intensity setting
-  intensity: f32,
-  /// Current decay rate setting
-  decay_rate: f32,
+  /// Index into `INTENSITIES`
+  intensity_choice: usize,
+  /// Index into `RECOVERIES`
+  recovery_choice: usize,
   /// Ground Y position
   ground_y: f32,
   /// Gravity
@@ -48,8 +45,8 @@ impl SquashStretchDemoScene {
   fn new() -> Self {
     Self {
       balls: Vec::new(),
-      intensity: 0.3,
-      decay_rate: 8.0,
+      intensity_choice: 1,
+      recovery_choice: 1,
       ground_y: 0.0,
       gravity: 800.0,
     }
@@ -83,8 +80,6 @@ impl SquashStretchDemoScene {
       let sprite = Self::create_circle(30, *r, *g, *b);
       let entity = ctx.world.spawn((
         Ball {
-          start_x: x,
-          start_y: y,
           velocity_y: 0.0,
           on_ground: false,
           label,
@@ -110,36 +105,18 @@ impl SquashStretchDemoScene {
     }
   }
 
-  /// Reset all balls to starting positions
-  fn reset_balls(&self, ctx: &mut SceneContext) {
-    for &entity in &self.balls {
-      if let Some(ball) = ctx.world.get::<Ball>(entity) {
-        let start_x = ball.start_x;
-        let start_y = ball.start_y;
-        drop(ball);
+  fn intensity(&self) -> f32 {
+    INTENSITIES[self.intensity_choice.min(INTENSITIES.len() - 1)].1
+  }
 
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.x = start_x;
-          transform.y = start_y;
-          transform.scale_x = 1.0;
-          transform.scale_y = 1.0;
-        }
-      }
-      if let Some(mut ball) = ctx.world.get_mut::<Ball>(entity) {
-        ball.velocity_y = 0.0;
-        ball.on_ground = false;
-      }
-      // Stop any active squash effect
-      if let Some(mut ss) = ctx.world.get_mut::<SquashStretch>(entity) {
-        ss.stop();
-      }
-    }
+  fn decay_rate(&self) -> f32 {
+    RECOVERIES[self.recovery_choice.min(RECOVERIES.len() - 1)].1
   }
 
   /// Apply squash to a specific ball
   fn squash_ball(&self, ctx: &mut SceneContext, index: usize) {
     if let Some(&entity) = self.balls.get(index) {
-      ctx.squash_with_decay(entity, self.intensity, self.decay_rate);
+      ctx.squash_with_decay(entity, self.intensity(), self.decay_rate());
     }
   }
 
@@ -194,85 +171,65 @@ impl SquashStretchDemoScene {
 
         if should_apply_squash {
           // Apply squash using current intensity setting
-          ctx.squash_with_decay(entity, self.intensity, self.decay_rate);
+          ctx.squash_with_decay(entity, self.intensity(), self.decay_rate());
         }
       }
     }
   }
 }
 
-impl Scene for SquashStretchDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    println!("Squash/Stretch Demo initialized!");
-    println!("  1/2/3: Intensity (subtle/normal/exaggerated)");
-    println!("  Q/W/E: Recovery speed (snappy/normal/slow)");
-    println!("  Space: Drop all balls");
-    println!("  R: Reset");
-    println!("  ESC: Exit");
+impl DemoPage for SquashStretchDemoScene {
+  fn name(&self) -> &str {
+    "Bounce"
+  }
 
+  fn description(&self) -> &str {
+    "Balls deform on impact; intensity sets how much, recovery how fast they spring back"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Intensity", &mut self.intensity_choice, &INTENSITY_LABELS);
+    s.choice("Recovery", &mut self.recovery_choice, &RECOVERY_LABELS);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::key(KeyCode::Space, "Drop the balls"),
+      Control::keys(
+        "1-5",
+        &[
+          KeyCode::Digit1,
+          KeyCode::Digit2,
+          KeyCode::Digit3,
+          KeyCode::Digit4,
+          KeyCode::Digit5,
+        ],
+        "Squash a ball",
+      ),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     self.spawn_balls(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Exit on escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Intensity controls
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      self.intensity = 0.15;
-      println!("Intensity: Subtle (0.15)");
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      self.intensity = 0.3;
-      println!("Intensity: Normal (0.3)");
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      self.intensity = 0.5;
-      println!("Intensity: Exaggerated (0.5)");
-    }
-
-    // Decay rate controls
-    if ctx.input.key_pressed(KeyCode::KeyQ) {
-      self.decay_rate = 12.0;
-      println!("Recovery: Snappy (12.0)");
-    }
-    if ctx.input.key_pressed(KeyCode::KeyW) {
-      self.decay_rate = 8.0;
-      println!("Recovery: Normal (8.0)");
-    }
-    if ctx.input.key_pressed(KeyCode::KeyE) {
-      self.decay_rate = 4.0;
-      println!("Recovery: Slow (4.0)");
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Drop balls
     if ctx.input.key_pressed(KeyCode::Space) {
       self.drop_balls(ctx);
-      println!("Dropping balls!");
     }
 
-    // Reset
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.reset_balls(ctx);
-      println!("Reset!");
-    }
-
-    // Manual squash on individual balls (number keys + shift)
-    if ctx.input.key_down(KeyCode::ShiftLeft) {
-      for i in 0..5 {
-        let key = match i {
-          0 => KeyCode::Digit1,
-          1 => KeyCode::Digit2,
-          2 => KeyCode::Digit3,
-          3 => KeyCode::Digit4,
-          4 => KeyCode::Digit5,
-          _ => continue,
-        };
-        if ctx.input.key_pressed(key) {
-          self.squash_ball(ctx, i);
-        }
+    // Manual squash on individual balls
+    let keys = [
+      KeyCode::Digit1,
+      KeyCode::Digit2,
+      KeyCode::Digit3,
+      KeyCode::Digit4,
+      KeyCode::Digit5,
+    ];
+    for (i, key) in keys.into_iter().enumerate() {
+      if ctx.input.key_pressed(key) {
+        self.squash_ball(ctx, i);
       }
     }
 
@@ -291,39 +248,10 @@ impl Scene for SquashStretchDemoScene {
         println!("{} ball recovered", ball.label);
       }
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let text_light = Color::rgb(220, 220, 220);
-    let text_accent = Color::rgb(130, 180, 255);
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let text_muted = Color::rgb(160, 160, 160);
-
-    // Title
-    ui.draw_text("Squash/Stretch Demo", 10.0, 10.0, text_light);
-
-    // Current settings
-    let intensity_label = match self.intensity {
-      i if i <= 0.2 => "Subtle",
-      i if i <= 0.35 => "Normal",
-      _ => "Exaggerated",
-    };
-    let decay_label = match self.decay_rate {
-      d if d >= 10.0 => "Snappy",
-      d if d >= 6.0 => "Normal",
-      _ => "Slow",
-    };
-
-    let settings = format!(
-      "Intensity: {} ({:.2}) | Recovery: {} ({:.1})",
-      intensity_label, self.intensity, decay_label, self.decay_rate
-    );
-    ui.draw_text(&settings, 10.0, 30.0, text_accent);
-
-    // Controls
-    ui.draw_text("1/2/3: Intensity | Q/W/E: Recovery", 10.0, 50.0, text_muted);
-    ui.draw_text("Space: Drop | R: Reset | ESC: Exit", 10.0, 70.0, text_muted);
 
     // Ground line indicator
     let (screen_w, _) = ui.screen_size();
@@ -334,21 +262,17 @@ impl Scene for SquashStretchDemoScene {
       ground_y + 20.0,
       text_muted,
     );
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Squash/Stretch Demo - Ryo2D")
+  Demo::new("Squash/Stretch")
     .resolution(800, 600)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .target_fps(60)
-    .physics_hz(60)
-    .start_scene(SquashStretchDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableAspectRatio)
+        .target_fps(60)
+        .physics_hz(60)
+    })
+    .page(SquashStretchDemoScene::new)
+    .run();
 }

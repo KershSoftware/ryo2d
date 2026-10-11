@@ -1,7 +1,13 @@
+//! Inventory Demo - Ryo2D Example
+//!
+//! Shows the item system on the demo-kit shell: a JSON item registry,
+//! an 8-slot inventory, tag-validated equipment slots, loot tables and
+//! dropped items in the world.
+
 use std::any::Any;
 
+use demo_kit::prelude::*;
 use rand::Rng;
-use ryo2d::prelude::*;
 
 // === Custom Item Data ===
 
@@ -353,8 +359,51 @@ impl InventoryDemoScene {
   }
 }
 
-impl Scene for InventoryDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for InventoryDemoScene {
+  fn name(&self) -> &str {
+    "Inventory"
+  }
+
+  fn description(&self) -> &str {
+    "Items load from JSON; equip, drop and loot them, and watch the character and stats change"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::keys(
+        "1-8",
+        &[
+          KeyCode::Digit1,
+          KeyCode::Digit2,
+          KeyCode::Digit3,
+          KeyCode::Digit4,
+          KeyCode::Digit5,
+          KeyCode::Digit6,
+          KeyCode::Digit7,
+          KeyCode::Digit8,
+        ],
+        "Select slot",
+      ),
+      Control::keys("W/S", &[KeyCode::KeyW, KeyCode::KeyS], "Move selection"),
+      Control::key(KeyCode::Space, "Equip / unequip"),
+      Control::key(KeyCode::KeyE, "Equip"),
+      Control::key(KeyCode::KeyD, "Drop"),
+      Control::key(KeyCode::KeyP, "Pick up"),
+      Control::key(KeyCode::KeyL, "Roll loot"),
+      Control::keys(
+        "U+1-3",
+        &[
+          KeyCode::KeyU,
+          KeyCode::Digit1,
+          KeyCode::Digit2,
+          KeyCode::Digit3,
+        ],
+        "Unequip slot",
+      ),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Register combat stats data type factory
     self.registry.register_data_type("combat_stats", |value| {
       let damage = value["damage"].as_i64()? as i32;
@@ -486,7 +535,7 @@ impl Scene for InventoryDemoScene {
     ));
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Tick status timer
     if self.status_timer > 0.0 {
       self.status_timer -= dt;
@@ -497,11 +546,6 @@ impl Scene for InventoryDemoScene {
 
     // Track entity count for display
     self.entity_count = ctx.world.len();
-
-    // ESC to quit
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
 
     let digit_keys = [
       KeyCode::Digit1,
@@ -514,8 +558,8 @@ impl Scene for InventoryDemoScene {
       KeyCode::Digit8,
     ];
 
-    // Arrow keys: navigate between equipment (3 slots) and inventory (8 slots)
-    if ctx.input.key_pressed(KeyCode::ArrowUp) {
+    // W/S: navigate between equipment (3 slots) and inventory (8 slots)
+    if ctx.input.key_pressed(KeyCode::KeyW) {
       if self.focus_equipment {
         if self.selected_slot > 0 {
           self.selected_slot -= 1;
@@ -528,7 +572,7 @@ impl Scene for InventoryDemoScene {
         self.selected_slot = 2;
       }
     }
-    if ctx.input.key_pressed(KeyCode::ArrowDown) {
+    if ctx.input.key_pressed(KeyCode::KeyS) {
       if self.focus_equipment {
         if self.selected_slot < 2 {
           self.selected_slot += 1;
@@ -590,23 +634,28 @@ impl Scene for InventoryDemoScene {
 
     // Sync equipment visuals to match current equipment state
     self.sync_equipment_visuals(ctx.world);
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
     let white = Color::rgb(240, 240, 240);
     let gray = Color::rgb(160, 160, 170);
     let highlight = Color::rgb(100, 160, 255);
     let panel_x = 424.0_f32;
 
     // Right panel background
-    ui.draw_rect(Rect::new(412.0, 0.0, 612.0, 700.0), Color::rgb(25, 25, 35));
+    ui.draw_rect(
+      Rect::new(412.0, area.y, area.width - 412.0, area.height),
+      Color::rgb(25, 25, 35),
+    );
     // Divider line
-    ui.draw_rect(Rect::new(412.0, 0.0, 2.0, 700.0), Color::rgb(80, 80, 100));
+    ui.draw_rect(
+      Rect::new(412.0, area.y, 2.0, area.height),
+      Color::rgb(80, 80, 100),
+    );
 
     // === EQUIPMENT ===
-    let mut y = 20.0_f32;
+    let mut y = area.y + 10.0;
     ui.draw_text("EQUIPMENT", panel_x, y, white);
     y += 28.0;
 
@@ -700,32 +749,13 @@ impl Scene for InventoryDemoScene {
       gray,
     );
 
-    // === CONTROLS ===
-    y += 30.0;
-    ui.draw_text("CONTROLS", panel_x, y, white);
-    y += 28.0;
-
-    let controls = [
-      "[Up/Down] Navigate",
-      "[Space] Equip / Unequip",
-      "[1-8] Select slot  [E] Equip",
-      "[U+1/2/3] Unequip slot",
-      "[D] Drop  [P] Pickup  [L] Loot",
-      "[ESC] Quit",
-    ];
-    for line in &controls {
-      ui.draw_text(&format!("  {}", line), panel_x, y, gray);
-      y += 20.0;
-    }
-
     // === LEFT PANEL INFO ===
     ui.draw_text(
       &format!("Entities: {}", self.entity_count),
       20.0,
-      20.0,
+      area.y + 10.0,
       gray,
     );
-    ui.draw_text("INVENTORY DEMO", 100.0, 55.0, white);
 
     // Status message
     if !self.status_message.is_empty() && self.status_timer > 0.0 {
@@ -735,22 +765,15 @@ impl Scene for InventoryDemoScene {
         255
       };
       let c = Color::rgb(255, 255, 100).with_alpha(a);
-      ui.draw_text(&self.status_message, 20.0, 650.0, c);
+      ui.draw_text(&self.status_message, 20.0, area.y + area.height - 24.0, c);
     }
-
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Inventory System Demo - Ryo2D")
+  Demo::new("Inventory")
     .resolution(1024, 700)
-    .target_fps(60)
-    .start_scene(InventoryDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| b.target_fps(60))
+    .page(InventoryDemoScene::new)
+    .run();
 }

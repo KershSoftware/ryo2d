@@ -13,3 +13,4 @@ profiler = ["ryo2d/profiler"]
 
 [dependencies]
 ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }

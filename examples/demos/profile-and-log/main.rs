@@ -2,20 +2,12 @@
 //!
 //! Run with: cargo run -p profile-and-log --features profiler
 //!
-//! Controls:
-//! - 1/2: Add/Remove CPU-heavy entities (physics simulation)
-//! - 3/4: Add/Remove GPU-heavy entities (many sprites)
-//! - 5/6: Add/Remove mixed entities (both CPU and GPU load)
-//! - 7/8: Increase/Decrease work multiplier (CPU work per entity)
-//! - Space: Toggle auto-spawn mode
-//! - R: Reset all entities
-//! - F1: Toggle debug overlay
-//! - F9: Toggle logger window
-//! - F10: Toggle profiler window
+//!
+//! Runs on the demo-kit shell; the work multiplier and auto-spawn are settings.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 const SCREEN_WIDTH: u32 = 1280;
 const SCREEN_HEIGHT: u32 = 720;
@@ -33,19 +25,19 @@ const CPU_BATCH: usize = 50;
 const GPU_BATCH: usize = 200;
 const MIXED_BATCH: usize = 25;
 
+/// Work multiplier choices; the default is x1
+const WORK_LABELS: [&str; 6] = ["x0.25", "x0.5", "x1", "x2", "x4", "x8"];
+const WORK_VALUES: [f32; 6] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
+const WORK_DEFAULT: usize = 2;
+
 fn main() {
   game_info!(module: "Main", "Starting Profile and Log Demo");
 
-  let engine = EngineBuilder::new()
-    .title("Profile and Log Demo")
+  Demo::new("Profile and Log")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
-    .target_fps(144)
-    .start_scene(DemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    game_error!(module: "Main", "Engine error: {}", e);
-  }
+    .configure(|b| b.target_fps(144))
+    .page(DemoScene::new)
+    .run();
 }
 
 /// Marker for CPU-heavy entities (complex physics)
@@ -80,11 +72,15 @@ struct DemoScene {
   mixed_count: usize,
   auto_spawn: bool,
   auto_spawn_timer: f32,
-  /// Work multiplier - increases CPU work per entity (7/8 to adjust)
-  work_multiplier: u32,
+  /// Index into `WORK_VALUES`: scales the CPU work per entity
+  work_choice: usize,
 }
 
 impl DemoScene {
+  fn work_multiplier(&self) -> f32 {
+    WORK_VALUES[self.work_choice.min(WORK_VALUES.len() - 1)]
+  }
+
   fn new() -> Self {
     Self {
       // Create simple colored sprites for each type
@@ -96,7 +92,7 @@ impl DemoScene {
       mixed_count: 0,
       auto_spawn: false,
       auto_spawn_timer: 0.0,
-      work_multiplier: 1,
+      work_choice: WORK_DEFAULT,
     }
   }
 
@@ -222,36 +218,12 @@ impl DemoScene {
     }
   }
 
-  fn reset_all(&mut self, ctx: &mut SceneContext) {
-    #[cfg(feature = "profiler")]
-    profile_scope!("reset");
-
-    let cpu_entities: Vec<_> = ctx.world.entities_with::<CpuHeavy>();
-    let gpu_entities: Vec<_> = ctx.world.entities_with::<GpuHeavy>();
-    let mixed_entities: Vec<_> = ctx.world.entities_with::<MixedLoad>();
-
-    let total = cpu_entities.len() + gpu_entities.len() + mixed_entities.len();
-
-    for entity in cpu_entities {
-      let _ = ctx.world.despawn(entity);
-    }
-    for entity in gpu_entities {
-      let _ = ctx.world.despawn(entity);
-    }
-    for entity in mixed_entities {
-      let _ = ctx.world.despawn(entity);
-    }
-
-    self.auto_spawn = false;
-
-    game_warn!(module: "Demo", "Reset all entities (removed {})", total);
-  }
-
   fn update_cpu_entities(&mut self, ctx: &mut SceneContext, dt: f32) {
     #[cfg(feature = "profiler")]
     profile_scope!("physics_sim");
 
     // Expensive physics simulation - lots of trig and calculations
+    let work = self.work_multiplier();
     let entities: Vec<_> = ctx.world.entities_with::<CpuHeavy>();
 
     for entity in entities {
@@ -272,8 +244,9 @@ impl DemoScene {
 
           // Extra CPU work: scaled by work_multiplier
           // Use black_box to prevent compiler from optimizing away
-          for _ in 0..self.work_multiplier {
-            std::hint::black_box((0..100).fold(0.0f32, |acc, i| {
+          let iterations = (100.0 * work) as i32;
+          {
+            std::hint::black_box((0..iterations).fold(0.0f32, |acc, i| {
               acc + (new_angle * i as f32).sin() * (new_x * 0.01).cos()
             }));
           }
@@ -337,6 +310,7 @@ impl DemoScene {
     profile_scope!("ai_pathfinding");
 
     // Simulated AI/pathfinding - moderate CPU work
+    let work = self.work_multiplier();
     let entities: Vec<_> = ctx.world.entities_with::<MixedLoad>();
     let mut rng = rand::thread_rng();
 
@@ -362,8 +336,9 @@ impl DemoScene {
 
           // Simulated pathfinding cost - scaled by work_multiplier
           // Use black_box to prevent compiler from optimizing away
-          for _ in 0..self.work_multiplier {
-            std::hint::black_box((0..50).fold(0.0f32, |acc, i| {
+          let iterations = (50.0 * work) as i32;
+          {
+            std::hint::black_box((0..iterations).fold(0.0f32, |acc, i| {
               acc
                 + ((t.x + i as f32 * 10.0) * 0.1).sin().abs()
                 + ((t.y + i as f32 * 10.0) * 0.1).cos().abs()
@@ -411,13 +386,46 @@ impl DemoScene {
   }
 }
 
-impl Scene for DemoScene {
-  fn on_enter(&mut self, _ctx: &mut SceneContext) {
+impl DemoPage for DemoScene {
+  fn name(&self) -> &str {
+    "Load"
+  }
+
+  fn description(&self) -> &str {
+    "Spawn CPU, GPU and mixed load, then inspect it: F9 opens the logger, F10 the profiler"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Work multiplier", &mut self.work_choice, &WORK_LABELS);
+    s.toggle("Auto-spawn", &mut self.auto_spawn);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::keys(
+        "1 / 2",
+        &[KeyCode::Digit1, KeyCode::Digit2],
+        "Add / remove CPU entities",
+      ),
+      Control::keys(
+        "3 / 4",
+        &[KeyCode::Digit3, KeyCode::Digit4],
+        "Add / remove GPU entities",
+      ),
+      Control::keys(
+        "5 / 6",
+        &[KeyCode::Digit5, KeyCode::Digit6],
+        "Add / remove mixed entities",
+      ),
+    ]
+  }
+
+  fn enter(&mut self, _ctx: &mut SceneContext) {
     game_info!(module: "Demo", "Scene entered - press 1-6 to spawn/despawn entities");
     game_debug!(module: "Demo", "F9 opens logger, F10 opens profiler");
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     #[cfg(feature = "profiler")]
     profile_scope!("demo_update");
 
@@ -446,33 +454,6 @@ impl Scene for DemoScene {
       self.despawn_mixed(ctx, MIXED_BATCH);
     }
 
-    // Auto-spawn toggle
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.auto_spawn = !self.auto_spawn;
-      if self.auto_spawn {
-        game_info!(module: "Demo", "Auto-spawn enabled");
-      } else {
-        game_info!(module: "Demo", "Auto-spawn disabled");
-      }
-    }
-
-    // Reset
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.reset_all(ctx);
-    }
-
-    // Work multiplier (increases CPU work per entity)
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      let old = self.work_multiplier;
-      self.work_multiplier = (self.work_multiplier * 2).min(1024);
-      game_info!(module: "Demo", "Work multiplier: {}x -> {}x", old, self.work_multiplier);
-    }
-    if ctx.input.key_pressed(KeyCode::Digit8) {
-      let old = self.work_multiplier;
-      self.work_multiplier = (self.work_multiplier / 2).max(1);
-      game_info!(module: "Demo", "Work multiplier: {}x -> {}x", old, self.work_multiplier);
-    }
-
     // Auto-spawn mode
     if self.auto_spawn {
       self.auto_spawn_timer += dt;
@@ -489,27 +470,18 @@ impl Scene for DemoScene {
 
     // Update counts
     self.update_counts(ctx);
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     #[cfg(feature = "profiler")]
     profile_scope!("demo_ui");
 
     let line_height = 18.0;
-    let mut y = 10.0;
-
-    // Title
-    ui.draw_text("PROFILE AND LOG DEMO", 10.0, y, Color::WHITE);
-    y += line_height + 5.0;
+    let mut y = content_area(ui).y + 8.0;
 
     // Counts with inline controls
     ui.draw_text(
-      &format!(
-        "[1] +{}  [2] -{}  CPU: {}",
-        CPU_BATCH, CPU_BATCH, self.cpu_count
-      ),
+      &format!("CPU: {} (+{} / -{})", self.cpu_count, CPU_BATCH, CPU_BATCH),
       10.0,
       y,
       Color::rgb(100, 150, 255),
@@ -517,10 +489,7 @@ impl Scene for DemoScene {
     y += line_height;
 
     ui.draw_text(
-      &format!(
-        "[3] +{}  [4] -{}  GPU: {}",
-        GPU_BATCH, GPU_BATCH, self.gpu_count
-      ),
+      &format!("GPU: {} (+{} / -{})", self.gpu_count, GPU_BATCH, GPU_BATCH),
       10.0,
       y,
       Color::rgb(150, 255, 100),
@@ -529,8 +498,8 @@ impl Scene for DemoScene {
 
     ui.draw_text(
       &format!(
-        "[5] +{}  [6] -{}  Mixed: {}",
-        MIXED_BATCH, MIXED_BATCH, self.mixed_count
+        "Mixed: {} (+{} / -{})",
+        self.mixed_count, MIXED_BATCH, MIXED_BATCH
       ),
       10.0,
       y,
@@ -540,40 +509,15 @@ impl Scene for DemoScene {
 
     let total = self.cpu_count + self.gpu_count + self.mixed_count;
     ui.draw_text(&format!("Total entities: {}", total), 10.0, y, Color::WHITE);
-    y += line_height + 10.0;
-
-    // Work multiplier
+    y += line_height;
     ui.draw_text(
-      &format!("[7] x2  [8] /2  Work: {}x", self.work_multiplier),
+      &format!(
+        "Work: {}",
+        WORK_LABELS[self.work_choice.min(WORK_LABELS.len() - 1)]
+      ),
       10.0,
       y,
       Color::rgb(255, 255, 150),
     );
-    y += line_height + 10.0;
-
-    // Other controls
-    ui.draw_text("Controls:", 10.0, y, Color::GRAY);
-    y += line_height;
-
-    let auto_status = if self.auto_spawn { "ON" } else { "OFF" };
-    ui.draw_text(
-      &format!("Space: Auto-spawn [{}]", auto_status),
-      10.0,
-      y,
-      Color::GRAY,
-    );
-    y += line_height;
-
-    ui.draw_text("R: Reset all", 10.0, y, Color::GRAY);
-    y += line_height;
-
-    ui.draw_text("F1: Debug overlay", 10.0, y, Color::GRAY);
-    y += line_height;
-
-    ui.draw_text("F9: Logger window", 10.0, y, Color::GRAY);
-    y += line_height;
-
-    ui.draw_text("F10: Profiler window", 10.0, y, Color::GRAY);
-    SceneAction::Continue
   }
 }

@@ -8,26 +8,23 @@
 //! - Time-sliced pathfinding for many agents
 //! - Agent avoidance using steering behaviors
 //!
-//! ## Controls
 //!
-//! - Left Click: Set destination for all agents
-//! - Right Click/Drag: Add obstacles (drag to paint)
-//! - Shift + Right Click: Remove obstacle
-//! - Space: Spawn 10 more agents
-//! - 1: No smoothing
-//! - 2: Line-of-sight smoothing
-//! - 3: Spline smoothing
-//! - A: Toggle agent avoidance (steering)
-//! - R: Reset (clear obstacles and respawn agents)
-//! - G: Toggle grid visualization
-//! - T: Toggle movement trails
-//! - Escape: Exit
+//! Runs on the demo-kit shell; smoothing, avoidance, grid and trails are settings.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 const CELL_SIZE: f32 = 16.0;
 const AGENT_SPEED: f32 = 120.0;
 const INITIAL_AGENTS: usize = 5;
+
+/// Smoothing choices, in the order the settings row lists them
+const SMOOTHING_LABELS: [&str; 3] = ["None", "Line of sight", "Spline"];
+const SMOOTHING_MODES: [PathSmoothing; 3] = [
+  PathSmoothing::None,
+  PathSmoothing::LineOfSight,
+  PathSmoothing::Spline,
+];
+const SMOOTHING_DEFAULT: usize = 1;
 
 /// Marker component for agents
 #[derive(Debug, Clone)]
@@ -51,6 +48,8 @@ struct PathfindingDemoScene {
   agents: Vec<Entity>,
   obstacles: Vec<Entity>,
   smoothing: PathSmoothing,
+  /// Index into `SMOOTHING_MODES`, set by the settings row
+  smoothing_choice: usize,
   screen_w: f32,
   screen_h: f32,
   show_grid: bool,
@@ -79,6 +78,7 @@ impl PathfindingDemoScene {
       agents: Vec::new(),
       obstacles: Vec::new(),
       smoothing: PathSmoothing::LineOfSight,
+      smoothing_choice: SMOOTHING_DEFAULT,
       screen_w: 0.0,
       screen_h: 0.0,
       show_grid: false,
@@ -427,37 +427,6 @@ impl PathfindingDemoScene {
     }
   }
 
-  fn reset(&mut self, ctx: &mut SceneContext) {
-    // Despawn all agents
-    for entity in self.agents.drain(..) {
-      let _ = ctx.world.despawn(entity);
-    }
-
-    // Despawn all obstacles
-    for entity in self.obstacles.drain(..) {
-      let _ = ctx.world.despawn(entity);
-    }
-
-    // Despawn destination marker
-    if let Some(marker) = self.destination_marker.take() {
-      let _ = ctx.world.despawn(marker);
-    }
-
-    // Rebuild empty grid
-    self.nav_grid = NavigationGrid::new(self.screen_w, self.screen_h, CELL_SIZE);
-
-    // Respawn initial agents
-    self.spawn_initial_agents(ctx);
-  }
-
-  fn smoothing_name(&self) -> &'static str {
-    match self.smoothing {
-      PathSmoothing::None => "None",
-      PathSmoothing::LineOfSight => "LineOfSight",
-      PathSmoothing::Spline => "Spline",
-    }
-  }
-
   fn update_trails(&self, ctx: &mut SceneContext, _dt: f32) {
     // Engine automatically updates trail positions from Transform.
     // We just need to sync the enabled state for visibility toggle.
@@ -469,18 +438,30 @@ impl PathfindingDemoScene {
   }
 }
 
-impl Scene for PathfindingDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    println!("Pathfinding Demo initialized!");
-    println!("  Left Click: Set destination");
-    println!("  Right Click/Drag: Add obstacles");
-    println!("  Shift + Right Click: Remove obstacles");
-    println!("  Space: Spawn 10 more agents");
-    println!("  1/2/3: Change smoothing mode");
-    println!("  A: Toggle agent avoidance");
-    println!("  G: Toggle grid | T: Toggle trails");
-    println!("  R: Reset | ESC: Exit");
+impl DemoPage for PathfindingDemoScene {
+  fn name(&self) -> &str {
+    "Agents"
+  }
 
+  fn description(&self) -> &str {
+    "A* pathfinding on a grid: agents path to your click around obstacles you paint"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Smoothing", &mut self.smoothing_choice, &SMOOTHING_LABELS);
+    s.toggle("Avoidance", &mut self.avoid_agents);
+    s.toggle("Grid", &mut self.show_grid);
+    s.toggle("Trails", &mut self.show_trails);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::key(KeyCode::Space, "Add 10 agents"),
+      Control::mouse("Left click: destination; right drag: obstacles; Shift + right click: remove"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
     self.screen_w = screen_w;
     self.screen_h = screen_h;
@@ -490,41 +471,11 @@ impl Scene for PathfindingDemoScene {
     self.spawn_initial_agents(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Exit on escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Reset
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.reset(ctx);
-    }
-
-    // Toggle visualizations
-    if ctx.input.key_pressed(KeyCode::KeyG) {
-      self.show_grid = !self.show_grid;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyT) {
-      self.show_trails = !self.show_trails;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyA) {
-      self.avoid_agents = !self.avoid_agents;
-      println!(
-        "Agent avoidance: {}",
-        if self.avoid_agents { "ON" } else { "OFF" }
-      );
-    }
-
-    // Smoothing modes
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      self.update_smoothing(ctx, PathSmoothing::None);
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      self.update_smoothing(ctx, PathSmoothing::LineOfSight);
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      self.update_smoothing(ctx, PathSmoothing::Spline);
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    // Apply the smoothing setting
+    let smoothing = SMOOTHING_MODES[self.smoothing_choice.min(SMOOTHING_MODES.len() - 1)];
+    if smoothing != self.smoothing {
+      self.update_smoothing(ctx, smoothing);
     }
 
     // Spawn more agents
@@ -580,11 +531,10 @@ impl Scene for PathfindingDemoScene {
 
     // Update trails with current agent positions
     self.update_trails(ctx, dt);
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
     let (width, height) = ui.screen_size();
     let w = width as f32;
     let h = height as f32;
@@ -604,52 +554,25 @@ impl Scene for PathfindingDemoScene {
       }
     }
 
-    let text_light = Color::rgb(220, 220, 220);
     let text_accent = Color::rgb(130, 180, 255);
-    let text_muted = Color::rgb(160, 160, 160);
 
-    // Title
-    ui.draw_text("Pathfinding Demo", 10.0, 10.0, text_light);
-
-    // Stats
-    let avoidance_str = if self.avoid_agents { "ON" } else { "OFF" };
     let stats = format!(
-      "Agents: {} | Obstacles: {} | Smoothing: {} | Avoidance: {}",
+      "Agents: {} | Obstacles: {}",
       self.agents.len(),
-      self.obstacles.len(),
-      self.smoothing_name(),
-      avoidance_str
+      self.obstacles.len()
     );
-    ui.draw_text(&stats, 10.0, 30.0, text_accent);
-
-    // Controls
-    ui.draw_text(
-      "LMB: Destination | RMB/Drag: Add Obstacles | Shift+RMB: Remove",
-      10.0,
-      50.0,
-      text_muted,
-    );
-    ui.draw_text(
-      "Space: +10 Agents | 1/2/3: Smoothing | A: Avoidance | G: Grid | T: Trails | R: Reset",
-      10.0,
-      66.0,
-      text_muted,
-    );
-    SceneAction::Continue
+    ui.draw_text(&stats, 10.0, area.y + 8.0, text_accent);
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Pathfinding Demo - Ryo2D")
+  Demo::new("Pathfinding")
     .resolution(1024, 768)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .target_fps(60)
-    .physics_hz(60)
-    .start_scene(PathfindingDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableAspectRatio)
+        .target_fps(60)
+        .physics_hz(60)
+    })
+    .page(PathfindingDemoScene::new)
+    .run();
 }

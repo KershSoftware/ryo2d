@@ -6,33 +6,17 @@
 //! - Physics vs non-physics entities
 //! - Events (KnockbackStarted, KnockbackFinished)
 //!
-//! ## Controls
-//!
-//! - 1: Fast decay knockback (decay_rate: 8.0)
-//! - 2: Normal decay knockback (decay_rate: 4.0)
-//! - 3: Slow decay knockback (decay_rate: 2.0)
-//! - 4: No accumulation knockback (replaces existing)
-//! - Space: Radial knockback from center (all entities)
-//! - A: Rapid fire knockback (test accumulation)
-//! - R: Reset all entities to starting positions
-//! - Up/Down: Adjust force (default: 400)
-//! - Escape: Exit
+//! Runs on the demo-kit shell; the force is a setting.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 /// Marker for simple entities (no physics)
 #[derive(Debug)]
-struct SimpleEntity {
-  start_x: f32,
-  start_y: f32,
-}
+struct SimpleEntity;
 
 /// Marker for physics entities (with Velocity)
 #[derive(Debug)]
-struct PhysicsEntity {
-  start_x: f32,
-  start_y: f32,
-}
+struct PhysicsEntity;
 
 /// Tracks entity flash state for visual feedback
 #[derive(Debug, Default)]
@@ -87,10 +71,7 @@ impl KnockbackDemoScene {
       // Top row: Simple entities (Transform only)
       let simple_sprite = Self::create_square(40, 100, 180, 255); // Blue
       let simple_entity = ctx.world.spawn((
-        SimpleEntity {
-          start_x: x,
-          start_y: y_top,
-        },
+        SimpleEntity,
         Transform::new(x, y_top).with_pivot_center(),
         Renderable::sprite(simple_sprite).with_z_order(10),
       ));
@@ -99,10 +80,7 @@ impl KnockbackDemoScene {
       // Bottom row: Physics entities (with Velocity)
       let physics_sprite = Self::create_square(40, 255, 140, 100); // Orange
       let physics_entity = ctx.world.spawn((
-        PhysicsEntity {
-          start_x: x,
-          start_y: y_bottom,
-        },
+        PhysicsEntity,
         Transform::new(x, y_bottom).with_pivot_center(),
         Renderable::sprite(physics_sprite).with_z_order(10),
         Velocity::new(0.0, 0.0),
@@ -191,44 +169,6 @@ impl KnockbackDemoScene {
     }
   }
 
-  /// Reset all entities to their starting positions
-  fn reset_entities(&self, ctx: &mut SceneContext) {
-    // Reset simple entities
-    for &entity in &self.simple_entities {
-      if let (Some(simple), Some(mut transform)) = (
-        ctx.world.get::<SimpleEntity>(entity),
-        ctx.world.get_mut::<Transform>(entity),
-      ) {
-        transform.x = simple.start_x;
-        transform.y = simple.start_y;
-      }
-      // Stop any active knockback
-      if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity) {
-        kb.stop();
-      }
-    }
-
-    // Reset physics entities
-    for &entity in &self.physics_entities {
-      if let (Some(physics), Some(mut transform)) = (
-        ctx.world.get::<PhysicsEntity>(entity),
-        ctx.world.get_mut::<Transform>(entity),
-      ) {
-        transform.x = physics.start_x;
-        transform.y = physics.start_y;
-      }
-      // Reset velocity
-      if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(entity) {
-        velocity.dx = 0.0;
-        velocity.dy = 0.0;
-      }
-      // Stop any active knockback
-      if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity) {
-        kb.stop();
-      }
-    }
-  }
-
   /// Update flash states and apply visual feedback
   fn update_flashes(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Process knockback events
@@ -269,28 +209,41 @@ impl KnockbackDemoScene {
   }
 }
 
-impl Scene for KnockbackDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    println!("Knockback Demo initialized!");
-    println!("  1: Fast decay (8.0)");
-    println!("  2: Normal decay (4.0)");
-    println!("  3: Slow decay (2.0)");
-    println!("  4: No accumulation");
-    println!("  Space: Radial knockback");
-    println!("  A: Rapid fire (hold)");
-    println!("  R: Reset positions");
-    println!("  Up/Down: Adjust force");
-    println!("  ESC: Exit");
+impl DemoPage for KnockbackDemoScene {
+  fn name(&self) -> &str {
+    "Knockback"
+  }
 
+  fn description(&self) -> &str {
+    "Directional force with different decay rates, accumulation, and simple vs physics entities"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.float("Force", &mut self.force, 100.0..=1000.0, 50.0);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::keys(
+        "1-4",
+        &[
+          KeyCode::Digit1,
+          KeyCode::Digit2,
+          KeyCode::Digit3,
+          KeyCode::Digit4,
+        ],
+        "Knock a column",
+      ),
+      Control::key(KeyCode::Space, "Radial knockback"),
+      Control::key(KeyCode::KeyA, "Rapid fire (hold)"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     self.spawn_entities(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Exit on escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Column 1: Fast decay (8.0)
     if ctx.input.key_pressed(KeyCode::Digit1) {
       self.knockback_column(ctx, 0, 8.0, true);
@@ -335,22 +288,6 @@ impl Scene for KnockbackDemoScene {
       self.rapid_fire_timer = 0.0;
     }
 
-    // Reset positions
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.reset_entities(ctx);
-      println!("Entities reset to starting positions");
-    }
-
-    // Adjust force
-    if ctx.input.key_pressed(KeyCode::ArrowUp) {
-      self.force = (self.force + 50.0).min(1000.0);
-      println!("Force: {:.0} px/sec", self.force);
-    }
-    if ctx.input.key_pressed(KeyCode::ArrowDown) {
-      self.force = (self.force - 50.0).max(100.0);
-      println!("Force: {:.0} px/sec", self.force);
-    }
-
     // Update visual flash effects
     self.update_flashes(ctx, dt);
 
@@ -363,39 +300,16 @@ impl Scene for KnockbackDemoScene {
         println!("Physics entity knockback finished");
       }
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
     let text_light = Color::rgb(220, 220, 220);
-    let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
     let text_blue = Color::rgb(100, 180, 255);
     let text_orange = Color::rgb(255, 160, 100);
 
     let (screen_w, _) = ui.screen_size();
-
-    // Title
-    ui.draw_text("Knockback Demo", 10.0, 10.0, text_light);
-
-    // Current force
-    let force_text = format!("Force: {:.0} px/sec", self.force);
-    ui.draw_text(&force_text, 10.0, 30.0, text_accent);
-
-    // Controls
-    ui.draw_text(
-      "1-4: Knockback columns | Space: Radial | A: Rapid",
-      10.0,
-      50.0,
-      text_muted,
-    );
-    ui.draw_text(
-      "Up/Down: Force | R: Reset | ESC: Exit",
-      10.0,
-      70.0,
-      text_muted,
-    );
 
     // Column labels
     let spacing_x = screen_w as f32 / 5.0;
@@ -403,7 +317,7 @@ impl Scene for KnockbackDemoScene {
 
     for (col, label) in columns.iter().enumerate() {
       let x = spacing_x * (col as f32 + 1.0) - 35.0;
-      ui.draw_text(label, x, 100.0, text_light);
+      ui.draw_text(label, x, area.y + 16.0, text_light);
     }
 
     // Row labels
@@ -416,34 +330,31 @@ impl Scene for KnockbackDemoScene {
     ui.draw_text("Physics", 10.0, y_bottom - 5.0, text_orange);
     ui.draw_text("(Velocity)", 10.0, y_bottom + 10.0, text_muted);
 
-    // Instructions at bottom
+    // Colour key, above the shell's legend
+    let bottom = area.y + area.height;
     ui.draw_text(
       "Blue = Simple entities (direct Transform movement)",
       10.0,
-      ui.screen_size().1 as f32 - 40.0,
+      bottom - 44.0,
       text_blue,
     );
     ui.draw_text(
       "Orange = Physics entities (Velocity-based movement)",
       10.0,
-      ui.screen_size().1 as f32 - 20.0,
+      bottom - 24.0,
       text_orange,
     );
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Knockback Demo - Ryo2D")
+  Demo::new("Knockback")
     .resolution(800, 600)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .target_fps(60)
-    .physics_hz(60)
-    .start_scene(KnockbackDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableAspectRatio)
+        .target_fps(60)
+        .physics_hz(60)
+    })
+    .page(KnockbackDemoScene::new)
+    .run();
 }

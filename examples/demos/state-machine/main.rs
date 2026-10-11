@@ -8,27 +8,10 @@
 //! ## Right Side: Game State Stack
 //! A pushdown automata for interruptible/nested game states.
 //!
-//! ## Controls
 //!
-//! ### Character FSM (Left)
-//! - A/D: Walk left/right
-//! - Shift + A/D: Run left/right
-//! - Space: Jump
-//! - S: Crouch (while idle)
-//! - X: Attack (triggers stunned after)
-//! - Release keys: Return to idle
-//!
-//! ### Game Stack (Right)
-//! - P: Push Pause
-//! - I: Push Inventory
-//! - O: Push Options
-//! - Backspace: Pop current state
-//! - Home: Pop to root (Playing)
-//!
-//! ### General
-//! - Escape: Exit
+//! Runs on the demo-kit shell.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 // =============================================================================
 // Character State Machine (FSM)
@@ -452,8 +435,30 @@ impl StateMachineDemoScene {
   }
 }
 
-impl Scene for StateMachineDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for StateMachineDemoScene {
+  fn name(&self) -> &str {
+    "State Machines"
+  }
+
+  fn description(&self) -> &str {
+    "A character FSM with explicit transitions (left) beside a pushdown state stack (right)"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::keys("A/D", &[KeyCode::KeyA, KeyCode::KeyD], "Walk (Shift: run)"),
+      Control::key(KeyCode::Space, "Jump"),
+      Control::key(KeyCode::KeyS, "Crouch (hold)"),
+      Control::key(KeyCode::KeyX, "Attack"),
+      Control::key(KeyCode::KeyP, "Push pause"),
+      Control::key(KeyCode::KeyI, "Push inventory"),
+      Control::key(KeyCode::KeyO, "Push options (Shift+O: video)"),
+      Control::key(KeyCode::Backspace, "Pop state"),
+      Control::key(KeyCode::Home, "Back to the root"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (w, h) = ctx.screen_size();
     self.screen_w = w;
     self.screen_h = h;
@@ -461,33 +466,16 @@ impl Scene for StateMachineDemoScene {
     self.character_y = self.ground_y;
 
     self.spawn_character(ctx);
-
-    println!("State Machine Demo");
-    println!("==================");
-    println!();
-    println!("Character FSM (Left):");
-    println!("  A/D: Walk | Shift+A/D: Run | Space: Jump");
-    println!("  S: Crouch | X: Attack");
-    println!();
-    println!("Game Stack (Right):");
-    println!("  P: Pause | I: Inventory | O: Options");
-    println!("  Backspace: Pop | Home: Pop to root");
-    println!();
-    println!("ESC: Exit");
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     self.update_character_fsm(ctx, dt);
     self.update_game_stack(ctx, dt);
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
+    let oy = area.y - 16.0;
     let white = Color::rgb(240, 240, 240);
     let gray = Color::rgb(150, 150, 150);
     let dark_gray = Color::rgb(80, 80, 80);
@@ -495,36 +483,36 @@ impl Scene for StateMachineDemoScene {
     // =========================================================================
     // Left Side: Character FSM
     // =========================================================================
-    ui.draw_text("CHARACTER FSM", 20.0, 20.0, white);
-    ui.draw_text("━━━━━━━━━━━━━━", 20.0, 38.0, dark_gray);
+    ui.draw_text("CHARACTER FSM", 20.0, oy + 20.0, white);
+    ui.draw_text("━━━━━━━━━━━━━━", 20.0, oy + 38.0, dark_gray);
 
     // Current state with color
     let current_state = self.character_fsm.current();
     let (r, g, b) = current_state.color();
     let state_color = Color::rgb(r, g, b);
-    ui.draw_text("Current:", 20.0, 60.0, gray);
-    ui.draw_text(current_state.name(), 90.0, 60.0, state_color);
+    ui.draw_text("Current:", 20.0, oy + 60.0, gray);
+    ui.draw_text(current_state.name(), 90.0, oy + 60.0, state_color);
 
     // Time in state
     let time_str = format!("{:.1}s", self.character_fsm.time_in_state());
-    ui.draw_text("Time:", 20.0, 80.0, gray);
-    ui.draw_text(&time_str, 90.0, 80.0, white);
+    ui.draw_text("Time:", 20.0, oy + 80.0, gray);
+    ui.draw_text(&time_str, 90.0, oy + 80.0, white);
 
     // Previous state
     if let Some(prev) = self.character_fsm.previous() {
       let (pr, pg, pb) = prev.color();
-      ui.draw_text("Previous:", 20.0, 100.0, gray);
-      ui.draw_text(prev.name(), 90.0, 100.0, Color::rgb(pr, pg, pb));
+      ui.draw_text("Previous:", 20.0, oy + 100.0, gray);
+      ui.draw_text(prev.name(), 90.0, oy + 100.0, Color::rgb(pr, pg, pb));
     }
 
     // Transition log
-    ui.draw_text("Transitions:", 20.0, 130.0, gray);
+    ui.draw_text("Transitions:", 20.0, oy + 130.0, gray);
     for (i, log) in self.fsm_log.iter().enumerate() {
       let alpha = 255 - (i as u8 * 20);
       ui.draw_text(
         log,
         20.0,
-        150.0 + (i as f32 * 16.0),
+        oy + 150.0 + (i as f32 * 16.0),
         Color::new(200, 200, 200, alpha),
       );
     }
@@ -532,47 +520,39 @@ impl Scene for StateMachineDemoScene {
     // Ground line
     ui.draw_rect(Rect::new(0.0, self.ground_y + 30.0, 400.0, 2.0), dark_gray);
 
-    // Controls (below ground line, in footer area)
-    ui.draw_text("Controls:", 20.0, self.ground_y + 50.0, gray);
-    ui.draw_text("A/D: Walk", 20.0, self.ground_y + 68.0, dark_gray);
-    ui.draw_text("Shift+A/D: Run", 20.0, self.ground_y + 84.0, dark_gray);
-    ui.draw_text("Space: Jump", 120.0, self.ground_y + 68.0, dark_gray);
-    ui.draw_text("S: Crouch", 120.0, self.ground_y + 84.0, dark_gray);
-    ui.draw_text("X: Attack", 220.0, self.ground_y + 68.0, dark_gray);
-
     // =========================================================================
     // Divider
     // =========================================================================
-    ui.draw_rect(Rect::new(400.0, 0.0, 2.0, self.screen_h), dark_gray);
+    ui.draw_rect(Rect::new(400.0, area.y, 2.0, area.height), dark_gray);
 
     // =========================================================================
     // Right Side: Game State Stack
     // =========================================================================
-    ui.draw_text("GAME STATE STACK", 420.0, 20.0, white);
-    ui.draw_text("━━━━━━━━━━━━━━━━", 420.0, 38.0, dark_gray);
+    ui.draw_text("GAME STATE STACK", 420.0, oy + 20.0, white);
+    ui.draw_text("━━━━━━━━━━━━━━━━", 420.0, oy + 38.0, dark_gray);
 
     // Current state
     let current_game = self.game_stack.current();
     let (gr, gg, gb) = current_game.color();
     let game_color = Color::rgb(gr, gg, gb);
-    ui.draw_text("Current:", 420.0, 60.0, gray);
-    ui.draw_text(current_game.name(), 490.0, 60.0, game_color);
+    ui.draw_text("Current:", 420.0, oy + 60.0, gray);
+    ui.draw_text(current_game.name(), 490.0, oy + 60.0, game_color);
 
     // Time in state
     let game_time = format!("{:.1}s", self.game_stack.time_in_state());
-    ui.draw_text("Time:", 420.0, 80.0, gray);
-    ui.draw_text(&game_time, 490.0, 80.0, white);
+    ui.draw_text("Time:", 420.0, oy + 80.0, gray);
+    ui.draw_text(&game_time, 490.0, oy + 80.0, white);
 
     // Stack depth
     let depth_str = format!("{}", self.game_stack.as_slice().len());
-    ui.draw_text("Depth:", 420.0, 100.0, gray);
-    ui.draw_text(&depth_str, 490.0, 100.0, white);
+    ui.draw_text("Depth:", 420.0, oy + 100.0, gray);
+    ui.draw_text(&depth_str, 490.0, oy + 100.0, white);
 
     // Stack visualization
-    ui.draw_text("Stack:", 420.0, 130.0, gray);
+    ui.draw_text("Stack:", 420.0, oy + 130.0, gray);
     let stack_slice = self.game_stack.as_slice();
     for (i, state) in stack_slice.iter().enumerate() {
-      let y = 150.0 + (i as f32 * 24.0);
+      let y = oy + 150.0 + (i as f32 * 24.0);
       let (sr, sg, sb) = state.color();
       let prefix = if i == stack_slice.len() - 1 {
         "▶ "
@@ -584,43 +564,26 @@ impl Scene for StateMachineDemoScene {
     }
 
     // Action log
-    ui.draw_text("Actions:", 420.0, 280.0, gray);
+    ui.draw_text("Actions:", 420.0, oy + 280.0, gray);
     for (i, log) in self.stack_log.iter().enumerate() {
       let alpha = 255 - (i as u8 * 20);
       ui.draw_text(
         log,
         420.0,
-        298.0 + (i as f32 * 16.0),
+        oy + 298.0 + (i as f32 * 16.0),
         Color::new(200, 200, 200, alpha),
       );
     }
-
-    // Controls
-    ui.draw_text("Controls:", 420.0, 450.0, gray);
-    ui.draw_text("P: Pause", 420.0, 468.0, dark_gray);
-    ui.draw_text("I: Inventory", 420.0, 484.0, dark_gray);
-    ui.draw_text("O: Options", 420.0, 500.0, dark_gray);
-    ui.draw_text("Backspace: Pop", 420.0, 516.0, dark_gray);
-    ui.draw_text("Home: Pop to root", 420.0, 532.0, dark_gray);
-
-    // =========================================================================
-    // Title bar
-    // =========================================================================
-    ui.draw_text("ESC: Exit", self.screen_w - 80.0, 10.0, dark_gray);
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("State Machine Demo - Ryo2D")
+  Demo::new("State Machine")
     .resolution(800, 600)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .target_fps(60)
-    .start_scene(StateMachineDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableAspectRatio)
+        .target_fps(60)
+    })
+    .page(StateMachineDemoScene::new)
+    .run();
 }
