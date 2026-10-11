@@ -1330,7 +1330,7 @@ impl EffectsManager {
 
     // Vignette
     fn set_vignette(&mut self, intensity: f32);
-    fn set_vignette_custom(&mut self, intensity: f32, radius: f32, softness: f32);
+    fn set_vignette_custom(&mut self, intensity: f32, radius: f32, softness: f32); // radius: 0 = center, 1 = corners (values tuned before 2026-10-11 darken further out now)
 
     // Screen flash (timed, auto-decays)
     fn flash(&mut self, color: Color, duration: Duration);

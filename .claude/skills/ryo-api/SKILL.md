@@ -991,6 +991,11 @@ impl InputState {
     fn key_pressed_and_consume(&mut self, key: KeyCode) -> bool;
     fn mouse_pressed_and_consume(&mut self, button: MouseButton) -> bool;
 
+    // Blocking (an overlay over the game: block, run the game's update, unblock)
+    fn block_pointer(&mut self);   // Hide mouse presses, held buttons, motion, scroll
+    fn block_all(&mut self);       // Also keys, text and gamepad
+    fn unblock(&mut self);         // Also cleared each frame; position and releases always report
+
     // Text entry
     fn text_input(&self) -> &str;                 // Characters typed this frame
 
@@ -1325,7 +1330,7 @@ impl EffectsManager {
 
     // Vignette
     fn set_vignette(&mut self, intensity: f32);
-    fn set_vignette_custom(&mut self, intensity: f32, radius: f32, softness: f32);
+    fn set_vignette_custom(&mut self, intensity: f32, radius: f32, softness: f32); // radius: 0 = center, 1 = corners (values tuned before 2026-10-11 darken further out now)
 
     // Screen flash (timed, auto-decays)
     fn flash(&mut self, color: Color, duration: Duration);
