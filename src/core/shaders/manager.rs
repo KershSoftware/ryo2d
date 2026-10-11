@@ -230,7 +230,6 @@ impl EffectsManager {
   /// Set a parameter of the custom effect `name`
   ///
   /// Returns `false` for an unknown effect name.
-  #[must_use]
   pub fn set_custom_param(
     &mut self,
     name: &str,
@@ -249,7 +248,6 @@ impl EffectsManager {
   /// Enable or disable the custom effect `name`
   ///
   /// Returns `false` for an unknown effect name.
-  #[must_use]
   pub fn set_custom_enabled(&mut self, name: &str, enabled: bool) -> bool {
     match self.custom.iter_mut().find(|c| c.name == name) {
       Some(effect) => {
@@ -263,7 +261,6 @@ impl EffectsManager {
   /// Remove the custom effect `name`
   ///
   /// Returns `false` for an unknown effect name.
-  #[must_use]
   pub fn remove_custom(&mut self, name: &str) -> bool {
     let before = self.custom.len();
     self.custom.retain(|c| c.name != name);
