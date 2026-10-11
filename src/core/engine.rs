@@ -1341,6 +1341,43 @@ impl Engine {
       .unwrap_or_else(|| std::time::Duration::from_secs_f64(1.0 / 60.0))
   }
 
+  /// The window (or offscreen target) is now `width x height`
+  pub(crate) fn resize_window(&mut self, width: u32, height: u32) {
+    self.resize_game_buffer(width, height);
+    if let Some(renderer) = &mut self.renderer {
+      // For all modes, update surface size for proper scaling
+      renderer.resize(width, height);
+      self.last_window_size = (width, height);
+    }
+  }
+
+  /// In `ResizableStretch` the game buffer follows the window: resize it and
+  /// everything drawn at its size. Other modes, and a minimised window's 0x0,
+  /// keep the current buffers.
+  fn resize_game_buffer(&mut self, width: u32, height: u32) {
+    if self.config.window_mode != WindowMode::ResizableStretch || width == 0 || height == 0 {
+      return;
+    }
+    let Some(renderer) = &mut self.renderer else {
+      return;
+    };
+    renderer.resize_buffer(width, height);
+    self.ui_buffer = vec![0; (width * height * 4) as usize];
+    if let Some(lighting) = &mut self.lighting {
+      lighting.resize(renderer.device(), width, height);
+    }
+    if let Some(raycast) = &mut self.raycast_renderer {
+      raycast.resize(renderer.device(), width, height);
+    }
+    // Trails, lines and debug overlays project with the game size
+    if let Some(trails) = &mut self.trail_renderer {
+      trails.resize(width, height);
+    }
+    self.camera = Camera::centered_at(width as f32 / 2.0, height as f32 / 2.0, width, height);
+    // The viewport changed
+    self.render_cache_dirty = true;
+  }
+
   pub(crate) fn game_size(&self) -> (u32, u32) {
     (self.config.width, self.config.height)
   }
@@ -2567,39 +2604,7 @@ impl ApplicationHandler for Engine {
         }
       }
       WindowEvent::Resized(new_size) => {
-        // Handle window resize based on window mode
-        if let Some(renderer) = &mut self.renderer {
-          // For stretch mode, resize the internal buffer to match window
-          // A minimised window reports 0x0; keep the current buffers then
-          if self.config.window_mode == WindowMode::ResizableStretch
-            && new_size.width > 0
-            && new_size.height > 0
-          {
-            renderer.resize_buffer(new_size.width, new_size.height);
-            self.ui_buffer = vec![0; (new_size.width * new_size.height * 4) as usize];
-            // Resize lighting renderer to match new game buffer size
-            if let Some(lighting) = &mut self.lighting {
-              lighting.resize(renderer.device(), new_size.width, new_size.height);
-            }
-            // Resize raycast renderer depth texture to match new buffer size
-            if let Some(ref mut raycast) = self.raycast_renderer {
-              raycast.resize(renderer.device(), new_size.width, new_size.height);
-            }
-            // Update camera to match new buffer size
-            self.camera = Camera::centered_at(
-              new_size.width as f32 / 2.0,
-              new_size.height as f32 / 2.0,
-              new_size.width,
-              new_size.height,
-            );
-            // Mark render cache as dirty since viewport changed
-            self.render_cache_dirty = true;
-          }
-
-          // For all modes, update surface size for proper scaling
-          renderer.resize(new_size.width, new_size.height);
-          self.last_window_size = (new_size.width, new_size.height);
-        }
+        self.resize_window(new_size.width, new_size.height);
 
         // Request immediate redraw to update display
         if let Some(window) = &self.window {

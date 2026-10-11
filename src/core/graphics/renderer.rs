@@ -43,6 +43,24 @@ enum PresentTarget {
   },
 }
 
+/// The texture an offscreen renderer presents into, read back by `read_frame`
+fn offscreen_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+  device.create_texture(&wgpu::TextureDescriptor {
+    label: Some("Offscreen Target"),
+    size: wgpu::Extent3d {
+      width,
+      height,
+      depth_or_array_layers: 1,
+    },
+    mip_level_count: 1,
+    sample_count: 1,
+    dimension: wgpu::TextureDimension::D2,
+    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+    view_formats: &[],
+  })
+}
+
 impl PresentTarget {
   /// The view to draw this frame into, plus the surface texture to present afterwards.
   fn acquire(
@@ -285,20 +303,7 @@ impl WgpuRenderer {
     width: u32,
     height: u32,
   ) -> Self {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some("Offscreen Target"),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
-      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-      view_formats: &[],
-    });
+    let texture = offscreen_target(&device, width, height);
     Self::from_parts(RendererParts {
       instance: None,
       adapter: None,
@@ -543,13 +548,17 @@ impl WgpuRenderer {
     if new_width == 0 || new_height == 0 {
       return;
     }
-    let PresentTarget::Surface { surface, config } = &mut self.target else {
-      // Offscreen targets always match the game resolution
-      return;
-    };
-    config.width = new_width;
-    config.height = new_height;
-    surface.configure(&self.device, config);
+    match &mut self.target {
+      PresentTarget::Surface { surface, config } => {
+        config.width = new_width;
+        config.height = new_height;
+        surface.configure(&self.device, config);
+      }
+      // An offscreen target stands in for the window
+      PresentTarget::Offscreen { texture } => {
+        *texture = offscreen_target(&self.device, new_width, new_height);
+      }
+    }
     self.window_width = new_width;
     self.window_height = new_height;
     self.update_viewport_transform();
