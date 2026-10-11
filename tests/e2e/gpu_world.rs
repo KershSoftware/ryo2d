@@ -557,3 +557,66 @@ fn plain_sprites_draw_under_y_sorted_ones_in_their_layer() {
     assert_eq!(frame.get_pixel(17, 5).0, GREEN, "z {z}: floor shows");
   }
 }
+
+/// Black left half, mid-grey (128) right half; pushes a fade through white
+struct FadesToWhite {
+  started: bool,
+}
+
+impl Scene for FadesToWhite {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let halves = Sprite::from_rgba(
+      (0..32 * 64)
+        .flat_map(|i| {
+          let v = if i % 64 < 32 { 0 } else { 128 };
+          [v, v, v, 255]
+        })
+        .collect(),
+      64,
+      32,
+    );
+    ctx.world.spawn((
+      Transform::new(0.0, 0.0),
+      Renderable::sprite(SpriteHandle::from_sprite(halves, "fade-halves")),
+    ));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if self.started {
+      return SceneAction::Continue;
+    }
+    self.started = true;
+    SceneAction::PushWith(
+      Box::new(Next),
+      Transition::fade_color(Duration::from_millis(300), 255, 255, 255),
+    )
+  }
+}
+
+#[test]
+fn transition_fades_like_srgb_bytes() {
+  let builder = EngineBuilder::new()
+    .resolution(64, 32)
+    .start_scene(FadesToWhite { started: false });
+  let Some(mut engine) = start(builder) else {
+    return;
+  };
+  // At fade opacity a, black becomes 255a and grey 128 + 127a, as the CPU
+  // blended bytes; blending in linear light would hold grey back mid-fade
+  let mut checked = 0;
+  for _ in 0..40 {
+    engine.step().unwrap();
+    let frame = engine.frame().unwrap();
+    let black = frame.get_pixel(20, 20).0[0] as f32;
+    let grey = frame.get_pixel(50, 20).0[0] as f32;
+    if (40.0..215.0).contains(&black) {
+      let expected = 128.0 + black * 127.0 / 255.0;
+      assert!(
+        (grey - expected).abs() <= 3.0,
+        "black {black}: grey {grey}, expected {expected}"
+      );
+      checked += 1;
+    }
+  }
+  assert!(checked >= 2, "too few mid-fade frames ({checked})");
+}

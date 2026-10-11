@@ -1,14 +1,20 @@
-// Scene transition fade: one colour over the whole frame.
+// Scene transition fade: the frame mixed toward one colour.
 //
-// The colour arrives as sRGB bytes (0-1) with the fade's opacity in alpha, the
-// way the CPU blended it. The frame is an sRGB target, so the colour is
-// converted to linear here and alpha blending does the rest.
+// The CPU renderer blended sRGB bytes, which is the pace players expect a
+// fade to pass through mid-tones at. Blending in linear light would hold
+// bright areas back and then snap at the end, so the pass reads a copy of the
+// frame, mixes in sRGB and writes the result over it.
 
 struct Overlay {
+    // sRGB colour (0-1), the fade's opacity in alpha
     color: vec4<f32>,
+    // x: 1.0 when the frame texture is sRGB-encoded (reads and writes are
+    // linear), 0.0 when it stores the bytes as they are
+    srgb_frame: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> overlay: Overlay;
+@group(0) @binding(1) var frame: texture_2d<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -24,7 +30,18 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(high, low, c <= vec3<f32>(0.04045));
 }
 
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let low = c * 12.92;
+    let high = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(high, low, c <= vec3<f32>(0.0031308));
+}
+
 @fragment
-fn fs_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(srgb_to_linear(overlay.color.rgb), overlay.color.a);
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let below = textureLoad(frame, vec2<i32>(position.xy), 0);
+    if overlay.srgb_frame.x < 0.5 {
+        return vec4<f32>(mix(below.rgb, overlay.color.rgb, overlay.color.a), below.a);
+    }
+    let mixed = mix(linear_to_srgb(below.rgb), overlay.color.rgb, overlay.color.a);
+    return vec4<f32>(srgb_to_linear(mixed), below.a);
 }
