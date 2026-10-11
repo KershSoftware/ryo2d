@@ -3123,6 +3123,7 @@ impl ApplicationHandler for Engine {
           // For stretch mode, resize the internal buffer to match window
           if self.config.window_mode == WindowMode::ResizableStretch {
             renderer.resize_buffer(new_size.width, new_size.height);
+            self.ui_buffer = vec![0; (new_size.width * new_size.height * 4) as usize];
             // Resize lighting renderer to match new game buffer size
             if let Some(lighting) = &mut self.lighting {
               lighting.resize(renderer.device(), new_size.width, new_size.height);

@@ -97,7 +97,6 @@ pub struct WgpuRenderer {
   texture_view: wgpu::TextureView,
   // Staging texture for CPU pixel buffer (used for alpha-blending onto game texture)
   cpu_texture: wgpu::Texture,
-  #[expect(dead_code, reason = "view kept alive for cpu_bind_group GPU lifetime")]
   cpu_texture_view: wgpu::TextureView,
   cpu_bind_group: wgpu::BindGroup,
   // Final composite (scene + UI overlay to the target) and its shared resources
@@ -132,6 +131,30 @@ pub struct WgpuRenderer {
   pending_capture: Option<PathBuf>,
   // Result of the latest capture, collected by the engine
   capture_result: Option<CaptureResult<CapturedFrame>>,
+}
+
+/// Create the CPU staging texture at game resolution.
+fn create_cpu_texture(
+  device: &wgpu::Device,
+  width: u32,
+  height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+  let texture = device.create_texture(&wgpu::TextureDescriptor {
+    label: Some("CPU Staging Texture"),
+    size: wgpu::Extent3d {
+      width,
+      height,
+      depth_or_array_layers: 1,
+    },
+    mip_level_count: 1,
+    sample_count: 1,
+    dimension: wgpu::TextureDimension::D2,
+    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+    view_formats: &[],
+  });
+  let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+  (texture, view)
 }
 
 /// Create the persistent lighting output texture at game resolution.
@@ -374,21 +397,7 @@ impl WgpuRenderer {
     let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     // Create CPU staging texture (for uploading CPU pixel buffer and blending onto game texture)
-    let cpu_texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some("CPU Staging Texture"),
-      size: wgpu::Extent3d {
-        width: game_width,
-        height: game_height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
-      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-      view_formats: &[],
-    });
-    let cpu_texture_view = cpu_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let (cpu_texture, cpu_texture_view) = create_cpu_texture(&device, game_width, game_height);
 
     let compositor = Compositor::new(&device, target_format, game_width, game_height);
     let (lit_texture, lit_texture_view) = create_lit_texture(&device, game_width, game_height);
@@ -697,6 +706,35 @@ impl WgpuRenderer {
         },
       ],
     });
+
+    (self.lit_texture, self.lit_texture_view) =
+      create_lit_texture(&self.device, new_width, new_height);
+    (self.cpu_texture, self.cpu_texture_view) =
+      create_cpu_texture(&self.device, new_width, new_height);
+    self.cpu_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("CPU Texture Bind Group"),
+      layout: &self.compositor.bind_group_layout,
+      entries: &[
+        wgpu::BindGroupEntry {
+          binding: 0,
+          resource: wgpu::BindingResource::TextureView(&self.cpu_texture_view),
+        },
+        wgpu::BindGroupEntry {
+          binding: 1,
+          resource: wgpu::BindingResource::Sampler(&self.compositor.sampler),
+        },
+        wgpu::BindGroupEntry {
+          binding: 2,
+          resource: self.compositor.identity_uniform_buffer.as_entire_binding(),
+        },
+      ],
+    });
+    self
+      .compositor
+      .resize_ui(&self.device, new_width, new_height);
+    if let Some(post_process) = &mut self.post_process {
+      post_process.resize(&self.device, new_width, new_height);
+    }
 
     self.update_viewport_transform();
 
@@ -1619,6 +1657,29 @@ mod tests {
   use super::*;
 
   #[test]
+  fn resize_buffer_resizes_every_game_resolution_texture() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return; // no GPU on this machine
+    };
+    let mut renderer = WgpuRenderer::new_offscreen(device, queue, 64, 48);
+    renderer.resize_buffer(96, 80);
+
+    let size = |t: &wgpu::Texture| (t.width(), t.height());
+    assert_eq!(size(&renderer.texture), (96, 80));
+    assert_eq!(size(&renderer.lit_texture), (96, 80));
+    assert_eq!(size(&renderer.cpu_texture), (96, 80));
+    assert_eq!(size(renderer.compositor.ui_texture()), (96, 80));
+    let post = renderer.post_process.as_ref().expect("post process");
+    assert_eq!(size(post.texture_a()), (96, 80));
+    assert_eq!(size(post.texture_b()), (96, 80));
+
+    let ui = vec![255u8; 96 * 80 * 4];
+    renderer
+      .render_with_effects(None, Some(&ui))
+      .expect("render after resize");
+  }
+
+  #[test]
   fn stretch_mode_fills_window() {
     let (scale_x, scale_y, _, _) = calculate_viewport_scale(
       800,
@@ -1785,7 +1846,7 @@ mod tests {
   /// must be copied to post-process texture_a before effects are applied.
   ///
   /// Background:
-  /// - Lighting renders to a temporary `lit_texture` (not texture_a)
+  /// - Lighting renders to the persistent `lit_texture` (not texture_a)
   /// - Post-process effects read from texture_a and ping-pong to texture_b
   /// - If we skip the copy, effects read uninitialized data → black screen
   ///

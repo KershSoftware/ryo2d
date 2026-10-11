@@ -42,6 +42,30 @@ pub(crate) struct Compositor {
   pub(crate) identity_uniform_buffer: wgpu::Buffer,
 }
 
+/// Dedicated UI texture (separate from the CPU staging texture to avoid write_texture ordering issues).
+fn create_ui_texture(
+  device: &wgpu::Device,
+  width: u32,
+  height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+  let texture = device.create_texture(&wgpu::TextureDescriptor {
+    label: Some("UI Texture"),
+    size: wgpu::Extent3d {
+      width,
+      height,
+      depth_or_array_layers: 1,
+    },
+    mip_level_count: 1,
+    sample_count: 1,
+    dimension: wgpu::TextureDimension::D2,
+    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+    view_formats: &[],
+  });
+  let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+  (texture, view)
+}
+
 impl Compositor {
   /// Create the composite resources for a `target_format` target and a game-sized UI texture.
   pub(crate) fn new(
@@ -50,22 +74,7 @@ impl Compositor {
     width: u32,
     height: u32,
   ) -> Self {
-    // Create UI texture (dedicated texture for UI overlay to avoid write_texture ordering issues)
-    let ui_texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some("UI Texture"),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
-      usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-      view_formats: &[],
-    });
-    let ui_texture_view = ui_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let (ui_texture, ui_texture_view) = create_ui_texture(device, width, height);
 
     // Create sampler (nearest neighbor for pixel art crispness)
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -232,6 +241,17 @@ impl Compositor {
       uniform_buffer,
       identity_uniform_buffer,
     }
+  }
+
+  /// The UI overlay texture.
+  #[cfg(test)]
+  pub(crate) fn ui_texture(&self) -> &wgpu::Texture {
+    &self.ui_texture
+  }
+
+  /// Recreate the UI texture at a new game resolution.
+  pub(crate) fn resize_ui(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    (self.ui_texture, self.ui_texture_view) = create_ui_texture(device, width, height);
   }
 
   /// Set the letterbox transform: `[scale_x, scale_y, offset_x, offset_y]`.
