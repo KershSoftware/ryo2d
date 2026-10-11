@@ -90,6 +90,7 @@ Unless explicitly told so, always confirm committing and the commit message with
 
 - **Progress incrementally** - don't jump ahead in the task list
 - **Before finishing** - run `cargo check`, `cargo clippy`, `cargo test` and verify no regressions
+- **Line endings** - LF everywhere on every platform, enforced by `.gitattributes`, `.editorconfig` and `rustfmt.toml`; edit files normally
 
 ### Commit Message Guidelines
 

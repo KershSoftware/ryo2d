@@ -1,0 +1,8 @@
+# Commits that only reformat or change line endings; git blame skips them with
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub reads this file automatically)
+
+# Store every text file with LF line endings
+33928619a348fa09056fff0d42d807dde3677576
+# Apply rustfmt to the files that had drifted
+6049913feba95787a2d5b767172181886793b979
