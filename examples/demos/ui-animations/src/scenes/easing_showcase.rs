@@ -2,9 +2,6 @@
 
 use demo_kit::prelude::*;
 
-/// Height of the settings panel at the top right, which the grid starts below
-const SETTINGS_CLEARANCE: f32 = 42.0;
-
 /// Data for a single easing demo box
 struct EasingBox {
   name: &'static str,
@@ -143,12 +140,13 @@ impl DemoPage for EasingShowcase {
       Color::rgb(20, 20, 30),
     );
 
-    // Grid layout, starting below the settings panel
+    // Grid layout, starting below the settings panel (one row: Auto-restart)
+    let clearance = settings_panel_height(ui, 1) + 4.0;
     let area = Rect::new(
       area.x,
-      area.y + SETTINGS_CLEARANCE,
+      area.y + clearance,
       area.width,
-      area.height - SETTINGS_CLEARANCE,
+      area.height - clearance,
     );
     let cols = 5;
     let rows = self.boxes.len().div_ceil(cols);

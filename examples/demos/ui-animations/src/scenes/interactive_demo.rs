@@ -2,9 +2,6 @@
 
 use demo_kit::prelude::*;
 
-/// The layout was written for a title above y = 55; the shell's header ends higher
-const SHIFT_Y: f32 = -15.0;
-
 /// An animated button with hover and click effects
 struct AnimatedButton {
   label: &'static str,
@@ -73,8 +70,10 @@ impl AnimatedButton {
     Rect::centered_at(cx, cy, w, h)
   }
 
-  fn render(&self, ui: &mut UiContext) {
+  /// Draw with the layout's origin at `top` on screen
+  fn render(&self, ui: &mut UiContext, top: f32) {
     let rect = self.current_rect();
+    let rect = Rect::new(rect.x, rect.y + top, rect.width, rect.height);
     let glow_alpha = (self.glow_alpha.value() * 255.0) as u8;
 
     // Glow effect (larger background rect)
@@ -138,12 +137,14 @@ impl Notification {
     }
   }
 
-  fn render(&self, ui: &mut UiContext) {
+  /// Draw with the layout's origin at `top` on screen
+  fn render(&self, ui: &mut UiContext, top: f32) {
     if !self.active {
       return;
     }
 
     let (x, y) = self.position.value();
+    let y = y + top;
     let alpha = (self.alpha.value() * 255.0) as u8;
     let scale = self.scale.value();
 
@@ -174,6 +175,8 @@ pub struct InteractiveDemo {
   click_count: u32,
   hover_indicator: TweenFloat,
   last_hovered: Option<usize>,
+  /// The content area's top on screen, from the last UI frame: the layout's origin
+  top: f32,
 }
 
 impl InteractiveDemo {
@@ -182,7 +185,7 @@ impl InteractiveDemo {
       AnimatedButton::new(
         "Button A",
         100.0,
-        200.0 + SHIFT_Y,
+        153.0,
         150.0,
         50.0,
         Color::rgb(80, 100, 160),
@@ -190,7 +193,7 @@ impl InteractiveDemo {
       AnimatedButton::new(
         "Button B",
         300.0,
-        200.0 + SHIFT_Y,
+        153.0,
         150.0,
         50.0,
         Color::rgb(160, 80, 100),
@@ -198,7 +201,7 @@ impl InteractiveDemo {
       AnimatedButton::new(
         "Button C",
         500.0,
-        200.0 + SHIFT_Y,
+        153.0,
         150.0,
         50.0,
         Color::rgb(80, 160, 100),
@@ -206,27 +209,13 @@ impl InteractiveDemo {
       AnimatedButton::new(
         "Large Button",
         200.0,
-        320.0 + SHIFT_Y,
+        273.0,
         250.0,
         70.0,
         Color::rgb(120, 100, 160),
       ),
-      AnimatedButton::new(
-        "Small",
-        500.0,
-        330.0 + SHIFT_Y,
-        80.0,
-        40.0,
-        Color::rgb(160, 120, 80),
-      ),
-      AnimatedButton::new(
-        "Tiny",
-        620.0,
-        330.0 + SHIFT_Y,
-        60.0,
-        40.0,
-        Color::rgb(80, 140, 140),
-      ),
+      AnimatedButton::new("Small", 500.0, 283.0, 80.0, 40.0, Color::rgb(160, 120, 80)),
+      AnimatedButton::new("Tiny", 620.0, 283.0, 60.0, 40.0, Color::rgb(80, 140, 140)),
     ];
 
     let notifications: Vec<Notification> = (0..5).map(|_| Notification::new()).collect();
@@ -237,6 +226,7 @@ impl InteractiveDemo {
       click_count: 0,
       hover_indicator: TweenFloat::new(0.0, 0.0, 0.3).with_ease(Ease::OutQuad),
       last_hovered: None,
+      top: 0.0,
     }
   }
 }
@@ -261,7 +251,10 @@ impl DemoPage for InteractiveDemo {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
-    let mouse_pos = ctx.input.mouse_position();
+    // Buttons live in layout coordinates, with y measured from the content
+    // area's top
+    let (mx, my) = ctx.input.mouse_position();
+    let mouse_pos = (mx, my - self.top);
     let mouse_down = ctx.input.mouse_down(MouseButton::Left);
     let mouse_pressed = ctx.input.mouse_pressed(MouseButton::Left);
 
@@ -326,61 +319,58 @@ impl DemoPage for InteractiveDemo {
     // Click counter
     let count_text = format!("Total clicks: {}", self.click_count);
     let area = content_area(ui);
-    ui.draw_text(&count_text, screen_w - 150.0, area.y, Color::WHITE);
+    self.top = area.y;
+    let top = area.y;
+    ui.draw_text(&count_text, screen_w - 150.0, top, Color::WHITE);
 
     // Section title
     ui.draw_text(
       "Animated Buttons with Hover & Click Effects:",
       100.0,
-      160.0 + SHIFT_Y,
+      top + 113.0,
       Color::WHITE,
     );
 
     // Render buttons
     for button in &self.buttons {
-      button.render(ui);
+      button.render(ui, top);
     }
 
     // Render notifications
     for notif in &self.notifications {
-      notif.render(ui);
+      notif.render(ui, top);
     }
 
     // Info panel
     ui.draw_panel(
-      Rect::new(50.0, 420.0 + SHIFT_Y, 700.0, 130.0),
+      Rect::new(50.0, top + 373.0, 700.0, 130.0),
       Color::rgb(30, 30, 45),
       Some(Color::rgb(60, 60, 90)),
     );
 
-    ui.draw_text(
-      "Animation Techniques Used:",
-      60.0,
-      430.0 + SHIFT_Y,
-      text_accent,
-    );
+    ui.draw_text("Animation Techniques Used:", 60.0, top + 383.0, text_accent);
     ui.draw_text(
       "Hover: Scale up with OutBack easing + glow fade in",
       60.0,
-      455.0 + SHIFT_Y,
+      top + 408.0,
       Color::WHITE,
     );
     ui.draw_text(
       "Click: Quick scale down (squish) then bounce back",
       60.0,
-      475.0 + SHIFT_Y,
+      top + 428.0,
       Color::WHITE,
     );
     ui.draw_text(
       "Notifications: Pop up, float upward, fade out",
       60.0,
-      495.0 + SHIFT_Y,
+      top + 448.0,
       Color::WHITE,
     );
     ui.draw_text(
       "All animations use UiTween with retargeting for smooth interrupts",
       60.0,
-      520.0 + SHIFT_Y,
+      top + 473.0,
       text_muted,
     );
   }
