@@ -11,6 +11,7 @@
 
 pub mod animation;
 pub mod camera;
+mod compositor;
 pub mod parallax;
 pub mod parallax_gpu;
 pub mod renderer;
@@ -24,6 +25,7 @@ pub use animation::{
 pub use camera::{Camera, CameraBounds};
 pub use parallax::TileMode;
 pub use parallax_gpu::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
+pub(crate) use compositor::{Compositor, Viewport};
 pub use renderer::WgpuRenderer;
 pub use sprite::{AnimatedSprite, Sprite};
 pub use sprite_gpu::{
