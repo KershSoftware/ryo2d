@@ -24,6 +24,8 @@ struct Seen {
   /// The Typing page's field text, once drawn, and whether it has focus
   typed: Option<String>,
   field_focused: bool,
+  /// The Dialog page's dialog is open, as its last update saw it
+  dialog_open: bool,
 }
 
 type Shared = Arc<Mutex<Seen>>;
@@ -320,6 +322,78 @@ fn help_closes_on_escape_before_escape_quits() {
   assert_eq!(tap(&mut engine, KeyCode::KeyH), StepOutcome::Running);
   assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Running);
   assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Quit);
+}
+
+/// A page whose dialog starts open; while it is open the page wants Escape,
+/// lists it, and closes the dialog with it
+struct Dialog {
+  shared: Shared,
+  open: bool,
+}
+
+impl DemoPage for Dialog {
+  fn name(&self) -> &str {
+    "Dialog"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    if self.open {
+      vec![Control::key(KeyCode::Escape, "Close the dialog")]
+    } else {
+      Vec::new()
+    }
+  }
+
+  fn wants_escape(&self) -> bool {
+    self.open
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+    if self.open && ctx.input.key_pressed(KeyCode::Escape) {
+      self.open = false;
+    }
+    if let Ok(mut seen) = self.shared.lock() {
+      seen.dialog_open = self.open;
+    }
+  }
+}
+
+fn dialog(shared: &Shared) -> Demo {
+  let shared = shared.clone();
+  Demo::new("Dialog")
+    .resolution(320, 240)
+    .page(move || Dialog {
+      shared: shared.clone(),
+      open: true,
+    })
+}
+
+#[test]
+fn a_page_that_wants_escape_gets_it_instead_of_quitting() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(dialog(&shared)) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  assert!(seen(&shared).dialog_open);
+  assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Running);
+  assert!(!seen(&shared).dialog_open);
+  // The page no longer wants it: Escape quits again
+  assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Quit);
+}
+
+#[test]
+fn help_closes_before_a_page_gets_escape() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(dialog(&shared)) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  assert_eq!(tap(&mut engine, KeyCode::KeyH), StepOutcome::Running);
+  assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Running);
+  assert!(seen(&shared).dialog_open, "help took the first Escape");
+  assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Running);
+  assert!(!seen(&shared).dialog_open);
 }
 
 #[test]

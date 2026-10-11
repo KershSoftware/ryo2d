@@ -76,7 +76,9 @@ impl PageScene {
     let input = &mut *ctx.input;
 
     let help = input.key_pressed_and_consume(KeyCode::KeyH);
-    let escape = input.key_pressed_and_consume(KeyCode::Escape);
+    // Escape closes help first; otherwise a page that wants it gets it
+    let escape = (self.help_open || !self.page.wants_escape())
+      && input.key_pressed_and_consume(KeyCode::Escape);
     // `|` so both aliases are consumed
     let next = input.key_pressed_and_consume(KeyCode::BracketRight)
       | input.key_pressed_and_consume(KeyCode::PageDown);
@@ -191,10 +193,11 @@ impl Scene for PageScene {
     self.page.render_ui(ui);
     self.keyboard_wanted = ui.wants_keyboard();
     let controls = self.page.controls();
+    let wants_escape = self.page.wants_escape();
     // Startup checks each page's first controls; this catches ones that
     // change later, such as with a setting
     if cfg!(debug_assertions)
-      && let Some(key) = reserved_key(&controls)
+      && let Some(key) = reserved_key(&controls, wants_escape)
     {
       panic!(
         "demo \"{}\", page \"{}\": {key:?} is reserved by the demo shell",
@@ -212,6 +215,7 @@ impl Scene for PageScene {
       selected: self.selected,
       scroll: self.scroll,
       controls: &controls,
+      escape_quits: !wants_escape,
       help_open: self.help_open,
     };
     let drawn = chrome::draw(ui, &view);

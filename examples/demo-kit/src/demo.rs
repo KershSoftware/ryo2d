@@ -88,7 +88,7 @@ impl Demo {
     );
     for factory in &self.pages {
       let page = factory();
-      if let Some(key) = reserved_key(&page.controls()) {
+      if let Some(key) = reserved_key(&page.controls(), page.wants_escape()) {
         panic!(
           "demo \"{}\", page \"{}\": {key:?} is reserved by the demo shell",
           self.title,

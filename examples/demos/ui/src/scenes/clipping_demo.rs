@@ -57,13 +57,27 @@ impl DemoPage for ClippingDemo {
   }
 
   fn controls(&self) -> Vec<Control> {
-    vec![
+    let mut controls = vec![
       Control::mouse("Click the list to focus it, wheel to scroll"),
       Control::mouse("Drag the scrollbar"),
-    ]
+    ];
+    if self.show_modal {
+      controls.push(Control::key(KeyCode::Escape, "Cancel the dialog"));
+    }
+    controls
+  }
+
+  /// Escape cancels the open dialog instead of quitting
+  fn wants_escape(&self) -> bool {
+    self.show_modal
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    if self.show_modal && ctx.input.key_pressed(KeyCode::Escape) {
+      self.show_modal = false;
+      self.modal_result = Some(false);
+    }
+
     let (mx, my) = ctx.input.mouse_position();
     let mouse_in_scroll_area = self.scroll_area.contains(mx, my);
     let content_height = self.items.len() as f32 * 25.0;

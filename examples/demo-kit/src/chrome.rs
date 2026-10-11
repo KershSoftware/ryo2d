@@ -19,6 +19,8 @@ pub(crate) struct View<'a> {
   /// The first settings row shown on the last frame
   pub scroll: usize,
   pub controls: &'a [Control],
+  /// Escape quits when help is closed (the page doesn't want it)
+  pub escape_quits: bool,
   pub help_open: bool,
 }
 
@@ -241,10 +243,11 @@ fn draw_top_bar(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
   } else {
     view.title.to_string()
   };
-  let right = if view.count > 1 {
-    "[ ] page   H help   Esc quit"
-  } else {
-    "H help   Esc quit"
+  let right = match (view.count > 1, view.escape_quits) {
+    (true, true) => "[ ] page   H help   Esc quit",
+    (true, false) => "[ ] page   H help",
+    (false, true) => "H help   Esc quit",
+    (false, false) => "H help",
   };
   let y = l.pad;
   let right_w = text_w(ui, right);
@@ -465,8 +468,13 @@ fn draw_help(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
     "  Up/Down  pick a setting   Left/Right  change it".to_string(),
     Color::WHITE,
   ));
+  let escape = if view.escape_quits {
+    "close help / quit"
+  } else {
+    "close help"
+  };
   lines.push((
-    "  R  reset this page   H  help   Esc  close help / quit".to_string(),
+    format!("  R  reset this page   H  help   Esc  {escape}"),
     Color::WHITE,
   ));
   if !view.controls.is_empty() {

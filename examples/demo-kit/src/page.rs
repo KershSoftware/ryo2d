@@ -31,6 +31,14 @@ pub trait DemoPage: 'static {
     Vec::new()
   }
 
+  /// The page uses Escape itself right now, such as to close its own dialog.
+  /// While this is true the shell leaves Escape to the page instead of
+  /// quitting (an open help overlay still takes it first), drops `Esc quit`
+  /// from the top bar, and lets [`controls`](Self::controls) list Escape.
+  fn wants_escape(&self) -> bool {
+    false
+  }
+
   /// Set up the page (spawn entities, configure the camera and lighting)
   fn enter(&mut self, _ctx: &mut SceneContext) {}
 

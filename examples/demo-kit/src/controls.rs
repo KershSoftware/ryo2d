@@ -63,12 +63,13 @@ pub(crate) const RESERVED: &[KeyCode] = &[
   KeyCode::Backquote,
 ];
 
-/// The first reserved key any control uses
-pub(crate) fn reserved_key(controls: &[Control]) -> Option<KeyCode> {
+/// The first reserved key any control uses; Escape is the page's to list
+/// while it `wants_escape`
+pub(crate) fn reserved_key(controls: &[Control], wants_escape: bool) -> Option<KeyCode> {
   controls
     .iter()
     .flat_map(|control| control.keys.iter().copied())
-    .find(|key| RESERVED.contains(key))
+    .find(|&key| RESERVED.contains(&key) && !(wants_escape && key == KeyCode::Escape))
 }
 
 /// A short label for a key: `KeyQ` -> `Q`, `Digit3` -> `3` (the arrows are
@@ -100,15 +101,24 @@ mod tests {
   #[test]
   fn reserved_keys_are_found_in_any_control() {
     let fine = [Control::key(KeyCode::Space, "Burst"), Control::mouse("Aim")];
-    assert_eq!(reserved_key(&fine), None);
+    assert_eq!(reserved_key(&fine, false), None);
     let clash = [
       Control::key(KeyCode::Space, "Burst"),
       Control::keys("WASD + Up", &[KeyCode::KeyW, KeyCode::ArrowUp], "Move"),
     ];
-    assert_eq!(reserved_key(&clash), Some(KeyCode::ArrowUp));
+    assert_eq!(reserved_key(&clash, false), Some(KeyCode::ArrowUp));
     assert_eq!(
-      reserved_key(&[Control::key(KeyCode::KeyH, "Hop")]),
+      reserved_key(&[Control::key(KeyCode::KeyH, "Hop")], false),
       Some(KeyCode::KeyH)
+    );
+
+    // Escape only while the page wants it
+    let close = [Control::key(KeyCode::Escape, "Close")];
+    assert_eq!(reserved_key(&close, false), Some(KeyCode::Escape));
+    assert_eq!(reserved_key(&close, true), None);
+    assert_eq!(
+      reserved_key(&[Control::key(KeyCode::KeyR, "Roll")], true),
+      Some(KeyCode::KeyR)
     );
   }
 }
