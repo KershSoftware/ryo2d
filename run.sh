@@ -14,7 +14,7 @@
 #     ./run.sh demos:run-all       - Launch all demos in dev mode (parallel terminals)
 #     ./run.sh demos:kill-all      - Kill all running demos
 #     ./run.sh demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)
-#     ./run.sh check               - Compilation check (engine + all examples)
+#     ./run.sh check               - Compilation check (engine + all examples) and line endings
 #     ./run.sh lint                - Linting with clippy (engine + all examples)
 #     ./run.sh test                - Run unit + integration tests
 #     ./run.sh test:unit           - Run unit tests only
@@ -63,6 +63,33 @@ WHITE='\033[1;37m'
 GRAY='\033[0;90m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+
+# Fail if a file that was CRLF at the last push lost CRLF lines, or a file
+# that was LF picked up some. Checks committed and uncommitted changes.
+check_line_endings() {
+    local root base bad=0 added file old_lines old_cr new_lines new_cr
+    root=$(git rev-parse --show-toplevel)
+    base=$(git rev-parse --verify -q '@{upstream}') || base=HEAD
+    while IFS=$'\t' read -r added _ file; do
+        [[ "$added" == "-" || ! -f "$root/$file" ]] && continue
+        old_lines=$(git show "$base:$file" | wc -l)
+        # grep -c exits 1 on a zero count, which set -e would treat as failure
+        old_cr=$(git show "$base:$file" | grep -c $'\r$' || true)
+        new_lines=$(wc -l < "$root/$file")
+        new_cr=$(grep -c $'\r$' "$root/$file" || true)
+        if (( old_lines > 0 && old_cr == old_lines && new_cr != new_lines )); then
+            echo -e "${YELLOW}  $file: was CRLF, now has LF lines${NC}"
+            bad=1
+        elif (( old_cr == 0 && new_cr > 0 && new_cr != new_lines )); then
+            echo -e "${YELLOW}  $file: was LF, now mixes in CRLF lines${NC}"
+            bad=1
+        fi
+    done < <(git diff --numstat --diff-filter=M "$base")
+    if (( bad )); then
+        echo "Line endings changed; keep each file's existing line endings."
+    fi
+    return $bad
+}
 
 # Function to discover examples
 get_examples() {
@@ -478,7 +505,7 @@ case "$COMMAND" in
         cargo run -q -p demo-kit --bin demo-tour -- "${TOUR_ARGS[@]}"
         ;;
     check)
-        cargo check --workspace
+        cargo check --workspace && check_line_endings
         ;;
     lint)
         cargo clippy --workspace
@@ -588,7 +615,7 @@ case "$COMMAND" in
         echo "    ./run.sh demos:run-all       - Launch all demos in dev mode (parallel terminals)"
         echo "    ./run.sh demos:kill-all      - Kill all running demos"
         echo "    ./run.sh demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)"
-        echo "    ./run.sh check               - Compilation check (engine + all examples)"
+        echo "    ./run.sh check               - Compilation check (engine + all examples) and line endings"
         echo "    ./run.sh lint                - Linting with clippy (engine + all examples)"
         echo "    ./run.sh test                - Run unit + integration tests (default)"
         echo "    ./run.sh test:unit           - Run unit tests only"

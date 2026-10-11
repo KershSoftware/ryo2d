@@ -13,7 +13,7 @@
 #   .\run demos:run-all    - Launch all demos in dev mode (parallel terminals)
 #   .\run demos:kill-all   - Kill all running demos
 #   .\run demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)
-#   .\run check        - Compilation check (engine + all examples)
+#   .\run check        - Compilation check (engine + all examples) and line endings
 #   .\run lint         - Linting with clippy (engine + all examples)
 #   .\run test         - Run unit + integration tests
 #   .\run test:unit    - Run unit tests only
@@ -76,6 +76,54 @@ elseif ($Arg2 -eq "--release" -or $Arg2 -eq "-r") {
 elseif ($Arg2 -eq "-p" -or $Arg2 -eq "--profiler") {
     $ProfilerMode = $true
     $DevMode = $true  # Profiler implies dev mode
+}
+
+# Fail if a file that was CRLF at the last push lost CRLF lines, or a file
+# that was LF picked up some. Checks committed and uncommitted changes.
+function Get-LineEndingCounts([byte[]]$Bytes) {
+    # Latin-1 maps bytes 1:1, so counting characters counts bytes
+    $text = [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes)
+    $crlf = [regex]::Matches($text, "`r`n").Count
+    $lf = [regex]::Matches($text, "`n").Count - $crlf
+    return @($crlf, $lf)
+}
+
+function Get-GitBlobBytes([string]$Spec) {
+    # Read through a raw stream; PowerShell's pipeline would strip the CRs
+    $psi = [System.Diagnostics.ProcessStartInfo]::new("git", "show `"$Spec`"")
+    $psi.RedirectStandardOutput = $true
+    $psi.UseShellExecute = $false
+    $psi.WorkingDirectory = (Get-Location).Path
+    $process = [System.Diagnostics.Process]::Start($psi)
+    $buffer = [System.IO.MemoryStream]::new()
+    $process.StandardOutput.BaseStream.CopyTo($buffer)
+    $process.WaitForExit()
+    # The comma keeps PowerShell from unrolling the array byte by byte
+    return , $buffer.ToArray()
+}
+
+function Test-LineEndings {
+    $root = git rev-parse --show-toplevel
+    $base = git rev-parse --verify -q "@{upstream}" 2>$null
+    if (-not $base) { $base = "HEAD" }
+    $bad = $false
+    foreach ($row in (git diff --numstat --diff-filter=M $base)) {
+        $added, $null, $file = $row -split "`t", 3
+        $path = Join-Path $root $file
+        if ($added -eq "-" -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        $oldCrlf, $oldLf = Get-LineEndingCounts (Get-GitBlobBytes "${base}:$file")
+        $newCrlf, $newLf = Get-LineEndingCounts ([System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path).Path))
+        if ($oldCrlf -gt 0 -and $oldLf -eq 0 -and $newLf -gt 0) {
+            Write-Host "  ${file}: was CRLF, now has LF lines" -ForegroundColor Yellow
+            $bad = $true
+        }
+        elseif ($oldCrlf -eq 0 -and $newCrlf -gt 0 -and $newLf -gt 0) {
+            Write-Host "  ${file}: was LF, now mixes in CRLF lines" -ForegroundColor Yellow
+            $bad = $true
+        }
+    }
+    if ($bad) { Write-Host "Line endings changed; keep each file's existing line endings." }
+    return -not $bad
 }
 
 # Function to discover examples from ryo.toml files
@@ -421,6 +469,8 @@ switch ($ExampleName.ToLower()) {
     }
     "check" {
         cargo check --workspace
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        if (-not (Test-LineEndings)) { exit 1 }
     }
     "lint" {
         cargo clippy --workspace
@@ -544,7 +594,7 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./run demos:run-all      - Launch all demos in dev mode (parallel terminals)"
         Write-Host "  ./run demos:kill-all     - Kill all running demos"
         Write-Host "  ./run demos:tour [demo...] - Capture every page of every demo headlessly"
-        Write-Host "  ./run check              - Compilation check (engine + all examples)"
+        Write-Host "  ./run check              - Compilation check (engine + all examples) and line endings"
         Write-Host "  ./run lint               - Linting with clippy (engine + all examples)"
         Write-Host "  ./run test               - Run unit + integration tests (default)"
         Write-Host "  ./run test:unit          - Run unit tests only"
