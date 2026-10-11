@@ -415,33 +415,20 @@ impl Scene for PostProcessingDemo {
       _ => {}
     }
 
-    // Controls reminder (positioned to avoid cutoff at 600px height)
-    let controls_y = 510.0;
+    // Controls reminder: left of the sprite grid (x >= 220) and above the FPS counter
+    let controls_y = 480.0;
     ui.draw_text("Controls:", 10.0, controls_y, Color::WHITE);
-    ui.draw_text(
-      "1-8: Switch effects (8: custom WGSL scanlines)",
-      10.0,
-      controls_y + 15.0,
-      Color::rgb(180, 180, 180),
-    );
-    ui.draw_text(
+    let lines = [
+      "1-7: Built-in effects",
+      "8: Custom WGSL scanlines",
       "Arrows: Adjust parameters",
-      10.0,
-      controls_y + 30.0,
-      Color::rgb(180, 180, 180),
-    );
-    ui.draw_text(
       "Space: Flash",
-      10.0,
-      controls_y + 45.0,
-      Color::rgb(180, 180, 180),
-    );
-    ui.draw_text(
       "ESC: Quit",
-      10.0,
-      controls_y + 60.0,
-      Color::rgb(180, 180, 180),
-    );
+    ];
+    for (i, line) in lines.iter().enumerate() {
+      let y = controls_y + 15.0 * (i + 1) as f32;
+      ui.draw_text(line, 10.0, y, Color::rgb(180, 180, 180));
+    }
 
     SceneAction::Continue
   }

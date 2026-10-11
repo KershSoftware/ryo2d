@@ -34,6 +34,8 @@ struct Wanderer {
   speed: f32,
   direction: (f32, f32),
   change_timer: f32,
+  /// The shadow entity that follows this NPC
+  shadow: Entity,
 }
 
 /// Main demo scene
@@ -455,7 +457,7 @@ impl Scene for YSortingScene {
       let npc_handle = ctx.assets.create_sprite(npc_sprite, format!("npc_{}", i));
 
       // NPC shadow
-      ctx.world.spawn((
+      let shadow = ctx.world.spawn((
         Transform::new(*x, *y + 2.0).with_anchor(Anchor::Center),
         Renderable::sprite(shadow_handle.clone()).with_z_order(-1),
       ));
@@ -466,6 +468,7 @@ impl Scene for YSortingScene {
           speed: 25.0 + (i as f32 * 5.0),
           direction: (1.0, 0.0),
           change_timer: 0.0,
+          shadow,
         },
         Transform::new(*x, *y).with_anchor(Anchor::BottomCenter),
         Renderable::sprite(npc_handle).with_z_order(0),
@@ -560,12 +563,12 @@ impl Scene for YSortingScene {
     // Update wandering NPCs
     for &wanderer in &self.wanderers {
       // Get current state
-      let (x, y, dir, timer, speed) = {
+      let (x, y, dir, timer, speed, shadow) = {
         let transform = ctx.world.get::<Transform>(wanderer);
         let wander = ctx.world.get::<Wanderer>(wanderer);
 
         if let (Some(t), Some(w)) = (transform, wander) {
-          (t.x, t.y, w.direction, w.change_timer, w.speed)
+          (t.x, t.y, w.direction, w.change_timer, w.speed, w.shadow)
         } else {
           continue;
         }
@@ -614,6 +617,10 @@ impl Scene for YSortingScene {
       if let Some(mut t) = ctx.world.get_mut::<Transform>(wanderer) {
         t.x = new_x;
         t.y = new_y;
+      }
+      if let Some(mut t) = ctx.world.get_mut::<Transform>(shadow) {
+        t.x = new_x;
+        t.y = new_y + 2.0;
       }
     }
 

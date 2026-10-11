@@ -544,12 +544,19 @@ impl Scene for SpriteShaderDemo {
       );
     }
 
-    // Labels
-    ui.draw_text("Normal", 170.0, 440.0, Color::WHITE);
+    // Labels, centred under the three 96 px sprites at x = 200, 400 and 600
+    let label = |x: f32, y: f32| Rect {
+      x: x - 50.0,
+      y,
+      width: 196.0,
+      height: 16.0,
+    };
+    ui.draw_text_centered("Normal", label(200.0, 432.0), Color::WHITE);
     if self.custom_sprite.is_some() {
-      ui.draw_text("Custom WGSL (dissolve.wgsl)", 300.0, 440.0, Color::WHITE);
+      ui.draw_text_centered("Custom WGSL", label(400.0, 432.0), Color::WHITE);
+      ui.draw_text_centered("(dissolve.wgsl)", label(400.0, 448.0), Color::WHITE);
     }
-    ui.draw_text("With Effect", 500.0, 440.0, Color::WHITE);
+    ui.draw_text_centered("With Effect", label(600.0, 432.0), Color::WHITE);
 
     // Controls reminder
     ui.draw_text(
