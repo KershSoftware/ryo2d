@@ -330,7 +330,6 @@ impl Velocity {
 pub struct Renderable {
     pub sprite: SpriteHandle,
     pub style: RenderStyle,       // Single (default) or Tiled
-    pub mode: RenderMode,         // Auto (default), Cpu, Gpu
     pub visible: bool,
     pub z_order: i32,
     pub flip_x: bool,
@@ -349,7 +348,6 @@ impl Renderable {
     fn tiled(sprite: SpriteHandle, direction: TileDirection, target_size: f32) -> Self;
     fn with_visible(self, visible: bool) -> Self;   // with_visible(false) to hide
     fn with_z_order(self, z: i32) -> Self;
-    fn with_mode(self, mode: RenderMode) -> Self;
     fn with_flip_x(self, flip: bool) -> Self;
     fn with_flip_y(self, flip: bool) -> Self;
     fn with_alpha(self, alpha: f32) -> Self;

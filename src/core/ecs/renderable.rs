@@ -27,17 +27,6 @@
 //! world.spawn((Transform::new(100.0, 200.0), sprite));
 //! ```
 //!
-//! # Render Modes
-//!
-//! The `RenderMode` enum hints to the renderer how to handle this entity:
-//!
-//! - `Auto` (default): Engine decides based on entity count and complexity
-//! - `Cpu`: Force CPU-based software rendering
-//! - `Gpu`: Request GPU-batched instanced rendering (for bullet hell / particles)
-//!
-//! For most games, `Auto` is the right choice. Use `Gpu` when you have thousands
-//! of similar sprites (bullets, particles) that benefit from instanced rendering.
-//!
 //! # Shaders
 //!
 //! Shaders can be attached in two ways:
@@ -413,18 +402,6 @@ impl ContactShadow {
   }
 }
 
-/// Hints for how the renderer should handle this entity
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RenderMode {
-  /// Let the engine decide (default). Uses CPU for low counts, GPU for high counts.
-  #[default]
-  Auto,
-  /// Force CPU software rendering. Good for unique sprites with complex transforms.
-  Cpu,
-  /// Request GPU instanced rendering. Ideal for many similar sprites (bullets, particles).
-  Gpu,
-}
-
 /// How the sprite should be rendered
 #[derive(Debug, Clone, Default)]
 pub enum RenderStyle {
@@ -452,8 +429,6 @@ pub struct Renderable {
   pub sprite: SpriteHandle,
   /// How to render the sprite (single or tiled)
   pub style: RenderStyle,
-  /// Rendering hint (CPU/GPU/Auto)
-  pub mode: RenderMode,
   /// Whether this entity is visible
   pub visible: bool,
   /// Render order (lower = behind, higher = in front)
@@ -511,7 +486,6 @@ impl Renderable {
     Renderable {
       sprite,
       style: RenderStyle::Single,
-      mode: RenderMode::Auto,
       visible: true,
       z_order: 0,
       flip_x: false,
@@ -534,7 +508,6 @@ impl Renderable {
         direction,
         target_size,
       },
-      mode: RenderMode::Auto,
       visible: true,
       z_order: 0,
       flip_x: false,
@@ -558,12 +531,6 @@ impl Renderable {
   /// Set z-order for render ordering
   pub fn with_z_order(mut self, z_order: i32) -> Self {
     self.z_order = z_order;
-    self
-  }
-
-  /// Set render mode hint
-  pub fn with_mode(mut self, mode: RenderMode) -> Self {
-    self.mode = mode;
     self
   }
 
@@ -784,7 +751,6 @@ mod tests {
     assert_eq!(r.z_order, 0);
     assert!(r.is_single());
     assert!(!r.is_tiled());
-    assert_eq!(r.mode, RenderMode::Auto);
     assert!(!r.flip_x);
     assert!(!r.flip_y);
     assert_eq!(r.alpha, 1.0);
@@ -809,13 +775,11 @@ mod tests {
     let r = Renderable::sprite(test_handle())
       .with_z_order(5)
       .with_visible(false)
-      .with_mode(RenderMode::Gpu)
       .with_flip_x(true)
       .with_alpha(0.5);
 
     assert_eq!(r.z_order, 5);
     assert!(!r.visible);
-    assert_eq!(r.mode, RenderMode::Gpu);
     assert!(r.flip_x);
     assert_eq!(r.alpha, 0.5);
   }

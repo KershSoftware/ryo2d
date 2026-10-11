@@ -36,7 +36,7 @@ pub use lerp::Lerp;
 pub use material::{Material, ParamValue, ShaderHandle, ShaderParams, SpriteShader};
 pub use pool::{Pool, PoolConfig, PoolExhaustedPolicy, PoolStats};
 pub use property_tween::PropertyTween;
-pub use renderable::{BlobShadow, ContactShadow, DropShadow, RenderMode, RenderStyle, Renderable};
+pub use renderable::{BlobShadow, ContactShadow, DropShadow, RenderStyle, Renderable};
 pub use sprite_effects::SpriteEffect;
 pub use squash_stretch::{SquashAxis, SquashStretch};
 pub use tween::{Ease, Tween, TweenLoop, TweenSequence};

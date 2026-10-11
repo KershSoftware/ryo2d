@@ -75,9 +75,9 @@ pub mod prelude {
   pub use crate::core::ecs::{
     Active, BlobShadow, Children, ContactShadow, DropShadow, Ease, Entity, Inactive, Knockback,
     Lerp, Material, ParamValue, Parent, Pool, PoolConfig, PoolExhaustedPolicy, PoolStats,
-    PreviousTransform, PropertyTween, RenderLayer, RenderMode, RenderStyle, Renderable,
-    ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, SquashAxis, SquashStretch, Transform,
-    Tween, TweenLoop, TweenSequence, Velocity, World, WorldTransform, YSort,
+    PreviousTransform, PropertyTween, RenderLayer, RenderStyle, Renderable, ShaderHandle,
+    ShaderParams, SpriteEffect, SpriteShader, SquashAxis, SquashStretch, Transform, Tween,
+    TweenLoop, TweenSequence, Velocity, World, WorldTransform, YSort,
   };
 
   // Math types (from glam)
