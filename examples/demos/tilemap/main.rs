@@ -7,17 +7,11 @@
 //! colored Renderable entities and collision rectangles are drawn as
 //! semi-transparent UI overlays.
 //!
-//! ## Controls
-//!
-//! - Arrow keys: Pan the camera
-//! - Mouse hover: Show tile coordinates and info
-//! - Left click: Place a solid tile at the hovered position
-//! - Right click: Clear the tile at the hovered position
-//! - Escape: Exit
+//! Runs on the demo-kit shell; hover, click and WASD are listed in its legend.
 
 use std::collections::HashMap;
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -44,14 +38,14 @@ struct TileVis;
 // Scene
 // ---------------------------------------------------------------------------
 
-struct TilemapDemoScene {
+struct TilemapPage {
   map_entity: Option<Entity>,
   collision_rects: Vec<CollisionRect>,
   hover_tile: Option<(u32, u32)>,
   hover_world: (f32, f32),
 }
 
-impl TilemapDemoScene {
+impl TilemapPage {
   fn new() -> Self {
     Self {
       map_entity: None,
@@ -178,8 +172,27 @@ impl TilemapDemoScene {
   }
 }
 
-impl Scene for TilemapDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for TilemapPage {
+  fn name(&self) -> &str {
+    "Tilemap"
+  }
+
+  fn description(&self) -> &str {
+    "Tilemap data API: tile queries, coordinate conversion and collision rects"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::keys(
+        "WASD",
+        &[KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD],
+        "Pan",
+      ),
+      Control::mouse("Hover for tile info, left click places, right click clears"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Position camera at the center of the map
     let map_pixel_w = (MAP_WIDTH * TILE_SIZE) as f32;
     let map_pixel_h = (MAP_HEIGHT * TILE_SIZE) as f32;
@@ -199,24 +212,20 @@ impl Scene for TilemapDemoScene {
     self.spawn_tile_visuals(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Camera panning
     let mut dx = 0.0f32;
     let mut dy = 0.0f32;
-    if ctx.input.key_down(KeyCode::ArrowLeft) {
+    if ctx.input.key_down(KeyCode::KeyA) {
       dx -= 1.0;
     }
-    if ctx.input.key_down(KeyCode::ArrowRight) {
+    if ctx.input.key_down(KeyCode::KeyD) {
       dx += 1.0;
     }
-    if ctx.input.key_down(KeyCode::ArrowUp) {
+    if ctx.input.key_down(KeyCode::KeyW) {
       dy -= 1.0;
     }
-    if ctx.input.key_down(KeyCode::ArrowDown) {
+    if ctx.input.key_down(KeyCode::KeyS) {
       dy += 1.0;
     }
     if dx != 0.0 || dy != 0.0 {
@@ -259,19 +268,17 @@ impl Scene for TilemapDemoScene {
         }
       }
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
+    let left = area.x + 10.0;
+    let top = area.y + 4.0;
     let white = Color::rgb(220, 220, 220);
     let accent = Color::rgb(130, 180, 255);
     let muted = Color::rgb(160, 160, 160);
     let green = Color::rgb(100, 220, 100);
     let red_tint = Color::new(255, 80, 80, 100);
-
-    // Title
-    ui.draw_text("Tilemap Demo", 10.0, 10.0, white);
 
     // Map info
     let info = format!(
@@ -282,7 +289,7 @@ impl Scene for TilemapDemoScene {
       MAP_HEIGHT * TILE_SIZE,
       TILE_SIZE,
     );
-    ui.draw_text(&info, 10.0, 30.0, accent);
+    ui.draw_text(&info, left, top, accent);
 
     // Hover info
     let hover_text = if let Some((tx, ty)) = self.hover_tile {
@@ -296,11 +303,11 @@ impl Scene for TilemapDemoScene {
         self.hover_world.0, self.hover_world.1,
       )
     };
-    ui.draw_text(&hover_text, 10.0, 50.0, green);
+    ui.draw_text(&hover_text, left, top + 20.0, green);
 
     // Collision rect count
     let col_text = format!("Collision rects: {}", self.collision_rects.len());
-    ui.draw_text(&col_text, 10.0, 70.0, accent);
+    ui.draw_text(&col_text, left, top + 40.0, accent);
 
     // Draw collision rects as UI overlays (screen-space approximation).
     // We convert world rects to screen positions using the camera transform
@@ -309,17 +316,16 @@ impl Scene for TilemapDemoScene {
     // For a proper implementation this would use the render() callback with
     // world-space drawing, but for this data-API demo we show them as
     // rect outlines in the bottom-right info panel instead.
-    let (sw, _sh) = ui.screen_size();
-    let panel_x = sw as f32 - 260.0;
-    ui.draw_text("Collision Rects:", panel_x, 10.0, white);
+    let panel_x = area.x + area.width - 260.0;
+    ui.draw_text("Collision Rects:", panel_x, top, white);
     for (i, rect) in self.collision_rects.iter().enumerate() {
       let (wx, wy, ww, wh) = rect.to_world(TILE_SIZE, TILE_SIZE);
       let line = format!(
         "  [{}] pos({:.0},{:.0}) size({:.0}x{:.0})",
         i, wx, wy, ww, wh,
       );
-      let y_pos = 30.0 + i as f32 * 16.0;
-      if y_pos > 580.0 {
+      let y_pos = top + 20.0 + i as f32 * 16.0;
+      if y_pos > area.y + area.height - 20.0 {
         ui.draw_text("  ...", panel_x, y_pos, muted);
         break;
       }
@@ -331,30 +337,17 @@ impl Scene for TilemapDemoScene {
       let iy = y_pos + 2.0;
       ui.draw_rect(Rect::new(ix, iy, indicator_size, indicator_size), red_tint);
     }
-
-    // Controls
-    ui.draw_text(
-      "Arrows: Pan | LMB: Place tile | RMB: Clear tile | ESC: Exit",
-      10.0,
-      90.0,
-      muted,
-    );
-
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Tilemap Demo - Ryo2D")
+  Demo::new("Tilemap")
     .resolution(800, 600)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .target_fps(60)
-    .physics_hz(60)
-    .start_scene(TilemapDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableAspectRatio)
+        .target_fps(60)
+        .physics_hz(60)
+    })
+    .page(TilemapPage::new)
+    .run();
 }

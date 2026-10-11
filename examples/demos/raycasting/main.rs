@@ -3,23 +3,19 @@
 //! Demonstrates pseudo-3D rendering using GPU-accelerated raycasting
 //! (Wolfenstein/Build engine style).
 //!
-//! Controls:
-//! - W/S: Move forward/backward
-//! - A/D: Strafe left/right
-//! - Arrow keys: Turn left/right
-//! - Mouse: Look around
-//! - E: Open nearby doors
-//! - Escape: Quit
+//! Runs on the demo-kit shell. The mouse looks around (the cursor is locked
+//! while the page is shown); movement, turning and doors are listed in the
+//! shell's legend.
 
 #[allow(dead_code)]
 mod textures;
 
 use std::path::Path;
 
+use demo_kit::prelude::*;
 use image::GenericImageView;
-use ryo2d::prelude::*;
 
-struct RaycastDemo {
+struct RaycastPage {
   player_x: f32,
   player_y: f32,
   player_angle: f32,
@@ -28,7 +24,7 @@ struct RaycastDemo {
   door_entities: Vec<Entity>,
 }
 
-impl RaycastDemo {
+impl RaycastPage {
   fn new() -> Self {
     Self {
       player_x: 4.5,
@@ -41,8 +37,27 @@ impl RaycastDemo {
   }
 }
 
-impl Scene for RaycastDemo {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for RaycastPage {
+  fn name(&self) -> &str {
+    "Maze"
+  }
+
+  fn description(&self) -> &str {
+    "GPU raycasting: textured walls, doors, lights, sprites and floor heights\n\
+     The cursor is locked for mouse look"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::keys("W/S", &[KeyCode::KeyW, KeyCode::KeyS], "Move"),
+      Control::keys("A/D", &[KeyCode::KeyA, KeyCode::KeyD], "Strafe"),
+      Control::keys("Q/E", &[KeyCode::KeyQ, KeyCode::KeyE], "Turn"),
+      Control::key(KeyCode::KeyF, "Open a door"),
+      Control::mouse("Look"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Build a 32x32 map
     let mut world = RaycastWorld::new(32, 32);
 
@@ -63,7 +78,7 @@ impl Scene for RaycastDemo {
     // Clear doorway openings (empty cells the player walks through freely)
     *world.get_mut(15, 8).unwrap() = MapCell::default();
     *world.get_mut(15, 20).unwrap() = MapCell::default();
-    // Door cells (block when closed, open with E key)
+    // Door cells (block when closed, open with F key)
     {
       let cell = world.get_mut(15, 12).unwrap();
       cell.wall_texture = 2;
@@ -287,7 +302,7 @@ impl Scene for RaycastDemo {
     self.door_entities = vec![door1];
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     let move_speed = 3.0 * dt;
     let turn_speed = 2.0 * dt;
     let mouse_sensitivity = 0.003;
@@ -298,10 +313,10 @@ impl Scene for RaycastDemo {
     self.player_pitch = (self.player_pitch - mouse_dy * mouse_sensitivity).clamp(-0.7, 0.7);
 
     // Keyboard turning
-    if ctx.input.key_down(KeyCode::ArrowLeft) {
+    if ctx.input.key_down(KeyCode::KeyQ) {
       self.player_angle -= turn_speed;
     }
-    if ctx.input.key_down(KeyCode::ArrowRight) {
+    if ctx.input.key_down(KeyCode::KeyE) {
       self.player_angle += turn_speed;
     }
 
@@ -391,8 +406,8 @@ impl Scene for RaycastDemo {
       self.player_y = new_y;
     }
 
-    // E key: activate nearby doors
-    if ctx.input.key_pressed(KeyCode::KeyE) {
+    // F key: activate nearby doors
+    if ctx.input.key_pressed(KeyCode::KeyF) {
       let interact_range = 2.0_f32;
       for &door_entity in &self.door_entities {
         if let Some(mut door) = ctx.world.get_mut::<RaycastDoor>(door_entity) {
@@ -439,17 +454,9 @@ impl Scene for RaycastDemo {
         camera.set_pitch(self.player_pitch);
       }
     }
-
-    // Escape to quit (release cursor first)
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      ctx.set_cursor_locked(false);
-      return SceneAction::Quit;
-    }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (w, h) = ui.screen_size();
     let cx = w as f32 / 2.0;
     let cy = h as f32 / 2.0;
@@ -469,6 +476,7 @@ impl Scene for RaycastDemo {
       crosshair_color,
     );
 
+    let area = content_area(ui);
     let text_color = Color::new(255, 255, 255, 220);
     ui.draw_text(
       &format!(
@@ -478,25 +486,17 @@ impl Scene for RaycastDemo {
         self.player_angle.to_degrees(),
         self.player_pitch.to_degrees()
       ),
-      8.0,
-      8.0,
+      area.x + 8.0,
+      area.y + 8.0,
       text_color,
     );
-
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Raycasting Demo")
+  Demo::new("Raycasting")
     .resolution(1920, 1080)
-    .target_fps(144)
-    .vsync(true)
-    .start_scene(RaycastDemo::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| b.target_fps(144).vsync(true))
+    .page(RaycastPage::new)
+    .run();
 }

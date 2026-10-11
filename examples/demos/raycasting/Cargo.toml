@@ -11,3 +11,4 @@ path = "main.rs"
 [dependencies]
 image = "0.25"
 ryo2d = { path = "../../../" }
+demo-kit = { path = "../../demo-kit" }

@@ -1,15 +1,11 @@
 //! Procedural Generation Demo
 //!
-//! Interactive demonstration of all procgen algorithms.
-//!
-//! Controls:
-//! - 1-6: Switch algorithm (BSP, Cellular, Noise, Walk, Poisson, WFC)
-//! - Space: Regenerate with new seed
-//! - G: Toggle grid overlay
-//! - Arrow keys: Pan camera
-//! - Escape: Exit
+//! Interactive demonstration of all procgen algorithms: BSP dungeons, cellular
+//! caves, Perlin terrain, random walks, Poisson disk sampling and wave
+//! function collapse. Runs on the demo-kit shell; the algorithm and grid
+//! overlay are settings.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 const SCREEN_WIDTH: u32 = 1024;
 const SCREEN_HEIGHT: u32 = 768;
@@ -37,21 +33,25 @@ impl Algorithm {
       Algorithm::Wfc => "Wave Function Collapse",
     }
   }
-
-  fn key_hint(&self) -> &'static str {
-    match self {
-      Algorithm::Bsp => "1",
-      Algorithm::Cellular => "2",
-      Algorithm::Noise => "3",
-      Algorithm::RandomWalk => "4",
-      Algorithm::Poisson => "5",
-      Algorithm::Wfc => "6",
-    }
-  }
 }
 
-struct ProcgenScene {
-  algorithm: Algorithm,
+const ALGORITHMS: [Algorithm; 6] = [
+  Algorithm::Bsp,
+  Algorithm::Cellular,
+  Algorithm::Noise,
+  Algorithm::RandomWalk,
+  Algorithm::Poisson,
+  Algorithm::Wfc,
+];
+
+/// Setting labels, in `ALGORITHMS` order
+const ALGORITHM_LABELS: [&str; 6] = ["BSP", "Cellular", "Noise", "Random walk", "Poisson", "WFC"];
+
+struct ProcgenPage {
+  /// Index into `ALGORITHMS`, bound to the Algorithm setting
+  algorithm_index: usize,
+  /// The algorithm the current grid was generated with
+  generated_index: usize,
   grid: Option<GenerationGrid>,
   poisson_points: Vec<(f32, f32)>,
   seed: u64,
@@ -61,10 +61,11 @@ struct ProcgenScene {
   generation_time_ms: u64,
 }
 
-impl ProcgenScene {
+impl ProcgenPage {
   fn new() -> Self {
     Self {
-      algorithm: Algorithm::Bsp,
+      algorithm_index: 0,
+      generated_index: 0,
       grid: None,
       poisson_points: Vec::new(),
       seed: 12345,
@@ -78,7 +79,8 @@ impl ProcgenScene {
   fn generate(&mut self) {
     let start = std::time::Instant::now();
 
-    match self.algorithm {
+    self.generated_index = self.algorithm_index;
+    match ALGORITHMS[self.algorithm_index] {
       Algorithm::Bsp => {
         let result = ProcgenBuilder::new(GRID_SIZE, GRID_SIZE)
           .with_seed(self.seed)
@@ -157,35 +159,38 @@ impl ProcgenScene {
   }
 }
 
-impl Scene for ProcgenScene {
-  fn on_enter(&mut self, _ctx: &mut SceneContext) {
+impl DemoPage for ProcgenPage {
+  fn name(&self) -> &str {
+    "Generators"
+  }
+
+  fn description(&self) -> &str {
+    "Procedural generation: pick an algorithm, roll a new seed, pan the map"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Algorithm", &mut self.algorithm_index, &ALGORITHM_LABELS);
+    s.toggle("Grid", &mut self.show_grid);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::key(KeyCode::Space, "New seed"),
+      Control::keys(
+        "WASD",
+        &[KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD],
+        "Pan",
+      ),
+    ]
+  }
+
+  fn enter(&mut self, _ctx: &mut SceneContext) {
     self.generate();
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Algorithm selection
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      self.algorithm = Algorithm::Bsp;
-      self.generate();
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      self.algorithm = Algorithm::Cellular;
-      self.generate();
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      self.algorithm = Algorithm::Noise;
-      self.generate();
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      self.algorithm = Algorithm::RandomWalk;
-      self.generate();
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      self.algorithm = Algorithm::Poisson;
-      self.generate();
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      self.algorithm = Algorithm::Wfc;
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    // Algorithm changed in the settings panel
+    if self.algorithm_index != self.generated_index {
       self.generate();
     }
 
@@ -193,35 +198,24 @@ impl Scene for ProcgenScene {
     if ctx.input.key_pressed(KeyCode::Space) {
       self.new_seed();
     }
-    // Toggle grid
-    if ctx.input.key_pressed(KeyCode::KeyG) {
-      self.show_grid = !self.show_grid;
-    }
 
     // Camera panning
     let pan_speed = 200.0 * dt;
-    if ctx.input.key_down(KeyCode::ArrowLeft) {
+    if ctx.input.key_down(KeyCode::KeyA) {
       self.camera_x -= pan_speed;
     }
-    if ctx.input.key_down(KeyCode::ArrowRight) {
+    if ctx.input.key_down(KeyCode::KeyD) {
       self.camera_x += pan_speed;
     }
-    if ctx.input.key_down(KeyCode::ArrowUp) {
+    if ctx.input.key_down(KeyCode::KeyW) {
       self.camera_y -= pan_speed;
     }
-    if ctx.input.key_down(KeyCode::ArrowDown) {
+    if ctx.input.key_down(KeyCode::KeyS) {
       self.camera_y += pan_speed;
     }
-
-    // Exit (Pop with no scene below exits the engine)
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Pop;
-    }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let w = screen_w as f32;
     let h = screen_h as f32;
@@ -229,11 +223,16 @@ impl Scene for ProcgenScene {
     // Background
     ui.draw_rect(Rect::new(0.0, 0.0, w, h), Color::rgb(30, 30, 35));
 
+    let area = content_area(ui);
+    // Centre the map in the content area, below the three info lines
+    let info_h = 52.0;
+
     // Render grid tiles
     if let Some(ref grid) = self.grid {
       let cell = CELL_SIZE as f32;
       let ox = (w - GRID_SIZE as f32 * cell) / 2.0 - self.camera_x;
-      let oy = (h - GRID_SIZE as f32 * cell) / 2.0 - self.camera_y;
+      let oy =
+        area.y + info_h + (area.height - info_h - GRID_SIZE as f32 * cell) / 2.0 - self.camera_y;
 
       for (gx, gy, tile) in grid.iter() {
         let px = ox + gx as f32 * cell;
@@ -275,23 +274,22 @@ impl Scene for ProcgenScene {
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
 
-    // Title
+    let x = area.x + 10.0;
+    let mut y = area.y + 4.0;
     ui.draw_text(
-      &format!("Procedural Generation: {}", self.algorithm.name()),
-      10.0,
-      10.0,
+      &format!("Algorithm: {}", ALGORITHMS[self.generated_index].name()),
+      x,
+      y,
       text_light,
     );
-
-    // Info
+    y += 16.0;
     ui.draw_text(
       &format!("Seed: {} | Time: {}ms", self.seed, self.generation_time_ms),
-      10.0,
-      26.0,
+      x,
+      y,
       text_accent,
     );
-
-    // Grid info
+    y += 16.0;
     if let Some(ref grid) = self.grid {
       ui.draw_text(
         &format!(
@@ -300,47 +298,11 @@ impl Scene for ProcgenScene {
           grid.count_type(TileType::Floor),
           grid.count_type(TileType::Wall)
         ),
-        10.0,
-        42.0,
+        x,
+        y,
         text_muted,
       );
     }
-
-    // Controls
-    ui.draw_text(
-      "1-6: Algorithm | Space: New Seed | G: Grid | Arrows: Pan",
-      10.0,
-      58.0,
-      text_muted,
-    );
-
-    // Algorithm list on the right
-    let (screen_w, _) = ui.screen_size();
-    let x = screen_w as f32 - 220.0;
-
-    let algorithms = [
-      Algorithm::Bsp,
-      Algorithm::Cellular,
-      Algorithm::Noise,
-      Algorithm::RandomWalk,
-      Algorithm::Poisson,
-      Algorithm::Wfc,
-    ];
-
-    for (i, algo) in algorithms.iter().enumerate() {
-      let color = if *algo == self.algorithm {
-        text_light
-      } else {
-        text_muted
-      };
-      ui.draw_text(
-        &format!("[{}] {}", algo.key_hint(), algo.name()),
-        x,
-        10.0 + i as f32 * 16.0,
-        color,
-      );
-    }
-    SceneAction::Continue
   }
 }
 
@@ -360,15 +322,12 @@ fn tile_color(tile: TileType) -> Color {
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Procedural Generation Demo - Ryo2D")
+  Demo::new("Procedural Generation")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .target_fps(60)
-    .start_scene(ProcgenScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableAspectRatio)
+        .target_fps(60)
+    })
+    .page(ProcgenPage::new)
+    .run();
 }
