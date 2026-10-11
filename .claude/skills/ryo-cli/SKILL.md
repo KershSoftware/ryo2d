@@ -182,7 +182,7 @@ Save frames as PNGs to check rendering without watching the window. Works with `
 | `RYO_CAPTURE_DIR=captures` | Output directory (default `captures/`) |
 | `RYO_CAPTURE_EXIT=1` | Quit after the last capture; exit code 1 if one failed |
 | `RYO_INPUT="60:Digit2 200-260:ArrowUp 300:Click@320x180"` | Dev builds: tap a key on a frame (`N:Key`), hold it from frame A until just before B (`A-B:Key`), move or click the mouse |
-| `RYO_HEADLESS=1` | Dev builds: no window; render offscreen at the fixed timestep, with no audio, gamepads or saved preferences |
+| `RYO_HEADLESS=1` | Dev builds: no window; render offscreen one fixed timestep per frame, as fast as possible rather than paced to the clock, with no audio, gamepads, saved preferences, debug keys (F1, F9, F10, F12) or timing overlays |
 
 Files are named `frame-000060.png` at game resolution (no letterboxing). In dev builds, F12 or the console command `debug:capture [path]` saves the next frame.
 
@@ -192,7 +192,7 @@ Files are named `frame-000060.png` at game resolution (no letterboxing). In dev 
 RYO_CAPTURE_FRAMES=120 RYO_CAPTURE_EXIT=1 ryo2d dev
 
 # Open a demo's second and third pages and capture them, without a window
-RYO_HEADLESS=1 RYO_INPUT="60:ArrowRight 120:ArrowRight" \
+RYO_HEADLESS=1 RYO_INPUT="60:BracketRight 120:BracketRight" \
   RYO_CAPTURE_FRAMES=90,150 RYO_CAPTURE_EXIT=1 ryo2d dev
 ```
 

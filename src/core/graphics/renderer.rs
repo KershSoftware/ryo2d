@@ -9,6 +9,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use image::RgbaImage;
+
 /// Default background color for the game framebuffer.
 /// This color matches the UI demo background rgb(25, 25, 35) aka #191923.
 /// Values are LINEAR (not sRGB) because wgpu applies sRGB encoding to the texture.
@@ -19,7 +21,6 @@ pub const DEFAULT_BACKGROUND_COLOR: wgpu::Color = wgpu::Color {
   b: 0.0473, // sRGB 35 -> linear
   a: 1.0,
 };
-use image::RgbaImage;
 use winit::window::Window;
 
 use crate::core::capture::{CapturedFrame, read_texture_rgba};
@@ -837,7 +838,8 @@ impl WgpuRenderer {
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        // Must match the surface format: the final-composite pipelines target it
+        // Must match the output target's format (window surface or offscreen
+        // texture): the final-composite pipelines target it
         format: self.target.format(),
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],

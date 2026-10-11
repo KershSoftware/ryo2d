@@ -351,11 +351,6 @@ mod tests {
     time.accumulator = time.fixed_timestep * 2;
     assert_eq!(time.interpolation_alpha(), 1.0);
   }
-}
-
-#[cfg(test)]
-mod advance_tests {
-  use super::*;
 
   #[test]
   fn one_fixed_step_runs_exactly_one_update() {

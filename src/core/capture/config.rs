@@ -83,7 +83,7 @@ impl AutoCaptureConfig {
 
 /// Read `RYO_HEADLESS`, returning whether to run without a window and a
 /// warning for a value that was not used.
-pub fn headless_run_from_env() -> (bool, Option<String>) {
+pub(crate) fn headless_run_from_env() -> (bool, Option<String>) {
   parse_headless(
     std::env::var("RYO_HEADLESS").ok().as_deref(),
     cfg!(debug_assertions),

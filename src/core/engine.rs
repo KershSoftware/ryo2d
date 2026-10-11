@@ -1281,7 +1281,7 @@ impl Engine {
     // When profiler has focus (throttle=false), we need to render directly
     // because Windows won't deliver RedrawRequested to unfocused game window
     if !throttle {
-      // Do full render and present (same as RedrawRequested handler)
+      // Render and present now
       let _ = self.present_frame();
 
       // Update frame timings and smoothed overlay values
@@ -1345,7 +1345,9 @@ impl Engine {
       .time
       .as_ref()
       .map(TimeState::fixed_timestep)
-      .unwrap_or_else(|| std::time::Duration::from_secs_f64(1.0 / 60.0))
+      .unwrap_or_else(|| {
+        std::time::Duration::from_secs_f64(1.0 / f64::from(self.config.physics_hz.max(1)))
+      })
   }
 
   /// The window (or offscreen target) is now `width x height`
@@ -1482,7 +1484,7 @@ impl Engine {
           .time
           .as_ref()
           .map(|t| t.fixed_dt())
-          .unwrap_or(1.0 / 60.0),
+          .unwrap_or(1.0 / self.config.physics_hz.max(1) as f32),
         scaled_dt: 0.0,
         real_dt: 0.0,
         render_alpha: 0.0,
@@ -1491,10 +1493,10 @@ impl Engine {
         frame_count: 0,
       };
 
-      let (renderer_device, renderer_queue) = {
-        let r = self.renderer.as_ref().unwrap();
-        (r.device(), r.queue())
+      let Some(renderer) = self.renderer.as_ref() else {
+        return;
       };
+      let (renderer_device, renderer_queue) = (renderer.device(), renderer.queue());
 
       let mut scene_ctx = SceneContext {
         resources: &mut self.resources,
@@ -1952,7 +1954,7 @@ impl Engine {
           .time
           .as_ref()
           .map(|t| t.fixed_dt())
-          .unwrap_or(1.0 / 60.0),
+          .unwrap_or(1.0 / self.config.physics_hz.max(1) as f32),
         scaled_dt: _dt,
         real_dt: self.time.as_ref().map(|t| t.dt()).unwrap_or(0.0),
         render_alpha: self
@@ -1965,10 +1967,10 @@ impl Engine {
         frame_count: self.time.as_ref().map(|t| t.frame_count()).unwrap_or(0),
       };
 
-      let (renderer_device, renderer_queue) = {
-        let r = self.renderer.as_ref().unwrap();
-        (r.device(), r.queue())
+      let Some(renderer) = self.renderer.as_ref() else {
+        return;
       };
+      let (renderer_device, renderer_queue) = (renderer.device(), renderer.queue());
 
       let mut scene_ctx = SceneContext {
         resources: &mut self.resources,
@@ -2804,13 +2806,14 @@ impl ApplicationHandler for Engine {
     }
 
     // Process pending dev window open requests (F9/F10)
+    // A request is used up whether or not a window can open, so it is not
+    // retried every frame
     #[cfg(feature = "profiler")]
-    if self.pending_open_profiler
+    if std::mem::take(&mut self.pending_open_profiler)
       && self.profiler_window.is_none()
       && let Some(ref renderer) = self.renderer
       && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
     {
-      self.pending_open_profiler = false;
       // Enable puffin scope collection if not already enabled
       // This allows F10 to work even if enable_profiler wasn't set in config
       puffin::set_scopes_on(true);
@@ -2823,12 +2826,11 @@ impl ApplicationHandler for Engine {
       );
     }
 
-    if self.pending_open_logger
+    if std::mem::take(&mut self.pending_open_logger)
       && self.logger_window.is_none()
       && let Some(ref renderer) = self.renderer
       && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
     {
-      self.pending_open_logger = false;
       self.logger_window = super::windows::logger_window::LoggerWindow::new(
         event_loop,
         renderer.device_arc(),
@@ -3183,7 +3185,8 @@ impl EngineBuilder {
     self
   }
 
-  /// Load user preferences from system.json.
+  /// Let saved player preferences in `system.json` override settings when the
+  /// engine is built (this only chooses which ones may).
   ///
   /// Lets players customize and save their preferences. Startup settings resolve in one
   /// order, each layer overriding only what it sets: engine defaults → `Ryo.toml` (dev) or
@@ -3654,6 +3657,25 @@ mod tests {
       .start_scene(EmptyScene)
       .resolve_in(Some(&ws), false);
     assert_eq!((r.config.width, r.config.height), (1600, 900));
+  }
+
+  #[test]
+  fn a_headless_build_ignores_saved_preferences() {
+    let (_dir, ws) = temp_workspace("", Some(r#"{"resolution": "1600x900"}"#));
+    let r = EngineBuilder::new()
+      .resolution(800, 600)
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), true);
+    assert_eq!((r.config.width, r.config.height), (800, 600));
+
+    // Nor does it seed a system.json
+    let (dir, ws) = temp_workspace("", None);
+    let _ = EngineBuilder::new()
+      .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
+      .start_scene(EmptyScene)
+      .resolve_in(Some(&ws), true);
+    assert!(!dir.path().join("data/system.json").exists());
   }
 
   #[test]
