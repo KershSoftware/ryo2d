@@ -566,7 +566,7 @@ impl AssetManager {
 }
 
 // ShaderHandle::from_source(id, wgsl) -> ShaderHandle; handle.replace_source(wgsl)
-// SpriteShader::custom(handle).with_param("amount", 0.4)   // params by name: f32, Vec2/3/4, Color (sRGB/255)
+// SpriteShader::custom(handle).with_param("amount", 0.4)   // params by name: f32, Vec2/3/4, Color (sRGB/255; fills a vec3 or vec4)
 // Material::custom(handle).with_param(..)                  // wins over Renderable::shader
 // GpuRenderContext::add_custom_sprite(texture_id, &shader, &params, instance, z_order)
 // Templates and colour-space rules: ryo-renderer skill, "Custom Shaders"

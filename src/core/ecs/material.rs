@@ -40,9 +40,10 @@
 //! ```
 //!
 //! A `Material` wins over `Renderable::shader`. Custom params are set by name
-//! (`f32`, `Vec2/3/4`, or `Color` packed as sRGB/255). Custom shaders draw
-//! within the sprite's quad; shadows and tiled tiles draw plain. A shader that
-//! fails to compile is logged and the sprite draws plain.
+//! (`f32`, `Vec2/3/4`, or `Color` as sRGB/255, which fills a `vec3` with rgb or
+//! a `vec4` with rgba). Custom shaders draw within the sprite's quad; shadows
+//! and tiled tiles draw plain. A shader that fails to compile is logged and the
+//! sprite draws plain.
 //!
 //! # GPU Rendering Requirement
 //!
@@ -176,6 +177,8 @@ pub enum ParamValue {
   Vec2([f32; 2]),
   Vec3([f32; 3]),
   Vec4([f32; 4]),
+  /// sRGB/255 with alpha; fills a `vec3<f32>` (rgb) or a `vec4<f32>` (rgba)
+  Color([f32; 4]),
 }
 
 impl From<f32> for ParamValue {
@@ -205,7 +208,7 @@ impl From<glam::Vec4> for ParamValue {
 impl From<Color> for ParamValue {
   /// sRGB bytes divided by 255, alpha included
   fn from(c: Color) -> Self {
-    Self::Vec4([
+    Self::Color([
       c.r as f32 / 255.0,
       c.g as f32 / 255.0,
       c.b as f32 / 255.0,
@@ -665,7 +668,7 @@ mod tests {
     );
     assert_eq!(
       ParamValue::from(Color::new(255, 0, 51, 255)),
-      ParamValue::Vec4([1.0, 0.0, 0.2, 1.0])
+      ParamValue::Color([1.0, 0.0, 0.2, 1.0])
     );
   }
 

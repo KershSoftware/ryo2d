@@ -186,14 +186,14 @@ Without a `Params` struct the engine supplies `struct Params { unused: f32 }`. T
 
 ```rust
 if let Ok(handle) = ctx.assets.load_shader("shaders/dissolve.wgsl") {
-    // Params are set by name; Color packs as sRGB/255.
+    // Params are set by name; a Color is sRGB/255 (rgb into a vec3, rgba into a vec4).
     let fx = SpriteShader::custom(handle).with_param("amount", 0.4).with_param("edge", Color::rgb(255, 120, 0));
     Renderable::sprite(sprite).with_shader(fx);   // or a Material component (wins over Renderable::shader)
 }
 // render_gpu: ctx.add_custom_sprite(texture_id, &handle, &params, instance, z_order);
 ```
 
-`ParamValue` is `F32`/`Vec2`/`Vec3`/`Vec4`, with `From` for `f32`, `glam::Vec2/3/4` and `Color`. A name the shader does not declare, or a value of the wrong type, is warned about and ignored; a declared param never set is zero.
+`ParamValue` is `F32`/`Vec2`/`Vec3`/`Vec4`/`Color`, with `From` for `f32`, `glam::Vec2/3/4` and `Color`. A `Color` fills a `vec3<f32>` field with rgb or a `vec4<f32>` field with rgba. A name the shader does not declare, or a value of the wrong type, is warned about and ignored; a declared param never set is zero.
 
 ### Post-process effect
 

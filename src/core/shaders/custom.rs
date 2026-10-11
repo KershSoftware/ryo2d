@@ -511,6 +511,8 @@ pub(crate) fn pack_with(
       (ParamKind::Vec2, ParamValue::Vec2(v)) => v,
       (ParamKind::Vec3, ParamValue::Vec3(v)) => v,
       (ParamKind::Vec4, ParamValue::Vec4(v)) => v,
+      (ParamKind::Vec3, ParamValue::Color(c)) => &c[..3],
+      (ParamKind::Vec4, ParamValue::Color(c)) => c,
       _ => {
         on_problem(name, Some(field.kind));
         continue;
@@ -693,6 +695,38 @@ mod tests {
     assert_eq!(floats[0], 2.5);
     assert_eq!(&floats[4..8], &[1.0, 128.0 / 255.0, 0.0, 1.0]);
     assert_eq!(&floats[1..4], &[0.0, 0.0, 0.0]);
+  }
+
+  #[test]
+  fn pack_fills_a_vec3_from_a_color_without_its_alpha() {
+    let layout = ParamLayout {
+      fields: vec![
+        ParamField {
+          name: "edge".into(),
+          offset: 0,
+          kind: ParamKind::Vec3,
+        },
+        ParamField {
+          name: "amount".into(),
+          offset: 12,
+          kind: ParamKind::F32,
+        },
+      ],
+      size: 16,
+    };
+    // `amount` first, so alpha spilling past the vec3 would overwrite it
+    let params = ShaderParams::new()
+      .with("amount", 0.5)
+      .with("edge", Color::rgb(255, 0, 51));
+    let mut out = [0u8; 16];
+    let problems = pack(&layout, &params, &mut out);
+    assert!(problems.is_empty(), "{problems:?}");
+
+    let floats: Vec<f32> = out
+      .chunks_exact(4)
+      .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+      .collect();
+    assert_eq!(floats, [1.0, 0.0, 0.2, 0.5]);
   }
 
   #[test]
