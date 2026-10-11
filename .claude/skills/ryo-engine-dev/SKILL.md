@@ -34,9 +34,9 @@ User's Scene (Scene trait)
          -> Scene update -> Hierarchy -> Trails -> Physics (Rapier)
          |
          v
-    Frame render (graphics/renderer.rs)
+    Frame render (render/, one pass per stage)
     Clear -> GPU sprites -> CPU sprites -> Trails/Lines -> Lighting
-         -> Unlit trails/lines -> UI -> Post-process effects -> Present
+         -> Unlit trails/lines -> Post-process effects -> UI -> Composite -> Present
 ```
 
 The frame is drawn by the pass-based `RenderPipeline` (`render/`); see `src/core/render/AGENTS.md`.

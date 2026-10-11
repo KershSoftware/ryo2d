@@ -90,13 +90,27 @@ impl<'a> RenderContext<'a> {
     (self.frame.game_width, self.frame.game_height)
   }
 
+  /// The format of [`current_view`](Self::current_view), for the render
+  /// pipelines a pass builds. Every game-size image (game, lit and
+  /// post-process output) shares it.
+  pub fn format(&self) -> wgpu::TextureFormat {
+    image_texture(&self.targets, self.post_process.as_deref(), self.image).format()
+  }
+
   /// The texture holding the frame's latest image (the game texture, the lit
   /// scene or the post-process output), at game resolution.
+  ///
+  /// Only passes before `composite` reach the window: it copies this image to
+  /// the screen, so drawing on it from a pass placed after `composite` is not
+  /// shown. Insert game passes before `composite` (or after `post_process`).
   pub fn current_view(&self) -> &wgpu::TextureView {
     image_view(&self.targets, self.post_process.as_deref(), self.image)
   }
 
   /// The encoder and the latest image together, to draw onto the image.
+  ///
+  /// Only passes before `composite` reach the window: a pass placed after
+  /// `composite` draws on an image that is no longer presented.
   pub fn encoder_and_current_view(&mut self) -> (&mut wgpu::CommandEncoder, &wgpu::TextureView) {
     let view = image_view(&self.targets, self.post_process.as_deref(), self.image);
     (&mut *self.encoder, view)

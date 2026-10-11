@@ -2667,7 +2667,7 @@ impl Engine {
     }
 
     // Note: UI compositing for non-lit UI is done on GPU by the pipeline's composite pass
-    // The ui_buffer is passed to the renderer and composited after the lighting pass
+    // The ui_buffer is passed to the renderer and composited last, by the `composite` pass
   }
 }
 
@@ -3004,7 +3004,11 @@ impl ApplicationHandler for Engine {
         // Handle window resize based on window mode
         if let Some(renderer) = &mut self.renderer {
           // For stretch mode, resize the internal buffer to match window
-          if self.config.window_mode == WindowMode::ResizableStretch {
+          // A minimised window reports 0x0; keep the current buffers then
+          if self.config.window_mode == WindowMode::ResizableStretch
+            && new_size.width > 0
+            && new_size.height > 0
+          {
             renderer.resize_buffer(new_size.width, new_size.height);
             self.ui_buffer = vec![0; (new_size.width * new_size.height * 4) as usize];
             // Resize lighting renderer to match new game buffer size

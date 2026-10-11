@@ -11,6 +11,12 @@ use crate::core::trail::TrailRenderer;
 ///
 /// Passes read it in [`RenderPass::should_run`](super::RenderPass::should_run)
 /// to decide whether they take part in the frame.
+///
+/// It describes the frame's content, not which passes run. `effects` and
+/// `lighting` stay true when the game disabled the `post_process` or
+/// `lighting` pass, and `lighting` can be true on raycast frames, where the
+/// lighting pass does not run. To know what ran, use
+/// [`RenderPipeline::passes_to_run`](super::RenderPipeline::passes_to_run).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameInfo {
   /// Game resolution width in pixels

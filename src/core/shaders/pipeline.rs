@@ -119,27 +119,37 @@ struct EffectPipeline {
   pipeline: wgpu::RenderPipeline,
 }
 
+/// Descriptor shared by the two ping-pong textures, so a resize keeps the
+/// usages they were created with.
+fn ping_pong_texture_desc(
+  width: u32,
+  height: u32,
+  format: wgpu::TextureFormat,
+) -> wgpu::TextureDescriptor<'static> {
+  wgpu::TextureDescriptor {
+    label: Some("Post-Process Texture"),
+    size: wgpu::Extent3d {
+      width,
+      height,
+      depth_or_array_layers: 1,
+    },
+    mip_level_count: 1,
+    sample_count: 1,
+    dimension: wgpu::TextureDimension::D2,
+    format,
+    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+      | wgpu::TextureUsages::TEXTURE_BINDING
+      | wgpu::TextureUsages::COPY_DST
+      | wgpu::TextureUsages::COPY_SRC, // Allow copying between ping-pong buffers
+    view_formats: &[],
+  }
+}
+
 impl PostProcessPipeline {
   /// Create a new post-process pipeline
   pub fn new(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
     // Create ping-pong textures
-    let texture_desc = wgpu::TextureDescriptor {
-      label: Some("Post-Process Texture"),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format,
-      usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-        | wgpu::TextureUsages::TEXTURE_BINDING
-        | wgpu::TextureUsages::COPY_DST
-        | wgpu::TextureUsages::COPY_SRC, // Allow copying between ping-pong buffers
-      view_formats: &[],
-    };
+    let texture_desc = ping_pong_texture_desc(width, height, format);
 
     let texture_a = device.create_texture(&wgpu::TextureDescriptor {
       label: Some("Post-Process Texture A"),
@@ -349,22 +359,7 @@ impl PostProcessPipeline {
     self.width = width;
     self.height = height;
 
-    let texture_desc = wgpu::TextureDescriptor {
-      label: Some("Post-Process Texture"),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: self.format,
-      usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-        | wgpu::TextureUsages::TEXTURE_BINDING
-        | wgpu::TextureUsages::COPY_DST,
-      view_formats: &[],
-    };
+    let texture_desc = ping_pong_texture_desc(width, height, self.format);
 
     self.texture_a = device.create_texture(&wgpu::TextureDescriptor {
       label: Some("Post-Process Texture A"),

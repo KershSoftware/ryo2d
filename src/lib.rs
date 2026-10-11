@@ -50,6 +50,10 @@ pub use core::testing;
 #[cfg(feature = "profiler")]
 pub use puffin;
 
+/// The GPU types the engine renders with. Custom [`RenderPass`](prelude::RenderPass)es
+/// use these (`ryo2d::wgpu`), so a game needs no `wgpu` dependency of its own.
+pub use wgpu;
+
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
   // Core game types

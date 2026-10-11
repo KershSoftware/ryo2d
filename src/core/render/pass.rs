@@ -21,7 +21,10 @@ use super::{FrameInfo, RenderContext};
 ///   }
 /// }
 ///
-/// ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, Flash).expect("known, unique pass id");
+/// // Passes persist across scenes, so add it only once
+/// if !ctx.render_pipeline.contains("flash") {
+///   let _ = ctx.render_pipeline.insert_before(pass_ids::COMPOSITE, Flash);
+/// }
 /// ```
 pub trait RenderPass: Send + Sync {
   /// Unique id, used to find, enable, disable and anchor passes.
@@ -35,4 +38,20 @@ pub trait RenderPass: Send + Sync {
 
   /// Record this pass's GPU work for the frame.
   fn execute(&mut self, ctx: &mut RenderContext<'_>);
+}
+
+/// Lets a pass taken out with [`RenderPipeline::remove`](super::RenderPipeline::remove)
+/// go back in.
+impl RenderPass for Box<dyn RenderPass> {
+  fn id(&self) -> &str {
+    (**self).id()
+  }
+
+  fn should_run(&self, frame: &FrameInfo) -> bool {
+    (**self).should_run(frame)
+  }
+
+  fn execute(&mut self, ctx: &mut RenderContext<'_>) {
+    (**self).execute(ctx);
+  }
 }

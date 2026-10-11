@@ -132,7 +132,6 @@ pub struct WgpuRenderer {
   pending_capture: Option<PathBuf>,
   // Result of the latest capture, collected by the engine
   capture_result: Option<CaptureResult<CapturedFrame>>,
-  // What the latest `render_frame` contained
 }
 
 /// Create the CPU staging texture at game resolution.
@@ -661,7 +660,13 @@ impl WgpuRenderer {
   }
 
   /// Resize the internal pixel buffer (for stretch mode).
+  ///
+  /// A zero width or height (a minimised window) is ignored: the buffer keeps
+  /// its size, since zero-size textures are invalid.
   pub fn resize_buffer(&mut self, new_width: u32, new_height: u32) {
+    if new_width == 0 || new_height == 0 {
+      return;
+    }
     self.game_width = new_width;
     self.game_height = new_height;
     self.pixel_buffer = vec![0u8; (new_width * new_height * 4) as usize];
@@ -1089,10 +1094,41 @@ mod tests {
     assert_eq!(size(post.texture_a()), (96, 80));
     assert_eq!(size(post.texture_b()), (96, 80));
 
+    // Resizing must keep the usages the textures were created with
+    assert!(
+      post
+        .texture_a()
+        .usage()
+        .contains(wgpu::TextureUsages::COPY_SRC)
+    );
+    assert!(
+      post
+        .texture_b()
+        .usage()
+        .contains(wgpu::TextureUsages::COPY_SRC)
+    );
+
     let ui = vec![255u8; 96 * 80 * 4];
     renderer
       .render_blank_frame(&mut RenderPipeline::default_2d(), &ui)
       .expect("render after resize");
+  }
+
+  #[test]
+  fn resize_buffer_ignores_a_zero_size() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return; // no GPU on this machine
+    };
+    let mut renderer = WgpuRenderer::new_offscreen(device, queue, 64, 48);
+    renderer.resize_buffer(0, 0);
+    renderer.resize_buffer(0, 10);
+    renderer.resize_buffer(10, 0);
+
+    assert_eq!((renderer.game_width, renderer.game_height), (64, 48));
+    assert_eq!(
+      (renderer.texture.width(), renderer.texture.height()),
+      (64, 48)
+    );
   }
 
   #[test]

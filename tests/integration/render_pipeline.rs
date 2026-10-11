@@ -120,6 +120,21 @@ fn remove_hands_the_pass_back() {
 }
 
 #[test]
+fn a_removed_pass_can_be_inserted_again() {
+  let mut pipeline = RenderPipeline::default_2d();
+  let original: Vec<String> = pipeline.pass_ids().map(str::to_string).collect();
+
+  let removed = pipeline.remove(pass_ids::POST_PROCESS).unwrap();
+  assert!(!pipeline.contains(pass_ids::POST_PROCESS));
+  pipeline
+    .insert_after(pass_ids::UNLIT_TRAILS, removed)
+    .unwrap();
+
+  let restored: Vec<String> = pipeline.pass_ids().map(str::to_string).collect();
+  assert_eq!(restored, original);
+}
+
+#[test]
 fn should_run_decides_per_frame() {
   let mut pipeline = pipeline(&["a"]);
   pipeline.push(LitOnly).unwrap();

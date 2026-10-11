@@ -2,6 +2,7 @@
 
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
+use std::sync::Mutex;
 
 const UI_COLOR: [u8; 4] = [10, 200, 90, 255];
 
@@ -140,26 +141,32 @@ fn effects_apply_to_the_lit_image() {
 /// A game pass that clears the current image to magenta.
 struct Magenta;
 
+/// The format `RenderContext::format` reported inside the pass.
+static SEEN_FORMAT: Mutex<Option<ryo2d::wgpu::TextureFormat>> = Mutex::new(None);
+
 impl RenderPass for Magenta {
   fn id(&self) -> &str {
     "magenta"
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
+    if let Ok(mut seen) = SEEN_FORMAT.lock() {
+      *seen = Some(ctx.format());
+    }
     let (encoder, view) = ctx.encoder_and_current_view();
-    let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    let _pass = encoder.begin_render_pass(&ryo2d::wgpu::RenderPassDescriptor {
       label: Some("magenta"),
-      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+      color_attachments: &[Some(ryo2d::wgpu::RenderPassColorAttachment {
         view,
         resolve_target: None,
-        ops: wgpu::Operations {
-          load: wgpu::LoadOp::Clear(wgpu::Color {
+        ops: ryo2d::wgpu::Operations {
+          load: ryo2d::wgpu::LoadOp::Clear(ryo2d::wgpu::Color {
             r: 1.0,
             g: 0.0,
             b: 1.0,
             a: 1.0,
           }),
-          store: wgpu::StoreOp::Store,
+          store: ryo2d::wgpu::StoreOp::Store,
         },
       })],
       depth_stencil_attachment: None,
@@ -197,6 +204,10 @@ fn a_game_pass_after_post_process_draws_on_the_frame() {
   assert_eq!(
     engine.frame().unwrap().get_pixel(32, 32).0,
     [255, 0, 255, 255]
+  );
+  assert_eq!(
+    *SEEN_FORMAT.lock().unwrap(),
+    Some(ryo2d::wgpu::TextureFormat::Rgba8UnormSrgb)
   );
 }
 

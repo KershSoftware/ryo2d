@@ -61,16 +61,20 @@ pub trait RenderPass: Send + Sync {
 `ctx.render_pipeline` (on `SceneContext`) is the engine's pipeline, so changes persist across scenes. Ids and anchors are checked: duplicates or unknown ids return `RenderPipelineError`.
 
 ```rust
-// Toggle a built-in pass
-ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false).expect("known, unique pass id");
+// Toggle a built-in pass (fails only if the game removed it)
+let _ = ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false);
 
-// Insert a game pass relative to a named one (or `push` at the end)
-ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, Flash).expect("known, unique pass id");
-ctx.render_pipeline.insert_before(pass_ids::UI, Overlay).expect("known, unique pass id");
+// Passes persist across scenes, so add a game pass only if it is missing
+// (scene re-entry would otherwise hit DuplicatePass)
+if !ctx.render_pipeline.contains("flash") {
+    let _ = ctx.render_pipeline.insert_before(pass_ids::COMPOSITE, Flash);
+}
 
-// Remove it again
+// Alternative: remove it in on_exit
 ctx.render_pipeline.remove("flash");
 ```
+
+To draw on the frame, insert the pass before `composite` (or after `post_process`). `composite` copies the frame to the window, so a pass placed after it (including `push` at the end) never reaches the screen. `RenderContext::format()` gives the image's texture format, and `ryo2d::wgpu` re-exports the wgpu types a pass needs.
 
 A game pass draws on the latest image:
 

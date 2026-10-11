@@ -5,7 +5,7 @@ Saves the final composed frame (scene + UI) as a PNG at game resolution. Spec: `
 ## Split
 
 - `CaptureState` (engine) decides *when* and *where*: presented-frame counter, `RYO_CAPTURE_*` schedule, F12/console requests, background PNG writes, exit.
-- `WgpuRenderer` only knows one pending path: `request_capture(path)` before a render call, `take_capture_result()` after. The capture pass reuses `draw_final_composite` with the identity uniform (no letterbox).
+- `WgpuRenderer` only knows one pending path: `request_capture(path)` before a render call, `take_capture_result()` after. The `capture` pass reuses `Compositor::draw` with the identity uniform (no letterbox).
 - Keep scheduling out of the renderer so a headless harness can drive the same API.
 
 ## Gotchas

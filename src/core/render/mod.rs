@@ -22,9 +22,12 @@
 //! use ryo2d::prelude::*;
 //!
 //! // Draw the frame without post-process effects
-//! ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false).expect("known, unique pass id");
-//! // Run a game pass after the effects
-//! ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, MyPass).expect("known, unique pass id");
+//! let _ = ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false);
+//! // Run a game pass before the frame reaches the screen. Passes persist
+//! // across scenes, so add it once (or `remove("my_pass")` in `on_exit`).
+//! if !ctx.render_pipeline.contains("my_pass") {
+//!   let _ = ctx.render_pipeline.insert_before(pass_ids::COMPOSITE, MyPass);
+//! }
 //! ```
 
 mod context;

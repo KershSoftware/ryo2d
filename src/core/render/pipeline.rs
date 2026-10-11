@@ -51,6 +51,11 @@ impl RenderPipeline {
   }
 
   /// Add a pass at the end.
+  ///
+  /// The last built-in passes are `composite` (copies the frame to the screen)
+  /// and `capture`, so a pass pushed after them does not reach the window. To
+  /// draw on the frame use [`insert_before`](Self::insert_before) with
+  /// `pass_ids::COMPOSITE`.
   pub fn push(&mut self, pass: impl RenderPass + 'static) -> Result<(), RenderPipelineError> {
     self.insert_at(self.entries.len(), Box::new(pass))
   }
@@ -118,7 +123,10 @@ impl RenderPipeline {
     let frame = *ctx.frame();
     for entry in &mut self.entries {
       if entry.enabled && entry.pass.should_run(&frame) {
+        // Name the pass in GPU validation errors
+        ctx.encoder.push_debug_group(entry.pass.id());
         entry.pass.execute(ctx);
+        ctx.encoder.pop_debug_group();
       }
     }
   }
