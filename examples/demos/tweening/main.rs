@@ -11,6 +11,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// The Easing page's rows: below the settings panel, one per curve
+const EASING_TOP: f32 = 110.0;
+const EASING_ROW: f32 = 50.0;
+
 // ============================================================================
 // Scene 1: Easing Functions
 // ============================================================================
@@ -89,11 +93,9 @@ impl EasingScene {
 
     let start_x = 100.0;
     let target_x = screen_w - 100.0;
-    let row_height = 50.0;
-    let start_y = 80.0;
 
     for (i, (_name, ease, (r, g, b))) in easings.iter().enumerate() {
-      let y = start_y + i as f32 * row_height;
+      let y = EASING_TOP + i as f32 * EASING_ROW;
       let sprite = Self::create_square(*r, *g, *b);
 
       let entity = ctx.world.spawn((
@@ -208,11 +210,8 @@ impl DemoPage for EasingScene {
       "OutBounce",
       "OutElastic",
     ];
-    let row_height = 50.0;
-    let start_y = 80.0;
-
     for (i, name) in easings.iter().enumerate() {
-      let y = start_y + i as f32 * row_height;
+      let y = EASING_TOP + i as f32 * EASING_ROW;
       ui.draw_text(name, screen_w - 90.0, y - 5.0, text_light);
     }
 
@@ -343,7 +342,13 @@ impl DemoPage for SpeedControlScene {
       text_light
     };
 
-    ui.draw_text(&format!("Status: {}", status), 10.0, 70.0, status_color);
+    let area = content_area(ui);
+    ui.draw_text(
+      &format!("Status: {}", status),
+      area.x + 6.0,
+      area.y + 20.0,
+      status_color,
+    );
   }
 }
 
@@ -442,30 +447,28 @@ impl DemoPage for CallbacksScene {
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
 
-    ui.draw_text(
-      "Tween loops 3 times with callbacks:",
-      10.0,
-      70.0,
-      text_light,
-    );
+    // Lines down from the top of the content area
+    let area = content_area(ui);
+    let (x, top) = (area.x + 6.0, area.y + 20.0);
+    ui.draw_text("Tween loops 3 times with callbacks:", x, top, text_light);
 
     let start_count = self.start_count.load(Ordering::SeqCst);
     let update_count = self.update_count.load(Ordering::SeqCst);
     let complete_count = self.complete_count.load(Ordering::SeqCst);
 
     let start_text = format!("on_start called: {} time(s)", start_count);
-    ui.draw_text(&start_text, 10.0, 100.0, Color::GREEN);
+    ui.draw_text(&start_text, x, top + 30.0, Color::GREEN);
 
     let update_text = format!("on_update called: {} times", update_count);
-    ui.draw_text(&update_text, 10.0, 120.0, Color::rgb(255, 200, 100));
+    ui.draw_text(&update_text, x, top + 50.0, Color::rgb(255, 200, 100));
 
     let complete_text = format!("on_complete called: {} time(s)", complete_count);
-    ui.draw_text(&complete_text, 10.0, 140.0, Color::rgb(255, 100, 100));
+    ui.draw_text(&complete_text, x, top + 70.0, Color::rgb(255, 100, 100));
 
     ui.draw_text(
       "Note: on_start fires once, on_complete fires each iteration",
-      10.0,
-      180.0,
+      x,
+      top + 110.0,
       text_muted,
     );
   }
