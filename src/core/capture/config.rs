@@ -57,10 +57,9 @@ impl AutoCaptureConfig {
     }
 
     if let Some(raw) = exit {
-      match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" => config.exit_after = true,
-        "0" | "false" | "" => {}
-        _ => warnings.push(format!(
+      match parse_flag(raw) {
+        Some(on) => config.exit_after = on,
+        None => warnings.push(format!(
           "RYO_CAPTURE_EXIT={raw:?} is invalid (expected 1/true or 0/false); ignoring"
         )),
       }
@@ -72,6 +71,44 @@ impl AutoCaptureConfig {
     }
 
     (config, warnings)
+  }
+}
+
+/// Read `RYO_HEADLESS`, returning whether to run without a window and a
+/// warning for a value that was not used.
+pub fn headless_run_from_env() -> (bool, Option<String>) {
+  parse_headless(
+    std::env::var("RYO_HEADLESS").ok().as_deref(),
+    cfg!(debug_assertions),
+  )
+}
+
+pub(crate) fn parse_headless(raw: Option<&str>, dev_build: bool) -> (bool, Option<String>) {
+  let Some(raw) = raw else {
+    return (false, None);
+  };
+  match parse_flag(raw) {
+    Some(false) => (false, None),
+    Some(true) if dev_build => (true, None),
+    Some(true) => (
+      false,
+      Some("RYO_HEADLESS is ignored in release builds".to_string()),
+    ),
+    None => (
+      false,
+      Some(format!(
+        "RYO_HEADLESS={raw:?} is invalid (expected 1/true or 0/false); opening a window"
+      )),
+    ),
+  }
+}
+
+/// `1`/`true` or `0`/`false` (any case, surrounding spaces ignored); empty is false
+fn parse_flag(raw: &str) -> Option<bool> {
+  match raw.trim().to_ascii_lowercase().as_str() {
+    "1" | "true" => Some(true),
+    "0" | "false" | "" => Some(false),
+    _ => None,
   }
 }
 
@@ -145,6 +182,23 @@ mod tests {
     let (config, warnings) = AutoCaptureConfig::parse(None, None, Some("1"));
     assert!(!config.exit_after);
     assert!(warnings.is_empty());
+  }
+
+  #[test]
+  fn headless_flag_is_on_only_for_one_or_true_in_dev_builds() {
+    assert_eq!(parse_headless(None, true), (false, None));
+    for raw in ["1", "true", " TRUE "] {
+      assert_eq!(parse_headless(Some(raw), true), (true, None), "{raw:?}");
+    }
+    for raw in ["0", "false", ""] {
+      assert_eq!(parse_headless(Some(raw), true), (false, None), "{raw:?}");
+    }
+    let (on, warning) = parse_headless(Some("yes"), true);
+    assert!(!on);
+    assert!(warning.is_some_and(|w| w.contains("\"yes\"")));
+    let (on, warning) = parse_headless(Some("1"), false);
+    assert!(!on, "release builds always open a window");
+    assert!(warning.is_some_and(|w| w.contains("release")));
   }
 
   #[test]

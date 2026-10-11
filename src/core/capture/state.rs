@@ -60,6 +60,16 @@ impl CaptureState {
     }
   }
 
+  /// Number of frames presented so far.
+  pub fn presented_frames(&self) -> u64 {
+    self.presented
+  }
+
+  /// Whether `RYO_CAPTURE_EXIT` ends the run after the last scheduled capture.
+  pub fn exits_after_last(&self) -> bool {
+    self.config.exit_after
+  }
+
   /// Request a capture of the next presented frame (F12, console).
   pub fn request(&mut self, target: CaptureTarget) {
     self.manual = Some(target);

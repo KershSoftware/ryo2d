@@ -341,6 +341,11 @@ impl InputState {
     self.keys_pressed.contains(&key)
   }
 
+  /// Whether a press of `key` is still waiting for a game update to see it
+  pub(crate) fn key_press_pending(&self, key: KeyCode) -> bool {
+    self.keys_pressed.contains(&key)
+  }
+
   /// Returns true if the key was just released this frame
   pub fn key_released(&self, key: KeyCode) -> bool {
     if self.oneshots_suppressed {
@@ -386,6 +391,11 @@ impl InputState {
   /// Returns true if the mouse button is currently held down
   pub fn mouse_down(&self, button: MouseButton) -> bool {
     self.mouse_buttons_down.contains(&button)
+  }
+
+  /// Whether a press of `button` is still waiting for a game update to see it
+  pub(crate) fn mouse_press_pending(&self, button: MouseButton) -> bool {
+    self.mouse_buttons_pressed.contains(&button)
   }
 
   /// Returns true if the mouse button was just pressed this frame

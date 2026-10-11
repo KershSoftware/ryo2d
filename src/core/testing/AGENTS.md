@@ -12,5 +12,5 @@
 
 - One process-wide device (`shared_gpu`) — concurrent device creation deadlocks on Windows. `tests/common/gpu.rs` reuses it.
 - Headless never calls `TimeState::tick_fps_counter`: it resets `frame_count` on the wall clock, and `frame_count` drives trail/lighting animation time.
-- Headless mode disables audio, gamepads, hot reload, dev windows, user preferences and `RYO_CAPTURE_*`, and forces FPS/timing/stats overlays off. Engine debug keys (F1-F5, F9, F10, F12) are inert headless, so injected F-keys reach the game like any other key. Keep new wall-clock-dependent features out of headless frames the same way.
+- Headless mode disables audio, gamepads, hot reload, dev windows, user preferences, `RYO_CAPTURE_*` and `RYO_INPUT`, and forces FPS/timing/stats overlays off. Engine debug keys (F1-F5, F9, F10, F12) are inert headless, so injected F-keys reach the game like any other key. Keep new wall-clock-dependent features out of headless frames the same way.
 - `tick_frame` (unfocused window) is still a separate frame path; it shares `present_frame` but not `step_frame`.

@@ -181,9 +181,19 @@ Save frames as PNGs to check rendering without watching the window. Works with `
 | `RYO_CAPTURE_FRAMES=60,120` | Presented-frame numbers to capture |
 | `RYO_CAPTURE_DIR=captures` | Output directory (default `captures/`) |
 | `RYO_CAPTURE_EXIT=1` | Quit after the last capture; exit code 1 if one failed |
+| `RYO_INPUT="60:Digit2 200-260:ArrowUp 300:Click@320x180"` | Dev builds: tap a key on a frame (`N:Key`), hold it from frame A until just before B (`A-B:Key`), move or click the mouse |
+| `RYO_HEADLESS=1` | Dev builds: no window; render offscreen at the fixed timestep, with no audio, gamepads or saved preferences |
 
 Files are named `frame-000060.png` at game resolution (no letterboxing). In dev builds, F12 or the console command `debug:capture [path]` saves the next frame.
 
+`RYO_INPUT` keys use winit `KeyCode` names in any case (`KeyA`, `Digit1`, `ArrowLeft`, `Space`, `Enter`, `Escape`, `Tab`, `F1`), separated by spaces or commas. A tap stays down until a game update has seen it. `N:Mouse@XxY` moves the mouse to game coordinates; `Click` and `RightClick` work like keys, optionally at `@XxY`, and a range (`A-B:Click@XxY`) holds the button so `Mouse` entries inside it drag. An invalid entry disables the whole script with one warning.
+
 ```bash
 RYO_CAPTURE_FRAMES=120 RYO_CAPTURE_EXIT=1 ryo2d dev
+
+# Open a demo's second and third pages and capture them, without a window
+RYO_HEADLESS=1 RYO_INPUT="60:ArrowRight 120:ArrowRight" \
+  RYO_CAPTURE_FRAMES=90,150 RYO_CAPTURE_EXIT=1 ryo2d dev
 ```
+
+Without `RYO_CAPTURE_EXIT`, a headless run lasts until the scene quits.

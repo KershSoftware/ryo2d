@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use image::RgbaImage;
 
-pub use config::{AutoCaptureConfig, DEFAULT_CAPTURE_DIR};
+pub use config::{AutoCaptureConfig, DEFAULT_CAPTURE_DIR, headless_run_from_env};
 pub use readback::read_texture_rgba;
 pub use state::{CaptureReport, CaptureState};
 pub use writer::{default_file_name, write_png};

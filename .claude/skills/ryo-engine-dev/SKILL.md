@@ -175,7 +175,7 @@ ryo2d dev --profiler
 
 ## Verifying Rendering Changes
 
-Use frame capture (`src/core/capture/`) instead of guessing: run an example with `RYO_CAPTURE_FRAMES=<n> RYO_CAPTURE_EXIT=1 RYO_CAPTURE_DIR=<abs dir>` and inspect the PNG. Capture before and after a renderer change to prove it.
+Use frame capture (`src/core/capture/`) instead of guessing: run an example with `RYO_CAPTURE_FRAMES=<n> RYO_CAPTURE_EXIT=1 RYO_CAPTURE_DIR=<abs dir>` and inspect the PNG. Capture before and after a renderer change to prove it. Add `RYO_HEADLESS=1` to run without opening a window, and `RYO_INPUT="60:Digit2 120:ArrowRight"` to reach pages behind keys (see the `ryo-cli` skill).
 
 ## Headless Engine Tests
 

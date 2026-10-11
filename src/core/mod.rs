@@ -10,6 +10,7 @@ pub mod asset;
 pub mod audio;
 pub mod cursor;
 pub mod input;
+pub(crate) mod input_script;
 pub mod network;
 
 // Graphics & rendering

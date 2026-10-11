@@ -27,6 +27,7 @@ use super::events::{CollisionStarted, CollisionStopped, Events};
 use super::game::{GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
 use super::graphics::{BatchCollector, Camera, SpriteGpuRenderer, WgpuRenderer};
 use super::input::InputState;
+use super::input_script::InputScript;
 use super::lighting::{Light2D, LightOccluder2D, LightingRenderer};
 use super::physics::{PhysicsConfig, RapierPhysicsWorld};
 use super::raycast::{
@@ -304,6 +305,10 @@ pub struct Engine {
   console_quit_requested: bool,
   // Frame capture scheduling (RYO_CAPTURE_*, F12, debug:capture)
   pub(crate) capture: CaptureState,
+  // `RYO_INPUT` key presses, keyed to presented frames
+  input_script: InputScript,
+  // `RYO_HEADLESS`: `run` renders offscreen instead of opening a window
+  offscreen_run: bool,
   // Game name (from Ryo.toml [project] section)
   game_name: Option<String>,
   // Game version (from Ryo.toml [project] section)
@@ -336,6 +341,21 @@ pub(crate) enum FrameOutcome {
   Quit,
   /// Rendering failed fatally
   Fatal(String),
+}
+
+/// `RYO_CAPTURE_*` and `RYO_INPUT` from the environment, warnings reported
+fn scripted_run_from_env() -> (AutoCaptureConfig, InputScript) {
+  let (capture, warnings) = AutoCaptureConfig::from_env();
+  for warning in &warnings {
+    eprintln!("[capture] {warning}");
+    engine_warn!(module: "Capture", "{}", warning);
+  }
+  let (script, warning) = InputScript::from_env();
+  if let Some(warning) = warning {
+    eprintln!("[input] {warning}");
+    engine_warn!(module: "Input", "{}", warning);
+  }
+  (capture, script)
 }
 
 impl Engine {
@@ -708,15 +728,11 @@ impl Engine {
       }
     }
 
-    let (capture_config, capture_warnings) = if headless {
-      (AutoCaptureConfig::default(), Vec::new())
+    let (capture_config, input_script) = if headless {
+      (AutoCaptureConfig::default(), InputScript::default())
     } else {
-      AutoCaptureConfig::from_env()
+      scripted_run_from_env()
     };
-    for warning in &capture_warnings {
-      eprintln!("[capture] {warning}");
-      engine_warn!(module: "Capture", "{}", warning);
-    }
 
     Engine {
       config,
@@ -784,6 +800,8 @@ impl Engine {
       command_registry,
       console_quit_requested: false,
       capture: CaptureState::new(capture_config),
+      input_script,
+      offscreen_run: false,
       game_name,
       game_version,
       render_pipeline: RenderPipeline::default_2d(),
@@ -797,7 +815,14 @@ impl Engine {
   // =============================================================================
 
   /// Run the engine
+  ///
+  /// With `RYO_HEADLESS=1` in a dev build this renders offscreen instead of
+  /// opening a window (see [`capture`](super::capture)).
   pub fn run(mut self) -> EngineResult<()> {
+    if self.offscreen_run {
+      return self.run_offscreen();
+    }
+
     // Print startup banner to console
     Self::print_startup_banner(&self.config);
 
@@ -810,6 +835,60 @@ impl Engine {
     event_loop
       .run_app(&mut self)
       .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))
+  }
+
+  /// Make [`run`](Self::run) render offscreen with these schedules (`RYO_HEADLESS`).
+  pub(crate) fn prepare_offscreen_run(&mut self, capture: AutoCaptureConfig, script: InputScript) {
+    self.capture = CaptureState::new(capture);
+    self.input_script = script;
+    self.offscreen_run = true;
+  }
+
+  /// `RYO_HEADLESS`: run without a window, one fixed update per frame.
+  fn run_offscreen(mut self) -> EngineResult<()> {
+    println!(
+      "[headless] {} at {}x{}, no window",
+      self.config.title, self.config.width, self.config.height
+    );
+    if !self.capture.exits_after_last() {
+      println!("[headless] RYO_CAPTURE_EXIT is not set: running until the scene quits");
+    }
+    if self.run_offscreen_frames()? {
+      std::process::exit(1);
+    }
+    Ok(())
+  }
+
+  /// The offscreen loop: step until the scene quits or `RYO_CAPTURE_EXIT` is
+  /// met, then flush captures. Returns whether a scheduled capture failed.
+  pub(crate) fn run_offscreen_frames(&mut self) -> EngineResult<bool> {
+    let (device, queue) =
+      crate::core::testing::shared_gpu().map_err(|e| EngineError::Render(e.to_string()))?;
+    let (width, height) = self.game_size();
+    self.init_gpu(
+      WgpuRenderer::new_offscreen(device, queue, width, height),
+      1.0,
+    );
+
+    let dt = self.fixed_timestep();
+    loop {
+      let outcome = self.step_frame(Some(dt));
+      self.apply_headless_requests();
+      let reports = self.capture.poll_writes();
+      self.report_captures(reports);
+      match outcome {
+        FrameOutcome::Quit => break,
+        FrameOutcome::Fatal(error) => return Err(EngineError::Render(error)),
+        FrameOutcome::Presented | FrameOutcome::Skipped => {}
+      }
+      if self.capture.exit_requested() {
+        break;
+      }
+    }
+
+    let reports = self.capture.finish();
+    self.report_captures(reports);
+    Ok(self.capture.exit_with_failure())
   }
 
   /// Print startup banner to console with useful info.
@@ -840,6 +919,10 @@ impl Engine {
   pub(crate) fn step_frame(&mut self, dt: Option<std::time::Duration>) -> FrameOutcome {
     // Reset frame timings
     self.frame_timings = FrameTimings::default();
+
+    // Scripted presses for this frame, before anything reads input
+    let next_frame = self.capture.presented_frames() + 1;
+    self.input_script.before_frame(next_frame, &mut self.input);
 
     if let Some(time) = &mut self.time {
       match dt {
@@ -1093,6 +1176,7 @@ impl Engine {
     if did_update {
       self.input.begin_frame();
     }
+    self.input_script.after_frame(&mut self.input);
 
     outcome
   }
@@ -3208,8 +3292,23 @@ impl EngineBuilder {
   /// In a `ryo2d build` release the process switches to the game's folder
   /// during this call, so relative paths are resolved against that folder
   /// afterwards. Resolve command-line file arguments before calling it.
+  ///
+  /// With `RYO_HEADLESS=1` in a dev build the engine is built like a
+  /// `HeadlessEngine` (no audio, gamepads, user preferences or wall-clock
+  /// overlays) but keeps `RYO_CAPTURE_*` and `RYO_INPUT`, and `run` renders
+  /// offscreen.
   pub fn build(self) -> Engine {
-    self.build_engine(false)
+    let (offscreen, warning) = super::capture::headless_run_from_env();
+    if let Some(warning) = warning {
+      eprintln!("[headless] {warning}");
+    }
+    if !offscreen {
+      return self.build_engine(false);
+    }
+    let mut engine = self.build_engine(true);
+    let (capture, script) = scripted_run_from_env();
+    engine.prepare_offscreen_run(capture, script);
+    engine
   }
 
   /// Build an engine for `testing::HeadlessEngine`: no audio, gamepads, hot
@@ -3807,6 +3906,88 @@ mod tests {
     assert!(!engine.config.debug.show_stats);
     assert!(!engine.config.debug.logger_window);
     assert_eq!(engine.overlay_mode, OverlayMode::Off);
+  }
+
+  use std::sync::Arc;
+  use std::sync::atomic::{AtomicBool, Ordering};
+
+  /// Records whether Space reached an update, and quits after `quit_after` updates
+  struct SpaceWatcher {
+    saw_space: Arc<AtomicBool>,
+    updates: u32,
+    quit_after: u32,
+  }
+
+  impl Scene for SpaceWatcher {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      if ctx.input.key_pressed(KeyCode::Space) {
+        self.saw_space.store(true, Ordering::SeqCst);
+      }
+      self.updates += 1;
+      if self.updates >= self.quit_after {
+        SceneAction::Quit
+      } else {
+        SceneAction::Continue
+      }
+    }
+  }
+
+  fn space_watcher(quit_after: u32) -> (SpaceWatcher, Arc<AtomicBool>) {
+    let saw_space = Arc::new(AtomicBool::new(false));
+    let scene = SpaceWatcher {
+      saw_space: Arc::clone(&saw_space),
+      updates: 0,
+      quit_after,
+    };
+    (scene, saw_space)
+  }
+
+  #[test]
+  fn offscreen_run_captures_scripted_frames_and_stops_after_the_last() {
+    if crate::core::testing::shared_gpu().is_err() {
+      eprintln!("skipping: no GPU available");
+      return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (scene, saw_space) = space_watcher(u32::MAX);
+    let mut engine = EngineBuilder::new()
+      .resolution(64, 48)
+      .start_scene(scene)
+      .build_headless();
+    let capture = AutoCaptureConfig {
+      frames: vec![3, 5],
+      dir: dir.path().to_path_buf(),
+      exit_after: true,
+    };
+    let script = InputScript::parse("2:Space").unwrap();
+    engine.prepare_offscreen_run(capture, script);
+
+    let failed = engine.run_offscreen_frames().unwrap();
+
+    assert!(!failed);
+    assert!(saw_space.load(Ordering::SeqCst));
+    for frame in ["frame-000003.png", "frame-000005.png"] {
+      let image = image::open(dir.path().join(frame)).unwrap();
+      assert_eq!((image.width(), image.height()), (64, 48), "{frame}");
+    }
+  }
+
+  #[test]
+  fn offscreen_run_ends_when_the_scene_quits() {
+    if crate::core::testing::shared_gpu().is_err() {
+      eprintln!("skipping: no GPU available");
+      return;
+    }
+    let (scene, _) = space_watcher(4);
+    let mut engine = EngineBuilder::new()
+      .resolution(32, 32)
+      .start_scene(scene)
+      .build_headless();
+    engine.prepare_offscreen_run(AutoCaptureConfig::default(), InputScript::default());
+
+    assert!(!engine.run_offscreen_frames().unwrap());
+    let presented = engine.capture.presented_frames();
+    assert!((1..=4).contains(&presented), "{presented}");
   }
 
   #[test]
