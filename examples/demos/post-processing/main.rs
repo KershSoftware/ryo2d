@@ -6,6 +6,9 @@
 
 use demo_kit::prelude::*;
 
+/// How dark the vignette's edges get; its settings move where and how softly
+const VIGNETTE_INTENSITY: f32 = 0.8;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DemoEffect {
   None,
@@ -201,7 +204,7 @@ impl PostProcessingPage {
       DemoEffect::Vignette => {
         ctx.effects.clear();
         ctx.effects.set_vignette_custom(
-          self.vignette_radius,
+          VIGNETTE_INTENSITY,
           self.vignette_radius,
           self.vignette_softness,
         );
@@ -259,12 +262,25 @@ impl DemoPage for PostProcessingPage {
         0.05,
       ),
       DemoEffect::Vignette => {
-        s.float("Radius", &mut self.vignette_radius, 0.0..=1.0, 0.05);
-        s.float("Softness", &mut self.vignette_softness, 0.0..=1.0, 0.05);
+        s.float(
+          "Vignette radius",
+          &mut self.vignette_radius,
+          0.0..=1.0,
+          0.05,
+        );
+        s.float(
+          "Vignette softness",
+          &mut self.vignette_softness,
+          0.0..=1.0,
+          0.05,
+        );
       }
-      DemoEffect::ChromaticAberration => {
-        s.float("Strength", &mut self.chromatic_strength, 0.0..=0.02, 0.001)
-      }
+      DemoEffect::ChromaticAberration => s.float(
+        "Chromatic strength",
+        &mut self.chromatic_strength,
+        0.0..=0.02,
+        0.001,
+      ),
       DemoEffect::CustomScanlines => s.float(
         "Scanline strength",
         &mut self.scanline_strength,
