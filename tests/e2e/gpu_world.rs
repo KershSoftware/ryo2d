@@ -191,6 +191,102 @@ fn ysort_lower_draws_in_front() {
 }
 
 #[test]
+fn ysort_entities_stay_in_their_layer() {
+  // A y-sorted entity at z 0 whose sort y is about 500 must still sit
+  // between the z -1 and z 1 layers.
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::new(20.0, 10.0),
+      Renderable::sprite(solid("yl-mid", 20, RED)),
+      YSort {
+        sort_offset: 500.0,
+        ..YSort::new()
+      },
+    ));
+  })
+  .with_gpu_sprite(solid("yl-back", 4, GREEN), 20.0, 20.0, 20.0, -1)
+  .with_gpu_sprite(solid("yl-front", 4, BLUE), 40.0, 20.0, 20.0, 1);
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  // Sprites cover x 10..30 and 30..50; the entity covers x 20..40
+  assert_eq!(
+    frame.get_pixel(25, 20).0,
+    RED,
+    "entity over the z -1 sprite"
+  );
+  assert_eq!(
+    frame.get_pixel(35, 20).0,
+    BLUE,
+    "z 1 sprite over the entity"
+  );
+}
+
+#[test]
+fn a_higher_layer_beats_a_far_down_ysort_entity() {
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::new(20.0, 20.0),
+      Renderable::sprite(solid("hl-ysort", 20, RED)),
+      YSort {
+        sort_offset: 2000.0,
+        ..YSort::new()
+      },
+    ));
+    spawn_entity(ctx, "hl-top", 30.0, 20.0, BLUE, 1);
+  });
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  assert_eq!(
+    frame.get_pixel(35, 30).0,
+    BLUE,
+    "z 1 over the z 0 YSort entity"
+  );
+  assert_eq!(frame.get_pixel(25, 30).0, RED);
+}
+
+#[test]
+fn skeleton_debug_lines_draw_on_top() {
+  let def = SkeletonDef::builder()
+    .bone("root", None, Vec2::new(0.0, 32.0), 0.0, 10.0)
+    .bone("tip", Some("root"), Vec2::new(64.0, 0.0), 0.0, 10.0)
+    .build();
+  let transforms = [
+    BoneWorldTransform {
+      position: Vec2::new(0.0, 32.0),
+      rotation: 0.0,
+    },
+    BoneWorldTransform {
+      position: Vec2::new(64.0, 32.0),
+      rotation: 0.0,
+    },
+  ];
+  let lines = skeleton_debug_lines(
+    &def,
+    &transforms,
+    Color::new(0, 255, 0, 255),
+    Color::new(0, 255, 0, 255),
+    4.0,
+    1.0,
+  );
+  assert!(!lines.is_empty());
+  let scene = Fixture::new(|ctx| spawn_entity(ctx, "sk-cover", 20.0, 22.0, RED, 10));
+  let Some(mut engine) = start(EngineBuilder::new().resolution(64, 64).start_scene(scene)) else {
+    return;
+  };
+  for line in lines {
+    engine.world_mut().spawn((Transform::new(0.0, 0.0), line));
+  }
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  assert!(
+    is_line(frame.get_pixel(30, 32).0),
+    "debug line over the z-10 sprite"
+  );
+}
+
+#[test]
 fn composite_tile_honours_z() {
   // Entity z 1 over a composite z 0 (overlap x 50..60); then the composite
   // above a z-(-1) entity.

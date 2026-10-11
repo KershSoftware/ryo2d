@@ -1607,29 +1607,38 @@ impl Engine {
         rend.game_width() as f32,
         rend.game_height() as f32,
       );
+      // Check if raycasting is active
+      let raycast_enabled = raycast_renderer
+        .as_ref()
+        .map(|r| r.is_enabled())
+        .unwrap_or(false);
+
       self.draw_list.clear();
       // Entities, sprites and trails drawn together in z order
       self
         .batch_collector
         .push_to(&mut self.draw_list, DrawKind::Sprite);
-      let entities = EntityFrame {
-        world: &self.world,
-        camera: &self.camera,
-        cache: &self.renderable_cache,
-        alpha: self
-          .time
-          .as_ref()
-          .map(|t| t.interpolation_alpha())
-          .unwrap_or(0.0),
-        size: (rend.game_width(), rend.game_height()),
-      };
-      self.entity_drawer.collect(
-        &entities,
-        gpu,
-        rend.device(),
-        rend.queue(),
-        &mut self.draw_list,
-      );
+      // The raycast view replaces the 2D world, so skip collecting it
+      if !raycast_enabled {
+        let entities = EntityFrame {
+          world: &self.world,
+          camera: &self.camera,
+          cache: &self.renderable_cache,
+          alpha: self
+            .time
+            .as_ref()
+            .map(|t| t.interpolation_alpha())
+            .unwrap_or(0.0),
+          size: (rend.game_width(), rend.game_height()),
+        };
+        self.entity_drawer.collect(
+          &entities,
+          gpu,
+          rend.device(),
+          rend.queue(),
+          &mut self.draw_list,
+        );
+      }
       if let Some(trails) = trail_renderer.as_ref() {
         for z in trails.groups(true) {
           self.draw_list.push_trail_group(true, z);
@@ -1639,7 +1648,9 @@ impl Engine {
         }
       }
       self.draw_list.sorted();
-      gpu.prepare_world(rend.device(), rend.queue(), &self.draw_list);
+      if !raycast_enabled {
+        gpu.prepare_world(rend.device(), rend.queue(), &self.draw_list);
+      }
       let trail_draws = trail_renderer.as_ref().map_or(0, |t| t.draw_count());
       self.debug_stats.draw_calls = (gpu.world_draw_count() + trail_draws) as u32;
 
@@ -1651,12 +1662,6 @@ impl Engine {
         .as_ref()
         .map(|t| t.frame_count() as f32 / 60.0)
         .unwrap_or(0.0);
-
-      // Check if raycasting is active
-      let raycast_enabled = raycast_renderer
-        .as_ref()
-        .map(|r| r.is_enabled())
-        .unwrap_or(false);
 
       // The raycast pass draws what this syncs
       if raycast_enabled && let Some(raycast) = raycast_renderer.as_mut() {

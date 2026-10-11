@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
-use super::{AtlasKey, AtlasSlot, TextureAtlas};
+use super::{AtlasKey, AtlasSlot, SlotPage, TextureAtlas};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Material, SpriteEffect, SpriteShader};
 use crate::core::render::{DrawKind, DrawList, TextureRef, WorldRun, plan_runs};
@@ -308,6 +308,11 @@ struct EntitySprite {
 
 /// Entity sprites unused for this many frames are forgotten.
 const ENTITY_SPRITE_TTL: u64 = 600;
+
+/// Most entity sprites kept as standalone (over 256 px) textures; the least
+/// recently used beyond it are freed, so a game minting large sprite handles
+/// every frame can't hold hundreds of them until the TTL.
+const MAX_STANDALONE_ENTITY_SPRITES: usize = 64;
 
 /// GPU-based sprite renderer with per-sprite shader effects
 pub struct SpriteGpuRenderer {
@@ -941,6 +946,7 @@ impl SpriteGpuRenderer {
   /// Forget entity sprites nothing asked for in a while, so sprites of
   /// despawned entities don't stay in memory.
   fn prune_entity_sprites(&mut self) {
+    self.cap_standalone_entity_sprites();
     if !self.frame.is_multiple_of(120) {
       return;
     }
@@ -962,10 +968,67 @@ impl SpriteGpuRenderer {
     }
   }
 
+  /// Free the least recently used standalone entity textures beyond
+  /// [`MAX_STANDALONE_ENTITY_SPRITES`], sparing any used this frame.
+  fn cap_standalone_entity_sprites(&mut self) {
+    if self.entity_sprites.len() <= MAX_STANDALONE_ENTITY_SPRITES {
+      return;
+    }
+    let mut standalone = self.standalone_entity_serials();
+    let Some(excess) = standalone
+      .len()
+      .checked_sub(MAX_STANDALONE_ENTITY_SPRITES)
+      .filter(|n| *n > 0)
+    else {
+      return;
+    };
+    standalone.sort_by_key(|&(_, last_used)| last_used);
+    let frame = self.frame;
+    let evict = standalone
+      .into_iter()
+      .filter(|&(_, last_used)| last_used < frame)
+      .take(excess);
+    let evict: Vec<usize> = evict.map(|(serial, _)| serial).collect();
+    for serial in evict {
+      if let Some(entry) = self.entity_sprites.remove(&serial) {
+        self.textures.remove(&*entry.texture);
+        self.atlas.remove(&AtlasKey::Sprite {
+          handle: serial,
+          generation: entry.generation,
+        });
+      }
+    }
+  }
+
+  /// Entity sprites holding a standalone texture, as `(serial, last_used)`.
+  fn standalone_entity_serials(&self) -> Vec<(usize, u64)> {
+    self
+      .entity_sprites
+      .iter()
+      .filter(|(serial, e)| {
+        e.uploaded
+          && self
+            .atlas
+            .lookup(&AtlasKey::Sprite {
+              handle: **serial,
+              generation: e.generation,
+            })
+            .is_some_and(|slot| matches!(slot.page, SlotPage::Standalone(_)))
+      })
+      .map(|(serial, e)| (*serial, e.last_used))
+      .collect()
+  }
+
   /// How many textures are cached (for tests that watch for leaks).
   #[cfg(test)]
   pub(crate) fn texture_count(&self) -> usize {
     self.textures.len()
+  }
+
+  /// How many entity sprites hold a standalone texture.
+  #[cfg(test)]
+  pub(crate) fn standalone_entity_count(&self) -> usize {
+    self.standalone_entity_serials().len()
   }
 
   /// Whether the entity sprite is resident (for tests of what gets uploaded).

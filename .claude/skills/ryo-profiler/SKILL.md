@@ -62,7 +62,7 @@ These engine systems are automatically profiled:
 |-------|-----------------|
 | `cpu:update` | Game logic + fixed timestep |
 | `cpu:engine_update` | Built-in systems and scene update |
-| `cpu:render` | CPU sprite rendering |
+| `cpu:render` | Collecting entities into the GPU draw list, plus the UI |
 | `cpu:engine_render` | Engine render path |
 | `gpu:present` | GPU submission + effects |
 | `cpu:physics` | Rapier2D simulation |

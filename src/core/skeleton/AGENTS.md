@@ -6,6 +6,10 @@
 - `SkeletalBlender` crossfades from a **frozen snapshot** of the "from" pose to the **live** "to" pose, so the outgoing animation does not keep advancing during the blend.
 - `SkeletalController` = FSM + animation map + `SkeletalAnimator` + `SkeletalBlender`. `set_state` validates through the FSM, and `force_state` bypasses it.
 
+## Debug Lines
+
+`skeleton_debug_lines` returns `Line2D`s at z `i32::MAX - 1`, so they draw on top of game content (below the engine's own `i32::MAX` overlays).
+
 ## Coordinate System
 
 Y-down: negative Y = up on screen, positive rotation = clockwise.

@@ -8,8 +8,9 @@
 //! nearest sampling maps whole-number scales onto the same source pixels.
 //!
 //! Everything an entity emits (its shadows first, then the sprite or its
-//! tiles) is a [`DrawKind::Entity`] item at the entity's sort key, in render
-//! cache order, so the shadow draws under its entity. Composite tiles draw at
+//! tiles) is a [`DrawKind::Entity`] item at the entity's `z_order`, submitted
+//! in render cache order, so the shadow draws under its entity and YSort
+//! orders entities within their layer. Composite tiles draw at
 //! their own `z_order`; on equal z they follow the entities.
 
 use super::{DrawKind, DrawList, TextureRef};
@@ -71,8 +72,10 @@ impl EntityDrawer {
       ellipse: &mut self.ellipse,
       size: frame.size,
     };
-    for &(entity, z) in frame.cache {
-      collect_entity(frame, entity, z, &mut out);
+    // The cache's sort key mixes in the YSort position, which would outrank
+    // other layers' z; only its order is used, as the submission sequence
+    for &(entity, _) in frame.cache {
+      collect_entity(frame, entity, &mut out);
     }
     collect_composites(frame, &mut out);
   }
@@ -346,7 +349,7 @@ fn tile_start(direction: TileDirection, tile_count: u32, tile_size: f32) -> (f32
 }
 
 /// One renderable entity: its shadows, then its sprite or tiles.
-fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, z: i32, out: &mut Emitter<'_>) {
+fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>) {
   let world = frame.world;
   let camera = frame.camera;
   if world.has::<Inactive>(entity) {
@@ -358,6 +361,7 @@ fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, z: i32, out: &mut Emi
   if !renderable.visible {
     return;
   }
+  let z = renderable.z_order;
 
   // WorldTransform for hierarchical entities, else the local Transform
   let (

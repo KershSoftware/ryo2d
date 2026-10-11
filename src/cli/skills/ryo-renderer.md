@@ -89,7 +89,7 @@ Custom shaders and a higher-level effects API for passes are coming; for now a g
 
 Everything in the world draws on the GPU in one z-sorted list: entities (`Renderable`, `CompositeTile`, shadows), `render_gpu()` sprites (particles, parallax) and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then `render_gpu` sprite, then trail/line; within a kind, in submission order. Consecutive sprites on one atlas page merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top.
 
-Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities. `render_gpu` sprites no longer sit behind entities automatically. `Trail2D` and `Line2D` have `with_z_order` (default 0). Debug overlays are unlit lines on top; the transition fade covers the world (including trails) but not the UI. Only the UI uses CPU drawing now (`Sprite::draw` / `draw_scaled`).
+Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities. `render_gpu` sprites no longer sit behind entities automatically. `Trail2D` and `Line2D` have `with_z_order` (default 0). `z_order` picks the layer; `YSort` orders entities by y within their layer; sprites, particles and trails at the same z draw after the layer's entities. `skeleton_debug_lines` draw on top. Debug overlays are unlit lines on top; the transition fade covers the world (including trails) but not the UI. Only the UI uses CPU drawing now (`Sprite::draw` / `draw_scaled`).
 
 ### Texture Atlas and Fidelity
 

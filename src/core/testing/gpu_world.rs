@@ -138,6 +138,62 @@ fn off_screen_entities_are_not_uploaded() {
 }
 
 #[test]
+fn raycast_frames_do_not_collect_the_2d_world() {
+  let scene = Fixture {
+    setup: |ctx| {
+      ctx.enable_raycast();
+      let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 1, 2, 3, 255), "ray-near");
+      ctx
+        .world
+        .spawn((Transform::new(20.0, 20.0), Renderable::sprite(sprite)));
+    },
+  };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let sprite = {
+    let world = engine.world();
+    let entity = *world.entities_with::<Renderable>().first().unwrap();
+    world.get::<Renderable>(entity).unwrap().sprite.clone()
+  };
+  let gpu = engine.engine.sprite_gpu.as_ref().unwrap();
+  assert!(
+    !gpu.has_entity_sprite(&sprite),
+    "a raycast frame uploaded a 2D entity sprite"
+  );
+}
+
+#[test]
+fn large_standalone_entity_textures_are_bounded() {
+  // A new 300x20 sprite (standalone, over the 256 px atlas limit) every frame
+  let scene = Fixture { setup: |_| {} };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
+    return;
+  };
+  for i in 0..200 {
+    {
+      let world = engine.world_mut();
+      for entity in world.entities_with::<Renderable>() {
+        let _ = world.despawn(entity);
+      }
+      let sprite = SpriteHandle::from_sprite(
+        Sprite::solid_rect(300, 20, 1, 2, 3, 255),
+        format!("wide-{i}"),
+      );
+      world.spawn((Transform::new(0.0, 10.0), Renderable::sprite(sprite)));
+    }
+    engine.step().unwrap();
+  }
+  let gpu = engine.engine.sprite_gpu.as_ref().unwrap();
+  assert!(
+    gpu.standalone_entity_count() <= 64,
+    "standalone entity textures: {}",
+    gpu.standalone_entity_count()
+  );
+}
+
+#[test]
 fn ten_thousand_sprites_few_draws() {
   // 10,000 visible entities from 3 textures, 2x2 px each on a 3 px grid
   let scene = Fixture {
