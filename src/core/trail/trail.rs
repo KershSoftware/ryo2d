@@ -149,8 +149,6 @@ pub struct Trail2D {
   effect: Option<TrailEffect>,
   /// How endpoints are drawn
   cap: LineCap,
-  /// How segments connect at corners
-  join: LineJoin,
   /// Whether scene lighting applies (false: full brightness over the lit scene)
   lighting: bool,
   /// Draw order against sprites and other trails (higher draws on top)
@@ -203,7 +201,6 @@ impl Trail2D {
       style: TrailStyle::Solid,
       effect: None,
       cap: LineCap::Butt,
-      join: LineJoin::None,
       lighting: true,
       z_order: 0,
     }
@@ -794,12 +791,6 @@ impl Trail2D {
     self
   }
 
-  /// Set the line join style for corners.
-  pub fn with_join(mut self, join: LineJoin) -> Self {
-    self.join = join;
-    self
-  }
-
   /// Get the rendering style.
   pub fn style(&self) -> TrailStyle {
     self.style
@@ -830,11 +821,6 @@ impl Trail2D {
     self.cap = cap;
   }
 
-  /// Get the line join style.
-  pub fn join(&self) -> LineJoin {
-    self.join
-  }
-
   /// Set whether scene lighting applies (default `true`).
   ///
   /// With `false` the trail is drawn at full brightness on top of the lit scene
@@ -853,11 +839,6 @@ impl Trail2D {
   /// Set whether scene lighting applies to this trail.
   pub fn set_lighting(&mut self, enabled: bool) {
     self.lighting = enabled;
-  }
-
-  /// Set the line join style.
-  pub fn set_join(&mut self, join: LineJoin) {
-    self.join = join;
   }
 
   /// Set the draw order (default 0). Trails sort with entities, `render_gpu`
@@ -1272,18 +1253,6 @@ mod tests {
   fn trail_with_cap() {
     let trail = Trail2D::new(Color::WHITE, 3.0).with_cap(LineCap::Round);
     assert_eq!(trail.cap(), LineCap::Round);
-  }
-
-  #[test]
-  fn trail_default_join_is_none() {
-    let trail = Trail2D::new(Color::WHITE, 3.0);
-    assert_eq!(trail.join(), LineJoin::None);
-  }
-
-  #[test]
-  fn trail_with_join() {
-    let trail = Trail2D::new(Color::WHITE, 3.0).with_join(LineJoin::Bevel);
-    assert_eq!(trail.join(), LineJoin::Bevel);
   }
 
   // ========== New Preset Tests ==========

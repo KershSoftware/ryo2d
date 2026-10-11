@@ -38,7 +38,7 @@ impl Variant {
       Variant::FadeModes => "Four trails side by side: position, time, distance and no fade",
       Variant::Styles => "Solid, Soft and Glow rendering styles on extra-wide trails",
       Variant::CapsJoins => {
-        "Line caps (left) and joins (right) on Line2D shapes; the mouse trail uses the chosen cap"
+        "Line caps (left) and joins (right) on Line2D shapes; the zigzag takes the chosen cap and join, the mouse trail the cap"
       }
       Variant::Textured => "Stretch (left) vs Tile (right) texture mapping on orbiting trails",
       Variant::GpuEffects => "Lightning, Noise and Ribbon displacement effects",
@@ -46,7 +46,6 @@ impl Variant {
   }
 }
 
-// =============================================================================
 // =============================================================================
 // Marker Components
 // =============================================================================
@@ -487,13 +486,27 @@ impl TrailsPage {
       self.entities.push(entity);
     }
 
-    // --- Mouse trail with cyclable cap/join ---
+    // --- Zigzag with the chosen cap and join (joins apply to Line2D) ---
+    let (zig_x, zig_y, zig_w) = (sw * 0.08, sh * 0.82, sw * 0.32);
+    let zigzag: Vec<Vec2> = (0..5)
+      .map(|i| {
+        let rise = if i % 2 == 0 { 0.0 } else { -150.0 };
+        Vec2::new(zig_x + zig_w * i as f32 / 4.0, zig_y + rise)
+      })
+      .collect();
+    let line = Line2D::new(zigzag, Color::rgb(200, 255, 200), 24.0)
+      .with_cap(self.cap())
+      .with_join(self.join())
+      .with_style(TrailStyle::Solid);
+    let entity = ctx.world.spawn((Transform::new(0.0, 0.0), line));
+    self.entities.push(entity);
+
+    // --- Mouse trail with the chosen cap (trails draw no joins) ---
     let (mx, my) = ctx.input.mouse_position();
     let mouse_color = Color::rgb(200, 255, 200);
     let trail = Trail2D::new(mouse_color, 12.0)
       .with_length(40)
       .with_cap(self.cap())
-      .with_join(self.join())
       .with_style(TrailStyle::Solid);
 
     let entity = ctx.world.spawn((
@@ -837,10 +850,12 @@ impl DemoPage for TrailsPage {
           ui.draw_text(label, sw * 0.50, y - 20.0, white);
         }
 
-        // Mouse trail info
+        // What the settings drive
         ui.draw_text(
           &format!(
-            "Mouse trail: Cap={} (Joins apply to Line2D only, not Trail2D)",
+            "Zigzag: Cap={}, Join={}   Mouse trail: Cap={} (trails draw no joins)",
+            CAP_NAMES[self.cap_index.min(CAP_NAMES.len() - 1)],
+            JOIN_NAMES[self.join_index.min(JOIN_NAMES.len() - 1)],
             CAP_NAMES[self.cap_index.min(CAP_NAMES.len() - 1)],
           ),
           10.0,
