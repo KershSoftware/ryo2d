@@ -9,7 +9,8 @@
 //! reported as [`RenderPipelineError`], never panics. The ids of the built-in
 //! passes live in [`pass_ids`].
 //!
-//! The engine doesn't run this pipeline by default yet; it's being wired in.
+//! The engine draws every frame through this pipeline
+//! ([`RenderPipeline::default_2d`]).
 
 mod context;
 mod frame;

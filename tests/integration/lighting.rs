@@ -620,7 +620,7 @@ fn regression_separate_textures_for_cpu_ui_game() {
 #[test]
 fn regression_ui_uses_dedicated_texture() {
   // This is a documentation test.
-  // The actual implementation in render_with_lighting() does:
+  // The actual implementation in the `ui` render pass does:
   //
   // // Upload UI to dedicated ui_texture (NOT cpu_texture or game_texture!)
   // self.queue.write_texture(
@@ -659,7 +659,7 @@ fn regression_ui_uses_dedicated_texture() {
 #[test]
 fn regression_render_flow_texture_isolation() {
   // This is a documentation test verifying the expected render flow.
-  // The actual implementation is in WgpuRenderer::render_with_lighting().
+  // The actual implementation is the `default_2d` render pipeline.
   //
   // Key invariants:
   // - cpu_texture receives ONLY pixel_buffer data
@@ -681,7 +681,7 @@ fn regression_render_flow_texture_isolation() {
 /// - But nothing copied the lit scene from lit_texture to texture_a
 /// - Effects were reading uninitialized/black data
 ///
-/// FIX: In render_with_lighting(), when `has_effects && lighting_applied`:
+/// FIX: In the lighting-to-effects handoff, when `has_effects && lighting_applied`:
 /// 1. Added COPY_SRC flag to lit_texture (enables copying from it)
 /// 2. Added copy_texture_to_texture(lit_texture -> texture_a) before effects
 ///
@@ -696,7 +696,7 @@ fn regression_render_flow_texture_isolation() {
 fn regression_lighting_plus_effects_requires_texture_copy() {
   // This is a documentation test. The actual GPU verification is in e2e tests.
   //
-  // The critical code path in WgpuRenderer::render_with_lighting() is:
+  // The critical code path in the old renderer was:
   //
   // } else if has_effects && lighting_applied {
   //   // Lighting wrote to lit_texture, need to copy to texture_a before applying effects

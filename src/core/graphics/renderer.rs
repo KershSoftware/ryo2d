@@ -28,7 +28,7 @@ use crate::core::error::{CaptureError, CaptureResult};
 use crate::core::render::{FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline};
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
-use super::{Compositor, Viewport};
+use super::{Compositor, SpriteGpuRenderer, sprite_gpu::BatchCollector};
 
 /// Where finished frames go: the window surface or an offscreen texture.
 enum PresentTarget {
@@ -133,7 +133,6 @@ pub struct WgpuRenderer {
   // Result of the latest capture, collected by the engine
   capture_result: Option<CaptureResult<CapturedFrame>>,
   // What the latest `render_frame` contained
-  last_frame: Option<FrameInfo>,
 }
 
 /// Create the CPU staging texture at game resolution.
@@ -554,7 +553,6 @@ impl WgpuRenderer {
       capture_texture: None,
       pending_capture: None,
       capture_result: None,
-      last_frame: None,
     };
 
     // Initialize viewport transform
@@ -830,664 +828,6 @@ impl WgpuRenderer {
     }
   }
 
-  /// Render the pixel buffer to the screen.
-  pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-    type Cb = fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView);
-    self.render_with_gpu_sprites::<Cb, Cb>(None, None, None, None)
-  }
-
-  /// Render the pixel buffer with post-processing effects.
-  pub fn render_with_effects(
-    &mut self,
-    effects: Option<&EffectsManager>,
-    ui_buffer: Option<&[u8]>,
-  ) -> Result<(), wgpu::SurfaceError> {
-    type Cb = fn(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView);
-    self.render_with_gpu_sprites::<Cb, Cb>(effects, None, None, ui_buffer)
-  }
-
-  /// Render with optional GPU sprites and post-processing effects.
-  ///
-  /// GPU sprites and CPU content are properly z-ordered:
-  /// - GPU sprites with negative z-order (e.g., parallax backgrounds) render BEHIND CPU content
-  /// - CPU content renders on top with alpha blending
-  ///
-  /// # Render Order
-  /// 1. Game texture is cleared
-  /// 2. `gpu_sprite_callback` draws GPU sprites (backgrounds, parallax)
-  /// 3. CPU pixel buffer is alpha-blended on top
-  /// 4. `trail_callback` draws trails ON TOP of CPU content (so backgrounds don't cover trails)
-  /// 5. Post-processing effects are applied (if provided)
-  /// 6. Final result is rendered to screen with letterboxing
-  /// 7. UI buffer is composited on top (if provided)
-  ///
-  /// # Arguments
-  /// - `effects`: Optional post-processing effects manager
-  /// - `gpu_sprite_callback`: Optional callback for rendering GPU sprites
-  /// - `trail_callback`: Optional callback for rendering trails
-  /// - `ui_buffer`: Optional UI buffer to composite after everything. Should be RGBA, same
-  ///   dimensions as game resolution. Non-zero alpha pixels are blended on top.
-  pub fn render_with_gpu_sprites<F, T>(
-    &mut self,
-    effects: Option<&EffectsManager>,
-    gpu_sprite_callback: Option<F>,
-    trail_callback: Option<T>,
-    ui_buffer: Option<&[u8]>,
-  ) -> Result<(), wgpu::SurfaceError>
-  where
-    F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
-    T: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
-  {
-    // Step 1: Upload CPU pixel buffer to staging texture (not game texture)
-    self.queue.write_texture(
-      wgpu::ImageCopyTexture {
-        texture: &self.cpu_texture,
-        mip_level: 0,
-        origin: wgpu::Origin3d::ZERO,
-        aspect: wgpu::TextureAspect::All,
-      },
-      &self.pixel_buffer,
-      wgpu::ImageDataLayout {
-        offset: 0,
-        bytes_per_row: Some(4 * self.game_width),
-        rows_per_image: Some(self.game_height),
-      },
-      wgpu::Extent3d {
-        width: self.game_width,
-        height: self.game_height,
-        depth_or_array_layers: 1,
-      },
-    );
-
-    // Get surface texture
-    let (output, view) = self.target.acquire()?;
-    let capture_path = self.prepare_capture();
-
-    // Create command encoder
-    let mut encoder = self
-      .device
-      .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Render Encoder"),
-      });
-
-    // Step 2: Clear game texture (required to prevent ghosting from previous frame)
-    {
-      let _clear_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Clear Game Texture Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &self.texture_view,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(DEFAULT_BACKGROUND_COLOR),
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-      });
-    }
-
-    // Step 3: Render GPU sprites (backgrounds, parallax) if callback provided
-    if let Some(callback) = gpu_sprite_callback {
-      callback(&self.queue, &mut encoder, &self.texture_view);
-    }
-
-    // Step 3: Blend CPU content on top of GPU sprites
-    // CPU pixel buffer has alpha=0 for transparent areas, alpha=255 for opaque content
-    {
-      let mut blend_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("CPU Content Blend Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &self.texture_view,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            load: wgpu::LoadOp::Load, // Preserve GPU sprite content
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-      });
-
-      // Use game blend pipeline to alpha-composite CPU content onto GPU sprites
-      // (game_blend_pipeline uses Rgba8UnormSrgb format to match game texture)
-      blend_pass.set_pipeline(&self.game_blend_pipeline);
-      blend_pass.set_bind_group(0, &self.cpu_bind_group, &[]);
-      blend_pass.draw(0..6, 0..1);
-    }
-
-    // Step 4: Render trails ON TOP of CPU content
-    // This ensures trails are visible even when backgrounds use opaque alpha
-    if let Some(callback) = trail_callback {
-      callback(&self.queue, &mut encoder, &self.texture_view);
-    }
-
-    // Check if we have active effects to apply
-    let has_effects = effects.map(|e| e.has_active_effects()).unwrap_or(false);
-
-    // Apply post-processing if we have effects
-    let use_post_process = if has_effects {
-      if let (Some(effects_mgr), Some(post_process)) = (effects, self.post_process.as_mut()) {
-        // Collect active effects
-        let active: Vec<_> = effects_mgr
-          .active_effects()
-          .map(|e| (e, effects_mgr.time()))
-          .collect();
-
-        if !active.is_empty() {
-          // Copy game texture to post-process texture A first
-          encoder.copy_texture_to_texture(
-            wgpu::ImageCopyTexture {
-              texture: &self.texture,
-              mip_level: 0,
-              origin: wgpu::Origin3d::ZERO,
-              aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::ImageCopyTexture {
-              texture: post_process.texture_a(),
-              mip_level: 0,
-              origin: wgpu::Origin3d::ZERO,
-              aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-              width: self.game_width,
-              height: self.game_height,
-              depth_or_array_layers: 1,
-            },
-          );
-
-          // Apply effects chain
-          let output_buffer =
-            post_process.apply_effects(&self.device, &self.queue, &mut encoder, &active);
-
-          Some(output_buffer)
-        } else {
-          None
-        }
-      } else {
-        None
-      }
-    } else {
-      None
-    };
-
-    // Check if we have UI to overlay (non-zero ui_buffer)
-    let has_ui_overlay = ui_buffer
-      .as_ref()
-      .map(|buf| buf.iter().any(|&b| b != 0))
-      .unwrap_or(false);
-
-    // If we have UI overlay, upload UI to dedicated ui_texture for blending
-    if has_ui_overlay && let Some(ui_data) = ui_buffer {
-      self
-        .compositor
-        .upload_ui(&self.queue, ui_data, self.game_width, self.game_height);
-    }
-
-    // Final render pass to screen
-    let source_view = match use_post_process {
-      Some(output_buffer) => self
-        .post_process
-        .as_ref()
-        .map(|pp| pp.get_output_view(output_buffer))
-        .unwrap_or(&self.texture_view),
-      None => &self.texture_view,
-    };
-    self.compositor.draw(
-      &self.device,
-      &mut encoder,
-      &view,
-      source_view,
-      has_ui_overlay,
-      Viewport::Letterboxed,
-    );
-    if capture_path.is_some() {
-      self.encode_capture_pass(&mut encoder, source_view, has_ui_overlay);
-    }
-
-    // Submit commands
-    self.queue.submit(std::iter::once(encoder.finish()));
-    if let Some(output) = output {
-      output.present();
-    }
-    self.finish_capture(capture_path);
-
-    Ok(())
-  }
-
-  /// Render with GPU sprites, lighting, UI overlay, and post-processing effects.
-  ///
-  /// This is the most comprehensive render method that supports the full pipeline:
-  /// 1. CPU pixel buffer is uploaded to game texture
-  /// 2. GPU sprite callback renders on top
-  /// 3. Trail callback draws trails and lines on top of the CPU content
-  /// 4. Lighting callback processes the scene (render_lights + compose), so trails are lit
-  /// 5. Unlit trail callback draws trails and lines that skip lighting onto the lit scene
-  /// 6. UI buffer is composited on top of lit scene (if provided)
-  /// 7. Post-processing effects are applied
-  /// 8. Final result is rendered to screen with letterboxing
-  ///
-  /// # Arguments
-  /// - `effects`: Optional post-processing effects manager
-  /// - `gpu_sprite_callback`: Optional callback for rendering GPU sprites
-  /// - `trail_callback`: Optional callback for rendering trails and lines
-  /// - `unlit_trail_callback`: Optional callback for trails and lines that skip lighting;
-  ///   receives the lit scene's view (or the game texture's when no lighting ran)
-  /// - `lighting_callback`: Optional callback for lighting. Receives (device, queue, encoder,
-  ///   scene_view, output_view). Should render lights and compose to output_view.
-  /// - `ui_buffer`: Optional UI buffer to composite after lighting. Should be RGBA, same dimensions
-  ///   as game resolution. Non-zero alpha pixels are blended on top of the lit scene.
-  ///
-  /// # Lighting Flow
-  /// When a lighting callback is provided:
-  /// - scene_view: The game texture (unlit scene after CPU + GPU sprites)
-  /// - output_view: Texture A from post-process pipeline (write lit result here)
-  /// - After callback, texture A becomes the source for effects/final render
-  /// - If ui_buffer is provided, it's alpha-blended onto the lit scene
-  #[allow(clippy::too_many_arguments)]
-  pub fn render_with_lighting<F, T, U, L>(
-    &mut self,
-    effects: Option<&EffectsManager>,
-    gpu_sprite_callback: Option<F>,
-    trail_callback: Option<T>,
-    unlit_trail_callback: Option<U>,
-    lighting_callback: Option<L>,
-    ui_buffer: Option<&[u8]>,
-  ) -> Result<(), wgpu::SurfaceError>
-  where
-    F: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
-    T: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
-    U: FnOnce(&wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
-    L: FnOnce(
-      &wgpu::Device,
-      &wgpu::Queue,
-      &mut wgpu::CommandEncoder,
-      &wgpu::Texture, // Changed from &[u8] to &wgpu::Texture
-      &wgpu::TextureView,
-    ),
-  {
-    // Step 1: Upload CPU pixel buffer to staging texture (not game texture)
-    self.queue.write_texture(
-      wgpu::ImageCopyTexture {
-        texture: &self.cpu_texture,
-        mip_level: 0,
-        origin: wgpu::Origin3d::ZERO,
-        aspect: wgpu::TextureAspect::All,
-      },
-      &self.pixel_buffer,
-      wgpu::ImageDataLayout {
-        offset: 0,
-        bytes_per_row: Some(4 * self.game_width),
-        rows_per_image: Some(self.game_height),
-      },
-      wgpu::Extent3d {
-        width: self.game_width,
-        height: self.game_height,
-        depth_or_array_layers: 1,
-      },
-    );
-
-    // Get surface texture
-    let (output, view) = self.target.acquire()?;
-    let capture_path = self.prepare_capture();
-
-    // Create command encoder
-    let mut encoder = self
-      .device
-      .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Render Encoder"),
-      });
-
-    // Step 2: Clear game texture (required to prevent ghosting from previous frame)
-    {
-      let _clear_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Clear Game Texture Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &self.texture_view,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            load: wgpu::LoadOp::Clear(DEFAULT_BACKGROUND_COLOR),
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-      });
-    }
-
-    // Step 3: Render GPU sprites (backgrounds, parallax) if callback provided
-    if let Some(callback) = gpu_sprite_callback {
-      callback(&self.queue, &mut encoder, &self.texture_view);
-    }
-
-    // Step 4: Blend CPU content on top of GPU sprites
-    {
-      let mut blend_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("CPU Content Blend Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: &self.texture_view,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            load: wgpu::LoadOp::Load, // Preserve GPU sprite content
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-      });
-
-      // Use game blend pipeline (Rgba8UnormSrgb format to match game texture)
-      blend_pass.set_pipeline(&self.game_blend_pipeline);
-      blend_pass.set_bind_group(0, &self.cpu_bind_group, &[]);
-      blend_pass.draw(0..6, 0..1);
-    }
-
-    // Trails and lines go on top of CPU content and before lighting, so they are lit
-    if let Some(callback) = trail_callback {
-      callback(&self.queue, &mut encoder, &self.texture_view);
-    }
-
-    // Track whether lighting was applied (changes the source texture)
-    let lighting_applied = if let Some(callback) = lighting_callback {
-      // Lighting callback receives game texture (with GPU sprites + CPU content blended)
-      callback(
-        &self.device,
-        &self.queue,
-        &mut encoder,
-        &self.texture, // Pass game texture instead of pixel buffer
-        &self.lit_texture_view,
-      );
-      true
-    } else {
-      false
-    };
-
-    // Trails and lines that skip lighting go on top of the lit scene, before effects
-    if let Some(callback) = unlit_trail_callback {
-      let target = if lighting_applied {
-        &self.lit_texture_view
-      } else {
-        &self.texture_view
-      };
-      callback(&self.queue, &mut encoder, target);
-    }
-
-    // Check if we have active effects to apply
-    let has_effects = effects.map(|e| e.has_active_effects()).unwrap_or(false);
-
-    // Apply post-processing if we have effects
-    let use_post_process = if has_effects && !lighting_applied {
-      // Normal path: copy game texture to texture_a, then apply effects
-      if let (Some(effects_mgr), Some(post_process)) = (effects, self.post_process.as_mut()) {
-        let active: Vec<_> = effects_mgr
-          .active_effects()
-          .map(|e| (e, effects_mgr.time()))
-          .collect();
-
-        if !active.is_empty() {
-          // Copy game texture to post-process texture A first
-          encoder.copy_texture_to_texture(
-            wgpu::ImageCopyTexture {
-              texture: &self.texture,
-              mip_level: 0,
-              origin: wgpu::Origin3d::ZERO,
-              aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::ImageCopyTexture {
-              texture: post_process.texture_a(),
-              mip_level: 0,
-              origin: wgpu::Origin3d::ZERO,
-              aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-              width: self.game_width,
-              height: self.game_height,
-              depth_or_array_layers: 1,
-            },
-          );
-
-          // Apply effects chain
-          let output_buffer =
-            post_process.apply_effects(&self.device, &self.queue, &mut encoder, &active);
-
-          Some(output_buffer)
-        } else {
-          None
-        }
-      } else {
-        None
-      }
-    } else if has_effects && lighting_applied {
-      // Lighting wrote to lit_texture, need to copy to texture_a before applying effects
-      if let (Some(effects_mgr), Some(post_process)) = (effects, self.post_process.as_mut()) {
-        let lit_tex = &self.lit_texture;
-        let active: Vec<_> = effects_mgr
-          .active_effects()
-          .map(|e| (e, effects_mgr.time()))
-          .collect();
-
-        if !active.is_empty() {
-          // Copy lit scene to texture_a first
-          encoder.copy_texture_to_texture(
-            wgpu::ImageCopyTexture {
-              texture: lit_tex,
-              mip_level: 0,
-              origin: wgpu::Origin3d::ZERO,
-              aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::ImageCopyTexture {
-              texture: post_process.texture_a(),
-              mip_level: 0,
-              origin: wgpu::Origin3d::ZERO,
-              aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-              width: self.game_width,
-              height: self.game_height,
-              depth_or_array_layers: 1,
-            },
-          );
-
-          // Now apply effects chain starting from texture_a
-          let output_buffer =
-            post_process.apply_effects(&self.device, &self.queue, &mut encoder, &active);
-
-          Some(output_buffer)
-        } else {
-          None
-        }
-      } else {
-        None
-      }
-    } else {
-      None
-    };
-
-    // Check if we have UI to overlay (non-zero ui_buffer)
-    let has_ui_overlay = ui_buffer
-      .as_ref()
-      .map(|buf| buf.iter().any(|&b| b != 0))
-      .unwrap_or(false);
-
-    // If we have UI overlay, upload UI to dedicated ui_texture for blending
-    // IMPORTANT: We use a separate ui_texture to avoid write_texture ordering issues
-    // (write_texture operations aren't ordered with command buffer execution)
-    if has_ui_overlay && let Some(ui_data) = ui_buffer {
-      self
-        .compositor
-        .upload_ui(&self.queue, ui_data, self.game_width, self.game_height);
-    }
-
-    // Final render pass to screen
-    let source_view = match (use_post_process, lighting_applied) {
-      (Some(output_buffer), _) => self
-        .post_process
-        .as_ref()
-        .map(|pp| pp.get_output_view(output_buffer))
-        .unwrap_or(&self.texture_view),
-      (None, true) => &self.lit_texture_view,
-      (None, false) => &self.texture_view,
-    };
-    self.compositor.draw(
-      &self.device,
-      &mut encoder,
-      &view,
-      source_view,
-      has_ui_overlay,
-      Viewport::Letterboxed,
-    );
-    if capture_path.is_some() {
-      self.encode_capture_pass(&mut encoder, source_view, has_ui_overlay);
-    }
-
-    // Submit commands
-    self.queue.submit(std::iter::once(encoder.finish()));
-    if let Some(output) = output {
-      output.present();
-    }
-    self.finish_capture(capture_path);
-
-    Ok(())
-  }
-
-  /// Render with GPU raycasting, optional sprite overlay, and post-processing.
-  ///
-  /// The raycasting path bypasses the CPU pixel buffer entirely. The GPU raycaster
-  /// writes directly to the game texture, then sprites are overlaid, UI is composited,
-  /// effects are applied, and the result is presented to screen.
-  ///
-  /// # Render Order
-  /// 1. `raycast_callback` renders walls/floors/ceilings to game texture
-  /// 2. `sprite_callback` renders billboard sprites on top (if provided)
-  /// 3. UI buffer is composited on top (if provided)
-  /// 4. Post-processing effects are applied (if any)
-  /// 5. Final result is rendered to screen with letterboxing
-  pub fn render_raycast<R, S>(
-    &mut self,
-    effects: Option<&EffectsManager>,
-    raycast_callback: R,
-    sprite_callback: Option<S>,
-    ui_buffer: Option<&[u8]>,
-  ) -> Result<(), wgpu::SurfaceError>
-  where
-    R: FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
-    S: FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
-  {
-    // Get surface texture
-    let (output, view) = self.target.acquire()?;
-    let capture_path = self.prepare_capture();
-
-    // Create command encoder
-    let mut encoder = self
-      .device
-      .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Raycast Render Encoder"),
-      });
-
-    // Step 1: Raycast renders walls/floors/ceilings directly to game texture
-    raycast_callback(&self.device, &self.queue, &mut encoder, &self.texture_view);
-
-    // Step 2: Sprites render on top (billboard sprites with depth testing)
-    if let Some(callback) = sprite_callback {
-      callback(&self.device, &self.queue, &mut encoder, &self.texture_view);
-    }
-
-    // Check if we have active effects to apply
-    let has_effects = effects.map(|e| e.has_active_effects()).unwrap_or(false);
-
-    // Apply post-processing if we have effects
-    let use_post_process = if has_effects {
-      if let (Some(effects_mgr), Some(post_process)) = (effects, self.post_process.as_mut()) {
-        let active: Vec<_> = effects_mgr
-          .active_effects()
-          .map(|e| (e, effects_mgr.time()))
-          .collect();
-
-        if !active.is_empty() {
-          // Copy game texture to post-process texture A first
-          encoder.copy_texture_to_texture(
-            wgpu::ImageCopyTexture {
-              texture: &self.texture,
-              mip_level: 0,
-              origin: wgpu::Origin3d::ZERO,
-              aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::ImageCopyTexture {
-              texture: post_process.texture_a(),
-              mip_level: 0,
-              origin: wgpu::Origin3d::ZERO,
-              aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-              width: self.game_width,
-              height: self.game_height,
-              depth_or_array_layers: 1,
-            },
-          );
-
-          // Apply effects chain
-          let output_buffer =
-            post_process.apply_effects(&self.device, &self.queue, &mut encoder, &active);
-
-          Some(output_buffer)
-        } else {
-          None
-        }
-      } else {
-        None
-      }
-    } else {
-      None
-    };
-
-    // Check if we have UI to overlay
-    let has_ui_overlay = ui_buffer
-      .as_ref()
-      .map(|buf| buf.iter().any(|&b| b != 0))
-      .unwrap_or(false);
-
-    // If we have UI overlay, upload UI to dedicated ui_texture for blending
-    if has_ui_overlay && let Some(ui_data) = ui_buffer {
-      self
-        .compositor
-        .upload_ui(&self.queue, ui_data, self.game_width, self.game_height);
-    }
-
-    // Final render pass to screen
-    let source_view = match use_post_process {
-      Some(output_buffer) => self
-        .post_process
-        .as_ref()
-        .map(|pp| pp.get_output_view(output_buffer))
-        .unwrap_or(&self.texture_view),
-      None => &self.texture_view,
-    };
-    self.compositor.draw(
-      &self.device,
-      &mut encoder,
-      &view,
-      source_view,
-      has_ui_overlay,
-      Viewport::Letterboxed,
-    );
-    if capture_path.is_some() {
-      self.encode_capture_pass(&mut encoder, source_view, has_ui_overlay);
-    }
-
-    // Submit commands
-    self.queue.submit(std::iter::once(encoder.finish()));
-    if let Some(output) = output {
-      output.present();
-    }
-    self.finish_capture(capture_path);
-
-    Ok(())
-  }
-
   /// Render a frame by running `pipeline`'s passes on one encoder.
   pub(crate) fn render_frame(
     &mut self,
@@ -1507,12 +847,12 @@ impl WgpuRenderer {
       ui: scene.ui_buffer.iter().any(|&b| b != 0),
       capture: capture_path.is_some(),
     };
-    self.last_frame = Some(frame);
     let mut encoder = self
       .device
       .create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Frame Encoder"),
       });
+    let captured;
     {
       let targets = FrameTargets {
         game: &self.texture,
@@ -1537,22 +877,47 @@ impl WgpuRenderer {
         self.post_process.as_mut(),
       );
       pipeline.execute(&mut ctx);
+      captured = ctx.captured;
     }
     self.queue.submit(std::iter::once(encoder.finish()));
     if let Some(output) = output {
       output.present();
     }
-    self.finish_capture(capture_path);
+    // Only read back what the capture pass drew; otherwise the texture is stale or blank
+    if captured {
+      self.finish_capture(capture_path);
+    } else if capture_path.is_some() {
+      self.capture_result = Some(Err(CaptureError::Readback(
+        "capture pass did not run".to_string(),
+      )));
+    }
     Ok(())
   }
 
-  /// What the latest [`render_frame`](Self::render_frame) contained.
-  #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the render comparison tests")
-  )]
-  pub(crate) fn last_frame_info(&self) -> Option<FrameInfo> {
-    self.last_frame
+  /// Render a frame with no sprites, trails, lights or effects, and the given UI.
+  ///
+  /// Used to put something on screen before the engine's renderers exist.
+  pub(crate) fn render_blank_frame(
+    &mut self,
+    pipeline: &mut RenderPipeline,
+    ui_buffer: &[u8],
+  ) -> Result<(), wgpu::SurfaceError> {
+    let sprites = SpriteGpuRenderer::new(&self.device, &self.queue, self.target.format());
+    let batches = BatchCollector::new();
+    let effects = EffectsManager::new();
+    let scene = FrameScene {
+      sprites: &sprites,
+      batches: &batches,
+      trails: None,
+      lighting: None,
+      raycast: None,
+      effects: &effects,
+      ui_buffer,
+      camera_pos: glam::Vec2::ZERO,
+      camera_zoom: 1.0,
+      time: 0.0,
+    };
+    self.render_frame(pipeline, scene)
   }
 
   /// Capture the next presented frame to `path` at game resolution.
@@ -1593,26 +958,6 @@ impl WgpuRenderer {
       }));
     }
     Some(path)
-  }
-
-  /// Draw the final composite into the capture texture (no letterbox).
-  fn encode_capture_pass(
-    &self,
-    encoder: &mut wgpu::CommandEncoder,
-    source: &wgpu::TextureView,
-    has_ui_overlay: bool,
-  ) {
-    if let Some(texture) = &self.capture_texture {
-      let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-      self.compositor.draw(
-        &self.device,
-        encoder,
-        &view,
-        source,
-        has_ui_overlay,
-        Viewport::Identity,
-      );
-    }
   }
 
   /// Read the capture texture back once the frame's commands were submitted.
@@ -1746,8 +1091,61 @@ mod tests {
 
     let ui = vec![255u8; 96 * 80 * 4];
     renderer
-      .render_with_effects(None, Some(&ui))
+      .render_blank_frame(&mut RenderPipeline::default_2d(), &ui)
       .expect("render after resize");
+  }
+
+  #[test]
+  fn offscreen_frame_matches_cpu_pixels() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return; // no GPU on this machine
+    };
+    let (width, height) = (37, 9);
+    let mut renderer = WgpuRenderer::new_offscreen(device, queue, width, height);
+
+    // Opaque pattern: each pixel encodes its position
+    for (i, px) in renderer.frame_mut().chunks_exact_mut(4).enumerate() {
+      let (x, y) = ((i as u32 % width) as u8, (i as u32 / width) as u8);
+      px.copy_from_slice(&[x * 6, y * 20, 128, 255]);
+    }
+    let expected = renderer.frame_mut().to_vec();
+
+    renderer
+      .render_blank_frame(&mut RenderPipeline::default_2d(), &[])
+      .expect("render");
+    let frame = renderer.read_frame().expect("read frame");
+
+    assert_eq!(frame.dimensions(), (width, height));
+    for (got, want) in frame.as_raw().chunks_exact(4).zip(expected.chunks_exact(4)) {
+      assert!(
+        got.iter().zip(want).all(|(g, w)| g.abs_diff(*w) <= 1),
+        "got {got:?}, want {want:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn capture_without_the_capture_pass_reports_an_error() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return; // no GPU on this machine
+    };
+    let mut renderer = WgpuRenderer::new_offscreen(device, queue, 32, 32);
+    let mut pipeline = RenderPipeline::default_2d();
+    pipeline
+      .set_enabled(crate::core::render::pass_ids::CAPTURE, false)
+      .expect("capture pass exists");
+
+    renderer.request_capture(std::env::temp_dir().join("ryo2d-capture-disabled.png"));
+    renderer
+      .render_blank_frame(&mut pipeline, &[])
+      .expect("render");
+
+    let result = renderer.take_capture_result().expect("a capture result");
+    assert!(
+      matches!(result, Err(CaptureError::Readback(_))),
+      "capture should report an error, got ok: {}",
+      result.is_ok()
+    );
   }
 
   #[test]
@@ -1907,32 +1305,5 @@ mod tests {
     );
     let fixed = calculate_viewport_scale(800, 600, 1920, 1080, WindowMode::Fixed, None, None);
     assert_eq!(aspect, fixed);
-  }
-
-  // ============================================================================
-  // CRITICAL INVARIANTS - Document important rendering pipeline constraints
-  // ============================================================================
-
-  /// INVARIANT: When lighting AND effects are both enabled, the lit scene
-  /// must be copied to post-process texture_a before effects are applied.
-  ///
-  /// Background:
-  /// - Lighting renders to the persistent `lit_texture` (not texture_a)
-  /// - Post-process effects read from texture_a and ping-pong to texture_b
-  /// - If we skip the copy, effects read uninitialized data → black screen
-  ///
-  /// This invariant is enforced in `render_with_lighting()` at the code path:
-  /// `has_effects && lighting_applied` → copy lit_texture → texture_a
-  ///
-  /// See: tests/e2e/lighting_renderer.rs::test_lighting_plus_effects_produces_visible_output
-  #[test]
-  fn document_lighting_effects_copy_invariant() {
-    // This is a documentation test - the actual GPU test is in e2e tests.
-    // The invariant is: when `lighting_applied && has_effects`:
-    //   encoder.copy_texture_to_texture(lit_texture, texture_a, ...)
-    // must be called BEFORE apply_effects().
-    //
-    // Key code location: render_with_lighting(), around the comment:
-    //   "Lighting wrote to lit_texture, need to copy to texture_a before applying effects"
   }
 }

@@ -22,7 +22,7 @@ You help developers work on the rendering system.
 
 ## Rendering Pipeline
 
-Frame rendering is hard-coded in `engine.rs` / `graphics/renderer.rs` (`WgpuRenderer::render_with_gpu_sprites` and the lighting variant). Order, back to front:
+Every frame runs through the engine's `RenderPipeline::default_2d()` (`src/core/render/`). Order, back to front:
 
 ```
 1. Clear game texture

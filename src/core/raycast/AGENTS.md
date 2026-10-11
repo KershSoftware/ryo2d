@@ -3,7 +3,7 @@
 ## Cross-File Flow
 
 - ECS → GPU sync lives in `engine.rs` `sync_raycast()` (camera, sprites sorted back-to-front, lights, `flush_pending`)
-- Compositing (post-processing, UI, letterbox) lives in `graphics/renderer.rs` `render_raycast()`
+- The `raycast` pass (`render/passes/raycast.rs`) draws walls and sprites; post-processing, UI and letterbox are the shared passes after it
 
 ## GPU Data Pipeline
 

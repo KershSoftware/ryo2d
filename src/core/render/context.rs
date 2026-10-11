@@ -36,6 +36,8 @@ pub struct RenderContext<'a> {
   pub(crate) image: FrameImage,
   /// Whether the `ui` pass uploaded this frame's UI (the composite only blends it then)
   pub(crate) ui_uploaded: bool,
+  /// Whether the `capture` pass drew into the capture texture this frame
+  pub(crate) captured: bool,
 }
 
 impl<'a> RenderContext<'a> {
@@ -59,6 +61,7 @@ impl<'a> RenderContext<'a> {
       post_process,
       image: FrameImage::Game,
       ui_uploaded: false,
+      captured: false,
     }
   }
 

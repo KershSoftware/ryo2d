@@ -76,5 +76,6 @@ impl RenderPass for Capture {
       include_ui,
       Viewport::Identity,
     );
+    ctx.captured = true;
   }
 }

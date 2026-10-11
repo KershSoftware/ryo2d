@@ -29,7 +29,7 @@ use super::graphics::{
   BatchCollector, Camera, CompositeTile, Sprite, SpriteGpuRenderer, TileDirection, WgpuRenderer,
 };
 use super::input::InputState;
-use super::lighting::{Light2D, LightOccluder2D, LightingRenderer, generate_shadow_geometry};
+use super::lighting::{Light2D, LightOccluder2D, LightingRenderer};
 use super::physics::{PhysicsConfig, RapierPhysicsWorld};
 use super::raycast::{
   CameraUniform, GpuRaycastRenderer, LightInstance, RaycastCamera, RaycastLight, RaycastSprite,
@@ -310,8 +310,6 @@ pub struct Engine {
   game_version: Option<String>,
   // The render passes every frame runs through
   pub(crate) render_pipeline: RenderPipeline,
-  // Draw frames with the old hand-written render paths instead of `render_pipeline`
-  pub(crate) legacy_render: bool,
 }
 
 /// Result of rendering and presenting one frame.
@@ -785,7 +783,6 @@ impl Engine {
       game_name,
       game_version,
       render_pipeline: RenderPipeline::default_2d(),
-      legacy_render: true,
     }
   }
 
@@ -1266,13 +1263,17 @@ impl Engine {
     }
   }
 
-  /// What the latest frame drawn through `render_pipeline` contained.
+  /// Request a capture of an upcoming frame, as F12 and the console do.
   #[cfg(test)]
-  pub(crate) fn last_frame_info(&self) -> Option<super::render::FrameInfo> {
-    self
-      .renderer
-      .as_ref()
-      .and_then(WgpuRenderer::last_frame_info)
+  pub(crate) fn request_capture(&mut self, path: std::path::PathBuf) {
+    self.capture.request(CaptureTarget::Path(path));
+  }
+
+  /// Wait for in-flight capture writes to finish.
+  #[cfg(test)]
+  pub(crate) fn finish_captures(&mut self) {
+    let reports = self.capture.finish();
+    self.report_captures(reports);
   }
 
   /// Finish GPU-dependent setup once a renderer exists (window or offscreen).
@@ -1560,13 +1561,6 @@ impl Engine {
           }
         }
       }
-      // Only use GPU sprite callback if we have batched sprites or trails
-      let has_gpu_sprites = self.batch_collector.sprite_count() > 0;
-      let has_trails = trail_renderer
-        .as_ref()
-        .map(|t| t.vertex_count() > 0)
-        .unwrap_or(false);
-
       // Collect lights from the world
       let lights: Vec<_> = self
         .world
@@ -1582,10 +1576,6 @@ impl Engine {
         .into_iter()
         .map(|(t, o)| (t.clone(), o.clone()))
         .collect();
-
-      // Check if any lights cast shadows and there are occluders
-      let has_shadow_casting_lights = lights.iter().any(|(_, l)| l.casts_shadows());
-      let should_render_shadows = has_shadow_casting_lights && !occluders.is_empty();
 
       // Auto-enable lighting when Light2D entities exist
       if !lights.is_empty()
@@ -1617,149 +1607,36 @@ impl Engine {
         .map(|t| t.frame_count() as f32 / 60.0)
         .unwrap_or(0.0);
 
-      // Check if lighting is enabled and should be applied
-      let lighting_enabled = lighting.as_ref().map(|l| l.is_enabled()).unwrap_or(false);
-
       // Check if raycasting is active
       let raycast_enabled = raycast_renderer
         .as_ref()
         .map(|r| r.is_enabled())
         .unwrap_or(false);
 
-      let result = if !self.legacy_render {
-        // The raycast pass draws what this syncs
-        if raycast_enabled && let Some(raycast) = raycast_renderer.as_mut() {
-          sync_raycast(&self.world, raycast, rend, time, &self.texture_manager);
-        }
-        let scene = FrameScene {
-          sprites: &*gpu,
-          batches: &self.batch_collector,
-          trails: trail_renderer.as_ref(),
-          lighting: lighting
-            .as_mut()
-            .filter(|l| l.is_enabled())
-            .map(|renderer| LightingFrame {
-              renderer,
-              lights: &lights,
-              occluders: &occluders,
-            }),
-          raycast: raycast_renderer.as_ref().filter(|r| r.is_enabled()),
-          effects: &self.effects,
-          ui_buffer: &self.ui_buffer,
-          camera_pos,
-          camera_zoom,
-          time,
-        };
-        rend.render_frame(&mut self.render_pipeline, scene)
-      } else if raycast_enabled {
-        // GPU raycasting path - bypasses CPU pixel buffer entirely
-        sync_and_render_raycast(
-          &self.world,
-          raycast_renderer.as_mut().unwrap(),
-          rend,
-          &self.effects,
-          &self.ui_buffer,
-          time,
-          &self.texture_manager,
-        )
-      } else if has_gpu_sprites || has_trails || lighting_enabled {
-        // Create GPU sprite callback (backgrounds, parallax - renders BEFORE CPU content)
-        let batch_collector = &self.batch_collector;
-        let gpu_callback =
-          |queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
-            if has_gpu_sprites {
-              gpu.render_batches(queue, encoder, view, batch_collector);
-            }
-          };
-
-        // Create trail callback (renders AFTER CPU content so backgrounds don't cover trails)
-        let trail_callback =
-          |queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
-            if let Some(ref trails) = trail_renderer {
-              trails.render(
-                queue,
-                encoder,
-                view,
-                camera_pos,
-                camera_zoom,
-                time,
-                super::trail::TrailStyle::Solid,
-              );
-              // Without lighting, trails that skip it draw in the same place
-              if !lighting_enabled {
-                trails.render_unlit(queue, encoder, view, camera_pos, camera_zoom, time);
-              }
-            }
-          };
-
-        // Trails and lines with `with_lighting(false)` draw onto the lit scene
-        let unlit_trail_callback =
-          |queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
-            if let Some(ref trails) = trail_renderer {
-              trails.render_unlit(queue, encoder, view, camera_pos, camera_zoom, time);
-            }
-          };
-
-        // Create lighting callback if lighting is enabled
-        if lighting_enabled {
-          let lighting_ref = &mut lighting;
-          let lighting_callback =
-            move |device: &wgpu::Device,
-                  queue: &wgpu::Queue,
-                  encoder: &mut wgpu::CommandEncoder,
-                  scene_texture: &wgpu::Texture,
-                  output_view: &wgpu::TextureView| {
-              if let Some(ref mut lighting_renderer) = *lighting_ref {
-                // Render lights to the light accumulation buffer
-                lighting_renderer.render_lights(
-                  device,
-                  queue,
-                  encoder,
-                  lights.iter().map(|(t, l)| (t, l)),
-                  camera_pos,
-                  camera_zoom,
-                );
-
-                // Render shadows to subtract from light buffer
-                if should_render_shadows {
-                  let occluder_refs: Vec<(&Transform, &LightOccluder2D)> =
-                    occluders.iter().map(|(t, o)| (t, o)).collect();
-                  let shadow_geometry =
-                    generate_shadow_geometry(lights.iter().map(|(t, l)| (t, l)), &occluder_refs);
-                  lighting_renderer.render_shadows(device, queue, encoder, &shadow_geometry);
-                }
-
-                // Compose the lit scene from game texture
-                lighting_renderer.compose_from_texture(
-                  device,
-                  queue,
-                  encoder,
-                  scene_texture,
-                  output_view,
-                  time,
-                );
-              }
-            };
-
-          rend.render_with_lighting(
-            Some(&self.effects),
-            Some(gpu_callback),
-            Some(trail_callback),
-            Some(unlit_trail_callback),
-            Some(lighting_callback),
-            Some(&self.ui_buffer),
-          )
-        } else {
-          rend.render_with_gpu_sprites(
-            Some(&self.effects),
-            Some(gpu_callback),
-            Some(trail_callback),
-            Some(&self.ui_buffer),
-          )
-        }
-      } else {
-        rend.render_with_effects(Some(&self.effects), Some(&self.ui_buffer))
+      // The raycast pass draws what this syncs
+      if raycast_enabled && let Some(raycast) = raycast_renderer.as_mut() {
+        sync_raycast(&self.world, raycast, rend, time, &self.texture_manager);
+      }
+      let scene = FrameScene {
+        sprites: &*gpu,
+        batches: &self.batch_collector,
+        trails: trail_renderer.as_ref(),
+        lighting: lighting
+          .as_mut()
+          .filter(|l| l.is_enabled())
+          .map(|renderer| LightingFrame {
+            renderer,
+            lights: &lights,
+            occluders: &occluders,
+          }),
+        raycast: raycast_renderer.as_ref().filter(|r| r.is_enabled()),
+        effects: &self.effects,
+        ui_buffer: &self.ui_buffer,
+        camera_pos,
+        camera_zoom,
+        time,
       };
+      let result = rend.render_frame(&mut self.render_pipeline, scene);
 
       match result {
         Ok(_) => outcome = PresentOutcome::Presented,
@@ -2800,7 +2677,7 @@ impl Engine {
       }
     }
 
-    // Note: UI compositing for non-lit UI is now done on GPU in render_with_lighting
+    // Note: UI compositing for non-lit UI is done on GPU by the pipeline's composite pass
     // The ui_buffer is passed to the renderer and composited after the lighting pass
   }
 }
@@ -2827,42 +2704,6 @@ fn blend_overlay(frame: &mut [u8], color: [u8; 4], alpha: f32) {
 // =============================================================================
 // Raycast render helper
 // =============================================================================
-
-/// Sync raycast ECS data to GPU and render the raycasting scene.
-///
-/// Shared render path used by both focused and unfocused frame rendering.
-fn sync_and_render_raycast(
-  world: &World,
-  raycast: &mut GpuRaycastRenderer,
-  rend: &mut WgpuRenderer,
-  effects: &EffectsManager,
-  ui_buffer: &[u8],
-  time: f32,
-  texture_mgr: &TextureManager,
-) -> Result<(), wgpu::SurfaceError> {
-  sync_raycast(world, raycast, rend, time, texture_mgr);
-
-  // Reborrow as immutable for render callbacks
-  let raycast = &*raycast;
-  let raycast_wall_cb = |device: &wgpu::Device,
-                         _queue: &wgpu::Queue,
-                         encoder: &mut wgpu::CommandEncoder,
-                         view: &wgpu::TextureView| {
-    raycast.render_walls(device, encoder, view);
-  };
-  let raycast_sprite_cb = |device: &wgpu::Device,
-                           _queue: &wgpu::Queue,
-                           encoder: &mut wgpu::CommandEncoder,
-                           view: &wgpu::TextureView| {
-    raycast.render_sprites(device, encoder, view);
-  };
-  rend.render_raycast(
-    Some(effects),
-    raycast_wall_cb,
-    Some(raycast_sprite_cb),
-    Some(ui_buffer),
-  )
-}
 
 /// Upload pending raycast textures and map data, and sync the camera, sprites
 /// and lights from the ECS to the GPU.
@@ -3012,7 +2853,7 @@ impl ApplicationHandler for Engine {
 
     // Present the first frame immediately to prevent white flash on startup
     // The renderer's pixel buffer is pre-filled with warm cream background
-    let _ = renderer.render();
+    let _ = renderer.render_blank_frame(&mut RenderPipeline::default_2d(), &[]);
 
     // Now that the first frame is rendered, show the window
     window.set_visible(true);

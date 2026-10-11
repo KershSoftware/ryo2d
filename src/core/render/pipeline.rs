@@ -33,7 +33,7 @@ impl RenderPipeline {
     Self::default()
   }
 
-  /// The built-in passes, in the order the engine runs them: `upload`,
+  /// The built-in passes, in the order `default_2d` runs them: `upload`,
   /// `clear`, `raycast`, `gpu_sprites`, `cpu_blend`, `trails`, `lighting`,
   /// `unlit_trails`, `post_process`, `ui`, `composite`, `capture` (see
   /// [`pass_ids`](super::pass_ids)). Each takes part in a frame only when its

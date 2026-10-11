@@ -2,7 +2,7 @@
 
 ## Status
 
-**Migration in progress: games still render through the old paths.** `Engine` owns a `RenderPipeline::default_2d()` (the twelve built-in passes in `passes/`), and `present_frame` runs it through `WgpuRenderer::render_frame` only when the crate-internal `Engine::legacy_render` is false. It defaults to true, so frames still come from the hard-coded paths in `graphics/renderer.rs`. `testing/render_comparison.rs` proves both draw byte-identical frames. The old paths, the switch and those tests go once the engine switches over.
+The engine draws every frame through its `RenderPipeline::default_2d()` (the twelve built-in passes in `passes/`): `present_frame` runs it with `WgpuRenderer::render_frame`. The hard-coded render paths are gone. A requested capture is read back only if the `capture` pass drew; otherwise `render_frame` reports `CaptureError::Readback`.
 
 ## Ordering Rules
 

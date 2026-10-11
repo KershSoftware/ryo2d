@@ -34,9 +34,9 @@
 //! Particle emitters use an unseeded thread RNG, so don't compare frames
 //! containing particles byte-for-byte.
 
-mod gpu;
 #[cfg(test)]
-mod render_comparison;
+mod capture_matches_frame;
+mod gpu;
 
 use image::RgbaImage;
 use winit::event::{ElementState, MouseButton};

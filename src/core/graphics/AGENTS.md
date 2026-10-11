@@ -9,7 +9,7 @@ GPU path:  SpriteInstance → BatchCollector → SpriteGpuRenderer → GPU
 
 **When to use the GPU path:** 1000+ sprites (particles, bullets), per-sprite shader effects, or when CPU blitting becomes the bottleneck. Most games use the CPU path. GPU is opt-in via `render_gpu()`.
 
-**Compositing order** (`WgpuRenderer::render_with_gpu_sprites`):
+**Compositing order** (the `default_2d` render pipeline in `core/render/`):
 1. `render_gpu()` sprites (incl. parallax) draw into the game texture first.
 2. The CPU pixel buffer (cleared to transparent each frame) is alpha-blended on top.
 3. Trails, lighting, post-processing, then UI follow.
