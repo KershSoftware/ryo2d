@@ -882,6 +882,7 @@ impl Engine {
     );
 
     let dt = self.fixed_timestep();
+    let mut fatal = None;
     loop {
       let outcome = self.step_frame(Some(dt));
       self.apply_headless_requests();
@@ -889,7 +890,10 @@ impl Engine {
       self.report_captures(reports);
       match outcome {
         FrameOutcome::Quit => break,
-        FrameOutcome::Fatal(error) => return Err(EngineError::Render(error)),
+        FrameOutcome::Fatal(error) => {
+          fatal = Some(error);
+          break;
+        }
         FrameOutcome::Presented | FrameOutcome::Skipped => {}
       }
       if self.capture.exit_requested() {
@@ -897,8 +901,13 @@ impl Engine {
       }
     }
 
+    // However the loop ended, finish in-flight writes and report frames that
+    // were never presented
     let reports = self.capture.finish();
     self.report_captures(reports);
+    if let Some(error) = fatal {
+      return Err(EngineError::Render(error));
+    }
     Ok(self.capture.exit_with_failure())
   }
 
@@ -1692,7 +1701,8 @@ impl Engine {
           }
         }
 
-        // Debug overlays are unlit lines on top
+        // Debug overlays are unlit lines on top. Added last, so when the
+        // vertex budget runs out the overlays are dropped, not game trails
         let overlays = OverlayFlags {
           colliders: self.config.debug.show_colliders,
           velocities: self.config.debug.show_velocities,
