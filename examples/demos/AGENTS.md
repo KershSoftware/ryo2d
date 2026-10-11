@@ -71,4 +71,4 @@ Top bar (title, `N/M page`, shell keys), one description line, the settings pane
 
 ## Tour
 
-`./run demos:tour [demo...]` (or `cargo run -p demo-kit --bin demo-tour -- [demo...]`) builds the demos and captures every page headlessly to `target/demo-tour/<demo>/page-<n>.png`, with each run's log beside it. A page that panics, times out (60 s) or captures nothing fails the tour. Demos not yet on demo-kit are captured once and reported as `not on demo-kit`. Run it after changing a demo or the renderer, and look at the PNGs.
+`./run demos:tour [demo...]` (or `cargo run -p demo-kit --bin demo-tour -- [demo...]`) builds the demos and captures every page headlessly to `target/demo-tour/<demo>/page-<n>.png`, with each run's log beside it. A page that panics, times out (60 s) or captures nothing fails the tour, as does a demo that never prints the kit's `[demo]` startup line; every page still runs, so one tour lists every failure. `RYO_*` variables in your shell are not passed on to the demos. Run it after changing a demo or the renderer, and look at the PNGs.

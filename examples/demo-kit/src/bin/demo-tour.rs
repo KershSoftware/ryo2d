@@ -4,7 +4,8 @@
 //! `./run demos:tour [demo ...]`) builds the demos, runs each page with
 //! `RYO_HEADLESS=1` and `RYO_DEMO_PAGE`, and saves
 //! `target/demo-tour/<demo>/page-<n>.png`. Exits non-zero if any page
-//! panics, times out or captures nothing.
+//! panics, times out or captures nothing, or a demo is not on demo-kit.
+//! `RYO_*` variables in the caller's environment are not passed on.
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -173,17 +174,43 @@ fn bin_for(metadata: &serde_json::Value, dir: &Path) -> Option<(String, String)>
 fn tour_demo(demo: &DemoBin, bin: &Path, out_dir: &Path) -> Result<String, String> {
   let _ = fs::remove_dir_all(out_dir);
   fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
-  let first = run_page(demo, bin, out_dir, 1)?;
-  let Some(pages) = parse_page_count(&first) else {
-    return Ok("1 capture (not on demo-kit)".to_string());
-  };
-  for page in 2..=pages {
-    run_page(demo, bin, out_dir, page)?;
+  let pages = page_count(&run_page(demo, bin, out_dir, 1)?)?;
+  // Every page runs even after one fails, so one tour shows every failure
+  let failures: Vec<String> = (2..=pages)
+    .filter_map(|page| run_page(demo, bin, out_dir, page).err())
+    .collect();
+  summarize(pages, &failures)
+}
+
+/// The page count from page 1's output; a demo without it is not on demo-kit
+fn page_count(output: &str) -> Result<usize, String> {
+  parse_page_count(output)
+    .ok_or_else(|| "no \"[demo] <title>: <n> pages\" line: is it on demo-kit?".to_string())
+}
+
+/// `N pages ok`, or every failed page
+fn summarize(pages: usize, failures: &[String]) -> Result<String, String> {
+  if failures.is_empty() {
+    let noun = if pages == 1 { "page" } else { "pages" };
+    return Ok(format!("{pages} {noun} ok"));
   }
-  Ok(format!(
-    "{pages} {} ok",
-    if pages == 1 { "page" } else { "pages" }
-  ))
+  Err(failures.join("; "))
+}
+
+/// Names of the `RYO_*` variables among `vars`, which the tour must not pass
+/// on: a stray `RYO_INPUT` would drive every page
+fn inherited_ryo_vars(vars: impl Iterator<Item = (String, String)>) -> Vec<String> {
+  vars
+    .map(|(name, _)| name)
+    .filter(|name| name.starts_with("RYO_"))
+    .collect()
+}
+
+/// A page's log; bytes that are not UTF-8 must not hide the rest
+fn read_log(path: &Path) -> String {
+  fs::read(path)
+    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    .unwrap_or_default()
 }
 
 /// Run one page, keep its frame as `page-<n>.png`, and return its output
@@ -192,7 +219,11 @@ fn run_page(demo: &DemoBin, bin: &Path, out_dir: &Path, page: usize) -> Result<S
   let log_path = out_dir.join(format!("page-{page}.log"));
   let log = File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
   let log_err = log.try_clone().map_err(|e| e.to_string())?;
-  let mut child = Command::new(bin)
+  let mut command = Command::new(bin);
+  for name in inherited_ryo_vars(std::env::vars()) {
+    command.env_remove(name);
+  }
+  let mut child = command
     .current_dir(&demo.dir)
     .env("RYO_HEADLESS", "1")
     .env("RYO_DEMO_PAGE", page.to_string())
@@ -218,7 +249,7 @@ fn run_page(demo: &DemoBin, bin: &Path, out_dir: &Path, page: usize) -> Result<S
     }
   };
 
-  let output = fs::read_to_string(&log_path).unwrap_or_default();
+  let output = read_log(&log_path);
   let frame = capture_dir.join(format!("frame-{CAPTURE_FRAME:06}.png"));
   judge(exit, &output, frame.is_file())
     .map_err(|e| format!("page {page}: {e} (log: {})", log_path.display()))?;
@@ -304,6 +335,49 @@ mod tests {
     let one = demo_dirs(root.path(), &["trails".to_string()]).unwrap();
     assert_eq!(one.len(), 1);
     assert!(demo_dirs(root.path(), &["nope".to_string()]).is_err());
+  }
+
+  #[test]
+  fn a_run_without_the_startup_line_fails() {
+    assert!(page_count("[headless] Bloom at 960x640, no window\n").is_err());
+    assert_eq!(page_count("[demo] Bloom: 6 pages\n"), Ok(6));
+  }
+
+  #[test]
+  fn inherited_ryo_variables_are_cleared() {
+    let vars = [
+      ("RYO_INPUT", "5:Space"),
+      ("PATH", "/bin"),
+      ("RYO_CAPTURE_FRAMES", "3"),
+    ]
+    .map(|(k, v)| (k.to_string(), v.to_string()));
+    assert_eq!(
+      inherited_ryo_vars(vars.into_iter()),
+      ["RYO_INPUT", "RYO_CAPTURE_FRAMES"]
+    );
+  }
+
+  #[test]
+  fn logs_with_invalid_utf8_still_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("page-1.log");
+    fs::write(&path, b"\xff\xfe junk\n[demo] Bloom: 2 pages\n").unwrap();
+    assert_eq!(page_count(&read_log(&path)), Ok(2));
+  }
+
+  #[test]
+  fn every_failed_page_is_reported() {
+    assert_eq!(summarize(3, &[]), Ok("3 pages ok".to_string()));
+    assert_eq!(summarize(1, &[]), Ok("1 page ok".to_string()));
+    let failures = [
+      "page 2: timed out".to_string(),
+      "page 4: panicked".to_string(),
+    ];
+    let error = summarize(4, &failures).unwrap_err();
+    assert!(
+      error.contains("page 2") && error.contains("page 4"),
+      "{error}"
+    );
   }
 
   #[test]
