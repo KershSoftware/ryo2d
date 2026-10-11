@@ -571,6 +571,48 @@ impl DemoPage for Greedy {
   }
 }
 
+/// Lists H as a control once its setting is switched on
+struct Shifty {
+  late_h: bool,
+}
+
+impl DemoPage for Shifty {
+  fn name(&self) -> &str {
+    "Shifty"
+  }
+  fn settings(&mut self, s: &mut Settings) {
+    s.toggle("Late H", &mut self.late_h);
+  }
+  fn controls(&self) -> Vec<Control> {
+    if self.late_h {
+      vec![Control::key(KeyCode::KeyH, "Hop")]
+    } else {
+      Vec::new()
+    }
+  }
+}
+
+#[test]
+fn a_reserved_key_listed_later_is_caught_in_debug_builds() {
+  let demo = Demo::new("Shifty")
+    .resolution(320, 240)
+    .page(|| Shifty { late_h: false });
+  let Some(mut engine) = start(demo) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    tap(&mut engine, KeyCode::ArrowRight);
+    engine.step_frames(2).unwrap();
+  }));
+  let message = result
+    .err()
+    .and_then(|panic| panic.downcast::<String>().ok())
+    .map(|message| *message)
+    .unwrap_or_default();
+  assert!(message.contains("reserved"), "no reserved-key panic: {message:?}");
+}
+
 #[test]
 #[should_panic(expected = "reserved")]
 fn a_page_listing_a_reserved_key_is_rejected() {

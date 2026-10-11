@@ -5,6 +5,7 @@ use std::rc::Rc;
 use ryo2d::prelude::*;
 
 use crate::chrome::{self, View};
+use crate::controls::reserved_key;
 use crate::demo::DemoDef;
 use crate::hold::HoldRepeat;
 use crate::page::DemoPage;
@@ -186,6 +187,17 @@ impl Scene for PageScene {
     self.page.render_ui(ui);
     self.keyboard_wanted = ui.wants_keyboard();
     let controls = self.page.controls();
+    // Startup checks each page's first controls; this catches ones that
+    // change later, such as with a setting
+    if cfg!(debug_assertions)
+      && let Some(key) = reserved_key(&controls)
+    {
+      panic!(
+        "demo \"{}\", page \"{}\": {key:?} is reserved by the demo shell",
+        self.def.title,
+        self.page.name()
+      );
+    }
     let view = View {
       title: &self.def.title,
       index: self.index,
