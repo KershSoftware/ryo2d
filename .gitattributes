@@ -1,0 +1,17 @@
+# Every text file is stored and checked out with LF line endings, on Windows
+# as well as macOS and Linux, whatever core.autocrlf is set to
+* text=auto eol=lf
+
+# Binary assets are never converted
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.flac binary
+*.ttf binary
+*.otf binary
+*.zip binary
