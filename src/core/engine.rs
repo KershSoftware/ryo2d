@@ -309,6 +309,8 @@ pub struct Engine {
   input_script: InputScript,
   // `RYO_HEADLESS`: `run` renders offscreen instead of opening a window
   offscreen_run: bool,
+  // A `RYO_*` value of the headless run was invalid: `run` exits instead
+  offscreen_refused: bool,
   // Game name (from Ryo.toml [project] section)
   game_name: Option<String>,
   // Game version (from Ryo.toml [project] section)
@@ -343,19 +345,21 @@ pub(crate) enum FrameOutcome {
   Fatal(String),
 }
 
-/// `RYO_CAPTURE_*` and `RYO_INPUT` from the environment, warnings reported
-fn scripted_run_from_env() -> (AutoCaptureConfig, InputScript) {
+/// `RYO_CAPTURE_*` and `RYO_INPUT` from the environment, warnings reported;
+/// the last value is whether any of them was invalid
+fn scripted_run_from_env() -> (AutoCaptureConfig, InputScript, bool) {
   let (capture, warnings) = AutoCaptureConfig::from_env();
   for warning in &warnings {
     eprintln!("[capture] {warning}");
     engine_warn!(module: "Capture", "{}", warning);
   }
   let (script, warning) = InputScript::from_env();
+  let invalid = !warnings.is_empty() || warning.is_some();
   if let Some(warning) = warning {
     eprintln!("[input] {warning}");
     engine_warn!(module: "Input", "{}", warning);
   }
-  (capture, script)
+  (capture, script, invalid)
 }
 
 impl Engine {
@@ -731,7 +735,8 @@ impl Engine {
     let (capture_config, input_script) = if headless {
       (AutoCaptureConfig::default(), InputScript::default())
     } else {
-      scripted_run_from_env()
+      let (capture, script, _) = scripted_run_from_env();
+      (capture, script)
     };
 
     Engine {
@@ -802,6 +807,7 @@ impl Engine {
       capture: CaptureState::new(capture_config),
       input_script,
       offscreen_run: false,
+      offscreen_refused: false,
       game_name,
       game_version,
       render_pipeline: RenderPipeline::default_2d(),
@@ -846,12 +852,19 @@ impl Engine {
 
   /// `RYO_HEADLESS`: run without a window, one fixed update per frame.
   fn run_offscreen(mut self) -> EngineResult<()> {
+    // A scripted run with a typo would capture the wrong thing or never end
+    if self.offscreen_refused {
+      eprintln!("[headless] not running: fix the invalid RYO_* values above");
+      std::process::exit(2);
+    }
     println!(
       "[headless] {} at {}x{}, no window",
       self.config.title, self.config.width, self.config.height
     );
     if !self.capture.exits_after_last() {
-      println!("[headless] RYO_CAPTURE_EXIT is not set: running until the scene quits");
+      println!(
+        "[headless] no RYO_CAPTURE_EXIT=1 with RYO_CAPTURE_FRAMES: running until the scene quits"
+      );
     }
     if self.run_offscreen_frames()? {
       std::process::exit(1);
@@ -3306,8 +3319,9 @@ impl EngineBuilder {
       return self.build_engine(false);
     }
     let mut engine = self.build_engine(true);
-    let (capture, script) = scripted_run_from_env();
+    let (capture, script, invalid) = scripted_run_from_env();
     engine.prepare_offscreen_run(capture, script);
+    engine.offscreen_refused = invalid;
     engine
   }
 

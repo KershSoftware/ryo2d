@@ -65,8 +65,15 @@ impl AutoCaptureConfig {
       }
     }
 
-    // Exiting only makes sense once scheduled captures exist
+    // Exiting only makes sense once scheduled captures exist. Invalid frames
+    // already warned above.
     if config.frames.is_empty() {
+      if config.exit_after && frames.is_none() {
+        warnings.push(
+          "RYO_CAPTURE_EXIT is set but RYO_CAPTURE_FRAMES schedules no captures; ignoring"
+            .to_string(),
+        );
+      }
       config.exit_after = false;
     }
 
@@ -178,9 +185,13 @@ mod tests {
   }
 
   #[test]
-  fn exit_without_frames_has_no_effect() {
+  fn exit_without_frames_warns_and_has_no_effect() {
     let (config, warnings) = AutoCaptureConfig::parse(None, None, Some("1"));
     assert!(!config.exit_after);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("RYO_CAPTURE_FRAMES"));
+    // Exit off needs no frames
+    let (_, warnings) = AutoCaptureConfig::parse(None, None, Some("0"));
     assert!(warnings.is_empty());
   }
 

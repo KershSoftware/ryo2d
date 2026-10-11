@@ -19,5 +19,5 @@ Saves the final composed frame (scene + UI) as a PNG at game resolution. Spec: `
 ## Scripted runs
 
 - `RYO_INPUT` (`src/core/input_script.rs`) taps or holds keys and mouse buttons, and moves the mouse (game coordinates), at presented frames, counted by `CaptureState::presented_frames`; `step_frame` applies it before anything reads input and releases taps once `begin_frame` has cleared the press (a frame with an update).
-- `RYO_HEADLESS` (`config.rs`) makes `EngineBuilder::build` build like `HeadlessEngine` (no audio, gamepads, preferences, wall-clock overlays) but keep `RYO_CAPTURE_*` and `RYO_INPUT`; `Engine::run` then steps offscreen at the fixed timestep until the scene quits or `RYO_CAPTURE_EXIT` is met.
+- `RYO_HEADLESS` (`config.rs`) makes `EngineBuilder::build` build like `HeadlessEngine` (no audio, gamepads, preferences, wall-clock overlays) but keep `RYO_CAPTURE_*` and `RYO_INPUT`; `Engine::run` then steps offscreen at the fixed timestep until the scene quits or `RYO_CAPTURE_EXIT` is met. Any invalid `RYO_*` value makes `run` exit with code 2 first: a scripted run with a typo would otherwise capture the wrong thing or never end.
 - Both are read in dev builds only (`cfg!(debug_assertions)`); release builds warn and ignore them. `HeadlessEngine` tests ignore all of these and drive input with `tap_key`.

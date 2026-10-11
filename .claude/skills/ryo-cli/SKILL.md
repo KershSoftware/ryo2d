@@ -196,4 +196,6 @@ RYO_HEADLESS=1 RYO_INPUT="60:ArrowRight 120:ArrowRight" \
   RYO_CAPTURE_FRAMES=90,150 RYO_CAPTURE_EXIT=1 ryo2d dev
 ```
 
-Without `RYO_CAPTURE_EXIT`, a headless run lasts until the scene quits.
+Without `RYO_CAPTURE_EXIT`, a headless run lasts until the scene quits. An invalid `RYO_CAPTURE_*` or `RYO_INPUT` value (or `RYO_CAPTURE_EXIT=1` with no frames) stops a headless run before it starts, with exit code 2.
+
+In a window, `RYO_INPUT` only advances while the window has focus; prefer `RYO_HEADLESS=1` for scripted runs.
