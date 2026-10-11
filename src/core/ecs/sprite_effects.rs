@@ -93,13 +93,14 @@ pub enum SpriteEffect {
   ///
   /// Creates a wavy distortion. Good for underwater, heat shimmer, ghost effects.
   Wave {
-    /// Amplitude of the wave in pixels
+    /// How far rows shift sideways, in pixels
     amplitude: f32,
-    /// Frequency of the wave (waves per sprite width)
+    /// Wave cycles down the sprite's height
     frequency: f32,
-    /// Speed of wave animation (0.0 for static)
+    /// How fast [`update`](SpriteEffect::update) advances `time` (0.0 for static)
     speed: f32,
-    /// Current time offset (updated by engine)
+    /// Phase in radians. The engine does not advance it: call
+    /// [`update`](SpriteEffect::update) each frame, which adds `dt * speed`
     time: f32,
   },
 

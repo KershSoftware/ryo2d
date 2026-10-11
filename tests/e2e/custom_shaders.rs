@@ -114,6 +114,38 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
 }
 ";
 
+const CLOCK: &str = "
+fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
+  let c = sample(in.uv);
+  if (in.time > 0.0) {
+    return vec4<f32>(0.0, 0.0, 1.0, c.a);
+  }
+  return vec4<f32>(0.0, 1.0, 0.0, c.a);
+}
+";
+
+#[test]
+fn sprite_time_advances() {
+  let shader = ShaderHandle::from_source("t2-clock.wgsl", CLOCK);
+  let scene = Fixture::entities(move |ctx| {
+    ctx.world.spawn((
+      Transform::new(10.0, 10.0),
+      Renderable::sprite(solid("t2-clock-red", 10, RED))
+        .with_shader(SpriteShader::custom(shader.clone())),
+    ));
+  });
+  let Some(mut engine) = start(scene) else {
+    return;
+  };
+  engine.step_frames(10).unwrap();
+  let frame = engine.frame().unwrap();
+  assert_eq!(
+    frame.get_pixel(15, 15).0,
+    [0, 0, 255, 255],
+    "in.time is still 0"
+  );
+}
+
 #[test]
 fn params_reach_the_shader() {
   let shader = ShaderHandle::from_source("t2-params.wgsl", PARAMS);

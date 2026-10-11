@@ -44,3 +44,6 @@ mod gpu_world;
 
 #[path = "e2e/custom_shaders.rs"]
 mod custom_shaders;
+
+#[path = "e2e/sprite_effects.rs"]
+mod sprite_effects;

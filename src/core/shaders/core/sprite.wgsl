@@ -113,8 +113,8 @@ fn fs_effect(in: VertexOutput) -> @location(0) vec4<f32> {
         case 6: { // Pixelate: y=block size
             color = apply_pixelate(in.uv, in.uv_bounds, params.y);
         }
-        case 7: { // Wave: y=amplitude, z=frequency, extra.x=speed
-            color = apply_wave(in.uv, in.uv_bounds, params.y, params.z, extra.x);
+        case 7: { // Wave: y=amplitude, z=frequency, w=time
+            color = apply_wave(in.uv, in.uv_bounds, params.y, params.z, params.w);
         }
         case 8: { // Dissolve: y=progress, extra=edge color
             color = apply_dissolve(base, in.uv, in.uv_bounds, params.y, extra);
@@ -272,19 +272,26 @@ fn apply_pixelate(uv: vec2<f32>, bounds: vec4<f32>, block_size: f32) -> vec4<f32
     return sample_masked(bounds.xy + (block + 0.5) * texel, bounds);
 }
 
+// Like the CPU renderer did: each row shifts right by `amplitude` texels times
+// sin(phase), with `frequency` cycles down the sprite's height, wrapping
+// round within the sprite. `time` is the effect's own phase.
 fn apply_wave(
     uv: vec2<f32>,
     bounds: vec4<f32>,
     amplitude: f32,
     frequency: f32,
-    speed: f32
+    time: f32
 ) -> vec4<f32> {
-    // Phase and amplitude are relative to the sprite's own rect
+    let texel = texel_size();
+    let slack = texel.x * 0.01;
+    if uv.x < bounds.x - slack || uv.x > bounds.z + slack {
+        return vec4<f32>(0.0);
+    }
     let size = max(bounds.zw - bounds.xy, vec2<f32>(1e-6));
     let local_y = (uv.y - bounds.y) / size.y;
-    let time = globals.time_resolution.x;
-    let shift = sin(local_y * frequency + time * speed) * amplitude * 0.01 * size.x;
-    return sample_masked(vec2<f32>(uv.x + shift, uv.y), bounds);
+    let shift = amplitude * sin(local_y * frequency * 6.2831853 + time) * texel.x;
+    let x = bounds.x + fract((uv.x - shift - bounds.x) / size.x) * size.x;
+    return sample_masked(vec2<f32>(x, uv.y), bounds);
 }
 
 fn apply_dissolve(

@@ -1698,11 +1698,12 @@ impl Engine {
         l.update_god_rays(&mut self.effects, &lights, cam_pos, self.camera.zoom);
       }
 
-      // Update GPU renderer viewport
+      // Update GPU renderer viewport; sprite shaders share the effects clock
       gpu.set_viewport(
         rend.queue(),
         rend.game_width() as f32,
         rend.game_height() as f32,
+        self.effects.time(),
       );
       // Check if raycasting is active
       let raycast_enabled = raycast_renderer

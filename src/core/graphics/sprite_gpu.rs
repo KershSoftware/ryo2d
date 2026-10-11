@@ -186,11 +186,10 @@ impl SpriteInstance {
       SpriteEffect::Wave {
         amplitude,
         frequency,
-        speed,
         time,
+        ..
       } => {
         self.effect_params = [7.0, *amplitude, *frequency, *time];
-        self.effect_extra = [*speed, 0.0, 0.0, 0.0];
       }
       SpriteEffect::Dissolve {
         progress,
@@ -548,9 +547,6 @@ pub struct SpriteGpuRenderer {
   world_runs: Vec<WorldRun>,
   // Textures already made resident this frame (scratch, reused across frames)
   resident_scratch: HashSet<TextureRef>,
-
-  // Timing
-  time: f32,
 }
 
 impl SpriteGpuRenderer {
@@ -846,7 +842,6 @@ impl SpriteGpuRenderer {
       placed: Vec::new(),
       world_runs: Vec::new(),
       resident_scratch: HashSet::new(),
-      time: 0.0,
     }
   }
 
@@ -859,14 +854,10 @@ impl SpriteGpuRenderer {
     })
   }
 
-  /// Update time (called each frame)
-  pub fn update(&mut self, dt: f32) {
-    self.time += dt;
-  }
-
-  /// Update globals for current frame
-  pub fn set_viewport(&mut self, queue: &wgpu::Queue, width: f32, height: f32) {
-    let globals = SpriteGlobals::new(width, height, self.time);
+  /// Update globals for the current frame: the game resolution and the time
+  /// custom sprite shaders read as `in.time`, in seconds
+  pub fn set_viewport(&mut self, queue: &wgpu::Queue, width: f32, height: f32, time: f32) {
+    let globals = SpriteGlobals::new(width, height, time);
     queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
   }
 
