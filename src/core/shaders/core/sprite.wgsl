@@ -154,7 +154,10 @@ fn sample_masked(uv: vec2<f32>, bounds: vec4<f32>) -> vec4<f32> {
     if any(uv < bounds.xy - slack) || any(uv > bounds.zw + slack) {
         return vec4<f32>(0.0);
     }
-    let inner = clamp(uv, bounds.xy + texel * 0.5, bounds.zw - texel * 0.5);
+    // A rect narrower than one texel clamps onto its first texel
+    let low = bounds.xy + texel * 0.5;
+    let high = max(low, bounds.zw - texel * 0.5);
+    let inner = clamp(uv, low, high);
     return textureSampleLevel(sprite_texture, sprite_sampler, inner, 0.0);
 }
 
@@ -164,10 +167,17 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(high, low, c <= vec3<f32>(0.04045));
 }
 
-// Tint in sRGB space, then convert RGB to linear (alpha unchanged)
+// Tint like the CPU renderer, then convert RGB to linear.
+//
+// RGB is quantised to bytes: the source byte times the tint fraction,
+// truncated. Alpha is source alpha times tint alpha, truncated to a byte
+// unless it reaches 1 (so opaque stays opaque).
 fn finish(color: vec4<f32>, tint: vec4<f32>) -> vec4<f32> {
-    let c = clamp(color * tint, vec4<f32>(0.0), vec4<f32>(1.0));
-    return vec4<f32>(srgb_to_linear(c.rgb), c.a);
+    let source = round(clamp(color.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) * 255.0);
+    let rgb = floor(min(source * tint.rgb, vec3<f32>(255.0))) / 255.0;
+    let a = clamp(color.a * tint.a, 0.0, 1.0);
+    let alpha = select(floor(a * 255.0) / 255.0, 1.0, a >= 1.0);
+    return vec4<f32>(srgb_to_linear(rgb), alpha);
 }
 
 // =============================================================================

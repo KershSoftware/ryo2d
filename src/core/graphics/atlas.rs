@@ -194,7 +194,8 @@ impl AtlasLayout {
     }
   }
 
-  fn remove(&mut self, key: &AtlasKey) {
+  /// Free `key`'s slot, if it has one.
+  pub(crate) fn remove(&mut self, key: &AtlasKey) {
     if let Some(entry) = self.entries.remove(key)
       && let Some(page) = self.pages.get_mut(entry.page)
     {
@@ -313,7 +314,7 @@ impl TextureAtlas {
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    key: AtlasKey,
+    key: &AtlasKey,
     width: u32,
     height: u32,
     rgba: impl FnOnce() -> Vec<u8>,
@@ -327,7 +328,7 @@ impl TextureAtlas {
       return None;
     }
 
-    if let Some(id) = self.standalone_ids.get(&key).copied() {
+    if let Some(id) = self.standalone_ids.get(key).copied() {
       if let Some(s) = self.standalone.get_mut(&id)
         && s.size == (width, height)
       {
@@ -339,17 +340,14 @@ impl TextureAtlas {
 
     let small = width <= MAX_ATLAS_IMAGE && height <= MAX_ATLAS_IMAGE;
     // A resized key falls through, so its new pixels are written
-    if small && self.layout.holds(&key, width, height) {
-      return self
-        .layout
-        .place(&key, width, height, frame)
-        .map(|p| p.slot);
+    if small && self.layout.holds(key, width, height) {
+      return self.layout.place(key, width, height, frame).map(|p| p.slot);
     }
 
     // Validate before registering anything, so a bad upload leaves no entry.
     let pixels = rgba();
     let bordered = extrude_border(&pixels, width, height)?;
-    if small && let Some(p) = self.layout.place(&key, width, height, frame) {
+    if small && let Some(p) = self.layout.place(key, width, height, frame) {
       while self.pages.len() < self.layout.page_count() {
         self.pages.push(self.create_page(device));
       }
@@ -360,7 +358,10 @@ impl TextureAtlas {
       write_bordered(queue, &page.texture, p.x, p.y, width, height, &bordered);
       return Some(p.slot);
     }
-    Some(self.create_standalone(device, queue, key, width, height, &bordered, frame))
+    // Standalone now: a leftover atlas slot would be returned, unwritten, if
+    // the key later shrinks back to its old size
+    self.layout.remove(key);
+    Some(self.create_standalone(device, queue, key.clone(), width, height, &bordered, frame))
   }
 
   /// Where `key` lives now, without uploading it or marking it used.
@@ -756,12 +757,12 @@ mod tests {
     let mut atlas = gpu_atlas(&device);
     assert!(
       atlas
-        .slot(&device, &queue, id(0), 2, 2, || vec![0; 7], 0)
+        .slot(&device, &queue, &id(0), 2, 2, || vec![0; 7], 0)
         .is_none()
     );
     let px: Vec<u8> = (0..4u8).flat_map(|i| [10 * (i + 1), 0, 0, 255]).collect();
     let slot = atlas
-      .slot(&device, &queue, id(0), 2, 2, || px.clone(), 1)
+      .slot(&device, &queue, &id(0), 2, 2, || px.clone(), 1)
       .unwrap();
     let page = atlas.texture(slot.page).unwrap();
     let img = crate::core::capture::read_texture_rgba(&device, &queue, page).unwrap();
@@ -777,14 +778,40 @@ mod tests {
     };
     let mut atlas = gpu_atlas(&device);
     let a = atlas
-      .slot(&device, &queue, id(0), 300, 4, || vec![9; 300 * 4 * 4], 0)
+      .slot(&device, &queue, &id(0), 300, 4, || vec![9; 300 * 4 * 4], 0)
       .unwrap();
     let b = atlas
-      .slot(&device, &queue, id(0), 301, 4, || vec![9; 301 * 4 * 4], 1)
+      .slot(&device, &queue, &id(0), 301, 4, || vec![9; 301 * 4 * 4], 1)
       .unwrap();
     assert_ne!(a.uv, b.uv);
     let tex = atlas.texture(b.page).unwrap();
     assert_eq!(tex.width(), 303);
+  }
+
+  #[test]
+  fn key_growing_standalone_then_shrinking_rewrites_its_pixels() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut atlas = gpu_atlas(&device);
+    atlas
+      .slot(&device, &queue, &id(0), 2, 2, || vec![10; 2 * 2 * 4], 0)
+      .unwrap();
+    // Too big for the atlas, so standalone
+    let big = atlas
+      .slot(&device, &queue, &id(0), 300, 4, || vec![20; 300 * 4 * 4], 1)
+      .unwrap();
+    assert!(matches!(big.page, SlotPage::Standalone(_)));
+    // Back at the original size, the new pixels must be written
+    let small = atlas
+      .slot(&device, &queue, &id(0), 2, 2, || vec![77; 2 * 2 * 4], 2)
+      .unwrap();
+    assert!(matches!(small.page, SlotPage::Atlas(_)));
+    let page = atlas.texture(small.page).unwrap();
+    let img = crate::core::capture::read_texture_rgba(&device, &queue, page).unwrap();
+    let x = (small.uv[0] * 2048.0).round() as u32;
+    let y = (small.uv[1] * 2048.0).round() as u32;
+    assert_eq!(img.get_pixel(x, y).0[0], 77);
   }
 
   #[test]
@@ -794,10 +821,10 @@ mod tests {
     };
     let mut atlas = gpu_atlas(&device);
     let small = atlas
-      .slot(&device, &queue, id(0), 2, 2, || vec![10; 2 * 2 * 4], 0)
+      .slot(&device, &queue, &id(0), 2, 2, || vec![10; 2 * 2 * 4], 0)
       .unwrap();
     let resized = atlas
-      .slot(&device, &queue, id(0), 3, 2, || vec![50; 3 * 2 * 4], 1)
+      .slot(&device, &queue, &id(0), 3, 2, || vec![50; 3 * 2 * 4], 1)
       .unwrap();
     assert_ne!(small.uv, resized.uv);
     assert_eq!(atlas.lookup(&id(0)), Some(resized));
@@ -817,7 +844,7 @@ mod tests {
     let too_big = device.limits().max_texture_dimension_2d;
     assert!(
       atlas
-        .slot(&device, &queue, id(0), too_big, 1, || unreachable!(), 0)
+        .slot(&device, &queue, &id(0), too_big, 1, || unreachable!(), 0)
         .is_none()
     );
   }
@@ -830,7 +857,7 @@ mod tests {
     let mut atlas = gpu_atlas(&device);
     let px: Vec<u8> = (0..4u8).flat_map(|i| [10 * (i + 1), 0, 0, 255]).collect();
     let slot = atlas
-      .slot(&device, &queue, id(0), 2, 2, || px.clone(), 0)
+      .slot(&device, &queue, &id(0), 2, 2, || px.clone(), 0)
       .unwrap();
     assert!(atlas.bind_group(slot.page).is_some());
     let page = atlas.texture(slot.page).unwrap();

@@ -35,6 +35,8 @@
 //! containing particles byte-for-byte.
 
 #[cfg(test)]
+mod atlas_bleeding;
+#[cfg(test)]
 mod capture_matches_frame;
 mod gpu;
 

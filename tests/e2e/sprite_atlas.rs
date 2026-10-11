@@ -1,7 +1,6 @@
 //! E2E tests for GPU sprites drawn from the texture atlas: masking, effect
 //! growth and CPU-matching (sRGB-space) shading.
 
-use ryo2d::core::graphics::SpriteGpuRenderer;
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
 
@@ -9,7 +8,6 @@ const RED: [u8; 4] = [220, 30, 40, 255];
 const BLUE: [u8; 4] = [30, 60, 230, 255];
 const GREEN: [u8; 4] = [0, 255, 0, 255];
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
-const WHITE: [u8; 4] = [255, 255, 255, 255];
 
 fn solid(name: &str, c: [u8; 4]) -> SpriteHandle {
   SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, c[0], c[1], c[2], c[3]), name)
@@ -93,37 +91,6 @@ fn inside(x: u32, y: u32, min: u32, max: u32) -> bool {
 }
 
 #[test]
-fn no_bleeding_under_scaling() {
-  let red = solid("atlas-bleed-red", RED);
-  let blue = solid("atlas-bleed-blue", BLUE);
-
-  // Bleeding is only possible when the sprites share an atlas page
-  let Ok((device, queue)) = ryo2d::testing::shared_gpu() else {
-    return;
-  };
-  let mut renderer =
-    SpriteGpuRenderer::new(&device, &queue, ryo2d::wgpu::TextureFormat::Rgba8UnormSrgb);
-  renderer.upload_sprite(&device, &queue, &red);
-  renderer.upload_sprite(&device, &queue, &blue);
-  let (Some(a), Some(b)) = (
-    renderer.get_texture_bind_group(&red.id()),
-    renderer.get_texture_bind_group(&blue.id()),
-  ) else {
-    panic!("both sprites must be uploaded");
-  };
-  assert!(
-    std::ptr::eq(a, b),
-    "the two sprites must share an atlas page"
-  );
-
-  let Some(frame) = render(AtlasScene::new(vec![red, blue], 3.0)) else {
-    return;
-  };
-  // 12x12 px rect centred at (32, 32)
-  assert_pixels(&frame, |x, y| inside(x, y, 26, 38).then_some(RED));
-}
-
-#[test]
 fn outline_ignores_atlas_neighbours() {
   let mut scene = AtlasScene::new(
     vec![
@@ -148,16 +115,44 @@ fn outline_ignores_atlas_neighbours() {
   });
 }
 
+/// The CPU renderer's tint: multiply by the tint fraction, truncate.
+fn cpu_tint(source: u8, tint: u8) -> u8 {
+  (source as f32 * (tint as f32 / 255.0)).min(255.0) as u8
+}
+
 #[test]
 fn tint_matches_the_cpu() {
-  let mut scene = AtlasScene::new(vec![solid("atlas-tint-white", WHITE)], 4.0);
-  scene.tint = Color::rgb(200, 100, 50);
-  let Some(frame) = render(scene) else {
-    return;
-  };
-  assert_pixels(&frame, |x, y| {
-    inside(x, y, 24, 40).then_some([200, 100, 50, 255])
-  });
+  // Pairs the CPU truncates but a rounding encode would not, e.g. 130 x 200
+  // (CPU 101) and 77 x 133 (CPU 40), plus white and an over-bright product
+  let sources = [
+    [255, 255, 255, 255],
+    [130, 77, 200, 255],
+    [10, 250, 99, 255],
+  ];
+  let tints = [Color::rgb(200, 100, 50), Color::rgb(200, 133, 255)];
+  for source in sources {
+    for tint in tints {
+      let mut scene = AtlasScene::new(vec![solid("atlas-tint-source", source)], 4.0);
+      scene.tint = tint;
+      let Some(frame) = render(scene) else {
+        return;
+      };
+      let want = [
+        cpu_tint(source[0], tint.r),
+        cpu_tint(source[1], tint.g),
+        cpu_tint(source[2], tint.b),
+        255,
+      ];
+      assert_pixels(&frame, |x, y| inside(x, y, 24, 40).then_some(want));
+    }
+  }
+}
+
+#[test]
+fn tint_expectations_follow_the_cpu_formula() {
+  // Guards the helper against drifting from the CPU's truncation
+  assert_eq!(cpu_tint(130, 200), 101);
+  assert_eq!(cpu_tint(77, 133), 40);
 }
 
 #[test]

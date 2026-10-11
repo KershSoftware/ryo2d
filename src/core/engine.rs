@@ -231,7 +231,7 @@ pub struct Engine {
   // VSync preference from system.json (None = use engine default)
   vsync: bool,
   // GPU sprite renderer for entities with Material/shader effects
-  sprite_gpu: Option<SpriteGpuRenderer>,
+  pub(crate) sprite_gpu: Option<SpriteGpuRenderer>,
   // Batch collector for GPU sprite rendering (reused each frame)
   batch_collector: BatchCollector,
   // 2D Lighting renderer
@@ -1492,12 +1492,12 @@ impl Engine {
 
       self.debug_stats = DebugStats {
         entity_count: self.world.len(),
-        draw_calls: self.batch_collector.batch_count() as u32,
+        // Set once the batches are laid out for drawing (`prepare`)
+        draw_calls: 0,
         sprite_count: (cpu_sprite_count + self.batch_collector.sprite_count()) as u32,
       };
       self.frame_timings.render = render_start.elapsed();
     } // render scope ends
-    self.smoothed_stats.update(&self.debug_stats);
 
     // Present phase
     profile_scope!("gpu:present");
@@ -1585,6 +1585,7 @@ impl Engine {
       );
       // Make the batches' textures resident in the atlas before drawing
       gpu.prepare(rend.device(), rend.queue(), &self.batch_collector);
+      self.debug_stats.draw_calls = gpu.draw_call_count() as u32;
 
       // Prepare camera data for trail rendering
       let camera_pos = glam::Vec2::new(self.camera.x, self.camera.y);
@@ -1648,6 +1649,8 @@ impl Engine {
         }
       }
     }
+
+    self.smoothed_stats.update(&self.debug_stats);
 
     // Put everything back
     self.sprite_gpu = sprite_gpu;

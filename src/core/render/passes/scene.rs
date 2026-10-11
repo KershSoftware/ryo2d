@@ -71,9 +71,9 @@ impl RenderPass for GpuSprites {
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
-    let (sprites, batches) = (ctx.scene.sprites, ctx.scene.batches);
+    let sprites = ctx.scene.sprites;
     let (queue, game_view) = (ctx.queue(), ctx.targets.game_view);
-    sprites.render_batches(queue, ctx.encoder(), game_view, batches);
+    sprites.render_batches(queue, ctx.encoder(), game_view);
   }
 }
 

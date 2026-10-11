@@ -278,27 +278,25 @@ impl SpriteGlobals {
 /// Where an uploaded texture's pixels come from, for re-uploading it after
 /// the atlas evicted it.
 enum TextureSource {
-  Pixels {
-    width: u32,
-    height: u32,
-    data: Vec<u8>,
-  },
+  Pixels(Vec<u8>),
   /// Read from the sprite when (re)uploaded
   Sprite(SpriteHandle),
 }
 
-impl TextureSource {
-  fn size(&self) -> (u32, u32) {
-    match self {
-      Self::Pixels { width, height, .. } => (*width, *height),
-      Self::Sprite(sprite) => sprite.with_sprite(|s| (s.width(), s.height())),
-    }
-  }
+/// A texture uploaded by id.
+struct CachedTexture {
+  key: AtlasKey,
+  /// Size at upload (sprites are not re-read for it every frame)
+  width: u32,
+  height: u32,
+  source: TextureSource,
+}
 
+impl CachedTexture {
   fn rgba(&self) -> Vec<u8> {
-    match self {
-      Self::Pixels { data, .. } => data.clone(),
-      Self::Sprite(sprite) => sprite.with_sprite(|s| s.data().to_vec()),
+    match &self.source {
+      TextureSource::Pixels(data) => data.clone(),
+      TextureSource::Sprite(sprite) => sprite.with_sprite(|s| s.data().to_vec()),
     }
   }
 }
@@ -331,9 +329,14 @@ pub struct SpriteGpuRenderer {
   // Every uploaded texture lives in the atlas under `AtlasKey::Id`
   atlas: TextureAtlas,
   // Pixel sources by texture id, for re-uploading evicted textures
-  textures: HashMap<String, TextureSource>,
+  textures: HashMap<String, CachedTexture>,
   // Atlas frame counter, advanced by `prepare`
   frame: u64,
+
+  // This frame's instances remapped into atlas slots, and the draws over
+  // them; both built by `prepare` and reused across frames
+  placed: Vec<SpriteInstance>,
+  runs: Vec<DrawRun>,
 
   // Timing
   time: f32,
@@ -620,6 +623,8 @@ impl SpriteGpuRenderer {
       atlas: TextureAtlas::new(device, texture_layout, sampler),
       textures: HashMap::new(),
       frame: 0,
+      placed: Vec::new(),
+      runs: Vec::new(),
       time: 0.0,
     }
   }
@@ -665,29 +670,33 @@ impl SpriteGpuRenderer {
     let placed = self.atlas.slot(
       device,
       queue,
-      key,
+      &key,
       width,
       height,
       || data.to_vec(),
       self.frame,
     );
     if placed.is_some() {
-      let data = data.to_vec();
-      let source = TextureSource::Pixels {
+      let source = TextureSource::Pixels(data.to_vec());
+      let texture = CachedTexture {
+        key,
         width,
         height,
-        data,
+        source,
       };
-      self.textures.insert(id.to_string(), source);
+      self.textures.insert(id.to_string(), texture);
     }
   }
 
-  /// Make every texture `collector` uses resident in the atlas.
+  /// Make every texture `collector` uses resident, and lay out the frame.
   ///
   /// Re-uploads textures the atlas evicted, marks them used this frame (so
   /// nothing drawn this frame is evicted), grows the instance buffer to fit
-  /// and runs the atlas housekeeping. Call once per frame, after the batches
-  /// are collected and before [`render_batches`](Self::render_batches).
+  /// and runs the atlas housekeeping. Then remaps the batches, in z-order,
+  /// into their atlas slots and merges neighbours on one atlas page and
+  /// pipeline into draw runs. Call once per frame, after the batches are
+  /// collected and before [`render_batches`](Self::render_batches), which
+  /// draws what this laid out.
   pub fn prepare(
     &mut self,
     device: &wgpu::Device,
@@ -695,12 +704,12 @@ impl SpriteGpuRenderer {
     collector: &BatchCollector,
   ) {
     for key in collector.batches.keys() {
-      let Some(source) = self.textures.get(&key.texture_id) else {
+      let Some(texture) = self.textures.get(key.texture_id.as_str()) else {
         continue;
       };
-      let (width, height) = source.size();
-      let atlas_key = AtlasKey::Id(key.texture_id.clone());
-      let rgba = || source.rgba();
+      let rgba = || texture.rgba();
+      let (width, height) = (texture.width, texture.height);
+      let atlas_key = &texture.key;
       self
         .atlas
         .slot(device, queue, atlas_key, width, height, rgba, self.frame);
@@ -713,54 +722,62 @@ impl SpriteGpuRenderer {
       self.instance_capacity = needed.next_power_of_two();
       self.instance_buffer = Self::create_instance_buffer(device, self.instance_capacity);
     }
+
+    self.placed.clear();
+    self.runs.clear();
+    for (key, batch) in collector.sorted_batches() {
+      let Some(slot) = self.lookup(&key.texture_id) else {
+        continue;
+      };
+      let Some(page) = self.atlas.texture(slot.page) else {
+        continue;
+      };
+      let page_size = (page.width(), page.height());
+      let start = self.placed.len();
+      let has_effects = key.has_effects;
+      self.placed.extend(
+        batch
+          .instances()
+          .iter()
+          .map(|i| place_in_slot(i, &slot, page_size, has_effects)),
+      );
+      let count = self.placed.len() - start;
+      if count == 0 {
+        continue;
+      }
+      match self.runs.last_mut() {
+        Some(run) if run.page == slot.page && run.has_effects == has_effects => run.count += count,
+        _ => self.runs.push(DrawRun {
+          page: slot.page,
+          has_effects,
+          start,
+          count,
+        }),
+      }
+    }
   }
 
-  /// Get the bind group of the atlas page holding a cached texture
-  pub fn get_texture_bind_group(&self, id: &str) -> Option<&wgpu::BindGroup> {
-    let slot = self.lookup(id)?;
-    self.atlas.bind_group(slot.page)
+  /// Number of draw calls [`render_batches`](Self::render_batches) issues for
+  /// the frame last laid out by [`prepare`](Self::prepare).
+  pub fn draw_call_count(&self) -> usize {
+    self.runs.len()
   }
 
   /// Where a cached texture currently lives in the atlas.
-  fn lookup(&self, id: &str) -> Option<AtlasSlot> {
-    if !self.textures.contains_key(id) {
-      return None;
-    }
-    self.atlas.lookup(&AtlasKey::Id(id.to_string()))
+  pub(crate) fn lookup(&self, id: &str) -> Option<AtlasSlot> {
+    let texture = self.textures.get(id)?;
+    self.atlas.lookup(&texture.key)
   }
 
-  /// Render sprites to a render pass
+  /// Draw the frame laid out by [`prepare`](Self::prepare).
   ///
-  /// Batches whose textures share an atlas page and pipeline and follow each
-  /// other are drawn with one draw call.
-  ///
-  /// # Arguments
-  /// - `queue`: GPU queue for uploading instance data
-  /// - `encoder`: Command encoder for recording GPU commands
-  /// - `view`: Target texture view to render to
-  /// - `sprites`: Iterator of (texture_id, instances, has_effects)
-  pub fn render<'a>(
-    &'a self,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-    sprites: impl Iterator<Item = (&'a str, &'a [SpriteInstance], bool)>,
-  ) {
-    self.draw(queue, encoder, view, sprites);
-  }
-
-  /// Render sprites using the BatchCollector for automatic batching
-  ///
-  /// This is the preferred method for high-performance sprite rendering.
   /// Batches are drawn in z-order; consecutive batches on the same atlas page
-  /// and pipeline share one draw call. Call [`prepare`](Self::prepare) first
-  /// each frame so the textures are resident.
+  /// and pipeline share one draw call. Draws nothing until `prepare` has run.
   ///
   /// # Arguments
   /// - `queue`: GPU queue for uploading instance data
   /// - `encoder`: Command encoder for recording GPU commands
   /// - `view`: Target texture view to render to
-  /// - `collector`: BatchCollector containing grouped sprite instances
   ///
   /// # Example
   ///
@@ -775,70 +792,20 @@ impl SpriteGpuRenderer {
   /// }
   ///
   /// renderer.prepare(device, queue, &collector);
-  /// renderer.render_batches(queue, encoder, view, &collector);
+  /// renderer.render_batches(queue, encoder, view);
   /// ```
   pub fn render_batches(
     &self,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
-    collector: &BatchCollector,
   ) {
-    if collector.sprite_count() == 0 {
-      return;
-    }
-    let batches = collector.sorted_batches().into_iter();
-    let batches =
-      batches.map(|(key, batch)| (key.texture_id.as_str(), batch.instances(), key.has_effects));
-    self.draw(queue, encoder, view, batches);
-  }
-
-  /// Remap the batches into their atlas slots and draw them in order.
-  fn draw<'a>(
-    &self,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-    batches: impl Iterator<Item = (&'a str, &'a [SpriteInstance], bool)>,
-  ) {
-    let mut instances: Vec<SpriteInstance> = Vec::new();
-    let mut runs: Vec<DrawRun> = Vec::new();
-    for (texture_id, batch, has_effects) in batches {
-      let Some(slot) = self.lookup(texture_id) else {
-        continue;
-      };
-      let Some(page) = self.atlas.texture(slot.page) else {
-        continue;
-      };
-      let page_size = (page.width(), page.height());
-      let start = instances.len();
-      let room = self.instance_capacity.saturating_sub(start);
-      instances.extend(
-        batch
-          .iter()
-          .take(room)
-          .map(|i| place_in_slot(i, &slot, page_size, has_effects)),
-      );
-      let count = instances.len() - start;
-      if count == 0 {
-        continue;
-      }
-      match runs.last_mut() {
-        Some(run) if run.page == slot.page && run.has_effects == has_effects => run.count += count,
-        _ => runs.push(DrawRun {
-          page: slot.page,
-          has_effects,
-          start,
-          count,
-        }),
-      }
-    }
-    if runs.is_empty() {
+    if self.runs.is_empty() {
       return;
     }
 
     // Upload all instance data BEFORE the render pass begins
-    queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
+    queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.placed));
 
     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
       label: Some("Sprite Batch Render Pass"),
@@ -859,7 +826,7 @@ impl SpriteGpuRenderer {
     render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
 
     let instance_size = std::mem::size_of::<SpriteInstance>() as u64;
-    for run in &runs {
+    for run in &self.runs {
       let Some(bind_group) = self.atlas.bind_group(run.page) else {
         continue;
       };
@@ -894,11 +861,15 @@ impl SpriteGpuRenderer {
     let key = AtlasKey::Id(id.clone());
     let placed = self
       .atlas
-      .slot(device, queue, key, width, height, || data, self.frame);
+      .slot(device, queue, &key, width, height, || data, self.frame);
     if placed.is_some() {
-      self
-        .textures
-        .insert(id, TextureSource::Sprite(sprite.clone()));
+      let texture = CachedTexture {
+        key,
+        width,
+        height,
+        source: TextureSource::Sprite(sprite.clone()),
+      };
+      self.textures.insert(id, texture);
     }
   }
 
@@ -911,6 +882,8 @@ impl SpriteGpuRenderer {
   pub fn clear_cache(&mut self) {
     self.textures.clear();
     self.atlas.clear();
+    self.placed.clear();
+    self.runs.clear();
   }
 }
 
@@ -1335,12 +1308,12 @@ mod tests {
     renderer.upload_texture(&device, &queue, "a", 2, 2, &[255; 16]);
     // As if the atlas had evicted it
     renderer.atlas.clear();
-    assert!(renderer.get_texture_bind_group("a").is_none());
+    assert!(renderer.lookup("a").is_none());
 
     let mut collector = BatchCollector::new();
     collector.add("a", false, SpriteInstance::new(), 0);
     renderer.prepare(&device, &queue, &collector);
-    assert!(renderer.get_texture_bind_group("a").is_some());
+    assert!(renderer.lookup("a").is_some());
   }
 
   #[test]
