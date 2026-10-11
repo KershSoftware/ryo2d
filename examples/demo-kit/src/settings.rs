@@ -74,6 +74,27 @@ impl Settings {
     );
   }
 
+  /// An angle in degrees changed by `step` per press, wrapping round past
+  /// 0 and 360 (shown as "deg": the shell's font is ASCII)
+  pub fn angle(&mut self, label: &str, degrees: &mut f32, step: f32) {
+    let steps = self.steps();
+    let mut value = *degrees + steps as f32 * step;
+    if steps != 0 && step > 0.0 {
+      value = (value / step).round() * step;
+    }
+    *degrees = if value.is_finite() {
+      value.rem_euclid(360.0)
+    } else {
+      0.0
+    };
+    let places = decimals(step);
+    self.push(
+      label,
+      format!("{:.*} deg", places, *degrees),
+      "0 - 360 deg, wrapping".to_string(),
+    );
+  }
+
   /// A whole number changed by one per press and kept within `range`
   pub fn int(&mut self, label: &str, value: &mut i32, range: RangeInclusive<i32>) {
     let (lo, hi) = (*range.start(), *range.end());
@@ -126,6 +147,25 @@ mod tests {
       .into_iter()
       .map(|row| row.value)
       .collect()
+  }
+
+  #[test]
+  fn angles_wrap_round_both_ways() {
+    let mut degrees = 355.0;
+    let mut s = Settings::new(0, 1);
+    s.angle("Spot", &mut degrees, 5.0);
+    assert_eq!(degrees, 0.0);
+    assert_eq!(values(s), ["0 deg"]);
+
+    let mut s = Settings::new(0, -1);
+    s.angle("Spot", &mut degrees, 5.0);
+    assert_eq!(degrees, 355.0);
+
+    // Out-of-range starting values come back into 0..360
+    let mut degrees = 725.0;
+    let s = &mut Settings::new(1, 0);
+    s.angle("Spot", &mut degrees, 5.0);
+    assert_eq!(degrees, 5.0);
   }
 
   #[test]

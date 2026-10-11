@@ -302,12 +302,7 @@ impl DemoPage for VolumetricPage {
       0.1,
     );
     s.choice("Light colour", &mut self.light, &colours);
-    s.float(
-      "Spot direction",
-      &mut self.spotlight_direction,
-      0.0..=360.0,
-      5.0,
-    );
+    s.angle("Spot direction", &mut self.spotlight_direction, 5.0);
     s.float("Cone angle", &mut self.spotlight_angle, 10.0..=90.0, 5.0);
     let max_x = (self.screen_w - 100.0).max(100.0);
     s.float("Spot position", &mut self.spotlight_x, 100.0..=max_x, 20.0);
