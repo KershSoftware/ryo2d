@@ -206,6 +206,9 @@ fn error_chain(err: &dyn std::error::Error) -> String {
 struct RawParseError {
   offset: Option<usize>,
   message: String,
+  /// Byte offsets of naga's labelled spans (for a redefinition, the earlier
+  /// definition)
+  labels: Vec<usize>,
 }
 
 impl RawParseError {
@@ -221,11 +224,42 @@ fn parse_raw(src: &Source) -> Result<naga::Module, RawParseError> {
   naga::front::wgsl::parse_str(&src.text).map_err(|e| RawParseError {
     offset: e.location(&src.text).map(|l| l.offset as usize),
     message: e.message().to_string(),
+    labels: e
+      .labels()
+      .filter_map(|(span, _)| span.to_range().map(|r| r.start))
+      .collect(),
   })
 }
 
 fn parse(src: &Source, id: &str) -> Result<naga::Module, ShaderError> {
-  parse_raw(src).map_err(|e| src.error(id, e.offset, e.message))
+  parse_raw(src).map_err(|e| src.parse_error(id, e))
+}
+
+impl Source {
+  /// Map a parse failure to the game's code. A name defined both by the game
+  /// and by engine code is reported at the game's definition, saying so.
+  fn parse_error(&self, id: &str, e: RawParseError) -> ShaderError {
+    if e.message.starts_with("redefinition") {
+      let in_game = |offset: &usize| self.game.contains(offset);
+      let at_game = e
+        .offset
+        .filter(in_game)
+        .or_else(|| e.labels.iter().copied().find(in_game));
+      let engine_too = e.offset.iter().chain(&e.labels).any(|o| !in_game(o));
+      if let (Some(at), true) = (at_game, engine_too) {
+        let message = if e.message.contains("`Params`") {
+          "`Params` must be a struct".to_string()
+        } else {
+          format!(
+            "{}: the engine defines this name, so rename yours",
+            e.message
+          )
+        };
+        return self.error(id, Some(at), message);
+      }
+    }
+    self.error(id, e.offset, e.message)
+  }
 }
 
 fn validate(src: &Source, id: &str, module: &naga::Module) -> Result<(), ShaderError> {
@@ -439,6 +473,8 @@ pub(crate) fn compile(
   id: &str,
   user_source: &str,
 ) -> Result<CompiledShader, ShaderError> {
+  // Editors on Windows may save a byte order mark, which WGSL rejects
+  let user_source = user_source.strip_prefix('\u{feff}').unwrap_or(user_source);
   let (head, entry_name, input, limit) = match kind {
     ShaderKind::Sprite => (
       format!(
@@ -468,7 +504,7 @@ pub(crate) fn compile(
     Ok(module) if has_params_struct(&module) => (plain, false, module),
     Ok(_) => retry_with_fallback(&head, user_source, id)?,
     Err(e) if e.is_unresolved_params() => retry_with_fallback(&head, user_source, id)?,
-    Err(e) => return Err(plain.error(id, e.offset, e.message)),
+    Err(e) => return Err(plain.parse_error(id, e)),
   };
   check_entry(&base, id, &module, entry_name, input)?;
   let layout = reflect_params(&base, id, &module, limit)?;
@@ -735,6 +771,35 @@ mod tests {
       .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
       .collect();
     assert_eq!(floats, [1.0, 0.0, 0.2, 0.5]);
+  }
+
+  #[test]
+  fn redefining_an_engine_name_says_so() {
+    let src = "fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> { return c; }\nfn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
+    let err = compile_sprite(src).err().expect("name clash");
+    assert_eq!(err.line, Some(1), "{err}");
+    assert!(err.message.contains("srgb_to_linear"), "{err}");
+    assert!(err.message.contains("engine"), "{err}");
+  }
+
+  #[test]
+  fn a_params_that_is_not_a_struct_is_the_games_error() {
+    let src = "\nalias Params = vec4<f32>;\nfn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return params; }";
+    let err = compile_sprite(src).err().expect("non-struct Params");
+    assert_eq!(err.line, Some(2), "{err}");
+    assert!(err.message.contains("must be a struct"), "{err}");
+    assert!(!err.message.contains("engine-generated"), "{err}");
+  }
+
+  #[test]
+  fn a_byte_order_mark_is_ignored() {
+    let src = "\u{feff}fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {\n  return sample(in.uv);\n}\n";
+    assert!(compile_sprite(src).is_ok());
+    // Positions on the first line count from the first real character
+    let broken = "\u{feff}fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return nope; }";
+    let err = compile_sprite(broken).err().expect("unknown name");
+    assert_eq!(err.line, Some(1), "{err}");
+    assert_eq!(err.column, Some(63), "{err}");
   }
 
   #[test]
