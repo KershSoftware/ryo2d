@@ -456,7 +456,7 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `Parent` / `Children` | Entity hierarchy |
 | `NavAgent` | Navigation and pathfinding |
 | `Trail2D` | Motion trails; `with_z_order` sorts them with entities (default 0, drawn after entities at equal z) |
-| `YSort` | `z_order` picks the layer; `YSort` orders entities by y within their layer; sprites, particles and trails at the same z draw after the layer's entities |
+| `YSort` | `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; sprites, particles and trails at the same z draw after the layer's entities |
 
 ## Navigation & Pathfinding
 

@@ -35,12 +35,48 @@ const ELLIPSE_ID: &str = "\u{1}shadow-ellipse";
 /// CPU renderer.
 const AXIS_ALIGNED_DEGREES: f32 = 0.01;
 
+/// Where an entity falls in the draw order: by z layer, then in each layer
+/// plain sprites before y-sorted ones, and y-sorted ones by their sort y.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DrawOrder {
+  z: i32,
+  /// The sort y of a y-sorted entity
+  sort_y: Option<f32>,
+}
+
+impl DrawOrder {
+  pub(crate) fn plain(z: i32) -> Self {
+    Self { z, sort_y: None }
+  }
+
+  pub(crate) fn y_sorted(z: i32, sort_y: f32) -> Self {
+    Self {
+      z,
+      sort_y: Some(sort_y),
+    }
+  }
+
+  /// Total order; sort with a stable sort so plain sprites keep their order
+  pub(crate) fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    self
+      .z
+      .cmp(&other.z)
+      .then_with(|| match (self.sort_y, other.sort_y) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (Some(a), Some(b)) => a.total_cmp(&b),
+      })
+  }
+}
+
 /// What [`EntityDrawer::collect`] reads from the engine.
 pub(crate) struct EntityFrame<'a> {
   pub(crate) world: &'a World,
   pub(crate) camera: &'a Camera,
-  /// The render cache: entities with their sort keys, in draw order
-  pub(crate) cache: &'a [(Entity, i32)],
+  /// The render cache: entities in draw order
+  pub(crate) cache: &'a [(Entity, DrawOrder)],
   /// Render interpolation factor
   pub(crate) alpha: f32,
   /// Game resolution, to skip sprites entirely off screen
@@ -73,8 +109,8 @@ impl EntityDrawer {
       ellipse: &mut self.ellipse,
       size: frame.size,
     };
-    // The cache's sort key mixes in the YSort position, which would outrank
-    // other layers' z; only its order is used, as the submission sequence
+    // The draw list sorts by each entity's own z; the cache's order (y-sorted
+    // after plain within a layer) becomes the submission sequence
     for &(entity, _) in frame.cache {
       collect_entity(frame, entity, &mut out);
     }
@@ -699,5 +735,34 @@ fn collect_composites(frame: &EntityFrame<'_>, out: &mut Emitter<'_>) {
         }
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod draw_order_tests {
+  use super::DrawOrder;
+
+  #[test]
+  fn layers_then_plain_then_sort_y() {
+    let mut orders = [
+      DrawOrder::y_sorted(0, 50.0),
+      DrawOrder::plain(1),
+      DrawOrder::y_sorted(0, -20.0),
+      DrawOrder::plain(0),
+      DrawOrder::y_sorted(i32::MAX, 1e9),
+      DrawOrder::plain(i32::MIN),
+    ];
+    orders.sort_by(|a, b| a.cmp(b));
+    assert_eq!(
+      orders,
+      [
+        DrawOrder::plain(i32::MIN),
+        DrawOrder::plain(0),
+        DrawOrder::y_sorted(0, -20.0),
+        DrawOrder::y_sorted(0, 50.0),
+        DrawOrder::plain(1),
+        DrawOrder::y_sorted(i32::MAX, 1e9),
+      ]
+    );
   }
 }

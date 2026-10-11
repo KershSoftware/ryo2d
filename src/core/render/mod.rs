@@ -43,7 +43,7 @@ pub use context::RenderContext;
 pub(crate) use draw_list::{
   DrawKind, DrawList, DrawPayload, PipelineKind, SpriteShading, TextureRef, WorldRun, plan_runs,
 };
-pub(crate) use entities::{EntityDrawer, EntityFrame};
+pub(crate) use entities::{DrawOrder, EntityDrawer, EntityFrame};
 pub use frame::FrameInfo;
 pub(crate) use frame::{FrameImage, FrameScene, LightingFrame, TRANSITION_VISIBLE};
 pub use pass::RenderPass;

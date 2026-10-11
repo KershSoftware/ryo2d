@@ -509,3 +509,51 @@ fn lines_stay_in_place_after_a_stretch_resize() {
   assert!(!is_line(px(20, 64)), "line drawn at the old size's scale");
   assert!(!is_line(px(100, 32)), "line stretched past x 64");
 }
+
+/// A y-sorted entity at `(x, y)` in layer `z`
+fn spawn_sorted(ctx: &mut SceneContext, name: &str, x: f32, y: f32, c: [u8; 4], z: i32) {
+  ctx.world.spawn((
+    Transform::new(x, y),
+    Renderable::sprite(solid(name, 20, c)).with_z_order(z),
+    YSort::default(),
+  ));
+}
+
+#[test]
+fn plain_sprites_draw_under_y_sorted_ones_in_their_layer() {
+  // In every layer, whatever the sign of z or y, a plain floor sits under
+  // the y-sorted characters on it
+  for z in [-3, 0, 4] {
+    let frame = {
+      let builder = EngineBuilder::new()
+        .resolution(64, 64)
+        .start_scene(Fixture::new(match z {
+          -3 => |ctx: &mut SceneContext| {
+            spawn_sorted(ctx, "ys-red-n", 10.0, 10.0, RED, -3);
+            spawn_entity(ctx, "ys-floor-n", 0.0, 0.0, GREEN, -3);
+          },
+          0 => |ctx: &mut SceneContext| {
+            spawn_sorted(ctx, "ys-red-0", 10.0, 10.0, RED, 0);
+            spawn_entity(ctx, "ys-floor-0", 0.0, 0.0, GREEN, 0);
+          },
+          _ => |ctx: &mut SceneContext| {
+            spawn_sorted(ctx, "ys-red-p", 10.0, 10.0, RED, 4);
+            spawn_entity(ctx, "ys-floor-p", 0.0, 0.0, GREEN, 4);
+          },
+        }));
+      let Some(mut engine) = start(builder) else {
+        return;
+      };
+      engine.step_frames(2).unwrap();
+      engine.frame().unwrap()
+    };
+    // The floor covers (0..20, 0..20); the character (10..30, 10..30)
+    assert_eq!(
+      frame.get_pixel(15, 15).0,
+      RED,
+      "z {z}: character over floor"
+    );
+    // (Clear of the fixture's UI rect)
+    assert_eq!(frame.get_pixel(17, 5).0, GREEN, "z {z}: floor shows");
+  }
+}

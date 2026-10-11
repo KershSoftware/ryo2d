@@ -35,7 +35,8 @@ use super::raycast::{
   SpriteInstance as RaycastSpriteInstance,
 };
 use super::render::{
-  DrawKind, DrawList, EntityDrawer, EntityFrame, FrameScene, LightingFrame, RenderPipeline,
+  DrawKind, DrawList, DrawOrder, EntityDrawer, EntityFrame, FrameScene, LightingFrame,
+  RenderPipeline,
 };
 use super::scene::{Scene, SceneAction, SceneContext, SceneManager};
 use super::shaders::EffectsManager;
@@ -216,7 +217,7 @@ pub struct Engine {
   // Whether the first frame has been rendered (used to show window)
   first_frame_rendered: bool,
   // Cached sorted list of Renderable component entities
-  renderable_cache: Vec<(Entity, i32)>,
+  renderable_cache: Vec<(Entity, DrawOrder)>,
   // Whether render cache needs rebuilding (entities spawned/despawned, z_order changed)
   render_cache_dirty: bool,
   // Cached list of entities with YSort component (for per-frame Y-based sorting)
@@ -2113,12 +2114,12 @@ impl Engine {
 
   /// Apply Y-based sorting to entities with YSort component
   ///
-  /// This recalculates sort keys for Y-sorted entities every frame, combining
-  /// their z_order with Y position to achieve Zelda/RPG-style depth sorting.
+  /// This recalculates the draw order of Y-sorted entities every frame from
+  /// their z_order and Y position, for Zelda/RPG-style depth sorting: in each
+  /// layer they draw after the plain sprites, ordered by sort y.
   fn apply_y_sorting(&mut self) {
-    // Calculate sort keys for all YSort entities
-    // Sort key = (z_order * 10000) + sort_y, giving layer priority with Y-sorting within layers
-    let mut y_sort_keys: Vec<(Entity, i64)> = Vec::with_capacity(self.y_sort_entities.len());
+    let mut y_sort_keys: Vec<(Entity, DrawOrder)> =
+      Vec::with_capacity(self.y_sort_entities.len());
 
     for &entity in &self.y_sort_entities {
       // Skip inactive entities
@@ -2147,27 +2148,19 @@ impl Engine {
       let sprite_height = renderable.sprite.height() as f32;
       let sort_y = y_sort.calculate_sort_y(y, sprite_height);
 
-      // Combine z_order with Y position for final sort key
-      // z_order * 10000 ensures layer separation, sort_y provides Y-sorting within layers
-      let sort_key = (renderable.z_order as i64 * 10000) + (sort_y as i64);
-
-      y_sort_keys.push((entity, sort_key));
+      y_sort_keys.push((entity, DrawOrder::y_sorted(renderable.z_order, sort_y)));
     }
 
-    // Update the renderable_cache with new sort keys for YSort entities
-    // First, create a map of entity -> sort_key for quick lookup
-    let y_sort_map: std::collections::HashMap<Entity, i64> = y_sort_keys.into_iter().collect();
-
-    // Update sort keys in renderable_cache for YSort entities
-    for (entity, z_order) in &mut self.renderable_cache {
-      if let Some(&sort_key) = y_sort_map.get(entity) {
-        // Use the Y-aware sort key (stored as i32, truncated if necessary)
-        *z_order = sort_key as i32;
+    let y_sort_map: std::collections::HashMap<Entity, DrawOrder> =
+      y_sort_keys.into_iter().collect();
+    for (entity, order) in &mut self.renderable_cache {
+      if let Some(&sorted) = y_sort_map.get(entity) {
+        *order = sorted;
       }
     }
 
-    // Re-sort the entire cache with updated keys
-    self.renderable_cache.sort_by_key(|(_, z)| *z);
+    // Stable, so plain sprites keep their order
+    self.renderable_cache.sort_by(|(_, a), (_, b)| a.cmp(b));
   }
 
   /// Prepare the frame's CPU-side content
@@ -2188,7 +2181,7 @@ impl Engine {
 
       for entity in self.world.entities_with_two::<Transform, Renderable>() {
         if let Some(renderable) = self.world.get::<Renderable>(entity) {
-          self.renderable_cache.push((entity, renderable.z_order));
+          self.renderable_cache.push((entity, DrawOrder::plain(renderable.z_order)));
 
           // Track entities with YSort component for per-frame Y-based sorting
           if self.world.has::<YSort>(entity) {
@@ -2196,7 +2189,7 @@ impl Engine {
           }
         }
       }
-      self.renderable_cache.sort_by_key(|(_, z)| *z);
+      self.renderable_cache.sort_by(|(_, a), (_, b)| a.cmp(b));
 
       self.render_cache_dirty = false;
     }

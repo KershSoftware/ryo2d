@@ -32,15 +32,10 @@
 //!
 //! # How It Works
 //!
-//! Y-sorting combines the entity's z_order (from Renderable) with its Y position
-//! to create a final sort key:
-//!
-//! ```text
-//! sort_key = (z_order * 10000) + sort_y
-//! ```
-//!
-//! This maintains layer separation (z_order) while enabling Y-based sorting within
-//! each layer. Entities at higher Y positions (lower on screen) appear in front.
+//! Entities draw by z_order (from Renderable) first. Within one z_order layer,
+//! plain sprites draw first, in their usual order, then Y-sorted ones by their
+//! sort Y: entities at higher Y positions (lower on screen) appear in front.
+//! So a floor at the characters' z_order stays under them.
 //!
 //! # Foot Offset
 //!
