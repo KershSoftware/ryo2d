@@ -575,7 +575,7 @@ patches/matchbox_socket/   # Patched matchbox_socket (signaling resilience)
 
 ## See Also
 
-- [Networking Guide](docs/src/concepts/networking.md) - Getting started with multiplayer
-- [Replication Guide](docs/src/concepts/replication.md) - Entity synchronization details
-- [RPC Guide](docs/src/concepts/rpc.md) - Remote procedure calls
-- [Matchbox Server Deployment](docs/matchbox-server-deploy.md) - Deploy signaling server for WebRTC
+- [Networking Guide](../src/concepts/networking.md) - Getting started with multiplayer
+- [Replication Guide](../src/concepts/replication.md) - Entity synchronization details
+- [RPC Guide](../src/concepts/rpc.md) - Remote procedure calls
+- [Matchbox Server Deployment](../src/concepts/matchbox-server-deploy.md) - Deploy signaling server for WebRTC

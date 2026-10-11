@@ -1,6 +1,6 @@
 # AGENTS.md - Network Module
 
-Client-server networking on renet. For architecture, server types, channels and setup walkthroughs, see `NETWORK_ARCHITECTURE.md` (repo root) and the `ryo-network` skill.
+Client-server networking on renet. For architecture, server types, channels and setup walkthroughs, see `docs/architecture/network.md` and the `ryo-network` skill.
 
 Submodule docs:
 - `transport/AGENTS.md` - UDP/WebRTC transports, signaling

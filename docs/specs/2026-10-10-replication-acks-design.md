@@ -38,7 +38,7 @@ Malformed messages on the replication channels are ignored (as today). An ack fo
 
 ## Documentation
 
-`ryo-network` skill (both copies, CRLF): reserved channels, acknowledged changes, refresh every ~5 s, `ClientLike`. `src/core/network/replication/AGENTS.md`: replace the "process_incoming drains game messages" gotcha with the channel rule; describe acks. `NETWORK_ARCHITECTURE.md` (repo root): channel list. Rustdoc on every new public item.
+`ryo-network` skill (both copies, CRLF): reserved channels, acknowledged changes, refresh every ~5 s, `ClientLike`. `src/core/network/replication/AGENTS.md`: replace the "process_incoming drains game messages" gotcha with the channel rule; describe acks. `docs/architecture/network.md`: channel list. Rustdoc on every new public item.
 
 ## Design Decisions
 

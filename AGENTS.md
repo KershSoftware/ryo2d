@@ -66,7 +66,7 @@ Designs and implementation plans from the superpowers skills live here, not in t
 
 - **Specs** (`superpowers:brainstorming`): `docs/specs/YYYY-MM-DD-<topic>-design.md`. A spec records a design's decisions and why; nested AGENTS.md files may point to it. Keep specs after the work lands. When later work changes a decision, the code and AGENTS.md files are the current truth.
 - **Plans** (`superpowers:writing-plans`): `docs/plans/YYYY-MM-DD-<topic>-plan.md`, with a `**Spec:**` line naming its spec. A plan is a task checklist: delete it once it has been executed and reviewed. The code and git history are its record.
-- **Other docs:** `docs/backlog/` holds ideas for later, `docs/research/` background notes.
+- **Other docs:** `docs/architecture/` holds the engine overview (`overview.md`) and the network architecture (`network.md`), `docs/backlog/` ideas for later, `docs/research/` background notes.
 
 ---
 

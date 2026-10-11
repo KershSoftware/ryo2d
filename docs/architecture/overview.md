@@ -482,7 +482,7 @@ Rapier Space: PIXELS_PER_METER = 100.0 (500 pixels = 5 meters)
 
 ## Networking
 
-Client-server multiplayer with Listen Server support. See **[NETWORK_ARCHITECTURE.md](./NETWORK_ARCHITECTURE.md)** for complete documentation.
+Client-server multiplayer with Listen Server support. See **[the network architecture](./network.md)** for complete documentation.
 
 **Quick Overview:**
 - **Transport**: UDP via renet (3 channels: Unreliable, ReliableOrdered, ReliableUnordered)
@@ -516,4 +516,4 @@ Client-server multiplayer with Listen Server support. See **[NETWORK_ARCHITECTUR
 | State Machine | `state_machine/` | Generic FSM utilities |
 | Proc Gen | `procgen/` | Procedural generation helpers |
 | Navigation | `navigation/` | Pathfinding utilities |
-| Networking | `network/` | Multiplayer (see [NETWORK_ARCHITECTURE.md](./NETWORK_ARCHITECTURE.md)) |
+| Networking | `network/` | Multiplayer (see [network architecture](./network.md)) |
