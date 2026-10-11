@@ -565,6 +565,8 @@ impl ParticlesPage {
   fn setup_attractors(&mut self, world: &mut World) {
     let cx = self.screen_width / 2.0;
     let cy = self.screen_height / 2.0;
+    let [point_at, vortex_at, turbulence_at, repel_at] =
+      attractor_sites(self.screen_width, self.screen_height).map(|site| (site.x, site.y));
 
     // Emitter near point attractor (top left)
     let emitter1 = world.spawn((
@@ -631,28 +633,28 @@ impl ParticlesPage {
 
     // Point attractor (gravity well) - top left
     let point = world.spawn((
-      Transform::new(150.0, 150.0),
+      Transform::new(point_at.0, point_at.1),
       ParticleAttractor::point(200.0, 180.0),
     ));
     self.attractors.push(point);
 
     // Vortex attractor - top right
     let vortex = world.spawn((
-      Transform::new(self.screen_width - 150.0, 150.0),
+      Transform::new(vortex_at.0, vortex_at.1),
       ParticleAttractor::vortex(120.0, 180.0),
     ));
     self.attractors.push(vortex);
 
     // Turbulence - bottom center
     let turbulence = world.spawn((
-      Transform::new(cx, self.screen_height - 100.0),
+      Transform::new(turbulence_at.0, turbulence_at.1),
       ParticleAttractor::turbulence(80.0, 40.0, 1.5),
     ));
     self.attractors.push(turbulence);
 
     // Repelling attractor - center (pushes red particles outward)
     let repel = world.spawn((
-      Transform::new(cx, cy - 50.0),
+      Transform::new(repel_at.0, repel_at.1),
       ParticleAttractor::point(-120.0, 150.0), // Negative strength = repel
     ));
     self.attractors.push(repel);
@@ -858,8 +860,6 @@ impl DemoPage for ParticlesPage {
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) {
-    let (sw, sh) = ui.screen_size();
-
     // Particle count, top right of the content area
     let area = content_area(ui);
     let count = format!("Particles: {}", self.particle_system.particle_count());
@@ -871,24 +871,43 @@ impl DemoPage for ParticlesPage {
       Color::GREEN,
     );
 
-    // Attractor indicators
+    // Mark each attractor, with its label centred below on a backing so it
+    // reads over the particles
     if self.current_scene == DemoScene::Attractors {
-      ui.draw_text("Point (attract)", 130.0, 170.0, Color::GREEN);
-      ui.draw_text("Vortex (swirl)", sw as f32 - 220.0, 170.0, Color::CYAN);
-      ui.draw_text(
-        "Turbulence",
-        sw as f32 / 2.0 - 40.0,
-        sh as f32 - 130.0,
-        Color::MAGENTA,
-      );
-      ui.draw_text(
-        "Repel",
-        sw as f32 / 2.0 - 20.0,
-        sh as f32 / 2.0 - 130.0,
-        Color::RED,
-      );
+      for site in attractor_sites(self.screen_width, self.screen_height) {
+        ui.draw_rect(Rect::new(site.x - 5.0, site.y - 1.0, 11.0, 3.0), site.color);
+        ui.draw_rect(Rect::new(site.x - 1.0, site.y - 5.0, 3.0, 11.0), site.color);
+        let (text_w, text_h) = ui.text_size(site.label);
+        let (text_w, text_h) = (text_w as f32, text_h as f32);
+        let (x, y) = (site.x - text_w / 2.0, site.y + 10.0);
+        ui.draw_rect(
+          Rect::new(x - 3.0, y - 2.0, text_w + 6.0, text_h + 4.0),
+          Color::new(12, 12, 20, 190),
+        );
+        ui.draw_text(site.label, x, y, site.color);
+      }
     }
   }
+}
+
+/// One of the Attractors page's attractors: where it sits and its label
+struct AttractorSite {
+  x: f32,
+  y: f32,
+  label: &'static str,
+  color: Color,
+}
+
+/// The Attractors page's point, vortex, turbulence and repel attractors on
+/// a `w` x `h` screen
+fn attractor_sites(w: f32, h: f32) -> [AttractorSite; 4] {
+  let site = |x, y, label, color| AttractorSite { x, y, label, color };
+  [
+    site(150.0, 150.0, "Point (attract)", Color::GREEN),
+    site(w - 150.0, 150.0, "Vortex (swirl)", Color::CYAN),
+    site(w / 2.0, h - 100.0, "Turbulence", Color::MAGENTA),
+    site(w / 2.0, h / 2.0 - 50.0, "Repel", Color::RED),
+  ]
 }
 
 fn main() {
