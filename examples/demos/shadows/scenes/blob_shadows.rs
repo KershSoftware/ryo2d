@@ -1,9 +1,9 @@
-//! Blob Shadow Scene
+//! Blob Shadows page
 //!
 //! Demonstrates simple elliptical blob shadows beneath sprites.
 //! Blob shadows are commonly used for characters in platformers and top-down games.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 /// A jumping character for demonstrating height-based shadow scaling
 struct JumpingCharacter {
@@ -13,11 +13,8 @@ struct JumpingCharacter {
   is_jumping: bool,
 }
 
-/// Blob shadow demo scene
-pub struct BlobShadowsScene {
-  screen_w: f32,
-  screen_h: f32,
-
+/// Blob shadow page state
+pub struct BlobShadowsPage {
   // Characters with blob shadows
   characters: Vec<JumpingCharacter>,
 
@@ -28,11 +25,9 @@ pub struct BlobShadowsScene {
   height_scaling_enabled: bool,
 }
 
-impl BlobShadowsScene {
+impl BlobShadowsPage {
   pub fn new() -> Self {
     Self {
-      screen_w: 1280.0,
-      screen_h: 720.0,
       characters: Vec::new(),
       static_objects: Vec::new(),
       height_scaling_enabled: true,
@@ -101,18 +96,24 @@ impl BlobShadowsScene {
   }
 }
 
-impl Scene for BlobShadowsScene {
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
-    self.characters.clear();
-    self.static_objects.clear();
+impl DemoPage for BlobShadowsPage {
+  fn name(&self) -> &str {
+    "Blob"
   }
 
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let (w, h) = ctx.screen_size();
-    self.screen_w = w;
-    self.screen_h = h;
+  fn description(&self) -> &str {
+    "Simple ellipses beneath entities via Renderable.with_blob_shadow(); with height scaling they shrink when jumping."
+  }
 
+  fn settings(&mut self, s: &mut Settings) {
+    s.toggle("Height scaling", &mut self.height_scaling_enabled);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Make the characters jump")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Bright lighting for this demo
     if let Some(lighting) = ctx.lighting {
       lighting.set_ui_affected_by_lighting(false);
@@ -174,46 +175,13 @@ impl Scene for BlobShadowsScene {
     }
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(super::HardShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(super::DropShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(super::SoftShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(super::ColoredShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(super::ContactShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(super::AmbientOcclusionScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit8) {
-      return SceneAction::Switch(Box::new(super::RaymarchedShadowsScene::new()));
-    }
-
-    // Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Toggle height scaling
-    if ctx.input.key_pressed(KeyCode::KeyH) {
-      self.height_scaling_enabled = !self.height_scaling_enabled;
-
-      // Update all character shadows
-      for char in &self.characters {
-        if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(char.entity)
-          && let Some(ref mut blob) = renderable.blob_shadow
-        {
-          blob.height_scaling = self.height_scaling_enabled;
-        }
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    // Keep every character shadow in step with the setting
+    for char in &self.characters {
+      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(char.entity)
+        && let Some(ref mut blob) = renderable.blob_shadow
+      {
+        blob.height_scaling = self.height_scaling_enabled;
       }
     }
 
@@ -257,83 +225,5 @@ impl Scene for BlobShadowsScene {
         }
       }
     }
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let white = Color::WHITE;
-    let gray = Color::new(180, 180, 180, 255);
-    let highlight = Color::new(255, 255, 100, 255);
-    let bg = Some(Color::new(0, 0, 0, 180));
-
-    // Scene indicator
-    ui.label(
-      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray",
-      10.0,
-      10.0,
-      highlight,
-      bg,
-    );
-
-    // Title
-    ui.label("Blob Shadows (Elliptical)", 10.0, 40.0, white, bg);
-
-    // Height scaling status
-    let scaling_status = if self.height_scaling_enabled {
-      "ON"
-    } else {
-      "OFF"
-    };
-    ui.label(
-      &format!("Height Scaling: {} (H)", scaling_status),
-      10.0,
-      70.0,
-      if self.height_scaling_enabled {
-        highlight
-      } else {
-        gray
-      },
-      bg,
-    );
-
-    // Controls
-    ui.label("Controls:", 10.0, 105.0, white, bg);
-    ui.label("  Space: Make characters jump", 10.0, 125.0, gray, bg);
-    ui.label(
-      "  H: Toggle height-based shadow scaling",
-      10.0,
-      145.0,
-      gray,
-      bg,
-    );
-    ui.label("  1-6: Switch shadow scenes", 10.0, 165.0, gray, bg);
-    ui.label("  ESC: Quit", 10.0, 185.0, gray, bg);
-
-    // Description
-    ui.label(
-      "Blob shadows are simple ellipses beneath entities.",
-      10.0,
-      220.0,
-      gray,
-      bg,
-    );
-    ui.label(
-      "With height scaling, shadows shrink when jumping!",
-      10.0,
-      240.0,
-      gray,
-      bg,
-    );
-
-    // Feature description
-    ui.label(
-      "Blob shadows via Renderable.with_blob_shadow()",
-      self.screen_w - 360.0,
-      self.screen_h - 30.0,
-      gray,
-      bg,
-    );
-    SceneAction::Continue
   }
 }

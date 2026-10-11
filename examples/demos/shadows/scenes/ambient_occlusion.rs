@@ -1,15 +1,12 @@
-//! Ambient Occlusion Scene
+//! Ambient Occlusion page
 //!
 //! Demonstrates 2D screen-space ambient occlusion effect.
 //! AO darkens corners and crevices based on edge detection.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
-/// Ambient occlusion demo scene
-pub struct AmbientOcclusionScene {
-  screen_w: f32,
-  screen_h: f32,
-
+/// Ambient occlusion page state
+pub struct AmbientOcclusionPage {
   // AO settings
   ao_intensity: f32,
   ao_radius: f32,
@@ -20,11 +17,9 @@ pub struct AmbientOcclusionScene {
   sprites: Vec<Entity>,
 }
 
-impl AmbientOcclusionScene {
+impl AmbientOcclusionPage {
   pub fn new() -> Self {
     Self {
-      screen_w: 1280.0,
-      screen_h: 720.0,
       ao_intensity: 0.5,
       ao_radius: 16.0,
       ao_bias: 0.05,
@@ -54,18 +49,23 @@ impl AmbientOcclusionScene {
   }
 }
 
-impl Scene for AmbientOcclusionScene {
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
-    self.sprites.clear();
-    ctx.effects.disable_ambient_occlusion();
+impl DemoPage for AmbientOcclusionPage {
+  fn name(&self) -> &str {
+    "Ambient Occlusion"
   }
 
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let (w, h) = ctx.screen_size();
-    self.screen_w = w;
-    self.screen_h = h;
+  fn description(&self) -> &str {
+    "Screen-space ambient occlusion: edge-based darkening of corners where surfaces meet."
+  }
 
+  fn settings(&mut self, s: &mut Settings) {
+    s.toggle("AO", &mut self.ao_enabled);
+    s.float("Intensity", &mut self.ao_intensity, 0.0..=1.0, 0.05);
+    s.float("Radius", &mut self.ao_radius, 1.0..=64.0, 1.0);
+    s.float("Bias", &mut self.ao_bias, 0.001..=0.5, 0.005);
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Bright ambient lighting for this demo
     if let Some(lighting) = ctx.lighting {
       lighting.set_ui_affected_by_lighting(false);
@@ -171,190 +171,15 @@ impl Scene for AmbientOcclusionScene {
         &format!("small_box_{}", i),
       ));
     }
+  }
 
-    // Apply initial AO settings
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     if self.ao_enabled {
       ctx
         .effects
         .set_ambient_occlusion_custom(self.ao_intensity, self.ao_radius, self.ao_bias);
+    } else {
+      ctx.effects.disable_ambient_occlusion();
     }
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(super::HardShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(super::DropShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(super::BlobShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(super::SoftShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(super::ColoredShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(super::ContactShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit8) {
-      return SceneAction::Switch(Box::new(super::RaymarchedShadowsScene::new()));
-    }
-
-    // Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Toggle AO
-    if ctx.input.key_pressed(KeyCode::KeyA) {
-      self.ao_enabled = !self.ao_enabled;
-      if self.ao_enabled {
-        ctx
-          .effects
-          .set_ambient_occlusion_custom(self.ao_intensity, self.ao_radius, self.ao_bias);
-      } else {
-        ctx.effects.disable_ambient_occlusion();
-      }
-    }
-
-    // Adjust intensity
-    if ctx.input.key_down(KeyCode::KeyI) {
-      self.ao_intensity = (self.ao_intensity + 0.01).min(1.0);
-      if self.ao_enabled {
-        ctx
-          .effects
-          .set_ambient_occlusion_custom(self.ao_intensity, self.ao_radius, self.ao_bias);
-      }
-    }
-    if ctx.input.key_down(KeyCode::KeyK) {
-      self.ao_intensity = (self.ao_intensity - 0.01).max(0.0);
-      if self.ao_enabled {
-        ctx
-          .effects
-          .set_ambient_occlusion_custom(self.ao_intensity, self.ao_radius, self.ao_bias);
-      }
-    }
-
-    // Adjust radius
-    if ctx.input.key_down(KeyCode::KeyR) {
-      self.ao_radius = (self.ao_radius + 0.5).min(64.0);
-      if self.ao_enabled {
-        ctx
-          .effects
-          .set_ambient_occlusion_custom(self.ao_intensity, self.ao_radius, self.ao_bias);
-      }
-    }
-    if ctx.input.key_down(KeyCode::KeyF) {
-      self.ao_radius = (self.ao_radius - 0.5).max(1.0);
-      if self.ao_enabled {
-        ctx
-          .effects
-          .set_ambient_occlusion_custom(self.ao_intensity, self.ao_radius, self.ao_bias);
-      }
-    }
-
-    // Adjust bias
-    if ctx.input.key_down(KeyCode::KeyB) {
-      self.ao_bias = (self.ao_bias + 0.005).min(0.5);
-      if self.ao_enabled {
-        ctx
-          .effects
-          .set_ambient_occlusion_custom(self.ao_intensity, self.ao_radius, self.ao_bias);
-      }
-    }
-    if ctx.input.key_down(KeyCode::KeyV) {
-      self.ao_bias = (self.ao_bias - 0.005).max(0.001);
-      if self.ao_enabled {
-        ctx
-          .effects
-          .set_ambient_occlusion_custom(self.ao_intensity, self.ao_radius, self.ao_bias);
-      }
-    }
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let white = Color::WHITE;
-    let gray = Color::new(180, 180, 180, 255);
-    let highlight = Color::new(255, 255, 100, 255);
-    let bg = Some(Color::new(0, 0, 0, 180));
-
-    // Scene indicator
-    ui.label(
-      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray",
-      10.0,
-      10.0,
-      highlight,
-      bg,
-    );
-
-    // Title
-    ui.label("Ambient Occlusion (Post-Process)", 10.0, 40.0, white, bg);
-
-    // AO status
-    let ao_status = if self.ao_enabled { "ON" } else { "OFF" };
-    ui.label(
-      &format!("AO: {} (A)", ao_status),
-      10.0,
-      70.0,
-      if self.ao_enabled { highlight } else { gray },
-      bg,
-    );
-
-    // Parameters
-    ui.label(
-      &format!("Intensity: {:.2} (I/K)", self.ao_intensity),
-      10.0,
-      100.0,
-      gray,
-      bg,
-    );
-    ui.label(
-      &format!("Radius: {:.1}px (R/F)", self.ao_radius),
-      10.0,
-      120.0,
-      gray,
-      bg,
-    );
-    ui.label(
-      &format!("Bias: {:.3} (B/V)", self.ao_bias),
-      10.0,
-      140.0,
-      gray,
-      bg,
-    );
-
-    // Controls
-    ui.label("Controls:", 10.0, 175.0, white, bg);
-    ui.label("  A: Toggle ambient occlusion", 10.0, 195.0, gray, bg);
-    ui.label("  I/K: Increase/decrease intensity", 10.0, 215.0, gray, bg);
-    ui.label("  R/F: Increase/decrease radius", 10.0, 235.0, gray, bg);
-    ui.label("  B/V: Increase/decrease bias", 10.0, 255.0, gray, bg);
-    ui.label("  1-7: Switch shadow scenes", 10.0, 275.0, gray, bg);
-    ui.label("  ESC: Quit", 10.0, 295.0, gray, bg);
-
-    // Description
-    ui.label(
-      "Edge-based AO darkens corners where surfaces meet.",
-      10.0,
-      330.0,
-      gray,
-      bg,
-    );
-
-    // API example
-    ui.label(
-      "ctx.effects.set_ambient_occlusion(intensity, radius)",
-      self.screen_w - 420.0,
-      self.screen_h - 30.0,
-      gray,
-      bg,
-    );
-    SceneAction::Continue
   }
 }

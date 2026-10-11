@@ -1,16 +1,12 @@
-//! Ray-marched Shadows Scene
+//! Ray-marched Shadows page
 //!
 //! Demonstrates per-pixel ray casting for accurate 2D shadows.
 //! Ray-marching provides more precise shadows for complex occluder shapes.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
-/// Ray-marched shadow demo scene state
-pub struct RaymarchedShadowsScene {
-  // Screen dimensions
-  screen_w: f32,
-  screen_h: f32,
-
+/// Ray-marched shadow page state
+pub struct RaymarchedShadowsPage {
   // Player-controlled light
   light_entity: Option<Entity>,
   /// The marker drawn at the light
@@ -20,7 +16,7 @@ pub struct RaymarchedShadowsScene {
   light_color: Color,
 
   // Ray-march settings
-  raymarch_samples: u32,
+  raymarch_samples: i32,
 
   // Placed occluders (by player)
   placed_occluders: Vec<Entity>,
@@ -29,12 +25,9 @@ pub struct RaymarchedShadowsScene {
   static_occluders: Vec<Entity>,
 }
 
-impl RaymarchedShadowsScene {
+impl RaymarchedShadowsPage {
   pub fn new() -> Self {
     Self {
-      screen_w: 1280.0,
-      screen_h: 720.0,
-
       light_entity: None,
       light_visual: None,
       light_x: 640.0,
@@ -51,7 +44,7 @@ impl RaymarchedShadowsScene {
   fn create_light(&self) -> Light2D {
     Light2D::point(self.light_color, 400.0)
       .with_intensity(1.3)
-      .with_raymarched_shadows(self.raymarch_samples)
+      .with_raymarched_shadows(self.raymarch_samples.clamp(4, 64) as u32)
   }
 
   fn update_light(&mut self, ctx: &mut SceneContext) {
@@ -126,28 +119,28 @@ impl RaymarchedShadowsScene {
       let _ = ctx.world.despawn(entity);
     }
   }
-
-  fn reset_placed_occluders(&mut self, ctx: &mut SceneContext) {
-    for entity in self.placed_occluders.drain(..) {
-      let _ = ctx.world.despawn(entity);
-    }
-  }
 }
 
-impl Scene for RaymarchedShadowsScene {
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
-    self.placed_occluders.clear();
-    self.static_occluders.clear();
-    self.light_entity = None;
-    self.light_visual = None;
+impl DemoPage for RaymarchedShadowsPage {
+  fn name(&self) -> &str {
+    "Ray-marched"
   }
 
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let (w, h) = ctx.screen_size();
-    self.screen_w = w;
-    self.screen_h = h;
+  fn description(&self) -> &str {
+    "Per-pixel ray casting for accurate shadows; more samples are smoother."
+  }
 
+  fn settings(&mut self, s: &mut Settings) {
+    s.int("Samples", &mut self.raymarch_samples, 4..=64);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::mouse(
+      "Move the light; left click places a box, right click removes one",
+    )]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting - dark ambient for dramatic effect
     if let Some(lighting) = ctx.lighting {
       lighting.set_ui_affected_by_lighting(false);
@@ -194,47 +187,11 @@ impl Scene for RaymarchedShadowsScene {
     )));
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(super::HardShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(super::DropShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(super::BlobShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(super::SoftShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(super::ColoredShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(super::ContactShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(super::AmbientOcclusionScene::new()));
-    }
-
-    // Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Move light to mouse position
     let (mx, my) = ctx.input.mouse_position();
     self.light_x = mx;
     self.light_y = my;
-
-    // Adjust ray-march samples
-    if ctx.input.key_pressed(KeyCode::KeyW) {
-      self.raymarch_samples = (self.raymarch_samples + 4).min(64);
-    }
-    if ctx.input.key_pressed(KeyCode::KeyS) {
-      self.raymarch_samples = (self.raymarch_samples.saturating_sub(4)).max(4);
-    }
 
     // Place occluder on left click
     if ctx.input.mouse_pressed(MouseButton::Left) {
@@ -247,89 +204,23 @@ impl Scene for RaymarchedShadowsScene {
       self.remove_nearest_occluder(ctx, mx, my);
     }
 
-    // Reset placed occluders
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.reset_placed_occluders(ctx);
-    }
-
     // Update the light
     self.update_light(ctx);
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let white = Color::WHITE;
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let gray = Color::new(180, 180, 180, 255);
-    let highlight = Color::new(255, 255, 100, 255);
     let bg = Some(Color::new(0, 0, 0, 180));
+    let area = content_area(ui);
 
-    // Scene indicator
-    ui.label(
-      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray",
-      10.0,
-      10.0,
-      highlight,
-      bg,
-    );
-
-    // Title
-    ui.label("Ray-marched Shadows (Per-Pixel)", 10.0, 40.0, white, bg);
-
-    // Ray-march info
-    ui.label(
-      &format!("Samples: {} (W/S)", self.raymarch_samples),
-      10.0,
-      70.0,
-      gray,
-      bg,
-    );
-
-    // Occluder count
     let placed = self.placed_occluders.len();
     let total = placed + self.static_occluders.len();
     ui.label(
       &format!("Occluders: {} placed / {} total", placed, total),
-      10.0,
-      100.0,
+      area.x + 10.0,
+      area.y + 10.0,
       gray,
       bg,
     );
-
-    // Controls
-    ui.label("Controls:", 10.0, 135.0, white, bg);
-    ui.label("  Mouse: Move light", 10.0, 155.0, gray, bg);
-    ui.label("  W/S: Adjust samples (4-64)", 10.0, 175.0, gray, bg);
-    ui.label("  Left Click: Place box", 10.0, 195.0, gray, bg);
-    ui.label("  Right Click: Remove box", 10.0, 215.0, gray, bg);
-    ui.label("  R: Reset placed boxes", 10.0, 235.0, gray, bg);
-    ui.label("  1-8: Switch scenes", 10.0, 255.0, gray, bg);
-    ui.label("  ESC: Quit", 10.0, 275.0, gray, bg);
-
-    // Description
-    ui.label(
-      "Per-pixel ray casting produces accurate shadows",
-      10.0,
-      310.0,
-      gray,
-      bg,
-    );
-    ui.label(
-      "for complex occluder shapes. Higher samples = smoother.",
-      10.0,
-      330.0,
-      gray,
-      bg,
-    );
-
-    // API example
-    ui.label(
-      "Light2D::point(c, r).with_raymarched_shadows(32)",
-      self.screen_w - 400.0,
-      self.screen_h - 30.0,
-      gray,
-      bg,
-    );
-    SceneAction::Continue
   }
 }

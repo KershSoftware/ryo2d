@@ -1,16 +1,13 @@
-//! Contact Shadow Scene
+//! Contact Shadows page
 //!
 //! Demonstrates contact shadows - small, concentrated shadows at contact points
 //! between objects and surfaces. Contact shadows simulate ambient occlusion and
 //! create visual grounding for objects.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
-/// Contact shadow demo scene
-pub struct ContactShadowsScene {
-  screen_w: f32,
-  screen_h: f32,
-
+/// Contact shadow page state
+pub struct ContactShadowsPage {
   // Demo objects with contact shadows
   objects: Vec<Entity>,
 
@@ -20,11 +17,9 @@ pub struct ContactShadowsScene {
   falloff: f32,
 }
 
-impl ContactShadowsScene {
+impl ContactShadowsPage {
   pub fn new() -> Self {
     Self {
-      screen_w: 1280.0,
-      screen_h: 720.0,
       objects: Vec::new(),
       radius: 8.0,
       intensity: 0.6,
@@ -73,17 +68,22 @@ impl ContactShadowsScene {
   }
 }
 
-impl Scene for ContactShadowsScene {
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
-    self.objects.clear();
+impl DemoPage for ContactShadowsPage {
+  fn name(&self) -> &str {
+    "Contact"
   }
 
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let (w, h) = ctx.screen_size();
-    self.screen_w = w;
-    self.screen_h = h;
+  fn description(&self) -> &str {
+    "Small, concentrated shadows at object bases that ground them on the surface."
+  }
 
+  fn settings(&mut self, s: &mut Settings) {
+    s.float("Radius", &mut self.radius, 2.0..=30.0, 1.0);
+    s.float("Intensity", &mut self.intensity, 0.1..=1.0, 0.05);
+    s.float("Falloff", &mut self.falloff, 0.5..=4.0, 0.25);
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Bright lighting to show contact shadows clearly
     if let Some(lighting) = ctx.lighting {
       lighting.set_ui_affected_by_lighting(false);
@@ -190,172 +190,7 @@ impl Scene for ContactShadowsScene {
     }
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(super::HardShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(super::DropShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(super::BlobShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(super::SoftShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(super::ColoredShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      // Already on this scene, but keeping consistent pattern
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(super::AmbientOcclusionScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit8) {
-      return SceneAction::Switch(Box::new(super::RaymarchedShadowsScene::new()));
-    }
-
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    let speed = 1.0 / 60.0;
-    let mut changed = false;
-
-    // Adjust radius (Q/A)
-    if ctx.input.key_down(KeyCode::KeyQ) {
-      self.radius = (self.radius + 10.0 * speed).min(30.0);
-      changed = true;
-    }
-    if ctx.input.key_down(KeyCode::KeyA) {
-      self.radius = (self.radius - 10.0 * speed).max(2.0);
-      changed = true;
-    }
-
-    // Adjust intensity (W/S)
-    if ctx.input.key_down(KeyCode::KeyW) {
-      self.intensity = (self.intensity + 0.5 * speed).min(1.0);
-      changed = true;
-    }
-    if ctx.input.key_down(KeyCode::KeyS) {
-      self.intensity = (self.intensity - 0.5 * speed).max(0.1);
-      changed = true;
-    }
-
-    // Adjust falloff (E/D)
-    if ctx.input.key_down(KeyCode::KeyE) {
-      self.falloff = (self.falloff + 2.0 * speed).min(4.0);
-      changed = true;
-    }
-    if ctx.input.key_down(KeyCode::KeyD) {
-      self.falloff = (self.falloff - 2.0 * speed).max(0.5);
-      changed = true;
-    }
-
-    // Presets
-    if ctx.input.key_pressed(KeyCode::KeyZ) {
-      // Sharp preset
-      self.radius = 6.0;
-      self.intensity = 0.7;
-      self.falloff = 3.0;
-      changed = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyX) {
-      // Soft preset
-      self.radius = 12.0;
-      self.intensity = 0.4;
-      self.falloff = 1.0;
-      changed = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyC) {
-      // Default preset
-      self.radius = 8.0;
-      self.intensity = 0.6;
-      self.falloff = 2.0;
-      changed = true;
-    }
-
-    if changed {
-      self.update_all_shadows(ctx);
-    }
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let white = Color::WHITE;
-    let gray = Color::new(180, 180, 180, 255);
-    let highlight = Color::new(255, 255, 100, 255);
-    let bg = Some(Color::new(0, 0, 0, 180));
-
-    // Scene indicator
-    ui.label(
-      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray",
-      10.0,
-      10.0,
-      highlight,
-      bg,
-    );
-
-    // Title
-    ui.label("Contact Shadows (Ambient Occlusion)", 10.0, 40.0, white, bg);
-
-    // Current settings
-    ui.label(
-      &format!("Radius: {:.1} (Q/A)", self.radius),
-      10.0,
-      70.0,
-      gray,
-      bg,
-    );
-    ui.label(
-      &format!("Intensity: {:.2} (W/S)", self.intensity),
-      10.0,
-      95.0,
-      gray,
-      bg,
-    );
-
-    let falloff_desc = match self.falloff {
-      f if f < 1.5 => "Soft",
-      f if f < 2.5 => "Medium",
-      _ => "Sharp",
-    };
-    ui.label(
-      &format!("Falloff: {:.1} ({}) (E/D)", self.falloff, falloff_desc),
-      10.0,
-      120.0,
-      gray,
-      bg,
-    );
-
-    // Presets
-    ui.label(
-      "Presets: [Z] Sharp  [X] Soft  [C] Default",
-      10.0,
-      155.0,
-      gray,
-      bg,
-    );
-
-    // Controls
-    ui.label("Controls:", 10.0, 190.0, white, bg);
-    ui.label("  Q/A: Radius +/-", 10.0, 210.0, gray, bg);
-    ui.label("  W/S: Intensity +/-", 10.0, 230.0, gray, bg);
-    ui.label("  E/D: Falloff +/-", 10.0, 250.0, gray, bg);
-    ui.label("  1-6: Switch shadow scenes", 10.0, 270.0, gray, bg);
-    ui.label("  ESC: Quit", 10.0, 290.0, gray, bg);
-
-    // Description
-    ui.label(
-      "Small shadows at object bases",
-      self.screen_w - 260.0,
-      self.screen_h - 30.0,
-      gray,
-      bg,
-    );
-    SceneAction::Continue
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+    self.update_all_shadows(ctx);
   }
 }

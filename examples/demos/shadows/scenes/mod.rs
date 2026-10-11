@@ -1,4 +1,4 @@
-//! Shadow demo scenes
+//! Shadow demo pages
 //!
 //! Each module contains a different shadow type demonstration.
 
@@ -11,11 +11,11 @@ mod hard_shadows;
 mod raymarched_shadows;
 mod soft_shadows;
 
-pub use ambient_occlusion::AmbientOcclusionScene;
-pub use blob_shadows::BlobShadowsScene;
-pub use colored_shadows::ColoredShadowsScene;
-pub use contact_shadows::ContactShadowsScene;
-pub use drop_shadows::DropShadowsScene;
-pub use hard_shadows::HardShadowsScene;
-pub use raymarched_shadows::RaymarchedShadowsScene;
-pub use soft_shadows::SoftShadowsScene;
+pub use ambient_occlusion::AmbientOcclusionPage;
+pub use blob_shadows::BlobShadowsPage;
+pub use colored_shadows::ColoredShadowsPage;
+pub use contact_shadows::ContactShadowsPage;
+pub use drop_shadows::DropShadowsPage;
+pub use hard_shadows::HardShadowsPage;
+pub use raymarched_shadows::RaymarchedShadowsPage;
+pub use soft_shadows::SoftShadowsPage;

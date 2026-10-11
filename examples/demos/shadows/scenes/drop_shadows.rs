@@ -1,9 +1,9 @@
-//! Drop Shadow Scene
+//! Drop Shadows page
 //!
 //! Demonstrates artist-controlled drop shadows for sprites.
 //! Drop shadows are simple offset shadows that don't require light sources.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 /// Shadow preset for demonstration
 #[derive(Clone, Copy, PartialEq)]
@@ -16,15 +16,15 @@ enum ShadowPreset {
 }
 
 impl ShadowPreset {
-  fn name(&self) -> &'static str {
-    match self {
-      ShadowPreset::Default => "Default",
-      ShadowPreset::Below => "Below",
-      ShadowPreset::Diagonal => "Diagonal",
-      ShadowPreset::Squashed => "Squashed (Isometric)",
-      ShadowPreset::Custom => "Custom",
-    }
-  }
+  const ALL: [ShadowPreset; 5] = [
+    ShadowPreset::Default,
+    ShadowPreset::Below,
+    ShadowPreset::Diagonal,
+    ShadowPreset::Squashed,
+    ShadowPreset::Custom,
+  ];
+
+  const NAMES: [&'static str; 5] = ["Default", "Below", "Diagonal", "Squashed", "Custom"];
 
   fn create(&self, custom: &CustomShadowParams) -> DropShadow {
     match self {
@@ -34,7 +34,7 @@ impl ShadowPreset {
       ShadowPreset::Squashed => DropShadow::squashed(12.0, 0.3),
       ShadowPreset::Custom => DropShadow::new()
         .offset(custom.offset_x, custom.offset_y)
-        .color(Color::new(0, 0, 0, custom.alpha))
+        .color(Color::new(0, 0, 0, custom.alpha.clamp(0, 255) as u8))
         .scale(custom.scale_x, custom.scale_y),
     }
   }
@@ -44,7 +44,7 @@ impl ShadowPreset {
 struct CustomShadowParams {
   offset_x: f32,
   offset_y: f32,
-  alpha: u8,
+  alpha: i32,
   scale_x: f32,
   scale_y: f32,
 }
@@ -61,16 +61,13 @@ impl Default for CustomShadowParams {
   }
 }
 
-/// Drop shadow demo scene
-pub struct DropShadowsScene {
-  screen_w: f32,
-  screen_h: f32,
-
+/// Drop shadow page state
+pub struct DropShadowsPage {
   // Demo sprites
   sprites: Vec<Entity>,
 
-  // Current shadow preset
-  current_preset: ShadowPreset,
+  // Current shadow preset (index into ShadowPreset::ALL)
+  preset: usize,
   custom_params: CustomShadowParams,
 
   // Animation
@@ -78,21 +75,23 @@ pub struct DropShadowsScene {
   animate_sprites: bool,
 }
 
-impl DropShadowsScene {
+impl DropShadowsPage {
   pub fn new() -> Self {
     Self {
-      screen_w: 1280.0,
-      screen_h: 720.0,
       sprites: Vec::new(),
-      current_preset: ShadowPreset::Default,
+      preset: 0,
       custom_params: CustomShadowParams::default(),
       animation_time: 0.0,
       animate_sprites: true,
     }
   }
 
+  fn current_preset(&self) -> ShadowPreset {
+    ShadowPreset::ALL[self.preset.min(ShadowPreset::ALL.len() - 1)]
+  }
+
   fn update_all_shadows(&mut self, ctx: &mut SceneContext) {
-    let shadow = self.current_preset.create(&self.custom_params);
+    let shadow = self.current_preset().create(&self.custom_params);
     for &entity in &self.sprites {
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(entity) {
         renderable.drop_shadow = Some(shadow.clone());
@@ -143,18 +142,29 @@ impl DropShadowsScene {
   }
 }
 
-impl Scene for DropShadowsScene {
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    // Clean up all entities when leaving scene
-    ctx.world.clear();
-    self.sprites.clear();
+impl DemoPage for DropShadowsPage {
+  fn name(&self) -> &str {
+    "Drop"
   }
 
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let (w, h) = ctx.screen_size();
-    self.screen_w = w;
-    self.screen_h = h;
+  fn description(&self) -> &str {
+    "Artist-controlled offset shadows via Renderable.with_drop_shadow()."
+  }
 
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Style", &mut self.preset, &ShadowPreset::NAMES);
+    s.toggle("Animation", &mut self.animate_sprites);
+    if self.current_preset() == ShadowPreset::Custom {
+      let p = &mut self.custom_params;
+      s.float("Offset X", &mut p.offset_x, -40.0..=40.0, 1.0);
+      s.float("Offset Y", &mut p.offset_y, -40.0..=40.0, 1.0);
+      s.int("Alpha", &mut p.alpha, 0..=255);
+      s.float("Scale X", &mut p.scale_x, 0.1..=2.0, 0.1);
+      s.float("Scale Y", &mut p.scale_y, 0.1..=2.0, 0.1);
+    }
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting - brighter for drop shadow demo
     if let Some(lighting) = ctx.lighting {
       lighting.set_ui_affected_by_lighting(false);
@@ -181,7 +191,7 @@ impl Scene for DropShadowsScene {
       Renderable::sprite(sky).with_z_order(-1),
     ));
 
-    let shadow = self.current_preset.create(&self.custom_params);
+    let shadow = self.current_preset().create(&self.custom_params);
 
     // Spawn demo sprites in a row
     // Different colored boxes to show shadows on various sprites
@@ -224,110 +234,8 @@ impl Scene for DropShadowsScene {
     }
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(super::HardShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(super::BlobShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(super::SoftShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(super::ColoredShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(super::ContactShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(super::AmbientOcclusionScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit8) {
-      return SceneAction::Switch(Box::new(super::RaymarchedShadowsScene::new()));
-    }
-
-    // Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Cycle shadow presets with Tab
-    if ctx.input.key_pressed(KeyCode::Tab) {
-      self.current_preset = match self.current_preset {
-        ShadowPreset::Default => ShadowPreset::Below,
-        ShadowPreset::Below => ShadowPreset::Diagonal,
-        ShadowPreset::Diagonal => ShadowPreset::Squashed,
-        ShadowPreset::Squashed => ShadowPreset::Custom,
-        ShadowPreset::Custom => ShadowPreset::Default,
-      };
-      self.update_all_shadows(ctx);
-    }
-
-    // Toggle animation
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.animate_sprites = !self.animate_sprites;
-    }
-
-    // Custom shadow adjustments (when in custom mode)
-    if self.current_preset == ShadowPreset::Custom {
-      let mut changed = false;
-
-      // Offset X (A/D)
-      if ctx.input.key_down(KeyCode::KeyA) {
-        self.custom_params.offset_x -= 20.0 * dt;
-        changed = true;
-      }
-      if ctx.input.key_down(KeyCode::KeyD) {
-        self.custom_params.offset_x += 20.0 * dt;
-        changed = true;
-      }
-
-      // Offset Y (W/S)
-      if ctx.input.key_down(KeyCode::KeyW) {
-        self.custom_params.offset_y -= 20.0 * dt;
-        changed = true;
-      }
-      if ctx.input.key_down(KeyCode::KeyS) {
-        self.custom_params.offset_y += 20.0 * dt;
-        changed = true;
-      }
-
-      // Alpha (Q/E)
-      if ctx.input.key_down(KeyCode::KeyQ) {
-        self.custom_params.alpha = self.custom_params.alpha.saturating_sub((100.0 * dt) as u8);
-        changed = true;
-      }
-      if ctx.input.key_down(KeyCode::KeyE) {
-        self.custom_params.alpha = self.custom_params.alpha.saturating_add((100.0 * dt) as u8);
-        changed = true;
-      }
-
-      // Scale X (Z/C)
-      if ctx.input.key_down(KeyCode::KeyZ) {
-        self.custom_params.scale_x = (self.custom_params.scale_x - dt).max(0.1);
-        changed = true;
-      }
-      if ctx.input.key_down(KeyCode::KeyC) {
-        self.custom_params.scale_x = (self.custom_params.scale_x + dt).min(2.0);
-        changed = true;
-      }
-
-      // Scale Y (X/V) - using X for down since it's below Z
-      if ctx.input.key_down(KeyCode::KeyX) {
-        self.custom_params.scale_y = (self.custom_params.scale_y - dt).max(0.1);
-        changed = true;
-      }
-      if ctx.input.key_down(KeyCode::KeyV) {
-        self.custom_params.scale_y = (self.custom_params.scale_y + dt).min(2.0);
-        changed = true;
-      }
-
-      if changed {
-        self.update_all_shadows(ctx);
-      }
-    }
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    self.update_all_shadows(ctx);
 
     // Animate sprites (bobbing motion)
     if self.animate_sprites {
@@ -349,106 +257,5 @@ impl Scene for DropShadowsScene {
         }
       }
     }
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let white = Color::WHITE;
-    let gray = Color::new(180, 180, 180, 255);
-    let highlight = Color::new(255, 255, 100, 255);
-    let bg = Some(Color::new(0, 0, 0, 180));
-
-    // Scene indicator
-    ui.label(
-      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray",
-      10.0,
-      10.0,
-      highlight,
-      bg,
-    );
-
-    // Title
-    ui.label("Drop Shadows (Artist-Controlled)", 10.0, 40.0, white, bg);
-
-    // Current preset
-    ui.label(
-      &format!("Preset: {} (Tab to cycle)", self.current_preset.name()),
-      10.0,
-      70.0,
-      highlight,
-      bg,
-    );
-
-    // Animation status
-    let anim_status = if self.animate_sprites { "ON" } else { "OFF" };
-    ui.label(
-      &format!("Animation: {} (Space)", anim_status),
-      10.0,
-      100.0,
-      gray,
-      bg,
-    );
-
-    // Custom controls (only shown in custom mode)
-    if self.current_preset == ShadowPreset::Custom {
-      ui.label("Custom Shadow Controls:", 10.0, 135.0, white, bg);
-      ui.label(
-        &format!(
-          "  Offset: ({:.1}, {:.1}) [A/D, W/S]",
-          self.custom_params.offset_x, self.custom_params.offset_y
-        ),
-        10.0,
-        155.0,
-        gray,
-        bg,
-      );
-      ui.label(
-        &format!("  Alpha: {} [Q/E]", self.custom_params.alpha),
-        10.0,
-        175.0,
-        gray,
-        bg,
-      );
-      ui.label(
-        &format!(
-          "  Scale: ({:.2}, {:.2}) [Z/C, X/V]",
-          self.custom_params.scale_x, self.custom_params.scale_y
-        ),
-        10.0,
-        195.0,
-        gray,
-        bg,
-      );
-    }
-
-    // Description
-    let desc_y = if self.current_preset == ShadowPreset::Custom {
-      230.0
-    } else {
-      135.0
-    };
-
-    let description = match self.current_preset {
-      ShadowPreset::Default => "Simple offset shadow (4px diagonal)",
-      ShadowPreset::Below => "Shadow directly below sprite",
-      ShadowPreset::Diagonal => "Classic drop shadow at 45 degrees",
-      ShadowPreset::Squashed => "Flattened shadow for top-down/isometric",
-      ShadowPreset::Custom => "Fully customizable shadow parameters",
-    };
-    ui.label(description, 10.0, desc_y, gray, bg);
-
-    // Feature description
-    ui.label(
-      "Drop shadows via Renderable.with_drop_shadow()",
-      self.screen_w - 360.0,
-      self.screen_h - 30.0,
-      gray,
-      bg,
-    );
-
-    // ESC hint
-    ui.label("ESC: Quit", 10.0, self.screen_h - 30.0, gray, bg);
-    SceneAction::Continue
   }
 }

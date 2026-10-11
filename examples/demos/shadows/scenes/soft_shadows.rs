@@ -1,16 +1,12 @@
-//! Soft Shadow Scene
+//! Soft Shadows page
 //!
 //! Demonstrates soft shadows with configurable edge softness.
 //! Soft shadows fade gradually at the edges instead of having hard edges.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
-/// Soft shadow demo scene state
-pub struct SoftShadowsScene {
-  // Screen dimensions
-  screen_w: f32,
-  screen_h: f32,
-
+/// Soft shadow page state
+pub struct SoftShadowsPage {
   // Player-controlled light
   light_entity: Option<Entity>,
   /// The marker drawn at the light
@@ -28,12 +24,9 @@ pub struct SoftShadowsScene {
   static_occluders: Vec<Entity>,
 }
 
-impl SoftShadowsScene {
+impl SoftShadowsPage {
   pub fn new() -> Self {
     Self {
-      screen_w: 1280.0,
-      screen_h: 720.0,
-
       light_entity: None,
       light_visual: None,
       light_x: 640.0,
@@ -98,20 +91,25 @@ impl SoftShadowsScene {
   }
 }
 
-impl Scene for SoftShadowsScene {
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    // Clean up all entities when leaving scene
-    ctx.world.clear();
-    self.static_occluders.clear();
-    self.light_entity = None;
-    self.light_visual = None;
+impl DemoPage for SoftShadowsPage {
+  fn name(&self) -> &str {
+    "Soft"
   }
 
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let (w, h) = ctx.screen_size();
-    self.screen_w = w;
-    self.screen_h = h;
+  fn description(&self) -> &str {
+    "Shadows with a gradual edge fade instead of hard edges."
+  }
 
+  fn settings(&mut self, s: &mut Settings) {
+    s.float("Softness", &mut self.softness, 0.0..=1.0, 0.05);
+    s.float("Light radius", &mut self.light_radius, 150.0..=600.0, 10.0);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::mouse("Move the light")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting
     if let Some(lighting) = ctx.lighting {
       lighting.set_ui_affected_by_lighting(false);
@@ -165,139 +163,13 @@ impl Scene for SoftShadowsScene {
     )));
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(super::HardShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(super::DropShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(super::BlobShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(super::ColoredShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(super::ContactShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(super::AmbientOcclusionScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit8) {
-      return SceneAction::Switch(Box::new(super::RaymarchedShadowsScene::new()));
-    }
-
-    // Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Move light to mouse position
     let (mx, my) = ctx.input.mouse_position();
     self.light_x = mx;
     self.light_y = my;
 
-    // Adjust softness with W/S keys
-    if ctx.input.key_down(KeyCode::KeyW) {
-      self.softness = (self.softness + 0.5 * (1.0 / 60.0)).min(1.0);
-    }
-    if ctx.input.key_down(KeyCode::KeyS) {
-      self.softness = (self.softness - 0.5 * (1.0 / 60.0)).max(0.0);
-    }
-
-    // Adjust light radius with Q/E keys
-    if ctx.input.key_down(KeyCode::KeyE) {
-      self.light_radius = (self.light_radius + 100.0 * (1.0 / 60.0)).min(600.0);
-    }
-    if ctx.input.key_down(KeyCode::KeyQ) {
-      self.light_radius = (self.light_radius - 100.0 * (1.0 / 60.0)).max(150.0);
-    }
-
-    // Toggle between presets with number keys (5-7)
-    if ctx.input.key_pressed(KeyCode::KeyZ) {
-      self.softness = 0.0; // Hard shadows
-    }
-    if ctx.input.key_pressed(KeyCode::KeyX) {
-      self.softness = 0.5; // Medium soft
-    }
-    if ctx.input.key_pressed(KeyCode::KeyC) {
-      self.softness = 1.0; // Very soft
-    }
-
     // Update the light
     self.update_light(ctx);
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let white = Color::WHITE;
-    let gray = Color::new(180, 180, 180, 255);
-    let highlight = Color::new(255, 255, 100, 255);
-    let bg = Some(Color::new(0, 0, 0, 180));
-
-    // Scene indicator
-    ui.label(
-      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray",
-      10.0,
-      10.0,
-      highlight,
-      bg,
-    );
-
-    // Title
-    ui.label("Soft Shadows", 10.0, 40.0, white, bg);
-
-    // Softness level
-    let softness_desc = match self.softness {
-      s if s < 0.1 => "Hard",
-      s if s < 0.4 => "Slight",
-      s if s < 0.7 => "Medium",
-      _ => "Very Soft",
-    };
-    ui.label(
-      &format!("Softness: {:.2} ({}) (W/S)", self.softness, softness_desc),
-      10.0,
-      70.0,
-      gray,
-      bg,
-    );
-
-    // Light radius
-    ui.label(
-      &format!("Light Radius: {:.0} (Q/E)", self.light_radius),
-      10.0,
-      95.0,
-      gray,
-      bg,
-    );
-
-    // Presets
-    ui.label(
-      "Presets: [Z] Hard  [X] Medium  [C] Very Soft",
-      10.0,
-      130.0,
-      gray,
-      bg,
-    );
-
-    // Controls
-    ui.label("Controls:", 10.0, 165.0, white, bg);
-    ui.label("  Mouse: Move light", 10.0, 185.0, gray, bg);
-    ui.label("  W/S: Adjust softness", 10.0, 205.0, gray, bg);
-    ui.label("  Q/E: Adjust radius", 10.0, 225.0, gray, bg);
-    ui.label("  ESC: Quit", 10.0, 245.0, gray, bg);
-
-    // Feature description
-    ui.label(
-      "Shadows with gradual edge fade",
-      self.screen_w - 280.0,
-      self.screen_h - 30.0,
-      gray,
-      bg,
-    );
-    SceneAction::Continue
   }
 }

@@ -1,10 +1,10 @@
-//! Colored Shadow Scene
+//! Colored Shadows page
 //!
 //! Demonstrates colored shadows - shadows that have a color tint rather than
 //! being pure black. Useful for stained glass effects, atmospheric lighting,
 //! and artistic stylization.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 /// Preset shadow colors
 #[derive(Clone, Copy, PartialEq)]
@@ -19,17 +19,25 @@ enum ShadowColorPreset {
 }
 
 impl ShadowColorPreset {
-  fn name(&self) -> &'static str {
-    match self {
-      Self::Black => "Black (Default)",
-      Self::Red => "Red",
-      Self::Blue => "Blue",
-      Self::Purple => "Purple",
-      Self::Warm => "Warm (Sunset)",
-      Self::Cool => "Cool (Moonlight)",
-      Self::Custom => "Custom",
-    }
-  }
+  const ALL: [ShadowColorPreset; 7] = [
+    Self::Black,
+    Self::Red,
+    Self::Blue,
+    Self::Purple,
+    Self::Warm,
+    Self::Cool,
+    Self::Custom,
+  ];
+
+  const NAMES: [&'static str; 7] = [
+    "Black",
+    "Red",
+    "Blue",
+    "Purple",
+    "Warm (Sunset)",
+    "Cool (Moonlight)",
+    "Custom",
+  ];
 
   fn color(&self, custom: Color) -> Color {
     match self {
@@ -42,25 +50,10 @@ impl ShadowColorPreset {
       Self::Custom => custom,
     }
   }
-
-  fn next(&self) -> Self {
-    match self {
-      Self::Black => Self::Red,
-      Self::Red => Self::Blue,
-      Self::Blue => Self::Purple,
-      Self::Purple => Self::Warm,
-      Self::Warm => Self::Cool,
-      Self::Cool => Self::Custom,
-      Self::Custom => Self::Black,
-    }
-  }
 }
 
-/// Colored shadow demo scene
-pub struct ColoredShadowsScene {
-  screen_w: f32,
-  screen_h: f32,
-
+/// Colored shadow page state
+pub struct ColoredShadowsPage {
   // Light entity
   light_entity: Option<Entity>,
   /// The marker drawn at the light
@@ -68,34 +61,40 @@ pub struct ColoredShadowsScene {
   light_x: f32,
   light_y: f32,
 
-  // Shadow color settings
-  current_preset: ShadowColorPreset,
-  custom_color: Color,
+  // Shadow color settings (preset indexes ShadowColorPreset::ALL)
+  preset: usize,
+  custom_rgb: [i32; 3],
 
   // Occluders
   static_occluders: Vec<Entity>,
 }
 
-impl ColoredShadowsScene {
+impl ColoredShadowsPage {
   pub fn new() -> Self {
     Self {
-      screen_w: 1280.0,
-      screen_h: 720.0,
-
       light_entity: None,
       light_visual: None,
       light_x: 640.0,
       light_y: 360.0,
 
-      current_preset: ShadowColorPreset::Black,
-      custom_color: Color::new(100, 100, 100, 255),
+      preset: 0,
+      custom_rgb: [100, 100, 100],
 
       static_occluders: Vec::new(),
     }
   }
 
+  fn current_preset(&self) -> ShadowColorPreset {
+    ShadowColorPreset::ALL[self.preset.min(ShadowColorPreset::ALL.len() - 1)]
+  }
+
+  fn custom_color(&self) -> Color {
+    let [r, g, b] = self.custom_rgb.map(|c| c.clamp(0, 255) as u8);
+    Color::new(r, g, b, 255)
+  }
+
   fn create_light(&self) -> Light2D {
-    let shadow_color = self.current_preset.color(self.custom_color);
+    let shadow_color = self.current_preset().color(self.custom_color());
     Light2D::point(Color::WHITE, 400.0)
       .with_intensity(1.4)
       .with_shadows()
@@ -145,19 +144,29 @@ impl ColoredShadowsScene {
   }
 }
 
-impl Scene for ColoredShadowsScene {
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
-    self.static_occluders.clear();
-    self.light_entity = None;
-    self.light_visual = None;
+impl DemoPage for ColoredShadowsPage {
+  fn name(&self) -> &str {
+    "Colored"
   }
 
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let (w, h) = ctx.screen_size();
-    self.screen_w = w;
-    self.screen_h = h;
+  fn description(&self) -> &str {
+    "Tinted shadows for stained glass, atmosphere and stylization."
+  }
 
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Shadow colour", &mut self.preset, &ShadowColorPreset::NAMES);
+    if self.current_preset() == ShadowColorPreset::Custom {
+      s.int("R", &mut self.custom_rgb[0], 0..=255);
+      s.int("G", &mut self.custom_rgb[1], 0..=255);
+      s.int("B", &mut self.custom_rgb[2], 0..=255);
+    }
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::mouse("Move the light")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting
     if let Some(lighting) = ctx.lighting {
       lighting.set_ui_affected_by_lighting(false);
@@ -207,164 +216,12 @@ impl Scene for ColoredShadowsScene {
     )));
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(super::HardShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(super::DropShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(super::BlobShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(super::SoftShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(super::ContactShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(super::AmbientOcclusionScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit8) {
-      return SceneAction::Switch(Box::new(super::RaymarchedShadowsScene::new()));
-    }
-
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Move light to mouse
     let (mx, my) = ctx.input.mouse_position();
     self.light_x = mx;
     self.light_y = my;
 
-    // Cycle presets with Tab
-    if ctx.input.key_pressed(KeyCode::Tab) {
-      self.current_preset = self.current_preset.next();
-    }
-
-    // Custom color adjustments (when in custom mode)
-    if self.current_preset == ShadowColorPreset::Custom {
-      let speed = 150.0 * (1.0 / 60.0);
-
-      // R channel (Q/A)
-      if ctx.input.key_down(KeyCode::KeyQ) {
-        self.custom_color.r = self.custom_color.r.saturating_add(speed as u8);
-      }
-      if ctx.input.key_down(KeyCode::KeyA) {
-        self.custom_color.r = self.custom_color.r.saturating_sub(speed as u8);
-      }
-
-      // G channel (W/S)
-      if ctx.input.key_down(KeyCode::KeyW) {
-        self.custom_color.g = self.custom_color.g.saturating_add(speed as u8);
-      }
-      if ctx.input.key_down(KeyCode::KeyS) {
-        self.custom_color.g = self.custom_color.g.saturating_sub(speed as u8);
-      }
-
-      // B channel (E/D)
-      if ctx.input.key_down(KeyCode::KeyE) {
-        self.custom_color.b = self.custom_color.b.saturating_add(speed as u8);
-      }
-      if ctx.input.key_down(KeyCode::KeyD) {
-        self.custom_color.b = self.custom_color.b.saturating_sub(speed as u8);
-      }
-    }
-
     self.update_light(ctx);
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let white = Color::WHITE;
-    let gray = Color::new(180, 180, 180, 255);
-    let highlight = Color::new(255, 255, 100, 255);
-    let bg = Some(Color::new(0, 0, 0, 180));
-
-    // Scene indicator
-    ui.label(
-      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray",
-      10.0,
-      10.0,
-      highlight,
-      bg,
-    );
-
-    // Title
-    ui.label("Colored Shadows", 10.0, 40.0, white, bg);
-
-    // Current preset
-    let shadow_color = self.current_preset.color(self.custom_color);
-    ui.label(
-      &format!("Shadow Color: {} (Tab)", self.current_preset.name()),
-      10.0,
-      70.0,
-      highlight,
-      bg,
-    );
-
-    // Show RGB values
-    ui.label(
-      &format!(
-        "RGB: ({}, {}, {})",
-        shadow_color.r, shadow_color.g, shadow_color.b
-      ),
-      10.0,
-      95.0,
-      gray,
-      bg,
-    );
-
-    // Custom controls
-    if self.current_preset == ShadowColorPreset::Custom {
-      ui.label("Custom Color Controls:", 10.0, 130.0, white, bg);
-      ui.label(
-        "  Q/A: Red +/-",
-        10.0,
-        150.0,
-        Color::new(255, 150, 150, 255),
-        bg,
-      );
-      ui.label(
-        "  W/S: Green +/-",
-        10.0,
-        170.0,
-        Color::new(150, 255, 150, 255),
-        bg,
-      );
-      ui.label(
-        "  E/D: Blue +/-",
-        10.0,
-        190.0,
-        Color::new(150, 150, 255, 255),
-        bg,
-      );
-    }
-
-    // Controls
-    let ctrl_y = if self.current_preset == ShadowColorPreset::Custom {
-      225.0
-    } else {
-      130.0
-    };
-    ui.label("Controls:", 10.0, ctrl_y, white, bg);
-    ui.label("  Mouse: Move light", 10.0, ctrl_y + 20.0, gray, bg);
-    ui.label("  Tab: Cycle shadow colors", 10.0, ctrl_y + 40.0, gray, bg);
-    ui.label("  1-5: Switch shadow scenes", 10.0, ctrl_y + 60.0, gray, bg);
-    ui.label("  ESC: Quit", 10.0, ctrl_y + 80.0, gray, bg);
-
-    // Feature description
-    ui.label(
-      "Tinted shadows for atmosphere",
-      self.screen_w - 260.0,
-      self.screen_h - 30.0,
-      gray,
-      bg,
-    );
-    SceneAction::Continue
   }
 }

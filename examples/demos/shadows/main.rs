@@ -1,37 +1,25 @@
 //! Shadow Demo
 //!
-//! Demonstrates various shadow techniques in Ryo2D.
-//!
-//! ## Scenes
-//!
-//! - **[1] Hard Shadows**: Real-time shadow volumes from light occluders
-//! - **[2] Drop Shadows**: Artist-controlled offset shadows for sprites
-//! - **[3] Blob Shadows**: Simple elliptical shadows beneath entities
-//! - **[4] Soft Shadows**: Shadows with gradual edge fade
-//! - **[5] Colored Shadows**: Tinted shadows for atmospheric effects
-//! - **[6] Contact Shadows**: Concentrated shadows at object contact points
-//!
-//! ## Controls
-//!
-//! Press **1-6** to switch between shadow type demos.
-//! Press **ESC** to quit.
-//!
-//! See each scene for specific controls.
+//! Eight shadow techniques on the demo-kit shell, one page each: hard
+//! (shadow volumes), drop, blob, soft, colored, contact, ambient occlusion
+//! and ray-marched shadows.
 
 mod scenes;
 
-use ryo2d::prelude::*;
-use scenes::HardShadowsScene;
+use demo_kit::prelude::*;
+use scenes::*;
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Shadow Demo - Ryo2D")
+  Demo::new("Shadows")
     .resolution(1280, 720)
-    .target_fps(60)
-    .start_scene(HardShadowsScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| b.target_fps(60))
+    .page(HardShadowsPage::new)
+    .page(DropShadowsPage::new)
+    .page(BlobShadowsPage::new)
+    .page(SoftShadowsPage::new)
+    .page(ColoredShadowsPage::new)
+    .page(ContactShadowsPage::new)
+    .page(AmbientOcclusionPage::new)
+    .page(RaymarchedShadowsPage::new)
+    .run();
 }

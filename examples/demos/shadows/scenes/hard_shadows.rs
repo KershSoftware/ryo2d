@@ -1,15 +1,11 @@
-//! Hard Shadow Scene
+//! Hard Shadows page
 //!
 //! Demonstrates 2D hard shadows from light occluders using shadow volumes.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
-/// Hard shadow demo scene state
-pub struct HardShadowsScene {
-  // Screen dimensions
-  screen_w: f32,
-  screen_h: f32,
-
+/// Hard shadow page state
+pub struct HardShadowsPage {
   // Player-controlled light
   light_entity: Option<Entity>,
   /// The marker drawn at the light
@@ -28,12 +24,9 @@ pub struct HardShadowsScene {
   static_occluders: Vec<Entity>,
 }
 
-impl HardShadowsScene {
+impl HardShadowsPage {
   pub fn new() -> Self {
     Self {
-      screen_w: 1280.0,
-      screen_h: 720.0,
-
       light_entity: None,
       light_visual: None,
       light_x: 640.0,
@@ -138,28 +131,30 @@ impl HardShadowsScene {
     }
   }
 
-  fn reset_placed_occluders(&mut self, ctx: &mut SceneContext) {
-    for entity in self.placed_occluders.drain(..) {
-      let _ = ctx.world.despawn(entity);
-    }
-  }
 }
 
-impl Scene for HardShadowsScene {
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    // Clean up all entities when leaving scene
-    ctx.world.clear();
-    self.placed_occluders.clear();
-    self.static_occluders.clear();
-    self.light_entity = None;
-    self.light_visual = None;
+impl DemoPage for HardShadowsPage {
+  fn name(&self) -> &str {
+    "Hard"
   }
 
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let (w, h) = ctx.screen_size();
-    self.screen_w = w;
-    self.screen_h = h;
+  fn description(&self) -> &str {
+    "Real-time hard shadows from LightOccluder2D shadow volumes."
+  }
 
+  fn settings(&mut self, s: &mut Settings) {
+    s.toggle("Spotlight", &mut self.is_spotlight);
+    s.float("Spot rotation", &mut self.spotlight_direction, 0.0..=359.0, 5.0);
+    s.float("Cone", &mut self.spotlight_angle, 15.0..=120.0, 5.0);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::mouse(
+      "Move the light; left click places a box, right click removes one",
+    )]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting
     if let Some(lighting) = ctx.lighting {
       lighting.set_ui_affected_by_lighting(false);
@@ -223,64 +218,11 @@ impl Scene for HardShadowsScene {
     )));
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(super::DropShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(super::BlobShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(super::SoftShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(super::ColoredShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(super::ContactShadowsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(super::AmbientOcclusionScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit8) {
-      return SceneAction::Switch(Box::new(super::RaymarchedShadowsScene::new()));
-    }
-
-    // Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Move light to mouse position
     let (mx, my) = ctx.input.mouse_position();
     self.light_x = mx;
     self.light_y = my;
-
-    // Toggle spotlight mode
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.is_spotlight = !self.is_spotlight;
-    }
-
-    // Spotlight controls
-    if self.is_spotlight {
-      let dt = 1.0 / 60.0; // Approximate dt for smooth controls
-      if ctx.input.key_down(KeyCode::KeyQ) {
-        self.spotlight_direction = (self.spotlight_direction - 90.0 * dt) % 360.0;
-        if self.spotlight_direction < 0.0 {
-          self.spotlight_direction += 360.0;
-        }
-      }
-      if ctx.input.key_down(KeyCode::KeyE) {
-        self.spotlight_direction = (self.spotlight_direction + 90.0 * dt) % 360.0;
-      }
-      if ctx.input.key_down(KeyCode::KeyW) {
-        self.spotlight_angle = (self.spotlight_angle + 30.0 * dt).min(120.0);
-      }
-      if ctx.input.key_down(KeyCode::KeyS) {
-        self.spotlight_angle = (self.spotlight_angle - 30.0 * dt).max(15.0);
-      }
-    }
 
     // Place occluder on left click
     if ctx.input.mouse_pressed(MouseButton::Left) {
@@ -293,94 +235,23 @@ impl Scene for HardShadowsScene {
       self.remove_nearest_occluder(ctx, mx, my);
     }
 
-    // Reset placed occluders
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.reset_placed_occluders(ctx);
-    }
-
     // Update the light
     self.update_light(ctx);
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let white = Color::WHITE;
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let gray = Color::new(180, 180, 180, 255);
-    let highlight = Color::new(255, 255, 100, 255);
     let bg = Some(Color::new(0, 0, 0, 180));
+    let area = content_area(ui);
 
-    // Scene indicator
-    ui.label(
-      "[1] Hard [2] Drop [3] Blob [4] Soft [5] Color [6] Contact [7] AO [8] Ray",
-      10.0,
-      10.0,
-      highlight,
-      bg,
-    );
-
-    // Title
-    ui.label("Hard Shadows (Shadow Volumes)", 10.0, 40.0, white, bg);
-
-    // Light mode
-    let mode = if self.is_spotlight {
-      "Spotlight"
-    } else {
-      "Point Light"
-    };
-    ui.label(
-      &format!("Light Mode: {} (Space)", mode),
-      10.0,
-      70.0,
-      gray,
-      bg,
-    );
-
-    // Spotlight info
-    if self.is_spotlight {
-      ui.label(
-        &format!("Direction: {:.0} deg (Q/E)", self.spotlight_direction),
-        10.0,
-        95.0,
-        gray,
-        bg,
-      );
-      ui.label(
-        &format!("Cone Angle: {:.0} deg (W/S)", self.spotlight_angle),
-        10.0,
-        120.0,
-        gray,
-        bg,
-      );
-    }
-
-    // Occluder count
     let placed = self.placed_occluders.len();
     let total = placed + self.static_occluders.len();
     ui.label(
       &format!("Occluders: {} placed / {} total", placed, total),
-      10.0,
-      150.0,
+      area.x + 10.0,
+      area.y + 10.0,
       gray,
       bg,
     );
-
-    // Controls
-    ui.label("Controls:", 10.0, 185.0, white, bg);
-    ui.label("  Mouse: Move light", 10.0, 205.0, gray, bg);
-    ui.label("  Left Click: Place box", 10.0, 225.0, gray, bg);
-    ui.label("  Right Click: Remove box", 10.0, 245.0, gray, bg);
-    ui.label("  R: Reset placed boxes", 10.0, 265.0, gray, bg);
-    ui.label("  ESC: Quit", 10.0, 285.0, gray, bg);
-
-    // Feature description
-    ui.label(
-      "Real-time shadows from LightOccluder2D",
-      self.screen_w - 320.0,
-      self.screen_h - 30.0,
-      gray,
-      bg,
-    );
-    SceneAction::Continue
   }
 }
