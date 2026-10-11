@@ -19,7 +19,6 @@ struct GridSquare;
 #[derive(Debug)]
 struct Player;
 
-/// Main demo scene
 /// Intensity curves offered by the Curve setting
 const CURVES: [(&str, Ease); 3] = [
   ("Linear", Ease::Linear),

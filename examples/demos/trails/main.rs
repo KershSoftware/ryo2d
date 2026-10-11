@@ -448,10 +448,7 @@ impl TrailsPage {
     // Bright vertical reference lines (3px, magenta) at endpoint positions
     // so the user can see how Round/Square extend past Butt
     for &ref_x in &[cap_x0, cap_x1] {
-      let pts = vec![
-        Vec2::new(ref_x, sh * 0.12),
-        Vec2::new(ref_x, sh * 0.58),
-      ];
+      let pts = vec![Vec2::new(ref_x, sh * 0.12), Vec2::new(ref_x, sh * 0.58)];
       let line = Line2D::new(pts, Color::rgb(255, 50, 255), 3.0)
         .with_cap(LineCap::Butt)
         .with_style(TrailStyle::Solid);

@@ -2,8 +2,8 @@
 
 use demo_kit::prelude::*;
 use image::RgbaImage;
-use std::sync::atomic::{AtomicU32, Ordering};
 use ryo2d::testing::HeadlessEngine;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 const RED: Color = Color::new(200, 60, 60, 255);
 
@@ -138,9 +138,7 @@ impl DemoPage for Bright {
 
 /// The bright page's frame with its line height and the layout's pad
 fn bright_frame() -> Option<(RgbaImage, u32, u32)> {
-  let demo = Demo::new("Chrome")
-    .resolution(320, 240)
-    .page(|| Bright);
+  let demo = Demo::new("Chrome").resolution(320, 240).page(|| Bright);
   let mut engine = HeadlessEngine::new_or_skip(demo.engine_builder())?;
   engine.step_frames(2).ok()?;
   let image = engine.frame().ok()?;

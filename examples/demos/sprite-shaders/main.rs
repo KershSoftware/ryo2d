@@ -83,10 +83,17 @@ impl DemoEffect {
 const COLOR_NAMES: [&str; 6] = ["White", "Red", "Cyan", "Yellow", "Magenta", "Green"];
 
 fn palette(index: usize) -> Color {
-  [Color::WHITE, Color::RED, Color::CYAN, Color::YELLOW, Color::MAGENTA, Color::GREEN]
-    .get(index)
-    .copied()
-    .unwrap_or(Color::WHITE)
+  [
+    Color::WHITE,
+    Color::RED,
+    Color::CYAN,
+    Color::YELLOW,
+    Color::MAGENTA,
+    Color::GREEN,
+  ]
+  .get(index)
+  .copied()
+  .unwrap_or(Color::WHITE)
 }
 
 /// Left edges of the plain, custom-shader and effect sprites (96 px wide),
@@ -267,20 +274,20 @@ impl DemoPage for EffectsPage {
     // unreadable file is reported and the sprite is simply left out.
     match ctx.assets.load_shader("assets/shaders/dissolve.wgsl") {
       Ok(shader) => {
-        let handle3 = ctx.assets.create_sprite(create_test_sprite(), "test_sprite_3");
+        let handle3 = ctx
+          .assets
+          .create_sprite(create_test_sprite(), "test_sprite_3");
         let mut custom_transform = Transform::new(SPRITE_X[1], cy);
         custom_transform.scale_x = 3.0;
         custom_transform.scale_y = 3.0;
         self.custom_sprite = Some(
           ctx.world.spawn((
             custom_transform,
-            Renderable::sprite(handle3)
-              .with_z_order(0)
-              .with_shader(
-                SpriteShader::custom(shader)
-                  .with_param("amount", 0.0)
-                  .with_param("edge", Color::rgb(255, 120, 0)),
-              ),
+            Renderable::sprite(handle3).with_z_order(0).with_shader(
+              SpriteShader::custom(shader)
+                .with_param("amount", 0.0)
+                .with_param("edge", Color::rgb(255, 120, 0)),
+            ),
           )),
         );
       }

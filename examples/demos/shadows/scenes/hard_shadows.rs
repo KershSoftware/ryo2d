@@ -130,7 +130,6 @@ impl HardShadowsPage {
       let _ = ctx.world.despawn(entity);
     }
   }
-
 }
 
 impl DemoPage for HardShadowsPage {
@@ -144,7 +143,12 @@ impl DemoPage for HardShadowsPage {
 
   fn settings(&mut self, s: &mut Settings) {
     s.toggle("Spotlight", &mut self.is_spotlight);
-    s.float("Spot rotation", &mut self.spotlight_direction, 0.0..=359.0, 5.0);
+    s.float(
+      "Spot rotation",
+      &mut self.spotlight_direction,
+      0.0..=359.0,
+      5.0,
+    );
     s.float("Cone", &mut self.spotlight_angle, 15.0..=120.0, 5.0);
   }
 

@@ -107,7 +107,13 @@ impl Lobby {
     );
 
     // Title
-    ui.draw_text_anchored("NETPLAY", Anchor::TopCenter, 0.0, area.y + 10.0, Color::WHITE);
+    ui.draw_text_anchored(
+      "NETPLAY",
+      Anchor::TopCenter,
+      0.0,
+      area.y + 10.0,
+      Color::WHITE,
+    );
     ui.draw_text_anchored(
       "Multiplayer Platformer",
       Anchor::TopCenter,

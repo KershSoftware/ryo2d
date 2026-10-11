@@ -233,12 +233,7 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
     }
     let marker = if selected { "> " } else { "  " };
     let label = format!("{marker}{}", row.label);
-    let (label_max, value_max) = row_widths(
-      inner,
-      text_w(ui, &label),
-      text_w(ui, &row.value),
-      gap,
-    );
+    let (label_max, value_max) = row_widths(inner, text_w(ui, &label), text_w(ui, &row.value), gap);
     let label = truncate_to(&label, label_max, |s| text_w(ui, s));
     ui.draw_text(
       &label,

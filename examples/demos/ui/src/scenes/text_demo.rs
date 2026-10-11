@@ -56,7 +56,10 @@ impl DemoPage for TextDemo {
   }
 
   fn settings(&mut self, s: &mut Settings) {
-    let names: Vec<&str> = Self::sample_texts().iter().map(|(title, _)| *title).collect();
+    let names: Vec<&str> = Self::sample_texts()
+      .iter()
+      .map(|(title, _)| *title)
+      .collect();
     s.choice("Sample", &mut self.sample_index, &names);
     s.int("Wrap width", &mut self.wrap_width, 50..=600);
   }
