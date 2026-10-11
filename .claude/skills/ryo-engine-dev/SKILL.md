@@ -39,7 +39,7 @@ User's Scene (Scene trait)
          -> Unlit trails/lines -> UI -> Post-process effects -> Present
 ```
 
-`RenderPipeline` (`render/`) exists but is not wired into the engine; see `src/core/render/AGENTS.md`.
+The frame is drawn by the pass-based `RenderPipeline` (`render/`); see `src/core/render/AGENTS.md`.
 
 ## Module Organization
 
@@ -48,10 +48,10 @@ User's Scene (Scene trait)
 | `engine.rs` | Game loop, window, EngineBuilder |
 | `game.rs` | GpuRenderContext, TimeControl, TimeInfo, WindowRequest |
 | `ecs/` | ECS (hecs wrapper), pooling, tweens |
-| `render/` | Pass-based render pipeline (not wired into the engine) |
+| `render/` | Pass-based render pipeline the engine draws every frame with |
 | `render/pipeline.rs` | RenderPipeline, pass execution |
 | `render/pass.rs` | RenderPass trait |
-| `render/passes/` | Pass implementations (clear, parallax, upload, lighting) |
+| `render/passes/` | Built-in pass implementations (upload, clear, raycast, sprites, lighting, post-process, composite, ...) |
 | `graphics/` | wgpu renderer, GPU sprite batching, camera, sprite animation |
 | `physics/` | Rapier2D integration, colliders |
 | `systems/` | Per-frame engine systems (animation, tween, physics, ...) |

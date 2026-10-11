@@ -235,6 +235,15 @@ fn apply_settings(&mut self, ctx: &mut SceneContext) {
 }
 ```
 
+### Render pipeline
+
+`SceneContext::render_pipeline` is the engine's `RenderPipeline`. Toggle built-in passes (`pass_ids::*`) or insert game passes; changes persist across scenes. See `ryo-renderer` for the pass order and the `RenderPass` trait.
+
+```rust
+ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false)?;
+ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, MyPass)?;
+```
+
 ---
 
 ## Components

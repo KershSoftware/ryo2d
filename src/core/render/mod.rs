@@ -10,7 +10,22 @@
 //! passes live in [`pass_ids`].
 //!
 //! The engine draws every frame through this pipeline
-//! ([`RenderPipeline::default_2d`]).
+//! ([`RenderPipeline::default_2d`]), on one command encoder with one submit.
+//!
+//! # Using it from a game
+//!
+//! The engine's pipeline is reachable as `ctx.render_pipeline` in scene
+//! callbacks. Changes persist across scene transitions. A pass that draws on
+//! the frame uses [`RenderContext::encoder_and_current_view`]:
+//!
+//! ```ignore
+//! use ryo2d::prelude::*;
+//!
+//! // Draw the frame without post-process effects
+//! ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false)?;
+//! // Run a game pass after the effects
+//! ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, MyPass)?;
+//! ```
 
 mod context;
 mod frame;

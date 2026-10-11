@@ -9,10 +9,12 @@ GPU path:  SpriteInstance → BatchCollector → SpriteGpuRenderer → GPU
 
 **When to use the GPU path:** 1000+ sprites (particles, bullets), per-sprite shader effects, or when CPU blitting becomes the bottleneck. Most games use the CPU path. GPU is opt-in via `render_gpu()`.
 
-**Compositing order** (the `default_2d` render pipeline in `core/render/`):
+Both paths are drawn by the engine's `RenderPipeline` (`core/render/`, see its AGENTS.md). Scenes can toggle built-in passes or insert their own through `ctx.render_pipeline`. The graphics module holds the renderers the passes call; it has no render entry points of its own besides `WgpuRenderer::render_frame`, which runs the pipeline.
+
+**Compositing order** (the `gpu_sprites`, `cpu_blend`, `trails`, `lighting`, `unlit_trails`, `post_process`, `ui` and `composite` passes of `default_2d`):
 1. `render_gpu()` sprites (incl. parallax) draw into the game texture first.
 2. The CPU pixel buffer (cleared to transparent each frame) is alpha-blended on top.
-3. Trails, lighting, post-processing, then UI follow.
+3. Trails, lighting, unlit trails and post-processing follow; the UI is composited last, untouched by effects.
 
 So GPU sprites always sit **behind** CPU-rendered entities. `z_order` only orders GPU batches among themselves.
 

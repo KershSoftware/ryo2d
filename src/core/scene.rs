@@ -41,6 +41,7 @@ use super::graphics::Camera;
 use super::input::InputState;
 use super::lighting::{AmbientLight, Atmosphere, LightingRenderer};
 use super::raycast::GpuRaycastRenderer;
+use super::render::RenderPipeline;
 use super::shaders::EffectsManager;
 use super::texture::{TextureContext, TextureManager};
 use super::ui::UiContext;
@@ -173,6 +174,21 @@ pub struct SceneContext<'a> {
   pub lighting: &'a mut Option<LightingRenderer>,
   /// GPU raycasting renderer (None if not initialized)
   pub raycast: &'a mut Option<GpuRaycastRenderer>,
+  /// The frame's render pipeline: toggle built-in passes or insert game passes.
+  ///
+  /// The pipeline belongs to the engine, so changes persist across scene
+  /// transitions. A pass a scene inserts keeps running after the scene
+  /// pops unless the scene removes it.
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// // Draw the frame without post-process effects
+  /// ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false)?;
+  /// // Run a custom pass right after lighting
+  /// ctx.render_pipeline.insert_after(pass_ids::LIGHTING, MyPass)?;
+  /// ```
+  pub render_pipeline: &'a mut RenderPipeline,
   /// Centralized GPU texture manager
   pub(crate) texture_manager: &'a mut TextureManager,
   /// GPU device reference (needed for TextureContext)

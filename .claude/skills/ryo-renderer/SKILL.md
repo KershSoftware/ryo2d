@@ -22,71 +22,66 @@ You help developers work on the rendering system.
 
 ## Rendering Pipeline
 
-Frame rendering is hard-coded in `engine.rs` / `graphics/renderer.rs` (`WgpuRenderer::render_with_gpu_sprites` and the lighting variant). Order, back to front:
+Every frame runs through the engine's `RenderPipeline` (`src/core/render/`), built with `RenderPipeline::default_2d()`. One command encoder, one submit per frame. Passes run in list order:
 
 ```
-1. Clear game texture
-2. render_gpu() sprites (incl. parallax) - behind CPU content
-3. CPU pixel buffer (Renderable sprites) alpha-blended on top
-4. Trails and lines (so lighting applies to them)
-5. Lighting (render_lights + compose) - if enabled
-6. Trails and lines with `with_lighting(false)`, at full brightness on the lit scene
-7. UI composited on top of the lit scene
-8. Post-processing effects (bloom, CRT, vignette, etc.)
-9. Present to screen with letterboxing
+upload        CPU pixel buffer -> GPU
+clear         clear the game texture
+raycast       GPU raycaster (replaces the 2D scene passes while raycasting; clears to black)
+gpu_sprites   render_gpu() sprites (incl. parallax) - behind CPU content
+cpu_blend     CPU pixel buffer (Renderable sprites) alpha-blended on top
+trails        trails and lines (so lighting applies to them)
+lighting      render_lights + compose, if enabled (the lit texture is persistent)
+unlit_trails  trails and lines with `with_lighting(false)`, full brightness on the lit scene
+post_process  bloom, CRT, vignette, etc.
+ui            upload the UI layer (only if the scene drew UI)
+composite     letterboxed present to the window/offscreen target; the UI is blended last, untouched by effects
+capture       frame capture, when requested
 ```
 
-### RenderPass / RenderPipeline (not wired in)
-
-`RenderPipeline` (`src/core/render/`, import from `ryo2d::core::render` - it isn't in the prelude) is a pass-based, topologically sorted pipeline, but **the engine never builds or executes it**. Adding or disabling passes does not change what the game renders. Only `ClearPass`, `ParallaxPass`, `UploadPass` and `LightingPass` exist; the other `pass_ids` are constants only.
+Gotchas:
+- The UI is only composited if the `ui` pass uploaded it this frame. A requested capture is only read back if the `capture` pass ran; otherwise it reports an error.
+- Every game-size texture follows `resize_buffer` (ResizableStretch).
+- Passes are thin: GPU pipelines live in the subsystem renderers (lighting, trails, post-process, ...), and the passes just call them.
 
 ### RenderPass Trait
 
 ```rust
 pub trait RenderPass: Send + Sync {
-    fn id(&self) -> RenderPassId;  // &'static str
-    fn dependencies(&self) -> &[RenderPassId] { &[] }
-    fn execute(&mut self, ctx: &mut RenderContext);
-    fn should_execute(&self, _ctx: &RenderContext) -> bool { true }
-    fn is_enabled(&self) -> bool { true }
-    fn set_enabled(&mut self, _enabled: bool) {}
+    fn id(&self) -> &str;                                   // unique
+    fn should_run(&self, _frame: &FrameInfo) -> bool { true } // only asked while enabled
+    fn execute(&mut self, ctx: &mut RenderContext<'_>);
 }
 ```
 
-### RenderContext
+`RenderContext` exposes `device()`, `queue()`, `encoder()`, `frame()`, `game_size()`, `current_view()` and `encoder_and_current_view()` (the encoder plus the view holding the latest image - draw on it to add to the frame). All of these are in the prelude, with `pass_ids`, `RenderPipeline`, `RenderPipelineError` and `FrameInfo`.
 
-Shared state passed to all passes:
+### Configuring the pipeline from a scene
+
+`ctx.render_pipeline` (on `SceneContext`) is the engine's pipeline, so changes persist across scenes. Ids and anchors are checked: duplicates or unknown ids return `RenderPipelineError`.
 
 ```rust
-pub struct RenderContext<'a> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
-    pub encoder: &'a mut wgpu::CommandEncoder,
-    pub game_texture: &'a wgpu::Texture,
-    pub game_texture_view: &'a wgpu::TextureView,
-    pub scratch_a: Option<&'a wgpu::Texture>,  // Ping-pong buffers
-    pub scratch_b: Option<&'a wgpu::Texture>,
-    pub pixel_buffer: &'a mut [u8],            // CPU buffer
-    pub camera: &'a Camera,
-    pub sprite_gpu: &'a mut SpriteGpuRenderer,
-    pub batch_collector: &'a mut BatchCollector,
-    pub current_source: TextureSlot,           // Which texture has result
-    // ... more fields
+// Toggle a built-in pass
+ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false)?;
+
+// Insert a game pass relative to a named one (or `push` at the end)
+ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, Flash)?;
+ctx.render_pipeline.insert_before(pass_ids::UI, Overlay)?;
+
+// Remove it again
+ctx.render_pipeline.remove("flash");
+```
+
+A game pass draws on the latest image:
+
+```rust
+fn execute(&mut self, ctx: &mut RenderContext<'_>) {
+    let (encoder, view) = ctx.encoder_and_current_view();
+    let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { /* attach `view` */ });
 }
 ```
 
-### Pipeline Configuration
-
-```rust
-// Disable a pass (returns false if no such pass)
-pipeline.set_enabled("lighting", false);
-
-// Add custom pass (inserted by dependency order)
-pipeline.add_pass(MyCustomPass::new());
-
-// Remove a pass
-pipeline.remove_pass("trail");
-```
+Custom shaders and a higher-level effects API for passes are coming; for now a game pass records raw wgpu work.
 
 ## CPU vs GPU Path
 

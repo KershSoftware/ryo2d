@@ -269,6 +269,8 @@ Key WGSL considerations:
 
 Sprites are always-facing-camera 2D images rendered after walls using a 1D Z-buffer.
 
+> Note: this section predates the current `RenderPipeline` (ordered passes, no dependencies or topological sorting); see `src/core/render` for the actual API.
+
 **Pipeline:**
 
 1. Sort all sprites far-to-near (painter's algorithm)
