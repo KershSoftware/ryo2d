@@ -28,6 +28,7 @@ Ids are constants in `pass_ids`.
 - `FrameInfo::world` means the draw list has lit items. `unlit_world` has no flag of its own and returns early without unlit items.
 - Trail vertices are uploaded once per frame by the engine (`TrailRenderer::prepare`) before the pipeline runs; the passes only draw. Sprite instances are uploaded by the `world` pass.
 - `DebugStats::draw_calls` counts the draws of `world` and `unlit_world`.
+- `FrameInfo` carries `world` (the draw list has lit items) and `transition`; the old `gpu_sprites` / `trails` flags and the `upload`, `gpu_sprites`, `cpu_blend`, `trails` and `unlit_trails` passes are gone.
 - Placement: top-left is the screen position truncated to a pixel, size `ceil(w * scale)` by `ceil(h * scale)`; rotated sprites turn about the box centre with integer halves. Blending happens in linear space on the GPU.
 - Crate-internal checks that need engine internals live in `testing/gpu_world.rs`; pixel-level behaviour is in `tests/e2e/gpu_world.rs`.
 

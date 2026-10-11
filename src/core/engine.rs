@@ -2075,7 +2075,7 @@ impl Engine {
     // --- UI & FPS Counter ---
     // Call scene_manager.render_ui with UiContext for immediate-mode UI
     // UI is always rendered to a separate buffer and composited last, ensuring it appears
-    // on top of trails, GPU sprites, lighting, and post-processing effects.
+    // on top of the world, lighting, and post-processing effects.
     self.ui_buffer.fill(0);
     {
       let mut scene_manager = std::mem::take(&mut self.scene_manager);
@@ -2304,7 +2304,7 @@ impl ApplicationHandler for Engine {
     ));
 
     // Present the first frame immediately to prevent white flash on startup
-    // The renderer's pixel buffer is pre-filled with warm cream background
+    // The renderer's game texture is pre-filled with warm cream background
     let _ = renderer.render_blank_frame(&mut RenderPipeline::default_2d(), &[]);
 
     // Now that the first frame is rendered, show the window

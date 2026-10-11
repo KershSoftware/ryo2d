@@ -10,8 +10,7 @@
 //! Everything an entity emits (its shadows first, then the sprite or its
 //! tiles) is a [`DrawKind::Entity`] item at the entity's sort key, in render
 //! cache order, so the shadow draws under its entity. Composite tiles draw at
-//! their own `z_order`; on equal z they follow the entities, as the CPU path
-//! drew them after all entities.
+//! their own `z_order`; on equal z they follow the entities.
 
 use super::{DrawKind, DrawList, TextureRef};
 use crate::core::asset::SpriteHandle;

@@ -174,7 +174,7 @@ pub struct Inactive;
 ```
 
 Engine systems automatically skip `Inactive` entities in:
-- CPU rendering
+- World rendering (entity draw list)
 - Physics registration/simulation
 - Animation systems (Animator, AnimationController)
 - Tween updates

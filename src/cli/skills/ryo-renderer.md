@@ -89,7 +89,11 @@ Custom shaders and a higher-level effects API for passes are coming; for now a g
 
 Everything in the world draws on the GPU in one z-sorted list: entities (`Renderable`, `CompositeTile`, shadows), `render_gpu()` sprites (particles, parallax) and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then `render_gpu` sprite, then trail/line; within a kind, in submission order. Consecutive sprites on one atlas page merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top.
 
-Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities. Only the UI uses CPU drawing now (`Sprite::draw` / `draw_scaled`).
+Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities. `render_gpu` sprites no longer sit behind entities automatically. `Trail2D` and `Line2D` have `with_z_order` (default 0). Debug overlays are unlit lines on top; the transition fade covers the world (including trails) but not the UI. Only the UI uses CPU drawing now (`Sprite::draw` / `draw_scaled`).
+
+### Texture Atlas and Fidelity
+
+Sprite images are packed into shared atlas pages (2048x2048, 1-px extruded border); images over 256 px get their own texture. Games keep texture ids and normalized UVs; UVs outside a sprite's own rect are transparent, so there is no UV wrapping. Unused entries are evicted and re-uploaded automatically. Tint and effects run in sRGB space, quantised like the old CPU path, so opaque tinted pixels look as before; translucent overlaps blend in linear space and may look slightly different. Outline, glow and directional outline draw outside the sprite. Blob and contact shadows are a tinted ellipse; drop shadows are the sprite's silhouette. `DebugStats::draw_calls` counts the world draws.
 
 ## Background Rendering
 

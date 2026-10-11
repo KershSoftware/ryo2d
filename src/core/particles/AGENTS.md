@@ -7,7 +7,7 @@ The engine never runs particles. The scene owns a `ParticleSystem` and drives it
 1. In `update`: `self.particle_system.update(ctx.world, ctx.events, dt)`. This spawns, simulates, applies attractors, and refreshes the emitter particle counts that `is_finished()` reads.
 2. In `render_gpu(ctx: &mut GpuRenderContext)`: first `ctx.upload_sprite(&sprite)` for each particle sprite, then `self.particle_system.collect_for_render(ctx.world, ctx.camera, ctx.batch)`.
 
-Particles go into the GPU sprite batch, so they draw with GPU sprites, before trails and UI.
+Particles go into the `render_gpu` batch and sort by `z_order` (default 0) with entities, other sprites and trails: at equal z they draw after entities and before trails. Give the particle sprite a lower z to sit behind entities. The UI is drawn last.
 
 ## Gotchas
 

@@ -860,20 +860,21 @@ impl Trail2D {
     self.join = join;
   }
 
-  /// Set the draw order (default 0): the trail draws over sprites and lines
-  /// with a lower z and under those with a higher one. At equal z, trails
-  /// draw over sprites.
+  /// Set the draw order (default 0). Trails sort with entities, `render_gpu`
+  /// sprites and lines by z: a trail draws over anything with a lower z and
+  /// under anything with a higher one. At equal z, trails draw after
+  /// entities and sprites, so give a trail its entity's z to keep it in front.
   pub fn with_z_order(mut self, z_order: i32) -> Self {
     self.z_order = z_order;
     self
   }
 
-  /// The draw order of this trail.
+  /// The draw order of this trail (see [`Trail2D::with_z_order`]).
   pub fn z_order(&self) -> i32 {
     self.z_order
   }
 
-  /// Set the draw order of this trail.
+  /// Set the draw order of this trail (see [`Trail2D::with_z_order`]).
   pub fn set_z_order(&mut self, z_order: i32) {
     self.z_order = z_order;
   }

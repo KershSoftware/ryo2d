@@ -18,7 +18,7 @@ Configure the renderer via `ctx.raycast_renderer()` (`set_world`, `set_map_info`
 
 ## Design Decisions
 
-- **GPU-only rendering** - The raycasting path bypasses the CPU pixel buffer entirely for performance
+- **GPU-only rendering** - The raycasting path bypasses the 2D world draw entirely for performance
 - **Texture arrays** - Wall/floor/sprite textures are `texture_2d_array`s from `TextureManager`, indexed by texture ID in the shader
 - **f16 packing** - Map cell heights and light levels are packed as f16 to minimize GPU memory (3×u32 per cell)
 - **Cached bind groups** - Built in `flush_pending()` and reused until textures change (`set_*_textures` invalidates them), avoiding per-frame allocation

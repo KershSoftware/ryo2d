@@ -455,7 +455,7 @@ transform.y = transform.y.clamp(0.0, self.screen_h - sprite_h);
 | `PropertyTween<T>` | Generic value tweening (f32, Vec2, Color, custom Lerp types) |
 | `Parent` / `Children` | Entity hierarchy |
 | `NavAgent` | Navigation and pathfinding |
-| `Trail2D` | Motion trails behind entities |
+| `Trail2D` | Motion trails; `with_z_order` sorts them with entities (default 0, drawn after entities at equal z) |
 
 ## Navigation & Pathfinding
 

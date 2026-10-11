@@ -1061,7 +1061,7 @@ pub trait Scene {
   /// - Any high-performance instanced rendering
   ///
   /// Sprites added here are batched and rendered with GPU instancing,
-  /// which is significantly faster than CPU rendering for large quantities.
+  /// which is significantly faster than one entity per sprite for large quantities.
   ///
   /// # Example
   ///

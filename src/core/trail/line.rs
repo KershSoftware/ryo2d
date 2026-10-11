@@ -271,7 +271,8 @@ impl Line2D {
     self
   }
 
-  /// Set the z-order for rendering.
+  /// Set the draw order (default 0); lines sort with entities, sprites and
+  /// trails by z, and draw last at equal z.
   pub fn with_z_order(mut self, z_order: i32) -> Self {
     self.z_order = z_order;
     self

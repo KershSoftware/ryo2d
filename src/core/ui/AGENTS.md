@@ -22,7 +22,7 @@ The UI system combines two paradigms for game HUDs, menus, and interactive eleme
 
 ## Integration Point
 
-`render_ui()` draws into a separate UI buffer that is composited **last**, above trails, GPU sprites, lighting, and post-processing. Engine stats/FPS overlays and the dev console are drawn into the same `UiContext` after the scene, so they appear on top. Clicks/Escape consumed by UI are propagated to `InputState`, so they don't leak into game input.
+`render_ui()` draws into a separate UI buffer that is composited **last**, above the world, lighting, and post-processing. Engine stats/FPS overlays and the dev console are drawn into the same `UiContext` after the scene, so they appear on top. Clicks/Escape consumed by UI are propagated to `InputState`, so they don't leak into game input.
 
 API usage is covered by the `ryo-ui` skill.
 

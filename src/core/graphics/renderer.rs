@@ -1,10 +1,10 @@
-//! WGPU-based software renderer for 2D games.
+//! WGPU renderer for 2D games.
 //!
 //! This module provides a renderer that:
-//! 1. Maintains a CPU-side pixel buffer (like a framebuffer)
-//! 2. Uploads it to a GPU texture each frame
-//! 3. Applies post-processing effects (optional)
-//! 4. Renders the texture to screen with proper letterboxing/scaling
+//! 1. Runs the render pipeline: the world is drawn on the GPU into the game texture
+//! 2. Applies lighting and post-processing effects (optional)
+//! 3. Composites the CPU-drawn UI layer last
+//! 4. Presents the result with proper letterboxing/scaling
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -87,7 +87,7 @@ struct RendererParts {
   max_height: Option<u32>,
 }
 
-/// Handles wgpu rendering of a software pixel buffer to screen.
+/// Handles wgpu rendering of the game texture to screen.
 pub struct WgpuRenderer {
   // Only set for window renderers (dev windows create extra surfaces from them)
   instance: Option<wgpu::Instance>,
@@ -346,7 +346,7 @@ impl WgpuRenderer {
     } = parts;
     let target_format = target.format();
 
-    // Create the game texture (where we upload our pixel buffer)
+    // Create the game texture (where the world is drawn)
     let texture = device.create_texture(&wgpu::TextureDescriptor {
       label: Some("Game Texture"),
       size: wgpu::Extent3d {
@@ -533,7 +533,7 @@ impl WgpuRenderer {
     self.target.format()
   }
 
-  /// Get the format of the game texture (where GPU sprites render to)
+  /// Get the format of the game texture (where the world renders to)
   pub fn game_texture_format(&self) -> wgpu::TextureFormat {
     wgpu::TextureFormat::Rgba8UnormSrgb
   }
@@ -555,7 +555,7 @@ impl WgpuRenderer {
     self.update_viewport_transform();
   }
 
-  /// Resize the internal pixel buffer (for stretch mode).
+  /// Resize the internal game textures (for stretch mode).
   ///
   /// A zero width or height (a minimised window) is ignored: the buffer keeps
   /// its size, since zero-size textures are invalid.

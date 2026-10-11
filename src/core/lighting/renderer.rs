@@ -1383,7 +1383,7 @@ impl LightingRenderer {
   /// Compose the lit scene from a texture view (instead of pixel data).
   ///
   /// This is the preferred method when the scene is already on a GPU texture
-  /// (e.g., after GPU sprites have been rendered to the game texture).
+  /// (e.g., after the world has been rendered to the game texture).
   ///
   /// # Arguments
   /// * `device` - The wgpu device

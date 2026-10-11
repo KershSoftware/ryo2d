@@ -32,7 +32,7 @@ pub trait Scene {
     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction;  // Fixed timestep
     fn render(&mut self, ctx: &mut SceneContext, alpha: f32) {}            // Custom rendering (alpha = interpolation)
     fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction { SceneAction::Continue }
-    fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {}                // GPU-batched rendering
+    fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {}                // GPU-batched sprites; sorted by z with entities (no longer behind them automatically)
     fn is_transparent(&self) -> bool { false }     // Render scenes below this one too
     fn updates_below(&self) -> bool { false }      // Keep updating scenes below this one
     fn name(&self) -> &str { /* type name */ }

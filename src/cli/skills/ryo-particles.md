@@ -35,6 +35,7 @@ fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
 }
 
 fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+    // Particles sort by z with entities (default 0; give the sprite a lower z to sit behind them)
     gpu.upload_sprite(&self.particle_sprite);  // each particle sprite
     self.particle_system.collect_for_render(gpu.world, gpu.camera, gpu.batch);
 }

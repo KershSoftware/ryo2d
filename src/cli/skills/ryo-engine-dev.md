@@ -35,7 +35,7 @@ User's Scene (Scene trait)
          |
          v
     Frame render (render/, one pass per stage)
-    Clear -> World (entities, sprites, trails/lines by z) -> Lighting
+    Clear -> World (entities, sprites, trails/lines, one z-sorted list; equal z: entities, sprites, trails/lines) -> Lighting
          -> Unlit lines -> Transition -> Post-process effects -> UI -> Composite -> Present
 ```
 

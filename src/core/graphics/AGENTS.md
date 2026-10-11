@@ -20,10 +20,17 @@ The renderers are drawn by the engine's `RenderPipeline` (`core/render/`, see it
 - `BatchCollector` keeps each `render_gpu` sprite in submission order (texture id shared per texture) and pushes them into the `DrawList`. There are no per-texture batches: `SpriteGpuRenderer::prepare_world` merges **consecutive** sprites on one atlas page and pipeline into one draw, so many small textures still cost few draws.
 - **Synchronization**: all instance data is written to the instance buffer **before** the render pass begins (`upload_world`), so the GPU never reads a buffer still being written. Each draw binds `instance_buffer.slice(offset..end)`.
 
+## Texture Atlas and Shading
+
+- Sprite images are packed into shared atlas pages (2048x2048, 1-px extruded border so scaling never bleeds neighbours). Images over 256 px get their own texture. Games keep their texture ids and normalized UVs; UVs outside a sprite's own rect are transparent (there is no UV wrapping). Unused entries are evicted and re-uploaded automatically.
+- Tint and effects are computed in sRGB space and quantised like the old CPU path, so opaque tinted pixels look as before. Translucent overlaps blend in linear space and may look slightly different. Outline, glow and directional outline draw outside the sprite (`DirectionalOutline` works on the GPU).
+- Blob and contact shadows are one tinted ellipse texture; drop shadows are the sprite's silhouette.
+- Debug overlays (colliders, velocities, origins) are unlit lines on top. `DebugStats::draw_calls` counts the world draws.
+
 ## Parallax
 
 - A builder-driven system (`GpuParallaxBackground`), not ECS components: layers are one cohesive visual, and render-time tiling is cheaper than spawning duplicate entities.
-- Rendered from `render_gpu()` at each layer's `z_order`; it sits behind entities only if the layers' z is below theirs (the examples use -100..-20).
+- Rendered from `render_gpu()` at each layer's `z_order`; `render_gpu` sprites no longer sit behind entities automatically, so it sits behind them only if the layers' z is below theirs (the examples use -100..-20).
 
 ## Camera Shake
 
