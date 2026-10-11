@@ -189,7 +189,7 @@ let text = self.username.text();
 
 Features: cursor, selection, clipboard (Ctrl+C/V/X), Shift+arrows, Home/End
 
-`ui.wants_keyboard()` is true when a widget drawn this frame has keyboard focus (a focused text input, or an open dropdown). Check it after drawing and ignore your own key bindings on the next update so typing never triggers them.
+`ui.wants_keyboard()` is true when a widget drawn this frame has keyboard focus (a focused text input, or an open dropdown). Check it after drawing and ignore your own key bindings on the next update so typing never triggers them. Escape leaves a focused text input (and closes an open dropdown) and sets `ui.escape_consumed()`, so the next Escape reaches the scene.
 
 ### Dropdown
 
@@ -377,7 +377,7 @@ if self.show_modal {
 ui.is_hovered(rect)           // Mouse over rect
 ui.is_clicked(rect)           // Left click this frame
 ui.is_held(rect)              // Left button held down
-ui.escape_consumed()          // Escape was pressed (e.g., by dropdown)
+ui.escape_consumed()          // A widget used Escape (closed a dropdown, left a text input)
 ui.click_consumed()           // Click was handled by a widget
 ui.point_in_clip(x, y)        // Point within current clip
 ```

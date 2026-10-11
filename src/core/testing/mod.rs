@@ -200,6 +200,12 @@ impl HeadlessEngine {
   }
 
   /// Press `key` for the next step only; it is released after that step.
+  /// Deliver typed text, as a window's text event does alongside a key press
+  /// (`press_key` and `tap_key` type nothing).
+  pub fn type_text(&mut self, text: &str) {
+    self.engine.input_mut().handle_text_input(text);
+  }
+
   pub fn tap_key(&mut self, key: KeyCode) {
     self.press_key(key);
     self.pending_releases.push(key);

@@ -54,10 +54,24 @@ impl PageScene {
     let dt = ctx.time.fixed_dt;
     let input = &mut *ctx.input;
 
-    if input.key_pressed_and_consume(KeyCode::KeyH) {
+    let help = input.key_pressed_and_consume(KeyCode::KeyH);
+    let escape = input.key_pressed_and_consume(KeyCode::Escape);
+    // `|` so both aliases are consumed
+    let next = input.key_pressed_and_consume(KeyCode::BracketRight)
+      | input.key_pressed_and_consume(KeyCode::PageDown);
+    let prev = input.key_pressed_and_consume(KeyCode::BracketLeft)
+      | input.key_pressed_and_consume(KeyCode::PageUp);
+    let reset = input.key_pressed_and_consume(KeyCode::KeyR);
+    // A key the shell acts on must not also be typed into a field, such as
+    // one the next page focuses on entry
+    if help || escape || next || prev || reset {
+      input.consume_text_input();
+    }
+
+    if help {
       self.help_open = !self.help_open;
     }
-    if input.key_pressed_and_consume(KeyCode::Escape) {
+    if escape {
       if !self.help_open {
         return Err(SceneAction::Quit);
       }
@@ -65,18 +79,13 @@ impl PageScene {
     }
 
     let count = self.def.pages.len();
-    // `|` so both aliases are consumed
-    let next = input.key_pressed_and_consume(KeyCode::BracketRight)
-      | input.key_pressed_and_consume(KeyCode::PageDown);
-    let prev = input.key_pressed_and_consume(KeyCode::BracketLeft)
-      | input.key_pressed_and_consume(KeyCode::PageUp);
     if next {
       return Err(self.switch_to((self.index + 1) % count));
     }
     if prev {
       return Err(self.switch_to((self.index + count - 1) % count));
     }
-    if input.key_pressed_and_consume(KeyCode::KeyR) {
+    if reset {
       return Err(self.switch_to(self.index));
     }
 

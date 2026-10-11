@@ -18,6 +18,9 @@ struct Seen {
   w_down: bool,
   /// The page's content area, from its last UI frame
   content: Option<Rect>,
+  /// The Typing page's field text, once drawn, and whether it has focus
+  typed: Option<String>,
+  field_focused: bool,
 }
 
 type Shared = Arc<Mutex<Seen>>;
@@ -373,6 +376,80 @@ fn the_page_sees_no_input_while_help_is_open() {
   // Closing help hands input back
   tap(&mut engine, KeyCode::Escape);
   assert!(seen(&shared).w_down);
+}
+
+/// A page whose text field starts focused, like the ui demo's Text Input page
+struct Typing {
+  shared: Shared,
+  field: TextInputState,
+}
+
+impl Typing {
+  fn new(shared: &Shared) -> Self {
+    let mut field = TextInputState::new();
+    field.set_focused(true);
+    Self {
+      shared: shared.clone(),
+      field,
+    }
+  }
+}
+
+impl DemoPage for Typing {
+  fn name(&self) -> &str {
+    "Typing"
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    ui.text_input(
+      &mut self.field,
+      Rect::new(10.0, 100.0, 120.0, 20.0),
+      "",
+      0.0,
+    );
+    if let Ok(mut seen) = self.shared.lock() {
+      seen.typed = Some(self.field.text().to_string());
+      seen.field_focused = self.field.is_focused();
+    }
+  }
+}
+
+#[test]
+fn arriving_on_a_focused_field_types_nothing() {
+  let shared = Shared::default();
+  let (a, b) = (shared.clone(), shared.clone());
+  let demo = Demo::new("Typing")
+    .resolution(320, 240)
+    .page(move || Probe::new("one", &a))
+    .page(move || Typing::new(&b));
+  let Some(mut engine) = start(demo) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  // A real `]` press also types "]"
+  engine.type_text("]");
+  tap(&mut engine, KeyCode::BracketRight);
+  assert_eq!(seen(&shared).typed.as_deref(), Some(""));
+}
+
+#[test]
+fn escape_leaves_a_focused_field_before_it_quits() {
+  let shared = Shared::default();
+  let page = shared.clone();
+  let demo = Demo::new("Typing")
+    .resolution(320, 240)
+    .page(move || Typing::new(&page));
+  let Some(mut engine) = start(demo) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  assert!(seen(&shared).field_focused);
+  assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Running);
+  assert!(
+    !seen(&shared).field_focused,
+    "the first Esc leaves the field"
+  );
+  assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Quit);
 }
 
 struct Greedy;

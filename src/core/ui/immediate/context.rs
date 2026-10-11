@@ -1327,6 +1327,15 @@ impl<'a> UiContext<'a> {
       state.set_focused(false);
     }
 
+    // Escape leaves the field, used up so the scene does not also act on it
+    if state.is_focused()
+      && !self.escape_consumed
+      && self.input.key_pressed(winit::keyboard::KeyCode::Escape)
+    {
+      state.set_focused(false);
+      self.escape_consumed = true;
+    }
+
     if state.is_focused() {
       self.keyboard_focus = true;
     }
@@ -2910,6 +2919,30 @@ mod tests {
     focused.set_focused(true);
     ui.text_input(&mut focused, Rect::new(0.0, 30.0, 100.0, 20.0), "", 0.0);
     assert!(ui.wants_keyboard());
+  }
+
+  #[test]
+  fn escape_leaves_a_focused_text_input_and_is_consumed() {
+    let mut input = InputState::new();
+    input.handle_keyboard(
+      winit::keyboard::KeyCode::Escape,
+      winit::event::ElementState::Pressed,
+    );
+    let input: &'static InputState = Box::leak(Box::new(input));
+    let font: &'static BitmapFont = Box::leak(Box::new(super::super::font::create_debug_font()));
+    let mut frame = vec![0u8; 200 * 100 * 4];
+    let mut ui = UiContext::new(&mut frame, 200, 100, input, font);
+    let mut field = TextInputState::new();
+    field.set_focused(true);
+
+    ui.text_input(&mut field, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
+
+    assert!(!field.is_focused());
+    assert!(
+      ui.escape_consumed(),
+      "the scene must not also act on this Esc"
+    );
+    assert!(!ui.wants_keyboard());
   }
 
   #[test]
