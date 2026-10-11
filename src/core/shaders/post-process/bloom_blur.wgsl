@@ -1,6 +1,6 @@
-// Bloom blur pass - 9-tap separable Gaussian blur
+// Bloom blur pass - separable Gaussian blur
 // Direction controlled by params.w: 0.0 = horizontal, 1.0 = vertical
-// Radius scaled by params.z
+// Spread of params.z pixels (sigma = radius / 2)
 
 struct EffectParams {
     color: vec4<f32>,           // Not used (16 bytes)
@@ -46,40 +46,37 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let radius = effect.params.z;
+    let radius = clamp(effect.params.z, 1.0, 32.0);
     let direction = effect.params.w; // 0.0 = horizontal, 1.0 = vertical
 
-    // Pixel size in UV space
-    let pixel_size = vec2<f32>(1.0 / effect.time_resolution.y, 1.0 / effect.time_resolution.z);
-
-    // Direction vector: horizontal or vertical
+    // One texel along the blur direction, in UV space
     var dir: vec2<f32>;
     if direction < 0.5 {
-        dir = vec2<f32>(pixel_size.x, 0.0);
+        dir = vec2<f32>(1.0 / effect.time_resolution.y, 0.0);
     } else {
-        dir = vec2<f32>(0.0, pixel_size.y);
+        dir = vec2<f32>(0.0, 1.0 / effect.time_resolution.z);
     }
-    dir = dir * radius;
 
-    // 9-tap Gaussian weights (sigma ~= 2.7)
-    let w0 = 0.227027027;
-    let w1 = 0.1945945946;
-    let w2 = 0.1216216216;
-    let w3 = 0.0540540541;
-    let w4 = 0.0162162162;
+    // Gaussian sampled at every texel out to `radius`. Each bilinear sample
+    // covers two neighbouring texels, placed between them by their weights,
+    // so the blur stays continuous at any radius.
+    let sigma = radius * 0.5;
+    let falloff = -1.0 / (2.0 * sigma * sigma);
+    let last = i32(ceil(radius));
 
-    // Center sample
-    var result = textureSample(t_input, s_input, in.tex_coord) * w0;
+    var result = textureSampleLevel(t_input, s_input, in.tex_coord, 0.0);
+    var total = 1.0;
+    for (var i = 1; i <= last; i += 2) {
+        let a = f32(i);
+        let b = a + 1.0;
+        let wa = exp(a * a * falloff);
+        let wb = exp(b * b * falloff);
+        let w = wa + wb;
+        let offset = dir * ((a * wa + b * wb) / w);
+        result += textureSampleLevel(t_input, s_input, in.tex_coord + offset, 0.0) * w;
+        result += textureSampleLevel(t_input, s_input, in.tex_coord - offset, 0.0) * w;
+        total += 2.0 * w;
+    }
 
-    // Symmetric taps
-    result += textureSample(t_input, s_input, in.tex_coord + dir * 1.0) * w1;
-    result += textureSample(t_input, s_input, in.tex_coord - dir * 1.0) * w1;
-    result += textureSample(t_input, s_input, in.tex_coord + dir * 2.0) * w2;
-    result += textureSample(t_input, s_input, in.tex_coord - dir * 2.0) * w2;
-    result += textureSample(t_input, s_input, in.tex_coord + dir * 3.0) * w3;
-    result += textureSample(t_input, s_input, in.tex_coord - dir * 3.0) * w3;
-    result += textureSample(t_input, s_input, in.tex_coord + dir * 4.0) * w4;
-    result += textureSample(t_input, s_input, in.tex_coord - dir * 4.0) * w4;
-
-    return vec4<f32>(result.rgb, 1.0);
+    return vec4<f32>(result.rgb / total, 1.0);
 }

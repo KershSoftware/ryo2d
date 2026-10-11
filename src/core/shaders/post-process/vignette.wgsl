@@ -51,13 +51,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let radius = effect.params.y;
     let softness = effect.params.z;
     
-    // Calculate distance from center (normalized to 0-1)
+    // Distance from center, normalized so the corners are at 1.0
     let center = vec2<f32>(0.5, 0.5);
-    let dist = distance(in.tex_coord, center);
+    let dist = distance(in.tex_coord, center) / 0.70710678;
     
     // Smooth vignette falloff
-    // At dist=0 (center): vignette = 0
-    // At dist>radius: vignette approaches intensity
+    // At dist <= radius: vignette = 0
+    // At dist >= radius + softness: vignette = intensity
     let vignette = smoothstep(radius, radius + softness, dist) * intensity;
     
     // Darken the scene by the vignette amount

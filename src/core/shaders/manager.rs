@@ -312,6 +312,9 @@ impl EffectsManager {
   }
 
   /// Set vignette with custom parameters
+  ///
+  /// Darkening begins `radius` from the center (0.0 = center, 1.0 = corners)
+  /// and reaches `intensity` over the next `softness`.
   pub fn set_vignette_custom(&mut self, intensity: f32, radius: f32, softness: f32) {
     let effect = PostProcessEffect::vignette_custom(intensity, radius, softness);
     self.set_effect(effect);

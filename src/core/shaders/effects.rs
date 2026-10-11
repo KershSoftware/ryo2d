@@ -31,9 +31,9 @@ pub enum PostProcessEffect {
   Vignette {
     /// How dark the edges get (0.0 = none, 1.0 = fully black)
     intensity: f32,
-    /// How far the vignette extends from edges (0.0 = edges only, 1.0 = center)
+    /// Distance from the center where darkening begins (0.0 = center, 1.0 = corners)
     radius: f32,
-    /// How soft/gradual the vignette transition is
+    /// Distance over which the darkening fades in, in the same units as `radius`
     softness: f32,
   },
 
