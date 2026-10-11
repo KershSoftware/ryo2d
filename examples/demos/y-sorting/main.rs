@@ -421,11 +421,12 @@ impl DemoPage for YSortingPage {
       self.get_y_sort(),
     )));
 
-    // Place trees around the world
+    // Place trees around the world, clear of the shell's description and
+    // settings panel along the top
     let tree_positions = [
-      (3, 2),
+      (3, 4),
       (7, 3),
-      (15, 2),
+      (13, 4),
       (18, 4),
       (2, 7),
       (12, 6),
