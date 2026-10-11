@@ -212,7 +212,9 @@ impl WfcConfig {
   ///
   /// Uses three tiles: floor, wall, and a border transition tile.
   /// Floor and wall cannot be directly adjacent — they must be separated
-  /// by a border, which forces coherent regions instead of random noise.
+  /// by a border. The grid always completes, but collapse grows outward from
+  /// the first cell, so a map is usually one floor or wall region sprinkled
+  /// with border tiles.
   pub fn simple_preset() -> Self {
     const FLOOR: u32 = 0;
     const WALL: u32 = 1;
@@ -230,9 +232,12 @@ impl WfcConfig {
       .allow_self_adjacent()
       .allow_all_directions(BORDER);
 
-    // Border is always exactly 1 cell thick (no self-adjacency)
+    // Border separates floor from wall. It may touch itself so a boundary of
+    // any shape can form; without that, floor and wall could only meet along
+    // diagonals and most grids ended in a contradiction.
     let border = WfcTile::new(BORDER, TileType::Door)
       .with_weight(1.0)
+      .allow_self_adjacent()
       .allow_all_directions(FLOOR)
       .allow_all_directions(WALL);
 
@@ -509,6 +514,16 @@ mod tests {
     assert_eq!(result, WfcResult::Success);
     assert!(grid.count_type(TileType::Floor) > 0);
     assert!(grid.count_type(TileType::Wall) > 0);
+  }
+
+  #[test]
+  fn simple_preset_completes_a_demo_sized_grid() {
+    let config = WfcConfig::simple_preset();
+    for seed in 0..8 {
+      let mut rng = SeededRng::new(seed);
+      let (_, result) = generate(64, 64, &config, &mut rng);
+      assert_eq!(result, WfcResult::Success, "seed {seed}");
+    }
   }
 
   #[test]
