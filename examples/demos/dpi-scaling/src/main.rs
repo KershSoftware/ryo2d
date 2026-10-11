@@ -71,131 +71,123 @@ impl DemoPage for DpiScalingPage {
 
   fn render_ui(&mut self, ui: &mut UiContext) {
     let (width, height) = ui.screen_size();
-    let width = width as f32;
-    let height = height as f32;
     let current_scale = ui.ui_scale();
     let area = content_area(ui);
 
     // Dark background
-    ui.draw_rect(Rect::new(0.0, 0.0, width, height), Color::rgb(20, 25, 35));
+    ui.draw_rect(
+      Rect::new(0.0, 0.0, width as f32, height as f32),
+      Color::rgb(20, 25, 35),
+    );
 
-    let line_height = (8 * current_scale) as f32 + 4.0;
+    let line_height = ui.text_size("Ag").1 as f32 + 4.0;
+    let char_w = ui.text_size("0").0 as f32;
     let padding = 15.0;
     let margin = area.x;
-    // The settings panel scales with the UI: beside the panels at 1x, above them when larger
-    let panel_w = if current_scale == 1 {
+    let bottom = area.y + area.height;
+    // Beside the settings panel at 1x; below it, full width, when larger
+    let beside = current_scale == 1;
+    let panel_w = if beside {
       area.width * 0.68
     } else {
       area.width
     };
-    let mut y = area.y + 60.0 * (current_scale as f32 - 1.0);
+    let mut y = if beside {
+      area.y
+    } else {
+      area.y + settings_panel_height(ui, 1) + 8.0
+    };
 
     // Helper: panel height for N lines of text
-    let panel_h = |lines: u32| -> f32 { padding * 2.0 + line_height * lines as f32 };
+    let panel_h = |lines: usize| -> f32 { padding * 2.0 + line_height * lines as f32 };
+    let text_x = margin + 20.0;
 
-    // Info panel (3 lines)
-    let info_h = panel_h(3);
-    let info_rect = Rect::new(margin, y, panel_w, info_h);
+    // Info panel
+    let info = [
+      (
+        format!("Window DPI Scale Factor: {:.2}", self.scale_factor),
+        Color::rgb(150, 200, 255),
+      ),
+      (
+        format!("Current UI Scale: {}x", current_scale),
+        Color::rgb(150, 255, 150),
+      ),
+      (
+        format!(
+          "Mode: {}",
+          if self.scale_choice == AUTO {
+            "Auto-detect"
+          } else {
+            "Manual"
+          }
+        ),
+        Color::rgb(255, 200, 150),
+      ),
+    ];
+    let info_rect = Rect::new(margin, y, panel_w, panel_h(info.len()));
     ui.draw_rect(info_rect, Color::rgb(30, 35, 45));
     ui.draw_rect_outline(info_rect, Color::rgb(60, 70, 90), 1.0);
+    for (i, (text, color)) in info.iter().enumerate() {
+      ui.draw_text(text, text_x, y + padding + line_height * i as f32, *color);
+    }
+    y += info_rect.height + 10.0;
 
-    ui.draw_text(
-      &format!("Window DPI Scale Factor: {:.2}", self.scale_factor),
-      margin + 20.0,
-      y + padding,
-      Color::rgb(150, 200, 255),
-    );
-    ui.draw_text(
-      &format!("Current UI Scale: {}x", current_scale),
-      margin + 20.0,
-      y + padding + line_height,
-      Color::rgb(150, 255, 150),
-    );
-    ui.draw_text(
-      &format!(
-        "Mode: {}",
-        if self.scale_choice == AUTO {
-          "Auto-detect"
-        } else {
-          "Manual"
-        }
-      ),
-      margin + 20.0,
-      y + padding + line_height * 2.0,
-      Color::rgb(255, 200, 150),
-    );
-    y += info_h + 10.0;
-
-    // Sample text panel (5 lines)
-    let sample_h = panel_h(5);
-    let sample_rect = Rect::new(margin, y, panel_w, sample_h);
+    // Sample text panel: as many lines as fit above the scale comparison
+    let comparison_h = line_height + 10.0 + 64.0;
+    let sample = [
+      ("Sample Text:", Color::YELLOW),
+      ("ABCDEFGHIJKLMNOPQRSTUVWXYZ", Color::WHITE),
+      ("abcdefghijklmnopqrstuvwxyz", Color::WHITE),
+      ("0123456789 !@#$%^&*()_+-=", Color::WHITE),
+      ("The quick brown fox jumps.", Color::rgb(200, 200, 200)),
+    ];
+    let room = bottom - y - 10.0 - comparison_h - padding * 2.0;
+    let fit = ((room / line_height).floor().max(0.0) as usize).clamp(2, sample.len());
+    let sample_rect = Rect::new(margin, y, panel_w, panel_h(fit));
     ui.draw_rect(sample_rect, Color::rgb(30, 35, 45));
     ui.draw_rect_outline(sample_rect, Color::rgb(60, 70, 90), 1.0);
+    for (i, (text, color)) in sample.iter().take(fit).enumerate() {
+      ui.draw_text(text, text_x, y + padding + line_height * i as f32, *color);
+    }
+    y += sample_rect.height + 10.0;
 
-    ui.draw_text("Sample Text:", margin + 20.0, y + padding, Color::YELLOW);
-    ui.draw_text(
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-      margin + 20.0,
-      y + padding + line_height,
-      Color::WHITE,
-    );
-    ui.draw_text(
-      "abcdefghijklmnopqrstuvwxyz",
-      margin + 20.0,
-      y + padding + line_height * 2.0,
-      Color::WHITE,
-    );
-    ui.draw_text(
-      "0123456789 !@#$%^&*()_+-=",
-      margin + 20.0,
-      y + padding + line_height * 3.0,
-      Color::WHITE,
-    );
-    ui.draw_text(
-      "The quick brown fox jumps.",
-      margin + 20.0,
-      y + padding + line_height * 4.0,
-      Color::rgb(200, 200, 200),
-    );
-    y += sample_h + 10.0;
-
-    // Visual scale comparison - fixed size boxes with labels
-    ui.draw_text("Scale Comparison:", margin + 20.0, y, Color::YELLOW);
+    // Visual scale comparison - fixed size boxes with labels, if it fits
     let box_y = y + line_height + 10.0;
-
-    // "16px" etc. are 4 chars; bitmap font is 8px/char at base scale
-    let char_w = 8.0 * current_scale as f32;
-    let label_px = 4.0 * char_w;
+    if box_y + 64.0 > bottom {
+      return;
+    }
+    ui.draw_text("Scale Comparison:", text_x, y, Color::YELLOW);
+    let label_px = 4.0 * char_w; // "16px" and the others are 4 characters
     let gap = 4.0; // box-to-label gap
     let spacing = 16.0; // label-to-next-box gap
-    let mut bx = margin + 20.0;
+    let mut bx = text_x;
+    for (size, color) in [
+      (16.0, Color::rgb(255, 100, 100)),
+      (32.0, Color::rgb(100, 255, 100)),
+      (64.0, Color::rgb(100, 100, 255)),
+    ] {
+      ui.draw_rect(Rect::new(bx, box_y, size, size), color);
+      ui.draw_text(
+        &format!("{size}px"),
+        bx + size + gap,
+        box_y + size / 2.0 - 4.0,
+        Color::LIGHT_GRAY,
+      );
+      bx += size + gap + label_px + spacing;
+    }
 
-    // Small reference box (always 16x16 visual pixels)
-    ui.draw_rect(Rect::new(bx, box_y, 16.0, 16.0), Color::rgb(255, 100, 100));
-    ui.draw_text("16px", bx + 16.0 + gap, box_y + 4.0, Color::LIGHT_GRAY);
-    bx += 16.0 + gap + label_px + spacing;
-
-    // Medium reference box (always 32x32 visual pixels)
-    ui.draw_rect(Rect::new(bx, box_y, 32.0, 32.0), Color::rgb(100, 255, 100));
-    ui.draw_text("32px", bx + 32.0 + gap, box_y + 12.0, Color::LIGHT_GRAY);
-    bx += 32.0 + gap + label_px + spacing;
-
-    // Large reference box (always 64x64 visual pixels)
-    ui.draw_rect(Rect::new(bx, box_y, 64.0, 64.0), Color::rgb(100, 100, 255));
-    ui.draw_text("64px", bx + 64.0 + gap, box_y + 28.0, Color::LIGHT_GRAY);
-
-    // Footer with hint, unless the scaled panels above already reach it
-    let footer_y = area.y + area.height - line_height * 2.0;
+    // Footer with hint, unless the panels above already reach it
+    let footer_y = bottom - line_height * 2.0;
     if footer_y > box_y + 64.0 + 4.0 {
       ui.draw_text(
         "Note: Text scales with ui_scale,",
-        margin + 20.0,
+        text_x,
         footer_y,
         Color::GRAY,
       );
       ui.draw_text(
         "shapes remain at game resolution",
-        margin + 20.0,
+        text_x,
         footer_y + line_height,
         Color::GRAY,
       );

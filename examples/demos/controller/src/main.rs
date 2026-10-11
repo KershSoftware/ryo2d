@@ -128,49 +128,52 @@ impl DemoPage for ControllerPage {
 
   fn render_ui(&mut self, ui: &mut UiContext) {
     let area = content_area(ui);
-    // The layout below was designed with its first line at y = 50
-    let top = area.y - 44.0;
+    // Two columns in the content area: the left one for status, sticks,
+    // triggers and history, the right one for buttons and values
+    let left = area.x + 16.0;
+    let right = area.x + area.width * 0.56;
+    let top = area.y + 6.0;
 
     // Connection status
-    let status_y = top + 50.0;
+    let status_y = top;
     if self.gamepad_connected {
       ui.draw_text(
         &format!("Connected: {}", self.gamepad_name),
-        20.0,
+        left,
         status_y,
         Color::hex(0x00FF00),
       );
     } else {
       ui.draw_text(
         "No controller connected",
-        20.0,
+        left,
         status_y,
         Color::hex(0xFF6666),
       );
       ui.draw_text(
         "Connect a gamepad to test inputs",
-        20.0,
+        left,
         status_y + 20.0,
         Color::hex(0xAAAAAA),
       );
     }
 
     // Left stick visualization
-    let stick_section_y = top + 100.0;
-    ui.draw_text("Left Stick", 80.0, stick_section_y, Color::WHITE);
+    let stick_section_y = top + 50.0;
+    ui.draw_text("Left Stick", left + 60.0, stick_section_y, Color::WHITE);
     self.draw_stick(
       ui,
-      100.0,
+      left + 80.0,
       stick_section_y + 80.0,
       self.left_stick_raw,
       self.left_stick,
     );
 
     // Right stick visualization
-    ui.draw_text("Right Stick", 260.0, stick_section_y, Color::WHITE);
+    ui.draw_text("Right Stick", left + 240.0, stick_section_y, Color::WHITE);
     self.draw_stick(
       ui,
-      280.0,
+      left + 260.0,
       stick_section_y + 80.0,
       self.right_stick_raw,
       self.right_stick,
@@ -178,37 +181,47 @@ impl DemoPage for ControllerPage {
 
     // Triggers
     let trigger_y = stick_section_y + 180.0;
-    ui.draw_text("Triggers", 20.0, trigger_y, Color::WHITE);
+    ui.draw_text("Triggers", left, trigger_y, Color::WHITE);
 
     // Left trigger bar
-    ui.draw_text("LT:", 20.0, trigger_y + 25.0, Color::hex(0xAAAAAA));
-    let lt_rect = Rect::new(60.0, trigger_y + 20.0, 150.0, 20.0);
+    ui.draw_text("LT:", left, trigger_y + 25.0, Color::hex(0xAAAAAA));
+    let lt_rect = Rect::new(left + 40.0, trigger_y + 20.0, 150.0, 20.0);
     ui.draw_rect(lt_rect, Color::hex(0x333333));
-    let lt_fill = Rect::new(60.0, trigger_y + 20.0, 150.0 * self.left_trigger, 20.0);
+    let lt_fill = Rect::new(
+      left + 40.0,
+      trigger_y + 20.0,
+      150.0 * self.left_trigger,
+      20.0,
+    );
     ui.draw_rect(lt_fill, Color::hex(0x4488FF));
     ui.draw_text(
       &format!("{:.2}", self.left_trigger),
-      220.0,
+      left + 200.0,
       trigger_y + 25.0,
       Color::WHITE,
     );
 
     // Right trigger bar
-    ui.draw_text("RT:", 20.0, trigger_y + 50.0, Color::hex(0xAAAAAA));
-    let rt_rect = Rect::new(60.0, trigger_y + 45.0, 150.0, 20.0);
+    ui.draw_text("RT:", left, trigger_y + 50.0, Color::hex(0xAAAAAA));
+    let rt_rect = Rect::new(left + 40.0, trigger_y + 45.0, 150.0, 20.0);
     ui.draw_rect(rt_rect, Color::hex(0x333333));
-    let rt_fill = Rect::new(60.0, trigger_y + 45.0, 150.0 * self.right_trigger, 20.0);
+    let rt_fill = Rect::new(
+      left + 40.0,
+      trigger_y + 45.0,
+      150.0 * self.right_trigger,
+      20.0,
+    );
     ui.draw_rect(rt_fill, Color::hex(0xFF8844));
     ui.draw_text(
       &format!("{:.2}", self.right_trigger),
-      220.0,
+      left + 200.0,
       trigger_y + 50.0,
       Color::WHITE,
     );
 
     // Buttons section
-    let buttons_y = top + 100.0;
-    let buttons_x = 450.0;
+    let buttons_y = top + 50.0;
+    let buttons_x = right;
     ui.draw_text("Buttons", buttons_x, buttons_y, Color::WHITE);
 
     // Face buttons (diamond layout)
@@ -337,19 +350,19 @@ impl DemoPage for ControllerPage {
 
     // Button history
     let history_y = area.y + area.height - 164.0;
-    ui.draw_text("Button History", 20.0, history_y, Color::WHITE);
+    ui.draw_text("Button History", left, history_y, Color::WHITE);
     for (i, btn_name) in self.button_history.iter().enumerate() {
       let alpha = 255 - (i as u8 * 30).min(200);
       ui.draw_text(
         btn_name,
-        20.0,
+        left,
         history_y + 20.0 + (i as f32 * 18.0),
         Color::WHITE.with_alpha(alpha),
       );
     }
 
     // Raw vs processed values
-    let values_x = 450.0;
+    let values_x = right;
     let values_y = history_y + 40.0;
     ui.draw_text(
       "Stick Values (Raw / Processed)",

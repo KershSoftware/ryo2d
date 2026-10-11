@@ -58,6 +58,24 @@ pub fn content_area(ui: &UiContext) -> Rect {
   layout(w as f32, h as f32, line_height(ui)).content
 }
 
+/// How far the settings panel reaches below the top of [`content_area`] on a
+/// page with `rows` settings rows (0 without settings), so page content can
+/// start below it when it doesn't fit beside it.
+pub fn settings_panel_height(ui: &UiContext, rows: usize) -> f32 {
+  if rows == 0 {
+    return 0.0;
+  }
+  let (w, h) = ui.screen_size();
+  panel_height(&layout(w as f32, h as f32, line_height(ui)), rows)
+}
+
+/// The settings panel's height: a header, the rows and a hint line, within
+/// the content area
+fn panel_height(l: &Layout, rows: usize) -> f32 {
+  let row_h = l.line_h + l.pad * 0.5;
+  ((rows as f32 + 2.0) * row_h + 2.0 * l.pad).min(l.content.height)
+}
+
 fn line_height(ui: &UiContext) -> f32 {
   ui.text_size("Ag").1 as f32
 }
@@ -257,9 +275,7 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<Rec
     .fold(0.0, f32::max);
   let panel_w = (widest_row.max(text_w(ui, hint)) + 2.0 * l.pad).min(w * 0.45);
   let row_h = l.line_h + l.pad * 0.5;
-  // Header + rows + hint, within the content area
-  let wanted_h = (view.rows.len() as f32 + 2.0) * row_h + 2.0 * l.pad;
-  let panel_h = wanted_h.min(l.content.height);
+  let panel_h = panel_height(l, view.rows.len());
   let x = w - l.pad - panel_w;
   let y = l.content.y;
   if panel_h < row_h * 2.0 || panel_w <= 0.0 {
@@ -505,6 +521,15 @@ mod tests {
       vec![vec![0], vec![1]]
     );
     assert!(wrap_items(&[], 10.0, 100.0).is_empty());
+  }
+
+  #[test]
+  fn the_panel_is_a_header_rows_and_a_hint_tall() {
+    let l = layout(800.0, 600.0, 10.0);
+    // pad 5, rows 12.5 apart: three rows plus header and hint, plus padding
+    assert_eq!(panel_height(&l, 3), 5.0 * 12.5 + 10.0);
+    // Never past the content area
+    assert_eq!(panel_height(&l, 1000), l.content.height);
   }
 
   #[test]
