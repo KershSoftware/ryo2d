@@ -60,6 +60,16 @@ Subdirectories carry their own AGENTS.md with module-specific conventions and de
 
 ---
 
+## Specs and Plans
+
+Designs and implementation plans from the superpowers skills live here, not in the skills' default `docs/superpowers/`:
+
+- **Specs** (`superpowers:brainstorming`): `docs/specs/YYYY-MM-DD-<topic>-design.md`. A spec records a design's decisions and why; nested AGENTS.md files may point to it. Keep specs after the work lands. When later work changes a decision, the code and AGENTS.md files are the current truth.
+- **Plans** (`superpowers:writing-plans`): `docs/plans/YYYY-MM-DD-<topic>-plan.md`, with a `**Spec:**` line naming its spec. A plan is a task checklist: delete it once it has been executed and reviewed. The code and git history are its record.
+- **Other docs:** `docs/backlog/` holds ideas for later, `docs/research/` background notes.
+
+---
+
 ## Development Philosophy
 
 **Production-grade code with clear documentation.**

@@ -1,6 +1,6 @@
 # AGENTS.md - Feature Demos
 
-Every demo in this folder follows one standard, provided by `examples/demo-kit`. Spec: `docs/plans/2026-10-11-demo-standard-design.md`. Games in `examples/games` keep their own UX.
+Every demo in this folder follows one standard, provided by `examples/demo-kit`. Spec: `docs/specs/2026-10-11-demo-standard-design.md`. Games in `examples/games` keep their own UX.
 
 ## Controls (every demo)
 

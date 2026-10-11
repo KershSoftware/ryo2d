@@ -118,7 +118,7 @@ impl DemoPage for Glow {
 
 ## Tour command
 
-`./run demos:tour [demo...]` in `run.sh` and `run.ps1`:
+`./dev demos:tour [demo...]` in `dev.sh` and `dev.ps1`:
 
 - Builds the demo binaries, then for each demo (all of `examples/demos`, or the ones named) runs page 1, 2, ... with `RYO_HEADLESS=1 RYO_DEMO_PAGE=<n> RYO_CAPTURE_FRAMES=90 RYO_CAPTURE_EXIT=1 RYO_CAPTURE_DIR=target/demo-tour/<demo>` from the demo's folder.
 - The kit logs `[demo] <title>: <m> pages` at startup; the tour reads the page count from page 1's run. A demo whose page 1 run has no such line is not on the kit yet: it is captured once and marked `not on demo-kit`.
@@ -138,7 +138,7 @@ Each pilot keeps what it demonstrates; only navigation, settings and layout chan
 ## Documentation
 
 - `examples/demos/AGENTS.md` (new): the standard, the layout, how to write a page, and the tour.
-- `ryo-engine-dev` skill: a short "Demos" section pointing to it and to `./run demos:tour`.
+- `ryo-engine-dev` skill: a short "Demos" section pointing to it and to `./dev demos:tour`.
 - `ryo-ui` and `ryo-api` skills: `wants_keyboard`.
 - `examples/demos/sprite-shaders/README.md`: its content moves into the page description and help, and the README is removed. The other demo READMEs are handled in sub-project 2.
 

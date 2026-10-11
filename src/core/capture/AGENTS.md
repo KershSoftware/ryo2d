@@ -1,6 +1,6 @@
 # AGENTS.md - Frame Capture
 
-Saves the final composed frame (scene + UI) as a PNG at game resolution. Spec: `docs/plans/2026-10-10-frame-capture-design.md`.
+Saves the final composed frame (scene + UI) as a PNG at game resolution. Spec: `docs/specs/2026-10-10-frame-capture-design.md`.
 
 ## Split
 

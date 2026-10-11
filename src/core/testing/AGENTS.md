@@ -1,6 +1,6 @@
 # AGENTS.md - Headless Testing
 
-`HeadlessEngine` runs the real engine without a window: offscreen `WgpuRenderer`, one fixed update per `step`, pixels via `frame()`. Spec: `docs/plans/2026-10-10-headless-rendering-design.md`.
+`HeadlessEngine` runs the real engine without a window: offscreen `WgpuRenderer`, one fixed update per `step`, pixels via `frame()`. Spec: `docs/specs/2026-10-10-headless-rendering-design.md`.
 
 ## How it fits
 

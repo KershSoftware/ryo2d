@@ -2,7 +2,7 @@
 
 ## Overview
 
-Sub-project 2 of the demo standard (`docs/plans/2026-10-11-demo-standard-design.md`): move the 31 feature demos that are not yet on `examples/demo-kit` onto it, so every demo in `examples/demos` shares the same controls, layout and settings panel. The kit, its rules and the three pilots (sprite-shaders, particles, ui) are done; this spec decides each remaining demo's pages, settings and keys. The five games are out of scope.
+Sub-project 2 of the demo standard (`docs/specs/2026-10-11-demo-standard-design.md`): move the 31 feature demos that are not yet on `examples/demo-kit` onto it, so every demo in `examples/demos` shares the same controls, layout and settings panel. The kit, its rules and the three pilots (sprite-shaders, particles, ui) are done; this spec decides each remaining demo's pages, settings and keys. The five games are out of scope.
 
 Owner decisions (2026-10-11): the cross-cutting rules below as written; the console demo's Hub and Workshop become pages and its `game:scene1`/`game:scene2` commands are dropped (no kit change).
 
@@ -60,10 +60,10 @@ Resolutions and engine settings (`physics_hz`, `target_fps`, `vsync`, window mod
 
 ## Verification
 
-- Each demo builds with no warnings in its own files and its pages pass `./run demos:tour <demo>`.
+- Each demo builds with no warnings in its own files and its pages pass `./dev demos:tour <demo>`.
 - Every page's frame is looked at: shell bar, description and legend present; no page text under the shell's bar or behind the settings panel; the page still shows its feature.
 - One `RYO_INPUT` run per demo changes a setting or presses a page control and shows the effect.
-- At the end, `./run demos:tour` reports every demo on the kit (`N pages ok`), and no demo `not on demo-kit`.
+- At the end, `./dev demos:tour` reports every demo on the kit (`N pages ok`), and no demo `not on demo-kit`.
 
 ## Out of scope
 

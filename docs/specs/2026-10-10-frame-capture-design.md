@@ -183,7 +183,7 @@ Capture errors are never fatal: they are logged and the game continues (except f
 - **Offscreen pass at game resolution, not surface copy:** deterministic across window sizes/DPI, no letterbox bars, no reliance on surface `COPY_SRC` support, and the same final-composite path sub-project 2 needs for headless output.
 - **Blocking readback on capture frames:** captures are rare dev events; a one-frame hitch is acceptable and keeps the code synchronous and deterministic. PNG encoding moves to a thread because it is the slow part.
 - **Presented-frame numbering:** skipped frames do not shift what "frame N" means.
-- **Env vars over CLI flags:** they work unchanged through `./run`, `ryo2d dev`, `ryo2d run` and `cargo run`, because the game process inherits the environment.
+- **Env vars over CLI flags:** they work unchanged through `./dev`, `ryo2d dev`, `ryo2d run` and `cargo run`, because the game process inherits the environment.
 - **Release builds honour env vars:** capture is opt-in and costs nothing when unset; agents need to verify release rendering.
 
 ## Future Extensions (Not in Scope)
