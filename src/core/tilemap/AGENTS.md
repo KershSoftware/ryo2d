@@ -2,7 +2,7 @@
 
 ## Status / Gotchas
 
-- **Rendering is a data stub**: nothing in the renderer consumes `TilemapManager` yet. GPU chunk rendering via `BatchCollector`/`SpriteBatch` is planned.
+- **Rendering is a data stub**: nothing in the renderer consumes `TilemapManager` yet. GPU chunk rendering (entries in the frame's `DrawList`) is planned.
 - **Only orthogonal is implemented**: `Tilemap::orientation` stores `TilemapOrientation` (Isometric, Hexagonal*), but coordinate conversion ignores it.
 
 ## Design Decisions

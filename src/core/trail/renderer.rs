@@ -165,6 +165,9 @@ pub struct TrailRenderer {
   /// Whether geometry was dropped this frame because the vertex buffer is full
   dropped: bool,
 
+  /// Whether the current run of frames with dropped geometry was reported
+  drop_warned: std::cell::Cell<bool>,
+
   /// Screen dimensions
   width: u32,
   height: u32,
@@ -400,6 +403,7 @@ impl TrailRenderer {
       groups: Vec::new(),
       group_index: HashMap::new(),
       dropped: false,
+      drop_warned: std::cell::Cell::new(false),
       width,
       height,
       enabled: true,
@@ -1591,7 +1595,10 @@ impl TrailRenderer {
     if !self.enabled {
       return;
     }
-    if self.dropped {
+    let mut warned = self.drop_warned.get();
+    let warn = should_warn_about_drops(self.dropped, &mut warned);
+    self.drop_warned.set(warned);
+    if warn {
       crate::engine_warn!(
         module: "Trails",
         "Trail/line vertex limit ({MAX_TRAIL_VERTICES}) reached; some trails or lines were not drawn this frame"
@@ -2051,9 +2058,30 @@ pub fn compute_miter_limit_angle(miter_limit: f32) -> f32 {
 /// Number of segments for round joins
 const ROUND_JOIN_SEGMENTS: u32 = 6;
 
+/// Whether to report dropped geometry now: once when drops start, and again
+/// only after a frame without drops, so sustained overload doesn't flood the log.
+fn should_warn_about_drops(dropped: bool, warned: &mut bool) -> bool {
+  let warn = dropped && !*warned;
+  *warned = dropped;
+  warn
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn drop_warning_fires_once_per_overload() {
+    let mut warned = false;
+    let frames = [true, true, true, false, true, true];
+
+    let warnings: Vec<bool> = frames
+      .iter()
+      .map(|&dropped| should_warn_about_drops(dropped, &mut warned))
+      .collect();
+
+    assert_eq!(warnings, [true, false, false, false, true, false]);
+  }
 
   /// Helper to create a test trail with specific number of points
   #[allow(dead_code)]
