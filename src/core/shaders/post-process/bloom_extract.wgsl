@@ -1,5 +1,7 @@
 // Bloom extract pass - extracts bright pixels above luminance threshold
-// Uses soft knee to prevent hard edges at the threshold boundary
+// Uses soft knee to prevent hard edges at the threshold boundary.
+// Writes a half-resolution image: each output texel averages the 2x2 scene
+// texels under it, thresholded one by one so thin bright lines survive.
 
 struct EffectParams {
     color: vec4<f32>,           // Not used (16 bytes)
@@ -47,19 +49,22 @@ fn luminance(color: vec3<f32>) -> f32 {
     return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
+// The bright part of one scene texel, with a soft knee from threshold-0.1
+// to threshold+0.1
+fn bright(uv: vec2<f32>, threshold: f32) -> vec3<f32> {
+    let color = textureSampleLevel(t_input, s_input, uv, 0.0);
+    let knee = 0.1;
+    return color.rgb * smoothstep(threshold - knee, threshold + knee, luminance(color.rgb));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let color = textureSample(t_input, s_input, in.tex_coord);
     let threshold = effect.params.x;
-
-    let lum = luminance(color.rgb);
-
-    // Soft knee: smoothstep from threshold-0.1 to threshold+0.1
-    let knee = 0.1;
-    let soft = smoothstep(threshold - knee, threshold + knee, lum);
-
-    // Extract bright pixels with soft falloff
-    let bloom_color = color.rgb * soft;
-
-    return vec4<f32>(bloom_color, 1.0);
+    // Half a scene texel: the four samples land on the 2x2 texel centres
+    let half_texel = 0.5 / vec2<f32>(effect.time_resolution.y, effect.time_resolution.z);
+    var sum = bright(in.tex_coord + vec2<f32>(-half_texel.x, -half_texel.y), threshold);
+    sum += bright(in.tex_coord + vec2<f32>(half_texel.x, -half_texel.y), threshold);
+    sum += bright(in.tex_coord + vec2<f32>(-half_texel.x, half_texel.y), threshold);
+    sum += bright(in.tex_coord + vec2<f32>(half_texel.x, half_texel.y), threshold);
+    return vec4<f32>(sum * 0.25, 1.0);
 }

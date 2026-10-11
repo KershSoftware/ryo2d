@@ -111,7 +111,8 @@ pub enum PostProcessEffect {
     threshold: f32,
     /// Glow strength (0.0 - 5.0)
     intensity: f32,
-    /// Blur spread in pixels (1.0 - 20.0)
+    /// Blur spread (1.0 - 20.0): each pass is a Gaussian with sigma of about
+    /// 1.7 x radius pixels
     radius: f32,
     /// Number of blur passes for quality (1 - 5, each pass = H+V blur)
     blur_passes: u32,
@@ -296,7 +297,7 @@ impl PostProcessEffect {
   /// # Arguments
   /// * `threshold` - Brightness cutoff (0.0 - 1.0)
   /// * `intensity` - Glow strength (0.0 - 5.0)
-  /// * `radius` - Blur spread (1.0 - 20.0)
+  /// * `radius` - Blur spread (1.0 - 20.0); each pass blurs with sigma of about 1.7 x radius pixels
   /// * `blur_passes` - Quality level (1 - 5, each pass = H+V blur)
   pub fn bloom_custom(threshold: f32, intensity: f32, radius: f32, blur_passes: u32) -> Self {
     Self::Bloom {

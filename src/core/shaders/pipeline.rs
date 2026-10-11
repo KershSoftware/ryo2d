@@ -68,6 +68,10 @@ impl UniformPool {
 }
 
 /// Largest `Params` uniform a custom effect can have (see `custom::compile`)
+/// Bloom's blur sigma per unit of radius, in screen pixels: the spread of the
+/// original 9-tap kernel (sigma 1.69 taps, taps `radius` pixels apart)
+const BLOOM_SIGMA_PER_RADIUS: f32 = 1.7;
+
 const CUSTOM_PARAMS_BYTES: u64 = 64;
 /// Custom effect globals: `time_resolution: vec4<f32>`
 const CUSTOM_GLOBALS_BYTES: u64 = 16;
@@ -342,9 +346,11 @@ pub struct PostProcessPipeline {
   bloom_blur_pipeline: Option<EffectPipeline>,
   bloom_composite_pipeline: Option<EffectPipeline>,
 
-  // Bloom scratch texture (holds extracted/blurred bloom data)
-  bloom_texture: wgpu::Texture,
+  // Half-resolution bloom scratch textures: the extract writes A, and each
+  // blur pass goes A -> B -> A
   bloom_view: wgpu::TextureView,
+  bloom_view_b: wgpu::TextureView,
+  bloom_size: (u32, u32),
 
   // Per-pass uniform buffers for effect parameters
   effect_uniforms: UniformPool,
@@ -380,6 +386,36 @@ struct EffectPipeline {
 
 /// Descriptor shared by the two ping-pong textures, so a resize keeps the
 /// usages they were created with.
+/// Bloom extracts and blurs at half resolution: wide glows stay cheap, and
+/// the composite's bilinear upsample smooths the result
+fn bloom_size(width: u32, height: u32) -> (u32, u32) {
+  (width.div_ceil(2).max(1), height.div_ceil(2).max(1))
+}
+
+fn bloom_scratch(
+  device: &wgpu::Device,
+  (width, height): (u32, u32),
+  format: wgpu::TextureFormat,
+  label: &str,
+) -> wgpu::TextureView {
+  device
+    .create_texture(&wgpu::TextureDescriptor {
+      label: Some(label),
+      size: wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+      },
+      mip_level_count: 1,
+      sample_count: 1,
+      dimension: wgpu::TextureDimension::D2,
+      format,
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+      view_formats: &[],
+    })
+    .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
 fn ping_pong_texture_desc(
   width: u32,
   height: u32,
@@ -508,22 +544,9 @@ impl PostProcessPipeline {
         ],
       });
 
-    // Create bloom scratch texture
-    let bloom_texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some("Bloom Scratch Texture"),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format,
-      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-      view_formats: &[],
-    });
-    let bloom_view = bloom_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bloom_size = bloom_size(width, height);
+    let bloom_view = bloom_scratch(device, bloom_size, format, "Bloom Scratch A");
+    let bloom_view_b = bloom_scratch(device, bloom_size, format, "Bloom Scratch B");
 
     // Bloom composite bind group layout: 2 textures + sampler + uniform
     let bloom_composite_bind_group_layout =
@@ -590,8 +613,9 @@ impl PostProcessPipeline {
       bloom_extract_pipeline: None,
       bloom_blur_pipeline: None,
       bloom_composite_pipeline: None,
-      bloom_texture,
       bloom_view,
+      bloom_view_b,
+      bloom_size,
       effect_uniforms: UniformPool::new(
         "Post-Process Uniform Buffer",
         std::mem::size_of::<EffectParams>() as u64,
@@ -640,24 +664,9 @@ impl PostProcessPipeline {
       .texture_b
       .create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Recreate bloom scratch texture
-    self.bloom_texture = device.create_texture(&wgpu::TextureDescriptor {
-      label: Some("Bloom Scratch Texture"),
-      size: wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-      },
-      mip_level_count: 1,
-      sample_count: 1,
-      dimension: wgpu::TextureDimension::D2,
-      format: self.format,
-      usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-      view_formats: &[],
-    });
-    self.bloom_view = self
-      .bloom_texture
-      .create_view(&wgpu::TextureViewDescriptor::default());
+    self.bloom_size = bloom_size(width, height);
+    self.bloom_view = bloom_scratch(device, self.bloom_size, self.format, "Bloom Scratch A");
+    self.bloom_view_b = bloom_scratch(device, self.bloom_size, self.format, "Bloom Scratch B");
   }
 
   /// Apply a chain of effects to the source in texture A.
@@ -1167,16 +1176,20 @@ impl PostProcessPipeline {
 
     // Write every pass's params up front: the writes need `&mut self`, and each
     // pass needs its own buffer (see `UniformPool`).
-    let params_for = |w: f32| EffectParams {
+    let params_for = |spread: f32, w: f32, (width, height): (u32, u32)| EffectParams {
       color: [0.0, 0.0, 0.0, 1.0],
-      params: [*threshold, *intensity, *radius, w],
-      time_resolution: [time, self.width as f32, self.height as f32, 0.0],
+      params: [*threshold, *intensity, spread, w],
+      time_resolution: [time, width as f32, height as f32, 0.0],
       _padding: [0.0; 4],
     };
-    let extract_params = params_for(*blur_passes as f32);
-    let h_params = params_for(0.0); // w=0.0 = horizontal
-    let v_params = params_for(1.0); // w=1.0 = vertical
-    let composite_params = params_for(*blur_passes as f32);
+    let full = (self.width, self.height);
+    // Each pass blurs with sigma = 1.7 x radius screen pixels, the spread of
+    // the original 9-tap kernel, given in half-resolution texels
+    let sigma = BLOOM_SIGMA_PER_RADIUS * *radius / 2.0;
+    let extract_params = params_for(*radius, *blur_passes as f32, full);
+    let h_params = params_for(sigma, 0.0, self.bloom_size); // w=0.0 = horizontal
+    let v_params = params_for(sigma, 1.0, self.bloom_size); // w=1.0 = vertical
+    let composite_params = params_for(*radius, *blur_passes as f32, full);
 
     let extract_index =
       self
@@ -1217,7 +1230,7 @@ impl PostProcessPipeline {
       (&self.view_b, &self.view_a)
     };
 
-    // --- Pass 1: Extract bright pixels (scene -> bloom_texture) ---
+    // --- Pass 1: Extract bright pixels (scene -> bloom A, half resolution) ---
 
     let extract_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
       label: Some("Bloom Extract Bind Group"),
@@ -1261,9 +1274,9 @@ impl PostProcessPipeline {
       render_pass.draw(0..6, 0..1);
     }
 
-    // --- Pass 2: Blur loop (bloom_texture <-> output_view as temp) ---
+    // --- Pass 2: Blur loop (bloom A -> B -> A) ---
     for &(h_index, v_index) in &blur_indices {
-      // Horizontal blur: bloom_texture -> output_view (used as temp)
+      // Horizontal blur: bloom A -> bloom B
       let h_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Bloom Blur H Bind Group"),
         layout: &self.bind_group_layout,
@@ -1287,7 +1300,7 @@ impl PostProcessPipeline {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
           label: Some("Bloom Blur H Pass"),
           color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: output_view,
+            view: &self.bloom_view_b,
             resolve_target: None,
             ops: wgpu::Operations {
               load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1303,14 +1316,14 @@ impl PostProcessPipeline {
         render_pass.draw(0..6, 0..1);
       }
 
-      // Vertical blur: output_view (temp) -> bloom_texture
+      // Vertical blur: bloom B -> bloom A
       let v_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Bloom Blur V Bind Group"),
         layout: &self.bind_group_layout,
         entries: &[
           wgpu::BindGroupEntry {
             binding: 0,
-            resource: wgpu::BindingResource::TextureView(output_view),
+            resource: wgpu::BindingResource::TextureView(&self.bloom_view_b),
           },
           wgpu::BindGroupEntry {
             binding: 1,
@@ -1344,7 +1357,7 @@ impl PostProcessPipeline {
       }
     }
 
-    // --- Pass 3: Composite (scene + bloom_texture -> output_view) ---
+    // --- Pass 3: Composite (scene + upsampled bloom A -> output_view) ---
     let composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
       label: Some("Bloom Composite Bind Group"),
       layout: &self.bloom_composite_bind_group_layout,

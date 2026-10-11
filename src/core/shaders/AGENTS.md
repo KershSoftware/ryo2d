@@ -47,17 +47,19 @@ Custom effect bind group (group 0): `0` scene texture, `1` sampler, `2` params u
 
 ## Multi-Pass Effects
 
-**Bloom** runs three internal passes using a dedicated `bloom_texture` as scratch space:
+**Bloom** runs three internal passes using two half-resolution scratch textures, bloom A and B:
 
 ```
 Input in buffer X (scene)
-1. Extract bright pixels:  X -> bloom_texture
+1. Extract bright pixels:  X -> A (each texel averages 2x2 scene texels, thresholded one by one)
 2. For each blur_pass:
-   a. Blur H:  bloom_texture -> Y (output buffer, used as temp)
-   b. Blur V:  Y -> bloom_texture
-3. Composite:  X (scene) + bloom_texture (blurred bloom) -> Y
+   a. Blur H:  A -> B
+   b. Blur V:  B -> A
+3. Composite:  X (scene) + A (bilinear upsample) -> Y
 Output in buffer Y
 ```
+
+Each blur pass is a Gaussian with sigma = 1.7 x radius screen pixels (`BLOOM_SIGMA_PER_RADIUS`), the spread of the original 9-tap kernel, sampled at every half-resolution texel out to 3 sigma with paired bilinear taps. Half resolution keeps wide glows cheap: at the default radius 5 a pass costs fewer samples per screen pixel than the old 9 taps.
 
 Bloom consumes one slot in the A/B ping-pong chain. Its three pipelines use different bind group layouts:
 - **Extract**: standard layout (1 texture + sampler + uniform)

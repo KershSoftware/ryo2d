@@ -139,7 +139,7 @@ impl Scene for BrightDot {
       }
     }
     spawn_sprite(ctx, Sprite::from_rgba(pixels, 128, 64), "dot");
-    ctx.effects.set_bloom_custom(0.1, 5.0, 20.0, 1);
+    ctx.effects.set_bloom_custom(0.1, 5.0, 5.0, 1);
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -170,6 +170,64 @@ fn bloom_fades_smoothly_within_its_radius() {
     );
   }
   assert!(row[2] > 0, "the glow reaches past the dot: {row:?}");
-  // A 20 px radius spreads 20 px, not four times that
-  assert_eq!(row[45], 0, "nothing 45 px away: {row:?}");
+  // Radius 5 spreads to about 3 sigma (25 px), not to lattice copies beyond
+  assert_eq!(row[45], 0, "nothing 47 px away: {row:?}");
+}
+
+/// Black 128x64 screen with an 8x8 white square centred on (24, 32), bloom
+/// radius 5 and one pass
+struct BrightSquare;
+
+impl Scene for BrightSquare {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let mut pixels = Vec::with_capacity(128 * 64 * 4);
+    for y in 0..64 {
+      for x in 0..128 {
+        let v = if (20..28).contains(&x) && (28..36).contains(&y) {
+          255
+        } else {
+          0
+        };
+        pixels.extend_from_slice(&[v, v, v, 255]);
+      }
+    }
+    spawn_sprite(ctx, Sprite::from_rgba(pixels, 128, 64), "square");
+    ctx.effects.set_bloom_custom(0.1, 5.0, 5.0, 1);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn bloom_spreads_as_wide_as_the_original_kernel() {
+  let Some(mut engine) = HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(128, 64)
+      .start_scene(BrightSquare),
+  ) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  // Light, not sRGB bytes
+  let at = |dx: u32| {
+    let c = frame.get_pixel(24 + dx, 32).0[0] as f32 / 255.0;
+    if c <= 0.04045 {
+      c / 12.92
+    } else {
+      ((c + 0.055) / 1.055).powf(2.4)
+    }
+  };
+  let (near, far) = (at(6), at(16));
+
+  // Each pass blurs with sigma = 1.7 x radius (8.5 px here), as the original
+  // 9-tap kernel did: 16 px from the centre keeps about a fifth of the light
+  // at 6 px (with sigma 2.5 px it kept none)
+  assert!(near > 0.1, "glow next to the square: {near}");
+  assert!(
+    far > near * 0.12 && far < near * 0.4,
+    "glow 16 px out is {far}, 6 px out {near}"
+  );
 }

@@ -1,10 +1,10 @@
 // Bloom blur pass - separable Gaussian blur
 // Direction controlled by params.w: 0.0 = horizontal, 1.0 = vertical
-// Spread of params.z pixels (sigma = radius / 2)
+// params.z is sigma, in texels of the (half-resolution) bloom image
 
 struct EffectParams {
     color: vec4<f32>,           // Not used (16 bytes)
-    params: vec4<f32>,          // x: threshold, y: intensity, z: radius, w: direction (16 bytes)
+    params: vec4<f32>,          // x: threshold, y: intensity, z: sigma, w: direction (16 bytes)
     time_resolution: vec4<f32>, // x: time, y: width, z: height (16 bytes)
     _padding: vec4<f32>,        // Padding (16 bytes) - total 64 bytes
 };
@@ -46,7 +46,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let radius = clamp(effect.params.z, 1.0, 32.0);
+    let sigma = clamp(effect.params.z, 0.25, 16.0);
     let direction = effect.params.w; // 0.0 = horizontal, 1.0 = vertical
 
     // One texel along the blur direction, in UV space
@@ -57,12 +57,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         dir = vec2<f32>(0.0, 1.0 / effect.time_resolution.z);
     }
 
-    // Gaussian sampled at every texel out to `radius`. Each bilinear sample
+    // Gaussian sampled at every texel out to 3 sigma. Each bilinear sample
     // covers two neighbouring texels, placed between them by their weights,
-    // so the blur stays continuous at any radius.
-    let sigma = radius * 0.5;
+    // so the blur stays continuous at any size.
     let falloff = -1.0 / (2.0 * sigma * sigma);
-    let last = i32(ceil(radius));
+    let last = i32(ceil(3.0 * sigma));
 
     var result = textureSampleLevel(t_input, s_input, in.tex_coord, 0.0);
     var total = 1.0;
