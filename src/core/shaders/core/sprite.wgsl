@@ -5,6 +5,12 @@
 // - Per-instance UV rectangles (for sprite sheets/atlases)
 // - Per-instance tint colors with alpha
 // - Per-instance visual effects (outline, glow, flash, etc.)
+//
+// Sprites are sampled from texture atlas pages (Rgba8Unorm), so samples are
+// raw sRGB bytes. Effects and tint run in that sRGB space, in the CPU
+// renderer's order (effect, then tint), and the result is converted to linear
+// on output for the Rgba8UnormSrgb game texture. Samples outside the sprite's
+// own rect (uv_bounds) are transparent, so atlas neighbours never show.
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -28,15 +34,20 @@ struct InstanceInput {
     @location(6) tint: vec4<f32>,
     @location(7) effect_params: vec4<f32>,
     @location(8) effect_extra: vec4<f32>,
+    @location(9) uv_bounds: vec4<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) tint: vec4<f32>,
-    @location(2) effect_params: vec4<f32>,
-    @location(3) effect_extra: vec4<f32>,
+    @location(1) @interpolate(flat) tint: vec4<f32>,
+    @location(2) @interpolate(flat) effect_params: vec4<f32>,
+    @location(3) @interpolate(flat) effect_extra: vec4<f32>,
+    @location(4) @interpolate(flat) uv_bounds: vec4<f32>,
 }
+
+// Alpha above which a texel counts as visible (the CPU tests alpha > 0)
+const VISIBLE: f32 = 0.002;
 
 @vertex
 fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
@@ -61,6 +72,7 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.tint = instance.tint;
     out.effect_params = instance.effect_params;
     out.effect_extra = instance.effect_extra;
+    out.uv_bounds = instance.uv_bounds;
     
     return out;
 }
@@ -68,247 +80,225 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
 // Base fragment shader (no effects)
 @fragment
 fn fs_base(in: VertexOutput) -> @location(0) vec4<f32> {
-    let tex_color = textureSample(sprite_texture, sprite_sampler, in.uv);
-    return tex_color * in.tint;
+    return finish(sample_masked(in.uv, in.uv_bounds), in.tint);
 }
 
 // Effect fragment shader
 @fragment
 fn fs_effect(in: VertexOutput) -> @location(0) vec4<f32> {
-    let tex_color = textureSample(sprite_texture, sprite_sampler, in.uv);
-    var color = tex_color * in.tint;
+    let base = sample_masked(in.uv, in.uv_bounds);
+    let params = in.effect_params;
+    let extra = in.effect_extra;
+    var color = base;
     
-    let effect_type = i32(in.effect_params.x);
-    let time = globals.time_resolution.x;
-    let tex_size = vec2<f32>(
-        f32(textureDimensions(sprite_texture).x),
-        f32(textureDimensions(sprite_texture).y)
-    );
-    
-    switch (effect_type) {
+    switch (i32(params.x)) {
         case 0: { // None
             // No effect, just return base color
         }
-        case 1: { // Outline
-            let thickness = in.effect_params.y;
-            let outline_color = in.effect_extra;
-            color = apply_outline(tex_color, in.uv, tex_size, thickness, outline_color, in.tint);
+        case 1: { // Outline: y=thickness, extra=color
+            color = apply_outline(base, in.uv, in.uv_bounds, params.y, extra);
         }
-        case 2: { // Glow
-            let radius = in.effect_params.y;
-            let intensity = in.effect_params.z;
-            let glow_color = in.effect_extra;
-            color = apply_glow(tex_color, in.uv, tex_size, radius, intensity, glow_color, in.tint);
+        case 2: { // Glow: y=radius, z=intensity, extra=color
+            color = apply_glow(base, in.uv, in.uv_bounds, params.y, params.z, extra);
         }
-        case 3: { // Flash
-            let intensity = in.effect_params.y;
-            let flash_color = in.effect_extra;
-            color = apply_flash(tex_color, intensity, flash_color, in.tint);
+        case 3: { // Flash: y=intensity, extra=color
+            color = vec4<f32>(mix(base.rgb, extra.rgb, params.y), base.a);
         }
-        case 4: { // ColorShift
-            let amount = in.effect_params.y;
-            let shift_color = in.effect_extra;
-            color = apply_color_shift(tex_color, amount, shift_color, in.tint);
+        case 4: { // ColorShift: y=amount, extra=color
+            color = vec4<f32>(mix(base.rgb, extra.rgb, params.y), base.a);
         }
-        case 5: { // Silhouette
-            let sil_color = in.effect_extra;
-            color = apply_silhouette(tex_color, sil_color);
+        case 5: { // Silhouette: extra=color
+            color = vec4<f32>(extra.rgb, base.a * extra.a);
         }
-        case 6: { // Pixelate
-            let block_size = in.effect_params.y;
-            color = apply_pixelate(in.uv, tex_size, block_size, in.tint);
+        case 6: { // Pixelate: y=block size
+            color = apply_pixelate(in.uv, in.uv_bounds, params.y);
         }
-        case 7: { // Wave
-            let amplitude = in.effect_params.y;
-            let frequency = in.effect_params.z;
-            let phase = in.effect_params.w;
-            let speed = in.effect_extra.x;
-            color = apply_wave(in.uv, amplitude, frequency, speed, time, in.tint);
+        case 7: { // Wave: y=amplitude, z=frequency, extra.x=speed
+            color = apply_wave(in.uv, in.uv_bounds, params.y, params.z, extra.x);
         }
-        case 8: { // Dissolve
-            let progress = in.effect_params.y;
-            let edge_color = in.effect_extra;
-            color = apply_dissolve(tex_color, in.uv, progress, edge_color, in.tint);
+        case 8: { // Dissolve: y=progress, extra=edge color
+            color = apply_dissolve(base, in.uv, in.uv_bounds, params.y, extra);
         }
         case 9: { // Invert
-            color = apply_invert(tex_color, in.tint);
+            color = vec4<f32>(1.0 - base.rgb, base.a);
         }
-        case 10: { // Grayscale
-            let intensity = in.effect_params.y;
-            color = apply_grayscale(tex_color, intensity, in.tint);
+        case 10: { // Grayscale: y=intensity
+            let gray = dot(base.rgb, vec3<f32>(0.299, 0.587, 0.114));
+            color = vec4<f32>(mix(base.rgb, vec3<f32>(gray), params.y), base.a);
+        }
+        case 11: { // DirectionalOutline: y=thickness, z/w=passable color, extra=solid color
+            color = apply_directional_outline(base, in.uv, in.uv_bounds, params, extra);
         }
         default: {
             // Unknown effect, just return base color
         }
     }
     
-    return color;
+    return finish(color, in.tint);
+}
+
+// =============================================================================
+// Sampling and colour space
+// =============================================================================
+
+fn texel_size() -> vec2<f32> {
+    return 1.0 / vec2<f32>(textureDimensions(sprite_texture));
+}
+
+// Sample at `uv`; transparent outside `bounds` (the sprite's own rect).
+// UVs within a hundredth of a texel of the rect still count as inside (float
+// error at quad edges) and are clamped onto its edge texels.
+fn sample_masked(uv: vec2<f32>, bounds: vec4<f32>) -> vec4<f32> {
+    let texel = texel_size();
+    let slack = texel * 0.01;
+    if any(uv < bounds.xy - slack) || any(uv > bounds.zw + slack) {
+        return vec4<f32>(0.0);
+    }
+    let inner = clamp(uv, bounds.xy + texel * 0.5, bounds.zw - texel * 0.5);
+    return textureSampleLevel(sprite_texture, sprite_sampler, inner, 0.0);
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / 12.92;
+    let high = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
+}
+
+// Tint in sRGB space, then convert RGB to linear (alpha unchanged)
+fn finish(color: vec4<f32>, tint: vec4<f32>) -> vec4<f32> {
+    let c = clamp(color * tint, vec4<f32>(0.0), vec4<f32>(1.0));
+    return vec4<f32>(srgb_to_linear(c.rgb), c.a);
 }
 
 // =============================================================================
 // Effect implementations
 // =============================================================================
 
-fn apply_outline(
-    tex_color: vec4<f32>,
-    uv: vec2<f32>,
-    tex_size: vec2<f32>,
-    thickness: f32,
-    outline_color: vec4<f32>,
-    tint: vec4<f32>
-) -> vec4<f32> {
-    // If pixel is opaque, return it
-    if tex_color.a > 0.5 {
-        return tex_color * tint;
-    }
-    
-    // Check neighboring pixels for outline
-    let pixel_size = 1.0 / tex_size;
-    var outline_alpha = 0.0;
-    
-    for (var dy = -thickness; dy <= thickness; dy += 1.0) {
-        for (var dx = -thickness; dx <= thickness; dx += 1.0) {
-            if dx == 0.0 && dy == 0.0 { continue; }
-            let neighbor_uv = uv + vec2<f32>(dx, dy) * pixel_size;
-            let neighbor = textureSample(sprite_texture, sprite_sampler, neighbor_uv);
-            if neighbor.a > 0.5 {
-                outline_alpha = 1.0;
-                break;
+// Whether a visible texel lies within `thickness` texels of `uv` (square
+// neighbourhood, like the CPU outline)
+fn near_visible(uv: vec2<f32>, bounds: vec4<f32>, thickness: f32) -> bool {
+    let texel = texel_size();
+    let t = i32(thickness);
+    for (var dy = -t; dy <= t; dy += 1) {
+        for (var dx = -t; dx <= t; dx += 1) {
+            if dx == 0 && dy == 0 { continue; }
+            let offset = vec2<f32>(f32(dx), f32(dy)) * texel;
+            if sample_masked(uv + offset, bounds).a > VISIBLE {
+                return true;
             }
         }
-        if outline_alpha > 0.0 { break; }
     }
-    
-    if outline_alpha > 0.0 {
-        return outline_color;
+    return false;
+}
+
+fn apply_outline(
+    base: vec4<f32>,
+    uv: vec2<f32>,
+    bounds: vec4<f32>,
+    thickness: f32,
+    outline_color: vec4<f32>
+) -> vec4<f32> {
+    if base.a > VISIBLE || !near_visible(uv, bounds, thickness) {
+        return base;
     }
-    return vec4<f32>(0.0);
+    return outline_color;
+}
+
+// Two 8-bit channels packed as hi * 256 + lo
+fn unpack_pair(v: f32) -> vec2<f32> {
+    let hi = floor(v / 256.0);
+    return vec2<f32>(hi, v - hi * 256.0) / 255.0;
+}
+
+// Outline whose part below the sprite's rect (the passable bottom edge) uses
+// the passable colour; the top, left and right use the solid colour
+fn apply_directional_outline(
+    base: vec4<f32>,
+    uv: vec2<f32>,
+    bounds: vec4<f32>,
+    params: vec4<f32>,
+    solid_color: vec4<f32>
+) -> vec4<f32> {
+    if base.a > VISIBLE || !near_visible(uv, bounds, params.y) {
+        return base;
+    }
+    if uv.y > bounds.w {
+        return vec4<f32>(unpack_pair(params.z), unpack_pair(params.w));
+    }
+    return solid_color;
 }
 
 fn apply_glow(
-    tex_color: vec4<f32>,
+    base: vec4<f32>,
     uv: vec2<f32>,
-    tex_size: vec2<f32>,
+    bounds: vec4<f32>,
     radius: f32,
     intensity: f32,
-    glow_color: vec4<f32>,
-    tint: vec4<f32>
+    glow_color: vec4<f32>
 ) -> vec4<f32> {
     // Sample glow from surrounding pixels
-    let pixel_size = 1.0 / tex_size;
+    let texel = texel_size();
     var glow_amount = 0.0;
     let samples = 8.0;
     
     for (var i = 0.0; i < samples; i += 1.0) {
         let angle = i * 6.28318 / samples;
-        let offset = vec2<f32>(cos(angle), sin(angle)) * radius * pixel_size;
-        let sample = textureSample(sprite_texture, sprite_sampler, uv + offset);
-        glow_amount += sample.a;
+        let offset = vec2<f32>(cos(angle), sin(angle)) * radius * texel;
+        glow_amount += sample_masked(uv + offset, bounds).a;
     }
     glow_amount = glow_amount / samples * intensity;
     
     // Blend glow behind sprite
-    let base = tex_color * tint;
     let glow = vec4<f32>(glow_color.rgb, glow_amount * glow_color.a);
     return mix(glow, base, base.a);
 }
 
-fn apply_flash(
-    tex_color: vec4<f32>,
-    intensity: f32,
-    flash_color: vec4<f32>,
-    tint: vec4<f32>
-) -> vec4<f32> {
-    let base = tex_color * tint;
-    // Mix toward flash color
-    var result = mix(base.rgb, flash_color.rgb, intensity);
-    return vec4<f32>(result, base.a);
-}
-
-fn apply_color_shift(
-    tex_color: vec4<f32>,
-    amount: f32,
-    shift_color: vec4<f32>,
-    tint: vec4<f32>
-) -> vec4<f32> {
-    let base = tex_color * tint;
-    var result = mix(base.rgb, shift_color.rgb, amount);
-    return vec4<f32>(result, base.a);
-}
-
-fn apply_silhouette(
-    tex_color: vec4<f32>,
-    sil_color: vec4<f32>
-) -> vec4<f32> {
-    // Replace color with silhouette, keep alpha
-    return vec4<f32>(sil_color.rgb, tex_color.a * sil_color.a);
-}
-
-fn apply_pixelate(
-    uv: vec2<f32>,
-    tex_size: vec2<f32>,
-    block_size: f32,
-    tint: vec4<f32>
-) -> vec4<f32> {
-    let pixel_uv = floor(uv * tex_size / block_size) * block_size / tex_size;
-    let tex_color = textureSample(sprite_texture, sprite_sampler, pixel_uv);
-    return tex_color * tint;
+fn apply_pixelate(uv: vec2<f32>, bounds: vec4<f32>, block_size: f32) -> vec4<f32> {
+    // Blocks start at the sprite's top-left texel; each shows its first texel
+    let texel = texel_size();
+    let size = max(block_size, 1.0);
+    let local = floor((uv - bounds.xy) / texel);
+    let block = floor(local / size) * size;
+    return sample_masked(bounds.xy + (block + 0.5) * texel, bounds);
 }
 
 fn apply_wave(
     uv: vec2<f32>,
+    bounds: vec4<f32>,
     amplitude: f32,
     frequency: f32,
-    speed: f32,
-    time: f32,
-    tint: vec4<f32>
+    speed: f32
 ) -> vec4<f32> {
-    var wave_uv = uv;
-    wave_uv.x += sin(uv.y * frequency + time * speed) * amplitude * 0.01;
-    let tex_color = textureSample(sprite_texture, sprite_sampler, wave_uv);
-    return tex_color * tint;
+    // Phase and amplitude are relative to the sprite's own rect
+    let size = max(bounds.zw - bounds.xy, vec2<f32>(1e-6));
+    let local_y = (uv.y - bounds.y) / size.y;
+    let time = globals.time_resolution.x;
+    let shift = sin(local_y * frequency + time * speed) * amplitude * 0.01 * size.x;
+    return sample_masked(vec2<f32>(uv.x + shift, uv.y), bounds);
 }
 
 fn apply_dissolve(
-    tex_color: vec4<f32>,
+    base: vec4<f32>,
     uv: vec2<f32>,
+    bounds: vec4<f32>,
     progress: f32,
-    edge_color: vec4<f32>,
-    tint: vec4<f32>
+    edge_color: vec4<f32>
 ) -> vec4<f32> {
-    // Simple noise-based dissolve
-    let noise = fract(sin(dot(uv, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    // Simple noise-based dissolve over the sprite's own rect
+    let size = max(bounds.zw - bounds.xy, vec2<f32>(1e-6));
+    let local = (uv - bounds.xy) / size;
+    let noise = fract(sin(dot(local, vec2<f32>(12.9898, 78.233))) * 43758.5453);
     
     if noise < progress {
         return vec4<f32>(0.0); // Dissolved
     }
     
-    // Edge glow
+    // Edge glow on visible pixels
     let edge_width = 0.1;
-    if noise < progress + edge_width && edge_color.a > 0.0 {
+    if noise < progress + edge_width && edge_color.a > 0.0 && base.a > VISIBLE {
         let edge_factor = (noise - progress) / edge_width;
-        let base = tex_color * tint;
         return mix(edge_color, base, edge_factor);
     }
     
-    return tex_color * tint;
-}
-
-fn apply_invert(
-    tex_color: vec4<f32>,
-    tint: vec4<f32>
-) -> vec4<f32> {
-    let base = tex_color * tint;
-    return vec4<f32>(1.0 - base.rgb, base.a);
-}
-
-fn apply_grayscale(
-    tex_color: vec4<f32>,
-    intensity: f32,
-    tint: vec4<f32>
-) -> vec4<f32> {
-    let base = tex_color * tint;
-    let gray = dot(base.rgb, vec3<f32>(0.299, 0.587, 0.114));
-    let result = mix(base.rgb, vec3<f32>(gray), intensity);
-    return vec4<f32>(result, base.a);
+    return base;
 }

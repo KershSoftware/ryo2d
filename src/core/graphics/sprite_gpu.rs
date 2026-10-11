@@ -17,11 +17,16 @@
 //!     │   └── draw to pixel buffer → upload texture → fullscreen quad
 //!     │
 //!     └── GPU path: sprites with Material/shader
-//!         └── SpriteGpuRenderer::render()
-//!             ├── Upload sprite textures (cached)
-//!             ├── Build instance buffer (transforms, UVs, effect params)
-//!             └── Draw calls per shader type
+//!         ├── SpriteGpuRenderer::prepare()
+//!         │   └── Make used textures resident in the texture atlas
+//!         └── SpriteGpuRenderer::render_batches()
+//!             ├── Remap instance UVs into atlas slots (mask, effect growth)
+//!             └── One draw per run of batches sharing an atlas page
 //! ```
+//!
+//! Textures live in a texture atlas (`Rgba8Unorm` pages holding raw sRGB
+//! bytes). The shader tints and applies effects in sRGB space, like the CPU
+//! renderer, and converts to linear on output.
 //!
 //! # Usage
 //!
@@ -32,11 +37,13 @@
 //! CPU rendering is used as fallback for sprites without shaders.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
+use super::{AtlasKey, AtlasSlot, SlotPage, TextureAtlas};
+use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Material, SpriteEffect, SpriteShader};
-use crate::core::texture::{TextureHandle, TextureManager};
 use crate::core::ui::Color;
 
 /// Per-instance data for GPU sprite rendering
@@ -50,7 +57,8 @@ pub struct SpriteInstance {
   pub transform: [[f32; 4]; 3],
   /// UV rect: x=u_min, y=v_min, z=u_max, w=v_max
   pub uv_rect: [f32; 4],
-  /// Tint color (RGBA, pre-multiplied alpha)
+  /// Tint color (RGBA of the sRGB colour, straight alpha, 0-1), applied in
+  /// sRGB space like the CPU renderer
   pub tint: [f32; 4],
   /// Effect parameters (meaning depends on shader)
   /// x=effect_type, y,z,w=effect-specific params
@@ -58,6 +66,11 @@ pub struct SpriteInstance {
   /// Additional effect parameters
   /// Used for effects that need more than 4 floats
   pub effect_extra: [f32; 4],
+  /// The sprite's own rect in atlas UVs (u_min, v_min, u_max, v_max).
+  ///
+  /// Set by the renderer at draw time from `uv_rect`; texture samples outside
+  /// it are transparent, so effects never pick up atlas neighbours.
+  pub uv_bounds: [f32; 4],
 }
 
 impl SpriteInstance {
@@ -73,6 +86,7 @@ impl SpriteInstance {
       tint: [1.0, 1.0, 1.0, 1.0],
       effect_params: [0.0; 4],
       effect_extra: [0.0; 4],
+      uv_bounds: [0.0, 0.0, 1.0, 1.0],
     }
   }
 
@@ -204,12 +218,18 @@ impl SpriteInstance {
       }
       SpriteEffect::DirectionalOutline {
         solid_color,
+        passable_color,
         thickness,
-        ..
       } => {
-        // For GPU rendering, treat as regular outline with solid color
-        // (directional outline is primarily a CPU effect)
-        self.effect_params = [1.0, *thickness as f32, 0.0, 0.0];
+        // The passable (bottom edge) colour is packed two 8-bit channels per
+        // float (exact integers), the solid colour goes in effect_extra
+        let p = passable_color;
+        self.effect_params = [
+          11.0,
+          *thickness as f32,
+          p.r as f32 * 256.0 + p.g as f32,
+          p.b as f32 * 256.0 + p.a as f32,
+        ];
         self.effect_extra = [
           solid_color.r as f32 / 255.0,
           solid_color.g as f32 / 255.0,
@@ -255,19 +275,47 @@ impl SpriteGlobals {
   }
 }
 
+/// Where an uploaded texture's pixels come from, for re-uploading it after
+/// the atlas evicted it.
+enum TextureSource {
+  Pixels {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+  },
+  /// Read from the sprite when (re)uploaded
+  Sprite(SpriteHandle),
+}
+
+impl TextureSource {
+  fn size(&self) -> (u32, u32) {
+    match self {
+      Self::Pixels { width, height, .. } => (*width, *height),
+      Self::Sprite(sprite) => sprite.with_sprite(|s| (s.width(), s.height())),
+    }
+  }
+
+  fn rgba(&self) -> Vec<u8> {
+    match self {
+      Self::Pixels { data, .. } => data.clone(),
+      Self::Sprite(sprite) => sprite.with_sprite(|s| s.data().to_vec()),
+    }
+  }
+}
+
+/// Consecutive instances drawn with one pipeline and atlas page.
+struct DrawRun {
+  page: SlotPage,
+  has_effects: bool,
+  start: usize,
+  count: usize,
+}
+
 /// GPU-based sprite renderer with per-sprite shader effects
-#[expect(
-  dead_code,
-  reason = "some fields reserved for future shader pipeline use"
-)]
 pub struct SpriteGpuRenderer {
   // Shader pipelines (one per effect type + base)
   base_pipeline: wgpu::RenderPipeline,
   effect_pipeline: wgpu::RenderPipeline,
-
-  // Bind group layouts
-  globals_layout: wgpu::BindGroupLayout,
-  texture_layout: wgpu::BindGroupLayout,
 
   // Global uniforms
   globals_buffer: wgpu::Buffer,
@@ -280,16 +328,19 @@ pub struct SpriteGpuRenderer {
   // Vertex buffer (quad)
   vertex_buffer: wgpu::Buffer,
 
-  // Texture cache (bind groups keyed by handle, string ID → handle mapping)
-  bind_group_cache: HashMap<TextureHandle, wgpu::BindGroup>,
-  id_to_handle: HashMap<String, TextureHandle>,
+  // Every uploaded texture lives in the atlas under `AtlasKey::Id`
+  atlas: TextureAtlas,
+  // Pixel sources by texture id, for re-uploading evicted textures
+  textures: HashMap<String, TextureSource>,
+  // Atlas frame counter, advanced by `prepare`
+  frame: u64,
 
   // Timing
   time: f32,
 }
 
 impl SpriteGpuRenderer {
-  /// Maximum sprites per draw call
+  /// Initial instance buffer capacity (grown by `prepare` when needed)
   const MAX_INSTANCES: usize = 10000;
 
   /// Create a new GPU sprite renderer
@@ -313,27 +364,41 @@ impl SpriteGpuRenderer {
       }],
     });
 
-    let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-      label: Some("Sprite Texture Layout"),
-      entries: &[
-        wgpu::BindGroupLayoutEntry {
-          binding: 0,
-          visibility: wgpu::ShaderStages::FRAGMENT,
-          ty: wgpu::BindingType::Texture {
-            multisampled: false,
-            view_dimension: wgpu::TextureViewDimension::D2,
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+    let texture_layout = Arc::new(device.create_bind_group_layout(
+      &wgpu::BindGroupLayoutDescriptor {
+        label: Some("Sprite Texture Layout"),
+        entries: &[
+          wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+              multisampled: false,
+              view_dimension: wgpu::TextureViewDimension::D2,
+              sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            },
+            count: None,
           },
-          count: None,
-        },
-        wgpu::BindGroupLayoutEntry {
-          binding: 1,
-          visibility: wgpu::ShaderStages::FRAGMENT,
-          ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-          count: None,
-        },
-      ],
-    });
+          wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+          },
+        ],
+      },
+    ));
+
+    // Nearest filtering for pixel art; the atlas border covers any edge overshoot
+    let sampler = Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
+      label: Some("Sprite Sampler"),
+      address_mode_u: wgpu::AddressMode::ClampToEdge,
+      address_mode_v: wgpu::AddressMode::ClampToEdge,
+      address_mode_w: wgpu::AddressMode::ClampToEdge,
+      mag_filter: wgpu::FilterMode::Nearest,
+      min_filter: wgpu::FilterMode::Nearest,
+      mipmap_filter: wgpu::FilterMode::Nearest,
+      ..Default::default()
+    }));
 
     // Create globals buffer
     let globals = SpriteGlobals::new(320.0, 180.0, 0.0);
@@ -352,13 +417,7 @@ impl SpriteGpuRenderer {
       }],
     });
 
-    // Create instance buffer
-    let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-      label: Some("Sprite Instance Buffer"),
-      size: (Self::MAX_INSTANCES * std::mem::size_of::<SpriteInstance>()) as u64,
-      usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-      mapped_at_creation: false,
-    });
+    let instance_buffer = Self::create_instance_buffer(device, Self::MAX_INSTANCES);
 
     // Create quad vertex buffer
     // Each vertex: position (x, y), uv (u, v)
@@ -412,7 +471,7 @@ impl SpriteGpuRenderer {
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Sprite Pipeline Layout"),
-      bind_group_layouts: &[&globals_layout, &texture_layout],
+      bind_group_layouts: &[&globals_layout, &*texture_layout],
       push_constant_ranges: &[],
     });
 
@@ -481,6 +540,12 @@ impl SpriteGpuRenderer {
           shader_location: 8,
           format: wgpu::VertexFormat::Float32x4,
         },
+        // uv_bounds
+        wgpu::VertexAttribute {
+          offset: 112,
+          shader_location: 9,
+          format: wgpu::VertexFormat::Float32x4,
+        },
       ],
     };
 
@@ -547,17 +612,25 @@ impl SpriteGpuRenderer {
     Self {
       base_pipeline,
       effect_pipeline,
-      globals_layout,
-      texture_layout,
       globals_buffer,
       globals_bind_group,
       instance_buffer,
       instance_capacity: Self::MAX_INSTANCES,
       vertex_buffer,
-      bind_group_cache: HashMap::new(),
-      id_to_handle: HashMap::new(),
+      atlas: TextureAtlas::new(device, texture_layout, sampler),
+      textures: HashMap::new(),
+      frame: 0,
       time: 0.0,
     }
+  }
+
+  fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("Sprite Instance Buffer"),
+      size: (capacity * std::mem::size_of::<SpriteInstance>()) as u64,
+      usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+      mapped_at_creation: false,
+    })
   }
 
   /// Update time (called each frame)
@@ -571,8 +644,11 @@ impl SpriteGpuRenderer {
     queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
   }
 
-  /// Upload a sprite texture to GPU (cached by id)
-  #[allow(clippy::too_many_arguments)]
+  /// Upload a sprite texture to the GPU (cached by id).
+  ///
+  /// `data` is RGBA8 in sRGB. The texture goes into the texture atlas;
+  /// uploading an id that is already cached does nothing. Data that doesn't
+  /// match `width`x`height` is ignored.
   pub fn upload_texture(
     &mut self,
     device: &wgpu::Device,
@@ -581,54 +657,82 @@ impl SpriteGpuRenderer {
     width: u32,
     height: u32,
     data: &[u8],
-    texture_mgr: &mut TextureManager,
   ) {
-    if self.id_to_handle.contains_key(id) {
+    if self.textures.contains_key(id) {
       return;
     }
-
-    let handle = texture_mgr.from_rgba(data.to_vec(), width, height, device, queue);
-    let view = texture_mgr.get_view(handle).unwrap();
-
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-      label: Some("Sprite Sampler"),
-      address_mode_u: wgpu::AddressMode::ClampToEdge,
-      address_mode_v: wgpu::AddressMode::ClampToEdge,
-      address_mode_w: wgpu::AddressMode::ClampToEdge,
-      mag_filter: wgpu::FilterMode::Nearest,
-      min_filter: wgpu::FilterMode::Nearest,
-      mipmap_filter: wgpu::FilterMode::Nearest,
-      ..Default::default()
-    });
-
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Sprite Texture Bind Group"),
-      layout: &self.texture_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&sampler),
-        },
-      ],
-    });
-
-    self.id_to_handle.insert(id.to_string(), handle);
-    self.bind_group_cache.insert(handle, bind_group);
+    let key = AtlasKey::Id(id.to_string());
+    let placed = self.atlas.slot(
+      device,
+      queue,
+      key,
+      width,
+      height,
+      || data.to_vec(),
+      self.frame,
+    );
+    if placed.is_some() {
+      let data = data.to_vec();
+      let source = TextureSource::Pixels {
+        width,
+        height,
+        data,
+      };
+      self.textures.insert(id.to_string(), source);
+    }
   }
 
-  /// Get a cached texture's bind group
+  /// Make every texture `collector` uses resident in the atlas.
+  ///
+  /// Re-uploads textures the atlas evicted, marks them used this frame (so
+  /// nothing drawn this frame is evicted), grows the instance buffer to fit
+  /// and runs the atlas housekeeping. Call once per frame, after the batches
+  /// are collected and before [`render_batches`](Self::render_batches).
+  pub fn prepare(
+    &mut self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    collector: &BatchCollector,
+  ) {
+    for key in collector.batches.keys() {
+      let Some(source) = self.textures.get(&key.texture_id) else {
+        continue;
+      };
+      let (width, height) = source.size();
+      let atlas_key = AtlasKey::Id(key.texture_id.clone());
+      let rgba = || source.rgba();
+      self
+        .atlas
+        .slot(device, queue, atlas_key, width, height, rgba, self.frame);
+    }
+    self.atlas.end_frame(self.frame);
+    self.frame += 1;
+
+    let needed = collector.sprite_count();
+    if needed > self.instance_capacity {
+      self.instance_capacity = needed.next_power_of_two();
+      self.instance_buffer = Self::create_instance_buffer(device, self.instance_capacity);
+    }
+  }
+
+  /// Get the bind group of the atlas page holding a cached texture
   pub fn get_texture_bind_group(&self, id: &str) -> Option<&wgpu::BindGroup> {
-    self
-      .id_to_handle
-      .get(id)
-      .and_then(|h| self.bind_group_cache.get(h))
+    let slot = self.lookup(id)?;
+    self.atlas.bind_group(slot.page)
+  }
+
+  /// Where a cached texture currently lives in the atlas.
+  fn lookup(&self, id: &str) -> Option<AtlasSlot> {
+    if !self.textures.contains_key(id) {
+      return None;
+    }
+    self.atlas.lookup(&AtlasKey::Id(id.to_string()))
   }
 
   /// Render sprites to a render pass
+  ///
+  /// Batches whose textures share an atlas page and pipeline and follow each
+  /// other are drawn with one draw call.
   ///
   /// # Arguments
   /// - `queue`: GPU queue for uploading instance data
@@ -642,86 +746,15 @@ impl SpriteGpuRenderer {
     view: &wgpu::TextureView,
     sprites: impl Iterator<Item = (&'a str, &'a [SpriteInstance], bool)>,
   ) {
-    // Collect sprites into a Vec so we can iterate twice
-    let sprites: Vec<_> = sprites.collect();
-
-    // Pre-upload ALL instance data BEFORE starting the render pass
-    let instance_size = std::mem::size_of::<SpriteInstance>() as u64;
-    let mut batch_info: Vec<(u64, u32)> = Vec::with_capacity(sprites.len());
-    let mut current_offset: u64 = 0;
-
-    for (texture_id, instances, _has_effects) in &sprites {
-      if instances.is_empty() {
-        batch_info.push((0, 0));
-        continue;
-      }
-
-      if !self.id_to_handle.contains_key(*texture_id) {
-        batch_info.push((0, 0));
-        continue;
-      }
-
-      let instance_count = instances.len() as u32;
-      let instance_data = bytemuck::cast_slice(instances);
-
-      queue.write_buffer(&self.instance_buffer, current_offset, instance_data);
-
-      batch_info.push((current_offset, instance_count));
-      current_offset += instance_count as u64 * instance_size;
-    }
-
-    // Now start the render pass - all buffer writes are complete
-    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-      label: Some("Sprite Render Pass"),
-      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        view,
-        resolve_target: None,
-        ops: wgpu::Operations {
-          load: wgpu::LoadOp::Load, // Preserve existing content
-          store: wgpu::StoreOp::Store,
-        },
-      })],
-      depth_stencil_attachment: None,
-      timestamp_writes: None,
-      occlusion_query_set: None,
-    });
-
-    render_pass.set_bind_group(0, &self.globals_bind_group, &[]);
-    render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-
-    for (i, (texture_id, _instances, has_effects)) in sprites.iter().enumerate() {
-      let (offset, instance_count) = batch_info[i];
-      if instance_count == 0 {
-        continue;
-      }
-
-      let Some(handle) = self.id_to_handle.get(*texture_id) else {
-        continue;
-      };
-      let Some(bind_group) = self.bind_group_cache.get(handle) else {
-        continue;
-      };
-
-      // Choose pipeline based on whether we need effects
-      if *has_effects {
-        render_pass.set_pipeline(&self.effect_pipeline);
-      } else {
-        render_pass.set_pipeline(&self.base_pipeline);
-      }
-
-      render_pass.set_bind_group(1, bind_group, &[]);
-
-      // Use buffer slice starting at this batch's offset
-      let end_offset = offset + instance_count as u64 * instance_size;
-      render_pass.set_vertex_buffer(1, self.instance_buffer.slice(offset..end_offset));
-      render_pass.draw(0..6, 0..instance_count);
-    }
+    self.draw(queue, encoder, view, sprites);
   }
 
   /// Render sprites using the BatchCollector for automatic batching
   ///
   /// This is the preferred method for high-performance sprite rendering.
-  /// Sprites are grouped by texture and effect, minimizing draw calls.
+  /// Batches are drawn in z-order; consecutive batches on the same atlas page
+  /// and pipeline share one draw call. Call [`prepare`](Self::prepare) first
+  /// each frame so the textures are resident.
   ///
   /// # Arguments
   /// - `queue`: GPU queue for uploading instance data
@@ -741,6 +774,7 @@ impl SpriteGpuRenderer {
   ///     collector.add(renderable.sprite.id(), has_effect, instance, z_order);
   /// }
   ///
+  /// renderer.prepare(device, queue, &collector);
   /// renderer.render_batches(queue, encoder, view, &collector);
   /// ```
   pub fn render_batches(
@@ -753,39 +787,59 @@ impl SpriteGpuRenderer {
     if collector.sprite_count() == 0 {
       return;
     }
+    let batches = collector.sorted_batches().into_iter();
+    let batches =
+      batches.map(|(key, batch)| (key.texture_id.as_str(), batch.instances(), key.has_effects));
+    self.draw(queue, encoder, view, batches);
+  }
 
-    // Get sorted batches for consistent ordering
-    let sorted_batches = collector.sorted_batches();
-
-    // Pre-upload ALL instance data BEFORE starting the render pass
-    // This ensures buffer writes complete before GPU reads
-    let instance_size = std::mem::size_of::<SpriteInstance>() as u64;
-    let mut batch_offsets: Vec<(u64, u32)> = Vec::with_capacity(sorted_batches.len());
-    let mut current_offset: u64 = 0;
-
-    for (key, batch) in &sorted_batches {
-      if batch.is_empty() {
-        batch_offsets.push((0, 0));
+  /// Remap the batches into their atlas slots and draw them in order.
+  fn draw<'a>(
+    &self,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    batches: impl Iterator<Item = (&'a str, &'a [SpriteInstance], bool)>,
+  ) {
+    let mut instances: Vec<SpriteInstance> = Vec::new();
+    let mut runs: Vec<DrawRun> = Vec::new();
+    for (texture_id, batch, has_effects) in batches {
+      let Some(slot) = self.lookup(texture_id) else {
+        continue;
+      };
+      let Some(page) = self.atlas.texture(slot.page) else {
+        continue;
+      };
+      let page_size = (page.width(), page.height());
+      let start = instances.len();
+      let room = self.instance_capacity.saturating_sub(start);
+      instances.extend(
+        batch
+          .iter()
+          .take(room)
+          .map(|i| place_in_slot(i, &slot, page_size, has_effects)),
+      );
+      let count = instances.len() - start;
+      if count == 0 {
         continue;
       }
-
-      // Skip batches without cached textures
-      if !self.id_to_handle.contains_key(&key.texture_id) {
-        batch_offsets.push((0, 0));
-        continue;
+      match runs.last_mut() {
+        Some(run) if run.page == slot.page && run.has_effects == has_effects => run.count += count,
+        _ => runs.push(DrawRun {
+          page: slot.page,
+          has_effects,
+          start,
+          count,
+        }),
       }
-
-      let instance_count = batch.len() as u32;
-      let instance_data = bytemuck::cast_slice(batch.instances());
-
-      // Write this batch's data at the current offset
-      queue.write_buffer(&self.instance_buffer, current_offset, instance_data);
-
-      batch_offsets.push((current_offset, instance_count));
-      current_offset += instance_count as u64 * instance_size;
+    }
+    if runs.is_empty() {
+      return;
     }
 
-    // Now start the render pass - all buffer writes are complete
+    // Upload all instance data BEFORE the render pass begins
+    queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
+
     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
       label: Some("Sprite Batch Render Pass"),
       color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -804,33 +858,21 @@ impl SpriteGpuRenderer {
     render_pass.set_bind_group(0, &self.globals_bind_group, &[]);
     render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
 
-    // Render batches in z-order using pre-uploaded data
-    for (i, (key, _batch)) in sorted_batches.iter().enumerate() {
-      let (offset, instance_count) = batch_offsets[i];
-      if instance_count == 0 {
-        continue;
-      }
-
-      let Some(handle) = self.id_to_handle.get(&key.texture_id) else {
+    let instance_size = std::mem::size_of::<SpriteInstance>() as u64;
+    for run in &runs {
+      let Some(bind_group) = self.atlas.bind_group(run.page) else {
         continue;
       };
-      let Some(bind_group) = self.bind_group_cache.get(handle) else {
-        continue;
-      };
-
-      // Choose pipeline based on whether batch has effects
-      if key.has_effects {
+      if run.has_effects {
         render_pass.set_pipeline(&self.effect_pipeline);
       } else {
         render_pass.set_pipeline(&self.base_pipeline);
       }
-
       render_pass.set_bind_group(1, bind_group, &[]);
-
-      // Use buffer slice starting at this batch's offset
-      let end_offset = offset + instance_count as u64 * instance_size;
-      render_pass.set_vertex_buffer(1, self.instance_buffer.slice(offset..end_offset));
-      render_pass.draw(0..6, 0..instance_count);
+      let offset = run.start as u64 * instance_size;
+      let end = offset + run.count as u64 * instance_size;
+      render_pass.set_vertex_buffer(1, self.instance_buffer.slice(offset..end));
+      render_pass.draw(0..6, 0..run.count as u32);
     }
   }
 
@@ -842,37 +884,100 @@ impl SpriteGpuRenderer {
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    sprite: &crate::core::asset::SpriteHandle,
-    texture_mgr: &mut TextureManager,
+    sprite: &SpriteHandle,
   ) {
     let id = sprite.id();
-    if self.id_to_handle.contains_key(&id) {
+    if self.textures.contains_key(&id) {
       return;
     }
-
-    sprite.with_sprite(|s| {
-      self.upload_texture(
-        device,
-        queue,
-        &id,
-        s.width(),
-        s.height(),
-        s.data(),
-        texture_mgr,
-      );
-    });
+    let (width, height, data) = sprite.with_sprite(|s| (s.width(), s.height(), s.data().to_vec()));
+    let key = AtlasKey::Id(id.clone());
+    let placed = self
+      .atlas
+      .slot(device, queue, key, width, height, || data, self.frame);
+    if placed.is_some() {
+      self
+        .textures
+        .insert(id, TextureSource::Sprite(sprite.clone()));
+    }
   }
 
   /// Check if a texture is already cached
   pub fn has_texture(&self, id: &str) -> bool {
-    self.id_to_handle.contains_key(id)
+    self.textures.contains_key(id)
   }
 
   /// Clear the texture cache
   pub fn clear_cache(&mut self) {
-    self.bind_group_cache.clear();
-    self.id_to_handle.clear();
+    self.textures.clear();
+    self.atlas.clear();
   }
+}
+
+/// Atlas padding (texels on every side) of the effect in `params`: outline,
+/// glow and directional outline grow the sprite as the CPU renderer did.
+fn effect_padding(params: &[f32; 4]) -> f32 {
+  match params[0] as i32 {
+    // Outline, DirectionalOutline: thickness
+    1 | 11 => params[1].max(0.0),
+    // Glow: the radius in whole texels, at least 1
+    2 => params[1].floor().max(1.0),
+    _ => 0.0,
+  }
+}
+
+/// Map an instance into its atlas slot.
+///
+/// `uv_rect` (normalized over the texture) is remapped into the slot and
+/// `uv_bounds` becomes the sprite's own rect, clipped to the slot. When
+/// `effects` is set and the effect grows the sprite, the quad and its UVs are
+/// enlarged by the effect's padding around the same centre, so the effect can
+/// draw outside the sprite. `page_size` is the size of the slot's texture.
+fn place_in_slot(
+  instance: &SpriteInstance,
+  slot: &AtlasSlot,
+  page_size: (u32, u32),
+  effects: bool,
+) -> SpriteInstance {
+  let [s0, t0, s1, t1] = slot.uv;
+  let [u0, v0, u1, v1] = instance.uv_rect;
+  let (du, dv) = (s1 - s0, t1 - t0);
+  let mut uv = [s0 + u0 * du, t0 + v0 * dv, s0 + u1 * du, t0 + v1 * dv];
+  let mut out = *instance;
+  out.uv_bounds = [
+    uv[0].min(uv[2]).max(s0),
+    uv[1].min(uv[3]).max(t0),
+    uv[0].max(uv[2]).min(s1),
+    uv[1].max(uv[3]).min(t1),
+  ];
+
+  let pad = if effects {
+    effect_padding(&instance.effect_params)
+  } else {
+    0.0
+  };
+  let texel_u = 1.0 / page_size.0.max(1) as f32;
+  let texel_v = 1.0 / page_size.1.max(1) as f32;
+  // Sprite size in texels
+  let width = (uv[2] - uv[0]).abs() / texel_u;
+  let height = (uv[3] - uv[1]).abs() / texel_v;
+  if pad > 0.0 && width > 0.0 && height > 0.0 {
+    let grow_x = (width + 2.0 * pad) / width;
+    let grow_y = (height + 2.0 * pad) / height;
+    for c in 0..2 {
+      out.transform[0][c] *= grow_x;
+      out.transform[1][c] *= grow_y;
+    }
+    // Grow outward, also when the UVs are flipped
+    let pad_u = (uv[2] - uv[0]).signum() * pad * texel_u;
+    let pad_v = (uv[3] - uv[1]).signum() * pad * texel_v;
+    uv[0] -= pad_u;
+    uv[2] += pad_u;
+    uv[1] -= pad_v;
+    uv[3] += pad_v;
+  }
+  out.uv_rect = uv;
+  out
 }
 
 /// Get the shader effect from a Material or inline shader
@@ -1079,7 +1184,7 @@ mod tests {
   #[test]
   fn sprite_instance_size() {
     // Verify instance size matches expected (for GPU buffer layout)
-    assert_eq!(std::mem::size_of::<SpriteInstance>(), 112);
+    assert_eq!(std::mem::size_of::<SpriteInstance>(), 128);
   }
 
   #[test]
@@ -1112,6 +1217,158 @@ mod tests {
     let instance = SpriteInstance::new().with_effect(&effect);
     assert_eq!(instance.effect_params[0], 3.0); // Flash effect type
     assert_eq!(instance.effect_params[1], 0.8); // intensity
+  }
+
+  #[test]
+  fn directional_outline_packs_both_colours() {
+    let effect =
+      SpriteEffect::directional_outline(Color::new(1, 2, 3, 4), Color::new(120, 121, 130, 255), 2);
+    let instance = SpriteInstance::new().with_effect(&effect);
+    assert_eq!(
+      instance.effect_params,
+      [11.0, 2.0, 120.0 * 256.0 + 121.0, 130.0 * 256.0 + 255.0]
+    );
+    assert_eq!(
+      instance.effect_extra,
+      [1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0, 4.0 / 255.0]
+    );
+  }
+
+  // =========================================================================
+  // Atlas placement tests
+  // =========================================================================
+
+  const PAGE: (u32, u32) = (2048, 2048);
+
+  fn texels(v: [f32; 4]) -> [f32; 4] {
+    v.map(|c| c * 2048.0)
+  }
+
+  /// A 4x4 image at texel (8, 8) of a 2048 page.
+  fn slot_4x4() -> AtlasSlot {
+    AtlasSlot {
+      page: SlotPage::Atlas(0),
+      uv: [8.0, 8.0, 12.0, 12.0].map(|c| c / 2048.0),
+    }
+  }
+
+  #[test]
+  fn uvs_are_remapped_into_the_slot() {
+    let sub = SpriteInstance::new().with_uv(0.5, 0.0, 1.0, 0.5);
+    let placed = place_in_slot(&sub, &slot_4x4(), PAGE, false);
+    assert_eq!(texels(placed.uv_rect), [10.0, 8.0, 12.0, 10.0]);
+    assert_eq!(placed.uv_bounds, placed.uv_rect);
+    assert_eq!(placed.transform, sub.transform);
+  }
+
+  #[test]
+  fn flipped_uvs_keep_ordered_bounds() {
+    let flipped = SpriteInstance::new().with_uv(1.0, 0.0, 0.0, 1.0);
+    let placed = place_in_slot(&flipped, &slot_4x4(), PAGE, false);
+    assert_eq!(texels(placed.uv_rect), [12.0, 8.0, 8.0, 12.0]);
+    assert_eq!(texels(placed.uv_bounds), [8.0, 8.0, 12.0, 12.0]);
+  }
+
+  #[test]
+  fn bounds_are_clipped_to_the_slot() {
+    let beyond = SpriteInstance::new().with_uv(-1.0, 0.0, 2.0, 1.0);
+    let placed = place_in_slot(&beyond, &slot_4x4(), PAGE, false);
+    assert_eq!(texels(placed.uv_bounds), [8.0, 8.0, 12.0, 12.0]);
+  }
+
+  #[test]
+  fn growing_effects_enlarge_quad_and_uvs_around_the_centre() {
+    let outlined = SpriteInstance::new()
+      .with_transform(32.0, 32.0, 0.0, 16.0, 16.0)
+      .with_effect(&SpriteEffect::outline(Color::WHITE, 2));
+    let placed = place_in_slot(&outlined, &slot_4x4(), PAGE, true);
+    // 4 texels + 2 on each side = 8 texels, 4 px each
+    assert_eq!(placed.transform[0][0], 32.0);
+    assert_eq!(placed.transform[1][1], 32.0);
+    assert_eq!(placed.transform[2], outlined.transform[2]);
+    assert_eq!(texels(placed.uv_rect), [6.0, 6.0, 14.0, 14.0]);
+    assert_eq!(texels(placed.uv_bounds), [8.0, 8.0, 12.0, 12.0]);
+  }
+
+  #[test]
+  fn growth_follows_flipped_uvs() {
+    let outlined = SpriteInstance::new()
+      .with_uv(1.0, 0.0, 0.0, 1.0)
+      .with_effect(&SpriteEffect::outline(Color::WHITE, 1));
+    let placed = place_in_slot(&outlined, &slot_4x4(), PAGE, true);
+    assert_eq!(texels(placed.uv_rect), [13.0, 7.0, 7.0, 13.0]);
+  }
+
+  #[test]
+  fn nothing_grows_without_the_effect_pipeline_or_a_growing_effect() {
+    let outlined = SpriteInstance::new().with_effect(&SpriteEffect::outline(Color::WHITE, 2));
+    let base = place_in_slot(&outlined, &slot_4x4(), PAGE, false);
+    assert_eq!(texels(base.uv_rect), [8.0, 8.0, 12.0, 12.0]);
+    let flashed = SpriteInstance::new().with_effect(&SpriteEffect::flash(Color::WHITE, 1.0));
+    let flash = place_in_slot(&flashed, &slot_4x4(), PAGE, true);
+    assert_eq!(flash.transform, flashed.transform);
+  }
+
+  #[test]
+  fn effect_padding_matches_the_cpu_growth() {
+    let pad =
+      |e: SpriteEffect| effect_padding(&SpriteInstance::new().with_effect(&e).effect_params);
+    assert_eq!(pad(SpriteEffect::outline(Color::WHITE, 3)), 3.0);
+    let directional = SpriteEffect::directional_outline(Color::WHITE, Color::BLACK, 2);
+    assert_eq!(pad(directional), 2.0);
+    // The CPU grows a glow by `radius as usize`, at least 1
+    assert_eq!(
+      pad(SpriteEffect::glow_with_intensity(Color::WHITE, 2.7, 1.0)),
+      2.0
+    );
+    assert_eq!(pad(SpriteEffect::glow(Color::WHITE, 1.0)), 1.0);
+    assert_eq!(pad(SpriteEffect::invert()), 0.0);
+  }
+
+  #[test]
+  fn prepare_reuploads_evicted_textures() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    renderer.upload_texture(&device, &queue, "a", 2, 2, &[255; 16]);
+    // As if the atlas had evicted it
+    renderer.atlas.clear();
+    assert!(renderer.get_texture_bind_group("a").is_none());
+
+    let mut collector = BatchCollector::new();
+    collector.add("a", false, SpriteInstance::new(), 0);
+    renderer.prepare(&device, &queue, &collector);
+    assert!(renderer.get_texture_bind_group("a").is_some());
+  }
+
+  #[test]
+  fn mismatched_texture_data_is_not_cached() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    renderer.upload_texture(&device, &queue, "short", 2, 2, &[255; 15]);
+    assert!(!renderer.has_texture("short"));
+  }
+
+  #[test]
+  fn prepare_grows_the_instance_buffer() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    let mut collector = BatchCollector::new();
+    for _ in 0..=SpriteGpuRenderer::MAX_INSTANCES {
+      collector.add("a", false, SpriteInstance::new(), 0);
+    }
+    renderer.prepare(&device, &queue, &collector);
+    assert_eq!(renderer.instance_capacity, 16384);
+    let size = 16384 * std::mem::size_of::<SpriteInstance>() as u64;
+    assert_eq!(renderer.instance_buffer.size(), size);
   }
 
   // =========================================================================

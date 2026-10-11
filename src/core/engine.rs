@@ -1458,7 +1458,6 @@ impl Engine {
               sprite_gpu,
               renderer.device(),
               renderer.queue(),
-              &mut self.texture_manager,
             );
             self.debug_font_uploaded = true;
           }
@@ -1466,7 +1465,6 @@ impl Engine {
           let mut gpu_ctx = GpuRenderContext::new(
             &mut self.batch_collector,
             sprite_gpu,
-            &mut self.texture_manager,
             renderer.device(),
             renderer.queue(),
             &self.camera,
@@ -1585,6 +1583,8 @@ impl Engine {
         rend.game_width() as f32,
         rend.game_height() as f32,
       );
+      // Make the batches' textures resident in the atlas before drawing
+      gpu.prepare(rend.device(), rend.queue(), &self.batch_collector);
 
       // Prepare camera data for trail rendering
       let camera_pos = glam::Vec2::new(self.camera.x, self.camera.y);

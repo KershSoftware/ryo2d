@@ -35,3 +35,6 @@ mod render_pipeline;
 
 #[path = "e2e/post_process.rs"]
 mod post_process;
+
+#[path = "e2e/sprite_atlas.rs"]
+mod sprite_atlas;

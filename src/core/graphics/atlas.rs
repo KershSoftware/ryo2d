@@ -9,10 +9,6 @@
 //! An [`AtlasSlot`] names its texture with a [`SlotPage`]: either a shared atlas
 //! page or a standalone texture.
 
-// Nothing outside this module uses the atlas until Task 2 wires it into the
-// sprite renderer; remove this allow then.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -37,6 +33,13 @@ const PAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum AtlasKey {
   /// An entity sprite: the handle's identity plus its content generation
+  #[cfg_attr(
+    not(test),
+    expect(
+      dead_code,
+      reason = "constructed once entity sprites render on the GPU"
+    )
+  )]
   Sprite { handle: usize, generation: u64 },
   /// A texture uploaded by id (render_gpu, particles, parallax)
   Id(String),
@@ -165,16 +168,17 @@ impl AtlasLayout {
     })
   }
 
-  /// Whether `key` currently has a slot.
-  pub(crate) fn contains(&self, key: &AtlasKey) -> bool {
-    self.entries.contains_key(key)
+  /// Whether `key` currently has a slot of exactly `width`x`height`.
+  pub(crate) fn holds(&self, key: &AtlasKey, width: u32, height: u32) -> bool {
+    self
+      .entries
+      .get(key)
+      .is_some_and(|e| (e.w, e.h) == (width, height))
   }
 
-  /// Mark `key` used this frame.
-  pub(crate) fn touch(&mut self, key: &AtlasKey, frame: u64) {
-    if let Some(entry) = self.entries.get_mut(key) {
-      entry.last_used = frame;
-    }
+  /// The slot of `key`, without marking it used.
+  pub(crate) fn get(&self, key: &AtlasKey) -> Option<AtlasSlot> {
+    self.entries.get(key).map(|e| e.slot)
   }
 
   /// Free every entry unused for [`STALE_FRAMES`] or more frames.
@@ -334,7 +338,8 @@ impl TextureAtlas {
     }
 
     let small = width <= MAX_ATLAS_IMAGE && height <= MAX_ATLAS_IMAGE;
-    if small && self.layout.contains(&key) {
+    // A resized key falls through, so its new pixels are written
+    if small && self.layout.holds(&key, width, height) {
       return self
         .layout
         .place(&key, width, height, frame)
@@ -356,6 +361,22 @@ impl TextureAtlas {
       return Some(p.slot);
     }
     Some(self.create_standalone(device, queue, key, width, height, &bordered, frame))
+  }
+
+  /// Where `key` lives now, without uploading it or marking it used.
+  pub(crate) fn lookup(&self, key: &AtlasKey) -> Option<AtlasSlot> {
+    match self.standalone_ids.get(key) {
+      Some(id) => self.standalone.get(id).map(|s| s.slot),
+      None => self.layout.get(key),
+    }
+  }
+
+  /// Drop every entry, page and standalone texture.
+  pub(crate) fn clear(&mut self) {
+    self.layout = AtlasLayout::new(PAGE_SIZE, MAX_PAGES);
+    self.pages.clear();
+    self.standalone.clear();
+    self.standalone_ids.clear();
   }
 
   pub(crate) fn bind_group(&self, page: SlotPage) -> Option<&wgpu::BindGroup> {
@@ -764,6 +785,27 @@ mod tests {
     assert_ne!(a.uv, b.uv);
     let tex = atlas.texture(b.page).unwrap();
     assert_eq!(tex.width(), 303);
+  }
+
+  #[test]
+  fn resized_key_rewrites_pixels() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut atlas = gpu_atlas(&device);
+    let small = atlas
+      .slot(&device, &queue, id(0), 2, 2, || vec![10; 2 * 2 * 4], 0)
+      .unwrap();
+    let resized = atlas
+      .slot(&device, &queue, id(0), 3, 2, || vec![50; 3 * 2 * 4], 1)
+      .unwrap();
+    assert_ne!(small.uv, resized.uv);
+    assert_eq!(atlas.lookup(&id(0)), Some(resized));
+    let page = atlas.texture(resized.page).unwrap();
+    let img = crate::core::capture::read_texture_rgba(&device, &queue, page).unwrap();
+    let x = (resized.uv[0] * 2048.0).round() as u32;
+    let y = (resized.uv[1] * 2048.0).round() as u32;
+    assert_eq!(img.get_pixel(x, y).0[0], 50);
   }
 
   #[test]
