@@ -1,27 +1,9 @@
 //! Sprite Shader Effects Demo
 //!
-//! Demonstrates all per-sprite shader effects available in Ryo2D:
-//!
-//! - Outline: Draw colored borders around sprites
-//! - Glow: Add bloom/halo effects
-//! - Flash: Damage/power-up flashes
-//! - ColorShift: Status effect tints
-//! - Silhouette: Shadow/death effects
-//! - Pixelate: Retro/transition effects
-//! - Wave: Water/heat shimmer
-//! - Dissolve: Death/teleport animations
-//! - Invert: Color inversion
-//! - Grayscale: Desaturation
-//! - Custom WGSL: `assets/shaders/dissolve.wgsl` on the middle sprite, `amount` animated over time
-//!
-//! Controls:
-//! - Left/Right: Navigate between effects
-//! - Up/Down: Adjust effect parameters
-//! - Space: Trigger animated effects
-//! - R: Reset parameters
-//! - Escape: Quit
+//! Per-sprite shader effects: ten built-in effects plus a custom WGSL shader
+//! (`assets/shaders/dissolve.wgsl`) on the middle sprite.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 /// All available sprite effects for demonstration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,18 +51,16 @@ impl DemoEffect {
 
   fn description(&self) -> &'static str {
     match self {
-      Self::Outline => {
-        "Draw a colored border around the sprite.\nUp/Down: Thickness (1-8)  C: Cycle color"
-      }
-      Self::Glow => "Add a soft halo around the sprite.\nUp/Down: Radius (1-32)  C: Cycle color",
-      Self::Flash => "Blend with a solid color (damage flash).\nUp/Down: Intensity  Space: Trigger",
-      Self::ColorShift => "Shift colors toward a target.\nUp/Down: Amount",
-      Self::Silhouette => "Replace all colors (shadow mode).\nUp/Down: Alpha",
-      Self::Pixelate => "Group pixels into blocks.\nUp/Down: Block size (2-16)",
-      Self::Wave => "Wavy distortion effect.\nUp/Down: Amplitude (0.5-10)  C: Change speed",
-      Self::Dissolve => "Noise-based pixel dissolve.\nUp/Down: Progress (0-1)  Space: Animate",
-      Self::Invert => "Invert all RGB colors.\n(No parameters)",
-      Self::Grayscale => "Convert to grayscale.\nUp/Down: Intensity",
+      Self::Outline => "Draw a coloured border around the sprite.",
+      Self::Glow => "Add a soft halo around the sprite.",
+      Self::Flash => "Blend with a solid colour (damage flash).",
+      Self::ColorShift => "Shift colours toward a target colour.",
+      Self::Silhouette => "Replace every colour (shadow mode).",
+      Self::Pixelate => "Group pixels into blocks.",
+      Self::Wave => "Wavy distortion over time.",
+      Self::Dissolve => "Noise-based pixel dissolve.",
+      Self::Invert => "Invert the RGB colours.",
+      Self::Grayscale => "Convert to grayscale.",
     }
   }
 
@@ -100,100 +80,77 @@ impl DemoEffect {
   }
 }
 
-struct SpriteShaderDemo {
-  // Current effect being demonstrated
-  current_index: usize,
+const COLOR_NAMES: [&str; 6] = ["White", "Red", "Cyan", "Yellow", "Magenta", "Green"];
 
-  // Demo sprites - one normal, one with effect
-  normal_sprite: Option<Entity>,
-  effect_sprite: Option<Entity>,
-  // Middle sprite driven by the custom WGSL dissolve shader (None if it failed to load)
-  custom_sprite: Option<Entity>,
+fn palette(index: usize) -> Color {
+  [Color::WHITE, Color::RED, Color::CYAN, Color::YELLOW, Color::MAGENTA, Color::GREEN]
+    .get(index)
+    .copied()
+    .unwrap_or(Color::WHITE)
+}
 
-  // Effect parameters (adjustable via keyboard)
-  outline_thickness: u32,
+/// Left edges of the plain, custom-shader and effect sprites (96 px wide),
+/// left of the settings panel
+const SPRITE_X: [f32; 3] = [80.0, 230.0, 380.0];
+
+struct EffectsPage {
+  effect: usize,
+  color: usize,
+  outline_thickness: i32,
   glow_radius: f32,
   glow_intensity: f32,
   flash_intensity: f32,
   color_shift_amount: f32,
-  silhouette_alpha: u8,
-  pixelate_size: u32,
+  silhouette_alpha: f32,
+  pixelate_size: i32,
   wave_amplitude: f32,
   wave_speed: f32,
   dissolve_progress: f32,
   grayscale_intensity: f32,
-
-  // Animation state
   time: f32,
   flash_timer: f32,
   dissolve_animating: bool,
-
-  // Input debouncing - track cooldown for navigation
-  nav_cooldown: f32,
-
-  // Colors for cycling
-  effect_colors: Vec<Color>,
-  current_color_index: usize,
-
-  // Screen dimensions (set in on_enter)
-  screen_width: f32,
-  screen_height: f32,
+  normal_sprite: Option<Entity>,
+  effect_sprite: Option<Entity>,
+  // Middle sprite driven by the custom WGSL dissolve shader (None if it failed to load)
+  custom_sprite: Option<Entity>,
 }
 
-impl SpriteShaderDemo {
-  fn new() -> Self {
+impl Default for EffectsPage {
+  fn default() -> Self {
     Self {
-      current_index: 0,
-      normal_sprite: None,
-      effect_sprite: None,
-      custom_sprite: None,
-
-      // Default parameters
+      effect: 0,
+      color: 0,
       outline_thickness: 2,
       glow_radius: 8.0,
       glow_intensity: 0.8,
       flash_intensity: 0.7,
       color_shift_amount: 0.5,
-      silhouette_alpha: 128,
+      silhouette_alpha: 0.5,
       pixelate_size: 4,
       wave_amplitude: 3.0,
       wave_speed: 2.0,
       dissolve_progress: 0.3,
       grayscale_intensity: 1.0,
-
       time: 0.0,
       flash_timer: 0.0,
       dissolve_animating: false,
-
-      nav_cooldown: 0.0,
-
-      effect_colors: vec![
-        Color::WHITE,
-        Color::RED,
-        Color::CYAN,
-        Color::YELLOW,
-        Color::MAGENTA,
-        Color::GREEN,
-      ],
-      current_color_index: 0,
-
-      screen_width: 0.0,
-      screen_height: 0.0,
+      normal_sprite: None,
+      effect_sprite: None,
+      custom_sprite: None,
     }
   }
+}
 
-  fn current_effect(&self) -> DemoEffect {
-    DemoEffect::ALL[self.current_index]
-  }
-
-  fn current_color(&self) -> Color {
-    self.effect_colors[self.current_color_index]
+impl EffectsPage {
+  fn current(&self) -> DemoEffect {
+    DemoEffect::ALL[self.effect.min(DemoEffect::ALL.len() - 1)]
   }
 
   fn create_sprite_effect(&self) -> SpriteEffect {
-    let color = self.current_color();
-    match self.current_effect() {
-      DemoEffect::Outline => SpriteEffect::outline(color, self.outline_thickness),
+    let color = palette(self.color);
+    match self.current() {
+      DemoEffect::Outline => SpriteEffect::outline(color, self.outline_thickness.max(1) as u32),
       DemoEffect::Glow => {
         SpriteEffect::glow_with_intensity(color, self.glow_radius, self.glow_intensity)
       }
@@ -201,10 +158,10 @@ impl SpriteShaderDemo {
       DemoEffect::ColorShift => SpriteEffect::color_shift(color, self.color_shift_amount),
       DemoEffect::Silhouette => {
         let mut c = color;
-        c.a = self.silhouette_alpha;
+        c.a = (self.silhouette_alpha * 255.0).round() as u8;
         SpriteEffect::silhouette(c)
       }
-      DemoEffect::Pixelate => SpriteEffect::pixelate(self.pixelate_size),
+      DemoEffect::Pixelate => SpriteEffect::pixelate(self.pixelate_size.max(1) as u32),
       DemoEffect::Wave => SpriteEffect::wave(self.wave_amplitude, 2.0, self.wave_speed),
       DemoEffect::Dissolve => {
         SpriteEffect::dissolve_with_edge(self.dissolve_progress, Color::new(255, 165, 0, 255))
@@ -222,68 +179,8 @@ impl SpriteShaderDemo {
     }
   }
 
-  fn adjust_param(&mut self, delta: f32) {
-    match self.current_effect() {
-      DemoEffect::Outline => {
-        self.outline_thickness = (self.outline_thickness as i32 + delta as i32).clamp(1, 8) as u32;
-      }
-      DemoEffect::Glow => {
-        self.glow_radius = (self.glow_radius + delta * 1.0).clamp(1.0, 32.0);
-      }
-      DemoEffect::Flash => {
-        self.flash_intensity = (self.flash_intensity + delta * 0.1).clamp(0.0, 1.0);
-      }
-      DemoEffect::ColorShift => {
-        self.color_shift_amount = (self.color_shift_amount + delta * 0.1).clamp(0.0, 1.0);
-      }
-      DemoEffect::Silhouette => {
-        self.silhouette_alpha =
-          (self.silhouette_alpha as i32 + (delta * 25.0) as i32).clamp(0, 255) as u8;
-      }
-      DemoEffect::Pixelate => {
-        self.pixelate_size = (self.pixelate_size as i32 + delta as i32).clamp(2, 16) as u32;
-      }
-      DemoEffect::Wave => {
-        self.wave_amplitude = (self.wave_amplitude + delta * 0.5).clamp(0.5, 10.0);
-      }
-      DemoEffect::Dissolve => {
-        self.dissolve_progress = (self.dissolve_progress + delta * 0.1).clamp(0.0, 1.0);
-      }
-      DemoEffect::Invert => {
-        // No parameters
-      }
-      DemoEffect::Grayscale => {
-        self.grayscale_intensity = (self.grayscale_intensity + delta * 0.1).clamp(0.0, 1.0);
-      }
-    }
-  }
-
-  fn adjust_secondary_param(&mut self, delta: f32) {
-    match self.current_effect() {
-      DemoEffect::Wave => {
-        // For Wave, C changes speed (wrap around at max)
-        self.wave_speed += delta * 0.5;
-        if self.wave_speed > 5.0 {
-          self.wave_speed = 0.0;
-        } else if self.wave_speed < 0.0 {
-          self.wave_speed = 5.0;
-        }
-      }
-      _ => {
-        // For all other effects (including Glow), C cycles colors
-        if delta > 0.0 {
-          self.current_color_index = (self.current_color_index + 1) % self.effect_colors.len();
-        } else if self.current_color_index > 0 {
-          self.current_color_index -= 1;
-        } else {
-          self.current_color_index = self.effect_colors.len() - 1;
-        }
-      }
-    }
-  }
-
   fn trigger_action(&mut self) {
-    match self.current_effect() {
+    match self.current() {
       DemoEffect::Flash => {
         self.flash_timer = 0.5;
         self.flash_intensity = 1.0;
@@ -294,31 +191,62 @@ impl SpriteShaderDemo {
       _ => {}
     }
   }
-
-  fn reset_params(&mut self) {
-    self.outline_thickness = 2;
-    self.glow_radius = 8.0;
-    self.glow_intensity = 0.8;
-    self.flash_intensity = 0.7;
-    self.color_shift_amount = 0.5;
-    self.silhouette_alpha = 128;
-    self.pixelate_size = 4;
-    self.wave_amplitude = 3.0;
-    self.wave_speed = 2.0;
-    self.dissolve_progress = 0.3;
-    self.grayscale_intensity = 1.0;
-    self.current_color_index = 0;
-    self.dissolve_animating = false;
-  }
 }
 
-impl Scene for SpriteShaderDemo {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    let (width, height) = ctx.screen_size();
-    self.screen_width = width;
-    self.screen_height = height;
+impl DemoPage for EffectsPage {
+  fn name(&self) -> &str {
+    "Effects"
+  }
 
-    let cx = width / 2.0;
+  fn description(&self) -> &str {
+    "Plain sprite (left), custom WGSL dissolve shader (middle), the chosen built-in effect (right)."
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    let names: Vec<&str> = DemoEffect::ALL.iter().map(|e| e.name()).collect();
+    s.choice("Effect", &mut self.effect, &names);
+    match self.current() {
+      DemoEffect::Outline => {
+        s.int("Thickness", &mut self.outline_thickness, 1..=8);
+        s.choice("Color", &mut self.color, &COLOR_NAMES);
+      }
+      DemoEffect::Glow => {
+        s.float("Radius", &mut self.glow_radius, 1.0..=32.0, 1.0);
+        s.choice("Color", &mut self.color, &COLOR_NAMES);
+      }
+      DemoEffect::Flash => {
+        s.float("Intensity", &mut self.flash_intensity, 0.0..=1.0, 0.1);
+        s.choice("Color", &mut self.color, &COLOR_NAMES);
+      }
+      DemoEffect::ColorShift => {
+        s.float("Amount", &mut self.color_shift_amount, 0.0..=1.0, 0.1);
+        s.choice("Color", &mut self.color, &COLOR_NAMES);
+      }
+      DemoEffect::Silhouette => {
+        s.float("Alpha", &mut self.silhouette_alpha, 0.0..=1.0, 0.1);
+        s.choice("Color", &mut self.color, &COLOR_NAMES);
+      }
+      DemoEffect::Pixelate => s.int("Block size", &mut self.pixelate_size, 2..=16),
+      DemoEffect::Wave => {
+        s.float("Amplitude", &mut self.wave_amplitude, 0.5..=10.0, 0.5);
+        s.float("Speed", &mut self.wave_speed, 0.0..=5.0, 0.5);
+      }
+      DemoEffect::Dissolve => s.float("Progress", &mut self.dissolve_progress, 0.0..=1.0, 0.1),
+      DemoEffect::Invert => {}
+      DemoEffect::Grayscale => s.float("Intensity", &mut self.grayscale_intensity, 0.0..=1.0, 0.1),
+    }
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    match self.current() {
+      DemoEffect::Flash => vec![Control::key(KeyCode::Space, "Flash")],
+      DemoEffect::Dissolve => vec![Control::key(KeyCode::Space, "Animate the dissolve")],
+      _ => Vec::new(),
+    }
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    let (_, height) = ctx.screen_size();
     let cy = height / 2.0;
 
     // Create a colorful test sprite
@@ -326,8 +254,8 @@ impl Scene for SpriteShaderDemo {
     let handle = ctx.assets.create_sprite(sprite.clone(), "test_sprite");
     let handle2 = ctx.assets.create_sprite(sprite, "test_sprite_2");
 
-    // Left side: normal sprite (no effect)
-    let mut normal_transform = Transform::new(cx - cx / 2.0, cy);
+    // Left: normal sprite (no effect)
+    let mut normal_transform = Transform::new(SPRITE_X[0], cy);
     normal_transform.scale_x = 3.0;
     normal_transform.scale_y = 3.0;
     self.normal_sprite = Some(ctx.world.spawn((
@@ -340,7 +268,7 @@ impl Scene for SpriteShaderDemo {
     match ctx.assets.load_shader("assets/shaders/dissolve.wgsl") {
       Ok(shader) => {
         let handle3 = ctx.assets.create_sprite(create_test_sprite(), "test_sprite_3");
-        let mut custom_transform = Transform::new(cx, cy);
+        let mut custom_transform = Transform::new(SPRITE_X[1], cy);
         custom_transform.scale_x = 3.0;
         custom_transform.scale_y = 3.0;
         self.custom_sprite = Some(
@@ -359,8 +287,8 @@ impl Scene for SpriteShaderDemo {
       Err(e) => eprintln!("Could not load dissolve.wgsl: {e}"),
     }
 
-    // Right side: sprite with effect
-    let mut effect_transform = Transform::new(cx + cx / 2.0, cy);
+    // Right: sprite with effect
+    let mut effect_transform = Transform::new(SPRITE_X[2], cy);
     effect_transform.scale_x = 3.0;
     effect_transform.scale_y = 3.0;
     self.effect_sprite = Some(
@@ -373,19 +301,13 @@ impl Scene for SpriteShaderDemo {
     );
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     self.time += dt;
-
-    // Update navigation cooldown
-    if self.nav_cooldown > 0.0 {
-      self.nav_cooldown -= dt;
-    }
 
     // Handle flash timer
     if self.flash_timer > 0.0 {
       self.flash_timer -= dt;
       self.flash_intensity = self.flash_timer.max(0.0) * 2.0;
-      self.update_effect_sprite(ctx.world);
     }
 
     // Handle dissolve animation
@@ -394,7 +316,6 @@ impl Scene for SpriteShaderDemo {
       if self.dissolve_progress >= 1.0 {
         self.dissolve_progress = 0.0;
       }
-      self.update_effect_sprite(ctx.world);
     }
 
     // Animate the custom shader's `amount` back and forth (0 -> 1 -> 0)
@@ -406,8 +327,11 @@ impl Scene for SpriteShaderDemo {
       params.set("amount", amount);
     }
 
-    // Update wave time (animated effect)
-    if self.current_effect() == DemoEffect::Wave
+    // Settings may change any frame, so rebuild the effect every update
+    self.update_effect_sprite(ctx.world);
+
+    // Update wave time (animated effect); must follow the rebuild above
+    if self.current() == DemoEffect::Wave
       && let Some(entity) = self.effect_sprite
       && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(entity)
       && let Some(SpriteShader::BuiltIn(SpriteEffect::Wave {
@@ -420,153 +344,36 @@ impl Scene for SpriteShaderDemo {
       *time = self.time * speed;
     }
 
-    // Navigate effects (with cooldown to prevent rapid jumps)
-    if self.nav_cooldown <= 0.0 {
-      if ctx.input.key_pressed(KeyCode::ArrowRight) {
-        self.current_index = (self.current_index + 1) % DemoEffect::ALL.len();
-        self.update_effect_sprite(ctx.world);
-        self.nav_cooldown = 0.15; // 150ms cooldown
-      } else if ctx.input.key_pressed(KeyCode::ArrowLeft) {
-        if self.current_index > 0 {
-          self.current_index -= 1;
-        } else {
-          self.current_index = DemoEffect::ALL.len() - 1;
-        }
-        self.update_effect_sprite(ctx.world);
-        self.nav_cooldown = 0.15; // 150ms cooldown
-      }
-    }
-
-    // Adjust parameters
-    if ctx.input.key_pressed(KeyCode::ArrowUp) {
-      self.adjust_param(1.0);
-      self.update_effect_sprite(ctx.world);
-    }
-    if ctx.input.key_pressed(KeyCode::ArrowDown) {
-      self.adjust_param(-1.0);
-      self.update_effect_sprite(ctx.world);
-    }
-
-    // Secondary parameter / color cycling
-    if ctx.input.key_pressed(KeyCode::KeyC) {
-      self.adjust_secondary_param(1.0);
-      self.update_effect_sprite(ctx.world);
-    }
-
-    // Trigger action
     if ctx.input.key_pressed(KeyCode::Space) {
       self.trigger_action();
-      self.update_effect_sprite(ctx.world);
     }
-
-    // Reset
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.reset_params();
-      self.update_effect_sprite(ctx.world);
-    }
-
-    // Quit
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let effect = self.current_effect();
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
+    let effect = self.current();
 
-    // Title
-    ui.draw_text("Per-Sprite Shader Effects Demo", 10.0, 10.0, Color::WHITE);
-    ui.draw_text(&"-".repeat(40), 10.0, 25.0, Color::WHITE);
-
-    // Current effect info
+    ui.draw_text(effect.description(), area.x, area.y, Color::WHITE);
     ui.draw_text(
-      &format!(
-        "Effect {}/{}: {}",
-        self.current_index + 1,
-        DemoEffect::ALL.len(),
-        effect.name()
-      ),
-      10.0,
-      45.0,
+      &format!("Code: {}", effect.convenience_method()),
+      area.x,
+      area.y + 20.0,
       Color::WHITE,
     );
 
-    // Description
-    for (i, line) in effect.description().lines().enumerate() {
-      ui.draw_text(line, 10.0, 65.0 + i as f32 * 15.0, Color::WHITE);
-    }
-
-    // Convenience method
-    ui.draw_text("Code:", 10.0, 110.0, Color::WHITE);
-    ui.draw_text(effect.convenience_method(), 20.0, 125.0, Color::WHITE);
-
-    // Current parameters
-    ui.draw_text("Current values:", 10.0, 155.0, Color::WHITE);
-    let param_text = match effect {
-      DemoEffect::Outline => format!("thickness: {}", self.outline_thickness),
-      DemoEffect::Glow => {
-        format!(
-          "radius: {:.1}, intensity: {:.2}",
-          self.glow_radius, self.glow_intensity
-        )
-      }
-      DemoEffect::Flash => format!("intensity: {:.2}", self.flash_intensity),
-      DemoEffect::ColorShift => format!("amount: {:.2}", self.color_shift_amount),
-      DemoEffect::Silhouette => format!("alpha: {}", self.silhouette_alpha),
-      DemoEffect::Pixelate => format!("block_size: {}", self.pixelate_size),
-      DemoEffect::Wave => format!(
-        "amplitude: {:.1}  (C for speed: {:.1})",
-        self.wave_amplitude, self.wave_speed
-      ),
-      DemoEffect::Dissolve => format!("progress: {:.2}", self.dissolve_progress),
-      DemoEffect::Invert => "none".to_string(),
-      DemoEffect::Grayscale => format!("intensity: {:.2}", self.grayscale_intensity),
-    };
-    ui.draw_text(&param_text, 20.0, 170.0, Color::WHITE);
-
-    // Color (for effects that use it)
-    let uses_color = !matches!(
-      effect,
-      DemoEffect::Pixelate
-        | DemoEffect::Invert
-        | DemoEffect::Grayscale
-        | DemoEffect::Dissolve
-        | DemoEffect::Wave
-    );
-    if uses_color {
-      ui.draw_text(
-        &format!("color: {:?} (C to cycle)", self.current_color()),
-        20.0,
-        185.0,
-        Color::WHITE,
-      );
-    }
-
-    // Labels, centred under the three 96 px sprites at x = 200, 400 and 600
+    // Labels, centred under the three 96 px sprites
     let label = |x: f32, y: f32| Rect {
       x: x - 50.0,
       y,
       width: 196.0,
       height: 16.0,
     };
-    ui.draw_text_centered("Normal", label(200.0, 432.0), Color::WHITE);
+    ui.draw_text_centered("Normal", label(SPRITE_X[0], 432.0), Color::WHITE);
     if self.custom_sprite.is_some() {
-      ui.draw_text_centered("Custom WGSL", label(400.0, 432.0), Color::WHITE);
-      ui.draw_text_centered("(dissolve.wgsl)", label(400.0, 448.0), Color::WHITE);
+      ui.draw_text_centered("Custom WGSL", label(SPRITE_X[1], 432.0), Color::WHITE);
+      ui.draw_text_centered("(dissolve.wgsl)", label(SPRITE_X[1], 448.0), Color::WHITE);
     }
-    ui.draw_text_centered("With Effect", label(600.0, 432.0), Color::WHITE);
-
-    // Controls reminder
-    ui.draw_text(
-      "[Left/Right]: Change effect  [Up/Down]: Adjust param  C: Cycle color  Space: Trigger  R: Reset",
-      10.0,
-      570.0,
-      Color::WHITE,
-    );
-
-    SceneAction::Continue
+    ui.draw_text_centered("With Effect", label(SPRITE_X[2], 432.0), Color::WHITE);
   }
 }
 
@@ -643,13 +450,8 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Sprite Shaders Demo")
+  Demo::new("Sprite Shaders")
     .resolution(800, 600)
-    .start_scene(SpriteShaderDemo::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .page(EffectsPage::default)
+    .run();
 }
