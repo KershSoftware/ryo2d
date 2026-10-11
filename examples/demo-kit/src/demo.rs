@@ -130,6 +130,8 @@ impl Demo {
     let engine = self.engine_builder().build();
     if let Err(error) = engine.run() {
       eprintln!("Engine error: {error}");
+      // Scripts and the demo tour read the exit code
+      std::process::exit(1);
     }
   }
 }
