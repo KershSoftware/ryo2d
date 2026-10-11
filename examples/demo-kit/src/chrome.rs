@@ -167,6 +167,14 @@ fn draw_description(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
   ui.draw_text(&line, l.pad, l.description_y, dim_text());
 }
 
+/// Widths a row's label and value may use within `inner`, separated by `gap`.
+/// The value keeps its full width up to half of `inner`; the label gets the rest.
+pub(crate) fn row_widths(inner: f32, _label_w: f32, value_w: f32, gap: f32) -> (f32, f32) {
+  let value_max = value_w.min(inner * 0.5);
+  let label_max = (inner - value_max - gap).max(0.0);
+  (label_max, value_max)
+}
+
 fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
   if view.rows.is_empty() {
     return;
@@ -213,16 +221,21 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
       );
     }
     let marker = if selected { "> " } else { "  " };
-    let label = truncate_to(&format!("{marker}{}", row.label), inner * 0.6, |s| {
-      text_w(ui, s)
-    });
+    let label = format!("{marker}{}", row.label);
+    let (label_max, value_max) = row_widths(
+      inner,
+      text_w(ui, &label),
+      text_w(ui, &row.value),
+      gap,
+    );
+    let label = truncate_to(&label, label_max, |s| text_w(ui, s));
     ui.draw_text(
       &label,
       x + l.pad,
       row_y,
       if selected { key_text() } else { Color::WHITE },
     );
-    let value = truncate_to(&row.value, inner * 0.4, |s| text_w(ui, s));
+    let value = truncate_to(&row.value, value_max, |s| text_w(ui, s));
     let value_x = x + panel_w - l.pad - text_w(ui, &value);
     ui.draw_text(&value, value_x, row_y, Color::WHITE);
   }
@@ -343,6 +356,21 @@ fn draw_help(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn row_widths_keep_a_row_that_fits() {
+    assert_eq!(row_widths(200.0, 120.0, 30.0, 10.0), (160.0, 30.0));
+  }
+
+  #[test]
+  fn row_widths_cap_a_long_value_at_half() {
+    assert_eq!(row_widths(200.0, 50.0, 150.0, 10.0), (90.0, 100.0));
+  }
+
+  #[test]
+  fn row_widths_never_go_negative() {
+    assert_eq!(row_widths(10.0, 50.0, 50.0, 20.0).0, 0.0);
+  }
 
   #[test]
   fn layout_stacks_bar_description_content_and_legend() {
