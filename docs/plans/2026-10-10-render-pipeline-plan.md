@@ -858,3 +858,59 @@ git add src/core tests/e2e/render_pipeline.rs src/cli/skills .claude/skills
 git commit -m "feat(render): let scenes configure the render pipeline" -m "- SceneContext::render_pipeline toggles built-in passes and inserts game passes
 - Document the pass pipeline in the renderer skill and AGENTS.md"
 ```
+
+---
+
+## Addendum: post-process uniforms (found during Task 3)
+
+`PostProcessPipeline` writes every pass's settings into one `uniform_buffer` (and one `god_rays_uniform_buffer`) with `queue.write_buffer` while recording the frame. All of those writes land before the frame's commands run, so every pass reads the last value written: bloom's extract and both blur directions read the composite pass's settings (it never blurs horizontally), and in a chain of effects every effect runs with the last effect's settings. Pre-existing, player-visible, in the `post_process` pass this plan owns; fixing it changes pixels, which is fine now the old paths are gone (owner: breaking demos/games is allowed).
+
+### Task 6: One uniform buffer per post-process pass
+
+**Files:**
+- Modify: `src/core/shaders/pipeline.rs` (a per-frame uniform pool replaces `uniform_buffer` and `god_rays_uniform_buffer`; `apply_effects` and `apply_bloom_effect` take buffers from it; `apply_bloom_effect`'s `.unwrap()`s become `let … else { return use_a_as_input }`)
+- Modify: `src/core/shaders/AGENTS.md` (gotcha: one uniform buffer per pass per frame)
+- Create: `tests/e2e/post_process.rs` (register in `tests/e2e.rs`)
+
+**Interfaces:**
+- Produces (crate-private to `shaders/pipeline.rs`):
+
+```rust
+/// Uniform buffers handed out one per post-process pass within a frame.
+///
+/// `queue.write_buffer` calls all land before the frame's commands run, so
+/// passes sharing one buffer would all read the last value written.
+struct UniformPool {
+  label: &'static str,
+  size: u64,
+  buffers: Vec<wgpu::Buffer>,
+  next: usize,
+}
+
+impl UniformPool {
+  fn new(label: &'static str, size: u64) -> Self;
+  /// Start a frame: buffers are handed out again from the first.
+  fn reset(&mut self);
+  /// Write `data` into a buffer no other pass uses this frame (creating one
+  /// if the pool is exhausted) and return its index.
+  fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8]) -> usize;
+  fn buffer(&self, index: usize) -> &wgpu::Buffer;
+}
+```
+
+- [ ] **Step 1: Write the failing tests** (`tests/e2e/post_process.rs`, `HeadlessEngine::new_or_skip`, 64x64):
+  - `stacked_effects_each_keep_their_settings`: a uniform mid-grey full-screen CPU sprite; turn on a strong vignette and a second effect that comes *after* it in the chain (check `EffectsManager::active_effects` ordering) whose settings would disable the vignette if the vignette read them (e.g. a no-op-intensity effect whose `params.x` is 0). After 2 steps a corner pixel is clearly darker than the centre. RED today: the vignette reads the later effect's settings.
+  - `bloom_blurs_horizontally`: a black background and a 2-px-wide bright white vertical line at x = 32; two engines, one with `set_bloom(1.0)` and one without; after 2 steps the pixel 4 px to the right of the line is brighter with bloom. RED today: both blur passes read the composite settings, so the horizontal blur never happens.
+  - Run: `cargo test --test e2e post_process 2>&1 | tail -5` → both FAIL.
+
+- [ ] **Step 2: Implement** `UniformPool` (buffers `UNIFORM | COPY_DST`, sized `size`, labelled `label`), replace the two shared buffers with `effect_uniforms` (`size_of::<EffectParams>()`) and `god_rays_uniforms` (`size_of::<GodRaysParams>()`), `reset` both at the start of `apply_effects`, and in every pass (standard, god rays, bloom extract / blur H / blur V / composite) write its params with `write` and bind `buffer(index)` instead of the shared buffer. `apply_bloom_effect` becomes `&mut self` (write the params first, then take the immutable borrows).
+
+- [ ] **Step 3: Run the tests** — `cargo test --test e2e post_process`, `cargo test --test e2e`, `cargo test --lib shaders::`.
+
+- [ ] **Step 4: Suite, lint, check, commit**
+
+```bash
+git add src/core/shaders tests/e2e.rs tests/e2e/post_process.rs
+git commit -m "fix(shaders): give each post-process pass its own uniform buffer" -m "- Bloom blurs horizontally again; its passes no longer all read the composite settings
+- Stacked effects keep their own settings instead of the last effect's"
+```
