@@ -289,11 +289,11 @@ fn test_render_empty_trails() {
   };
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
-  let mut renderer = TrailRenderer::new(&gpu.device, 100, 100, format);
+  let renderer = TrailRenderer::new(&gpu.device, 100, 100, format);
   let target = gpu.create_target(100, 100);
 
   // Clear target first
-  target.clear(&gpu, 0.0, 0.0, 0.0, 1.0);
+  target.clear(gpu, 0.0, 0.0, 0.0, 1.0);
 
   let mut encoder = gpu
     .device
@@ -340,7 +340,7 @@ fn test_render_when_disabled() {
   renderer.set_enabled(false);
 
   // Clear target to black
-  target.clear(&gpu, 0.0, 0.0, 0.0, 1.0);
+  target.clear(gpu, 0.0, 0.0, 0.0, 1.0);
 
   let mut encoder = gpu
     .device
@@ -362,7 +362,7 @@ fn test_render_when_disabled() {
   gpu.queue.submit(std::iter::once(encoder.finish()));
 
   // Target should remain black since renderer was disabled
-  let center = target.get_pixel(&gpu, 50, 50);
+  let center = target.get_pixel(gpu, 50, 50);
   assert_eq!(
     center.0, 0,
     "Disabled renderer should not render (red channel)"
@@ -400,7 +400,7 @@ fn test_render_produces_visible_output() {
   renderer.add_trail(&trail, &transform);
 
   // Clear target to black
-  target.clear(&gpu, 0.0, 0.0, 0.0, 1.0);
+  target.clear(gpu, 0.0, 0.0, 0.0, 1.0);
 
   let mut encoder = gpu
     .device
@@ -422,7 +422,7 @@ fn test_render_produces_visible_output() {
   gpu.queue.submit(std::iter::once(encoder.finish()));
 
   // The center should have visible trail pixels
-  let center = target.get_pixel(&gpu, 32, 32);
+  let center = target.get_pixel(gpu, 32, 32);
   let brightness = (center.0 as u32 + center.1 as u32 + center.2 as u32) / 3;
 
   // Trail should be visible (not completely black)
@@ -459,7 +459,7 @@ fn test_render_all_styles() {
 
     renderer.add_trail(&trail, &transform);
 
-    target.clear(&gpu, 0.0, 0.0, 0.0, 1.0);
+    target.clear(gpu, 0.0, 0.0, 0.0, 1.0);
 
     let mut encoder = gpu
       .device
@@ -557,7 +557,7 @@ fn regression_no_cross_trail_connections() {
   renderer.add_trail(&trail1, &transform);
   renderer.add_trail(&trail2, &transform);
 
-  target.clear(&gpu, 0.0, 0.0, 0.0, 1.0);
+  target.clear(gpu, 0.0, 0.0, 0.0, 1.0);
 
   let mut encoder = gpu
     .device
@@ -579,7 +579,7 @@ fn regression_no_cross_trail_connections() {
 
   // The center of the screen (100, 100) should be black/empty
   // because neither trail passes through there
-  let center = target.get_pixel(&gpu, 100, 100);
+  let center = target.get_pixel(gpu, 100, 100);
   let brightness = (center.0 as u32 + center.1 as u32 + center.2 as u32) / 3;
 
   assert!(
@@ -620,7 +620,7 @@ fn test_line_rendering() {
 
   assert!(renderer.vertex_count() > 0, "Line should generate vertices");
 
-  target.clear(&gpu, 0.0, 0.0, 0.0, 1.0);
+  target.clear(gpu, 0.0, 0.0, 0.0, 1.0);
 
   let mut encoder = gpu
     .device

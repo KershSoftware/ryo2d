@@ -461,33 +461,31 @@ fn get_lan_ips() -> Vec<String> {
   #[cfg(unix)]
   {
     // Try hostname -I first (Linux)
-    if let Ok(output) = Command::new("hostname").args(["-I"]).output() {
-      if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for ip in stdout.split_whitespace() {
-          if is_valid_ipv4(ip) && !ip.starts_with("127.") {
-            ips.push(ip.to_string());
-          }
+    if let Ok(output) = Command::new("hostname").args(["-I"]).output()
+      && output.status.success()
+    {
+      let stdout = String::from_utf8_lossy(&output.stdout);
+      for ip in stdout.split_whitespace() {
+        if is_valid_ipv4(ip) && !ip.starts_with("127.") {
+          ips.push(ip.to_string());
         }
       }
     }
 
     // Fallback to ifconfig/ip
-    if ips.is_empty() {
-      if let Ok(output) = Command::new("ip").args(["addr"]).output() {
-        if output.status.success() {
-          let stdout = String::from_utf8_lossy(&output.stdout);
-          for line in stdout.lines() {
-            if line.contains("inet ") && !line.contains("127.0.0.1") {
-              if let Some(ip) = line.split_whitespace().nth(1) {
-                if let Some(ip) = ip.split('/').next() {
-                  if is_valid_ipv4(ip) {
-                    ips.push(ip.to_string());
-                  }
-                }
-              }
-            }
-          }
+    if ips.is_empty()
+      && let Ok(output) = Command::new("ip").args(["addr"]).output()
+      && output.status.success()
+    {
+      let stdout = String::from_utf8_lossy(&output.stdout);
+      for line in stdout.lines() {
+        if line.contains("inet ")
+          && !line.contains("127.0.0.1")
+          && let Some(ip) = line.split_whitespace().nth(1)
+          && let Some(ip) = ip.split('/').next()
+          && is_valid_ipv4(ip)
+        {
+          ips.push(ip.to_string());
         }
       }
     }

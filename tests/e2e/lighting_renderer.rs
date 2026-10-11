@@ -356,7 +356,7 @@ fn test_compose_with_ambient() {
   renderer.set_ambient(AmbientLight::new(Color::WHITE, 1.0));
 
   // Create output target with matching sRGB format
-  let target = create_srgb_target(&gpu, width, height);
+  let target = create_srgb_target(gpu, width, height);
 
   // Create pixel data with gray pixels
   let gray_value = 128u8;
@@ -398,7 +398,7 @@ fn test_compose_with_ambient() {
   gpu.queue.submit(std::iter::once(encoder.finish()));
 
   // Read back center pixel
-  let (r, g, b, _a) = target.get_pixel(&gpu, width / 2, height / 2);
+  let (r, g, b, _a) = target.get_pixel(gpu, width / 2, height / 2);
 
   // With ambient intensity 1.0, output should be close to input
   // Allow some tolerance for sRGB conversion
@@ -444,7 +444,7 @@ fn test_compose_with_zero_ambient() {
   renderer.set_ambient(AmbientLight::new(Color::WHITE, 0.0));
 
   // Create output target with matching sRGB format
-  let target = create_srgb_target(&gpu, width, height);
+  let target = create_srgb_target(gpu, width, height);
 
   // Create pixel data with bright pixels
   let mut pixel_data = vec![0u8; (width * height * 4) as usize];
@@ -485,7 +485,7 @@ fn test_compose_with_zero_ambient() {
   gpu.queue.submit(std::iter::once(encoder.finish()));
 
   // Read back center pixel
-  let (r, g, b, _a) = target.get_pixel(&gpu, width / 2, height / 2);
+  let (r, g, b, _a) = target.get_pixel(gpu, width / 2, height / 2);
 
   // With zero ambient and no lights, output should be black
   // Allow small tolerance for numerical precision
@@ -657,7 +657,7 @@ fn test_lighting_plus_effects_produces_visible_output() {
     ryo2d::core::shaders::PostProcessPipeline::new(&gpu.device, width, height, format);
 
   // Create output target
-  let target = create_srgb_target(&gpu, width, height);
+  let target = create_srgb_target(gpu, width, height);
 
   // Create bright white pixel data
   let mut pixel_data = vec![0u8; (width * height * 4) as usize];
@@ -728,7 +728,7 @@ fn test_lighting_plus_effects_produces_visible_output() {
   gpu.queue.submit(std::iter::once(encoder.finish()));
 
   // Verify output is NOT black (the original bug produced all-black output)
-  let (r, g, b, _a) = target.get_pixel(&gpu, width / 2, height / 2);
+  let (r, g, b, _a) = target.get_pixel(gpu, width / 2, height / 2);
 
   // With 50% ambient on white scene, output should be visible (not black)
   // CRT effect may darken slightly, but should still be well above black
@@ -877,7 +877,7 @@ fn test_volumetric_spotlight_beam() {
   renderer.set_enabled(true);
   renderer.set_ambient(AmbientLight::new(Color::WHITE, 0.3));
 
-  let target = create_srgb_target(&gpu, width, height);
+  let target = create_srgb_target(gpu, width, height);
 
   // Create a spotlight with volumetric beam
   let transform = Transform::new(32.0, 32.0);
@@ -928,7 +928,7 @@ fn test_volumetric_spotlight_beam() {
   gpu.queue.submit(std::iter::once(encoder.finish()));
 
   // Verify output has some content (not all black)
-  let center = target.get_pixel(&gpu, 32, 32);
+  let center = target.get_pixel(gpu, 32, 32);
   let brightness = (center.0 as u32 + center.1 as u32 + center.2 as u32) / 3;
 
   // With ambient 0.3 on gray 128 scene, expect at least some output
@@ -1061,7 +1061,7 @@ fn test_non_volumetric_lights_unchanged() {
   renderer.set_enabled(true);
   renderer.set_ambient(AmbientLight::new(Color::WHITE, 0.5));
 
-  let target = create_srgb_target(&gpu, width, height);
+  let target = create_srgb_target(gpu, width, height);
 
   // Create a normal light (no volumetric)
   let transform = Transform::new(16.0, 16.0);
@@ -1107,7 +1107,7 @@ fn test_non_volumetric_lights_unchanged() {
   gpu.queue.submit(std::iter::once(encoder.finish()));
 
   // Verify output has visible content from ambient
-  let center = target.get_pixel(&gpu, 16, 16);
+  let center = target.get_pixel(gpu, 16, 16);
   let brightness = (center.0 as u32 + center.1 as u32 + center.2 as u32) / 3;
 
   // With ambient 0.5 on light gray scene (200), expect ~100 brightness

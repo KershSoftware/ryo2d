@@ -2110,9 +2110,11 @@ mod tests {
 
   #[test]
   fn system_state_serializes_resolution_as_string() {
-    let mut state = SystemState::default();
-    state.width = 1920;
-    state.height = 1080;
+    let state = SystemState {
+      width: 1920,
+      height: 1080,
+      ..Default::default()
+    };
 
     let json = serde_json::to_string(&state).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -2138,11 +2140,13 @@ mod tests {
 
   #[test]
   fn system_state_roundtrip_serde() {
-    let mut original = SystemState::default();
-    original.width = 2560;
-    original.height = 1440;
-    original.display_mode = DisplayMode::BorderlessFullscreen;
-    original.vsync = Some(true);
+    let original = SystemState {
+      width: 2560,
+      height: 1440,
+      display_mode: DisplayMode::BorderlessFullscreen,
+      vsync: Some(true),
+      ..Default::default()
+    };
 
     let json = serde_json::to_string(&original).unwrap();
     let deserialized: SystemState = serde_json::from_str(&json).unwrap();

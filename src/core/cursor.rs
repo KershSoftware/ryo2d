@@ -200,8 +200,10 @@ mod tests {
 
   #[test]
   fn cursor_request_confined_triggers_changes() {
-    let mut req = CursorRequest::default();
-    req.confined = Some(true);
+    let req = CursorRequest {
+      confined: Some(true),
+      ..Default::default()
+    };
     assert!(req.has_changes());
   }
 
@@ -218,31 +220,41 @@ mod tests {
   #[test]
   fn cursor_request_all_fields_trigger_changes() {
     // Each field individually should trigger has_changes
-    let mut req = CursorRequest::default();
-    req.cursor = Some(CursorStyle::Crosshair);
+    let req = CursorRequest {
+      cursor: Some(CursorStyle::Crosshair),
+      ..Default::default()
+    };
     assert!(req.has_changes());
 
-    let mut req = CursorRequest::default();
-    req.visible = Some(true);
+    let req = CursorRequest {
+      visible: Some(true),
+      ..Default::default()
+    };
     assert!(req.has_changes());
 
-    let mut req = CursorRequest::default();
-    req.confined = Some(false);
+    let req = CursorRequest {
+      confined: Some(false),
+      ..Default::default()
+    };
     assert!(req.has_changes());
 
-    let mut req = CursorRequest::default();
-    req.locked = Some(true);
+    let req = CursorRequest {
+      locked: Some(true),
+      ..Default::default()
+    };
     assert!(req.has_changes());
 
-    let mut req = CursorRequest::default();
-    req.custom_cursor = Some(CustomCursorData {
-      rgba: vec![0; 16],
-      width: 2,
-      height: 2,
-      hotspot_x: 0,
-      hotspot_y: 0,
-      id: "test".into(),
-    });
+    let req = CursorRequest {
+      custom_cursor: Some(CustomCursorData {
+        rgba: vec![0; 16],
+        width: 2,
+        height: 2,
+        hotspot_x: 0,
+        hotspot_y: 0,
+        id: "test".into(),
+      }),
+      ..Default::default()
+    };
     assert!(req.has_changes());
   }
 

@@ -230,7 +230,7 @@ impl GameScene {
 
     // Release bullets back to pool (or despawn if not pooled)
     // Sort by index descending to safely swap_remove
-    bullets_to_release.sort_by(|a, b| b.0.cmp(&a.0));
+    bullets_to_release.sort_by_key(|&(i, _)| std::cmp::Reverse(i));
     for (i, entity) in bullets_to_release {
       self.bullets.swap_remove(i);
       // Release to pool if available, otherwise despawn

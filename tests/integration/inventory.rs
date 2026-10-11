@@ -711,10 +711,10 @@ fn equipment_validator_rejects() {
   struct WeaponsOnlySlot0;
   impl EquipValidator for WeaponsOnlySlot0 {
     fn can_equip(&self, slot: usize, item: &ItemStack, registry: &ItemRegistry) -> bool {
-      if slot == 0 {
-        if let Some(template) = registry.get(item.item_id()) {
-          return template.has_tag("weapon");
-        }
+      if slot == 0
+        && let Some(template) = registry.get(item.item_id())
+      {
+        return template.has_tag("weapon");
       }
       true
     }

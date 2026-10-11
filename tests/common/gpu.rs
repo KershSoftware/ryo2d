@@ -35,7 +35,7 @@ impl TestGpu {
   ///
   /// Returns `None` if no GPU adapter is available (e.g., in CI without GPU).
   pub fn shared() -> Option<&'static Self> {
-    SHARED_GPU.get_or_init(|| Self::new()).as_ref()
+    SHARED_GPU.get_or_init(Self::new).as_ref()
   }
 
   /// Create a headless GPU context on the engine's shared device.

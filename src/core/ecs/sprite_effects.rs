@@ -621,7 +621,7 @@ impl SpriteEffect {
               }
             }
 
-            if count > 0 {
+            if let Some(count) = std::num::NonZeroU32::new(count) {
               let r = (r_sum / count) as u8;
               let g = (g_sum / count) as u8;
               let b = (b_sum / count) as u8;

@@ -173,6 +173,15 @@ mod tests {
   use crate::core::tilemap::tileset::{TileProperties, Tileset};
   use std::collections::HashMap;
 
+  /// A 3x3 grid with the cells at `cells`, as (x, y), solid
+  fn grid3(cells: &[(usize, usize)]) -> Vec<bool> {
+    let mut solid = vec![false; 9];
+    for &(x, y) in cells {
+      solid[y * 3 + x] = true;
+    }
+    solid
+  }
+
   // -- greedy_merge unit tests --
 
   #[test]
@@ -184,9 +193,7 @@ mod tests {
 
   #[test]
   fn greedy_merge_single_tile() {
-    // 3x3 grid with one solid cell at (1, 1)
-    let mut solid = vec![false; 9];
-    solid[1 * 3 + 1] = true;
+    let solid = grid3(&[(1, 1)]);
     let rects = greedy_merge(&solid, 3, 3);
     assert_eq!(rects.len(), 1);
     assert_eq!(
@@ -253,10 +260,7 @@ mod tests {
 
   #[test]
   fn greedy_merge_two_separate_tiles() {
-    // 3x3 grid with solid at (0,0) and (2,2)
-    let mut solid = vec![false; 9];
-    solid[0] = true;
-    solid[2 * 3 + 2] = true;
+    let solid = grid3(&[(0, 0), (2, 2)]);
     let rects = greedy_merge(&solid, 3, 3);
     assert_eq!(rects.len(), 2);
     assert_eq!(
@@ -285,12 +289,7 @@ mod tests {
     // X . .
     // X . .
     // X X X
-    let mut solid = vec![false; 9];
-    solid[0] = true; // (0,0)
-    solid[1 * 3 + 0] = true; // (0,1)
-    solid[2 * 3 + 0] = true; // (0,2)
-    solid[2 * 3 + 1] = true; // (1,2)
-    solid[2 * 3 + 2] = true; // (2,2)
+    let solid = grid3(&[(0, 0), (0, 1), (0, 2), (1, 2), (2, 2)]);
     let rects = greedy_merge(&solid, 3, 3);
     // The vertical column (0,0) w=1 h=3, then horizontal (1,2) w=2 h=1
     // OR the greedy algorithm starting top-left:
