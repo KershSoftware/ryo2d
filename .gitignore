@@ -26,6 +26,7 @@ release/
 *~
 **/TASKS.md
 **/RESEARCH.md
+!docs/research/RESEARCH.md
 .claude/CLAUDE.md
 .claude/settings.local.json
 # Re-ignore skills in examples (override the above exceptions)
