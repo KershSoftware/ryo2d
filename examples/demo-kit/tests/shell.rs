@@ -205,11 +205,17 @@ fn holding_right_repeats_and_releasing_stops() {
     return;
   };
   engine.step_frames(1).unwrap();
+  // 0.6 s at 60 Hz: the first step, then repeats after 0.35 s, stopping
+  // short of Level's 1.0 limit so a repeat after release would show
   engine.press_key(KeyCode::ArrowRight);
-  engine.step_frames(90).unwrap(); // 1.5 s at the default 60 Hz
+  engine.step_frames(36).unwrap();
   engine.release_key(KeyCode::ArrowRight);
-  engine.step_frames(2).unwrap();
-  assert_eq!(seen(&shared).level, 1.0);
+  engine.step_frames(1).unwrap();
+  let released = seen(&shared).level;
+  assert!(released > 0.65, "repeated past one step: {released}");
+  assert!(released < 1.0, "still below the limit: {released}");
+  engine.step_frames(60).unwrap();
+  assert_eq!(seen(&shared).level, released, "no change after release");
 }
 
 #[test]
@@ -610,7 +616,10 @@ fn a_reserved_key_listed_later_is_caught_in_debug_builds() {
     .and_then(|panic| panic.downcast::<String>().ok())
     .map(|message| *message)
     .unwrap_or_default();
-  assert!(message.contains("reserved"), "no reserved-key panic: {message:?}");
+  assert!(
+    message.contains("reserved"),
+    "no reserved-key panic: {message:?}"
+  );
 }
 
 #[test]
