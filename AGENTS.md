@@ -78,7 +78,7 @@ Designs and implementation plans from the superpowers skills live here, not in t
 - **Performance:** Cache-friendly data structures, minimize allocations in hot paths
 - **API design:** Ergonomic, hard to misuse, well-documented
 - **Testing:** Unit tests for core logic, integration tests for systems, e2e for complex-but-worth-know-shouldn't-break
-- **Documentation:** Rustdoc for API, mdbook for guides and tutorials
+- **Documentation:** Rustdoc for API; the skills (`src/cli/skills/`) for using the engine; nested AGENTS.md for module conventions and decisions; `docs/architecture/` for the big picture. There is no separate guide book
 
 **Code comments should be normal/minimal** - explain intent and non-obvious logic. Complex algorithms get thorough documentation.
 

@@ -575,7 +575,6 @@ patches/matchbox_socket/   # Patched matchbox_socket (signaling resilience)
 
 ## See Also
 
-- [Networking Guide](../src/concepts/networking.md) - Getting started with multiplayer
-- [Replication Guide](../src/concepts/replication.md) - Entity synchronization details
-- [RPC Guide](../src/concepts/rpc.md) - Remote procedure calls
-- [Matchbox Server Deployment](../src/concepts/matchbox-server-deploy.md) - Deploy signaling server for WebRTC
+- [`ryo-network` skill](../../src/cli/skills/ryo-network.md) - Using networking from a game: servers, clients, replication, RPCs
+- [`src/core/network/AGENTS.md`](../../src/core/network/AGENTS.md), [`replication/AGENTS.md`](../../src/core/network/replication/AGENTS.md), [`rpc/AGENTS.md`](../../src/core/network/rpc/AGENTS.md) - Module notes and design decisions
+- [Matchbox Server Deployment](./matchbox-server.md) - Deploy signaling server for WebRTC

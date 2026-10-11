@@ -6,7 +6,7 @@ WebRTC needs a signaling server for peer discovery:
 
 1. **Local testing**: `cargo install matchbox_server && matchbox_server`
 2. **Quick test with friends**: `ryo2d netplay start` (uses Cloudflare Tunnel)
-3. **Production**: Deploy `matchbox_server` - see `docs/src/concepts/matchbox-server-deploy.md`
+3. **Production**: Deploy `matchbox_server` - see `docs/architecture/matchbox-server.md`
 
 ## Feature Flag
 

@@ -162,7 +162,7 @@ ryo2d netplay ip                # Show your LAN and WAN IPs
 
 The tunnel URL is **temporary** - it changes each run and stops when you Ctrl+C.
 
-For production games, deploy your own signaling server (see `docs/src/concepts/matchbox-server-deploy.md` in the engine repo).
+For production games, deploy your own signaling server (see `docs/architecture/matchbox-server.md` in the engine repo).
 
 ## Tips
 

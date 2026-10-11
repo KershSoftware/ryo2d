@@ -89,7 +89,7 @@ DESCRIPTION:
     internet. The tunnel URL changes each time and closes when you press Ctrl+C.
 
     NOT FOR PRODUCTION - For shipped games, deploy your own signaling server.
-    See: docs/matchbox-server-deploy.md
+    See: docs/architecture/matchbox-server.md
 
     Press Ctrl+C to stop the server and close the tunnel.
 
