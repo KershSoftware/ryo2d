@@ -174,6 +174,8 @@ struct WithGamePass;
 impl Scene for WithGamePass {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     white_sprite(ctx);
+    // Post-processing runs too: magenta only survives if the pass comes after it
+    ctx.effects.set_color_tint(Color::rgb(0, 255, 0), 1.0);
     let _ = ctx
       .render_pipeline
       .insert_after(pass_ids::POST_PROCESS, Magenta);

@@ -62,11 +62,11 @@ pub trait RenderPass: Send + Sync {
 
 ```rust
 // Toggle a built-in pass
-ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false)?;
+ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false).expect("known, unique pass id");
 
 // Insert a game pass relative to a named one (or `push` at the end)
-ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, Flash)?;
-ctx.render_pipeline.insert_before(pass_ids::UI, Overlay)?;
+ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, Flash).expect("known, unique pass id");
+ctx.render_pipeline.insert_before(pass_ids::UI, Overlay).expect("known, unique pass id");
 
 // Remove it again
 ctx.render_pipeline.remove("flash");

@@ -22,9 +22,9 @@
 //! use ryo2d::prelude::*;
 //!
 //! // Draw the frame without post-process effects
-//! ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false)?;
+//! ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false).expect("known, unique pass id");
 //! // Run a game pass after the effects
-//! ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, MyPass)?;
+//! ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, MyPass).expect("known, unique pass id");
 //! ```
 
 mod context;

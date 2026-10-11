@@ -21,7 +21,7 @@ use super::{FrameInfo, RenderContext};
 ///   }
 /// }
 ///
-/// ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, Flash)?;
+/// ctx.render_pipeline.insert_after(pass_ids::POST_PROCESS, Flash).expect("known, unique pass id");
 /// ```
 pub trait RenderPass: Send + Sync {
   /// Unique id, used to find, enable, disable and anchor passes.

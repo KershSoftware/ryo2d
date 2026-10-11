@@ -184,9 +184,9 @@ pub struct SceneContext<'a> {
   ///
   /// ```ignore
   /// // Draw the frame without post-process effects
-  /// ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false)?;
+  /// ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false).expect("known, unique pass id");
   /// // Run a custom pass right after lighting
-  /// ctx.render_pipeline.insert_after(pass_ids::LIGHTING, MyPass)?;
+  /// ctx.render_pipeline.insert_after(pass_ids::LIGHTING, MyPass).expect("known, unique pass id");
   /// ```
   pub render_pipeline: &'a mut RenderPipeline,
   /// Centralized GPU texture manager
