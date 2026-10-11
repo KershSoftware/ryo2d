@@ -567,3 +567,79 @@ fn broken_effect_is_skipped() {
   assert_eq!(errors[0].level, LogLevel::Error);
   assert!(errors[0].message.contains(":2:"), "{}", errors[0].message);
 }
+
+/// Red top-left quadrant on green, with `effect` added as a custom effect
+struct Quadrants {
+  effect: Option<ShaderHandle>,
+}
+
+impl Scene for Quadrants {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let pixels = (0..64 * 64)
+      .flat_map(|i| {
+        let (x, y) = (i % 64, i / 64);
+        if x < 32 && y < 32 { RED } else { GREEN }
+      })
+      .collect();
+    ctx.world.spawn((
+      Transform::new(0.0, 0.0),
+      Renderable::sprite(SpriteHandle::from_sprite(
+        Sprite::from_rgba(pixels, 64, 64),
+        "t3-quadrants",
+      )),
+    ));
+    if let Some(shader) = self.effect.take() {
+      assert!(ctx.effects.add_custom("fx", shader).is_ok());
+    }
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+fn quadrants_with(effect: &str) -> Option<image::RgbaImage> {
+  let shader = ShaderHandle::from_source("t3-quadrants.wgsl", effect);
+  let builder = EngineBuilder::new()
+    .resolution(64, 64)
+    .start_scene(Quadrants {
+      effect: Some(shader),
+    });
+  let mut engine = HeadlessEngine::new_or_skip(builder)?;
+  Some(render(&mut engine))
+}
+
+#[test]
+fn effects_read_the_scene_the_right_way_up() {
+  let Some(frame) =
+    quadrants_with("fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv); }")
+  else {
+    return;
+  };
+  assert_eq!(frame.get_pixel(8, 8).0, RED, "top left stays top left");
+  assert_eq!(frame.get_pixel(56, 56).0, GREEN);
+  assert_eq!(frame.get_pixel(56, 8).0, GREEN, "not mirrored");
+  assert_eq!(frame.get_pixel(8, 56).0, GREEN, "not flipped");
+}
+
+#[test]
+fn effect_uv_runs_from_the_top_left() {
+  let Some(frame) = quadrants_with(
+    "fn effect(in: EffectIn, params: Params) -> vec4<f32> { return vec4<f32>(in.uv, 0.0, 1.0); }",
+  ) else {
+    return;
+  };
+  // Corner pixels (uv of their centres, sRGB-encoded on output)
+  let top_left = frame.get_pixel(0, 0).0;
+  let bottom_right = frame.get_pixel(63, 63).0;
+  let top_right = frame.get_pixel(63, 0).0;
+  assert!(top_left[0] < 40 && top_left[1] < 40, "{top_left:?}");
+  assert!(
+    bottom_right[0] > 220 && bottom_right[1] > 220,
+    "{bottom_right:?}"
+  );
+  assert!(
+    top_right[0] > 220 && top_right[1] < 40,
+    "x grows rightward, y downward: {top_right:?}"
+  );
+}

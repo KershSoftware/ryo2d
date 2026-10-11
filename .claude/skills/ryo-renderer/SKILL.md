@@ -222,7 +222,7 @@ Custom effects run after the built-in effects, in insertion order. `effects.clea
 
 ### Hot reload and errors
 
-`assets.enable_hot_reload(..)` then `process_reloads()` each frame: editing a `.wgsl` file updates the handle and the next frame rebuilds. A bad shader is logged once per version in the dev log as `<id>:<line>:<column>: <message>` with the line in your own file; a sprite then draws plain and an effect is skipped. Nothing panics.
+In debug builds the engine watches the game's `assets/` folder and reloads changed files every frame, with nothing to call: editing a `.wgsl` file loaded with `assets.load_shader` updates the handle and the next frame rebuilds. (`assets.enable_hot_reload(dirs)` watches other folders.) A bad shader is logged once per version in the dev log as `<id>:<line>:<column>: <message>` with the line in your own file; a sprite then draws plain and an effect is skipped. Nothing panics.
 
 ## Post-Processing
 

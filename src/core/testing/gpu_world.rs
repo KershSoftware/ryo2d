@@ -329,3 +329,54 @@ fn handles_with_one_source_share_a_draw_run() {
   };
   assert_eq!(calls, 1);
 }
+
+#[test]
+fn editing_a_shader_file_redraws_with_the_new_source() {
+  use crate::core::asset::HotReloadEvent;
+
+  const GREEN_SHADER: &str = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return vec4<f32>(0.0, 1.0, 0.0, 1.0); }";
+  const BLUE_SHADER: &str = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return vec4<f32>(0.0, 0.0, 1.0, 1.0); }";
+
+  /// Draws a sprite with the shader in `path`, then rewrites the file and
+  /// delivers the change the way the engine's per-frame reload does
+  struct Edits {
+    path: std::path::PathBuf,
+    updates: u32,
+  }
+  impl Scene for Edits {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let shader = ctx.assets.load_shader(&self.path).expect("load shader");
+      let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 200, 30, 40, 255), "edit");
+      ctx.world.spawn((
+        Transform::new(4.0, 4.0),
+        Renderable::sprite(sprite).with_shader(SpriteShader::custom(shader)),
+      ));
+    }
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      self.updates += 1;
+      if self.updates == 3 {
+        std::fs::write(&self.path, BLUE_SHADER).expect("rewrite shader");
+        assert!(
+          ctx
+            .assets
+            .handle_reload_event(HotReloadEvent::FileModified(self.path.clone()))
+        );
+      }
+      SceneAction::Continue
+    }
+  }
+
+  let dir = tempfile::tempdir().expect("temp dir");
+  let path = dir.path().join("edit.wgsl");
+  std::fs::write(&path, GREEN_SHADER).expect("write shader");
+  let builder = EngineBuilder::new()
+    .resolution(32, 32)
+    .start_scene(Edits { path, updates: 0 });
+  let Some(mut engine) = engine(builder) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  assert_eq!(engine.frame().unwrap().get_pixel(8, 8).0, [0, 255, 0, 255]);
+  engine.step_frames(3).unwrap();
+  assert_eq!(engine.frame().unwrap().get_pixel(8, 8).0, [0, 0, 255, 255]);
+}
