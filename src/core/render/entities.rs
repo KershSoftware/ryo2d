@@ -13,11 +13,11 @@
 //! orders entities within their layer. Composite tiles draw at
 //! their own `z_order`; on equal z they follow the entities.
 
-use super::{DrawKind, DrawList, TextureRef};
+use super::{DrawKind, DrawList, SpriteShading, TextureRef};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{
-  Entity, Inactive, PreviousTransform, RenderStyle, Renderable, SpriteEffect, SpriteShader,
-  Transform, World, WorldTransform, YSort,
+  Entity, Inactive, Material, PreviousTransform, RenderStyle, Renderable, ShaderHandle,
+  ShaderParams, SpriteEffect, SpriteShader, Transform, World, WorldTransform, YSort,
 };
 use crate::core::graphics::{Camera, CompositeTile, Sprite, SpriteGpuRenderer, SpriteInstance};
 use crate::core::graphics::{TileDirection, effect_padding};
@@ -163,13 +163,16 @@ struct Shading<'a> {
   tint: Color,
   alpha: f32,
   effect: Option<&'a SpriteEffect>,
+  /// A game shader and its parameters (instead of `effect`)
+  custom: Option<(&'a ShaderHandle, &'a ShaderParams)>,
 }
 
-impl Shading<'_> {
+impl<'a> Shading<'a> {
   const PLAIN: Shading<'static> = Shading {
     tint: Color::WHITE,
     alpha: 1.0,
     effect: None,
+    custom: None,
   };
 
   fn tinted(tint: Color, alpha: f32) -> Self {
@@ -177,7 +180,19 @@ impl Shading<'_> {
       tint,
       alpha,
       effect: None,
+      custom: None,
     }
+  }
+
+  /// Shade with `shader`, whichever kind it is.
+  fn shaded(tint: Color, alpha: f32, shader: Option<&'a SpriteShader>) -> Self {
+    let mut shading = Self::tinted(tint, alpha);
+    match shader {
+      Some(SpriteShader::BuiltIn(effect)) => shading.effect = Some(effect),
+      Some(SpriteShader::Custom { shader, params }) => shading.custom = Some((shader, params)),
+      None => {}
+    }
+    shading
   }
 }
 
@@ -272,13 +287,17 @@ impl Emitter<'_> {
       instance.effect_params = effect_params.effect_params;
       instance.effect_extra = effect_params.effect_extra;
     }
-    self.list.push_sprite(
-      DrawKind::Entity,
-      z,
-      texture,
-      shading.effect.is_some(),
-      instance,
-    );
+    let shading = match (shading.effect, shading.custom) {
+      (Some(_), _) => SpriteShading::Effect,
+      (None, Some((shader, params))) => SpriteShading::Custom {
+        shader: shader.clone(),
+        params: params.clone(),
+      },
+      (None, None) => SpriteShading::Plain,
+    };
+    self
+      .list
+      .push_sprite(DrawKind::Entity, z, texture, shading, instance);
   }
 }
 
@@ -362,6 +381,7 @@ fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>
     return;
   }
   let z = renderable.z_order;
+  let material = world.get::<Material>(entity);
 
   // WorldTransform for hierarchical entities, else the local Transform
   let (
@@ -532,21 +552,18 @@ fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>
         }
       }
 
-      let effect = match &renderable.shader {
-        Some(SpriteShader::BuiltIn(effect)) => Some(effect),
-        _ => None,
-      };
+      // A Material component wins over the inline shader
+      let shader = material
+        .as_ref()
+        .map(|m| &m.shader)
+        .or(renderable.shader.as_ref());
       out.draw(
         z,
         &mut source,
         Placement::at(screen_x, screen_y, final_scale_x, final_scale_y)
           .rotated(rotation_deg)
           .flipped(renderable.flip_x, renderable.flip_y),
-        Shading {
-          tint,
-          alpha,
-          effect,
-        },
+        Shading::shaded(tint, alpha, shader),
       );
     }
 

@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use crate::core::ecs::{ShaderHandle, ShaderParams};
 use crate::core::graphics::{SlotPage, SpriteInstance};
 
 /// A texture as the sprite renderer resolves it: the id the texture was
@@ -43,11 +44,35 @@ pub(crate) struct DrawItem {
   pub(crate) payload: DrawPayload,
 }
 
+/// How a sprite is shaded.
+#[derive(Debug, Clone)]
+pub(crate) enum SpriteShading {
+  /// Texture times tint
+  Plain,
+  /// A built-in effect, already in the instance's effect parameters
+  Effect,
+  /// A game shader; its parameters are packed once the shader is compiled
+  /// and its `Params` layout is known
+  Custom {
+    shader: ShaderHandle,
+    params: ShaderParams,
+  },
+}
+
+/// The pipeline a run of sprites is drawn with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PipelineKind {
+  Plain,
+  Effect,
+  /// The custom pipeline of the shader with this serial
+  Custom(u64),
+}
+
 /// A sprite waiting to be drawn.
 #[derive(Debug, Clone)]
 pub(crate) struct DrawSprite {
   pub(crate) texture: TextureRef,
-  pub(crate) has_effects: bool,
+  pub(crate) shading: SpriteShading,
   pub(crate) instance: SpriteInstance,
 }
 
@@ -80,13 +105,13 @@ impl DrawList {
     kind: DrawKind,
     z: i32,
     texture: TextureRef,
-    has_effects: bool,
+    shading: SpriteShading,
     instance: SpriteInstance,
   ) {
     let payload = DrawPayload::Sprite(self.sprites.len());
     self.sprites.push(DrawSprite {
       texture,
-      has_effects,
+      shading,
       instance,
     });
     self.push_item(true, z, kind, payload);
@@ -156,7 +181,7 @@ pub(crate) enum WorldRun {
   /// and pipeline
   Sprites {
     page: SlotPage,
-    has_effects: bool,
+    pipeline: PipelineKind,
     start: usize,
     count: usize,
   },
@@ -168,32 +193,32 @@ pub(crate) enum WorldRun {
 ///
 /// `place` is asked once per sprite, in draw order, with its index in the
 /// list: it puts the sprite in the instance buffer and returns its atlas page
-/// and whether it uses the effect pipeline, or `None` to drop the sprite.
+/// and the pipeline it draws with, or `None` to drop the sprite.
 /// Consecutive sprites on one page and pipeline merge into one run; a trail
 /// group splits runs.
 pub(crate) fn plan_runs(
   items: &[DrawItem],
   runs: &mut Vec<WorldRun>,
-  mut place: impl FnMut(usize) -> Option<(SlotPage, bool)>,
+  mut place: impl FnMut(usize) -> Option<(SlotPage, PipelineKind)>,
 ) {
   runs.clear();
   let mut placed = 0;
   for item in items {
     match item.payload {
       DrawPayload::Sprite(index) => {
-        let Some((page, has_effects)) = place(index) else {
+        let Some((page, pipeline)) = place(index) else {
           continue;
         };
         match runs.last_mut() {
           Some(WorldRun::Sprites {
             page: run_page,
-            has_effects: run_effects,
+            pipeline: run_pipeline,
             count,
             ..
-          }) if *run_page == page && *run_effects == has_effects => *count += 1,
+          }) if *run_page == page && *run_pipeline == pipeline => *count += 1,
           _ => runs.push(WorldRun::Sprites {
             page,
-            has_effects,
+            pipeline,
             start: placed,
             count: 1,
           }),
@@ -214,7 +239,13 @@ mod tests {
   }
 
   fn push(list: &mut DrawList, kind: DrawKind, z: i32, name: &str) {
-    list.push_sprite(kind, z, texture(name), false, SpriteInstance::new());
+    list.push_sprite(
+      kind,
+      z,
+      texture(name),
+      SpriteShading::Plain,
+      SpriteInstance::new(),
+    );
   }
 
   fn order(items: &[DrawItem]) -> Vec<(i32, DrawKind)> {
@@ -280,12 +311,12 @@ mod tests {
     );
   }
 
-  fn runs_for(list: &mut DrawList, pages: &[(usize, bool)]) -> Vec<WorldRun> {
+  fn runs_for(list: &mut DrawList, pages: &[(usize, PipelineKind)]) -> Vec<WorldRun> {
     list.sorted();
     let mut runs = Vec::new();
     plan_runs(list.items(), &mut runs, |i| {
-      let (page, effects) = pages[i];
-      Some((SlotPage::Atlas(page), effects))
+      let (page, pipeline) = pages[i];
+      Some((SlotPage::Atlas(page), pipeline))
     });
     runs
   }
@@ -293,7 +324,7 @@ mod tests {
   fn sprites(page: usize, start: usize, count: usize) -> WorldRun {
     WorldRun::Sprites {
       page: SlotPage::Atlas(page),
-      has_effects: false,
+      pipeline: PipelineKind::Plain,
       start,
       count,
     }
@@ -306,7 +337,7 @@ mod tests {
       push(&mut list, DrawKind::Sprite, z, "a");
     }
 
-    let runs = runs_for(&mut list, &[(0, false); 3]);
+    let runs = runs_for(&mut list, &[(0, PipelineKind::Plain); 3]);
 
     assert_eq!(runs, vec![sprites(0, 0, 3)]);
   }
@@ -318,7 +349,7 @@ mod tests {
     list.push_trail_group(true, 1);
     push(&mut list, DrawKind::Sprite, 2, "a");
 
-    let runs = runs_for(&mut list, &[(0, false); 2]);
+    let runs = runs_for(&mut list, &[(0, PipelineKind::Plain); 2]);
 
     assert_eq!(
       runs,
@@ -333,7 +364,14 @@ mod tests {
       push(&mut list, DrawKind::Sprite, z, "a");
     }
 
-    let runs = runs_for(&mut list, &[(0, false), (1, false), (1, true)]);
+    let runs = runs_for(
+      &mut list,
+      &[
+        (0, PipelineKind::Plain),
+        (1, PipelineKind::Plain),
+        (1, PipelineKind::Effect),
+      ],
+    );
 
     assert_eq!(
       runs,
@@ -342,12 +380,39 @@ mod tests {
         sprites(1, 1, 1),
         WorldRun::Sprites {
           page: SlotPage::Atlas(1),
-          has_effects: true,
+          pipeline: PipelineKind::Effect,
           start: 2,
           count: 1,
         },
       ]
     );
+  }
+
+  #[test]
+  fn each_custom_shader_starts_a_run() {
+    let mut list = DrawList::default();
+    for z in 0..4 {
+      push(&mut list, DrawKind::Sprite, z, "a");
+    }
+
+    let runs = runs_for(
+      &mut list,
+      &[
+        (0, PipelineKind::Custom(1)),
+        (0, PipelineKind::Custom(1)),
+        (0, PipelineKind::Custom(2)),
+        (0, PipelineKind::Custom(1)),
+      ],
+    );
+
+    let counts: Vec<_> = runs
+      .iter()
+      .map(|run| match run {
+        WorldRun::Sprites { count, .. } => *count,
+        WorldRun::Trail { .. } => 0,
+      })
+      .collect();
+    assert_eq!(counts, vec![2, 1, 1]);
   }
 
   #[test]
@@ -360,7 +425,7 @@ mod tests {
 
     let mut runs = Vec::new();
     plan_runs(list.items(), &mut runs, |i| {
-      (i != 1).then_some((SlotPage::Atlas(0), false))
+      (i != 1).then_some((SlotPage::Atlas(0), PipelineKind::Plain))
     });
 
     assert_eq!(runs, vec![sprites(0, 0, 2)]);

@@ -41,3 +41,6 @@ mod sprite_atlas;
 
 #[path = "e2e/gpu_world.rs"]
 mod gpu_world;
+
+#[path = "e2e/custom_shaders.rs"]
+mod custom_shaders;

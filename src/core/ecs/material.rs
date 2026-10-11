@@ -57,6 +57,7 @@ static NEXT_SHADER_SERIAL: AtomicU64 = AtomicU64::new(1);
 struct ShaderSourceCell {
   id: String,
   serial: u64,
+  #[allow(dead_code)] // for naming file shaders once effects use it
   path: Option<PathBuf>,
   source: Mutex<String>,
   generation: AtomicU64,
@@ -130,7 +131,7 @@ impl ShaderHandle {
   }
 
   /// File the shader was loaded from, if any
-  #[allow(dead_code)] // read by the renderer when it names shaders in logs
+  #[allow(dead_code)] // see `path` on the source cell
   pub(crate) fn path(&self) -> Option<&Path> {
     self.inner.path.as_deref()
   }

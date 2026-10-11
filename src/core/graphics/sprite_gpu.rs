@@ -35,8 +35,11 @@ use wgpu::util::DeviceExt;
 
 use super::{AtlasKey, AtlasSlot, SlotPage, TextureAtlas};
 use crate::core::asset::SpriteHandle;
-use crate::core::ecs::{Material, SpriteEffect, SpriteShader};
-use crate::core::render::{DrawKind, DrawList, TextureRef, WorldRun, plan_runs};
+use crate::core::ecs::{Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
+use crate::core::render::{
+  DrawKind, DrawList, PipelineKind, SpriteShading, TextureRef, WorldRun, plan_runs,
+};
+use crate::core::shaders::custom::{self, ParamLayout, ShaderError, ShaderKind};
 use crate::core::ui::Color;
 
 /// Per-instance data for GPU sprite rendering
@@ -314,11 +317,163 @@ const ENTITY_SPRITE_TTL: u64 = 600;
 /// every frame can't hold hundreds of them until the TTL.
 const MAX_STANDALONE_ENTITY_SPRITES: usize = 64;
 
+/// A compiled game shader: its pipeline and the `Params` layout to pack for it.
+struct CustomPipeline {
+  pipeline: wgpu::RenderPipeline,
+  layout: ParamLayout,
+}
+
+/// What the cache knows about one shader version.
+struct CustomEntry {
+  generation: u64,
+  /// `None` when this version failed to compile; it is not retried until the
+  /// shader's source changes
+  ready: Option<CustomPipeline>,
+}
+
+/// Pipelines of game sprite shaders, built on first use and rebuilt when the
+/// shader's source changes.
+///
+/// Built with the effect pipeline's layout, vertex buffers, blend and target,
+/// but with the shader's own `fs_custom` entry point.
+struct CustomPipelines {
+  layout: wgpu::PipelineLayout,
+  vertex: wgpu::VertexBufferLayout<'static>,
+  instance: wgpu::VertexBufferLayout<'static>,
+  format: wgpu::TextureFormat,
+  /// By `ShaderHandle::serial()`
+  entries: HashMap<u64, CustomEntry>,
+  /// Parameter problems already warned about, by (serial, description)
+  warned: HashSet<(u64, String)>,
+}
+
+impl CustomPipelines {
+  /// Make sure the cache holds the shader's current version; whether it can
+  /// be drawn.
+  fn prepare(&mut self, device: &wgpu::Device, shader: &ShaderHandle) -> bool {
+    let serial = shader.serial();
+    // Cheap check first: this runs for every custom sprite of every frame
+    if let Some(entry) = self.entries.get(&serial)
+      && entry.generation == shader.generation()
+    {
+      return entry.ready.is_some();
+    }
+    let (generation, source) = shader.snapshot();
+    let ready = self.build(device, shader, generation, &source);
+    let usable = ready.is_some();
+    self
+      .entries
+      .insert(serial, CustomEntry { generation, ready });
+    usable
+  }
+
+  /// Compile `source` and build its pipeline; any failure is logged once and
+  /// leaves the shader drawn plain.
+  fn build(
+    &self,
+    device: &wgpu::Device,
+    shader: &ShaderHandle,
+    generation: u64,
+    source: &str,
+  ) -> Option<CustomPipeline> {
+    let serial = shader.serial();
+    let compiled = match custom::compile(ShaderKind::Sprite, shader.id(), source) {
+      Ok(compiled) => compiled,
+      Err(error) => {
+        custom::report_once(serial, generation, &error);
+        return None;
+      }
+    };
+
+    // Anything naga accepted but the device rejects surfaces here instead of
+    // taking the engine down
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+      label: Some(shader.id()),
+      source: wgpu::ShaderSource::Wgsl(compiled.wgsl.into()),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+      label: Some(shader.id()),
+      layout: Some(&self.layout),
+      vertex: wgpu::VertexState {
+        module: &module,
+        entry_point: "vs_main",
+        buffers: &[self.vertex.clone(), self.instance.clone()],
+        compilation_options: Default::default(),
+      },
+      fragment: Some(wgpu::FragmentState {
+        module: &module,
+        entry_point: "fs_custom",
+        targets: &[Some(wgpu::ColorTargetState {
+          format: self.format,
+          blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+          write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+      }),
+      primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        ..Default::default()
+      },
+      depth_stencil: None,
+      multisample: wgpu::MultisampleState::default(),
+      multiview: None,
+      cache: None,
+    });
+    if let Some(error) = pollster::block_on(device.pop_error_scope()) {
+      let error = ShaderError {
+        shader: shader.id().to_string(),
+        line: None,
+        column: None,
+        message: error.to_string(),
+      };
+      custom::report_once(serial, generation, &error);
+      return None;
+    }
+    Some(CustomPipeline {
+      pipeline,
+      layout: compiled.layout,
+    })
+  }
+
+  /// Put `params` into the instance's eight effect floats, in the layout of
+  /// the shader's `Params`. Names the shader doesn't have are warned about once.
+  fn pack(&mut self, shader: &ShaderHandle, params: &ShaderParams, instance: &mut SpriteInstance) {
+    let serial = shader.serial();
+    let Some(ready) = self.entries.get(&serial).and_then(|e| e.ready.as_ref()) else {
+      return;
+    };
+    debug_assert_eq!(custom::uniform_size(ShaderKind::Sprite, &ready.layout), 32);
+    let mut bytes = [0u8; 32];
+    let problems = custom::pack(&ready.layout, params, &mut bytes);
+    for problem in problems {
+      if self.warned.insert((serial, problem.clone())) {
+        crate::engine_warn!(
+          module: "Shaders",
+          "{}: parameter `{}` is not a field of Params (or has the wrong type) and is ignored",
+          shader.id(),
+          problem
+        );
+      }
+    }
+    let floats: [f32; 8] = bytemuck::cast(bytes);
+    instance.effect_params = [floats[0], floats[1], floats[2], floats[3]];
+    instance.effect_extra = [floats[4], floats[5], floats[6], floats[7]];
+  }
+
+  fn pipeline(&self, serial: u64) -> Option<&wgpu::RenderPipeline> {
+    let ready = self.entries.get(&serial)?.ready.as_ref()?;
+    Some(&ready.pipeline)
+  }
+}
+
 /// GPU-based sprite renderer with per-sprite shader effects
 pub struct SpriteGpuRenderer {
   // Shader pipelines (one per effect type + base)
   base_pipeline: wgpu::RenderPipeline,
   effect_pipeline: wgpu::RenderPipeline,
+  // Game sprite shaders
+  custom: CustomPipelines,
 
   // Global uniforms
   globals_buffer: wgpu::Buffer,
@@ -488,7 +643,7 @@ impl SpriteGpuRenderer {
     });
 
     // Vertex buffer layout
-    let vertex_layout = wgpu::VertexBufferLayout {
+    let vertex_layout: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
       array_stride: 16, // 4 floats * 4 bytes
       step_mode: wgpu::VertexStepMode::Vertex,
       attributes: &[
@@ -506,7 +661,7 @@ impl SpriteGpuRenderer {
     };
 
     // Instance buffer layout
-    let instance_layout = wgpu::VertexBufferLayout {
+    let instance_layout: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
       array_stride: std::mem::size_of::<SpriteInstance>() as u64,
       step_mode: wgpu::VertexStepMode::Instance,
       attributes: &[
@@ -598,7 +753,7 @@ impl SpriteGpuRenderer {
       vertex: wgpu::VertexState {
         module: &shader,
         entry_point: "vs_main",
-        buffers: &[vertex_layout, instance_layout],
+        buffers: &[vertex_layout.clone(), instance_layout.clone()],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
@@ -624,6 +779,14 @@ impl SpriteGpuRenderer {
     Self {
       base_pipeline,
       effect_pipeline,
+      custom: CustomPipelines {
+        layout: pipeline_layout,
+        vertex: vertex_layout,
+        instance: instance_layout,
+        format: surface_format,
+        entries: HashMap::new(),
+        warned: HashSet::new(),
+      },
       globals_buffer,
       globals_bind_group,
       instance_buffer,
@@ -762,13 +925,26 @@ impl SpriteGpuRenderer {
       let slot = self.atlas.lookup(&texture.key)?;
       let page = self.atlas.texture(slot.page)?;
       let page_size = (page.width(), page.height());
-      self.placed.push(place_in_slot(
-        &sprite.instance,
-        &slot,
-        page_size,
-        sprite.has_effects,
-      ));
-      Some((slot.page, sprite.has_effects))
+      let mut instance = sprite.instance;
+      let pipeline = match &sprite.shading {
+        SpriteShading::Plain => PipelineKind::Plain,
+        SpriteShading::Effect => PipelineKind::Effect,
+        SpriteShading::Custom { shader, params } => {
+          // A shader that failed to build draws plain
+          if self.custom.prepare(device, shader) {
+            self.custom.pack(shader, params, &mut instance);
+            PipelineKind::Custom(shader.serial())
+          } else {
+            PipelineKind::Plain
+          }
+        }
+      };
+      // Only built-in effects grow the quad; custom params are not effect ids
+      let effects = pipeline == PipelineKind::Effect;
+      self
+        .placed
+        .push(place_in_slot(&instance, &slot, page_size, effects));
+      Some((slot.page, pipeline))
     });
     self.world_runs = runs;
   }
@@ -801,7 +977,7 @@ impl SpriteGpuRenderer {
   pub(crate) fn draw_world_run<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, run: &WorldRun) {
     let WorldRun::Sprites {
       page,
-      has_effects,
+      pipeline,
       start,
       count,
     } = *run
@@ -811,10 +987,10 @@ impl SpriteGpuRenderer {
     let Some(bind_group) = self.atlas.bind_group(page) else {
       return;
     };
-    let pipeline = if has_effects {
-      &self.effect_pipeline
-    } else {
-      &self.base_pipeline
+    let pipeline = match pipeline {
+      PipelineKind::Plain => &self.base_pipeline,
+      PipelineKind::Effect => &self.effect_pipeline,
+      PipelineKind::Custom(serial) => self.custom.pipeline(serial).unwrap_or(&self.base_pipeline),
     };
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, &self.globals_bind_group, &[]);
@@ -1167,7 +1343,7 @@ pub struct BatchCollector {
 #[derive(Debug)]
 struct CollectedSprite {
   texture: TextureRef,
-  has_effects: bool,
+  shading: SpriteShading,
   z_order: i32,
   instance: SpriteInstance,
 }
@@ -1203,12 +1379,40 @@ impl BatchCollector {
         texture
       }
     };
+    let shading = if has_effects {
+      SpriteShading::Effect
+    } else {
+      SpriteShading::Plain
+    };
     self.items.push(CollectedSprite {
       texture,
-      has_effects,
+      shading,
       z_order,
       instance,
     });
+  }
+
+  /// Add a sprite drawn with a game shader.
+  ///
+  /// `params` are matched by name to the fields of the shader's `Params`
+  /// struct when the frame is laid out; a shader that fails to compile draws
+  /// the sprite plain. The sprite's `effect_params` and `effect_extra` are
+  /// overwritten with the packed parameters.
+  pub fn add_custom(
+    &mut self,
+    texture_id: impl AsRef<str>,
+    shader: &ShaderHandle,
+    params: &ShaderParams,
+    instance: SpriteInstance,
+    z_order: i32,
+  ) {
+    self.add(texture_id, false, instance, z_order);
+    if let Some(item) = self.items.last_mut() {
+      item.shading = SpriteShading::Custom {
+        shader: shader.clone(),
+        params: params.clone(),
+      };
+    }
   }
 
   /// Push every collected sprite onto `list` as `kind`, in submission order.
@@ -1218,7 +1422,7 @@ impl BatchCollector {
         kind,
         item.z_order,
         item.texture.clone(),
-        item.has_effects,
+        item.shading.clone(),
         item.instance,
       );
     }

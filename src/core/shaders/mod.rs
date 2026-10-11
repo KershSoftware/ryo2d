@@ -45,7 +45,6 @@
 //! ```
 
 // Consumed by the sprite and effect pipelines
-#[allow(dead_code)]
 pub(crate) mod custom;
 mod effects;
 mod manager;

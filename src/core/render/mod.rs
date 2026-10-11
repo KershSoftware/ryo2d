@@ -40,7 +40,9 @@ mod pipeline;
 
 pub(crate) use context::FrameTargets;
 pub use context::RenderContext;
-pub(crate) use draw_list::{DrawKind, DrawList, DrawPayload, TextureRef, WorldRun, plan_runs};
+pub(crate) use draw_list::{
+  DrawKind, DrawList, DrawPayload, PipelineKind, SpriteShading, TextureRef, WorldRun, plan_runs,
+};
 pub(crate) use entities::{EntityDrawer, EntityFrame};
 pub use frame::FrameInfo;
 pub(crate) use frame::{FrameImage, FrameScene, LightingFrame, TRANSITION_VISIBLE};

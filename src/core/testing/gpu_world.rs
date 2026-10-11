@@ -229,3 +229,30 @@ fn ten_thousand_sprites_few_draws() {
     stats.draw_calls
   );
 }
+
+#[test]
+fn two_shaders_split_draw_runs() {
+  let scene = Fixture {
+    setup: |ctx| {
+      let src = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
+      let a = ShaderHandle::from_source("split-a.wgsl", src);
+      let b = ShaderHandle::from_source("split-b.wgsl", src);
+      let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 200, 30, 40, 255), "split");
+      // A A B B: one draw per shader; the shared texture doesn't merge them
+      for (i, shader) in [&a, &a, &b, &b].into_iter().enumerate() {
+        ctx.world.spawn((
+          Transform::new(i as f32 * 6.0, 0.0),
+          Renderable::sprite(sprite.clone())
+            .with_z_order(i as i32)
+            .with_shader(SpriteShader::custom(shader.clone())),
+        ));
+      }
+    },
+  };
+  let builder = EngineBuilder::new().resolution(64, 64).start_scene(scene);
+  let Some(mut engine) = engine(builder) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  assert_eq!(engine.engine.debug_stats().draw_calls, 2);
+}
