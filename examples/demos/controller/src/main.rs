@@ -6,14 +6,12 @@
 //! - Trigger values
 //! - Connection status
 //!
-//! Works gracefully when no controller is connected.
+//! Works gracefully when no controller is connected. Runs on the demo-kit
+//! shell.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
-const SCREEN_WIDTH: f32 = 800.0;
-const SCREEN_HEIGHT: f32 = 600.0;
-
-struct ControllerDemo {
+struct ControllerPage {
   button_history: Vec<String>,
   // Cached input state for render_ui
   gamepad_connected: bool,
@@ -27,7 +25,7 @@ struct ControllerDemo {
   buttons_down: Vec<GamepadButton>,
 }
 
-impl ControllerDemo {
+impl ControllerPage {
   fn new() -> Self {
     Self {
       button_history: Vec::new(),
@@ -51,8 +49,20 @@ impl ControllerDemo {
   }
 }
 
-impl Scene for ControllerDemo {
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+impl DemoPage for ControllerPage {
+  fn name(&self) -> &str {
+    "Gamepad"
+  }
+
+  fn description(&self) -> &str {
+    "Live gamepad visualization: buttons, sticks (raw and processed) and triggers"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::keys("Gamepad", &[], "Buttons and sticks")]
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Cache input state for render_ui
     self.gamepad_connected = ctx.input.gamepad_connected();
     self.gamepad_name = ctx.input.gamepad_name().to_string();
@@ -114,21 +124,15 @@ impl Scene for ControllerDemo {
         self.record_button(name);
       }
     }
-
-    // Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    // Title
-    ui.draw_text("Controller Input Demo", 20.0, 20.0, Color::WHITE);
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
+    // The layout below was designed with its first line at y = 50
+    let top = area.y - 44.0;
 
     // Connection status
-    let status_y = 50.0;
+    let status_y = top + 50.0;
     if self.gamepad_connected {
       ui.draw_text(
         &format!("Connected: {}", self.gamepad_name),
@@ -152,7 +156,7 @@ impl Scene for ControllerDemo {
     }
 
     // Left stick visualization
-    let stick_section_y = 100.0;
+    let stick_section_y = top + 100.0;
     ui.draw_text("Left Stick", 80.0, stick_section_y, Color::WHITE);
     self.draw_stick(
       ui,
@@ -203,7 +207,7 @@ impl Scene for ControllerDemo {
     );
 
     // Buttons section
-    let buttons_y = 100.0;
+    let buttons_y = top + 100.0;
     let buttons_x = 450.0;
     ui.draw_text("Buttons", buttons_x, buttons_y, Color::WHITE);
 
@@ -332,7 +336,7 @@ impl Scene for ControllerDemo {
     );
 
     // Button history
-    let history_y = SCREEN_HEIGHT - 180.0;
+    let history_y = area.y + area.height - 164.0;
     ui.draw_text("Button History", 20.0, history_y, Color::WHITE);
     for (i, btn_name) in self.button_history.iter().enumerate() {
       let alpha = 255 - (i as u8 * 30).min(200);
@@ -346,7 +350,7 @@ impl Scene for ControllerDemo {
 
     // Raw vs processed values
     let values_x = 450.0;
-    let values_y = SCREEN_HEIGHT - 140.0;
+    let values_y = history_y + 40.0;
     ui.draw_text(
       "Stick Values (Raw / Processed)",
       values_x,
@@ -371,19 +375,10 @@ impl Scene for ControllerDemo {
       values_y + 45.0,
       Color::hex(0xAAAAAA),
     );
-
-    // Instructions
-    ui.draw_text(
-      "Press ESC to quit",
-      20.0,
-      SCREEN_HEIGHT - 30.0,
-      Color::hex(0x666666),
-    );
-    SceneAction::Continue
   }
 }
 
-impl ControllerDemo {
+impl ControllerPage {
   fn draw_stick(
     &self,
     ui: &mut UiContext,
@@ -531,14 +526,9 @@ impl ControllerDemo {
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Ryo2D Controller Demo")
-    .resolution(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .start_scene(ControllerDemo::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+  Demo::new("Controller")
+    .resolution(800, 600)
+    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
+    .page(ControllerPage::new)
+    .run();
 }

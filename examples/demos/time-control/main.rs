@@ -5,19 +5,9 @@
 //! - Hitstop: freeze frame for impact emphasis
 //! - Shows how animations/tweens respond to time changes
 //!
-//! ## Controls
-//!
-//! - 1: Normal speed (1.0x)
-//! - 2: Slow-mo (0.3x)
-//! - 3: Very slow (0.1x)
-//! - 4: Fast forward (2.0x)
-//! - 5: Pause (0.0x)
-//! - Space: Trigger hitstop (100ms freeze)
-//! - H: Trigger short hitstop (50ms)
-//! - R: Reset all balls to starting positions
-//! - Escape: Exit
+//! Runs on the demo-kit shell: the time scale is a setting, hitstops are keys.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 use std::f32::consts::PI;
 
 /// Marker for bouncing ball entities
@@ -35,8 +25,13 @@ struct RotatingSquare;
 #[derive(Debug)]
 struct PulsingCircle;
 
-/// Main demo scene
-struct TimeControlDemoScene {
+/// Time scale choices, as labels and values
+const TIME_SCALE_LABELS: [&str; 5] = ["1.0x", "0.3x", "0.1x", "2.0x", "Paused"];
+const TIME_SCALES: [f32; 5] = [1.0, 0.3, 0.1, 2.0, 0.0];
+
+/// Main demo page
+struct TimeControlPage {
+  time_scale: usize,
   balls: Vec<Entity>,
   rotating_square: Option<Entity>,
   pulsing_circle: Option<Entity>,
@@ -44,9 +39,10 @@ struct TimeControlDemoScene {
   screen_h: f32,
 }
 
-impl TimeControlDemoScene {
+impl TimeControlPage {
   fn new() -> Self {
     Self {
+      time_scale: 0,
       balls: Vec::new(),
       rotating_square: None,
       pulsing_circle: None,
@@ -153,17 +149,6 @@ impl TimeControlDemoScene {
     );
   }
 
-  /// Reset all balls to starting positions
-  fn reset_balls(&mut self, ctx: &mut SceneContext) {
-    // Despawn existing balls
-    for entity in self.balls.drain(..) {
-      let _ = ctx.world.despawn(entity);
-    }
-
-    // Respawn them
-    self.spawn_balls(ctx);
-  }
-
   /// Update bouncing balls manually (affected by dt)
   fn update_balls(&self, ctx: &mut SceneContext, dt: f32) {
     let margin = 12.0; // Ball radius
@@ -213,19 +198,28 @@ impl TimeControlDemoScene {
   }
 }
 
-impl Scene for TimeControlDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    println!("Time Control Demo initialized!");
-    println!("  1: Normal (1.0x)");
-    println!("  2: Slow-mo (0.3x)");
-    println!("  3: Very slow (0.1x)");
-    println!("  4: Fast (2.0x)");
-    println!("  5: Pause (0.0x)");
-    println!("  Space: Hitstop (100ms)");
-    println!("  H: Short hitstop (50ms)");
-    println!("  R: Reset balls");
-    println!("  ESC: Exit");
+impl DemoPage for TimeControlPage {
+  fn name(&self) -> &str {
+    "Time"
+  }
 
+  fn description(&self) -> &str {
+    "Watch balls & tweens respond to time!\n\
+     Time scale gives slow-mo and fast-forward; hitstop freezes briefly for impact"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Time scale", &mut self.time_scale, &TIME_SCALE_LABELS);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::key(KeyCode::Space, "100 ms hitstop"),
+      Control::key(KeyCode::KeyJ, "50 ms hitstop"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
     self.screen_w = screen_w;
     self.screen_h = screen_h;
@@ -235,104 +229,43 @@ impl Scene for TimeControlDemoScene {
     self.spawn_pulsing_circle(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Exit on escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Time scale controls
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      ctx.set_time_scale(1.0);
-      println!("Time scale: 1.0x (normal)");
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      ctx.set_time_scale(0.3);
-      println!("Time scale: 0.3x (slow-mo)");
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      ctx.set_time_scale(0.1);
-      println!("Time scale: 0.1x (very slow)");
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      ctx.set_time_scale(2.0);
-      println!("Time scale: 2.0x (fast)");
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      ctx.set_time_scale(0.0);
-      println!("Time scale: 0.0x (paused)");
-    }
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    let scale = TIME_SCALES[self.time_scale.min(TIME_SCALES.len() - 1)];
+    ctx.set_time_scale(scale);
 
     // Hitstop controls
     if ctx.input.key_pressed(KeyCode::Space) {
       ctx.hitstop(0.1);
-      println!("Hitstop: 100ms freeze!");
     }
-    if ctx.input.key_pressed(KeyCode::KeyH) {
+    if ctx.input.key_pressed(KeyCode::KeyJ) {
       ctx.hitstop(0.05);
-      println!("Hitstop: 50ms freeze!");
-    }
-
-    // Reset balls
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.reset_balls(ctx);
-      println!("Balls reset");
     }
 
     // Update bouncing balls with the scaled dt
     // Note: dt is already scaled by time_scale and will be 0 during hitstop
     self.update_balls(ctx, dt);
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let text_light = Color::rgb(220, 220, 220);
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let text_accent = Color::rgb(130, 180, 255);
-    let text_muted = Color::rgb(160, 160, 160);
-    let text_warning = Color::rgb(255, 200, 100);
 
-    // Title
-    ui.draw_text("Time Control Demo", 10.0, 10.0, text_light);
-
-    // Instructions
-    ui.draw_text(
-      "1-5: Time scale | Space/H: Hitstop | R: Reset",
-      10.0,
-      30.0,
-      text_muted,
-    );
-
-    // Bottom labels
-    let (_, screen_h) = ui.screen_size();
-    let bottom_y = screen_h as f32 - 60.0;
+    // Bottom labels, above the shell's legend
+    let area = content_area(ui);
+    let bottom_y = area.y + area.height - 20.0;
 
     ui.draw_text("Rotating (Tween)", 100.0, bottom_y, text_accent);
     ui.draw_text("Pulsing (Tween)", 580.0, bottom_y, text_accent);
-
-    // Center instruction
-    let (screen_w, _) = ui.screen_size();
-    ui.draw_text(
-      "Watch balls & tweens respond to time!",
-      screen_w as f32 / 2.0 - 130.0,
-      80.0,
-      text_warning,
-    );
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Time Control Demo - Ryo2D")
+  Demo::new("Time Control")
     .resolution(800, 600)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .target_fps(60)
-    .physics_hz(60)
-    .start_scene(TimeControlDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableAspectRatio)
+        .target_fps(60)
+        .physics_hz(60)
+    })
+    .page(TimeControlPage::new)
+    .run();
 }

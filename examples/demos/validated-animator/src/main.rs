@@ -4,19 +4,9 @@
 //! between animation states. Shows how certain transitions are blocked
 //! while others are allowed.
 //!
-//! Controls:
-//! - 1: Try to go to Idle
-//! - 2: Try to Walk
-//! - 3: Try to Attack
-//! - 4: Try to get Hurt
-//! - 5: Try to Die
-//! - Space: Force transition to Idle (bypasses rules)
-//! - ESC: Quit
+//! Runs on the demo-kit shell.
 
-use ryo2d::prelude::*;
-
-const SCREEN_WIDTH: f32 = 800.0;
-const SCREEN_HEIGHT: f32 = 600.0;
+use demo_kit::prelude::*;
 
 // Animation state identifiers
 const IDLE: &str = "idle";
@@ -25,13 +15,13 @@ const ATTACK: &str = "attack";
 const HURT: &str = "hurt";
 const DEATH: &str = "death";
 
-struct ValidatedAnimatorDemo {
+struct ValidatedAnimatorPage {
   animator: ValidatedAnimator,
   last_transition_result: Option<(String, bool)>,
   transition_log: Vec<String>,
 }
 
-impl ValidatedAnimatorDemo {
+impl ValidatedAnimatorPage {
   fn new() -> Self {
     // Create simple colored frame animations (simulating sprite sheets)
     let idle_anim = Self::create_animation("idle", 4, 0.3);
@@ -139,8 +129,34 @@ impl ValidatedAnimatorDemo {
   }
 }
 
-impl Scene for ValidatedAnimatorDemo {
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+impl DemoPage for ValidatedAnimatorPage {
+  fn name(&self) -> &str {
+    "Animator"
+  }
+
+  fn description(&self) -> &str {
+    "ValidatedAnimator enforces transition rules between animation states\n\
+     Some transitions are blocked, others allowed; Space forces Idle and bypasses the rules"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::keys(
+        "1-5",
+        &[
+          KeyCode::Digit1,
+          KeyCode::Digit2,
+          KeyCode::Digit3,
+          KeyCode::Digit4,
+          KeyCode::Digit5,
+        ],
+        "Try a transition (Idle, Walk, Attack, Hurt, Death)",
+      ),
+      Control::key(KeyCode::Space, "Force Idle"),
+    ]
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Handle input
     if ctx.input.key_pressed(KeyCode::Digit1) {
       self.try_transition(IDLE);
@@ -160,9 +176,6 @@ impl Scene for ValidatedAnimatorDemo {
     if ctx.input.key_pressed(KeyCode::Space) {
       self.force_transition(IDLE);
     }
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
 
     // Auto-transition when attack/hurt finishes
     if self.animator.just_finished() {
@@ -174,16 +187,14 @@ impl Scene for ValidatedAnimatorDemo {
 
     // Update animator
     self.animator.update(dt);
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    // Title
-    ui.draw_text("Validated Animator Demo", 20.0, 20.0, Color::WHITE);
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
+    let center_x = area.x + area.width / 2.0;
 
     // Current state display (large, centered)
-    let state_y = 80.0;
+    let state_y = area.y + 10.0;
     let current = self.animator.current();
     let state_color = match current {
       IDLE => Color::hex(0x00FF00),
@@ -194,15 +205,10 @@ impl Scene for ValidatedAnimatorDemo {
       _ => Color::WHITE,
     };
 
-    ui.draw_text(
-      "Current State:",
-      SCREEN_WIDTH / 2.0 - 60.0,
-      state_y,
-      Color::WHITE,
-    );
+    ui.draw_text("Current State:", center_x - 60.0, state_y, Color::WHITE);
     ui.draw_text(
       &current.to_uppercase(),
-      SCREEN_WIDTH / 2.0 - 30.0,
+      center_x - 30.0,
       state_y + 25.0,
       state_color,
     );
@@ -210,13 +216,13 @@ impl Scene for ValidatedAnimatorDemo {
     // Time in state
     ui.draw_text(
       &format!("Time: {:.1}s", self.animator.time_in_state()),
-      SCREEN_WIDTH / 2.0 - 40.0,
+      center_x - 40.0,
       state_y + 50.0,
       Color::hex(0xAAAAAA),
     );
 
     // Animated sprite preview (centered box showing current frame color)
-    let preview_x = SCREEN_WIDTH / 2.0 - 40.0;
+    let preview_x = center_x - 40.0;
     let preview_y = state_y + 90.0;
     let preview_size = 80.0;
 
@@ -239,8 +245,8 @@ impl Scene for ValidatedAnimatorDemo {
     );
 
     // Transition rules panel (left side)
-    let rules_x = 20.0;
-    let rules_y = 200.0;
+    let rules_x = area.x + 10.0;
+    let rules_y = area.y + 130.0;
     ui.draw_text("Transition Rules:", rules_x, rules_y, Color::WHITE);
 
     let rules = [
@@ -271,8 +277,8 @@ impl Scene for ValidatedAnimatorDemo {
     }
 
     // Available transitions from current state (right side)
-    let avail_x = SCREEN_WIDTH - 200.0;
-    let avail_y = 200.0;
+    let avail_x = area.x + area.width - 190.0;
+    let avail_y = area.y + 130.0;
     ui.draw_text("Can Transition To:", avail_x, avail_y, Color::WHITE);
 
     let all_states = [IDLE, WALK, ATTACK, HURT, DEATH];
@@ -292,9 +298,10 @@ impl Scene for ValidatedAnimatorDemo {
       );
     }
 
-    // Transition log (bottom)
-    let log_y = SCREEN_HEIGHT - 220.0;
-    ui.draw_text("Transition Log:", 20.0, log_y, Color::WHITE);
+    // Transition log (centre, below the state display)
+    let log_x = center_x - 100.0;
+    let log_y = area.y + 230.0;
+    ui.draw_text("Transition Log:", log_x, log_y, Color::WHITE);
 
     for (i, entry) in self.transition_log.iter().enumerate() {
       let color = if entry.contains("[OK]") {
@@ -307,33 +314,9 @@ impl Scene for ValidatedAnimatorDemo {
       let alpha = 255 - (i as u8 * 20).min(200);
       ui.draw_text(
         entry,
-        20.0,
+        log_x,
         log_y + 20.0 + (i as f32 * 16.0),
         color.with_alpha(alpha),
-      );
-    }
-
-    // Controls
-    let controls_x = SCREEN_WIDTH - 250.0;
-    let controls_y = SCREEN_HEIGHT - 180.0;
-    ui.draw_text("Controls:", controls_x, controls_y, Color::WHITE);
-
-    let controls = [
-      ("1", "Idle"),
-      ("2", "Walk"),
-      ("3", "Attack"),
-      ("4", "Hurt"),
-      ("5", "Death"),
-      ("Space", "Force Idle"),
-      ("ESC", "Quit"),
-    ];
-
-    for (i, (key, action)) in controls.iter().enumerate() {
-      ui.draw_text(
-        &format!("[{}] {}", key, action),
-        controls_x,
-        controls_y + 20.0 + (i as f32 * 18.0),
-        Color::hex(0xAAAAAA),
       );
     }
 
@@ -349,21 +332,15 @@ impl Scene for ValidatedAnimatorDemo {
       } else {
         Color::hex(0xFF4444)
       };
-      ui.draw_text(&msg, SCREEN_WIDTH / 2.0 - 80.0, state_y + 180.0, color);
+      ui.draw_text(&msg, center_x - 80.0, state_y + 180.0, color);
     }
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Ryo2D Validated Animator Demo")
-    .resolution(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .start_scene(ValidatedAnimatorDemo::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+  Demo::new("Validated Animator")
+    .resolution(800, 600)
+    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
+    .page(ValidatedAnimatorPage::new)
+    .run();
 }

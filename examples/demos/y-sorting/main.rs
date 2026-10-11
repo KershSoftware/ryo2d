@@ -6,19 +6,19 @@
 //! - Entities automatically sort by Y position (feet)
 //! - Walk behind trees, in front of bushes based on Y position
 //!
-//! ## Controls
-//!
-//! - Arrow keys: Move the player
-//! - Space: Toggle depth scaling
-//! - Escape: Exit
+//! Depth scaling (a setting) also scales entities by their Y position.
+//! Runs on the demo-kit shell.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 const TILE_SIZE: u32 = 16;
 const WORLD_TILES_X: u32 = 20;
 const WORLD_TILES_Y: u32 = 15;
 const GAME_WIDTH: u32 = TILE_SIZE * WORLD_TILES_X; // 320
 const GAME_HEIGHT: u32 = TILE_SIZE * WORLD_TILES_Y; // 240
+
+/// Window size is the world at this zoom, leaving room for the demo-kit shell
+const SCREEN_ZOOM: f32 = 2.0;
 
 // Play area for depth scaling (leave some margin)
 const PLAY_AREA_TOP: f32 = 24.0;
@@ -38,21 +38,24 @@ struct Wanderer {
   shadow: Entity,
 }
 
-/// Main demo scene
-struct YSortingScene {
+/// Main demo page
+struct YSortingPage {
   player: Option<Entity>,
   player_shadow: Option<Entity>,
   wanderers: Vec<Entity>,
   depth_scale_enabled: bool,
+  /// The depth scaling last written to the entities' YSort components
+  applied_depth_scale: bool,
 }
 
-impl YSortingScene {
+impl YSortingPage {
   fn new() -> Self {
     Self {
       player: None,
       player_shadow: None,
       wanderers: Vec::new(),
       depth_scale_enabled: true,
+      applied_depth_scale: true,
     }
   }
 
@@ -336,8 +339,35 @@ impl YSortingScene {
   }
 }
 
-impl Scene for YSortingScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for YSortingPage {
+  fn name(&self) -> &str {
+    "Y-Sort"
+  }
+
+  fn description(&self) -> &str {
+    "Entities sort by foot Y: walk behind trees, in front of bushes\n\
+     Depth scaling also scales entities by their Y position"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.toggle("Depth scaling", &mut self.depth_scale_enabled);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::keys(
+      "WASD",
+      &[KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD],
+      "Move the player",
+    )]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    // The 320x240 world is shown at 2x so the shell has room around it
+    ctx.camera.set_zoom(SCREEN_ZOOM);
+    ctx
+      .camera
+      .set_position(GAME_WIDTH as f32 / 2.0, GAME_HEIGHT as f32 / 2.0);
+
     // Create grass tiles with variation
     let grass_handles: Vec<_> = (0..4)
       .map(|i| {
@@ -479,15 +509,10 @@ impl Scene for YSortingScene {
     }
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Exit on escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Toggle depth scaling
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.depth_scale_enabled = !self.depth_scale_enabled;
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    // Depth scaling changed in the settings panel
+    if self.depth_scale_enabled != self.applied_depth_scale {
+      self.applied_depth_scale = self.depth_scale_enabled;
 
       // Update all YSort components
       let new_y_sort = self.get_y_sort();
@@ -517,16 +542,16 @@ impl Scene for YSortingScene {
     let mut dx = 0.0;
     let mut dy = 0.0;
 
-    if ctx.input.key_down(KeyCode::ArrowLeft) {
+    if ctx.input.key_down(KeyCode::KeyA) {
       dx -= speed;
     }
-    if ctx.input.key_down(KeyCode::ArrowRight) {
+    if ctx.input.key_down(KeyCode::KeyD) {
       dx += speed;
     }
-    if ctx.input.key_down(KeyCode::ArrowUp) {
+    if ctx.input.key_down(KeyCode::KeyW) {
       dy -= speed;
     }
-    if ctx.input.key_down(KeyCode::ArrowDown) {
+    if ctx.input.key_down(KeyCode::KeyS) {
       dy += speed;
     }
 
@@ -623,43 +648,19 @@ impl Scene for YSortingScene {
         t.y = new_y + 2.0;
       }
     }
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    // Minimal HUD
-    let status = if self.depth_scale_enabled {
-      "SPACE: Scale ON"
-    } else {
-      "SPACE: Scale OFF"
-    };
-
-    ui.label(
-      status,
-      4.0,
-      4.0,
-      if self.depth_scale_enabled {
-        Color::new(100, 255, 100, 255)
-      } else {
-        Color::new(200, 200, 200, 255)
-      },
-      Some(Color::new(0, 0, 0, 180)),
-    );
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Y-Sorting Demo - Zelda Style")
-    .resolution(GAME_WIDTH, GAME_HEIGHT)
-    .window_mode(WindowMode::ResizableIntegerScale)
-    .target_fps(60)
-    .start_scene(YSortingScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+  Demo::new("Y-Sorting")
+    .resolution(
+      GAME_WIDTH * SCREEN_ZOOM as u32,
+      GAME_HEIGHT * SCREEN_ZOOM as u32,
+    )
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableIntegerScale)
+        .target_fps(60)
+    })
+    .page(YSortingPage::new)
+    .run();
 }

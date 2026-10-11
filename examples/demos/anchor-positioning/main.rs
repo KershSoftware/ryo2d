@@ -1,24 +1,12 @@
-//! Anchor Positioning Demo - Ryo2D Example
+//! Anchor Positioning Demo - Ryo2D
 //!
-//! This example demonstrates the Anchor system for sprite positioning:
-//! - 9-point anchor system (TopLeft, Center, BottomRight, etc.)
-//! - How anchors affect where sprites appear relative to their position
-//! - Offset adjustments for fine-tuning
-//!
-//! ## Visual Guide
-//!
-//! Each cell shows a red crosshair at the "target position" and a sprite
-//! anchored to that position. The anchor determines which part of the
-//! sprite aligns with the crosshair.
-//!
-//! ## Controls
-//!
-//! - Arrow keys: Adjust global offset
-//! - R: Reset offset to zero
-//! - Space: Toggle offset display
-//! - Escape: Exit
+//! Shows the Anchor system for sprite positioning: the 9-point anchors
+//! (TopLeft, Center, BottomRight, ...), how they change where a sprite appears
+//! relative to its position, and offset adjustments for fine-tuning. Each cell
+//! has a red crosshair at the target position and a sprite anchored to it.
+//! Runs on the demo-kit shell.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 /// Marker component for the demo sprites
 #[derive(Debug)]
@@ -28,19 +16,50 @@ struct DemoSprite;
 #[derive(Debug)]
 struct Crosshair;
 
-/// Main demo scene
-struct AnchorDemoScene {
+/// Grid margin around the cells
+const MARGIN: f32 = 40.0;
+/// Space above the grid for the shell's top bar and description
+const TOP: f32 = 72.0;
+/// Space below the grid for the shell's legend and the offset readout
+const BOTTOM: f32 = 70.0;
+/// Share of the screen width the grid may use; the settings panel covers the rest
+const GRID_WIDTH_FRACTION: f32 = 0.58;
+
+/// Anchors with their labels and grid positions (column, row)
+const ANCHORS: [(Anchor, &str, u32, u32); 9] = [
+  (Anchor::TopLeft, "TopLeft", 0, 0),
+  (Anchor::TopCenter, "TopCenter", 1, 0),
+  (Anchor::TopRight, "TopRight", 2, 0),
+  (Anchor::CenterLeft, "CenterLeft", 0, 1),
+  (Anchor::Center, "Center", 1, 1),
+  (Anchor::CenterRight, "CenterRight", 2, 1),
+  (Anchor::BottomLeft, "BottomLeft", 0, 2),
+  (Anchor::BottomCenter, "BottomCenter", 1, 2),
+  (Anchor::BottomRight, "BottomRight", 2, 2),
+];
+
+/// Size of one grid cell for a screen size
+fn cell_size(screen_w: f32, screen_h: f32) -> (f32, f32) {
+  (
+    (screen_w * GRID_WIDTH_FRACTION - MARGIN) / 3.0,
+    (screen_h - TOP - BOTTOM) / 3.0,
+  )
+}
+
+/// The anchors page
+#[derive(Default)]
+struct AnchorPage {
   sprites: Vec<Entity>,
-  offset: (f32, f32),
+  offset_x: f32,
+  offset_y: f32,
   show_offset_info: bool,
 }
 
-impl AnchorDemoScene {
+impl AnchorPage {
   fn new() -> Self {
     Self {
-      sprites: Vec::new(),
-      offset: (0.0, 0.0),
       show_offset_info: true,
+      ..Self::default()
     }
   }
 
@@ -73,21 +92,31 @@ impl AnchorDemoScene {
   fn update_offsets(&self, world: &mut World) {
     for &entity in &self.sprites {
       if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-        transform.offset_x = self.offset.0;
-        transform.offset_y = self.offset.1;
+        transform.offset_x = self.offset_x;
+        transform.offset_y = self.offset_y;
       }
     }
   }
 }
 
-impl Scene for AnchorDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    println!("Anchor Positioning Demo initialized!");
-    println!("  Arrow keys: Adjust offset");
-    println!("  R: Reset offset");
-    println!("  Space: Toggle offset info");
-    println!("  ESC: Exit");
+impl DemoPage for AnchorPage {
+  fn name(&self) -> &str {
+    "Anchors"
+  }
 
+  fn description(&self) -> &str {
+    "Red crosshair = target position | Blue rect = sprite with anchor\n\
+     The anchor picks which part of the sprite sits on the crosshair (Transform x, y).\n\
+     Offset is extra pixels applied after the anchor: Transform::with_offset(x, y)."
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.float("Offset X", &mut self.offset_x, -200.0..=200.0, 2.0);
+    s.float("Offset Y", &mut self.offset_y, -200.0..=200.0, 2.0);
+    s.toggle("Info panel", &mut self.show_offset_info);
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
 
     // Create demo sprite (a colored rectangle with visible bounds)
@@ -99,29 +128,13 @@ impl Scene for AnchorDemoScene {
     // Create crosshair for marking target positions
     let crosshair_handle = Self::create_crosshair();
 
-    // Define the 9 anchors with their labels and grid positions
-    let anchors = [
-      (Anchor::TopLeft, "TopLeft", 0, 0),
-      (Anchor::TopCenter, "TopCenter", 1, 0),
-      (Anchor::TopRight, "TopRight", 2, 0),
-      (Anchor::CenterLeft, "CenterLeft", 0, 1),
-      (Anchor::Center, "Center", 1, 1),
-      (Anchor::CenterRight, "CenterRight", 2, 1),
-      (Anchor::BottomLeft, "BottomLeft", 0, 2),
-      (Anchor::BottomCenter, "BottomCenter", 1, 2),
-      (Anchor::BottomRight, "BottomRight", 2, 2),
-    ];
-
-    // Calculate grid cell size
-    let margin = 40.0;
-    let cell_w = (screen_w - margin * 2.0) / 3.0;
-    let cell_h = (screen_h - margin * 2.0 - 60.0) / 3.0; // Extra space for title
+    let (cell_w, cell_h) = cell_size(screen_w, screen_h);
 
     // Spawn sprites for each anchor type
-    for (anchor, _label, col, row) in anchors {
+    for (anchor, _label, col, row) in ANCHORS {
       // Calculate target position (center of each cell)
-      let target_x = margin + cell_w * (col as f32 + 0.5);
-      let target_y = margin + 60.0 + cell_h * (row as f32 + 0.5);
+      let target_x = MARGIN + cell_w * (col as f32 + 0.5);
+      let target_y = TOP + cell_h * (row as f32 + 0.5);
 
       // Spawn crosshair at target position (always centered)
       ctx.world.spawn((
@@ -141,130 +154,44 @@ impl Scene for AnchorDemoScene {
     }
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Exit on escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Toggle offset info
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.show_offset_info = !self.show_offset_info;
-    }
-
-    // Reset offset
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.offset = (0.0, 0.0);
-      self.update_offsets(ctx.world);
-    }
-
-    // Adjust offset with arrow keys (key_down for continuous movement)
-    let offset_step = 2.0;
-    let mut changed = false;
-
-    if ctx.input.key_down(KeyCode::ArrowLeft) {
-      self.offset.0 -= offset_step;
-      changed = true;
-    }
-    if ctx.input.key_down(KeyCode::ArrowRight) {
-      self.offset.0 += offset_step;
-      changed = true;
-    }
-    if ctx.input.key_down(KeyCode::ArrowUp) {
-      self.offset.1 -= offset_step;
-      changed = true;
-    }
-    if ctx.input.key_down(KeyCode::ArrowDown) {
-      self.offset.1 += offset_step;
-      changed = true;
-    }
-
-    if changed {
-      self.update_offsets(ctx.world);
-    }
-
-    SceneAction::Continue
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+    self.update_offsets(ctx.world);
   }
 
-  fn render(&mut self, _ctx: &mut SceneContext, _alpha: f32) {
-    // Sprites are rendered automatically by the engine
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
-    let screen_w = screen_w as f32;
-    let screen_h = screen_h as f32;
+    let (cell_w, cell_h) = cell_size(screen_w as f32, screen_h as f32);
 
-    // Title
-    ui.draw_text(
-      "Anchor Positioning Demo",
-      screen_w / 2.0 - 100.0,
-      10.0,
-      Color::WHITE,
-    );
-
-    // Subtitle explaining the visual
-    ui.draw_text(
-      "Red crosshair = target position | Blue rect = sprite with anchor",
-      screen_w / 2.0 - 230.0,
-      30.0,
-      Color::new(180, 180, 180, 255),
-    );
-
-    // Draw labels for each cell
-    let margin = 40.0;
-    let cell_w = (screen_w - margin * 2.0) / 3.0;
-    let cell_h = (screen_h - margin * 2.0 - 60.0) / 3.0;
-
-    let labels = [
-      ("TopLeft", 0, 0),
-      ("TopCenter", 1, 0),
-      ("TopRight", 2, 0),
-      ("CenterLeft", 0, 1),
-      ("Center", 1, 1),
-      ("CenterRight", 2, 1),
-      ("BottomLeft", 0, 2),
-      ("BottomCenter", 1, 2),
-      ("BottomRight", 2, 2),
-    ];
-
-    for (label, col, row) in labels {
-      let label_x = margin + cell_w * col as f32 + 5.0;
-      let label_y = margin + 60.0 + cell_h * row as f32 + 5.0;
+    for (_, label, col, row) in ANCHORS {
+      let label_x = MARGIN + cell_w * col as f32 + 5.0;
+      let label_y = TOP + cell_h * row as f32 + 5.0;
       ui.draw_text(label, label_x, label_y, Color::YELLOW);
     }
 
-    // Controls and offset info at bottom
-    let info_y = screen_h - 60.0;
-    ui.draw_text(
-      "Controls: Arrows=Offset  R=Reset  Space=Toggle Info  ESC=Exit",
-      10.0,
-      info_y,
-      Color::WHITE,
-    );
-
     if self.show_offset_info {
+      let area = content_area(ui);
       let offset_text = format!(
         "Current Offset: ({:.0}, {:.0})",
-        self.offset.0, self.offset.1
+        self.offset_x, self.offset_y
       );
-      ui.draw_text(&offset_text, 10.0, info_y + 20.0, Color::GREEN);
+      ui.draw_text(
+        &offset_text,
+        area.x,
+        area.y + area.height - 20.0,
+        Color::GREEN,
+      );
     }
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Anchor Positioning Demo - Ryo2D")
+  Demo::new("Anchor Positioning")
     .resolution(800, 600)
-    .window_mode(WindowMode::ResizableIntegerScale)
-    .target_fps(60)
-    .physics_hz(60)
-    .start_scene(AnchorDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableIntegerScale)
+        .target_fps(60)
+        .physics_hz(60)
+    })
+    .page(AnchorPage::new)
+    .run();
 }

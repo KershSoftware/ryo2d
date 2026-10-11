@@ -6,3 +6,4 @@ description = "Gamepad/controller input testing demo for Ryo2D engine"
 
 [dependencies]
 ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }

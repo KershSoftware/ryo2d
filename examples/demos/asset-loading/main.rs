@@ -2,23 +2,19 @@
 //!
 //! Demonstrates the AssetManager's async loading with progress tracking.
 //! Shows how to build a loading screen with progress bar and current asset display.
+//! Runs on the demo-kit shell.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
-const SCREEN_WIDTH: u32 = 600;
-const SCREEN_HEIGHT: u32 = 400;
+const SCREEN_WIDTH: u32 = 800;
+const SCREEN_HEIGHT: u32 = 600;
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Asset Loading Demo")
+  Demo::new("Asset Loading")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
-    .show_fps(true)
-    .start_scene(LoadingDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| b.show_fps(true))
+    .page(LoadingPage::new)
+    .run();
 }
 
 /// Demo states
@@ -32,7 +28,7 @@ enum DemoState {
   Complete,
 }
 
-struct LoadingDemoScene {
+struct LoadingPage {
   state: DemoState,
   load_clicked: bool,
   reset_clicked: bool,
@@ -48,7 +44,7 @@ struct LoadingDemoScene {
   actual_progress: LoadingProgress,
 }
 
-impl LoadingDemoScene {
+impl LoadingPage {
   fn new() -> Self {
     Self {
       state: DemoState::Ready,
@@ -80,15 +76,28 @@ impl LoadingDemoScene {
   }
 }
 
-impl Scene for LoadingDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
+impl DemoPage for LoadingPage {
+  fn name(&self) -> &str {
+    "Loading"
+  }
+
+  fn description(&self) -> &str {
+    "Async asset loading with a progress bar and the current asset"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::mouse("Load / Reset buttons")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    // Loading progress lives in the engine, not the scene, so start from zero
+    ctx.assets.reset_loading_progress();
     ctx
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     match self.state {
       DemoState::Ready => {
         if self.load_clicked {
@@ -158,59 +167,47 @@ impl Scene for LoadingDemoScene {
         }
       }
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let (screen_w, screen_h) = ui.screen_size();
-    let center_x = screen_w as f32 / 2.0;
-    let screen_h = screen_h as f32;
-
-    // Title
-    ui.draw_text_anchored(
-      "Asset Loading Demo",
-      Anchor::TopCenter,
-      0.0,
-      20.0,
-      Color::WHITE,
-    );
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
 
     match self.state {
-      DemoState::Ready => {
-        self.render_ready_state(ui, center_x, screen_h);
-      }
-      DemoState::Loading => {
-        self.render_loading_state(ui, center_x, screen_h);
-      }
-      DemoState::Complete => {
-        self.render_complete_state(ui, center_x, screen_h);
-      }
+      DemoState::Ready => self.render_ready_state(ui, area),
+      DemoState::Loading => self.render_loading_state(ui, area),
+      DemoState::Complete => self.render_complete_state(ui, area),
     }
-    SceneAction::Continue
   }
 }
 
-impl LoadingDemoScene {
-  fn render_ready_state(&mut self, ui: &mut UiContext, center_x: f32, _screen_h: f32) {
+/// A line of text centred across `area`, `y` below its top
+fn centered_line(ui: &mut UiContext, text: &str, area: Rect, y: f32, color: Color) {
+  ui.draw_text_centered(text, Rect::new(area.x, area.y + y, area.width, 16.0), color);
+}
+
+impl LoadingPage {
+  fn render_ready_state(&mut self, ui: &mut UiContext, area: Rect) {
+    let center_x = area.x + area.width / 2.0;
+
     // Instructions
-    ui.draw_text_anchored(
+    centered_line(
+      ui,
       "Click the button to start loading assets",
-      Anchor::TopCenter,
-      0.0,
-      100.0,
+      area,
+      20.0,
       Color::LIGHT_GRAY,
     );
 
     // Asset list preview
     let assets = Self::assets_to_load();
-    let list_y = 140.0;
-    ui.draw_text("Assets to load:", 50.0, list_y, Color::GRAY);
+    let list_x = area.x + 50.0;
+    let list_y = area.y + 60.0;
+    ui.draw_text("Assets to load:", list_x, list_y, Color::GRAY);
 
     for (i, path) in assets.iter().enumerate() {
       let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
       let y = list_y + 25.0 + (i as f32 * 20.0);
-      ui.draw_text(&format!("  - {}", filename), 50.0, y, Color::DARK_GRAY);
+      ui.draw_text(&format!("  - {}", filename), list_x, y, Color::DARK_GRAY);
     }
 
     // Load button, in the empty column right of the asset list
@@ -227,7 +224,8 @@ impl LoadingDemoScene {
     }
   }
 
-  fn render_loading_state(&mut self, ui: &mut UiContext, center_x: f32, _screen_h: f32) {
+  fn render_loading_state(&mut self, ui: &mut UiContext, area: Rect) {
+    let center_x = area.x + area.width / 2.0;
     // Use ui_shown_count for visual progress (gradually catches up to actual progress)
     let total = Self::assets_to_load().len().max(1);
     let completed = self.ui_shown_count;
@@ -241,13 +239,13 @@ impl LoadingDemoScene {
       _ => "...",
     };
     let loading_text = format!("Loading{}", dots);
-    ui.draw_text_anchored(&loading_text, Anchor::TopCenter, 0.0, 120.0, Color::WHITE);
+    centered_line(ui, &loading_text, area, 40.0, Color::WHITE);
 
     // Progress bar
     let bar_w = 400.0;
     let bar_h = 30.0;
     let bar_x = center_x - bar_w / 2.0;
-    let bar_y = 160.0;
+    let bar_y = area.y + 80.0;
 
     // Background
     ui.draw_rect(Rect::new(bar_x, bar_y, bar_w, bar_h), Color::DARK_GRAY);
@@ -263,11 +261,11 @@ impl LoadingDemoScene {
 
     // Progress text
     let progress_text = format!("{}/{} ({:.0}%)", completed, total, percentage * 100.0);
-    ui.draw_text_anchored(
+    centered_line(
+      ui,
       &progress_text,
-      Anchor::TopCenter,
-      0.0,
-      bar_y + bar_h + 10.0,
+      area,
+      bar_y - area.y + bar_h + 10.0,
       Color::LIGHT_GRAY,
     );
 
@@ -280,24 +278,26 @@ impl LoadingDemoScene {
         .next()
         .unwrap_or(current_path);
       let current_text = format!("Loading: {}", filename);
-      ui.draw_text_anchored(
+      centered_line(
+        ui,
         &current_text,
-        Anchor::TopCenter,
-        0.0,
-        bar_y + bar_h + 35.0,
+        area,
+        bar_y - area.y + bar_h + 35.0,
         Color::GRAY,
       );
     }
   }
 
-  fn render_complete_state(&mut self, ui: &mut UiContext, center_x: f32, screen_h: f32) {
+  fn render_complete_state(&mut self, ui: &mut UiContext, area: Rect) {
+    let center_x = area.x + area.width / 2.0;
+
     // Success message
     let success_text = format!("Loaded {} assets!", self.loaded_sprites.len());
-    ui.draw_text_anchored(&success_text, Anchor::TopCenter, 0.0, 60.0, Color::GREEN);
+    centered_line(ui, &success_text, area, 0.0, Color::GREEN);
 
     // Display loaded sprites in a grid
-    let start_x = 50.0;
-    let start_y = 100.0;
+    let start_x = area.x + 50.0;
+    let start_y = area.y + 40.0;
     let max_preview_size = 80.0;
     let spacing = 110.0;
 
@@ -333,7 +333,7 @@ impl LoadingDemoScene {
     let button_w = 150.0;
     let button_h = 40.0;
     let button_x = center_x - button_w / 2.0;
-    let button_y = screen_h - 60.0;
+    let button_y = area.y + area.height - button_h - 10.0;
 
     if ui.button("Reset", Rect::new(button_x, button_y, button_w, button_h)) {
       self.reset_clicked = true;

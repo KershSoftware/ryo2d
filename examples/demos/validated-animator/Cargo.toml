@@ -6,3 +6,4 @@ description = "Demonstrates ValidatedAnimator with enforced state transitions"
 
 [dependencies]
 ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }

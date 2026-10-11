@@ -6,12 +6,10 @@
 //! - Nested hierarchies (planet → moon → satellite)
 //! - The unified Renderable component for sprite rendering
 //!
-//! ## Controls
-//!
-//! - Space: Toggle automatic rotation
-//! - Escape: Exit
+//! A child's position is relative to its parent, so when the sun rotates the
+//! planet orbits it, and so on down the chain. Runs on the demo-kit shell.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 /// Rotation speeds (degrees per second)
 const SUN_ROTATION: f32 = 10.0;
@@ -32,35 +30,36 @@ struct Moon;
 #[derive(Debug)]
 struct Satellite;
 
-/// Stores entity references for our solar system
-struct SolarSystem {
-  sun: Entity,
-  #[allow(dead_code)]
-  planet: Entity,
-  #[allow(dead_code)]
-  moon: Entity,
-  #[allow(dead_code)]
-  satellite: Entity,
+/// Page demonstrating hierarchies
+struct HierarchyPage {
+  sun: Option<Entity>,
   rotating: bool,
 }
 
-/// Main game scene demonstrating hierarchies
-struct HierarchyScene {
-  solar_system: Option<SolarSystem>,
-}
-
-impl HierarchyScene {
+impl HierarchyPage {
   fn new() -> Self {
-    Self { solar_system: None }
+    Self {
+      sun: None,
+      rotating: true,
+    }
   }
 }
 
-impl Scene for HierarchyScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    println!("Hierarchy Sprites Demo initialized!");
-    println!("  Press SPACE to toggle rotation");
-    println!("  Press ESC to exit");
+impl DemoPage for HierarchyPage {
+  fn name(&self) -> &str {
+    "Solar System"
+  }
 
+  fn description(&self) -> &str {
+    "Sun > planet > moon > satellite: each child is positioned relative to its parent\n\
+     Rotating the sun carries the whole chain; each body also spins to orbit its parent"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.toggle("Rotation", &mut self.rotating);
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Create sprites for our celestial bodies
     // Sun: large yellow circle
     let sun_sprite = Sprite::solid_circle(40, 255, 220, 50, 255);
@@ -108,7 +107,7 @@ impl Scene for HierarchyScene {
     );
 
     // Create satellite as child of moon (orbits around moon)
-    let satellite = ctx.world.spawn_child(
+    ctx.world.spawn_child(
       moon,
       (
         Satellite,
@@ -117,35 +116,16 @@ impl Scene for HierarchyScene {
       ),
     );
 
-    self.solar_system = Some(SolarSystem {
-      sun,
-      planet,
-      moon,
-      satellite,
-      rotating: true,
-    });
+    self.sun = Some(sun);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Toggle rotation with space
-    if ctx.input.key_pressed(KeyCode::Space)
-      && let Some(ref mut ss) = self.solar_system
-    {
-      ss.rotating = !ss.rotating;
-      println!("Rotation: {}", if ss.rotating { "ON" } else { "OFF" });
-    }
-
-    // Exit on escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Update rotations if enabled
-    if let Some(ref ss) = self.solar_system
-      && ss.rotating
+    if self.rotating
+      && let Some(sun) = self.sun
     {
       // Rotate the sun (affects entire hierarchy)
-      if let Some(mut transform) = ctx.world.get_mut::<Transform>(ss.sun) {
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(sun) {
         transform.rotation += SUN_ROTATION * dt;
       }
 
@@ -164,51 +144,17 @@ impl Scene for HierarchyScene {
         transform.rotation += SATELLITE_ORBIT * dt;
       }
     }
-
-    SceneAction::Continue
-  }
-
-  fn render(&mut self, _ctx: &mut SceneContext, _alpha: f32) {
-    // The Renderable components are drawn automatically by the engine
-    // because we're using the new Renderable system!
-    // No custom rendering needed here.
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    // Display controls and rotation status
-    ui.draw_text("Controls:", 10.0, 10.0, Color::WHITE);
-    ui.draw_text("  SPACE - Toggle rotation", 10.0, 30.0, Color::WHITE);
-    ui.draw_text("  ESC   - Exit", 10.0, 50.0, Color::WHITE);
-
-    // Show current rotation state
-    if let Some(ref ss) = self.solar_system {
-      let status_color = if ss.rotating {
-        Color::GREEN
-      } else {
-        Color::RED
-      };
-      let status_text = if ss.rotating {
-        "Rotation: ON"
-      } else {
-        "Rotation: OFF"
-      };
-      ui.draw_text(status_text, 10.0, 80.0, status_color);
-    }
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Hierarchy Sprites Demo - Ryo2D")
+  Demo::new("Hierarchy Sprites")
     .resolution(800, 600)
-    .window_mode(WindowMode::ResizableIntegerScale) // Pixel-perfect scaling
-    .target_fps(60)
-    .physics_hz(60)
-    .start_scene(HierarchyScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableIntegerScale) // Pixel-perfect scaling
+        .target_fps(60)
+        .physics_hz(60)
+    })
+    .page(HierarchyPage::new)
+    .run();
 }
