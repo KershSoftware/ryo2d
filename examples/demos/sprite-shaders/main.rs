@@ -100,6 +100,9 @@ fn palette(index: usize) -> Color {
 /// left of the settings panel
 const SPRITE_X: [f32; 3] = [80.0, 230.0, 380.0];
 
+/// How long a Space flash takes to fade
+const FLASH_SECONDS: f32 = 0.5;
+
 struct EffectsPage {
   effect: usize,
   color: usize,
@@ -115,8 +118,11 @@ struct EffectsPage {
   dissolve_progress: f32,
   grayscale_intensity: f32,
   time: f32,
+  /// Seconds left of a Space flash, which fades from full strength back to
+  /// `flash_intensity`
   flash_timer: f32,
-  dissolve_animating: bool,
+  /// The playing dissolve's progress; the setting is untouched while it plays
+  dissolve_anim: Option<f32>,
   normal_sprite: Option<Entity>,
   effect_sprite: Option<Entity>,
   // Middle sprite driven by the custom WGSL dissolve shader (None if it failed to load)
@@ -141,7 +147,7 @@ impl Default for EffectsPage {
       grayscale_intensity: 1.0,
       time: 0.0,
       flash_timer: 0.0,
-      dissolve_animating: false,
+      dissolve_anim: None,
       normal_sprite: None,
       effect_sprite: None,
       custom_sprite: None,
@@ -157,21 +163,26 @@ impl EffectsPage {
   fn create_sprite_effect(&self) -> SpriteEffect {
     let color = palette(self.color);
     match self.current() {
-      DemoEffect::Outline => SpriteEffect::outline(color, self.outline_thickness.max(1) as u32),
+      DemoEffect::Outline => SpriteEffect::outline(color, self.outline_thickness as u32),
       DemoEffect::Glow => {
         SpriteEffect::glow_with_intensity(color, self.glow_radius, self.glow_intensity)
       }
-      DemoEffect::Flash => SpriteEffect::flash(color, self.flash_intensity),
+      DemoEffect::Flash => {
+        let pulse = (self.flash_timer / FLASH_SECONDS).clamp(0.0, 1.0);
+        let intensity = self.flash_intensity + (1.0 - self.flash_intensity) * pulse;
+        SpriteEffect::flash(color, intensity)
+      }
       DemoEffect::ColorShift => SpriteEffect::color_shift(color, self.color_shift_amount),
       DemoEffect::Silhouette => {
         let mut c = color;
         c.a = (self.silhouette_alpha * 255.0).round() as u8;
         SpriteEffect::silhouette(c)
       }
-      DemoEffect::Pixelate => SpriteEffect::pixelate(self.pixelate_size.max(1) as u32),
+      DemoEffect::Pixelate => SpriteEffect::pixelate(self.pixelate_size as u32),
       DemoEffect::Wave => SpriteEffect::wave(self.wave_amplitude, 2.0, self.wave_speed),
       DemoEffect::Dissolve => {
-        SpriteEffect::dissolve_with_edge(self.dissolve_progress, Color::new(255, 165, 0, 255))
+        let progress = self.dissolve_anim.unwrap_or(self.dissolve_progress);
+        SpriteEffect::dissolve_with_edge(progress, Color::new(255, 165, 0, 255))
       }
       DemoEffect::Invert => SpriteEffect::invert(),
       DemoEffect::Grayscale => SpriteEffect::grayscale(self.grayscale_intensity),
@@ -188,12 +199,12 @@ impl EffectsPage {
 
   fn trigger_action(&mut self) {
     match self.current() {
-      DemoEffect::Flash => {
-        self.flash_timer = 0.5;
-        self.flash_intensity = 1.0;
-      }
+      DemoEffect::Flash => self.flash_timer = FLASH_SECONDS,
       DemoEffect::Dissolve => {
-        self.dissolve_animating = !self.dissolve_animating;
+        self.dissolve_anim = match self.dissolve_anim {
+          Some(_) => None,
+          None => Some(self.dissolve_progress),
+        };
       }
       _ => {}
     }
@@ -247,7 +258,7 @@ impl DemoPage for EffectsPage {
   fn controls(&self) -> Vec<Control> {
     match self.current() {
       DemoEffect::Flash => vec![Control::key(KeyCode::Space, "Flash")],
-      DemoEffect::Dissolve => vec![Control::key(KeyCode::Space, "Animate the dissolve")],
+      DemoEffect::Dissolve => vec![Control::key(KeyCode::Space, "Play or stop the dissolve")],
       _ => Vec::new(),
     }
   }
@@ -311,17 +322,13 @@ impl DemoPage for EffectsPage {
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     self.time += dt;
 
-    // Handle flash timer
-    if self.flash_timer > 0.0 {
-      self.flash_timer -= dt;
-      self.flash_intensity = self.flash_timer.max(0.0) * 2.0;
-    }
+    self.flash_timer = (self.flash_timer - dt).max(0.0);
 
-    // Handle dissolve animation
-    if self.dissolve_animating {
-      self.dissolve_progress += dt * 0.5;
-      if self.dissolve_progress >= 1.0 {
-        self.dissolve_progress = 0.0;
+    // The playing dissolve loops 0 -> 1
+    if let Some(progress) = &mut self.dissolve_anim {
+      *progress += dt * 0.5;
+      if *progress >= 1.0 {
+        *progress = 0.0;
       }
     }
 
