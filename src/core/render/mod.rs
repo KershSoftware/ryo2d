@@ -1,76 +1,50 @@
-//! Render Pipeline System (experimental, not used by the engine)
+//! Render Pipeline: an ordered list of render passes
 //!
-//! **Status:** the engine never builds or executes a `RenderPipeline` - frame
-//! rendering is hard-coded in `engine.rs` and `graphics/renderer.rs`, so passes
-//! configured here don't change what a game draws. Only `ClearPass`,
-//! `ParallaxPass`, `UploadPass` and `LightingPass` exist. The module is kept for a
-//! future pass-based renderer and isn't part of the prelude.
+//! A [`RenderPipeline`] holds [`RenderPass`]es in order. For each frame, every
+//! enabled pass whose [`RenderPass::should_run`] holds for the [`FrameInfo`]
+//! records its work, in list order, on one command encoder.
 //!
-//! The design: each rendering phase is encapsulated in a `RenderPass`; passes
-//! can be added, removed, or reordered at runtime.
+//! Passes are found by id: add one at the end with `push`, or place it with
+//! `insert_before` / `insert_after` a named pass. Duplicate or unknown ids are
+//! reported as [`RenderPipelineError`], never panics. The ids of the built-in
+//! passes live in [`pass_ids`].
 //!
-//! # Architecture
-//!
-//! ```text
-//! Game code describes intent
-//!     │
-//!     ▼
-//! Engine extracts intent into render data
-//!     │
-//!     ▼
-//! RenderPipeline plans passes
-//!     │
-//!     ├── ClearPass: Clear buffers
-//!     ├── ParallaxPass: GPU parallax layers
-//!     ├── CpuSpritePass: Software sprite rendering
-//!     ├── UploadPass: CPU buffer → GPU texture
-//!     ├── GpuSpritePass: Batched GPU sprites
-//!     ├── TrailPass: Motion trails
-//!     ├── LightingPass: 2D lighting
-//!     ├── UiPass: User interface
-//!     ├── EffectsPass: Post-processing
-//!     └── PresentPass: Final output
-//!     │
-//!     ▼
-//! Swapchain shows the result
-//! ```
-//!
-//! # Example
-//!
-//! ```ignore
-//! use ryo2d::core::render::{RenderPipeline, passes::ClearPass};
-//!
-//! let mut pipeline = RenderPipeline::new();
-//! pipeline.add_pass(ClearPass::new());
-//! pipeline.add_pass(MyCustomPass::new());
-//!
-//! // Disable a pass without removing it
-//! pipeline.set_enabled("clear", false);
-//!
-//! // Execute pipeline
-//! pipeline.execute(&mut render_context);
-//! ```
+//! The engine doesn't run this pipeline yet; it's being wired in.
 
 mod context;
+mod frame;
 mod pass;
-pub mod passes;
 mod pipeline;
 
-pub use context::{RenderContext, TextureSlot};
-pub use pass::{RenderPass, RenderPassId};
-pub use pipeline::RenderPipeline;
+pub use context::RenderContext;
+pub use frame::FrameInfo;
+pub use pass::RenderPass;
+pub use pipeline::{RenderPipeline, RenderPipelineError};
 
-/// Pass IDs for the planned passes. Only `CLEAR`, `PARALLAX`, `UPLOAD` and
-/// `LIGHTING` have implementations (see [`passes`]).
+/// Ids of the built-in passes, in the order `RenderPipeline::default_2d` runs them.
 pub mod pass_ids {
-  pub const CLEAR: &str = "clear";
-  pub const PARALLAX: &str = "parallax";
-  pub const CPU_SPRITE: &str = "cpu_sprite";
+  /// CPU pixel buffer upload
   pub const UPLOAD: &str = "upload";
-  pub const GPU_SPRITE: &str = "gpu_sprite";
-  pub const TRAIL: &str = "trail";
+  /// Game texture clear
+  pub const CLEAR: &str = "clear";
+  /// GPU raycaster (replaces the 2D scene passes while raycasting)
+  pub const RAYCAST: &str = "raycast";
+  /// GPU sprite batches
+  pub const GPU_SPRITES: &str = "gpu_sprites";
+  /// CPU-rendered content blended onto the game texture
+  pub const CPU_BLEND: &str = "cpu_blend";
+  /// Lit trails and lines
+  pub const TRAILS: &str = "trails";
+  /// 2D lighting
   pub const LIGHTING: &str = "lighting";
+  /// Trails and lines that skip lighting
+  pub const UNLIT_TRAILS: &str = "unlit_trails";
+  /// Post-process effects
+  pub const POST_PROCESS: &str = "post_process";
+  /// UI upload
   pub const UI: &str = "ui";
-  pub const EFFECTS: &str = "effects";
-  pub const PRESENT: &str = "present";
+  /// Final composite to the window or offscreen target
+  pub const COMPOSITE: &str = "composite";
+  /// Frame capture
+  pub const CAPTURE: &str = "capture";
 }

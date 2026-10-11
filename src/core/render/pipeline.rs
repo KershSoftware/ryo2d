@@ -1,340 +1,126 @@
-//! Render pipeline orchestration
+//! An ordered list of render passes
 
-use std::collections::HashMap;
+use super::{FrameInfo, RenderPass};
 
-use super::RenderContext;
-use super::pass::RenderPass;
-
-/// A configurable render pipeline that executes passes in dependency order.
-///
-/// The pipeline manages a collection of render passes and ensures they execute
-/// in the correct order based on their declared dependencies.
-///
-/// # Example
-///
-/// ```ignore
-/// let mut pipeline = RenderPipeline::new();
-///
-/// // Add passes (order doesn't matter - sorted by dependencies)
-/// pipeline.add_pass(ClearPass::new());
-/// pipeline.add_pass(UploadPass::new());
-/// pipeline.add_pass(PresentPass::new());
-///
-/// // Execute
-/// pipeline.execute(&mut render_context);
-/// ```
-pub struct RenderPipeline {
-  /// All registered passes
-  passes: Vec<Box<dyn RenderPass>>,
-  /// Execution order (indices into passes vec)
-  execution_order: Vec<usize>,
-  /// Map from pass ID to index in passes vec
-  pass_indices: HashMap<&'static str, usize>,
-  /// Whether execution order needs recalculation
-  order_dirty: bool,
+/// A problem configuring a [`RenderPipeline`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RenderPipelineError {
+  /// A pass with this id is already in the pipeline
+  #[error("a render pass with id `{0}` is already in the pipeline")]
+  DuplicatePass(String),
+  /// No pass has this id
+  #[error("no render pass with id `{0}`")]
+  UnknownPass(String),
 }
 
-impl Default for RenderPipeline {
-  fn default() -> Self {
-    Self::new()
-  }
+struct Entry {
+  pass: Box<dyn RenderPass>,
+  enabled: bool,
+}
+
+/// The frame's render passes, run in order.
+///
+/// Each enabled pass whose [`should_run`](RenderPass::should_run) holds for
+/// the frame records its work, in list order, on one command encoder.
+#[derive(Default)]
+pub struct RenderPipeline {
+  entries: Vec<Entry>,
 }
 
 impl RenderPipeline {
-  /// Create an empty pipeline
+  /// An empty pipeline.
   pub fn new() -> Self {
-    Self {
-      passes: Vec::new(),
-      execution_order: Vec::new(),
-      pass_indices: HashMap::new(),
-      order_dirty: true,
-    }
+    Self::default()
   }
 
-  /// Add a pass to the pipeline.
-  ///
-  /// The pass will be inserted and the execution order recalculated based on
-  /// dependencies. Panics if a pass with the same ID already exists.
-  pub fn add_pass<P: RenderPass + 'static>(&mut self, pass: P) {
-    let id = pass.id();
-    if self.pass_indices.contains_key(id) {
-      panic!("Render pass '{}' already exists in pipeline", id);
-    }
-
-    let index = self.passes.len();
-    self.passes.push(Box::new(pass));
-    self.pass_indices.insert(id, index);
-    self.order_dirty = true;
+  /// Add a pass at the end.
+  pub fn push(&mut self, pass: impl RenderPass + 'static) -> Result<(), RenderPipelineError> {
+    self.insert_at(self.entries.len(), Box::new(pass))
   }
 
-  /// Remove a pass by ID.
-  ///
-  /// Returns the removed pass, or None if not found.
-  pub fn remove_pass(&mut self, id: &str) -> Option<Box<dyn RenderPass>> {
-    let index = *self.pass_indices.get(id)?;
-
-    // Remove from passes vec
-    let pass = self.passes.remove(index);
-
-    // Rebuild pass_indices (indices shifted after removal)
-    self.pass_indices.clear();
-    for (i, p) in self.passes.iter().enumerate() {
-      self.pass_indices.insert(p.id(), i);
-    }
-
-    self.order_dirty = true;
-    Some(pass)
+  /// Add a pass just before the pass `anchor`.
+  pub fn insert_before(
+    &mut self,
+    anchor: &str,
+    pass: impl RenderPass + 'static,
+  ) -> Result<(), RenderPipelineError> {
+    let index = self.index_of(anchor)?;
+    self.insert_at(index, Box::new(pass))
   }
 
-  /// Get a reference to a pass by ID
-  pub fn get_pass(&self, id: &str) -> Option<&dyn RenderPass> {
-    let index = *self.pass_indices.get(id)?;
-    Some(self.passes[index].as_ref())
+  /// Add a pass just after the pass `anchor`.
+  pub fn insert_after(
+    &mut self,
+    anchor: &str,
+    pass: impl RenderPass + 'static,
+  ) -> Result<(), RenderPipelineError> {
+    let index = self.index_of(anchor)? + 1;
+    self.insert_at(index, Box::new(pass))
   }
 
-  /// Get a mutable reference to a pass by ID
-  pub fn get_pass_mut(&mut self, id: &str) -> Option<&mut dyn RenderPass> {
-    let index = *self.pass_indices.get(id)?;
-    Some(self.passes[index].as_mut())
+  /// Take a pass out of the pipeline.
+  pub fn remove(&mut self, id: &str) -> Option<Box<dyn RenderPass>> {
+    let index = self.position(id)?;
+    Some(self.entries.remove(index).pass)
   }
 
-  /// Enable or disable a pass by ID.
-  ///
-  /// Returns false if the pass doesn't exist.
-  pub fn set_enabled(&mut self, id: &str, enabled: bool) -> bool {
-    if let Some(pass) = self.get_pass_mut(id) {
-      pass.set_enabled(enabled);
-      true
-    } else {
-      false
-    }
+  /// Turn a pass on or off without moving it.
+  pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), RenderPipelineError> {
+    let index = self.index_of(id)?;
+    self.entries[index].enabled = enabled;
+    Ok(())
   }
 
-  /// Check if a pass is enabled
-  pub fn is_enabled(&self, id: &str) -> bool {
-    self.get_pass(id).is_some_and(|p| p.is_enabled())
+  /// Whether a pass is on, or `None` if there is no such pass.
+  pub fn is_enabled(&self, id: &str) -> Option<bool> {
+    self.position(id).map(|index| self.entries[index].enabled)
   }
 
-  /// Get the number of passes in the pipeline
-  pub fn pass_count(&self) -> usize {
-    self.passes.len()
+  /// Whether the pipeline has a pass with this id.
+  pub fn contains(&self, id: &str) -> bool {
+    self.position(id).is_some()
   }
 
-  /// Get all pass IDs in execution order
-  pub fn pass_ids(&mut self) -> Vec<&'static str> {
-    self.ensure_order_computed();
+  /// Every pass id, in order.
+  pub fn pass_ids(&self) -> impl Iterator<Item = &str> {
+    self.entries.iter().map(|entry| entry.pass.id())
+  }
+
+  /// The ids of the passes that would run for `frame`, in order.
+  pub fn passes_to_run(&self, frame: &FrameInfo) -> Vec<&str> {
     self
-      .execution_order
+      .entries
       .iter()
-      .map(|&i| self.passes[i].id())
+      .filter(|entry| entry.enabled && entry.pass.should_run(frame))
+      .map(|entry| entry.pass.id())
       .collect()
   }
 
-  /// Execute all enabled passes in dependency order.
-  ///
-  /// Passes are executed if:
-  /// 1. They are enabled (`is_enabled()` returns true)
-  /// 2. Their runtime check passes (`should_execute()` returns true)
-  pub fn execute(&mut self, ctx: &mut RenderContext) {
-    self.ensure_order_computed();
-
-    // Execute passes in order
-    for &index in &self.execution_order.clone() {
-      let pass = &mut self.passes[index];
-
-      // Skip disabled passes
-      if !pass.is_enabled() {
-        continue;
-      }
-
-      // Skip passes that shouldn't run this frame
-      if !pass.should_execute(ctx) {
-        continue;
-      }
-
-      // Execute the pass
-      pass.execute(ctx);
-    }
+  fn position(&self, id: &str) -> Option<usize> {
+    self.entries.iter().position(|entry| entry.pass.id() == id)
   }
 
-  /// Ensure execution order is computed
-  fn ensure_order_computed(&mut self) {
-    if !self.order_dirty {
-      return;
-    }
-
-    self.execution_order = self.compute_execution_order();
-    self.order_dirty = false;
+  fn index_of(&self, id: &str) -> Result<usize, RenderPipelineError> {
+    self
+      .position(id)
+      .ok_or_else(|| RenderPipelineError::UnknownPass(id.to_string()))
   }
 
-  /// Compute execution order using topological sort
-  fn compute_execution_order(&self) -> Vec<usize> {
-    // Build adjacency list for dependency graph
-    let mut in_degree: HashMap<usize, usize> = HashMap::new();
-    let mut dependents: HashMap<usize, Vec<usize>> = HashMap::new();
-
-    for (i, _pass) in self.passes.iter().enumerate() {
-      in_degree.insert(i, 0);
-      dependents.insert(i, Vec::new());
+  fn insert_at(
+    &mut self,
+    index: usize,
+    pass: Box<dyn RenderPass>,
+  ) -> Result<(), RenderPipelineError> {
+    if self.contains(pass.id()) {
+      return Err(RenderPipelineError::DuplicatePass(pass.id().to_string()));
     }
-
-    // Count incoming edges (dependencies)
-    for (i, pass) in self.passes.iter().enumerate() {
-      for dep_id in pass.dependencies() {
-        if let Some(&dep_index) = self.pass_indices.get(dep_id) {
-          *in_degree.get_mut(&i).unwrap() += 1;
-          dependents.get_mut(&dep_index).unwrap().push(i);
-        }
-        // Silently ignore missing dependencies (pass might be optional)
-      }
-    }
-
-    // Kahn's algorithm for topological sort
-    let mut queue: Vec<usize> = in_degree
-      .iter()
-      .filter_map(|(&i, &deg)| if deg == 0 { Some(i) } else { None })
-      .collect();
-
-    // Sort initial queue for deterministic ordering (descending so pop() yields ascending)
-    queue.sort_by(|&a, &b| self.passes[b].id().cmp(self.passes[a].id()));
-
-    let mut result = Vec::with_capacity(self.passes.len());
-
-    while let Some(current) = queue.pop() {
-      result.push(current);
-
-      // Process dependents
-      let mut new_ready = Vec::new();
-      for &dependent in &dependents[&current] {
-        let degree = in_degree.get_mut(&dependent).unwrap();
-        *degree -= 1;
-        if *degree == 0 {
-          new_ready.push(dependent);
-        }
-      }
-
-      // Sort new ready passes for deterministic ordering (descending so pop() yields ascending)
-      new_ready.sort_by(|&a, &b| self.passes[b].id().cmp(self.passes[a].id()));
-      queue.extend(new_ready);
-    }
-
-    // Check for cycles
-    if result.len() != self.passes.len() {
-      let remaining: Vec<_> = (0..self.passes.len())
-        .filter(|i| !result.contains(i))
-        .map(|i| self.passes[i].id())
-        .collect();
-      panic!(
-        "Circular dependency detected in render passes: {:?}",
-        remaining
-      );
-    }
-
-    result
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  /// Test pass for unit testing
-  struct TestPass {
-    id: &'static str,
-    deps: Vec<&'static str>,
-    enabled: bool,
-    executed: std::sync::atomic::AtomicBool,
-  }
-
-  impl TestPass {
-    fn new(id: &'static str, deps: Vec<&'static str>) -> Self {
-      Self {
-        id,
-        deps,
+    self.entries.insert(
+      index,
+      Entry {
+        pass,
         enabled: true,
-        executed: std::sync::atomic::AtomicBool::new(false),
-      }
-    }
-  }
-
-  impl RenderPass for TestPass {
-    fn id(&self) -> &'static str {
-      self.id
-    }
-
-    fn dependencies(&self) -> &[&'static str] {
-      &self.deps
-    }
-
-    fn execute(&mut self, _ctx: &mut RenderContext) {
-      self
-        .executed
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    fn is_enabled(&self) -> bool {
-      self.enabled
-    }
-
-    fn set_enabled(&mut self, enabled: bool) {
-      self.enabled = enabled;
-    }
-  }
-
-  #[test]
-  fn test_empty_pipeline() {
-    let pipeline = RenderPipeline::new();
-    assert_eq!(pipeline.pass_count(), 0);
-  }
-
-  #[test]
-  fn test_add_pass() {
-    let mut pipeline = RenderPipeline::new();
-    pipeline.add_pass(TestPass::new("test", vec![]));
-    assert_eq!(pipeline.pass_count(), 1);
-    assert!(pipeline.get_pass("test").is_some());
-  }
-
-  #[test]
-  fn test_remove_pass() {
-    let mut pipeline = RenderPipeline::new();
-    pipeline.add_pass(TestPass::new("test", vec![]));
-    let removed = pipeline.remove_pass("test");
-    assert!(removed.is_some());
-    assert_eq!(pipeline.pass_count(), 0);
-  }
-
-  #[test]
-  fn test_dependency_order() {
-    let mut pipeline = RenderPipeline::new();
-
-    // Add passes in reverse order - should still execute in correct order
-    pipeline.add_pass(TestPass::new("c", vec!["b"]));
-    pipeline.add_pass(TestPass::new("a", vec![]));
-    pipeline.add_pass(TestPass::new("b", vec!["a"]));
-
-    let order = pipeline.pass_ids();
-    assert_eq!(order, vec!["a", "b", "c"]);
-  }
-
-  #[test]
-  #[should_panic(expected = "Circular dependency")]
-  fn test_circular_dependency_detection() {
-    let mut pipeline = RenderPipeline::new();
-    pipeline.add_pass(TestPass::new("a", vec!["b"]));
-    pipeline.add_pass(TestPass::new("b", vec!["a"]));
-
-    // This should panic
-    pipeline.pass_ids();
-  }
-
-  #[test]
-  fn test_enable_disable() {
-    let mut pipeline = RenderPipeline::new();
-    pipeline.add_pass(TestPass::new("test", vec![]));
-
-    assert!(pipeline.is_enabled("test"));
-    pipeline.set_enabled("test", false);
-    assert!(!pipeline.is_enabled("test"));
+      },
+    );
+    Ok(())
   }
 }

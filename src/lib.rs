@@ -170,6 +170,11 @@ pub mod prelude {
     SequencedInput,
   };
 
+  // Render pipeline
+  pub use crate::core::render::{
+    FrameInfo, RenderContext, RenderPass, RenderPipeline, RenderPipelineError, pass_ids,
+  };
+
   // Network Actions (dual local+network execution)
   pub use crate::core::network::action::{
     ActionContext, ActionError, NetworkAction, SerializedAction, apply_received_action,
