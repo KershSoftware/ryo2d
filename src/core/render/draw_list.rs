@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use crate::core::ecs::{ShaderHandle, ShaderParams};
 use crate::core::graphics::{SlotPage, SpriteInstance};
 
 /// A texture as the sprite renderer resolves it: the id the texture was
@@ -45,18 +44,15 @@ pub(crate) struct DrawItem {
 }
 
 /// How a sprite is shaded.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpriteShading {
   /// Texture times tint
   Plain,
   /// A built-in effect, already in the instance's effect parameters
   Effect,
-  /// A game shader; its parameters are packed once the shader is compiled
-  /// and its `Params` layout is known
-  Custom {
-    shader: ShaderHandle,
-    params: ShaderParams,
-  },
+  /// The game shader with this serial; its parameters are already packed in
+  /// the instance's effect parameters
+  Custom(u64),
 }
 
 /// The pipeline a run of sprites is drawn with.

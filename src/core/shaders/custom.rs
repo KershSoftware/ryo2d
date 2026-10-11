@@ -489,16 +489,22 @@ pub(crate) fn compile(
   })
 }
 
-/// Pack named values into the layout's bytes
+/// Pack named values into the layout's bytes, calling `on_problem` for every
+/// name the shader has no field for (`None`) and every value of the wrong type
+/// for its field (`Some(expected)`)
 ///
-/// `out` is zeroed first. Names the shader has no field for, and values of the
-/// wrong type for their field, are returned so the caller can warn once.
-pub(crate) fn pack(layout: &ParamLayout, params: &ShaderParams, out: &mut [u8]) -> Vec<String> {
+/// `out` is zeroed first. Nothing is allocated here, so a sprite with correct
+/// names costs no heap traffic; the caller decides whether to warn.
+pub(crate) fn pack_with(
+  layout: &ParamLayout,
+  params: &ShaderParams,
+  out: &mut [u8],
+  mut on_problem: impl FnMut(&str, Option<ParamKind>),
+) {
   out.fill(0);
-  let mut problems = Vec::new();
   for (name, value) in params.iter() {
     let Some(field) = layout.fields.iter().find(|f| f.name == name) else {
-      problems.push(name.to_string());
+      on_problem(name, None);
       continue;
     };
     let floats: &[f32] = match (&field.kind, &value) {
@@ -507,7 +513,7 @@ pub(crate) fn pack(layout: &ParamLayout, params: &ShaderParams, out: &mut [u8]) 
       (ParamKind::Vec3, ParamValue::Vec3(v)) => v,
       (ParamKind::Vec4, ParamValue::Vec4(v)) => v,
       _ => {
-        problems.push(format!("{name} (expects {:?})", field.kind));
+        on_problem(name, Some(field.kind));
         continue;
       }
     };
@@ -518,6 +524,15 @@ pub(crate) fn pack(layout: &ParamLayout, params: &ShaderParams, out: &mut [u8]) 
       }
     }
   }
+}
+
+/// [`pack_with`], returning the problem names (tests)
+#[cfg(test)]
+pub(crate) fn pack(layout: &ParamLayout, params: &ShaderParams, out: &mut [u8]) -> Vec<String> {
+  let mut problems = Vec::new();
+  pack_with(layout, params, out, |name, _| {
+    problems.push(name.to_string())
+  });
   problems
 }
 

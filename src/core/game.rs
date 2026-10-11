@@ -218,6 +218,30 @@ impl<'a> GpuRenderContext<'a> {
     self.gpu_renderer.has_texture(id)
   }
 
+  /// Add a sprite drawn with a game shader.
+  ///
+  /// `texture_id` is the id the texture was uploaded under. `params` are
+  /// matched by name to the fields of the shader's `Params` struct (the
+  /// sprite's own effect parameters are overwritten with them). A shader that
+  /// fails to compile is logged and the sprite is drawn plain.
+  pub fn add_custom_sprite(
+    &mut self,
+    texture_id: &str,
+    shader: &super::ecs::ShaderHandle,
+    params: &super::ecs::ShaderParams,
+    mut instance: super::graphics::sprite_gpu::SpriteInstance,
+    z_order: i32,
+  ) {
+    let shading = match self
+      .gpu_renderer
+      .shade_custom(self.device, shader, params, &mut instance)
+    {
+      Some(serial) => crate::core::render::SpriteShading::Custom(serial),
+      None => crate::core::render::SpriteShading::Plain,
+    };
+    self.batch.add_shaded(texture_id, shading, instance, z_order);
+  }
+
   /// Get screen dimensions (width, height)
   pub fn screen_size(&self) -> (f32, f32) {
     self.camera.viewport_size()

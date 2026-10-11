@@ -329,7 +329,13 @@ struct CustomEntry {
   /// `None` when this version failed to compile; it is not retried until the
   /// shader's source changes
   ready: Option<CustomPipeline>,
+  /// Atlas frame the shader was last drawn in, to drop unused shaders
+  last_used: u64,
 }
+
+/// Shaders unused for this many frames are forgotten, so handles created per
+/// spawn don't keep their pipelines forever.
+const CUSTOM_SHADER_TTL: u64 = 600;
 
 /// Pipelines of game sprite shaders, built on first use and rebuilt when the
 /// shader's source changes.
@@ -343,28 +349,47 @@ struct CustomPipelines {
   format: wgpu::TextureFormat,
   /// By `ShaderHandle::serial()`
   entries: HashMap<u64, CustomEntry>,
-  /// Parameter problems already warned about, by (serial, description)
-  warned: HashSet<(u64, String)>,
+  /// Parameter names already warned about, by (serial, generation)
+  warned: HashMap<(u64, u64), HashSet<String>>,
 }
 
 impl CustomPipelines {
   /// Make sure the cache holds the shader's current version; whether it can
   /// be drawn.
-  fn prepare(&mut self, device: &wgpu::Device, shader: &ShaderHandle) -> bool {
+  fn prepare(&mut self, device: &wgpu::Device, shader: &ShaderHandle, frame: u64) -> bool {
     let serial = shader.serial();
     // Cheap check first: this runs for every custom sprite of every frame
-    if let Some(entry) = self.entries.get(&serial)
+    if let Some(entry) = self.entries.get_mut(&serial)
       && entry.generation == shader.generation()
     {
+      entry.last_used = frame;
       return entry.ready.is_some();
     }
     let (generation, source) = shader.snapshot();
     let ready = self.build(device, shader, generation, &source);
     let usable = ready.is_some();
+    self.entries.insert(
+      serial,
+      CustomEntry {
+        generation,
+        ready,
+        last_used: frame,
+      },
+    );
+    usable
+  }
+
+  /// Drop shaders unused for [`CUSTOM_SHADER_TTL`] frames and their warnings.
+  fn prune(&mut self, frame: u64) {
     self
       .entries
-      .insert(serial, CustomEntry { generation, ready });
-    usable
+      .retain(|_, e| frame.saturating_sub(e.last_used) < CUSTOM_SHADER_TTL);
+    let entries = &self.entries;
+    self.warned.retain(|(serial, generation), _| {
+      entries
+        .get(serial)
+        .is_some_and(|e| e.generation == *generation)
+    });
   }
 
   /// Compile `source` and build its pipeline; any failure is logged once and
@@ -437,25 +462,47 @@ impl CustomPipelines {
   }
 
   /// Put `params` into the instance's eight effect floats, in the layout of
-  /// the shader's `Params`. Names the shader doesn't have are warned about once.
+  /// the shader's `Params`. Names the shader doesn't have are warned about
+  /// once per shader version; correct names allocate nothing.
   fn pack(&mut self, shader: &ShaderHandle, params: &ShaderParams, instance: &mut SpriteInstance) {
     let serial = shader.serial();
-    let Some(ready) = self.entries.get(&serial).and_then(|e| e.ready.as_ref()) else {
+    let Some(entry) = self.entries.get(&serial) else {
       return;
     };
+    let Some(ready) = entry.ready.as_ref() else {
+      return;
+    };
+    let generation = entry.generation;
     debug_assert_eq!(custom::uniform_size(ShaderKind::Sprite, &ready.layout), 32);
     let mut bytes = [0u8; 32];
-    let problems = custom::pack(&ready.layout, params, &mut bytes);
-    for problem in problems {
-      if self.warned.insert((serial, problem.clone())) {
-        crate::engine_warn!(
-          module: "Shaders",
-          "{}: parameter `{}` is not a field of Params (or has the wrong type) and is ignored",
-          shader.id(),
-          problem
-        );
+    let warned = &mut self.warned;
+    custom::pack_with(&ready.layout, params, &mut bytes, |name, expected| {
+      let seen = warned
+        .get(&(serial, generation))
+        .is_some_and(|names| names.contains(name));
+      if seen {
+        return;
       }
-    }
+      warned
+        .entry((serial, generation))
+        .or_default()
+        .insert(name.to_string());
+      match expected {
+        None => crate::engine_warn!(
+          module: "Shaders",
+          "{}: parameter `{}` is not a field of Params and is ignored",
+          shader.id(),
+          name
+        ),
+        Some(kind) => crate::engine_warn!(
+          module: "Shaders",
+          "{}: parameter `{}` has the wrong type (Params expects {:?}) and is ignored",
+          shader.id(),
+          name,
+          kind
+        ),
+      }
+    });
     let floats: [f32; 8] = bytemuck::cast(bytes);
     instance.effect_params = [floats[0], floats[1], floats[2], floats[3]];
     instance.effect_extra = [floats[4], floats[5], floats[6], floats[7]];
@@ -785,7 +832,7 @@ impl SpriteGpuRenderer {
         instance: instance_layout,
         format: surface_format,
         entries: HashMap::new(),
-        warned: HashSet::new(),
+        warned: HashMap::new(),
       },
       globals_buffer,
       globals_bind_group,
@@ -925,28 +972,42 @@ impl SpriteGpuRenderer {
       let slot = self.atlas.lookup(&texture.key)?;
       let page = self.atlas.texture(slot.page)?;
       let page_size = (page.width(), page.height());
-      let mut instance = sprite.instance;
-      let pipeline = match &sprite.shading {
+      let pipeline = match sprite.shading {
         SpriteShading::Plain => PipelineKind::Plain,
         SpriteShading::Effect => PipelineKind::Effect,
-        SpriteShading::Custom { shader, params } => {
-          // A shader that failed to build draws plain
-          if self.custom.prepare(device, shader) {
-            self.custom.pack(shader, params, &mut instance);
-            PipelineKind::Custom(shader.serial())
-          } else {
-            PipelineKind::Plain
-          }
+        SpriteShading::Custom(serial) if self.custom.pipeline(serial).is_some() => {
+          PipelineKind::Custom(serial)
         }
+        SpriteShading::Custom(_) => PipelineKind::Plain,
       };
       // Only built-in effects grow the quad; custom params are not effect ids
       let effects = pipeline == PipelineKind::Effect;
       self
         .placed
-        .push(place_in_slot(&instance, &slot, page_size, effects));
+        .push(place_in_slot(&sprite.instance, &slot, page_size, effects));
       Some((slot.page, pipeline))
     });
     self.world_runs = runs;
+  }
+
+  /// Compile (or reuse) the game shader and pack `params` into `instance`.
+  ///
+  /// Returns the serial to draw the sprite with
+  /// ([`SpriteShading::Custom`]), or `None` when the shader failed, in which
+  /// case the sprite draws plain. Call at emit time, so nothing per-sprite
+  /// has to be kept until the frame is laid out.
+  pub(crate) fn shade_custom(
+    &mut self,
+    device: &wgpu::Device,
+    shader: &ShaderHandle,
+    params: &ShaderParams,
+    instance: &mut SpriteInstance,
+  ) -> Option<u64> {
+    if !self.custom.prepare(device, shader, self.frame) {
+      return None;
+    }
+    self.custom.pack(shader, params, instance);
+    Some(shader.serial())
   }
 
   /// The draws [`prepare_world`](Self::prepare_world) laid out, in order.
@@ -1126,6 +1187,7 @@ impl SpriteGpuRenderer {
     if !self.frame.is_multiple_of(120) {
       return;
     }
+    self.custom.prune(self.frame);
     let frame = self.frame;
     let stale: Vec<usize> = self
       .entity_sprites
@@ -1297,21 +1359,20 @@ fn place_in_slot(
   out
 }
 
+/// The shader that applies to a sprite: its `Material`'s, else the inline one.
+pub(crate) fn effective_shader<'a>(
+  material: Option<&'a Material>,
+  inline_shader: Option<&'a SpriteShader>,
+) -> Option<&'a SpriteShader> {
+  material.map(|m| &m.shader).or(inline_shader)
+}
+
 /// Get the shader effect from a Material or inline shader
 pub fn get_sprite_effect<'a>(
   material: Option<&'a Material>,
   inline_shader: Option<&'a SpriteShader>,
 ) -> Option<&'a SpriteEffect> {
-  // Material takes precedence
-  if let Some(mat) = material {
-    return mat.shader.as_builtin();
-  }
-
-  if let Some(shader) = inline_shader {
-    return shader.as_builtin();
-  }
-
-  None
+  effective_shader(material, inline_shader).and_then(SpriteShader::as_builtin)
 }
 
 /// The WGSL shader for sprite rendering (loaded from external file)
@@ -1370,6 +1431,22 @@ impl BatchCollector {
     instance: SpriteInstance,
     z_order: i32,
   ) {
+    let shading = if has_effects {
+      SpriteShading::Effect
+    } else {
+      SpriteShading::Plain
+    };
+    self.add_shaded(texture_id, shading, instance, z_order);
+  }
+
+  /// Add a sprite with its shading already decided.
+  pub(crate) fn add_shaded(
+    &mut self,
+    texture_id: impl AsRef<str>,
+    shading: SpriteShading,
+    instance: SpriteInstance,
+    z_order: i32,
+  ) {
     let id = texture_id.as_ref();
     let texture = match self.textures.get(id) {
       Some(texture) => texture.clone(),
@@ -1379,40 +1456,12 @@ impl BatchCollector {
         texture
       }
     };
-    let shading = if has_effects {
-      SpriteShading::Effect
-    } else {
-      SpriteShading::Plain
-    };
     self.items.push(CollectedSprite {
       texture,
       shading,
       z_order,
       instance,
     });
-  }
-
-  /// Add a sprite drawn with a game shader.
-  ///
-  /// `params` are matched by name to the fields of the shader's `Params`
-  /// struct when the frame is laid out; a shader that fails to compile draws
-  /// the sprite plain. The sprite's `effect_params` and `effect_extra` are
-  /// overwritten with the packed parameters.
-  pub fn add_custom(
-    &mut self,
-    texture_id: impl AsRef<str>,
-    shader: &ShaderHandle,
-    params: &ShaderParams,
-    instance: SpriteInstance,
-    z_order: i32,
-  ) {
-    self.add(texture_id, false, instance, z_order);
-    if let Some(item) = self.items.last_mut() {
-      item.shading = SpriteShading::Custom {
-        shader: shader.clone(),
-        params: params.clone(),
-      };
-    }
   }
 
   /// Push every collected sprite onto `list` as `kind`, in submission order.
@@ -1422,7 +1471,7 @@ impl BatchCollector {
         kind,
         item.z_order,
         item.texture.clone(),
-        item.shading.clone(),
+        item.shading,
         item.instance,
       );
     }
@@ -1638,6 +1687,51 @@ mod tests {
     assert_eq!(renderer.instance_capacity, 16384);
     let size = 16384 * std::mem::size_of::<SpriteInstance>() as u64;
     assert_eq!(renderer.instance_buffer.size(), size);
+  }
+
+  #[test]
+  fn shading_is_copy_so_sprites_carry_no_heap_data() {
+    fn assert_copy<T: Copy>() {}
+    assert_copy::<SpriteShading>();
+    assert!(std::mem::size_of::<SpriteShading>() <= 16);
+  }
+
+  #[test]
+  fn packing_correct_names_reports_nothing() {
+    let src = "struct Params { a: f32 }\nfn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return vec4<f32>(params.a); }";
+    let layout = custom::compile(ShaderKind::Sprite, "pack.wgsl", src)
+      .map(|c| c.layout)
+      .unwrap_or_else(|e| panic!("{e}"));
+    let mut bytes = [0u8; 32];
+    let mut problems = 0;
+    let params = ShaderParams::new().with("a", 2.0);
+    custom::pack_with(&layout, &params, &mut bytes, |_, _| problems += 1);
+    assert_eq!(problems, 0);
+    assert_eq!(&bytes[..4], &2.0f32.to_le_bytes());
+
+    let params = params.with("typo", 1.0);
+    custom::pack_with(&layout, &params, &mut bytes, |_, _| problems += 1);
+    assert_eq!(problems, 1);
+  }
+
+  #[test]
+  fn unused_custom_shaders_are_forgotten() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    let src = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
+    let shader = ShaderHandle::from_source("prune.wgsl", src);
+    let mut instance = SpriteInstance::new();
+    let serial = renderer.shade_custom(&device, &shader, &ShaderParams::new(), &mut instance);
+    assert_eq!(serial, Some(shader.serial()));
+    assert_eq!(renderer.custom.entries.len(), 1);
+
+    renderer.custom.prune(CUSTOM_SHADER_TTL - 1);
+    assert_eq!(renderer.custom.entries.len(), 1);
+    renderer.custom.prune(CUSTOM_SHADER_TTL);
+    assert!(renderer.custom.entries.is_empty());
   }
 
   // =========================================================================

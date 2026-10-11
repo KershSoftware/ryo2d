@@ -180,6 +180,13 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
     }
   }
   assert_eq!(frame.get_pixel(11, 14).0, RED);
+  // The columns the shift pushed past the sprite's edge are transparent
+  let background = frame.get_pixel(0, 0).0;
+  for y in 10..18 {
+    for x in 16..18 {
+      assert_eq!(frame.get_pixel(x, y).0, background, "edge column {x},{y}");
+    }
+  }
 }
 
 #[test]
@@ -237,9 +244,7 @@ fn render_gpu_sprites_can_use_custom_shaders() {
   let scene = Fixture::gpu(move |gpu| {
     gpu.upload_sprite(&sprite);
     let instance = SpriteInstance::new().with_transform(30.0, 30.0, 0.0, 20.0, 20.0);
-    gpu
-      .batch
-      .add_custom(sprite.id(), &shader, &ShaderParams::new(), instance, 0);
+    gpu.add_custom_sprite(&sprite.id(), &shader, &ShaderParams::new(), instance, 0);
   });
   let Some(mut engine) = start(scene) else {
     return;
@@ -295,6 +300,50 @@ fn replaced_source_changes_the_next_frame() {
     return;
   };
   assert_eq!(render(&mut engine).get_pixel(15, 15).0, RED);
+
+  handle.replace_source(INVERT);
+
+  assert_eq!(render(&mut engine).get_pixel(15, 15).0, [35, 225, 215, 255]);
+}
+
+#[test]
+fn material_built_in_effect_wins_over_renderable_shader() {
+  let identity = ShaderHandle::from_source("t2-mat-builtin-identity.wgsl", IDENTITY);
+  let scene = Fixture::entities(move |ctx| {
+    ctx.world.spawn((
+      Transform::new(10.0, 10.0),
+      Renderable::sprite(solid("t2-mat-builtin-red", 10, RED))
+        .with_shader(SpriteShader::custom(identity.clone())),
+      Material::invert(),
+    ));
+  });
+  let Some(mut engine) = start(scene) else {
+    return;
+  };
+  let frame = render(&mut engine);
+
+  assert_eq!(frame.get_pixel(15, 15).0, [35, 225, 215, 255]);
+}
+
+#[test]
+fn fixed_shader_recovers_after_an_error() {
+  let shader = ShaderHandle::from_source("t2-recover.wgsl", "fn sprite( {");
+  let handle = shader.clone();
+  let scene = Fixture::entities(move |ctx| {
+    ctx.world.spawn((
+      Transform::new(10.0, 10.0),
+      Renderable::sprite(solid("t2-recover-red", 10, RED))
+        .with_shader(SpriteShader::custom(shader.clone())),
+    ));
+  });
+  let Some(mut engine) = start(scene) else {
+    return;
+  };
+  assert_eq!(
+    render(&mut engine).get_pixel(15, 15).0,
+    RED,
+    "plain while broken"
+  );
 
   handle.replace_source(INVERT);
 

@@ -19,6 +19,7 @@ use crate::core::ecs::{
   Entity, Inactive, Material, PreviousTransform, RenderStyle, Renderable, ShaderHandle,
   ShaderParams, SpriteEffect, SpriteShader, Transform, World, WorldTransform, YSort,
 };
+use crate::core::graphics::sprite_gpu::effective_shader;
 use crate::core::graphics::{Camera, CompositeTile, Sprite, SpriteGpuRenderer, SpriteInstance};
 use crate::core::graphics::{TileDirection, effect_padding};
 use crate::core::ui::Color;
@@ -289,10 +290,16 @@ impl Emitter<'_> {
     }
     let shading = match (shading.effect, shading.custom) {
       (Some(_), _) => SpriteShading::Effect,
-      (None, Some((shader, params))) => SpriteShading::Custom {
-        shader: shader.clone(),
-        params: params.clone(),
-      },
+      (None, Some((shader, params))) => {
+        // Params are packed into the instance now; a failed shader draws plain
+        match self
+          .gpu
+          .shade_custom(self.device, shader, params, &mut instance)
+        {
+          Some(serial) => SpriteShading::Custom(serial),
+          None => SpriteShading::Plain,
+        }
+      }
       (None, None) => SpriteShading::Plain,
     };
     self
@@ -553,10 +560,7 @@ fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>
       }
 
       // A Material component wins over the inline shader
-      let shader = material
-        .as_ref()
-        .map(|m| &m.shader)
-        .or(renderable.shader.as_ref());
+      let shader = effective_shader(material.as_deref(), renderable.shader.as_ref());
       out.draw(
         z,
         &mut source,
