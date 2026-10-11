@@ -10,6 +10,7 @@ mod post_process;
 mod raycast;
 mod scene;
 mod trails;
+mod transition;
 mod world;
 
 use super::RenderPass;
@@ -33,13 +34,14 @@ pub(crate) fn built_in() -> [Box<dyn RenderPass>; 12] {
 }
 
 /// The built-in passes of [`RenderPipeline::world_2d`](super::RenderPipeline::world_2d), in order.
-pub(crate) fn world_2d() -> [Box<dyn RenderPass>; 9] {
+pub(crate) fn world_2d() -> [Box<dyn RenderPass>; 10] {
   [
     Box::new(scene::Clear),
     Box::new(raycast::Raycast),
     Box::new(world::World),
     Box::new(lighting::Lighting),
     Box::new(world::UnlitWorld),
+    Box::new(transition::TransitionPass::default()),
     Box::new(post_process::PostProcess),
     Box::new(output::Ui),
     Box::new(output::Composite),

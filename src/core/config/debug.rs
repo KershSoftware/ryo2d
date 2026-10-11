@@ -84,9 +84,10 @@
 //! Debug settings from `Ryo.toml` are automatically loaded during `build()`.
 //! Values set programmatically will override config file settings.
 
-use crate::core::ecs::{Transform, Velocity, World};
+use crate::core::ecs::{Transform, Vec2, Velocity, World};
 use crate::core::graphics::{Camera, GroupedCollider};
 use crate::core::physics::{Collider, ColliderShape};
+use crate::core::trail::{Line2D, TrailStyle};
 use crate::core::ui::{Color, UiContext};
 
 // ============================================================================
@@ -391,12 +392,28 @@ pub mod colors {
 // Debug Rendering Functions
 // ============================================================================
 
-/// Render collision debug visualization.
-///
-/// Draws outlines around all entities with `Collider` or `GroupedCollider` components.
-/// Uses bright green to clearly stand out against game graphics.
-pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World, camera: &Camera) {
-  // Render standard Collider components
+/// A debug shape in whole screen pixels, the unit both the pixel-buffer
+/// overlays and the GPU world path's lines are built from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum OverlayShape {
+  /// A one-pixel rectangle outline
+  Rect { x: i32, y: i32, w: i32, h: i32 },
+  /// A one-pixel circle outline
+  Circle { x: i32, y: i32, radius: i32 },
+  /// A one-pixel line from the first pixel to the second
+  Line { x0: i32, y0: i32, x1: i32, y1: i32 },
+  /// Origin crosshair arms (a horizontal and a vertical bar) centred here
+  Cross { x: i32, y: i32 },
+}
+
+/// Half the length of an origin crosshair arm, in pixels.
+const CROSS_SIZE: i32 = 4;
+
+/// The collider outlines, `Collider` and `GroupedCollider` components both.
+fn collider_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
+  let mut shapes = Vec::new();
+
+  // Standard Collider components
   for entity in world.entities_with_two::<Transform, Collider>() {
     let Some(transform) = world.get::<Transform>(entity) else {
       continue;
@@ -414,39 +431,27 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
         let scaled_h = (aabb.height() * camera.zoom) as i32;
 
         let (screen_cx, screen_cy) = camera.world_to_screen(cx, cy);
-        let screen_x = screen_cx as i32 - scaled_w / 2;
-        let screen_y = screen_cy as i32 - scaled_h / 2;
-
-        draw_rect_outline(
-          frame,
-          width,
-          height,
-          screen_x,
-          screen_y,
-          scaled_w,
-          scaled_h,
-          colors::COLLIDER,
-        );
+        shapes.push(OverlayShape::Rect {
+          x: screen_cx as i32 - scaled_w / 2,
+          y: screen_cy as i32 - scaled_h / 2,
+          w: scaled_w,
+          h: scaled_h,
+        });
       }
       ColliderShape::Circle { radius } => {
         let (screen_x, screen_y) = camera.world_to_screen(cx, cy);
 
         let avg_scale = (transform.scale_x + transform.scale_y) / 2.0;
-        let scaled_radius = (*radius * avg_scale * camera.zoom) as i32;
-        draw_circle_outline(
-          frame,
-          width,
-          height,
-          screen_x as i32,
-          screen_y as i32,
-          scaled_radius,
-          colors::COLLIDER,
-        );
+        shapes.push(OverlayShape::Circle {
+          x: screen_x as i32,
+          y: screen_y as i32,
+          radius: (*radius * avg_scale * camera.zoom) as i32,
+        });
       }
     }
   }
 
-  // Render GroupedCollider components (used by composite tiles)
+  // GroupedCollider components (used by composite tiles)
   for entity in world.entities_with_two::<Transform, GroupedCollider>() {
     let Some(transform) = world.get::<Transform>(entity) else {
       continue;
@@ -455,7 +460,7 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
       continue;
     };
 
-    // Calculate pivot-aware collider center position
+    // Pivot-aware collider centre
     let pivot_offset_x = (0.5 - transform.pivot_x) * grouped.width;
     let pivot_offset_y = (0.5 - transform.pivot_y) * grouped.height;
     let center_x = transform.x + grouped.offset_x + pivot_offset_x;
@@ -464,36 +469,27 @@ pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World
     let scaled_w = (grouped.width * camera.zoom) as i32;
     let scaled_h = (grouped.height * camera.zoom) as i32;
 
-    // Convert center to screen, then offset to top-left for drawing
+    // Centre to screen, then offset to the top-left for drawing
     let (screen_cx, screen_cy) = camera.world_to_screen(center_x, center_y);
-    let screen_x = screen_cx as i32 - scaled_w / 2;
-    let screen_y = screen_cy as i32 - scaled_h / 2;
-
-    draw_rect_outline(
-      frame,
-      width,
-      height,
-      screen_x,
-      screen_y,
-      scaled_w,
-      scaled_h,
-      colors::COLLIDER,
-    );
+    shapes.push(OverlayShape::Rect {
+      x: screen_cx as i32 - scaled_w / 2,
+      y: screen_cy as i32 - scaled_h / 2,
+      w: scaled_w,
+      h: scaled_h,
+    });
   }
+
+  shapes
+    .into_iter()
+    .map(|shape| (shape, colors::COLLIDER))
+    .collect()
 }
 
-/// Render velocity vectors on all entities with `Velocity` components.
-///
-/// Draws cyan arrows showing the direction and magnitude of movement.
-pub fn render_velocities(
-  frame: &mut [u8],
-  width: u32,
-  height: u32,
-  world: &World,
-  camera: &Camera,
-) {
+/// The velocity vectors of moving entities.
+fn velocity_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
   const VELOCITY_SCALE: f32 = 0.1; // Scale factor for visualizing velocity
 
+  let mut shapes = Vec::new();
   for entity in world.entities_with_two::<Transform, Velocity>() {
     let Some(transform) = world.get::<Transform>(entity) else {
       continue;
@@ -510,56 +506,196 @@ pub fn render_velocities(
     let (screen_x, screen_y) = camera.world_to_screen(transform.x, transform.y);
     let end_x = screen_x + velocity.dx * VELOCITY_SCALE * camera.zoom;
     let end_y = screen_y + velocity.dy * VELOCITY_SCALE * camera.zoom;
-
-    draw_line(
-      frame,
-      width,
-      height,
-      screen_x as i32,
-      screen_y as i32,
-      end_x as i32,
-      end_y as i32,
+    shapes.push((
+      OverlayShape::Line {
+        x0: screen_x as i32,
+        y0: screen_y as i32,
+        x1: end_x as i32,
+        y1: end_y as i32,
+      },
       colors::VELOCITY,
-    );
+    ));
   }
+  shapes
+}
+
+/// The origin crosshairs of every entity with a `Transform`.
+fn origin_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
+  let mut shapes = Vec::new();
+  for entity in world.entities_with::<Transform>() {
+    let Some(transform) = world.get::<Transform>(entity) else {
+      continue;
+    };
+    let (screen_x, screen_y) = camera.world_to_screen(transform.x, transform.y);
+    shapes.push((
+      OverlayShape::Cross {
+        x: screen_x as i32,
+        y: screen_y as i32,
+      },
+      colors::ORIGIN,
+    ));
+  }
+  shapes
+}
+
+/// Draw `shapes` into a pixel buffer.
+fn draw_shapes(
+  frame: &mut [u8],
+  width: u32,
+  height: u32,
+  shapes: impl IntoIterator<Item = (OverlayShape, [u8; 4])>,
+) {
+  for (shape, color) in shapes {
+    match shape {
+      OverlayShape::Rect { x, y, w, h } => {
+        draw_rect_outline(frame, width, height, x, y, w, h, color);
+      }
+      OverlayShape::Circle { x, y, radius } => {
+        draw_circle_outline(frame, width, height, x, y, radius, color);
+      }
+      OverlayShape::Line { x0, y0, x1, y1 } => {
+        draw_line(frame, width, height, x0, y0, x1, y1, color);
+      }
+      OverlayShape::Cross { x, y } => {
+        // Horizontal bar
+        draw_horizontal_line(
+          frame,
+          width,
+          height,
+          x - CROSS_SIZE,
+          y,
+          CROSS_SIZE * 2 + 1,
+          color,
+        );
+        // Vertical bar
+        draw_vertical_line(
+          frame,
+          width,
+          height,
+          x,
+          y - CROSS_SIZE,
+          CROSS_SIZE * 2 + 1,
+          color,
+        );
+      }
+    }
+  }
+}
+
+/// Render collision debug visualization.
+///
+/// Draws outlines around all entities with `Collider` or `GroupedCollider` components.
+/// Uses bright green to clearly stand out against game graphics.
+pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World, camera: &Camera) {
+  draw_shapes(frame, width, height, collider_shapes(world, camera));
+}
+
+/// Render velocity vectors on all entities with `Velocity` components.
+///
+/// Draws cyan arrows showing the direction and magnitude of movement.
+pub fn render_velocities(
+  frame: &mut [u8],
+  width: u32,
+  height: u32,
+  world: &World,
+  camera: &Camera,
+) {
+  draw_shapes(frame, width, height, velocity_shapes(world, camera));
 }
 
 /// Render origin crosshairs on all entities with `Transform` components.
 ///
 /// Draws small yellow crosshairs at each entity's transform position.
 pub fn render_origins(frame: &mut [u8], width: u32, height: u32, world: &World, camera: &Camera) {
-  const CROSS_SIZE: i32 = 4;
+  draw_shapes(frame, width, height, origin_shapes(world, camera));
+}
 
-  for entity in world.entities_with::<Transform>() {
-    let Some(transform) = world.get::<Transform>(entity) else {
-      continue;
-    };
+/// Which debug overlays [`overlay_lines`] builds.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct OverlayFlags {
+  pub(crate) colliders: bool,
+  pub(crate) velocities: bool,
+  pub(crate) origins: bool,
+}
 
-    let (screen_x, screen_y) = camera.world_to_screen(transform.x, transform.y);
-    let sx = screen_x as i32;
-    let sy = screen_y as i32;
-
-    // Horizontal bar
-    draw_horizontal_line(
-      frame,
-      width,
-      height,
-      sx - CROSS_SIZE,
-      sy,
-      CROSS_SIZE * 2 + 1,
-      colors::ORIGIN,
-    );
-    // Vertical bar
-    draw_vertical_line(
-      frame,
-      width,
-      height,
-      sx,
-      sy - CROSS_SIZE,
-      CROSS_SIZE * 2 + 1,
-      colors::ORIGIN,
-    );
+/// The enabled debug overlays as unlit, one-pixel lines on top of everything,
+/// for the GPU world path, where the pixel-buffer renderers above do not run.
+/// They cover the same pixels as those. The lines use the `Soft` style: a
+/// pixel-wide `Solid` line is anti-aliased into a faint smear.
+pub(crate) fn overlay_lines(world: &World, camera: &Camera, flags: OverlayFlags) -> Vec<Line2D> {
+  let mut shapes = Vec::new();
+  if flags.colliders {
+    shapes.extend(collider_shapes(world, camera));
   }
+  if flags.velocities {
+    shapes.extend(velocity_shapes(world, camera));
+  }
+  if flags.origins {
+    shapes.extend(origin_shapes(world, camera));
+  }
+
+  // Lines are in world units: a pixel is 1 / zoom wide
+  let width = 1.0 / camera.zoom;
+  let point = |x: f32, y: f32| {
+    let (wx, wy) = camera.screen_to_world(x, y);
+    Vec2::new(wx, wy)
+  };
+  let line = |points: Vec<Vec2>, color: [u8; 4]| {
+    Line2D::new(
+      points,
+      Color::new(color[0], color[1], color[2], color[3]),
+      width,
+    )
+    .with_style(TrailStyle::Soft)
+    .with_lighting(false)
+    .with_z_order(i32::MAX)
+  };
+
+  let mut lines = Vec::new();
+  for (shape, color) in shapes {
+    match shape {
+      // Each edge is the run of pixels the pixel-buffer outline sets
+      OverlayShape::Rect { x, y, w, h } => {
+        let (x0, y0, x1, y1) = (x as f32, y as f32, (x + w) as f32, (y + h) as f32);
+        for (a, b) in [
+          ((x0, y0 + 0.5), (x1, y0 + 0.5)),
+          ((x0, y1 - 0.5), (x1, y1 - 0.5)),
+          ((x0 + 0.5, y0), (x0 + 0.5, y1)),
+          ((x1 - 0.5, y0), (x1 - 0.5, y1)),
+        ] {
+          lines.push(line(vec![point(a.0, a.1), point(b.0, b.1)], color));
+        }
+      }
+      OverlayShape::Circle { x, y, radius } => {
+        if radius > 0 {
+          let center = point(x as f32 + 0.5, y as f32 + 0.5);
+          let radius = radius as f32 / camera.zoom;
+          let mut circle = Line2D::circle(center, radius, Color::WHITE, width, 32);
+          circle.set_color(Color::new(color[0], color[1], color[2], color[3]));
+          lines.push(
+            circle
+              .with_style(TrailStyle::Soft)
+              .with_lighting(false)
+              .with_z_order(i32::MAX),
+          );
+        }
+      }
+      OverlayShape::Line { x0, y0, x1, y1 } => {
+        let a = point(x0 as f32 + 0.5, y0 as f32 + 0.5);
+        let b = point(x1 as f32 + 0.5, y1 as f32 + 0.5);
+        lines.push(line(vec![a, b], color));
+      }
+      OverlayShape::Cross { x, y } => {
+        let (cx, cy) = (x as f32, y as f32);
+        let arm = CROSS_SIZE as f32;
+        let (h0, h1) = (point(cx - arm, cy + 0.5), point(cx + arm + 1.0, cy + 0.5));
+        let (v0, v1) = (point(cx + 0.5, cy - arm), point(cx + 0.5, cy + arm + 1.0));
+        lines.push(line(vec![h0, h1], color));
+        lines.push(line(vec![v0, v1], color));
+      }
+    }
+  }
+  lines
 }
 
 /// Height of the frame timing overlay (5 lines + padding).

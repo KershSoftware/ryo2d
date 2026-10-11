@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
@@ -57,7 +58,14 @@ pub struct SpriteHandle {
   inner: Arc<RwLock<Sprite>>,
   /// The path this sprite was loaded from (for debugging/reloading)
   path: Arc<PathBuf>,
+  /// Process-unique identity shared by every clone of this handle
+  serial: usize,
+  /// Bumped on every write to the sprite, shared by every clone
+  generation: Arc<AtomicU64>,
 }
+
+/// Source of [`SpriteHandle::serial`] values.
+static NEXT_SERIAL: AtomicUsize = AtomicUsize::new(1);
 
 impl SpriteHandle {
   /// Create a new sprite handle from a sprite
@@ -65,7 +73,26 @@ impl SpriteHandle {
     SpriteHandle {
       inner: Arc::new(RwLock::new(sprite)),
       path: Arc::new(path),
+      serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
+      generation: Arc::new(AtomicU64::new(0)),
     }
+  }
+
+  /// A process-unique identity, shared by clones of this handle.
+  ///
+  /// Unlike [`id`](Self::id) (the path), two handles made from the same path
+  /// have different serials, and a serial is never reused after a handle is
+  /// dropped.
+  pub(crate) fn serial(&self) -> usize {
+    self.serial
+  }
+
+  /// How many times the sprite's pixels were replaced (0 for a fresh handle).
+  ///
+  /// With [`serial`](Self::serial) it names one version of the sprite's
+  /// content, so a cache can tell when its copy is stale.
+  pub(crate) fn generation(&self) -> u64 {
+    self.generation.load(Ordering::Acquire)
   }
 
   /// Create a sprite handle from an existing sprite with a name
@@ -140,6 +167,9 @@ impl SpriteHandle {
   pub(crate) fn update(&self, new_sprite: Sprite) {
     let mut sprite = self.inner.write().expect("SpriteHandle RwLock poisoned");
     *sprite = new_sprite;
+    // Bumped while the write lock is held, so a reader never sees new pixels
+    // under the old generation
+    self.generation.fetch_add(1, Ordering::Release);
   }
 
   /// Check how many handles reference this sprite
@@ -1093,6 +1123,30 @@ mod tests {
     handle.update(sprite2);
     assert_eq!(handle.width(), 20);
     assert_eq!(handle.height(), 20);
+  }
+
+  #[test]
+  fn sprite_handle_identity_and_generation() {
+    let make = || {
+      SpriteHandle::new(
+        Sprite::solid_rect(4, 4, 1, 2, 3, 255),
+        PathBuf::from("same"),
+      )
+    };
+    let handle = make();
+    let other = make();
+    let clone = handle.clone();
+
+    // Same path, different sprites; clones share the identity
+    assert_ne!(handle.serial(), other.serial());
+    assert_eq!(handle.serial(), clone.serial());
+
+    assert_eq!(handle.generation(), 0);
+    handle.update(Sprite::solid_rect(4, 4, 9, 9, 9, 255));
+    // Every clone sees the write; other handles do not
+    assert_eq!(handle.generation(), 1);
+    assert_eq!(clone.generation(), 1);
+    assert_eq!(other.generation(), 0);
   }
 
   #[test]

@@ -23,6 +23,13 @@ Games reach the pipeline through `SceneContext::render_pipeline`: toggle built-i
 
 Ids are constants in `pass_ids`.
 
+## GPU World Path (crate-internal, `Engine::use_gpu_world`)
+
+`RenderPipeline::world_2d()` replaces the CPU draw: `clear`, `raycast`, `world`, `lighting`, `unlit_world`, `transition`, `post_process`, `ui`, `composite`, `capture`. `present_frame` fills one z-sorted `DrawList` with `render_gpu` sprites, trail groups and (`entities.rs`) the entities: shadows, sprites, `Tiled` tiles and `CompositeTile` parts as `DrawKind::Entity`, at the render-cache sort key (composites at their `z_order`). Debug overlays become unlit `Line2D`s at `i32::MAX` (`config::debug::overlay_lines`); the fade is the `transition` pass (colour and opacity from `FrameScene::overlay`). Entity sprites are atlas textures keyed by `SpriteHandle::serial()` plus `generation()` (bumped by hot reload).
+
+- Unrotated, whole-number-scale, opaque content matches the CPU renderer byte for byte (`testing/gpu_world_comparison.rs`). Allowed to differ: translucent overlaps (GPU blends in linear space, the CPU in sRGB bytes, also for the fade), rotation edges and fractional scales.
+- Placement mirrors the CPU: top-left is the screen position truncated to a pixel, size `ceil(w * scale)` by `ceil(h * scale)`; rotated sprites turn about the box centre with integer halves.
+
 ## Ordering Rules
 
 - Order is the list order. There are no dependencies or sorting: `push` adds at the end, `insert_before` / `insert_after` place a pass relative to a named one.

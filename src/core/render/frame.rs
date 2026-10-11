@@ -36,9 +36,14 @@ pub struct FrameInfo {
   pub effects: bool,
   /// The UI buffer has something to draw
   pub ui: bool,
+  /// A scene transition's fade overlay is visible
+  pub transition: bool,
   /// A frame capture was requested for this frame
   pub capture: bool,
 }
+
+/// Fade overlay opacity above which a scene transition is drawn.
+pub(crate) const TRANSITION_VISIBLE: f32 = 0.001;
 
 /// Which texture holds the frame's latest image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,4 +79,7 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) camera_pos: glam::Vec2,
   pub(crate) camera_zoom: f32,
   pub(crate) time: f32,
+  /// The scene transition's fade overlay: colour (RGB bytes) and opacity.
+  /// Opacity 0 means no fade.
+  pub(crate) overlay: ([u8; 3], f32),
 }

@@ -303,6 +303,18 @@ impl CachedTexture {
   }
 }
 
+/// An entity sprite's current texture: which version of its content is
+/// uploaded and under which id.
+struct EntitySprite {
+  generation: u64,
+  texture: TextureRef,
+  /// Atlas frame it was last asked for, to drop sprites that went away
+  last_used: u64,
+}
+
+/// Entity sprites unused for this many frames are forgotten.
+const ENTITY_SPRITE_TTL: u64 = 600;
+
 /// Consecutive instances drawn with one pipeline and atlas page.
 struct DrawRun {
   page: SlotPage,
@@ -332,6 +344,8 @@ pub struct SpriteGpuRenderer {
   atlas: TextureAtlas,
   // Pixel sources by texture id, for re-uploading evicted textures
   textures: HashMap<String, CachedTexture>,
+  // Entity sprites by handle identity, each under one texture id
+  entity_sprites: HashMap<usize, EntitySprite>,
   // Atlas frame counter, advanced by `prepare`
   frame: u64,
 
@@ -626,6 +640,7 @@ impl SpriteGpuRenderer {
       vertex_buffer,
       atlas: TextureAtlas::new(device, texture_layout, sampler),
       textures: HashMap::new(),
+      entity_sprites: HashMap::new(),
       frame: 0,
       placed: Vec::new(),
       runs: Vec::new(),
@@ -767,6 +782,7 @@ impl SpriteGpuRenderer {
         .slot(device, queue, atlas_key, width, height, rgba, self.frame);
     }
     self.atlas.end_frame(self.frame);
+    self.prune_entity_sprites();
     self.frame += 1;
 
     if sprites > self.instance_capacity {
@@ -986,6 +1002,101 @@ impl SpriteGpuRenderer {
     }
   }
 
+  /// Make an entity's sprite resident and return the texture id to draw it by.
+  ///
+  /// Sprites are keyed by the handle's identity and content generation, so
+  /// every entity sharing a handle shares one texture, and a hot-reloaded
+  /// sprite is uploaded again. Returns `None` for a sprite that cannot be
+  /// uploaded (empty, or larger than the device allows).
+  pub(crate) fn upload_entity_sprite(
+    &mut self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    sprite: &SpriteHandle,
+  ) -> Option<TextureRef> {
+    let serial = sprite.serial();
+    let generation = sprite.generation();
+    if let Some(entry) = self.entity_sprites.get_mut(&serial)
+      && entry.generation == generation
+    {
+      entry.last_used = self.frame;
+      return Some(entry.texture.clone());
+    }
+
+    // New, or its pixels changed: read the generation under the read lock so
+    // the pixels and the number belong together
+    let (generation, width, height, data) = sprite.with_sprite(|s| {
+      (
+        sprite.generation(),
+        s.width(),
+        s.height(),
+        s.data().to_vec(),
+      )
+    });
+    let key = AtlasKey::Sprite {
+      handle: serial,
+      generation,
+    };
+    self
+      .atlas
+      .slot(device, queue, &key, width, height, || data, self.frame)?;
+
+    let previous = self.entity_sprites.remove(&serial);
+    let texture = match previous {
+      Some(old) => {
+        // The superseded version's rect is free for reuse
+        self.atlas.remove(&AtlasKey::Sprite {
+          handle: serial,
+          generation: old.generation,
+        });
+        old.texture
+      }
+      None => TextureRef::from(format!("\u{1}sprite:{serial}")),
+    };
+    self.textures.insert(
+      texture.to_string(),
+      CachedTexture {
+        key,
+        width,
+        height,
+        source: TextureSource::Sprite(sprite.clone()),
+      },
+    );
+    self.entity_sprites.insert(
+      serial,
+      EntitySprite {
+        generation,
+        texture: texture.clone(),
+        last_used: self.frame,
+      },
+    );
+    Some(texture)
+  }
+
+  /// Forget entity sprites nothing asked for in a while, so sprites of
+  /// despawned entities don't stay in memory.
+  fn prune_entity_sprites(&mut self) {
+    if !self.frame.is_multiple_of(120) {
+      return;
+    }
+    let frame = self.frame;
+    let stale: Vec<usize> = self
+      .entity_sprites
+      .iter()
+      .filter(|(_, e)| frame.saturating_sub(e.last_used) >= ENTITY_SPRITE_TTL)
+      .map(|(serial, _)| *serial)
+      .collect();
+    for serial in stale {
+      if let Some(entry) = self.entity_sprites.remove(&serial) {
+        self.textures.remove(&*entry.texture);
+        self.atlas.remove(&AtlasKey::Sprite {
+          handle: serial,
+          generation: entry.generation,
+        });
+      }
+    }
+  }
+
   /// Check if a texture is already cached
   pub fn has_texture(&self, id: &str) -> bool {
     self.textures.contains_key(id)
@@ -994,6 +1105,7 @@ impl SpriteGpuRenderer {
   /// Clear the texture cache
   pub fn clear_cache(&mut self) {
     self.textures.clear();
+    self.entity_sprites.clear();
     self.atlas.clear();
     self.placed.clear();
     self.runs.clear();

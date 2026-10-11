@@ -10,6 +10,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use super::asset::AssetManager;
 use super::audio::AudioManager;
 use super::capture::{AutoCaptureConfig, CaptureReport, CaptureState, CaptureTarget};
+use super::config::debug::{OverlayFlags, overlay_lines};
 use super::config::{
   self as debug, DebugConfig, DebugStats, DisplayMode, FrameTimings, OverlayMode,
   SmoothedDebugStats, SmoothedFrameTimings,
@@ -35,7 +36,10 @@ use super::raycast::{
   CameraUniform, GpuRaycastRenderer, LightInstance, RaycastCamera, RaycastLight, RaycastSprite,
   SpriteInstance as RaycastSpriteInstance,
 };
-use super::render::{DrawKind, DrawList, FrameScene, LightingFrame, RenderPipeline};
+use super::render::{
+  DrawKind, DrawList, EntityDrawer, EntityFrame, FrameScene, LightingFrame, RenderPipeline,
+  TRANSITION_VISIBLE,
+};
 use super::scene::{Scene, SceneAction, SceneContext, SceneManager};
 use super::shaders::EffectsManager;
 use super::systems::{
@@ -314,7 +318,9 @@ pub struct Engine {
   // `RenderPipeline::world_2d` passes) instead of the legacy passes
   pub(crate) gpu_world: bool,
   // The frame's z-sorted drawables on the GPU world path (reused each frame)
-  draw_list: DrawList,
+  pub(crate) draw_list: DrawList,
+  // Shadow textures and the like the GPU entity path keeps between frames
+  entity_drawer: EntityDrawer,
 }
 
 /// Result of rendering and presenting one frame.
@@ -790,6 +796,7 @@ impl Engine {
       render_pipeline: RenderPipeline::default_2d(),
       gpu_world: false,
       draw_list: DrawList::default(),
+      entity_drawer: EntityDrawer::default(),
     }
   }
 
@@ -1431,8 +1438,9 @@ impl Engine {
     }
   }
 
-  /// Draw through the GPU world path: sprites and trails from one z-sorted
-  /// list, with the `world_2d` passes (CPU entities are not drawn yet).
+  /// Draw through the GPU world path: entities, shadows, sprites, trails and
+  /// debug overlays from one z-sorted list, and the transition fade, with the
+  /// `world_2d` passes (the CPU entity renderer does not run).
   #[cfg_attr(
     not(test),
     allow(dead_code, reason = "only tests enable the GPU world path so far")
@@ -1440,6 +1448,19 @@ impl Engine {
   pub(crate) fn use_gpu_world(&mut self) {
     self.gpu_world = true;
     self.render_pipeline = RenderPipeline::world_2d();
+  }
+
+  /// The scene transition's fade colour and opacity for the GPU world path
+  /// (opacity 0 on the legacy path, which blends the fade on the CPU).
+  fn transition_overlay(&self) -> ([u8; 3], f32) {
+    if !self.gpu_world {
+      return ([0; 3], 0.0);
+    }
+    let [r, g, b, _] = self
+      .scene_manager
+      .transition_overlay_color()
+      .unwrap_or([0, 0, 0, 255]);
+    ([r, g, b], self.scene_manager.transition_overlay_alpha())
   }
 
   /// Render and present one frame — the single present path for window and headless runs.
@@ -1564,6 +1585,18 @@ impl Engine {
             trails.add_line(&line, transform.x, transform.y);
           }
         }
+
+        // The GPU world path draws the debug overlays as unlit lines on top
+        if self.gpu_world {
+          let overlays = OverlayFlags {
+            colliders: self.config.debug.show_colliders,
+            velocities: self.config.debug.show_velocities,
+            origins: self.config.debug.show_origins,
+          };
+          for line in overlay_lines(&self.world, &self.camera, overlays) {
+            trails.add_line(&line, 0.0, 0.0);
+          }
+        }
       }
       // Collect lights from the world
       let lights: Vec<_> = self
@@ -1607,6 +1640,24 @@ impl Engine {
         self
           .batch_collector
           .push_to(&mut self.draw_list, DrawKind::Sprite);
+        let entities = EntityFrame {
+          world: &self.world,
+          camera: &self.camera,
+          cache: &self.renderable_cache,
+          alpha: self
+            .time
+            .as_ref()
+            .map(|t| t.interpolation_alpha())
+            .unwrap_or(0.0),
+          size: (rend.game_width(), rend.game_height()),
+        };
+        self.entity_drawer.collect(
+          &entities,
+          gpu,
+          rend.device(),
+          rend.queue(),
+          &mut self.draw_list,
+        );
         if let Some(trails) = trail_renderer.as_ref() {
           for z in trails.groups(true) {
             self.draw_list.push_trail_group(true, z);
@@ -1663,6 +1714,7 @@ impl Engine {
         camera_pos,
         camera_zoom,
         time,
+        overlay: self.transition_overlay(),
       };
       let result = rend.render_frame(&mut self.render_pipeline, scene);
 
@@ -2056,18 +2108,29 @@ impl Engine {
       None => return,
     };
 
+    // On the GPU world path the entities, composites and debug overlays are
+    // collected into the draw list by `present_frame` instead
+    let gpu_world = self.gpu_world;
+    let cpu_entities: &[(Entity, i32)] = if gpu_world {
+      &[]
+    } else {
+      &self.renderable_cache
+    };
+
     // Fill background with transparent black
     // This allows GPU-rendered content (parallax backgrounds) to show through
     // Areas without CPU sprites will be transparent, showing the GPU layer beneath
-    for pixel in frame.chunks_exact_mut(4) {
-      pixel[0] = 0x00; // R: 0
-      pixel[1] = 0x00; // G: 0
-      pixel[2] = 0x00; // B: 0
-      pixel[3] = 0x00; // A: 0 (transparent)
+    if !gpu_world {
+      for pixel in frame.chunks_exact_mut(4) {
+        pixel[0] = 0x00; // R: 0
+        pixel[1] = 0x00; // G: 0
+        pixel[2] = 0x00; // B: 0
+        pixel[3] = 0x00; // A: 0 (transparent)
+      }
     }
 
     // --- Render All Entities (CPU Path) ---
-    for &(entity, _) in &self.renderable_cache {
+    for &(entity, _) in cpu_entities {
       // Skip inactive entities (used by object pooling)
       if self.world.has::<super::ecs::Inactive>(entity) {
         continue;
@@ -2520,7 +2583,12 @@ impl Engine {
 
     // === Render CompositeTile components ===
     // These are multi-part tiles with static and tiled sections
-    for entity in self.world.entities_with_two::<Transform, CompositeTile>() {
+    let composites = if gpu_world {
+      Vec::new()
+    } else {
+      self.world.entities_with_two::<Transform, CompositeTile>()
+    };
+    for entity in composites {
       let Some(transform) = self.world.get::<Transform>(entity) else {
         continue;
       };
@@ -2610,13 +2678,13 @@ impl Engine {
     }
 
     // --- Debug Overlays ---
-    if self.config.debug.show_colliders {
+    if self.config.debug.show_colliders && !gpu_world {
       debug::render_colliders(frame, frame_width, frame_height, &self.world, &self.camera);
     }
-    if self.config.debug.show_velocities {
+    if self.config.debug.show_velocities && !gpu_world {
       debug::render_velocities(frame, frame_width, frame_height, &self.world, &self.camera);
     }
-    if self.config.debug.show_origins {
+    if self.config.debug.show_origins && !gpu_world {
       debug::render_origins(frame, frame_width, frame_height, &self.world, &self.camera);
     }
 
@@ -2697,9 +2765,10 @@ impl Engine {
     }
 
     // --- Screen Overlay (for transitions) ---
-    {
+    // (the GPU world path fades in its `transition` pass)
+    if !gpu_world {
       let alpha = self.scene_manager.transition_overlay_alpha();
-      if alpha > 0.001 {
+      if alpha > TRANSITION_VISIBLE {
         let color = self
           .scene_manager
           .transition_overlay_color()

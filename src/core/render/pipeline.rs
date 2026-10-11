@@ -52,12 +52,12 @@ impl RenderPipeline {
 
   /// The built-in passes of the GPU world path, in the order `world_2d` runs
   /// them: `clear`, `raycast`, `world`, `lighting`, `unlit_world`,
-  /// `post_process`, `ui`, `composite`, `capture` (see
+  /// `transition`, `post_process`, `ui`, `composite`, `capture` (see
   /// [`pass_ids`](super::pass_ids)).
   ///
-  /// `world` draws GPU sprites and lit trails and lines together in z order;
-  /// `unlit_world` draws the trails and lines that skip lighting. CPU-rendered
-  /// entities are not drawn by this pipeline.
+  /// `world` draws entities, GPU sprites and lit trails and lines together in
+  /// z order; `unlit_world` draws the trails and lines that skip lighting;
+  /// `transition` fades the whole frame during a scene transition.
   pub fn world_2d() -> Self {
     let entries = passes::world_2d()
       .into_iter()

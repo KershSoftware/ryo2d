@@ -243,11 +243,25 @@ fn world_2d_order() {
       "world",
       "lighting",
       "unlit_world",
+      "transition",
       "post_process",
       "ui",
       "composite",
       "capture",
     ]
+  );
+}
+
+#[test]
+fn the_transition_pass_runs_only_while_fading() {
+  let fading = FrameInfo {
+    gpu_sprites: true,
+    transition: true,
+    ..FrameInfo::default()
+  };
+  assert_eq!(
+    RenderPipeline::world_2d().passes_to_run(&fading),
+    vec!["clear", "world", "transition", "composite"]
   );
 }
 

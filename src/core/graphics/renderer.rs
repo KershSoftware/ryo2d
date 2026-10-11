@@ -26,7 +26,7 @@ use crate::core::capture::{CapturedFrame, read_texture_rgba};
 use crate::core::engine::WindowMode;
 use crate::core::error::{CaptureError, CaptureResult};
 use crate::core::render::{
-  DrawList, FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline,
+  DrawList, FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline, TRANSITION_VISIBLE,
 };
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
@@ -847,11 +847,12 @@ impl WgpuRenderer {
       game_width: self.game_width,
       game_height: self.game_height,
       raycast: scene.raycast.is_some(),
-      gpu_sprites: scene.batches.sprite_count() > 0,
+      gpu_sprites: scene.batches.sprite_count() > 0 || scene.draw_list.sprite_count() > 0,
       trails: scene.trails.is_some_and(|t| t.vertex_count() > 0),
       lighting: scene.lighting.is_some(),
       effects: self.post_process.is_some() && scene.effects.has_active_effects(),
       ui: scene.ui_buffer.iter().any(|&b| b != 0),
+      transition: scene.overlay.1 > TRANSITION_VISIBLE,
       capture: capture_path.is_some(),
     };
     let mut encoder = self
@@ -925,6 +926,7 @@ impl WgpuRenderer {
       camera_pos: glam::Vec2::ZERO,
       camera_zoom: 1.0,
       time: 0.0,
+      overlay: ([0; 3], 0.0),
     };
     self.render_frame(pipeline, scene)
   }

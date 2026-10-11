@@ -33,13 +33,6 @@ const PAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum AtlasKey {
   /// An entity sprite: the handle's identity plus its content generation
-  #[cfg_attr(
-    not(test),
-    expect(
-      dead_code,
-      reason = "constructed once entity sprites render on the GPU"
-    )
-  )]
   Sprite { handle: usize, generation: u64 },
   /// A texture uploaded by id (render_gpu, particles, parallax)
   Id(String),
@@ -370,6 +363,14 @@ impl TextureAtlas {
       Some(id) => self.standalone.get(id).map(|s| s.slot),
       None => self.layout.get(key),
     }
+  }
+
+  /// Forget `key`, freeing its atlas rect or standalone texture.
+  pub(crate) fn remove(&mut self, key: &AtlasKey) {
+    if let Some(id) = self.standalone_ids.get(key).copied() {
+      self.remove_standalone(id);
+    }
+    self.layout.remove(key);
   }
 
   /// Drop every entry, page and standalone texture.

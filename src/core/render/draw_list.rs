@@ -15,11 +15,7 @@ pub(crate) type TextureRef = Arc<str>;
 /// What a drawable is, which breaks ties between equal z (in declaration order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum DrawKind {
-  /// A CPU-path entity drawn on the GPU (nothing pushes these yet)
-  #[allow(
-    dead_code,
-    reason = "entities join the draw list with the GPU entity path"
-  )]
+  /// An entity (with its shadows, tiles and composite parts) drawn on the GPU
   Entity,
   /// A `render_gpu`, particle or parallax sprite
   Sprite,

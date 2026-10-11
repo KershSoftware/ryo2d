@@ -32,6 +32,7 @@
 
 mod context;
 mod draw_list;
+mod entities;
 mod frame;
 mod pass;
 mod passes;
@@ -40,8 +41,9 @@ mod pipeline;
 pub(crate) use context::FrameTargets;
 pub use context::RenderContext;
 pub(crate) use draw_list::{DrawKind, DrawList, DrawPayload, TextureRef, WorldRun, plan_runs};
+pub(crate) use entities::{EntityDrawer, EntityFrame};
 pub use frame::FrameInfo;
-pub(crate) use frame::{FrameImage, FrameScene, LightingFrame};
+pub(crate) use frame::{FrameImage, FrameScene, LightingFrame, TRANSITION_VISIBLE};
 pub use pass::RenderPass;
 pub use pipeline::{RenderPipeline, RenderPipelineError};
 
