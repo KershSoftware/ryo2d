@@ -206,3 +206,148 @@ fn replaced_sprite_pixels_are_drawn_again() {
     [10, 200, 30, 255]
   );
 }
+
+/// Changes the blob shadow's radius and colour every update.
+struct VaryingBlob;
+
+impl Scene for VaryingBlob {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 220, 30, 40, 255), "varying");
+    ctx.world.spawn((
+      Transform::new(60.0, 40.0),
+      Renderable::sprite(sprite).with_blob_shadow(BlobShadow::default()),
+    ));
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    for entity in ctx.world.entities_with::<Renderable>() {
+      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(entity)
+        && let Some(blob) = renderable.blob_shadow.as_mut()
+      {
+        blob.radius_x += 0.37;
+        blob.radius_y += 0.21;
+        let shift = (blob.radius_x * 7.0) as u8;
+        blob.color = Color::new(shift, 255 - shift, shift / 2, 200);
+      }
+    }
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn varying_shadows_do_not_grow_the_texture_cache() {
+  let builder = EngineBuilder::new()
+    .resolution(120, 90)
+    .start_scene(VaryingBlob);
+  let Some(mut engine) = gpu_engine(builder) else {
+    return;
+  };
+  let count = |engine: &HeadlessEngine| engine.engine.sprite_gpu.as_ref().unwrap().texture_count();
+  engine.step().unwrap();
+  let first = count(&engine);
+  engine.step_frames(200).unwrap();
+  assert_eq!(count(&engine), first, "shadow textures leaked");
+}
+
+#[test]
+fn off_screen_entities_are_not_uploaded() {
+  let scene = Fixture {
+    setup: |ctx| {
+      let near = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 1, 2, 3, 255), "near");
+      let far = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 4, 5, 6, 255), "far");
+      ctx
+        .world
+        .spawn((Transform::new(20.0, 20.0), Renderable::sprite(near)));
+      ctx
+        .world
+        .spawn((Transform::new(5000.0, 20.0), Renderable::sprite(far)));
+    },
+  };
+  let Some(mut engine) = gpu_engine(EngineBuilder::new().resolution(120, 90).start_scene(scene))
+  else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let handles: Vec<SpriteHandle> = {
+    let world = engine.world();
+    world
+      .entities_with::<Renderable>()
+      .into_iter()
+      .map(|e| world.get::<Renderable>(e).unwrap().sprite.clone())
+      .collect()
+  };
+  let gpu = engine.engine.sprite_gpu.as_ref().unwrap();
+  let uploaded = |name: &str| {
+    handles
+      .iter()
+      .filter(|h| h.id() == name)
+      .any(|h| gpu.has_entity_sprite(h))
+  };
+  assert!(uploaded("near"));
+  assert!(!uploaded("far"), "an off-screen sprite was uploaded");
+}
+
+#[test]
+fn composite_below_an_entity_draws_under_it() {
+  let scene = Fixture {
+    setup: |ctx| {
+      let solid = |name: &str, c: [u8; 3]| {
+        SpriteHandle::from_sprite(Sprite::solid_rect(20, 20, c[0], c[1], c[2], 255), name)
+      };
+      ctx.world.spawn((
+        Transform::new(40.0, 40.0),
+        Renderable::sprite(solid("entity-over", [220, 30, 40])).with_z_order(1),
+      ));
+      let composite = CompositeTile::new().add_part(TilePart::static_part(
+        solid("tile-under", [30, 200, 60]),
+        0.0,
+        0.0,
+      ));
+      ctx
+        .world
+        .spawn((Transform::new(50.0, 40.0), composite.with_z_order(0)));
+    },
+  };
+  let Some(mut engine) = gpu_engine(EngineBuilder::new().resolution(120, 90).start_scene(scene))
+  else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  // Overlap (x 50..60): the entity at the higher z covers the composite
+  assert_eq!(frame.get_pixel(55, 50).0, RED);
+  // The composite's own part shows beyond the entity
+  assert_eq!(frame.get_pixel(65, 50).0, [30, 200, 60, 255]);
+}
+
+#[test]
+fn inactive_and_invisible_entities_do_not_draw() {
+  let scene = Fixture {
+    setup: |ctx| {
+      let solid =
+        |name: &str| SpriteHandle::from_sprite(Sprite::solid_rect(10, 10, 220, 30, 40, 255), name);
+      ctx.world.spawn((
+        Transform::new(10.0, 10.0),
+        Renderable::sprite(solid("inactive")),
+        Inactive,
+      ));
+      ctx.world.spawn((
+        Transform::new(40.0, 10.0),
+        Renderable::sprite(solid("hidden")).with_visible(false),
+      ));
+      ctx.world.spawn((
+        Transform::new(70.0, 10.0),
+        Renderable::sprite(solid("shown")),
+      ));
+    },
+  };
+  let Some(mut engine) = gpu_engine(EngineBuilder::new().resolution(120, 90).start_scene(scene))
+  else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  assert_ne!(frame.get_pixel(15, 15).0, RED, "inactive entity drew");
+  assert_ne!(frame.get_pixel(45, 15).0, RED, "invisible entity drew");
+  assert_eq!(frame.get_pixel(75, 15).0, RED);
+}

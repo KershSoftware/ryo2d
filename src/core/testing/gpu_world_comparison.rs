@@ -300,3 +300,101 @@ fn rotated_sprite_covers_the_same_area() {
     "areas differ by more than 10% (the CPU drops the last row and column, about 6%): {cpu_area} vs {gpu_area}"
   );
 }
+
+/// The bounding box of everything that is not the background.
+fn content_bounds(frame: &image::RgbaImage) -> Option<(u32, u32, u32, u32)> {
+  let background = *frame.get_pixel(0, 0);
+  let mut bounds: Option<(u32, u32, u32, u32)> = None;
+  for (x, y, pixel) in frame.enumerate_pixels() {
+    if *pixel != background {
+      let (x0, y0, x1, y1) = bounds.unwrap_or((x, y, x, y));
+      bounds = Some((x0.min(x), y0.min(y), x1.max(x), y1.max(y)));
+    }
+  }
+  bounds
+}
+
+/// An outline or glow grows the sprite; both paths must place the grown
+/// image on the same pixels (their contents may differ).
+#[test]
+fn effect_growth_has_the_cpu_bounds() {
+  type MakeEffect = fn() -> SpriteShader;
+  let effects: [(&str, MakeEffect); 3] = [
+    ("outline", || {
+      SpriteShader::BuiltIn(SpriteEffect::outline(Color::new(255, 255, 255, 255), 2))
+    }),
+    ("outline3", || {
+      SpriteShader::BuiltIn(SpriteEffect::outline(Color::new(255, 255, 255, 255), 3))
+    }),
+    ("glow", || {
+      SpriteShader::BuiltIn(SpriteEffect::glow(Color::new(255, 255, 255, 255), 3.0))
+    }),
+  ];
+  for (effect_name, effect) in effects {
+    for scale in [1.0_f32, 2.0, 1.5] {
+      let builder = || {
+        EngineBuilder::new()
+          .resolution(WIDTH, HEIGHT)
+          .start_scene(EffectScene {
+            scale,
+            effect: effect(),
+          })
+      };
+      let (Some(mut cpu), Some(mut gpu)) = (
+        HeadlessEngine::new_or_skip(builder()),
+        HeadlessEngine::new_or_skip(builder()),
+      ) else {
+        return;
+      };
+      gpu.engine.use_gpu_world();
+      cpu.step_frames(2).unwrap();
+      gpu.step_frames(2).unwrap();
+      let cpu_bounds = content_bounds(&cpu.frame().unwrap());
+      let gpu_bounds = content_bounds(&gpu.frame().unwrap());
+      eprintln!("{effect_name} x{scale}: CPU {cpu_bounds:?}, GPU {gpu_bounds:?}");
+      let (Some(cpu_box), Some(gpu_box)) = (cpu_bounds, gpu_bounds) else {
+        panic!("{effect_name} at scale {scale}: nothing drawn");
+      };
+      if effect_name == "glow" {
+        // The two glows fade differently, so the CPU's faint outer ring can
+        // be invisible where the GPU's shows: the GPU box holds the CPU's and
+        // stays within the grown image (3 px of padding, scaled, plus rounding)
+        let slack = (3.0 * scale).ceil() as u32 + 1;
+        assert!(
+          gpu_box.0 <= cpu_box.0
+            && gpu_box.1 <= cpu_box.1
+            && gpu_box.2 >= cpu_box.2
+            && gpu_box.3 >= cpu_box.3,
+          "glow at scale {scale}: {gpu_box:?} does not hold {cpu_box:?}"
+        );
+        assert!(
+          cpu_box.0 - gpu_box.0 <= slack
+            && gpu_box.2 - cpu_box.2 <= slack
+            && cpu_box.1 - gpu_box.1 <= slack
+            && gpu_box.3 - cpu_box.3 <= slack,
+          "glow at scale {scale}: {gpu_box:?} too far past {cpu_box:?}"
+        );
+      } else {
+        assert_eq!(cpu_box, gpu_box, "{effect_name} at scale {scale}");
+      }
+    }
+  }
+}
+
+struct EffectScene {
+  scale: f32,
+  effect: SpriteShader,
+}
+
+impl Scene for EffectScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.world.spawn((
+      Transform::new(50.0, 40.0).with_uniform_scale(self.scale),
+      Renderable::sprite(pattern("cmp-effect", 11, 9, 21)).with_shader(self.effect.clone()),
+    ));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}

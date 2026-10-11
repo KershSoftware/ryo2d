@@ -308,6 +308,9 @@ impl CachedTexture {
 struct EntitySprite {
   generation: u64,
   texture: TextureRef,
+  /// False when this version could not be uploaded; it is not tried again
+  /// until the sprite changes
+  uploaded: bool,
   /// Atlas frame it was last asked for, to drop sprites that went away
   last_used: u64,
 }
@@ -1020,29 +1023,32 @@ impl SpriteGpuRenderer {
       && entry.generation == generation
     {
       entry.last_used = self.frame;
-      return Some(entry.texture.clone());
+      return entry.uploaded.then(|| entry.texture.clone());
     }
 
-    // New, or its pixels changed: read the generation under the read lock so
-    // the pixels and the number belong together
-    let (generation, width, height, data) = sprite.with_sprite(|s| {
-      (
-        sprite.generation(),
-        s.width(),
-        s.height(),
-        s.data().to_vec(),
-      )
-    });
+    // New, or its pixels changed: read the size and generation under the
+    // read lock, so they belong together; the pixels are copied only if the
+    // atlas needs them
+    let (generation, width, height) =
+      sprite.with_sprite(|s| (sprite.generation(), s.width(), s.height()));
     let key = AtlasKey::Sprite {
       handle: serial,
       generation,
     };
-    self
+    let uploaded = self
       .atlas
-      .slot(device, queue, &key, width, height, || data, self.frame)?;
+      .slot(
+        device,
+        queue,
+        &key,
+        width,
+        height,
+        || sprite.with_sprite(|s| s.data().to_vec()),
+        self.frame,
+      )
+      .is_some();
 
-    let previous = self.entity_sprites.remove(&serial);
-    let texture = match previous {
+    let texture = match self.entity_sprites.remove(&serial) {
       Some(old) => {
         // The superseded version's rect is free for reuse
         self.atlas.remove(&AtlasKey::Sprite {
@@ -1053,24 +1059,29 @@ impl SpriteGpuRenderer {
       }
       None => TextureRef::from(format!("\u{1}sprite:{serial}")),
     };
-    self.textures.insert(
-      texture.to_string(),
-      CachedTexture {
-        key,
-        width,
-        height,
-        source: TextureSource::Sprite(sprite.clone()),
-      },
-    );
+    if uploaded {
+      self.textures.insert(
+        texture.to_string(),
+        CachedTexture {
+          key,
+          width,
+          height,
+          source: TextureSource::Sprite(sprite.clone()),
+        },
+      );
+    } else {
+      self.textures.remove(&*texture);
+    }
     self.entity_sprites.insert(
       serial,
       EntitySprite {
         generation,
         texture: texture.clone(),
+        uploaded,
         last_used: self.frame,
       },
     );
-    Some(texture)
+    uploaded.then_some(texture)
   }
 
   /// Forget entity sprites nothing asked for in a while, so sprites of
@@ -1097,6 +1108,21 @@ impl SpriteGpuRenderer {
     }
   }
 
+  /// How many textures are cached (for tests that watch for leaks).
+  #[cfg(test)]
+  pub(crate) fn texture_count(&self) -> usize {
+    self.textures.len()
+  }
+
+  /// Whether the entity sprite is resident (for tests of what gets uploaded).
+  #[cfg(test)]
+  pub(crate) fn has_entity_sprite(&self, sprite: &SpriteHandle) -> bool {
+    self
+      .entity_sprites
+      .get(&sprite.serial())
+      .is_some_and(|e| e.uploaded)
+  }
+
   /// Check if a texture is already cached
   pub fn has_texture(&self, id: &str) -> bool {
     self.textures.contains_key(id)
@@ -1115,7 +1141,7 @@ impl SpriteGpuRenderer {
 
 /// Atlas padding (texels on every side) of the effect in `params`: outline,
 /// glow and directional outline grow the sprite as the CPU renderer did.
-fn effect_padding(params: &[f32; 4]) -> f32 {
+pub(crate) fn effect_padding(params: &[f32; 4]) -> f32 {
   match params[0] as i32 {
     // Outline, DirectionalOutline: thickness
     1 | 11 => params[1].max(0.0),
