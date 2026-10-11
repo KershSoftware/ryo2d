@@ -94,13 +94,20 @@ impl UiContext {
     fn draw_sprite_handle(&mut self, handle: &SpriteHandle, x: f32, y: f32);
     fn draw_sprite_handle_scaled(&mut self, handle: &SpriteHandle, x: f32, y: f32, scale: f32);
 
-    // Widgets
-    fn button(&mut self, text: &str, rect: Rect) -> bool;   // true when clicked
+    // Widgets (each returns true when its value changed, or when clicked)
+    fn button(&mut self, text: &str, rect: Rect) -> bool;
     fn slider(&mut self, rect: Rect, value: &mut f32, min: f32, max: f32) -> bool;
-    fn wants_keyboard(&self) -> bool;   // a focused text input or an open dropdown was drawn this frame
+    fn checkbox(&mut self, rect: Rect, checked: &mut bool, label: Option<&str>) -> bool;
+    fn toggle(&mut self, rect: Rect, on: &mut bool) -> bool;
+    fn text_input(&mut self, state: &mut TextInputState, rect: Rect, placeholder: &str, dt: f32) -> bool;
+    fn dropdown(&mut self, state: &mut DropdownState, rect: Rect, options: &[&str]) -> bool;
+    fn finish_dropdowns(&mut self);   // last in render_ui: draws open dropdown lists on top
+
+    // Pointer and keyboard
     fn is_clicked(&self, rect: Rect) -> bool;
     fn is_hovered(&self, rect: Rect) -> bool;
     fn is_held(&self, rect: Rect) -> bool;
+    fn wants_keyboard(&self) -> bool;   // a focused text input or an open dropdown was drawn this frame
 
     // Layout helpers
     fn screen_size(&self) -> (u32, u32);  // Returns (width, height) as u32
