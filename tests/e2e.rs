@@ -32,3 +32,6 @@ mod trail_renderer;
 
 #[path = "e2e/render_pipeline.rs"]
 mod render_pipeline;
+
+#[path = "e2e/post_process.rs"]
+mod post_process;

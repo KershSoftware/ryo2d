@@ -5,13 +5,62 @@
 
 use super::effects::{EffectParams, GodRaysParams, PostProcessEffect};
 use super::post_process_shaders;
-use wgpu::util::DeviceExt;
 
 /// Which buffer contains the effect output
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputBuffer {
   A,
   B,
+}
+
+/// Uniform buffers handed out one per post-process pass within a frame.
+///
+/// `queue.write_buffer` calls all land before the frame's commands run, so
+/// passes sharing one buffer would all read the last value written.
+struct UniformPool {
+  label: &'static str,
+  size: u64,
+  buffers: Vec<wgpu::Buffer>,
+  next: usize,
+}
+
+impl UniformPool {
+  fn new(label: &'static str, size: u64) -> Self {
+    Self {
+      label,
+      size,
+      buffers: Vec::new(),
+      next: 0,
+    }
+  }
+
+  /// Start a frame: buffers are handed out again from the first.
+  fn reset(&mut self) {
+    self.next = 0;
+  }
+
+  /// Write `data` into a buffer no other pass uses this frame (creating one
+  /// if the pool is exhausted) and return its index.
+  fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8]) -> usize {
+    if self.next == self.buffers.len() {
+      self
+        .buffers
+        .push(device.create_buffer(&wgpu::BufferDescriptor {
+          label: Some(self.label),
+          size: self.size,
+          usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+          mapped_at_creation: false,
+        }));
+    }
+    let index = self.next;
+    self.next += 1;
+    queue.write_buffer(&self.buffers[index], 0, data);
+    index
+  }
+
+  fn buffer(&self, index: usize) -> &wgpu::Buffer {
+    &self.buffers[index]
+  }
 }
 
 /// GPU pipeline for post-processing effects
@@ -44,11 +93,11 @@ pub struct PostProcessPipeline {
   bloom_texture: wgpu::Texture,
   bloom_view: wgpu::TextureView,
 
-  // Uniform buffer for effect parameters
-  uniform_buffer: wgpu::Buffer,
+  // Per-pass uniform buffers for effect parameters
+  effect_uniforms: UniformPool,
 
-  // Larger uniform buffer for god rays (128 bytes)
-  god_rays_uniform_buffer: wgpu::Buffer,
+  // Per-pass uniform buffers for god rays (larger params)
+  god_rays_uniforms: UniformPool,
 
   // Bind group layout shared by most effects
   bind_group_layout: wgpu::BindGroupLayout,
@@ -117,18 +166,6 @@ impl PostProcessPipeline {
     });
 
     // Create uniform buffer
-    let uniform = EffectParams {
-      color: [0.0, 0.0, 0.0, 1.0],
-      params: [0.0; 4],
-      time_resolution: [0.0, width as f32, height as f32, 0.0],
-      _padding: [0.0; 4],
-    };
-    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-      label: Some("Post-Process Uniform Buffer"),
-      contents: bytemuck::cast_slice(&[uniform]),
-      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
-
     // Create bind group layout (shared by most effects)
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
       label: Some("Post-Process Bind Group Layout"),
@@ -201,14 +238,6 @@ impl PostProcessPipeline {
           },
         ],
       });
-
-    // Create god rays uniform buffer
-    let god_rays_uniform = GodRaysParams::default();
-    let god_rays_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-      label: Some("God Rays Uniform Buffer"),
-      contents: bytemuck::cast_slice(&[god_rays_uniform]),
-      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
 
     // Create bloom scratch texture
     let bloom_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -294,8 +323,14 @@ impl PostProcessPipeline {
       bloom_composite_pipeline: None,
       bloom_texture,
       bloom_view,
-      uniform_buffer,
-      god_rays_uniform_buffer,
+      effect_uniforms: UniformPool::new(
+        "Post-Process Uniform Buffer",
+        std::mem::size_of::<EffectParams>() as u64,
+      ),
+      god_rays_uniforms: UniformPool::new(
+        "God Rays Uniform Buffer",
+        std::mem::size_of::<GodRaysParams>() as u64,
+      ),
       bind_group_layout,
       god_rays_bind_group_layout,
       bloom_composite_bind_group_layout,
@@ -387,6 +422,9 @@ impl PostProcessPipeline {
       self.ensure_pipeline_exists(device, effect);
     }
 
+    self.effect_uniforms.reset();
+    self.god_rays_uniforms.reset();
+
     let mut use_a_as_input = true;
 
     for (effect, time) in effects {
@@ -396,6 +434,20 @@ impl PostProcessPipeline {
           self.apply_bloom_effect(device, queue, encoder, effect, *time, use_a_as_input);
         continue;
       }
+
+      // Write this pass's params first; each pass owns its buffer for the frame
+      let is_god_rays = matches!(effect, PostProcessEffect::GodRays { .. });
+      let uniform_index = if is_god_rays {
+        let params = GodRaysParams::from_effect(effect, *time, self.width, self.height);
+        self
+          .god_rays_uniforms
+          .write(device, queue, bytemuck::bytes_of(&params))
+      } else {
+        let params = EffectParams::from_effect(effect, *time, self.width, self.height);
+        self
+          .effect_uniforms
+          .write(device, queue, bytemuck::bytes_of(&params))
+      };
 
       // Get the pipeline (guaranteed to exist after ensure_pipeline_exists)
       let pipeline = self.get_pipeline(effect);
@@ -408,15 +460,7 @@ impl PostProcessPipeline {
       };
 
       // Handle god rays specially (different uniform buffer size)
-      let bind_group = if matches!(effect, PostProcessEffect::GodRays { .. }) {
-        // Update god rays uniform buffer
-        let params = GodRaysParams::from_effect(effect, *time, self.width, self.height);
-        queue.write_buffer(
-          &self.god_rays_uniform_buffer,
-          0,
-          bytemuck::cast_slice(&[params]),
-        );
-
+      let bind_group = if is_god_rays {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
           label: Some("God Rays Bind Group"),
           layout: &self.god_rays_bind_group_layout,
@@ -431,15 +475,14 @@ impl PostProcessPipeline {
             },
             wgpu::BindGroupEntry {
               binding: 2,
-              resource: self.god_rays_uniform_buffer.as_entire_binding(),
+              resource: self
+                .god_rays_uniforms
+                .buffer(uniform_index)
+                .as_entire_binding(),
             },
           ],
         })
       } else {
-        // Update standard uniform buffer
-        let params = EffectParams::from_effect(effect, *time, self.width, self.height);
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[params]));
-
         device.create_bind_group(&wgpu::BindGroupDescriptor {
           label: Some("Post-Process Bind Group"),
           layout: &self.bind_group_layout,
@@ -454,7 +497,10 @@ impl PostProcessPipeline {
             },
             wgpu::BindGroupEntry {
               binding: 2,
-              resource: self.uniform_buffer.as_entire_binding(),
+              resource: self
+                .effect_uniforms
+                .buffer(uniform_index)
+                .as_entire_binding(),
             },
           ],
         })
@@ -735,7 +781,7 @@ impl PostProcessPipeline {
   /// Flow: extract bright pixels -> blur H/V loop -> composite with scene.
   /// Returns the new `use_a_as_input` value for the caller's ping-pong state.
   fn apply_bloom_effect(
-    &self,
+    &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
@@ -754,9 +800,50 @@ impl PostProcessPipeline {
       return use_a_as_input;
     };
 
-    let extract_pipeline = &self.bloom_extract_pipeline.as_ref().unwrap().pipeline;
-    let blur_pipeline = &self.bloom_blur_pipeline.as_ref().unwrap().pipeline;
-    let composite_pipeline = &self.bloom_composite_pipeline.as_ref().unwrap().pipeline;
+    // Write every pass's params up front: the writes need `&mut self`, and each
+    // pass needs its own buffer (see `UniformPool`).
+    let params_for = |w: f32| EffectParams {
+      color: [0.0, 0.0, 0.0, 1.0],
+      params: [*threshold, *intensity, *radius, w],
+      time_resolution: [time, self.width as f32, self.height as f32, 0.0],
+      _padding: [0.0; 4],
+    };
+    let extract_params = params_for(*blur_passes as f32);
+    let h_params = params_for(0.0); // w=0.0 = horizontal
+    let v_params = params_for(1.0); // w=1.0 = vertical
+    let composite_params = params_for(*blur_passes as f32);
+
+    let extract_index =
+      self
+        .effect_uniforms
+        .write(device, queue, bytemuck::bytes_of(&extract_params));
+    let blur_indices: Vec<(usize, usize)> = (0..*blur_passes)
+      .map(|_| {
+        (
+          self
+            .effect_uniforms
+            .write(device, queue, bytemuck::bytes_of(&h_params)),
+          self
+            .effect_uniforms
+            .write(device, queue, bytemuck::bytes_of(&v_params)),
+        )
+      })
+      .collect();
+    let composite_index =
+      self
+        .effect_uniforms
+        .write(device, queue, bytemuck::bytes_of(&composite_params));
+
+    let (Some(extract), Some(blur), Some(composite)) = (
+      self.bloom_extract_pipeline.as_ref(),
+      self.bloom_blur_pipeline.as_ref(),
+      self.bloom_composite_pipeline.as_ref(),
+    ) else {
+      return use_a_as_input;
+    };
+    let extract_pipeline = &extract.pipeline;
+    let blur_pipeline = &blur.pipeline;
+    let composite_pipeline = &composite.pipeline;
 
     // Input buffer = scene, output buffer = composite destination
     let (scene_view, output_view) = if use_a_as_input {
@@ -766,17 +853,6 @@ impl PostProcessPipeline {
     };
 
     // --- Pass 1: Extract bright pixels (scene -> bloom_texture) ---
-    let extract_params = EffectParams {
-      color: [0.0, 0.0, 0.0, 1.0],
-      params: [*threshold, *intensity, *radius, *blur_passes as f32],
-      time_resolution: [time, self.width as f32, self.height as f32, 0.0],
-      _padding: [0.0; 4],
-    };
-    queue.write_buffer(
-      &self.uniform_buffer,
-      0,
-      bytemuck::cast_slice(&[extract_params]),
-    );
 
     let extract_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
       label: Some("Bloom Extract Bind Group"),
@@ -792,7 +868,10 @@ impl PostProcessPipeline {
         },
         wgpu::BindGroupEntry {
           binding: 2,
-          resource: self.uniform_buffer.as_entire_binding(),
+          resource: self
+            .effect_uniforms
+            .buffer(extract_index)
+            .as_entire_binding(),
         },
       ],
     });
@@ -818,16 +897,8 @@ impl PostProcessPipeline {
     }
 
     // --- Pass 2: Blur loop (bloom_texture <-> output_view as temp) ---
-    for _ in 0..*blur_passes {
+    for &(h_index, v_index) in &blur_indices {
       // Horizontal blur: bloom_texture -> output_view (used as temp)
-      let h_params = EffectParams {
-        color: [0.0, 0.0, 0.0, 1.0],
-        params: [*threshold, *intensity, *radius, 0.0], // w=0.0 = horizontal
-        time_resolution: [time, self.width as f32, self.height as f32, 0.0],
-        _padding: [0.0; 4],
-      };
-      queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[h_params]));
-
       let h_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Bloom Blur H Bind Group"),
         layout: &self.bind_group_layout,
@@ -842,7 +913,7 @@ impl PostProcessPipeline {
           },
           wgpu::BindGroupEntry {
             binding: 2,
-            resource: self.uniform_buffer.as_entire_binding(),
+            resource: self.effect_uniforms.buffer(h_index).as_entire_binding(),
           },
         ],
       });
@@ -868,14 +939,6 @@ impl PostProcessPipeline {
       }
 
       // Vertical blur: output_view (temp) -> bloom_texture
-      let v_params = EffectParams {
-        color: [0.0, 0.0, 0.0, 1.0],
-        params: [*threshold, *intensity, *radius, 1.0], // w=1.0 = vertical
-        time_resolution: [time, self.width as f32, self.height as f32, 0.0],
-        _padding: [0.0; 4],
-      };
-      queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[v_params]));
-
       let v_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Bloom Blur V Bind Group"),
         layout: &self.bind_group_layout,
@@ -890,7 +953,7 @@ impl PostProcessPipeline {
           },
           wgpu::BindGroupEntry {
             binding: 2,
-            resource: self.uniform_buffer.as_entire_binding(),
+            resource: self.effect_uniforms.buffer(v_index).as_entire_binding(),
           },
         ],
       });
@@ -917,18 +980,6 @@ impl PostProcessPipeline {
     }
 
     // --- Pass 3: Composite (scene + bloom_texture -> output_view) ---
-    let composite_params = EffectParams {
-      color: [0.0, 0.0, 0.0, 1.0],
-      params: [*threshold, *intensity, *radius, *blur_passes as f32],
-      time_resolution: [time, self.width as f32, self.height as f32, 0.0],
-      _padding: [0.0; 4],
-    };
-    queue.write_buffer(
-      &self.uniform_buffer,
-      0,
-      bytemuck::cast_slice(&[composite_params]),
-    );
-
     let composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
       label: Some("Bloom Composite Bind Group"),
       layout: &self.bloom_composite_bind_group_layout,
@@ -947,7 +998,10 @@ impl PostProcessPipeline {
         },
         wgpu::BindGroupEntry {
           binding: 3,
-          resource: self.uniform_buffer.as_entire_binding(),
+          resource: self
+            .effect_uniforms
+            .buffer(composite_index)
+            .as_entire_binding(),
         },
       ],
     });

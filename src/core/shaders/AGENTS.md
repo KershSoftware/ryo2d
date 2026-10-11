@@ -68,3 +68,4 @@ Bloom consumes one slot in the A/B ping-pong chain. Its three pipelines use diff
 - **Buffer alignment errors**: WGSL requires 16-byte alignment for uniform struct members. `array<f32, N>` has stride 4 and fails validation. Always pad with `vec4<f32>`.
 - **Effects not visible**: check the ping-pong output tracking in `pipeline.rs`.
 - **Texture usage flags**: ping-pong textures need `RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_DST | COPY_SRC` for copying between them.
+- **Passes reading each other's settings**: `queue.write_buffer` calls all land before the frame's commands run, so passes sharing one uniform buffer all read the last value written. Take one buffer per pass per frame from `UniformPool` (`write` returns the buffer index to bind).
