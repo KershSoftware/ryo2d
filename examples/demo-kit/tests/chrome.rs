@@ -104,11 +104,44 @@ fn help_dims_the_screen() {
 }
 
 #[test]
-fn tiny_screen_with_many_rows_and_a_long_legend_renders() {
-  let Some(image) = frame_of(Backdrop::new(30, 12), (160, 120), &[KeyCode::KeyH]) else {
+fn tiny_screen_keeps_the_panel_and_legend_in_their_places() {
+  let Some(image) = frame_of(Backdrop::new(30, 12), (160, 120), &[]) else {
     return;
   };
-  assert_eq!((image.width(), image.height()), (160, 120));
+  // Block averages, so glyphs don't decide it
+  assert!(
+    mean_red(&image, 95..150, 45..75) < 120.0,
+    "the panel shows in the right column"
+  );
+  // A dozen long controls stay in a few lines at the bottom instead of
+  // covering the page
+  assert!(
+    mean_red(&image, 10..60, 40..70) > 180.0,
+    "the page shows above the legend"
+  );
+  assert!(
+    mean_red(&image, 10..150, 108..116) < 150.0,
+    "the legend shows at the bottom"
+  );
+  let Some(help) = frame_of(Backdrop::new(30, 12), (160, 120), &[KeyCode::KeyH]) else {
+    return;
+  };
+  assert!(
+    mean_red(&help, 20..140, 30..90) < 120.0,
+    "help covers the screen"
+  );
+}
+
+fn mean_red(image: &RgbaImage, xs: std::ops::Range<u32>, ys: std::ops::Range<u32>) -> f32 {
+  let mut sum = 0.0;
+  let mut n = 0.0;
+  for y in ys {
+    for x in xs.clone() {
+      sum += red_at(image, x, y) as f32;
+      n += 1.0;
+    }
+  }
+  sum / n
 }
 
 static LINE_H: AtomicU32 = AtomicU32::new(0);

@@ -85,6 +85,58 @@ pub(crate) fn wrap_items(widths: &[f32], gap: f32, available: f32) -> Vec<Vec<us
   lines
 }
 
+/// Most legend lines; help lists every control
+const MAX_LEGEND_LINES: usize = 3;
+
+/// Legend items in at most `max_lines` lines of `available` width. When they
+/// don't all fit, the last line keeps room for a "+N more" item `more_w(N)`
+/// wide; returns the lines and how many items were left out.
+pub(crate) fn fit_legend(
+  widths: &[f32],
+  gap: f32,
+  available: f32,
+  max_lines: usize,
+  more_w: impl Fn(usize) -> f32,
+) -> (Vec<Vec<usize>>, usize) {
+  let mut lines = wrap_items(widths, gap, available);
+  if lines.len() <= max_lines {
+    return (lines, 0);
+  }
+  lines.truncate(max_lines.max(1));
+  let before_last: usize = lines[..lines.len() - 1].iter().map(Vec::len).sum();
+  let hidden = match lines.last_mut() {
+    Some(last) => loop {
+      let hidden = widths.len() - before_last - last.len();
+      let used: f32 =
+        last.iter().map(|&i| widths[i]).sum::<f32>() + gap * last.len().saturating_sub(1) as f32;
+      let more = if last.is_empty() { 0.0 } else { gap } + more_w(hidden);
+      if used + more <= available || last.is_empty() {
+        break hidden;
+      }
+      last.pop();
+    },
+    None => 0,
+  };
+  (lines, hidden)
+}
+
+/// How many of `total` help lines to draw when `capacity` fit, and how many
+/// a final "N more" line stands for when they don't all fit
+pub(crate) fn help_fit(total: usize, capacity: usize) -> (usize, Option<usize>) {
+  if total <= capacity || capacity == 0 {
+    return (total.min(capacity), None);
+  }
+  let shown = capacity - 1;
+  (shown, Some(total - shown))
+}
+
+/// The top bar's title width limit and whether the shell keys show: they
+/// show only beside the whole title, and the title may use the whole bar
+/// otherwise
+pub(crate) fn top_bar_fit(title_w: f32, keys_w: f32, room: f32, gap: f32) -> (f32, bool) {
+  (room, title_w + gap + keys_w <= room)
+}
+
 /// `text`, shortened with `...` until `width` says it fits in `max`
 pub(crate) fn truncate_to(text: &str, max: f32, width: impl Fn(&str) -> f32) -> String {
   if width(text) <= max {
@@ -155,12 +207,12 @@ fn draw_top_bar(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
     "H help   Esc quit"
   };
   let y = l.pad;
-  ui.draw_text(&left, l.pad, y, Color::WHITE);
   let right_w = text_w(ui, right);
-  let right_x = w - l.pad - right_w;
-  // Only when it clears the left text
-  if right_x > l.pad + text_w(ui, &left) + l.pad {
-    ui.draw_text(right, right_x, y, dim_text());
+  let (left_max, show_right) = top_bar_fit(text_w(ui, &left), right_w, w - 2.0 * l.pad, l.pad);
+  let left = truncate_to(&left, left_max, |s| text_w(ui, s));
+  ui.draw_text(&left, l.pad, y, Color::WHITE);
+  if show_right {
+    ui.draw_text(right, w - l.pad - right_w, y, dim_text());
   }
 }
 
@@ -266,25 +318,40 @@ fn legend_items(view: &View) -> Vec<(String, String)> {
 }
 
 fn draw_legend(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
-  let items = legend_items(view);
   let gap = l.pad * 3.0;
+  // Leave the bottom-left corner to the engine's FPS counter
+  let fps_reserve = text_w(ui, "FPS: 0000") + 2.0 * l.pad;
+  let available = (w - 2.0 * l.pad - fps_reserve).max(1.0);
+  // An item wider than the screen is shortened rather than run off it
+  let items: Vec<(String, String)> = legend_items(view)
+    .into_iter()
+    .map(|(key, desc)| {
+      let room = available - text_w(ui, &key) - text_w(ui, " ");
+      let desc = truncate_to(&desc, room, |s| text_w(ui, s));
+      (key, desc)
+    })
+    .collect();
   let widths: Vec<f32> = items
     .iter()
     .map(|(key, desc)| text_w(ui, key) + text_w(ui, " ") + text_w(ui, desc))
     .collect();
-  // Leave the bottom-left corner to the engine's FPS counter
-  let fps_reserve = text_w(ui, "FPS: 0000") + 2.0 * l.pad;
-  let available = (w - 2.0 * l.pad - fps_reserve).max(1.0);
-  let lines = wrap_items(&widths, gap, available);
+  let more = |n: usize| format!("+{n} more (H)");
+  let (lines, hidden) = fit_legend(&widths, gap, available, MAX_LEGEND_LINES, |n| {
+    text_w(ui, &more(n))
+  });
   let line_step = l.line_h + l.pad * 0.5;
   for (n, line) in lines.iter().enumerate() {
+    let last = n + 1 == lines.len();
     let from_bottom = (lines.len() - 1 - n) as f32;
     let y = h - l.pad - l.line_h - from_bottom * line_step;
     if y < l.content.y {
       continue;
     }
-    let line_w: f32 =
+    let mut line_w: f32 =
       line.iter().map(|&i| widths[i]).sum::<f32>() + gap * line.len().saturating_sub(1) as f32;
+    if last && hidden > 0 {
+      line_w += if line.is_empty() { 0.0 } else { gap } + text_w(ui, &more(hidden));
+    }
     let mut x = (w - l.pad - line_w).max(l.pad);
     ui.draw_rect(
       Rect::new(
@@ -301,6 +368,9 @@ fn draw_legend(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
       let desc_x = x + text_w(ui, key) + text_w(ui, " ");
       ui.draw_text(desc, desc_x, y, dim_text());
       x += widths[i] + gap;
+    }
+    if last && hidden > 0 {
+      ui.draw_text(&more(hidden), x, y, dim_text());
     }
   }
 }
@@ -361,14 +431,24 @@ fn draw_help(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
 
   let inner = box_w - 2.0 * l.pad;
   let step = l.line_h + l.pad * 0.5;
+  // Lines that fit in the box: the first takes a line height, the rest a step
+  let room = box_h - 2.0 * l.pad;
+  let capacity = if room < l.line_h {
+    0
+  } else {
+    ((room - l.line_h) / step).floor() as usize + 1
+  };
+  let (shown, more) = help_fit(lines.len(), capacity);
   let mut line_y = y + l.pad;
-  for (text, color) in lines {
-    if line_y + l.line_h > y + box_h - l.pad {
-      break;
-    }
+  for (text, color) in lines.into_iter().take(shown) {
     let text = truncate_to(&text, inner, |s| text_w(ui, s));
     ui.draw_text(&text, x + l.pad, line_y, color);
     line_y += step;
+  }
+  if let Some(more) = more {
+    let text = format!("... {more} more lines (enlarge the window)");
+    let text = truncate_to(&text, inner, |s| text_w(ui, s));
+    ui.draw_text(&text, x + l.pad, line_y, dim_text());
   }
 }
 
@@ -421,6 +501,40 @@ mod tests {
       vec![vec![0], vec![1]]
     );
     assert!(wrap_items(&[], 10.0, 100.0).is_empty());
+  }
+
+  #[test]
+  fn a_legend_that_fits_is_left_alone() {
+    let (lines, hidden) = fit_legend(&[50.0, 50.0, 50.0], 10.0, 200.0, 3, |_| 40.0);
+    assert_eq!(lines, vec![vec![0, 1, 2]]);
+    assert_eq!(hidden, 0);
+  }
+
+  #[test]
+  fn a_long_legend_keeps_three_lines_and_counts_the_rest() {
+    // Two 50s per 120 wide line: five lines wanted
+    let widths = [50.0; 10];
+    let (lines, hidden) = fit_legend(&widths, 10.0, 120.0, 3, |_| 40.0);
+    // The last line makes room for the 40 wide "+N more"
+    assert_eq!(lines, vec![vec![0, 1], vec![2, 3], vec![4]]);
+    assert_eq!(hidden, 5);
+  }
+
+  #[test]
+  fn help_shows_what_fits_and_says_how_much_is_left() {
+    assert_eq!(help_fit(10, 12), (10, None));
+    assert_eq!(help_fit(10, 10), (10, None));
+    assert_eq!(help_fit(15, 10), (9, Some(6)));
+    assert_eq!(help_fit(3, 0), (0, None));
+  }
+
+  #[test]
+  fn the_top_bar_drops_its_keys_before_cutting_the_title() {
+    // Both fit with the gap
+    assert_eq!(top_bar_fit(100.0, 80.0, 200.0, 10.0), (200.0, true));
+    // The keys go first, and the title may then use the whole bar
+    assert_eq!(top_bar_fit(150.0, 80.0, 200.0, 10.0), (200.0, false));
+    assert_eq!(top_bar_fit(300.0, 80.0, 200.0, 10.0), (200.0, false));
   }
 
   #[test]
