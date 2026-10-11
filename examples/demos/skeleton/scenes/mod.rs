@@ -8,7 +8,7 @@ pub use fighter::FighterScene;
 
 use std::sync::Arc;
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 use crate::DebugBone;
 
@@ -18,6 +18,7 @@ use crate::DebugBone;
 /// implements the identical enter/exit/debug-line/UI logic so each scene
 /// only needs to provide its unique `update()` input handling.
 pub(crate) struct SceneBase {
+  def: Arc<SkeletonDef>,
   pub controller_template: SkeletalController,
   pub skeleton_entity: Option<Entity>,
   debug_entities: Vec<Entity>,
@@ -28,8 +29,14 @@ pub(crate) struct SceneBase {
 }
 
 impl SceneBase {
-  pub fn new(controller: SkeletalController, bone_color: Color, joint_color: Color) -> Self {
+  pub fn new(
+    def: Arc<SkeletonDef>,
+    controller: SkeletalController,
+    bone_color: Color,
+    joint_color: Color,
+  ) -> Self {
     Self {
+      def,
       controller_template: controller,
       skeleton_entity: None,
       debug_entities: Vec::new(),
@@ -40,24 +47,14 @@ impl SceneBase {
     }
   }
 
-  pub fn enter(&mut self, world: &mut World, def: &Arc<SkeletonDef>) {
-    let entity = world.spawn((
+  pub fn enter(&mut self, ctx: &mut SceneContext) {
+    ctx.camera.set_position(640.0, 360.0);
+    let entity = ctx.world.spawn((
       Transform::new(640.0, 360.0),
-      Skeleton::new(def.clone()),
+      Skeleton::new(self.def.clone()),
       self.controller_template.clone(),
     ));
     self.skeleton_entity = Some(entity);
-    self.current_state = "idle";
-    self.blending = false;
-  }
-
-  pub fn exit(&mut self, world: &mut World) {
-    for entity in self.debug_entities.drain(..) {
-      let _ = world.despawn(entity);
-    }
-    if let Some(entity) = self.skeleton_entity.take() {
-      let _ = world.despawn(entity);
-    }
   }
 
   /// Cache current controller state for UI rendering.
@@ -98,17 +95,16 @@ impl SceneBase {
     }
   }
 
-  /// Render the standard UI: scene name, state, blend status, controls.
-  pub fn render_ui(&self, ui: &mut UiContext, scene_name: &str, controls: &str) {
-    let white = Color::rgb(220, 220, 220);
+  /// Render the controller state and blend status at the top of the content area
+  pub fn render_ui(&self, ui: &mut UiContext) {
     let gray = Color::rgb(150, 150, 150);
     let yellow = Color::rgb(255, 255, 100);
 
-    ui.draw_text(scene_name, 10.0, 10.0, white);
+    let area = content_area(ui);
     ui.draw_text(
       &format!("State: {}", self.current_state),
-      10.0,
-      30.0,
+      area.x + 10.0,
+      area.y + 8.0,
       yellow,
     );
 
@@ -117,9 +113,11 @@ impl SceneBase {
     } else {
       "Stable"
     };
-    ui.draw_text(&format!("Blend: {}", blend_status), 10.0, 50.0, gray);
-
-    ui.draw_text(controls, 10.0, 80.0, gray);
-    ui.draw_text("Tab: Next scene  Esc: Exit", 10.0, 100.0, gray);
+    ui.draw_text(
+      &format!("Blend: {}", blend_status),
+      area.x + 10.0,
+      area.y + 28.0,
+      gray,
+    );
   }
 }

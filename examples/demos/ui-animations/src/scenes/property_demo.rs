@@ -2,7 +2,7 @@
 //!
 //! Shows slide-in panels, fading labels, scaling buttons, and color transitions.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 pub struct PropertyDemo {
   // Slide-in panels
@@ -100,12 +100,20 @@ impl Default for PropertyDemo {
   }
 }
 
-impl Scene for PropertyDemo {
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) || ctx.input.key_pressed(KeyCode::Backspace) {
-      return SceneAction::Pop;
-    }
+impl DemoPage for PropertyDemo {
+  fn name(&self) -> &str {
+    "Property Animations"
+  }
 
+  fn description(&self) -> &str {
+    "Slide-in panels, fades, scale, colour, position and rectangle tweens"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Restart")]
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Update all tweens
     self.panel_left.update(dt);
     self.panel_right.update(dt);
@@ -120,14 +128,15 @@ impl Scene for PropertyDemo {
     if ctx.input.key_pressed(KeyCode::Space) {
       self.restart();
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let screen_w = screen_w as f32;
     let screen_h = screen_h as f32;
+    let area = content_area(ui);
+    // The layout below was written for content starting at y = 55
+    let oy = area.y - 55.0;
 
     // Dark background
     ui.draw_rect(
@@ -135,31 +144,22 @@ impl Scene for PropertyDemo {
       Color::rgb(20, 20, 30),
     );
 
-    // Title and instructions
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
-
-    ui.draw_text("Property Animations Demo", 10.0, 10.0, text_accent);
-    ui.draw_text(
-      "Space: Restart | ESC/Backspace: Back",
-      10.0,
-      30.0,
-      text_muted,
-    );
 
     // ==========================================
     // Left panel (slides in from left)
     // ==========================================
     let left_x = self.panel_left.value();
     ui.draw_panel(
-      Rect::new(left_x, 150.0, 180.0, 120.0),
+      Rect::new(left_x, 150.0 + oy, 180.0, 120.0),
       Color::rgb(40, 40, 60),
       Some(Color::rgb(80, 80, 120)),
     );
-    ui.draw_text("Left Panel", left_x + 10.0, 160.0, Color::WHITE);
-    ui.draw_text("TweenFloat", left_x + 10.0, 180.0, text_muted);
-    ui.draw_text("Ease: OutBack", left_x + 10.0, 200.0, text_muted);
-    ui.draw_text("Slides from left", left_x + 10.0, 220.0, text_muted);
+    ui.draw_text("Left Panel", left_x + 10.0, 160.0 + oy, Color::WHITE);
+    ui.draw_text("TweenFloat", left_x + 10.0, 180.0 + oy, text_muted);
+    ui.draw_text("Ease: OutBack", left_x + 10.0, 200.0 + oy, text_muted);
+    ui.draw_text("Slides from left", left_x + 10.0, 220.0 + oy, text_muted);
 
     // ==========================================
     // Right panel (slides in from right)
@@ -167,20 +167,20 @@ impl Scene for PropertyDemo {
     let right_offset = self.panel_right.value();
     let right_x = screen_w - 200.0 + right_offset;
     ui.draw_panel(
-      Rect::new(right_x, 150.0, 180.0, 120.0),
+      Rect::new(right_x, 150.0 + oy, 180.0, 120.0),
       Color::rgb(60, 40, 40),
       Some(Color::rgb(120, 80, 80)),
     );
-    ui.draw_text("Right Panel", right_x + 10.0, 160.0, Color::WHITE);
-    ui.draw_text("TweenFloat", right_x + 10.0, 180.0, text_muted);
-    ui.draw_text("Ease: OutBack", right_x + 10.0, 200.0, text_muted);
-    ui.draw_text("Slides from right", right_x + 10.0, 220.0, text_muted);
+    ui.draw_text("Right Panel", right_x + 10.0, 160.0 + oy, Color::WHITE);
+    ui.draw_text("TweenFloat", right_x + 10.0, 180.0 + oy, text_muted);
+    ui.draw_text("Ease: OutBack", right_x + 10.0, 200.0 + oy, text_muted);
+    ui.draw_text("Slides from right", right_x + 10.0, 220.0 + oy, text_muted);
 
     // ==========================================
     // Top panel (slides down)
     // ==========================================
     let center_x = screen_w / 2.0;
-    let top_y = self.panel_top.value();
+    let top_y = self.panel_top.value() + oy;
     let top_panel_w = 200.0;
     ui.draw_panel(
       Rect::centered_at(center_x, top_y, top_panel_w, 50.0),
@@ -200,7 +200,7 @@ impl Scene for PropertyDemo {
     ui.draw_text(
       "Fading Text (PingPong)",
       250.0,
-      300.0,
+      300.0 + oy,
       Color::rgb(255, 200, 100).with_alpha(alpha),
     );
 
@@ -211,7 +211,7 @@ impl Scene for PropertyDemo {
     let base_size = 40.0;
     let scaled_size = base_size * scale;
     let scale_x = 400.0;
-    let scale_y = 320.0;
+    let scale_y = 320.0 + oy;
     ui.draw_rect(
       Rect::centered_at(scale_x + 50.0, scale_y + 50.0, scaled_size, scaled_size),
       Color::rgb(100, 200, 255),
@@ -222,57 +222,59 @@ impl Scene for PropertyDemo {
     // Color transition
     // ==========================================
     let color = self.color_tween.value();
-    ui.draw_rect(Rect::new(550.0, 280.0, 80.0, 40.0), color);
-    ui.draw_text("Color Tween", 550.0, 330.0, text_muted);
-    ui.draw_text("Red <-> Blue", 550.0, 350.0, Color::GRAY);
+    ui.draw_rect(Rect::new(550.0, 280.0 + oy, 80.0, 40.0), color);
+    ui.draw_text("Color Tween", 550.0, 330.0 + oy, text_muted);
+    ui.draw_text("Red <-> Blue", 550.0, 350.0 + oy, Color::GRAY);
 
     // ==========================================
     // Position animation (bouncing box)
     // ==========================================
     let (pos_x, pos_y) = self.position.value();
+    let pos_y = pos_y + oy;
     ui.draw_rect(Rect::centered_at(pos_x, pos_y, 30.0, 30.0), Color::GREEN);
-    ui.draw_text("TweenVec2 Position", 140.0, 440.0, text_muted);
+    ui.draw_text("TweenVec2 Position", 140.0, 440.0 + oy, text_muted);
 
     // ==========================================
     // Rectangle animation (position + size)
     // ==========================================
-    let rect = self.rect_tween.value();
+    let mut rect = self.rect_tween.value();
+    rect.y += oy;
     ui.draw_rect(rect, Color::rgb(255, 150, 50));
-    ui.draw_text("TweenRect", 520.0, 480.0, text_muted);
-    ui.draw_text("(pos + size)", 520.0, 500.0, Color::GRAY);
+    ui.draw_text("TweenRect", 520.0, 480.0 + oy, text_muted);
+    ui.draw_text("(pos + size)", 520.0, 500.0 + oy, Color::GRAY);
 
     // ==========================================
     // Labels for animation types
     // ==========================================
+    let panel_y = area.y + area.height - 90.0;
     ui.draw_panel(
-      Rect::new(10.0, screen_h - 100.0, 780.0, 90.0),
+      Rect::new(10.0, panel_y, 780.0, 90.0),
       Color::rgb(30, 30, 40),
       Some(Color::rgb(60, 60, 80)),
     );
     ui.draw_text(
       "Animation Types Demonstrated:",
       20.0,
-      screen_h - 90.0,
+      panel_y + 10.0,
       text_accent,
     );
     ui.draw_text(
       "TweenFloat: Single value (position offset, alpha, scale)",
       20.0,
-      screen_h - 70.0,
+      panel_y + 30.0,
       Color::WHITE,
     );
     ui.draw_text(
       "TweenVec2: Two values (position coordinates)",
       20.0,
-      screen_h - 50.0,
+      panel_y + 50.0,
       Color::WHITE,
     );
     ui.draw_text(
       "TweenColor: RGBA color | TweenRect: Position + Size combined",
       20.0,
-      screen_h - 30.0,
+      panel_y + 70.0,
       Color::WHITE,
     );
-    SceneAction::Continue
   }
 }

@@ -1,22 +1,20 @@
-//! UI Animations Demo - Comprehensive demonstration of Ryo2D's UI tweening system
+//! UI Animations Demo - Ryo2D's UI tweening system
 //!
-//! This example showcases the UiTween system for animating UI properties,
-//! organized into themed demo scenes that you can navigate between.
+//! Easing curves, property animations (panels, fades, colour, position, rect)
+//! and animated buttons driven by `UiTween`. Runs on the demo-kit shell;
+//! switch pages with `[` / `]`.
 
 mod scenes;
 
-use ryo2d::prelude::*;
-use scenes::MainMenu;
+use demo_kit::prelude::*;
+use scenes::{EasingShowcase, InteractiveDemo, PropertyDemo};
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Ryo2D UI Animations Demo")
+  Demo::new("UI Animations")
     .resolution(800, 600)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .start_scene(MainMenu::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
+    .page(EasingShowcase::new)
+    .page(PropertyDemo::new)
+    .page(InteractiveDemo::new)
+    .run();
 }

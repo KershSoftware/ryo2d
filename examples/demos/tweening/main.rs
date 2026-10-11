@@ -1,24 +1,11 @@
-//! Tweening Demo - Ryo2D Example
+//! Tweening Demo - Ryo2D
 //!
-//! This example demonstrates the Tween system for smooth interpolation:
-//!
-//! ## Scenes (press number keys to switch)
-//!
-//! 1. **Easing Functions** - Various easing curves with loop mode controls
-//! 2. **Speed Control** - Playback speed manipulation (0.5x, 1x, 2x, pause)
-//! 3. **Callbacks** - on_start, on_update, on_complete callbacks with visual feedback
-//! 4. **Combined Effects** - Position + scale + rotation combinations
-//! 5. **Sequences** - TweenSequence for chained animations
-//! 6. **Color & Alpha** - Alpha fade, tint colors, and combined color effects
-//! 7. **PropertyTween** - Generic value tweens (f32 health bar, Vec2 position, callback progress)
-//!
-//! ## Controls
-//!
-//! - 1-7: Switch scenes
-//! - Space: Restart tweens (scene-specific)
-//! - Escape: Exit
+//! The Tween system for smooth interpolation, one feature per page: easing
+//! curves with loop modes, playback speed, callbacks, combined effects,
+//! sequences, colour and alpha, and generic property tweens.
+//! Runs on the demo-kit shell; switch pages with `[` / `]`.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 use std::f32::consts::PI;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -37,11 +24,23 @@ struct RotationDemo;
 #[derive(Debug)]
 struct ScaleDemo;
 
+const LOOP_NAMES: [&str; 4] = ["Once", "Loop", "PingPong", "Times(3)"];
+const LOOP_MODES: [TweenLoop; 4] = [
+  TweenLoop::Once,
+  TweenLoop::Loop,
+  TweenLoop::PingPong,
+  TweenLoop::Times(3),
+];
+const DEFAULT_LOOP: usize = 2;
+
 struct EasingScene {
   position_entities: Vec<Entity>,
   rotation_entity: Option<Entity>,
   scale_entity: Option<Entity>,
-  loop_mode: TweenLoop,
+  /// Index into `LOOP_MODES`, bound to the settings panel
+  loop_index: usize,
+  /// The index the current tweens were spawned with
+  spawned_loop: usize,
   screen_w: f32,
   screen_h: f32,
 }
@@ -52,7 +51,8 @@ impl EasingScene {
       position_entities: Vec::new(),
       rotation_entity: None,
       scale_entity: None,
-      loop_mode: TweenLoop::PingPong,
+      loop_index: DEFAULT_LOOP,
+      spawned_loop: DEFAULT_LOOP,
       screen_w: 0.0,
       screen_h: 0.0,
     }
@@ -63,16 +63,8 @@ impl EasingScene {
     SpriteHandle::from_sprite(sprite, format!("square_{}_{}_{}", r, g, b))
   }
 
-  fn loop_mode_name(&self) -> &'static str {
-    match self.loop_mode {
-      TweenLoop::Once => "Once",
-      TweenLoop::Loop => "Loop",
-      TweenLoop::PingPong => "PingPong",
-      TweenLoop::Times(_) => "Times(3)",
-    }
-  }
-
   fn respawn_with_loop_mode(&mut self, ctx: &mut SceneContext) {
+    self.spawned_loop = self.loop_index;
     self.cleanup(ctx);
     self.spawn_demos(ctx);
   }
@@ -80,6 +72,7 @@ impl EasingScene {
   fn spawn_demos(&mut self, ctx: &mut SceneContext) {
     let screen_w = self.screen_w;
     let screen_h = self.screen_h;
+    let loop_mode = LOOP_MODES[self.loop_index.min(LOOP_MODES.len() - 1)];
 
     let easings: Vec<(&str, Ease, (u8, u8, u8))> = vec![
       ("Linear", Ease::Linear, (200, 200, 200)),
@@ -110,7 +103,7 @@ impl EasingScene {
         Tween::new(2.0)
           .to_x(target_x)
           .with_easing(*ease)
-          .with_loop(self.loop_mode),
+          .with_loop(loop_mode),
       ));
 
       self.position_entities.push(entity);
@@ -127,7 +120,7 @@ impl EasingScene {
         Renderable::sprite(rotation_sprite).with_z_order(10),
         Tween::to_rotation(PI * 2.0, 2.0)
           .with_easing(Ease::InOutCubic)
-          .with_loop(self.loop_mode),
+          .with_loop(loop_mode),
       )),
     );
 
@@ -142,7 +135,7 @@ impl EasingScene {
         Renderable::sprite(scale_sprite).with_z_order(10),
         Tween::to_scale(2.0, 2.0, 1.0)
           .with_easing(Ease::OutElastic)
-          .with_loop(self.loop_mode),
+          .with_loop(loop_mode),
       )),
     );
   }
@@ -160,63 +153,33 @@ impl EasingScene {
   }
 }
 
-impl Scene for EasingScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for EasingScene {
+  fn name(&self) -> &str {
+    "Easing"
+  }
+
+  fn description(&self) -> &str {
+    "Ten easing curves racing, plus a rotation and a scale tween; the loop mode is a setting"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Loop mode", &mut self.loop_index, &LOOP_NAMES);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Restart")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
     self.screen_w = screen_w;
     self.screen_h = screen_h;
     self.spawn_demos(ctx);
   }
 
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    self.cleanup(ctx);
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Scene switching (number keys)
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(SpeedControlScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(CallbacksScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(CombinedEffectsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(SequenceScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
-    }
-
-    // Loop mode controls (Q/W/E/R)
-    let mut mode_changed = false;
-    if ctx.input.key_pressed(KeyCode::KeyQ) {
-      self.loop_mode = TweenLoop::Once;
-      mode_changed = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyW) {
-      self.loop_mode = TweenLoop::Loop;
-      mode_changed = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyE) {
-      self.loop_mode = TweenLoop::PingPong;
-      mode_changed = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.loop_mode = TweenLoop::Times(3);
-      mode_changed = true;
-    }
-
-    if mode_changed {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+    // Respawn the tweens when the loop mode setting changed
+    if self.loop_index != self.spawned_loop {
       self.respawn_with_loop_mode(ctx);
     }
 
@@ -224,30 +187,14 @@ impl Scene for EasingScene {
     if ctx.input.key_pressed(KeyCode::Space) {
       self.respawn_with_loop_mode(ctx);
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let screen_w = screen_w as f32;
     let screen_h = screen_h as f32;
 
     let text_light = Color::rgb(220, 220, 220);
-    let text_accent = Color::rgb(130, 180, 255);
-    let text_muted = Color::rgb(160, 160, 160);
-
-    ui.draw_text("[1] Easing Functions", 10.0, 10.0, text_accent);
-
-    let mode_text = format!("Loop: {} (Q/W/E/R to change)", self.loop_mode_name());
-    ui.draw_text(&mode_text, 10.0, 30.0, text_light);
-
-    ui.draw_text(
-      "2-7: Scenes | Space: Restart | ESC: Exit",
-      10.0,
-      50.0,
-      text_muted,
-    );
 
     let easings = [
       "Linear",
@@ -277,7 +224,6 @@ impl Scene for EasingScene {
       bottom_y,
       Color::rgb(100, 180, 255),
     );
-    SceneAction::Continue
   }
 }
 
@@ -285,10 +231,17 @@ impl Scene for EasingScene {
 // Scene 2: Speed Control
 // ============================================================================
 
+const SPEED_NAMES: [&str; 5] = ["0.25x", "0.5x", "1x", "2x", "4x"];
+const SPEEDS: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
+const DEFAULT_SPEED: usize = 2;
+
 struct SpeedControlScene {
   entity: Option<Entity>,
-  speed: f32,
+  /// Index into `SPEEDS`, bound to the settings panel
+  speed_index: usize,
   paused: bool,
+  /// The speed index and pause state last applied to the tween
+  applied: (usize, bool),
   screen_w: f32,
   screen_h: f32,
 }
@@ -297,14 +250,21 @@ impl SpeedControlScene {
   fn new() -> Self {
     Self {
       entity: None,
-      speed: 1.0,
+      speed_index: DEFAULT_SPEED,
       paused: false,
+      applied: (DEFAULT_SPEED, false),
       screen_w: 0.0,
       screen_h: 0.0,
     }
   }
 
-  fn apply_speed(&self, ctx: &mut SceneContext) {
+  fn speed(&self) -> f32 {
+    SPEEDS[self.speed_index.min(SPEEDS.len() - 1)]
+  }
+
+  fn apply_speed(&mut self, ctx: &mut SceneContext) {
+    self.applied = (self.speed_index, self.paused);
+    let speed = self.speed();
     if let Some(entity) = self.entity
       && let Some(mut tween) = ctx.world.get_mut::<Tween>(entity)
     {
@@ -312,14 +272,31 @@ impl SpeedControlScene {
         tween.pause();
       } else {
         tween.resume();
-        tween.set_speed(self.speed);
+        tween.set_speed(speed);
       }
     }
   }
 }
 
-impl Scene for SpeedControlScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for SpeedControlScene {
+  fn name(&self) -> &str {
+    "Speed Control"
+  }
+
+  fn description(&self) -> &str {
+    "One ping-pong tween played back at different speeds, or paused"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Speed", &mut self.speed_index, &SPEED_NAMES);
+    s.toggle("Paused", &mut self.paused);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    Vec::new()
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
     self.screen_w = screen_w;
     self.screen_h = screen_h;
@@ -336,118 +313,37 @@ impl Scene for SpeedControlScene {
         Tween::to_position(screen_w - 100.0, center_y, 3.0)
           .with_easing(Ease::InOutCubic)
           .with_loop(TweenLoop::PingPong)
-          .with_speed(self.speed),
+          .with_speed(self.speed()),
       )),
     );
   }
 
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    if let Some(entity) = self.entity.take() {
-      let _ = ctx.world.despawn(entity);
-    }
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(EasingScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(CallbacksScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(CombinedEffectsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(SequenceScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
-    }
-
-    // Speed control
-    let mut changed = false;
-
-    if ctx.input.key_pressed(KeyCode::KeyQ) {
-      self.speed = 0.25;
-      self.paused = false;
-      changed = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyW) {
-      self.speed = 0.5;
-      self.paused = false;
-      changed = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyE) {
-      self.speed = 1.0;
-      self.paused = false;
-      changed = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      self.speed = 2.0;
-      self.paused = false;
-      changed = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyT) {
-      self.speed = 4.0;
-      self.paused = false;
-      changed = true;
-    }
-
-    // Space toggles pause
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.paused = !self.paused;
-      changed = true;
-    }
-
-    if changed {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+    if self.applied != (self.speed_index, self.paused) {
       self.apply_speed(ctx);
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let text_accent = Color::rgb(130, 180, 255);
-    let text_muted = Color::rgb(160, 160, 160);
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let text_light = Color::rgb(220, 220, 220);
-
-    ui.draw_text("[2] Speed Control", 10.0, 10.0, text_accent);
-    ui.draw_text("1,3-7: Other scenes | ESC: Exit", 10.0, 30.0, text_muted);
-
-    ui.draw_text(
-      "Speed: Q=0.25x W=0.5x E=1x R=2x T=4x",
-      10.0,
-      70.0,
-      text_light,
-    );
-    ui.draw_text("Space: Toggle Pause", 10.0, 90.0, text_light);
 
     let status = if self.paused {
       "PAUSED".to_string()
     } else {
-      format!("{:.2}x speed", self.speed)
+      format!("{:.2}x speed", self.speed())
     };
 
     let status_color = if self.paused {
       Color::RED
-    } else if self.speed < 1.0 {
+    } else if self.speed() < 1.0 {
       Color::rgb(255, 200, 100)
-    } else if self.speed > 1.0 {
+    } else if self.speed() > 1.0 {
       Color::GREEN
     } else {
       text_light
     };
 
-    ui.draw_text(&format!("Status: {}", status), 10.0, 130.0, status_color);
-    SceneAction::Continue
+    ui.draw_text(&format!("Status: {}", status), 10.0, 70.0, status_color);
   }
 }
 
@@ -512,45 +408,27 @@ impl CallbacksScene {
   }
 }
 
-impl Scene for CallbacksScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for CallbacksScene {
+  fn name(&self) -> &str {
+    "Callbacks"
+  }
+
+  fn description(&self) -> &str {
+    "on_start, on_update and on_complete callbacks counting a tween that loops three times"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Restart")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
     self.screen_w = screen_w;
     self.screen_h = screen_h;
     self.spawn_entity(ctx);
   }
 
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    if let Some(entity) = self.entity.take() {
-      let _ = ctx.world.despawn(entity);
-    }
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(EasingScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(SpeedControlScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(CombinedEffectsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(SequenceScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Restart
     if ctx.input.key_pressed(KeyCode::Space) {
       if let Some(entity) = self.entity.take() {
@@ -558,22 +436,11 @@ impl Scene for CallbacksScene {
       }
       self.spawn_entity(ctx);
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let text_accent = Color::rgb(130, 180, 255);
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
-
-    ui.draw_text("[3] Callbacks", 10.0, 10.0, text_accent);
-    ui.draw_text(
-      "1-2,4-7: Other scenes | Space: Restart | ESC: Exit",
-      10.0,
-      30.0,
-      text_muted,
-    );
 
     ui.draw_text(
       "Tween loops 3 times with callbacks:",
@@ -601,7 +468,6 @@ impl Scene for CallbacksScene {
       180.0,
       text_muted,
     );
-    SceneAction::Continue
   }
 }
 
@@ -716,64 +582,37 @@ impl CombinedEffectsScene {
   }
 }
 
-impl Scene for CombinedEffectsScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for CombinedEffectsScene {
+  fn name(&self) -> &str {
+    "Combined Effects"
+  }
+
+  fn description(&self) -> &str {
+    "Position, scale and rotation tweens combined and sequenced"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Restart")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
     self.screen_w = screen_w;
     self.screen_h = screen_h;
     self.spawn_demos(ctx);
   }
 
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    self.cleanup(ctx);
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(EasingScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(SpeedControlScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(CallbacksScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(SequenceScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Restart
     if ctx.input.key_pressed(KeyCode::Space) {
       self.cleanup(ctx);
       self.spawn_demos(ctx);
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let text_accent = Color::rgb(130, 180, 255);
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
-
-    ui.draw_text("[4] Combined Effects", 10.0, 10.0, text_accent);
-    ui.draw_text(
-      "1-3,5-7: Other scenes | Space: Restart | ESC: Exit",
-      10.0,
-      30.0,
-      text_muted,
-    );
 
     let (w, h) = ui.screen_size();
     let center_x = w as f32 / 2.0;
@@ -807,7 +646,6 @@ impl Scene for CombinedEffectsScene {
       center_y + 160.0,
       text_muted,
     );
-    SceneAction::Continue
   }
 }
 
@@ -862,45 +700,27 @@ impl SequenceScene {
   }
 }
 
-impl Scene for SequenceScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for SequenceScene {
+  fn name(&self) -> &str {
+    "Sequences"
+  }
+
+  fn description(&self) -> &str {
+    "TweenSequence chaining four moves along a square path"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Restart")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
     self.screen_w = screen_w;
     self.screen_h = screen_h;
     self.spawn_entity(ctx);
   }
 
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    if let Some(entity) = self.entity.take() {
-      let _ = ctx.world.despawn(entity);
-    }
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(EasingScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(SpeedControlScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(CallbacksScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(CombinedEffectsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Restart
     if ctx.input.key_pressed(KeyCode::Space)
       && let Some(entity) = self.entity
@@ -913,22 +733,11 @@ impl Scene for SequenceScene {
         transform.y = 100.0;
       }
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let text_accent = Color::rgb(130, 180, 255);
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
-
-    ui.draw_text("[5] Tween Sequences", 10.0, 10.0, text_accent);
-    ui.draw_text(
-      "1-4,6-7: Other scenes | Space: Restart | ESC: Exit",
-      10.0,
-      30.0,
-      text_muted,
-    );
 
     let (w, h) = ui.screen_size();
     let center_x = w as f32 / 2.0;
@@ -952,7 +761,6 @@ impl Scene for SequenceScene {
       center_y + 20.0,
       text_muted,
     );
-    SceneAction::Continue
   }
 }
 
@@ -1219,64 +1027,36 @@ impl ColorAlphaScene {
   }
 }
 
-impl Scene for ColorAlphaScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for ColorAlphaScene {
+  fn name(&self) -> &str {
+    "Colour & Alpha"
+  }
+
+  fn description(&self) -> &str {
+    "Alpha fades, tints, colour cycling and combined colour effects"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Restart")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
     self.screen_w = screen_w;
     self.screen_h = screen_h;
     self.spawn_demos(ctx);
   }
 
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    self.cleanup(ctx);
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(EasingScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(SpeedControlScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(CallbacksScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(CombinedEffectsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(SequenceScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
-      return SceneAction::Switch(Box::new(PropertyTweenScene::new()));
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Restart all
     if ctx.input.key_pressed(KeyCode::Space) {
       self.cleanup(ctx);
       self.spawn_demos(ctx);
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let text_accent = Color::rgb(130, 180, 255);
-    let text_muted = Color::rgb(160, 160, 160);
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let text_white = Color::rgb(240, 240, 240);
-
-    ui.draw_text("[6] Color & Alpha Tweening", 10.0, 10.0, text_accent);
-    ui.draw_text(
-      "1-5,7: Other scenes | Space: Restart | ESC: Exit",
-      10.0,
-      30.0,
-      text_muted,
-    );
 
     // Row labels
     ui.draw_text("Alpha Fade", 170.0, 150.0, text_white);
@@ -1291,7 +1071,6 @@ impl Scene for ColorAlphaScene {
 
     ui.draw_text("Darken", 180.0, 390.0, text_white);
     ui.draw_text("Full Combo (all properties)", 500.0, 390.0, text_white);
-    SceneAction::Continue
   }
 }
 
@@ -1393,43 +1172,27 @@ impl PropertyTweenScene {
   }
 }
 
-impl Scene for PropertyTweenScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for PropertyTweenScene {
+  fn name(&self) -> &str {
+    "Property Tweens"
+  }
+
+  fn description(&self) -> &str {
+    "Generic PropertyTween values: an f32 health bar, a Vec2 position and a callback progress"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Restart")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
     self.screen_w = screen_w;
     self.screen_h = screen_h;
     self.spawn_demos(ctx);
   }
 
-  fn on_exit(&mut self, ctx: &mut SceneContext) {
-    self.cleanup(ctx);
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Scene switching
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      return SceneAction::Switch(Box::new(EasingScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      return SceneAction::Switch(Box::new(SpeedControlScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      return SceneAction::Switch(Box::new(CallbacksScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      return SceneAction::Switch(Box::new(CombinedEffectsScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      return SceneAction::Switch(Box::new(SequenceScene::new()));
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      return SceneAction::Switch(Box::new(ColorAlphaScene::new()));
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     // Demo 1: Read PropertyTween<f32> value and drive scale_x
     if let Some(entity) = self.health_bar_entity {
       let scale = ctx
@@ -1462,22 +1225,11 @@ impl Scene for PropertyTweenScene {
       self.cleanup(ctx);
       self.spawn_demos(ctx);
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let text_accent = Color::rgb(130, 180, 255);
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
-
-    ui.draw_text("[7] PropertyTween", 10.0, 10.0, text_accent);
-    ui.draw_text(
-      "1-6: Other scenes | Space: Restart | ESC: Exit",
-      10.0,
-      30.0,
-      text_muted,
-    );
 
     // Demo 1 label
     ui.draw_text(
@@ -1518,8 +1270,6 @@ impl Scene for PropertyTweenScene {
       .collect();
     let bar_text = format!("[{}]", bar);
     ui.draw_text(&bar_text, 100.0, 550.0, Color::rgb(200, 200, 100));
-
-    SceneAction::Continue
   }
 }
 
@@ -1528,16 +1278,19 @@ impl Scene for PropertyTweenScene {
 // ============================================================================
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Tweening Demo - Ryo2D")
+  Demo::new("Tweening")
     .resolution(1024, 768)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .target_fps(60)
-    .physics_hz(60)
-    .start_scene(EasingScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableAspectRatio)
+        .target_fps(60)
+        .physics_hz(60)
+    })
+    .page(EasingScene::new)
+    .page(SpeedControlScene::new)
+    .page(CallbacksScene::new)
+    .page(CombinedEffectsScene::new)
+    .page(SequenceScene::new)
+    .page(ColorAlphaScene::new)
+    .page(PropertyTweenScene::new)
+    .run();
 }

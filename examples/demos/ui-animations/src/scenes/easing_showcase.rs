@@ -1,6 +1,9 @@
 //! Easing showcase scene - Grid showing all 25 easing functions
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
+
+/// Height of the settings panel at the top right, which the grid starts below
+const SETTINGS_CLEARANCE: f32 = 42.0;
 
 /// Data for a single easing demo box
 struct EasingBox {
@@ -92,12 +95,24 @@ impl Default for EasingShowcase {
   }
 }
 
-impl Scene for EasingShowcase {
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) || ctx.input.key_pressed(KeyCode::Backspace) {
-      return SceneAction::Pop;
-    }
+impl DemoPage for EasingShowcase {
+  fn name(&self) -> &str {
+    "Easing Showcase"
+  }
 
+  fn description(&self) -> &str {
+    "All 25 easing functions animating the same 0 to 1 tween"
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.toggle("Auto-restart", &mut self.auto_restart);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Restart")]
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Update all tweens
     let mut all_finished = true;
     for b in &mut self.boxes {
@@ -116,62 +131,29 @@ impl Scene for EasingShowcase {
     if ctx.input.key_pressed(KeyCode::Space) {
       self.restart_all();
     }
-
-    // Toggle auto-restart
-    if ctx.input.key_pressed(KeyCode::KeyA) {
-      self.auto_restart = !self.auto_restart;
-    }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
-    let screen_w = screen_w as f32;
-    let screen_h = screen_h as f32;
+    let area = content_area(ui);
 
     // Dark background
     ui.draw_rect(
-      Rect::new(0.0, 0.0, screen_w, screen_h),
+      Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32),
       Color::rgb(20, 20, 30),
     );
 
-    // Title and instructions
-    let text_accent = Color::rgb(130, 180, 255);
-    let text_muted = Color::rgb(160, 160, 160);
-
-    ui.draw_text(
-      "Easing Showcase - All 25 Functions",
-      10.0,
-      10.0,
-      text_accent,
+    // Grid layout, starting below the settings panel
+    let area = Rect::new(
+      area.x,
+      area.y + SETTINGS_CLEARANCE,
+      area.width,
+      area.height - SETTINGS_CLEARANCE,
     );
-    ui.draw_text(
-      "Space: Restart | A: Toggle Auto | ESC/Backspace: Back",
-      10.0,
-      30.0,
-      text_muted,
-    );
-
-    let auto_text = if self.auto_restart {
-      "Auto: ON"
-    } else {
-      "Auto: OFF"
-    };
-    ui.draw_text(auto_text, screen_w - 70.0, 30.0, text_muted);
-
-    // Grid layout
     let cols = 5;
-    let margin_x = 20.0;
-    let margin_top = 60.0;
-    let margin_bottom = 20.0;
-
-    let available_w = screen_w - margin_x * 2.0;
-    let available_h = screen_h - margin_top - margin_bottom;
-
     let rows = self.boxes.len().div_ceil(cols);
-    let cell_w = available_w / cols as f32;
-    let cell_h = available_h / rows as f32;
+    let cell_w = area.width / cols as f32;
+    let cell_h = area.height / rows as f32;
 
     let box_width = cell_w - 20.0;
     let track_height = 6.0;
@@ -181,9 +163,8 @@ impl Scene for EasingShowcase {
       let col = i % cols;
       let row = i / cols;
 
-      let cell_x = margin_x + col as f32 * cell_w;
-      let cell_y = margin_top + row as f32 * cell_h;
-
+      let cell_x = area.x + col as f32 * cell_w;
+      let cell_y = area.y + row as f32 * cell_h;
       // Label
       let (label_w, _) = ui.text_size(b.name);
       let label_x = cell_x + (cell_w - label_w as f32) / 2.0;
@@ -212,6 +193,5 @@ impl Scene for EasingShowcase {
       let pct_x = cell_x + (cell_w - pct_w as f32) / 2.0;
       ui.draw_text(&pct_text, pct_x, track_y + 15.0, Color::GRAY);
     }
-    SceneAction::Continue
   }
 }

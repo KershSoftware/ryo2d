@@ -1,6 +1,9 @@
 //! Interactive demo scene - Button hover/click effects with visual feedback
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
+
+/// The layout was written for a title above y = 55; the shell's header ends higher
+const SHIFT_Y: f32 = -15.0;
 
 /// An animated button with hover and click effects
 struct AnimatedButton {
@@ -179,7 +182,7 @@ impl InteractiveDemo {
       AnimatedButton::new(
         "Button A",
         100.0,
-        200.0,
+        200.0 + SHIFT_Y,
         150.0,
         50.0,
         Color::rgb(80, 100, 160),
@@ -187,7 +190,7 @@ impl InteractiveDemo {
       AnimatedButton::new(
         "Button B",
         300.0,
-        200.0,
+        200.0 + SHIFT_Y,
         150.0,
         50.0,
         Color::rgb(160, 80, 100),
@@ -195,7 +198,7 @@ impl InteractiveDemo {
       AnimatedButton::new(
         "Button C",
         500.0,
-        200.0,
+        200.0 + SHIFT_Y,
         150.0,
         50.0,
         Color::rgb(80, 160, 100),
@@ -203,13 +206,27 @@ impl InteractiveDemo {
       AnimatedButton::new(
         "Large Button",
         200.0,
-        320.0,
+        320.0 + SHIFT_Y,
         250.0,
         70.0,
         Color::rgb(120, 100, 160),
       ),
-      AnimatedButton::new("Small", 500.0, 330.0, 80.0, 40.0, Color::rgb(160, 120, 80)),
-      AnimatedButton::new("Tiny", 620.0, 330.0, 60.0, 40.0, Color::rgb(80, 140, 140)),
+      AnimatedButton::new(
+        "Small",
+        500.0,
+        330.0 + SHIFT_Y,
+        80.0,
+        40.0,
+        Color::rgb(160, 120, 80),
+      ),
+      AnimatedButton::new(
+        "Tiny",
+        620.0,
+        330.0 + SHIFT_Y,
+        60.0,
+        40.0,
+        Color::rgb(80, 140, 140),
+      ),
     ];
 
     let notifications: Vec<Notification> = (0..5).map(|_| Notification::new()).collect();
@@ -230,12 +247,20 @@ impl Default for InteractiveDemo {
   }
 }
 
-impl Scene for InteractiveDemo {
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) || ctx.input.key_pressed(KeyCode::Backspace) {
-      return SceneAction::Pop;
-    }
+impl DemoPage for InteractiveDemo {
+  fn name(&self) -> &str {
+    "Interactive"
+  }
 
+  fn description(&self) -> &str {
+    "Buttons that scale on hover, squish on click and pop up notifications"
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::mouse("Hover and click the buttons")]
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     let mouse_pos = ctx.input.mouse_position();
     let mouse_down = ctx.input.mouse_down(MouseButton::Left);
     let mouse_pressed = ctx.input.mouse_pressed(MouseButton::Left);
@@ -282,11 +307,9 @@ impl Scene for InteractiveDemo {
     for notif in &mut self.notifications {
       notif.update(dt);
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let screen_w = screen_w as f32;
     let screen_h = screen_h as f32;
@@ -297,27 +320,19 @@ impl Scene for InteractiveDemo {
       Color::rgb(20, 20, 30),
     );
 
-    // Title and instructions
     let text_accent = Color::rgb(130, 180, 255);
     let text_muted = Color::rgb(160, 160, 160);
 
-    ui.draw_text("Interactive Animation Demo", 10.0, 10.0, text_accent);
-    ui.draw_text(
-      "Hover and click buttons | ESC/Backspace: Back",
-      10.0,
-      30.0,
-      text_muted,
-    );
-
     // Click counter
     let count_text = format!("Total clicks: {}", self.click_count);
-    ui.draw_text(&count_text, screen_w - 150.0, 10.0, Color::WHITE);
+    let area = content_area(ui);
+    ui.draw_text(&count_text, screen_w - 150.0, area.y, Color::WHITE);
 
     // Section title
     ui.draw_text(
       "Animated Buttons with Hover & Click Effects:",
       100.0,
-      160.0,
+      160.0 + SHIFT_Y,
       Color::WHITE,
     );
 
@@ -333,36 +348,40 @@ impl Scene for InteractiveDemo {
 
     // Info panel
     ui.draw_panel(
-      Rect::new(50.0, 420.0, 700.0, 130.0),
+      Rect::new(50.0, 420.0 + SHIFT_Y, 700.0, 130.0),
       Color::rgb(30, 30, 45),
       Some(Color::rgb(60, 60, 90)),
     );
 
-    ui.draw_text("Animation Techniques Used:", 60.0, 430.0, text_accent);
+    ui.draw_text(
+      "Animation Techniques Used:",
+      60.0,
+      430.0 + SHIFT_Y,
+      text_accent,
+    );
     ui.draw_text(
       "Hover: Scale up with OutBack easing + glow fade in",
       60.0,
-      455.0,
+      455.0 + SHIFT_Y,
       Color::WHITE,
     );
     ui.draw_text(
       "Click: Quick scale down (squish) then bounce back",
       60.0,
-      475.0,
+      475.0 + SHIFT_Y,
       Color::WHITE,
     );
     ui.draw_text(
       "Notifications: Pop up, float upward, fade out",
       60.0,
-      495.0,
+      495.0 + SHIFT_Y,
       Color::WHITE,
     );
     ui.draw_text(
       "All animations use UiTween with retargeting for smooth interrupts",
       60.0,
-      520.0,
+      520.0 + SHIFT_Y,
       text_muted,
     );
-    SceneAction::Continue
   }
 }

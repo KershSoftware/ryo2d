@@ -1,21 +1,14 @@
-//! Skeleton Demo - Ryo2D Example
+//! Skeleton Demo - Ryo2D
 //!
-//! Demonstrates the skeletal animation system with controller-based state machines:
-//! - Fighter scene: idle, walk, punch, kick, block with crossfade blending
-//! - Casual scene: idle, walk, wave, jump, dance
-//! - Action RPG scene: idle, run, attack, dodge, victory
-//!
-//! ## Controls
-//!
-//! - Tab: Cycle between scenes
-//! - Escape: Exit
-//! - See each scene for specific controls
+//! Skeletal animation driven by controller state machines with crossfade
+//! blending, one character per page: Fighter, Casual and Action RPG.
+//! Runs on the demo-kit shell; switch pages with `[` / `]`.
 
 mod scenes;
 
 use std::sync::Arc;
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 use scenes::{ActionRpgScene, CasualScene, FighterScene};
 
@@ -23,9 +16,7 @@ use scenes::{ActionRpgScene, CasualScene, FighterScene};
 #[derive(Debug)]
 pub(crate) struct DebugBone;
 
-const SCENE_NAMES: [&str; 3] = ["Fighter", "Casual", "Action RPG"];
-
-fn create_stick_fighter() -> Arc<SkeletonDef> {
+pub(crate) fn create_stick_fighter() -> Arc<SkeletonDef> {
   Arc::new(
     SkeletonDef::builder()
       // Core (Y-down: negative Y = up on screen)
@@ -100,113 +91,11 @@ fn create_stick_fighter() -> Arc<SkeletonDef> {
   )
 }
 
-// =============================================================================
-// Main Scene - Delegates to sub-scenes
-// =============================================================================
-
-struct SkeletonDemoScene {
-  skeleton_def: Arc<SkeletonDef>,
-  current_scene: usize,
-  fighter: FighterScene,
-  casual: CasualScene,
-  action_rpg: ActionRpgScene,
-  entered: bool,
-}
-
-impl SkeletonDemoScene {
-  fn new() -> Self {
-    let def = create_stick_fighter();
-    let fighter = FighterScene::new(&def);
-    let casual = CasualScene::new(&def);
-    let action_rpg = ActionRpgScene::new(&def);
-    Self {
-      skeleton_def: def,
-      current_scene: 0,
-      fighter,
-      casual,
-      action_rpg,
-      entered: false,
-    }
-  }
-
-  fn enter_current(&mut self, world: &mut World) {
-    let def = &self.skeleton_def;
-    match self.current_scene {
-      0 => self.fighter.enter(world, def),
-      1 => self.casual.enter(world, def),
-      2 => self.action_rpg.enter(world, def),
-      _ => {}
-    }
-  }
-
-  fn exit_current(&mut self, world: &mut World) {
-    match self.current_scene {
-      0 => self.fighter.exit(world),
-      1 => self.casual.exit(world),
-      2 => self.action_rpg.exit(world),
-      _ => {}
-    }
-  }
-}
-
-impl Scene for SkeletonDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.camera.set_position(640.0, 360.0);
-    self.enter_current(ctx.world);
-    self.entered = true;
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Tab: cycle scenes
-    if ctx.input.key_pressed(KeyCode::Tab) {
-      self.exit_current(ctx.world);
-      self.current_scene = (self.current_scene + 1) % SCENE_NAMES.len();
-      self.enter_current(ctx.world);
-    }
-
-    // Delegate update to current sub-scene
-    match self.current_scene {
-      0 => self.fighter.update(ctx, dt),
-      1 => self.casual.update(ctx, dt),
-      2 => self.action_rpg.update(ctx, dt),
-      _ => {}
-    }
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    match self.current_scene {
-      0 => self.fighter.render_ui(ui),
-      1 => self.casual.render_ui(ui),
-      2 => self.action_rpg.render_ui(ui),
-      _ => {}
-    }
-
-    // Scene indicator at top-right
-    let gray = Color::rgb(150, 150, 150);
-    let scene_label = format!(
-      "[{}/{}] {}",
-      self.current_scene + 1,
-      SCENE_NAMES.len(),
-      SCENE_NAMES[self.current_scene]
-    );
-    ui.draw_text(&scene_label, 1050.0, 10.0, gray);
-
-    SceneAction::Continue
-  }
-}
-
 fn main() {
-  EngineBuilder::new()
-    .title("Skeleton Demo")
+  Demo::new("Skeleton")
     .resolution(1280, 720)
-    .start_scene(SkeletonDemoScene::new())
-    .build()
-    .run()
-    .unwrap();
+    .page(FighterScene::new)
+    .page(CasualScene::new)
+    .page(ActionRpgScene::new)
+    .run();
 }

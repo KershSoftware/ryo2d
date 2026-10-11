@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 use super::SceneBase;
+use crate::create_stick_fighter;
 
 fn create_rpg_idle(def: &Arc<SkeletonDef>) -> Arc<SkeletalAnimation> {
   Arc::new(
@@ -222,7 +223,8 @@ pub struct ActionRpgScene {
 }
 
 impl ActionRpgScene {
-  pub fn new(def: &Arc<SkeletonDef>) -> Self {
+  pub fn new() -> Self {
+    let def = &create_stick_fighter();
     let idle = create_rpg_idle(def);
     let run = create_rpg_run(def);
     let attack = create_rpg_attack(def);
@@ -256,22 +258,44 @@ impl ActionRpgScene {
 
     Self {
       base: SceneBase::new(
+        def.clone(),
         controller,
         Color::rgb(255, 100, 100),
         Color::rgb(255, 200, 50),
       ),
     }
   }
+}
 
-  pub fn enter(&mut self, world: &mut World, def: &Arc<SkeletonDef>) {
-    self.base.enter(world, def);
+impl Default for ActionRpgScene {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl DemoPage for ActionRpgScene {
+  fn name(&self) -> &str {
+    "Action RPG"
   }
 
-  pub fn exit(&mut self, world: &mut World) {
-    self.base.exit(world);
+  fn description(&self) -> &str {
+    "Action hero with run, attack, dodge and victory animations."
   }
 
-  pub fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::keys("AD", &[KeyCode::KeyA, KeyCode::KeyD], "Run"),
+      Control::key(KeyCode::KeyJ, "Attack"),
+      Control::key(KeyCode::KeyK, "Dodge"),
+      Control::key(KeyCode::KeyV, "Victory"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    self.base.enter(ctx);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     let Some(entity) = self.base.skeleton_entity else {
       return;
     };
@@ -314,11 +338,7 @@ impl ActionRpgScene {
     self.base.redraw_debug_lines(ctx.world);
   }
 
-  pub fn render_ui(&self, ui: &mut UiContext) {
-    self.base.render_ui(
-      ui,
-      "Action RPG Scene",
-      "A/D: Run  J: Attack  K: Dodge  V: Victory",
-    );
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    self.base.render_ui(ui);
   }
 }

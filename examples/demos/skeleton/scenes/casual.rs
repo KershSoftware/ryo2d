@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 use super::SceneBase;
 use super::fighter::create_fighter_idle;
+use crate::create_stick_fighter;
 
 fn create_casual_walk(def: &Arc<SkeletonDef>) -> Arc<SkeletalAnimation> {
   Arc::new(
@@ -147,7 +148,8 @@ pub struct CasualScene {
 }
 
 impl CasualScene {
-  pub fn new(def: &Arc<SkeletonDef>) -> Self {
+  pub fn new() -> Self {
+    let def = &create_stick_fighter();
     let idle = create_fighter_idle(def);
     let walk = create_casual_walk(def);
     let wave = create_casual_wave(def);
@@ -170,22 +172,44 @@ impl CasualScene {
 
     Self {
       base: SceneBase::new(
+        def.clone(),
         controller,
         Color::rgb(100, 200, 255),
         Color::rgb(255, 200, 100),
       ),
     }
   }
+}
 
-  pub fn enter(&mut self, world: &mut World, def: &Arc<SkeletonDef>) {
-    self.base.enter(world, def);
+impl Default for CasualScene {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl DemoPage for CasualScene {
+  fn name(&self) -> &str {
+    "Casual"
   }
 
-  pub fn exit(&mut self, world: &mut World) {
-    self.base.exit(world);
+  fn description(&self) -> &str {
+    "Relaxed character with walk, wave, jump and a toggled dance."
   }
 
-  pub fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::keys("AD", &[KeyCode::KeyA, KeyCode::KeyD], "Walk"),
+      Control::key(KeyCode::Digit1, "Wave"),
+      Control::key(KeyCode::Digit2, "Jump"),
+      Control::key(KeyCode::Digit3, "Dance (toggle)"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    self.base.enter(ctx);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     let Some(entity) = self.base.skeleton_entity else {
       return;
     };
@@ -232,9 +256,7 @@ impl CasualScene {
     self.base.redraw_debug_lines(ctx.world);
   }
 
-  pub fn render_ui(&self, ui: &mut UiContext) {
-    self
-      .base
-      .render_ui(ui, "Casual Scene", "A/D: Walk  1: Wave  2: Jump  3: Dance");
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    self.base.render_ui(ui);
   }
 }

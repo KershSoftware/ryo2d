@@ -1,25 +1,17 @@
-//! Trails Demo - Ryo2D Example
+//! Trails Demo - Ryo2D
 //!
-//! Six discrete demo pages, each showcasing one trail feature clearly.
-//! Left/Right arrows switch pages (wrapping); on the Presets page, 1-6 pick a preset.
-//!
-//! ## Pages
-//!
-//! 1. **Presets** — Mouse trail + 4 orbiting trails, 1-6 switches preset
-//! 2. **Fade Modes** — 4 orbiting trails with Position/Time/Distance/None fade
-//! 3. **Styles** — 3 trails showing Solid/Soft/Glow rendering styles
-//! 4. **Caps & Joins** — Line2D polylines and polygons with all cap/join combos
-//! 5. **Textured** — Stretch vs Tile texture modes on orbiting trails
-//! 6. **GPU Effects** — Lightning/Noise/Ribbon displacement effects
+//! Six pages, each showcasing one trail feature: presets, fade modes,
+//! rendering styles, caps and joins, textured trails and GPU effects.
+//! Runs on the demo-kit shell; switch pages with `[` / `]`.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 // =============================================================================
 // Demo Page Enum
 // =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DemoPage {
+enum Variant {
   Presets,
   FadeModes,
   Styles,
@@ -28,62 +20,33 @@ enum DemoPage {
   GpuEffects,
 }
 
-impl DemoPage {
-  const ALL: [DemoPage; 6] = [
-    DemoPage::Presets,
-    DemoPage::FadeModes,
-    DemoPage::Styles,
-    DemoPage::CapsJoins,
-    DemoPage::Textured,
-    DemoPage::GpuEffects,
-  ];
-
-  fn index(&self) -> usize {
-    Self::ALL.iter().position(|p| p == self).unwrap_or(0)
-  }
-
-  fn from_index(idx: usize) -> Self {
-    Self::ALL.get(idx).copied().unwrap_or(DemoPage::Presets)
-  }
-
+impl Variant {
   fn name(&self) -> &'static str {
     match self {
-      DemoPage::Presets => "Presets",
-      DemoPage::FadeModes => "Fade Modes",
-      DemoPage::Styles => "Styles & Visual Quality",
-      DemoPage::CapsJoins => "Caps & Joins",
-      DemoPage::Textured => "Textured Trails",
-      DemoPage::GpuEffects => "GPU Effects",
+      Variant::Presets => "Presets",
+      Variant::FadeModes => "Fade Modes",
+      Variant::Styles => "Styles",
+      Variant::CapsJoins => "Caps & Joins",
+      Variant::Textured => "Textured",
+      Variant::GpuEffects => "GPU Effects",
     }
   }
 
   fn description(&self) -> &'static str {
     match self {
-      DemoPage::Presets => "1-6: Switch preset | Space: Pause | R: Reset",
-      DemoPage::FadeModes => "4 trails side-by-side | Up/Down: Adjust lifetime & distance",
-      DemoPage::Styles => "Solid / Soft / Glow rendering styles (wider = more visible difference)",
-      DemoPage::CapsJoins => {
-        "Caps (left) + Joins (right) | Mouse trail: C to cycle cap"
+      Variant::Presets => "A mouse trail and four orbiting trails using one trail preset",
+      Variant::FadeModes => "Four trails side by side: position, time, distance and no fade",
+      Variant::Styles => "Solid, Soft and Glow rendering styles on extra-wide trails",
+      Variant::CapsJoins => {
+        "Line caps (left) and joins (right) on Line2D shapes; the mouse trail uses the chosen cap"
       }
-      DemoPage::Textured => "Stretch (left) vs Tile (right) texture mapping on orbiting trails",
-      DemoPage::GpuEffects => "Lightning / Noise / Ribbon displacement effects",
+      Variant::Textured => "Stretch (left) vs Tile (right) texture mapping on orbiting trails",
+      Variant::GpuEffects => "Lightning, Noise and Ribbon displacement effects",
     }
-  }
-
-  fn next(&self) -> Self {
-    Self::from_index((self.index() + 1) % Self::ALL.len())
-  }
-
-  fn prev(&self) -> Self {
-    let idx = if self.index() == 0 {
-      Self::ALL.len() - 1
-    } else {
-      self.index() - 1
-    };
-    Self::from_index(idx)
   }
 }
 
+// =============================================================================
 // =============================================================================
 // Marker Components
 // =============================================================================
@@ -115,16 +78,16 @@ enum TrailPreset {
 }
 
 impl TrailPreset {
-  fn name(&self) -> &'static str {
-    match self {
-      TrailPreset::Bullet => "Bullet",
-      TrailPreset::Laser => "Laser",
-      TrailPreset::Swipe => "Swipe",
-      TrailPreset::Lightning => "Lightning",
-      TrailPreset::Fire => "Fire",
-      TrailPreset::Energy => "Energy",
-    }
-  }
+  const ALL: [TrailPreset; 6] = [
+    TrailPreset::Bullet,
+    TrailPreset::Laser,
+    TrailPreset::Swipe,
+    TrailPreset::Lightning,
+    TrailPreset::Fire,
+    TrailPreset::Energy,
+  ];
+
+  const NAMES: [&str; 6] = ["Bullet", "Laser", "Swipe", "Lightning", "Fire", "Energy"];
 
   fn create(&self, color: Color, width: f32) -> Trail2D {
     match self {
@@ -142,13 +105,18 @@ impl TrailPreset {
 // Helpers
 // =============================================================================
 
-fn cap_name(cap: LineCap) -> &'static str {
-  match cap {
-    LineCap::Butt => "Butt",
-    LineCap::Round => "Round",
-    LineCap::Square => "Square",
-  }
-}
+const CAPS: [LineCap; 3] = [LineCap::Butt, LineCap::Round, LineCap::Square];
+const CAP_NAMES: [&str; 3] = ["Butt", "Round", "Square"];
+const DEFAULT_CAP: usize = 1;
+
+const JOINS: [LineJoin; 4] = [
+  LineJoin::None,
+  LineJoin::Miter,
+  LineJoin::Bevel,
+  LineJoin::Round,
+];
+const JOIN_NAMES: [&str; 4] = ["None", "Miter", "Bevel", "Round"];
+const DEFAULT_JOIN: usize = 3;
 
 fn circle_sprite(radius: u32, color: Color) -> SpriteHandle {
   let sprite = Sprite::solid_circle(radius, color.r, color.g, color.b, color.a);
@@ -191,55 +159,66 @@ fn create_trail_texture() -> SpriteHandle {
   SpriteHandle::from_sprite(sprite, "trail_gradient")
 }
 
-
 // =============================================================================
-// Main Demo Scene
+// Page
 // =============================================================================
 
-struct TrailsDemoScene {
-  current_page: DemoPage,
+struct TrailsPage {
+  variant: Variant,
   entities: Vec<Entity>,
-  nav_cooldown: f32,
   paused: bool,
   screen_width: f32,
   screen_height: f32,
 
-  // Page 1: Presets
-  current_preset: TrailPreset,
+  // Presets: index into `TrailPreset::ALL`
+  preset_index: usize,
+  applied_preset: usize,
 
-  // Page 2: Fade Modes
+  // Fade Modes
   lifetime: f32,
   fade_distance: f32,
+  applied_fade: (f32, f32),
 
-  // Page 4: Caps & Joins (mouse trail cycling)
-  current_cap: LineCap,
-  current_join: LineJoin,
+  // Caps & Joins (mouse trail and Line2D shapes)
+  cap_index: usize,
+  join_index: usize,
+  applied_cap_join: (usize, usize),
 
-  // Page 5: Textured
+  // Textured
   texture_sprite: Option<SpriteHandle>,
 }
 
-impl TrailsDemoScene {
-  fn new() -> Self {
+impl TrailsPage {
+  fn new(variant: Variant) -> Self {
     Self {
-      current_page: DemoPage::Presets,
+      variant,
       entities: Vec::new(),
-      nav_cooldown: 0.0,
       paused: false,
       screen_width: 0.0,
       screen_height: 0.0,
-      current_preset: TrailPreset::Bullet,
+      preset_index: 0,
+      applied_preset: 0,
       lifetime: 0.5,
       fade_distance: 100.0,
-      current_cap: LineCap::Round,
-      current_join: LineJoin::Round,
+      applied_fade: (0.5, 100.0),
+      cap_index: DEFAULT_CAP,
+      join_index: DEFAULT_JOIN,
+      applied_cap_join: (DEFAULT_CAP, DEFAULT_JOIN),
       texture_sprite: None,
     }
   }
 
-  // ===========================================================================
-  // Page lifecycle
-  // ===========================================================================
+  fn preset(&self) -> TrailPreset {
+    TrailPreset::ALL[self.preset_index.min(TrailPreset::ALL.len() - 1)]
+  }
+
+  fn cap(&self) -> LineCap {
+    CAPS[self.cap_index.min(CAPS.len() - 1)]
+  }
+
+  fn join(&self) -> LineJoin {
+    JOINS[self.join_index.min(JOINS.len() - 1)]
+  }
 
   fn clear_page(&mut self, world: &mut World) {
     for entity in self.entities.drain(..) {
@@ -248,23 +227,19 @@ impl TrailsDemoScene {
   }
 
   fn setup_page(&mut self, ctx: &mut SceneContext) {
-    match self.current_page {
-      DemoPage::Presets => self.setup_presets(ctx),
-      DemoPage::FadeModes => self.setup_fade_modes(ctx),
-      DemoPage::Styles => self.setup_styles(ctx),
-      DemoPage::CapsJoins => self.setup_caps_joins(ctx),
-      DemoPage::Textured => self.setup_textured(ctx),
-      DemoPage::GpuEffects => self.setup_gpu_effects(ctx),
+    match self.variant {
+      Variant::Presets => self.setup_presets(ctx),
+      Variant::FadeModes => self.setup_fade_modes(ctx),
+      Variant::Styles => self.setup_styles(ctx),
+      Variant::CapsJoins => self.setup_caps_joins(ctx),
+      Variant::Textured => self.setup_textured(ctx),
+      Variant::GpuEffects => self.setup_gpu_effects(ctx),
     }
   }
 
-  fn switch_page(&mut self, ctx: &mut SceneContext, page: DemoPage) {
-    if page == self.current_page {
-      return;
-    }
+  /// Rebuild the page's entities when a setting changed
+  fn rebuild(&mut self, ctx: &mut SceneContext) {
     self.clear_page(ctx.world);
-    self.current_page = page;
-    self.paused = false;
     self.setup_page(ctx);
   }
 
@@ -314,7 +289,7 @@ impl TrailsDemoScene {
     // Mouse-controlled trail — uses preset's natural parameters
     let (mx, my) = ctx.input.mouse_position();
     let mouse_color = Color::rgb(100, 200, 255);
-    let trail = self.current_preset.create(mouse_color, 8.0);
+    let trail = self.preset().create(mouse_color, 8.0);
 
     let entity = ctx.world.spawn((
       Transform::new(mx, my).with_pivot(0.5, 0.5),
@@ -334,14 +309,9 @@ impl TrailsDemoScene {
 
     for (i, (radius, speed, color)) in configs.iter().enumerate() {
       let angle = i as f32 * std::f32::consts::FRAC_PI_2;
-      let trail = self.current_preset.create(*color, 8.0);
+      let trail = self.preset().create(*color, 8.0);
       self.spawn_orbit(ctx, cx, cy, *radius, *speed, angle, *color, trail);
     }
-  }
-
-  fn recreate_presets(&mut self, ctx: &mut SceneContext) {
-    self.clear_page(ctx.world);
-    self.setup_presets(ctx);
   }
 
   // ===========================================================================
@@ -525,8 +495,8 @@ impl TrailsDemoScene {
     let mouse_color = Color::rgb(200, 255, 200);
     let trail = Trail2D::new(mouse_color, 12.0)
       .with_length(40)
-      .with_cap(self.current_cap)
-      .with_join(self.current_join)
+      .with_cap(self.cap())
+      .with_join(self.join())
       .with_style(TrailStyle::Solid);
 
     let entity = ctx.world.spawn((
@@ -705,193 +675,93 @@ impl TrailsDemoScene {
       }
     }
   }
-
-  // ===========================================================================
-  // Page-specific input handling
-  // ===========================================================================
-
-  fn handle_presets_input(&mut self, ctx: &mut SceneContext) {
-    let mut changed = false;
-
-    // Preset switching
-    let presets = [
-      (KeyCode::Digit1, TrailPreset::Bullet),
-      (KeyCode::Digit2, TrailPreset::Laser),
-      (KeyCode::Digit3, TrailPreset::Swipe),
-      (KeyCode::Digit4, TrailPreset::Lightning),
-      (KeyCode::Digit5, TrailPreset::Fire),
-      (KeyCode::Digit6, TrailPreset::Energy),
-    ];
-    for (key, preset) in &presets {
-      if ctx.input.key_pressed(*key) {
-        self.current_preset = *preset;
-        changed = true;
-      }
-    }
-
-    // Pause
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.paused = !self.paused;
-    }
-
-    // Reset
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      for &entity in &self.entities {
-        if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
-          trail.clear();
-        }
-      }
-    }
-
-    if changed {
-      self.recreate_presets(ctx);
-    }
-  }
-
-  fn handle_fade_modes_input(&mut self, ctx: &mut SceneContext) {
-    let mut changed = false;
-
-    if ctx.input.key_pressed(KeyCode::ArrowUp) {
-      self.lifetime = (self.lifetime + 0.1).min(2.0);
-      self.fade_distance = (self.fade_distance + 20.0).min(500.0);
-      changed = true;
-    }
-    if ctx.input.key_pressed(KeyCode::ArrowDown) {
-      self.lifetime = (self.lifetime - 0.1).max(0.1);
-      self.fade_distance = (self.fade_distance - 20.0).max(20.0);
-      changed = true;
-    }
-
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.paused = !self.paused;
-    }
-
-    if changed {
-      self.clear_page(ctx.world);
-      self.setup_fade_modes(ctx);
-    }
-  }
-
-  fn handle_caps_joins_input(&mut self, ctx: &mut SceneContext) {
-    let mut changed = false;
-
-    if ctx.input.key_pressed(KeyCode::KeyC) {
-      self.current_cap = match self.current_cap {
-        LineCap::Butt => LineCap::Round,
-        LineCap::Round => LineCap::Square,
-        LineCap::Square => LineCap::Butt,
-      };
-      changed = true;
-    }
-
-    if ctx.input.key_pressed(KeyCode::KeyJ) {
-      self.current_join = match self.current_join {
-        LineJoin::None => LineJoin::Miter,
-        LineJoin::Miter => LineJoin::Bevel,
-        LineJoin::Bevel => LineJoin::Round,
-        LineJoin::Round => LineJoin::None,
-      };
-      changed = true;
-    }
-
-    if changed {
-      self.clear_page(ctx.world);
-      self.setup_caps_joins(ctx);
-    }
-  }
-
-  fn handle_textured_input(&mut self, ctx: &mut SceneContext) {
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.paused = !self.paused;
-    }
-  }
-
-  fn handle_gpu_effects_input(&mut self, ctx: &mut SceneContext) {
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.paused = !self.paused;
-    }
-  }
-
-  // ===========================================================================
-  // Navigation
-  // ===========================================================================
-
-  fn handle_navigation(&mut self, ctx: &mut SceneContext) -> bool {
-    // Left/Right arrows always switch pages
-    let new_page = if ctx.input.key_pressed(KeyCode::ArrowRight) {
-      Some(self.current_page.next())
-    } else if ctx.input.key_pressed(KeyCode::ArrowLeft) {
-      Some(self.current_page.prev())
-    } else {
-      None
-    };
-
-    if let Some(page) = new_page {
-      self.switch_page(ctx, page);
-      return true;
-    }
-    false
-  }
 }
 
 // =============================================================================
-// Scene Implementation
+// Page Implementation
 // =============================================================================
 
-impl Scene for TrailsDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for TrailsPage {
+  fn name(&self) -> &str {
+    self.variant.name()
+  }
+
+  fn description(&self) -> &str {
+    self.variant.description()
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    match self.variant {
+      Variant::Presets => s.choice("Preset", &mut self.preset_index, &TrailPreset::NAMES),
+      Variant::FadeModes => {
+        s.float("Lifetime", &mut self.lifetime, 0.1..=2.0, 0.1);
+        s.float("Distance", &mut self.fade_distance, 20.0..=500.0, 20.0);
+      }
+      Variant::CapsJoins => {
+        s.choice("Cap", &mut self.cap_index, &CAP_NAMES);
+        s.choice("Join", &mut self.join_index, &JOIN_NAMES);
+      }
+      Variant::Styles | Variant::Textured | Variant::GpuEffects => {}
+    }
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    match self.variant {
+      Variant::Presets => vec![
+        Control::key(KeyCode::Space, "Pause"),
+        Control::mouse("Move the trail"),
+      ],
+      Variant::CapsJoins => vec![Control::mouse("Move the trail")],
+      _ => vec![Control::key(KeyCode::Space, "Pause")],
+    }
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (w, h) = ctx.screen_size();
     self.screen_width = w;
     self.screen_height = h;
-
-    println!("=== TRAILS DEMO ===");
-    println!("Left/Right: Switch pages");
-    println!("ESC: Exit");
-
     self.setup_page(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Navigation cooldown
-    if self.nav_cooldown > 0.0 {
-      self.nav_cooldown -= dt;
-    }
-
-    if self.nav_cooldown <= 0.0 && self.handle_navigation(ctx) {
-      self.nav_cooldown = 0.2;
-      return SceneAction::Continue;
-    }
-
-    // Page-specific input
-    match self.current_page {
-      DemoPage::Presets => self.handle_presets_input(ctx),
-      DemoPage::FadeModes => self.handle_fade_modes_input(ctx),
-      DemoPage::Styles => {
-        if ctx.input.key_pressed(KeyCode::Space) {
-          self.paused = !self.paused;
-        }
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    // Settings changes rebuild the page's trails
+    let changed = match self.variant {
+      Variant::Presets => {
+        let changed = self.preset_index != self.applied_preset;
+        self.applied_preset = self.preset_index;
+        changed
       }
-      DemoPage::CapsJoins => self.handle_caps_joins_input(ctx),
-      DemoPage::Textured => self.handle_textured_input(ctx),
-      DemoPage::GpuEffects => self.handle_gpu_effects_input(ctx),
+      Variant::FadeModes => {
+        let now = (self.lifetime, self.fade_distance);
+        let changed = now != self.applied_fade;
+        self.applied_fade = now;
+        changed
+      }
+      Variant::CapsJoins => {
+        let now = (self.cap_index, self.join_index);
+        let changed = now != self.applied_cap_join;
+        self.applied_cap_join = now;
+        changed
+      }
+      _ => false,
+    };
+    if changed {
+      self.rebuild(ctx);
     }
 
-    // Update trails
+    if self.variant != Variant::CapsJoins && ctx.input.key_pressed(KeyCode::Space) {
+      self.paused = !self.paused;
+    }
+
     self.update_orbits(ctx, dt);
 
     // Mouse trail only on pages that have one
-    if matches!(self.current_page, DemoPage::Presets | DemoPage::CapsJoins) {
+    if matches!(self.variant, Variant::Presets | Variant::CapsJoins) {
       self.update_mouse_trail(ctx, dt);
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (sw, sh) = ui.screen_size();
     let sw = sw as f32;
     let sh = sh as f32;
@@ -900,45 +770,16 @@ impl Scene for TrailsDemoScene {
     let muted = Color::rgb(150, 150, 150);
     let yellow = Color::rgb(255, 255, 100);
 
-    // Page title
-    ui.draw_text(
-      &format!(
-        "Page {}/6: {}",
-        self.current_page.index() + 1,
-        self.current_page.name()
-      ),
-      10.0,
-      10.0,
-      white,
-    );
-
-    // Description
-    ui.draw_text(self.current_page.description(), 10.0, 30.0, yellow);
-
-    // Navigation hint at bottom
-    ui.draw_text(
-      "Left/Right: Switch Page | ESC: Exit",
-      10.0,
-      sh - 20.0,
-      muted,
-    );
-
     // Page-specific UI
-    match self.current_page {
-      DemoPage::Presets => {
-        ui.draw_text(
-          &format!("Preset: {}", self.current_preset.name()),
-          10.0,
-          50.0,
-          gray,
-        );
+    match self.variant {
+      Variant::Presets => {
         if self.paused {
           ui.draw_text("PAUSED", sw / 2.0 - 30.0, sh / 2.0, yellow);
         }
       }
-      DemoPage::FadeModes => {
+      Variant::FadeModes => {
         let spacing = sw / 4.0;
-        let label_y = 55.0;
+        let label_y = 100.0; // below the settings panel
         let colors = [
           Color::rgb(100, 200, 255),
           Color::rgb(255, 200, 80),
@@ -963,7 +804,7 @@ impl Scene for TrailsDemoScene {
           ui.draw_text("PAUSED", sw / 2.0 - 30.0, sh / 2.0, yellow);
         }
       }
-      DemoPage::Styles => {
+      Variant::Styles => {
         let spacing = sw / 3.0;
         let label_y = self.screen_height * 0.25 - 80.0;
         let labels = ["Solid", "Soft", "Glow"];
@@ -975,7 +816,7 @@ impl Scene for TrailsDemoScene {
           ui.draw_text("PAUSED", sw / 2.0 - 30.0, sh / 2.0, yellow);
         }
       }
-      DemoPage::CapsJoins => {
+      Variant::CapsJoins => {
         // LEFT HALF: Cap labels beside each line
         ui.draw_text("CAPS", 10.0, 55.0, gray);
         ui.draw_text("(magenta lines = true endpoints)", 50.0, 55.0, muted);
@@ -1002,15 +843,15 @@ impl Scene for TrailsDemoScene {
         // Mouse trail info
         ui.draw_text(
           &format!(
-            "Mouse trail: Cap={} | C to cycle cap  (Joins apply to Line2D only, not Trail2D)",
-            cap_name(self.current_cap),
+            "Mouse trail: Cap={} (Joins apply to Line2D only, not Trail2D)",
+            CAP_NAMES[self.cap_index.min(CAP_NAMES.len() - 1)],
           ),
           10.0,
           sh - 40.0,
           gray,
         );
       }
-      DemoPage::Textured => {
+      Variant::Textured => {
         let cx = sw / 2.0;
         ui.draw_text("Stretch", cx - 180.0 - 25.0, sh * 0.25 - 60.0, white);
         ui.draw_text(
@@ -1030,7 +871,7 @@ impl Scene for TrailsDemoScene {
           ui.draw_text("PAUSED", sw / 2.0 - 30.0, sh / 2.0, yellow);
         }
       }
-      DemoPage::GpuEffects => {
+      Variant::GpuEffects => {
         let col = sw / 3.0;
         let cx = sw / 2.0;
         ui.draw_text("Lightning", col * 0.5 - 30.0, sh * 0.25 - 60.0, Color::CYAN);
@@ -1059,22 +900,22 @@ impl Scene for TrailsDemoScene {
         }
       }
     }
-
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Trails Demo - Ryo2D")
+  Demo::new("Trails")
     .resolution(1920, 1080)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .target_fps(144)
-    .physics_hz(144)
-    .start_scene(TrailsDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableAspectRatio)
+        .target_fps(144)
+        .physics_hz(144)
+    })
+    .page(|| TrailsPage::new(Variant::Presets))
+    .page(|| TrailsPage::new(Variant::FadeModes))
+    .page(|| TrailsPage::new(Variant::Styles))
+    .page(|| TrailsPage::new(Variant::CapsJoins))
+    .page(|| TrailsPage::new(Variant::Textured))
+    .page(|| TrailsPage::new(Variant::GpuEffects))
+    .run();
 }

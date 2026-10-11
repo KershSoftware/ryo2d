@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 use super::SceneBase;
+use crate::create_stick_fighter;
 
 pub(crate) fn create_fighter_idle(def: &Arc<SkeletonDef>) -> Arc<SkeletalAnimation> {
   Arc::new(
@@ -160,7 +161,8 @@ pub struct FighterScene {
 }
 
 impl FighterScene {
-  pub fn new(def: &Arc<SkeletonDef>) -> Self {
+  pub fn new() -> Self {
+    let def = &create_stick_fighter();
     let idle = create_fighter_idle(def);
     let walk = create_fighter_walk(def);
     let punch = create_fighter_punch(def);
@@ -195,22 +197,44 @@ impl FighterScene {
 
     Self {
       base: SceneBase::new(
+        def.clone(),
         controller,
         Color::rgb(100, 255, 100),
         Color::rgb(255, 255, 100),
       ),
     }
   }
+}
 
-  pub fn enter(&mut self, world: &mut World, def: &Arc<SkeletonDef>) {
-    self.base.enter(world, def);
+impl Default for FighterScene {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl DemoPage for FighterScene {
+  fn name(&self) -> &str {
+    "Fighter"
   }
 
-  pub fn exit(&mut self, world: &mut World) {
-    self.base.exit(world);
+  fn description(&self) -> &str {
+    "Stick fighter with idle, walk, punch, kick and block states, crossfaded by a skeletal state machine."
   }
 
-  pub fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::keys("AD", &[KeyCode::KeyA, KeyCode::KeyD], "Walk"),
+      Control::key(KeyCode::KeyJ, "Punch"),
+      Control::key(KeyCode::KeyK, "Kick"),
+      Control::key(KeyCode::KeyL, "Block (hold)"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    self.base.enter(ctx);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     let Some(entity) = self.base.skeleton_entity else {
       return;
     };
@@ -260,11 +284,7 @@ impl FighterScene {
     self.base.redraw_debug_lines(ctx.world);
   }
 
-  pub fn render_ui(&self, ui: &mut UiContext) {
-    self.base.render_ui(
-      ui,
-      "Fighter Scene",
-      "A/D: Walk  J: Punch  K: Kick  L: Block",
-    );
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    self.base.render_ui(ui);
   }
 }
