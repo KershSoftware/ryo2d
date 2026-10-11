@@ -13,6 +13,7 @@
 #     ./run.sh -r|--release <example>       - Same as above (flag before example)
 #     ./run.sh demos:run-all       - Launch all demos in dev mode (parallel terminals)
 #     ./run.sh demos:kill-all      - Kill all running demos
+#     ./run.sh demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)
 #     ./run.sh check               - Compilation check (engine + all examples)
 #     ./run.sh lint                - Linting with clippy (engine + all examples)
 #     ./run.sh test                - Run unit + integration tests
@@ -467,6 +468,15 @@ case "$COMMAND" in
             echo -e "${YELLOW}No demos were running.${NC}"
         fi
         ;;
+    demos:tour)
+        TOUR_ARGS=()
+        for arg in "$@"; do
+            if [[ "$arg" != "demos:tour" && "$arg" != -* ]]; then
+                TOUR_ARGS+=("$arg")
+            fi
+        done
+        cargo run -q -p demo-kit --bin demo-tour -- "${TOUR_ARGS[@]}"
+        ;;
     check)
         cargo check --workspace
         ;;
@@ -577,6 +587,7 @@ case "$COMMAND" in
         echo "    ./run.sh -r|--release <example>       - Same as above (flag before example)"
         echo "    ./run.sh demos:run-all       - Launch all demos in dev mode (parallel terminals)"
         echo "    ./run.sh demos:kill-all      - Kill all running demos"
+        echo "    ./run.sh demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)"
         echo "    ./run.sh check               - Compilation check (engine + all examples)"
         echo "    ./run.sh lint                - Linting with clippy (engine + all examples)"
         echo "    ./run.sh test                - Run unit + integration tests (default)"

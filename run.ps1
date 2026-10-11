@@ -12,6 +12,7 @@
 #   .\run -r|--release <example>   - Same as above (flag before example)
 #   .\run demos:run-all    - Launch all demos in dev mode (parallel terminals)
 #   .\run demos:kill-all   - Kill all running demos
+#   .\run demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)
 #   .\run check        - Compilation check (engine + all examples)
 #   .\run lint         - Linting with clippy (engine + all examples)
 #   .\run test         - Run unit + integration tests
@@ -411,6 +412,13 @@ switch ($ExampleName.ToLower()) {
             Write-Host "No demos were running." -ForegroundColor Yellow
         }
     }
+    "demos:tour" {
+        $tourArgs = @()
+        if ($Arg2) { $tourArgs += $Arg2 }
+        $tourArgs += $args
+        cargo run -q -p demo-kit --bin demo-tour -- @tourArgs
+        exit $LASTEXITCODE
+    }
     "check" {
         cargo check --workspace
     }
@@ -535,6 +543,7 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./run -r|--release <example>       - Same as above (flag before example)"
         Write-Host "  ./run demos:run-all      - Launch all demos in dev mode (parallel terminals)"
         Write-Host "  ./run demos:kill-all     - Kill all running demos"
+        Write-Host "  ./run demos:tour [demo...] - Capture every page of every demo headlessly"
         Write-Host "  ./run check              - Compilation check (engine + all examples)"
         Write-Host "  ./run lint               - Linting with clippy (engine + all examples)"
         Write-Host "  ./run test               - Run unit + integration tests (default)"

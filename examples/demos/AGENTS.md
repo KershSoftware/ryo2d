@@ -67,3 +67,7 @@ Top bar (title, `N/M page`, shell keys), one description line, the settings pane
 - `RYO_DEMO_PAGE=<n>` (dev builds, 1-based) starts on page n; an out-of-range page exits with code 2.
 - The demo logs `[demo] <title>: <m> pages` at startup.
 - Combine with `RYO_HEADLESS=1`, `RYO_INPUT` and `RYO_CAPTURE_*` (see the `ryo-cli` skill).
+
+## Tour
+
+`./run demos:tour [demo...]` (or `cargo run -p demo-kit --bin demo-tour -- [demo...]`) builds the demos and captures every page headlessly to `target/demo-tour/<demo>/page-<n>.png`, with each run's log beside it. A page that panics, times out (60 s) or captures nothing fails the tour. Demos not yet on demo-kit are captured once and reported as `not on demo-kit`. Run it after changing a demo or the renderer, and look at the PNGs.
