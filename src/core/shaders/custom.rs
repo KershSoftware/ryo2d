@@ -141,6 +141,10 @@ impl Source {
     if !self.game.contains(&offset) {
       return None;
     }
+    self.position(offset)
+  }
+
+  fn position(&self, offset: usize) -> Option<(u32, u32)> {
     let before = self.text.get(self.game.start..offset)?;
     let line = before.matches('\n').count() as u32 + 1;
     let line_start = before.rfind('\n').map_or(0, |p| p + 1);
@@ -148,31 +152,41 @@ impl Source {
     Some((line, column))
   }
 
+  /// Position just past the game's last non-blank character
+  fn end_of_game(&self) -> Option<(u32, u32)> {
+    let game = self.text.get(self.game.clone())?;
+    self.position(self.game.start + game.trim_end().len())
+  }
+
   /// Build an error from an optional byte offset into the assembled source
+  ///
+  /// An offset at the end of the game's code or at the first generated token
+  /// right after it means the game's code ended unexpectedly (an unclosed
+  /// brace or parenthesis), so it is reported at the game's last line.
   fn error(&self, id: &str, offset: Option<usize>, message: impl Into<String>) -> ShaderError {
     let message = message.into();
-    match offset {
-      None => ShaderError {
-        shader: id.to_string(),
-        line: None,
-        column: None,
-        message,
-      },
-      Some(o) => match self.locate(o) {
-        Some((line, column)) => ShaderError {
-          shader: id.to_string(),
-          line: Some(line),
-          column: Some(column),
-          message,
-        },
-        None => ShaderError {
-          shader: id.to_string(),
-          line: None,
-          column: None,
-          message: format!("in engine-generated code: {message}"),
-        },
-      },
+    let at = |line, column, message| ShaderError {
+      shader: id.to_string(),
+      line,
+      column,
+      message,
+    };
+    let Some(o) = offset else {
+      return at(None, None, message);
+    };
+    if let Some((line, column)) = self.locate(o) {
+      return at(Some(line), Some(column), message);
     }
+    if (self.game.end..=self.game.end + 1).contains(&o)
+      && let Some((line, column)) = self.end_of_game()
+    {
+      return at(
+        Some(line),
+        Some(column),
+        format!("unexpected end of shader: {message}"),
+      );
+    }
+    at(None, None, format!("in engine-generated code: {message}"))
   }
 }
 
@@ -188,11 +202,30 @@ fn error_chain(err: &dyn std::error::Error) -> String {
   out
 }
 
-fn parse(src: &Source, id: &str) -> Result<naga::Module, ShaderError> {
-  naga::front::wgsl::parse_str(&src.text).map_err(|e| {
-    let offset = e.location(&src.text).map(|l| l.offset as usize);
-    src.error(id, offset, e.message().to_string())
+/// Parse failure before line mapping: byte offset and naga's message
+struct RawParseError {
+  offset: Option<usize>,
+  message: String,
+}
+
+impl RawParseError {
+  /// Whether naga could not find `Params` (the game declared none)
+  fn is_unresolved_params(&self) -> bool {
+    let names_params = self.message.contains("`Params`") || self.message.contains("'Params'");
+    names_params
+      && (self.message.contains("unknown type") || self.message.contains("no definition in scope"))
+  }
+}
+
+fn parse_raw(src: &Source) -> Result<naga::Module, RawParseError> {
+  naga::front::wgsl::parse_str(&src.text).map_err(|e| RawParseError {
+    offset: e.location(&src.text).map(|l| l.offset as usize),
+    message: e.message().to_string(),
   })
+}
+
+fn parse(src: &Source, id: &str) -> Result<naga::Module, ShaderError> {
+  parse_raw(src).map_err(|e| src.error(id, e.offset, e.message))
 }
 
 fn validate(src: &Source, id: &str, module: &naga::Module) -> Result<(), ShaderError> {
@@ -209,56 +242,11 @@ fn validate(src: &Source, id: &str, module: &naga::Module) -> Result<(), ShaderE
     })
 }
 
-/// Remove `//` and `/* */` comments so a commented-out `struct Params` is ignored
-fn strip_comments(code: &str) -> String {
-  let mut out = String::with_capacity(code.len());
-  let mut chars = code.chars().peekable();
-  while let Some(c) = chars.next() {
-    match (c, chars.peek()) {
-      ('/', Some('/')) => {
-        for n in chars.by_ref() {
-          if n == '\n' {
-            out.push('\n');
-            break;
-          }
-        }
-      }
-      ('/', Some('*')) => {
-        chars.next();
-        let mut prev = ' ';
-        for n in chars.by_ref() {
-          if prev == '*' && n == '/' {
-            break;
-          }
-          prev = n;
-        }
-        out.push(' ');
-      }
-      _ => out.push(c),
-    }
-  }
-  out
-}
-
-/// Whether the game's code declares its own `struct Params`
-fn declares_params(game: &str) -> bool {
-  let code = strip_comments(game);
-  let is_ident = |c: char| c.is_alphanumeric() || c == '_';
-  let mut rest = code.as_str();
-  while let Some(i) = rest.find("struct") {
-    let before_ok = rest[..i].chars().next_back().is_none_or(|c| !is_ident(c));
-    let after = &rest[i + 6..];
-    let trimmed = after.trim_start();
-    if before_ok
-      && trimmed.len() < after.len()
-      && let Some(tail) = trimmed.strip_prefix("Params")
-      && tail.chars().next().is_none_or(|c| !is_ident(c))
-    {
-      return true;
-    }
-    rest = after;
-  }
-  false
+/// Whether a parsed module has a struct type named `Params`
+fn has_params_struct(module: &naga::Module) -> bool {
+  module.types.iter().any(|(_, t)| {
+    t.name.as_deref() == Some("Params") && matches!(t.inner, naga::TypeInner::Struct { .. })
+  })
 }
 
 fn reflect_params(
@@ -426,6 +414,25 @@ fn fs_main(in: RyVsOut) -> @location(0) vec4<f32> {
 }
 ";
 
+fn retry_with_fallback(
+  head: &str,
+  user_source: &str,
+  id: &str,
+) -> Result<(Source, bool, naga::Module), ShaderError> {
+  let src = Source::new(head, user_source, true);
+  let module = parse(&src, id)?;
+  Ok((src, true, module))
+}
+
+/// Size in bytes of the uniform data for a layout: 32 for sprites (eight
+/// floats in the instance), the struct size rounded up to 16 for effects
+pub(crate) fn uniform_size(kind: ShaderKind, layout: &ParamLayout) -> usize {
+  match kind {
+    ShaderKind::Sprite => SPRITE_PARAM_LIMIT as usize,
+    ShaderKind::Effect => (layout.size as usize).next_multiple_of(16),
+  }
+}
+
 /// Assemble prelude + game code + generated entry, validate with naga, reflect `Params`
 pub(crate) fn compile(
   kind: ShaderKind,
@@ -453,9 +460,16 @@ pub(crate) fn compile(
 
   // First pass: everything but the generated entry, so the game's own errors,
   // its entry signature and its `Params` are checked before the entry is built
-  let fallback = !declares_params(user_source);
-  let base = Source::new(&head, user_source, fallback);
-  let module = parse(&base, id)?;
+  //
+  // `Params` is declared by the game exactly when it parses without the
+  // fallback and the module has the struct; otherwise the fallback is added.
+  let plain = Source::new(&head, user_source, false);
+  let (base, fallback, module) = match parse_raw(&plain) {
+    Ok(module) if has_params_struct(&module) => (plain, false, module),
+    Ok(_) => retry_with_fallback(&head, user_source, id)?,
+    Err(e) if e.is_unresolved_params() => retry_with_fallback(&head, user_source, id)?,
+    Err(e) => return Err(plain.error(id, e.offset, e.message)),
+  };
   check_entry(&base, id, &module, entry_name, input)?;
   let layout = reflect_params(&base, id, &module, limit)?;
 
@@ -684,7 +698,7 @@ mod tests {
   fn validation_errors_point_at_the_games_line() {
     let src = "\n\nfn sprite(in: SpriteIn, params: Params) -> vec4<f32> {\n  let x: f32 = vec2<f32>(1.0);\n  return vec4<f32>(x);\n}\n";
     let err = compile_sprite(src).err().expect("type error");
-    assert!(err.line.is_some(), "{err}");
+    assert_eq!(err.line, Some(4), "{err}");
   }
 
   #[test]
@@ -693,5 +707,92 @@ mod tests {
     let compiled = compile(ShaderKind::Effect, "fx.wgsl", src).expect("compiles");
     assert_eq!(compiled.layout.fields.len(), 1);
     assert_eq!(compiled.layout.fields[0].name, "unused");
+  }
+
+  #[test]
+  fn unclosed_brace_points_at_the_games_last_line() {
+    let src = "// header\nfn sprite(in: SpriteIn, params: Params) -> vec4<f32> {\n  return sample(in.uv);\n\n";
+    let err = compile_sprite(src).err().expect("unclosed");
+    assert_eq!(err.line, Some(3), "{err}");
+    assert!(err.message.starts_with("unexpected end of shader"), "{err}");
+    assert!(!err.message.contains("engine-generated"), "{err}");
+
+    let src = "struct Params { a: f32 }\nfn sprite(in: SpriteIn, params: Params) -> vec4<f32> {\n  return vec4<f32>(max(params.a, 1.0);\n}";
+    let err = compile_sprite(src).err().expect("unclosed paren");
+    assert_eq!(err.line, Some(3), "{err}");
+  }
+
+  #[test]
+  fn params_extra_is_not_params() {
+    let src = "struct ParamsExtra { z: f32 }\nstruct Params { a: f32 }\n\
+      fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return vec4<f32>(params.a); }";
+    let layout = compile_sprite(src).expect("compiles").layout;
+    assert_eq!(layout.fields.len(), 1);
+    assert_eq!(layout.fields[0].name, "a");
+
+    let src = "struct ParamsExtra { z: f32 }\n\
+      fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
+    let layout = compile_sprite(src).expect("fallback used").layout;
+    assert_eq!(layout.fields[0].name, "unused");
+  }
+
+  #[test]
+  fn commented_params_is_not_declared() {
+    let src = "/* /* struct Params {} */ */\n\
+      fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
+    let layout = compile_sprite(src).expect("fallback used").layout;
+    assert_eq!(layout.fields[0].name, "unused");
+  }
+
+  #[test]
+  fn odd_whitespace_params_is_declared() {
+    let src = "struct  Params{\n a:f32 }\n\
+      fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return vec4<f32>(params.a); }";
+    let layout = compile_sprite(src).expect("compiles").layout;
+    assert_eq!(layout.fields[0].name, "a");
+  }
+
+  #[test]
+  fn generated_fields_cover_every_kind() {
+    let wgsl = |params: &str, body: &str| compiled_effect_or_sprite(&sprite_src(params, body)).wgsl;
+    let w = wgsl("struct Params { a: f32 }", "return vec4<f32>(params.a);");
+    assert!(w.contains("Params(f[0])"), "{w}");
+    let w = wgsl(
+      "struct Params { a: f32, b: vec2<f32> }",
+      "return vec4<f32>(params.b, params.a, 1.0);",
+    );
+    assert!(w.contains("Params(f[0], vec2<f32>(f[2], f[3]))"), "{w}");
+    let w = wgsl(
+      "struct Params { a: vec3<f32>, b: f32 }",
+      "return vec4<f32>(params.a, params.b);",
+    );
+    assert!(
+      w.contains("Params(vec3<f32>(f[0], f[1], f[2]), f[3])"),
+      "{w}"
+    );
+    let w = wgsl(
+      "struct Params { a: f32, b: vec4<f32> }",
+      "return params.b * params.a;",
+    );
+    assert!(
+      w.contains("Params(f[0], vec4<f32>(f[4], f[5], f[6], f[7]))"),
+      "{w}"
+    );
+  }
+
+  #[test]
+  fn effect_params_pack_to_sixteen_bytes() {
+    let src = "struct Params { a: f32 }\n\
+      fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv) * params.a; }";
+    let layout = compile(ShaderKind::Effect, "fx.wgsl", src)
+      .expect("compiles")
+      .layout;
+    assert_eq!(uniform_size(ShaderKind::Effect, &layout), 16);
+    assert_eq!(uniform_size(ShaderKind::Sprite, &layout), 32);
+    let mut out = vec![0xFFu8; uniform_size(ShaderKind::Effect, &layout)];
+    let unknown = pack(&layout, &ShaderParams::new().with("a", 3.0), &mut out);
+    assert!(unknown.is_empty());
+    assert_eq!(&out[..4], &3.0f32.to_le_bytes());
+    assert!(out[4..].iter().all(|b| *b == 0));
   }
 }

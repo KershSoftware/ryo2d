@@ -135,12 +135,28 @@ impl ShaderHandle {
     self.inner.path.as_deref()
   }
 
+  /// The generation and source read together under one lock
+  ///
+  /// Prefer this over separate `generation()` and `source()` calls: a reload
+  /// between those two reads would pair a new generation with old source (or
+  /// the reverse) and the compiled shader would never be refreshed.
+  pub fn snapshot(&self) -> (u64, String) {
+    let guard = self.inner.source.lock().unwrap_or_else(|e| e.into_inner());
+    (self.inner.generation.load(Ordering::Acquire), guard.clone())
+  }
+
   /// Replace the WGSL source and bump the generation
   ///
   /// Used by hot reload; also lets tools and tests update inline shaders.
+  /// Replacing with identical source is a no-op, so saving an unchanged file
+  /// does not trigger a recompile.
   pub fn replace_source(&self, source: impl Into<String>) {
+    let source = source.into();
     let mut guard = self.inner.source.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = source.into();
+    if *guard == source {
+      return;
+    }
+    *guard = source;
     self.inner.generation.fetch_add(1, Ordering::Release);
   }
 }
@@ -622,6 +638,16 @@ mod tests {
     assert_eq!(before.generation(), 1);
     assert_eq!(h.source(), "b");
     assert!(format!("{h:?}").contains("generation"));
+  }
+
+  #[test]
+  fn identical_replacement_keeps_generation() {
+    let h = ShaderHandle::from_source("test", "a");
+    h.replace_source("a");
+    assert_eq!(h.generation(), 0);
+    h.replace_source("b");
+    h.replace_source("b");
+    assert_eq!(h.snapshot(), (1, "b".to_string()));
   }
 
   #[test]
