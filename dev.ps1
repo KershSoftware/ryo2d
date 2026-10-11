@@ -2,27 +2,27 @@
 # For Unix/Linux/macOS, use dev.sh instead
 #
 # Usage:
-#   .\dev              - Interactive example selection
-#   .\dev <example>    - Run specific example (e.g., .\dev breakout)
-#   .\dev <example> -d|--dev       - Run in dev mode with hot-reload
-#   .\dev <example> -p|--profiler  - Run in dev mode with profiler
-#   .\dev <example> -r|--release   - Build and run release (no prompts)
-#   .\dev -d|--dev <example>       - Same as above (flag before example)
-#   .\dev -p|--profiler <example>  - Same as above (flag before example)
-#   .\dev -r|--release <example>   - Same as above (flag before example)
-#   .\dev demos:run-all    - Launch all demos in dev mode (parallel terminals)
-#   .\dev demos:kill-all   - Kill all running demos
-#   .\dev demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)
-#   .\dev check        - Compilation check (engine + all examples) and line endings
-#   .\dev lint         - Linting with clippy (engine + all examples)
-#   .\dev test         - Run unit + integration tests
-#   .\dev test:unit    - Run unit tests only
-#   .\dev test:integration - Run integration tests only
-#   .\dev test:e2e     - Run e2e tests (requires GPU)
-#   .\dev coverage     - Unit test coverage (default)
-#   .\dev coverage:unit - Unit test coverage
-#   .\dev coverage:integration - Integration test coverage
-#   .\dev coverage:all - Combined coverage (unit + integration)
+#   .\dev                         - Interactive example selection
+#   .\dev <example>               - Run specific example (e.g., .\dev breakout)
+#   .\dev <example> -d|--dev      - Run in dev mode with hot-reload
+#   .\dev <example> -p|--profiler - Run in dev mode with profiler
+#   .\dev <example> -r|--release  - Build and run release (no prompts)
+#   .\dev -d|--dev <example>      - Same as above (flag before example)
+#   .\dev -p|--profiler <example> - Same as above (flag before example)
+#   .\dev -r|--release <example>  - Same as above (flag before example)
+#   .\dev demos:run-all           - Launch all demos in dev mode (parallel terminals)
+#   .\dev demos:kill-all          - Kill all running demos
+#   .\dev demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)
+#   .\dev check                   - Compilation check (engine + all examples) and line endings
+#   .\dev lint                    - Linting with clippy (engine + all examples)
+#   .\dev test                    - Run unit + integration tests
+#   .\dev test:unit               - Run unit tests only
+#   .\dev test:integration        - Run integration tests only
+#   .\dev test:e2e                - Run e2e tests (requires GPU)
+#   .\dev coverage                - Unit test coverage (default)
+#   .\dev coverage:unit           - Unit test coverage
+#   .\dev coverage:integration    - Integration test coverage
+#   .\dev coverage:all            - Combined coverage (unit + integration)
 
 param(
     [Parameter(Position = 0)]
@@ -583,30 +583,30 @@ switch ($ExampleName.ToLower()) {
         Write-Host "Ryo2D Development Script" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "Usage:"
-        Write-Host "  ./dev                              - Interactive example selection"
-        Write-Host "  ./dev <example>                    - Run specific example (shows mode menu)"
-        Write-Host "  ./dev <example> -d|--dev           - Run in dev mode with hot-reload"
-        Write-Host "  ./dev <example> -p|--profiler      - Run in dev mode with profiler"
-        Write-Host "  ./dev <example> -r|--release       - Build and run release (no prompts)"
-        Write-Host "  ./dev -d|--dev <example>           - Same as above (flag before example)"
-        Write-Host "  ./dev -p|--profiler <example>      - Same as above (flag before example)"
-        Write-Host "  ./dev -r|--release <example>       - Same as above (flag before example)"
-        Write-Host "  ./dev demos:run-all      - Launch all demos in dev mode (parallel terminals)"
-        Write-Host "  ./dev demos:kill-all     - Kill all running demos"
-        Write-Host "  ./dev demos:tour [demo...] - Capture every page of every demo headlessly"
-        Write-Host "  ./dev check              - Compilation check (engine + all examples) and line endings"
-        Write-Host "  ./dev lint               - Linting with clippy (engine + all examples)"
-        Write-Host "  ./dev test               - Run unit + integration tests (default)"
-        Write-Host "  ./dev test:unit          - Run unit tests only"
-        Write-Host "  ./dev test:integration   - Run integration tests only"
-        Write-Host "  ./dev test:e2e           - Run e2e tests (requires GPU)"
-        Write-Host "  ./dev test:all           - Run ALL tests"
-        Write-Host "  ./dev coverage           - Unit test coverage (default)"
-        Write-Host "  ./dev coverage:unit      - Unit test coverage"
-        Write-Host "  ./dev coverage:integration - Integration test coverage"
-        Write-Host "  ./dev coverage:all       - Combined coverage (unit + integration)"
-        Write-Host "  ./dev watch              - Watch mode with hot-reload"
-        Write-Host "  ./dev help               - Show this help"
+        Write-Host "  ./dev                         - Interactive example selection"
+        Write-Host "  ./dev <example>               - Run specific example (shows mode menu)"
+        Write-Host "  ./dev <example> -d|--dev      - Run in dev mode with hot-reload"
+        Write-Host "  ./dev <example> -p|--profiler - Run in dev mode with profiler"
+        Write-Host "  ./dev <example> -r|--release  - Build and run release (no prompts)"
+        Write-Host "  ./dev -d|--dev <example>      - Same as above (flag before example)"
+        Write-Host "  ./dev -p|--profiler <example> - Same as above (flag before example)"
+        Write-Host "  ./dev -r|--release <example>  - Same as above (flag before example)"
+        Write-Host "  ./dev demos:run-all           - Launch all demos in dev mode (parallel terminals)"
+        Write-Host "  ./dev demos:kill-all          - Kill all running demos"
+        Write-Host "  ./dev demos:tour [demo...]    - Capture every page of every demo headlessly"
+        Write-Host "  ./dev check                   - Compilation check (engine + all examples) and line endings"
+        Write-Host "  ./dev lint                    - Linting with clippy (engine + all examples)"
+        Write-Host "  ./dev test                    - Run unit + integration tests (default)"
+        Write-Host "  ./dev test:unit               - Run unit tests only"
+        Write-Host "  ./dev test:integration        - Run integration tests only"
+        Write-Host "  ./dev test:e2e                - Run e2e tests (requires GPU)"
+        Write-Host "  ./dev test:all                - Run ALL tests"
+        Write-Host "  ./dev coverage                - Unit test coverage (default)"
+        Write-Host "  ./dev coverage:unit           - Unit test coverage"
+        Write-Host "  ./dev coverage:integration    - Integration test coverage"
+        Write-Host "  ./dev coverage:all            - Combined coverage (unit + integration)"
+        Write-Host "  ./dev watch                   - Watch mode with hot-reload"
+        Write-Host "  ./dev help                    - Show this help"
         Write-Host ""
     }
     default {
