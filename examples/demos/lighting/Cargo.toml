@@ -11,6 +11,7 @@ path = "main.rs"
 [dependencies]
 # Ryo2D engine dependency (local path for examples)
 ryo2d = { path = "../../../" }
+demo-kit = { path = "../../demo-kit" }
 
 # Add your game dependencies here
 # serde = { version = "1.0", features = ["derive"] }

@@ -8,8 +8,11 @@
 //! - Line occluders for thin fence/wire shadow casting
 //! - Various shapes to demonstrate lighting effects
 //! - Pendulum physics simulation
+//!
+//! Runs on the demo-kit shell: light intensity, radius and ambient darkness are
+//! settings; Space resets the pendulum.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 use std::f32::consts::PI;
 
 // Pendulum physics constants
@@ -84,8 +87,8 @@ impl PendulumState {
   }
 }
 
-/// Main lighting demo scene
-struct LightingScene {
+/// The lighting demo page
+struct PendulumPage {
   pendulum: PendulumState,
   rope_entities: Vec<Entity>, // Store rope segment entities for reliable updates
   bulb_entity: Option<Entity>,
@@ -93,14 +96,14 @@ struct LightingScene {
   // Bulb secondary pendulum state
   bulb_angle: f32,            // angle relative to straight down
   bulb_angular_velocity: f32, // angular velocity of bulb swing
-  // Light properties (adjustable with arrow keys)
+  // Light properties (settings rows)
   light_intensity: f32,
   light_radius: f32,
-  // Ambient darkness (adjustable with Q/E keys)
-  ambient_intensity: f32,
+  // Ambient darkness, 1 = pitch black
+  darkness: f32,
 }
 
-impl LightingScene {
+impl PendulumPage {
   fn new() -> Self {
     Self {
       pendulum: PendulumState::new(640.0, PENDULUM_ANCHOR_Y, INITIAL_ANGLE),
@@ -111,13 +114,34 @@ impl LightingScene {
       bulb_angular_velocity: 0.0,
       light_intensity: 1.2,
       light_radius: 250.0,
-      ambient_intensity: 0.0, // Start pitch black
+      darkness: 1.0, // Start pitch black
     }
   }
 }
 
-impl Scene for LightingScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for PendulumPage {
+  fn name(&self) -> &str {
+    "Pendulum"
+  }
+
+  fn description(&self) -> &str {
+    "A pendulum lamp swinging in a dark room: dynamic light and shadows.\n\
+The lamp is a Light2D::torch on a pendulum simulation; walls, boxes and thin wires are\n\
+LightOccluder2D shapes that cast shadows, and light falls off with distance.\n\
+Ambient darkness is the room's base light: 1 is pitch black."
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.float("Intensity", &mut self.light_intensity, 0.1..=3.0, 0.1);
+    s.float("Radius", &mut self.light_radius, 50.0..=500.0, 10.0);
+    s.float("Ambient darkness", &mut self.darkness, 0.0..=1.0, 0.05);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Reset the pendulum")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting to not affect UI - keeps text readable in darkness
     if let Some(lighting) = ctx.lighting {
       lighting.set_ui_affected_by_lighting(false);
@@ -270,12 +294,7 @@ impl Scene for LightingScene {
     ));
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Reset pendulum on Space
     if ctx.input.key_pressed(KeyCode::Space) {
       self.pendulum = PendulumState::new(640.0, PENDULUM_ANCHOR_Y, INITIAL_ANGLE);
@@ -283,33 +302,9 @@ impl Scene for LightingScene {
       self.bulb_angular_velocity = 0.0;
     }
 
-    // Adjust light intensity with Up/Down arrows
-    if ctx.input.key_down(KeyCode::ArrowUp) {
-      self.light_intensity = (self.light_intensity + 0.02).min(3.0);
-    }
-    if ctx.input.key_down(KeyCode::ArrowDown) {
-      self.light_intensity = (self.light_intensity - 0.02).max(0.1);
-    }
-
-    // Adjust light radius with Left/Right arrows
-    if ctx.input.key_down(KeyCode::ArrowRight) {
-      self.light_radius = (self.light_radius + 2.0).min(500.0);
-    }
-    if ctx.input.key_down(KeyCode::ArrowLeft) {
-      self.light_radius = (self.light_radius - 2.0).max(50.0);
-    }
-
-    // Adjust ambient darkness with Q/E keys
-    if ctx.input.key_down(KeyCode::KeyQ) {
-      self.ambient_intensity = (self.ambient_intensity - 0.01).max(0.0);
-    }
-    if ctx.input.key_down(KeyCode::KeyE) {
-      self.ambient_intensity = (self.ambient_intensity + 0.01).min(1.0);
-    }
-
     // Update ambient light if it changed
     if let Some(lighting) = ctx.lighting {
-      lighting.ambient_mut().set_intensity(self.ambient_intensity);
+      lighting.ambient_mut().set_intensity(1.0 - self.darkness);
     }
 
     // Update light properties if they changed
@@ -383,94 +378,13 @@ impl Scene for LightingScene {
         transform.rotation = -self.pendulum.angle;
       }
     }
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    ui.label(
-      "Lighting Demo",
-      10.0,
-      10.0,
-      Color::WHITE,
-      Some(Color::new(0, 0, 0, 180)),
-    );
-
-    ui.label(
-      "Press SPACE to reset pendulum",
-      10.0,
-      35.0,
-      Color::new(200, 200, 200, 255),
-      Some(Color::new(0, 0, 0, 160)),
-    );
-
-    ui.label(
-      "Arrow UP/DOWN: Adjust light intensity",
-      10.0,
-      60.0,
-      Color::new(200, 200, 200, 255),
-      Some(Color::new(0, 0, 0, 160)),
-    );
-
-    ui.label(
-      "Arrow LEFT/RIGHT: Adjust light radius",
-      10.0,
-      85.0,
-      Color::new(200, 200, 200, 255),
-      Some(Color::new(0, 0, 0, 160)),
-    );
-
-    ui.label(
-      "Q/E: Decrease/Increase darkness",
-      10.0,
-      110.0,
-      Color::new(200, 200, 200, 255),
-      Some(Color::new(0, 0, 0, 160)),
-    );
-
-    ui.label(
-      &format!("Light Intensity: {:.2}", self.light_intensity),
-      10.0,
-      135.0,
-      Color::new(255, 255, 100, 255),
-      Some(Color::new(0, 0, 0, 160)),
-    );
-
-    ui.label(
-      &format!("Light Radius: {:.0}", self.light_radius),
-      10.0,
-      160.0,
-      Color::new(255, 255, 100, 255),
-      Some(Color::new(0, 0, 0, 160)),
-    );
-
-    ui.label(
-      &format!("Ambient Darkness: {:.2}", 1.0 - self.ambient_intensity),
-      10.0,
-      185.0,
-      Color::new(255, 255, 100, 255),
-      Some(Color::new(0, 0, 0, 160)),
-    );
-
-    ui.label(
-      "Press ESC to quit",
-      10.0,
-      210.0,
-      Color::new(200, 200, 200, 255),
-      Some(Color::new(0, 0, 0, 160)),
-    );
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Lighting Demo - Pendulum Lamp")
+  Demo::new("Lighting")
     .resolution(1280, 720)
-    .target_fps(60)
-    .start_scene(LightingScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| b.target_fps(60))
+    .page(PendulumPage::new)
+    .run();
 }

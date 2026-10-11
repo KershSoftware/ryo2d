@@ -1,4 +1,10 @@
-use ryo2d::prelude::*;
+//! Bloom Effect Demo
+//!
+//! Bright pixels bleed light into their neighbours: a dark tile grid with bright
+//! orbiting sprites, a preset choice and live bloom parameters. Runs on the
+//! demo-kit shell.
+
+use demo_kit::prelude::*;
 
 /// Preset bloom configurations to showcase different looks.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -12,17 +18,6 @@ enum BloomPreset {
 }
 
 impl BloomPreset {
-  fn name(&self) -> &'static str {
-    match self {
-      Self::Off => "Off",
-      Self::Subtle => "Subtle Glow",
-      Self::Dreamy => "Dreamy / Soft Focus",
-      Self::Neon => "Neon Glow",
-      Self::Explosive => "Explosive Bloom",
-      Self::Custom => "Custom (Tweak Live)",
-    }
-  }
-
   fn description(&self) -> &'static str {
     match self {
       Self::Off => "No bloom. Base scene for comparison.",
@@ -30,11 +25,11 @@ impl BloomPreset {
       Self::Dreamy => "Mid threshold, high radius. Soft ethereal look.",
       Self::Neon => "Low threshold, high intensity. Punchy neon vibe.",
       Self::Explosive => "Very low threshold, max intensity & radius.",
-      Self::Custom => "Up/Down: intensity  Left/Right: radius\nW/S: threshold  Q/E: blur passes",
+      Self::Custom => "Your own values: tweak the rows on the right.",
     }
   }
 
-  fn params(&self) -> (f32, f32, f32, u32) {
+  fn params(&self) -> (f32, f32, f32, i32) {
     // (threshold, intensity, radius, blur_passes)
     match self {
       Self::Off => (0.7, 0.0, 5.0, 2),
@@ -47,6 +42,9 @@ impl BloomPreset {
   }
 }
 
+const PRESET_NAMES: [&str; 6] = ["Off", "Subtle", "Dreamy", "Neon", "Explosive", "Custom"];
+const CUSTOM_PRESET: usize = 5;
+
 const PRESETS: [BloomPreset; 6] = [
   BloomPreset::Off,
   BloomPreset::Subtle,
@@ -56,7 +54,7 @@ const PRESETS: [BloomPreset; 6] = [
   BloomPreset::Custom,
 ];
 
-struct BloomDemo {
+struct BloomPage {
   // Scene entities
   bg_tiles: Vec<Entity>,
   bright_sprites: Vec<Entity>,
@@ -67,26 +65,31 @@ struct BloomDemo {
   threshold: f32,
   intensity: f32,
   radius: f32,
-  blur_passes: u32,
+  blur_passes: i32,
+  // Values seen last frame, to notice edits made through the settings rows
+  last_preset: usize,
+  last_values: (f32, f32, f32, i32),
   time: f32,
 
-  // Screen dimensions (set in on_enter)
+  // Screen dimensions (set in enter)
   screen_width: f32,
   screen_height: f32,
 }
 
-impl BloomDemo {
+impl BloomPage {
   fn new() -> Self {
-    let (threshold, intensity, radius, blur_passes) = PRESETS[0].params();
+    let (threshold, intensity, radius, blur_passes) = PRESETS[1].params();
     Self {
       bg_tiles: Vec::new(),
       bright_sprites: Vec::new(),
       orbiting_sprites: Vec::new(),
-      current_preset: 0,
+      current_preset: 1,
       threshold,
       intensity,
       radius,
       blur_passes,
+      last_preset: 1,
+      last_values: (threshold, intensity, radius, blur_passes),
       time: 0.0,
       screen_width: 0.0,
       screen_height: 0.0,
@@ -202,83 +205,69 @@ impl BloomDemo {
         self.threshold,
         self.intensity,
         self.radius,
-        self.blur_passes,
+        self.blur_passes.max(1) as u32,
       );
     }
   }
 
   fn switch_preset(&mut self, index: usize) {
     self.current_preset = index;
-    let (threshold, intensity, radius, blur_passes) = PRESETS[index].params();
-    self.threshold = threshold;
-    self.intensity = intensity;
-    self.radius = radius;
-    self.blur_passes = blur_passes;
+    if index != CUSTOM_PRESET {
+      let (threshold, intensity, radius, blur_passes) = PRESETS[index].params();
+      self.threshold = threshold;
+      self.intensity = intensity;
+      self.radius = radius;
+      self.blur_passes = blur_passes;
+    }
+    self.remember_values();
   }
 
-  /// Returns true if the user pressed Escape to quit.
-  fn handle_input(&mut self, ctx: &mut SceneContext) -> bool {
-    // Preset switching: 1-6
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      self.switch_preset(0);
-    } else if ctx.input.key_pressed(KeyCode::Digit2) {
-      self.switch_preset(1);
-    } else if ctx.input.key_pressed(KeyCode::Digit3) {
-      self.switch_preset(2);
-    } else if ctx.input.key_pressed(KeyCode::Digit4) {
-      self.switch_preset(3);
-    } else if ctx.input.key_pressed(KeyCode::Digit5) {
-      self.switch_preset(4);
-    } else if ctx.input.key_pressed(KeyCode::Digit6) {
-      self.switch_preset(5);
-    }
+  fn values(&self) -> (f32, f32, f32, i32) {
+    (
+      self.threshold,
+      self.intensity,
+      self.radius,
+      self.blur_passes,
+    )
+  }
 
-    // Live parameter tweaking (works in any preset, switches to Custom if changed)
-    let mut tweaked = false;
+  fn remember_values(&mut self) {
+    self.last_preset = self.current_preset;
+    self.last_values = self.values();
+  }
 
-    if ctx.input.key_down(KeyCode::ArrowUp) {
-      self.intensity = (self.intensity + 0.02).min(5.0);
-      tweaked = true;
+  /// Picking a preset loads its values; editing a value under any other
+  /// preset switches to Custom.
+  fn sync_preset(&mut self) {
+    if self.current_preset != self.last_preset {
+      self.switch_preset(self.current_preset);
+    } else if self.values() != self.last_values {
+      if self.current_preset != CUSTOM_PRESET {
+        self.current_preset = CUSTOM_PRESET;
+      }
+      self.remember_values();
     }
-    if ctx.input.key_down(KeyCode::ArrowDown) {
-      self.intensity = (self.intensity - 0.02).max(0.0);
-      tweaked = true;
-    }
-    if ctx.input.key_down(KeyCode::ArrowRight) {
-      self.radius = (self.radius + 0.1).min(20.0);
-      tweaked = true;
-    }
-    if ctx.input.key_down(KeyCode::ArrowLeft) {
-      self.radius = (self.radius - 0.1).max(1.0);
-      tweaked = true;
-    }
-    if ctx.input.key_down(KeyCode::KeyW) {
-      self.threshold = (self.threshold + 0.005).min(1.0);
-      tweaked = true;
-    }
-    if ctx.input.key_down(KeyCode::KeyS) {
-      self.threshold = (self.threshold - 0.005).max(0.0);
-      tweaked = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyQ) {
-      self.blur_passes = (self.blur_passes.saturating_sub(1)).max(1);
-      tweaked = true;
-    }
-    if ctx.input.key_pressed(KeyCode::KeyE) {
-      self.blur_passes = (self.blur_passes + 1).min(5);
-      tweaked = true;
-    }
-
-    if tweaked && PRESETS[self.current_preset] != BloomPreset::Custom {
-      self.current_preset = 5; // Switch to Custom
-    }
-
-    ctx.input.key_pressed(KeyCode::Escape)
   }
 }
 
-impl Scene for BloomDemo {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for BloomPage {
+  fn name(&self) -> &str {
+    "Bloom"
+  }
+
+  fn description(&self) -> &str {
+    PRESETS[self.current_preset.min(CUSTOM_PRESET)].description()
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Preset", &mut self.current_preset, &PRESET_NAMES);
+    s.float("Intensity", &mut self.intensity, 0.0..=5.0, 0.1);
+    s.float("Radius", &mut self.radius, 1.0..=20.0, 0.5);
+    s.float("Threshold", &mut self.threshold, 0.0..=1.0, 0.05);
+    s.int("Blur passes", &mut self.blur_passes, 1..=5);
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (width, height) = ctx.screen_size();
     self.screen_width = width;
     self.screen_height = height;
@@ -288,97 +277,18 @@ impl Scene for BloomDemo {
     self.switch_preset(1);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     self.time += dt;
-    if self.handle_input(ctx) {
-      return SceneAction::Quit;
-    }
+    self.sync_preset();
     self.animate(ctx);
     self.apply_bloom(ctx);
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let preset = &PRESETS[self.current_preset];
-
-    // Title
-    ui.draw_text("BLOOM EFFECT DEMO", 10.0, 10.0, Color::WHITE);
-
-    // Current preset
-    ui.draw_text(
-      &format!("[{}] {}", self.current_preset + 1, preset.name()),
-      10.0,
-      35.0,
-      Color::rgb(100, 255, 100),
-    );
-
-    // Description
-    for (i, line) in preset.description().lines().enumerate() {
-      ui.draw_text(
-        line,
-        10.0,
-        58.0 + i as f32 * 15.0,
-        Color::rgb(200, 200, 200),
-      );
-    }
-
-    // Live parameter readout
-    let py = 100.0;
-    ui.draw_text(
-      &format!("threshold: {:.2}", self.threshold),
-      10.0,
-      py,
-      Color::rgb(255, 255, 100),
-    );
-    ui.draw_text(
-      &format!("intensity: {:.2}", self.intensity),
-      10.0,
-      py + 16.0,
-      Color::rgb(255, 255, 100),
-    );
-    ui.draw_text(
-      &format!("radius:    {:.1}", self.radius),
-      10.0,
-      py + 32.0,
-      Color::rgb(255, 255, 100),
-    );
-    ui.draw_text(
-      &format!("blur_passes: {}", self.blur_passes),
-      10.0,
-      py + 48.0,
-      Color::rgb(255, 255, 100),
-    );
-
-    // Controls
-    let cy = 560.0;
-    ui.draw_text("1-6: Presets", 10.0, cy, Color::rgb(180, 180, 180));
-    ui.draw_text(
-      "Up/Down: intensity  Left/Right: radius",
-      10.0,
-      cy + 15.0,
-      Color::rgb(180, 180, 180),
-    );
-    ui.draw_text(
-      "W/S: threshold  Q/E: blur passes",
-      10.0,
-      cy + 30.0,
-      Color::rgb(180, 180, 180),
-    );
-    ui.draw_text("ESC: Quit", 10.0, cy + 45.0, Color::rgb(180, 180, 180));
-
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Bloom Effect Demo")
+  Demo::new("Bloom")
     .resolution(960, 640)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .start_scene(BloomDemo::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
+    .page(BloomPage::new)
+    .run();
 }

@@ -1,4 +1,10 @@
-use ryo2d::prelude::*;
+//! Post-Processing Effects Demo
+//!
+//! Fade, sepia, vignette, screen flash, CRT, chromatic aberration and a custom
+//! WGSL scanlines effect (`assets/shaders/scanlines.wgsl`) over a colourful tile
+//! scene. Runs on the demo-kit shell; the chosen effect's values are settings.
+
+use demo_kit::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DemoEffect {
@@ -13,44 +19,52 @@ enum DemoEffect {
 }
 
 impl DemoEffect {
-  fn name(&self) -> &'static str {
-    match self {
-      DemoEffect::None => "None",
-      DemoEffect::Fade => "Fade",
-      DemoEffect::ColorTint => "Color Tint (Sepia)",
-      DemoEffect::Vignette => "Vignette",
-      DemoEffect::ScreenFlash => "Screen Flash",
-      DemoEffect::Crt => "CRT",
-      DemoEffect::ChromaticAberration => "Chromatic Aberration",
-      DemoEffect::CustomScanlines => "Custom WGSL (scanlines.wgsl)",
-    }
-  }
+  const ALL: [DemoEffect; 8] = [
+    DemoEffect::None,
+    DemoEffect::Fade,
+    DemoEffect::ColorTint,
+    DemoEffect::Vignette,
+    DemoEffect::ScreenFlash,
+    DemoEffect::Crt,
+    DemoEffect::ChromaticAberration,
+    DemoEffect::CustomScanlines,
+  ];
+
+  const NAMES: [&'static str; 8] = [
+    "None",
+    "Fade",
+    "Sepia",
+    "Vignette",
+    "Screen flash",
+    "CRT",
+    "Chromatic aberration",
+    "Custom scanlines",
+  ];
 
   fn description(&self) -> &'static str {
     match self {
-      DemoEffect::None => "No post-processing effects",
-      DemoEffect::Fade => "Alpha fade for scene transitions\nUp/Down: Adjust fade amount",
-      DemoEffect::ColorTint => "Sepia color grading\nUp/Down: Adjust sepia intensity",
-      DemoEffect::Vignette => "Edge darkening\nUp/Down: Radius  Left/Right: Softness",
-      DemoEffect::ScreenFlash => "Impact flash effect\nSpace: Trigger flash",
-      DemoEffect::Crt => "Retro CRT scanlines & distortion\nAlways-on effect",
-      DemoEffect::ChromaticAberration => "RGB channel offset\nUp/Down: Adjust offset strength",
-      DemoEffect::CustomScanlines => {
-        "Game-authored WGSL post-process effect\nUp/Down: Scanline strength"
-      }
+      DemoEffect::None => "No post-processing effects.",
+      DemoEffect::Fade => "Alpha fade for scene transitions.",
+      DemoEffect::ColorTint => "Sepia colour grading.",
+      DemoEffect::Vignette => "Edge darkening.",
+      DemoEffect::ScreenFlash => "Impact flash effect: press Space.",
+      DemoEffect::Crt => "Retro CRT scanlines and distortion. Always on.",
+      DemoEffect::ChromaticAberration => "RGB channel offset.",
+      DemoEffect::CustomScanlines => "Game-authored WGSL post-process effect (scanlines.wgsl).",
     }
   }
 }
 
-struct PostProcessingDemo {
+struct PostProcessingPage {
   // Scene objects
   background_sprites: Vec<Entity>,
   rotating_sprites: Vec<Entity>,
 
   // Effect state
-  current_effect: DemoEffect,
+  effect: usize,
+  last_effect: usize,
 
-  // Effect parameters (adjustable via keyboard)
+  // Effect parameters (settings rows)
   fade_amount: f32,
   sepia_intensity: f32,
   vignette_radius: f32,
@@ -64,17 +78,18 @@ struct PostProcessingDemo {
   // Animation
   time: f32,
 
-  // Screen dimensions (set in on_enter)
+  // Screen dimensions (set in enter)
   screen_width: f32,
   screen_height: f32,
 }
 
-impl PostProcessingDemo {
+impl PostProcessingPage {
   fn new() -> Self {
     Self {
       background_sprites: Vec::new(),
       rotating_sprites: Vec::new(),
-      current_effect: DemoEffect::None,
+      effect: 0,
+      last_effect: 0,
       fade_amount: 0.5,
       sepia_intensity: 0.8,
       vignette_radius: 0.7,
@@ -164,10 +179,14 @@ impl PostProcessingDemo {
     }
   }
 
+  fn current(&self) -> DemoEffect {
+    DemoEffect::ALL[self.effect.min(DemoEffect::ALL.len() - 1)]
+  }
+
   fn apply_current_effect(&self, ctx: &mut SceneContext) {
     // Apply the selected effect
     // Note: Don't clear effects for ScreenFlash mode, as we want timed flashes to decay
-    match self.current_effect {
+    match self.current() {
       DemoEffect::None => {
         ctx.effects.clear();
       }
@@ -188,7 +207,7 @@ impl PostProcessingDemo {
         );
       }
       DemoEffect::ScreenFlash => {
-        // Flash is triggered manually via Space key
+        // Flash is triggered manually via Space
         // Don't clear or reapply - let timed flashes decay naturally
       }
       DemoEffect::Crt => {
@@ -215,81 +234,76 @@ impl PostProcessingDemo {
       }
     }
   }
+}
 
-  fn handle_input(&mut self, ctx: &mut SceneContext) {
-    // Switch effects with number keys
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      self.current_effect = DemoEffect::None;
-      ctx.effects.clear(); // Clear when switching to None
-    } else if ctx.input.key_pressed(KeyCode::Digit2) {
-      self.current_effect = DemoEffect::Fade;
-    } else if ctx.input.key_pressed(KeyCode::Digit3) {
-      self.current_effect = DemoEffect::ColorTint;
-    } else if ctx.input.key_pressed(KeyCode::Digit4) {
-      self.current_effect = DemoEffect::Vignette;
-    } else if ctx.input.key_pressed(KeyCode::Digit5) {
-      self.current_effect = DemoEffect::ScreenFlash;
-      ctx.effects.clear(); // Clear when switching to ScreenFlash mode
-    } else if ctx.input.key_pressed(KeyCode::Digit6) {
-      self.current_effect = DemoEffect::Crt;
-    } else if ctx.input.key_pressed(KeyCode::Digit7) {
-      self.current_effect = DemoEffect::ChromaticAberration;
-    } else if ctx.input.key_pressed(KeyCode::Digit8) {
-      self.current_effect = DemoEffect::CustomScanlines;
+impl DemoPage for PostProcessingPage {
+  fn name(&self) -> &str {
+    "Effects"
+  }
+
+  fn description(&self) -> &str {
+    if self.current() == DemoEffect::CustomScanlines && self.scanlines.is_none() {
+      return "scanlines.wgsl failed to load (see console).";
     }
+    self.current().description()
+  }
 
-    // Adjust parameters with arrow keys
-    let adjust_speed = 0.01;
-
-    match self.current_effect {
-      DemoEffect::Fade => {
-        if ctx.input.key_down(KeyCode::ArrowUp) {
-          self.fade_amount = (self.fade_amount + adjust_speed).min(1.0);
-        }
-        if ctx.input.key_down(KeyCode::ArrowDown) {
-          self.fade_amount = (self.fade_amount - adjust_speed).max(0.0);
-        }
-      }
-      DemoEffect::ColorTint => {
-        if ctx.input.key_down(KeyCode::ArrowUp) {
-          self.sepia_intensity = (self.sepia_intensity + adjust_speed).min(1.0);
-        }
-        if ctx.input.key_down(KeyCode::ArrowDown) {
-          self.sepia_intensity = (self.sepia_intensity - adjust_speed).max(0.0);
-        }
-      }
+  fn settings(&mut self, s: &mut Settings) {
+    s.choice("Effect", &mut self.effect, &DemoEffect::NAMES);
+    match self.current() {
+      DemoEffect::Fade => s.float("Fade amount", &mut self.fade_amount, 0.0..=1.0, 0.05),
+      DemoEffect::ColorTint => s.float(
+        "Sepia intensity",
+        &mut self.sepia_intensity,
+        0.0..=1.0,
+        0.05,
+      ),
       DemoEffect::Vignette => {
-        if ctx.input.key_down(KeyCode::ArrowUp) {
-          self.vignette_radius = (self.vignette_radius + adjust_speed).min(1.0);
-        }
-        if ctx.input.key_down(KeyCode::ArrowDown) {
-          self.vignette_radius = (self.vignette_radius - adjust_speed).max(0.0);
-        }
-        if ctx.input.key_down(KeyCode::ArrowLeft) {
-          self.vignette_softness = (self.vignette_softness - adjust_speed).max(0.0);
-        }
-        if ctx.input.key_down(KeyCode::ArrowRight) {
-          self.vignette_softness = (self.vignette_softness + adjust_speed).min(1.0);
-        }
+        s.float("Radius", &mut self.vignette_radius, 0.0..=1.0, 0.05);
+        s.float("Softness", &mut self.vignette_softness, 0.0..=1.0, 0.05);
       }
       DemoEffect::ChromaticAberration => {
-        if ctx.input.key_down(KeyCode::ArrowUp) {
-          self.chromatic_strength = (self.chromatic_strength + 0.0002).min(0.02);
-        }
-        if ctx.input.key_down(KeyCode::ArrowDown) {
-          self.chromatic_strength = (self.chromatic_strength - 0.0002).max(0.0);
-        }
+        s.float("Strength", &mut self.chromatic_strength, 0.0..=0.02, 0.001)
       }
-      DemoEffect::CustomScanlines => {
-        if ctx.input.key_down(KeyCode::ArrowUp) {
-          self.scanline_strength = (self.scanline_strength + adjust_speed).min(1.0);
-        }
-        if ctx.input.key_down(KeyCode::ArrowDown) {
-          self.scanline_strength = (self.scanline_strength - adjust_speed).max(0.0);
-        }
-      }
-      _ => {}
+      DemoEffect::CustomScanlines => s.float(
+        "Scanline strength",
+        &mut self.scanline_strength,
+        0.0..=1.0,
+        0.05,
+      ),
+      DemoEffect::None | DemoEffect::ScreenFlash | DemoEffect::Crt => {}
     }
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Space, "Flash")]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    let (width, height) = ctx.screen_size();
+    self.screen_width = width;
+    self.screen_height = height;
+
+    // A missing shader only disables the scanlines effect; the rest still works.
+    match ctx.assets.load_shader("assets/shaders/scanlines.wgsl") {
+      Ok(shader) => self.scanlines = Some(shader),
+      Err(e) => eprintln!("Could not load scanlines.wgsl: {e}"),
+    }
+
+    self.create_colorful_scene(ctx);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    self.time += dt;
+
+    // Leaving an effect behind: start clean so timed flashes can decay
+    if self.effect != self.last_effect {
+      ctx.effects.clear();
+      self.last_effect = self.effect;
+    }
+
+    self.update_rotating_sprites(ctx);
+    self.apply_current_effect(ctx);
 
     // Space triggers screen flash
     if ctx.input.key_pressed(KeyCode::Space) {
@@ -300,149 +314,10 @@ impl PostProcessingDemo {
   }
 }
 
-impl Scene for PostProcessingDemo {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    println!("=== Post-Processing Effects Demo ===");
-    println!("Press 1-8 to switch effects (8 = custom WGSL scanlines)");
-    println!("Use arrow keys to adjust parameters");
-    println!("Press Space for screen flash");
-    println!("Press ESC to quit");
-    println!();
-
-    let (width, height) = ctx.screen_size();
-    self.screen_width = width;
-    self.screen_height = height;
-
-    // A missing shader only disables effect 8; the rest of the demo still works.
-    match ctx.assets.load_shader("assets/shaders/scanlines.wgsl") {
-      Ok(shader) => self.scanlines = Some(shader),
-      Err(e) => eprintln!("Could not load scanlines.wgsl: {e}"),
-    }
-
-    self.create_colorful_scene(ctx);
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    self.time += dt;
-
-    // Handle input
-    self.handle_input(ctx);
-
-    // Update animations
-    self.update_rotating_sprites(ctx);
-
-    // Apply current effect
-    self.apply_current_effect(ctx);
-
-    // Exit on ESC
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    // Title
-    ui.draw_text("POST-PROCESSING EFFECTS DEMO", 10.0, 10.0, Color::WHITE);
-
-    // Current effect info
-    let y_offset = 40.0;
-    ui.draw_text(
-      &format!("Current Effect: {}", self.current_effect.name()),
-      10.0,
-      y_offset,
-      Color::rgb(100, 255, 100),
-    );
-
-    // Description
-    let desc_y = y_offset + 25.0;
-    for (i, line) in self.current_effect.description().lines().enumerate() {
-      ui.draw_text(
-        line,
-        10.0,
-        desc_y + i as f32 * 15.0,
-        Color::rgb(200, 200, 200),
-      );
-    }
-
-    // Current parameters
-    let params_y = 130.0;
-    match self.current_effect {
-      DemoEffect::Fade => {
-        ui.draw_text(
-          &format!("Fade Amount: {:.2}", self.fade_amount),
-          10.0,
-          params_y,
-          Color::rgb(255, 255, 100),
-        );
-      }
-      DemoEffect::ColorTint => {
-        ui.draw_text(
-          &format!("Sepia Intensity: {:.2}", self.sepia_intensity),
-          10.0,
-          params_y,
-          Color::rgb(255, 255, 100),
-        );
-      }
-      DemoEffect::Vignette => {
-        ui.draw_text(
-          &format!(
-            "Radius: {:.2}  Softness: {:.2}",
-            self.vignette_radius, self.vignette_softness
-          ),
-          10.0,
-          params_y,
-          Color::rgb(255, 255, 100),
-        );
-      }
-      DemoEffect::ChromaticAberration => {
-        ui.draw_text(
-          &format!("Strength: {:.4}", self.chromatic_strength),
-          10.0,
-          params_y,
-          Color::rgb(255, 255, 100),
-        );
-      }
-      DemoEffect::CustomScanlines => {
-        let text = if self.scanlines.is_some() {
-          format!("Scanline strength: {:.2}", self.scanline_strength)
-        } else {
-          "scanlines.wgsl failed to load (see console)".to_string()
-        };
-        ui.draw_text(&text, 10.0, params_y, Color::rgb(255, 255, 100));
-      }
-      _ => {}
-    }
-
-    // Controls reminder: left of the sprite grid (x >= 220) and above the FPS counter
-    let controls_y = 480.0;
-    ui.draw_text("Controls:", 10.0, controls_y, Color::WHITE);
-    let lines = [
-      "1-7: Built-in effects",
-      "8: Custom WGSL scanlines",
-      "Arrows: Adjust parameters",
-      "Space: Flash",
-      "ESC: Quit",
-    ];
-    for (i, line) in lines.iter().enumerate() {
-      let y = controls_y + 15.0 * (i + 1) as f32;
-      ui.draw_text(line, 10.0, y, Color::rgb(180, 180, 180));
-    }
-
-    SceneAction::Continue
-  }
-}
-
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Post-Processing Effects Demo")
+  Demo::new("Post-Processing")
     .resolution(800, 600)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .start_scene(PostProcessingDemo::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
+    .page(PostProcessingPage::new)
+    .run();
 }

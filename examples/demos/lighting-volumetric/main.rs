@@ -8,18 +8,10 @@
 //! - **Atmosphere Presets**: Clear, hazy, dusty, foggy, smoky, underwater
 //! - **Light Presets**: Torch, flashlight, moonlight, lamp, warning, magic
 //!
-//! ## Controls
-//!
-//! - **1-6**: Switch atmosphere preset (Clear, Hazy, Dusty, Foggy, Smoky, Underwater)
-//! - **Q/E**: Rotate spotlight left/right
-//! - **W/S**: Increase/decrease spotlight angle (cone width)
-//! - **A/D**: Move spotlight left/right
-//! - **Space**: Toggle god rays on/off
-//! - **Tab**: Cycle through light color presets
-//! - **Arrow Up/Down**: Adjust god rays intensity
-//! - **Escape**: Quit
+//! Runs on the demo-kit shell: atmosphere, god rays, light colour and the
+//! spotlight's direction, cone and position are all settings.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 /// Current atmosphere preset
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +25,15 @@ enum AtmospherePreset {
 }
 
 impl AtmospherePreset {
+  const ALL: [AtmospherePreset; 6] = [
+    Self::Clear,
+    Self::Hazy,
+    Self::Dusty,
+    Self::Foggy,
+    Self::Smoky,
+    Self::Underwater,
+  ];
+
   fn name(&self) -> &'static str {
     match self {
       Self::Clear => "Clear",
@@ -94,6 +95,15 @@ enum LightPreset {
 }
 
 impl LightPreset {
+  const ALL: [LightPreset; 6] = [
+    Self::Warm,
+    Self::Cool,
+    Self::White,
+    Self::Warning,
+    Self::Magic,
+    Self::Nature,
+  ];
+
   fn name(&self) -> &'static str {
     match self {
       Self::Warm => "Warm (Torch)",
@@ -115,20 +125,9 @@ impl LightPreset {
       Self::Nature => Color::new(100, 255, 150, 255),
     }
   }
-
-  fn next(&self) -> Self {
-    match self {
-      Self::Warm => Self::Cool,
-      Self::Cool => Self::White,
-      Self::White => Self::Warning,
-      Self::Warning => Self::Magic,
-      Self::Magic => Self::Nature,
-      Self::Nature => Self::Warm,
-    }
-  }
 }
 
-struct VolumetricLightingScene {
+struct VolumetricPage {
   // Scene dimensions
   screen_w: f32,
   screen_h: f32,
@@ -150,14 +149,15 @@ struct VolumetricLightingScene {
   torch_entities: Vec<Entity>,
 
   // Current presets
-  atmosphere_preset: AtmospherePreset,
-  light_preset: LightPreset,
+  // Indices into AtmospherePreset::ALL and LightPreset::ALL
+  atmosphere: usize,
+  light: usize,
 
   // Animation time
   time: f32,
 }
 
-impl VolumetricLightingScene {
+impl VolumetricPage {
   fn new() -> Self {
     Self {
       screen_w: 1280.0,
@@ -176,17 +176,25 @@ impl VolumetricLightingScene {
 
       torch_entities: Vec::new(),
 
-      atmosphere_preset: AtmospherePreset::Dusty,
-      light_preset: LightPreset::Warm,
+      atmosphere: 2, // Dusty
+      light: 0,      // Warm
 
       time: 0.0,
     }
   }
 
+  fn atmosphere_preset(&self) -> AtmospherePreset {
+    AtmospherePreset::ALL[self.atmosphere.min(AtmospherePreset::ALL.len() - 1)]
+  }
+
+  fn light_preset(&self) -> LightPreset {
+    LightPreset::ALL[self.light.min(LightPreset::ALL.len() - 1)]
+  }
+
   fn apply_atmosphere(&mut self, ctx: &mut SceneContext) {
     // Apply atmosphere and ambient light based on preset
-    let (ambient_color, ambient_intensity) = self.atmosphere_preset.ambient();
-    let atmosphere = self.atmosphere_preset.atmosphere();
+    let (ambient_color, ambient_intensity) = self.atmosphere_preset().ambient();
+    let atmosphere = self.atmosphere_preset().atmosphere();
     if let Some(lighting) = ctx.lighting {
       lighting.set_ambient(AmbientLight::new(ambient_color, ambient_intensity));
       lighting.set_atmosphere(atmosphere);
@@ -208,7 +216,7 @@ impl VolumetricLightingScene {
       }
 
       if !light_positions.is_empty() {
-        let intensity = self.god_rays_intensity * self.atmosphere_preset.god_rays_multiplier();
+        let intensity = self.god_rays_intensity * self.atmosphere_preset().god_rays_multiplier();
         ctx.effects.set_god_rays(intensity, light_positions);
       }
     } else {
@@ -221,7 +229,7 @@ impl VolumetricLightingScene {
       // Update spotlight properties
       if let Some(mut light) = ctx.world.get_mut::<Light2D>(entity) {
         *light = Light2D::spot(
-          self.light_preset.color(),
+          self.light_preset().color(),
           400.0,
           self.spotlight_angle,
           self.spotlight_direction,
@@ -273,8 +281,39 @@ impl VolumetricLightingScene {
   }
 }
 
-impl Scene for VolumetricLightingScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl DemoPage for VolumetricPage {
+  fn name(&self) -> &str {
+    "Volumetric"
+  }
+
+  fn description(&self) -> &str {
+    "God rays, a volumetric spotlight, flickering torches and atmosphere presets over shadow-casting occluders."
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    let atmospheres: Vec<&str> = AtmospherePreset::ALL.iter().map(|a| a.name()).collect();
+    let colours: Vec<&str> = LightPreset::ALL.iter().map(|l| l.name()).collect();
+    s.choice("Atmosphere", &mut self.atmosphere, &atmospheres);
+    s.toggle("God rays", &mut self.god_rays_enabled);
+    s.float(
+      "God ray intensity",
+      &mut self.god_rays_intensity,
+      0.1..=2.0,
+      0.1,
+    );
+    s.choice("Light colour", &mut self.light, &colours);
+    s.float(
+      "Spot direction",
+      &mut self.spotlight_direction,
+      0.0..=360.0,
+      5.0,
+    );
+    s.float("Cone angle", &mut self.spotlight_angle, 10.0..=90.0, 5.0);
+    let max_x = (self.screen_w - 100.0).max(100.0);
+    s.float("Spot position", &mut self.spotlight_x, 100.0..=max_x, 20.0);
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     let (w, h) = ctx.screen_size();
     self.screen_w = w;
     self.screen_h = h;
@@ -341,7 +380,7 @@ impl Scene for VolumetricLightingScene {
       ctx.world.spawn((
         Transform::new(self.spotlight_x, 620.0),
         Light2D::spot(
-          self.light_preset.color(),
+          self.light_preset().color(),
           400.0,
           self.spotlight_angle,
           self.spotlight_direction,
@@ -416,79 +455,8 @@ impl Scene for VolumetricLightingScene {
     self.apply_atmosphere(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     self.time += dt;
-
-    // Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    // Atmosphere preset selection (1-6)
-    if ctx.input.key_pressed(KeyCode::Digit1) {
-      self.atmosphere_preset = AtmospherePreset::Clear;
-    }
-    if ctx.input.key_pressed(KeyCode::Digit2) {
-      self.atmosphere_preset = AtmospherePreset::Hazy;
-    }
-    if ctx.input.key_pressed(KeyCode::Digit3) {
-      self.atmosphere_preset = AtmospherePreset::Dusty;
-    }
-    if ctx.input.key_pressed(KeyCode::Digit4) {
-      self.atmosphere_preset = AtmospherePreset::Foggy;
-    }
-    if ctx.input.key_pressed(KeyCode::Digit5) {
-      self.atmosphere_preset = AtmospherePreset::Smoky;
-    }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
-      self.atmosphere_preset = AtmospherePreset::Underwater;
-    }
-
-    // Toggle god rays
-    if ctx.input.key_pressed(KeyCode::Space) {
-      self.god_rays_enabled = !self.god_rays_enabled;
-    }
-
-    // Adjust god rays intensity
-    if ctx.input.key_down(KeyCode::ArrowUp) {
-      self.god_rays_intensity = (self.god_rays_intensity + dt).min(2.0);
-    }
-    if ctx.input.key_down(KeyCode::ArrowDown) {
-      self.god_rays_intensity = (self.god_rays_intensity - dt).max(0.1);
-    }
-
-    // Cycle light color preset
-    if ctx.input.key_pressed(KeyCode::Tab) {
-      self.light_preset = self.light_preset.next();
-    }
-
-    // Spotlight controls
-    // Rotate
-    if ctx.input.key_down(KeyCode::KeyQ) {
-      self.spotlight_direction = (self.spotlight_direction - 90.0 * dt) % 360.0;
-      if self.spotlight_direction < 0.0 {
-        self.spotlight_direction += 360.0;
-      }
-    }
-    if ctx.input.key_down(KeyCode::KeyE) {
-      self.spotlight_direction = (self.spotlight_direction + 90.0 * dt) % 360.0;
-    }
-
-    // Adjust cone angle
-    if ctx.input.key_down(KeyCode::KeyW) {
-      self.spotlight_angle = (self.spotlight_angle + 30.0 * dt).min(90.0);
-    }
-    if ctx.input.key_down(KeyCode::KeyS) {
-      self.spotlight_angle = (self.spotlight_angle - 30.0 * dt).max(10.0);
-    }
-
-    // Move spotlight
-    if ctx.input.key_down(KeyCode::KeyA) {
-      self.spotlight_x = (self.spotlight_x - 200.0 * dt).max(100.0);
-    }
-    if ctx.input.key_down(KeyCode::KeyD) {
-      self.spotlight_x = (self.spotlight_x + 200.0 * dt).min(self.screen_w - 100.0);
-    }
 
     // Update all lights
     self.update_spotlight(ctx);
@@ -497,115 +465,13 @@ impl Scene for VolumetricLightingScene {
 
     // Apply atmosphere effects
     self.apply_atmosphere(ctx);
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let white = Color::WHITE;
-    let gray = Color::new(180, 180, 180, 255);
-    let highlight = Color::new(255, 255, 100, 255);
-    let bg = Some(Color::new(0, 0, 0, 180));
-
-    // Title
-    ui.label("Volumetric Lighting Demo", 10.0, 10.0, white, bg);
-
-    // Current settings
-    ui.label(
-      &format!(
-        "Atmosphere: {} (1-6 to change)",
-        self.atmosphere_preset.name()
-      ),
-      10.0,
-      40.0,
-      highlight,
-      bg,
-    );
-
-    ui.label(
-      &format!(
-        "God Rays: {} (Space to toggle)",
-        if self.god_rays_enabled { "ON" } else { "OFF" }
-      ),
-      10.0,
-      65.0,
-      if self.god_rays_enabled {
-        highlight
-      } else {
-        gray
-      },
-      bg,
-    );
-
-    ui.label(
-      &format!(
-        "God Rays Intensity: {:.1} (Up/Down)",
-        self.god_rays_intensity
-      ),
-      10.0,
-      90.0,
-      gray,
-      bg,
-    );
-
-    ui.label(
-      &format!("Light Color: {} (Tab)", self.light_preset.name()),
-      10.0,
-      115.0,
-      self.light_preset.color(),
-      bg,
-    );
-
-    // Spotlight info
-    ui.label("", 10.0, 145.0, white, None); // spacer
-    ui.label("Spotlight Controls:", 10.0, 150.0, white, bg);
-    ui.label(
-      &format!("  Direction: {:.0} deg (Q/E)", self.spotlight_direction),
-      10.0,
-      175.0,
-      gray,
-      bg,
-    );
-    ui.label(
-      &format!("  Cone Angle: {:.0} deg (W/S)", self.spotlight_angle),
-      10.0,
-      200.0,
-      gray,
-      bg,
-    );
-    ui.label(
-      &format!("  Position: {:.0} (A/D)", self.spotlight_x),
-      10.0,
-      225.0,
-      gray,
-      bg,
-    );
-
-    // Instructions at bottom
-    ui.label("ESC to quit", 10.0, self.screen_h - 30.0, gray, bg);
-
-    // Feature list on right side
-    let right_x = self.screen_w - 250.0;
-    ui.label("Features Shown:", right_x, 10.0, white, bg);
-    ui.label("- God rays post-effect", right_x, 35.0, gray, bg);
-    ui.label("- Volumetric spotlight", right_x, 55.0, gray, bg);
-    ui.label("- Flickering torches", right_x, 75.0, gray, bg);
-    ui.label("- Atmosphere presets", right_x, 95.0, gray, bg);
-    ui.label("- Light color presets", right_x, 115.0, gray, bg);
-    ui.label("- Shadow occluders", right_x, 135.0, gray, bg);
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Volumetric Lighting Demo - Ryo2D")
+  Demo::new("Volumetric Lighting")
     .resolution(1280, 720)
-    .target_fps(60)
-    .start_scene(VolumetricLightingScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| b.target_fps(60))
+    .page(VolumetricPage::new)
+    .run();
 }

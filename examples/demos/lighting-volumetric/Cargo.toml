@@ -11,3 +11,4 @@ path = "main.rs"
 [dependencies]
 # Ryo2D engine dependency (local path for examples)
 ryo2d = { path = "../../../" }
+demo-kit = { path = "../../demo-kit" }

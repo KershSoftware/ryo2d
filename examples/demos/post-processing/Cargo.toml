@@ -11,3 +11,4 @@ path = "main.rs"
 [dependencies]
 # Use path dependency during development
 ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }

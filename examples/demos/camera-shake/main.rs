@@ -6,19 +6,10 @@
 //! - Configurable shake parameters
 //! - Configurable intensity curves
 //!
-//! ## Controls
-//!
-//! - 1: Small shake (0.2 trauma) - light impacts
-//! - 2: Medium shake (0.5 trauma) - hits, collisions
-//! - 3: Large shake (0.8 trauma) - explosions
-//! - Space: Maximum shake (1.0 trauma)
-//! - Q/W/E: Intensity curve (Linear / InQuad / InCubic)
-//! - R: Reset trauma to zero
-//! - Up/Down: Adjust max offset (default: 10 pixels)
-//! - Left/Right: Adjust decay rate (default: 1.0/sec)
-//! - Escape: Exit
+//! Runs on the demo-kit shell: the curve, max offset and decay are settings,
+//! trauma is added with the number keys and Space.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 /// Marker for grid squares (to show shake effect)
 #[derive(Debug)]
@@ -29,30 +20,28 @@ struct GridSquare;
 struct Player;
 
 /// Main demo scene
-struct CameraShakeDemoScene {
+/// Intensity curves offered by the Curve setting
+const CURVES: [(&str, Ease); 3] = [
+  ("Linear", Ease::Linear),
+  ("InQuad", Ease::InQuad),
+  ("InCubic", Ease::InCubic),
+];
+
+struct CameraShakePage {
   max_offset: f32,
   decay_rate: f32,
-  intensity_curve: Ease,
+  curve: usize,
+  // What was last sent to the camera, to reconfigure only on change
+  applied: (f32, f32, usize),
 }
 
-impl CameraShakeDemoScene {
+impl CameraShakePage {
   fn new() -> Self {
     Self {
       max_offset: 10.0,
       decay_rate: 1.0,
-      intensity_curve: Ease::InQuad,
-    }
-  }
-
-  /// Get a human-readable name for the current curve
-  fn curve_name(&self) -> &'static str {
-    match self.intensity_curve {
-      Ease::Linear => "Linear",
-      Ease::InQuad => "InQuad (default)",
-      Ease::InCubic => "InCubic",
-      Ease::InQuart => "InQuart",
-      Ease::OutQuad => "OutQuad",
-      _ => "Custom",
+      curve: 1,
+      applied: (10.0, 1.0, 1),
     }
   }
 
@@ -94,6 +83,15 @@ impl CameraShakeDemoScene {
     }
   }
 
+  /// Send the current settings to the camera
+  fn apply_config(&mut self, ctx: &mut SceneContext) {
+    ctx.camera.configure_shake(self.max_offset, self.decay_rate);
+    ctx
+      .camera
+      .set_shake_curve(CURVES[self.curve.min(CURVES.len() - 1)].1);
+    self.applied = (self.max_offset, self.decay_rate, self.curve);
+  }
+
   /// Spawn a "player" entity in the center
   fn spawn_player(&self, ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ctx.screen_size();
@@ -107,24 +105,42 @@ impl CameraShakeDemoScene {
   }
 }
 
-impl Scene for CameraShakeDemoScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // Apply initial shake config
-    ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-    ctx.camera.set_shake_curve(self.intensity_curve);
+impl DemoPage for CameraShakePage {
+  fn name(&self) -> &str {
+    "Trauma"
+  }
 
-    // Spawn visual elements
+  fn description(&self) -> &str {
+    "Trauma-based camera shake: shake grows with trauma^curve and decays over time."
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    let names: Vec<&str> = CURVES.iter().map(|(name, _)| *name).collect();
+    s.choice("Curve", &mut self.curve, &names);
+    s.float("Max offset", &mut self.max_offset, 2.0..=50.0, 2.0);
+    s.float("Decay", &mut self.decay_rate, 0.2..=5.0, 0.2);
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::key(KeyCode::Digit1, "Small shake (0.2)"),
+      Control::key(KeyCode::Digit2, "Medium shake (0.5)"),
+      Control::key(KeyCode::Digit3, "Large shake (0.8)"),
+      Control::key(KeyCode::Space, "Maximum shake (1.0)"),
+    ]
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    self.apply_config(ctx);
     self.spawn_grid(ctx);
     self.spawn_player(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Exit on escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
+    if (self.max_offset, self.decay_rate, self.curve) != self.applied {
+      self.apply_config(ctx);
     }
 
-    // Trigger different shake intensities
     if ctx.input.key_pressed(KeyCode::Digit1) {
       ctx.camera.add_trauma(0.2);
     }
@@ -137,105 +153,27 @@ impl Scene for CameraShakeDemoScene {
     if ctx.input.key_pressed(KeyCode::Space) {
       ctx.camera.add_trauma(1.0);
     }
-
-    // Change intensity curve
-    if ctx.input.key_pressed(KeyCode::KeyQ) {
-      self.intensity_curve = Ease::Linear;
-      ctx.camera.set_shake_curve(self.intensity_curve);
-    }
-    if ctx.input.key_pressed(KeyCode::KeyW) {
-      self.intensity_curve = Ease::InQuad;
-      ctx.camera.set_shake_curve(self.intensity_curve);
-    }
-    if ctx.input.key_pressed(KeyCode::KeyE) {
-      self.intensity_curve = Ease::InCubic;
-      ctx.camera.set_shake_curve(self.intensity_curve);
-    }
-
-    // Reset trauma
-    if ctx.input.key_pressed(KeyCode::KeyR) {
-      // Set trauma to 0 by configuring with same params (clears internal state)
-      ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-    }
-
-    // Adjust max offset
-    if ctx.input.key_pressed(KeyCode::ArrowUp) {
-      self.max_offset = (self.max_offset + 2.0).min(50.0);
-      ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-    }
-    if ctx.input.key_pressed(KeyCode::ArrowDown) {
-      self.max_offset = (self.max_offset - 2.0).max(2.0);
-      ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-    }
-
-    // Adjust decay rate
-    if ctx.input.key_pressed(KeyCode::ArrowRight) {
-      self.decay_rate = (self.decay_rate + 0.2).min(5.0);
-      ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-    }
-    if ctx.input.key_pressed(KeyCode::ArrowLeft) {
-      self.decay_rate = (self.decay_rate - 0.2).max(0.2);
-      ctx.camera.configure_shake(self.max_offset, self.decay_rate);
-    }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let text_light = Color::rgb(220, 220, 220);
-    let text_accent = Color::rgb(130, 180, 255);
-    let text_muted = Color::rgb(160, 160, 160);
-    let text_warning = Color::rgb(255, 200, 100);
-
-    // Title
-    ui.draw_text("Camera Shake Demo", 10.0, 10.0, text_light);
-
-    // Current config
-    let config_text = format!(
-      "Max Offset: {:.0}px | Decay: {:.1}/sec | Curve: {}",
-      self.max_offset,
-      self.decay_rate,
-      self.curve_name()
-    );
-    ui.draw_text(&config_text, 10.0, 30.0, text_accent);
-
-    // Controls
-    ui.draw_text(
-      "1-3: Shake levels | Space: Max | R: Reset",
-      10.0,
-      50.0,
-      text_muted,
-    );
-    ui.draw_text(
-      "Q/W/E: Curve | Arrows: Config | ESC: Exit",
-      10.0,
-      70.0,
-      text_muted,
-    );
-
-    // Visual indicator area
-    let (screen_w, _) = ui.screen_size();
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
     ui.draw_text(
       "Press keys to trigger shake!",
-      screen_w as f32 / 2.0 - 80.0,
-      100.0,
-      text_warning,
+      area.x + 8.0,
+      area.y + 8.0,
+      Color::rgb(255, 200, 100),
     );
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Camera Shake Demo - Ryo2D")
+  Demo::new("Camera Shake")
     .resolution(800, 600)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .target_fps(60)
-    .physics_hz(60)
-    .start_scene(CameraShakeDemoScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| {
+      b.window_mode(WindowMode::ResizableAspectRatio)
+        .target_fps(60)
+        .physics_hz(60)
+    })
+    .page(CameraShakePage::new)
+    .run();
 }
