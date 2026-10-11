@@ -83,7 +83,7 @@ fn execute(&mut self, ctx: &mut RenderContext<'_>) {
 }
 ```
 
-Custom shaders and a higher-level effects API for passes are coming; for now a game pass records raw wgpu work.
+For screen-wide effects written in WGSL, use a custom post-process effect (see Custom Shaders); a game pass is for raw wgpu work.
 
 ## Draw Order
 
@@ -159,6 +159,67 @@ Per-sprite effect:
 3. Pass uniforms from Rust
 
 Post-process effect: see `src/core/shaders/AGENTS.md` (`effects.rs`, `post-process/<name>.wgsl`, `pipeline.rs`, `manager.rs`).
+
+## Custom Shaders
+
+Games write WGSL; the engine wraps it with a prelude and a generated entry point (`src/core/shaders/custom.rs`). Load with `assets.load_shader("shaders/x.wgsl")` (cached by path; only IO errors are `Err`, so `match` it). `ShaderHandle::from_source(id, wgsl)` makes an inline shader and `handle.replace_source(..)` updates it.
+
+### Sprite shader
+
+```wgsl
+struct Params {          // optional; members f32/vec2/vec3/vec4<f32>, at most 32 bytes
+  edge: vec3<f32>,
+  amount: f32,
+}
+
+fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
+  // in.uv: 0..1 across the sprite, in.size: sprite size in texels,
+  // in.screen_pos: pixel position on screen, in.time: seconds
+  let c = sample(in.uv);  // sprite colour; transparent outside the sprite rect
+  return vec4<f32>(mix(c.rgb, params.edge, params.amount), c.a);
+}
+```
+
+Without a `Params` struct the engine supplies `struct Params { unused: f32 }`. The function works in the sprite's sRGB values (straight alpha); the engine applies the tint, rounding and linear conversion afterwards. Custom shaders draw within the sprite's quad. Shadows and tiled tiles draw plain.
+
+```rust
+let shader = match ctx.assets.load_shader("shaders/dissolve.wgsl") { Ok(s) => Some(s), Err(e) => { eprintln!("{e}"); None } };
+// Params are set by name; Color packs as sRGB/255.
+let fx = SpriteShader::custom(handle).with_param("amount", 0.4).with_param("edge", Color::rgb(255, 120, 0));
+Renderable::sprite(sprite).with_shader(fx);       // or a Material component (wins over Renderable::shader)
+// render_gpu: ctx.add_custom_sprite(texture_id, &shader, &params, instance, z_order);
+```
+
+`ParamValue` is `F32`/`Vec2`/`Vec3`/`Vec4`, with `From` for `f32`, `glam::Vec2/3/4` and `Color`. A name the shader does not declare, or a value of the wrong type, is warned about and ignored; a declared param never set is zero.
+
+### Post-process effect
+
+```wgsl
+struct Params {          // optional; at most 64 bytes
+  strength: f32,
+}
+
+fn effect(in: EffectIn, params: Params) -> vec4<f32> {
+  // in.uv, in.time, in.resolution
+  let c = scene(in.uv);  // latest image, LINEAR colour; return linear colour too
+  return vec4<f32>(c.rgb * (1.0 - params.strength), c.a);
+}
+```
+
+```rust
+if let Ok(h) = ctx.assets.load_shader("shaders/scan.wgsl") {
+    ctx.effects.add_custom("scan", h)?;                 // Err(EffectError::DuplicateName)
+    ctx.effects.set_custom_param("scan", "strength", 0.3);
+    ctx.effects.set_custom_enabled("scan", false);
+    ctx.effects.remove_custom("scan");                  // has_custom("scan")
+}
+```
+
+Custom effects run after the built-in effects, in insertion order. `effects.clear()` (part of default scene cleanup) removes them too.
+
+### Hot reload and errors
+
+`assets.enable_hot_reload(..)` then `process_reloads()` each frame: editing a `.wgsl` file updates the handle and the next frame rebuilds. A bad shader is logged once per version in the dev log as `<id>:<line>:<column>: <message>` with the line in your own file; a sprite then draws plain and an effect is skipped. Nothing panics.
 
 ## Post-Processing
 

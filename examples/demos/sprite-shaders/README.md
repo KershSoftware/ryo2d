@@ -15,6 +15,8 @@ This demo showcases all per-sprite shader effects available in Ryo2D.
 9. **Invert** - Color inversion
 10. **Grayscale** - Desaturation
 
+The middle sprite uses a custom WGSL shader (`assets/shaders/dissolve.wgsl`, loaded with `assets.load_shader`) whose `amount` param animates over time. Run the demo from this directory so the relative asset path resolves.
+
 ## Controls
 
 | Key | Action |

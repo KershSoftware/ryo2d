@@ -9,6 +9,7 @@ enum DemoEffect {
   ScreenFlash,
   Crt,
   ChromaticAberration,
+  CustomScanlines,
 }
 
 impl DemoEffect {
@@ -21,6 +22,7 @@ impl DemoEffect {
       DemoEffect::ScreenFlash => "Screen Flash",
       DemoEffect::Crt => "CRT",
       DemoEffect::ChromaticAberration => "Chromatic Aberration",
+      DemoEffect::CustomScanlines => "Custom WGSL (scanlines.wgsl)",
     }
   }
 
@@ -33,6 +35,9 @@ impl DemoEffect {
       DemoEffect::ScreenFlash => "Impact flash effect\nSpace: Trigger flash",
       DemoEffect::Crt => "Retro CRT scanlines & distortion\nAlways-on effect",
       DemoEffect::ChromaticAberration => "RGB channel offset\nUp/Down: Adjust offset strength",
+      DemoEffect::CustomScanlines => {
+        "Game-authored WGSL post-process effect\nUp/Down: Scanline strength"
+      }
     }
   }
 }
@@ -51,6 +56,10 @@ struct PostProcessingDemo {
   vignette_radius: f32,
   vignette_softness: f32,
   chromatic_strength: f32,
+  scanline_strength: f32,
+
+  // Custom WGSL effect, None if the shader file could not be loaded
+  scanlines: Option<ShaderHandle>,
 
   // Animation
   time: f32,
@@ -71,6 +80,8 @@ impl PostProcessingDemo {
       vignette_radius: 0.7,
       vignette_softness: 0.5,
       chromatic_strength: 0.005,
+      scanline_strength: 0.4,
+      scanlines: None,
       time: 0.0,
       screen_width: 0.0,
       screen_height: 0.0,
@@ -190,6 +201,17 @@ impl PostProcessingDemo {
           .effects
           .set_chromatic_aberration(self.chromatic_strength);
       }
+      DemoEffect::CustomScanlines => {
+        ctx.effects.clear();
+        if let Some(shader) = &self.scanlines
+          && ctx.effects.add_custom("scanlines", shader.clone()).is_ok()
+        {
+          ctx.effects.set_custom_param("scanlines", "density", 600.0);
+          ctx
+            .effects
+            .set_custom_param("scanlines", "strength", self.scanline_strength);
+        }
+      }
     }
   }
 
@@ -211,6 +233,8 @@ impl PostProcessingDemo {
       self.current_effect = DemoEffect::Crt;
     } else if ctx.input.key_pressed(KeyCode::Digit7) {
       self.current_effect = DemoEffect::ChromaticAberration;
+    } else if ctx.input.key_pressed(KeyCode::Digit8) {
+      self.current_effect = DemoEffect::CustomScanlines;
     }
 
     // Adjust parameters with arrow keys
@@ -255,6 +279,14 @@ impl PostProcessingDemo {
           self.chromatic_strength = (self.chromatic_strength - 0.0002).max(0.0);
         }
       }
+      DemoEffect::CustomScanlines => {
+        if ctx.input.key_down(KeyCode::ArrowUp) {
+          self.scanline_strength = (self.scanline_strength + adjust_speed).min(1.0);
+        }
+        if ctx.input.key_down(KeyCode::ArrowDown) {
+          self.scanline_strength = (self.scanline_strength - adjust_speed).max(0.0);
+        }
+      }
       _ => {}
     }
 
@@ -270,7 +302,7 @@ impl PostProcessingDemo {
 impl Scene for PostProcessingDemo {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     println!("=== Post-Processing Effects Demo ===");
-    println!("Press 1-7 to switch effects");
+    println!("Press 1-8 to switch effects (8 = custom WGSL scanlines)");
     println!("Use arrow keys to adjust parameters");
     println!("Press Space for screen flash");
     println!("Press ESC to quit");
@@ -279,6 +311,12 @@ impl Scene for PostProcessingDemo {
     let (width, height) = ctx.screen_size();
     self.screen_width = width;
     self.screen_height = height;
+
+    // A missing shader only disables effect 8; the rest of the demo still works.
+    match ctx.assets.load_shader("assets/shaders/scanlines.wgsl") {
+      Ok(shader) => self.scanlines = Some(shader),
+      Err(e) => eprintln!("Could not load scanlines.wgsl: {e}"),
+    }
 
     self.create_colorful_scene(ctx);
   }
@@ -365,6 +403,14 @@ impl Scene for PostProcessingDemo {
           Color::rgb(255, 255, 100),
         );
       }
+      DemoEffect::CustomScanlines => {
+        let text = if self.scanlines.is_some() {
+          format!("Scanline strength: {:.2}", self.scanline_strength)
+        } else {
+          "scanlines.wgsl failed to load (see console)".to_string()
+        };
+        ui.draw_text(&text, 10.0, params_y, Color::rgb(255, 255, 100));
+      }
       _ => {}
     }
 
@@ -372,7 +418,7 @@ impl Scene for PostProcessingDemo {
     let controls_y = 510.0;
     ui.draw_text("Controls:", 10.0, controls_y, Color::WHITE);
     ui.draw_text(
-      "1-7: Switch effects",
+      "1-8: Switch effects (8: custom WGSL scanlines)",
       10.0,
       controls_y + 15.0,
       Color::rgb(180, 180, 180),

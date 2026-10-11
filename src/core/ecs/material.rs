@@ -28,16 +28,21 @@
 //!     Material::outline(Color::WHITE, 2),
 //! ));
 //!
-//! // Pattern 3: Custom user shader
+//! // Pattern 3: Custom user shader (WGSL `fn sprite(in: SpriteIn, params: Params)`)
 //! let dissolve = assets.load_shader("shaders/dissolve.wgsl")?;
 //! world.spawn((
 //!     Transform::new(100.0, 200.0),
 //!     Renderable::sprite(sprite),
 //!     Material::custom(dissolve)
-//!         .with_param("progress", 0.5)
-//!         .with_param("edge_glow", 1.0),
+//!         .with_param("amount", 0.5)
+//!         .with_param("edge", Color::rgb(255, 120, 0)),
 //! ));
 //! ```
+//!
+//! A `Material` wins over `Renderable::shader`. Custom params are set by name
+//! (`f32`, `Vec2/3/4`, or `Color` packed as sRGB/255). Custom shaders draw
+//! within the sprite's quad; shadows and tiled tiles draw plain. A shader that
+//! fails to compile is logged and the sprite draws plain.
 //!
 //! # GPU Rendering Requirement
 //!

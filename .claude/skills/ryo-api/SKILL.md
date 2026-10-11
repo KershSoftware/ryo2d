@@ -560,7 +560,16 @@ impl AssetManager {
     fn disable_hot_reload(&mut self);
     fn is_hot_reload_enabled(&self) -> bool;
     fn process_reloads(&mut self) -> usize;
+
+    // WGSL shaders (cached by path; hot reload updates the handle)
+    fn load_shader<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<ShaderHandle>;
 }
+
+// ShaderHandle::from_source(id, wgsl) -> ShaderHandle; handle.replace_source(wgsl)
+// SpriteShader::custom(handle).with_param("amount", 0.4)   // params by name: f32, Vec2/3/4, Color (sRGB/255)
+// Material::custom(handle).with_param(..)                  // wins over Renderable::shader
+// GpuRenderContext::add_custom_sprite(texture_id, &shader, &params, instance, z_order)
+// Templates and colour-space rules: ryo-renderer skill, "Custom Shaders"
 ```
 
 ### LoadingProgress
@@ -1350,6 +1359,13 @@ impl EffectsManager {
     fn set_bloom_custom(&mut self, threshold: f32, intensity: f32, radius: f32, blur_passes: u32);
     fn disable_bloom(&mut self);
     fn has_bloom(&self) -> bool;
+
+    // Custom WGSL effects (fn effect(in: EffectIn, params: Params) -> vec4<f32>); run after built-ins, in insertion order
+    fn add_custom(&mut self, name: impl Into<String>, shader: ShaderHandle) -> Result<(), EffectError>;
+    fn set_custom_param(&mut self, name: &str, param: &str, value: impl Into<ParamValue>) -> bool;
+    fn set_custom_enabled(&mut self, name: &str, enabled: bool) -> bool;
+    fn remove_custom(&mut self, name: &str) -> bool;
+    fn has_custom(&self, name: &str) -> bool;
 }
 ```
 

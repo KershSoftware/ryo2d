@@ -12,6 +12,7 @@
 //! - Dissolve: Death/teleport animations
 //! - Invert: Color inversion
 //! - Grayscale: Desaturation
+//! - Custom WGSL: `assets/shaders/dissolve.wgsl` on the middle sprite, `amount` animated over time
 //!
 //! Controls:
 //! - Left/Right: Navigate between effects
@@ -106,6 +107,8 @@ struct SpriteShaderDemo {
   // Demo sprites - one normal, one with effect
   normal_sprite: Option<Entity>,
   effect_sprite: Option<Entity>,
+  // Middle sprite driven by the custom WGSL dissolve shader (None if it failed to load)
+  custom_sprite: Option<Entity>,
 
   // Effect parameters (adjustable via keyboard)
   outline_thickness: u32,
@@ -143,6 +146,7 @@ impl SpriteShaderDemo {
       current_index: 0,
       normal_sprite: None,
       effect_sprite: None,
+      custom_sprite: None,
 
       // Default parameters
       outline_thickness: 2,
@@ -331,6 +335,30 @@ impl Scene for SpriteShaderDemo {
       Renderable::sprite(handle.clone()).with_z_order(0),
     )));
 
+    // Middle: sprite with a custom WGSL shader loaded from disk. A missing or
+    // unreadable file is reported and the sprite is simply left out.
+    match ctx.assets.load_shader("assets/shaders/dissolve.wgsl") {
+      Ok(shader) => {
+        let handle3 = ctx.assets.create_sprite(create_test_sprite(), "test_sprite_3");
+        let mut custom_transform = Transform::new(cx, cy);
+        custom_transform.scale_x = 3.0;
+        custom_transform.scale_y = 3.0;
+        self.custom_sprite = Some(
+          ctx.world.spawn((
+            custom_transform,
+            Renderable::sprite(handle3)
+              .with_z_order(0)
+              .with_shader(
+                SpriteShader::custom(shader)
+                  .with_param("amount", 0.0)
+                  .with_param("edge", Color::rgb(255, 120, 0)),
+              ),
+          )),
+        );
+      }
+      Err(e) => eprintln!("Could not load dissolve.wgsl: {e}"),
+    }
+
     // Right side: sprite with effect
     let mut effect_transform = Transform::new(cx + cx / 2.0, cy);
     effect_transform.scale_x = 3.0;
@@ -367,6 +395,15 @@ impl Scene for SpriteShaderDemo {
         self.dissolve_progress = 0.0;
       }
       self.update_effect_sprite(ctx.world);
+    }
+
+    // Animate the custom shader's `amount` back and forth (0 -> 1 -> 0)
+    if let Some(entity) = self.custom_sprite
+      && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(entity)
+      && let Some(params) = renderable.shader.as_mut().and_then(|s| s.params_mut())
+    {
+      let amount = 0.5 - 0.5 * (self.time * 0.8).cos();
+      params.set("amount", amount);
     }
 
     // Update wave time (animated effect)
@@ -509,6 +546,9 @@ impl Scene for SpriteShaderDemo {
 
     // Labels
     ui.draw_text("Normal", 170.0, 440.0, Color::WHITE);
+    if self.custom_sprite.is_some() {
+      ui.draw_text("Custom WGSL (dissolve.wgsl)", 300.0, 440.0, Color::WHITE);
+    }
     ui.draw_text("With Effect", 500.0, 440.0, Color::WHITE);
 
     // Controls reminder

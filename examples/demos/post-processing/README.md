@@ -14,7 +14,7 @@ Interactive demo showcasing Ryo2D's post-processing shader system.
 
 ## Controls
 
-- **Number Keys (1-7):** Switch between effects
+- **Number Keys (1-8):** Switch between effects
   - `1` - None (disable all effects)
   - `2` - Fade
   - `3` - Color Tint (Sepia)
@@ -22,6 +22,7 @@ Interactive demo showcasing Ryo2D's post-processing shader system.
   - `5` - Screen Flash
   - `6` - CRT
   - `7` - Chromatic Aberration
+  - `8` - Custom WGSL scanlines (`assets/shaders/scanlines.wgsl`)
 
 - **Arrow Keys:** Adjust effect intensity
   - `Up/Down` - Increase/decrease primary parameter
