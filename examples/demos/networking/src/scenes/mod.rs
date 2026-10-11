@@ -1,7 +1,9 @@
-//! Game scenes
+//! The demo page and its two states
 
 mod game;
 mod menu;
+mod netplay;
 
-pub use game::GameScene;
-pub use menu::MenuScene;
+pub use game::Match;
+pub use menu::Lobby;
+pub use netplay::NetplayPage;

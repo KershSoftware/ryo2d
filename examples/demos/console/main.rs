@@ -1,41 +1,30 @@
 //! Console Demo - Ryo2D Example
 //!
-//! Demonstrates the two-phase command system, scene switching, and command scoping.
-//!
-//! ## Controls
-//!
-//! - `~`: Open developer console
-//! - Try `help game` to see all game commands
-//! - `game:hello [name]`: Prints a greeting (works in both scenes)
-//! - `game:scene1` / `game:scene2`: Switch scenes
-//! - `game:paint <color>`: Change background color (Scene 2 only)
+//! Demonstrates the two-phase command system and command scoping: commands are
+//! declared once and handlers are registered per page, so `game:paint` only
+//! works on the Workshop page. Runs on the demo-kit shell; switch pages with
+//! `[` and `]`.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
-// Cross-scene communication via atomics (console handlers can't return SceneAction)
-static SCENE_REQUEST: AtomicU8 = AtomicU8::new(0); // 0=none, 1=scene1, 2=scene2
-static PAINT_R: AtomicU8 = AtomicU8::new(40);
-static PAINT_G: AtomicU8 = AtomicU8::new(70);
-static PAINT_B: AtomicU8 = AtomicU8::new(40);
+// Console handlers can't touch the page, so the paint color is shared via atomics
+const PAINT_DEFAULT: (u8, u8, u8) = (40, 70, 40);
+static PAINT_R: AtomicU8 = AtomicU8::new(PAINT_DEFAULT.0);
+static PAINT_G: AtomicU8 = AtomicU8::new(PAINT_DEFAULT.1);
+static PAINT_B: AtomicU8 = AtomicU8::new(PAINT_DEFAULT.2);
 
 fn main() {
-  EngineBuilder::new()
-    .title("Console Demo")
+  Demo::new("Console")
     .resolution(800, 600)
-    .start_scene(HubScene)
-    .build()
-    .run()
-    .unwrap();
+    .page(|| HubPage)
+    .page(|| WorkshopPage)
+    .run();
 }
 
-// ============================================================================
-// Shared console command setup
-// ============================================================================
-
 /// Declare all commands and register the shared handlers.
-/// Declarations are global and idempotent; handlers are scoped to the active scene.
+/// Declarations are global and idempotent; handlers are scoped to the active page.
 fn register_shared_commands(ctx: &mut SceneContext) {
   // Declare ALL commands up front (visible in help immediately)
   ctx.declare_console_command(
@@ -45,130 +34,110 @@ fn register_shared_commands(ctx: &mut SceneContext) {
       "Usage: game:hello [name]\n\nPrints 'Hello, <name>!' or 'Hello, World!' if no name given.",
     ),
   );
-  ctx.declare_console_command("game:scene1", "Switch to Scene 1 (Hub)", None::<&str>);
-  ctx.declare_console_command("game:scene2", "Switch to Scene 2 (Workshop)", None::<&str>);
   ctx.declare_console_command(
     "game:paint",
-    "Change background color (Scene 2 only)",
-    Some("Usage: game:paint <color>\n\nColors: red, green, blue, yellow, purple, reset\nOnly has effect in Scene 2."),
+    "Change background color (Workshop page only)",
+    Some("Usage: game:paint <color>\n\nColors: red, green, blue, yellow, purple, reset\nOnly has effect on the Workshop page."),
   );
 
-  // Register handlers that work in every scene (scoped, re-registered on each enter)
+  // Register handlers that work on every page (scoped, re-registered on each enter)
   ctx.register_console_command("game:hello", |args, cmd_ctx| {
     let name = if args.is_empty() { "World" } else { args[0] };
     cmd_ctx.console.print(format!("Hello, {}!", name));
     CommandResult::Ok
   });
-
-  ctx.register_console_command("game:scene1", |_args, cmd_ctx| {
-    SCENE_REQUEST.store(1, Ordering::Relaxed);
-    cmd_ctx.console.print("Switching to Scene 1...");
-    CommandResult::Ok
-  });
-
-  ctx.register_console_command("game:scene2", |_args, cmd_ctx| {
-    SCENE_REQUEST.store(2, Ordering::Relaxed);
-    cmd_ctx.console.print("Switching to Scene 2...");
-    CommandResult::Ok
-  });
 }
 
+const CONSOLE_HINT: &str = "Open the developer console with the backquote key (`).\n\
+  Run `help game` to list commands; game:hello [name] works on both pages, game:paint <color> only on Workshop.";
+
 // ============================================================================
-// Scene 1 — Hub
+// Page 1 — Hub
 // ============================================================================
 
-struct HubScene;
+struct HubPage;
 
-impl Scene for HubScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    register_shared_commands(ctx);
-  }
-
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Check for scene switch request from console command
-    let req = SCENE_REQUEST.swap(0, Ordering::Relaxed);
-    if req == 2 {
-      return SceneAction::Switch(Box::new(WorkshopScene));
-    }
-
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    // Title
-    ui.draw_text("Scene 1 — Hub", 30.0, 20.0, Color::WHITE);
-
-    // Instructions
-    ui.draw_text(
-      "Press ~ to open the developer console",
-      30.0,
-      60.0,
-      Color::rgb(150, 170, 200),
-    );
-    ui.draw_text(
-      "Try: help game, game:hello, game:scene2",
-      30.0,
-      85.0,
-      Color::rgb(120, 140, 170),
-    );
-
-    // Scene 2 button
-    let btn_rect = Rect::new(30.0, 130.0, 200.0, 40.0);
-    if ui.button("Go to Scene 2", btn_rect) {
-      SCENE_REQUEST.store(2, Ordering::Relaxed);
-    }
-
-    // Status panel
-    let panel = Rect::new(30.0, 200.0, 400.0, 100.0);
-    ui.draw_rect(panel, Color::rgb(15, 20, 40));
-    ui.draw_rect_outline(panel, Color::rgb(50, 60, 90), 1.0);
-
-    ui.draw_text("Active Commands", 40.0, 210.0, Color::rgb(150, 200, 255));
-    ui.draw_text(
-      "game:hello — active (permanent)",
-      40.0,
-      235.0,
-      Color::rgb(100, 255, 100),
-    );
-    ui.draw_text(
-      "game:scene1 / game:scene2 — active (permanent)",
-      40.0,
-      255.0,
-      Color::rgb(100, 255, 100),
-    );
-    ui.draw_text(
-      "game:paint — inactive (Scene 2 only)",
-      40.0,
-      275.0,
-      Color::rgb(255, 100, 100),
-    );
-
-    // Footer
-    ui.draw_text("Press ESC to exit", 30.0, 560.0, Color::rgb(100, 100, 100));
-    SceneAction::Continue
-  }
-
+impl DemoPage for HubPage {
   fn name(&self) -> &str {
     "Hub"
   }
+
+  fn description(&self) -> &str {
+    CONSOLE_HINT
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    register_shared_commands(ctx);
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
+    let x = area.x + 10.0;
+    let y = area.y + 10.0;
+
+    ui.draw_text(
+      "Press ` to open the developer console",
+      x,
+      y,
+      Color::rgb(150, 170, 200),
+    );
+    ui.draw_text(
+      "Try: help game, game:hello, game:paint red",
+      x,
+      y + 25.0,
+      Color::rgb(120, 140, 170),
+    );
+
+    // Status panel
+    let panel = Rect::new(x, y + 70.0, 400.0, 100.0);
+    ui.draw_rect(panel, Color::rgb(15, 20, 40));
+    ui.draw_rect_outline(panel, Color::rgb(50, 60, 90), 1.0);
+
+    ui.draw_text(
+      "Active Commands",
+      panel.x + 10.0,
+      panel.y + 10.0,
+      Color::rgb(150, 200, 255),
+    );
+    ui.draw_text(
+      "game:hello — active (permanent)",
+      panel.x + 10.0,
+      panel.y + 35.0,
+      Color::rgb(100, 255, 100),
+    );
+    ui.draw_text(
+      "game:paint — inactive (Workshop page only)",
+      panel.x + 10.0,
+      panel.y + 55.0,
+      Color::rgb(255, 100, 100),
+    );
+  }
 }
 
 // ============================================================================
-// Scene 2 — Workshop
+// Page 2 — Workshop
 // ============================================================================
 
-struct WorkshopScene;
+struct WorkshopPage;
 
-impl Scene for WorkshopScene {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // Register shared commands (hello, scene1, scene2)
+impl DemoPage for WorkshopPage {
+  fn name(&self) -> &str {
+    "Workshop"
+  }
+
+  fn description(&self) -> &str {
+    CONSOLE_HINT
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
+    PAINT_R.store(PAINT_DEFAULT.0, Ordering::Relaxed);
+    PAINT_G.store(PAINT_DEFAULT.1, Ordering::Relaxed);
+    PAINT_B.store(PAINT_DEFAULT.2, Ordering::Relaxed);
+
+    // Register shared commands (hello)
     register_shared_commands(ctx);
 
-    // Register scoped handler for game:paint (auto-cleaned on scene exit)
+    // Register scoped handler for game:paint (auto-cleaned on page exit)
     ctx.register_console_command("game:paint", |args, cmd_ctx| {
       if args.is_empty() {
         cmd_ctx.console.print("Usage: game:paint <color>");
@@ -227,21 +196,7 @@ impl Scene for WorkshopScene {
     });
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Check for scene switch request from console command
-    let req = SCENE_REQUEST.swap(0, Ordering::Relaxed);
-    if req == 1 {
-      return SceneAction::Switch(Box::new(HubScene));
-    }
-
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     // Painted background (set via game:paint console command)
     let r = PAINT_R.load(Ordering::Relaxed);
     let g = PAINT_G.load(Ordering::Relaxed);
@@ -249,68 +204,51 @@ impl Scene for WorkshopScene {
     let (w, h) = ui.screen_size();
     ui.draw_rect(Rect::new(0.0, 0.0, w as f32, h as f32), Color::rgb(r, g, b));
 
-    // Title
-    ui.draw_text("Scene 2 — Workshop", 30.0, 20.0, Color::WHITE);
+    let area = content_area(ui);
+    let x = area.x + 10.0;
+    let y = area.y + 10.0;
 
-    // Instructions
     ui.draw_text(
-      "Press ~ to open the developer console",
-      30.0,
-      60.0,
+      "Press ` to open the developer console",
+      x,
+      y,
       Color::rgb(150, 200, 170),
     );
     ui.draw_text(
       "Try: game:paint red, game:paint green, game:paint reset",
-      30.0,
-      85.0,
+      x,
+      y + 25.0,
       Color::rgb(120, 170, 140),
     );
 
-    // Back button
-    let btn_rect = Rect::new(30.0, 130.0, 200.0, 40.0);
-    if ui.button("Back to Scene 1", btn_rect) {
-      SCENE_REQUEST.store(1, Ordering::Relaxed);
-    }
-
     // Status panel
-    let panel = Rect::new(30.0, 200.0, 400.0, 120.0);
+    let panel = Rect::new(x, y + 70.0, 400.0, 120.0);
     ui.draw_rect(panel, Color::rgb(15, 30, 20));
     ui.draw_rect_outline(panel, Color::rgb(50, 90, 60), 1.0);
 
-    ui.draw_text("Active Commands", 40.0, 210.0, Color::rgb(150, 255, 200));
+    ui.draw_text(
+      "Active Commands",
+      panel.x + 10.0,
+      panel.y + 10.0,
+      Color::rgb(150, 255, 200),
+    );
     ui.draw_text(
       "game:hello — active (permanent)",
-      40.0,
-      235.0,
+      panel.x + 10.0,
+      panel.y + 35.0,
       Color::rgb(100, 255, 100),
     );
     ui.draw_text(
-      "game:scene1 / game:scene2 — active (permanent)",
-      40.0,
-      255.0,
+      "game:paint — active (scoped to this page)",
+      panel.x + 10.0,
+      panel.y + 55.0,
       Color::rgb(100, 255, 100),
     );
-    ui.draw_text(
-      "game:paint — active (scoped to this scene)",
-      40.0,
-      275.0,
-      Color::rgb(100, 255, 100),
-    );
-
-    // Color display
     ui.draw_text(
       &format!("Background: rgb({}, {}, {})", r, g, b),
-      40.0,
-      295.0,
+      panel.x + 10.0,
+      panel.y + 85.0,
       Color::rgb(200, 200, 200),
     );
-
-    // Footer
-    ui.draw_text("Press ESC to exit", 30.0, 560.0, Color::rgb(100, 100, 100));
-    SceneAction::Continue
-  }
-
-  fn name(&self) -> &str {
-    "Workshop"
   }
 }

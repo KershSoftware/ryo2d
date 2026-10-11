@@ -1,28 +1,16 @@
 //! Netplay - Multiplayer Platformer Demo
 //!
-//! A simple 2-player networked game demonstrating Ryo2D's networking features.
-//!
-//! ## Features
-//! - Listen server (host) and client modes
-//! - 5-character room codes for easy joining
-//! - Player movement, jumping, and collision
-//! - Real-time position synchronization
-//!
-//! ## Controls
-//! - A/D or Arrow keys: Move left/right
-//! - Space or W: Jump
+//! A two-player networked platformer: a listen-server host and a client that
+//! joins with a 5-character room code, with player movement, jumping,
+//! collision and position synchronization. The lobby and the match are one
+//! page on the demo-kit shell; `L` leaves a match back to the lobby.
 
+use demo_kit::prelude::*;
 use networking::prelude::*;
-use ryo2d::prelude::*;
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Netplay - Multiplayer Demo")
+  Demo::new("Netplay")
     .resolution(800, 600)
-    .start_scene(MenuScene::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .page(NetplayPage::new)
+    .run();
 }

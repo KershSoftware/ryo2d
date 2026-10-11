@@ -1,9 +1,9 @@
-//! Menu scene with lobby creation/joining
+//! The lobby: create a room or join one
 
 use crate::constants::*;
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
-use super::GameScene;
+use super::Match;
 
 /// Generate a random 5-character room code
 fn generate_room_code() -> String {
@@ -14,15 +14,16 @@ fn generate_room_code() -> String {
     .collect()
 }
 
-pub struct MenuScene {
+/// Room creation and joining; hands a `Match` to the page when one starts
+pub struct Lobby {
   room_code_input: TextInputState,
   address_input: TextInputState,
   error_message: Option<String>,
   last_dt: f32,
-  pending_scene: Option<Box<dyn Scene>>,
+  pending_match: Option<Match>,
 }
 
-impl MenuScene {
+impl Lobby {
   pub fn new() -> Self {
     let mut address_input = TextInputState::new();
     address_input.set_text(DEFAULT_ADDRESS);
@@ -31,15 +32,15 @@ impl MenuScene {
       address_input,
       error_message: None,
       last_dt: 0.016,
-      pending_scene: None,
+      pending_match: None,
     }
   }
 
   fn try_create_room(&mut self) {
     let room_code = generate_room_code();
-    match GameScene::new_host(room_code.clone()) {
+    match Match::new_host(room_code.clone()) {
       Ok(scene) => {
-        self.pending_scene = Some(Box::new(scene));
+        self.pending_match = Some(scene);
       }
       Err(e) => {
         self.error_message = Some(format!("Failed to create: {}", e));
@@ -61,9 +62,9 @@ impl MenuScene {
       return;
     }
 
-    match GameScene::new_client(&room_code, &address) {
+    match Match::new_client(&room_code, &address) {
       Ok(scene) => {
-        self.pending_scene = Some(Box::new(scene));
+        self.pending_match = Some(scene);
       }
       Err(e) => {
         self.error_message = Some(format!("Failed to join: {}", e));
@@ -72,23 +73,14 @@ impl MenuScene {
   }
 }
 
-impl Scene for MenuScene {
-  fn name(&self) -> &str {
-    "MenuScene"
+impl Lobby {
+  /// The match the player just started, if any
+  pub fn take_match(&mut self) -> Option<Match> {
+    self.pending_match.take()
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  pub fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     self.last_dt = dt;
-
-    // Check for pending scene switch
-    if let Some(scene) = self.pending_scene.take() {
-      return SceneAction::Switch(scene);
-    }
-
-    // ESC to quit
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
 
     // Enter to join if either input is focused and both have content
     let enter_pressed = ctx.input.key_pressed(KeyCode::Enter);
@@ -99,12 +91,11 @@ impl Scene for MenuScene {
     if enter_pressed && either_focused && has_code && has_address {
       self.try_join_room();
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  pub fn render_ui(&mut self, ui: &mut UiContext) {
     let dt = self.last_dt;
+    let area = content_area(ui);
     let (sw, sh) = ui.screen_size();
     let center_x = sw as f32 / 2.0;
     let center_y = sh as f32 / 2.0;
@@ -116,12 +107,12 @@ impl Scene for MenuScene {
     );
 
     // Title
-    ui.draw_text_anchored("NETPLAY", Anchor::TopCenter, 0.0, 80.0, Color::WHITE);
+    ui.draw_text_anchored("NETPLAY", Anchor::TopCenter, 0.0, area.y + 10.0, Color::WHITE);
     ui.draw_text_anchored(
       "Multiplayer Platformer",
       Anchor::TopCenter,
       0.0,
-      105.0,
+      area.y + 35.0,
       Color::GRAY,
     );
 
@@ -175,17 +166,13 @@ impl Scene for MenuScene {
 
     // Error message
     if let Some(ref err) = self.error_message {
-      ui.draw_text_anchored(err, Anchor::Center, 0.0, 200.0, Color::RED);
+      ui.draw_text_anchored(
+        err,
+        Anchor::TopCenter,
+        0.0,
+        join_rect.y + join_rect.height + 10.0,
+        Color::RED,
+      );
     }
-
-    // Instructions
-    ui.draw_text_anchored(
-      "ESC to quit",
-      Anchor::BottomCenter,
-      0.0,
-      -20.0,
-      Color::DARK_GRAY,
-    );
-    SceneAction::Continue
   }
 }

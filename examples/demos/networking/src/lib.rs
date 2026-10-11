@@ -5,6 +5,8 @@
 //! - NetworkClient for joining games
 //! - Entity replication and state synchronization
 //! - Simple platformer physics
+//!
+//! Runs as a single page on the demo-kit shell.
 
 #![allow(clippy::new_without_default)]
 

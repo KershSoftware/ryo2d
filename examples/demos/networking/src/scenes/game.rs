@@ -1,15 +1,13 @@
-//! Game scene with multiplayer gameplay
+//! The match: two players on a platform, host-authoritative
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 use crate::components::*;
 use crate::constants::*;
-
-use super::MenuScene;
 
 /// Get the local LAN IP address by connecting to a remote address.
 /// This doesn't actually send data, just determines which interface would be used.
@@ -56,7 +54,8 @@ struct PendingInput {
   jump: bool,
 }
 
-pub struct GameScene {
+/// A running match, as host or client
+pub struct Match {
   role: Role,
   room_code: String,
 
@@ -80,12 +79,11 @@ pub struct GameScene {
   connected: bool,
   waiting_for_player: bool,
 
-  // UI state
-  show_quit_dialog: bool,
-  pending_quit: bool,
+  // Set by the leave key; the page then drops the match
+  leave_requested: bool,
 }
 
-impl GameScene {
+impl Match {
   /// Create a new host (server) game
   pub fn new_host(room_code: String) -> Result<Self, NetworkError> {
     let server = ListenServer::new(NetworkServerConfig {
@@ -114,8 +112,7 @@ impl GameScene {
       local_jump: false,
       connected: true,
       waiting_for_player: true,
-      show_quit_dialog: false,
-      pending_quit: false,
+      leave_requested: false,
     })
   }
 
@@ -147,8 +144,7 @@ impl GameScene {
       local_jump: false,
       connected: false,
       waiting_for_player: true,
-      show_quit_dialog: false,
-      pending_quit: false,
+      leave_requested: false,
     })
   }
 
@@ -224,15 +220,27 @@ impl GameScene {
   fn handle_input(&mut self, ctx: &mut SceneContext) {
     // Horizontal movement
     self.local_move_x = 0.0;
-    if ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::ArrowLeft) {
+    if ctx.input.key_down(KeyCode::KeyA) {
       self.local_move_x -= 1.0;
     }
-    if ctx.input.key_down(KeyCode::KeyD) || ctx.input.key_down(KeyCode::ArrowRight) {
+    if ctx.input.key_down(KeyCode::KeyD) {
       self.local_move_x += 1.0;
     }
 
     // Jump
     self.local_jump = ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::KeyW);
+  }
+
+  /// True once the player pressed the leave key
+  pub fn leave_requested(&self) -> bool {
+    self.leave_requested
+  }
+
+  /// Disconnect from the host; a hosted server stops when dropped
+  pub fn disconnect(&mut self) {
+    if let Some(client) = self.client.as_mut() {
+      client.disconnect();
+    }
   }
 
   fn update_host(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -580,84 +588,61 @@ impl GameScene {
   }
 }
 
-impl Scene for GameScene {
-  fn name(&self) -> &str {
-    "GameScene"
-  }
-
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
+impl Match {
+  /// Build the match's world: background, platform and the host's player
+  pub fn enter(&mut self, ctx: &mut SceneContext) {
     ctx.world.clear();
     ctx
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
-    // Spawn background and platform
     self.spawn_background(ctx);
     self.spawn_platform(ctx);
 
-    // If host, spawn player A immediately
     if self.role == Role::Host {
       let host_id = self.server.as_ref().unwrap().host_id();
       self.spawn_player(ctx, 0, host_id);
     }
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Check for pending quit (confirmed in dialog)
-    if self.pending_quit {
-      // Gracefully disconnect
-      if let Some(client) = self.client.as_mut() {
-        client.disconnect();
-      }
-      // Server will clean up on drop
-      return SceneAction::Switch(Box::new(MenuScene::new()));
+  pub fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+    if ctx.input.key_pressed(KeyCode::KeyL) {
+      self.leave_requested = true;
+      return;
     }
 
-    // ESC toggles quit dialog
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      self.show_quit_dialog = !self.show_quit_dialog;
+    self.handle_input(ctx);
+
+    match self.role {
+      Role::Host => self.update_host(ctx, dt),
+      Role::Client => self.update_client(ctx, dt),
     }
-
-    // Don't process game input while dialog is open
-    if !self.show_quit_dialog {
-      self.handle_input(ctx);
-
-      // Update based on role
-      match self.role {
-        Role::Host => self.update_host(ctx, dt),
-        Role::Client => self.update_client(ctx, dt),
-      }
-    }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let (sw, sh) = ui.screen_size();
-
-    // NOTE: Don't draw background here - it covers game sprites!
-    // Background is set via clear color in on_enter
+  pub fn render_ui(&mut self, ui: &mut UiContext) {
+    let area = content_area(ui);
+    let right = area.x + area.width;
 
     // Room code (top right, faded)
     let code_text = format!("Room: {}", self.room_code);
     let (tw, _) = ui.text_size(&code_text);
     ui.draw_text(
       &code_text,
-      sw as f32 - tw as f32 - 20.0,
-      20.0,
+      right - tw as f32,
+      area.y,
       Color::new(255, 255, 255, 100),
     );
 
     // Show host IP addresses below room code (host only)
     if self.role == Role::Host {
-      let mut y_pos = 40.0;
+      let mut y_pos = area.y + 20.0;
 
       if let Some(ref lan) = self.lan_ip {
         let lan_text = format!("LAN: {}:{}", lan, DEFAULT_PORT);
         let (tw, _) = ui.text_size(&lan_text);
         ui.draw_text(
           &lan_text,
-          sw as f32 - tw as f32 - 20.0,
+          right - tw as f32,
           y_pos,
           Color::new(100, 200, 100, 150), // Green tint
         );
@@ -669,7 +654,7 @@ impl Scene for GameScene {
         let (tw, _) = ui.text_size(&wan_text);
         ui.draw_text(
           &wan_text,
-          sw as f32 - tw as f32 - 20.0,
+          right - tw as f32,
           y_pos,
           Color::new(200, 150, 100, 150), // Orange tint
         );
@@ -691,8 +676,8 @@ impl Scene for GameScene {
 
     ui.draw_text(
       &format!("[{}] {}", role_str, connected_str),
-      20.0,
-      20.0,
+      area.x,
+      area.y,
       if self.role == Role::Host {
         Color::rgb(66, 135, 245)
       } else {
@@ -701,16 +686,16 @@ impl Scene for GameScene {
     );
     ui.draw_text(
       &format!("Players: {}/2", player_count),
-      20.0,
-      40.0,
+      area.x,
+      area.y + 20.0,
       Color::WHITE,
     );
 
     // Show player positions
-    let mut y_offset = 60.0;
+    let mut y_offset = area.y + 40.0;
     for (&client_id, &entity) in &self.players {
       let pos_str = format!("  P{}: entity {:?}", client_id, entity);
-      ui.draw_text(&pos_str, 20.0, y_offset, Color::GRAY);
+      ui.draw_text(&pos_str, area.x, y_offset, Color::GRAY);
       y_offset += 20.0;
     }
 
@@ -726,62 +711,6 @@ impl Scene for GameScene {
         Color::YELLOW,
       );
     }
-
-    // Controls hint
-    ui.draw_text(
-      "A/D: Move | Space: Jump | ESC: Menu",
-      20.0,
-      sh as f32 - 30.0,
-      Color::LIGHT_GRAY,
-    );
-
-    // Quit confirmation dialog
-    if self.show_quit_dialog {
-      let center_x = sw as f32 / 2.0;
-      let center_y = sh as f32 / 2.0;
-
-      // Semi-transparent overlay
-      ui.draw_rect(
-        Rect::new(0.0, 0.0, sw as f32, sh as f32),
-        Color::new(0, 0, 0, 180),
-      );
-
-      // Dialog box
-      let dialog_w = 300.0;
-      let dialog_h = 150.0;
-      let dialog_x = center_x - dialog_w / 2.0;
-      let dialog_y = center_y - dialog_h / 2.0;
-
-      ui.draw_rect(
-        Rect::new(dialog_x, dialog_y, dialog_w, dialog_h),
-        Color::rgb(40, 40, 50),
-      );
-      ui.draw_rect_outline(
-        Rect::new(dialog_x, dialog_y, dialog_w, dialog_h),
-        Color::WHITE,
-        2.0,
-      );
-
-      // Dialog text
-      ui.draw_text_anchored("Leave Game?", Anchor::Center, 0.0, -30.0, Color::WHITE);
-
-      // Buttons
-      let btn_w = 100.0;
-      let btn_h = 36.0;
-      let btn_y = center_y + 25.0;
-
-      let yes_rect = Rect::new(center_x - btn_w - 20.0, btn_y, btn_w, btn_h);
-      let no_rect = Rect::new(center_x + 20.0, btn_y, btn_w, btn_h);
-
-      if ui.button("Yes, Leave", yes_rect) {
-        self.pending_quit = true;
-      }
-
-      if ui.button("Cancel", no_rect) {
-        self.show_quit_dialog = false;
-      }
-    }
-    SceneAction::Continue
   }
 }
 
