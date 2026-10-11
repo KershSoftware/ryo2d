@@ -10,6 +10,8 @@
 //! - [`GpuParallaxBackground`] - GPU-accelerated parallax for layered scrolling backgrounds
 
 pub mod animation;
+#[allow(dead_code)] // consumed by the sprite renderer in a later task
+mod atlas;
 pub mod camera;
 mod compositor;
 pub mod parallax;
@@ -22,6 +24,8 @@ pub mod tile;
 pub use animation::{
   Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState, ValidatedAnimator,
 };
+#[allow(unused_imports)] // consumed by the sprite renderer in a later task
+pub(crate) use atlas::{AtlasKey, AtlasLayout, AtlasSlot, Placement, TextureAtlas};
 pub use camera::{Camera, CameraBounds};
 pub use parallax::TileMode;
 pub use parallax_gpu::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};

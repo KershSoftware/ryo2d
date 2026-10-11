@@ -64,6 +64,7 @@ puffin = { version = "0.19", optional = true }
 
 # Optional WebRTC transport for NAT traversal (enable with --features matchbox)
 matchbox_socket = { version = "0.10", optional = true, features = ["ggrs"] }
+etagere = "0.2"
 
 [features]
 default = []
