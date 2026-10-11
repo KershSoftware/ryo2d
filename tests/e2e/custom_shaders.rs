@@ -426,7 +426,7 @@ fn custom_grayscale_effect() {
   let shader = ShaderHandle::from_source("t3-gray.wgsl", GRAYSCALE);
   let Some((mut engine, queue)) = effect_engine(move |fx| {
     assert!(fx.add_custom("gray", shader).is_ok());
-    fx.set_custom_param("gray", "strength", 0.0);
+    assert!(fx.set_custom_param("gray", "strength", 0.0));
   }) else {
     return;
   };

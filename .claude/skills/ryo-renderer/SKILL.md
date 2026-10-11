@@ -180,14 +180,17 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
 }
 ```
 
+WGSL alignment applies: a `vec3<f32>` member takes 16 bytes of alignment, so `{ a: vec3<f32>, b: vec3<f32> }` is 32 bytes. Put `f32`s after a `vec3` to pack tightly (as `edge`/`amount` above do).
+
 Without a `Params` struct the engine supplies `struct Params { unused: f32 }`. The function works in the sprite's sRGB values (straight alpha); the engine applies the tint, rounding and linear conversion afterwards. Custom shaders draw within the sprite's quad. Shadows and tiled tiles draw plain.
 
 ```rust
-let shader = match ctx.assets.load_shader("shaders/dissolve.wgsl") { Ok(s) => Some(s), Err(e) => { eprintln!("{e}"); None } };
-// Params are set by name; Color packs as sRGB/255.
-let fx = SpriteShader::custom(handle).with_param("amount", 0.4).with_param("edge", Color::rgb(255, 120, 0));
-Renderable::sprite(sprite).with_shader(fx);       // or a Material component (wins over Renderable::shader)
-// render_gpu: ctx.add_custom_sprite(texture_id, &shader, &params, instance, z_order);
+if let Ok(handle) = ctx.assets.load_shader("shaders/dissolve.wgsl") {
+    // Params are set by name; Color packs as sRGB/255.
+    let fx = SpriteShader::custom(handle).with_param("amount", 0.4).with_param("edge", Color::rgb(255, 120, 0));
+    Renderable::sprite(sprite).with_shader(fx);   // or a Material component (wins over Renderable::shader)
+}
+// render_gpu: ctx.add_custom_sprite(texture_id, &handle, &params, instance, z_order);
 ```
 
 `ParamValue` is `F32`/`Vec2`/`Vec3`/`Vec4`, with `From` for `f32`, `glam::Vec2/3/4` and `Color`. A name the shader does not declare, or a value of the wrong type, is warned about and ignored; a declared param never set is zero.
@@ -209,7 +212,7 @@ fn effect(in: EffectIn, params: Params) -> vec4<f32> {
 ```rust
 if let Ok(h) = ctx.assets.load_shader("shaders/scan.wgsl") {
     ctx.effects.add_custom("scan", h)?;                 // Err(EffectError::DuplicateName)
-    ctx.effects.set_custom_param("scan", "strength", 0.3);
+    ctx.effects.set_custom_param("scan", "strength", 0.3);   // setters return false (#[must_use]) for an unknown name
     ctx.effects.set_custom_enabled("scan", false);
     ctx.effects.remove_custom("scan");                  // has_custom("scan")
 }

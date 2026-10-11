@@ -598,6 +598,16 @@ impl AssetManager {
     }
   }
 
+  /// Cache key for an asset path: the canonical resolved path
+  ///
+  /// Hot reload events carry absolute, symlink-resolved paths, so keys are
+  /// canonicalized to match them. Falls back to the resolved path when the
+  /// file does not exist. Handle ids stay the (readable) resolved path.
+  fn cache_key<P: AsRef<Path>>(&self, path: P) -> PathBuf {
+    let resolved = self.resolve_path(path);
+    std::fs::canonicalize(&resolved).unwrap_or(resolved)
+  }
+
   /// Load a sprite from a file
   ///
   /// If the sprite was previously loaded, returns the cached handle.
@@ -619,9 +629,10 @@ impl AssetManager {
   /// ```
   pub fn load_sprite<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<SpriteHandle> {
     let full_path = self.resolve_path(&path);
+    let key = self.cache_key(&path);
 
     // Check cache first
-    if let Some(handle) = self.sprites.get(&full_path) {
+    if let Some(handle) = self.sprites.get(&key) {
       return Ok(handle.clone());
     }
 
@@ -630,7 +641,7 @@ impl AssetManager {
 
     // Create handle and cache it
     let handle = SpriteHandle::new(sprite, full_path.clone());
-    self.sprites.insert(full_path, handle.clone());
+    self.sprites.insert(key, handle.clone());
 
     Ok(handle)
   }
@@ -652,8 +663,9 @@ impl AssetManager {
   /// ```
   pub fn load_shader<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<ShaderHandle> {
     let full_path = self.resolve_path(&path);
+    let key = self.cache_key(&path);
 
-    if let Some(handle) = self.shaders.get(&full_path) {
+    if let Some(handle) = self.shaders.get(&key) {
       return Ok(handle.clone());
     }
 
@@ -666,7 +678,7 @@ impl AssetManager {
     })?;
 
     let handle = ShaderHandle::from_file(&full_path, source);
-    self.shaders.insert(full_path, handle.clone());
+    self.shaders.insert(key, handle.clone());
     Ok(handle)
   }
 
@@ -724,7 +736,7 @@ impl AssetManager {
     let full_path = self.resolve_path(&path);
 
     // If already cached, return immediately as loaded
-    if let Some(handle) = self.sprites.get(&full_path) {
+    if let Some(handle) = self.sprites.get(&self.cache_key(&path)) {
       let async_handle = AsyncSpriteHandle::new_pending(full_path);
       async_handle.complete_success(handle.clone());
       return async_handle;
@@ -789,7 +801,8 @@ impl AssetManager {
           Ok(sprite) => {
             // Create handle and cache it
             let handle = SpriteHandle::new(sprite, result.path.clone());
-            self.sprites.insert(result.path, handle.clone());
+            let key = std::fs::canonicalize(&result.path).unwrap_or(result.path);
+            self.sprites.insert(key, handle.clone());
 
             // Update the async handle
             pending.complete_success(handle);
@@ -830,8 +843,7 @@ impl AssetManager {
 
   /// Check if a sprite is already cached
   pub fn is_sprite_cached<P: AsRef<Path>>(&self, path: P) -> bool {
-    let full_path = self.resolve_path(path);
-    self.sprites.contains_key(&full_path)
+    self.sprites.contains_key(&self.cache_key(path))
   }
 
   /// Get the number of cached sprites
@@ -877,8 +889,8 @@ impl AssetManager {
   /// let bg = assets.load_sprite("assets/bg.png")?; // No disk I/O!
   /// ```
   pub fn cache_sprite_handle(&mut self, handle: SpriteHandle) {
-    let path = self.resolve_path(handle.path());
-    self.sprites.insert(path, handle);
+    let key = self.cache_key(handle.path());
+    self.sprites.insert(key, handle);
   }
 
   // ==========================================================================
@@ -925,8 +937,7 @@ impl AssetManager {
     // Queue all assets for loading
     for path in paths {
       // Skip already-cached assets (they're already loaded)
-      let full_path = self.resolve_path(&path);
-      if self.sprites.contains_key(&full_path) {
+      if self.sprites.contains_key(&self.cache_key(&path)) {
         // Count as already completed
         self.batch_total += 1;
         self.batch_completed += 1;
@@ -1066,56 +1077,63 @@ impl AssetManager {
   /// }
   /// ```
   pub fn process_reloads(&mut self) -> usize {
-    let watcher = match &self.watcher {
-      Some(w) => w,
+    let events = match &self.watcher {
+      Some(w) => w.poll(),
       None => return 0,
     };
 
-    let mut reloaded = 0;
+    events
+      .into_iter()
+      .filter(|event| self.handle_reload_event(event.clone()))
+      .count()
+  }
 
-    // Process all pending events
-    for event in watcher.poll() {
-      match event {
-        HotReloadEvent::FileModified(path) | HotReloadEvent::FileCreated(path) => {
-          if let Some(handle) = self.shaders.get(&path) {
-            match std::fs::read_to_string(&path) {
-              Ok(source) => {
-                handle.replace_source(source);
-                reloaded += 1;
-                #[cfg(debug_assertions)]
-                engine_info!(module: "HotReload", "Reloaded shader: {:?}", path);
-              }
-              Err(e) => {
-                engine_error!(module: "HotReload", "Failed to reload {:?}: {}", path, e);
-              }
+  /// Apply one watcher event, returning whether an asset was reloaded
+  ///
+  /// The event path is canonicalized before the cache lookup, because the OS
+  /// reports absolute (and symlink-resolved) paths while cache keys come from
+  /// the possibly relative base path.
+  pub(crate) fn handle_reload_event(&mut self, event: HotReloadEvent) -> bool {
+    let mut reloaded = false;
+    match event {
+      HotReloadEvent::FileModified(path) | HotReloadEvent::FileCreated(path) => {
+        let key = std::fs::canonicalize(&path).unwrap_or(path);
+        if let Some(handle) = self.shaders.get(&key) {
+          match std::fs::read_to_string(&key) {
+            Ok(source) => {
+              handle.replace_source(source);
+              reloaded = true;
+              #[cfg(debug_assertions)]
+              engine_info!(module: "HotReload", "Reloaded shader: {:?}", key);
             }
-          }
-          if let Some(handle) = self.sprites.get(&path) {
-            // Reload the sprite from disk
-            match Sprite::load(&path) {
-              Ok(new_sprite) => {
-                handle.update(new_sprite);
-                reloaded += 1;
-                #[cfg(debug_assertions)]
-                engine_info!(module: "HotReload", "Reloaded: {:?}", path);
-              }
-              Err(e) => {
-                engine_error!(module: "HotReload", "Failed to reload {:?}: {}", path, e);
-              }
+            Err(e) => {
+              engine_error!(module: "HotReload", "Failed to reload {:?}: {}", key, e);
             }
           }
         }
-        HotReloadEvent::FileDeleted(_path) => {
-          // Just log - don't remove from cache as handles may still be in use
-          #[cfg(debug_assertions)]
-          engine_info!(module: "HotReload", "Asset removed (still cached): {:?}", _path);
-        }
-        HotReloadEvent::Error(e) => {
-          engine_warn!(module: "HotReload", "Watcher error: {}", e);
+        if let Some(handle) = self.sprites.get(&key) {
+          match Sprite::load(&key) {
+            Ok(new_sprite) => {
+              handle.update(new_sprite);
+              reloaded = true;
+              #[cfg(debug_assertions)]
+              engine_info!(module: "HotReload", "Reloaded: {:?}", key);
+            }
+            Err(e) => {
+              engine_error!(module: "HotReload", "Failed to reload {:?}: {}", key, e);
+            }
+          }
         }
       }
+      HotReloadEvent::FileDeleted(_path) => {
+        // Just log - don't remove from cache as handles may still be in use
+        #[cfg(debug_assertions)]
+        engine_info!(module: "HotReload", "Asset removed (still cached): {:?}", _path);
+      }
+      HotReloadEvent::Error(e) => {
+        engine_warn!(module: "HotReload", "Watcher error: {}", e);
+      }
     }
-
     reloaded
   }
 }
@@ -1140,6 +1158,60 @@ pub struct AssetStats {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn event_fixture() -> (tempfile::TempDir, AssetManager) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut assets = AssetManager::new();
+    assets.set_base_path(dir.path());
+    (dir, assets)
+  }
+
+  #[test]
+  fn shader_reload_matches_an_absolute_event_path() {
+    let (dir, mut assets) = event_fixture();
+    std::fs::create_dir_all(dir.path().join("assets/shaders")).expect("mkdir");
+    let file = dir.path().join("assets/shaders/x.wgsl");
+    std::fs::write(&file, "old").expect("write");
+    let handle = assets.load_shader("assets/shaders/x.wgsl").expect("load");
+    let before = handle.generation();
+
+    std::fs::write(&file, "new").expect("rewrite");
+    let absolute = std::fs::canonicalize(&file).expect("canonical");
+
+    assert!(assets.handle_reload_event(HotReloadEvent::FileModified(absolute)));
+    assert_eq!(handle.source(), "new");
+    assert!(handle.generation() > before);
+  }
+
+  #[test]
+  fn sprite_reload_matches_an_absolute_event_path() {
+    let (dir, mut assets) = event_fixture();
+    std::fs::create_dir_all(dir.path().join("assets")).expect("mkdir");
+    let file = dir.path().join("assets/s.png");
+    image::RgbaImage::new(2, 2).save(&file).expect("save png");
+    let handle = assets.load_sprite("assets/s.png").expect("load");
+    let before = handle.generation();
+
+    image::RgbaImage::new(4, 3).save(&file).expect("resave png");
+    let absolute = std::fs::canonicalize(&file).expect("canonical");
+
+    assert!(assets.handle_reload_event(HotReloadEvent::FileModified(absolute)));
+    assert_eq!((handle.width(), handle.height()), (4, 3));
+    assert!(handle.generation() > before);
+  }
+
+  #[test]
+  fn reload_also_matches_a_relative_event_path() {
+    let (dir, mut assets) = event_fixture();
+    let file = dir.path().join("r.wgsl");
+    std::fs::write(&file, "old").expect("write");
+    let handle = assets.load_shader("r.wgsl").expect("load");
+
+    std::fs::write(&file, "new").expect("rewrite");
+
+    assert!(assets.handle_reload_event(HotReloadEvent::FileModified(file)));
+    assert_eq!(handle.source(), "new");
+  }
 
   #[test]
   fn load_shader_caches_by_path() {

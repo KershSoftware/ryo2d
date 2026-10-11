@@ -206,8 +206,9 @@ impl PostProcessingDemo {
         if let Some(shader) = &self.scanlines
           && ctx.effects.add_custom("scanlines", shader.clone()).is_ok()
         {
-          ctx.effects.set_custom_param("scanlines", "density", 600.0);
-          ctx
+          // Registered just above, so the name is known
+          let _ = ctx.effects.set_custom_param("scanlines", "density", 600.0);
+          let _ = ctx
             .effects
             .set_custom_param("scanlines", "strength", self.scanline_strength);
         }
