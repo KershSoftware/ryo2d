@@ -807,6 +807,14 @@ impl GpuRaycastRenderer {
     }
   }
 
+  /// Draw calls [`render_walls`](Self::render_walls) and
+  /// [`render_sprites`](Self::render_sprites) issue for the synced frame
+  pub(crate) fn draw_count(&self) -> usize {
+    let walls = usize::from(self.cached_wall_bind_group.is_some());
+    let sprites = usize::from(self.sprite_count > 0 && self.cached_sprite_bind_group.is_some());
+    walls + sprites
+  }
+
   /// Render the wall (DDA raycasting) pass.
   pub fn render_walls(
     &self,

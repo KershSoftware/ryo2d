@@ -1783,8 +1783,6 @@ impl Engine {
       if !raycast_enabled {
         gpu.prepare_world(rend.device(), rend.queue(), &self.draw_list);
       }
-      let trail_draws = trail_renderer.as_ref().map_or(0, |t| t.draw_count());
-      self.debug_stats.draw_calls = (gpu.world_draw_count() + trail_draws) as u32;
 
       // Camera data for the passes
       let camera_pos = glam::Vec2::new(self.camera.x, self.camera.y);
@@ -1799,6 +1797,14 @@ impl Engine {
       if raycast_enabled && let Some(raycast) = raycast_renderer.as_mut() {
         sync_raycast(&self.world, raycast, rend, time, &self.texture_manager);
       }
+      // The raycast view replaces the 2D world's draws
+      self.debug_stats.draw_calls = match raycast_renderer.as_ref() {
+        Some(raycast) if raycast_enabled => raycast.draw_count() as u32,
+        _ => {
+          let trail_draws = trail_renderer.as_ref().map_or(0, |t| t.draw_count());
+          (gpu.world_draw_count() + trail_draws) as u32
+        }
+      };
       // Upload the trail and line vertices once; the world passes only draw
       if let Some(trails) = trail_renderer.as_ref() {
         trails.prepare(rend.queue(), (camera_pos, camera_zoom, time));

@@ -165,6 +165,54 @@ fn raycast_frames_do_not_collect_the_2d_world() {
 }
 
 #[test]
+fn raycast_frames_count_their_own_draws() {
+  // Three shaders draw three runs in 2D; then the raycast view takes over
+  struct ThenRaycast {
+    updates: u32,
+  }
+  impl Scene for ThenRaycast {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let sprite =
+        SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 200, 30, 40, 255), "ray-runs");
+      for (i, swizzle) in ["rgba", "bgra", "gbra"].into_iter().enumerate() {
+        let src = format!(
+          "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {{ return sample(in.uv).{swizzle}; }}"
+        );
+        let shader = ShaderHandle::from_source(format!("ray-runs-{i}.wgsl"), src);
+        ctx.world.spawn((
+          Transform::new(i as f32 * 6.0, 0.0),
+          Renderable::sprite(sprite.clone())
+            .with_z_order(i as i32)
+            .with_shader(SpriteShader::custom(shader)),
+        ));
+      }
+    }
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      self.updates += 1;
+      if self.updates == 3 {
+        ctx.enable_raycast();
+      }
+      SceneAction::Continue
+    }
+  }
+  let builder = EngineBuilder::new()
+    .resolution(64, 64)
+    .start_scene(ThenRaycast { updates: 0 });
+  let Some(mut engine) = engine(builder) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  assert_eq!(engine.engine.debug_stats().draw_calls, 3, "2D frame");
+  engine.step_frames(3).unwrap();
+  // Walls, plus sprites when there are any
+  assert!(
+    engine.engine.debug_stats().draw_calls <= 2,
+    "raycast frame reported {} draws",
+    engine.engine.debug_stats().draw_calls
+  );
+}
+
+#[test]
 fn large_standalone_entity_textures_are_bounded() {
   // A new 300x20 sprite (standalone, over the 256 px atlas limit) every frame
   let scene = Fixture { setup: |_| {} };
