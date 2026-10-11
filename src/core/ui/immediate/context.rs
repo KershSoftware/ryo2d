@@ -91,6 +91,8 @@ pub struct UiContext<'a> {
   click_consumed: bool,
   /// ID of the currently focused dropdown (0 = none)
   focused_dropdown_id: u32,
+  /// Whether a text input or dropdown drawn this frame has keyboard focus
+  keyboard_focus: bool,
   /// UI scale factor for HiDPI displays (1 = normal, 2 = double size, etc.)
   ui_scale: u32,
   /// Whether the mouse is occluded by an overlay (e.g. developer console).
@@ -124,6 +126,7 @@ impl<'a> UiContext<'a> {
       escape_consumed: false,
       click_consumed: false,
       focused_dropdown_id: 0,
+      keyboard_focus: false,
       ui_scale: 1,
       mouse_occluded: false,
       dt: 0.0,
@@ -155,6 +158,7 @@ impl<'a> UiContext<'a> {
       escape_consumed: false,
       click_consumed: false,
       focused_dropdown_id: 0,
+      keyboard_focus: false,
       ui_scale: ui_scale.max(1),
       mouse_occluded: false,
       dt: 0.0,
@@ -183,6 +187,7 @@ impl<'a> UiContext<'a> {
       escape_consumed: false,
       click_consumed: false,
       focused_dropdown_id: 0,
+      keyboard_focus: false,
       ui_scale: 1,
       mouse_occluded: false,
       dt: 0.0,
@@ -212,6 +217,7 @@ impl<'a> UiContext<'a> {
       escape_consumed: false,
       click_consumed: false,
       focused_dropdown_id: 0,
+      keyboard_focus: false,
       ui_scale: ui_scale.max(1),
       mouse_occluded: false,
       dt: 0.0,
@@ -309,6 +315,16 @@ impl<'a> UiContext<'a> {
   /// Get the currently focused dropdown ID (0 = none focused).
   pub fn focused_dropdown(&self) -> u32 {
     self.focused_dropdown_id
+  }
+
+  /// Whether a widget drawn this frame has keyboard focus: a focused text
+  /// input, or a focused or open dropdown.
+  ///
+  /// Scenes with their own key bindings can check it after drawing their UI
+  /// and ignore those keys on the next update, so typing into a field never
+  /// triggers them.
+  pub fn wants_keyboard(&self) -> bool {
+    self.keyboard_focus
   }
 
   /// Set the currently focused dropdown ID.
@@ -1310,6 +1326,10 @@ impl<'a> UiContext<'a> {
       state.set_focused(false);
     }
 
+    if state.is_focused() {
+      self.keyboard_focus = true;
+    }
+
     // Handle keyboard input
     let modified = state.handle_input(self.input);
 
@@ -1820,6 +1840,10 @@ impl<'a> UiContext<'a> {
     // This ensures only one dropdown has focus at a time
     if state.id() > 0 && self.focused_dropdown_id > 0 && self.focused_dropdown_id != state.id() {
       state.set_focused(false);
+    }
+
+    if state.is_focused() || state.is_open() {
+      self.keyboard_focus = true;
     }
 
     // Determine if we should show focus ring
@@ -2864,5 +2888,57 @@ mod tests {
     // Rect that doesn't contain the mouse — is_hovered is false regardless
     let far_rect = Rect::new(150.0, 150.0, 30.0, 30.0);
     assert!(!ui.is_hovered(far_rect));
+  }
+
+  #[test]
+  fn wants_keyboard_is_false_without_widgets() {
+    let mut frame = vec![0u8; 200 * 100 * 4];
+    let ui = create_test_context(200, 100, &mut frame);
+    assert!(!ui.wants_keyboard());
+  }
+
+  #[test]
+  fn wants_keyboard_while_a_focused_text_input_is_drawn() {
+    let mut frame = vec![0u8; 200 * 100 * 4];
+    let mut ui = create_test_context(200, 100, &mut frame);
+    let mut unfocused = TextInputState::new();
+    ui.text_input(&mut unfocused, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
+    assert!(!ui.wants_keyboard());
+
+    let mut focused = TextInputState::new();
+    focused.set_focused(true);
+    ui.text_input(&mut focused, Rect::new(0.0, 30.0, 100.0, 20.0), "", 0.0);
+    assert!(ui.wants_keyboard());
+  }
+
+  #[test]
+  fn wants_keyboard_while_a_dropdown_is_focused_or_open() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context(200, 200, &mut frame);
+    let mut closed = DropdownState::with_id(1);
+    ui.dropdown(&mut closed, Rect::new(0.0, 0.0, 100.0, 20.0), &["a", "b"]);
+    assert!(!ui.wants_keyboard());
+
+    let mut open = DropdownState::with_id(2);
+    open.open();
+    ui.dropdown(&mut open, Rect::new(0.0, 40.0, 100.0, 20.0), &["a", "b"]);
+    assert!(ui.wants_keyboard());
+  }
+
+  #[test]
+  fn wants_keyboard_resets_with_each_frame() {
+    let mut frame = vec![0u8; 200 * 100 * 4];
+    let mut focused = TextInputState::new();
+    focused.set_focused(true);
+    {
+      let mut ui = create_test_context(200, 100, &mut frame);
+      ui.text_input(&mut focused, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
+      assert!(ui.wants_keyboard());
+    }
+    // Focus lost before the next frame: the next context starts clear
+    focused.set_focused(false);
+    let mut ui = create_test_context(200, 100, &mut frame);
+    ui.text_input(&mut focused, Rect::new(0.0, 0.0, 100.0, 20.0), "", 0.0);
+    assert!(!ui.wants_keyboard());
   }
 }

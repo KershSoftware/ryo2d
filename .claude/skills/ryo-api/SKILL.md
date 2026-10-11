@@ -97,6 +97,7 @@ impl UiContext {
     // Widgets
     fn button(&mut self, text: &str, rect: Rect) -> bool;   // true when clicked
     fn slider(&mut self, rect: Rect, value: &mut f32, min: f32, max: f32) -> bool;
+    fn wants_keyboard(&self) -> bool;   // a focused text input or a focused/open dropdown was drawn this frame
     fn is_clicked(&self, rect: Rect) -> bool;
     fn is_hovered(&self, rect: Rect) -> bool;
     fn is_held(&self, rect: Rect) -> bool;

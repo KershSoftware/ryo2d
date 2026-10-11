@@ -189,6 +189,8 @@ let text = self.username.text();
 
 Features: cursor, selection, clipboard (Ctrl+C/V/X), Shift+arrows, Home/End
 
+`ui.wants_keyboard()` is true when a widget drawn this frame has keyboard focus (a focused text input, or a focused or open dropdown). Check it after drawing and ignore your own key bindings on the next update so typing never triggers them.
+
 ### Dropdown
 
 ```rust
