@@ -229,7 +229,7 @@ impl DemoPage for TimeControlPage {
     self.spawn_pulsing_circle(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     let scale = TIME_SCALES[self.time_scale.min(TIME_SCALES.len() - 1)];
     ctx.set_time_scale(scale);
 
@@ -241,8 +241,14 @@ impl DemoPage for TimeControlPage {
       ctx.hitstop(0.05);
     }
 
-    // Update bouncing balls with the scaled dt
-    // Note: dt is already scaled by time_scale and will be 0 during hitstop
+    // The engine scaled this update's dt before the setting could change, so
+    // scale the step here: the balls answer a new scale, or a hitstop, on the
+    // same frame (the tweens follow on the next)
+    let dt = if ctx.time_control.hitstop_remaining > 0.0 {
+      0.0
+    } else {
+      ctx.time.fixed_dt * scale
+    };
     self.update_balls(ctx, dt);
   }
 
