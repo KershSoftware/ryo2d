@@ -3,7 +3,6 @@
 use demo_kit::prelude::*;
 use image::RgbaImage;
 use ryo2d::testing::HeadlessEngine;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 const RED: Color = Color::new(200, 60, 60, 255);
 
@@ -144,10 +143,13 @@ fn mean_red(image: &RgbaImage, xs: std::ops::Range<u32>, ys: std::ops::Range<u32
   sum / n
 }
 
-static LINE_H: AtomicU32 = AtomicU32::new(0);
+/// The bright page's content area and line height, from its last UI frame
+type Seen = std::sync::Arc<std::sync::Mutex<Option<(Rect, u32)>>>;
 
 /// A white page with a long description and one control, for text-backing checks
-struct Bright;
+struct Bright {
+  seen: Seen,
+}
 
 impl DemoPage for Bright {
   fn name(&self) -> &str {
@@ -161,7 +163,9 @@ impl DemoPage for Bright {
   }
   fn render_ui(&mut self, ui: &mut UiContext) {
     let (w, h) = ui.screen_size();
-    LINE_H.store(ui.text_size("Ag").1, Ordering::Relaxed);
+    if let Ok(mut seen) = self.seen.lock() {
+      *seen = Some((content_area(ui), ui.text_size("Ag").1));
+    }
     ui.draw_rect(
       Rect::new(0.0, 0.0, w as f32, h as f32),
       Color::new(255, 255, 255, 255),
@@ -169,41 +173,74 @@ impl DemoPage for Bright {
   }
 }
 
-/// The bright page's frame with its line height and the layout's pad
-fn bright_frame() -> Option<(RgbaImage, u32, u32)> {
-  let demo = Demo::new("Chrome").resolution(320, 240).page(|| Bright);
+/// Where the shell drew around the bright page, read from the public content
+/// area: the side padding is its x, the description sits a pad above it and
+/// the legend a pad below it
+struct Places {
+  pad: u32,
+  line_h: u32,
+  description_mid_y: u32,
+  legend_mid_y: u32,
+}
+
+/// The bright page's frame at `size`, and where the shell drew
+fn bright_frame(size: (u32, u32)) -> Option<(RgbaImage, Places)> {
+  let seen = Seen::default();
+  let page = seen.clone();
+  let demo = Demo::new("Chrome")
+    .resolution(size.0, size.1)
+    .page(move || Bright { seen: page.clone() });
   let mut engine = HeadlessEngine::new_or_skip(demo.engine_builder())?;
   engine.step_frames(2).ok()?;
   let image = engine.frame().ok()?;
-  let line_h = LINE_H.load(Ordering::Relaxed);
-  let pad = ((line_h as f32 * 0.5).round().max(2.0)) as u32;
-  Some((image, line_h, pad))
+  let (content, line_h) = seen.lock().ok()?.take()?;
+  let pad = content.x as u32;
+  let places = Places {
+    pad,
+    line_h,
+    description_mid_y: content.y as u32 - pad - line_h / 2,
+    legend_mid_y: (content.y + content.height) as u32 + pad + line_h / 2,
+  };
+  Some((image, places))
 }
 
 #[test]
 fn description_has_a_dark_backing_on_bright_pages() {
-  let Some((image, line_h, pad)) = bright_frame() else {
+  let Some((image, at)) = bright_frame((320, 240)) else {
     return;
   };
-  // Same arithmetic as the shell's layout: bar, then a pad, then the line
-  let description_y = line_h + 2 * pad + pad;
-  let y = description_y + line_h / 2;
+  // Just inside the backing, which starts half a pad from the edge
+  let x = at.pad / 2 + 1;
   assert!(
-    red_at(&image, 2, y) < 120,
+    red_at(&image, x, at.description_mid_y) < 120,
     "left padding of the description is backed"
   );
 }
 
 #[test]
 fn legend_has_a_dark_backing_on_bright_pages() {
-  let Some((image, line_h, pad)) = bright_frame() else {
+  let Some((image, at)) = bright_frame((320, 240)) else {
     return;
   };
-  let y = 240 - pad - line_h + line_h / 2;
-  // The backing reaches half a pad past the line's right edge, pad from the screen edge
-  let x = 320 - pad / 2 - 1;
+  // The backing reaches half a pad past the line's right edge, a pad from the
+  // screen edge
+  let x = 320 - at.pad / 2 - 1;
   assert!(
-    red_at(&image, x, y) < 120,
+    red_at(&image, x, at.legend_mid_y) < 120,
     "right padding of the legend is backed"
+  );
+  assert!(at.line_h > 0);
+}
+
+#[test]
+fn a_description_too_wide_for_any_text_draws_nothing() {
+  // So narrow that not even "..." fits
+  let Some((image, at)) = bright_frame((20, 240)) else {
+    return;
+  };
+  let x = at.pad / 2 + 1;
+  assert!(
+    red_at(&image, x, at.description_mid_y) > 200,
+    "an empty description is not backed"
   );
 }

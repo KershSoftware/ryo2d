@@ -222,6 +222,10 @@ fn draw_description(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
     return;
   }
   let line = truncate_to(first, w - 2.0 * l.pad, |s| text_w(ui, s));
+  // Too narrow for any of it: no empty backing either
+  if line.is_empty() {
+    return;
+  }
   let backing = Rect::new(
     l.pad / 2.0,
     l.description_y - l.pad / 2.0,
