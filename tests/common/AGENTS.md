@@ -6,7 +6,7 @@ GPU tests must **skip, not fail**, when no GPU is available (CI without GPU).
 
 ## Running and Registering Tests
 
-- Run: `cargo test --test e2e` or `./run test:e2e` (`./run.ps1 test:e2e` on Windows)
+- Run: `cargo test --test e2e` or `./dev test:e2e` (`./dev.ps1 test:e2e` on Windows)
 - `tests/e2e.rs` lists modules with explicit `#[path = "e2e/<file>.rs"]` entries. A new file in `tests/e2e/` won't run until you add one (`tests/integration.rs` works the same way)
 
 ## Basic Pattern

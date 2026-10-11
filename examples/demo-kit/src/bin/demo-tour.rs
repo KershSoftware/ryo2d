@@ -1,7 +1,7 @@
 //! Capture every page of every demo without a window.
 //!
 //! `cargo run -p demo-kit --bin demo-tour -- [demo ...]` (or
-//! `./run demos:tour [demo ...]`) builds the demos, runs each page with
+//! `./dev demos:tour [demo ...]`) builds the demos, runs each page with
 //! `RYO_HEADLESS=1` and `RYO_DEMO_PAGE`, and saves
 //! `target/demo-tour/<demo>/page-<n>.png`. Exits non-zero if any page
 //! panics, times out or captures nothing, or a demo is not on demo-kit.

@@ -118,10 +118,10 @@ Don't export:
 ## Development Workflow
 
 ```bash
-./run check    # Fast compile check
-./run lint     # Clippy
-./run test     # Tests
-./run breakout # Test with example
+./dev check    # Fast compile check
+./dev lint     # Clippy
+./dev test     # Tests
+./dev breakout # Test with example
 ```
 
 ## Profiler Integration
@@ -160,7 +160,7 @@ Key design decisions:
 ### Testing with Profiler
 
 ```bash
-./run breakout -p
+./dev breakout -p
 # Or:
 ryo2d dev --profiler
 ```
@@ -179,7 +179,7 @@ Use frame capture (`src/core/capture/`) instead of guessing: run an example with
 
 ## Demos
 
-Feature demos follow one standard (shared keys, settings panel, layout) through `examples/demo-kit`; see `examples/demos/AGENTS.md`. `./run demos:tour` captures every page of every demo headlessly to `target/demo-tour/`.
+Feature demos follow one standard (shared keys, settings panel, layout) through `examples/demo-kit`; see `examples/demos/AGENTS.md`. `./dev demos:tour` captures every page of every demo headlessly to `target/demo-tour/`.
 
 ## Headless Engine Tests
 

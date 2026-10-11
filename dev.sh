@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# Ryo2D Development Run Script (Unix/Linux/macOS)
-# For Windows, use run.ps1 instead
+# Ryo2D Development Script (Unix/Linux/macOS)
+# For Windows, use dev.ps1 instead
 #
 # Usage:
-#     ./run.sh                              - Interactive example selection
-#     ./run.sh <example>                    - Run specific example (shows mode menu)
-#     ./run.sh <example> -d|--dev           - Run in dev mode with hot-reload
-#     ./run.sh <example> -p|--profiler      - Run in dev mode with profiler window
-#     ./run.sh <example> -r|--release       - Build and run release (no prompts)
-#     ./run.sh -d|--dev <example>           - Same as above (flag before example)
-#     ./run.sh -p|--profiler <example>      - Same as above (flag before example)
-#     ./run.sh -r|--release <example>       - Same as above (flag before example)
-#     ./run.sh demos:run-all       - Launch all demos in dev mode (parallel terminals)
-#     ./run.sh demos:kill-all      - Kill all running demos
-#     ./run.sh demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)
-#     ./run.sh check               - Compilation check (engine + all examples) and line endings
-#     ./run.sh lint                - Linting with clippy (engine + all examples)
-#     ./run.sh test                - Run unit + integration tests
-#     ./run.sh test:unit           - Run unit tests only
-#     ./run.sh test:integration    - Run integration tests only
-#     ./run.sh test:e2e            - Run e2e tests (requires GPU)
-#     ./run.sh coverage            - Unit test coverage (default)
-#     ./run.sh coverage:unit       - Unit test coverage
-#     ./run.sh coverage:integration - Integration test coverage
-#     ./run.sh coverage:all        - Combined coverage (unit + integration)
+#     ./dev.sh                              - Interactive example selection
+#     ./dev.sh <example>                    - Run specific example (shows mode menu)
+#     ./dev.sh <example> -d|--dev           - Run in dev mode with hot-reload
+#     ./dev.sh <example> -p|--profiler      - Run in dev mode with profiler window
+#     ./dev.sh <example> -r|--release       - Build and run release (no prompts)
+#     ./dev.sh -d|--dev <example>           - Same as above (flag before example)
+#     ./dev.sh -p|--profiler <example>      - Same as above (flag before example)
+#     ./dev.sh -r|--release <example>       - Same as above (flag before example)
+#     ./dev.sh demos:run-all       - Launch all demos in dev mode (parallel terminals)
+#     ./dev.sh demos:kill-all      - Kill all running demos
+#     ./dev.sh demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)
+#     ./dev.sh check               - Compilation check (engine + all examples) and line endings
+#     ./dev.sh lint                - Linting with clippy (engine + all examples)
+#     ./dev.sh test                - Run unit + integration tests
+#     ./dev.sh test:unit           - Run unit tests only
+#     ./dev.sh test:integration    - Run integration tests only
+#     ./dev.sh test:e2e            - Run e2e tests (requires GPU)
+#     ./dev.sh coverage            - Unit test coverage (default)
+#     ./dev.sh coverage:unit       - Unit test coverage
+#     ./dev.sh coverage:integration - Integration test coverage
+#     ./dev.sh coverage:all        - Combined coverage (unit + integration)
 
 set -e
 
@@ -468,7 +468,7 @@ case "$COMMAND" in
         done
 
         echo ""
-        echo -e "${CYAN}All demos launched in dev mode. Run './run.sh demos:kill-all' to close them.${NC}"
+        echo -e "${CYAN}All demos launched in dev mode. Run './dev.sh demos:kill-all' to close them.${NC}"
         ;;
     demos:kill-all)
         PID_FILE="$SCRIPT_DIR/.demo-pids"
@@ -604,30 +604,30 @@ case "$COMMAND" in
         echo -e "${CYAN}Ryo2D Development Script${NC}"
         echo ""
         echo "Usage:"
-        echo "    ./run.sh                              - Interactive example selection"
-        echo "    ./run.sh <example>                    - Run specific example (shows mode menu)"
-        echo "    ./run.sh <example> -d|--dev           - Run in dev mode with hot-reload"
-        echo "    ./run.sh <example> -p|--profiler      - Run in dev mode with profiler window"
-        echo "    ./run.sh <example> -r|--release       - Build and run release (no prompts)"
-        echo "    ./run.sh -d|--dev <example>           - Same as above (flag before example)"
-        echo "    ./run.sh -p|--profiler <example>      - Same as above (flag before example)"
-        echo "    ./run.sh -r|--release <example>       - Same as above (flag before example)"
-        echo "    ./run.sh demos:run-all       - Launch all demos in dev mode (parallel terminals)"
-        echo "    ./run.sh demos:kill-all      - Kill all running demos"
-        echo "    ./run.sh demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)"
-        echo "    ./run.sh check               - Compilation check (engine + all examples) and line endings"
-        echo "    ./run.sh lint                - Linting with clippy (engine + all examples)"
-        echo "    ./run.sh test                - Run unit + integration tests (default)"
-        echo "    ./run.sh test:unit           - Run unit tests only"
-        echo "    ./run.sh test:integration    - Run integration tests only"
-        echo "    ./run.sh test:e2e            - Run e2e tests (requires GPU)"
-        echo "    ./run.sh test:all            - Run ALL tests"
-        echo "    ./run.sh coverage            - Unit test coverage (default)"
-        echo "    ./run.sh coverage:unit       - Unit test coverage"
-        echo "    ./run.sh coverage:integration - Integration test coverage"
-        echo "    ./run.sh coverage:all        - Combined coverage (unit + integration)"
-        echo "    ./run.sh watch               - Watch mode with hot-reload"
-        echo "    ./run.sh help                - Show this help"
+        echo "    ./dev.sh                              - Interactive example selection"
+        echo "    ./dev.sh <example>                    - Run specific example (shows mode menu)"
+        echo "    ./dev.sh <example> -d|--dev           - Run in dev mode with hot-reload"
+        echo "    ./dev.sh <example> -p|--profiler      - Run in dev mode with profiler window"
+        echo "    ./dev.sh <example> -r|--release       - Build and run release (no prompts)"
+        echo "    ./dev.sh -d|--dev <example>           - Same as above (flag before example)"
+        echo "    ./dev.sh -p|--profiler <example>      - Same as above (flag before example)"
+        echo "    ./dev.sh -r|--release <example>       - Same as above (flag before example)"
+        echo "    ./dev.sh demos:run-all       - Launch all demos in dev mode (parallel terminals)"
+        echo "    ./dev.sh demos:kill-all      - Kill all running demos"
+        echo "    ./dev.sh demos:tour [demo...] - Capture every page of every demo headlessly (target/demo-tour)"
+        echo "    ./dev.sh check               - Compilation check (engine + all examples) and line endings"
+        echo "    ./dev.sh lint                - Linting with clippy (engine + all examples)"
+        echo "    ./dev.sh test                - Run unit + integration tests (default)"
+        echo "    ./dev.sh test:unit           - Run unit tests only"
+        echo "    ./dev.sh test:integration    - Run integration tests only"
+        echo "    ./dev.sh test:e2e            - Run e2e tests (requires GPU)"
+        echo "    ./dev.sh test:all            - Run ALL tests"
+        echo "    ./dev.sh coverage            - Unit test coverage (default)"
+        echo "    ./dev.sh coverage:unit       - Unit test coverage"
+        echo "    ./dev.sh coverage:integration - Integration test coverage"
+        echo "    ./dev.sh coverage:all        - Combined coverage (unit + integration)"
+        echo "    ./dev.sh watch               - Watch mode with hot-reload"
+        echo "    ./dev.sh help                - Show this help"
         echo ""
         ;;
     *)
@@ -668,7 +668,7 @@ case "$COMMAND" in
                 echo "    - $example"
             done
             echo ""
-            echo "Run './run.sh help' for more options."
+            echo "Run './dev.sh help' for more options."
             exit 1
         fi
         ;;

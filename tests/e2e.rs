@@ -1,7 +1,7 @@
 //! End-to-end tests for Ryo2D engine
 //!
 //! Run with: `cargo test --test e2e`
-//! Or via run script: `./run test:e2e`
+//! Or via the dev script: `./dev test:e2e`
 //!
 //! E2E tests verify complete workflows and full engine initialization.
 //! Tests gracefully skip when GPU is unavailable (CI without GPU).

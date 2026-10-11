@@ -105,24 +105,24 @@ When working ON the engine (not a game), use root scripts:
 
 ```powershell
 # Windows (from repo root)
-./run              # Interactive example selection
-./run breakout     # Run specific example
-./run check        # Fast cargo check
-./run lint         # Clippy
-./run test         # Run tests
+./dev              # Interactive example selection
+./dev breakout     # Run specific example
+./dev check        # Fast cargo check
+./dev lint         # Clippy
+./dev test         # Run tests
 ```
 
 ```bash
 # Unix/macOS
-./run.sh breakout
-./run.sh test
+./dev.sh breakout
+./dev.sh test
 ```
 
 | Context | Tool |
 |---------|------|
 | Making a game | `ryo2d build/run/dev` |
-| Working on engine | `./run` scripts or `cargo` |
-| Testing with examples | `./run <example>` |
+| Working on engine | `./dev` scripts or `cargo` |
+| Testing with examples | `./dev <example>` |
 
 ## Configuration Priority
 
@@ -169,12 +169,12 @@ For production games, deploy your own signaling server (see `docs/src/concepts/m
 - Run CLI from project root (where `Ryo.toml` is)
 - Use `ryo2d dev` for fast iteration
 - Asset hot reload works in dev mode (no recompile needed)
-- For engine dev, use `./run` scripts from repo root
+- For engine dev, use `./dev` scripts from repo root
 - Use `ryo2d netplay` for quick multiplayer testing
 
 ## Frame Capture
 
-Save frames as PNGs to check rendering without watching the window. Works with `ryo2d dev`, `ryo2d run`, `./run` and `cargo run` (the game inherits the environment):
+Save frames as PNGs to check rendering without watching the window. Works with `ryo2d dev`, `ryo2d run`, `./dev` and `cargo run` (the game inherits the environment):
 
 | Variable | Meaning |
 |----------|---------|

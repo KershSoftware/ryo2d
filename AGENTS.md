@@ -32,23 +32,23 @@ Suggested sources for game assets:
 
 **For contributors working on the engine itself** (not game developers using it):
 
-### Root Run Scripts (`./run.ps1` / `./run.sh`)
+### Root Dev Scripts (`./dev.ps1` / `./dev.sh`)
 
 **For Engine Development:** The root scripts are for working on the engine codebase itself:
 
 ```powershell
-./run              # Interactive example selection menu
-./run <example>    # Run specific example (e.g., ./run breakout)
-./run check        # Compilation check (engine + all examples)
-./run lint         # Run clippy (engine + all examples)
-./run test         # Run all tests
-./run coverage     # Generate code coverage report
-./run help         # Show available commands
+./dev              # Interactive example selection menu
+./dev <example>    # Run specific example (e.g., ./dev breakout)
+./dev check        # Compilation check (engine + all examples)
+./dev lint         # Run clippy (engine + all examples)
+./dev test         # Run all tests
+./dev coverage     # Generate code coverage report
+./dev help         # Show available commands
 ```
 
 **Example Workflow:**
 1. When working on game projects → use `ryo2d build/run/dev` from the project directory
-2. When working on the engine and validating with example projects → use `./run <project>` scripts from the repository root (this will build and run the built game)
+2. When working on the engine and validating with example projects → use `./dev <project>` scripts from the repository root (this will build and run the built game)
 OR
 2. Simply run `cargo <cmd>` at root of the project if checking the engine codebase without example projects
 

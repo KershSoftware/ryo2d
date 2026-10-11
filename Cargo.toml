@@ -26,7 +26,7 @@ members = [
   "examples/games/*",
 ]
 
-# Run demos/games with: cargo run -p <name> or ./run run-demos
+# Run demos/games with: cargo run -p <name> or ./dev demos:run-all
 
 [dependencies]
 arboard = "3.6.1"

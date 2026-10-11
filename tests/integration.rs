@@ -1,7 +1,7 @@
 //! Integration tests for Ryo2D engine
 //!
 //! Run with: `cargo test --test integration`
-//! Or via run script: `./run test:integration`
+//! Or via the dev script: `./dev test:integration`
 //!
 //! These tests verify that engine subsystems work correctly together.
 

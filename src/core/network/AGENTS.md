@@ -49,7 +49,7 @@ Both networked examples send move/jump input as an RPC (`LeapInputRpc`, `PlayerI
 
 ## Testing
 
-- `tests/integration/{network,network_action,network_input,prediction}.rs` - `./run test:integration`
+- `tests/integration/{network,network_action,network_input,prediction}.rs` - `./dev test:integration`
 - WebRTC tests in `tests/integration/network.rs` need `--features matchbox`
 - `tests/e2e/network.rs` - `cargo test --test e2e`
 
