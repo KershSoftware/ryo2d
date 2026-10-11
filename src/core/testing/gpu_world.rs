@@ -230,15 +230,16 @@ fn ten_thousand_sprites_few_draws() {
   );
 }
 
-#[test]
-fn two_shaders_split_draw_runs() {
-  let scene = Fixture {
-    setup: |ctx| {
-      let src = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
-      let a = ShaderHandle::from_source("split-a.wgsl", src);
-      let b = ShaderHandle::from_source("split-b.wgsl", src);
+/// Four sprites in z order using shaders `a`, `a`, `b`, `b`; the frame's draw calls
+fn draw_calls_for(a_src: &'static str, b_src: &'static str) -> Option<u32> {
+  struct Shaded {
+    sources: (&'static str, &'static str),
+  }
+  impl Scene for Shaded {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let a = ShaderHandle::from_source("split-a.wgsl", self.sources.0);
+      let b = ShaderHandle::from_source("split-b.wgsl", self.sources.1);
       let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 200, 30, 40, 255), "split");
-      // A A B B: one draw per shader; the shared texture doesn't merge them
       for (i, shader) in [&a, &a, &b, &b].into_iter().enumerate() {
         ctx.world.spawn((
           Transform::new(i as f32 * 6.0, 0.0),
@@ -247,12 +248,36 @@ fn two_shaders_split_draw_runs() {
             .with_shader(SpriteShader::custom(shader.clone())),
         ));
       }
-    },
-  };
-  let builder = EngineBuilder::new().resolution(64, 64).start_scene(scene);
-  let Some(mut engine) = engine(builder) else {
+    }
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+  }
+  let builder = EngineBuilder::new().resolution(64, 64).start_scene(Shaded {
+    sources: (a_src, b_src),
+  });
+  let mut engine = engine(builder)?;
+  engine.step_frames(2).unwrap();
+  Some(engine.engine.debug_stats().draw_calls)
+}
+
+#[test]
+fn two_shaders_split_draw_runs() {
+  // One draw per shader; the shared texture doesn't merge them
+  let Some(calls) = draw_calls_for(
+    "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }",
+    "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv).bgra; }",
+  ) else {
     return;
   };
-  engine.step_frames(2).unwrap();
-  assert_eq!(engine.engine.debug_stats().draw_calls, 2);
+  assert_eq!(calls, 2);
+}
+
+#[test]
+fn handles_with_one_source_share_a_draw_run() {
+  let src = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
+  let Some(calls) = draw_calls_for(src, src) else {
+    return;
+  };
+  assert_eq!(calls, 1);
 }

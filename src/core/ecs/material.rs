@@ -94,9 +94,9 @@ impl ShaderHandle {
 
   /// Create a shader handle from WGSL source
   ///
-  /// Each call makes a distinct shader that compiles its own pipeline, even
-  /// for the same source: create a handle once and clone it, rather than
-  /// calling this per entity or per frame. Typically you'd use
+  /// Each call makes a distinct handle (its own `replace_source`), but handles
+  /// with the same source share one compiled pipeline, so only the first
+  /// compiles. Cloning one handle is still cheapest. Typically you'd use
   /// `assets.load_shader()`, which caches by path.
   pub fn from_source(id: impl Into<String>, source: impl Into<String>) -> Self {
     Self::new(id.into(), source.into())

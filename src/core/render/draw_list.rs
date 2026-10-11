@@ -50,8 +50,8 @@ pub(crate) enum SpriteShading {
   Plain,
   /// A built-in effect, already in the instance's effect parameters
   Effect,
-  /// The game shader with this serial; its parameters are already packed in
-  /// the instance's effect parameters
+  /// The game shader with this source key (from `shade_custom`); its
+  /// parameters are already packed in the instance's effect parameters
   Custom(u64),
 }
 
@@ -60,7 +60,7 @@ pub(crate) enum SpriteShading {
 pub(crate) enum PipelineKind {
   Plain,
   Effect,
-  /// The custom pipeline of the shader with this serial
+  /// The custom pipeline of the shader source with this key
   Custom(u64),
 }
 

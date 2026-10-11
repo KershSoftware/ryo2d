@@ -84,11 +84,17 @@ struct CustomPipeline {
   layout: ParamLayout,
 }
 
-/// What the cache knows about one effect version
+/// What the cache knows about one effect handle's current version
 struct CustomEntry {
   generation: u64,
-  /// `None` when this version failed to compile; not retried until the
-  /// shader's source changes
+  /// Its source's key in [`CustomEffectPipelines::compiled`]
+  source: u64,
+  last_used: u64,
+}
+
+/// One compiled source, shared by every handle with that source
+struct CompiledSource {
+  /// `None` when the source failed to compile; it is not retried
   ready: Option<CustomPipeline>,
   last_used: u64,
 }
@@ -101,6 +107,9 @@ struct CustomEffectPipelines {
   format: wgpu::TextureFormat,
   /// By `ShaderHandle::serial()`
   entries: HashMap<u64, CustomEntry>,
+  /// Compiled pipelines by [`custom::source_key`]: handles with equal sources
+  /// compile once
+  compiled: HashMap<u64, CompiledSource>,
   /// Parameter names already warned about, by (serial, generation)
   warned: HashMap<(u64, u64), HashSet<String>>,
 }
@@ -150,31 +159,46 @@ impl CustomEffectPipelines {
       pipeline_layout,
       format,
       entries: HashMap::new(),
+      compiled: HashMap::new(),
       warned: HashMap::new(),
     }
   }
 
-  /// Make sure the cache holds the shader's current version; whether it can run.
-  fn prepare(&mut self, device: &wgpu::Device, shader: &ShaderHandle, frame: u64) -> bool {
+  /// Make sure the cache holds the shader's current version; the key to run
+  /// it with ([`pipeline`](Self::pipeline)), or `None` if it failed.
+  fn prepare(&mut self, device: &wgpu::Device, shader: &ShaderHandle, frame: u64) -> Option<u64> {
     let serial = shader.serial();
     if let Some(entry) = self.entries.get_mut(&serial)
       && entry.generation == shader.generation()
+      && let Some(compiled) = self.compiled.get_mut(&entry.source)
     {
       entry.last_used = frame;
-      return entry.ready.is_some();
+      compiled.last_used = frame;
+      return compiled.ready.is_some().then_some(entry.source);
     }
     let (generation, source) = shader.snapshot();
-    let ready = self.build(device, shader, generation, &source);
-    let usable = ready.is_some();
+    let key = custom::source_key(ShaderKind::Effect, &source);
+    if !self.compiled.contains_key(&key) {
+      let ready = self.build(device, shader, key, &source);
+      self.compiled.insert(
+        key,
+        CompiledSource {
+          ready,
+          last_used: frame,
+        },
+      );
+    }
     self.entries.insert(
       serial,
       CustomEntry {
         generation,
-        ready,
+        source: key,
         last_used: frame,
       },
     );
-    usable
+    let compiled = self.compiled.get_mut(&key)?;
+    compiled.last_used = frame;
+    compiled.ready.is_some().then_some(key)
   }
 
   /// Drop effects unused for [`CUSTOM_EFFECT_TTL`] frames and their warnings.
@@ -182,6 +206,9 @@ impl CustomEffectPipelines {
     self
       .entries
       .retain(|_, e| frame.saturating_sub(e.last_used) < CUSTOM_EFFECT_TTL);
+    self
+      .compiled
+      .retain(|_, c| frame.saturating_sub(c.last_used) < CUSTOM_EFFECT_TTL);
     let entries = &self.entries;
     self.warned.retain(|(serial, generation), _| {
       entries
@@ -190,20 +217,19 @@ impl CustomEffectPipelines {
     });
   }
 
-  /// Compile `source` and build its pipeline; any failure is logged once and
-  /// leaves the effect skipped.
+  /// Compile `source` (whose key is `key`) and build its pipeline; any
+  /// failure is logged once and leaves the effect skipped.
   fn build(
     &self,
     device: &wgpu::Device,
     shader: &ShaderHandle,
-    generation: u64,
+    key: u64,
     source: &str,
   ) -> Option<CustomPipeline> {
-    let serial = shader.serial();
     let compiled = match custom::compile(ShaderKind::Effect, shader.id(), source) {
       Ok(compiled) => compiled,
       Err(error) => {
-        custom::report_once(serial, generation, &error);
+        custom::report_once(key, &error);
         return None;
       }
     };
@@ -214,7 +240,7 @@ impl CustomEffectPipelines {
         column: None,
         message: format!("Params is larger than {CUSTOM_PARAMS_BYTES} bytes"),
       };
-      custom::report_once(serial, generation, &error);
+      custom::report_once(key, &error);
       return None;
     }
 
@@ -260,7 +286,7 @@ impl CustomEffectPipelines {
         column: None,
         message: error.to_string(),
       };
-      custom::report_once(serial, generation, &error);
+      custom::report_once(key, &error);
       return None;
     }
     Some(CustomPipeline {
@@ -280,7 +306,7 @@ impl CustomEffectPipelines {
   ) -> Option<usize> {
     let serial = shader.serial();
     let entry = self.entries.get(&serial)?;
-    let ready = entry.ready.as_ref()?;
+    let ready = self.compiled.get(&entry.source)?.ready.as_ref()?;
     let generation = entry.generation;
     let size = custom::uniform_size(ShaderKind::Effect, &ready.layout);
     let warned = &mut self.warned;
@@ -314,8 +340,9 @@ impl CustomEffectPipelines {
     Some(size)
   }
 
-  fn pipeline(&self, serial: u64) -> Option<&wgpu::RenderPipeline> {
-    let ready = self.entries.get(&serial)?.ready.as_ref()?;
+  /// The pipeline for a key from [`prepare`](Self::prepare)
+  fn pipeline(&self, key: u64) -> Option<&wgpu::RenderPipeline> {
+    let ready = self.compiled.get(&key)?.ready.as_ref()?;
     Some(&ready.pipeline)
   }
 }
@@ -847,9 +874,9 @@ impl PostProcessPipeline {
 
     for effect in custom {
       let shader = effect.shader();
-      if !self.custom.prepare(device, shader, frame) {
+      let Some(key) = self.custom.prepare(device, shader, frame) else {
         continue;
-      }
+      };
       let mut bytes = [0u8; CUSTOM_PARAMS_BYTES as usize];
       let Some(size) = self.custom.pack(shader, effect.params(), &mut bytes) else {
         continue;
@@ -858,7 +885,7 @@ impl PostProcessPipeline {
       let globals_index = self
         .custom_globals
         .write(device, queue, bytemuck::bytes_of(&globals));
-      let Some(pipeline) = self.custom.pipeline(shader.serial()) else {
+      let Some(pipeline) = self.custom.pipeline(key) else {
         continue;
       };
 
@@ -1480,5 +1507,29 @@ impl PostProcessPipeline {
   /// Get texture B (for lighting output)
   pub fn texture_b(&self) -> &wgpu::Texture {
     &self.texture_b
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn effect_handles_with_the_same_source_share_one_pipeline() {
+    let Ok((device, _queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut effects = CustomEffectPipelines::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let src = "fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv) * 0.5; }";
+    let keys: Vec<Option<u64>> = (0..3)
+      .map(|i| {
+        let shader = ShaderHandle::from_source(format!("shared-fx-{i}.wgsl"), src);
+        effects.prepare(&device, &shader, 1)
+      })
+      .collect();
+    assert!(keys[0].is_some());
+    assert!(keys.iter().all(|k| *k == keys[0]), "{keys:?}");
+    assert_eq!(effects.compiled.len(), 1);
+    assert_eq!(effects.entries.len(), 3);
   }
 }

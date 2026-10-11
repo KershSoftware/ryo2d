@@ -8,7 +8,7 @@
 use crate::core::ecs::{ParamValue, ShaderParams};
 
 /// Which kind of game shader is being compiled
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ShaderKind {
   /// Per-sprite fragment function, `fn sprite(in: SpriteIn, params: Params) -> vec4<f32>`
   Sprite,
@@ -537,17 +537,25 @@ pub(crate) fn pack(layout: &ParamLayout, params: &ShaderParams, out: &mut [u8]) 
   problems
 }
 
-/// Log a shader error once per (serial, generation); returns whether it was logged now
-pub(crate) fn report_once(serial: u64, generation: u64, error: &ShaderError) -> bool {
+/// Identifies a shader's source for its kind: handles whose sources are equal
+/// share one compiled pipeline (and one error report)
+pub(crate) fn source_key(kind: ShaderKind, source: &str) -> u64 {
+  use std::hash::{Hash, Hasher};
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  kind.hash(&mut hasher);
+  source.hash(&mut hasher);
+  hasher.finish()
+}
+
+/// Log a shader error once per source (see [`source_key`]); returns whether it
+/// was logged now
+pub(crate) fn report_once(key: u64, error: &ShaderError) -> bool {
   use std::collections::HashSet;
   use std::sync::{Mutex, OnceLock};
 
-  static SEEN: OnceLock<Mutex<HashSet<(u64, u64)>>> = OnceLock::new();
+  static SEEN: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
   let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
-  let first = seen
-    .lock()
-    .unwrap_or_else(|e| e.into_inner())
-    .insert((serial, generation));
+  let first = seen.lock().unwrap_or_else(|e| e.into_inner()).insert(key);
   if first {
     crate::engine_error!(module: "Shaders", "{}", error);
   }
@@ -730,17 +738,24 @@ mod tests {
   }
 
   #[test]
-  fn report_once_logs_once_per_version() {
+  fn report_once_logs_once_per_source() {
     let err = ShaderError {
       shader: "x".into(),
       line: Some(1),
       column: None,
       message: "bad".into(),
     };
-    assert!(report_once(9_000_001, 0, &err));
-    assert!(!report_once(9_000_001, 0, &err));
-    assert!(report_once(9_000_001, 1, &err));
-    assert!(report_once(9_000_002, 0, &err));
+    let key = source_key(ShaderKind::Sprite, "report-once-a");
+    assert!(report_once(key, &err));
+    assert!(!report_once(key, &err));
+    assert!(report_once(
+      source_key(ShaderKind::Sprite, "report-once-b"),
+      &err
+    ));
+    assert!(report_once(
+      source_key(ShaderKind::Effect, "report-once-a"),
+      &err
+    ));
   }
 
   #[test]

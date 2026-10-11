@@ -322,13 +322,19 @@ struct CustomPipeline {
   layout: ParamLayout,
 }
 
-/// What the cache knows about one shader version.
+/// What the cache knows about one shader handle's current version.
 struct CustomEntry {
   generation: u64,
-  /// `None` when this version failed to compile; it is not retried until the
-  /// shader's source changes
-  ready: Option<CustomPipeline>,
+  /// Its source's key in [`CustomPipelines::compiled`]
+  source: u64,
   /// Atlas frame the shader was last drawn in, to drop unused shaders
+  last_used: u64,
+}
+
+/// One compiled source, shared by every handle with that source.
+struct CompiledSource {
+  /// `None` when the source failed to compile; it is not retried
+  ready: Option<CustomPipeline>,
   last_used: u64,
 }
 
@@ -348,34 +354,50 @@ struct CustomPipelines {
   format: wgpu::TextureFormat,
   /// By `ShaderHandle::serial()`
   entries: HashMap<u64, CustomEntry>,
+  /// Compiled pipelines by [`custom::source_key`]: handles with equal sources
+  /// compile once
+  compiled: HashMap<u64, CompiledSource>,
   /// Parameter names already warned about, by (serial, generation)
   warned: HashMap<(u64, u64), HashSet<String>>,
 }
 
 impl CustomPipelines {
-  /// Make sure the cache holds the shader's current version; whether it can
-  /// be drawn.
-  fn prepare(&mut self, device: &wgpu::Device, shader: &ShaderHandle, frame: u64) -> bool {
+  /// Make sure the cache holds the shader's current version; the key to draw
+  /// it with ([`pipeline`](Self::pipeline)), or `None` if it failed.
+  fn prepare(&mut self, device: &wgpu::Device, shader: &ShaderHandle, frame: u64) -> Option<u64> {
     let serial = shader.serial();
     // Cheap check first: this runs for every custom sprite of every frame
     if let Some(entry) = self.entries.get_mut(&serial)
       && entry.generation == shader.generation()
+      && let Some(compiled) = self.compiled.get_mut(&entry.source)
     {
       entry.last_used = frame;
-      return entry.ready.is_some();
+      compiled.last_used = frame;
+      return compiled.ready.is_some().then_some(entry.source);
     }
     let (generation, source) = shader.snapshot();
-    let ready = self.build(device, shader, generation, &source);
-    let usable = ready.is_some();
+    let key = custom::source_key(ShaderKind::Sprite, &source);
+    if !self.compiled.contains_key(&key) {
+      let ready = self.build(device, shader, key, &source);
+      self.compiled.insert(
+        key,
+        CompiledSource {
+          ready,
+          last_used: frame,
+        },
+      );
+    }
     self.entries.insert(
       serial,
       CustomEntry {
         generation,
-        ready,
+        source: key,
         last_used: frame,
       },
     );
-    usable
+    let compiled = self.compiled.get_mut(&key)?;
+    compiled.last_used = frame;
+    compiled.ready.is_some().then_some(key)
   }
 
   /// Drop shaders unused for [`CUSTOM_SHADER_TTL`] frames and their warnings.
@@ -383,6 +405,9 @@ impl CustomPipelines {
     self
       .entries
       .retain(|_, e| frame.saturating_sub(e.last_used) < CUSTOM_SHADER_TTL);
+    self
+      .compiled
+      .retain(|_, c| frame.saturating_sub(c.last_used) < CUSTOM_SHADER_TTL);
     let entries = &self.entries;
     self.warned.retain(|(serial, generation), _| {
       entries
@@ -391,20 +416,19 @@ impl CustomPipelines {
     });
   }
 
-  /// Compile `source` and build its pipeline; any failure is logged once and
-  /// leaves the shader drawn plain.
+  /// Compile `source` (whose key is `key`) and build its pipeline; any
+  /// failure is logged once and leaves the shader drawn plain.
   fn build(
     &self,
     device: &wgpu::Device,
     shader: &ShaderHandle,
-    generation: u64,
+    key: u64,
     source: &str,
   ) -> Option<CustomPipeline> {
-    let serial = shader.serial();
     let compiled = match custom::compile(ShaderKind::Sprite, shader.id(), source) {
       Ok(compiled) => compiled,
       Err(error) => {
-        custom::report_once(serial, generation, &error);
+        custom::report_once(key, &error);
         return None;
       }
     };
@@ -451,7 +475,7 @@ impl CustomPipelines {
         column: None,
         message: error.to_string(),
       };
-      custom::report_once(serial, generation, &error);
+      custom::report_once(key, &error);
       return None;
     }
     Some(CustomPipeline {
@@ -468,7 +492,11 @@ impl CustomPipelines {
     let Some(entry) = self.entries.get(&serial) else {
       return;
     };
-    let Some(ready) = entry.ready.as_ref() else {
+    let Some(ready) = self
+      .compiled
+      .get(&entry.source)
+      .and_then(|c| c.ready.as_ref())
+    else {
       return;
     };
     let generation = entry.generation;
@@ -507,8 +535,9 @@ impl CustomPipelines {
     instance.effect_extra = [floats[4], floats[5], floats[6], floats[7]];
   }
 
-  fn pipeline(&self, serial: u64) -> Option<&wgpu::RenderPipeline> {
-    let ready = self.entries.get(&serial)?.ready.as_ref()?;
+  /// The pipeline for a key from [`prepare`](Self::prepare)
+  fn pipeline(&self, key: u64) -> Option<&wgpu::RenderPipeline> {
+    let ready = self.compiled.get(&key)?.ready.as_ref()?;
     Some(&ready.pipeline)
   }
 }
@@ -828,6 +857,7 @@ impl SpriteGpuRenderer {
         instance: instance_layout,
         format: surface_format,
         entries: HashMap::new(),
+        compiled: HashMap::new(),
         warned: HashMap::new(),
       },
       globals_buffer,
@@ -966,8 +996,8 @@ impl SpriteGpuRenderer {
       let pipeline = match sprite.shading {
         SpriteShading::Plain => PipelineKind::Plain,
         SpriteShading::Effect => PipelineKind::Effect,
-        SpriteShading::Custom(serial) if self.custom.pipeline(serial).is_some() => {
-          PipelineKind::Custom(serial)
+        SpriteShading::Custom(key) if self.custom.pipeline(key).is_some() => {
+          PipelineKind::Custom(key)
         }
         SpriteShading::Custom(_) => PipelineKind::Plain,
       };
@@ -983,8 +1013,8 @@ impl SpriteGpuRenderer {
 
   /// Compile (or reuse) the game shader and pack `params` into `instance`.
   ///
-  /// Returns the serial to draw the sprite with
-  /// ([`SpriteShading::Custom`]), or `None` when the shader failed, in which
+  /// Returns the key to draw the sprite with ([`SpriteShading::Custom`];
+  /// handles with equal sources share it), or `None` when the shader failed, in which
   /// case the sprite draws plain. Call at emit time, so nothing per-sprite
   /// has to be kept until the frame is laid out.
   pub(crate) fn shade_custom(
@@ -994,11 +1024,9 @@ impl SpriteGpuRenderer {
     params: &ShaderParams,
     instance: &mut SpriteInstance,
   ) -> Option<u64> {
-    if !self.custom.prepare(device, shader, self.frame) {
-      return None;
-    }
+    let key = self.custom.prepare(device, shader, self.frame)?;
     self.custom.pack(shader, params, instance);
-    Some(shader.serial())
+    Some(key)
   }
 
   /// The draws [`prepare_world`](Self::prepare_world) laid out, in order.
@@ -1042,7 +1070,7 @@ impl SpriteGpuRenderer {
     let pipeline = match pipeline {
       PipelineKind::Plain => &self.base_pipeline,
       PipelineKind::Effect => &self.effect_pipeline,
-      PipelineKind::Custom(serial) => self.custom.pipeline(serial).unwrap_or(&self.base_pipeline),
+      PipelineKind::Custom(key) => self.custom.pipeline(key).unwrap_or(&self.base_pipeline),
     };
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, &self.globals_bind_group, &[]);
@@ -1715,14 +1743,34 @@ mod tests {
     let src = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
     let shader = ShaderHandle::from_source("prune.wgsl", src);
     let mut instance = SpriteInstance::new();
-    let serial = renderer.shade_custom(&device, &shader, &ShaderParams::new(), &mut instance);
-    assert_eq!(serial, Some(shader.serial()));
+    let key = renderer.shade_custom(&device, &shader, &ShaderParams::new(), &mut instance);
+    assert!(key.is_some());
     assert_eq!(renderer.custom.entries.len(), 1);
 
     renderer.custom.prune(CUSTOM_SHADER_TTL - 1);
     assert_eq!(renderer.custom.entries.len(), 1);
     renderer.custom.prune(CUSTOM_SHADER_TTL);
     assert!(renderer.custom.entries.is_empty());
+  }
+
+  #[test]
+  fn handles_with_the_same_source_share_one_pipeline() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    let src =
+      "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv) * 0.5; }";
+    let mut instance = SpriteInstance::new();
+    let keys: Vec<Option<u64>> = (0..3)
+      .map(|i| {
+        let shader = ShaderHandle::from_source(format!("shared-{i}.wgsl"), src);
+        renderer.shade_custom(&device, &shader, &ShaderParams::new(), &mut instance)
+      })
+      .collect();
+    assert!(keys[0].is_some());
+    assert!(keys.iter().all(|k| *k == keys[0]), "{keys:?}");
   }
 
   // =========================================================================

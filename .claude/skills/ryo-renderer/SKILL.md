@@ -162,7 +162,7 @@ Post-process effect: see `src/core/shaders/AGENTS.md` (`effects.rs`, `post-proce
 
 ## Custom Shaders
 
-Games write WGSL; the engine wraps it with a prelude and a generated entry point (`src/core/shaders/custom.rs`). Load with `assets.load_shader("shaders/x.wgsl")` (cached by path; only IO errors are `Err`, so `match` it). `ShaderHandle::from_source(id, wgsl)` makes an inline shader and `handle.replace_source(..)` updates it. Each `from_source` call is a separate shader with its own compiled pipeline, so create the handle once and clone it; never call it per entity or per frame.
+Games write WGSL; the engine wraps it with a prelude and a generated entry point (`src/core/shaders/custom.rs`). Load with `assets.load_shader("shaders/x.wgsl")` (cached by path; only IO errors are `Err`, so `match` it). `ShaderHandle::from_source(id, wgsl)` makes an inline shader and `handle.replace_source(..)` updates it. Handles with the same source share one compiled pipeline (and one error report), so only the first compiles; cloning one handle is still cheapest.
 
 ### Sprite shader
 

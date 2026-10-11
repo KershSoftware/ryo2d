@@ -332,7 +332,7 @@ impl Emitter<'_> {
           .gpu
           .shade_custom(self.device, shader, params, &mut instance)
         {
-          Some(serial) => SpriteShading::Custom(serial),
+          Some(key) => SpriteShading::Custom(key),
           None => SpriteShading::Plain,
         }
       }

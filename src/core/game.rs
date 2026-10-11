@@ -236,7 +236,7 @@ impl<'a> GpuRenderContext<'a> {
       .gpu_renderer
       .shade_custom(self.device, shader, params, &mut instance)
     {
-      Some(serial) => crate::core::render::SpriteShading::Custom(serial),
+      Some(key) => crate::core::render::SpriteShading::Custom(key),
       None => crate::core::render::SpriteShading::Plain,
     };
     self.batch.add_shaded(texture_id, shading, instance, z_order);
