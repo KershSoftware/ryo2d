@@ -35,6 +35,8 @@
 //! containing particles byte-for-byte.
 
 mod gpu;
+#[cfg(test)]
+mod render_comparison;
 
 use image::RgbaImage;
 use winit::event::{ElementState, MouseButton};

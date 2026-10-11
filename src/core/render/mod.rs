@@ -9,15 +9,18 @@
 //! reported as [`RenderPipelineError`], never panics. The ids of the built-in
 //! passes live in [`pass_ids`].
 //!
-//! The engine doesn't run this pipeline yet; it's being wired in.
+//! The engine doesn't run this pipeline by default yet; it's being wired in.
 
 mod context;
 mod frame;
 mod pass;
+mod passes;
 mod pipeline;
 
+pub(crate) use context::FrameTargets;
 pub use context::RenderContext;
 pub use frame::FrameInfo;
+pub(crate) use frame::{FrameImage, FrameScene, LightingFrame};
 pub use pass::RenderPass;
 pub use pipeline::{RenderPipeline, RenderPipelineError};
 

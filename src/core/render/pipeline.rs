@@ -1,6 +1,6 @@
 //! An ordered list of render passes
 
-use super::{FrameInfo, RenderPass};
+use super::{FrameInfo, RenderContext, RenderPass, passes};
 
 /// A problem configuring a [`RenderPipeline`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -31,6 +31,23 @@ impl RenderPipeline {
   /// An empty pipeline.
   pub fn new() -> Self {
     Self::default()
+  }
+
+  /// The built-in passes, in the order the engine runs them: `upload`,
+  /// `clear`, `raycast`, `gpu_sprites`, `cpu_blend`, `trails`, `lighting`,
+  /// `unlit_trails`, `post_process`, `ui`, `composite`, `capture` (see
+  /// [`pass_ids`](super::pass_ids)). Each takes part in a frame only when its
+  /// content is there; `raycast` replaces the 2D scene passes.
+  pub fn default_2d() -> Self {
+    // Built-in ids are unique, so they go straight in
+    let entries = passes::built_in()
+      .into_iter()
+      .map(|pass| Entry {
+        pass,
+        enabled: true,
+      })
+      .collect();
+    Self { entries }
   }
 
   /// Add a pass at the end.
@@ -94,6 +111,16 @@ impl RenderPipeline {
       .filter(|entry| entry.enabled && entry.pass.should_run(frame))
       .map(|entry| entry.pass.id())
       .collect()
+  }
+
+  /// Record the frame: every enabled pass whose `should_run` holds, in order.
+  pub(crate) fn execute(&mut self, ctx: &mut RenderContext<'_>) {
+    let frame = *ctx.frame();
+    for entry in &mut self.entries {
+      if entry.enabled && entry.pass.should_run(&frame) {
+        entry.pass.execute(ctx);
+      }
+    }
   }
 
   fn position(&self, id: &str) -> Option<usize> {

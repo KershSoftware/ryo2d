@@ -143,3 +143,77 @@ fn errors_name_the_pass() {
     "no render pass with id `x`"
   );
 }
+
+const ORDER: [&str; 12] = [
+  pass_ids::UPLOAD,
+  pass_ids::CLEAR,
+  pass_ids::RAYCAST,
+  pass_ids::GPU_SPRITES,
+  pass_ids::CPU_BLEND,
+  pass_ids::TRAILS,
+  pass_ids::LIGHTING,
+  pass_ids::UNLIT_TRAILS,
+  pass_ids::POST_PROCESS,
+  pass_ids::UI,
+  pass_ids::COMPOSITE,
+  pass_ids::CAPTURE,
+];
+
+#[test]
+fn default_2d_runs_the_built_in_passes_in_order() {
+  assert_eq!(ids(&RenderPipeline::default_2d()), ORDER.to_vec());
+}
+
+#[test]
+fn a_plain_frame_runs_the_scene_passes() {
+  assert_eq!(
+    RenderPipeline::default_2d().passes_to_run(&FrameInfo::default()),
+    vec!["upload", "clear", "cpu_blend", "composite"]
+  );
+}
+
+#[test]
+fn a_full_2d_frame_runs_every_scene_pass() {
+  let frame = FrameInfo {
+    gpu_sprites: true,
+    trails: true,
+    lighting: true,
+    effects: true,
+    ui: true,
+    capture: true,
+    ..FrameInfo::default()
+  };
+  assert_eq!(
+    RenderPipeline::default_2d().passes_to_run(&frame),
+    vec![
+      "upload",
+      "clear",
+      "gpu_sprites",
+      "cpu_blend",
+      "trails",
+      "lighting",
+      "unlit_trails",
+      "post_process",
+      "ui",
+      "composite",
+      "capture",
+    ]
+  );
+}
+
+#[test]
+fn a_raycast_frame_skips_the_2d_scene() {
+  let frame = FrameInfo {
+    raycast: true,
+    gpu_sprites: true,
+    trails: true,
+    lighting: true,
+    effects: true,
+    ui: true,
+    ..FrameInfo::default()
+  };
+  assert_eq!(
+    RenderPipeline::default_2d().passes_to_run(&frame),
+    vec!["raycast", "post_process", "ui", "composite"]
+  );
+}

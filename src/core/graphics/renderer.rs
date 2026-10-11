@@ -25,6 +25,7 @@ use winit::window::Window;
 use crate::core::capture::{CapturedFrame, read_texture_rgba};
 use crate::core::engine::WindowMode;
 use crate::core::error::{CaptureError, CaptureResult};
+use crate::core::render::{FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline};
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
 use super::{Compositor, Viewport};
@@ -131,6 +132,8 @@ pub struct WgpuRenderer {
   pending_capture: Option<PathBuf>,
   // Result of the latest capture, collected by the engine
   capture_result: Option<CaptureResult<CapturedFrame>>,
+  // What the latest `render_frame` contained
+  last_frame: Option<FrameInfo>,
 }
 
 /// Create the CPU staging texture at game resolution.
@@ -551,6 +554,7 @@ impl WgpuRenderer {
       capture_texture: None,
       pending_capture: None,
       capture_result: None,
+      last_frame: None,
     };
 
     // Initialize viewport transform
@@ -1482,6 +1486,73 @@ impl WgpuRenderer {
     self.finish_capture(capture_path);
 
     Ok(())
+  }
+
+  /// Render a frame by running `pipeline`'s passes on one encoder.
+  pub(crate) fn render_frame(
+    &mut self,
+    pipeline: &mut RenderPipeline,
+    scene: FrameScene<'_>,
+  ) -> Result<(), wgpu::SurfaceError> {
+    let (output, view) = self.target.acquire()?;
+    let capture_path = self.prepare_capture();
+    let frame = FrameInfo {
+      game_width: self.game_width,
+      game_height: self.game_height,
+      raycast: scene.raycast.is_some(),
+      gpu_sprites: scene.batches.sprite_count() > 0,
+      trails: scene.trails.is_some_and(|t| t.vertex_count() > 0),
+      lighting: scene.lighting.is_some(),
+      effects: self.post_process.is_some() && scene.effects.has_active_effects(),
+      ui: scene.ui_buffer.iter().any(|&b| b != 0),
+      capture: capture_path.is_some(),
+    };
+    self.last_frame = Some(frame);
+    let mut encoder = self
+      .device
+      .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Frame Encoder"),
+      });
+    {
+      let targets = FrameTargets {
+        game: &self.texture,
+        game_view: &self.texture_view,
+        lit: &self.lit_texture,
+        lit_view: &self.lit_texture_view,
+        cpu_texture: &self.cpu_texture,
+        pixel_buffer: &self.pixel_buffer,
+        cpu_blend_pipeline: &self.game_blend_pipeline,
+        cpu_bind_group: &self.cpu_bind_group,
+        compositor: &self.compositor,
+        output_view: &view,
+        capture: capture_path.as_ref().and(self.capture_texture.as_ref()),
+      };
+      let mut ctx = RenderContext::new(
+        &self.device,
+        &self.queue,
+        &mut encoder,
+        frame,
+        targets,
+        scene,
+        self.post_process.as_mut(),
+      );
+      pipeline.execute(&mut ctx);
+    }
+    self.queue.submit(std::iter::once(encoder.finish()));
+    if let Some(output) = output {
+      output.present();
+    }
+    self.finish_capture(capture_path);
+    Ok(())
+  }
+
+  /// What the latest [`render_frame`](Self::render_frame) contained.
+  #[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "read by the render comparison tests")
+  )]
+  pub(crate) fn last_frame_info(&self) -> Option<FrameInfo> {
+    self.last_frame
   }
 
   /// Capture the next presented frame to `path` at game resolution.

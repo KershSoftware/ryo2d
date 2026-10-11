@@ -2,9 +2,7 @@
 
 ## Status
 
-**`RenderPipeline` is not wired into the engine yet.** `engine.rs` never builds or executes it, and actual frame rendering is still hard-coded in `engine.rs` / `graphics/renderer.rs`. Changing passes here does not change what the game renders.
-
-The module holds the core API only: `RenderPipeline` (ordered list), `RenderPass` (with `should_run`), `FrameInfo`, `RenderContext`, `RenderPipelineError` and the `pass_ids` constants. There are no built-in passes and no `RenderPipeline::default_2d()` yet.
+**Migration in progress: games still render through the old paths.** `Engine` owns a `RenderPipeline::default_2d()` (the twelve built-in passes in `passes/`), and `present_frame` runs it through `WgpuRenderer::render_frame` only when the crate-internal `Engine::legacy_render` is false. It defaults to true, so frames still come from the hard-coded paths in `graphics/renderer.rs`. `testing/render_comparison.rs` proves both draw byte-identical frames. The old paths, the switch and those tests go once the engine switches over.
 
 ## Ordering Rules
 

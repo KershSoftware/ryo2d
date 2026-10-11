@@ -1,0 +1,68 @@
+//! 2D lighting: lights, shadows, then the lit scene
+
+use crate::core::ecs::Transform;
+use crate::core::lighting::{LightOccluder2D, generate_shadow_geometry};
+use crate::core::render::{FrameImage, FrameInfo, RenderContext, RenderPass, pass_ids};
+
+/// Renders the lights (and shadows from shadow-casting lights and occluders),
+/// then composes the game texture with them into the lit texture.
+pub(super) struct Lighting;
+
+impl RenderPass for Lighting {
+  fn id(&self) -> &str {
+    pass_ids::LIGHTING
+  }
+
+  fn should_run(&self, frame: &FrameInfo) -> bool {
+    !frame.raycast && frame.lighting
+  }
+
+  fn execute(&mut self, ctx: &mut RenderContext<'_>) {
+    let (device, queue) = (ctx.device(), ctx.queue());
+    let RenderContext {
+      encoder,
+      targets,
+      scene,
+      image,
+      ..
+    } = ctx;
+    let Some(lighting) = scene.lighting.as_mut() else {
+      return;
+    };
+    let lights = lighting.lights;
+    let light_refs = || lights.iter().map(|(transform, light)| (transform, light));
+
+    lighting.renderer.render_lights(
+      device,
+      queue,
+      encoder,
+      light_refs(),
+      scene.camera_pos,
+      scene.camera_zoom,
+    );
+
+    // Shadows subtract from the light buffer
+    let casts_shadows = lights.iter().any(|(_, light)| light.casts_shadows());
+    if casts_shadows && !lighting.occluders.is_empty() {
+      let occluders: Vec<(&Transform, &LightOccluder2D)> = lighting
+        .occluders
+        .iter()
+        .map(|(transform, occluder)| (transform, occluder))
+        .collect();
+      let geometry = generate_shadow_geometry(light_refs(), &occluders);
+      lighting
+        .renderer
+        .render_shadows(device, queue, encoder, &geometry);
+    }
+
+    lighting.renderer.compose_from_texture(
+      device,
+      queue,
+      encoder,
+      targets.game,
+      targets.lit_view,
+      scene.time,
+    );
+    *image = FrameImage::Lit;
+  }
+}

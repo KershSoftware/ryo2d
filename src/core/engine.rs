@@ -35,6 +35,7 @@ use super::raycast::{
   CameraUniform, GpuRaycastRenderer, LightInstance, RaycastCamera, RaycastLight, RaycastSprite,
   SpriteInstance as RaycastSpriteInstance,
 };
+use super::render::{FrameScene, LightingFrame, RenderPipeline};
 use super::scene::{Scene, SceneAction, SceneContext, SceneManager};
 use super::shaders::EffectsManager;
 use super::systems::{
@@ -307,6 +308,10 @@ pub struct Engine {
   game_name: Option<String>,
   // Game version (from Ryo.toml [project] section)
   game_version: Option<String>,
+  // The render passes every frame runs through
+  pub(crate) render_pipeline: RenderPipeline,
+  // Draw frames with the old hand-written render paths instead of `render_pipeline`
+  pub(crate) legacy_render: bool,
 }
 
 /// Result of rendering and presenting one frame.
@@ -779,6 +784,8 @@ impl Engine {
       capture: CaptureState::new(capture_config),
       game_name,
       game_version,
+      render_pipeline: RenderPipeline::default_2d(),
+      legacy_render: true,
     }
   }
 
@@ -1259,6 +1266,15 @@ impl Engine {
     }
   }
 
+  /// What the latest frame drawn through `render_pipeline` contained.
+  #[cfg(test)]
+  pub(crate) fn last_frame_info(&self) -> Option<super::render::FrameInfo> {
+    self
+      .renderer
+      .as_ref()
+      .and_then(WgpuRenderer::last_frame_info)
+  }
+
   /// Finish GPU-dependent setup once a renderer exists (window or offscreen).
   ///
   /// Creates the sprite, lighting, trail and raycast renderers, the frame
@@ -1610,7 +1626,32 @@ impl Engine {
         .map(|r| r.is_enabled())
         .unwrap_or(false);
 
-      let result = if raycast_enabled {
+      let result = if !self.legacy_render {
+        // The raycast pass draws what this syncs
+        if raycast_enabled && let Some(raycast) = raycast_renderer.as_mut() {
+          sync_raycast(&self.world, raycast, rend, time, &self.texture_manager);
+        }
+        let scene = FrameScene {
+          sprites: &*gpu,
+          batches: &self.batch_collector,
+          trails: trail_renderer.as_ref(),
+          lighting: lighting
+            .as_mut()
+            .filter(|l| l.is_enabled())
+            .map(|renderer| LightingFrame {
+              renderer,
+              lights: &lights,
+              occluders: &occluders,
+            }),
+          raycast: raycast_renderer.as_ref().filter(|r| r.is_enabled()),
+          effects: &self.effects,
+          ui_buffer: &self.ui_buffer,
+          camera_pos,
+          camera_zoom,
+          time,
+        };
+        rend.render_frame(&mut self.render_pipeline, scene)
+      } else if raycast_enabled {
         // GPU raycasting path - bypasses CPU pixel buffer entirely
         sync_and_render_raycast(
           &self.world,
@@ -2799,6 +2840,39 @@ fn sync_and_render_raycast(
   time: f32,
   texture_mgr: &TextureManager,
 ) -> Result<(), wgpu::SurfaceError> {
+  sync_raycast(world, raycast, rend, time, texture_mgr);
+
+  // Reborrow as immutable for render callbacks
+  let raycast = &*raycast;
+  let raycast_wall_cb = |device: &wgpu::Device,
+                         _queue: &wgpu::Queue,
+                         encoder: &mut wgpu::CommandEncoder,
+                         view: &wgpu::TextureView| {
+    raycast.render_walls(device, encoder, view);
+  };
+  let raycast_sprite_cb = |device: &wgpu::Device,
+                           _queue: &wgpu::Queue,
+                           encoder: &mut wgpu::CommandEncoder,
+                           view: &wgpu::TextureView| {
+    raycast.render_sprites(device, encoder, view);
+  };
+  rend.render_raycast(
+    Some(effects),
+    raycast_wall_cb,
+    Some(raycast_sprite_cb),
+    Some(ui_buffer),
+  )
+}
+
+/// Upload pending raycast textures and map data, and sync the camera, sprites
+/// and lights from the ECS to the GPU.
+fn sync_raycast(
+  world: &World,
+  raycast: &mut GpuRaycastRenderer,
+  rend: &WgpuRenderer,
+  time: f32,
+  texture_mgr: &TextureManager,
+) {
   // Flush pending textures and map data to GPU
   raycast.flush_pending(rend.device(), rend.queue(), texture_mgr);
 
@@ -2868,27 +2942,6 @@ fn sync_and_render_raycast(
     }
   }
   raycast.update_lights(rend.queue(), &ray_lights);
-
-  // Reborrow as immutable for render callbacks
-  let raycast = &*raycast;
-  let raycast_wall_cb = |device: &wgpu::Device,
-                         _queue: &wgpu::Queue,
-                         encoder: &mut wgpu::CommandEncoder,
-                         view: &wgpu::TextureView| {
-    raycast.render_walls(device, encoder, view);
-  };
-  let raycast_sprite_cb = |device: &wgpu::Device,
-                           _queue: &wgpu::Queue,
-                           encoder: &mut wgpu::CommandEncoder,
-                           view: &wgpu::TextureView| {
-    raycast.render_sprites(device, encoder, view);
-  };
-  rend.render_raycast(
-    Some(effects),
-    raycast_wall_cb,
-    Some(raycast_sprite_cb),
-    Some(ui_buffer),
-  )
 }
 
 // =============================================================================

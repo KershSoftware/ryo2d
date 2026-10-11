@@ -1,5 +1,12 @@
 //! What a frame contains, decided before any pass runs
 
+use crate::core::ecs::Transform;
+use crate::core::graphics::{BatchCollector, SpriteGpuRenderer};
+use crate::core::lighting::{Light2D, LightOccluder2D, LightingRenderer};
+use crate::core::raycast::GpuRaycastRenderer;
+use crate::core::shaders::{EffectsManager, OutputBuffer};
+use crate::core::trail::TrailRenderer;
+
 /// What this frame contains, decided before any render pass runs.
 ///
 /// Passes read it in [`RenderPass::should_run`](super::RenderPass::should_run)
@@ -24,4 +31,38 @@ pub struct FrameInfo {
   pub ui: bool,
   /// A frame capture was requested for this frame
   pub capture: bool,
+}
+
+/// Which texture holds the frame's latest image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameImage {
+  /// The game texture (the 2D scene or the raycaster)
+  Game,
+  /// The lighting output
+  Lit,
+  /// A post-process ping-pong buffer
+  PostProcess(OutputBuffer),
+}
+
+/// Lighting inputs for a frame (only built while lighting is enabled).
+pub(crate) struct LightingFrame<'a> {
+  pub(crate) renderer: &'a mut LightingRenderer,
+  pub(crate) lights: &'a [(Transform, Light2D)],
+  pub(crate) occluders: &'a [(Transform, LightOccluder2D)],
+}
+
+/// The engine subsystems and per-frame data the built-in passes draw from.
+pub(crate) struct FrameScene<'a> {
+  pub(crate) sprites: &'a SpriteGpuRenderer,
+  pub(crate) batches: &'a BatchCollector,
+  pub(crate) trails: Option<&'a TrailRenderer>,
+  /// `Some` only while lighting is enabled
+  pub(crate) lighting: Option<LightingFrame<'a>>,
+  /// `Some` only while raycasting is enabled
+  pub(crate) raycast: Option<&'a GpuRaycastRenderer>,
+  pub(crate) effects: &'a EffectsManager,
+  pub(crate) ui_buffer: &'a [u8],
+  pub(crate) camera_pos: glam::Vec2,
+  pub(crate) camera_zoom: f32,
+  pub(crate) time: f32,
 }
