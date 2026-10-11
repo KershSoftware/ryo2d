@@ -18,6 +18,8 @@ pub(crate) struct PageScene {
   page: Box<dyn DemoPage>,
   help_open: bool,
   selected: usize,
+  /// The first settings row the panel showed on the last UI frame
+  scroll: usize,
   rows: Vec<Row>,
   left: HoldRepeat,
   right: HoldRepeat,
@@ -36,6 +38,7 @@ impl PageScene {
       page,
       help_open: false,
       selected: 0,
+      scroll: 0,
       rows: Vec::new(),
       left: HoldRepeat::default(),
       right: HoldRepeat::default(),
@@ -49,10 +52,11 @@ impl PageScene {
     SceneAction::Switch(Box::new(PageScene::new(self.def.clone(), index)))
   }
 
-  /// A fresh scene for this page with the same row selected
+  /// A fresh scene for this page with the same row selected and in view
   fn reset(&self) -> SceneAction {
     let mut scene = PageScene::new(self.def.clone(), self.index);
     scene.selected = self.selected;
+    scene.scroll = self.scroll;
     SceneAction::Switch(Box::new(scene))
   }
 
@@ -206,10 +210,13 @@ impl Scene for PageScene {
       description: self.page.description(),
       rows: &self.rows,
       selected: self.selected,
+      scroll: self.scroll,
       controls: &controls,
       help_open: self.help_open,
     };
-    self.panel = chrome::draw(ui, &view);
+    let drawn = chrome::draw(ui, &view);
+    self.panel = drawn.panel;
+    self.scroll = drawn.scroll;
     SceneAction::Continue
   }
 

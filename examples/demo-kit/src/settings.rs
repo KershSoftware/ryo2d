@@ -52,7 +52,8 @@ impl Settings {
     });
   }
 
-  /// A number changed by `step` per press and kept within `range`
+  /// A number changed by `step` per press, snapped to a multiple of `step`
+  /// and kept within `range`
   pub fn float(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>, step: f32) {
     let (lo, hi) = (*range.start(), *range.end());
     let steps = self.steps();
@@ -124,17 +125,16 @@ impl Settings {
   }
 }
 
-/// Decimal places that show a value changed by `step`
+/// Decimal places that show every digit of `step` (0.25 needs two), up to
+/// three
 fn decimals(step: f32) -> usize {
-  if step >= 1.0 {
-    0
-  } else if step >= 0.1 {
-    1
-  } else if step >= 0.01 {
-    2
-  } else {
-    3
-  }
+  (0..3)
+    .find(|&places| {
+      let scaled = f64::from(step.abs()) * 10f64.powi(places as i32);
+      // A whole number, to within float error
+      scaled >= 0.5 && (scaled - scaled.round()).abs() < 1e-4
+    })
+    .unwrap_or(3)
 }
 
 #[cfg(test)]
@@ -179,6 +179,18 @@ mod tests {
     let mut s = Settings::new(0, 10);
     s.float("Level", &mut level, 0.0..=1.0, 0.1);
     assert_eq!(level, 1.0);
+  }
+
+  #[test]
+  fn float_shows_every_digit_of_its_step() {
+    let mut zoom = 0.75;
+    let mut s = Settings::new(9, 0);
+    s.float("Zoom", &mut zoom, 0.5..=4.0, 0.25);
+    s.float("Rate", &mut 0.75, 0.0..=5.0, 2.5);
+    s.float("Count", &mut 3.0, 0.0..=10.0, 1.0);
+    s.float("Fine", &mut 0.005, 0.0..=1.0, 0.005);
+    s.float("Finer", &mut 0.0002, 0.0..=1.0, 0.0002);
+    assert_eq!(values(s), ["0.75", "0.8", "3", "0.005", "0.000"]);
   }
 
   #[test]

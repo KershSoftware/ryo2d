@@ -16,8 +16,18 @@ pub(crate) struct View<'a> {
   pub description: &'a str,
   pub rows: &'a [Row],
   pub selected: usize,
+  /// The first settings row shown on the last frame
+  pub scroll: usize,
   pub controls: &'a [Control],
   pub help_open: bool,
+}
+
+/// What the shell drew that it needs on the next frame
+pub(crate) struct Drawn {
+  /// Where the settings panel went, if it was drawn
+  pub panel: Option<Rect>,
+  /// The first settings row shown
+  pub scroll: usize,
 }
 
 /// Where the shell's parts go on a screen
@@ -160,15 +170,24 @@ pub(crate) fn truncate_to(text: &str, max: f32, width: impl Fn(&str) -> f32) -> 
   if width(text) <= max {
     return text.to_string();
   }
-  let mut chars: Vec<char> = text.chars().collect();
-  while !chars.is_empty() {
-    chars.pop();
-    let candidate: String = chars.iter().collect::<String>() + "...";
-    if width(&candidate) <= max {
-      return candidate;
+  let chars: Vec<char> = text.chars().collect();
+  let cut = |n: usize| chars[..n].iter().collect::<String>() + "...";
+  let fits = |n: usize| width(&cut(n)) <= max;
+  if !fits(0) {
+    return String::new();
+  }
+  // The longest prefix that fits, by binary search: width grows with the
+  // prefix. `lo` fits; `hi` doesn't, or is the whole text
+  let (mut lo, mut hi) = (0, chars.len());
+  while hi - lo > 1 {
+    let mid = (lo + hi) / 2;
+    if fits(mid) {
+      lo = mid;
+    } else {
+      hi = mid;
     }
   }
-  String::new()
+  cut(lo)
 }
 
 fn bar_color() -> Color {
@@ -191,19 +210,22 @@ fn key_text() -> Color {
   Color::YELLOW
 }
 
-/// Draw the shell; returns where the settings panel went, if it was drawn
-pub(crate) fn draw(ui: &mut UiContext, view: &View) -> Option<Rect> {
+/// Draw the shell
+pub(crate) fn draw(ui: &mut UiContext, view: &View) -> Drawn {
   let (w, h) = ui.screen_size();
   let (w, h) = (w as f32, h as f32);
   let l = layout(w, h, line_height(ui));
   draw_top_bar(ui, view, &l, w);
   draw_description(ui, view, &l, w);
-  let panel = draw_panel(ui, view, &l, w);
+  let (panel, scroll) = draw_panel(ui, view, &l, w).unzip();
   draw_legend(ui, view, &l, w, h);
   if view.help_open {
     draw_help(ui, view, &l, w, h);
   }
-  panel
+  Drawn {
+    panel,
+    scroll: scroll.unwrap_or(view.scroll),
+  }
 }
 
 fn draw_top_bar(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
@@ -262,7 +284,8 @@ pub(crate) fn row_widths(inner: f32, value_w: f32, gap: f32) -> (f32, f32) {
   (label_max, value_max)
 }
 
-fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<Rect> {
+/// The panel and the first row it shows, if it was drawn
+fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<(Rect, usize)> {
   if view.rows.is_empty() {
     return None;
   }
@@ -287,8 +310,7 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<Rec
 
   let rows_fit = ((panel_h - 2.0 * l.pad) / row_h).floor() as usize;
   let visible = rows_fit.saturating_sub(2).min(view.rows.len());
-  // Keep the selected row in view
-  let first = view.selected.saturating_sub(visible.saturating_sub(1));
+  let first = scroll_rows(view.scroll, view.selected, visible, view.rows.len());
   let inner = panel_w - 2.0 * l.pad;
   for (slot, (i, row)) in view
     .rows
@@ -323,7 +345,23 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<Rec
   let hint_y = y + panel_h - l.pad - l.line_h;
   let hint = truncate_to(hint, inner, |s| text_w(ui, s));
   ui.draw_text(&hint, x + l.pad, hint_y, dim_text());
-  Some(panel)
+  Some((panel, first))
+}
+
+/// The first of `visible` rows to show out of `len`, moving the window from
+/// `first` only as far as it takes to show `selected`
+pub(crate) fn scroll_rows(first: usize, selected: usize, visible: usize, len: usize) -> usize {
+  if visible == 0 {
+    return 0;
+  }
+  let first = if selected < first {
+    selected
+  } else if selected >= first + visible {
+    selected + 1 - visible
+  } else {
+    first
+  };
+  first.min(len.saturating_sub(visible))
 }
 
 /// Legend items: the page's controls, then `R reset`
@@ -567,11 +605,46 @@ mod tests {
   }
 
   #[test]
+  fn the_panel_scrolls_only_at_its_edges() {
+    // 10 rows, 4 visible, from the top
+    assert_eq!(scroll_rows(0, 3, 4, 10), 0);
+    // Down past the bottom edge: the window follows by one row
+    assert_eq!(scroll_rows(0, 4, 4, 10), 1);
+    // Back up inside the window: it stays put
+    assert_eq!(scroll_rows(1, 2, 4, 10), 1);
+    // Up past the top edge
+    assert_eq!(scroll_rows(1, 0, 4, 10), 0);
+    // Fewer rows, or more room: no blank rows below the last
+    assert_eq!(scroll_rows(6, 6, 4, 8), 4);
+    assert_eq!(scroll_rows(3, 5, 10, 8), 0);
+    assert_eq!(scroll_rows(3, 5, 0, 8), 0);
+  }
+
+  #[test]
   fn truncation_keeps_text_within_the_width() {
     let width = |s: &str| s.len() as f32 * 8.0;
     assert_eq!(truncate_to("short", 100.0, width), "short");
     let cut = truncate_to("a long description line", 80.0, width);
     assert!(width(&cut) <= 80.0, "{cut}");
     assert!(cut.ends_with("..."), "{cut}");
+  }
+
+  #[test]
+  fn truncation_keeps_the_longest_prefix_and_measures_few_times() {
+    let calls = std::cell::Cell::new(0);
+    let width = |s: &str| {
+      calls.set(calls.get() + 1);
+      s.len() as f32 * 8.0
+    };
+    let long = "x".repeat(1000);
+    // 20 characters fit: 17 of the text, then "..."
+    assert_eq!(
+      truncate_to(&long, 160.0, width),
+      format!("{}...", "x".repeat(17))
+    );
+    assert!(calls.get() <= 16, "measured {} times", calls.get());
+
+    // Too narrow even for "..."
+    assert_eq!(truncate_to(&long, 16.0, width), "");
   }
 }

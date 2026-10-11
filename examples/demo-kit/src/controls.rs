@@ -71,10 +71,11 @@ pub(crate) fn reserved_key(controls: &[Control]) -> Option<KeyCode> {
     .find(|key| RESERVED.contains(key))
 }
 
-/// A short label for a key: `KeyQ` -> `Q`, `Digit3` -> `3`, `ArrowUp` -> `Up`
+/// A short label for a key: `KeyQ` -> `Q`, `Digit3` -> `3` (the arrows are
+/// the shell's, so pages never label them)
 pub(crate) fn key_label(key: KeyCode) -> String {
   let name = format!("{key:?}");
-  for prefix in ["Key", "Digit", "Arrow"] {
+  for prefix in ["Key", "Digit"] {
     if let Some(rest) = name.strip_prefix(prefix)
       && !rest.is_empty()
     {
