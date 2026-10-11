@@ -20,13 +20,16 @@ const PAGE_SIZE: u32 = 2048;
 const MAX_PAGES: usize = 8;
 /// Images larger than this on either side are standalone.
 const MAX_ATLAS_IMAGE: u32 = 256;
-/// Entries unused for this many frames may be freed when a page is full.
+/// Entries unused for this many frames may be freed when a page is full, and
+/// are freed every [`RELEASE_EVERY`] frames.
 const STALE_FRAMES: u64 = 300;
 /// Most entries evicted for a single placement before giving up (the image
 /// then falls back to a standalone texture rather than flushing the atlas).
 const MAX_EVICTIONS: usize = 64;
 /// Border added around every image, in pixels.
 const BORDER: u32 = 1;
+/// How often stale atlas entries are freed and empty pages released
+const RELEASE_EVERY: u64 = 60;
 const PAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// What an atlas entry is keyed by.
@@ -185,6 +188,14 @@ impl AtlasLayout {
     for key in stale {
       self.remove(&key);
     }
+  }
+
+  /// Free entries unused for [`STALE_FRAMES`] frames, then release empty
+  /// pages at the end (earlier pages keep their index)
+  pub(crate) fn release_stale(&mut self, frame: u64) {
+    self.free_stale(frame);
+    let used = self.entries.values().map(|e| e.page + 1).max().unwrap_or(0);
+    self.pages.truncate(used);
   }
 
   /// Free `key`'s slot, if it has one.
@@ -432,8 +443,14 @@ impl TextureAtlas {
     }
   }
 
-  /// Housekeeping: drop standalone textures unused for 300 or more frames.
+  /// Housekeeping: drop standalone textures unused for 300 or more frames,
+  /// and every [`RELEASE_EVERY`] frames free stale atlas entries and the
+  /// pages left empty at the end, so the GPU memory comes back.
   pub(crate) fn end_frame(&mut self, frame: u64) {
+    if frame.is_multiple_of(RELEASE_EVERY) {
+      self.layout.release_stale(frame);
+      self.pages.truncate(self.layout.page_count());
+    }
     let stale: Vec<usize> = self
       .standalone
       .iter()
@@ -702,6 +719,21 @@ mod tests {
     let big = layout.place(&id(100), 126, 126, 3).expect("room is made");
     assert_eq!(big.slot.page, SlotPage::Atlas(1));
     assert!((0..16).all(|n| layout.holds(&id(n), 62, 62)), "page 0 kept");
+  }
+
+  #[test]
+  fn stale_entries_are_freed_and_empty_trailing_pages_released() {
+    let mut layout = AtlasLayout::new(128, 3);
+    for n in 0..8 {
+      layout.place(&id(n), 62, 62, 1);
+    }
+    assert_eq!(layout.page_count(), 2);
+    // Only one image on page 0 is still drawn
+    layout.place(&id(0), 62, 62, 200);
+    layout.release_stale(301);
+    assert!(layout.holds(&id(0), 62, 62));
+    assert!(!(1..8).any(|n| layout.holds(&id(n), 62, 62)));
+    assert_eq!(layout.page_count(), 1, "the emptied last page is released");
   }
 
   #[test]

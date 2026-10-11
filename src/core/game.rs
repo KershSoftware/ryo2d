@@ -205,8 +205,10 @@ impl<'a> GpuRenderContext<'a> {
 
   /// Upload a sprite texture to the GPU cache.
   ///
-  /// Call this for each unique sprite before adding instances to the batch.
-  /// Sprites are cached by ID, so subsequent calls with the same sprite are no-ops.
+  /// Call this for each unique sprite, every frame, before adding its
+  /// instances to the batch. Sprites are cached by ID, so later calls with
+  /// the same sprite are no-ops; textures neither uploaded nor drawn for 600
+  /// frames are dropped.
   pub fn upload_sprite(&mut self, sprite: &SpriteHandle) {
     self
       .gpu_renderer

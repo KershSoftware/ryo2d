@@ -113,7 +113,7 @@ Games use `render_gpu()`:
 
 ```rust
 fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
-    gpu.upload_sprite(&self.particle_sprite);
+    gpu.upload_sprite(&self.particle_sprite); // every frame: a no-op once cached, and unused textures are dropped after 600 frames
 
     for particle in &self.particles {
         let instance = SpriteInstance::new()

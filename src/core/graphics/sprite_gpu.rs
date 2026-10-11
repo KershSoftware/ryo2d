@@ -285,6 +285,8 @@ struct CachedTexture {
   width: u32,
   height: u32,
   source: TextureSource,
+  /// Atlas frame it was last uploaded or drawn in
+  last_used: u64,
 }
 
 impl CachedTexture {
@@ -310,6 +312,10 @@ struct EntitySprite {
 
 /// Entity sprites unused for this many frames are forgotten.
 const ENTITY_SPRITE_TTL: u64 = 600;
+
+/// Textures uploaded by id and neither uploaded nor drawn for this many
+/// frames are forgotten, with their pixels
+const TEXTURE_TTL: u64 = 600;
 
 /// Most entity sprites kept as standalone (over 256 px) textures; the least
 /// recently used beyond it are freed, so a game minting large sprite handles
@@ -894,8 +900,9 @@ impl SpriteGpuRenderer {
   /// Upload a sprite texture to the GPU (cached by id).
   ///
   /// `data` is RGBA8 in sRGB. The texture goes into the texture atlas;
-  /// uploading an id that is already cached does nothing. Data that doesn't
-  /// match `width`x`height` is ignored.
+  /// uploading an id that is already cached does nothing, so upload each
+  /// frame you draw it: textures neither uploaded nor drawn for 600 frames
+  /// are dropped. Data that doesn't match `width`x`height` is ignored.
   pub fn upload_texture(
     &mut self,
     device: &wgpu::Device,
@@ -905,7 +912,8 @@ impl SpriteGpuRenderer {
     height: u32,
     data: &[u8],
   ) {
-    if self.textures.contains_key(id) {
+    if let Some(texture) = self.textures.get_mut(id) {
+      texture.last_used = self.frame;
       return;
     }
     let key = AtlasKey::Id(id.to_string());
@@ -925,6 +933,7 @@ impl SpriteGpuRenderer {
         width,
         height,
         source,
+        last_used: self.frame,
       };
       self.textures.insert(id.to_string(), texture);
     }
@@ -941,9 +950,11 @@ impl SpriteGpuRenderer {
     sprites: usize,
   ) {
     for id in ids {
-      let Some(texture) = self.textures.get(id) else {
+      let Some(texture) = self.textures.get_mut(id) else {
         continue;
       };
+      texture.last_used = self.frame;
+      let texture = &*texture;
       let rgba = || texture.rgba();
       let (width, height) = (texture.width, texture.height);
       let atlas_key = &texture.key;
@@ -953,6 +964,7 @@ impl SpriteGpuRenderer {
     }
     self.atlas.end_frame(self.frame);
     self.prune_entity_sprites();
+    self.prune_textures();
     self.frame += 1;
 
     if sprites > self.instance_capacity {
@@ -1101,7 +1113,8 @@ impl SpriteGpuRenderer {
     sprite: &SpriteHandle,
   ) {
     let id = sprite.id();
-    if self.textures.contains_key(&id) {
+    if let Some(texture) = self.textures.get_mut(&id) {
+      texture.last_used = self.frame;
       return;
     }
     let (width, height, data) = sprite.with_sprite(|s| (s.width(), s.height(), s.data().to_vec()));
@@ -1115,6 +1128,7 @@ impl SpriteGpuRenderer {
         width,
         height,
         source: TextureSource::Sprite(sprite.clone()),
+        last_used: self.frame,
       };
       self.textures.insert(id, texture);
     }
@@ -1182,6 +1196,7 @@ impl SpriteGpuRenderer {
           width,
           height,
           source: TextureSource::Sprite(sprite.clone()),
+          last_used: self.frame,
         },
       );
     } else {
@@ -1201,6 +1216,23 @@ impl SpriteGpuRenderer {
 
   /// Forget entity sprites nothing asked for in a while, so sprites of
   /// despawned entities don't stay in memory.
+  /// Forget textures uploaded by id and neither uploaded nor drawn for
+  /// [`TEXTURE_TTL`] frames, with their pixels and atlas space. Games upload
+  /// what they draw each frame, so a texture still in use is never dropped.
+  /// Entity sprites are left to [`prune_entity_sprites`](Self::prune_entity_sprites).
+  fn prune_textures(&mut self) {
+    let frame = self.frame;
+    let atlas = &mut self.atlas;
+    self.textures.retain(|_, texture| {
+      let keep = !matches!(texture.key, AtlasKey::Id(_))
+        || frame.saturating_sub(texture.last_used) < TEXTURE_TTL;
+      if !keep {
+        atlas.remove(&texture.key);
+      }
+      keep
+    });
+  }
+
   fn prune_entity_sprites(&mut self) {
     self.cap_standalone_entity_sprites();
     if !self.frame.is_multiple_of(120) {
@@ -1692,6 +1724,26 @@ mod tests {
     let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
     renderer.upload_texture(&device, &queue, "short", 2, 2, &[255; 15]);
     assert!(!renderer.has_texture("short"));
+  }
+
+  #[test]
+  fn textures_neither_uploaded_nor_drawn_are_dropped() {
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    renderer.upload_texture(&device, &queue, "gone", 2, 2, &[255; 16]);
+    for _ in 0..=TEXTURE_TTL {
+      // Games upload what they draw each frame (a no-op once cached)
+      renderer.upload_texture(&device, &queue, "uploaded", 2, 2, &[255; 16]);
+      renderer.upload_texture(&device, &queue, "drawn", 2, 2, &[255; 16]);
+      renderer.prepare_world(&device, &queue, &world_list(&[("drawn", 0)]));
+    }
+    assert!(!renderer.has_texture("gone"));
+    assert!(renderer.lookup("gone").is_none(), "its atlas rect is freed");
+    assert!(renderer.has_texture("uploaded"));
+    assert!(renderer.has_texture("drawn"));
   }
 
   #[test]

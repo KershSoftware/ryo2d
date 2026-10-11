@@ -256,8 +256,6 @@ pub struct Engine {
   smoothed_stats: SmoothedDebugStats,
   // Whether debug keys (F1-F4) are enabled
   debug_keys_enabled: bool,
-  // Whether debug font has been uploaded to GPU
-  debug_font_uploaded: bool,
   // Temporary buffer for UI when not affected by lighting
   ui_buffer: Vec<u8>,
   // Pending window configuration changes from game
@@ -778,7 +776,6 @@ impl Engine {
       debug_stats: DebugStats::default(),
       smoothed_stats: SmoothedDebugStats::default(),
       debug_keys_enabled: !disable_debug_keys && !headless,
-      debug_font_uploaded: false,
       ui_buffer: vec![0; ui_buffer_size], // RGBA buffer for UI
       window_request: WindowRequest::default(),
       cursor_request: crate::core::cursor::CursorRequest::default(),
@@ -1596,11 +1593,11 @@ impl Engine {
         if let (Some(sprite_gpu), Some(renderer)) =
           (self.sprite_gpu.as_mut(), self.renderer.as_ref())
         {
-          // Upload debug font texture on first frame (if debug overlays enabled)
-          if !self.debug_font_uploaded
-            && (self.config.debug.show_fps
-              || self.config.debug.show_frame_timing
-              || self.config.debug.show_stats)
+          // Upload the debug font while overlays show (a no-op once cached;
+          // unused textures are dropped after a while)
+          if self.config.debug.show_fps
+            || self.config.debug.show_frame_timing
+            || self.config.debug.show_stats
           {
             debug::upload_debug_font(
               &self.ui_font,
@@ -1608,7 +1605,6 @@ impl Engine {
               renderer.device(),
               renderer.queue(),
             );
-            self.debug_font_uploaded = true;
           }
 
           let mut gpu_ctx = GpuRenderContext::new(
