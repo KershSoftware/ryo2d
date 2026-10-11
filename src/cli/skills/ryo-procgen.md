@@ -196,6 +196,8 @@ let config = WfcConfig::new()
     .with_backtracking(true);
 ```
 
+Collapse grows outward from one cell, which suits connected structures. `.with_seed_spacing(10)` starts from about one random cell per 10x10 area instead, so several regions grow and meet (`simple_preset` does this).
+
 ## Chaining Algorithms
 
 Combine multiple algorithms in a pipeline:

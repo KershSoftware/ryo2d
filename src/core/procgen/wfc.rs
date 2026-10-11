@@ -121,6 +121,9 @@ pub struct WfcConfig {
   pub enable_backtracking: bool,
   /// Maximum backtrack attempts
   pub max_backtracks: u32,
+  /// Start from about one random cell per `spacing x spacing` area instead of
+  /// one cell, so several regions grow and meet (see `with_seed_spacing`)
+  pub seed_spacing: Option<u32>,
 }
 
 impl Default for WfcConfig {
@@ -130,6 +133,7 @@ impl Default for WfcConfig {
       max_iterations: 100000,
       enable_backtracking: true,
       max_backtracks: 100,
+      seed_spacing: None,
     }
   }
 }
@@ -158,6 +162,14 @@ impl WfcConfig {
   }
 
   /// Enable/disable backtracking
+  /// Collapse about one random cell per `spacing x spacing` area before the
+  /// main loop. Collapse otherwise grows outward from a single cell, which
+  /// suits connected structures; scattered starts give several regions.
+  pub fn with_seed_spacing(mut self, spacing: u32) -> Self {
+    self.seed_spacing = Some(spacing.max(1));
+    self
+  }
+
   pub fn with_backtracking(mut self, enable: bool) -> Self {
     self.enable_backtracking = enable;
     self
@@ -212,9 +224,9 @@ impl WfcConfig {
   ///
   /// Uses three tiles: floor, wall, and a border transition tile.
   /// Floor and wall cannot be directly adjacent — they must be separated
-  /// by a border. The grid always completes, but collapse grows outward from
-  /// the first cell, so a map is usually one floor or wall region sprinkled
-  /// with border tiles.
+  /// by a border. Growth starts from scattered cells, so floor and wall
+  /// regions form and meet along borders. Border goes next to anything, so
+  /// the grid always completes.
   pub fn simple_preset() -> Self {
     const FLOOR: u32 = 0;
     const WALL: u32 = 1;
@@ -235,8 +247,10 @@ impl WfcConfig {
     // Border separates floor from wall. It may touch itself so a boundary of
     // any shape can form; without that, floor and wall could only meet along
     // diagonals and most grids ended in a contradiction.
+    // Rare inside a region (where it would leave stray specks); it still
+    // forms wherever a floor region meets a wall region
     let border = WfcTile::new(BORDER, TileType::Door)
-      .with_weight(1.0)
+      .with_weight(0.05)
       .allow_self_adjacent()
       .allow_all_directions(FLOOR)
       .allow_all_directions(WALL);
@@ -245,6 +259,7 @@ impl WfcConfig {
       .with_tile(floor)
       .with_tile(wall)
       .with_tile(border)
+      .with_seed_spacing(10)
   }
 }
 
@@ -304,6 +319,7 @@ pub fn generate(
   let mut cells: Vec<WfcCell> = (0..(width * height))
     .map(|_| WfcCell::new(&tile_ids))
     .collect();
+  seed_cells(&mut cells, config, width, height, rng);
 
   let mut iterations = 0;
   let mut backtracks = 0;
@@ -336,6 +352,7 @@ pub fn generate(
             cells = (0..(width * height))
               .map(|_| WfcCell::new(&tile_ids))
               .collect();
+            seed_cells(&mut cells, config, width, height, rng);
             backtracks += 1;
             continue;
           }
@@ -354,6 +371,29 @@ pub fn generate(
         propagate(&mut cells, config, width, height, x as i32, y as i32);
       }
     }
+  }
+}
+
+/// Collapse the scattered starting cells of `config.seed_spacing`, if set
+fn seed_cells(
+  cells: &mut [WfcCell],
+  config: &WfcConfig,
+  width: u32,
+  height: u32,
+  rng: &mut SeededRng,
+) {
+  let Some(spacing) = config.seed_spacing else {
+    return;
+  };
+  let count = (width * height) / (spacing * spacing).max(1);
+  for _ in 0..count {
+    let idx = rng.gen_range(0..cells.len());
+    if cells[idx].is_collapsed() || cells[idx].is_contradicted() {
+      continue;
+    }
+    collapse_cell(&mut cells[idx], &config.tiles, rng);
+    let (x, y) = (idx as u32 % width, idx as u32 / width);
+    propagate(cells, config, width, height, x as i32, y as i32);
   }
 }
 
@@ -523,6 +563,48 @@ mod tests {
       let mut rng = SeededRng::new(seed);
       let (_, result) = generate(64, 64, &config, &mut rng);
       assert_eq!(result, WfcResult::Success, "seed {seed}");
+    }
+  }
+
+  #[test]
+  fn simple_preset_forms_floor_and_wall_clusters() {
+    let config = WfcConfig::simple_preset();
+    for seed in 0..8 {
+      let mut rng = SeededRng::new(seed);
+      let (grid, result) = generate(64, 64, &config, &mut rng);
+      assert_eq!(result, WfcResult::Success, "seed {seed}");
+      let share = |t: TileType| grid.count_type(t) as f32 / (64.0 * 64.0);
+      let (floor, wall, border) = (
+        share(TileType::Floor),
+        share(TileType::Wall),
+        share(TileType::Door),
+      );
+      assert!(
+        floor > 0.2 && wall > 0.2 && border < 0.25,
+        "seed {seed}: floor {floor:.2}, wall {wall:.2}, border {border:.2}"
+      );
+      // Clustered: most cells of each kind have only their own kind around them
+      let cohesion = |t: TileType| {
+        let mut own = 0;
+        let mut all = 0;
+        for y in 1..63 {
+          for x in 1..63 {
+            if grid.get(x, y) == t {
+              all += 1;
+              let around = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+              if around.iter().all(|(dx, dy)| grid.get(x + dx, y + dy) == t) {
+                own += 1;
+              }
+            }
+          }
+        }
+        own as f32 / all.max(1) as f32
+      };
+      let (floor_c, wall_c) = (cohesion(TileType::Floor), cohesion(TileType::Wall));
+      assert!(
+        floor_c > 0.5 && wall_c > 0.5,
+        "seed {seed}: floor cohesion {floor_c:.2}, wall cohesion {wall_c:.2}"
+      );
     }
   }
 
