@@ -19,7 +19,7 @@ Every demo in this folder follows one standard, provided by `examples/demo-kit`.
 - Presets and variants are `choice` settings, not number keys. Digits, other letters and Tab are free for the page and listed in its controls.
 - A page listing a reserved key (`[ ] PageUp PageDown`, arrows, `H R Esc`, F1-F5, F9, F10, F12, backquote) makes the demo panic at startup.
 - While a text field has focus or a dropdown is open the shell ignores all of its keys. Esc first leaves the field or closes the dropdown; the next Esc quits. Keys the shell acts on are not typed into a field.
-- While help is open the page's `update` sees no input, and a pointer over the settings panel never reaches it (`InputState::block_all` / `block_pointer`); the page keeps animating.
+- While help is open the page's `update` sees no input and its widgets take no clicks, and a pointer over the settings panel never reaches the page's `update` (`InputState::block_all` / `block_pointer`, `UiContext::set_mouse_occluded`); the page keeps animating.
 
 ## Writing a demo
 

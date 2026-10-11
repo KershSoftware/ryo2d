@@ -163,6 +163,11 @@ impl Scene for PageScene {
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+    // Help covers the page: its widgets take no clicks or hover. The shell's
+    // own chrome uses no mouse.
+    if self.help_open {
+      ui.set_mouse_occluded();
+    }
     self.page.render_ui(ui);
     self.keyboard_wanted = ui.wants_keyboard();
     let controls = self.page.controls();

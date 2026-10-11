@@ -19,6 +19,8 @@ struct Seen {
   w_down: bool,
   /// The page's content area, from its last UI frame
   content: Option<Rect>,
+  /// Clicks the Clicky page's button saw
+  button_clicks: u32,
   /// The Typing page's field text, once drawn, and whether it has focus
   typed: Option<String>,
   field_focused: bool,
@@ -471,6 +473,46 @@ fn escape_leaves_a_focused_field_before_it_quits() {
     "the first Esc leaves the field"
   );
   assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Quit);
+}
+
+/// A page with one button at (10, 100)-(130, 120)
+struct Clicky {
+  shared: Shared,
+}
+
+impl DemoPage for Clicky {
+  fn name(&self) -> &str {
+    "Clicky"
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    if ui.button("Press", Rect::new(10.0, 100.0, 120.0, 20.0))
+      && let Ok(mut seen) = self.shared.lock()
+    {
+      seen.button_clicks += 1;
+    }
+  }
+}
+
+#[test]
+fn page_widgets_take_no_clicks_under_help() {
+  let shared = Shared::default();
+  let page = shared.clone();
+  let demo = Demo::new("Clicky")
+    .resolution(320, 240)
+    .page(move || Clicky {
+      shared: page.clone(),
+    });
+  let Some(mut engine) = start(demo) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  tap(&mut engine, KeyCode::KeyH);
+  click(&mut engine, 40.0, 110.0);
+  assert_eq!(seen(&shared).button_clicks, 0);
+  tap(&mut engine, KeyCode::KeyH);
+  click(&mut engine, 40.0, 110.0);
+  assert_eq!(seen(&shared).button_clicks, 1);
 }
 
 struct Greedy;
