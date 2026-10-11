@@ -164,7 +164,7 @@ impl OverlayMode {
 pub struct DebugStats {
   /// Number of active entities in the ECS world
   pub entity_count: u32,
-  /// Number of draw calls (GPU batches)
+  /// Number of draw calls issued by the `world` and `unlit_world` passes
   pub draw_calls: u32,
   /// Number of sprites submitted for rendering
   pub sprite_count: u32,
@@ -538,78 +538,6 @@ fn origin_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])>
   shapes
 }
 
-/// Draw `shapes` into a pixel buffer.
-fn draw_shapes(
-  frame: &mut [u8],
-  width: u32,
-  height: u32,
-  shapes: impl IntoIterator<Item = (OverlayShape, [u8; 4])>,
-) {
-  for (shape, color) in shapes {
-    match shape {
-      OverlayShape::Rect { x, y, w, h } => {
-        draw_rect_outline(frame, width, height, x, y, w, h, color);
-      }
-      OverlayShape::Circle { x, y, radius } => {
-        draw_circle_outline(frame, width, height, x, y, radius, color);
-      }
-      OverlayShape::Line { x0, y0, x1, y1 } => {
-        draw_line(frame, width, height, x0, y0, x1, y1, color);
-      }
-      OverlayShape::Cross { x, y } => {
-        // Horizontal bar
-        draw_horizontal_line(
-          frame,
-          width,
-          height,
-          x - CROSS_SIZE,
-          y,
-          CROSS_SIZE * 2 + 1,
-          color,
-        );
-        // Vertical bar
-        draw_vertical_line(
-          frame,
-          width,
-          height,
-          x,
-          y - CROSS_SIZE,
-          CROSS_SIZE * 2 + 1,
-          color,
-        );
-      }
-    }
-  }
-}
-
-/// Render collision debug visualization.
-///
-/// Draws outlines around all entities with `Collider` or `GroupedCollider` components.
-/// Uses bright green to clearly stand out against game graphics.
-pub fn render_colliders(frame: &mut [u8], width: u32, height: u32, world: &World, camera: &Camera) {
-  draw_shapes(frame, width, height, collider_shapes(world, camera));
-}
-
-/// Render velocity vectors on all entities with `Velocity` components.
-///
-/// Draws cyan arrows showing the direction and magnitude of movement.
-pub fn render_velocities(
-  frame: &mut [u8],
-  width: u32,
-  height: u32,
-  world: &World,
-  camera: &Camera,
-) {
-  draw_shapes(frame, width, height, velocity_shapes(world, camera));
-}
-
-/// Render origin crosshairs on all entities with `Transform` components.
-///
-/// Draws small yellow crosshairs at each entity's transform position.
-pub fn render_origins(frame: &mut [u8], width: u32, height: u32, world: &World, camera: &Camera) {
-  draw_shapes(frame, width, height, origin_shapes(world, camera));
-}
-
 /// Which debug overlays [`overlay_lines`] builds.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct OverlayFlags {
@@ -619,8 +547,7 @@ pub(crate) struct OverlayFlags {
 }
 
 /// The enabled debug overlays as unlit, one-pixel lines on top of everything,
-/// for the GPU world path, where the pixel-buffer renderers above do not run.
-/// They cover the same pixels as those. The lines use the `Soft` style: a
+/// for the world passes. The lines use the `Soft` style: a
 /// pixel-wide `Solid` line is anti-aliased into a faint smear.
 pub(crate) fn overlay_lines(world: &World, camera: &Camera, flags: OverlayFlags) -> Vec<Line2D> {
   let mut shapes = Vec::new();
@@ -829,194 +756,6 @@ pub fn render_stats(ui: &mut UiContext, stats: &SmoothedDebugStats, screen_heigh
     dim,
     bg,
   );
-}
-
-// ============================================================================
-// Drawing Primitives
-// ============================================================================
-
-/// Draw a rectangle outline (1px thick).
-#[allow(clippy::too_many_arguments)]
-pub fn draw_rect_outline(
-  frame: &mut [u8],
-  frame_width: u32,
-  frame_height: u32,
-  x: i32,
-  y: i32,
-  w: i32,
-  h: i32,
-  color: [u8; 4],
-) {
-  // Top edge
-  draw_horizontal_line(frame, frame_width, frame_height, x, y, w, color);
-  // Bottom edge
-  draw_horizontal_line(frame, frame_width, frame_height, x, y + h - 1, w, color);
-  // Left edge
-  draw_vertical_line(frame, frame_width, frame_height, x, y, h, color);
-  // Right edge
-  draw_vertical_line(frame, frame_width, frame_height, x + w - 1, y, h, color);
-}
-
-/// Draw a horizontal line with proper bounds checking.
-#[inline]
-pub fn draw_horizontal_line(
-  frame: &mut [u8],
-  frame_width: u32,
-  frame_height: u32,
-  x: i32,
-  y: i32,
-  length: i32,
-  color: [u8; 4],
-) {
-  if y < 0 || y >= frame_height as i32 {
-    return;
-  }
-  // Calculate the visible portion of the line
-  let end_x_signed = x.saturating_add(length);
-  if end_x_signed <= 0 || x >= frame_width as i32 {
-    return; // Entirely off-screen
-  }
-  let start_x = x.max(0) as u32;
-  let end_x = (end_x_signed as u32).min(frame_width);
-  for px in start_x..end_x {
-    let idx = ((y as u32 * frame_width + px) * 4) as usize;
-    if idx + 3 < frame.len() {
-      frame[idx] = color[0];
-      frame[idx + 1] = color[1];
-      frame[idx + 2] = color[2];
-      frame[idx + 3] = color[3];
-    }
-  }
-}
-
-/// Draw a vertical line with proper bounds checking.
-#[inline]
-pub fn draw_vertical_line(
-  frame: &mut [u8],
-  frame_width: u32,
-  frame_height: u32,
-  x: i32,
-  y: i32,
-  length: i32,
-  color: [u8; 4],
-) {
-  if x < 0 || x >= frame_width as i32 {
-    return;
-  }
-  // Calculate the visible portion of the line
-  let end_y_signed = y.saturating_add(length);
-  if end_y_signed <= 0 || y >= frame_height as i32 {
-    return; // Entirely off-screen
-  }
-  let start_y = y.max(0) as u32;
-  let end_y = (end_y_signed as u32).min(frame_height);
-  for py in start_y..end_y {
-    let idx = ((py * frame_width + x as u32) * 4) as usize;
-    if idx + 3 < frame.len() {
-      frame[idx] = color[0];
-      frame[idx + 1] = color[1];
-      frame[idx + 2] = color[2];
-      frame[idx + 3] = color[3];
-    }
-  }
-}
-
-/// Draw a line using Bresenham's algorithm.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_line(
-  frame: &mut [u8],
-  width: u32,
-  height: u32,
-  x0: i32,
-  y0: i32,
-  x1: i32,
-  y1: i32,
-  color: [u8; 4],
-) {
-  let dx = (x1 - x0).abs();
-  let dy = -(y1 - y0).abs();
-  let sx = if x0 < x1 { 1 } else { -1 };
-  let sy = if y0 < y1 { 1 } else { -1 };
-  let mut err = dx + dy;
-
-  let mut x = x0;
-  let mut y = y0;
-
-  loop {
-    set_pixel(frame, width, height, x, y, color);
-
-    if x == x1 && y == y1 {
-      break;
-    }
-
-    let e2 = 2 * err;
-    if e2 >= dy {
-      if x == x1 {
-        break;
-      }
-      err += dy;
-      x += sx;
-    }
-    if e2 <= dx {
-      if y == y1 {
-        break;
-      }
-      err += dx;
-      y += sy;
-    }
-  }
-}
-
-/// Draw a circle outline using midpoint circle algorithm.
-pub fn draw_circle_outline(
-  frame: &mut [u8],
-  frame_width: u32,
-  frame_height: u32,
-  cx: i32,
-  cy: i32,
-  radius: i32,
-  color: [u8; 4],
-) {
-  if radius <= 0 {
-    return;
-  }
-
-  let mut x = radius;
-  let mut y = 0;
-  let mut err = 0;
-
-  while x >= y {
-    // Draw 8 octants
-    set_pixel(frame, frame_width, frame_height, cx + x, cy + y, color);
-    set_pixel(frame, frame_width, frame_height, cx + y, cy + x, color);
-    set_pixel(frame, frame_width, frame_height, cx - y, cy + x, color);
-    set_pixel(frame, frame_width, frame_height, cx - x, cy + y, color);
-    set_pixel(frame, frame_width, frame_height, cx - x, cy - y, color);
-    set_pixel(frame, frame_width, frame_height, cx - y, cy - x, color);
-    set_pixel(frame, frame_width, frame_height, cx + y, cy - x, color);
-    set_pixel(frame, frame_width, frame_height, cx + x, cy - y, color);
-
-    y += 1;
-    err += 1 + 2 * y;
-    if 2 * (err - x) + 1 > 0 {
-      x -= 1;
-      err += 1 - 2 * x;
-    }
-  }
-}
-
-/// Set a single pixel (with bounds checking).
-#[inline]
-pub fn set_pixel(frame: &mut [u8], width: u32, height: u32, x: i32, y: i32, color: [u8; 4]) {
-  if x >= 0 && x < width as i32 && y >= 0 && y < height as i32 {
-    let idx = ((y as u32 * width + x as u32) * 4) as usize;
-    if idx + 3 < frame.len() {
-      frame[idx] = color[0];
-      frame[idx + 1] = color[1];
-      frame[idx + 2] = color[2];
-      frame[idx + 3] = color[3];
-    }
-  }
 }
 
 // ============================================================================
@@ -1357,54 +1096,4 @@ mod tests {
     assert!((smoothed.sprite_count - 500.0).abs() < 1.0);
   }
 
-  #[test]
-  fn set_pixel_respects_bounds() {
-    let mut frame = vec![0u8; 16]; // 2x2 RGBA
-    let width = 2u32;
-    let height = 2u32;
-    let white = [255, 255, 255, 255];
-
-    // Valid pixel
-    set_pixel(&mut frame, width, height, 0, 0, white);
-    assert_eq!(&frame[0..4], &white);
-
-    // Out of bounds - should not modify
-    set_pixel(&mut frame, width, height, -1, 0, white);
-    set_pixel(&mut frame, width, height, 0, -1, white);
-    set_pixel(&mut frame, width, height, 2, 0, white);
-    set_pixel(&mut frame, width, height, 0, 2, white);
-    // Frame should still have only first pixel set
-    assert_eq!(&frame[0..4], &white);
-    assert_eq!(&frame[4..8], &[0, 0, 0, 0]);
-  }
-
-  #[test]
-  fn horizontal_line_clips_correctly() {
-    let mut frame = vec![0u8; 40]; // 10x1 RGBA
-    let white = [255, 255, 255, 255];
-
-    // Line starting off-screen left, ending on-screen
-    draw_horizontal_line(&mut frame, 10, 1, -5, 0, 10, white);
-
-    // First 5 pixels should be white (indices 0-4)
-    for i in 0..5 {
-      let idx = i * 4;
-      assert_eq!(&frame[idx..idx + 4], &white, "pixel {} should be white", i);
-    }
-  }
-
-  #[test]
-  fn vertical_line_clips_correctly() {
-    let mut frame = vec![0u8; 40]; // 1x10 RGBA
-    let white = [255, 255, 255, 255];
-
-    // Line starting off-screen top, ending on-screen
-    draw_vertical_line(&mut frame, 1, 10, 0, -5, 10, white);
-
-    // First 5 rows should be white
-    for i in 0..5 {
-      let idx = i * 4;
-      assert_eq!(&frame[idx..idx + 4], &white, "row {} should be white", i);
-    }
-  }
 }

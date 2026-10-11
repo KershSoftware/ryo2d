@@ -194,52 +194,33 @@ Grid-based broad-phase (`SpatialHash`):
 
 ## Render Pipeline
 
-Ryo2D uses a **pass-based render pipeline** where each phase is a `RenderPass` with declared dependencies.
+Ryo2D draws every frame through a **pass-based render pipeline** (`RenderPipeline::default_2d()`): an ordered list of `RenderPass`es recorded on one command encoder with one submit. The whole world is drawn on the GPU; only the UI is drawn on the CPU (into a buffer composited last).
 
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                           RenderPipeline                                  │
-│                                                                           │
-│  Pass Execution Order (topological sort by dependencies):                 │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │                                                                    │   │
-│  │   ClearPass ──► ParallaxPass ──► CpuSpritePass ──► UploadPass      │   │
-│  │                                                          │         │   │
-│  │                                                          ▼         │   │
-│  │   PresentPass ◄── EffectsPass ◄── UiPass ◄── LightingPass          │   │
-│  │                                                    │               │   │
-│  │                                                    ▼               │   │
-│  │                                              GpuSpritePass         │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  Built-in Passes:                                                         │
-│  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  clear       │  Clear pixel buffer to background color             │   │
-│  │  parallax    │  GPU-rendered parallax background layers            │   │
-│  │  cpu_sprite  │  Software sprite rendering to pixel buffer          │   │
-│  │  upload      │  Upload CPU pixel buffer to GPU texture             │   │
-│  │  gpu_sprite  │  Batched GPU sprite rendering (10k max instances)   │   │
-│  │  trail       │  Motion trail rendering (Line2D, Trail2D)           │   │
-│  │  lighting    │  2D lighting with point lights and shadows          │   │
-│  │  ui          │  User interface overlay                             │   │
-│  │  effects     │  Post-processing (CRT, vignette, fade, flash)       │   │
-│  │  present     │  Final output to swapchain                          │   │
-│  └────────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  RenderContext (shared state for all passes):                             │
-│  • device, queue, encoder (wgpu resources)                                │
-│  • game_texture, scratch_a/b (ping-pong buffers)                          │
-│  • pixel_buffer (CPU software rendering)                                  │
-│  • camera, sprite_gpu, batch_collector                                    │
-│  • trail_renderer, lighting, effects                                      │
-└───────────────────────────────────────────────────────────────────────────┘
+clear -> raycast -> world -> lighting -> unlit_world -> transition
+      -> post_process -> ui -> composite -> capture
 ```
+
+| Pass | Draws |
+|------|-------|
+| `clear` | Clears the game texture |
+| `raycast` | GPU raycaster (replaces the 2D world passes while raycasting) |
+| `world` | Entities, `render_gpu` sprites (particles, parallax) and lit trails/lines, in one z-sorted list |
+| `lighting` | 2D lighting with point lights and shadows |
+| `unlit_world` | Trails/lines with `with_lighting(false)`, by z |
+| `transition` | Scene transition fade over the frame |
+| `post_process` | CRT, vignette, bloom and other effects |
+| `ui` | Uploads the UI layer |
+| `composite` | Letterboxed present, UI blended last |
+| `capture` | Frame capture readback |
+
+Games reach the pipeline through `ctx.render_pipeline` to toggle built-in passes or insert their own. See `src/core/render/AGENTS.md`.
 
 ### GPU Sprite Batching
 
-- Automatic grouping by (texture_id, has_effects)
-- Z-order sorting across batches
-- 112 bytes per instance (transform matrix, UV, tint, effect params)
+- One z-sorted draw list for entities, sprites and trails; consecutive sprites on one atlas page and pipeline merge into one draw
+- Equal z draws entity, then `render_gpu` sprite, then trail/line
+- 128 bytes per instance (transform matrix, UV, tint, effect params)
 - Instance buffer pre-upload before render pass
 - Two pipelines: base (no effects) and effect (per-sprite shaders)
 

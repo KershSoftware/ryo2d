@@ -11,10 +11,6 @@ pub(crate) struct FrameTargets<'a> {
   pub(crate) game_view: &'a wgpu::TextureView,
   pub(crate) lit: &'a wgpu::Texture,
   pub(crate) lit_view: &'a wgpu::TextureView,
-  pub(crate) cpu_texture: &'a wgpu::Texture,
-  pub(crate) pixel_buffer: &'a [u8],
-  pub(crate) cpu_blend_pipeline: &'a wgpu::RenderPipeline,
-  pub(crate) cpu_bind_group: &'a wgpu::BindGroup,
   pub(crate) compositor: &'a Compositor,
   /// The window surface or offscreen texture this frame is presented to
   pub(crate) output_view: &'a wgpu::TextureView,

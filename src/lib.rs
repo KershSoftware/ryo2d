@@ -258,7 +258,7 @@ pub mod prelude {
   };
 
   // GPU sprite batching (for high-performance particle systems)
-  pub use crate::core::graphics::{BatchCollector, BatchKey, SpriteBatch, SpriteInstance};
+  pub use crate::core::graphics::{BatchCollector, SpriteInstance};
 
   // Error types (centralized)
   pub use crate::core::error::{

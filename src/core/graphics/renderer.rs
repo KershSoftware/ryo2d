@@ -30,7 +30,7 @@ use crate::core::render::{
 };
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
-use super::{Compositor, SpriteGpuRenderer, sprite_gpu::BatchCollector};
+use super::{Compositor, SpriteGpuRenderer};
 
 /// Where finished frames go: the window surface or an offscreen texture.
 enum PresentTarget {
@@ -95,20 +95,14 @@ pub struct WgpuRenderer {
   target: PresentTarget,
   device: std::sync::Arc<wgpu::Device>,
   queue: std::sync::Arc<wgpu::Queue>,
-  // The game texture (GPU sprites render here first, then CPU content blended on top)
+  // The game texture the world passes draw into
   texture: wgpu::Texture,
   texture_view: wgpu::TextureView,
-  // Staging texture for CPU pixel buffer (used for alpha-blending onto game texture)
-  cpu_texture: wgpu::Texture,
-  cpu_texture_view: wgpu::TextureView,
-  cpu_bind_group: wgpu::BindGroup,
   // Final composite (scene + UI overlay to the target) and its shared resources
   compositor: Compositor,
   // Lighting output, kept between frames and recreated with the game texture
   lit_texture: wgpu::Texture,
   lit_texture_view: wgpu::TextureView,
-  // Pipeline for alpha-blending CPU content onto game texture (Rgba8UnormSrgb format)
-  game_blend_pipeline: wgpu::RenderPipeline,
   bind_group: wgpu::BindGroup,
   // Game resolution
   game_width: u32,
@@ -121,8 +115,6 @@ pub struct WgpuRenderer {
   // Max viewport constraints
   max_width: Option<u32>,
   max_height: Option<u32>,
-  // CPU-side pixel buffer (RGBA)
-  pixel_buffer: Vec<u8>,
   // Post-processing pipeline
   post_process: Option<PostProcessPipeline>,
   // Whether presentation blocks until vsync (Fifo mode)
@@ -134,30 +126,6 @@ pub struct WgpuRenderer {
   pending_capture: Option<PathBuf>,
   // Result of the latest capture, collected by the engine
   capture_result: Option<CaptureResult<CapturedFrame>>,
-}
-
-/// Create the CPU staging texture at game resolution.
-fn create_cpu_texture(
-  device: &wgpu::Device,
-  width: u32,
-  height: u32,
-) -> (wgpu::Texture, wgpu::TextureView) {
-  let texture = device.create_texture(&wgpu::TextureDescriptor {
-    label: Some("CPU Staging Texture"),
-    size: wgpu::Extent3d {
-      width,
-      height,
-      depth_or_array_layers: 1,
-    },
-    mip_level_count: 1,
-    sample_count: 1,
-    dimension: wgpu::TextureDimension::D2,
-    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-    view_formats: &[],
-  });
-  let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-  (texture, view)
 }
 
 /// Create the persistent lighting output texture at game resolution.
@@ -399,9 +367,6 @@ impl WgpuRenderer {
 
     let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Create CPU staging texture (for uploading CPU pixel buffer and blending onto game texture)
-    let (cpu_texture, cpu_texture_view) = create_cpu_texture(&device, game_width, game_height);
-
     let compositor = Compositor::new(&device, target_format, game_width, game_height);
     let (lit_texture, lit_texture_view) = create_lit_texture(&device, game_width, game_height);
 
@@ -425,69 +390,8 @@ impl WgpuRenderer {
       ],
     });
 
-    // Create bind group for CPU staging texture (for blending onto game texture)
-    // Uses identity_uniform_buffer for 1:1 scale (viewport scaling only on final screen render)
-    let cpu_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("CPU Texture Bind Group"),
-      layout: &compositor.bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&cpu_texture_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&compositor.sampler),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: compositor.identity_uniform_buffer.as_entire_binding(),
-        },
-      ],
-    });
-
-    // Create game blend pipeline (ALPHA_BLENDING - for CPU content onto game texture)
-    // Uses Rgba8UnormSrgb format to match the game texture
-    let game_blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-      label: Some("Game Blend Pipeline"),
-      layout: Some(&compositor.pipeline_layout),
-      vertex: wgpu::VertexState {
-        module: &compositor.shader,
-        entry_point: "vs_main",
-        buffers: &[],
-        compilation_options: Default::default(),
-      },
-      fragment: Some(wgpu::FragmentState {
-        module: &compositor.shader,
-        entry_point: "fs_main",
-        targets: &[Some(wgpu::ColorTargetState {
-          format: wgpu::TextureFormat::Rgba8UnormSrgb, // Game texture format
-          blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-          write_mask: wgpu::ColorWrites::ALL,
-        })],
-        compilation_options: Default::default(),
-      }),
-      primitive: wgpu::PrimitiveState {
-        topology: wgpu::PrimitiveTopology::TriangleList,
-        strip_index_format: None,
-        front_face: wgpu::FrontFace::Ccw,
-        cull_mode: None,
-        polygon_mode: wgpu::PolygonMode::Fill,
-        unclipped_depth: false,
-        conservative: false,
-      },
-      depth_stencil: None,
-      multisample: wgpu::MultisampleState {
-        count: 1,
-        mask: !0,
-        alpha_to_coverage_enabled: false,
-      },
-      multiview: None,
-      cache: None,
-    });
-
-    // Create CPU-side pixel buffer pre-filled with dark charcoal background
-    // This color is presented immediately to prevent flash on startup
+    // Fill the game texture with a dark charcoal background, which is presented
+    // immediately to prevent a flash on startup
     let mut pixel_buffer = vec![0u8; (game_width * game_height * 4) as usize];
     for pixel in pixel_buffer.chunks_exact_mut(4) {
       pixel[0] = 0x2d; // R: 45
@@ -496,7 +400,7 @@ impl WgpuRenderer {
       pixel[3] = 0xff; // A: 255
     }
 
-    // Upload initial pixel buffer to GPU texture immediately
+    // Upload the initial colour to the game texture immediately
     queue.write_texture(
       wgpu::ImageCopyTexture {
         texture: &texture,
@@ -533,13 +437,9 @@ impl WgpuRenderer {
       target,
       texture,
       texture_view,
-      cpu_texture,
-      cpu_texture_view,
-      cpu_bind_group,
       compositor,
       lit_texture,
       lit_texture_view,
-      game_blend_pipeline,
       bind_group,
       game_width,
       game_height,
@@ -548,7 +448,6 @@ impl WgpuRenderer {
       window_mode,
       max_width,
       max_height,
-      pixel_buffer,
       post_process: Some(post_process),
       presentation_blocks,
       capture_texture: None,
@@ -560,11 +459,6 @@ impl WgpuRenderer {
     renderer.update_viewport_transform();
 
     renderer
-  }
-
-  /// Get a mutable reference to the pixel buffer for rendering.
-  pub fn frame_mut(&mut self) -> &mut [u8] {
-    &mut self.pixel_buffer
   }
 
   /// Get the game width.
@@ -671,7 +565,6 @@ impl WgpuRenderer {
     }
     self.game_width = new_width;
     self.game_height = new_height;
-    self.pixel_buffer = vec![0u8; (new_width * new_height * 4) as usize];
 
     // Recreate texture with new size
     self.texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -718,26 +611,6 @@ impl WgpuRenderer {
 
     (self.lit_texture, self.lit_texture_view) =
       create_lit_texture(&self.device, new_width, new_height);
-    (self.cpu_texture, self.cpu_texture_view) =
-      create_cpu_texture(&self.device, new_width, new_height);
-    self.cpu_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("CPU Texture Bind Group"),
-      layout: &self.compositor.bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: wgpu::BindingResource::TextureView(&self.cpu_texture_view),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: wgpu::BindingResource::Sampler(&self.compositor.sampler),
-        },
-        wgpu::BindGroupEntry {
-          binding: 2,
-          resource: self.compositor.identity_uniform_buffer.as_entire_binding(),
-        },
-      ],
-    });
     self
       .compositor
       .resize_ui(&self.device, new_width, new_height);
@@ -847,8 +720,7 @@ impl WgpuRenderer {
       game_width: self.game_width,
       game_height: self.game_height,
       raycast: scene.raycast.is_some(),
-      gpu_sprites: scene.batches.sprite_count() > 0 || scene.draw_list.sprite_count() > 0,
-      trails: scene.trails.is_some_and(|t| t.vertex_count() > 0),
+      world: !scene.draw_list.items().is_empty(),
       lighting: scene.lighting.is_some(),
       effects: self.post_process.is_some() && scene.effects.has_active_effects(),
       ui: scene.ui_buffer.iter().any(|&b| b != 0),
@@ -867,10 +739,6 @@ impl WgpuRenderer {
         game_view: &self.texture_view,
         lit: &self.lit_texture,
         lit_view: &self.lit_texture_view,
-        cpu_texture: &self.cpu_texture,
-        pixel_buffer: &self.pixel_buffer,
-        cpu_blend_pipeline: &self.game_blend_pipeline,
-        cpu_bind_group: &self.cpu_bind_group,
         compositor: &self.compositor,
         output_view: &view,
         capture: capture_path.as_ref().and(self.capture_texture.as_ref()),
@@ -911,12 +779,10 @@ impl WgpuRenderer {
     ui_buffer: &[u8],
   ) -> Result<(), wgpu::SurfaceError> {
     let sprites = SpriteGpuRenderer::new(&self.device, &self.queue, self.target.format());
-    let batches = BatchCollector::new();
     let effects = EffectsManager::new();
     let draw_list = DrawList::default();
     let scene = FrameScene {
       sprites: &sprites,
-      batches: &batches,
       draw_list: &draw_list,
       trails: None,
       lighting: None,
@@ -1094,7 +960,6 @@ mod tests {
     let size = |t: &wgpu::Texture| (t.width(), t.height());
     assert_eq!(size(&renderer.texture), (96, 80));
     assert_eq!(size(&renderer.lit_texture), (96, 80));
-    assert_eq!(size(&renderer.cpu_texture), (96, 80));
     assert_eq!(size(renderer.compositor.ui_texture()), (96, 80));
     let post = renderer.post_process.as_ref().expect("post process");
     assert_eq!(size(post.texture_a()), (96, 80));
@@ -1138,22 +1003,22 @@ mod tests {
   }
 
   #[test]
-  fn offscreen_frame_matches_cpu_pixels() {
+  fn offscreen_frame_matches_ui_pixels() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return; // no GPU on this machine
     };
     let (width, height) = (37, 9);
     let mut renderer = WgpuRenderer::new_offscreen(device, queue, width, height);
 
-    // Opaque pattern: each pixel encodes its position
-    for (i, px) in renderer.frame_mut().chunks_exact_mut(4).enumerate() {
+    // Opaque UI pattern: each pixel encodes its position
+    let mut expected = vec![0u8; (width * height * 4) as usize];
+    for (i, px) in expected.chunks_exact_mut(4).enumerate() {
       let (x, y) = ((i as u32 % width) as u8, (i as u32 / width) as u8);
       px.copy_from_slice(&[x * 6, y * 20, 128, 255]);
     }
-    let expected = renderer.frame_mut().to_vec();
 
     renderer
-      .render_blank_frame(&mut RenderPipeline::default_2d(), &[])
+      .render_blank_frame(&mut RenderPipeline::default_2d(), &expected)
       .expect("render");
     let frame = renderer.read_frame().expect("read frame");
 

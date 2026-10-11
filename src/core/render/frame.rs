@@ -2,7 +2,7 @@
 
 use super::DrawList;
 use crate::core::ecs::Transform;
-use crate::core::graphics::{BatchCollector, SpriteGpuRenderer};
+use crate::core::graphics::SpriteGpuRenderer;
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingRenderer};
 use crate::core::raycast::GpuRaycastRenderer;
 use crate::core::shaders::{EffectsManager, OutputBuffer};
@@ -26,10 +26,9 @@ pub struct FrameInfo {
   pub game_height: u32,
   /// The GPU raycaster draws this frame instead of the 2D scene
   pub raycast: bool,
-  /// GPU sprite batches were submitted this frame
-  pub gpu_sprites: bool,
-  /// Trails or lines have geometry this frame
-  pub trails: bool,
+  /// The draw list has lit items (entities, sprites, trails or lines drawn
+  /// before lighting)
+  pub world: bool,
   /// 2D lighting is on
   pub lighting: bool,
   /// Post-process effects are active
@@ -66,8 +65,7 @@ pub(crate) struct LightingFrame<'a> {
 /// The engine subsystems and per-frame data the built-in passes draw from.
 pub(crate) struct FrameScene<'a> {
   pub(crate) sprites: &'a SpriteGpuRenderer,
-  pub(crate) batches: &'a BatchCollector,
-  /// The z-sorted drawables of the world passes (empty on the legacy path)
+  /// The z-sorted drawables of the world passes
   pub(crate) draw_list: &'a DrawList,
   pub(crate) trails: Option<&'a TrailRenderer>,
   /// `Some` only while lighting is enabled

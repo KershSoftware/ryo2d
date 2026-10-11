@@ -6,6 +6,7 @@ use super::{Line2D, LineCap, LineJoin, TextureMode, Trail2D, TrailEffect, TrailP
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Transform, Vec2};
 use crate::core::ui::Color;
+use std::cell::Cell;
 use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
@@ -98,6 +99,8 @@ struct Group {
   /// Whether anything was added to the group this frame
   used: bool,
   geometry: Geometry,
+  /// Where the group's vertices start in the vertex buffer, set by `prepare`
+  base: Cell<usize>,
 }
 
 impl Group {
@@ -148,8 +151,19 @@ pub struct TrailRenderer {
   /// Vertices held by the groups other than the one being built
   other_vertices: usize,
 
-  /// The frame's geometry by lighting mode and z-order
+  /// Vertices held by all groups (the one being built is swapped in only
+  /// while it is built, so this counts it once it is done)
+  total_vertices: usize,
+
+  /// The frame's geometry by lighting mode and z-order, in draw order (lit
+  /// groups first, each by z), which is also their layout in the vertex buffer
   groups: Vec<Group>,
+
+  /// `(lit, z)` to the group's index in `groups`
+  group_index: HashMap<(bool, i32), usize>,
+
+  /// Whether geometry was dropped this frame because the vertex buffer is full
+  dropped: bool,
 
   /// Screen dimensions
   width: u32,
@@ -382,7 +396,10 @@ impl TrailRenderer {
       textured_vertices: Vec::with_capacity(MAX_TRAIL_VERTICES / 2),
       textured_batches: Vec::new(),
       other_vertices: 0,
+      total_vertices: 0,
       groups: Vec::new(),
+      group_index: HashMap::new(),
+      dropped: false,
       width,
       height,
       enabled: true,
@@ -411,42 +428,56 @@ impl TrailRenderer {
     self.textured_vertices.clear();
     self.textured_batches.clear();
     // Keep last frame's groups (and their allocations) for reuse
+    let before = self.groups.len();
     self.groups.retain(|group| group.used);
     for group in &mut self.groups {
       group.geometry.clear();
       group.used = false;
     }
+    if self.groups.len() != before {
+      self.reindex_groups();
+    }
+    self.other_vertices = 0;
+    self.total_vertices = 0;
+    self.dropped = false;
+  }
+
+  fn reindex_groups(&mut self) {
+    self.group_index.clear();
+    for (index, group) in self.groups.iter().enumerate() {
+      self.group_index.insert((group.lit, group.z), index);
+    }
   }
 
   /// Build geometry with `add` into the group of this lighting mode and z.
   fn add_in_group(&mut self, lit: bool, z: i32, add: impl FnOnce(&mut Self)) {
-    let index = match self
-      .groups
-      .iter()
-      .position(|group| group.lit == lit && group.z == z)
-    {
-      Some(index) => index,
+    let index = match self.group_index.get(&(lit, z)) {
+      Some(&index) => index,
       None => {
-        self.groups.push(Group {
-          lit,
-          z,
-          used: false,
-          geometry: Geometry::default(),
-        });
-        self.groups.len() - 1
+        // Keep the groups in draw order
+        let order = (!lit, z);
+        let index = self.groups.partition_point(|group| group.order() < order);
+        self.groups.insert(
+          index,
+          Group {
+            lit,
+            z,
+            used: false,
+            geometry: Geometry::default(),
+            base: Cell::new(0),
+          },
+        );
+        self.reindex_groups();
+        index
       }
     };
-    self.other_vertices = self
-      .groups
-      .iter()
-      .enumerate()
-      .filter(|(i, _)| *i != index)
-      .map(|(_, group)| group.geometry.len())
-      .sum();
+    let before = self.groups[index].geometry.len();
+    self.other_vertices = self.total_vertices - before;
     self.groups[index].used = true;
     self.swap_group(index);
     add(self);
     self.swap_group(index);
+    self.total_vertices = self.other_vertices + self.groups[index].geometry.len();
   }
 
   /// Swap the group at `index` with the working vertices.
@@ -574,6 +605,7 @@ impl TrailRenderer {
       LineCap::Square => 2 * 4,          // 2 caps, 4 vertices each
     };
     if used + point_count * 2 + cap_overhead > MAX_TRAIL_VERTICES {
+      self.dropped = true;
       return; // Buffer full
     }
 
@@ -980,6 +1012,7 @@ impl TrailRenderer {
     };
     let used = self.other_vertices + self.vertices.len() + self.textured_vertices.len();
     if used + point_count * 2 + cap_overhead + join_overhead > MAX_TRAIL_VERTICES {
+      self.dropped = true;
       return; // Buffer full
     }
 
@@ -1545,17 +1578,6 @@ impl TrailRenderer {
       .map(|group| group.z)
   }
 
-  /// Where a group's vertices start in the vertex buffer: groups are laid out
-  /// lit first, each by z, non-textured vertices before textured ones.
-  fn group_base(&self, group: &Group) -> usize {
-    self
-      .groups
-      .iter()
-      .filter(|other| other.order() < group.order())
-      .map(|other| other.geometry.len())
-      .sum()
-  }
-
   /// Upload the frame's globals and every group's vertices.
   ///
   /// Call before the render pass that draws groups with
@@ -1568,6 +1590,12 @@ impl TrailRenderer {
   ) {
     if !self.enabled {
       return;
+    }
+    if self.dropped {
+      crate::engine_warn!(
+        module: "Trails",
+        "Trail/line vertex limit ({MAX_TRAIL_VERTICES}) reached; some trails or lines were not drawn this frame"
+      );
     }
 
     // Update globals with camera transform
@@ -1593,12 +1621,17 @@ impl TrailRenderer {
     queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
 
     let vertex_size = std::mem::size_of::<TrailVertex>();
+    // The groups are in draw order, so each starts where the last one ended
+    let mut base = 0;
     for group in &self.groups {
       let geometry = &group.geometry;
-      let base = self.group_base(group);
-      if geometry.len() == 0 || base + geometry.len() > MAX_TRAIL_VERTICES {
+      group.base.set(base);
+      let start = base;
+      base += geometry.len();
+      if geometry.len() == 0 || start + geometry.len() > MAX_TRAIL_VERTICES {
         continue;
       }
+      let base = start;
       if !geometry.vertices.is_empty() {
         queue.write_buffer(
           &self.vertex_buffer,
@@ -1627,14 +1660,14 @@ impl TrailRenderer {
       return;
     }
     let Some(group) = self
-      .groups
-      .iter()
-      .find(|group| group.lit == lit && group.z == z)
+      .group_index
+      .get(&(lit, z))
+      .and_then(|&index| self.groups.get(index))
     else {
       return;
     };
     let geometry = &group.geometry;
-    let base = self.group_base(group);
+    let base = group.base.get();
     if geometry.len() == 0 || base + geometry.len() > MAX_TRAIL_VERTICES {
       return;
     }
@@ -1682,7 +1715,7 @@ impl TrailRenderer {
 
   /// Get the number of vertices accumulated this frame.
   pub fn vertex_count(&self) -> usize {
-    self.groups.iter().map(|group| group.geometry.len()).sum()
+    self.total_vertices
   }
 
   /// Whether any trail or line skips lighting this frame.

@@ -39,11 +39,7 @@ mod atlas_bleeding;
 #[cfg(test)]
 mod capture_matches_frame;
 #[cfg(test)]
-mod gpu_world_comparison;
-#[cfg(test)]
-mod gpu_world_entities;
-#[cfg(test)]
-mod gpu_world_order;
+mod gpu_world;
 mod gpu;
 
 use image::RgbaImage;

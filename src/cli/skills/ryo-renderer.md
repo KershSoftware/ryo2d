@@ -25,14 +25,12 @@ You help developers work on the rendering system.
 Every frame runs through the engine's `RenderPipeline` (`src/core/render/`), built with `RenderPipeline::default_2d()`. One command encoder, one submit per frame. Passes run in list order:
 
 ```
-upload        CPU pixel buffer -> GPU
 clear         clear the game texture
-raycast       GPU raycaster (replaces the 2D scene passes while raycasting; clears to black)
-gpu_sprites   render_gpu() sprites (incl. parallax) - behind CPU content
-cpu_blend     CPU pixel buffer (Renderable sprites) alpha-blended on top
-trails        trails and lines (so lighting applies to them)
+raycast       GPU raycaster (replaces the 2D world passes while raycasting; clears to black)
+world         entities, render_gpu() sprites (particles, parallax) and trails/lines, one z-sorted list (lit by lighting)
 lighting      render_lights + compose, if enabled (the lit texture is persistent)
-unlit_trails  trails and lines with `with_lighting(false)`, full brightness on the lit scene
+unlit_world   trails and lines with `with_lighting(false)`, by z, full brightness on the lit scene
+transition    scene transition fade over the whole frame (not the UI)
 post_process  bloom, CRT, vignette, etc.
 ui            upload the UI layer (only if the scene drew UI)
 composite     letterboxed present to the window/offscreen target; the UI is blended last, untouched by effects
@@ -87,11 +85,11 @@ fn execute(&mut self, ctx: &mut RenderContext<'_>) {
 
 Custom shaders and a higher-level effects API for passes are coming; for now a game pass records raw wgpu work.
 
-## CPU vs GPU Path
+## Draw Order
 
-**CPU (default)**: Software blitting, good for <1000 sprites
+Everything in the world draws on the GPU in one z-sorted list: entities (`Renderable`, `CompositeTile`, shadows), `render_gpu()` sprites (particles, parallax) and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then `render_gpu` sprite, then trail/line; within a kind, in submission order. Consecutive sprites on one atlas page merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top.
 
-**GPU (opt-in)**: Batched instanced rendering, for 1000+ sprites (particles, bullets). GPU sprites always draw behind CPU-rendered entities; `z_order` only orders GPU batches among themselves.
+Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities. Only the UI uses CPU drawing now (`Sprite::draw` / `draw_scaled`).
 
 ## Background Rendering
 
@@ -103,7 +101,7 @@ fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
 }
 ```
 
-Parallax layers render behind all game entities via the GPU pipeline.
+Give parallax layers a negative z (e.g. -100..-20) so they sit behind entities at z 0 and above.
 
 ## GPU Batching
 
@@ -190,8 +188,7 @@ render_pass.draw_indexed(...);
 
 ## Tips
 
-- CPU rendering is simpler and sufficient for most 2D games
-- Use GPU path when CPU blitting becomes a bottleneck
+- Trails, lines and particles sort with entities by z: give them one that matches what they should sit behind or in front of
 - Keep shaders simple for mobile compatibility
 - Instance buffers are more efficient than individual draws
 

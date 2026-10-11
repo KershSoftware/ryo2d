@@ -31,7 +31,7 @@ pub(crate) use compositor::{Compositor, Viewport};
 pub use renderer::WgpuRenderer;
 pub use sprite::{AnimatedSprite, Sprite};
 pub use sprite_gpu::{
-  BatchCollector, BatchKey, SpriteBatch, SpriteGlobals, SpriteGpuRenderer, SpriteInstance,
+  BatchCollector, SpriteGlobals, SpriteGpuRenderer, SpriteInstance,
   get_sprite_effect,
 };
 pub(crate) use sprite_gpu::effect_padding;

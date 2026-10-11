@@ -11,38 +11,29 @@
 //! # Architecture
 //!
 //! ```text
-//! Engine render loop
+//! Engine present
 //!     │
-//!     ├── CPU path: sprites without shaders
-//!     │   └── draw to pixel buffer → upload texture → fullscreen quad
+//!     ├── DrawList: entities, `render_gpu`/particle/parallax sprites and
+//!     │   trail groups, sorted by z
 //!     │
-//!     └── GPU path: sprites with Material/shader
-//!         ├── SpriteGpuRenderer::prepare()
-//!         │   └── Make used textures resident in the texture atlas
-//!         └── SpriteGpuRenderer::render_batches()
-//!             ├── Remap instance UVs into atlas slots (mask, effect growth)
-//!             └── One draw per run of batches sharing an atlas page
+//!     └── SpriteGpuRenderer::prepare_world()
+//!         ├── Make used textures resident in the texture atlas
+//!         ├── Remap instance UVs into atlas slots (mask, effect growth)
+//!         └── One draw per run of consecutive sprites on one atlas page
+//!             and pipeline (drawn by the `world` pass)
 //! ```
 //!
 //! Textures live in a texture atlas (`Rgba8Unorm` pages holding raw sRGB
-//! bytes). The shader tints and applies effects in sRGB space, like the CPU
-//! renderer, and converts to linear on output.
-//!
-//! # Usage
-//!
-//! The GPU renderer is automatically used for entities that have:
-//! - A `Renderable` with `.shader` set, OR
-//! - A `Material` component
-//!
-//! CPU rendering is used as fallback for sprites without shaders.
+//! bytes). The shader tints and applies effects in sRGB space and converts
+//! to linear on output.
 
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
-use super::{AtlasKey, AtlasSlot, SlotPage, TextureAtlas};
+use super::{AtlasKey, AtlasSlot, TextureAtlas};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Material, SpriteEffect, SpriteShader};
 use crate::core::render::{DrawKind, DrawList, TextureRef, WorldRun, plan_runs};
@@ -318,14 +309,6 @@ struct EntitySprite {
 /// Entity sprites unused for this many frames are forgotten.
 const ENTITY_SPRITE_TTL: u64 = 600;
 
-/// Consecutive instances drawn with one pipeline and atlas page.
-struct DrawRun {
-  page: SlotPage,
-  has_effects: bool,
-  start: usize,
-  count: usize,
-}
-
 /// GPU-based sprite renderer with per-sprite shader effects
 pub struct SpriteGpuRenderer {
   // Shader pipelines (one per effect type + base)
@@ -353,11 +336,11 @@ pub struct SpriteGpuRenderer {
   frame: u64,
 
   // This frame's instances remapped into atlas slots, and the draws over
-  // them; both built by `prepare` and reused across frames
+  // them; both built by `prepare_world` and reused across frames
   placed: Vec<SpriteInstance>,
-  runs: Vec<DrawRun>,
-  // The z-sorted world path's draws over `placed` (built by `prepare_world`)
   world_runs: Vec<WorldRun>,
+  // Textures already made resident this frame (scratch, reused across frames)
+  resident_scratch: HashSet<TextureRef>,
 
   // Timing
   time: f32,
@@ -646,8 +629,8 @@ impl SpriteGpuRenderer {
       entity_sprites: HashMap::new(),
       frame: 0,
       placed: Vec::new(),
-      runs: Vec::new(),
       world_runs: Vec::new(),
+      resident_scratch: HashSet::new(),
       time: 0.0,
     }
   }
@@ -711,58 +694,6 @@ impl SpriteGpuRenderer {
     }
   }
 
-  /// Make every texture `collector` uses resident, and lay out the frame.
-  ///
-  /// Re-uploads textures the atlas evicted, marks them used this frame (so
-  /// nothing drawn this frame is evicted), grows the instance buffer to fit
-  /// and runs the atlas housekeeping. Then remaps the batches, in z-order,
-  /// into their atlas slots and merges neighbours on one atlas page and
-  /// pipeline into draw runs. Call once per frame, after the batches are
-  /// collected and before [`render_batches`](Self::render_batches), which
-  /// draws what this laid out.
-  pub fn prepare(
-    &mut self,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    collector: &BatchCollector,
-  ) {
-    let textures = collector.batches.keys().map(|key| key.texture_id.as_str());
-    self.make_resident(device, queue, textures, collector.sprite_count());
-
-    self.placed.clear();
-    self.runs.clear();
-    for (key, batch) in collector.sorted_batches() {
-      let Some(slot) = self.lookup(&key.texture_id) else {
-        continue;
-      };
-      let Some(page) = self.atlas.texture(slot.page) else {
-        continue;
-      };
-      let page_size = (page.width(), page.height());
-      let start = self.placed.len();
-      let has_effects = key.has_effects;
-      self.placed.extend(
-        batch
-          .instances()
-          .iter()
-          .map(|i| place_in_slot(i, &slot, page_size, has_effects)),
-      );
-      let count = self.placed.len() - start;
-      if count == 0 {
-        continue;
-      }
-      match self.runs.last_mut() {
-        Some(run) if run.page == slot.page && run.has_effects == has_effects => run.count += count,
-        _ => self.runs.push(DrawRun {
-          page: slot.page,
-          has_effects,
-          start,
-          count,
-        }),
-      }
-    }
-  }
-
   /// Make the textures `ids` resident for this frame, which draws `sprites`
   /// instances: re-upload what the atlas evicted, mark them used, grow the
   /// instance buffer and run the atlas housekeeping.
@@ -797,8 +728,7 @@ impl SpriteGpuRenderer {
   /// Lay out the z-sorted draw list's sprites for
   /// [`draw_world_run`](Self::draw_world_run).
   ///
-  /// The world-path counterpart of [`prepare`](Self::prepare): makes the
-  /// list's textures resident, remaps its sprites into their atlas slots in
+  /// Makes the list's textures resident, remaps its sprites into their atlas slots in
   /// draw order and splits the sorted items into draws (sprites merge only
   /// when consecutive on one atlas page and pipeline; trail groups split
   /// them). `list` must be sorted ([`DrawList::sorted`]). Call once per frame,
@@ -809,12 +739,15 @@ impl SpriteGpuRenderer {
     queue: &wgpu::Queue,
     list: &DrawList,
   ) {
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut seen = std::mem::take(&mut self.resident_scratch);
+    seen.clear();
     let textures = (0..list.sprite_count())
       .filter_map(|i| list.sprite(i))
-      .map(|sprite| &*sprite.texture)
-      .filter(|id| seen.insert(id));
+      .map(|sprite| &sprite.texture)
+      .filter(|texture| seen.insert(Arc::clone(texture)))
+      .map(|texture| &**texture);
     self.make_resident(device, queue, textures, list.sprite_count());
+    self.resident_scratch = seen;
 
     self.placed.clear();
     let mut runs = std::mem::take(&mut self.world_runs);
@@ -889,90 +822,11 @@ impl SpriteGpuRenderer {
     pass.draw(0..6, 0..count as u32);
   }
 
-  /// Number of draw calls [`render_batches`](Self::render_batches) issues for
-  /// the frame last laid out by [`prepare`](Self::prepare).
-  pub fn draw_call_count(&self) -> usize {
-    self.runs.len()
-  }
-
   /// Where a cached texture currently lives in the atlas.
+  #[cfg(test)]
   pub(crate) fn lookup(&self, id: &str) -> Option<AtlasSlot> {
     let texture = self.textures.get(id)?;
     self.atlas.lookup(&texture.key)
-  }
-
-  /// Draw the frame laid out by [`prepare`](Self::prepare).
-  ///
-  /// Batches are drawn in z-order; consecutive batches on the same atlas page
-  /// and pipeline share one draw call. Draws nothing until `prepare` has run.
-  ///
-  /// # Arguments
-  /// - `queue`: GPU queue for uploading instance data
-  /// - `encoder`: Command encoder for recording GPU commands
-  /// - `view`: Target texture view to render to
-  ///
-  /// # Example
-  ///
-  /// ```ignore
-  /// let mut collector = BatchCollector::new();
-  ///
-  /// for (entity, renderable, transform) in entities {
-  ///     let instance = SpriteInstance::new()
-  ///         .with_transform(transform.x, transform.y, ...)
-  ///         .with_effect(&effect);
-  ///     collector.add(renderable.sprite.id(), has_effect, instance, z_order);
-  /// }
-  ///
-  /// renderer.prepare(device, queue, &collector);
-  /// renderer.render_batches(queue, encoder, view);
-  /// ```
-  pub fn render_batches(
-    &self,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-  ) {
-    if self.runs.is_empty() {
-      return;
-    }
-
-    // Upload all instance data BEFORE the render pass begins
-    queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.placed));
-
-    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-      label: Some("Sprite Batch Render Pass"),
-      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        view,
-        resolve_target: None,
-        ops: wgpu::Operations {
-          load: wgpu::LoadOp::Load, // Preserve existing content
-          store: wgpu::StoreOp::Store,
-        },
-      })],
-      depth_stencil_attachment: None,
-      timestamp_writes: None,
-      occlusion_query_set: None,
-    });
-
-    render_pass.set_bind_group(0, &self.globals_bind_group, &[]);
-    render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-
-    let instance_size = std::mem::size_of::<SpriteInstance>() as u64;
-    for run in &self.runs {
-      let Some(bind_group) = self.atlas.bind_group(run.page) else {
-        continue;
-      };
-      if run.has_effects {
-        render_pass.set_pipeline(&self.effect_pipeline);
-      } else {
-        render_pass.set_pipeline(&self.base_pipeline);
-      }
-      render_pass.set_bind_group(1, bind_group, &[]);
-      let offset = run.start as u64 * instance_size;
-      let end = offset + run.count as u64 * instance_size;
-      render_pass.set_vertex_buffer(1, self.instance_buffer.slice(offset..end));
-      render_pass.draw(0..6, 0..run.count as u32);
-    }
   }
 
   /// Upload a sprite from a SpriteHandle to the GPU texture cache
@@ -1134,7 +988,6 @@ impl SpriteGpuRenderer {
     self.entity_sprites.clear();
     self.atlas.clear();
     self.placed.clear();
-    self.runs.clear();
     self.world_runs.clear();
   }
 }
@@ -1229,122 +1082,22 @@ pub const SPRITE_SHADER: &str = include_str!("../shaders/core/sprite.wgsl");
 // Sprite Batching System
 // =============================================================================
 
-/// Key for grouping sprites into batches
+/// Collects the frame's `render_gpu`, particle and parallax sprites.
 ///
-/// Sprites with the same BatchKey can be rendered in a single draw call.
-/// This includes texture ID and whether effects are applied.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct BatchKey {
-  /// Texture identifier (from SpriteHandle)
-  pub texture_id: String,
-  /// Whether this batch uses effects (determines pipeline)
-  pub has_effects: bool,
-}
-
-impl BatchKey {
-  /// Create a new batch key
-  pub fn new(texture_id: impl Into<String>, has_effects: bool) -> Self {
-    Self {
-      texture_id: texture_id.into(),
-      has_effects,
-    }
-  }
-}
-
-/// A batch of sprites to be rendered in a single draw call
-///
-/// Sprites in a batch share the same texture and effect pipeline.
-/// They are rendered with GPU instancing for maximum performance.
-#[derive(Debug)]
-pub struct SpriteBatch {
-  /// Per-sprite instance data
-  instances: Vec<SpriteInstance>,
-  /// The batch's texture id, shared with the per-sprite items
-  texture: TextureRef,
-  /// Z-order for sorting batches (uses minimum z from all sprites)
-  z_order: i32,
-}
-
-impl Default for SpriteBatch {
-  fn default() -> Self {
-    Self::new()
-  }
-}
-
-impl SpriteBatch {
-  /// Create a new empty batch
-  pub fn new() -> Self {
-    Self {
-      instances: Vec::new(),
-      texture: TextureRef::from(""),
-      z_order: i32::MAX,
-    }
-  }
-
-  /// Create a batch with pre-allocated capacity
-  pub fn with_capacity(capacity: usize) -> Self {
-    Self {
-      instances: Vec::with_capacity(capacity),
-      texture: TextureRef::from(""),
-      z_order: i32::MAX,
-    }
-  }
-
-  /// Add a sprite instance to this batch
-  pub fn add(&mut self, instance: SpriteInstance, z_order: i32) {
-    self.instances.push(instance);
-    self.z_order = self.z_order.min(z_order);
-  }
-
-  /// Get the number of sprites in this batch
-  pub fn len(&self) -> usize {
-    self.instances.len()
-  }
-
-  /// Check if batch is empty
-  pub fn is_empty(&self) -> bool {
-    self.instances.is_empty()
-  }
-
-  /// Get the instance data slice
-  pub fn instances(&self) -> &[SpriteInstance] {
-    &self.instances
-  }
-
-  /// Clear the batch for reuse
-  pub fn clear(&mut self) {
-    self.instances.clear();
-    self.z_order = i32::MAX;
-  }
-}
-
-/// Collector for batching sprites by texture and effect type
-///
-/// Use this to efficiently group sprites for GPU rendering:
+/// Sprites are kept in submission order and join the frame's z-sorted draw
+/// list, where equal-z sprites draw in submission order:
 ///
 /// ```ignore
 /// let mut collector = BatchCollector::new();
-///
-/// // Add sprites during render phase
-/// for entity in entities {
-///     let texture_id = renderable.sprite.id();
-///     let has_effect = renderable.shader.is_some();
-///     let instance = SpriteInstance::new()
-///         .with_transform(x, y, rotation, sx, sy)
-///         .with_effect(&effect);
-///     collector.add(texture_id, has_effect, instance, z_order);
-/// }
-///
-/// // Render all batches
-/// gpu_renderer.render_batches(queue, encoder, view, &collector);
+/// collector.add(sprite.id(), has_effect, instance, z_order);
 /// ```
 #[derive(Debug, Default)]
 pub struct BatchCollector {
-  batches: HashMap<BatchKey, SpriteBatch>,
-  /// Every sprite in submission order, for the z-sorted draw list
+  /// Every sprite in submission order
   items: Vec<CollectedSprite>,
-  /// Total sprites collected
-  sprite_count: usize,
+  /// Shared texture ids, so sprites of one texture hold one allocation.
+  /// Kept across frames; it only grows with the distinct textures used.
+  textures: HashMap<String, TextureRef>,
 }
 
 /// One collected sprite, as the draw list takes it.
@@ -1357,48 +1110,42 @@ struct CollectedSprite {
 }
 
 impl BatchCollector {
-  /// Create a new batch collector
+  /// Create a new, empty collector.
   pub fn new() -> Self {
     Self::default()
   }
 
-  /// Create a collector with expected batch capacity
-  pub fn with_capacity(batch_count: usize) -> Self {
+  /// Create a collector with room for `sprites` sprites.
+  pub fn with_capacity(sprites: usize) -> Self {
     Self {
-      batches: HashMap::with_capacity(batch_count),
+      items: Vec::with_capacity(sprites),
       ..Self::default()
     }
   }
 
-  /// Add a sprite to the appropriate batch
-  ///
-  /// Sprites are automatically grouped by texture_id and effect status.
+  /// Add a sprite. `texture_id` is the id the texture was uploaded under.
   pub fn add(
     &mut self,
-    texture_id: impl Into<String>,
+    texture_id: impl AsRef<str>,
     has_effects: bool,
     instance: SpriteInstance,
     z_order: i32,
   ) {
-    let key = BatchKey::new(texture_id, has_effects);
-    let batch = match self.batches.entry(key) {
-      Entry::Occupied(entry) => entry.into_mut(),
-      Entry::Vacant(entry) => {
-        let texture = TextureRef::from(entry.key().texture_id.as_str());
-        entry.insert(SpriteBatch {
-          texture,
-          ..SpriteBatch::new()
-        })
+    let id = texture_id.as_ref();
+    let texture = match self.textures.get(id) {
+      Some(texture) => texture.clone(),
+      None => {
+        let texture = TextureRef::from(id);
+        self.textures.insert(id.to_string(), texture.clone());
+        texture
       }
     };
-    batch.add(instance, z_order);
     self.items.push(CollectedSprite {
-      texture: batch.texture.clone(),
+      texture,
       has_effects,
       z_order,
       instance,
     });
-    self.sprite_count += 1;
   }
 
   /// Push every collected sprite onto `list` as `kind`, in submission order.
@@ -1416,37 +1163,19 @@ impl BatchCollector {
 
   /// Get the total number of sprites collected
   pub fn sprite_count(&self) -> usize {
-    self.sprite_count
+    self.items.len()
   }
 
-  /// Get the number of batches (draw calls)
-  pub fn batch_count(&self) -> usize {
-    self.batches.len()
-  }
-
-  /// Get batches sorted by z-order for correct draw ordering
-  pub fn sorted_batches(&self) -> Vec<(&BatchKey, &SpriteBatch)> {
-    let mut batches: Vec<_> = self.batches.iter().collect();
-    batches.sort_by_key(|(_, batch)| batch.z_order);
-    batches
-  }
-
-  /// Clear all batches for reuse next frame
+  /// Forget this frame's sprites, keeping the allocations.
   pub fn clear(&mut self) {
-    self.batches.clear();
     self.items.clear();
-    self.sprite_count = 0;
-  }
-
-  /// Iterate over all batches (unordered)
-  pub fn iter(&self) -> impl Iterator<Item = (&BatchKey, &SpriteBatch)> {
-    self.batches.iter()
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::graphics::SlotPage;
 
   #[test]
   fn sprite_instance_size() {
@@ -1592,8 +1321,19 @@ mod tests {
     assert_eq!(pad(SpriteEffect::invert()), 0.0);
   }
 
+  fn world_list(entries: &[(&str, i32)]) -> DrawList {
+    let mut collector = BatchCollector::new();
+    for (id, z) in entries {
+      collector.add(id, false, SpriteInstance::new(), *z);
+    }
+    let mut list = DrawList::default();
+    collector.push_to(&mut list, DrawKind::Sprite);
+    list.sorted();
+    list
+  }
+
   #[test]
-  fn prepare_reuploads_evicted_textures() {
+  fn prepare_world_reuploads_evicted_textures() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
@@ -1604,9 +1344,7 @@ mod tests {
     renderer.atlas.clear();
     assert!(renderer.lookup("a").is_none());
 
-    let mut collector = BatchCollector::new();
-    collector.add("a", false, SpriteInstance::new(), 0);
-    renderer.prepare(&device, &queue, &collector);
+    renderer.prepare_world(&device, &queue, &world_list(&[("a", 0)]));
     assert!(renderer.lookup("a").is_some());
   }
 
@@ -1622,87 +1360,39 @@ mod tests {
   }
 
   #[test]
-  fn prepare_grows_the_instance_buffer() {
+  fn prepare_world_grows_the_instance_buffer() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
-    let mut collector = BatchCollector::new();
-    for _ in 0..=SpriteGpuRenderer::MAX_INSTANCES {
-      collector.add("a", false, SpriteInstance::new(), 0);
-    }
-    renderer.prepare(&device, &queue, &collector);
+    let entries = vec![("a", 0); SpriteGpuRenderer::MAX_INSTANCES + 1];
+    renderer.prepare_world(&device, &queue, &world_list(&entries));
     assert_eq!(renderer.instance_capacity, 16384);
     let size = 16384 * std::mem::size_of::<SpriteInstance>() as u64;
     assert_eq!(renderer.instance_buffer.size(), size);
   }
 
   // =========================================================================
-  // Batching tests
+  // Collector tests
   // =========================================================================
 
   #[test]
-  fn sprite_batch_add() {
-    let mut batch = SpriteBatch::new();
-    assert!(batch.is_empty());
-
-    batch.add(SpriteInstance::new(), 5);
-    assert_eq!(batch.len(), 1);
-    assert_eq!(batch.z_order, 5);
-
-    batch.add(SpriteInstance::new(), 2);
-    assert_eq!(batch.len(), 2);
-    assert_eq!(batch.z_order, 2); // Min z-order
-
-    batch.add(SpriteInstance::new(), 10);
-    assert_eq!(batch.len(), 3);
-    assert_eq!(batch.z_order, 2); // Still min
-  }
-
-  #[test]
-  fn batch_collector_grouping() {
+  fn collector_keeps_submission_order_and_counts() {
     let mut collector = BatchCollector::new();
-
-    // Add sprites with same texture, different effects
-    collector.add("texture_a", false, SpriteInstance::new(), 0);
-    collector.add("texture_a", false, SpriteInstance::new(), 1);
-    collector.add("texture_a", true, SpriteInstance::new(), 2);
-
-    // Add sprites with different texture
-    collector.add("texture_b", false, SpriteInstance::new(), 0);
-
-    assert_eq!(collector.sprite_count(), 4);
-    assert_eq!(collector.batch_count(), 3); // 3 unique (texture, effect) combos
-  }
-
-  #[test]
-  fn batch_collector_sorted() {
-    let mut collector = BatchCollector::new();
-
-    // Add sprites in non-z-order sequence
     collector.add("tex_c", false, SpriteInstance::new(), 100);
-    collector.add("tex_a", false, SpriteInstance::new(), 0);
-    collector.add("tex_b", false, SpriteInstance::new(), 50);
+    collector.add("tex_a", true, SpriteInstance::new(), 0);
+    collector.add(String::from("tex_a"), false, SpriteInstance::new(), 50);
+    assert_eq!(collector.sprite_count(), 3);
 
-    let sorted = collector.sorted_batches();
-    assert_eq!(sorted.len(), 3);
-
-    // Verify z-order sorting
-    assert_eq!(sorted[0].0.texture_id, "tex_a");
-    assert_eq!(sorted[1].0.texture_id, "tex_b");
-    assert_eq!(sorted[2].0.texture_id, "tex_c");
-  }
-
-  #[test]
-  fn batch_key_equality() {
-    let key1 = BatchKey::new("test", false);
-    let key2 = BatchKey::new("test", false);
-    let key3 = BatchKey::new("test", true);
-    let key4 = BatchKey::new("other", false);
-
-    assert_eq!(key1, key2);
-    assert_ne!(key1, key3);
-    assert_ne!(key1, key4);
+    let mut list = DrawList::default();
+    collector.push_to(&mut list, DrawKind::Sprite);
+    // One shared allocation per texture id
+    assert!(Arc::ptr_eq(
+      &list.sprite(1).unwrap().texture,
+      &list.sprite(2).unwrap().texture
+    ));
+    collector.clear();
+    assert_eq!(collector.sprite_count(), 0);
   }
 }

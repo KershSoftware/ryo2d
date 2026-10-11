@@ -295,6 +295,7 @@ impl Scene for GameScene {
           Velocity::zero(),
           Bullet::new(0.0, 0.0),
           Trail2D::new(Color::new(255, 140, 30, 230), 3.5)
+            .with_z_order(Z_BULLET)
             .with_length(25)
             .with_taper(0.7)
             .with_fade(true)

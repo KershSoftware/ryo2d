@@ -20,15 +20,12 @@ use super::console::{
   register_builtins,
 };
 use super::ecs::{
-  Entity, PreviousTransform, RenderStyle, Renderable, SpriteShader, Transform, World,
-  WorldTransform, YSort,
+  Entity, Renderable, Transform, World, WorldTransform, YSort,
 };
 use super::error::{EngineError, EngineResult};
 use super::events::{CollisionStarted, CollisionStopped, Events};
 use super::game::{GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
-use super::graphics::{
-  BatchCollector, Camera, CompositeTile, Sprite, SpriteGpuRenderer, TileDirection, WgpuRenderer,
-};
+use super::graphics::{BatchCollector, Camera, SpriteGpuRenderer, WgpuRenderer};
 use super::input::InputState;
 use super::lighting::{Light2D, LightOccluder2D, LightingRenderer};
 use super::physics::{PhysicsConfig, RapierPhysicsWorld};
@@ -38,7 +35,6 @@ use super::raycast::{
 };
 use super::render::{
   DrawKind, DrawList, EntityDrawer, EntityFrame, FrameScene, LightingFrame, RenderPipeline,
-  TRANSITION_VISIBLE,
 };
 use super::scene::{Scene, SceneAction, SceneContext, SceneManager};
 use super::shaders::EffectsManager;
@@ -49,7 +45,7 @@ use super::systems::{
 use super::texture::TextureManager;
 use super::timing::TimeState;
 use super::trail::{Line2D, Trail2D, TrailRenderer};
-use super::ui::{BitmapFont, Color, UiContext, create_debug_font};
+use super::ui::{BitmapFont, UiContext, create_debug_font};
 use crate::profile_scope;
 use crate::{engine_debug, engine_error, engine_info, engine_warn};
 
@@ -314,9 +310,6 @@ pub struct Engine {
   game_version: Option<String>,
   // The render passes every frame runs through
   pub(crate) render_pipeline: RenderPipeline,
-  // Draw GPU sprites and trails from one z-sorted list (with the
-  // `RenderPipeline::world_2d` passes) instead of the legacy passes
-  pub(crate) gpu_world: bool,
   // The frame's z-sorted drawables on the GPU world path (reused each frame)
   pub(crate) draw_list: DrawList,
   // Shadow textures and the like the GPU entity path keeps between frames
@@ -794,7 +787,6 @@ impl Engine {
       game_name,
       game_version,
       render_pipeline: RenderPipeline::default_2d(),
-      gpu_world: false,
       draw_list: DrawList::default(),
       entity_drawer: EntityDrawer::default(),
     }
@@ -1438,24 +1430,14 @@ impl Engine {
     }
   }
 
-  /// Draw through the GPU world path: entities, shadows, sprites, trails and
-  /// debug overlays from one z-sorted list, and the transition fade, with the
-  /// `world_2d` passes (the CPU entity renderer does not run).
-  #[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "only tests enable the GPU world path so far")
-  )]
-  pub(crate) fn use_gpu_world(&mut self) {
-    self.gpu_world = true;
-    self.render_pipeline = RenderPipeline::world_2d();
+  /// The stats of the last frame, for tests.
+  #[cfg(test)]
+  pub(crate) fn debug_stats(&self) -> &DebugStats {
+    &self.debug_stats
   }
 
-  /// The scene transition's fade colour and opacity for the GPU world path
-  /// (opacity 0 on the legacy path, which blends the fade on the CPU).
+  /// The scene transition's fade colour and opacity.
   fn transition_overlay(&self) -> ([u8; 3], f32) {
-    if !self.gpu_world {
-      return ([0; 3], 0.0);
-    }
     let [r, g, b, _] = self
       .scene_manager
       .transition_overlay_color()
@@ -1470,15 +1452,8 @@ impl Engine {
       profile_scope!("cpu:render");
       let render_start = std::time::Instant::now();
 
-      // Get interpolation alpha for smooth rendering
-      let alpha = self
-        .time
-        .as_ref()
-        .map(|t| t.interpolation_alpha())
-        .unwrap_or(0.0);
-
-      // CPU render pass
-      self.render(alpha);
+      // Refresh the render cache and draw the UI
+      self.render();
 
       // Call scene_manager.render_gpu() to populate GPU sprite batches
       {
@@ -1531,7 +1506,7 @@ impl Engine {
 
       self.debug_stats = DebugStats {
         entity_count: self.world.len(),
-        // Set once the batches are laid out for drawing (`prepare`)
+        // Set once the world is laid out for drawing (`prepare_world`)
         draw_calls: 0,
         sprite_count: (cpu_sprite_count + self.batch_collector.sprite_count()) as u32,
       };
@@ -1586,16 +1561,14 @@ impl Engine {
           }
         }
 
-        // The GPU world path draws the debug overlays as unlit lines on top
-        if self.gpu_world {
-          let overlays = OverlayFlags {
-            colliders: self.config.debug.show_colliders,
-            velocities: self.config.debug.show_velocities,
-            origins: self.config.debug.show_origins,
-          };
-          for line in overlay_lines(&self.world, &self.camera, overlays) {
-            trails.add_line(&line, 0.0, 0.0);
-          }
+        // Debug overlays are unlit lines on top
+        let overlays = OverlayFlags {
+          colliders: self.config.debug.show_colliders,
+          velocities: self.config.debug.show_velocities,
+          origins: self.config.debug.show_origins,
+        };
+        for line in overlay_lines(&self.world, &self.camera, overlays) {
+          trails.add_line(&line, 0.0, 0.0);
         }
       }
       // Collect lights from the world
@@ -1635,48 +1608,42 @@ impl Engine {
         rend.game_height() as f32,
       );
       self.draw_list.clear();
-      if self.gpu_world {
-        // Sprites and trails drawn together in z order
-        self
-          .batch_collector
-          .push_to(&mut self.draw_list, DrawKind::Sprite);
-        let entities = EntityFrame {
-          world: &self.world,
-          camera: &self.camera,
-          cache: &self.renderable_cache,
-          alpha: self
-            .time
-            .as_ref()
-            .map(|t| t.interpolation_alpha())
-            .unwrap_or(0.0),
-          size: (rend.game_width(), rend.game_height()),
-        };
-        self.entity_drawer.collect(
-          &entities,
-          gpu,
-          rend.device(),
-          rend.queue(),
-          &mut self.draw_list,
-        );
-        if let Some(trails) = trail_renderer.as_ref() {
-          for z in trails.groups(true) {
-            self.draw_list.push_trail_group(true, z);
-          }
-          for z in trails.groups(false) {
-            self.draw_list.push_trail_group(false, z);
-          }
+      // Entities, sprites and trails drawn together in z order
+      self
+        .batch_collector
+        .push_to(&mut self.draw_list, DrawKind::Sprite);
+      let entities = EntityFrame {
+        world: &self.world,
+        camera: &self.camera,
+        cache: &self.renderable_cache,
+        alpha: self
+          .time
+          .as_ref()
+          .map(|t| t.interpolation_alpha())
+          .unwrap_or(0.0),
+        size: (rend.game_width(), rend.game_height()),
+      };
+      self.entity_drawer.collect(
+        &entities,
+        gpu,
+        rend.device(),
+        rend.queue(),
+        &mut self.draw_list,
+      );
+      if let Some(trails) = trail_renderer.as_ref() {
+        for z in trails.groups(true) {
+          self.draw_list.push_trail_group(true, z);
         }
-        self.draw_list.sorted();
-        gpu.prepare_world(rend.device(), rend.queue(), &self.draw_list);
-        let trail_draws = trail_renderer.as_ref().map_or(0, |t| t.draw_count());
-        self.debug_stats.draw_calls = (gpu.world_draw_count() + trail_draws) as u32;
-      } else {
-        // Make the batches' textures resident in the atlas before drawing
-        gpu.prepare(rend.device(), rend.queue(), &self.batch_collector);
-        self.debug_stats.draw_calls = gpu.draw_call_count() as u32;
+        for z in trails.groups(false) {
+          self.draw_list.push_trail_group(false, z);
+        }
       }
+      self.draw_list.sorted();
+      gpu.prepare_world(rend.device(), rend.queue(), &self.draw_list);
+      let trail_draws = trail_renderer.as_ref().map_or(0, |t| t.draw_count());
+      self.debug_stats.draw_calls = (gpu.world_draw_count() + trail_draws) as u32;
 
-      // Prepare camera data for trail rendering
+      // Camera data for the passes
       let camera_pos = glam::Vec2::new(self.camera.x, self.camera.y);
       let camera_zoom = self.camera.zoom;
       let time = self
@@ -1695,9 +1662,12 @@ impl Engine {
       if raycast_enabled && let Some(raycast) = raycast_renderer.as_mut() {
         sync_raycast(&self.world, raycast, rend, time, &self.texture_manager);
       }
+      // Upload the trail and line vertices once; the world passes only draw
+      if let Some(trails) = trail_renderer.as_ref() {
+        trails.prepare(rend.queue(), (camera_pos, camera_zoom, time));
+      }
       let scene = FrameScene {
         sprites: &*gpu,
-        batches: &self.batch_collector,
         draw_list: &self.draw_list,
         trails: trail_renderer.as_ref(),
         lighting: lighting
@@ -2060,10 +2030,11 @@ impl Engine {
     self.renderable_cache.sort_by_key(|(_, z)| *z);
   }
 
-  /// Render the current frame
+  /// Prepare the frame's CPU-side content
   ///
-  /// This is the "Render System" - it draws all entities with Transform + Renderable
-  fn render(&mut self, _alpha: f32) {
+  /// Refreshes the render cache and Y-sorting that the entity drawer reads,
+  /// and draws the UI into the UI buffer. The world itself draws on the GPU.
+  fn render(&mut self) {
     profile_scope!("cpu:engine_render");
 
     // Clear batch collector for this frame (used for GPU sprite batching)
@@ -2071,7 +2042,6 @@ impl Engine {
 
     // --- Rebuild Render Cache (if dirty) ---
     // Rebuild render cache if dirty (entities added/removed or z_order changed)
-    // This must happen before we borrow the frame buffer
     if self.render_cache_dirty {
       self.renderable_cache.clear();
       self.y_sort_entities.clear();
@@ -2093,600 +2063,14 @@ impl Engine {
 
     // --- Apply Y-Sorting (every frame for YSort entities) ---
     // Y-sorting entities need their sort keys recalculated each frame based on Y position
-    // This must happen before we borrow the frame buffer
     if !self.y_sort_entities.is_empty() {
       self.apply_y_sorting();
     }
 
-    // Get frame buffer from renderer
-    let (frame, frame_width, frame_height) = match &mut self.renderer {
-      Some(renderer) => {
-        let w = renderer.game_width();
-        let h = renderer.game_height();
-        (renderer.frame_mut(), w, h)
-      }
+    let (frame_width, frame_height) = match &self.renderer {
+      Some(renderer) => (renderer.game_width(), renderer.game_height()),
       None => return,
     };
-
-    // On the GPU world path the entities, composites and debug overlays are
-    // collected into the draw list by `present_frame` instead
-    let gpu_world = self.gpu_world;
-    let cpu_entities: &[(Entity, i32)] = if gpu_world {
-      &[]
-    } else {
-      &self.renderable_cache
-    };
-
-    // Fill background with transparent black
-    // This allows GPU-rendered content (parallax backgrounds) to show through
-    // Areas without CPU sprites will be transparent, showing the GPU layer beneath
-    if !gpu_world {
-      for pixel in frame.chunks_exact_mut(4) {
-        pixel[0] = 0x00; // R: 0
-        pixel[1] = 0x00; // G: 0
-        pixel[2] = 0x00; // B: 0
-        pixel[3] = 0x00; // A: 0 (transparent)
-      }
-    }
-
-    // --- Render All Entities (CPU Path) ---
-    for &(entity, _) in cpu_entities {
-      // Skip inactive entities (used by object pooling)
-      if self.world.has::<super::ecs::Inactive>(entity) {
-        continue;
-      }
-
-      let Some(renderable) = self.world.get::<Renderable>(entity) else {
-        continue;
-      };
-
-      if !renderable.visible {
-        continue;
-      }
-
-      // Use WorldTransform if available (for hierarchical entities),
-      // otherwise fall back to local Transform
-      let (
-        base_x,
-        base_y,
-        base_rotation,
-        base_scale_x,
-        base_scale_y,
-        pivot_x,
-        pivot_y,
-        offset_x,
-        offset_y,
-      ) = if let Some(wt) = self.world.get::<WorldTransform>(entity) {
-        (
-          wt.x,
-          wt.y,
-          wt.rotation,
-          wt.scale_x,
-          wt.scale_y,
-          wt.pivot_x,
-          wt.pivot_y,
-          wt.offset_x,
-          wt.offset_y,
-        )
-      } else if let Some(t) = self.world.get::<Transform>(entity) {
-        (
-          t.x, t.y, t.rotation, t.scale_x, t.scale_y, t.pivot_x, t.pivot_y, t.offset_x, t.offset_y,
-        )
-      } else {
-        continue;
-      };
-
-      // Apply render interpolation if enabled
-      let (x, y, rotation, scale_x, scale_y) = if renderable.interpolate {
-        if let Some(prev) = self.world.get::<PreviousTransform>(entity) {
-          if prev.skip {
-            // Skip interpolation this frame (just spawned or teleported)
-            (base_x, base_y, base_rotation, base_scale_x, base_scale_y)
-          } else {
-            // Interpolate between previous and current transform
-            let target = Transform {
-              x: base_x,
-              y: base_y,
-              z: 0.0,
-              rotation: base_rotation,
-              scale_x: base_scale_x,
-              scale_y: base_scale_y,
-              pivot_x: 0.0,
-              pivot_y: 0.0,
-              offset_x: 0.0,
-              offset_y: 0.0,
-            };
-            prev.lerp(&target, _alpha)
-          }
-        } else {
-          // No PreviousTransform yet, use current position
-          (base_x, base_y, base_rotation, base_scale_x, base_scale_y)
-        }
-      } else {
-        // Interpolation disabled, use current position
-        (base_x, base_y, base_rotation, base_scale_x, base_scale_y)
-      };
-
-      // Apply offset to base position (offset is a pixel-level adjustment after anchor)
-      let x = x + offset_x;
-      let y = y + offset_y;
-
-      // Apply YSort depth scaling if present
-      let (scale_x, scale_y) = if let Some(y_sort) = self.world.get::<YSort>(entity) {
-        let (depth_scale_x, depth_scale_y) = y_sort.calculate_depth_scale(y);
-        (scale_x * depth_scale_x, scale_y * depth_scale_y)
-      } else {
-        (scale_x, scale_y)
-      };
-
-      // draw_rotated expects degrees, Transform.rotation is in radians
-      let rotation_deg = rotation.to_degrees();
-
-      // Capture alpha and tint for use in draw calls
-      let alpha = renderable.alpha;
-      let tint = renderable.tint;
-
-      match &renderable.style {
-        RenderStyle::Single => {
-          // Calculate final scale (transform scale * camera zoom)
-          let final_scale_x = scale_x * self.camera.zoom;
-          let final_scale_y = scale_y * self.camera.zoom;
-
-          // Calculate sprite dimensions after scaling
-          let sprite_w = renderable.sprite.width() as f32 * final_scale_x;
-          let sprite_h = renderable.sprite.height() as f32 * final_scale_y;
-
-          // Calculate draw position based on pivot point
-          // draw_rotated takes the TOP-LEFT corner and rotates around the CENTER.
-          //
-          // For top-left pivot (0, 0): position IS the top-left, sprite rotates around its center
-          // For other pivots: position is the pivot point, we must offset so pivot stays fixed during rotation
-          let (draw_x, draw_y) = if pivot_x.abs() < 0.001 && pivot_y.abs() < 0.001 {
-            // Top-left pivot (default): original behavior
-            // Position is the top-left corner, rotation happens around sprite center
-            (x, y)
-          } else {
-            // Custom pivot point: calculate where top-left should be so pivot stays at (x, y)
-            // Offset from pivot to center in sprite-local coords:
-            let pivot_to_center_x = (0.5 - pivot_x) * sprite_w;
-            let pivot_to_center_y = (0.5 - pivot_y) * sprite_h;
-
-            // Rotate this offset by the sprite's rotation
-            let (rotated_offset_x, rotated_offset_y) = if rotation_deg.abs() > 0.01 {
-              let angle_rad = rotation_deg.to_radians();
-              let cos_a = angle_rad.cos();
-              let sin_a = angle_rad.sin();
-              (
-                pivot_to_center_x * cos_a - pivot_to_center_y * sin_a,
-                pivot_to_center_x * sin_a + pivot_to_center_y * cos_a,
-              )
-            } else {
-              (pivot_to_center_x, pivot_to_center_y)
-            };
-
-            // The sprite's center in world coords = pivot position + rotated offset
-            let center_x = x + rotated_offset_x;
-            let center_y = y + rotated_offset_y;
-
-            // The sprite's top-left corner (what draw_rotated expects)
-            (center_x - sprite_w / 2.0, center_y - sprite_h / 2.0)
-          };
-
-          // Convert to screen position using camera
-          let (screen_x, screen_y) = self.camera.world_to_screen(draw_x, draw_y);
-
-          // Cull off-screen sprites (use draw position, not anchor position)
-          if !self.camera.is_visible(draw_x, draw_y, sprite_w, sprite_h) {
-            continue;
-          }
-
-          // Render drop shadow before main sprite (if present)
-          if let Some(shadow) = &renderable.drop_shadow {
-            // Calculate shadow position (offset from sprite)
-            let shadow_x = draw_x + shadow.offset.x;
-            let shadow_y = draw_y + shadow.offset.y;
-
-            // Convert to screen position
-            let (shadow_screen_x, shadow_screen_y) =
-              self.camera.world_to_screen(shadow_x, shadow_y);
-
-            // Apply shadow scale to sprite scale
-            let shadow_scale_x = final_scale_x * shadow.scale.x;
-            let shadow_scale_y = final_scale_y * shadow.scale.y;
-
-            // Draw shadow sprite with shadow color as tint
-            // Combine shadow alpha with renderable alpha
-            let shadow_alpha = (shadow.color.a as f32 / 255.0) * alpha;
-
-            renderable.sprite.with_sprite(|sprite| {
-              sprite.draw_rotated_tinted(
-                frame,
-                frame_width,
-                frame_height,
-                shadow_screen_x as i32,
-                shadow_screen_y as i32,
-                shadow_scale_x,
-                shadow_scale_y,
-                rotation_deg,
-                renderable.flip_x,
-                renderable.flip_y,
-                shadow_alpha,
-                Color::new(shadow.color.r, shadow.color.g, shadow.color.b, 255), // Full alpha in tint, alpha handled separately
-              );
-            });
-          }
-
-          // Render blob shadow before main sprite (if present)
-          if let Some(blob) = &renderable.blob_shadow {
-            // Get effective radius and alpha (accounts for height scaling)
-            let (eff_radius_x, eff_radius_y) = blob.effective_radius();
-            let blob_alpha = blob.effective_alpha() * alpha;
-
-            // Skip if shadow is too small or transparent
-            if eff_radius_x >= 1.0 && eff_radius_y >= 1.0 && blob_alpha > 0.01 {
-              // Calculate blob shadow position (centered below sprite, with offset)
-              // Use the sprite's base position (not the rotated draw position)
-              let blob_x = x - eff_radius_x;
-              let blob_y = y + blob.offset_y - eff_radius_y;
-
-              let (blob_screen_x, blob_screen_y) = self.camera.world_to_screen(blob_x, blob_y);
-
-              // Create ellipse sprite for the blob shadow
-              let blob_w = (eff_radius_x * 2.0) as u32;
-              let blob_h = (eff_radius_y * 2.0) as u32;
-              let blob_sprite = Sprite::solid_ellipse(
-                blob_w,
-                blob_h,
-                blob.color.r,
-                blob.color.g,
-                blob.color.b,
-                255,
-              );
-
-              // Draw with camera zoom
-              blob_sprite.draw_rotated_tinted(
-                frame,
-                frame_width,
-                frame_height,
-                blob_screen_x as i32,
-                blob_screen_y as i32,
-                self.camera.zoom,
-                self.camera.zoom,
-                0.0, // No rotation for blob shadows
-                false,
-                false,
-                blob_alpha,
-                Color::WHITE,
-              );
-            }
-          }
-
-          // Render contact shadow before main sprite (if present)
-          // Contact shadows are small concentrated shadows at the contact point
-          if let Some(contact) = &renderable.contact_shadow {
-            let contact_alpha = contact.intensity * alpha;
-
-            // Skip if shadow is too small or transparent
-            if contact.radius >= 1.0 && contact_alpha > 0.01 {
-              // Contact shadow is positioned at the base of the sprite
-              // Using a squashed ellipse (width = radius, height = radius/2)
-              let contact_radius_x = contact.radius;
-              let contact_radius_y = contact.radius * 0.4; // More squashed than blob shadows
-
-              let contact_x = x - contact_radius_x;
-              let contact_y = y + contact.offset_y - contact_radius_y;
-
-              let (contact_screen_x, contact_screen_y) =
-                self.camera.world_to_screen(contact_x, contact_y);
-
-              // Create ellipse sprite for the contact shadow
-              let contact_w = (contact_radius_x * 2.0) as u32;
-              let contact_h = (contact_radius_y * 2.0) as u32;
-              let contact_sprite = Sprite::solid_ellipse(
-                contact_w.max(2),
-                contact_h.max(2),
-                contact.color.r,
-                contact.color.g,
-                contact.color.b,
-                255,
-              );
-
-              // Draw with camera zoom
-              contact_sprite.draw_rotated_tinted(
-                frame,
-                frame_width,
-                frame_height,
-                contact_screen_x as i32,
-                contact_screen_y as i32,
-                self.camera.zoom,
-                self.camera.zoom,
-                0.0, // No rotation for contact shadows
-                false,
-                false,
-                contact_alpha,
-                Color::WHITE,
-              );
-            }
-          }
-
-          // Check if sprite has a shader effect to apply
-          if let Some(SpriteShader::BuiltIn(effect)) = &renderable.shader {
-            // Apply CPU-based shader effect
-            renderable.sprite.with_sprite(|sprite| {
-              let src_width = sprite.width();
-              let src_height = sprite.height();
-              let (transformed_data, new_width, new_height) =
-                effect.apply_cpu(sprite.data(), src_width, src_height);
-
-              // For expanded sprites (outline/glow), we need to adjust position to keep sprite centered
-              // Use round() instead of truncation to avoid asymmetric clipping with non-uniform scales
-              let offset_x = ((new_width as i32 - src_width as i32) / 2) as f32 * final_scale_x;
-              let offset_y = ((new_height as i32 - src_height as i32) / 2) as f32 * final_scale_y;
-
-              let transformed_sprite = Sprite::from_rgba(transformed_data, new_width, new_height);
-              transformed_sprite.draw_rotated_tinted(
-                frame,
-                frame_width,
-                frame_height,
-                screen_x as i32 - offset_x.round() as i32,
-                screen_y as i32 - offset_y.round() as i32,
-                final_scale_x,
-                final_scale_y,
-                rotation_deg,
-                renderable.flip_x,
-                renderable.flip_y,
-                alpha,
-                tint,
-              );
-            });
-          } else {
-            // No shader - draw normally with alpha/tint
-            renderable.sprite.with_sprite(|sprite| {
-              sprite.draw_rotated_tinted(
-                frame,
-                frame_width,
-                frame_height,
-                screen_x as i32,
-                screen_y as i32,
-                final_scale_x,
-                final_scale_y,
-                rotation_deg,
-                renderable.flip_x,
-                renderable.flip_y,
-                alpha,
-                tint,
-              );
-            });
-          }
-        }
-
-        RenderStyle::Tiled {
-          direction,
-          target_size,
-        } => {
-          let tile_size = if direction.is_horizontal() {
-            renderable.sprite.width() as f32
-          } else {
-            renderable.sprite.height() as f32
-          };
-
-          if tile_size <= 0.0 {
-            continue;
-          }
-
-          let tile_count = (target_size / tile_size).ceil() as u32;
-          let (offset_dx, offset_dy) = direction.offset(tile_size);
-
-          // Common values for both shadow and main passes
-          let rotation_rad = rotation_deg.to_radians();
-          let cos_r = rotation_rad.cos();
-          let sin_r = rotation_rad.sin();
-          let final_scale_x = scale_x * self.camera.zoom;
-          let final_scale_y = scale_y * self.camera.zoom;
-
-          // Render drop shadows for all tiles first (if present)
-          if let Some(shadow) = &renderable.drop_shadow {
-            let shadow_alpha = (shadow.color.a as f32 / 255.0) * alpha;
-            let shadow_scale_x = final_scale_x * shadow.scale.x;
-            let shadow_scale_y = final_scale_y * shadow.scale.y;
-            let shadow_tint = Color::new(shadow.color.r, shadow.color.g, shadow.color.b, 255);
-
-            for i in 0..tile_count {
-              let tile_offset_x = offset_dx * i as f32;
-              let tile_offset_y = offset_dy * i as f32;
-
-              let (start_x, start_y) = match direction {
-                TileDirection::Up => (0.0, -(tile_count as f32 - 1.0) * tile_size),
-                TileDirection::Left => (-(tile_count as f32 - 1.0) * tile_size, 0.0),
-                TileDirection::Down | TileDirection::Right => (0.0, 0.0),
-              };
-
-              let local_x = start_x + tile_offset_x;
-              let local_y = start_y + tile_offset_y;
-              let rotated_x = local_x * cos_r - local_y * sin_r;
-              let rotated_y = local_x * sin_r + local_y * cos_r;
-              let scaled_x = rotated_x * scale_x;
-              let scaled_y = rotated_y * scale_y;
-
-              // Shadow position = tile position + shadow offset
-              let world_x = x + scaled_x + shadow.offset.x;
-              let world_y = y + scaled_y + shadow.offset.y;
-
-              let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
-
-              renderable.sprite.with_sprite(|sprite| {
-                sprite.draw_rotated_tinted(
-                  frame,
-                  frame_width,
-                  frame_height,
-                  screen_x as i32,
-                  screen_y as i32,
-                  shadow_scale_x,
-                  shadow_scale_y,
-                  rotation_deg,
-                  renderable.flip_x,
-                  renderable.flip_y,
-                  shadow_alpha,
-                  shadow_tint,
-                );
-              });
-            }
-          }
-
-          // Render main tiles
-          for i in 0..tile_count {
-            let tile_offset_x = offset_dx * i as f32;
-            let tile_offset_y = offset_dy * i as f32;
-
-            // For Up/Left directions, start from negative offset
-            let (start_x, start_y) = match direction {
-              TileDirection::Up => (0.0, -(tile_count as f32 - 1.0) * tile_size),
-              TileDirection::Left => (-(tile_count as f32 - 1.0) * tile_size, 0.0),
-              TileDirection::Down | TileDirection::Right => (0.0, 0.0),
-            };
-
-            // Calculate tile position relative to entity, then rotate
-            let local_x = start_x + tile_offset_x;
-            let local_y = start_y + tile_offset_y;
-            let rotated_x = local_x * cos_r - local_y * sin_r;
-            let rotated_y = local_x * sin_r + local_y * cos_r;
-
-            // Apply scale to rotated offset
-            let scaled_x = rotated_x * scale_x;
-            let scaled_y = rotated_y * scale_y;
-
-            let world_x = x + scaled_x;
-            let world_y = y + scaled_y;
-
-            let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
-
-            renderable.sprite.with_sprite(|sprite| {
-              sprite.draw_rotated_tinted(
-                frame,
-                frame_width,
-                frame_height,
-                screen_x as i32,
-                screen_y as i32,
-                final_scale_x,
-                final_scale_y,
-                rotation_deg,
-                renderable.flip_x,
-                renderable.flip_y,
-                alpha,
-                tint,
-              );
-            });
-          }
-        }
-      }
-    }
-
-    // === Render CompositeTile components ===
-    // These are multi-part tiles with static and tiled sections
-    let composites = if gpu_world {
-      Vec::new()
-    } else {
-      self.world.entities_with_two::<Transform, CompositeTile>()
-    };
-    for entity in composites {
-      let Some(transform) = self.world.get::<Transform>(entity) else {
-        continue;
-      };
-      let Some(composite) = self.world.get::<CompositeTile>(entity) else {
-        continue;
-      };
-
-      if !composite.visible {
-        continue;
-      }
-
-      let final_scale_x = transform.scale_x * self.camera.zoom;
-      let final_scale_y = transform.scale_y * self.camera.zoom;
-
-      for part in &composite.parts {
-        let flip_x = part.flip_x;
-        let flip_y = part.flip_y;
-
-        match &part.tiling {
-          None => {
-            // Static part - draw once
-            let world_x = transform.x + part.offset_x;
-            let world_y = transform.y + part.offset_y;
-            let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
-
-            part.sprite.with_sprite(|sprite| {
-              sprite.draw_scaled_xy_flipped(
-                frame,
-                frame_width,
-                frame_height,
-                screen_x as i32,
-                screen_y as i32,
-                final_scale_x,
-                final_scale_y,
-                flip_x,
-                flip_y,
-              );
-            });
-          }
-          Some((direction, target_size)) => {
-            // Tiled part - draw multiple times
-            let tile_size = if direction.is_horizontal() {
-              part.sprite.width() as f32
-            } else {
-              part.sprite.height() as f32
-            };
-
-            if tile_size <= 0.0 || *target_size <= 0.0 {
-              continue;
-            }
-
-            let tile_count = (target_size / tile_size).ceil() as u32;
-            let (offset_dx, offset_dy) = direction.offset(tile_size);
-
-            for i in 0..tile_count {
-              let tile_offset_x = offset_dx * i as f32;
-              let tile_offset_y = offset_dy * i as f32;
-
-              // For Up/Left directions, adjust starting position
-              let (start_x, start_y) = match direction {
-                TileDirection::Up => (0.0, -(tile_count as f32 - 1.0) * tile_size),
-                TileDirection::Left => (-(tile_count as f32 - 1.0) * tile_size, 0.0),
-                TileDirection::Down | TileDirection::Right => (0.0, 0.0),
-              };
-
-              let world_x = transform.x + part.offset_x + start_x + tile_offset_x;
-              let world_y = transform.y + part.offset_y + start_y + tile_offset_y;
-              let (screen_x, screen_y) = self.camera.world_to_screen(world_x, world_y);
-
-              part.sprite.with_sprite(|sprite| {
-                sprite.draw_scaled_xy_flipped(
-                  frame,
-                  frame_width,
-                  frame_height,
-                  screen_x as i32,
-                  screen_y as i32,
-                  final_scale_x,
-                  final_scale_y,
-                  flip_x,
-                  flip_y,
-                );
-              });
-            }
-          }
-        }
-      }
-    }
-
-    // --- Debug Overlays ---
-    if self.config.debug.show_colliders && !gpu_world {
-      debug::render_colliders(frame, frame_width, frame_height, &self.world, &self.camera);
-    }
-    if self.config.debug.show_velocities && !gpu_world {
-      debug::render_velocities(frame, frame_width, frame_height, &self.world, &self.camera);
-    }
-    if self.config.debug.show_origins && !gpu_world {
-      debug::render_origins(frame, frame_width, frame_height, &self.world, &self.camera);
-    }
 
     // --- UI & FPS Counter ---
     // Call scene_manager.render_ui with UiContext for immediate-mode UI
@@ -2764,40 +2148,8 @@ impl Engine {
       self.scene_manager = scene_manager;
     }
 
-    // --- Screen Overlay (for transitions) ---
-    // (the GPU world path fades in its `transition` pass)
-    if !gpu_world {
-      let alpha = self.scene_manager.transition_overlay_alpha();
-      if alpha > TRANSITION_VISIBLE {
-        let color = self
-          .scene_manager
-          .transition_overlay_color()
-          .unwrap_or([0, 0, 0, 255]);
-        blend_overlay(frame, color, alpha);
-      }
-    }
-
     // Note: UI compositing for non-lit UI is done on GPU by the pipeline's composite pass
     // The ui_buffer is passed to the renderer and composited last, by the `composite` pass
-  }
-}
-
-/// Blend a color overlay over the entire frame buffer.
-///
-/// This is used for transition effects (fade to black, etc.).
-/// Alpha of 0.0 = no change, 1.0 = fully replaced with overlay color.
-#[inline]
-fn blend_overlay(frame: &mut [u8], color: [u8; 4], alpha: f32) {
-  let inv_alpha = 1.0 - alpha;
-  let overlay_r = color[0] as f32 * alpha;
-  let overlay_g = color[1] as f32 * alpha;
-  let overlay_b = color[2] as f32 * alpha;
-
-  for pixel in frame.chunks_exact_mut(4) {
-    pixel[0] = (pixel[0] as f32 * inv_alpha + overlay_r) as u8;
-    pixel[1] = (pixel[1] as f32 * inv_alpha + overlay_g) as u8;
-    pixel[2] = (pixel[2] as f32 * inv_alpha + overlay_b) as u8;
-    // pixel[3] (alpha) stays unchanged
   }
 }
 

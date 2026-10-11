@@ -30,10 +30,7 @@ pub(crate) struct Compositor {
   blend_pipeline: wgpu::RenderPipeline,
   pub(crate) bind_group_layout: wgpu::BindGroupLayout,
   pub(crate) sampler: wgpu::Sampler,
-  // Shared with the renderer's other fullscreen-quad pipelines
-  pub(crate) shader: wgpu::ShaderModule,
-  pub(crate) pipeline_layout: wgpu::PipelineLayout,
-  // Dedicated UI texture (separate from the CPU staging texture to avoid write_texture ordering issues)
+  // Dedicated UI texture (its own texture, so uploading it never races with the game texture)
   ui_texture: wgpu::Texture,
   ui_texture_view: wgpu::TextureView,
   // Letterbox transform, updated when the window or mode changes
@@ -42,7 +39,7 @@ pub(crate) struct Compositor {
   pub(crate) identity_uniform_buffer: wgpu::Buffer,
 }
 
-/// Dedicated UI texture (separate from the CPU staging texture to avoid write_texture ordering issues).
+/// Dedicated UI texture (its own texture, so uploading it never races with the game texture).
 fn create_ui_texture(
   device: &wgpu::Device,
   width: u32,
@@ -234,8 +231,6 @@ impl Compositor {
       blend_pipeline,
       bind_group_layout,
       sampler,
-      shader,
-      pipeline_layout,
       ui_texture,
       ui_texture_view,
       uniform_buffer,

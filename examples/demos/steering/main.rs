@@ -95,6 +95,7 @@ impl SteeringDemoScene {
     // min_distance must be less than distance traveled per frame:
     // at 120 px/s and 60 FPS = 2 px/frame, so use 1.0 to capture movement
     let trail = Trail2D::new(Color::new(r, g, b, 200), 3.0)
+      .with_z_order(10) // With the boid, so the trail stays in front of the ground
       .with_length(25)
       .with_fade(true)
       .with_min_distance(1.0);

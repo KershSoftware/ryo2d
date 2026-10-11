@@ -33,33 +33,18 @@ impl RenderPipeline {
     Self::default()
   }
 
-  /// The built-in passes, in the order `default_2d` runs them: `upload`,
-  /// `clear`, `raycast`, `gpu_sprites`, `cpu_blend`, `trails`, `lighting`,
-  /// `unlit_trails`, `post_process`, `ui`, `composite`, `capture` (see
+  /// The built-in passes, in the order `default_2d` runs them: `clear`,
+  /// `raycast`, `world`, `lighting`, `unlit_world`, `transition`,
+  /// `post_process`, `ui`, `composite`, `capture` (see
   /// [`pass_ids`](super::pass_ids)). Each takes part in a frame only when its
-  /// content is there; `raycast` replaces the 2D scene passes.
+  /// content is there; `raycast` replaces the 2D world passes.
+  ///
+  /// `world` draws entities, sprites and lit trails and lines together in z
+  /// order; `unlit_world` draws the trails and lines that skip lighting;
+  /// `transition` fades the whole frame during a scene transition.
   pub fn default_2d() -> Self {
     // Built-in ids are unique, so they go straight in
     let entries = passes::built_in()
-      .into_iter()
-      .map(|pass| Entry {
-        pass,
-        enabled: true,
-      })
-      .collect();
-    Self { entries }
-  }
-
-  /// The built-in passes of the GPU world path, in the order `world_2d` runs
-  /// them: `clear`, `raycast`, `world`, `lighting`, `unlit_world`,
-  /// `transition`, `post_process`, `ui`, `composite`, `capture` (see
-  /// [`pass_ids`](super::pass_ids)).
-  ///
-  /// `world` draws entities, GPU sprites and lit trails and lines together in
-  /// z order; `unlit_world` draws the trails and lines that skip lighting;
-  /// `transition` fades the whole frame during a scene transition.
-  pub fn world_2d() -> Self {
-    let entries = passes::world_2d()
       .into_iter()
       .map(|pass| Entry {
         pass,

@@ -124,6 +124,7 @@ impl PathfindingDemoScene {
 
     // Create a trail with the agent's color (slightly transparent)
     let trail = Trail2D::new(Color::new(r, g, b, 180), 3.0)
+      .with_z_order(10) // With the agent, so the trail stays above the map
       .with_length(50)
       .with_taper(0.5)
       .with_fade(true)

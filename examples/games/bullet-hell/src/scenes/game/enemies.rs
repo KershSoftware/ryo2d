@@ -195,7 +195,8 @@ impl GameScene {
               Vec2::new(extended_x, extended_y),
               Color::new(255, 100, 100, warning_alpha),
               warning_width,
-            ),
+            )
+            .with_z_order(Z_LASER),
           ));
           self.lasers.push(warning_laser);
 
@@ -256,6 +257,7 @@ impl GameScene {
 
               // Outer laser trail (red) - DAMAGING
               let outer_trail = Trail2D::new(Color::new(255, 50, 50, 220), DRONE_LASER_WIDTH)
+                .with_z_order(Z_LASER)
                 .with_length(80)
                 .with_fade(true)
                 .with_lifetime(0.35)
@@ -271,6 +273,7 @@ impl GameScene {
               // Inner core trail (bright) - visual only
               let core_trail =
                 Trail2D::new(Color::new(255, 200, 150, 255), DRONE_LASER_WIDTH * 0.4)
+                  .with_z_order(Z_LASER)
                   .with_length(80)
                   .with_fade(true)
                   .with_lifetime(0.3)
@@ -755,6 +758,7 @@ impl GameScene {
 
     // Trail for rocket
     let trail = Trail2D::new(Color::new(255, 150, 50, 180), 4.0)
+      .with_z_order(Z_ROCKET)
       .with_length(30)
       .with_fade(true)
       .with_taper(0.8)

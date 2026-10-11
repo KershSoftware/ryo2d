@@ -178,7 +178,7 @@ pub struct ParticleEmitter {
   // =========================================================================
   // Rendering
   // =========================================================================
-  /// Z-order for sorting
+  /// Z-order against entities, sprites and trails (higher draws on top; default 0)
   pub z_order: i32,
   /// Optional sprite effect (glow, dissolve, etc.)
   pub effect: Option<SpriteEffect>,
@@ -329,7 +329,8 @@ impl ParticleEmitter {
     self
   }
 
-  /// Set z-order for rendering.
+  /// Set z-order for rendering. Particles sort with entities, so use a lower
+  /// z than the entities they should sit behind.
   pub fn with_z_order(mut self, z_order: i32) -> Self {
     self.z_order = z_order;
     self

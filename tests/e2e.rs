@@ -38,3 +38,6 @@ mod post_process;
 
 #[path = "e2e/sprite_atlas.rs"]
 mod sprite_atlas;
+
+#[path = "e2e/gpu_world.rs"]
+mod gpu_world;

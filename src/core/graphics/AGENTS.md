@@ -1,32 +1,29 @@
 # AGENTS.md - Graphics Module
 
-## Rendering Paths
+## Rendering
 
 ```
-CPU path:  Sprite.draw() → pixel buffer → WgpuRenderer → screen
-GPU path:  SpriteInstance → BatchCollector → SpriteGpuRenderer → GPU
+World:  Renderable / CompositeTile → EntityDrawer ─┐
+        render_gpu() → BatchCollector ─────────────┼→ DrawList (z-sorted) → SpriteGpuRenderer → GPU
+        Trail2D / Line2D → TrailRenderer ──────────┘
+UI:     Sprite.draw() / draw_scaled() → UI buffer → composited last
 ```
 
-**When to use the GPU path:** 1000+ sprites (particles, bullets), per-sprite shader effects, or when CPU blitting becomes the bottleneck. Most games use the CPU path. GPU is opt-in via `render_gpu()`.
+The whole world draws on the GPU. The only CPU drawing left is the UI (`UiContext` draws `Sprite`s into the UI buffer).
 
-Both paths are drawn by the engine's `RenderPipeline` (`core/render/`, see its AGENTS.md). Scenes can toggle built-in passes or insert their own through `ctx.render_pipeline`. The graphics module holds the renderers the passes call; it has no render entry points of its own besides `WgpuRenderer::render_frame`, which runs the pipeline.
+The renderers are drawn by the engine's `RenderPipeline` (`core/render/`, see its AGENTS.md). Scenes can toggle built-in passes or insert their own through `ctx.render_pipeline`. The graphics module holds the renderers the passes call; it has no render entry points of its own besides `WgpuRenderer::render_frame`, which runs the pipeline.
 
-**Compositing order** (the `gpu_sprites`, `cpu_blend`, `trails`, `lighting`, `unlit_trails`, `post_process`, `ui` and `composite` passes of `default_2d`):
-1. `render_gpu()` sprites (incl. parallax) draw into the game texture first.
-2. The CPU pixel buffer (cleared to transparent each frame) is alpha-blended on top.
-3. Trails, lighting, unlit trails and post-processing follow; the UI is composited last, untouched by effects.
-
-So GPU sprites always sit **behind** CPU-rendered entities. `z_order` only orders GPU batches among themselves.
+**Draw order**: entities, `render_gpu()` sprites (incl. particles and parallax) and trails/lines sort together by `z_order`. Equal z: entity, then `render_gpu` sprite, then trail/line; within a kind, in submission order. Lighting, the transition fade, post-processing and the UI follow; the UI is composited last, untouched by effects. Parallax layers need a negative z to sit behind entities at z 0.
 
 ## GPU Sprite Batching
 
-- `BatchCollector` groups instances by `BatchKey` (texture ID + has-effects). Each batch's z is the **minimum** `z_order` of its instances, and batches are sorted by it. Within a batch, instances draw in insertion order.
-- **Synchronization**: all instance data is written to the instance buffer **before** the render pass begins, so the GPU never reads a buffer still being written. Each batch gets its own offset, and the pass binds `instance_buffer.slice(offset..end)`.
+- `BatchCollector` keeps each `render_gpu` sprite in submission order (texture id shared per texture) and pushes them into the `DrawList`. There are no per-texture batches: `SpriteGpuRenderer::prepare_world` merges **consecutive** sprites on one atlas page and pipeline into one draw, so many small textures still cost few draws.
+- **Synchronization**: all instance data is written to the instance buffer **before** the render pass begins (`upload_world`), so the GPU never reads a buffer still being written. Each draw binds `instance_buffer.slice(offset..end)`.
 
 ## Parallax
 
 - A builder-driven system (`GpuParallaxBackground`), not ECS components: layers are one cohesive visual, and render-time tiling is cheaper than spawning duplicate entities.
-- Rendered from `render_gpu()`, so it draws behind all CPU-rendered game entities.
+- Rendered from `render_gpu()` at each layer's `z_order`; it sits behind entities only if the layers' z is below theirs (the examples use -100..-20).
 
 ## Camera Shake
 

@@ -35,8 +35,8 @@ User's Scene (Scene trait)
          |
          v
     Frame render (render/, one pass per stage)
-    Clear -> GPU sprites -> CPU sprites -> Trails/Lines -> Lighting
-         -> Unlit trails/lines -> Post-process effects -> UI -> Composite -> Present
+    Clear -> World (entities, sprites, trails/lines by z) -> Lighting
+         -> Unlit lines -> Transition -> Post-process effects -> UI -> Composite -> Present
 ```
 
 The frame is drawn by the pass-based `RenderPipeline` (`render/`); see `src/core/render/AGENTS.md`.

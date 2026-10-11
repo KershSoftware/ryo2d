@@ -1,10 +1,10 @@
-//! The world: GPU sprites and trails/lines drawn together in z order
+//! The world: entities, sprites and trails/lines drawn together in z order
 
 use crate::core::graphics::SpriteGpuRenderer;
 use crate::core::render::{FrameInfo, RenderContext, RenderPass, WorldRun, pass_ids};
 use crate::core::trail::TrailRenderer;
 
-/// Draws the frame's sprites and lit trails and lines onto the game texture
+/// Draws the frame's entities, sprites and lit trails and lines onto the game texture
 /// in one render pass, interleaved by z.
 pub(super) struct World;
 
@@ -14,20 +14,17 @@ impl RenderPass for World {
   }
 
   fn should_run(&self, frame: &FrameInfo) -> bool {
-    !frame.raycast && (frame.gpu_sprites || frame.trails)
+    !frame.raycast && frame.world
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
     let sprites: &SpriteGpuRenderer = ctx.scene.sprites;
     let trails: Option<&TrailRenderer> = ctx.scene.trails;
-    let camera = (ctx.scene.camera_pos, ctx.scene.camera_zoom, ctx.scene.time);
     let (queue, game_view) = (ctx.queue(), ctx.targets.game_view);
 
-    // Buffer writes can't happen inside the pass
+    // Buffer writes can't happen inside the pass (the engine already wrote
+    // the trail vertices when it laid out the frame)
     sprites.upload_world(queue);
-    if let Some(trails) = trails {
-      trails.prepare(queue, camera);
-    }
 
     let runs = sprites.world_runs();
     if runs.is_empty() {
@@ -70,7 +67,7 @@ impl RenderPass for UnlitWorld {
   }
 
   fn should_run(&self, frame: &FrameInfo) -> bool {
-    !frame.raycast && frame.trails
+    !frame.raycast
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
@@ -81,10 +78,6 @@ impl RenderPass for UnlitWorld {
     if list.unlit_items().is_empty() {
       return;
     }
-    let camera = (ctx.scene.camera_pos, ctx.scene.camera_zoom, ctx.scene.time);
-    let queue = ctx.queue();
-    trails.prepare(queue, camera);
-
     let (encoder, view) = ctx.encoder_and_current_view();
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
       label: Some("Unlit World Render Pass"),
