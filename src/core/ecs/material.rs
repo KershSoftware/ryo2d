@@ -94,7 +94,10 @@ impl ShaderHandle {
 
   /// Create a shader handle from WGSL source
   ///
-  /// Typically you'd use `assets.load_shader()` instead of this directly.
+  /// Each call makes a distinct shader that compiles its own pipeline, even
+  /// for the same source: create a handle once and clone it, rather than
+  /// calling this per entity or per frame. Typically you'd use
+  /// `assets.load_shader()`, which caches by path.
   pub fn from_source(id: impl Into<String>, source: impl Into<String>) -> Self {
     Self::new(id.into(), source.into())
   }
@@ -104,7 +107,8 @@ impl ShaderHandle {
     Self::new(path.to_string_lossy().into_owned(), source)
   }
 
-  /// Get the shader's unique identifier
+  /// The name given at creation (the path, for loaded shaders), used in error
+  /// messages. Two handles can share an id and still be distinct shaders.
   pub fn id(&self) -> &str {
     &self.inner.id
   }
