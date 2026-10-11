@@ -3,7 +3,7 @@
 //! Comprehensive showcase of all particle presets and features.
 //! Navigate between scenes with number keys or arrow keys.
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 // =============================================================================
 // Scene Types
@@ -37,14 +37,6 @@ impl DemoScene {
     DemoScene::Combined,
   ];
 
-  fn index(&self) -> usize {
-    Self::ALL.iter().position(|s| s == self).unwrap_or(0)
-  }
-
-  fn from_index(idx: usize) -> Self {
-    Self::ALL.get(idx).copied().unwrap_or(DemoScene::Fire)
-  }
-
   fn name(&self) -> &'static str {
     match self {
       DemoScene::Fire => "Fire Effects",
@@ -74,32 +66,17 @@ impl DemoScene {
       DemoScene::Combined => "Fire, magic, confetti, gravity well, and more",
     }
   }
-
-  fn next(&self) -> Self {
-    let idx = (self.index() + 1) % Self::ALL.len();
-    Self::from_index(idx)
-  }
-
-  fn prev(&self) -> Self {
-    let idx = if self.index() == 0 {
-      Self::ALL.len() - 1
-    } else {
-      self.index() - 1
-    };
-    Self::from_index(idx)
-  }
 }
 
 // =============================================================================
 // Main Demo
 // =============================================================================
 
-struct ParticlesDemo {
+struct ParticlesPage {
   current_scene: DemoScene,
   particle_sprite: SpriteHandle,
   screen_width: f32,
   screen_height: f32,
-  nav_cooldown: f32,
 
   // Particle system
   particle_system: ParticleSystem,
@@ -113,37 +90,21 @@ struct ParticlesDemo {
   trail_target_y: f32,
 }
 
-impl ParticlesDemo {
-  fn new() -> Self {
+impl ParticlesPage {
+  fn new(scene: DemoScene) -> Self {
     // Create a temporary placeholder sprite - will be replaced in on_enter
     let placeholder = Sprite::solid_circle(8, 255, 255, 255, 255);
     Self {
-      current_scene: DemoScene::Fire,
+      current_scene: scene,
       particle_sprite: SpriteHandle::from_sprite(placeholder, "placeholder"),
       screen_width: 0.0,
       screen_height: 0.0,
-      nav_cooldown: 0.0,
       particle_system: ParticleSystem::new(),
       emitters: Vec::new(),
       attractors: Vec::new(),
       trail_target_x: 0.0,
       trail_target_y: 0.0,
     }
-  }
-
-  fn clear_scene(&mut self, world: &mut World) {
-    // Despawn all emitters
-    for entity in self.emitters.drain(..) {
-      let _ = world.despawn(entity);
-    }
-
-    // Despawn all attractors
-    for entity in self.attractors.drain(..) {
-      let _ = world.despawn(entity);
-    }
-
-    // Clear all particles from the particle system
-    self.particle_system.clear();
   }
 
   fn setup_scene(&mut self, world: &mut World) {
@@ -814,17 +775,25 @@ impl ParticlesDemo {
   }
 }
 
-impl Scene for ParticlesDemo {
-  fn on_enter(&mut self, ctx: &mut SceneContext) {
-    println!("Particle System Demo");
-    println!();
-    println!("Controls:");
-    println!("  Left/Right or 1-0 - Switch scenes");
-    println!("  Click             - Spawn effects (Explosions/Impacts)");
-    println!("  Mouse             - Control trails");
-    println!("  Escape            - Quit");
-    println!();
+impl DemoPage for ParticlesPage {
+  fn name(&self) -> &str {
+    self.current_scene.name()
+  }
 
+  fn description(&self) -> &str {
+    self.current_scene.description()
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    match self.current_scene {
+      DemoScene::Explosions => vec![Control::mouse("Left-click explosion, right-click debris")],
+      DemoScene::Impacts => vec![Control::mouse("Left-click sparks, right-click dust")],
+      DemoScene::Trails => vec![Control::mouse("Move to steer the comet")],
+      _ => Vec::new(),
+    }
+  }
+
+  fn enter(&mut self, ctx: &mut SceneContext) {
     // Store screen dimensions
     let (width, height) = ctx.screen_size();
     self.screen_width = width;
@@ -843,52 +812,7 @@ impl Scene for ParticlesDemo {
     self.setup_scene(ctx.world);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Navigation cooldown
-    if self.nav_cooldown > 0.0 {
-      self.nav_cooldown -= dt;
-    }
-
-    // Scene switching with arrow keys
-    if self.nav_cooldown <= 0.0 {
-      let new_scene = if ctx.input.key_pressed(KeyCode::ArrowRight) {
-        Some(self.current_scene.next())
-      } else if ctx.input.key_pressed(KeyCode::ArrowLeft) {
-        Some(self.current_scene.prev())
-      } else if ctx.input.key_pressed(KeyCode::Digit1) {
-        Some(DemoScene::Fire)
-      } else if ctx.input.key_pressed(KeyCode::Digit2) {
-        Some(DemoScene::Smoke)
-      } else if ctx.input.key_pressed(KeyCode::Digit3) {
-        Some(DemoScene::Explosions)
-      } else if ctx.input.key_pressed(KeyCode::Digit4) {
-        Some(DemoScene::Magic)
-      } else if ctx.input.key_pressed(KeyCode::Digit5) {
-        Some(DemoScene::Weather)
-      } else if ctx.input.key_pressed(KeyCode::Digit6) {
-        Some(DemoScene::Impacts)
-      } else if ctx.input.key_pressed(KeyCode::Digit7) {
-        Some(DemoScene::Celebration)
-      } else if ctx.input.key_pressed(KeyCode::Digit8) {
-        Some(DemoScene::Trails)
-      } else if ctx.input.key_pressed(KeyCode::Digit9) {
-        Some(DemoScene::Attractors)
-      } else if ctx.input.key_pressed(KeyCode::Digit0) {
-        Some(DemoScene::Combined)
-      } else {
-        None
-      };
-
-      if let Some(scene) = new_scene
-        && scene != self.current_scene
-      {
-        self.nav_cooldown = 0.3;
-        self.clear_scene(ctx.world);
-        self.current_scene = scene;
-        self.setup_scene(ctx.world);
-      }
-    }
-
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Scene-specific interactions
     let (mouse_x, mouse_y) = ctx.input.mouse_position();
     let (world_x, world_y) = ctx.camera.screen_to_world(mouse_x, mouse_y);
@@ -921,13 +845,6 @@ impl Scene for ParticlesDemo {
 
     // Update particle system
     self.particle_system.update(ctx.world, ctx.events, dt);
-
-    // Quit on Escape
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Quit;
-    }
-
-    SceneAction::Continue
   }
 
   fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
@@ -940,38 +857,18 @@ impl Scene for ParticlesDemo {
       .collect_for_render(gpu.world, gpu.camera, gpu.batch);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (sw, sh) = ui.screen_size();
 
-    // Scene title
+    // Particle count, top right of the content area
+    let area = content_area(ui);
+    let count = format!("Particles: {}", self.particle_system.particle_count());
+    let (text_w, _) = ui.text_size(&count);
     ui.draw_text(
-      &format!(
-        "Scene {}: {}",
-        self.current_scene.index() + 1,
-        self.current_scene.name()
-      ),
-      10.0,
-      10.0,
-      Color::WHITE,
-    );
-
-    // Description
-    ui.draw_text(self.current_scene.description(), 10.0, 30.0, Color::YELLOW);
-
-    // Particle count
-    ui.draw_text(
-      &format!("Particles: {}", self.particle_system.particle_count()),
-      sw as f32 - 150.0,
-      10.0,
+      &count,
+      area.x + area.width - text_w as f32,
+      area.y,
       Color::GREEN,
-    );
-
-    // Navigation hint
-    ui.draw_text(
-      "Left/Right: Switch scenes | 1-0: Jump to scene",
-      10.0,
-      sh as f32 - 30.0,
-      Color::new(150, 150, 150, 255),
     );
 
     // Attractor indicators
@@ -991,49 +888,15 @@ impl Scene for ParticlesDemo {
         Color::RED,
       );
     }
-
-    // Scene-specific hints
-    match self.current_scene {
-      DemoScene::Explosions => {
-        ui.draw_text(
-          "Left-click: Explosion | Right-click: Debris (auto demos running)",
-          10.0,
-          50.0,
-          Color::CYAN,
-        );
-      }
-      DemoScene::Impacts => {
-        ui.draw_text(
-          "Left-click: Sparks | Right-click: Dust (auto demos running)",
-          10.0,
-          50.0,
-          Color::CYAN,
-        );
-      }
-      DemoScene::Trails => {
-        ui.draw_text("Move mouse to control comet", 10.0, 50.0, Color::CYAN);
-      }
-      DemoScene::Weather => {
-        ui.draw_text("Rain (left) | Snow (right)", 10.0, 50.0, Color::CYAN);
-      }
-      _ => {}
-    }
-
-    SceneAction::Continue
   }
 }
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Particle System Demo")
+  let mut demo = Demo::new("Particles")
     .resolution(1280, 720)
-    .target_fps(144)
-    .physics_hz(144)
-    .vsync(false)
-    .start_scene(ParticlesDemo::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
+    .configure(|b| b.target_fps(144).physics_hz(144).vsync(false));
+  for scene in DemoScene::ALL {
+    demo = demo.page(move || ParticlesPage::new(scene));
   }
+  demo.run();
 }
