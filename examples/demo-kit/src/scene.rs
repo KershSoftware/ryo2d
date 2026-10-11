@@ -22,6 +22,8 @@ pub(crate) struct PageScene {
   right: HoldRepeat,
   /// A widget had keyboard focus on the last UI frame
   keyboard_wanted: bool,
+  /// Where the settings panel was drawn on the last UI frame
+  panel: Option<Rect>,
 }
 
 impl PageScene {
@@ -37,6 +39,7 @@ impl PageScene {
       left: HoldRepeat::default(),
       right: HoldRepeat::default(),
       keyboard_wanted: false,
+      panel: None,
     }
   }
 
@@ -124,7 +127,16 @@ impl Scene for PageScene {
     self.rows = settings.into_rows();
     self.selected = self.selected.min(self.rows.len().saturating_sub(1));
 
+    // The page sees no input under help, and no pointer over the panel
+    let input = &mut *ctx.input;
+    let (mx, my) = input.mouse_position();
+    if self.help_open {
+      input.block_all();
+    } else if self.panel.is_some_and(|panel| panel.contains(mx, my)) {
+      input.block_pointer();
+    }
     self.page.update(ctx, dt);
+    ctx.input.unblock();
     SceneAction::Continue
   }
 
@@ -147,7 +159,7 @@ impl Scene for PageScene {
       controls: &controls,
       help_open: self.help_open,
     };
-    chrome::draw(ui, &view);
+    self.panel = chrome::draw(ui, &view);
     SceneAction::Continue
   }
 

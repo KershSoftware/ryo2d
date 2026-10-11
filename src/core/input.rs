@@ -177,6 +177,18 @@ pub struct InputState {
   /// Used by the engine to prevent events from firing in subsequent
   /// fixed timestep updates after the first.
   oneshots_suppressed: bool,
+
+  /// Input hidden from queries until `unblock` or the next frame
+  block: InputBlock,
+}
+
+/// What `InputState::block_pointer` / `block_all` hide
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum InputBlock {
+  #[default]
+  None,
+  Pointer,
+  All,
 }
 
 impl InputState {
@@ -205,6 +217,7 @@ impl InputState {
     self.gamepad_buttons_released.clear();
     // Reset oneshot suppression for the new frame
     self.oneshots_suppressed = false;
+    self.block = InputBlock::None;
   }
 
   /// Suppress one-shot input queries (pressed/released/text).
@@ -220,6 +233,39 @@ impl InputState {
   /// Called before render so that `render_ui()` can still see one-shot events.
   pub(crate) fn unsuppress_oneshots(&mut self) {
     self.oneshots_suppressed = false;
+  }
+
+  /// Hide mouse presses, held buttons, mouse motion and scrolling from every
+  /// query until [`unblock`](Self::unblock) or the next frame. The cursor
+  /// position still reads, so hover keeps working, and releases still report,
+  /// so a drag begun before the block can end.
+  ///
+  /// Use it to keep a click on an overlay (a menu, a panel) from also reaching
+  /// the game underneath: block, run the game's update, unblock.
+  pub fn block_pointer(&mut self) {
+    self.block = InputBlock::Pointer;
+  }
+
+  /// Hide keyboard, text, mouse and gamepad input from every query until
+  /// [`unblock`](Self::unblock) or the next frame. As with
+  /// [`block_pointer`](Self::block_pointer), the cursor position and releases
+  /// still report. Consuming calls do nothing while blocked, so the input is
+  /// still there once unblocked.
+  pub fn block_all(&mut self) {
+    self.block = InputBlock::All;
+  }
+
+  /// Undo [`block_pointer`](Self::block_pointer) or [`block_all`](Self::block_all)
+  pub fn unblock(&mut self) {
+    self.block = InputBlock::None;
+  }
+
+  fn keys_blocked(&self) -> bool {
+    self.block == InputBlock::All
+  }
+
+  fn pointer_blocked(&self) -> bool {
+    self.block != InputBlock::None
   }
 
   /// Clean up input state that should not persist across renders.
@@ -259,7 +305,7 @@ impl InputState {
   /// }
   /// ```
   pub fn key_pressed_and_consume(&mut self, key: KeyCode) -> bool {
-    if self.oneshots_suppressed {
+    if self.oneshots_suppressed || self.keys_blocked() {
       return false;
     }
     self.keys_pressed.remove(&key)
@@ -269,6 +315,9 @@ impl InputState {
   ///
   /// Use this when you know a key was pressed and want to prevent other systems from seeing it.
   pub fn consume_key_press(&mut self, key: KeyCode) {
+    if self.keys_blocked() {
+      return;
+    }
     self.keys_pressed.remove(&key);
   }
 
@@ -284,7 +333,7 @@ impl InputState {
   /// }
   /// ```
   pub fn mouse_pressed_and_consume(&mut self, button: MouseButton) -> bool {
-    if self.oneshots_suppressed {
+    if self.oneshots_suppressed || self.pointer_blocked() {
       return false;
     }
     self.mouse_buttons_pressed.remove(&button)
@@ -292,6 +341,9 @@ impl InputState {
 
   /// Consume a mouse button press without checking if it was pressed.
   pub fn consume_mouse_press(&mut self, button: MouseButton) {
+    if self.pointer_blocked() {
+      return;
+    }
     self.mouse_buttons_pressed.remove(&button);
   }
 
@@ -299,7 +351,7 @@ impl InputState {
   ///
   /// Returns `true` if the button was pressed (and is now consumed), `false` otherwise.
   pub fn gamepad_button_pressed_and_consume(&mut self, button: GamepadButton) -> bool {
-    if self.oneshots_suppressed {
+    if self.oneshots_suppressed || self.keys_blocked() {
       return false;
     }
     self.gamepad_buttons_pressed.remove(&button)
@@ -307,6 +359,9 @@ impl InputState {
 
   /// Consume a gamepad button press without checking if it was pressed.
   pub fn consume_gamepad_button_press(&mut self, button: GamepadButton) {
+    if self.keys_blocked() {
+      return;
+    }
     self.gamepad_buttons_pressed.remove(&button);
   }
 
@@ -330,12 +385,12 @@ impl InputState {
 
   /// Returns true if the key is currently held down
   pub fn key_down(&self, key: KeyCode) -> bool {
-    self.keys_down.contains(&key)
+    !self.keys_blocked() && self.keys_down.contains(&key)
   }
 
   /// Returns true if the key was just pressed this frame
   pub fn key_pressed(&self, key: KeyCode) -> bool {
-    if self.oneshots_suppressed {
+    if self.oneshots_suppressed || self.keys_blocked() {
       return false;
     }
     self.keys_pressed.contains(&key)
@@ -359,7 +414,7 @@ impl InputState {
   /// Use this for text editing keys like arrows, backspace, delete that
   /// should repeat when held down.
   pub fn key_repeat(&self, key: KeyCode) -> bool {
-    if self.oneshots_suppressed {
+    if self.oneshots_suppressed || self.keys_blocked() {
       return false;
     }
     self.keys_repeated.contains(&key)
@@ -390,7 +445,7 @@ impl InputState {
 
   /// Returns true if the mouse button is currently held down
   pub fn mouse_down(&self, button: MouseButton) -> bool {
-    self.mouse_buttons_down.contains(&button)
+    !self.pointer_blocked() && self.mouse_buttons_down.contains(&button)
   }
 
   /// Whether a press of `button` is still waiting for a game update to see it
@@ -400,7 +455,7 @@ impl InputState {
 
   /// Returns true if the mouse button was just pressed this frame
   pub fn mouse_pressed(&self, button: MouseButton) -> bool {
-    if self.oneshots_suppressed {
+    if self.oneshots_suppressed || self.pointer_blocked() {
       return false;
     }
     self.mouse_buttons_pressed.contains(&button)
@@ -451,6 +506,9 @@ impl InputState {
 
   /// Get how much the mouse moved this frame (x, y)
   pub fn mouse_delta(&self) -> (f32, f32) {
+    if self.pointer_blocked() {
+      return (0.0, 0.0);
+    }
     (self.mouse_delta_x, self.mouse_delta_y)
   }
 
@@ -477,6 +535,9 @@ impl InputState {
   /// Get the scroll wheel delta this frame (x, y)
   /// Positive y = scroll up, negative y = scroll down
   pub fn scroll_delta(&self) -> (f32, f32) {
+    if self.pointer_blocked() {
+      return (0.0, 0.0);
+    }
     (self.scroll_delta_x, self.scroll_delta_y)
   }
 
@@ -507,7 +568,7 @@ impl InputState {
   ///
   /// Returns an empty string if no text was input or it was already consumed.
   pub fn text_input(&self) -> &str {
-    if self.oneshots_suppressed || self.text_input_consumed.get() {
+    if self.oneshots_suppressed || self.keys_blocked() || self.text_input_consumed.get() {
       return "";
     }
     // Only mark as consumed when there's actual text — reading an empty buffer
@@ -521,7 +582,7 @@ impl InputState {
 
   /// Check if any text was input this frame (and hasn't been consumed yet).
   pub fn has_text_input(&self) -> bool {
-    if self.oneshots_suppressed || self.text_input_consumed.get() {
+    if self.oneshots_suppressed || self.keys_blocked() || self.text_input_consumed.get() {
       return false;
     }
     !self.text_input.is_empty()
@@ -531,6 +592,9 @@ impl InputState {
   ///
   /// Call this after reading text input to ensure no other system processes it.
   pub fn consume_text_input(&self) {
+    if self.keys_blocked() {
+      return;
+    }
     self.text_input_consumed.set(true);
   }
 
@@ -636,12 +700,12 @@ impl InputState {
 
   /// Returns true if the gamepad button is currently held down.
   pub fn gamepad_button_down(&self, button: GamepadButton) -> bool {
-    self.gamepad_buttons_down.contains(&button)
+    !self.keys_blocked() && self.gamepad_buttons_down.contains(&button)
   }
 
   /// Returns true if the gamepad button was just pressed this frame.
   pub fn gamepad_button_pressed(&self, button: GamepadButton) -> bool {
-    if self.oneshots_suppressed {
+    if self.oneshots_suppressed || self.keys_blocked() {
       return false;
     }
     self.gamepad_buttons_pressed.contains(&button)
@@ -658,52 +722,82 @@ impl InputState {
   /// Get the left stick position as (x, y) with deadzone applied.
   /// Values range from -1.0 to 1.0.
   pub fn left_stick(&self) -> (f32, f32) {
+    if self.keys_blocked() {
+      return (0.0, 0.0);
+    }
     (self.left_stick_x, self.left_stick_y)
   }
 
   /// Get the left stick X axis with deadzone applied (-1.0 to 1.0).
   pub fn left_stick_x(&self) -> f32 {
+    if self.keys_blocked() {
+      return 0.0;
+    }
     self.left_stick_x
   }
 
   /// Get the left stick Y axis with deadzone applied (-1.0 to 1.0).
   pub fn left_stick_y(&self) -> f32 {
+    if self.keys_blocked() {
+      return 0.0;
+    }
     self.left_stick_y
   }
 
   /// Get the right stick position as (x, y) with deadzone applied.
   /// Values range from -1.0 to 1.0.
   pub fn right_stick(&self) -> (f32, f32) {
+    if self.keys_blocked() {
+      return (0.0, 0.0);
+    }
     (self.right_stick_x, self.right_stick_y)
   }
 
   /// Get the right stick X axis with deadzone applied (-1.0 to 1.0).
   pub fn right_stick_x(&self) -> f32 {
+    if self.keys_blocked() {
+      return 0.0;
+    }
     self.right_stick_x
   }
 
   /// Get the right stick Y axis with deadzone applied (-1.0 to 1.0).
   pub fn right_stick_y(&self) -> f32 {
+    if self.keys_blocked() {
+      return 0.0;
+    }
     self.right_stick_y
   }
 
   /// Get raw left stick position without deadzone (for debug visualization).
   pub fn left_stick_raw(&self) -> (f32, f32) {
+    if self.keys_blocked() {
+      return (0.0, 0.0);
+    }
     (self.left_stick_x_raw, self.left_stick_y_raw)
   }
 
   /// Get raw right stick position without deadzone (for debug visualization).
   pub fn right_stick_raw(&self) -> (f32, f32) {
+    if self.keys_blocked() {
+      return (0.0, 0.0);
+    }
     (self.right_stick_x_raw, self.right_stick_y_raw)
   }
 
   /// Get the left trigger value (0.0 to 1.0).
   pub fn left_trigger(&self) -> f32 {
+    if self.keys_blocked() {
+      return 0.0;
+    }
     self.left_trigger
   }
 
   /// Get the right trigger value (0.0 to 1.0).
   pub fn right_trigger(&self) -> f32 {
+    if self.keys_blocked() {
+      return 0.0;
+    }
     self.right_trigger
   }
 
@@ -2128,5 +2222,96 @@ mod tests {
     // Clean slate for next frame
     assert!(!input.key_repeat(KeyCode::Backspace));
     assert_eq!(input.text_input(), "");
+  }
+
+  #[test]
+  fn block_pointer_hides_mouse_buttons_motion_and_scroll() {
+    let mut input = InputState::new();
+    input.handle_mouse_move(40.0, 30.0);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    input.handle_mouse_button(MouseButton::Right, ElementState::Pressed);
+    input.handle_mouse_button(MouseButton::Right, ElementState::Released);
+    input.handle_scroll(MouseScrollDelta::LineDelta(0.0, 1.0));
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
+
+    input.block_pointer();
+
+    assert!(!input.mouse_pressed(MouseButton::Left));
+    assert!(!input.mouse_down(MouseButton::Left));
+    // Releases still report, so a drag begun before the block can end
+    assert!(input.mouse_released(MouseButton::Right));
+    assert!(!input.mouse_pressed_and_consume(MouseButton::Left));
+    assert_eq!(input.mouse_delta(), (0.0, 0.0));
+    assert_eq!(input.scroll_delta(), (0.0, 0.0));
+    // The cursor position still reads, for hover
+    assert_eq!(input.mouse_position(), (40.0, 30.0));
+    // Keys are not the pointer
+    assert!(input.key_pressed(KeyCode::KeyW));
+    assert!(input.key_down(KeyCode::KeyW));
+  }
+
+  #[test]
+  fn block_all_hides_keys_text_and_gamepad() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::KeyS, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::KeyS, ElementState::Released);
+    input.handle_text_input("w");
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    input.gamepad_buttons_pressed.insert(GamepadButton::South);
+    input.gamepad_buttons_down.insert(GamepadButton::South);
+    input.gamepad_buttons_released.insert(GamepadButton::East);
+    input.left_stick_x = 0.5;
+    input.right_stick_y = -0.5;
+    input.left_trigger = 1.0;
+
+    input.block_all();
+
+    assert!(!input.key_pressed(KeyCode::KeyW));
+    assert!(!input.key_down(KeyCode::KeyW));
+    assert!(!input.key_repeat(KeyCode::KeyW));
+    assert!(input.key_released(KeyCode::KeyS));
+    assert!(!input.key_pressed_and_consume(KeyCode::KeyW));
+    assert!(!input.has_text_input());
+    assert_eq!(input.text_input(), "");
+    assert!(!input.mouse_pressed(MouseButton::Left));
+    assert!(!input.gamepad_button_pressed(GamepadButton::South));
+    assert!(!input.gamepad_button_down(GamepadButton::South));
+    assert!(input.gamepad_button_released(GamepadButton::East));
+    assert!(!input.gamepad_button_pressed_and_consume(GamepadButton::South));
+    assert_eq!(input.left_stick(), (0.0, 0.0));
+    assert_eq!(input.left_stick_x(), 0.0);
+    assert_eq!(input.right_stick(), (0.0, 0.0));
+    assert_eq!(input.right_stick_y(), 0.0);
+    assert_eq!(input.left_trigger(), 0.0);
+  }
+
+  #[test]
+  fn unblock_restores_input_that_blocked_consumes_left_alone() {
+    let mut input = InputState::new();
+    input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    input.handle_text_input("a");
+
+    input.block_all();
+    assert!(!input.key_pressed_and_consume(KeyCode::Space));
+    assert!(!input.mouse_pressed_and_consume(MouseButton::Left));
+    assert_eq!(input.text_input(), "");
+
+    input.unblock();
+    assert!(input.key_pressed(KeyCode::Space));
+    assert!(input.mouse_pressed(MouseButton::Left));
+    assert_eq!(input.text_input(), "a");
+  }
+
+  #[test]
+  fn begin_frame_clears_an_input_block() {
+    let mut input = InputState::new();
+    input.block_all();
+
+    input.begin_frame();
+    input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
+
+    assert!(input.key_pressed(KeyCode::Space));
   }
 }

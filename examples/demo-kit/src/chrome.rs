@@ -121,17 +121,19 @@ fn key_text() -> Color {
   Color::YELLOW
 }
 
-pub(crate) fn draw(ui: &mut UiContext, view: &View) {
+/// Draw the shell; returns where the settings panel went, if it was drawn
+pub(crate) fn draw(ui: &mut UiContext, view: &View) -> Option<Rect> {
   let (w, h) = ui.screen_size();
   let (w, h) = (w as f32, h as f32);
   let l = layout(w, h, line_height(ui));
   draw_top_bar(ui, view, &l, w);
   draw_description(ui, view, &l, w);
-  draw_panel(ui, view, &l, w);
+  let panel = draw_panel(ui, view, &l, w);
   draw_legend(ui, view, &l, w, h);
   if view.help_open {
     draw_help(ui, view, &l, w, h);
   }
+  panel
 }
 
 fn draw_top_bar(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
@@ -186,9 +188,9 @@ pub(crate) fn row_widths(inner: f32, _label_w: f32, value_w: f32, gap: f32) -> (
   (label_max, value_max)
 }
 
-fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
+fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<Rect> {
   if view.rows.is_empty() {
-    return;
+    return None;
   }
   let gap = l.pad * 2.0;
   let hint = "Up/Down pick  Left/Right set";
@@ -205,9 +207,10 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
   let x = w - l.pad - panel_w;
   let y = l.content.y;
   if panel_h < row_h * 2.0 || panel_w <= 0.0 {
-    return;
+    return None;
   }
-  ui.draw_rect(Rect::new(x, y, panel_w, panel_h), panel_color());
+  let panel = Rect::new(x, y, panel_w, panel_h);
+  ui.draw_rect(panel, panel_color());
   ui.draw_text("SETTINGS", x + l.pad, y + l.pad, Color::WHITE);
 
   let rows_fit = ((panel_h - 2.0 * l.pad) / row_h).floor() as usize;
@@ -248,6 +251,7 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
   let hint_y = y + panel_h - l.pad - l.line_h;
   let hint = truncate_to(hint, inner, |s| text_w(ui, s));
   ui.draw_text(&hint, x + l.pad, hint_y, dim_text());
+  Some(panel)
 }
 
 /// Legend items: the page's controls, then `R reset`

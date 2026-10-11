@@ -991,6 +991,11 @@ impl InputState {
     fn key_pressed_and_consume(&mut self, key: KeyCode) -> bool;
     fn mouse_pressed_and_consume(&mut self, button: MouseButton) -> bool;
 
+    // Blocking (an overlay over the game: block, run the game's update, unblock)
+    fn block_pointer(&mut self);   // Hide mouse presses, held buttons, motion, scroll
+    fn block_all(&mut self);       // Also keys, text and gamepad
+    fn unblock(&mut self);         // Also cleared each frame; position and releases always report
+
     // Text entry
     fn text_input(&self) -> &str;                 // Characters typed this frame
 

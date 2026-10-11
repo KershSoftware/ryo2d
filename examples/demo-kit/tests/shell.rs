@@ -12,6 +12,12 @@ struct Seen {
   count: i32,
   mode: usize,
   on: bool,
+  /// Left clicks the page's updates saw
+  clicks: u32,
+  /// W held, as the page's last update saw it
+  w_down: bool,
+  /// The page's content area, from its last UI frame
+  content: Option<Rect>,
 }
 
 type Shared = Arc<Mutex<Seen>>;
@@ -69,16 +75,21 @@ impl DemoPage for Probe {
     }
   }
 
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) {
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     if let Ok(mut seen) = self.shared.lock() {
       seen.level = self.level;
       seen.count = self.count;
       seen.mode = self.mode;
       seen.on = self.on;
+      seen.clicks += u32::from(ctx.input.mouse_pressed(MouseButton::Left));
+      seen.w_down = ctx.input.key_down(KeyCode::KeyW);
     }
   }
 
   fn render_ui(&mut self, ui: &mut UiContext) {
+    if let Ok(mut seen) = self.shared.lock() {
+      seen.content = Some(content_area(ui));
+    }
     if let Some(text) = &mut self.text {
       ui.text_input(text, Rect::new(10.0, 100.0, 120.0, 20.0), "", 0.0);
     }
@@ -314,6 +325,54 @@ fn arrows_do_nothing_while_help_is_open() {
   tap(&mut engine, KeyCode::ArrowRight);
   tap(&mut engine, KeyCode::Escape);
   assert_eq!(seen(&shared).level, 0.5);
+}
+
+/// Click at `(x, y)` and run a frame
+fn click(engine: &mut HeadlessEngine, x: f32, y: f32) {
+  engine.mouse_move(x, y);
+  engine.press_mouse(MouseButton::Left);
+  let _ = engine.step();
+  engine.release_mouse(MouseButton::Left);
+  let _ = engine.step();
+}
+
+#[test]
+fn a_click_on_the_settings_panel_does_not_reach_the_page() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let Some(content) = seen(&shared).content else {
+    panic!("the page drew no UI frame");
+  };
+  // The panel sits at the content area's top right
+  click(&mut engine, content.right() - 4.0, content.y + 4.0);
+  assert_eq!(seen(&shared).clicks, 0);
+  // Left of the panel, the page gets the click
+  click(&mut engine, content.x + 4.0, content.y + 4.0);
+  assert_eq!(seen(&shared).clicks, 1);
+}
+
+#[test]
+fn the_page_sees_no_input_while_help_is_open() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let Some(content) = seen(&shared).content else {
+    panic!("the page drew no UI frame");
+  };
+  tap(&mut engine, KeyCode::KeyH);
+  click(&mut engine, content.x + 4.0, content.y + 4.0);
+  engine.press_key(KeyCode::KeyW);
+  let _ = engine.step();
+  assert_eq!(seen(&shared).clicks, 0);
+  assert!(!seen(&shared).w_down);
+  // Closing help hands input back
+  tap(&mut engine, KeyCode::Escape);
+  assert!(seen(&shared).w_down);
 }
 
 struct Greedy;
