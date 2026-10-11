@@ -255,21 +255,21 @@ impl Scene for ContactShadowsScene {
     }
 
     // Presets
-    if ctx.input.key_pressed(KeyCode::Digit7) {
+    if ctx.input.key_pressed(KeyCode::KeyZ) {
       // Sharp preset
       self.radius = 6.0;
       self.intensity = 0.7;
       self.falloff = 3.0;
       changed = true;
     }
-    if ctx.input.key_pressed(KeyCode::Digit8) {
+    if ctx.input.key_pressed(KeyCode::KeyX) {
       // Soft preset
       self.radius = 12.0;
       self.intensity = 0.4;
       self.falloff = 1.0;
       changed = true;
     }
-    if ctx.input.key_pressed(KeyCode::Digit9) {
+    if ctx.input.key_pressed(KeyCode::KeyC) {
       // Default preset
       self.radius = 8.0;
       self.intensity = 0.6;
@@ -333,7 +333,7 @@ impl Scene for ContactShadowsScene {
 
     // Presets
     ui.label(
-      "Presets: [7] Sharp  [8] Soft  [9] Default",
+      "Presets: [Z] Sharp  [X] Soft  [C] Default",
       10.0,
       155.0,
       gray,

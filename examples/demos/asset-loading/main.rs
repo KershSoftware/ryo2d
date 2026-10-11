@@ -192,7 +192,7 @@ impl Scene for LoadingDemoScene {
 }
 
 impl LoadingDemoScene {
-  fn render_ready_state(&mut self, ui: &mut UiContext, center_x: f32, screen_h: f32) {
+  fn render_ready_state(&mut self, ui: &mut UiContext, center_x: f32, _screen_h: f32) {
     // Instructions
     ui.draw_text_anchored(
       "Click the button to start loading assets",
@@ -213,11 +213,11 @@ impl LoadingDemoScene {
       ui.draw_text(&format!("  - {}", filename), 50.0, y, Color::DARK_GRAY);
     }
 
-    // Load button
+    // Load button, in the empty column right of the asset list
     let button_w = 200.0;
     let button_h = 50.0;
-    let button_x = center_x - button_w / 2.0;
-    let button_y = screen_h - 100.0;
+    let button_x = center_x + 60.0;
+    let button_y = list_y + 80.0;
 
     if ui.button(
       "Load Assets",

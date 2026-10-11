@@ -13,6 +13,8 @@ pub struct SoftShadowsScene {
 
   // Player-controlled light
   light_entity: Option<Entity>,
+  /// The marker drawn at the light
+  light_visual: Option<Entity>,
   light_x: f32,
   light_y: f32,
 
@@ -33,6 +35,7 @@ impl SoftShadowsScene {
       screen_h: 720.0,
 
       light_entity: None,
+      light_visual: None,
       light_x: 640.0,
       light_y: 360.0,
 
@@ -61,6 +64,14 @@ impl SoftShadowsScene {
         transform.x = self.light_x;
         transform.y = self.light_y;
       }
+    }
+
+    // Keep the marker on the light
+    if let Some(visual) = self.light_visual
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(visual)
+    {
+      transform.x = self.light_x;
+      transform.y = self.light_y;
     }
   }
 
@@ -93,6 +104,7 @@ impl Scene for SoftShadowsScene {
     ctx.world.clear();
     self.static_occluders.clear();
     self.light_entity = None;
+    self.light_visual = None;
   }
 
   fn on_enter(&mut self, ctx: &mut SceneContext) {
@@ -147,10 +159,10 @@ impl Scene for SoftShadowsScene {
       Sprite::solid_circle(20, 255, 240, 200, 255),
       "soft_light_source",
     );
-    ctx.world.spawn((
+    self.light_visual = Some(ctx.world.spawn((
       Transform::new(self.light_x, self.light_y).with_pivot_center(),
       Renderable::sprite(light_visual).with_z_order(10),
-    ));
+    )));
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -204,13 +216,13 @@ impl Scene for SoftShadowsScene {
     }
 
     // Toggle between presets with number keys (5-7)
-    if ctx.input.key_pressed(KeyCode::Digit5) {
+    if ctx.input.key_pressed(KeyCode::KeyZ) {
       self.softness = 0.0; // Hard shadows
     }
-    if ctx.input.key_pressed(KeyCode::Digit6) {
+    if ctx.input.key_pressed(KeyCode::KeyX) {
       self.softness = 0.5; // Medium soft
     }
-    if ctx.input.key_pressed(KeyCode::Digit7) {
+    if ctx.input.key_pressed(KeyCode::KeyC) {
       self.softness = 1.0; // Very soft
     }
 
@@ -264,7 +276,7 @@ impl Scene for SoftShadowsScene {
 
     // Presets
     ui.label(
-      "Presets: [5] Hard  [6] Medium  [7] Very Soft",
+      "Presets: [Z] Hard  [X] Medium  [C] Very Soft",
       10.0,
       130.0,
       gray,

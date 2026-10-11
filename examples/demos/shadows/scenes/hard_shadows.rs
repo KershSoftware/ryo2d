@@ -12,6 +12,8 @@ pub struct HardShadowsScene {
 
   // Player-controlled light
   light_entity: Option<Entity>,
+  /// The marker drawn at the light
+  light_visual: Option<Entity>,
   light_x: f32,
   light_y: f32,
   is_spotlight: bool,
@@ -33,6 +35,7 @@ impl HardShadowsScene {
       screen_h: 720.0,
 
       light_entity: None,
+      light_visual: None,
       light_x: 640.0,
       light_y: 360.0,
       is_spotlight: false,
@@ -74,6 +77,14 @@ impl HardShadowsScene {
         transform.x = self.light_x;
         transform.y = self.light_y;
       }
+    }
+
+    // Keep the marker on the light
+    if let Some(visual) = self.light_visual
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(visual)
+    {
+      transform.x = self.light_x;
+      transform.y = self.light_y;
     }
   }
 
@@ -141,6 +152,7 @@ impl Scene for HardShadowsScene {
     self.placed_occluders.clear();
     self.static_occluders.clear();
     self.light_entity = None;
+    self.light_visual = None;
   }
 
   fn on_enter(&mut self, ctx: &mut SceneContext) {
@@ -205,10 +217,10 @@ impl Scene for HardShadowsScene {
     let light_visual = ctx
       .assets
       .create_sprite(Sprite::solid_circle(16, 255, 255, 200, 255), "light_source");
-    ctx.world.spawn((
+    self.light_visual = Some(ctx.world.spawn((
       Transform::new(self.light_x, self.light_y).with_pivot_center(),
       Renderable::sprite(light_visual).with_z_order(10),
-    ));
+    )));
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {

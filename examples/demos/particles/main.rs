@@ -401,8 +401,10 @@ impl ParticlesDemo {
     for x in [200.0, 420.0] {
       let rain = world.spawn((
         Transform::new(x, 0.0),
+        // Live long enough to fall the full screen height
         ParticleEmitter::rain(self.particle_sprite.clone())
-          .with_mode(EmissionMode::Continuous { rate: 60.0 }),
+          .with_mode(EmissionMode::Continuous { rate: 60.0 })
+          .with_lifetime(1.3, 1.5),
       ));
       self.emitters.push(rain);
     }
@@ -411,8 +413,10 @@ impl ParticlesDemo {
     for x in [820.0, 1050.0] {
       let snow = world.spawn((
         Transform::new(x, 0.0),
+        // Snow drifts at about 40 px/s, so it needs ~20 s to cross the screen
         ParticleEmitter::snow(self.particle_sprite.clone())
-          .with_mode(EmissionMode::Continuous { rate: 20.0 }),
+          .with_mode(EmissionMode::Continuous { rate: 20.0 })
+          .with_lifetime(19.0, 21.0),
       ));
       self.emitters.push(snow);
     }

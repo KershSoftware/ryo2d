@@ -1,7 +1,7 @@
 //! Trails Demo - Ryo2D Example
 //!
 //! Six discrete demo pages, each showcasing one trail feature clearly.
-//! Navigate with arrow keys or number keys 1-6.
+//! Left/Right arrows switch pages (wrapping); on the Presets page, 1-6 pick a preset.
 //!
 //! ## Pages
 //!

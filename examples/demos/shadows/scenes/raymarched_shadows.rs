@@ -13,6 +13,8 @@ pub struct RaymarchedShadowsScene {
 
   // Player-controlled light
   light_entity: Option<Entity>,
+  /// The marker drawn at the light
+  light_visual: Option<Entity>,
   light_x: f32,
   light_y: f32,
   light_color: Color,
@@ -34,6 +36,7 @@ impl RaymarchedShadowsScene {
       screen_h: 720.0,
 
       light_entity: None,
+      light_visual: None,
       light_x: 640.0,
       light_y: 360.0,
       light_color: Color::new(255, 220, 180, 255), // Warm light
@@ -63,6 +66,14 @@ impl RaymarchedShadowsScene {
         transform.x = self.light_x;
         transform.y = self.light_y;
       }
+    }
+
+    // Keep the marker on the light
+    if let Some(visual) = self.light_visual
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(visual)
+    {
+      transform.x = self.light_x;
+      transform.y = self.light_y;
     }
   }
 
@@ -129,6 +140,7 @@ impl Scene for RaymarchedShadowsScene {
     self.placed_occluders.clear();
     self.static_occluders.clear();
     self.light_entity = None;
+    self.light_visual = None;
   }
 
   fn on_enter(&mut self, ctx: &mut SceneContext) {
@@ -176,10 +188,10 @@ impl Scene for RaymarchedShadowsScene {
       Sprite::solid_circle(20, 255, 220, 150, 255),
       "rm_light_source",
     );
-    ctx.world.spawn((
+    self.light_visual = Some(ctx.world.spawn((
       Transform::new(self.light_x, self.light_y).with_pivot_center(),
       Renderable::sprite(light_visual).with_z_order(10),
-    ));
+    )));
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
