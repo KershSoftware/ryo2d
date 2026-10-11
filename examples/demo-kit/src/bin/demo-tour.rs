@@ -43,9 +43,8 @@ fn main() -> ExitCode {
 }
 
 fn tour(wanted: &[String]) -> Result<bool, String> {
-  let root = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-    .map_err(|e| format!("cannot find the repository root: {e}"))?;
-  let metadata = cargo_metadata(&root)?;
+  let metadata = cargo_metadata(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))?;
+  let root = workspace_root(&metadata)?;
   let target_dir = PathBuf::from(
     metadata["target_directory"]
       .as_str()
@@ -102,6 +101,16 @@ fn cargo_metadata(root: &Path) -> Result<serde_json::Value, String> {
     ));
   }
   serde_json::from_slice(&output.stdout).map_err(|e| format!("cargo metadata: {e}"))
+}
+
+/// The repository root as cargo writes paths, so demo folders found under it
+/// compare equal to its manifest paths (`fs::canonicalize` gives `\\?\C:\`
+/// paths on Windows where cargo gives `C:\`)
+fn workspace_root(metadata: &serde_json::Value) -> Result<PathBuf, String> {
+  metadata["workspace_root"]
+    .as_str()
+    .map(PathBuf::from)
+    .ok_or_else(|| "cargo metadata has no workspace_root".to_string())
 }
 
 fn build(root: &Path, demos: &[DemoBin]) -> Result<(), String> {
@@ -295,6 +304,17 @@ mod tests {
     let one = demo_dirs(root.path(), &["trails".to_string()]).unwrap();
     assert_eq!(one.len(), 1);
     assert!(demo_dirs(root.path(), &["nope".to_string()]).is_err());
+  }
+
+  #[test]
+  fn every_demo_folder_under_cargos_root_has_a_binary() {
+    let metadata = cargo_metadata(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+    let root = workspace_root(&metadata).unwrap();
+    let dirs = demo_dirs(&root.join("examples").join("demos"), &[]).unwrap();
+    assert!(!dirs.is_empty());
+    for dir in dirs {
+      assert!(bin_for(&metadata, &dir).is_some(), "{}", dir.display());
+    }
   }
 
   #[test]
