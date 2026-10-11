@@ -1,0 +1,9 @@
+[package]
+name = "demo-kit"
+version = "0.1.0"
+edition = "2024"
+description = "Shared shell for Ryo2D feature demos: pages, settings panel, help and layout"
+publish = false
+
+[dependencies]
+ryo2d = { path = "../.." }

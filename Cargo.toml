@@ -21,6 +21,7 @@ path = "src/bin/ryo2d.rs"
 members = [
   ".",
   "ryo2d-derive",
+  "examples/demo-kit",
   "examples/demos/*",
   "examples/games/*",
 ]
