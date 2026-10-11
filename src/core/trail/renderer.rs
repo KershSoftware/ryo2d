@@ -68,12 +68,43 @@ struct TexturedBatch {
   end: usize,
 }
 
-/// Geometry of trails and lines drawn after lighting (`with_lighting(false)`).
+/// The vertices of one geometry group.
 #[derive(Default)]
-struct UnlitGeometry {
+struct Geometry {
   vertices: Vec<TrailVertex>,
   textured_vertices: Vec<TrailVertex>,
   textured_batches: Vec<TexturedBatch>,
+}
+
+impl Geometry {
+  fn len(&self) -> usize {
+    self.vertices.len() + self.textured_vertices.len()
+  }
+
+  fn clear(&mut self) {
+    self.vertices.clear();
+    self.textured_vertices.clear();
+    self.textured_batches.clear();
+  }
+}
+
+/// The geometry of the trails and lines sharing a lighting mode and z-order.
+///
+/// Groups drawn before lighting are lit; the others (`with_lighting(false)`)
+/// draw after it.
+struct Group {
+  lit: bool,
+  z: i32,
+  /// Whether anything was added to the group this frame
+  used: bool,
+  geometry: Geometry,
+}
+
+impl Group {
+  /// Position in draw order: lit groups first, each by z.
+  fn order(&self) -> (bool, i32) {
+    (!self.lit, self.z)
+  }
 }
 
 /// GPU-accelerated trail and line renderer.
@@ -105,17 +136,20 @@ pub struct TrailRenderer {
   /// Cached textures (sprite_id -> CachedTexture)
   texture_cache: HashMap<String, CachedTexture>,
 
-  /// Accumulated vertices for non-textured trails
+  /// The group being built: its non-textured vertices
   vertices: Vec<TrailVertex>,
 
-  /// Accumulated vertices for textured trails
+  /// The group being built: its textured vertices
   textured_vertices: Vec<TrailVertex>,
 
-  /// Batches of textured trails (grouped by texture)
+  /// The group being built: its textured batches (grouped by texture)
   textured_batches: Vec<TexturedBatch>,
 
-  /// Geometry of trails and lines that skip lighting
-  unlit: UnlitGeometry,
+  /// Vertices held by the groups other than the one being built
+  other_vertices: usize,
+
+  /// The frame's geometry by lighting mode and z-order
+  groups: Vec<Group>,
 
   /// Screen dimensions
   width: u32,
@@ -347,7 +381,8 @@ impl TrailRenderer {
       vertices: Vec::with_capacity(MAX_TRAIL_VERTICES),
       textured_vertices: Vec::with_capacity(MAX_TRAIL_VERTICES / 2),
       textured_batches: Vec::new(),
-      unlit: UnlitGeometry::default(),
+      other_vertices: 0,
+      groups: Vec::new(),
       width,
       height,
       enabled: true,
@@ -375,25 +410,51 @@ impl TrailRenderer {
     self.vertices.clear();
     self.textured_vertices.clear();
     self.textured_batches.clear();
-    self.unlit.vertices.clear();
-    self.unlit.textured_vertices.clear();
-    self.unlit.textured_batches.clear();
+    // Keep last frame's groups (and their allocations) for reuse
+    self.groups.retain(|group| group.used);
+    for group in &mut self.groups {
+      group.geometry.clear();
+      group.used = false;
+    }
   }
 
-  /// Build geometry with `add` into the unlit group instead of the lit one.
-  fn add_unlit(&mut self, add: impl FnOnce(&mut Self)) {
-    self.swap_unlit();
+  /// Build geometry with `add` into the group of this lighting mode and z.
+  fn add_in_group(&mut self, lit: bool, z: i32, add: impl FnOnce(&mut Self)) {
+    let index = match self
+      .groups
+      .iter()
+      .position(|group| group.lit == lit && group.z == z)
+    {
+      Some(index) => index,
+      None => {
+        self.groups.push(Group {
+          lit,
+          z,
+          used: false,
+          geometry: Geometry::default(),
+        });
+        self.groups.len() - 1
+      }
+    };
+    self.other_vertices = self
+      .groups
+      .iter()
+      .enumerate()
+      .filter(|(i, _)| *i != index)
+      .map(|(_, group)| group.geometry.len())
+      .sum();
+    self.groups[index].used = true;
+    self.swap_group(index);
     add(self);
-    self.swap_unlit();
+    self.swap_group(index);
   }
 
-  fn swap_unlit(&mut self) {
-    std::mem::swap(&mut self.vertices, &mut self.unlit.vertices);
-    std::mem::swap(
-      &mut self.textured_vertices,
-      &mut self.unlit.textured_vertices,
-    );
-    std::mem::swap(&mut self.textured_batches, &mut self.unlit.textured_batches);
+  /// Swap the group at `index` with the working vertices.
+  fn swap_group(&mut self, index: usize) {
+    let geometry = &mut self.groups[index].geometry;
+    std::mem::swap(&mut self.vertices, &mut geometry.vertices);
+    std::mem::swap(&mut self.textured_vertices, &mut geometry.textured_vertices);
+    std::mem::swap(&mut self.textured_batches, &mut geometry.textured_batches);
   }
 
   /// Ensure a texture is cached and return its sprite_id for batch lookup.
@@ -479,11 +540,9 @@ impl TrailRenderer {
   /// The trail's points are converted to triangle strip vertices.
   /// If the trail has a texture, it will be rendered with texture mapping.
   pub fn add_trail(&mut self, trail: &Trail2D, transform: &Transform) {
-    if trail.lighting() {
-      self.push_trail(trail, transform);
-    } else {
-      self.add_unlit(|renderer| renderer.push_trail(trail, transform));
-    }
+    self.add_in_group(trail.lighting(), trail.z_order(), |renderer| {
+      renderer.push_trail(trail, transform)
+    });
   }
 
   /// Build a trail's geometry into the current (lit or unlit) group.
@@ -494,6 +553,9 @@ impl TrailRenderer {
 
     // Check if this trail has a texture (we'll need device/queue for caching)
     let has_texture = trail.texture().is_some();
+
+    // The whole frame shares one vertex buffer
+    let used = self.other_vertices + self.vertices.len() + self.textured_vertices.len();
 
     // Select the appropriate vertex buffer
     let vertices = if has_texture {
@@ -511,7 +573,7 @@ impl TrailRenderer {
       LineCap::Round => 2 * (8 * 2 + 3), // 2 caps, each ~8 segments * 2 verts + degenerate
       LineCap::Square => 2 * 4,          // 2 caps, 4 vertices each
     };
-    if vertices.len() + point_count * 2 + cap_overhead > MAX_TRAIL_VERTICES {
+    if used + point_count * 2 + cap_overhead > MAX_TRAIL_VERTICES {
       return; // Buffer full
     }
 
@@ -856,11 +918,9 @@ impl TrailRenderer {
     trail: &Trail2D,
     transform: &Transform,
   ) {
-    if trail.lighting() {
-      self.push_trail_with_device(device, queue, trail, transform);
-    } else {
-      self.add_unlit(|renderer| renderer.push_trail_with_device(device, queue, trail, transform));
-    }
+    self.add_in_group(trail.lighting(), trail.z_order(), |renderer| {
+      renderer.push_trail_with_device(device, queue, trail, transform)
+    });
   }
 
   fn push_trail_with_device(
@@ -894,11 +954,9 @@ impl TrailRenderer {
 
   /// Add a line to be rendered.
   pub fn add_line(&mut self, line: &Line2D, offset_x: f32, offset_y: f32) {
-    if line.lighting() {
-      self.push_line(line, offset_x, offset_y);
-    } else {
-      self.add_unlit(|renderer| renderer.push_line(line, offset_x, offset_y));
-    }
+    self.add_in_group(line.lighting(), line.z_order(), |renderer| {
+      renderer.push_line(line, offset_x, offset_y)
+    });
   }
 
   fn push_line(&mut self, line: &Line2D, offset_x: f32, offset_y: f32) {
@@ -920,7 +978,8 @@ impl TrailRenderer {
       LineJoin::Bevel | LineJoin::Miter => point_count.saturating_sub(2) * 6,
       LineJoin::Round => point_count.saturating_sub(2) * 20,
     };
-    if self.vertices.len() + point_count * 2 + cap_overhead + join_overhead > MAX_TRAIL_VERTICES {
+    let used = self.other_vertices + self.vertices.len() + self.textured_vertices.len();
+    if used + point_count * 2 + cap_overhead + join_overhead > MAX_TRAIL_VERTICES {
       return; // Buffer full
     }
 
@@ -1412,17 +1471,12 @@ impl TrailRenderer {
     time: f32,
     _style: TrailStyle,
   ) {
-    self.draw_geometry(
+    self.render_groups(
       queue,
       encoder,
       target_view,
       (camera_pos, camera_zoom, time),
-      (
-        &self.vertices,
-        &self.textured_vertices,
-        &self.textured_batches,
-      ),
-      0,
+      true,
     );
   }
 
@@ -1439,36 +1493,80 @@ impl TrailRenderer {
     camera_zoom: f32,
     time: f32,
   ) {
-    let base = self.vertices.len() + self.textured_vertices.len();
-    self.draw_geometry(
+    self.render_groups(
       queue,
       encoder,
       target_view,
       (camera_pos, camera_zoom, time),
-      (
-        &self.unlit.vertices,
-        &self.unlit.textured_vertices,
-        &self.unlit.textured_batches,
-      ),
-      base,
+      false,
     );
   }
 
-  /// Upload one geometry group at vertex index `base` and draw it.
-  fn draw_geometry(
+  /// Upload and draw the groups of one lighting mode in a pass of their own.
+  fn render_groups(
     &self,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
     target_view: &wgpu::TextureView,
-    (camera_pos, camera_zoom, time): (Vec2, f32, f32),
-    (vertices, textured_vertices, textured_batches): (
-      &[TrailVertex],
-      &[TrailVertex],
-      &[TexturedBatch],
-    ),
-    base: usize,
+    camera: (Vec2, f32, f32),
+    lit: bool,
   ) {
-    if !self.enabled || (vertices.is_empty() && textured_vertices.is_empty()) {
+    let mut zs: Vec<i32> = self.groups(lit).collect();
+    if zs.is_empty() {
+      return;
+    }
+    zs.sort_unstable();
+    self.prepare(queue, camera);
+    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+      label: Some("Trail Render Pass"),
+      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+        view: target_view,
+        resolve_target: None,
+        ops: wgpu::Operations {
+          load: wgpu::LoadOp::Load,
+          store: wgpu::StoreOp::Store,
+        },
+      })],
+      depth_stencil_attachment: None,
+      occlusion_query_set: None,
+      timestamp_writes: None,
+    });
+    for z in zs {
+      self.draw_group(&mut render_pass, lit, z);
+    }
+  }
+
+  /// The z of every group of one lighting mode that has geometry to draw.
+  pub(crate) fn groups(&self, lit: bool) -> impl Iterator<Item = i32> + '_ {
+    self
+      .groups
+      .iter()
+      .filter(move |group| self.enabled && group.lit == lit && group.geometry.len() > 0)
+      .map(|group| group.z)
+  }
+
+  /// Where a group's vertices start in the vertex buffer: groups are laid out
+  /// lit first, each by z, non-textured vertices before textured ones.
+  fn group_base(&self, group: &Group) -> usize {
+    self
+      .groups
+      .iter()
+      .filter(|other| other.order() < group.order())
+      .map(|other| other.geometry.len())
+      .sum()
+  }
+
+  /// Upload the frame's globals and every group's vertices.
+  ///
+  /// Call before the render pass that draws groups with
+  /// [`draw_group`](Self::draw_group); buffer writes are not allowed
+  /// mid-pass.
+  pub(crate) fn prepare(
+    &self,
+    queue: &wgpu::Queue,
+    (camera_pos, camera_zoom, time): (Vec2, f32, f32),
+  ) {
+    if !self.enabled {
       return;
     }
 
@@ -1495,86 +1593,101 @@ impl TrailRenderer {
     queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
 
     let vertex_size = std::mem::size_of::<TrailVertex>();
-
-    // Render non-textured trails
-    if !vertices.is_empty() {
-      queue.write_buffer(
-        &self.vertex_buffer,
-        (base * vertex_size) as u64,
-        bytemuck::cast_slice(vertices),
-      );
-
-      let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("Trail Render Pass"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-          view: target_view,
-          resolve_target: None,
-          ops: wgpu::Operations {
-            load: wgpu::LoadOp::Load,
-            store: wgpu::StoreOp::Store,
-          },
-        })],
-        depth_stencil_attachment: None,
-        occlusion_query_set: None,
-        timestamp_writes: None,
-      });
-
-      render_pass.set_pipeline(&self.pipeline);
-      render_pass.set_bind_group(0, &self.bind_group, &[]);
-      render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-      render_pass.draw(base as u32..(base + vertices.len()) as u32, 0..1);
-    }
-
-    // Render textured trails (grouped by texture), stored after the non-textured ones
-    if !textured_vertices.is_empty() && !textured_batches.is_empty() {
-      let textured_base = base + vertices.len();
-      queue.write_buffer(
-        &self.vertex_buffer,
-        (textured_base * vertex_size) as u64,
-        bytemuck::cast_slice(textured_vertices),
-      );
-
-      for batch in textured_batches {
-        if let Some(cached) = self.texture_cache.get(&batch.sprite_id) {
-          let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Trail Textured Render Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-              view: target_view,
-              resolve_target: None,
-              ops: wgpu::Operations {
-                load: wgpu::LoadOp::Load,
-                store: wgpu::StoreOp::Store,
-              },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-          });
-
-          render_pass.set_pipeline(&self.textured_pipeline);
-          render_pass.set_bind_group(0, &self.bind_group, &[]);
-          render_pass.set_bind_group(1, &cached.bind_group, &[]);
-          render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-
-          let start = (textured_base + batch.start) as u32;
-          let end = (textured_base + batch.end) as u32;
-          render_pass.draw(start..end, 0..1);
-        }
+    for group in &self.groups {
+      let geometry = &group.geometry;
+      let base = self.group_base(group);
+      if geometry.len() == 0 || base + geometry.len() > MAX_TRAIL_VERTICES {
+        continue;
+      }
+      if !geometry.vertices.is_empty() {
+        queue.write_buffer(
+          &self.vertex_buffer,
+          (base * vertex_size) as u64,
+          bytemuck::cast_slice(&geometry.vertices),
+        );
+      }
+      if !geometry.textured_vertices.is_empty() {
+        let textured_base = base + geometry.vertices.len();
+        queue.write_buffer(
+          &self.vertex_buffer,
+          (textured_base * vertex_size) as u64,
+          bytemuck::cast_slice(&geometry.textured_vertices),
+        );
       }
     }
   }
 
+  /// Draw one group inside a render pass, after [`prepare`](Self::prepare).
+  ///
+  /// Draws nothing when the group is empty or does not exist. Leaves the
+  /// pipeline and bind groups set for trails, so a caller drawing something
+  /// else next sets its own.
+  pub(crate) fn draw_group<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, lit: bool, z: i32) {
+    if !self.enabled {
+      return;
+    }
+    let Some(group) = self
+      .groups
+      .iter()
+      .find(|group| group.lit == lit && group.z == z)
+    else {
+      return;
+    };
+    let geometry = &group.geometry;
+    let base = self.group_base(group);
+    if geometry.len() == 0 || base + geometry.len() > MAX_TRAIL_VERTICES {
+      return;
+    }
+
+    pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+    if !geometry.vertices.is_empty() {
+      pass.set_pipeline(&self.pipeline);
+      pass.set_bind_group(0, &self.bind_group, &[]);
+      pass.draw(base as u32..(base + geometry.vertices.len()) as u32, 0..1);
+    }
+
+    // Textured trails (grouped by texture) follow the non-textured ones
+    let textured_base = base + geometry.vertices.len();
+    for batch in &geometry.textured_batches {
+      if let Some(cached) = self.texture_cache.get(&batch.sprite_id) {
+        pass.set_pipeline(&self.textured_pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(1, &cached.bind_group, &[]);
+        let start = (textured_base + batch.start) as u32;
+        let end = (textured_base + batch.end) as u32;
+        pass.draw(start..end, 0..1);
+      }
+    }
+  }
+
+  /// How many draw calls [`draw_group`](Self::draw_group) issues for all groups.
+  pub(crate) fn draw_count(&self) -> usize {
+    if !self.enabled {
+      return 0;
+    }
+    self
+      .groups
+      .iter()
+      .map(|group| {
+        let geometry = &group.geometry;
+        let textured = geometry
+          .textured_batches
+          .iter()
+          .filter(|batch| self.texture_cache.contains_key(&batch.sprite_id))
+          .count();
+        usize::from(!geometry.vertices.is_empty()) + textured
+      })
+      .sum()
+  }
+
   /// Get the number of vertices accumulated this frame.
   pub fn vertex_count(&self) -> usize {
-    self.vertices.len()
-      + self.textured_vertices.len()
-      + self.unlit.vertices.len()
-      + self.unlit.textured_vertices.len()
+    self.groups.iter().map(|group| group.geometry.len()).sum()
   }
 
   /// Whether any trail or line skips lighting this frame.
   pub fn has_unlit(&self) -> bool {
-    !self.unlit.vertices.is_empty() || !self.unlit.textured_vertices.is_empty()
+    self.groups(false).next().is_some()
   }
 
   /// Clear the texture cache (call when sprites are unloaded)

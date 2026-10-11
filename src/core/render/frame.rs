@@ -1,5 +1,6 @@
 //! What a frame contains, decided before any pass runs
 
+use super::DrawList;
 use crate::core::ecs::Transform;
 use crate::core::graphics::{BatchCollector, SpriteGpuRenderer};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingRenderer};
@@ -61,6 +62,8 @@ pub(crate) struct LightingFrame<'a> {
 pub(crate) struct FrameScene<'a> {
   pub(crate) sprites: &'a SpriteGpuRenderer,
   pub(crate) batches: &'a BatchCollector,
+  /// The z-sorted drawables of the world passes (empty on the legacy path)
+  pub(crate) draw_list: &'a DrawList,
   pub(crate) trails: Option<&'a TrailRenderer>,
   /// `Some` only while lighting is enabled
   pub(crate) lighting: Option<LightingFrame<'a>>,

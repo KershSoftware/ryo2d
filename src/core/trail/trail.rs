@@ -153,6 +153,8 @@ pub struct Trail2D {
   join: LineJoin,
   /// Whether scene lighting applies (false: full brightness over the lit scene)
   lighting: bool,
+  /// Draw order against sprites and other trails (higher draws on top)
+  z_order: i32,
 }
 
 /// A single point in the trail
@@ -203,6 +205,7 @@ impl Trail2D {
       cap: LineCap::Butt,
       join: LineJoin::None,
       lighting: true,
+      z_order: 0,
     }
   }
 
@@ -855,6 +858,24 @@ impl Trail2D {
   /// Set the line join style.
   pub fn set_join(&mut self, join: LineJoin) {
     self.join = join;
+  }
+
+  /// Set the draw order (default 0): the trail draws over sprites and lines
+  /// with a lower z and under those with a higher one. At equal z, trails
+  /// draw over sprites.
+  pub fn with_z_order(mut self, z_order: i32) -> Self {
+    self.z_order = z_order;
+    self
+  }
+
+  /// The draw order of this trail.
+  pub fn z_order(&self) -> i32 {
+    self.z_order
+  }
+
+  /// Set the draw order of this trail.
+  pub fn set_z_order(&mut self, z_order: i32) {
+    self.z_order = z_order;
   }
 }
 

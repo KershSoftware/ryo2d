@@ -31,6 +31,7 @@
 //! ```
 
 mod context;
+mod draw_list;
 mod frame;
 mod pass;
 mod passes;
@@ -38,6 +39,7 @@ mod pipeline;
 
 pub(crate) use context::FrameTargets;
 pub use context::RenderContext;
+pub(crate) use draw_list::{DrawKind, DrawList, DrawPayload, TextureRef, WorldRun, plan_runs};
 pub use frame::FrameInfo;
 pub(crate) use frame::{FrameImage, FrameScene, LightingFrame};
 pub use pass::RenderPass;
@@ -55,16 +57,22 @@ pub mod pass_ids {
   pub const GPU_SPRITES: &str = "gpu_sprites";
   /// CPU-rendered content blended onto the game texture
   pub const CPU_BLEND: &str = "cpu_blend";
+  /// GPU sprites and lit trails and lines, drawn together in z order
+  pub const WORLD: &str = "world";
   /// Lit trails and lines
   pub const TRAILS: &str = "trails";
   /// 2D lighting
   pub const LIGHTING: &str = "lighting";
   /// Trails and lines that skip lighting
   pub const UNLIT_TRAILS: &str = "unlit_trails";
+  /// Trails and lines that skip lighting, drawn in z order
+  pub const UNLIT_WORLD: &str = "unlit_world";
   /// Post-process effects
   pub const POST_PROCESS: &str = "post_process";
   /// UI upload
   pub const UI: &str = "ui";
+  /// Scene transition overlay
+  pub const TRANSITION: &str = "transition";
   /// Final composite to the window or offscreen target
   pub const COMPOSITE: &str = "composite";
   /// Frame capture

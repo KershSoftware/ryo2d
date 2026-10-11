@@ -25,7 +25,9 @@ use winit::window::Window;
 use crate::core::capture::{CapturedFrame, read_texture_rgba};
 use crate::core::engine::WindowMode;
 use crate::core::error::{CaptureError, CaptureResult};
-use crate::core::render::{FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline};
+use crate::core::render::{
+  DrawList, FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline,
+};
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
 use super::{Compositor, SpriteGpuRenderer, sprite_gpu::BatchCollector};
@@ -910,9 +912,11 @@ impl WgpuRenderer {
     let sprites = SpriteGpuRenderer::new(&self.device, &self.queue, self.target.format());
     let batches = BatchCollector::new();
     let effects = EffectsManager::new();
+    let draw_list = DrawList::default();
     let scene = FrameScene {
       sprites: &sprites,
       batches: &batches,
+      draw_list: &draw_list,
       trails: None,
       lighting: None,
       raycast: None,

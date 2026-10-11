@@ -35,7 +35,7 @@ use super::raycast::{
   CameraUniform, GpuRaycastRenderer, LightInstance, RaycastCamera, RaycastLight, RaycastSprite,
   SpriteInstance as RaycastSpriteInstance,
 };
-use super::render::{FrameScene, LightingFrame, RenderPipeline};
+use super::render::{DrawKind, DrawList, FrameScene, LightingFrame, RenderPipeline};
 use super::scene::{Scene, SceneAction, SceneContext, SceneManager};
 use super::shaders::EffectsManager;
 use super::systems::{
@@ -310,6 +310,11 @@ pub struct Engine {
   game_version: Option<String>,
   // The render passes every frame runs through
   pub(crate) render_pipeline: RenderPipeline,
+  // Draw GPU sprites and trails from one z-sorted list (with the
+  // `RenderPipeline::world_2d` passes) instead of the legacy passes
+  pub(crate) gpu_world: bool,
+  // The frame's z-sorted drawables on the GPU world path (reused each frame)
+  draw_list: DrawList,
 }
 
 /// Result of rendering and presenting one frame.
@@ -783,6 +788,8 @@ impl Engine {
       game_name,
       game_version,
       render_pipeline: RenderPipeline::default_2d(),
+      gpu_world: false,
+      draw_list: DrawList::default(),
     }
   }
 
@@ -1424,6 +1431,17 @@ impl Engine {
     }
   }
 
+  /// Draw through the GPU world path: sprites and trails from one z-sorted
+  /// list, with the `world_2d` passes (CPU entities are not drawn yet).
+  #[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "only tests enable the GPU world path so far")
+  )]
+  pub(crate) fn use_gpu_world(&mut self) {
+    self.gpu_world = true;
+    self.render_pipeline = RenderPipeline::world_2d();
+  }
+
   /// Render and present one frame — the single present path for window and headless runs.
   fn present_frame(&mut self) -> PresentOutcome {
     // Render phase
@@ -1583,9 +1601,29 @@ impl Engine {
         rend.game_width() as f32,
         rend.game_height() as f32,
       );
-      // Make the batches' textures resident in the atlas before drawing
-      gpu.prepare(rend.device(), rend.queue(), &self.batch_collector);
-      self.debug_stats.draw_calls = gpu.draw_call_count() as u32;
+      self.draw_list.clear();
+      if self.gpu_world {
+        // Sprites and trails drawn together in z order
+        self
+          .batch_collector
+          .push_to(&mut self.draw_list, DrawKind::Sprite);
+        if let Some(trails) = trail_renderer.as_ref() {
+          for z in trails.groups(true) {
+            self.draw_list.push_trail_group(true, z);
+          }
+          for z in trails.groups(false) {
+            self.draw_list.push_trail_group(false, z);
+          }
+        }
+        self.draw_list.sorted();
+        gpu.prepare_world(rend.device(), rend.queue(), &self.draw_list);
+        let trail_draws = trail_renderer.as_ref().map_or(0, |t| t.draw_count());
+        self.debug_stats.draw_calls = (gpu.world_draw_count() + trail_draws) as u32;
+      } else {
+        // Make the batches' textures resident in the atlas before drawing
+        gpu.prepare(rend.device(), rend.queue(), &self.batch_collector);
+        self.debug_stats.draw_calls = gpu.draw_call_count() as u32;
+      }
 
       // Prepare camera data for trail rendering
       let camera_pos = glam::Vec2::new(self.camera.x, self.camera.y);
@@ -1609,6 +1647,7 @@ impl Engine {
       let scene = FrameScene {
         sprites: &*gpu,
         batches: &self.batch_collector,
+        draw_list: &self.draw_list,
         trails: trail_renderer.as_ref(),
         lighting: lighting
           .as_mut()

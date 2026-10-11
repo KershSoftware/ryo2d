@@ -232,3 +232,35 @@ fn a_raycast_frame_skips_the_2d_scene() {
     vec!["raycast", "post_process", "ui", "composite"]
   );
 }
+
+#[test]
+fn world_2d_order() {
+  assert_eq!(
+    ids(&RenderPipeline::world_2d()),
+    vec![
+      "clear",
+      "raycast",
+      "world",
+      "lighting",
+      "unlit_world",
+      "post_process",
+      "ui",
+      "composite",
+      "capture",
+    ]
+  );
+}
+
+#[test]
+fn a_full_world_frame_runs_both_world_passes() {
+  let frame = FrameInfo {
+    gpu_sprites: true,
+    trails: true,
+    lighting: true,
+    ..FrameInfo::default()
+  };
+  assert_eq!(
+    RenderPipeline::world_2d().passes_to_run(&frame),
+    vec!["clear", "world", "lighting", "unlit_world", "composite"]
+  );
+}
