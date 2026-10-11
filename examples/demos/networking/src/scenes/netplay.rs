@@ -33,12 +33,21 @@ impl DemoPage for NetplayPage {
   }
 
   fn controls(&self) -> Vec<Control> {
-    vec![
-      Control::mouse("Lobby buttons and fields"),
-      Control::keys("A D", &[KeyCode::KeyA, KeyCode::KeyD], "Move"),
-      Control::keys("Space W", &[KeyCode::Space, KeyCode::KeyW], "Jump"),
-      Control::key(KeyCode::KeyL, "Leave the match"),
-    ]
+    match self.state {
+      State::Lobby(_) => vec![Control::mouse("Lobby buttons and fields")],
+      State::Match(_) => vec![
+        Control::keys("A D", &[KeyCode::KeyA, KeyCode::KeyD], "Move"),
+        Control::keys("Space W", &[KeyCode::Space, KeyCode::KeyW], "Jump"),
+        Control::key(KeyCode::KeyL, "Leave the match"),
+      ],
+    }
+  }
+
+  /// Resetting the page (R) ends a running match cleanly
+  fn exit(&mut self, _ctx: &mut SceneContext) {
+    if let State::Match(game) = &mut self.state {
+      game.disconnect();
+    }
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
