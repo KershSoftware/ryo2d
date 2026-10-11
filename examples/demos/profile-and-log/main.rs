@@ -2,7 +2,6 @@
 //!
 //! Run with: cargo run -p profile-and-log --features profiler
 //!
-//!
 //! Runs on the demo-kit shell; the work multiplier and auto-spawn are settings.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -245,11 +244,9 @@ impl DemoScene {
           // Extra CPU work: scaled by work_multiplier
           // Use black_box to prevent compiler from optimizing away
           let iterations = (100.0 * work) as i32;
-          {
-            std::hint::black_box((0..iterations).fold(0.0f32, |acc, i| {
-              acc + (new_angle * i as f32).sin() * (new_x * 0.01).cos()
-            }));
-          }
+          std::hint::black_box((0..iterations).fold(0.0f32, |acc, i| {
+            acc + (new_angle * i as f32).sin() * (new_x * 0.01).cos()
+          }));
 
           (new_x, new_y, new_angle, new_bounce)
         } else {
@@ -337,13 +334,11 @@ impl DemoScene {
           // Simulated pathfinding cost - scaled by work_multiplier
           // Use black_box to prevent compiler from optimizing away
           let iterations = (50.0 * work) as i32;
-          {
-            std::hint::black_box((0..iterations).fold(0.0f32, |acc, i| {
-              acc
-                + ((t.x + i as f32 * 10.0) * 0.1).sin().abs()
-                + ((t.y + i as f32 * 10.0) * 0.1).cos().abs()
-            }));
-          }
+          std::hint::black_box((0..iterations).fold(0.0f32, |acc, i| {
+            acc
+              + ((t.x + i as f32 * 10.0) * 0.1).sin().abs()
+              + ((t.y + i as f32 * 10.0) * 0.1).cos().abs()
+          }));
 
           let move_x = if dist > 0.0 {
             dx / dist * mixed.speed * dt

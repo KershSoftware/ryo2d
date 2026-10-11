@@ -8,7 +8,6 @@
 //! - Time-sliced pathfinding for many agents
 //! - Agent avoidance using steering behaviors
 //!
-//!
 //! Runs on the demo-kit shell; smoothing, avoidance, grid and trails are settings.
 
 use demo_kit::prelude::*;
@@ -47,9 +46,10 @@ struct PathfindingDemoScene {
   pathfinder: Pathfinder,
   agents: Vec<Entity>,
   obstacles: Vec<Entity>,
-  smoothing: PathSmoothing,
   /// Index into `SMOOTHING_MODES`, set by the settings row
   smoothing_choice: usize,
+  /// The choice the pathfinder and agents were last given
+  applied_choice: usize,
   screen_w: f32,
   screen_h: f32,
   show_grid: bool,
@@ -73,12 +73,12 @@ impl PathfindingDemoScene {
       pathfinder: Pathfinder::with_config(
         PathfinderConfig::default()
           .with_time_slicing(100) // 100 nodes per frame for smooth performance
-          .with_smoothing(PathSmoothing::LineOfSight),
+          .with_smoothing(SMOOTHING_MODES[SMOOTHING_DEFAULT]),
       ),
       agents: Vec::new(),
       obstacles: Vec::new(),
-      smoothing: PathSmoothing::LineOfSight,
       smoothing_choice: SMOOTHING_DEFAULT,
+      applied_choice: SMOOTHING_DEFAULT,
       screen_w: 0.0,
       screen_h: 0.0,
       show_grid: false,
@@ -135,7 +135,7 @@ impl PathfindingDemoScene {
       Transform::new(x, y).with_pivot_center(),
       Renderable::sprite(handle).with_z_order(10),
       NavAgent::new(AGENT_SPEED)
-        .with_smoothing(self.smoothing)
+        .with_smoothing(self.smoothing())
         .with_arrival_threshold(4.0),
       trail,
     ));
@@ -292,7 +292,7 @@ impl PathfindingDemoScene {
               match result {
                 PathResult::Found(mut path) => {
                   // Apply smoothing
-                  match self.smoothing {
+                  match self.smoothing() {
                     PathSmoothing::None => {}
                     PathSmoothing::LineOfSight => {
                       path.smooth_line_of_sight(&self.nav_grid);
@@ -409,8 +409,15 @@ impl PathfindingDemoScene {
     }
   }
 
-  fn update_smoothing(&mut self, ctx: &mut SceneContext, smoothing: PathSmoothing) {
-    self.smoothing = smoothing;
+  /// The smoothing the settings row picked
+  fn smoothing(&self) -> PathSmoothing {
+    SMOOTHING_MODES[self.smoothing_choice.min(SMOOTHING_MODES.len() - 1)]
+  }
+
+  /// Give the pathfinder and every agent the chosen smoothing
+  fn apply_smoothing(&mut self, ctx: &mut SceneContext) {
+    self.applied_choice = self.smoothing_choice;
+    let smoothing = self.smoothing();
 
     // Update pathfinder config
     self.pathfinder = Pathfinder::with_config(
@@ -472,10 +479,8 @@ impl DemoPage for PathfindingDemoScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
-    // Apply the smoothing setting
-    let smoothing = SMOOTHING_MODES[self.smoothing_choice.min(SMOOTHING_MODES.len() - 1)];
-    if smoothing != self.smoothing {
-      self.update_smoothing(ctx, smoothing);
+    if self.smoothing_choice != self.applied_choice {
+      self.apply_smoothing(ctx);
     }
 
     // Spawn more agents

@@ -6,7 +6,6 @@
 //! - Vertical squash (landing) vs horizontal squash (wall hits)
 //! - Events (SquashStretchStarted, SquashStretchFinished)
 //!
-//!
 //! Runs on the demo-kit shell; intensity and recovery are settings.
 
 use demo_kit::prelude::*;

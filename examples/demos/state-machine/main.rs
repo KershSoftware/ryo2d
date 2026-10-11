@@ -8,7 +8,6 @@
 //! ## Right Side: Game State Stack
 //! A pushdown automata for interruptible/nested game states.
 //!
-//!
 //! Runs on the demo-kit shell.
 
 use demo_kit::prelude::*;

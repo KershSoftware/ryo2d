@@ -4,7 +4,7 @@ use demo_kit::prelude::*;
 
 use super::SceneBase;
 use super::fighter::create_fighter_idle;
-use crate::create_stick_fighter;
+use crate::stick_fighter;
 
 fn create_casual_walk(def: &Arc<SkeletonDef>) -> Arc<SkeletalAnimation> {
   Arc::new(
@@ -147,9 +147,9 @@ pub struct CasualScene {
   base: SceneBase,
 }
 
-impl CasualScene {
-  pub fn new() -> Self {
-    let def = &create_stick_fighter();
+impl Default for CasualScene {
+  fn default() -> Self {
+    let def = &stick_fighter();
     let idle = create_fighter_idle(def);
     let walk = create_casual_walk(def);
     let wave = create_casual_wave(def);
@@ -178,12 +178,6 @@ impl CasualScene {
         Color::rgb(255, 200, 100),
       ),
     }
-  }
-}
-
-impl Default for CasualScene {
-  fn default() -> Self {
-    Self::new()
   }
 }
 

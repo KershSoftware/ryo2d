@@ -3,7 +3,7 @@ use std::sync::Arc;
 use demo_kit::prelude::*;
 
 use super::SceneBase;
-use crate::create_stick_fighter;
+use crate::stick_fighter;
 
 fn create_rpg_idle(def: &Arc<SkeletonDef>) -> Arc<SkeletalAnimation> {
   Arc::new(
@@ -222,9 +222,9 @@ pub struct ActionRpgScene {
   base: SceneBase,
 }
 
-impl ActionRpgScene {
-  pub fn new() -> Self {
-    let def = &create_stick_fighter();
+impl Default for ActionRpgScene {
+  fn default() -> Self {
+    let def = &stick_fighter();
     let idle = create_rpg_idle(def);
     let run = create_rpg_run(def);
     let attack = create_rpg_attack(def);
@@ -264,12 +264,6 @@ impl ActionRpgScene {
         Color::rgb(255, 200, 50),
       ),
     }
-  }
-}
-
-impl Default for ActionRpgScene {
-  fn default() -> Self {
-    Self::new()
   }
 }
 

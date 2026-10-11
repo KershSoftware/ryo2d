@@ -6,7 +6,6 @@
 //! - Alignment: Match velocity with nearby boids
 //! - Flee: Escape from predator (mouse position when held)
 //!
-//!
 //! Runs on the demo-kit shell; the weights and trails are settings.
 
 use demo_kit::prelude::*;

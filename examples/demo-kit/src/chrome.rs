@@ -234,7 +234,7 @@ fn draw_description(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
 
 /// Widths a row's label and value may use within `inner`, separated by `gap`.
 /// The value keeps its full width up to half of `inner`; the label gets the rest.
-pub(crate) fn row_widths(inner: f32, _label_w: f32, value_w: f32, gap: f32) -> (f32, f32) {
+pub(crate) fn row_widths(inner: f32, value_w: f32, gap: f32) -> (f32, f32) {
   let value_max = value_w.min(inner * 0.5);
   let label_max = (inner - value_max - gap).max(0.0);
   (label_max, value_max)
@@ -288,7 +288,7 @@ fn draw_panel(ui: &mut UiContext, view: &View, l: &Layout, w: f32) -> Option<Rec
     }
     let marker = if selected { "> " } else { "  " };
     let label = format!("{marker}{}", row.label);
-    let (label_max, value_max) = row_widths(inner, text_w(ui, &label), text_w(ui, &row.value), gap);
+    let (label_max, value_max) = row_widths(inner, text_w(ui, &row.value), gap);
     let label = truncate_to(&label, label_max, |s| text_w(ui, s));
     ui.draw_text(
       &label,
@@ -458,17 +458,17 @@ mod tests {
 
   #[test]
   fn row_widths_keep_a_row_that_fits() {
-    assert_eq!(row_widths(200.0, 120.0, 30.0, 10.0), (160.0, 30.0));
+    assert_eq!(row_widths(200.0, 30.0, 10.0), (160.0, 30.0));
   }
 
   #[test]
   fn row_widths_cap_a_long_value_at_half() {
-    assert_eq!(row_widths(200.0, 50.0, 150.0, 10.0), (90.0, 100.0));
+    assert_eq!(row_widths(200.0, 150.0, 10.0), (90.0, 100.0));
   }
 
   #[test]
   fn row_widths_never_go_negative() {
-    assert_eq!(row_widths(10.0, 50.0, 50.0, 20.0).0, 0.0);
+    assert_eq!(row_widths(10.0, 50.0, 20.0).0, 0.0);
   }
 
   #[test]

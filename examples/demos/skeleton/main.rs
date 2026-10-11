@@ -6,7 +6,7 @@
 
 mod scenes;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use demo_kit::prelude::*;
 
@@ -16,7 +16,13 @@ use scenes::{ActionRpgScene, CasualScene, FighterScene};
 #[derive(Debug)]
 pub(crate) struct DebugBone;
 
-pub(crate) fn create_stick_fighter() -> Arc<SkeletonDef> {
+/// The stick figure every page animates, built once and shared
+pub(crate) fn stick_fighter() -> Arc<SkeletonDef> {
+  static DEF: OnceLock<Arc<SkeletonDef>> = OnceLock::new();
+  DEF.get_or_init(build_stick_fighter).clone()
+}
+
+fn build_stick_fighter() -> Arc<SkeletonDef> {
   Arc::new(
     SkeletonDef::builder()
       // Core (Y-down: negative Y = up on screen)
@@ -94,8 +100,8 @@ pub(crate) fn create_stick_fighter() -> Arc<SkeletonDef> {
 fn main() {
   Demo::new("Skeleton")
     .resolution(1280, 720)
-    .page(FighterScene::new)
-    .page(CasualScene::new)
-    .page(ActionRpgScene::new)
+    .page(FighterScene::default)
+    .page(CasualScene::default)
+    .page(ActionRpgScene::default)
     .run();
 }
