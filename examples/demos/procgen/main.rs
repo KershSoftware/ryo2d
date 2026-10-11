@@ -224,8 +224,9 @@ impl DemoPage for ProcgenPage {
     ui.draw_rect(Rect::new(0.0, 0.0, w, h), Color::rgb(30, 30, 35));
 
     let area = content_area(ui);
-    // Centre the map in the content area, below the three info lines
-    let info_h = 52.0;
+    // Three info lines at the top of the content area, the map centred below
+    let line_step = ui.text_size("Ag").1 as f32 + 4.0;
+    let info_h = 4.0 + 3.0 * line_step;
 
     // Render grid tiles
     if let Some(ref grid) = self.grid {
@@ -282,14 +283,14 @@ impl DemoPage for ProcgenPage {
       y,
       text_light,
     );
-    y += 16.0;
+    y += line_step;
     ui.draw_text(
       &format!("Seed: {} | Time: {}ms", self.seed, self.generation_time_ms),
       x,
       y,
       text_accent,
     );
-    y += 16.0;
+    y += line_step;
     if let Some(ref grid) = self.grid {
       ui.draw_text(
         &format!(
