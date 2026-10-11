@@ -303,7 +303,7 @@ pub struct Engine {
   // Whether console requested quit
   console_quit_requested: bool,
   // Frame capture scheduling (RYO_CAPTURE_*, F12, debug:capture)
-  capture: CaptureState,
+  pub(crate) capture: CaptureState,
   // Game name (from Ryo.toml [project] section)
   game_name: Option<String>,
   // Game version (from Ryo.toml [project] section)
@@ -1261,19 +1261,6 @@ impl Engine {
         "renderer not initialized".to_string(),
       )),
     }
-  }
-
-  /// Request a capture of an upcoming frame, as F12 and the console do.
-  #[cfg(test)]
-  pub(crate) fn request_capture(&mut self, path: std::path::PathBuf) {
-    self.capture.request(CaptureTarget::Path(path));
-  }
-
-  /// Wait for in-flight capture writes to finish.
-  #[cfg(test)]
-  pub(crate) fn finish_captures(&mut self) {
-    let reports = self.capture.finish();
-    self.report_captures(reports);
   }
 
   /// Finish GPU-dependent setup once a renderer exists (window or offscreen).

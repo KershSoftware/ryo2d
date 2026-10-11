@@ -1,6 +1,7 @@
 //! A requested capture is the frame the engine presented.
 
 use super::HeadlessEngine;
+use crate::core::capture::CaptureTarget;
 use crate::core::engine::EngineBuilder;
 use crate::prelude::*;
 
@@ -41,10 +42,13 @@ fn capture_matches_the_presented_frame() {
     "ryo2d-capture-matches-frame-{}.png",
     std::process::id()
   ));
-  engine.engine.request_capture(path.clone());
+  engine
+    .engine
+    .capture
+    .request(CaptureTarget::Path(path.clone()));
   // A manual request captures the frame after the next one
   engine.step_frames(2).unwrap();
-  engine.engine.finish_captures();
+  engine.engine.capture.finish();
 
   let frame = engine.frame().unwrap();
   let captured = image::open(&path).expect("capture written").to_rgba8();

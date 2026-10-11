@@ -65,7 +65,7 @@ impl Scene for UiOverLitScene {
       lighting.set_ambient(AmbientLight::with_intensity(0.02));
       lighting.set_enabled(true);
     }
-    ctx.effects.set_vignette_custom(1.0, 0.3, 0.3);
+    ctx.effects.set_color_tint(Color::rgb(255, 0, 0), 1.0);
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -91,11 +91,16 @@ fn ui_is_untouched_by_effects_and_lighting() {
   let frame = engine.frame().unwrap();
 
   assert_eq!(frame.get_pixel(32, 32).0, UI_COLOR);
-  // The scene around the UI is dark, so lighting really was applied
-  assert!(frame.get_pixel(10, 32).0[..3].iter().all(|&c| c < 64));
+  // The scene around the UI is dark and tinted, so lighting and the effect really ran
+  let scene = frame.get_pixel(10, 32).0;
+  assert!(scene[..3].iter().all(|&c| c < 64), "{scene:?}");
+  assert!(
+    scene[0] > scene[1] && scene[0] > scene[2],
+    "not tinted: {scene:?}"
+  );
 }
 
-/// A white scene under dark ambient light with a luminance-preserving effect.
+/// A white scene under dark ambient light with sepia.
 struct DarkWithEffect;
 
 impl Scene for DarkWithEffect {
@@ -105,7 +110,7 @@ impl Scene for DarkWithEffect {
       lighting.set_ambient(AmbientLight::with_intensity(0.02));
       lighting.set_enabled(true);
     }
-    ctx.effects.set_vignette(0.2);
+    ctx.effects.set_sepia(1.0);
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -125,5 +130,9 @@ fn effects_apply_to_the_lit_image() {
   assert!(
     center[..3].iter().all(|&c| c < 64),
     "effects must read the lit image, not the unlit one: {center:?}"
+  );
+  assert!(
+    center[0] >= center[1] && center[1] >= center[2] && center[0] > center[2],
+    "sepia did not run: {center:?}"
   );
 }
