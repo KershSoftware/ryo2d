@@ -186,7 +186,7 @@ Save frames as PNGs to check rendering without watching the window. Works with `
 
 Files are named `frame-000060.png` at game resolution (no letterboxing). In dev builds, F12 or the console command `debug:capture [path]` saves the next frame.
 
-`RYO_INPUT` keys use winit `KeyCode` names in any case (`KeyA`, `Digit1`, `ArrowLeft`, `Space`, `Enter`, `Escape`, `Tab`, `F1`), separated by spaces or commas. A tap stays down until a game update has seen it. `N:Mouse@XxY` moves the mouse to game coordinates; `Click` and `RightClick` work like keys, optionally at `@XxY`, and a range (`A-B:Click@XxY`) holds the button so `Mouse` entries inside it drag. An invalid entry disables the whole script with one warning.
+`RYO_INPUT` keys use winit `KeyCode` names in any case (`KeyA`, `Digit1`, `ArrowLeft`, `Space`, `Enter`, `Escape`, `Tab`, `F1`), separated by spaces or commas. A tap stays down until a game update has seen it; pressing a key the script still holds waits until it is up, without delaying other entries. Scripted keys send no typed text, so they cannot type into UI text fields. `N:Mouse@XxY` moves the mouse to game coordinates; `Click` and `RightClick` work like keys, optionally at `@XxY`, and a range (`A-B:Click@XxY`) holds the button so `Mouse` entries inside it drag. An invalid entry disables the whole script with one warning.
 
 ```bash
 RYO_CAPTURE_FRAMES=120 RYO_CAPTURE_EXIT=1 ryo2d dev

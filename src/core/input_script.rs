@@ -171,6 +171,9 @@ pub(crate) struct InputScript {
   /// Entries in firing order
   entries: Vec<Entry>,
   next: usize,
+  /// Due presses of a control the script still holds, in order; each fires
+  /// once its control is up, without holding back the entries after it
+  waiting: Vec<Entry>,
   /// Controls the script holds down, and when each comes up
   held: Vec<(Control, Release)>,
 }
@@ -223,29 +226,45 @@ impl InputScript {
       !ends
     });
 
-    while let Some(entry) = self.entries.get(self.next) {
+    // Presses that were waiting go first, in order, then newly due entries
+    let waiting = std::mem::take(&mut self.waiting);
+    for entry in waiting {
+      self.fire(entry, input);
+    }
+    while let Some(&entry) = self.entries.get(self.next) {
       if entry.frame > frame {
         break;
       }
-      match entry.action {
-        Action::MoveMouse(x, y) => input.handle_mouse_move(f64::from(x), f64::from(y)),
-        Action::Press {
-          control,
-          at,
-          release,
-        } => {
-          // A control the script still holds is pressed again only once it is up
-          if self.held.iter().any(|(held, _)| *held == control) {
-            break;
-          }
-          if let Some((x, y)) = at {
-            input.handle_mouse_move(f64::from(x), f64::from(y));
-          }
-          set(input, control, ElementState::Pressed);
-          self.held.push((control, release));
-        }
-      }
+      self.fire(entry, input);
       self.next += 1;
+    }
+  }
+
+  /// Apply a due entry, or keep it waiting while its control is still held
+  /// (a control the script holds is pressed again only once it is up)
+  fn fire(&mut self, entry: Entry, input: &mut InputState) {
+    match entry.action {
+      Action::MoveMouse(x, y) => input.handle_mouse_move(f64::from(x), f64::from(y)),
+      Action::Press {
+        control,
+        at,
+        release,
+      } => {
+        let held = self.held.iter().any(|(held, _)| *held == control);
+        // An earlier press of the same control is already waiting: keep order
+        let queued = self.waiting.iter().any(
+          |waiting| matches!(waiting.action, Action::Press { control: c, .. } if c == control),
+        );
+        if held || queued {
+          self.waiting.push(entry);
+          return;
+        }
+        if let Some((x, y)) = at {
+          input.handle_mouse_move(f64::from(x), f64::from(y));
+        }
+        set(input, control, ElementState::Pressed);
+        self.held.push((control, release));
+      }
     }
   }
 
@@ -407,6 +426,34 @@ mod tests {
       s.after_frame(&mut input);
     }
     assert_eq!(presses, 3);
+  }
+
+  #[test]
+  fn a_press_waiting_on_a_held_key_delays_nothing_else() {
+    // The second ArrowRight waits for the hold to end at frame 6; the Space
+    // and the click due meanwhile still fire on their frames
+    let mut s = script("2-6:ArrowRight 3:ArrowRight 4:Space 5:Click@10x10");
+    let mut input = InputState::new();
+    let mut space = None;
+    let mut click = None;
+    let mut second_right = None;
+    for n in 1..=9 {
+      s.before_frame(n, &mut input);
+      if input.key_pressed(KeyCode::Space) {
+        space = Some(n);
+      }
+      if input.mouse_pressed(MouseButton::Left) {
+        click = Some(n);
+      }
+      if n > 2 && input.key_pressed(KeyCode::ArrowRight) {
+        second_right = Some(n);
+      }
+      input.begin_frame();
+      s.after_frame(&mut input);
+    }
+    assert_eq!(space, Some(4));
+    assert_eq!(click, Some(5));
+    assert_eq!(second_right, Some(6), "pressed again once the hold ends");
   }
 
   #[test]
