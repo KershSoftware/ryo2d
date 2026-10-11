@@ -13,6 +13,7 @@ mod scene;
 mod settings;
 mod start;
 
+pub use chrome::content_area;
 pub use controls::Control;
 pub use demo::Demo;
 pub use page::DemoPage;
@@ -20,6 +21,6 @@ pub use settings::Settings;
 
 /// Everything a demo needs: ryo2d's prelude plus the kit
 pub mod prelude {
-  pub use crate::{Control, Demo, DemoPage, Settings};
+  pub use crate::{Control, Demo, DemoPage, Settings, content_area};
   pub use ryo2d::prelude::*;
 }
