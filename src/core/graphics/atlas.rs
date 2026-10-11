@@ -232,21 +232,57 @@ impl AtlasLayout {
         return Some(found);
       }
     }
-    // Evict least recently used entries, never ones used this frame, and
-    // never more than MAX_EVICTIONS for one placement.
-    for _ in 0..MAX_EVICTIONS {
-      let lru = self
-        .entries
-        .iter()
-        .min_by_key(|(_, e)| e.last_used)
-        .filter(|(_, e)| e.last_used < frame)
-        .map(|(k, _)| k.clone())?;
-      self.remove(&lru);
+    // Clear the least recently used page that nothing drew from this frame:
+    // one eviction sure to make room, where scattered entries rarely free a
+    // large enough rect (the allocator reclaims space a bucket at a time)
+    if let Some(page) = self.least_recent_page(frame) {
+      self.clear_page(page);
+      if let Some(found) = self.try_allocate(bw, bh) {
+        return Some(found);
+      }
+    }
+    // Every page has something drawn this frame: evict single entries, least
+    // recently used first, never ones used this frame, and never more than
+    // MAX_EVICTIONS for one placement.
+    let mut candidates: Vec<(u64, AtlasKey)> = self
+      .entries
+      .iter()
+      .filter(|(_, e)| e.last_used < frame)
+      .map(|(k, e)| (e.last_used, k.clone()))
+      .collect();
+    candidates.sort_by_key(|(last_used, _)| *last_used);
+    for (_, key) in candidates.into_iter().take(MAX_EVICTIONS) {
+      self.remove(&key);
       if let Some(found) = self.try_allocate(bw, bh) {
         return Some(found);
       }
     }
     None
+  }
+
+  /// The page whose most recently used entry is the oldest, among pages with
+  /// entries and none used this frame
+  fn least_recent_page(&self, frame: u64) -> Option<usize> {
+    let mut newest: Vec<Option<u64>> = vec![None; self.pages.len()];
+    for entry in self.entries.values() {
+      let slot = &mut newest[entry.page];
+      *slot = Some(slot.map_or(entry.last_used, |n| n.max(entry.last_used)));
+    }
+    newest
+      .iter()
+      .enumerate()
+      .filter_map(|(page, newest)| newest.map(|n| (page, n)))
+      .filter(|(_, newest)| *newest < frame)
+      .min_by_key(|(_, newest)| *newest)
+      .map(|(page, _)| page)
+  }
+
+  /// Free every entry on `page`
+  fn clear_page(&mut self, page: usize) {
+    self.entries.retain(|_, e| e.page != page);
+    if let Some(allocator) = self.pages.get_mut(page) {
+      allocator.clear();
+    }
   }
 }
 
@@ -631,6 +667,41 @@ mod tests {
       (placed[0].slot, placed[0].x, placed[0].y)
     );
     assert!(layout.place(&id(0), 62, 62, 21).unwrap().newly_allocated);
+  }
+
+  #[test]
+  fn a_full_atlas_frees_a_whole_page_instead_of_scattered_entries() {
+    let mut layout = AtlasLayout::new(512, 1);
+    let mut n = 0;
+    while n < 2000 && layout.place(&id(n), 14, 14, 1).is_some() {
+      n += 1;
+    }
+    assert!(n > 500, "only {n} small images fit");
+    // Scattered small evictions would rarely free a 66 px square in one go
+    let big = layout.place(&id(9999), 64, 64, 2);
+    assert!(big.is_some(), "a 64 px image fell back to standalone");
+  }
+
+  #[test]
+  fn freeing_a_page_spares_pages_used_this_frame() {
+    let mut layout = AtlasLayout::new(256, 2);
+    for n in 0..16 {
+      assert_eq!(
+        layout.place(&id(n), 62, 62, 1).map(|p| p.slot.page),
+        Some(SlotPage::Atlas(0))
+      );
+    }
+    for n in 16..32 {
+      assert_eq!(
+        layout.place(&id(n), 62, 62, 2).map(|p| p.slot.page),
+        Some(SlotPage::Atlas(1))
+      );
+    }
+    // Page 0 is older, but one of its images is drawn this frame
+    layout.place(&id(0), 62, 62, 3);
+    let big = layout.place(&id(100), 126, 126, 3).expect("room is made");
+    assert_eq!(big.slot.page, SlotPage::Atlas(1));
+    assert!((0..16).all(|n| layout.holds(&id(n), 62, 62)), "page 0 kept");
   }
 
   #[test]
