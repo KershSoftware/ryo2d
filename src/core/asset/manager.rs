@@ -27,6 +27,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 
+use crate::core::ecs::ShaderHandle;
 use crate::core::error::{AssetError, AssetResult};
 use crate::core::graphics::Sprite;
 
@@ -524,6 +525,8 @@ pub struct AssetManager {
   base_path: PathBuf,
   /// Cache of loaded sprites, keyed by canonical path
   sprites: HashMap<PathBuf, SpriteHandle>,
+  /// Cache of loaded shaders, keyed by resolved path
+  shaders: HashMap<PathBuf, ShaderHandle>,
   /// Hot reload watcher (optional, for development)
   watcher: Option<HotReloadWatcher>,
   /// Background loader for async loading
@@ -546,6 +549,7 @@ impl AssetManager {
     AssetManager {
       base_path: PathBuf::from("."),
       sprites: HashMap::new(),
+      shaders: HashMap::new(),
       watcher: None,
       async_loader: None,
       pending_loads: HashMap::new(),
@@ -563,6 +567,7 @@ impl AssetManager {
     AssetManager {
       base_path: base_path.as_ref().to_path_buf(),
       sprites: HashMap::new(),
+      shaders: HashMap::new(),
       watcher: None,
       async_loader: None,
       pending_loads: HashMap::new(),
@@ -627,6 +632,41 @@ impl AssetManager {
     let handle = SpriteHandle::new(sprite, full_path.clone());
     self.sprites.insert(full_path, handle.clone());
 
+    Ok(handle)
+  }
+
+  /// Load a custom WGSL shader from a file
+  ///
+  /// Cached by resolved path, so loading the same file twice returns clones of
+  /// one handle. With hot reload enabled, editing the file updates the handle
+  /// in place and every sprite using it picks up the new code.
+  ///
+  /// The source is compiled lazily by the renderer; WGSL errors are reported
+  /// in the dev log with the line numbers of the game's own file.
+  ///
+  /// # Example
+  ///
+  /// ```rust,ignore
+  /// let dissolve = assets.load_shader("shaders/dissolve.wgsl")?;
+  /// let material = Material::custom(dissolve).with_param("progress", 0.5);
+  /// ```
+  pub fn load_shader<P: AsRef<Path>>(&mut self, path: P) -> AssetResult<ShaderHandle> {
+    let full_path = self.resolve_path(&path);
+
+    if let Some(handle) = self.shaders.get(&full_path) {
+      return Ok(handle.clone());
+    }
+
+    let source = std::fs::read_to_string(&full_path).map_err(|e| match e.kind() {
+      std::io::ErrorKind::NotFound => AssetError::NotFound(full_path.clone()),
+      _ => AssetError::LoadError {
+        path: full_path.clone(),
+        reason: e.to_string(),
+      },
+    })?;
+
+    let handle = ShaderHandle::from_file(&full_path, source);
+    self.shaders.insert(full_path, handle.clone());
     Ok(handle)
   }
 
@@ -1037,6 +1077,19 @@ impl AssetManager {
     for event in watcher.poll() {
       match event {
         HotReloadEvent::FileModified(path) | HotReloadEvent::FileCreated(path) => {
+          if let Some(handle) = self.shaders.get(&path) {
+            match std::fs::read_to_string(&path) {
+              Ok(source) => {
+                handle.replace_source(source);
+                reloaded += 1;
+                #[cfg(debug_assertions)]
+                engine_info!(module: "HotReload", "Reloaded shader: {:?}", path);
+              }
+              Err(e) => {
+                engine_error!(module: "HotReload", "Failed to reload {:?}: {}", path, e);
+              }
+            }
+          }
           if let Some(handle) = self.sprites.get(&path) {
             // Reload the sprite from disk
             match Sprite::load(&path) {
@@ -1087,6 +1140,33 @@ pub struct AssetStats {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn load_shader_caches_by_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(dir.path().join("a.wgsl"), "fn sprite() {}").expect("write shader");
+    let mut assets = AssetManager::with_base_path(dir.path());
+
+    let first = assets.load_shader("a.wgsl").expect("load shader");
+    let second = assets.load_shader("a.wgsl").expect("load shader again");
+
+    assert_eq!(first, second);
+    assert_eq!(first.source(), "fn sprite() {}");
+    assert!(first.path().is_some());
+    first.replace_source("changed");
+    assert_eq!(second.source(), "changed");
+  }
+
+  #[test]
+  fn missing_shader_file_is_an_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut assets = AssetManager::with_base_path(dir.path());
+
+    assert!(matches!(
+      assets.load_shader("nope.wgsl"),
+      Err(AssetError::NotFound(_))
+    ));
+  }
 
   #[test]
   fn sprite_handle_clone_shares_data() {

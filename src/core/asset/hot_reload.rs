@@ -71,6 +71,8 @@ impl Default for HotReloadConfig {
     extensions.insert("ogg".to_string());
     extensions.insert("mp3".to_string());
     extensions.insert("flac".to_string());
+    // Shaders
+    extensions.insert("wgsl".to_string());
 
     HotReloadConfig {
       watch_paths: vec![PathBuf::from(".")],

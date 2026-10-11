@@ -47,63 +47,172 @@
 
 use super::sprite_effects::SpriteEffect;
 use crate::core::ui::Color;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+static NEXT_SHADER_SERIAL: AtomicU64 = AtomicU64::new(1);
+
+/// Shared state behind a [`ShaderHandle`]
+struct ShaderSourceCell {
+  id: String,
+  serial: u64,
+  path: Option<PathBuf>,
+  source: Mutex<String>,
+  generation: AtomicU64,
+}
 
 /// Handle to a loaded shader resource
 ///
-/// Shaders are loaded via the asset system and cached. The handle allows
-/// multiple sprites to share the same shader without duplication.
-#[derive(Debug, Clone)]
+/// Shaders are loaded via the asset system and cached. Clones share one
+/// source and one identity, so a hot reload (or [`replace_source`]) is seen by
+/// every sprite using the shader. The generation counter increases on every
+/// source change so renderers know when to recompile.
+///
+/// [`replace_source`]: ShaderHandle::replace_source
+#[derive(Clone)]
 pub struct ShaderHandle {
-  /// Unique identifier for cache lookup
-  pub(crate) id: String,
-  /// The compiled WGSL source (will be GPU pipeline in future)
-  pub(crate) source: Arc<String>,
+  inner: Arc<ShaderSourceCell>,
 }
 
 impl ShaderHandle {
+  fn new(id: String, source: String, path: Option<PathBuf>) -> Self {
+    Self {
+      inner: Arc::new(ShaderSourceCell {
+        id,
+        serial: NEXT_SHADER_SERIAL.fetch_add(1, Ordering::Relaxed),
+        path,
+        source: Mutex::new(source),
+        generation: AtomicU64::new(0),
+      }),
+    }
+  }
+
   /// Create a shader handle from WGSL source
   ///
   /// Typically you'd use `assets.load_shader()` instead of this directly.
   pub fn from_source(id: impl Into<String>, source: impl Into<String>) -> Self {
-    Self {
-      id: id.into(),
-      source: Arc::new(source.into()),
-    }
+    Self::new(id.into(), source.into(), None)
+  }
+
+  /// Create a handle for a shader loaded from `path`
+  pub(crate) fn from_file(path: &Path, source: String) -> Self {
+    Self::new(
+      path.to_string_lossy().into_owned(),
+      source,
+      Some(path.to_path_buf()),
+    )
   }
 
   /// Get the shader's unique identifier
   pub fn id(&self) -> &str {
-    &self.id
+    &self.inner.id
   }
 
-  /// Get the WGSL source code
-  pub fn source(&self) -> &str {
-    &self.source
+  /// Get a copy of the current WGSL source code
+  pub fn source(&self) -> String {
+    self
+      .inner
+      .source
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .clone()
+  }
+
+  /// Number of times the source has been replaced (0 for a fresh handle)
+  pub fn generation(&self) -> u64 {
+    self.inner.generation.load(Ordering::Acquire)
+  }
+
+  /// Identity shared by all clones of this handle
+  pub(crate) fn serial(&self) -> u64 {
+    self.inner.serial
+  }
+
+  /// File the shader was loaded from, if any
+  #[allow(dead_code)] // read by the renderer when it names shaders in logs
+  pub(crate) fn path(&self) -> Option<&Path> {
+    self.inner.path.as_deref()
+  }
+
+  /// Replace the WGSL source and bump the generation
+  ///
+  /// Used by hot reload; also lets tools and tests update inline shaders.
+  pub fn replace_source(&self, source: impl Into<String>) {
+    let mut guard = self.inner.source.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = source.into();
+    self.inner.generation.fetch_add(1, Ordering::Release);
+  }
+}
+
+impl std::fmt::Debug for ShaderHandle {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("ShaderHandle")
+      .field("id", &self.inner.id)
+      .field("generation", &self.generation())
+      .finish()
   }
 }
 
 impl PartialEq for ShaderHandle {
   fn eq(&self, other: &Self) -> bool {
-    self.id == other.id
+    self.serial() == other.serial() && self.generation() == other.generation()
+  }
+}
+
+/// A value for a custom shader parameter
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParamValue {
+  F32(f32),
+  Vec2([f32; 2]),
+  Vec3([f32; 3]),
+  Vec4([f32; 4]),
+}
+
+impl From<f32> for ParamValue {
+  fn from(v: f32) -> Self {
+    Self::F32(v)
+  }
+}
+
+impl From<glam::Vec2> for ParamValue {
+  fn from(v: glam::Vec2) -> Self {
+    Self::Vec2(v.to_array())
+  }
+}
+
+impl From<glam::Vec3> for ParamValue {
+  fn from(v: glam::Vec3) -> Self {
+    Self::Vec3(v.to_array())
+  }
+}
+
+impl From<glam::Vec4> for ParamValue {
+  fn from(v: glam::Vec4) -> Self {
+    Self::Vec4(v.to_array())
+  }
+}
+
+impl From<Color> for ParamValue {
+  /// sRGB bytes divided by 255, alpha included
+  fn from(c: Color) -> Self {
+    Self::Vec4([
+      c.r as f32 / 255.0,
+      c.g as f32 / 255.0,
+      c.b as f32 / 255.0,
+      c.a as f32 / 255.0,
+    ])
   }
 }
 
 /// Named parameters for custom shaders
 ///
-/// Parameters are passed to the shader as uniforms. The shader can
-/// read these values to customize its behavior per-sprite.
-///
-/// # Supported Types
-///
-/// Currently supports `f32` values. Future versions may add:
-/// - `Vec2`, `Vec3`, `Vec4` for colors/positions
-/// - `i32` for integer parameters
-/// - Texture samplers for multi-texture effects
+/// Values are matched by name to the fields of the shader's `Params` struct,
+/// so a typo is reported rather than silently reordering anything. Fields the
+/// game does not set are zero.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ShaderParams {
-  params: HashMap<String, f32>,
+  values: Vec<(String, ParamValue)>,
 }
 
 impl ShaderParams {
@@ -112,37 +221,31 @@ impl ShaderParams {
     Self::default()
   }
 
-  /// Set a parameter value
-  pub fn set(&mut self, name: impl Into<String>, value: f32) -> &mut Self {
-    self.params.insert(name.into(), value);
+  /// Set a parameter value (replaces an earlier value with the same name)
+  pub fn set(&mut self, name: impl Into<String>, value: impl Into<ParamValue>) -> &mut Self {
+    let name = name.into();
+    let value = value.into();
+    match self.values.iter_mut().find(|(n, _)| *n == name) {
+      Some(slot) => slot.1 = value,
+      None => self.values.push((name, value)),
+    }
+    self
+  }
+
+  /// Builder form of [`set`](Self::set)
+  pub fn with(mut self, name: impl Into<String>, value: impl Into<ParamValue>) -> Self {
+    self.set(name, value);
     self
   }
 
   /// Get a parameter value
-  pub fn get(&self, name: &str) -> Option<f32> {
-    self.params.get(name).copied()
+  pub fn get(&self, name: &str) -> Option<ParamValue> {
+    self.values.iter().find(|(n, _)| n == name).map(|(_, v)| *v)
   }
 
-  /// Get a parameter with a default fallback
-  pub fn get_or(&self, name: &str, default: f32) -> f32 {
-    self.params.get(name).copied().unwrap_or(default)
-  }
-
-  /// Convert to a uniform buffer format (16 float array for GPU)
-  ///
-  /// Parameters are laid out in alphabetical order by name.
-  /// Unused slots are filled with 0.0.
-  pub fn to_uniform_array(&self) -> [f32; 16] {
-    let mut result = [0.0f32; 16];
-    let mut keys: Vec<_> = self.params.keys().collect();
-    keys.sort();
-
-    for (i, key) in keys.iter().take(16).enumerate() {
-      if let Some(&value) = self.params.get(*key) {
-        result[i] = value;
-      }
-    }
-    result
+  /// Iterate the values in insertion order
+  pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, ParamValue)> {
+    self.values.iter().map(|(n, v)| (n.as_str(), *v))
   }
 }
 
@@ -268,6 +371,14 @@ impl SpriteShader {
   /// Create a custom shader with parameters
   pub fn custom_with_params(shader: ShaderHandle, params: ShaderParams) -> Self {
     Self::Custom { shader, params }
+  }
+
+  /// Set a shader parameter (no-op for built-in effects)
+  pub fn with_param(mut self, name: impl Into<String>, value: impl Into<ParamValue>) -> Self {
+    if let Some(params) = self.params_mut() {
+      params.set(name, value);
+    }
+    self
   }
 
   // =========================================================================
@@ -459,10 +570,8 @@ impl Material {
   /// Set a shader parameter (only works for custom shaders)
   ///
   /// For built-in effects, this is a no-op.
-  pub fn with_param(mut self, name: impl Into<String>, value: f32) -> Self {
-    if let Some(params) = self.shader.params_mut() {
-      params.set(name, value);
-    }
+  pub fn with_param(mut self, name: impl Into<String>, value: impl Into<ParamValue>) -> Self {
+    self.shader = self.shader.with_param(name, value);
     self
   }
 
@@ -491,13 +600,28 @@ mod tests {
   use super::*;
 
   #[test]
-  fn shader_handle_equality() {
-    let h1 = ShaderHandle::from_source("test", "void main() {}");
-    let h2 = ShaderHandle::from_source("test", "different source");
-    let h3 = ShaderHandle::from_source("other", "void main() {}");
+  fn clones_share_identity() {
+    let a = ShaderHandle::from_source("test", "fn sprite() {}");
+    let b = a.clone();
+    let other = ShaderHandle::from_source("test", "fn sprite() {}");
 
-    assert_eq!(h1, h2); // Same ID = equal
-    assert_ne!(h1, h3); // Different ID = not equal
+    assert_eq!(a, b);
+    assert_ne!(a, other); // same id, different shader
+    b.replace_source("fn sprite() { }");
+    assert_eq!(a.source(), "fn sprite() { }");
+    assert_eq!(a, b);
+  }
+
+  #[test]
+  fn replace_source_bumps_generation() {
+    let h = ShaderHandle::from_source("test", "a");
+    let before = h.clone();
+    assert_eq!(h.generation(), 0);
+    h.replace_source("b");
+    assert_eq!(h.generation(), 1);
+    assert_eq!(before.generation(), 1);
+    assert_eq!(h.source(), "b");
+    assert!(format!("{h:?}").contains("generation"));
   }
 
   #[test]
@@ -505,25 +629,25 @@ mod tests {
     let mut params = ShaderParams::new();
     params.set("progress", 0.5);
     params.set("intensity", 1.0);
+    params.set("progress", 0.75);
 
-    assert_eq!(params.get("progress"), Some(0.5));
-    assert_eq!(params.get("intensity"), Some(1.0));
+    assert_eq!(params.get("progress"), Some(ParamValue::F32(0.75)));
+    assert_eq!(params.get("intensity"), Some(ParamValue::F32(1.0)));
     assert_eq!(params.get("missing"), None);
-    assert_eq!(params.get_or("missing", 0.25), 0.25);
+    let names: Vec<_> = params.iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["progress", "intensity"]);
   }
 
   #[test]
-  fn shader_params_to_uniform() {
-    let mut params = ShaderParams::new();
-    params.set("b_second", 2.0);
-    params.set("a_first", 1.0);
-    params.set("c_third", 3.0);
-
-    let uniform = params.to_uniform_array();
-    assert_eq!(uniform[0], 1.0); // a_first (alphabetical)
-    assert_eq!(uniform[1], 2.0); // b_second
-    assert_eq!(uniform[2], 3.0); // c_third
-    assert_eq!(uniform[3], 0.0); // unused
+  fn param_value_conversions() {
+    assert_eq!(
+      ParamValue::from(glam::Vec2::new(1.0, 2.0)),
+      ParamValue::Vec2([1.0, 2.0])
+    );
+    assert_eq!(
+      ParamValue::from(Color::new(255, 0, 51, 255)),
+      ParamValue::Vec4([1.0, 0.0, 0.2, 1.0])
+    );
   }
 
   #[test]
@@ -554,9 +678,9 @@ mod tests {
       .with_param("progress", 0.5)
       .with_param("edge", 1.0);
 
-    let params = material.shader.params().unwrap();
-    assert_eq!(params.get("progress"), Some(0.5));
-    assert_eq!(params.get("edge"), Some(1.0));
+    let params = material.shader.params().expect("custom shader has params");
+    assert_eq!(params.get("progress"), Some(ParamValue::F32(0.5)));
+    assert_eq!(params.get("edge"), Some(ParamValue::F32(1.0)));
   }
 
   #[test]

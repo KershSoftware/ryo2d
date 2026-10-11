@@ -33,7 +33,7 @@ pub use hecs::Entity;
 pub use hierarchy::{Children, Parent, WorldTransform};
 pub use knockback::Knockback;
 pub use lerp::Lerp;
-pub use material::{Material, ShaderHandle, ShaderParams, SpriteShader};
+pub use material::{Material, ParamValue, ShaderHandle, ShaderParams, SpriteShader};
 pub use pool::{Pool, PoolConfig, PoolExhaustedPolicy, PoolStats};
 pub use property_tween::PropertyTween;
 pub use renderable::{BlobShadow, ContactShadow, DropShadow, RenderMode, RenderStyle, Renderable};
