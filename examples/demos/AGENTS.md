@@ -18,7 +18,7 @@ Every demo in this folder follows one standard, provided by `examples/demo-kit`.
 - Arrow keys always belong to the panel; pages move with WASD.
 - Presets and variants are `choice` settings, not number keys. Digits, other letters and Tab are free for the page and listed in its controls.
 - A page listing a reserved key (`[ ] PageUp PageDown`, arrows, `H R Esc`, F1-F5, F9, F10, F12, backquote) makes the demo panic at startup.
-- While a text field or dropdown has keyboard focus the shell ignores all of its keys.
+- While a text field has focus or a dropdown is open the shell ignores all of its keys.
 
 ## Writing a demo
 

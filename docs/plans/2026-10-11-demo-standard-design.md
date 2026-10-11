@@ -113,7 +113,7 @@ impl DemoPage for Glow {
 
 ## Engine addition: `UiContext::wants_keyboard`
 
-- `UiContext::wants_keyboard() -> bool` is true when, this frame, a focused `text_input` was drawn or a dropdown has keyboard focus (`focused_dropdown() != 0`).
+- `UiContext::wants_keyboard() -> bool` is true when, this frame, a focused `text_input` was drawn or a dropdown is open (a merely focused dropdown does not count).
 - Cleared at the start of each UI frame, set by `text_input` when its state is focused. Documented in the `ryo-ui` and `ryo-api` skills as the way for any scene to stay out of the way of typing.
 
 ## Tour command
@@ -145,7 +145,7 @@ Each pilot keeps what it demonstrates; only navigation, settings and layout chan
 ## Testing
 
 - **demo-kit (headless, in the crate's tests):** `]`/`[` and PageUp/PageDown change pages and wrap; `R` rebuilds the page with default values; Up/Down select rows and clamp to the rows present; Left/Right change floats and ints within their ranges, cycle choices and flip toggles; holding repeats after the delay; `H` toggles help and `Esc` closes help before quitting; with `wants_keyboard` set, `H`, `R`, `[`, `]` and the arrows do nothing; a reserved key in a page's controls panics with the page and key named; `RYO_DEMO_PAGE` parsing (valid, invalid, out of range).
-- **Engine:** `wants_keyboard` is false with no widgets, true while a focused text input is drawn, true while a dropdown has focus, and false again the frame after focus is lost.
+- **Engine:** `wants_keyboard` is false with no widgets, true while a focused text input is drawn, true while a dropdown is open, false for a focused but closed dropdown, and false again the frame after focus is lost.
 - **Tour:** run on the three pilots and every other demo; the pilots' pages all render without panic and the others are reported as `not on demo-kit`. Reviewed by eye from the PNGs.
 
 ## Design decisions

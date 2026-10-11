@@ -20,7 +20,8 @@ fn seen(shared: &Shared) -> Seen {
   shared.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
-/// A page with one row of each kind; `rows` limits how many are declared
+/// A page with one row of each kind (Level, Count, Mode, On); Mode "C" hides
+/// the On toggle row. Optional text input and dropdown are drawn in `render_ui`.
 struct Probe {
   name: &'static str,
   shared: Shared,
@@ -278,6 +279,41 @@ fn escape_with_an_open_dropdown_does_not_quit() {
   };
   engine.step_frames(2).unwrap();
   assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Running);
+}
+
+#[test]
+fn a_focused_but_closed_dropdown_does_not_block_the_shell_keys() {
+  let shared = Shared::default();
+  let (a, b) = (shared.clone(), shared.clone());
+  let demo = Demo::new("Dropdown")
+    .resolution(320, 240)
+    .page(move || {
+      let mut page = Probe::new("one", &a);
+      let mut dropdown = DropdownState::with_id(7);
+      dropdown.set_focused(true);
+      page.dropdown = Some(dropdown);
+      page
+    })
+    .page(move || Probe::new("two", &b));
+  let Some(mut engine) = start(demo) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  tap(&mut engine, KeyCode::BracketRight);
+  assert_eq!(seen(&shared).enters, ["one", "two"]);
+}
+
+#[test]
+fn arrows_do_nothing_while_help_is_open() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  tap(&mut engine, KeyCode::KeyH);
+  tap(&mut engine, KeyCode::ArrowRight);
+  tap(&mut engine, KeyCode::Escape);
+  assert_eq!(seen(&shared).level, 0.5);
 }
 
 struct Greedy;

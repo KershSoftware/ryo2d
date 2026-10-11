@@ -1,7 +1,7 @@
 //! Particle System Demo - Ryo2D
 //!
 //! Comprehensive showcase of all particle presets and features.
-//! Navigate between scenes with number keys or arrow keys.
+//! Switch pages with `[` / `]` (the demo-kit shell).
 
 use demo_kit::prelude::*;
 
@@ -92,7 +92,7 @@ struct ParticlesPage {
 
 impl ParticlesPage {
   fn new(scene: DemoScene) -> Self {
-    // Create a temporary placeholder sprite - will be replaced in on_enter
+    // Create a temporary placeholder sprite - will be replaced in enter
     let placeholder = Sprite::solid_circle(8, 255, 255, 255, 255);
     Self {
       current_scene: scene,

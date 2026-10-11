@@ -77,6 +77,12 @@ impl PageScene {
       return Err(self.switch_to(self.index));
     }
 
+    if self.help_open {
+      // Help is modal: arrows change neither selection nor values
+      self.left = HoldRepeat::default();
+      self.right = HoldRepeat::default();
+      return Ok(0);
+    }
     if input.key_pressed_and_consume(KeyCode::ArrowDown) && !self.rows.is_empty() {
       self.selected = (self.selected + 1).min(self.rows.len() - 1);
     }

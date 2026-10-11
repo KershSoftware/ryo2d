@@ -91,7 +91,7 @@ pub struct UiContext<'a> {
   click_consumed: bool,
   /// ID of the currently focused dropdown (0 = none)
   focused_dropdown_id: u32,
-  /// Whether a text input or dropdown drawn this frame has keyboard focus
+  /// Whether a focused text input or an open dropdown was drawn this frame
   keyboard_focus: bool,
   /// UI scale factor for HiDPI displays (1 = normal, 2 = double size, etc.)
   ui_scale: u32,
@@ -317,8 +317,9 @@ impl<'a> UiContext<'a> {
     self.focused_dropdown_id
   }
 
-  /// Whether a widget drawn this frame has keyboard focus: a focused text
-  /// input, or a focused or open dropdown.
+  /// Whether a widget drawn this frame wants the keyboard: a focused text
+  /// input, or an open dropdown. A dropdown that is merely focused does not
+  /// count, since its focus is only cleared when another dropdown takes it.
   ///
   /// Scenes with their own key bindings can check it after drawing their UI
   /// and ignore those keys on the next update, so typing into a field never
@@ -1842,7 +1843,7 @@ impl<'a> UiContext<'a> {
       state.set_focused(false);
     }
 
-    if state.is_focused() || state.is_open() {
+    if state.is_open() {
       self.keyboard_focus = true;
     }
 
@@ -2912,7 +2913,7 @@ mod tests {
   }
 
   #[test]
-  fn wants_keyboard_while_a_dropdown_is_focused_or_open() {
+  fn wants_keyboard_while_a_dropdown_is_open() {
     let mut frame = vec![0u8; 200 * 200 * 4];
     let mut ui = create_test_context(200, 200, &mut frame);
     let mut closed = DropdownState::with_id(1);
@@ -2923,6 +2924,16 @@ mod tests {
     open.open();
     ui.dropdown(&mut open, Rect::new(0.0, 40.0, 100.0, 20.0), &["a", "b"]);
     assert!(ui.wants_keyboard());
+  }
+
+  #[test]
+  fn wants_keyboard_ignores_a_focused_but_closed_dropdown() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context(200, 200, &mut frame);
+    let mut focused = DropdownState::with_id(1);
+    focused.set_focused(true);
+    ui.dropdown(&mut focused, Rect::new(0.0, 0.0, 100.0, 20.0), &["a", "b"]);
+    assert!(!ui.wants_keyboard());
   }
 
   #[test]
