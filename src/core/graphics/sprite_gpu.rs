@@ -989,22 +989,39 @@ impl SpriteGpuRenderer {
   ) {
     let mut seen = std::mem::take(&mut self.resident_scratch);
     seen.clear();
+    // Consecutive sprites mostly share a texture: compare pointers before
+    // hashing
+    let mut previous: Option<&TextureRef> = None;
     let textures = (0..list.sprite_count())
       .filter_map(|i| list.sprite(i))
       .map(|sprite| &sprite.texture)
-      .filter(|texture| seen.insert(Arc::clone(texture)))
+      .filter(|texture| {
+        let repeat = previous.is_some_and(|p| Arc::ptr_eq(p, texture));
+        previous = Some(texture);
+        !repeat && seen.insert(Arc::clone(texture))
+      })
       .map(|texture| &**texture);
     self.make_resident(device, queue, textures, list.sprite_count());
     self.resident_scratch = seen;
 
     self.placed.clear();
     let mut runs = std::mem::take(&mut self.world_runs);
+    // The previous sprite's texture and where it lives, reused while
+    // sprites share it
+    let mut last: Option<(TextureRef, AtlasSlot, (u32, u32))> = None;
     plan_runs(list.items(), &mut runs, |index| {
       let sprite = list.sprite(index)?;
-      let texture = self.textures.get(&*sprite.texture)?;
-      let slot = self.atlas.lookup(&texture.key)?;
-      let page = self.atlas.texture(slot.page)?;
-      let page_size = (page.width(), page.height());
+      let (slot, page_size) = match &last {
+        Some((texture, slot, size)) if Arc::ptr_eq(texture, &sprite.texture) => (*slot, *size),
+        _ => {
+          let texture = self.textures.get(&*sprite.texture)?;
+          let slot = self.atlas.lookup(&texture.key)?;
+          let page = self.atlas.texture(slot.page)?;
+          let size = (page.width(), page.height());
+          last = Some((Arc::clone(&sprite.texture), slot, size));
+          (slot, size)
+        }
+      };
       let pipeline = match sprite.shading {
         SpriteShading::Plain => PipelineKind::Plain,
         SpriteShading::Effect => PipelineKind::Effect,
