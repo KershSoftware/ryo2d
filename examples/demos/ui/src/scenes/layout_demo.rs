@@ -1,6 +1,6 @@
-//! Layout demo scene - demonstrates HBox, VBox, and Stack layout containers
+//! Layout demo page - demonstrates HBox, VBox, and Stack layout containers
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 pub struct LayoutDemo {
   // Demo state for interactive elements
@@ -29,38 +29,22 @@ impl Default for LayoutDemo {
   }
 }
 
-impl Scene for LayoutDemo {
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Pop;
-    }
-
-    SceneAction::Continue
+impl DemoPage for LayoutDemo {
+  fn name(&self) -> &str {
+    "Layout"
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn description(&self) -> &str {
+    "HBox, VBox and Stack positioning."
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Background
     ui.draw_rect(
       Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32),
       Color::rgb(25, 25, 35),
-    );
-
-    // Title
-    ui.draw_text_anchored(
-      "Layout Containers Demo",
-      Anchor::TopCenter,
-      0.0,
-      20.0,
-      Color::WHITE,
-    );
-    ui.draw_text_anchored(
-      "HBox, VBox, and Stack for easy widget positioning",
-      Anchor::TopCenter,
-      0.0,
-      45.0,
-      Color::GRAY,
     );
 
     // =====================================================================
@@ -278,7 +262,7 @@ impl Scene for LayoutDemo {
     // =====================================================================
     // Spacing Controls (bottom of screen)
     // =====================================================================
-    let controls_y = screen_h as f32 - 60.0;
+    let controls_y = screen_h as f32 - 90.0;
     ui.draw_panel(
       Rect::new(10.0, controls_y - 10.0, 420.0, 55.0),
       Color::new(0, 0, 0, 150),
@@ -302,15 +286,5 @@ impl Scene for LayoutDemo {
       0.0,
       20.0,
     );
-
-    // Instructions
-    ui.draw_text_anchored(
-      "Press ESC to return",
-      Anchor::BottomRight,
-      -10.0,
-      -10.0,
-      Color::rgb(80, 80, 100),
-    );
-    SceneAction::Continue
   }
 }

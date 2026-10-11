@@ -1,6 +1,6 @@
-//! Clipping demo scene - demonstrates scissor rect clipping and modal overlays
+//! Clipping demo page - demonstrates scissor rect clipping and modal overlays
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 pub struct ClippingDemo {
   // Scroll state
@@ -47,16 +47,23 @@ impl Default for ClippingDemo {
   }
 }
 
-impl Scene for ClippingDemo {
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      if self.show_modal {
-        self.show_modal = false;
-      } else {
-        return SceneAction::Pop;
-      }
-    }
+impl DemoPage for ClippingDemo {
+  fn name(&self) -> &str {
+    "Clipping & Modals"
+  }
 
+  fn description(&self) -> &str {
+    "Scissor clipping for scroll regions, and modal overlays."
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::mouse("Click the list to focus it, wheel to scroll"),
+      Control::mouse("Drag the scrollbar"),
+    ]
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     let (mx, my) = ctx.input.mouse_position();
     let mouse_in_scroll_area = self.scroll_area.contains(mx, my);
     let content_height = self.items.len() as f32 * 25.0;
@@ -120,16 +127,6 @@ impl Scene for ClippingDemo {
     // Clamp scroll offset
     self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
 
-    // Handle scroll input - only when focused
-    if self.scroll_focused {
-      if ctx.input.key_down(KeyCode::ArrowUp) {
-        self.scroll_velocity = -300.0;
-      }
-      if ctx.input.key_down(KeyCode::ArrowDown) {
-        self.scroll_velocity = 300.0;
-      }
-    }
-
     // Mouse wheel scrolling - only when hovering over scroll area
     if mouse_in_scroll_area {
       let scroll_delta = ctx.input.scroll_delta();
@@ -138,33 +135,15 @@ impl Scene for ClippingDemo {
         self.scroll_velocity = -scroll_delta.1 * 400.0;
       }
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Background
     ui.draw_rect(
       Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32),
       Color::rgb(25, 25, 35),
-    );
-
-    // Title
-    ui.draw_text_anchored(
-      "Clipping & Modal Demo",
-      Anchor::TopCenter,
-      0.0,
-      20.0,
-      Color::WHITE,
-    );
-    ui.draw_text_anchored(
-      "Scissor clipping for scroll regions and overlays",
-      Anchor::TopCenter,
-      0.0,
-      45.0,
-      Color::GRAY,
     );
 
     // =====================================================================
@@ -265,7 +244,7 @@ impl Scene for ClippingDemo {
 
     // Scroll instructions
     let instruction = if self.scroll_focused {
-      "Click and drag scrollbar, or use UP/DOWN arrows"
+      "Drag the scrollbar, or use the scroll wheel"
     } else {
       "Click to focus, scroll wheel to scroll"
     };
@@ -444,15 +423,5 @@ impl Scene for ClippingDemo {
         self.modal_result = Some(false);
       }
     }
-
-    // Instructions
-    ui.draw_text_anchored(
-      "Press ESC to return (or close modal)",
-      Anchor::BottomRight,
-      -10.0,
-      -10.0,
-      Color::rgb(80, 80, 100),
-    );
-    SceneAction::Continue
   }
 }

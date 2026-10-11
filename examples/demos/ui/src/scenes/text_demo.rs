@@ -1,10 +1,10 @@
-//! Text demo scene - demonstrates text wrapping and (future) text input
+//! Text demo page - demonstrates text wrapping
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 pub struct TextDemo {
   /// Width of the wrapping area
-  wrap_width: f32,
+  wrap_width: i32,
   /// Sample texts to demonstrate wrapping
   sample_index: usize,
 }
@@ -12,7 +12,7 @@ pub struct TextDemo {
 impl TextDemo {
   pub fn new() -> Self {
     Self {
-      wrap_width: 200.0,
+      wrap_width: 200,
       sample_index: 0,
     }
   }
@@ -46,35 +46,25 @@ impl Default for TextDemo {
   }
 }
 
-impl Scene for TextDemo {
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Back to menu
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Pop;
-    }
-
-    // Navigate samples with arrow keys
-    let samples = Self::sample_texts();
-    if ctx.input.key_pressed(KeyCode::ArrowUp) && self.sample_index > 0 {
-      self.sample_index -= 1;
-    }
-    if ctx.input.key_pressed(KeyCode::ArrowDown) && self.sample_index < samples.len() - 1 {
-      self.sample_index += 1;
-    }
-
-    // Adjust width with left/right
-    if ctx.input.key_down(KeyCode::ArrowLeft) {
-      self.wrap_width = (self.wrap_width - 2.0).max(50.0);
-    }
-    if ctx.input.key_down(KeyCode::ArrowRight) {
-      self.wrap_width = (self.wrap_width + 2.0).min(600.0);
-    }
-
-    SceneAction::Continue
+impl DemoPage for TextDemo {
+  fn name(&self) -> &str {
+    "Text Wrapping"
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn description(&self) -> &str {
+    "Word wrap and text layout."
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    let names: Vec<&str> = Self::sample_texts().iter().map(|(title, _)| *title).collect();
+    s.choice("Sample", &mut self.sample_index, &names);
+    s.int("Wrap width", &mut self.wrap_width, 50..=600);
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
+    let top = content_area(ui).y;
+    let wrap_width = self.wrap_width as f32;
 
     // Background
     ui.draw_rect(
@@ -82,51 +72,12 @@ impl Scene for TextDemo {
       Color::rgb(25, 25, 35),
     );
 
-    // Title
-    ui.draw_text_anchored(
-      "Text Wrapping Demo",
-      Anchor::TopCenter,
-      0.0,
-      20.0,
-      Color::WHITE,
-    );
-
-    // Instructions
-    ui.draw_text(
-      "ESC: Back | Up/Down: Change sample | Left/Right: Adjust width",
-      10.0,
-      50.0,
-      Color::GRAY,
-    );
-
     let samples = Self::sample_texts();
-    let (title, text) = samples[self.sample_index];
-
-    // Sample selector
-    let selector_y = 80.0;
-    ui.draw_text(
-      &format!(
-        "Sample: {} ({}/{})",
-        title,
-        self.sample_index + 1,
-        samples.len()
-      ),
-      10.0,
-      selector_y,
-      Color::CYAN,
-    );
-
-    // Width indicator
-    ui.draw_text(
-      &format!("Wrap width: {}px", self.wrap_width as u32),
-      10.0,
-      selector_y + 20.0,
-      Color::YELLOW,
-    );
+    let (_, text) = samples[self.sample_index.min(samples.len() - 1)];
 
     // Wrapping demonstration area
     let demo_x = 50.0;
-    let demo_y = 140.0;
+    let demo_y = top + 30.0;
     let max_width = self.wrap_width as u32;
 
     // Draw boundary box to show wrap width
@@ -134,7 +85,7 @@ impl Scene for TextDemo {
     let boundary = Rect::new(
       demo_x - 5.0,
       demo_y - 5.0,
-      self.wrap_width + 10.0,
+      wrap_width + 10.0,
       wrapped_h as f32 + 10.0,
     );
     ui.draw_panel(
@@ -165,15 +116,15 @@ impl Scene for TextDemo {
     let center_x = screen_w as f32 / 2.0 + 100.0;
     let center_demo_y = demo_y;
     let center_rect = Rect::new(
-      center_x - self.wrap_width / 2.0 - 5.0,
+      center_x - wrap_width / 2.0 - 5.0,
       center_demo_y - 5.0,
-      self.wrap_width + 10.0,
+      wrap_width + 10.0,
       wrapped_h as f32 + 10.0,
     );
 
     ui.draw_text(
       "Centered:",
-      center_x - self.wrap_width / 2.0,
+      center_x - wrap_width / 2.0,
       center_demo_y - 25.0,
       Color::CYAN,
     );
@@ -185,12 +136,11 @@ impl Scene for TextDemo {
 
     // Create rect for centered wrapped text
     let text_rect = Rect::new(
-      center_x - self.wrap_width / 2.0,
+      center_x - wrap_width / 2.0,
       center_demo_y,
-      self.wrap_width,
+      wrap_width,
       wrapped_h as f32,
     );
     ui.draw_text_wrapped_centered(text, text_rect, Color::WHITE);
-    SceneAction::Continue
   }
 }

@@ -1,6 +1,6 @@
-//! Dropdown demo scene - demonstrates the dropdown widget
+//! Dropdown demo page - demonstrates the dropdown widget
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 pub struct DropdownDemo {
   /// Difficulty dropdown
@@ -24,51 +24,43 @@ impl DropdownDemo {
   }
 }
 
-impl Scene for DropdownDemo {
+impl DemoPage for DropdownDemo {
   fn name(&self) -> &str {
-    "Dropdown Demo"
+    "Dropdowns"
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Only handle escape if no dropdown is open (they handle their own escape)
-    let any_open = self.difficulty.is_open()
-      || self.resolution.is_open()
-      || self.audio_device.is_open()
-      || self.language.is_open();
-
-    if ctx.input.key_pressed(KeyCode::Escape) && !any_open {
-      return SceneAction::Pop;
-    }
-    SceneAction::Continue
+  fn description(&self) -> &str {
+    "Pick from a list of options with mouse or keyboard."
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    // Title
-    ui.draw_text("Dropdown Widget Demo", 20.0, 15.0, Color::WHITE);
-    ui.draw_text(
-      "Press ESC to return | Click to open | Arrow keys to navigate | Enter to select",
-      20.0,
-      35.0,
-      Color::GRAY,
-    );
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::key(KeyCode::Tab, "Next dropdown"),
+      Control::mouse("Click a dropdown to open it"),
+    ]
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    // Everything below was laid out for a panel at y = 65
+    let oy = content_area(ui).y - 65.0;
 
     // --- Settings Panel ---
-    let panel_rect = Rect::new(20.0, 65.0, 400.0, 300.0);
+    let panel_rect = Rect::new(20.0, 65.0 + oy, 400.0, 300.0);
     ui.draw_rect(panel_rect, Color::rgb(35, 35, 45));
     ui.draw_rect_outline(panel_rect, Color::rgb(60, 60, 80), 1.0);
 
-    ui.draw_text("Game Settings", 35.0, 80.0, Color::rgb(100, 180, 255));
+    ui.draw_text("Game Settings", 35.0, 80.0 + oy, Color::rgb(100, 180, 255));
 
     // Difficulty dropdown
-    ui.draw_text("Difficulty:", 35.0, 115.0, Color::LIGHT_GRAY);
+    ui.draw_text("Difficulty:", 35.0, 115.0 + oy, Color::LIGHT_GRAY);
     let difficulty_options = ["Easy", "Medium", "Hard", "Nightmare"];
-    let difficulty_rect = Rect::new(140.0, 110.0, 200.0, 28.0);
+    let difficulty_rect = Rect::new(140.0, 110.0 + oy, 200.0, 28.0);
     if ui.dropdown(&mut self.difficulty, difficulty_rect, &difficulty_options) {
       // Selection changed - could trigger game logic here
     }
 
     // Resolution dropdown
-    ui.draw_text("Resolution:", 35.0, 160.0, Color::LIGHT_GRAY);
+    ui.draw_text("Resolution:", 35.0, 160.0 + oy, Color::LIGHT_GRAY);
     let resolution_options = [
       "1280x720",
       "1600x900",
@@ -76,11 +68,11 @@ impl Scene for DropdownDemo {
       "2560x1440",
       "3840x2160",
     ];
-    let resolution_rect = Rect::new(140.0, 155.0, 200.0, 28.0);
+    let resolution_rect = Rect::new(140.0, 155.0 + oy, 200.0, 28.0);
     ui.dropdown(&mut self.resolution, resolution_rect, &resolution_options);
 
     // Audio device dropdown
-    ui.draw_text("Audio:", 35.0, 205.0, Color::LIGHT_GRAY);
+    ui.draw_text("Audio:", 35.0, 205.0 + oy, Color::LIGHT_GRAY);
     let audio_options = [
       "Default Device",
       "Speakers",
@@ -88,11 +80,11 @@ impl Scene for DropdownDemo {
       "USB Audio",
       "HDMI Audio",
     ];
-    let audio_rect = Rect::new(140.0, 200.0, 200.0, 28.0);
+    let audio_rect = Rect::new(140.0, 200.0 + oy, 200.0, 28.0);
     ui.dropdown(&mut self.audio_device, audio_rect, &audio_options);
 
     // Language dropdown
-    ui.draw_text("Language:", 35.0, 250.0, Color::LIGHT_GRAY);
+    ui.draw_text("Language:", 35.0, 250.0 + oy, Color::LIGHT_GRAY);
     let language_options = [
       "English",
       "Español",
@@ -102,7 +94,7 @@ impl Scene for DropdownDemo {
       "한국어",
       "中文",
     ];
-    let language_rect = Rect::new(140.0, 245.0, 200.0, 28.0);
+    let language_rect = Rect::new(140.0, 245.0 + oy, 200.0, 28.0);
     ui.dropdown(&mut self.language, language_rect, &language_options);
 
     // --- Current Selections Display ---
@@ -110,7 +102,7 @@ impl Scene for DropdownDemo {
     ui.draw_text(
       "Current Selections:",
       info_x,
-      80.0,
+      80.0 + oy,
       Color::rgb(100, 180, 255),
     );
 
@@ -120,7 +112,7 @@ impl Scene for DropdownDemo {
         difficulty_options[self.difficulty.selected()]
       ),
       info_x + 10.0,
-      110.0,
+      110.0 + oy,
       Color::WHITE,
     );
     ui.draw_text(
@@ -129,24 +121,24 @@ impl Scene for DropdownDemo {
         resolution_options[self.resolution.selected()]
       ),
       info_x + 10.0,
-      130.0,
+      130.0 + oy,
       Color::WHITE,
     );
     ui.draw_text(
       &format!("Audio: {}", audio_options[self.audio_device.selected()]),
       info_x + 10.0,
-      150.0,
+      150.0 + oy,
       Color::WHITE,
     );
     ui.draw_text(
       &format!("Language: {}", language_options[self.language.selected()]),
       info_x + 10.0,
-      170.0,
+      170.0 + oy,
       Color::WHITE,
     );
 
     // --- Usage Notes ---
-    let notes_y = 390.0;
+    let notes_y = 390.0 + oy;
     ui.draw_text("Features:", 20.0, notes_y, Color::rgb(100, 180, 255));
     ui.draw_text(
       "- Click trigger to open/close dropdown",
@@ -189,6 +181,5 @@ impl Scene for DropdownDemo {
 
     // Draw dropdown lists on top of all other content
     ui.finish_dropdowns();
-    SceneAction::Continue
   }
 }

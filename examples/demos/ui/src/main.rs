@@ -1,22 +1,22 @@
-//! UI Demo - Comprehensive demonstration of Ryo2D's UI system
-//!
-//! This example showcases all UI features available in the engine,
-//! organized into themed demo scenes that you can navigate between.
+//! UI Demo - Ryo2D's immediate-mode UI, one feature per page
 
 mod scenes;
 
-use ryo2d::prelude::*;
-use scenes::MainMenu;
+use demo_kit::prelude::*;
+use scenes::{
+  ClippingDemo, DropdownDemo, LayoutDemo, ScrollViewDemo, TextDemo, TextInputDemo, ThemeDemo,
+};
 
 fn main() {
-  let engine = EngineBuilder::new()
-    .title("Ryo2D UI Demo")
+  Demo::new("UI")
     .resolution(1024, 768)
-    .window_mode(WindowMode::ResizableAspectRatio)
-    .start_scene(MainMenu::new())
-    .build();
-
-  if let Err(e) = engine.run() {
-    eprintln!("Engine error: {}", e);
-  }
+    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
+    .page(ThemeDemo::new)
+    .page(LayoutDemo::new)
+    .page(ClippingDemo::new)
+    .page(TextDemo::new)
+    .page(TextInputDemo::new)
+    .page(ScrollViewDemo::new)
+    .page(DropdownDemo::new)
+    .run();
 }

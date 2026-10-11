@@ -1,6 +1,6 @@
-//! Theme demo scene - demonstrates the hot-reloadable theme system
+//! Theme demo page - demonstrates the hot-reloadable theme system
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 pub struct ThemeDemo {
   hot_theme: Option<HotReloadTheme>,
@@ -165,12 +165,27 @@ impl Default for ThemeDemo {
   }
 }
 
-impl Scene for ThemeDemo {
-  fn on_enter(&mut self, _ctx: &mut SceneContext) {
+impl DemoPage for ThemeDemo {
+  fn name(&self) -> &str {
+    "Widgets & Themes"
+  }
+
+  fn description(&self) -> &str {
+    "Buttons, sliders, toggles and a hot-reloaded theme (assets/ui/theme.json)."
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::key(KeyCode::KeyT, "Next theme variant"),
+      Control::key(KeyCode::KeyI, "Show or hide instructions"),
+    ]
+  }
+
+  fn enter(&mut self, _ctx: &mut SceneContext) {
     self.initialize_theme();
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Poll for theme hot-reload
     if let Some(ref hot_theme) = self.hot_theme {
       hot_theme.poll_reload();
@@ -187,10 +202,6 @@ impl Scene for ThemeDemo {
     }
 
     // Handle input
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Pop;
-    }
-
     if ctx.input.key_pressed(KeyCode::KeyT) {
       self.switch_theme_variant();
     }
@@ -198,12 +209,11 @@ impl Scene for ThemeDemo {
     if ctx.input.key_pressed(KeyCode::KeyI) {
       self.show_instructions = !self.show_instructions;
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
+    let top = content_area(ui).y;
 
     // Get current theme for colors
     let theme = self.hot_theme.as_ref().map(|t| t.get());
@@ -229,15 +239,6 @@ impl Scene for ThemeDemo {
       bg_color,
     );
 
-    // Header
-    ui.draw_text_anchored(
-      "Theme System Demo",
-      Anchor::TopCenter,
-      0.0,
-      20.0,
-      text_color,
-    );
-
     let theme_name = theme
       .as_ref()
       .map(|t| t.name.as_str())
@@ -246,20 +247,20 @@ impl Scene for ThemeDemo {
       &format!("Current theme: {}", theme_name),
       Anchor::TopCenter,
       0.0,
-      45.0,
+      top,
       muted_color,
     );
 
     // Show error if theme failed to load
     if let Some(ref error) = self.theme_load_error {
-      ui.draw_text_anchored(error, Anchor::TopCenter, 0.0, 65.0, Color::RED);
+      ui.draw_text_anchored(error, Anchor::TopCenter, 0.0, top + 20.0, Color::RED);
     }
 
     // Main demo panel
     let panel_width = 500.0;
     let panel_height = 380.0;
     let panel_x = (screen_w as f32 - panel_width) / 2.0;
-    let panel_y = 90.0;
+    let panel_y = top + 45.0;
     let panel_rect = Rect::new(panel_x, panel_y, panel_width, panel_height);
 
     // Draw themed panel
@@ -417,7 +418,7 @@ impl Scene for ThemeDemo {
 
     // Instructions panel (collapsible)
     if self.show_instructions {
-      let inst_panel = Rect::new(10.0, screen_h as f32 - 140.0, 280.0, 130.0);
+      let inst_panel = Rect::new(10.0, screen_h as f32 - 160.0, 280.0, 112.0);
       ui.draw_panel(
         inst_panel,
         Color::new(0, 0, 0, 180),
@@ -425,13 +426,11 @@ impl Scene for ThemeDemo {
       );
 
       let inst_x = 20.0;
-      let mut inst_y = screen_h as f32 - 130.0;
+      let mut inst_y = screen_h as f32 - 150.0;
       let inst_line_h = 18.0;
 
       ui.draw_text("Instructions:", inst_x, inst_y, Color::WHITE);
       inst_y += inst_line_h + 5.0;
-      ui.draw_text("ESC - Return to menu", inst_x, inst_y, Color::LIGHT_GRAY);
-      inst_y += inst_line_h;
       ui.draw_text(
         "T - Cycle theme variants",
         inst_x,
@@ -452,14 +451,13 @@ impl Scene for ThemeDemo {
         "Press I for instructions",
         Anchor::BottomLeft,
         10.0,
-        -10.0,
+        -34.0,
         muted_color,
       );
     }
 
     // Theme file path info
     let path_text = format!("Theme file: {}", Self::get_theme_path().display());
-    ui.draw_text_anchored(&path_text, Anchor::BottomRight, -10.0, -10.0, muted_color);
-    SceneAction::Continue
+    ui.draw_text_anchored(&path_text, Anchor::BottomRight, -10.0, -34.0, muted_color);
   }
 }

@@ -1,9 +1,9 @@
-//! Text input demo scene - demonstrates the text input widget
+//! Text input demo page - demonstrates the text input widget
 //!
 //! This demo showcases the unified focus system with Tab/Shift+Tab navigation
 //! across multiple TextInputState widgets using handle_tab_navigation().
 
-use ryo2d::prelude::*;
+use demo_kit::prelude::*;
 
 pub struct TextInputDemo {
   /// Username text input state
@@ -39,19 +39,25 @@ impl TextInputDemo {
   }
 }
 
-impl Scene for TextInputDemo {
+impl DemoPage for TextInputDemo {
   fn name(&self) -> &str {
-    "Text Input Demo"
+    "Text Input"
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  fn description(&self) -> &str {
+    "Editable text fields with a cursor and selection."
+  }
+
+  fn controls(&self) -> Vec<Control> {
+    vec![
+      Control::key(KeyCode::Enter, "Submit the username"),
+      Control::key(KeyCode::Tab, "Next field"),
+    ]
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Store dt for use in render_ui
     self.last_dt = dt;
-
-    // Press Escape to go back to main menu
-    if ctx.input.key_pressed(KeyCode::Escape) {
-      return SceneAction::Pop;
-    }
 
     // Check for Enter key to "submit" the form when username is focused
     if self.username.is_focused() && ctx.input.key_pressed(KeyCode::Enter) {
@@ -59,28 +65,18 @@ impl Scene for TextInputDemo {
       self.last_submitted_username = self.username.text().to_string();
       self.username.set_focused(false);
     }
-
-    SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn render_ui(&mut self, ui: &mut UiContext) {
     let dt = self.last_dt;
 
     // Get screen dimensions
     let (sw, _sh) = ui.screen_size();
-
-    // Title
-    ui.draw_text("Text Input Demo", 20.0, 20.0, Color::WHITE);
-    ui.draw_text(
-      "Press ESC to return | Tab/Shift+Tab to navigate fields",
-      20.0,
-      40.0,
-      Color::GRAY,
-    );
+    let top = content_area(ui).y;
 
     // Form layout
     let form_x = 20.0;
-    let mut y = 80.0;
+    let mut y = top + 10.0;
     let label_color = Color::WHITE;
     let field_width = 300.0;
     let field_height = 28.0;
@@ -192,7 +188,7 @@ impl Scene for TextInputDemo {
 
     // Debug panel on the right showing current state
     let debug_x = sw as f32 - 280.0;
-    let mut debug_y = 80.0;
+    let mut debug_y = top + 10.0;
 
     ui.draw_text("Debug Info:", debug_x, debug_y, Color::rgb(100, 180, 255));
     debug_y += 25.0;
@@ -260,6 +256,5 @@ impl Scene for TextInputDemo {
       debug_y,
       Color::WHITE,
     );
-    SceneAction::Continue
   }
 }
