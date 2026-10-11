@@ -118,6 +118,15 @@ impl Scene for PageScene {
     self.page.enter(ctx);
   }
 
+  fn on_exit(&mut self, ctx: &mut SceneContext) {
+    self.page.exit(ctx);
+  }
+
+  /// Pages also stop music, so one page's music can't play over the next
+  fn cleanup_on_exit(&self) -> SceneCleanup {
+    SceneCleanup::ALL
+  }
+
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     let adjust = if self.keyboard_wanted {
       // Typing into a widget: the shell's keys belong to it

@@ -8,8 +8,11 @@ use crate::{Control, Settings};
 /// page switching, the settings panel, help and layout.
 ///
 /// A page is built fresh from its factory whenever it is shown or reset, and
-/// runs inside its own engine scene, so the world, camera, effects, lighting,
-/// time and events start clean.
+/// runs inside its own engine scene. Leaving it resets the world, camera,
+/// post-processing effects, ambient light and atmosphere, time scale, music,
+/// events and raycasting. Anything else a page changes (the cursor, UI scale,
+/// render pipeline passes, other lighting settings, sound effects, tilemaps,
+/// `Resources`) carries over unless the page undoes it in `exit`.
 pub trait DemoPage: 'static {
   /// Shown in the top bar, e.g. `Glow`
   fn name(&self) -> &str;
@@ -30,6 +33,10 @@ pub trait DemoPage: 'static {
 
   /// Set up the page (spawn entities, configure the camera and lighting)
   fn enter(&mut self, _ctx: &mut SceneContext) {}
+
+  /// Undo engine state the page changed that the scene reset does not cover
+  /// (see the trait docs); called when the page is left or reset
+  fn exit(&mut self, _ctx: &mut SceneContext) {}
 
   /// Fixed-timestep update; read settings fields here
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) {}

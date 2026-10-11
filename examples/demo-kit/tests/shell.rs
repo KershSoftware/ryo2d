@@ -8,6 +8,7 @@ use ryo2d::testing::{HeadlessEngine, StepOutcome};
 #[derive(Debug, Default, Clone)]
 struct Seen {
   enters: Vec<&'static str>,
+  exits: Vec<&'static str>,
   level: f32,
   count: i32,
   mode: usize,
@@ -78,6 +79,12 @@ impl DemoPage for Probe {
     }
   }
 
+  fn exit(&mut self, _ctx: &mut SceneContext) {
+    if let Ok(mut seen) = self.shared.lock() {
+      seen.exits.push(self.name);
+    }
+  }
+
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     if let Ok(mut seen) = self.shared.lock() {
       seen.level = self.level;
@@ -141,6 +148,20 @@ fn brackets_and_page_keys_change_pages_and_wrap() {
     seen(&shared).enters,
     ["one", "two", "one", "three", "one", "three"]
   );
+}
+
+#[test]
+fn a_page_exits_when_it_is_left_or_reset() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  tap(&mut engine, KeyCode::BracketRight);
+  assert_eq!(seen(&shared).exits, ["one"]);
+  tap(&mut engine, KeyCode::KeyR);
+  assert_eq!(seen(&shared).exits, ["one", "two"]);
+  assert_eq!(seen(&shared).enters, ["one", "two", "two"]);
 }
 
 #[test]

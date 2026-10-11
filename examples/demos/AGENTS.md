@@ -54,7 +54,7 @@ impl DemoPage for Glow {
 ```
 
 - Add `demo-kit = { path = "../../demo-kit" }` to the demo's `Cargo.toml`.
-- Each page is built fresh from its factory when shown or reset, inside its own scene: the engine's scene cleanup resets the world, camera, effects, lighting, time, events and raycasting between pages. Keep feature code plain ryo2d.
+- Each page is built fresh from its factory when shown or reset, inside its own scene: leaving it resets the world, camera, effects, ambient light and atmosphere, time, music, events and raycasting. Anything else a page changes (cursor, UI scale, render pipeline passes, other lighting settings, tilemaps, `Resources`) carries over unless it undoes it in `DemoPage::exit`, or every page sets it in `enter`. Keep feature code plain ryo2d.
 - `Settings`: `float(label, &mut f32, range, step)`, `int(label, &mut i32, range)`, `choice(label, &mut usize, &[&str])`, `toggle(label, &mut bool)`. Called every frame before `update`; rows may change with other values.
 - `Control::key(KeyCode, desc)`, `Control::keys("WASD", &[..], desc)`, `Control::mouse(desc)`.
 - Draw page UI inside `content_area(ui)`: below the top bar and description, above the legend. The settings panel covers the right of it when the page has settings, so keep important content left of about 55% of the width on those pages.
