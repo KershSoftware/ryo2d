@@ -241,7 +241,9 @@ impl<'a> GpuRenderContext<'a> {
       Some(key) => crate::core::render::SpriteShading::Custom(key),
       None => crate::core::render::SpriteShading::Plain,
     };
-    self.batch.add_shaded(texture_id, shading, instance, z_order);
+    self
+      .batch
+      .add_shaded(texture_id, shading, instance, z_order);
   }
 
   /// Get screen dimensions (width, height)

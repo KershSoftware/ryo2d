@@ -38,9 +38,9 @@
 mod atlas_bleeding;
 #[cfg(test)]
 mod capture_matches_frame;
+mod gpu;
 #[cfg(test)]
 mod gpu_world;
-mod gpu;
 
 use image::RgbaImage;
 use winit::event::{ElementState, MouseButton};

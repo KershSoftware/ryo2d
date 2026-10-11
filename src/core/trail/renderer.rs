@@ -1116,19 +1116,22 @@ impl TrailRenderer {
 
           // Helper: emit a full-width vertex pair in correct strip order
           // (+perp first UV.y=0, -perp second UV.y=1)
-          let emit_pair =
-            |verts: &mut Vec<TrailVertex>, px: f32, py: f32, t: f32, ep: [f32; 4]| {
-              verts.push(TrailVertex {
-                position: [world_x + px * half_width, world_y + py * half_width],
-                color: color_arr, uv: [t, 0.0], effect_params: ep,
-                perpendicular: [px, py],
-              });
-              verts.push(TrailVertex {
-                position: [world_x - px * half_width, world_y - py * half_width],
-                color: color_arr, uv: [t, 1.0], effect_params: ep,
-                perpendicular: [px, py],
-              });
-            };
+          let emit_pair = |verts: &mut Vec<TrailVertex>, px: f32, py: f32, t: f32, ep: [f32; 4]| {
+            verts.push(TrailVertex {
+              position: [world_x + px * half_width, world_y + py * half_width],
+              color: color_arr,
+              uv: [t, 0.0],
+              effect_params: ep,
+              perpendicular: [px, py],
+            });
+            verts.push(TrailVertex {
+              position: [world_x - px * half_width, world_y - py * half_width],
+              color: color_arr,
+              uv: [t, 1.0],
+              effect_params: ep,
+              perpendicular: [px, py],
+            });
+          };
 
           match join {
             LineJoin::Miter => {
@@ -1162,7 +1165,9 @@ impl TrailRenderer {
                       // Spike is +perp side (first), inside is -perp side (second)
                       self.vertices.push(TrailVertex {
                         position: [spike_x, spike_y],
-                        color: color_arr, uv: [t, spike_uv_y], effect_params,
+                        color: color_arr,
+                        uv: [t, spike_uv_y],
+                        effect_params,
                         perpendicular: [mnx, mny],
                       });
                       self.vertices.push(TrailVertex {
@@ -1170,7 +1175,9 @@ impl TrailRenderer {
                           world_x + inside_sign * ppx * half_width,
                           world_y + inside_sign * ppy * half_width,
                         ],
-                        color: color_arr, uv: [t, inside_uv_y], effect_params,
+                        color: color_arr,
+                        uv: [t, inside_uv_y],
+                        effect_params,
                         perpendicular: [ppx, ppy],
                       });
                     } else {
@@ -1180,12 +1187,16 @@ impl TrailRenderer {
                           world_x + inside_sign * ppx * half_width,
                           world_y + inside_sign * ppy * half_width,
                         ],
-                        color: color_arr, uv: [t, inside_uv_y], effect_params,
+                        color: color_arr,
+                        uv: [t, inside_uv_y],
+                        effect_params,
                         perpendicular: [ppx, ppy],
                       });
                       self.vertices.push(TrailVertex {
                         position: [spike_x, spike_y],
-                        color: color_arr, uv: [t, spike_uv_y], effect_params,
+                        color: color_arr,
+                        uv: [t, spike_uv_y],
+                        effect_params,
                         perpendicular: [mnx, mny],
                       });
                     }
@@ -1193,7 +1204,9 @@ impl TrailRenderer {
                     if outside_sign > 0.0 {
                       self.vertices.push(TrailVertex {
                         position: [spike_x, spike_y],
-                        color: color_arr, uv: [t, spike_uv_y], effect_params,
+                        color: color_arr,
+                        uv: [t, spike_uv_y],
+                        effect_params,
                         perpendicular: [mnx, mny],
                       });
                       self.vertices.push(TrailVertex {
@@ -1201,7 +1214,9 @@ impl TrailRenderer {
                           world_x + inside_sign * npx * half_width,
                           world_y + inside_sign * npy * half_width,
                         ],
-                        color: color_arr, uv: [t, inside_uv_y], effect_params,
+                        color: color_arr,
+                        uv: [t, inside_uv_y],
+                        effect_params,
                         perpendicular: [npx, npy],
                       });
                     } else {
@@ -1210,12 +1225,16 @@ impl TrailRenderer {
                           world_x + inside_sign * npx * half_width,
                           world_y + inside_sign * npy * half_width,
                         ],
-                        color: color_arr, uv: [t, inside_uv_y], effect_params,
+                        color: color_arr,
+                        uv: [t, inside_uv_y],
+                        effect_params,
                         perpendicular: [npx, npy],
                       });
                       self.vertices.push(TrailVertex {
                         position: [spike_x, spike_y],
-                        color: color_arr, uv: [t, spike_uv_y], effect_params,
+                        color: color_arr,
+                        uv: [t, spike_uv_y],
+                        effect_params,
                         perpendicular: [mnx, mny],
                       });
                     }
@@ -1275,11 +1294,10 @@ impl TrailRenderer {
                 if outside_sign > 0.0 {
                   // Outside arc is +perp side (first), inside is -perp side (second)
                   self.vertices.push(TrailVertex {
-                    position: [
-                      world_x + rot_ox * half_width,
-                      world_y + rot_oy * half_width,
-                    ],
-                    color: color_arr, uv: [t, 0.0], effect_params,
+                    position: [world_x + rot_ox * half_width, world_y + rot_oy * half_width],
+                    color: color_arr,
+                    uv: [t, 0.0],
+                    effect_params,
                     perpendicular: [rot_ox, rot_oy],
                   });
                   self.vertices.push(TrailVertex {
@@ -1287,7 +1305,9 @@ impl TrailRenderer {
                       world_x + inside_sign * in_px * half_width,
                       world_y + inside_sign * in_py * half_width,
                     ],
-                    color: color_arr, uv: [t, 1.0], effect_params,
+                    color: color_arr,
+                    uv: [t, 1.0],
+                    effect_params,
                     perpendicular: [in_px, in_py],
                   });
                 } else {
@@ -1297,15 +1317,16 @@ impl TrailRenderer {
                       world_x + inside_sign * in_px * half_width,
                       world_y + inside_sign * in_py * half_width,
                     ],
-                    color: color_arr, uv: [t, 0.0], effect_params,
+                    color: color_arr,
+                    uv: [t, 0.0],
+                    effect_params,
                     perpendicular: [in_px, in_py],
                   });
                   self.vertices.push(TrailVertex {
-                    position: [
-                      world_x + rot_ox * half_width,
-                      world_y + rot_oy * half_width,
-                    ],
-                    color: color_arr, uv: [t, 1.0], effect_params,
+                    position: [world_x + rot_ox * half_width, world_y + rot_oy * half_width],
+                    color: color_arr,
+                    uv: [t, 1.0],
+                    effect_params,
                     perpendicular: [rot_ox, rot_oy],
                   });
                 }
@@ -1493,7 +1514,6 @@ impl TrailRenderer {
         }
       }
     }
-
   }
 
   /// Render the trails and lines that scene lighting applies to.
@@ -2530,7 +2550,9 @@ mod tests {
                 if outside_sign > 0.0 {
                   vertices.push(TrailVertex {
                     position: [spike_x, spike_y],
-                    color: color_arr, uv: [t, spike_uv_y], effect_params,
+                    color: color_arr,
+                    uv: [t, spike_uv_y],
+                    effect_params,
                     perpendicular: [mnx, mny],
                   });
                   vertices.push(TrailVertex {
@@ -2538,7 +2560,9 @@ mod tests {
                       world_x + inside_sign * px * half_width,
                       world_y + inside_sign * py * half_width,
                     ],
-                    color: color_arr, uv: [t, inside_uv_y], effect_params,
+                    color: color_arr,
+                    uv: [t, inside_uv_y],
+                    effect_params,
                     perpendicular: [px, py],
                   });
                 } else {
@@ -2547,12 +2571,16 @@ mod tests {
                       world_x + inside_sign * px * half_width,
                       world_y + inside_sign * py * half_width,
                     ],
-                    color: color_arr, uv: [t, inside_uv_y], effect_params,
+                    color: color_arr,
+                    uv: [t, inside_uv_y],
+                    effect_params,
                     perpendicular: [px, py],
                   });
                   vertices.push(TrailVertex {
                     position: [spike_x, spike_y],
-                    color: color_arr, uv: [t, spike_uv_y], effect_params,
+                    color: color_arr,
+                    uv: [t, spike_uv_y],
+                    effect_params,
                     perpendicular: [mnx, mny],
                   });
                 }
@@ -2565,12 +2593,16 @@ mod tests {
         for (px, py) in [(ppx, ppy), (npx, npy)] {
           vertices.push(TrailVertex {
             position: [world_x + px * half_width, world_y + py * half_width],
-            color: color_arr, uv: [t, 0.0], effect_params,
+            color: color_arr,
+            uv: [t, 0.0],
+            effect_params,
             perpendicular: [px, py],
           });
           vertices.push(TrailVertex {
             position: [world_x - px * half_width, world_y - py * half_width],
-            color: color_arr, uv: [t, 1.0], effect_params,
+            color: color_arr,
+            uv: [t, 1.0],
+            effect_params,
             perpendicular: [px, py],
           });
         }
@@ -2611,7 +2643,9 @@ mod tests {
           if outside_sign > 0.0 {
             vertices.push(TrailVertex {
               position: [world_x + rot_ox * half_width, world_y + rot_oy * half_width],
-              color: color_arr, uv: [t, 0.0], effect_params,
+              color: color_arr,
+              uv: [t, 0.0],
+              effect_params,
               perpendicular: [rot_ox, rot_oy],
             });
             vertices.push(TrailVertex {
@@ -2619,7 +2653,9 @@ mod tests {
                 world_x + inside_sign * in_px * half_width,
                 world_y + inside_sign * in_py * half_width,
               ],
-              color: color_arr, uv: [t, 1.0], effect_params,
+              color: color_arr,
+              uv: [t, 1.0],
+              effect_params,
               perpendicular: [in_px, in_py],
             });
           } else {
@@ -2628,12 +2664,16 @@ mod tests {
                 world_x + inside_sign * in_px * half_width,
                 world_y + inside_sign * in_py * half_width,
               ],
-              color: color_arr, uv: [t, 0.0], effect_params,
+              color: color_arr,
+              uv: [t, 0.0],
+              effect_params,
               perpendicular: [in_px, in_py],
             });
             vertices.push(TrailVertex {
               position: [world_x + rot_ox * half_width, world_y + rot_oy * half_width],
-              color: color_arr, uv: [t, 1.0], effect_params,
+              color: color_arr,
+              uv: [t, 1.0],
+              effect_params,
               perpendicular: [rot_ox, rot_oy],
             });
           }
@@ -2653,8 +2693,8 @@ mod tests {
     // 90-degree L-shape: right then up
     let verts = simulate_join_vertices(
       LineJoin::Miter,
-      (0.0, 0.0),   // left
-      (100.0, 0.0),  // corner
+      (0.0, 0.0),      // left
+      (100.0, 0.0),    // corner
       (100.0, -100.0), // up
       10.0,
     );
@@ -2763,7 +2803,7 @@ mod tests {
     let verts = simulate_join_vertices(
       LineJoin::Miter,
       (100.0 - dx, 200.0 - dy), // left arm tip (up-left)
-      (100.0, 200.0),            // apex
+      (100.0, 200.0),           // apex
       (100.0 + dx, 200.0 - dy), // right arm tip (up-right)
       15.0,
     );
@@ -2790,11 +2830,14 @@ mod tests {
     assert_eq!(verts.len(), 4);
     // Find the spike vertex (the one furthest from center)
     let center = (100.0_f32, 0.0_f32);
-    let max_dist = verts.iter().map(|v| {
-      let dx = v.position[0] - center.0;
-      let dy = v.position[1] - center.1;
-      (dx * dx + dy * dy).sqrt()
-    }).fold(0.0_f32, f32::max);
+    let max_dist = verts
+      .iter()
+      .map(|v| {
+        let dx = v.position[0] - center.0;
+        let dy = v.position[1] - center.1;
+        (dx * dx + dy * dy).sqrt()
+      })
+      .fold(0.0_f32, f32::max);
     // Expected: half_width * miter_length = 10.0 * 1.414 ≈ 14.14
     assert!(
       (max_dist - 14.14).abs() < 0.5,
@@ -2842,8 +2885,14 @@ mod tests {
     for pair in verts.chunks(2) {
       let d0 = ((pair[0].position[0] - 100.0).powi(2) + (pair[0].position[1]).powi(2)).sqrt();
       let d1 = ((pair[1].position[0] - 100.0).powi(2) + (pair[1].position[1]).powi(2)).sqrt();
-      assert!((d0 - 10.0).abs() < 0.1, "All round join vertices should be at half_width");
-      assert!((d1 - 10.0).abs() < 0.1, "All round join vertices should be at half_width");
+      assert!(
+        (d0 - 10.0).abs() < 0.1,
+        "All round join vertices should be at half_width"
+      );
+      assert!(
+        (d1 - 10.0).abs() < 0.1,
+        "All round join vertices should be at half_width"
+      );
     }
   }
 
@@ -2869,11 +2918,11 @@ mod tests {
       assert!(
         (dist - hw).abs() < 0.5,
         "Outside arc vertex should be ~{} from center, got {}",
-        hw, dist
+        hw,
+        dist
       );
     }
   }
-
 
   #[test]
   fn square_cap_head_helper_generates_vertices() {

@@ -19,9 +19,7 @@ use super::console::{
   CommandContext, CommandRegistry, CommandResult, ConsoleCommandBuilder, ConsoleState,
   register_builtins,
 };
-use super::ecs::{
-  Entity, Renderable, Transform, World, WorldTransform, YSort,
-};
+use super::ecs::{Entity, Renderable, Transform, World, WorldTransform, YSort};
 use super::error::{EngineError, EngineResult};
 use super::events::{CollisionStarted, CollisionStopped, Events};
 use super::game::{GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
@@ -2132,8 +2130,7 @@ impl Engine {
   /// their z_order and Y position, for Zelda/RPG-style depth sorting: in each
   /// layer they draw after the plain sprites, ordered by sort y.
   fn apply_y_sorting(&mut self) {
-    let mut y_sort_keys: Vec<(Entity, DrawOrder)> =
-      Vec::with_capacity(self.y_sort_entities.len());
+    let mut y_sort_keys: Vec<(Entity, DrawOrder)> = Vec::with_capacity(self.y_sort_entities.len());
 
     for &entity in &self.y_sort_entities {
       // Skip inactive entities
@@ -2195,7 +2192,9 @@ impl Engine {
 
       for entity in self.world.entities_with_two::<Transform, Renderable>() {
         if let Some(renderable) = self.world.get::<Renderable>(entity) {
-          self.renderable_cache.push((entity, DrawOrder::plain(renderable.z_order)));
+          self
+            .renderable_cache
+            .push((entity, DrawOrder::plain(renderable.z_order)));
 
           // Track entities with YSort component for per-frame Y-based sorting
           if self.world.has::<YSort>(entity) {

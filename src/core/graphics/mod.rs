@@ -25,14 +25,13 @@ pub use animation::{
 };
 pub(crate) use atlas::{AtlasKey, AtlasSlot, SlotPage, TextureAtlas};
 pub use camera::{Camera, CameraBounds};
+pub(crate) use compositor::{Compositor, Viewport};
 pub use parallax::TileMode;
 pub use parallax_gpu::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
-pub(crate) use compositor::{Compositor, Viewport};
 pub use renderer::WgpuRenderer;
 pub use sprite::{AnimatedSprite, Sprite};
-pub use sprite_gpu::{
-  BatchCollector, SpriteGlobals, SpriteGpuRenderer, SpriteInstance,
-  get_sprite_effect,
-};
 pub(crate) use sprite_gpu::effect_padding;
+pub use sprite_gpu::{
+  BatchCollector, SpriteGlobals, SpriteGpuRenderer, SpriteInstance, get_sprite_effect,
+};
 pub use tile::{CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart};

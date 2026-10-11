@@ -1095,5 +1095,4 @@ mod tests {
     assert!((smoothed.draw_calls - 10.0).abs() < 1.0);
     assert!((smoothed.sprite_count - 500.0).abs() < 1.0);
   }
-
 }

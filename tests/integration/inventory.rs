@@ -502,7 +502,10 @@ fn space_in_a_stack_with_data_is_not_room_for_plain_items() {
 
   let result = inv.add(ItemStack::new(potion, 1), &registry);
 
-  assert!(matches!(result, Err(InventoryError::InventoryFull { remainder: 1 })));
+  assert!(matches!(
+    result,
+    Err(InventoryError::InventoryFull { remainder: 1 })
+  ));
   assert_eq!(inv.get(0).unwrap().quantity(), 1);
 }
 
