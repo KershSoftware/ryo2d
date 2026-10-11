@@ -48,6 +48,22 @@ impl PageScene {
     SceneAction::Switch(Box::new(PageScene::new(self.def.clone(), index)))
   }
 
+  /// A fresh scene for this page with the same row selected
+  fn reset(&self) -> SceneAction {
+    let mut scene = PageScene::new(self.def.clone(), self.index);
+    scene.selected = self.selected;
+    SceneAction::Switch(Box::new(scene))
+  }
+
+  /// Record the page's settings rows, applying `adjust` steps to the
+  /// selected one
+  fn read_rows(&mut self, adjust: i32) {
+    let mut settings = Settings::new(self.selected, adjust);
+    self.page.settings(&mut settings);
+    self.rows = settings.into_rows();
+    self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+  }
+
   /// Handle the shell's keys; returns the adjustment steps for the panel, or
   /// a scene action to return instead of updating the page
   fn shell_keys(&mut self, ctx: &mut SceneContext) -> Result<i32, SceneAction> {
@@ -86,7 +102,7 @@ impl PageScene {
       return Err(self.switch_to((self.index + count - 1) % count));
     }
     if reset {
-      return Err(self.switch_to(self.index));
+      return Err(self.reset());
     }
 
     if self.help_open {
@@ -116,6 +132,8 @@ impl PageScene {
 impl Scene for PageScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     self.page.enter(ctx);
+    // The page's UI may draw before its first update: show its panel already
+    self.read_rows(0);
   }
 
   fn on_exit(&mut self, ctx: &mut SceneContext) {
@@ -140,10 +158,7 @@ impl Scene for PageScene {
       }
     };
 
-    let mut settings = Settings::new(self.selected, adjust);
-    self.page.settings(&mut settings);
-    self.rows = settings.into_rows();
-    self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+    self.read_rows(adjust);
 
     // The page sees no input under help, and no pointer over the panel
     let input = &mut *ctx.input;

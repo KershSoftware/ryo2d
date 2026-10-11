@@ -227,6 +227,51 @@ fn reset_rebuilds_the_page_with_defaults() {
 }
 
 #[test]
+fn reset_keeps_the_selected_row() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  // Pick the Mode row (third), reset, then change the selected value
+  tap(&mut engine, KeyCode::ArrowDown);
+  tap(&mut engine, KeyCode::ArrowDown);
+  tap(&mut engine, KeyCode::KeyR);
+  tap(&mut engine, KeyCode::ArrowRight);
+  assert_eq!(seen(&shared).mode, 1, "Mode changed");
+  assert_eq!(seen(&shared).level, 0.5, "Level untouched");
+}
+
+#[test]
+fn a_new_page_shows_its_panel_on_its_first_frame() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let Some(content) = seen(&shared).content else {
+    panic!("the page drew no UI frame");
+  };
+  // The frame that switches page, then the next one
+  engine.tap_key(KeyCode::BracketRight);
+  engine.step().unwrap();
+  let first = engine.frame().unwrap();
+  engine.step().unwrap();
+  let second = engine.frame().unwrap();
+  let panel_x = (content.right() - 40.0) as u32..content.right() as u32;
+  let panel_y = content.y as u32..(content.y + 30.0) as u32;
+  for y in panel_y {
+    for x in panel_x.clone() {
+      assert_eq!(
+        first.get_pixel(x, y),
+        second.get_pixel(x, y),
+        "panel differs at ({x}, {y}) on the page's first frame"
+      );
+    }
+  }
+}
+
+#[test]
 fn holding_right_through_a_reset_does_not_keep_adjusting() {
   let shared = Shared::default();
   let Some(mut engine) = start(three_pages(&shared)) else {
