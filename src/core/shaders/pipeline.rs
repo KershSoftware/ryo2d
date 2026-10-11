@@ -3,8 +3,12 @@
 //! Manages GPU resources for rendering post-processing effects.
 //! Uses ping-pong buffers for effect chaining.
 
+use super::custom::{self, ParamLayout, ShaderError, ShaderKind};
 use super::effects::{EffectParams, GodRaysParams, PostProcessEffect};
+use super::manager::CustomEffect;
 use super::post_process_shaders;
+use crate::core::ecs::{ShaderHandle, ShaderParams};
+use std::collections::{HashMap, HashSet};
 
 /// Which buffer contains the effect output
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +67,255 @@ impl UniformPool {
   }
 }
 
+/// Largest `Params` uniform a custom effect can have (see `custom::compile`)
+const CUSTOM_PARAMS_BYTES: u64 = 64;
+/// Custom effect globals: `time_resolution: vec4<f32>`
+const CUSTOM_GLOBALS_BYTES: u64 = 16;
+/// Custom effects unused for this many frames are forgotten
+const CUSTOM_EFFECT_TTL: u64 = 600;
+
+/// A compiled game effect
+struct CustomPipeline {
+  pipeline: wgpu::RenderPipeline,
+  layout: ParamLayout,
+}
+
+/// What the cache knows about one effect version
+struct CustomEntry {
+  generation: u64,
+  /// `None` when this version failed to compile; not retried until the
+  /// shader's source changes
+  ready: Option<CustomPipeline>,
+  last_used: u64,
+}
+
+/// Pipelines of game effects, built on first use and rebuilt when the shader's
+/// source changes.
+struct CustomEffectPipelines {
+  bind_group_layout: wgpu::BindGroupLayout,
+  pipeline_layout: wgpu::PipelineLayout,
+  format: wgpu::TextureFormat,
+  /// By `ShaderHandle::serial()`
+  entries: HashMap<u64, CustomEntry>,
+  /// Parameter names already warned about, by (serial, generation)
+  warned: HashMap<(u64, u64), HashSet<String>>,
+}
+
+impl CustomEffectPipelines {
+  fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    let uniform = |binding| wgpu::BindGroupLayoutEntry {
+      binding,
+      visibility: wgpu::ShaderStages::FRAGMENT,
+      ty: wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Uniform,
+        has_dynamic_offset: false,
+        min_binding_size: None,
+      },
+      count: None,
+    };
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+      label: Some("Custom Effect Bind Group Layout"),
+      entries: &[
+        wgpu::BindGroupLayoutEntry {
+          binding: 0,
+          visibility: wgpu::ShaderStages::FRAGMENT,
+          ty: wgpu::BindingType::Texture {
+            multisampled: false,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+          },
+          count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+          binding: 1,
+          visibility: wgpu::ShaderStages::FRAGMENT,
+          ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+          count: None,
+        },
+        uniform(2),
+        uniform(3),
+      ],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+      label: Some("Custom Effect Pipeline Layout"),
+      bind_group_layouts: &[&bind_group_layout],
+      push_constant_ranges: &[],
+    });
+    Self {
+      bind_group_layout,
+      pipeline_layout,
+      format,
+      entries: HashMap::new(),
+      warned: HashMap::new(),
+    }
+  }
+
+  /// Make sure the cache holds the shader's current version; whether it can run.
+  fn prepare(&mut self, device: &wgpu::Device, shader: &ShaderHandle, frame: u64) -> bool {
+    let serial = shader.serial();
+    if let Some(entry) = self.entries.get_mut(&serial)
+      && entry.generation == shader.generation()
+    {
+      entry.last_used = frame;
+      return entry.ready.is_some();
+    }
+    let (generation, source) = shader.snapshot();
+    let ready = self.build(device, shader, generation, &source);
+    let usable = ready.is_some();
+    self.entries.insert(
+      serial,
+      CustomEntry {
+        generation,
+        ready,
+        last_used: frame,
+      },
+    );
+    usable
+  }
+
+  /// Drop effects unused for [`CUSTOM_EFFECT_TTL`] frames and their warnings.
+  fn prune(&mut self, frame: u64) {
+    self
+      .entries
+      .retain(|_, e| frame.saturating_sub(e.last_used) < CUSTOM_EFFECT_TTL);
+    let entries = &self.entries;
+    self.warned.retain(|(serial, generation), _| {
+      entries
+        .get(serial)
+        .is_some_and(|e| e.generation == *generation)
+    });
+  }
+
+  /// Compile `source` and build its pipeline; any failure is logged once and
+  /// leaves the effect skipped.
+  fn build(
+    &self,
+    device: &wgpu::Device,
+    shader: &ShaderHandle,
+    generation: u64,
+    source: &str,
+  ) -> Option<CustomPipeline> {
+    let serial = shader.serial();
+    let compiled = match custom::compile(ShaderKind::Effect, shader.id(), source) {
+      Ok(compiled) => compiled,
+      Err(error) => {
+        custom::report_once(serial, generation, &error);
+        return None;
+      }
+    };
+    if custom::uniform_size(ShaderKind::Effect, &compiled.layout) as u64 > CUSTOM_PARAMS_BYTES {
+      let error = ShaderError {
+        shader: shader.id().to_string(),
+        line: None,
+        column: None,
+        message: format!("Params is larger than {CUSTOM_PARAMS_BYTES} bytes"),
+      };
+      custom::report_once(serial, generation, &error);
+      return None;
+    }
+
+    // Anything naga accepted but the device rejects surfaces here instead of
+    // taking the engine down
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+      label: Some(shader.id()),
+      source: wgpu::ShaderSource::Wgsl(compiled.wgsl.into()),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+      label: Some(shader.id()),
+      layout: Some(&self.pipeline_layout),
+      vertex: wgpu::VertexState {
+        module: &module,
+        entry_point: "vs_main",
+        buffers: &[],
+        compilation_options: Default::default(),
+      },
+      fragment: Some(wgpu::FragmentState {
+        module: &module,
+        entry_point: "fs_main",
+        targets: &[Some(wgpu::ColorTargetState {
+          format: self.format,
+          blend: Some(wgpu::BlendState::REPLACE),
+          write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+      }),
+      primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        ..Default::default()
+      },
+      depth_stencil: None,
+      multisample: wgpu::MultisampleState::default(),
+      multiview: None,
+      cache: None,
+    });
+    if let Some(error) = pollster::block_on(device.pop_error_scope()) {
+      let error = ShaderError {
+        shader: shader.id().to_string(),
+        line: None,
+        column: None,
+        message: error.to_string(),
+      };
+      custom::report_once(serial, generation, &error);
+      return None;
+    }
+    Some(CustomPipeline {
+      pipeline,
+      layout: compiled.layout,
+    })
+  }
+
+  /// Pack `params` for the shader's `Params` into `out`; the number of bytes
+  /// to upload. Names the shader doesn't have are warned about once per
+  /// shader version.
+  fn pack(
+    &mut self,
+    shader: &ShaderHandle,
+    params: &ShaderParams,
+    out: &mut [u8; CUSTOM_PARAMS_BYTES as usize],
+  ) -> Option<usize> {
+    let serial = shader.serial();
+    let entry = self.entries.get(&serial)?;
+    let ready = entry.ready.as_ref()?;
+    let generation = entry.generation;
+    let size = custom::uniform_size(ShaderKind::Effect, &ready.layout);
+    let warned = &mut self.warned;
+    custom::pack_with(&ready.layout, params, &mut out[..size], |name, expected| {
+      let seen = warned
+        .get(&(serial, generation))
+        .is_some_and(|names| names.contains(name));
+      if seen {
+        return;
+      }
+      warned
+        .entry((serial, generation))
+        .or_default()
+        .insert(name.to_string());
+      match expected {
+        None => crate::engine_warn!(
+          module: "Shaders",
+          "{}: parameter `{}` is not a field of Params and is ignored",
+          shader.id(),
+          name
+        ),
+        Some(kind) => crate::engine_warn!(
+          module: "Shaders",
+          "{}: parameter `{}` has the wrong type (Params expects {:?}) and is ignored",
+          shader.id(),
+          name,
+          kind
+        ),
+      }
+    });
+    Some(size)
+  }
+
+  fn pipeline(&self, serial: u64) -> Option<&wgpu::RenderPipeline> {
+    let ready = self.entries.get(&serial)?.ready.as_ref()?;
+    Some(&ready.pipeline)
+  }
+}
+
 /// GPU pipeline for post-processing effects
 pub struct PostProcessPipeline {
   // Ping-pong textures for effect chaining
@@ -98,6 +351,12 @@ pub struct PostProcessPipeline {
 
   // Per-pass uniform buffers for god rays (larger params)
   god_rays_uniforms: UniformPool,
+
+  // Game-written effects, run after the built-ins
+  custom: CustomEffectPipelines,
+  custom_params: UniformPool,
+  custom_globals: UniformPool,
+  custom_frame: u64,
 
   // Bind group layout shared by most effects
   bind_group_layout: wgpu::BindGroupLayout,
@@ -341,6 +600,10 @@ impl PostProcessPipeline {
         "God Rays Uniform Buffer",
         std::mem::size_of::<GodRaysParams>() as u64,
       ),
+      custom: CustomEffectPipelines::new(device, format),
+      custom_params: UniformPool::new("Custom Effect Params", CUSTOM_PARAMS_BYTES),
+      custom_globals: UniformPool::new("Custom Effect Globals", CUSTOM_GLOBALS_BYTES),
+      custom_frame: 0,
       bind_group_layout,
       god_rays_bind_group_layout,
       bloom_composite_bind_group_layout,
@@ -408,7 +671,22 @@ impl PostProcessPipeline {
     encoder: &mut wgpu::CommandEncoder,
     effects: &[(&PostProcessEffect, f32)], // (effect, time)
   ) -> OutputBuffer {
-    if effects.is_empty() {
+    self.apply_chain(device, queue, encoder, effects, &[], 0.0)
+  }
+
+  /// [`apply_effects`](Self::apply_effects), then the game's custom effects in
+  /// order. A custom effect that failed to compile, or whose pipeline isn't
+  /// ready, is skipped and the image carries through.
+  pub(crate) fn apply_chain(
+    &mut self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    effects: &[(&PostProcessEffect, f32)],
+    custom: &[&CustomEffect],
+    time: f32,
+  ) -> OutputBuffer {
+    if effects.is_empty() && custom.is_empty() {
       return OutputBuffer::A;
     }
 
@@ -527,6 +805,10 @@ impl PostProcessPipeline {
       use_a_as_input = !use_a_as_input;
     }
 
+    if !custom.is_empty() {
+      use_a_as_input = self.apply_custom(device, queue, encoder, custom, time, use_a_as_input);
+    }
+
     // After all effects, use_a_as_input indicates what the NEXT input would be
     // If use_a_as_input is FALSE, last write was to B (we just flipped from true)
     // If use_a_as_input is TRUE, last write was to A (we just flipped from false)
@@ -536,6 +818,94 @@ impl PostProcessPipeline {
     } else {
       OutputBuffer::B
     }
+  }
+
+  /// Run the game's effects in order; the new `use_a_as_input`.
+  fn apply_custom(
+    &mut self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    custom: &[&CustomEffect],
+    time: f32,
+    mut use_a_as_input: bool,
+  ) -> bool {
+    self.custom_frame += 1;
+    let frame = self.custom_frame;
+    self.custom_params.reset();
+    self.custom_globals.reset();
+    let globals = [time, self.width as f32, self.height as f32, 0.0];
+
+    for effect in custom {
+      let shader = effect.shader();
+      if !self.custom.prepare(device, shader, frame) {
+        continue;
+      }
+      let mut bytes = [0u8; CUSTOM_PARAMS_BYTES as usize];
+      let Some(size) = self.custom.pack(shader, effect.params(), &mut bytes) else {
+        continue;
+      };
+      let params_index = self.custom_params.write(device, queue, &bytes[..size]);
+      let globals_index = self
+        .custom_globals
+        .write(device, queue, bytemuck::bytes_of(&globals));
+      let Some(pipeline) = self.custom.pipeline(shader.serial()) else {
+        continue;
+      };
+
+      let (input_view, output_view) = if use_a_as_input {
+        (&self.view_a, &self.view_b)
+      } else {
+        (&self.view_b, &self.view_a)
+      };
+      let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Custom Effect Bind Group"),
+        layout: &self.custom.bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(input_view),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(&self.sampler),
+          },
+          wgpu::BindGroupEntry {
+            binding: 2,
+            resource: self.custom_params.buffer(params_index).as_entire_binding(),
+          },
+          wgpu::BindGroupEntry {
+            binding: 3,
+            resource: self
+              .custom_globals
+              .buffer(globals_index)
+              .as_entire_binding(),
+          },
+        ],
+      });
+      {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+          label: Some("Custom Effect Pass"),
+          color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: output_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+              load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+              store: wgpu::StoreOp::Store,
+            },
+          })],
+          depth_stencil_attachment: None,
+          occlusion_query_set: None,
+          timestamp_writes: None,
+        });
+        render_pass.set_pipeline(pipeline);
+        render_pass.set_bind_group(0, &bind_group, &[]);
+        render_pass.draw(0..6, 0..1);
+      }
+      use_a_as_input = !use_a_as_input;
+    }
+    self.custom.prune(frame);
+    use_a_as_input
   }
 
   /// Get the view for a specific output buffer

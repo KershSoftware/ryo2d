@@ -47,7 +47,7 @@
 
 use super::sprite_effects::SpriteEffect;
 use crate::core::ui::Color;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -57,8 +57,6 @@ static NEXT_SHADER_SERIAL: AtomicU64 = AtomicU64::new(1);
 struct ShaderSourceCell {
   id: String,
   serial: u64,
-  #[allow(dead_code)] // not read yet; the post-process effects will name file shaders by it
-  path: Option<PathBuf>,
   source: Mutex<String>,
   generation: AtomicU64,
 }
@@ -77,12 +75,11 @@ pub struct ShaderHandle {
 }
 
 impl ShaderHandle {
-  fn new(id: String, source: String, path: Option<PathBuf>) -> Self {
+  fn new(id: String, source: String) -> Self {
     Self {
       inner: Arc::new(ShaderSourceCell {
         id,
         serial: NEXT_SHADER_SERIAL.fetch_add(1, Ordering::Relaxed),
-        path,
         source: Mutex::new(source),
         generation: AtomicU64::new(0),
       }),
@@ -93,16 +90,12 @@ impl ShaderHandle {
   ///
   /// Typically you'd use `assets.load_shader()` instead of this directly.
   pub fn from_source(id: impl Into<String>, source: impl Into<String>) -> Self {
-    Self::new(id.into(), source.into(), None)
+    Self::new(id.into(), source.into())
   }
 
   /// Create a handle for a shader loaded from `path`
   pub(crate) fn from_file(path: &Path, source: String) -> Self {
-    Self::new(
-      path.to_string_lossy().into_owned(),
-      source,
-      Some(path.to_path_buf()),
-    )
+    Self::new(path.to_string_lossy().into_owned(), source)
   }
 
   /// Get the shader's unique identifier
@@ -128,12 +121,6 @@ impl ShaderHandle {
   /// Identity shared by all clones of this handle
   pub(crate) fn serial(&self) -> u64 {
     self.inner.serial
-  }
-
-  /// File the shader was loaded from, if any
-  #[allow(dead_code)] // not read yet (see the `path` field)
-  pub(crate) fn path(&self) -> Option<&Path> {
-    self.inner.path.as_deref()
   }
 
   /// The generation and source read together under one lock

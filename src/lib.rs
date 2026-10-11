@@ -217,7 +217,7 @@ pub mod prelude {
   };
 
   // Post-processing effects
-  pub use crate::core::shaders::{EffectTarget, EffectsManager, PostProcessEffect};
+  pub use crate::core::shaders::{EffectError, EffectTarget, EffectsManager, PostProcessEffect};
 
   // Trail and Line rendering
   pub use crate::core::trail::{

@@ -51,7 +51,7 @@ mod manager;
 mod pipeline;
 
 pub use effects::{EffectParams, GodRaysParams, PostProcessEffect};
-pub use manager::{EffectTarget, EffectsManager};
+pub use manager::{EffectError, EffectTarget, EffectsManager};
 pub use pipeline::{OutputBuffer, PostProcessPipeline};
 
 /// Embed core shaders at compile time

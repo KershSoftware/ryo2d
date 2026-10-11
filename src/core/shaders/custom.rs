@@ -13,7 +13,6 @@ pub(crate) enum ShaderKind {
   /// Per-sprite fragment function, `fn sprite(in: SpriteIn, params: Params) -> vec4<f32>`
   Sprite,
   /// Full-screen post-process, `fn effect(in: EffectIn, params: Params) -> vec4<f32>`
-  #[allow(dead_code)] // built by the post-process effects
   Effect,
 }
 

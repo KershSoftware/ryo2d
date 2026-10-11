@@ -1152,7 +1152,7 @@ mod tests {
 
     assert_eq!(first, second);
     assert_eq!(first.source(), "fn sprite() {}");
-    assert!(first.path().is_some());
+    assert!(first.id().ends_with("a.wgsl"));
     first.replace_source("changed");
     assert_eq!(second.source(), "changed");
   }

@@ -5,7 +5,35 @@
 
 use super::super::ui::Color;
 use super::effects::PostProcessEffect;
+use crate::core::ecs::{ParamValue, ShaderHandle, ShaderParams};
 use std::time::Duration;
+
+/// Why a custom effect could not be registered
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EffectError {
+  /// A custom effect with this name already exists
+  #[error("a custom effect named \"{0}\" already exists")]
+  DuplicateName(String),
+}
+
+/// A game-written full-screen effect with its parameters
+#[derive(Debug, Clone)]
+pub(crate) struct CustomEffect {
+  name: String,
+  shader: ShaderHandle,
+  params: ShaderParams,
+  enabled: bool,
+}
+
+impl CustomEffect {
+  pub(crate) fn shader(&self) -> &ShaderHandle {
+    &self.shader
+  }
+
+  pub(crate) fn params(&self) -> &ShaderParams {
+    &self.params
+  }
+}
 
 /// Trait for types that can have post-processing effects applied.
 ///
@@ -38,6 +66,8 @@ pub trait EffectTarget {
 pub struct EffectsManager {
   /// Currently active effects in render order
   effects: Vec<ActiveEffect>,
+  /// Game-written effects, run after the built-ins in insertion order
+  custom: Vec<CustomEffect>,
   /// Global time accumulator for animated effects
   time: f32,
 }
@@ -96,6 +126,7 @@ impl EffectsManager {
   pub fn new() -> Self {
     Self {
       effects: Vec::with_capacity(8),
+      custom: Vec::new(),
       time: 0.0,
     }
   }
@@ -152,12 +183,92 @@ impl EffectsManager {
 
   /// Check if any effects are currently active
   pub fn has_active_effects(&self) -> bool {
-    self.effects.iter().any(|a| a.effect.is_active())
+    self.effects.iter().any(|a| a.effect.is_active()) || self.custom.iter().any(|c| c.enabled)
   }
 
-  /// Clear all effects
+  /// Clear all effects, custom ones included
   pub fn clear(&mut self) {
     self.effects.clear();
+    self.custom.clear();
+  }
+
+  // ========== Custom Effects ==========
+
+  /// Register a game-written full-screen effect under `name`.
+  ///
+  /// The shader defines `fn effect(in: EffectIn, params: Params) -> vec4<f32>`
+  /// and reads the image so far with `scene(uv)`. Custom effects run after all
+  /// built-in effects, in the order they were added, while enabled.
+  ///
+  /// Colour space: the scene texture is sRGB-format, so `scene()` returns
+  /// linear colour and the returned colour is linear too.
+  ///
+  /// A shader that fails to compile is logged once and skipped; the rest of
+  /// the chain still runs.
+  ///
+  /// # Errors
+  ///
+  /// [`EffectError::DuplicateName`] if `name` is already registered.
+  pub fn add_custom(
+    &mut self,
+    name: impl Into<String>,
+    shader: ShaderHandle,
+  ) -> Result<(), EffectError> {
+    let name = name.into();
+    if self.has_custom(&name) {
+      return Err(EffectError::DuplicateName(name));
+    }
+    self.custom.push(CustomEffect {
+      name,
+      shader,
+      params: ShaderParams::new(),
+      enabled: true,
+    });
+    Ok(())
+  }
+
+  /// Set a parameter of the custom effect `name`; false if there is no such effect.
+  pub fn set_custom_param(
+    &mut self,
+    name: &str,
+    param: &str,
+    value: impl Into<ParamValue>,
+  ) -> bool {
+    match self.custom.iter_mut().find(|c| c.name == name) {
+      Some(effect) => {
+        effect.params.set(param, value);
+        true
+      }
+      None => false,
+    }
+  }
+
+  /// Enable or disable the custom effect `name`; false if there is no such effect.
+  pub fn set_custom_enabled(&mut self, name: &str, enabled: bool) -> bool {
+    match self.custom.iter_mut().find(|c| c.name == name) {
+      Some(effect) => {
+        effect.enabled = enabled;
+        true
+      }
+      None => false,
+    }
+  }
+
+  /// Remove the custom effect `name`; false if there is no such effect.
+  pub fn remove_custom(&mut self, name: &str) -> bool {
+    let before = self.custom.len();
+    self.custom.retain(|c| c.name != name);
+    self.custom.len() != before
+  }
+
+  /// Whether a custom effect named `name` is registered (enabled or not)
+  pub fn has_custom(&self, name: &str) -> bool {
+    self.custom.iter().any(|c| c.name == name)
+  }
+
+  /// Enabled custom effects in the order they run
+  pub(crate) fn enabled_custom(&self) -> impl Iterator<Item = &CustomEffect> {
+    self.custom.iter().filter(|c| c.enabled)
   }
 
   // ========== Convenience Methods ==========

@@ -25,6 +25,8 @@ impl RenderPass for PostProcess {
       .active_effects()
       .map(|effect| (effect, effects.time()))
       .collect();
+    let custom: Vec<_> = effects.enabled_custom().collect();
+    let time = effects.time();
     let RenderContext {
       encoder,
       targets,
@@ -35,7 +37,7 @@ impl RenderPass for PostProcess {
     let Some(post_process) = post_process.as_deref_mut() else {
       return;
     };
-    if active.is_empty() {
+    if active.is_empty() && custom.is_empty() {
       return;
     }
 
@@ -63,7 +65,7 @@ impl RenderPass for PostProcess {
       );
     }
 
-    let output = post_process.apply_effects(device, queue, encoder, &active);
+    let output = post_process.apply_chain(device, queue, encoder, &active, &custom, time);
     *image = FrameImage::PostProcess(output);
   }
 }

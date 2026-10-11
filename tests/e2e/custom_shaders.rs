@@ -349,3 +349,189 @@ fn fixed_shader_recovers_after_an_error() {
 
   assert_eq!(render(&mut engine).get_pixel(15, 15).0, [35, 225, 215, 255]);
 }
+
+// ---------------------------------------------------------------------------
+// Custom post-process effects
+// ---------------------------------------------------------------------------
+
+const GRAYSCALE: &str = "
+struct Params { strength: f32 }
+fn effect(in: EffectIn, params: Params) -> vec4<f32> {
+  let c = scene(in.uv);
+  let g = dot(c.rgb, vec3<f32>(0.299, 0.587, 0.114));
+  return vec4<f32>(mix(c.rgb, vec3<f32>(g), params.strength), c.a);
+}
+";
+
+const FLAT_GREY: &str = "
+fn effect(in: EffectIn, params: Params) -> vec4<f32> {
+  return vec4<f32>(scene(in.uv).rgb * 0.0 + 0.5, 1.0);
+}
+";
+
+type EffectCommand = Box<dyn FnOnce(&mut EffectsManager) + Send>;
+
+/// A red screen whose effects are set up on enter and changed by queued commands.
+struct EffectScene {
+  setup: Option<EffectCommand>,
+  queue: std::sync::Arc<std::sync::Mutex<Vec<EffectCommand>>>,
+}
+
+impl Scene for EffectScene {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.world.spawn((
+      Transform::new(0.0, 0.0),
+      Renderable::sprite(solid("t3-red-screen", 64, RED)),
+    ));
+    if let Some(setup) = self.setup.take() {
+      setup(ctx.effects);
+    }
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let pending: Vec<_> = self
+      .queue
+      .lock()
+      .map(|mut q| q.drain(..).collect())
+      .unwrap_or_default();
+    for command in pending {
+      command(ctx.effects);
+    }
+    SceneAction::Continue
+  }
+}
+
+type Queue = std::sync::Arc<std::sync::Mutex<Vec<EffectCommand>>>;
+
+fn effect_engine(
+  setup: impl FnOnce(&mut EffectsManager) + Send + 'static,
+) -> Option<(HeadlessEngine, Queue)> {
+  let queue = Queue::default();
+  let scene = EffectScene {
+    setup: Some(Box::new(setup)),
+    queue: queue.clone(),
+  };
+  let builder = EngineBuilder::new().resolution(64, 64).start_scene(scene);
+  HeadlessEngine::new_or_skip(builder).map(|e| (e, queue))
+}
+
+fn send(queue: &Queue, command: impl FnOnce(&mut EffectsManager) + Send + 'static) {
+  if let Ok(mut q) = queue.lock() {
+    q.push(Box::new(command));
+  }
+}
+
+#[test]
+fn custom_grayscale_effect() {
+  let shader = ShaderHandle::from_source("t3-gray.wgsl", GRAYSCALE);
+  let Some((mut engine, queue)) = effect_engine(move |fx| {
+    assert!(fx.add_custom("gray", shader).is_ok());
+    fx.set_custom_param("gray", "strength", 0.0);
+  }) else {
+    return;
+  };
+  let off = render(&mut engine).get_pixel(10, 10).0;
+  assert_eq!(off, RED, "strength 0 leaves the frame unchanged");
+
+  send(&queue, |fx| {
+    assert!(fx.set_custom_param("gray", "strength", 1.0));
+  });
+  let on = render(&mut engine).get_pixel(10, 10).0;
+  let (r, g, b) = (on[0] as i32, on[1] as i32, on[2] as i32);
+  assert!((r - g).abs() <= 2 && (g - b).abs() <= 2, "{on:?}");
+  assert_ne!(on, RED);
+}
+
+#[test]
+fn custom_effect_runs_after_built_ins() {
+  let shader = ShaderHandle::from_source("t3-flat.wgsl", FLAT_GREY);
+  let Some((mut engine, _)) = effect_engine(move |fx| {
+    fx.set_vignette_custom(1.0, 0.2, 0.3);
+    assert!(fx.add_custom("flat", shader).is_ok());
+  }) else {
+    return;
+  };
+  let frame = render(&mut engine);
+  let centre = frame.get_pixel(32, 32).0;
+  // Linear 0.5 encodes to sRGB 188
+  assert!((187..=189).contains(&centre[0]), "{centre:?}");
+  for (x, y, p) in frame.enumerate_pixels() {
+    assert_eq!(p.0, centre, "pixel {x},{y}");
+  }
+}
+
+#[test]
+fn disabled_and_removed_effects_do_not_run() {
+  let shader = ShaderHandle::from_source("t3-toggle.wgsl", FLAT_GREY);
+  let Some((mut engine, queue)) = effect_engine(move |fx| {
+    assert!(fx.add_custom("flat", shader).is_ok());
+    assert!(fx.has_custom("flat"));
+  }) else {
+    return;
+  };
+  assert_ne!(render(&mut engine).get_pixel(10, 10).0, RED, "runs");
+
+  send(&queue, |fx| {
+    assert!(fx.set_custom_enabled("flat", false));
+  });
+  assert_eq!(render(&mut engine).get_pixel(10, 10).0, RED, "disabled");
+
+  send(&queue, |fx| {
+    assert!(fx.set_custom_enabled("flat", true));
+  });
+  assert_ne!(render(&mut engine).get_pixel(10, 10).0, RED, "re-enabled");
+
+  send(&queue, |fx| {
+    assert!(fx.remove_custom("flat"));
+    assert!(!fx.has_custom("flat"));
+    assert!(!fx.remove_custom("flat"));
+    assert!(!fx.set_custom_enabled("flat", true));
+    assert!(!fx.set_custom_param("flat", "x", 1.0));
+  });
+  assert_eq!(render(&mut engine).get_pixel(10, 10).0, RED, "removed");
+}
+
+#[test]
+fn duplicate_custom_effect_names_are_rejected() {
+  let mut fx = EffectsManager::new();
+  let shader = ShaderHandle::from_source("t3-dup.wgsl", FLAT_GREY);
+  assert!(fx.add_custom("a", shader.clone()).is_ok());
+  let err = fx.add_custom("a", shader).unwrap_err();
+  assert!(err.to_string().contains("\"a\""), "{err}");
+  assert!(fx.has_custom("a"));
+}
+
+#[test]
+fn broken_effect_is_skipped() {
+  let id = "t3-broken-effect.wgsl";
+  let source = "fn effect(in: EffectIn, params: Params) -> vec4<f32> {
+  return vec4<f32>(1.0, 0.0 0.0, 1.0);
+}
+";
+  let shader = ShaderHandle::from_source(id, source);
+  let Some((mut engine, _)) = effect_engine(move |fx| {
+    assert!(fx.add_custom("broken", shader).is_ok());
+  }) else {
+    return;
+  };
+  engine.step_frames(4).unwrap();
+  let frame = engine.frame().unwrap();
+
+  let Some((mut plain, _)) = effect_engine(|_| {}) else {
+    return;
+  };
+  let expected = render(&mut plain);
+  assert_eq!(
+    frame.as_raw(),
+    expected.as_raw(),
+    "frame without the effect"
+  );
+
+  let errors: Vec<_> = dev_log::get_entries()
+    .into_iter()
+    .filter(|e| e.message.contains(id))
+    .collect();
+  assert_eq!(errors.len(), 1, "{errors:?}");
+  assert_eq!(errors[0].level, LogLevel::Error);
+  assert!(errors[0].message.contains(":2:"), "{}", errors[0].message);
+}
