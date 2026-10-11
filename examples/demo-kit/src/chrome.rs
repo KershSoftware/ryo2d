@@ -104,6 +104,10 @@ pub(crate) fn truncate_to(text: &str, max: f32, width: impl Fn(&str) -> f32) -> 
 fn bar_color() -> Color {
   Color::new(12, 12, 20, 225)
 }
+/// Behind free-standing text so it reads on any page
+fn backing_color() -> Color {
+  Color::new(12, 12, 20, 170)
+}
 fn panel_color() -> Color {
   Color::new(12, 12, 20, 205)
 }
@@ -164,6 +168,13 @@ fn draw_description(ui: &mut UiContext, view: &View, l: &Layout, w: f32) {
     return;
   }
   let line = truncate_to(first, w - 2.0 * l.pad, |s| text_w(ui, s));
+  let backing = Rect::new(
+    l.pad / 2.0,
+    l.description_y - l.pad / 2.0,
+    text_w(ui, &line) + l.pad,
+    l.line_h + l.pad,
+  );
+  ui.draw_rect(backing, backing_color());
   ui.draw_text(&line, l.pad, l.description_y, dim_text());
 }
 
@@ -276,6 +287,15 @@ fn draw_legend(ui: &mut UiContext, view: &View, l: &Layout, w: f32, h: f32) {
     let line_w: f32 =
       line.iter().map(|&i| widths[i]).sum::<f32>() + gap * line.len().saturating_sub(1) as f32;
     let mut x = (w - l.pad - line_w).max(l.pad);
+    ui.draw_rect(
+      Rect::new(
+        x - l.pad / 2.0,
+        y - l.pad / 2.0,
+        line_w + l.pad,
+        l.line_h + l.pad,
+      ),
+      backing_color(),
+    );
     for &i in line {
       let (key, desc) = &items[i];
       ui.draw_text(key, x, y, key_text());

@@ -2,6 +2,7 @@
 
 use demo_kit::prelude::*;
 use image::RgbaImage;
+use std::sync::atomic::{AtomicU32, Ordering};
 use ryo2d::testing::HeadlessEngine;
 
 const RED: Color = Color::new(200, 60, 60, 255);
@@ -108,4 +109,70 @@ fn tiny_screen_with_many_rows_and_a_long_legend_renders() {
     return;
   };
   assert_eq!((image.width(), image.height()), (160, 120));
+}
+
+static LINE_H: AtomicU32 = AtomicU32::new(0);
+
+/// A white page with a long description and one control, for text-backing checks
+struct Bright;
+
+impl DemoPage for Bright {
+  fn name(&self) -> &str {
+    "Bright"
+  }
+  fn description(&self) -> &str {
+    "A long description line that runs across most of the screen on a bright page."
+  }
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::Digit1, "Do the thing")]
+  }
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    let (w, h) = ui.screen_size();
+    LINE_H.store(ui.text_size("Ag").1, Ordering::Relaxed);
+    ui.draw_rect(
+      Rect::new(0.0, 0.0, w as f32, h as f32),
+      Color::new(255, 255, 255, 255),
+    );
+  }
+}
+
+/// The bright page's frame with its line height and the layout's pad
+fn bright_frame() -> Option<(RgbaImage, u32, u32)> {
+  let demo = Demo::new("Chrome")
+    .resolution(320, 240)
+    .page(|| Bright);
+  let mut engine = HeadlessEngine::new_or_skip(demo.engine_builder())?;
+  engine.step_frames(2).ok()?;
+  let image = engine.frame().ok()?;
+  let line_h = LINE_H.load(Ordering::Relaxed);
+  let pad = ((line_h as f32 * 0.5).round().max(2.0)) as u32;
+  Some((image, line_h, pad))
+}
+
+#[test]
+fn description_has_a_dark_backing_on_bright_pages() {
+  let Some((image, line_h, pad)) = bright_frame() else {
+    return;
+  };
+  // Same arithmetic as the shell's layout: bar, then a pad, then the line
+  let description_y = line_h + 2 * pad + pad;
+  let y = description_y + line_h / 2;
+  assert!(
+    red_at(&image, 2, y) < 120,
+    "left padding of the description is backed"
+  );
+}
+
+#[test]
+fn legend_has_a_dark_backing_on_bright_pages() {
+  let Some((image, line_h, pad)) = bright_frame() else {
+    return;
+  };
+  let y = 240 - pad - line_h + line_h / 2;
+  // The backing reaches half a pad past the line's right edge, pad from the screen edge
+  let x = 320 - pad / 2 - 1;
+  assert!(
+    red_at(&image, x, y) < 120,
+    "right padding of the legend is backed"
+  );
 }
