@@ -57,6 +57,7 @@ gilrs = "0.11"
 zip = "2"
 noise = "0.9"
 rand = "0.8"
+etagere = "0.2"
 ryo2d-derive = { path = "ryo2d-derive" }
 
 # Optional profiling dependency (enable with --features profiler)
@@ -64,7 +65,6 @@ puffin = { version = "0.19", optional = true }
 
 # Optional WebRTC transport for NAT traversal (enable with --features matchbox)
 matchbox_socket = { version = "0.10", optional = true, features = ["ggrs"] }
-etagere = "0.2"
 
 [features]
 default = []
