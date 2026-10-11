@@ -1,7 +1,6 @@
 //! `RYO_DEMO_PAGE`: the page a demo starts on
 
 /// Why `RYO_DEMO_PAGE` was not used
-#[allow(dead_code)] // used by the runtime from Task 3
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StartPageError {
   /// Not a page number: warn and start on page 1
@@ -12,7 +11,6 @@ pub(crate) enum StartPageError {
 
 /// The 0-based page to start on for a 1-based `RYO_DEMO_PAGE` value, or
 /// `Ok(None)` when it is unset.
-#[allow(dead_code)] // used by the runtime from Task 3
 pub(crate) fn start_page(
   raw: Option<&str>,
   title: &str,
@@ -36,7 +34,6 @@ pub(crate) fn start_page(
 }
 
 /// `1 page`, `6 pages`
-#[allow(dead_code)] // used by the runtime from Task 3
 pub(crate) fn pages_label(pages: usize) -> String {
   if pages == 1 {
     "1 page".to_string()

@@ -23,7 +23,6 @@ pub struct Settings {
 }
 
 impl Settings {
-  #[allow(dead_code)] // used by the runtime from Task 3
   pub(crate) fn new(selected: usize, adjust: i32) -> Self {
     Self {
       selected,
@@ -32,7 +31,6 @@ impl Settings {
     }
   }
 
-  #[allow(dead_code)] // used by the runtime from Task 3
   pub(crate) fn into_rows(self) -> Vec<Row> {
     self.rows
   }

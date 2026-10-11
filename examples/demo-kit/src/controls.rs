@@ -5,10 +5,8 @@ use ryo2d::prelude::KeyCode;
 /// A page's own control, listed in the legend and the help overlay.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Control {
-  #[allow(dead_code)] // read by the legend and help from Task 3
   pub(crate) label: String,
   pub(crate) keys: Vec<KeyCode>,
-  #[allow(dead_code)] // read by the legend and help from Task 3
   pub(crate) description: String,
 }
 
@@ -66,7 +64,6 @@ pub(crate) const RESERVED: &[KeyCode] = &[
 ];
 
 /// The first reserved key any control uses
-#[allow(dead_code)] // used by the runtime from Task 3
 pub(crate) fn reserved_key(controls: &[Control]) -> Option<KeyCode> {
   controls
     .iter()

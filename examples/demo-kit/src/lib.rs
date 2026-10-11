@@ -4,10 +4,22 @@
 //! reset, `H` help, `Esc` quit), the same layout and a settings panel. See
 //! `examples/demos/AGENTS.md`.
 
+mod chrome;
 mod controls;
+mod demo;
 mod hold;
+mod page;
+mod scene;
 mod settings;
 mod start;
 
 pub use controls::Control;
+pub use demo::Demo;
+pub use page::DemoPage;
 pub use settings::Settings;
+
+/// Everything a demo needs: ryo2d's prelude plus the kit
+pub mod prelude {
+  pub use crate::{Control, Demo, DemoPage, Settings};
+  pub use ryo2d::prelude::*;
+}

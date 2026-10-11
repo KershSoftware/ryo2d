@@ -9,7 +9,6 @@ pub(crate) const REPEAT_RATE: f32 = 12.0;
 ///
 /// A key only repeats after this tracker has seen it pressed, so a key still
 /// held when a page is rebuilt does nothing until pressed again.
-#[allow(dead_code)] // used by the runtime from Task 3
 #[derive(Debug, Default)]
 pub(crate) struct HoldRepeat {
   armed: bool,
@@ -20,7 +19,6 @@ pub(crate) struct HoldRepeat {
 impl HoldRepeat {
   /// Steps to apply this update, given whether the key was just pressed,
   /// whether it is down, and the update's unscaled time step.
-  #[allow(dead_code)] // used by the runtime from Task 3
   pub(crate) fn steps(&mut self, pressed: bool, down: bool, dt: f32) -> u32 {
     if pressed {
       self.armed = true;

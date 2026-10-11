@@ -1,0 +1,298 @@
+//! Headless tests of the demo shell's keys, pages and settings
+
+use std::sync::{Arc, Mutex};
+
+use demo_kit::prelude::*;
+use ryo2d::testing::{HeadlessEngine, StepOutcome};
+
+#[derive(Debug, Default, Clone)]
+struct Seen {
+  enters: Vec<&'static str>,
+  level: f32,
+  count: i32,
+  mode: usize,
+  on: bool,
+}
+
+type Shared = Arc<Mutex<Seen>>;
+
+fn seen(shared: &Shared) -> Seen {
+  shared.lock().map(|s| s.clone()).unwrap_or_default()
+}
+
+/// A page with one row of each kind; `rows` limits how many are declared
+struct Probe {
+  name: &'static str,
+  shared: Shared,
+  level: f32,
+  count: i32,
+  mode: usize,
+  on: bool,
+  text: Option<TextInputState>,
+  dropdown: Option<DropdownState>,
+}
+
+impl Probe {
+  fn new(name: &'static str, shared: &Shared) -> Self {
+    Self {
+      name,
+      shared: shared.clone(),
+      level: 0.5,
+      count: 3,
+      mode: 0,
+      on: false,
+      text: None,
+      dropdown: None,
+    }
+  }
+}
+
+impl DemoPage for Probe {
+  fn name(&self) -> &str {
+    self.name
+  }
+
+  fn settings(&mut self, s: &mut Settings) {
+    s.float("Level", &mut self.level, 0.0..=1.0, 0.1);
+    s.int("Count", &mut self.count, 1..=5);
+    // Mode "C" hides the toggle row
+    s.choice("Mode", &mut self.mode, &["A", "B", "C"]);
+    if self.mode != 2 {
+      s.toggle("On", &mut self.on);
+    }
+  }
+
+  fn enter(&mut self, _ctx: &mut SceneContext) {
+    if let Ok(mut seen) = self.shared.lock() {
+      seen.enters.push(self.name);
+    }
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) {
+    if let Ok(mut seen) = self.shared.lock() {
+      seen.level = self.level;
+      seen.count = self.count;
+      seen.mode = self.mode;
+      seen.on = self.on;
+    }
+  }
+
+  fn render_ui(&mut self, ui: &mut UiContext) {
+    if let Some(text) = &mut self.text {
+      ui.text_input(text, Rect::new(10.0, 100.0, 120.0, 20.0), "", 0.0);
+    }
+    if let Some(dropdown) = &mut self.dropdown {
+      ui.dropdown(dropdown, Rect::new(10.0, 130.0, 120.0, 20.0), &["x", "y"]);
+    }
+  }
+}
+
+fn three_pages(shared: &Shared) -> Demo {
+  let (a, b, c) = (shared.clone(), shared.clone(), shared.clone());
+  Demo::new("Probe")
+    .resolution(320, 240)
+    .page(move || Probe::new("one", &a))
+    .page(move || Probe::new("two", &b))
+    .page(move || Probe::new("three", &c))
+}
+
+fn start(demo: Demo) -> Option<HeadlessEngine> {
+  HeadlessEngine::new_or_skip(demo.engine_builder())
+}
+
+/// Tap a key, then run two frames so a page switch has entered
+fn tap(engine: &mut HeadlessEngine, key: KeyCode) -> StepOutcome {
+  engine.tap_key(key);
+  let first = engine.step().unwrap_or(StepOutcome::Quit);
+  if first == StepOutcome::Quit {
+    return first;
+  }
+  engine.step().unwrap_or(StepOutcome::Quit)
+}
+
+#[test]
+fn brackets_and_page_keys_change_pages_and_wrap() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  tap(&mut engine, KeyCode::BracketRight);
+  tap(&mut engine, KeyCode::BracketLeft);
+  tap(&mut engine, KeyCode::BracketLeft);
+  tap(&mut engine, KeyCode::PageDown);
+  tap(&mut engine, KeyCode::PageUp);
+  assert_eq!(
+    seen(&shared).enters,
+    ["one", "two", "one", "three", "one", "three"]
+  );
+}
+
+#[test]
+fn start_page_opens_that_page() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared).start_page(2)) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  assert_eq!(seen(&shared).enters, ["three"]);
+}
+
+#[test]
+fn arrows_select_rows_and_change_values() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  tap(&mut engine, KeyCode::ArrowRight); // Level 0.5 -> 0.6
+  tap(&mut engine, KeyCode::ArrowDown); // Count
+  for _ in 0..3 {
+    tap(&mut engine, KeyCode::ArrowRight); // 3 -> 5, clamped
+  }
+  tap(&mut engine, KeyCode::ArrowDown); // Mode
+  tap(&mut engine, KeyCode::ArrowLeft); // A -> C (wraps)
+  tap(&mut engine, KeyCode::ArrowLeft); // C -> B
+  tap(&mut engine, KeyCode::ArrowDown); // On
+  tap(&mut engine, KeyCode::ArrowRight); // flips on
+  let s = seen(&shared);
+  assert!((s.level - 0.6).abs() < 1e-6, "{s:?}");
+  assert_eq!((s.count, s.mode, s.on), (5, 1, true), "{s:?}");
+}
+
+#[test]
+fn holding_right_repeats_and_releasing_stops() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  engine.press_key(KeyCode::ArrowRight);
+  engine.step_frames(90).unwrap(); // 1.5 s at the default 60 Hz
+  engine.release_key(KeyCode::ArrowRight);
+  engine.step_frames(2).unwrap();
+  assert_eq!(seen(&shared).level, 1.0);
+}
+
+#[test]
+fn reset_rebuilds_the_page_with_defaults() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  tap(&mut engine, KeyCode::ArrowRight);
+  tap(&mut engine, KeyCode::KeyR);
+  let s = seen(&shared);
+  assert_eq!(s.enters, ["one", "one"]);
+  assert_eq!(s.level, 0.5);
+}
+
+#[test]
+fn holding_right_through_a_reset_does_not_keep_adjusting() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  engine.press_key(KeyCode::ArrowRight);
+  engine.step_frames(2).unwrap();
+  tap(&mut engine, KeyCode::KeyR);
+  engine.step_frames(60).unwrap(); // still held, 1 s
+  assert_eq!(seen(&shared).level, 0.5);
+}
+
+#[test]
+fn selection_clamps_when_rows_disappear() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  for _ in 0..3 {
+    tap(&mut engine, KeyCode::ArrowDown); // On (row 4 of 4)
+  }
+  tap(&mut engine, KeyCode::ArrowUp); // Mode
+  tap(&mut engine, KeyCode::ArrowLeft); // A -> C: the On row disappears
+  tap(&mut engine, KeyCode::ArrowDown); // stays on Mode, the last row
+  tap(&mut engine, KeyCode::ArrowRight); // C -> A
+  let s = seen(&shared);
+  assert_eq!(s.mode, 0, "{s:?}");
+  assert!(!s.on, "{s:?}");
+}
+
+#[test]
+fn help_closes_on_escape_before_escape_quits() {
+  let shared = Shared::default();
+  let Some(mut engine) = start(three_pages(&shared)) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  assert_eq!(tap(&mut engine, KeyCode::KeyH), StepOutcome::Running);
+  assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Running);
+  assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Quit);
+}
+
+#[test]
+fn shell_keys_are_ignored_while_typing() {
+  let shared = Shared::default();
+  let typing = shared.clone();
+  let demo = Demo::new("Typing").resolution(320, 240).page(move || {
+    let mut page = Probe::new("typing", &typing);
+    let mut text = TextInputState::new();
+    text.set_focused(true);
+    page.text = Some(text);
+    page
+  });
+  let Some(mut engine) = start(demo) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  for key in [
+    KeyCode::KeyR,
+    KeyCode::BracketRight,
+    KeyCode::ArrowRight,
+    KeyCode::KeyH,
+    KeyCode::Escape,
+  ] {
+    assert_eq!(tap(&mut engine, key), StepOutcome::Running, "{key:?}");
+  }
+  let s = seen(&shared);
+  assert_eq!(s.enters, ["typing"]);
+  assert_eq!(s.level, 0.5);
+}
+
+#[test]
+fn escape_with_an_open_dropdown_does_not_quit() {
+  let shared = Shared::default();
+  let picking = shared.clone();
+  let demo = Demo::new("Dropdown").resolution(320, 240).page(move || {
+    let mut page = Probe::new("dropdown", &picking);
+    let mut dropdown = DropdownState::with_id(7);
+    dropdown.open();
+    page.dropdown = Some(dropdown);
+    page
+  });
+  let Some(mut engine) = start(demo) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  assert_eq!(tap(&mut engine, KeyCode::Escape), StepOutcome::Running);
+}
+
+struct Greedy;
+
+impl DemoPage for Greedy {
+  fn name(&self) -> &str {
+    "Greedy"
+  }
+  fn controls(&self) -> Vec<Control> {
+    vec![Control::key(KeyCode::KeyH, "Hop")]
+  }
+}
+
+#[test]
+#[should_panic(expected = "reserved")]
+fn a_page_listing_a_reserved_key_is_rejected() {
+  let _ = Demo::new("Greedy").page(|| Greedy).engine_builder();
+}
