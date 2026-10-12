@@ -33,8 +33,7 @@ pub mod ui;
 pub mod window;
 
 // Physics
-// MIGRATION: Task 12
-// pub mod physics;
+pub mod physics;
 
 // Navigation & Pathfinding
 // MIGRATION: Task 16

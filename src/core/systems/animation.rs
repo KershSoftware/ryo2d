@@ -6,19 +6,16 @@ use crate::core::ecs::{Or, Query, Renderable, Res, With};
 use crate::core::graphics::{AnimationController, Animator};
 use crate::core::time::Time;
 
+type Animated = (
+  Option<&'static mut Animator>,
+  Option<&'static mut AnimationController>,
+  Option<&'static mut Renderable>,
+);
+type HasAnimation = Or<(With<Animator>, With<AnimationController>)>;
+
 /// Advance every `Animator` and `AnimationController` by one fixed step and
 /// put the current frame on the entity's `Renderable`.
-pub fn animate_sprites(
-  time: Res<Time>,
-  mut query: Query<
-    (
-      Option<&mut Animator>,
-      Option<&mut AnimationController>,
-      Option<&mut Renderable>,
-    ),
-    Or<(With<Animator>, With<AnimationController>)>,
-  >,
-) {
+pub fn animate_sprites(time: Res<Time>, mut query: Query<Animated, HasAnimation>) {
   let dt = time.fixed.timestep();
   for (animator, controller, mut renderable) in &mut query {
     if let Some(mut animator) = animator {

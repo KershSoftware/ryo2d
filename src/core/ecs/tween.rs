@@ -743,7 +743,7 @@ impl Tween {
     self.step(dt, None);
   }
 
-  fn step(&mut self, dt: f32, mut transform: Option<&mut Transform>) {
+  fn step(&mut self, dt: f32, transform: Option<&mut Transform>) {
     self.just_finished = false;
     self.just_started = false;
 
@@ -805,7 +805,7 @@ impl Tween {
     let eased = self.easing.apply(progress);
 
     // Interpolate and apply each property
-    if let Some(transform) = transform.as_deref_mut() {
+    if let Some(transform) = transform {
       if let Some(target) = self.target_x {
         transform.translation.x = lerp(self.start_x, target, eased);
       }

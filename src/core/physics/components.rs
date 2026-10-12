@@ -1,7 +1,7 @@
 //! Physics components for Rapier2D integration
 //!
 //! This module provides component types used by the Rapier2D physics backend.
-//! The actual physics simulation is handled by [`super::rapier_physics::RapierPhysicsWorld`].
+//! The actual physics simulation is handled by [`super::rapier::RapierPhysicsWorld`].
 //!
 //! ## Components
 //!
@@ -15,13 +15,13 @@
 //! 3. Rapier handles gravity, collision response, and velocity integration
 //! 4. Positions sync back to `Transform` after each physics step
 //!
-//! For collision events, see [`super::rapier_physics::PhysicsCollisionEvent`].
+//! For collision events, see [`super::rapier::PhysicsCollisionEvent`].
+
+use crate::core::ecs::{Component, Resource};
 
 /// RigidBody component - controls how physics affects an entity
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct RigidBody {
-  /// Mass of the body (affects force application, not gravity)
-  pub mass: f32,
   /// Multiplier for gravity (0 = no gravity, 1 = normal, 2 = double, etc.)
   pub gravity_scale: f32,
   /// Linear drag (velocity decay per second, 0-1 range typical)
@@ -39,7 +39,6 @@ impl RigidBody {
   /// Create a new dynamic rigid body with default physics properties
   pub fn new() -> Self {
     RigidBody {
-      mass: 1.0,
       gravity_scale: 1.0,
       drag: 0.0,
       is_kinematic: false,
@@ -50,18 +49,11 @@ impl RigidBody {
   /// Create a kinematic body (not affected by physics, moved manually)
   pub fn kinematic() -> Self {
     RigidBody {
-      mass: 1.0,
       gravity_scale: 0.0,
       drag: 0.0,
       is_kinematic: true,
       ccd_enabled: false,
     }
-  }
-
-  /// Builder method to set mass
-  pub fn with_mass(mut self, mass: f32) -> Self {
-    self.mass = mass;
-    self
   }
 
   /// Builder method to set gravity scale
@@ -97,7 +89,7 @@ impl Default for RigidBody {
 }
 
 /// Physics world configuration
-#[derive(Debug, Clone)]
+#[derive(Resource, Debug, Clone)]
 pub struct PhysicsConfig {
   /// Gravity acceleration in pixels per second squared (positive Y = down in screen coords)
   pub gravity: (f32, f32),
@@ -138,7 +130,6 @@ mod tests {
   #[test]
   fn rigid_body_defaults() {
     let rb = RigidBody::new();
-    assert_eq!(rb.mass, 1.0);
     assert_eq!(rb.gravity_scale, 1.0);
     assert_eq!(rb.drag, 0.0);
     assert!(!rb.is_kinematic);
@@ -155,12 +146,8 @@ mod tests {
 
   #[test]
   fn rigid_body_builder() {
-    let rb = RigidBody::new()
-      .with_mass(2.5)
-      .with_gravity_scale(0.5)
-      .with_drag(0.1);
+    let rb = RigidBody::new().with_gravity_scale(0.5).with_drag(0.1);
 
-    assert_eq!(rb.mass, 2.5);
     assert_eq!(rb.gravity_scale, 0.5);
     assert_eq!(rb.drag, 0.1);
   }
@@ -171,9 +158,8 @@ mod tests {
     assert!(rb.ccd_enabled);
 
     // CCD should work with other options
-    let rb2 = RigidBody::new().with_mass(2.0).with_ccd().with_drag(0.5);
+    let rb2 = RigidBody::new().with_ccd().with_drag(0.5);
     assert!(rb2.ccd_enabled);
-    assert_eq!(rb2.mass, 2.0);
     assert_eq!(rb2.drag, 0.5);
   }
 

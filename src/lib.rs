@@ -91,27 +91,11 @@ pub mod prelude {
     KnockbackStarted, SquashStretchFinished, SquashStretchStarted, TweenCompleted, TweenStarted,
   };
 
-  // Physics components
-  // MIGRATION: Task 12
-  // pub use crate::core::physics::{PhysicsConfig, RigidBody};
-
-  // Physics events (from Rapier integration)
-  // MIGRATION: Task 12
-  // pub use crate::core::physics::{CollisionEventType, PhysicsCollisionEvent};
-
-  // Collision shapes
-  // MIGRATION: Task 12
-  // pub use crate::core::physics::{
-  //   AABB, Circle, Collider, ColliderShape, Collision, check_collision,
-  // };
-
-  // Spatial partitioning
-  // MIGRATION: Task 12
-  // pub use crate::core::physics::{CollisionPair, CollisionResult, PhysicsWorld, SpatialHash};
-
-  // Rapier physics world
-  // MIGRATION: Task 12
-  // pub use crate::core::physics::RapierPhysicsWorld;
+  // Physics
+  pub use crate::core::physics::{
+    Collider, ColliderShape, CollisionEventType, PhysicsCollisionEvent, PhysicsConfig,
+    RapierPhysicsWorld, RigidBody,
+  };
 
   // Graphics
   pub use crate::core::graphics::{AnimatedSprite, Gpu, GpuRenderContext, Sprite};

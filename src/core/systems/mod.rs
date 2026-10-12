@@ -2,8 +2,7 @@
 
 mod animation;
 mod knockback;
-// MIGRATION: Task 12
-// mod physics;
+mod physics;
 // MIGRATION: Task 16
 // mod skeleton;
 mod squash_stretch;
@@ -13,6 +12,10 @@ mod tween;
 
 pub use animation::animate_sprites;
 pub use knockback::update_knockback;
+pub use physics::{
+  emit_collision_messages, physics_enabled, register_new_bodies, register_physics_systems,
+  step_physics, sync_from_physics, sync_to_physics, unregister_removed_bodies,
+};
 pub use squash_stretch::update_squash_stretch;
 pub use tween::{update_property_tweens, update_tween_sequences, update_tweens};
 

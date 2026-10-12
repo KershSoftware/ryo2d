@@ -84,14 +84,9 @@
 //! Debug settings from `Ryo.toml` are automatically loaded during `build()`.
 //! Values set programmatically will override config file settings.
 
-// MIGRATION: Task 12 restores the world overlays over the new world
-#[cfg(any())]
-use crate::core::ecs::{Transform, Vec2, Velocity, World};
-#[cfg(any())]
+use crate::core::ecs::{GlobalTransform, Vec2, Velocity, World};
 use crate::core::graphics::{Camera, GroupedCollider};
-#[cfg(any())]
 use crate::core::physics::{Collider, ColliderShape};
-#[cfg(any())]
 use crate::core::trail::{Line2D, TrailStyle};
 use crate::core::ui::{Color, UiContext};
 
@@ -399,7 +394,6 @@ pub mod colors {
 
 /// A debug shape in whole screen pixels, the unit both the pixel-buffer
 /// overlays and the GPU world path's lines are built from.
-#[cfg(any())] // MIGRATION: Task 12
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum OverlayShape {
   /// A one-pixel rectangle outline
@@ -413,106 +407,62 @@ enum OverlayShape {
 }
 
 /// Half the length of an origin crosshair arm, in pixels.
-#[cfg(any())] // MIGRATION: Task 12
 const CROSS_SIZE: i32 = 4;
 
-/// The collider outlines, `Collider` and `GroupedCollider` components both.
-#[cfg(any())] // MIGRATION: Task 12
-fn collider_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
+/// The collider outlines, `Collider` and `GroupedCollider` components both,
+/// drawn where physics simulates them.
+fn collider_shapes(world: &mut World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
   let mut shapes = Vec::new();
-
-  // Standard Collider components
-  for entity in world.entities_with_two::<Transform, Collider>() {
-    let Some(transform) = world.get::<Transform>(entity) else {
-      continue;
-    };
-    let Some(collider) = world.get::<Collider>(entity) else {
-      continue;
-    };
-
-    let aabb = collider.world_aabb(&transform);
-    let (cx, cy) = aabb.center();
-
-    match &collider.shape {
-      ColliderShape::Box { .. } => {
-        let scaled_w = (aabb.width() * camera.zoom) as i32;
-        let scaled_h = (aabb.height() * camera.zoom) as i32;
-
-        let (screen_cx, screen_cy) = camera.world_to_screen(cx, cy);
-        shapes.push(OverlayShape::Rect {
-          x: screen_cx as i32 - scaled_w / 2,
-          y: screen_cy as i32 - scaled_h / 2,
-          w: scaled_w,
-          h: scaled_h,
-        });
-      }
-      ColliderShape::Circle { radius } => {
-        let (screen_x, screen_y) = camera.world_to_screen(cx, cy);
-
-        let avg_scale = (transform.scale_x + transform.scale_y) / 2.0;
-        shapes.push(OverlayShape::Circle {
-          x: screen_x as i32,
-          y: screen_y as i32,
-          radius: (*radius * avg_scale * camera.zoom) as i32,
-        });
-      }
+  let rect = |center: Vec2, size: Vec2| {
+    let (w, h) = ((size.x * camera.zoom) as i32, (size.y * camera.zoom) as i32);
+    let (sx, sy) = camera.world_to_screen(center.x, center.y);
+    OverlayShape::Rect {
+      x: sx as i32 - w / 2,
+      y: sy as i32 - h / 2,
+      w,
+      h,
     }
+  };
+
+  for (global, collider) in world.query::<(&GlobalTransform, &Collider)>().iter(world) {
+    let center = collider.world_center(global.translation());
+    let shape = match collider.shape {
+      ColliderShape::Box { width, height } => rect(center, Vec2::new(width, height)),
+      ColliderShape::Circle { radius } => {
+        let (sx, sy) = camera.world_to_screen(center.x, center.y);
+        OverlayShape::Circle {
+          x: sx as i32,
+          y: sy as i32,
+          radius: (radius * camera.zoom) as i32,
+        }
+      }
+    };
+    shapes.push((shape, colors::COLLIDER));
   }
 
-  // GroupedCollider components (used by composite tiles)
-  for entity in world.entities_with_two::<Transform, GroupedCollider>() {
-    let Some(transform) = world.get::<Transform>(entity) else {
-      continue;
-    };
-    let Some(grouped) = world.get::<GroupedCollider>(entity) else {
-      continue;
-    };
-
-    // Pivot-aware collider centre
-    let pivot_offset_x = (0.5 - transform.pivot_x) * grouped.width;
-    let pivot_offset_y = (0.5 - transform.pivot_y) * grouped.height;
-    let center_x = transform.x + grouped.offset_x + pivot_offset_x;
-    let center_y = transform.y + grouped.offset_y + pivot_offset_y;
-
-    let scaled_w = (grouped.width * camera.zoom) as i32;
-    let scaled_h = (grouped.height * camera.zoom) as i32;
-
-    // Centre to screen, then offset to the top-left for drawing
-    let (screen_cx, screen_cy) = camera.world_to_screen(center_x, center_y);
-    shapes.push(OverlayShape::Rect {
-      x: screen_cx as i32 - scaled_w / 2,
-      y: screen_cy as i32 - scaled_h / 2,
-      w: scaled_w,
-      h: scaled_h,
-    });
+  // A grouped collider spans `offset` to `offset + size` from its origin
+  for (global, grouped) in world
+    .query::<(&GlobalTransform, &GroupedCollider)>()
+    .iter(world)
+  {
+    let size = Vec2::new(grouped.width, grouped.height);
+    let center = global.translation() + Vec2::new(grouped.offset_x, grouped.offset_y) + size / 2.0;
+    shapes.push((rect(center, size), colors::COLLIDER));
   }
-
   shapes
-    .into_iter()
-    .map(|shape| (shape, colors::COLLIDER))
-    .collect()
 }
 
 /// The velocity vectors of moving entities.
-#[cfg(any())] // MIGRATION: Task 12
-fn velocity_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
+fn velocity_shapes(world: &mut World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
   const VELOCITY_SCALE: f32 = 0.1; // Scale factor for visualizing velocity
 
   let mut shapes = Vec::new();
-  for entity in world.entities_with_two::<Transform, Velocity>() {
-    let Some(transform) = world.get::<Transform>(entity) else {
-      continue;
-    };
-    let Some(velocity) = world.get::<Velocity>(entity) else {
-      continue;
-    };
-
-    // Skip if not moving
+  for (global, velocity) in world.query::<(&GlobalTransform, &Velocity)>().iter(world) {
     if velocity.dx.abs() < 0.1 && velocity.dy.abs() < 0.1 {
       continue;
     }
-
-    let (screen_x, screen_y) = camera.world_to_screen(transform.x, transform.y);
+    let origin = global.translation();
+    let (screen_x, screen_y) = camera.world_to_screen(origin.x, origin.y);
     let end_x = screen_x + velocity.dx * VELOCITY_SCALE * camera.zoom;
     let end_y = screen_y + velocity.dy * VELOCITY_SCALE * camera.zoom;
     shapes.push((
@@ -528,24 +478,23 @@ fn velocity_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4]
   shapes
 }
 
-/// The origin crosshairs of every entity with a `Transform`.
-#[cfg(any())] // MIGRATION: Task 12
-fn origin_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
-  let mut shapes = Vec::new();
-  for entity in world.entities_with::<Transform>() {
-    let Some(transform) = world.get::<Transform>(entity) else {
-      continue;
-    };
-    let (screen_x, screen_y) = camera.world_to_screen(transform.x, transform.y);
-    shapes.push((
-      OverlayShape::Cross {
-        x: screen_x as i32,
-        y: screen_y as i32,
-      },
-      colors::ORIGIN,
-    ));
-  }
-  shapes
+/// The origin crosshairs of every placed entity.
+fn origin_shapes(world: &mut World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
+  world
+    .query::<&GlobalTransform>()
+    .iter(world)
+    .map(|global| {
+      let origin = global.translation();
+      let (screen_x, screen_y) = camera.world_to_screen(origin.x, origin.y);
+      (
+        OverlayShape::Cross {
+          x: screen_x as i32,
+          y: screen_y as i32,
+        },
+        colors::ORIGIN,
+      )
+    })
+    .collect()
 }
 
 /// Which debug overlays [`overlay_lines`] builds.
@@ -559,8 +508,11 @@ pub(crate) struct OverlayFlags {
 /// The enabled debug overlays as unlit, one-pixel lines on top of everything,
 /// for the world passes. The lines use the `Soft` style: a
 /// pixel-wide `Solid` line is anti-aliased into a faint smear.
-#[cfg(any())] // MIGRATION: Task 12
-pub(crate) fn overlay_lines(world: &World, camera: &Camera, flags: OverlayFlags) -> Vec<Line2D> {
+pub(crate) fn overlay_lines(
+  world: &mut World,
+  camera: &Camera,
+  flags: OverlayFlags,
+) -> Vec<Line2D> {
   let mut shapes = Vec::new();
   if flags.colliders {
     shapes.extend(collider_shapes(world, camera));
@@ -772,6 +724,36 @@ pub fn render_stats(ui: &mut UiContext, stats: &SmoothedDebugStats, screen_heigh
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn overlay_lines_outline_colliders_where_physics_puts_them() {
+    use crate::core::ecs::{GlobalTransform, Transform};
+    let mut world = World::new();
+    let t = Transform::from_xy(100.0, 50.0);
+    world.spawn((
+      t,
+      GlobalTransform::from_transform(&t),
+      Collider::box_collider(20.0, 10.0),
+    ));
+    let camera = Camera::centered_at(400.0, 300.0, 800, 600);
+    let colliders = OverlayFlags {
+      colliders: true,
+      ..Default::default()
+    };
+    let lines = overlay_lines(&mut world, &camera, colliders);
+    assert_eq!(lines.len(), 4, "a box is four edges");
+    let xs: Vec<f32> = lines
+      .iter()
+      .flat_map(|line| line.points().iter().map(|p| p.x))
+      .collect();
+    let min = xs.iter().copied().fold(f32::MAX, f32::min);
+    let max = xs.iter().copied().fold(f32::MIN, f32::max);
+    assert!(
+      (min - 90.0).abs() <= 1.0 && (max - 110.0).abs() <= 1.0,
+      "{min}..{max}"
+    );
+    assert!(overlay_lines(&mut world, &camera, OverlayFlags::default()).is_empty());
+  }
 
   #[test]
   fn debug_config_defaults() {

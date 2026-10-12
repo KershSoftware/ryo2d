@@ -1,8 +1,9 @@
 //! Rapier2D physics integration
 //!
 //! This module wraps Rapier2D to provide physics simulation with collision response.
-//! It maintains a mapping between ECS entities and Rapier physics bodies, handling
-//! automatic synchronization of positions and velocities.
+//! It maps ECS entities to Rapier bodies; the physics systems
+//! (`systems/physics.rs`) register bodies, push game changes in, step, and
+//! read positions back.
 //!
 //! ## Collision Events
 //!
@@ -25,7 +26,7 @@ use rapier2d::prelude::*;
 
 use super::collision::{Collider, ColliderShape};
 use super::components::RigidBody;
-use crate::core::ecs::{Entity, Transform, Velocity, World};
+use crate::core::ecs::{Entity, Resource, Transform, Vec2, Velocity};
 use crate::core::graphics::GroupedCollider;
 
 /// Pixels per meter conversion factor
@@ -101,8 +102,9 @@ impl PhysicsCollisionEvent {
 /// This struct manages the physics world and provides methods for:
 /// - Registering/unregistering entities with physics bodies
 /// - Stepping the physics simulation
-/// - Syncing positions between Rapier and the ECS world
+/// - Pushing game writes in and reading simulated positions out
 /// - Collecting and querying collision events
+#[derive(Resource)]
 pub struct RapierPhysicsWorld {
   // Rapier structures
   rigid_body_set: RigidBodySet,
@@ -202,13 +204,48 @@ impl RapierPhysicsWorld {
       return;
     }
 
-    // Convert position from pixels to meters
-    let x_meters = transform.x / PIXELS_PER_METER;
-    let y_meters = transform.y / PIXELS_PER_METER;
+    let body = Self::build_body(transform, velocity, rigid_body);
+    let body_handle = self.rigid_body_set.insert(body);
 
-    // Create Rapier rigid body
-    // Lock rotation for all bodies - this is a 2D engine and we don't sync rotation
-    let body = if rigid_body.is_kinematic {
+    // The shape is centred on the entity's origin plus the collider's offset
+    let offset = collider.offset / PIXELS_PER_METER;
+
+    // Create Rapier collider based on shape
+    // All colliders get COLLISION_EVENTS enabled to support event queries
+    // NOTE: Collider dimensions should be the FINAL world-space sizes
+    //       (already scaled by the game if needed)
+    let rapier_collider = match collider.shape {
+      ColliderShape::Box { width, height } => {
+        let half_w = (width / 2.0) / PIXELS_PER_METER;
+        let half_h = (height / 2.0) / PIXELS_PER_METER;
+        ColliderBuilder::cuboid(half_w, half_h)
+      }
+      ColliderShape::Circle { radius } => ColliderBuilder::ball(radius / PIXELS_PER_METER),
+    }
+    .translation(vector![offset.x, offset.y])
+    .restitution(collider.restitution)
+    .friction(collider.friction)
+    .sensor(collider.is_trigger)
+    .active_events(ActiveEvents::COLLISION_EVENTS)
+    .build();
+
+    let collider_handle =
+      self
+        .collider_set
+        .insert_with_parent(rapier_collider, body_handle, &mut self.rigid_body_set);
+    self.insert_mappings(entity, body_handle, collider_handle);
+  }
+
+  /// A Rapier body at the entity's position. Rotation is locked: bodies do
+  /// not rotate, and the engine does not sync rotation.
+  fn build_body(
+    transform: &Transform,
+    velocity: Option<&Velocity>,
+    rigid_body: &RigidBody,
+  ) -> rapier2d::dynamics::RigidBody {
+    let position = transform.translation / PIXELS_PER_METER;
+    let (x_meters, y_meters) = (position.x, position.y);
+    if rigid_body.is_kinematic {
       RigidBodyBuilder::kinematic_position_based()
         .translation(vector![x_meters, y_meters])
         .locked_axes(LockedAxes::ROTATION_LOCKED)
@@ -229,90 +266,15 @@ impl RapierPhysicsWorld {
       }
 
       builder.build()
-    };
+    }
+  }
 
-    let body_handle = self.rigid_body_set.insert(body);
-
-    // Calculate collider offset in meters
-    // Priority:
-    // 1. centered_in() - center within specified bounds using pivot
-    // 2. with_offset() - use explicit offset directly
-    // 3. Auto-center based on collider size and pivot
-    let user_set_offset = collider.offset_x != 0.0 || collider.offset_y != 0.0;
-
-    let (offset_x_meters, offset_y_meters) =
-      if let Some((bounds_w, bounds_h)) = collider.center_in_bounds {
-        // centered_in() was used - center within the specified bounds
-        // This accounts for pivot, so it works for any pivot setting
-        let offset_x = (0.5 - transform.pivot_x) * bounds_w;
-        let offset_y = (0.5 - transform.pivot_y) * bounds_h;
-        (offset_x / PIXELS_PER_METER, offset_y / PIXELS_PER_METER)
-      } else if user_set_offset {
-        // User explicitly positioned the collider via with_offset() - use directly
-        (
-          collider.offset_x / PIXELS_PER_METER,
-          collider.offset_y / PIXELS_PER_METER,
-        )
-      } else {
-        // No explicit positioning - auto-center based on collider size and pivot
-        // Rapier colliders are centered on their origin, so we need to offset
-        // based on where the sprite's pivot is:
-        // - pivot (0.5, 0.5) = center: no offset needed (collider already centered)
-        // - pivot (0.0, 0.0) = top-left: offset by half-size to center
-        match collider.shape {
-          ColliderShape::Box { width, height } => {
-            let pivot_offset_x = (0.5 - transform.pivot_x) * width;
-            let pivot_offset_y = (0.5 - transform.pivot_y) * height;
-            (
-              pivot_offset_x / PIXELS_PER_METER,
-              pivot_offset_y / PIXELS_PER_METER,
-            )
-          }
-          ColliderShape::Circle { radius } => {
-            let pivot_offset_x = (0.5 - transform.pivot_x) * radius * 2.0;
-            let pivot_offset_y = (0.5 - transform.pivot_y) * radius * 2.0;
-            (
-              pivot_offset_x / PIXELS_PER_METER,
-              pivot_offset_y / PIXELS_PER_METER,
-            )
-          }
-        }
-      };
-
-    // Create Rapier collider based on shape
-    // All colliders get COLLISION_EVENTS enabled to support event queries
-    // NOTE: Collider dimensions should be the FINAL world-space sizes
-    //       (already scaled by the game if needed)
-    let rapier_collider = match collider.shape {
-      ColliderShape::Box { width, height } => {
-        let half_w = (width / 2.0) / PIXELS_PER_METER;
-        let half_h = (height / 2.0) / PIXELS_PER_METER;
-        ColliderBuilder::cuboid(half_w, half_h)
-          .translation(vector![offset_x_meters, offset_y_meters])
-          .restitution(collider.restitution)
-          .friction(collider.friction)
-          .sensor(collider.is_trigger)
-          .active_events(ActiveEvents::COLLISION_EVENTS)
-          .build()
-      }
-      ColliderShape::Circle { radius } => {
-        let radius_meters = radius / PIXELS_PER_METER;
-        ColliderBuilder::ball(radius_meters)
-          .translation(vector![offset_x_meters, offset_y_meters])
-          .restitution(collider.restitution)
-          .friction(collider.friction)
-          .sensor(collider.is_trigger)
-          .active_events(ActiveEvents::COLLISION_EVENTS)
-          .build()
-      }
-    };
-
-    let collider_handle =
-      self
-        .collider_set
-        .insert_with_parent(rapier_collider, body_handle, &mut self.rigid_body_set);
-
-    // Store mappings
+  fn insert_mappings(
+    &mut self,
+    entity: Entity,
+    body_handle: RigidBodyHandle,
+    collider_handle: ColliderHandle,
+  ) {
     self.entity_to_body.insert(entity, body_handle);
     self.body_to_entity.insert(body_handle, entity);
     self.entity_to_collider.insert(entity, collider_handle);
@@ -336,50 +298,16 @@ impl RapierPhysicsWorld {
       return;
     }
 
-    // Convert position from pixels to meters
-    let x_meters = transform.x / PIXELS_PER_METER;
-    let y_meters = transform.y / PIXELS_PER_METER;
-
-    // Create Rapier rigid body
-    let body = if rigid_body.is_kinematic {
-      RigidBodyBuilder::kinematic_position_based()
-        .translation(vector![x_meters, y_meters])
-        .locked_axes(LockedAxes::ROTATION_LOCKED)
-        .build()
-    } else {
-      let mut builder = RigidBodyBuilder::dynamic()
-        .translation(vector![x_meters, y_meters])
-        .gravity_scale(rigid_body.gravity_scale)
-        .linear_damping(rigid_body.drag)
-        .locked_axes(LockedAxes::ROTATION_LOCKED)
-        .ccd_enabled(rigid_body.ccd_enabled);
-
-      if let Some(vel) = velocity {
-        let vx_meters = vel.dx / PIXELS_PER_METER;
-        let vy_meters = vel.dy / PIXELS_PER_METER;
-        builder = builder.linvel(vector![vx_meters, vy_meters]);
-      }
-
-      builder.build()
-    };
-
+    let body = Self::build_body(transform, velocity, rigid_body);
     let body_handle = self.rigid_body_set.insert(body);
 
-    // GroupedCollider offset calculation, accounting for pivot
-    let half_w = grouped.width / 2.0;
-    let half_h = grouped.height / 2.0;
-    // Calculate pivot-aware offset (same logic as regular colliders)
-    let pivot_offset_x = (0.5 - transform.pivot_x) * grouped.width;
-    let pivot_offset_y = (0.5 - transform.pivot_y) * grouped.height;
-    let center_offset_x = (grouped.offset_x + pivot_offset_x) / PIXELS_PER_METER;
-    let center_offset_y = (grouped.offset_y + pivot_offset_y) / PIXELS_PER_METER;
-
-    // Create box collider for the grouped area
-    let half_w_meters = half_w / PIXELS_PER_METER;
-    let half_h_meters = half_h / PIXELS_PER_METER;
-
-    let rapier_collider = ColliderBuilder::cuboid(half_w_meters, half_h_meters)
-      .translation(vector![center_offset_x, center_offset_y])
+    // The box spans `offset` to `offset + size` from the entity's origin, the
+    // way composite tile parts are laid out
+    let size = Vec2::new(grouped.width, grouped.height);
+    let center = (Vec2::new(grouped.offset_x, grouped.offset_y) + size / 2.0) / PIXELS_PER_METER;
+    let half = size / 2.0 / PIXELS_PER_METER;
+    let rapier_collider = ColliderBuilder::cuboid(half.x, half.y)
+      .translation(vector![center.x, center.y])
       .restitution(grouped.restitution)
       .friction(grouped.friction)
       .sensor(grouped.is_trigger)
@@ -390,12 +318,7 @@ impl RapierPhysicsWorld {
       self
         .collider_set
         .insert_with_parent(rapier_collider, body_handle, &mut self.rigid_body_set);
-
-    // Store mappings
-    self.entity_to_body.insert(entity, body_handle);
-    self.body_to_entity.insert(body_handle, entity);
-    self.entity_to_collider.insert(entity, collider_handle);
-    self.collider_to_entity.insert(collider_handle, entity);
+    self.insert_mappings(entity, body_handle, collider_handle);
   }
 
   /// Remove an entity from the physics world
@@ -416,15 +339,16 @@ impl RapierPhysicsWorld {
     }
   }
 
-  /// Step the physics simulation
+  /// Advance the simulation by `dt` seconds (the fixed timestep).
   ///
   /// `gravity` is in pixels per second squared (e.g., (0.0, 980.0) for Earth-like gravity)
   ///
   /// Collision events are collected during this step and can be queried
   /// with `get_collision_events()` or `drain_collision_events()`.
-  pub fn step(&mut self, gravity: (f32, f32)) {
+  pub fn step(&mut self, gravity: (f32, f32), dt: f32) {
     // Clear previous events
     self.collision_events.clear();
+    self.integration_parameters.dt = dt;
 
     let gravity_meters = vector![gravity.0 / PIXELS_PER_METER, gravity.1 / PIXELS_PER_METER];
 
@@ -488,88 +412,82 @@ impl RapierPhysicsWorld {
     drop(contact_force_recv);
   }
 
-  /// Sync Rapier body positions and velocities back to ECS components
-  ///
-  /// Call this after `step()` to update Transform and Velocity components
-  pub fn sync_to_ecs(&self, world: &mut World) {
-    for (&entity, &body_handle) in &self.entity_to_body {
-      if let Some(body) = self.rigid_body_set.get(body_handle) {
-        // Skip kinematic bodies (they are controlled by game code)
-        if body.is_kinematic() {
-          continue;
-        }
+  fn body_mut(&mut self, entity: Entity) -> Option<&mut rapier2d::dynamics::RigidBody> {
+    let handle = *self.entity_to_body.get(&entity)?;
+    self.rigid_body_set.get_mut(handle)
+  }
 
-        let pos = body.translation();
-        let vel = body.linvel();
+  fn body(&self, entity: Entity) -> Option<&rapier2d::dynamics::RigidBody> {
+    self.rigid_body_set.get(*self.entity_to_body.get(&entity)?)
+  }
 
-        // Convert from meters back to pixels
-        let x_pixels = pos.x * PIXELS_PER_METER;
-        let y_pixels = pos.y * PIXELS_PER_METER;
-        let vx_pixels = vel.x * PIXELS_PER_METER;
-        let vy_pixels = vel.y * PIXELS_PER_METER;
-
-        // Update Transform
-        if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-          transform.x = x_pixels;
-          transform.y = y_pixels;
-        }
-
-        // Update Velocity
-        if let Some(mut velocity) = world.get_mut::<Velocity>(entity) {
-          velocity.dx = vx_pixels;
-          velocity.dy = vy_pixels;
-        }
-      }
+  /// Put the body where the game moved it: a kinematic body moves there over
+  /// the next step, any other body teleports (and wakes).
+  pub fn set_transform(&mut self, entity: Entity, transform: &Transform) {
+    let Some(body) = self.body_mut(entity) else {
+      return;
+    };
+    let p = transform.translation / PIXELS_PER_METER;
+    if body.is_kinematic() {
+      body.set_next_kinematic_translation(vector![p.x, p.y]);
+    } else {
+      body.set_translation(vector![p.x, p.y], true);
     }
   }
 
-  /// Sync ECS positions to Rapier (for kinematic bodies moved by game code)
-  ///
-  /// Call this before `step()` to ensure kinematic bodies are updated
-  pub fn sync_kinematic_from_ecs(&mut self, world: &World) {
-    for (&entity, &body_handle) in &self.entity_to_body {
-      if let Some(body) = self.rigid_body_set.get_mut(body_handle)
-        && body.is_kinematic()
-        && let Some(transform) = world.get::<Transform>(entity)
-      {
-        let x_meters = transform.x / PIXELS_PER_METER;
-        let y_meters = transform.y / PIXELS_PER_METER;
-        body.set_next_kinematic_translation(vector![x_meters, y_meters]);
-      }
+  /// Move a kinematic body to `transform` over the next step; other bodies
+  /// are left alone.
+  pub fn set_kinematic_target(&mut self, entity: Entity, transform: &Transform) {
+    let Some(body) = self.body_mut(entity) else {
+      return;
+    };
+    if body.is_kinematic() {
+      let p = transform.translation / PIXELS_PER_METER;
+      body.set_next_kinematic_translation(vector![p.x, p.y]);
     }
   }
 
-  /// Sync dynamic body positions from ECS to Rapier (for teleportation/reset)
-  ///
-  /// Call this before `step()` if game code modifies Transform of dynamic bodies directly.
-  /// This teleports the body to the new position without physics interpolation.
-  pub fn sync_dynamic_from_ecs(&mut self, world: &World) {
-    for (&entity, &body_handle) in &self.entity_to_body {
-      if let Some(body) = self.rigid_body_set.get_mut(body_handle)
-        && body.is_dynamic()
-        && let Some(transform) = world.get::<Transform>(entity)
-      {
-        let x_meters = transform.x / PIXELS_PER_METER;
-        let y_meters = transform.y / PIXELS_PER_METER;
-        body.set_translation(vector![x_meters, y_meters], true);
-      }
+  /// Give a dynamic body the game's velocity (pixels per second), waking it.
+  pub fn set_velocity(&mut self, entity: Entity, velocity: &Velocity) {
+    if let Some(body) = self.body_mut(entity)
+      && !body.is_kinematic()
+    {
+      body.set_linvel(vector![velocity.dx, velocity.dy] / PIXELS_PER_METER, true);
     }
   }
 
-  /// Sync velocity changes from ECS to Rapier (for impulses applied in game code)
-  ///
-  /// Call this before `step()` if game code modifies Velocity directly
-  pub fn sync_velocities_from_ecs(&mut self, world: &World) {
-    for (&entity, &body_handle) in &self.entity_to_body {
-      if let Some(body) = self.rigid_body_set.get_mut(body_handle)
-        && !body.is_kinematic()
-        && let Some(velocity) = world.get::<Velocity>(entity)
-      {
-        let vx_meters = velocity.dx / PIXELS_PER_METER;
-        let vy_meters = velocity.dy / PIXELS_PER_METER;
-        body.set_linvel(vector![vx_meters, vy_meters], true);
+  /// Awake dynamic bodies: (entity, position px, velocity px/s).
+  pub fn read_back(&self) -> impl Iterator<Item = (Entity, Vec2, Vec2)> + '_ {
+    self.entity_to_body.iter().filter_map(|(&entity, &handle)| {
+      let body = self.rigid_body_set.get(handle)?;
+      if body.is_kinematic() || body.is_sleeping() {
+        return None;
       }
-    }
+      let p = body.translation();
+      let v = body.linvel();
+      Some((
+        entity,
+        Vec2::new(p.x, p.y) * PIXELS_PER_METER,
+        Vec2::new(v.x, v.y) * PIXELS_PER_METER,
+      ))
+    })
+  }
+
+  /// The entity's body velocity in pixels per second, if it is registered.
+  pub fn body_velocity(&self, entity: Entity) -> Option<Vec2> {
+    let v = self.body(entity)?.linvel();
+    Some(Vec2::new(v.x, v.y) * PIXELS_PER_METER)
+  }
+
+  /// Whether the entity's body is asleep (at rest, skipped by the solver).
+  pub fn is_sleeping(&self, entity: Entity) -> bool {
+    self.body(entity).is_some_and(|body| body.is_sleeping())
+  }
+
+  /// The entity's body position in pixels, if it is registered.
+  pub fn body_position(&self, entity: Entity) -> Option<Vec2> {
+    let p = self.body(entity)?.translation();
+    Some(Vec2::new(p.x, p.y) * PIXELS_PER_METER)
   }
 
   /// Get collision events from the last physics step
@@ -684,8 +602,37 @@ impl Default for RapierPhysicsWorld {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::ecs::{Transform, Velocity, World};
+  use crate::core::ecs::{Transform, Velocity};
   use crate::core::physics::{Collider, RigidBody};
+
+  /// Register an entity directly (the physics systems do this in the engine).
+  fn add(
+    physics: &mut RapierPhysicsWorld,
+    entity: Entity,
+    x: f32,
+    y: f32,
+    velocity: Option<Velocity>,
+    body: RigidBody,
+    collider: Collider,
+  ) {
+    physics.register_entity(
+      entity,
+      &Transform::from_xy(x, y),
+      velocity.as_ref(),
+      &body,
+      &collider,
+    );
+  }
+
+  fn entity(index: u32) -> Entity {
+    Entity::from_raw_u32(index).expect("a valid test index")
+  }
+
+  fn collider_center(physics: &RapierPhysicsWorld, entity: Entity) -> Vec2 {
+    let handle = physics.entity_to_collider[&entity];
+    let t = physics.collider_set[handle].position().translation;
+    Vec2::new(t.x, t.y) * PIXELS_PER_METER
+  }
 
   #[test]
   fn rapier_world_creates() {
@@ -694,545 +641,232 @@ mod tests {
   }
 
   #[test]
-  fn register_entity() {
+  fn register_and_unregister_entity() {
     let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    let entity = world.spawn((
-      Transform::new(100.0, 100.0),
-      Velocity::zero(),
+    let e = entity(1);
+    add(
+      &mut physics,
+      e,
+      100.0,
+      100.0,
+      Some(Velocity::zero()),
       RigidBody::new(),
       Collider::box_collider(32.0, 32.0),
-    ));
-
-    // Register with physics
-    {
-      let transform = world.get::<Transform>(entity).unwrap();
-      let velocity = world.get::<Velocity>(entity);
-      let rb = world.get::<RigidBody>(entity).unwrap();
-      let col = world.get::<Collider>(entity).unwrap();
-      physics.register_entity(entity, &transform, velocity.as_deref(), &rb, &col);
-    }
-
-    assert!(physics.is_registered(entity));
+    );
+    assert!(physics.is_registered(e));
     assert_eq!(physics.body_count(), 1);
-  }
-
-  #[test]
-  fn unregister_entity() {
-    let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    let entity = world.spawn((
-      Transform::new(100.0, 100.0),
-      RigidBody::new(),
-      Collider::circle_collider(16.0),
-    ));
-
-    {
-      let transform = world.get::<Transform>(entity).unwrap();
-      let rb = world.get::<RigidBody>(entity).unwrap();
-      let col = world.get::<Collider>(entity).unwrap();
-      physics.register_entity(entity, &transform, None, &rb, &col);
-    }
-
-    assert_eq!(physics.body_count(), 1);
-    physics.unregister_entity(entity);
+    physics.unregister_entity(e);
     assert_eq!(physics.body_count(), 0);
-    assert!(!physics.is_registered(entity));
+    assert!(!physics.is_registered(e));
   }
 
   #[test]
   fn step_applies_gravity() {
     let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    let entity = world.spawn((
-      Transform::new(100.0, 100.0),
-      Velocity::zero(),
+    let e = entity(1);
+    add(
+      &mut physics,
+      e,
+      100.0,
+      100.0,
+      None,
       RigidBody::new(),
       Collider::box_collider(32.0, 32.0),
-    ));
-
-    {
-      let transform = world.get::<Transform>(entity).unwrap();
-      let velocity = world.get::<Velocity>(entity);
-      let rb = world.get::<RigidBody>(entity).unwrap();
-      let col = world.get::<Collider>(entity).unwrap();
-      physics.register_entity(entity, &transform, velocity.as_deref(), &rb, &col);
-    }
-
-    // Step physics with gravity
-    physics.step((0.0, 980.0));
-    physics.sync_to_ecs(&mut world);
-
-    // Entity should have fallen
-    let transform = world.get::<Transform>(entity).unwrap();
-    assert!(transform.y > 100.0, "Entity should fall due to gravity");
+    );
+    physics.step((0.0, 980.0), 1.0 / 60.0);
+    let (moved, position, velocity) = physics.read_back().next().unwrap();
+    assert_eq!(moved, e);
+    assert!(position.y > 100.0, "Entity should fall due to gravity");
+    assert!(velocity.y > 0.0);
   }
 
   #[test]
-  fn kinematic_body_not_affected_by_gravity() {
+  fn kinematic_body_not_affected_by_gravity_nor_read_back() {
     let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    let entity = world.spawn((
-      Transform::new(100.0, 100.0),
+    let e = entity(1);
+    add(
+      &mut physics,
+      e,
+      100.0,
+      100.0,
+      None,
       RigidBody::kinematic(),
       Collider::box_collider(32.0, 32.0),
-    ));
-
-    {
-      let transform = world.get::<Transform>(entity).unwrap();
-      let rb = world.get::<RigidBody>(entity).unwrap();
-      let col = world.get::<Collider>(entity).unwrap();
-      physics.register_entity(entity, &transform, None, &rb, &col);
-    }
-
-    // Step physics with gravity
-    physics.step((0.0, 980.0));
-    physics.sync_to_ecs(&mut world);
-
-    // Kinematic body should not move
-    let transform = world.get::<Transform>(entity).unwrap();
-    assert!(
-      (transform.y - 100.0).abs() < 0.01,
-      "Kinematic body should not fall"
     );
+    physics.step((0.0, 980.0), 1.0 / 60.0);
+    assert_eq!(physics.body_position(e), Some(Vec2::new(100.0, 100.0)));
+    assert_eq!(physics.read_back().count(), 0);
   }
 
   #[test]
-  fn collision_response() {
+  fn collision_response_and_events() {
     let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    // Falling ball
-    let ball = world.spawn((
-      Transform::new(100.0, 50.0),
-      Velocity::zero(),
+    let (ball, floor) = (entity(1), entity(2));
+    add(
+      &mut physics,
+      ball,
+      100.0,
+      80.0,
+      Some(Velocity::new(0.0, 100.0)),
       RigidBody::new(),
-      Collider::circle_collider(16.0),
-    ));
-
-    // Static floor (kinematic)
-    let floor = world.spawn((
-      Transform::new(100.0, 200.0),
-      RigidBody::kinematic(),
-      Collider::box_collider(200.0, 20.0),
-    ));
-
-    // Register both
-    {
-      let t = world.get::<Transform>(ball).unwrap();
-      let v = world.get::<Velocity>(ball);
-      let rb = world.get::<RigidBody>(ball).unwrap();
-      let col = world.get::<Collider>(ball).unwrap();
-      physics.register_entity(ball, &t, v.as_deref(), &rb, &col);
-    }
-    {
-      let t = world.get::<Transform>(floor).unwrap();
-      let rb = world.get::<RigidBody>(floor).unwrap();
-      let col = world.get::<Collider>(floor).unwrap();
-      physics.register_entity(floor, &t, None, &rb, &col);
-    }
-
-    // Step multiple times
-    for _ in 0..60 {
-      physics.step((0.0, 980.0));
-    }
-    physics.sync_to_ecs(&mut world);
-
-    // Ball should have landed on floor (not fallen through)
-    let ball_transform = world.get::<Transform>(ball).unwrap();
-    assert!(
-      ball_transform.y < 200.0,
-      "Ball should be stopped by floor, not fall through. Y = {}",
-      ball_transform.y
-    );
-  }
-
-  #[test]
-  fn collision_events_generated() {
-    let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    // Ball starting above floor (will collide after physics step)
-    let ball = world.spawn((
-      Transform::new(100.0, 80.0), // Ball at y=80
-      Velocity::new(0.0, 100.0),   // Moving downward
-      RigidBody::new().with_gravity_scale(1.0),
       Collider::circle_collider(10.0),
-    ));
-
-    // Static floor at y=100
-    let floor = world.spawn((
-      Transform::new(50.0, 100.0),
+    );
+    add(
+      &mut physics,
+      floor,
+      50.0,
+      100.0,
+      None,
       RigidBody::kinematic(),
       Collider::box_collider(100.0, 20.0),
-    ));
+    );
 
-    // Register both entities
-    {
-      let t = world.get::<Transform>(ball).unwrap();
-      let v = world.get::<Velocity>(ball);
-      let rb = world.get::<RigidBody>(ball).unwrap();
-      let col = world.get::<Collider>(ball).unwrap();
-      physics.register_entity(ball, &t, v.as_deref(), &rb, &col);
-    }
-    {
-      let t = world.get::<Transform>(floor).unwrap();
-      let rb = world.get::<RigidBody>(floor).unwrap();
-      let col = world.get::<Collider>(floor).unwrap();
-      physics.register_entity(floor, &t, None, &rb, &col);
-    }
-
-    // Step physics until collision happens
     let mut collision_detected = false;
-    for _ in 0..30 {
-      physics.step((0.0, 980.0));
-      physics.sync_to_ecs(&mut world);
-
-      // Check for collision events
+    for _ in 0..60 {
+      physics.step((0.0, 980.0), 1.0 / 60.0);
       for event in physics.get_collision_events() {
-        if event.event_type == CollisionEventType::Started
-          && event.involves(ball)
-          && event.involves(floor)
-        {
+        if event.is_started() && event.involves(ball) && event.involves(floor) {
           collision_detected = true;
-          // Verify helper methods work
           assert_eq!(event.other(ball), Some(floor));
           assert_eq!(event.other(floor), Some(ball));
         }
       }
     }
-
     assert!(
       collision_detected,
       "Expected collision event between ball and floor"
     );
+    let y = physics.body_position(ball).unwrap().y;
+    assert!(
+      y < 100.0,
+      "Ball should rest on the floor, not fall through: y = {y}"
+    );
+  }
 
-    // Step again to show events are cleared between steps
-    physics.step((0.0, 980.0));
-    // After a step with no new collisions starting, event count should reflect
-    // only events from that step (could be 0 or continued contact)
+  #[test]
+  fn set_transform_teleports_and_set_velocity_pushes() {
+    let mut physics = RapierPhysicsWorld::new();
+    let e = entity(1);
+    add(
+      &mut physics,
+      e,
+      0.0,
+      0.0,
+      None,
+      RigidBody::new().with_gravity_scale(0.0),
+      Collider::circle_collider(4.0),
+    );
+    physics.set_transform(e, &Transform::from_xy(300.0, -20.0));
+    assert_eq!(physics.body_position(e), Some(Vec2::new(300.0, -20.0)));
+    physics.set_velocity(e, &Velocity::new(60.0, 0.0));
+    physics.step((0.0, 0.0), 0.5);
+    let x = physics.body_position(e).unwrap().x;
+    assert!((x - 330.0).abs() < 0.5, "half a second at 60 px/s: {x}");
   }
 
   #[test]
   fn clear_resets_physics_world() {
     let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    // Register some entities
-    let e1 = world.spawn((
-      Transform::new(100.0, 100.0),
+    let (e1, e2, e3) = (entity(1), entity(2), entity(3));
+    add(
+      &mut physics,
+      e1,
+      100.0,
+      100.0,
+      None,
       RigidBody::new(),
       Collider::box_collider(32.0, 32.0),
-    ));
-    let e2 = world.spawn((
-      Transform::new(200.0, 200.0),
+    );
+    add(
+      &mut physics,
+      e2,
+      200.0,
+      200.0,
+      None,
       RigidBody::kinematic(),
       Collider::circle_collider(16.0),
-    ));
-
-    {
-      let t = world.get::<Transform>(e1).unwrap();
-      let rb = world.get::<RigidBody>(e1).unwrap();
-      let col = world.get::<Collider>(e1).unwrap();
-      physics.register_entity(e1, &t, None, &rb, &col);
-    }
-    {
-      let t = world.get::<Transform>(e2).unwrap();
-      let rb = world.get::<RigidBody>(e2).unwrap();
-      let col = world.get::<Collider>(e2).unwrap();
-      physics.register_entity(e2, &t, None, &rb, &col);
-    }
-
+    );
     assert_eq!(physics.body_count(), 2);
-    assert!(physics.is_registered(e1));
-    assert!(physics.is_registered(e2));
-
-    // Clear the physics world
     physics.clear();
-
-    // All bodies should be gone
     assert_eq!(physics.body_count(), 0);
     assert!(!physics.is_registered(e1));
     assert!(!physics.is_registered(e2));
-
-    // Should be able to register new entities after clear
-    let e3 = world.spawn((
-      Transform::new(50.0, 50.0),
+    add(
+      &mut physics,
+      e3,
+      50.0,
+      50.0,
+      None,
       RigidBody::new(),
       Collider::box_collider(10.0, 10.0),
-    ));
-    {
-      let t = world.get::<Transform>(e3).unwrap();
-      let rb = world.get::<RigidBody>(e3).unwrap();
-      let col = world.get::<Collider>(e3).unwrap();
-      physics.register_entity(e3, &t, None, &rb, &col);
-    }
+    );
     assert_eq!(physics.body_count(), 1);
     assert!(physics.is_registered(e3));
   }
 
   #[test]
   fn collision_event_is_started_is_stopped() {
-    // Test Started event
     let started_event = PhysicsCollisionEvent {
-      entity_a: hecs::Entity::DANGLING,
-      entity_b: hecs::Entity::DANGLING,
+      entity_a: Entity::PLACEHOLDER,
+      entity_b: Entity::PLACEHOLDER,
       event_type: CollisionEventType::Started,
       is_sensor: false,
     };
     assert!(started_event.is_started());
     assert!(!started_event.is_stopped());
 
-    // Test Stopped event
     let stopped_event = PhysicsCollisionEvent {
-      entity_a: hecs::Entity::DANGLING,
-      entity_b: hecs::Entity::DANGLING,
       event_type: CollisionEventType::Stopped,
-      is_sensor: false,
+      ..started_event
     };
     assert!(!stopped_event.is_started());
     assert!(stopped_event.is_stopped());
   }
 
-  /// REGRESSION: Explicit collider offset should not be combined with pivot offset
-  ///
-  /// Previously, when a user set an explicit offset via with_offset(), the physics
-  /// system would ALSO add a pivot-based offset, causing colliders to be positioned
-  /// incorrectly (e.g., bottom-right of sprite instead of centered).
-  ///
-  /// The fix: when user explicitly sets an offset, use it directly without
-  /// adding automatic pivot-based adjustments.
   #[test]
-  fn regression_explicit_collider_offset_not_double_adjusted() {
+  fn a_collider_is_centred_on_the_entity() {
     let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    // Create entity with top-left pivot (0, 0) and explicit offset to center collider
-    // For a 64x64 sprite, offset (32, 32) should center a circle collider
-    let entity = world.spawn((
-      Transform::new(100.0, 100.0), // Default pivot (0, 0) = top-left
+    let e = entity(1);
+    add(
+      &mut physics,
+      e,
+      100.0,
+      100.0,
+      None,
       RigidBody::new(),
-      Collider::circle_collider(20.0).with_offset(32.0, 32.0),
-    ));
-
-    {
-      let transform = world.get::<Transform>(entity).unwrap();
-      let rb = world.get::<RigidBody>(entity).unwrap();
-      let col = world.get::<Collider>(entity).unwrap();
-      physics.register_entity(entity, &transform, None, &rb, &col);
-    }
-
-    // Get the Rapier collider position
-    let rapier_handle = physics.entity_to_collider.get(&entity).unwrap();
-    let rapier_collider = physics.collider_set.get(*rapier_handle).unwrap();
-    let translation = rapier_collider.position().translation;
-
-    // Convert back to pixels
-    let collider_x_pixels = translation.x * PIXELS_PER_METER;
-    let collider_y_pixels = translation.y * PIXELS_PER_METER;
-
-    // Collider center should be at transform position (100, 100) + explicit offset (32, 32)
-    // = (132, 132) in pixels, or (1.32, 1.32) in meters
-    // It should NOT be at (100 + 32 + 20, 100 + 32 + 20) = (152, 152) from double-offset bug
-    let expected_x = 100.0 + 32.0;
-    let expected_y = 100.0 + 32.0;
-
-    assert!(
-      (collider_x_pixels - expected_x).abs() < 1.0,
-      "Collider X should be ~{}, got {} (double-offset bug if ~{})",
-      expected_x,
-      collider_x_pixels,
-      expected_x + 20.0
+      Collider::circle_collider(20.0),
     );
-    assert!(
-      (collider_y_pixels - expected_y).abs() < 1.0,
-      "Collider Y should be ~{}, got {} (double-offset bug if ~{})",
-      expected_y,
-      collider_y_pixels,
-      expected_y + 20.0
-    );
+    assert!((collider_center(&physics, e) - Vec2::new(100.0, 100.0)).length() < 1e-3);
   }
 
-  /// Test that auto-centering still works when no explicit offset is set
   #[test]
-  fn collider_auto_centers_with_no_explicit_offset() {
+  fn a_collider_offset_moves_it_from_the_entity_centre() {
     let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    // Create entity with top-left pivot (0, 0) and NO explicit offset
-    // For a circle with radius 20, auto-centering should add offset = 0.5 * 40 = 20
-    let entity = world.spawn((
-      Transform::new(100.0, 100.0), // Default pivot (0, 0) = top-left
+    let e = entity(1);
+    add(
+      &mut physics,
+      e,
+      100.0,
+      100.0,
+      None,
       RigidBody::new(),
-      Collider::circle_collider(20.0), // No with_offset() call
-    ));
-
-    {
-      let transform = world.get::<Transform>(entity).unwrap();
-      let rb = world.get::<RigidBody>(entity).unwrap();
-      let col = world.get::<Collider>(entity).unwrap();
-      physics.register_entity(entity, &transform, None, &rb, &col);
-    }
-
-    let rapier_handle = physics.entity_to_collider.get(&entity).unwrap();
-    let rapier_collider = physics.collider_set.get(*rapier_handle).unwrap();
-    let translation = rapier_collider.position().translation;
-
-    let collider_x_pixels = translation.x * PIXELS_PER_METER;
-    let collider_y_pixels = translation.y * PIXELS_PER_METER;
-
-    // With pivot (0, 0) and no offset, auto-center should place collider at:
-    // transform + (0.5 - pivot) * diameter = 100 + 0.5 * 40 = 120
-    let expected_x = 100.0 + 20.0;
-    let expected_y = 100.0 + 20.0;
-
-    assert!(
-      (collider_x_pixels - expected_x).abs() < 1.0,
-      "Auto-centered collider X should be ~{}, got {}",
-      expected_x,
-      collider_x_pixels
+      Collider::circle_collider(20.0).with_offset(32.0, -8.0),
     );
-    assert!(
-      (collider_y_pixels - expected_y).abs() < 1.0,
-      "Auto-centered collider Y should be ~{}, got {}",
-      expected_y,
-      collider_y_pixels
-    );
+    assert!((collider_center(&physics, e) - Vec2::new(132.0, 92.0)).length() < 1e-3);
   }
 
-  /// Test centered_in() with top-left pivot (most common case)
   #[test]
-  fn centered_in_with_top_left_pivot() {
+  fn a_grouped_collider_spans_its_offset_and_size() {
     let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    // 64x64 sprite with top-left pivot, smaller 20px radius collider
-    // centered_in(64, 64) should center the collider at sprite center
-    let entity = world.spawn((
-      Transform::new(100.0, 100.0), // Default pivot (0, 0) = top-left
-      RigidBody::new(),
-      Collider::circle_collider(20.0).centered_in(64.0, 64.0),
-    ));
-
-    {
-      let transform = world.get::<Transform>(entity).unwrap();
-      let rb = world.get::<RigidBody>(entity).unwrap();
-      let col = world.get::<Collider>(entity).unwrap();
-      physics.register_entity(entity, &transform, None, &rb, &col);
-    }
-
-    let rapier_handle = physics.entity_to_collider.get(&entity).unwrap();
-    let rapier_collider = physics.collider_set.get(*rapier_handle).unwrap();
-    let translation = rapier_collider.position().translation;
-
-    let collider_x_pixels = translation.x * PIXELS_PER_METER;
-    let collider_y_pixels = translation.y * PIXELS_PER_METER;
-
-    // With top-left pivot (0, 0) and centered_in(64, 64):
-    // offset = (0.5 - 0) * 64 = 32
-    // collider center = 100 + 32 = 132
-    let expected = 100.0 + 32.0;
-
-    assert!(
-      (collider_x_pixels - expected).abs() < 1.0,
-      "centered_in X should be ~{}, got {}",
-      expected,
-      collider_x_pixels
+    let e = entity(1);
+    let grouped = GroupedCollider::new(40.0, 20.0).with_offset(-20.0, 0.0);
+    physics.register_grouped_entity(
+      e,
+      &Transform::from_xy(100.0, 100.0),
+      None,
+      &RigidBody::kinematic(),
+      &grouped,
     );
-    assert!(
-      (collider_y_pixels - expected).abs() < 1.0,
-      "centered_in Y should be ~{}, got {}",
-      expected,
-      collider_y_pixels
-    );
-  }
-
-  /// Test centered_in() with center pivot
-  #[test]
-  fn centered_in_with_center_pivot() {
-    let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    // 64x64 sprite with center pivot, smaller collider
-    let entity = world.spawn((
-      Transform::new(100.0, 100.0).with_pivot_center(), // pivot (0.5, 0.5)
-      RigidBody::new(),
-      Collider::circle_collider(20.0).centered_in(64.0, 64.0),
-    ));
-
-    {
-      let transform = world.get::<Transform>(entity).unwrap();
-      let rb = world.get::<RigidBody>(entity).unwrap();
-      let col = world.get::<Collider>(entity).unwrap();
-      physics.register_entity(entity, &transform, None, &rb, &col);
-    }
-
-    let rapier_handle = physics.entity_to_collider.get(&entity).unwrap();
-    let rapier_collider = physics.collider_set.get(*rapier_handle).unwrap();
-    let translation = rapier_collider.position().translation;
-
-    let collider_x_pixels = translation.x * PIXELS_PER_METER;
-    let collider_y_pixels = translation.y * PIXELS_PER_METER;
-
-    // With center pivot (0.5, 0.5) and centered_in(64, 64):
-    // offset = (0.5 - 0.5) * 64 = 0
-    // collider center = 100 + 0 = 100 (same as transform)
-    let expected = 100.0;
-
-    assert!(
-      (collider_x_pixels - expected).abs() < 1.0,
-      "centered_in with center pivot X should be ~{}, got {}",
-      expected,
-      collider_x_pixels
-    );
-    assert!(
-      (collider_y_pixels - expected).abs() < 1.0,
-      "centered_in with center pivot Y should be ~{}, got {}",
-      expected,
-      collider_y_pixels
-    );
-  }
-
-  /// Test that centered_in() takes precedence over with_offset()
-  #[test]
-  fn centered_in_takes_precedence_over_offset() {
-    let mut physics = RapierPhysicsWorld::new();
-    let mut world = World::new();
-
-    // Both centered_in and with_offset set - centered_in should win
-    let entity = world.spawn((
-      Transform::new(100.0, 100.0),
-      RigidBody::new(),
-      Collider::circle_collider(20.0)
-        .with_offset(999.0, 999.0) // This should be ignored
-        .centered_in(64.0, 64.0), // This should be used
-    ));
-
-    {
-      let transform = world.get::<Transform>(entity).unwrap();
-      let rb = world.get::<RigidBody>(entity).unwrap();
-      let col = world.get::<Collider>(entity).unwrap();
-      physics.register_entity(entity, &transform, None, &rb, &col);
-    }
-
-    let rapier_handle = physics.entity_to_collider.get(&entity).unwrap();
-    let rapier_collider = physics.collider_set.get(*rapier_handle).unwrap();
-    let translation = rapier_collider.position().translation;
-
-    let collider_x_pixels = translation.x * PIXELS_PER_METER;
-
-    // Should use centered_in(64, 64) calculation, not with_offset(999, 999)
-    let expected = 100.0 + 32.0; // not 100 + 999
-
-    assert!(
-      (collider_x_pixels - expected).abs() < 1.0,
-      "centered_in should take precedence, expected ~{}, got {}",
-      expected,
-      collider_x_pixels
-    );
+    assert!((collider_center(&physics, e) - Vec2::new(100.0, 110.0)).length() < 1e-3);
   }
 }
