@@ -543,6 +543,9 @@ pub struct AssetManager {
   batch_succeeded: usize,
   /// Batch loading tracking: paths that failed
   batch_failures: Vec<String>,
+  /// Hot reloads since the engine last took them: the path, or the path and
+  /// the error
+  reload_outcomes: Vec<Result<PathBuf, (PathBuf, String)>>,
 }
 
 impl AssetManager {
@@ -559,6 +562,7 @@ impl AssetManager {
       batch_completed: 0,
       batch_succeeded: 0,
       batch_failures: Vec::new(),
+      reload_outcomes: Vec::new(),
     }
   }
 
@@ -577,6 +581,7 @@ impl AssetManager {
       batch_completed: 0,
       batch_succeeded: 0,
       batch_failures: Vec::new(),
+      reload_outcomes: Vec::new(),
     }
   }
 
@@ -1090,6 +1095,12 @@ impl AssetManager {
       .count()
   }
 
+  /// The hot reloads since the last call: each reloaded path, or the path
+  /// and why it failed.
+  pub(crate) fn take_reload_outcomes(&mut self) -> Vec<Result<PathBuf, (PathBuf, String)>> {
+    std::mem::take(&mut self.reload_outcomes)
+  }
+
   /// Apply one watcher event, returning whether an asset was reloaded
   ///
   /// The event path is canonicalized before the cache lookup, because the OS
@@ -1105,11 +1116,13 @@ impl AssetManager {
             Ok(source) => {
               handle.replace_source(source);
               reloaded = true;
+              self.reload_outcomes.push(Ok(key.clone()));
               #[cfg(debug_assertions)]
               engine_info!(module: "HotReload", "Reloaded shader: {:?}", key);
             }
             Err(e) => {
               engine_error!(module: "HotReload", "Failed to reload {:?}: {}", key, e);
+              self.reload_outcomes.push(Err((key.clone(), e.to_string())));
             }
           }
         }
@@ -1118,11 +1131,13 @@ impl AssetManager {
             Ok(new_sprite) => {
               handle.update(new_sprite);
               reloaded = true;
+              self.reload_outcomes.push(Ok(key.clone()));
               #[cfg(debug_assertions)]
               engine_info!(module: "HotReload", "Reloaded: {:?}", key);
             }
             Err(e) => {
               engine_error!(module: "HotReload", "Failed to reload {:?}: {}", key, e);
+              self.reload_outcomes.push(Err((key.clone(), e.to_string())));
             }
           }
         }

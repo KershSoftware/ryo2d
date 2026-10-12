@@ -183,7 +183,7 @@ impl WgpuRenderer {
   /// - `window_mode`: How to scale the game viewport to window size
   /// - `max_width`: Optional maximum viewport width constraint
   /// - `max_height`: Optional maximum viewport height constraint
-  /// - `vsync`: VSync preference (None = Mailbox→Immediate, Some(true) = Mailbox→Fifo, Some(false) = Immediate)
+  /// - `vsync`: `Some(true)` or `None` = Fifo (waits for the display); `Some(false)` = Mailbox, else Immediate
   pub async fn new(
     window: Arc<Window>,
     game_width: u32,
@@ -239,32 +239,17 @@ impl WgpuRenderer {
       .copied()
       .unwrap_or(surface_caps.formats[0]);
 
-    // Choose present mode based on vsync preference
-    let present_mode = match vsync {
-      // Not configured: Mailbox (best of both worlds) → Immediate (no tearing, max perf)
-      None => {
-        if surface_caps
-          .present_modes
-          .contains(&wgpu::PresentMode::Mailbox)
-        {
-          wgpu::PresentMode::Mailbox
-        } else {
-          wgpu::PresentMode::Immediate
-        }
-      }
-      // VSync on: Mailbox → Fifo (traditional vsync)
-      Some(true) => {
-        if surface_caps
-          .present_modes
-          .contains(&wgpu::PresentMode::Mailbox)
-        {
-          wgpu::PresentMode::Mailbox
-        } else {
-          wgpu::PresentMode::Fifo
-        }
-      }
-      // VSync off: Immediate (maximum performance, may tear)
-      Some(false) => wgpu::PresentMode::Immediate,
+    // VSync on: Fifo, which waits for the display (every surface supports
+    // it). Off: Mailbox, else Immediate, paced to target_fps by the engine
+    let supports = |mode| surface_caps.present_modes.contains(&mode);
+    let present_mode = if vsync.unwrap_or(true) {
+      wgpu::PresentMode::Fifo
+    } else if supports(wgpu::PresentMode::Mailbox) {
+      wgpu::PresentMode::Mailbox
+    } else if supports(wgpu::PresentMode::Immediate) {
+      wgpu::PresentMode::Immediate
+    } else {
+      wgpu::PresentMode::Fifo
     };
 
     let config = wgpu::SurfaceConfiguration {

@@ -249,13 +249,14 @@ impl Default for SpriteInstance {
 pub struct SpriteGlobals {
   /// View-projection matrix (orthographic 2D)
   pub view_proj: [[f32; 4]; 4],
-  /// Time and resolution: x=time, y=width, z=height, w=unused
+  /// Time and resolution: x = game time (what sprite effects animate on),
+  /// y = width, z = height, w = real time (seconds since start)
   pub time_resolution: [f32; 4],
 }
 
 impl SpriteGlobals {
   /// Create globals for orthographic 2D rendering
-  pub fn new(width: f32, height: f32, time: f32) -> Self {
+  pub fn new(width: f32, height: f32, game_time: f32, real_time: f32) -> Self {
     // Orthographic projection: maps (0,0)-(width,height) to clip space (-1,-1)-(1,1)
     // Y is flipped so 0 is at top
     Self {
@@ -265,7 +266,7 @@ impl SpriteGlobals {
         [0.0, 0.0, 1.0, 0.0],
         [-1.0, 1.0, 0.0, 1.0],
       ],
-      time_resolution: [time, width, height, 0.0],
+      time_resolution: [game_time, width, height, real_time],
     }
   }
 }
@@ -646,7 +647,7 @@ impl SpriteGpuRenderer {
     }));
 
     // Create globals buffer
-    let globals = SpriteGlobals::new(320.0, 180.0, 0.0);
+    let globals = SpriteGlobals::new(320.0, 180.0, 0.0, 0.0);
     let globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
       label: Some("Sprite Globals Buffer"),
       contents: bytemuck::cast_slice(&[globals]),
@@ -892,8 +893,15 @@ impl SpriteGpuRenderer {
 
   /// Update globals for the current frame: the game resolution and the time
   /// custom sprite shaders read as `in.time`, in seconds
-  pub fn set_viewport(&mut self, queue: &wgpu::Queue, width: f32, height: f32, time: f32) {
-    let globals = SpriteGlobals::new(width, height, time);
+  pub fn set_viewport(
+    &mut self,
+    queue: &wgpu::Queue,
+    width: f32,
+    height: f32,
+    game_time: f32,
+    real_time: f32,
+  ) {
+    let globals = SpriteGlobals::new(width, height, game_time, real_time);
     queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
   }
 
@@ -1327,18 +1335,21 @@ impl SpriteGpuRenderer {
 
   /// How many textures are cached (for tests that watch for leaks).
   #[cfg(test)]
+  #[allow(dead_code)] // MIGRATION: Task 15 (the GPU world tests)
   pub(crate) fn texture_count(&self) -> usize {
     self.textures.len()
   }
 
   /// How many entity sprites hold a standalone texture.
   #[cfg(test)]
+  #[allow(dead_code)] // MIGRATION: Task 15 (the GPU world tests)
   pub(crate) fn standalone_entity_count(&self) -> usize {
     self.standalone_entity_serials().len()
   }
 
   /// Whether the entity sprite is resident (for tests of what gets uploaded).
   #[cfg(test)]
+  #[allow(dead_code)] // MIGRATION: Task 15 (the GPU world tests)
   pub(crate) fn has_entity_sprite(&self, sprite: &SpriteHandle) -> bool {
     self
       .entity_sprites

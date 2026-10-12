@@ -19,6 +19,7 @@ use crate::core::texture::{TextureContext, TextureManager};
 use crate::core::time::Time;
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
 
+#[cfg(test)]
 use super::SceneSlot;
 
 /// What a scene callback can reach.
@@ -45,6 +46,7 @@ impl SceneContext<'_> {
   ///
   /// Panics if `Time`, `Input`, `Camera` or `AssetManager` is not a resource
   /// (the engine inserts all four at startup).
+  #[cfg(test)]
   pub(crate) fn scoped<R>(
     world: &mut World,
     audio: &mut Audio,

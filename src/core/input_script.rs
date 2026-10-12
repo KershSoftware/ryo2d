@@ -23,7 +23,7 @@
 use winit::event::{ElementState, MouseButton};
 use winit::keyboard::KeyCode;
 
-use crate::core::input::Input;
+use crate::core::input::{Input, InputEvent};
 
 macro_rules! key_table {
   ($($key:ident),* $(,)?) => {
@@ -216,7 +216,8 @@ impl InputScript {
     })
   }
 
-  /// Apply the input due before presented frame `frame` (1-based).
+  /// Queue the input due before presented frame `frame` (1-based); call it
+  /// before the frame publishes input.
   pub(crate) fn before_frame(&mut self, frame: u64, input: &mut Input) {
     self.held.retain(|&(control, release)| {
       let ends = matches!(release, Release::Before(end) if end <= frame);
@@ -244,7 +245,10 @@ impl InputScript {
   /// (a control the script holds is pressed again only once it is up)
   fn fire(&mut self, entry: Entry, input: &mut Input) {
     match entry.action {
-      Action::MoveMouse(x, y) => input.handle_mouse_move(f64::from(x), f64::from(y)),
+      Action::MoveMouse(x, y) => input.queue(InputEvent::MouseMove {
+        x: f64::from(x),
+        y: f64::from(y),
+      }),
       Action::Press {
         control,
         at,
@@ -260,7 +264,10 @@ impl InputScript {
           return;
         }
         if let Some((x, y)) = at {
-          input.handle_mouse_move(f64::from(x), f64::from(y));
+          input.queue(InputEvent::MouseMove {
+            x: f64::from(x),
+            y: f64::from(y),
+          });
         }
         set(input, control, ElementState::Pressed);
         self.held.push((control, release));
@@ -268,7 +275,7 @@ impl InputScript {
     }
   }
 
-  /// Release taps whose press a game update has seen.
+  /// Queue the release of taps whose press a fixed update has seen.
   pub(crate) fn after_frame(&mut self, input: &mut Input) {
     self.held.retain(|&(control, release)| {
       let seen = release == Release::Seen && !press_pending(input, control);
@@ -280,11 +287,13 @@ impl InputScript {
   }
 }
 
+/// Queue a press or release; it takes effect when the frame publishes input.
 fn set(input: &mut Input, control: Control, state: ElementState) {
-  match control {
-    Control::Key(key) => input.handle_keyboard(key, state),
-    Control::Button(button) => input.handle_mouse_button(button, state),
-  }
+  let pressed = state == ElementState::Pressed;
+  input.queue(match control {
+    Control::Key(key) => InputEvent::Key { key, pressed },
+    Control::Button(button) => InputEvent::MouseButton { button, pressed },
+  });
 }
 
 fn press_pending(input: &Input, control: Control) -> bool {
@@ -352,15 +361,25 @@ mod tests {
     InputScript::parse(raw).unwrap_or_else(|e| panic!("{raw:?}: {e}"))
   }
 
-  /// One engine frame: inject, run an update if `update`, then release
-  fn frame(script: &mut InputScript, input: &mut Input, n: u64, update: bool) {
+  /// Start engine frame `n`: the script queues, then `First` publishes input
+  fn start(script: &mut InputScript, input: &mut Input, n: u64) {
     script.before_frame(n, input);
+    input.begin_frame();
+  }
+
+  /// Finish the frame: a fixed step if `update`, then the script releases
+  /// what an update saw (released at the next start)
+  fn finish(script: &mut InputScript, input: &mut Input, update: bool) {
     if update {
       input.set_fixed_step(0);
-      input.end_fixed_steps(true);
-      input.begin_frame();
     }
+    input.end_fixed_steps(update);
     script.after_frame(input);
+  }
+
+  fn frame(script: &mut InputScript, input: &mut Input, n: u64, update: bool) {
+    start(script, input, n);
+    finish(script, input, update);
   }
 
   #[test]
@@ -368,18 +387,16 @@ mod tests {
     let mut s = script("3:Space");
     let mut input = Input::new();
 
-    s.before_frame(2, &mut input);
+    start(&mut s, &mut input, 2);
     assert!(!input.key_down(KeyCode::Space));
-    s.after_frame(&mut input);
+    finish(&mut s, &mut input, true);
 
-    s.before_frame(3, &mut input);
+    start(&mut s, &mut input, 3);
     assert!(input.key_pressed(KeyCode::Space));
     assert!(input.key_down(KeyCode::Space));
-    input.set_fixed_step(0); // the update saw it
-    input.end_fixed_steps(true);
-    input.begin_frame();
-    s.after_frame(&mut input);
+    finish(&mut s, &mut input, true); // the update saw it
 
+    start(&mut s, &mut input, 4);
     assert!(!input.key_down(KeyCode::Space));
     assert!(input.key_released(KeyCode::Space));
   }
@@ -397,6 +414,7 @@ mod tests {
     assert!(input.key_down(KeyCode::KeyA));
 
     frame(&mut s, &mut input, 2, true);
+    start(&mut s, &mut input, 3);
     assert!(!input.key_down(KeyCode::KeyA));
   }
 
@@ -411,7 +429,7 @@ mod tests {
       frame(&mut s, &mut input, n, true);
       assert!(input.key_down(KeyCode::ArrowUp), "frame {n}");
     }
-    s.before_frame(4, &mut input);
+    start(&mut s, &mut input, 4);
     assert!(!input.key_down(KeyCode::ArrowUp));
     assert!(input.key_released(KeyCode::ArrowUp));
   }
@@ -422,14 +440,11 @@ mod tests {
     let mut input = Input::new();
     let mut presses = 0;
     for n in 1..=6 {
-      s.before_frame(n, &mut input);
+      start(&mut s, &mut input, n);
       if input.key_pressed(KeyCode::Digit2) {
         presses += 1;
       }
-      input.set_fixed_step(0);
-      input.end_fixed_steps(true);
-      input.begin_frame();
-      s.after_frame(&mut input);
+      finish(&mut s, &mut input, true);
     }
     assert_eq!(presses, 3);
   }
@@ -444,7 +459,7 @@ mod tests {
     let mut click = None;
     let mut second_right = None;
     for n in 1..=9 {
-      s.before_frame(n, &mut input);
+      start(&mut s, &mut input, n);
       if input.key_pressed(KeyCode::Space) {
         space = Some(n);
       }
@@ -454,10 +469,7 @@ mod tests {
       if n > 2 && input.key_pressed(KeyCode::ArrowRight) {
         second_right = Some(n);
       }
-      input.set_fixed_step(0);
-      input.end_fixed_steps(true);
-      input.begin_frame();
-      s.after_frame(&mut input);
+      finish(&mut s, &mut input, true);
     }
     assert_eq!(space, Some(4));
     assert_eq!(click, Some(5));
@@ -468,7 +480,7 @@ mod tests {
   fn a_late_frame_fires_everything_due() {
     let mut s = script("2:KeyQ 5:KeyW");
     let mut input = Input::new();
-    s.before_frame(9, &mut input);
+    start(&mut s, &mut input, 9);
     assert!(input.key_pressed(KeyCode::KeyQ));
     assert!(input.key_pressed(KeyCode::KeyW));
   }
@@ -477,7 +489,7 @@ mod tests {
   fn key_names_ignore_case() {
     let mut s = script("1:arrowright 1:ESCAPE 1:f1 1:digit0");
     let mut input = Input::new();
-    s.before_frame(1, &mut input);
+    start(&mut s, &mut input, 1);
     for key in [
       KeyCode::ArrowRight,
       KeyCode::Escape,
@@ -515,7 +527,7 @@ mod tests {
     let mut input = Input::new();
     frame(&mut s, &mut input, 2, true);
     assert_eq!(input.mouse_position(), (0.0, 0.0));
-    s.before_frame(3, &mut input);
+    start(&mut s, &mut input, 3);
     assert_eq!(input.mouse_position(), (120.5, 40.0));
     assert!(!input.mouse_down(MouseButton::Left));
   }
@@ -524,13 +536,11 @@ mod tests {
   fn click_moves_then_taps_the_left_button() {
     let mut s = script("2:Click@64x32");
     let mut input = Input::new();
-    s.before_frame(2, &mut input);
+    start(&mut s, &mut input, 2);
     assert_eq!(input.mouse_position(), (64.0, 32.0));
     assert!(input.mouse_pressed(MouseButton::Left));
-    input.set_fixed_step(0);
-    input.end_fixed_steps(true);
-    input.begin_frame();
-    s.after_frame(&mut input);
+    finish(&mut s, &mut input, true);
+    start(&mut s, &mut input, 3);
     assert!(!input.mouse_down(MouseButton::Left));
     assert!(input.mouse_released(MouseButton::Left));
   }
@@ -544,7 +554,7 @@ mod tests {
     frame(&mut s, &mut input, 3, true);
     assert!(input.mouse_down(MouseButton::Left));
     assert_eq!(input.mouse_position(), (30.0, 10.0));
-    s.before_frame(5, &mut input);
+    start(&mut s, &mut input, 5);
     assert!(!input.mouse_down(MouseButton::Left));
   }
 
@@ -553,7 +563,7 @@ mod tests {
     let mut s = script("1:Mouse@7x9 2:RightClick");
     let mut input = Input::new();
     frame(&mut s, &mut input, 1, true);
-    s.before_frame(2, &mut input);
+    start(&mut s, &mut input, 2);
     assert!(input.mouse_pressed(MouseButton::Right));
     assert_eq!(input.mouse_position(), (7.0, 9.0));
   }

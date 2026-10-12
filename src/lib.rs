@@ -71,19 +71,16 @@ pub mod prelude {
   // ECS: the kernel, Transform, the engine's components and glam's math types
   pub use crate::core::ecs::*;
 
-  // Core game types
-  // MIGRATION: Task 13 (WindowRequest moves to core::window; TimeControl and TimeInfo are gone)
-  // pub use crate::core::game::{TimeControl, TimeInfo, WindowRequest};
-
   // Scene management
   pub use crate::core::scene::{
     ConsoleScope, Scene, SceneAction, SceneCleanup, SceneContext, SceneManager, SlideDirection,
     Transition, downcast_return,
   };
 
-  // Engine builder
-  // MIGRATION: Task 13
-  // pub use crate::core::engine::{EngineBuilder, WindowMode};
+  // Engine builder, clocks and phases
+  pub use crate::core::engine::{EngineBuilder, WindowMode};
+  pub use crate::core::schedule::{FixedSet, Phase, PostUpdateSet, UpdateSet};
+  pub use crate::core::time::Time;
 
   // Engine messages
   pub use crate::core::messages::{

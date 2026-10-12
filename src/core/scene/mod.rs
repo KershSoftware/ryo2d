@@ -35,6 +35,7 @@ use crate::core::ui::UiContext;
 
 pub use context::{ConsoleScope, SceneContext};
 pub use manager::SceneManager;
+#[cfg(test)]
 pub(crate) use manager::SceneSlot;
 
 // ============================================================================
@@ -83,7 +84,7 @@ impl SceneCleanup {
   pub const CAMERA: Self = Self(1 << 1);
   /// Clear all post-processing effects.
   pub const EFFECTS: Self = Self(1 << 2);
-  /// Reset ambient light, atmosphere and volumetric settings to defaults.
+  /// Reset ambient light and atmosphere to defaults.
   pub const LIGHTING: Self = Self(1 << 3);
   /// Reset the game clock's speed, pause and hitstop.
   pub const TIME: Self = Self(1 << 4);

@@ -32,8 +32,7 @@
 
 mod context;
 mod draw_list;
-// MIGRATION: Task 13
-// mod entities;
+mod entities;
 mod frame;
 mod pass;
 mod passes;
@@ -44,8 +43,7 @@ pub use context::RenderContext;
 pub(crate) use draw_list::{
   DrawKind, DrawList, DrawPayload, PipelineKind, SpriteShading, TextureRef, WorldRun, plan_runs,
 };
-// MIGRATION: Task 13
-// pub(crate) use entities::{DrawOrder, EntityDrawer, EntityFrame};
+pub(crate) use entities::EntityDrawer;
 pub use frame::FrameInfo;
 pub(crate) use frame::{FrameImage, FrameScene, LightingFrame, TRANSITION_VISIBLE};
 pub use pass::RenderPass;

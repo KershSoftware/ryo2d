@@ -1041,13 +1041,6 @@ impl Input {
       _ => {}
     }
   }
-
-  /// Try to set the active gamepad if none is currently active.
-  pub(crate) fn try_set_active_gamepad(&mut self, id: gilrs::GamepadId, name: String) {
-    if !self.gamepad_connected {
-      self.handle_gamepad_connected(id, name);
-    }
-  }
 }
 
 #[cfg(test)]

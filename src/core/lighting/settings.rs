@@ -2,16 +2,15 @@
 
 use crate::core::ecs::Resource;
 
-use super::{AmbientLight, Atmosphere, VolumetricSettings};
+use super::{AmbientLight, Atmosphere};
 
-/// The scene-controlled lighting state: ambient light, atmosphere and
-/// volumetric settings. The engine copies it into the lighting renderer
-/// before each lit frame.
+/// The scene-controlled lighting state: ambient light and atmosphere. The
+/// engine copies it into the lighting renderer before each lit frame.
+/// Volumetric lighting is per light (`Light2D::set_volumetric`).
 #[derive(Resource, Debug, Clone, Default)]
 pub struct LightingSettings {
   ambient: AmbientLight,
   atmosphere: Atmosphere,
-  volumetric: VolumetricSettings,
 }
 
 impl LightingSettings {
@@ -30,14 +29,6 @@ impl LightingSettings {
   pub fn set_atmosphere(&mut self, atmosphere: Atmosphere) {
     self.atmosphere = atmosphere;
   }
-
-  pub fn volumetric(&self) -> &VolumetricSettings {
-    &self.volumetric
-  }
-
-  pub fn set_volumetric(&mut self, volumetric: VolumetricSettings) {
-    self.volumetric = volumetric;
-  }
 }
 
 #[cfg(test)]
@@ -52,7 +43,6 @@ mod tests {
     settings.set_ambient(ambient);
     assert_eq!(settings.ambient(), &ambient);
     settings.set_atmosphere(Atmosphere::default());
-    settings.set_volumetric(VolumetricSettings::default());
-    assert_eq!(settings.volumetric(), &VolumetricSettings::default());
+    assert_eq!(settings.atmosphere(), &Atmosphere::default());
   }
 }

@@ -9,15 +9,20 @@
 //!
 //! Everything an entity emits (its shadows first, then the sprite or its
 //! tiles) is a [`DrawKind::Entity`] item at the entity's `z_order`, submitted
-//! in render cache order, so the shadow draws under its entity and YSort
-//! orders entities within their layer. Composite tiles draw at
-//! their own `z_order`; on equal z they follow the entities.
+//! in draw order, so the shadow draws under its entity and YSort orders
+//! entities within their layer. Composite tiles draw at their own `z_order`;
+//! on equal z they follow the entities.
+//!
+//! Positions come from `GlobalTransform`, interpolated by the frame's alpha
+//! for entities with `PreviousGlobalTransform`. A single sprite is placed by
+//! its `Renderable::anchor`; tiled runs and composite parts are laid out from
+//! the entity's position.
 
 use super::{DrawKind, DrawList, SpriteShading, TextureRef};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{
-  Entity, Inactive, Material, PreviousTransform, RenderStyle, Renderable, ShaderHandle,
-  ShaderParams, SpriteEffect, SpriteShader, Transform, World, WorldTransform, YSort,
+  Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable,
+  ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, World, YSort, render_global,
 };
 use crate::core::graphics::sprite_gpu::effective_shader;
 use crate::core::graphics::{Camera, CompositeTile, Sprite, SpriteGpuRenderer, SpriteInstance};
@@ -71,16 +76,12 @@ impl DrawOrder {
   }
 }
 
-/// What [`EntityDrawer::collect`] reads from the engine.
-pub(crate) struct EntityFrame<'a> {
-  pub(crate) world: &'a World,
-  pub(crate) camera: &'a Camera,
-  /// The render cache: entities in draw order
-  pub(crate) cache: &'a [(Entity, DrawOrder)],
+/// What one entity is drawn from.
+struct EntityFrame<'a> {
+  world: &'a World,
+  camera: &'a Camera,
   /// Render interpolation factor
-  pub(crate) alpha: f32,
-  /// Game resolution, to skip sprites entirely off screen
-  pub(crate) size: (u32, u32),
+  alpha: f32,
 }
 
 /// Turns the world's renderable entities into draw list sprites, keeping the
@@ -92,29 +93,66 @@ pub(crate) struct EntityDrawer {
 }
 
 impl EntityDrawer {
-  /// Push the frame's entities onto `list`.
+  /// Push the frame's entities onto `list`, returning how many visible
+  /// renderables there were. `alpha` is the render interpolation factor and
+  /// `size` the game resolution (sprites entirely off it are skipped).
+  #[allow(clippy::too_many_arguments)]
   pub(crate) fn collect(
     &mut self,
-    frame: &EntityFrame<'_>,
+    world: &mut World,
+    camera: &Camera,
+    alpha: f32,
+    size: (u32, u32),
     gpu: &mut SpriteGpuRenderer,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     list: &mut DrawList,
-  ) {
+  ) -> usize {
+    // The draw list sorts by each entity's own z; this order (y-sorted after
+    // plain within a layer) becomes the submission sequence
+    let mut items: Vec<(Entity, DrawOrder)> = world
+      .query::<(Entity, &Renderable, &GlobalTransform, Option<&YSort>)>()
+      .iter(world)
+      .filter(|(_, renderable, _, _)| renderable.visible)
+      .map(|(entity, renderable, global, y_sort)| {
+        let order = match y_sort {
+          Some(y_sort) => DrawOrder::y_sorted(
+            renderable.z_order,
+            y_sort.calculate_sort_y(global.translation().y, renderable.sprite.height() as f32),
+          ),
+          None => DrawOrder::plain(renderable.z_order),
+        };
+        (entity, order)
+      })
+      .collect();
+    // Stable, so plain sprites keep their order
+    items.sort_by(|(_, a), (_, b)| a.cmp(b));
+    let composites: Vec<Entity> = world
+      .query::<(Entity, &GlobalTransform, &CompositeTile)>()
+      .iter(world)
+      .map(|(entity, _, _)| entity)
+      .collect();
+
+    let frame = EntityFrame {
+      world,
+      camera,
+      alpha,
+    };
     let mut out = Emitter {
       gpu,
       device,
       queue,
       list,
       ellipse: &mut self.ellipse,
-      size: frame.size,
+      size,
     };
-    // The draw list sorts by each entity's own z; the cache's order (y-sorted
-    // after plain within a layer) becomes the submission sequence
-    for &(entity, _) in frame.cache {
-      collect_entity(frame, entity, &mut out);
+    for &(entity, _) in &items {
+      collect_entity(&frame, entity, &mut out);
     }
-    collect_composites(frame, &mut out);
+    for entity in composites {
+      collect_composite(&frame, entity, &mut out);
+    }
+    items.len()
   }
 }
 
@@ -414,78 +452,26 @@ fn tile_start(direction: TileDirection, tile_count: u32, tile_size: f32) -> (f32
 fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>) {
   let world = frame.world;
   let camera = frame.camera;
-  if world.has::<Inactive>(entity) {
-    return;
-  }
-  let Some(renderable) = world.get::<Renderable>(entity) else {
+  let (Some(renderable), Some(global)) = (
+    world.get::<Renderable>(entity),
+    world.get::<GlobalTransform>(entity),
+  ) else {
     return;
   };
-  if !renderable.visible {
-    return;
-  }
   let z = renderable.z_order;
   let material = world.get::<Material>(entity);
 
-  // WorldTransform for hierarchical entities, else the local Transform
-  let (
-    base_x,
-    base_y,
-    base_rotation,
-    base_scale_x,
-    base_scale_y,
-    pivot_x,
-    pivot_y,
-    offset_x,
-    offset_y,
-  ) = if let Some(wt) = world.get::<WorldTransform>(entity) {
-    (
-      wt.x,
-      wt.y,
-      wt.rotation,
-      wt.scale_x,
-      wt.scale_y,
-      wt.pivot_x,
-      wt.pivot_y,
-      wt.offset_x,
-      wt.offset_y,
-    )
-  } else if let Some(t) = world.get::<Transform>(entity) {
-    (
-      t.x, t.y, t.rotation, t.scale_x, t.scale_y, t.pivot_x, t.pivot_y, t.offset_x, t.offset_y,
-    )
-  } else {
-    return;
-  };
-
-  let interpolated = if renderable.interpolate {
-    world
-      .get::<PreviousTransform>(entity)
-      .filter(|prev| !prev.skip)
-  } else {
-    None
-  };
-  let (x, y, rotation, scale_x, scale_y) = match interpolated {
-    Some(prev) => {
-      let target = Transform {
-        x: base_x,
-        y: base_y,
-        z: 0.0,
-        rotation: base_rotation,
-        scale_x: base_scale_x,
-        scale_y: base_scale_y,
-        pivot_x: 0.0,
-        pivot_y: 0.0,
-        offset_x: 0.0,
-        offset_y: 0.0,
-      };
-      prev.lerp(&target, frame.alpha)
-    }
-    None => (base_x, base_y, base_rotation, base_scale_x, base_scale_y),
-  };
-
-  // The offset is a pixel-level adjustment after the anchor
-  let x = x + offset_x;
-  let y = y + offset_y;
+  // Between the last two fixed steps for interpolated entities
+  let drawn = render_global(
+    global,
+    world.get::<PreviousGlobalTransform>(entity),
+    frame.alpha,
+  );
+  let position = drawn.translation();
+  let scale = drawn.scale();
+  let (x, y, rotation, scale_x, scale_y) =
+    (position.x, position.y, drawn.rotation(), scale.x, scale.y);
+  let (pivot_x, pivot_y) = renderable.anchor.to_pivot();
 
   let (scale_x, scale_y) = if let Some(y_sort) = world.get::<YSort>(entity) {
     let (depth_x, depth_y) = y_sort.calculate_depth_scale(y);
@@ -596,7 +582,7 @@ fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>
       }
 
       // A Material component wins over the inline shader
-      let shader = effective_shader(material.as_deref(), renderable.shader.as_ref());
+      let shader = effective_shader(material, renderable.shader.as_ref());
       out.draw(
         z,
         &mut source,
@@ -679,59 +665,59 @@ fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>
   }
 }
 
-/// The multi-part tiles: static parts once, tiled parts repeated, each part
-/// at the composite's `z_order`.
-fn collect_composites(frame: &EntityFrame<'_>, out: &mut Emitter<'_>) {
+/// A multi-part tile: static parts once, tiled parts repeated, each part at
+/// the composite's `z_order`, laid out from the entity's position.
+fn collect_composite(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>) {
   let world = frame.world;
   let camera = frame.camera;
-  for entity in world.entities_with_two::<Transform, CompositeTile>() {
-    let Some(transform) = world.get::<Transform>(entity) else {
-      continue;
+  let (Some(global), Some(composite)) = (
+    world.get::<GlobalTransform>(entity),
+    world.get::<CompositeTile>(entity),
+  ) else {
+    return;
+  };
+  if !composite.visible {
+    return;
+  }
+
+  let z = composite.z_order;
+  let origin = global.translation();
+  let scale = global.scale();
+  let final_scale_x = scale.x * camera.zoom;
+  let final_scale_y = scale.y * camera.zoom;
+
+  for part in &composite.parts {
+    let mut source = Source::sprite(&part.sprite);
+    let placement = |world_x: f32, world_y: f32| {
+      let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
+      Placement::at(screen_x, screen_y, final_scale_x, final_scale_y)
+        .flipped(part.flip_x, part.flip_y)
     };
-    let Some(composite) = world.get::<CompositeTile>(entity) else {
-      continue;
-    };
-    if !composite.visible {
-      continue;
-    }
 
-    let z = composite.z_order;
-    let final_scale_x = transform.scale_x * camera.zoom;
-    let final_scale_y = transform.scale_y * camera.zoom;
-
-    for part in &composite.parts {
-      let mut source = Source::sprite(&part.sprite);
-      let placement = |world_x: f32, world_y: f32| {
-        let (screen_x, screen_y) = camera.world_to_screen(world_x, world_y);
-        Placement::at(screen_x, screen_y, final_scale_x, final_scale_y)
-          .flipped(part.flip_x, part.flip_y)
-      };
-
-      match &part.tiling {
-        None => {
-          let at = placement(transform.x + part.offset_x, transform.y + part.offset_y);
-          out.draw(z, &mut source, at, Shading::PLAIN);
+    match &part.tiling {
+      None => {
+        let at = placement(origin.x + part.offset_x, origin.y + part.offset_y);
+        out.draw(z, &mut source, at, Shading::PLAIN);
+      }
+      Some((direction, target_size)) => {
+        let tile_size = if direction.is_horizontal() {
+          source.width as f32
+        } else {
+          source.height as f32
+        };
+        if tile_size <= 0.0 || *target_size <= 0.0 {
+          continue;
         }
-        Some((direction, target_size)) => {
-          let tile_size = if direction.is_horizontal() {
-            source.width as f32
-          } else {
-            source.height as f32
-          };
-          if tile_size <= 0.0 || *target_size <= 0.0 {
-            continue;
-          }
 
-          let tile_count = (target_size / tile_size).ceil() as u32;
-          let (offset_dx, offset_dy) = direction.offset(tile_size);
-          let (start_x, start_y) = tile_start(*direction, tile_count, tile_size);
-          for i in 0..tile_count {
-            let at = placement(
-              transform.x + part.offset_x + start_x + offset_dx * i as f32,
-              transform.y + part.offset_y + start_y + offset_dy * i as f32,
-            );
-            out.draw(z, &mut source, at, Shading::PLAIN);
-          }
+        let tile_count = (target_size / tile_size).ceil() as u32;
+        let (offset_dx, offset_dy) = direction.offset(tile_size);
+        let (start_x, start_y) = tile_start(*direction, tile_count, tile_size);
+        for i in 0..tile_count {
+          let at = placement(
+            origin.x + part.offset_x + start_x + offset_dx * i as f32,
+            origin.y + part.offset_y + start_y + offset_dy * i as f32,
+          );
+          out.draw(z, &mut source, at, Shading::PLAIN);
         }
       }
     }

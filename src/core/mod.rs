@@ -68,8 +68,5 @@ pub mod testing;
 pub mod time;
 
 // Engine orchestration
-// MIGRATION: Task 13
-// pub mod engine;
-// MIGRATION: Task 13
-// pub mod game;
+pub mod engine;
 pub mod scene;

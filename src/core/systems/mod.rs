@@ -6,8 +6,7 @@ mod physics;
 // MIGRATION: Task 16
 // mod skeleton;
 mod squash_stretch;
-// MIGRATION: Task 13
-// mod trail;
+mod trail;
 mod tween;
 
 pub use animation::animate_sprites;
@@ -17,6 +16,7 @@ pub use physics::{
   step_physics, sync_from_physics, sync_to_physics, unregister_removed_bodies,
 };
 pub use squash_stretch::update_squash_stretch;
+pub use trail::record_trail_points;
 pub use tween::{update_property_tweens, update_tween_sequences, update_tweens};
 
 use crate::core::ecs::IntoScheduleConfigs;
