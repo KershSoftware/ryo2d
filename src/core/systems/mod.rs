@@ -12,7 +12,8 @@ pub use animation::animate_sprites;
 pub use knockback::update_knockback;
 pub use physics::{
   emit_collision_messages, physics_enabled, register_new_bodies, register_physics_systems,
-  step_physics, sync_from_physics, sync_to_physics, unregister_removed_bodies,
+  register_restored_bodies, step_physics, sync_from_physics, sync_to_physics,
+  unregister_removed_bodies,
 };
 pub use skeleton::update_skeletons;
 pub use squash_stretch::update_squash_stretch;

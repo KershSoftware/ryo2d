@@ -7,8 +7,9 @@
 //! into `CollisionStarted`/`CollisionStopped` messages.
 
 use crate::core::ecs::{
-  Added, Allow, Changed, DetectChangesMut, Disabled, Entity, IntoScheduleConfigs, MessageWriter,
-  Or, Query, RemovedComponents, Res, ResMut, Transform, Velocity, With,
+  Added, Allow, Changed, ChildOf, DetectChanges, DetectChangesMut, Disabled, Entity,
+  IntoScheduleConfigs, MessageWriter, Or, Query, Ref, RemovedComponents, Res, ResMut, Transform,
+  Velocity, With, Without,
 };
 use crate::core::graphics::GroupedCollider;
 use crate::core::messages::{CollisionStarted, CollisionStopped};
@@ -33,6 +34,8 @@ type BodyItem<'a> = (
 
 /// A body gaining its `RigidBody` or a collider
 type NewBody = Or<(Added<RigidBody>, Added<Collider>, Added<GroupedCollider>)>;
+/// Bodies are simulated only on root entities
+type RootBody = (With<RigidBody>, Without<ChildOf>);
 /// A body whose entity was just disabled
 type NewlyDisabled = (With<RigidBody>, Added<Disabled>, Allow<Disabled>);
 /// A body whose `Transform` changed
@@ -40,29 +43,68 @@ type Moved = (With<RigidBody>, Changed<Transform>);
 /// A body whose `Velocity` changed
 type Pushed = (With<RigidBody>, Changed<Velocity>);
 
-/// Register bodies that gained a `RigidBody` or a collider, and bodies whose
-/// entity was re-enabled. A `RigidBody` replaced or edited (a dynamic body
-/// made kinematic) rebuilds its body. Runs after `unregister_removed_bodies`,
-/// so a `RigidBody` removed and added again in one tick keeps a body.
+/// Register bodies that gained a `RigidBody` or a collider, and apply edits
+/// to a registered body's `RigidBody` (a dynamic body made kinematic) in
+/// place, keeping its contacts. Runs after `unregister_removed_bodies`, so a
+/// `RigidBody` removed and added again in one tick keeps a body.
 pub fn register_new_bodies(
   mut physics: ResMut<RapierPhysicsWorld>,
-  retyped: Query<BodyItem, Changed<RigidBody>>,
-  added: Query<BodyItem, NewBody>,
-  bodies: Query<BodyItem, With<RigidBody>>,
-  mut re_enabled: RemovedComponents<Disabled>,
+  edited: Query<BodyItem, (Changed<RigidBody>, Without<ChildOf>)>,
+  added: Query<BodyItem, (NewBody, Without<ChildOf>)>,
 ) {
-  for item in &retyped {
-    physics.unregister_entity(item.0);
-    register(&mut physics, item);
+  for item in &edited {
+    if physics.is_registered(item.0) {
+      physics.apply_body_settings(item.0, item.3);
+    } else {
+      register(&mut physics, item);
+    }
   }
   for item in &added {
     register(&mut physics, item);
   }
-  for entity in re_enabled.read() {
+}
+
+/// Register the bodies of entities that were re-enabled or detached from
+/// their parent.
+pub fn register_restored_bodies(
+  mut physics: ResMut<RapierPhysicsWorld>,
+  bodies: Query<BodyItem, RootBody>,
+  mut re_enabled: RemovedComponents<Disabled>,
+  mut detached: RemovedComponents<ChildOf>,
+) {
+  for entity in re_enabled.read().chain(detached.read()) {
     if let Ok(item) = bodies.get(entity) {
       register(&mut physics, item);
     }
   }
+}
+
+/// A `RigidBody` on a child entity is not simulated (a body moves its own
+/// `Transform`, which for a child is relative to the parent): take a body
+/// that gained a parent out of the simulation, and log each such body once.
+pub fn drop_parented_bodies(
+  mut physics: ResMut<RapierPhysicsWorld>,
+  newly_parented: Query<Entity, (With<RigidBody>, Added<ChildOf>)>,
+  bodies_on_children: Query<(Entity, Ref<ChildOf>), Added<RigidBody>>,
+) {
+  for entity in &newly_parented {
+    physics.unregister_entity(entity);
+    warn_parented(entity);
+  }
+  // A child that gained a `RigidBody` (one spawned with its parent was
+  // logged above)
+  for (entity, child_of) in &bodies_on_children {
+    if !child_of.is_added() {
+      warn_parented(entity);
+    }
+  }
+}
+
+fn warn_parented(entity: Entity) {
+  crate::engine_warn!(
+    module: "Physics",
+    "{entity}: a RigidBody on a child entity is not simulated; give bodies to root entities"
+  );
 }
 
 fn register(
@@ -180,6 +222,8 @@ pub fn register_physics_systems(schedules: &mut EngineSchedules) {
     Phase::FixedUpdate,
     (
       unregister_removed_bodies,
+      drop_parented_bodies,
+      register_restored_bodies,
       register_new_bodies,
       sync_to_physics,
       step_physics,
@@ -301,6 +345,40 @@ mod tests {
       world.entity_mut(e).insert(RigidBody::new());
     });
     assert!(fell > 1.0, "the body stopped: fell {fell}");
+  }
+
+  #[test]
+  fn a_body_on_a_child_is_not_simulated_until_detached() {
+    use crate::core::ecs::ChildOf;
+    let (mut world, mut s) = world(60);
+    let parent = world.spawn(Transform::from_xy(0.0, 0.0)).id();
+    let child = world
+      .spawn((
+        Transform::from_xy(5.0, 0.0),
+        RigidBody::new(),
+        Collider::box_collider(4.0, 4.0),
+        ChildOf(parent),
+      ))
+      .id();
+    s.run(Phase::FixedUpdate, &mut world);
+    assert!(!world.resource::<RapierPhysicsWorld>().is_registered(child));
+    // Parenting a registered body takes it out of the simulation
+    let body = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::new(),
+        Collider::box_collider(4.0, 4.0),
+      ))
+      .id();
+    s.run(Phase::FixedUpdate, &mut world);
+    assert!(world.resource::<RapierPhysicsWorld>().is_registered(body));
+    world.entity_mut(body).insert(ChildOf(parent));
+    s.run(Phase::FixedUpdate, &mut world);
+    assert!(!world.resource::<RapierPhysicsWorld>().is_registered(body));
+    // Detached, it is a root body again
+    world.entity_mut(child).remove::<ChildOf>();
+    s.run(Phase::FixedUpdate, &mut world);
+    assert!(world.resource::<RapierPhysicsWorld>().is_registered(child));
   }
 
   #[test]

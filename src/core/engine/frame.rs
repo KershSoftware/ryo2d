@@ -534,6 +534,59 @@ mod tests {
   }
 
   #[test]
+  fn a_body_spawned_on_a_floor_starts_one_collision_through_the_frame_loop() {
+    use crate::core::messages::CollisionStarted;
+    use crate::core::physics::{Collider, RigidBody};
+
+    #[derive(Resource, Default)]
+    struct Starts(u32);
+    struct Floor {
+      spawned: bool,
+    }
+    impl Scene for Floor {
+      fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+        if !self.spawned {
+          self.spawned = true;
+          ctx.world.spawn((
+            Transform::from_xy(0.0, 100.0),
+            RigidBody::kinematic(),
+            Collider::box_collider(200.0, 20.0),
+          ));
+          ctx.world.spawn((
+            Transform::from_xy(0.0, 86.0),
+            RigidBody::new(),
+            Collider::box_collider(10.0, 10.0),
+          ));
+        }
+        let seen = ctx.messages::<CollisionStarted>().len() as u32;
+        ctx.world.resource_mut::<Starts>().0 += seen;
+        SceneAction::Continue
+      }
+    }
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(16, 16)
+      .fixed_hz(60)
+      .insert_resource(Starts::default())
+      // A game that writes the body every step (same value) must not rebuild it
+      .add_systems(Phase::FixedUpdate, |mut bodies: Query<&mut RigidBody>| {
+        for mut body in &mut bodies {
+          body.gravity_scale = body.gravity_scale;
+        }
+      })
+      .start_scene(Floor { spawned: false })
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 16, 16), 1.0);
+    for _ in 0..30 {
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    assert_eq!(e.world().resource::<Starts>().0, 1);
+  }
+
+  #[test]
   fn a_message_from_a_fixed_step_survives_frames_without_one() {
     use crate::core::ecs::{IntoScheduleConfigs, Message, MessageReader, MessageWriter};
     #[derive(Message, Clone)]

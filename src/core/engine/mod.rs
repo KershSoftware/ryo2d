@@ -44,7 +44,7 @@ use crate::core::scene::{PhysicsPaused, Scene, SceneManager};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet, UpdateSet};
 use crate::core::shaders::EffectsManager;
 use crate::core::systems::{
-  record_trail_points, register_juice_systems, register_new_bodies, register_physics_systems,
+  record_trail_points, register_juice_systems, register_physics_systems, register_restored_bodies,
   unregister_removed_bodies,
 };
 use crate::core::texture::TextureManager;
@@ -315,12 +315,13 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   );
   // Removal events last two tracker clears, and the fixed steps may not run
   // that often: physics bookkeeping for despawned, disabled and re-enabled
-  // bodies runs every frame too, before the trackers are cleared
+  // bodies runs every frame too, before the trackers are cleared. Added and
+  // edited bodies are tick-based and wait for the next fixed step.
   schedules.add_systems(
     Phase::Last,
     (
       unregister_removed_bodies,
-      register_new_bodies,
+      register_restored_bodies,
       clear_trackers_system,
     )
       .chain(),

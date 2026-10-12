@@ -236,6 +236,37 @@ impl RapierPhysicsWorld {
     self.insert_mappings(entity, body_handle, collider_handle);
   }
 
+  /// Bring a registered body's settings in line with its `RigidBody`: body
+  /// type, gravity scale, drag and CCD. Only values that differ are written,
+  /// so an unchanged body keeps its contacts and stays asleep.
+  pub fn apply_body_settings(&mut self, entity: Entity, rigid_body: &RigidBody) {
+    let Some(handle) = self.entity_to_body.get(&entity).copied() else {
+      return;
+    };
+    let Some(body) = self.rigid_body_set.get_mut(handle) else {
+      return;
+    };
+    let body_type = if rigid_body.is_kinematic {
+      RigidBodyType::KinematicPositionBased
+    } else {
+      RigidBodyType::Dynamic
+    };
+    if body.body_type() != body_type {
+      body.set_body_type(body_type, true);
+    }
+    if !rigid_body.is_kinematic {
+      if body.gravity_scale() != rigid_body.gravity_scale {
+        body.set_gravity_scale(rigid_body.gravity_scale, true);
+      }
+      if body.linear_damping() != rigid_body.drag {
+        body.set_linear_damping(rigid_body.drag);
+      }
+      if body.is_ccd_enabled() != rigid_body.ccd_enabled {
+        body.enable_ccd(rigid_body.ccd_enabled);
+      }
+    }
+  }
+
   /// A Rapier body at the entity's position. Rotation is locked: bodies do
   /// not rotate, and the engine does not sync rotation.
   fn build_body(
