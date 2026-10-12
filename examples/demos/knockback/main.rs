@@ -3,7 +3,7 @@
 //! This example demonstrates the knockback system for directional force effects:
 //! - Different decay rates (fast, normal, slow)
 //! - Accumulation behavior (blending vs replacing)
-//! - Physics bodies (knockback sets their Velocity) vs plain Transform entities
+//! - Physics bodies (knockback adds to their Velocity) vs plain Transform entities
 //! - Messages (KnockbackStarted, KnockbackFinished)
 //!
 //! Runs on the demo-kit shell; the force is a setting.
@@ -80,7 +80,7 @@ impl KnockbackDemoScene {
         .id();
       self.simple_entities.push(simple_entity);
 
-      // Bottom row: Physics entities. Knockback sets their Velocity and the
+      // Bottom row: Physics entities. Knockback adds to their Velocity and the
       // physics step moves the (weightless) body.
       let physics_sprite = Self::create_square(40, 255, 140, 100); // Orange
       let physics_entity = ctx
