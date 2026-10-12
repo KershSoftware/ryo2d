@@ -14,7 +14,7 @@
 
 struct Globals {
     view_proj: mat4x4<f32>,
-    time_resolution: vec4<f32>, // x=game time, y=width, z=height, w=real time
+    time_resolution: vec4<f32>, // x=game time, y=width, z=height, w=unused
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;

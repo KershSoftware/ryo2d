@@ -119,14 +119,8 @@ impl Engine {
         lighting.update_god_rays(&mut effects, &lights, camera_pos, camera.zoom);
       }
 
-      // Sprite effects animate on game time; custom shaders also get real time
-      gpu.set_viewport(
-        rend.queue(),
-        size.0 as f32,
-        size.1 as f32,
-        game_time,
-        real_time,
-      );
+      // Sprite effects and custom sprite shaders animate on game time
+      gpu.set_viewport(rend.queue(), size.0 as f32, size.1 as f32, game_time);
 
       self.draw_list.clear();
       self
