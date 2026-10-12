@@ -447,7 +447,8 @@ mod tests {
 
   #[test]
   fn a_falling_body_s_global_transform_follows_it() {
-    use crate::core::ecs::{GlobalTransform, IntoScheduleConfigs, propagate_transforms};
+    use crate::core::ecs::propagate::propagate_transforms;
+    use crate::core::ecs::{GlobalTransform, IntoScheduleConfigs};
     use crate::core::schedule::FixedSet;
     let (mut world, mut s) = world(60);
     s.add_systems(

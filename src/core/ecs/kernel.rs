@@ -9,8 +9,9 @@ pub use bevy_ecs::change_detection::{DetectChanges, DetectChangesMut, Mut, Ref};
 pub use bevy_ecs::component::{Component, Mutable};
 pub use bevy_ecs::entity::Entity;
 pub use bevy_ecs::entity_disabling::Disabled;
+pub use bevy_ecs::error::BevyError as SystemError;
 pub(crate) use bevy_ecs::error::panic as panic_on_error;
-pub use bevy_ecs::error::{BevyError as SystemError, ErrorContext, FallbackErrorHandler};
+pub(crate) use bevy_ecs::error::{ErrorContext, FallbackErrorHandler};
 pub use bevy_ecs::event::{EntityEvent, Event};
 pub use bevy_ecs::hierarchy::{ChildOf, Children};
 pub(crate) use bevy_ecs::lifecycle::HookContext;
@@ -23,11 +24,10 @@ pub(crate) use bevy_ecs::system::SystemIdMarker;
 // Resources live on hidden entities; `IsResource` marks them so world-wide
 // entity sweeps can leave them alone.
 pub use bevy_ecs::resource::{IsResource, Resource};
+pub(crate) use bevy_ecs::schedule::SingleThreadedExecutor;
 pub(crate) use bevy_ecs::schedule::graph::Direction;
 pub(crate) use bevy_ecs::schedule::{InternedSystemSet, NodeId};
-pub use bevy_ecs::schedule::{
-  IntoScheduleConfigs, Schedule, ScheduleLabel, SingleThreadedExecutor, SystemSet,
-};
+pub use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel, SystemSet};
 pub use bevy_ecs::system::{
   Commands, EntityCommands, IntoSystem, Query, Res, ResMut, ScheduleSystem, System,
 };

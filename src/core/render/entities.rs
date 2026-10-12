@@ -20,9 +20,10 @@
 
 use super::{DrawKind, DrawList, SpriteShading, TextureRef};
 use crate::core::asset::SpriteHandle;
+use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{
   GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable, ShaderHandle,
-  ShaderParams, SpriteEffect, SpriteShader, World, YSort, render_global,
+  ShaderParams, SpriteEffect, SpriteShader, World, YSort,
 };
 use crate::core::graphics::sprite_gpu::effective_shader;
 use crate::core::graphics::{Camera, CompositeTile, Sprite, SpriteGpuRenderer, SpriteInstance};

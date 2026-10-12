@@ -870,7 +870,8 @@ impl ParticleSystem {
 mod tests {
   use super::*;
   use crate::core::asset::SpriteHandle;
-  use crate::core::ecs::{Disabled, Messages, Transform, propagate_transforms};
+  use crate::core::ecs::propagate::propagate_transforms;
+  use crate::core::ecs::{Disabled, Messages, Transform};
   use crate::core::graphics::Sprite;
   use crate::core::physics::Collider;
   use crate::core::systems::test_util;

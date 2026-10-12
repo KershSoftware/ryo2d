@@ -28,9 +28,10 @@ use crate::core::console::{
   CommandRegistry, ConsoleCommandBuilder, ConsoleState, register_builtins,
 };
 use crate::core::cursor::CursorRequest;
+use crate::core::ecs::interpolate::snapshot_previous_transforms;
+use crate::core::ecs::propagate::propagate_transforms;
 use crate::core::ecs::{
   FallbackErrorHandler, IntoScheduleConfigs, Message, Resource, ScheduleSystem, World,
-  propagate_transforms, snapshot_previous_transforms,
 };
 use crate::core::error::{EngineError, EngineResult};
 use crate::core::graphics::{BatchCollector, Camera, Gpu, SpriteGpuRenderer, WgpuRenderer};

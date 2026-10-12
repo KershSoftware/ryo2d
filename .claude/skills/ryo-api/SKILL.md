@@ -41,9 +41,9 @@ Ryo2D's ECS (`ryo2d::ecs`, all in the prelude) is a curated set of kernel types.
 | `ChildOf`, `Children` | Hierarchy relationship (see below) |
 | `Message`, `Messages`, `MessageReader`, `MessageWriter`, `MessageCursor` | Buffered messages (see [Messages](#messages)) |
 | `Event`, `EntityEvent`, `On`, `Observer` | Observer events: `world.add_observer(\|e: On<T>\| ..)`, `world.trigger(T { .. })` |
-| `Schedule`, `ScheduleLabel`, `SystemSet`, `SingleThreadedExecutor` | Own schedules (tests, tools) |
+| `Schedule`, `ScheduleLabel`, `SystemSet` | Own schedules (tests, tools) |
 | `IntoScheduleConfigs`, `IntoSystem`, `System`, `ScheduleSystem` | `.chain()`, `.before()`, `.after()`, `.in_set()`, `.run_if()` on systems |
-| `SystemError`, `ErrorContext`, `FallbackErrorHandler` | Systems may return `Result<(), SystemError>`; the engine's handler panics in debug and logs in release |
+| `SystemError` | Systems may return `Result<(), SystemError>`; the engine's handler panics in debug and logs in release |
 | `Vec2`, `Vec3`, `Vec4`, `Mat4` | glam math types |
 
 Derives: `#[derive(Component)]`, `#[derive(Resource)]`, `#[derive(Message)]`, `#[derive(Event)]`, `#[derive(SystemSet)]`, `#[derive(ScheduleLabel)]`, `#[derive(Bundle)]`.
@@ -124,7 +124,7 @@ Despawning a parent despawns its descendants. Never make an entity its own ances
 
 Interpolation: add the `Interpolated` marker (covers descendants) to draw between the previous and current fixed step. The engine keeps `PreviousGlobalTransform { pub global: GlobalTransform, pub skip: bool }` on those entities. `GlobalTransform` is always the true state; only drawing blends.
 
-Engine systems exported for tests and tools: `propagate_transforms`, `snapshot_previous_transforms`, `render_global(global: &GlobalTransform, previous: Option<&PreviousGlobalTransform>, alpha: f32) -> GlobalTransform`.
+Engine systems for tests and tools, outside the prelude: `ryo2d::ecs::propagate::propagate_transforms`, `ryo2d::ecs::interpolate::snapshot_previous_transforms`, `ryo2d::ecs::interpolate::render_global(global: &GlobalTransform, previous: Option<&PreviousGlobalTransform>, alpha: f32) -> GlobalTransform`.
 
 ---
 

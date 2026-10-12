@@ -6,10 +6,11 @@ use std::time::Instant;
 use super::{Engine, PresentOutcome, SceneHost};
 use crate::core::config::DebugStats;
 use crate::core::config::debug::{OverlayFlags, overlay_lines};
+use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::{QueryState, SystemIdMarker};
 use crate::core::ecs::{
   DetectChangesMut, GlobalTransform, IsResource, Mut, Observer, PreviousGlobalTransform, Vec2,
-  World, render_global,
+  World,
 };
 use crate::core::graphics::{Camera, GpuRenderContext};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};

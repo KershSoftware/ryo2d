@@ -2,6 +2,7 @@
 //! hierarchy, and a whole headless frame drawing 10,000 sprites.
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use ryo2d::ecs::propagate::propagate_transforms;
 use ryo2d::prelude::*;
 use ryo2d::testing::HeadlessEngine;
 

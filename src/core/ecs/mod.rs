@@ -2,7 +2,9 @@
 //!
 //! Everything a game needs is exported here (and from the prelude):
 //! `World`, `Entity`, `Query`, `Commands`, the derives, `Transform` and
-//! `GlobalTransform`, and the engine's components.
+//! `GlobalTransform`, and the engine's components. The engine's own systems
+//! stay in their modules (`propagate::propagate_transforms`,
+//! `interpolate::render_global`, ...).
 
 pub mod interpolate;
 pub mod kernel;
@@ -25,13 +27,11 @@ mod y_sort;
 pub use glam::{Mat4, Vec2, Vec3, Vec4};
 
 pub use components::{RenderLayer, Velocity};
-pub use interpolate::{render_global, snapshot_previous_transforms};
 pub use kernel::*;
 pub use knockback::Knockback;
 pub use lerp::Lerp;
 pub use material::{Material, ParamValue, ShaderHandle, ShaderParams, SpriteShader};
 pub use pooling::{Pool, PoolConfig, PoolExhaustedPolicy, PoolStats};
-pub use propagate::propagate_transforms;
 pub use property_tween::PropertyTween;
 pub use renderable::{BlobShadow, ContactShadow, DropShadow, RenderStyle, Renderable};
 pub use sprite_effects::SpriteEffect;

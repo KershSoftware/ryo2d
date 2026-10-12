@@ -4,6 +4,7 @@
 //! writes `GlobalTransform`. Single sprites are placed by their anchor, which
 //! defaults to the centre.
 
+use ryo2d::ecs::propagate::propagate_transforms;
 use ryo2d::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
