@@ -59,12 +59,16 @@ impl ContactShadowsPage {
       name,
     );
 
-    ctx.world.spawn((
-      Transform::new(x, y).with_pivot(0.5, 1.0), // Pivot at bottom center
-      Renderable::sprite(sprite)
-        .with_z_order(5)
-        .with_contact_shadow(shadow),
-    ))
+    ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite)
+          .with_anchor(Anchor::BottomCenter) // Placed by the base, where the shadow sits
+          .with_z_order(5)
+          .with_contact_shadow(shadow),
+      ))
+      .id()
   }
 }
 
@@ -85,18 +89,19 @@ impl DemoPage for ContactShadowsPage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Bright lighting to show contact shadows clearly
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ui_affected_by_lighting(false);
-      lighting.set_ambient(AmbientLight::new(Color::WHITE, 0.95));
-    }
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(Color::WHITE, 0.95));
 
     // Ground plane
     let ground = ctx
       .assets
       .create_sprite(Sprite::solid_rect(1280, 300, 180, 170, 160, 255), "ground");
     ctx.world.spawn((
-      Transform::new(0.0, 420.0),
-      Renderable::sprite(ground).with_z_order(0),
+      Transform::from_xy(0.0, 420.0),
+      Renderable::sprite(ground)
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(0),
     ));
 
     // Sky
@@ -104,8 +109,10 @@ impl DemoPage for ContactShadowsPage {
       .assets
       .create_sprite(Sprite::solid_rect(1280, 420, 200, 220, 240, 255), "sky");
     ctx.world.spawn((
-      Transform::new(0.0, 0.0),
-      Renderable::sprite(sky).with_z_order(-1),
+      Transform::from_xy(0.0, 0.0),
+      Renderable::sprite(sky)
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(-1),
     ));
 
     let shadow = self.create_contact_shadow();

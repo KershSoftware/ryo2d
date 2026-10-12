@@ -108,8 +108,7 @@ impl ColoredShadowsPage {
       }
 
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = self.light_x;
-        transform.y = self.light_y;
+        transform.translation = Vec2::new(self.light_x, self.light_y);
       }
     }
 
@@ -117,8 +116,7 @@ impl ColoredShadowsPage {
     if let Some(visual) = self.light_visual
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(visual)
     {
-      transform.x = self.light_x;
-      transform.y = self.light_y;
+      transform.translation = Vec2::new(self.light_x, self.light_y);
     }
   }
 
@@ -136,11 +134,14 @@ impl ColoredShadowsPage {
       format!("colored_occluder_{}_{}", x as i32, y as i32),
     );
 
-    ctx.world.spawn((
-      Transform::new(x, y).with_pivot_center(),
-      Renderable::sprite(sprite).with_z_order(5),
-      LightOccluder2D::rect(width, height),
-    ))
+    ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite).with_z_order(5),
+        LightOccluder2D::rect(width, height),
+      ))
+      .id()
   }
 }
 
@@ -168,10 +169,9 @@ impl DemoPage for ColoredShadowsPage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ui_affected_by_lighting(false);
-      lighting.set_ambient(AmbientLight::new(Color::new(20, 20, 30, 255), 0.12));
-    }
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(Color::new(20, 20, 30, 255), 0.12));
 
     // Create floor
     let floor = ctx.assets.create_sprite(
@@ -179,7 +179,7 @@ impl DemoPage for ColoredShadowsPage {
       "colored_floor",
     );
     ctx.world.spawn((
-      Transform::new(640.0, 360.0).with_pivot_center(),
+      Transform::from_xy(640.0, 360.0),
       Renderable::sprite(floor).with_z_order(0),
     ));
 
@@ -200,20 +200,30 @@ impl DemoPage for ColoredShadowsPage {
     }
 
     // Create the light
-    self.light_entity = Some(ctx.world.spawn((
-      Transform::new(self.light_x, self.light_y),
-      self.create_light(),
-    )));
+    self.light_entity = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.light_x, self.light_y),
+          self.create_light(),
+        ))
+        .id(),
+    );
 
     // Light source visual
     let light_visual = ctx.assets.create_sprite(
       Sprite::solid_circle(18, 255, 255, 255, 255),
       "colored_light_source",
     );
-    self.light_visual = Some(ctx.world.spawn((
-      Transform::new(self.light_x, self.light_y).with_pivot_center(),
-      Renderable::sprite(light_visual).with_z_order(10),
-    )));
+    self.light_visual = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.light_x, self.light_y),
+          Renderable::sprite(light_visual).with_z_order(10),
+        ))
+        .id(),
+    );
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {

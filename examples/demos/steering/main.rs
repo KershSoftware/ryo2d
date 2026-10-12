@@ -16,7 +16,7 @@ const NEIGHBOR_RADIUS: f32 = 80.0;
 const PREDATOR_FEAR_RADIUS: f32 = 150.0;
 
 /// Boid component with velocity
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 struct Boid {
   velocity: Vec2,
   #[allow(dead_code)]
@@ -24,7 +24,7 @@ struct Boid {
 }
 
 /// Predator marker (follows mouse when active)
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 struct Predator;
 
 struct SteeringDemoScene {
@@ -91,15 +91,18 @@ impl SteeringDemoScene {
       .with_fade(true)
       .with_min_distance(1.0);
 
-    let entity = ctx.world.spawn((
-      Boid {
-        velocity,
-        color: (r, g, b),
-      },
-      Transform::new(x, y).with_pivot_center(),
-      Renderable::sprite(handle).with_z_order(10),
-      trail,
-    ));
+    let entity = ctx
+      .world
+      .spawn((
+        Boid {
+          velocity,
+          color: (r, g, b),
+        },
+        Transform::from_xy(x, y),
+        Renderable::sprite(handle).with_z_order(10),
+        trail,
+      ))
+      .id();
 
     self.boids.push(entity);
   }
@@ -122,18 +125,21 @@ impl SteeringDemoScene {
     let sprite = Sprite::solid_rect(20, 20, 255, 50, 50, 255);
     let handle = SpriteHandle::from_sprite(sprite, "predator");
 
-    let entity = ctx.world.spawn((
-      Predator,
-      Transform::new(x, y).with_pivot_center(),
-      Renderable::sprite(handle).with_z_order(20),
-    ));
+    let entity = ctx
+      .world
+      .spawn((
+        Predator,
+        Transform::from_xy(x, y),
+        Renderable::sprite(handle).with_z_order(20),
+      ))
+      .id();
 
     self.predator = Some(entity);
   }
 
   fn despawn_predator(&mut self, ctx: &mut SceneContext) {
     if let Some(entity) = self.predator.take() {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
   }
 
@@ -145,14 +151,14 @@ impl SteeringDemoScene {
       .filter_map(|&e| {
         let t = ctx.world.get::<Transform>(e)?;
         let b = ctx.world.get::<Boid>(e)?;
-        Some((e, Vec2::new(t.x, t.y), b.velocity))
+        Some((e, t.translation, b.velocity))
       })
       .collect();
 
     // Get predator position if active
     let predator_pos = self.predator.and_then(|e| {
       let t = ctx.world.get::<Transform>(e)?;
-      Some(Vec2::new(t.x, t.y))
+      Some(t.translation)
     });
 
     // Update each boid
@@ -206,36 +212,36 @@ impl SteeringDemoScene {
       };
 
       // Update position
+      let mut wrapped = false;
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x += new_vel.x * dt;
-        transform.y += new_vel.y * dt;
+        transform.translation += new_vel * dt;
 
-        // Wrap around edges - clear trail when wrapping to prevent line across screen
-        let mut wrapped = false;
-        if transform.x < 0.0 {
-          transform.x += self.screen_w;
+        // Wrap around edges
+        let p = &mut transform.translation;
+        if p.x < 0.0 {
+          p.x += self.screen_w;
           wrapped = true;
         }
-        if transform.x > self.screen_w {
-          transform.x -= self.screen_w;
+        if p.x > self.screen_w {
+          p.x -= self.screen_w;
           wrapped = true;
         }
-        if transform.y < 0.0 {
-          transform.y += self.screen_h;
+        if p.y < 0.0 {
+          p.y += self.screen_h;
           wrapped = true;
         }
-        if transform.y > self.screen_h {
-          transform.y -= self.screen_h;
+        if p.y > self.screen_h {
+          p.y -= self.screen_h;
           wrapped = true;
-        }
-
-        // Clear trail when boid wraps to prevent line shooting across screen
-        if wrapped && let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
-          trail.clear();
         }
 
         // Update rotation to face velocity
         transform.rotation = new_vel.y.atan2(new_vel.x);
+      }
+
+      // Clear trail when boid wraps to prevent line shooting across screen
+      if wrapped && let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
+        trail.clear();
       }
     }
   }
@@ -305,8 +311,7 @@ impl DemoPage for SteeringDemoScene {
       } else if let Some(pred) = self.predator {
         // Move predator to mouse
         if let Some(mut t) = ctx.world.get_mut::<Transform>(pred) {
-          t.x = wx;
-          t.y = wy;
+          t.translation = Vec2::new(wx, wy);
         }
       }
     } else {
@@ -318,7 +323,7 @@ impl DemoPage for SteeringDemoScene {
     self.update_trails(ctx, dt);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     let text_accent = Color::rgb(130, 180, 255);
     let text_warn = Color::rgb(255, 150, 100);

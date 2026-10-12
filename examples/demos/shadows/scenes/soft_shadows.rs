@@ -54,8 +54,7 @@ impl SoftShadowsPage {
 
       // Update position
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = self.light_x;
-        transform.y = self.light_y;
+        transform.translation = Vec2::new(self.light_x, self.light_y);
       }
     }
 
@@ -63,8 +62,7 @@ impl SoftShadowsPage {
     if let Some(visual) = self.light_visual
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(visual)
     {
-      transform.x = self.light_x;
-      transform.y = self.light_y;
+      transform.translation = Vec2::new(self.light_x, self.light_y);
     }
   }
 
@@ -83,11 +81,14 @@ impl SoftShadowsPage {
     );
 
     // Spawn entity with both visual and occluder
-    ctx.world.spawn((
-      Transform::new(x, y).with_pivot_center(),
-      Renderable::sprite(sprite).with_z_order(5),
-      LightOccluder2D::rect(width, height),
-    ))
+    ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite).with_z_order(5),
+        LightOccluder2D::rect(width, height),
+      ))
+      .id()
   }
 }
 
@@ -111,18 +112,17 @@ impl DemoPage for SoftShadowsPage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ui_affected_by_lighting(false);
-      // Dark ambient for dramatic shadows
-      lighting.set_ambient(AmbientLight::new(Color::new(20, 18, 30, 255), 0.1));
-    }
+    // Dark ambient for dramatic shadows
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(Color::new(20, 18, 30, 255), 0.1));
 
     // Create floor
     let floor = ctx
       .assets
       .create_sprite(Sprite::solid_rect(1280, 720, 35, 30, 40, 255), "soft_floor");
     ctx.world.spawn((
-      Transform::new(640.0, 360.0).with_pivot_center(),
+      Transform::from_xy(640.0, 360.0),
       Renderable::sprite(floor).with_z_order(0),
     ));
 
@@ -147,20 +147,30 @@ impl DemoPage for SoftShadowsPage {
     }
 
     // Create the player light
-    self.light_entity = Some(ctx.world.spawn((
-      Transform::new(self.light_x, self.light_y),
-      self.create_light(),
-    )));
+    self.light_entity = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.light_x, self.light_y),
+          self.create_light(),
+        ))
+        .id(),
+    );
 
     // Create a visual for the light source
     let light_visual = ctx.assets.create_sprite(
       Sprite::solid_circle(20, 255, 240, 200, 255),
       "soft_light_source",
     );
-    self.light_visual = Some(ctx.world.spawn((
-      Transform::new(self.light_x, self.light_y).with_pivot_center(),
-      Renderable::sprite(light_visual).with_z_order(10),
-    )));
+    self.light_visual = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.light_x, self.light_y),
+          Renderable::sprite(light_visual).with_z_order(10),
+        ))
+        .id(),
+    );
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {

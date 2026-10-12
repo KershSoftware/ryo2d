@@ -42,10 +42,15 @@ impl AmbientOcclusionPage {
       name,
     );
 
-    ctx.world.spawn((
-      Transform::new(x, y),
-      Renderable::sprite(sprite).with_z_order(5),
-    ))
+    ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite)
+          .with_anchor(Anchor::TopLeft)
+          .with_z_order(5),
+      ))
+      .id()
   }
 }
 
@@ -67,10 +72,9 @@ impl DemoPage for AmbientOcclusionPage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Bright ambient lighting for this demo
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ui_affected_by_lighting(false);
-      lighting.set_ambient(AmbientLight::new(Color::WHITE, 0.95));
-    }
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(Color::WHITE, 0.95));
 
     // Create background
     let bg = ctx.assets.create_sprite(
@@ -78,8 +82,10 @@ impl DemoPage for AmbientOcclusionPage {
       "background",
     );
     ctx.world.spawn((
-      Transform::new(0.0, 0.0),
-      Renderable::sprite(bg).with_z_order(-1),
+      Transform::from_xy(0.0, 0.0),
+      Renderable::sprite(bg)
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(-1),
     ));
 
     // Create a variety of boxes arranged to show AO in corners
@@ -176,10 +182,10 @@ impl DemoPage for AmbientOcclusionPage {
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
     if self.ao_enabled {
       ctx
-        .effects
+        .effects()
         .set_ambient_occlusion_custom(self.ao_intensity, self.ao_radius, self.ao_bias);
     } else {
-      ctx.effects.disable_ambient_occlusion();
+      ctx.effects().disable_ambient_occlusion();
     }
   }
 }

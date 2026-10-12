@@ -67,8 +67,7 @@ impl HardShadowsPage {
 
       // Update position
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = self.light_x;
-        transform.y = self.light_y;
+        transform.translation = Vec2::new(self.light_x, self.light_y);
       }
     }
 
@@ -76,8 +75,7 @@ impl HardShadowsPage {
     if let Some(visual) = self.light_visual
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(visual)
     {
-      transform.x = self.light_x;
-      transform.y = self.light_y;
+      transform.translation = Vec2::new(self.light_x, self.light_y);
     }
   }
 
@@ -96,11 +94,14 @@ impl HardShadowsPage {
     );
 
     // Spawn entity with both visual and occluder
-    ctx.world.spawn((
-      Transform::new(x, y).with_pivot_center(),
-      Renderable::sprite(sprite).with_z_order(5),
-      LightOccluder2D::rect(width, height),
-    ))
+    ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite).with_z_order(5),
+        LightOccluder2D::rect(width, height),
+      ))
+      .id()
   }
 
   fn remove_nearest_occluder(&mut self, ctx: &mut SceneContext, x: f32, y: f32) {
@@ -114,8 +115,8 @@ impl HardShadowsPage {
 
     for (idx, &entity) in self.placed_occluders.iter().enumerate() {
       if let Some(transform) = ctx.world.get::<Transform>(entity) {
-        let dx = transform.x - x;
-        let dy = transform.y - y;
+        let dx = transform.translation.x - x;
+        let dy = transform.translation.y - y;
         let dist = dx * dx + dy * dy;
         if dist < nearest_dist {
           nearest_dist = dist;
@@ -127,7 +128,7 @@ impl HardShadowsPage {
     // Remove if within reasonable distance (100 pixels)
     if nearest_dist < 100.0 * 100.0 {
       let entity = self.placed_occluders.remove(nearest_idx);
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
   }
 }
@@ -160,18 +161,17 @@ impl DemoPage for HardShadowsPage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ui_affected_by_lighting(false);
-      // Dark ambient for dramatic shadows
-      lighting.set_ambient(AmbientLight::new(Color::new(15, 15, 25, 255), 0.05));
-    }
+    // Dark ambient for dramatic shadows
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(Color::new(15, 15, 25, 255), 0.05));
 
     // Create floor
     let floor = ctx
       .assets
       .create_sprite(Sprite::solid_rect(1280, 720, 40, 40, 45, 255), "floor");
     ctx.world.spawn((
-      Transform::new(640.0, 360.0).with_pivot_center(),
+      Transform::from_xy(640.0, 360.0),
       Renderable::sprite(floor).with_z_order(0),
     ));
 
@@ -207,19 +207,29 @@ impl DemoPage for HardShadowsPage {
     }
 
     // Create the player light
-    self.light_entity = Some(ctx.world.spawn((
-      Transform::new(self.light_x, self.light_y),
-      self.create_light(),
-    )));
+    self.light_entity = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.light_x, self.light_y),
+          self.create_light(),
+        ))
+        .id(),
+    );
 
     // Create a visual for the light source
     let light_visual = ctx
       .assets
       .create_sprite(Sprite::solid_circle(16, 255, 255, 200, 255), "light_source");
-    self.light_visual = Some(ctx.world.spawn((
-      Transform::new(self.light_x, self.light_y).with_pivot_center(),
-      Renderable::sprite(light_visual).with_z_order(10),
-    )));
+    self.light_visual = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.light_x, self.light_y),
+          Renderable::sprite(light_visual).with_z_order(10),
+        ))
+        .id(),
+    );
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
@@ -243,7 +253,7 @@ impl DemoPage for HardShadowsPage {
     self.update_light(ctx);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let gray = Color::new(180, 180, 180, 255);
     let bg = Some(Color::new(0, 0, 0, 180));
     let area = content_area(ui);

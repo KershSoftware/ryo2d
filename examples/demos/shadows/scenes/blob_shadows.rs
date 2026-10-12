@@ -49,19 +49,22 @@ impl BlobShadowsPage {
 
     let blob = if height_scaling {
       BlobShadow::ellipse(20.0, 10.0)
-        .offset(48.0) // Below the sprite (pivot at top)
+        .offset(24.0) // At the sprite's base, half its height below the centre
         .with_height_scale(true)
         .max_height(150.0)
     } else {
-      BlobShadow::ellipse(20.0, 10.0).offset(48.0)
+      BlobShadow::ellipse(20.0, 10.0).offset(24.0)
     };
 
-    let entity = ctx.world.spawn((
-      Transform::new(x, y),
-      Renderable::sprite(sprite)
-        .with_z_order(5)
-        .with_blob_shadow(blob),
-    ));
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite)
+          .with_z_order(5)
+          .with_blob_shadow(blob),
+      ))
+      .id();
 
     JumpingCharacter {
       entity,
@@ -85,14 +88,18 @@ impl BlobShadowsPage {
       name,
     );
 
-    let blob = BlobShadow::ellipse(shadow_size.0, shadow_size.1).offset(size as f32); // Below the sprite
+    // At the sprite's base, half its height below the centre
+    let blob = BlobShadow::ellipse(shadow_size.0, shadow_size.1).offset(size as f32 / 2.0);
 
-    ctx.world.spawn((
-      Transform::new(x, y),
-      Renderable::sprite(sprite)
-        .with_z_order(5)
-        .with_blob_shadow(blob),
-    ))
+    ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite)
+          .with_z_order(5)
+          .with_blob_shadow(blob),
+      ))
+      .id()
   }
 }
 
@@ -115,10 +122,9 @@ impl DemoPage for BlobShadowsPage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Bright lighting for this demo
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ui_affected_by_lighting(false);
-      lighting.set_ambient(AmbientLight::new(Color::WHITE, 0.95));
-    }
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(Color::WHITE, 0.95));
 
     // Create ground
     let ground = ctx.assets.create_sprite(
@@ -126,8 +132,10 @@ impl DemoPage for BlobShadowsPage {
       "ground",
     );
     ctx.world.spawn((
-      Transform::new(0.0, 420.0),
-      Renderable::sprite(ground).with_z_order(0),
+      Transform::from_xy(0.0, 420.0),
+      Renderable::sprite(ground)
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(0),
     ));
 
     // Create sky
@@ -136,8 +144,10 @@ impl DemoPage for BlobShadowsPage {
       "sky",
     );
     ctx.world.spawn((
-      Transform::new(0.0, 0.0),
-      Renderable::sprite(sky).with_z_order(-1),
+      Transform::from_xy(0.0, 0.0),
+      Renderable::sprite(sky)
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(-1),
     ));
 
     // Spawn characters that can jump
@@ -149,8 +159,9 @@ impl DemoPage for BlobShadowsPage {
     ];
 
     for (i, &color) in char_colors.iter().enumerate() {
-      let x = 200.0 + i as f32 * 250.0;
-      let y = 370.0; // Above ground
+      // Centres; the 48 px tall sprites stand on the ground at y = 418
+      let x = 216.0 + i as f32 * 250.0;
+      let y = 394.0;
       let char = Self::spawn_character(
         ctx,
         x,
@@ -162,11 +173,11 @@ impl DemoPage for BlobShadowsPage {
       self.characters.push(char);
     }
 
-    // Spawn some static objects with different shadow sizes
+    // Spawn some static objects with different shadow sizes (centres)
     let objects = [
-      (150.0, 380.0, 40, (80, 80, 90), "crate1", (25.0, 12.0)),
-      (1100.0, 385.0, 30, (120, 80, 60), "barrel", (18.0, 9.0)),
-      (640.0, 350.0, 60, (90, 90, 100), "big_box", (35.0, 18.0)),
+      (170.0, 400.0, 40, (80, 80, 90), "crate1", (25.0, 12.0)),
+      (1115.0, 400.0, 30, (120, 80, 60), "barrel", (18.0, 9.0)),
+      (670.0, 380.0, 60, (90, 90, 100), "big_box", (35.0, 18.0)),
     ];
 
     for (x, y, size, color, name, shadow_size) in objects {
@@ -204,18 +215,18 @@ impl DemoPage for BlobShadowsPage {
 
         // Update position
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(char.entity) {
-          transform.y += char.velocity_y * dt;
+          transform.translation.y += char.velocity_y * dt;
 
           // Check if landed
-          if transform.y >= char.base_y {
-            transform.y = char.base_y;
+          if transform.translation.y >= char.base_y {
+            transform.translation.y = char.base_y;
             char.velocity_y = 0.0;
             char.is_jumping = false;
           }
 
           // Update blob shadow height for scaling effect
           if self.height_scaling_enabled {
-            let height = (char.base_y - transform.y).max(0.0);
+            let height = (char.base_y - transform.translation.y).max(0.0);
             if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(char.entity)
               && let Some(ref mut blob) = renderable.blob_shadow
             {

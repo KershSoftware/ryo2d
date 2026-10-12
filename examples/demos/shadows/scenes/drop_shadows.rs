@@ -113,12 +113,15 @@ impl DropShadowsPage {
       name,
     );
 
-    ctx.world.spawn((
-      Transform::new(x, y).with_pivot_center(),
-      Renderable::sprite(sprite)
-        .with_z_order(5)
-        .with_drop_shadow(shadow),
-    ))
+    ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite)
+          .with_z_order(5)
+          .with_drop_shadow(shadow),
+      ))
+      .id()
   }
 
   fn spawn_character_sprite(
@@ -133,12 +136,16 @@ impl DropShadowsPage {
       .assets
       .create_sprite(Sprite::solid_rect(32, 48, 100, 150, 200, 255), name);
 
-    ctx.world.spawn((
-      Transform::new(x, y).with_pivot(0.5, 1.0), // Pivot at feet
-      Renderable::sprite(sprite)
-        .with_z_order(5)
-        .with_drop_shadow(shadow),
-    ))
+    ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite)
+          .with_anchor(Anchor::BottomCenter) // Placed by the feet
+          .with_z_order(5)
+          .with_drop_shadow(shadow),
+      ))
+      .id()
   }
 }
 
@@ -166,10 +173,9 @@ impl DemoPage for DropShadowsPage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting - brighter for drop shadow demo
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ui_affected_by_lighting(false);
-      lighting.set_ambient(AmbientLight::new(Color::WHITE, 0.9));
-    }
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(Color::WHITE, 0.9));
 
     // Create floor/ground
     let floor = ctx.assets.create_sprite(
@@ -177,7 +183,7 @@ impl DemoPage for DropShadowsPage {
       "ground",
     );
     ctx.world.spawn((
-      Transform::new(640.0, 520.0).with_pivot_center(),
+      Transform::from_xy(640.0, 520.0),
       Renderable::sprite(floor).with_z_order(0),
     ));
 
@@ -187,7 +193,7 @@ impl DemoPage for DropShadowsPage {
       "sky",
     );
     ctx.world.spawn((
-      Transform::new(640.0, 160.0).with_pivot_center(),
+      Transform::from_xy(640.0, 160.0),
       Renderable::sprite(sky).with_z_order(-1),
     ));
 
@@ -249,10 +255,10 @@ impl DemoPage for DropShadowsPage {
 
           // Only adjust Y for the first row (boxes)
           if i < 5 {
-            transform.y = 400.0 + bob;
+            transform.translation.y = 400.0 + bob;
           } else {
             // Characters bob less
-            transform.y = 500.0 + bob * 0.5;
+            transform.translation.y = 500.0 + bob * 0.5;
           }
         }
       }

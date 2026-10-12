@@ -4,14 +4,14 @@
 //! - Different intensities (subtle, normal, exaggerated)
 //! - Different decay rates (snappy, normal, slow)
 //! - Vertical squash (landing) vs horizontal squash (wall hits)
-//! - Events (SquashStretchStarted, SquashStretchFinished)
+//! - Messages (SquashStretchStarted, SquashStretchFinished)
 //!
 //! Runs on the demo-kit shell; intensity and recovery are settings.
 
 use demo_kit::prelude::*;
 
 /// Ball entity data
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct Ball {
   velocity_y: f32,
   on_ground: bool,
@@ -77,15 +77,18 @@ impl SquashStretchDemoScene {
       let y = 150.0;
 
       let sprite = Self::create_circle(30, *r, *g, *b);
-      let entity = ctx.world.spawn((
-        Ball {
-          velocity_y: 0.0,
-          on_ground: false,
-          label,
-        },
-        Transform::new(x, y).with_pivot_center(),
-        Renderable::sprite(sprite).with_z_order(10),
-      ));
+      let entity = ctx
+        .world
+        .spawn((
+          Ball {
+            velocity_y: 0.0,
+            on_ground: false,
+            label,
+          },
+          Transform::from_xy(x, y),
+          Renderable::sprite(sprite).with_z_order(10),
+        ))
+        .id();
       self.balls.push(entity);
     }
   }
@@ -99,7 +102,7 @@ impl SquashStretchDemoScene {
       }
       // Move ball up a bit to give it room to fall
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.y = 150.0;
+        transform.translation.y = 150.0;
       }
     }
   }
@@ -115,7 +118,7 @@ impl SquashStretchDemoScene {
   /// Apply squash to a specific ball
   fn squash_ball(&self, ctx: &mut SceneContext, index: usize) {
     if let Some(&entity) = self.balls.get(index) {
-      ctx.squash_with_decay(entity, self.intensity(), self.decay_rate());
+      SquashStretch::apply_with_decay(ctx.world, entity, self.intensity(), self.decay_rate());
     }
   }
 
@@ -136,18 +139,18 @@ impl SquashStretchDemoScene {
         let ball = ctx.world.get::<Ball>(entity);
         let transform = ctx.world.get::<Transform>(entity);
         match (ball, transform) {
-          (Some(b), Some(t)) => (t.y, b.velocity_y),
+          (Some(b), Some(t)) => (t.translation.y, b.velocity_y),
           _ => continue,
         }
       };
 
       // Update position
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.y += velocity_y * dt;
+        transform.translation.y += velocity_y * dt;
 
         // Check ground collision
-        if transform.y >= self.ground_y {
-          transform.y = self.ground_y;
+        if transform.translation.y >= self.ground_y {
+          transform.translation.y = self.ground_y;
           should_squash = true;
         }
       }
@@ -170,7 +173,7 @@ impl SquashStretchDemoScene {
 
         if should_apply_squash {
           // Apply squash using current intensity setting
-          ctx.squash_with_decay(entity, self.intensity(), self.decay_rate());
+          SquashStretch::apply_with_decay(ctx.world, entity, self.intensity(), self.decay_rate());
         }
       }
     }
@@ -235,21 +238,21 @@ impl DemoPage for SquashStretchDemoScene {
     // Update physics
     self.update_physics(ctx, dt);
 
-    // Log events
-    for event in ctx.events.read::<SquashStretchStarted>() {
-      if let Some(ball) = ctx.world.get::<Ball>(event.entity) {
+    // Log the squash messages
+    for msg in ctx.messages::<SquashStretchStarted>() {
+      if let Some(ball) = ctx.world.get::<Ball>(msg.entity) {
         println!("{} ball squashed!", ball.label);
       }
     }
 
-    for event in ctx.events.read::<SquashStretchFinished>() {
-      if let Some(ball) = ctx.world.get::<Ball>(event.entity) {
+    for msg in ctx.messages::<SquashStretchFinished>() {
+      if let Some(ball) = ctx.world.get::<Ball>(msg.entity) {
         println!("{} ball recovered", ball.label);
       }
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let text_muted = Color::rgb(160, 160, 160);
 
     // Ground line indicator
@@ -270,7 +273,7 @@ fn main() {
     .configure(|b| {
       b.window_mode(WindowMode::ResizableAspectRatio)
         .target_fps(60)
-        .physics_hz(60)
+        .fixed_hz(60)
     })
     .page(SquashStretchDemoScene::new)
     .run();

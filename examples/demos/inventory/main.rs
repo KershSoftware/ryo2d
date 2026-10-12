@@ -8,6 +8,7 @@ use std::any::Any;
 
 use demo_kit::prelude::*;
 use rand::Rng;
+use ryo2d_inventory::prelude::*;
 
 // === Custom Item Data ===
 
@@ -200,7 +201,9 @@ impl InventoryDemoScene {
     self.drop_counter += 1;
     let sprite = Sprite::solid_rect(12, 12, color.0, color.1, color.2, 255);
     let handle = SpriteHandle::from_sprite(sprite, format!("drop_{}", self.drop_counter));
-    world.add_component(entity, Renderable::sprite(handle).with_z_order(5));
+    world
+      .entity_mut(entity)
+      .insert(Renderable::sprite(handle).with_z_order(5));
 
     self.world_drops.push(entity);
   }
@@ -474,49 +477,64 @@ impl DemoPage for InventoryDemoScene {
     // Body
     let body_sprite = Sprite::solid_rect(28, 36, 100, 140, 200, 255);
     let body_handle = SpriteHandle::from_sprite(body_sprite, "player_body");
-    let body = ctx.world.spawn((
-      Transform::new(px, py).with_pivot_center(),
-      Renderable::sprite(body_handle).with_z_order(0),
-    ));
+    let body = ctx
+      .world
+      .spawn((
+        Transform::from_xy(px, py),
+        Renderable::sprite(body_handle).with_z_order(0),
+      ))
+      .id();
 
     // Head
     let head_sprite = Sprite::solid_rect(20, 20, 220, 180, 140, 255);
     let head_handle = SpriteHandle::from_sprite(head_sprite, "player_head");
-    let head = ctx.world.spawn((
-      Transform::new(px, py - 28.0).with_pivot_center(),
-      Renderable::sprite(head_handle).with_z_order(1),
-    ));
+    let head = ctx
+      .world
+      .spawn((
+        Transform::from_xy(px, py - 28.0),
+        Renderable::sprite(head_handle).with_z_order(1),
+      ))
+      .id();
 
     // Weapon overlay (hidden until equipped, white sprite tinted by item color)
     let weapon_sprite = Sprite::solid_rect(6, 30, 255, 255, 255, 255);
     let weapon_handle = SpriteHandle::from_sprite(weapon_sprite, "player_weapon");
-    let weapon = ctx.world.spawn((
-      Transform::new(px + 17.0, py).with_pivot_center(),
-      Renderable::sprite(weapon_handle)
-        .with_z_order(2)
-        .with_visible(false),
-    ));
+    let weapon = ctx
+      .world
+      .spawn((
+        Transform::from_xy(px + 17.0, py),
+        Renderable::sprite(weapon_handle)
+          .with_z_order(2)
+          .with_visible(false),
+      ))
+      .id();
 
     // Armor overlay (hidden until equipped)
     let armor_sprite = Sprite::solid_rect(28, 36, 255, 255, 255, 255);
     let armor_handle = SpriteHandle::from_sprite(armor_sprite, "player_armor");
-    let armor_overlay = ctx.world.spawn((
-      Transform::new(px, py).with_pivot_center(),
-      Renderable::sprite(armor_handle)
-        .with_z_order(1)
-        .with_visible(false)
-        .with_alpha(0.7),
-    ));
+    let armor_overlay = ctx
+      .world
+      .spawn((
+        Transform::from_xy(px, py),
+        Renderable::sprite(armor_handle)
+          .with_z_order(1)
+          .with_visible(false)
+          .with_alpha(0.7),
+      ))
+      .id();
 
     // Helmet overlay (hidden until equipped)
     let helmet_sprite = Sprite::solid_rect(22, 10, 255, 255, 255, 255);
     let helmet_handle = SpriteHandle::from_sprite(helmet_sprite, "player_helmet");
-    let helmet_overlay = ctx.world.spawn((
-      Transform::new(px, py - 33.0).with_pivot_center(),
-      Renderable::sprite(helmet_handle)
-        .with_z_order(3)
-        .with_visible(false),
-    ));
+    let helmet_overlay = ctx
+      .world
+      .spawn((
+        Transform::from_xy(px, py - 33.0),
+        Renderable::sprite(helmet_handle)
+          .with_z_order(3)
+          .with_visible(false),
+      ))
+      .id();
 
     self.player_visual = Some(PlayerVisual {
       _body: body,
@@ -530,7 +548,7 @@ impl DemoPage for InventoryDemoScene {
     let ground_sprite = Sprite::solid_rect(380, 2, 100, 100, 100, 255);
     let ground_handle = SpriteHandle::from_sprite(ground_sprite, "ground_line");
     ctx.world.spawn((
-      Transform::new(200.0, 480.0).with_pivot_center(),
+      Transform::from_xy(200.0, 480.0),
       Renderable::sprite(ground_handle).with_z_order(-1),
     ));
   }
@@ -544,8 +562,13 @@ impl DemoPage for InventoryDemoScene {
       }
     }
 
-    // Track entity count for display
-    self.entity_count = ctx.world.len();
+    // Track the scene's entity count for display (the world also holds the
+    // engine's resource and system entities, which have no Transform)
+    self.entity_count = ctx
+      .world
+      .query_filtered::<(), With<Transform>>()
+      .iter(ctx.world)
+      .count() as u32;
 
     let digit_keys = [
       KeyCode::Digit1,
@@ -636,7 +659,7 @@ impl DemoPage for InventoryDemoScene {
     self.sync_equipment_visuals(ctx.world);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     let white = Color::rgb(240, 240, 240);
     let gray = Color::rgb(160, 160, 170);

@@ -49,11 +49,14 @@ impl SceneBase {
 
   pub fn enter(&mut self, ctx: &mut SceneContext) {
     ctx.camera.set_position(640.0, 360.0);
-    let entity = ctx.world.spawn((
-      Transform::new(640.0, 360.0),
-      Skeleton::new(self.def.clone()),
-      self.controller_template.clone(),
-    ));
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(640.0, 360.0),
+        Skeleton::new(self.def.clone()),
+        self.controller_template.clone(),
+      ))
+      .id();
     self.skeleton_entity = Some(entity);
   }
 
@@ -67,7 +70,7 @@ impl SceneBase {
   pub fn redraw_debug_lines(&mut self, world: &mut World) {
     // Despawn old
     for entity in self.debug_entities.drain(..) {
-      let _ = world.despawn(entity);
+      world.despawn(entity);
     }
 
     // Spawn new
@@ -90,13 +93,13 @@ impl SceneBase {
     };
 
     for line in lines {
-      let e = world.spawn((Transform::default(), line, DebugBone));
+      let e = world.spawn((Transform::default(), line, DebugBone)).id();
       self.debug_entities.push(e);
     }
   }
 
   /// Render the controller state and blend status at the top of the content area
-  pub fn render_ui(&self, ui: &mut UiContext) {
+  pub fn ui(&self, ui: &mut UiContext) {
     let gray = Color::rgb(150, 150, 150);
     let yellow = Color::rgb(255, 255, 100);
 

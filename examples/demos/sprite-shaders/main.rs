@@ -273,13 +273,17 @@ impl DemoPage for EffectsPage {
     let handle2 = ctx.assets.create_sprite(sprite, "test_sprite_2");
 
     // Left: normal sprite (no effect)
-    let mut normal_transform = Transform::new(SPRITE_X[0], cy);
-    normal_transform.scale_x = 3.0;
-    normal_transform.scale_y = 3.0;
-    self.normal_sprite = Some(ctx.world.spawn((
-      normal_transform,
-      Renderable::sprite(handle.clone()).with_z_order(0),
-    )));
+    self.normal_sprite = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(SPRITE_X[0], cy).with_uniform_scale(3.0),
+          Renderable::sprite(handle.clone())
+            .with_anchor(Anchor::TopLeft)
+            .with_z_order(0),
+        ))
+        .id(),
+    );
 
     // Middle: sprite with a custom WGSL shader loaded from disk. A missing or
     // unreadable file is reported and the sprite is simply left out.
@@ -288,34 +292,38 @@ impl DemoPage for EffectsPage {
         let handle3 = ctx
           .assets
           .create_sprite(create_test_sprite(), "test_sprite_3");
-        let mut custom_transform = Transform::new(SPRITE_X[1], cy);
-        custom_transform.scale_x = 3.0;
-        custom_transform.scale_y = 3.0;
         self.custom_sprite = Some(
-          ctx.world.spawn((
-            custom_transform,
-            Renderable::sprite(handle3).with_z_order(0).with_shader(
-              SpriteShader::custom(shader)
-                .with_param("amount", 0.0)
-                .with_param("edge", Color::rgb(255, 120, 0)),
-            ),
-          )),
+          ctx
+            .world
+            .spawn((
+              Transform::from_xy(SPRITE_X[1], cy).with_uniform_scale(3.0),
+              Renderable::sprite(handle3)
+                .with_anchor(Anchor::TopLeft)
+                .with_z_order(0)
+                .with_shader(
+                  SpriteShader::custom(shader)
+                    .with_param("amount", 0.0)
+                    .with_param("edge", Color::rgb(255, 120, 0)),
+                ),
+            ))
+            .id(),
         );
       }
       Err(e) => eprintln!("Could not load dissolve.wgsl: {e}"),
     }
 
     // Right: sprite with effect
-    let mut effect_transform = Transform::new(SPRITE_X[2], cy);
-    effect_transform.scale_x = 3.0;
-    effect_transform.scale_y = 3.0;
     self.effect_sprite = Some(
-      ctx.world.spawn((
-        effect_transform,
-        Renderable::sprite(handle2)
-          .with_z_order(0)
-          .with_shader(SpriteShader::BuiltIn(self.create_sprite_effect())),
-      )),
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(SPRITE_X[2], cy).with_uniform_scale(3.0),
+          Renderable::sprite(handle2)
+            .with_anchor(Anchor::TopLeft)
+            .with_z_order(0)
+            .with_shader(SpriteShader::BuiltIn(self.create_sprite_effect())),
+        ))
+        .id(),
     );
   }
 
@@ -363,7 +371,7 @@ impl DemoPage for EffectsPage {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     let effect = self.current();
 

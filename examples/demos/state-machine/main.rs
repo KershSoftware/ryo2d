@@ -184,12 +184,15 @@ impl StateMachineDemoScene {
     let sprite = Self::create_character_sprite();
     let (r, g, b) = self.character_fsm.current().color();
     self.character_entity = Some(
-      ctx.world.spawn((
-        Transform::new(self.character_x, self.character_y).with_pivot_center(),
-        Renderable::sprite(sprite)
-          .with_z_order(10)
-          .with_tint(Color::rgb(r, g, b)),
-      )),
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.character_x, self.character_y),
+          Renderable::sprite(sprite)
+            .with_z_order(10)
+            .with_tint(Color::rgb(r, g, b)),
+        ))
+        .id(),
     );
   }
 
@@ -373,8 +376,7 @@ impl StateMachineDemoScene {
     if let Some(entity) = self.character_entity
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
     {
-      transform.x = self.character_x;
-      transform.y = self.character_y;
+      transform.translation = Vec2::new(self.character_x, self.character_y);
     }
 
     // Log transition and update tint
@@ -472,7 +474,7 @@ impl DemoPage for StateMachineDemoScene {
     self.update_game_stack(ctx, dt);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     let oy = area.y - 16.0;
     let white = Color::rgb(240, 240, 240);

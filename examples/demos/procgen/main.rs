@@ -6,6 +6,7 @@
 //! overlay are settings.
 
 use demo_kit::prelude::*;
+use ryo2d_procgen::prelude::*;
 
 const SCREEN_WIDTH: u32 = 1024;
 const SCREEN_HEIGHT: u32 = 768;
@@ -215,7 +216,7 @@ impl DemoPage for ProcgenPage {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let w = screen_w as f32;
     let h = screen_h as f32;

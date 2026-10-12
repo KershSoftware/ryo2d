@@ -56,8 +56,7 @@ impl RaymarchedShadowsPage {
 
       // Update position
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = self.light_x;
-        transform.y = self.light_y;
+        transform.translation = Vec2::new(self.light_x, self.light_y);
       }
     }
 
@@ -65,8 +64,7 @@ impl RaymarchedShadowsPage {
     if let Some(visual) = self.light_visual
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(visual)
     {
-      transform.x = self.light_x;
-      transform.y = self.light_y;
+      transform.translation = Vec2::new(self.light_x, self.light_y);
     }
   }
 
@@ -85,11 +83,14 @@ impl RaymarchedShadowsPage {
     );
 
     // Spawn entity with both visual and occluder
-    ctx.world.spawn((
-      Transform::new(x, y).with_pivot_center(),
-      Renderable::sprite(sprite).with_z_order(5),
-      LightOccluder2D::rect(width, height),
-    ))
+    ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite).with_z_order(5),
+        LightOccluder2D::rect(width, height),
+      ))
+      .id()
   }
 
   fn remove_nearest_occluder(&mut self, ctx: &mut SceneContext, x: f32, y: f32) {
@@ -103,8 +104,8 @@ impl RaymarchedShadowsPage {
 
     for (idx, &entity) in self.placed_occluders.iter().enumerate() {
       if let Some(transform) = ctx.world.get::<Transform>(entity) {
-        let dx = transform.x - x;
-        let dy = transform.y - y;
+        let dx = transform.translation.x - x;
+        let dy = transform.translation.y - y;
         let dist = dx * dx + dy * dy;
         if dist < nearest_dist {
           nearest_dist = dist;
@@ -116,7 +117,7 @@ impl RaymarchedShadowsPage {
     // Remove if within reasonable distance (100 pixels)
     if nearest_dist < 100.0 * 100.0 {
       let entity = self.placed_occluders.remove(nearest_idx);
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
   }
 }
@@ -142,17 +143,16 @@ impl DemoPage for RaymarchedShadowsPage {
 
   fn enter(&mut self, ctx: &mut SceneContext) {
     // Configure lighting - dark ambient for dramatic effect
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ui_affected_by_lighting(false);
-      lighting.set_ambient(AmbientLight::new(Color::new(10, 12, 18, 255), 0.05));
-    }
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(Color::new(10, 12, 18, 255), 0.05));
 
     // Create floor with subtle pattern
     let floor = ctx
       .assets
       .create_sprite(Sprite::solid_rect(1280, 720, 25, 28, 35, 255), "rm_floor");
     ctx.world.spawn((
-      Transform::new(640.0, 360.0).with_pivot_center(),
+      Transform::from_xy(640.0, 360.0),
       Renderable::sprite(floor).with_z_order(0),
     ));
 
@@ -171,20 +171,30 @@ impl DemoPage for RaymarchedShadowsPage {
     }
 
     // Create the player light with ray-marched shadows
-    self.light_entity = Some(ctx.world.spawn((
-      Transform::new(self.light_x, self.light_y),
-      self.create_light(),
-    )));
+    self.light_entity = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.light_x, self.light_y),
+          self.create_light(),
+        ))
+        .id(),
+    );
 
     // Create a visual for the light source
     let light_visual = ctx.assets.create_sprite(
       Sprite::solid_circle(20, 255, 220, 150, 255),
       "rm_light_source",
     );
-    self.light_visual = Some(ctx.world.spawn((
-      Transform::new(self.light_x, self.light_y).with_pivot_center(),
-      Renderable::sprite(light_visual).with_z_order(10),
-    )));
+    self.light_visual = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.light_x, self.light_y),
+          Renderable::sprite(light_visual).with_z_order(10),
+        ))
+        .id(),
+    );
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
@@ -208,7 +218,7 @@ impl DemoPage for RaymarchedShadowsPage {
     self.update_light(ctx);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let gray = Color::new(180, 180, 180, 255);
     let bg = Some(Color::new(0, 0, 0, 180));
     let area = content_area(ui);

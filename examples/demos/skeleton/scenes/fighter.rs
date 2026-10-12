@@ -278,7 +278,7 @@ impl DemoPage for FighterScene {
     self.base.redraw_debug_lines(ctx.world);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
-    self.base.render_ui(ui);
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
+    self.base.ui(ui);
   }
 }
