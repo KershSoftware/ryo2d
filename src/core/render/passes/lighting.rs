@@ -47,7 +47,7 @@ impl RenderPass for Lighting {
       let occluders: Vec<(&GlobalTransform, &LightOccluder2D)> = lighting
         .occluders
         .iter()
-        .map(|(transform, occluder)| (transform, occluder))
+        .map(|(transform, occluder)| (transform, *occluder))
         .collect();
       let geometry = generate_shadow_geometry(light_refs(), &occluders);
       lighting

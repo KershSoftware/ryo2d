@@ -6,7 +6,7 @@ use std::time::Instant;
 use super::{Engine, PresentOutcome, SceneHost};
 use crate::core::config::DebugStats;
 use crate::core::config::debug::{OverlayFlags, overlay_lines};
-use crate::core::ecs::kernel::SystemIdMarker;
+use crate::core::ecs::kernel::{QueryState, SystemIdMarker};
 use crate::core::ecs::{
   DetectChangesMut, GlobalTransform, IsResource, Mut, Observer, PreviousGlobalTransform, Vec2,
   World, render_global,
@@ -55,7 +55,7 @@ impl Engine {
     let camera_pos = Vec2::new(camera.x, camera.y);
     let size = (rend.game_width(), rend.game_height());
 
-    let (entity_sprites, lights, occluders) = {
+    let (entity_sprites, lights) = {
       profile_scope!("cpu:render");
 
       // The scenes' GPU-batched sprites
@@ -102,9 +102,8 @@ impl Engine {
         }
       }
 
-      // Lights at their world position; occluders keep their rotation
+      // Lights at their world position (occluders are gathered while drawing)
       let lights = lights_to_draw(&mut self.world, alpha);
-      let occluders = occluders_to_draw(&mut self.world, alpha);
       if let Some(lighting) = lighting.as_mut() {
         let mut settings = self.world.resource_mut::<LightingSettings>();
         lighting.set_enabled(
@@ -148,7 +147,7 @@ impl Engine {
       }
       self.draw_list.sorted();
       gpu.prepare_world(rend.device(), rend.queue(), &self.draw_list);
-      (entity_sprites, lights, occluders)
+      (entity_sprites, lights)
     };
 
     let trail_draws = trails.as_ref().map_or(0, |t| t.draw_count());
@@ -165,18 +164,23 @@ impl Engine {
     let result = self
       .world
       .resource_scope(|world, mut pipeline: Mut<RenderPipeline>| {
+        let mut occluder_query = world.query::<OccluderItem>();
+        let world: &World = world;
+        let lighting = lighting.as_mut().filter(|l| l.is_enabled());
+        let occluders = if lighting.is_some() {
+          occluders_to_draw(world, &mut occluder_query, alpha)
+        } else {
+          Vec::new()
+        };
         let scene = FrameScene {
           sprites: &gpu,
           draw_list: &self.draw_list,
           trails: trails.as_ref(),
-          lighting: lighting
-            .as_mut()
-            .filter(|l| l.is_enabled())
-            .map(|renderer| LightingFrame {
-              renderer,
-              lights: &lights,
-              occluders: &occluders,
-            }),
+          lighting: lighting.map(|renderer| LightingFrame {
+            renderer,
+            lights: &lights,
+            occluders: &occluders,
+          }),
           effects: world.resource::<EffectsManager>(),
           ui_buffer: &self.ui_buffer,
           camera_pos,
@@ -258,15 +262,22 @@ fn lights_to_draw(world: &mut World, alpha: f32) -> Vec<(Vec2, Light2D)> {
 
 /// The occluders to draw this frame, with their world transforms (blended
 /// for interpolated entities).
-fn occluders_to_draw(world: &mut World, alpha: f32) -> Vec<(GlobalTransform, LightOccluder2D)> {
-  world
-    .query::<(
-      &GlobalTransform,
-      Option<&PreviousGlobalTransform>,
-      &LightOccluder2D,
-    )>()
+type OccluderItem = (
+  &'static GlobalTransform,
+  Option<&'static PreviousGlobalTransform>,
+  &'static LightOccluder2D,
+);
+
+/// Every occluder where it is drawn (blended for interpolated entities, its
+/// rotation kept), borrowed from the world rather than copied.
+fn occluders_to_draw<'w>(
+  world: &'w World,
+  query: &mut QueryState<OccluderItem>,
+  alpha: f32,
+) -> Vec<(GlobalTransform, &'w LightOccluder2D)> {
+  query
     .iter(world)
-    .map(|(global, previous, occluder)| (render_global(global, previous, alpha), occluder.clone()))
+    .map(|(global, previous, occluder)| (render_global(global, previous, alpha), occluder))
     .collect()
 }
 
@@ -295,7 +306,8 @@ mod tests {
     moved(&mut world, LightOccluder2D::rect(4.0, 4.0));
     let lights = lights_to_draw(&mut world, 0.5);
     assert_eq!(lights[0].0, Vec2::new(5.0, 0.0));
-    let occluders = occluders_to_draw(&mut world, 0.5);
+    let mut query = world.query::<OccluderItem>();
+    let occluders = occluders_to_draw(&world, &mut query, 0.5);
     assert_eq!(occluders[0].0.translation(), Vec2::new(5.0, 0.0));
   }
 }

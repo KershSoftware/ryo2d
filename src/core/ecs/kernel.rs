@@ -17,6 +17,7 @@ pub(crate) use bevy_ecs::lifecycle::HookContext;
 pub use bevy_ecs::lifecycle::RemovedComponents;
 pub use bevy_ecs::message::{Message, MessageCursor, MessageReader, MessageWriter, Messages};
 pub use bevy_ecs::observer::{Observer, On};
+pub(crate) use bevy_ecs::query::QueryState;
 pub use bevy_ecs::query::{Added, Allow, Changed, Has, Or, With, Without};
 pub(crate) use bevy_ecs::system::SystemIdMarker;
 // Resources live on hidden entities; `IsResource` marks them so world-wide

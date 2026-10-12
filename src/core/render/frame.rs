@@ -56,7 +56,8 @@ pub(crate) struct LightingFrame<'a> {
   pub(crate) renderer: &'a mut LightingRenderer,
   /// Each light's world position
   pub(crate) lights: &'a [(Vec2, Light2D)],
-  pub(crate) occluders: &'a [(GlobalTransform, LightOccluder2D)],
+  /// Each occluder where it is drawn, borrowed from the world
+  pub(crate) occluders: &'a [(GlobalTransform, &'a LightOccluder2D)],
 }
 
 /// The engine subsystems and per-frame data the built-in passes draw from.

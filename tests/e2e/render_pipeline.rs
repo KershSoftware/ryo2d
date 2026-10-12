@@ -313,3 +313,44 @@ fn lighting_turned_on_by_a_scene_is_off_in_the_next() {
     "the next scene has no lights, so it is unlit"
   );
 }
+
+/// A white scene lit from the left by a shadow-casting light, with an
+/// optional wall between the light and the right half.
+struct LitPastAWall {
+  wall: bool,
+}
+
+impl Scene for LitPastAWall {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    white_sprite(ctx);
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 32.0),
+      Light2D::point(Color::rgb(255, 255, 255), 64.0).with_shadows(),
+    ));
+    if self.wall {
+      ctx.world.spawn((
+        Transform::from_xy(32.0, 32.0),
+        LightOccluder2D::rect(4.0, 30.0),
+      ));
+    }
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.02));
+  }
+}
+
+#[test]
+fn an_occluder_shadows_what_is_behind_it() {
+  let behind_the_wall = |wall| {
+    let mut engine = engine(LitPastAWall { wall })?;
+    engine.step_frames(3).unwrap();
+    Some(engine.frame().unwrap().get_pixel(48, 32).0)
+  };
+  let (Some(open), Some(shadowed)) = (behind_the_wall(false), behind_the_wall(true)) else {
+    return;
+  };
+  assert!(
+    u16::from(shadowed[0]) + 40 < u16::from(open[0]),
+    "{shadowed:?} vs {open:?}"
+  );
+}
