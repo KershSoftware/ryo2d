@@ -56,6 +56,7 @@ pub mod inventory;
 // Game systems (extracted from engine for modularity)
 pub mod systems;
 pub mod testing;
+pub mod time;
 pub mod timing;
 
 // Engine orchestration
