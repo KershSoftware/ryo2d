@@ -5,6 +5,8 @@ use super::atlas::slice_atlas;
 use super::handle::{
   SlotMap, TextureArrayHandle, TextureArrayMarker, TextureHandle, TextureMarker,
 };
+use crate::core::ecs::Resource;
+use crate::core::graphics::Gpu;
 
 /// CPU + GPU data for an individual texture.
 #[derive(Debug)]
@@ -35,6 +37,7 @@ pub(crate) struct ManagedTextureArray {
 ///
 /// Owns all content GPU textures (not render targets). Provides loading,
 /// atlas slicing, deduplication, and lifecycle management.
+#[derive(Resource)]
 pub struct TextureManager {
   textures: SlotMap<TextureMarker, ManagedTexture>,
   arrays: SlotMap<TextureArrayMarker, ManagedTextureArray>,
@@ -302,31 +305,24 @@ impl Default for TextureManager {
 
 /// Convenience wrapper that bundles TextureManager with device/queue references.
 ///
-/// Obtained via `ctx.textures()` in scene callbacks. Avoids manually threading
-/// `device`/`queue` through every texture operation.
+/// Obtained via `ctx.textures()` in scene callbacks; it holds the `Gpu`
+/// resource so texture calls need no device or queue.
 pub struct TextureContext<'a> {
   manager: &'a mut TextureManager,
-  device: &'a wgpu::Device,
-  queue: &'a wgpu::Queue,
+  gpu: Gpu,
 }
 
 impl<'a> TextureContext<'a> {
   /// Create a new TextureContext.
-  pub fn new(
-    manager: &'a mut TextureManager,
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
-  ) -> Self {
-    Self {
-      manager,
-      device,
-      queue,
-    }
+  pub fn new(manager: &'a mut TextureManager, gpu: Gpu) -> Self {
+    Self { manager, gpu }
   }
 
   /// Load an image from disk. Deduplicates by path.
   pub fn load(&mut self, path: impl AsRef<std::path::Path>) -> TextureHandle {
-    self.manager.load(path.as_ref(), self.device, self.queue)
+    self
+      .manager
+      .load(path.as_ref(), &self.gpu.device, &self.gpu.queue)
   }
 
   /// Load an atlas image and slice into individual tile textures.
@@ -336,21 +332,27 @@ impl<'a> TextureContext<'a> {
     tile_w: u32,
     tile_h: u32,
   ) -> Vec<TextureHandle> {
-    self
-      .manager
-      .load_atlas(path.as_ref(), tile_w, tile_h, self.device, self.queue)
+    self.manager.load_atlas(
+      path.as_ref(),
+      tile_w,
+      tile_h,
+      &self.gpu.device,
+      &self.gpu.queue,
+    )
   }
 
   /// Create from raw RGBA bytes.
   pub fn from_rgba(&mut self, data: Vec<u8>, width: u32, height: u32) -> TextureHandle {
     self
       .manager
-      .from_rgba(data, width, height, self.device, self.queue)
+      .from_rgba(data, width, height, &self.gpu.device, &self.gpu.queue)
   }
 
   /// Build a texture_2d_array from individual texture handles.
   pub fn create_array(&mut self, handles: &[TextureHandle]) -> TextureArrayHandle {
-    self.manager.create_array(handles, self.device, self.queue)
+    self
+      .manager
+      .create_array(handles, &self.gpu.device, &self.gpu.queue)
   }
 }
 

@@ -200,6 +200,7 @@ mod atmosphere;
 mod light;
 mod occluder;
 mod renderer;
+mod settings;
 mod shadow;
 mod volumetric;
 
@@ -208,5 +209,6 @@ pub use atmosphere::{Atmosphere, GodRaysQuality};
 pub use light::Light2D;
 pub use occluder::LightOccluder2D;
 pub use renderer::{LightingParams, LightingRenderer, MAX_LIGHTS};
+pub use settings::LightingSettings;
 pub use shadow::{MAX_SHADOW_VERTICES, ShadowGeometry, ShadowVertex, generate_shadow_geometry};
 pub use volumetric::VolumetricSettings;

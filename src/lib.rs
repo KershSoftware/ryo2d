@@ -76,11 +76,10 @@ pub mod prelude {
   // pub use crate::core::game::{TimeControl, TimeInfo, WindowRequest};
 
   // Scene management
-  // MIGRATION: Task 10
-  // pub use crate::core::scene::{
-  //   Scene, SceneAction, SceneCleanup, SceneContext, SceneManager, SlideDirection, Transition,
-  //   downcast_return,
-  // };
+  pub use crate::core::scene::{
+    ConsoleScope, Scene, SceneAction, SceneCleanup, SceneContext, SceneManager, SlideDirection,
+    Transition, downcast_return,
+  };
 
   // Engine builder
   // MIGRATION: Task 13
@@ -115,7 +114,7 @@ pub mod prelude {
   // pub use crate::core::physics::RapierPhysicsWorld;
 
   // Graphics
-  pub use crate::core::graphics::{AnimatedSprite, GpuRenderContext, Sprite};
+  pub use crate::core::graphics::{AnimatedSprite, Gpu, GpuRenderContext, Sprite};
 
   // Tiled rendering
   pub use crate::core::graphics::{
@@ -140,15 +139,18 @@ pub mod prelude {
     AssetManager, AssetStats, AsyncSpriteHandle, LoadingProgress, LoadingState, SpriteHandle,
   };
 
+  // Window and cursor
+  pub use crate::core::cursor::{CursorRequest, CursorStyle};
+  pub use crate::core::window::{WindowInfo, WindowRequest};
+
   // Input (re-export KeyCode for convenience)
-  pub use crate::core::cursor::CursorStyle;
   pub use crate::core::input::{GamepadButton, Input};
   pub use winit::event::MouseButton;
   pub use winit::keyboard::KeyCode;
 
   // Audio
   pub use crate::core::audio::{
-    AudioManager, MusicHandle, MusicOptions, SoundHandle, SoundOptions,
+    Audio, AudioManager, MusicHandle, MusicOptions, SoundHandle, SoundOptions,
   };
 
   // Networking
@@ -227,7 +229,7 @@ pub mod prelude {
   // 2D Lighting system
   pub use crate::core::lighting::{
     AmbientLight, Atmosphere, GodRaysQuality, Light2D, LightOccluder2D, LightingRenderer,
-    VolumetricSettings,
+    LightingSettings, VolumetricSettings,
   };
 
   // Post-processing effects

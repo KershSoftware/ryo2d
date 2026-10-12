@@ -6,7 +6,7 @@
 
 pub use bevy_ecs::bundle::Bundle;
 pub use bevy_ecs::change_detection::{DetectChanges, DetectChangesMut, Mut, Ref};
-pub use bevy_ecs::component::Component;
+pub use bevy_ecs::component::{Component, Mutable};
 pub use bevy_ecs::entity::Entity;
 pub use bevy_ecs::entity_disabling::Disabled;
 pub use bevy_ecs::error::{BevyError as SystemError, FallbackErrorHandler};
@@ -16,6 +16,7 @@ pub use bevy_ecs::lifecycle::RemovedComponents;
 pub use bevy_ecs::message::{Message, MessageCursor, MessageReader, MessageWriter, Messages};
 pub use bevy_ecs::observer::{Observer, On};
 pub use bevy_ecs::query::{Added, Allow, Changed, Has, Or, With, Without};
+pub(crate) use bevy_ecs::system::SystemIdMarker;
 // Resources live on hidden entities; `IsResource` marks them so world-wide
 // entity sweeps can leave them alone.
 pub use bevy_ecs::resource::{IsResource, Resource};

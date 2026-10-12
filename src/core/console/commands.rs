@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use super::ConsoleState;
 use crate::core::capture::CaptureTarget;
 use crate::core::config::DebugConfig;
+use crate::core::ecs::Resource;
 
 /// Result of executing a console command
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +177,7 @@ impl ConsoleCommandBuilder {
 /// Registry of console commands
 ///
 /// Manages both built-in engine commands and declared game commands.
+#[derive(Resource)]
 pub struct CommandRegistry {
   /// Built-in commands (always have handlers)
   builtins: HashMap<&'static str, BuiltinCommand>,

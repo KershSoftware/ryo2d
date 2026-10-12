@@ -37,3 +37,10 @@ pub use sprite_gpu::{
   BatchCollector, SpriteGlobals, SpriteGpuRenderer, SpriteInstance, get_sprite_effect,
 };
 pub use tile::{CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart};
+
+/// The GPU device and queue, shared by the renderers and the texture manager.
+#[derive(crate::core::ecs::Resource, Clone)]
+pub struct Gpu {
+  pub device: std::sync::Arc<wgpu::Device>,
+  pub queue: std::sync::Arc<wgpu::Queue>,
+}

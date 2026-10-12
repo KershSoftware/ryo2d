@@ -1,6 +1,8 @@
 //! Convenience methods on `World` for the hierarchy and interpolation.
 
-use super::kernel::{Bundle, ChildOf, Entity, World};
+use super::kernel::{
+  Allow, Bundle, ChildOf, Disabled, Entity, IsResource, Observer, SystemIdMarker, Without, World,
+};
 use super::transform::{GlobalTransform, PreviousGlobalTransform};
 
 pub trait WorldExt {
@@ -38,6 +40,24 @@ impl WorldExt for World {
   }
 }
 
+/// Despawn every game entity, disabled ones included. Resources, observers
+/// and registered systems are entities too, and stay.
+pub(crate) fn despawn_game_entities(world: &mut World) {
+  let entities: Vec<Entity> = world
+    .query_filtered::<Entity, (
+      Allow<Disabled>,
+      Without<IsResource>,
+      Without<Observer>,
+      Without<SystemIdMarker>,
+    )>()
+    .iter(world)
+    .collect();
+  for entity in entities {
+    // Children went with their parent already
+    let _ = world.try_despawn(entity);
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -46,6 +66,37 @@ mod tests {
   use crate::core::ecs::transform::{Interpolated, Transform};
   use glam::Vec2;
   use std::f32::consts::FRAC_PI_2;
+
+  #[test]
+  fn despawn_game_entities_keeps_resources_observers_and_systems() {
+    use crate::core::ecs::kernel::{
+      Allow, Disabled, Event, IsResource, Observer, On, Resource, Without,
+    };
+
+    #[derive(Resource)]
+    struct Score(u32);
+    #[derive(Event)]
+    struct Ping;
+
+    let mut world = World::new();
+    world.insert_resource(Score(7));
+    world.add_observer(|_: On<Ping>| {});
+    let system = world.register_system(|| {});
+    let parent = world.spawn(Transform::IDENTITY).id();
+    world.spawn_child(parent, Transform::IDENTITY);
+    world.spawn((Transform::IDENTITY, Disabled));
+
+    despawn_game_entities(&mut world);
+
+    let left = world
+      .query_filtered::<Entity, (Allow<Disabled>, Without<IsResource>, Without<Observer>)>()
+      .iter(&world)
+      .count();
+    assert_eq!(left, 1, "only the registered system's entity is left");
+    assert_eq!(world.resource::<Score>().0, 7);
+    assert_eq!(world.query::<&Observer>().iter(&world).count(), 1);
+    assert!(world.run_system(system).is_ok());
+  }
 
   #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
   struct Step;
@@ -62,11 +113,7 @@ mod tests {
     let p = world.spawn(Transform::IDENTITY).id();
     let c = world.spawn_child(p, Transform::from_xy(1.0, 1.0));
     assert_eq!(world.get::<ChildOf>(c).map(|c| c.parent()), Some(p));
-    assert!(
-      world
-        .get::<Children>(p)
-        .is_some_and(|ch| ch.contains(&c))
-    );
+    assert!(world.get::<Children>(p).is_some_and(|ch| ch.contains(&c)));
   }
 
   #[test]

@@ -3,24 +3,7 @@
 //! Contains shared types like WindowRequest, TimeControl, TimeInfo,
 //! and GpuRenderContext that are used by both the engine and scenes.
 
-use super::config::save::DisplayMode;
-
-/// Pending window configuration change requested by the game.
-///
-/// Set via [`SceneContext::request_display_change`].
-/// The engine will apply these changes after the current update.
-#[derive(Debug, Clone, Default)]
-pub struct WindowRequest {
-  /// New resolution width (None = no change)
-  pub width: Option<u32>,
-  /// New resolution height (None = no change)
-  pub height: Option<u32>,
-  /// New display mode (None = no change)
-  pub display_mode: Option<DisplayMode>,
-  /// New UI scale factor (None = no change)
-  /// Use Some(0) to reset to auto-detect mode
-  pub ui_scale: Option<u32>,
-}
+pub use super::window::WindowRequest;
 
 /// Time control state for game juice effects.
 ///
@@ -106,41 +89,6 @@ pub struct TimeInfo {
   pub frame_count: u64,
 }
 
-impl WindowRequest {
-  /// Create a new empty window request
-  pub fn new() -> Self {
-    Self::default()
-  }
-
-  /// Request a resolution change
-  pub fn with_resolution(mut self, width: u32, height: u32) -> Self {
-    self.width = Some(width);
-    self.height = Some(height);
-    self
-  }
-
-  /// Request a display mode change
-  pub fn with_display_mode(mut self, mode: DisplayMode) -> Self {
-    self.display_mode = Some(mode);
-    self
-  }
-
-  /// Check if any change is requested
-  pub fn has_changes(&self) -> bool {
-    self.width.is_some()
-      || self.height.is_some()
-      || self.display_mode.is_some()
-      || self.ui_scale.is_some()
-  }
-
-  /// Clear all pending requests
-  pub fn clear(&mut self) {
-    self.width = None;
-    self.height = None;
-    self.display_mode = None;
-    self.ui_scale = None;
-  }
-}
 
 pub use super::graphics::GpuRenderContext;
 

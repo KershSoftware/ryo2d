@@ -1,6 +1,7 @@
 //! An ordered list of render passes
 
 use super::{FrameInfo, RenderContext, RenderPass, passes};
+use crate::core::ecs::Resource;
 
 /// A problem configuring a [`RenderPipeline`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -22,7 +23,7 @@ struct Entry {
 ///
 /// Each enabled pass whose [`should_run`](RenderPass::should_run) holds for
 /// the frame records its work, in list order, on one command encoder.
-#[derive(Default)]
+#[derive(Resource, Default)]
 pub struct RenderPipeline {
   entries: Vec<Entry>,
 }

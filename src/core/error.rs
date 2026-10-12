@@ -129,6 +129,10 @@ pub enum AudioError {
   /// Sound not found in cache
   #[error("Sound not found: {0}")]
   NotFound(String),
+
+  /// No audio output device, so nothing can play
+  #[error("no audio device")]
+  Unavailable,
 }
 
 /// Result type for audio operations

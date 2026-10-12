@@ -23,11 +23,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 
-use crate::core::ecs::ShaderHandle;
+use crossbeam_channel::{Receiver, Sender, unbounded};
+
+use crate::core::ecs::{Resource, ShaderHandle};
 use crate::core::error::{AssetError, AssetResult};
 use crate::core::graphics::Sprite;
 
@@ -370,8 +371,8 @@ struct AsyncLoader {
 
 impl AsyncLoader {
   fn new() -> Self {
-    let (request_tx, request_rx) = channel::<PathBuf>();
-    let (result_tx, result_rx) = channel::<LoadResult>();
+    let (request_tx, request_rx) = unbounded::<PathBuf>();
+    let (result_tx, result_rx) = unbounded::<LoadResult>();
 
     let thread = thread::spawn(move || {
       // Process load requests until channel closes
@@ -520,6 +521,7 @@ impl Default for LoadingProgress {
 ///     let sprite = boss.get().unwrap();
 /// }
 /// ```
+#[derive(Resource)]
 pub struct AssetManager {
   /// Base directory for resolving relative paths
   base_path: PathBuf,

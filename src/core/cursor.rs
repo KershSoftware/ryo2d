@@ -28,6 +28,8 @@
 //! }
 //! ```
 
+use crate::core::ecs::Resource;
+
 /// System cursor icons available on most platforms.
 ///
 /// These map to standard OS cursor icons. Not all icons may be available
@@ -132,8 +134,8 @@ pub enum CursorHotspot {
 }
 
 /// Pending cursor changes to be applied to the window.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct CursorRequest {
+#[derive(Resource, Debug, Default, Clone)]
+pub struct CursorRequest {
   /// New system cursor style to set (None = no change)
   pub cursor: Option<CursorStyle>,
   /// Custom cursor data (takes precedence over cursor style)

@@ -709,9 +709,190 @@ impl AudioManager {
   }
 }
 
+/// The engine's audio, usable whether or not a device was found.
+///
+/// Every method forwards to the [`AudioManager`] when there is one. Without a
+/// device, methods that return a `Result` return [`AudioError::Unavailable`],
+/// and the rest do nothing or return a default (silent volumes, nothing
+/// playing).
+pub struct Audio {
+  manager: Option<AudioManager>,
+}
+
+impl Audio {
+  pub fn new(manager: Option<AudioManager>) -> Self {
+    Self { manager }
+  }
+
+  /// Whether an output device is available.
+  pub fn is_available(&self) -> bool {
+    self.manager.is_some()
+  }
+
+  /// The underlying manager, when a device exists.
+  pub fn manager(&mut self) -> Option<&mut AudioManager> {
+    self.manager.as_mut()
+  }
+
+  fn with<T>(&mut self, f: impl FnOnce(&mut AudioManager) -> AudioResult<T>) -> AudioResult<T> {
+    match &mut self.manager {
+      Some(m) => f(m),
+      None => Err(AudioError::Unavailable),
+    }
+  }
+
+  pub fn load_sound(&mut self, name: &str, path: impl AsRef<Path>) -> AudioResult<()> {
+    self.with(|m| m.load_sound(name, path))
+  }
+
+  pub fn play_sound(&mut self, name: &str) -> AudioResult<SoundHandle> {
+    self.with(|m| m.play_sound(name))
+  }
+
+  pub fn play_sound_with(&mut self, name: &str, options: SoundOptions) -> AudioResult<SoundHandle> {
+    self.with(|m| m.play_sound_with(name, options))
+  }
+
+  pub fn play_music(&mut self, path: impl AsRef<Path>) -> AudioResult<MusicHandle> {
+    self.with(|m| m.play_music(path))
+  }
+
+  pub fn play_music_with(
+    &mut self,
+    path: impl AsRef<Path>,
+    options: MusicOptions,
+  ) -> AudioResult<MusicHandle> {
+    self.with(|m| m.play_music_with(path, options))
+  }
+
+  pub fn crossfade_music(
+    &mut self,
+    current: &mut MusicHandle,
+    new_path: impl AsRef<Path>,
+    fade_duration: Duration,
+  ) -> AudioResult<MusicHandle> {
+    self.with(|m| m.crossfade_music(current, new_path, fade_duration))
+  }
+
+  pub fn crossfade_music_with(
+    &mut self,
+    current: &mut MusicHandle,
+    new_path: impl AsRef<Path>,
+    fade_duration: Duration,
+    options: MusicOptions,
+  ) -> AudioResult<MusicHandle> {
+    self.with(|m| m.crossfade_music_with(current, new_path, fade_duration, options))
+  }
+
+  pub fn set_master_volume(&mut self, volume: f32) {
+    if let Some(m) = &mut self.manager {
+      m.set_master_volume(volume);
+    }
+  }
+
+  pub fn master_volume(&self) -> f32 {
+    self
+      .manager
+      .as_ref()
+      .map_or(0.0, AudioManager::master_volume)
+  }
+
+  pub fn set_sfx_volume(&mut self, volume: f32) {
+    if let Some(m) = &mut self.manager {
+      m.set_sfx_volume(volume);
+    }
+  }
+
+  pub fn sfx_volume(&self) -> f32 {
+    self.manager.as_ref().map_or(0.0, AudioManager::sfx_volume)
+  }
+
+  pub fn set_music_volume(&mut self, volume: f32) {
+    if let Some(m) = &mut self.manager {
+      m.set_music_volume(volume);
+    }
+  }
+
+  pub fn music_volume(&self) -> f32 {
+    self
+      .manager
+      .as_ref()
+      .map_or(0.0, AudioManager::music_volume)
+  }
+
+  pub fn has_sound(&self, name: &str) -> bool {
+    self.manager.as_ref().is_some_and(|m| m.has_sound(name))
+  }
+
+  pub fn unload_sound(&mut self, name: &str) {
+    if let Some(m) = &mut self.manager {
+      m.unload_sound(name);
+    }
+  }
+
+  pub fn clear_sounds(&mut self) {
+    if let Some(m) = &mut self.manager {
+      m.clear_sounds();
+    }
+  }
+
+  pub fn is_music_playing(&self) -> bool {
+    self
+      .manager
+      .as_ref()
+      .is_some_and(AudioManager::is_music_playing)
+  }
+
+  pub fn stop_music(&mut self) {
+    if let Some(m) = &mut self.manager {
+      m.stop_music();
+    }
+  }
+
+  pub fn stop_music_fade(&mut self, duration: Duration) {
+    if let Some(m) = &mut self.manager {
+      m.stop_music_fade(duration);
+    }
+  }
+
+  pub fn play_music_once(
+    &mut self,
+    path: impl AsRef<Path>,
+    options: MusicOptions,
+  ) -> AudioResult<bool> {
+    self.with(|m| m.play_music_once(path, options))
+  }
+
+  pub fn current_music(&mut self) -> Option<&mut MusicHandle> {
+    self.manager.as_mut().and_then(AudioManager::current_music)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn audio_without_a_device_is_silent_not_an_error_source_of_panics() {
+    let mut audio = Audio::new(None);
+    assert!(!audio.is_available());
+    assert!(audio.manager().is_none());
+    assert!(matches!(
+      audio.play_sound("hit"),
+      Err(AudioError::Unavailable)
+    ));
+    assert!(matches!(
+      audio.play_music("theme.ogg"),
+      Err(AudioError::Unavailable)
+    ));
+    audio.set_master_volume(0.5);
+    audio.stop_music();
+    assert_eq!(audio.master_volume(), 0.0);
+    assert!(!audio.is_music_playing());
+    assert!(!audio.has_sound("hit"));
+    assert!(audio.current_music().is_none());
+    assert_eq!(AudioError::Unavailable.to_string(), "no audio device");
+  }
 
   #[test]
   fn audio_error_display() {

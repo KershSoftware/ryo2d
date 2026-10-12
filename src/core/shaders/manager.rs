@@ -5,7 +5,7 @@
 
 use super::super::ui::Color;
 use super::effects::PostProcessEffect;
-use crate::core::ecs::{ParamValue, ShaderHandle, ShaderParams};
+use crate::core::ecs::{ParamValue, Resource, ShaderHandle, ShaderParams};
 use std::time::Duration;
 
 /// Why a custom effect could not be registered
@@ -62,7 +62,7 @@ pub trait EffectTarget {
 /// - Active effect stack with ordering
 /// - Timed effects (flash, fade) with automatic decay
 /// - Persistent effects (vignette, CRT)
-#[derive(Debug, Clone)]
+#[derive(Resource, Debug, Clone)]
 pub struct EffectsManager {
   /// Currently active effects in render order
   effects: Vec<ActiveEffect>,

@@ -21,10 +21,10 @@
 //! Hot reloading is enabled automatically in debug builds. Call `process_reloads()`
 //! each frame to apply any pending asset updates.
 
+use crossbeam_channel::{Receiver, unbounded};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -101,7 +101,7 @@ impl HotReloadWatcher {
   ///
   /// This spawns a background thread that monitors the filesystem.
   pub fn new(config: HotReloadConfig) -> HotReloadResult<Self> {
-    let (tx, rx) = channel::<HotReloadEvent>();
+    let (tx, rx) = unbounded::<HotReloadEvent>();
 
     // Create the notify watcher
     let tx_clone = tx.clone();

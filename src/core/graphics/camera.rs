@@ -1,4 +1,4 @@
-use super::super::ecs::Ease;
+use super::super::ecs::{Ease, Resource};
 
 /// Camera shake state for impact feedback.
 ///
@@ -113,7 +113,7 @@ impl CameraShake {
 }
 
 /// 2D Camera for world-to-screen transformations
-#[derive(Debug, Clone)]
+#[derive(Resource, Debug, Clone)]
 pub struct Camera {
   /// Camera position in world space (center of view)
   pub x: f32,

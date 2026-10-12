@@ -74,5 +74,4 @@ pub mod time;
 // pub mod engine;
 // MIGRATION: Task 13
 // pub mod game;
-// MIGRATION: Task 10
-// pub mod scene;
+pub mod scene;
