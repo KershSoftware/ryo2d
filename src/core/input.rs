@@ -1,8 +1,9 @@
-use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashSet;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
+use crate::core::ecs::kernel::Resource;
 use crate::engine_info;
 
 /// Standard gamepad buttons (mapped from gilrs).
@@ -94,20 +95,54 @@ fn apply_deadzone(x: f32, y: f32) -> (f32, f32) {
   }
 }
 
-/// Tracks all input state for the current and previous frame
-#[derive(Debug, Default)]
-pub struct InputState {
+/// A window or gamepad event, applied at the next `begin_frame`.
+#[derive(Debug, Clone)]
+pub enum InputEvent {
+  Key { key: KeyCode, pressed: bool },
+  Text(String),
+  MouseButton { button: MouseButton, pressed: bool },
+  MouseMove { x: f64, y: f64 },
+  RawMouseMotion { dx: f64, dy: f64 },
+  Scroll(MouseScrollDelta),
+  ImeEnabled,
+  ImeDisabled,
+  ImePreedit { text: String, cursor: Option<(usize, usize)> },
+  ImeCommit(String),
+  GamepadConnected { id: gilrs::GamepadId, name: String },
+  GamepadDisconnected(gilrs::GamepadId),
+  GamepadButton { id: gilrs::GamepadId, button: gilrs::Button, pressed: bool },
+  GamepadTrigger { id: gilrs::GamepadId, button: gilrs::Button, value: f32 },
+  GamepadAxis { id: gilrs::GamepadId, axis: gilrs::Axis, value: f32 },
+}
+
+/// Input state for the frame, a resource and `SceneContext::input`.
+///
+/// Events are queued as they arrive and applied at `begin_frame`. One-shot
+/// queries (`just pressed`, `just released`) have two views: the frame view,
+/// true for exactly one frame, and the fixed view, true in the first fixed
+/// step after the event even when that step runs in a later frame. Consuming
+/// an input hides it from both for the rest of the frame.
+#[derive(Debug, Default, Resource)]
+pub struct Input {
+  pending: Vec<InputEvent>,
+
   // Keyboard state
   keys_down: HashSet<KeyCode>,
   keys_pressed: HashSet<KeyCode>,
   keys_released: HashSet<KeyCode>,
+  keys_pressed_fixed: HashSet<KeyCode>,
+  keys_released_fixed: HashSet<KeyCode>,
   /// Keys that fired this frame (includes initial press AND repeats)
   keys_repeated: HashSet<KeyCode>,
+  consumed_keys: HashSet<KeyCode>,
 
   // Mouse button state
   mouse_buttons_down: HashSet<MouseButton>,
   mouse_buttons_pressed: HashSet<MouseButton>,
   mouse_buttons_released: HashSet<MouseButton>,
+  mouse_buttons_pressed_fixed: HashSet<MouseButton>,
+  mouse_buttons_released_fixed: HashSet<MouseButton>,
+  consumed_mouse: HashSet<MouseButton>,
 
   // Mouse position (in pixels, relative to window)
   mouse_x: f32,
@@ -133,56 +168,41 @@ pub struct InputState {
   /// Bytes of text_input that came from handle_text_input (keyboard) this frame
   keyboard_text_len: usize,
   /// Whether text_input has been consumed this frame (first reader wins)
-  text_input_consumed: Cell<bool>,
+  text_input_consumed: AtomicBool,
 
   // Gamepad state (first connected gamepad only)
-  /// Whether a gamepad is currently connected
   gamepad_connected: bool,
-  /// Name of the connected gamepad
   gamepad_name: String,
-  /// ID of the active gamepad (for gilrs)
   gamepad_id: Option<gilrs::GamepadId>,
-
-  /// Gamepad buttons currently held down
   gamepad_buttons_down: HashSet<GamepadButton>,
-  /// Gamepad buttons that were just pressed this frame
   gamepad_buttons_pressed: HashSet<GamepadButton>,
-  /// Gamepad buttons that were just released this frame
   gamepad_buttons_released: HashSet<GamepadButton>,
-
-  /// Left stick X axis (after deadzone, -1.0 to 1.0)
+  gamepad_buttons_pressed_fixed: HashSet<GamepadButton>,
+  gamepad_buttons_released_fixed: HashSet<GamepadButton>,
+  consumed_gamepad: HashSet<GamepadButton>,
   left_stick_x: f32,
-  /// Left stick Y axis (after deadzone, -1.0 to 1.0)
   left_stick_y: f32,
-  /// Right stick X axis (after deadzone, -1.0 to 1.0)
   right_stick_x: f32,
-  /// Right stick Y axis (after deadzone, -1.0 to 1.0)
   right_stick_y: f32,
-
-  /// Raw left stick X (before deadzone, for visualization)
   left_stick_x_raw: f32,
-  /// Raw left stick Y (before deadzone, for visualization)
   left_stick_y_raw: f32,
-  /// Raw right stick X (before deadzone, for visualization)
   right_stick_x_raw: f32,
-  /// Raw right stick Y (before deadzone, for visualization)
   right_stick_y_raw: f32,
-
-  /// Left trigger value (0.0 to 1.0)
   left_trigger: f32,
-  /// Right trigger value (0.0 to 1.0)
   right_trigger: f32,
 
-  /// When true, one-shot input queries return false/empty.
-  /// Used by the engine to prevent events from firing in subsequent
-  /// fixed timestep updates after the first.
-  oneshots_suppressed: bool,
+  /// `Some(i)` while fixed step `i` of the frame runs; one-shots then read
+  /// the fixed view (step 0) or nothing (later steps)
+  fixed_step: Option<u32>,
 
   /// Input hidden from queries until `unblock` or the next frame
   block: InputBlock,
 }
 
-/// What `InputState::block_pointer` / `block_all` hide
+/// The old name of [`Input`].
+pub type InputState = Input;
+
+/// What `Input::block_pointer` / `block_all` hide
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum InputBlock {
   #[default]
@@ -191,18 +211,34 @@ enum InputBlock {
   All,
 }
 
-impl InputState {
+/// Which one-shot view a query reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OneShots {
+  Frame,
+  Fixed,
+  Suppressed,
+}
+
+impl Input {
   pub fn new() -> Self {
-    InputState::default()
+    Input::default()
   }
 
-  /// Call at the start of each frame to clear per-frame state
+  /// Queue an event; it takes effect at the next `begin_frame`.
+  pub fn queue(&mut self, event: InputEvent) {
+    self.pending.push(event);
+  }
+
+  /// Start a frame: forget last frame's one-shots and consumptions, then
+  /// apply everything queued since the previous frame.
   pub fn begin_frame(&mut self) {
     self.keys_pressed.clear();
     self.keys_released.clear();
     self.keys_repeated.clear();
+    self.consumed_keys.clear();
     self.mouse_buttons_pressed.clear();
     self.mouse_buttons_released.clear();
+    self.consumed_mouse.clear();
     self.mouse_delta_x = 0.0;
     self.mouse_delta_y = 0.0;
     self.scroll_delta_x = 0.0;
@@ -211,37 +247,120 @@ impl InputState {
     self.text_input.clear();
     self.ime_committed_this_frame = false;
     self.keyboard_text_len = 0;
-    self.text_input_consumed.set(false);
-    // Clear per-frame gamepad state
+    self.text_input_consumed.store(false, Ordering::Relaxed);
     self.gamepad_buttons_pressed.clear();
     self.gamepad_buttons_released.clear();
-    // Reset oneshot suppression for the new frame
-    self.oneshots_suppressed = false;
+    self.consumed_gamepad.clear();
+    self.fixed_step = None;
     self.block = InputBlock::None;
+    let pending = std::mem::take(&mut self.pending);
+    for event in pending {
+      self.apply(event);
+    }
   }
 
-  /// Suppress one-shot input queries (pressed/released/text).
-  ///
-  /// When suppressed, one-shot queries return false/empty so that events
-  /// only fire in the first fixed timestep update, not subsequent ones.
+  fn apply(&mut self, event: InputEvent) {
+    match event {
+      InputEvent::Key { key, pressed } => self.handle_keyboard(
+        key,
+        if pressed {
+          ElementState::Pressed
+        } else {
+          ElementState::Released
+        },
+      ),
+      InputEvent::Text(text) => self.handle_text_input(&text),
+      InputEvent::MouseButton { button, pressed } => self.handle_mouse_button(
+        button,
+        if pressed {
+          ElementState::Pressed
+        } else {
+          ElementState::Released
+        },
+      ),
+      InputEvent::MouseMove { x, y } => self.handle_mouse_move(x, y),
+      InputEvent::RawMouseMotion { dx, dy } => self.handle_raw_mouse_motion(dx, dy),
+      InputEvent::Scroll(delta) => self.handle_scroll(delta),
+      InputEvent::ImeEnabled => self.handle_ime_enabled(),
+      InputEvent::ImeDisabled => self.handle_ime_disabled(),
+      InputEvent::ImePreedit { text, cursor } => self.handle_ime_preedit(text, cursor),
+      InputEvent::ImeCommit(text) => self.handle_ime_commit(text),
+      InputEvent::GamepadConnected { id, name } => self.handle_gamepad_connected(id, name),
+      InputEvent::GamepadDisconnected(id) => self.handle_gamepad_disconnected(id),
+      InputEvent::GamepadButton {
+        id,
+        button,
+        pressed,
+      } => self.handle_gamepad_button(id, button, pressed),
+      InputEvent::GamepadTrigger { id, button, value } => {
+        self.handle_gamepad_trigger(id, button, value)
+      }
+      InputEvent::GamepadAxis { id, axis, value } => self.handle_gamepad_axis(id, axis, value),
+    }
+  }
+
+  /// Which fixed step of the frame is running: one-shots show in step 0
+  /// (from the fixed view) and are suppressed in later steps.
+  pub fn set_fixed_step(&mut self, index: u32) {
+    self.fixed_step = Some(index);
+  }
+
+  /// The fixed loop is over. If a step ran, the fixed view's one-shots were
+  /// seen and are cleared; otherwise they wait for the next frame's first step.
+  pub fn end_fixed_steps(&mut self, ran_any: bool) {
+    self.fixed_step = None;
+    if ran_any {
+      self.keys_pressed_fixed.clear();
+      self.keys_released_fixed.clear();
+      self.mouse_buttons_pressed_fixed.clear();
+      self.mouse_buttons_released_fixed.clear();
+      self.gamepad_buttons_pressed_fixed.clear();
+      self.gamepad_buttons_released_fixed.clear();
+    }
+  }
+
+  /// The fixed step index while one runs, else 0.
+  pub fn fixed_step(&self) -> u32 {
+    self.fixed_step.unwrap_or(0)
+  }
+
+  #[cfg(test)]
+  /// Old name for entering a later fixed step (one-shots suppressed).
   pub(crate) fn suppress_oneshots(&mut self) {
-    self.oneshots_suppressed = true;
+    self.fixed_step = Some(1);
   }
 
-  /// Restore one-shot input queries after suppression.
-  ///
-  /// Called before render so that `render_ui()` can still see one-shot events.
+  #[cfg(test)]
+  /// Old name for leaving the fixed loop without clearing the fixed view.
   pub(crate) fn unsuppress_oneshots(&mut self) {
-    self.oneshots_suppressed = false;
+    self.fixed_step = None;
+  }
+
+  fn oneshots(&self) -> OneShots {
+    match self.fixed_step {
+      None => OneShots::Frame,
+      Some(0) => OneShots::Fixed,
+      Some(_) => OneShots::Suppressed,
+    }
+  }
+
+  fn one_shot<T: std::hash::Hash + Eq>(
+    &self,
+    frame: &HashSet<T>,
+    fixed: &HashSet<T>,
+    value: &T,
+  ) -> bool {
+    match self.oneshots() {
+      OneShots::Frame => frame.contains(value),
+      OneShots::Fixed => fixed.contains(value),
+      OneShots::Suppressed => false,
+    }
   }
 
   /// Hide mouse presses, held buttons, mouse motion and scrolling from every
   /// query until [`unblock`](Self::unblock) or the next frame. The cursor
   /// position still reads, so hover keeps working, and releases still report,
   /// so a drag begun before the block can end.
-  ///
-  /// Use it to keep a click on an overlay (a menu, a panel) from also reaching
-  /// the game underneath: block, run the game's update, unblock.
   pub fn block_pointer(&mut self) {
     self.block = InputBlock::Pointer;
   }
@@ -268,113 +387,106 @@ impl InputState {
     self.block != InputBlock::None
   }
 
-  /// Clean up input state that should not persist across renders.
-  ///
-  /// Called every frame after render_ui completes (unconditionally, unlike
-  /// `begin_frame` which only runs on update frames). Clears `keys_repeated`
-  /// so that held-key actions (backspace, arrow keys) don't fire multiple
-  /// times when render_ui runs on consecutive no-update frames.
+  #[cfg(test)]
+  /// Old name: clears key repeats between frames (begin_frame does this now).
   pub(crate) fn post_render_cleanup(&mut self) {
     self.keys_repeated.clear();
   }
 
-  /// Consume a specific key press, preventing it from being detected again this frame.
-  ///
-  /// Used by the engine for debug keys (F1-F4) which are processed outside
-  /// the fixed timestep loop and need to fire exactly once.
-  pub(crate) fn consume_key(&mut self, key: KeyCode) {
-    self.keys_pressed.remove(&key);
-  }
-
   // ─────────────────────────────────────────────────────────────────────────────
-  // Input Consumption Utilities
+  // Input Consumption
   // ─────────────────────────────────────────────────────────────────────────────
 
-  /// Check if a key was pressed this frame AND consume it, preventing other systems from seeing it.
-  ///
-  /// This is useful when multiple systems might react to the same key press and you want
-  /// only one to handle it. Returns `true` if the key was pressed (and is now consumed),
-  /// `false` if it wasn't pressed.
-  ///
-  /// # Example
-  /// ```ignore
-  /// // In a menu system - consume Escape so the game doesn't also pause
-  /// if input.key_pressed_and_consume(KeyCode::Escape) {
-  ///     self.close_menu();
-  ///     // Other systems checking key_pressed(Escape) will now return false
-  /// }
-  /// ```
-  pub fn key_pressed_and_consume(&mut self, key: KeyCode) -> bool {
-    if self.oneshots_suppressed || self.keys_blocked() {
-      return false;
-    }
-    self.keys_pressed.remove(&key)
-  }
-
-  /// Consume a key press without checking if it was pressed.
-  ///
-  /// Use this when you know a key was pressed and want to prevent other systems from seeing it.
-  pub fn consume_key_press(&mut self, key: KeyCode) {
+  /// Hide a key from every query for the rest of the frame, including the
+  /// fixed view, so gameplay never sees a press the UI took.
+  pub fn consume_key(&mut self, key: KeyCode) {
     if self.keys_blocked() {
       return;
     }
     self.keys_pressed.remove(&key);
+    self.keys_pressed_fixed.remove(&key);
+    self.consumed_keys.insert(key);
   }
 
-  /// Check if a mouse button was pressed this frame AND consume it.
-  ///
-  /// Returns `true` if the button was pressed (and is now consumed), `false` otherwise.
-  ///
-  /// # Example
-  /// ```ignore
-  /// // UI button consumes click so world interaction doesn't trigger
-  /// if input.mouse_pressed_and_consume(MouseButton::Left) {
-  ///     self.handle_button_click();
-  /// }
-  /// ```
-  pub fn mouse_pressed_and_consume(&mut self, button: MouseButton) -> bool {
-    if self.oneshots_suppressed || self.pointer_blocked() {
-      return false;
-    }
-    self.mouse_buttons_pressed.remove(&button)
-  }
-
-  /// Consume a mouse button press without checking if it was pressed.
-  pub fn consume_mouse_press(&mut self, button: MouseButton) {
+  /// Hide a mouse button for the rest of the frame, including the fixed view.
+  pub fn consume_mouse(&mut self, button: MouseButton) {
     if self.pointer_blocked() {
       return;
     }
     self.mouse_buttons_pressed.remove(&button);
+    self.mouse_buttons_pressed_fixed.remove(&button);
+    self.consumed_mouse.insert(button);
   }
 
-  /// Check if a gamepad button was pressed this frame AND consume it.
-  ///
-  /// Returns `true` if the button was pressed (and is now consumed), `false` otherwise.
-  pub fn gamepad_button_pressed_and_consume(&mut self, button: GamepadButton) -> bool {
-    if self.oneshots_suppressed || self.keys_blocked() {
-      return false;
-    }
-    self.gamepad_buttons_pressed.remove(&button)
-  }
-
-  /// Consume a gamepad button press without checking if it was pressed.
-  pub fn consume_gamepad_button_press(&mut self, button: GamepadButton) {
+  /// Hide a gamepad button for the rest of the frame, including the fixed view.
+  pub fn consume_gamepad_button(&mut self, button: GamepadButton) {
     if self.keys_blocked() {
       return;
     }
     self.gamepad_buttons_pressed.remove(&button);
+    self.gamepad_buttons_pressed_fixed.remove(&button);
+    self.consumed_gamepad.insert(button);
+  }
+
+  /// Hide this frame's text from later readers.
+  pub fn consume_text(&mut self) {
+    self.consume_text_input();
+  }
+
+  /// Check if a key was pressed this frame AND consume it, preventing other systems from seeing it.
+  pub fn key_pressed_and_consume(&mut self, key: KeyCode) -> bool {
+    if self.key_pressed(key) {
+      self.consume_key(key);
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Consume a key press without checking if it was pressed.
+  pub fn consume_key_press(&mut self, key: KeyCode) {
+    self.consume_key(key);
+  }
+
+  /// Check if a mouse button was pressed this frame AND consume it.
+  pub fn mouse_pressed_and_consume(&mut self, button: MouseButton) -> bool {
+    if self.mouse_pressed(button) {
+      self.consume_mouse(button);
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Consume a mouse button press without checking if it was pressed.
+  pub fn consume_mouse_press(&mut self, button: MouseButton) {
+    self.consume_mouse(button);
+  }
+
+  /// Check if a gamepad button was pressed this frame AND consume it.
+  pub fn gamepad_button_pressed_and_consume(&mut self, button: GamepadButton) -> bool {
+    if self.gamepad_button_pressed(button) {
+      self.consume_gamepad_button(button);
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Consume a gamepad button press without checking if it was pressed.
+  pub fn consume_gamepad_button_press(&mut self, button: GamepadButton) {
+    self.consume_gamepad_button(button);
   }
 
   /// Clear all keyboard state for this frame.
   ///
-  /// This prevents any keyboard input from reaching systems that check input after this call.
   /// Used by the developer console to block game input while typing.
-  ///
-  /// Clears: pressed keys, released keys, repeated keys, held keys, and text input.
   pub fn clear_keyboard_state(&mut self) {
     self.keys_pressed.clear();
     self.keys_released.clear();
     self.keys_repeated.clear();
+    self.keys_pressed_fixed.clear();
+    self.keys_released_fixed.clear();
     self.keys_down.clear();
     self.text_input.clear();
   }
@@ -385,28 +497,26 @@ impl InputState {
 
   /// Returns true if the key is currently held down
   pub fn key_down(&self, key: KeyCode) -> bool {
-    !self.keys_blocked() && self.keys_down.contains(&key)
+    !self.keys_blocked() && !self.consumed_keys.contains(&key) && self.keys_down.contains(&key)
   }
 
-  /// Returns true if the key was just pressed this frame
+  /// Returns true if the key was just pressed (once per frame, and once in
+  /// the first fixed step after the press)
   pub fn key_pressed(&self, key: KeyCode) -> bool {
-    if self.oneshots_suppressed || self.keys_blocked() {
+    if self.keys_blocked() || self.consumed_keys.contains(&key) {
       return false;
     }
-    self.keys_pressed.contains(&key)
+    self.one_shot(&self.keys_pressed, &self.keys_pressed_fixed, &key)
   }
 
-  /// Whether a press of `key` is still waiting for a game update to see it
+  /// Whether a press of `key` is still waiting for a fixed step to see it
   pub(crate) fn key_press_pending(&self, key: KeyCode) -> bool {
-    self.keys_pressed.contains(&key)
+    self.keys_pressed_fixed.contains(&key)
   }
 
-  /// Returns true if the key was just released this frame
+  /// Returns true if the key was just released
   pub fn key_released(&self, key: KeyCode) -> bool {
-    if self.oneshots_suppressed {
-      return false;
-    }
-    self.keys_released.contains(&key)
+    self.one_shot(&self.keys_released, &self.keys_released_fixed, &key)
   }
 
   /// Returns true if the key fired this frame (initial press OR repeat).
@@ -414,19 +524,23 @@ impl InputState {
   /// Use this for text editing keys like arrows, backspace, delete that
   /// should repeat when held down.
   pub fn key_repeat(&self, key: KeyCode) -> bool {
-    if self.oneshots_suppressed || self.keys_blocked() {
+    if self.keys_blocked()
+      || self.consumed_keys.contains(&key)
+      || self.oneshots() == OneShots::Suppressed
+    {
       return false;
     }
     self.keys_repeated.contains(&key)
   }
 
-  /// Handle a keyboard event from winit
+  /// Handle a keyboard event (applied at once)
   pub(crate) fn handle_keyboard(&mut self, key: KeyCode, state: ElementState) {
     match state {
       ElementState::Pressed => {
         // Only register as "pressed" if it wasn't already down (prevents key repeat)
         if !self.keys_down.contains(&key) {
           self.keys_pressed.insert(key);
+          self.keys_pressed_fixed.insert(key);
         }
         self.keys_down.insert(key);
         // Always register in keys_repeated (includes initial press and repeats)
@@ -435,6 +549,7 @@ impl InputState {
       ElementState::Released => {
         self.keys_down.remove(&key);
         self.keys_released.insert(key);
+        self.keys_released_fixed.insert(key);
       }
     }
   }
@@ -445,42 +560,51 @@ impl InputState {
 
   /// Returns true if the mouse button is currently held down
   pub fn mouse_down(&self, button: MouseButton) -> bool {
-    !self.pointer_blocked() && self.mouse_buttons_down.contains(&button)
+    !self.pointer_blocked()
+      && !self.consumed_mouse.contains(&button)
+      && self.mouse_buttons_down.contains(&button)
   }
 
-  /// Whether a press of `button` is still waiting for a game update to see it
+  /// Whether a press of `button` is still waiting for a fixed step to see it
   pub(crate) fn mouse_press_pending(&self, button: MouseButton) -> bool {
-    self.mouse_buttons_pressed.contains(&button)
+    self.mouse_buttons_pressed_fixed.contains(&button)
   }
 
-  /// Returns true if the mouse button was just pressed this frame
+  /// Returns true if the mouse button was just pressed
   pub fn mouse_pressed(&self, button: MouseButton) -> bool {
-    if self.oneshots_suppressed || self.pointer_blocked() {
+    if self.pointer_blocked() || self.consumed_mouse.contains(&button) {
       return false;
     }
-    self.mouse_buttons_pressed.contains(&button)
+    self.one_shot(
+      &self.mouse_buttons_pressed,
+      &self.mouse_buttons_pressed_fixed,
+      &button,
+    )
   }
 
-  /// Returns true if the mouse button was just released this frame
+  /// Returns true if the mouse button was just released
   pub fn mouse_released(&self, button: MouseButton) -> bool {
-    if self.oneshots_suppressed {
-      return false;
-    }
-    self.mouse_buttons_released.contains(&button)
+    self.one_shot(
+      &self.mouse_buttons_released,
+      &self.mouse_buttons_released_fixed,
+      &button,
+    )
   }
 
-  /// Handle a mouse button event from winit
+  /// Handle a mouse button event (applied at once)
   pub(crate) fn handle_mouse_button(&mut self, button: MouseButton, state: ElementState) {
     match state {
       ElementState::Pressed => {
         if !self.mouse_buttons_down.contains(&button) {
           self.mouse_buttons_pressed.insert(button);
+          self.mouse_buttons_pressed_fixed.insert(button);
         }
         self.mouse_buttons_down.insert(button);
       }
       ElementState::Released => {
         self.mouse_buttons_down.remove(&button);
         self.mouse_buttons_released.insert(button);
+        self.mouse_buttons_released_fixed.insert(button);
       }
     }
   }
@@ -512,7 +636,7 @@ impl InputState {
     (self.mouse_delta_x, self.mouse_delta_y)
   }
 
-  /// Handle mouse movement from winit
+  /// Handle mouse movement (applied at once)
   pub(crate) fn handle_mouse_move(&mut self, x: f64, y: f64) {
     let new_x = x as f32;
     let new_y = y as f32;
@@ -541,7 +665,7 @@ impl InputState {
     (self.scroll_delta_x, self.scroll_delta_y)
   }
 
-  /// Handle mouse scroll from winit
+  /// Handle mouse scroll (applied at once)
   pub(crate) fn handle_scroll(&mut self, delta: MouseScrollDelta) {
     match delta {
       MouseScrollDelta::LineDelta(x, y) => {
@@ -564,51 +688,45 @@ impl InputState {
   ///
   /// The first caller to read text input in a frame gets the text; subsequent
   /// callers receive an empty string. This prevents duplicate processing when
-  /// multiple systems (game update, UI render, console) all read text input.
-  ///
-  /// Returns an empty string if no text was input or it was already consumed.
+  /// multiple systems (game update, UI, console) all read text input.
   pub fn text_input(&self) -> &str {
-    if self.oneshots_suppressed || self.keys_blocked() || self.text_input_consumed.get() {
+    if self.oneshots() == OneShots::Suppressed
+      || self.keys_blocked()
+      || self.text_input_consumed.load(Ordering::Relaxed)
+    {
       return "";
     }
-    // Only mark as consumed when there's actual text — reading an empty buffer
-    // on a no-input frame must NOT set consumed, because begin_frame() only runs
-    // on update frames and won't reset it before the next frame's events arrive.
     if !self.text_input.is_empty() {
-      self.text_input_consumed.set(true);
+      self.text_input_consumed.store(true, Ordering::Relaxed);
     }
     &self.text_input
   }
 
   /// Check if any text was input this frame (and hasn't been consumed yet).
   pub fn has_text_input(&self) -> bool {
-    if self.oneshots_suppressed || self.keys_blocked() || self.text_input_consumed.get() {
+    if self.oneshots() == OneShots::Suppressed
+      || self.keys_blocked()
+      || self.text_input_consumed.load(Ordering::Relaxed)
+    {
       return false;
     }
     !self.text_input.is_empty()
   }
 
   /// Explicitly consume text input, preventing subsequent readers from seeing it.
-  ///
-  /// Call this after reading text input to ensure no other system processes it.
   pub fn consume_text_input(&self) {
     if self.keys_blocked() {
       return;
     }
-    self.text_input_consumed.set(true);
+    self.text_input_consumed.store(true, Ordering::Relaxed);
   }
 
   /// Get the current IME preedit/composition text (in-progress input).
-  ///
-  /// This text should be displayed at the cursor but not committed until
-  /// the IME confirms it. Returns an empty string if no composition is active.
   pub fn ime_preedit(&self) -> &str {
     &self.ime_preedit
   }
 
   /// Get the IME preedit cursor position as (start, end) byte offsets.
-  ///
-  /// Returns `None` if no cursor should be shown in the preedit text.
   pub fn ime_preedit_cursor(&self) -> Option<(usize, usize)> {
     self.ime_preedit_cursor
   }
@@ -623,28 +741,24 @@ impl InputState {
     self.ime_enabled
   }
 
-  /// Handle IME enabled event
   pub(crate) fn handle_ime_enabled(&mut self) {
     self.ime_enabled = true;
   }
 
-  /// Handle IME disabled event
   pub(crate) fn handle_ime_disabled(&mut self) {
     self.ime_enabled = false;
     self.ime_preedit.clear();
     self.ime_preedit_cursor = None;
   }
 
-  /// Handle IME preedit (composition) text update
   pub(crate) fn handle_ime_preedit(&mut self, text: String, cursor: Option<(usize, usize)>) {
     self.ime_preedit = text;
     self.ime_preedit_cursor = cursor;
   }
 
-  /// Handle IME commit (finalized text ready to insert)
   pub(crate) fn handle_ime_commit(&mut self, text: String) {
     // When Ctrl/Cmd is held, the IME commit is likely from a keyboard shortcut
-    // (e.g. Ctrl+V paste on Windows). Skip it — the app handles shortcuts directly.
+    // (e.g. Ctrl+V paste on Windows). Skip it; the app handles shortcuts directly.
     let ctrl_held = self.keys_down.contains(&KeyCode::ControlLeft)
       || self.keys_down.contains(&KeyCode::ControlRight)
       || self.keys_down.contains(&KeyCode::SuperLeft)
@@ -663,21 +777,16 @@ impl InputState {
     }
     self.text_input.push_str(&text);
     self.ime_committed_this_frame = true;
-    // Preedit should be cleared by winit before commit, but ensure it's clear
     self.ime_preedit.clear();
     self.ime_preedit_cursor = None;
   }
 
   /// Handle direct text input from keyboard events (non-IME).
-  ///
-  /// This is used for regular character input when IME is not composing.
   pub(crate) fn handle_text_input(&mut self, text: &str) {
     // Skip keyboard text input when IME is enabled - let IME handle all text
-    // This prevents double input on Windows where both keyboard and IME events fire
     if self.ime_enabled {
       return;
     }
-    // Only add text if not currently in IME composition mode
     if self.ime_preedit.is_empty() {
       self.text_input.push_str(text);
       self.keyboard_text_len += text.len();
@@ -700,27 +809,33 @@ impl InputState {
 
   /// Returns true if the gamepad button is currently held down.
   pub fn gamepad_button_down(&self, button: GamepadButton) -> bool {
-    !self.keys_blocked() && self.gamepad_buttons_down.contains(&button)
+    !self.keys_blocked()
+      && !self.consumed_gamepad.contains(&button)
+      && self.gamepad_buttons_down.contains(&button)
   }
 
-  /// Returns true if the gamepad button was just pressed this frame.
+  /// Returns true if the gamepad button was just pressed.
   pub fn gamepad_button_pressed(&self, button: GamepadButton) -> bool {
-    if self.oneshots_suppressed || self.keys_blocked() {
+    if self.keys_blocked() || self.consumed_gamepad.contains(&button) {
       return false;
     }
-    self.gamepad_buttons_pressed.contains(&button)
+    self.one_shot(
+      &self.gamepad_buttons_pressed,
+      &self.gamepad_buttons_pressed_fixed,
+      &button,
+    )
   }
 
-  /// Returns true if the gamepad button was just released this frame.
+  /// Returns true if the gamepad button was just released.
   pub fn gamepad_button_released(&self, button: GamepadButton) -> bool {
-    if self.oneshots_suppressed {
-      return false;
-    }
-    self.gamepad_buttons_released.contains(&button)
+    self.one_shot(
+      &self.gamepad_buttons_released,
+      &self.gamepad_buttons_released_fixed,
+      &button,
+    )
   }
 
   /// Get the left stick position as (x, y) with deadzone applied.
-  /// Values range from -1.0 to 1.0.
   pub fn left_stick(&self) -> (f32, f32) {
     if self.keys_blocked() {
       return (0.0, 0.0);
@@ -728,24 +843,15 @@ impl InputState {
     (self.left_stick_x, self.left_stick_y)
   }
 
-  /// Get the left stick X axis with deadzone applied (-1.0 to 1.0).
   pub fn left_stick_x(&self) -> f32 {
-    if self.keys_blocked() {
-      return 0.0;
-    }
-    self.left_stick_x
+    self.left_stick().0
   }
 
-  /// Get the left stick Y axis with deadzone applied (-1.0 to 1.0).
   pub fn left_stick_y(&self) -> f32 {
-    if self.keys_blocked() {
-      return 0.0;
-    }
-    self.left_stick_y
+    self.left_stick().1
   }
 
   /// Get the right stick position as (x, y) with deadzone applied.
-  /// Values range from -1.0 to 1.0.
   pub fn right_stick(&self) -> (f32, f32) {
     if self.keys_blocked() {
       return (0.0, 0.0);
@@ -753,20 +859,12 @@ impl InputState {
     (self.right_stick_x, self.right_stick_y)
   }
 
-  /// Get the right stick X axis with deadzone applied (-1.0 to 1.0).
   pub fn right_stick_x(&self) -> f32 {
-    if self.keys_blocked() {
-      return 0.0;
-    }
-    self.right_stick_x
+    self.right_stick().0
   }
 
-  /// Get the right stick Y axis with deadzone applied (-1.0 to 1.0).
   pub fn right_stick_y(&self) -> f32 {
-    if self.keys_blocked() {
-      return 0.0;
-    }
-    self.right_stick_y
+    self.right_stick().1
   }
 
   /// Get raw left stick position without deadzone (for debug visualization).
@@ -801,7 +899,6 @@ impl InputState {
     self.right_trigger
   }
 
-  /// Handle gamepad connection event.
   pub(crate) fn handle_gamepad_connected(&mut self, id: gilrs::GamepadId, name: String) {
     // Only track first gamepad if none connected
     if !self.gamepad_connected {
@@ -812,17 +909,17 @@ impl InputState {
     }
   }
 
-  /// Handle gamepad disconnection event.
   pub(crate) fn handle_gamepad_disconnected(&mut self, id: gilrs::GamepadId) {
     if self.gamepad_id == Some(id) {
       engine_info!(module: "Gamepad", "Disconnected: {}", self.gamepad_name);
       self.gamepad_connected = false;
       self.gamepad_id = None;
       self.gamepad_name.clear();
-      // Clear all gamepad state
       self.gamepad_buttons_down.clear();
       self.gamepad_buttons_pressed.clear();
       self.gamepad_buttons_released.clear();
+      self.gamepad_buttons_pressed_fixed.clear();
+      self.gamepad_buttons_released_fixed.clear();
       self.left_stick_x = 0.0;
       self.left_stick_y = 0.0;
       self.right_stick_x = 0.0;
@@ -836,45 +933,35 @@ impl InputState {
     }
   }
 
-  /// Handle gamepad button event.
   pub(crate) fn handle_gamepad_button(
     &mut self,
     id: gilrs::GamepadId,
     button: gilrs::Button,
     pressed: bool,
   ) {
-    // Only process events from the active gamepad
     if self.gamepad_id != Some(id) {
       return;
     }
-
     let Some(btn) = GamepadButton::from_gilrs(button) else {
       return;
     };
-
     if pressed {
       if !self.gamepad_buttons_down.contains(&btn) {
         self.gamepad_buttons_pressed.insert(btn);
+        self.gamepad_buttons_pressed_fixed.insert(btn);
       }
       self.gamepad_buttons_down.insert(btn);
     } else {
       self.gamepad_buttons_down.remove(&btn);
       self.gamepad_buttons_released.insert(btn);
+      self.gamepad_buttons_released_fixed.insert(btn);
     }
   }
 
-  /// Handle gamepad axis event.
-  pub(crate) fn handle_gamepad_axis(
-    &mut self,
-    id: gilrs::GamepadId,
-    axis: gilrs::Axis,
-    value: f32,
-  ) {
-    // Only process events from the active gamepad
+  pub(crate) fn handle_gamepad_axis(&mut self, id: gilrs::GamepadId, axis: gilrs::Axis, value: f32) {
     if self.gamepad_id != Some(id) {
       return;
     }
-
     use gilrs::Axis;
     match axis {
       Axis::LeftStickX => {
@@ -901,36 +988,24 @@ impl InputState {
         self.right_stick_x = x;
         self.right_stick_y = y;
       }
-      Axis::LeftZ | Axis::RightZ => {
-        // Some controllers report triggers as Z axes
-        // Z is typically left trigger, RightZ is right trigger
-        // However, gilrs normalizes this - we handle it via LeftTrigger2/RightTrigger2 buttons
-        // and via dedicated trigger events (handled below)
-      }
+      // Triggers arrive as LeftTrigger2/RightTrigger2 button-changed events
       _ => {}
     }
   }
 
-  /// Handle gamepad trigger event (analog triggers).
   pub(crate) fn handle_gamepad_trigger(
     &mut self,
     id: gilrs::GamepadId,
     button: gilrs::Button,
     value: f32,
   ) {
-    // Only process events from the active gamepad
     if self.gamepad_id != Some(id) {
       return;
     }
-
     use gilrs::Button;
     match button {
-      Button::LeftTrigger2 => {
-        self.left_trigger = value;
-      }
-      Button::RightTrigger2 => {
-        self.right_trigger = value;
-      }
+      Button::LeftTrigger2 => self.left_trigger = value,
+      Button::RightTrigger2 => self.right_trigger = value,
       _ => {}
     }
   }
@@ -1454,8 +1529,8 @@ mod tests {
     // Regular key_pressed also returns false
     assert!(!input.key_pressed(KeyCode::Escape));
 
-    // But key_down still works (key is held)
-    assert!(input.key_down(KeyCode::Escape));
+    // Consumed for the rest of the frame, held state included
+    assert!(!input.key_down(KeyCode::Escape));
   }
 
   #[test]
@@ -1488,8 +1563,8 @@ mod tests {
     // Regular mouse_pressed also returns false
     assert!(!input.mouse_pressed(MouseButton::Left));
 
-    // But mouse_down still works (button is held)
-    assert!(input.mouse_down(MouseButton::Left));
+    // Consumed for the rest of the frame, held state included
+    assert!(!input.mouse_down(MouseButton::Left));
   }
 
   #[test]
@@ -1524,8 +1599,8 @@ mod tests {
     // Regular gamepad_button_pressed also returns false
     assert!(!input.gamepad_button_pressed(GamepadButton::South));
 
-    // But gamepad_button_down still works (button is held)
-    assert!(input.gamepad_button_down(GamepadButton::South));
+    // Consumed for the rest of the frame, held state included
+    assert!(!input.gamepad_button_down(GamepadButton::South));
   }
 
   #[test]
@@ -2313,5 +2388,131 @@ mod tests {
     input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
 
     assert!(input.key_pressed(KeyCode::Space));
+  }
+
+  // ── Frame-scoped queue, fixed view and consumption ──────────────────────
+
+  #[test]
+  fn queued_events_become_visible_at_begin_frame() {
+    let mut input = Input::new();
+    input.queue(InputEvent::Key {
+      key: KeyCode::Space,
+      pressed: true,
+    });
+    assert!(
+      !input.key_pressed(KeyCode::Space),
+      "not until the frame begins"
+    );
+    input.begin_frame();
+    assert!(input.key_pressed(KeyCode::Space));
+    assert!(input.key_down(KeyCode::Space));
+    input.begin_frame();
+    assert!(
+      !input.key_pressed(KeyCode::Space),
+      "one-shots last one frame"
+    );
+    assert!(input.key_down(KeyCode::Space), "held state persists");
+  }
+
+  #[test]
+  fn just_pressed_is_visible_in_the_first_fixed_step_only() {
+    let mut input = Input::new();
+    input.queue(InputEvent::Key {
+      key: KeyCode::KeyA,
+      pressed: true,
+    });
+    input.begin_frame();
+    input.set_fixed_step(0);
+    assert!(input.key_pressed(KeyCode::KeyA));
+    input.set_fixed_step(1);
+    assert!(!input.key_pressed(KeyCode::KeyA));
+    assert!(input.key_down(KeyCode::KeyA));
+    input.end_fixed_steps(true);
+    input.begin_frame();
+    assert!(!input.key_pressed(KeyCode::KeyA));
+    input.set_fixed_step(0);
+    assert!(
+      !input.key_pressed(KeyCode::KeyA),
+      "the fixed view was cleared once a step ran"
+    );
+  }
+
+  #[test]
+  fn a_press_in_a_frame_without_a_fixed_step_reaches_the_next_fixed_step() {
+    let mut input = Input::new();
+    input.queue(InputEvent::Key {
+      key: KeyCode::Space,
+      pressed: true,
+    });
+    input.begin_frame();
+    assert!(input.key_pressed(KeyCode::Space), "frame view, frame 1");
+    input.end_fixed_steps(false); // no fixed step ran this frame
+    input.begin_frame();
+    assert!(
+      !input.key_pressed(KeyCode::Space),
+      "the frame view lasts one frame"
+    );
+    input.set_fixed_step(0);
+    assert!(
+      input.key_pressed(KeyCode::Space),
+      "the first fixed step after the press still sees it"
+    );
+    input.end_fixed_steps(true);
+    input.begin_frame();
+    input.set_fixed_step(0);
+    assert!(!input.key_pressed(KeyCode::Space));
+  }
+
+  #[test]
+  fn consumed_input_is_hidden_for_the_rest_of_the_frame() {
+    let mut input = Input::new();
+    input.queue(InputEvent::Key {
+      key: KeyCode::Escape,
+      pressed: true,
+    });
+    input.queue(InputEvent::MouseButton {
+      button: MouseButton::Left,
+      pressed: true,
+    });
+    input.begin_frame();
+    assert!(input.key_pressed(KeyCode::Escape));
+    input.consume_key(KeyCode::Escape);
+    assert!(!input.key_pressed(KeyCode::Escape));
+    assert!(
+      !input.key_down(KeyCode::Escape),
+      "consumed means not pressed at all this frame"
+    );
+    input.set_fixed_step(0);
+    assert!(
+      !input.key_pressed(KeyCode::Escape),
+      "the fixed view is hidden too"
+    );
+    input.end_fixed_steps(true);
+    input.consume_mouse(MouseButton::Left);
+    assert!(!input.mouse_pressed(MouseButton::Left));
+    input.begin_frame();
+    assert!(
+      input.key_down(KeyCode::Escape),
+      "the key is still physically held next frame"
+    );
+  }
+
+  #[test]
+  fn text_and_release_events_round_trip() {
+    let mut input = Input::new();
+    input.queue(InputEvent::Text("hi".into()));
+    input.queue(InputEvent::Key {
+      key: KeyCode::KeyH,
+      pressed: true,
+    });
+    input.queue(InputEvent::Key {
+      key: KeyCode::KeyH,
+      pressed: false,
+    });
+    input.begin_frame();
+    assert_eq!(input.text_input(), "hi");
+    assert!(input.key_pressed(KeyCode::KeyH));
+    assert!(input.key_released(KeyCode::KeyH));
+    assert!(!input.key_down(KeyCode::KeyH));
   }
 }

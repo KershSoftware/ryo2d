@@ -43,10 +43,11 @@ mod gpu;
 mod gpu_world;
 
 use image::RgbaImage;
-use winit::event::{ElementState, MouseButton};
+use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 use crate::core::ecs::World;
+use crate::core::input::InputEvent;
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
 use crate::core::graphics::WgpuRenderer;
 
@@ -125,7 +126,7 @@ impl HeadlessEngine {
       self
         .engine
         .input_mut()
-        .handle_keyboard(key, ElementState::Released);
+        .queue(InputEvent::Key { key, pressed: false });
     }
     match outcome {
       FrameOutcome::Presented => {
@@ -188,7 +189,7 @@ impl HeadlessEngine {
     self
       .engine
       .input_mut()
-      .handle_keyboard(key, ElementState::Pressed);
+      .queue(InputEvent::Key { key, pressed: true });
   }
 
   /// Release `key`; the next step sees it as just released.
@@ -196,14 +197,14 @@ impl HeadlessEngine {
     self
       .engine
       .input_mut()
-      .handle_keyboard(key, ElementState::Released);
+      .queue(InputEvent::Key { key, pressed: false });
   }
 
   /// Press `key` for the next step only; it is released after that step.
   /// Deliver typed text, as a window's text event does alongside a key press
   /// (`press_key` and `tap_key` type nothing).
   pub fn type_text(&mut self, text: &str) {
-    self.engine.input_mut().handle_text_input(text);
+    self.engine.input_mut().queue(InputEvent::Text(text.to_string()));
   }
 
   pub fn tap_key(&mut self, key: KeyCode) {
@@ -216,7 +217,7 @@ impl HeadlessEngine {
     self
       .engine
       .input_mut()
-      .handle_mouse_button(button, ElementState::Pressed);
+      .queue(InputEvent::MouseButton { button, pressed: true });
   }
 
   /// Release a mouse button.
@@ -224,7 +225,7 @@ impl HeadlessEngine {
     self
       .engine
       .input_mut()
-      .handle_mouse_button(button, ElementState::Released);
+      .queue(InputEvent::MouseButton { button, pressed: false });
   }
 
   /// Move the mouse to `(x, y)` in game coordinates.
@@ -232,6 +233,6 @@ impl HeadlessEngine {
     self
       .engine
       .input_mut()
-      .handle_mouse_move(f64::from(x), f64::from(y));
+      .queue(InputEvent::MouseMove { x: f64::from(x), y: f64::from(y) });
   }
 }

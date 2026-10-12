@@ -356,6 +356,8 @@ mod tests {
   fn frame(script: &mut InputScript, input: &mut InputState, n: u64, update: bool) {
     script.before_frame(n, input);
     if update {
+      input.set_fixed_step(0);
+      input.end_fixed_steps(true);
       input.begin_frame();
     }
     script.after_frame(input);
@@ -373,7 +375,9 @@ mod tests {
     s.before_frame(3, &mut input);
     assert!(input.key_pressed(KeyCode::Space));
     assert!(input.key_down(KeyCode::Space));
-    input.begin_frame(); // the update saw it
+    input.set_fixed_step(0); // the update saw it
+    input.end_fixed_steps(true);
+    input.begin_frame();
     s.after_frame(&mut input);
 
     assert!(!input.key_down(KeyCode::Space));
@@ -422,6 +426,8 @@ mod tests {
       if input.key_pressed(KeyCode::Digit2) {
         presses += 1;
       }
+      input.set_fixed_step(0);
+      input.end_fixed_steps(true);
       input.begin_frame();
       s.after_frame(&mut input);
     }
@@ -448,6 +454,8 @@ mod tests {
       if n > 2 && input.key_pressed(KeyCode::ArrowRight) {
         second_right = Some(n);
       }
+      input.set_fixed_step(0);
+      input.end_fixed_steps(true);
       input.begin_frame();
       s.after_frame(&mut input);
     }
@@ -519,6 +527,8 @@ mod tests {
     s.before_frame(2, &mut input);
     assert_eq!(input.mouse_position(), (64.0, 32.0));
     assert!(input.mouse_pressed(MouseButton::Left));
+    input.set_fixed_step(0);
+    input.end_fixed_steps(true);
     input.begin_frame();
     s.after_frame(&mut input);
     assert!(!input.mouse_down(MouseButton::Left));

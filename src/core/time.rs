@@ -239,6 +239,8 @@ impl Time {
     self.frame_count += 1;
   }
 
+  // Driven by the frame loop once it runs on these clocks
+  #[allow(dead_code)]
   /// Consume one fixed step if the accumulator holds one.
   pub(crate) fn try_expend_fixed_step(&mut self) -> bool {
     if self.fixed.accumulator >= self.fixed.timestep {
@@ -250,6 +252,8 @@ impl Time {
     }
   }
 
+  // Driven by the frame loop once it runs on these clocks
+  #[allow(dead_code)]
   pub(crate) fn set_in_fixed(&mut self, in_fixed: bool) {
     self.in_fixed = in_fixed;
   }

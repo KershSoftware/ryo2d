@@ -24,7 +24,7 @@ use super::error::{EngineError, EngineResult};
 use super::events::{CollisionStarted, CollisionStopped, Events};
 use super::game::{GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
 use super::graphics::{BatchCollector, Camera, SpriteGpuRenderer, WgpuRenderer};
-use super::input::InputState;
+use super::input::{InputEvent, InputState};
 use super::input_script::InputScript;
 use super::lighting::{Light2D, LightOccluder2D, LightingRenderer};
 use super::physics::{PhysicsConfig, RapierPhysicsWorld};
@@ -938,6 +938,9 @@ impl Engine {
     // Reset frame timings
     self.frame_timings = FrameTimings::default();
 
+    // Apply the events queued since the last frame; scripted presses follow
+    self.input.begin_frame();
+
     // Scripted presses for this frame, before anything reads input
     let next_frame = self.capture.presented_frames() + 1;
     self.input_script.before_frame(next_frame, &mut self.input);
@@ -1121,7 +1124,6 @@ impl Engine {
 
     // Fixed timestep update loop (includes game logic + physics)
     // Use a block to limit the profile_scope lifetime
-    let mut did_update = false;
     {
       profile_scope!("cpu:update");
       let update_start = std::time::Instant::now();
@@ -1130,7 +1132,7 @@ impl Engine {
       // This captures the "previous" state that we'll lerp from during rendering
       InterpolationSystem::snapshot(&mut self.world);
 
-      let mut first_update = true;
+      let mut step_index = 0u32;
       while self
         .time
         .as_ref()
@@ -1148,19 +1150,15 @@ impl Engine {
           .as_ref()
           .expect("TimeState should be initialized")
           .scaled_fixed_dt();
+        self.input.set_fixed_step(step_index);
         self.update(scaled_dt);
-
-        if first_update {
-          self.input.suppress_oneshots();
-          first_update = false;
-        }
+        step_index += 1;
 
         if let Some(time) = &mut self.time {
           time.consume_update();
         }
-        did_update = true;
       }
-      self.input.unsuppress_oneshots();
+      self.input.end_fixed_steps(step_index > 0);
 
       // After all updates: decay hitstop and sync back to time_control
       if let Some(time) = &mut self.time {
@@ -1183,17 +1181,6 @@ impl Engine {
       PresentOutcome::Skipped => FrameOutcome::Skipped,
     };
 
-    // Clear key repeat state every frame so held-key actions (backspace,
-    // arrows) don't fire multiple times across consecutive no-update frames
-    // when render_ui processes them on each frame.
-    self.input.post_render_cleanup();
-
-    // Clear all per-frame input state at the END of the frame, but ONLY if
-    // we ran at least one update. This preserves input events for the next
-    // frame when the fixed timestep accumulator isn't ready yet.
-    if did_update {
-      self.input.begin_frame();
-    }
     self.input_script.after_frame(&mut self.input);
 
     outcome
@@ -1221,6 +1208,7 @@ impl Engine {
     if let Some(time) = &mut self.time {
       time.begin_frame();
     }
+    self.input.begin_frame();
 
     // Process gamepad events even when not focused
     if let Some(ref mut gilrs) = self.gilrs {
@@ -1238,7 +1226,7 @@ impl Engine {
     // Fixed timestep update loop with profile scope
     {
       profile_scope!("cpu:update");
-      let mut first_update = true;
+      let mut step_index = 0u32;
       while self
         .time
         .as_ref()
@@ -1255,18 +1243,15 @@ impl Engine {
           .as_ref()
           .map(|t| t.scaled_fixed_dt())
           .unwrap_or(0.0);
+        self.input.set_fixed_step(step_index);
         self.update(scaled_dt);
-
-        if first_update {
-          self.input.suppress_oneshots();
-          first_update = false;
-        }
+        step_index += 1;
 
         if let Some(time) = &mut self.time {
           time.consume_update();
         }
       }
-      self.input.unsuppress_oneshots();
+      self.input.end_fixed_steps(step_index > 0);
     }
 
     // Decay hitstop and sync back to time_control
@@ -2557,7 +2542,10 @@ impl ApplicationHandler for Engine {
     match &event {
       WindowEvent::KeyboardInput { event, .. } => {
         if let PhysicalKey::Code(key) = event.physical_key {
-          self.input.handle_keyboard(key, event.state);
+          self.input.queue(InputEvent::Key {
+            key,
+            pressed: event.state == winit::event::ElementState::Pressed,
+          });
         }
         // Capture text input from key events (winit 0.30+)
         // This handles regular character input when IME is not composing
@@ -2572,12 +2560,15 @@ impl ApplicationHandler for Engine {
           let alt_held =
             self.input.key_down(KeyCode::AltLeft) || self.input.key_down(KeyCode::AltRight);
           if !ctrl_held && !alt_held && !text.chars().all(|c| c.is_control()) {
-            self.input.handle_text_input(text);
+            self.input.queue(InputEvent::Text(text.to_string()));
           }
         }
       }
       WindowEvent::MouseInput { state, button, .. } => {
-        self.input.handle_mouse_button(*button, *state);
+        self.input.queue(InputEvent::MouseButton {
+          button: *button,
+          pressed: *state == winit::event::ElementState::Pressed,
+        });
       }
       WindowEvent::CursorMoved { position, .. } => {
         // When cursor is locked, deltas come from DeviceEvent::MouseMotion instead
@@ -2585,27 +2576,33 @@ impl ApplicationHandler for Engine {
           // Transform window coordinates to game coordinates
           // If None, cursor is in black bars (letterbox area) - don't update mouse position
           if let Some((game_x, game_y)) = self.window_to_game_coords(position.x, position.y) {
-            self.input.handle_mouse_move(game_x as f64, game_y as f64);
+            self.input.queue(InputEvent::MouseMove {
+              x: game_x as f64,
+              y: game_y as f64,
+            });
           }
         }
       }
       WindowEvent::MouseWheel { delta, .. } => {
-        self.input.handle_scroll(*delta);
+        self.input.queue(InputEvent::Scroll(*delta));
       }
       WindowEvent::Ime(ime_event) => {
         // Handle Input Method Editor (IME) events for text input
         match ime_event {
           Ime::Enabled => {
-            self.input.handle_ime_enabled();
+            self.input.queue(InputEvent::ImeEnabled);
           }
           Ime::Disabled => {
-            self.input.handle_ime_disabled();
+            self.input.queue(InputEvent::ImeDisabled);
           }
           Ime::Preedit(text, cursor) => {
-            self.input.handle_ime_preedit(text.clone(), *cursor);
+            self.input.queue(InputEvent::ImePreedit {
+              text: text.clone(),
+              cursor: *cursor,
+            });
           }
           Ime::Commit(text) => {
-            self.input.handle_ime_commit(text.clone());
+            self.input.queue(InputEvent::ImeCommit(text.clone()));
           }
         }
       }
@@ -2764,7 +2761,10 @@ impl ApplicationHandler for Engine {
     if self.cursor_locked
       && let winit::event::DeviceEvent::MouseMotion { delta } = event
     {
-      self.input.handle_raw_mouse_motion(delta.0, delta.1);
+      self.input.queue(InputEvent::RawMouseMotion {
+        dx: delta.0,
+        dy: delta.1,
+      });
     }
   }
 
