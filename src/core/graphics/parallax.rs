@@ -1,4 +1,4 @@
-//! Parallax background types shared between CPU and GPU implementations.
+//! Parallax tiling modes, used by [`GpuParallaxLayer`](super::GpuParallaxLayer).
 
 /// Controls how a parallax layer tiles horizontally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

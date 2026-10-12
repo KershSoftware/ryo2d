@@ -620,7 +620,7 @@ mod tests {
 
   #[test]
   fn input_is_seen_once_per_frame_by_fixed_logic() {
-    // covered end to end in Task 15's headless tests; here: the loop sets the fixed step index
+    // Covered end to end by the headless input tests; here: the loop sets the fixed step index
     if crate::core::testing::shared_gpu().is_err() {
       return;
     }

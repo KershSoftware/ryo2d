@@ -1,20 +1,15 @@
 //! GPU-accelerated parallax background rendering
 //!
-//! This module provides a GPU-based parallax system that uses instanced rendering
-//! for significantly better performance with large images or many layers.
+//! Parallax layers are batched GPU sprites: a scene builds a
+//! [`GpuParallaxBackground`] and adds it to the frame from [`Scene::render`],
+//! where its layers sort by z with entities and other sprites.
 //!
-//! # Performance Comparison
-//!
-//! | Scenario | CPU Parallax | GPU Parallax |
-//! |----------|-------------|--------------|
-//! | 1 layer, small image | ~0.1ms | ~0.1ms |
-//! | 6 layers, large images | ~8-15ms | ~0.5ms |
-//! | Many tiled layers | Scales poorly | Constant time |
+//! [`Scene::render`]: crate::core::scene::Scene::render
 //!
 //! # Example
 //!
 //! ```ignore
-//! // In your game's init:
+//! // In on_enter:
 //! let parallax = GpuParallaxBuilder::new()
 //!     .static_layer(&sky_sprite, -100)
 //!     .layer(&mountains_sprite, 0.3, -80)
@@ -22,9 +17,9 @@
 //!         .with_auto_scroll(10.0)
 //!     .build();
 //!
-//! // In your game's render_gpu callback — textures upload automatically:
-//! fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
-//!     self.parallax.render(ctx);
+//! // In Scene::render (textures upload automatically):
+//! fn render(&mut self, gpu: &mut GpuRenderContext) {
+//!     self.parallax.render(gpu);
 //! }
 //! ```
 
@@ -33,9 +28,7 @@ use crate::core::asset::SpriteHandle;
 use crate::core::graphics::parallax::TileMode;
 use crate::core::graphics::sprite_gpu::SpriteInstance;
 
-/// A parallax layer configured for GPU rendering.
-///
-/// Similar to the CPU `ParallaxLayer` but optimized for GPU instancing.
+/// One layer of a [`GpuParallaxBackground`], drawn as instanced GPU sprites.
 #[derive(Clone)]
 pub struct GpuParallaxLayer {
   /// Texture ID (from SpriteHandle.id())
@@ -281,7 +274,7 @@ impl GpuParallaxBackground {
 
   /// Render the parallax background using GPU rendering.
   ///
-  /// This should be called from your `render_gpu` callback.
+  /// Call it from [`Scene::render`](crate::core::scene::Scene::render).
   /// Layers created with [`GpuParallaxLayer::new()`] have their textures
   /// uploaded automatically. Layers created with [`GpuParallaxLayer::from_id()`]
   /// require manual upload via `ctx.upload_sprite()` before this call.

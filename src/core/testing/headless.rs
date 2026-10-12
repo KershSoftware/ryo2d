@@ -22,7 +22,7 @@ pub enum StepOutcome {
   Quit,
 }
 
-/// The engine running without a window. See the [module docs](self).
+/// The engine running without a window. See the [module docs](crate::testing).
 pub struct HeadlessEngine {
   pub(super) engine: Engine,
   presented: u64,

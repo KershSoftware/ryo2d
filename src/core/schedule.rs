@@ -167,6 +167,8 @@ impl EngineSchedules {
   }
 }
 
+/// Why [`SceneContext::add_systems`](crate::core::scene::SceneContext::add_systems)
+/// refused a scene's systems.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SceneScheduleError {
   #[error("scenes can add systems to FixedUpdate and Update only, not {0:?}")]

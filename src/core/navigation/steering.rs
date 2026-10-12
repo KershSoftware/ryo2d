@@ -19,8 +19,7 @@
 //!
 //! // Apply to movement
 //! let final_velocity = path_direction + avoid;
-//! transform.x += final_velocity.x * dt;
-//! transform.y += final_velocity.y * dt;
+//! transform.translation += final_velocity * dt;
 //! ```
 
 use crate::core::ecs::Vec2;

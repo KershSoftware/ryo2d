@@ -12,6 +12,9 @@
 //! - [`NavAgent`] - Component for entities that need pathfinding
 //! - [`NavTarget`] - Component to set navigation destinations
 //!
+//! No engine system runs navigation: the game owns the grid and pathfinder,
+//! drives each `NavAgent`'s state and moves its `Transform` along the path.
+//!
 //! # Quick Start
 //!
 //! ```ignore
@@ -20,6 +23,7 @@
 //! struct GameScene {
 //!     nav_grid: NavigationGrid,
 //!     pathfinder: Pathfinder,
+//!     agent: Option<Entity>,
 //! }
 //!
 //! impl Scene for GameScene {
@@ -30,18 +34,20 @@
 //!             .build_from_world(ctx.world);
 //!
 //!         // Spawn a navigating entity
-//!         ctx.world.spawn((
+//!         let agent = ctx.world.spawn((
 //!             Transform::from_xy(100.0, 100.0),
 //!             NavAgent::new(100.0),  // 100 px/second
-//!         ));
+//!         )).id();
+//!         self.agent = Some(agent);
 //!     }
 //!
-//!     fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+//!     fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
 //!         // Set destination for an entity
-//!         if ctx.input.just_pressed(KeyCode::Space) {
-//!             ctx.world.entity_mut(entity).insert(NavTarget::position(500.0, 400.0));
+//!         if let Some(agent) = self.agent && ctx.input.key_pressed(KeyCode::Space) {
+//!             ctx.world.entity_mut(agent).insert(NavTarget::position(500.0, 400.0));
 //!         }
-//!
+//!         // ...then find the path and move the agent along it (see below)
+//!         SceneAction::Continue
 //!     }
 //! }
 //! ```
@@ -58,7 +64,7 @@
 //! // Or build from world colliders automatically
 //! let grid = NavigationBuilder::new(800.0, 600.0)
 //!     .with_cell_size(16.0)
-//!     .build_from_world(&ctx.world);
+//!     .build_from_world(ctx.world);
 //! ```
 //!
 //! # Pathfinding

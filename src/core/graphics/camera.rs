@@ -329,7 +329,7 @@ impl Camera {
 
   /// Instantly clear all screen shake trauma and offsets.
   ///
-  /// Unlike [`reset`], this only affects the shake state — camera position
+  /// Unlike [`reset`](Self::reset), this only affects the shake state — camera position
   /// and zoom are preserved.
   pub fn reset_trauma(&mut self) {
     self.shake.trauma = 0.0;

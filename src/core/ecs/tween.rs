@@ -307,7 +307,7 @@ pub enum TweenLoop {
 /// Component for tweening Transform properties over time.
 ///
 /// Attach to an entity with a `Transform` to animate its position, rotation, or scale.
-/// The engine updates active tweens automatically each frame.
+/// The engine updates active tweens automatically each fixed step (`FixedSet::Juice`).
 ///
 /// # Example
 ///
@@ -318,7 +318,7 @@ pub enum TweenLoop {
 ///     Tween::new(1.5)
 ///         .to_x(200.0)
 ///         .to_y(100.0)
-///         .to_rotation(std::f32::consts::PI)
+///         .to_rotation_value(std::f32::consts::PI)
 ///         .with_easing(Ease::OutCubic),
 /// ));
 /// ```
@@ -363,9 +363,9 @@ pub struct Tween {
   started: bool,
   /// Whether the tween is currently playing
   pub playing: bool,
-  /// True for one frame when the tween starts (after delay)
+  /// True for one fixed step when the tween starts (after delay)
   pub just_started: bool,
-  /// True for one frame when the tween finishes (or each loop iteration for Loop/Times)
+  /// True for one fixed step when the tween finishes (or each loop iteration for Loop/Times)
   pub just_finished: bool,
   /// For PingPong: true when going backward
   ping_pong_reverse: bool,
@@ -913,7 +913,7 @@ pub struct TweenSequence {
   current_index: usize,
   /// Whether the sequence is playing
   pub playing: bool,
-  /// True for one frame when the entire sequence finishes
+  /// True for one fixed step when the entire sequence finishes
   pub just_finished: bool,
   /// Loop the entire sequence
   pub loop_sequence: bool,

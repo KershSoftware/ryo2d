@@ -368,7 +368,7 @@ pub struct SceneContext<'a> {
 
 | Helper | |
 |---|---|
-| `add_systems<M>(&mut self, phase: Phase, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Result<(), SceneScheduleError>` | scene-owned systems; `FixedUpdate` and `Update` only (other phases: `SceneScheduleError::UnsupportedPhase`, in `ryo2d::core::schedule`) |
+| `add_systems<M>(&mut self, phase: Phase, systems: impl IntoScheduleConfigs<ScheduleSystem, M>) -> Result<(), SceneScheduleError>` | scene-owned systems; `FixedUpdate` and `Update` only (other phases: `SceneScheduleError::UnsupportedPhase`; `SceneScheduleError` is in the prelude) |
 | `messages<T: Message + Clone>(&mut self) -> Vec<T>` | messages written since this scene last read `T` |
 | `write_message<T: Message>(&mut self, message: T)` | registers `T` on first use |
 | `resource<T: Resource>(&self) -> Option<&T>` | |

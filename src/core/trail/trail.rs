@@ -9,13 +9,13 @@
 //! use ryo2d::prelude::*;
 //!
 //! // Spawn a bullet with a trail
-//! let bullet = world.spawn((
-//!     Transform::at(100.0, 100.0),
+//! let bullet = ctx.world.spawn((
+//!     Transform::from_xy(100.0, 100.0),
 //!     Renderable::sprite(bullet_sprite),
 //!     Trail2D::new(Color::YELLOW, 5.0)
 //!         .with_length(20)
 //!         .with_fade(true),
-//! ));
+//! )).id();
 //! ```
 
 use super::TrailStyle;
@@ -560,8 +560,9 @@ impl Trail2D {
 
   /// Update the trail with a new position.
   ///
-  /// This should be called every frame with the entity's current position.
-  /// Points are automatically added based on distance and time thresholds,
+  /// The engine calls this every fixed step with the entity's world position
+  /// (`FixedSet::Trails`); call it yourself only for a trail that follows
+  /// something else. Points are automatically added based on distance and time thresholds,
   /// and removed when they exceed the lifetime (if set).
   ///
   /// When `enabled` is false, points are still aged and removed (for fade-out effects),
@@ -842,7 +843,7 @@ impl Trail2D {
     self.lighting = enabled;
   }
 
-  /// Set the draw order (default 0). Trails sort with entities, `render_gpu`
+  /// Set the draw order (default 0). Trails sort with entities, `Scene::render`
   /// sprites and lines by z: a trail draws over anything with a lower z and
   /// under anything with a higher one. At equal z, trails draw after
   /// entities and sprites, so give a trail its entity's z to keep it in front.

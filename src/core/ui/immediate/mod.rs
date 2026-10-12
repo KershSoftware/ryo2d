@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```ignore
-//! fn render_ui(&mut self, ui: &mut UiContext) {
+//! fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
 //!     // Draw a health bar
 //!     ui.draw_progress_bar(
 //!         Rect::new(10.0, 10.0, 200.0, 20.0),
@@ -27,7 +27,7 @@
 //!
 //!     // Button returns true when clicked (immediate - no state persisted)
 //!     if ui.button("Pause", Rect::new(700.0, 10.0, 80.0, 30.0)) {
-//!         self.paused = true;
+//!         return SceneAction::Push(Box::new(PauseMenu));
 //!     }
 //!
 //!     // Layout containers for positioning (stateless helpers)
@@ -35,6 +35,7 @@
 //!     ui.button("A", row.next(60.0, 30.0));
 //!     ui.button("B", row.next(60.0, 30.0));
 //!     ui.button("C", row.next(60.0, 30.0));
+//!     SceneAction::Continue
 //! }
 //! ```
 

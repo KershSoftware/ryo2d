@@ -11,7 +11,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! // In render_ui:
+//! // In Scene::ui:
 //! ui.handle_tab_navigation(&mut [
 //!     &mut self.username_input,    // TextInputState
 //!     &mut self.difficulty,        // DropdownState
@@ -57,15 +57,18 @@ pub trait Focusable {
 /// # Example
 ///
 /// ```ignore
-/// // In a modal dialog scene:
-/// let trap = FocusTrap::new(&mut [
-///     &mut self.confirm_button,
-///     &mut self.cancel_button,
-///     &mut self.input_field,
-/// ]);
+/// // In a modal dialog scene's Scene::ui:
+/// let tab = ui.input().key_pressed(KeyCode::Tab);
+/// let shift = ui.input().key_down(KeyCode::ShiftLeft)
+///     || ui.input().key_down(KeyCode::ShiftRight);
 ///
-/// // Handle Tab navigation within the trap
-/// trap.handle_tab(input);
+/// let mut widgets: [&mut dyn Focusable; 2] = [&mut self.name_input, &mut self.difficulty];
+/// let mut trap = FocusTrap::new(&mut widgets);
+///
+/// // Tab cycles within the trap unless a widget (an open dropdown) captures input
+/// if tab && !trap.is_capturing() {
+///     if shift { trap.focus_prev() } else { trap.focus_next() }
+/// }
 /// ```
 pub struct FocusTrap<'a> {
   widgets: &'a mut [&'a mut dyn Focusable],

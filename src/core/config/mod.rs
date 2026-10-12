@@ -2,7 +2,8 @@
 //!
 //! This module provides:
 //! - [`Workspace`] - Project discovery and Ryo.toml parsing
-//! - [`SaveManager`] - 3-tier save system with compression
+//! - [`SaveManager`] - saves: system state (`system.json` user settings) and
+//!   compressed game data
 //! - Debug visualization and frame timing utilities
 
 pub mod debug;

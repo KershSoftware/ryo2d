@@ -1,6 +1,6 @@
 //! # Ryo2D
 //!
-//! A simple, scriptable 2D game engine built in Rust.
+//! A 2D game engine built in Rust.
 //!
 //! ## Quick Start
 //!
@@ -33,13 +33,19 @@
 //!
 //! ## Architecture
 //!
-//! Ryo2D uses a simple Entity-Component-System (ECS) architecture:
+//! Ryo2D's ECS ([`ecs`], all in the prelude) holds the game state:
 //!
-//! - **Entities** are unique IDs representing game objects
-//! - **Components** are data attached to entities (Transform, Velocity, Renderable)
-//! - **Systems** process entities with specific components (handled by the engine)
+//! - **Entities** are game objects: `ctx.world.spawn((Transform::from_xy(..), ..)).id()`
+//! - **Components** are data on entities (`Transform`, `Renderable`, `RigidBody`, your own)
+//! - **Resources** are world singletons (`Time`, `Input`, `Camera`, your own)
+//! - **Systems** are functions over queries and resources, run in the engine's
+//!   phases; gameplay runs at a fixed rate (`EngineBuilder::fixed_hz`)
+//! - **Messages** carry buffered notifications between systems and scenes
 //!
-//! You implement the [`core::scene::Scene`] trait to define your game's behavior.
+//! You implement the [`core::scene::Scene`] trait for your game's flow:
+//! `update(ctx, dt)` each fixed step, `ui(ui, ctx)` once a frame and
+//! `render(gpu)` for batched GPU sprites. Scenes add their own systems with
+//! `ctx.add_systems`.
 
 pub mod cli;
 pub mod core;
@@ -72,7 +78,7 @@ pub mod prelude {
   pub use crate::core::ecs::*;
 
   // Clocks and phases
-  pub use crate::core::schedule::{FixedSet, Phase, PostUpdateSet, UpdateSet};
+  pub use crate::core::schedule::{FixedSet, Phase, PostUpdateSet, SceneScheduleError, UpdateSet};
   pub use crate::core::time::Time;
 
   // Scenes

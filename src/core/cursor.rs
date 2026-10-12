@@ -11,7 +11,7 @@
 //! ```rust,ignore
 //! use ryo2d::prelude::*;
 //!
-//! fn update(&mut self, ctx: &mut GameContext) {
+//! fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
 //!     // Change to crosshair when aiming
 //!     if ctx.input.mouse_down(MouseButton::Right) {
 //!         ctx.set_cursor(CursorStyle::Crosshair);
@@ -25,6 +25,7 @@
 //!
 //!     // Hide cursor during gameplay
 //!     ctx.set_cursor_visible(false);
+//!     SceneAction::Continue
 //! }
 //! ```
 

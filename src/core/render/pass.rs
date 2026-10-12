@@ -22,8 +22,9 @@ use super::{FrameInfo, RenderContext};
 /// }
 ///
 /// // Passes persist across scenes, so add it only once
-/// if !ctx.render_pipeline.contains("flash") {
-///   let _ = ctx.render_pipeline.insert_before(pass_ids::COMPOSITE, Flash);
+/// let mut pipeline = ctx.render_pipeline();
+/// if !pipeline.contains("flash") {
+///   let _ = pipeline.insert_before(pass_ids::COMPOSITE, Flash);
 /// }
 /// ```
 pub trait RenderPass: Send + Sync {

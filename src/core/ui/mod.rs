@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────┐
-//! │              Game Code (render_ui callback)             │
+//! │              Game Code (Scene::ui callback)             │
 //! ├─────────────────────────────────────────────────────────┤
 //! │   Retained Mode Layer                                   │
 //! │   ├─ Layout Containers (HBox, VBox, Stack)              │
@@ -24,7 +24,7 @@
 //! ├─────────────────────────────────────────────────────────┤
 //! │   Theme System                                          │
 //! │   ├─ Widget styles (colors, spacing, borders)           │
-//! │   └─ Hot-reload from RON files                          │
+//! │   └─ Hot-reload from JSON files                         │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -36,7 +36,7 @@
 //! - Dynamic UI that changes frequently
 //! - Prototyping
 //!
-//! ## Retained Mode (coming soon)
+//! ## Retained Mode
 //! - Complex forms with text input
 //! - Menus with many options
 //! - Inventory screens
@@ -45,7 +45,7 @@
 //! # Example
 //!
 //! ```ignore
-//! fn render_ui(&mut self, ui: &mut UiContext) {
+//! fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
 //!     // Immediate mode: draw directly
 //!     ui.draw_progress_bar(
 //!         Rect::new(10.0, 10.0, 200.0, 20.0),
@@ -56,8 +56,9 @@
 //!
 //!     // Button returns true when clicked
 //!     if ui.button("Pause", Rect::new(700.0, 10.0, 80.0, 30.0)) {
-//!         self.paused = true;
+//!         return SceneAction::Push(Box::new(PauseMenu));
 //!     }
+//!     SceneAction::Continue
 //! }
 //! ```
 

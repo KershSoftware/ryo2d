@@ -9,7 +9,7 @@
 //! // In your scene/game struct:
 //! dropdown_state: DropdownState,
 //!
-//! // In render_ui:
+//! // In Scene::ui:
 //! let options = ["Easy", "Medium", "Hard"];
 //! let rect = Rect::new(100.0, 100.0, 200.0, 30.0);
 //!

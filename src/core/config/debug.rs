@@ -22,7 +22,7 @@
 //!
 //! # Runtime Debug Key Toggles
 //!
-//! **Game Debug Keys (F1-F4)** - Available to players unless `disable_debug_keys = true`:
+//! **Game Debug Keys (F1-F5)** - Available to players unless `disable_debug_keys = true`:
 //!
 //! | Key | Action |
 //! |-----|--------|
@@ -30,6 +30,7 @@
 //! | F2 | Toggle collision boundaries |
 //! | F3 | Toggle velocity vectors |
 //! | F4 | Toggle origin points |
+//! | F5 | Toggle borderless fullscreen |
 //!
 //! **Dev Keys (F9, F10, F12)** - Dev-only by default, requires `dev_window_keys = true` in release:
 //!
@@ -39,7 +40,7 @@
 //! | F10 | Toggle profiler window (requires `profiler` feature) |
 //! | F12 | Capture the next frame to `captures/` (or `RYO_CAPTURE_DIR`) |
 //!
-//! Set `disable_debug_keys = true` in `[debug]` to disable F1-F4 toggles.
+//! Set `disable_debug_keys = true` in `[debug]` to disable the F1-F5 toggles.
 //! Set `dev_window_keys = true` in `[debug]` to enable F9, F10 and F12 in release builds.
 //!
 //! # Profiling Workflow
@@ -68,7 +69,7 @@
 //! disable_debug_keys = false
 //! enable_profiler = true   # Open flamegraph profiler window
 //!
-//! [info]
+//! [system]
 //! show_fps = true
 //! ```
 //!
@@ -253,7 +254,7 @@ impl Default for DebugConfig {
       show_origins: false,
       enable_profiler: false, // Disabled by default (opt-in)
       logger_window: false,   // Disabled by default (opt-in)
-      // Dev window keys (F8/F9) enabled by default in debug builds only
+      // Dev window keys (F9/F10/F12) enabled by default in debug builds only
       #[cfg(debug_assertions)]
       dev_window_keys: true,
       #[cfg(not(debug_assertions))]

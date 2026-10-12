@@ -14,19 +14,20 @@
 //!
 //! # Using it from a game
 //!
-//! The engine's pipeline is reachable as `ctx.render_pipeline` in scene
-//! callbacks. Changes persist across scene transitions. A pass that draws on
-//! the frame uses [`RenderContext::encoder_and_current_view`]:
+//! The engine's pipeline is a resource, reachable as `ctx.render_pipeline()`
+//! in scene callbacks. Changes persist across scene transitions. A pass that
+//! draws on the frame uses [`RenderContext::encoder_and_current_view`]:
 //!
 //! ```ignore
 //! use ryo2d::prelude::*;
 //!
 //! // Draw the frame without post-process effects
-//! let _ = ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false);
+//! let _ = ctx.render_pipeline().set_enabled(pass_ids::POST_PROCESS, false);
 //! // Run a game pass before the frame reaches the screen. Passes persist
 //! // across scenes, so add it once (or `remove("my_pass")` in `on_exit`).
-//! if !ctx.render_pipeline.contains("my_pass") {
-//!   let _ = ctx.render_pipeline.insert_before(pass_ids::COMPOSITE, MyPass);
+//! let mut pipeline = ctx.render_pipeline();
+//! if !pipeline.contains("my_pass") {
+//!   let _ = pipeline.insert_before(pass_ids::COMPOSITE, MyPass);
 //! }
 //! ```
 

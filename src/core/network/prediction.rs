@@ -26,7 +26,7 @@
 //! let entity = world.spawn((
 //!     Transform::from_xy(0.0, 0.0),
 //!     Predicted::new(client_id),
-//! ));
+//! )).id();
 //!
 //! // Create prediction helper
 //! let mut prediction = PredictionHelper::new(Some(local_client_id));

@@ -84,7 +84,8 @@ impl SceneCleanup {
   pub const CAMERA: Self = Self(1 << 1);
   /// Clear all post-processing effects.
   pub const EFFECTS: Self = Self(1 << 2);
-  /// Reset ambient light and atmosphere to defaults.
+  /// Reset the lighting settings to defaults: forced on/off, ambient light,
+  /// atmosphere, and automatic lighting (back off until a light exists).
   pub const LIGHTING: Self = Self(1 << 3);
   /// Reset the game clock's speed, pause and hitstop.
   pub const TIME: Self = Self(1 << 4);

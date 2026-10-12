@@ -22,16 +22,16 @@
 //! # Example
 //!
 //! ```ignore
-//! // Register a custom command in your game
-//! fn init(&mut self, ctx: &mut GameContext) {
-//!     ctx.register_console_command(
-//!         "spawn_enemy",
-//!         "Spawn an enemy at the player's position",
-//!         |args, cmd_ctx| {
-//!             cmd_ctx.console.print("Spawning enemy...");
-//!             CommandResult::Ok
-//!         }
-//!     );
+//! // Declare the command once (here, or with `EngineBuilder::with_console_commands`)
+//! // and attach a handler from a scene; the handler goes away with the scene.
+//! fn on_enter(&mut self, ctx: &mut SceneContext) {
+//!     let mut console = ctx.console();
+//!     console.declare("game:spawn_enemy", "Spawn an enemy at the player's position", None::<&str>);
+//!     console.register("game:spawn_enemy", |_args, cmd_ctx| {
+//!         cmd_ctx.console.print("Spawning enemy...");
+//!         SPAWN_REQUESTED.store(true, Ordering::Relaxed); // read in update
+//!         CommandResult::Ok
+//!     });
 //! }
 //! ```
 

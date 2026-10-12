@@ -53,9 +53,9 @@ pub struct SquashStretch {
   base_explicit: bool,
   /// Whether the effect is currently active
   pub active: bool,
-  /// Set to true on the frame the effect starts
+  /// Set to true on the fixed step the effect starts
   pub just_started: bool,
-  /// Set to true on the frame the effect finishes
+  /// Set to true on the fixed step the effect finishes
   pub just_finished: bool,
 }
 
@@ -259,7 +259,7 @@ impl SquashStretch {
     }
   }
 
-  /// Update the effect (called by engine each frame).
+  /// Update the effect (called by the engine each fixed step).
   ///
   /// Decays strength and updates state flags.
   pub fn update(&mut self, dt: f32) {

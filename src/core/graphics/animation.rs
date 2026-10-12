@@ -13,7 +13,7 @@
 //! let spin = Animation::new("spin", vec![frame1, frame2, frame3], 0.1);
 //!
 //! ctx.world.spawn((
-//!     Transform::new(x, y),
+//!     Transform::from_xy(x, y),
 //!     Renderable::sprite(frame1),
 //!     Animator::new(spin),
 //! ));
@@ -31,8 +31,12 @@
 //! controller.add_animation("attack", attack_anim.with_loop_mode(LoopMode::Once));
 //! controller.set_state("idle");
 //!
-//! // In game logic - just set the state
-//! controller.set_state("walk");
+//! ctx.world.spawn((Transform::from_xy(x, y), Renderable::sprite(idle_frame), controller));
+//!
+//! // In game logic, set the state on the entity's controller
+//! if let Some(mut controller) = ctx.world.get_mut::<AnimationController>(player) {
+//!     controller.set_state("walk");
+//! }
 //! ```
 
 use crate::core::ecs::Component;
@@ -151,7 +155,8 @@ pub enum PlaybackState {
 /// ECS component for playing animations on an entity
 ///
 /// Attach this to any entity with a [`Renderable`](crate::core::ecs::Renderable).
-/// The engine automatically updates the sprite each frame.
+/// The engine advances it each fixed step and puts the current frame on the
+/// entity's `Renderable`.
 #[derive(Component, Clone)]
 pub struct Animator {
   animation: Animation,
@@ -239,7 +244,8 @@ impl Animator {
 
   /// Check if animation just finished (one-shot or limited loops)
   ///
-  /// This flag is set for one frame when the animation completes.
+  /// This flag is set for one update (one fixed step for engine-driven
+  /// animators) when the animation completes.
   pub fn just_finished(&self) -> bool {
     self.just_finished
   }
@@ -259,7 +265,7 @@ impl Animator {
     self.animation.name()
   }
 
-  /// Update the animation (called by engine each frame)
+  /// Update the animation (called by the engine each fixed step)
   pub fn update(&mut self, dt: f32) {
     self.just_finished = false;
 
@@ -433,7 +439,7 @@ impl AnimationController {
     }
   }
 
-  /// Update the controller (called by engine each frame)
+  /// Update the controller (called by the engine each fixed step)
   pub fn update(&mut self, dt: f32) {
     if let Some(animator) = &mut self.animator {
       animator.update(dt);
@@ -613,7 +619,9 @@ impl ValidatedAnimator {
     self.controller.reset();
   }
 
-  /// Update the animator (called by engine each frame).
+  /// Update the animator. The engine does not drive `ValidatedAnimator`:
+  /// call this from `Scene::update` and copy `current_sprite()` to the
+  /// entity's `Renderable`.
   pub fn update(&mut self, dt: f32) {
     self.fsm.update(dt);
 

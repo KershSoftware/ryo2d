@@ -9,15 +9,15 @@
 //!
 //! // Create a point light
 //! let torch = world.spawn((
-//!     Transform::at(100.0, 100.0),
+//!     Transform::from_xy(100.0, 100.0),
 //!     Light2D::point(Color::ORANGE, 150.0),
-//! ));
+//! )).id();
 //!
 //! // Create a spotlight
 //! let flashlight = world.spawn((
-//!     Transform::at(200.0, 200.0),
+//!     Transform::from_xy(200.0, 200.0),
 //!     Light2D::spot(Color::WHITE, 200.0, 45.0, 0.0), // 45 degree cone, pointing right
-//! ));
+//! )).id();
 //!
 //! // Create a spotlight with volumetric beam
 //! let volumetric_flashlight = Light2D::flashlight(200.0, 0.0)

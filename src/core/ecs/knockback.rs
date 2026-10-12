@@ -67,9 +67,9 @@ pub struct Knockback {
   decay_rate: f32,
   /// Whether the knockback is currently active
   pub active: bool,
-  /// True for one frame when knockback starts
+  /// True for one fixed step when knockback starts
   pub just_started: bool,
-  /// True for one frame when knockback finishes
+  /// True for one fixed step when knockback finishes
   pub just_finished: bool,
   /// Whether to accumulate with existing knockback (blend directions)
   pub accumulate: bool,
@@ -304,7 +304,7 @@ impl Knockback {
 
   /// Update the knockback state (decay strength over time).
   ///
-  /// Called by the engine each frame.
+  /// Called by the engine each fixed step.
   pub fn update(&mut self, dt: f32) {
     self.just_started = false;
     self.just_finished = false;

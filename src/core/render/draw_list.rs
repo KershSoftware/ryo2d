@@ -17,7 +17,7 @@ pub(crate) type TextureRef = Arc<str>;
 pub(crate) enum DrawKind {
   /// An entity (with its shadows, tiles and composite parts) drawn on the GPU
   Entity,
-  /// A `render_gpu`, particle or parallax sprite
+  /// A `Scene::render`, particle or parallax sprite
   Sprite,
   /// A trail or line geometry group
   Trail,

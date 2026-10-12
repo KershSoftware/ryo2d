@@ -17,7 +17,7 @@
 //!
 //! // After modifying a component, verify it was marked dirty
 //! if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-//!     transform.x += 10.0;
+//!     transform.translation.x += 10.0;
 //! }
 //! // This will warn in debug builds if mark_dirty wasn't called
 //! warn_if_not_dirty::<Transform>(entity, &replication);
@@ -49,7 +49,7 @@ use super::replication::{Replicated, ReplicationManager};
 /// ```ignore
 /// // After modifying a transform
 /// if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-///     transform.x += 10.0;
+///     transform.translation.x += 10.0;
 /// }
 /// replication.mark_dirty::<Transform>(entity);
 ///

@@ -27,13 +27,15 @@
 //!     settings_scroll: ScrollViewState,
 //! }
 //!
-//! fn render_ui(&mut self, ui: &mut UiContext) {
+//! fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+//!     let dt = ui.dt();
 //!     ui.text_input(&mut self.username, rect, "Enter name...", dt);
 //!     ui.dropdown(&mut self.difficulty, rect, &["Easy", "Medium", "Hard"]);
-//!     ui.scroll_view(&mut self.settings_scroll, rect, content_height, |ui, offset| {
+//!     ui.scroll_view(&mut self.settings_scroll, rect, content_height, dt, |ui, offset| {
 //!         // Draw scrollable content
 //!     });
 //!     ui.finish_dropdowns(); // Render dropdown overlays on top
+//!     SceneAction::Continue
 //! }
 //! ```
 

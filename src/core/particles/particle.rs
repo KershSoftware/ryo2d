@@ -6,7 +6,7 @@ use crate::core::ui::Color;
 
 /// A single particle in the particle system.
 ///
-/// Particles are spawned by [`ParticleEmitter`] and simulated on the CPU.
+/// Particles are spawned by [`ParticleEmitter`](super::ParticleEmitter) and simulated on the CPU.
 /// Visual properties (size, color) are interpolated over the particle's lifetime.
 ///
 /// # Example

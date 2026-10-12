@@ -117,7 +117,7 @@ impl SkeletalAnimator {
     }
   }
 
-  /// Update playback time. Called by the skeleton system each frame.
+  /// Update playback time. Called by the skeleton system each fixed step.
   pub fn update(&mut self, dt: f32) {
     self.just_finished = false;
 

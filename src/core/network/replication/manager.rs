@@ -441,7 +441,7 @@ impl ReplicationManager {
   /// behind that, bounding how long a client can show a stale value. A
   /// refresh cycle is spread over broadcasts, one message of at most
   /// [`MAX_REFRESH_BYTES`] each; changing the interval ends a running cycle.
-  /// Default: [`DEFAULT_REFRESH_INTERVAL`].
+  /// Default: `DEFAULT_REFRESH_INTERVAL` (300).
   pub fn set_refresh_interval(&mut self, interval: u64) {
     self.refresh_interval = interval;
     self.refresh_queue.clear();

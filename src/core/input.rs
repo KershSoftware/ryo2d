@@ -640,17 +640,19 @@ impl Input {
   // Mouse Position
   // ─────────────────────────────────────────────────────────────────────────────
 
-  /// Get the current mouse X position in window pixels
+  /// The mouse X position in game-resolution screen pixels (letterboxing and
+  /// window scaling removed); `camera.screen_to_world` gives world space.
+  /// Not updated while the cursor is over the black bars or locked.
   pub fn mouse_x(&self) -> f32 {
     self.mouse_x
   }
 
-  /// Get the current mouse Y position in window pixels
+  /// The mouse Y position in game-resolution screen pixels (see [`Input::mouse_x`]).
   pub fn mouse_y(&self) -> f32 {
     self.mouse_y
   }
 
-  /// Get the mouse position as a tuple (x, y)
+  /// The mouse position `(x, y)` in game-resolution screen pixels (see [`Input::mouse_x`]).
   pub fn mouse_position(&self) -> (f32, f32) {
     (self.mouse_x, self.mouse_y)
   }
@@ -1497,7 +1499,7 @@ mod tests {
     // Mouse pressed should persist until begin_frame
     assert!(
       input.mouse_pressed(MouseButton::Left),
-      "Mouse pressed should persist for render_ui"
+      "Mouse pressed should persist for later readers in the frame"
     );
     assert!(
       input.mouse_down(MouseButton::Left),
@@ -1732,14 +1734,14 @@ mod tests {
 
   /// Regression test: keyboard events must persist for the entire frame.
   ///
-  /// Keyboard events persist until begin_frame() is called, so that
-  /// UI widgets (text input, dropdowns) can see them during render_ui().
+  /// Keyboard events persist until begin_frame() is called, so that every
+  /// reader in the frame sees them: the UI pass (`Scene::ui`, text inputs,
+  /// dropdowns), the fixed steps and per-frame code.
   ///
   /// Frame flow should be:
   /// 1. Events received -> key_pressed() returns true
-  /// 2. update() runs (possibly multiple times for fixed timestep)
-  /// 3. render() + render_ui() runs -> key_pressed() MUST still return true
-  /// 4. begin_frame() clears events -> key_pressed() returns false
+  /// 2. Several readers in the frame -> key_pressed() MUST still return true
+  /// 3. begin_frame() clears events -> key_pressed() returns false
   #[test]
   fn keyboard_events_persist_until_begin_frame() {
     let mut input = Input::new();
@@ -1765,11 +1767,11 @@ mod tests {
       "key_pressed should persist across multiple update reads"
     );
 
-    // Read again (simulating render_ui phase - the critical regression case)
+    // Read again (simulating a UI read - the critical regression case)
     // This is where the bug manifested: UI couldn't see keyboard events
     assert!(
       input.key_pressed(KeyCode::KeyA),
-      "key_pressed MUST be available during render_ui (regression test)"
+      "key_pressed MUST be available to the UI (regression test)"
     );
     assert!(
       input.key_down(KeyCode::ControlLeft),
@@ -1941,10 +1943,10 @@ mod tests {
     assert!(!input.key_pressed(KeyCode::Escape));
     assert!(!input.mouse_pressed(MouseButton::Left));
 
-    // Engine unsuppresses before render
+    // The fixed loop ends
     input.unsuppress_oneshots();
 
-    // render_ui CAN see them
+    // Per-frame code CAN see them
     assert!(input.key_pressed(KeyCode::Escape));
     assert!(input.mouse_pressed(MouseButton::Left));
 
@@ -1955,8 +1957,8 @@ mod tests {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Text Input Consume-on-Read Tests
-  // Regression tests for text duplication where multiple systems (update,
-  // render_ui, console) all read the same text_input in one frame.
+  // Regression tests for text duplication where multiple readers (update,
+  // the UI, the console) all read the same text_input in one frame.
   // ─────────────────────────────────────────────────────────────────────────────
 
   #[test]
@@ -2000,29 +2002,30 @@ mod tests {
     assert_eq!(input.text_input(), "a");
   }
 
-  /// Regression test: on no-update frames, begin_frame() is not called.
-  /// Reading empty text_input must NOT set the consumed flag, otherwise
-  /// text arriving on the next frame would be blocked.
+  /// Regression test from the old frame loop, where a frame without an
+  /// update skipped begin_frame() (`post_render_cleanup` is its test-only
+  /// shim; begin_frame now runs every frame). Reading empty text_input must
+  /// NOT set the consumed flag, otherwise text arriving later would be blocked.
   #[test]
   fn text_not_blocked_across_no_update_frames() {
     let mut input = Input::new();
 
     // Frame 1 (update): no text input
-    // render_ui: widget reads text_input (empty)
+    // UI: widget reads text_input (empty)
     assert_eq!(input.text_input(), "");
     // post_render_cleanup + begin_frame
     input.post_render_cleanup();
     input.begin_frame();
 
     // Frame 2 (no update): still no text
-    // render_ui: widget reads text_input (empty)
+    // UI: widget reads text_input (empty)
     assert_eq!(input.text_input(), "");
     // Only post_render_cleanup, NO begin_frame (no update ran)
     input.post_render_cleanup();
 
     // Frame 3 (no update): key pressed
     input.handle_text_input("1");
-    // render_ui: widget should see the text (consumed flag must be false)
+    // UI: widget should see the text (consumed flag must be false)
     assert!(input.has_text_input());
     assert_eq!(input.text_input(), "1");
   }
@@ -2053,8 +2056,8 @@ mod tests {
     assert_eq!(input.text_input(), "y");
   }
 
-  /// Simulate the full frame flow: update reads text, suppress, unsuppress,
-  /// render_ui should NOT see the same text again.
+  /// Once update reads the text, a later reader in the same frame (the UI,
+  /// the console) should NOT see the same text again.
   #[test]
   fn text_input_not_duplicated_across_update_and_render() {
     let mut input = Input::new();
@@ -2068,7 +2071,7 @@ mod tests {
     input.suppress_oneshots();
     input.unsuppress_oneshots();
 
-    // render_ui should NOT see the text again (already consumed)
+    // A later reader should NOT see the text again (already consumed)
     assert!(!input.has_text_input());
     assert_eq!(input.text_input(), "");
   }
@@ -2254,8 +2257,10 @@ mod tests {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Post-Render Cleanup Tests
-  // Regression tests for key_repeat firing 2-3x per keypress when render_ui
-  // runs on consecutive no-update frames (begin_frame not called).
+  // Regression tests from the old frame loop, where key_repeat fired 2-3x per
+  // keypress when the UI drew on consecutive frames without an update
+  // (begin_frame not called). `post_render_cleanup` is a test-only shim for
+  // that loop; begin_frame now runs every frame.
   // ─────────────────────────────────────────────────────────────────────────────
 
   #[test]
@@ -2285,7 +2290,7 @@ mod tests {
     // Key pressed during event processing
     input.handle_keyboard(KeyCode::Backspace, ElementState::Pressed);
 
-    // Frame 1 (no update): render_ui checks key_repeat
+    // Frame 1 (no update): the UI checks key_repeat
     assert!(
       input.key_repeat(KeyCode::Backspace),
       "First render frame should see key_repeat"
@@ -2293,7 +2298,7 @@ mod tests {
     // Engine calls post_render_cleanup (no begin_frame because no update)
     input.post_render_cleanup();
 
-    // Frame 2 (no update): render_ui checks key_repeat again
+    // Frame 2 (no update): the UI checks key_repeat again
     assert!(
       !input.key_repeat(KeyCode::Backspace),
       "Second render frame must NOT see key_repeat (already processed)"
@@ -2372,7 +2377,7 @@ mod tests {
     input.unsuppress_oneshots();
 
     // --- Render phase ---
-    // render_ui: widget sees key_repeat and text_input
+    // UI: widget sees key_repeat and text_input
     assert!(input.key_repeat(KeyCode::Backspace));
     let text = input.text_input();
     assert_eq!(text, "x");

@@ -35,18 +35,18 @@ impl CustomEffect {
   }
 }
 
-/// Trait for types that can have post-processing effects applied.
+/// Trait for types that own an [`EffectsManager`].
 ///
-/// This trait is implemented by both `GameContext` (for global effects)
-/// and `Camera` (for per-camera effects). It provides a common interface
-/// for effect management.
+/// The engine implements it for nothing: scenes reach the screen's effects
+/// through `ctx.effects()`. Implement it for a game type that keeps its own
+/// manager to share code that drives effects.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// // Both work with the same API
-/// ctx.effects().set_fade(0.5);
-/// camera.effects().set_vignette(0.3);
+/// fn pulse(target: &mut impl EffectTarget, amount: f32) {
+///     target.effects_mut().set_vignette(amount);
+/// }
 /// ```
 pub trait EffectTarget {
   /// Get a reference to the effects manager
@@ -131,7 +131,7 @@ impl EffectsManager {
     }
   }
 
-  /// Update timed effects (call once per frame with delta time)
+  /// Update timed effects; the engine calls it once per frame with real delta time
   pub fn update(&mut self, dt: f32) {
     self.time += dt;
 

@@ -13,7 +13,7 @@
 //! ```text
 //! Engine present
 //!     │
-//!     ├── DrawList: entities, `render_gpu`/particle/parallax sprites and
+//!     ├── DrawList: entities, `Scene::render`/particle/parallax sprites and
 //!     │   trail groups, sorted by z
 //!     │
 //!     └── SpriteGpuRenderer::prepare_world()
@@ -1458,7 +1458,7 @@ pub const SPRITE_SHADER: &str = include_str!("../shaders/core/sprite.wgsl");
 // Sprite Batching System
 // =============================================================================
 
-/// Collects the frame's `render_gpu`, particle and parallax sprites.
+/// Collects the frame's `Scene::render`, particle and parallax sprites.
 ///
 /// Sprites are kept in submission order and join the frame's z-sorted draw
 /// list, where equal-z sprites draw in submission order:

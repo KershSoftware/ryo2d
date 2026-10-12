@@ -20,7 +20,7 @@
 //!     .build_with_collider();
 //!
 //! world.spawn((
-//!     Transform::new(100.0, 50.0),
+//!     Transform::from_xy(100.0, 50.0),
 //!     RigidBody::kinematic(),
 //!     composite,
 //!     collider,
@@ -284,7 +284,7 @@ impl Default for CompositeTile {
 /// ```rust,ignore
 /// let collider = GroupedCollider::new(32.0, 160.0);
 /// world.spawn((
-///     Transform::new(100.0, 50.0),
+///     Transform::from_xy(100.0, 50.0),
 ///     RigidBody::kinematic(),
 ///     composite,
 ///     collider,
@@ -300,7 +300,7 @@ pub struct GroupedCollider {
   pub offset_x: f32,
   /// Offset from entity position (Y)
   pub offset_y: f32,
-  /// Whether this collider is a trigger (no physics response, just events)
+  /// Whether this collider is a trigger (no physics response, just collision messages)
   pub is_trigger: bool,
   /// Restitution (bounciness): 0.0 = no bounce, 1.0 = perfect bounce
   pub restitution: f32,

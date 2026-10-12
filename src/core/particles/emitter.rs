@@ -90,15 +90,15 @@ pub enum EmissionShape {
 /// use ryo2d::prelude::*;
 ///
 /// // Simple fire effect
-/// let fire_sprite = ctx.assets.load_sprite("particle.png");
+/// let fire_sprite = ctx.assets.load_sprite("particle.png")?;
 /// ctx.world.spawn((
-///     Transform::at(100.0, 100.0),
+///     Transform::from_xy(100.0, 100.0),
 ///     ParticleEmitter::fire(fire_sprite),
 /// ));
 ///
 /// // Custom emitter
 /// ctx.world.spawn((
-///     Transform::at(200.0, 200.0),
+///     Transform::from_xy(200.0, 200.0),
 ///     ParticleEmitter::new(sprite)
 ///         .with_mode(EmissionMode::Continuous { rate: 50.0 })
 ///         .with_shape(EmissionShape::Circle { radius: 10.0, hollow: false })

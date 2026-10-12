@@ -32,8 +32,7 @@
 //! assets = "assets"
 //!
 //! [system]  # Defaults for system.json (user-facing settings)
-//! resolution_width = 1920
-//! resolution_height = 1080
+//! resolution = "1920x1080"
 //! vsync = true
 //! display_mode = "windowed"
 //! master_volume = 1.0
@@ -64,7 +63,9 @@
 //!
 //! // Access system defaults from Ryo.toml [system] section
 //! let system_defaults = &workspace.config().system;
-//! println!("Default resolution: {}x{}", system_defaults.resolution_width, system_defaults.resolution_height);
+//! if let Some((width, height)) = system_defaults.resolution {
+//!     println!("Default resolution: {width}x{height}");
+//! }
 //! ```
 
 use serde::Deserialize;
@@ -101,11 +102,11 @@ pub struct Workspace {
 pub struct WorkspaceConfig {
   /// Project name (defaults to directory name)
   pub name: String,
-  /// Window title (from [project].title, defaults to name)
+  /// Window title (from `[project] title`, defaults to name)
   pub title: String,
   /// Project description (optional, for tooling)
   pub description: Option<String>,
-  /// Project version (optional, from [project] section)
+  /// Project version (optional, from the `[project]` section)
   pub version: Option<String>,
   /// Path to entry point relative to workspace root
   pub entry_point: PathBuf,
@@ -116,9 +117,9 @@ pub struct WorkspaceConfig {
   pub assets: PathBuf,
   /// Debug configuration options
   pub debug: DebugConfig,
-  /// System defaults for user configuration (from [system] section)
+  /// System defaults for user configuration (from the `[system]` section)
   pub system: SystemDefaults,
-  /// Release/distribution configuration (from [release] section)
+  /// Release/distribution configuration (from the `[release]` section)
   pub release: ReleaseConfig,
   /// Game-specific environment variables from [env] section
   pub env: std::collections::HashMap<String, toml::Value>,
@@ -126,7 +127,7 @@ pub struct WorkspaceConfig {
 
 /// Debug configuration options for development.
 ///
-/// See [`crate::core::debug::DebugConfig`] for the engine-level config.
+/// See [`crate::core::config::debug::DebugConfig`] for the engine-level config.
 /// This struct mirrors those options for TOML deserialization.
 #[derive(Debug, Clone)]
 pub struct DebugConfig {
@@ -142,13 +143,13 @@ pub struct DebugConfig {
   pub show_stats: bool,
   /// Whether to display FPS counter
   pub show_fps: bool,
-  /// Whether to disable F1-F4 debug key toggles
+  /// Whether to disable the F1-F5 debug key toggles
   pub disable_debug_keys: bool,
   /// Whether to open the flamegraph profiler window (requires --features profiler)
   pub enable_profiler: bool,
   /// Whether to open the logger dev window at startup (shows engine/game logs in real-time)
   pub logger_window: bool,
-  /// Whether to enable dev window hotkeys (F8=profiler, F9=logger).
+  /// Whether to enable dev hotkeys (F9=logger, F10=profiler, F12=frame capture).
   /// Defaults to true in debug builds, false in release builds.
   pub dev_window_keys: bool,
 }
@@ -165,7 +166,7 @@ impl Default for DebugConfig {
       disable_debug_keys: false,
       enable_profiler: false, // Disabled by default (requires explicit opt-in)
       logger_window: false,   // Disabled by default (requires explicit opt-in)
-      // Dev window keys (F8/F9) enabled by default in debug builds only
+      // Dev window keys (F9/F10/F12) enabled by default in debug builds only
       #[cfg(debug_assertions)]
       dev_window_keys: true,
       #[cfg(not(debug_assertions))]
@@ -213,7 +214,7 @@ pub struct SystemDefaults {
   pub music_volume: f32,
   /// Default SFX volume (0.0 - 1.0)
   pub sfx_volume: f32,
-  /// Default show FPS setting (from [system] section)
+  /// Default show FPS setting (from the `[system]` section)
   pub show_fps: bool,
   /// Whether to enable the developer console (toggled with backtick key).
   /// Unlike debug settings, this is available in both debug and release builds.

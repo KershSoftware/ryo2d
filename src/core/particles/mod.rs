@@ -9,35 +9,52 @@
 //! - Rendering uses the existing `SpriteGpuRenderer` with instanced drawing
 //! - Supports 10k+ particles at 60fps
 //!
-//! # Components
+//! A scene owns a [`ParticleSystem`]: it calls `update(ctx.world, dt)` from
+//! `Scene::update` and `collect_for_render` from `Scene::render`. The engine
+//! does not drive particles itself.
 //!
-//! | Component | Description |
-//! |-----------|-------------|
+//! # Types
+//!
+//! | Type | Description |
+//! |------|-------------|
+//! | [`ParticleSystem`] | Simulates every emitter's particles and batches them for drawing |
 //! | [`Particle`] | Individual particle data (velocity, lifetime, color) |
-//! | [`ParticleEmitter`] | Spawns particles with configurable shapes and rates |
-//! | [`ParticleAttractor`] | Force fields that affect particle motion |
+//! | [`ParticleEmitter`] (component) | Spawns particles with configurable shapes and rates |
+//! | [`ParticleAttractor`] (component) | Force fields that affect particle motion |
 //!
 //! # Quick Start
 //!
 //! ```ignore
 //! use ryo2d::prelude::*;
 //!
+//! // The scene owns the system
+//! struct Level { particles: ParticleSystem }
+//!
+//! fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+//!     self.particles.update(ctx.world, dt);
+//!     SceneAction::Continue
+//! }
+//!
+//! fn render(&mut self, gpu: &mut GpuRenderContext) {
+//!     self.particles.collect_for_render(gpu.world, gpu.camera, gpu.batch);
+//! }
+//!
 //! // Spawn a fire effect
-//! let fire_sprite = ctx.assets.load_sprite("particle.png");
+//! let fire_sprite = ctx.assets.load_sprite("particle.png")?;
 //! ctx.world.spawn((
-//!     Transform::at(100.0, 100.0),
+//!     Transform::from_xy(100.0, 100.0),
 //!     ParticleEmitter::fire(fire_sprite),
 //! ));
 //!
 //! // One-shot explosion
 //! ctx.world.spawn((
-//!     Transform::at(x, y),
+//!     Transform::from_xy(x, y),
 //!     ParticleEmitter::explosion(spark_sprite, 50).one_shot(),
 //! ));
 //!
 //! // Custom emitter with attractor
 //! ctx.world.spawn((
-//!     Transform::at(x, y),
+//!     Transform::from_xy(x, y),
 //!     ParticleEmitter::new(sprite)
 //!         .with_mode(EmissionMode::Continuous { rate: 30.0 })
 //!         .with_shape(EmissionShape::Circle { radius: 20.0, hollow: true })
@@ -47,7 +64,7 @@
 //!
 //! // Attractor that pulls particles
 //! ctx.world.spawn((
-//!     Transform::at(mouse_x, mouse_y),
+//!     Transform::from_xy(mouse_x, mouse_y),
 //!     ParticleAttractor::point(200.0, 100.0),
 //! ));
 //! ```

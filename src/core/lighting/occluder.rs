@@ -10,20 +10,20 @@
 //!
 //! // Create a rectangular occluder (like a wall)
 //! let wall = world.spawn((
-//!     Transform::at(100.0, 100.0),
+//!     Transform::from_xy(100.0, 100.0),
 //!     LightOccluder2D::rect(50.0, 100.0), // 50x100 rectangle
-//! ));
+//! )).id();
 //!
 //! // Create a custom polygon occluder
 //! let pillar = world.spawn((
-//!     Transform::at(200.0, 200.0),
+//!     Transform::from_xy(200.0, 200.0),
 //!     LightOccluder2D::polygon(vec![
 //!         Vec2::new(-10.0, -10.0),
 //!         Vec2::new(10.0, -10.0),
 //!         Vec2::new(10.0, 10.0),
 //!         Vec2::new(-10.0, 10.0),
 //!     ]),
-//! ));
+//! )).id();
 //! ```
 
 use crate::core::ecs::Component;

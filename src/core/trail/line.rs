@@ -8,14 +8,15 @@
 //! ```rust,ignore
 //! use ryo2d::prelude::*;
 //!
-//! // Create a simple line
+//! // Create a simple line (points are offsets from the entity's position)
 //! let laser = world.spawn((
+//!     Transform::from_xy(100.0, 100.0),
 //!     Line2D::new(
 //!         vec![Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0)],
 //!         Color::RED,
 //!         3.0,
 //!     ),
-//! ));
+//! )).id();
 //!
 //! // Create a bezier curve
 //! let curve = Line2D::bezier(

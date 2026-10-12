@@ -1,6 +1,7 @@
 //! Audio system for sound effects and music
 //!
 //! This module provides:
+//! - `Audio` - The engine's audio (`ctx.audio`), usable with or without a device
 //! - `AudioManager` - Manages audio device and playback
 //! - Sound effect playback with volume, panning, and playback rate control
 //! - Background music with looping and crossfading
@@ -681,12 +682,10 @@ impl AudioManager {
   /// # Example
   /// ```ignore
   /// // In menu and game scenes - music persists across both
-  /// if let Some(audio) = &mut ctx.audio {
-  ///   audio.play_music_once(
-  ///     "assets/music/theme.mp3",
-  ///     MusicOptions::new().volume(0.3).looping(true)
-  ///   )?;
-  /// }
+  /// ctx.audio.play_music_once(
+  ///   "assets/music/theme.mp3",
+  ///   MusicOptions::new().volume(0.3).looping(true)
+  /// )?;
   /// ```
   pub fn play_music_once(
     &mut self,

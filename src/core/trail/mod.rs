@@ -18,19 +18,15 @@
 //! use ryo2d::prelude::*;
 //!
 //! // Spawn a bullet with a trail effect
-//! let bullet = world.spawn((
-//!     Transform::at(100.0, 100.0),
+//! let bullet = ctx.world.spawn((
+//!     Transform::from_xy(100.0, 100.0),
 //!     Renderable::sprite(bullet_sprite),
-//!     Velocity::new(500.0, 0.0),
 //!     Trail2D::bullet(Color::YELLOW),
-//! ));
+//! )).id();
 //!
-//! // In your update loop, update the trail with current position
-//! fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-//!     for (entity, (transform, trail)) in ctx.world.query::<(&Transform, &mut Trail2D)>() {
-//!         trail.update(transform.x, transform.y, dt);
-//!     }
-//! }
+//! // The engine records the entity's world position into its trail every
+//! // fixed step (`FixedSet::Trails`); call `trail.update(x, y, dt)` yourself
+//! // only for a trail that follows something other than its entity.
 //! ```
 //!
 //! ## Trail Presets

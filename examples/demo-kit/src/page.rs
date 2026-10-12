@@ -8,11 +8,14 @@ use crate::{Control, Settings};
 /// page switching, the settings panel, help and layout.
 ///
 /// A page is built fresh from its factory whenever it is shown or reset, and
-/// runs inside its own engine scene. Leaving it resets the world, camera,
-/// post-processing effects, ambient light and atmosphere, time scale, music,
-/// events and raycasting. Anything else a page changes (the cursor, UI scale,
-/// render pipeline passes, other lighting settings, sound effects, tilemaps,
-/// `Resources`) carries over unless the page undoes it in `exit`.
+/// runs inside its own engine scene, which leaves with `SceneCleanup::ALL`:
+/// every entity is despawned, and the camera, post-processing effects,
+/// lighting settings (forced state, ambient, atmosphere), game clock (speed,
+/// pause, hitstop), music and pending messages are reset. Systems and console
+/// handlers the page added go with its scene. Anything else a page changes
+/// (the cursor, UI scale, render pipeline passes, sound effects, tilemap
+/// registrations, resources it inserted) carries over unless the page undoes
+/// it in `exit`.
 pub trait DemoPage: 'static {
   /// Shown in the top bar, e.g. `Glow`
   fn name(&self) -> &str;

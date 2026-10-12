@@ -23,16 +23,17 @@
 //! }
 //! ```
 //!
-//! Headless runs have no audio (`ctx.audio` is `None`), no gamepads, no hot
-//! reload and no dev windows; they never read or write `system.json` user
-//! preferences, ignore `RYO_CAPTURE_*`, and keep the FPS, frame-timing and
+//! Headless runs have no audio device (`ctx.audio` works, but its `Result`
+//! methods return `AudioError::Unavailable`), no gamepads, no hot reload and
+//! no dev windows; they never read or write `system.json` user preferences,
+//! ignore `RYO_CAPTURE_*` and `RYO_INPUT`, and keep the FPS, frame-timing and
 //! stats overlays off. `Ryo.toml` is honoured as in a normal build. Input
 //! injected with `press_key`/`tap_key`/`press_mouse`/`mouse_move` is queued
-//! like window events and seen from the next step; the engine's own debug keys (F1-F5, F9,
-//! F10, F12) are inert headless. Seed any randomness your scene uses if you
-//! compare frames exactly.
-//! Particle emitters use an unseeded thread RNG, so don't compare frames
-//! containing particles byte-for-byte.
+//! like window events and seen from the next step; the engine's own debug
+//! keys (F1-F5, F9, F10, F12) are inert headless. Seed any randomness your
+//! scene uses if you compare frames exactly: `ParticleSystem::new()` seeds
+//! from entropy, so use `ParticleSystem::with_seed` for frames containing
+//! particles.
 
 #[cfg(test)]
 mod atlas_bleeding;

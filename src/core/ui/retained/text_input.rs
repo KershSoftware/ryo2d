@@ -10,18 +10,14 @@
 //!     username_input: TextInputState,
 //! }
 //!
-//! impl MyScene {
-//!     fn new() -> Self {
-//!         Self {
-//!             username_input: TextInputState::new(),
-//!         }
-//!     }
-//!
-//!     fn render_ui(&mut self, ui: &mut UiContext, dt: f32) {
+//! impl Scene for MyScene {
+//!     fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
 //!         let rect = Rect::new(100.0, 100.0, 200.0, 30.0);
+//!         let dt = ui.dt();
 //!         if ui.text_input(&mut self.username_input, rect, "Enter name...", dt) {
 //!             println!("Text changed: {}", self.username_input.text());
 //!         }
+//!         SceneAction::Continue
 //!     }
 //! }
 //! ```
@@ -50,9 +46,7 @@ pub struct TextInputState {
   blink_timer: f32,
   /// Whether cursor is currently visible (toggles during blink)
   cursor_visible: bool,
-  /// Guards against paste firing multiple times per key press.
-  /// `key_pressed` is not consume-on-read, so render_ui running multiple times
-  /// between begin_frame calls (high FPS) would re-trigger paste each render.
+  /// Guards against paste firing more than once per key press.
   /// This flag is set when paste fires and cleared when V is released.
   /// Also blocks the text_input insertion path to prevent IME-sourced clipboard
   /// text from double-inserting alongside the paste.
@@ -466,9 +460,8 @@ impl TextInputState {
       modified = true;
     }
 
-    // Paste (Ctrl+V) — guarded so it only fires once per key press.
-    // key_pressed is not consume-on-read, so without the guard, paste would
-    // re-fire on every render_ui call between begin_frame resets (high FPS).
+    // Paste (Ctrl+V) — guarded so it only fires once per key press; the
+    // guard clears when V is released.
     if ctrl && input.key_pressed(KeyCode::KeyV) && !self.paste_guard && self.paste() {
       self.paste_guard = true;
       modified = true;

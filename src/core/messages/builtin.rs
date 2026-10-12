@@ -58,7 +58,8 @@ pub struct AssetReloaded {
   pub path: PathBuf,
 }
 
-/// An asset failed to load or reload.
+/// An asset failed to hot reload (dev builds); the previous version stays in
+/// use. Initial and async loads report failure through their own results.
 #[derive(Message, Debug, Clone, PartialEq, Eq)]
 pub struct AssetLoadFailed {
   pub path: PathBuf,

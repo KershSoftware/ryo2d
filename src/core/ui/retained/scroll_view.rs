@@ -9,11 +9,12 @@
 //! // In your scene/game struct:
 //! scroll_state: ScrollViewState,
 //!
-//! // In render_ui:
+//! // In Scene::ui:
 //! let content_height = 800.0; // Total height of all content
 //! let view_rect = Rect::new(20.0, 50.0, 300.0, 400.0);
+//! let dt = ui.dt();
 //!
-//! ui.scroll_view(&mut self.scroll_state, view_rect, content_height, |ui, scroll_offset| {
+//! ui.scroll_view(&mut self.scroll_state, view_rect, content_height, dt, |ui, scroll_offset| {
 //!     // Draw content - y positions are relative to scroll offset
 //!     for i in 0..20 {
 //!         let y = i as f32 * 35.0 - scroll_offset;

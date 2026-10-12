@@ -72,9 +72,9 @@ pub enum AttractorType {
 ///
 /// // Create a gravity well at mouse position
 /// let attractor = ctx.world.spawn((
-///     Transform::at(mouse_x, mouse_y),
+///     Transform::from_xy(mouse_x, mouse_y),
 ///     ParticleAttractor::point(200.0, 100.0),
-/// ));
+/// )).id();
 /// ```
 #[derive(Component, Debug, Clone)]
 pub struct ParticleAttractor {

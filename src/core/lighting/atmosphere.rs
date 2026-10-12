@@ -7,12 +7,12 @@
 //! ```rust,ignore
 //! use ryo2d::prelude::*;
 //!
-//! fn init(&mut self, ctx: &mut GameContext) {
+//! fn on_enter(&mut self, ctx: &mut SceneContext) {
 //!     // Use a preset
-//!     ctx.lighting.set_atmosphere(Atmosphere::dusty());
+//!     ctx.lighting().set_atmosphere(Atmosphere::dusty());
 //!
 //!     // Or configure manually
-//!     ctx.lighting.set_atmosphere(Atmosphere {
+//!     ctx.lighting().set_atmosphere(Atmosphere {
 //!         density: 0.3,
 //!         color: Color::new(200, 210, 220, 255),
 //!         scattering: 0.2,

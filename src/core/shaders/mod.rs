@@ -1,7 +1,7 @@
 //! Shader system for post-processing effects
 //!
-//! This module provides a flexible post-processing pipeline that can be applied
-//! to both the global game context and individual cameras.
+//! This module provides the screen-wide post-processing pipeline. Scenes reach
+//! its [`EffectsManager`] (a resource) through `ctx.effects()`.
 //!
 //! # Architecture
 //!
@@ -9,7 +9,7 @@
 //!
 //! 1. **Effects** ([`PostProcessEffect`]) - Individual visual effects with parameters
 //! 2. **Effect Stack** ([`EffectsManager`]) - Manages active effects and their order
-//! 3. **Effect Target** ([`EffectTarget`]) - Trait for types that can have effects applied
+//! 3. **Effect Target** ([`EffectTarget`]) - Trait for types that own an `EffectsManager`
 //!
 //! # Shader Organization
 //!
@@ -29,18 +29,20 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! // In Game::update()
-//! fn update(&mut self, ctx: &mut GameContext, dt: f32) {
+//! fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+//!     let mut effects = ctx.effects();
+//!
 //!     // Scene transition fade
-//!     ctx.effects.set_fade(self.fade_progress);
+//!     effects.set_fade(self.fade_progress);
 //!
 //!     // Damage flash
 //!     if player_hit {
-//!         ctx.effects.flash(Color::RED, 0.15);
+//!         effects.flash_secs(Color::RED, 0.15);
 //!     }
 //!
 //!     // Enable persistent effects
-//!     ctx.effects.set_vignette(0.3);
+//!     effects.set_vignette(0.3);
+//!     SceneAction::Continue
 //! }
 //! ```
 

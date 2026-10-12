@@ -8,14 +8,14 @@
 //! ```rust,ignore
 //! use ryo2d::prelude::*;
 //!
-//! // In your game setup
-//! ctx.lighting.set_ambient(AmbientLight::new(Color::new(30, 30, 50, 255), 0.2));
+//! // In your scene's on_enter
+//! ctx.lighting().set_ambient(AmbientLight::new(Color::new(30, 30, 50, 255), 0.2));
 //!
 //! // For a completely dark scene (only light sources visible)
-//! ctx.lighting.set_ambient(AmbientLight::dark());
+//! ctx.lighting().set_ambient(AmbientLight::dark());
 //!
 //! // For a moonlit night
-//! ctx.lighting.set_ambient(AmbientLight::moonlit());
+//! ctx.lighting().set_ambient(AmbientLight::moonlit());
 //! ```
 
 use crate::core::ui::Color;

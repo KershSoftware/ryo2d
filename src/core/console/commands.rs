@@ -102,15 +102,15 @@ pub struct CommandContext<'a> {
   pub time_scale: &'a mut f32,
   /// List of all commands (for help)
   pub commands: Vec<CommandInfo>,
-  /// Game name (from Ryo.toml [project] section)
+  /// Game name (from the Ryo.toml `[project]` section)
   pub game_name: Option<String>,
-  /// Game version (from Ryo.toml [project] section)
+  /// Game version (from the Ryo.toml `[project]` section)
   pub game_version: Option<String>,
 }
 
 /// Builder for configuring console commands at the engine level.
 ///
-/// Passed to the closure in [`EngineBuilder::with_console_commands`] to allow
+/// Passed to the closure in [`EngineBuilder::with_console_commands`](crate::core::engine::EngineBuilder::with_console_commands) to allow
 /// declaring game commands and removing built-in commands before the engine starts.
 ///
 /// # Example
@@ -127,7 +127,7 @@ pub struct CommandContext<'a> {
 ///         );
 ///         cmd.remove_builtin("system:ip:wan");
 ///     })
-///     .with_scene(GameScene::new())
+///     .start_scene(GameScene::new())
 ///     .build()
 ///     .run()?;
 /// ```
@@ -142,8 +142,8 @@ pub struct ConsoleCommandBuilder {
 impl ConsoleCommandBuilder {
   /// Declare a game command with a name and description.
   ///
-  /// The command is registered as inactive (noop) until a handler is attached
-  /// via [`CommandRegistry::register_handler`] in a game or scene context.
+  /// The command is registered as inactive (noop) until a scene attaches a
+  /// handler with `ctx.console().register(..)`.
   pub fn declare(&mut self, name: impl Into<String>, description: impl Into<String>) {
     self
       .declarations
@@ -235,10 +235,13 @@ impl CommandRegistry {
   /// * `description` - Brief description shown in command listings
   /// * `verbose_description` - Optional detailed help shown for `help <command>`
   ///
+  /// Games declare through `ctx.console().declare(..)` in a scene or
+  /// `EngineBuilder::with_console_commands`.
+  ///
   /// # Example
   ///
   /// ```ignore
-  /// ctx.declare_console_command(
+  /// registry.declare(
   ///     "game:reset",
   ///     "Reset the game to initial state",
   ///     Some("Resets all game state including score, player position, and enemies. \
@@ -263,8 +266,9 @@ impl CommandRegistry {
 
   /// Register a handler for a declared game command
   ///
-  /// The handler is associated with a scope ID for automatic cleanup.
-  /// When the scope ends (e.g., scene exits), call `clear_scope` to remove handlers.
+  /// The handler is associated with a scope ID for automatic cleanup: the
+  /// scene manager calls `clear_scope` when a scene leaves the stack. Scenes
+  /// register through `ctx.console().register(..)`, which supplies their scope.
   ///
   /// # Arguments
   ///

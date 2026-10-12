@@ -1,7 +1,7 @@
 //! Immediate-mode UI drawing context
 //!
 //! The `UiContext` provides a simple API for drawing shapes, text, and
-//! interactive elements. Create one per frame and pass it to render functions.
+//! interactive elements. The engine builds one per frame for `Scene::ui`.
 //!
 //! # Clipping
 //!
@@ -52,19 +52,20 @@ struct PendingDropdown {
 /// Context for immediate-mode UI rendering.
 ///
 /// Provides methods for drawing shapes, text, and interactive elements.
-/// Create one per frame and pass it to your render functions.
+/// The engine builds one per frame and passes it to `Scene::ui`.
 ///
 /// # Example
 ///
 /// ```ignore
-/// fn render_ui(&mut self, ui: &mut UiContext) {
+/// fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
 ///     // Draw a simple label
 ///     ui.draw_text("Score: 100", 10.0, 10.0, Color::WHITE);
 ///
 ///     // Draw a button that returns true when clicked
 ///     if ui.button("Start", Rect::new(100.0, 100.0, 120.0, 40.0)) {
-///         // Handle button click
+///         return SceneAction::Switch(Box::new(Level::default()));
 ///     }
+///     SceneAction::Continue
 /// }
 /// ```
 pub struct UiContext<'a> {
@@ -250,19 +251,22 @@ impl<'a> UiContext<'a> {
 
   /// Check if the Escape key was consumed by a widget this frame.
   ///
-  /// Use this after calling your UI methods to know whether to handle
-  /// Escape yourself (e.g., for scene navigation).
+  /// The UI pass runs before gameplay and what it consumes is hidden from
+  /// `Input`, so `update` never sees an Escape a widget took. Use this in
+  /// `Scene::ui`, after the widgets, to tell the cases apart there.
   ///
   /// # Example
   /// ```ignore
-  /// // In update():
-  /// if ctx.input.key_pressed(KeyCode::Escape) && !self.escape_consumed {
+  /// // In Scene::ui:
+  /// ui.dropdown(&mut self.dropdown, rect, &options);
+  /// if !ui.escape_consumed() && ui.input().key_pressed(KeyCode::Escape) {
   ///     return SceneAction::Pop;
   /// }
   ///
-  /// // In render_ui():
-  /// ui.dropdown(&mut self.dropdown, rect, &options);
-  /// self.escape_consumed = ui.escape_consumed();
+  /// // Or in update(): an Escape the dropdown took reads as not pressed
+  /// if ctx.input.key_pressed(KeyCode::Escape) {
+  ///     return SceneAction::Pop;
+  /// }
   /// ```
   pub fn escape_consumed(&self) -> bool {
     self.input.is_key_consumed(KeyCode::Escape)
@@ -1795,7 +1799,7 @@ impl<'a> UiContext<'a> {
   /// Space or Enter opens a focused dropdown.
   ///
   /// # Note
-  /// Call `finish_dropdowns()` at the end of your `render_ui` to draw all open
+  /// Call `finish_dropdowns()` at the end of your `Scene::ui` to draw all open
   /// dropdown lists on top of other content.
   ///
   /// # Example
@@ -1805,7 +1809,7 @@ impl<'a> UiContext<'a> {
   ///     println!("Selected: {}", options[self.difficulty.selected()]);
   /// }
   ///
-  /// // At end of render_ui:
+  /// // At the end of Scene::ui:
   /// ui.finish_dropdowns();
   /// ```
   pub fn dropdown(&mut self, state: &mut DropdownState, rect: Rect, options: &[&str]) -> bool {
@@ -2075,18 +2079,19 @@ impl<'a> UiContext<'a> {
 
   /// Draw all pending dropdown lists on top of other content.
   ///
-  /// Call this at the end of your `render_ui` function to ensure dropdown
-  /// lists appear above other UI elements.
+  /// Call this at the end of your `Scene::ui` to ensure dropdown lists
+  /// appear above other UI elements.
   ///
   /// # Example
   /// ```ignore
-  /// fn render_ui(&mut self, ui: &mut UiContext) {
+  /// fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
   ///     // Draw all your UI...
   ///     ui.dropdown(&mut self.dropdown1, rect1, &options1);
   ///     ui.dropdown(&mut self.dropdown2, rect2, &options2);
-  ///     
+  ///
   ///     // Draw dropdown overlays last
   ///     ui.finish_dropdowns();
+  ///     SceneAction::Continue
   /// }
   /// ```
   pub fn finish_dropdowns(&mut self) {

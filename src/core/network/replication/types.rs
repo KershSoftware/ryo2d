@@ -99,7 +99,7 @@ pub enum Authority {
 ///
 /// Attach this component to any entity that should be synchronized
 /// across the network. The replication system will automatically
-/// sync components that implement [`Replicated`] on entities with
+/// sync components that implement [`Replicated`](super::Replicated) on entities with
 /// this component.
 ///
 /// # Fields

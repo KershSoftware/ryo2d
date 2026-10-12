@@ -82,16 +82,21 @@
 //! State machines work well as ECS components:
 //!
 //! ```ignore
+//! #[derive(Component)]
+//! struct CharacterFsm(StateMachine<PlayerState>);
+//!
 //! // Attach to entities
 //! world.spawn((
-//!     Transform::new(100.0, 100.0),
+//!     Transform::from_xy(100.0, 100.0),
 //!     CharacterFsm(StateMachine::new(PlayerState::Idle)),
 //! ));
 //!
-//! // Process in systems
-//! for (entity, (fsm, input)) in world.query::<(&mut CharacterFsm, &Input)>() {
-//!     if input.jump_pressed && fsm.0.current() == &PlayerState::Idle {
-//!         fsm.0.transition_to(PlayerState::Jumping);
+//! // Process in a system
+//! fn jump(input: Res<Input>, mut fsms: Query<&mut CharacterFsm>) {
+//!     for mut fsm in &mut fsms {
+//!         if input.key_pressed(KeyCode::Space) && fsm.0.current() == &PlayerState::Idle {
+//!             let _ = fsm.0.transition_to(PlayerState::Jumping);
+//!         }
 //!     }
 //! }
 //! ```

@@ -23,7 +23,7 @@
 //!
 //! // Pattern 2: Material as separate component
 //! world.spawn((
-//!     Transform::new(100.0, 200.0),
+//!     Transform::from_xy(100.0, 200.0),
 //!     Renderable::sprite(sprite),
 //!     Material::outline(Color::WHITE, 2),
 //! ));
@@ -31,7 +31,7 @@
 //! // Pattern 3: Custom user shader (WGSL `fn sprite(in: SpriteIn, params: Params)`)
 //! let dissolve = assets.load_shader("shaders/dissolve.wgsl")?;
 //! world.spawn((
-//!     Transform::new(100.0, 200.0),
+//!     Transform::from_xy(100.0, 200.0),
 //!     Renderable::sprite(sprite),
 //!     Material::custom(dissolve)
 //!         .with_param("amount", 0.5)

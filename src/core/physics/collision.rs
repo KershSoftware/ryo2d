@@ -22,7 +22,7 @@ pub struct Collider {
   pub shape: ColliderShape,
   /// Offset of the shape's centre from the entity's origin
   pub offset: Vec2,
-  /// Whether this collider is a trigger (no physics response, just events)
+  /// Whether this collider is a trigger (no physics response, just collision messages)
   pub is_trigger: bool,
   /// Collision layer (for filtering)
   pub layer: u32,

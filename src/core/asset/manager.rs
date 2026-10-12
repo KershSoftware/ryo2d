@@ -15,10 +15,10 @@
 //!
 //! // Handles are cheap to clone (Arc-backed)
 //! let player2 = player.clone(); // No extra memory allocation
-//!
-//! // Hot reload: call each frame to apply pending changes
-//! assets.process_reloads();
 //! ```
+//!
+//! The engine's manager is a resource (`ctx.assets` in scene callbacks); it
+//! finishes async loads and applies hot reloads each frame in `PreUpdate`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -714,7 +714,7 @@ impl AssetManager {
   /// be polled for completion. The actual loading happens in a background
   /// thread, preventing frame hitches for large assets.
   ///
-  /// **Important:** You must call `process_async_loads()` each frame to
+  /// The engine calls `process_async_loads()` each frame (`PreUpdate`) to
   /// complete pending loads and update handles.
   ///
   /// # Example
@@ -726,10 +726,7 @@ impl AssetManager {
   /// // Store the handle
   /// self.boss_sprite = Some(boss);
   ///
-  /// // In update loop:
-  /// assets.process_async_loads();
-  ///
-  /// // Check if loaded before using
+  /// // In update: check if loaded before using
   /// if let Some(boss) = &self.boss_sprite {
   ///     if boss.is_loaded() {
   ///         let sprite = boss.get().unwrap();
@@ -774,25 +771,10 @@ impl AssetManager {
 
   /// Process completed async loads
   ///
-  /// Call this once per frame to check for completed background loads
-  /// and update their handles. Returns the number of loads completed.
-  ///
-  /// This method is separate from `process_reloads()` - call both if
-  /// using both async loading and hot reloading.
-  ///
-  /// # Example
-  ///
-  /// ```rust,ignore
-  /// fn update(&mut self, ctx: &mut GameContext, _dt: f32) {
-  ///     // Process async loads
-  ///     let loaded = ctx.assets.process_async_loads();
-  ///     if loaded > 0 {
-  ///         println!("Loaded {} assets", loaded);
-  ///     }
-  ///     
-  ///     // ... rest of update
-  /// }
-  /// ```
+  /// Checks for completed background loads and updates their handles.
+  /// Returns the number of loads completed. The engine calls it once per
+  /// frame in `PreUpdate`, so games only need it when driving an
+  /// `AssetManager` of their own.
   pub fn process_async_loads(&mut self) -> usize {
     let loader = match &self.async_loader {
       Some(l) => l,
@@ -910,7 +892,8 @@ impl AssetManager {
   /// the progress tracking. Use `loading_progress()` to monitor progress
   /// and display loading screens.
   ///
-  /// **Important:** Call `process_async_loads()` each frame to complete loads.
+  /// The engine completes loads each frame (`process_async_loads()` in
+  /// `PreUpdate`).
   ///
   /// # Example
   ///
@@ -922,9 +905,7 @@ impl AssetManager {
   ///     "assets/enemy.png",
   /// ]);
   ///
-  /// // In update loop:
-  /// ctx.assets.process_async_loads();
-  ///
+  /// // In update:
   /// let progress = ctx.assets.loading_progress();
   /// if progress.is_complete() {
   ///     return SceneAction::Switch(Box::new(GameScene::new()));
@@ -1014,8 +995,8 @@ impl AssetManager {
   /// Enable hot reloading for development
   ///
   /// When enabled, a background thread watches for file changes and
-  /// automatically reloads modified assets. Call `process_reloads()`
-  /// each frame to apply pending changes.
+  /// automatically reloads modified assets. The engine enables it for the
+  /// assets folder in dev builds and calls `process_reloads()` each frame.
   ///
   /// # Arguments
   ///
@@ -1026,10 +1007,9 @@ impl AssetManager {
   /// ```rust,ignore
   /// assets.enable_hot_reload(vec!["assets/sprites", "assets/textures"])?;
   ///
-  /// // In your game loop:
-  /// let reloaded = assets.process_reloads();
-  /// if reloaded > 0 {
-  ///     println!("Reloaded {} assets", reloaded);
+  /// // Each reload then arrives as a message
+  /// for reloaded in ctx.messages::<AssetReloaded>() {
+  ///     println!("Reloaded {}", reloaded.path.display());
   /// }
   /// ```
   pub fn enable_hot_reload<P, I>(&mut self, watch_paths: I) -> AssetResult<()>
@@ -1070,19 +1050,10 @@ impl AssetManager {
 
   /// Process pending hot reload events
   ///
-  /// Call this once per frame to check for and apply asset changes.
-  /// Returns the number of assets that were reloaded.
-  ///
-  /// # Example
-  ///
-  /// ```rust,ignore
-  /// fn update(&mut self, ctx: &mut GameContext) {
-  ///     // Process any pending hot reloads
-  ///     ctx.assets.process_reloads();
-  ///     
-  ///     // ... rest of update
-  /// }
-  /// ```
+  /// Checks for and applies asset changes. Returns the number of assets that
+  /// were reloaded. The engine calls it once per frame in `PreUpdate` (dev
+  /// builds) and writes an `AssetReloaded` or `AssetLoadFailed` message for
+  /// each outcome.
   pub fn process_reloads(&mut self) -> usize {
     let events = match &self.watcher {
       Some(w) => w.poll(),

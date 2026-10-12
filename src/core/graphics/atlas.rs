@@ -37,7 +37,7 @@ const PAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub(crate) enum AtlasKey {
   /// An entity sprite: the handle's identity plus its content generation
   Sprite { handle: usize, generation: u64 },
-  /// A texture uploaded by id (render_gpu, particles, parallax)
+  /// A texture uploaded by id (`Scene::render` sprites, particles, parallax)
   Id(String),
 }
 

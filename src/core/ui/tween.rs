@@ -23,12 +23,12 @@
 //!     .with_ease(Ease::InOutSine)
 //!     .with_loop(UiTweenLoop::PingPong);
 //!
-//! // In update():
+//! // In Scene::ui (ui.dt() is real time, so UI animation runs through pause):
+//! let dt = ui.dt();
 //! fade.update(dt);
 //! slide.update(dt);
 //! pulse.update(dt);
 //!
-//! // In render_ui():
 //! let alpha = (fade.value() * 255.0) as u8;
 //! let (x, y) = slide.value();
 //! ```

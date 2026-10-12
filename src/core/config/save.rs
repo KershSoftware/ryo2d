@@ -310,10 +310,9 @@ pub struct SystemState {
   /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
   pub display_mode: DisplayMode,
 
-  /// VSync preference
-  /// - None: Use Mailbox with fallback to Immediate (best performance, no tearing)
-  /// - Some(true): Use Mailbox with fallback to Fifo (vsync on)
-  /// - Some(false): Use Immediate (vsync off, may tear)
+  /// VSync preference; `None` keeps the resolved setting (on by default).
+  /// - On: Fifo presentation, which waits for the display
+  /// - Off: Mailbox, else Immediate (may tear), paced to `target_fps`
   pub vsync: Option<bool>,
 
   /// Show FPS counter (engine override, optional)
@@ -581,7 +580,7 @@ impl SystemState {
     Self::default()
   }
 
-  /// Create from SystemDefaults (Ryo.toml [system] + [info] sections).
+  /// Create from SystemDefaults (the Ryo.toml `[system]` section).
   ///
   /// Used when creating a new system.json file from developer defaults.
   pub fn from_defaults(defaults: &super::workspace::SystemDefaults) -> Self {
@@ -845,7 +844,7 @@ impl SaveManager {
   ///
   /// # Arguments
   ///
-  /// * `defaults` - Developer defaults from Ryo.toml [system] section
+  /// * `defaults` - Developer defaults from the Ryo.toml `[system]` section
   ///
   /// # Example
   ///

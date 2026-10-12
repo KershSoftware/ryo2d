@@ -144,7 +144,8 @@ impl SceneContext<'_> {
     self.world.resource_mut::<EffectsManager>()
   }
 
-  /// Ambient light, atmosphere and volumetric settings.
+  /// Whether lighting runs (forced on or off), ambient light and atmosphere.
+  /// Volumetric lighting is per light (`Light2D`).
   pub fn lighting(&mut self) -> Mut<'_, LightingSettings> {
     self.world.resource_mut::<LightingSettings>()
   }

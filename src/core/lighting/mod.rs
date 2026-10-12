@@ -24,22 +24,22 @@
 //! ```rust,ignore
 //! use ryo2d::prelude::*;
 //!
-//! fn init(&mut self, ctx: &mut GameContext) {
+//! fn on_enter(&mut self, ctx: &mut SceneContext) {
 //!     // Spawn a point light (torch)
 //!     ctx.world.spawn((
-//!         Transform::at(100.0, 100.0),
+//!         Transform::from_xy(100.0, 100.0),
 //!         Light2D::torch(150.0),
 //!     ));
 //!
 //!     // Spawn a spotlight (flashlight)
 //!     ctx.world.spawn((
-//!         Transform::at(200.0, 50.0),
+//!         Transform::from_xy(200.0, 50.0),
 //!         Light2D::flashlight(200.0, 90.0), // pointing down
 //!     ));
 //!
 //!     // Spawn a custom colored light
 //!     ctx.world.spawn((
-//!         Transform::at(300.0, 300.0),
+//!         Transform::from_xy(300.0, 300.0),
 //!         Light2D::point(Color::new(100, 200, 255, 255), 100.0)
 //!             .with_intensity(0.8),
 //!     ));
@@ -115,10 +115,10 @@
 //!
 //! ```rust,ignore
 //! // Set a moonlit ambient
-//! let ambient = AmbientLight::moonlit();
+//! ctx.lighting().set_ambient(AmbientLight::moonlit());
 //!
 //! // Or create custom ambient
-//! let ambient = AmbientLight::new(Color::new(30, 30, 50, 255), 0.15);
+//! ctx.lighting().set_ambient(AmbientLight::new(Color::new(30, 30, 50, 255), 0.15));
 //! ```
 //!
 //! ## Ambient Presets
@@ -139,19 +139,19 @@
 //! ```rust,ignore
 //! // Rectangular wall
 //! ctx.world.spawn((
-//!     Transform::at(150.0, 100.0),
+//!     Transform::from_xy(150.0, 100.0),
 //!     LightOccluder2D::rect(50.0, 100.0),
 //! ));
 //!
 //! // Circular pillar
 //! ctx.world.spawn((
-//!     Transform::at(200.0, 200.0),
+//!     Transform::from_xy(200.0, 200.0),
 //!     LightOccluder2D::circle(25.0, 8), // 8 segments
 //! ));
 //!
 //! // Custom polygon
 //! ctx.world.spawn((
-//!     Transform::at(300.0, 150.0),
+//!     Transform::from_xy(300.0, 150.0),
 //!     LightOccluder2D::polygon(vec![
 //!         Vec2::new(-20.0, -30.0),
 //!         Vec2::new(20.0, -30.0),
@@ -164,14 +164,14 @@
 //! # Dynamic Lights
 //!
 //! Lights follow their entity's transform, so you can create dynamic
-//! lighting by moving the entity:
+//! lighting by moving the entity (or by spawning the light as a child of the
+//! entity it should follow, with `ctx.spawn_child`):
 //!
 //! ```rust,ignore
-//! fn update(&mut self, ctx: &mut GameContext, dt: f32) {
-//!     // Make a light follow the player
+//! fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+//!     // Move a light
 //!     if let Some(mut transform) = ctx.world.get_mut::<Transform>(self.player_light) {
-//!         transform.x = self.player_x;
-//!         transform.y = self.player_y;
+//!         transform.translation = Vec2::new(self.player_x, self.player_y);
 //!     }
 //!
 //!     // Rotate a spotlight
@@ -184,6 +184,7 @@
 //!         let flicker = 0.8 + 0.2 * (self.time * 10.0).sin();
 //!         light.set_intensity(flicker);
 //!     }
+//!     SceneAction::Continue
 //! }
 //! ```
 //!

@@ -34,8 +34,10 @@ use super::tween::{Ease, TweenCallback, TweenLoop};
 /// Unlike [`super::Tween`] which operates on Transform fields, `PropertyTween<T>`
 /// stores its own start/end/current values and can be used for arbitrary data.
 ///
-/// Create with [`PropertyTween::new`] and advance each frame with [`PropertyTween::update`].
-/// Read the interpolated value with [`PropertyTween::value`].
+/// Create with [`PropertyTween::new`]. The engine advances `PropertyTween<f32>`,
+/// `<Vec2>` and `<Color>` components each fixed step; advance other types (or
+/// tweens kept outside the world) with [`PropertyTween::update`]. Read the
+/// interpolated value with [`PropertyTween::value`].
 #[derive(Component)]
 pub struct PropertyTween<T: Lerp> {
   start: T,
@@ -200,7 +202,7 @@ impl<T: Lerp> PropertyTween<T> {
 
   /// Stop and mark as done. The current value is preserved.
   ///
-  /// Unlike [`Tween::stop`] which resets to the beginning,
+  /// Unlike [`Tween::stop`](super::Tween::stop) which resets to the beginning,
   /// this freezes the tween at its current interpolated value.
   pub fn stop(&mut self) {
     self.playing = false;

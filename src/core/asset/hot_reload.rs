@@ -18,8 +18,9 @@
 //!
 //! # Usage
 //!
-//! Hot reloading is enabled automatically in debug builds. Call `process_reloads()`
-//! each frame to apply any pending asset updates.
+//! Hot reloading is enabled automatically in debug builds. The engine calls
+//! `AssetManager::process_reloads()` each frame in `PreUpdate` to apply pending
+//! asset updates, and reports them as `AssetReloaded` / `AssetLoadFailed` messages.
 
 use crossbeam_channel::{Receiver, unbounded};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -198,7 +199,7 @@ impl HotReloadWatcher {
   /// Poll for pending file change events
   ///
   /// Returns all events that have occurred since the last poll.
-  /// Call this once per frame in your game loop.
+  /// The `AssetManager` calls this once per frame (`process_reloads`).
   ///
   /// # Example
   ///

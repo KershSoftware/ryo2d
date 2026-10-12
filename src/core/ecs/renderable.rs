@@ -1,7 +1,8 @@
 //! Unified rendering component for sprites and tiles
 //!
-//! The `Renderable` component provides a flexible rendering primitive that
-//! supports sprites, tiled sprites, rotation, scale, and parent-child hierarchies.
+//! The `Renderable` component provides a flexible rendering primitive for
+//! sprites and tiled sprites; the entity's `Transform` places, rotates and
+//! scales it (under its parent, in a hierarchy).
 //!
 //! # Example
 //!
@@ -23,8 +24,8 @@
 //! let highlighted = Renderable::sprite(item_handle)
 //!     .with_shader(SpriteShader::outline(Color::WHITE, 2));
 //!
-//! // Spawn with transform (uses WorldTransform if parent-child)
-//! world.spawn((Transform::new(100.0, 200.0), sprite));
+//! // Spawn with a transform (local to the parent for a child entity)
+//! let player = world.spawn((Transform::from_xy(100.0, 200.0), sprite)).id();
 //! ```
 //!
 //! # Shaders
