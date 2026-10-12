@@ -321,7 +321,7 @@ impl WebRtcServerTransport {
   }
 
   /// Look up the underlying `PeerId` for a connected client.
-  #[allow(dead_code)]
+  #[cfg_attr(not(test), allow(dead_code))] // only the tests ask
   pub fn get_peer(&self, client_id: ClientId) -> Option<PeerId> {
     self.client_to_peer.get(&client_id).copied()
   }

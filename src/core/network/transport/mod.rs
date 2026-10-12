@@ -74,7 +74,8 @@ pub enum TransportConfig {
 ///
 /// This trait abstracts the differences between UDP and WebRTC transports,
 /// allowing the server/client code to work with either transparently.
-#[allow(dead_code)]
+// `update` is only called by the WebRTC path
+#[cfg_attr(not(feature = "matchbox"), allow(dead_code))]
 pub(crate) trait ServerTransport: Send {
   /// Update the transport state.
   ///
@@ -92,7 +93,8 @@ pub(crate) trait ServerTransport: Send {
 }
 
 /// Internal trait for client transport implementations.
-#[allow(dead_code)]
+// `update` is only called by the WebRTC path
+#[cfg_attr(not(feature = "matchbox"), allow(dead_code))]
 pub(crate) trait ClientTransport: Send {
   /// Update the transport state.
   fn update(&mut self, dt: Duration) -> NetworkResult<()>;
@@ -110,6 +112,7 @@ pub(crate) trait ClientTransport: Send {
   fn client_id(&self) -> ClientId;
 
   /// Check if the transport is ready (connected or connecting).
+  #[cfg_attr(not(test), allow(dead_code))] // only the tests ask
   fn is_ready(&self) -> bool;
 }
 
