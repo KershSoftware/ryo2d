@@ -58,8 +58,8 @@ pub use crate::core::window::WindowMode;
 
 use frame::{
   advance_clock_system, asset_pump_system, camera_shake_system, clear_trackers_system,
-  publish_input_system, scene_fixed_systems, scene_update_system, scene_update_systems,
-  update_effects_system, update_messages_system,
+  publish_input_system, scene_fixed_systems, scene_transition_system, scene_update_system,
+  scene_update_systems, update_effects_system, update_messages_system,
 };
 
 /// Configuration for the engine
@@ -281,7 +281,10 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
     )
       .chain(),
   );
-  schedules.add_systems(Phase::PreUpdate, asset_pump_system);
+  schedules.add_systems(
+    Phase::PreUpdate,
+    (asset_pump_system, scene_transition_system),
+  );
   schedules.add_systems(
     Phase::FixedUpdate,
     snapshot_previous_transforms.in_set(FixedSet::Snapshot),

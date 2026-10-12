@@ -470,6 +470,23 @@ pub(crate) fn scene_update_system(world: &mut World) {
   });
 }
 
+/// `PreUpdate`: advance a scene transition once a frame on real time, so a
+/// fade runs while the game clock is paused or slowed.
+pub(crate) fn scene_transition_system(world: &mut World) {
+  let dt = world.resource::<Time>().real.delta();
+  with_host(world, |world, host| {
+    let SceneHost { scenes, audio } = host;
+    if !scenes.is_transitioning() {
+      return;
+    }
+    scenes.update_transition(dt, world, audio);
+    scenes.sync_physics_paused(world);
+    if scenes.is_empty() {
+      world.insert_resource(QuitRequested);
+    }
+  });
+}
+
 /// `FixedSet::Game`: the scenes' fixed-step systems.
 pub(crate) fn scene_fixed_systems(world: &mut World) {
   with_host(world, |world, host| host.scenes.run_fixed_systems(world));
@@ -585,6 +602,50 @@ mod tests {
       e.frame(Some(Duration::from_micros(16_667)));
     }
     assert_eq!(e.world().resource::<Starts>().0, 1);
+  }
+
+  #[test]
+  fn a_fade_started_while_the_game_clock_is_paused_finishes() {
+    use crate::core::scene::Transition;
+    use crate::core::ui::UiContext;
+
+    struct Arrived;
+    impl Scene for Arrived {}
+    struct PausesAndLeaves {
+      left: bool,
+    }
+    impl Scene for PausesAndLeaves {
+      fn ui(&mut self, _ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+        if self.left {
+          return SceneAction::Continue;
+        }
+        self.left = true;
+        // A pause menu's "quit to title": the game clock is stopped
+        ctx.time.game.pause();
+        SceneAction::SwitchWith(
+          Box::new(Arrived),
+          Transition::fade(Duration::from_millis(100)),
+        )
+      }
+    }
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(16, 16)
+      .start_scene(PausesAndLeaves { left: false })
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 16, 16), 1.0);
+    for _ in 0..30 {
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    let host = e.world().non_send::<SceneHost>();
+    assert!(
+      !host.scenes.is_transitioning(),
+      "the fade ends on real time"
+    );
+    assert_eq!(host.scenes.scene_names(), ["Arrived"]);
   }
 
   #[test]

@@ -290,7 +290,6 @@ impl SceneManager {
   /// the stack is empty); scenes do not update while a transition runs.
   pub fn update(&mut self, world: &mut World, audio: &mut Audio) -> SceneAction {
     let dt = world.resource::<Time>().fixed.timestep();
-    self.update_transition(dt, world, audio);
     if self.scenes.is_empty() {
       return SceneAction::Quit;
     }
@@ -811,6 +810,8 @@ mod tests {
     assert_eq!(m.transition_overlay_color(), Some([0, 0, 0, 255]));
     let mut steps = 0;
     while m.is_transitioning() {
+      // The engine advances transitions once a frame on real time
+      m.update_transition(0.02, &mut world, &mut audio);
       assert!(matches!(
         m.update(&mut world, &mut audio),
         SceneAction::Continue
