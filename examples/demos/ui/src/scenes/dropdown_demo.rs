@@ -40,7 +40,7 @@ impl DemoPage for DropdownDemo {
     ]
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     // Everything below was laid out for a panel at y = 65
     let oy = content_area(ui).y - 65.0;
 

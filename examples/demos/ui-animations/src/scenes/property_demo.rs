@@ -113,8 +113,10 @@ impl DemoPage for PropertyDemo {
     vec![Control::key(KeyCode::Space, "Restart")]
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+  /// UI tweens run in the UI pass, on real time
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     // Update all tweens
+    let dt = ui.dt();
     self.panel_left.update(dt);
     self.panel_right.update(dt);
     self.panel_top.update(dt);
@@ -125,12 +127,11 @@ impl DemoPage for PropertyDemo {
     self.rect_tween.update(dt);
 
     // Manual restart
-    if ctx.input.key_pressed(KeyCode::Space) {
+    if ui.input().key_pressed(KeyCode::Space) {
+      ui.consume_key(KeyCode::Space);
       self.restart();
     }
-  }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let screen_w = screen_w as f32;
     let screen_h = screen_h as f32;

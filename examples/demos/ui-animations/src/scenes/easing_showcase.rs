@@ -109,8 +109,10 @@ impl DemoPage for EasingShowcase {
     vec![Control::key(KeyCode::Space, "Restart")]
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+  /// UI tweens run in the UI pass, on real time
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     // Update all tweens
+    let dt = ui.dt();
     let mut all_finished = true;
     for b in &mut self.boxes {
       b.tween.update(dt);
@@ -125,12 +127,11 @@ impl DemoPage for EasingShowcase {
     }
 
     // Manual restart
-    if ctx.input.key_pressed(KeyCode::Space) {
+    if ui.input().key_pressed(KeyCode::Space) {
+      ui.consume_key(KeyCode::Space);
       self.restart_all();
     }
-  }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let area = content_area(ui);
 

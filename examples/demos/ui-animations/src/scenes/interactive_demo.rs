@@ -28,13 +28,20 @@ impl AnimatedButton {
     }
   }
 
-  fn update(&mut self, dt: f32, mouse_pos: (f32, f32), mouse_down: bool, mouse_pressed: bool) {
+  /// `mouse_pos` is `None` while the mouse is hidden from the page
+  fn update(
+    &mut self,
+    dt: f32,
+    mouse_pos: Option<(f32, f32)>,
+    mouse_down: bool,
+    mouse_pressed: bool,
+  ) {
     self.scale.update(dt);
     self.glow_alpha.update(dt);
     self.click_scale.update(dt);
 
     let current_rect = self.current_rect();
-    let is_hovered = current_rect.contains(mouse_pos.0, mouse_pos.1);
+    let is_hovered = mouse_pos.is_some_and(|(x, y)| current_rect.contains(x, y));
 
     // Handle hover state change
     if is_hovered && !self.was_hovered {
@@ -175,8 +182,6 @@ pub struct InteractiveDemo {
   click_count: u32,
   hover_indicator: TweenFloat,
   last_hovered: Option<usize>,
-  /// The content area's top on screen, from the last UI frame: the layout's origin
-  top: f32,
 }
 
 impl InteractiveDemo {
@@ -226,7 +231,6 @@ impl InteractiveDemo {
       click_count: 0,
       hover_indicator: TweenFloat::new(0.0, 0.0, 0.3).with_ease(Ease::OutQuad),
       last_hovered: None,
-      top: 0.0,
     }
   }
 }
@@ -250,13 +254,24 @@ impl DemoPage for InteractiveDemo {
     vec![Control::mouse("Hover and click the buttons")]
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+  /// Hover, clicks and the UI tweens run in the UI pass, on real time
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
+    let dt = ui.dt();
+    let (screen_w, screen_h) = ui.screen_size();
+    let screen_w = screen_w as f32;
+    let screen_h = screen_h as f32;
+    let top = content_area(ui).y;
+
     // Buttons live in layout coordinates, with y measured from the content
-    // area's top
-    let (mx, my) = ctx.input.mouse_position();
-    let mouse_pos = (mx, my - self.top);
-    let mouse_down = ctx.input.mouse_down(MouseButton::Left);
-    let mouse_pressed = ctx.input.mouse_pressed(MouseButton::Left);
+    // area's top. `is_hovered` is false while the shell's help overlay hides
+    // the mouse from the page.
+    let (mx, my) = ui.input().mouse_position();
+    let mouse_pos = ui
+      .is_hovered(Rect::new(0.0, 0.0, screen_w, screen_h))
+      .then_some((mx, my - top));
+    let mouse_down = ui.input().mouse_down(MouseButton::Left);
+    let mouse_pressed = ui.input().mouse_pressed(MouseButton::Left);
+    let mouse_released = ui.input().mouse_released(MouseButton::Left);
 
     // Update buttons
     for (i, button) in self.buttons.iter_mut().enumerate() {
@@ -264,7 +279,7 @@ impl DemoPage for InteractiveDemo {
       button.update(dt, mouse_pos, mouse_down, mouse_pressed);
 
       // Check for click
-      if button.is_hovered() && ctx.input.mouse_released(MouseButton::Left) {
+      if button.is_hovered() && mouse_released {
         self.click_count += 1;
 
         // Find an inactive notification slot, or recycle the oldest active one
@@ -300,12 +315,6 @@ impl DemoPage for InteractiveDemo {
     for notif in &mut self.notifications {
       notif.update(dt);
     }
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) {
-    let (screen_w, screen_h) = ui.screen_size();
-    let screen_w = screen_w as f32;
-    let screen_h = screen_h as f32;
 
     // Dark background
     ui.draw_rect(
@@ -318,9 +327,6 @@ impl DemoPage for InteractiveDemo {
 
     // Click counter
     let count_text = format!("Total clicks: {}", self.click_count);
-    let area = content_area(ui);
-    self.top = area.y;
-    let top = area.y;
     ui.draw_text(&count_text, screen_w - 150.0, top, Color::WHITE);
 
     // Section title

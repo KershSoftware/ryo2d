@@ -13,8 +13,6 @@ pub struct ScrollViewDemo {
   item_count: i32,
   /// Selected item index
   selected_item: Option<usize>,
-  /// Delta time from last frame
-  last_dt: f32,
 }
 
 impl ScrollViewDemo {
@@ -25,7 +23,6 @@ impl ScrollViewDemo {
       horizontal_scroll: ScrollViewState::new(),
       item_count: 50,
       selected_item: None,
-      last_dt: 0.016,
     }
   }
 }
@@ -50,16 +47,19 @@ impl DemoPage for ScrollViewDemo {
     ]
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
-    self.last_dt = dt;
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
+    // Scroll momentum runs on the UI's real frame time
+    let dt = ui.dt();
 
     // Home/End to scroll to top/bottom (or left/right for horizontal)
-    if ctx.input.key_pressed(KeyCode::Home) {
+    if ui.input().key_pressed(KeyCode::Home) {
+      ui.consume_key(KeyCode::Home);
       self.content_scroll.scroll_to_top();
       self.list_scroll.scroll_to_top();
       self.horizontal_scroll.scroll_to_top(); // Scrolls to left
     }
-    if ctx.input.key_pressed(KeyCode::End) {
+    if ui.input().key_pressed(KeyCode::End) {
+      ui.consume_key(KeyCode::End);
       let content_height = 800.0; // Approximate
       self.content_scroll.scroll_to_bottom(content_height, 250.0);
       let list_height = self.item_count.max(0) as f32 * 28.0;
@@ -67,10 +67,7 @@ impl DemoPage for ScrollViewDemo {
       // Scroll horizontal to right
       self.horizontal_scroll.set_scroll_x(800.0); // Content width - view width
     }
-  }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
-    let dt = self.last_dt;
     let padding = 8.0; // Consistent padding for all scroll views
     let top = content_area(ui).y;
     let item_count = self.item_count.max(0) as usize;

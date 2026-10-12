@@ -16,7 +16,7 @@ pub struct ClippingDemo {
   modal_result: Option<bool>,
   // Demo items
   items: Vec<String>,
-  // Cached scroll area rect (set during render, used in update)
+  // Scroll area rects (set while drawing, read by the next frame's input)
   scroll_area: Rect,
   content_area: Rect,
 }
@@ -72,20 +72,33 @@ impl DemoPage for ClippingDemo {
     self.show_modal
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
-    if self.show_modal && ctx.input.key_pressed(KeyCode::Escape) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
+    if self.show_modal && ui.input().key_pressed(KeyCode::Escape) {
+      ui.consume_key(KeyCode::Escape);
       self.show_modal = false;
       self.modal_result = Some(false);
     }
+    self.handle_scroll(ui);
+    self.draw(ui);
+  }
+}
 
-    let (mx, my) = ctx.input.mouse_position();
-    let mouse_in_scroll_area = self.scroll_area.contains(mx, my);
+impl ClippingDemo {
+  /// Focus, scrollbar dragging, wheel and momentum for the scroll region.
+  /// `is_hovered` / `is_clicked` / `is_held` respect the shell's help
+  /// overlay, which hides the mouse from the page.
+  fn handle_scroll(&mut self, ui: &mut UiContext) {
+    let dt = ui.dt();
+    let my = ui.input().mouse_y();
+    let mouse_in_scroll_area = ui.is_hovered(self.scroll_area);
+    let (screen_w, screen_h) = ui.screen_size();
+    let screen = Rect::new(0.0, 0.0, screen_w as f32, screen_h as f32);
     let content_height = self.items.len() as f32 * 25.0;
     // max_scroll = total content height - visible area height
     let max_scroll = (content_height - self.content_area.height).max(0.0);
 
     // Handle focus - click to focus, click outside to unfocus
-    if ctx.input.mouse_pressed(MouseButton::Left) {
+    if ui.is_clicked(screen) {
       self.scroll_focused = mouse_in_scroll_area;
     }
 
@@ -107,7 +120,7 @@ impl DemoPage for ClippingDemo {
     );
 
     // Handle scrollbar dragging
-    if ctx.input.mouse_pressed(MouseButton::Left) && scrollbar_rect.contains(mx, my) {
+    if ui.is_clicked(scrollbar_rect) {
       self.scroll_dragging = true;
       self.drag_start_y = my;
       self.drag_start_offset = self.scroll_offset;
@@ -115,7 +128,7 @@ impl DemoPage for ClippingDemo {
     }
 
     if self.scroll_dragging {
-      if ctx.input.mouse_down(MouseButton::Left) {
+      if ui.input().mouse_down(MouseButton::Left) {
         // Calculate new scroll based on drag distance
         let drag_delta = my - self.drag_start_y;
         let scroll_ratio = drag_delta / (self.content_area.height - scrollbar_height);
@@ -130,7 +143,8 @@ impl DemoPage for ClippingDemo {
     // Apply scroll velocity with friction (only when not dragging)
     if !self.scroll_dragging {
       self.scroll_offset += self.scroll_velocity * dt;
-      self.scroll_velocity *= 0.92; // Slightly stronger friction
+      // Friction: 8% per 60th of a second, whatever the frame rate
+      self.scroll_velocity *= 0.92_f32.powf(dt * 60.0);
 
       // Stop very small velocities
       if self.scroll_velocity.abs() < 1.0 {
@@ -143,7 +157,7 @@ impl DemoPage for ClippingDemo {
 
     // Mouse wheel scrolling - only when hovering over scroll area
     if mouse_in_scroll_area {
-      let scroll_delta = ctx.input.scroll_delta();
+      let scroll_delta = ui.input().scroll_delta();
       if scroll_delta.1.abs() > 0.01 {
         // Much higher multiplier for better responsiveness
         self.scroll_velocity = -scroll_delta.1 * 400.0;
@@ -151,7 +165,7 @@ impl DemoPage for ClippingDemo {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn draw(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Background

@@ -50,10 +50,10 @@ impl Variant {
 // Marker Components
 // =============================================================================
 
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct MouseTrail;
 
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct OrbitTrail {
   angle: f32,
   radius: f32,
@@ -221,7 +221,7 @@ impl TrailsPage {
 
   fn clear_page(&mut self, world: &mut World) {
     for entity in self.entities.drain(..) {
-      let _ = world.despawn(entity);
+      world.despawn(entity);
     }
   }
 
@@ -261,18 +261,21 @@ impl TrailsPage {
     let x = cx + start_angle.cos() * radius;
     let y = cy + start_angle.sin() * radius;
 
-    let entity = ctx.world.spawn((
-      Transform::new(x, y).with_pivot(0.5, 0.5),
-      Renderable::sprite(circle_sprite(6, color)),
-      trail,
-      OrbitTrail {
-        angle: start_angle,
-        radius,
-        speed,
-        center_x: cx,
-        center_y: cy,
-      },
-    ));
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(circle_sprite(6, color)),
+        trail,
+        OrbitTrail {
+          angle: start_angle,
+          radius,
+          speed,
+          center_x: cx,
+          center_y: cy,
+        },
+      ))
+      .id();
     self.entities.push(entity);
     entity
   }
@@ -290,12 +293,15 @@ impl TrailsPage {
     let mouse_color = Color::rgb(100, 200, 255);
     let trail = self.preset().create(mouse_color, 8.0);
 
-    let entity = ctx.world.spawn((
-      Transform::new(mx, my).with_pivot(0.5, 0.5),
-      Renderable::sprite(circle_sprite(8, mouse_color)),
-      trail,
-      MouseTrail,
-    ));
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(mx, my),
+        Renderable::sprite(circle_sprite(8, mouse_color)),
+        trail,
+        MouseTrail,
+      ))
+      .id();
     self.entities.push(entity);
 
     // 4 orbiting trails — wide spacing to avoid visual overlap with effect presets
@@ -440,7 +446,7 @@ impl TrailsPage {
       let line = Line2D::new(pts, Color::rgb(100, 200, 255), cap_width)
         .with_cap(*cap)
         .with_style(TrailStyle::Solid);
-      let entity = ctx.world.spawn((Transform::new(0.0, 0.0), line));
+      let entity = ctx.world.spawn((Transform::IDENTITY, line)).id();
       self.entities.push(entity);
     }
 
@@ -451,7 +457,7 @@ impl TrailsPage {
       let line = Line2D::new(pts, Color::rgb(255, 50, 255), 3.0)
         .with_cap(LineCap::Butt)
         .with_style(TrailStyle::Solid);
-      let entity = ctx.world.spawn((Transform::new(0.0, 0.0), line));
+      let entity = ctx.world.spawn((Transform::IDENTITY, line)).id();
       self.entities.push(entity);
     }
 
@@ -482,7 +488,7 @@ impl TrailsPage {
         .with_join(*join)
         .with_cap(LineCap::Butt)
         .with_style(TrailStyle::Solid);
-      let entity = ctx.world.spawn((Transform::new(0.0, 0.0), line));
+      let entity = ctx.world.spawn((Transform::IDENTITY, line)).id();
       self.entities.push(entity);
     }
 
@@ -498,7 +504,7 @@ impl TrailsPage {
       .with_cap(self.cap())
       .with_join(self.join())
       .with_style(TrailStyle::Solid);
-    let entity = ctx.world.spawn((Transform::new(0.0, 0.0), line));
+    let entity = ctx.world.spawn((Transform::IDENTITY, line)).id();
     self.entities.push(entity);
 
     // --- Mouse trail with the chosen cap (trails draw no joins) ---
@@ -509,12 +515,15 @@ impl TrailsPage {
       .with_cap(self.cap())
       .with_style(TrailStyle::Solid);
 
-    let entity = ctx.world.spawn((
-      Transform::new(mx, my).with_pivot(0.5, 0.5),
-      Renderable::sprite(circle_sprite(6, mouse_color)),
-      trail,
-      MouseTrail,
-    ));
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(mx, my),
+        Renderable::sprite(circle_sprite(6, mouse_color)),
+        trail,
+        MouseTrail,
+      ))
+      .id();
     self.entities.push(entity);
   }
 
@@ -647,42 +656,35 @@ impl TrailsPage {
   // Update helpers
   // ===========================================================================
 
+  /// Move each orbiting head; the engine records its trail point after
+  /// `update`, in world space
   fn update_orbits(&self, ctx: &mut SceneContext, dt: f32) {
     if self.paused {
       return;
     }
 
-    for &entity in &self.entities {
-      if let Some(mut orbit) = ctx.world.get_mut::<OrbitTrail>(entity) {
-        orbit.angle += orbit.speed * dt;
-        let new_x = orbit.center_x + orbit.angle.cos() * orbit.radius;
-        let new_y = orbit.center_y + orbit.angle.sin() * orbit.radius;
-        drop(orbit);
-
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.x = new_x;
-          transform.y = new_y;
-        }
-        if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
-          trail.update(new_x, new_y, dt);
-        }
-      }
+    for (mut orbit, mut transform) in ctx
+      .world
+      .query::<(&mut OrbitTrail, &mut Transform)>()
+      .iter_mut(ctx.world)
+    {
+      orbit.angle += orbit.speed * dt;
+      transform.translation = Vec2::new(
+        orbit.center_x + orbit.angle.cos() * orbit.radius,
+        orbit.center_y + orbit.angle.sin() * orbit.radius,
+      );
     }
   }
 
-  fn update_mouse_trail(&self, ctx: &mut SceneContext, dt: f32) {
+  fn update_mouse_trail(&self, ctx: &mut SceneContext) {
     let (mx, my) = ctx.input.mouse_position();
 
-    for &entity in &self.entities {
-      if ctx.world.get::<MouseTrail>(entity).is_some() {
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.x = mx;
-          transform.y = my;
-        }
-        if let Some(mut trail) = ctx.world.get_mut::<Trail2D>(entity) {
-          trail.update(mx, my, dt);
-        }
-      }
+    for mut transform in ctx
+      .world
+      .query_filtered::<&mut Transform, With<MouseTrail>>()
+      .iter_mut(ctx.world)
+    {
+      transform.translation = Vec2::new(mx, my);
     }
   }
 }
@@ -767,11 +769,11 @@ impl DemoPage for TrailsPage {
 
     // Mouse trail only on pages that have one
     if matches!(self.variant, Variant::Presets | Variant::CapsJoins) {
-      self.update_mouse_trail(ctx, dt);
+      self.update_mouse_trail(ctx);
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let (sw, sh) = ui.screen_size();
     let sw = sw as f32;
     let sh = sh as f32;
@@ -921,7 +923,7 @@ fn main() {
     .configure(|b| {
       b.window_mode(WindowMode::ResizableAspectRatio)
         .target_fps(144)
-        .physics_hz(144)
+        .fixed_hz(144)
     })
     .page(|| TrailsPage::new(Variant::Presets))
     .page(|| TrailsPage::new(Variant::FadeModes))

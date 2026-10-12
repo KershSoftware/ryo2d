@@ -25,11 +25,11 @@ const PLAY_AREA_TOP: f32 = 24.0;
 const PLAY_AREA_BOTTOM: f32 = (GAME_HEIGHT - 16) as f32;
 
 /// Marker for the player entity
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct Player;
 
 /// Marker for NPC entities that wander
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct Wanderer {
   speed: f32,
   direction: (f32, f32),
@@ -325,6 +325,8 @@ impl YSortingPage {
     Sprite::from_rgba(data, width, height)
   }
 
+  /// Y-sorted sprites are anchored at their feet (bottom centre), and the
+  /// foot offset is measured from the anchor, so 0 sorts by the feet
   fn get_y_sort(&self) -> YSort {
     if self.depth_scale_enabled {
       YSort::new().with_foot_offset(1.0).with_depth_scale(
@@ -381,8 +383,10 @@ impl DemoPage for YSortingPage {
       for tx in 0..WORLD_TILES_X {
         let variant = ((tx * 3 + ty * 7) % 4) as usize;
         ctx.world.spawn((
-          Transform::new((tx * TILE_SIZE) as f32, (ty * TILE_SIZE) as f32),
-          Renderable::sprite(grass_handles[variant].clone()).with_z_order(-100),
+          Transform::from_xy((tx * TILE_SIZE) as f32, (ty * TILE_SIZE) as f32),
+          Renderable::sprite(grass_handles[variant].clone())
+            .with_anchor(Anchor::TopLeft)
+            .with_z_order(-100),
         ));
       }
     }
@@ -408,18 +412,30 @@ impl DemoPage for YSortingPage {
     let player_y = GAME_HEIGHT as f32 / 2.0;
 
     // Player shadow (rendered below, no y-sort)
-    self.player_shadow = Some(ctx.world.spawn((
-      Transform::new(player_x, player_y + 2.0).with_anchor(Anchor::Center),
-      Renderable::sprite(shadow_handle.clone()).with_z_order(-1),
-    )));
+    self.player_shadow = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(player_x, player_y + 2.0),
+          Renderable::sprite(shadow_handle.clone()).with_z_order(-1),
+        ))
+        .id(),
+    );
 
     // Player
-    self.player = Some(ctx.world.spawn((
-      Player,
-      Transform::new(player_x, player_y).with_anchor(Anchor::BottomCenter),
-      Renderable::sprite(player_handle.clone()).with_z_order(0),
-      self.get_y_sort(),
-    )));
+    self.player = Some(
+      ctx
+        .world
+        .spawn((
+          Player,
+          Transform::from_xy(player_x, player_y),
+          Renderable::sprite(player_handle.clone())
+            .with_anchor(Anchor::BottomCenter)
+            .with_z_order(0),
+          self.get_y_sort(),
+        ))
+        .id(),
+    );
 
     // Place trees around the world, clear of the shell's description and
     // settings panel along the top
@@ -442,8 +458,10 @@ impl DemoPage for YSortingPage {
       let y = (ty * TILE_SIZE as i32 + TILE_SIZE as i32) as f32;
 
       ctx.world.spawn((
-        Transform::new(x, y).with_anchor(Anchor::BottomCenter),
-        Renderable::sprite(tree_handle.clone()).with_z_order(0),
+        Transform::from_xy(x, y),
+        Renderable::sprite(tree_handle.clone())
+          .with_anchor(Anchor::BottomCenter)
+          .with_z_order(0),
         self.get_y_sort(),
       ));
     }
@@ -456,8 +474,10 @@ impl DemoPage for YSortingPage {
       let y = (ty * TILE_SIZE as i32 + TILE_SIZE as i32) as f32;
 
       ctx.world.spawn((
-        Transform::new(x, y).with_anchor(Anchor::BottomCenter),
-        Renderable::sprite(bush_handle.clone()).with_z_order(0),
+        Transform::from_xy(x, y),
+        Renderable::sprite(bush_handle.clone())
+          .with_anchor(Anchor::BottomCenter)
+          .with_z_order(0),
         self.get_y_sort(),
       ));
     }
@@ -470,8 +490,10 @@ impl DemoPage for YSortingPage {
       let y = (ty * TILE_SIZE as i32 + TILE_SIZE as i32) as f32;
 
       ctx.world.spawn((
-        Transform::new(x, y).with_anchor(Anchor::BottomCenter),
-        Renderable::sprite(rock_handle.clone()).with_z_order(0),
+        Transform::from_xy(x, y),
+        Renderable::sprite(rock_handle.clone())
+          .with_anchor(Anchor::BottomCenter)
+          .with_z_order(0),
         self.get_y_sort(),
       ));
     }
@@ -488,23 +510,31 @@ impl DemoPage for YSortingPage {
       let npc_handle = ctx.assets.create_sprite(npc_sprite, format!("npc_{}", i));
 
       // NPC shadow
-      let shadow = ctx.world.spawn((
-        Transform::new(*x, *y + 2.0).with_anchor(Anchor::Center),
-        Renderable::sprite(shadow_handle.clone()).with_z_order(-1),
-      ));
+      let shadow = ctx
+        .world
+        .spawn((
+          Transform::from_xy(*x, *y + 2.0),
+          Renderable::sprite(shadow_handle.clone()).with_z_order(-1),
+        ))
+        .id();
 
       // NPC entity
-      let entity = ctx.world.spawn((
-        Wanderer {
-          speed: 25.0 + (i as f32 * 5.0),
-          direction: (1.0, 0.0),
-          change_timer: 0.0,
-          shadow,
-        },
-        Transform::new(*x, *y).with_anchor(Anchor::BottomCenter),
-        Renderable::sprite(npc_handle).with_z_order(0),
-        self.get_y_sort(),
-      ));
+      let entity = ctx
+        .world
+        .spawn((
+          Wanderer {
+            speed: 25.0 + (i as f32 * 5.0),
+            direction: (1.0, 0.0),
+            change_timer: 0.0,
+            shadow,
+          },
+          Transform::from_xy(*x, *y),
+          Renderable::sprite(npc_handle)
+            .with_anchor(Anchor::BottomCenter)
+            .with_z_order(0),
+          self.get_y_sort(),
+        ))
+        .id();
 
       self.wanderers.push(entity);
     }
@@ -518,13 +548,8 @@ impl DemoPage for YSortingPage {
       // Update all YSort components
       let new_y_sort = self.get_y_sort();
 
-      // Get all entities with YSort component
-      let entities_to_update = ctx.world.entities_with::<YSort>();
-
-      for entity in entities_to_update {
-        if let Some(mut ys) = ctx.world.get_mut::<YSort>(entity) {
-          *ys = new_y_sort.clone();
-        }
+      for mut ys in ctx.world.query::<&mut YSort>().iter_mut(ctx.world) {
+        *ys = new_y_sort.clone();
       }
     }
 
@@ -536,8 +561,8 @@ impl DemoPage for YSortingPage {
     if let Some(player) = self.player
       && let Some(transform) = ctx.world.get::<Transform>(player)
     {
-      player_x = transform.x;
-      player_y = transform.y;
+      player_x = transform.translation.x;
+      player_y = transform.translation.y;
     }
 
     let mut dx = 0.0;
@@ -574,16 +599,14 @@ impl DemoPage for YSortingPage {
     if let Some(player) = self.player
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(player)
     {
-      transform.x = player_x;
-      transform.y = player_y;
+      transform.translation = Vec2::new(player_x, player_y);
     }
 
     // Update player shadow position
     if let Some(shadow) = self.player_shadow
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(shadow)
     {
-      transform.x = player_x;
-      transform.y = player_y + 2.0;
+      transform.translation = Vec2::new(player_x, player_y + 2.0);
     }
 
     // Update wandering NPCs
@@ -594,7 +617,14 @@ impl DemoPage for YSortingPage {
         let wander = ctx.world.get::<Wanderer>(wanderer);
 
         if let (Some(t), Some(w)) = (transform, wander) {
-          (t.x, t.y, w.direction, w.change_timer, w.speed, w.shadow)
+          (
+            t.translation.x,
+            t.translation.y,
+            w.direction,
+            w.change_timer,
+            w.speed,
+            w.shadow,
+          )
         } else {
           continue;
         }
@@ -641,12 +671,10 @@ impl DemoPage for YSortingPage {
       }
 
       if let Some(mut t) = ctx.world.get_mut::<Transform>(wanderer) {
-        t.x = new_x;
-        t.y = new_y;
+        t.translation = Vec2::new(new_x, new_y);
       }
       if let Some(mut t) = ctx.world.get_mut::<Transform>(shadow) {
-        t.x = new_x;
-        t.y = new_y + 2.0;
+        t.translation = Vec2::new(new_x, new_y + 2.0);
       }
     }
   }

@@ -185,14 +185,16 @@ impl DemoPage for ThemeDemo {
     self.initialize_theme();
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
+  /// The whole page is UI: its keys and the progress bar's animation run in
+  /// the UI pass, on real time
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     // Poll for theme hot-reload
     if let Some(ref hot_theme) = self.hot_theme {
       hot_theme.poll_reload();
     }
 
     // Animate progress bar
-    self.progress_value += dt * 0.2 * self.progress_direction;
+    self.progress_value += ui.dt() * 0.2 * self.progress_direction;
     if self.progress_value >= 1.0 {
       self.progress_value = 1.0;
       self.progress_direction = -1.0;
@@ -202,16 +204,16 @@ impl DemoPage for ThemeDemo {
     }
 
     // Handle input
-    if ctx.input.key_pressed(KeyCode::KeyT) {
+    if ui.input().key_pressed(KeyCode::KeyT) {
+      ui.consume_key(KeyCode::KeyT);
       self.switch_theme_variant();
     }
 
-    if ctx.input.key_pressed(KeyCode::KeyI) {
+    if ui.input().key_pressed(KeyCode::KeyI) {
+      ui.consume_key(KeyCode::KeyI);
       self.show_instructions = !self.show_instructions;
     }
-  }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let top = content_area(ui).y;
 

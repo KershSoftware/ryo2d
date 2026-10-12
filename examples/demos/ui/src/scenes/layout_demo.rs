@@ -38,7 +38,7 @@ impl DemoPage for LayoutDemo {
     "HBox, VBox and Stack positioning."
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Background

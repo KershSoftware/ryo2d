@@ -189,7 +189,7 @@ impl DemoPage for ValidatedAnimatorPage {
     self.animator.update(dt);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     let center_x = area.x + area.width / 2.0;
 

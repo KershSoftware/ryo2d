@@ -18,8 +18,6 @@ pub struct TextInputDemo {
   submitted: bool,
   /// Last submitted username
   last_submitted_username: String,
-  /// Delta time from last frame (for cursor blinking)
-  last_dt: f32,
 }
 
 impl TextInputDemo {
@@ -31,7 +29,6 @@ impl TextInputDemo {
       search: TextInputState::new(),
       submitted: false,
       last_submitted_username: String::new(),
-      last_dt: 0.016, // Default to ~60fps
     };
     // Focus first field by default
     demo.username.set_focused(true);
@@ -55,20 +52,17 @@ impl DemoPage for TextInputDemo {
     ]
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
-    // Store dt for use in render_ui
-    self.last_dt = dt;
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
+    // Cursor blink runs on the UI's real frame time
+    let dt = ui.dt();
 
     // Check for Enter key to "submit" the form when username is focused
-    if self.username.is_focused() && ctx.input.key_pressed(KeyCode::Enter) {
+    if self.username.is_focused() && ui.input().key_pressed(KeyCode::Enter) {
+      ui.consume_key(KeyCode::Enter);
       self.submitted = true;
       self.last_submitted_username = self.username.text().to_string();
       self.username.set_focused(false);
     }
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) {
-    let dt = self.last_dt;
 
     // Get screen dimensions
     let (sw, _sh) = ui.screen_size();

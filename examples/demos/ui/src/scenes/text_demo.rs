@@ -64,7 +64,7 @@ impl DemoPage for TextDemo {
     s.int("Wrap width", &mut self.wrap_width, 50..=600);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let top = content_area(ui).y;
     let wrap_width = self.wrap_width as f32;

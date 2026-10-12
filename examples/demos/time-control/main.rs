@@ -1,40 +1,30 @@
 //! Time Control Demo - Ryo2D Example
 //!
-//! This example demonstrates time scale and hitstop effects:
-//! - Time scale: slow-mo and fast-forward
-//! - Hitstop: freeze frame for impact emphasis
-//! - Shows how animations/tweens respond to time changes
+//! This example demonstrates the game clock:
+//! - Speed: slow-mo and fast-forward (`ctx.time.game.set_speed`)
+//! - Pause and resume (`ctx.time.game.pause` / `resume`)
+//! - Hitstop: a freeze frame for impact emphasis (`ctx.time.game.hitstop`)
+//!
+//! Physics, tweens and the page's `update` all run on the fixed clock, which
+//! is fed by game time: slow-mo runs fewer fixed steps, pause and hitstop run
+//! none. The time controls themselves live in the per-frame UI pass so they
+//! keep working while game time is slowed or stopped.
 //!
 //! Runs on the demo-kit shell: the time scale is a setting, hitstops are keys.
 
 use demo_kit::prelude::*;
 use std::f32::consts::PI;
 
-/// Marker for bouncing ball entities
-#[derive(Debug, Clone)]
-struct BouncingBall {
-  speed_x: f32,
-  speed_y: f32,
-}
+const BALL_RADIUS: u32 = 12;
+const WALL_THICKNESS: f32 = 40.0;
 
-/// Marker for rotating square
-#[derive(Debug)]
-struct RotatingSquare;
-
-/// Marker for pulsing circle
-#[derive(Debug)]
-struct PulsingCircle;
-
-/// Time scale choices, as labels and values
+/// Time scale choices, as labels and values (`None` pauses)
 const TIME_SCALE_LABELS: [&str; 5] = ["1.0x", "0.3x", "0.1x", "2.0x", "Paused"];
-const TIME_SCALES: [f32; 5] = [1.0, 0.3, 0.1, 2.0, 0.0];
+const TIME_SCALES: [Option<f32>; 5] = [Some(1.0), Some(0.3), Some(0.1), Some(2.0), None];
 
 /// Main demo page
 struct TimeControlPage {
   time_scale: usize,
-  balls: Vec<Entity>,
-  rotating_square: Option<Entity>,
-  pulsing_circle: Option<Entity>,
   screen_w: f32,
   screen_h: f32,
 }
@@ -43,9 +33,6 @@ impl TimeControlPage {
   fn new() -> Self {
     Self {
       time_scale: 0,
-      balls: Vec::new(),
-      rotating_square: None,
-      pulsing_circle: None,
       screen_w: 0.0,
       screen_h: 0.0,
     }
@@ -83,8 +70,29 @@ impl TimeControlPage {
     SpriteHandle::from_sprite(sprite, format!("square_{}_{}_{}", r, g, b))
   }
 
-  /// Spawn bouncing balls
-  fn spawn_balls(&mut self, ctx: &mut SceneContext) {
+  /// Invisible walls just outside the screen edges keep the balls in view
+  fn spawn_walls(&self, ctx: &mut SceneContext) {
+    let (w, h, t) = (self.screen_w, self.screen_h, WALL_THICKNESS);
+    let walls = [
+      (w / 2.0, -t / 2.0, w + 2.0 * t, t),    // top
+      (w / 2.0, h + t / 2.0, w + 2.0 * t, t), // bottom
+      (-t / 2.0, h / 2.0, t, h),              // left
+      (w + t / 2.0, h / 2.0, t, h),           // right
+    ];
+    for (x, y, width, height) in walls {
+      ctx.world.spawn((
+        Transform::from_xy(x, y),
+        RigidBody::kinematic(),
+        Collider::box_collider(width, height)
+          .with_restitution(1.0)
+          .with_friction(0.0),
+      ));
+    }
+  }
+
+  /// Spawn bouncing balls: Rapier bodies under gravity, bouncing off the walls
+  /// and each other
+  fn spawn_balls(&self, ctx: &mut SceneContext) {
     let colors = [
       (255, 100, 100), // Red
       (100, 255, 100), // Green
@@ -95,7 +103,7 @@ impl TimeControlPage {
     ];
 
     for (i, (r, g, b)) in colors.iter().enumerate() {
-      let sprite = Self::create_circle(12, *r, *g, *b);
+      let sprite = Self::create_circle(BALL_RADIUS, *r, *g, *b);
 
       // Spread balls across the screen with different velocities
       let x = 100.0 + (i as f32 * 100.0);
@@ -104,96 +112,53 @@ impl TimeControlPage {
       // Varied speeds and directions
       let angle = (i as f32 * 0.5) + 0.3;
       let speed = 150.0 + (i as f32 * 20.0);
-      let speed_x = angle.cos() * speed;
-      let speed_y = angle.sin() * speed;
 
-      let entity = ctx.world.spawn((
-        BouncingBall { speed_x, speed_y },
-        Transform::new(x, y).with_pivot_center(),
+      ctx.world.spawn((
+        Transform::from_xy(x, y),
         Renderable::sprite(sprite).with_z_order(10),
+        Velocity::new(angle.cos() * speed, angle.sin() * speed),
+        RigidBody::new().with_gravity_scale(0.5),
+        Collider::circle_collider(BALL_RADIUS as f32)
+          .with_restitution(1.0)
+          .with_friction(0.0),
       ));
-
-      self.balls.push(entity);
     }
   }
 
   /// Spawn a rotating square (uses Tween)
-  fn spawn_rotating_square(&mut self, ctx: &mut SceneContext) {
+  fn spawn_rotating_square(&self, ctx: &mut SceneContext) {
     let sprite = Self::create_square(40, 255, 200, 100);
 
-    self.rotating_square = Some(
-      ctx.world.spawn((
-        RotatingSquare,
-        Transform::new(150.0, self.screen_h - 100.0).with_pivot_center(),
-        Renderable::sprite(sprite).with_z_order(5),
-        Tween::to_rotation(PI * 2.0, 2.0)
-          .with_easing(Ease::Linear)
-          .with_loop(TweenLoop::Loop),
-      )),
-    );
+    ctx.world.spawn((
+      Transform::from_xy(150.0, self.screen_h - 100.0),
+      Renderable::sprite(sprite).with_z_order(5),
+      Tween::to_rotation(PI * 2.0, 2.0)
+        .with_easing(Ease::Linear)
+        .with_loop(TweenLoop::Loop),
+    ));
   }
 
   /// Spawn a pulsing circle (uses Tween for scale)
-  fn spawn_pulsing_circle(&mut self, ctx: &mut SceneContext) {
+  fn spawn_pulsing_circle(&self, ctx: &mut SceneContext) {
     let sprite = Self::create_circle(20, 100, 200, 255);
 
-    self.pulsing_circle = Some(
-      ctx.world.spawn((
-        PulsingCircle,
-        Transform::new(self.screen_w - 150.0, self.screen_h - 100.0).with_pivot_center(),
-        Renderable::sprite(sprite).with_z_order(5),
-        Tween::to_scale(1.5, 1.5, 0.5)
-          .with_easing(Ease::InOutSine)
-          .with_loop(TweenLoop::PingPong),
-      )),
-    );
+    ctx.world.spawn((
+      Transform::from_xy(self.screen_w - 150.0, self.screen_h - 100.0),
+      Renderable::sprite(sprite).with_z_order(5),
+      Tween::to_scale(1.5, 1.5, 0.5)
+        .with_easing(Ease::InOutSine)
+        .with_loop(TweenLoop::PingPong),
+    ));
   }
 
-  /// Update bouncing balls manually (affected by dt)
-  fn update_balls(&self, ctx: &mut SceneContext, dt: f32) {
-    let margin = 12.0; // Ball radius
-
-    for &entity in &self.balls {
-      // Get current state
-      let (x, y, mut speed_x, mut speed_y) = {
-        let transform = ctx.world.get::<Transform>(entity);
-        let ball = ctx.world.get::<BouncingBall>(entity);
-        match (transform, ball) {
-          (Some(t), Some(b)) => (t.x, t.y, b.speed_x, b.speed_y),
-          _ => continue,
-        }
-      };
-
-      // Calculate new position
-      let mut new_x = x + speed_x * dt;
-      let mut new_y = y + speed_y * dt;
-
-      // Bounce off walls
-      if new_x < margin {
-        new_x = margin;
-        speed_x = -speed_x;
-      } else if new_x > self.screen_w - margin {
-        new_x = self.screen_w - margin;
-        speed_x = -speed_x;
+  /// Apply the time scale setting to the game clock
+  fn apply_time_scale(&self, time: &mut Time) {
+    match TIME_SCALES[self.time_scale.min(TIME_SCALES.len() - 1)] {
+      Some(speed) => {
+        time.game.resume();
+        time.game.set_speed(speed);
       }
-
-      if new_y < margin {
-        new_y = margin;
-        speed_y = -speed_y;
-      } else if new_y > self.screen_h - margin {
-        new_y = self.screen_h - margin;
-        speed_y = -speed_y;
-      }
-
-      // Update components
-      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = new_x;
-        transform.y = new_y;
-      }
-      if let Some(mut ball) = ctx.world.get_mut::<BouncingBall>(entity) {
-        ball.speed_x = speed_x;
-        ball.speed_y = speed_y;
-      }
+      None => time.game.pause(),
     }
   }
 }
@@ -204,8 +169,10 @@ impl DemoPage for TimeControlPage {
   }
 
   fn description(&self) -> &str {
-    "Watch balls & tweens respond to time!\n\
-     Time scale gives slow-mo and fast-forward; hitstop freezes briefly for impact"
+    "Watch physics & tweens respond to time!\n\
+     The game clock's speed gives slow-mo and fast-forward, pause stops it and \
+     hitstop freezes it briefly for impact. Rapier physics, tweens and update \
+     all run on the fixed clock, which follows game time."
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -224,43 +191,73 @@ impl DemoPage for TimeControlPage {
     self.screen_w = screen_w;
     self.screen_h = screen_h;
 
+    self.spawn_walls(ctx);
     self.spawn_balls(ctx);
     self.spawn_rotating_square(ctx);
     self.spawn_pulsing_circle(ctx);
   }
 
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
-    let scale = TIME_SCALES[self.time_scale.min(TIME_SCALES.len() - 1)];
-    ctx.set_time_scale(scale);
+  /// The time controls run once a frame on real time: `update` runs on the
+  /// fixed clock, so it would run rarely in slow-mo and never while paused
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) {
+    self.apply_time_scale(ctx.time);
 
-    // Hitstop controls
-    if ctx.input.key_pressed(KeyCode::Space) {
-      ctx.hitstop(0.1);
+    if ui.input().key_pressed(KeyCode::Space) {
+      ui.consume_key(KeyCode::Space);
+      ctx.time.game.hitstop(0.1);
     }
-    if ctx.input.key_pressed(KeyCode::KeyJ) {
-      ctx.hitstop(0.05);
+    if ui.input().key_pressed(KeyCode::KeyJ) {
+      ui.consume_key(KeyCode::KeyJ);
+      ctx.time.game.hitstop(0.05);
     }
 
-    // The engine scaled this update's dt before the setting could change, so
-    // scale the step here: the balls answer a new scale, or a hitstop, on the
-    // same frame (the tweens follow on the next)
-    let dt = if ctx.time_control.hitstop_remaining > 0.0 {
-      0.0
-    } else {
-      ctx.time.fixed_dt * scale
-    };
-    self.update_balls(ctx, dt);
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) {
     let text_accent = Color::rgb(130, 180, 255);
+    let text_light = Color::rgb(220, 220, 220);
+    let text_warn = Color::rgb(255, 200, 80);
+
+    // Clock readout, top left of the content area
+    let area = content_area(ui);
+    let (x, top) = (area.x + 6.0, area.y + 4.0);
+    let game = &ctx.time.game;
+    let state = if game.is_hitstop() {
+      "HITSTOP"
+    } else if game.is_paused() {
+      "PAUSED"
+    } else {
+      "running"
+    };
+    ui.draw_text(
+      &format!("Game clock: speed {:.1}x, {}", game.speed(), state),
+      x,
+      top,
+      if state == "running" {
+        text_light
+      } else {
+        text_warn
+      },
+    );
+    ui.draw_text(
+      &format!(
+        "Game time {:.1} s   real time {:.1} s",
+        game.elapsed(),
+        ctx.time.real.elapsed()
+      ),
+      x,
+      top + 20.0,
+      text_light,
+    );
+    ui.draw_text(
+      &format!("Fixed steps: {}", ctx.time.fixed.step_count()),
+      x,
+      top + 40.0,
+      text_light,
+    );
 
     // Bottom labels, above the shell's legend
-    let area = content_area(ui);
     let bottom_y = area.y + area.height - 20.0;
-
     ui.draw_text("Rotating (Tween)", 100.0, bottom_y, text_accent);
     ui.draw_text("Pulsing (Tween)", 580.0, bottom_y, text_accent);
+    ui.draw_text("Balls: Rapier physics", 300.0, bottom_y, text_accent);
   }
 }
 
@@ -270,7 +267,7 @@ fn main() {
     .configure(|b| {
       b.window_mode(WindowMode::ResizableAspectRatio)
         .target_fps(60)
-        .physics_hz(60)
+        .fixed_hz(60)
     })
     .page(TimeControlPage::new)
     .run();

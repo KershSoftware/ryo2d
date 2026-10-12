@@ -19,13 +19,13 @@ const EASING_ROW: f32 = 50.0;
 // Scene 1: Easing Functions
 // ============================================================================
 
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 struct PositionDemo;
 
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct RotationDemo;
 
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct ScaleDemo;
 
 const LOOP_NAMES: [&str; 4] = ["Once", "Loop", "PingPong", "Times(3)"];
@@ -98,15 +98,18 @@ impl EasingScene {
       let y = EASING_TOP + i as f32 * EASING_ROW;
       let sprite = Self::create_square(*r, *g, *b);
 
-      let entity = ctx.world.spawn((
-        PositionDemo,
-        Transform::new(start_x, y).with_pivot_center(),
-        Renderable::sprite(sprite).with_z_order(10),
-        Tween::new(2.0)
-          .to_x(target_x)
-          .with_easing(*ease)
-          .with_loop(loop_mode),
-      ));
+      let entity = ctx
+        .world
+        .spawn((
+          PositionDemo,
+          Transform::from_xy(start_x, y),
+          Renderable::sprite(sprite).with_z_order(10),
+          Tween::new(2.0)
+            .to_x(target_x)
+            .with_easing(*ease)
+            .with_loop(loop_mode),
+        ))
+        .id();
 
       self.position_entities.push(entity);
     }
@@ -116,14 +119,17 @@ impl EasingScene {
     let rotation_x = 200.0;
 
     self.rotation_entity = Some(
-      ctx.world.spawn((
-        RotationDemo,
-        Transform::new(rotation_x, rotation_y).with_pivot_center(),
-        Renderable::sprite(rotation_sprite).with_z_order(10),
-        Tween::to_rotation(PI * 2.0, 2.0)
-          .with_easing(Ease::InOutCubic)
-          .with_loop(loop_mode),
-      )),
+      ctx
+        .world
+        .spawn((
+          RotationDemo,
+          Transform::from_xy(rotation_x, rotation_y),
+          Renderable::sprite(rotation_sprite).with_z_order(10),
+          Tween::to_rotation(PI * 2.0, 2.0)
+            .with_easing(Ease::InOutCubic)
+            .with_loop(loop_mode),
+        ))
+        .id(),
     );
 
     let scale_sprite = Self::create_square(100, 200, 255);
@@ -131,26 +137,29 @@ impl EasingScene {
     let scale_y = screen_h - 120.0;
 
     self.scale_entity = Some(
-      ctx.world.spawn((
-        ScaleDemo,
-        Transform::new(scale_x, scale_y).with_pivot_center(),
-        Renderable::sprite(scale_sprite).with_z_order(10),
-        Tween::to_scale(2.0, 2.0, 1.0)
-          .with_easing(Ease::OutElastic)
-          .with_loop(loop_mode),
-      )),
+      ctx
+        .world
+        .spawn((
+          ScaleDemo,
+          Transform::from_xy(scale_x, scale_y),
+          Renderable::sprite(scale_sprite).with_z_order(10),
+          Tween::to_scale(2.0, 2.0, 1.0)
+            .with_easing(Ease::OutElastic)
+            .with_loop(loop_mode),
+        ))
+        .id(),
     );
   }
 
   fn cleanup(&mut self, ctx: &mut SceneContext) {
     for entity in self.position_entities.drain(..) {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
     if let Some(entity) = self.rotation_entity.take() {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
     if let Some(entity) = self.scale_entity.take() {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
   }
 }
@@ -191,7 +200,7 @@ impl DemoPage for EasingScene {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let screen_w = screen_w as f32;
     let screen_h = screen_h as f32;
@@ -306,14 +315,17 @@ impl DemoPage for SpeedControlScene {
     let center_y = screen_h / 2.0;
 
     self.entity = Some(
-      ctx.world.spawn((
-        Transform::new(100.0, center_y).with_pivot_center(),
-        Renderable::sprite(handle).with_z_order(10),
-        Tween::to_position(screen_w - 100.0, center_y, 3.0)
-          .with_easing(Ease::InOutCubic)
-          .with_loop(TweenLoop::PingPong)
-          .with_speed(self.speed()),
-      )),
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(100.0, center_y),
+          Renderable::sprite(handle).with_z_order(10),
+          Tween::to_position(screen_w - 100.0, center_y, 3.0)
+            .with_easing(Ease::InOutCubic)
+            .with_loop(TweenLoop::PingPong)
+            .with_speed(self.speed()),
+        ))
+        .id(),
     );
   }
 
@@ -323,7 +335,7 @@ impl DemoPage for SpeedControlScene {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let text_light = Color::rgb(220, 220, 220);
 
     let status = if self.paused {
@@ -393,22 +405,25 @@ impl CallbacksScene {
     let complete_clone = self.complete_count.clone();
 
     self.entity = Some(
-      ctx.world.spawn((
-        Transform::new(100.0, center_y).with_pivot_center(),
-        Renderable::sprite(handle).with_z_order(10),
-        Tween::to_position(self.screen_w - 100.0, center_y, 2.0)
-          .with_easing(Ease::OutCubic)
-          .with_loop(TweenLoop::Times(3))
-          .on_start(move |_| {
-            start_clone.fetch_add(1, Ordering::SeqCst);
-          })
-          .on_update(move |_| {
-            update_clone.fetch_add(1, Ordering::SeqCst);
-          })
-          .on_complete(move |_| {
-            complete_clone.fetch_add(1, Ordering::SeqCst);
-          }),
-      )),
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(100.0, center_y),
+          Renderable::sprite(handle).with_z_order(10),
+          Tween::to_position(self.screen_w - 100.0, center_y, 2.0)
+            .with_easing(Ease::OutCubic)
+            .with_loop(TweenLoop::Times(3))
+            .on_start(move |_| {
+              start_clone.fetch_add(1, Ordering::SeqCst);
+            })
+            .on_update(move |_| {
+              update_clone.fetch_add(1, Ordering::SeqCst);
+            })
+            .on_complete(move |_| {
+              complete_clone.fetch_add(1, Ordering::SeqCst);
+            }),
+        ))
+        .id(),
     );
   }
 }
@@ -437,13 +452,13 @@ impl DemoPage for CallbacksScene {
     // Restart
     if ctx.input.key_pressed(KeyCode::Space) {
       if let Some(entity) = self.entity.take() {
-        let _ = ctx.world.despawn(entity);
+        ctx.world.despawn(entity);
       }
       self.spawn_entity(ctx);
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
 
@@ -478,7 +493,7 @@ impl DemoPage for CallbacksScene {
 // Scene 4: Combined Effects (position + scale + rotation)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct CombinedDemo;
 
 struct CombinedEffectsScene {
@@ -505,17 +520,20 @@ impl CombinedEffectsScene {
     let handle1 = SpriteHandle::from_sprite(sprite1, "bounce_ball");
 
     self.entities.push(
-      ctx.world.spawn((
-        CombinedDemo,
-        Transform::new(center_x - 200.0, center_y - 100.0).with_pivot_center(),
-        Renderable::sprite(handle1).with_z_order(10),
-        Tween::new(0.6)
-          .to_y(center_y + 100.0)
-          .to_scale_x(1.3)
-          .to_scale_y(0.7)
-          .with_easing(Ease::InQuad)
-          .with_loop(TweenLoop::PingPong),
-      )),
+      ctx
+        .world
+        .spawn((
+          CombinedDemo,
+          Transform::from_xy(center_x - 200.0, center_y - 100.0),
+          Renderable::sprite(handle1).with_z_order(10),
+          Tween::new(0.6)
+            .to_y(center_y + 100.0)
+            .to_scale_x(1.3)
+            .to_scale_y(0.7)
+            .with_easing(Ease::InQuad)
+            .with_loop(TweenLoop::PingPong),
+        ))
+        .id(),
     );
 
     // Demo 2: Position + Rotation (orbiting)
@@ -523,37 +541,40 @@ impl CombinedEffectsScene {
     let handle2 = SpriteHandle::from_sprite(sprite2, "orbit_box");
 
     self.entities.push(
-      ctx.world.spawn((
-        CombinedDemo,
-        Transform::new(center_x, center_y).with_pivot_center(),
-        Renderable::sprite(handle2).with_z_order(10),
-        TweenSequence::new()
-          .then(
-            Tween::new(1.0)
-              .to_x(center_x + 100.0)
-              .to_rotation_value(PI / 2.0)
-              .with_easing(Ease::InOutSine),
-          )
-          .then(
-            Tween::new(1.0)
-              .to_y(center_y + 100.0)
-              .to_rotation_value(PI)
-              .with_easing(Ease::InOutSine),
-          )
-          .then(
-            Tween::new(1.0)
-              .to_x(center_x)
-              .to_rotation_value(PI * 1.5)
-              .with_easing(Ease::InOutSine),
-          )
-          .then(
-            Tween::new(1.0)
-              .to_y(center_y)
-              .to_rotation_value(PI * 2.0)
-              .with_easing(Ease::InOutSine),
-          )
-          .with_loop(),
-      )),
+      ctx
+        .world
+        .spawn((
+          CombinedDemo,
+          Transform::from_xy(center_x, center_y),
+          Renderable::sprite(handle2).with_z_order(10),
+          TweenSequence::new()
+            .then(
+              Tween::new(1.0)
+                .to_x(center_x + 100.0)
+                .to_rotation_value(PI / 2.0)
+                .with_easing(Ease::InOutSine),
+            )
+            .then(
+              Tween::new(1.0)
+                .to_y(center_y + 100.0)
+                .to_rotation_value(PI)
+                .with_easing(Ease::InOutSine),
+            )
+            .then(
+              Tween::new(1.0)
+                .to_x(center_x)
+                .to_rotation_value(PI * 1.5)
+                .with_easing(Ease::InOutSine),
+            )
+            .then(
+              Tween::new(1.0)
+                .to_y(center_y)
+                .to_rotation_value(PI * 2.0)
+                .with_easing(Ease::InOutSine),
+            )
+            .with_loop(),
+        ))
+        .id(),
     );
 
     // Demo 3: Scale pulsing (heartbeat)
@@ -561,26 +582,29 @@ impl CombinedEffectsScene {
     let handle3 = SpriteHandle::from_sprite(sprite3, "heart");
 
     self.entities.push(
-      ctx.world.spawn((
-        CombinedDemo,
-        Transform::new(center_x + 200.0, center_y).with_pivot_center(),
-        Renderable::sprite(handle3).with_z_order(10),
-        TweenSequence::new()
-          .then(Tween::to_uniform_scale(1.3, 0.15).with_easing(Ease::OutQuad))
-          .then(Tween::to_uniform_scale(1.0, 0.15).with_easing(Ease::InQuad))
-          .then(Tween::to_uniform_scale(1.2, 0.1).with_easing(Ease::OutQuad))
-          .then(Tween::to_uniform_scale(1.0, 0.3).with_easing(Ease::InQuad))
-          .then(
-            Tween::new(0.3), // Pause between beats
-          )
-          .with_loop(),
-      )),
+      ctx
+        .world
+        .spawn((
+          CombinedDemo,
+          Transform::from_xy(center_x + 200.0, center_y),
+          Renderable::sprite(handle3).with_z_order(10),
+          TweenSequence::new()
+            .then(Tween::to_uniform_scale(1.3, 0.15).with_easing(Ease::OutQuad))
+            .then(Tween::to_uniform_scale(1.0, 0.15).with_easing(Ease::InQuad))
+            .then(Tween::to_uniform_scale(1.2, 0.1).with_easing(Ease::OutQuad))
+            .then(Tween::to_uniform_scale(1.0, 0.3).with_easing(Ease::InQuad))
+            .then(
+              Tween::new(0.3), // Pause between beats
+            )
+            .with_loop(),
+        ))
+        .id(),
     );
   }
 
   fn cleanup(&mut self, ctx: &mut SceneContext) {
     for entity in self.entities.drain(..) {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
   }
 }
@@ -613,7 +637,7 @@ impl DemoPage for CombinedEffectsScene {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
 
@@ -656,7 +680,7 @@ impl DemoPage for CombinedEffectsScene {
 // Scene 5: Tween Sequences
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct SequenceDemo;
 
 struct SequenceScene {
@@ -684,21 +708,24 @@ impl SequenceScene {
     let bottom = self.screen_h - margin;
 
     self.entity = Some(
-      ctx.world.spawn((
-        SequenceDemo,
-        Transform::new(margin, margin).with_pivot_center(),
-        Renderable::sprite(handle).with_z_order(10),
-        TweenSequence::new()
-          // Move right
-          .then(Tween::to_position(right, margin, 1.0).with_easing(Ease::InOutCubic))
-          // Move down
-          .then(Tween::to_position(right, bottom, 1.0).with_easing(Ease::InOutCubic))
-          // Move left
-          .then(Tween::to_position(margin, bottom, 1.0).with_easing(Ease::InOutCubic))
-          // Move up (back to start)
-          .then(Tween::to_position(margin, margin, 1.0).with_easing(Ease::InOutCubic))
-          .with_loop(),
-      )),
+      ctx
+        .world
+        .spawn((
+          SequenceDemo,
+          Transform::from_xy(margin, margin),
+          Renderable::sprite(handle).with_z_order(10),
+          TweenSequence::new()
+            // Move right
+            .then(Tween::to_position(right, margin, 1.0).with_easing(Ease::InOutCubic))
+            // Move down
+            .then(Tween::to_position(right, bottom, 1.0).with_easing(Ease::InOutCubic))
+            // Move left
+            .then(Tween::to_position(margin, bottom, 1.0).with_easing(Ease::InOutCubic))
+            // Move up (back to start)
+            .then(Tween::to_position(margin, margin, 1.0).with_easing(Ease::InOutCubic))
+            .with_loop(),
+        ))
+        .id(),
     );
   }
 }
@@ -732,13 +759,12 @@ impl DemoPage for SequenceScene {
         seq.restart();
       }
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = 100.0;
-        transform.y = 100.0;
+        transform.translation = Vec2::new(100.0, 100.0);
       }
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
 
@@ -771,7 +797,7 @@ impl DemoPage for SequenceScene {
 // Scene 6: Color & Alpha
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct ColorAlphaDemo;
 
 struct ColorAlphaScene {
@@ -798,15 +824,18 @@ impl ColorAlphaScene {
     let handle1 = SpriteHandle::from_sprite(sprite1, "fade_box");
 
     self.entities.push(
-      ctx.world.spawn((
-        ColorAlphaDemo,
-        Transform::new(200.0, start_y).with_pivot_center(),
-        Renderable::sprite(handle1).with_z_order(10),
-        Tween::new(1.5)
-          .to_alpha(0.1)
-          .with_easing(Ease::InOutSine)
-          .with_loop(TweenLoop::PingPong),
-      )),
+      ctx
+        .world
+        .spawn((
+          ColorAlphaDemo,
+          Transform::from_xy(200.0, start_y),
+          Renderable::sprite(handle1).with_z_order(10),
+          Tween::new(1.5)
+            .to_alpha(0.1)
+            .with_easing(Ease::InOutSine)
+            .with_loop(TweenLoop::PingPong),
+        ))
+        .id(),
     );
 
     // Demo 2: Tint to red
@@ -814,15 +843,18 @@ impl ColorAlphaScene {
     let handle2 = SpriteHandle::from_sprite(sprite2, "tint_red");
 
     self.entities.push(
-      ctx.world.spawn((
-        ColorAlphaDemo,
-        Transform::new(350.0, start_y).with_pivot_center(),
-        Renderable::sprite(handle2).with_z_order(10),
-        Tween::new(1.0)
-          .to_tint(Color::new(255, 80, 80, 255))
-          .with_easing(Ease::InOutQuad)
-          .with_loop(TweenLoop::PingPong),
-      )),
+      ctx
+        .world
+        .spawn((
+          ColorAlphaDemo,
+          Transform::from_xy(350.0, start_y),
+          Renderable::sprite(handle2).with_z_order(10),
+          Tween::new(1.0)
+            .to_tint(Color::new(255, 80, 80, 255))
+            .with_easing(Ease::InOutQuad)
+            .with_loop(TweenLoop::PingPong),
+        ))
+        .id(),
     );
 
     // Demo 3: Tint to green
@@ -830,15 +862,18 @@ impl ColorAlphaScene {
     let handle3 = SpriteHandle::from_sprite(sprite3, "tint_green");
 
     self.entities.push(
-      ctx.world.spawn((
-        ColorAlphaDemo,
-        Transform::new(500.0, start_y).with_pivot_center(),
-        Renderable::sprite(handle3).with_z_order(10),
-        Tween::new(1.0)
-          .to_tint(Color::new(80, 255, 80, 255))
-          .with_easing(Ease::InOutQuad)
-          .with_loop(TweenLoop::PingPong),
-      )),
+      ctx
+        .world
+        .spawn((
+          ColorAlphaDemo,
+          Transform::from_xy(500.0, start_y),
+          Renderable::sprite(handle3).with_z_order(10),
+          Tween::new(1.0)
+            .to_tint(Color::new(80, 255, 80, 255))
+            .with_easing(Ease::InOutQuad)
+            .with_loop(TweenLoop::PingPong),
+        ))
+        .id(),
     );
 
     // Demo 4: Tint to blue
@@ -846,15 +881,18 @@ impl ColorAlphaScene {
     let handle4 = SpriteHandle::from_sprite(sprite4, "tint_blue");
 
     self.entities.push(
-      ctx.world.spawn((
-        ColorAlphaDemo,
-        Transform::new(650.0, start_y).with_pivot_center(),
-        Renderable::sprite(handle4).with_z_order(10),
-        Tween::new(1.0)
-          .to_tint(Color::new(80, 80, 255, 255))
-          .with_easing(Ease::InOutQuad)
-          .with_loop(TweenLoop::PingPong),
-      )),
+      ctx
+        .world
+        .spawn((
+          ColorAlphaDemo,
+          Transform::from_xy(650.0, start_y),
+          Renderable::sprite(handle4).with_z_order(10),
+          Tween::new(1.0)
+            .to_tint(Color::new(80, 80, 255, 255))
+            .with_easing(Ease::InOutQuad)
+            .with_loop(TweenLoop::PingPong),
+        ))
+        .id(),
     );
 
     // Demo 5: Color cycle (sequence)
@@ -862,33 +900,36 @@ impl ColorAlphaScene {
     let handle5 = SpriteHandle::from_sprite(sprite5, "color_cycle");
 
     self.entities.push(
-      ctx.world.spawn((
-        ColorAlphaDemo,
-        Transform::new(825.0, start_y).with_pivot_center(),
-        Renderable::sprite(handle5).with_z_order(10),
-        TweenSequence::new()
-          .then(
-            Tween::new(0.6)
-              .to_tint(Color::new(255, 100, 100, 255))
-              .with_easing(Ease::InOutSine),
-          )
-          .then(
-            Tween::new(0.6)
-              .to_tint(Color::new(100, 255, 100, 255))
-              .with_easing(Ease::InOutSine),
-          )
-          .then(
-            Tween::new(0.6)
-              .to_tint(Color::new(100, 100, 255, 255))
-              .with_easing(Ease::InOutSine),
-          )
-          .then(
-            Tween::new(0.6)
-              .to_tint(Color::WHITE)
-              .with_easing(Ease::InOutSine),
-          )
-          .with_loop(),
-      )),
+      ctx
+        .world
+        .spawn((
+          ColorAlphaDemo,
+          Transform::from_xy(825.0, start_y),
+          Renderable::sprite(handle5).with_z_order(10),
+          TweenSequence::new()
+            .then(
+              Tween::new(0.6)
+                .to_tint(Color::new(255, 100, 100, 255))
+                .with_easing(Ease::InOutSine),
+            )
+            .then(
+              Tween::new(0.6)
+                .to_tint(Color::new(100, 255, 100, 255))
+                .with_easing(Ease::InOutSine),
+            )
+            .then(
+              Tween::new(0.6)
+                .to_tint(Color::new(100, 100, 255, 255))
+                .with_easing(Ease::InOutSine),
+            )
+            .then(
+              Tween::new(0.6)
+                .to_tint(Color::WHITE)
+                .with_easing(Ease::InOutSine),
+            )
+            .with_loop(),
+        ))
+        .id(),
     );
 
     // Row 2: Combined effects
@@ -899,31 +940,32 @@ impl ColorAlphaScene {
     let handle6 = SpriteHandle::from_sprite(sprite6, "pop_box");
 
     self.entities.push(
-      ctx.world.spawn((
-        ColorAlphaDemo,
-        Transform::new(200.0, row2_y)
-          .with_pivot_center()
-          .with_uniform_scale(0.1),
-        Renderable::sprite(handle6).with_z_order(10).with_alpha(0.0),
-        TweenSequence::new()
-          .then(
-            Tween::new(0.4)
-              .to_alpha(1.0)
-              .to_scale_x(1.0)
-              .to_scale_y(1.0)
-              .with_easing(Ease::OutBack),
-          )
-          .then(Tween::new(0.8)) // Hold
-          .then(
-            Tween::new(0.4)
-              .to_alpha(0.0)
-              .to_scale_x(0.1)
-              .to_scale_y(0.1)
-              .with_easing(Ease::InBack),
-          )
-          .then(Tween::new(0.3)) // Pause
-          .with_loop(),
-      )),
+      ctx
+        .world
+        .spawn((
+          ColorAlphaDemo,
+          Transform::from_xy(200.0, row2_y).with_uniform_scale(0.1),
+          Renderable::sprite(handle6).with_z_order(10).with_alpha(0.0),
+          TweenSequence::new()
+            .then(
+              Tween::new(0.4)
+                .to_alpha(1.0)
+                .to_scale_x(1.0)
+                .to_scale_y(1.0)
+                .with_easing(Ease::OutBack),
+            )
+            .then(Tween::new(0.8)) // Hold
+            .then(
+              Tween::new(0.4)
+                .to_alpha(0.0)
+                .to_scale_x(0.1)
+                .to_scale_y(0.1)
+                .with_easing(Ease::InBack),
+            )
+            .then(Tween::new(0.3)) // Pause
+            .with_loop(),
+        ))
+        .id(),
     );
 
     // Demo 7: Tint + Position (moving color)
@@ -931,25 +973,28 @@ impl ColorAlphaScene {
     let handle7 = SpriteHandle::from_sprite(sprite7, "moving_tint");
 
     self.entities.push(
-      ctx.world.spawn((
-        ColorAlphaDemo,
-        Transform::new(350.0, row2_y).with_pivot_center(),
-        Renderable::sprite(handle7).with_z_order(10),
-        TweenSequence::new()
-          .then(
-            Tween::new(0.8)
-              .to_x(550.0)
-              .to_tint(Color::new(255, 100, 255, 255))
-              .with_easing(Ease::InOutQuad),
-          )
-          .then(
-            Tween::new(0.8)
-              .to_x(350.0)
-              .to_tint(Color::WHITE)
-              .with_easing(Ease::InOutQuad),
-          )
-          .with_loop(),
-      )),
+      ctx
+        .world
+        .spawn((
+          ColorAlphaDemo,
+          Transform::from_xy(350.0, row2_y),
+          Renderable::sprite(handle7).with_z_order(10),
+          TweenSequence::new()
+            .then(
+              Tween::new(0.8)
+                .to_x(550.0)
+                .to_tint(Color::new(255, 100, 255, 255))
+                .with_easing(Ease::InOutQuad),
+            )
+            .then(
+              Tween::new(0.8)
+                .to_x(350.0)
+                .to_tint(Color::WHITE)
+                .with_easing(Ease::InOutQuad),
+            )
+            .with_loop(),
+        ))
+        .id(),
     );
 
     // Demo 8: Alpha + Rotation (fading spin)
@@ -957,16 +1002,19 @@ impl ColorAlphaScene {
     let handle8 = SpriteHandle::from_sprite(sprite8, "spin_fade");
 
     self.entities.push(
-      ctx.world.spawn((
-        ColorAlphaDemo,
-        Transform::new(700.0, row2_y).with_pivot_center(),
-        Renderable::sprite(handle8).with_z_order(10),
-        Tween::new(2.0)
-          .to_alpha(0.2)
-          .to_rotation_value(PI * 2.0)
-          .with_easing(Ease::Linear)
-          .with_loop(TweenLoop::PingPong),
-      )),
+      ctx
+        .world
+        .spawn((
+          ColorAlphaDemo,
+          Transform::from_xy(700.0, row2_y),
+          Renderable::sprite(handle8).with_z_order(10),
+          Tween::new(2.0)
+            .to_alpha(0.2)
+            .to_rotation_value(PI * 2.0)
+            .with_easing(Ease::Linear)
+            .with_loop(TweenLoop::PingPong),
+        ))
+        .id(),
     );
 
     // Row 3: Labels
@@ -977,15 +1025,18 @@ impl ColorAlphaScene {
     let handle9 = SpriteHandle::from_sprite(sprite9, "darken");
 
     self.entities.push(
-      ctx.world.spawn((
-        ColorAlphaDemo,
-        Transform::new(200.0, row3_y).with_pivot_center(),
-        Renderable::sprite(handle9).with_z_order(10),
-        Tween::new(1.2)
-          .to_tint(Color::new(80, 80, 80, 255)) // Darken by multiplying with gray
-          .with_easing(Ease::InOutSine)
-          .with_loop(TweenLoop::PingPong),
-      )),
+      ctx
+        .world
+        .spawn((
+          ColorAlphaDemo,
+          Transform::from_xy(200.0, row3_y),
+          Renderable::sprite(handle9).with_z_order(10),
+          Tween::new(1.2)
+            .to_tint(Color::new(80, 80, 80, 255)) // Darken by multiplying with gray
+            .with_easing(Ease::InOutSine)
+            .with_loop(TweenLoop::PingPong),
+        ))
+        .id(),
     );
 
     // Demo 10: Full combo (position + scale + rotation + alpha + tint)
@@ -993,39 +1044,42 @@ impl ColorAlphaScene {
     let handle10 = SpriteHandle::from_sprite(sprite10, "full_combo");
 
     self.entities.push(
-      ctx.world.spawn((
-        ColorAlphaDemo,
-        Transform::new(500.0, row3_y).with_pivot_center(),
-        Renderable::sprite(handle10).with_z_order(10),
-        TweenSequence::new()
-          .then(
-            Tween::new(1.0)
-              .to_x(700.0)
-              .to_scale_x(1.5)
-              .to_scale_y(1.5)
-              .to_rotation_value(PI)
-              .to_alpha(0.5)
-              .to_tint(Color::new(255, 150, 50, 255))
-              .with_easing(Ease::InOutCubic),
-          )
-          .then(
-            Tween::new(1.0)
-              .to_x(500.0)
-              .to_scale_x(1.0)
-              .to_scale_y(1.0)
-              .to_rotation_value(PI * 2.0)
-              .to_alpha(1.0)
-              .to_tint(Color::WHITE)
-              .with_easing(Ease::InOutCubic),
-          )
-          .with_loop(),
-      )),
+      ctx
+        .world
+        .spawn((
+          ColorAlphaDemo,
+          Transform::from_xy(500.0, row3_y),
+          Renderable::sprite(handle10).with_z_order(10),
+          TweenSequence::new()
+            .then(
+              Tween::new(1.0)
+                .to_x(700.0)
+                .to_scale_x(1.5)
+                .to_scale_y(1.5)
+                .to_rotation_value(PI)
+                .to_alpha(0.5)
+                .to_tint(Color::new(255, 150, 50, 255))
+                .with_easing(Ease::InOutCubic),
+            )
+            .then(
+              Tween::new(1.0)
+                .to_x(500.0)
+                .to_scale_x(1.0)
+                .to_scale_y(1.0)
+                .to_rotation_value(PI * 2.0)
+                .to_alpha(1.0)
+                .to_tint(Color::WHITE)
+                .with_easing(Ease::InOutCubic),
+            )
+            .with_loop(),
+        ))
+        .id(),
     );
   }
 
   fn cleanup(&mut self, ctx: &mut SceneContext) {
     for entity in self.entities.drain(..) {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
   }
 }
@@ -1058,7 +1112,7 @@ impl DemoPage for ColorAlphaScene {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let text_white = Color::rgb(240, 240, 240);
 
     // Row labels
@@ -1081,10 +1135,10 @@ impl DemoPage for ColorAlphaScene {
 // Scene 7: PropertyTween (generic value tweens)
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct HealthBarTag;
 
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct MovingDotTag;
 
 struct PropertyTweenScene {
@@ -1120,14 +1174,20 @@ impl PropertyTweenScene {
 
     let bar_y = 200.0;
     self.health_bar_entity = Some(
-      ctx.world.spawn((
-        HealthBarTag,
-        Transform::new(100.0, bar_y),
-        Renderable::sprite(bar_handle).with_z_order(10),
-        PropertyTween::new(0.0_f32, 1.0, 2.0)
-          .with_easing(Ease::OutQuad)
-          .with_loop(TweenLoop::PingPong),
-      )),
+      ctx
+        .world
+        .spawn((
+          HealthBarTag,
+          // Placed and scaled from its top-left corner, so it grows rightwards
+          Transform::from_xy(100.0, bar_y),
+          Renderable::sprite(bar_handle)
+            .with_anchor(Anchor::TopLeft)
+            .with_z_order(10),
+          PropertyTween::new(0.0_f32, 1.0, 2.0)
+            .with_easing(Ease::OutQuad)
+            .with_loop(TweenLoop::PingPong),
+        ))
+        .id(),
     );
 
     // Demo 2: PropertyTween<Vec2> — Position
@@ -1135,18 +1195,21 @@ impl PropertyTweenScene {
     let dot_handle = SpriteHandle::from_sprite(dot_sprite, "moving_dot");
 
     self.moving_dot_entity = Some(
-      ctx.world.spawn((
-        MovingDotTag,
-        Transform::new(100.0, 400.0).with_pivot_center(),
-        Renderable::sprite(dot_handle).with_z_order(10),
-        PropertyTween::new(
-          Vec2::new(100.0, 400.0),
-          Vec2::new(self.screen_w - 100.0, 400.0),
-          3.0,
-        )
-        .with_easing(Ease::InOutCubic)
-        .with_loop(TweenLoop::PingPong),
-      )),
+      ctx
+        .world
+        .spawn((
+          MovingDotTag,
+          Transform::from_xy(100.0, 400.0),
+          Renderable::sprite(dot_handle).with_z_order(10),
+          PropertyTween::new(
+            Vec2::new(100.0, 400.0),
+            Vec2::new(self.screen_w - 100.0, 400.0),
+            3.0,
+          )
+          .with_easing(Ease::InOutCubic)
+          .with_loop(TweenLoop::PingPong),
+        ))
+        .id(),
     );
 
     // Demo 3: PropertyTween<f32> with on_update callback — Progress indicator
@@ -1159,18 +1222,18 @@ impl PropertyTweenScene {
       });
 
     // Spawn a small marker entity to host the callback tween
-    self.callback_entity = Some(ctx.world.spawn((progress_tween,)));
+    self.callback_entity = Some(ctx.world.spawn((progress_tween,)).id());
   }
 
   fn cleanup(&mut self, ctx: &mut SceneContext) {
     if let Some(entity) = self.health_bar_entity.take() {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
     if let Some(entity) = self.moving_dot_entity.take() {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
     if let Some(entity) = self.callback_entity.take() {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
   }
 }
@@ -1205,7 +1268,7 @@ impl DemoPage for PropertyTweenScene {
       if let Some(s) = scale
         && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
       {
-        transform.scale_x = s;
+        transform.scale.x = s;
       }
     }
 
@@ -1218,8 +1281,7 @@ impl DemoPage for PropertyTweenScene {
       if let Some(p) = pos
         && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
       {
-        transform.x = p.x;
-        transform.y = p.y;
+        transform.translation = p;
       }
     }
 
@@ -1230,7 +1292,7 @@ impl DemoPage for PropertyTweenScene {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let text_muted = Color::rgb(160, 160, 160);
     let text_light = Color::rgb(220, 220, 220);
 
@@ -1286,7 +1348,7 @@ fn main() {
     .configure(|b| {
       b.window_mode(WindowMode::ResizableAspectRatio)
         .target_fps(60)
-        .physics_hz(60)
+        .fixed_hz(60)
     })
     .page(EasingScene::new)
     .page(SpeedControlScene::new)

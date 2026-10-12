@@ -31,7 +31,7 @@ const TILE_PLATFORM: TileId = 1;
 // ---------------------------------------------------------------------------
 
 /// Marker so we can despawn all tile sprites when rebuilding.
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct TileVis;
 
 // ---------------------------------------------------------------------------
@@ -133,42 +133,66 @@ impl TilemapPage {
     let Some(entity) = self.map_entity else {
       return;
     };
-    let Some(tilemap) = ctx.tilemap.get_tilemap(entity) else {
-      return;
+
+    // Read the tiles first: the manager is a world resource
+    let tiles: Vec<(f32, f32, TileId)> = {
+      let tilemaps = ctx.tilemaps();
+      let Some(tilemap) = tilemaps.get_tilemap(entity) else {
+        return;
+      };
+      let mut tiles = Vec::new();
+      for layer in &tilemap.layers {
+        for y in 0..layer.height {
+          for x in 0..layer.width {
+            if let Some(tile_id) = layer.get_tile(x, y) {
+              let (wx, wy) = tilemap.tile_to_world(x, y);
+              tiles.push((wx, wy, tile_id));
+            }
+          }
+        }
+      }
+      tiles
     };
 
     // Pre-build sprites per tile ID
     let ground_sprite = Self::tile_sprite(TILE_GROUND);
     let platform_sprite = Self::tile_sprite(TILE_PLATFORM);
 
-    for layer in &tilemap.layers {
-      for y in 0..layer.height {
-        for x in 0..layer.width {
-          if let Some(tile_id) = layer.get_tile(x, y) {
-            let (wx, wy) = tilemap.tile_to_world(x, y);
-            let sprite = match tile_id {
-              TILE_GROUND => ground_sprite.clone(),
-              TILE_PLATFORM => platform_sprite.clone(),
-              _ => Self::tile_sprite(tile_id),
-            };
-            ctx.world.spawn((
-              TileVis,
-              Transform::new(wx, wy),
-              Renderable::sprite(sprite).with_z_order(0),
-            ));
-          }
-        }
-      }
+    for (wx, wy, tile_id) in tiles {
+      let sprite = match tile_id {
+        TILE_GROUND => ground_sprite.clone(),
+        TILE_PLATFORM => platform_sprite.clone(),
+        _ => Self::tile_sprite(tile_id),
+      };
+      // Tiles are placed by their top-left corner, like the tile grid
+      ctx.world.spawn((
+        TileVis,
+        Transform::from_xy(wx, wy),
+        Renderable::sprite(sprite)
+          .with_anchor(Anchor::TopLeft)
+          .with_z_order(0),
+      ));
     }
   }
 
   /// Despawn all tile visualisation entities and respawn from current data.
   fn rebuild_visuals(&self, ctx: &mut SceneContext) {
-    let to_despawn = ctx.world.entities_with::<TileVis>();
+    let to_despawn: Vec<Entity> = ctx
+      .world
+      .query_filtered::<Entity, With<TileVis>>()
+      .iter(ctx.world)
+      .collect();
     for e in to_despawn {
-      let _ = ctx.world.despawn(e);
+      ctx.world.despawn(e);
     }
     self.spawn_tile_visuals(ctx);
+  }
+
+  /// Regenerate the collision rects from the map's current tiles.
+  fn refresh_collision_rects(&mut self, ctx: &mut SceneContext, entity: Entity) {
+    if let Some(tilemap) = ctx.tilemaps().get_tilemap(entity) {
+      self.collision_rects = generate_collision_rects(tilemap);
+    }
   }
 }
 
@@ -204,8 +228,8 @@ impl DemoPage for TilemapPage {
     let tilemap = Self::build_tilemap();
     self.collision_rects = generate_collision_rects(&tilemap);
 
-    let entity = ctx.world.spawn(());
-    ctx.tilemap.register(entity, tilemap);
+    let entity = ctx.world.spawn_empty().id();
+    ctx.tilemaps().register(entity, tilemap);
     self.map_entity = Some(entity);
 
     // Visualise tiles as sprites
@@ -244,33 +268,31 @@ impl DemoPage for TilemapPage {
     self.hover_world = (wx, wy);
 
     if let Some(entity) = self.map_entity {
-      self.hover_tile = ctx.tilemap.world_to_tile(entity, wx, wy);
+      self.hover_tile = ctx.tilemaps().world_to_tile(entity, wx, wy);
 
       // Place solid ground tile with left click
       if ctx.input.mouse_pressed(MouseButton::Left)
         && let Some((tx, ty)) = self.hover_tile
       {
-        ctx.tilemap.set_tile(entity, 0, tx, ty, Some(TILE_GROUND));
+        ctx
+          .tilemaps()
+          .set_tile(entity, 0, tx, ty, Some(TILE_GROUND));
         self.rebuild_visuals(ctx);
-        if let Some(tilemap) = ctx.tilemap.get_tilemap(entity) {
-          self.collision_rects = generate_collision_rects(tilemap);
-        }
+        self.refresh_collision_rects(ctx, entity);
       }
 
       // Clear tile with right click
       if ctx.input.mouse_pressed(MouseButton::Right)
         && let Some((tx, ty)) = self.hover_tile
       {
-        ctx.tilemap.set_tile(entity, 0, tx, ty, None);
+        ctx.tilemaps().set_tile(entity, 0, tx, ty, None);
         self.rebuild_visuals(ctx);
-        if let Some(tilemap) = ctx.tilemap.get_tilemap(entity) {
-          self.collision_rects = generate_collision_rects(tilemap);
-        }
+        self.refresh_collision_rects(ctx, entity);
       }
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     let left = area.x + 10.0;
     let top = area.y + 4.0;
@@ -346,7 +368,7 @@ fn main() {
     .configure(|b| {
       b.window_mode(WindowMode::ResizableAspectRatio)
         .target_fps(60)
-        .physics_hz(60)
+        .fixed_hz(60)
     })
     .page(TilemapPage::new)
     .run();
