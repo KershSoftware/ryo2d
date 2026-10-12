@@ -59,3 +59,4 @@ Thumbs.db
 # Track Ryo2D Agent Skills
 !.claude/skills/ryo-*/
 !.claude/skills/ryo-*/**
+.claude/worktrees/
