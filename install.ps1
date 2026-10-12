@@ -163,7 +163,8 @@ if (Test-Path $engineDir) {
 $null = New-Item -ItemType Directory -Path $engineDir -Force
 
 # Copy essential engine files
-$filesToCopy = @("src", "Cargo.toml", "LICENSE", "README.md")
+# `crates` holds ryo2d-derive (an engine dependency) and the optional crates
+$filesToCopy = @("src", "crates", "Cargo.toml", "LICENSE", "README.md")
 foreach ($item in $filesToCopy) {
   $source = Join-Path $ScriptDir $item
   if (Test-Path $source) {

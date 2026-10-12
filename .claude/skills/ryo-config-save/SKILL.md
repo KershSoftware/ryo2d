@@ -1,328 +1,229 @@
 ---
 name: ryo-config-save
-description: Project configuration (Ryo.toml), user settings (system.json), and the 3-tier save system.
+description: Project configuration (Ryo.toml), player settings (system.json, SystemState) and game saves (SaveManager, GameSaveData).
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
-# Ryo2D Configuration and Save System
+# Ryo2D Configuration and Saves
 
-You help game developers configure their projects and implement save/load functionality.
+You help game developers configure their projects and save and load data. Complete signatures are in `ryo-api`.
 
-## Configuration Hierarchy
+## Files
 
-Ryo2D uses a two-file configuration system:
-
-| File | Purpose | Who Edits | Format |
+| File | Purpose | Who edits | Format |
 |------|---------|-----------|--------|
-| `Ryo.toml` | Developer defaults, debug flags | Game developer | TOML |
-| `data/system.json` | User preferences | Player | JSON |
+| `Ryo.toml` | Developer defaults, debug flags, release settings, game variables | Game developer | TOML |
+| `system.json` | Player settings (`SystemState`) | Player (or the game's settings menu) | JSON |
+| `<slot>.ryo-save` | Game data (`GameSaveData<T>`) | The game | Compressed binary |
 
-**Priority chain:** saved `system.json` preferences (only keys present, only with `with_user_preferences`) > `EngineBuilder` calls > `Ryo.toml` (dev) / embedded values (release) > engine defaults
+There are two kinds of save: system state (`system.json`) and game data (`*.ryo-save`). The engine does not snapshot the `World`; a game saves its own serializable structs and rebuilds entities from them on load.
 
-## Ryo.toml Structure
+## Startup Settings
+
+Each layer overrides only what it sets, lowest first:
+
+1. Engine defaults
+2. `Ryo.toml` (dev) or the values `ryo2d build` embedded from it (release)
+3. `EngineBuilder` calls (`.resolution(..)`, `.vsync(..)`, `.display_mode(..)`, `.show_fps(..)`, ...)
+4. `system.json`, only with `.with_user_preferences(filter)`, only keys present in the file and in the filter
+
+Without `with_user_preferences`, `system.json` is never read or written. With it, a missing file is seeded from layers 1-3 holding only the filtered keys (plus `env` when `[env]` exists); after that the file wins over later builder or `[system]` changes, so delete it in dev to re-seed. Headless builds never touch it.
+
+```rust
+EngineBuilder::new()
+  .title("My Game")
+  .resolution(1280, 720)
+  .fixed_hz(60)
+  .with_user_preferences([UserPreference::MasterVolume, UserPreference::MusicVolume])
+  .start_scene(Menu::new())
+  .build()
+  .run()
+```
+
+`UserPreferenceFilter::all()`, `none()`, `only(..)`, or an array/`Vec`/slice of `UserPreference` (`MasterVolume`, `MusicVolume`, `SfxVolume`, `Resolution`, `DisplayMode`, `Vsync`, `ShowFps`). Leave `Resolution` out for a fixed-resolution game. Repeated calls combine.
+
+The fixed update rate is builder-only: `EngineBuilder::fixed_hz(hz)` (default 60). There is no Ryo.toml key for it.
+
+## Ryo.toml
 
 ```toml
 [project]
 name = "My Game"
-title = "My Awesome Game"  # Window title (defaults to name)
+title = "My Awesome Game"   # window title (defaults to name)
+version = "0.0.1"
 
 [paths]
-entry_point = "src/main.rs"
-save_data = "data"
+entry_point = "main.rs"
+save_data = "data"          # dev save folder
 assets = "assets"
 
-[system]  # Defaults for system.json (user-facing)
-resolution = "1920x1080"
+[system]                    # defaults for player settings
+resolution = "1280x720"
 vsync = true
-display_mode = "windowed"  # "windowed", "exclusive_fullscreen", or "borderless_fullscreen"
-master_volume = 1.0
-music_volume = 0.8
+display_mode = "windowed"   # windowed | exclusive_fullscreen | borderless_fullscreen
+master_volume = 0.8
+music_volume = 1.0
 sfx_volume = 1.0
 show_fps = false
+console = false             # developer console (backtick), debug and release
+target_background_fps = 0   # unfocused frame rate, 0 = target_fps
+background_rendering = true # keep presenting while unfocused
 
-[debug]  # Dev-only flags (NOT in system.json)
+[debug]                     # developer only, never in system.json
 show_colliders = false
 show_velocities = false
 show_origins = false
 show_frame_timing = false
+disable_debug_keys = false
+enable_profiler = false
+logger_window = false
+# dev_window_keys = true
 
-[env]  # Game-specific variables
-debug_mode = false
+[release]                   # read by `ryo2d build`
+# logo = "assets/icon.png"
+# portable = false
+# save_folder = "MyStudio/MyGame"
+
+[env]                       # game variables, shipped with release builds
 difficulty = "normal"
 ```
 
-### Section Mapping
+| Section | In system.json | Read through |
+|---------|----------------|--------------|
+| `[project]`, `[paths]` | No | `workspace.config().name`, `.title`, `.assets`, ... |
+| `[system]` | Yes (seeds it) | `workspace.config().system` (`SystemDefaults`) |
+| `[debug]` | No | `workspace.config().debug` |
+| `[release]` | No | `workspace.config().release` |
+| `[env]` | Seeds its `env` | `config.env_str/env_bool/env_int/env_float(key)`, `has_env` |
 
-| Section | Goes to system.json | Purpose |
-|---------|---------------------|---------|
-| `[project]` | No | Project metadata (name, title, version) |
-| `[paths]` | No | Directory structure |
-| `[system]` | Yes | User-facing defaults (resolution, audio, show_fps) |
-| `[debug]` | No | Developer debugging |
-| `[env]` | Seeds its `env` (with `with_user_preferences`) | Game variables; shipped with release builds |
+## Where Saves Live
 
-## system.json
-
-Created on first run from the game's resolved settings (builder > Ryo.toml > defaults), holding only the keys in the `with_user_preferences` filter (plus `env` when Ryo.toml has `[env]`); never created without `with_user_preferences`.
-After the first run, `data/system.json` holds the filtered settings and overrides later builder or `[system]` changes - delete it in dev to re-seed.
-Players can edit this file directly.
-
-```json
-{
-  "master_volume": 0.8,
-  "music_volume": 1.0,
-  "sfx_volume": 1.0,
-  "resolution": "1920x1080",
-  "display_mode": "windowed",
-  "vsync": true,
-  "show_fps": false,
-  "env": {}
-}
-```
-
-### DisplayMode Values
-
-| Value | Description |
-|-------|-------------|
-| `"windowed"` | Regular window with decorations |
-| `"exclusive_fullscreen"` | Exclusive fullscreen (changes display resolution) |
-| `"borderless_fullscreen"` | Borderless window covering full screen |
-
-## Where saves live
-
-| Build | Save folder (system.json, game and world saves) |
-|---|---|
+| Build | Save folder (system.json and game saves) |
+|-------|------------------------------------------|
 | Dev (`ryo2d dev`, `cargo run`) | `[paths] save_data` under the project (default `data/`) |
-| Release (`ryo2d build`) | OS user data folder: `%APPDATA%`, `~/Library/Application Support` or `~/.local/share`, plus `[release] save_folder` (default `[project] name`) |
-| Release with `[release] portable = true` | `data/` beside the game |
+| Release (`ryo2d build`) | OS user data folder (`%APPDATA%`, `~/Library/Application Support`, `~/.local/share`) plus `[release] save_folder` (default `[project] name`) |
+| Release with `portable = true` | `data/` beside the game |
 
-`Workspace::save_location()` returns the folder; the engine logs it at startup. `ryo2d run` launches the release bundle like a player would, so a non-portable game saves into your real OS folder.
+- `Workspace::save_location()` returns the folder; the engine logs it at startup. `ryo2d run` launches the release bundle, so a non-portable game saves into your real OS folder.
+- Set `[release] save_folder` before the first release: changing it (or `[project] name` while it is unset) moves to a new, empty folder.
+- A default folder name has `/` and characters Windows rejects replaced with `-`; an explicit `save_folder` is used as written (`Studio/Game` nests).
+- Release builds read the embedded Ryo.toml values (including `[env]`), never a Ryo.toml on disk.
 
-- The save folder is where players' saves live: set `[release] save_folder` before your first release. Changing it - or `[project] name` while it's unset - moves to a new, empty folder.
-- A default folder name from `[project] name` has `/` and characters Windows rejects replaced with `-`. An explicit `save_folder` is used as written (`Studio/Game` nests).
-- Games built with older engine versions saved to `data/` beside the game; set `portable = true` to keep using those saves when shipping an update.
-- The folder persists across `ryo2d build`s; delete its `system.json` to pick up new `[system]` defaults when testing with `ryo2d run`.
-- Release builds read the Ryo.toml values embedded by `ryo2d build` (including `[env]`) and never a Ryo.toml on disk, so `Workspace::discover().config()` matches between `ryo2d run` and a shipped game.
-
-## Loading Configuration
+## Workspace
 
 ```rust
-use ryo2d::prelude::*;
-
-// Discover workspace (finds Ryo.toml)
-let workspace = Workspace::discover()?;
-
-// Access developer config
+let workspace = Workspace::discover()?;        // finds Ryo.toml (up to 3 parents)
 let config = workspace.config();
-println!("Game: {}", config.name);
-println!("Assets: {:?}", config.assets);
-
-// Access system defaults from [system] section
-let defaults = &config.system;
-println!("Default resolution: {:?}", defaults.resolution);  // Option<(u32, u32)>
-
-// Access debug flags from [debug] section
-if config.debug.show_colliders {
-    // Enable debug rendering
-}
-
-// Access env variables from [env] section
-if let Some(difficulty) = config.env.get("difficulty") {
-    println!("Difficulty: {}", difficulty);
-}
+let difficulty = config.env_str("difficulty").unwrap_or("normal");
+let saves = workspace.create_save_manager()?;  // SaveManager over the save folder
 ```
 
-## 3-Tier Save System
+## System State
 
-| Tier | Purpose | File | Format |
-|------|---------|------|--------|
-| 1 | System State | `system.json` | JSON (editable) |
-| 2 | World State | `*.ryo-world` | Compressed binary |
-| 3 | Game Data | `*.ryo-save` | Compressed binary |
-
-### Save Directory Structure
-
-```
-{workspace}/data/
-+-- system.json          # Tier 1: User settings
-+-- slot1.ryo-world      # Tier 2: World snapshot
-+-- slot1.ryo-save       # Tier 3: Game data
-+-- slot2.ryo-world
-+-- slot2.ryo-save
-```
-
-## Tier 1: System State
-
-User settings that persist across sessions.
+`SystemState` holds `master_volume`, `music_volume`, `sfx_volume`, `width`, `height`, `display_mode: DisplayMode`, `vsync: Option<bool>`, `show_fps: Option<bool>` and `env` (typed JSON values). In the file the resolution is one `"1280x720"` key.
 
 ```rust
-let workspace = Workspace::discover()?;
-let save_manager = workspace.create_save_manager()?;
-
-// Load with proper fallback chain
-let settings = save_manager.load_or_create_system(
-    &workspace.config().system
-)?;
-
-// Modify and save (resolution is settings.width / settings.height)
-let mut settings = save_manager.load_system()?;
+let mut settings = saves.load_or_create_system(&workspace.config().system)?;
 settings.master_volume = 0.5;
-settings.display_mode = DisplayMode::ExclusiveFullscreen;
-save_manager.save_system(&settings)?;
-
-// Custom game env variables (typed values)
-settings.set_env("language", serde_json::json!("en"));
+settings.display_mode = DisplayMode::BorderlessFullscreen;
+settings.set_env("language", "en");
+saves.save_system(&settings)?;
 ```
 
-## Tier 2: World State
+- `load_or_create_system(&defaults)` creates the file from `[system]` when missing and merges new default keys into an existing one; `load_or_create_system_filtered(&defaults, &filter)` writes only the filtered keys to a new file.
+- `save_system` updates keys already in the file and adds a missing key only when its value differs, so a narrow file keeps its shape.
+- `DisplayMode::all()` and `display_name()`, `Resolution::common()` and `display_name()` feed settings menus.
+- Applying a change at runtime is separate from saving it: `ctx.request_display_mode(mode)`, `ctx.request_resolution(w, h)`, `ctx.request_display_change(w, h, mode)`, `ctx.request_ui_scale(..)` (applied after the frame), and `ctx.audio.set_master_volume(v)` / `set_music_volume` / `set_sfx_volume`.
 
-`WorldState` is a container of `EntitySnapshot`s (component data serialized to bytes, keyed by component name). The engine does not capture a `World` into it automatically: you fill it yourself, and rebuild entities from it after loading.
-
-```rust
-// use std::collections::HashMap;
-// Build a snapshot (serialize the components you care about yourself)
-let mut state = WorldState::new();
-state.set_metadata("level", "forest");
-state.add_entity(EntitySnapshot { id: 1, components: HashMap::new() });
-
-// Save to slot
-save_manager.save_world("autosave", &state)?;
-
-// Load from slot
-let loaded: WorldState = save_manager.load_world("autosave")?;
-for snapshot in &loaded.entities {
-    // Recreate the entity from snapshot.components
-}
-
-// List available world saves
-let slots = save_manager.list_world_saves()?;
-for slot in slots {
-    println!("Found save: {}", slot);
-}
-```
-
-**Note:** For most games, `save_game` with your own serializable struct (Tier 3) is simpler than world snapshots.
-
-## Tier 3: Game Data
-
-Custom game-specific data (progress, unlocks, etc.).
+## Game Data
 
 ```rust
-use serde::{Serialize, Deserialize};
-
 #[derive(Serialize, Deserialize)]
-struct PlayerProgress {
-    level: u32,
-    score: u64,
-    unlocked_items: Vec<String>,
+struct Progress {
+  level: u32,
+  score: u64,
+  unlocked: Vec<String>,
 }
 
-let progress = PlayerProgress {
-    level: 5,
-    score: 12500,
-    unlocked_items: vec!["sword".into(), "shield".into()],
-};
-
-// Save to slot (compressed)
-save_manager.save_game("slot1", &progress)?;
-
-// Load from slot (returned in a GameSaveData wrapper: .data, .timestamp, .play_time, ...)
-let loaded: PlayerProgress = save_manager.load_game("slot1")?.data;
-
-// Delete a save
-save_manager.delete_game("slot1")?;
+saves.save_game("slot1", &progress)?;                        // slot1.ryo-save
+let progress: Progress = saves.load_game("slot1")?.data;    // GameSaveData<Progress>
+let slots = saves.list_game_saves()?;
+saves.delete_game("slot1")?;
 ```
 
-## Best Practices
+- `GameSaveData<T>` wraps the data with `timestamp` (Unix seconds), `name`, `play_time` (seconds) and `metadata`; write them with `save_game_with_info(slot, GameSaveData::new(&data).with_name("Forest").with_play_time(secs).with_metadata("chapter", "2"))`.
+- A slot name with a path separator, `..` or a leading dot is `SaveError::InvalidSlot`; a missing slot is `SaveError::NotFound`.
+- `set_compression_level(0..=9)` (default 6). `save_raw(filename, &data)` / `load_raw(filename)` write a custom compressed file; `compress_data` / `decompress_data` work on bytes.
+- Serde is not re-exported: add `serde = { version = "1", features = ["derive"] }` to the game.
 
-1. **Use `load_or_create_system`** - Handles the fallback chain correctly
-2. **Keep system.json player-editable** - It's JSON for a reason
-3. **Debug flags in [debug]** - Never expose to players
-4. **Use [env] for game variables** - Easy to tweak during development; `ryo2d build` ships them, so set dev-only switches (e.g. `debug_scene`) to `false` before release
-5. **World saves for checkpoints** - Quick snapshots of game state
-6. **Game saves for progress** - Structured data you control
+## Patterns
 
-## Common Patterns
-
-### Settings Menu
+### Settings Screen
 
 ```rust
-fn render_settings(&mut self, ui: &mut UiContext, save_manager: &SaveManager) {
-    let mut settings = save_manager.load_system().unwrap_or_default();
+struct Settings {
+  saves: SaveManager,
+  state: SystemState,
+}
 
+impl Scene for Settings {
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
     let track = Rect::new(100.0, 100.0, 200.0, 20.0);
-    if ui.slider(track, &mut settings.master_volume, 0.0, 1.0) {
-        save_manager.save_system(&settings).ok();
+    if ui.slider(track, &mut self.state.master_volume, 0.0, 1.0) {
+      ctx.audio.set_master_volume(self.state.master_volume);
+      self.saves.save_system(&self.state).ok();
     }
-}
-```
-
-### Display Mode Settings
-
-For runtime display mode changes, use `WindowRequest`:
-
-```rust
-// In your scene/game
-fn apply_display_mode(&mut self, ctx: &mut SceneContext, save_manager: &SaveManager, mode: DisplayMode) {
-    // Request display mode change (applied after the current frame)
-    ctx.request_display_mode(mode);
-
-    // Save preference
-    let mut settings = save_manager.load_system().unwrap_or_default();
-    settings.display_mode = mode;
-    save_manager.save_system(&settings).ok();
-}
-
-// Display mode options for settings menu
-const DISPLAY_MODES: &[DisplayMode] = &[
-    DisplayMode::Windowed,
-    DisplayMode::BorderlessFullscreen,
-    DisplayMode::ExclusiveFullscreen,
-];
-
-fn display_mode_label(mode: DisplayMode) -> &'static str {
-    match mode {
-        DisplayMode::Windowed => "Windowed",
-        DisplayMode::BorderlessFullscreen => "Borderless Fullscreen",
-        DisplayMode::ExclusiveFullscreen => "Exclusive Fullscreen",
+    for (i, mode) in DisplayMode::all().iter().enumerate() {
+      let rect = Rect::new(100.0, 140.0 + i as f32 * 36.0, 240.0, 30.0);
+      if ui.button(mode.display_name(), rect) {
+        self.state.display_mode = *mode;
+        ctx.request_display_mode(*mode);
+        self.saves.save_system(&self.state).ok();
+      }
     }
+    SceneAction::Continue
+  }
 }
 ```
 
 ### Autosave
 
+`update` runs every fixed step with the constant timestep, so a timer in it counts game time (it stops while paused).
+
 ```rust
-impl Scene for MyScene {
-    fn update(&mut self, _ctx: &mut SceneContext, dt: f32) -> SceneAction {
-        self.autosave_timer += dt;
-        if self.autosave_timer >= 60.0 {
-            self.autosave_timer = 0.0;
-            if let Some(ref save_manager) = self.save_manager {
-                save_manager.save_game("autosave", &self.progress).ok();
-            }
-        }
-        SceneAction::Continue
+fn update(&mut self, _ctx: &mut SceneContext, dt: f32) -> SceneAction {
+  self.autosave_timer += dt;
+  if self.autosave_timer >= 60.0 {
+    self.autosave_timer = 0.0;
+    self.saves.save_game("autosave", &self.progress).ok();
+  }
+  SceneAction::Continue
+}
+```
+
+### Rebuilding the World From a Save
+
+Save what you need to recreate entities (positions, health, ids) in your own struct and spawn from it in `on_enter`:
+
+```rust
+#[derive(Serialize, Deserialize)]
+struct LevelSave {
+  enemies: Vec<(f32, f32, i32)>,
+}
+
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+  if let Ok(save) = self.saves.load_game::<LevelSave>("level") {
+    for (x, y, health) in save.data.enemies {
+      ctx.world.spawn((Transform::from_xy(x, y), Enemy { health }));
     }
+  }
 }
 ```
 
-### Multiple Save Slots
+## Best Practices
 
-`self.world` here is a `WorldState` you maintain (see Tier 2).
-
-```rust
-fn save_to_slot(&self, slot: u8) -> SaveResult<()> {
-    let slot_name = format!("slot{}", slot);
-    self.save_manager.save_world(&slot_name, &self.world)?;
-    self.save_manager.save_game(&slot_name, &self.progress)?;
-    Ok(())
-}
-
-fn load_from_slot(&mut self, slot: u8) -> SaveResult<()> {
-    let slot_name = format!("slot{}", slot);
-    self.world = self.save_manager.load_world(&slot_name)?;
-    self.progress = self.save_manager.load_game(&slot_name)?.data;
-    Ok(())
-}
-```
+1. Keep `system.json` player-editable; never commit it.
+2. Debug flags belong in `[debug]`; `[env]` ships with release builds, so set dev-only switches to `false` before release.
+3. Save structured data you control rather than component dumps; `Transform` and `Velocity` derive serde if you do want them.
+4. Choose `with_user_preferences` keys deliberately: a key in the filter lets the file override the builder from then on.

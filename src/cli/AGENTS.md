@@ -10,4 +10,4 @@
 ## Skills
 
 - `src/cli/skills/*.md` are compiled into the binary via `include_str!` in `EMBEDDED_SKILLS` (`commands/install_skills.rs`), and that is what `init`/`install-skills` ship to games
-- They have drifted from `.claude/skills/*/SKILL.md` (most files differ). Update both when changing a skill, and add an `EMBEDDED_SKILLS` entry for a new one
+- They are verbatim copies of `.claude/skills/<name>/SKILL.md`: edit the skill there, copy it to `src/cli/skills/<name>.md`, and keep its `EMBEDDED_SKILLS` description in step with the skill's frontmatter (add an entry for a new skill)

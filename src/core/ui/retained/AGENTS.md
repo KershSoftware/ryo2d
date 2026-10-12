@@ -3,7 +3,7 @@
 ## Focus Management
 
 - Create dropdowns that take part in focus with `DropdownState::with_id(n)` and a **unique, non-zero** `n`. `new()` uses id 0, which `UiContext` treats as "no dropdown", so click-to-focus won't track it.
-- Call order inside `render_ui()` matters:
+- Call order inside `Scene::ui` matters:
 
 ```rust
 // 1. Draw every dropdown

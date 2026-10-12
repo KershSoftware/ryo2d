@@ -1,255 +1,187 @@
 ---
 name: ryo-ecs-internals
-description: Working on the hecs wrapper, adding components, and ECS patterns.
+description: Working on Ryo2D's ECS (bevy_ecs presented as ryo2d::ecs) - kernel re-exports, components, propagation, interpolation, pooling and engine systems.
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
-# Ryo2D ECS Internals Specialist
+# Ryo2D ECS Internals
 
-You help developers work on the ECS layer.
+You help contributors work on `src/core/ecs/` and the engine's systems. Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: games import it through `ryo2d::prelude`/`ryo2d::ecs` and never name `bevy_ecs`.
 
-## Resources
+## Read First
 
-- **ECS Module**: `src/core/ecs/AGENTS.md`
-- **World Wrapper**: `src/core/ecs/world.rs`
-- **Components**: `src/core/ecs/components.rs`
+| Doc | Covers |
+|-----|--------|
+| `src/core/ecs/AGENTS.md` | Phases and sets, the resource-scope rule, transform and hierarchy, interpolation, `Disabled` and pooling, resources as entities, messages |
+| `src/core/systems/AGENTS.md` | The built-in systems, their sets, conventions, adding a system |
+| `ryo-api` skill | Public signatures |
+| `ryo-game-dev` skill | How games use all of this |
 
-## Module Structure
+This skill adds the working knowledge for changing that code; the AGENTS.md files are the reference for the rules.
+
+## Module Map
 
 ```
 src/core/ecs/
-├── mod.rs          # Public exports
-├── active.rs       # Active/Inactive marker components for pooling
-├── component.rs    # Component trait
-├── components.rs   # Built-in components (Transform, PreviousTransform, Velocity)
-├── hierarchy.rs    # Parent/child relationships
-├── knockback.rs    # Knockback component (decay-based force)
-├── squash_stretch.rs # SquashStretch component (impact deformation)
-├── pool.rs         # Object pooling system
-├── renderable.rs   # Renderable component
-├── sprite_effects.rs # Per-sprite SpriteEffect
-├── material.rs     # SpriteShader / Material
-├── y_sort.rs       # YSort component
-├── tween.rs        # Tweening system (Tween, TweenSequence)
-├── property_tween.rs # Generic property tweening (PropertyTween<T>)
-├── lerp.rs         # Lerp trait for generic interpolation
-└── world.rs        # World wrapper
+  kernel.rs          the curated bevy_ecs re-exports (the only file naming the crate)
+  transform.rs       Anchor, Transform (+ insert hook), GlobalTransform, PreviousGlobalTransform, Interpolated
+  propagate.rs       propagate_transforms
+  interpolate.rs     snapshot_previous_transforms, render_global
+  world_ext.rs       WorldExt (spawn_child, detach_keep_world, skip_interpolation), despawn_game_entities
+  pooling.rs         Pool, PoolConfig, PoolExhaustedPolicy, PoolStats
+  components.rs      Velocity, RenderLayer
+  renderable.rs      Renderable, RenderStyle, DropShadow, BlobShadow, ContactShadow
+  material.rs        Material, SpriteShader, ShaderHandle, ShaderParams, ParamValue
+  sprite_effects.rs  SpriteEffect
+  y_sort.rs          YSort
+  tween.rs           Tween, TweenSequence, TweenLoop, Ease
+  property_tween.rs  PropertyTween<T>
+  lerp.rs            Lerp
+  knockback.rs       Knockback (+ world-level Knockback::apply)
+  squash_stretch.rs  SquashStretch, SquashAxis (+ SquashStretch::apply)
+src/core/systems/    the engine systems over these components
+src/core/schedule.rs Phase, FixedSet, UpdateSet, PostUpdateSet, EngineSchedules, SceneSchedules
+src/core/messages/   engine message types, register_message, SceneMessages
 ```
 
-## Why hecs?
+`ecs/mod.rs` re-exports the public items, and the prelude glob-imports `crate::core::ecs::*`: **anything `pub` in `ecs/mod.rs` (including `pub use kernel::*`) is in every game's prelude.** Keep crate-internal items `pub(crate)`.
 
-- Generational entity IDs (u64 with index + generation)
-- Archetype storage (cache-friendly)
-- Battle-tested, no proc macros
+## The Kernel Rule
 
-## World Wrapper
+- `bevy_ecs` is named only in `Cargo.toml`, `ecs/kernel.rs` and the hidden re-exports in `src/lib.rs` (crate root and prelude).
+- The derives (`Component`, `Resource`, `Message`, `Event`, `SystemSet`, `ScheduleLabel`, `Bundle`) expand to paths rooted at `bevy_ecs`. A game's `use ryo2d::prelude::*` brings that name into scope through the hidden prelude re-export; that is why the derives work downstream with no extra dependency. Do not remove it.
+- Engine code imports from `crate::core::ecs` (or `crate::core::ecs::kernel` for crate-internal items such as `HookContext`, `DeferredWorld`, `SystemIdMarker`).
+- Need another kernel type? Add one line to `kernel.rs`: `pub use` if games need it (it lands in the prelude), `pub(crate) use` otherwise.
 
-```rust
-pub struct World {
-    inner: hecs::World,
-}
-
-impl World {
-    pub fn spawn<T: hecs::DynamicBundle>(&mut self, components: T) -> Entity;
-    pub fn despawn(&mut self, entity: Entity) -> Result<(), hecs::NoSuchEntity>;
-    pub fn get<T: hecs::Component>(&self, entity: Entity) -> Option<hecs::Ref<'_, T>>;
-    pub fn get_mut<T: hecs::Component>(&self, entity: Entity) -> Option<hecs::RefMut<'_, T>>;
-    // get_component / get_component_mut: deprecated aliases of get / get_mut
-    pub fn add_component<T: hecs::Component>(&mut self, entity: Entity, component: T);
-    pub fn has_component<T: hecs::Component>(&self, entity: Entity) -> bool;
-    pub fn query<Q: hecs::Query>(&self) -> hecs::QueryBorrow<'_, Q>;
-    pub fn query_mut<Q: hecs::Query>(&mut self) -> hecs::QueryMut<'_, Q>;
-    pub fn entities_with<T: hecs::Component>(&self) -> Vec<Entity>;
-    pub fn clear(&mut self);          // despawns everything, bumps generation()
-}
-
-// get/get_mut/has/insert_one/remove_one are the short forms of the *_component methods.
-```
-
-## Core Components
+## Components
 
 ```rust
-pub struct Transform { pub x: f32, pub y: f32, pub z: f32, pub rotation: f32, pub scale_x: f32, pub scale_y: f32, /* + pivot_x/y, offset_x/y */ }
-pub struct Velocity { pub dx: f32, pub dy: f32, pub dz: f32 }
-pub struct Renderable { pub sprite: SpriteHandle, pub visible: bool, pub z_order: i32, pub flip_x: bool, pub flip_y: bool, pub alpha: f32, pub tint: Color, /* + style, mode, shader, shadows */ }
-pub struct Parent(pub Entity);
-pub struct Children(pub Vec<Entity>);
-```
-
-## Query Patterns
-
-hecs 0.11: iterators yield only the query item. Put `Entity` in the tuple to get IDs.
-
-```rust
-// Immutable (query() returns a borrow - call .iter())
-for (entity, transform, velocity) in world.query::<(Entity, &Transform, &Velocity)>().iter() {
-    // read-only access
-}
-
-// Mutable (query_mut() returns the iterator directly)
-for (transform, velocity) in world.query_mut::<(&mut Transform, &Velocity)>() {
-    transform.x += velocity.dx * dt;
-}
-
-// Optional components
-for (transform, maybe_sprite) in world.query::<(&Transform, Option<&Renderable>)>().iter() {
-    if let Some(sprite) = maybe_sprite { /* ... */ }
-}
-```
-
-## Adding Components
-
-1. Define in `components.rs`:
-```rust
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct Health {
-    pub current: f32,
-    pub max: f32,
+  pub current: f32,
+  pub max: f32,
 }
 ```
 
-2. Export in `ecs/mod.rs`
-3. Add to prelude in `lib.rs` if public
+1. Define it beside the code that owns it (an `ecs/` file for general components, the feature module otherwise).
+2. Export it from that module; export it from the prelude in `src/lib.rs` if games use it (ECS items arrive there through the glob).
+3. Write rustdoc on the type: rustdoc is the API reference.
 
-Components must be `Send + Sync + 'static`.
+Patterns the engine uses:
 
-## Engine Integration
+| Need | How | Example |
+|------|-----|---------|
+| Always present with another component | `#[require(Other)]` | `Transform` requires `GlobalTransform` |
+| React on insert/remove | `#[component(on_insert = hook)]`, hook `fn(DeferredWorld, HookContext)` | `place_on_insert` in `transform.rs` |
+| Hidden from queries | the kernel's `Disabled` | pooling |
+| Written by networking | `Component<Mutability = Mutable>` (the default derive) | `Replicated` |
+| Resource with `ResMut` / `resource_mut` | `Resource<Mutability = Mutable>` (the default derive) | `Time`, `Input` |
 
-Systems run each frame:
+A resource must be `Send + Sync`. The scene stack and audio are not, so they live in the non-send `SceneHost` (`engine/mod.rs`).
+
+## Transform Internals
+
+- **Insert hook** (`place_on_insert`): inserting a `Transform` sets `GlobalTransform` at once, from the parent's current global for a child. Spawning in `update` therefore places the entity for the rest of the step. Edits through `get_mut::<Transform>` do not fire it; they wait for propagation.
+- **Propagation** (`propagate_transforms`): one system, run in `FixedSet::Transforms` and `PostUpdateSet::Transforms`. Roots are `Transform` without `ChildOf`; a subtree is recomputed when the root's `Transform` changed or, during the walk, an ancestor's `Transform`/`ChildOf` changed. Children of a parent with no `Transform` (a grouping entity) start from the identity and are recomputed every run. Writes go through `set_if_neq`, so an unmoved entity's `GlobalTransform` is never marked changed.
+- **Previous transforms**: propagation also inserts `PreviousGlobalTransform` (with `skip: true`) on every entity that is `Interpolated` or under one, and removes it elsewhere, through `Commands` (applied at the end of the phase).
+- **Snapshot**: `snapshot_previous_transforms` runs first in each fixed step and copies `GlobalTransform` into `PreviousGlobalTransform`, clearing `skip`.
+- **Render**: extraction calls `render_global(global, previous, time.fixed.overstep_fraction())`; gameplay never sees a blend.
+
+Changing the transform model means changing all four places and their tests (`propagate.rs`, `transform.rs`, `interpolate.rs`, `tests/integration/transform.rs`).
+
+## Change-Detection Discipline
+
+Propagation and physics sync are change-detected, so a spurious write costs work and can wake a sleeping body.
+
+- Assign a component only when the value changed, or use `set_if_neq`.
+- Iterating `&mut T` does not mark anything; dereferencing `Mut<T>` mutably does.
+- Physics' write-back is an ordinary change (propagation must see bodies move); `sync_to_physics` therefore compares values with the body before pushing.
+- `bypass_change_detection()` hides a write from propagation as well: do not use it on `Transform`.
+
+## Resources Are Entities
+
+In `bevy_ecs` 0.20 a resource is a component on a hidden entity marked `IsResource`; observers and registered one-shot systems are entities too. Any sweep over "every entity" must exclude them:
+
+- `despawn_game_entities` (`world_ext.rs`, behind `SceneCleanup::WORLD`) filters `(Allow<Disabled>, Without<IsResource>, Without<Observer>, Without<SystemIdMarker>)`.
+- Counting entities (debug stats) skips archetypes holding those markers.
+- Tests that count entities count their own marker component, not `world.entities()`.
+
+## Disabled and Pooling
+
+- `Disabled` is the kernel's entity-disabling component: every query skips it unless it includes `Allow<Disabled>` (or names `Disabled`). Systems need no filter of their own for pooled entities.
+- Bookkeeping that must see disabled entities asks for them: physics' `(With<RigidBody>, Added<Disabled>, Allow<Disabled>)` unregisters a body as it is disabled.
+- `Pool<B: Bundle>` spawns its batches disabled; `acquire` removes `Disabled`, `release`/`release_all` insert it. `acquire` does not reset components. A pool forgets entities the world no longer has (a cleanup sweep) and refills on the next `acquire`.
+
+## Engine Systems
+
+Engine systems are plain functions over `Query`, `Res`, `ResMut`, `MessageWriter`, `Commands`, or exclusive `fn(&mut World)` when they need the whole world (the scene systems, message updates, tracker clearing).
 
 ```rust
-// Update animators (skipping Inactive pooled entities)
-for entity in world.entities_with::<Animator>() {
-    if world.has::<Inactive>(entity) { continue; }
-    if let Some(mut animator) = world.get_mut::<Animator>(entity) {
-        animator.update(dt);
-    }
-}
-
-// Apply velocities
-for (transform, velocity) in world.query_mut::<(&mut Transform, &Velocity)>() {
-    transform.x += velocity.dx * dt;
+/// Decay every active `Knockback` by one fixed step.
+pub fn update_knockback(
+  time: Res<Time>,
+  mut query: Query<(Entity, &mut Knockback, Option<&mut Velocity>, Option<&mut Transform>)>,
+  mut started: MessageWriter<KnockbackStarted>,
+  mut finished: MessageWriter<KnockbackFinished>,
+) {
+  let dt = time.fixed.timestep();
+  // ...
 }
 ```
 
-## Performance
+- Fixed-step systems integrate with `time.fixed.timestep()`; per-frame systems that must run through pause use `time.real.delta()`.
+- Register in `register_juice_systems` (`systems/mod.rs`), `register_physics_systems` (`systems/physics.rs`) or `register_engine_systems` (`engine/mod.rs`), with `.in_set(..)` and `.chain()`/`.before()`/`.after()`. Every schedule runs on the single-threaded executor, but declare real access so a parallel executor stays possible.
+- Errors: return `Result<(), SystemError>`; the installed `FallbackErrorHandler` panics in debug and logs in release.
+- Profile with `profile_scope!("name")` inside the system.
 
-- Entities with same components share an archetype
-- Iteration is contiguous in memory
-- Use batch queries over individual `get()` calls
-
-```rust
-// Good - single query
-for (t, v) in world.query_mut::<(&mut Transform, &Velocity)>() {
-    t.x += v.dx;
-}
-
-// Avoid - per-entity lookups
-for entity in world.entities_with::<Velocity>() {   // allocates a Vec
-    if let Some(mut t) = world.get_mut::<Transform>(entity) { /* ... */ }
-}
-```
-
-## Tips
-
-- Use `spawn()` with component tuples
-- Prefer `query_mut()` for batch processing
-- Generational entities prevent use-after-free
-- Keep components small (data only)
-- Despawn entities after iteration (collect IDs first, then despawn)
-
-## Object Pooling System
-
-The pooling system (`pool.rs` and `active.rs`) provides pre-allocated entity pools for high-frequency spawning.
-
-### Active/Inactive Markers
+Test a system through a real `Schedule` with `systems::test_util`:
 
 ```rust
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Active;
+use crate::core::systems::test_util::{messages, run, world};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Inactive;
-```
-
-Engine systems automatically skip `Inactive` entities in:
-- World rendering (entity draw list)
-- Physics registration/simulation
-- Animation systems (Animator, AnimationController)
-- Tween updates
-
-### Pool Implementation
-
-```rust
-pub struct Pool<B: DynamicBundle + Clone> {
-    available: Vec<Entity>,           // Ready for reuse
-    active: Vec<Entity>,              // Currently in use
-    config: PoolConfig,
-    factory: Box<dyn Fn() -> B + Send + Sync>,  // Creates component bundles
-    world_generation: u64,            // For scene-change detection
-    stats: PoolStats,
-}
-
-impl<B: DynamicBundle + Clone + Send + Sync + 'static> Pool<B> {
-    fn new<F: Fn() -> B + Send + Sync + 'static>(world: &mut World, config: PoolConfig, factory: F) -> Self;
-    fn acquire(&mut self, world: &mut World) -> Option<Entity>;
-    fn release(&mut self, world: &mut World, entity: Entity) -> bool;
-    fn release_all(&mut self, world: &mut World);
-    fn active_iter(&self) -> impl Iterator<Item = &Entity>;
-    fn stats(&self) -> &PoolStats;
-}
-
-// PoolConfig::default().with_capacity(n).with_max_capacity(n)
-//     .with_expand_batch_size(n).with_exhausted_policy(policy)
-```
-
-**Key implementation detail:** When spawning entities for the pool, we spawn the user's bundle first, then add `Inactive` separately with `insert_one()`. This avoids nested tuple issues with hecs's `DynamicBundle`:
-
-```rust
-// Correct - spawn bundle, then add Inactive
-let entity = world.spawn(bundle);
-let _ = world.insert_one(entity, Inactive);
-
-// Wrong - nested tuple ((Transform, ...), Inactive)
-let entity = world.spawn((bundle, Inactive));
-```
-
-### World Generation Tracking
-
-Pools track `world.generation()` to detect scene clears:
-
-```rust
-fn check_generation(&mut self, world: &World) {
-    if world.generation() != self.world_generation {
-        // World was cleared - invalidate pool
-        self.available.clear();
-        self.active.clear();
-        self.world_generation = world.generation();
-    }
+#[test]
+fn knockback_moves_an_entity_without_velocity() {
+  let mut world = world(10); // Time at 10 Hz plus the engine messages
+  let entity = world
+    .spawn((Transform::IDENTITY, Knockback::new(Vec2::X, 100.0)))
+    .id();
+  run(&mut world, update_knockback);
+  assert!(world.get::<Transform>(entity).unwrap().translation.x > 0.0);
+  assert_eq!(messages::<KnockbackStarted>(&world), [KnockbackStarted { entity }]);
 }
 ```
 
-### Exhaustion Policies
+`set_hz(world, hz)` changes the step, `clear_messages(world)` empties the buffers. Cross-module behaviour (engine plus schedules) goes in `tests/integration/` (`support.rs`: `juice_world`, `run_fixed`, `messages`); anything that needs a frame, `tests/e2e/` with `HeadlessEngine`.
+
+## Messages
+
+- A message type derives `Message` (and `Clone` for scene readers). `register_message::<T>(world)` inserts `Messages<T>` and adds an updater and a clearer (`MessageUpdaters`); registering twice is a no-op.
+- The engine's types register in `register_engine_messages` at build; games use `EngineBuilder::add_message::<T>()`, or `ctx.write_message` registers lazily. A system with `MessageReader<T>` for an unregistered `T` fails validation, so register types systems read.
+- `update_messages` advances every buffer once per frame in `First`; `clear_messages` backs `SceneCleanup::MESSAGES`.
+- Scenes read through `SceneMessages` (`messages/scene.rs`): one `MessageCursor<T>` per type per scene instance.
+- Add a message type only if engine code writes it; games define their own notifications.
+
+## Queries Outside Systems
+
+`World::query` returns a `QueryState`; iterate with the world:
 
 ```rust
-pub enum PoolExhaustedPolicy {
-    Expand,         // Spawn more (default)
-    ReturnNone,     // Return None
-    RecycleOldest,  // Force-release oldest active
-}
+let mut q = world.query::<(Entity, &GlobalTransform, &Renderable)>();
+for (entity, global, renderable) in q.iter(world) {}
+
+let ids: Vec<Entity> = world
+  .query_filtered::<Entity, With<Collider>>()
+  .iter(world)
+  .collect();
 ```
 
-### Stats Tracking
+Building a `QueryState` is not free: in per-frame engine code prefer a system with `Query` parameters, or keep the state.
 
-```rust
-pub struct PoolStats {
-    pub total_spawned: usize,
-    pub current_available: usize,
-    pub current_active: usize,
-    pub peak_active: usize,
-    pub acquires: usize,
-    pub releases: usize,
-    pub expansions: usize,
-}
+## Checks
 
+```bash
+cargo test --lib -- core::ecs core::systems   # several filters go after --
+cargo test --test integration
+cargo clippy --lib --tests
+```

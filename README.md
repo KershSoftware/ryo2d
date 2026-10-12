@@ -47,6 +47,70 @@ ryo2d dev
 
 When you run `ryo2d init`, you'll be prompted to install **Agent Skills**—domain-specific knowledge that helps AI assistants understand the engine's APIs and patterns. This is **highly recommended** for agentic game development.
 
+### A First Scene
+
+A game is a stack of scenes over one ECS world. `update` runs at the fixed rate, `ui` once a frame before it:
+
+```rust
+use ryo2d::prelude::*;
+
+#[derive(Default)]
+struct Level {
+  player: Option<Entity>,
+  presses: u32,
+}
+
+impl Scene for Level {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(32, 32, 80, 200, 255, 255), "player");
+    let player = ctx
+      .world
+      .spawn((Transform::from_xy(400.0, 300.0), Renderable::sprite(sprite)))
+      .id();
+    self.player = Some(player);
+  }
+
+  // Every fixed step (60 per second by default); dt is the step length
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    let mut dx = 0.0;
+    if ctx.input.key_down(KeyCode::KeyA) {
+      dx -= 1.0;
+    }
+    if ctx.input.key_down(KeyCode::KeyD) {
+      dx += 1.0;
+    }
+    if ctx.input.key_pressed(KeyCode::Space) {
+      self.presses += 1;
+    }
+    if let Some(player) = self.player
+      && let Some(mut transform) = ctx.world.get_mut::<Transform>(player)
+    {
+      transform.translation.x += dx * 200.0 * dt;
+    }
+    SceneAction::Continue
+  }
+
+  // Once a frame, before the fixed steps; input the UI uses never reaches update
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    ui.draw_text(&format!("Space presses: {}", self.presses), 10.0, 10.0, Color::WHITE);
+    if ui.button("Quit", Rect::new(10.0, 30.0, 80.0, 24.0)) {
+      return SceneAction::Quit;
+    }
+    SceneAction::Continue
+  }
+}
+
+fn main() -> EngineResult<()> {
+  EngineBuilder::new()
+    .title("My Game")
+    .resolution(800, 600)
+    .fixed_hz(60)
+    .start_scene(Level::default())
+    .build()
+    .run()
+}
+```
+
 ## CLI Commands
 
 | Command | Description |
@@ -73,32 +137,34 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 ## Core Features
 
 ### Architecture
-- **ECS** — Entity-Component-System with generational IDs and archetype storage
-- **Scene Management** — Stack-based scenes with transitions
-- **Event Bus** — Decoupled publish-subscribe communication
+- **ECS** — Ryo2D's ECS (built on `bevy_ecs`): queries, systems in named phases, resources, change detection
+- **Frame Loop** — Fixed-step gameplay with real, game and fixed clocks, render interpolation, UI before gameplay
+- **Transforms** — Local `Transform` and engine-written `GlobalTransform` with parent/child hierarchy
+- **Scene Management** — Stack-based scenes with transitions and scene-owned systems
+- **Messages** — Typed messages between systems and scenes
 - **Object Pooling** — Pre-allocated entity pools for bullets, particles, effects
 - **State Machines** — Generic FSM and state stack for player states, AI, menus
 
 ### Rendering
 - **Sprites** — GPU-batched rendering with z-ordering and per-sprite shaders
-- **Animation** — Sprite sheets, state machine controllers, 24 easing functions
+- **Animation** — Sprite sheets and state machine controllers
 - **Skeletal Animation** — Bone hierarchies, per-bone keyframe tracks, crossfade blending, FSM controllers
-- **Tweening** — Transform tweens, generic property tweens, sequences, 24 easing functions
+- **Tweening** — Transform tweens, generic property tweens, sequences, 25 easing functions
 - **Parallax** — Layered scrolling backgrounds with infinite scroll
 - **2D Lighting** — Point lights, spotlights, volumetric effects, atmospheric scattering
 - **Shadow System** — Hard shadows, soft shadows, ray-marched shadows, drop/blob/contact shadows, ambient occlusion
 - **Trails** — Motion path rendering with fade and taper effects
 - **Particles** — GPU-batched particle system with emitters, attractors, and presets
-- **Raycasting** — GPU-accelerated pseudo-3D rendering (Wolfenstein/Build engine style) with dynamic lighting, smooth lightmaps, and sprite illumination
-- **Post-Processing** — Shader pipeline (CRT, vignette, chromatic aberration, etc.)
+- **Post-Processing** — Shader pipeline (bloom, CRT, vignette, chromatic aberration, etc.)
+- **Render Pipeline** — Pass-based; games toggle built-in passes or add their own
 
 ### Physics & Collision
 - **Rapier2D** — Full physics simulation with rigid bodies
-- **Collision Shapes** — AABB and circle colliders with trigger support
-- **Collision Events** — Started/stopped events for gameplay logic
+- **Collision Shapes** — Box and circle colliders with trigger support
+- **Collision Messages** — Started/stopped messages for gameplay logic
 
 ### Camera
-- **2D Camera** — Follow targets, zoom, rotation, bounds
+- **2D Camera** — Follow targets, zoom, bounds clamping, screen/world conversion
 - **Screen Shake** — Trauma-based shake with smooth noise
 
 ### Input
@@ -108,6 +174,7 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 ### Game Feel
 - **Time Scale** — Slow-motion and fast-forward effects
 - **Hitstop** — Freeze frames for impact feedback
+- **Juice** — Knockback, squash and stretch, camera shake
 
 ### Audio
 - **Kira Backend** — Music and sound effects with volume control
@@ -120,8 +187,8 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 
 ### Gameplay Systems
 - **Pathfinding** — A* with nav agents and grid-based navigation
-- **Procedural Generation** — BSP dungeons, cellular automata, WFC, noise
-- **Inventory System** — Item registry, slot-based containers, equipment, loot tables
+- **Procedural Generation** — BSP dungeons, cellular automata, WFC, noise (optional `ryo2d-procgen` crate)
+- **Inventory System** — Item registry, slot-based containers, equipment, loot tables (optional `ryo2d-inventory` crate)
 
 ### Networking
 - **Client-Server** — Dedicated and listen server modes
@@ -131,12 +198,14 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 - **Netplay Testing** — `ryo2d netplay` for quick multiplayer testing
 
 ### Persistence
-- **Save System** — 3-tier saves (system, world, game) with compression
+- **Save System** — Player settings plus compressed game save slots
 - **Configuration** — TOML-based project settings, JSON user preferences
 
 ### Development Tools
 - **Hot Reload** — Asset changes apply without restart
 - **Debug Visualization** — Colliders, velocities, origins, FPS overlay
+- **Developer Console** — Built-in and game commands
+- **Headless Runs** — Scripted input and frame capture without a window, for tests and agents
 - **Profiler Window** — Real-time flamegraph with CPU/GPU timing (requires `--features profiler`)
 - **Logger Window** — Live log viewer with level/context filtering
 
@@ -144,7 +213,7 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 
 | Crate | Purpose |
 |-------|---------|
-| [hecs](https://crates.io/crates/hecs) | Entity-Component-System |
+| [bevy_ecs](https://crates.io/crates/bevy_ecs) | Entity-Component-System |
 | [rapier2d](https://crates.io/crates/rapier2d) | 2D Physics |
 | [wgpu](https://crates.io/crates/wgpu) | GPU Rendering |
 | [winit](https://crates.io/crates/winit) | Windowing |
@@ -155,7 +224,7 @@ This optimizes dependencies (physics, rendering) while keeping your game code fa
 ## Documentation
 
 - **API reference:** rustdoc, `cargo doc --open`
-- **Using the engine:** the agent skills in `src/cli/skills/` (`ryo-api` is the full API reference), shipped with `ryo2d` and kept current with the code
+- **Using the engine:** the agent skills in `.claude/skills/` (`ryo-api` is the full API reference), shipped with `ryo2d` and kept current with the code
 - **Design notes:** a nested `AGENTS.md` in each module, and the specs in `docs/specs/`
 - **Big picture:** `docs/architecture/` (engine overview, network architecture)
 

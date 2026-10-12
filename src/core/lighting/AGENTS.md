@@ -8,7 +8,11 @@ The lighting system uses a **deferred lighting approach**:
 2. **Shadow Pass**: occluder geometry is projected away from lights and subtracted from the light buffer (reverse-subtract blending).
 3. **Composition Pass**: `final_color = base_color × (ambient + light_buffer)`, plus atmosphere scattering/fog.
 
-Ambient and atmosphere state lives on the `LightingRenderer` (`ctx.lighting`, `None` when lighting is disabled). Set it with `set_ambient(AmbientLight::...)`, not as an ECS resource. UI is unaffected by lighting unless `set_ui_affected_by_lighting(true)`.
+Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()`): `set_ambient(AmbientLight::...)`, `set_atmosphere(..)` and `set_enabled(bool)`. The `LightingRenderer` is engine-owned; `present_frame` copies the settings into it before each frame. Volumetric light is per light (`Light2D::set_volumetric`); there is no global switch.
+
+- **When lighting runs:** with no override (`enabled()` is `None`), lighting turns on once any `Light2D` exists and then stays on, also after the lights are gone and across scene changes. `set_enabled(true)` gives a dark scene before any light exists; `set_enabled(false)` forces it off.
+- `SceneCleanup::LIGHTING` resets the settings (ambient, atmosphere, the override) to their defaults; it does not switch off a renderer that a light already turned on.
+- The UI is never lit: it is composited after lighting and post-processing.
 
 ## Limits
 
@@ -19,8 +23,8 @@ Ambient and atmosphere state lives on the `LightingRenderer` (`ctx.lighting`, `N
 ## Conventions
 
 - **Artist-friendly units**: colors use 0-255 RGB, not 0.0-1.0. Radius is in pixels.
-- **Transform required**: lights and occluders are positioned by their entity's `Transform`.
-- **Coordinate space**: light positions are world space. Occluder vertices are local space (relative to the transform), CCW winding.
+- **Placed by `GlobalTransform`**: lights draw at their entity's world translation; occluders use its world translation and rotation (not its scale). Both are drawn at the true transform, never interpolated.
+- **Coordinate space**: occluder vertices are local space (relative to the entity), CCW winding.
 
 ## Notes for AI Agents
 

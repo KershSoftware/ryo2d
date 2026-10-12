@@ -2,7 +2,7 @@
 name: ryo-console
 description: Developer console system - commands, registration, debugging overlays.
 metadata:
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # Ryo2D Developer Console
@@ -11,11 +11,13 @@ You help users work with the Valve-style developer console system, including reg
 
 ## Overview
 
-The developer console is a draggable, resizable overlay toggled with the tilde (`~`) key. It provides:
+The developer console is a draggable, resizable overlay toggled with the backtick key (`KeyCode::Backquote`, the `~` key on US layouts). It provides:
 - Runtime command execution
 - Debug toggles (FPS, colliders, timing stats)
 - Custom game commands with scoped handlers
 - Scrollable output with word wrapping
+
+While it is open and focused it takes the keyboard (the game sees no keys); an unfocused console stays open while the game plays. The mouse over its window never reaches the game or the scene UI. Commands run once per frame before the scene UI and the fixed steps, on real time, so they work while the game is paused.
 
 ## Enabling the Console
 
@@ -41,7 +43,7 @@ console = true  # Works in both debug and release builds
 | `debug:origins` | F4 | Toggle entity origin points |
 | `debug:capture [path]` | F12 | Save the next frame as a PNG |
 | `system:version` | | Show engine and game version |
-| `system:timescale <n>` | | Set game time scale (0.0-10.0) |
+| `system:timescale <n>` | | Set the game clock's speed (`ctx.time.game.speed()`, 0.0-10.0) |
 | `system:ip:lan` / `system:ip:wan` | | Show local / public IP address |
 
 Category commands list related commands:
@@ -59,21 +61,22 @@ Declare game-wide commands on the engine builder (recommended):
 
 ```rust
 EngineBuilder::new()
-    .title("My Game")
-    .with_console_commands(|cmd| {
-        cmd.declare("game:reset", "Reset the game to initial state");
-        cmd.declare_verbose(
-            "game:godmode",
-            "Toggle invincibility",
-            "Makes the player immune to all damage until toggled off.",
-        );
-    })
-    .start_scene(MenuScene::new())
-    .build()
-    .run()?;
+  .title("My Game")
+  .with_console_commands(|cmd| {
+    cmd.declare("game:reset", "Reset the game to initial state");
+    cmd.declare_verbose(
+      "game:godmode",
+      "Toggle invincibility",
+      "Makes the player immune to all damage until toggled off.",
+    );
+    cmd.remove_builtin("system:ip:wan"); // drop a built-in the game does not want
+  })
+  .start_scene(MenuScene::new())
+  .build()
+  .run()?;
 ```
 
-Scene-specific commands can also be declared via `ctx.declare_console_command()` in `on_enter`.
+Scene-specific commands can also be declared in `on_enter` with `ctx.console().declare(name, description, verbose)` (`verbose` is an `Option`, e.g. `None::<&str>`). Declarations are global and idempotent.
 
 Parameters:
 - `name` - Command name (use `game:` prefix for game commands)
@@ -82,23 +85,25 @@ Parameters:
 
 ### Phase 2: Registration (Scoped)
 
-Register handlers where they make sense (e.g., in GameScene):
+Register handlers where they make sense (e.g., in GameScene). `ctx.console()` returns a `ConsoleScope` tied to the calling scene; `register` returns `false` if the command was never declared:
 
 ```rust
 fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // Register handler - command becomes active
-    ctx.register_console_command("game:reset", |args, cmd_ctx| {
-        cmd_ctx.console.print_system("Resetting game...");
-        // Trigger reset logic
-        shared::request_reset();
-        CommandResult::Ok
-    });
+  // Register handler - command becomes active
+  ctx.console().register("game:reset", |_args, cmd_ctx| {
+    cmd_ctx.console.print_system("Resetting game...");
+    // Trigger reset logic
+    shared::request_reset();
+    CommandResult::Ok
+  });
 }
 ```
 
+`ctx.console().remove_builtin(name)` removes a built-in command at runtime.
+
 ### Automatic Cleanup
 
-When a scene exits, all handlers registered in that scene's scope are automatically removed. The command reverts to "noop" state - it still appears in help but prints:
+When a scene leaves the stack, every handler it registered is removed (each scene instance has its own scope, so a pushed overlay's handlers go with the overlay). The command reverts to "noop" state - it still appears in help but prints:
 
 ```
 Command 'game:reset' has no effect in the current context
@@ -124,7 +129,7 @@ type CommandFn = Box<dyn Fn(&[&str], &mut CommandContext) -> CommandResult + Sen
 | `debug_config` | `&mut DebugConfig` | Toggle debug flags |
 | `quit_requested` | `bool` | Set to request game exit |
 | `capture_requested` | `Option<CaptureTarget>` | Set to request a frame capture |
-| `time_scale` | `&mut f32` | Adjust game speed |
+| `time_scale` | `&mut f32` | The game clock's speed; written back after the command |
 | `commands` | `Vec<CommandInfo>` | List of all commands |
 | `game_name` | `Option<String>` | Game name from Ryo.toml |
 | `game_version` | `Option<String>` | Game version from Ryo.toml |
@@ -133,9 +138,9 @@ type CommandFn = Box<dyn Fn(&[&str], &mut CommandContext) -> CommandResult + Sen
 
 ```rust
 pub enum CommandResult {
-    Ok,                    // Command succeeded
-    Error(String),         // Command failed with message
-    Quit,                  // Request game exit
+  Ok,            // Command succeeded
+  Error(String), // Command failed with message
+  Quit,          // Request game exit
 }
 ```
 
@@ -156,41 +161,43 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static RESET_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub fn request_reset() {
-    RESET_REQUESTED.store(true, Ordering::SeqCst);
+  RESET_REQUESTED.store(true, Ordering::SeqCst);
 }
 
 pub fn take_reset_request() -> bool {
-    RESET_REQUESTED.swap(false, Ordering::SeqCst)
+  RESET_REQUESTED.swap(false, Ordering::SeqCst)
 }
 
 // main.rs - Declare command at engine level
 EngineBuilder::new()
-    .with_console_commands(|cmd| {
-        cmd.declare("game:reset", "Reset the game to initial state");
-    })
-    .start_scene(MenuScene::new())
-    .build()
-    .run()?;
+  .with_console_commands(|cmd| {
+    cmd.declare("game:reset", "Reset the game to initial state");
+  })
+  .start_scene(MenuScene::new())
+  .build()
+  .run()?;
 
 // game.rs - Register handler
 impl Scene for GameScene {
-    fn on_enter(&mut self, ctx: &mut SceneContext) {
-        ctx.register_console_command("game:reset", |_args, cmd_ctx| {
-            cmd_ctx.console.print_system("Resetting game...");
-            shared::request_reset();
-            CommandResult::Ok
-        });
-    }
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.console().register("game:reset", |_args, cmd_ctx| {
+      cmd_ctx.console.print_system("Resetting game...");
+      shared::request_reset();
+      CommandResult::Ok
+    });
+  }
 
-    fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-        // Check for reset request
-        if shared::take_reset_request() {
-            return SceneAction::Switch(Box::new(GameScene::new()));
-        }
-        SceneAction::Continue
+  fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
+    // Check for reset request
+    if shared::take_reset_request() {
+      return SceneAction::Switch(Box::new(GameScene::new()));
     }
+    SceneAction::Continue
+  }
 }
 ```
+
+Handlers are `Fn(&[&str], &mut CommandContext) -> CommandResult + Send + Sync + 'static` and cannot reach the world, which is why the example passes the request through an atomic.
 
 ## Console UI Features
 
@@ -252,18 +259,20 @@ src/core/console/
 - Command history (max 100)
 - Scroll offset, word wrapping
 
-**CommandRegistry** - Command management:
+**CommandRegistry** - Command management, a resource in the world:
 - `builtins: HashMap<&'static str, BuiltinCommand>` - Engine commands
 - `declared: HashMap<String, DeclaredCommand>` - Game commands
-- Scope-based handler cleanup
+- Scope-based handler cleanup (the scene manager calls `clear_scope` when a scene leaves the stack)
+
+**ConsoleScope** - what `ctx.console()` returns: `declare`, `register` and `remove_builtin` against the registry, with the calling scene's scope id
 
 **DeclaredCommand** - Game command with optional handler:
 ```rust
 pub struct DeclaredCommand {
-    pub name: String,
-    pub description: String,
-    pub verbose_description: Option<String>,
-    pub handler: Option<(u64, CommandFn)>,  // (scope_id, handler)
+  pub name: String,
+  pub description: String,
+  pub verbose_description: Option<String>,
+  pub handler: Option<(u64, CommandFn)>, // (scope_id, handler)
 }
 ```
 

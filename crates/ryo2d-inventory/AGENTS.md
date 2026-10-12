@@ -1,8 +1,25 @@
-# AGENTS.md - Inventory & Item System
+# AGENTS.md - ryo2d-inventory
 
-## Overview
+Items, inventories, equipment and loot tables for Ryo2D, as an optional crate on top of `ryo2d`. The core never depends on it. The crate's rustdoc (`src/lib.rs`) is the reference; there is no skill.
 
-Items use a hybrid value/entity model: lightweight `ItemStack` values inside inventories and equipment, full ECS entities (`Transform` + `ItemDrop`) only when dropped in the world.
+## Using It
+
+```toml
+[dependencies]
+ryo2d = { path = "<ryo2d checkout>" }
+ryo2d-inventory = { path = "<ryo2d checkout>/crates/ryo2d-inventory" }
+```
+
+```rust
+use ryo2d::prelude::*;
+use ryo2d_inventory::prelude::*;
+```
+
+Inside this repository a demo uses `{ path = "../../../crates/ryo2d-inventory" }`. Its errors (`InventoryError`, `InventoryResult`) live here, not in `ryo2d`'s `EngineError`.
+
+## Model
+
+Items use a hybrid value/entity model: lightweight `ItemStack` values inside inventories and equipment, full ECS entities (`Transform` + `ItemDrop`) only when dropped in the world (`spawn_item_drop(world, stack, (x, y))`, `pickup_item(world, entity)`).
 
 ## Tips for AI Agents
 

@@ -1,172 +1,170 @@
 ---
 name: ryo-lighting
-description: 2D lighting system - lights, shadows, ambient occlusion, volumetric effects.
+description: 2D lighting - Light2D and LightOccluder2D entities, ctx.lighting() for ambient, atmosphere and on/off, shadows, volumetric beams, sprite shadows and ambient occlusion.
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
 # Ryo2D Lighting Specialist
 
-You help developers implement lighting and shadow effects.
+You help developers light scenes and cast shadows. Complete signatures are in `ryo-api`.
 
 ## Resources
 
-- **Lighting**: `src/core/lighting/`
-- **Shadow Shaders**: `src/core/shaders/core/shadow.wgsl`, `raymarch_shadow.wgsl`
-- **AO Shader**: `src/core/shaders/post-process/ambient_occlusion.wgsl`
-- **Demo**: `examples/demos/shadows/`
+- **Lighting**: `src/core/lighting/` (`settings.rs` is what scenes control)
+- **Shaders**: `src/core/shaders/core/light.wgsl`, `shadow.wgsl`, `raymarch_shadow.wgsl`; `post-process/lighting.wgsl`, `god_rays.wgsl`, `ambient_occlusion.wgsl`
+- **Demos**: `examples/demos/lighting/`, `lighting-volumetric/`, `shadows/`
 
-## Light Types
+## The Model
 
-### Point Light
+- Lights and occluders are components: `Light2D` and `LightOccluder2D` on entities with a `Transform`. Despawn or disable the entity to remove them.
+- What the scene controls lives in the `LightingSettings` resource, reached with `ctx.lighting()` (a `Mut<LightingSettings>`): ambient light, atmosphere, and an optional on/off override. The lighting renderer itself is engine-owned; there is no renderer access from game code.
+- Lighting is **automatic**: it turns on the first frame any `Light2D` exists and stays on. `ctx.lighting().set_enabled(true)` forces it on (a dark scene before any light exists); `set_enabled(false)` forces it off. `enabled()` returns the override (`None` when automatic).
+- Once on, lighting stays on across scene changes, even after `SceneCleanup::LIGHTING` resets the settings to their defaults (dim grey ambient, 0.15). A later scene that wants to be fully lit calls `ctx.lighting().set_enabled(false)` in `on_enter`.
+- The UI is never lit: it is composited after lighting and post-processing.
+
 ```rust
-Light2D::point(Color::WHITE, 200.0)
-    .with_intensity(1.3)
-    .with_falloff(2.0)
+fn on_enter(&mut self, ctx: &mut SceneContext) {
+  let mut lighting = ctx.lighting();
+  lighting.set_ambient(AmbientLight::night());
+  lighting.set_atmosphere(Atmosphere::hazy());
 
-// Presets
-Light2D::torch(150.0)       // Warm orange
-Light2D::moonlight(150.0)   // Cool blue
-Light2D::lamp(150.0)        // Bright white
-Light2D::warning(100.0)     // Red
-Light2D::magic(120.0, color) // Custom color, soft falloff
+  ctx.world.spawn((Transform::from_xy(400.0, 300.0), Light2D::torch(180.0).with_shadows()));
+  ctx.world.spawn((Transform::from_xy(500.0, 320.0), LightOccluder2D::rect(64.0, 64.0)));
+}
 ```
 
-### Spotlight
-```rust
-Light2D::spot(Color::WHITE, 200.0, 45.0, 270.0)  // color, radius, cone angle (degrees), direction (degrees)
-    .with_intensity(1.5)
-    .with_soft_shadows(0.3)
+Bind `let mut lighting = ctx.lighting();` for several calls; it borrows `ctx` until its last use.
 
-// Preset
+## Lights
+
+```rust
+// Point: color, radius (px)
+Light2D::point(Color::WHITE, 200.0).with_intensity(1.3).with_falloff(2.0)
+
+// Spot: color, radius, cone angle (degrees), direction (degrees)
+Light2D::spot(Color::WHITE, 200.0, 45.0, 270.0).with_intensity(1.5)
+
+// Presets
+Light2D::torch(150.0)            // warm orange
+Light2D::moonlight(150.0)        // cool blue
+Light2D::lamp(150.0)             // bright white
+Light2D::warning(100.0)          // red
+Light2D::magic(120.0, color)     // custom colour, soft falloff
 Light2D::flashlight(200.0, 270.0)
 ```
 
-## Shadow Types
+Change a light at runtime through a query or `get_mut`: `set_color`, `set_radius`, `set_intensity`, `set_direction` (spot), `set_cast_shadows`, `set_shadow_softness`, `set_shadow_color`, `set_raymarch_samples`, `set_volumetric`.
 
-### Hard Shadows (Shadow Volumes)
 ```rust
-Light2D::point(color, radius).with_shadows()
-```
-Projects occluder geometry away from light.
-
-### Soft Shadows
-```rust
-Light2D::point(color, radius).with_soft_shadows(0.5)  // softness 0.0-1.0
+if let Some(mut light) = ctx.world.get_mut::<Light2D>(self.torch) {
+  light.set_intensity(1.0 + (ctx.time.game.elapsed() * 8.0).sin() * 0.1);
+}
 ```
 
-### Colored Shadows
+Lights are placed at their entity's `GlobalTransform` translation (a child entity follows its parent) and are not interpolated.
+
+## Shadows
+
 ```rust
-Light2D::point(color, radius)
-    .with_shadows()
-    .with_shadow_color(Color::new(50, 30, 80, 255))
+Light2D::point(color, radius).with_shadows()                 // hard (shadow volumes)
+Light2D::point(color, radius).with_soft_shadows(0.5)         // softness 0.0-1.0
+Light2D::point(color, radius).with_shadows().with_shadow_color(Color::new(50, 30, 80, 255))
+Light2D::point(color, radius).with_raymarched_shadows(32)    // per-pixel, samples 4-64
 ```
 
-### Ray-marched Shadows
-```rust
-Light2D::point(color, radius).with_raymarched_shadows(32)  // samples 4-64
-```
-Per-pixel ray casting. Higher samples = better quality, slower.
-
-## Sprite Shadows
-
-### Drop Shadow
-```rust
-Renderable::sprite(h).with_drop_shadow(DropShadow::below(8.0))
-Renderable::sprite(h).with_drop_shadow(DropShadow::diagonal(6.0))
-Renderable::sprite(h).with_drop_shadow(DropShadow::squashed(12.0, 0.3))
-
-// Custom
-DropShadow::new().offset(4.0, 8.0).color(Color::new(0, 0, 0, 100)).scale(1.0, 0.6)
-```
-
-### Blob Shadow
-```rust
-Renderable::sprite(h).with_blob_shadow(
-    BlobShadow::ellipse(20.0, 10.0)
-        .offset(48.0)
-        .with_height_scale(true)
-        .max_height(150.0)
-)
-```
-
-### Contact Shadow
-```rust
-Renderable::sprite(h).with_contact_shadow(
-    ContactShadow::new().radius(8.0).intensity(0.6).falloff(2.0)
-)
-```
-
-## Ambient Occlusion
-
-Screen-space post-process:
+## Occluders
 
 ```rust
-ctx.effects.set_ambient_occlusion(0.3, 16.0);  // intensity, radius
-ctx.effects.set_ambient_occlusion_custom(0.3, 16.0, 0.05);  // + bias
-ctx.effects.disable_ambient_occlusion();
-```
-
-## Light Occluders
-
-```rust
-LightOccluder2D::rect(width, height)
+LightOccluder2D::rect(width, height)                  // centred on the entity
+LightOccluder2D::rect_offset(x, y, width, height)
 LightOccluder2D::circle(radius, segments)
-LightOccluder2D::polygon(vertices)  // CCW winding
+LightOccluder2D::line(start, end, thickness)          // Vec2 points
+LightOccluder2D::polygon(vec![Vec2::new(0.0, 0.0), ..])   // CCW winding
 ```
+
+Vertices are local to the entity and follow its `GlobalTransform` (rotation included). `with_enabled(false)` / `set_enabled(..)` turns one off without removing it.
 
 ## Ambient Light
 
 ```rust
-// `lighting` is `ctx.lighting.as_mut()` (None when lighting is disabled)
-lighting.set_ambient(AmbientLight::new(Color::new(20, 20, 40, 255), 0.15));
+ctx.lighting().set_ambient(AmbientLight::new(Color::new(20, 20, 40, 255), 0.15));
+let current = *ctx.lighting().ambient();
 
-// Presets
-AmbientLight::dark()     // 0 intensity
-AmbientLight::night()    // Dim blue
-AmbientLight::moonlit()  // Blue tint
-AmbientLight::indoor()   // Warm dim
-AmbientLight::daylight() // Bright
-AmbientLight::sunset()   // Warm orange
+AmbientLight::dark()      // 0 intensity: pitch-black shadows
+AmbientLight::night()
+AmbientLight::moonlit()
+AmbientLight::indoor()
+AmbientLight::daylight()
+AmbientLight::sunset()
+AmbientLight::with_intensity(0.25)   // default colour
 ```
 
-## Volumetric Effects
+## Volumetric Light and Atmosphere
+
+Volumetric beams are per light:
 
 ```rust
+Light2D::flashlight(250.0, 0.0).with_volumetric()              // default beam
+Light2D::point(color, radius).with_volumetric_and_god_rays()
 Light2D::point(color, radius)
-    .with_volumetric_settings(VolumetricSettings::new(0.3, 0.5, 0.2))  // intensity, density, scattering
-    .with_god_rays()
+  .with_volumetric_settings(VolumetricSettings::new(0.3, 0.5, 0.2).with_god_rays())   // intensity, density, scattering
+// Presets: VolumetricSettings::enabled(), subtle_beam(), strong_beam(), flashlight(), god_rays_only()
+```
 
-// Or defaults: .with_volumetric() (beam), .with_volumetric_and_god_rays()
+Atmosphere (fog, scattering, scene-wide god rays) is a setting:
 
-lighting.set_atmosphere(
-    Atmosphere::new(0.3, Color::new(100, 120, 150, 255))  // density, fog color
-        .with_scattering(0.2)
-        .with_god_rays(),
+```rust
+ctx.lighting().set_atmosphere(
+  Atmosphere::new(0.3, Color::new(100, 120, 150, 255))   // density, fog colour
+    .with_scattering(0.2)
+    .with_god_rays_quality(GodRaysQuality::Medium),
 );
-// Presets: Atmosphere::hazy() / dusty() / foggy() / smoky() / underwater()
+// Presets: Atmosphere::clear(), hazy(), dusty(), foggy(), smoky(), underwater(); .with_god_rays()
 ```
 
-## Architecture
+## Sprite Shadows
+
+Drawn with the sprite, independent of lights:
+
+```rust
+Renderable::sprite(handle).with_drop_shadow(DropShadow::below(8.0))
+Renderable::sprite(handle).with_drop_shadow(DropShadow::diagonal(6.0))
+Renderable::sprite(handle).with_drop_shadow(DropShadow::squashed(12.0, 0.3))
+Renderable::sprite(handle).with_drop_shadow(
+  DropShadow::new().offset(4.0, 8.0).color(Color::new(0, 0, 0, 100)).scale(1.0, 0.6),
+)
+Renderable::sprite(handle).with_blob_shadow(
+  BlobShadow::ellipse(20.0, 10.0).offset(48.0).with_height_scale(true).max_height(150.0),
+)
+Renderable::sprite(handle).with_contact_shadow(ContactShadow::new().radius(8.0).intensity(0.6).falloff(2.0))
+```
+
+## Ambient Occlusion
+
+A screen-space post-process on `EffectsManager`:
+
+```rust
+ctx.effects().set_ambient_occlusion(0.3, 16.0);              // intensity, radius
+ctx.effects().set_ambient_occlusion_custom(0.3, 16.0, 0.05); // + bias
+ctx.effects().disable_ambient_occlusion();
+```
+
+## What Gets Lit
+
+The world (entities, `Scene::render` GPU sprites, trails and lines) is drawn first and lit. A `Trail2D` or `Line2D` with `.with_lighting(false)` draws at full brightness over the lit scene (lasers, magic); post-processing still applies. The UI is never lit.
+
+## Pipeline
 
 ```
-1. Light Accumulation Pass - Lights render to buffer (additive)
-2. Shadow Pass - Occluders subtract from buffer (reverse-subtract)
-3. Composition Pass - final = scene × (ambient + light_buffer)
+1. Light accumulation: lights add into a light buffer
+2. Shadows: occluder geometry projected away from each light, subtracted from the buffer
+3. Composition: final = scene x (ambient + light buffer), plus atmosphere
 ```
 
 ## Performance
 
-- Keep lights under 20-30
-- Disable shadows on unimportant lights
-- Simple occluder shapes are faster
-- Ray-march: use 16-32 samples, 64 only when needed
-- AO: lower radius = faster
-
-## Tips
-
-- Lights need `Transform` component for position
-- The whole world (entities, `render_gpu` sprites, trails and lines, one z-sorted list) is drawn before lighting and so is lit; trails and lines render before lighting, so lighting (and shadows) apply to them. `.with_lighting(false)` on a `Trail2D`/`Line2D` draws it at full brightness on top of the lit scene instead (glowing lasers, magic); post-processing still applies
-- Occluder vertices are local space, transformed by entity's Transform
-- Shadow intensity multiplied by 10x to ensure full light subtraction
-- Ambient light fills shadowed areas - set to 0 for pitch black shadows
+- At most 256 lights draw (one instanced call); extra lights are dropped and there is no viewport culling.
+- Ray-marched shadows consider at most 64 occluder edges; use 16-32 samples, 64 only when needed.
+- Disable shadows on unimportant lights; simple occluder shapes are cheaper.
+- Lower AO radius is faster.

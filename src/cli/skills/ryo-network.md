@@ -164,7 +164,8 @@ while let Some(data) = client.receive(Channel::Unreliable) {
 ```rust
 use serde::{Serialize, Deserialize};
 
-#[derive(Clone, Serialize, Deserialize)]
+// A replicated type is a component: received values are inserted on the entity
+#[derive(Component, Clone, Serialize, Deserialize)]
 struct PlayerPosition {
     x: f32,
     y: f32,
@@ -201,19 +202,19 @@ let entity = replication.spawn_networked(
     &mut world,
     NetworkEntityBuilder::new()
         .client_owned(client_id) // Client controls this entity
-        .with_component(Transform::new(x, y))
+        .with_component(Transform::from_xy(x, y))
         .with_component(PlayerPosition { x, y }),
 );
 
 // Non-replicated components (sprites, colliders) are added as usual
-// with world.add_component(entity, ...)
+// with world.entity_mut(entity).insert(..)
 
 // When a client connects, bring it up to date
 replication.register_client(client_id);
 replication.send_full_state(&world, &mut server, client_id);
 ```
 
-Spawn messages (and full-state syncs) carry the current value of every registered component the entity has when `broadcast_updates()` runs: `with_component` values are there from the start, and replicated components added later with `add_component` must be added before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`. Changes are re-sent to each client until it acknowledges them (`process_incoming()` acknowledges automatically), so a lost packet is recovered on the next broadcast. Changes go out in size-limited batches (`MAX_BATCH_BYTES`, never-sent components first), so a large backlog arrives over several broadcasts (about 16 KB of changes per client per `broadcast_updates()`); a new client starts from its full-state sync (call `send_full_state` on connect, as shown above). As a safety net the server also re-sends every replicated component's current value every 300 `broadcast_updates()` calls by default (about 5 s; tune with `replication.set_refresh_interval(n)`, `0` turns it off), spread over several broadcasts in messages of at most `MAX_REFRESH_BYTES`.
+Spawn messages (and full-state syncs) carry the current value of every registered component the entity has when `broadcast_updates()` runs: `with_component` values are there from the start, and replicated components inserted later must be added before the next `broadcast_updates()`. Clients then never see an entity without its initial state. Later changes are sent as unreliable deltas, only for components you `mark_dirty`. Changes are re-sent to each client until it acknowledges them (`process_incoming()` acknowledges automatically), so a lost packet is recovered on the next broadcast. Changes go out in size-limited batches (`MAX_BATCH_BYTES`, never-sent components first), so a large backlog arrives over several broadcasts (about 16 KB of changes per client per `broadcast_updates()`); a new client starts from its full-state sync (call `send_full_state` on connect, as shown above). As a safety net the server also re-sends every replicated component's current value every 300 `broadcast_updates()` calls by default (about 5 s; tune with `replication.set_refresh_interval(n)`, `0` turns it off), spread over several broadcasts in messages of at most `MAX_REFRESH_BYTES`.
 
 ### 4. Broadcast Updates
 
@@ -351,7 +352,7 @@ fn broadcast_positions(&mut self) {
     let mut updates = Vec::new();
     for (&client_id, &entity) in &self.players {
         if let Some(t) = self.world.get::<Transform>(entity) {
-            updates.push(PositionUpdate { client_id, x: t.x, y: t.y });
+            updates.push(PositionUpdate { client_id, x: t.translation.x, y: t.translation.y });
         }
     }
 
@@ -367,8 +368,7 @@ while let Some(data) = client.receive(Channel::Unreliable) {
     for update in updates {
         if let Some(entity) = self.players.get(&update.client_id) {
             if let Some(mut t) = world.get_mut::<Transform>(*entity) {
-                t.x = update.x;
-                t.y = update.y;
+                t.translation = Vec2::new(update.x, update.y);
             }
         }
     }

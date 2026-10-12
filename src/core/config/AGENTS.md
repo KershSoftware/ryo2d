@@ -4,7 +4,7 @@ See skill `ryo-config-save` for Ryo.toml layout and the save API.
 
 ## Configuration Precedence
 
-`EngineBuilder::resolve_in` in `engine.rs` calls `resolve::resolve_settings` (pure, unit-tested). Lowest to highest:
+`EngineBuilder::resolve_in` (`engine/mod.rs`) calls `resolve::resolve_settings` (pure, unit-tested). Lowest to highest:
 1. Engine defaults (`ResolvedSettings::defaults`)
 2. Project values: Ryo.toml (dev) or `RYO_EMBED_*` values from `ryo2d build` (release) - `ProjectLayer`
 3. Builder calls - `BuilderOverrides`

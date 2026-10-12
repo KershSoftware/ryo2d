@@ -1,186 +1,173 @@
 ---
 name: ryo-engine-dev
-description: Working on the Ryo2D engine - architecture, systems, public API.
+description: Working on the Ryo2D engine - the frame's phases, module map, resources, public API, crates and testing.
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
 # Ryo2D Engine Developer
 
-You help developers work on the Ryo2D engine itself.
+You help developers work on the Ryo2D engine itself (games use `ryo-game-dev`).
 
-## Resources
+## Read First
 
-- **Project Overview**: `AGENTS.md` (root)
-- **Core Modules**: `src/core/AGENTS.md`
-- **ECS Design**: `src/core/ecs/AGENTS.md`
-- **UI Module**: `src/core/ui/AGENTS.md`
-- **CLI Design**: `src/cli/AGENTS.md`
+| Doc | Covers |
+|-----|--------|
+| `AGENTS.md` (root) | Workspace layout, dev scripts, conventions, commit rules |
+| `src/core/AGENTS.md` | Cross-cutting design, time, input, cursor and window requests |
+| `src/core/ecs/AGENTS.md` | Phases and sets, resource-scope rule, transforms, interpolation, pooling, messages |
+| `src/core/systems/AGENTS.md` | Built-in systems and how to add one |
+| `src/core/*/AGENTS.md` | Each module's conventions and decisions (read the nearest one) |
+| `src/cli/AGENTS.md` | The `ryo2d` command and the embedded skills |
+| `docs/architecture/overview.md` | The big picture |
+| Skills `ryo-ecs-internals`, `ryo-renderer`, `ryo-api` | ECS internals, the renderer, public signatures |
 
-## Architecture
+## The Frame
+
+`Engine::frame` (`engine/frame.rs`) runs once per redraw, and on the unfocused tick at the background rate. Windowed and headless runs use the same function.
 
 ```
-User's Scene (Scene trait)
-         |
-         v
-    SceneContext
-    +----------------------------------------------------+
-    | Resources | World | Camera | Input | Assets | ...  |
-    +----------------------------------------------------+
-         |
-         v
-    Engine Systems (engine.rs update)
-    Animation -> Tweens -> Skeleton -> Knockback -> SquashStretch
-         -> Scene update -> Hierarchy -> Trails -> Physics (Rapier)
-         |
-         v
-    Frame render (render/, one pass per stage)
-    Clear -> World (entities, sprites, trails/lines, one z-sorted list; equal z: entities, sprites, trails/lines) -> Lighting
-         -> Unlit lines -> Transition -> Post-process effects -> UI -> Composite -> Present
+Engine::frame
+│
+├─ queue input        RYO_INPUT script, gamepads (gilrs), window events already queued
+├─ First              advance the clocks · publish Input · advance every message buffer
+│                     then the engine's debug keys consume their presses
+├─ PreUpdate          async asset loads, hot reload (AssetReloaded / AssetLoadFailed)
+│                     then the console (animation, input, commands)
+├─ UI pass            Scene::ui for visible scenes bottom-up, debug overlays, console;
+│                     consumption applied to Input; a SceneAction applies at once
+│                     (a scene change redraws the UI once so the new scene shows)
+├─ FixedUpdate × N    while the fixed clock holds a step; a quit ends the steps
+│   ├─ Snapshot       GlobalTransform → PreviousGlobalTransform
+│   ├─ Juice          animation, tweens, sequences, property tweens, knockback, squash, skeletons
+│   ├─ Scene          transitions, Scene::update (active scene and those under updates_below), action
+│   ├─ Game           the scenes' own FixedUpdate schedules
+│   ├─ Physics        register, unregister, sync to Rapier, step, sync back, collision messages
+│   ├─ Transforms     propagation
+│   └─ Trails         trail point recording
+├─ Update             UpdateSet::Game: the scenes' own Update schedules
+├─ PostUpdate         Transforms (propagation) → Camera (shake, real time) → Extract (timed effects)
+├─ render             present_frame (engine/extract.rs): Scene::render (GPU batches), queries
+│                     the world into the draw list, runs the RenderPipeline:
+│                     clear → world → lighting → unlit_world → transition → post_process
+│                     → ui → composite → capture
+└─ Last               physics registration bookkeeping, clear_trackers,
+                      check_change_ticks every 1024 frames
 ```
 
-The frame is drawn by the pass-based `RenderPipeline` (`render/`); see `src/core/render/AGENTS.md`.
+- Phases are `bevy_ecs` schedules owned by `EngineSchedules` (`schedule.rs`); sets are `FixedSet`, `UpdateSet`, `PostUpdateSet`. Every schedule uses the single-threaded executor.
+- The UI pass and render are not schedules; they are engine methods between phases.
+- Engine systems are registered in `register_engine_systems` (`engine/mod.rs`), `register_juice_systems` (`systems/mod.rs`) and `register_physics_systems` (`systems/physics.rs`). Games add theirs with `EngineBuilder::add_systems` or `SceneContext::add_systems`.
+- Three clocks (`time.rs`): `real` (wall), `game` (capped, scaled, pausable), `fixed` (constant steps fed by game time). Fixed-step code uses `time.fixed.timestep()`; real-time effects use `time.real`. Sprite shader globals carry game time in `x` and real time in `w`.
 
-## Module Organization
+## World and Engine State
+
+| In the world (resources) | Engine-owned (fields of `Engine`) |
+|--------------------------|-----------------------------------|
+| `Time`, `Input`, `Camera`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `TextureManager`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `RapierPhysicsWorld`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer and sprite/lighting/trail renderers, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
+| Non-send `SceneHost` (scene stack + Kira `Audio`), taken out by the scene systems while they run | |
+
+- `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
+- Scene callbacks get `Time`, `Input`, `Camera` and `AssetManager` as `SceneContext` fields, taken out of the world for the callback (`SceneContext::scoped`). Systems always see them as resources.
+- Per-frame requests from scenes to the window go through resources (`WindowRequest`, `CursorRequest`) applied in `about_to_wait` (`engine/window.rs`), never by borrowing the window during a callback.
+
+## Module Map (`src/core/`)
 
 | Module | Purpose |
 |--------|---------|
-| `engine.rs` | Game loop, window, EngineBuilder |
-| `game.rs` | GpuRenderContext, TimeControl, TimeInfo, WindowRequest |
-| `ecs/` | ECS (hecs wrapper), pooling, tweens |
-| `render/` | Pass-based render pipeline the engine draws every frame with |
-| `render/pipeline.rs` | RenderPipeline, pass execution |
-| `render/pass.rs` | RenderPass trait |
-| `render/passes/` | Built-in pass implementations (upload, clear, raycast, sprites, lighting, post-process, composite, ...) |
-| `graphics/` | wgpu renderer, GPU sprite batching, camera, sprite animation |
-| `physics/` | Rapier2D integration, colliders |
-| `systems/` | Per-frame engine systems (animation, tween, physics, ...) |
-| `asset/` | AssetManager, hot reload |
-| `audio.rs` | Kira audio |
-| `graphics/camera.rs` | 2D camera with shake |
-| `scene.rs` | Scene management |
-| `ui/` | Hybrid immediate/retained UI |
-| `lighting/` | 2D lighting system |
-| `trail/` | Motion trail rendering |
+| `engine/` | `Engine`, `EngineBuilder`, `EngineConfig`; `frame.rs` the loop, `extract.rs` world-to-draw-list and present, `window.rs` the winit handler |
+| `schedule.rs` | `Phase`, the sets, `EngineSchedules`, `SceneSchedules` |
+| `time.rs` | `Time` and the three clocks |
+| `input.rs`, `input_script.rs` | `Input` rebuilt each frame from `InputEvent`s; `RYO_INPUT` scripting |
+| `ecs/` | Kernel re-exports, `Transform`/`GlobalTransform`, propagation, interpolation, pooling, the engine's components |
+| `systems/` | The built-in systems (juice, physics, trails) |
+| `messages/` | Engine message types, registration, per-scene cursors |
+| `scene/` | `Scene`, `SceneAction`, `SceneContext`, `SceneManager`, cleanup |
+| `render/` | `RenderPipeline` of `RenderPass`es, the draw list, entity extraction |
+| `graphics/` | wgpu renderer, sprite GPU batching, camera, sprite animation, tiles, parallax, atlas, compositor |
+| `texture/` | `TextureManager`, `TextureContext` for game textures |
+| `shaders/` | Post-process effects (`EffectsManager`) and sprite shaders |
+| `lighting/` | 2D lights, occluders, `LightingSettings` |
+| `physics/` | Rapier integration, `RigidBody`, `Collider`, `RapierPhysicsWorld` |
+| `particles/`, `trail/`, `skeleton/`, `tilemap/`, `navigation/`, `state_machine/` | Feature modules |
+| `ui/` | Immediate-mode and retained UI, `UiContext` |
+| `asset/` | `AssetManager`, async loads, hot reload |
+| `audio.rs` | Kira audio (`Audio`, `AudioManager`) |
+| `config/` | `Ryo.toml` workspace, user preferences (`system.json`), saves |
+| `console/` | Developer console and commands |
+| `capture/` | Frame capture to PNG (`RYO_CAPTURE_*`) |
+| `testing/` | `HeadlessEngine`, `shared_gpu` |
+| `network/` | Client/server, replication, RPC (`ryo-network`) |
+| `windows/` | Dev tool windows (profiler, logger) |
+| `window.rs`, `cursor.rs` | Window modes and requests, cursor requests |
+| `profiler.rs`, `dev_log.rs`, `error.rs` | Puffin macros, logging, error types |
 
-## Adding Components
+## Workspace
 
-1. Define in `ecs/components.rs`:
-```rust
-#[derive(Debug, Clone)]
-pub struct Health {
-    pub current: f32,
-    pub max: f32,
-}
-```
+| Path | Rule |
+|------|------|
+| `src/lib.rs` | The prelude is the public surface; games use only `ryo2d::prelude::*` (plus `ryo2d::testing`) |
+| `crates/ryo2d-derive` | `#[derive(NetworkInput)]`, re-exported by `ryo2d` |
+| `crates/ryo2d-procgen`, `crates/ryo2d-inventory` | Optional crates on top of `ryo2d`, each with its own prelude and AGENTS.md |
+| `attic/` | Parked code outside the workspace, not compiled (the raycaster and its demo) |
+| `examples/demo-kit`, `examples/demos/*`, `examples/games/*` | The demo shell, feature demos, sample games |
 
-2. Export in `ecs/mod.rs`:
-```rust
-pub use components::Health;
-```
+Dependencies point toward the core: nothing in `src/` uses a crate in `crates/`, and the `ryo2d` prelude exports the core only. A feature that only some games need belongs in a crate.
 
-3. Add to prelude in `lib.rs` (if public):
-```rust
-pub use crate::core::ecs::Health;
-```
+## Public API
 
-## Adding Systems
+- Export from the prelude what games spawn, query, implement or store: components, `Scene`, handles, builders, message types. ECS items arrive through the `crate::core::ecs::*` glob, so anything `pub` in `ecs/mod.rs` is public.
+- Keep engine plumbing out: system functions, `SceneManager`, renderers, registration helpers.
+- Games never name `bevy_ecs`; it is re-exported (hidden) only so the derives resolve. New kernel types go through `ecs/kernel.rs`.
+- Rustdoc every public item; it is the API reference. The `ryo-api` skill mirrors the prelude.
+- No `unwrap()` in library code; return `Result` with the module's error type (`error.rs` re-exports them).
 
-```rust
-fn update_poison_system(world: &mut World, dt: f32) {
-    for (health, poison) in world.query_mut::<(&mut Health, &Poison)>() {
-        health.current -= poison.damage_per_second * dt;
-    }
-}
-```
+## Adding a Component or System
 
-Call in engine's update loop at appropriate point.
+See `ryo-ecs-internals` and `src/core/systems/AGENTS.md`. In short: derive `Component`, export it, write a system over `Query`/`Res`, put it in a set, test it through a `Schedule` with `systems::test_util`.
 
-## Public API Design
+## Testing
 
-Export in `lib.rs::prelude`:
-- Types users spawn/query: `Transform`, `Velocity`
-- Traits users implement: `Scene`
-- Handles users store: `Entity`, `SpriteHandle`
+| Layer | Where | Run |
+|-------|-------|-----|
+| Unit | beside the code (`#[cfg(test)]`) | `cargo test --lib` |
+| Integration | `tests/integration/` (target `integration`) | `cargo test --test integration` |
+| End-to-end, GPU | `tests/e2e/` with `HeadlessEngine` (target `e2e`) | `cargo test --test e2e`, `./dev.sh test:e2e` |
+| Demo tour | every page of every demo, headless | `./dev.sh demos:tour [demo...]` → `target/demo-tour/<demo>/page-N.png` |
 
-Don't export:
-- Internal engine state
-- System functions
-- Implementation details
+- Rendering regressions: write the failing pixel assertion in `tests/e2e/` first (see `src/core/testing/AGENTS.md`).
+- `cargo test` takes one name filter; several go after `--`: `cargo test --lib -- core::scene core::audio`.
+- Verify a rendering change from captures, not guesses: `RYO_CAPTURE_FRAMES=<n> RYO_CAPTURE_EXIT=1 RYO_CAPTURE_DIR=<abs dir>`, plus `RYO_HEADLESS=1` (no window) and `RYO_INPUT="60:Digit2 120:ArrowRight"` to reach pages behind keys (`ryo-cli`).
 
-## Error Handling
-
-- No `unwrap()` in library code
-- Return `Result` for fallible operations
-- Provide helpful error messages
-- Use centralized error types in `error.rs`
-
-## Development Workflow
+## Dev Scripts
 
 ```bash
-./dev check    # Fast compile check
-./dev lint     # Clippy
-./dev test     # Tests
-./dev breakout # Test with example
+./dev.sh check            # engine + every example
+./dev.sh lint             # clippy, tests included
+./dev.sh test             # unit + integration (test:unit, test:integration, test:e2e, test:all)
+./dev.sh <example>        # run an example (-d dev mode, -p profiler, -r release)
+./dev.sh demos:tour       # capture every demo page
+./dev.sh coverage         # coverage reports
 ```
 
-## Profiler Integration
+`./dev.ps1` is the Windows twin. Before finishing: `cargo check`, `cargo clippy`, `cargo test`, and the e2e suite for rendering changes.
 
-The engine includes a built-in profiler using puffin:
+## Profiling
 
-### Key Files
-- `profiler.rs` - Macros (`profile_function!`, `profile_scope!`) and init
-- `windows/profiler_window.rs` - Standalone flamegraph window (CPU-rendered)
+- `profile_scope!("name")` / `profile_function!()` (`profiler.rs`, `use crate::profile_scope;` inside the engine); no-ops without the `profiler` feature.
+- The frame records `cpu:update`, `cpu:render` and `gpu:present`; add scopes inside systems that may be slow.
+- `windows/profiler_window.rs` is a separate CPU-drawn flamegraph window (a puffin sink, throttled to 10 FPS, bars fade instead of flickering). Run with `./dev.sh <example> -p` or `ryo2d dev --profiler`. More in `ryo-profiler`.
 
-### Adding Profiler Scopes to Engine Systems
+## Documentation Homes
 
-```rust
-use crate::profile_scope;
-
-fn my_engine_system(world: &mut World, dt: f32) {
-    profile_scope!("my_system");
-    // ... system work
-}
-```
-
-### Profiler Window Architecture
-
-ProfilerWindow is a separate wgpu window that:
-1. Registers as a puffin sink to receive frame data
-2. Collects scope entries from `FrameView`
-3. CPU-renders colored bars to a pixel buffer
-4. Uploads to GPU texture and presents
-
-Key design decisions:
-- **10 FPS throttle** - Keeps display readable and stable
-- **Scope persistence** - Bars fade slowly instead of flickering
-- **Separate focus tracking** - Game doesn't throttle when profiler is focused
-- **Wall-clock FPS** - Shows actual frame rate, not just work time
-
-### Testing with Profiler
-
-```bash
-./dev breakout -p
-# Or:
-ryo2d dev --profiler
-```
-
-## Tips
-
-- Read relevant `AGENTS.md` before modifying a module
-- Check example games to understand feature usage
-- Keep public API minimal
-- Performance matters in hot paths
-- Document public types with rustdoc
-
-## Verifying Rendering Changes
-
-Use frame capture (`src/core/capture/`) instead of guessing: run an example with `RYO_CAPTURE_FRAMES=<n> RYO_CAPTURE_EXIT=1 RYO_CAPTURE_DIR=<abs dir>` and inspect the PNG. Capture before and after a renderer change to prove it. Add `RYO_HEADLESS=1` to run without opening a window, and `RYO_INPUT="60:Digit2 120:ArrowRight"` to reach pages behind keys (see the `ryo-cli` skill).
+| What | Where |
+|------|-------|
+| API | Rustdoc on public items |
+| Using the engine | Skills in `.claude/skills/` (the CLI embeds copies from `src/cli/skills/`; keep both in step) |
+| Module conventions and decisions | The nearest `AGENTS.md` |
+| The big picture | `docs/architecture/` |
+| Designs and their reasons | `docs/specs/` |
 
 ## Demos
 
-Feature demos follow one standard (shared keys, settings panel, layout) through `examples/demo-kit`; see `examples/demos/AGENTS.md`. `./dev demos:tour` captures every page of every demo headlessly to `target/demo-tour/`.
-
-## Headless Engine Tests
-
-Regression tests for rendering go in `tests/e2e/` using `ryo2d::testing::HeadlessEngine` (see `src/core/testing/AGENTS.md`). Write the failing pixel assertion first, then fix.
+Feature demos share one shell (keys, settings panel, layout) through `examples/demo-kit`; see `examples/demos/AGENTS.md`.

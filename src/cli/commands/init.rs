@@ -140,15 +140,18 @@ fn create_project_structure(project_dir: &Path, project_name: &str) -> CliResult
 /// Generate Cargo.toml content
 fn generate_cargo_toml(project_name: &str) -> String {
   // Detect installed engine location
-  let ryo2d_dep = if let Some(engine_path) = get_installed_engine_path() {
+  let (ryo2d_dep, engine_root) = if let Some(engine_path) = get_installed_engine_path() {
     // Convert backslashes to forward slashes for TOML compatibility
     let path_str = engine_path.display().to_string().replace('\\', "/");
-    format!(r#"ryo2d = {{ path = "{}" }}"#, path_str)
+    (format!(r#"ryo2d = {{ path = "{}" }}"#, path_str), path_str)
   } else {
     // Fallback to git dependency if engine not installed
-    r#"# ryo2d = { git = "https://github.com/your-username/ryo2d" }
+    (
+      r#"# ryo2d = { git = "https://github.com/your-username/ryo2d" }
 ryo2d = { path = "../path/to/ryo2d" }  # Update this path"#
-      .to_string()
+        .to_string(),
+      "../path/to/ryo2d".to_string(),
+    )
   };
 
   format!(
@@ -167,6 +170,10 @@ path = "main.rs"
 # Ryo2D engine dependency
 {}
 
+# Optional Ryo2D crates (uncomment to use; import their `prelude`)
+# ryo2d-procgen = {{ path = "{}/crates/ryo2d-procgen" }}      # dungeons, caves, noise, WFC
+# ryo2d-inventory = {{ path = "{}/crates/ryo2d-inventory" }}  # items, inventories, loot
+
 # Add your game dependencies here
 # serde = {{ version = "1.0", features = ["derive"] }}
 # rand = "0.8"
@@ -183,7 +190,7 @@ opt-level = 2
 [profile.dev.package.ryo2d]
 opt-level = 2
 "#,
-    project_name, project_name, ryo2d_dep
+    project_name, project_name, ryo2d_dep, engine_root, engine_root
   )
 }
 
@@ -328,14 +335,15 @@ impl Scene for GameScene {
       Sprite::solid_rect(64, 64, 0, 255, 255, 255),
       "square"
     );
+    // Sprites are centred on their position by default
     ctx.world.spawn((
-      Transform::new(640.0, 360.0),
+      Transform::from_xy(640.0, 360.0),
       Renderable::sprite(sprite).with_z_order(0),
     ));
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Update game logic here
+    // Game logic, at the fixed rate (`dt` is the fixed step)
 
     // Example: Quit on Escape
     if ctx.input.key_pressed(KeyCode::Escape) {
@@ -345,8 +353,8 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    // Draw UI here
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    // Draw UI here, once a frame before the game logic
     ui.label(
       "My Ryo2D Game",
       10.0,
@@ -361,7 +369,8 @@ impl Scene for GameScene {
 fn main() {
   let engine = EngineBuilder::new()
     .resolution(1280, 720)
-    .with_scene(GameScene)
+    .fixed_hz(60)
+    .start_scene(GameScene)
     .build();
 
   if let Err(e) = engine.run() {

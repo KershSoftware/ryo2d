@@ -1,15 +1,15 @@
 ---
 name: ryo-procgen
-description: Procedural generation framework for dungeons, caves, terrain, and more.
+description: The optional ryo2d-procgen crate - dungeons (BSP), caves (cellular), noise terrain, random walks, Poisson sampling, WFC and MST corridors.
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
 # Ryo2D Procedural Generation Specialist
 
-You help users generate procedural content using the procgen framework: dungeons, caves, terrain, point distributions, and constraint-based patterns.
+You help users generate procedural content with the `ryo2d-procgen` crate: dungeons, caves, terrain, point distributions, and constraint-based patterns.
 
-**For complete API signatures, see the `ryo-api` skill.**
+The crate's types are not in `ryo2d::prelude` (so not in `ryo-api`); its own rustdoc (`crates/ryo2d-procgen/src`) has the full signatures.
 
 ## Core Concept
 
@@ -25,12 +25,22 @@ The procgen framework provides multiple algorithms that can be used standalone o
 
 ## Setup
 
-Procedural generation is the optional `ryo2d-procgen` crate. Add it beside `ryo2d` in the game's `Cargo.toml` (a path or version like `ryo2d`'s) and import its prelude:
+Procedural generation is the optional `ryo2d-procgen` crate; the engine never depends on it. Add it beside `ryo2d` in the game's `Cargo.toml` and import both preludes:
 
 ```toml
 [dependencies]
+ryo2d = { path = "<ryo2d checkout>" }
 ryo2d-procgen = { path = "<ryo2d checkout>/crates/ryo2d-procgen" }
 ```
+
+```rust
+use ryo2d::prelude::*;
+use ryo2d_procgen::prelude::*;
+```
+
+A demo inside the repository uses `{ path = "../../../crates/ryo2d-procgen" }`. The prelude holds the builder, configs, grid and result types, `SeededRng`, `TileType` and `poisson_points`; `generate_heightmap`, `apply_island_gradient`, `poisson_circle` and `poisson_masked` are imported from the crate root.
+
+Generation is a plain function call that returns its result; the crate writes no messages. A game that wants to announce a finished level defines its own `#[derive(Message, Clone)]` type and calls `ctx.write_message(..)`.
 
 ## Quick Start with ProcgenBuilder
 
@@ -112,7 +122,7 @@ let result = ProcgenBuilder::new(128, 128)
 ```
 
 **Presets:**
-- `NoiseConfig::terrain_preset()` - Multi-biome terrain (water, sand, grass, forest, mountain, snow)
+- `NoiseConfig::terrain_preset()` - Multi-biome terrain: `Water` (deep), `Custom(1)` (shallow), `Custom(2)` (sand), `Floor` (grass), `Custom(3)` (forest), `Wall` (mountain), `Custom(4)` (snow)
 - `NoiseConfig::island_preset()` - Island with water edges
 - `NoiseConfig::cave_preset()` - Binary floor/wall noise
 
@@ -157,6 +167,8 @@ for (x, y) in points.iter() {
     // Spawn tree/enemy/item at (x, y)
 }
 ```
+
+`poisson_points` returns a `PoissonResult`: `.points` (`Vec<(f32, f32)>`), `.iter()`, `.len()`, `.to_grid_coords(cell_size)`.
 
 **Variants** (`poisson_circle` and `poisson_masked` are not in the prelude; import them from `ryo2d_procgen`):
 ```rust
@@ -298,7 +310,7 @@ let mut rng = SeededRng::from_entropy();
 
 ## Seed Reproducibility
 
-All algorithms are deterministic - same seed produces same output:
+All algorithms are deterministic - same seed produces same output. Without `with_seed()`, `build()` picks a random seed; read it back from `result.seed` to reproduce a run.
 
 ```rust
 // These produce identical results
@@ -315,6 +327,8 @@ let grid2 = ProcgenBuilder::new(64, 64)
 
 ## Integration with Navigation
 
+`GenerationGrid::to_navigation_grid(cell_size)` builds the core's `NavigationGrid`: `Floor`, `Door` and `Custom` cells are walkable, `Water` is difficult (cost 2), `Wall` and `Empty` are blocked.
+
 ```rust
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)
@@ -324,9 +338,24 @@ let result = ProcgenBuilder::new(64, 64)
 // Each procgen cell becomes a 16x16 pixel navigation cell
 let nav_grid = result.grid().to_navigation_grid(16.0);
 
-// Use with pathfinding
-let path = pathfinder.find_path(&nav_grid, start_x, start_y, goal_x, goal_y);
+// World-space start and goal
+let path = Pathfinder::new().find_path(&nav_grid, start_x, start_y, goal_x, goal_y);
 ```
+
+## Spawning the Result
+
+Grid cells are integer coordinates; multiply by your tile size for world positions. Sprites are centred on their `Transform` by default, so a tile drawn by its centre sits half a tile in:
+
+```rust
+const TILE: f32 = 16.0;
+
+for (x, y) in result.grid().iter_type(TileType::Wall) {
+  let position = Transform::from_xy(x as f32 * TILE + TILE / 2.0, y as f32 * TILE + TILE / 2.0);
+  ctx.world.spawn((position, Renderable::sprite(wall.clone())));
+}
+```
+
+Use `.with_anchor(Anchor::TopLeft)` on the `Renderable` to place tiles by their corner instead.
 
 ## Common Patterns
 
@@ -373,8 +402,8 @@ let spawn_points = poisson_points(
     seed
 );
 
-for (x, y) in spawn_points.iter() {
-    spawn_enemy(x, y);
+for &(x, y) in spawn_points.iter() {
+    ctx.world.spawn((Transform::from_xy(x, y), Enemy::default()));
 }
 ```
 

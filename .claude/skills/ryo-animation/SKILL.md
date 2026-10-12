@@ -1,290 +1,274 @@
 ---
 name: ryo-animation
-description: Sprite animations, Animator component, AnimationController state machines.
+description: Sprite animations (Animator, AnimationController), tweens, knockback and squash/stretch.
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
 # Ryo2D Animation Specialist
 
-You help users create sprite animations, from simple loops to complex character state machines.
+You help users animate games: sprite frame animation, from simple loops to character state machines, and the "juice" components that move, scale, fade and push entities.
 
 **For complete API signatures, see the `ryo-api` skill.**
 
-## Three Animation APIs
+## How it runs
 
-| API | Use Case |
-|-----|----------|
-| `Animation` | Define frame sequences with timing |
-| `Animator` | Simple looping animations (coins, flames) |
-| `AnimationController` | State machines (character walk/run/attack) |
+Every animation component here is driven by the engine in `FixedSet::Juice`, once per fixed step with the fixed timestep, before the scene's `update` in the same step. So:
 
-## Animation - Frame Sequences
+- Slow motion (`ctx.time.game.set_speed(0.5)`) slows them; pause and hitstop freeze them.
+- A flag such as `just_finished` set in a step is visible to that step's `update`.
+- Start and finish are also reported as messages (`TweenStarted`, `TweenCompleted`, `KnockbackStarted`, ...), which a scene reads once with `ctx.messages::<T>()`.
+
+| Component | Driven by the engine | Writes |
+|-----------|----------------------|--------|
+| `Animator`, `AnimationController` | yes | `Renderable.sprite` |
+| `Tween`, `TweenSequence` | yes | `Transform` (position, rotation, scale), `Renderable` alpha and tint |
+| `PropertyTween<f32>`, `<Vec2>`, `<Color>` | yes | its own value |
+| `PropertyTween<T>` for other `Lerp` types | no: call `update(dt)` | its own value |
+| `Knockback` | yes | `Velocity` if present, else `Transform.translation` |
+| `SquashStretch` | yes | `Transform.scale` |
+| `ValidatedAnimator` | no: call `update(dt)`, copy `current_sprite()` | nothing |
+
+## Sprite animation
+
+### Animation: frames and timing
 
 ```rust
-// Uniform frame duration
-let walk_anim = Animation::new(
-    "walk",
-    vec![frame1, frame2, frame3, frame4],
-    0.1,  // 100ms per frame
-);  // loops by default
+// Uniform frame duration; loops by default
+let walk = Animation::new("walk", walk_frames, 0.1);
 
-// Variable timing + loop mode
-let attack_anim = Animation::with_frame_durations(
-    "attack",
-    vec![frame1, frame2, frame3],
-    vec![0.1, 0.15, 0.2],
-).with_loop_mode(LoopMode::Once);
+// Per-frame timing and a loop mode
+let attack = Animation::with_frame_durations("attack", attack_frames, vec![0.1, 0.15, 0.2])
+  .with_loop_mode(LoopMode::Once);
 ```
 
-LoopMode: `Once`, `Loop` (default), `PingPong`, `Times(n)`
+`LoopMode`: `Once` (stops on the last frame), `Loop` (default), `PingPong`, `Times(n)`. Frames are `SpriteHandle`s.
 
-## Animator - Simple Looping
-
-For entities that just play a looping animation:
+### Animator: one animation
 
 ```rust
-let coin = ctx.world.spawn((
-    Transform::new(100.0, 100.0),
+let coin = ctx
+  .world
+  .spawn((
+    Transform::from_xy(100.0, 100.0),
     Renderable::sprite(coin_frames[0].clone()),
-    Animator::new(coin_animation),  // Engine auto-updates
-));
+    Animator::new(Animation::new("spin", coin_frames, 0.08)),
+  ))
+  .id();
 
-// Control playback
 if let Some(mut animator) = ctx.world.get_mut::<Animator>(coin) {
-    animator.play();
-    animator.pause();
-    animator.stop();          // Stop and reset to frame 0
-    animator.reset();         // Back to frame 0, keep play state
-    animator.set_speed(2.0);  // 2x speed
+  animator.pause();
+  animator.play();
+  animator.stop(); // back to frame 0, stopped
+  animator.reset(); // back to frame 0, same play state
+  animator.set_speed(2.0);
 }
 ```
 
-## AnimationController - State Machine
+Read: `is_playing()`, `just_finished()`, `current_frame_index()`, `animation_name()`, `speed()`. `set_animation(animation)` swaps the animation and restarts it.
 
-For characters with multiple animation states:
+### AnimationController: named states
 
 ```rust
 let mut controller = AnimationController::new();
-controller.add_animation("idle", idle_animation);
-controller.add_animation("walk", walk_animation);
-controller.add_animation("jump", jump_animation);
-controller.add_animation("attack", attack_animation);
+controller.add_animation("idle", idle);
+controller.add_animation("walk", walk);
+controller.add_animation("attack", attack.with_loop_mode(LoopMode::Once));
 controller.set_state("idle");
 
-let player = ctx.world.spawn((
-    Transform::new(100.0, 100.0),
+let player = ctx
+  .world
+  .spawn((
+    Transform::from_xy(100.0, 100.0),
     Renderable::sprite(idle_frames[0].clone()),
     controller,
-));
+  ))
+  .id();
 ```
 
-### State Transitions
+State names are `AnimationId` (`&'static str`). Setting the current state again does not restart it.
 
 ```rust
-fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    if let Some(mut ctrl) = ctx.world.get_mut::<AnimationController>(self.player) {
-        if ctx.input.key_down(KeyCode::KeyD) {
-            ctrl.set_state("walk");
-        } else {
-            ctrl.set_state("idle");
-        }
-
-        // One-shot that returns to idle when it finishes
-        // (give the attack animation LoopMode::Once)
-        if ctx.input.key_pressed(KeyCode::Space) {
-            ctrl.set_state("attack");
-            ctrl.transition_after_finish("idle");
-        }
+fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+  if let Some(mut anim) = ctx.world.get_mut::<AnimationController>(self.player) {
+    if ctx.input.key_pressed(KeyCode::Space) {
+      // A one-shot that returns to idle when it finishes
+      anim.set_state("attack");
+      anim.transition_after_finish("idle");
+    } else if anim.current_state() != Some("attack") {
+      let moving = ctx.input.key_down(KeyCode::KeyA) || ctx.input.key_down(KeyCode::KeyD);
+      anim.set_state(if moving { "walk" } else { "idle" });
     }
-
-    SceneAction::Continue
+  }
+  SceneAction::Continue
 }
 ```
 
-### Query State
+Read: `current_state() -> Option<AnimationId>`, `just_finished()` (true for the step a `Once`/`Times` animation completes). Control: `pause`, `play`, `reset`, `set_speed`.
 
-```rust
-if let Some(ctrl) = ctx.world.get::<AnimationController>(self.player) {
-    ctrl.current_state()  // Option<&'static str>: Some("idle"), Some("walk"), ...
-    ctrl.just_finished()  // True for one frame when a LoopMode::Once / Times animation completes
-}
-```
+### ValidatedAnimator: enforced transitions
 
-## Common Patterns
+An `AnimationController` behind a `StateMachine` that only allows declared transitions (`with_animation`, `with_transition`, `with_bidirectional`, `with_transition_from_any`; `set_animation(id) -> bool`, `force_animation`). The engine does not drive it: call `update(dt)` in `update` and put `current_sprite()` on the `Renderable` yourself.
 
-### Character State Machine
+### Facing
 
-```rust
-// Priority: attack > jump > walk > idle
-if self.is_attacking {
-    if ctrl.current_state() != Some("attack") {
-        ctrl.set_state("attack");
-        ctrl.transition_after_finish("idle");
-    }
-    if ctrl.just_finished() {
-        self.is_attacking = false;
-    }
-} else if !self.is_grounded {
-    ctrl.set_state("jump");
-} else if self.is_moving {
-    ctrl.set_state("walk");
-} else {
-    ctrl.set_state("idle");
-}
-```
-
-### Directional Flip
+Flip instead of drawing left/right variants:
 
 ```rust
 if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(self.player) {
-    if dx < 0.0 { renderable.flip_x = true; }   // Face left
-    else if dx > 0.0 { renderable.flip_x = false; }  // Face right
+  if dx < 0.0 {
+    renderable.flip_x = true;
+  } else if dx > 0.0 {
+    renderable.flip_x = false;
+  }
 }
 ```
 
-## Tweening - Transform Animation
+## Tween: transform and colour
 
-For animating **Transform properties** (position, rotation, scale) rather than sprite frames, use the `Tween` component.
-
-### Quick Examples
+`Tween` animates `Transform` translation, rotation (radians) and scale, and `Renderable` alpha and tint. Start values are captured when the tween starts.
 
 ```rust
-// Move to position with bounce
+use std::f32::consts::PI;
+
+// Move with a bounce
 ctx.world.spawn((
-    Transform::new(100.0, 100.0),
-    Tween::to_position(400.0, 300.0, 2.0)
-        .with_easing(Ease::OutBounce),
+  Transform::from_xy(100.0, 100.0),
+  Renderable::sprite(sprite.clone()),
+  Tween::to_position(400.0, 300.0, 2.0).with_easing(Ease::OutBounce),
 ));
 
-// Rotate with overshoot
+// Pulse forever
 ctx.world.spawn((
-    Transform::new(200.0, 200.0),
-    Tween::to_rotation(PI, 0.5)
-        .with_easing(Ease::OutBack),
+  Transform::from_xy(300.0, 300.0),
+  Renderable::sprite(sprite.clone()),
+  Tween::to_scale(1.2, 1.2, 0.3)
+    .with_easing(Ease::InOutSine)
+    .with_loop(TweenLoop::PingPong),
 ));
 
-// Pulsing scale (looping)
+// Several targets, after a delay
 ctx.world.spawn((
-    Transform::new(300.0, 300.0),
-    Tween::to_scale(1.2, 1.2, 0.3)
-        .with_easing(Ease::InOutSine)
-        .with_loop(TweenLoop::PingPong),
+  Transform::IDENTITY,
+  Renderable::sprite(sprite.clone()),
+  Tween::new(1.5)
+    .to_x(200.0)
+    .to_y(100.0)
+    .to_rotation_value(PI / 4.0)
+    .with_easing(Ease::OutCubic)
+    .with_delay(0.5),
 ));
 
-// Combined with delay
-ctx.world.spawn((
-    Transform::new(0.0, 0.0),
-    Tween::new(1.5)
-        .to_x(200.0)
-        .to_y(100.0)
-        .to_rotation_value(PI / 4.0)
-        .with_easing(Ease::OutCubic)
-        .with_delay(0.5),
-));
+// Fade out (needs a Renderable; works without a Transform too)
+ctx.world.entity_mut(ghost).insert(Tween::fade_out(0.4));
 ```
 
-### Callbacks
+Constructors: `new(duration)`, `to_position(x, y, d)`, `to_rotation(radians, d)`, `to_scale(sx, sy, d)`, `to_uniform_scale(s, d)`, `fade_to(alpha, d)`, `fade_in(d)`, `fade_out(d)`, `tint_to(color, d)`. Builders: `to_x`, `to_y`, `to_rotation_value`, `to_scale_x`, `to_scale_y`, `to_alpha`, `to_tint`, `with_easing`, `with_delay`, `with_loop`, `with_speed`. Control: `pause`, `resume`, `stop`, `restart`, `set_speed`; read `progress()`, `is_finished()`.
 
-Tween callbacks receive the eased progress (0.0–1.0):
+Callbacks receive the eased progress and must be `Send + Sync`:
 
 ```rust
 Tween::to_position(100.0, 100.0, 1.0)
-    .on_start(|_progress| println!("started"))      // receives 0.0
-    .on_update(|progress| println!("at {progress}")) // receives eased 0.0-1.0
-    .on_complete(|_| println!("done"));              // receives 1.0
+  .on_start(|_| game_info!("started"))
+  .on_update(|t| game_trace!("at {t}"))
+  .on_complete(|_| game_info!("done"));
 ```
 
-### Easing Functions
+### Completion
 
-| Category | Options |
-|----------|---------|
-| Basic | `Linear` |
-| Smooth | `InQuad`, `OutQuad`, `InOutQuad` |
-| Smoother | `InCubic`, `OutCubic`, `InOutCubic` |
-| Sharper | `InQuart`, `OutQuart`, `InOutQuart` |
-| Gentle | `InSine`, `OutSine`, `InOutSine` |
-| Dramatic | `InExpo`, `OutExpo`, `InOutExpo` |
-| Overshoot | `InBack`, `OutBack`, `InOutBack` |
-| Bouncy | `InBounce`, `OutBounce`, `InOutBounce` |
+Read the messages; `finished` is `false` for the end of one loop iteration and `true` when the tween is done (`Once`, or the last of `Times(n)`):
+
+```rust
+for done in ctx.messages::<TweenCompleted>() {
+  if done.entity == self.door && done.finished {
+    self.door_open = true;
+  }
+}
+```
+
+### Easing and loops
+
+| Family | Variants |
+|--------|----------|
+| Linear | `Linear` (default) |
+| Quad, Cubic, Quart | `InQuad`, `OutQuad`, `InOutQuad`, ... |
+| Sine, Expo | `InSine`, `OutSine`, `InOutSine`, `InExpo`, ... |
+| Back (overshoot) | `InBack`, `OutBack`, `InOutBack` |
 | Elastic | `InElastic`, `OutElastic`, `InOutElastic` |
+| Bounce | `InBounce`, `OutBounce`, `InOutBounce` |
 
-### Loop Modes
+`Ease::apply(t)` evaluates a curve. `TweenLoop`: `Once` (default), `Loop`, `PingPong`, `Times(n)`.
 
-- `TweenLoop::Once` - Play once, stop (default)
-- `TweenLoop::Loop` - Repeat forever
-- `TweenLoop::PingPong` - Forward, backward, repeat
-- `TweenLoop::Times(n)` - Repeat n times
-
-### Detecting Completion
+### TweenSequence: one after another
 
 ```rust
-if let Some(tween) = ctx.world.get::<Tween>(entity) {
-    if tween.just_finished {
-        // Tween completed this frame (or loop iteration)
-    }
-    if tween.is_finished() {
-        // Tween fully done (Once or Times mode)
-    }
+ctx.world.spawn((
+  Transform::from_xy(100.0, 100.0),
+  Renderable::sprite(sprite.clone()),
+  TweenSequence::new()
+    .then(Tween::to_position(200.0, 100.0, 0.5).with_easing(Ease::OutQuad))
+    .then(Tween::to_position(200.0, 50.0, 0.3))
+    .then(Tween::fade_out(0.2)),
+));
+```
+
+`with_loop()` repeats the whole sequence; `TweenCompleted { finished: true }` is written when it ends.
+
+## PropertyTween<T>: any value
+
+Interpolates any `Lerp` type (`f32`, `(f32, f32)`, `Vec2`, `Color`, `Rect`, or your own) and stores the value; read it with `value()`.
+
+```rust
+let bar = ctx
+  .world
+  .spawn(PropertyTween::new(0.0_f32, 100.0, 2.0).with_easing(Ease::OutQuad))
+  .id();
+
+// later
+if let Some(tween) = ctx.world.get::<PropertyTween<f32>>(bar) {
+  self.health_shown = tween.value();
 }
 ```
 
-## PropertyTween\<T\> — Generic Value Tweening
+Control: `pause`, `resume`, `stop`, `restart`, `retarget(new_end)`; read `progress()`, `playing()`, `is_finished()`, `just_started()`, `just_finished()`. The engine drives `f32`, `Vec2` and `Color`; for other types call `tween.update(dt)` yourself, for example from a scene system.
 
-For animating **arbitrary values** (not just Transform), use `PropertyTween<T>`. It interpolates any `Lerp`-implementing type. You read `.value()` each frame.
-
-### Quick Examples
+## Knockback
 
 ```rust
-// Tween a float (health, opacity, score display)
-let entity = ctx.world.spawn((
-    PropertyTween::new(0.0f32, 100.0, 2.0)
-        .with_easing(Ease::OutQuad),
-));
+// Push an enemy away from the player (adds a Knockback if it has none)
+let dir = enemy_pos - player_pos;
+Knockback::apply(ctx.world, enemy, dir, 400.0);
+Knockback::apply_with_decay(ctx.world, enemy, dir, 400.0, 8.0); // faster recovery
 
-// Tween a Vec2 (custom position, offset)
-let entity = ctx.world.spawn((
-    PropertyTween::new(Vec2::ZERO, Vec2::new(400.0, 300.0), 1.5)
-        .with_loop(TweenLoop::PingPong),
-));
-
-// Tween a Color
-let entity = ctx.world.spawn((
-    PropertyTween::new(Color::RED, Color::BLUE, 1.0),
-));
-```
-
-### Reading Values
-
-```rust
-if let Some(tween) = ctx.world.get::<PropertyTween<f32>>(entity) {
-    let value = tween.value();      // Current interpolated value
-    let progress = tween.progress(); // Raw 0.0-1.0
+// On a component you already hold
+if let Some(mut kb) = ctx.world.get_mut::<Knockback>(enemy) {
+  kb.push(Vec2::new(-1.0, 0.0), 300.0);
 }
 ```
 
-### Runtime Control
+The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. An entity with `Velocity` gets the knockback velocity (physics bodies move with it; on a non-physics entity your code must apply `Velocity`); one without is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
+
+## Squash and stretch
 
 ```rust
-tween.pause();
-tween.resume();
-tween.stop();           // Freezes at current value
-tween.restart();        // Replays from start
-tween.retarget(50.0);   // Change destination mid-flight
+SquashStretch::apply(ctx.world, player, 0.3); // land: squash on Y
+SquashStretch::apply_x(ctx.world, player, 0.25); // wall hit: squash on X
+SquashStretch::apply_on_axis(ctx.world, player, 0.3, SquashAxis::Y);
+SquashStretch::apply_with_decay(ctx.world, player, 0.4, 3.0); // slow, wobbly
+
+// Full control
+ctx.world.entity_mut(player).insert(
+  SquashStretch::new(0.4)
+    .with_axis(SquashAxis::X)
+    .with_decay_rate(6.0)
+    .with_preserve_volume(true),
+);
 ```
 
-### Auto-Driven Types
-
-The engine automatically updates `PropertyTween<f32>`, `PropertyTween<Vec2>`, and `PropertyTween<Color>`. For custom `Lerp` types, call `tween.update(dt)` manually.
+The effect deforms `Transform.scale` and recovers to the base scale, read from the entity when an effect starts from rest (or fixed with `with_base_scale`). Component methods: `squash`, `squash_with_decay`, `squash_on_axis`. Messages: `SquashStretchStarted`, `SquashStretchFinished`. Scaling happens about the sprite's anchor (`Anchor::Center` by default), so a character meant to squash onto the floor uses `Renderable::with_anchor(Anchor::BottomCenter)` with its origin at the feet.
 
 ## Tips
 
-- Use `Animator` for decorative animations (coins, flames, water)
-- Use `AnimationController` for player/enemy characters with states
-- Use `Tween` for position/rotation/scale animations (UI, effects, movement)
-- Use `PropertyTween<T>` for animating arbitrary values (health bars, opacity, colors)
-- `transition_after_finish()` is perfect for attack/hurt animations that return to idle
-- Flip sprites with `renderable.flip_x` rather than separate left/right animations
-- The engine auto-syncs animation frames to `Renderable`
-- The engine auto-updates `Tween`, `PropertyTween<f32/Vec2/Color>` each frame
-
+- `Animator` for decoration, `AnimationController` for characters, `Tween` for movement and fades, `PropertyTween` for numbers and colours.
+- Detect completion with the messages rather than polling flags.
+- A tween and squash/stretch both writing `Transform.scale` on one entity fight each other; put one on a child entity.

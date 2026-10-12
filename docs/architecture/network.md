@@ -196,7 +196,7 @@ Abstracts over server types for generic game code:
 | `clients()` | Iterate all client IDs |
 | `is_host(client_id)` | Check if client is local host |
 
-### Connection Events
+### Connection Events (`NetworkEvent`)
 
 | Event | When |
 |-------|------|

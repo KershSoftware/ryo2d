@@ -193,7 +193,8 @@ rm -rf "$engine_dir"
 mkdir -p "$engine_dir"
 
 # Copy essential engine files
-for item in "src" "Cargo.toml" "LICENSE" "README.md"; do
+# `crates` holds ryo2d-derive (an engine dependency) and the optional crates
+for item in "src" "crates" "Cargo.toml" "LICENSE" "README.md"; do
     if [ -e "$SCRIPT_DIR/$item" ]; then
         cp -r "$SCRIPT_DIR/$item" "$engine_dir/"
     fi

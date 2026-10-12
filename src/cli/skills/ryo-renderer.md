@@ -2,7 +2,7 @@
 name: ryo-renderer
 description: Working on the wgpu renderer, shaders, and GPU batching.
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
 # Ryo2D Renderer Specialist
@@ -11,6 +11,7 @@ You help developers work on the rendering system.
 
 ## Resources
 
+- **Extraction**: `src/core/engine/extract.rs` (`present_frame`), `src/core/render/entities.rs`, `draw_list.rs`
 - **Render Pipeline**: `src/core/render/` (pass-based architecture)
 - **Pipeline**: `src/core/render/pipeline.rs`
 - **Pass Trait**: `src/core/render/pass.rs`
@@ -20,14 +21,29 @@ You help developers work on the rendering system.
 - **Lighting**: `src/core/lighting/`
 - **Trails**: `src/core/trail/`
 
+## Extraction
+
+The world is read fresh every frame; there is no render cache to invalidate. `present_frame` (after `PostUpdate`) does:
+
+1. Scenes' `Scene::render(gpu)` hooks fill the `BatchCollector` (particles, parallax, many-sprite effects).
+2. One query over `(Entity, &Renderable, &GlobalTransform, Option<&YSort>)` (plus `CompositeTile`) builds the frame's `DrawList`, sorted by `z_order` then y. `Disabled` entities are skipped by the query itself.
+3. Queries collect `Trail2D` (world-space points), `Line2D` (at its `GlobalTransform` translation), `Light2D` (at its translation) and `LightOccluder2D` (at its `GlobalTransform`, rotation kept).
+4. The render pipeline runs.
+
+Placement rules:
+
+- Entities with `PreviousGlobalTransform` (the `Interpolated` marker on them or an ancestor) draw at `render_global(global, previous, time.fixed.overstep_fraction())`; everything else draws at `GlobalTransform`. Composite tiles, lights, occluders and lines are not interpolated.
+- A single sprite is placed by `Renderable::anchor` (default `Anchor::Center`); rotation and scale happen about the anchor. Tiled runs and composite parts are laid out from the entity's position (the first tile's top-left).
+- `YSort` sorts by the sprite's feet (`foot_offset` of the way down from its top edge, wherever the anchor is).
+- Sprite globals (`time_resolution`): `x` = game time (sprite effects; a custom sprite shader's `in.time`), `y`/`z` = size, `w` = real time. Lighting, trails, transitions and post-process effects (including a custom effect's `in.time`) use real time.
+
 ## Rendering Pipeline
 
 Every frame runs through the engine's `RenderPipeline` (`src/core/render/`), built with `RenderPipeline::default_2d()`. One command encoder, one submit per frame. Passes run in list order:
 
 ```
 clear         clear the game texture
-raycast       GPU raycaster (replaces the 2D world passes while raycasting; clears to black)
-world         entities, render_gpu() sprites (particles, parallax) and trails/lines, one z-sorted list (lit by lighting)
+world         entities, Scene::render sprites (particles, parallax) and trails/lines, one z-sorted list (lit by lighting)
 lighting      render_lights + compose, if enabled (the lit texture is persistent)
 unlit_world   trails and lines with `with_lighting(false)`, by z, full brightness on the lit scene
 transition    scene transition fade over the whole frame (not the UI)
@@ -56,20 +72,22 @@ pub trait RenderPass: Send + Sync {
 
 ### Configuring the pipeline from a scene
 
-`ctx.render_pipeline` (on `SceneContext`) is the engine's pipeline, so changes persist across scenes. Ids and anchors are checked: duplicates or unknown ids return `RenderPipelineError`.
+`ctx.render_pipeline()` returns the engine's `RenderPipeline` resource (`Mut<RenderPipeline>`), so changes persist across scenes. Ids and anchors are checked: duplicates or unknown ids return `RenderPipelineError`.
 
 ```rust
+let mut pipeline = ctx.render_pipeline();
+
 // Toggle a built-in pass (fails only if the game removed it)
-let _ = ctx.render_pipeline.set_enabled(pass_ids::POST_PROCESS, false);
+let _ = pipeline.set_enabled(pass_ids::POST_PROCESS, false);
 
 // Passes persist across scenes, so add a game pass only if it is missing
 // (scene re-entry would otherwise hit DuplicatePass)
-if !ctx.render_pipeline.contains("flash") {
-    let _ = ctx.render_pipeline.insert_before(pass_ids::COMPOSITE, Flash);
+if !pipeline.contains("flash") {
+  let _ = pipeline.insert_before(pass_ids::COMPOSITE, Flash);
 }
 
 // Alternative: remove it in on_exit
-ctx.render_pipeline.remove("flash");
+ctx.render_pipeline().remove("flash");
 ```
 
 To draw on the frame, insert the pass before `composite` (or after `post_process`). `composite` copies the frame to the window, so a pass placed after it (including `push` at the end) never reaches the screen. `RenderContext::format()` gives the image's texture format, and `ryo2d::wgpu` re-exports the wgpu types a pass needs.
@@ -87,9 +105,9 @@ For screen-wide effects written in WGSL, use a custom post-process effect (see C
 
 ## Draw Order
 
-Everything in the world draws on the GPU in one z-sorted list: entities (`Renderable`, `CompositeTile`, shadows), `render_gpu()` sprites (particles, parallax) and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then `render_gpu` sprite, then trail/line; within a kind, in submission order. Consecutive sprites on one atlas page merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top.
+Everything in the world draws on the GPU in one z-sorted list: entities (`Renderable`, `CompositeTile`, shadows), `Scene::render` sprites (particles, parallax) and `Trail2D`/`Line2D` all sort by `z_order`. Equal z draws entity, then `Scene::render` sprite, then trail/line; within a kind, in submission order. Consecutive sprites on one atlas page merge into one draw call, so 10,000 sprites cost a handful of draws. The UI is a separate layer on top.
 
-Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities. `render_gpu` sprites no longer sit behind entities automatically. `Trail2D` and `Line2D` have `with_z_order` (default 0). `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; sprites, particles and trails at the same z draw after the layer's entities. `skeleton_debug_lines` draw on top. Debug overlays are unlit lines on top; the transition fade covers the world (including trails) but not the UI. Only the UI uses CPU drawing now (`Sprite::draw` / `draw_scaled`).
+Particles, parallax and trails default to z 0: give them an explicit z to sit behind or in front of entities; `Scene::render` sprites do not sit behind entities automatically. `Trail2D` and `Line2D` have `with_z_order` (default 0). `z_order` picks the layer; `YSort` orders entities by y within their layer, after the layer's plain sprites; sprites, particles and trails at the same z draw after the layer's entities. `skeleton_debug_lines` draw on top. Debug overlays are unlit lines on top; the transition fade covers the world (including trails) but not the UI. Only the UI uses CPU drawing now (`Sprite::draw` / `draw_scaled`).
 
 ### Texture Atlas and Fidelity
 
@@ -100,8 +118,8 @@ Sprite images are packed into shared atlas pages (2048x2048, 1-px extruded borde
 Games render parallax and background layers via the GPU path:
 
 ```rust
-fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
-    self.background.render(gpu);
+fn render(&mut self, gpu: &mut GpuRenderContext) {
+  self.background.render(gpu);
 }
 ```
 
@@ -109,21 +127,21 @@ Give parallax layers a negative z (e.g. -100..-20) so they sit behind entities a
 
 ## GPU Batching
 
-Games use `render_gpu()`:
+Games use `Scene::render`, called once per frame for every visible scene, bottom-up:
 
 ```rust
-fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
-    gpu.upload_sprite(&self.particle_sprite); // every frame: a no-op once cached, and unused textures are dropped after 600 frames
+fn render(&mut self, gpu: &mut GpuRenderContext) {
+  gpu.upload_sprite(&self.particle_sprite); // every frame: a no-op once cached, and unused textures are dropped after 600 frames
 
-    for particle in &self.particles {
-        let instance = SpriteInstance::new()
-            .with_transform(particle.x, particle.y, particle.rotation, 1.0, 1.0);
-        gpu.batch.add(&self.particle_sprite.id(), false, instance, particle.z_order);
-    }
+  for particle in &self.particles {
+    let instance = SpriteInstance::new()
+      .with_transform(particle.x, particle.y, particle.rotation, 1.0, 1.0);
+    gpu.batch.add(self.particle_sprite.id(), false, instance, particle.z_order);
+  }
 }
 ```
 
-Sprites are batched by texture and effect type.
+`gpu` also carries `world` (read-only) and `camera`. Sprites are batched by texture and effect type. Positions are world space; nothing here is interpolated, so move particles in `update` and draw where they are.
 
 ## WGSL Shaders
 
@@ -174,7 +192,7 @@ struct Params {          // optional; members f32/vec2/vec3/vec4<f32>, at most 3
 
 fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
   // in.uv: 0..1 across the sprite, in.size: sprite size in texels,
-  // in.screen_pos: pixel position on screen, in.time: seconds
+  // in.screen_pos: pixel position on screen, in.time: game seconds (stops while paused)
   let c = sample(in.uv);  // sprite colour; transparent outside the sprite rect
   return vec4<f32>(mix(c.rgb, params.edge, params.amount), c.a);
 }
@@ -190,7 +208,7 @@ if let Ok(handle) = ctx.assets.load_shader("shaders/dissolve.wgsl") {
     let fx = SpriteShader::custom(handle).with_param("amount", 0.4).with_param("edge", Color::rgb(255, 120, 0));
     Renderable::sprite(sprite).with_shader(fx);   // or a Material component (wins over Renderable::shader)
 }
-// render_gpu: ctx.add_custom_sprite(texture_id, &handle, &params, instance, z_order);
+// Scene::render: gpu.add_custom_sprite(texture_id, &handle, &params, instance, z_order);
 ```
 
 `ParamValue` is `F32`/`Vec2`/`Vec3`/`Vec4`/`Color`, with `From` for `f32`, `glam::Vec2/3/4` and `Color`. A `Color` fills a `vec3<f32>` field with rgb or a `vec4<f32>` field with rgba. A name the shader does not declare, or a value of the wrong type, is warned about and ignored; a declared param never set is zero.
@@ -203,7 +221,7 @@ struct Params {          // optional; at most 64 bytes
 }
 
 fn effect(in: EffectIn, params: Params) -> vec4<f32> {
-  // in.uv, in.time, in.resolution
+  // in.uv, in.time (real seconds), in.resolution
   let c = scene(in.uv);  // latest image, LINEAR colour; return linear colour too
   return vec4<f32>(c.rgb * (1.0 - params.strength), c.a);
 }
@@ -211,10 +229,11 @@ fn effect(in: EffectIn, params: Params) -> vec4<f32> {
 
 ```rust
 if let Ok(h) = ctx.assets.load_shader("shaders/scan.wgsl") {
-    ctx.effects.add_custom("scan", h)?;                 // Err(EffectError::DuplicateName)
-    ctx.effects.set_custom_param("scan", "strength", 0.3);   // setters return false (#[must_use]) for an unknown name
-    ctx.effects.set_custom_enabled("scan", false);
-    ctx.effects.remove_custom("scan");                  // has_custom("scan")
+  let mut fx = ctx.effects();
+  fx.add_custom("scan", h)?;                           // Err(EffectError::DuplicateName)
+  let _ = fx.set_custom_param("scan", "strength", 0.3); // setters return false (#[must_use]) for an unknown name
+  let _ = fx.set_custom_enabled("scan", false);
+  fx.remove_custom("scan");                            // has_custom("scan")
 }
 ```
 
@@ -226,33 +245,24 @@ In debug builds the engine watches the game's `assets/` folder and reloads chang
 
 ## Post-Processing
 
-9 built-in effects applied via `ctx.effects`:
+Built-in effects on the `EffectsManager` resource, reached with `ctx.effects()` (`Mut<EffectsManager>`; bind it for several calls). Timed effects (flash) run on real time.
 
 ```rust
-ctx.effects.set_fade(0.5);
-ctx.effects.set_vignette(0.3);
-ctx.effects.enable_crt();
-ctx.effects.set_chromatic_aberration(0.005);
-ctx.effects.set_god_rays(0.8, vec![(0.5, 0.3)]);
-ctx.effects.set_ambient_occlusion(0.3, 16.0);
-ctx.effects.set_bloom(1.0);  // multi-pass: extract -> blur -> composite
-ctx.effects.flash(Color::RED, Duration::from_millis(100));
-ctx.effects.set_sepia(0.5);
+let mut fx = ctx.effects();
+fx.set_fade(0.5);
+fx.set_vignette(0.3);
+fx.enable_crt();
+fx.set_chromatic_aberration(0.005);
+fx.set_god_rays(0.8, vec![(0.5, 0.3)]);
+fx.set_ambient_occlusion(0.3, 16.0);
+fx.set_bloom(1.0);  // multi-pass: extract -> blur -> composite
+fx.flash(Color::RED, Duration::from_millis(100));
+fx.set_sepia(0.5);
 ```
 
 ## Synchronization
 
-Critical: Upload instance data BEFORE starting render pass:
-
-```rust
-// Pre-upload all data
-for (key, instances) in batch_collector.iter() {
-    queue.write_buffer(&instance_buffer, offset, &instances);
-}
-
-// Then render
-render_pass.draw_indexed(...);
-```
+Write every instance buffer (`queue.write_buffer`) before beginning the render pass that draws from it; the sprite renderer uploads the whole draw list in `prepare_world` (during extraction), then the `world` pass records the draws.
 
 ## Tips
 

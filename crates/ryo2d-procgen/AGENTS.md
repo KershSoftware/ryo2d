@@ -1,6 +1,21 @@
-# AGENTS.md - Procedural Generation Module
+# AGENTS.md - ryo2d-procgen
 
-API, algorithms, presets and navigation conversion are covered by the `ryo-procgen` skill.
+Procedural generation for Ryo2D (BSP dungeons, cellular caves, noise terrain, random walks, Poisson sampling, WFC, MST corridors), as an optional crate on top of `ryo2d`. The core never depends on it. API, algorithms and presets are covered by the `ryo-procgen` skill.
+
+## Using It
+
+```toml
+[dependencies]
+ryo2d = { path = "<ryo2d checkout>" }
+ryo2d-procgen = { path = "<ryo2d checkout>/crates/ryo2d-procgen" }
+```
+
+```rust
+use ryo2d::prelude::*;
+use ryo2d_procgen::prelude::*;
+```
+
+Inside this repository a demo uses `{ path = "../../../crates/ryo2d-procgen" }`. The crate's prelude exports only its own types; `GenerationGrid::to_navigation_grid(cell_size)` converts a result into the core's `NavigationGrid`.
 
 ## Gotchas
 

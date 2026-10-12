@@ -56,16 +56,14 @@ When `profiler` feature is disabled (default), macros compile to nothing.
 
 ## Pre-Instrumented Engine Scopes
 
-These engine systems are automatically profiled:
+These engine scopes are always recorded:
 
 | Scope | What it measures |
 |-------|-----------------|
-| `cpu:update` | Game logic + fixed timestep |
-| `cpu:engine_update` | Built-in systems and scene update |
-| `cpu:render` | Collecting entities into the GPU draw list, plus the UI |
-| `cpu:engine_render` | Engine render path |
-| `gpu:present` | GPU submission + effects |
-| `cpu:physics` | Rapier2D simulation |
+| `cpu:update` | The UI pass and every fixed step of the frame (`Scene::update`, juice, scene systems, physics, propagation) |
+| `cpu:physics` | One Rapier step (`step_physics`) |
+| `cpu:render` | `Scene::render` hooks and collecting the world (entities, trails, lights) into the GPU draw list |
+| `gpu:present` | Running the render pipeline and presenting |
 | `cpu:scene_push` | Scene push transitions |
 | `cpu:scene_switch` | Scene switch transitions |
 
@@ -137,14 +135,14 @@ This compiles with the profiler feature but doesn't auto-open. Press **F10** to 
 ### Adding New Engine Scopes
 
 ```rust
-// In engine system code
-use crate::profile_scope;
-
-fn my_system(world: &mut World, dt: f32) {
-    profile_scope!("my_system");
-    // ... system work
+// In an engine system
+pub fn my_system(time: Res<Time>, mut query: Query<&mut Transform>) {
+  crate::profile_scope!("cpu:my_system");
+  // ... system work
 }
 ```
+
+The `cpu:` / `gpu:` prefix picks the bar colour in the profiler window.
 
 ## Troubleshooting
 

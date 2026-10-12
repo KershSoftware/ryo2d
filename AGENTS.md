@@ -28,6 +28,23 @@ Suggested sources for game assets:
 
 ---
 
+## Workspace Layout
+
+| Path | What |
+|------|------|
+| `src/` | The `ryo2d` crate: `src/core/` is the engine, `src/cli/` the `ryo2d` command, `src/lib.rs` the prelude (the public surface) |
+| `crates/ryo2d-derive` | The `#[derive(NetworkInput)]` macro, re-exported by `ryo2d` |
+| `crates/ryo2d-procgen` | Optional procedural generation; games add the crate and `use ryo2d_procgen::prelude::*` |
+| `crates/ryo2d-inventory` | Optional items, inventories, equipment and loot; `use ryo2d_inventory::prelude::*` |
+| `examples/demo-kit`, `examples/demos/*`, `examples/games/*` | The demo shell, feature demos and sample games (workspace members) |
+| `tests/integration`, `tests/e2e` | Integration tests and headless GPU end-to-end tests |
+| `attic/` | Code parked outside the build (the raycaster and its demo); not compiled |
+| `.claude/skills/` | Agent skills; the CLI embeds copies in `src/cli/skills/` |
+
+Dependencies point toward the core: the optional crates depend on `ryo2d`, never the reverse (the core's only dependency in `crates/` is the `ryo2d-derive` proc macro), and the `ryo2d` prelude exports the core only.
+
+---
+
 ## Engine Development
 
 **For contributors working on the engine itself** (not game developers using it):
@@ -78,7 +95,7 @@ Designs and implementation plans from the superpowers skills live here, not in t
 - **Performance:** Cache-friendly data structures, minimize allocations in hot paths
 - **API design:** Ergonomic, hard to misuse, well-documented
 - **Testing:** Unit tests for core logic, integration tests for systems, e2e for complex-but-worth-know-shouldn't-break
-- **Documentation:** Rustdoc for API; the skills (`src/cli/skills/`) for using the engine; nested AGENTS.md for module conventions and decisions; `docs/architecture/` for the big picture. There is no separate guide book
+- **Documentation:** Rustdoc for API; the skills (`.claude/skills/`, embedded in the CLI from `src/cli/skills/`) for using the engine; nested AGENTS.md for module conventions and decisions; `docs/architecture/` for the big picture. There is no separate guide book
 
 **Code comments should be normal/minimal** - explain intent and non-obvious logic. Complex algorithms get thorough documentation.
 

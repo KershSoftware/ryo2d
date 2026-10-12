@@ -17,6 +17,7 @@
 - `NetworkedValue::is_dirty()` does NOT notify the manager. You still have to call `replication.mark_dirty::<T>(entity)`
 - Replication uses only `Channel::ReplicationReliable` / `ReplicationUnreliable`; game code owns the default channels
 - Clients call `process_incoming` each update (it sends the acks); servers call `broadcast_updates` (it reads them)
+- A received component is applied with `insert`, replacing the entity's value (a received `Transform` places the entity at once through its insert hook); a component for an entity that no longer exists is `ReplicationError::EntityNotFound`. `Replicated` types must be mutable components (`Component<Mutability = Mutable>`, the derive's default)
 
 ## Notes for AI Agents
 

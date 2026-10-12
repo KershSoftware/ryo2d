@@ -21,12 +21,14 @@ GPU uniform struct. **Must be 64 bytes with 16-byte alignment.**
 ```rust
 #[repr(C)]
 pub struct EffectParams {
-    pub color: [f32; 4],           // offset 0
-    pub params: [f32; 4],          // offset 16
-    pub time_resolution: [f32; 4], // offset 32 (x=time, y=width, z=height)
-    pub _padding: [f32; 4],        // offset 48
-}                                  // Total: 64 bytes
+  pub color: [f32; 4],           // offset 0
+  pub params: [f32; 4],          // offset 16
+  pub time_resolution: [f32; 4], // offset 32 (x=time, y=width, z=height)
+  pub _padding: [f32; 4],        // offset 48
+}                                // Total: 64 bytes
 ```
+
+`time` is the `EffectsManager` clock, advanced with real time by `update_effects_system` (`PostUpdateSet::Extract`), which also counts down timed effects, so they run through pause and slow motion.
 
 GodRays uses a separate 128-byte `GodRaysParams` uniform instead of `EffectParams`.
 
@@ -41,7 +43,7 @@ Every post-process shader is self-contained. It must:
 
 `custom.rs` compiles shaders written by games. A game file holds an optional `struct Params { .. }` and one function, `fn sprite(in: SpriteIn, params: Params) -> vec4<f32>` or `fn effect(in: EffectIn, params: Params) -> vec4<f32>`. The compiler prepends the engine prelude, appends a generated entry point (`fs_custom` for sprites, a generated `vs_main`/`fs_main` pair for effects), validates the result with naga and reflects `Params` (members `f32`/`vec2`/`vec3`/`vec4<f32>`; at most 32 bytes for sprites, 64 for effects). Without a `Params` struct the prelude supplies `struct Params { unused: f32 }`. Error positions are mapped back to the game's own line (`<id>:<line>:<column>: <message>`), logged once per source; a failing sprite shader draws plain and a failing effect is skipped. Compiled pipelines are cached by `custom::source_key` (kind + source text), so handles with equal sources compile once and their sprites batch together; per-handle entries (by `ShaderHandle::serial()` and generation) point at them, and both are pruned after 600 unused frames.
 
-Custom effect bind group (group 0): `0` scene texture, `1` sampler, `2` params uniform, `3` globals (time, resolution). `scene(uv)` samples the latest image in LINEAR colour and the effect returns linear colour. Sprite shaders work in the sprite's sRGB values; the engine tints, rounds and converts to linear afterwards.
+Custom effect bind group (group 0): `0` scene texture, `1` sampler, `2` params uniform, `3` globals (time, resolution). An effect's `in.time` is the effects clock (real time); a sprite shader's `in.time` is the sprite globals' `x`, game time, so it freezes under pause. `scene(uv)` samples the latest image in LINEAR colour and the effect returns linear colour. Sprite shaders work in the sprite's sRGB values; the engine tints, rounds and converts to linear afterwards.
 
 `EffectsManager::add_custom/set_custom_param/set_custom_enabled/remove_custom` hold the custom effects. They run after the built-in effects, in insertion order, each as one ping-pong slot, and `clear()` removes them. Params are packed by name from `ShaderParams` at emit time; `Color` packs as sRGB/255. Hot reload updates the `ShaderHandle` source and bumps its generation, which triggers a rebuild the next frame.
 
