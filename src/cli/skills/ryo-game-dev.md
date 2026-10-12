@@ -124,7 +124,7 @@ Every method has a default; implement what the scene needs.
 | `on_pause(ctx)` / `on_resume(ctx, returned)` | Another scene is pushed on top / the one above popped |
 | `on_exit(ctx)` | The scene leaves the stack |
 | `is_transparent()` | Scenes below are still drawn and still get `ui` (overlays, HUDs) |
-| `updates_below()` | Scenes below still update and run their systems |
+| `updates_below()` | Scenes below still update and run their systems; only the top scene's returned `SceneAction` is applied (a lower scene's is dropped with a warning) |
 | `is_physics_paused()` | Pause physics while this scene is on top |
 | `cleanup_on_exit()` | Which engine state `Switch`/`Reset` resets (default `SceneCleanup::DEFAULT`) |
 
@@ -223,7 +223,7 @@ ctx
 | `ctx.add_systems(phase, systems)` | `Phase::FixedUpdate`, `Phase::Update` (others return `SceneScheduleError`) | While the scene is active (or below an `updates_below` scene) |
 | `EngineBuilder::add_systems(phase, systems)` | Any `Phase` | The whole run |
 
-Scene systems run inside `FixedSet::Game` (after the scene's `update`, before physics) and `UpdateSet::Game`. Builder systems in `FixedUpdate` should name their place: `.in_set(FixedSet::Game)`, `.after(FixedSet::Physics)`. Systems may return `Result<(), SystemError>`; an error panics in debug builds and is logged in release. The frame's phases are described in `ryo-engine-dev`.
+Scene systems run inside `FixedSet::Game` (after the scene's `update`, before physics) and `UpdateSet::Game`. Builder systems go there too unless they name one of the phase's sets: `.in_set(FixedSet::Juice)`, `.after(FixedSet::Physics)`. Systems may return `Result<(), SystemError>`; an error panics in debug builds and is logged in release. The frame's phases are described in `ryo-engine-dev`.
 
 ## Resources
 
@@ -383,7 +383,7 @@ if let Some(bullet) = bullets.acquire(ctx.world) {
 bullets.release(ctx.world, spent);
 ```
 
-Released entities carry `Disabled`: every query, physics and rendering skip them. `PoolConfig` fields: `initial_capacity`, `max_capacity` (0 = unlimited), `expand_batch_size`, `exhausted_policy` (`Expand`, `ReturnNone`, `RecycleOldest`).
+Released entities carry `Disabled`: every query, physics and rendering skip them. An acquired entity does not slide from where it was released. `PoolConfig` fields: `initial_capacity`, `max_capacity` (0 = unlimited), `expand_batch_size`, `exhausted_policy` (`Expand`, `ReturnNone`, `RecycleOldest`).
 
 ## Camera and Coordinates
 

@@ -21,13 +21,12 @@ Every animation component here is driven by the engine in `FixedSet::Juice`, onc
 
 | Component | Driven by the engine | Writes |
 |-----------|----------------------|--------|
-| `Animator`, `AnimationController` | yes | `Renderable.sprite` |
+| `Animator`, `AnimationController`, `ValidatedAnimator` | yes | `Renderable.sprite` |
 | `Tween`, `TweenSequence` | yes | `Transform` (position, rotation, scale), `Renderable` alpha and tint |
 | `PropertyTween<f32>`, `<Vec2>`, `<Color>` | yes | its own value |
 | `PropertyTween<T>` for other `Lerp` types | no: call `update(dt)` | its own value |
-| `Knockback` | yes | `Velocity` if present, else `Transform.translation` |
+| `Knockback` | yes | a dynamic body's `Velocity` (added on top), else `Transform.translation` |
 | `SquashStretch` | yes | `Transform.scale` |
-| `ValidatedAnimator` | no: call `update(dt)`, copy `current_sprite()` | nothing |
 
 ## Sprite animation
 
@@ -108,7 +107,7 @@ Read: `current_state() -> Option<AnimationId>`, `just_finished()` (true for the 
 
 ### ValidatedAnimator: enforced transitions
 
-An `AnimationController` behind a `StateMachine` that only allows declared transitions (`with_animation`, `with_transition`, `with_bidirectional`, `with_transition_from_any`; `set_animation(id) -> bool`, `force_animation`). The engine does not drive it: call `update(dt)` in `update` and put `current_sprite()` on the `Renderable` yourself.
+An `AnimationController` behind a `StateMachine` that only allows declared transitions (`with_animation`, `with_transition`, `with_bidirectional`, `with_transition_from_any`; `set_animation(id) -> bool`, `force_animation`). On an entity the engine drives it like `Animator`, putting its frame on the `Renderable`; one kept outside the world needs `update(dt)` and `current_sprite()` by hand.
 
 ### Facing
 
@@ -246,7 +245,7 @@ if let Some(mut kb) = ctx.world.get_mut::<Knockback>(enemy) {
 }
 ```
 
-The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. An entity with `Velocity` gets the knockback velocity (physics bodies move with it; on a non-physics entity your code must apply `Velocity`); one without is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
+The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. A dynamic physics body gets the knockback added to its `Velocity` (gravity and collisions keep acting, and the push is taken back as it decays); anything else, including an entity whose `Velocity` your own code integrates, is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
 
 ## Squash and stretch
 

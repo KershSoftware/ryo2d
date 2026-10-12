@@ -41,9 +41,9 @@ Ryo2D's ECS (`ryo2d::ecs`, all in the prelude) is a curated set of kernel types.
 | `ChildOf`, `Children` | Hierarchy relationship (see below) |
 | `Message`, `Messages`, `MessageReader`, `MessageWriter`, `MessageCursor` | Buffered messages (see [Messages](#messages)) |
 | `Event`, `EntityEvent`, `On`, `Observer` | Observer events: `world.add_observer(\|e: On<T>\| ..)`, `world.trigger(T { .. })` |
-| `Schedule`, `ScheduleLabel`, `SystemSet`, `SingleThreadedExecutor` | Own schedules (tests, tools) |
+| `Schedule`, `ScheduleLabel`, `SystemSet` | Own schedules (tests, tools) |
 | `IntoScheduleConfigs`, `IntoSystem`, `System`, `ScheduleSystem` | `.chain()`, `.before()`, `.after()`, `.in_set()`, `.run_if()` on systems |
-| `SystemError`, `ErrorContext`, `FallbackErrorHandler` | Systems may return `Result<(), SystemError>`; the engine's handler panics in debug and logs in release |
+| `SystemError` | Systems may return `Result<(), SystemError>`; the engine's handler panics in debug and logs in release |
 | `Vec2`, `Vec3`, `Vec4`, `Mat4` | glam math types |
 
 Derives: `#[derive(Component)]`, `#[derive(Resource)]`, `#[derive(Message)]`, `#[derive(Event)]`, `#[derive(SystemSet)]`, `#[derive(ScheduleLabel)]`, `#[derive(Bundle)]`.
@@ -124,7 +124,7 @@ Despawning a parent despawns its descendants. Never make an entity its own ances
 
 Interpolation: add the `Interpolated` marker (covers descendants) to draw between the previous and current fixed step. The engine keeps `PreviousGlobalTransform { pub global: GlobalTransform, pub skip: bool }` on those entities. `GlobalTransform` is always the true state; only drawing blends.
 
-Engine systems exported for tests and tools: `propagate_transforms`, `snapshot_previous_transforms`, `render_global(global: &GlobalTransform, previous: Option<&PreviousGlobalTransform>, alpha: f32) -> GlobalTransform`.
+Engine systems for tests and tools, outside the prelude: `ryo2d::ecs::propagate::propagate_transforms`, `ryo2d::ecs::interpolate::snapshot_previous_transforms`, `ryo2d::ecs::interpolate::render_global(global: &GlobalTransform, previous: Option<&PreviousGlobalTransform>, alpha: f32) -> GlobalTransform`.
 
 ---
 
@@ -236,7 +236,7 @@ ctx.world.entity_mut(player).insert(
 | `push(&mut self, direction, force)`, `push_with_decay(..)`, `stop`, `restart`, `update(dt)` | on a component value |
 | `current_velocity() -> (f32, f32)`, `strength()`, `force()`, `direction() -> Vec2`, `decay_rate()`, `is_finished()` | state |
 
-An entity with `Velocity` gets the knockback velocity there; one without is moved directly.
+A dynamic body (`RigidBody`, not kinematic, with `Velocity`) gets the knockback added to its velocity, so gravity and collisions keep acting; the push is taken back as it decays. Anything else is moved through its `Transform`.
 
 ### SquashStretch (component)
 
@@ -257,15 +257,16 @@ An entity with `Velocity` gets the knockback velocity there; one without is move
 ```rust
 pub struct Pool<B: Bundle>;
 Pool::new(factory: impl Fn() -> B + Send + Sync + 'static, config: PoolConfig) -> Self
-pool.acquire(&mut self, world: &mut World) -> Option<Entity>   // enabled; components keep old values
+pool.acquire(&mut self, world: &mut World) -> Option<Entity>   // enabled, interpolation skipped; components keep old values
 pool.release(&mut self, world: &mut World, entity: Entity) -> bool // disabled again
 pool.release_all(&mut self, world: &mut World)
-pool.active(&self) -> &[Entity]; pool.is_active(&self, Entity) -> bool; pool.stats(&self) -> PoolStats
+pool.active(&self) -> impl Iterator<Item = Entity> /* oldest first */; pool.is_active(&self, Entity) -> bool; pool.stats(&self) -> PoolStats
 ```
 
 - `PoolConfig { initial_capacity: 32, max_capacity: 0 /* unlimited */, expand_batch_size: 16, exhausted_policy: PoolExhaustedPolicy::Expand }`.
 - `enum PoolExhaustedPolicy { Expand, ReturnNone, RecycleOldest }`; `PoolStats { total_spawned, active, available }`.
-- Pooled entities are `Disabled`, so queries skip them. After `acquire`, set every field you rely on and call `skip_interpolation` if the entity is `Interpolated`.
+- Pooled entities are `Disabled`, so queries skip them. After `acquire`, set every field you rely on; an `Interpolated` entity draws where you put it this step (acquire skips its interpolation).
+- `acquire`, `release` and `is_active` are O(1); entities a scene cleanup despawned are dropped when the pool meets them or runs dry.
 
 ---
 
@@ -280,7 +281,7 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | Clock | Methods | Use |
 |---|---|---|
 | `real: RealClock` | `delta() -> f32`, `delta_duration()`, `elapsed() -> f32` | wall clock; UI animation, camera shake, timed post effects |
-| `game: GameClock` | `delta()`, `delta_duration()`, `elapsed()`, `speed()`, `set_speed(f32)` (clamped ≥ 0), `pause()`, `resume()`, `is_paused()`, `hitstop(secs)`, `is_hitstop()`, `clear_hitstop()`, `max_delta()`, `set_max_delta(Duration)` (default 250 ms) | game time: real delta capped, times speed, zero while paused or in hitstop |
+| `game: GameClock` | `delta()`, `delta_duration()`, `elapsed()`, `speed()`, `set_speed(f32)` (clamped to 0..=100), `pause()`, `resume()`, `is_paused()`, `hitstop(secs)`, `is_hitstop()`, `clear_hitstop()`, `max_delta()`, `set_max_delta(Duration)` (default 250 ms; never below one fixed timestep) | game time: real delta capped, times speed, zero while paused or in hitstop |
 | `fixed: FixedClock` | `timestep() -> f32`, `timestep_duration()`, `set_hz(u32)`, `accumulator()`, `overstep_fraction() -> f32` (render alpha, `[0, 1)`), `step_count() -> u64` | accumulates game time into constant steps |
 
 `Time`: `new(fixed_hz)`, `delta() -> f32` (the fixed timestep inside `FixedUpdate`, the game delta elsewhere), `frame_count() -> u64`, `advance(Duration)`, `begin_frame()`, `frame_start()`.
@@ -306,7 +307,7 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | `Last` | tracker clearing |
 
 - `enum FixedSet { Snapshot, Juice, Scene, Game, Physics, Transforms, Trails }`, `enum UpdateSet { Game }`, `enum PostUpdateSet { Transforms, Camera, Extract }`: order your systems with `.in_set(..)`, `.before(..)`, `.after(..)`.
-- Game-wide systems: `EngineBuilder::add_systems(phase, systems)` (any phase). Scene-owned systems: `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)`, dropped when the scene leaves the stack.
+- Game-wide systems: `EngineBuilder::add_systems(phase, systems)` (any phase; in `FixedUpdate`/`Update`, systems that name none of the phase's sets run in its `Game` set). Scene-owned systems: `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)`, dropped when the scene leaves the stack.
 - Every schedule is single-threaded.
 
 ---
@@ -452,7 +453,7 @@ EngineBuilder::new()
   .fixed_hz(60)
   .insert_resource(Score::default())
   .add_message::<CoinCollected>()
-  .add_systems(Phase::FixedUpdate, move_players.in_set(FixedSet::Game))
+  .add_systems(Phase::FixedUpdate, move_players) // FixedSet::Game unless it names a set
   .start_scene(Level::default())
   .build()
   .run()?; // EngineResult<()>
@@ -514,7 +515,7 @@ Engine messages (all `Message + Clone`):
 | mouse | `mouse_down(MouseButton)`, `mouse_pressed(..)`, `mouse_released(..)`, `mouse_x()`, `mouse_y()`, `mouse_position() -> (f32, f32)` (game-resolution screen pixels; `camera.screen_to_world` for world), `mouse_delta()`, `scroll_delta()` |
 | text and IME | `text_input() -> &str`, `has_text_input()`, `consume_text_input()`, `ime_preedit()`, `ime_preedit_cursor()`, `ime_composing()`, `ime_enabled()` |
 | gamepad | `gamepad_connected()`, `gamepad_name()`, `gamepad_button_down/pressed/released(GamepadButton)`, `left_stick()`, `right_stick()` (deadzoned, plus `_x`/`_y`), `left_stick_raw()`, `right_stick_raw()`, `left_trigger()`, `right_trigger()` (0..1) |
-| consumption | `consume_key(KeyCode)`, `consume_mouse(MouseButton)`, `consume_gamepad_button(..)`, `consume_text()`, `key_pressed_and_consume(..) -> bool`, `mouse_pressed_and_consume(..)`, `gamepad_button_pressed_and_consume(..)`, `consume_key_press`, `consume_mouse_press`, `consume_gamepad_button_press`, `clear_keyboard_state()` |
+| consumption | `consume_key(KeyCode)`, `consume_mouse(MouseButton)`, `consume_gamepad_button(..)`, `consume_text()`, `consume_scroll()`, `key_pressed_and_consume(..) -> bool`, `mouse_pressed_and_consume(..)`, `gamepad_button_pressed_and_consume(..)`, `consume_key_press`, `consume_mouse_press`, `consume_gamepad_button_press`, `clear_keyboard_state()` |
 | gating | `block_pointer()`, `block_all()`, `unblock()` |
 | engine plumbing | `new()`, `queue(InputEvent)`, `begin_frame()`, `set_fixed_step(u32)`, `end_fixed_steps(bool)`, `fixed_step()` |
 
@@ -589,7 +590,7 @@ Wrap a `Sprite` in a `SpriteHandle` for rendering: `ctx.assets.create_sprite(spr
 | `Animation` | `new(name, frames: Vec<SpriteHandle>, frame_duration: f32)`, `with_frame_durations(name, frames, durations: Vec<f32>)`, `with_loop_mode(LoopMode)`, `name()`, `duration()`, `frame_count()`, `frame(i)`, `frame_duration(i)`, `loop_mode()` |
 | `Animator` (component, engine-driven) | `new(Animation)`, `set_animation(Animation)`, `play`, `pause`, `stop`, `reset`, `set_speed(f32)`, `speed()`, `is_playing()`, `just_finished()`, `current_sprite()`, `current_frame_index()`, `animation_name()`, `update(dt)` |
 | `AnimationController` (component, engine-driven) | `new()`, `add_animation(AnimationId, Animation)`, `set_state(AnimationId)`, `transition_after_finish(AnimationId)`, `current_state()`, `just_finished()`, `current_sprite()`, `reset`, `pause`, `play`, `set_speed`, `update(dt)` |
-| `ValidatedAnimator` (game-driven: call `update(dt)` and copy `current_sprite()` to the `Renderable`) | `new(Animation, AnimationId)`, `with_animation(Animation, AnimationId)`, `with_transition(from, to)`, `with_bidirectional(a, b)`, `with_transition_from_any(to)`, `set_animation(id) -> bool`, `force_animation(id)`, `transition_after_finish(id) -> bool`, `current()`, `current_sprite()`, `just_entered()`, `just_finished()`, `can_transition_to(id)`, `time_in_state()`, `pause`, `play`, `set_speed`, `reset`, `update(dt)` |
+| `ValidatedAnimator` (engine-driven on an entity, like `Animator`) | `new(Animation, AnimationId)`, `with_animation(Animation, AnimationId)`, `with_transition(from, to)`, `with_bidirectional(a, b)`, `with_transition_from_any(to)`, `set_animation(id) -> bool`, `force_animation(id)`, `transition_after_finish(id) -> bool`, `current()`, `current_sprite()`, `just_entered()`, `just_finished()`, `can_transition_to(id)`, `time_in_state()`, `pause`, `play`, `set_speed`, `reset`, `update(dt)` |
 
 `type AnimationId = &'static str`; `enum LoopMode { Once, Loop, PingPong, Times(u32) }`; `enum PlaybackState { Playing, Paused, Stopped }`. The engine advances `Animator` and `AnimationController` each fixed step and puts the current frame on the entity's `Renderable`. See `ryo-animation`.
 
@@ -719,7 +720,7 @@ Lights and occluders sit at their entity's `GlobalTransform`. See `ryo-lighting`
 | `add_custom(name, ShaderHandle) -> Result<(), EffectError>`, `set_custom_param(name, param, value) -> bool`, `set_custom_enabled(name, bool) -> bool`, `remove_custom(name) -> bool`, `has_custom(name)` | game-written full-screen WGSL |
 | `new()`, `update(dt)`, `time()`, `active_effects()`, `has_active_effects()`, `clear()` | |
 
-`enum PostProcessEffect { Fade, ColorTint, Vignette, ScreenFlash, Crt, ChromaticAberration, GodRays, AmbientOcclusion, Bloom }` (what `active_effects` yields); `enum EffectError { DuplicateName(String) }`; `trait EffectTarget { fn effects(&self) -> &EffectsManager; fn effects_mut(&mut self) -> &mut EffectsManager; }`.
+`enum PostProcessEffect { Fade, ColorTint, Vignette, ScreenFlash, Crt, ChromaticAberration, GodRays, AmbientOcclusion, Bloom }` (what `active_effects` yields); `enum EffectError { DuplicateName(String) }`.
 
 ---
 
@@ -779,7 +780,7 @@ See `ryo-particles`.
 
 Tile data, coordinates, collision and Tiled import; the renderer does not draw tilemaps yet.
 
-- `TilemapManager` (resource, `ctx.tilemaps()`), keyed by the tilemap's entity: `register(Entity, Tilemap)`, `unregister(Entity)`, `get_tile(e, layer, x, y) -> Option<TileId>`, `set_tile(e, layer, x, y, Option<TileId>)`, `world_to_tile(e, wx, wy) -> Option<(u32, u32)>`, `tile_to_world(e, tx, ty)` (top-left), `is_solid(e, wx, wy)`, `get_tilemap(e)`, `visible_chunks(e, min_x, min_y, max_x, max_y) -> Vec<ChunkCoord>`.
+- `TilemapManager` (resource, `ctx.tilemaps()`), keyed by the tilemap's entity (a record is dropped when its entity is despawned): `register(Entity, Tilemap)`, `unregister(Entity)`, `get_tile(e, layer, x, y) -> Option<TileId>`, `set_tile(e, layer, x, y, Option<TileId>)`, `world_to_tile(e, wx, wy) -> Option<(u32, u32)>`, `tile_to_world(e, tx, ty)` (top-left), `is_solid(e, wx, wy)`, `get_tilemap(e)`, `visible_chunks(e, min_x, min_y, max_x, max_y) -> Vec<ChunkCoord>`.
 - `Tilemap { tilesets, layers, tile_width, tile_height, map_width, map_height, orientation }`: `new(tile_w, tile_h, map_w, map_h)`, `add_layer(TilemapLayer) -> usize`, `add_tileset(Tileset) -> usize`, `pixel_width()`, `pixel_height()`, `world_to_tile(x, y)`, `tile_to_world(tx, ty)`, `tile_to_world_center(tx, ty)`, `tile_at_world(layer, x, y)`, `is_solid_at(x, y)`. `enum TilemapOrientation { Orthogonal, Isometric, HexagonalFlat, HexagonalPointy }` (coordinate conversion is orthogonal only).
 - `TilemapLayer { name, tiles: Vec<Option<TileId>>, width, height, tileset_index, visible, opacity, z_order, parallax_x, parallax_y }`: `new(name, w, h)`, `in_bounds(x, y)`, `get_tile(x, y)`, `set_tile(x, y, TileId)`.
 - `Tileset { name, image_path, tile_width, tile_height, columns, tile_count, spacing, margin, image_width, image_height, properties }`: `tile_uv(id)`, `get_properties(id) -> TileProperties`. `TileProperties { solid, platform, animation: Option<TileAnimation>, custom }`, `TileAnimation { frames: Vec<(TileId, u32 /* ms */)> }`, `type TileId = u32`.
@@ -870,7 +871,7 @@ Immediate-mode UI drawn in `Scene::ui` with `UiContext`; retained state structs 
 | `draw_text(text, x, y, Color)`, `draw_text_anchored(text, Anchor, ox, oy, Color)`, `draw_text_centered(text, Rect, Color)`, `draw_text_wrapped(..)`, `draw_text_wrapped_centered(..)`, `text_size(text)`, `wrap_text(..)` | text (bitmap font) |
 | `draw_rect(Rect, Color)`, `draw_rect_outline(Rect, Color, thickness)`, `draw_panel(Rect, bg, border: Option<Color>)`, `draw_themed_panel(Rect)`, `draw_progress_bar(Rect, progress, fill, bg)`, `draw_progress_bar_with_border(..)`, `draw_themed_progress_bar(Rect, progress)`, `draw_sprite(&Sprite, x, y)`, `draw_sprite_scaled(..)`, `draw_sprite_handle(&SpriteHandle, x, y)`, `draw_sprite_handle_scaled(..)`, `draw_modal_overlay(Color)`, `draw_focus_ring(..)`, `draw_focus_ring_themed(Rect)` | drawing |
 | `is_clicked(Rect)`, `is_hovered(Rect)`, `is_held(Rect)` | hit tests |
-| `input() -> &UiInput`, `consume_key(KeyCode)`, `consume_click()`, `consume_escape()`, `click_consumed()`, `escape_consumed()`, `wants_keyboard()`, `set_mouse_occluded()` | input; consumption carries over to gameplay |
+| `input() -> &UiInput`, `consume_key(KeyCode)`, `consume_click()`, `consume_escape()`, `consume_scroll()`, `click_consumed()`, `escape_consumed()`, `wants_keyboard()`, `set_mouse_occluded()` | input; consumption carries over to gameplay |
 | `push_clip(Rect)`, `pop_clip()`, `with_no_clip(f)`, `current_clip()`, `has_clip()`, `clip_depth()`, `clear_clips()`, `point_in_clip(x, y)` | clipping |
 | `handle_tab_navigation(&mut [&mut dyn Focusable])`, `handle_dropdown_tab_navigation(..)`, `finish_dropdowns()`, `any_dropdown_open()`, `focused_dropdown()`, `set_focused_dropdown(id)` | focus |
 | `dt()` (real time), `screen_size()`, `ui_scale()`, `theme()` | |
@@ -879,7 +880,7 @@ Immediate-mode UI drawn in `Scene::ui` with `UiContext`; retained state structs 
 - `Rect { x, y, width, height }`: `new(x, y, w, h)`, `from_pos_size`, `centered_at(cx, cy, w, h)`, `right()`, `bottom()`, `center()`, `contains(x, y)`, `shrink(p)`, `expand(p)`.
 - Layout: `VBox::new(x, y, spacing)` / `HBox::new(x, y, spacing)` with `next(w, h) -> Rect`, `with_halign(HAlign)` / `with_valign(VAlign)`, `bounds()`, `reset()`; `Stack::new(x, y, w, h)` / `from_rect` with `centered(w, h)`, `aligned(w, h, HAlign, VAlign)`, `padded(p)`, `split_horizontal(w)`, `split_vertical(h)`. `enum HAlign { Left, Center, Right }`, `enum VAlign { Top, Center, Bottom }`.
 - Retained state: `TextInputState` (`new()`, `with_text`, `text()`, `set_text`, `is_focused`, `set_focused`, selection and clipboard methods), `DropdownState` (`new()`, `with_selected(i)`, `with_id(u32)`, `selected()`, `set_selected`, `is_open`, `open`, `close`, `toggle`), `ScrollViewState` (`new()`, `scroll_y()`, `set_scroll_y`, `scroll_to_top`, `scroll_to_bottom(content_h, view_h)`), `FocusTrap::new(&mut [&mut dyn Focusable])` (`focus_next`, `focus_prev`, ...), `trait Focusable { fn is_focused(&self) -> bool; fn set_focused(&mut self, bool); .. }`.
-- `UiInput`: the frame's input as the UI sees it (`mouse_position`, `mouse_pressed`, `key_pressed`, `key_repeat`, `text_input`, `gamepad_button_pressed`, `left_stick`, `consume_key`, `consume_mouse`, ...).
+- `UiInput`: the frame's input as the UI sees it (`mouse_position`, `mouse_pressed`, `key_pressed`, `key_repeat`, `text_input`, `gamepad_button_pressed`, `left_stick`, `consume_key`, `consume_mouse`, `consume_scroll`, ...).
 - UI tweens (driven by the owner with `update(ui.dt())`): `UiTween<T: Lerp>` with `new(start, end, duration)`, `with_ease(Ease)`, `with_delay`, `with_loop(UiTweenLoop)`, `on_start`, `on_complete`, `update(dt)`, `value()`, `progress()`, `is_finished()`, `is_playing()`, `restart`, `pause`, `resume`, `stop`, `retarget(target)`; aliases `TweenFloat`, `TweenVec2` (`(f32, f32)`), `TweenColor`, `TweenRect`; `enum UiTweenLoop { Once, Loop, PingPong, Times(u32) }`.
 - Themes: `Theme` (`new()`, `dark()`, `light()`, `load(path)`, `save(path)`), `HotReloadTheme` (`new(path)`, `poll_reload()`, `force_reload()`, `get()`, `set(Theme)`, `path()`), `ThemeError`.
 - Fonts: `BitmapFont` (`load(path, char_w, char_h)`, `from_rgba(..)`, `with_spacing`, `with_char_range`, `text_width`, ...), `create_debug_font() -> BitmapFont` (the built-in 8×8 font).

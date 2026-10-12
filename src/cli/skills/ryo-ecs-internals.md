@@ -83,7 +83,7 @@ A resource must be `Send + Sync`. The scene stack and audio are not, so they liv
 ## Transform Internals
 
 - **Insert hook** (`place_on_insert`): inserting a `Transform` sets `GlobalTransform` at once, from the parent's current global for a child. Spawning in `update` therefore places the entity for the rest of the step. Edits through `get_mut::<Transform>` do not fire it; they wait for propagation.
-- **Propagation** (`propagate_transforms`): one system, run in `FixedSet::Transforms` and `PostUpdateSet::Transforms`. Roots are `Transform` without `ChildOf`; a subtree is recomputed when the root's `Transform` changed or, during the walk, an ancestor's `Transform`/`ChildOf` changed. Children of a parent with no `Transform` (a grouping entity) start from the identity and are recomputed every run. Writes go through `set_if_neq`, so an unmoved entity's `GlobalTransform` is never marked changed.
+- **Propagation** (`propagate_transforms`): one system, run in `FixedSet::Transforms` and `PostUpdateSet::Transforms`. Roots are `Transform` without `ChildOf`; a subtree is recomputed when the root's `Transform` changed or, during the walk, an ancestor's `Transform`/`ChildOf` changed. Children of a parent with no `Transform` (a grouping entity) start from the identity; they are recomputed like any node, plus when the grouping entity has just lost its `Transform`. Writes go through `set_if_neq`, so an unmoved entity's `GlobalTransform` is never marked changed.
 - **Previous transforms**: propagation also inserts `PreviousGlobalTransform` (with `skip: true`) on every entity that is `Interpolated` or under one, and removes it elsewhere, through `Commands` (applied at the end of the phase).
 - **Snapshot**: `snapshot_previous_transforms` runs first in each fixed step and copies `GlobalTransform` into `PreviousGlobalTransform`, clearing `skip`.
 - **Render**: extraction calls `render_global(global, previous, time.fixed.overstep_fraction())`; gameplay never sees a blend.
@@ -111,7 +111,7 @@ In `bevy_ecs` 0.20 a resource is a component on a hidden entity marked `IsResour
 
 - `Disabled` is the kernel's entity-disabling component: every query skips it unless it includes `Allow<Disabled>` (or names `Disabled`). Systems need no filter of their own for pooled entities.
 - Bookkeeping that must see disabled entities asks for them: physics' `(With<RigidBody>, Added<Disabled>, Allow<Disabled>)` unregisters a body as it is disabled.
-- `Pool<B: Bundle>` spawns its batches disabled; `acquire` removes `Disabled`, `release`/`release_all` insert it. `acquire` does not reset components. A pool forgets entities the world no longer has (a cleanup sweep) and refills on the next `acquire`.
+- `Pool<B: Bundle>` spawns its batches disabled; `acquire` removes `Disabled`, `release`/`release_all` insert it. `acquire` does not reset components and skips the entity's interpolation for this step. Acquire, release and `is_active` are O(1); a pool forgets entities the world no longer has (a cleanup sweep) when it meets them or runs dry, and refills.
 
 ## Engine Systems
 

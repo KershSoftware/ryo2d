@@ -38,11 +38,13 @@ The UI pass reads the frame's input through `ui.input()` (a `UiInput` snapshot: 
 | Consumed by | What |
 |-------------|------|
 | `button`, `button_styled`, `checkbox`, `toggle`, `text_input`, `dropdown` | the left click they act on |
-| `slider`, a `scroll_view`'s scrollbar | the press and drag |
+| `slider`, a `scroll_view`'s scrollbar (vertical or horizontal) | the press and drag |
+| A hovered `scroll_view` whose content overflows | the mouse wheel |
 | A focused text input | the whole keyboard and the typed text |
 | An open dropdown | Escape (closes the list) |
 | `ui.consume_click()` | the left click |
 | `ui.consume_escape()` | Escape |
+| `ui.consume_scroll()` | the mouse wheel (say, over a panel, so the camera does not zoom) |
 | `ui.consume_key(key)` | any key |
 | `ui.input().consume_text()` | the frame's typed text (`ctx.input.text_input()`) |
 
