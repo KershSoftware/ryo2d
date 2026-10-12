@@ -468,7 +468,7 @@ EngineBuilder::new()
 | `target_fps(u32)` | cap when vsync is off |
 | `vsync(bool)` | default `true` |
 | `background_fps(u32)`, `background_rendering(bool)` | unfocused behaviour |
-| `window_mode(WindowMode)`, `display_mode(DisplayMode)`, `max_width(u32)`, `max_height(u32)`, `ui_scale(Option<u32>)` | presentation |
+| `pixel_art(w: u32, h: u32)`, `window_size(w: u32, h: u32)`, `resizable(bool)`, `display_mode(DisplayMode)`, `ui_scale(Option<u32>)` | presentation |
 | `show_colliders(bool)`, `show_fps(bool)`, `show_velocities(bool)`, `show_origins(bool)` | debug overlays |
 | `with_user_preferences(impl Into<UserPreferenceFilter>)` | let saved `system.json` values override |
 | `insert_resource(impl Resource)` | resource for every scene and system |
@@ -480,7 +480,7 @@ EngineBuilder::new()
 
 Settings resolve in order: engine defaults, `Ryo.toml` (or values embedded by `ryo2d build`), builder calls, then saved preferences allowed by `with_user_preferences`.
 
-`enum WindowMode { Fixed, ResizableAspectRatio (default), ResizableIntegerScale, ResizableStretch }`.
+`enum Presentation { ResolutionIndependent (default), PixelArt { width, height } }`. `ScreenMapping` converts between window pixels and screen space: `new(presentation, physical, scale_factor)`, `screen_size()`, `scale()`, `window_rect()`, `window_to_screen(Vec2)`, `screen_to_window(Vec2)`, `render_size()`, `ndc_rect()`, `presentation()`.
 
 ---
 

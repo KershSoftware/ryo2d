@@ -41,7 +41,7 @@ EngineBuilder::new()
   .run()
 ```
 
-`UserPreferenceFilter::all()`, `none()`, `only(..)`, or an array/`Vec`/slice of `UserPreference` (`MasterVolume`, `MusicVolume`, `SfxVolume`, `Resolution`, `DisplayMode`, `Vsync`, `ShowFps`). Leave `Resolution` out for a fixed-resolution game. Repeated calls combine.
+`UserPreferenceFilter::all()`, `none()`, `only(..)`, or an array/`Vec`/slice of `UserPreference` (`MasterVolume`, `MusicVolume`, `SfxVolume`, `Resolution`, `DisplayMode`, `Vsync`, `ShowFps`). A saved `Resolution` sizes the window; the game's own resolution (the pixel-art target or design area) comes from `Ryo.toml` and the builder. Repeated calls combine.
 
 The fixed update rate is builder-only: `EngineBuilder::fixed_hz(hz)` (default 60). There is no Ryo.toml key for it.
 
@@ -60,6 +60,7 @@ assets = "assets"
 
 [system]                    # defaults for player settings
 resolution = "1280x720"
+pixel_art = false           # true: resolution is a pixel-art target, scaled by whole numbers
 vsync = true
 display_mode = "windowed"   # windowed | exclusive_fullscreen | borderless_fullscreen
 master_volume = 0.8
@@ -134,7 +135,7 @@ saves.save_system(&settings)?;
 - `load_or_create_system(&defaults)` creates the file from `[system]` when missing and merges new default keys into an existing one; `load_or_create_system_filtered(&defaults, &filter)` writes only the filtered keys to a new file.
 - `save_system` updates keys already in the file and adds a missing key only when its value differs, so a narrow file keeps its shape.
 - `DisplayMode::all()` and `display_name()`, `Resolution::common()` and `display_name()` feed settings menus.
-- Applying a change at runtime is separate from saving it: `ctx.request_display_mode(mode)`, `ctx.request_resolution(w, h)`, `ctx.request_display_change(w, h, mode)`, `ctx.request_ui_scale(..)` (applied after the frame), and `ctx.audio.set_master_volume(v)` / `set_music_volume` / `set_sfx_volume`.
+- Applying a change at runtime is separate from saving it: `ctx.request_display_mode(mode)`, `ctx.request_resolution(w, h)` (resizes the window), `ctx.request_display_change(w, h, mode)`, `ctx.request_ui_scale(..)` (applied after the frame), and `ctx.audio.set_master_volume(v)` / `set_music_volume` / `set_sfx_volume`.
 
 ## Game Data
 

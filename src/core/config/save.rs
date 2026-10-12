@@ -1456,6 +1456,7 @@ mod tests {
 
     let defaults = super::super::workspace::SystemDefaults {
       resolution: Some((1920, 1080)),
+      pixel_art: false,
       vsync: false,
       display_mode: DisplayMode::ExclusiveFullscreen,
       master_volume: 0.5,
@@ -1566,6 +1567,7 @@ mod tests {
 
     let defaults = super::super::workspace::SystemDefaults {
       resolution: Some((1024, 768)),
+      pixel_art: false,
       vsync: true,
       display_mode: DisplayMode::Windowed,
       master_volume: 0.9,

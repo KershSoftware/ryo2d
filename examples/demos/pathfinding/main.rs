@@ -589,11 +589,7 @@ impl DemoPage for PathfindingDemoScene {
 fn main() {
   Demo::new("Pathfinding")
     .resolution(1024, 768)
-    .configure(|b| {
-      b.window_mode(WindowMode::ResizableAspectRatio)
-        .target_fps(60)
-        .fixed_hz(60)
-    })
+    .configure(|b| b.target_fps(60).fixed_hz(60))
     .page(PathfindingDemoScene::new)
     .run();
 }

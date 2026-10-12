@@ -393,16 +393,14 @@ Released entities carry `Disabled`: every query, physics and rendering skip them
 
 ## Resolution and Window
 
-Resolution comes from `Ryo.toml`; the game always works in its design resolution and the window scales it.
+Resolution comes from `Ryo.toml` (`[system] resolution`) or `EngineBuilder::resolution`. `Presentation` says how the world reaches the window:
 
-| `WindowMode` | Behaviour |
+| `Presentation` | Behaviour |
 |--------------|-----------|
-| `Fixed` | No resizing |
-| `ResizableAspectRatio` | Scales with letterboxing (default) |
-| `ResizableIntegerScale` | Pixel-perfect integer scaling |
-| `ResizableStretch` | Fills the window, may distort |
+| `ResolutionIndependent` (default) | Renders at the window's resolution; the game resolution is the design area |
+| `PixelArt { width, height }` | Renders into that target, scaled by a whole number and centred with bars (`EngineBuilder::pixel_art(w, h)` or `pixel_art = true` in `[system]`) |
 
-`DisplayMode` (`Windowed`, `ExclusiveFullscreen`, `BorderlessFullscreen`) is how the window appears: `ctx.request_display_mode(DisplayMode::BorderlessFullscreen)`. Builder overrides (`resolution`, `target_fps`, `vsync`, `fixed_hz`, `window_mode`) beat `Ryo.toml`; saved player preferences beat both when `with_user_preferences` includes them (`ryo-config-save`).
+`EngineBuilder::window_size(w, h)` sets the window's initial size and `resizable(bool)` whether the player can resize it. A saved `resolution` preference picks the window size, not the game's. `DisplayMode` (`Windowed`, `ExclusiveFullscreen`, `BorderlessFullscreen`) is how the window appears: `ctx.request_display_mode(DisplayMode::BorderlessFullscreen)`. Builder overrides (`resolution`, `pixel_art`, `window_size`, `target_fps`, `vsync`, `fixed_hz`) beat `Ryo.toml`; saved player preferences beat both when `with_user_preferences` includes them (`ryo-config-save`).
 
 ## Navigation
 

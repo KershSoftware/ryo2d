@@ -199,8 +199,7 @@ fn main() {
   Demo::new("DPI Scaling")
     .resolution(800, 600)
     .configure(|b| {
-      b.window_mode(WindowMode::ResizableAspectRatio)
-        .ui_scale(None) // Auto-detect from DPI
+      b.ui_scale(None) // Auto-detect from DPI
     })
     .page(DpiScalingPage::new)
     .run();

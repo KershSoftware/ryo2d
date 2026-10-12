@@ -18,6 +18,7 @@ pub mod gpu_error;
 pub mod parallax;
 pub mod parallax_gpu;
 pub mod renderer;
+pub mod screen;
 pub mod sprite;
 pub mod sprite_gpu;
 mod texture_registry;
@@ -34,6 +35,7 @@ pub use gpu_error::GpuError;
 pub use parallax::TileMode;
 pub use parallax_gpu::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
 pub use renderer::WgpuRenderer;
+pub use screen::{Presentation, ScreenMapping};
 pub use sprite::{AnimatedSprite, Sprite};
 pub(crate) use sprite_gpu::effect_padding;
 pub use sprite_gpu::{

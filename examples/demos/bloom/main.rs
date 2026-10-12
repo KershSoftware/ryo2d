@@ -297,7 +297,6 @@ impl DemoPage for BloomPage {
 fn main() {
   Demo::new("Bloom")
     .resolution(960, 640)
-    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
     .page(BloomPage::new)
     .run();
 }

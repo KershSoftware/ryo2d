@@ -42,15 +42,15 @@ fn builder_only_fields_survive_resolve() {
   let r = EngineBuilder::new()
     .target_fps(144)
     .fixed_hz(120)
-    .window_mode(WindowMode::Fixed)
-    .max_width(1000)
+    .resizable(false)
+    .window_size(800, 600)
     .ui_scale(Some(2))
     .start_scene(EmptyScene)
     .resolve_in(None, false);
   assert_eq!(r.config.target_fps, 144);
   assert_eq!(r.config.fixed_hz, 120);
-  assert_eq!(r.config.window_mode, WindowMode::Fixed);
-  assert_eq!(r.config.max_width, Some(1000));
+  assert!(!r.config.resizable);
+  assert_eq!(r.config.window_size, Some((800, 600)));
   assert_eq!(r.config.ui_scale, Some(2));
 }
 
@@ -118,7 +118,9 @@ fn saved_preference_beats_builder() {
     .with_user_preferences(crate::core::config::UserPreferenceFilter::all())
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), false);
-  assert_eq!((r.config.width, r.config.height), (1600, 900));
+  // The saved resolution sizes the window; the game keeps its own
+  assert_eq!(r.config.window_size, Some((1600, 900)));
+  assert_eq!((r.config.width, r.config.height), (800, 600));
 }
 
 #[test]
@@ -150,7 +152,8 @@ fn saved_720p_survives_a_different_ryo_toml_resolution() {
     .with_user_preferences([crate::core::config::UserPreference::Resolution])
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), false);
-  assert_eq!((r.config.width, r.config.height), (1280, 720));
+  assert_eq!(r.config.window_size, Some((1280, 720)));
+  assert_eq!((r.config.width, r.config.height), (1920, 1080));
   let raw = std::fs::read_to_string(dir.path().join("data/system.json")).unwrap();
   assert!(raw.contains("1280x720"));
 }
@@ -284,7 +287,7 @@ fn repeated_builder_calls_and_filters() {
     .start_scene(EmptyScene)
     .resolve_in(Some(&ws), false);
   assert_eq!(r.master_volume, 0.2);
-  assert_eq!((r.config.width, r.config.height), (1600, 900));
+  assert_eq!(r.config.window_size, Some((1600, 900)));
   // Vsync isn't in either filter: the last builder call wins
   assert!(r.vsync);
 }
@@ -493,30 +496,27 @@ fn engine_builder_sets_fixed_hz_at_least_one() {
 }
 
 #[test]
-fn window_mode_defaults_to_resizable_aspect_ratio() {
-  let mode = WindowMode::default();
-  assert_eq!(mode, WindowMode::ResizableAspectRatio);
-}
-
-#[test]
-fn engine_config_includes_window_mode() {
+fn the_default_is_resolution_independent_and_resizable() {
   let config = EngineConfig::default();
-  assert_eq!(config.window_mode, WindowMode::ResizableAspectRatio);
+  assert_eq!(config.presentation, Presentation::ResolutionIndependent);
+  assert!(config.resizable);
+  assert_eq!(config.window_size, None);
 }
 
 #[test]
-fn engine_builder_sets_window_mode() {
-  let builder = EngineBuilder::new().window_mode(WindowMode::Fixed);
-  assert_eq!(builder.config.window_mode, WindowMode::Fixed);
-
-  let builder = EngineBuilder::new().window_mode(WindowMode::ResizableIntegerScale);
+fn pixel_art_sets_the_presentation_and_the_resolution() {
+  let r = EngineBuilder::new()
+    .pixel_art(320, 180)
+    .start_scene(EmptyScene)
+    .resolve_in(None, false);
   assert_eq!(
-    builder.config.window_mode,
-    WindowMode::ResizableIntegerScale
+    r.config.presentation,
+    Presentation::PixelArt {
+      width: 320,
+      height: 180
+    }
   );
-
-  let builder = EngineBuilder::new().window_mode(WindowMode::ResizableStretch);
-  assert_eq!(builder.config.window_mode, WindowMode::ResizableStretch);
+  assert_eq!((r.config.width, r.config.height), (320, 180));
 }
 
 // ===========================================================================

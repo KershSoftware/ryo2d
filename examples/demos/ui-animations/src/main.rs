@@ -12,7 +12,6 @@ use scenes::{EasingShowcase, InteractiveDemo, PropertyDemo};
 fn main() {
   Demo::new("UI Animations")
     .resolution(800, 600)
-    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
     .page(EasingShowcase::new)
     .page(PropertyDemo::new)
     .page(InteractiveDemo::new)

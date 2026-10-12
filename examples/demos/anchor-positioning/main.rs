@@ -196,11 +196,7 @@ impl DemoPage for AnchorPage {
 fn main() {
   Demo::new("Anchor Positioning")
     .resolution(800, 600)
-    .configure(|b| {
-      b.window_mode(WindowMode::ResizableIntegerScale)
-        .target_fps(60)
-        .fixed_hz(60)
-    })
+    .configure(|b| b.target_fps(60).fixed_hz(60))
     .page(AnchorPage::new)
     .run();
 }

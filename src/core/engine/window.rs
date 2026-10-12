@@ -12,11 +12,12 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::frame::should_pace_frames;
-use super::{Engine, EngineEvent, FrameOutcome, WindowMode};
+use super::{Engine, EngineEvent, FrameOutcome};
 use crate::core::config::DisplayMode;
 use crate::core::cursor::CursorRequest;
+use crate::core::graphics::WgpuRenderer;
 use crate::core::graphics::renderer::RendererSettings;
-use crate::core::graphics::{Camera, WgpuRenderer};
+use crate::core::graphics::screen::initial_window_size;
 use crate::core::input::{Input, InputEvent};
 use crate::core::render::RenderPipeline;
 use crate::core::window::{WindowInfo, WindowRequest};
@@ -93,9 +94,6 @@ impl Engine {
     RendererSettings {
       game_width: self.config.width,
       game_height: self.config.height,
-      window_mode: self.config.window_mode,
-      max_width: self.config.max_width,
-      max_height: self.config.max_height,
       vsync: Some(self.vsync),
     }
   }
@@ -111,28 +109,14 @@ impl Engine {
     let window_size = window.inner_size();
     let (game_width, game_height) = (self.config.width as f32, self.config.height as f32);
 
-    // For stretch mode, coordinates map 1:1 to the resized buffer
-    if self.config.window_mode == WindowMode::ResizableStretch {
-      return Some((window_x as f32, window_y as f32));
-    }
-
     // Scale to fit, keeping the aspect ratio (bars on the sides or top/bottom)
     let window_aspect = window_size.width as f32 / window_size.height as f32;
     let game_aspect = game_width / game_height;
-    let mut scale = if window_aspect > game_aspect {
+    let scale = if window_aspect > game_aspect {
       window_size.height as f32 / game_height
     } else {
       window_size.width as f32 / game_width
     };
-    if let Some(max_width) = self.config.max_width {
-      scale = scale.min(max_width as f32 / game_width);
-    }
-    if let Some(max_height) = self.config.max_height {
-      scale = scale.min(max_height as f32 / game_height);
-    }
-    if self.config.window_mode == WindowMode::ResizableIntegerScale {
-      scale = scale.floor().max(1.0);
-    }
 
     let offset_x = (window_size.width as f32 - game_width * scale) / 2.0;
     let offset_y = (window_size.height as f32 - game_height * scale) / 2.0;
@@ -169,14 +153,11 @@ impl Engine {
 
   /// Apply pending window configuration changes from the game.
   fn apply_window_request(&mut self, window: &Arc<Window>, request: WindowRequest) {
+    // A resolution request sizes the window; the game's resolution stays
     if let (Some(width), Some(height)) = (request.width, request.height) {
       let new_size = winit::dpi::PhysicalSize::new(width, height);
       if let Some(actual_size) = window.request_inner_size(new_size) {
-        self.config.width = actual_size.width;
-        self.config.height = actual_size.height;
         self.last_window_size = (actual_size.width, actual_size.height);
-        *self.world.resource_mut::<Camera>() =
-          Camera::centered_at(width as f32 / 2.0, height as f32 / 2.0, width, height);
       }
     }
 
@@ -396,16 +377,17 @@ impl ApplicationHandler<EngineEvent> for Engine {
     if self.window.is_some() {
       return;
     }
-    let resizable = self.config.window_mode != WindowMode::Fixed;
+    let (width, height) = initial_window_size(
+      self.config.presentation,
+      (self.config.width, self.config.height),
+      self.config.window_size,
+    );
 
     // Hidden until the first frame is presented, to avoid a white flash
     let window_attrs = WindowAttributes::default()
       .with_title(&self.config.title)
-      .with_inner_size(winit::dpi::LogicalSize::new(
-        self.config.width,
-        self.config.height,
-      ))
-      .with_resizable(resizable)
+      .with_inner_size(winit::dpi::LogicalSize::new(width, height))
+      .with_resizable(self.config.resizable)
       .with_decorations(self.config.display_mode != DisplayMode::BorderlessFullscreen)
       .with_visible(false);
     // On the web the window is a canvas appended to the page, sized by the

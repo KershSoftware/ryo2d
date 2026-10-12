@@ -541,7 +541,6 @@ impl ControllerPage {
 fn main() {
   Demo::new("Controller")
     .resolution(800, 600)
-    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
     .page(ControllerPage::new)
     .run();
 }

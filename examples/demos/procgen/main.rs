@@ -326,10 +326,7 @@ fn tile_color(tile: TileType) -> Color {
 fn main() {
   Demo::new("Procedural Generation")
     .resolution(SCREEN_WIDTH, SCREEN_HEIGHT)
-    .configure(|b| {
-      b.window_mode(WindowMode::ResizableAspectRatio)
-        .target_fps(60)
-    })
+    .configure(|b| b.target_fps(60))
     .page(ProcgenPage::new)
     .run();
 }

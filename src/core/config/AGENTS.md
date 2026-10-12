@@ -15,7 +15,7 @@ See skill `ryo-config-save` for Ryo.toml layout and the save API.
 - After the first run, `data/system.json` holds the filtered settings and overrides later builder or `[system]` changes - delete it in dev to re-seed.
 - Embedded keys live in `resolve::COMPILED_EMBEDDED`, `cli/commands/build.rs::embedded_config_env` and `src/build.rs` (tests keep them in sync)
 - Filter with `UserPreference` / `UserPreferenceFilter` (`all()`, `none()`, or an array of fields):
-  - Fixed-resolution games: leave out `Resolution`
+  - `Resolution` is the player's window size; the game's resolution (the pixel-art target or design area) always comes from the project and builder layers. Leave it out to keep the window the game picks
   - Audio-only settings: volume fields only
 
 ## Save Location

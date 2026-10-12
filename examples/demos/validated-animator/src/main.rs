@@ -340,7 +340,6 @@ impl DemoPage for ValidatedAnimatorPage {
 fn main() {
   Demo::new("Validated Animator")
     .resolution(800, 600)
-    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
     .page(ValidatedAnimatorPage::new)
     .run();
 }

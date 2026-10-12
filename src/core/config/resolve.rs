@@ -18,6 +18,7 @@ use super::save::{
   DisplayMode, SystemState, UserPreference, UserPreferenceFilter, parse_resolution,
 };
 use super::workspace::Workspace;
+use crate::core::graphics::screen::{Presentation, initial_window_size};
 
 /// Engine default resolution.
 pub(crate) const DEFAULT_RESOLUTION: (u32, u32) = (1280, 720);
@@ -34,6 +35,8 @@ const DEFAULT_TITLE: &str = "Ryo2D";
 pub(crate) struct BuilderOverrides {
   pub title: Option<String>,
   pub resolution: Option<(u32, u32)>,
+  pub pixel_art: Option<bool>,
+  pub window_size: Option<(u32, u32)>,
   pub display_mode: Option<DisplayMode>,
   pub vsync: Option<bool>,
   pub show_fps: Option<bool>,
@@ -51,6 +54,7 @@ pub(crate) struct BuilderOverrides {
 pub(crate) struct ProjectLayer {
   pub title: Option<String>,
   pub resolution: Option<(u32, u32)>,
+  pub pixel_art: Option<bool>,
   pub display_mode: Option<DisplayMode>,
   pub vsync: Option<bool>,
   pub master_volume: Option<f32>,
@@ -74,6 +78,7 @@ pub(crate) struct ProjectLayer {
 /// Player preferences present in `system.json`; `None` = key absent or malformed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct StoredPreferences {
+  /// The window size the player picked
   pub resolution: Option<(u32, u32)>,
   pub display_mode: Option<DisplayMode>,
   pub vsync: Option<bool>,
@@ -87,7 +92,12 @@ pub(crate) struct StoredPreferences {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedSettings {
   pub title: String,
+  /// The pixel-art target, or the main camera's design area
   pub resolution: (u32, u32),
+  /// Whether `resolution` is a pixel-art target
+  pub pixel_art: bool,
+  /// The window's logical size, when a layer or the player picked one
+  pub window_size: Option<(u32, u32)>,
   pub display_mode: DisplayMode,
   pub vsync: bool,
   pub master_volume: f32,
@@ -114,6 +124,8 @@ impl ResolvedSettings {
     ResolvedSettings {
       title: DEFAULT_TITLE.to_string(),
       resolution: DEFAULT_RESOLUTION,
+      pixel_art: false,
+      window_size: None,
       display_mode: DisplayMode::Windowed,
       vsync: true,
       master_volume: DEFAULT_MASTER_VOLUME,
@@ -135,14 +147,29 @@ impl ResolvedSettings {
     }
   }
 
-  /// The `system.json` contents a new file is seeded with.
+  /// How the world reaches the window.
+  pub(crate) fn presentation(&self) -> Presentation {
+    if self.pixel_art {
+      Presentation::PixelArt {
+        width: self.resolution.0,
+        height: self.resolution.1,
+      }
+    } else {
+      Presentation::ResolutionIndependent
+    }
+  }
+
+  /// The `system.json` contents a new file is seeded with: its resolution is
+  /// the window the game opens.
   pub(crate) fn to_system_state(&self, env: HashMap<String, serde_json::Value>) -> SystemState {
+    let (width, height) =
+      initial_window_size(self.presentation(), self.resolution, self.window_size);
     SystemState {
       master_volume: self.master_volume,
       music_volume: self.music_volume,
       sfx_volume: self.sfx_volume,
-      width: self.resolution.0,
-      height: self.resolution.1,
+      width,
+      height,
       display_mode: self.display_mode,
       vsync: Some(self.vsync),
       show_fps: Some(self.show_fps),
@@ -161,6 +188,7 @@ pub(crate) fn resolve_settings(
 
   set(&mut s.title, project.title.clone());
   set(&mut s.resolution, project.resolution);
+  set(&mut s.pixel_art, project.pixel_art);
   set(&mut s.display_mode, project.display_mode);
   set(&mut s.vsync, project.vsync);
   set(&mut s.master_volume, project.master_volume);
@@ -184,6 +212,10 @@ pub(crate) fn resolve_settings(
 
   set(&mut s.title, builder.title.clone());
   set(&mut s.resolution, builder.resolution);
+  set(&mut s.pixel_art, builder.pixel_art);
+  if builder.window_size.is_some() {
+    s.window_size = builder.window_size;
+  }
   set(&mut s.display_mode, builder.display_mode);
   set(&mut s.vsync, builder.vsync);
   set(&mut s.show_fps, builder.show_fps);
@@ -197,8 +229,9 @@ pub(crate) fn resolve_settings(
   }
 
   if let Some((prefs, filter)) = prefs {
-    if filter.contains(UserPreference::Resolution) {
-      set(&mut s.resolution, prefs.resolution);
+    // The player's resolution sizes the window; the game's resolution is the project's
+    if filter.contains(UserPreference::Resolution) && prefs.resolution.is_some() {
+      s.window_size = prefs.resolution;
     }
     if filter.contains(UserPreference::DisplayMode) {
       set(&mut s.display_mode, prefs.display_mode);
@@ -252,6 +285,7 @@ impl ProjectLayer {
     ProjectLayer {
       title: Some(config.title.clone()),
       resolution: system.resolution,
+      pixel_art: Some(system.pixel_art),
       display_mode: Some(system.display_mode),
       vsync: Some(system.vsync),
       master_volume: Some(system.master_volume),
@@ -294,6 +328,7 @@ impl ProjectLayer {
         })
       }),
       vsync: parse_embedded(&lookup, "RYO_EMBED_VSYNC"),
+      pixel_art: parse_embedded(&lookup, "RYO_EMBED_PIXEL_ART"),
       master_volume: parse_embedded(&lookup, "RYO_EMBED_MASTER_VOLUME"),
       music_volume: parse_embedded(&lookup, "RYO_EMBED_MUSIC_VOLUME"),
       sfx_volume: parse_embedded(&lookup, "RYO_EMBED_SFX_VOLUME"),
@@ -326,6 +361,7 @@ macro_rules! compiled_embedded {
 
 pub(crate) const COMPILED_EMBEDDED: &[(&str, Option<&str>)] = compiled_embedded![
   "RYO_EMBED_RESOLUTION",
+  "RYO_EMBED_PIXEL_ART",
   "RYO_EMBED_VSYNC",
   "RYO_EMBED_DISPLAY_MODE",
   "RYO_EMBED_MASTER_VOLUME",
@@ -396,6 +432,8 @@ mod tests {
     BuilderOverrides {
       title: Some("Builder".to_string()),
       resolution: Some((640, 480)),
+      pixel_art: Some(false),
+      window_size: None,
       display_mode: Some(DisplayMode::ExclusiveFullscreen),
       vsync: Some(false),
       show_fps: Some(true),
@@ -412,6 +450,7 @@ mod tests {
     ProjectLayer {
       title: Some("Project".to_string()),
       resolution: Some((800, 600)),
+      pixel_art: Some(true),
       display_mode: Some(DisplayMode::BorderlessFullscreen),
       vsync: Some(true),
       master_volume: Some(0.3),
@@ -504,7 +543,12 @@ mod tests {
       &builder_with_everything(),
       Some((&prefs, &filter)),
     );
-    assert_eq!(s.resolution, (1920, 1080));
+    assert_eq!(
+      s.resolution,
+      (640, 480),
+      "the player picks the window, not the game"
+    );
+    assert_eq!(s.window_size, Some((1920, 1080)));
     assert_eq!(s.display_mode, DisplayMode::Windowed);
     assert!(s.vsync);
     assert_eq!(
@@ -512,6 +556,28 @@ mod tests {
       (0.1, 0.2, 0.9)
     );
     assert!(!s.show_fps);
+  }
+
+  #[test]
+  fn the_project_picks_the_art_and_the_player_picks_the_window() {
+    let project = ProjectLayer {
+      resolution: Some((320, 180)),
+      pixel_art: Some(true),
+      ..Default::default()
+    };
+    let prefs = StoredPreferences {
+      resolution: Some((1920, 1080)),
+      ..Default::default()
+    };
+    let filter = UserPreferenceFilter::all();
+    let s = resolve_settings(
+      &project,
+      &BuilderOverrides::default(),
+      Some((&prefs, &filter)),
+    );
+    assert!(s.pixel_art);
+    assert_eq!(s.resolution, (320, 180), "the art's size");
+    assert_eq!(s.window_size, Some((1920, 1080)), "the player's window");
   }
 
   #[test]
@@ -681,7 +747,7 @@ logo = "art/logo.png"
   fn compiled_table_has_unique_embed_keys() {
     let keys: Vec<&str> = COMPILED_EMBEDDED.iter().map(|(key, _)| *key).collect();
     let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
-    assert_eq!(keys.len(), 22);
+    assert_eq!(keys.len(), 23);
     assert_eq!(unique.len(), keys.len());
     assert!(keys.iter().all(|key| key.starts_with("RYO_EMBED_")));
     assert_eq!(compiled_embedded_value("RYO_EMBED_NOT_A_KEY"), None);

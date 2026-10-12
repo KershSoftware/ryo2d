@@ -1345,11 +1345,7 @@ impl DemoPage for PropertyTweenScene {
 fn main() {
   Demo::new("Tweening")
     .resolution(1024, 768)
-    .configure(|b| {
-      b.window_mode(WindowMode::ResizableAspectRatio)
-        .target_fps(60)
-        .fixed_hz(60)
-    })
+    .configure(|b| b.target_fps(60).fixed_hz(60))
     .page(EasingScene::new)
     .page(SpeedControlScene::new)
     .page(CallbacksScene::new)

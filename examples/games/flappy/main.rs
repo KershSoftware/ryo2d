@@ -43,7 +43,7 @@ fn main() {
     .unwrap_or(false);
 
   let builder = EngineBuilder::new()
-    .resolution(400, 600)
+    .pixel_art(400, 600)
     .target_fps(144)
     .fixed_hz(144);
 

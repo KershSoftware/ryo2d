@@ -44,7 +44,8 @@ impl Demo {
     }
   }
 
-  /// Game resolution
+  /// The pixel-art resolution the demo draws at (scaled by whole numbers to
+  /// the window)
   pub fn resolution(mut self, width: u32, height: u32) -> Self {
     self.resolution = Some((width, height));
     self
@@ -103,7 +104,7 @@ impl Demo {
     });
     let mut builder = EngineBuilder::new().title(format!("Ryo2D - {}", def.title));
     if let Some((width, height)) = self.resolution {
-      builder = builder.resolution(width, height);
+      builder = builder.pixel_art(width, height);
     }
     for configure in self.configure {
       builder = configure(builder);

@@ -252,11 +252,7 @@ impl DemoPage for HierarchyPage {
 fn main() {
   Demo::new("Hierarchy Sprites")
     .resolution(800, 600)
-    .configure(|b| {
-      b.window_mode(WindowMode::ResizableIntegerScale) // Pixel-perfect scaling
-        .target_fps(60)
-        .fixed_hz(FIXED_HZ)
-    })
+    .configure(|b| b.target_fps(60).fixed_hz(FIXED_HZ))
     .page(HierarchyPage::new)
     .run();
 }

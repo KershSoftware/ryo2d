@@ -164,6 +164,7 @@ fn embedded_config_env(
         .map(|(w, h)| format!("{}x{}", w, h))
         .unwrap_or_else(|| "1280x720".to_string()),
     ),
+    ("RYO_EMBED_PIXEL_ART", system.pixel_art.to_string()),
     ("RYO_EMBED_VSYNC", system.vsync.to_string()),
     ("RYO_EMBED_DISPLAY_MODE", display_mode.to_string()),
     ("RYO_EMBED_MASTER_VOLUME", system.master_volume.to_string()),

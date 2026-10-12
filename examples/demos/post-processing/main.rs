@@ -335,7 +335,6 @@ impl DemoPage for PostProcessingPage {
 fn main() {
   Demo::new("Post-Processing")
     .resolution(800, 600)
-    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
     .page(PostProcessingPage::new)
     .run();
 }

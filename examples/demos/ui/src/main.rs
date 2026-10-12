@@ -10,7 +10,6 @@ use scenes::{
 fn main() {
   Demo::new("UI")
     .resolution(1024, 768)
-    .configure(|b| b.window_mode(WindowMode::ResizableAspectRatio))
     .page(ThemeDemo::new)
     .page(LayoutDemo::new)
     .page(ClippingDemo::new)

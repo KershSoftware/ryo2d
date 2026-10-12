@@ -581,10 +581,7 @@ impl DemoPage for StateMachineDemoScene {
 fn main() {
   Demo::new("State Machine")
     .resolution(800, 600)
-    .configure(|b| {
-      b.window_mode(WindowMode::ResizableAspectRatio)
-        .target_fps(60)
-    })
+    .configure(|b| b.target_fps(60))
     .page(StateMachineDemoScene::new)
     .run();
 }

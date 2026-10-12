@@ -498,28 +498,6 @@ fn inactive_and_invisible_entities_do_not_draw() {
   assert_eq!(frame.get_pixel(75, 15).0, RED);
 }
 
-#[test]
-fn lines_stay_in_place_after_a_stretch_resize() {
-  let builder = EngineBuilder::new()
-    .resolution(64, 64)
-    .window_mode(WindowMode::ResizableStretch)
-    .start_scene(Fixture::new(|ctx| spawn_line(ctx, 0)));
-  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
-    return;
-  };
-  engine.step_frames(1).unwrap();
-  engine.resize(128, 128);
-  engine.step_frames(2).unwrap();
-  let frame = engine.frame().unwrap();
-  assert_eq!(frame.dimensions(), (128, 128));
-  let px = |x, y| frame.get_pixel(x, y).0;
-
-  // The world keeps its scale: y 32 stays at y 32 and the line ends at x 64
-  assert!(is_line(px(20, 32)), "line at y 32: {:?}", px(20, 32));
-  assert!(!is_line(px(20, 64)), "line drawn at the old size's scale");
-  assert!(!is_line(px(100, 32)), "line stretched past x 64");
-}
-
 /// A y-sorted entity at `(x, y)` in layer `z`
 fn spawn_sorted(ctx: &mut SceneContext, name: &str, x: f32, y: f32, c: [u8; 4], z: i32) {
   ctx.world.spawn((

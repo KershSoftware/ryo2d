@@ -36,7 +36,9 @@ use crate::core::ecs::{
   FallbackErrorHandler, IntoScheduleConfigs, Message, Resource, ScheduleSystem, World,
 };
 use crate::core::error::{EngineError, EngineResult};
-use crate::core::graphics::{BatchCollector, Camera, Gpu, SpriteGpuRenderer, WgpuRenderer};
+use crate::core::graphics::{
+  BatchCollector, Camera, Gpu, Presentation, SpriteGpuRenderer, WgpuRenderer,
+};
 use crate::core::input::Input;
 use crate::core::input_script::InputScript;
 use crate::core::lighting::{LightingRenderer, LightingSettings};
@@ -55,8 +57,6 @@ use crate::core::trail::TrailRenderer;
 use crate::core::ui::{BitmapFont, create_debug_font};
 use crate::core::window::{WindowInfo, WindowRequest};
 use crate::{engine_info, engine_warn};
-
-pub use crate::core::window::WindowMode;
 
 use frame::{
   advance_clock_system, asset_pump_system, camera_shake_system, clear_trackers_system,
@@ -83,13 +83,15 @@ pub struct EngineConfig {
   pub fixed_hz: u32,
   pub physics: PhysicsConfig,
   pub debug: DebugConfig,
-  pub window_mode: WindowMode,
+  /// How the world reaches the window (`width`x`height` is the pixel-art
+  /// target in [`Presentation::PixelArt`])
+  pub presentation: Presentation,
+  /// The window's initial logical size; `None` picks one from the resolution
+  pub window_size: Option<(u32, u32)>,
+  /// Whether the player can resize the window (default `true`)
+  pub resizable: bool,
   /// Display mode (windowed, fullscreen, borderless)
   pub display_mode: DisplayMode,
-  /// Maximum width for letterboxed viewport (None = no limit)
-  pub max_width: Option<u32>,
-  /// Maximum height for letterboxed viewport (None = no limit)
-  pub max_height: Option<u32>,
   /// Path to window icon (PNG). If None, uses embedded Ryo2D logo.
   pub icon_path: Option<std::path::PathBuf>,
   /// UI scale factor for HiDPI displays.
@@ -114,10 +116,10 @@ impl Default for EngineConfig {
       fixed_hz: 60,
       physics: PhysicsConfig::default(),
       debug: DebugConfig::default(),
-      window_mode: WindowMode::default(),
+      presentation: Presentation::default(),
+      window_size: None,
+      resizable: true,
       display_mode: DisplayMode::default(),
-      max_width: None,
-      max_height: None,
       icon_path: None,
       ui_scale: Some(1), // Normal size (good for standard displays)
       target_background_fps: 0,
@@ -677,35 +679,11 @@ impl Engine {
 
   /// The window (or offscreen target) is now `width x height`
   pub(crate) fn resize_window(&mut self, width: u32, height: u32) {
-    self.resize_game_buffer(width, height);
     if let Some(renderer) = &mut self.renderer {
       // For all modes, update surface size for proper scaling
       renderer.resize(width, height);
       self.last_window_size = (width, height);
     }
-  }
-
-  /// In `ResizableStretch` the game buffer follows the window: resize it and
-  /// everything drawn at its size. Other modes, and a minimised window's 0x0,
-  /// keep the current buffers.
-  fn resize_game_buffer(&mut self, width: u32, height: u32) {
-    if self.config.window_mode != WindowMode::ResizableStretch || width == 0 || height == 0 {
-      return;
-    }
-    let Some(renderer) = &mut self.renderer else {
-      return;
-    };
-    renderer.resize_buffer(width, height);
-    self.ui_buffer = vec![0; (width * height * 4) as usize];
-    if let Some(lighting) = &mut self.lighting {
-      lighting.resize(renderer.device(), width, height);
-    }
-    // Trails, lines and debug overlays project with the game size
-    if let Some(trails) = &mut self.trail_renderer {
-      trails.resize(width, height);
-    }
-    *self.world.resource_mut::<Camera>() =
-      Camera::centered_at(width as f32 / 2.0, height as f32 / 2.0, width, height);
   }
 
   #[cfg(not(target_arch = "wasm32"))]
@@ -867,9 +845,8 @@ impl EngineBuilder {
     self
   }
 
-  /// Set the logical resolution. Overrides Ryo.toml.
-  ///
-  /// A saved preference overrides this when the `with_user_preferences` filter includes it.
+  /// Set the game resolution (with `pixel_art = true` in Ryo.toml, the
+  /// pixel-art target). Overrides Ryo.toml.
   pub fn resolution(mut self, width: u32, height: u32) -> Self {
     self.overrides.resolution = Some((width, height));
     self
@@ -917,14 +894,27 @@ impl EngineBuilder {
     self
   }
 
-  /// Set the window resize behavior.
-  ///
-  /// - [`WindowMode::Fixed`] - Window cannot be resized
-  /// - [`WindowMode::ResizableAspectRatio`] - Scale with letterboxing (default)
-  /// - [`WindowMode::ResizableIntegerScale`] - Integer scaling for pixel-perfect
-  /// - [`WindowMode::ResizableStretch`] - Stretch to fill (may distort)
-  pub fn window_mode(mut self, mode: WindowMode) -> Self {
-    self.config.window_mode = mode;
+  /// Draw pixel art: the world renders into a `width`x`height` target that
+  /// is scaled by a whole number to fit the window, centred with bars.
+  /// Sets the resolution too. Overrides Ryo.toml.
+  pub fn pixel_art(mut self, width: u32, height: u32) -> Self {
+    self.overrides.pixel_art = Some(true);
+    self.overrides.resolution = Some((width, height));
+    self
+  }
+
+  /// The window's initial logical size (by default the resolution, or for
+  /// pixel art the largest whole multiple that fits 1280x720). A saved
+  /// resolution preference overrides it when the `with_user_preferences`
+  /// filter includes it.
+  pub fn window_size(mut self, width: u32, height: u32) -> Self {
+    self.overrides.window_size = Some((width, height));
+    self
+  }
+
+  /// Whether the player can resize the window (default `true`).
+  pub fn resizable(mut self, resizable: bool) -> Self {
+    self.config.resizable = resizable;
     self
   }
 
@@ -934,18 +924,6 @@ impl EngineBuilder {
   /// `with_user_preferences` filter includes it.
   pub fn display_mode(mut self, mode: DisplayMode) -> Self {
     self.overrides.display_mode = Some(mode);
-    self
-  }
-
-  /// Set maximum width for letterboxed viewport.
-  pub fn max_width(mut self, max: u32) -> Self {
-    self.config.max_width = Some(max);
-    self
-  }
-
-  /// Set maximum height for letterboxed viewport.
-  pub fn max_height(mut self, max: u32) -> Self {
-    self.config.max_height = Some(max);
     self
   }
 
@@ -1147,6 +1125,8 @@ impl EngineBuilder {
     }
 
     let mut config = self.config;
+    config.presentation = settings.presentation();
+    config.window_size = settings.window_size;
     config.title = settings.title;
     config.width = settings.resolution.0;
     config.height = settings.resolution.1;

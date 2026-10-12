@@ -353,11 +353,7 @@ impl DemoPage for KnockbackDemoScene {
 fn main() {
   Demo::new("Knockback")
     .resolution(800, 600)
-    .configure(|b| {
-      b.window_mode(WindowMode::ResizableAspectRatio)
-        .target_fps(60)
-        .fixed_hz(60)
-    })
+    .configure(|b| b.target_fps(60).fixed_hz(60))
     .page(KnockbackDemoScene::new)
     .run();
 }

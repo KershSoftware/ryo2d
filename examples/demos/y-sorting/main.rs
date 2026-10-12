@@ -17,9 +17,6 @@ const WORLD_TILES_Y: u32 = 15;
 const GAME_WIDTH: u32 = TILE_SIZE * WORLD_TILES_X; // 320
 const GAME_HEIGHT: u32 = TILE_SIZE * WORLD_TILES_Y; // 240
 
-/// Window size is the world at this zoom, leaving room for the demo-kit shell
-const SCREEN_ZOOM: f32 = 2.0;
-
 // Play area for depth scaling (leave some margin)
 const PLAY_AREA_TOP: f32 = 24.0;
 const PLAY_AREA_BOTTOM: f32 = (GAME_HEIGHT - 16) as f32;
@@ -364,8 +361,6 @@ impl DemoPage for YSortingPage {
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    // The 320x240 world is shown at 2x so the shell has room around it
-    ctx.camera.set_zoom(SCREEN_ZOOM);
     ctx
       .camera
       .set_position(GAME_WIDTH as f32 / 2.0, GAME_HEIGHT as f32 / 2.0);
@@ -682,12 +677,10 @@ impl DemoPage for YSortingPage {
 
 fn main() {
   Demo::new("Y-Sorting")
-    .resolution(
-      GAME_WIDTH * SCREEN_ZOOM as u32,
-      GAME_HEIGHT * SCREEN_ZOOM as u32,
-    )
+    .resolution(GAME_WIDTH, GAME_HEIGHT)
+    // The 320x240 world opens at 2x
     .configure(|b| {
-      b.window_mode(WindowMode::ResizableIntegerScale)
+      b.window_size(GAME_WIDTH * 2, GAME_HEIGHT * 2)
         .target_fps(60)
     })
     .page(YSortingPage::new)

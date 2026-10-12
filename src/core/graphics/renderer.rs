@@ -29,7 +29,6 @@ use crate::core::render::{
   DrawList, FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline, TRANSITION_VISIBLE,
 };
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
-use crate::core::window::WindowMode;
 
 use super::gpu_error::{GpuError, GpuFault, SurfaceAction, SurfaceState, surface_action};
 use super::{Compositor, SpriteGpuRenderer};
@@ -141,9 +140,6 @@ struct RendererParts {
   presentation_blocks: bool,
   game_width: u32,
   game_height: u32,
-  window_mode: WindowMode,
-  max_width: Option<u32>,
-  max_height: Option<u32>,
 }
 
 /// How the window renderer is set up.
@@ -151,9 +147,6 @@ struct RendererParts {
 pub struct RendererSettings {
   pub game_width: u32,
   pub game_height: u32,
-  pub window_mode: WindowMode,
-  pub max_width: Option<u32>,
-  pub max_height: Option<u32>,
   pub vsync: Option<bool>,
 }
 
@@ -180,11 +173,6 @@ pub struct WgpuRenderer {
   // Current window size
   window_width: u32,
   window_height: u32,
-  // Window mode for scaling
-  window_mode: WindowMode,
-  // Max viewport constraints
-  max_width: Option<u32>,
-  max_height: Option<u32>,
   // Post-processing pipeline
   post_process: Option<PostProcessPipeline>,
   // Whether presentation blocks until vsync (Fifo mode)
@@ -235,17 +223,11 @@ impl WgpuRenderer {
   /// - `window`: The window to render to
   /// - `game_width`: Internal game resolution width
   /// - `game_height`: Internal game resolution height
-  /// - `window_mode`: How to scale the game viewport to window size
-  /// - `max_width`: Optional maximum viewport width constraint
-  /// - `max_height`: Optional maximum viewport height constraint
   /// - `vsync`: `Some(true)` or `None` = Fifo (waits for the display); `Some(false)` = Mailbox, else Immediate
   pub async fn new(window: Arc<Window>, settings: RendererSettings) -> Result<Self, GpuError> {
     let RendererSettings {
       game_width,
       game_height,
-      window_mode,
-      max_width,
-      max_height,
       vsync,
     } = settings;
     let size = window.inner_size();
@@ -345,9 +327,6 @@ impl WgpuRenderer {
       presentation_blocks: present_mode == wgpu::PresentMode::Fifo,
       game_width,
       game_height,
-      window_mode,
-      max_width,
-      max_height,
     });
     renderer.fault = fault;
     Ok(renderer)
@@ -392,9 +371,6 @@ impl WgpuRenderer {
       presentation_blocks: false,
       game_width: width,
       game_height: height,
-      window_mode: WindowMode::default(),
-      max_width: None,
-      max_height: None,
     })
   }
 
@@ -423,9 +399,6 @@ impl WgpuRenderer {
       presentation_blocks,
       game_width,
       game_height,
-      window_mode,
-      max_width,
-      max_height,
     } = parts;
     let target_format = target.format();
 
@@ -528,9 +501,6 @@ impl WgpuRenderer {
       game_height,
       window_width: window_size.0,
       window_height: window_size.1,
-      window_mode,
-      max_width,
-      max_height,
       post_process: Some(post_process),
       presentation_blocks,
       capture_texture: None,
@@ -722,79 +692,15 @@ impl WgpuRenderer {
       .set_viewport_transform(&self.queue, [scale_x, scale_y, offset_x, offset_y]);
   }
 
-  /// Calculate viewport scale and offset based on window mode.
+  /// The game image's rectangle in the window: scaled to fit, keeping its
+  /// aspect ratio, with bars on the sides or top and bottom.
   fn calculate_viewport(&self) -> (f32, f32, f32, f32) {
-    let game_width = self.game_width as f32;
-    let game_height = self.game_height as f32;
-    let window_width = self.window_width as f32;
-    let window_height = self.window_height as f32;
-
-    match self.window_mode {
-      WindowMode::Fixed | WindowMode::ResizableAspectRatio => {
-        let window_aspect = window_width / window_height;
-        let game_aspect = game_width / game_height;
-
-        let mut scale = if window_aspect > game_aspect {
-          window_height / game_height
-        } else {
-          window_width / game_width
-        };
-
-        // Apply max constraints
-        if let Some(max_width) = self.max_width {
-          let max_scale_width = max_width as f32 / game_width;
-          scale = scale.min(max_scale_width);
-        }
-        if let Some(max_height) = self.max_height {
-          let max_scale_height = max_height as f32 / game_height;
-          scale = scale.min(max_scale_height);
-        }
-
-        let scaled_width = game_width * scale;
-        let scaled_height = game_height * scale;
-
-        // Convert to normalized device coordinates (-1 to 1)
-        let scale_x = scaled_width / window_width;
-        let scale_y = scaled_height / window_height;
-
-        (scale_x, scale_y, 0.0, 0.0)
-      }
-      WindowMode::ResizableIntegerScale => {
-        let window_aspect = window_width / window_height;
-        let game_aspect = game_width / game_height;
-
-        let mut scale = if window_aspect > game_aspect {
-          window_height / game_height
-        } else {
-          window_width / game_width
-        };
-
-        // Integer scaling
-        scale = scale.floor().max(1.0);
-
-        // Apply max constraints
-        if let Some(max_width) = self.max_width {
-          let max_scale_width = max_width as f32 / game_width;
-          scale = scale.min(max_scale_width.floor().max(1.0));
-        }
-        if let Some(max_height) = self.max_height {
-          let max_scale_height = max_height as f32 / game_height;
-          scale = scale.min(max_scale_height.floor().max(1.0));
-        }
-
-        let scaled_width = game_width * scale;
-        let scaled_height = game_height * scale;
-
-        let scale_x = scaled_width / window_width;
-        let scale_y = scaled_height / window_height;
-
-        (scale_x, scale_y, 0.0, 0.0)
-      }
-      WindowMode::ResizableStretch => {
-        // Fill entire window
-        (1.0, 1.0, 0.0, 0.0)
-      }
-    }
+    calculate_viewport_scale(
+      self.game_width,
+      self.game_height,
+      self.window_width,
+      self.window_height,
+    )
   }
 
   /// Render a frame by running `pipeline`'s passes on one encoder.
@@ -950,98 +856,32 @@ impl WgpuRenderer {
     };
     self.capture_result = Some(result);
   }
-
-  /// Set the window mode.
-  pub fn set_window_mode(&mut self, mode: WindowMode) {
-    self.window_mode = mode;
-    self.update_viewport_transform();
-  }
-
-  /// Set max width constraint.
-  pub fn set_max_width(&mut self, max: Option<u32>) {
-    self.max_width = max;
-    self.update_viewport_transform();
-  }
-
-  /// Set max height constraint.
-  pub fn set_max_height(&mut self, max: Option<u32>) {
-    self.max_height = max;
-    self.update_viewport_transform();
-  }
 }
 
-/// Calculate viewport scale for a given configuration.
-///
-/// This is a pure function used for testing viewport math without GPU context.
-/// Returns (scale_x, scale_y, offset_x, offset_y) for the fullscreen quad shader.
-#[cfg(test)]
+/// Scale (and offset) of a `game_width`x`game_height` image fitted into the
+/// window keeping its aspect ratio, for the fullscreen quad shader:
+/// `(scale_x, scale_y, offset_x, offset_y)` in normalised device coordinates.
 fn calculate_viewport_scale(
   game_width: u32,
   game_height: u32,
   window_width: u32,
   window_height: u32,
-  window_mode: WindowMode,
-  max_width: Option<u32>,
-  max_height: Option<u32>,
 ) -> (f32, f32, f32, f32) {
   let game_w = game_width as f32;
   let game_h = game_height as f32;
   let window_w = window_width as f32;
   let window_h = window_height as f32;
-
-  match window_mode {
-    WindowMode::Fixed | WindowMode::ResizableAspectRatio => {
-      let window_aspect = window_w / window_h;
-      let game_aspect = game_w / game_h;
-
-      let mut scale = if window_aspect > game_aspect {
-        window_h / game_h
-      } else {
-        window_w / game_w
-      };
-
-      if let Some(max_w) = max_width {
-        let max_scale_w = max_w as f32 / game_w;
-        scale = scale.min(max_scale_w);
-      }
-      if let Some(max_h) = max_height {
-        let max_scale_h = max_h as f32 / game_h;
-        scale = scale.min(max_scale_h);
-      }
-
-      let scaled_w = game_w * scale;
-      let scaled_h = game_h * scale;
-
-      (scaled_w / window_w, scaled_h / window_h, 0.0, 0.0)
-    }
-    WindowMode::ResizableIntegerScale => {
-      let window_aspect = window_w / window_h;
-      let game_aspect = game_w / game_h;
-
-      let mut scale = if window_aspect > game_aspect {
-        window_h / game_h
-      } else {
-        window_w / game_w
-      };
-
-      scale = scale.floor().max(1.0);
-
-      if let Some(max_w) = max_width {
-        let max_scale_w = max_w as f32 / game_w;
-        scale = scale.min(max_scale_w.floor().max(1.0));
-      }
-      if let Some(max_h) = max_height {
-        let max_scale_h = max_h as f32 / game_h;
-        scale = scale.min(max_scale_h.floor().max(1.0));
-      }
-
-      let scaled_w = game_w * scale;
-      let scaled_h = game_h * scale;
-
-      (scaled_w / window_w, scaled_h / window_h, 0.0, 0.0)
-    }
-    WindowMode::ResizableStretch => (1.0, 1.0, 0.0, 0.0),
-  }
+  let scale = if window_w / window_h > game_w / game_h {
+    window_h / game_h
+  } else {
+    window_w / game_w
+  };
+  (
+    game_w * scale / window_w,
+    game_h * scale / window_h,
+    0.0,
+    0.0,
+  )
 }
 
 #[cfg(test)]
@@ -1161,32 +1001,9 @@ mod tests {
   }
 
   #[test]
-  fn stretch_mode_fills_window() {
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
-      800,
-      600,
-      1920,
-      1080,
-      WindowMode::ResizableStretch,
-      None,
-      None,
-    );
-    assert_eq!(scale_x, 1.0);
-    assert_eq!(scale_y, 1.0);
-  }
-
-  #[test]
   fn aspect_ratio_letterbox_wider_window() {
     // 800x600 game (4:3) in 1920x1080 window (16:9) = pillarboxing
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
-      800,
-      600,
-      1920,
-      1080,
-      WindowMode::ResizableAspectRatio,
-      None,
-      None,
-    );
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(800, 600, 1920, 1080);
     // Window is wider than game, so height is limiting factor
     // scale = 1080 / 600 = 1.8, scaled = 1440x1080
     // scale_x = 1440/1920 = 0.75, scale_y = 1080/1080 = 1.0
@@ -1197,15 +1014,7 @@ mod tests {
   #[test]
   fn aspect_ratio_letterbox_taller_window() {
     // 800x600 game (4:3) in 800x1000 window = letterboxing (black bars top/bottom)
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
-      800,
-      600,
-      800,
-      1000,
-      WindowMode::ResizableAspectRatio,
-      None,
-      None,
-    );
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(800, 600, 800, 1000);
     // Window is taller than game, so width is limiting factor
     // scale = 800 / 800 = 1.0, scaled = 800x600
     // scale_x = 800/800 = 1.0, scale_y = 600/1000 = 0.6
@@ -1216,106 +1025,8 @@ mod tests {
   #[test]
   fn aspect_ratio_exact_fit() {
     // Same aspect ratio, no letterboxing needed
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
-      400,
-      300,
-      800,
-      600,
-      WindowMode::ResizableAspectRatio,
-      None,
-      None,
-    );
+    let (scale_x, scale_y, _, _) = calculate_viewport_scale(400, 300, 800, 600);
     assert!((scale_x - 1.0).abs() < 0.001);
     assert!((scale_y - 1.0).abs() < 0.001);
-  }
-
-  #[test]
-  fn integer_scale_rounds_down() {
-    // 320x240 game in 1000x800 window
-    // Max scale that fits: 1000/320 = 3.125, 800/240 = 3.33
-    // Integer: floor(3.125) = 3
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
-      320,
-      240,
-      1000,
-      800,
-      WindowMode::ResizableIntegerScale,
-      None,
-      None,
-    );
-    // scaled = 960x720, scale_x = 960/1000 = 0.96, scale_y = 720/800 = 0.9
-    assert!((scale_x - 0.96).abs() < 0.001);
-    assert!((scale_y - 0.9).abs() < 0.001);
-  }
-
-  #[test]
-  fn integer_scale_minimum_is_one() {
-    // Small window, should still be at least 1x scale
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
-      800,
-      600,
-      400,
-      300,
-      WindowMode::ResizableIntegerScale,
-      None,
-      None,
-    );
-    // scale = floor(400/800) = 0 -> clamped to 1
-    // scaled = 800x600, scale_x = 800/400 = 2.0, scale_y = 600/300 = 2.0
-    assert!((scale_x - 2.0).abs() < 0.001);
-    assert!((scale_y - 2.0).abs() < 0.001);
-  }
-
-  #[test]
-  fn max_width_constrains_scale() {
-    // 400x300 game in 1600x1200 window, max_width = 800
-    // Without constraint: scale = 4x, scaled = 1600x1200
-    // With max_width 800: scale = 800/400 = 2x, scaled = 800x600
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
-      400,
-      300,
-      1600,
-      1200,
-      WindowMode::ResizableAspectRatio,
-      Some(800),
-      None,
-    );
-    // scaled = 800x600, scale_x = 800/1600 = 0.5, scale_y = 600/1200 = 0.5
-    assert!((scale_x - 0.5).abs() < 0.001);
-    assert!((scale_y - 0.5).abs() < 0.001);
-  }
-
-  #[test]
-  fn max_height_constrains_scale() {
-    // 400x300 game in 1600x1200 window, max_height = 600
-    // Without constraint: scale = 4x
-    // With max_height 600: scale = 600/300 = 2x, scaled = 800x600
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(
-      400,
-      300,
-      1600,
-      1200,
-      WindowMode::ResizableAspectRatio,
-      None,
-      Some(600),
-    );
-    // scaled = 800x600, scale_x = 800/1600 = 0.5, scale_y = 600/1200 = 0.5
-    assert!((scale_x - 0.5).abs() < 0.001);
-    assert!((scale_y - 0.5).abs() < 0.001);
-  }
-
-  #[test]
-  fn fixed_mode_same_as_aspect_ratio() {
-    let aspect = calculate_viewport_scale(
-      800,
-      600,
-      1920,
-      1080,
-      WindowMode::ResizableAspectRatio,
-      None,
-      None,
-    );
-    let fixed = calculate_viewport_scale(800, 600, 1920, 1080, WindowMode::Fixed, None, None);
-    assert_eq!(aspect, fixed);
   }
 }

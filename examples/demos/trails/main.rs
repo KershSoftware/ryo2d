@@ -920,11 +920,7 @@ impl DemoPage for TrailsPage {
 fn main() {
   Demo::new("Trails")
     .resolution(1920, 1080)
-    .configure(|b| {
-      b.window_mode(WindowMode::ResizableAspectRatio)
-        .target_fps(144)
-        .fixed_hz(144)
-    })
+    .configure(|b| b.target_fps(144).fixed_hz(144))
     .page(|| TrailsPage::new(Variant::Presets))
     .page(|| TrailsPage::new(Variant::FadeModes))
     .page(|| TrailsPage::new(Variant::Styles))

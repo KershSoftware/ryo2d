@@ -156,9 +156,8 @@ impl HeadlessEngine {
     Ok(self.engine.read_frame()?)
   }
 
-  /// Resize as if the window became `width x height`; frames are read back
-  /// at the new size. In `WindowMode::ResizableStretch` the game buffer,
-  /// camera and renderers follow it; other modes scale the game into it.
+  /// Resize as if the window became `width x height`; the game is scaled
+  /// into it.
   pub fn resize(&mut self, width: u32, height: u32) {
     self.engine.resize_window(width, height);
   }

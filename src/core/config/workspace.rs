@@ -206,6 +206,8 @@ pub struct ReleaseConfig {
 pub struct SystemDefaults {
   /// Resolution as (width, height). None = not set, use engine defaults (1280x720).
   pub resolution: Option<(u32, u32)>,
+  /// Whether `resolution` is a pixel-art target (scaled by whole numbers)
+  pub pixel_art: bool,
   /// Default VSync setting
   pub vsync: bool,
   /// Default display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
@@ -234,6 +236,7 @@ impl Default for SystemDefaults {
   fn default() -> Self {
     SystemDefaults {
       resolution: None,
+      pixel_art: false,
       vsync: true,
       display_mode: super::save::DisplayMode::Windowed,
       master_volume: super::resolve::DEFAULT_MASTER_VOLUME,
@@ -305,6 +308,7 @@ struct ReleaseSection {
 #[derive(Debug, Deserialize, Default)]
 struct SystemSection {
   resolution: Option<String>,
+  pixel_art: Option<bool>,
   vsync: Option<bool>,
   /// Display mode (windowed, exclusive_fullscreen, borderless_fullscreen)
   display_mode: Option<String>,
@@ -363,6 +367,7 @@ impl Workspace {
       system.resolution = layer.resolution;
     }
     set(&mut system.vsync, layer.vsync);
+    set(&mut system.pixel_art, layer.pixel_art);
     set(&mut system.display_mode, layer.display_mode);
     set(&mut system.master_volume, layer.master_volume);
     set(&mut system.music_volume, layer.music_volume);
@@ -595,6 +600,9 @@ impl Workspace {
           parsed
         })
         .or(engine_defaults.resolution),
+      pixel_art: system_section
+        .pixel_art
+        .unwrap_or(engine_defaults.pixel_art),
       vsync: system_section.vsync.unwrap_or(engine_defaults.vsync),
       display_mode,
       master_volume: system_section

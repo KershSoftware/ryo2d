@@ -90,7 +90,7 @@ pub mod prelude {
   };
 
   // Engine builder
-  pub use crate::core::engine::{EngineBuilder, WindowMode};
+  pub use crate::core::engine::EngineBuilder;
 
   // Engine messages
   pub use crate::core::messages::{
@@ -109,7 +109,9 @@ pub mod prelude {
   };
 
   // Graphics
-  pub use crate::core::graphics::{AnimatedSprite, Camera, Gpu, GpuRenderContext, Sprite};
+  pub use crate::core::graphics::{
+    AnimatedSprite, Camera, Gpu, GpuRenderContext, Presentation, ScreenMapping, Sprite,
+  };
 
   // Tiled rendering
   pub use crate::core::graphics::{
