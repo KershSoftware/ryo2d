@@ -2,24 +2,29 @@
 
 use crate::core::ecs::{Entity, Knockback, MessageWriter, Query, Res, Transform, Velocity};
 use crate::core::messages::{KnockbackFinished, KnockbackStarted};
+use crate::core::physics::RigidBody;
 use crate::core::time::Time;
 
-/// Decay every active `Knockback` by one fixed step. An entity with a
-/// `Velocity` gets the knockback velocity there (whatever integrates
-/// `Velocity` moves it); one without is moved directly.
+type Pushed = (
+  Entity,
+  &'static mut Knockback,
+  Option<&'static mut Velocity>,
+  Option<&'static RigidBody>,
+  Option<&'static mut Transform>,
+);
+
+/// Decay every active `Knockback` by one fixed step. A dynamic body's
+/// `Velocity` gets the change in knockback velocity added, so gravity and
+/// collisions keep acting and the push is taken back as it decays; anything
+/// else is moved through its `Transform`.
 pub fn update_knockback(
   time: Res<Time>,
-  mut query: Query<(
-    Entity,
-    &mut Knockback,
-    Option<&mut Velocity>,
-    Option<&mut Transform>,
-  )>,
+  mut query: Query<Pushed>,
   mut started: MessageWriter<KnockbackStarted>,
   mut finished: MessageWriter<KnockbackFinished>,
 ) {
   let dt = time.fixed.timestep();
-  for (entity, mut knockback, velocity, transform) in &mut query {
+  for (entity, mut knockback, velocity, body, transform) in &mut query {
     if !knockback.active {
       continue;
     }
@@ -32,12 +37,20 @@ pub fn update_knockback(
     if knockback.just_finished {
       finished.write(KnockbackFinished { entity });
     }
-    if let Some(mut velocity) = velocity {
-      velocity.dx = dx;
-      velocity.dy = dy;
-    } else if let Some(mut transform) = transform {
-      transform.translation.x += dx * dt;
-      transform.translation.y += dy * dt;
+    let dynamic = body.is_some_and(|body| !body.is_kinematic);
+    match velocity {
+      Some(mut velocity) if dynamic => {
+        let (added_x, added_y) = knockback.applied;
+        velocity.dx += dx - added_x;
+        velocity.dy += dy - added_y;
+        knockback.applied = (dx, dy);
+      }
+      _ => {
+        if let Some(mut transform) = transform {
+          transform.translation.x += dx * dt;
+          transform.translation.y += dy * dt;
+        }
+      }
     }
   }
 }
@@ -47,6 +60,7 @@ mod tests {
   use super::*;
   use crate::core::ecs::{Disabled, Knockback, Transform, Vec2, Velocity};
   use crate::core::messages::{KnockbackFinished, KnockbackStarted};
+  use crate::core::physics::RigidBody;
   use crate::core::systems::test_util::{messages, run, world};
 
   #[test]
@@ -70,7 +84,7 @@ mod tests {
   }
 
   #[test]
-  fn knockback_sets_velocity_and_leaves_translation_to_whatever_integrates_it() {
+  fn knockback_moves_an_entity_with_velocity_but_no_body() {
     let mut world = world(60);
     let entity = world
       .spawn((
@@ -80,12 +94,49 @@ mod tests {
       ))
       .id();
     run(&mut world, update_knockback);
-    assert!(world.get::<Velocity>(entity).unwrap().dx > 0.0);
+    assert!(
+      world.get::<Transform>(entity).unwrap().translation.x > 0.0,
+      "nothing integrates Velocity without a body"
+    );
+  }
+
+  fn falling_body(world: &mut crate::core::ecs::World) -> Entity {
+    world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::new(),
+        Velocity::new(0.0, 300.0),
+        Knockback::new(Vec2::X, 100.0),
+      ))
+      .id()
+  }
+
+  #[test]
+  fn knockback_adds_to_a_dynamic_body_s_velocity() {
+    let mut world = world(60);
+    let entity = falling_body(&mut world);
+    run(&mut world, update_knockback);
+    let velocity = world.get::<Velocity>(entity).unwrap();
+    assert!(velocity.dx > 0.0);
+    assert_eq!(velocity.dy, 300.0, "the fall goes on under the push");
     assert_eq!(
       world.get::<Transform>(entity).unwrap().translation,
       Vec2::ZERO,
-      "moving it here as well would move it twice"
+      "physics moves a body"
     );
+  }
+
+  #[test]
+  fn a_finished_knockback_takes_back_the_velocity_it_added() {
+    let mut world = world(60);
+    let entity = falling_body(&mut world);
+    for _ in 0..60 {
+      run(&mut world, update_knockback);
+    }
+    assert!(!world.get::<Knockback>(entity).unwrap().active);
+    let velocity = world.get::<Velocity>(entity).unwrap();
+    assert!(velocity.dx.abs() < 1e-3, "{}", velocity.dx);
+    assert_eq!(velocity.dy, 300.0);
   }
 
   #[test]

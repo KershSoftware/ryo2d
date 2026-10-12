@@ -25,7 +25,7 @@ Every animation component here is driven by the engine in `FixedSet::Juice`, onc
 | `Tween`, `TweenSequence` | yes | `Transform` (position, rotation, scale), `Renderable` alpha and tint |
 | `PropertyTween<f32>`, `<Vec2>`, `<Color>` | yes | its own value |
 | `PropertyTween<T>` for other `Lerp` types | no: call `update(dt)` | its own value |
-| `Knockback` | yes | `Velocity` if present, else `Transform.translation` |
+| `Knockback` | yes | a dynamic body's `Velocity` (added on top), else `Transform.translation` |
 | `SquashStretch` | yes | `Transform.scale` |
 
 ## Sprite animation
@@ -245,7 +245,7 @@ if let Some(mut kb) = ctx.world.get_mut::<Knockback>(enemy) {
 }
 ```
 
-The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. An entity with `Velocity` gets the knockback velocity (physics bodies move with it; on a non-physics entity your code must apply `Velocity`); one without is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
+The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. A dynamic physics body gets the knockback added to its `Velocity` (gravity and collisions keep acting, and the push is taken back as it decays); anything else, including an entity whose `Velocity` your own code integrates, is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
 
 ## Squash and stretch
 

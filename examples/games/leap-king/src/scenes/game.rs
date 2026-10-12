@@ -2002,7 +2002,6 @@ impl GameScene {
             }
             // Don't skip — fall through to airborne physics below
           } else {
-            Self::slide_by_knockback(ctx, entity, dt);
             continue;
           }
         } else {
@@ -2052,19 +2051,6 @@ impl GameScene {
           self.check_platform_landing(ctx, entity, prev_y);
         }
       }
-    }
-  }
-
-  /// Knockback pushes through `Velocity`, which grounded players otherwise
-  /// ignore: slide them along the ground while a push lasts.
-  fn slide_by_knockback(ctx: &mut SceneContext, entity: Entity, dt: f32) {
-    let pushed = ctx
-      .world
-      .get::<Knockback>(entity)
-      .is_some_and(|knockback| knockback.active);
-    let dx = ctx.world.get::<Velocity>(entity).map_or(0.0, |vel| vel.dx);
-    if pushed && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-      transform.translation.x += dx * dt;
     }
   }
 

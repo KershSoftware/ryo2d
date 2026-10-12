@@ -20,13 +20,16 @@ use crate::core::ecs::kernel::{Message, Messages, Resource, World};
 /// A type-erased `MessageCursor<T>`.
 pub(crate) type ErasedCursor = Box<dyn Any + Send + Sync>;
 
+/// Makes a cursor past every `T` written so far.
+type CursorNow = fn(&World) -> ErasedCursor;
+
 /// One updater, one clearer and one "read from now on" cursor maker per
 /// registered message type.
 #[derive(Resource, Default)]
 struct MessageUpdaters {
   update: Vec<fn(&mut World)>,
   clear: Vec<fn(&mut World)>,
-  cursor_now: Vec<(TypeId, fn(&World) -> ErasedCursor)>,
+  cursor_now: Vec<(TypeId, CursorNow)>,
 }
 
 fn update_one<T: Message>(world: &mut World) {

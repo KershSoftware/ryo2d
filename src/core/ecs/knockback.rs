@@ -73,6 +73,9 @@ pub struct Knockback {
   pub just_finished: bool,
   /// Whether to accumulate with existing knockback (blend directions)
   pub accumulate: bool,
+  /// The velocity this knockback has added to a dynamic body, taken back
+  /// step by step as it decays
+  pub(crate) applied: (f32, f32),
 }
 
 impl Default for Knockback {
@@ -87,6 +90,7 @@ impl Default for Knockback {
       just_started: false,
       just_finished: false,
       accumulate: true,
+      applied: (0.0, 0.0),
     }
   }
 }
@@ -126,6 +130,7 @@ impl Knockback {
       just_started: true,
       just_finished: false,
       accumulate: true,
+      applied: (0.0, 0.0),
     }
   }
 
@@ -160,6 +165,7 @@ impl Knockback {
       just_started: true,
       just_finished: false,
       accumulate: true,
+      applied: (0.0, 0.0),
     }
   }
 
