@@ -2,7 +2,10 @@
 //!
 //! Systems write with `MessageWriter<T>` and read with `MessageReader<T>`;
 //! scenes go through `SceneContext::write_message` and `messages::<T>()`,
-//! which keep a cursor per scene. Buffers advance once per frame.
+//! which keep a cursor per scene. Buffers advance at the start of a frame
+//! once a fixed step has run since the last advance, so a reader in the fixed
+//! update never misses a message, at any frame rate. While no fixed step runs
+//! (the game clock paused) nothing is dropped.
 
 mod builtin;
 mod scene;

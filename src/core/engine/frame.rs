@@ -388,8 +388,21 @@ pub(crate) fn publish_input_system(mut input: ResMut<Input>) {
   input.begin_frame();
 }
 
-/// `First`: advance every message buffer by a frame.
+/// Where the fixed clock stood when the message buffers last advanced.
+#[derive(Resource, Default)]
+pub(crate) struct MessagesAdvancedAt(u64);
+
+/// `First`: advance every message buffer, but only once a fixed step has run
+/// since the last advance. Buffers keep two advances' worth of messages, so
+/// advancing on frames without a fixed step (any frame rate above twice the
+/// fixed rate) would drop a message before a fixed-step reader saw it.
 pub(crate) fn update_messages_system(world: &mut World) {
+  let steps = world.resource::<Time>().fixed.step_count();
+  let mut advanced_at = world.get_resource_or_insert_with(MessagesAdvancedAt::default);
+  if advanced_at.0 == steps {
+    return;
+  }
+  advanced_at.0 = steps;
   update_messages(world);
 }
 
@@ -518,6 +531,54 @@ mod tests {
       .build_headless();
     engine.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 48), 1.0);
     engine
+  }
+
+  #[test]
+  fn a_message_from_a_fixed_step_survives_frames_without_one() {
+    use crate::core::ecs::{IntoScheduleConfigs, Message, MessageReader, MessageWriter};
+    #[derive(Message, Clone)]
+    struct Ping;
+    #[derive(Resource, Default)]
+    struct Heard(u32);
+    struct Idle;
+    impl Scene for Idle {}
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut written = false;
+    let mut e = EngineBuilder::new()
+      .resolution(16, 16)
+      .fixed_hz(60)
+      .add_message::<Ping>()
+      .insert_resource(Heard::default())
+      .add_systems(
+        Phase::FixedUpdate,
+        (
+          |mut pings: MessageReader<Ping>, mut heard: ResMut<Heard>| {
+            heard.0 += pings.read().count() as u32;
+          },
+          move |mut pings: MessageWriter<Ping>| {
+            if !written {
+              written = true;
+              pings.write(Ping);
+            }
+          },
+        )
+          .chain(),
+      )
+      .start_scene(Idle)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 16, 16), 1.0);
+    // One fixed step writes the message after the reader ran
+    e.frame(Some(Duration::from_micros(16_667)));
+    // Two fast frames (240 fps against 60 Hz) run no fixed step
+    e.frame(Some(Duration::from_micros(4_166)));
+    e.frame(Some(Duration::from_micros(4_166)));
+    assert_eq!(e.world().resource::<Heard>().0, 0);
+    // The next fixed step's reader still gets it
+    e.frame(Some(Duration::from_micros(16_667)));
+    assert_eq!(e.world().resource::<Heard>().0, 1);
   }
 
   #[test]

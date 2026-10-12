@@ -261,3 +261,55 @@ fn lighting_forced_off_leaves_the_scene_unlit() {
     [255, 255, 255, 255]
   );
 }
+
+/// A white scene under a dark ambient and one small light, which switches to
+/// a plain white scene after its second update.
+struct LitThenPlain {
+  updates: u32,
+}
+
+impl Scene for LitThenPlain {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    white_sprite(ctx);
+    ctx.world.spawn((
+      Transform::from_xy(32.0, 32.0),
+      Light2D::point(Color::rgb(255, 255, 255), 6.0),
+    ));
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.02));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    self.updates += 1;
+    if self.updates == 2 {
+      return SceneAction::Switch(Box::new(Plain));
+    }
+    SceneAction::Continue
+  }
+}
+
+/// White, with no lights.
+struct Plain;
+
+impl Scene for Plain {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    white_sprite(ctx);
+  }
+}
+
+#[test]
+fn lighting_turned_on_by_a_scene_is_off_in_the_next() {
+  let Some(mut engine) = engine(LitThenPlain { updates: 0 }) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  let lit = engine.frame().unwrap().get_pixel(4, 4).0;
+  assert!(lit[..3].iter().all(|&c| c < 64), "first scene lit: {lit:?}");
+  engine.step_frames(4).unwrap();
+  assert_eq!(
+    engine.frame().unwrap().get_pixel(4, 4).0,
+    [255, 255, 255, 255],
+    "the next scene has no lights, so it is unlit"
+  );
+}
