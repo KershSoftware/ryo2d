@@ -590,14 +590,14 @@ fn write_bordered(
 ) {
   let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
   queue.write_texture(
-    wgpu::ImageCopyTexture {
+    wgpu::TexelCopyTextureInfo {
       texture,
       mip_level: 0,
       origin: wgpu::Origin3d { x, y, z: 0 },
       aspect: wgpu::TextureAspect::All,
     },
     bordered,
-    wgpu::ImageDataLayout {
+    wgpu::TexelCopyBufferLayout {
       offset: 0,
       bytes_per_row: Some(bw * 4),
       rows_per_image: Some(bh),

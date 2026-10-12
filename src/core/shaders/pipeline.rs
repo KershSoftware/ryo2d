@@ -151,8 +151,8 @@ impl CustomEffectPipelines {
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Custom Effect Pipeline Layout"),
-      bind_group_layouts: &[&bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&bind_group_layout)],
+      immediate_size: 0,
     });
     Self {
       bind_group_layout,
@@ -246,7 +246,7 @@ impl CustomEffectPipelines {
 
     // Anything naga accepted but the device rejects surfaces here instead of
     // taking the engine down
-    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some(shader.id()),
       source: wgpu::ShaderSource::Wgsl(compiled.wgsl.into()),
@@ -256,13 +256,13 @@ impl CustomEffectPipelines {
       layout: Some(&self.pipeline_layout),
       vertex: wgpu::VertexState {
         module: &module,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &module,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: self.format,
           blend: Some(wgpu::BlendState::REPLACE),
@@ -276,10 +276,10 @@ impl CustomEffectPipelines {
       },
       depth_stencil: None,
       multisample: wgpu::MultisampleState::default(),
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
-    if let Some(error) = pollster::block_on(device.pop_error_scope()) {
+    if let Some(error) = pollster::block_on(scope.pop()) {
       let error = ShaderError {
         shader: shader.id().to_string(),
         line: None,
@@ -493,7 +493,7 @@ impl PostProcessPipeline {
       address_mode_w: wgpu::AddressMode::ClampToEdge,
       mag_filter: wgpu::FilterMode::Linear,
       min_filter: wgpu::FilterMode::Linear,
-      mipmap_filter: wgpu::FilterMode::Nearest,
+      mipmap_filter: wgpu::MipmapFilterMode::Nearest,
       ..Default::default()
     });
 
@@ -821,6 +821,7 @@ impl PostProcessPipeline {
           label: Some("Post-Process Pass"),
           color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: output_view,
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
               load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -829,6 +830,7 @@ impl PostProcessPipeline {
           })],
           depth_stencil_attachment: None,
           occlusion_query_set: None,
+          multiview_mask: None,
           timestamp_writes: None,
         });
 
@@ -924,6 +926,7 @@ impl PostProcessPipeline {
           label: Some("Custom Effect Pass"),
           color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: output_view,
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
               load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -932,6 +935,7 @@ impl PostProcessPipeline {
           })],
           depth_stencil_attachment: None,
           occlusion_query_set: None,
+          multiview_mask: None,
           timestamp_writes: None,
         });
         render_pass.set_pipeline(pipeline);
@@ -1078,8 +1082,8 @@ impl PostProcessPipeline {
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some(&format!("{} Pipeline Layout", name)),
-      bind_group_layouts: &[&self.bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&self.bind_group_layout)],
+      immediate_size: 0,
     });
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1087,13 +1091,13 @@ impl PostProcessPipeline {
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: self.format,
           blend: Some(wgpu::BlendState::REPLACE),
@@ -1116,7 +1120,7 @@ impl PostProcessPipeline {
         mask: !0,
         alpha_to_coverage_enabled: false,
       },
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 
@@ -1132,8 +1136,8 @@ impl PostProcessPipeline {
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("God Rays Pipeline Layout"),
-      bind_group_layouts: &[&self.god_rays_bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&self.god_rays_bind_group_layout)],
+      immediate_size: 0,
     });
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1141,13 +1145,13 @@ impl PostProcessPipeline {
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: self.format,
           blend: Some(wgpu::BlendState::REPLACE),
@@ -1170,7 +1174,7 @@ impl PostProcessPipeline {
         mask: !0,
         alpha_to_coverage_enabled: false,
       },
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 
@@ -1286,6 +1290,7 @@ impl PostProcessPipeline {
         label: Some("Bloom Extract Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &self.bloom_view,
+          depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1294,6 +1299,7 @@ impl PostProcessPipeline {
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
+        multiview_mask: None,
         timestamp_writes: None,
       });
       render_pass.set_pipeline(extract_pipeline);
@@ -1328,6 +1334,7 @@ impl PostProcessPipeline {
           label: Some("Bloom Blur H Pass"),
           color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: &self.bloom_view_b,
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
               load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1336,6 +1343,7 @@ impl PostProcessPipeline {
           })],
           depth_stencil_attachment: None,
           occlusion_query_set: None,
+          multiview_mask: None,
           timestamp_writes: None,
         });
         render_pass.set_pipeline(blur_pipeline);
@@ -1368,6 +1376,7 @@ impl PostProcessPipeline {
           label: Some("Bloom Blur V Pass"),
           color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: &self.bloom_view,
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
               load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1376,6 +1385,7 @@ impl PostProcessPipeline {
           })],
           depth_stencil_attachment: None,
           occlusion_query_set: None,
+          multiview_mask: None,
           timestamp_writes: None,
         });
         render_pass.set_pipeline(blur_pipeline);
@@ -1416,6 +1426,7 @@ impl PostProcessPipeline {
         label: Some("Bloom Composite Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: output_view,
+          depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1424,6 +1435,7 @@ impl PostProcessPipeline {
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
+        multiview_mask: None,
         timestamp_writes: None,
       });
       render_pass.set_pipeline(composite_pipeline);
@@ -1444,8 +1456,8 @@ impl PostProcessPipeline {
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Bloom Composite Pipeline Layout"),
-      bind_group_layouts: &[&self.bloom_composite_bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&self.bloom_composite_bind_group_layout)],
+      immediate_size: 0,
     });
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1453,13 +1465,13 @@ impl PostProcessPipeline {
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: self.format,
           blend: Some(wgpu::BlendState::REPLACE),
@@ -1482,7 +1494,7 @@ impl PostProcessPipeline {
         mask: !0,
         alpha_to_coverage_enabled: false,
       },
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 

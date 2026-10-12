@@ -141,6 +141,7 @@ impl DevWindowRenderer {
       alpha_mode: surface_caps.alpha_modes[0],
       view_formats: vec![],
       desired_maximum_frame_latency: 2,
+      color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(&device, &surface_config);
 
@@ -218,8 +219,8 @@ impl DevWindowRenderer {
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("dev_window_pipeline_layout"),
-      bind_group_layouts: &[&bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&bind_group_layout)],
+      immediate_size: 0,
     });
 
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -227,13 +228,13 @@ impl DevWindowRenderer {
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: surface_format,
           blend: None,
@@ -247,7 +248,7 @@ impl DevWindowRenderer {
       },
       depth_stencil: None,
       multisample: wgpu::MultisampleState::default(),
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 
@@ -491,14 +492,14 @@ impl DevWindowRenderer {
   pub fn present(&mut self) {
     // Upload pixel buffer to texture
     self.queue.write_texture(
-      wgpu::ImageCopyTexture {
+      wgpu::TexelCopyTextureInfo {
         texture: &self.texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
       },
       &self.pixel_buffer,
-      wgpu::ImageDataLayout {
+      wgpu::TexelCopyBufferLayout {
         offset: 0,
         bytes_per_row: Some(self.width * 4),
         rows_per_image: Some(self.height),
@@ -512,15 +513,16 @@ impl DevWindowRenderer {
 
     // Get surface texture
     let output = match self.surface.get_current_texture() {
-      Ok(t) => t,
-      Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+      wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+      wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
         self.surface.configure(&self.device, &self.surface_config);
         return;
       }
-      Err(e) => {
-        eprintln!("[DevWindow] Surface error: {}", e);
+      wgpu::CurrentSurfaceTexture::Validation => {
+        eprintln!("[DevWindow] Surface validation error");
         return;
       }
+      wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
     };
 
     let view = output
@@ -538,6 +540,7 @@ impl DevWindowRenderer {
         label: Some("dev_window_render_pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &view,
+          depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -547,6 +550,7 @@ impl DevWindowRenderer {
         depth_stencil_attachment: None,
         timestamp_writes: None,
         occlusion_query_set: None,
+        multiview_mask: None,
       });
 
       render_pass.set_pipeline(&self.render_pipeline);
@@ -555,7 +559,7 @@ impl DevWindowRenderer {
     }
 
     self.queue.submit(std::iter::once(encoder.finish()));
-    output.present();
+    self.queue.present(output);
 
     // Request continuous redraws
     self.window.request_redraw();

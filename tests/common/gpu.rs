@@ -143,15 +143,15 @@ impl TestRenderTarget {
 
     // Copy texture to staging buffer
     encoder.copy_texture_to_buffer(
-      wgpu::ImageCopyTexture {
+      wgpu::TexelCopyTextureInfo {
         texture: &self.texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
       },
-      wgpu::ImageCopyBuffer {
+      wgpu::TexelCopyBufferInfo {
         buffer: &self.staging_buffer,
-        layout: wgpu::ImageDataLayout {
+        layout: wgpu::TexelCopyBufferLayout {
           offset: 0,
           bytes_per_row: Some(self.padded_bytes_per_row),
           rows_per_image: Some(self.height),
@@ -175,11 +175,14 @@ impl TestRenderTarget {
     });
 
     // Wait for the GPU to finish
-    gpu.device.poll(wgpu::Maintain::Wait);
+    gpu
+      .device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .expect("poll");
     rx.recv().unwrap().expect("Failed to map buffer");
 
     // Read the data, removing row padding
-    let mapped = buffer_slice.get_mapped_range();
+    let mapped = buffer_slice.get_mapped_range().expect("mapped range");
     let mut pixels = Vec::with_capacity((self.width * self.height * 4) as usize);
 
     for y in 0..self.height {
@@ -226,6 +229,7 @@ impl TestRenderTarget {
         label: Some("Clear Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &self.view,
+          depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
@@ -234,6 +238,7 @@ impl TestRenderTarget {
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
+        multiview_mask: None,
         timestamp_writes: None,
       });
     }

@@ -59,15 +59,15 @@ pub fn read_texture_rgba(
     label: Some("Capture Readback Encoder"),
   });
   encoder.copy_texture_to_buffer(
-    wgpu::ImageCopyTexture {
+    wgpu::TexelCopyTextureInfo {
       texture,
       mip_level: 0,
       origin: wgpu::Origin3d::ZERO,
       aspect: wgpu::TextureAspect::All,
     },
-    wgpu::ImageCopyBuffer {
+    wgpu::TexelCopyBufferInfo {
       buffer: &buffer,
-      layout: wgpu::ImageDataLayout {
+      layout: wgpu::TexelCopyBufferLayout {
         offset: 0,
         bytes_per_row: Some(padded_row),
         rows_per_image: Some(height),
@@ -86,13 +86,17 @@ pub fn read_texture_rgba(
   slice.map_async(wgpu::MapMode::Read, move |result| {
     let _ = tx.send(result);
   });
-  device.poll(wgpu::Maintain::Wait);
+  device
+    .poll(wgpu::PollType::wait_indefinitely())
+    .map_err(|e| CaptureError::Readback(e.to_string()))?;
   rx.recv()
     .map_err(|e| CaptureError::Readback(e.to_string()))?
     .map_err(|e| CaptureError::Readback(e.to_string()))?;
 
   let mut pixels = {
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+      .get_mapped_range()
+      .map_err(|e| CaptureError::Readback(e.to_string()))?;
     strip_row_padding(&mapped, width, height, padded_row)
   };
   buffer.unmap();

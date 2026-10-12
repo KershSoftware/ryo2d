@@ -118,6 +118,7 @@ impl RenderPass for Magenta {
       label: Some("magenta"),
       color_attachments: &[Some(ryo2d::wgpu::RenderPassColorAttachment {
         view,
+        depth_slice: None,
         resolve_target: None,
         ops: ryo2d::wgpu::Operations {
           load: ryo2d::wgpu::LoadOp::Clear(ryo2d::wgpu::Color {
@@ -132,6 +133,7 @@ impl RenderPass for Magenta {
       depth_stencil_attachment: None,
       timestamp_writes: None,
       occlusion_query_set: None,
+      multiview_mask: None,
     });
   }
 }

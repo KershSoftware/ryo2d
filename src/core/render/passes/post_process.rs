@@ -45,13 +45,13 @@ impl RenderPass for PostProcess {
     if *image != FrameImage::PostProcess(OutputBuffer::A) {
       let source = image_texture(targets, Some(&*post_process), *image);
       encoder.copy_texture_to_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
           texture: source,
           mip_level: 0,
           origin: wgpu::Origin3d::ZERO,
           aspect: wgpu::TextureAspect::All,
         },
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
           texture: post_process.texture_a(),
           mip_level: 0,
           origin: wgpu::Origin3d::ZERO,

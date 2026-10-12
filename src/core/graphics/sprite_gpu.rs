@@ -442,7 +442,7 @@ impl CustomPipelines {
 
     // Anything naga accepted but the device rejects surfaces here instead of
     // taking the engine down
-    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some(shader.id()),
       source: wgpu::ShaderSource::Wgsl(compiled.wgsl.into()),
@@ -452,13 +452,13 @@ impl CustomPipelines {
       layout: Some(&self.layout),
       vertex: wgpu::VertexState {
         module: &module,
-        entry_point: "vs_main",
-        buffers: &[self.vertex.clone(), self.instance.clone()],
+        entry_point: Some("vs_main"),
+        buffers: &[Some(self.vertex.clone()), Some(self.instance.clone())],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &module,
-        entry_point: "fs_custom",
+        entry_point: Some("fs_custom"),
         targets: &[Some(wgpu::ColorTargetState {
           format: self.format,
           blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -472,10 +472,10 @@ impl CustomPipelines {
       },
       depth_stencil: None,
       multisample: wgpu::MultisampleState::default(),
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
-    if let Some(error) = pollster::block_on(device.pop_error_scope()) {
+    if let Some(error) = pollster::block_on(scope.pop()) {
       let error = ShaderError {
         shader: shader.id().to_string(),
         line: None,
@@ -642,7 +642,7 @@ impl SpriteGpuRenderer {
       address_mode_w: wgpu::AddressMode::ClampToEdge,
       mag_filter: wgpu::FilterMode::Nearest,
       min_filter: wgpu::FilterMode::Nearest,
-      mipmap_filter: wgpu::FilterMode::Nearest,
+      mipmap_filter: wgpu::MipmapFilterMode::Nearest,
       ..Default::default()
     }));
 
@@ -717,8 +717,8 @@ impl SpriteGpuRenderer {
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Sprite Pipeline Layout"),
-      bind_group_layouts: &[&globals_layout, &*texture_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&globals_layout), Some(&*texture_layout)],
+      immediate_size: 0,
     });
 
     // Vertex buffer layout
@@ -801,13 +801,13 @@ impl SpriteGpuRenderer {
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,
-        entry_point: "vs_main",
-        buffers: &[vertex_layout.clone(), instance_layout.clone()],
+        entry_point: Some("vs_main"),
+        buffers: &[Some(vertex_layout.clone()), Some(instance_layout.clone())],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &shader,
-        entry_point: "fs_base",
+        entry_point: Some("fs_base"),
         targets: &[Some(wgpu::ColorTargetState {
           format: surface_format,
           blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -821,7 +821,7 @@ impl SpriteGpuRenderer {
       },
       depth_stencil: None,
       multisample: wgpu::MultisampleState::default(),
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 
@@ -831,13 +831,13 @@ impl SpriteGpuRenderer {
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,
-        entry_point: "vs_main",
-        buffers: &[vertex_layout.clone(), instance_layout.clone()],
+        entry_point: Some("vs_main"),
+        buffers: &[Some(vertex_layout.clone()), Some(instance_layout.clone())],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &shader,
-        entry_point: "fs_effect",
+        entry_point: Some("fs_effect"),
         targets: &[Some(wgpu::ColorTargetState {
           format: surface_format,
           blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -851,7 +851,7 @@ impl SpriteGpuRenderer {
       },
       depth_stencil: None,
       multisample: wgpu::MultisampleState::default(),
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 

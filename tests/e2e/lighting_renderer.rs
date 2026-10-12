@@ -98,15 +98,15 @@ impl SrgbRenderTarget {
       });
 
     encoder.copy_texture_to_buffer(
-      wgpu::ImageCopyTexture {
+      wgpu::TexelCopyTextureInfo {
         texture: &self.texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
       },
-      wgpu::ImageCopyBuffer {
+      wgpu::TexelCopyBufferInfo {
         buffer: &self.staging_buffer,
-        layout: wgpu::ImageDataLayout {
+        layout: wgpu::TexelCopyBufferLayout {
           offset: 0,
           bytes_per_row: Some(self.padded_bytes_per_row),
           rows_per_image: Some(self.height),
@@ -127,10 +127,13 @@ impl SrgbRenderTarget {
       tx.send(result).unwrap();
     });
 
-    gpu.device.poll(wgpu::Maintain::Wait);
+    gpu
+      .device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .expect("poll");
     rx.recv().unwrap().expect("Failed to map buffer");
 
-    let mapped = buffer_slice.get_mapped_range();
+    let mapped = buffer_slice.get_mapped_range().expect("mapped range");
     let mut pixels = Vec::with_capacity((self.width * self.height * 4) as usize);
 
     for y in 0..self.height {
@@ -707,13 +710,13 @@ fn test_lighting_plus_effects_produces_visible_output() {
   };
 
   encoder.copy_texture_to_texture(
-    wgpu::ImageCopyTexture {
+    wgpu::TexelCopyTextureInfo {
       texture: output_texture,
       mip_level: 0,
       origin: wgpu::Origin3d::ZERO,
       aspect: wgpu::TextureAspect::All,
     },
-    wgpu::ImageCopyTexture {
+    wgpu::TexelCopyTextureInfo {
       texture: &target.texture,
       mip_level: 0,
       origin: wgpu::Origin3d::ZERO,

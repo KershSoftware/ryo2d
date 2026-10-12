@@ -81,7 +81,7 @@ impl Compositor {
       address_mode_w: wgpu::AddressMode::ClampToEdge,
       mag_filter: wgpu::FilterMode::Nearest,
       min_filter: wgpu::FilterMode::Nearest,
-      mipmap_filter: wgpu::FilterMode::Nearest,
+      mipmap_filter: wgpu::MipmapFilterMode::Nearest,
       ..Default::default()
     });
 
@@ -144,8 +144,8 @@ impl Compositor {
     // Create pipeline layout
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Render Pipeline Layout"),
-      bind_group_layouts: &[&bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&bind_group_layout)],
+      immediate_size: 0,
     });
 
     // Create render pipeline (REPLACE blend - for drawing scene)
@@ -154,13 +154,13 @@ impl Compositor {
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: target_format,
           blend: Some(wgpu::BlendState::REPLACE),
@@ -183,7 +183,7 @@ impl Compositor {
         mask: !0,
         alpha_to_coverage_enabled: false,
       },
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 
@@ -193,13 +193,13 @@ impl Compositor {
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: target_format,
           blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -222,7 +222,7 @@ impl Compositor {
         mask: !0,
         alpha_to_coverage_enabled: false,
       },
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 
@@ -258,14 +258,14 @@ impl Compositor {
   /// Upload the UI overlay pixels (RGBA, `width` x `height`) for the next [`draw`](Self::draw).
   pub(crate) fn upload_ui(&self, queue: &wgpu::Queue, data: &[u8], width: u32, height: u32) {
     queue.write_texture(
-      wgpu::ImageCopyTexture {
+      wgpu::TexelCopyTextureInfo {
         texture: &self.ui_texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
       },
       data,
-      wgpu::ImageDataLayout {
+      wgpu::TexelCopyBufferLayout {
         offset: 0,
         bytes_per_row: Some(4 * width),
         rows_per_image: Some(height),
@@ -306,6 +306,7 @@ impl Compositor {
       label: Some("Final Composite Pass"),
       color_attachments: &[Some(wgpu::RenderPassColorAttachment {
         view: target,
+        depth_slice: None,
         resolve_target: None,
         ops: wgpu::Operations {
           // Clear to black (letterbox color)
@@ -315,6 +316,7 @@ impl Compositor {
       })],
       depth_stencil_attachment: None,
       occlusion_query_set: None,
+      multiview_mask: None,
       timestamp_writes: None,
     });
 

@@ -34,6 +34,7 @@ impl RenderPass for World {
       label: Some("World Render Pass"),
       color_attachments: &[Some(wgpu::RenderPassColorAttachment {
         view: game_view,
+        depth_slice: None,
         resolve_target: None,
         ops: wgpu::Operations {
           load: wgpu::LoadOp::Load,
@@ -43,6 +44,7 @@ impl RenderPass for World {
       depth_stencil_attachment: None,
       timestamp_writes: None,
       occlusion_query_set: None,
+      multiview_mask: None,
     });
     for run in runs {
       match run {
@@ -83,6 +85,7 @@ impl RenderPass for UnlitWorld {
       label: Some("Unlit World Render Pass"),
       color_attachments: &[Some(wgpu::RenderPassColorAttachment {
         view,
+        depth_slice: None,
         resolve_target: None,
         ops: wgpu::Operations {
           load: wgpu::LoadOp::Load,
@@ -92,6 +95,7 @@ impl RenderPass for UnlitWorld {
       depth_stencil_attachment: None,
       timestamp_writes: None,
       occlusion_query_set: None,
+      multiview_mask: None,
     });
     for item in list.unlit_items() {
       if let crate::core::render::DrawPayload::Trail { z } = item.payload {

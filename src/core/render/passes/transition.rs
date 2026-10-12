@@ -84,21 +84,21 @@ impl FadePipeline {
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Transition Pipeline Layout"),
-      bind_group_layouts: &[&layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&layout)],
+      immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
       label: Some("Transition Pipeline"),
       layout: Some(&pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shader,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         // The shader mixes with the copy itself, so it replaces the frame
         targets: &[Some(wgpu::ColorTargetState {
           format,
@@ -110,7 +110,7 @@ impl FadePipeline {
       primitive: wgpu::PrimitiveState::default(),
       depth_stencil: None,
       multisample: wgpu::MultisampleState::default(),
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
     Self {
@@ -183,6 +183,7 @@ impl RenderPass for TransitionPass {
       label: Some("Transition Render Pass"),
       color_attachments: &[Some(wgpu::RenderPassColorAttachment {
         view,
+        depth_slice: None,
         resolve_target: None,
         ops: wgpu::Operations {
           load: wgpu::LoadOp::Load,
@@ -192,6 +193,7 @@ impl RenderPass for TransitionPass {
       depth_stencil_attachment: None,
       timestamp_writes: None,
       occlusion_query_set: None,
+      multiview_mask: None,
     });
     pass.set_pipeline(&fade.pipeline);
     pass.set_bind_group(0, &fade.bind_group, &[]);

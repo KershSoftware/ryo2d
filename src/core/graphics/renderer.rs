@@ -34,6 +34,19 @@ use crate::core::window::WindowMode;
 use super::{Compositor, SpriteGpuRenderer};
 
 /// Where finished frames go: the window surface or an offscreen texture.
+/// Why a frame was not presented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FrameError {
+  /// Nothing to draw into this frame (timeout, occluded window)
+  Skip,
+  /// The surface must be reconfigured before the next frame
+  Reconfigure,
+  /// The surface was lost and must be recreated
+  Recreate,
+  /// Rendering cannot continue
+  Fatal(String),
+}
+
 enum PresentTarget {
   Surface {
     surface: wgpu::Surface<'static>,
@@ -64,12 +77,21 @@ fn offscreen_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Tex
 
 impl PresentTarget {
   /// The view to draw this frame into, plus the surface texture to present afterwards.
-  fn acquire(
-    &self,
-  ) -> Result<(Option<wgpu::SurfaceTexture>, wgpu::TextureView), wgpu::SurfaceError> {
+  fn acquire(&self) -> Result<(Option<wgpu::SurfaceTexture>, wgpu::TextureView), FrameError> {
     match self {
       PresentTarget::Surface { surface, .. } => {
-        let output = surface.get_current_texture()?;
+        let output = match surface.get_current_texture() {
+          wgpu::CurrentSurfaceTexture::Success(output)
+          | wgpu::CurrentSurfaceTexture::Suboptimal(output) => output,
+          wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+            return Err(FrameError::Skip);
+          }
+          wgpu::CurrentSurfaceTexture::Outdated => return Err(FrameError::Reconfigure),
+          wgpu::CurrentSurfaceTexture::Lost => return Err(FrameError::Recreate),
+          wgpu::CurrentSurfaceTexture::Validation => {
+            return Err(FrameError::Fatal("surface validation error".to_string()));
+          }
+        };
         let view = output
           .texture
           .create_view(&wgpu::TextureViewDescriptor::default());
@@ -196,10 +218,10 @@ impl WgpuRenderer {
     let size = window.inner_size();
 
     // Create wgpu instance
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-      backends: wgpu::Backends::all(),
-      ..Default::default()
-    });
+    let mut descriptor =
+      wgpu::InstanceDescriptor::new_with_display_handle(Box::new(Arc::clone(&window)));
+    descriptor.backends = wgpu::Backends::all();
+    let instance = wgpu::Instance::new(descriptor);
 
     // Create surface
     let surface = instance.create_surface(window).unwrap();
@@ -210,21 +232,21 @@ impl WgpuRenderer {
         power_preference: wgpu::PowerPreference::default(),
         compatible_surface: Some(&surface),
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
       })
       .await
       .expect("Failed to find an appropriate adapter");
 
     // Request device and queue (wrapped in Arc for sharing with profiler window)
     let (device, queue) = adapter
-      .request_device(
-        &wgpu::DeviceDescriptor {
-          label: Some("Ryo2D Device"),
-          required_features: wgpu::Features::empty(),
-          required_limits: wgpu::Limits::default(),
-          memory_hints: Default::default(),
-        },
-        None,
-      )
+      .request_device(&wgpu::DeviceDescriptor {
+        label: Some("Ryo2D Device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: Default::default(),
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        trace: wgpu::Trace::Off,
+      })
       .await
       .expect("Failed to create device");
     let device = std::sync::Arc::new(device);
@@ -261,6 +283,7 @@ impl WgpuRenderer {
       alpha_mode: surface_caps.alpha_modes[0],
       view_formats: vec![],
       desired_maximum_frame_latency: 2,
+      color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(&device, &config);
     Self::from_parts(RendererParts {
@@ -393,14 +416,14 @@ impl WgpuRenderer {
 
     // Upload the initial colour to the game texture immediately
     queue.write_texture(
-      wgpu::ImageCopyTexture {
+      wgpu::TexelCopyTextureInfo {
         texture: &texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
       },
       &pixel_buffer,
-      wgpu::ImageDataLayout {
+      wgpu::TexelCopyBufferLayout {
         offset: 0,
         bytes_per_row: Some(4 * game_width),
         rows_per_image: Some(game_height),
@@ -708,7 +731,7 @@ impl WgpuRenderer {
     &mut self,
     pipeline: &mut RenderPipeline,
     scene: FrameScene<'_>,
-  ) -> Result<(), wgpu::SurfaceError> {
+  ) -> Result<(), FrameError> {
     let (output, view) = self.target.acquire()?;
     let capture_path = self.prepare_capture();
     let frame = FrameInfo {
@@ -751,7 +774,7 @@ impl WgpuRenderer {
     }
     self.queue.submit(std::iter::once(encoder.finish()));
     if let Some(output) = output {
-      output.present();
+      self.queue.present(output);
     }
     // Only read back what the capture pass drew; otherwise the texture is stale or blank
     if captured {
@@ -771,7 +794,7 @@ impl WgpuRenderer {
     &mut self,
     pipeline: &mut RenderPipeline,
     ui_buffer: &[u8],
-  ) -> Result<(), wgpu::SurfaceError> {
+  ) -> Result<(), FrameError> {
     let sprites = SpriteGpuRenderer::new(&self.device, &self.queue, self.target.format());
     let effects = EffectsManager::new();
     let draw_list = DrawList::default();

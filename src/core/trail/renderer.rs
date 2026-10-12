@@ -265,7 +265,7 @@ impl TrailRenderer {
       address_mode_w: wgpu::AddressMode::ClampToEdge,
       mag_filter: wgpu::FilterMode::Linear,
       min_filter: wgpu::FilterMode::Linear,
-      mipmap_filter: wgpu::FilterMode::Nearest,
+      mipmap_filter: wgpu::MipmapFilterMode::Nearest,
       ..Default::default()
     });
 
@@ -284,15 +284,15 @@ impl TrailRenderer {
     // Create pipeline layout for non-textured trails
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Trail Pipeline Layout"),
-      bind_group_layouts: &[&bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&bind_group_layout)],
+      immediate_size: 0,
     });
 
     // Create pipeline layout for textured trails (globals + texture)
     let textured_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Trail Textured Pipeline Layout"),
-      bind_group_layouts: &[&bind_group_layout, &texture_bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&bind_group_layout), Some(&texture_bind_group_layout)],
+      immediate_size: 0,
     });
 
     // Vertex buffer layout
@@ -343,13 +343,13 @@ impl TrailRenderer {
         layout: Some(layout),
         vertex: wgpu::VertexState {
           module: shader,
-          entry_point: "vs_main",
-          buffers: std::slice::from_ref(&vertex_layout),
+          entry_point: Some("vs_main"),
+          buffers: &[Some(vertex_layout.clone())],
           compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
           module: shader,
-          entry_point,
+          entry_point: Some(entry_point),
           targets: &[Some(wgpu::ColorTargetState {
             format: output_format,
             blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -372,7 +372,7 @@ impl TrailRenderer {
           mask: !0,
           alpha_to_coverage_enabled: false,
         },
-        multiview: None,
+        multiview_mask: None,
         cache: None,
       })
     };
@@ -521,14 +521,14 @@ impl TrailRenderer {
 
       // Upload texture data
       queue.write_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
           texture: &texture,
           mip_level: 0,
           origin: wgpu::Origin3d::ZERO,
           aspect: wgpu::TextureAspect::All,
         },
         sprite_data.data(),
-        wgpu::ImageDataLayout {
+        wgpu::TexelCopyBufferLayout {
           offset: 0,
           bytes_per_row: Some(sprite_data.width() * 4),
           rows_per_image: Some(sprite_data.height()),
@@ -1577,6 +1577,7 @@ impl TrailRenderer {
       label: Some("Trail Render Pass"),
       color_attachments: &[Some(wgpu::RenderPassColorAttachment {
         view: target_view,
+        depth_slice: None,
         resolve_target: None,
         ops: wgpu::Operations {
           load: wgpu::LoadOp::Load,
@@ -1585,6 +1586,7 @@ impl TrailRenderer {
       })],
       depth_stencil_attachment: None,
       occlusion_query_set: None,
+      multiview_mask: None,
       timestamp_writes: None,
     });
     for z in zs {

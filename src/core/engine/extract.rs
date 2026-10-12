@@ -12,6 +12,7 @@ use crate::core::ecs::{
   DetectChangesMut, GlobalTransform, IsResource, Mut, Observer, PreviousGlobalTransform, Vec2,
   World,
 };
+use crate::core::graphics::renderer::FrameError;
 use crate::core::graphics::{Camera, GpuRenderContext};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::{DrawKind, FrameScene, LightingFrame, RenderPipeline};
@@ -195,20 +196,21 @@ impl Engine {
     let outcome = match result {
       Ok(()) => PresentOutcome::Presented,
       // Recoverable: reconfigure and draw the next frame
-      Err(wgpu::SurfaceError::Outdated) | Err(wgpu::SurfaceError::Timeout) => {
+      Err(FrameError::Skip) => PresentOutcome::Skipped,
+      Err(FrameError::Reconfigure) => {
         self.surface_needs_reconfigure = true;
         PresentOutcome::Skipped
       }
-      Err(wgpu::SurfaceError::Lost) => {
+      Err(FrameError::Recreate) => {
         if let Some(window) = &self.window {
           let size = window.inner_size();
           rend.resize(size.width, size.height);
         }
         PresentOutcome::Skipped
       }
-      Err(wgpu::SurfaceError::OutOfMemory) => {
-        crate::engine_error!(module: "Render", "out of GPU memory");
-        PresentOutcome::Fatal("out of GPU memory".into())
+      Err(FrameError::Fatal(message)) => {
+        crate::engine_error!(module: "Render", "{}", message);
+        PresentOutcome::Fatal(message)
       }
     };
 

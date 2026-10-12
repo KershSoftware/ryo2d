@@ -177,7 +177,7 @@ impl LightingRenderer {
       address_mode_w: wgpu::AddressMode::ClampToEdge,
       mag_filter: wgpu::FilterMode::Linear,
       min_filter: wgpu::FilterMode::Linear,
-      mipmap_filter: wgpu::FilterMode::Nearest,
+      mipmap_filter: wgpu::MipmapFilterMode::Nearest,
       ..Default::default()
     });
 
@@ -303,8 +303,8 @@ impl LightingRenderer {
 
     let light_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Light Pipeline Layout"),
-      bind_group_layouts: &[&light_bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&light_bind_group_layout)],
+      immediate_size: 0,
     });
 
     let light_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -312,13 +312,13 @@ impl LightingRenderer {
       layout: Some(&light_pipeline_layout),
       vertex: wgpu::VertexState {
         module: &light_shader,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &light_shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: wgpu::TextureFormat::Rgba16Float,
           // Additive blending for light accumulation
@@ -353,7 +353,7 @@ impl LightingRenderer {
         mask: !0,
         alpha_to_coverage_enabled: false,
       },
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 
@@ -367,8 +367,8 @@ impl LightingRenderer {
 
     let compose_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Lighting Compose Pipeline Layout"),
-      bind_group_layouts: &[&compose_bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&compose_bind_group_layout)],
+      immediate_size: 0,
     });
 
     let compose_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -376,13 +376,13 @@ impl LightingRenderer {
       layout: Some(&compose_pipeline_layout),
       vertex: wgpu::VertexState {
         module: &compose_shader,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &compose_shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: output_format,
           blend: Some(wgpu::BlendState::REPLACE),
@@ -405,7 +405,7 @@ impl LightingRenderer {
         mask: !0,
         alpha_to_coverage_enabled: false,
       },
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 
@@ -460,8 +460,8 @@ impl LightingRenderer {
 
     let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Shadow Pipeline Layout"),
-      bind_group_layouts: &[&shadow_bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&shadow_bind_group_layout)],
+      immediate_size: 0,
     });
 
     // Shadow pipeline with reverse-subtract blending
@@ -470,8 +470,8 @@ impl LightingRenderer {
       layout: Some(&shadow_pipeline_layout),
       vertex: wgpu::VertexState {
         module: &shadow_shader,
-        entry_point: "vs_main",
-        buffers: &[wgpu::VertexBufferLayout {
+        entry_point: Some("vs_main"),
+        buffers: &[Some(wgpu::VertexBufferLayout {
           array_stride: std::mem::size_of::<ShadowVertex>() as u64,
           step_mode: wgpu::VertexStepMode::Vertex,
           attributes: &[
@@ -506,12 +506,12 @@ impl LightingRenderer {
               format: wgpu::VertexFormat::Uint32,
             },
           ],
-        }],
+        })],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &shadow_shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: wgpu::TextureFormat::Rgba16Float,
           // Reverse subtract: dst = dst - src (subtract shadow from light)
@@ -546,7 +546,7 @@ impl LightingRenderer {
         mask: !0,
         alpha_to_coverage_enabled: false,
       },
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 
@@ -622,8 +622,8 @@ impl LightingRenderer {
 
     let raymarch_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Raymarch Shadow Pipeline Layout"),
-      bind_group_layouts: &[&raymarch_bind_group_layout],
-      push_constant_ranges: &[],
+      bind_group_layouts: &[Some(&raymarch_bind_group_layout)],
+      immediate_size: 0,
     });
 
     // Raymarch pipeline with reverse-subtract blending (same as shadow pipeline)
@@ -632,13 +632,13 @@ impl LightingRenderer {
       layout: Some(&raymarch_pipeline_layout),
       vertex: wgpu::VertexState {
         module: &raymarch_shader,
-        entry_point: "vs_main",
+        entry_point: Some("vs_main"),
         buffers: &[],
         compilation_options: Default::default(),
       },
       fragment: Some(wgpu::FragmentState {
         module: &raymarch_shader,
-        entry_point: "fs_main",
+        entry_point: Some("fs_main"),
         targets: &[Some(wgpu::ColorTargetState {
           format: wgpu::TextureFormat::Rgba16Float,
           // Reverse subtract: dst = dst - src (subtract shadow from light)
@@ -673,7 +673,7 @@ impl LightingRenderer {
         mask: !0,
         alpha_to_coverage_enabled: false,
       },
-      multiview: None,
+      multiview_mask: None,
       cache: None,
     });
 
@@ -943,6 +943,7 @@ impl LightingRenderer {
         label: Some("Light Accumulation Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &self.light_texture_view,
+          depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -951,6 +952,7 @@ impl LightingRenderer {
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
+        multiview_mask: None,
         timestamp_writes: None,
       });
 
@@ -1006,6 +1008,7 @@ impl LightingRenderer {
         label: Some("Shadow Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &self.light_texture_view,
+          depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
             load: wgpu::LoadOp::Load, // Keep existing light accumulation
@@ -1014,6 +1017,7 @@ impl LightingRenderer {
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
+        multiview_mask: None,
         timestamp_writes: None,
       });
 
@@ -1130,6 +1134,7 @@ impl LightingRenderer {
         label: Some("Raymarch Shadow Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: &self.light_texture_view,
+          depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
             load: wgpu::LoadOp::Load, // Keep existing light accumulation
@@ -1138,6 +1143,7 @@ impl LightingRenderer {
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
+        multiview_mask: None,
         timestamp_writes: None,
       });
 
@@ -1235,14 +1241,14 @@ impl LightingRenderer {
 
     // Write pixel data to our scene copy texture
     queue.write_texture(
-      wgpu::ImageCopyTexture {
+      wgpu::TexelCopyTextureInfo {
         texture: &self.scene_copy_texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
       },
       pixel_data,
-      wgpu::ImageDataLayout {
+      wgpu::TexelCopyBufferLayout {
         offset: 0,
         bytes_per_row: Some(4 * self.width),
         rows_per_image: Some(self.height),
@@ -1312,6 +1318,7 @@ impl LightingRenderer {
         label: Some("Lighting Compose Pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: output_view,
+          depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1320,6 +1327,7 @@ impl LightingRenderer {
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
+        multiview_mask: None,
         timestamp_writes: None,
       });
 
@@ -1410,13 +1418,13 @@ impl LightingRenderer {
 
     // Copy scene texture to our internal scene_copy_texture
     encoder.copy_texture_to_texture(
-      wgpu::ImageCopyTexture {
+      wgpu::TexelCopyTextureInfo {
         texture: scene_texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
         aspect: wgpu::TextureAspect::All,
       },
-      wgpu::ImageCopyTexture {
+      wgpu::TexelCopyTextureInfo {
         texture: &self.scene_copy_texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
@@ -1487,6 +1495,7 @@ impl LightingRenderer {
         label: Some("Lighting Compose Pass (from texture)"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
           view: output_view,
+          depth_slice: None,
           resolve_target: None,
           ops: wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1495,6 +1504,7 @@ impl LightingRenderer {
         })],
         depth_stencil_attachment: None,
         occlusion_query_set: None,
+        multiview_mask: None,
         timestamp_writes: None,
       });
 

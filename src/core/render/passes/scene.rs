@@ -32,6 +32,7 @@ pub(super) fn clear(
     label: Some("Clear Game Texture Pass"),
     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
       view,
+      depth_slice: None,
       resolve_target: None,
       ops: wgpu::Operations {
         load: wgpu::LoadOp::Clear(color),
@@ -41,5 +42,6 @@ pub(super) fn clear(
     depth_stencil_attachment: None,
     timestamp_writes: None,
     occlusion_query_set: None,
+    multiview_mask: None,
   });
 }

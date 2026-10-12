@@ -23,27 +23,27 @@ pub fn shared_gpu() -> Result<Gpu, HeadlessError> {
 }
 
 async fn create() -> Option<Gpu> {
-  let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-    backends: wgpu::Backends::all(),
-    ..Default::default()
-  });
+  let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+  descriptor.backends = wgpu::Backends::all();
+  let instance = wgpu::Instance::new(descriptor);
   let adapter = instance
     .request_adapter(&wgpu::RequestAdapterOptions {
       power_preference: wgpu::PowerPreference::default(),
       compatible_surface: None,
       force_fallback_adapter: false,
+      apply_limit_buckets: false,
     })
-    .await?;
+    .await
+    .ok()?;
   let (device, queue) = adapter
-    .request_device(
-      &wgpu::DeviceDescriptor {
-        label: Some("Ryo2D Headless Device"),
-        required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: Default::default(),
-      },
-      None,
-    )
+    .request_device(&wgpu::DeviceDescriptor {
+      label: Some("Ryo2D Headless Device"),
+      required_features: wgpu::Features::empty(),
+      required_limits: wgpu::Limits::default(),
+      memory_hints: Default::default(),
+      experimental_features: wgpu::ExperimentalFeatures::disabled(),
+      trace: wgpu::Trace::Off,
+    })
     .await
     .ok()?;
   Some((Arc::new(device), Arc::new(queue)))
