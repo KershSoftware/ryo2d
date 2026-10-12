@@ -10,7 +10,9 @@
 //! - **Per-sprite shaders** - Material components for GPU effects
 //! - **Object pooling** - Pre-allocated entity pools for high-frequency spawning
 
+pub mod interpolate;
 pub mod kernel;
+pub mod propagate;
 pub mod transform;
 
 mod active;

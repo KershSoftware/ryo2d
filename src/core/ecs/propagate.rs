@@ -1,0 +1,229 @@
+//! Transform propagation: local `Transform`s down the hierarchy into
+//! `GlobalTransform`s, recomputing only subtrees that changed.
+
+use super::kernel::{
+  ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Entity, Has, Query, Ref, With,
+  Without,
+};
+use super::transform::{GlobalTransform, Interpolated, PreviousGlobalTransform, Transform};
+
+type RootItem<'a> = (
+  Entity,
+  Ref<'a, Transform>,
+  &'a mut GlobalTransform,
+  Option<&'a Children>,
+  Has<Interpolated>,
+  Has<PreviousGlobalTransform>,
+);
+
+type NodeItem<'a> = (
+  Ref<'a, Transform>,
+  Ref<'a, ChildOf>,
+  &'a mut GlobalTransform,
+  Option<&'a Children>,
+  Has<Interpolated>,
+  Has<PreviousGlobalTransform>,
+);
+
+/// Recompute `GlobalTransform` for every subtree whose root or any ancestor
+/// changed, and keep `PreviousGlobalTransform` present on interpolated
+/// subtrees (and absent elsewhere).
+///
+/// Roots are entities with a `Transform` and no parent. Children of a parent
+/// that has no `Transform` of its own (a bare grouping entity) start from the
+/// identity, as if they were roots.
+pub fn propagate_transforms(
+  mut roots: Query<RootItem, Without<ChildOf>>,
+  mut nodes: Query<NodeItem, With<ChildOf>>,
+  grouping: Query<(Entity, &Children), Without<Transform>>,
+  mut commands: Commands,
+) {
+  // (entity, parent's global, parent changed, parent interpolated)
+  let mut stack: Vec<(Entity, GlobalTransform, bool, bool)> = Vec::new();
+
+  for (entity, transform, mut global, children, interpolated, has_previous) in roots.iter_mut() {
+    let changed = transform.is_changed();
+    if changed {
+      global.set_if_neq(GlobalTransform::from_transform(&transform));
+    }
+    sync_previous(&mut commands, entity, interpolated, has_previous, *global);
+    if let Some(children) = children {
+      for child in children.iter().copied() {
+        stack.push((child, *global, changed, interpolated));
+      }
+    }
+  }
+
+  for (_, children) in grouping.iter() {
+    for child in children.iter().copied() {
+      stack.push((child, GlobalTransform::IDENTITY, true, false));
+    }
+  }
+
+  while let Some((entity, parent_global, parent_changed, parent_interpolated)) = stack.pop() {
+    let Ok((transform, child_of, mut global, children, interpolated, has_previous)) =
+      nodes.get_mut(entity)
+    else {
+      // A child without a Transform: nothing to place, and its own children
+      // (if any) are reached through the grouping query.
+      continue;
+    };
+    let changed = parent_changed || transform.is_changed() || child_of.is_changed();
+    if changed {
+      global.set_if_neq(parent_global.mul_transform(&transform));
+    }
+    let interpolated = interpolated || parent_interpolated;
+    sync_previous(&mut commands, entity, interpolated, has_previous, *global);
+    if let Some(children) = children {
+      for child in children.iter().copied() {
+        stack.push((child, *global, changed, interpolated));
+      }
+    }
+  }
+}
+
+/// Insert or remove `PreviousGlobalTransform` so that it exists exactly on
+/// interpolated entities. A fresh one skips, so the first frame draws current.
+fn sync_previous(
+  commands: &mut Commands,
+  entity: Entity,
+  interpolated: bool,
+  has_previous: bool,
+  global: GlobalTransform,
+) {
+  match (interpolated, has_previous) {
+    (true, false) => {
+      commands
+        .entity(entity)
+        .insert(PreviousGlobalTransform { global, skip: true });
+    }
+    (false, true) => {
+      commands.entity(entity).remove::<PreviousGlobalTransform>();
+    }
+    _ => {}
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::ecs::kernel::{Schedule, ScheduleLabel, World};
+  use glam::Vec2;
+  use std::f32::consts::FRAC_PI_2;
+
+  #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+  struct Step;
+
+  fn schedule() -> Schedule {
+    let mut s = Schedule::new(Step);
+    s.add_systems(propagate_transforms);
+    s
+  }
+
+  fn global(world: &World, e: Entity) -> GlobalTransform {
+    *world.get::<GlobalTransform>(e).expect("GlobalTransform")
+  }
+
+  fn close(a: Vec2, b: Vec2) -> bool {
+    (a - b).length() < 1e-4
+  }
+
+  #[test]
+  fn child_of_rotated_parent() {
+    let mut world = World::new();
+    let parent = world
+      .spawn(Transform::from_xy(100.0, 100.0).with_rotation(FRAC_PI_2))
+      .id();
+    let child = world
+      .spawn((Transform::from_xy(10.0, 0.0), ChildOf(parent)))
+      .id();
+    schedule().run(&mut world);
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(100.0, 110.0)
+    ));
+  }
+
+  #[test]
+  fn three_levels_compose() {
+    let mut world = World::new();
+    let a = world.spawn(Transform::from_xy(1.0, 0.0)).id();
+    let b = world.spawn((Transform::from_xy(1.0, 0.0), ChildOf(a))).id();
+    let c = world.spawn((Transform::from_xy(1.0, 0.0), ChildOf(b))).id();
+    schedule().run(&mut world);
+    assert!(close(global(&world, c).translation(), Vec2::new(3.0, 0.0)));
+  }
+
+  #[test]
+  fn unchanged_subtrees_are_not_rewritten() {
+    let mut world = World::new();
+    let a = world.spawn(Transform::from_xy(1.0, 0.0)).id();
+    let b = world.spawn((Transform::from_xy(1.0, 0.0), ChildOf(a))).id();
+    let mut s = schedule();
+    s.run(&mut world);
+    world.clear_trackers();
+    s.run(&mut world);
+    let b_ref = world.entity(b).get_ref::<GlobalTransform>().unwrap();
+    assert!(
+      !b_ref.is_changed(),
+      "nothing moved, so nothing was written"
+    );
+    world.get_mut::<Transform>(a).unwrap().translation.x = 5.0;
+    s.run(&mut world);
+    assert!(close(global(&world, b).translation(), Vec2::new(6.0, 0.0)));
+  }
+
+  #[test]
+  fn reparenting_recomputes() {
+    let mut world = World::new();
+    let a = world.spawn(Transform::from_xy(0.0, 0.0)).id();
+    let b = world.spawn(Transform::from_xy(50.0, 0.0)).id();
+    let c = world.spawn((Transform::from_xy(1.0, 0.0), ChildOf(a))).id();
+    let mut s = schedule();
+    s.run(&mut world);
+    world.entity_mut(c).insert(ChildOf(b));
+    s.run(&mut world);
+    assert!(close(global(&world, c).translation(), Vec2::new(51.0, 0.0)));
+  }
+
+  #[test]
+  fn child_of_a_transform_less_parent_treats_it_as_identity() {
+    let mut world = World::new();
+    let group = world.spawn_empty().id();
+    let child = world
+      .spawn((Transform::from_xy(7.0, 8.0), ChildOf(group)))
+      .id();
+    schedule().run(&mut world);
+    assert!(close(global(&world, child).translation(), Vec2::new(7.0, 8.0)));
+  }
+
+  #[test]
+  fn interpolated_ancestors_mark_descendants() {
+    let mut world = World::new();
+    let ship = world.spawn((Transform::IDENTITY, Interpolated)).id();
+    let turret = world
+      .spawn((Transform::from_xy(1.0, 0.0), ChildOf(ship)))
+      .id();
+    let plain = world.spawn(Transform::IDENTITY).id();
+    schedule().run(&mut world);
+    assert!(world.get::<PreviousGlobalTransform>(ship).is_some());
+    assert!(world.get::<PreviousGlobalTransform>(turret).is_some());
+    assert!(world.get::<PreviousGlobalTransform>(plain).is_none());
+    assert!(
+      world.get::<PreviousGlobalTransform>(turret).unwrap().skip,
+      "a fresh snapshot skips so the first frame does not lerp from identity"
+    );
+    world.entity_mut(ship).remove::<Interpolated>();
+    schedule().run(&mut world);
+    assert!(world.get::<PreviousGlobalTransform>(turret).is_none());
+  }
+
+  #[test]
+  fn despawning_a_parent_removes_descendants() {
+    let mut world = World::new();
+    let a = world.spawn(Transform::IDENTITY).id();
+    let b = world.spawn((Transform::IDENTITY, ChildOf(a))).id();
+    world.despawn(a);
+    assert!(world.get_entity(b).is_err());
+  }
+}
