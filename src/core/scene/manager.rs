@@ -462,12 +462,21 @@ impl SceneManager {
     }
     let top = self.scenes.len() - 1;
     let mut action = SceneAction::Continue;
+    // Scenes under the top one draw first but must not take the pointer the
+    // top scene's widgets sit over: they run with it occluded
+    let occluded = ui.is_mouse_occluded();
     for i in self.render_from()..=top {
+      if i < top {
+        ui.set_mouse_occluded();
+      } else {
+        ui.restore_mouse_occluded(occluded);
+      }
       let result = self.scenes[i].call(world, audio, |scene, ctx| scene.ui(ui, ctx));
       if i == top {
         action = result;
       }
     }
+    ui.restore_mouse_occluded(occluded);
     action
   }
 

@@ -307,10 +307,21 @@ impl<'a> UiContext<'a> {
     self.input
   }
 
+  /// Whether the pointer is occluded for the widgets drawn from here on.
+  pub fn is_mouse_occluded(&self) -> bool {
+    self.mouse_occluded
+  }
+
+  /// Restore occlusion saved with [`is_mouse_occluded`](Self::is_mouse_occluded).
+  pub(crate) fn restore_mouse_occluded(&mut self, occluded: bool) {
+    self.mouse_occluded = occluded;
+  }
+
   /// Mark the mouse as occluded by an overlay (e.g. developer console).
   ///
   /// When set, `is_hovered`, `is_held`, and `is_clicked` all return false,
   /// preventing widgets underneath the overlay from responding to the mouse.
+  /// Scenes under the top scene run their `ui` with the mouse occluded.
   pub fn set_mouse_occluded(&mut self) {
     self.mouse_occluded = true;
   }

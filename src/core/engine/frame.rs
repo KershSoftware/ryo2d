@@ -867,6 +867,70 @@ mod tests {
   }
 
   #[test]
+  fn an_overlay_s_button_takes_the_click_over_the_scene_below() {
+    use crate::core::input::{Input, InputEvent};
+    use crate::core::ui::{Rect, UiContext};
+    use winit::event::MouseButton;
+
+    #[derive(Resource, Default)]
+    struct Clicks {
+      below: u32,
+      overlay: u32,
+    }
+    struct Below {
+      pushed: bool,
+    }
+    impl Scene for Below {
+      fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+        if ui.button("Below", Rect::new(0.0, 0.0, 32.0, 16.0)) {
+          ctx.world.resource_mut::<Clicks>().below += 1;
+        }
+        if !self.pushed {
+          self.pushed = true;
+          return SceneAction::Push(Box::new(Overlay));
+        }
+        SceneAction::Continue
+      }
+    }
+    struct Overlay;
+    impl Scene for Overlay {
+      fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+        if ui.button("Over", Rect::new(0.0, 0.0, 32.0, 16.0)) {
+          ctx.world.resource_mut::<Clicks>().overlay += 1;
+        }
+        SceneAction::Continue
+      }
+      fn is_transparent(&self) -> bool {
+        true
+      }
+    }
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(64, 64)
+      .insert_resource(Clicks::default())
+      .start_scene(Below { pushed: false })
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 64), 1.0);
+    let frame = Duration::from_micros(16_667);
+    e.frame(Some(frame));
+    for event in [
+      InputEvent::MouseMove { x: 8.0, y: 8.0 },
+      InputEvent::MouseButton {
+        button: MouseButton::Left,
+        pressed: true,
+      },
+    ] {
+      e.world_mut().resource_mut::<Input>().queue(event);
+    }
+    e.frame(Some(frame));
+    let clicks = e.world().resource::<Clicks>();
+    assert_eq!((clicks.below, clicks.overlay), (0, 1));
+  }
+
+  #[test]
   fn a_message_from_a_fixed_step_survives_frames_without_one() {
     use crate::core::ecs::{IntoScheduleConfigs, Message, MessageReader, MessageWriter};
     #[derive(Message, Clone)]
