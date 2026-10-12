@@ -15,7 +15,7 @@
 #     ./dev.sh demos:kill-all          - Kill all running demos
 #     ./dev.sh demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)
 #     ./dev.sh check                   - Compilation check (engine + all examples)
-#     ./dev.sh lint                    - Linting with clippy (engine + all examples)
+#     ./dev.sh lint                    - Linting with clippy (engine + all examples, incl. tests)
 #     ./dev.sh test                    - Run unit + integration tests
 #     ./dev.sh test:unit               - Run unit tests only
 #     ./dev.sh test:integration        - Run integration tests only
@@ -484,7 +484,7 @@ case "$COMMAND" in
         cargo check --workspace
         ;;
     lint)
-        cargo clippy --workspace
+        cargo clippy --workspace --all-targets
         ;;
     test)
         # Default: run unit tests + integration tests
@@ -592,7 +592,7 @@ case "$COMMAND" in
         echo "    ./dev.sh demos:kill-all          - Kill all running demos"
         echo "    ./dev.sh demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)"
         echo "    ./dev.sh check                   - Compilation check (engine + all examples)"
-        echo "    ./dev.sh lint                    - Linting with clippy (engine + all examples)"
+        echo "    ./dev.sh lint                    - Linting with clippy (engine + all examples, incl. tests)"
         echo "    ./dev.sh test                    - Run unit + integration tests (default)"
         echo "    ./dev.sh test:unit               - Run unit tests only"
         echo "    ./dev.sh test:integration        - Run integration tests only"
