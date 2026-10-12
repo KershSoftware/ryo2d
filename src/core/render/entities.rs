@@ -679,6 +679,12 @@ fn collect_composite(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<
   if !composite.visible {
     return;
   }
+  // Blended for interpolated entities, like single sprites
+  let global = &render_global(
+    global,
+    world.get::<PreviousGlobalTransform>(entity),
+    frame.alpha,
+  );
 
   let z = composite.z_order;
   let origin = global.translation();

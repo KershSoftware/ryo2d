@@ -7,7 +7,10 @@ use super::{Engine, PresentOutcome, SceneHost};
 use crate::core::config::DebugStats;
 use crate::core::config::debug::{OverlayFlags, overlay_lines};
 use crate::core::ecs::kernel::SystemIdMarker;
-use crate::core::ecs::{DetectChangesMut, GlobalTransform, IsResource, Mut, Observer, Vec2, World};
+use crate::core::ecs::{
+  DetectChangesMut, GlobalTransform, IsResource, Mut, Observer, PreviousGlobalTransform, Vec2,
+  World, render_global,
+};
 use crate::core::graphics::{Camera, GpuRenderContext};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::{DrawKind, FrameScene, LightingFrame, RenderPipeline};
@@ -80,12 +83,12 @@ impl Engine {
         for trail in self.world.query::<&Trail2D>().iter(&self.world) {
           trails.add_trail_with_device(rend.device(), rend.queue(), trail);
         }
-        for (global, line) in self
+        for (global, previous, line) in self
           .world
-          .query::<(&GlobalTransform, &Line2D)>()
+          .query::<(&GlobalTransform, Option<&PreviousGlobalTransform>, &Line2D)>()
           .iter(&self.world)
         {
-          trails.add_line(line, global.translation());
+          trails.add_line(line, render_global(global, previous, alpha).translation());
         }
         // Unlit lines on top, added last so that when the vertex budget runs
         // out the overlays are dropped, not game trails
@@ -100,18 +103,8 @@ impl Engine {
       }
 
       // Lights at their world position; occluders keep their rotation
-      let lights: Vec<(Vec2, Light2D)> = self
-        .world
-        .query::<(&GlobalTransform, &Light2D)>()
-        .iter(&self.world)
-        .map(|(global, light)| (global.translation(), light.clone()))
-        .collect();
-      let occluders: Vec<(GlobalTransform, LightOccluder2D)> = self
-        .world
-        .query::<(&GlobalTransform, &LightOccluder2D)>()
-        .iter(&self.world)
-        .map(|(global, occluder)| (*global, occluder.clone()))
-        .collect();
+      let lights = lights_to_draw(&mut self.world, alpha);
+      let occluders = occluders_to_draw(&mut self.world, alpha);
       if let Some(lighting) = lighting.as_mut() {
         let mut settings = self.world.resource_mut::<LightingSettings>();
         lighting.set_enabled(
@@ -252,4 +245,63 @@ fn game_entity_count(world: &World) -> u32 {
     .filter(|archetype| !internal.iter().any(|&id| archetype.contains(id)))
     .map(|archetype| archetype.len())
     .sum()
+}
+
+/// The lights to draw this frame, at their world positions (blended for
+/// interpolated entities, like their sprites).
+fn lights_to_draw(world: &mut World, alpha: f32) -> Vec<(Vec2, Light2D)> {
+  world
+    .query::<(&GlobalTransform, Option<&PreviousGlobalTransform>, &Light2D)>()
+    .iter(world)
+    .map(|(global, previous, light)| {
+      (
+        render_global(global, previous, alpha).translation(),
+        light.clone(),
+      )
+    })
+    .collect()
+}
+
+/// The occluders to draw this frame, with their world transforms (blended
+/// for interpolated entities).
+fn occluders_to_draw(world: &mut World, alpha: f32) -> Vec<(GlobalTransform, LightOccluder2D)> {
+  world
+    .query::<(
+      &GlobalTransform,
+      Option<&PreviousGlobalTransform>,
+      &LightOccluder2D,
+    )>()
+    .iter(world)
+    .map(|(global, previous, occluder)| (render_global(global, previous, alpha), occluder.clone()))
+    .collect()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::ecs::Transform;
+  use crate::core::ui::Color;
+
+  /// An interpolated entity that moved from x = 0 to x = 10 in the last step.
+  fn moved(world: &mut World, part: impl crate::core::ecs::Bundle) {
+    world.spawn((
+      Transform::from_xy(10.0, 0.0),
+      PreviousGlobalTransform {
+        global: GlobalTransform::from_transform(&Transform::from_xy(0.0, 0.0)),
+        skip: false,
+      },
+      part,
+    ));
+  }
+
+  #[test]
+  fn interpolated_lights_and_occluders_draw_where_their_sprites_do() {
+    let mut world = World::new();
+    moved(&mut world, Light2D::point(Color::WHITE, 5.0));
+    moved(&mut world, LightOccluder2D::rect(4.0, 4.0));
+    let lights = lights_to_draw(&mut world, 0.5);
+    assert_eq!(lights[0].0, Vec2::new(5.0, 0.0));
+    let occluders = occluders_to_draw(&mut world, 0.5);
+    assert_eq!(occluders[0].0.translation(), Vec2::new(5.0, 0.0));
+  }
 }
