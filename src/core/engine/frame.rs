@@ -535,6 +535,7 @@ mod tests {
 
   #[test]
   fn a_body_spawned_on_a_floor_starts_one_collision_through_the_frame_loop() {
+    use crate::core::ecs::DetectChangesMut;
     use crate::core::messages::CollisionStarted;
     use crate::core::physics::{Collider, RigidBody};
 
@@ -574,7 +575,7 @@ mod tests {
       // A game that writes the body every step (same value) must not rebuild it
       .add_systems(Phase::FixedUpdate, |mut bodies: Query<&mut RigidBody>| {
         for mut body in &mut bodies {
-          body.gravity_scale = body.gravity_scale;
+          body.set_changed();
         }
       })
       .start_scene(Floor { spawned: false })
