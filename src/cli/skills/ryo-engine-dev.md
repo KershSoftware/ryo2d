@@ -41,17 +41,17 @@ Engine::frame
 │   ├─ Snapshot       GlobalTransform → PreviousGlobalTransform
 │   ├─ Juice          animation, tweens, sequences, property tweens, knockback, squash, skeletons
 │   ├─ Scene          transitions, Scene::update (active scene and those under updates_below), action
-│   ├─ Game           the scenes' own FixedUpdate schedules
+│   ├─ Game           the scenes' own FixedUpdate schedules; builder systems by default
 │   ├─ Physics        register, unregister, sync to Rapier, step, sync back, collision messages
 │   ├─ Transforms     propagation
 │   └─ Trails         trail point recording
-├─ Update             UpdateSet::Game: the scenes' own Update schedules
+├─ Update             UpdateSet::Game: the scenes' own Update schedules; builder systems by default
 ├─ PostUpdate         Transforms (propagation) → Camera (shake, real time) → Extract (timed effects)
 ├─ render             present_frame (engine/extract.rs): Scene::render (GPU batches), queries
 │                     the world into the draw list, runs the RenderPipeline:
 │                     clear → world → lighting → unlit_world → transition → post_process
 │                     → ui → composite → capture
-└─ Last               physics registration bookkeeping, clear_trackers,
+└─ Last               physics registration bookkeeping, forget despawned tilemaps, clear_trackers,
                       check_change_ticks every 1024 frames
 ```
 

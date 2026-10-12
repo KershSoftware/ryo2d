@@ -223,7 +223,7 @@ ctx
 | `ctx.add_systems(phase, systems)` | `Phase::FixedUpdate`, `Phase::Update` (others return `SceneScheduleError`) | While the scene is active (or below an `updates_below` scene) |
 | `EngineBuilder::add_systems(phase, systems)` | Any `Phase` | The whole run |
 
-Scene systems run inside `FixedSet::Game` (after the scene's `update`, before physics) and `UpdateSet::Game`. Builder systems go there too unless they name one of the phase's sets: `.in_set(FixedSet::Juice)`, `.after(FixedSet::Physics)`. Systems may return `Result<(), SystemError>`; an error panics in debug builds and is logged in release. The frame's phases are described in `ryo-engine-dev`.
+Scene systems run inside `FixedSet::Game` (after the scene's `update`, before physics) and `UpdateSet::Game`. Builder systems go there too, one `add_systems` call at a time, unless the call names a set or another call's system to order against (`.in_set(FixedSet::Juice)`, `.after(FixedSet::Physics)`, `.after(other_system)`); then it keeps exactly that order. Systems may return `Result<(), SystemError>`; an error panics in debug builds and is logged in release. The frame's phases are described in `ryo-engine-dev`.
 
 ## Resources
 
@@ -383,7 +383,7 @@ if let Some(bullet) = bullets.acquire(ctx.world) {
 bullets.release(ctx.world, spent);
 ```
 
-Released entities carry `Disabled`: every query, physics and rendering skip them. An acquired entity does not slide from where it was released. `PoolConfig` fields: `initial_capacity`, `max_capacity` (0 = unlimited), `expand_batch_size`, `exhausted_policy` (`Expand`, `ReturnNone`, `RecycleOldest`).
+Released entities carry `Disabled`: every query, physics and rendering skip them. Its children leave and come back with it, and an acquired entity does not slide from where it was released. `PoolConfig` fields: `initial_capacity`, `max_capacity` (0 = unlimited), `expand_batch_size`, `exhausted_policy` (`Expand`, `ReturnNone`, `RecycleOldest`).
 
 ## Camera and Coordinates
 

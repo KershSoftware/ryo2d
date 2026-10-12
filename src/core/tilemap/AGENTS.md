@@ -4,7 +4,7 @@
 
 - **Rendering is a data stub**: nothing in the renderer consumes `TilemapManager` yet. GPU chunk rendering (entries in the frame's `DrawList`) is planned.
 - `TilemapManager` is a resource (`ctx.tilemaps()`), keyed by the tilemap's entity. The only engine system touching it is `forget_despawned_tilemaps` (in `Last` and after a `SceneCleanup::WORLD` despawn), which drops records whose entity is gone.
-- `SceneCleanup::WORLD` despawns the tilemap entities but leaves the manager's entries; remove them yourself when a scene's maps go away.
+- `SceneCleanup::WORLD` despawns the tilemap entities and their manager entries go with them; so does any other despawn (by `Last`).
 - **Only orthogonal is implemented**: `Tilemap::orientation` stores `TilemapOrientation` (Isometric, Hexagonal*), but coordinate conversion ignores it.
 
 ## Design Decisions

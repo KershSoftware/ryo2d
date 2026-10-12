@@ -16,10 +16,10 @@ Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports
 | `PreUpdate` | once | async loads and hot reload (`AssetReloaded` / `AssetLoadFailed`); then the console |
 | UI pass | once | `Scene::ui` for visible scenes bottom-up, debug overlays, console; consumption applied to `Input`; a returned `SceneAction` applies at once, and a scene change redraws the UI once so the new scene shows this frame |
 | `FixedUpdate` | 0..N | one run per fixed step; the sets below, chained |
-| `Update` | once | `UpdateSet::Game`: scene per-frame systems |
+| `Update` | once | `UpdateSet::Game`: scene per-frame systems and builder ones by default |
 | `PostUpdate` | once | `PostUpdateSet::Transforms` (propagation), `Camera` (shake, real time), `Extract` (timed effects, real time) |
 | render | once | `present_frame` (`engine/extract.rs`): queries the world into the draw list, runs the render pipeline (not a schedule) |
-| `Last` | once | physics registration bookkeeping, `clear_trackers`, `check_change_ticks` every 1024 frames |
+| `Last` | once | physics registration bookkeeping, `forget_despawned_tilemaps`, `clear_trackers`, `check_change_ticks` every 1024 frames |
 
 `FixedSet`, in order:
 

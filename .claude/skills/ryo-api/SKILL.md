@@ -281,7 +281,7 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | Clock | Methods | Use |
 |---|---|---|
 | `real: RealClock` | `delta() -> f32`, `delta_duration()`, `elapsed() -> f32` | wall clock; UI animation, camera shake, timed post effects |
-| `game: GameClock` | `delta()`, `delta_duration()`, `elapsed()`, `speed()`, `set_speed(f32)` (clamped to 0..=100), `pause()`, `resume()`, `is_paused()`, `hitstop(secs)`, `is_hitstop()`, `clear_hitstop()`, `max_delta()`, `set_max_delta(Duration)` (default 250 ms; never below one fixed timestep) | game time: real delta capped, times speed, zero while paused or in hitstop |
+| `game: GameClock` | `delta()`, `delta_duration()`, `elapsed()`, `speed()`, `set_speed(f32)` (clamped to `0..=GameClock::MAX_SPEED`, 100), `pause()`, `resume()`, `is_paused()`, `hitstop(secs)`, `is_hitstop()`, `clear_hitstop()`, `max_delta()`, `set_max_delta(Duration)` (default 250 ms; never below one fixed timestep) | game time: real delta capped, times speed, zero while paused or in hitstop |
 | `fixed: FixedClock` | `timestep() -> f32`, `timestep_duration()`, `set_hz(u32)`, `accumulator()`, `overstep_fraction() -> f32` (render alpha, `[0, 1)`), `step_count() -> u64` | accumulates game time into constant steps |
 
 `Time`: `new(fixed_hz)`, `delta() -> f32` (the fixed timestep inside `FixedUpdate`, the game delta elsewhere), `frame_count() -> u64`, `advance(Duration)`, `begin_frame()`, `frame_start()`.
@@ -344,6 +344,8 @@ A `SceneAction` returned from `ui` applies at once, before the fixed steps; a sc
 | `Switch(Box<dyn Scene>)`, `SwitchWith(..)` | replace the top scene (cleanup runs) |
 | `Reset(Box<dyn Scene>)`, `ResetWith(..)` | clear the stack, push one (cleanup runs) |
 | `Quit` | exit |
+
+Only the top scene's action applies; a lower scene's (from `update` or `ui`) is dropped with a warning. `SceneAction::kind() -> &'static str` names the variant.
 
 - `downcast_return::<T: Any>(returned: Option<Box<dyn Any>>) -> Option<T>` reads `PopReturn` data in `on_resume`.
 - `enum Transition { None, Fade { .. }, Slide { .. } }`: `fade(Duration)`, `fade_color(Duration, r, g, b)`, `fade_white(Duration)`, `slide(Duration, SlideDirection)`, `duration()`. `enum SlideDirection { Left, Right, Up, Down }`.
@@ -592,7 +594,7 @@ Wrap a `Sprite` in a `SpriteHandle` for rendering: `ctx.assets.create_sprite(spr
 | `AnimationController` (component, engine-driven) | `new()`, `add_animation(AnimationId, Animation)`, `set_state(AnimationId)`, `transition_after_finish(AnimationId)`, `current_state()`, `just_finished()`, `current_sprite()`, `reset`, `pause`, `play`, `set_speed`, `update(dt)` |
 | `ValidatedAnimator` (engine-driven on an entity, like `Animator`) | `new(Animation, AnimationId)`, `with_animation(Animation, AnimationId)`, `with_transition(from, to)`, `with_bidirectional(a, b)`, `with_transition_from_any(to)`, `set_animation(id) -> bool`, `force_animation(id)`, `transition_after_finish(id) -> bool`, `current()`, `current_sprite()`, `just_entered()`, `just_finished()`, `can_transition_to(id)`, `time_in_state()`, `pause`, `play`, `set_speed`, `reset`, `update(dt)` |
 
-`type AnimationId = &'static str`; `enum LoopMode { Once, Loop, PingPong, Times(u32) }`; `enum PlaybackState { Playing, Paused, Stopped }`. The engine advances `Animator` and `AnimationController` each fixed step and puts the current frame on the entity's `Renderable`. See `ryo-animation`.
+`type AnimationId = &'static str`; `enum LoopMode { Once, Loop, PingPong, Times(u32) }`; `enum PlaybackState { Playing, Paused, Stopped }`. The engine advances `Animator`, `AnimationController` and `ValidatedAnimator` each fixed step and puts the current frame on the entity's `Renderable`. See `ryo-animation`.
 
 ---
 

@@ -23,7 +23,7 @@ Everything is read from the world by query, every frame. There is no render cach
 1. `Scene::render(gpu)` for the visible scenes, bottom-up (`GpuRenderContext`: `gpu.batch`, `gpu.camera`, read-only `gpu.world`); the `BatchCollector` keeps submission order.
 2. Trails (`&Trail2D`: world-space points), lines (`(&GlobalTransform, &Line2D)`: at the entity's translation) and the debug overlays (unlit `Line2D`s at `i32::MAX`, added last so they are what gets dropped when the vertex budget runs out).
 3. Lights (`(&GlobalTransform, &Light2D)`, at their world translation) and occluders (`(&GlobalTransform, &LightOccluder2D)`, keeping rotation); `LightingSettings` is copied into the lighting renderer.
-4. Sprite globals: `x` = game elapsed time, `w` = real elapsed time (`SpriteGpuRenderer::set_viewport`).
+4. Sprite globals: `x` = game elapsed time, `w` unused (`SpriteGpuRenderer::set_viewport`).
 5. `EntityDrawer::collect` (`entities.rs`): one query over `(Entity, &Renderable, &GlobalTransform, Option<&YSort>)` for visible renderables, then `(Entity, &GlobalTransform, &CompositeTile)`. Disabled entities are skipped by the queries themselves.
 6. Trail groups join the draw list; trail and line vertices are uploaded once (`TrailRenderer::prepare`) before the pipeline runs; the passes only draw.
 7. The list is sorted and the sprite instances uploaded (`prepare_world`), then the pipeline runs.

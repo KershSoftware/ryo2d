@@ -55,7 +55,7 @@ pub enum FixedSet {
   Juice,
   /// The scene's `update`
   Scene,
-  /// Scene-registered fixed systems
+  /// The scenes' fixed systems, and builder systems that name no other place
   Game,
   /// Register, sync, step, sync back
   Physics,
@@ -68,7 +68,7 @@ pub enum FixedSet {
 /// Order inside `Update`.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UpdateSet {
-  /// Scene-registered per-frame systems
+  /// The scenes' per-frame systems, and builder systems that name no other place
   Game,
 }
 

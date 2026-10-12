@@ -57,15 +57,15 @@ Engine::frame()
  │        Snapshot ..... GlobalTransform -> PreviousGlobalTransform
  │        Juice ........ animation, tweens, knockback, squash/stretch, skeletons
  │        Scene ........ Scene::update(ctx, timestep) unless a transition runs, its SceneAction
- │        Game ......... the scenes' own FixedUpdate systems
+ │        Game ......... the scenes' own FixedUpdate systems; builder systems by default
  │        Physics ...... unregister, register (root bodies only; edits in place), sync to
  │                       Rapier, step, sync back, collision messages
  │        Transforms ... propagate GlobalTransform
  │        Trails ....... record trail points
- ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems
+ ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems; builder ones by default
  ├─ PostUpdate ... Transforms (propagation), Camera (shake), Extract (timed effects)
  ├─ render ....... Scene::render, query the world into the draw list, run the RenderPipeline
- └─ Last ......... physics registration bookkeeping, clear change trackers
+ └─ Last ......... physics registration bookkeeping, forget despawned tilemaps, clear change trackers
 ```
 
 - Phases are bevy schedules labelled by `Phase`; the sets inside them are `FixedSet`, `UpdateSet` and `PostUpdateSet`, chained in the order shown. Every schedule uses the single-threaded executor.

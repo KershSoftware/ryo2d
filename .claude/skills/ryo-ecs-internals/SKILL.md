@@ -121,7 +121,7 @@ Engine systems are plain functions over `Query`, `Res`, `ResMut`, `MessageWriter
 /// Decay every active `Knockback` by one fixed step.
 pub fn update_knockback(
   time: Res<Time>,
-  mut query: Query<(Entity, &mut Knockback, Option<&mut Velocity>, Option<&mut Transform>)>,
+  mut query: Query<(Entity, &mut Knockback, Option<&mut Velocity>, Option<&RigidBody>, Option<&mut Transform>)>,
   mut started: MessageWriter<KnockbackStarted>,
   mut finished: MessageWriter<KnockbackFinished>,
 ) {

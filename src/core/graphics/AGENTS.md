@@ -34,7 +34,7 @@ Renderers are engine-owned, not resources. `GpuRenderContext` is the only GPU ac
 
 ## Shader Time
 
-Sprite globals carry two clocks: `x` is game elapsed time (`time.game.elapsed()`), which sprite effects and custom sprite shaders (`in.time`) animate on, so they freeze under pause and slow under slow motion; `w` is real elapsed time. Post-process effects, lighting and trails use real time.
+Sprite globals carry game elapsed time in `x` (`time.game.elapsed()`), which sprite effects and custom sprite shaders (`in.time`) animate on, so they freeze under pause and slow under slow motion; `w` is unused. Post-process effects, lighting and trails use real time.
 
 ## GPU Sprite Batching
 
