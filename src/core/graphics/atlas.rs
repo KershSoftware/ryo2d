@@ -14,6 +14,8 @@ use std::sync::Arc;
 
 use etagere::{AllocId, BucketedAtlasAllocator, size2};
 
+use super::texture_registry::TextureId;
+
 /// Edge length of an atlas page in pixels.
 const PAGE_SIZE: u32 = 2048;
 /// Maximum number of atlas pages before entries are evicted.
@@ -31,15 +33,6 @@ const BORDER: u32 = 1;
 /// How often stale atlas entries are freed and empty pages released
 const RELEASE_EVERY: u64 = 60;
 const PAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-
-/// What an atlas entry is keyed by.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum AtlasKey {
-  /// An entity sprite: the handle's identity plus its content generation
-  Sprite { handle: usize, generation: u64 },
-  /// A texture uploaded by id (`Scene::render` sprites, particles, parallax)
-  Id(String),
-}
 
 /// Which texture holds an image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -84,7 +77,7 @@ pub(crate) struct AtlasLayout {
   page_size: u32,
   max_pages: usize,
   pages: Vec<BucketedAtlasAllocator>,
-  entries: HashMap<AtlasKey, Entry>,
+  entries: HashMap<TextureId, Entry>,
 }
 
 impl AtlasLayout {
@@ -106,7 +99,7 @@ impl AtlasLayout {
   /// `None` when the image must be standalone (larger than 256 px) or nothing can be freed.
   pub(crate) fn place(
     &mut self,
-    key: &AtlasKey,
+    key: TextureId,
     width: u32,
     height: u32,
     frame: u64,
@@ -116,12 +109,12 @@ impl AtlasLayout {
     }
     if self
       .entries
-      .get(key)
+      .get(&key)
       .is_some_and(|e| (e.w, e.h) != (width, height))
     {
       self.remove(key);
     }
-    if let Some(entry) = self.entries.get_mut(key) {
+    if let Some(entry) = self.entries.get_mut(&key) {
       entry.last_used = frame;
       return Some(Placement {
         slot: entry.slot,
@@ -144,7 +137,7 @@ impl AtlasLayout {
       ],
     };
     self.entries.insert(
-      key.clone(),
+      key,
       Entry {
         w: width,
         h: height,
@@ -165,28 +158,28 @@ impl AtlasLayout {
   }
 
   /// Whether `key` currently has a slot of exactly `width`x`height`.
-  pub(crate) fn holds(&self, key: &AtlasKey, width: u32, height: u32) -> bool {
+  pub(crate) fn holds(&self, key: TextureId, width: u32, height: u32) -> bool {
     self
       .entries
-      .get(key)
+      .get(&key)
       .is_some_and(|e| (e.w, e.h) == (width, height))
   }
 
   /// The slot of `key`, without marking it used.
-  pub(crate) fn get(&self, key: &AtlasKey) -> Option<AtlasSlot> {
-    self.entries.get(key).map(|e| e.slot)
+  pub(crate) fn get(&self, key: TextureId) -> Option<AtlasSlot> {
+    self.entries.get(&key).map(|e| e.slot)
   }
 
   /// Free every entry unused for [`STALE_FRAMES`] or more frames.
   pub(crate) fn free_stale(&mut self, frame: u64) {
-    let stale: Vec<AtlasKey> = self
+    let stale: Vec<TextureId> = self
       .entries
       .iter()
       .filter(|(_, e)| frame.saturating_sub(e.last_used) >= STALE_FRAMES)
-      .map(|(k, _)| k.clone())
+      .map(|(k, _)| *k)
       .collect();
     for key in stale {
-      self.remove(&key);
+      self.remove(key);
     }
   }
 
@@ -199,8 +192,8 @@ impl AtlasLayout {
   }
 
   /// Free `key`'s slot, if it has one.
-  pub(crate) fn remove(&mut self, key: &AtlasKey) {
-    if let Some(entry) = self.entries.remove(key)
+  pub(crate) fn remove(&mut self, key: TextureId) {
+    if let Some(entry) = self.entries.remove(&key)
       && let Some(page) = self.pages.get_mut(entry.page)
     {
       page.deallocate(entry.alloc);
@@ -255,15 +248,15 @@ impl AtlasLayout {
     // Every page has something drawn this frame: evict single entries, least
     // recently used first, never ones used this frame, and never more than
     // MAX_EVICTIONS for one placement.
-    let mut candidates: Vec<(u64, AtlasKey)> = self
+    let mut candidates: Vec<(u64, TextureId)> = self
       .entries
       .iter()
       .filter(|(_, e)| e.last_used < frame)
-      .map(|(k, e)| (e.last_used, k.clone()))
+      .map(|(k, e)| (e.last_used, *k))
       .collect();
     candidates.sort_by_key(|(last_used, _)| *last_used);
     for (_, key) in candidates.into_iter().take(MAX_EVICTIONS) {
-      self.remove(&key);
+      self.remove(key);
       if let Some(found) = self.try_allocate(bw, bh) {
         return Some(found);
       }
@@ -303,7 +296,7 @@ struct Page {
 }
 
 struct Standalone {
-  key: AtlasKey,
+  key: TextureId,
   texture: wgpu::Texture,
   bind_group: wgpu::BindGroup,
   slot: AtlasSlot,
@@ -319,7 +312,7 @@ pub(crate) struct TextureAtlas {
   layout: AtlasLayout,
   pages: Vec<Page>,
   standalone: HashMap<usize, Standalone>,
-  standalone_ids: HashMap<AtlasKey, usize>,
+  standalone_ids: HashMap<TextureId, usize>,
   next_standalone: usize,
   bind_layout: Arc<wgpu::BindGroupLayout>,
   sampler: Arc<wgpu::Sampler>,
@@ -354,7 +347,7 @@ impl TextureAtlas {
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    key: &AtlasKey,
+    key: TextureId,
     width: u32,
     height: u32,
     rgba: impl FnOnce() -> Vec<u8>,
@@ -368,7 +361,7 @@ impl TextureAtlas {
       return None;
     }
 
-    if let Some(id) = self.standalone_ids.get(key).copied() {
+    if let Some(id) = self.standalone_ids.get(&key).copied() {
       if let Some(s) = self.standalone.get_mut(&id)
         && s.size == (width, height)
       {
@@ -401,20 +394,20 @@ impl TextureAtlas {
     // Standalone now: a leftover atlas slot would be returned, unwritten, if
     // the key later shrinks back to its old size
     self.layout.remove(key);
-    Some(self.create_standalone(device, queue, key.clone(), width, height, &bordered, frame))
+    Some(self.create_standalone(device, queue, key, width, height, &bordered, frame))
   }
 
   /// Where `key` lives now, without uploading it or marking it used.
-  pub(crate) fn lookup(&self, key: &AtlasKey) -> Option<AtlasSlot> {
-    match self.standalone_ids.get(key) {
+  pub(crate) fn lookup(&self, key: TextureId) -> Option<AtlasSlot> {
+    match self.standalone_ids.get(&key) {
       Some(id) => self.standalone.get(id).map(|s| s.slot),
       None => self.layout.get(key),
     }
   }
 
   /// Forget `key`, freeing its atlas rect or standalone texture.
-  pub(crate) fn remove(&mut self, key: &AtlasKey) {
-    if let Some(id) = self.standalone_ids.get(key).copied() {
+  pub(crate) fn remove(&mut self, key: TextureId) {
+    if let Some(id) = self.standalone_ids.get(&key).copied() {
       self.remove_standalone(id);
     }
     self.layout.remove(key);
@@ -522,7 +515,7 @@ impl TextureAtlas {
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    key: AtlasKey,
+    key: TextureId,
     width: u32,
     height: u32,
     bordered: &[u8],
@@ -542,7 +535,7 @@ impl TextureAtlas {
         (BORDER + height) as f32 / bh as f32,
       ],
     };
-    self.standalone_ids.insert(key.clone(), id);
+    self.standalone_ids.insert(key, id);
     self.standalone.insert(
       id,
       Standalone {
@@ -625,15 +618,15 @@ mod tests {
     }
   }
 
-  fn id(n: usize) -> AtlasKey {
-    AtlasKey::Id(format!("k{n}"))
+  fn id(n: usize) -> TextureId {
+    TextureId::for_test(n as u32)
   }
 
   #[test]
   fn same_key_gets_the_same_slot() {
     let mut layout = AtlasLayout::new(2048, 2);
-    let a = layout.place(&id(0), 32, 16, 0).unwrap();
-    let b = layout.place(&id(0), 32, 16, 1).unwrap();
+    let a = layout.place(id(0), 32, 16, 0).unwrap();
+    let b = layout.place(id(0), 32, 16, 1).unwrap();
     assert!(a.newly_allocated);
     assert!(!b.newly_allocated);
     assert_eq!(a.slot, b.slot);
@@ -647,7 +640,7 @@ mod tests {
     let mut rects = Vec::new();
     for n in 0..50 {
       let (w, h) = (1 + rng.next(120), 1 + rng.next(120));
-      let p = layout.place(&id(n), w, h, 0).unwrap();
+      let p = layout.place(id(n), w, h, 0).unwrap();
       rects.push((p.slot.page, p.x, p.y, w + 2, h + 2));
     }
     for (i, a) in rects.iter().enumerate() {
@@ -664,38 +657,38 @@ mod tests {
   #[test]
   fn large_images_are_standalone() {
     let mut layout = AtlasLayout::new(2048, 2);
-    assert!(layout.place(&id(0), 257, 10, 0).is_none());
-    assert!(layout.place(&id(1), 10, 257, 0).is_none());
-    assert!(layout.place(&id(2), 256, 256, 0).is_some());
+    assert!(layout.place(id(0), 257, 10, 0).is_none());
+    assert!(layout.place(id(1), 10, 257, 0).is_none());
+    assert!(layout.place(id(2), 256, 256, 0).is_some());
   }
 
   #[test]
   fn new_pages_before_eviction_then_lru() {
     let mut layout = AtlasLayout::new(128, 2);
     let placed: Vec<_> = (0..8)
-      .map(|n| layout.place(&id(n), 62, 62, n as u64 + 1).unwrap())
+      .map(|n| layout.place(id(n), 62, 62, n as u64 + 1).unwrap())
       .collect();
     assert_eq!(placed[0].slot.page, SlotPage::Atlas(0));
     assert_eq!(placed[4].slot.page, SlotPage::Atlas(1));
     assert!(placed.iter().all(|p| p.newly_allocated));
-    let ninth = layout.place(&id(8), 62, 62, 20).unwrap();
+    let ninth = layout.place(id(8), 62, 62, 20).unwrap();
     assert_eq!(
       (ninth.slot, ninth.x, ninth.y),
       (placed[0].slot, placed[0].x, placed[0].y)
     );
-    assert!(layout.place(&id(0), 62, 62, 21).unwrap().newly_allocated);
+    assert!(layout.place(id(0), 62, 62, 21).unwrap().newly_allocated);
   }
 
   #[test]
   fn a_full_atlas_frees_a_whole_page_instead_of_scattered_entries() {
     let mut layout = AtlasLayout::new(512, 1);
     let mut n = 0;
-    while n < 2000 && layout.place(&id(n), 14, 14, 1).is_some() {
+    while n < 2000 && layout.place(id(n), 14, 14, 1).is_some() {
       n += 1;
     }
     assert!(n > 500, "only {n} small images fit");
     // Scattered small evictions would rarely free a 66 px square in one go
-    let big = layout.place(&id(9999), 64, 64, 2);
+    let big = layout.place(id(9999), 64, 64, 2);
     assert!(big.is_some(), "a 64 px image fell back to standalone");
   }
 
@@ -704,53 +697,45 @@ mod tests {
     let mut layout = AtlasLayout::new(256, 2);
     for n in 0..16 {
       assert_eq!(
-        layout.place(&id(n), 62, 62, 1).map(|p| p.slot.page),
+        layout.place(id(n), 62, 62, 1).map(|p| p.slot.page),
         Some(SlotPage::Atlas(0))
       );
     }
     for n in 16..32 {
       assert_eq!(
-        layout.place(&id(n), 62, 62, 2).map(|p| p.slot.page),
+        layout.place(id(n), 62, 62, 2).map(|p| p.slot.page),
         Some(SlotPage::Atlas(1))
       );
     }
     // Page 0 is older, but one of its images is drawn this frame
-    layout.place(&id(0), 62, 62, 3);
-    let big = layout.place(&id(100), 126, 126, 3).expect("room is made");
+    layout.place(id(0), 62, 62, 3);
+    let big = layout.place(id(100), 126, 126, 3).expect("room is made");
     assert_eq!(big.slot.page, SlotPage::Atlas(1));
-    assert!((0..16).all(|n| layout.holds(&id(n), 62, 62)), "page 0 kept");
+    assert!((0..16).all(|n| layout.holds(id(n), 62, 62)), "page 0 kept");
   }
 
   #[test]
   fn stale_entries_are_freed_and_empty_trailing_pages_released() {
     let mut layout = AtlasLayout::new(128, 3);
     for n in 0..8 {
-      layout.place(&id(n), 62, 62, 1);
+      layout.place(id(n), 62, 62, 1);
     }
     assert_eq!(layout.page_count(), 2);
     // Only one image on page 0 is still drawn
-    layout.place(&id(0), 62, 62, 200);
+    layout.place(id(0), 62, 62, 200);
     layout.release_stale(301);
-    assert!(layout.holds(&id(0), 62, 62));
-    assert!(!(1..8).any(|n| layout.holds(&id(n), 62, 62)));
+    assert!(layout.holds(id(0), 62, 62));
+    assert!(!(1..8).any(|n| layout.holds(id(n), 62, 62)));
     assert_eq!(layout.page_count(), 1, "the emptied last page is released");
   }
 
   #[test]
-  fn changed_sprite_reuploads() {
+  fn a_removed_id_is_placed_afresh() {
+    // A changed sprite is removed and placed again, so its pixels are rewritten
     let mut layout = AtlasLayout::new(2048, 2);
-    let k1 = AtlasKey::Sprite {
-      handle: 5,
-      generation: 1,
-    };
-    let k2 = AtlasKey::Sprite {
-      handle: 5,
-      generation: 2,
-    };
-    let a = layout.place(&k1, 16, 16, 0).unwrap();
-    let b = layout.place(&k2, 16, 16, 1).unwrap();
-    assert!(a.newly_allocated && b.newly_allocated);
-    assert_ne!((a.x, a.y), (b.x, b.y));
+    assert!(layout.place(id(5), 16, 16, 0).unwrap().newly_allocated);
+    layout.remove(id(5));
+    assert!(layout.place(id(5), 16, 16, 1).unwrap().newly_allocated);
   }
 
   fn assert_live_disjoint(layout: &AtlasLayout) {
@@ -774,9 +759,9 @@ mod tests {
   fn full_page_frees_entries_unused_for_300_frames() {
     let mut layout = AtlasLayout::new(128, 2);
     let old: Vec<_> = (0..4)
-      .map(|n| layout.place(&id(n), 62, 62, 0).unwrap())
+      .map(|n| layout.place(id(n), 62, 62, 0).unwrap())
       .collect();
-    let p = layout.place(&id(9), 62, 62, 300).unwrap();
+    let p = layout.place(id(9), 62, 62, 300).unwrap();
     assert_eq!(layout.page_count(), 1);
     assert_eq!(p.slot.page, SlotPage::Atlas(0));
     assert!(old.iter().any(|o| (o.x, o.y) == (p.x, p.y)));
@@ -787,13 +772,13 @@ mod tests {
   fn fresh_entries_are_kept_and_a_page_is_opened() {
     let mut layout = AtlasLayout::new(128, 2);
     let old: Vec<_> = (0..4)
-      .map(|n| layout.place(&id(n), 62, 62, 0).unwrap())
+      .map(|n| layout.place(id(n), 62, 62, 0).unwrap())
       .collect();
-    let p = layout.place(&id(9), 62, 62, 299).unwrap();
+    let p = layout.place(id(9), 62, 62, 299).unwrap();
     assert_eq!(layout.page_count(), 2);
     assert_eq!(p.slot.page, SlotPage::Atlas(1));
     for (n, o) in old.iter().enumerate() {
-      let again = layout.place(&id(n), 62, 62, 299).unwrap();
+      let again = layout.place(id(n), 62, 62, 299).unwrap();
       assert!(!again.newly_allocated);
       assert_eq!(again.slot, o.slot);
     }
@@ -803,11 +788,11 @@ mod tests {
   fn nothing_used_this_frame_is_evicted() {
     let mut layout = AtlasLayout::new(128, 1);
     let old: Vec<_> = (0..4)
-      .map(|n| layout.place(&id(n), 62, 62, 5).unwrap())
+      .map(|n| layout.place(id(n), 62, 62, 5).unwrap())
       .collect();
-    assert!(layout.place(&id(9), 62, 62, 5).is_none());
+    assert!(layout.place(id(9), 62, 62, 5).is_none());
     for (n, o) in old.iter().enumerate() {
-      let again = layout.place(&id(n), 62, 62, 5).unwrap();
+      let again = layout.place(id(n), 62, 62, 5).unwrap();
       assert!(!again.newly_allocated);
       assert_eq!(again.slot, o.slot);
     }
@@ -817,10 +802,10 @@ mod tests {
   fn lru_eviction_keeps_live_rects_disjoint() {
     let mut layout = AtlasLayout::new(128, 2);
     for n in 0..8 {
-      layout.place(&id(n), 62, 62, n as u64 + 1).unwrap();
+      layout.place(id(n), 62, 62, n as u64 + 1).unwrap();
     }
     for n in 8..12 {
-      let p = layout.place(&id(n), 62, 62, 20 + n as u64).unwrap();
+      let p = layout.place(id(n), 62, 62, 20 + n as u64).unwrap();
       assert!(p.newly_allocated);
       assert_live_disjoint(&layout);
     }
@@ -861,12 +846,12 @@ mod tests {
     let mut atlas = gpu_atlas(&device);
     assert!(
       atlas
-        .slot(&device, &queue, &id(0), 2, 2, || vec![0; 7], 0)
+        .slot(&device, &queue, id(0), 2, 2, || vec![0; 7], 0)
         .is_none()
     );
     let px: Vec<u8> = (0..4u8).flat_map(|i| [10 * (i + 1), 0, 0, 255]).collect();
     let slot = atlas
-      .slot(&device, &queue, &id(0), 2, 2, || px.clone(), 1)
+      .slot(&device, &queue, id(0), 2, 2, || px.clone(), 1)
       .unwrap();
     let page = atlas.texture(slot.page).unwrap();
     let img = crate::core::capture::read_texture_rgba(&device, &queue, page).unwrap();
@@ -882,10 +867,10 @@ mod tests {
     };
     let mut atlas = gpu_atlas(&device);
     let a = atlas
-      .slot(&device, &queue, &id(0), 300, 4, || vec![9; 300 * 4 * 4], 0)
+      .slot(&device, &queue, id(0), 300, 4, || vec![9; 300 * 4 * 4], 0)
       .unwrap();
     let b = atlas
-      .slot(&device, &queue, &id(0), 301, 4, || vec![9; 301 * 4 * 4], 1)
+      .slot(&device, &queue, id(0), 301, 4, || vec![9; 301 * 4 * 4], 1)
       .unwrap();
     assert_ne!(a.uv, b.uv);
     let tex = atlas.texture(b.page).unwrap();
@@ -899,16 +884,16 @@ mod tests {
     };
     let mut atlas = gpu_atlas(&device);
     atlas
-      .slot(&device, &queue, &id(0), 2, 2, || vec![10; 2 * 2 * 4], 0)
+      .slot(&device, &queue, id(0), 2, 2, || vec![10; 2 * 2 * 4], 0)
       .unwrap();
     // Too big for the atlas, so standalone
     let big = atlas
-      .slot(&device, &queue, &id(0), 300, 4, || vec![20; 300 * 4 * 4], 1)
+      .slot(&device, &queue, id(0), 300, 4, || vec![20; 300 * 4 * 4], 1)
       .unwrap();
     assert!(matches!(big.page, SlotPage::Standalone(_)));
     // Back at the original size, the new pixels must be written
     let small = atlas
-      .slot(&device, &queue, &id(0), 2, 2, || vec![77; 2 * 2 * 4], 2)
+      .slot(&device, &queue, id(0), 2, 2, || vec![77; 2 * 2 * 4], 2)
       .unwrap();
     assert!(matches!(small.page, SlotPage::Atlas(_)));
     let page = atlas.texture(small.page).unwrap();
@@ -925,13 +910,13 @@ mod tests {
     };
     let mut atlas = gpu_atlas(&device);
     let small = atlas
-      .slot(&device, &queue, &id(0), 2, 2, || vec![10; 2 * 2 * 4], 0)
+      .slot(&device, &queue, id(0), 2, 2, || vec![10; 2 * 2 * 4], 0)
       .unwrap();
     let resized = atlas
-      .slot(&device, &queue, &id(0), 3, 2, || vec![50; 3 * 2 * 4], 1)
+      .slot(&device, &queue, id(0), 3, 2, || vec![50; 3 * 2 * 4], 1)
       .unwrap();
     assert_ne!(small.uv, resized.uv);
-    assert_eq!(atlas.lookup(&id(0)), Some(resized));
+    assert_eq!(atlas.lookup(id(0)), Some(resized));
     let page = atlas.texture(resized.page).unwrap();
     let img = crate::core::capture::read_texture_rgba(&device, &queue, page).unwrap();
     let x = (resized.uv[0] * 2048.0).round() as u32;
@@ -948,7 +933,7 @@ mod tests {
     let too_big = device.limits().max_texture_dimension_2d;
     assert!(
       atlas
-        .slot(&device, &queue, &id(0), too_big, 1, || unreachable!(), 0)
+        .slot(&device, &queue, id(0), too_big, 1, || unreachable!(), 0)
         .is_none()
     );
   }
@@ -961,7 +946,7 @@ mod tests {
     let mut atlas = gpu_atlas(&device);
     let px: Vec<u8> = (0..4u8).flat_map(|i| [10 * (i + 1), 0, 0, 255]).collect();
     let slot = atlas
-      .slot(&device, &queue, &id(0), 2, 2, || px.clone(), 0)
+      .slot(&device, &queue, id(0), 2, 2, || px.clone(), 0)
       .unwrap();
     assert!(atlas.bind_group(slot.page).is_some());
     let page = atlas.texture(slot.page).unwrap();

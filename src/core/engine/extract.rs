@@ -126,7 +126,7 @@ impl Engine {
       self.draw_list.clear();
       self
         .batch_collector
-        .push_to(&mut self.draw_list, DrawKind::Sprite);
+        .push_to(&mut self.draw_list, DrawKind::Sprite, &gpu);
       let entity_sprites = self.entity_drawer.collect(
         &mut self.world,
         &camera,

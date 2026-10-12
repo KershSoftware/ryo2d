@@ -33,12 +33,10 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
-use super::{AtlasKey, AtlasSlot, SlotPage, TextureAtlas};
+use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
-use crate::core::render::{
-  DrawKind, DrawList, PipelineKind, SpriteShading, TextureRef, WorldRun, plan_runs,
-};
+use crate::core::render::{DrawKind, DrawList, PipelineKind, SpriteShading, WorldRun, plan_runs};
 use crate::core::shaders::custom::{self, ParamLayout, ShaderError, ShaderKind};
 use crate::core::shaders::scope::Checked;
 use crate::core::ui::Color;
@@ -272,54 +270,14 @@ impl SpriteGlobals {
   }
 }
 
-/// Where an uploaded texture's pixels come from, for re-uploading it after
-/// the atlas evicted it.
-enum TextureSource {
-  Pixels(Vec<u8>),
-  /// Read from the sprite when (re)uploaded
-  Sprite(SpriteHandle),
-}
-
-/// A texture uploaded by id.
-struct CachedTexture {
-  key: AtlasKey,
-  /// Size at upload (sprites are not re-read for it every frame)
-  width: u32,
-  height: u32,
-  source: TextureSource,
-  /// Atlas frame it was last uploaded or drawn in
-  last_used: u64,
-}
-
-impl CachedTexture {
-  fn rgba(&self) -> Vec<u8> {
-    match &self.source {
-      TextureSource::Pixels(data) => data.clone(),
-      TextureSource::Sprite(sprite) => sprite.with_sprite(|s| s.data().to_vec()),
-    }
-  }
-}
-
-/// An entity sprite's current texture: which version of its content is
-/// uploaded and under which id.
-struct EntitySprite {
-  generation: u64,
-  texture: TextureRef,
-  /// False when this version could not be uploaded; it is not tried again
-  /// until the sprite changes
-  uploaded: bool,
-  /// Atlas frame it was last asked for, to drop sprites that went away
-  last_used: u64,
-}
-
-/// Entity sprites unused for this many frames are forgotten.
-const ENTITY_SPRITE_TTL: u64 = 600;
-
-/// Textures uploaded by id and neither uploaded nor drawn for this many
-/// frames are forgotten, with their pixels
+/// Textures neither uploaded nor drawn for this many frames are forgotten,
+/// with their pixels
 const TEXTURE_TTL: u64 = 600;
 
-/// Most entity sprites kept as standalone (over 256 px) textures; the least
+/// How often forgotten textures are pruned
+const PRUNE_EVERY: u64 = 120;
+
+/// Most sprites kept as standalone (over 256 px) textures; the least
 /// recently used beyond it are freed, so a game minting large sprite handles
 /// every frame can't hold hundreds of them until the TTL.
 const MAX_STANDALONE_ENTITY_SPRITES: usize = 64;
@@ -582,12 +540,12 @@ pub struct SpriteGpuRenderer {
   // Vertex buffer (quad)
   vertex_buffer: wgpu::Buffer,
 
-  // Every uploaded texture lives in the atlas under `AtlasKey::Id`
+  // Every texture drawn lives in the atlas under its `TextureId`
   atlas: TextureAtlas,
-  // Pixel sources by texture id, for re-uploading evicted textures
-  textures: HashMap<String, CachedTexture>,
-  // Entity sprites by handle identity, each under one texture id
-  entity_sprites: HashMap<usize, EntitySprite>,
+  // The textures and their pixel sources, for (re)uploading
+  registry: TextureRegistry,
+  // Textures `Scene::render` sprites name, by the name they were uploaded under
+  names: HashMap<String, TextureId>,
   // Atlas frame counter, advanced by `prepare`
   frame: u64,
 
@@ -596,7 +554,7 @@ pub struct SpriteGpuRenderer {
   placed: Vec<SpriteInstance>,
   world_runs: Vec<WorldRun>,
   // Textures already made resident this frame (scratch, reused across frames)
-  resident_scratch: HashSet<TextureRef>,
+  resident_scratch: HashSet<TextureId>,
 }
 
 impl SpriteGpuRenderer {
@@ -887,8 +845,8 @@ impl SpriteGpuRenderer {
       instance_capacity: Self::MAX_INSTANCES,
       vertex_buffer,
       atlas: TextureAtlas::new(device, texture_layout, sampler),
-      textures: HashMap::new(),
-      entity_sprites: HashMap::new(),
+      registry: TextureRegistry::new(),
+      names: HashMap::new(),
       frame: 0,
       placed: Vec::new(),
       world_runs: Vec::new(),
@@ -927,59 +885,93 @@ impl SpriteGpuRenderer {
     height: u32,
     data: &[u8],
   ) {
-    if let Some(texture) = self.textures.get_mut(id) {
-      texture.last_used = self.frame;
-      return;
+    self.upload_named(device, queue, id, width, height, data);
+  }
+
+  /// [`upload_texture`](Self::upload_texture), returning the texture's id
+  /// (`None` when the data cannot be uploaded; nothing is kept then).
+  pub(crate) fn upload_named(
+    &mut self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    name: &str,
+    width: u32,
+    height: u32,
+    data: &[u8],
+  ) -> Option<TextureId> {
+    if let Some(id) = self.named_texture(name) {
+      self.touch(id);
+      return Some(id);
     }
-    let key = AtlasKey::Id(id.to_string());
-    let placed = self.atlas.slot(
+    let id = self.registry.pixels(name, width, height, data, self.frame);
+    if self.resident(device, queue, id).is_none() {
+      self.registry.remove(id);
+      return None;
+    }
+    self.names.insert(name.to_string(), id);
+    Some(id)
+  }
+
+  /// The texture uploaded under `name`, if it is still kept.
+  pub(crate) fn named_texture(&self, name: &str) -> Option<TextureId> {
+    self
+      .names
+      .get(name)
+      .copied()
+      .filter(|id| self.registry.get(*id).is_some())
+  }
+
+  fn touch(&mut self, id: TextureId) {
+    if let Some(entry) = self.registry.get_mut(id) {
+      entry.last_used = self.frame;
+    }
+  }
+
+  /// Make `id` resident in the atlas: write its pixels when they are new,
+  /// changed (a hot-reloaded sprite) or were evicted. `None` when they cannot
+  /// be uploaded (empty, mismatched or larger than the device allows).
+  fn resident(
+    &mut self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    id: TextureId,
+  ) -> Option<AtlasSlot> {
+    if self.registry.needs_upload(id) {
+      // Changed content: free the old pixels' rect, so the new ones are written
+      self.atlas.remove(id);
+    }
+    let entry = self.registry.get(id)?;
+    let slot = self.atlas.slot(
       device,
       queue,
-      &key,
-      width,
-      height,
-      || data.to_vec(),
+      id,
+      entry.width,
+      entry.height,
+      || entry.source.rgba(),
       self.frame,
     );
-    if placed.is_some() {
-      let source = TextureSource::Pixels(data.to_vec());
-      let texture = CachedTexture {
-        key,
-        width,
-        height,
-        source,
-        last_used: self.frame,
-      };
-      self.textures.insert(id.to_string(), texture);
+    if slot.is_some() {
+      self.registry.mark_uploaded(id);
     }
+    slot
   }
 
   /// Make the textures `ids` resident for this frame, which draws `sprites`
   /// instances: re-upload what the atlas evicted, mark them used, grow the
   /// instance buffer and run the atlas housekeeping.
-  fn make_resident<'a>(
+  fn make_resident(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    ids: impl Iterator<Item = &'a str>,
+    ids: impl Iterator<Item = TextureId>,
     sprites: usize,
   ) {
     for id in ids {
-      let Some(texture) = self.textures.get_mut(id) else {
-        continue;
-      };
-      texture.last_used = self.frame;
-      let texture = &*texture;
-      let rgba = || texture.rgba();
-      let (width, height) = (texture.width, texture.height);
-      let atlas_key = &texture.key;
-      self
-        .atlas
-        .slot(device, queue, atlas_key, width, height, rgba, self.frame);
+      self.touch(id);
+      self.resident(device, queue, id);
     }
     self.atlas.end_frame(self.frame);
-    self.prune_entity_sprites();
-    self.prune_textures();
+    self.prune();
     self.frame += 1;
 
     if sprites > self.instance_capacity {
@@ -1006,18 +998,16 @@ impl SpriteGpuRenderer {
     self.custom.settle();
     let mut seen = std::mem::take(&mut self.resident_scratch);
     seen.clear();
-    // Consecutive sprites mostly share a texture: compare pointers before
-    // hashing
-    let mut previous: Option<&TextureRef> = None;
+    // Consecutive sprites mostly share a texture: skip repeats before hashing
+    let mut previous: Option<TextureId> = None;
     let textures = (0..list.sprite_count())
       .filter_map(|i| list.sprite(i))
-      .map(|sprite| &sprite.texture)
-      .filter(|texture| {
-        let repeat = previous.is_some_and(|p| Arc::ptr_eq(p, texture));
+      .map(|sprite| sprite.texture)
+      .filter(|&texture| {
+        let repeat = previous == Some(texture);
         previous = Some(texture);
-        !repeat && seen.insert(Arc::clone(texture))
-      })
-      .map(|texture| &**texture);
+        !repeat && seen.insert(texture)
+      });
     self.make_resident(device, queue, textures, list.sprite_count());
     self.resident_scratch = seen;
 
@@ -1025,17 +1015,16 @@ impl SpriteGpuRenderer {
     let mut runs = std::mem::take(&mut self.world_runs);
     // The previous sprite's texture and where it lives, reused while
     // sprites share it
-    let mut last: Option<(TextureRef, AtlasSlot, (u32, u32))> = None;
+    let mut last: Option<(TextureId, AtlasSlot, (u32, u32))> = None;
     plan_runs(list.items(), &mut runs, |index| {
       let sprite = list.sprite(index)?;
-      let (slot, page_size) = match &last {
-        Some((texture, slot, size)) if Arc::ptr_eq(texture, &sprite.texture) => (*slot, *size),
+      let (slot, page_size) = match last {
+        Some((texture, slot, size)) if texture == sprite.texture => (slot, size),
         _ => {
-          let texture = self.textures.get(&*sprite.texture)?;
-          let slot = self.atlas.lookup(&texture.key)?;
+          let slot = self.atlas.lookup(sprite.texture)?;
           let page = self.atlas.texture(slot.page)?;
           let size = (page.width(), page.height());
-          last = Some((Arc::clone(&sprite.texture), slot, size));
+          last = Some((sprite.texture, slot, size));
           (slot, size)
         }
       };
@@ -1129,11 +1118,10 @@ impl SpriteGpuRenderer {
     pass.draw(0..6, 0..count as u32);
   }
 
-  /// Where a cached texture currently lives in the atlas.
+  /// Where a texture uploaded by name currently lives in the atlas.
   #[cfg(test)]
-  pub(crate) fn lookup(&self, id: &str) -> Option<AtlasSlot> {
-    let texture = self.textures.get(id)?;
-    self.atlas.lookup(&texture.key)
+  pub(crate) fn lookup(&self, name: &str) -> Option<AtlasSlot> {
+    self.atlas.lookup(self.named_texture(name)?)
   }
 
   /// Upload a sprite from a SpriteHandle to the GPU texture cache
@@ -1146,32 +1134,20 @@ impl SpriteGpuRenderer {
     queue: &wgpu::Queue,
     sprite: &SpriteHandle,
   ) {
-    let id = sprite.id();
-    if let Some(texture) = self.textures.get_mut(&id) {
-      texture.last_used = self.frame;
+    let name = sprite.id();
+    if let Some(id) = self.named_texture(&name) {
+      self.touch(id);
       return;
     }
-    let (width, height, data) = sprite.with_sprite(|s| (s.width(), s.height(), s.data().to_vec()));
-    let key = AtlasKey::Id(id.clone());
-    let placed = self
-      .atlas
-      .slot(device, queue, &key, width, height, || data, self.frame);
-    if placed.is_some() {
-      let texture = CachedTexture {
-        key,
-        width,
-        height,
-        source: TextureSource::Sprite(sprite.clone()),
-        last_used: self.frame,
-      };
-      self.textures.insert(id, texture);
+    let id = self.registry.sprite(sprite, self.frame);
+    if self.resident(device, queue, id).is_some() {
+      self.names.insert(name, id);
     }
   }
 
-  /// Make an entity's sprite resident and return the texture id to draw it by.
+  /// Make an entity's sprite resident and return the texture to draw it by.
   ///
-  /// Sprites are keyed by the handle's identity and content generation, so
-  /// every entity sharing a handle shares one texture, and a hot-reloaded
+  /// Every entity sharing a handle shares one texture, and a hot-reloaded
   /// sprite is uploaded again. Returns `None` for a sprite that cannot be
   /// uploaded (empty, or larger than the device allows).
   pub(crate) fn upload_entity_sprite(
@@ -1179,125 +1155,39 @@ impl SpriteGpuRenderer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     sprite: &SpriteHandle,
-  ) -> Option<TextureRef> {
-    let serial = sprite.serial();
-    let generation = sprite.generation();
-    if let Some(entry) = self.entity_sprites.get_mut(&serial)
-      && entry.generation == generation
-    {
-      entry.last_used = self.frame;
-      return entry.uploaded.then(|| entry.texture.clone());
+  ) -> Option<TextureId> {
+    let id = self.registry.sprite(sprite, self.frame);
+    // Uploaded ones are made resident with the frame's other textures
+    if self.registry.needs_upload(id) {
+      self.resident(device, queue, id)?;
     }
-
-    // New, or its pixels changed: read the size and generation under the
-    // read lock, so they belong together; the pixels are copied only if the
-    // atlas needs them
-    let (generation, width, height) =
-      sprite.with_sprite(|s| (sprite.generation(), s.width(), s.height()));
-    let key = AtlasKey::Sprite {
-      handle: serial,
-      generation,
-    };
-    let uploaded = self
-      .atlas
-      .slot(
-        device,
-        queue,
-        &key,
-        width,
-        height,
-        || sprite.with_sprite(|s| s.data().to_vec()),
-        self.frame,
-      )
-      .is_some();
-
-    let texture = match self.entity_sprites.remove(&serial) {
-      Some(old) => {
-        // The superseded version's rect is free for reuse
-        self.atlas.remove(&AtlasKey::Sprite {
-          handle: serial,
-          generation: old.generation,
-        });
-        old.texture
-      }
-      None => TextureRef::from(format!("\u{1}sprite:{serial}")),
-    };
-    if uploaded {
-      self.textures.insert(
-        texture.to_string(),
-        CachedTexture {
-          key,
-          width,
-          height,
-          source: TextureSource::Sprite(sprite.clone()),
-          last_used: self.frame,
-        },
-      );
-    } else {
-      self.textures.remove(&*texture);
-    }
-    self.entity_sprites.insert(
-      serial,
-      EntitySprite {
-        generation,
-        texture: texture.clone(),
-        uploaded,
-        last_used: self.frame,
-      },
-    );
-    uploaded.then_some(texture)
+    Some(id)
   }
 
-  /// Forget entity sprites nothing asked for in a while, so sprites of
-  /// despawned entities don't stay in memory.
-  /// Forget textures uploaded by id and neither uploaded nor drawn for
-  /// [`TEXTURE_TTL`] frames, with their pixels and atlas space. Games upload
-  /// what they draw each frame, so a texture still in use is never dropped.
-  /// Entity sprites are left to [`prune_entity_sprites`](Self::prune_entity_sprites).
-  fn prune_textures(&mut self) {
-    let frame = self.frame;
-    let atlas = &mut self.atlas;
-    self.textures.retain(|_, texture| {
-      let keep = !matches!(texture.key, AtlasKey::Id(_))
-        || frame.saturating_sub(texture.last_used) < TEXTURE_TTL;
-      if !keep {
-        atlas.remove(&texture.key);
-      }
-      keep
-    });
-  }
-
-  fn prune_entity_sprites(&mut self) {
-    self.cap_standalone_entity_sprites();
-    if !self.frame.is_multiple_of(120) {
+  /// Forget textures neither uploaded nor drawn for [`TEXTURE_TTL`] frames,
+  /// with their pixels and atlas space, and cap the standalone sprites. Games
+  /// upload what they draw each frame, so a texture still in use is never
+  /// dropped.
+  fn prune(&mut self) {
+    self.cap_standalone_sprites();
+    if !self.frame.is_multiple_of(PRUNE_EVERY) {
       return;
     }
     self.custom.prune(self.frame);
-    let frame = self.frame;
-    let stale: Vec<usize> = self
-      .entity_sprites
-      .iter()
-      .filter(|(_, e)| frame.saturating_sub(e.last_used) >= ENTITY_SPRITE_TTL)
-      .map(|(serial, _)| *serial)
-      .collect();
-    for serial in stale {
-      if let Some(entry) = self.entity_sprites.remove(&serial) {
-        self.textures.remove(&*entry.texture);
-        self.atlas.remove(&AtlasKey::Sprite {
-          handle: serial,
-          generation: entry.generation,
-        });
-      }
+    for id in self.registry.prune(self.frame, TEXTURE_TTL) {
+      self.atlas.remove(id);
     }
+    let registry = &self.registry;
+    self.names.retain(|_, id| registry.get(*id).is_some());
   }
 
-  /// Free the least recently used standalone entity textures beyond
+  /// Free the least recently used standalone sprite textures beyond
   /// [`MAX_STANDALONE_ENTITY_SPRITES`], sparing any used this frame.
-  fn cap_standalone_entity_sprites(&mut self) {
-    if self.entity_sprites.len() <= MAX_STANDALONE_ENTITY_SPRITES {
+  fn cap_standalone_sprites(&mut self) {
+    if self.registry.len() <= MAX_STANDALONE_ENTITY_SPRITES {
       return;
     }
-    let mut standalone = self.standalone_entity_serials();
+    let mut standalone = self.standalone_sprites();
     let Some(excess) = standalone
       .len()
       .checked_sub(MAX_STANDALONE_ENTITY_SPRITES)
@@ -1307,71 +1197,64 @@ impl SpriteGpuRenderer {
     };
     standalone.sort_by_key(|&(_, last_used)| last_used);
     let frame = self.frame;
-    let evict = standalone
+    let evict: Vec<TextureId> = standalone
       .into_iter()
       .filter(|&(_, last_used)| last_used < frame)
-      .take(excess);
-    let evict: Vec<usize> = evict.map(|(serial, _)| serial).collect();
-    for serial in evict {
-      if let Some(entry) = self.entity_sprites.remove(&serial) {
-        self.textures.remove(&*entry.texture);
-        self.atlas.remove(&AtlasKey::Sprite {
-          handle: serial,
-          generation: entry.generation,
-        });
-      }
+      .take(excess)
+      .map(|(id, _)| id)
+      .collect();
+    for id in evict {
+      self.atlas.remove(id);
+      self.registry.remove(id);
     }
   }
 
-  /// Entity sprites holding a standalone texture, as `(serial, last_used)`.
-  fn standalone_entity_serials(&self) -> Vec<(usize, u64)> {
+  /// Sprites holding a standalone texture, as `(id, last_used)`.
+  fn standalone_sprites(&self) -> Vec<(TextureId, u64)> {
     self
-      .entity_sprites
+      .registry
       .iter()
-      .filter(|(serial, e)| {
-        e.uploaded
+      .filter(|(id, entry)| {
+        matches!(entry.source, TextureSource::Sprite(_))
           && self
             .atlas
-            .lookup(&AtlasKey::Sprite {
-              handle: **serial,
-              generation: e.generation,
-            })
+            .lookup(*id)
             .is_some_and(|slot| matches!(slot.page, SlotPage::Standalone(_)))
       })
-      .map(|(serial, e)| (*serial, e.last_used))
+      .map(|(id, entry)| (id, entry.last_used))
       .collect()
   }
 
   /// How many textures are cached (for tests that watch for leaks).
   #[cfg(test)]
   pub(crate) fn texture_count(&self) -> usize {
-    self.textures.len()
+    self.registry.len()
   }
 
-  /// How many entity sprites hold a standalone texture.
+  /// How many sprites hold a standalone texture.
   #[cfg(test)]
   pub(crate) fn standalone_entity_count(&self) -> usize {
-    self.standalone_entity_serials().len()
+    self.standalone_sprites().len()
   }
 
-  /// Whether the entity sprite is resident (for tests of what gets uploaded).
+  /// Whether the entity sprite is uploaded (for tests of what gets uploaded).
   #[cfg(test)]
   pub(crate) fn has_entity_sprite(&self, sprite: &SpriteHandle) -> bool {
-    self
-      .entity_sprites
-      .get(&sprite.serial())
-      .is_some_and(|e| e.uploaded)
+    self.registry.iter().any(|(id, entry)| {
+      matches!(&entry.source, TextureSource::Sprite(s) if s.serial() == sprite.serial())
+        && !self.registry.needs_upload(id)
+    })
   }
 
   /// Check if a texture is already cached
   pub fn has_texture(&self, id: &str) -> bool {
-    self.textures.contains_key(id)
+    self.named_texture(id).is_some()
   }
 
   /// Clear the texture cache
   pub fn clear_cache(&mut self) {
-    self.textures.clear();
-    self.entity_sprites.clear();
+    self.registry = TextureRegistry::new();
+    self.names.clear();
     self.atlas.clear();
     self.placed.clear();
     self.world_runs.clear();
@@ -1480,15 +1363,17 @@ pub const SPRITE_SHADER: &str = include_str!("../shaders/core/sprite.wgsl");
 pub struct BatchCollector {
   /// Every sprite in submission order
   items: Vec<CollectedSprite>,
-  /// Shared texture ids, so sprites of one texture hold one allocation.
+  /// The texture ids sprites name, each held once (an index in `CollectedSprite`).
   /// Kept across frames; it only grows with the distinct textures used.
-  textures: HashMap<String, TextureRef>,
+  names: Vec<String>,
+  name_index: HashMap<String, usize>,
 }
 
 /// One collected sprite, as the draw list takes it.
 #[derive(Debug)]
 struct CollectedSprite {
-  texture: TextureRef,
+  /// Index of its texture's name
+  name: usize,
   shading: SpriteShading,
   z_order: i32,
   instance: SpriteInstance,
@@ -1533,32 +1418,33 @@ impl BatchCollector {
     z_order: i32,
   ) {
     let id = texture_id.as_ref();
-    let texture = match self.textures.get(id) {
-      Some(texture) => texture.clone(),
+    let name = match self.name_index.get(id) {
+      Some(&name) => name,
       None => {
-        let texture = TextureRef::from(id);
-        self.textures.insert(id.to_string(), texture.clone());
-        texture
+        self.names.push(id.to_string());
+        self.name_index.insert(id.to_string(), self.names.len() - 1);
+        self.names.len() - 1
       }
     };
     self.items.push(CollectedSprite {
-      texture,
+      name,
       shading,
       z_order,
       instance,
     });
   }
 
-  /// Push every collected sprite onto `list` as `kind`, in submission order.
-  pub(crate) fn push_to(&self, list: &mut DrawList, kind: DrawKind) {
+  /// Push every collected sprite onto `list` as `kind`, in submission order,
+  /// with its texture resolved through `gpu`; sprites naming a texture that
+  /// was never uploaded are dropped.
+  pub(crate) fn push_to(&self, list: &mut DrawList, kind: DrawKind, gpu: &SpriteGpuRenderer) {
+    let mut resolved: Vec<Option<Option<TextureId>>> = vec![None; self.names.len()];
     for item in &self.items {
-      list.push_sprite(
-        kind,
-        item.z_order,
-        item.texture.clone(),
-        item.shading,
-        item.instance,
-      );
+      let texture =
+        *resolved[item.name].get_or_insert_with(|| gpu.named_texture(&self.names[item.name]));
+      if let Some(texture) = texture {
+        list.push_sprite(kind, item.z_order, texture, item.shading, item.instance);
+      }
     }
   }
 
@@ -1722,13 +1608,13 @@ mod tests {
     assert_eq!(pad(SpriteEffect::invert()), 0.0);
   }
 
-  fn world_list(entries: &[(&str, i32)]) -> DrawList {
+  fn world_list(renderer: &SpriteGpuRenderer, entries: &[(&str, i32)]) -> DrawList {
     let mut collector = BatchCollector::new();
     for (id, z) in entries {
       collector.add(id, false, SpriteInstance::new(), *z);
     }
     let mut list = DrawList::default();
-    collector.push_to(&mut list, DrawKind::Sprite);
+    collector.push_to(&mut list, DrawKind::Sprite, renderer);
     list.sorted();
     list
   }
@@ -1745,7 +1631,8 @@ mod tests {
     renderer.atlas.clear();
     assert!(renderer.lookup("a").is_none());
 
-    renderer.prepare_world(&device, &queue, &world_list(&[("a", 0)]));
+    let list = world_list(&renderer, &[("a", 0)]);
+    renderer.prepare_world(&device, &queue, &list);
     assert!(renderer.lookup("a").is_some());
   }
 
@@ -1772,7 +1659,8 @@ mod tests {
       // Games upload what they draw each frame (a no-op once cached)
       renderer.upload_texture(&device, &queue, "uploaded", 2, 2, &[255; 16]);
       renderer.upload_texture(&device, &queue, "drawn", 2, 2, &[255; 16]);
-      renderer.prepare_world(&device, &queue, &world_list(&[("drawn", 0)]));
+      let list = world_list(&renderer, &[("drawn", 0)]);
+      renderer.prepare_world(&device, &queue, &list);
     }
     assert!(!renderer.has_texture("gone"));
     assert!(renderer.lookup("gone").is_none(), "its atlas rect is freed");
@@ -1787,8 +1675,10 @@ mod tests {
     };
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    renderer.upload_texture(&device, &queue, "a", 2, 2, &[255; 16]);
     let entries = vec![("a", 0); SpriteGpuRenderer::MAX_INSTANCES + 1];
-    renderer.prepare_world(&device, &queue, &world_list(&entries));
+    let list = world_list(&renderer, &entries);
+    renderer.prepare_world(&device, &queue, &list);
     assert_eq!(renderer.instance_capacity, 16384);
     let size = 16384 * std::mem::size_of::<SpriteInstance>() as u64;
     assert_eq!(renderer.instance_buffer.size(), size);
@@ -1877,13 +1767,9 @@ mod tests {
     collector.add(String::from("tex_a"), false, SpriteInstance::new(), 50);
     assert_eq!(collector.sprite_count(), 3);
 
-    let mut list = DrawList::default();
-    collector.push_to(&mut list, DrawKind::Sprite);
-    // One shared allocation per texture id
-    assert!(Arc::ptr_eq(
-      &list.sprite(1).unwrap().texture,
-      &list.sprite(2).unwrap().texture
-    ));
+    // One name per texture id, shared by its sprites
+    assert_eq!(collector.names, vec!["tex_c", "tex_a"]);
+    assert_eq!(collector.items[1].name, collector.items[2].name);
     collector.clear();
     assert_eq!(collector.sprite_count(), 0);
   }

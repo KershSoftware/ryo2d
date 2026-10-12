@@ -18,7 +18,7 @@
 //! its `Renderable::anchor`; tiled runs and composite parts are laid out from
 //! the entity's position.
 
-use super::{DrawKind, DrawList, SpriteShading, TextureRef};
+use super::{DrawKind, DrawList, SpriteShading};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{
@@ -26,7 +26,9 @@ use crate::core::ecs::{
   ShaderParams, SpriteEffect, SpriteShader, World, YSort,
 };
 use crate::core::graphics::sprite_gpu::effective_shader;
-use crate::core::graphics::{Camera, CompositeTile, Sprite, SpriteGpuRenderer, SpriteInstance};
+use crate::core::graphics::{
+  Camera, CompositeTile, Sprite, SpriteGpuRenderer, SpriteInstance, TextureId,
+};
 use crate::core::graphics::{TileDirection, effect_padding};
 use crate::core::ui::Color;
 
@@ -103,13 +105,9 @@ struct Drawable<'w> {
   y_sort: Option<&'w YSort>,
 }
 
-/// Turns the world's renderable entities into draw list sprites, keeping the
-/// shadow ellipse texture between frames.
+/// Turns the world's renderable entities into draw list sprites.
 #[derive(Default)]
-pub(crate) struct EntityDrawer {
-  /// The shared shadow ellipse texture, once uploaded
-  ellipse: Option<TextureRef>,
-}
+pub(crate) struct EntityDrawer;
 
 impl EntityDrawer {
   /// Push the frame's entities onto `list`, returning how many visible
@@ -166,7 +164,6 @@ impl EntityDrawer {
       device,
       queue,
       list,
-      ellipse: &mut self.ellipse,
       size,
     };
     for (_, drawable) in &items {
@@ -231,7 +228,7 @@ struct Source<'a> {
   width: u32,
   height: u32,
   /// Resolved lazily: `Some(None)` is a failed upload
-  id: Option<Option<TextureRef>>,
+  id: Option<Option<TextureId>>,
 }
 
 impl<'a> Source<'a> {
@@ -300,45 +297,39 @@ struct Emitter<'a> {
   device: &'a wgpu::Device,
   queue: &'a wgpu::Queue,
   list: &'a mut DrawList,
-  ellipse: &'a mut Option<TextureRef>,
   size: (u32, u32),
 }
 
 impl Emitter<'_> {
   /// The shared white ellipse texture, uploaded if need be. One texture for
   /// every shadow: size comes from scaling, colour and opacity from the tint.
-  fn ellipse_texture(&mut self) -> TextureRef {
-    if let Some(id) = self.ellipse.as_ref()
-      && self.gpu.has_texture(id)
-    {
-      return id.clone();
+  fn ellipse_texture(&mut self) -> Option<TextureId> {
+    if let Some(id) = self.gpu.named_texture(ELLIPSE_ID) {
+      return Some(id);
     }
-    let id = TextureRef::from(ELLIPSE_ID);
     let sprite = Sprite::solid_ellipse(ELLIPSE_SIZE, ELLIPSE_SIZE, 255, 255, 255, 255);
-    self.gpu.upload_texture(
+    self.gpu.upload_named(
       self.device,
       self.queue,
-      &id,
+      ELLIPSE_ID,
       ELLIPSE_SIZE,
       ELLIPSE_SIZE,
       sprite.data(),
-    );
-    *self.ellipse = Some(id.clone());
-    id
+    )
   }
 
   /// The texture behind `source`, uploaded on first use.
-  fn resolve(&mut self, source: &mut Source<'_>) -> Option<TextureRef> {
+  fn resolve(&mut self, source: &mut Source<'_>) -> Option<TextureId> {
     if source.id.is_none() {
       let id = match source.sprite {
         Some(sprite) => self
           .gpu
           .upload_entity_sprite(self.device, self.queue, sprite),
-        None => Some(self.ellipse_texture()),
+        None => self.ellipse_texture(),
       };
       source.id = Some(id);
     }
-    source.id.clone().flatten()
+    source.id.flatten()
   }
 
   /// Draw `source` at `at` with `shading` as an entity item at `z`.

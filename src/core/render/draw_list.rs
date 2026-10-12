@@ -4,13 +4,7 @@
 //! passes draw them sorted by z, then by [`DrawKind`], then by submission, so
 //! a trail can sit between two sprites in one render pass.
 
-use std::sync::Arc;
-
-use crate::core::graphics::{SlotPage, SpriteInstance};
-
-/// A texture as the sprite renderer resolves it: the id the texture was
-/// uploaded under. Shared, so every sprite of a batch holds one allocation.
-pub(crate) type TextureRef = Arc<str>;
+use crate::core::graphics::{SlotPage, SpriteInstance, TextureId};
 
 /// What a drawable is, which breaks ties between equal z (in declaration order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -67,7 +61,7 @@ pub(crate) enum PipelineKind {
 /// A sprite waiting to be drawn.
 #[derive(Debug, Clone)]
 pub(crate) struct DrawSprite {
-  pub(crate) texture: TextureRef,
+  pub(crate) texture: TextureId,
   pub(crate) shading: SpriteShading,
   pub(crate) instance: SpriteInstance,
 }
@@ -100,7 +94,7 @@ impl DrawList {
     &mut self,
     kind: DrawKind,
     z: i32,
-    texture: TextureRef,
+    texture: TextureId,
     shading: SpriteShading,
     instance: SpriteInstance,
   ) {
@@ -230,15 +224,11 @@ pub(crate) fn plan_runs(
 mod tests {
   use super::*;
 
-  fn texture(name: &str) -> TextureRef {
-    Arc::from(name)
-  }
-
-  fn push(list: &mut DrawList, kind: DrawKind, z: i32, name: &str) {
+  fn push(list: &mut DrawList, kind: DrawKind, z: i32, texture: u32) {
     list.push_sprite(
       kind,
       z,
-      texture(name),
+      TextureId::for_test(texture),
       SpriteShading::Plain,
       SpriteInstance::new(),
     );
@@ -251,10 +241,10 @@ mod tests {
   #[test]
   fn sorts_by_z_then_kind_then_sequence() {
     let mut list = DrawList::default();
-    push(&mut list, DrawKind::Entity, 1, "a");
+    push(&mut list, DrawKind::Entity, 1, 0);
     list.push_trail_group(true, 0);
-    push(&mut list, DrawKind::Sprite, 1, "b");
-    push(&mut list, DrawKind::Entity, 1, "c");
+    push(&mut list, DrawKind::Sprite, 1, 1);
+    push(&mut list, DrawKind::Entity, 1, 2);
 
     let sorted = list.sorted();
 
@@ -274,21 +264,24 @@ mod tests {
   #[test]
   fn stable_within_kind() {
     let mut list = DrawList::default();
-    for name in ["a", "b", "c", "d"] {
-      push(&mut list, DrawKind::Sprite, 3, name);
+    for texture in 0..4 {
+      push(&mut list, DrawKind::Sprite, 3, texture);
     }
 
     list.sorted();
-    let names: Vec<_> = list
+    let textures: Vec<_> = list
       .items()
       .iter()
       .filter_map(|item| match item.payload {
-        DrawPayload::Sprite(i) => list.sprite(i).map(|s| s.texture.to_string()),
+        DrawPayload::Sprite(i) => list.sprite(i).map(|s| s.texture),
         DrawPayload::Trail { .. } => None,
       })
       .collect();
 
-    assert_eq!(names, vec!["a", "b", "c", "d"]);
+    assert_eq!(
+      textures,
+      (0..4).map(TextureId::for_test).collect::<Vec<_>>()
+    );
   }
 
   #[test]
@@ -330,7 +323,7 @@ mod tests {
   fn consecutive_sprites_on_one_page_merge_into_one_run() {
     let mut list = DrawList::default();
     for z in 0..3 {
-      push(&mut list, DrawKind::Sprite, z, "a");
+      push(&mut list, DrawKind::Sprite, z, 0);
     }
 
     let runs = runs_for(&mut list, &[(0, PipelineKind::Plain); 3]);
@@ -341,9 +334,9 @@ mod tests {
   #[test]
   fn a_trail_between_sprites_splits_the_run() {
     let mut list = DrawList::default();
-    push(&mut list, DrawKind::Sprite, 0, "a");
+    push(&mut list, DrawKind::Sprite, 0, 0);
     list.push_trail_group(true, 1);
-    push(&mut list, DrawKind::Sprite, 2, "a");
+    push(&mut list, DrawKind::Sprite, 2, 0);
 
     let runs = runs_for(&mut list, &[(0, PipelineKind::Plain); 2]);
 
@@ -357,7 +350,7 @@ mod tests {
   fn a_new_page_or_pipeline_starts_a_run() {
     let mut list = DrawList::default();
     for z in 0..3 {
-      push(&mut list, DrawKind::Sprite, z, "a");
+      push(&mut list, DrawKind::Sprite, z, 0);
     }
 
     let runs = runs_for(
@@ -388,7 +381,7 @@ mod tests {
   fn each_custom_shader_starts_a_run() {
     let mut list = DrawList::default();
     for z in 0..4 {
-      push(&mut list, DrawKind::Sprite, z, "a");
+      push(&mut list, DrawKind::Sprite, z, 0);
     }
 
     let runs = runs_for(
@@ -415,7 +408,7 @@ mod tests {
   fn dropped_sprites_leave_no_gap() {
     let mut list = DrawList::default();
     for z in 0..3 {
-      push(&mut list, DrawKind::Sprite, z, "a");
+      push(&mut list, DrawKind::Sprite, z, 0);
     }
     list.sorted();
 
@@ -430,14 +423,14 @@ mod tests {
   #[test]
   fn clear_empties_the_list_for_reuse() {
     let mut list = DrawList::default();
-    push(&mut list, DrawKind::Sprite, 0, "a");
+    push(&mut list, DrawKind::Sprite, 0, 0);
     list.push_trail_group(false, 0);
 
     list.clear();
 
     assert!(list.items().is_empty() && list.unlit_items().is_empty());
     assert_eq!(list.sprite_count(), 0);
-    push(&mut list, DrawKind::Sprite, 0, "b");
+    push(&mut list, DrawKind::Sprite, 0, 1);
     assert_eq!(list.sorted()[0].sequence, 0);
   }
 }

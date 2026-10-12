@@ -486,7 +486,7 @@ impl Engine {
       sprite_gpu: None,
       lighting: None,
       trail_renderer: None,
-      entity_drawer: EntityDrawer::default(),
+      entity_drawer: EntityDrawer,
       draw_list: DrawList::default(),
       batch_collector: BatchCollector::new(),
       ui_font,

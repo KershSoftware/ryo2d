@@ -20,12 +20,13 @@ pub mod parallax_gpu;
 pub mod renderer;
 pub mod sprite;
 pub mod sprite_gpu;
+mod texture_registry;
 pub mod tile;
 
 pub use animation::{
   Animation, AnimationController, AnimationId, Animator, LoopMode, PlaybackState, ValidatedAnimator,
 };
-pub(crate) use atlas::{AtlasKey, AtlasSlot, SlotPage, TextureAtlas};
+pub(crate) use atlas::{AtlasSlot, SlotPage, TextureAtlas};
 pub use camera::{Camera, CameraBounds};
 pub(crate) use compositor::{Compositor, Viewport};
 pub use gpu_context::GpuRenderContext;
@@ -38,6 +39,7 @@ pub(crate) use sprite_gpu::effect_padding;
 pub use sprite_gpu::{
   BatchCollector, SpriteGlobals, SpriteGpuRenderer, SpriteInstance, get_sprite_effect,
 };
+pub(crate) use texture_registry::{TextureId, TextureRegistry, TextureSource};
 pub use tile::{CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart};
 
 /// The GPU device and queue, shared by the renderers and the texture manager.
