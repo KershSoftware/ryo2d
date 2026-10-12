@@ -24,12 +24,12 @@ pub const DEFAULT_BACKGROUND_COLOR: wgpu::Color = wgpu::Color {
 use winit::window::Window;
 
 use crate::core::capture::{CapturedFrame, read_texture_rgba};
-use crate::core::engine::WindowMode;
 use crate::core::error::{CaptureError, CaptureResult};
 use crate::core::render::{
   DrawList, FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline, TRANSITION_VISIBLE,
 };
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
+use crate::core::window::WindowMode;
 
 use super::{Compositor, SpriteGpuRenderer};
 
@@ -729,7 +729,6 @@ impl WgpuRenderer {
     let frame = FrameInfo {
       game_width: self.game_width,
       game_height: self.game_height,
-      raycast: scene.raycast.is_some(),
       world: !scene.draw_list.items().is_empty(),
       lighting: scene.lighting.is_some(),
       effects: self.post_process.is_some() && scene.effects.has_active_effects(),
@@ -796,7 +795,6 @@ impl WgpuRenderer {
       draw_list: &draw_list,
       trails: None,
       lighting: None,
-      raycast: None,
       effects: &effects,
       ui_buffer,
       camera_pos: glam::Vec2::ZERO,

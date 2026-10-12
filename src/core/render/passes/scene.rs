@@ -11,8 +11,8 @@ impl RenderPass for Clear {
     pass_ids::CLEAR
   }
 
-  fn should_run(&self, frame: &FrameInfo) -> bool {
-    !frame.raycast
+  fn should_run(&self, _frame: &FrameInfo) -> bool {
+    true
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {

@@ -26,6 +26,5 @@ pub use save::{
 // Debug utilities (re-export with prefix to avoid conflict with workspace::DebugConfig)
 pub use debug::{
   DebugConfig, DebugStats, FrameTimings, OverlayMode, SmoothedDebugStats, SmoothedFrameTimings,
-  add_gpu_rect, add_gpu_text, render_fps_counter, render_fps_counter_gpu, render_frame_timing,
-  render_frame_timing_gpu, render_stats, render_stats_gpu, time_block, upload_debug_font,
+  render_fps_counter, render_frame_timing, render_stats, time_block,
 };

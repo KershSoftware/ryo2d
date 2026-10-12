@@ -20,6 +20,7 @@
 
 use super::TrailStyle;
 use crate::core::asset::SpriteHandle;
+use crate::core::ecs::Component;
 use crate::core::ui::Color;
 use std::collections::VecDeque;
 
@@ -106,7 +107,7 @@ pub const MAX_TRAIL_POINTS: usize = 128;
 ///
 /// Trails automatically record position history and render a smooth
 /// line that fades from the current position to older positions.
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct Trail2D {
   /// Position history (newest at front)
   points: VecDeque<TrailPoint>,

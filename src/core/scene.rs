@@ -38,7 +38,7 @@ use super::ecs::{Entity, Knockback, SquashAxis, SquashStretch, Vec2, World};
 use super::events::Events;
 use super::game::{TimeControl, TimeInfo, WindowRequest};
 use super::graphics::Camera;
-use super::input::InputState;
+use super::input::Input;
 use super::lighting::{AmbientLight, Atmosphere, LightingRenderer};
 use super::raycast::GpuRaycastRenderer;
 use super::render::RenderPipeline;
@@ -163,7 +163,7 @@ pub struct SceneContext<'a> {
   pub camera: &'a mut Camera,
   /// Current input state (keyboard, mouse)
   /// Mutable to allow consuming inputs (preventing double-handling)
-  pub input: &'a mut InputState,
+  pub input: &'a mut Input,
   /// Asset manager for loading and caching resources
   pub assets: &'a mut AssetManager,
   /// Audio manager for sound effects and music (None if audio unavailable)

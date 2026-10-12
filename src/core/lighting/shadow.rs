@@ -14,7 +14,7 @@
 //!    - Create a quad: [edge_start, edge_end, projected_end, projected_start]
 //! 4. Return all shadow quads for rendering
 
-use crate::core::ecs::{Transform, Vec2};
+use crate::core::ecs::{GlobalTransform, Vec2};
 use crate::core::lighting::{Light2D, LightOccluder2D};
 use crate::core::ui::Color;
 
@@ -101,14 +101,14 @@ impl ShadowGeometry {
 /// Generate shadow geometry for all shadow-casting lights and occluders.
 ///
 /// # Arguments
-/// * `lights` - Iterator of (transform, light) pairs
-/// * `occluders` - Iterator of (transform, occluder) pairs
+/// * `lights` - Iterator of (world position, light) pairs
+/// * `occluders` - (global transform, occluder) pairs
 ///
 /// # Returns
 /// Shadow geometry ready for GPU upload
 pub fn generate_shadow_geometry<'a>(
-  lights: impl Iterator<Item = (&'a Transform, &'a Light2D)>,
-  occluders: &[(&Transform, &LightOccluder2D)],
+  lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)>,
+  occluders: &[(&GlobalTransform, &LightOccluder2D)],
 ) -> ShadowGeometry {
   let mut geometry = ShadowGeometry::new();
 
@@ -169,14 +169,14 @@ pub fn generate_shadow_geometry<'a>(
       }
 
       // Transform occluder vertices to world space
+      let occluder_center = occluder_transform.translation();
       let world_vertices = occluder.transform_vertices(
-        occluder_transform.x,
-        occluder_transform.y,
-        occluder_transform.rotation,
+        occluder_center.x,
+        occluder_center.y,
+        occluder_transform.rotation(),
       );
 
       // Quick distance check - skip if occluder center is too far
-      let occluder_center = Vec2::new(occluder_transform.x, occluder_transform.y);
       let dist_to_light = ((occluder_center.x - light_pos.x).powi(2)
         + (occluder_center.y - light_pos.y).powi(2))
       .sqrt();

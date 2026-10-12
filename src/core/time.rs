@@ -374,7 +374,10 @@ mod tests {
   #[test]
   fn invalid_rates_and_speeds_are_clamped() {
     let t = Time::new(0);
-    assert!((t.fixed.timestep() - 1.0).abs() < 1e-6, "0 Hz clamps to 1 Hz");
+    assert!(
+      (t.fixed.timestep() - 1.0).abs() < 1e-6,
+      "0 Hz clamps to 1 Hz"
+    );
     let mut t = Time::new(60);
     t.game.set_speed(-3.0);
     assert_eq!(t.game.speed(), 0.0);

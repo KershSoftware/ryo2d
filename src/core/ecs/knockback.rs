@@ -34,6 +34,7 @@
 //! - **Without RigidBody**: Applies directly to Transform position
 
 use super::Vec2;
+use super::kernel::Component;
 
 /// Component for applying decaying directional force to an entity.
 ///
@@ -53,7 +54,7 @@ use super::Vec2;
 /// let kb = Knockback::new(Vec2::new(-1.0, 0.0), 400.0)
 ///     .with_decay_rate(8.0);  // Fast decay
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct Knockback {
   /// Normalized direction X component
   direction_x: f32,

@@ -1,8 +1,8 @@
 //! The engine's phases and the schedules behind them.
 
 use crate::core::ecs::kernel::{
-  IntoScheduleConfigs, Schedule, ScheduleLabel, ScheduleSystem, SingleThreadedExecutor,
-  SystemSet, World,
+  IntoScheduleConfigs, Schedule, ScheduleLabel, ScheduleSystem, SingleThreadedExecutor, SystemSet,
+  World,
 };
 
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -232,8 +232,14 @@ mod tests {
     let mut world = World::new();
     world.init_resource::<Log>();
     let mut s = EngineSchedules::new();
-    s.add_systems(Phase::FixedUpdate, push("physics").in_set(FixedSet::Physics));
-    s.add_systems(Phase::FixedUpdate, push("snapshot").in_set(FixedSet::Snapshot));
+    s.add_systems(
+      Phase::FixedUpdate,
+      push("physics").in_set(FixedSet::Physics),
+    );
+    s.add_systems(
+      Phase::FixedUpdate,
+      push("snapshot").in_set(FixedSet::Snapshot),
+    );
     s.add_systems(
       Phase::FixedUpdate,
       push("transforms").in_set(FixedSet::Transforms),
@@ -251,7 +257,10 @@ mod tests {
     let mut world = World::new();
     world.init_resource::<Log>();
     let mut s = EngineSchedules::new();
-    s.add_systems(Phase::FixedUpdate, push("physics").in_set(FixedSet::Physics));
+    s.add_systems(
+      Phase::FixedUpdate,
+      push("physics").in_set(FixedSet::Physics),
+    );
     s.add_systems(Phase::FixedUpdate, push("after").after(FixedSet::Physics));
     s.add_systems(Phase::FixedUpdate, push("before").before(FixedSet::Physics));
     s.run(Phase::FixedUpdate, &mut world);

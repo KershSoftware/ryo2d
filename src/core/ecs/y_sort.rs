@@ -52,6 +52,8 @@
 //!
 //! This creates a pseudo-3D effect common in top-down RPGs.
 
+use super::kernel::Component;
+
 /// Y-sorting component for automatic depth ordering based on Y position
 ///
 /// Attach this to entities that should be sorted by their vertical position
@@ -59,7 +61,7 @@
 ///
 /// `z_order` picks the layer; `YSort` orders entities by y within their layer;
 /// sprites, particles and trails at the same z draw after the layer's entities.
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct YSort {
   /// Where on the sprite to measure Y for sorting (0.0=top, 1.0=bottom)
   ///

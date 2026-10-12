@@ -1,10 +1,9 @@
 //! What a frame contains, decided before any pass runs
 
 use super::DrawList;
-use crate::core::ecs::Transform;
+use crate::core::ecs::{GlobalTransform, Vec2};
 use crate::core::graphics::SpriteGpuRenderer;
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingRenderer};
-use crate::core::raycast::GpuRaycastRenderer;
 use crate::core::shaders::{EffectsManager, OutputBuffer};
 use crate::core::trail::TrailRenderer;
 
@@ -15,8 +14,7 @@ use crate::core::trail::TrailRenderer;
 ///
 /// It describes the frame's content, not which passes run. `effects` and
 /// `lighting` stay true when the game disabled the `post_process` or
-/// `lighting` pass, and `lighting` can be true on raycast frames, where the
-/// lighting pass does not run. To know what ran, use
+/// `lighting` pass. To know what ran, use
 /// [`RenderPipeline::passes_to_run`](super::RenderPipeline::passes_to_run).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameInfo {
@@ -24,8 +22,6 @@ pub struct FrameInfo {
   pub game_width: u32,
   /// Game resolution height in pixels
   pub game_height: u32,
-  /// The GPU raycaster draws this frame instead of the 2D scene
-  pub raycast: bool,
   /// The draw list has lit items (entities, sprites, trails or lines drawn
   /// before lighting)
   pub world: bool,
@@ -47,7 +43,7 @@ pub(crate) const TRANSITION_VISIBLE: f32 = 0.001;
 /// Which texture holds the frame's latest image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FrameImage {
-  /// The game texture (the 2D scene or the raycaster)
+  /// The game texture (the 2D scene)
   Game,
   /// The lighting output
   Lit,
@@ -58,8 +54,9 @@ pub(crate) enum FrameImage {
 /// Lighting inputs for a frame (only built while lighting is enabled).
 pub(crate) struct LightingFrame<'a> {
   pub(crate) renderer: &'a mut LightingRenderer,
-  pub(crate) lights: &'a [(Transform, Light2D)],
-  pub(crate) occluders: &'a [(Transform, LightOccluder2D)],
+  /// Each light's world position
+  pub(crate) lights: &'a [(Vec2, Light2D)],
+  pub(crate) occluders: &'a [(GlobalTransform, LightOccluder2D)],
 }
 
 /// The engine subsystems and per-frame data the built-in passes draw from.
@@ -70,8 +67,6 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) trails: Option<&'a TrailRenderer>,
   /// `Some` only while lighting is enabled
   pub(crate) lighting: Option<LightingFrame<'a>>,
-  /// `Some` only while raycasting is enabled
-  pub(crate) raycast: Option<&'a GpuRaycastRenderer>,
   pub(crate) effects: &'a EffectsManager,
   pub(crate) ui_buffer: &'a [u8],
   pub(crate) camera_pos: glam::Vec2,

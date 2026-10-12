@@ -3,6 +3,8 @@
 //! Provides automatic scale deformation that recovers over time,
 //! commonly used for landing impacts, hits, and bouncy animations.
 
+use super::kernel::Component;
+
 /// Axis for squash/stretch deformation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SquashAxis {
@@ -30,7 +32,7 @@ pub enum SquashAxis {
 ///     .with_decay_rate(6.0)
 ///     .with_preserve_volume(true));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct SquashStretch {
   /// Deformation intensity (0.3 = 30% squash/stretch)
   intensity: f32,

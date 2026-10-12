@@ -137,7 +137,7 @@ impl RenderPass for TransitionPass {
   }
 
   fn should_run(&self, frame: &FrameInfo) -> bool {
-    !frame.raycast && frame.transition
+    frame.transition
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {

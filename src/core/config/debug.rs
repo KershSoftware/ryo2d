@@ -84,9 +84,14 @@
 //! Debug settings from `Ryo.toml` are automatically loaded during `build()`.
 //! Values set programmatically will override config file settings.
 
+// MIGRATION: Task 12 restores the world overlays over the new world
+#[cfg(any())]
 use crate::core::ecs::{Transform, Vec2, Velocity, World};
+#[cfg(any())]
 use crate::core::graphics::{Camera, GroupedCollider};
+#[cfg(any())]
 use crate::core::physics::{Collider, ColliderShape};
+#[cfg(any())]
 use crate::core::trail::{Line2D, TrailStyle};
 use crate::core::ui::{Color, UiContext};
 
@@ -394,6 +399,7 @@ pub mod colors {
 
 /// A debug shape in whole screen pixels, the unit both the pixel-buffer
 /// overlays and the GPU world path's lines are built from.
+#[cfg(any())] // MIGRATION: Task 12
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum OverlayShape {
   /// A one-pixel rectangle outline
@@ -407,9 +413,11 @@ enum OverlayShape {
 }
 
 /// Half the length of an origin crosshair arm, in pixels.
+#[cfg(any())] // MIGRATION: Task 12
 const CROSS_SIZE: i32 = 4;
 
 /// The collider outlines, `Collider` and `GroupedCollider` components both.
+#[cfg(any())] // MIGRATION: Task 12
 fn collider_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
   let mut shapes = Vec::new();
 
@@ -486,6 +494,7 @@ fn collider_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4]
 }
 
 /// The velocity vectors of moving entities.
+#[cfg(any())] // MIGRATION: Task 12
 fn velocity_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
   const VELOCITY_SCALE: f32 = 0.1; // Scale factor for visualizing velocity
 
@@ -520,6 +529,7 @@ fn velocity_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4]
 }
 
 /// The origin crosshairs of every entity with a `Transform`.
+#[cfg(any())] // MIGRATION: Task 12
 fn origin_shapes(world: &World, camera: &Camera) -> Vec<(OverlayShape, [u8; 4])> {
   let mut shapes = Vec::new();
   for entity in world.entities_with::<Transform>() {
@@ -549,6 +559,7 @@ pub(crate) struct OverlayFlags {
 /// The enabled debug overlays as unlit, one-pixel lines on top of everything,
 /// for the world passes. The lines use the `Soft` style: a
 /// pixel-wide `Solid` line is anti-aliased into a faint smear.
+#[cfg(any())] // MIGRATION: Task 12
 pub(crate) fn overlay_lines(world: &World, camera: &Camera, flags: OverlayFlags) -> Vec<Line2D> {
   let mut shapes = Vec::new();
   if flags.colliders {
@@ -756,243 +767,6 @@ pub fn render_stats(ui: &mut UiContext, stats: &SmoothedDebugStats, screen_heigh
     dim,
     bg,
   );
-}
-
-// ============================================================================
-// GPU Debug Overlay
-// ============================================================================
-
-use crate::core::graphics::{BatchCollector, SpriteGpuRenderer, SpriteInstance};
-use crate::core::ui::BitmapFont;
-
-/// Debug overlay texture ID constant
-pub const DEBUG_FONT_TEXTURE_ID: &str = "__debug_font__";
-
-/// Z-order for debug overlays (renders on top of everything)
-pub const DEBUG_OVERLAY_Z_ORDER: i32 = i32::MAX - 1000;
-
-/// Upload the debug font texture to GPU for overlay rendering.
-pub fn upload_debug_font(
-  font: &BitmapFont,
-  gpu: &mut SpriteGpuRenderer,
-  device: &wgpu::Device,
-  queue: &wgpu::Queue,
-) {
-  gpu.upload_texture(
-    device,
-    queue,
-    DEBUG_FONT_TEXTURE_ID,
-    font.atlas_width(),
-    font.atlas_height(),
-    font.atlas_data(),
-  );
-}
-
-/// Add text to the GPU batch collector for overlay rendering.
-///
-/// This renders text as GPU sprites, ensuring it appears on top of all game content.
-#[allow(clippy::too_many_arguments)]
-pub fn add_gpu_text(
-  batch: &mut BatchCollector,
-  font: &BitmapFont,
-  text: &str,
-  x: f32,
-  y: f32,
-  color: Color,
-) {
-  let char_w = font.char_width() as f32;
-  let char_h = font.char_height() as f32;
-
-  let mut cursor_x = x;
-
-  for ch in text.chars() {
-    if let Some((u_min, v_min, u_max, v_max)) = font.char_uv(ch) {
-      // Position is top-left corner of the glyph (consistent with particles demo)
-      let instance = SpriteInstance::new()
-        .with_transform(cursor_x, y, 0.0, char_w, char_h)
-        .with_uv(u_min, v_min, u_max, v_max)
-        .with_tint(color, 1.0);
-
-      batch.add(
-        DEBUG_FONT_TEXTURE_ID,
-        false,
-        instance,
-        DEBUG_OVERLAY_Z_ORDER,
-      );
-    }
-    cursor_x += char_w;
-  }
-}
-
-/// Add a filled rectangle background to the GPU batch.
-///
-/// Uses a 1x1 white pixel region from the font texture (if available)
-/// or just skips if not available.
-pub fn add_gpu_rect(
-  batch: &mut BatchCollector,
-  x: f32,
-  y: f32,
-  width: f32,
-  height: f32,
-  color: Color,
-) {
-  // Use a small region of the font texture as a "solid" pixel
-  // We'll use the very first pixel which should be background
-  // Position is top-left corner
-  let instance = SpriteInstance::new()
-    .with_transform(x, y, 0.0, width, height)
-    .with_uv(0.0, 0.0, 0.001, 0.001) // Tiny UV = single pixel sample
-    .with_tint(color, 1.0);
-
-  batch.add(
-    DEBUG_FONT_TEXTURE_ID,
-    false,
-    instance,
-    DEBUG_OVERLAY_Z_ORDER - 1,
-  ); // Behind text
-}
-
-/// Render FPS counter as GPU overlay (bottom-left).
-///
-/// When `frame_timing_below` is true, positions the FPS counter above the frame timing overlay.
-pub fn render_fps_counter_gpu(
-  batch: &mut BatchCollector,
-  font: &BitmapFont,
-  smoothed: &SmoothedFrameTimings,
-  _screen_width: f32,
-  screen_height: f32,
-  frame_timing_below: bool,
-) {
-  let text = format!("FPS: {}", smoothed.fps.round() as u32);
-  let char_h = font.char_height() as f32;
-  let line_height = char_h + 2.0;
-  let x = 4.0;
-
-  // Calculate offset if frame timing is below
-  let offset = if frame_timing_below {
-    line_height * 5.0 + 8.0 // Height of frame timing overlay
-  } else {
-    0.0
-  };
-  let y = screen_height - char_h - 8.0 - offset;
-
-  // Background
-  let text_width = font.text_width(&text) as f32;
-  add_gpu_rect(
-    batch,
-    x - 2.0,
-    y - 2.0,
-    text_width + 4.0,
-    char_h + 4.0,
-    Color::new(0, 0, 0, 180),
-  );
-
-  // Text
-  add_gpu_text(batch, font, &text, x, y, Color::WHITE);
-}
-
-/// Render frame timing breakdown as GPU overlay (bottom-left).
-pub fn render_frame_timing_gpu(
-  batch: &mut BatchCollector,
-  font: &BitmapFont,
-  smoothed: &SmoothedFrameTimings,
-  _screen_width: f32,
-  screen_height: f32,
-) {
-  let char_h = font.char_height() as f32;
-  let line_height = char_h + 2.0;
-  let x = 4.0;
-  let base_y = screen_height - (line_height * 5.0) - 8.0;
-
-  let lines = [
-    format!("Update:  {:5.2}ms", smoothed.update_ms),
-    format!("Render:  {:5.2}ms", smoothed.render_ms),
-    format!("Present: {:5.2}ms", smoothed.present_ms),
-    String::from(
-      "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-    ),
-    format!(
-      "Total:   {:5.2}ms ({} FPS)",
-      smoothed.total_ms,
-      smoothed.fps.round() as u32
-    ),
-  ];
-
-  // Calculate max width for background
-  let max_width = lines.iter().map(|l| font.text_width(l)).max().unwrap_or(0) as f32;
-
-  // Background
-  add_gpu_rect(
-    batch,
-    x - 2.0,
-    base_y - 2.0,
-    max_width + 4.0,
-    line_height * 5.0 + 4.0,
-    Color::new(0, 0, 0, 180),
-  );
-
-  // Lines
-  for (i, line) in lines.iter().enumerate() {
-    add_gpu_text(
-      batch,
-      font,
-      line,
-      x,
-      base_y + (i as f32 * line_height),
-      Color::WHITE,
-    );
-  }
-}
-
-/// Render debug stats as GPU overlay (bottom-left, above frame timing).
-pub fn render_stats_gpu(
-  batch: &mut BatchCollector,
-  font: &BitmapFont,
-  stats: &SmoothedDebugStats,
-  _screen_width: f32,
-  screen_height: f32,
-) {
-  let char_h = font.char_height() as f32;
-  let line_height = char_h + 2.0;
-  let x = 4.0;
-
-  // Position above frame timing only (FPS counter not shown when frame timing is visible)
-  let frame_timing_height = line_height * 5.0 + 8.0;
-  let base_y = screen_height - frame_timing_height - (line_height * 4.0) - 8.0;
-
-  let lines = [
-    format!("Entities: {:5}", stats.entity_count.round() as u32),
-    format!("Sprites:  {:5}", stats.sprite_count.round() as u32),
-    format!("Batches:  {:5}", stats.draw_calls.round() as u32),
-    String::from(
-      "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-    ),
-  ];
-
-  // Calculate max width for background
-  let max_width = lines.iter().map(|l| font.text_width(l)).max().unwrap_or(0) as f32;
-
-  // Background
-  add_gpu_rect(
-    batch,
-    x - 2.0,
-    base_y - 2.0,
-    max_width + 4.0,
-    line_height * 4.0 + 4.0,
-    Color::new(0, 0, 0, 180),
-  );
-
-  // Lines
-  for (i, line) in lines.iter().enumerate() {
-    add_gpu_text(
-      batch,
-      font,
-      line,
-      x,
-      base_y + (i as f32 * line_height),
-      Color::WHITE,
-    );
-  }
 }
 
 #[cfg(test)]

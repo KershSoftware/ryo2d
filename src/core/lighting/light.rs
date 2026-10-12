@@ -29,6 +29,7 @@
 //! ```
 
 use super::VolumetricSettings;
+use crate::core::ecs::Component;
 use crate::core::ui::Color;
 
 /// A 2D light source component.
@@ -36,7 +37,7 @@ use crate::core::ui::Color;
 /// Attach this to any entity with a `Transform` to add dynamic lighting.
 /// Lights are rendered additively to a light accumulation buffer, which
 /// is then multiplied with the scene.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Component, Debug, Clone, PartialEq)]
 pub enum Light2D {
   /// A point light that emits light in all directions
   Point {

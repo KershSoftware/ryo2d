@@ -65,7 +65,7 @@ mod tests {
     assert!(
       world
         .get::<Children>(p)
-        .is_some_and(|ch| ch.iter().any(|e| *e == c))
+        .is_some_and(|ch| ch.contains(&c))
     );
   }
 

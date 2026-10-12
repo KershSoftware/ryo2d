@@ -211,7 +211,7 @@ impl<T: Clone> InputBuffer<T> {
 
 use super::Channel;
 use crate::core::ecs::World;
-use crate::core::input::InputState;
+use crate::core::input::Input;
 use hecs::Entity;
 
 /// Trait for handling networked player input with client-side prediction.
@@ -234,7 +234,7 @@ use hecs::Entity;
 /// impl NetworkedInputHandler for LeapInputHandler {
 ///     type Input = LeapInput;
 ///
-///     fn gather_input(&self, state: &InputState, _dt: f32) -> Self::Input {
+///     fn gather_input(&self, state: &Input, _dt: f32) -> Self::Input {
 ///         LeapInput::builder()
 ///             .charging(state.key_held(Key::Space))
 ///             .facing_right(self.last_facing_right)
@@ -262,7 +262,7 @@ pub trait NetworkedInputHandler {
   /// Gather input from local input sources.
   ///
   /// Called each frame on the client to build the input struct.
-  fn gather_input(&self, state: &InputState, dt: f32) -> Self::Input;
+  fn gather_input(&self, state: &Input, dt: f32) -> Self::Input;
 
   /// Apply input to an entity.
   ///
@@ -327,7 +327,7 @@ impl<H: NetworkedInputHandler> InputProcessor<H> {
   pub fn process_client_frame(
     &mut self,
     world: &mut World,
-    input_state: &InputState,
+    input_state: &Input,
     dt: f32,
     current_time: f64,
   ) -> Option<SequencedInput<H::Input>> {
@@ -424,7 +424,7 @@ mod tests {
   impl NetworkedInputHandler for TestHandler {
     type Input = i32;
 
-    fn gather_input(&self, _state: &InputState, _dt: f32) -> Self::Input {
+    fn gather_input(&self, _state: &Input, _dt: f32) -> Self::Input {
       42
     }
 
@@ -453,7 +453,7 @@ mod tests {
       predict: true,
     };
     let mut processor = InputProcessor::new(handler, 64);
-    let input_state = InputState::default();
+    let input_state = Input::default();
 
     // Process a frame
     let result = processor.process_client_frame(&mut world, &input_state, 0.016, 0.0);
@@ -478,7 +478,7 @@ mod tests {
       predict: false,
     };
     let mut processor = InputProcessor::new(handler, 64);
-    let input_state = InputState::default();
+    let input_state = Input::default();
 
     // Process a frame
     let _ = processor.process_client_frame(&mut world, &input_state, 0.016, 0.0);
@@ -498,7 +498,7 @@ mod tests {
       predict: true,
     };
     let mut processor = InputProcessor::new(handler, 64);
-    let input_state = InputState::default();
+    let input_state = Input::default();
 
     // Process several frames
     for _ in 0..3 {
@@ -527,7 +527,7 @@ mod tests {
       predict: true,
     };
     let mut processor = InputProcessor::new(handler, 64);
-    let input_state = InputState::default();
+    let input_state = Input::default();
 
     // Process should return None when no entity
     let result = processor.process_client_frame(&mut world, &input_state, 0.016, 0.0);

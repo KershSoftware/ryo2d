@@ -1,14 +1,8 @@
-//! Simple Entity-Component-System (ECS) module
+//! Ryo2D's ECS: the kernel types plus the engine's own components.
 //!
-//! This module provides a thin wrapper around `hecs` with a simplified API.
-//! Key features:
-//!
-//! - **Generational entity IDs** - Prevents use-after-free bugs with despawned entities
-//! - **Archetype-based storage** - Cache-friendly iteration
-//! - **Thread-safe** - Components must be `Send + Sync`
-//! - **Hierarchy support** - Parent-child relationships with transform propagation
-//! - **Per-sprite shaders** - Material components for GPU effects
-//! - **Object pooling** - Pre-allocated entity pools for high-frequency spawning
+//! Everything a game needs is exported here (and from the prelude):
+//! `World`, `Entity`, `Query`, `Commands`, the derives, `Transform` and
+//! `GlobalTransform`, and the engine's components.
 
 pub mod interpolate;
 pub mod kernel;
@@ -17,35 +11,32 @@ pub mod propagate;
 pub mod transform;
 pub mod world_ext;
 
-mod active;
-mod component;
 mod components;
-mod hierarchy;
 mod knockback;
 mod lerp;
 mod material;
-mod pool;
 mod property_tween;
 mod renderable;
 mod sprite_effects;
 mod squash_stretch;
 mod tween;
-mod world;
 mod y_sort;
 
-pub use active::{Active, Inactive};
-pub use component::Component;
-pub use components::{Mat4, PreviousTransform, RenderLayer, Transform, Vec2, Vec3, Vec4, Velocity};
-pub use hecs::Entity;
-pub use hierarchy::{Children, Parent, WorldTransform};
+pub use glam::{Mat4, Vec2, Vec3, Vec4};
+
+pub use components::{RenderLayer, Velocity};
+pub use interpolate::{render_global, snapshot_previous_transforms};
+pub use kernel::*;
 pub use knockback::Knockback;
 pub use lerp::Lerp;
 pub use material::{Material, ParamValue, ShaderHandle, ShaderParams, SpriteShader};
-pub use pool::{Pool, PoolConfig, PoolExhaustedPolicy, PoolStats};
+pub use pooling::{Pool, PoolConfig, PoolExhaustedPolicy, PoolStats};
+pub use propagate::propagate_transforms;
 pub use property_tween::PropertyTween;
 pub use renderable::{BlobShadow, ContactShadow, DropShadow, RenderStyle, Renderable};
 pub use sprite_effects::SpriteEffect;
 pub use squash_stretch::{SquashAxis, SquashStretch};
+pub use transform::{Anchor, GlobalTransform, Interpolated, PreviousGlobalTransform, Transform};
 pub use tween::{Ease, Tween, TweenLoop, TweenSequence};
-pub use world::World;
+pub use world_ext::WorldExt;
 pub use y_sort::YSort;

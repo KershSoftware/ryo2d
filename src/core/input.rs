@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::KeyCode;
 
@@ -98,21 +98,51 @@ fn apply_deadzone(x: f32, y: f32) -> (f32, f32) {
 /// A window or gamepad event, applied at the next `begin_frame`.
 #[derive(Debug, Clone)]
 pub enum InputEvent {
-  Key { key: KeyCode, pressed: bool },
+  Key {
+    key: KeyCode,
+    pressed: bool,
+  },
   Text(String),
-  MouseButton { button: MouseButton, pressed: bool },
-  MouseMove { x: f64, y: f64 },
-  RawMouseMotion { dx: f64, dy: f64 },
+  MouseButton {
+    button: MouseButton,
+    pressed: bool,
+  },
+  MouseMove {
+    x: f64,
+    y: f64,
+  },
+  RawMouseMotion {
+    dx: f64,
+    dy: f64,
+  },
   Scroll(MouseScrollDelta),
   ImeEnabled,
   ImeDisabled,
-  ImePreedit { text: String, cursor: Option<(usize, usize)> },
+  ImePreedit {
+    text: String,
+    cursor: Option<(usize, usize)>,
+  },
   ImeCommit(String),
-  GamepadConnected { id: gilrs::GamepadId, name: String },
+  GamepadConnected {
+    id: gilrs::GamepadId,
+    name: String,
+  },
   GamepadDisconnected(gilrs::GamepadId),
-  GamepadButton { id: gilrs::GamepadId, button: gilrs::Button, pressed: bool },
-  GamepadTrigger { id: gilrs::GamepadId, button: gilrs::Button, value: f32 },
-  GamepadAxis { id: gilrs::GamepadId, axis: gilrs::Axis, value: f32 },
+  GamepadButton {
+    id: gilrs::GamepadId,
+    button: gilrs::Button,
+    pressed: bool,
+  },
+  GamepadTrigger {
+    id: gilrs::GamepadId,
+    button: gilrs::Button,
+    value: f32,
+  },
+  GamepadAxis {
+    id: gilrs::GamepadId,
+    axis: gilrs::Axis,
+    value: f32,
+  },
 }
 
 /// Input state for the frame, a resource and `SceneContext::input`.
@@ -198,9 +228,6 @@ pub struct Input {
   /// Input hidden from queries until `unblock` or the next frame
   block: InputBlock,
 }
-
-/// The old name of [`Input`].
-pub type InputState = Input;
 
 /// What `Input::block_pointer` / `block_all` hide
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -958,7 +985,12 @@ impl Input {
     }
   }
 
-  pub(crate) fn handle_gamepad_axis(&mut self, id: gilrs::GamepadId, axis: gilrs::Axis, value: f32) {
+  pub(crate) fn handle_gamepad_axis(
+    &mut self,
+    id: gilrs::GamepadId,
+    axis: gilrs::Axis,
+    value: f32,
+  ) {
     if self.gamepad_id != Some(id) {
       return;
     }
@@ -1024,7 +1056,7 @@ mod tests {
 
   #[test]
   fn key_down_tracks_held_keys() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
     assert!(input.key_down(KeyCode::KeyW));
@@ -1036,7 +1068,7 @@ mod tests {
 
   #[test]
   fn key_pressed_only_fires_once() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
     assert!(input.key_pressed(KeyCode::KeyW));
@@ -1053,7 +1085,7 @@ mod tests {
 
   #[test]
   fn key_released_fires_on_release() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
     input.handle_keyboard(KeyCode::KeyW, ElementState::Released);
@@ -1065,7 +1097,7 @@ mod tests {
 
   #[test]
   fn mouse_position_tracking() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     input.handle_mouse_move(100.0, 200.0);
     assert_eq!(input.mouse_position(), (100.0, 200.0));
@@ -1078,7 +1110,7 @@ mod tests {
 
   #[test]
   fn mouse_button_tracking() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
     assert!(input.mouse_down(MouseButton::Left));
@@ -1095,7 +1127,7 @@ mod tests {
 
   #[test]
   fn scroll_accumulates_within_frame() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     input.handle_scroll(MouseScrollDelta::LineDelta(1.0, 2.0));
     input.handle_scroll(MouseScrollDelta::LineDelta(0.5, 1.0));
@@ -1107,7 +1139,7 @@ mod tests {
 
   #[test]
   fn scroll_pixel_delta_conversion() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_scroll(MouseScrollDelta::PixelDelta(
       winit::dpi::PhysicalPosition::new(120.0, 240.0),
     ));
@@ -1116,7 +1148,7 @@ mod tests {
 
   #[test]
   fn mouse_x_y_getters() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_mouse_move(150.0, 250.0);
     assert_eq!(input.mouse_x(), 150.0);
     assert_eq!(input.mouse_y(), 250.0);
@@ -1124,7 +1156,7 @@ mod tests {
 
   #[test]
   fn mouse_delta_accumulates() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_mouse_move(10.0, 20.0);
     input.handle_mouse_move(15.0, 25.0);
     assert_eq!(input.mouse_delta(), (15.0, 25.0)); // Total delta from origin
@@ -1132,7 +1164,7 @@ mod tests {
 
   #[test]
   fn raw_mouse_motion_adds_to_delta() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_raw_mouse_motion(5.0, -3.0);
     assert_eq!(input.mouse_delta(), (5.0, -3.0));
 
@@ -1143,7 +1175,7 @@ mod tests {
 
   #[test]
   fn raw_mouse_motion_cleared_by_begin_frame() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_raw_mouse_motion(10.0, 20.0);
     assert_eq!(input.mouse_delta(), (10.0, 20.0));
 
@@ -1153,7 +1185,7 @@ mod tests {
 
   #[test]
   fn raw_mouse_motion_does_not_affect_position() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_mouse_move(100.0, 200.0); // set position
     input.begin_frame();
 
@@ -1165,7 +1197,7 @@ mod tests {
 
   #[test]
   fn begin_frame_clears_one_frame_events() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
     input.handle_keyboard(KeyCode::KeyA, ElementState::Released);
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
@@ -1195,7 +1227,7 @@ mod tests {
 
   #[test]
   fn mouse_button_no_repeat_registration() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
     assert!(input.mouse_pressed(MouseButton::Left));
 
@@ -1207,7 +1239,7 @@ mod tests {
 
   #[test]
   fn key_repeat_fires_on_initial_and_repeat() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Initial press - both key_pressed and key_repeat fire
     input.handle_keyboard(KeyCode::ArrowLeft, ElementState::Pressed);
@@ -1230,7 +1262,7 @@ mod tests {
 
   #[test]
   fn key_repeat_clears_each_frame() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     input.handle_keyboard(KeyCode::Backspace, ElementState::Pressed);
     assert!(input.key_repeat(KeyCode::Backspace));
@@ -1271,14 +1303,14 @@ mod tests {
 
   #[test]
   fn gamepad_not_connected_by_default() {
-    let input = InputState::new();
+    let input = Input::new();
     assert!(!input.gamepad_connected());
     assert!(input.gamepad_name().is_empty());
   }
 
   #[test]
   fn gamepad_stick_values_default_to_zero() {
-    let input = InputState::new();
+    let input = Input::new();
     assert_eq!(input.left_stick(), (0.0, 0.0));
     assert_eq!(input.right_stick(), (0.0, 0.0));
     assert_eq!(input.left_trigger(), 0.0);
@@ -1323,7 +1355,7 @@ mod tests {
 
   #[test]
   fn key_pressed_only_fires_once_across_multiple_updates() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Simulate: key pressed before frame starts
     input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
@@ -1356,7 +1388,7 @@ mod tests {
 
   #[test]
   fn key_down_persists_across_multiple_updates() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Simulate: key pressed and held
     input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
@@ -1387,7 +1419,7 @@ mod tests {
 
   #[test]
   fn mouse_pressed_persists_for_ui_rendering() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Simulate: mouse button pressed
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
@@ -1419,7 +1451,7 @@ mod tests {
 
   #[test]
   fn toggle_action_only_toggles_once_per_keypress() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     let mut is_paused = false;
 
     // Simulate: user presses Escape to toggle pause
@@ -1443,7 +1475,7 @@ mod tests {
 
   #[test]
   fn continuous_action_works_across_multiple_updates() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     let mut move_count = 0;
 
     // Simulate: user holds W key for movement
@@ -1467,7 +1499,7 @@ mod tests {
 
   #[test]
   fn key_released_only_fires_once_across_multiple_updates() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Press and release key
     input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
@@ -1490,7 +1522,7 @@ mod tests {
 
   #[test]
   fn consume_key_removes_specific_key_only() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Press multiple keys
     input.handle_keyboard(KeyCode::F1, ElementState::Pressed);
@@ -1517,7 +1549,7 @@ mod tests {
 
   #[test]
   fn key_pressed_and_consume_returns_true_and_consumes() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
 
     // First call returns true and consumes
@@ -1535,13 +1567,13 @@ mod tests {
 
   #[test]
   fn key_pressed_and_consume_returns_false_if_not_pressed() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     assert!(!input.key_pressed_and_consume(KeyCode::Escape));
   }
 
   #[test]
   fn consume_key_press_removes_without_return() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
 
     assert!(input.key_pressed(KeyCode::Space));
@@ -1551,7 +1583,7 @@ mod tests {
 
   #[test]
   fn mouse_pressed_and_consume_returns_true_and_consumes() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
 
     // First call returns true and consumes
@@ -1569,13 +1601,13 @@ mod tests {
 
   #[test]
   fn mouse_pressed_and_consume_returns_false_if_not_pressed() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     assert!(!input.mouse_pressed_and_consume(MouseButton::Right));
   }
 
   #[test]
   fn consume_mouse_press_removes_without_return() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
 
     assert!(input.mouse_pressed(MouseButton::Left));
@@ -1585,7 +1617,7 @@ mod tests {
 
   #[test]
   fn gamepad_button_pressed_and_consume_returns_true_and_consumes() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     // Manually insert a gamepad button press (since we can't easily simulate gilrs)
     input.gamepad_buttons_pressed.insert(GamepadButton::South);
     input.gamepad_buttons_down.insert(GamepadButton::South);
@@ -1605,7 +1637,7 @@ mod tests {
 
   #[test]
   fn consume_gamepad_button_press_removes_without_return() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.gamepad_buttons_pressed.insert(GamepadButton::East);
 
     assert!(input.gamepad_button_pressed(GamepadButton::East));
@@ -1615,7 +1647,7 @@ mod tests {
 
   #[test]
   fn consume_prevents_double_handling_pattern() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
 
     let mut menu_handled = false;
@@ -1647,7 +1679,7 @@ mod tests {
   /// 4. begin_frame() clears events -> key_pressed() returns false
   #[test]
   fn keyboard_events_persist_until_begin_frame() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Simulate key press event at start of frame
     input.handle_keyboard(KeyCode::KeyA, ElementState::Pressed);
@@ -1707,7 +1739,7 @@ mod tests {
 
   #[test]
   fn oneshot_suppression_blocks_pressed_events() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
     input.gamepad_buttons_pressed.insert(GamepadButton::South);
@@ -1721,7 +1753,7 @@ mod tests {
 
   #[test]
   fn oneshot_suppression_blocks_released_events() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
     input.handle_keyboard(KeyCode::Escape, ElementState::Released);
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
@@ -1737,7 +1769,7 @@ mod tests {
 
   #[test]
   fn oneshot_suppression_blocks_key_repeat() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::ArrowLeft, ElementState::Pressed);
 
     assert!(input.key_repeat(KeyCode::ArrowLeft));
@@ -1752,7 +1784,7 @@ mod tests {
 
   #[test]
   fn oneshot_suppression_blocks_text_input() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_text_input("hello");
 
     assert!(input.has_text_input());
@@ -1766,7 +1798,7 @@ mod tests {
 
   #[test]
   fn oneshot_suppression_does_not_affect_down_state() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
     input.gamepad_buttons_down.insert(GamepadButton::South);
@@ -1780,7 +1812,7 @@ mod tests {
 
   #[test]
   fn suppressed_and_consume_does_not_remove_event() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
     input.gamepad_buttons_pressed.insert(GamepadButton::South);
@@ -1801,7 +1833,7 @@ mod tests {
 
   #[test]
   fn unsuppress_restores_oneshot_visibility() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
 
     input.suppress_oneshots();
@@ -1813,7 +1845,7 @@ mod tests {
 
   #[test]
   fn begin_frame_resets_suppression() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.suppress_oneshots();
 
     input.begin_frame();
@@ -1825,7 +1857,7 @@ mod tests {
 
   #[test]
   fn fixed_timestep_simulation() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Simulate: key pressed before frame starts
     input.handle_keyboard(KeyCode::Escape, ElementState::Pressed);
@@ -1866,7 +1898,7 @@ mod tests {
 
   #[test]
   fn text_input_consumed_after_first_read() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_text_input("hello");
 
     // First read returns the text
@@ -1879,7 +1911,7 @@ mod tests {
 
   #[test]
   fn text_input_has_check_does_not_consume() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_text_input("x");
 
     // has_text_input should NOT consume
@@ -1895,7 +1927,7 @@ mod tests {
 
   #[test]
   fn empty_text_input_does_not_set_consumed() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Reading empty text should NOT set consumed flag
     assert_eq!(input.text_input(), "");
@@ -1910,7 +1942,7 @@ mod tests {
   /// text arriving on the next frame would be blocked.
   #[test]
   fn text_not_blocked_across_no_update_frames() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Frame 1 (update): no text input
     // render_ui: widget reads text_input (empty)
@@ -1934,7 +1966,7 @@ mod tests {
 
   #[test]
   fn consume_text_input_prevents_subsequent_reads() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_text_input("abc");
 
     // Explicitly consume
@@ -1947,7 +1979,7 @@ mod tests {
 
   #[test]
   fn text_input_consumed_resets_on_begin_frame() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_text_input("x");
     assert_eq!(input.text_input(), "x"); // consumed
 
@@ -1962,7 +1994,7 @@ mod tests {
   /// render_ui should NOT see the same text again.
   #[test]
   fn text_input_not_duplicated_across_update_and_render() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_text_input("1");
 
     // Game update() reads the text
@@ -1988,7 +2020,7 @@ mod tests {
   /// Result should be "1", not "11".
   #[test]
   fn ime_dedup_keyboard_then_commit() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // macOS event order: keyboard first, then IME commit
     input.handle_text_input("1");
@@ -2001,7 +2033,7 @@ mod tests {
   /// Result should be "1", not "11".
   #[test]
   fn ime_dedup_commit_then_keyboard() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Reverse order: IME commit first, then keyboard
     input.handle_ime_commit("1".to_string());
@@ -2013,7 +2045,7 @@ mod tests {
     // would clean it. Since no more commits come, we get "11" in this contrived order.
     // In practice on macOS, if IME commits first, ime_enabled=true blocks keyboard text.
     // Test the realistic case: with ime_enabled=true (as macOS sets it)
-    let mut input2 = InputState::new();
+    let mut input2 = Input::new();
     input2.handle_ime_enabled();
     input2.handle_ime_commit("1".to_string());
     input2.handle_text_input("1"); // blocked by ime_enabled
@@ -2025,7 +2057,7 @@ mod tests {
   /// Should produce "ab", not "aabb" or "ab" with dropped characters.
   #[test]
   fn ime_dedup_fast_typing_two_keys() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Fast typing: keyboard events for both keys, then IME commits for both
     input.handle_text_input("a");
@@ -2039,7 +2071,7 @@ mod tests {
   /// Fast typing with interleaved events (keyboard a, IME a, keyboard b, IME b).
   #[test]
   fn ime_dedup_fast_typing_interleaved() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     input.handle_text_input("a");
     input.handle_ime_commit("a".to_string());
@@ -2052,7 +2084,7 @@ mod tests {
   /// Windows with IME enabled: keyboard text is skipped, only IME commit matters.
   #[test]
   fn ime_windows_with_ime_enabled() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_ime_enabled();
 
     input.handle_text_input("1"); // skipped (ime_enabled)
@@ -2065,7 +2097,7 @@ mod tests {
   /// All keyboard text should be preserved.
   #[test]
   fn ime_windows_no_ime_fast_typing() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Pure keyboard input, no IME events at all
     input.handle_text_input("a");
@@ -2079,7 +2111,7 @@ mod tests {
   /// earlier in the same frame via keyboard events.
   #[test]
   fn ime_commit_preserves_prior_ime_text() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // First key arrived via IME (no keyboard duplicate)
     input.handle_ime_commit("a".to_string());
@@ -2096,7 +2128,7 @@ mod tests {
   /// doesn't interfere with the next frame's IME dedup.
   #[test]
   fn ime_dedup_resets_across_frames() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Frame 1: keyboard + IME
     input.handle_text_input("x");
@@ -2120,7 +2152,7 @@ mod tests {
   /// IME commit is blocked when Ctrl is held (e.g. Ctrl+V paste on Windows).
   #[test]
   fn ime_commit_blocked_when_ctrl_held() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::ControlLeft, ElementState::Pressed);
     input.handle_ime_commit("clipboard text".to_string());
 
@@ -2130,7 +2162,7 @@ mod tests {
   /// IME commit is blocked when Cmd/Super is held (e.g. Cmd+V on macOS).
   #[test]
   fn ime_commit_blocked_when_super_held() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::SuperLeft, ElementState::Pressed);
     input.handle_ime_commit("clipboard text".to_string());
 
@@ -2140,7 +2172,7 @@ mod tests {
   /// IME commit works normally when no modifier is held.
   #[test]
   fn ime_commit_allowed_without_modifiers() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_ime_commit("hello".to_string());
 
     assert_eq!(input.text_input(), "hello");
@@ -2149,7 +2181,7 @@ mod tests {
   /// IME commit works after Ctrl is released.
   #[test]
   fn ime_commit_allowed_after_ctrl_released() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::ControlLeft, ElementState::Pressed);
     input.handle_keyboard(KeyCode::ControlLeft, ElementState::Released);
     input.handle_ime_commit("hello".to_string());
@@ -2165,7 +2197,7 @@ mod tests {
 
   #[test]
   fn post_render_cleanup_clears_key_repeat() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::Backspace, ElementState::Pressed);
 
     assert!(input.key_repeat(KeyCode::Backspace));
@@ -2185,7 +2217,7 @@ mod tests {
   /// is not called (no-update frames at high fps).
   #[test]
   fn key_repeat_fires_once_across_no_update_frames() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Key pressed during event processing
     input.handle_keyboard(KeyCode::Backspace, ElementState::Pressed);
@@ -2215,7 +2247,7 @@ mod tests {
   /// Same test for arrow keys — they use key_repeat for cursor movement.
   #[test]
   fn arrow_key_repeat_fires_once_across_no_update_frames() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::ArrowLeft, ElementState::Pressed);
 
     // First render sees it
@@ -2232,7 +2264,7 @@ mod tests {
   /// When the OS sends a real key repeat (held key), it should fire again.
   #[test]
   fn held_key_repeat_fires_on_each_os_repeat_event() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::Backspace, ElementState::Pressed);
 
     // First render sees initial press
@@ -2259,7 +2291,7 @@ mod tests {
   /// and doesn't duplicate across the update/render boundary.
   #[test]
   fn full_frame_key_repeat_no_duplication() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     // Events arrive
     input.handle_keyboard(KeyCode::Backspace, ElementState::Pressed);
@@ -2301,7 +2333,7 @@ mod tests {
 
   #[test]
   fn block_pointer_hides_mouse_buttons_motion_and_scroll() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_mouse_move(40.0, 30.0);
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
     input.handle_mouse_button(MouseButton::Right, ElementState::Pressed);
@@ -2327,7 +2359,7 @@ mod tests {
 
   #[test]
   fn block_all_hides_keys_text_and_gamepad() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
     input.handle_keyboard(KeyCode::KeyS, ElementState::Pressed);
     input.handle_keyboard(KeyCode::KeyS, ElementState::Released);
@@ -2363,7 +2395,7 @@ mod tests {
 
   #[test]
   fn unblock_restores_input_that_blocked_consumes_left_alone() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
     input.handle_text_input("a");
@@ -2381,7 +2413,7 @@ mod tests {
 
   #[test]
   fn begin_frame_clears_an_input_block() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.block_all();
 
     input.begin_frame();

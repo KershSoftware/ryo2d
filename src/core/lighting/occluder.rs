@@ -26,13 +26,14 @@
 //! ));
 //! ```
 
+use crate::core::ecs::Component;
 use crate::core::ecs::Vec2;
 
 /// A light occluder component that blocks light and creates shadows.
 ///
 /// Occluders are defined as closed polygons. The vertices should be in
 /// counter-clockwise order for correct shadow casting.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Component, Debug, Clone, PartialEq)]
 pub struct LightOccluder2D {
   /// The vertices of the occluder polygon (local space, relative to entity transform)
   vertices: Vec<Vec2>,

@@ -162,6 +162,7 @@ use super::error::{NetworkError, NetworkResult};
 
 pub mod action;
 pub mod debug;
+mod error;
 pub mod input;
 pub mod prediction;
 pub mod replication;
@@ -171,6 +172,7 @@ pub mod transport;
 use transport::{ClientTransport, ServerTransport};
 
 // Re-export ClientId for convenience
+pub use error::{NetworkError, NetworkResult, ReplicationError, ReplicationResult};
 pub use renet::ClientId;
 
 // Re-export transport types

@@ -51,6 +51,7 @@
 //! or inline shader, it will be rendered via the GPU pipeline rather than
 //! CPU software rendering.
 
+use super::kernel::Component;
 use super::sprite_effects::SpriteEffect;
 use crate::core::ui::Color;
 use std::path::Path;
@@ -465,7 +466,7 @@ impl SpriteShader {
 ///
 /// If a `Renderable` has an inline shader AND the entity has a `Material`,
 /// the `Material` takes precedence (it's easier to swap/query).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Component, Debug, Clone, PartialEq)]
 pub struct Material {
   /// The shader to apply
   pub shader: SpriteShader,

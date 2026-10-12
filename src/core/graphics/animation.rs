@@ -35,6 +35,7 @@
 //! controller.set_state("walk");
 //! ```
 
+use crate::core::ecs::Component;
 use std::collections::HashMap;
 
 use crate::core::asset::SpriteHandle;
@@ -151,7 +152,7 @@ pub enum PlaybackState {
 ///
 /// Attach this to any entity with a [`Renderable`](crate::core::ecs::Renderable).
 /// The engine automatically updates the sprite each frame.
-#[derive(Clone)]
+#[derive(Component, Clone)]
 pub struct Animator {
   animation: Animation,
   current_frame: usize,
@@ -341,7 +342,7 @@ pub type AnimationId = &'static str;
 ///
 /// Use when you have multiple animation states (idle, walk, run, jump, attack)
 /// that need to transition between each other.
-#[derive(Clone, Default)]
+#[derive(Component, Clone, Default)]
 pub struct AnimationController {
   animations: HashMap<AnimationId, Animation>,
   current_state: Option<AnimationId>,
@@ -483,7 +484,7 @@ impl AnimationController {
 ///     anim.set_animation("hurt");  // Always allowed
 /// }
 /// ```
-#[derive(Clone)]
+#[derive(Component, Clone)]
 pub struct ValidatedAnimator {
   fsm: StateMachine<AnimationId>,
   controller: AnimationController,

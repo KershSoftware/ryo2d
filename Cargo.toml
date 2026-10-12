@@ -36,7 +36,6 @@ dirs = "6"
 flate2 = "1.1"
 glam = { version = "0.31", features = ["serde"] }
 bitflags = "2"
-hecs = { version = "0.11", features = ["macros"] }
 bevy_ecs = { version = "0.20", default-features = false, features = ["std", "backtrace"] }
 half = { version = "2", features = ["bytemuck"] }
 image = "0.25"

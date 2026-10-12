@@ -34,10 +34,9 @@ impl RenderPipeline {
   }
 
   /// The built-in passes, in the order `default_2d` runs them: `clear`,
-  /// `raycast`, `world`, `lighting`, `unlit_world`, `transition`,
-  /// `post_process`, `ui`, `composite`, `capture` (see
-  /// [`pass_ids`](super::pass_ids)). Each takes part in a frame only when its
-  /// content is there; `raycast` replaces the 2D world passes.
+  /// `world`, `lighting`, `unlit_world`, `transition`, `post_process`, `ui`,
+  /// `composite`, `capture` (see [`pass_ids`](super::pass_ids)). Each takes
+  /// part in a frame only when its content is there.
   ///
   /// `world` draws entities, sprites and lit trails and lines together in z
   /// order; `unlit_world` draws the trails and lines that skip lighting;

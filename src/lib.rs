@@ -43,6 +43,7 @@
 
 pub mod cli;
 pub mod core;
+pub use core::ecs;
 pub use core::testing;
 
 // Re-export puffin so that profile_scope!/profile_function! macros resolve
@@ -67,66 +68,54 @@ pub mod prelude {
   #[doc(hidden)]
   pub use crate::bevy_ecs;
 
-  // ECS kernel derives and system types (the rest arrives with the new World)
-  pub use crate::core::ecs::kernel::{
-    Added, Changed, Commands, Component, Event, Message, Query, Res, ResMut, Resource,
-    ScheduleLabel, SystemSet, With, Without,
-  };
+  // ECS: the kernel, Transform, the engine's components and glam's math types
+  pub use crate::core::ecs::*;
 
   // Core game types
-  pub use crate::core::game::{GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
+  // MIGRATION: Task 13 (WindowRequest moves to core::window; TimeControl and TimeInfo are gone)
+  // pub use crate::core::game::{TimeControl, TimeInfo, WindowRequest};
 
   // Scene management
-  pub use crate::core::scene::{
-    Scene, SceneAction, SceneCleanup, SceneContext, SceneManager, SlideDirection, Transition,
-    downcast_return,
-  };
-
-  // Resources
-  pub use crate::core::resources::Resources;
+  // MIGRATION: Task 10
+  // pub use crate::core::scene::{
+  //   Scene, SceneAction, SceneCleanup, SceneContext, SceneManager, SlideDirection, Transition,
+  //   downcast_return,
+  // };
 
   // Engine builder
-  pub use crate::core::engine::{EngineBuilder, WindowMode};
+  // MIGRATION: Task 13
+  // pub use crate::core::engine::{EngineBuilder, WindowMode};
 
-  // ECS types
-  pub use crate::core::ecs::{
-    Active, BlobShadow, Children, ContactShadow, DropShadow, Ease, Entity, Inactive, Knockback,
-    Lerp, Material, ParamValue, Parent, Pool, PoolConfig, PoolExhaustedPolicy, PoolStats,
-    PreviousTransform, PropertyTween, RenderLayer, RenderStyle, Renderable, ShaderHandle,
-    ShaderParams, SpriteEffect, SpriteShader, SquashAxis, SquashStretch, Transform, Tween,
-    TweenLoop, TweenSequence, Velocity, World, WorldTransform, YSort,
-  };
-
-  // Math types (from glam)
-  pub use crate::core::ecs::{Mat4, Vec2, Vec3, Vec4};
-
-  // Event Bus
-  pub use crate::core::events::{
-    AssetLoadFailed, AssetReloaded, ClientConnected, ClientDisconnected, CollisionStarted,
-    CollisionStopped, ConnectedToServer, DisconnectReason, DisconnectedFromServer, Events,
-    InventoryChanged, ItemDropped, ItemEquipped, ItemPickedUp, ItemUnequipped, KnockbackFinished,
-    KnockbackStarted, SquashStretchFinished, SquashStretchStarted, StateChanged,
+  // Engine messages
+  pub use crate::core::messages::{
+    AssetLoadFailed, AssetReloaded, CollisionStarted, CollisionStopped, KnockbackFinished,
+    KnockbackStarted, SquashStretchFinished, SquashStretchStarted, TweenCompleted, TweenStarted,
   };
 
   // Physics components
-  pub use crate::core::physics::{PhysicsConfig, RigidBody};
+  // MIGRATION: Task 12
+  // pub use crate::core::physics::{PhysicsConfig, RigidBody};
 
   // Physics events (from Rapier integration)
-  pub use crate::core::physics::{CollisionEventType, PhysicsCollisionEvent};
+  // MIGRATION: Task 12
+  // pub use crate::core::physics::{CollisionEventType, PhysicsCollisionEvent};
 
   // Collision shapes
-  pub use crate::core::physics::{
-    AABB, Circle, Collider, ColliderShape, Collision, check_collision,
-  };
+  // MIGRATION: Task 12
+  // pub use crate::core::physics::{
+  //   AABB, Circle, Collider, ColliderShape, Collision, check_collision,
+  // };
 
   // Spatial partitioning
-  pub use crate::core::physics::{CollisionPair, CollisionResult, PhysicsWorld, SpatialHash};
+  // MIGRATION: Task 12
+  // pub use crate::core::physics::{CollisionPair, CollisionResult, PhysicsWorld, SpatialHash};
 
   // Rapier physics world
-  pub use crate::core::physics::RapierPhysicsWorld;
+  // MIGRATION: Task 12
+  // pub use crate::core::physics::RapierPhysicsWorld;
 
   // Graphics
-  pub use crate::core::graphics::{AnimatedSprite, Sprite};
+  pub use crate::core::graphics::{AnimatedSprite, GpuRenderContext, Sprite};
 
   // Tiled rendering
   pub use crate::core::graphics::{
@@ -153,7 +142,7 @@ pub mod prelude {
 
   // Input (re-export KeyCode for convenience)
   pub use crate::core::cursor::CursorStyle;
-  pub use crate::core::input::{GamepadButton, InputState};
+  pub use crate::core::input::{GamepadButton, Input};
   pub use winit::event::MouseButton;
   pub use winit::keyboard::KeyCode;
 
@@ -163,33 +152,38 @@ pub mod prelude {
   };
 
   // Networking
-  pub use crate::core::network::{
-    Channel, ClientId, ClientLike, LOCAL_HOST_ID, ListenServer, NetworkClient, NetworkClientConfig,
-    NetworkEvent, NetworkServer, NetworkServerConfig, ServerLike, TransportConfig,
-  };
+  // MIGRATION: Task 17
+  // pub use crate::core::network::{
+  //   Channel, ClientId, ClientLike, LOCAL_HOST_ID, ListenServer, NetworkClient, NetworkClientConfig,
+  //   NetworkEvent, NetworkServer, NetworkServerConfig, ServerLike, TransportConfig,
+  // };
 
   // WebRTC transport (requires `matchbox` feature)
-  #[cfg(feature = "matchbox")]
-  pub use crate::core::network::{IceServer, WebRtcConfig};
+  // MIGRATION: Task 17
+  // #[cfg(feature = "matchbox")]
+  // pub use crate::core::network::{IceServer, WebRtcConfig};
 
   // Network Replication
-  pub use crate::core::network::replication::{
-    Authority, ComponentBatchMessage, ComponentRegistry, ComponentTypeId, ComponentUpdateMessage,
-    DespawnEntityMessage, DirtyTracker, FullStateSyncMessage, NetworkEntity, NetworkEntityBuilder,
-    NetworkId, Replicated, ReplicationManager, ReplicationMessage, SerializedComponent,
-    SpawnEntityMessage,
-  };
+  // MIGRATION: Task 17
+  // pub use crate::core::network::replication::{
+  //   Authority, ComponentBatchMessage, ComponentRegistry, ComponentTypeId, ComponentUpdateMessage,
+  //   DespawnEntityMessage, DirtyTracker, FullStateSyncMessage, NetworkEntity, NetworkEntityBuilder,
+  //   NetworkId, Replicated, ReplicationManager, ReplicationMessage, SerializedComponent,
+  //   SpawnEntityMessage,
+  // };
 
   // RPC System
-  pub use crate::core::network::rpc::{
-    ReceivedRpc, Rpc, RpcRegistry, RpcTarget, RpcTypeId, SerializedRpc,
-  };
+  // MIGRATION: Task 17
+  // pub use crate::core::network::rpc::{
+  //   ReceivedRpc, Rpc, RpcRegistry, RpcTarget, RpcTypeId, SerializedRpc,
+  // };
 
   // Network Input (derive macro + helpers)
-  pub use crate::core::network::input::{
-    InputBuffer, InputProcessor, NetworkInput, NetworkInputTrait, NetworkedInputHandler,
-    SequencedInput,
-  };
+  // MIGRATION: Task 17
+  // pub use crate::core::network::input::{
+  //   InputBuffer, InputProcessor, NetworkInput, NetworkInputTrait, NetworkedInputHandler,
+  //   SequencedInput,
+  // };
 
   // Render pipeline
   pub use crate::core::render::{
@@ -197,18 +191,21 @@ pub mod prelude {
   };
 
   // Network Actions (dual local+network execution)
-  pub use crate::core::network::action::{
-    ActionContext, ActionError, NetworkAction, SerializedAction, apply_received_action,
-    execute_action, execute_action_broadcast, execute_action_server, try_execute_action,
-  };
+  // MIGRATION: Task 17
+  // pub use crate::core::network::action::{
+  //   ActionContext, ActionError, NetworkAction, SerializedAction, apply_received_action,
+  //   execute_action, execute_action_broadcast, execute_action_server, try_execute_action,
+  // };
 
   // Client-Side Prediction
-  pub use crate::core::network::prediction::{
-    Predicted, PredictionHelper, ServerPositionUpdate, UpdateResult,
-  };
+  // MIGRATION: Task 17
+  // pub use crate::core::network::prediction::{
+  //   Predicted, PredictionHelper, ServerPositionUpdate, UpdateResult,
+  // };
 
   // NetworkedValue wrapper
-  pub use crate::core::network::replication::NetworkedValue;
+  // MIGRATION: Task 17
+  // pub use crate::core::network::replication::NetworkedValue;
 
   // Workspace & config
   pub use crate::core::config::{SystemDefaults, Workspace, WorkspaceConfig};
@@ -243,31 +240,35 @@ pub mod prelude {
   };
 
   // Skeletal animation
-  pub use crate::core::skeleton::{
-    BoneDef, BoneTransform, BoneWorldTransform, Pose, SkeletalAnimation, SkeletalAnimator,
-    SkeletalBlender, SkeletalController, Skeleton, SkeletonDef, skeleton_debug_lines,
-  };
+  // MIGRATION: Task 16
+  // pub use crate::core::skeleton::{
+  //   BoneDef, BoneTransform, BoneWorldTransform, Pose, SkeletalAnimation, SkeletalAnimator,
+  //   SkeletalBlender, SkeletalController, Skeleton, SkeletonDef, skeleton_debug_lines,
+  // };
 
   // Particle system
-  pub use crate::core::particles::{
-    AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape,
-    MIN_BOUNCE_EVENT_SPEED, ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem,
-  };
+  // MIGRATION: Task 16
+  // pub use crate::core::particles::{
+  //   AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape,
+  //   MIN_BOUNCE_EVENT_SPEED, ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem,
+  // };
 
   // Tilemap system
-  pub use crate::core::tilemap::{
-    AutoTileMode, AutoTileSet, ChunkCoord, ChunkState, CollisionRect, TileAnimation, TileId,
-    TileProperties, TiledObject, TiledShape, TiledValue, Tilemap, TilemapError, TilemapLayer,
-    TilemapManager, TilemapOrientation, Tileset, compute_bitmask_full, compute_bitmask_minimal,
-    generate_collision_rects, generate_collision_rects_region, load_tiled_map,
-  };
+  // MIGRATION: Task 16
+  // pub use crate::core::tilemap::{
+  //   AutoTileMode, AutoTileSet, ChunkCoord, ChunkState, CollisionRect, TileAnimation, TileId,
+  //   TileProperties, TiledObject, TiledShape, TiledValue, Tilemap, TilemapError, TilemapLayer,
+  //   TilemapManager, TilemapOrientation, Tileset, compute_bitmask_full, compute_bitmask_minimal,
+  //   generate_collision_rects, generate_collision_rects_region, load_tiled_map,
+  // };
 
   // Raycasting (pseudo-3D)
-  pub use crate::core::raycast::{
-    CameraUniform, DoorSpeed, DoorState, GpuRaycastRenderer, MapCell, MapFlags, MapInfoUniform,
-    RaycastCamera, RaycastDoor, RaycastLight, RaycastSprite, RaycastWorld, camera_follow_system,
-    door_system,
-  };
+  // MIGRATION: Task 20 (parked)
+  // pub use crate::core::raycast::{
+  //   CameraUniform, DoorSpeed, DoorState, GpuRaycastRenderer, MapCell, MapFlags, MapInfoUniform,
+  //   RaycastCamera, RaycastDoor, RaycastLight, RaycastSprite, RaycastWorld, camera_follow_system,
+  //   door_system,
+  // };
 
   // Texture management
   pub use crate::core::texture::{
@@ -280,16 +281,17 @@ pub mod prelude {
   // Error types (centralized)
   pub use crate::core::error::{
     AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,
-    HotReloadResult, InventoryError, InventoryResult, NetworkError, NetworkResult,
-    ReplicationError, ReplicationResult, SaveError, SaveResult, SpriteError, SpriteResult,
+    HotReloadResult, InventoryError, InventoryResult, SaveError, SaveResult, SpriteError,
+    SpriteResult,
   };
 
   // Navigation & Pathfinding
-  pub use crate::core::navigation::{
-    CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder, NavigationGrid,
-    Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode, PathResult,
-    PathSmoothing, PathStarted, Pathfinder, PathfinderConfig, steering,
-  };
+  // MIGRATION: Task 16
+  // pub use crate::core::navigation::{
+  //   CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder, NavigationGrid,
+  //   Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode, PathResult,
+  //   PathSmoothing, PathStarted, Pathfinder, PathfinderConfig, steering,
+  // };
 
   // Procedural Generation
   pub use crate::core::procgen::{
@@ -302,10 +304,11 @@ pub mod prelude {
   };
 
   // Inventory & Item System
-  pub use crate::core::inventory::{
-    EquipValidator, Equipment, Inventory, ItemData, ItemDrop, ItemId, ItemRegistry, ItemStack,
-    ItemTemplate, ItemTemplateBuilder, LootEntry, LootTable, pickup_item, spawn_item_drop,
-  };
+  // MIGRATION: Task 19
+  // pub use crate::core::inventory::{
+  //   EquipValidator, Equipment, Inventory, ItemData, ItemDrop, ItemId, ItemRegistry, ItemStack,
+  //   ItemTemplate, ItemTemplateBuilder, LootEntry, LootTable, pickup_item, spawn_item_drop,
+  // };
 
   // State Machines
   pub use crate::core::state_machine::{

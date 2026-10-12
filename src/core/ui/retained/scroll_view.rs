@@ -22,7 +22,7 @@
 //! });
 //! ```
 
-use crate::core::input::InputState;
+use crate::core::input::Input;
 
 /// State for a scroll view widget.
 ///
@@ -122,7 +122,7 @@ impl ScrollViewState {
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn handle_input(
     &mut self,
-    input: &InputState,
+    input: &Input,
     view_height: f32,
     content_height: f32,
     hovered: bool,
@@ -232,7 +232,7 @@ impl ScrollViewState {
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn handle_input_horizontal(
     &mut self,
-    input: &InputState,
+    input: &Input,
     view_width: f32,
     content_width: f32,
     hovered: bool,

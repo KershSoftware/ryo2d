@@ -4,7 +4,7 @@
 
 use super::{Line2D, LineCap, LineJoin, TextureMode, Trail2D, TrailEffect, TrailPoint};
 use crate::core::asset::SpriteHandle;
-use crate::core::ecs::{Transform, Vec2};
+use crate::core::ecs::Vec2;
 use crate::core::ui::Color;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -574,14 +574,14 @@ impl TrailRenderer {
   ///
   /// The trail's points are converted to triangle strip vertices.
   /// If the trail has a texture, it will be rendered with texture mapping.
-  pub fn add_trail(&mut self, trail: &Trail2D, transform: &Transform) {
+  pub fn add_trail(&mut self, trail: &Trail2D) {
     self.add_in_group(trail.lighting(), trail.z_order(), |renderer| {
-      renderer.push_trail(trail, transform)
+      renderer.push_trail(trail)
     });
   }
 
   /// Build a trail's geometry into the current (lit or unlit) group.
-  fn push_trail(&mut self, trail: &Trail2D, _transform: &Transform) {
+  fn push_trail(&mut self, trail: &Trail2D) {
     if !self.enabled || !trail.is_visible() || trail.point_count() < 2 {
       return;
     }
@@ -952,10 +952,9 @@ impl TrailRenderer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     trail: &Trail2D,
-    transform: &Transform,
   ) {
     self.add_in_group(trail.lighting(), trail.z_order(), |renderer| {
-      renderer.push_trail_with_device(device, queue, trail, transform)
+      renderer.push_trail_with_device(device, queue, trail)
     });
   }
 
@@ -964,7 +963,6 @@ impl TrailRenderer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     trail: &Trail2D,
-    transform: &Transform,
   ) {
     if !self.enabled || !trail.is_visible() || trail.point_count() < 2 {
       return;
@@ -976,7 +974,7 @@ impl TrailRenderer {
       let batch_index = self.textured_batches.len();
 
       // Add the trail vertices
-      self.push_trail(trail, transform);
+      self.push_trail(trail);
 
       // Update the batch with the correct sprite_id
       if batch_index < self.textured_batches.len() {
@@ -984,18 +982,19 @@ impl TrailRenderer {
       }
     } else {
       // No texture, use regular add_trail
-      self.push_trail(trail, transform);
+      self.push_trail(trail);
     }
   }
 
   /// Add a line to be rendered.
-  pub fn add_line(&mut self, line: &Line2D, offset_x: f32, offset_y: f32) {
+  pub fn add_line(&mut self, line: &Line2D, offset: Vec2) {
     self.add_in_group(line.lighting(), line.z_order(), |renderer| {
-      renderer.push_line(line, offset_x, offset_y)
+      renderer.push_line(line, offset)
     });
   }
 
-  fn push_line(&mut self, line: &Line2D, offset_x: f32, offset_y: f32) {
+  fn push_line(&mut self, line: &Line2D, offset: Vec2) {
+    let (offset_x, offset_y) = (offset.x, offset.y);
     if !self.enabled || !line.is_visible() || line.point_count() < 2 {
       return;
     }

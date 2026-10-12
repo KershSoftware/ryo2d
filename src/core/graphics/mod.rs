@@ -13,6 +13,7 @@ pub mod animation;
 mod atlas;
 pub mod camera;
 mod compositor;
+mod gpu_context;
 pub mod parallax;
 pub mod parallax_gpu;
 pub mod renderer;
@@ -26,6 +27,7 @@ pub use animation::{
 pub(crate) use atlas::{AtlasKey, AtlasSlot, SlotPage, TextureAtlas};
 pub use camera::{Camera, CameraBounds};
 pub(crate) use compositor::{Compositor, Viewport};
+pub use gpu_context::GpuRenderContext;
 pub use parallax::TileMode;
 pub use parallax_gpu::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
 pub use renderer::WgpuRenderer;

@@ -164,10 +164,7 @@ mod tests {
     world.clear_trackers();
     s.run(&mut world);
     let b_ref = world.entity(b).get_ref::<GlobalTransform>().unwrap();
-    assert!(
-      !b_ref.is_changed(),
-      "nothing moved, so nothing was written"
-    );
+    assert!(!b_ref.is_changed(), "nothing moved, so nothing was written");
     world.get_mut::<Transform>(a).unwrap().translation.x = 5.0;
     s.run(&mut world);
     assert!(close(global(&world, b).translation(), Vec2::new(6.0, 0.0)));
@@ -194,7 +191,10 @@ mod tests {
       .spawn((Transform::from_xy(7.0, 8.0), ChildOf(group)))
       .id();
     schedule().run(&mut world);
-    assert!(close(global(&world, child).translation(), Vec2::new(7.0, 8.0)));
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(7.0, 8.0)
+    ));
   }
 
   #[test]

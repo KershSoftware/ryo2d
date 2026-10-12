@@ -46,7 +46,7 @@ pub use commands::{
 use std::collections::VecDeque;
 
 use super::cursor::CursorStyle;
-use super::input::InputState;
+use super::input::Input;
 use super::ui::{Color, Rect, UiContext};
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
@@ -488,7 +488,7 @@ impl ConsoleState {
   ///
   /// Returns Some(command) if a command was submitted, None otherwise.
   /// Also handles focus changes - clicking outside unfocuses, clicking inside focuses.
-  pub fn handle_input(&mut self, input: &mut InputState) -> Option<String> {
+  pub fn handle_input(&mut self, input: &mut Input) -> Option<String> {
     if !self.visible {
       return None;
     }

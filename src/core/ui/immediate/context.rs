@@ -22,7 +22,7 @@
 
 use winit::event::MouseButton;
 
-use crate::core::input::InputState;
+use crate::core::input::Input;
 
 use super::font::BitmapFont;
 use crate::core::ui::retained::{DropdownState, Focusable, ScrollViewState, TextInputState};
@@ -74,7 +74,7 @@ pub struct UiContext<'a> {
   /// Frame height in pixels
   frame_height: u32,
   /// Current input state (for click detection)
-  input: &'a InputState,
+  input: &'a Input,
   /// Font for text rendering
   font: &'a BitmapFont,
   /// Optional theme for styled widgets
@@ -110,7 +110,7 @@ impl<'a> UiContext<'a> {
     frame: &'a mut [u8],
     frame_width: u32,
     frame_height: u32,
-    input: &'a InputState,
+    input: &'a Input,
     font: &'a BitmapFont,
   ) -> Self {
     Self {
@@ -141,7 +141,7 @@ impl<'a> UiContext<'a> {
     frame: &'a mut [u8],
     frame_width: u32,
     frame_height: u32,
-    input: &'a InputState,
+    input: &'a Input,
     font: &'a BitmapFont,
     ui_scale: u32,
   ) -> Self {
@@ -170,7 +170,7 @@ impl<'a> UiContext<'a> {
     frame: &'a mut [u8],
     frame_width: u32,
     frame_height: u32,
-    input: &'a InputState,
+    input: &'a Input,
     font: &'a BitmapFont,
     theme: &'a Theme,
   ) -> Self {
@@ -199,7 +199,7 @@ impl<'a> UiContext<'a> {
     frame: &'a mut [u8],
     frame_width: u32,
     frame_height: u32,
-    input: &'a InputState,
+    input: &'a Input,
     font: &'a BitmapFont,
     theme: &'a Theme,
     ui_scale: u32,
@@ -2353,9 +2353,9 @@ mod tests {
   use winit::event::ElementState;
 
   fn create_test_context(width: u32, height: u32, frame: &mut [u8]) -> UiContext<'_> {
-    let input = InputState::new();
+    let input = Input::new();
     // Leak the input to get a static reference for testing
-    let input_ref: &'static InputState = Box::leak(Box::new(input));
+    let input_ref: &'static Input = Box::leak(Box::new(input));
     let font = super::super::font::create_debug_font();
     let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
 
@@ -2524,10 +2524,10 @@ mod tests {
     click_x: f32,
     click_y: f32,
   ) -> UiContext<'_> {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_mouse_move(click_x as f64, click_y as f64);
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
-    let input_ref: &'static InputState = Box::leak(Box::new(input));
+    let input_ref: &'static Input = Box::leak(Box::new(input));
     let font = super::super::font::create_debug_font();
     let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
     UiContext::new(frame, width, height, input_ref, font_ref)
@@ -2713,8 +2713,8 @@ mod tests {
     frame: &mut [u8],
     scale: u32,
   ) -> UiContext<'_> {
-    let input = InputState::new();
-    let input_ref: &'static InputState = Box::leak(Box::new(input));
+    let input = Input::new();
+    let input_ref: &'static Input = Box::leak(Box::new(input));
     let font = super::super::font::create_debug_font();
     let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
 
@@ -2807,9 +2807,9 @@ mod tests {
     hover_x: f32,
     hover_y: f32,
   ) -> UiContext<'_> {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_mouse_move(hover_x as f64, hover_y as f64);
-    let input_ref: &'static InputState = Box::leak(Box::new(input));
+    let input_ref: &'static Input = Box::leak(Box::new(input));
     let font = super::super::font::create_debug_font();
     let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
     UiContext::new(frame, width, height, input_ref, font_ref)
@@ -2923,12 +2923,12 @@ mod tests {
 
   #[test]
   fn escape_leaves_a_focused_text_input_and_is_consumed() {
-    let mut input = InputState::new();
+    let mut input = Input::new();
     input.handle_keyboard(
       winit::keyboard::KeyCode::Escape,
       winit::event::ElementState::Pressed,
     );
-    let input: &'static InputState = Box::leak(Box::new(input));
+    let input: &'static Input = Box::leak(Box::new(input));
     let font: &'static BitmapFont = Box::leak(Box::new(super::super::font::create_debug_font()));
     let mut frame = vec![0u8; 200 * 100 * 4];
     let mut ui = UiContext::new(&mut frame, 200, 100, input, font);

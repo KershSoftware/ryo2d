@@ -1,13 +1,12 @@
 //! The built-in passes of [`RenderPipeline::default_2d`](super::RenderPipeline::default_2d)
 //!
 //! Each pass is thin: the GPU pipelines live in the subsystem renderers
-//! (sprites, trails, lighting, post-process, raycaster, compositor) and a pass
+//! (sprites, trails, lighting, post-process, compositor) and a pass
 //! calls into one of them with the frame's targets and scene data.
 
 mod lighting;
 mod output;
 mod post_process;
-mod raycast;
 mod scene;
 mod transition;
 mod world;
@@ -15,10 +14,9 @@ mod world;
 use super::RenderPass;
 
 /// The built-in passes, in `default_2d` order.
-pub(crate) fn built_in() -> [Box<dyn RenderPass>; 10] {
+pub(crate) fn built_in() -> [Box<dyn RenderPass>; 9] {
   [
     Box::new(scene::Clear),
-    Box::new(raycast::Raycast),
     Box::new(world::World),
     Box::new(lighting::Lighting),
     Box::new(world::UnlitWorld),

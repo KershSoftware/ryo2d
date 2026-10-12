@@ -32,7 +32,8 @@
 
 mod context;
 mod draw_list;
-mod entities;
+// MIGRATION: Task 13
+// mod entities;
 mod frame;
 mod pass;
 mod passes;
@@ -43,7 +44,8 @@ pub use context::RenderContext;
 pub(crate) use draw_list::{
   DrawKind, DrawList, DrawPayload, PipelineKind, SpriteShading, TextureRef, WorldRun, plan_runs,
 };
-pub(crate) use entities::{DrawOrder, EntityDrawer, EntityFrame};
+// MIGRATION: Task 13
+// pub(crate) use entities::{DrawOrder, EntityDrawer, EntityFrame};
 pub use frame::FrameInfo;
 pub(crate) use frame::{FrameImage, FrameScene, LightingFrame, TRANSITION_VISIBLE};
 pub use pass::RenderPass;
@@ -53,8 +55,6 @@ pub use pipeline::{RenderPipeline, RenderPipelineError};
 pub mod pass_ids {
   /// Game texture clear
   pub const CLEAR: &str = "clear";
-  /// GPU raycaster (replaces the 2D world passes while raycasting)
-  pub const RAYCAST: &str = "raycast";
   /// Entities, sprites and lit trails and lines, drawn together in z order
   pub const WORLD: &str = "world";
   /// 2D lighting

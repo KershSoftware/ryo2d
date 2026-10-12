@@ -1,6 +1,6 @@
 //! 2D lighting: lights, shadows, then the lit scene
 
-use crate::core::ecs::Transform;
+use crate::core::ecs::GlobalTransform;
 use crate::core::lighting::{LightOccluder2D, generate_shadow_geometry};
 use crate::core::render::{FrameImage, FrameInfo, RenderContext, RenderPass, pass_ids};
 
@@ -14,7 +14,7 @@ impl RenderPass for Lighting {
   }
 
   fn should_run(&self, frame: &FrameInfo) -> bool {
-    !frame.raycast && frame.lighting
+    frame.lighting
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
@@ -30,7 +30,7 @@ impl RenderPass for Lighting {
       return;
     };
     let lights = lighting.lights;
-    let light_refs = || lights.iter().map(|(transform, light)| (transform, light));
+    let light_refs = || lights.iter().map(|(position, light)| (position, light));
 
     lighting.renderer.render_lights(
       device,
@@ -44,7 +44,7 @@ impl RenderPass for Lighting {
     // Shadows subtract from the light buffer
     let casts_shadows = lights.iter().any(|(_, light)| light.casts_shadows());
     if casts_shadows && !lighting.occluders.is_empty() {
-      let occluders: Vec<(&Transform, &LightOccluder2D)> = lighting
+      let occluders: Vec<(&GlobalTransform, &LightOccluder2D)> = lighting
         .occluders
         .iter()
         .map(|(transform, occluder)| (transform, occluder))

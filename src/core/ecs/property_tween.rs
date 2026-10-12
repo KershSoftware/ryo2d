@@ -23,6 +23,7 @@
 //!     .with_loop(TweenLoop::PingPong);
 //! ```
 
+use super::kernel::Component;
 use std::sync::Arc;
 
 use super::lerp::Lerp;
@@ -35,6 +36,7 @@ use super::tween::{Ease, TweenCallback, TweenLoop};
 ///
 /// Create with [`PropertyTween::new`] and advance each frame with [`PropertyTween::update`].
 /// Read the interpolated value with [`PropertyTween::value`].
+#[derive(Component)]
 pub struct PropertyTween<T: Lerp> {
   start: T,
   end: T,

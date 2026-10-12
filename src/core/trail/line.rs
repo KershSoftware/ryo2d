@@ -30,6 +30,7 @@
 //! ```
 
 use super::{LineCap, LineJoin, TrailStyle};
+use crate::core::ecs::Component;
 use crate::core::ecs::Vec2;
 use crate::core::ui::Color;
 
@@ -37,7 +38,7 @@ use crate::core::ui::Color;
 ///
 /// Unlike trails which automatically record position history,
 /// lines have explicitly defined points that you control.
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct Line2D {
   /// The points that make up the line (in local/world space)
   points: Vec<Vec2>,

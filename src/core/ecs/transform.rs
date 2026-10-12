@@ -277,7 +277,10 @@ mod tests {
         .with_rotation(FRAC_PI_2)
         .with_uniform_scale(2.0),
     );
-    assert!(close(g.transform_point(Vec2::new(1.0, 0.0)), Vec2::new(1.0, 3.0)));
+    assert!(close(
+      g.transform_point(Vec2::new(1.0, 0.0)),
+      Vec2::new(1.0, 3.0)
+    ));
   }
 
   #[test]
@@ -288,7 +291,11 @@ mod tests {
     let mid = a.lerp(&b, 0.5);
     assert!(close(mid.translation(), Vec2::new(5.0, 0.0)));
     // The short arc passes through PI, not through 0
-    assert!((mid.rotation().abs() - PI).abs() < 1e-4, "{}", mid.rotation());
+    assert!(
+      (mid.rotation().abs() - PI).abs() < 1e-4,
+      "{}",
+      mid.rotation()
+    );
   }
 
   #[test]

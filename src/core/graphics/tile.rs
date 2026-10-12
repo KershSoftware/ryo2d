@@ -28,6 +28,7 @@
 //! ```
 
 use crate::core::asset::SpriteHandle;
+use crate::core::ecs::Component;
 
 /// Direction in which tiles are repeated
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -165,7 +166,7 @@ impl TilePart {
 ///     .add_part(TilePart::static_part(cap, 0.0, 0.0))
 ///     .add_part(TilePart::tiled_part(body, 0.0, 32.0, TileDirection::Down, 128.0));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct CompositeTile {
   /// The parts that make up this composite
   pub parts: Vec<TilePart>,
@@ -289,7 +290,7 @@ impl Default for CompositeTile {
 ///     collider,
 /// ));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct GroupedCollider {
   /// Width of the collision box
   pub width: f32,

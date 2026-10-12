@@ -28,8 +28,8 @@
 //! }
 //! ```
 
+use super::GpuRenderContext;
 use crate::core::asset::SpriteHandle;
-use crate::core::game::GpuRenderContext;
 use crate::core::graphics::parallax::TileMode;
 use crate::core::graphics::sprite_gpu::SpriteInstance;
 

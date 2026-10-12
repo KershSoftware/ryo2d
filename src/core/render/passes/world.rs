@@ -14,7 +14,7 @@ impl RenderPass for World {
   }
 
   fn should_run(&self, frame: &FrameInfo) -> bool {
-    !frame.raycast && frame.world
+    frame.world
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
@@ -66,8 +66,8 @@ impl RenderPass for UnlitWorld {
     pass_ids::UNLIT_WORLD
   }
 
-  fn should_run(&self, frame: &FrameInfo) -> bool {
-    !frame.raycast
+  fn should_run(&self, _frame: &FrameInfo) -> bool {
+    true
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {

@@ -23,7 +23,7 @@
 use winit::event::{ElementState, MouseButton};
 use winit::keyboard::KeyCode;
 
-use crate::core::input::InputState;
+use crate::core::input::Input;
 
 macro_rules! key_table {
   ($($key:ident),* $(,)?) => {
@@ -217,7 +217,7 @@ impl InputScript {
   }
 
   /// Apply the input due before presented frame `frame` (1-based).
-  pub(crate) fn before_frame(&mut self, frame: u64, input: &mut InputState) {
+  pub(crate) fn before_frame(&mut self, frame: u64, input: &mut Input) {
     self.held.retain(|&(control, release)| {
       let ends = matches!(release, Release::Before(end) if end <= frame);
       if ends {
@@ -242,7 +242,7 @@ impl InputScript {
 
   /// Apply a due entry, or keep it waiting while its control is still held
   /// (a control the script holds is pressed again only once it is up)
-  fn fire(&mut self, entry: Entry, input: &mut InputState) {
+  fn fire(&mut self, entry: Entry, input: &mut Input) {
     match entry.action {
       Action::MoveMouse(x, y) => input.handle_mouse_move(f64::from(x), f64::from(y)),
       Action::Press {
@@ -269,7 +269,7 @@ impl InputScript {
   }
 
   /// Release taps whose press a game update has seen.
-  pub(crate) fn after_frame(&mut self, input: &mut InputState) {
+  pub(crate) fn after_frame(&mut self, input: &mut Input) {
     self.held.retain(|&(control, release)| {
       let seen = release == Release::Seen && !press_pending(input, control);
       if seen {
@@ -280,14 +280,14 @@ impl InputScript {
   }
 }
 
-fn set(input: &mut InputState, control: Control, state: ElementState) {
+fn set(input: &mut Input, control: Control, state: ElementState) {
   match control {
     Control::Key(key) => input.handle_keyboard(key, state),
     Control::Button(button) => input.handle_mouse_button(button, state),
   }
 }
 
-fn press_pending(input: &InputState, control: Control) -> bool {
+fn press_pending(input: &Input, control: Control) -> bool {
   match control {
     Control::Key(key) => input.key_press_pending(key),
     Control::Button(button) => input.mouse_press_pending(button),
@@ -353,7 +353,7 @@ mod tests {
   }
 
   /// One engine frame: inject, run an update if `update`, then release
-  fn frame(script: &mut InputScript, input: &mut InputState, n: u64, update: bool) {
+  fn frame(script: &mut InputScript, input: &mut Input, n: u64, update: bool) {
     script.before_frame(n, input);
     if update {
       input.set_fixed_step(0);
@@ -366,7 +366,7 @@ mod tests {
   #[test]
   fn tap_goes_down_on_its_frame_and_up_after_an_update() {
     let mut s = script("3:Space");
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     s.before_frame(2, &mut input);
     assert!(!input.key_down(KeyCode::Space));
@@ -387,7 +387,7 @@ mod tests {
   #[test]
   fn tap_waits_for_a_frame_that_runs_an_update() {
     let mut s = script("1:KeyA");
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     frame(&mut s, &mut input, 1, false);
     assert!(
@@ -403,7 +403,7 @@ mod tests {
   #[test]
   fn hold_stays_down_until_its_end_frame() {
     let mut s = script("2-4:ArrowUp");
-    let mut input = InputState::new();
+    let mut input = Input::new();
 
     frame(&mut s, &mut input, 1, true);
     assert!(!input.key_down(KeyCode::ArrowUp));
@@ -419,7 +419,7 @@ mod tests {
   #[test]
   fn repeated_taps_of_one_key_each_register_a_press() {
     let mut s = script("1:Digit2,1:Digit2 2:Digit2");
-    let mut input = InputState::new();
+    let mut input = Input::new();
     let mut presses = 0;
     for n in 1..=6 {
       s.before_frame(n, &mut input);
@@ -439,7 +439,7 @@ mod tests {
     // The second ArrowRight waits for the hold to end at frame 6; the Space
     // and the click due meanwhile still fire on their frames
     let mut s = script("2-6:ArrowRight 3:ArrowRight 4:Space 5:Click@10x10");
-    let mut input = InputState::new();
+    let mut input = Input::new();
     let mut space = None;
     let mut click = None;
     let mut second_right = None;
@@ -467,7 +467,7 @@ mod tests {
   #[test]
   fn a_late_frame_fires_everything_due() {
     let mut s = script("2:KeyQ 5:KeyW");
-    let mut input = InputState::new();
+    let mut input = Input::new();
     s.before_frame(9, &mut input);
     assert!(input.key_pressed(KeyCode::KeyQ));
     assert!(input.key_pressed(KeyCode::KeyW));
@@ -476,7 +476,7 @@ mod tests {
   #[test]
   fn key_names_ignore_case() {
     let mut s = script("1:arrowright 1:ESCAPE 1:f1 1:digit0");
-    let mut input = InputState::new();
+    let mut input = Input::new();
     s.before_frame(1, &mut input);
     for key in [
       KeyCode::ArrowRight,
@@ -512,7 +512,7 @@ mod tests {
   #[test]
   fn mouse_moves_to_game_coordinates_on_its_frame() {
     let mut s = script("3:Mouse@120.5x40");
-    let mut input = InputState::new();
+    let mut input = Input::new();
     frame(&mut s, &mut input, 2, true);
     assert_eq!(input.mouse_position(), (0.0, 0.0));
     s.before_frame(3, &mut input);
@@ -523,7 +523,7 @@ mod tests {
   #[test]
   fn click_moves_then_taps_the_left_button() {
     let mut s = script("2:Click@64x32");
-    let mut input = InputState::new();
+    let mut input = Input::new();
     s.before_frame(2, &mut input);
     assert_eq!(input.mouse_position(), (64.0, 32.0));
     assert!(input.mouse_pressed(MouseButton::Left));
@@ -538,7 +538,7 @@ mod tests {
   #[test]
   fn held_click_drags_until_its_end_frame() {
     let mut s = script("2-5:Click@10x10 3:Mouse@30x10");
-    let mut input = InputState::new();
+    let mut input = Input::new();
     frame(&mut s, &mut input, 2, true);
     assert!(input.mouse_down(MouseButton::Left));
     frame(&mut s, &mut input, 3, true);
@@ -551,7 +551,7 @@ mod tests {
   #[test]
   fn right_click_without_coordinates_clicks_in_place() {
     let mut s = script("1:Mouse@7x9 2:RightClick");
-    let mut input = InputState::new();
+    let mut input = Input::new();
     frame(&mut s, &mut input, 1, true);
     s.before_frame(2, &mut input);
     assert!(input.mouse_pressed(MouseButton::Right));
@@ -578,7 +578,7 @@ mod tests {
   #[test]
   fn blank_script_does_nothing() {
     let mut s = script("  ");
-    let mut input = InputState::new();
+    let mut input = Input::new();
     s.before_frame(1, &mut input);
     s.after_frame(&mut input);
     input.handle_keyboard(KeyCode::Space, ElementState::Pressed);

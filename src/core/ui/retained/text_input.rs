@@ -30,7 +30,7 @@ use arboard::Clipboard;
 use winit::keyboard::KeyCode;
 
 use super::focus::Focusable;
-use crate::core::input::InputState;
+use crate::core::input::Input;
 
 /// State for a text input widget.
 ///
@@ -396,7 +396,7 @@ impl TextInputState {
   /// Handle keyboard input for text editing.
   ///
   /// Returns `true` if the text was modified.
-  pub fn handle_input(&mut self, input: &InputState) -> bool {
+  pub fn handle_input(&mut self, input: &Input) -> bool {
     if !self.focused {
       return false;
     }

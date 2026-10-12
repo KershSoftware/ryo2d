@@ -3,7 +3,6 @@
 // Foundation
 pub mod ecs;
 pub mod error;
-pub mod events;
 pub mod messages;
 
 // Core systems
@@ -12,26 +11,34 @@ pub mod audio;
 pub mod cursor;
 pub mod input;
 pub(crate) mod input_script;
-pub mod network;
+// MIGRATION: Task 17
+// pub mod network;
 
 // Graphics & rendering
 pub mod graphics;
 pub mod lighting;
-pub mod particles;
-pub mod raycast;
+// MIGRATION: Task 16
+// pub mod particles;
+// MIGRATION: Task 20 (parked in attic/)
+// pub mod raycast;
 pub mod render;
 pub mod shaders;
-pub mod skeleton;
+// MIGRATION: Task 16
+// pub mod skeleton;
 pub mod texture;
-pub mod tilemap;
+// MIGRATION: Task 16
+// pub mod tilemap;
 pub mod trail;
 pub mod ui;
+pub mod window;
 
 // Physics
-pub mod physics;
+// MIGRATION: Task 12
+// pub mod physics;
 
 // Navigation & Pathfinding
-pub mod navigation;
+// MIGRATION: Task 16
+// pub mod navigation;
 
 // Procedural Generation
 pub mod procgen;
@@ -52,17 +59,20 @@ pub mod dev_log;
 pub mod windows;
 
 // Inventory & Item System
-pub mod inventory;
+// MIGRATION: Task 19 (moves to crates/ryo2d-inventory)
+// pub mod inventory;
 
-// Game systems (extracted from engine for modularity)
+// Frame structure, clocks and test support
 pub mod schedule;
-pub mod systems;
+// MIGRATION: Task 11
+// pub mod systems;
 pub mod testing;
 pub mod time;
-pub mod timing;
 
 // Engine orchestration
-pub mod engine;
-pub mod game;
-pub mod resources;
-pub mod scene;
+// MIGRATION: Task 13
+// pub mod engine;
+// MIGRATION: Task 13
+// pub mod game;
+// MIGRATION: Task 10
+// pub mod scene;

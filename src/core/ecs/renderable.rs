@@ -37,7 +37,9 @@
 //!
 //! If both are present, the `Material` component takes precedence.
 
+use super::kernel::Component;
 use super::material::SpriteShader;
+use super::transform::Anchor;
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Vec2;
 use crate::core::graphics::TileDirection;
@@ -419,11 +421,9 @@ pub enum RenderStyle {
 
 /// Unified rendering component for sprites and tiles
 ///
-/// Works with `Transform` for local positioning and `WorldTransform` for
-/// hierarchical rendering (parent-child relationships).
-///
-/// The renderer will prefer `WorldTransform` if present, otherwise uses `Transform`.
-#[derive(Debug, Clone)]
+/// Drawn at the entity's `GlobalTransform` (its `Transform` composed with its
+/// parents'), with `anchor` choosing which point of the sprite sits there.
+#[derive(Component, Debug, Clone)]
 pub struct Renderable {
   /// The sprite to render
   pub sprite: SpriteHandle,
@@ -466,18 +466,10 @@ pub struct Renderable {
   /// (base of sprite), simulating ambient occlusion. Contact shadows are
   /// darker at the center and fade radially outward.
   pub contact_shadow: Option<ContactShadow>,
-  /// Enable render interpolation for smooth motion.
+  /// Which point of the sprite sits on the entity's position.
   ///
-  /// When true, the entity's position is interpolated between the previous
-  /// and current Transform during rendering. This eliminates micro-stutter
-  /// when the render FPS exceeds the fixed update rate (e.g., 144hz display
-  /// with 60hz physics).
-  ///
-  /// Requires a `PreviousTransform` component to be present (added automatically
-  /// by the engine when interpolation is enabled).
-  ///
-  /// Default: false (pixel-perfect rendering at update positions)
-  pub interpolate: bool,
+  /// Default: `Anchor::Center`.
+  pub anchor: Anchor,
 }
 
 impl Renderable {
@@ -496,7 +488,7 @@ impl Renderable {
       drop_shadow: None,
       blob_shadow: None,
       contact_shadow: None,
-      interpolate: false,
+      anchor: Anchor::Center,
     }
   }
 
@@ -518,7 +510,7 @@ impl Renderable {
       drop_shadow: None,
       blob_shadow: None,
       contact_shadow: None,
-      interpolate: false,
+      anchor: Anchor::Center,
     }
   }
 
@@ -662,40 +654,9 @@ impl Renderable {
     self.contact_shadow.is_some()
   }
 
-  /// Enable render interpolation for smooth motion.
-  ///
-  /// When enabled, the entity's position is interpolated between the previous
-  /// and current Transform during rendering. This eliminates micro-stutter
-  /// when the render FPS exceeds the fixed update rate.
-  ///
-  /// Best for:
-  /// - Smoothly moving characters, projectiles, cameras
-  /// - High refresh rate displays (120hz, 144hz, 240hz)
-  ///
-  /// Not recommended for:
-  /// - Pixel art that should snap to pixel boundaries
-  /// - Static or rarely-moving entities
-  /// - Entities that teleport frequently
-  ///
-  /// # Example
-  ///
-  /// ```rust,ignore
-  /// // Enable interpolation for smooth player movement
-  /// let player = Renderable::sprite(handle).interpolated();
-  ///
-  /// // Or explicitly set it
-  /// let enemy = Renderable::sprite(handle).with_interpolation(true);
-  /// ```
-  pub fn interpolated(mut self) -> Self {
-    self.interpolate = true;
-    self
-  }
-
-  /// Set render interpolation enabled/disabled.
-  ///
-  /// See [`interpolated`](Self::interpolated) for details.
-  pub fn with_interpolation(mut self, enabled: bool) -> Self {
-    self.interpolate = enabled;
+  /// Set which point of the sprite sits on the entity's position.
+  pub fn with_anchor(mut self, anchor: Anchor) -> Self {
+    self.anchor = anchor;
     self
   }
 
@@ -761,6 +722,17 @@ mod tests {
     let r = Renderable::tiled(test_handle(), TileDirection::Right, 100.0);
     assert!(r.is_tiled());
     assert!(!r.is_single());
+  }
+
+  #[test]
+  fn anchor_defaults_to_center_and_can_be_set() {
+    assert_eq!(Renderable::sprite(test_handle()).anchor, Anchor::Center);
+    assert_eq!(
+      Renderable::tiled(test_handle(), TileDirection::Right, 100.0).anchor,
+      Anchor::Center
+    );
+    let r = Renderable::sprite(test_handle()).with_anchor(Anchor::TopLeft);
+    assert_eq!(r.anchor, Anchor::TopLeft);
   }
 
   #[test]

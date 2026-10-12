@@ -5,7 +5,7 @@
 
 use super::shadow::{MAX_SHADOW_VERTICES, ShadowGeometry, ShadowVertex};
 use super::{AmbientLight, Atmosphere, Light2D, LightOccluder2D};
-use crate::core::ecs::{Transform, Vec2};
+use crate::core::ecs::{GlobalTransform, Vec2};
 use crate::core::shaders::EffectsManager;
 use wgpu::util::DeviceExt;
 
@@ -823,7 +823,7 @@ impl LightingRenderer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
-    lights: impl Iterator<Item = (&'a Transform, &'a Light2D)>,
+    lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)>,
     camera_pos: Vec2,
     camera_zoom: f32,
   ) {
@@ -833,13 +833,13 @@ impl LightingRenderer {
     // Collect light instances
     let mut instances: Vec<LightInstance> = Vec::with_capacity(MAX_LIGHTS);
 
-    for (transform, light) in lights {
+    for (position, light) in lights {
       if instances.len() >= MAX_LIGHTS {
         break;
       }
 
-      let pos_x = transform.x;
-      let pos_y = transform.y;
+      let pos_x = position.x;
+      let pos_y = position.y;
 
       let instance = match light {
         Light2D::Point {
@@ -1039,7 +1039,7 @@ impl LightingRenderer {
     samples: u32,
     shadow_softness: f32,
     shadow_color: crate::core::ui::Color,
-    occluders: &[(&Transform, &LightOccluder2D)],
+    occluders: &[(&GlobalTransform, &LightOccluder2D)],
   ) {
     // Collect edges from occluders within light radius
     let mut edges: Vec<RaymarchEdge> = Vec::with_capacity(MAX_RAYMARCH_EDGES);
@@ -1050,14 +1050,15 @@ impl LightingRenderer {
       }
 
       // Quick distance check
-      let dist = ((transform.x - light_pos.x).powi(2) + (transform.y - light_pos.y).powi(2)).sqrt();
+      let position = transform.translation();
+      let dist = position.distance(light_pos);
       if dist > light_radius * 2.0 {
         continue;
       }
 
       // Transform vertices to world space
       let world_vertices =
-        occluder.transform_vertices(transform.x, transform.y, transform.rotation);
+        occluder.transform_vertices(position.x, position.y, transform.rotation());
 
       // Add edges
       for i in 0..world_vertices.len() {
@@ -1162,8 +1163,8 @@ impl LightingRenderer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
-    lights: impl Iterator<Item = (&'a Transform, &'a Light2D)> + Clone,
-    occluders: &[(&'a Transform, &'a LightOccluder2D)],
+    lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)> + Clone,
+    occluders: &[(&'a GlobalTransform, &'a LightOccluder2D)],
     camera_pos: Vec2,
     camera_zoom: f32,
   ) {
@@ -1178,7 +1179,7 @@ impl LightingRenderer {
     );
 
     // Separate lights into regular shadows and raymarched shadows
-    let mut raymarch_lights: Vec<(&Transform, &Light2D)> = Vec::new();
+    let mut raymarch_lights: Vec<(&Vec2, &Light2D)> = Vec::new();
     let regular_lights = lights.clone().filter(|(t, l)| {
       if l.uses_raymarched_shadows() {
         raymarch_lights.push((*t, *l));
@@ -1193,13 +1194,13 @@ impl LightingRenderer {
     self.render_shadows(device, queue, encoder, &shadow_geometry);
 
     // Render ray-marched shadows for lights that use them
-    for (transform, light) in raymarch_lights {
+    for (position, light) in raymarch_lights {
       if let Some(samples) = light.raymarch_samples() {
         self.render_raymarched_shadow(
           device,
           queue,
           encoder,
-          Vec2::new(transform.x, transform.y),
+          *position,
           light.radius(),
           samples,
           light.shadow_softness(),
@@ -1346,7 +1347,7 @@ impl LightingRenderer {
   pub fn update_god_rays(
     &self,
     effects: &mut EffectsManager,
-    lights: &[(Transform, Light2D)],
+    lights: &[(Vec2, Light2D)],
     camera_pos: Vec2,
     camera_zoom: f32,
   ) {
@@ -1360,10 +1361,10 @@ impl LightingRenderer {
       .iter()
       .filter(|(_, light)| light.contributes_to_god_rays())
       .take(4) // Shader supports max 4 lights
-      .map(|(transform, _)| {
+      .map(|(position, _)| {
         // World to screen (same math as Camera::world_to_screen)
-        let screen_x = (transform.x - camera_pos.x) * camera_zoom + half_w;
-        let screen_y = (transform.y - camera_pos.y) * camera_zoom + half_h;
+        let screen_x = (position.x - camera_pos.x) * camera_zoom + half_w;
+        let screen_y = (position.y - camera_pos.y) * camera_zoom + half_h;
         // Screen to UV
         (screen_x / viewport_w, screen_y / viewport_h)
       })

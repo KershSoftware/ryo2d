@@ -10,21 +10,22 @@
 //!
 //! // Move to position with easing
 //! world.spawn((
-//!     Transform::new(100.0, 100.0),
+//!     Transform::from_xy(100.0, 100.0),
 //!     Tween::to_position(400.0, 300.0, 2.0)
 //!         .with_easing(Ease::OutBounce),
 //! ));
 //!
 //! // Pulsing scale effect
 //! world.spawn((
-//!     Transform::new(200.0, 200.0),
+//!     Transform::from_xy(200.0, 200.0),
 //!     Tween::to_scale(1.2, 1.2, 0.3)
 //!         .with_easing(Ease::InOutSine)
 //!         .with_loop(TweenLoop::PingPong),
 //! ));
 //! ```
 
-use super::components::Transform;
+use super::kernel::Component;
+use super::transform::Transform;
 use crate::core::ui::Color;
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -313,7 +314,7 @@ pub enum TweenLoop {
 /// ```ignore
 /// // Move and rotate simultaneously
 /// world.spawn((
-///     Transform::new(0.0, 0.0),
+///     Transform::from_xy(0.0, 0.0),
 ///     Tween::new(1.5)
 ///         .to_x(200.0)
 ///         .to_y(100.0)
@@ -321,7 +322,7 @@ pub enum TweenLoop {
 ///         .with_easing(Ease::OutCubic),
 /// ));
 /// ```
-#[derive(Clone)]
+#[derive(Component, Clone)]
 pub struct Tween {
   // Target values (None = don't tween that property)
   pub target_x: Option<f32>,
@@ -652,11 +653,11 @@ impl Tween {
 
   /// Capture start values from the transform (called internally when tween starts).
   fn capture_start(&mut self, transform: &Transform) {
-    self.start_x = transform.x;
-    self.start_y = transform.y;
+    self.start_x = transform.translation.x;
+    self.start_y = transform.translation.y;
     self.start_rotation = transform.rotation;
-    self.start_scale_x = transform.scale_x;
-    self.start_scale_y = transform.scale_y;
+    self.start_scale_x = transform.scale.x;
+    self.start_scale_y = transform.scale.y;
     self.started = true;
   }
 
@@ -774,19 +775,19 @@ impl Tween {
 
     // Interpolate and apply each property
     if let Some(target) = self.target_x {
-      transform.x = lerp(self.start_x, target, eased);
+      transform.translation.x = lerp(self.start_x, target, eased);
     }
     if let Some(target) = self.target_y {
-      transform.y = lerp(self.start_y, target, eased);
+      transform.translation.y = lerp(self.start_y, target, eased);
     }
     if let Some(target) = self.target_rotation {
       transform.rotation = lerp(self.start_rotation, target, eased);
     }
     if let Some(target) = self.target_scale_x {
-      transform.scale_x = lerp(self.start_scale_x, target, eased);
+      transform.scale.x = lerp(self.start_scale_x, target, eased);
     }
     if let Some(target) = self.target_scale_y {
-      transform.scale_y = lerp(self.start_scale_y, target, eased);
+      transform.scale.y = lerp(self.start_scale_y, target, eased);
     }
 
     // Call on_update callback
@@ -866,12 +867,12 @@ fn lerp_color(start: Color, end: Color, t: f32) -> Color {
 ///     .then(Tween::fade_out(0.2));
 ///
 /// world.spawn((
-///     Transform::new(100.0, 100.0),
+///     Transform::from_xy(100.0, 100.0),
 ///     Renderable::sprite(handle),
 ///     sequence,
 /// ));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct TweenSequence {
   /// The tweens in order
   tweens: Vec<Tween>,
@@ -1188,20 +1189,20 @@ mod tests {
   #[test]
   fn tween_updates_position() {
     let mut t = Tween::to_position(100.0, 100.0, 1.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // First update captures start values
     t.update(0.5, &mut transform);
 
     assert!(t.started);
-    assert_eq!(transform.x, 50.0);
-    assert_eq!(transform.y, 50.0);
+    assert_eq!(transform.translation.x, 50.0);
+    assert_eq!(transform.translation.y, 50.0);
 
     // Complete the tween
     t.update(0.5, &mut transform);
 
-    assert_eq!(transform.x, 100.0);
-    assert_eq!(transform.y, 100.0);
+    assert_eq!(transform.translation.x, 100.0);
+    assert_eq!(transform.translation.y, 100.0);
     assert!(!t.playing);
     assert!(t.just_finished);
   }
@@ -1209,24 +1210,24 @@ mod tests {
   #[test]
   fn tween_with_delay() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).with_delay(0.5);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // During delay, position shouldn't change
     t.update(0.3, &mut transform);
-    assert_eq!(transform.x, 0.0);
+    assert_eq!(transform.translation.x, 0.0);
     assert!(!t.started);
 
     // Delay completes, tween starts
     t.update(0.3, &mut transform);
     assert!(t.started);
     // 0.1 seconds of actual tween time (0.6 total - 0.5 delay)
-    assert!((transform.x - 10.0).abs() < 0.01);
+    assert!((transform.translation.x - 10.0).abs() < 0.01);
   }
 
   #[test]
   fn tween_loop_mode() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).with_loop(TweenLoop::Loop);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // Complete one loop
     t.update(1.0, &mut transform);
@@ -1235,32 +1236,32 @@ mod tests {
 
     // Reset happens
     t.update(0.5, &mut transform);
-    assert_eq!(transform.x, 50.0); // Back to interpolating from start
+    assert_eq!(transform.translation.x, 50.0); // Back to interpolating from start
   }
 
   #[test]
   fn tween_ping_pong() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).with_loop(TweenLoop::PingPong);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // Forward to end
     t.update(1.0, &mut transform);
-    assert_eq!(transform.x, 100.0);
+    assert_eq!(transform.translation.x, 100.0);
     assert!(t.ping_pong_reverse);
 
     // Backward
     t.update(0.5, &mut transform);
-    assert_eq!(transform.x, 50.0);
+    assert_eq!(transform.translation.x, 50.0);
 
     t.update(0.5, &mut transform);
-    assert_eq!(transform.x, 0.0);
+    assert_eq!(transform.translation.x, 0.0);
     assert!(!t.ping_pong_reverse); // Back to forward
   }
 
   #[test]
   fn tween_times() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).with_loop(TweenLoop::Times(2));
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // First loop
     t.update(1.0, &mut transform);
@@ -1277,24 +1278,24 @@ mod tests {
   #[test]
   fn tween_pause_resume() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     t.update(0.5, &mut transform);
-    assert_eq!(transform.x, 50.0);
+    assert_eq!(transform.translation.x, 50.0);
 
     t.pause();
     t.update(0.5, &mut transform);
-    assert_eq!(transform.x, 50.0); // No change while paused
+    assert_eq!(transform.translation.x, 50.0); // No change while paused
 
     t.resume();
     t.update(0.5, &mut transform);
-    assert_eq!(transform.x, 100.0);
+    assert_eq!(transform.translation.x, 100.0);
   }
 
   #[test]
   fn tween_stop_restart() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     t.update(0.5, &mut transform);
     t.stop();
@@ -1310,7 +1311,7 @@ mod tests {
   #[test]
   fn tween_progress() {
     let mut t = Tween::to_position(100.0, 0.0, 2.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     assert_eq!(t.progress(), 0.0);
 
@@ -1324,35 +1325,35 @@ mod tests {
   #[test]
   fn tween_zero_duration() {
     let mut t = Tween::to_position(100.0, 0.0, 0.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     t.update(0.016, &mut transform);
 
     // Should immediately reach target
-    assert_eq!(transform.x, 100.0);
+    assert_eq!(transform.translation.x, 100.0);
     assert!(t.is_finished());
   }
 
   #[test]
   fn tween_only_tweens_specified_properties() {
     let mut t = Tween::new(1.0).to_x(100.0); // Only x, not y
-    let mut transform = Transform::new(50.0, 50.0);
+    let mut transform = Transform::from_xy(50.0, 50.0);
 
     t.update(1.0, &mut transform);
 
-    assert_eq!(transform.x, 100.0); // x was tweened
-    assert_eq!(transform.y, 50.0); // y unchanged
+    assert_eq!(transform.translation.x, 100.0); // x was tweened
+    assert_eq!(transform.translation.y, 50.0); // y unchanged
   }
 
   #[test]
   fn tween_with_easing() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).with_easing(Ease::InQuad);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     t.update(0.5, &mut transform);
 
     // InQuad at t=0.5 gives 0.25, so x should be 25
-    assert_eq!(transform.x, 25.0);
+    assert_eq!(transform.translation.x, 25.0);
   }
 
   // ===== Speed Control Tests =====
@@ -1360,55 +1361,55 @@ mod tests {
   #[test]
   fn tween_with_speed_double() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).with_speed(2.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // At 2x speed, 0.25 seconds should give 50% progress
     t.update(0.25, &mut transform);
-    assert_eq!(transform.x, 50.0);
+    assert_eq!(transform.translation.x, 50.0);
 
     // Complete in half the time
     t.update(0.25, &mut transform);
-    assert_eq!(transform.x, 100.0);
+    assert_eq!(transform.translation.x, 100.0);
     assert!(t.just_finished);
   }
 
   #[test]
   fn tween_with_speed_half() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).with_speed(0.5);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // At 0.5x speed, 1 second should give 50% progress
     t.update(1.0, &mut transform);
-    assert_eq!(transform.x, 50.0);
+    assert_eq!(transform.translation.x, 50.0);
 
     // Takes twice as long
     t.update(1.0, &mut transform);
-    assert_eq!(transform.x, 100.0);
+    assert_eq!(transform.translation.x, 100.0);
     assert!(t.just_finished);
   }
 
   #[test]
   fn tween_set_speed_runtime() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     t.update(0.5, &mut transform);
-    assert_eq!(transform.x, 50.0);
+    assert_eq!(transform.translation.x, 50.0);
 
     // Double the speed mid-tween
     t.set_speed(2.0);
     t.update(0.25, &mut transform);
-    assert_eq!(transform.x, 100.0);
+    assert_eq!(transform.translation.x, 100.0);
   }
 
   #[test]
   fn tween_speed_zero_pauses() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).with_speed(0.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // With speed 0, no progress should be made
     t.update(1.0, &mut transform);
-    assert_eq!(transform.x, 0.0);
+    assert_eq!(transform.translation.x, 0.0);
     assert!(t.playing); // Still playing, just not progressing
   }
 
@@ -1424,7 +1425,7 @@ mod tests {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).on_start(move |_| {
       started_clone.store(true, Ordering::SeqCst);
     });
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     assert!(!started.load(Ordering::SeqCst));
 
@@ -1444,7 +1445,7 @@ mod tests {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).on_start(move |_| {
       count_clone.fetch_add(1, Ordering::SeqCst);
     });
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     t.update(0.1, &mut transform);
     t.update(0.1, &mut transform);
@@ -1464,7 +1465,7 @@ mod tests {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).on_update(move |_| {
       count_clone.fetch_add(1, Ordering::SeqCst);
     });
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     t.update(0.1, &mut transform);
     t.update(0.1, &mut transform);
@@ -1484,7 +1485,7 @@ mod tests {
     let mut t = Tween::to_position(100.0, 0.0, 1.0).on_complete(move |_| {
       completed_clone.store(true, Ordering::SeqCst);
     });
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     t.update(0.5, &mut transform);
     assert!(!completed.load(Ordering::SeqCst));
@@ -1506,7 +1507,7 @@ mod tests {
       .on_complete(move |_| {
         count_clone.fetch_add(1, Ordering::SeqCst);
       });
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // Complete 3 iterations
     t.update(0.5, &mut transform); // iteration 1
@@ -1519,7 +1520,7 @@ mod tests {
   #[test]
   fn tween_just_started_flag() {
     let mut t = Tween::to_position(100.0, 0.0, 1.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     assert!(!t.just_started);
 
@@ -1542,7 +1543,7 @@ mod tests {
       .on_start(move |_| {
         started_clone.store(true, Ordering::SeqCst);
       });
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // During delay, on_start not called
     t.update(0.3, &mut transform);
@@ -1595,7 +1596,7 @@ mod tests {
   #[test]
   fn tween_current_alpha() {
     let mut t = Tween::fade_to(0.0, 1.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // Capture start values
     t.capture_start_renderable(1.0, Color::WHITE);
@@ -1612,7 +1613,7 @@ mod tests {
   #[test]
   fn tween_current_tint() {
     let mut t = Tween::tint_to(Color::RED, 1.0);
-    let mut transform = Transform::new(0.0, 0.0);
+    let mut transform = Transform::from_xy(0.0, 0.0);
 
     // Capture start values (WHITE to RED)
     t.capture_start_renderable(1.0, Color::WHITE);
