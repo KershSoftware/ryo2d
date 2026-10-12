@@ -64,8 +64,7 @@ pub mod windows;
 
 // Frame structure, clocks and test support
 pub mod schedule;
-// MIGRATION: Task 11
-// pub mod systems;
+pub mod systems;
 pub mod testing;
 pub mod time;
 

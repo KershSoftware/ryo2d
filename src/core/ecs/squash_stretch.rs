@@ -3,7 +3,7 @@
 //! Provides automatic scale deformation that recovers over time,
 //! commonly used for landing impacts, hits, and bouncy animations.
 
-use super::kernel::Component;
+use super::kernel::{Component, Entity, World};
 
 /// Axis for squash/stretch deformation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -24,10 +24,10 @@ pub enum SquashAxis {
 ///
 /// ```ignore
 /// // Quick squash on landing
-/// ctx.squash(entity, 0.3);
+/// SquashStretch::apply(ctx.world, entity, 0.3);
 ///
 /// // Or with full control
-/// world.add_component(entity, SquashStretch::new(0.4)
+/// ctx.world.entity_mut(entity).insert(SquashStretch::new(0.4)
 ///     .with_axis(SquashAxis::X)
 ///     .with_decay_rate(6.0)
 ///     .with_preserve_volume(true));
@@ -44,11 +44,13 @@ pub struct SquashStretch {
   axis: SquashAxis,
   /// Whether to preserve volume (squash one axis = stretch other)
   preserve_volume: bool,
-  /// Base scale to return to (captured on first apply)
+  /// Base scale to deform from and return to
   base_scale_x: f32,
   base_scale_y: f32,
-  /// Whether base scale has been captured
+  /// Whether the base has been captured for the current effect
   base_captured: bool,
+  /// The base was set with `with_base_scale`, so it is never re-read
+  base_explicit: bool,
   /// Whether the effect is currently active
   pub active: bool,
   /// Set to true on the frame the effect starts
@@ -68,6 +70,7 @@ impl Default for SquashStretch {
       base_scale_x: 1.0,
       base_scale_y: 1.0,
       base_captured: false,
+      base_explicit: false,
       active: false,
       just_started: false,
       just_finished: false,
@@ -79,7 +82,8 @@ impl SquashStretch {
   /// Create a new squash/stretch effect with given intensity.
   ///
   /// Intensity is the amount of deformation (0.3 = 30%).
-  /// The effect starts inactive; call `apply()` or use `ctx.squash()` to trigger.
+  /// The effect starts at once; later effects come from `squash()` or
+  /// `SquashStretch::apply(world, entity, intensity)`.
   pub fn new(intensity: f32) -> Self {
     Self {
       intensity: intensity.abs(),
@@ -128,13 +132,58 @@ impl SquashStretch {
     self.base_scale_x = scale_x;
     self.base_scale_y = scale_y;
     self.base_captured = true;
+    self.base_explicit = true;
     self
   }
 
-  /// Apply a new squash/stretch effect.
+  /// Squash `entity` on the Y axis, adding a `SquashStretch` if it has none.
+  /// Does nothing if the entity does not exist.
+  pub fn apply(world: &mut World, entity: Entity, intensity: f32) {
+    Self::apply_on_axis(world, entity, intensity, SquashAxis::Y);
+  }
+
+  /// Squash `entity` on the X axis (wall hits, horizontal impacts).
+  pub fn apply_x(world: &mut World, entity: Entity, intensity: f32) {
+    Self::apply_on_axis(world, entity, intensity, SquashAxis::X);
+  }
+
+  /// Squash `entity` on `axis`.
+  pub fn apply_on_axis(world: &mut World, entity: Entity, intensity: f32, axis: SquashAxis) {
+    let Ok(mut entity) = world.get_entity_mut(entity) else {
+      return;
+    };
+    if let Some(mut effect) = entity.get_mut::<SquashStretch>() {
+      effect.squash_on_axis(intensity, axis);
+    } else {
+      entity.insert(SquashStretch::new(intensity).with_axis(axis));
+    }
+  }
+
+  /// Squash `entity` with a custom recovery rate (8.0 snappy, 2.0 slow).
+  pub fn apply_with_decay(world: &mut World, entity: Entity, intensity: f32, decay_rate: f32) {
+    let Ok(mut entity) = world.get_entity_mut(entity) else {
+      return;
+    };
+    if let Some(mut effect) = entity.get_mut::<SquashStretch>() {
+      effect.squash_with_decay(intensity, decay_rate);
+    } else {
+      entity.insert(SquashStretch::new(intensity).with_decay_rate(decay_rate));
+    }
+  }
+
+  /// A new effect starting from rest re-reads the base scale, so a scale
+  /// changed since the last effect (by a tween, say) is the one it returns to.
+  fn start(&mut self) {
+    if !self.active && !self.base_explicit {
+      self.base_captured = false;
+    }
+  }
+
+  /// Start a new squash/stretch effect.
   ///
   /// Resets strength to 1.0 and updates intensity.
-  pub fn apply(&mut self, intensity: f32) {
+  pub fn squash(&mut self, intensity: f32) {
+    self.start();
     let was_active = self.active;
     self.intensity = intensity.abs();
     self.strength = 1.0;
@@ -143,10 +192,11 @@ impl SquashStretch {
     self.just_finished = false;
   }
 
-  /// Apply a new squash/stretch effect with custom decay rate.
+  /// Start a new effect with a custom decay rate.
   ///
   /// Resets strength to 1.0 and updates both intensity and decay_rate.
-  pub fn apply_with_decay(&mut self, intensity: f32, decay_rate: f32) {
+  pub fn squash_with_decay(&mut self, intensity: f32, decay_rate: f32) {
+    self.start();
     let was_active = self.active;
     self.intensity = intensity.abs();
     self.decay_rate = decay_rate.max(0.1);
@@ -156,13 +206,13 @@ impl SquashStretch {
     self.just_finished = false;
   }
 
-  /// Apply with a specific axis.
-  pub fn apply_on_axis(&mut self, intensity: f32, axis: SquashAxis) {
+  /// Start a new effect on `axis`.
+  pub fn squash_on_axis(&mut self, intensity: f32, axis: SquashAxis) {
     self.axis = axis;
-    self.apply(intensity);
+    self.squash(intensity);
   }
 
-  /// Capture the base scale from current transform values.
+  /// Capture the base scale from current transform values, once per effect.
   pub fn capture_base_scale(&mut self, scale_x: f32, scale_y: f32) {
     if !self.base_captured {
       self.base_scale_x = scale_x;
@@ -361,7 +411,7 @@ mod tests {
     ss.update(0.2); // Decay some
     assert!(ss.strength < 1.0);
 
-    ss.apply(0.5);
+    ss.squash(0.5);
     assert_eq!(ss.strength, 1.0);
     assert_eq!(ss.intensity, 0.5);
   }
@@ -416,7 +466,7 @@ mod tests {
   #[test]
   fn test_apply_on_axis() {
     let mut ss = SquashStretch::new(0.3).with_axis(SquashAxis::Y);
-    ss.apply_on_axis(0.4, SquashAxis::X);
+    ss.squash_on_axis(0.4, SquashAxis::X);
     assert_eq!(ss.axis, SquashAxis::X);
     assert_eq!(ss.intensity, 0.4);
   }
@@ -432,7 +482,7 @@ mod tests {
     assert!(ss.strength < 1.0);
 
     // Apply with new values
-    ss.apply_with_decay(0.5, 12.0);
+    ss.squash_with_decay(0.5, 12.0);
     assert_eq!(ss.intensity, 0.5);
     assert_eq!(ss.decay_rate, 12.0);
     assert_eq!(ss.strength, 1.0); // Reset to full

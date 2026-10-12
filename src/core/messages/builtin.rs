@@ -71,10 +71,13 @@ pub struct TweenStarted {
   pub entity: Entity,
 }
 
-/// A `Tween` finished (every loop done).
+/// A tween finished an iteration; for looping tweens this fires each cycle.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TweenCompleted {
   pub entity: Entity,
+  /// The tween is done (`Once`, or the last of `Times(n)`), not just one
+  /// iteration of a loop
+  pub finished: bool,
 }
 
 /// A knockback impulse began.

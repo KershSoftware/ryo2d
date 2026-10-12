@@ -651,14 +651,35 @@ impl Tween {
     }
   }
 
-  /// Capture start values from the transform (called internally when tween starts).
-  fn capture_start(&mut self, transform: &Transform) {
-    self.start_x = transform.translation.x;
-    self.start_y = transform.translation.y;
-    self.start_rotation = transform.rotation;
-    self.start_scale_x = transform.scale.x;
-    self.start_scale_y = transform.scale.y;
+  /// Capture start values from the transform, if any (called when the tween starts).
+  fn capture_start(&mut self, transform: Option<&Transform>) {
+    if let Some(transform) = transform {
+      self.start_x = transform.translation.x;
+      self.start_y = transform.translation.y;
+      self.start_rotation = transform.rotation;
+      self.start_scale_x = transform.scale.x;
+      self.start_scale_y = transform.scale.y;
+    }
     self.started = true;
+  }
+
+  /// Whether the tween writes any `Transform` field.
+  pub fn has_transform_targets(&self) -> bool {
+    self.target_x.is_some()
+      || self.target_y.is_some()
+      || self.target_rotation.is_some()
+      || self.target_scale_x.is_some()
+      || self.target_scale_y.is_some()
+  }
+
+  /// Write the current alpha and tint targets to `renderable`.
+  pub fn apply_color(&self, renderable: &mut super::Renderable) {
+    if let Some(alpha) = self.current_alpha() {
+      renderable.alpha = alpha;
+    }
+    if let Some(tint) = self.current_tint() {
+      renderable.tint = tint;
+    }
   }
 
   /// Capture start values from renderable (called by engine when tween has color targets).
@@ -711,8 +732,18 @@ impl Tween {
 
   /// Update the tween and apply to transform.
   ///
-  /// Called by the engine's tween system each frame.
+  /// Called by the engine's tween system each fixed step.
   pub fn update(&mut self, dt: f32, transform: &mut Transform) {
+    self.step(dt, Some(transform));
+  }
+
+  /// Update a tween with no `Transform` to write (one that only targets
+  /// alpha or tint, or an entity without a `Transform`).
+  pub fn update_without_transform(&mut self, dt: f32) {
+    self.step(dt, None);
+  }
+
+  fn step(&mut self, dt: f32, mut transform: Option<&mut Transform>) {
     self.just_finished = false;
     self.just_started = false;
 
@@ -736,7 +767,7 @@ impl Tween {
 
       // Capture start values before using overshoot
       if !self.started {
-        self.capture_start(transform);
+        self.capture_start(transform.as_deref());
         self.just_started = true;
         if let Some(ref cb) = self.on_start {
           cb(0.0);
@@ -747,7 +778,7 @@ impl Tween {
     } else {
       // Normal update: capture start values if needed, then add dt
       if !self.started {
-        self.capture_start(transform);
+        self.capture_start(transform.as_deref());
         self.just_started = true;
         if let Some(ref cb) = self.on_start {
           cb(0.0);
@@ -774,20 +805,22 @@ impl Tween {
     let eased = self.easing.apply(progress);
 
     // Interpolate and apply each property
-    if let Some(target) = self.target_x {
-      transform.translation.x = lerp(self.start_x, target, eased);
-    }
-    if let Some(target) = self.target_y {
-      transform.translation.y = lerp(self.start_y, target, eased);
-    }
-    if let Some(target) = self.target_rotation {
-      transform.rotation = lerp(self.start_rotation, target, eased);
-    }
-    if let Some(target) = self.target_scale_x {
-      transform.scale.x = lerp(self.start_scale_x, target, eased);
-    }
-    if let Some(target) = self.target_scale_y {
-      transform.scale.y = lerp(self.start_scale_y, target, eased);
+    if let Some(transform) = transform.as_deref_mut() {
+      if let Some(target) = self.target_x {
+        transform.translation.x = lerp(self.start_x, target, eased);
+      }
+      if let Some(target) = self.target_y {
+        transform.translation.y = lerp(self.start_y, target, eased);
+      }
+      if let Some(target) = self.target_rotation {
+        transform.rotation = lerp(self.start_rotation, target, eased);
+      }
+      if let Some(target) = self.target_scale_x {
+        transform.scale.x = lerp(self.start_scale_x, target, eased);
+      }
+      if let Some(target) = self.target_scale_y {
+        transform.scale.y = lerp(self.start_scale_y, target, eased);
+      }
     }
 
     // Call on_update callback

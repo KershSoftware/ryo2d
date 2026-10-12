@@ -1,246 +1,202 @@
-//! Tween system for updating Tween, TweenSequence, and PropertyTween components.
-//!
-//! This system handles:
-//! - Updating tween progress and interpolation
-//! - Applying tweened values to Transform (position, scale, rotation)
-//! - Applying tweened values to Renderable (alpha, tint)
-//! - Managing tween sequences (advancing to next tween when current finishes)
-//! - Driving generic property tweens (f32, Vec2, Color)
+//! Tweens: advance `Tween`, `TweenSequence` and `PropertyTween` components.
 
 use glam::Vec2;
 
 use crate::core::ecs::{
-  Entity, Inactive, Lerp, PropertyTween, Renderable, Transform, Tween, TweenSequence, World,
+  Entity, Lerp, MessageWriter, PropertyTween, Query, Renderable, Res, Transform, Tween,
+  TweenSequence, Without,
 };
-use crate::core::events::{Events, TweenCompleted, TweenStarted};
+use crate::core::messages::{TweenCompleted, TweenStarted};
+use crate::core::time::Time;
 use crate::core::ui::Color;
 
-/// System for updating tweens, tween sequences, and property tweens.
-///
-/// Handles `Tween`, `TweenSequence`, and `PropertyTween<T>` components,
-/// applying interpolated values to Transform, Renderable, and generic properties.
-pub struct TweenSystem;
-
-impl TweenSystem {
-  /// Update all tween components in the world.
-  ///
-  /// # Arguments
-  /// * `world` - The ECS world containing entities
-  /// * `dt` - Delta time (should be scaled for time effects)
-  pub fn update(world: &mut World, events: &mut Events, dt: f32) {
-    Self::update_tweens(world, events, dt);
-    Self::update_tween_sequences(world, events, dt);
-    Self::update_property_tweens(world, events, dt);
+/// Advance every playing `Tween` by one fixed step, writing its `Transform`
+/// and `Renderable` targets. A tween on an entity without a `Transform`
+/// still runs its alpha and tint targets.
+pub fn update_tweens(
+  time: Res<Time>,
+  mut placed: Query<(Entity, &mut Tween, &mut Transform, Option<&mut Renderable>)>,
+  mut unplaced: Query<(Entity, &mut Tween, Option<&mut Renderable>), Without<Transform>>,
+  mut started: MessageWriter<TweenStarted>,
+  mut completed: MessageWriter<TweenCompleted>,
+) {
+  let dt = time.fixed.timestep();
+  for (entity, mut tween, mut transform, renderable) in &mut placed {
+    if !tween.playing {
+      continue;
+    }
+    // Touch the Transform only when the tween moves it, so change detection
+    // (and propagation) does not see every colour tween
+    let transform = tween.has_transform_targets().then_some(&mut *transform);
+    drive_tween(
+      &mut tween,
+      dt,
+      transform,
+      renderable.map(|r| r.into_inner()),
+    );
+    report(entity, &tween, &mut started, &mut completed);
   }
-
-  /// Update all Tween components and apply to Transform/Renderable.
-  fn update_tweens(world: &mut World, events: &mut Events, dt: f32) {
-    for entity in world.entities_with::<Tween>() {
-      // Skip inactive pooled entities
-      if world.has::<Inactive>(entity) {
-        continue;
-      }
-
-      // Check if tween is playing before borrowing mutably
-      let should_update = world.get::<Tween>(entity).is_some_and(|t| t.playing);
-
-      if !should_update {
-        continue;
-      }
-
-      // Capture color start values from Renderable if tween has color targets and hasn't started
-      let needs_color_capture = world
-        .get::<Tween>(entity)
-        .is_some_and(|t| t.has_color_targets() && !t.has_started());
-
-      if needs_color_capture && let Some(renderable) = world.get::<Renderable>(entity) {
-        let alpha = renderable.alpha;
-        let tint = renderable.tint;
-        if let Some(mut tween) = world.get_mut::<Tween>(entity) {
-          tween.capture_start_renderable(alpha, tint);
-        }
-      }
-
-      // Get transform and tween together for update
-      if let (Some(mut transform), Some(mut tween)) = (
-        world.get_mut::<Transform>(entity),
-        world.get_mut::<Tween>(entity),
-      ) {
-        tween.update(dt, &mut transform);
-      }
-
-      // Apply color/alpha tweening to Renderable
-      if let (Some(tween), Some(mut renderable)) = (
-        world.get::<Tween>(entity),
-        world.get_mut::<Renderable>(entity),
-      ) {
-        if let Some(alpha) = tween.current_alpha() {
-          renderable.alpha = alpha;
-        }
-        if let Some(tint) = tween.current_tint() {
-          renderable.tint = tint;
-        }
-      }
-
-      // Emit tween events
-      if let Some(tween) = world.get::<Tween>(entity) {
-        if tween.just_started {
-          events.emit(TweenStarted { entity });
-        }
-        if tween.just_finished {
-          events.emit(TweenCompleted {
-            entity,
-            finished: !tween.playing,
-          });
-        }
-      }
+  for (entity, mut tween, renderable) in &mut unplaced {
+    if !tween.playing {
+      continue;
     }
-  }
-
-  /// Update all TweenSequence components.
-  fn update_tween_sequences(world: &mut World, events: &mut Events, dt: f32) {
-    for entity in world.entities_with::<TweenSequence>() {
-      // Skip inactive pooled entities
-      if world.has::<Inactive>(entity) {
-        continue;
-      }
-
-      // Clear last-frame state (TweenSequence.just_finished has no auto-reset like Tween does)
-      if let Some(mut seq) = world.get_mut::<TweenSequence>(entity) {
-        seq.just_finished = false;
-      }
-
-      // Check if sequence is playing and has a current tween
-      let should_update = world
-        .get::<TweenSequence>(entity)
-        .is_some_and(|s| s.playing && s.current().is_some());
-
-      if !should_update {
-        continue;
-      }
-
-      // Capture color start values if current tween has color targets and hasn't started
-      let needs_color_capture = world.get::<TweenSequence>(entity).is_some_and(|s| {
-        s.current()
-          .is_some_and(|t| t.has_color_targets() && !t.has_started())
-      });
-
-      if needs_color_capture && let Some(renderable) = world.get::<Renderable>(entity) {
-        let alpha = renderable.alpha;
-        let tint = renderable.tint;
-        if let Some(mut seq) = world.get_mut::<TweenSequence>(entity)
-          && let Some(tween) = seq.current_mut()
-        {
-          tween.capture_start_renderable(alpha, tint);
-        }
-      }
-
-      // Update the current tween in the sequence
-      let tween_finished = if let (Some(mut transform), Some(mut seq)) = (
-        world.get_mut::<Transform>(entity),
-        world.get_mut::<TweenSequence>(entity),
-      ) {
-        let speed = seq.speed;
-        if let Some(tween) = seq.current_mut() {
-          tween.update(dt * speed, &mut transform);
-          tween.just_finished
-        } else {
-          false
-        }
-      } else {
-        false
-      };
-
-      // Apply color/alpha tweening from current tween to Renderable
-      if let (Some(seq), Some(mut renderable)) = (
-        world.get::<TweenSequence>(entity),
-        world.get_mut::<Renderable>(entity),
-      ) && let Some(tween) = seq.current()
-      {
-        if let Some(alpha) = tween.current_alpha() {
-          renderable.alpha = alpha;
-        }
-        if let Some(tint) = tween.current_tint() {
-          renderable.tint = tint;
-        }
-      }
-
-      // Capture sequence event state before advance mutates it
-      let seq_just_started = if let Some(seq) = world.get::<TweenSequence>(entity) {
-        seq.current().is_some_and(|t| t.just_started) && seq.current_index() == 0
-      } else {
-        false
-      };
-
-      // Advance to next tween if current one finished
-      if tween_finished && let Some(mut seq) = world.get_mut::<TweenSequence>(entity) {
-        seq.advance();
-      }
-
-      // Emit sequence events using pre-advance state
-      if seq_just_started {
-        events.emit(TweenStarted { entity });
-      }
-      if let Some(seq) = world.get::<TweenSequence>(entity)
-        && seq.just_finished
-      {
-        events.emit(TweenCompleted {
-          entity,
-          finished: true,
-        });
-      }
-    }
-  }
-
-  /// Update all PropertyTween components (f32, Vec2, Color).
-  ///
-  /// Since `PropertyTween<T>` is generic, we query for each concrete type separately.
-  fn update_property_tweens(world: &mut World, events: &mut Events, dt: f32) {
-    // f32 property tweens
-    for entity in world.entities_with::<PropertyTween<f32>>() {
-      if world.has::<Inactive>(entity) {
-        continue;
-      }
-      if let Some(mut tween) = world.get_mut::<PropertyTween<f32>>(entity) {
-        drive_property_tween(entity, &mut *tween, events, dt);
-      }
-    }
-
-    // Vec2 property tweens
-    for entity in world.entities_with::<PropertyTween<Vec2>>() {
-      if world.has::<Inactive>(entity) {
-        continue;
-      }
-      if let Some(mut tween) = world.get_mut::<PropertyTween<Vec2>>(entity) {
-        drive_property_tween(entity, &mut *tween, events, dt);
-      }
-    }
-
-    // Color property tweens
-    for entity in world.entities_with::<PropertyTween<Color>>() {
-      if world.has::<Inactive>(entity) {
-        continue;
-      }
-      if let Some(mut tween) = world.get_mut::<PropertyTween<Color>>(entity) {
-        drive_property_tween(entity, &mut *tween, events, dt);
-      }
-    }
+    drive_tween(&mut tween, dt, None, renderable.map(|r| r.into_inner()));
+    report(entity, &tween, &mut started, &mut completed);
   }
 }
 
-/// Drive a single property tween forward by `dt`, emitting lifecycle events.
-fn drive_property_tween<T: Lerp>(
+/// One step of a tween: capture the colour start, advance, write colour.
+fn drive_tween(
+  tween: &mut Tween,
+  dt: f32,
+  transform: Option<&mut Transform>,
+  renderable: Option<&mut Renderable>,
+) {
+  if tween.has_color_targets()
+    && !tween.has_started()
+    && let Some(renderable) = renderable.as_deref()
+  {
+    tween.capture_start_renderable(renderable.alpha, renderable.tint);
+  }
+  match transform {
+    Some(transform) => tween.update(dt, transform),
+    None => tween.update_without_transform(dt),
+  }
+  if let Some(renderable) = renderable {
+    tween.apply_color(renderable);
+  }
+}
+
+fn report(
+  entity: Entity,
+  tween: &Tween,
+  started: &mut MessageWriter<TweenStarted>,
+  completed: &mut MessageWriter<TweenCompleted>,
+) {
+  if tween.just_started {
+    started.write(TweenStarted { entity });
+  }
+  if tween.just_finished {
+    completed.write(TweenCompleted {
+      entity,
+      finished: !tween.playing,
+    });
+  }
+}
+
+/// Advance every `TweenSequence` by one fixed step, moving to the next tween
+/// when one finishes.
+pub fn update_tween_sequences(
+  time: Res<Time>,
+  mut placed: Query<(
+    Entity,
+    &mut TweenSequence,
+    &mut Transform,
+    Option<&mut Renderable>,
+  )>,
+  mut unplaced: Query<(Entity, &mut TweenSequence, Option<&mut Renderable>), Without<Transform>>,
+  mut started: MessageWriter<TweenStarted>,
+  mut completed: MessageWriter<TweenCompleted>,
+) {
+  let dt = time.fixed.timestep();
+  for (entity, mut sequence, mut transform, renderable) in &mut placed {
+    drive_sequence(
+      entity,
+      &mut sequence,
+      dt,
+      Some(&mut *transform),
+      renderable.map(|r| r.into_inner()),
+      &mut started,
+      &mut completed,
+    );
+  }
+  for (entity, mut sequence, renderable) in &mut unplaced {
+    drive_sequence(
+      entity,
+      &mut sequence,
+      dt,
+      None,
+      renderable.map(|r| r.into_inner()),
+      &mut started,
+      &mut completed,
+    );
+  }
+}
+
+fn drive_sequence(
+  entity: Entity,
+  sequence: &mut TweenSequence,
+  dt: f32,
+  transform: Option<&mut Transform>,
+  renderable: Option<&mut Renderable>,
+  started: &mut MessageWriter<TweenStarted>,
+  completed: &mut MessageWriter<TweenCompleted>,
+) {
+  // `just_finished` lasts one step
+  if sequence.just_finished {
+    sequence.just_finished = false;
+  }
+  if !sequence.playing {
+    return;
+  }
+  let speed = sequence.speed;
+  let at_start = sequence.current_index() == 0;
+  let Some(tween) = sequence.current_mut() else {
+    return;
+  };
+  let transform = transform.filter(|_| tween.has_transform_targets());
+  drive_tween(tween, dt * speed, transform, renderable);
+  let sequence_started = at_start && tween.just_started;
+  let tween_finished = tween.just_finished;
+  if tween_finished {
+    sequence.advance();
+  }
+  if sequence_started {
+    started.write(TweenStarted { entity });
+  }
+  if sequence.just_finished {
+    completed.write(TweenCompleted {
+      entity,
+      finished: true,
+    });
+  }
+}
+
+/// Advance every `PropertyTween<f32>`, `PropertyTween<Vec2>` and
+/// `PropertyTween<Color>` by one fixed step.
+pub fn update_property_tweens(
+  time: Res<Time>,
+  mut floats: Query<(Entity, &mut PropertyTween<f32>)>,
+  mut vectors: Query<(Entity, &mut PropertyTween<Vec2>)>,
+  mut colors: Query<(Entity, &mut PropertyTween<Color>)>,
+  mut started: MessageWriter<TweenStarted>,
+  mut completed: MessageWriter<TweenCompleted>,
+) {
+  let dt = time.fixed.timestep();
+  for (entity, mut tween) in &mut floats {
+    drive_property_tween(entity, &mut tween, dt, &mut started, &mut completed);
+  }
+  for (entity, mut tween) in &mut vectors {
+    drive_property_tween(entity, &mut tween, dt, &mut started, &mut completed);
+  }
+  for (entity, mut tween) in &mut colors {
+    drive_property_tween(entity, &mut tween, dt, &mut started, &mut completed);
+  }
+}
+
+fn drive_property_tween<T: Lerp + Send + Sync + 'static>(
   entity: Entity,
   tween: &mut PropertyTween<T>,
-  events: &mut Events,
   dt: f32,
+  started: &mut MessageWriter<TweenStarted>,
+  completed: &mut MessageWriter<TweenCompleted>,
 ) {
   tween.update(dt);
   if tween.just_started() {
-    events.emit(TweenStarted { entity });
+    started.write(TweenStarted { entity });
   }
   if tween.just_finished() {
-    events.emit(TweenCompleted {
+    completed.write(TweenCompleted {
       entity,
       finished: !tween.playing(),
     });
@@ -250,249 +206,192 @@ fn drive_property_tween<T: Lerp>(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::events::{Events, TweenCompleted, TweenStarted};
+  use crate::core::asset::SpriteHandle;
+  use crate::core::ecs::{
+    Disabled, IntoScheduleConfigs, PropertyTween, Renderable, Transform, Tween, TweenSequence,
+    Vec2, World,
+  };
+  use crate::core::graphics::Sprite;
+  use crate::core::messages::{TweenCompleted, TweenStarted};
+  use crate::core::systems::test_util::{clear_messages, messages, run, set_hz, world};
+  use crate::core::ui::Color;
 
-  #[test]
-  fn test_tween_system_no_crash_on_empty_world() {
-    let mut world = World::default();
-    let mut events = Events::default();
-    // Should not panic on empty world
-    TweenSystem::update(&mut world, &mut events, 0.016);
-  }
-
-  #[test]
-  fn test_tween_emits_started_event() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    world.spawn((
-      Transform::new(0.0, 0.0),
-      Tween::to_position(100.0, 100.0, 1.0),
-    ));
-
-    TweenSystem::update(&mut world, &mut events, 0.016);
-
-    let started: Vec<_> = events.read::<TweenStarted>().collect();
-    assert_eq!(started.len(), 1, "Should emit TweenStarted");
-  }
-
-  #[test]
-  fn test_tween_emits_completed_event() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    world.spawn((
-      Transform::new(0.0, 0.0),
-      Tween::to_position(100.0, 100.0, 0.1),
-    ));
-
-    // Run past duration
-    TweenSystem::update(&mut world, &mut events, 0.2);
-
-    let completed: Vec<_> = events.read::<TweenCompleted>().collect();
-    assert_eq!(completed.len(), 1, "Should emit TweenCompleted");
-    assert!(completed[0].finished, "Once tween should be finished=true");
-  }
-
-  #[test]
-  fn test_tween_sequence_emits_started_event() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    world.spawn((
-      Transform::new(0.0, 0.0),
-      TweenSequence::new().then(Tween::to_position(100.0, 0.0, 1.0)),
-    ));
-
-    TweenSystem::update(&mut world, &mut events, 0.016);
-
-    let started: Vec<_> = events.read::<TweenStarted>().collect();
-    assert_eq!(started.len(), 1, "Should emit TweenStarted for sequence");
-  }
-
-  #[test]
-  fn test_tween_sequence_emits_completed_on_finish() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    world.spawn((
-      Transform::new(0.0, 0.0),
-      TweenSequence::new().then(Tween::to_position(100.0, 0.0, 0.1)),
-    ));
-
-    // Run past duration
-    TweenSystem::update(&mut world, &mut events, 0.2);
-
-    let completed: Vec<_> = events.read::<TweenCompleted>().collect();
-    assert_eq!(
-      completed.len(),
-      1,
-      "Should emit TweenCompleted for sequence"
-    );
-    assert!(completed[0].finished);
-  }
-
-  #[test]
-  fn test_tween_sequence_speed_doubles_progress() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    let entity = world.spawn((
-      Transform::new(0.0, 0.0),
-      TweenSequence::new()
-        .then(Tween::to_position(100.0, 0.0, 1.0))
-        .with_speed(2.0),
-    ));
-
-    // At 2x speed, 0.25s real time = 0.5s tween time
-    TweenSystem::update(&mut world, &mut events, 0.25);
-
-    let x = world.get::<Transform>(entity).unwrap().x;
-    // Should be approximately at 50% progress (50.0) rather than 25% (25.0)
-    assert!(
-      x > 40.0,
-      "At 2x speed, should be past 40% after 0.25s, got {x}"
+  fn all(world: &mut World) {
+    run(
+      world,
+      (
+        update_tweens,
+        update_tween_sequences,
+        update_property_tweens,
+      )
+        .chain(),
     );
   }
 
-  #[test]
-  fn test_looping_sequence_does_not_emit_completed() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    world.spawn((
-      Transform::new(0.0, 0.0),
-      TweenSequence::new()
-        .then(Tween::to_position(100.0, 0.0, 0.1))
-        .with_loop(),
-    ));
-
-    // Run past first iteration
-    TweenSystem::update(&mut world, &mut events, 0.2);
-
-    // Looping sequence should NOT emit TweenCompleted (it never "finishes")
-    let completed: Vec<_> = events.read::<TweenCompleted>().collect();
-    assert_eq!(
-      completed.len(),
-      0,
-      "Looping sequence should not emit TweenCompleted"
-    );
+  fn sprite() -> Renderable {
+    Renderable::sprite(SpriteHandle::from_sprite(
+      Sprite::solid_rect(4, 4, 255, 255, 255, 255),
+      "white",
+    ))
   }
 
   #[test]
-  fn test_property_tween_emits_started_event() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    world.spawn((PropertyTween::new(0.0_f32, 100.0, 1.0),));
-
-    TweenSystem::update(&mut world, &mut events, 0.016);
-
-    let started: Vec<_> = events.read::<TweenStarted>().collect();
-    assert_eq!(
-      started.len(),
-      1,
-      "Should emit TweenStarted for PropertyTween"
-    );
+  fn runs_on_an_empty_world() {
+    let mut world = world(60);
+    all(&mut world);
   }
 
   #[test]
-  fn test_property_tween_emits_completed_event() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    world.spawn((PropertyTween::new(0.0_f32, 100.0, 0.1),));
-
-    // Run past duration
-    TweenSystem::update(&mut world, &mut events, 0.2);
-
-    let completed: Vec<_> = events.read::<TweenCompleted>().collect();
-    assert_eq!(
-      completed.len(),
-      1,
-      "Should emit TweenCompleted for PropertyTween"
-    );
-    assert!(completed[0].finished);
+  fn a_tween_says_when_it_starts() {
+    let mut world = world(60);
+    let entity = world
+      .spawn((Transform::IDENTITY, Tween::to_position(100.0, 100.0, 1.0)))
+      .id();
+    all(&mut world);
+    assert_eq!(messages::<TweenStarted>(&world), [TweenStarted { entity }]);
   }
 
   #[test]
-  fn test_property_tween_vec2_emits_events() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    world.spawn((PropertyTween::new(Vec2::ZERO, Vec2::new(100.0, 50.0), 0.1),));
-
-    TweenSystem::update(&mut world, &mut events, 0.016);
-    let started: Vec<_> = events.read::<TweenStarted>().collect();
+  fn a_tween_says_when_it_completes() {
+    let mut world = world(5);
+    let entity = world
+      .spawn((Transform::IDENTITY, Tween::to_position(100.0, 100.0, 0.1)))
+      .id();
+    all(&mut world);
     assert_eq!(
-      started.len(),
-      1,
-      "Vec2 PropertyTween should emit TweenStarted"
-    );
-
-    events.clear();
-    TweenSystem::update(&mut world, &mut events, 0.2);
-    let completed: Vec<_> = events.read::<TweenCompleted>().collect();
-    assert_eq!(
-      completed.len(),
-      1,
-      "Vec2 PropertyTween should emit TweenCompleted"
-    );
-  }
-
-  #[test]
-  fn test_property_tween_color_emits_events() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    world.spawn((PropertyTween::new(Color::RED, Color::BLUE, 0.1),));
-
-    TweenSystem::update(&mut world, &mut events, 0.2);
-
-    let started: Vec<_> = events.read::<TweenStarted>().collect();
-    let completed: Vec<_> = events.read::<TweenCompleted>().collect();
-    assert_eq!(
-      started.len(),
-      1,
-      "Color PropertyTween should emit TweenStarted"
+      messages::<TweenCompleted>(&world),
+      [TweenCompleted {
+        entity,
+        finished: true
+      }]
     );
     assert_eq!(
-      completed.len(),
-      1,
-      "Color PropertyTween should emit TweenCompleted"
+      world.get::<Transform>(entity).unwrap().translation,
+      Vec2::new(100.0, 100.0)
     );
   }
 
   #[test]
-  fn test_looping_sequence_emits_started_on_restart() {
-    let mut world = World::default();
-    let mut events = Events::default();
-
-    world.spawn((
-      Transform::new(0.0, 0.0),
-      TweenSequence::new()
-        .then(Tween::to_position(100.0, 0.0, 0.1))
-        .with_loop(),
-    ));
-
-    // Frame 1: sequence starts
-    TweenSystem::update(&mut world, &mut events, 0.016);
-    let started: Vec<_> = events.read::<TweenStarted>().collect();
-    assert_eq!(started.len(), 1, "Should emit TweenStarted on first play");
-
-    // Frame 2: run past first iteration, advance() loops back to index 0
-    events.clear();
-    TweenSystem::update(&mut world, &mut events, 0.2);
-
-    // Frame 3: the restarted tween at index 0 now "starts" again
-    events.clear();
-    TweenSystem::update(&mut world, &mut events, 0.016);
-
-    let started: Vec<_> = events.read::<TweenStarted>().collect();
+  fn an_alpha_tween_runs_on_an_entity_without_a_transform() {
+    let mut world = world(5);
+    let entity = world.spawn((sprite(), Tween::fade_out(0.1))).id();
+    all(&mut world);
+    assert_eq!(world.get::<Renderable>(entity).unwrap().alpha, 0.0);
     assert_eq!(
-      started.len(),
-      1,
-      "Should emit TweenStarted when loop restarts"
+      messages::<TweenCompleted>(&world),
+      [TweenCompleted {
+        entity,
+        finished: true
+      }]
     );
+  }
+
+  #[test]
+  fn a_sequence_says_when_it_starts_and_completes() {
+    let mut world = world(60);
+    let entity = world
+      .spawn((
+        Transform::IDENTITY,
+        TweenSequence::new().then(Tween::to_position(100.0, 0.0, 0.1)),
+      ))
+      .id();
+    all(&mut world);
+    assert_eq!(messages::<TweenStarted>(&world), [TweenStarted { entity }]);
+    clear_messages(&mut world);
+    set_hz(&mut world, 5);
+    all(&mut world);
+    assert_eq!(
+      messages::<TweenCompleted>(&world),
+      [TweenCompleted {
+        entity,
+        finished: true
+      }]
+    );
+  }
+
+  #[test]
+  fn sequence_speed_scales_progress() {
+    let mut world = world(4);
+    let entity = world
+      .spawn((
+        Transform::IDENTITY,
+        TweenSequence::new()
+          .then(Tween::to_position(100.0, 0.0, 1.0))
+          .with_speed(2.0),
+      ))
+      .id();
+    // At 2x speed, 0.25 s is half the tween
+    all(&mut world);
+    let x = world.get::<Transform>(entity).unwrap().translation.x;
+    assert!(x > 40.0, "at 2x speed, past 40% after 0.25 s, got {x}");
+  }
+
+  #[test]
+  fn a_looping_sequence_never_completes_but_restarts() {
+    let mut world = world(60);
+    let entity = world
+      .spawn((
+        Transform::IDENTITY,
+        TweenSequence::new()
+          .then(Tween::to_position(100.0, 0.0, 0.1))
+          .with_loop(),
+      ))
+      .id();
+    all(&mut world);
+    assert_eq!(messages::<TweenStarted>(&world), [TweenStarted { entity }]);
+    clear_messages(&mut world);
+    set_hz(&mut world, 5);
+    all(&mut world);
+    assert!(messages::<TweenCompleted>(&world).is_empty());
+    clear_messages(&mut world);
+    set_hz(&mut world, 60);
+    all(&mut world);
+    assert_eq!(
+      messages::<TweenStarted>(&world),
+      [TweenStarted { entity }],
+      "the loop restarts"
+    );
+  }
+
+  #[test]
+  fn property_tweens_of_each_type_start_and_complete() {
+    let mut world = world(5);
+    let a = world.spawn(PropertyTween::new(0.0_f32, 100.0, 0.1)).id();
+    let b = world
+      .spawn(PropertyTween::new(Vec2::ZERO, Vec2::new(100.0, 50.0), 0.1))
+      .id();
+    let c = world
+      .spawn(PropertyTween::new(Color::RED, Color::BLUE, 0.1))
+      .id();
+    all(&mut world);
+    let started = messages::<TweenStarted>(&world);
+    let completed = messages::<TweenCompleted>(&world);
+    for entity in [a, b, c] {
+      assert!(started.contains(&TweenStarted { entity }));
+      assert!(completed.contains(&TweenCompleted {
+        entity,
+        finished: true
+      }));
+    }
+    assert_eq!(world.get::<PropertyTween<f32>>(a).unwrap().value(), 100.0);
+  }
+
+  #[test]
+  fn a_disabled_entity_is_untouched() {
+    let mut world = world(5);
+    let entity = world
+      .spawn((
+        Transform::IDENTITY,
+        Tween::to_position(100.0, 100.0, 0.1),
+        Disabled,
+      ))
+      .id();
+    world.spawn((PropertyTween::new(0.0_f32, 1.0, 0.1), Disabled));
+    all(&mut world);
+    assert_eq!(
+      world.get::<Transform>(entity).unwrap().translation,
+      Vec2::ZERO
+    );
+    assert!(messages::<TweenStarted>(&world).is_empty());
   }
 }

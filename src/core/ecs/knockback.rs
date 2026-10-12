@@ -16,25 +16,24 @@
 //! use ryo2d::prelude::*;
 //!
 //! // Apply knockback to an entity
-//! ctx.knockback(enemy, Vec2::new(-1.0, 0.0), 400.0);
+//! Knockback::apply(ctx.world, enemy, Vec2::new(-1.0, 0.0), 400.0);
 //!
 //! // Or with custom decay rate
-//! ctx.knockback_with_decay(enemy, Vec2::new(-1.0, 0.0), 400.0, 2.0);
+//! Knockback::apply_with_decay(ctx.world, enemy, Vec2::new(-1.0, 0.0), 400.0, 2.0);
 //!
-//! // Listen for knockback events
-//! for event in ctx.events.read::<KnockbackStarted>() {
+//! // React when it starts
+//! for event in ctx.messages::<KnockbackStarted>() {
 //!     // Play hit sound, spawn particles, etc.
 //! }
 //! ```
 //!
 //! # Physics Integration
 //!
-//! The knockback system automatically handles both physics and non-physics entities:
-//! - **With RigidBody**: Adds velocity impulse (works with colliders)
-//! - **Without RigidBody**: Applies directly to Transform position
+//! The knockback system sets the entity's `Velocity` when it has one (physics
+//! or the game moves it from there) and otherwise moves its `Transform`.
 
 use super::Vec2;
-use super::kernel::Component;
+use super::kernel::{Component, Entity, World};
 
 /// Component for applying decaying directional force to an entity.
 ///
@@ -231,12 +230,36 @@ impl Knockback {
     !self.active || self.strength <= 0.0
   }
 
-  /// Apply new knockback, optionally blending with existing.
+  /// Knock `entity` back with the default decay rate, adding a `Knockback`
+  /// if it has none. Does nothing if the entity does not exist.
+  pub fn apply(world: &mut World, entity: Entity, direction: Vec2, force: f32) {
+    Self::apply_with_decay(world, entity, direction, force, Self::DEFAULT_DECAY_RATE);
+  }
+
+  /// Knock `entity` back with a custom decay rate (higher recovers faster).
+  pub fn apply_with_decay(
+    world: &mut World,
+    entity: Entity,
+    direction: Vec2,
+    force: f32,
+    decay_rate: f32,
+  ) {
+    let Ok(mut entity) = world.get_entity_mut(entity) else {
+      return;
+    };
+    if let Some(mut knockback) = entity.get_mut::<Knockback>() {
+      knockback.push_with_decay(direction, force, decay_rate);
+    } else {
+      entity.insert(Knockback::new(direction, force).with_decay_rate(decay_rate));
+    }
+  }
+
+  /// Push again, optionally blending with an active knockback.
   ///
   /// If `self.accumulate` is true and knockback is active, this blends
   /// the new direction with the existing one and adds forces.
   /// Otherwise, it replaces the existing knockback entirely.
-  pub fn apply(&mut self, direction: Vec2, force: f32) {
+  pub fn push(&mut self, direction: Vec2, force: f32) {
     let (new_dir_x, new_dir_y) = normalize(direction.x, direction.y);
 
     if self.accumulate && self.active && self.strength > 0.0 {
@@ -273,9 +296,9 @@ impl Knockback {
     self.just_finished = false;
   }
 
-  /// Apply knockback with a specific decay rate.
-  pub fn apply_with_decay(&mut self, direction: Vec2, force: f32, decay_rate: f32) {
-    self.apply(direction, force);
+  /// Push with a specific decay rate.
+  pub fn push_with_decay(&mut self, direction: Vec2, force: f32, decay_rate: f32) {
+    self.push(direction, force);
     self.decay_rate = decay_rate.max(0.1);
   }
 
@@ -424,7 +447,7 @@ mod tests {
     let mut kb = Knockback::new(Vec2::new(1.0, 0.0), 100.0);
 
     // Apply force in different direction
-    kb.apply(Vec2::new(0.0, 1.0), 100.0);
+    kb.push(Vec2::new(0.0, 1.0), 100.0);
 
     // Direction should be blended (roughly 45 degrees)
     let dir = kb.direction();
@@ -436,7 +459,7 @@ mod tests {
   fn apply_replaces_when_accumulate_disabled() {
     let mut kb = Knockback::new(Vec2::new(1.0, 0.0), 100.0).with_accumulate(false);
 
-    kb.apply(Vec2::new(0.0, 1.0), 200.0);
+    kb.push(Vec2::new(0.0, 1.0), 200.0);
 
     // Direction should be replaced
     let dir = kb.direction();

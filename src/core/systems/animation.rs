@@ -1,99 +1,94 @@
-//! Animation system for updating Animator and AnimationController components.
-//!
-//! This system handles:
-//! - Updating animation frame timers
-//! - Syncing current animation frames to Renderable sprites
+//! Sprite animation: advance `Animator` and `AnimationController` and show
+//! their current frame on the entity's `Renderable`.
 
-use crate::core::ecs::{Inactive, Renderable, World};
+use crate::core::asset::SpriteHandle;
+use crate::core::ecs::{Or, Query, Renderable, Res, With};
 use crate::core::graphics::{AnimationController, Animator};
+use crate::core::time::Time;
 
-/// System for updating animations.
-///
-/// Updates both simple `Animator` components and state-machine based
-/// `AnimationController` components, syncing their current frames
-/// to the entity's `Renderable` sprite.
-pub struct AnimationSystem;
-
-impl AnimationSystem {
-  /// Update all animation components in the world.
-  ///
-  /// # Arguments
-  /// * `world` - The ECS world containing entities
-  /// * `dt` - Delta time (should be scaled for time effects)
-  pub fn update(world: &mut World, dt: f32) {
-    Self::update_animators(world, dt);
-    Self::sync_animator_sprites(world);
-    Self::update_animation_controllers(world, dt);
-    Self::sync_animation_controller_sprites(world);
-  }
-
-  /// Update all Animator components (skip inactive pooled entities).
-  fn update_animators(world: &mut World, dt: f32) {
-    for entity in world.entities_with::<Animator>() {
-      if world.has::<Inactive>(entity) {
-        continue;
-      }
-      if let Some(mut animator) = world.get_mut::<Animator>(entity) {
-        animator.update(dt);
-      }
+/// Advance every `Animator` and `AnimationController` by one fixed step and
+/// put the current frame on the entity's `Renderable`.
+pub fn animate_sprites(
+  time: Res<Time>,
+  mut query: Query<
+    (
+      Option<&mut Animator>,
+      Option<&mut AnimationController>,
+      Option<&mut Renderable>,
+    ),
+    Or<(With<Animator>, With<AnimationController>)>,
+  >,
+) {
+  let dt = time.fixed.timestep();
+  for (animator, controller, mut renderable) in &mut query {
+    if let Some(mut animator) = animator {
+      animator.update(dt);
+      show(animator.current_sprite(), renderable.as_deref_mut());
+    }
+    if let Some(mut controller) = controller {
+      controller.update(dt);
+      show(controller.current_sprite(), renderable.as_deref_mut());
     }
   }
+}
 
-  /// Sync Animator sprites to Renderable (skip inactive pooled entities).
-  fn sync_animator_sprites(world: &mut World) {
-    for entity in world.entities_with::<Animator>() {
-      if world.has::<Inactive>(entity) {
-        continue;
-      }
-      let sprite = world
-        .get::<Animator>(entity)
-        .and_then(|a| a.current_sprite().cloned());
-      if let Some(sprite) = sprite
-        && let Some(mut renderable) = world.get_mut::<Renderable>(entity)
-      {
-        renderable.sprite = sprite;
-      }
-    }
-  }
-
-  /// Update all AnimationController components (skip inactive pooled entities).
-  fn update_animation_controllers(world: &mut World, dt: f32) {
-    for entity in world.entities_with::<AnimationController>() {
-      if world.has::<Inactive>(entity) {
-        continue;
-      }
-      if let Some(mut controller) = world.get_mut::<AnimationController>(entity) {
-        controller.update(dt);
-      }
-    }
-  }
-
-  /// Sync AnimationController sprites to Renderable (skip inactive pooled entities).
-  fn sync_animation_controller_sprites(world: &mut World) {
-    for entity in world.entities_with::<AnimationController>() {
-      if world.has::<Inactive>(entity) {
-        continue;
-      }
-      let sprite = world
-        .get::<AnimationController>(entity)
-        .and_then(|c| c.current_sprite().cloned());
-      if let Some(sprite) = sprite
-        && let Some(mut renderable) = world.get_mut::<Renderable>(entity)
-      {
-        renderable.sprite = sprite;
-      }
-    }
+/// Put `sprite` on `renderable` unless it is already showing.
+fn show(sprite: Option<&SpriteHandle>, renderable: Option<&mut Renderable>) {
+  if let (Some(sprite), Some(renderable)) = (sprite, renderable)
+    && renderable.sprite.serial() != sprite.serial()
+  {
+    renderable.sprite = sprite.clone();
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::asset::SpriteHandle;
+  use crate::core::ecs::{Disabled, Renderable};
+  use crate::core::graphics::{Animation, Animator, Sprite};
+  use crate::core::systems::test_util::{run, world};
+
+  fn frames() -> Vec<SpriteHandle> {
+    (0..3)
+      .map(|i| SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, i * 80, 0, 0, 255), "frame"))
+      .collect()
+  }
 
   #[test]
-  fn test_animation_system_no_crash_on_empty_world() {
-    let mut world = World::default();
-    // Should not panic on empty world
-    AnimationSystem::update(&mut world, 0.016);
+  fn runs_on_an_empty_world() {
+    let mut world = world(60);
+    run(&mut world, animate_sprites);
+  }
+
+  #[test]
+  fn an_animator_shows_its_next_frame_on_the_renderable() {
+    let frames = frames();
+    let mut world = world(10);
+    let entity = world
+      .spawn((
+        Renderable::sprite(frames[0].clone()),
+        Animator::new(Animation::new("walk", frames.clone(), 0.1)),
+      ))
+      .id();
+    run(&mut world, animate_sprites);
+    let shown = world.get::<Renderable>(entity).unwrap().sprite.serial();
+    assert_eq!(shown, frames[1].serial());
+  }
+
+  #[test]
+  fn a_disabled_entity_is_untouched() {
+    let frames = frames();
+    let mut world = world(10);
+    let entity = world
+      .spawn((
+        Renderable::sprite(frames[0].clone()),
+        Animator::new(Animation::new("walk", frames.clone(), 0.1)),
+        Disabled,
+      ))
+      .id();
+    run(&mut world, animate_sprites);
+    let shown = world.get::<Renderable>(entity).unwrap().sprite.serial();
+    assert_eq!(shown, frames[0].serial());
   }
 }
