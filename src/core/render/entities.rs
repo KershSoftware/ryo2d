@@ -118,7 +118,7 @@ impl EntityDrawer {
         let order = match y_sort {
           Some(y_sort) => DrawOrder::y_sorted(
             renderable.z_order,
-            y_sort.calculate_sort_y(global.translation().y, renderable.sprite.height() as f32),
+            y_sort_key(y_sort, renderable, global.translation().y),
           ),
           None => DrawOrder::plain(renderable.z_order),
         };
@@ -724,9 +724,51 @@ fn collect_composite(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<
   }
 }
 
+/// The y a y-sorted entity sorts by: the point `foot_offset` of the way down
+/// its sprite (0 top, 1 bottom), plus `sort_offset`.
+fn y_sort_key(y_sort: &YSort, renderable: &Renderable, y: f32) -> f32 {
+  let height = renderable.sprite.height() as f32;
+  // `y` is the anchor point; `calculate_sort_y` measures from the top
+  let (_, pivot_y) = renderable.anchor.to_pivot();
+  y_sort.calculate_sort_y(y - pivot_y * height, height)
+}
+
 #[cfg(test)]
 mod draw_order_tests {
-  use super::DrawOrder;
+  use super::{DrawOrder, y_sort_key};
+  use crate::core::asset::SpriteHandle;
+  use crate::core::ecs::{Anchor, Renderable, YSort};
+  use crate::core::graphics::Sprite;
+
+  fn sprite_20_high(anchor: Anchor) -> Renderable {
+    let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(10, 20, 255, 255, 255, 255), "tall");
+    Renderable::sprite(sprite).with_anchor(anchor)
+  }
+
+  #[test]
+  fn the_sort_key_is_the_feet_wherever_the_anchor_is() {
+    let y_sort = YSort::new();
+    // A 20 px sprite placed at y = 100: its feet are at 110 centred, 100
+    // bottom-anchored, 120 top-anchored
+    assert_eq!(
+      y_sort_key(&y_sort, &sprite_20_high(Anchor::Center), 100.0),
+      110.0
+    );
+    assert_eq!(
+      y_sort_key(&y_sort, &sprite_20_high(Anchor::BottomCenter), 100.0),
+      100.0
+    );
+    assert_eq!(
+      y_sort_key(&y_sort, &sprite_20_high(Anchor::TopLeft), 100.0),
+      120.0
+    );
+    // Foot offset 0 sorts by the top
+    let by_top = YSort::new().with_foot_offset(0.0);
+    assert_eq!(
+      y_sort_key(&by_top, &sprite_20_high(Anchor::Center), 100.0),
+      90.0
+    );
+  }
 
   #[test]
   fn layers_then_plain_then_sort_y() {

@@ -218,7 +218,8 @@ pub mod prelude {
   // Networking
   pub use crate::core::network::{
     Channel, ClientId, ClientLike, LOCAL_HOST_ID, ListenServer, NetworkClient, NetworkClientConfig,
-    NetworkEvent, NetworkServer, NetworkServerConfig, ServerLike, TransportConfig,
+    NetworkError, NetworkEvent, NetworkResult, NetworkServer, NetworkServerConfig,
+    ReplicationError, ReplicationResult, ServerLike, TransportConfig,
   };
 
   // WebRTC transport (requires the `matchbox` feature)

@@ -11,7 +11,6 @@
 //!
 //! Run with: `cargo test --test network_e2e`
 
-use ryo2d::core::network::NetworkError;
 use ryo2d::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

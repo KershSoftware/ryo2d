@@ -3,7 +3,6 @@
 //! These tests verify actual network communication between server and client,
 //! including the `ListenServer` for player-hosted games.
 
-use ryo2d::core::network::ReplicationError;
 use ryo2d::prelude::*;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};

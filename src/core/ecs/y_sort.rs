@@ -176,7 +176,8 @@ impl YSort {
   ///
   /// # Arguments
   ///
-  /// * `transform_y` - The entity's transform Y position
+  /// * `transform_y` - The y of the sprite's top edge (the renderer derives
+  ///   it from the entity's position and its `Renderable` anchor)
   /// * `sprite_height` - Height of the sprite in pixels
   ///
   /// # Returns
