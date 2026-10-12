@@ -10,7 +10,7 @@ use renet::ClientId;
 
 use super::types::{Rpc, RpcTypeId, SerializedRpc};
 use crate::core::ecs::World;
-use crate::core::error::ReplicationError;
+use crate::core::network::ReplicationError;
 
 /// Type-erased RPC handler function.
 type RpcHandler =

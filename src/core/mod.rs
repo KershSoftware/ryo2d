@@ -11,8 +11,7 @@ pub mod audio;
 pub mod cursor;
 pub mod input;
 pub(crate) mod input_script;
-// MIGRATION: Task 17
-// pub mod network;
+pub mod network;
 
 // Graphics & rendering
 pub mod graphics;

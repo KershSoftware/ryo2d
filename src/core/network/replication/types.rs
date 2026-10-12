@@ -5,6 +5,7 @@
 //! - [`NetworkEntity`] - Component marking an entity as networked
 //! - [`Authority`] - Who controls an entity (server or specific client)
 
+use crate::core::ecs::Component;
 use renet::ClientId;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,7 +82,7 @@ impl std::fmt::Display for NetworkId {
 /// // Player controlled by client 5
 /// let player_authority = Authority::Client(5);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Authority {
   /// Server has authority over this entity (default).
   /// Only the server can modify component values.
@@ -127,7 +128,7 @@ pub enum Authority {
 ///     authority: Authority::Client(client_id),
 /// };
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Component, Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkEntity {
   /// Unique network identifier for this entity.
   pub network_id: NetworkId,

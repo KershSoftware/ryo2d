@@ -135,38 +135,35 @@ pub mod prelude {
   };
 
   // Networking
-  // MIGRATION: Task 17
-  // pub use crate::core::network::{
-  //   Channel, ClientId, ClientLike, LOCAL_HOST_ID, ListenServer, NetworkClient, NetworkClientConfig,
-  //   NetworkEvent, NetworkServer, NetworkServerConfig, ServerLike, TransportConfig,
-  // };
+  pub use crate::core::network::{
+    Channel, ClientConnected, ClientDisconnected, ClientId, ClientLike, ConnectedToServer,
+    DisconnectReason, DisconnectedFromServer, LOCAL_HOST_ID, ListenServer, NetworkClient,
+    NetworkClientConfig, NetworkEvent, NetworkServer, NetworkServerConfig, ServerLike,
+    TransportConfig,
+  };
 
   // WebRTC transport (requires `matchbox` feature)
-  // MIGRATION: Task 17
-  // #[cfg(feature = "matchbox")]
-  // pub use crate::core::network::{IceServer, WebRtcConfig};
+  #[cfg(feature = "matchbox")]
+  pub use crate::core::network::{IceServer, WebRtcConfig};
 
   // Network Replication
-  // MIGRATION: Task 17
-  // pub use crate::core::network::replication::{
-  //   Authority, ComponentBatchMessage, ComponentRegistry, ComponentTypeId, ComponentUpdateMessage,
-  //   DespawnEntityMessage, DirtyTracker, FullStateSyncMessage, NetworkEntity, NetworkEntityBuilder,
-  //   NetworkId, Replicated, ReplicationManager, ReplicationMessage, SerializedComponent,
-  //   SpawnEntityMessage,
-  // };
+  pub use crate::core::network::replication::{
+    Authority, ComponentBatchMessage, ComponentRegistry, ComponentTypeId, ComponentUpdateMessage,
+    DespawnEntityMessage, DirtyTracker, FullStateSyncMessage, NetworkEntity, NetworkEntityBuilder,
+    NetworkId, Replicated, ReplicationManager, ReplicationMessage, SerializedComponent,
+    SpawnEntityMessage,
+  };
 
   // RPC System
-  // MIGRATION: Task 17
-  // pub use crate::core::network::rpc::{
-  //   ReceivedRpc, Rpc, RpcRegistry, RpcTarget, RpcTypeId, SerializedRpc,
-  // };
+  pub use crate::core::network::rpc::{
+    ReceivedRpc, Rpc, RpcRegistry, RpcTarget, RpcTypeId, SerializedRpc,
+  };
 
   // Network Input (derive macro + helpers)
-  // MIGRATION: Task 17
-  // pub use crate::core::network::input::{
-  //   InputBuffer, InputProcessor, NetworkInput, NetworkInputTrait, NetworkedInputHandler,
-  //   SequencedInput,
-  // };
+  pub use crate::core::network::input::{
+    InputBuffer, InputProcessor, NetworkInput, NetworkInputTrait, NetworkedInputHandler,
+    SequencedInput,
+  };
 
   // Render pipeline
   pub use crate::core::render::{
@@ -174,21 +171,18 @@ pub mod prelude {
   };
 
   // Network Actions (dual local+network execution)
-  // MIGRATION: Task 17
-  // pub use crate::core::network::action::{
-  //   ActionContext, ActionError, NetworkAction, SerializedAction, apply_received_action,
-  //   execute_action, execute_action_broadcast, execute_action_server, try_execute_action,
-  // };
+  pub use crate::core::network::action::{
+    ActionContext, ActionError, NetworkAction, SerializedAction, apply_received_action,
+    execute_action, execute_action_broadcast, execute_action_server, try_execute_action,
+  };
 
   // Client-Side Prediction
-  // MIGRATION: Task 17
-  // pub use crate::core::network::prediction::{
-  //   Predicted, PredictionHelper, ServerPositionUpdate, UpdateResult,
-  // };
+  pub use crate::core::network::prediction::{
+    Predicted, PredictionHelper, ServerPositionUpdate, UpdateResult,
+  };
 
   // NetworkedValue wrapper
-  // MIGRATION: Task 17
-  // pub use crate::core::network::replication::NetworkedValue;
+  pub use crate::core::network::replication::NetworkedValue;
 
   // Workspace & config
   pub use crate::core::config::{SystemDefaults, Workspace, WorkspaceConfig};

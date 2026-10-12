@@ -39,7 +39,7 @@ use std::time::Duration;
 
 use renet::ClientId;
 
-use crate::core::error::NetworkResult;
+use crate::core::network::NetworkResult;
 
 use super::NetworkEvent;
 

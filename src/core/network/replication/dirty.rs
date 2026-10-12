@@ -3,6 +3,7 @@
 //! Tracks which components have changed since the last network sync,
 //! enabling delta updates instead of full state transmission.
 
+use crate::core::ecs::Component;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use renet::ClientId;
@@ -77,7 +78,7 @@ struct ClientDelivery {
 /// // Later, the client acknowledges the batch by its generation
 /// tracker.record_ack(client_id, tracker.generation());
 /// ```
-#[derive(Debug)]
+#[derive(Component, Debug)]
 pub struct DirtyTracker {
   /// Current generation counter (incremented each frame/sync cycle)
   generation: u64,

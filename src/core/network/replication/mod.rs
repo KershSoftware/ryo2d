@@ -30,7 +30,7 @@
 //! let entity = replication.spawn_networked(
 //!     &mut world,
 //!     NetworkEntityBuilder::new()
-//!         .with_component(Transform::new(100.0, 100.0))
+//!         .with_component(Transform::from_xy(100.0, 100.0))
 //!         .with_component(Velocity::new(5.0, 0.0))
 //! );
 //!
@@ -54,6 +54,7 @@
 //! ```
 
 mod builder;
+mod builtin;
 mod component;
 mod dirty;
 mod manager;

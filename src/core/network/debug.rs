@@ -27,7 +27,7 @@
 //! warn_default_input_field(&input.facing_right, "facing_right");
 //! ```
 
-use hecs::Entity;
+use crate::core::ecs::Entity;
 
 use super::replication::{Replicated, ReplicationManager};
 
@@ -186,7 +186,7 @@ mod tests {
   fn warn_if_not_dirty_no_panic_for_non_networked_entity() {
     let replication = ReplicationManager::new_server();
     let mut world = World::new();
-    let entity = world.spawn((Transform::new(0.0, 0.0),));
+    let entity = world.spawn((Transform::from_xy(0.0, 0.0),)).id();
 
     // Should not panic for non-networked entity
     warn_if_not_dirty::<Transform>(entity, &replication);
@@ -202,7 +202,9 @@ mod tests {
     let entity = replication.spawn_networked(&mut world, builder);
 
     // Add the transform component
-    let _ = world.insert_one(entity, Transform::new(0.0, 0.0));
+    world
+      .entity_mut(entity)
+      .insert(Transform::from_xy(0.0, 0.0));
 
     // Mark it dirty
     replication.mark_dirty::<Transform>(entity);

@@ -9,8 +9,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::any::TypeId;
 use std::collections::HashMap;
 
-use crate::core::ecs::Component;
-use crate::core::error::ReplicationError;
+use crate::core::ecs::{Component, Mutable};
+use crate::core::network::ReplicationError;
 
 /// Unique identifier for a component type.
 ///
@@ -56,7 +56,7 @@ use serde::Deserialize;
 ///
 /// Implement this trait for any component that should be automatically
 /// synchronized between server and clients. The trait requires:
-/// - [`Component`] - Must be a valid ECS component
+/// - [`Component`] - A mutable ECS component (`#[derive(Component)]`)
 /// - [`Serialize`] + [`DeserializeOwned`] - For network transmission
 /// - [`Clone`] - For creating copies during replication
 ///
@@ -66,7 +66,7 @@ use serde::Deserialize;
 /// use ryo2d::prelude::*;
 /// use serde::{Serialize, Deserialize};
 ///
-/// #[derive(Debug, Clone, Serialize, Deserialize)]
+/// #[derive(Component, Debug, Clone, Serialize, Deserialize)]
 /// struct Health {
 ///     current: f32,
 ///     max: f32,
@@ -82,7 +82,9 @@ use serde::Deserialize;
 ///     }
 /// }
 /// ```
-pub trait Replicated: Component + Serialize + DeserializeOwned + Clone {
+pub trait Replicated:
+  Component<Mutability = Mutable> + Serialize + DeserializeOwned + Clone
+{
   /// Get the unique type ID for this component.
   ///
   /// This should be deterministic (same ID on server and clients).
@@ -201,15 +203,18 @@ type ComponentDeserializer = Box<
   dyn Fn(
       &SerializedComponent,
       &mut crate::core::ecs::World,
-      hecs::Entity,
+      crate::core::ecs::Entity,
     ) -> Result<(), ReplicationError>
     + Send
     + Sync,
 >;
 
 /// Type-erased entity component serializer that queries the World.
-type EntityComponentSerializer =
-  Box<dyn Fn(&crate::core::ecs::World, hecs::Entity) -> Option<SerializedComponent> + Send + Sync>;
+type EntityComponentSerializer = Box<
+  dyn Fn(&crate::core::ecs::World, crate::core::ecs::Entity) -> Option<SerializedComponent>
+    + Send
+    + Sync,
+>;
 
 /// Registry for replicated component types.
 ///
@@ -294,16 +299,10 @@ impl ComponentRegistry {
         })?;
 
         // Add or replace the component on the entity
-        if world.get::<T>(entity).is_some() {
-          // Entity has this component, need to update it
-          if let Some(mut comp) = world.get_mut::<T>(entity) {
-            *comp = component;
-          }
-        } else {
-          // Entity doesn't have this component, add it
-          world.add_component(entity, component);
-        }
-
+        let mut target = world
+          .get_entity_mut(entity)
+          .map_err(|_| ReplicationError::EntityNotFound(entity.to_bits()))?;
+        target.insert(component);
         Ok(())
       }),
     );
@@ -313,7 +312,7 @@ impl ComponentRegistry {
       component_id,
       Box::new(|world, entity| {
         let component = world.get::<T>(entity)?;
-        SerializedComponent::from_component(&*component).ok()
+        SerializedComponent::from_component(component).ok()
       }),
     );
   }
@@ -354,7 +353,7 @@ impl ComponentRegistry {
     &self,
     component_id: ComponentTypeId,
     world: &crate::core::ecs::World,
-    entity: hecs::Entity,
+    entity: crate::core::ecs::Entity,
   ) -> Option<SerializedComponent> {
     self
       .entity_serializers
@@ -367,7 +366,7 @@ impl ComponentRegistry {
     &self,
     serialized: &SerializedComponent,
     world: &mut crate::core::ecs::World,
-    entity: hecs::Entity,
+    entity: crate::core::ecs::Entity,
   ) -> Result<(), ReplicationError> {
     let deserializer = self
       .deserializers
@@ -414,7 +413,7 @@ mod tests {
     assert_eq!(back.data, b"{}".to_vec());
   }
 
-  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+  #[derive(Component, Debug, Clone, Serialize, Deserialize, PartialEq)]
   struct TestComponent {
     value: i32,
   }

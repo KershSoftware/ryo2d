@@ -210,9 +210,9 @@ impl<T: Clone> InputBuffer<T> {
 // ============================================================================
 
 use super::Channel;
+use crate::core::ecs::Entity;
 use crate::core::ecs::World;
 use crate::core::input::Input;
-use hecs::Entity;
 
 /// Trait for handling networked player input with client-side prediction.
 ///
@@ -430,7 +430,7 @@ mod tests {
 
     fn apply_input(&self, world: &mut World, entity: Entity, input: &Self::Input, _dt: f32) {
       if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-        transform.x += *input as f32;
+        transform.translation.x += *input as f32;
       }
     }
 
@@ -446,7 +446,7 @@ mod tests {
   #[test]
   fn input_processor_basic() {
     let mut world = World::new();
-    let entity = world.spawn((Transform::default(),));
+    let entity = world.spawn((Transform::default(),)).id();
 
     let handler = TestHandler {
       entity: Some(entity),
@@ -465,13 +465,13 @@ mod tests {
 
     // Check that input was applied (prediction)
     let transform = world.get::<Transform>(entity).unwrap();
-    assert_eq!(transform.x, 42.0);
+    assert_eq!(transform.translation.x, 42.0);
   }
 
   #[test]
   fn input_processor_no_prediction() {
     let mut world = World::new();
-    let entity = world.spawn((Transform::default(),));
+    let entity = world.spawn((Transform::default(),)).id();
 
     let handler = TestHandler {
       entity: Some(entity),
@@ -485,13 +485,13 @@ mod tests {
 
     // Input should NOT be applied locally
     let transform = world.get::<Transform>(entity).unwrap();
-    assert_eq!(transform.x, 0.0);
+    assert_eq!(transform.translation.x, 0.0);
   }
 
   #[test]
   fn input_processor_reconcile() {
     let mut world = World::new();
-    let entity = world.spawn((Transform::default(),));
+    let entity = world.spawn((Transform::default(),)).id();
 
     let handler = TestHandler {
       entity: Some(entity),
@@ -507,7 +507,7 @@ mod tests {
 
     // Simulate server correction: reset position and acknowledge seq 1
     if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-      transform.x = 100.0; // Server says we're at 100
+      transform.translation.x = 100.0; // Server says we're at 100
     }
 
     // Reconcile: replay inputs 2 and 3
@@ -515,7 +515,7 @@ mod tests {
 
     // Should be 100 + 42 + 42 = 184
     let transform = world.get::<Transform>(entity).unwrap();
-    assert_eq!(transform.x, 184.0);
+    assert_eq!(transform.translation.x, 184.0);
   }
 
   #[test]

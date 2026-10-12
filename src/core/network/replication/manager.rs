@@ -6,7 +6,7 @@
 use std::any::TypeId;
 use std::collections::{HashMap, VecDeque};
 
-use hecs::Entity;
+use crate::core::ecs::Entity;
 use renet::ClientId;
 
 use super::builder::NetworkEntityBuilder;
@@ -18,7 +18,7 @@ use super::messages::{
 };
 use super::types::{NetworkEntity, NetworkId};
 use crate::core::ecs::World;
-use crate::core::error::ReplicationResult;
+use crate::core::network::ReplicationResult;
 use crate::core::network::{Channel, ClientLike, ServerLike};
 
 /// Role of this replication manager.
@@ -60,7 +60,7 @@ pub const MAX_BATCH_BYTES: usize = 16 * 1024;
 /// let entity = replication.spawn_networked(
 ///     &mut world,
 ///     NetworkEntityBuilder::new()
-///         .with_component(Transform::new(0.0, 0.0))
+///         .with_component(Transform::from_xy(0.0, 0.0))
 /// );
 ///
 /// // Mark dirty after modification
@@ -195,7 +195,7 @@ impl ReplicationManager {
     let network_entity = builder.build_network_entity();
     let network_id = network_entity.network_id;
 
-    let entity = world.spawn((network_entity,));
+    let entity = world.spawn(network_entity).id();
     builder.insert_components(world, entity);
 
     // Register the mapping
@@ -226,13 +226,13 @@ impl ReplicationManager {
       .network_to_entity
       .get(&msg.network_id)
       .copied()
-      .filter(|&entity| world.contains(entity));
+      .filter(|&entity| world.get_entity(entity).is_ok());
     let entity = match existing {
       Some(entity) => {
-        let _ = world.insert_one(entity, network_entity);
+        world.entity_mut(entity).insert(network_entity);
         entity
       }
-      None => world.spawn((network_entity,)),
+      None => world.spawn(network_entity).id(),
     };
 
     // Map first: the entity stays known even if a component fails to apply,
@@ -763,7 +763,9 @@ mod tests {
     assert!(manager.get_entity(network_id).is_none());
   }
 
-  #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+  #[derive(
+    crate::core::ecs::Component, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize,
+  )]
   struct Health(u32);
 
   impl Replicated for Health {
@@ -776,7 +778,9 @@ mod tests {
     }
   }
 
-  #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+  #[derive(
+    crate::core::ecs::Component, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize,
+  )]
   struct Label(String);
 
   impl Replicated for Label {
@@ -798,9 +802,7 @@ mod tests {
     let mut world = World::new();
     for i in 0..count {
       let entity = server.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
-      world
-        .insert_one(entity, Label(format!("{i:0>200}")))
-        .unwrap();
+      world.entity_mut(entity).insert(Label(format!("{i:0>200}")));
       server.mark_dirty::<Label>(entity);
     }
     let net = RecordingServer {
@@ -831,7 +833,7 @@ mod tests {
     server.register::<Health>();
     let mut world = World::new();
     let entity = server.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
-    world.insert_one(entity, Health(42)).unwrap();
+    world.entity_mut(entity).insert(Health(42));
     let network_id = server.get_network_id(entity).unwrap();
     (server, world, network_id)
   }
@@ -1189,7 +1191,7 @@ mod tests {
 
   #[test]
   fn periodic_refresh_resends_unchanged_components() {
-    let (mut server, world, network_id) = server_with_health();
+    let (mut server, mut world, network_id) = server_with_health();
     let mut net = RecordingServer {
       clients: vec![1],
       ..Default::default()
@@ -1232,7 +1234,7 @@ mod tests {
     let mut world = World::new();
     for i in 0..300 {
       let entity = server.spawn_networked(&mut world, NetworkEntityBuilder::new());
-      world.insert_one(entity, Health(i)).unwrap();
+      world.entity_mut(entity).insert(Health(i));
     }
     let mut net = RecordingServer {
       clients: vec![1],
@@ -1287,8 +1289,8 @@ mod tests {
     let mut world = World::new();
     let entity = server.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
     world
-      .insert_one(entity, Label("x".repeat(MAX_BATCH_BYTES)))
-      .unwrap();
+      .entity_mut(entity)
+      .insert(Label("x".repeat(MAX_BATCH_BYTES)));
     server.mark_dirty::<Label>(entity);
     let mut net = RecordingServer {
       clients: vec![1],
@@ -1525,9 +1527,9 @@ mod tests {
   fn a_repeated_spawn_reuses_the_entity() {
     let (server, mut world, network_id) = server_with_health();
     let entity = server.get_entity(network_id).unwrap();
-    world.insert_one(entity, Health(1)).unwrap();
+    world.entity_mut(entity).insert(Health(1));
     let sync = server.build_full_state_sync(&world);
-    world.insert_one(entity, Health(2)).unwrap();
+    world.entity_mut(entity).insert(Health(2));
     let spawn = server.spawn_message(&world, network_id).unwrap();
 
     let mut client = ReplicationManager::new_client();
@@ -1546,7 +1548,7 @@ mod tests {
 
     let networked = client_world
       .query::<&NetworkEntity>()
-      .iter()
+      .iter(&client_world)
       .filter(|ne| ne.network_id == network_id)
       .count();
     assert_eq!(networked, 1);

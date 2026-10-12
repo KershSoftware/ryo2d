@@ -47,8 +47,8 @@ use std::time::Duration;
 use matchbox_socket::{MultipleChannels, PeerId, PeerState, WebRtcSocket};
 use renet::{ClientId, RenetClient, RenetServer};
 
-use crate::core::error::{NetworkError, NetworkResult};
 use crate::core::network::NetworkEvent;
+use crate::core::network::{NetworkError, NetworkResult};
 
 use super::{ClientTransport, ServerTransport};
 

@@ -13,8 +13,8 @@ use renet_netcode::{
   ServerConfig,
 };
 
-use crate::core::error::{NetworkError, NetworkResult};
 use crate::core::network::NetworkEvent;
+use crate::core::network::{NetworkError, NetworkResult};
 
 use super::{ClientTransport, ServerTransport};
 

@@ -4,7 +4,7 @@
 
 use renet::ClientId;
 
-use hecs::Entity;
+use crate::core::ecs::Entity;
 
 use super::component::{Replicated, SerializedComponent};
 use super::types::{Authority, NetworkEntity, NetworkId};
@@ -27,7 +27,7 @@ type ComponentInserter = Box<dyn FnOnce(&mut World, Entity) + Send + Sync>;
 /// let builder = NetworkEntityBuilder::new()
 ///     .with_owner(client_id)
 ///     .with_authority(Authority::Client(client_id))
-///     .with_component(Transform::new(100.0, 200.0))
+///     .with_component(Transform::from_xy(100.0, 200.0))
 ///     .with_component(Velocity::new(5.0, 0.0));
 /// ```
 pub struct NetworkEntityBuilder {
@@ -113,7 +113,9 @@ impl NetworkEntityBuilder {
     self
       .inserters
       .push(Box::new(move |world: &mut World, entity| {
-        world.add_component(entity, component);
+        if let Ok(mut target) = world.get_entity_mut(entity) {
+          target.insert(component);
+        }
       }));
 
     self
@@ -201,7 +203,7 @@ mod tests {
   use super::*;
   use serde::{Deserialize, Serialize};
 
-  #[derive(Debug, Clone, Serialize, Deserialize)]
+  #[derive(crate::core::ecs::Component, Debug, Clone, Serialize, Deserialize)]
   struct TestComponent {
     value: i32,
   }

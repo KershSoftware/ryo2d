@@ -44,6 +44,7 @@
 //! but NOT `DerefMut`, forcing you to use `set()` or `modify()` which track
 //! modifications.
 
+use crate::core::ecs::Component;
 use std::fmt;
 use std::ops::Deref;
 
@@ -81,7 +82,7 @@ use serde::{Deserialize, Serialize};
 /// health.apply_server_correction(100);
 /// assert!(!health.is_dirty());
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Component, Clone, Serialize, Deserialize)]
 pub struct NetworkedValue<T> {
   value: T,
   #[serde(skip)]
