@@ -662,6 +662,29 @@ fn a_sprite_is_centred_on_its_position_by_default() {
 }
 
 #[test]
+fn a_centred_sprite_stays_on_its_position_under_zoom() {
+  // 10 x 10 at the camera's centre, zoomed 2x: 20 x 20 screen pixels around
+  // the middle of the 64 x 64 frame, 22..42 on both axes
+  let scene = Fixture::new(|ctx| {
+    ctx.camera.set_position(32.0, 32.0);
+    ctx.camera.set_zoom(2.0);
+    ctx.world.spawn((
+      Transform::from_xy(32.0, 32.0),
+      Renderable::sprite(red_rect(10, 10, "zoomed")),
+    ));
+  });
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  for (x, y) in [(23, 23), (32, 32), (41, 41)] {
+    assert_eq!(frame.get_pixel(x, y).0, ANCHOR_RED, "({x}, {y}) inside");
+  }
+  for (x, y) in [(20, 32), (44, 32), (32, 20), (32, 44)] {
+    assert_ne!(frame.get_pixel(x, y).0, ANCHOR_RED, "({x}, {y}) outside");
+  }
+}
+
+#[test]
 fn a_sprite_rotates_about_its_anchor() {
   // 20 wide, 10 tall, standing on (32, 32). A quarter turn clockwise (y is
   // down) lays it to the right of its feet: x 32..42, y 22..42

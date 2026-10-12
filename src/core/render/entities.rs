@@ -508,8 +508,9 @@ fn collect_entity(frame: &EntityFrame<'_>, drawable: &Drawable<'_>, out: &mut Em
     RenderStyle::Single => {
       let final_scale_x = scale_x * camera.zoom;
       let final_scale_y = scale_y * camera.zoom;
-      let sprite_w = source.width as f32 * final_scale_x;
-      let sprite_h = source.height as f32 * final_scale_y;
+      // World size: the camera applies its zoom in `world_to_screen`
+      let sprite_w = source.width as f32 * scale_x;
+      let sprite_h = source.height as f32 * scale_y;
 
       // Placement takes the top-left corner and turns about the middle, so
       // the corner moves to keep the pivot at (x, y) through any rotation
