@@ -98,6 +98,22 @@ impl ScreenMapping {
     }
   }
 
+  /// The window's physical size.
+  pub(crate) fn physical_size(&self) -> (u32, u32) {
+    self.physical
+  }
+
+  /// The same presentation and scale factor for a window of `physical` pixels.
+  pub(crate) fn with_physical(&self, physical: (u32, u32)) -> Self {
+    Self::new(self.presentation, physical, f64::from(self.scale_factor))
+  }
+
+  /// The size of images in screen space (the UI): the screen size rounded up.
+  pub(crate) fn ui_size(&self) -> (u32, u32) {
+    let size = self.screen_size().ceil();
+    ((size.x as u32).max(1), (size.y as u32).max(1))
+  }
+
   /// The screen rectangle in the window's normalised device coordinates:
   /// scale x, scale y, offset x, offset y.
   pub fn ndc_rect(&self) -> [f32; 4] {

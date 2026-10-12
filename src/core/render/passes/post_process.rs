@@ -19,7 +19,7 @@ impl RenderPass for PostProcess {
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
     let (device, queue) = (ctx.device(), ctx.queue());
-    let (width, height) = ctx.game_size();
+    let (width, height) = ctx.render_size();
     let effects = ctx.scene.effects;
     let active: Vec<_> = effects
       .active_effects()

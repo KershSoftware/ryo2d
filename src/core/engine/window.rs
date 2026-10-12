@@ -92,42 +92,9 @@ impl Engine {
 
   fn renderer_settings(&self) -> RendererSettings {
     RendererSettings {
-      game_width: self.config.width,
-      game_height: self.config.height,
+      presentation: self.config.presentation,
       vsync: Some(self.vsync),
     }
-  }
-
-  /// Transform window coordinates to game coordinates.
-  ///
-  /// Handles scaling and letterboxing when window size differs from game resolution.
-  /// Returns `None` if the coordinates are outside the game viewport (in black bars).
-  fn window_to_game_coords(&self, window_x: f64, window_y: f64) -> Option<(f32, f32)> {
-    let (Some(window), Some(_)) = (&self.window, &self.renderer) else {
-      return Some((window_x as f32, window_y as f32));
-    };
-    let window_size = window.inner_size();
-    let (game_width, game_height) = (self.config.width as f32, self.config.height as f32);
-
-    // Scale to fit, keeping the aspect ratio (bars on the sides or top/bottom)
-    let window_aspect = window_size.width as f32 / window_size.height as f32;
-    let game_aspect = game_width / game_height;
-    let scale = if window_aspect > game_aspect {
-      window_size.height as f32 / game_height
-    } else {
-      window_size.width as f32 / game_width
-    };
-
-    let offset_x = (window_size.width as f32 - game_width * scale) / 2.0;
-    let offset_y = (window_size.height as f32 - game_height * scale) / 2.0;
-    let game_x = (window_x as f32 - offset_x) / scale;
-    let game_y = (window_y as f32 - offset_y) / scale;
-
-    // Reject clicks in the black bars
-    if game_x < 0.0 || game_x > game_width || game_y < 0.0 || game_y > game_height {
-      return None;
-    }
-    Some((game_x, game_y))
   }
 
   /// Apply a requested UI scale (0 means detect it from the DPI).
@@ -544,18 +511,9 @@ impl ApplicationHandler<EngineEvent> for Engine {
           });
       }
       WindowEvent::CursorMoved { position, .. } => {
-        // While locked, motion comes from DeviceEvent::MouseMotion instead;
-        // outside the game viewport (black bars) the position is not updated
-        if !self.cursor_locked
-          && let Some((game_x, game_y)) = self.window_to_game_coords(position.x, position.y)
-        {
-          self
-            .world
-            .resource_mut::<Input>()
-            .queue(InputEvent::MouseMove {
-              x: game_x as f64,
-              y: game_y as f64,
-            });
+        // While locked, motion comes from DeviceEvent::MouseMotion instead
+        if !self.cursor_locked {
+          self.cursor_moved(position.x, position.y);
         }
       }
       WindowEvent::MouseWheel { delta, .. } => {
@@ -593,12 +551,14 @@ impl ApplicationHandler<EngineEvent> for Engine {
         }
       }
       WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-        // A resize event follows
+        // A resize event follows; screen space changes with the factor now
         self.scale_factor = *scale_factor;
         self.world.resource_mut::<WindowInfo>().scale_factor = *scale_factor;
         if self.config.ui_scale.is_none() {
           self.ui_scale = (self.scale_factor.round() as u32).max(1);
         }
+        let (width, height) = self.last_window_size;
+        self.resize_window(width, height);
       }
       _ => {}
     }

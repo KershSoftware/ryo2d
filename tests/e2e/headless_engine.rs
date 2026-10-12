@@ -581,3 +581,89 @@ fn a_non_srgb_target_still_shows_srgb_colours() {
   let pixel = engine.frame().unwrap().get_pixel(16, 16).0;
   assert!((i32::from(pixel[0]) - 128).abs() <= 2, "{pixel:?}");
 }
+
+fn red_square_at(x: f32, y: f32, size: u32) -> impl FnMut(&mut SceneContext) + Send + 'static {
+  move |ctx| {
+    let red = SpriteHandle::from_sprite(Sprite::solid_rect(size, size, 220, 30, 40, 255), "red");
+    ctx
+      .world
+      .spawn((Transform::from_xy(x, y), Renderable::sprite(red)));
+  }
+}
+
+struct Setup(Box<dyn FnMut(&mut SceneContext) + Send>);
+impl Scene for Setup {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    (self.0)(ctx);
+  }
+}
+
+#[test]
+fn scale_factor_two_renders_twice_the_pixels() {
+  let builder = EngineBuilder::new()
+    .resolution(32, 32)
+    .start_scene(Setup(Box::new(red_square_at(16.0, 16.0, 10))));
+  let Some(mut engine) = HeadlessEngine::new_or_skip_with_scale_factor(builder, 2.0) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  assert_eq!(frame.dimensions(), (64, 64));
+  // 10 x 10 screen units around (16, 16) is 20 x 20 pixels around (32, 32)
+  assert_eq!(frame.get_pixel(32, 32).0, [220, 30, 40, 255]);
+  assert_eq!(frame.get_pixel(23, 32).0, [220, 30, 40, 255]);
+  assert_ne!(frame.get_pixel(21, 32).0, [220, 30, 40, 255]);
+  assert_ne!(frame.get_pixel(43, 32).0, [220, 30, 40, 255]);
+}
+
+#[test]
+fn pixel_art_letterboxes_by_a_whole_number() {
+  let builder = EngineBuilder::new()
+    .pixel_art(32, 32)
+    .start_scene(Setup(Box::new(red_square_at(16.0, 16.0, 32))));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.resize(100, 80); // scale 2: a 64 x 64 image at (18, 8)
+  engine.step_frames(2).unwrap();
+  assert_eq!(engine.frame().unwrap().dimensions(), (32, 32));
+  let window = engine.window_frame().unwrap();
+  assert_eq!(window.dimensions(), (100, 80));
+  assert_eq!(window.get_pixel(5, 40).0, [0, 0, 0, 255], "left bar");
+  assert_eq!(window.get_pixel(50, 40).0, [220, 30, 40, 255], "the art");
+  assert_eq!(window.get_pixel(50, 4).0, [0, 0, 0, 255], "top bar");
+}
+
+#[test]
+fn the_pointer_over_a_bar_still_maps_to_screen_space() {
+  let builder = EngineBuilder::new()
+    .pixel_art(32, 32)
+    .start_scene(Setup(Box::new(|_| {})));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.resize(100, 80);
+  engine.mouse_move_window(10.0, 40.0);
+  engine.step_frames(1).unwrap();
+  let (x, y) = engine.world().resource::<Input>().mouse_position();
+  assert_eq!((x, y), (-4.0, 16.0));
+}
+
+#[test]
+fn a_minimised_window_skips_frames_and_comes_back() {
+  let builder = EngineBuilder::new()
+    .resolution(32, 32)
+    .start_scene(Setup(Box::new(red_square_at(16.0, 16.0, 10))));
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  engine.resize(0, 0);
+  engine.step_frames(3).unwrap();
+  engine.resize(32, 32);
+  engine.step_frames(2).unwrap();
+  assert_eq!(
+    engine.frame().unwrap().get_pixel(16, 16).0,
+    [220, 30, 40, 255]
+  );
+}

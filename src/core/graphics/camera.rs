@@ -168,6 +168,12 @@ impl Camera {
     (self.viewport_width, self.viewport_height)
   }
 
+  /// Set the viewport to screen space's size (it can be fractional)
+  pub(crate) fn set_viewport_size(&mut self, size: glam::Vec2) {
+    self.viewport_width = size.x;
+    self.viewport_height = size.y;
+  }
+
   /// Update viewport when window resizes
   pub fn set_viewport(&mut self, width: u32, height: u32) {
     self.viewport_width = width as f32;

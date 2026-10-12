@@ -303,7 +303,7 @@ impl Engine {
     let (width, height) = self
       .renderer
       .as_ref()
-      .map(|renderer| (renderer.game_width(), renderer.game_height()))?;
+      .map(crate::core::graphics::WgpuRenderer::ui_size)?;
     self.ui_buffer.fill(0);
     let snapshot = UiInput::snapshot(self.world.resource::<Input>());
     let real_dt = self.world.resource::<Time>().real.delta();

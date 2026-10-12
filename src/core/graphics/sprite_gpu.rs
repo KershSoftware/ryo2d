@@ -561,11 +561,22 @@ impl SpriteGpuRenderer {
   /// Initial instance buffer capacity (grown by `prepare` when needed)
   const MAX_INSTANCES: usize = 10000;
 
-  /// Create a new GPU sprite renderer
+  /// Create a new GPU sprite renderer sampling textures with nearest filtering
   pub fn new(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    surface_format: wgpu::TextureFormat,
+  ) -> Self {
+    Self::with_filter(device, queue, surface_format, wgpu::FilterMode::Nearest)
+  }
+
+  /// Create a sprite renderer sampling textures with `filter`: nearest for
+  /// pixel art, linear when sprites are drawn at the window's resolution.
+  pub fn with_filter(
     device: &wgpu::Device,
     _queue: &wgpu::Queue,
     surface_format: wgpu::TextureFormat,
+    filter: wgpu::FilterMode,
   ) -> Self {
     // Create bind group layouts
     let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -612,8 +623,8 @@ impl SpriteGpuRenderer {
       address_mode_u: wgpu::AddressMode::ClampToEdge,
       address_mode_v: wgpu::AddressMode::ClampToEdge,
       address_mode_w: wgpu::AddressMode::ClampToEdge,
-      mag_filter: wgpu::FilterMode::Nearest,
-      min_filter: wgpu::FilterMode::Nearest,
+      mag_filter: filter,
+      min_filter: filter,
       mipmap_filter: wgpu::MipmapFilterMode::Nearest,
       ..Default::default()
     }));

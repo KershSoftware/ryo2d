@@ -143,7 +143,7 @@ impl RenderPass for TransitionPass {
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
     let ([r, g, b], alpha) = ctx.scene.overlay;
     let (device, queue, format) = (ctx.device(), ctx.queue(), ctx.format());
-    let (width, height) = ctx.game_size();
+    let (width, height) = ctx.render_size();
     let fade = match &mut self.fade {
       Some(fade) if fade.format == format && fade.size == (width, height) => fade,
       slot => slot.insert(FadePipeline::new(device, format, (width, height))),

@@ -31,6 +31,7 @@ use crate::core::render::{
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
 use super::gpu_error::{GpuError, GpuFault, SurfaceAction, SurfaceState, surface_action};
+use super::screen::{Presentation, ScreenMapping};
 use super::{Compositor, SpriteGpuRenderer};
 
 /// Where finished frames go: the window surface or an offscreen texture.
@@ -136,17 +137,14 @@ struct RendererParts {
   device: Arc<wgpu::Device>,
   queue: Arc<wgpu::Queue>,
   target: PresentTarget,
-  window_size: (u32, u32),
+  mapping: ScreenMapping,
   presentation_blocks: bool,
-  game_width: u32,
-  game_height: u32,
 }
 
 /// How the window renderer is set up.
 #[derive(Debug, Clone, Copy)]
 pub struct RendererSettings {
-  pub game_width: u32,
-  pub game_height: u32,
+  pub presentation: Presentation,
   pub vsync: Option<bool>,
 }
 
@@ -167,12 +165,8 @@ pub struct WgpuRenderer {
   lit_texture: wgpu::Texture,
   lit_texture_view: wgpu::TextureView,
   bind_group: wgpu::BindGroup,
-  // Game resolution
-  game_width: u32,
-  game_height: u32,
-  // Current window size
-  window_width: u32,
-  window_height: u32,
+  // Screen space and the window: the scene renders at `render_size()`
+  mapping: ScreenMapping,
   // Post-processing pipeline
   post_process: Option<PostProcessPipeline>,
   // Whether presentation blocks until vsync (Fifo mode)
@@ -180,6 +174,10 @@ pub struct WgpuRenderer {
   presentation_blocks: bool,
   // Offscreen target for frame capture, created on first capture
   capture_texture: Option<wgpu::Texture>,
+  // Composite every frame into `capture_texture` for `read_scene` (headless)
+  keep_scene: bool,
+  // Whether `capture_texture` holds the last frame's scene
+  scene_current: bool,
   // Destination for the capture requested for the next presented frame
   pending_capture: Option<PathBuf>,
   // Result of the latest capture, collected by the engine
@@ -221,16 +219,19 @@ impl WgpuRenderer {
   ///
   /// # Arguments
   /// - `window`: The window to render to
-  /// - `game_width`: Internal game resolution width
-  /// - `game_height`: Internal game resolution height
+  /// - `presentation`: how the world reaches the window
   /// - `vsync`: `Some(true)` or `None` = Fifo (waits for the display); `Some(false)` = Mailbox, else Immediate
   pub async fn new(window: Arc<Window>, settings: RendererSettings) -> Result<Self, GpuError> {
     let RendererSettings {
-      game_width,
-      game_height,
+      presentation,
       vsync,
     } = settings;
     let size = window.inner_size();
+    let mapping = ScreenMapping::new(
+      presentation,
+      (size.width, size.height),
+      window.scale_factor(),
+    );
 
     // Create wgpu instance
     let mut descriptor =
@@ -323,10 +324,8 @@ impl WgpuRenderer {
       device,
       queue,
       target: PresentTarget::Surface { surface, config },
-      window_size: (size.width, size.height),
+      mapping,
       presentation_blocks: present_mode == wgpu::PresentMode::Fifo,
-      game_width,
-      game_height,
     });
     renderer.fault = fault;
     Ok(renderer)
@@ -360,6 +359,19 @@ impl WgpuRenderer {
     height: u32,
     format: wgpu::TextureFormat,
   ) -> Self {
+    let mapping = ScreenMapping::new(Presentation::ResolutionIndependent, (width, height), 1.0);
+    Self::new_offscreen_mapped(device, queue, mapping, format)
+  }
+
+  /// An offscreen renderer standing in for a window of `mapping`'s physical
+  /// size.
+  pub(crate) fn new_offscreen_mapped(
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    mapping: ScreenMapping,
+    format: wgpu::TextureFormat,
+  ) -> Self {
+    let (width, height) = mapping.physical_size();
     let texture = offscreen_target(&device, width, height, format);
     Self::from_parts(RendererParts {
       instance: None,
@@ -367,14 +379,13 @@ impl WgpuRenderer {
       device,
       queue,
       target: PresentTarget::Offscreen { texture },
-      window_size: (width, height),
+      mapping,
       presentation_blocks: false,
-      game_width: width,
-      game_height: height,
     })
   }
 
-  /// Read the last frame drawn to an offscreen target.
+  /// Read the last frame drawn to an offscreen target: the window, bars
+  /// included.
   ///
   /// Window renderers can't read their surface back; use
   /// [`request_capture`](Self::request_capture) instead.
@@ -395,12 +406,12 @@ impl WgpuRenderer {
       device,
       queue,
       target,
-      window_size,
+      mapping,
       presentation_blocks,
-      game_width,
-      game_height,
     } = parts;
     let target_format = target.format();
+    let (game_width, game_height) = mapping.render_size();
+    let (ui_width, ui_height) = mapping.ui_size();
 
     // Create the game texture (where the world is drawn)
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -423,7 +434,7 @@ impl WgpuRenderer {
 
     let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let compositor = Compositor::new(&device, target_format, game_width, game_height);
+    let compositor = Compositor::new(&device, target_format, ui_width, ui_height);
     let (lit_texture, lit_texture_view) = create_lit_texture(&device, game_width, game_height);
 
     // Create bind group for main game texture
@@ -497,13 +508,12 @@ impl WgpuRenderer {
       lit_texture,
       lit_texture_view,
       bind_group,
-      game_width,
-      game_height,
-      window_width: window_size.0,
-      window_height: window_size.1,
+      mapping,
       post_process: Some(post_process),
       presentation_blocks,
       capture_texture: None,
+      keep_scene: false,
+      scene_current: false,
       pending_capture: None,
       capture_result: None,
       fault: GpuFault::default(),
@@ -516,14 +526,24 @@ impl WgpuRenderer {
     renderer
   }
 
-  /// Get the game width.
-  pub fn game_width(&self) -> u32 {
-    self.game_width
+  /// How screen space maps to the window.
+  pub fn mapping(&self) -> ScreenMapping {
+    self.mapping
   }
 
-  /// Get the game height.
-  pub fn game_height(&self) -> u32 {
-    self.game_height
+  /// The size the scene renders at, in pixels.
+  pub fn render_size(&self) -> (u32, u32) {
+    self.mapping.render_size()
+  }
+
+  /// The size of screen space (what the world's projection and the UI span).
+  pub fn screen_size(&self) -> glam::Vec2 {
+    self.mapping.screen_size()
+  }
+
+  /// The UI's size in pixels: the screen size rounded up.
+  pub fn ui_size(&self) -> (u32, u32) {
+    self.mapping.ui_size()
   }
 
   /// Check if presentation blocks until vsync (Fifo mode).
@@ -593,38 +613,51 @@ impl WgpuRenderer {
     wgpu::TextureFormat::Rgba8UnormSrgb
   }
 
-  /// Resize the surface when window size changes (no-op for offscreen targets).
+  /// Resize the window target, keeping the presentation and scale factor.
+  /// A zero side (a minimised window) is ignored.
   pub fn resize(&mut self, new_width: u32, new_height: u32) {
     if new_width == 0 || new_height == 0 {
       return;
     }
-    match &mut self.target {
-      PresentTarget::Surface { surface, config } => {
-        config.width = new_width;
-        config.height = new_height;
-        surface.configure(&self.device, config);
+    self.set_mapping(self.mapping.with_physical((new_width, new_height)));
+  }
+
+  /// Follow a new mapping: reconfigure the window target when its physical
+  /// size changed, recreate the scene-sized textures when the render size
+  /// changed and the UI texture when the UI size changed, and move the
+  /// composite rectangle.
+  pub fn set_mapping(&mut self, mapping: ScreenMapping) {
+    let (width, height) = mapping.physical_size();
+    if mapping.physical_size() != self.mapping.physical_size() {
+      match &mut self.target {
+        PresentTarget::Surface { surface, config } => {
+          config.width = width;
+          config.height = height;
+          surface.configure(&self.device, config);
+        }
+        // An offscreen target stands in for the window
+        PresentTarget::Offscreen { texture } => {
+          *texture = offscreen_target(&self.device, width, height, texture.format());
+        }
       }
-      // An offscreen target stands in for the window
-      PresentTarget::Offscreen { texture } => {
-        *texture = offscreen_target(&self.device, new_width, new_height, texture.format());
-      }
+    } else if let PresentTarget::Surface { surface, config } = &mut self.target {
+      // Same size: reconfiguring is how a lost or outdated surface comes back
+      surface.configure(&self.device, config);
     }
-    self.window_width = new_width;
-    self.window_height = new_height;
+    let old = std::mem::replace(&mut self.mapping, mapping);
+    if old.render_size() != mapping.render_size() {
+      let (width, height) = mapping.render_size();
+      self.recreate_scene_targets(width, height);
+    }
+    if old.ui_size() != mapping.ui_size() {
+      let (width, height) = mapping.ui_size();
+      self.compositor.resize_ui(&self.device, width, height);
+    }
     self.update_viewport_transform();
   }
 
-  /// Resize the internal game textures (for stretch mode).
-  ///
-  /// A zero width or height (a minimised window) is ignored: the buffer keeps
-  /// its size, since zero-size textures are invalid.
-  pub fn resize_buffer(&mut self, new_width: u32, new_height: u32) {
-    if new_width == 0 || new_height == 0 {
-      return;
-    }
-    self.game_width = new_width;
-    self.game_height = new_height;
-
+  /// Recreate every texture the scene renders into at `width`x`height`.
+  fn recreate_scene_targets(&mut self, new_width: u32, new_height: u32) {
     // Recreate texture with new size
     self.texture = self.device.create_texture(&wgpu::TextureDescriptor {
       label: Some("Game Texture"),
@@ -670,37 +703,39 @@ impl WgpuRenderer {
 
     (self.lit_texture, self.lit_texture_view) =
       create_lit_texture(&self.device, new_width, new_height);
-    self
-      .compositor
-      .resize_ui(&self.device, new_width, new_height);
     if let Some(post_process) = &mut self.post_process {
       post_process.resize(&self.device, new_width, new_height);
     }
 
-    self.update_viewport_transform();
-
     // Recreated at the new size on the next capture
     self.capture_texture = None;
+    self.scene_current = false;
   }
 
-  /// Update the viewport uniform based on current window mode and sizes.
+  /// Point the composite at the screen rectangle in the window.
   fn update_viewport_transform(&mut self) {
-    let (scale_x, scale_y, offset_x, offset_y) = self.calculate_viewport();
-
     self
       .compositor
-      .set_viewport_transform(&self.queue, [scale_x, scale_y, offset_x, offset_y]);
+      .set_viewport_transform(&self.queue, self.mapping.ndc_rect());
   }
 
-  /// The game image's rectangle in the window: scaled to fit, keeping its
-  /// aspect ratio, with bars on the sides or top and bottom.
-  fn calculate_viewport(&self) -> (f32, f32, f32, f32) {
-    calculate_viewport_scale(
-      self.game_width,
-      self.game_height,
-      self.window_width,
-      self.window_height,
-    )
+  /// Keep every frame's scene image (scene and UI before the letterbox, at
+  /// [`render_size`](Self::render_size)) for [`read_scene`](Self::read_scene).
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn keep_scene_image(&mut self) {
+    self.keep_scene = true;
+  }
+
+  /// The last frame's scene image, kept by
+  /// [`keep_scene_image`](Self::keep_scene_image).
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn read_scene(&self) -> CaptureResult<RgbaImage> {
+    match &self.capture_texture {
+      Some(texture) if self.scene_current => read_texture_rgba(&self.device, &self.queue, texture),
+      _ => Err(CaptureError::Readback(
+        "no scene image kept for the last frame".to_string(),
+      )),
+    }
   }
 
   /// Render a frame by running `pipeline`'s passes on one encoder.
@@ -712,15 +747,19 @@ impl WgpuRenderer {
     let (output, view, then_reconfigure) = self.target.acquire()?;
     self.needs_reconfigure |= then_reconfigure;
     let capture_path = self.prepare_capture();
+    let screen = self.mapping.screen_size();
+    let (render_width, render_height) = self.mapping.render_size();
     let frame = FrameInfo {
-      game_width: self.game_width,
-      game_height: self.game_height,
+      screen_width: screen.x,
+      screen_height: screen.y,
+      render_width,
+      render_height,
       world: !scene.draw_list.items().is_empty(),
       lighting: scene.lighting.is_some(),
       effects: self.post_process.is_some() && scene.effects.has_active_effects(),
       ui: scene.ui_buffer.iter().any(|&b| b != 0),
       transition: scene.overlay.1 > TRANSITION_VISIBLE,
-      capture: capture_path.is_some(),
+      capture: capture_path.is_some() || self.keep_scene,
     };
     let mut encoder = self
       .device
@@ -736,7 +775,9 @@ impl WgpuRenderer {
         lit_view: &self.lit_texture_view,
         compositor: &self.compositor,
         output_view: &view,
-        capture: capture_path.as_ref().and(self.capture_texture.as_ref()),
+        capture: (capture_path.is_some() || self.keep_scene)
+          .then_some(self.capture_texture.as_ref())
+          .flatten(),
       };
       let mut ctx = RenderContext::new(
         &self.device,
@@ -754,6 +795,7 @@ impl WgpuRenderer {
     if let Some(output) = output {
       self.queue.present(output);
     }
+    self.scene_current = captured;
     // Only read back what the capture pass drew; otherwise the texture is stale or blank
     if captured {
       self.finish_capture(capture_path);
@@ -791,7 +833,8 @@ impl WgpuRenderer {
     self.render_frame(pipeline, scene)
   }
 
-  /// Capture the next presented frame to `path` at game resolution.
+  /// Capture the next presented frame (scene and UI before the letterbox, at
+  /// the render size) to `path`.
   ///
   /// Replaces any pending request. Collect the outcome with
   /// [`take_capture_result`](Self::take_capture_result) after rendering.
@@ -814,19 +857,24 @@ impl WgpuRenderer {
     self.capture_result.take()
   }
 
-  /// Take the pending request and make sure the capture texture matches the game resolution.
+  /// Take the pending request and make sure the capture texture matches the
+  /// render size (also when the scene image is kept every frame).
   fn prepare_capture(&mut self) -> Option<PathBuf> {
-    let path = self.pending_capture.take()?;
+    let path = self.pending_capture.take();
+    if path.is_none() && !self.keep_scene {
+      return None;
+    }
+    let (width, height) = self.mapping.render_size();
     let up_to_date = self
       .capture_texture
       .as_ref()
-      .is_some_and(|t| t.width() == self.game_width && t.height() == self.game_height);
+      .is_some_and(|t| t.width() == width && t.height() == height);
     if !up_to_date {
       self.capture_texture = Some(self.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Frame Capture Texture"),
         size: wgpu::Extent3d {
-          width: self.game_width,
-          height: self.game_height,
+          width,
+          height,
           depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -839,7 +887,7 @@ impl WgpuRenderer {
         view_formats: &[],
       }));
     }
-    Some(path)
+    path
   }
 
   /// Read the capture texture back once the frame's commands were submitted.
@@ -858,43 +906,17 @@ impl WgpuRenderer {
   }
 }
 
-/// Scale (and offset) of a `game_width`x`game_height` image fitted into the
-/// window keeping its aspect ratio, for the fullscreen quad shader:
-/// `(scale_x, scale_y, offset_x, offset_y)` in normalised device coordinates.
-fn calculate_viewport_scale(
-  game_width: u32,
-  game_height: u32,
-  window_width: u32,
-  window_height: u32,
-) -> (f32, f32, f32, f32) {
-  let game_w = game_width as f32;
-  let game_h = game_height as f32;
-  let window_w = window_width as f32;
-  let window_h = window_height as f32;
-  let scale = if window_w / window_h > game_w / game_h {
-    window_h / game_h
-  } else {
-    window_w / game_w
-  };
-  (
-    game_w * scale / window_w,
-    game_h * scale / window_h,
-    0.0,
-    0.0,
-  )
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
 
   #[test]
-  fn resize_buffer_resizes_every_game_resolution_texture() {
+  fn a_new_render_size_recreates_every_scene_texture() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return; // no GPU on this machine
     };
     let mut renderer = WgpuRenderer::new_offscreen(device, queue, 64, 48);
-    renderer.resize_buffer(96, 80);
+    renderer.resize(96, 80);
 
     let size = |t: &wgpu::Texture| (t.width(), t.height());
     assert_eq!(size(&renderer.texture), (96, 80));
@@ -925,16 +947,16 @@ mod tests {
   }
 
   #[test]
-  fn resize_buffer_ignores_a_zero_size() {
+  fn a_zero_size_resize_is_ignored() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return; // no GPU on this machine
     };
     let mut renderer = WgpuRenderer::new_offscreen(device, queue, 64, 48);
-    renderer.resize_buffer(0, 0);
-    renderer.resize_buffer(0, 10);
-    renderer.resize_buffer(10, 0);
+    renderer.resize(0, 0);
+    renderer.resize(0, 10);
+    renderer.resize(10, 0);
 
-    assert_eq!((renderer.game_width, renderer.game_height), (64, 48));
+    assert_eq!(renderer.render_size(), (64, 48));
     assert_eq!(
       (renderer.texture.width(), renderer.texture.height()),
       (64, 48)
@@ -998,35 +1020,5 @@ mod tests {
       "capture should report an error, got ok: {}",
       result.is_ok()
     );
-  }
-
-  #[test]
-  fn aspect_ratio_letterbox_wider_window() {
-    // 800x600 game (4:3) in 1920x1080 window (16:9) = pillarboxing
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(800, 600, 1920, 1080);
-    // Window is wider than game, so height is limiting factor
-    // scale = 1080 / 600 = 1.8, scaled = 1440x1080
-    // scale_x = 1440/1920 = 0.75, scale_y = 1080/1080 = 1.0
-    assert!((scale_x - 0.75).abs() < 0.001);
-    assert!((scale_y - 1.0).abs() < 0.001);
-  }
-
-  #[test]
-  fn aspect_ratio_letterbox_taller_window() {
-    // 800x600 game (4:3) in 800x1000 window = letterboxing (black bars top/bottom)
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(800, 600, 800, 1000);
-    // Window is taller than game, so width is limiting factor
-    // scale = 800 / 800 = 1.0, scaled = 800x600
-    // scale_x = 800/800 = 1.0, scale_y = 600/1000 = 0.6
-    assert!((scale_x - 1.0).abs() < 0.001);
-    assert!((scale_y - 0.6).abs() < 0.001);
-  }
-
-  #[test]
-  fn aspect_ratio_exact_fit() {
-    // Same aspect ratio, no letterboxing needed
-    let (scale_x, scale_y, _, _) = calculate_viewport_scale(400, 300, 800, 600);
-    assert!((scale_x - 1.0).abs() < 0.001);
-    assert!((scale_y - 1.0).abs() < 0.001);
   }
 }

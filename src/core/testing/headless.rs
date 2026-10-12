@@ -7,7 +7,7 @@ use winit::keyboard::KeyCode;
 use super::{HeadlessError, shared_gpu};
 use crate::core::ecs::World;
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
-use crate::core::graphics::WgpuRenderer;
+use crate::core::graphics::{ScreenMapping, WgpuRenderer};
 use crate::core::input::InputEvent;
 
 /// Largest supported render target side, in pixels.
@@ -65,6 +65,30 @@ impl HeadlessEngine {
     builder: EngineBuilder,
     options: OffscreenOptions,
   ) -> Result<Self, HeadlessError> {
+    Self::start(builder, options, 1.0)
+  }
+
+  /// A headless engine whose window has `scale_factor` physical pixels per
+  /// logical pixel (a HiDPI display at 2.0).
+  pub fn with_scale_factor(
+    builder: EngineBuilder,
+    scale_factor: f64,
+  ) -> Result<Self, HeadlessError> {
+    Self::start(builder, OffscreenOptions::default(), scale_factor)
+  }
+
+  /// [`with_scale_factor`](Self::with_scale_factor), or `None` (with a note)
+  /// when this machine has no GPU.
+  pub fn new_or_skip_with_scale_factor(builder: EngineBuilder, scale_factor: f64) -> Option<Self> {
+    Self::or_skip(Self::with_scale_factor(builder, scale_factor))
+  }
+
+  /// The window starts at the game resolution in logical pixels.
+  fn start(
+    builder: EngineBuilder,
+    options: OffscreenOptions,
+    scale_factor: f64,
+  ) -> Result<Self, HeadlessError> {
     let (device, queue) = shared_gpu()?;
     let mut engine = builder.build_headless();
     let (width, height) = engine.game_size();
@@ -73,10 +97,14 @@ impl HeadlessEngine {
         "invalid resolution {width}x{height} (each side must be 1..={MAX_DIMENSION})"
       )));
     }
-    engine.init_gpu(
-      WgpuRenderer::new_offscreen_with_format(device, queue, width, height, options.format),
-      1.0,
+    let physical = (
+      (f64::from(width) * scale_factor).round().max(1.0) as u32,
+      (f64::from(height) * scale_factor).round().max(1.0) as u32,
     );
+    let mapping = ScreenMapping::new(engine.presentation(), physical, scale_factor);
+    let mut renderer = WgpuRenderer::new_offscreen_mapped(device, queue, mapping, options.format);
+    renderer.keep_scene_image();
+    engine.init_gpu(renderer, scale_factor);
     Ok(Self {
       engine,
       presented: 0,
@@ -93,7 +121,11 @@ impl HeadlessEngine {
 
   /// [`new_or_skip`](Self::new_or_skip) with offscreen options.
   pub fn new_or_skip_with(builder: EngineBuilder, options: OffscreenOptions) -> Option<Self> {
-    match Self::new_with(builder, options) {
+    Self::or_skip(Self::new_with(builder, options))
+  }
+
+  fn or_skip(engine: Result<Self, HeadlessError>) -> Option<Self> {
+    match engine {
       Ok(engine) => Some(engine),
       Err(HeadlessError::NoGpu) => {
         eprintln!("skipping: no GPU available for HeadlessEngine");
@@ -160,6 +192,21 @@ impl HeadlessEngine {
   /// into it.
   pub fn resize(&mut self, width: u32, height: u32) {
     self.engine.resize_window(width, height);
+  }
+
+  /// The last presented window, bars included (`frame` is the scene image
+  /// inside them).
+  pub fn window_frame(&self) -> Result<RgbaImage, HeadlessError> {
+    if self.presented == 0 {
+      return Err(HeadlessError::Render("no frame presented yet".to_string()));
+    }
+    Ok(self.engine.read_window()?)
+  }
+
+  /// Move the pointer to `(x, y)` physical window pixels, mapped to screen
+  /// space like a real cursor (over the bars too).
+  pub fn mouse_move_window(&mut self, x: f32, y: f32) {
+    self.engine.cursor_moved(f64::from(x), f64::from(y));
   }
 
   /// The ECS world, for inspecting entities between steps.

@@ -16,7 +16,7 @@ impl RenderPass for Ui {
   }
 
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
-    let (width, height) = ctx.game_size();
+    let (width, height) = ctx.ui_size();
     ctx
       .targets
       .compositor

@@ -39,6 +39,10 @@ impl Engine {
   pub(super) fn present_frame(&mut self) -> PresentOutcome {
     let render_start = Instant::now();
     // Taken out for the frame so they can be used beside `self.world`
+    // A minimised window draws nothing until it comes back
+    if self.minimized {
+      return PresentOutcome::Skipped;
+    }
     let (Some(mut rend), Some(mut gpu)) = (self.renderer.take(), self.sprite_gpu.take()) else {
       return PresentOutcome::Skipped;
     };
@@ -55,7 +59,9 @@ impl Engine {
       )
     };
     let camera_pos = Vec2::new(camera.x, camera.y);
-    let size = (rend.game_width(), rend.game_height());
+    // Sprites are placed in screen units, which the projection spans
+    let screen = rend.screen_size();
+    let size = rend.ui_size();
 
     let (entity_sprites, lights) = {
       profile_scope!("cpu:render");
@@ -122,7 +128,7 @@ impl Engine {
       }
 
       // Sprite effects and custom sprite shaders animate on game time
-      gpu.set_viewport(rend.queue(), size.0 as f32, size.1 as f32, game_time);
+      gpu.set_viewport(rend.queue(), screen.x, screen.y, game_time);
 
       self.draw_list.clear();
       self

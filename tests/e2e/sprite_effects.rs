@@ -32,7 +32,7 @@ fn render(
   setup: impl FnMut(&mut SceneContext) + Send + 'static,
 ) -> Option<image::RgbaImage> {
   let builder = EngineBuilder::new()
-    .resolution(width, height)
+    .pixel_art(width, height)
     .start_scene(Fixture(Some(Box::new(setup))));
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
   engine.step_frames(2).ok()?;

@@ -37,7 +37,7 @@ use crate::core::ecs::{
 };
 use crate::core::error::{EngineError, EngineResult};
 use crate::core::graphics::{
-  BatchCollector, Camera, Gpu, Presentation, SpriteGpuRenderer, WgpuRenderer,
+  BatchCollector, Camera, Gpu, Presentation, ScreenMapping, SpriteGpuRenderer, WgpuRenderer,
 };
 use crate::core::input::Input;
 use crate::core::input_script::InputScript;
@@ -199,6 +199,8 @@ pub struct Engine {
   #[cfg(target_arch = "wasm32")]
   proxy: Option<EventLoopProxy<EngineEvent>>,
   last_window_size: (u32, u32),
+  // The window has a zero side: frames run but nothing is drawn
+  minimized: bool,
   vsync: bool,
   /// Run the frame's logic but do not draw it (an unfocused window with
   /// background rendering off)
@@ -524,6 +526,7 @@ impl Engine {
       #[cfg(target_arch = "wasm32")]
       proxy: None,
       last_window_size: initial_size,
+      minimized: false,
       vsync,
       skip_present: false,
       offscreen_run: false,
@@ -614,9 +617,14 @@ impl Engine {
   pub(crate) fn run_offscreen_frames(&mut self) -> EngineResult<bool> {
     let (device, queue) =
       crate::core::testing::shared_gpu().map_err(|e| EngineError::Render(e.to_string()))?;
-    let (width, height) = self.game_size();
+    let mapping = ScreenMapping::new(self.config.presentation, self.game_size(), 1.0);
     self.init_gpu(
-      WgpuRenderer::new_offscreen(device, queue, width, height),
+      WgpuRenderer::new_offscreen_mapped(
+        device,
+        queue,
+        mapping,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+      ),
       1.0,
     );
 
@@ -677,13 +685,68 @@ impl Engine {
     self.world.resource::<Time>().fixed.timestep_duration()
   }
 
-  /// The window (or offscreen target) is now `width x height`
+  /// The window (or offscreen target) is now `width x height` physical
+  /// pixels. A zero side (minimised) skips frames until it comes back.
   pub(crate) fn resize_window(&mut self, width: u32, height: u32) {
-    if let Some(renderer) = &mut self.renderer {
-      // For all modes, update surface size for proper scaling
-      renderer.resize(width, height);
-      self.last_window_size = (width, height);
+    self.minimized = width == 0 || height == 0;
+    if self.minimized {
+      return;
     }
+    self.last_window_size = (width, height);
+    let mapping = ScreenMapping::new(self.config.presentation, (width, height), self.scale_factor);
+    self.apply_mapping(mapping);
+  }
+
+  /// Follow a new screen mapping: the renderer's targets, the UI buffer, the
+  /// lighting and trail projections and the camera's viewport (position,
+  /// zoom and shake are kept).
+  fn apply_mapping(&mut self, mapping: ScreenMapping) {
+    let Some(renderer) = &mut self.renderer else {
+      return;
+    };
+    renderer.set_mapping(mapping);
+    let (ui_width, ui_height) = mapping.ui_size();
+    let ui_len = (ui_width * ui_height * 4) as usize;
+    if self.ui_buffer.len() != ui_len {
+      self.ui_buffer = vec![0; ui_len];
+    }
+    let screen = mapping.screen_size();
+    if let Some(lighting) = &mut self.lighting {
+      let (width, height) = mapping.render_size();
+      lighting.resize(renderer.device(), width, height);
+      lighting.set_screen_size(screen);
+    }
+    if let Some(trails) = &mut self.trail_renderer {
+      trails.set_screen_size(screen);
+    }
+    self
+      .world
+      .resource_mut::<Camera>()
+      .set_viewport_size(screen);
+  }
+
+  /// How the world reaches the window.
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn presentation(&self) -> Presentation {
+    self.config.presentation
+  }
+
+  /// The pointer moved to `(x, y)` physical window pixels: queue it in screen
+  /// space (over the bars too, outside `0..screen_size`).
+  pub(crate) fn cursor_moved(&mut self, x: f64, y: f64) {
+    let position = match &self.renderer {
+      Some(renderer) => renderer
+        .mapping()
+        .window_to_screen(glam::Vec2::new(x as f32, y as f32)),
+      None => glam::Vec2::new(x as f32, y as f32),
+    };
+    self
+      .world
+      .resource_mut::<Input>()
+      .queue(crate::core::input::InputEvent::MouseMove {
+        x: f64::from(position.x),
+        y: f64::from(position.y),
+      });
   }
 
   #[cfg(not(target_arch = "wasm32"))]
@@ -709,6 +772,17 @@ impl Engine {
   #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn read_frame(&self) -> crate::core::error::CaptureResult<image::RgbaImage> {
     match &self.renderer {
+      Some(renderer) => renderer.read_scene(),
+      None => Err(crate::core::error::CaptureError::Readback(
+        "renderer not initialized".to_string(),
+      )),
+    }
+  }
+
+  /// The presented window, bars included (offscreen renderers only).
+  #[cfg(not(target_arch = "wasm32"))]
+  pub(crate) fn read_window(&self) -> crate::core::error::CaptureResult<image::RgbaImage> {
+    match &self.renderer {
       Some(renderer) => renderer.read_frame(),
       None => Err(crate::core::error::CaptureError::Readback(
         "renderer not initialized".to_string(),
@@ -722,19 +796,19 @@ impl Engine {
   /// resource and the profiler, then enters the initial scene.
   pub(crate) fn init_gpu(&mut self, renderer: WgpuRenderer, scale_factor: f64) {
     let format = renderer.game_texture_format();
-    let sprite_gpu = SpriteGpuRenderer::new(renderer.device(), renderer.queue(), format);
-    let lighting = LightingRenderer::new(
-      renderer.device(),
-      self.config.width,
-      self.config.height,
-      format,
-    );
-    let trail_renderer = TrailRenderer::new(
-      renderer.device(),
-      self.config.width,
-      self.config.height,
-      format,
-    );
+    // Pixel art samples exact texels; drawing at the window's resolution
+    // smooths scaled and rotated sprites
+    let filter = match self.config.presentation {
+      Presentation::PixelArt { .. } => wgpu::FilterMode::Nearest,
+      Presentation::ResolutionIndependent => wgpu::FilterMode::Linear,
+    };
+    let sprite_gpu =
+      SpriteGpuRenderer::with_filter(renderer.device(), renderer.queue(), format, filter);
+    let (render_width, render_height) = renderer.render_size();
+    let lighting = LightingRenderer::new(renderer.device(), render_width, render_height, format);
+    let (ui_width, ui_height) = renderer.ui_size();
+    let trail_renderer = TrailRenderer::new(renderer.device(), ui_width, ui_height, format);
+    let mapping = renderer.mapping();
 
     self.scale_factor = scale_factor;
     self.ui_scale = self
@@ -751,6 +825,8 @@ impl Engine {
     self.sprite_gpu = Some(sprite_gpu);
     self.lighting = Some(lighting);
     self.trail_renderer = Some(trail_renderer);
+    self.last_window_size = mapping.physical_size();
+    self.apply_mapping(mapping);
 
     // Enables puffin scope collection so F10 can open the profiler later
     // (a no-op without the `profiler` feature)

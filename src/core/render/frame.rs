@@ -16,12 +16,16 @@ use crate::core::trail::TrailRenderer;
 /// `lighting` stay true when the game disabled the `post_process` or
 /// `lighting` pass. To know what ran, use
 /// [`RenderPipeline::passes_to_run`](super::RenderPipeline::passes_to_run).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct FrameInfo {
-  /// Game resolution width in pixels
-  pub game_width: u32,
-  /// Game resolution height in pixels
-  pub game_height: u32,
+  /// Width of screen space (logical pixels, or the pixel-art target)
+  pub screen_width: f32,
+  /// Height of screen space
+  pub screen_height: f32,
+  /// Width the scene renders at, in pixels
+  pub render_width: u32,
+  /// Height the scene renders at, in pixels
+  pub render_height: u32,
   /// The draw list has lit items (entities, sprites, trails or lines drawn
   /// before lighting)
   pub world: bool,

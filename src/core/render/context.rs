@@ -81,9 +81,21 @@ impl<'a> RenderContext<'a> {
     &self.frame
   }
 
-  /// Game resolution in pixels (width, height).
-  pub fn game_size(&self) -> (u32, u32) {
-    (self.frame.game_width, self.frame.game_height)
+  /// The size the scene renders at, in pixels: every scene image (game, lit
+  /// and post-process output) has it.
+  pub fn render_size(&self) -> (u32, u32) {
+    (self.frame.render_width, self.frame.render_height)
+  }
+
+  /// The size of screen space, which the world's projection and the UI span.
+  pub fn screen_size(&self) -> glam::Vec2 {
+    glam::Vec2::new(self.frame.screen_width, self.frame.screen_height)
+  }
+
+  /// The UI image's size in pixels: the screen size rounded up.
+  pub(crate) fn ui_size(&self) -> (u32, u32) {
+    let size = self.screen_size().ceil();
+    ((size.x as u32).max(1), (size.y as u32).max(1))
   }
 
   /// The format of [`current_view`](Self::current_view), for the render

@@ -172,9 +172,8 @@ pub struct TrailRenderer {
   /// Whether the current run of frames with dropped geometry was reported
   drop_warned: std::cell::Cell<bool>,
 
-  /// Screen dimensions
-  width: u32,
-  height: u32,
+  /// Screen space's size, which the projection spans
+  screen: glam::Vec2,
 
   /// Whether the renderer is enabled
   enabled: bool,
@@ -408,8 +407,7 @@ impl TrailRenderer {
       group_index: HashMap::new(),
       dropped: false,
       drop_warned: std::cell::Cell::new(false),
-      width,
-      height,
+      screen: glam::Vec2::new(width as f32, height as f32),
       enabled: true,
     }
   }
@@ -426,8 +424,12 @@ impl TrailRenderer {
 
   /// Resize the renderer.
   pub fn resize(&mut self, width: u32, height: u32) {
-    self.width = width;
-    self.height = height;
+    self.screen = glam::Vec2::new(width as f32, height as f32);
+  }
+
+  /// Set screen space's size, which trails and lines are projected into.
+  pub(crate) fn set_screen_size(&mut self, size: glam::Vec2) {
+    self.screen = size;
   }
 
   /// Begin a new frame (clears accumulated vertices).
@@ -1642,8 +1644,8 @@ impl TrailRenderer {
     }
 
     // Update globals with camera transform
-    let half_w = self.width as f32 / 2.0;
-    let half_h = self.height as f32 / 2.0;
+    let half_w = self.screen.x / 2.0;
+    let half_h = self.screen.y / 2.0;
 
     let scale_x = camera_zoom / half_w;
     let scale_y = -camera_zoom / half_h; // Flip Y
@@ -1659,7 +1661,7 @@ impl TrailRenderer {
 
     let globals = TrailGlobals {
       view_proj,
-      resolution_time: [self.width as f32, self.height as f32, time, 0.0],
+      resolution_time: [self.screen.x, self.screen.y, time, 0.0],
     };
     queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
 

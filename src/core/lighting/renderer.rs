@@ -111,9 +111,11 @@ pub struct LightingRenderer {
   /// Current atmosphere settings
   atmosphere: Atmosphere,
 
-  /// Dimensions
+  /// Render size of the light and scene textures, in pixels
   width: u32,
   height: u32,
+  /// Screen space's size, which the projection spans
+  screen: glam::Vec2,
 
   /// Whether lighting is enabled
   enabled: bool,
@@ -692,6 +694,7 @@ impl LightingRenderer {
       atmosphere: Atmosphere::default(),
       width,
       height,
+      screen: glam::Vec2::new(width as f32, height as f32),
       enabled: false, // Disabled by default, enabled when Light2D entities exist
       ui_affected_by_lighting: false, // By default, UI is always visible
       scene_copy_texture,
@@ -760,6 +763,11 @@ impl LightingRenderer {
   /// Check if UI is affected by lighting.
   pub fn is_ui_affected_by_lighting(&self) -> bool {
     self.ui_affected_by_lighting
+  }
+
+  /// Set screen space's size, which lights are projected into.
+  pub(crate) fn set_screen_size(&mut self, size: glam::Vec2) {
+    self.screen = size;
   }
 
   /// Resize the light accumulation texture.
@@ -897,9 +905,9 @@ impl LightingRenderer {
       queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&instances));
     }
 
-    // Update globals with camera transform
-    let half_w = self.width as f32 / 2.0;
-    let half_h = self.height as f32 / 2.0;
+    // Update globals with camera transform (screen space spans the target)
+    let half_w = self.screen.x / 2.0;
+    let half_h = self.screen.y / 2.0;
 
     // Create orthographic projection with camera offset
     // This transforms world coordinates to clip space (-1 to 1)
@@ -1359,10 +1367,10 @@ impl LightingRenderer {
     camera_pos: Vec2,
     camera_zoom: f32,
   ) {
-    let half_w = self.width as f32 / 2.0;
-    let half_h = self.height as f32 / 2.0;
-    let viewport_w = self.width as f32;
-    let viewport_h = self.height as f32;
+    let half_w = self.screen.x / 2.0;
+    let half_h = self.screen.y / 2.0;
+    let viewport_w = self.screen.x;
+    let viewport_h = self.screen.y;
 
     // Filter lights that contribute to god rays and convert to screen UV
     let positions: Vec<(f32, f32)> = lights
