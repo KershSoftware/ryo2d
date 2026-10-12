@@ -383,7 +383,7 @@ if let Some(bullet) = bullets.acquire(ctx.world) {
 bullets.release(ctx.world, spent);
 ```
 
-Released entities carry `Disabled`: every query, physics and rendering skip them. An acquired entity does not slide from where it was released. `PoolConfig` fields: `initial_capacity`, `max_capacity` (0 = unlimited), `expand_batch_size`, `exhausted_policy` (`Expand`, `ReturnNone`, `RecycleOldest`).
+Released entities carry `Disabled`: every query, physics and rendering skip them. Its children leave and come back with it, and an acquired entity does not slide from where it was released. `PoolConfig` fields: `initial_capacity`, `max_capacity` (0 = unlimited), `expand_batch_size`, `exhausted_policy` (`Expand`, `ReturnNone`, `RecycleOldest`).
 
 ## Camera and Coordinates
 

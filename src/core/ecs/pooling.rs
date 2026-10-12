@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use super::kernel::{Bundle, Disabled, Entity, World};
+use super::kernel::{Bundle, Children, Component, Disabled, Entity, World};
 use super::world_ext::WorldExt;
 
 /// What `acquire` does when every pooled entity is in use.
@@ -40,17 +40,64 @@ impl Default for PoolConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PoolStats {
-  /// Live pooled entities, active or not
+  /// Pooled entities, active or not (despawned ones count until the pool
+  /// next meets them)
   pub total_spawned: usize,
   pub active: usize,
   pub available: usize,
 }
 
+/// Marks a descendant the pool disabled along with its released root, so
+/// acquiring the root enables it again (and nothing the game disabled).
+#[derive(Component)]
+struct DisabledWithPool;
+
+fn descendants(world: &World, root: Entity) -> Vec<Entity> {
+  let mut found = Vec::new();
+  let mut stack = vec![root];
+  while let Some(entity) = stack.pop() {
+    if let Some(children) = world.get::<Children>(entity) {
+      for &child in children.iter() {
+        found.push(child);
+        stack.push(child);
+      }
+    }
+  }
+  found
+}
+
+fn disable_descendants(world: &mut World, root: Entity) {
+  for entity in descendants(world, root) {
+    if world.get::<Disabled>(entity).is_none() {
+      world
+        .entity_mut(entity)
+        .insert((Disabled, DisabledWithPool));
+    }
+  }
+}
+
+/// Enable what the pool disabled under `root`; nothing in the tree slides
+/// from where it was released.
+fn enable_tree(world: &mut World, root: Entity) {
+  world.skip_interpolation(root);
+  for entity in descendants(world, root) {
+    if world.get::<DisabledWithPool>(entity).is_some() {
+      world
+        .entity_mut(entity)
+        .remove::<(Disabled, DisabledWithPool)>();
+    }
+    world.skip_interpolation(entity);
+  }
+}
+
 /// A pool of entities built from one bundle factory.
 ///
-/// `acquire`, `release` and `is_active` cost O(1). Entities despawned behind
-/// the pool's back (a scene cleanup) are dropped when the pool meets them or
-/// runs dry.
+/// `acquire` (recycling included), `release` and `is_active` cost O(1),
+/// plus the entity's children. Entities despawned behind the pool's back (a
+/// scene cleanup) are dropped when the pool meets them; a pool that has
+/// nothing free and does not recycle rescans for them before growing or
+/// giving up. Releasing disables the entity's descendants too, and
+/// acquiring brings back those it disabled.
 pub struct Pool<B: Bundle> {
   factory: Box<dyn Fn() -> B + Send + Sync>,
   config: PoolConfig,
@@ -119,22 +166,34 @@ impl<B: Bundle> Pool<B> {
     None
   }
 
-  /// The pool has nothing free: purge, then refill as the policy says.
+  /// Free the longest-active entity the world still has, skipping stale and
+  /// dead entries. False if there is none.
+  fn recycle_oldest(&mut self, world: &World) -> bool {
+    while let Some((number, oldest)) = self.active.pop_front() {
+      if self.active_since.get(&oldest) != Some(&number) {
+        continue;
+      }
+      self.active_since.remove(&oldest);
+      if world.get_entity(oldest).is_ok() {
+        self.available.push(oldest);
+        return true;
+      }
+    }
+    false
+  }
+
+  /// The pool has nothing free: recycle, or purge and refill as the policy
+  /// says.
   fn refill(&mut self, world: &mut World) {
+    let policy = self.config.exhausted_policy;
+    if policy == PoolExhaustedPolicy::RecycleOldest && self.recycle_oldest(world) {
+      return;
+    }
     self.purge_dead(world);
     if self.total() == 0 {
       self.expand(world, self.config.initial_capacity.max(1));
-      return;
-    }
-    match self.config.exhausted_policy {
-      PoolExhaustedPolicy::Expand => self.expand(world, self.config.expand_batch_size.max(1)),
-      PoolExhaustedPolicy::ReturnNone => {}
-      PoolExhaustedPolicy::RecycleOldest => {
-        if let Some((_, oldest)) = self.active.pop_front() {
-          self.active_since.remove(&oldest);
-          self.available.push(oldest);
-        }
-      }
+    } else if policy == PoolExhaustedPolicy::Expand {
+      self.expand(world, self.config.expand_batch_size.max(1));
     }
   }
 
@@ -169,7 +228,7 @@ impl<B: Bundle> Pool<B> {
       }
     };
     world.entity_mut(entity).remove::<Disabled>();
-    world.skip_interpolation(entity);
+    enable_tree(world, entity);
     self.mark_active(entity);
     Some(entity)
   }
@@ -181,6 +240,7 @@ impl<B: Bundle> Pool<B> {
     }
     if let Ok(mut e) = world.get_entity_mut(entity) {
       e.insert(Disabled);
+      disable_descendants(world, entity);
       self.available.push(entity);
     }
     true
@@ -194,6 +254,7 @@ impl<B: Bundle> Pool<B> {
     for entity in active {
       if let Ok(mut e) = world.get_entity_mut(entity) {
         e.insert(Disabled);
+        disable_descendants(world, entity);
         self.available.push(entity);
       }
     }
@@ -226,6 +287,7 @@ mod tests {
   use super::*;
   use crate::core::ecs::kernel::{Allow, IsResource, Without};
   use crate::core::ecs::transform::{GlobalTransform, PreviousGlobalTransform, Transform};
+  use crate::core::ecs::world_ext::WorldExt;
 
   fn pool(config: PoolConfig) -> Pool<Transform> {
     Pool::new(|| Transform::IDENTITY, config)
@@ -274,6 +336,39 @@ mod tests {
     let again = p.acquire(&mut world).unwrap();
     assert_eq!(again, e);
     assert!(world.get::<PreviousGlobalTransform>(e).unwrap().skip);
+  }
+
+  #[test]
+  fn a_pooled_entity_s_children_leave_and_come_back_with_it() {
+    let mut world = World::new();
+    let mut p = pool(PoolConfig::default());
+    let e = p.acquire(&mut world).unwrap();
+    let child = world.spawn_child(
+      e,
+      (
+        Transform::IDENTITY,
+        PreviousGlobalTransform {
+          global: GlobalTransform::IDENTITY,
+          skip: false,
+        },
+      ),
+    );
+    let hidden = world.spawn_child(e, (Transform::IDENTITY, Disabled));
+    p.release(&mut world, e);
+    assert!(
+      world.get::<Disabled>(child).is_some(),
+      "released with its parent"
+    );
+    p.acquire(&mut world);
+    assert!(world.get::<Disabled>(child).is_none());
+    assert!(
+      world.get::<PreviousGlobalTransform>(child).unwrap().skip,
+      "no slide"
+    );
+    assert!(
+      world.get::<Disabled>(hidden).is_some(),
+      "a child the game disabled stays disabled"
+    );
   }
 
   #[test]
