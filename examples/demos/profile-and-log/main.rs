@@ -40,6 +40,7 @@ fn main() {
 }
 
 /// Marker for CPU-heavy entities (complex physics)
+#[derive(Component)]
 struct CpuHeavy {
   angle: f32,
   angular_velocity: f32,
@@ -49,12 +50,14 @@ struct CpuHeavy {
 }
 
 /// Marker for GPU-heavy entities (just sprites, minimal logic)
+#[derive(Component)]
 struct GpuHeavy {
   drift_x: f32,
   drift_y: f32,
 }
 
 /// Marker for mixed entities (both CPU and GPU load)
+#[derive(Component)]
 struct MixedLoad {
   target_x: f32,
   target_y: f32,
@@ -107,7 +110,7 @@ impl DemoScene {
       let center_y = rng.gen_range(SPAWN_TOP + 50.0..SPAWN_BOTTOM - 50.0);
 
       ctx.world.spawn((
-        Transform::new(center_x, center_y),
+        Transform::from_xy(center_x, center_y),
         Renderable::sprite(sprite.clone()).with_z_order(10),
         CpuHeavy {
           angle: rng.gen_range(0.0..std::f32::consts::TAU),
@@ -126,10 +129,10 @@ impl DemoScene {
     #[cfg(feature = "profiler")]
     profile_scope!("despawn_cpu");
 
-    let entities: Vec<_> = ctx.world.entities_with::<CpuHeavy>();
+    let entities = entities_with::<CpuHeavy>(ctx.world);
     let actual = entities.len().min(count);
     for entity in entities.into_iter().take(count) {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
 
     if actual > 0 {
@@ -146,7 +149,7 @@ impl DemoScene {
 
     for _ in 0..count {
       ctx.world.spawn((
-        Transform::new(
+        Transform::from_xy(
           rng.gen_range(SPAWN_LEFT..SPAWN_RIGHT),
           rng.gen_range(SPAWN_TOP..SPAWN_BOTTOM),
         ),
@@ -165,10 +168,10 @@ impl DemoScene {
     #[cfg(feature = "profiler")]
     profile_scope!("despawn_gpu");
 
-    let entities: Vec<_> = ctx.world.entities_with::<GpuHeavy>();
+    let entities = entities_with::<GpuHeavy>(ctx.world);
     let actual = entities.len().min(count);
     for entity in entities.into_iter().take(count) {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
 
     if actual > 0 {
@@ -185,7 +188,7 @@ impl DemoScene {
 
     for _ in 0..count {
       ctx.world.spawn((
-        Transform::new(
+        Transform::from_xy(
           rng.gen_range(SPAWN_LEFT..SPAWN_RIGHT),
           rng.gen_range(SPAWN_TOP..SPAWN_BOTTOM),
         ),
@@ -206,10 +209,10 @@ impl DemoScene {
     #[cfg(feature = "profiler")]
     profile_scope!("despawn_mixed");
 
-    let entities: Vec<_> = ctx.world.entities_with::<MixedLoad>();
+    let entities = entities_with::<MixedLoad>(ctx.world);
     let actual = entities.len().min(count);
     for entity in entities.into_iter().take(count) {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
 
     if actual > 0 {
@@ -223,46 +226,28 @@ impl DemoScene {
 
     // Expensive physics simulation - lots of trig and calculations
     let work = self.work_multiplier();
-    let entities: Vec<_> = ctx.world.entities_with::<CpuHeavy>();
+    let mut query = ctx.world.query::<(&mut Transform, &mut CpuHeavy)>();
 
-    for entity in entities {
-      // Get component data
-      let (new_x, new_y, new_angle, new_bounce) = {
-        let cpu = ctx.world.get::<CpuHeavy>(entity);
-        let transform = ctx.world.get::<Transform>(entity);
+    for (mut transform, mut cpu) in query.iter_mut(ctx.world) {
+      // Complex orbital motion with bounce
+      let new_angle = cpu.angle + cpu.angular_velocity * dt;
+      let new_bounce = cpu.bounce_phase + dt * 3.0;
+      let bounce = new_bounce.sin() * 10.0;
 
-        if let (Some(cpu), Some(_t)) = (cpu, transform) {
-          // Complex orbital motion with bounce
-          let new_angle = cpu.angle + cpu.angular_velocity * dt;
-          let new_bounce = cpu.bounce_phase + dt * 3.0;
-          let bounce = new_bounce.sin() * 10.0;
+      let radius = cpu.orbit_radius + bounce;
+      let new_x = cpu.orbit_center.0 + radius * new_angle.cos();
+      let new_y = cpu.orbit_center.1 + radius * new_angle.sin();
 
-          let radius = cpu.orbit_radius + bounce;
-          let new_x = cpu.orbit_center.0 + radius * new_angle.cos();
-          let new_y = cpu.orbit_center.1 + radius * new_angle.sin();
+      // Extra CPU work: scaled by work_multiplier
+      // Use black_box to prevent compiler from optimizing away
+      let iterations = (100.0 * work) as i32;
+      std::hint::black_box((0..iterations).fold(0.0f32, |acc, i| {
+        acc + (new_angle * i as f32).sin() * (new_x * 0.01).cos()
+      }));
 
-          // Extra CPU work: scaled by work_multiplier
-          // Use black_box to prevent compiler from optimizing away
-          let iterations = (100.0 * work) as i32;
-          std::hint::black_box((0..iterations).fold(0.0f32, |acc, i| {
-            acc + (new_angle * i as f32).sin() * (new_x * 0.01).cos()
-          }));
-
-          (new_x, new_y, new_angle, new_bounce)
-        } else {
-          continue;
-        }
-      };
-
-      // Update components
-      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = new_x;
-        transform.y = new_y;
-      }
-      if let Some(mut cpu) = ctx.world.get_mut::<CpuHeavy>(entity) {
-        cpu.angle = new_angle;
-        cpu.bounce_phase = new_bounce;
-      }
+      transform.translation = Vec2::new(new_x, new_y);
+      cpu.angle = new_angle;
+      cpu.bounce_phase = new_bounce;
     }
   }
 
@@ -271,33 +256,25 @@ impl DemoScene {
     profile_scope!("gpu_drift");
 
     // Minimal CPU work - just drift
-    let entities: Vec<_> = ctx.world.entities_with::<GpuHeavy>();
+    let mut query = ctx.world.query::<(&mut Transform, &GpuHeavy)>();
 
-    for entity in entities {
-      let drift = {
-        let gpu = ctx.world.get::<GpuHeavy>(entity);
-        gpu.map(|g| (g.drift_x, g.drift_y))
-      };
+    for (mut transform, gpu) in query.iter_mut(ctx.world) {
+      let p = &mut transform.translation;
+      p.x += gpu.drift_x * dt;
+      p.y += gpu.drift_y * dt;
 
-      if let Some((dx, dy)) = drift
-        && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
-      {
-        transform.x += dx * dt;
-        transform.y += dy * dt;
-
-        // Wrap around spawn area
-        if transform.x < SPAWN_LEFT {
-          transform.x = SPAWN_RIGHT;
-        }
-        if transform.x > SPAWN_RIGHT {
-          transform.x = SPAWN_LEFT;
-        }
-        if transform.y < SPAWN_TOP {
-          transform.y = SPAWN_BOTTOM;
-        }
-        if transform.y > SPAWN_BOTTOM {
-          transform.y = SPAWN_TOP;
-        }
+      // Wrap around spawn area
+      if p.x < SPAWN_LEFT {
+        p.x = SPAWN_RIGHT;
+      }
+      if p.x > SPAWN_RIGHT {
+        p.x = SPAWN_LEFT;
+      }
+      if p.y < SPAWN_TOP {
+        p.y = SPAWN_BOTTOM;
+      }
+      if p.y > SPAWN_BOTTOM {
+        p.y = SPAWN_TOP;
       }
     }
   }
@@ -308,76 +285,43 @@ impl DemoScene {
 
     // Simulated AI/pathfinding - moderate CPU work
     let work = self.work_multiplier();
-    let entities: Vec<_> = ctx.world.entities_with::<MixedLoad>();
     let mut rng = rand::thread_rng();
+    let mut query = ctx.world.query::<(&mut Transform, &mut MixedLoad)>();
 
-    for entity in entities {
-      let update = {
-        let mixed = ctx.world.get::<MixedLoad>(entity);
-        let transform = ctx.world.get::<Transform>(entity);
+    for (mut transform, mut mixed) in query.iter_mut(ctx.world) {
+      let t = transform.translation;
+      let dx = mixed.target_x - t.x;
+      let dy = mixed.target_y - t.y;
+      let dist = (dx * dx + dy * dy).sqrt();
 
-        if let (Some(mixed), Some(t)) = (mixed, transform) {
-          let dx = mixed.target_x - t.x;
-          let dy = mixed.target_y - t.y;
-          let dist = (dx * dx + dy * dy).sqrt();
+      let need_new_target = dist < 5.0 || mixed.think_timer <= 0.0;
 
-          let need_new_target = dist < 5.0 || mixed.think_timer <= 0.0;
-          let (new_target_x, new_target_y) = if need_new_target {
-            (
-              rng.gen_range(SPAWN_LEFT + 20.0..SPAWN_RIGHT - 20.0),
-              rng.gen_range(SPAWN_TOP + 20.0..SPAWN_BOTTOM - 20.0),
-            )
-          } else {
-            (mixed.target_x, mixed.target_y)
-          };
+      // Simulated pathfinding cost - scaled by work_multiplier
+      // Use black_box to prevent compiler from optimizing away
+      let iterations = (50.0 * work) as i32;
+      std::hint::black_box((0..iterations).fold(0.0f32, |acc, i| {
+        acc
+          + ((t.x + i as f32 * 10.0) * 0.1).sin().abs()
+          + ((t.y + i as f32 * 10.0) * 0.1).cos().abs()
+      }));
 
-          // Simulated pathfinding cost - scaled by work_multiplier
-          // Use black_box to prevent compiler from optimizing away
-          let iterations = (50.0 * work) as i32;
-          std::hint::black_box((0..iterations).fold(0.0f32, |acc, i| {
-            acc
-              + ((t.x + i as f32 * 10.0) * 0.1).sin().abs()
-              + ((t.y + i as f32 * 10.0) * 0.1).cos().abs()
-          }));
+      if dist > 0.0 {
+        transform.translation += Vec2::new(dx, dy) / dist * mixed.speed * dt;
+      }
 
-          let move_x = if dist > 0.0 {
-            dx / dist * mixed.speed * dt
-          } else {
-            0.0
-          };
-          let move_y = if dist > 0.0 {
-            dy / dist * mixed.speed * dt
-          } else {
-            0.0
-          };
-
-          Some((move_x, move_y, new_target_x, new_target_y, need_new_target))
-        } else {
-          None
-        }
-      };
-
-      if let Some((move_x, move_y, new_target_x, new_target_y, need_new_target)) = update {
-        if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.x += move_x;
-          transform.y += move_y;
-        }
-        if let Some(mut mixed) = ctx.world.get_mut::<MixedLoad>(entity) {
-          mixed.think_timer -= dt;
-          if need_new_target {
-            mixed.target_x = new_target_x;
-            mixed.target_y = new_target_y;
-            mixed.think_timer = rng.gen_range(0.5..2.0);
-          }
-        }
+      mixed.think_timer -= dt;
+      if need_new_target {
+        mixed.target_x = rng.gen_range(SPAWN_LEFT + 20.0..SPAWN_RIGHT - 20.0);
+        mixed.target_y = rng.gen_range(SPAWN_TOP + 20.0..SPAWN_BOTTOM - 20.0);
+        mixed.think_timer = rng.gen_range(0.5..2.0);
       }
     }
   }
 
   fn update_counts(&mut self, ctx: &mut SceneContext) {
-    self.cpu_count = ctx.world.entities_with::<CpuHeavy>().len();
-    self.gpu_count = ctx.world.entities_with::<GpuHeavy>().len();
-    self.mixed_count = ctx.world.entities_with::<MixedLoad>().len();
+    self.cpu_count = count::<CpuHeavy>(ctx.world);
+    self.gpu_count = count::<GpuHeavy>(ctx.world);
+    self.mixed_count = count::<MixedLoad>(ctx.world);
   }
 }
 
@@ -467,7 +411,7 @@ impl DemoPage for DemoScene {
     self.update_counts(ctx);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     #[cfg(feature = "profiler")]
     profile_scope!("demo_ui");
 
@@ -515,4 +459,17 @@ impl DemoPage for DemoScene {
       Color::rgb(255, 255, 150),
     );
   }
+}
+
+/// Every entity with a `T`
+fn entities_with<T: Component>(world: &mut World) -> Vec<Entity> {
+  world
+    .query_filtered::<Entity, With<T>>()
+    .iter(world)
+    .collect()
+}
+
+/// How many entities have a `T`
+fn count<T: Component>(world: &mut World) -> usize {
+  world.query_filtered::<(), With<T>>().iter(world).count()
 }

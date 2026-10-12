@@ -132,13 +132,16 @@ impl PostProcessingPage {
         let name = format!("tile_{}_{}", row, col);
         let handle = ctx.assets.create_sprite(sprite, &name);
 
-        let entity = ctx.world.spawn((
-          Transform::new(
-            start_x + col as f32 * spacing,
-            start_y + row as f32 * spacing,
-          ),
-          Renderable::sprite(handle).with_z_order(0),
-        ));
+        let entity = ctx
+          .world
+          .spawn((
+            Transform::from_xy(
+              start_x + col as f32 * spacing,
+              start_y + row as f32 * spacing,
+            ),
+            Renderable::sprite(handle).with_z_order(0),
+          ))
+          .id();
 
         self.background_sprites.push(entity);
       }
@@ -159,10 +162,13 @@ impl PostProcessingPage {
       let angle = (i as f32 / 3.0) * std::f32::consts::TAU;
       let radius = 150.0;
 
-      let entity = ctx.world.spawn((
-        Transform::new(cx + angle.cos() * radius, cy + angle.sin() * radius),
-        Renderable::sprite(handle).with_z_order(1),
-      ));
+      let entity = ctx
+        .world
+        .spawn((
+          Transform::from_xy(cx + angle.cos() * radius, cy + angle.sin() * radius),
+          Renderable::sprite(handle).with_z_order(1),
+        ))
+        .id();
 
       self.rotating_sprites.push(entity);
     }
@@ -175,8 +181,7 @@ impl PostProcessingPage {
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         let angle = self.time * 0.5 + (i as f32 / 3.0) * std::f32::consts::TAU;
         let radius = 150.0;
-        transform.x = cx + angle.cos() * radius;
-        transform.y = cy + angle.sin() * radius;
+        transform.translation = Vec2::new(cx + angle.cos() * radius, cy + angle.sin() * radius);
         transform.rotation = self.time * 2.0;
       }
     }
@@ -187,23 +192,24 @@ impl PostProcessingPage {
   }
 
   fn apply_current_effect(&self, ctx: &mut SceneContext) {
+    let mut effects = ctx.effects();
     // Apply the selected effect
     // Note: Don't clear effects for ScreenFlash mode, as we want timed flashes to decay
     match self.current() {
       DemoEffect::None => {
-        ctx.effects.clear();
+        effects.clear();
       }
       DemoEffect::Fade => {
-        ctx.effects.clear();
-        ctx.effects.set_fade(self.fade_amount);
+        effects.clear();
+        effects.set_fade(self.fade_amount);
       }
       DemoEffect::ColorTint => {
-        ctx.effects.clear();
-        ctx.effects.set_sepia(self.sepia_intensity);
+        effects.clear();
+        effects.set_sepia(self.sepia_intensity);
       }
       DemoEffect::Vignette => {
-        ctx.effects.clear();
-        ctx.effects.set_vignette_custom(
+        effects.clear();
+        effects.set_vignette_custom(
           VIGNETTE_INTENSITY,
           self.vignette_radius,
           self.vignette_softness,
@@ -214,25 +220,21 @@ impl PostProcessingPage {
         // Don't clear or reapply - let timed flashes decay naturally
       }
       DemoEffect::Crt => {
-        ctx.effects.clear();
-        ctx.effects.enable_crt();
+        effects.clear();
+        effects.enable_crt();
       }
       DemoEffect::ChromaticAberration => {
-        ctx.effects.clear();
-        ctx
-          .effects
-          .set_chromatic_aberration(self.chromatic_strength);
+        effects.clear();
+        effects.set_chromatic_aberration(self.chromatic_strength);
       }
       DemoEffect::CustomScanlines => {
-        ctx.effects.clear();
+        effects.clear();
         if let Some(shader) = &self.scanlines
-          && ctx.effects.add_custom("scanlines", shader.clone()).is_ok()
+          && effects.add_custom("scanlines", shader.clone()).is_ok()
         {
           // Registered just above, so the name is known
-          ctx.effects.set_custom_param("scanlines", "density", 600.0);
-          let _ = ctx
-            .effects
-            .set_custom_param("scanlines", "strength", self.scanline_strength);
+          effects.set_custom_param("scanlines", "density", 600.0);
+          let _ = effects.set_custom_param("scanlines", "strength", self.scanline_strength);
         }
       }
     }
@@ -314,7 +316,7 @@ impl DemoPage for PostProcessingPage {
 
     // Leaving an effect behind: start clean so timed flashes can decay
     if self.effect != self.last_effect {
-      ctx.effects.clear();
+      ctx.effects().clear();
       self.last_effect = self.effect;
     }
 
@@ -324,7 +326,7 @@ impl DemoPage for PostProcessingPage {
     // Space triggers screen flash
     if ctx.input.key_pressed(KeyCode::Space) {
       ctx
-        .effects
+        .effects()
         .flash(Color::WHITE, std::time::Duration::from_millis(300));
     }
   }

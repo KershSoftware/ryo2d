@@ -130,49 +130,57 @@ impl ParticlesPage {
     let cx = self.screen_width / 2.0;
 
     // Large bonfire in center
-    let fire = world.spawn((
-      Transform::new(cx, self.screen_height - 100.0),
-      ParticleEmitter::fire(self.particle_sprite.clone()),
-    ));
+    let fire = world
+      .spawn((
+        Transform::from_xy(cx, self.screen_height - 100.0),
+        ParticleEmitter::fire(self.particle_sprite.clone()),
+      ))
+      .id();
     self.emitters.push(fire);
 
     // Small flames on sides (torches)
     for x in [200.0, self.screen_width - 200.0] {
-      let flame = world.spawn((
-        Transform::new(x, self.screen_height - 80.0),
-        ParticleEmitter::flame_small(self.particle_sprite.clone()),
-      ));
+      let flame = world
+        .spawn((
+          Transform::from_xy(x, self.screen_height - 80.0),
+          ParticleEmitter::flame_small(self.particle_sprite.clone()),
+        ))
+        .id();
       self.emitters.push(flame);
     }
 
     // Row of candles spread across the scene
     for i in 0..7 {
       let x = 200.0 + i as f32 * 130.0;
-      let candle = world.spawn((
-        Transform::new(x, self.screen_height - 220.0),
-        ParticleEmitter::flame_small(self.particle_sprite.clone())
-          .with_mode(EmissionMode::Continuous { rate: 8.0 }),
-      ));
+      let candle = world
+        .spawn((
+          Transform::from_xy(x, self.screen_height - 220.0),
+          ParticleEmitter::flame_small(self.particle_sprite.clone())
+            .with_mode(EmissionMode::Continuous { rate: 8.0 }),
+        ))
+        .id();
       self.emitters.push(candle);
     }
 
     // Rising embers from the bonfire area
-    let embers = world.spawn((
-      Transform::new(cx, self.screen_height - 120.0),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 12.0 })
-        .with_shape(EmissionShape::Line {
-          start_x: -60.0,
-          start_y: 0.0,
-          end_x: 60.0,
-          end_y: 0.0,
-        })
-        .with_lifetime(2.0, 4.0)
-        .with_size(2.0, 4.0)
-        .with_color(Color::new(255, 120, 20, 255), Color::new(255, 60, 0, 0))
-        .with_gravity(0.0, -40.0)
-        .with_speed(10.0, 30.0),
-    ));
+    let embers = world
+      .spawn((
+        Transform::from_xy(cx, self.screen_height - 120.0),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 12.0 })
+          .with_shape(EmissionShape::Line {
+            start_x: -60.0,
+            start_y: 0.0,
+            end_x: 60.0,
+            end_y: 0.0,
+          })
+          .with_lifetime(2.0, 4.0)
+          .with_size(2.0, 4.0)
+          .with_color(Color::new(255, 120, 20, 255), Color::new(255, 60, 0, 0))
+          .with_gravity(0.0, -40.0)
+          .with_speed(10.0, 30.0),
+      ))
+      .id();
     self.emitters.push(embers);
   }
 
@@ -185,55 +193,63 @@ impl ParticlesPage {
 
     // Light smoke columns spread across scene
     for x in [200.0, 540.0, 880.0] {
-      let smoke = world.spawn((
-        Transform::new(x, self.screen_height - 50.0),
-        ParticleEmitter::smoke(self.particle_sprite.clone()),
-      ));
+      let smoke = world
+        .spawn((
+          Transform::from_xy(x, self.screen_height - 50.0),
+          ParticleEmitter::smoke(self.particle_sprite.clone()),
+        ))
+        .id();
       self.emitters.push(smoke);
     }
 
     // Thick smoke (like from a fire)
-    let thick = world.spawn((
-      Transform::new(cx, self.screen_height - 150.0),
-      ParticleEmitter::smoke_thick(self.particle_sprite.clone()),
-    ));
+    let thick = world
+      .spawn((
+        Transform::from_xy(cx, self.screen_height - 150.0),
+        ParticleEmitter::smoke_thick(self.particle_sprite.clone()),
+      ))
+      .id();
     self.emitters.push(thick);
 
     // Ground-level fog drifting across the scene
-    let fog = world.spawn((
-      Transform::new(cx, self.screen_height - 30.0),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 8.0 })
-        .with_shape(EmissionShape::Line {
-          start_x: -400.0,
-          start_y: 0.0,
-          end_x: 400.0,
-          end_y: 0.0,
-        })
-        .with_lifetime(3.0, 5.0)
-        .with_size(20.0, 40.0)
-        .with_color(Color::new(180, 180, 180, 40), Color::new(120, 120, 120, 0))
-        .with_gravity(15.0, -5.0)
-        .with_speed(2.0, 8.0),
-    ));
+    let fog = world
+      .spawn((
+        Transform::from_xy(cx, self.screen_height - 30.0),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 8.0 })
+          .with_shape(EmissionShape::Line {
+            start_x: -400.0,
+            start_y: 0.0,
+            end_x: 400.0,
+            end_y: 0.0,
+          })
+          .with_lifetime(3.0, 5.0)
+          .with_size(20.0, 40.0)
+          .with_color(Color::new(180, 180, 180, 40), Color::new(120, 120, 120, 0))
+          .with_gravity(15.0, -5.0)
+          .with_speed(2.0, 8.0),
+      ))
+      .id();
     self.emitters.push(fog);
 
     // Colored steam vent
-    let steam = world.spawn((
-      Transform::new(self.screen_width - 200.0, self.screen_height - 50.0),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 15.0 })
-        .with_shape(EmissionShape::Cone {
-          direction: -std::f32::consts::FRAC_PI_2,
-          spread: 0.4,
-          min_speed: 30.0,
-          max_speed: 60.0,
-        })
-        .with_lifetime(1.5, 3.0)
-        .with_size(6.0, 12.0)
-        .with_color(Color::new(100, 200, 180, 120), Color::new(80, 160, 140, 0))
-        .with_gravity(0.0, -10.0),
-    ));
+    let steam = world
+      .spawn((
+        Transform::from_xy(self.screen_width - 200.0, self.screen_height - 50.0),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 15.0 })
+          .with_shape(EmissionShape::Cone {
+            direction: -std::f32::consts::FRAC_PI_2,
+            spread: 0.4,
+            min_speed: 30.0,
+            max_speed: 60.0,
+          })
+          .with_lifetime(1.5, 3.0)
+          .with_size(6.0, 12.0)
+          .with_color(Color::new(100, 200, 180, 120), Color::new(80, 160, 140, 0))
+          .with_gravity(0.0, -10.0),
+      ))
+      .id();
     self.emitters.push(steam);
   }
 
@@ -243,55 +259,65 @@ impl ParticlesPage {
 
   fn setup_explosions(&mut self, world: &mut World) {
     // Auto-repeating explosion demos so the scene isn't empty
-    let explosion1 = world.spawn((
-      Transform::new(300.0, self.screen_height / 2.0),
-      ParticleEmitter::explosion(self.particle_sprite.clone(), 30).with_mode(
-        EmissionMode::BurstRepeating {
-          count: 30,
-          interval: 2.5,
-          repeats: None,
-        },
-      ),
-    ));
+    let explosion1 = world
+      .spawn((
+        Transform::from_xy(300.0, self.screen_height / 2.0),
+        ParticleEmitter::explosion(self.particle_sprite.clone(), 30).with_mode(
+          EmissionMode::BurstRepeating {
+            count: 30,
+            interval: 2.5,
+            repeats: None,
+          },
+        ),
+      ))
+      .id();
     self.emitters.push(explosion1);
 
-    let explosion2 = world.spawn((
-      Transform::new(self.screen_width - 300.0, self.screen_height / 2.0),
-      ParticleEmitter::explosion_debris(self.particle_sprite.clone(), 20).with_mode(
-        EmissionMode::BurstRepeating {
-          count: 20,
-          interval: 3.0,
-          repeats: None,
-        },
-      ),
-    ));
+    let explosion2 = world
+      .spawn((
+        Transform::from_xy(self.screen_width - 300.0, self.screen_height / 2.0),
+        ParticleEmitter::explosion_debris(self.particle_sprite.clone(), 20).with_mode(
+          EmissionMode::BurstRepeating {
+            count: 20,
+            interval: 3.0,
+            repeats: None,
+          },
+        ),
+      ))
+      .id();
     self.emitters.push(explosion2);
 
-    let explosion3 = world.spawn((
-      Transform::new(self.screen_width / 2.0, self.screen_height / 2.0 - 80.0),
-      ParticleEmitter::explosion(self.particle_sprite.clone(), 50).with_mode(
-        EmissionMode::BurstRepeating {
-          count: 50,
-          interval: 4.0,
-          repeats: None,
-        },
-      ),
-    ));
+    let explosion3 = world
+      .spawn((
+        Transform::from_xy(self.screen_width / 2.0, self.screen_height / 2.0 - 80.0),
+        ParticleEmitter::explosion(self.particle_sprite.clone(), 50).with_mode(
+          EmissionMode::BurstRepeating {
+            count: 50,
+            interval: 4.0,
+            repeats: None,
+          },
+        ),
+      ))
+      .id();
     self.emitters.push(explosion3);
   }
 
   fn spawn_explosion(&mut self, world: &mut World, x: f32, y: f32, debris: bool) {
     if debris {
-      let explosion = world.spawn((
-        Transform::new(x, y),
-        ParticleEmitter::explosion_debris(self.particle_sprite.clone(), 25),
-      ));
+      let explosion = world
+        .spawn((
+          Transform::from_xy(x, y),
+          ParticleEmitter::explosion_debris(self.particle_sprite.clone(), 25),
+        ))
+        .id();
       self.emitters.push(explosion);
     } else {
-      let explosion = world.spawn((
-        Transform::new(x, y),
-        ParticleEmitter::explosion(self.particle_sprite.clone(), 40),
-      ));
+      let explosion = world
+        .spawn((
+          Transform::from_xy(x, y),
+          ParticleEmitter::explosion(self.particle_sprite.clone(), 40),
+        ))
+        .id();
       self.emitters.push(explosion);
     }
   }
@@ -305,51 +331,59 @@ impl ParticlesPage {
     let cy = self.screen_height / 2.0;
 
     // Magic sparkle effect
-    let magic = world.spawn((
-      Transform::new(cx - 250.0, cy),
-      ParticleEmitter::magic(self.particle_sprite.clone()),
-    ));
+    let magic = world
+      .spawn((
+        Transform::from_xy(cx - 250.0, cy),
+        ParticleEmitter::magic(self.particle_sprite.clone()),
+      ))
+      .id();
     self.emitters.push(magic);
 
     // Healing effect
-    let heal = world.spawn((
-      Transform::new(cx + 250.0, cy),
-      ParticleEmitter::magic_heal(self.particle_sprite.clone()),
-    ));
+    let heal = world
+      .spawn((
+        Transform::from_xy(cx + 250.0, cy),
+        ParticleEmitter::magic_heal(self.particle_sprite.clone()),
+      ))
+      .id();
     self.emitters.push(heal);
 
     // Magic ring (hollow circle emitter)
-    let ring = world.spawn((
-      Transform::new(cx, cy - 50.0),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 40.0 })
-        .with_shape(EmissionShape::Circle {
-          radius: 80.0,
-          hollow: true,
-        })
-        .with_lifetime(1.0, 2.0)
-        .with_size(3.0, 6.0)
-        .with_color(Color::new(180, 100, 255, 200), Color::new(100, 50, 255, 0))
-        .with_speed(2.0, 8.0),
-    ));
+    let ring = world
+      .spawn((
+        Transform::from_xy(cx, cy - 50.0),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 40.0 })
+          .with_shape(EmissionShape::Circle {
+            radius: 80.0,
+            hollow: true,
+          })
+          .with_lifetime(1.0, 2.0)
+          .with_size(3.0, 6.0)
+          .with_color(Color::new(180, 100, 255, 200), Color::new(100, 50, 255, 0))
+          .with_speed(2.0, 8.0),
+      ))
+      .id();
     self.emitters.push(ring);
 
     // Particle fountain (cone pointing up)
-    let fountain = world.spawn((
-      Transform::new(cx, self.screen_height - 80.0),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 25.0 })
-        .with_shape(EmissionShape::Cone {
-          direction: -std::f32::consts::FRAC_PI_2,
-          spread: 0.3,
-          min_speed: 80.0,
-          max_speed: 150.0,
-        })
-        .with_lifetime(1.5, 2.5)
-        .with_size(4.0, 8.0)
-        .with_color(Color::new(100, 200, 255, 200), Color::new(200, 100, 255, 0))
-        .with_gravity(0.0, 60.0),
-    ));
+    let fountain = world
+      .spawn((
+        Transform::from_xy(cx, self.screen_height - 80.0),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 25.0 })
+          .with_shape(EmissionShape::Cone {
+            direction: -std::f32::consts::FRAC_PI_2,
+            spread: 0.3,
+            min_speed: 80.0,
+            max_speed: 150.0,
+          })
+          .with_lifetime(1.5, 2.5)
+          .with_size(4.0, 8.0)
+          .with_color(Color::new(100, 200, 255, 200), Color::new(200, 100, 255, 0))
+          .with_gravity(0.0, 60.0),
+      ))
+      .id();
     self.emitters.push(fountain);
   }
 
@@ -360,33 +394,39 @@ impl ParticlesPage {
   fn setup_weather(&mut self, world: &mut World) {
     // Rain covering left half (multiple emitters for wider coverage)
     for x in [200.0, 420.0] {
-      let rain = world.spawn((
-        Transform::new(x, 0.0),
-        // Live long enough to fall the full screen height
-        ParticleEmitter::rain(self.particle_sprite.clone())
-          .with_mode(EmissionMode::Continuous { rate: 60.0 })
-          .with_lifetime(1.3, 1.5),
-      ));
+      let rain = world
+        .spawn((
+          Transform::from_xy(x, 0.0),
+          // Live long enough to fall the full screen height
+          ParticleEmitter::rain(self.particle_sprite.clone())
+            .with_mode(EmissionMode::Continuous { rate: 60.0 })
+            .with_lifetime(1.3, 1.5),
+        ))
+        .id();
       self.emitters.push(rain);
     }
 
     // Snow covering right half
     for x in [820.0, 1050.0] {
-      let snow = world.spawn((
-        Transform::new(x, 0.0),
-        // Snow drifts at about 40 px/s, so it needs ~20 s to cross the screen
-        ParticleEmitter::snow(self.particle_sprite.clone())
-          .with_mode(EmissionMode::Continuous { rate: 20.0 })
-          .with_lifetime(19.0, 21.0),
-      ));
+      let snow = world
+        .spawn((
+          Transform::from_xy(x, 0.0),
+          // Snow drifts at about 40 px/s, so it needs ~20 s to cross the screen
+          ParticleEmitter::snow(self.particle_sprite.clone())
+            .with_mode(EmissionMode::Continuous { rate: 20.0 })
+            .with_lifetime(19.0, 21.0),
+        ))
+        .id();
       self.emitters.push(snow);
     }
 
     // Wind pushing rain sideways
-    let wind = world.spawn((
-      Transform::new(0.0, 0.0),
-      ParticleAttractor::area(self.screen_width / 2.0, self.screen_height, 30.0, 0.0),
-    ));
+    let wind = world
+      .spawn((
+        Transform::from_xy(0.0, 0.0),
+        ParticleAttractor::area(self.screen_width / 2.0, self.screen_height, 30.0, 0.0),
+      ))
+      .id();
     self.attractors.push(wind);
   }
 
@@ -396,54 +436,66 @@ impl ParticlesPage {
 
   fn setup_impacts(&mut self, world: &mut World) {
     // Auto-repeating spark demos
-    let sparks1 = world.spawn((
-      Transform::new(300.0, self.screen_height / 2.0),
-      ParticleEmitter::sparks(self.particle_sprite.clone()).with_mode(
-        EmissionMode::BurstRepeating {
-          count: 15,
-          interval: 1.5,
-          repeats: None,
-        },
-      ),
-    ));
+    let sparks1 = world
+      .spawn((
+        Transform::from_xy(300.0, self.screen_height / 2.0),
+        ParticleEmitter::sparks(self.particle_sprite.clone()).with_mode(
+          EmissionMode::BurstRepeating {
+            count: 15,
+            interval: 1.5,
+            repeats: None,
+          },
+        ),
+      ))
+      .id();
     self.emitters.push(sparks1);
 
-    let sparks2 = world.spawn((
-      Transform::new(self.screen_width - 300.0, self.screen_height / 2.0),
-      ParticleEmitter::sparks(self.particle_sprite.clone()).with_mode(
-        EmissionMode::BurstRepeating {
-          count: 15,
-          interval: 2.0,
-          repeats: None,
-        },
-      ),
-    ));
+    let sparks2 = world
+      .spawn((
+        Transform::from_xy(self.screen_width - 300.0, self.screen_height / 2.0),
+        ParticleEmitter::sparks(self.particle_sprite.clone()).with_mode(
+          EmissionMode::BurstRepeating {
+            count: 15,
+            interval: 2.0,
+            repeats: None,
+          },
+        ),
+      ))
+      .id();
     self.emitters.push(sparks2);
 
     // Auto-repeating dust demo
-    let dust = world.spawn((
-      Transform::new(self.screen_width / 2.0, self.screen_height / 2.0 + 50.0),
-      ParticleEmitter::dust(self.particle_sprite.clone()).with_mode(EmissionMode::BurstRepeating {
-        count: 12,
-        interval: 2.5,
-        repeats: None,
-      }),
-    ));
+    let dust = world
+      .spawn((
+        Transform::from_xy(self.screen_width / 2.0, self.screen_height / 2.0 + 50.0),
+        ParticleEmitter::dust(self.particle_sprite.clone()).with_mode(
+          EmissionMode::BurstRepeating {
+            count: 12,
+            interval: 2.5,
+            repeats: None,
+          },
+        ),
+      ))
+      .id();
     self.emitters.push(dust);
   }
 
   fn spawn_impact(&mut self, world: &mut World, x: f32, y: f32, is_sparks: bool) {
     if is_sparks {
-      let sparks = world.spawn((
-        Transform::new(x, y),
-        ParticleEmitter::sparks(self.particle_sprite.clone()),
-      ));
+      let sparks = world
+        .spawn((
+          Transform::from_xy(x, y),
+          ParticleEmitter::sparks(self.particle_sprite.clone()),
+        ))
+        .id();
       self.emitters.push(sparks);
     } else {
-      let dust = world.spawn((
-        Transform::new(x, y),
-        ParticleEmitter::dust(self.particle_sprite.clone()),
-      ));
+      let dust = world
+        .spawn((
+          Transform::from_xy(x, y),
+          ParticleEmitter::dust(self.particle_sprite.clone()),
+        ))
+        .id();
       self.emitters.push(dust);
     }
   }
@@ -457,44 +509,50 @@ impl ParticlesPage {
 
     // Confetti bursts at multiple positions
     for x in [cx - 200.0, cx + 200.0] {
-      let confetti = world.spawn((
-        Transform::new(x, self.screen_height - 50.0),
-        ParticleEmitter::confetti(self.particle_sprite.clone()).with_mode(
-          EmissionMode::BurstRepeating {
-            count: 25,
-            interval: 2.0,
-            repeats: None,
-          },
-        ),
-      ));
+      let confetti = world
+        .spawn((
+          Transform::from_xy(x, self.screen_height - 50.0),
+          ParticleEmitter::confetti(self.particle_sprite.clone()).with_mode(
+            EmissionMode::BurstRepeating {
+              count: 25,
+              interval: 2.0,
+              repeats: None,
+            },
+          ),
+        ))
+        .id();
       self.emitters.push(confetti);
     }
 
     // Bubbles rising from multiple positions
     for x in [200.0, 450.0, 700.0, 950.0, 1100.0] {
-      let bubbles = world.spawn((
-        Transform::new(x, self.screen_height - 50.0),
-        ParticleEmitter::bubbles(self.particle_sprite.clone()),
-      ));
+      let bubbles = world
+        .spawn((
+          Transform::from_xy(x, self.screen_height - 50.0),
+          ParticleEmitter::bubbles(self.particle_sprite.clone()),
+        ))
+        .id();
       self.emitters.push(bubbles);
     }
 
     // Firework-like burst from top
-    let firework = world.spawn((
-      Transform::new(cx, 120.0),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::BurstRepeating {
-          count: 40,
-          interval: 3.0,
-          repeats: None,
-        })
-        .with_shape(EmissionShape::Point)
-        .with_lifetime(1.5, 3.0)
-        .with_size(3.0, 6.0)
-        .with_color(Color::new(255, 200, 50, 255), Color::new(255, 80, 0, 0))
-        .with_speed(40.0, 120.0)
-        .with_gravity(0.0, 40.0),
-    ));
+    let firework = world
+      .spawn((
+        Transform::from_xy(cx, 120.0),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::BurstRepeating {
+            count: 40,
+            interval: 3.0,
+            repeats: None,
+          })
+          .with_shape(EmissionShape::Point)
+          .with_lifetime(1.5, 3.0)
+          .with_size(3.0, 6.0)
+          .with_color(Color::new(255, 200, 50, 255), Color::new(255, 80, 0, 0))
+          .with_speed(40.0, 120.0)
+          .with_gravity(0.0, 40.0),
+      ))
+      .id();
     self.emitters.push(firework);
   }
 
@@ -507,40 +565,46 @@ impl ParticlesPage {
     self.trail_target_y = self.screen_height / 2.0;
 
     // Comet trail (follows mouse)
-    let comet = world.spawn((
-      Transform::new(self.trail_target_x, self.trail_target_y),
-      ParticleEmitter::comet_trail(self.particle_sprite.clone()),
-    ));
+    let comet = world
+      .spawn((
+        Transform::from_xy(self.trail_target_x, self.trail_target_y),
+        ParticleEmitter::comet_trail(self.particle_sprite.clone()),
+      ))
+      .id();
     self.emitters.push(comet);
 
     // Exhaust trails at bottom corners
     for (i, x) in [300.0, self.screen_width - 300.0].iter().enumerate() {
-      let exhaust = world.spawn((
-        Transform::new(*x, self.screen_height - 100.0),
-        ParticleEmitter::exhaust(self.particle_sprite.clone()).with_shape(EmissionShape::Cone {
-          direction: if i == 0 {
-            -std::f32::consts::FRAC_PI_4
-          } else {
-            -std::f32::consts::FRAC_PI_4 * 3.0
-          },
-          spread: 0.3,
-          min_speed: 50.0,
-          max_speed: 100.0,
-        }),
-      ));
+      let exhaust = world
+        .spawn((
+          Transform::from_xy(*x, self.screen_height - 100.0),
+          ParticleEmitter::exhaust(self.particle_sprite.clone()).with_shape(EmissionShape::Cone {
+            direction: if i == 0 {
+              -std::f32::consts::FRAC_PI_4
+            } else {
+              -std::f32::consts::FRAC_PI_4 * 3.0
+            },
+            spread: 0.3,
+            min_speed: 50.0,
+            max_speed: 100.0,
+          }),
+        ))
+        .id();
       self.emitters.push(exhaust);
     }
 
     // Center exhaust pointing straight up
-    let center_exhaust = world.spawn((
-      Transform::new(self.screen_width / 2.0, self.screen_height - 60.0),
-      ParticleEmitter::exhaust(self.particle_sprite.clone()).with_shape(EmissionShape::Cone {
-        direction: -std::f32::consts::FRAC_PI_2,
-        spread: 0.2,
-        min_speed: 60.0,
-        max_speed: 120.0,
-      }),
-    ));
+    let center_exhaust = world
+      .spawn((
+        Transform::from_xy(self.screen_width / 2.0, self.screen_height - 60.0),
+        ParticleEmitter::exhaust(self.particle_sprite.clone()).with_shape(EmissionShape::Cone {
+          direction: -std::f32::consts::FRAC_PI_2,
+          spread: 0.2,
+          min_speed: 60.0,
+          max_speed: 120.0,
+        }),
+      ))
+      .id();
     self.emitters.push(center_exhaust);
   }
 
@@ -553,8 +617,9 @@ impl ParticlesPage {
       && let Some(mut transform) = world.get_mut::<Transform>(entity)
     {
       // Smooth follow
-      transform.x += (target_x - transform.x) * 0.1;
-      transform.y += (target_y - transform.y) * 0.1;
+      let target = Vec2::new(target_x, target_y);
+      let current = transform.translation;
+      transform.translation += (target - current) * 0.1;
     }
   }
 
@@ -569,94 +634,110 @@ impl ParticlesPage {
       attractor_sites(self.screen_width, self.screen_height).map(|site| (site.x, site.y));
 
     // Emitter near point attractor (top left)
-    let emitter1 = world.spawn((
-      Transform::new(150.0, 250.0),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 25.0 })
-        .with_shape(EmissionShape::Circle {
-          radius: 20.0,
-          hollow: false,
-        })
-        .with_lifetime(4.0, 6.0)
-        .with_size(4.0, 8.0)
-        .with_color(Color::GREEN, Color::new(0, 255, 100, 0))
-        .with_speed(5.0, 15.0),
-    ));
+    let emitter1 = world
+      .spawn((
+        Transform::from_xy(150.0, 250.0),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 25.0 })
+          .with_shape(EmissionShape::Circle {
+            radius: 20.0,
+            hollow: false,
+          })
+          .with_lifetime(4.0, 6.0)
+          .with_size(4.0, 8.0)
+          .with_color(Color::GREEN, Color::new(0, 255, 100, 0))
+          .with_speed(5.0, 15.0),
+      ))
+      .id();
     self.emitters.push(emitter1);
 
     // Emitter near vortex attractor (top right)
-    let emitter2 = world.spawn((
-      Transform::new(self.screen_width - 150.0, 250.0),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 25.0 })
-        .with_shape(EmissionShape::Circle {
-          radius: 20.0,
-          hollow: false,
-        })
-        .with_lifetime(4.0, 6.0)
-        .with_size(4.0, 8.0)
-        .with_color(Color::CYAN, Color::new(0, 200, 255, 0))
-        .with_speed(5.0, 15.0),
-    ));
+    let emitter2 = world
+      .spawn((
+        Transform::from_xy(self.screen_width - 150.0, 250.0),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 25.0 })
+          .with_shape(EmissionShape::Circle {
+            radius: 20.0,
+            hollow: false,
+          })
+          .with_lifetime(4.0, 6.0)
+          .with_size(4.0, 8.0)
+          .with_color(Color::CYAN, Color::new(0, 200, 255, 0))
+          .with_speed(5.0, 15.0),
+      ))
+      .id();
     self.emitters.push(emitter2);
 
     // Emitter near turbulence (bottom center)
-    let emitter3 = world.spawn((
-      Transform::new(cx, self.screen_height - 200.0),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 30.0 })
-        .with_shape(EmissionShape::Line {
-          start_x: -80.0,
-          start_y: 0.0,
-          end_x: 80.0,
-          end_y: 0.0,
-        })
-        .with_lifetime(3.0, 5.0)
-        .with_size(4.0, 6.0)
-        .with_color(Color::MAGENTA, Color::new(255, 0, 255, 0))
-        .with_speed(5.0, 20.0),
-    ));
+    let emitter3 = world
+      .spawn((
+        Transform::from_xy(cx, self.screen_height - 200.0),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 30.0 })
+          .with_shape(EmissionShape::Line {
+            start_x: -80.0,
+            start_y: 0.0,
+            end_x: 80.0,
+            end_y: 0.0,
+          })
+          .with_lifetime(3.0, 5.0)
+          .with_size(4.0, 6.0)
+          .with_color(Color::MAGENTA, Color::new(255, 0, 255, 0))
+          .with_speed(5.0, 20.0),
+      ))
+      .id();
     self.emitters.push(emitter3);
 
     // Emitter at center (affected by repel)
-    let emitter4 = world.spawn((
-      Transform::new(cx, cy),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 40.0 })
-        .with_shape(EmissionShape::Point)
-        .with_lifetime(3.0, 5.0)
-        .with_size(5.0, 10.0)
-        .with_color(Color::RED, Color::new(255, 50, 0, 0))
-        .with_speed(10.0, 30.0),
-    ));
+    let emitter4 = world
+      .spawn((
+        Transform::from_xy(cx, cy),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 40.0 })
+          .with_shape(EmissionShape::Point)
+          .with_lifetime(3.0, 5.0)
+          .with_size(5.0, 10.0)
+          .with_color(Color::RED, Color::new(255, 50, 0, 0))
+          .with_speed(10.0, 30.0),
+      ))
+      .id();
     self.emitters.push(emitter4);
 
     // Point attractor (gravity well) - top left
-    let point = world.spawn((
-      Transform::new(point_at.0, point_at.1),
-      ParticleAttractor::point(200.0, 180.0),
-    ));
+    let point = world
+      .spawn((
+        Transform::from_xy(point_at.0, point_at.1),
+        ParticleAttractor::point(200.0, 180.0),
+      ))
+      .id();
     self.attractors.push(point);
 
     // Vortex attractor - top right
-    let vortex = world.spawn((
-      Transform::new(vortex_at.0, vortex_at.1),
-      ParticleAttractor::vortex(120.0, 180.0),
-    ));
+    let vortex = world
+      .spawn((
+        Transform::from_xy(vortex_at.0, vortex_at.1),
+        ParticleAttractor::vortex(120.0, 180.0),
+      ))
+      .id();
     self.attractors.push(vortex);
 
     // Turbulence - bottom center
-    let turbulence = world.spawn((
-      Transform::new(turbulence_at.0, turbulence_at.1),
-      ParticleAttractor::turbulence(80.0, 40.0, 1.5),
-    ));
+    let turbulence = world
+      .spawn((
+        Transform::from_xy(turbulence_at.0, turbulence_at.1),
+        ParticleAttractor::turbulence(80.0, 40.0, 1.5),
+      ))
+      .id();
     self.attractors.push(turbulence);
 
     // Repelling attractor - center (pushes red particles outward)
-    let repel = world.spawn((
-      Transform::new(repel_at.0, repel_at.1),
-      ParticleAttractor::point(-120.0, 150.0), // Negative strength = repel
-    ));
+    let repel = world
+      .spawn((
+        Transform::from_xy(repel_at.0, repel_at.1),
+        ParticleAttractor::point(-120.0, 150.0), // Negative strength = repel
+      ))
+      .id();
     self.attractors.push(repel);
   }
 
@@ -669,87 +750,105 @@ impl ParticlesPage {
     let cy = self.screen_height / 2.0;
 
     // Fire + smoke on the left (well-inset from edge)
-    let fire = world.spawn((
-      Transform::new(200.0, self.screen_height - 80.0),
-      ParticleEmitter::fire(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 40.0 }),
-    ));
+    let fire = world
+      .spawn((
+        Transform::from_xy(200.0, self.screen_height - 80.0),
+        ParticleEmitter::fire(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 40.0 }),
+      ))
+      .id();
     self.emitters.push(fire);
 
-    let smoke = world.spawn((
-      Transform::new(200.0, self.screen_height - 160.0),
-      ParticleEmitter::smoke(self.particle_sprite.clone()),
-    ));
+    let smoke = world
+      .spawn((
+        Transform::from_xy(200.0, self.screen_height - 160.0),
+        ParticleEmitter::smoke(self.particle_sprite.clone()),
+      ))
+      .id();
     self.emitters.push(smoke);
 
     // Magic with vortex on the right (well-inset from edge)
-    let magic = world.spawn((
-      Transform::new(self.screen_width - 250.0, cy),
-      ParticleEmitter::magic(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 25.0 }),
-    ));
+    let magic = world
+      .spawn((
+        Transform::from_xy(self.screen_width - 250.0, cy),
+        ParticleEmitter::magic(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 25.0 }),
+      ))
+      .id();
     self.emitters.push(magic);
 
-    let vortex = world.spawn((
-      Transform::new(self.screen_width - 250.0, cy),
-      ParticleAttractor::vortex(100.0, 180.0),
-    ));
+    let vortex = world
+      .spawn((
+        Transform::from_xy(self.screen_width - 250.0, cy),
+        ParticleAttractor::vortex(100.0, 180.0),
+      ))
+      .id();
     self.attractors.push(vortex);
 
     // Central gravity well
-    let gravity = world.spawn((
-      Transform::new(cx, cy - 30.0),
-      ParticleAttractor::gravity_well(80.0, 160.0),
-    ));
+    let gravity = world
+      .spawn((
+        Transform::from_xy(cx, cy - 30.0),
+        ParticleAttractor::gravity_well(80.0, 160.0),
+      ))
+      .id();
     self.attractors.push(gravity);
 
     // Sparkle particles falling toward gravity well
-    let sparkle = world.spawn((
-      Transform::new(cx, 100.0),
-      ParticleEmitter::new(self.particle_sprite.clone())
-        .with_mode(EmissionMode::Continuous { rate: 25.0 })
-        .with_shape(EmissionShape::Line {
-          start_x: -150.0,
-          start_y: 0.0,
-          end_x: 150.0,
-          end_y: 0.0,
-        })
-        .with_lifetime(3.0, 5.0)
-        .with_size(3.0, 7.0)
-        .with_color(Color::YELLOW, Color::new(255, 100, 0, 0))
-        .with_gravity(0.0, 30.0)
-        .with_speed(5.0, 15.0),
-    ));
+    let sparkle = world
+      .spawn((
+        Transform::from_xy(cx, 100.0),
+        ParticleEmitter::new(self.particle_sprite.clone())
+          .with_mode(EmissionMode::Continuous { rate: 25.0 })
+          .with_shape(EmissionShape::Line {
+            start_x: -150.0,
+            start_y: 0.0,
+            end_x: 150.0,
+            end_y: 0.0,
+          })
+          .with_lifetime(3.0, 5.0)
+          .with_size(3.0, 7.0)
+          .with_color(Color::YELLOW, Color::new(255, 100, 0, 0))
+          .with_gravity(0.0, 30.0)
+          .with_speed(5.0, 15.0),
+      ))
+      .id();
     self.emitters.push(sparkle);
 
     // Bubbles rising from bottom-right (inset from edge)
-    let bubbles = world.spawn((
-      Transform::new(self.screen_width - 150.0, self.screen_height - 50.0),
-      ParticleEmitter::bubbles(self.particle_sprite.clone()),
-    ));
+    let bubbles = world
+      .spawn((
+        Transform::from_xy(self.screen_width - 150.0, self.screen_height - 50.0),
+        ParticleEmitter::bubbles(self.particle_sprite.clone()),
+      ))
+      .id();
     self.emitters.push(bubbles);
 
     // Confetti burst from bottom-center
-    let confetti = world.spawn((
-      Transform::new(cx, self.screen_height - 40.0),
-      ParticleEmitter::confetti(self.particle_sprite.clone()).with_mode(
-        EmissionMode::BurstRepeating {
-          count: 20,
-          interval: 3.5,
-          repeats: None,
-        },
-      ),
-    ));
+    let confetti = world
+      .spawn((
+        Transform::from_xy(cx, self.screen_height - 40.0),
+        ParticleEmitter::confetti(self.particle_sprite.clone()).with_mode(
+          EmissionMode::BurstRepeating {
+            count: 20,
+            interval: 3.5,
+            repeats: None,
+          },
+        ),
+      ))
+      .id();
     self.emitters.push(confetti);
 
     // Small candle flames along the middle
     for i in 0..3 {
       let x = 400.0 + i as f32 * 200.0;
-      let candle = world.spawn((
-        Transform::new(x, self.screen_height - 200.0),
-        ParticleEmitter::flame_small(self.particle_sprite.clone())
-          .with_mode(EmissionMode::Continuous { rate: 10.0 }),
-      ));
+      let candle = world
+        .spawn((
+          Transform::from_xy(x, self.screen_height - 200.0),
+          ParticleEmitter::flame_small(self.particle_sprite.clone())
+            .with_mode(EmissionMode::Continuous { rate: 10.0 }),
+        ))
+        .id();
       self.emitters.push(candle);
     }
   }
@@ -772,7 +871,7 @@ impl ParticlesPage {
     // Remove in reverse order to maintain indices
     for i in to_remove.into_iter().rev() {
       let entity = self.emitters.remove(i);
-      let _ = world.despawn(entity);
+      world.despawn(entity);
     }
   }
 }
@@ -846,10 +945,10 @@ impl DemoPage for ParticlesPage {
     self.cleanup_finished_emitters(ctx.world);
 
     // Update particle system
-    self.particle_system.update(ctx.world, ctx.events, dt);
+    self.particle_system.update(ctx.world, dt);
   }
 
-  fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
     // Upload particle sprite texture
     gpu.upload_sprite(&self.particle_sprite);
 
@@ -859,7 +958,7 @@ impl DemoPage for ParticlesPage {
       .collect_for_render(gpu.world, gpu.camera, gpu.batch);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     // Particle count, top right of the content area
     let area = content_area(ui);
     let count = format!("Particles: {}", self.particle_system.particle_count());
@@ -913,7 +1012,7 @@ fn attractor_sites(w: f32, h: f32) -> [AttractorSite; 4] {
 fn main() {
   let mut demo = Demo::new("Particles")
     .resolution(1280, 720)
-    .configure(|b| b.target_fps(144).physics_hz(144).vsync(false));
+    .configure(|b| b.target_fps(144).fixed_hz(144).vsync(false));
   for scene in DemoScene::ALL {
     demo = demo.page(move || ParticlesPage::new(scene));
   }

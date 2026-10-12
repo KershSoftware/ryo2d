@@ -4,7 +4,7 @@ use ryo2d::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Player marker component
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Player {
   /// Which player slot (0 = host/left, 1 = client/right)
   pub slot: u8,
@@ -22,7 +22,7 @@ impl Player {
 }
 
 /// Player velocity (custom because we handle physics manually)
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Component, Debug, Clone, Copy, Default)]
 pub struct PlayerVelocity {
   pub x: f32,
   pub y: f32,
@@ -35,7 +35,7 @@ impl PlayerVelocity {
 }
 
 /// Replicated player position for network sync
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Component, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetPlayerPosition {
   pub x: f32,
   pub y: f32,

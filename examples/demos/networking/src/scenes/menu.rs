@@ -93,7 +93,7 @@ impl Lobby {
     }
   }
 
-  pub fn render_ui(&mut self, ui: &mut UiContext) {
+  pub fn ui(&mut self, ui: &mut UiContext) {
     let dt = self.last_dt;
     let area = content_area(ui);
     let (sw, sh) = ui.screen_size();

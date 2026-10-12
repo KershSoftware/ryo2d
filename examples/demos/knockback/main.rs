@@ -3,19 +3,19 @@
 //! This example demonstrates the knockback system for directional force effects:
 //! - Different decay rates (fast, normal, slow)
 //! - Accumulation behavior (blending vs replacing)
-//! - Physics vs non-physics entities
-//! - Events (KnockbackStarted, KnockbackFinished)
+//! - Physics bodies (knockback sets their Velocity) vs plain Transform entities
+//! - Messages (KnockbackStarted, KnockbackFinished)
 //!
 //! Runs on the demo-kit shell; the force is a setting.
 
 use demo_kit::prelude::*;
 
 /// Marker for simple entities (no physics)
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct SimpleEntity;
 
 /// Marker for physics entities (with Velocity)
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct PhysicsEntity;
 
 /// Tracks entity flash state for visual feedback
@@ -70,21 +70,30 @@ impl KnockbackDemoScene {
 
       // Top row: Simple entities (Transform only)
       let simple_sprite = Self::create_square(40, 100, 180, 255); // Blue
-      let simple_entity = ctx.world.spawn((
-        SimpleEntity,
-        Transform::new(x, y_top).with_pivot_center(),
-        Renderable::sprite(simple_sprite).with_z_order(10),
-      ));
+      let simple_entity = ctx
+        .world
+        .spawn((
+          SimpleEntity,
+          Transform::from_xy(x, y_top),
+          Renderable::sprite(simple_sprite).with_z_order(10),
+        ))
+        .id();
       self.simple_entities.push(simple_entity);
 
-      // Bottom row: Physics entities (with Velocity)
+      // Bottom row: Physics entities. Knockback sets their Velocity and the
+      // physics step moves the (weightless) body.
       let physics_sprite = Self::create_square(40, 255, 140, 100); // Orange
-      let physics_entity = ctx.world.spawn((
-        PhysicsEntity,
-        Transform::new(x, y_bottom).with_pivot_center(),
-        Renderable::sprite(physics_sprite).with_z_order(10),
-        Velocity::new(0.0, 0.0),
-      ));
+      let physics_entity = ctx
+        .world
+        .spawn((
+          PhysicsEntity,
+          Transform::from_xy(x, y_bottom),
+          Renderable::sprite(physics_sprite).with_z_order(10),
+          Velocity::new(0.0, 0.0),
+          RigidBody::new().with_gravity_scale(0.0),
+          Collider::box_collider(40.0, 40.0),
+        ))
+        .id();
       self.physics_entities.push(physics_entity);
     }
   }
@@ -121,23 +130,17 @@ impl KnockbackDemoScene {
     accumulate: bool,
   ) {
     if accumulate {
-      ctx.knockback_with_decay(entity, direction, self.force, decay_rate);
+      Knockback::apply_with_decay(ctx.world, entity, direction, self.force, decay_rate);
+    } else if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity) {
+      // Non-accumulating: a new hit replaces the active knockback
+      kb.accumulate = false;
+      kb.push_with_decay(direction, self.force, decay_rate);
     } else {
-      // For non-accumulating, check if entity has knockback first
-      let has_knockback = ctx.world.has::<Knockback>(entity);
-      if has_knockback {
-        if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity) {
-          kb.accumulate = false;
-          kb.apply_with_decay(direction, self.force, decay_rate);
-        }
-      } else {
-        ctx.world.add_component(
-          entity,
-          Knockback::new(direction, self.force)
-            .with_decay_rate(decay_rate)
-            .with_accumulate(false),
-        );
-      }
+      ctx.world.entity_mut(entity).insert(
+        Knockback::new(direction, self.force)
+          .with_decay_rate(decay_rate)
+          .with_accumulate(false),
+      );
     }
   }
 
@@ -156,7 +159,7 @@ impl KnockbackDemoScene {
         ctx
           .world
           .get::<Transform>(entity)
-          .map(|t| (entity, t.x, t.y))
+          .map(|t| (entity, t.translation.x, t.translation.y))
       })
       .collect();
 
@@ -165,14 +168,14 @@ impl KnockbackDemoScene {
       let dx = x - center_x;
       let dy = y - center_y;
       let direction = Vec2::new(dx, dy);
-      ctx.knockback_with_decay(entity, direction, self.force, 4.0);
+      Knockback::apply_with_decay(ctx.world, entity, direction, self.force, 4.0);
     }
   }
 
   /// Update flash states and apply visual feedback
   fn update_flashes(&mut self, ctx: &mut SceneContext, dt: f32) {
-    // Process knockback events
-    for event in ctx.events.read::<KnockbackStarted>() {
+    // Flash entities whose knockback just started
+    for event in ctx.messages::<KnockbackStarted>() {
       self
         .flash_states
         .insert(event.entity, FlashState { timer: 0.15 });
@@ -291,18 +294,18 @@ impl DemoPage for KnockbackDemoScene {
     // Update visual flash effects
     self.update_flashes(ctx, dt);
 
-    // Log knockback finished events
-    for event in ctx.events.read::<KnockbackFinished>() {
+    // Log finished knockbacks
+    for event in ctx.messages::<KnockbackFinished>() {
       // Check which type of entity
-      if ctx.world.has::<SimpleEntity>(event.entity) {
+      if ctx.world.get::<SimpleEntity>(event.entity).is_some() {
         println!("Simple entity knockback finished");
-      } else if ctx.world.has::<PhysicsEntity>(event.entity) {
+      } else if ctx.world.get::<PhysicsEntity>(event.entity).is_some() {
         println!("Physics entity knockback finished");
       }
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     let text_light = Color::rgb(220, 220, 220);
     let text_muted = Color::rgb(160, 160, 160);
@@ -353,7 +356,7 @@ fn main() {
     .configure(|b| {
       b.window_mode(WindowMode::ResizableAspectRatio)
         .target_fps(60)
-        .physics_hz(60)
+        .fixed_hz(60)
     })
     .page(KnockbackDemoScene::new)
     .run();

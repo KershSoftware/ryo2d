@@ -26,18 +26,18 @@ const SMOOTHING_MODES: [PathSmoothing; 3] = [
 const SMOOTHING_DEFAULT: usize = 1;
 
 /// Marker component for agents
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 struct Agent {
   #[allow(dead_code)]
   color: (u8, u8, u8),
 }
 
 /// Marker component for obstacles
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 struct Obstacle;
 
 /// Marker component for destination indicator
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 struct DestinationMarker;
 
 /// Main demo scene
@@ -130,15 +130,18 @@ impl PathfindingDemoScene {
       .with_fade(true)
       .with_min_distance(4.0);
 
-    let entity = ctx.world.spawn((
-      Agent { color: (r, g, b) },
-      Transform::new(x, y).with_pivot_center(),
-      Renderable::sprite(handle).with_z_order(10),
-      NavAgent::new(AGENT_SPEED)
-        .with_smoothing(self.smoothing())
-        .with_arrival_threshold(4.0),
-      trail,
-    ));
+    let entity = ctx
+      .world
+      .spawn((
+        Agent { color: (r, g, b) },
+        Transform::from_xy(x, y),
+        Renderable::sprite(handle).with_z_order(10),
+        NavAgent::new(AGENT_SPEED)
+          .with_smoothing(self.smoothing())
+          .with_arrival_threshold(4.0),
+        trail,
+      ))
+      .id();
 
     self.agents.push(entity);
   }
@@ -157,7 +160,10 @@ impl PathfindingDemoScene {
   fn has_obstacle_at(&self, ctx: &SceneContext, coord: GridCoord) -> bool {
     self.obstacles.iter().any(|&e| {
       if let Some(t) = ctx.world.get::<Transform>(e) {
-        self.nav_grid.world_to_grid(t.x, t.y) == coord
+        self
+          .nav_grid
+          .world_to_grid(t.translation.x, t.translation.y)
+          == coord
       } else {
         false
       }
@@ -177,11 +183,14 @@ impl PathfindingDemoScene {
     let (cx, cy) = self.nav_grid.grid_to_world(coord);
 
     if let Some(sprite) = &self.obstacle_sprite {
-      let entity = ctx.world.spawn((
-        Obstacle,
-        Transform::new(cx, cy).with_pivot_center(),
-        Renderable::sprite(sprite.clone()).with_z_order(1),
-      ));
+      let entity = ctx
+        .world
+        .spawn((
+          Obstacle,
+          Transform::from_xy(cx, cy),
+          Renderable::sprite(sprite.clone()).with_z_order(1),
+        ))
+        .id();
       self.obstacles.push(entity);
       return true;
     }
@@ -195,7 +204,10 @@ impl PathfindingDemoScene {
     // Find existing obstacle
     let existing_idx = self.obstacles.iter().position(|&e| {
       if let Some(t) = ctx.world.get::<Transform>(e) {
-        self.nav_grid.world_to_grid(t.x, t.y) == coord
+        self
+          .nav_grid
+          .world_to_grid(t.translation.x, t.translation.y)
+          == coord
       } else {
         false
       }
@@ -203,7 +215,7 @@ impl PathfindingDemoScene {
 
     if let Some(idx) = existing_idx {
       let entity = self.obstacles.remove(idx);
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
       return true;
     }
     false
@@ -214,7 +226,9 @@ impl PathfindingDemoScene {
 
     for &entity in &self.obstacles {
       if let Some(t) = world.get::<Transform>(entity) {
-        let coord = self.nav_grid.world_to_grid(t.x, t.y);
+        let coord = self
+          .nav_grid
+          .world_to_grid(t.translation.x, t.translation.y);
         self.nav_grid.set(coord, CellState::Blocked);
       }
     }
@@ -232,29 +246,29 @@ impl PathfindingDemoScene {
     }
 
     for &entity in &self.agents {
-      // Remove existing NavTarget if any
-      let _ = ctx.world.remove_one::<NavTarget>(entity);
-
-      // Add new destination
+      // Replace any existing NavTarget with the new destination
       ctx
         .world
-        .add_component(entity, NavTarget::position(dest_x, dest_y));
+        .entity_mut(entity)
+        .insert(NavTarget::position(dest_x, dest_y));
     }
 
     // Create or move destination marker
     if let Some(marker_entity) = self.destination_marker {
       // Move existing marker
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(marker_entity) {
-        transform.x = dest_x;
-        transform.y = dest_y;
+        transform.translation = Vec2::new(dest_x, dest_y);
       }
     } else if let Some(sprite) = &self.marker_sprite {
       // Create new marker
-      let entity = ctx.world.spawn((
-        DestinationMarker,
-        Transform::new(dest_x, dest_y).with_pivot_center(),
-        Renderable::sprite(sprite.clone()).with_z_order(5),
-      ));
+      let entity = ctx
+        .world
+        .spawn((
+          DestinationMarker,
+          Transform::from_xy(dest_x, dest_y),
+          Renderable::sprite(sprite.clone()).with_z_order(5),
+        ))
+        .id();
       self.destination_marker = Some(entity);
     }
   }
@@ -283,10 +297,13 @@ impl PathfindingDemoScene {
           if let Some((tx, ty)) = target_pos
             && let Some(transform) = ctx.world.get::<Transform>(entity)
           {
-            let result =
-              self
-                .pathfinder
-                .find_path(&self.nav_grid, transform.x, transform.y, tx, ty);
+            let result = self.pathfinder.find_path(
+              &self.nav_grid,
+              transform.translation.x,
+              transform.translation.y,
+              tx,
+              ty,
+            );
 
             if let Some(mut agent) = ctx.world.get_mut::<NavAgent>(entity) {
               match result {
@@ -317,7 +334,7 @@ impl PathfindingDemoScene {
         }
         NavAgentState::Arrived | NavAgentState::Failed => {
           // Remove target, go idle
-          let _ = ctx.world.remove_one::<NavTarget>(entity);
+          ctx.world.entity_mut(entity).remove::<NavTarget>();
           if let Some(mut agent) = ctx.world.get_mut::<NavAgent>(entity) {
             agent.stop();
           }
@@ -337,7 +354,7 @@ impl PathfindingDemoScene {
         (Some(t), Some(a)) => {
           let wp = a.current_path.as_ref().and_then(|p| p.current_waypoint());
           (
-            Some((t.x, t.y)),
+            Some((t.translation.x, t.translation.y)),
             wp.map(|w| (w.x, w.y)),
             a.speed,
             a.arrival_threshold,
@@ -391,7 +408,7 @@ impl PathfindingDemoScene {
           .filter(|&&e| e != entity)
           .filter_map(|&e| {
             let t = world.get::<Transform>(e)?;
-            Some((Vec2::new(t.x, t.y), radius))
+            Some((t.translation, radius))
           })
           .filter(|(p, _)| pos.distance(*p) < 50.0)
           .collect();
@@ -403,8 +420,7 @@ impl PathfindingDemoScene {
 
       // Apply movement
       if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-        transform.x += velocity.x * dt;
-        transform.y += velocity.y * dt;
+        transform.translation += velocity * dt;
       }
     }
   }
@@ -538,7 +554,7 @@ impl DemoPage for PathfindingDemoScene {
     self.update_trails(ctx, dt);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     let (width, height) = ui.screen_size();
     let w = width as f32;
@@ -576,7 +592,7 @@ fn main() {
     .configure(|b| {
       b.window_mode(WindowMode::ResizableAspectRatio)
         .target_fps(60)
-        .physics_hz(60)
+        .fixed_hz(60)
     })
     .page(PathfindingDemoScene::new)
     .run();

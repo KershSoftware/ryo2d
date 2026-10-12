@@ -5,6 +5,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
 use demo_kit::prelude::*;
+use ryo2d::core::network::NetworkError;
 
 use crate::components::*;
 use crate::constants::*;
@@ -69,6 +70,8 @@ pub struct Match {
 
   // Entity tracking
   players: HashMap<ClientId, Entity>,
+  /// Background and platform, despawned with the players on leaving
+  scenery: Vec<Entity>,
   local_client_id: Option<ClientId>,
 
   // Local player input
@@ -107,6 +110,7 @@ impl Match {
       lan_ip,
       wan_ip,
       players: HashMap::new(),
+      scenery: Vec::new(),
       local_client_id: Some(host_id),
       local_move_x: 0.0,
       local_jump: false,
@@ -139,6 +143,7 @@ impl Match {
       lan_ip: None,
       wan_ip: None,
       players: HashMap::new(),
+      scenery: Vec::new(),
       local_client_id: None,
       local_move_x: 0.0,
       local_jump: false,
@@ -149,42 +154,53 @@ impl Match {
   }
 
   fn spawn_background(&mut self, ctx: &mut SceneContext) {
-    ctx.world.spawn((
-      Transform::new(0.0, 0.0),
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_rect(
-          SCREEN_WIDTH,
-          SCREEN_HEIGHT,
-          BACKGROUND_COLOR.0,
-          BACKGROUND_COLOR.1,
-          BACKGROUND_COLOR.2,
-          255,
-        ),
-        "background",
+    let background = ctx
+      .world
+      .spawn((
+        Transform::from_xy(0.0, 0.0),
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_rect(
+            SCREEN_WIDTH,
+            SCREEN_HEIGHT,
+            BACKGROUND_COLOR.0,
+            BACKGROUND_COLOR.1,
+            BACKGROUND_COLOR.2,
+            255,
+          ),
+          "background",
+        ))
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(Z_BACKGROUND),
       ))
-      .with_z_order(Z_BACKGROUND),
-    ));
+      .id();
+    self.scenery.push(background);
   }
 
   fn spawn_platform(&mut self, ctx: &mut SceneContext) {
     let platform_x = (SCREEN_WIDTH as f32 - PLATFORM_WIDTH) / 2.0;
 
-    ctx.world.spawn((
-      Transform::new(platform_x, PLATFORM_Y),
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_rect(
-          PLATFORM_WIDTH as u32,
-          PLATFORM_HEIGHT as u32,
-          PLATFORM_COLOR.0,
-          PLATFORM_COLOR.1,
-          PLATFORM_COLOR.2,
-          255,
-        ),
-        "platform",
+    let platform = ctx
+      .world
+      .spawn((
+        Transform::from_xy(platform_x, PLATFORM_Y),
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_rect(
+            PLATFORM_WIDTH as u32,
+            PLATFORM_HEIGHT as u32,
+            PLATFORM_COLOR.0,
+            PLATFORM_COLOR.1,
+            PLATFORM_COLOR.2,
+            255,
+          ),
+          "platform",
+        ))
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(Z_PLATFORM),
+        Collider::box_collider(PLATFORM_WIDTH, PLATFORM_HEIGHT)
+          .with_offset(PLATFORM_WIDTH / 2.0, PLATFORM_HEIGHT / 2.0),
       ))
-      .with_z_order(Z_PLATFORM),
-      Collider::box_collider(PLATFORM_WIDTH, PLATFORM_HEIGHT),
-    ));
+      .id();
+    self.scenery.push(platform);
   }
 
   fn spawn_player(&mut self, ctx: &mut SceneContext, slot: u8, client_id: ClientId) -> Entity {
@@ -194,24 +210,30 @@ impl Match {
       (PLAYER_B_SPAWN_X, PLAYER_B_COLOR)
     };
 
-    let entity = ctx.world.spawn((
-      Transform::new(spawn_x, PLAYER_SPAWN_Y),
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_rect(
-          PLAYER_WIDTH as u32,
-          PLAYER_HEIGHT as u32,
-          color.0,
-          color.1,
-          color.2,
-          255,
-        ),
-        format!("player_{}", slot),
+    // Positions are top-left corners: the platformer maths below works in them
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(spawn_x, PLAYER_SPAWN_Y),
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_rect(
+            PLAYER_WIDTH as u32,
+            PLAYER_HEIGHT as u32,
+            color.0,
+            color.1,
+            color.2,
+            255,
+          ),
+          format!("player_{}", slot),
+        ))
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(Z_PLAYER),
+        Collider::box_collider(PLAYER_WIDTH, PLAYER_HEIGHT)
+          .with_offset(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0),
+        Player::new(slot),
+        PlayerVelocity::zero(),
       ))
-      .with_z_order(Z_PLAYER),
-      Collider::box_collider(PLAYER_WIDTH, PLAYER_HEIGHT),
-      Player::new(slot),
-      PlayerVelocity::zero(),
-    ));
+      .id();
 
     self.players.insert(client_id, entity);
     entity
@@ -243,6 +265,16 @@ impl Match {
     }
   }
 
+  /// Despawn everything the match spawned
+  pub fn despawn(&mut self, ctx: &mut SceneContext) {
+    for entity in self.scenery.drain(..) {
+      ctx.world.despawn(entity);
+    }
+    for (_, entity) in self.players.drain() {
+      ctx.world.despawn(entity);
+    }
+  }
+
   fn update_host(&mut self, ctx: &mut SceneContext, dt: f32) {
     let server = self.server.as_mut().unwrap();
     server.update(Duration::from_secs_f32(dt));
@@ -260,7 +292,7 @@ impl Match {
         NetworkEvent::ClientDisconnected { client_id, .. } => {
           // Remove disconnected player
           if let Some(entity) = self.players.remove(&client_id) {
-            let _ = ctx.world.despawn(entity);
+            ctx.world.despawn(entity);
           }
           self.waiting_for_player = true;
         }
@@ -368,8 +400,7 @@ impl Match {
 
       // Update position
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = update.x;
-        transform.y = update.y;
+        transform.translation = Vec2::new(update.x, update.y);
       }
     }
 
@@ -419,25 +450,26 @@ impl Match {
       if let Some((vx, vy)) = vel {
         // Update position
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.x += vx * dt;
-          transform.y += vy * dt;
+          let t = &mut transform.translation;
+          t.x += vx * dt;
+          t.y += vy * dt;
 
           // Screen bounds
-          transform.x = transform.x.clamp(0.0, SCREEN_WIDTH as f32 - PLAYER_WIDTH);
+          t.x = t.x.clamp(0.0, SCREEN_WIDTH as f32 - PLAYER_WIDTH);
 
           // Check platform collision
-          let player_bottom = transform.y + PLAYER_HEIGHT;
+          let player_bottom = t.y + PLAYER_HEIGHT;
           let platform_top = PLATFORM_Y;
           let platform_left = (SCREEN_WIDTH as f32 - PLATFORM_WIDTH) / 2.0;
           let platform_right = platform_left + PLATFORM_WIDTH;
 
           // Check if landing on platform
           if player_bottom >= platform_top
-            && transform.x + PLAYER_WIDTH > platform_left
-            && transform.x < platform_right
+            && t.x + PLAYER_WIDTH > platform_left
+            && t.x < platform_right
             && vy > 0.0
           {
-            transform.y = platform_top - PLAYER_HEIGHT;
+            t.y = platform_top - PLAYER_HEIGHT;
           }
         }
 
@@ -446,6 +478,7 @@ impl Match {
           .world
           .get::<Transform>(entity)
           .map(|t| {
+            let t = t.translation;
             let player_bottom = t.y + PLAYER_HEIGHT;
             let platform_top = PLATFORM_Y;
             let platform_left = (SCREEN_WIDTH as f32 - PLATFORM_WIDTH) / 2.0;
@@ -491,8 +524,8 @@ impl Match {
           PositionUpdate {
             client_id,
             slot: player.slot,
-            x: transform.x,
-            y: transform.y,
+            x: transform.translation.x,
+            y: transform.translation.y,
           },
         ));
       }
@@ -513,7 +546,7 @@ impl Match {
     let (ax, ay) = {
       let t = ctx.world.get::<Transform>(a);
       match t {
-        Some(t) => (t.x, t.y),
+        Some(t) => (t.translation.x, t.translation.y),
         None => return,
       }
     };
@@ -521,7 +554,7 @@ impl Match {
     let (bx, by) = {
       let t = ctx.world.get::<Transform>(b);
       match t {
-        Some(t) => (t.x, t.y),
+        Some(t) => (t.translation.x, t.translation.y),
         None => return,
       }
     };
@@ -545,7 +578,7 @@ impl Match {
         if ay < by {
           // A is on top of B
           if let Some(mut t) = ctx.world.get_mut::<Transform>(a) {
-            t.y = by - PLAYER_HEIGHT;
+            t.translation.y = by - PLAYER_HEIGHT;
           }
           if let Some(mut v) = ctx.world.get_mut::<PlayerVelocity>(a) {
             v.y = 0.0;
@@ -556,7 +589,7 @@ impl Match {
         } else {
           // B is on top of A
           if let Some(mut t) = ctx.world.get_mut::<Transform>(b) {
-            t.y = ay - PLAYER_HEIGHT;
+            t.translation.y = ay - PLAYER_HEIGHT;
           }
           if let Some(mut v) = ctx.world.get_mut::<PlayerVelocity>(b) {
             v.y = 0.0;
@@ -570,17 +603,17 @@ impl Match {
         let push = min_overlap_x / 2.0 + 1.0;
         if ax < bx {
           if let Some(mut t) = ctx.world.get_mut::<Transform>(a) {
-            t.x -= push;
+            t.translation.x -= push;
           }
           if let Some(mut t) = ctx.world.get_mut::<Transform>(b) {
-            t.x += push;
+            t.translation.x += push;
           }
         } else {
           if let Some(mut t) = ctx.world.get_mut::<Transform>(a) {
-            t.x += push;
+            t.translation.x += push;
           }
           if let Some(mut t) = ctx.world.get_mut::<Transform>(b) {
-            t.x -= push;
+            t.translation.x -= push;
           }
         }
       }
@@ -591,7 +624,6 @@ impl Match {
 impl Match {
   /// Build the match's world: background, platform and the host's player
   pub fn enter(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
     ctx
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
@@ -619,7 +651,7 @@ impl Match {
     }
   }
 
-  pub fn render_ui(&mut self, ui: &mut UiContext) {
+  pub fn ui(&mut self, ui: &mut UiContext) {
     let area = content_area(ui);
     let right = area.x + area.width;
 

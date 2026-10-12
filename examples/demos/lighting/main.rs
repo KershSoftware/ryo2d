@@ -142,11 +142,6 @@ Ambient darkness is the room's base light: 1 is pitch black."
   }
 
   fn enter(&mut self, ctx: &mut SceneContext) {
-    // Configure lighting to not affect UI - keeps text readable in darkness
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ui_affected_by_lighting(false);
-    }
-
     // Create rope segments (visual only, connected chain of rectangles)
     let rope_segments = 20;
     let segment_length = PENDULUM_LENGTH / rope_segments as f32;
@@ -163,15 +158,18 @@ Ambient darkness is the room's base light: 1 is pitch black."
         format!("rope_segment_{}", i),
       );
 
-      // Use top-center pivot so segment rotates from its top attachment point
-      // Negate angle because positive pendulum angle swings right, but positive
-      // rotation is counterclockwise (appears as left-tilt on screen)
-      let entity = ctx.world.spawn((
-        Transform::new(x, y)
-          .with_pivot_top_center()
-          .with_rotation(-self.pendulum.angle),
-        Renderable::sprite(rope_sprite).with_z_order(10),
-      ));
+      // Anchored at its top centre so the segment rotates from its top
+      // attachment point. Negate the angle: a positive pendulum angle swings
+      // right, which is a negative rotation of the hanging segment.
+      let entity = ctx
+        .world
+        .spawn((
+          Transform::from_xy(x, y).with_rotation(-self.pendulum.angle),
+          Renderable::sprite(rope_sprite)
+            .with_anchor(Anchor::TopCenter)
+            .with_z_order(10),
+        ))
+        .id();
       self.rope_entities.push(entity);
     }
 
@@ -184,41 +182,53 @@ Ambient darkness is the room's base light: 1 is pitch black."
       "bulb",
     );
 
-    // Use pivot_top_center so the bulb rotates from its connection point with the rope
-    self.bulb_entity = Some(ctx.world.spawn((
-      Transform::new(bob_x, bob_y).with_pivot_top_center(),
-      Renderable::sprite(bulb_sprite).with_z_order(12),
-    )));
+    // Anchored at its top centre so the bulb rotates from its connection point with the rope
+    self.bulb_entity = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(bob_x, bob_y),
+          Renderable::sprite(bulb_sprite)
+            .with_anchor(Anchor::TopCenter)
+            .with_z_order(12),
+        ))
+        .id(),
+    );
 
     // Add the light source attached to the bulb position
-    self.light_entity = Some(ctx.world.spawn((
-      Transform::new(bob_x, bob_y),
-      Light2D::torch(self.light_radius).with_intensity(self.light_intensity),
-    )));
+    self.light_entity = Some(
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(bob_x, bob_y),
+          Light2D::torch(self.light_radius).with_intensity(self.light_intensity),
+        ))
+        .id(),
+    );
 
     // Add some floor shapes to demonstrate lighting
 
     // Floor occluders (walls)
     ctx.world.spawn((
-      Transform::new(640.0, 650.0).with_pivot_center(),
+      Transform::from_xy(640.0, 650.0),
       LightOccluder2D::rect(1280.0, 100.0),
     ));
 
     // Left wall
     ctx.world.spawn((
-      Transform::new(50.0, 360.0).with_pivot_center(),
+      Transform::from_xy(50.0, 360.0),
       LightOccluder2D::rect(20.0, 720.0),
     ));
 
     // Right wall
     ctx.world.spawn((
-      Transform::new(1230.0, 360.0).with_pivot_center(),
+      Transform::from_xy(1230.0, 360.0),
       LightOccluder2D::rect(20.0, 720.0),
     ));
 
     // Ceiling
     ctx.world.spawn((
-      Transform::new(640.0, 20.0).with_pivot_center(),
+      Transform::from_xy(640.0, 20.0),
       LightOccluder2D::rect(1280.0, 40.0),
     ));
 
@@ -237,7 +247,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
       );
 
       ctx.world.spawn((
-        Transform::new(*x, *y).with_pivot_center(),
+        Transform::from_xy(*x, *y),
         Renderable::sprite(sprite).with_z_order(5),
         LightOccluder2D::rect(*w, *h),
       ));
@@ -257,7 +267,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
       );
 
       ctx.world.spawn((
-        Transform::new(*x, *y).with_pivot_center(),
+        Transform::from_xy(*x, *y),
         Renderable::sprite(sprite).with_z_order(5),
         LightOccluder2D::rect(*w, *h),
       ));
@@ -269,7 +279,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
       .create_sprite(Sprite::solid_rect(40, 200, 80, 80, 80, 255), "pillar");
 
     ctx.world.spawn((
-      Transform::new(640.0, 450.0).with_pivot_center(),
+      Transform::from_xy(640.0, 450.0),
       Renderable::sprite(pillar_sprite).with_z_order(5),
       LightOccluder2D::rect(40.0, 200.0),
     ));
@@ -277,19 +287,19 @@ Ambient darkness is the room's base light: 1 is pitch black."
     // Line occluders — thin fence/wire segments that cast sharp shadows
     // Horizontal fence on the left side
     ctx.world.spawn((
-      Transform::new(0.0, 0.0),
+      Transform::from_xy(0.0, 0.0),
       LightOccluder2D::line(Vec2::new(120.0, 480.0), Vec2::new(320.0, 480.0), 3.0),
     ));
 
     // Diagonal wire from upper-left toward center
     ctx.world.spawn((
-      Transform::new(0.0, 0.0),
+      Transform::from_xy(0.0, 0.0),
       LightOccluder2D::line(Vec2::new(150.0, 200.0), Vec2::new(400.0, 350.0), 2.0),
     ));
 
     // Angled railing on the right side
     ctx.world.spawn((
-      Transform::new(0.0, 0.0),
+      Transform::from_xy(0.0, 0.0),
       LightOccluder2D::line(Vec2::new(950.0, 350.0), Vec2::new(1150.0, 500.0), 3.0),
     ));
   }
@@ -303,8 +313,11 @@ Ambient darkness is the room's base light: 1 is pitch black."
     }
 
     // Update ambient light if it changed
-    if let Some(lighting) = ctx.lighting {
-      lighting.ambient_mut().set_intensity(1.0 - self.darkness);
+    let intensity = 1.0 - self.darkness;
+    if ctx.lighting().ambient().intensity != intensity {
+      let mut ambient = *ctx.lighting().ambient();
+      ambient.set_intensity(intensity);
+      ctx.lighting().set_ambient(ambient);
     }
 
     // Update light properties if they changed
@@ -344,13 +357,12 @@ Ambient darkness is the room's base light: 1 is pitch black."
     // Clamp bulb angle to prevent wild swings
     self.bulb_angle = self.bulb_angle.clamp(-PI / 4.0, PI / 4.0);
 
-    // With pivot_top_center, we just set position to the rope end and rotation
-    // The engine automatically rotates around the top-center pivot point
+    // The bulb is anchored at its top centre: set the position to the rope end
+    // and the rotation, and it rotates about that point
     if let Some(bulb_entity) = self.bulb_entity
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(bulb_entity)
     {
-      transform.x = bob_x;
-      transform.y = bob_y;
+      transform.translation = Vec2::new(bob_x, bob_y);
       transform.rotation = self.bulb_angle;
     }
 
@@ -362,8 +374,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
     if let Some(light_entity) = self.light_entity
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(light_entity)
     {
-      transform.x = bulb_center_x;
-      transform.y = bulb_center_y;
+      transform.translation = Vec2::new(bulb_center_x, bulb_center_y);
     }
 
     // Update rope segments to follow pendulum (using stored entity IDs for correct order)
@@ -373,8 +384,7 @@ Ambient darkness is the room's base light: 1 is pitch black."
       let y = self.pendulum.anchor_y + PENDULUM_LENGTH * self.pendulum.angle.cos() * t;
 
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = x;
-        transform.y = y;
+        transform.translation = Vec2::new(x, y);
         transform.rotation = -self.pendulum.angle;
       }
     }

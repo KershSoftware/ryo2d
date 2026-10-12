@@ -195,10 +195,9 @@ impl VolumetricPage {
     // Apply atmosphere and ambient light based on preset
     let (ambient_color, ambient_intensity) = self.atmosphere_preset().ambient();
     let atmosphere = self.atmosphere_preset().atmosphere();
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ambient(AmbientLight::new(ambient_color, ambient_intensity));
-      lighting.set_atmosphere(atmosphere);
-    }
+    let mut lighting = ctx.lighting();
+    lighting.set_ambient(AmbientLight::new(ambient_color, ambient_intensity));
+    lighting.set_atmosphere(atmosphere);
 
     // Apply the current atmosphere preset to god rays effect
     if self.god_rays_enabled {
@@ -210,17 +209,17 @@ impl VolumetricPage {
         && let Some(transform) = ctx.world.get::<Transform>(sun_entity)
       {
         // Convert world position to screen UV (approximate)
-        let uv_x = transform.x / self.screen_w;
-        let uv_y = transform.y / self.screen_h;
+        let uv_x = transform.translation.x / self.screen_w;
+        let uv_y = transform.translation.y / self.screen_h;
         light_positions.push((uv_x, uv_y));
       }
 
       if !light_positions.is_empty() {
         let intensity = self.god_rays_intensity * self.atmosphere_preset().god_rays_multiplier();
-        ctx.effects.set_god_rays(intensity, light_positions);
+        ctx.effects().set_god_rays(intensity, light_positions);
       }
     } else {
-      ctx.effects.disable_god_rays();
+      ctx.effects().disable_god_rays();
     }
   }
 
@@ -240,7 +239,7 @@ impl VolumetricPage {
 
       // Update position
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = self.spotlight_x;
+        transform.translation.x = self.spotlight_x;
       }
     }
   }
@@ -251,8 +250,8 @@ impl VolumetricPage {
       let sway = (self.time * 0.3).sin() * 50.0;
 
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = 200.0 + sway;
-        self.sun_x = transform.x;
+        transform.translation.x = 200.0 + sway;
+        self.sun_x = transform.translation.x;
       }
 
       // Update sun light with god rays if enabled
@@ -313,19 +312,17 @@ impl DemoPage for VolumetricPage {
     self.screen_w = w;
     self.screen_h = h;
 
-    // Configure lighting - UI should remain visible
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ui_affected_by_lighting(false);
-      // Very dark ambient for dramatic effect
-      lighting.set_ambient(AmbientLight::new(Color::new(15, 15, 25, 255), 0.05));
-    }
+    // Very dark ambient for dramatic effect
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(Color::new(15, 15, 25, 255), 0.05));
 
     // Create ground/floor
     let ground_sprite = ctx
       .assets
       .create_sprite(Sprite::solid_rect(1280, 100, 40, 35, 30, 255), "ground");
     ctx.world.spawn((
-      Transform::new(640.0, 670.0).with_pivot_center(),
+      Transform::from_xy(640.0, 670.0),
       Renderable::sprite(ground_sprite).with_z_order(1),
       LightOccluder2D::rect(1280.0, 100.0),
     ));
@@ -344,10 +341,13 @@ impl DemoPage for VolumetricPage {
         Sprite::solid_rect(40, height as u32, 60, 55, 50, 255),
         format!("pillar_{}", i),
       );
+      // Standing on (x, y); the occluder covers the sprite
       ctx.world.spawn((
-        Transform::new(*x, *y).with_pivot_bottom_center(),
-        Renderable::sprite(pillar_sprite).with_z_order(2),
-        LightOccluder2D::rect(40.0, height),
+        Transform::from_xy(*x, *y),
+        Renderable::sprite(pillar_sprite)
+          .with_anchor(Anchor::BottomCenter)
+          .with_z_order(2),
+        LightOccluder2D::rect_offset(0.0, -height / 2.0, 40.0, height),
       ));
     }
 
@@ -364,7 +364,7 @@ impl DemoPage for VolumetricPage {
         format!("platform_{}", i),
       );
       ctx.world.spawn((
-        Transform::new(*x, *y).with_pivot_center(),
+        Transform::from_xy(*x, *y),
         Renderable::sprite(platform_sprite).with_z_order(2),
         LightOccluder2D::rect(*width, 20.0),
       ));
@@ -372,17 +372,20 @@ impl DemoPage for VolumetricPage {
 
     // Create the main spotlight (player-controlled)
     self.spotlight_entity = Some(
-      ctx.world.spawn((
-        Transform::new(self.spotlight_x, 620.0),
-        Light2D::spot(
-          self.light_preset().color(),
-          400.0,
-          self.spotlight_angle,
-          self.spotlight_direction,
-        )
-        .with_intensity(1.2)
-        .with_volumetric(),
-      )),
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.spotlight_x, 620.0),
+          Light2D::spot(
+            self.light_preset().color(),
+            400.0,
+            self.spotlight_angle,
+            self.spotlight_direction,
+          )
+          .with_intensity(1.2)
+          .with_volumetric(),
+        ))
+        .id(),
     );
 
     // Create a visible sprite for the spotlight source
@@ -391,18 +394,21 @@ impl DemoPage for VolumetricPage {
       "spotlight_base",
     );
     ctx.world.spawn((
-      Transform::new(self.spotlight_x, 610.0).with_pivot_center(),
+      Transform::from_xy(self.spotlight_x, 610.0),
       Renderable::sprite(spotlight_base).with_z_order(5),
     ));
 
     // Create the "sun" light source (for god rays)
     self.sun_entity = Some(
-      ctx.world.spawn((
-        Transform::new(self.sun_x, self.sun_y),
-        Light2D::point(Color::new(255, 250, 220, 255), 300.0)
-          .with_intensity(1.5)
-          .with_god_rays(),
-      )),
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(self.sun_x, self.sun_y),
+          Light2D::point(Color::new(255, 250, 220, 255), 300.0)
+            .with_intensity(1.5)
+            .with_god_rays(),
+        ))
+        .id(),
     );
 
     // Sun visual (bright circle)
@@ -410,7 +416,7 @@ impl DemoPage for VolumetricPage {
       .assets
       .create_sprite(Sprite::solid_circle(60, 255, 250, 200, 255), "sun");
     ctx.world.spawn((
-      Transform::new(self.sun_x, self.sun_y).with_pivot_center(),
+      Transform::from_xy(self.sun_x, self.sun_y),
       Renderable::sprite(sun_sprite).with_z_order(0),
     ));
 
@@ -424,7 +430,7 @@ impl DemoPage for VolumetricPage {
         format!("torch_bracket_{}", i),
       );
       ctx.world.spawn((
-        Transform::new(*x, *y).with_pivot_center(),
+        Transform::from_xy(*x, *y),
         Renderable::sprite(bracket).with_z_order(3),
       ));
 
@@ -434,15 +440,18 @@ impl DemoPage for VolumetricPage {
         format!("torch_flame_{}", i),
       );
       ctx.world.spawn((
-        Transform::new(*x, y - 20.0).with_pivot_center(),
+        Transform::from_xy(*x, y - 20.0),
         Renderable::sprite(flame).with_z_order(4),
       ));
 
       // Torch light
-      let torch_entity = ctx.world.spawn((
-        Transform::new(*x, y - 20.0),
-        Light2D::torch(120.0).with_intensity(0.8),
-      ));
+      let torch_entity = ctx
+        .world
+        .spawn((
+          Transform::from_xy(*x, y - 20.0),
+          Light2D::torch(120.0).with_intensity(0.8),
+        ))
+        .id();
       self.torch_entities.push(torch_entity);
     }
 

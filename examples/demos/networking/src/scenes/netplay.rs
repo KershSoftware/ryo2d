@@ -63,17 +63,17 @@ impl DemoPage for NetplayPage {
         game.update(ctx, dt);
         if game.leave_requested() {
           game.disconnect();
-          ctx.world.clear();
+          game.despawn(ctx);
           self.state = State::Lobby(Lobby::new());
         }
       }
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     match &mut self.state {
-      State::Lobby(lobby) => lobby.render_ui(ui),
-      State::Match(game) => game.render_ui(ui),
+      State::Lobby(lobby) => lobby.ui(ui),
+      State::Match(game) => game.ui(ui),
     }
   }
 }
