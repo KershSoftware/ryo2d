@@ -33,7 +33,6 @@ pub(crate) struct Slot<T> {
 pub(crate) struct SlotMap<M, T> {
   slots: Vec<Slot<T>>,
   free_list: Vec<u32>,
-  count: usize,
   _marker: PhantomData<M>,
 }
 
@@ -43,7 +42,6 @@ impl<M, T> SlotMap<M, T> {
     Self {
       slots: Vec::new(),
       free_list: Vec::new(),
-      count: 0,
       _marker: PhantomData,
     }
   }
@@ -65,8 +63,6 @@ impl<M, T> SlotMap<M, T> {
       index
     };
 
-    self.count += 1;
-
     Handle {
       index,
       generation: self.slots[index as usize].generation,
@@ -84,17 +80,6 @@ impl<M, T> SlotMap<M, T> {
     slot.value.as_ref()
   }
 
-  /// Returns a mutable reference to the value behind `handle`, or `None` if
-  /// the handle is stale or out of bounds.
-  #[allow(dead_code)]
-  pub fn get_mut(&mut self, handle: Handle<M>) -> Option<&mut T> {
-    let slot = self.slots.get_mut(handle.index as usize)?;
-    if slot.generation != handle.generation {
-      return None;
-    }
-    slot.value.as_mut()
-  }
-
   /// Removes and returns the value behind `handle`, or `None` if the handle
   /// is stale or out of bounds.
   ///
@@ -108,20 +93,7 @@ impl<M, T> SlotMap<M, T> {
     let value = slot.value.take()?;
     slot.generation = slot.generation.wrapping_add(1);
     self.free_list.push(handle.index);
-    self.count -= 1;
     Some(value)
-  }
-
-  /// Returns the number of occupied slots.
-  #[allow(dead_code)]
-  pub fn len(&self) -> usize {
-    self.count
-  }
-
-  /// Returns true if there are no occupied slots.
-  #[allow(dead_code)]
-  pub fn is_empty(&self) -> bool {
-    self.count == 0
   }
 }
 
@@ -170,7 +142,6 @@ mod tests {
     assert_eq!(map.get(h1), Some(&10));
     assert_eq!(map.get(h2), Some(&20));
     assert_eq!(map.get(h3), Some(&30));
-    assert_eq!(map.len(), 3);
   }
 
   #[test]
@@ -192,7 +163,7 @@ mod tests {
     let handle = map.insert("hello".to_string());
     let removed = map.remove(handle);
     assert_eq!(removed, Some("hello".to_string()));
-    assert_eq!(map.len(), 0);
+    assert_eq!(map.get(handle), None);
   }
 
   #[test]
@@ -205,15 +176,5 @@ mod tests {
     // Second remove with the now-stale handle must return None.
     let second = map.remove(handle);
     assert_eq!(second, None);
-  }
-
-  #[test]
-  fn test_get_mut() {
-    let mut map = TestMap::new();
-    let handle = map.insert(42);
-    if let Some(val) = map.get_mut(handle) {
-      *val = 100;
-    }
-    assert_eq!(map.get(handle), Some(&100));
   }
 }

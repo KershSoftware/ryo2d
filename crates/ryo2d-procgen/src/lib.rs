@@ -155,7 +155,6 @@ mod bsp;
 mod builder;
 mod cellular;
 mod config;
-mod events;
 mod grid;
 mod mst;
 mod noise;
@@ -168,10 +167,6 @@ pub use bsp::BspConfig;
 pub use builder::{ProcgenBuilder, poisson_points};
 pub use cellular::CellularConfig;
 pub use config::{GridRect, SeededRng, TileType};
-pub use events::{
-  GenerationCompleted, GenerationFailed, GenerationFailureReason, GenerationStarted, RegionCreated,
-  RegionsConnected,
-};
 pub use grid::{Connection, GenerationGrid, GenerationResult, Region, RegionMetadata, RegionType};
 pub use mst::{MstConfig, MstEdge};
 pub use noise::{
@@ -188,11 +183,9 @@ pub use wfc::{WfcConfig, WfcDirection, WfcResult, WfcTile};
 /// `ryo2d::prelude::*`.
 pub mod prelude {
   pub use crate::{
-    BspConfig, CellularConfig, Connection, GenerationCompleted, GenerationFailed,
-    GenerationFailureReason, GenerationGrid, GenerationResult, GenerationStarted, GridRect,
-    MstConfig, MstEdge, NoiseConfig, NoiseThreshold, NoiseType, PoissonConfig, PoissonResult,
-    ProcgenBuilder, RandomWalkConfig, Region, RegionCreated, RegionMetadata, RegionType,
-    RegionsConnected, SeededRng, TileType, WfcConfig, WfcDirection, WfcResult, WfcTile,
-    poisson_points,
+    BspConfig, CellularConfig, Connection, GenerationGrid, GenerationResult, GridRect, MstConfig,
+    MstEdge, NoiseConfig, NoiseThreshold, NoiseType, PoissonConfig, PoissonResult, ProcgenBuilder,
+    RandomWalkConfig, Region, RegionMetadata, RegionType, SeededRng, TileType, WfcConfig,
+    WfcDirection, WfcResult, WfcTile, poisson_points,
   };
 }

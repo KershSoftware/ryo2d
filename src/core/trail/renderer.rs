@@ -1823,31 +1823,6 @@ fn build_effect_params(effect: Option<&TrailEffect>, style: TrailStyle) -> [f32;
 /// Number of segments for round caps
 const ROUND_CAP_SEGMENTS: u32 = 8;
 
-/// Calculate the number of vertices produced by a round cap (triangle fan as strip).
-///
-/// A round cap emits a triangle fan of `segments` triangles as a degenerate-separated
-/// triangle strip. Each triangle is 3 vertices + 1 degenerate separator (except the last).
-/// Plus 2 degenerates to separate from the main strip.
-///
-/// Simplified: center + (segments + 1) rim vertices, emitted as strip.
-/// For a fan of N triangles as a strip: 2 + 2*N vertices (center/rim alternating).
-/// Plus 2 degenerate separator vertices from main strip.
-#[allow(dead_code)]
-pub fn cap_vertices_for_round(segments: u32) -> usize {
-  // Degenerate separator (2) + fan as strip (2 + 2*segments)
-  2 + 2 + 2 * segments as usize
-}
-
-/// Calculate the number of extra vertices produced by a square cap per endpoint.
-///
-/// Square cap extends by half_width and adds 2 vertices (left + right)
-/// plus 2 degenerate separator vertices from main strip.
-#[allow(dead_code)]
-pub fn cap_vertices_for_square() -> usize {
-  // 2 extra vertices for the extended endpoint (appended directly to the strip)
-  2
-}
-
 /// Generate round cap geometry at an endpoint, appending to the vertex buffer.
 ///
 /// # Parameters
@@ -2050,30 +2025,6 @@ fn vertices_push_square_cap_head(
 // Line Join Geometry Generation
 // =====================================================================
 
-/// Calculate the number of extra vertices produced by a bevel join at a corner.
-#[allow(dead_code)]
-pub fn bevel_join_extra_vertices_per_corner() -> usize {
-  // Bevel join: degenerate separator (2) + triangle (3 vertices as strip: center, outer1, outer2)
-  // Actually emitted as: degen(2) + center + outer1 + center + outer2 = 6 vertices
-  // But we use a simpler approach: 3 vertices for triangle fan strip
-  6
-}
-
-/// Calculate the miter limit angle - the angle below which miter falls back to bevel.
-///
-/// `miter_limit` is the maximum miter length as a multiple of half_width.
-/// Returns the critical half-angle in radians.
-#[allow(dead_code)]
-pub fn compute_miter_limit_angle(miter_limit: f32) -> f32 {
-  // miter_length = 1 / sin(half_angle)
-  // So limit_angle = asin(1 / miter_limit)
-  if miter_limit <= 1.0 {
-    std::f32::consts::FRAC_PI_2
-  } else {
-    (1.0 / miter_limit).asin()
-  }
-}
-
 /// Number of segments for round joins
 const ROUND_JOIN_SEGMENTS: u32 = 6;
 
@@ -2100,19 +2051,6 @@ mod tests {
       .collect();
 
     assert_eq!(warnings, [true, false, false, false, true, false]);
-  }
-
-  /// Helper to create a test trail with specific number of points
-  #[allow(dead_code)]
-  fn create_test_trail(num_points: usize) -> Trail2D {
-    let mut trail = Trail2D::new(Color::WHITE, 10.0)
-      .with_length(num_points + 10) // Ensure we can fit all points
-      .with_min_distance(1.0);
-
-    for i in 0..num_points {
-      trail.update(i as f32 * 10.0, 0.0, 0.016);
-    }
-    trail
   }
 
   /// Calculate expected vertex count for a single trail
@@ -2321,19 +2259,6 @@ mod tests {
   // ========== Line Cap Tests ==========
 
   #[test]
-  fn round_cap_vertex_count() {
-    // Round cap with 8 segments: degenerate(2) + center/rim pairs (2 + 2*8 = 18)
-    // Total: 20 vertices per cap
-    assert_eq!(cap_vertices_for_round(8), 20);
-  }
-
-  #[test]
-  fn square_cap_vertex_count() {
-    // Square cap: 2 vertices per endpoint (extends the strip naturally)
-    assert_eq!(cap_vertices_for_square(), 2);
-  }
-
-  #[test]
   fn round_cap_generates_vertices() {
     let mut vertices = Vec::new();
     let effect_params = [0.0; 4];
@@ -2476,21 +2401,6 @@ mod tests {
   }
 
   // ========== Line Join Tests ==========
-
-  #[test]
-  fn miter_limit_angle() {
-    // Miter limit of 4.0: falls back to bevel at very acute angles
-    let limit = compute_miter_limit_angle(4.0);
-    assert!(limit > 0.0);
-    assert!(limit < std::f32::consts::PI);
-  }
-
-  #[test]
-  fn miter_limit_angle_at_one() {
-    // Miter limit of 1.0: should be PI/2 (90 degrees)
-    let limit = compute_miter_limit_angle(1.0);
-    assert!((limit - std::f32::consts::FRAC_PI_2).abs() < 0.01);
-  }
 
   /// Helper: simulate inline join vertex generation for a 3-point V-shape.
   /// Returns the vertices produced by the join logic at the corner point.

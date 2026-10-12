@@ -747,8 +747,6 @@ mod tests {
     enum DefaultState {
       #[default]
       Initial,
-      #[allow(dead_code)]
-      Other,
     }
 
     let fsm: StateMachine<DefaultState> = StateMachine::default();

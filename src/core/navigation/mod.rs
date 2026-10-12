@@ -42,10 +42,6 @@
 //!             ctx.world.entity_mut(entity).insert(NavTarget::position(500.0, 400.0));
 //!         }
 //!
-//!         // Handle arrival messages
-//!         for event in ctx.messages::<PathCompleted>() {
-//!             println!("Entity {:?} arrived!", event.entity);
-//!         }
 //!     }
 //! }
 //! ```
@@ -104,20 +100,8 @@
 //! let agent = NavAgent::new(100.0)
 //!     .with_smoothing(PathSmoothing::Spline);
 //! ```
-//!
-//! # Messages
-//!
-//! Game code writes these as it drives agents, for other logic to read:
-//!
-//! | Message | When |
-//! |-------|--------------|
-//! | [`PathCompleted`] | Agent reached destination |
-//! | [`PathFailed`] | No path found or path blocked |
-//! | [`PathInvalidated`] | Grid changed, path needs recompute |
-//! | [`PathStarted`] | Agent began computing a path |
 
 mod agent;
-mod events;
 mod grid;
 mod path;
 mod pathfinder;
@@ -125,7 +109,6 @@ pub mod steering;
 
 // Re-export public API
 pub use agent::{NavAgent, NavAgentState, NavTarget};
-pub use events::{PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathStarted};
 pub use grid::{CellState, GridCoord, NavigationBuilder, NavigationGrid};
 pub use path::{Path, PathNode, PathSmoothing};
 pub use pathfinder::{PathResult, Pathfinder, PathfinderConfig, PathfindingState};

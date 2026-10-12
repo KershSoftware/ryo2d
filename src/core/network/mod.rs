@@ -162,7 +162,6 @@ pub mod action;
 pub mod debug;
 mod error;
 pub mod input;
-mod messages;
 pub mod prediction;
 pub mod replication;
 pub mod rpc;
@@ -172,9 +171,6 @@ use transport::{ClientTransport, ServerTransport};
 
 // Re-export ClientId for convenience
 pub use error::{NetworkError, NetworkResult, ReplicationError, ReplicationResult};
-pub use messages::{
-  ClientConnected, ClientDisconnected, ConnectedToServer, DisconnectReason, DisconnectedFromServer,
-};
 pub use renet::ClientId;
 
 // Re-export transport types

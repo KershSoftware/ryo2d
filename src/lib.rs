@@ -186,9 +186,8 @@ pub mod prelude {
 
   // Saves and preferences
   pub use crate::core::config::{
-    DisplayMode, EntitySnapshot, GameSaveData, Resolution, SaveManager, SystemState,
-    UserPreference, UserPreferenceFilter, WorldState, compress_data, decompress_data,
-    parse_resolution,
+    DisplayMode, GameSaveData, Resolution, SaveManager, SystemState, UserPreference,
+    UserPreferenceFilter, compress_data, decompress_data, parse_resolution,
   };
 
   // UI
@@ -208,8 +207,7 @@ pub mod prelude {
   // Navigation and pathfinding
   pub use crate::core::navigation::{
     CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder, NavigationGrid,
-    Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode, PathResult,
-    PathSmoothing, PathStarted, Pathfinder, PathfinderConfig, steering,
+    Path, PathNode, PathResult, PathSmoothing, Pathfinder, PathfinderConfig, steering,
   };
 
   // State machines
@@ -219,10 +217,8 @@ pub mod prelude {
 
   // Networking
   pub use crate::core::network::{
-    Channel, ClientConnected, ClientDisconnected, ClientId, ClientLike, ConnectedToServer,
-    DisconnectReason, DisconnectedFromServer, LOCAL_HOST_ID, ListenServer, NetworkClient,
-    NetworkClientConfig, NetworkEvent, NetworkServer, NetworkServerConfig, ServerLike,
-    TransportConfig,
+    Channel, ClientId, ClientLike, LOCAL_HOST_ID, ListenServer, NetworkClient, NetworkClientConfig,
+    NetworkEvent, NetworkServer, NetworkServerConfig, ServerLike, TransportConfig,
   };
 
   // WebRTC transport (requires the `matchbox` feature)

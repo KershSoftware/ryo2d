@@ -26,25 +26,9 @@ pub enum EngineError {
   #[error("Render error: {0}")]
   Render(String),
 
-  /// Asset loading or management error
-  #[error(transparent)]
-  Asset(#[from] AssetError),
-
-  /// Audio system error
-  #[error(transparent)]
-  Audio(#[from] AudioError),
-
-  /// Sprite loading error
-  #[error(transparent)]
-  Sprite(#[from] SpriteError),
-
   /// Save/load error
   #[error(transparent)]
   Save(#[from] SaveError),
-
-  /// I/O error
-  #[error("I/O error: {0}")]
-  Io(#[from] std::io::Error),
 
   /// Workspace configuration error
   #[error("Workspace error: {0}")]
@@ -65,13 +49,6 @@ pub enum AssetError {
   #[error("Failed to load {path}: {reason}")]
   LoadError { path: PathBuf, reason: String },
 
-  /// Asset type mismatch
-  #[error("Type mismatch for {path}: expected {expected}")]
-  TypeMismatch {
-    path: PathBuf,
-    expected: &'static str,
-  },
-
   /// Failed to set up file watcher for hot reloading
   #[error("Failed to set up file watcher: {0}")]
   WatchError(String),
@@ -87,21 +64,9 @@ pub type AssetResult<T> = Result<T, AssetError>;
 /// Errors that can occur when loading sprites
 #[derive(Error, Debug)]
 pub enum SpriteError {
-  /// File not found
-  #[error("Sprite file not found: {0}")]
-  NotFound(PathBuf),
-
   /// Failed to decode image
   #[error("Failed to decode image {path}: {reason}")]
   DecodeError { path: PathBuf, reason: String },
-
-  /// I/O error while reading file
-  #[error("I/O error reading {path}: {source}")]
-  IoError {
-    path: PathBuf,
-    #[source]
-    source: std::io::Error,
-  },
 }
 
 /// Result type for sprite operations
@@ -140,13 +105,6 @@ pub enum HotReloadError {
   /// Failed to create the file watcher
   #[error("Failed to create file watcher: {0}")]
   WatcherCreation(String),
-
-  /// Failed to watch a path
-  #[error("Failed to watch path {path}: {reason}")]
-  WatchPath {
-    path: std::path::PathBuf,
-    reason: String,
-  },
 }
 
 /// Result type for hot reload operations
@@ -256,30 +214,12 @@ mod tests {
   }
 
   #[test]
-  fn engine_error_from_asset_error() {
-    let asset_err = AssetError::NotFound(PathBuf::from("test.png"));
-    let engine_err: EngineError = asset_err.into();
-    assert!(matches!(engine_err, EngineError::Asset(_)));
-  }
-
-  #[test]
   fn sprite_error_chains_to_asset_error() {
-    let sprite_err = SpriteError::NotFound(PathBuf::from("test.png"));
+    let sprite_err = SpriteError::DecodeError {
+      path: PathBuf::from("test.png"),
+      reason: "truncated".to_string(),
+    };
     let asset_err: AssetError = sprite_err.into();
     assert!(matches!(asset_err, AssetError::Sprite(_)));
-  }
-
-  #[test]
-  fn error_source_chain() {
-    use std::error::Error;
-
-    let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
-    let sprite_err = SpriteError::IoError {
-      path: PathBuf::from("test.png"),
-      source: io_err,
-    };
-
-    // Verify the source chain works
-    assert!(sprite_err.source().is_some());
   }
 }

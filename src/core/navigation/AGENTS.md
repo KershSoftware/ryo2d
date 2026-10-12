@@ -2,12 +2,12 @@
 
 ## Integration Points
 
-Nothing in this module runs in the engine loop. No engine system reads `NavAgent`/`NavTarget`, moves entities, or writes navigation messages. Game code must:
+Nothing in this module runs in the engine loop. No engine system reads `NavAgent`/`NavTarget` or moves entities. Game code must:
 
 1. Own the `NavigationGrid` and `Pathfinder` (typically scene fields)
 2. Call pathfinding when a `NavTarget` is added and drive `NavAgent` state (`start_computing`, `set_path`, `fail`, `arrive`)
 3. Move the entity's `Transform` along `NavAgent.current_path`
-4. Write `PathStarted`/`PathCompleted`/`PathFailed`/`PathInvalidated` with `ctx.write_message()`
+4. Define and write its own messages if other logic must react to arrival or failure (`NavAgent::state()` already reports it)
 
 Gotchas:
 - **Time-slicing** - with `PathfinderConfig::with_time_slicing(n)`, the game keeps the request ID from `start_pathfinding` and polls `continue_pathfinding` each frame until it stops returning `InProgress`. `NavAgent`'s request field is `pub(crate)`, so store the ID yourself.

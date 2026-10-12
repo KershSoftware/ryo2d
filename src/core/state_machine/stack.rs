@@ -647,8 +647,6 @@ mod tests {
     enum DefaultState {
       #[default]
       Initial,
-      #[allow(dead_code)]
-      Other,
     }
 
     let stack: StateStack<DefaultState> = StateStack::default();

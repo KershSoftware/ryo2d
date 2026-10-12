@@ -25,12 +25,6 @@ pub(crate) struct ManagedTextureArray {
   #[allow(dead_code)] // RAII: dropping this frees the GPU allocation
   pub texture: wgpu::Texture,
   pub view: wgpu::TextureView,
-  #[allow(dead_code)] // Used by future renderer integration
-  pub width: u32,
-  #[allow(dead_code)] // Used by future renderer integration
-  pub height: u32,
-  #[allow(dead_code)] // Used by future renderer integration
-  pub layer_count: u32,
 }
 
 /// Centralized GPU content texture manager.
@@ -260,13 +254,7 @@ impl TextureManager {
       ..Default::default()
     });
 
-    self.arrays.insert(ManagedTextureArray {
-      texture,
-      view,
-      width,
-      height,
-      layer_count,
-    })
+    self.arrays.insert(ManagedTextureArray { texture, view })
   }
 
   /// Get the texture view for binding.

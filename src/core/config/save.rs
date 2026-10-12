@@ -1,10 +1,9 @@
 //! Save/Load System for Ryo2D
 //!
-//! Provides a 3-tier save system:
+//! Two kinds of save:
 //!
-//! - **Tier 1: System State** - User settings (display, audio) \[JSON, uncompressed\]
-//! - **Tier 2: World State** - ECS world snapshots (entities and serializable components) \[compressed\]
-//! - **Tier 3: Game Data** - Generic user data for game-specific saves \[compressed\]
+//! - **System state** - User settings (display, audio) \[JSON, uncompressed\]
+//! - **Game data** - Generic user data for game-specific saves \[compressed\]
 //!
 //! # Configuration Hierarchy
 //!
@@ -32,7 +31,7 @@
 //! master_volume = 0.8
 //! ```
 //!
-//! # Tier 1 Example (User Settings)
+//! # System State Example (User Settings)
 //!
 //! ```rust,ignore
 //! use ryo2d::prelude::*;
@@ -49,7 +48,7 @@
 //! save_manager.save_system(&settings)?;
 //! ```
 //!
-//! # Tier 3 Example (Game Data)
+//! # Game Data Example
 //!
 //! ```rust,ignore
 //! use ryo2d::prelude::*;
@@ -250,14 +249,11 @@ const SAVE_VERSION: u32 = 1;
 /// File extension for system saves (JSON)
 const SYSTEM_EXTENSION: &str = "json";
 
-/// File extension for world saves
-const WORLD_EXTENSION: &str = "ryo-world";
-
 /// File extension for game saves
 const GAME_EXTENSION: &str = "ryo-save";
 
 // ============================================================================
-// Tier 1: System State
+// System State
 // ============================================================================
 
 /// Serialize f32 as a cleanly-rounded f64 to avoid precision artifacts in JSON.
@@ -279,7 +275,7 @@ fn system_state_map(state: &SystemState) -> SaveResult<serde_json::Map<String, s
   }
 }
 
-/// User settings and configuration (Tier 1).
+/// User settings and configuration.
 ///
 /// Represents the contents of `system.json`, the player-editable configuration file.
 /// This is separate from `Ryo.toml` which contains developer settings.
@@ -649,73 +645,12 @@ impl SystemState {
 }
 
 // ============================================================================
-// Tier 2: World State
-// ============================================================================
-
-/// Serializable component data for ECS snapshots.
-///
-/// Components that should be saved must implement `Serialize + DeserializeOwned`.
-/// Not all components are serializable (e.g., sprites contain raw pixel data).
-///
-/// This struct holds serialized component data keyed by type name.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct EntitySnapshot {
-  /// Entity identifier (for reference purposes)
-  pub id: u64,
-  /// Component data keyed by component type name
-  pub components: HashMap<String, Vec<u8>>,
-}
-
-/// World state snapshot for ECS serialization.
-///
-/// Captures all entities and their serializable components.
-/// Non-serializable components (sprites, handles) are excluded.
-///
-/// World state is saved to `{save_dir}/{slot}.ryo-world`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorldState {
-  /// All entity snapshots
-  pub entities: Vec<EntitySnapshot>,
-  /// Custom world-level metadata
-  #[serde(default)]
-  pub metadata: HashMap<String, String>,
-}
-
-impl WorldState {
-  /// Create an empty world state
-  pub fn new() -> Self {
-    WorldState::default()
-  }
-
-  /// Set world metadata
-  pub fn set_metadata(&mut self, key: impl Into<String>, value: impl Into<String>) {
-    self.metadata.insert(key.into(), value.into());
-  }
-
-  /// Get world metadata
-  pub fn get_metadata(&self, key: &str) -> Option<&str> {
-    self.metadata.get(key).map(|s| s.as_str())
-  }
-
-  /// Add an entity snapshot
-  pub fn add_entity(&mut self, snapshot: EntitySnapshot) {
-    self.entities.push(snapshot);
-  }
-
-  /// Number of entities in the snapshot
-  pub fn entity_count(&self) -> usize {
-    self.entities.len()
-  }
-}
-
-// ============================================================================
-// Tier 3: Game Data
+// Game Data
 // ============================================================================
 
 /// Generic game data wrapper with metadata.
 ///
-/// This tier is for game-specific save data that doesn't fit into
-/// system settings or ECS snapshots:
+/// Game-specific save data that doesn't fit into system settings:
 /// - Player progress
 /// - Inventory
 /// - Quest state
@@ -777,17 +712,15 @@ impl<T> GameSaveData<T> {
 
 /// Manages all save/load operations for the engine.
 ///
-/// Provides a unified interface for all three save tiers with
-/// automatic compression and file format handling.
+/// One interface for system state and game data, with automatic
+/// compression and file format handling.
 ///
 /// # Save Directory Structure
 ///
 /// ```text
 /// {workspace}/data/
-/// ├── system.json          # Tier 1: User settings (uncompressed JSON)
-/// ├── slot1.ryo-world      # Tier 2: World snapshots (compressed)
-/// ├── slot1.ryo-save       # Tier 3: Game data (compressed)
-/// ├── slot2.ryo-world
+/// ├── system.json          # User settings (uncompressed JSON)
+/// ├── slot1.ryo-save       # Game data (compressed)
 /// ├── slot2.ryo-save
 /// └── ...
 /// ```
@@ -838,7 +771,7 @@ impl SaveManager {
   }
 
   // ==========================================================================
-  // Tier 1: System State (JSON, uncompressed)
+  // System State (JSON, uncompressed)
   // ==========================================================================
 
   /// Save system state as human-editable JSON.
@@ -1053,46 +986,7 @@ impl SaveManager {
   }
 
   // ==========================================================================
-  // Tier 2: World State
-  // ==========================================================================
-
-  /// Save world state to a named slot.
-  pub fn save_world(&self, slot: &str, state: &WorldState) -> SaveResult<()> {
-    self.validate_slot_name(slot)?;
-    let path = self.save_dir.join(format!("{}.{}", slot, WORLD_EXTENSION));
-    self.write_save_file(&path, state)
-  }
-
-  /// Load world state from a named slot.
-  pub fn load_world(&self, slot: &str) -> SaveResult<WorldState> {
-    self.validate_slot_name(slot)?;
-    let path = self.save_dir.join(format!("{}.{}", slot, WORLD_EXTENSION));
-    if !path.exists() {
-      return Err(SaveError::NotFound(path));
-    }
-    self.read_save_file(&path)
-  }
-
-  /// Check if a world save exists.
-  pub fn has_world_save(&self, slot: &str) -> bool {
-    self
-      .save_dir
-      .join(format!("{}.{}", slot, WORLD_EXTENSION))
-      .exists()
-  }
-
-  /// Delete a world save.
-  pub fn delete_world(&self, slot: &str) -> SaveResult<()> {
-    self.validate_slot_name(slot)?;
-    let path = self.save_dir.join(format!("{}.{}", slot, WORLD_EXTENSION));
-    if path.exists() {
-      fs::remove_file(&path)?;
-    }
-    Ok(())
-  }
-
-  // ==========================================================================
-  // Tier 3: Game Data
+  // Game Data
   // ==========================================================================
 
   /// Save game data to a named slot.
@@ -1147,18 +1041,13 @@ impl SaveManager {
     self.list_saves_with_extension(GAME_EXTENSION)
   }
 
-  /// List all world save slots.
-  pub fn list_world_saves(&self) -> SaveResult<Vec<String>> {
-    self.list_saves_with_extension(WORLD_EXTENSION)
-  }
-
   // ==========================================================================
   // Raw Data API (for advanced use)
   // ==========================================================================
 
   /// Save arbitrary serializable data to a custom file.
   ///
-  /// Use this for custom save formats not covered by the 3 tiers.
+  /// Use this for custom save formats that neither system state nor game data covers.
   pub fn save_raw<T: Serialize>(&self, filename: &str, data: &T) -> SaveResult<()> {
     let path = self.save_dir.join(filename);
     self.write_save_file(&path, data)
@@ -1177,7 +1066,7 @@ impl SaveManager {
   // Internal Helpers
   // ==========================================================================
 
-  /// Write data as pretty-printed JSON (for Tier 1: SystemState)
+  /// Write data as pretty-printed JSON (for `SystemState`)
   fn write_json_file<T: Serialize>(&self, path: &Path, data: &T) -> SaveResult<()> {
     let json =
       serde_json::to_string_pretty(data).map_err(|e| SaveError::Serialization(e.to_string()))?;
@@ -1187,7 +1076,7 @@ impl SaveManager {
     Ok(())
   }
 
-  /// Read data from JSON file (for Tier 1: SystemState)
+  /// Read data from JSON file (for `SystemState`)
   fn read_json_file<T: DeserializeOwned>(&self, path: &Path) -> SaveResult<T> {
     let json = fs::read_to_string(path)?;
     let data =
@@ -1195,7 +1084,7 @@ impl SaveManager {
     Ok(data)
   }
 
-  /// Write compressed save file with header (for Tiers 2-3)
+  /// Write compressed save file with header (for game data)
   fn write_save_file<T: Serialize>(&self, path: &Path, data: &T) -> SaveResult<()> {
     // Serialize to RON format
     let serialized = ron::to_string(data).map_err(|e| SaveError::Serialization(e.to_string()))?;
@@ -1213,7 +1102,7 @@ impl SaveManager {
     Ok(())
   }
 
-  /// Read compressed save file with header verification (for Tiers 2-3)
+  /// Read compressed save file with header verification (for game data)
   fn read_save_file<T: DeserializeOwned>(&self, path: &Path) -> SaveResult<T> {
     let mut file = File::open(path)?;
 
@@ -1414,27 +1303,6 @@ mod tests {
     // Should be human-readable (contains newlines from pretty-print)
     assert!(content.contains('\n'));
     assert!(content.contains("master_volume"));
-  }
-
-  #[test]
-  fn world_state_save_and_load() {
-    let dir = tempdir().unwrap();
-    let manager = SaveManager::new(dir.path()).unwrap();
-
-    let mut world = WorldState::new();
-    world.set_metadata("scene", "level_1");
-    world.add_entity(EntitySnapshot {
-      id: 42,
-      components: HashMap::new(),
-    });
-
-    manager.save_world("slot1", &world).unwrap();
-    assert!(manager.has_world_save("slot1"));
-
-    let loaded = manager.load_world("slot1").unwrap();
-    assert_eq!(loaded.entity_count(), 1);
-    assert_eq!(loaded.get_metadata("scene"), Some("level_1"));
-    assert_eq!(loaded.entities[0].id, 42);
   }
 
   #[test]

@@ -41,7 +41,6 @@ mod equipment;
 mod error;
 mod item;
 mod loot;
-mod messages;
 mod registry;
 mod world;
 
@@ -50,7 +49,6 @@ pub use equipment::*;
 pub use error::{InventoryError, InventoryResult};
 pub use item::*;
 pub use loot::*;
-pub use messages::{InventoryChanged, ItemDropped, ItemEquipped, ItemPickedUp, ItemUnequipped};
 pub use registry::*;
 pub use world::*;
 
@@ -58,9 +56,8 @@ pub use world::*;
 /// `ryo2d::prelude::*`.
 pub mod prelude {
   pub use crate::{
-    EquipValidator, Equipment, Inventory, InventoryChanged, InventoryError, InventoryResult,
-    ItemData, ItemDrop, ItemDropped, ItemEquipped, ItemId, ItemPickedUp, ItemRegistry, ItemStack,
-    ItemTemplate, ItemTemplateBuilder, ItemUnequipped, LootEntry, LootTable, pickup_item,
-    spawn_item_drop,
+    EquipValidator, Equipment, Inventory, InventoryError, InventoryResult, ItemData, ItemDrop,
+    ItemId, ItemRegistry, ItemStack, ItemTemplate, ItemTemplateBuilder, LootEntry, LootTable,
+    pickup_item, spawn_item_drop,
   };
 }
