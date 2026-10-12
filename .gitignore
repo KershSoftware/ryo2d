@@ -2,7 +2,6 @@
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
 
 # Example project build artifacts (standalone projects in examples/)
 examples/**/target/
