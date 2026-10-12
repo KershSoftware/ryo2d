@@ -159,7 +159,6 @@ impl TileType {
   }
 
   /// Convert to navigation CellState for pathfinding integration
-  #[cfg(any())] // MIGRATION: Task 16
   pub fn to_cell_state(&self) -> crate::core::navigation::CellState {
     use crate::core::navigation::CellState;
     match self {

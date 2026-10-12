@@ -3,6 +3,7 @@
 //! Emitters spawn particles with configurable shapes, rates, and properties.
 
 use crate::core::asset::SpriteHandle;
+use crate::core::ecs::Component;
 use crate::core::ecs::SpriteEffect;
 use crate::core::ui::Color;
 
@@ -105,7 +106,7 @@ pub enum EmissionShape {
 ///         .with_color(Color::CYAN, Color::TRANSPARENT),
 /// ));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct ParticleEmitter {
   // =========================================================================
   // Core settings

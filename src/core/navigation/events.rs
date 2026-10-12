@@ -1,8 +1,9 @@
-//! Navigation events
+//! Navigation messages
 //!
-//! Events emitted by the navigation system for game logic to react to.
+//! Messages for game logic to write as it drives agents (`ctx.write_message`)
+//! and to react to (`ctx.messages`).
 
-use crate::core::ecs::Entity;
+use crate::core::ecs::{Entity, Message};
 
 /// Emitted when an agent successfully reaches its destination
 ///
@@ -12,7 +13,7 @@ use crate::core::ecs::Entity;
 /// use ryo2d::prelude::*;
 ///
 /// fn update(&mut self, ctx: &mut GameContext) {
-///     for event in ctx.events.read::<PathCompleted>() {
+///     for event in ctx.messages::<PathCompleted>() {
 ///         if event.entity == self.enemy {
 ///             // Enemy reached player, deal damage
 ///             self.player_health -= 10;
@@ -20,7 +21,7 @@ use crate::core::ecs::Entity;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct PathCompleted {
   /// The entity that completed its path
   pub entity: Entity,
@@ -59,7 +60,7 @@ pub enum PathFailureReason {
 /// use ryo2d::prelude::*;
 ///
 /// fn update(&mut self, ctx: &mut GameContext) {
-///     for event in ctx.events.read::<PathFailed>() {
+///     for event in ctx.messages::<PathFailed>() {
 ///         match event.reason {
 ///             PathFailureReason::NoPath => {
 ///                 println!("Entity {:?} is stuck!", event.entity);
@@ -72,7 +73,7 @@ pub enum PathFailureReason {
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct PathFailed {
   /// The entity that failed to path
   pub entity: Entity,
@@ -112,13 +113,13 @@ impl PathFailed {
 /// use ryo2d::prelude::*;
 ///
 /// fn update(&mut self, ctx: &mut GameContext) {
-///     for event in ctx.events.read::<PathInvalidated>() {
+///     for event in ctx.messages::<PathInvalidated>() {
 ///         // Maybe show a "recalculating" indicator
 ///         self.show_path_indicator(event.entity, PathIndicator::Recalculating);
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct PathInvalidated {
   /// The entity whose path was invalidated
   pub entity: Entity,
@@ -139,7 +140,7 @@ impl PathInvalidated {
 ///
 /// Useful for showing loading indicators or disabling certain actions
 /// while pathfinding is in progress.
-#[derive(Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct PathStarted {
   /// The entity that started pathfinding
   pub entity: Entity,
@@ -166,7 +167,7 @@ mod tests {
   #[test]
   fn path_completed_creation() {
     let mut world = crate::core::ecs::World::new();
-    let entity = world.spawn(());
+    let entity = world.spawn(()).id();
 
     let event = PathCompleted::new(entity, 100.0, 200.0);
     assert_eq!(event.entity, entity);
@@ -177,7 +178,7 @@ mod tests {
   #[test]
   fn path_failed_with_target() {
     let mut world = crate::core::ecs::World::new();
-    let entity = world.spawn(());
+    let entity = world.spawn(()).id();
 
     let event = PathFailed::new(entity, PathFailureReason::NoPath).with_target(50.0, 75.0);
 
@@ -190,7 +191,7 @@ mod tests {
   #[test]
   fn path_invalidated_creation() {
     let mut world = crate::core::ecs::World::new();
-    let entity = world.spawn(());
+    let entity = world.spawn(()).id();
 
     let event = PathInvalidated::new(entity, true);
     assert_eq!(event.entity, entity);

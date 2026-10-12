@@ -253,7 +253,7 @@ pub(crate) fn init_world_resources(
   world.insert_resource(assets);
   world.insert_resource(EffectsManager::new());
   world.insert_resource(LightingSettings::default());
-  // MIGRATION: Task 16 inserts TilemapManager::new()
+  world.insert_resource(crate::core::tilemap::TilemapManager::new());
   world.insert_resource(WindowRequest::default());
   world.insert_resource(CursorRequest::default());
   world.insert_resource(WindowInfo {

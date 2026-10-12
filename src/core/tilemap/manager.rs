@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hecs::Entity;
+use crate::core::ecs::{Entity, Resource};
 
 use super::TileId;
 use super::chunk::*;
@@ -14,12 +14,13 @@ struct TilemapRecord {
 
 /// Manages all active tilemaps.
 ///
-/// Each tilemap is associated with a [`hecs::Entity`] and tracked with
+/// Each tilemap is associated with an [`Entity`] and tracked with
 /// per-chunk dirty state. The manager provides tile queries, coordinate
 /// conversion, and viewport culling without depending on rendering types.
 ///
 /// Full engine integration (rendering, asset loading) is added in a later
 /// stage; this stub contains only the data-management surface.
+#[derive(Resource)]
 pub struct TilemapManager {
   tilemaps: HashMap<Entity, TilemapRecord>,
 }
@@ -247,9 +248,8 @@ mod tests {
     }
   }
 
-  fn make_entity(id: u64) -> Entity {
-    // hecs provides Entity::from_bits for testing.
-    unsafe { core::mem::transmute::<u64, Entity>(id) }
+  fn make_entity(index: u32) -> Entity {
+    Entity::from_raw_u32(index).expect("a small index is a valid entity")
   }
 
   fn small_map_with_tiles() -> Tilemap {

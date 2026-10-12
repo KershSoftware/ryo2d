@@ -25,8 +25,10 @@ use std::sync::Arc;
 
 use glam::Vec2;
 
+use crate::core::ecs::Component;
+
 /// ECS component for a skeleton instance.
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct Skeleton {
   pub def: Arc<SkeletonDef>,
   pub pose: Pose,

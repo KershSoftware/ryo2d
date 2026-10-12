@@ -78,11 +78,12 @@ pub use collision::{
 pub use emitter::{EmissionMode, EmissionShape, ParticleEmitter};
 pub use particle::Particle;
 
-use crate::core::ecs::{Inactive, Transform, World};
-use crate::core::events::Events;
+use std::collections::HashMap;
+
+use crate::core::ecs::{Entity, GlobalTransform, SpriteEffect, World};
 use crate::core::graphics::{BatchCollector, Camera, SpriteInstance};
+use crate::core::messages::register_message;
 use crate::core::physics::{Collider, ColliderShape};
-use hecs::Entity;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -115,6 +116,16 @@ impl ParticleData {
       velocity_x: self.particle.velocity_x,
       velocity_y: self.particle.velocity_y,
     }
+  }
+}
+
+/// A uniform sample from `min..=max`; `min` when the range is empty or
+/// reversed (no spread, a zero-size shape, or min set above max).
+fn range(rng: &mut StdRng, min: f32, max: f32) -> f32 {
+  if max > min {
+    rng.gen_range(min..=max)
+  } else {
+    min
   }
 }
 
@@ -159,23 +170,27 @@ struct Contact {
 }
 
 impl ParticleCollider {
-  fn from_component(entity: Entity, transform: &Transform, collider: &Collider) -> Self {
-    let aabb = collider.world_aabb(transform);
-    // Negative transform scale inverts the bounds
-    let (min_x, max_x) = (aabb.min_x.min(aabb.max_x), aabb.min_x.max(aabb.max_x));
-    let (min_y, max_y) = (aabb.min_y.min(aabb.max_y), aabb.min_y.max(aabb.max_y));
+  fn from_component(entity: Entity, global: &GlobalTransform, collider: &Collider) -> Self {
+    // Centred on the origin plus offset, unscaled, as physics simulates it
+    let position = global.translation();
     let geometry = match collider.shape {
-      ColliderShape::Box { .. } => ColliderGeometry::Box {
-        min_x,
-        min_y,
-        max_x,
-        max_y,
-      },
-      ColliderShape::Circle { .. } => ColliderGeometry::Circle {
-        x: (min_x + max_x) * 0.5,
-        y: (min_y + max_y) * 0.5,
-        radius: (max_x - min_x) * 0.5,
-      },
+      ColliderShape::Box { .. } => {
+        let (min, max) = collider.world_bounds(position);
+        ColliderGeometry::Box {
+          min_x: min.x,
+          min_y: min.y,
+          max_x: max.x,
+          max_y: max.y,
+        }
+      }
+      ColliderShape::Circle { radius } => {
+        let center = collider.world_center(position);
+        ColliderGeometry::Circle {
+          x: center.x,
+          y: center.y,
+          radius,
+        }
+      }
     };
     Self {
       entity,
@@ -320,34 +335,27 @@ impl ParticleSystem {
 
   /// Update all particle emitters and simulate particles.
   ///
-  /// Call this in the engine's update phase, after game update. Particles from emitters with
-  /// [`ParticleEmitter::with_collision`] collide with `Transform` + `Collider` entities and may
-  /// emit [`ParticleCollision`] events into `events`.
-  pub fn update(&mut self, world: &mut World, events: &mut Events, dt: f32) {
-    // Collect emitter entities and positions
-    let emitter_entities = world.entities_with::<ParticleEmitter>();
-    let mut emitter_data: Vec<(Entity, f32, f32, f32, f32, Option<CollisionConfig>)> = Vec::new();
-
-    for entity in &emitter_entities {
-      if world.has::<Inactive>(*entity) {
-        continue;
-      }
-      if let Some(emitter) = world.get::<ParticleEmitter>(*entity) {
-        if !emitter.enabled {
-          continue;
-        }
-        if let Some(transform) = world.get::<Transform>(*entity) {
-          emitter_data.push((
-            *entity,
-            transform.x,
-            transform.y,
-            emitter.gravity.0,
-            emitter.gravity.1,
-            emitter.collision.clone(),
-          ));
-        }
-      }
-    }
+  /// Call this from the scene's `update`. Emitters and attractors act at
+  /// their `GlobalTransform`. Particles from emitters with
+  /// [`ParticleEmitter::with_collision`] collide with `Collider` entities and
+  /// may write [`ParticleCollision`] messages.
+  pub fn update(&mut self, world: &mut World, dt: f32) {
+    let emitter_data: Vec<(Entity, f32, f32, f32, f32, Option<CollisionConfig>)> = world
+      .query::<(Entity, &GlobalTransform, &ParticleEmitter)>()
+      .iter(world)
+      .filter(|(_, _, emitter)| emitter.enabled)
+      .map(|(entity, global, emitter)| {
+        let position = global.translation();
+        (
+          entity,
+          position.x,
+          position.y,
+          emitter.gravity.0,
+          emitter.gravity.1,
+          emitter.collision.clone(),
+        )
+      })
+      .collect();
 
     // Gather colliders only when some emitter collides
     self.colliders.clear();
@@ -355,56 +363,29 @@ impl ParticleSystem {
       .iter()
       .any(|(.., collision)| collision.is_some())
     {
-      let mut query = world
-        .query::<(Entity, &Transform, &Collider)>()
-        .without::<&Inactive>();
       self.colliders.extend(
-        query
-          .iter()
+        world
+          .query::<(Entity, &GlobalTransform, &Collider)>()
+          .iter(world)
           .filter(|(_, _, collider)| !collider.is_trigger)
-          .map(|(entity, transform, collider)| {
-            ParticleCollider::from_component(entity, transform, collider)
+          .map(|(entity, global, collider)| {
+            ParticleCollider::from_component(entity, global, collider)
           }),
       );
     }
 
-    // Collect attractors
-    let attractor_entities = world.entities_with::<ParticleAttractor>();
-    let mut attractors: Vec<(f32, f32, ParticleAttractor)> = Vec::new();
-
-    for entity in &attractor_entities {
-      if world.has::<Inactive>(*entity) {
-        continue;
-      }
-      // Get attractor data first
-      let attractor_data = world
-        .get::<ParticleAttractor>(*entity)
-        .map(|a| (a.enabled, a.attractor_type.clone(), a.layer_mask, a.time));
-      let Some((enabled, attractor_type, layer_mask, time)) = attractor_data else {
-        continue;
-      };
-      if !enabled {
-        continue;
-      }
-      if let Some(transform) = world.get::<Transform>(*entity) {
-        attractors.push((
-          transform.x,
-          transform.y,
-          ParticleAttractor {
-            attractor_type,
-            layer_mask,
-            enabled: true,
-            time,
-          },
-        ));
-      }
-    }
-
-    // Update attractor time
-    for entity in &attractor_entities {
-      if let Some(mut attractor) = world.get_mut::<ParticleAttractor>(*entity) {
-        attractor.update(dt);
-      }
+    // Attractors act with this update's state, then advance their time
+    let attractors: Vec<(f32, f32, ParticleAttractor)> = world
+      .query::<(&GlobalTransform, &ParticleAttractor)>()
+      .iter(world)
+      .filter(|(_, attractor)| attractor.enabled)
+      .map(|(global, attractor)| {
+        let position = global.translation();
+        (position.x, position.y, attractor.clone())
+      })
+      .collect();
+    for mut attractor in world.query::<&mut ParticleAttractor>().iter_mut(world) {
+      attractor.update(dt);
     }
 
     // Spawn new particles
@@ -413,13 +394,13 @@ impl ParticleSystem {
     }
 
     // Build lookup for emitter properties
-    let emitter_props: std::collections::HashMap<Entity, (f32, f32, Option<&CollisionConfig>)> =
-      emitter_data
-        .iter()
-        .map(|(e, _, _, gx, gy, collision)| (*e, (*gx, *gy, collision.as_ref())))
-        .collect();
+    let emitter_props: HashMap<Entity, (f32, f32, Option<&CollisionConfig>)> = emitter_data
+      .iter()
+      .map(|(e, _, _, gx, gy, collision)| (*e, (*gx, *gy, collision.as_ref())))
+      .collect();
 
     // Simulate particles
+    let mut collisions = Vec::new();
     let mut i = 0;
     while i < self.particles.len() {
       let p = &mut self.particles[i];
@@ -476,7 +457,7 @@ impl ParticleSystem {
             match config.response {
               CollisionResponse::Die => {
                 if config.send_events {
-                  events.emit(p.collision_event(&contact));
+                  collisions.push(p.collision_event(&contact));
                 }
                 dead = true;
                 break;
@@ -491,7 +472,7 @@ impl ParticleSystem {
                     && !bounce_event_sent
                     && -speed_along_normal >= MIN_BOUNCE_EVENT_SPEED
                   {
-                    events.emit(p.collision_event(&contact));
+                    collisions.push(p.collision_event(&contact));
                     bounce_event_sent = true;
                   }
                   let impulse = (1.0 + config.response.restitution()) * speed_along_normal;
@@ -504,7 +485,7 @@ impl ParticleSystem {
               }
               CollisionResponse::Stick => {
                 if config.send_events {
-                  events.emit(p.collision_event(&contact));
+                  collisions.push(p.collision_event(&contact));
                 }
                 p.particle.velocity_x = 0.0;
                 p.particle.velocity_y = 0.0;
@@ -513,7 +494,7 @@ impl ParticleSystem {
               }
               CollisionResponse::Event => {
                 if !was_touching {
-                  events.emit(p.collision_event(&contact));
+                  collisions.push(p.collision_event(&contact));
                 }
                 break;
               }
@@ -533,14 +514,23 @@ impl ParticleSystem {
     }
 
     // Update particle counts on emitters
-    let mut counts: std::collections::HashMap<Entity, u32> = std::collections::HashMap::new();
+    let mut counts: HashMap<Entity, u32> = HashMap::new();
     for p in &self.particles {
       *counts.entry(p.emitter_entity).or_insert(0) += 1;
     }
-    for entity in &emitter_entities {
-      if let Some(mut emitter) = world.get_mut::<ParticleEmitter>(*entity) {
-        emitter.particle_count = counts.get(entity).copied().unwrap_or(0);
+    for (entity, mut emitter) in world
+      .query::<(Entity, &mut ParticleEmitter)>()
+      .iter_mut(world)
+    {
+      let count = counts.get(&entity).copied().unwrap_or(0);
+      if emitter.particle_count != count {
+        emitter.particle_count = count;
       }
+    }
+
+    if !collisions.is_empty() {
+      register_message::<ParticleCollision>(world);
+      world.write_message_batch(collisions);
     }
   }
 
@@ -662,11 +652,11 @@ impl ParticleSystem {
       let mut particle = Particle::new();
 
       // Lifetime
-      particle.max_lifetime = rng.gen_range(lifetime_min..=lifetime_max);
+      particle.max_lifetime = range(rng, lifetime_min, lifetime_max);
 
       // Size
-      particle.start_size = rng.gen_range(size_min..=size_max);
-      particle.end_size = rng.gen_range(size_end_min..=size_end_max);
+      particle.start_size = range(rng, size_min, size_max);
+      particle.end_size = range(rng, size_end_min, size_end_max);
       particle.size = particle.start_size;
 
       // Color
@@ -675,8 +665,8 @@ impl ParticleSystem {
       particle.color = color_start;
 
       // Rotation
-      particle.rotation = rng.gen_range(rotation_min..=rotation_max);
-      particle.angular_velocity = rng.gen_range(angular_vel_min..=angular_vel_max);
+      particle.rotation = range(rng, rotation_min, rotation_max);
+      particle.angular_velocity = range(rng, angular_vel_min, angular_vel_max);
 
       particle.collision_layer = layer;
 
@@ -719,7 +709,7 @@ impl ParticleSystem {
       EmissionShape::Point => {
         // Random direction
         let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-        let speed = rng.gen_range(speed_min..=speed_max);
+        let speed = range(rng, speed_min, speed_max);
         (
           emitter_x,
           emitter_y,
@@ -738,7 +728,7 @@ impl ParticleSystem {
         let px = emitter_x + start_x + (end_x - start_x) * t;
         let py = emitter_y + start_y + (end_y - start_y) * t;
         let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-        let speed = rng.gen_range(speed_min..=speed_max);
+        let speed = range(rng, speed_min, speed_max);
         (px, py, angle.cos() * speed, angle.sin() * speed)
       }
 
@@ -747,21 +737,21 @@ impl ParticleSystem {
         let r = if *hollow {
           *radius
         } else {
-          rng.gen_range(0.0..*radius)
+          range(rng, 0.0, *radius)
         };
         let px = emitter_x + angle.cos() * r;
         let py = emitter_y + angle.sin() * r;
 
         // Velocity direction = outward from center
-        let speed = rng.gen_range(speed_min..=speed_max);
+        let speed = range(rng, speed_min, speed_max);
         (px, py, angle.cos() * speed, angle.sin() * speed)
       }
 
       EmissionShape::Rectangle { width, height } => {
-        let px = emitter_x + rng.gen_range(-width / 2.0..width / 2.0);
-        let py = emitter_y + rng.gen_range(-height / 2.0..height / 2.0);
+        let px = emitter_x + range(rng, -width / 2.0, width / 2.0);
+        let py = emitter_y + range(rng, -height / 2.0, height / 2.0);
         let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-        let speed = rng.gen_range(speed_min..=speed_max);
+        let speed = range(rng, speed_min, speed_max);
         (px, py, angle.cos() * speed, angle.sin() * speed)
       }
 
@@ -772,8 +762,8 @@ impl ParticleSystem {
         max_speed,
       } => {
         let half_spread = spread / 2.0;
-        let angle = direction + rng.gen_range(-half_spread..half_spread);
-        let speed = rng.gen_range(*min_speed..=*max_speed);
+        let angle = direction + range(rng, -half_spread, half_spread);
+        let speed = range(rng, *min_speed, *max_speed);
         (
           emitter_x,
           emitter_y,
@@ -789,22 +779,33 @@ impl ParticleSystem {
   /// Call this in the render phase to add particles to the batch collector.
   /// The camera is used to convert world positions to screen positions.
   pub fn collect_for_render(&self, world: &World, camera: &Camera, collector: &mut BatchCollector) {
+    if self.particles.is_empty() {
+      return;
+    }
+    // Each emitter's look, read once rather than per particle; disabled
+    // emitters are left out, so their particles are not drawn
+    let Some(mut emitters) = world.try_query::<(Entity, &ParticleEmitter)>() else {
+      return;
+    };
+    let looks: HashMap<Entity, (String, Option<&SpriteEffect>, i32)> = emitters
+      .iter(world)
+      .map(|(entity, emitter)| {
+        (
+          entity,
+          (
+            emitter.sprite.id(),
+            emitter.effect.as_ref(),
+            emitter.z_order,
+          ),
+        )
+      })
+      .collect();
     let zoom = camera.zoom;
 
-    // Group particles by emitter to get their sprites and effects
     for p in &self.particles {
-      let Some(emitter) = world.get::<ParticleEmitter>(p.emitter_entity) else {
+      let Some((texture_id, effect, z_order)) = looks.get(&p.emitter_entity) else {
         continue;
       };
-
-      // Skip if emitter's entity is inactive
-      if world.has::<Inactive>(p.emitter_entity) {
-        continue;
-      }
-
-      let texture_id = emitter.sprite.id();
-      let has_effect = emitter.effect.is_some();
-      let z_order = emitter.z_order;
 
       // Convert world position to screen position
       let (screen_x, screen_y) = camera.world_to_screen(p.x, p.y);
@@ -824,12 +825,11 @@ impl ParticleSystem {
       // Apply tint from particle color
       instance = instance.with_tint(p.particle.color, p.particle.color.a as f32 / 255.0);
 
-      // Apply effect if present
-      if let Some(effect) = &emitter.effect {
+      if let Some(effect) = effect {
         instance = instance.with_effect(effect);
       }
 
-      collector.add(texture_id, has_effect, instance, z_order);
+      collector.add(texture_id, effect.is_some(), instance, *z_order);
     }
   }
 
@@ -853,8 +853,16 @@ impl ParticleSystem {
 mod tests {
   use super::*;
   use crate::core::asset::SpriteHandle;
+  use crate::core::ecs::{Disabled, Messages, Transform, propagate_transforms};
   use crate::core::graphics::Sprite;
   use crate::core::physics::Collider;
+  use crate::core::systems::test_util;
+
+  /// Propagate transforms, as the engine does every step, then update.
+  fn update(system: &mut ParticleSystem, world: &mut World, dt: f32) {
+    test_util::run(world, propagate_transforms);
+    system.update(world, dt);
+  }
 
   fn test_sprite() -> SpriteHandle {
     SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 255, 255, 255, 255), "test.png")
@@ -864,20 +872,19 @@ mod tests {
   fn particle_near_attractor(emitter_layer: u32, attractor_mask: u32) -> f32 {
     let mut system = ParticleSystem::new();
     let mut world = World::new();
-    let mut events = Events::new();
     let emitter = ParticleEmitter::new(test_sprite())
       .with_mode(EmissionMode::Burst { count: 1 })
       .with_speed(0.0, 0.0)
       .with_lifetime(10.0, 10.0)
       .with_layer(emitter_layer);
-    world.spawn((Transform::new(0.0, 0.0), emitter));
+    world.spawn((Transform::from_xy(0.0, 0.0), emitter));
     world.spawn((
-      Transform::new(100.0, 0.0),
+      Transform::from_xy(100.0, 0.0),
       ParticleAttractor::point(500.0, 1000.0).with_layer_mask(attractor_mask),
     ));
 
-    system.update(&mut world, &mut events, 0.016);
-    system.update(&mut world, &mut events, 0.016);
+    update(&mut system, &mut world, 0.016);
+    update(&mut system, &mut world, 0.016);
 
     system.particles[0].particle.velocity_x
   }
@@ -895,15 +902,14 @@ mod tests {
   fn spawned_motion(seed: u64) -> Vec<(f32, f32, f32)> {
     let mut system = ParticleSystem::with_seed(seed);
     let mut world = World::new();
-    let mut events = Events::new();
     world.spawn((
-      Transform::new(0.0, 0.0),
+      Transform::from_xy(0.0, 0.0),
       ParticleEmitter::new(test_sprite())
         .with_mode(EmissionMode::Burst { count: 5 })
         .with_speed(10.0, 50.0)
         .with_lifetime(1.0, 3.0),
     ));
-    system.update(&mut world, &mut events, 0.016);
+    update(&mut system, &mut world, 0.016);
     system
       .particles
       .iter()
@@ -927,15 +933,103 @@ mod tests {
   fn default_particle_system_spawns_particles() {
     let mut system = ParticleSystem::default();
     let mut world = World::new();
-    let mut events = Events::new();
     world.spawn((
-      Transform::new(0.0, 0.0),
+      Transform::from_xy(0.0, 0.0),
       ParticleEmitter::new(test_sprite()).with_mode(EmissionMode::Burst { count: 3 }),
     ));
 
-    system.update(&mut world, &mut events, 0.016);
+    update(&mut system, &mut world, 0.016);
 
     assert_eq!(system.particles.len(), 3);
+  }
+
+  #[test]
+  fn empty_and_reversed_ranges_spawn_without_panicking() {
+    // A straight jet (no spread), a zero-size shape and min above max all
+    // pick the low end rather than panicking on an empty range
+    let mut system = ParticleSystem::with_seed(1);
+    let mut world = World::new();
+    world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      ParticleEmitter::new(test_sprite())
+        .with_mode(EmissionMode::Burst { count: 4 })
+        .with_shape(EmissionShape::Cone {
+          direction: 0.0,
+          spread: 0.0,
+          min_speed: 50.0,
+          max_speed: 50.0,
+        })
+        .with_lifetime(2.0, 1.0),
+    ));
+    world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      ParticleEmitter::new(test_sprite())
+        .with_mode(EmissionMode::Burst { count: 4 })
+        .with_shape(EmissionShape::Rectangle {
+          width: 0.0,
+          height: 0.0,
+        }),
+    ));
+    world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      ParticleEmitter::new(test_sprite())
+        .with_mode(EmissionMode::Burst { count: 4 })
+        .with_shape(EmissionShape::Circle {
+          radius: 0.0,
+          hollow: false,
+        }),
+    ));
+    update(&mut system, &mut world, 0.016);
+    assert_eq!(system.particle_count(), 12);
+    let jet: Vec<&ParticleData> = system
+      .particles
+      .iter()
+      .filter(|p| p.particle.max_lifetime == 2.0)
+      .collect();
+    assert_eq!(jet.len(), 4, "min above max uses min");
+    assert!(jet.iter().all(|p| p.particle.velocity_y.abs() < 1e-4));
+  }
+
+  #[test]
+  fn particles_of_a_disabled_emitter_are_not_drawn() {
+    use crate::core::graphics::{BatchCollector, Camera};
+    let mut system = ParticleSystem::with_seed(3);
+    let mut world = World::new();
+    let burst = |count| {
+      ParticleEmitter::new(test_sprite())
+        .with_mode(EmissionMode::Burst { count })
+        .with_speed(0.0, 0.0)
+    };
+    world.spawn((Transform::from_xy(10.0, 10.0), burst(2)));
+    let hidden = world.spawn((Transform::from_xy(20.0, 20.0), burst(3))).id();
+    update(&mut system, &mut world, 0.016);
+    let camera = Camera::centered_at(0.0, 0.0, 100, 100);
+    let drawn = |world: &World| {
+      let mut collector = BatchCollector::new();
+      system.collect_for_render(world, &camera, &mut collector);
+      collector.sprite_count()
+    };
+    assert_eq!(drawn(&world), 5);
+    world.entity_mut(hidden).insert(Disabled);
+    assert_eq!(drawn(&world), 2);
+  }
+
+  #[test]
+  fn a_burst_spawned_this_step_starts_at_its_emitter() {
+    // Spawned and updated in the same scene update: no propagation between
+    let mut system = ParticleSystem::with_seed(2);
+    let mut world = World::new();
+    world.spawn((
+      Transform::from_xy(300.0, 200.0),
+      ParticleEmitter::new(test_sprite())
+        .with_mode(EmissionMode::Burst { count: 3 })
+        .with_speed(0.0, 0.0),
+    ));
+    system.update(&mut world, 0.016);
+    assert_eq!(system.particle_count(), 3);
+    for p in &system.particles {
+      assert_eq!((p.x, p.y), (300.0, 200.0));
+    }
   }
 
   #[test]
@@ -948,15 +1042,16 @@ mod tests {
   fn particle_spawning() {
     let mut system = ParticleSystem::new();
     let mut world = World::new();
-    let mut events = Events::new();
 
     // Create an emitter
     let emitter = ParticleEmitter::new(test_sprite()).with_mode(EmissionMode::Burst { count: 10 });
 
-    let entity = world.spawn((Transform::new(100.0, 100.0), emitter));
+    let entity = world
+      .spawn((Transform::from_xy(100.0, 100.0), emitter))
+      .id();
 
     // Update should spawn particles
-    system.update(&mut world, &mut events, 0.016);
+    update(&mut system, &mut world, 0.016);
 
     assert_eq!(system.particle_count(), 10);
 
@@ -974,21 +1069,20 @@ mod tests {
   fn particle_lifetime() {
     let mut system = ParticleSystem::new();
     let mut world = World::new();
-    let mut events = Events::new();
 
     let emitter = ParticleEmitter::new(test_sprite())
       .with_mode(EmissionMode::Burst { count: 5 })
       .with_lifetime(0.1, 0.1); // Very short lifetime
 
-    world.spawn((Transform::new(0.0, 0.0), emitter));
+    world.spawn((Transform::from_xy(0.0, 0.0), emitter));
 
     // Spawn particles
-    system.update(&mut world, &mut events, 0.016);
+    update(&mut system, &mut world, 0.016);
     assert_eq!(system.particle_count(), 5);
 
     // Update past lifetime
     for _ in 0..20 {
-      system.update(&mut world, &mut events, 0.016);
+      update(&mut system, &mut world, 0.016);
     }
 
     // All particles should be dead
@@ -999,12 +1093,11 @@ mod tests {
   fn particle_clear() {
     let mut system = ParticleSystem::new();
     let mut world = World::new();
-    let mut events = Events::new();
 
     let emitter = ParticleEmitter::new(test_sprite()).with_mode(EmissionMode::Burst { count: 20 });
 
-    world.spawn((Transform::new(0.0, 0.0), emitter));
-    system.update(&mut world, &mut events, 0.016);
+    world.spawn((Transform::from_xy(0.0, 0.0), emitter));
+    update(&mut system, &mut world, 0.016);
 
     assert!(system.particle_count() > 0);
 
@@ -1017,12 +1110,11 @@ mod tests {
 
   /// One motionless particle at (100, 0) falling under gravity onto a collider below it.
   ///
-  /// The collider at (100, 60) uses a centre pivot so it sits centred under the particle; the
-  /// default top-left pivot would leave the particle exactly on a box's left edge.
+  /// The collider at (100, 60) is centred under the particle, as colliders are centred on their
+  /// entity's origin.
   struct FallScene {
     system: ParticleSystem,
     world: World,
-    events: Events,
     emitter: Entity,
     collider: Entity,
     /// Top edge of the collider's world bounds
@@ -1039,26 +1131,27 @@ mod tests {
 
     fn with_motion(config: CollisionConfig, collider: Collider, gravity_y: f32, dt: f32) -> Self {
       let mut world = World::new();
-      let emitter = world.spawn((
-        Transform::new(100.0, 0.0),
-        ParticleEmitter::new(test_sprite())
-          .with_mode(EmissionMode::Burst { count: 1 })
-          .with_speed(0.0, 0.0)
-          .with_lifetime(60.0, 60.0)
-          .with_gravity(0.0, gravity_y)
-          .with_collision(config),
-      ));
-      let transform = Transform::new(100.0, 60.0).with_pivot_center();
-      let bounds = collider.world_aabb(&transform);
-      let collider = world.spawn((transform, collider));
+      let emitter = world
+        .spawn((
+          Transform::from_xy(100.0, 0.0),
+          ParticleEmitter::new(test_sprite())
+            .with_mode(EmissionMode::Burst { count: 1 })
+            .with_speed(0.0, 0.0)
+            .with_lifetime(60.0, 60.0)
+            .with_gravity(0.0, gravity_y)
+            .with_collision(config),
+        ))
+        .id();
+      let transform = Transform::from_xy(100.0, 60.0);
+      let (min, max) = collider.world_bounds(transform.translation);
+      let collider = world.spawn((transform, collider)).id();
       Self {
         system: ParticleSystem::new(),
         world,
-        events: Events::new(),
         emitter,
         collider,
-        top: bounds.min_y,
-        bottom: bounds.max_y,
+        top: min.y,
+        bottom: max.y,
         dt,
       }
     }
@@ -1069,18 +1162,21 @@ mod tests {
     }
 
     fn step(&mut self) {
-      self
-        .system
-        .update(&mut self.world, &mut self.events, self.dt);
+      update(&mut self.system, &mut self.world, self.dt);
     }
 
     fn particle(&self) -> Option<&ParticleData> {
       self.system.particles.first()
     }
 
-    /// Events accumulate until `Events::clear`, which these tests never call.
+    /// Every collision written so far: these tests never advance the buffers.
     fn collisions(&self) -> Vec<ParticleCollision> {
-      self.events.read::<ParticleCollision>().cloned().collect()
+      self
+        .world
+        .get_resource::<Messages<ParticleCollision>>()
+        .map_or_else(Vec::new, |buffer| {
+          buffer.get_cursor().read(buffer).cloned().collect()
+        })
     }
   }
 
@@ -1090,7 +1186,7 @@ mod tests {
     let mut scene = FallScene::with_motion(config, Collider::box_collider(200.0, 20.0), 0.0, DT);
     // A wall rising from the floor, its left face at x = 150
     scene.world.spawn((
-      Transform::new(160.0, 50.0).with_pivot_center(),
+      Transform::from_xy(160.0, 50.0),
       Collider::box_collider(20.0, 200.0),
     ));
     scene.step();
@@ -1317,15 +1413,15 @@ mod tests {
   }
 
   #[test]
-  fn inactive_colliders_are_ignored() {
+  fn disabled_colliders_are_ignored() {
     let mut scene = FallScene::floor(CollisionConfig::die_on_hit(RADIUS));
-    let _ = scene.world.insert_one(scene.collider, Inactive);
+    scene.world.entity_mut(scene.collider).insert(Disabled);
     for _ in 0..120 {
       scene.step();
     }
     let p = scene
       .particle()
-      .expect("an inactive floor does not kill the particle");
+      .expect("a disabled floor does not kill the particle");
     assert!(
       p.y > scene.bottom + RADIUS,
       "particle at y={} should fall through",
@@ -1337,7 +1433,7 @@ mod tests {
   fn negatively_scaled_collider_still_collides() {
     let mut scene = FallScene::floor(CollisionConfig::die_on_hit(RADIUS));
     if let Some(mut transform) = scene.world.get_mut::<Transform>(scene.collider) {
-      transform.scale_x = -1.0;
+      transform.scale.x = -1.0;
     }
     for _ in 0..60 {
       scene.step();
@@ -1353,17 +1449,13 @@ mod tests {
   fn particles_ignore_their_own_emitters_collider() {
     let mut scene = FallScene::floor(CollisionConfig::die_on_hit(RADIUS));
     // A 20x20 box centred on the emitter, so particles spawn inside it
-    if let Some(mut transform) = scene.world.get_mut::<Transform>(scene.emitter) {
-      transform.pivot_x = 0.5;
-      transform.pivot_y = 0.5;
-    }
     let own_box = Collider::box_collider(20.0, 20.0);
     let own_bottom = scene
       .world
       .get::<Transform>(scene.emitter)
-      .map(|transform| own_box.world_aabb(&transform).max_y)
+      .map(|transform| own_box.world_bounds(transform.translation).1.y)
       .expect("emitter has a transform");
-    let _ = scene.world.insert_one(scene.emitter, own_box);
+    scene.world.entity_mut(scene.emitter).insert(own_box);
 
     scene.step();
     assert_eq!(
@@ -1416,11 +1508,11 @@ mod tests {
     // Start resting on the floor (x 0..200), then slide right into a wall spawned after it
     let rest_y = scene.top - RADIUS - CONTACT_SKIN;
     if let Some(mut transform) = scene.world.get_mut::<Transform>(scene.emitter) {
-      transform.y = rest_y;
+      transform.translation.y = rest_y;
     }
     let wall = Collider::box_collider(20.0, 100.0);
-    let wall_transform = Transform::new(160.0, scene.top).with_pivot_center();
-    let wall_face = wall.world_aabb(&wall_transform).min_x;
+    let wall_transform = Transform::from_xy(160.0, scene.top);
+    let wall_face = wall.world_bounds(wall_transform.translation).0.x;
     scene.world.spawn((wall_transform, wall));
 
     scene.step();
@@ -1448,7 +1540,7 @@ mod tests {
     let mut scene = FallScene::with_motion(config, floor, 0.0, DT);
     // 8px above contact, drifting down well under MIN_BOUNCE_EVENT_SPEED
     if let Some(mut transform) = scene.world.get_mut::<Transform>(scene.emitter) {
-      transform.y = scene.top - RADIUS - 8.0;
+      transform.translation.y = scene.top - RADIUS - 8.0;
     }
     scene.step();
     scene.system.particles[0].particle.velocity_y = 10.0;

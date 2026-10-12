@@ -3,7 +3,7 @@
 //! Provides `NavAgent` and `NavTarget` components for entity pathfinding.
 
 use super::path::{Path, PathSmoothing};
-use crate::core::ecs::Entity;
+use crate::core::ecs::{Component, Entity};
 use crate::core::state_machine::StateMachine;
 use std::hash::Hash;
 
@@ -97,19 +97,19 @@ fn create_nav_state_machine() -> StateMachine<NavAgentState> {
 ///
 /// // Spawn an entity with navigation
 /// ctx.world.spawn((
-///     Transform::new(100.0, 100.0),
+///     Transform::from_xy(100.0, 100.0),
 ///     NavAgent::new(100.0),  // 100 pixels/second
 /// ));
 ///
 /// // Set a destination
-/// ctx.world.add_component(entity, NavTarget::position(500.0, 400.0));
+/// ctx.world.entity_mut(entity).insert(NavTarget::position(500.0, 400.0));
 ///
 /// // Check agent state
 /// if agent.state() == NavAgentState::Arrived {
 ///     println!("Agent reached destination!");
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct NavAgent {
   /// Current path being followed
   pub current_path: Option<Path>,
@@ -317,12 +317,12 @@ impl Default for NavAgent {
 /// use ryo2d::prelude::*;
 ///
 /// // Move to a fixed position
-/// ctx.world.add_component(entity, NavTarget::position(500.0, 400.0));
+/// ctx.world.entity_mut(entity).insert(NavTarget::position(500.0, 400.0));
 ///
 /// // Follow another entity
-/// ctx.world.add_component(entity, NavTarget::follow(target_entity));
+/// ctx.world.entity_mut(entity).insert(NavTarget::follow(target_entity));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct NavTarget {
   /// Target X coordinate
   pub x: f32,
@@ -500,7 +500,7 @@ mod tests {
   #[test]
   fn nav_target_follow() {
     let mut world = crate::core::ecs::World::new();
-    let entity = world.spawn(());
+    let entity = world.spawn(()).id();
 
     let target = NavTarget::follow(entity);
     assert!(target.dynamic_target);

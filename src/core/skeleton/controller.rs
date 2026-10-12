@@ -1,5 +1,6 @@
 //! State-machine-driven skeletal animation controller with crossfade blending.
 
+use crate::core::ecs::Component;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,7 +18,7 @@ pub type SkeletalAnimationId = &'static str;
 ///
 /// Wraps a `StateMachine` for transition validation, a map of named animations,
 /// a `SkeletalAnimator` for playback, and a `SkeletalBlender` for crossfading.
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct SkeletalController {
   fsm: StateMachine<SkeletalAnimationId>,
   animations: HashMap<SkeletalAnimationId, Arc<SkeletalAnimation>>,

@@ -4,6 +4,8 @@
 //! non-trigger `Collider` whose layer shares a bit with [`CollisionConfig::collision_mask`].
 //! Particles ignore the collider on their own emitter's entity.
 
+use crate::core::ecs::{Entity, Message};
+
 /// How a particle responds to collision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CollisionResponse {
@@ -135,17 +137,18 @@ impl CollisionConfig {
   }
 }
 
-/// Event emitted when a particle hits a collider.
+/// Message written when a particle hits a collider; read it like any other
+/// (`ctx.messages::<ParticleCollision>()`).
 ///
 /// [`CollisionResponse::Event`] always emits it when a particle goes from touching no collider to
 /// touching one. Other responses emit it only when the config opts in with
 /// [`CollisionConfig::with_events`].
-#[derive(Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct ParticleCollision {
   /// Entity that owns the emitter
-  pub emitter_entity: hecs::Entity,
+  pub emitter_entity: Entity,
   /// The entity whose collider was hit
-  pub collider_entity: hecs::Entity,
+  pub collider_entity: Entity,
   /// Particle position when the contact was detected
   pub position_x: f32,
   pub position_y: f32,

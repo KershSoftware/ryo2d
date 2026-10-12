@@ -13,6 +13,7 @@ pub(crate) use bevy_ecs::error::panic as panic_on_error;
 pub use bevy_ecs::error::{BevyError as SystemError, ErrorContext, FallbackErrorHandler};
 pub use bevy_ecs::event::{EntityEvent, Event};
 pub use bevy_ecs::hierarchy::{ChildOf, Children};
+pub(crate) use bevy_ecs::lifecycle::HookContext;
 pub use bevy_ecs::lifecycle::RemovedComponents;
 pub use bevy_ecs::message::{Message, MessageCursor, MessageReader, MessageWriter, Messages};
 pub use bevy_ecs::observer::{Observer, On};
@@ -27,4 +28,5 @@ pub use bevy_ecs::schedule::{
 pub use bevy_ecs::system::{
   Commands, EntityCommands, IntoSystem, Query, Res, ResMut, ScheduleSystem, System,
 };
+pub(crate) use bevy_ecs::world::DeferredWorld;
 pub use bevy_ecs::world::{EntityWorldMut, World};

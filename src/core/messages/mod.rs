@@ -72,6 +72,7 @@ pub fn register_engine_messages(world: &mut World) {
   register_message::<SquashStretchFinished>(world);
   register_message::<AssetReloaded>(world);
   register_message::<AssetLoadFailed>(world);
+  register_message::<crate::core::particles::ParticleCollision>(world);
 }
 
 #[cfg(test)]

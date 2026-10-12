@@ -16,7 +16,6 @@
 
 - **`update()` ordering** - `update(dt)` clears the one-frame flags (`just_entered`/`just_exited`; `just_pushed`/`just_popped` on `StateStack`). Read the flags in the same frame as the transition, then call `update(dt)` at the end of the frame. Calling `update()` first means transitions made during the previous frame's logic are never seen. Same for `NavAgent::update`.
 - **`AlreadyInState`** - `transition_to` and `force_transition` to the current state return `Err(TransitionError::AlreadyInState)`. Self-transitions never succeed, even if defined with `with_transition(s, s)`.
-- **`StateChanged<S>` is not emitted** - neither type emits events. Game code emits `StateChanged::new(entity, from, to)` after a successful `transition_to`.
 
 ## Design Decisions
 

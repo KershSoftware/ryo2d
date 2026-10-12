@@ -224,27 +224,24 @@ pub mod prelude {
   };
 
   // Skeletal animation
-  // MIGRATION: Task 16
-  // pub use crate::core::skeleton::{
-  //   BoneDef, BoneTransform, BoneWorldTransform, Pose, SkeletalAnimation, SkeletalAnimator,
-  //   SkeletalBlender, SkeletalController, Skeleton, SkeletonDef, skeleton_debug_lines,
-  // };
+  pub use crate::core::skeleton::{
+    BoneDef, BoneTransform, BoneWorldTransform, Pose, SkeletalAnimation, SkeletalAnimator,
+    SkeletalBlender, SkeletalController, Skeleton, SkeletonDef, skeleton_debug_lines,
+  };
 
   // Particle system
-  // MIGRATION: Task 16
-  // pub use crate::core::particles::{
-  //   AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape,
-  //   MIN_BOUNCE_EVENT_SPEED, ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem,
-  // };
+  pub use crate::core::particles::{
+    AttractorType, CollisionConfig, CollisionResponse, EmissionMode, EmissionShape,
+    MIN_BOUNCE_EVENT_SPEED, ParticleAttractor, ParticleCollision, ParticleEmitter, ParticleSystem,
+  };
 
   // Tilemap system
-  // MIGRATION: Task 16
-  // pub use crate::core::tilemap::{
-  //   AutoTileMode, AutoTileSet, ChunkCoord, ChunkState, CollisionRect, TileAnimation, TileId,
-  //   TileProperties, TiledObject, TiledShape, TiledValue, Tilemap, TilemapError, TilemapLayer,
-  //   TilemapManager, TilemapOrientation, Tileset, compute_bitmask_full, compute_bitmask_minimal,
-  //   generate_collision_rects, generate_collision_rects_region, load_tiled_map,
-  // };
+  pub use crate::core::tilemap::{
+    AutoTileMode, AutoTileSet, ChunkCoord, ChunkState, CollisionRect, TileAnimation, TileId,
+    TileProperties, TiledObject, TiledShape, TiledValue, Tilemap, TilemapError, TilemapLayer,
+    TilemapManager, TilemapOrientation, Tileset, compute_bitmask_full, compute_bitmask_minimal,
+    generate_collision_rects, generate_collision_rects_region, load_tiled_map,
+  };
 
   // Raycasting (pseudo-3D)
   // MIGRATION: Task 20 (parked)
@@ -270,12 +267,11 @@ pub mod prelude {
   };
 
   // Navigation & Pathfinding
-  // MIGRATION: Task 16
-  // pub use crate::core::navigation::{
-  //   CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder, NavigationGrid,
-  //   Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode, PathResult,
-  //   PathSmoothing, PathStarted, Pathfinder, PathfinderConfig, steering,
-  // };
+  pub use crate::core::navigation::{
+    CellState, GridCoord, NavAgent, NavAgentState, NavTarget, NavigationBuilder, NavigationGrid,
+    Path, PathCompleted, PathFailed, PathFailureReason, PathInvalidated, PathNode, PathResult,
+    PathSmoothing, PathStarted, Pathfinder, PathfinderConfig, steering,
+  };
 
   // Procedural Generation
   pub use crate::core::procgen::{

@@ -3,6 +3,8 @@
 //! Attractors influence particle motion, creating effects like gravity wells,
 //! vortices, and turbulence.
 
+use crate::core::ecs::Component;
+
 /// Type of attractor force.
 #[derive(Debug, Clone)]
 pub enum AttractorType {
@@ -74,7 +76,7 @@ pub enum AttractorType {
 ///     ParticleAttractor::point(200.0, 100.0),
 /// ));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct ParticleAttractor {
   /// Type and parameters of the attractor
   pub attractor_type: AttractorType,

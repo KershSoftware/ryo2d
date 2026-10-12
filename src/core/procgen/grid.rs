@@ -3,7 +3,6 @@
 //! Provides the core data structure for storing and manipulating generated maps.
 
 use super::config::{GridRect, TileType};
-#[cfg(any())] // MIGRATION: Task 16
 use crate::core::navigation::NavigationGrid;
 
 /// Type of region generated
@@ -386,7 +385,6 @@ impl GenerationGrid {
   ///
   /// # Arguments
   /// * `cell_size` - Size of each cell in world units
-  #[cfg(any())] // MIGRATION: Task 16
   pub fn to_navigation_grid(&self, cell_size: f32) -> NavigationGrid {
     let world_width = self.width as f32 * cell_size;
     let world_height = self.height as f32 * cell_size;

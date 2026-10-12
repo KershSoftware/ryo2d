@@ -16,5 +16,5 @@ Y-down: negative Y = up on screen, positive rotation = clockwise.
 
 ## System Integration
 
-- `SkeletonSystem` (`src/core/systems/skeleton.rs`) processes all skeleton entities each frame. Entities with `SkeletalController` are handled exclusively by the controller path. Standalone `SkeletalAnimator` entities use the animator path. Having both on one entity is unsupported.
+- `update_skeletons` (`src/core/systems/skeleton.rs`) runs every fixed step in `FixedSet::Juice`, after squash and stretch: it advances each skeleton's controller (or, without one, its standalone `SkeletalAnimator`), writes the sampled pose, and places the bones at the entity's `GlobalTransform` (last step's propagated position). A controller wins over an animator on the same entity.
 - **Mutate the entity's component, not a copy**: drive animation via `ctx.world.get_mut::<SkeletalController>(entity)`. The system advances time on the component stored in the world, so changes to a local or cloned controller are never seen. See `examples/demos/skeleton` for the pattern.

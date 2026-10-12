@@ -2,7 +2,7 @@
 //!
 //! Provides a cell-based walkability map for A* pathfinding.
 
-use crate::core::ecs::{Entity, Transform, World};
+use crate::core::ecs::{Entity, GlobalTransform, World};
 use crate::core::physics::Collider;
 use std::collections::HashSet;
 
@@ -269,10 +269,11 @@ impl NavigationGrid {
     self.generation += 1;
   }
 
-  /// Block cells covered by a collider at a given position
-  pub fn block_collider(&mut self, collider: &Collider, x: f32, y: f32, entity: Entity) {
-    let aabb = collider.get_aabb(x, y);
-    self.block_rect(aabb.min_x, aabb.min_y, aabb.max_x, aabb.max_y);
+  /// Block the cells under a collider: centred on the entity's origin plus
+  /// its offset, unscaled, as physics simulates it.
+  pub fn block_collider(&mut self, global: &GlobalTransform, collider: &Collider, entity: Entity) {
+    let (min, max) = collider.world_bounds(global.translation());
+    self.block_rect(min.x, min.y, max.x, max.y);
     self.blocking_entities.insert(entity);
   }
 
@@ -290,22 +291,13 @@ impl NavigationGrid {
 
   /// Rebuild the grid from entities with Collider components
   ///
-  /// This scans all entities with static/kinematic colliders and marks
-  /// their cells as blocked.
-  pub fn rebuild_from_world(&mut self, world: &World) {
+  /// Every solid (non-trigger) collider blocks the cells it covers.
+  pub fn rebuild_from_world(&mut self, world: &mut World) {
     self.clear();
-
-    let entities: Vec<Entity> = world.entities_with::<Collider>();
-
-    for entity in entities {
-      let transform_data = world.get::<Transform>(entity).map(|t| (t.x, t.y));
-      let collider = world.get::<Collider>(entity);
-
-      if let (Some((x, y)), Some(col)) = (transform_data, collider) {
-        // Only block non-trigger colliders
-        if !col.is_trigger {
-          self.block_collider(&col, x, y, entity);
-        }
+    let mut colliders = world.query::<(Entity, &GlobalTransform, &Collider)>();
+    for (entity, global, collider) in colliders.iter(world) {
+      if !collider.is_trigger {
+        self.block_collider(global, collider, entity);
       }
     }
   }
@@ -357,7 +349,7 @@ impl NavigationBuilder {
   }
 
   /// Build a NavigationGrid populated from the world's colliders
-  pub fn build_from_world(self, world: &World) -> NavigationGrid {
+  pub fn build_from_world(self, world: &mut World) -> NavigationGrid {
     let mut grid = self.build();
     grid.rebuild_from_world(world);
     grid
@@ -373,6 +365,40 @@ mod tests {
     let grid = NavigationGrid::new(100.0, 100.0, 10.0);
     assert_eq!(grid.dimensions(), (10, 10));
     assert_eq!(grid.cell_size(), 10.0);
+  }
+
+  #[test]
+  fn a_collider_blocks_the_cells_around_its_origin() {
+    use crate::core::ecs::Transform;
+    // An 18x18 box at (50, 50) covers 41..59: cells 4 and 5 on each axis
+    let mut world = World::new();
+    let transform = Transform::from_xy(50.0, 50.0);
+    world.spawn((
+      transform,
+      GlobalTransform::from_transform(&transform),
+      Collider::box_collider(18.0, 18.0),
+    ));
+    world.spawn((
+      Transform::from_xy(5.0, 5.0),
+      GlobalTransform::from_transform(&Transform::from_xy(5.0, 5.0)),
+      Collider::box_collider(4.0, 4.0).as_trigger(),
+    ));
+    let mut grid = NavigationGrid::new(100.0, 100.0, 10.0);
+    grid.rebuild_from_world(&mut world);
+    for (x, y) in [(4, 4), (5, 5), (4, 5), (5, 4)] {
+      assert_eq!(
+        grid.get(GridCoord::new(x, y)),
+        CellState::Blocked,
+        "({x}, {y})"
+      );
+    }
+    for (x, y) in [(3, 3), (6, 6), (6, 4), (0, 0)] {
+      assert_eq!(
+        grid.get(GridCoord::new(x, y)),
+        CellState::Walkable,
+        "({x}, {y})"
+      );
+    }
   }
 
   #[test]

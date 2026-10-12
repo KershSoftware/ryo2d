@@ -16,6 +16,7 @@ use crate::core::render::RenderPipeline;
 use crate::core::schedule::{Phase, SceneScheduleError, SceneSchedules};
 use crate::core::shaders::EffectsManager;
 use crate::core::texture::{TextureContext, TextureManager};
+use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
 
@@ -148,7 +149,11 @@ impl SceneContext<'_> {
     self.world.resource_mut::<LightingSettings>()
   }
 
-  // MIGRATION: Task 16 adds `tilemaps()` (`Mut<TilemapManager>`)
+  /// The scene's tilemaps: tile reads and writes, coordinate conversion and
+  /// viewport culling, keyed by the tilemap's entity.
+  pub fn tilemaps(&mut self) -> Mut<'_, TilemapManager> {
+    self.world.resource_mut::<TilemapManager>()
+  }
 
   /// The frame's render pipeline: toggle built-in passes or insert game passes.
   ///

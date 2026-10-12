@@ -129,6 +129,36 @@ mod tests {
   }
 
   #[test]
+  fn a_spawned_entity_is_placed_before_propagation() {
+    let mut world = World::new();
+    let parent = world
+      .spawn(Transform::from_xy(100.0, 100.0).with_rotation(FRAC_PI_2))
+      .id();
+    let child = world
+      .spawn((Transform::from_xy(10.0, 0.0), ChildOf(parent)))
+      .id();
+    assert!(close(
+      global(&world, parent).translation(),
+      Vec2::new(100.0, 100.0)
+    ));
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(100.0, 110.0)
+    ));
+  }
+
+  #[test]
+  fn inserting_a_transform_places_the_entity_at_once() {
+    let mut world = World::new();
+    let e = world.spawn(Transform::from_xy(1.0, 2.0)).id();
+    world.entity_mut(e).insert(Transform::from_xy(30.0, 40.0));
+    assert!(close(
+      global(&world, e).translation(),
+      Vec2::new(30.0, 40.0)
+    ));
+  }
+
+  #[test]
   fn child_of_rotated_parent() {
     let mut world = World::new();
     let parent = world

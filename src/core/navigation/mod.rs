@@ -27,11 +27,11 @@
 //!         // Create navigation grid from world colliders
 //!         self.nav_grid = NavigationBuilder::new(800.0, 600.0)
 //!             .with_cell_size(16.0)
-//!             .build_from_world(&ctx.world);
+//!             .build_from_world(ctx.world);
 //!
 //!         // Spawn a navigating entity
 //!         ctx.world.spawn((
-//!             Transform::new(100.0, 100.0),
+//!             Transform::from_xy(100.0, 100.0),
 //!             NavAgent::new(100.0),  // 100 px/second
 //!         ));
 //!     }
@@ -39,11 +39,11 @@
 //!     fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
 //!         // Set destination for an entity
 //!         if ctx.input.just_pressed(KeyCode::Space) {
-//!             ctx.world.add_component(entity, NavTarget::position(500.0, 400.0));
+//!             ctx.world.entity_mut(entity).insert(NavTarget::position(500.0, 400.0));
 //!         }
 //!
-//!         // Handle arrival events
-//!         for event in ctx.events.read::<PathCompleted>() {
+//!         // Handle arrival messages
+//!         for event in ctx.messages::<PathCompleted>() {
 //!             println!("Entity {:?} arrived!", event.entity);
 //!         }
 //!     }
@@ -105,11 +105,11 @@
 //!     .with_smoothing(PathSmoothing::Spline);
 //! ```
 //!
-//! # Events
+//! # Messages
 //!
-//! The navigation system emits events for game logic:
+//! Game code writes these as it drives agents, for other logic to read:
 //!
-//! | Event | When Emitted |
+//! | Message | When |
 //! |-------|--------------|
 //! | [`PathCompleted`] | Agent reached destination |
 //! | [`PathFailed`] | No path found or path blocked |

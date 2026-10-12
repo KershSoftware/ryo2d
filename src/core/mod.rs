@@ -17,17 +17,14 @@ pub(crate) mod input_script;
 // Graphics & rendering
 pub mod graphics;
 pub mod lighting;
-// MIGRATION: Task 16
-// pub mod particles;
+pub mod particles;
 // MIGRATION: Task 20 (parked in attic/)
 // pub mod raycast;
 pub mod render;
 pub mod shaders;
-// MIGRATION: Task 16
-// pub mod skeleton;
+pub mod skeleton;
 pub mod texture;
-// MIGRATION: Task 16
-// pub mod tilemap;
+pub mod tilemap;
 pub mod trail;
 pub mod ui;
 pub mod window;
@@ -36,8 +33,7 @@ pub mod window;
 pub mod physics;
 
 // Navigation & Pathfinding
-// MIGRATION: Task 16
-// pub mod navigation;
+pub mod navigation;
 
 // Procedural Generation
 pub mod procgen;

@@ -1,8 +1,11 @@
-//! Procedural generation events
+//! Procedural generation messages
 //!
-//! Events emitted during procedural generation for monitoring and game logic.
+//! Messages for monitoring generation and for game logic, written with
+//! `ctx.write_message` and read with `ctx.messages`.
 
 use std::time::Duration;
+
+use crate::core::ecs::Message;
 
 /// Emitted when a generation algorithm starts
 ///
@@ -12,12 +15,12 @@ use std::time::Duration;
 /// use ryo2d::prelude::*;
 ///
 /// fn update(&mut self, ctx: &mut GameContext) {
-///     for event in ctx.events.read::<GenerationStarted>() {
+///     for event in ctx.messages::<GenerationStarted>() {
 ///         println!("Starting {} with seed {}", event.algorithm, event.seed);
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct GenerationStarted {
   /// Name of the algorithm being used
   pub algorithm: String,
@@ -48,7 +51,7 @@ impl GenerationStarted {
 /// use ryo2d::prelude::*;
 ///
 /// fn update(&mut self, ctx: &mut GameContext) {
-///     for event in ctx.events.read::<GenerationCompleted>() {
+///     for event in ctx.messages::<GenerationCompleted>() {
 ///         println!(
 ///             "{} generated {} regions in {}ms",
 ///             event.algorithm, event.region_count, event.duration_ms
@@ -56,7 +59,7 @@ impl GenerationStarted {
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct GenerationCompleted {
   /// Name of the algorithm used
   pub algorithm: String,
@@ -114,12 +117,12 @@ pub enum GenerationFailureReason {
 /// use ryo2d::prelude::*;
 ///
 /// fn update(&mut self, ctx: &mut GameContext) {
-///     for event in ctx.events.read::<GenerationFailed>() {
+///     for event in ctx.messages::<GenerationFailed>() {
 ///         eprintln!("Generation failed: {:?}", event.reason);
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct GenerationFailed {
   /// Name of the algorithm that failed
   pub algorithm: String,
@@ -144,13 +147,13 @@ impl GenerationFailed {
 /// use ryo2d::prelude::*;
 ///
 /// fn update(&mut self, ctx: &mut GameContext) {
-///     for event in ctx.events.read::<RegionCreated>() {
+///     for event in ctx.messages::<RegionCreated>() {
 ///         // Spawn entities in the new room
 ///         spawn_enemies_in_region(ctx, &event.bounds);
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct RegionCreated {
   /// Region ID
   pub region_id: u32,
@@ -210,13 +213,13 @@ impl RegionCreated {
 /// use ryo2d::prelude::*;
 ///
 /// fn update(&mut self, ctx: &mut GameContext) {
-///     for event in ctx.events.read::<RegionsConnected>() {
+///     for event in ctx.messages::<RegionsConnected>() {
 ///         // Maybe spawn a door between regions
 ///         spawn_door(ctx, event.region_a, event.region_b);
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct RegionsConnected {
   /// ID of the first region
   pub region_a: u32,

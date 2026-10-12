@@ -1,5 +1,6 @@
 //! Per-bone-track skeletal animation and playback.
 
+use crate::core::ecs::Component;
 use std::sync::Arc;
 
 use crate::core::ecs::Ease;
@@ -88,7 +89,7 @@ impl SkeletalAnimation {
 }
 
 /// ECS component controlling skeletal animation playback.
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct SkeletalAnimator {
   pub animation: Arc<SkeletalAnimation>,
   pub time: f32,

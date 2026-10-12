@@ -1,10 +1,11 @@
 //! Where things are: `Transform` is local to the parent, `GlobalTransform`
-//! is world space and written only by propagation.
+//! is world space and written only by the engine (when a `Transform` is
+//! inserted, and by propagation).
 
 use glam::{Affine2, Vec2};
 use serde::{Deserialize, Serialize};
 
-use super::kernel::Component;
+use super::kernel::{ChildOf, Component, DeferredWorld, DetectChangesMut, HookContext};
 
 /// Which point of a sprite (or UI element) sits on its position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -76,6 +77,7 @@ impl Anchor {
 /// world for a root entity.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[require(GlobalTransform)]
+#[component(on_insert = place_on_insert)]
 pub struct Transform {
   pub translation: Vec2,
   pub rotation: f32,
@@ -134,6 +136,27 @@ impl Transform {
 impl Default for Transform {
   fn default() -> Self {
     Self::IDENTITY
+  }
+}
+
+/// Places an entity as soon as its `Transform` is inserted, so world-space
+/// readers later in the same step (particles, navigation, lights) see it where
+/// it is rather than at the origin. A child is placed under its parent's
+/// current `GlobalTransform`; propagation still settles the hierarchy.
+fn place_on_insert(mut world: DeferredWorld, context: HookContext) {
+  let Some(local) = world.get::<Transform>(context.entity).copied() else {
+    return;
+  };
+  let parent = world
+    .get::<ChildOf>(context.entity)
+    .and_then(|child_of| world.get::<GlobalTransform>(child_of.parent()))
+    .copied();
+  let global = match parent {
+    Some(parent) => parent.mul_transform(&local),
+    None => GlobalTransform::from_transform(&local),
+  };
+  if let Some(mut current) = world.get_mut::<GlobalTransform>(context.entity) {
+    current.set_if_neq(global);
   }
 }
 
