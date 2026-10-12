@@ -51,7 +51,9 @@ pub fn propagate_transforms(
   // removal readers are drained either way so old removals don't count again.
   // An entity that lost its parent is a root placed by its own Transform
   let detached: Vec<Entity> = detached.read().collect();
-  let removed = detached.len() + uninterpolated.read().count() + untransformed.read().count();
+  // A parent that lost its Transform now places its children from the identity
+  let untransformed: Vec<Entity> = untransformed.read().collect();
+  let removed = detached.len() + uninterpolated.read().count() + untransformed.len();
   if removed == 0 && changed.is_empty() {
     return;
   }
@@ -72,9 +74,10 @@ pub fn propagate_transforms(
     }
   }
 
-  for (_, children) in grouping.iter() {
+  for (group, children) in grouping.iter() {
+    let changed = untransformed.contains(&group);
     for child in children.iter().copied() {
-      stack.push((child, GlobalTransform::IDENTITY, true, false));
+      stack.push((child, GlobalTransform::IDENTITY, changed, false));
     }
   }
 
@@ -209,6 +212,59 @@ mod tests {
     s.run(&mut world);
     let mut rewritten = world.query_filtered::<(), Changed<GlobalTransform>>();
     assert_eq!(rewritten.iter(&world).count(), 0);
+  }
+
+  #[test]
+  fn a_child_of_a_grouping_entity_starts_from_the_identity() {
+    let mut world = World::new();
+    let group = world.spawn_empty().id();
+    let child = world
+      .spawn((Transform::from_xy(10.0, 5.0), ChildOf(group)))
+      .id();
+    schedule().run(&mut world);
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(10.0, 5.0)
+    ));
+  }
+
+  #[test]
+  fn a_grouped_child_is_left_alone_when_something_else_moved() {
+    let mut world = World::new();
+    let group = world.spawn_empty().id();
+    let child = world.spawn((Transform::IDENTITY, ChildOf(group))).id();
+    let other = world.spawn(Transform::IDENTITY).id();
+    let mut s = schedule();
+    s.run(&mut world);
+    // A value propagation would correct if it recomputed the child
+    let planted = GlobalTransform::from_transform(&Transform::from_xy(7.0, 7.0));
+    *world
+      .get_mut::<GlobalTransform>(child)
+      .unwrap()
+      .bypass_change_detection() = planted;
+    world.clear_trackers();
+    world.get_mut::<Transform>(other).unwrap().translation.x = 1.0;
+    s.run(&mut world);
+    assert_eq!(global(&world, child), planted);
+  }
+
+  #[test]
+  fn children_start_from_the_identity_once_their_parent_loses_its_transform() {
+    let mut world = World::new();
+    let parent = world.spawn(Transform::from_xy(100.0, 0.0)).id();
+    let child = world
+      .spawn((Transform::from_xy(10.0, 0.0), ChildOf(parent)))
+      .id();
+    let mut s = schedule();
+    s.run(&mut world);
+    world
+      .entity_mut(parent)
+      .remove::<(Transform, GlobalTransform)>();
+    s.run(&mut world);
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(10.0, 0.0)
+    ));
   }
 
   #[test]
