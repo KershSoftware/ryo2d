@@ -197,14 +197,13 @@ Grid-based broad-phase (`SpatialHash`):
 Ryo2D draws every frame through a **pass-based render pipeline** (`RenderPipeline::default_2d()`): an ordered list of `RenderPass`es recorded on one command encoder with one submit. The whole world is drawn on the GPU; only the UI is drawn on the CPU (into a buffer composited last).
 
 ```
-clear -> raycast -> world -> lighting -> unlit_world -> transition
+clear -> world -> lighting -> unlit_world -> transition
       -> post_process -> ui -> composite -> capture
 ```
 
 | Pass | Draws |
 |------|-------|
 | `clear` | Clears the game texture |
-| `raycast` | GPU raycaster (replaces the 2D world passes while raycasting) |
 | `world` | Entities, `render_gpu` sprites (particles, parallax) and lit trails/lines, in one z-sorted list |
 | `lighting` | 2D lighting with point lights and shadows |
 | `unlit_world` | Trails/lines with `with_lighting(false)`, by z |

@@ -17,8 +17,6 @@ pub mod network;
 pub mod graphics;
 pub mod lighting;
 pub mod particles;
-// MIGRATION: Task 20 (parked in attic/)
-// pub mod raycast;
 pub mod render;
 pub mod shaders;
 pub mod skeleton;
