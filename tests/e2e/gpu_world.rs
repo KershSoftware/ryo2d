@@ -682,3 +682,25 @@ fn a_sprite_rotates_about_its_anchor() {
     assert_ne!(frame.get_pixel(x, y).0, ANCHOR_RED, "({x}, {y}) outside");
   }
 }
+
+#[test]
+fn a_top_left_anchored_sprite_rotates_about_its_corner() {
+  // 20 wide, 10 tall, top-left corner on (32, 32). A quarter turn clockwise
+  // swings it down and to the left of the corner: x 22..32, y 32..52
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(32.0, 32.0).with_rotation(std::f32::consts::FRAC_PI_2),
+      Renderable::sprite(red_rect(20, 10, "corner")).with_anchor(Anchor::TopLeft),
+    ));
+  });
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  for (x, y) in [(24, 34), (30, 50), (27, 42)] {
+    assert_eq!(frame.get_pixel(x, y).0, ANCHOR_RED, "({x}, {y}) inside");
+  }
+  // Turning about the middle instead would cover these
+  for (x, y) in [(42, 30), (45, 40)] {
+    assert_ne!(frame.get_pixel(x, y).0, ANCHOR_RED, "({x}, {y}) outside");
+  }
+}

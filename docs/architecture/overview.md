@@ -263,7 +263,7 @@ camera at its centre                     (0,0) at the top-left
           ▼ +Y                                ▼ Y
 ```
 
-- +Y is down in both. A sprite's `Anchor` (default `Center`) is the point placed at its entity's position; rotation and scale happen about it (a `TopLeft` sprite is the exception: it turns about its centre). Tiled runs and composite tiles are laid out from the position as their first tile's top-left.
+- +Y is down in both. A sprite's `Anchor` (default `Center`) is the point placed at its entity's position; rotation and scale happen about it. Tiled runs and composite tiles are laid out from the position as their first tile's top-left.
 - Rapier works in meters: 100 pixels = 1 meter.
 
 ## Networking

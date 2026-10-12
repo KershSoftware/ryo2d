@@ -493,9 +493,11 @@ fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>
       let sprite_w = source.width as f32 * final_scale_x;
       let sprite_h = source.height as f32 * final_scale_y;
 
-      // Placement takes the top-left corner and turns about the middle; a
-      // custom pivot moves the corner so the pivot stays at (x, y)
-      let (draw_x, draw_y) = if pivot_x.abs() < 0.001 && pivot_y.abs() < 0.001 {
+      // Placement takes the top-left corner and turns about the middle, so
+      // the corner moves to keep the pivot at (x, y) through any rotation
+      let unturned_top_left =
+        pivot_x.abs() < 0.001 && pivot_y.abs() < 0.001 && rotation_deg.abs() <= 0.01;
+      let (draw_x, draw_y) = if unturned_top_left {
         (x, y)
       } else {
         let pivot_to_center_x = (0.5 - pivot_x) * sprite_w;

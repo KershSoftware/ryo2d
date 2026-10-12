@@ -40,7 +40,7 @@ Everything is read from the world by query, every frame. There is no render cach
 ## Placement (`entities.rs`)
 
 - Positions come from `render_global(global, previous, time.fixed.overstep_fraction())`: entities with `PreviousGlobalTransform` (the `Interpolated` ones and their descendants) draw blended between the last two fixed steps. This covers single sprites and tiled runs; composite tiles draw at `GlobalTransform`.
-- **Single sprite:** the anchor point (`Renderable::anchor`, default `Anchor::Center`) sits on the position; scale and rotation happen about it. `Anchor::TopLeft` is the exception: the box's top-left sits on the position and it turns about the box centre.
+- **Single sprite:** the anchor point (`Renderable::anchor`, default `Anchor::Center`) sits on the position; scale and rotation happen about it.
 - **Tiled run** (`RenderStyle::Tiled`): laid out from the entity's position, which is the first tile's top-left (Up/Left runs grow backwards); the anchor is ignored; the run rotates and scales about that position.
 - **Composite tile:** parts at `origin + offset` (their top-left), scaled by the global scale, never rotated; the origin is blended for interpolated entities.
 - The top-left is the screen position truncated to a pixel, the size `ceil(w * scale)` by `ceil(h * scale)`. Blending happens in linear space on the GPU.
