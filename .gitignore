@@ -60,3 +60,6 @@ Thumbs.db
 !.claude/skills/ryo-*/
 !.claude/skills/ryo-*/**
 .claude/worktrees/
+
+# Plan execution workspaces (superpowers)
+.superpowers/
