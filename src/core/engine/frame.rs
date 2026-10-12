@@ -346,7 +346,21 @@ impl Engine {
       (action, ui.into_input())
     };
 
-    consumed.apply_consumed(&mut self.world.resource_mut::<Input>());
+    let mut input = self.world.resource_mut::<Input>();
+    consumed.apply_consumed(&mut input);
+    // A press the UI took stays the UI's until the button is released: its
+    // held frames and the release are hidden from gameplay as well
+    for button in consumed.mouse_presses_taken() {
+      if !self.ui_mouse_capture.contains(&button) {
+        self.ui_mouse_capture.push(button);
+      }
+    }
+    for &button in &self.ui_mouse_capture {
+      input.consume_mouse(button);
+    }
+    self
+      .ui_mouse_capture
+      .retain(|&button| consumed.mouse_held_raw(button));
     Some(action)
   }
 
@@ -698,6 +712,158 @@ mod tests {
     e.frame(Some(frame));
     e.frame(Some(frame));
     assert_eq!(e.world().resource::<Presses>().0, 0);
+  }
+
+  /// What gameplay saw of the left button and the W key.
+  #[derive(Resource, Default)]
+  struct GameplaySaw {
+    mouse: u32,
+    w: u32,
+  }
+
+  /// Draws one widget in `ui` and records what gameplay sees in `update`.
+  struct WidgetOverGameplay {
+    widget: fn(&mut crate::core::ui::UiContext, &mut WidgetState),
+    state: WidgetState,
+  }
+
+  #[derive(Default)]
+  struct WidgetState {
+    slider: f32,
+    text: crate::core::ui::TextInputState,
+  }
+
+  impl Scene for WidgetOverGameplay {
+    fn ui(&mut self, ui: &mut crate::core::ui::UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      (self.widget)(ui, &mut self.state);
+      SceneAction::Continue
+    }
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      use winit::event::MouseButton;
+      let mouse = ctx.input.mouse_down(MouseButton::Left)
+        || ctx.input.mouse_pressed(MouseButton::Left)
+        || ctx.input.mouse_released(MouseButton::Left);
+      let w = ctx.input.key_down(winit::keyboard::KeyCode::KeyW)
+        || ctx.input.key_pressed(winit::keyboard::KeyCode::KeyW);
+      let mut saw = ctx.world.resource_mut::<GameplaySaw>();
+      saw.mouse += mouse as u32;
+      saw.w += w as u32;
+      SceneAction::Continue
+    }
+  }
+
+  /// Run `script` (input events per frame) under `widget`; what gameplay saw.
+  fn gameplay_under(
+    widget: fn(&mut crate::core::ui::UiContext, &mut WidgetState),
+    state: WidgetState,
+    script: Vec<Vec<crate::core::input::InputEvent>>,
+  ) -> Option<(u32, u32)> {
+    let (device, queue) = crate::core::testing::shared_gpu().ok()?;
+    let mut e = EngineBuilder::new()
+      .resolution(64, 64)
+      .fixed_hz(60)
+      .insert_resource(GameplaySaw::default())
+      .start_scene(WidgetOverGameplay { widget, state })
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 64), 1.0);
+    for events in script {
+      for event in events {
+        e.world_mut()
+          .resource_mut::<crate::core::input::Input>()
+          .queue(event);
+      }
+      e.frame(Some(Duration::from_micros(16_667)));
+    }
+    let saw = e.world().resource::<GameplaySaw>();
+    Some((saw.mouse, saw.w))
+  }
+
+  fn press_hold_release_at(x: f64, y: f64) -> Vec<Vec<crate::core::input::InputEvent>> {
+    use crate::core::input::InputEvent;
+    use winit::event::MouseButton;
+    vec![
+      vec![InputEvent::MouseMove { x, y }],
+      vec![InputEvent::MouseButton {
+        button: MouseButton::Left,
+        pressed: true,
+      }],
+      vec![],
+      vec![],
+      vec![InputEvent::MouseButton {
+        button: MouseButton::Left,
+        pressed: false,
+      }],
+      vec![],
+    ]
+  }
+
+  #[test]
+  fn a_press_a_button_takes_stays_the_ui_s_until_released() {
+    let Some((mouse, _)) = gameplay_under(
+      |ui, _| {
+        ui.button("Go", crate::core::ui::Rect::new(0.0, 0.0, 32.0, 16.0));
+      },
+      WidgetState::default(),
+      press_hold_release_at(8.0, 8.0),
+    ) else {
+      return;
+    };
+    assert_eq!(mouse, 0, "gameplay saw the button's press, hold or release");
+  }
+
+  #[test]
+  fn a_slider_drag_is_the_ui_s() {
+    let Some((mouse, _)) = gameplay_under(
+      |ui, state| {
+        ui.slider(
+          crate::core::ui::Rect::new(10.0, 20.0, 40.0, 8.0),
+          &mut state.slider,
+          0.0,
+          1.0,
+        );
+      },
+      WidgetState::default(),
+      press_hold_release_at(30.0, 24.0),
+    ) else {
+      return;
+    };
+    assert_eq!(mouse, 0, "gameplay saw the slider drag");
+  }
+
+  #[test]
+  fn typing_into_a_focused_field_is_the_ui_s() {
+    use crate::core::input::InputEvent;
+    use winit::keyboard::KeyCode;
+    let mut state = WidgetState::default();
+    state.text.set_focused(true);
+    let Some((_, w)) = gameplay_under(
+      |ui, state| {
+        ui.text_input(
+          &mut state.text,
+          crate::core::ui::Rect::new(0.0, 0.0, 60.0, 16.0),
+          "",
+          0.0,
+        );
+      },
+      state,
+      vec![
+        vec![
+          InputEvent::Key {
+            key: KeyCode::KeyW,
+            pressed: true,
+          },
+          InputEvent::Text("w".into()),
+        ],
+        vec![],
+        vec![InputEvent::Key {
+          key: KeyCode::KeyW,
+          pressed: false,
+        }],
+      ],
+    ) else {
+      return;
+    };
+    assert_eq!(w, 0, "gameplay saw W typed into the field");
   }
 
   #[test]

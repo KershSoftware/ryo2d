@@ -148,6 +148,9 @@ pub struct Engine {
   // UI
   ui_font: BitmapFont,
   ui_buffer: Vec<u8>,
+  /// Mouse buttons whose press the UI took: until released, their held
+  /// state and release are the UI's too
+  ui_mouse_capture: Vec<winit::event::MouseButton>,
   // Developer tools
   console_state: ConsoleState,
   console_quit_requested: bool,
@@ -471,6 +474,7 @@ impl Engine {
       batch_collector: BatchCollector::new(),
       ui_font,
       ui_buffer: vec![0; ui_buffer_size],
+      ui_mouse_capture: Vec::new(),
       console_state: ConsoleState::new(),
       console_quit_requested: false,
       capture: CaptureState::new(capture_config),

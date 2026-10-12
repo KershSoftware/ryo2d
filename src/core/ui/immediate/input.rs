@@ -167,6 +167,35 @@ impl UiInput {
   }
 
   /// Hide what the UI consumed from `input` for the rest of the frame.
+  /// Take the whole keyboard for the frame: every key down, pressed or
+  /// released, and the typed text (a focused text field does this).
+  pub fn consume_keyboard(&mut self) {
+    let keys: Vec<KeyCode> = self
+      .view
+      .keys_down
+      .iter()
+      .chain(&self.view.keys_pressed)
+      .chain(&self.view.keys_released)
+      .copied()
+      .collect();
+    self.consumed_keys.extend(keys);
+    self.consume_text();
+  }
+
+  /// Mouse buttons pressed this frame that the UI took.
+  pub(crate) fn mouse_presses_taken(&self) -> impl Iterator<Item = MouseButton> + '_ {
+    self
+      .consumed_mouse
+      .iter()
+      .copied()
+      .filter(|button| self.view.mouse_pressed.contains(button))
+  }
+
+  /// Whether `button` is physically down, consumed or not.
+  pub(crate) fn mouse_held_raw(&self, button: MouseButton) -> bool {
+    self.view.mouse_down.contains(&button)
+  }
+
   pub fn apply_consumed(&self, input: &mut Input) {
     for &key in &self.consumed_keys {
       input.consume_key(key);

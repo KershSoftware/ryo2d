@@ -432,6 +432,7 @@ impl Input {
     }
     self.keys_pressed.remove(&key);
     self.keys_pressed_fixed.remove(&key);
+    self.keys_released_fixed.remove(&key);
     self.consumed_keys.insert(key);
   }
 
@@ -442,6 +443,7 @@ impl Input {
     }
     self.mouse_buttons_pressed.remove(&button);
     self.mouse_buttons_pressed_fixed.remove(&button);
+    self.mouse_buttons_released_fixed.remove(&button);
     self.consumed_mouse.insert(button);
   }
 

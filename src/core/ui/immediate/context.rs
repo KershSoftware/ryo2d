@@ -1087,6 +1087,10 @@ impl<'a> UiContext<'a> {
     // (In pure immediate mode, we can't track "which widget started the drag",
     // so we require staying near the slider to avoid affecting other widgets)
     let is_dragging = self.input.mouse_down(MouseButton::Left) && mouse_in_interaction;
+    // The drag is the slider's, not the game's
+    if is_dragging {
+      self.input.consume_mouse(MouseButton::Left);
+    }
 
     if is_dragging {
       // Calculate new value based on mouse position (clamped to slider bounds)
@@ -1349,6 +1353,11 @@ impl<'a> UiContext<'a> {
 
     // Handle keyboard input
     let modified = state.handle_input(&self.input);
+    // A focused field owns the keyboard: what is typed into it is not also
+    // gameplay input
+    if state.is_focused() {
+      self.input.consume_keyboard();
+    }
 
     // Get colors from theme or use defaults
     let (bg_color, border_color, text_color, placeholder_color, cursor_color, selection_color) =
@@ -1580,6 +1589,10 @@ impl<'a> UiContext<'a> {
       scrollbar_thumb_rect,
       dt,
     );
+    // A press on the scrollbar starts the UI's drag
+    if scrollbar_hovered && self.input.mouse_pressed(MouseButton::Left) {
+      self.input.consume_mouse(MouseButton::Left);
+    }
 
     // Get colors from theme or use defaults
     let (bg_color, scrollbar_bg, scrollbar_thumb, scrollbar_thumb_hover) =
