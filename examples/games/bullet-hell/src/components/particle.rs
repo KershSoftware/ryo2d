@@ -1,6 +1,8 @@
 //! Particle component for explosion effects
 
-#[derive(Debug, Clone, Copy)]
+use ryo2d::prelude::*;
+
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Particle {
   pub velocity_x: f32,
   pub velocity_y: f32,

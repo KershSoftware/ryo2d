@@ -219,64 +219,69 @@ impl GameScene {
   }
 
   fn spawn_paddle(&mut self, ctx: &mut SceneContext) {
-    let paddle = ctx.world.spawn((
-      Transform::new(SCREEN_WIDTH as f32 / 2.0 - PADDLE_WIDTH / 2.0, PADDLE_Y),
-      Velocity::zero(),
-      RigidBody::kinematic(),
-      Collider::box_collider(PADDLE_WIDTH, PADDLE_HEIGHT)
-        .with_restitution(1.0) // Perfect bounce
-        .with_friction(0.0), // No friction
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Self::bordered_rect(
-          PADDLE_WIDTH as u32,
-          PADDLE_HEIGHT as u32,
-          0x40,
-          0xc0,
-          0xff,
-          (0x20, 0x60, 0x80), // Darker blue border
-        ),
-        "paddle",
+    let paddle = ctx
+      .world
+      .spawn((
+        Transform::from_xy(SCREEN_WIDTH as f32 / 2.0, PADDLE_Y),
+        Velocity::zero(),
+        RigidBody::kinematic(),
+        Collider::box_collider(PADDLE_WIDTH, PADDLE_HEIGHT)
+          .with_restitution(1.0) // Perfect bounce
+          .with_friction(0.0), // No friction
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Self::bordered_rect(
+            PADDLE_WIDTH as u32,
+            PADDLE_HEIGHT as u32,
+            0x40,
+            0xc0,
+            0xff,
+            (0x20, 0x60, 0x80), // Darker blue border
+          ),
+          "paddle",
+        ))
+        .with_z_order(10),
+        Interpolated,
+        Paddle,
       ))
-      .with_z_order(10)
-      .interpolated(),
-      Paddle,
-    ));
+      .id();
     self.paddle = Some(paddle);
   }
 
   fn spawn_ball(&mut self, ctx: &mut SceneContext) {
-    // Ball spawns above the paddle, centered
-    let ball_x = SCREEN_WIDTH as f32 / 2.0 - BALL_SIZE / 2.0;
-    let ball_y = PADDLE_Y - BALL_SIZE - 10.0;
+    // Ball spawns centred, 10px above the paddle
+    let ball_x = SCREEN_WIDTH as f32 / 2.0;
+    let ball_y = PADDLE_Y - PADDLE_HEIGHT / 2.0 - 10.0 - BALL_SIZE / 2.0;
 
     // Use unique sprite ID for each ball to avoid caching issues
     self.ball_counter += 1;
     let sprite_id = format!("ball_{}", self.ball_counter);
 
-    let ball = ctx.world.spawn((
-      Transform::new(ball_x, ball_y),
-      Velocity::zero(), // Frozen initially
-      RigidBody::new()
-        .with_ccd()
-        .with_gravity_scale(0.0)
-        .with_drag(0.0), // CCD prevents tunneling
-      Collider::circle_collider(BALL_SIZE / 2.0)
-        .centered_in(BALL_SIZE, BALL_SIZE)
-        .with_restitution(1.0) // Perfect bounce
-        .with_friction(0.0), // No friction
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
-        sprite_id,
+    let ball = ctx
+      .world
+      .spawn((
+        Transform::from_xy(ball_x, ball_y),
+        Velocity::zero(), // Frozen initially
+        RigidBody::new()
+          .with_ccd()
+          .with_gravity_scale(0.0)
+          .with_drag(0.0), // CCD prevents tunneling
+        Collider::circle_collider(BALL_SIZE / 2.0)
+          .with_restitution(1.0) // Perfect bounce
+          .with_friction(0.0), // No friction
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
+          sprite_id,
+        ))
+        .with_z_order(15),
+        Interpolated,
+        Ball { frozen: true },
       ))
-      .with_z_order(15)
-      .interpolated(),
-      Ball { frozen: true },
-    ));
+      .id();
     self.balls.push(ball);
     self.game_started = false;
   }
 
-  /// Spawn an additional ball at a specific position (for multi-ball power-up)
+  /// Spawn an additional ball centred at a position (for multi-ball power-up)
   fn spawn_ball_at(&mut self, ctx: &mut SceneContext, x: f32, y: f32) {
     // Use unique sprite ID for each ball
     self.ball_counter += 1;
@@ -290,25 +295,27 @@ impl GameScene {
     let vel_x = BALL_SPEED * angle_offset;
     let vel_y = -(BALL_SPEED * BALL_SPEED - vel_x * vel_x).sqrt(); // Maintain constant speed
 
-    let ball = ctx.world.spawn((
-      Transform::new(x - BALL_SIZE / 2.0, y),
-      Velocity::new(vel_x, vel_y), // Moving upward with random angle
-      RigidBody::new()
-        .with_ccd()
-        .with_gravity_scale(0.0)
-        .with_drag(0.0), // CCD prevents tunneling
-      Collider::circle_collider(BALL_SIZE / 2.0)
-        .centered_in(BALL_SIZE, BALL_SIZE)
-        .with_restitution(1.0)
-        .with_friction(0.0),
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
-        sprite_id,
+    let ball = ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Velocity::new(vel_x, vel_y), // Moving upward with random angle
+        RigidBody::new()
+          .with_ccd()
+          .with_gravity_scale(0.0)
+          .with_drag(0.0), // CCD prevents tunneling
+        Collider::circle_collider(BALL_SIZE / 2.0)
+          .with_restitution(1.0)
+          .with_friction(0.0),
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_circle(BALL_SIZE as u32, 0xff, 0xff, 0xff, 0xff),
+          sprite_id,
+        ))
+        .with_z_order(15),
+        Interpolated,
+        Ball { frozen: false },
       ))
-      .with_z_order(15)
-      .interpolated(),
-      Ball { frozen: false },
-    ));
+      .id();
     self.balls.push(ball);
   }
 
@@ -486,60 +493,75 @@ impl GameScene {
 
   fn spawn_walls(&mut self, ctx: &mut SceneContext) {
     // Left wall
-    let left = ctx.world.spawn((
-      Transform::new(-WALL_THICKNESS, 0.0),
-      RigidBody::kinematic(),
-      Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32)
-        .with_restitution(1.0) // Perfect bounce
-        .with_friction(0.0), // No friction
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
-        "wall_left",
+    let left = ctx
+      .world
+      .spawn((
+        Transform::from_xy(-WALL_THICKNESS / 2.0, SCREEN_HEIGHT as f32 / 2.0),
+        RigidBody::kinematic(),
+        Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32)
+          .with_restitution(1.0) // Perfect bounce
+          .with_friction(0.0), // No friction
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
+          "wall_left",
+        ))
+        .with_z_order(0),
+        Wall,
       ))
-      .with_z_order(0),
-      Wall,
-    ));
+      .id();
     self.walls.push(left);
 
     // Right wall
-    let right = ctx.world.spawn((
-      Transform::new(SCREEN_WIDTH as f32, 0.0),
-      RigidBody::kinematic(),
-      Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32)
-        .with_restitution(1.0) // Perfect bounce
-        .with_friction(0.0), // No friction
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
-        "wall_right",
+    let right = ctx
+      .world
+      .spawn((
+        Transform::from_xy(
+          SCREEN_WIDTH as f32 + WALL_THICKNESS / 2.0,
+          SCREEN_HEIGHT as f32 / 2.0,
+        ),
+        RigidBody::kinematic(),
+        Collider::box_collider(WALL_THICKNESS, SCREEN_HEIGHT as f32)
+          .with_restitution(1.0) // Perfect bounce
+          .with_friction(0.0), // No friction
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_rect(WALL_THICKNESS as u32, SCREEN_HEIGHT, 0x30, 0x30, 0x40, 0xff),
+          "wall_right",
+        ))
+        .with_z_order(0),
+        Wall,
       ))
-      .with_z_order(0),
-      Wall,
-    ));
+      .id();
     self.walls.push(right);
 
     // Top wall (ceiling)
-    let ceiling = ctx.world.spawn((
-      Transform::new(0.0, -WALL_THICKNESS),
-      RigidBody::kinematic(),
-      Collider::box_collider(SCREEN_WIDTH as f32, WALL_THICKNESS)
-        .with_restitution(1.0) // Perfect bounce
-        .with_friction(0.0), // No friction
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_rect(SCREEN_WIDTH, WALL_THICKNESS as u32, 0x30, 0x30, 0x40, 0xff),
-        "wall_ceiling",
+    let ceiling = ctx
+      .world
+      .spawn((
+        Transform::from_xy(SCREEN_WIDTH as f32 / 2.0, -WALL_THICKNESS / 2.0),
+        RigidBody::kinematic(),
+        Collider::box_collider(SCREEN_WIDTH as f32, WALL_THICKNESS)
+          .with_restitution(1.0) // Perfect bounce
+          .with_friction(0.0), // No friction
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_rect(SCREEN_WIDTH, WALL_THICKNESS as u32, 0x30, 0x30, 0x40, 0xff),
+          "wall_ceiling",
+        ))
+        .with_z_order(0),
+        Wall,
       ))
-      .with_z_order(0),
-      Wall,
-    ));
+      .id();
     self.walls.push(ceiling);
 
     // Death zone (below screen)
-    let death = ctx.world.spawn((
-      Transform::new(0.0, SCREEN_HEIGHT as f32 + 50.0),
-      RigidBody::kinematic(),
-      Collider::box_collider(SCREEN_WIDTH as f32, 100.0).as_trigger(),
-      DeathZone,
-    ));
+    let death = ctx
+      .world
+      .spawn((
+        Transform::from_xy(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 + 100.0),
+        RigidBody::kinematic(),
+        Collider::box_collider(SCREEN_WIDTH as f32, 100.0).as_trigger(),
+        DeathZone,
+      ))
+      .id();
     self.death_zone = Some(death);
   }
 
@@ -563,19 +585,22 @@ impl GameScene {
       // Darker border color (half brightness)
       let border = (r / 3, g / 3, b / 3);
 
-      let block = ctx.world.spawn((
-        Transform::new(x, y),
-        RigidBody::kinematic(),
-        Collider::box_collider(BLOCK_WIDTH, BLOCK_HEIGHT)
-          .with_restitution(1.0) // Perfect bounce
-          .with_friction(0.0), // No friction
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Self::bordered_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, border),
-          format!("block_{}_{}", x as u32, y as u32),
+      let block = ctx
+        .world
+        .spawn((
+          Transform::from_xy(x, y),
+          RigidBody::kinematic(),
+          Collider::box_collider(BLOCK_WIDTH, BLOCK_HEIGHT)
+            .with_restitution(1.0) // Perfect bounce
+            .with_friction(0.0), // No friction
+          Renderable::sprite(SpriteHandle::from_sprite(
+            Self::bordered_rect(BLOCK_WIDTH as u32, BLOCK_HEIGHT as u32, r, g, b, border),
+            format!("block_{}_{}", x as u32, y as u32),
+          ))
+          .with_z_order(5),
+          Block::new(color, hits, points),
         ))
-        .with_z_order(5),
-        Block::new(color, hits, points),
-      ));
+        .id();
       self.blocks.push(block);
     }
 
@@ -586,27 +611,27 @@ impl GameScene {
   fn clear_level(&mut self, ctx: &mut SceneContext) {
     // Despawn all blocks
     for block in self.blocks.drain(..) {
-      let _ = ctx.world.despawn(block);
+      ctx.world.despawn(block);
     }
 
     // Despawn walls
     for wall in self.walls.drain(..) {
-      let _ = ctx.world.despawn(wall);
+      ctx.world.despawn(wall);
     }
 
     // Despawn all balls
     for ball in self.balls.drain(..) {
-      let _ = ctx.world.despawn(ball);
+      ctx.world.despawn(ball);
     }
 
     // Despawn paddle
     if let Some(paddle) = self.paddle.take() {
-      let _ = ctx.world.despawn(paddle);
+      ctx.world.despawn(paddle);
     }
 
     // Despawn death zone
     if let Some(death_zone) = self.death_zone.take() {
-      let _ = ctx.world.despawn(death_zone);
+      ctx.world.despawn(death_zone);
     }
 
     self.blocks_remaining = 0;
@@ -661,7 +686,7 @@ impl GameScene {
   fn reset_ball(&mut self, ctx: &mut SceneContext) {
     // Remove all existing balls
     for ball in self.balls.drain(..) {
-      let _ = ctx.world.despawn(ball);
+      ctx.world.despawn(ball);
     }
 
     // Reset paddle to center and stop its velocity
@@ -669,7 +694,7 @@ impl GameScene {
     if let Some(paddle) = self.paddle
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(paddle)
     {
-      transform.x = SCREEN_WIDTH as f32 / 2.0 - PADDLE_WIDTH / 2.0;
+      transform.translation.x = SCREEN_WIDTH as f32 / 2.0;
     }
 
     // Spawn new ball
@@ -678,9 +703,9 @@ impl GameScene {
 
   fn handle_ball_death(&mut self, ctx: &mut SceneContext) {
     // Play death sound
-    if let Some(audio) = ctx.audio.as_mut() {
-      let _ = audio.play_sound_with("ball_death", SoundOptions::new().volume(0.5));
-    }
+    let _ = ctx
+      .audio
+      .play_sound_with("ball_death", SoundOptions::new().volume(0.5));
 
     self.lives = self.lives.saturating_sub(1);
 
@@ -706,15 +731,11 @@ impl GameScene {
       ctx.world.get::<Transform>(ball),
       ctx.world.get::<Transform>(block),
     ) {
-      // Determine bounce direction based on collision position
-      let ball_cx = ball_transform.x + BALL_SIZE / 2.0;
-      let ball_cy = ball_transform.y + BALL_SIZE / 2.0;
-      let block_cx = block_transform.x + BLOCK_WIDTH / 2.0;
-      let block_cy = block_transform.y + BLOCK_HEIGHT / 2.0;
+      // Determine bounce direction based on collision position (both are centres)
+      let dx = (ball_transform.translation.x - block_transform.translation.x).abs();
+      let dy = (ball_transform.translation.y - block_transform.translation.y).abs();
 
       // Calculate overlap to determine which side was hit
-      let dx = (ball_cx - block_cx).abs();
-      let dy = (ball_cy - block_cy).abs();
       let overlap_x = (BALL_SIZE / 2.0 + BLOCK_WIDTH / 2.0) - dx;
       let overlap_y = (BALL_SIZE / 2.0 + BLOCK_HEIGHT / 2.0) - dy;
 
@@ -728,11 +749,14 @@ impl GameScene {
       }
     }
 
-    // Get block position FIRST (before any mutation) for multiball spawn
-    let block_position = ctx
-      .world
-      .get::<Transform>(block)
-      .map(|t| (t.x + BLOCK_WIDTH / 2.0, t.y + BLOCK_HEIGHT)); // center_x, bottom_y
+    // Get block position FIRST (before any mutation) for multiball spawn:
+    // the new ball's centre sits just below the block
+    let block_position = ctx.world.get::<Transform>(block).map(|t| {
+      (
+        t.translation.x,
+        t.translation.y + BLOCK_HEIGHT / 2.0 + BALL_SIZE / 2.0,
+      )
+    });
 
     // Extract data from block component
     let block_info = {
@@ -753,9 +777,9 @@ impl GameScene {
     if let Some((points, remaining_hits, color, is_multiball, is_heart)) = block_info {
       if remaining_hits == 0 {
         // Play block break sound
-        if let Some(audio) = ctx.audio.as_mut() {
-          let _ = audio.play_sound_with("block_break", SoundOptions::new().volume(0.15));
-        }
+        let _ = ctx
+          .audio
+          .play_sound_with("block_break", SoundOptions::new().volume(0.15));
 
         // Grant extra life if this was a health block
         if is_heart {
@@ -770,7 +794,7 @@ impl GameScene {
         self.blocks.retain(|&b| b != block);
         self.multiball_blocks.retain(|&b| b != block);
         self.heart_blocks.retain(|&b| b != block);
-        let _ = ctx.world.despawn(block);
+        ctx.world.despawn(block);
 
         // Spawn extra ball if this was a multiball block
         // Use position captured BEFORE despawning
@@ -814,15 +838,8 @@ impl GameScene {
       // Advance to next level
       self.level += 1;
 
-      // Clear blocks and spawn new level
-      ctx.world.clear();
-      self.paddle = None;
-      self.balls.clear();
-      self.blocks.clear();
-      self.multiball_blocks.clear();
-      self.walls.clear();
-      self.death_zone = None;
-      self.background = None;
+      // Clear the level's entities (the background stays)
+      self.clear_level(ctx);
 
       // Reset multiball cooldown for new level (keep survival time as reward)
       self.multiball_cooldown = 0.0;
@@ -841,8 +858,6 @@ impl Scene for GameScene {
       self.debug_mode = workspace.config().env_bool("debug_scene").unwrap_or(false);
     }
 
-    ctx.world.clear();
-
     // Clear tracking lists from previous game (fix stale entity references)
     self.multiball_blocks.clear();
     self.heart_blocks.clear();
@@ -855,41 +870,44 @@ impl Scene for GameScene {
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
     // Load audio files (gracefully handle missing files)
-    if let Some(audio) = ctx.audio.as_mut() {
-      let _ = audio.load_sound("paddle_hit", "assets/audio/bounce.wav");
-      let _ = audio.load_sound("block_break", "assets/audio/break.wav");
-      let _ = audio.load_sound("ball_death", "assets/audio/life-lost.wav");
+    let audio = &mut *ctx.audio;
+    let _ = audio.load_sound("paddle_hit", "assets/audio/bounce.wav");
+    let _ = audio.load_sound("block_break", "assets/audio/break.wav");
+    let _ = audio.load_sound("ball_death", "assets/audio/life-lost.wav");
 
-      // Crossfade from previous music to game music if available
-      if let Some(mut prev_music) = self.prev_music.take() {
-        if let Ok(music) = audio.crossfade_music(
-          &mut prev_music,
-          "assets/audio/bgm.mp3",
-          Duration::from_millis(1000),
-        ) {
-          self.music = Some(music);
-        }
-      } else {
-        // No previous music, just start game music with auto-fade on scene exit
-        if let Ok(music) = audio.play_music_with(
-          "assets/audio/bgm.mp3",
-          MusicOptions::new().fade_out_on_drop(Duration::from_millis(500)),
-        ) {
-          self.music = Some(music);
-        }
+    // Crossfade from previous music to game music if available
+    if let Some(mut prev_music) = self.prev_music.take() {
+      if let Ok(music) = audio.crossfade_music(
+        &mut prev_music,
+        "assets/audio/bgm.mp3",
+        Duration::from_millis(1000),
+      ) {
+        self.music = Some(music);
+      }
+    } else {
+      // No previous music, just start game music with auto-fade on scene exit
+      if let Ok(music) = audio.play_music_with(
+        "assets/audio/bgm.mp3",
+        MusicOptions::new().fade_out_on_drop(Duration::from_millis(500)),
+      ) {
+        self.music = Some(music);
       }
     }
 
     // Spawn background entity (solid color fill)
     // Color matches menu scene: RGB(20, 20, 35)
-    let bg = ctx.world.spawn((
-      Transform::new(0.0, 0.0),
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_rect(SCREEN_WIDTH, SCREEN_HEIGHT, 20, 20, 35, 255),
-        "game_background",
+    let bg = ctx
+      .world
+      .spawn((
+        Transform::from_xy(0.0, 0.0),
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_rect(SCREEN_WIDTH, SCREEN_HEIGHT, 20, 20, 35, 255),
+          "game_background",
+        ))
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(-10),
       ))
-      .with_z_order(-10),
-    ));
+      .id();
     self.background = Some(bg);
 
     self.spawn_walls(ctx);
@@ -1027,16 +1045,7 @@ impl Scene for GameScene {
         return SceneAction::Continue;
       }
 
-      // Re-enter to spawn new level (also re-spawn background cleared by world.clear())
-      let bg = ctx.world.spawn((
-        Transform::new(0.0, 0.0),
-        Renderable::sprite(SpriteHandle::from_sprite(
-          Sprite::solid_rect(SCREEN_WIDTH, SCREEN_HEIGHT, 20, 20, 35, 255),
-          "game_background",
-        ))
-        .with_z_order(-10),
-      ));
-      self.background = Some(bg);
+      // Spawn the next level
       self.spawn_walls(ctx);
       self.spawn_paddle(ctx);
       self.spawn_ball(ctx);
@@ -1114,14 +1123,16 @@ impl Scene for GameScene {
     if let Some(paddle) = self.paddle
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(paddle)
     {
-      transform.x += self.paddle_velocity * dt;
+      transform.translation.x += self.paddle_velocity * dt;
 
       // Clamp to screen bounds and stop velocity at walls
-      if transform.x < 0.0 {
-        transform.x = 0.0;
+      let min_x = PADDLE_WIDTH / 2.0;
+      let max_x = SCREEN_WIDTH as f32 - PADDLE_WIDTH / 2.0;
+      if transform.translation.x < min_x {
+        transform.translation.x = min_x;
         self.paddle_velocity = 0.0;
-      } else if transform.x > SCREEN_WIDTH as f32 - PADDLE_WIDTH {
-        transform.x = SCREEN_WIDTH as f32 - PADDLE_WIDTH;
+      } else if transform.translation.x > max_x {
+        transform.translation.x = max_x;
         self.paddle_velocity = 0.0;
       }
     }
@@ -1162,8 +1173,8 @@ impl Scene for GameScene {
     // Collect ball collision targets first to avoid borrow conflicts
     // Store (ball_entity, other_entity) pairs
     let ball_collisions: Vec<(Entity, Entity)> = ctx
-      .events
-      .read::<CollisionStarted>()
+      .messages::<CollisionStarted>()
+      .into_iter()
       .filter_map(|event| {
         // Find which ball was involved in this collision
         for &ball in &self.balls {
@@ -1188,17 +1199,16 @@ impl Scene for GameScene {
       // Ball hit paddle - add spin based on hit position
       if self.paddle == Some(other) {
         // Play paddle hit sound
-        if let Some(audio) = ctx.audio.as_mut() {
-          let _ = audio.play_sound_with("paddle_hit", SoundOptions::new().volume(0.15));
-        }
+        let _ = ctx
+          .audio
+          .play_sound_with("paddle_hit", SoundOptions::new().volume(0.15));
 
         if let (Some(ball_transform), Some(paddle_transform)) = (
           ctx.world.get::<Transform>(ball),
           ctx.world.get::<Transform>(other),
         ) {
-          let ball_center = ball_transform.x + BALL_SIZE / 2.0;
-          let paddle_center = paddle_transform.x + PADDLE_WIDTH / 2.0;
-          let offset = (ball_center - paddle_center) / (PADDLE_WIDTH / 2.0);
+          let offset =
+            (ball_transform.translation.x - paddle_transform.translation.x) / (PADDLE_WIDTH / 2.0);
 
           if let Some(mut vel) = ctx.world.get_mut::<Velocity>(ball) {
             // Reflect and add spin
@@ -1233,13 +1243,13 @@ impl Scene for GameScene {
 
     // Now despawn the dead ball entities (after new ball is spawned)
     for ball in balls_to_remove {
-      let _ = ctx.world.despawn(ball);
+      ctx.world.despawn(ball);
     }
 
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     let (screen_w, _screen_h) = ui.screen_size();
 
     // Score (top right)

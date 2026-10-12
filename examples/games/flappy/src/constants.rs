@@ -10,8 +10,9 @@ pub const BIRD_FLAP_VELOCITY: f32 = -300.0;
 pub const BIRD_MAX_FALL_SPEED: f32 = 400.0;
 pub const BIRD_SIZE: f32 = 64.0;
 pub const BIRD_COLLIDER_RATIO: f32 = 0.35; // Collision circle is 35% of sprite size (forgiving for wings)
-pub const BIRD_START_X: f32 = 100.0;
-pub const BIRD_START_Y: f32 = 200.0;
+/// Bird start position (its centre)
+pub const BIRD_START_X: f32 = 132.0;
+pub const BIRD_START_Y: f32 = 232.0;
 pub const BIRD_TILT_UP_MAX: f32 = -25.0; // Max upward tilt in degrees when jumping
 pub const BIRD_TILT_DOWN_MAX: f32 = 70.0; // Max downward tilt in degrees when falling
 

@@ -45,7 +45,7 @@ fn main() {
   let builder = EngineBuilder::new()
     .resolution(400, 600)
     .target_fps(144)
-    .physics_hz(144);
+    .fixed_hz(144);
 
   // Start with debug scene or menu based on env config
   let engine = if start_debug {

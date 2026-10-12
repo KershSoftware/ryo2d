@@ -93,12 +93,13 @@ impl MainMenuScene {
 impl Scene for MainMenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     // Set ambient light to zero for pitch black darkness
-    if let Some(lighting) = ctx.lighting {
-      lighting.ambient_mut().set_intensity(0.0);
-    }
+    let ambient_color = ctx.lighting().ambient().color;
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(ambient_color, 0.0));
 
     // Enable CRT post-processing effect
-    ctx.effects.enable_crt();
+    ctx.effects().enable_crt();
 
     // Hide the system cursor
     ctx.set_cursor_visible(false);
@@ -115,13 +116,16 @@ impl Scene for MainMenuScene {
     let core_sprite = Self::create_core_sprite(ctx.assets);
     let light_color = Color::rgb(180, 220, 255);
     self.fairy_entity = Some(
-      ctx.world.spawn((
-        Transform::new(center_x, center_y).with_pivot_center(),
-        Renderable::sprite(core_sprite).with_z_order(100),
-        Light2D::point(light_color, BASE_RADIUS)
-          .with_intensity(BASE_INTENSITY)
-          .with_falloff(1.5),
-      )),
+      ctx
+        .world
+        .spawn((
+          Transform::from_xy(center_x, center_y),
+          Renderable::sprite(core_sprite).with_z_order(100),
+          Light2D::point(light_color, BASE_RADIUS)
+            .with_intensity(BASE_INTENSITY)
+            .with_falloff(1.5),
+        ))
+        .id(),
     );
 
     // Spawn secondary glow lights that orbit around for organic irregular shape
@@ -132,12 +136,15 @@ impl Scene for MainMenuScene {
     ];
     for (i, color) in glow_colors.iter().enumerate() {
       self.glow_entities[i] = Some(
-        ctx.world.spawn((
-          Transform::new(center_x, center_y),
-          Light2D::point(*color, BASE_RADIUS * 0.6)
-            .with_intensity(BASE_INTENSITY * 0.4)
-            .with_falloff(1.2),
-        )),
+        ctx
+          .world
+          .spawn((
+            Transform::from_xy(center_x, center_y),
+            Light2D::point(*color, BASE_RADIUS * 0.6)
+              .with_intensity(BASE_INTENSITY * 0.4)
+              .with_falloff(1.2),
+          ))
+          .id(),
       );
     }
   }
@@ -206,8 +213,8 @@ impl Scene for MainMenuScene {
           0.0
         };
 
-        transform.x = self.mouse_x + bob_x + wobble_x + twitch_x + jerk_x;
-        transform.y = self.mouse_y + bob_y + wobble_y + twitch_y + jerk_y;
+        transform.translation.x = self.mouse_x + bob_x + wobble_x + twitch_x + jerk_x;
+        transform.translation.y = self.mouse_y + bob_y + wobble_y + twitch_y + jerk_y;
 
         // Rotation gets unstable at high charge
         transform.rotation =
@@ -267,8 +274,8 @@ impl Scene for MainMenuScene {
         let offset_y = angle.sin() * (dist + wobble * 0.7);
 
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(*entity) {
-          transform.x = fairy_x + offset_x;
-          transform.y = fairy_y + offset_y;
+          transform.translation.x = fairy_x + offset_x;
+          transform.translation.y = fairy_y + offset_y;
         }
 
         if let Some(mut light) = ctx.world.get_mut::<Light2D>(*entity) {
@@ -296,7 +303,7 @@ impl Scene for MainMenuScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     // Title text
     ui.label(
       "NIGH_T",
@@ -316,13 +323,13 @@ impl Scene for MainMenuScene {
 
     // Clean up fairy entity
     if let Some(entity) = self.fairy_entity.take() {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
 
     // Clean up secondary glow entities
     for glow_entity in &mut self.glow_entities {
       if let Some(entity) = glow_entity.take() {
-        let _ = ctx.world.despawn(entity);
+        ctx.world.despawn(entity);
       }
     }
   }

@@ -12,7 +12,7 @@ use crate::constants::{
 
 /// Loaded level data containing block positions and properties
 pub struct LevelData {
-  /// Blocks: (x, y, color, hits, points)
+  /// Blocks: (centre x, centre y, color, hits, points)
   pub blocks: Vec<(f32, f32, BlockColor, u32, u32)>,
 }
 

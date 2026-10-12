@@ -83,12 +83,10 @@ impl MenuScene {
 
 impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    // Clear the world to remove all entities (including bullets with trails)
-    ctx.world.clear();
     self.best_time = load_best_time();
 
     // Declare game commands (idempotent - can be called multiple times)
-    ctx.declare_console_command(
+    ctx.console().declare(
       "game:reset",
       "Reset the game to initial state",
       Some("Resets all game state including score, player position, and enemies. Only available during gameplay."),
@@ -100,9 +98,9 @@ impl Scene for MenuScene {
       .set_elapsed_time(shared::get_parallax_time());
 
     // Start background music (only if not already playing - persists across scenes)
-    if let Some(audio) = &mut ctx.audio {
-      let _ = audio.play_music_once("assets/music.mp3", MusicOptions::new().volume(0.4));
-    }
+    let _ = ctx
+      .audio
+      .play_music_once("assets/music.mp3", MusicOptions::new().volume(0.4));
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
@@ -125,11 +123,11 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
-    self.background.render(ctx);
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
+    self.background.render(gpu);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     // Title
     ui.draw_text_anchored(
       "BULLET HELL",

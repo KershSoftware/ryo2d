@@ -3,8 +3,10 @@
 //! When a drone fires, a tracer entity quickly moves from the drone to
 //! the laser endpoint, leaving a fading trail and damaging the player on contact.
 
+use ryo2d::prelude::*;
+
 /// Component for laser tracer entities that sweep across the screen.
-#[derive(Debug)]
+#[derive(Component, Debug)]
 pub struct LaserTracer {
   /// Target X position (endpoint of laser)
   pub target_x: f32,

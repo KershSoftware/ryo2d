@@ -1,6 +1,8 @@
 //! Bullet component
 
-#[derive(Debug, Clone, Copy)]
+use ryo2d::prelude::*;
+
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Bullet {
   pub velocity_x: f32,
   pub velocity_y: f32,

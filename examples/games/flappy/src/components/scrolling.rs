@@ -1,7 +1,9 @@
 //! Scrolling component - for parallax effects
 
+use ryo2d::prelude::*;
+
 /// Makes an entity scroll horizontally at a given speed
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Scrolling {
   pub speed: f32,
   /// Width of a single tile - when x <= -tile_width, the tile wraps

@@ -1,13 +1,15 @@
 //! Platform component for static level geometry
 
-#[derive(Debug, Clone, Copy)]
+use ryo2d::prelude::*;
+
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Platform;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Wall;
 
 /// Moving vertical barrier that blocks player and bullets
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Barrier {
   pub velocity_y: f32,
   pub min_y: f32,

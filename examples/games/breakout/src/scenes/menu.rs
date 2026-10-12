@@ -13,7 +13,7 @@ use crate::save::load_high_score;
 /// Main menu scene
 pub struct MenuScene {
   high_score: u32,
-  /// Pending action from button click (set in render_ui, consumed in update)
+  /// Pending action from button click (set in ui, consumed in update)
   start_clicked: bool,
   /// Wait for escape to be released before accepting input
   escape_was_released: bool,
@@ -41,32 +41,30 @@ impl Default for MenuScene {
 
 impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
     ctx
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
     // Load and start menu background music
-    if let Some(audio) = ctx.audio.as_mut() {
-      let _ = audio.load_sound("intro_sfx", "assets/audio/intro-sfx.wav");
+    let audio = &mut *ctx.audio;
+    let _ = audio.load_sound("intro_sfx", "assets/audio/intro-sfx.wav");
 
-      // If we have music from previous scene (game), crossfade to menu music
-      if let Some(mut prev_music) = self.music.take() {
-        if let Ok(music) = audio.crossfade_music(
-          &mut prev_music,
-          "assets/audio/bgm-main-menu.mp3",
-          Duration::from_millis(1000),
-        ) {
-          self.music = Some(music);
-        }
-      } else {
-        // No previous music, just start menu music with auto-fade on scene exit
-        if let Ok(music) = audio.play_music_with(
-          "assets/audio/bgm-main-menu.mp3",
-          MusicOptions::new().fade_out_on_drop(Duration::from_millis(500)),
-        ) {
-          self.music = Some(music);
-        }
+    // If we have music from previous scene (game), crossfade to menu music
+    if let Some(mut prev_music) = self.music.take() {
+      if let Ok(music) = audio.crossfade_music(
+        &mut prev_music,
+        "assets/audio/bgm-main-menu.mp3",
+        Duration::from_millis(1000),
+      ) {
+        self.music = Some(music);
+      }
+    } else {
+      // No previous music, just start menu music with auto-fade on scene exit
+      if let Ok(music) = audio.play_music_with(
+        "assets/audio/bgm-main-menu.mp3",
+        MusicOptions::new().fade_out_on_drop(Duration::from_millis(500)),
+      ) {
+        self.music = Some(music);
       }
     }
   }
@@ -92,9 +90,9 @@ impl Scene for MenuScene {
       self.start_clicked = false;
 
       // Play intro sound effect
-      if let Some(audio) = ctx.audio.as_mut() {
-        let _ = audio.play_sound_with("intro_sfx", SoundOptions::new().volume(0.5));
-      }
+      let _ = ctx
+        .audio
+        .play_sound_with("intro_sfx", SoundOptions::new().volume(0.5));
 
       // Take music handle to pass to game for crossfading
       let music = self.music.take();
@@ -118,7 +116,7 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Background

@@ -1,5 +1,7 @@
 //! Paddle Component
 
+use ryo2d::prelude::*;
+
 /// Marker component for the paddle
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct Paddle;

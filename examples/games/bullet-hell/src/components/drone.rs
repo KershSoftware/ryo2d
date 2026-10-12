@@ -1,6 +1,6 @@
 //! Drone enemy component - flies diagonally and fires lasers
 
-use ryo2d::prelude::{Rng, rand};
+use ryo2d::prelude::*;
 
 /// Spawn duration for drone fade-in effect
 pub const DRONE_SPAWN_DURATION: f32 = 2.5;
@@ -18,7 +18,7 @@ pub enum DroneState {
   Cooldown,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct Drone {
   /// Current behavior state
   pub state: DroneState,

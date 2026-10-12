@@ -53,7 +53,7 @@ pub fn create_bird_animation_controller() -> AnimationController {
 }
 
 /// Marks an entity as the player-controlled bird
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Bird {
   pub velocity_y: f32,
   pub is_alive: bool,

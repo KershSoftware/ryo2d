@@ -52,18 +52,20 @@ impl GameScene {
       .cloned()
       .expect("Animation controller should have a sprite");
 
-    let bird = ctx.world.spawn((
-      Transform::new(BIRD_START_X, BIRD_START_Y),
-      Velocity::zero(),
-      RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling through pipes
-      // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
-      Collider::circle_collider(BIRD_SIZE * BIRD_COLLIDER_RATIO).centered_in(BIRD_SIZE, BIRD_SIZE),
-      Renderable::sprite(initial_sprite)
-        .with_z_order(10)
-        .interpolated(),
-      controller,
-      Bird::new(),
-    ));
+    let bird = ctx
+      .world
+      .spawn((
+        Transform::from_xy(BIRD_START_X, BIRD_START_Y),
+        Velocity::zero(),
+        RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling through pipes
+        // Hitbox is smaller than sprite and centered on bird's body (forgiving for wing animations)
+        Collider::circle_collider(BIRD_SIZE * BIRD_COLLIDER_RATIO),
+        Renderable::sprite(initial_sprite).with_z_order(10),
+        Interpolated,
+        controller,
+        Bird::new(),
+      ))
+      .id();
     self.bird = Some(bird);
   }
 
@@ -102,15 +104,18 @@ impl GameScene {
       .z_order(5)
       .build_with_collider();
 
-    let top_pipe = ctx.world.spawn((
-      Transform::new(x, 0.0), // Start at top of screen
-      Velocity::zero(),
-      RigidBody::kinematic(),
-      top_collider,
-      top_composite,
-      Pipe::new_top(),
-      Scrolling::no_wrap(PIPE_SCROLL_SPEED),
-    ));
+    let top_pipe = ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, 0.0), // Start at top of screen
+        Velocity::zero(),
+        RigidBody::kinematic(),
+        top_collider,
+        top_composite,
+        Pipe::new_top(),
+        Scrolling::no_wrap(PIPE_SCROLL_SPEED),
+      ))
+      .id();
 
     // BOTTOM PIPE: rises from ground, opening faces up
     // Spans from gap_center_y + PIPE_GAP/2 down to bottom of screen
@@ -135,15 +140,18 @@ impl GameScene {
         .z_order(5)
         .build_with_collider();
 
-      let bottom_pipe = ctx.world.spawn((
-        Transform::new(x, bottom_y),
-        Velocity::zero(),
-        RigidBody::kinematic(),
-        bottom_collider,
-        bottom_composite,
-        Pipe::new_bottom(),
-        Scrolling::no_wrap(PIPE_SCROLL_SPEED),
-      ));
+      let bottom_pipe = ctx
+        .world
+        .spawn((
+          Transform::from_xy(x, bottom_y),
+          Velocity::zero(),
+          RigidBody::kinematic(),
+          bottom_collider,
+          bottom_composite,
+          Pipe::new_bottom(),
+          Scrolling::no_wrap(PIPE_SCROLL_SPEED),
+        ))
+        .id();
 
       self.pipes.push(bottom_pipe);
     }
@@ -174,18 +182,20 @@ impl GameScene {
 
     for i in 0..tiles_needed {
       let x = i as f32 * scaled_width;
-      let transform = Transform::new(x, screen_bottom)
-        .with_anchor(Anchor::BottomLeft)
-        .with_scale(scale, scale);
+      let transform = Transform::from_xy(x, screen_bottom).with_uniform_scale(scale);
 
-      let ground = ctx.world.spawn((
-        transform,
-        Renderable::sprite(ground_handle.clone())
-          .with_z_order(15)
-          .interpolated(),
-        Ground,
-        Scrolling::new(GROUND_SCROLL_SPEED, scaled_width, wrap_distance),
-      ));
+      let ground = ctx
+        .world
+        .spawn((
+          transform,
+          Renderable::sprite(ground_handle.clone())
+            .with_anchor(Anchor::BottomLeft)
+            .with_z_order(15),
+          Interpolated,
+          Ground,
+          Scrolling::new(GROUND_SCROLL_SPEED, scaled_width, wrap_distance),
+        ))
+        .id();
       self.ground_entities.push(ground);
     }
 
@@ -195,10 +205,15 @@ impl GameScene {
     let border_sprite = Sprite::solid_rect(SCREEN_WIDTH, 2, r, g, b, a);
     let border_handle = SpriteHandle::from_sprite(border_sprite, "ground_border");
 
-    let border = ctx.world.spawn((
-      Transform::new(0.0, GROUND_Y),
-      Renderable::sprite(border_handle).with_z_order(16),
-    ));
+    let border = ctx
+      .world
+      .spawn((
+        Transform::from_xy(0.0, GROUND_Y),
+        Renderable::sprite(border_handle)
+          .with_anchor(Anchor::TopLeft)
+          .with_z_order(16),
+      ))
+      .id();
     self.ground_border_entities.push(border);
   }
 
@@ -220,20 +235,22 @@ impl GameScene {
 
     for i in 0..2 {
       let x = i as f32 * bg_width * scale;
-      let mut transform = Transform::new(x, 0.0);
-      transform.scale_x = scale;
-      transform.scale_y = scale;
-      let background = ctx.world.spawn((
-        transform,
-        Renderable::sprite(bg_handle.clone())
-          .with_z_order(0)
-          .interpolated(), // Render behind everything
-        Scrolling::new(
-          BACKGROUND_SCROLL_SPEED,
-          tile_width * scale,
-          wrap_distance * scale,
-        ),
-      ));
+      let transform = Transform::from_xy(x, 0.0).with_uniform_scale(scale);
+      let background = ctx
+        .world
+        .spawn((
+          transform,
+          Renderable::sprite(bg_handle.clone())
+            .with_anchor(Anchor::TopLeft)
+            .with_z_order(0), // Render behind everything
+          Interpolated,
+          Scrolling::new(
+            BACKGROUND_SCROLL_SPEED,
+            tile_width * scale,
+            wrap_distance * scale,
+          ),
+        ))
+        .id();
       self.background_entities.push(background);
     }
   }
@@ -255,9 +272,9 @@ impl GameScene {
       if should_flap && bird.is_alive {
         bird.flap();
         // Play flap sound
-        if let Some(audio) = &mut ctx.audio {
-          let _ = audio.play_sound_with(FLAP_SOUND, SoundOptions::new().volume(0.6));
-        }
+        let _ = ctx
+          .audio
+          .play_sound_with(FLAP_SOUND, SoundOptions::new().volume(0.6));
       }
 
       // Apply gravity
@@ -300,20 +317,18 @@ impl GameScene {
 
     // Check bounds and clamp position
     if let Some(mut transform) = ctx.world.get_mut::<Transform>(bird_entity) {
-      // Calculate collision circle bounds (matches the actual Collider component)
-      let collider_offset_y = BIRD_SIZE / 2.0; // Circle center offset from transform origin
+      // Calculate collision circle bounds (the circle is centred on the bird)
       let collider_radius = BIRD_SIZE * BIRD_COLLIDER_RATIO;
-      let circle_center_y = transform.y + collider_offset_y;
-      let circle_top = circle_center_y - collider_radius;
-      let circle_bottom = circle_center_y + collider_radius;
+      let circle_top = transform.translation.y - collider_radius;
+      let circle_bottom = transform.translation.y + collider_radius;
 
       // Check if collision circle hit ceiling or ground
       if circle_top <= CEILING_Y || circle_bottom >= GROUND_Y {
         // Clamp position so circle stays within bounds
         if circle_top <= CEILING_Y {
-          transform.y = CEILING_Y + collider_radius - collider_offset_y;
+          transform.translation.y = CEILING_Y + collider_radius;
         } else if circle_bottom >= GROUND_Y {
-          transform.y = GROUND_Y - collider_radius - collider_offset_y;
+          transform.translation.y = GROUND_Y - collider_radius;
         }
 
         // Stop all movement when hitting boundaries
@@ -325,10 +340,8 @@ impl GameScene {
           bird.velocity_y = 0.0;
           bird.kill();
         }
-        // Make the bird kinematic so physics doesn't move it
-        if let Some(mut body) = ctx.world.get_mut::<RigidBody>(bird_entity) {
-          *body = RigidBody::kinematic();
-        }
+        // Take the bird out of the simulation so physics doesn't move it
+        ctx.world.entity_mut(bird_entity).remove::<RigidBody>();
       }
     }
 
@@ -367,15 +380,15 @@ impl GameScene {
     let mut to_update: Vec<(Entity, f32)> = Vec::new();
     {
       let mut query = ctx.world.query::<(Entity, &Transform, &Scrolling)>();
-      for (entity, transform, scrolling) in query.iter() {
-        let new_x = scrolling.update(transform.x, dt);
+      for (entity, transform, scrolling) in query.iter(ctx.world) {
+        let new_x = scrolling.update(transform.translation.x, dt);
         to_update.push((entity, new_x));
       }
     }
 
     for (entity, new_x) in to_update {
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.x = new_x;
+        transform.translation.x = new_x;
       }
     }
   }
@@ -389,9 +402,9 @@ impl GameScene {
     let mut rightmost_x: f32 = 0.0;
     for &pipe_entity in &self.pipes {
       if let Some(transform) = ctx.world.get::<Transform>(pipe_entity)
-        && transform.x > rightmost_x
+        && transform.translation.x > rightmost_x
       {
-        rightmost_x = transform.x;
+        rightmost_x = transform.translation.x;
       }
     }
 
@@ -408,13 +421,14 @@ impl GameScene {
     if let Some(bird_entity) = self.bird
       && let Some(bird_transform) = ctx.world.get::<Transform>(bird_entity)
     {
-      let bird_x = bird_transform.x;
+      // The bird's left edge (its position is its centre)
+      let bird_x = bird_transform.translation.x - BIRD_SIZE / 2.0;
 
       // Find any pipe pair that hasn't been scored and has been passed
       let mut scored_this_frame = false;
       for &pipe_entity in &self.pipes {
         if let Some(pipe_transform) = ctx.world.get::<Transform>(pipe_entity) {
-          let pipe_x = pipe_transform.x;
+          let pipe_x = pipe_transform.translation.x;
           // Check if pipe's right edge has passed the bird's position
           if pipe_x + PIPE_WIDTH < bird_x
             && let Some(mut pipe) = ctx.world.get_mut::<Pipe>(pipe_entity)
@@ -435,13 +449,13 @@ impl GameScene {
     let mut to_remove = Vec::new();
     for &entity in &self.pipes {
       if let Some(transform) = ctx.world.get::<Transform>(entity)
-        && transform.x < -PIPE_WIDTH - 100.0
+        && transform.translation.x < -PIPE_WIDTH - 100.0
       {
         to_remove.push(entity);
       }
     }
     for entity in to_remove {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
       self.pipes.retain(|&e| e != entity);
     }
   }
@@ -453,7 +467,7 @@ impl GameScene {
 
     // Use CollisionStarted events to only react when objects first touch
     // (not when they separate - that's CollisionStopped)
-    for event in ctx.events.read::<CollisionStarted>() {
+    for event in ctx.messages::<CollisionStarted>() {
       if event.involves(bird_entity) {
         // Bird hit something - game over
         if let Some(mut bird) = ctx.world.get_mut::<Bird>(bird_entity) {
@@ -466,16 +480,13 @@ impl GameScene {
 
 impl Scene for GameScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
     ctx
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
 
     // Load sound effects
-    if let Some(audio) = &mut ctx.audio {
-      let _ = audio.load_sound(FLAP_SOUND, "assets/flap.wav");
-      let _ = audio.load_sound(DEATH_SOUND, "assets/death.wav");
-    }
+    let _ = ctx.audio.load_sound(FLAP_SOUND, "assets/flap.wav");
+    let _ = ctx.audio.load_sound(DEATH_SOUND, "assets/death.wav");
 
     // Spawn entities
     self.spawn_background(ctx);
@@ -514,9 +525,9 @@ impl Scene for GameScene {
     {
       self.death_timer = Some(0.0);
       // Play death sound
-      if let Some(audio) = &mut ctx.audio {
-        let _ = audio.play_sound_with(DEATH_SOUND, SoundOptions::new().volume(0.8));
-      }
+      let _ = ctx
+        .audio
+        .play_sound_with(DEATH_SOUND, SoundOptions::new().volume(0.8));
     }
 
     // Handle death timer
@@ -539,7 +550,7 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     // Draw score centered at top
     ui.draw_text_anchored(
       &self.score.to_string(),

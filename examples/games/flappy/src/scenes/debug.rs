@@ -44,13 +44,16 @@ impl DebugScene {
       .expect("Failed to load bird sprite");
     let bird_handle = SpriteHandle::from_sprite(bird_sprite, "bird-flap-up.svg");
 
-    let bird = ctx.world.spawn((
-      Transform::new(BIRD_START_X, BIRD_START_Y),
-      Velocity::new(0.0, 0.0),
-      RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling
-      Collider::circle_collider(BIRD_SIZE / 2.0).centered_in(BIRD_SIZE, BIRD_SIZE),
-      Renderable::sprite(bird_handle).with_z_order(10),
-    ));
+    let bird = ctx
+      .world
+      .spawn((
+        Transform::from_xy(BIRD_START_X, BIRD_START_Y),
+        Velocity::new(0.0, 0.0),
+        RigidBody::new().with_ccd().with_gravity_scale(0.0), // CCD prevents tunneling
+        Collider::circle_collider(BIRD_SIZE / 2.0),
+        Renderable::sprite(bird_handle).with_z_order(10),
+      ))
+      .id();
     self.bird = Some(bird);
   }
 
@@ -88,13 +91,16 @@ impl DebugScene {
         .z_order(5)
         .build_with_collider();
 
-      let top_pipe = ctx.world.spawn((
-        Transform::new(x, 0.0),
-        Velocity::zero(),
-        RigidBody::kinematic(),
-        top_collider,
-        top_composite,
-      ));
+      let top_pipe = ctx
+        .world
+        .spawn((
+          Transform::from_xy(x, 0.0),
+          Velocity::zero(),
+          RigidBody::kinematic(),
+          top_collider,
+          top_composite,
+        ))
+        .id();
       self.pipes.push(top_pipe);
 
       // BOTTOM PIPE: rises from ground
@@ -115,13 +121,16 @@ impl DebugScene {
           .z_order(5)
           .build_with_collider();
 
-        let bottom_pipe = ctx.world.spawn((
-          Transform::new(x, bottom_y),
-          Velocity::zero(),
-          RigidBody::kinematic(),
-          bottom_collider,
-          bottom_composite,
-        ));
+        let bottom_pipe = ctx
+          .world
+          .spawn((
+            Transform::from_xy(x, bottom_y),
+            Velocity::zero(),
+            RigidBody::kinematic(),
+            bottom_collider,
+            bottom_composite,
+          ))
+          .id();
         self.pipes.push(bottom_pipe);
       }
     }
@@ -130,13 +139,16 @@ impl DebugScene {
   fn spawn_ground(&mut self, ctx: &mut SceneContext) {
     let ground_sprite = Sprite::load("assets/ground.png").expect("Failed to load ground sprite");
     let ground_handle = SpriteHandle::from_sprite(ground_sprite, "ground.png");
-    let ground = ctx.world.spawn((
-      Transform::new(0.0, GROUND_Y),
-      Velocity::new(0.0, 0.0),
-      RigidBody::kinematic(),
-      Collider::box_collider(SCREEN_WIDTH as f32, GROUND_HEIGHT),
-      Renderable::sprite(ground_handle).with_z_order(15),
-    ));
+    let ground = ctx
+      .world
+      .spawn((
+        Transform::from_xy(SCREEN_WIDTH as f32 / 2.0, GROUND_Y + GROUND_HEIGHT / 2.0),
+        Velocity::new(0.0, 0.0),
+        RigidBody::kinematic(),
+        Collider::box_collider(SCREEN_WIDTH as f32, GROUND_HEIGHT),
+        Renderable::sprite(ground_handle).with_z_order(15),
+      ))
+      .id();
     self.ground = Some(ground);
   }
 
@@ -153,8 +165,8 @@ impl DebugScene {
     };
 
     // Get bird's collision circle in world space
-    let bird_cx = bird_transform.x + bird_collider.offset_x;
-    let bird_cy = bird_transform.y + bird_collider.offset_y;
+    let bird_cx = bird_transform.translation.x + bird_collider.offset.x;
+    let bird_cy = bird_transform.translation.y + bird_collider.offset.y;
     let bird_radius = match bird_collider.shape {
       ColliderShape::Circle { radius } => radius,
       _ => BIRD_SIZE / 2.0,
@@ -172,8 +184,8 @@ impl DebugScene {
       };
 
       // GroupedCollider has a simple box covering the entire composite tile
-      let box_x = pipe_transform.x + grouped_collider.offset_x;
-      let box_y = pipe_transform.y + grouped_collider.offset_y;
+      let box_x = pipe_transform.translation.x + grouped_collider.offset_x;
+      let box_y = pipe_transform.translation.y + grouped_collider.offset_y;
       let width = grouped_collider.width;
       let height = grouped_collider.height;
 
@@ -199,8 +211,9 @@ impl DebugScene {
       && let Some(ground_collider) = ctx.world.get::<Collider>(ground_entity)
       && let ColliderShape::Box { width, height } = ground_collider.shape
     {
-      let box_x = ground_transform.x + ground_collider.offset_x;
-      let box_y = ground_transform.y + ground_collider.offset_y;
+      // The box is centred on the ground's origin plus its offset
+      let box_x = ground_transform.translation.x + ground_collider.offset.x - width / 2.0;
+      let box_y = ground_transform.translation.y + ground_collider.offset.y - height / 2.0;
 
       let closest_x = bird_cx.clamp(box_x, box_x + width);
       let closest_y = bird_cy.clamp(box_y, box_y + height);
@@ -223,13 +236,13 @@ impl DebugScene {
   }
 
   /// Check for collisions using Rapier physics events
-  fn check_physics_collisions(&mut self, ctx: &SceneContext) {
+  fn check_physics_collisions(&mut self, ctx: &mut SceneContext) {
     let Some(bird_entity) = self.bird else {
       return;
     };
 
     // Check if any collision event involves the bird
-    for event in ctx.events.read::<CollisionStarted>() {
+    for event in ctx.messages::<CollisionStarted>() {
       if event.involves(bird_entity) {
         self.is_colliding = true;
         let other = event.other(bird_entity).unwrap();
@@ -249,7 +262,6 @@ impl DebugScene {
 
 impl Scene for DebugScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
     ctx
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
@@ -281,8 +293,8 @@ impl Scene for DebugScene {
     if let Some(bird_entity) = self.bird
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(bird_entity)
     {
-      transform.x += dx;
-      transform.y += dy;
+      transform.translation.x += dx;
+      transform.translation.y += dy;
     }
 
     // Reset collision state each frame
@@ -317,7 +329,7 @@ impl Scene for DebugScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     let (screen_w, _screen_h) = ui.screen_size();
 
     // Title

@@ -10,7 +10,8 @@ pub const SCREEN_HEIGHT: u32 = 720;
 /// Paddle configuration
 pub const PADDLE_WIDTH: f32 = 120.0;
 pub const PADDLE_HEIGHT: f32 = 16.0;
-pub const PADDLE_Y: f32 = 650.0;
+/// Paddle centre y (its top edge sits at 650)
+pub const PADDLE_Y: f32 = 658.0;
 pub const PADDLE_SPEED: f32 = 900.0;
 /// Paddle acceleration (pixels per second squared)
 pub const PADDLE_ACCELERATION: f32 = 6300.0;
@@ -27,8 +28,10 @@ pub const BALL_SPEED: f32 = 400.0;
 pub const BLOCK_WIDTH: f32 = 80.0;
 pub const BLOCK_HEIGHT: f32 = 25.0;
 pub const BLOCK_PADDING: f32 = 4.0;
-pub const BLOCK_TOP_OFFSET: f32 = 60.0;
-pub const BLOCK_LEFT_OFFSET: f32 = 120.0;
+/// Centre y of the first block row (its top edge sits at 60)
+pub const BLOCK_TOP_OFFSET: f32 = 72.5;
+/// Centre x of the first block column (its left edge sits at 120)
+pub const BLOCK_LEFT_OFFSET: f32 = 160.0;
 
 /// Wall configuration
 pub const WALL_THICKNESS: f32 = 20.0;

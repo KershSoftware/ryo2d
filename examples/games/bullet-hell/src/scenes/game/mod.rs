@@ -22,6 +22,7 @@ const DESIGN_HEIGHT: f32 = 1080.0;
 pub(super) type BulletBundle = (
   Transform,
   Renderable,
+  Interpolated,
   RigidBody,
   Collider,
   Velocity,
@@ -30,7 +31,7 @@ pub(super) type BulletBundle = (
 );
 
 /// Marker component for nebula orb child entities
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub(super) struct NebulaOrbMarker {
   pub(super) parent: Entity,
   pub(super) index: usize,
@@ -229,22 +230,19 @@ impl Scene for GameScene {
 
     // Register handler for game:reset command (declared in MenuScene)
     // Handler is auto-cleaned when this scene exits
-    ctx.register_console_command("game:reset", |_args, cmd_ctx| {
+    ctx.console().register("game:reset", |_args, cmd_ctx| {
       cmd_ctx.console.print_system("Resetting game...");
       shared::request_reset();
       CommandResult::Ok
     });
 
     // Load sound effects
-    if let Some(audio) = &mut ctx.audio {
-      let _ = audio.load_sound("enemy-spawn", "assets/enemy-spawn.wav");
-      let _ = audio.load_sound("laser", "assets/laser.mp3");
-      let _ = audio.load_sound("hurt", "assets/hurt.mp3");
-      let _ = audio.load_sound("bullet", "assets/bullet.wav");
-    }
-
-    // Clear world
-    ctx.world.clear();
+    let _ = ctx
+      .audio
+      .load_sound("enemy-spawn", "assets/enemy-spawn.wav");
+    let _ = ctx.audio.load_sound("laser", "assets/laser.mp3");
+    let _ = ctx.audio.load_sound("hurt", "assets/hurt.mp3");
+    let _ = ctx.audio.load_sound("bullet", "assets/bullet.wav");
 
     // Sync parallax background with shared time (persists from menu)
     self
@@ -274,21 +272,14 @@ impl Scene for GameScene {
     self.spawn_drone(ctx);
     self.spawn_player(ctx);
 
-    // Initialize bullet pool (pre-allocate 200 bullets)
+    // Initialize bullet pool (200 bullets, spawned on first use)
     let bullet_sprite = self.bullet_sprite.clone();
     self.bullet_pool = Some(Pool::new(
-      ctx.world,
-      PoolConfig::default()
-        .with_capacity(200)
-        .with_max_capacity(500)
-        .with_expand_batch_size(50)
-        .with_exhausted_policy(PoolExhaustedPolicy::RecycleOldest),
       move || {
         (
           Transform::default(),
-          Renderable::sprite(bullet_sprite.clone())
-            .with_z_order(Z_BULLET)
-            .interpolated(),
+          Renderable::sprite(bullet_sprite.clone()).with_z_order(Z_BULLET),
+          Interpolated,
           // CCD for fast-moving bullets, no gravity
           RigidBody::new().with_ccd().with_gravity_scale(0.0),
           Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
@@ -301,6 +292,12 @@ impl Scene for GameScene {
             .with_fade(true)
             .with_min_distance(2.0),
         )
+      },
+      PoolConfig {
+        initial_capacity: 200,
+        max_capacity: 500,
+        expand_batch_size: 50,
+        exhausted_policy: PoolExhaustedPolicy::RecycleOldest,
       },
     ));
 
@@ -353,11 +350,11 @@ impl Scene for GameScene {
       // Sine curve for smooth pulse: rises to peak at 0.5, falls back to 0
       let intensity = (progress * std::f32::consts::PI).sin();
       let strength = intensity * 0.015; // Max chromatic aberration strength
-      ctx.effects.set_chromatic_aberration(strength);
+      ctx.effects().set_chromatic_aberration(strength);
 
       if new_timer <= 0.0 {
         // Effect complete, transition to game over
-        ctx.effects.clear();
+        ctx.effects().clear();
         save_best_time(self.survival_time);
         return SceneAction::Switch(Box::new(GameOverScene::new(self.survival_time)));
       }
@@ -388,12 +385,12 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
     profile_scope!("sprites");
-    self.background.render(ctx);
+    self.background.render(gpu);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     profile_scope!("ui");
 
     // Use cached player state
@@ -537,16 +534,13 @@ impl GameScene {
     player.take_damage();
     self.player_lives = player.lives;
     self.player_invincible = player.is_invincible();
-    drop(player);
 
     if !was_invincible {
       if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(player_e) {
         renderable.shader = Some(SpriteShader::flash(Color::rgb(255, 100, 100), 1.0));
       }
       ctx.camera.add_trauma(0.5);
-      if let Some(audio) = &mut ctx.audio {
-        let _ = audio.play_sound("hurt");
-      }
+      let _ = ctx.audio.play_sound("hurt");
     }
     !was_invincible
   }

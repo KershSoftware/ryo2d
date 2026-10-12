@@ -1,7 +1,9 @@
 //! Block Component
 
+use ryo2d::prelude::*;
+
 /// Marker component for blocks
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct Block {
   /// Hits remaining before destruction
   pub hits: u32,

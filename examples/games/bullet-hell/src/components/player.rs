@@ -1,5 +1,7 @@
 //! Player component
 
+use ryo2d::prelude::*;
+
 use crate::constants::{INVINCIBLE_DURATION, WALL_JUMP_PUSH_DURATION, WALL_SLIDE_GRACE_DURATION};
 
 /// Which wall the player is sliding on
@@ -9,7 +11,7 @@ pub enum WallSide {
   Right,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Player {
   pub lives: u32,
   pub is_grounded: bool,

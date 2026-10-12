@@ -4,8 +4,7 @@
 //! They use pathfinding with steering-based avoidance to float smoothly.
 //! Attacks with MLRS-style rockets that arc up then lock briefly on the player.
 
-use ryo2d::prelude::Vec2;
-use ryo2d::prelude::{Rng, rand};
+use ryo2d::prelude::*;
 
 /// Spawn duration for nebula fade-in effect
 pub const NEBULA_SPAWN_DURATION: f32 = 2.0;
@@ -64,7 +63,7 @@ impl NebulaOrb {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct Nebula {
   /// Current behavior state
   pub state: NebulaState,

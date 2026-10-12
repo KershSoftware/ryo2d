@@ -13,7 +13,7 @@ pub struct PauseScene {
   selected_display_mode_idx: usize,
   pause_menu_focus: usize,
   settings_menu_focus: usize,
-  /// Flag set in render_ui (mouse click) and processed in update (needs SceneContext)
+  /// Flag set in ui (mouse click) and processed in update
   apply_settings: bool,
 }
 
@@ -39,7 +39,7 @@ impl Scene for PauseScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    // Process flags set by mouse clicks in render_ui
+    // Process flags set by mouse clicks in ui
     if self.apply_settings {
       self.apply_settings = false;
       let modes = DisplayMode::all();
@@ -63,7 +63,7 @@ impl Scene for PauseScene {
     self.handle_navigation(ctx)
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
     self.render_pause_menu(ui, screen_w as f32, screen_h as f32)
   }

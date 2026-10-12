@@ -3,7 +3,7 @@
 //! Rockets launch upward with an arc, briefly calibrate on the player's position,
 //! then fly in that direction without further tracking.
 
-use ryo2d::prelude::Vec2;
+use ryo2d::prelude::*;
 
 /// Rocket flight phases
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -16,7 +16,7 @@ pub enum RocketPhase {
   Locked,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct Rocket {
   /// Current flight phase
   pub phase: RocketPhase,

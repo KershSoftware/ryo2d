@@ -68,11 +68,9 @@ impl Scene for PauseScene {
     let sfx_changed = (self.settings.sfx_volume - self.prev_sfx_volume).abs() > 0.001;
 
     if master_changed || music_changed || sfx_changed {
-      if let Some(audio) = ctx.audio.as_mut() {
-        audio.set_master_volume(self.settings.master_volume);
-        audio.set_music_volume(self.settings.music_volume);
-        audio.set_sfx_volume(self.settings.sfx_volume);
-      }
+      ctx.audio.set_master_volume(self.settings.master_volume);
+      ctx.audio.set_music_volume(self.settings.music_volume);
+      ctx.audio.set_sfx_volume(self.settings.sfx_volume);
       // Update previous values
       self.prev_master_volume = self.settings.master_volume;
       self.prev_music_volume = self.settings.music_volume;
@@ -127,7 +125,7 @@ impl Scene for PauseScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Dim overlay

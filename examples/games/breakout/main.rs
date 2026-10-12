@@ -45,7 +45,7 @@ fn main() {
   let engine = EngineBuilder::new()
     .resolution(1280, 720)
     .target_fps(144)
-    .physics_hz(144)
+    .fixed_hz(120)
     .start_scene(MenuScene::new())
     .with_user_preferences([
       UserPreference::MasterVolume,

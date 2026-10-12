@@ -1,9 +1,9 @@
 //! Turret component for wall-mounted guns
 
 use crate::constants::{TURRET_BURST_SIZE, TURRET_SPAWN_DURATION};
-use ryo2d::prelude::{Rng, rand};
+use ryo2d::prelude::*;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Turret {
   pub side: TurretSide,
   pub move_direction: f32, // 1.0 for down, -1.0 for up

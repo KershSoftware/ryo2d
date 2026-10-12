@@ -97,7 +97,6 @@ impl Default for MenuScene {
 
 impl Scene for MenuScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    ctx.world.clear();
     ctx
       .camera
       .set_position(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0);
@@ -109,14 +108,12 @@ impl Scene for MenuScene {
     }
 
     // Start background music (persists across scenes)
-    if let Some(audio) = &mut ctx.audio {
-      audio.set_music_volume(0.75);
-      audio.set_sfx_volume(0.5);
+    ctx.audio.set_music_volume(0.75);
+    ctx.audio.set_sfx_volume(0.5);
 
-      let options = MusicOptions::new().looping(true);
-      if let Err(e) = audio.play_music_once("assets/8bit-bg.mp3", options) {
-        eprintln!("Failed to play background music: {}", e);
-      }
+    let options = MusicOptions::new().looping(true);
+    if let Err(e) = ctx.audio.play_music_once("assets/8bit-bg.mp3", options) {
+      eprintln!("Failed to play background music: {}", e);
     }
 
     // Spawn scrolling background (uses cached assets)
@@ -125,7 +122,7 @@ impl Scene for MenuScene {
 
   fn on_exit(&mut self, ctx: &mut SceneContext) {
     for &entity in &self.background_entities {
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
     }
     self.background_entities.clear();
   }
@@ -133,11 +130,11 @@ impl Scene for MenuScene {
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
     // Update scrolling background
     for &entity in &self.background_entities {
-      if let Some(scrolling) = ctx.world.get::<Scrolling>(entity)
+      if let Some(scrolling) = ctx.world.get::<Scrolling>(entity).copied()
         && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
       {
-        let new_x = scrolling.update(transform.x, dt);
-        transform.x = new_x;
+        let new_x = scrolling.update(transform.translation.x, dt);
+        transform.translation.x = new_x;
       }
     }
 
@@ -167,7 +164,7 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     let (screen_w, screen_h) = ui.screen_size();
 
     // Title
@@ -268,18 +265,21 @@ impl MenuScene {
 
     for i in 0..2 {
       let x = i as f32 * bg_width * scale;
-      let mut transform = Transform::new(x, 0.0);
-      transform.scale_x = scale;
-      transform.scale_y = scale;
-      let background = ctx.world.spawn((
-        transform,
-        Renderable::sprite(bg_handle.clone()).with_z_order(0), // Render behind everything
-        Scrolling::new(
-          MENU_BACKGROUND_SCROLL_SPEED,
-          tile_width * scale,
-          wrap_distance * scale,
-        ),
-      ));
+      let transform = Transform::from_xy(x, 0.0).with_uniform_scale(scale);
+      let background = ctx
+        .world
+        .spawn((
+          transform,
+          Renderable::sprite(bg_handle.clone())
+            .with_anchor(Anchor::TopLeft)
+            .with_z_order(0), // Render behind everything
+          Scrolling::new(
+            MENU_BACKGROUND_SCROLL_SPEED,
+            tile_width * scale,
+            wrap_distance * scale,
+          ),
+        ))
+        .id();
       self.background_entities.push(background);
     }
   }

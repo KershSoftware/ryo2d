@@ -18,7 +18,7 @@ impl GameScene {
 
     // Clean up lasers from previous frame FIRST (so they render for one frame)
     for laser in self.lasers.drain(..) {
-      let _ = ctx.world.despawn(laser);
+      ctx.world.despawn(laser);
     }
 
     // Clean up fading lasers that have finished fading (no points left)
@@ -35,14 +35,19 @@ impl GameScene {
       .copied()
       .collect();
     for entity in &faded_lasers {
-      let _ = ctx.world.despawn(*entity);
+      ctx.world.despawn(*entity);
     }
     self.fading_lasers.retain(|e| !faded_lasers.contains(e));
 
     let player_entity = self.player;
 
     // Get player position for aiming (player uses center pivot)
-    let player_pos = player_entity.and_then(|e| ctx.world.get::<Transform>(e).map(|t| (t.x, t.y)));
+    let player_pos = player_entity.and_then(|e| {
+      ctx
+        .world
+        .get::<Transform>(e)
+        .map(|t| (t.translation.x, t.translation.y))
+    });
 
     // Collect drones to update
     let drones_to_update: Vec<_> = self.drones.clone();
@@ -57,13 +62,12 @@ impl GameScene {
       if drone.is_spawning() {
         let just_finished = drone.update_spawn(dt);
         let spawn_progress = drone.spawn_progress();
-        drop(drone);
 
         // Get drone position for panning
         let drone_x = ctx
           .world
           .get::<Transform>(drone_entity)
-          .map(|t| t.x)
+          .map(|t| t.translation.x)
           .unwrap_or(self.screen_width / 2.0);
 
         // Apply dissolve shader for spawn effect
@@ -73,10 +77,9 @@ impl GameScene {
             renderable.shader = Some(SpriteShader::outline(Color::rgb(200, 140, 255), 2));
             // Pan based on screen position (-1 left, 0 center, 1 right)
             let pan = ((drone_x / self.screen_width) * 2.0 - 1.0).clamp(-1.0, 1.0);
-            if let Some(audio) = &mut ctx.audio {
-              let _ =
-                audio.play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15).panning(pan));
-            }
+            let _ = ctx
+              .audio
+              .play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15).panning(pan));
           } else {
             // Still spawning - dissolve from invisible to visible
             let dissolve_progress = 1.0 - spawn_progress;
@@ -100,15 +103,13 @@ impl GameScene {
       let laser_target_x = drone.laser_target_x;
       let laser_target_y = drone.laser_target_y;
       let laser_active = drone.laser_active;
-      drop(drone);
 
       // Get current position
       let Some(transform) = ctx.world.get::<Transform>(drone_entity) else {
         continue;
       };
-      let current_x = transform.x;
-      let current_y = transform.y;
-      drop(transform);
+      let current_x = transform.translation.x;
+      let current_y = transform.translation.y;
 
       state_timer -= dt;
 
@@ -116,8 +117,8 @@ impl GameScene {
         DroneState::Moving => {
           // Move toward target
           if let Some(mut t) = ctx.world.get_mut::<Transform>(drone_entity) {
-            t.x += velocity_x * dt;
-            t.y += velocity_y * dt;
+            t.translation.x += velocity_x * dt;
+            t.translation.y += velocity_y * dt;
           }
 
           // Check if reached target
@@ -188,16 +189,19 @@ impl GameScene {
           let warning_alpha = (base_alpha + flash * 95.0).min(255.0) as u8; // Can reach 255 near end
           let warning_width = 2.0 + flash * 3.0 + aim_progress * 2.0; // Gets thicker too
 
-          let warning_laser = ctx.world.spawn((
-            Transform::new(0.0, 0.0),
-            Line2D::segment(
-              Vec2::new(drone_center_x, drone_center_y),
-              Vec2::new(extended_x, extended_y),
-              Color::new(255, 100, 100, warning_alpha),
-              warning_width,
-            )
-            .with_z_order(Z_LASER),
-          ));
+          let warning_laser = ctx
+            .world
+            .spawn((
+              Transform::from_xy(0.0, 0.0),
+              Line2D::segment(
+                Vec2::new(drone_center_x, drone_center_y),
+                Vec2::new(extended_x, extended_y),
+                Color::new(255, 100, 100, warning_alpha),
+                warning_width,
+              )
+              .with_z_order(Z_LASER),
+            ))
+            .id();
           self.lasers.push(warning_laser);
 
           // Flash the drone sprite during aiming
@@ -221,9 +225,9 @@ impl GameScene {
             if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(drone_entity) {
               renderable.shader = Some(SpriteShader::outline(Color::rgb(255, 50, 50), 2));
             }
-            if let Some(audio) = &mut ctx.audio {
-              let _ = audio.play_sound_with("laser", SoundOptions::new().volume(0.3));
-            }
+            let _ = ctx
+              .audio
+              .play_sound_with("laser", SoundOptions::new().volume(0.3));
           }
         }
 
@@ -263,11 +267,14 @@ impl GameScene {
                 .with_lifetime(0.35)
                 .with_min_distance(6.0);
 
-              let outer_tracer = ctx.world.spawn((
-                Transform::new(drone_center_x, drone_center_y),
-                outer_trail,
-                LaserTracer::damaging(extended_x, extended_y, tracer_speed, damage_radius),
-              ));
+              let outer_tracer = ctx
+                .world
+                .spawn((
+                  Transform::from_xy(drone_center_x, drone_center_y),
+                  outer_trail,
+                  LaserTracer::damaging(extended_x, extended_y, tracer_speed, damage_radius),
+                ))
+                .id();
               self.fading_lasers.push(outer_tracer);
 
               // Inner core trail (bright) - visual only
@@ -279,11 +286,14 @@ impl GameScene {
                   .with_lifetime(0.3)
                   .with_min_distance(6.0);
 
-              let core_tracer = ctx.world.spawn((
-                Transform::new(drone_center_x, drone_center_y),
-                core_trail,
-                LaserTracer::new(extended_x, extended_y, tracer_speed),
-              ));
+              let core_tracer = ctx
+                .world
+                .spawn((
+                  Transform::from_xy(drone_center_x, drone_center_y),
+                  core_trail,
+                  LaserTracer::new(extended_x, extended_y, tracer_speed),
+                ))
+                .id();
               self.fading_lasers.push(core_tracer);
             }
           }
@@ -331,9 +341,12 @@ impl GameScene {
   pub(super) fn update_laser_tracers(&mut self, ctx: &mut SceneContext, dt: f32) {
     profile_scope!("laser_tracers");
     // Get player position for damage checks
-    let player_pos = self
-      .player
-      .and_then(|e| ctx.world.get::<Transform>(e).map(|t| (t.x, t.y)));
+    let player_pos = self.player.and_then(|e| {
+      ctx
+        .world
+        .get::<Transform>(e)
+        .map(|t| (t.translation.x, t.translation.y))
+    });
 
     // Move tracers toward their targets and collect those that reached the end
     let mut reached_target: Vec<Entity> = Vec::new();
@@ -350,15 +363,13 @@ impl GameScene {
       let speed = tracer.speed;
       let damages = tracer.damages;
       let damage_radius = tracer.damage_radius;
-      drop(tracer);
 
       // Get current position
       let Some(transform) = ctx.world.get::<Transform>(entity) else {
         continue;
       };
-      let current_x = transform.x;
-      let current_y = transform.y;
-      drop(transform);
+      let current_x = transform.translation.x;
+      let current_y = transform.translation.y;
 
       // Check damage against player (only if this tracer damages)
       if damages
@@ -392,8 +403,8 @@ impl GameScene {
         let move_dist = (speed * dt).min(dist); // Don't overshoot
 
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.x += dir_x * move_dist;
-          transform.y += dir_y * move_dist;
+          transform.translation.x += dir_x * move_dist;
+          transform.translation.y += dir_y * move_dist;
         }
       }
     }
@@ -406,7 +417,7 @@ impl GameScene {
     // Remove LaserTracer component from entities that reached target
     // (they become regular fading trails that will be cleaned up when empty)
     for entity in reached_target {
-      let _ = ctx.world.remove_one::<LaserTracer>(entity);
+      ctx.world.entity_mut(entity).remove::<LaserTracer>();
     }
   }
 
@@ -455,14 +466,17 @@ impl GameScene {
       .collect();
 
     // Create center entity for the nebula (invisible, just holds the component)
-    let nebula_entity = ctx.world.spawn((Transform::new(spawn_x, spawn_y), nebula));
+    let nebula_entity = ctx
+      .world
+      .spawn((Transform::from_xy(spawn_x, spawn_y), nebula))
+      .id();
 
     // Create the 3 orb child entities
     for (i, orb_pos) in orb_positions.iter().enumerate() {
       let sprite = self.nebula_orb_sprite.clone();
 
       ctx.world.spawn((
-        Transform::new(orb_pos.x, orb_pos.y).with_pivot_center(),
+        Transform::from_xy(orb_pos.x, orb_pos.y),
         Renderable::sprite(sprite)
           .with_z_order(Z_NEBULA)
           .with_shader(SpriteShader::dissolve_with_edge(
@@ -489,7 +503,7 @@ impl GameScene {
     // Get player position for rocket targeting (used by spawn_rocket)
     let _player_pos = self
       .player
-      .and_then(|e| ctx.world.get::<Transform>(e).map(|t| Vec2::new(t.x, t.y)));
+      .and_then(|e| ctx.world.get::<Transform>(e).map(|t| t.translation));
 
     // Collect all nebula positions for avoidance
     let nebula_positions: Vec<(Entity, Vec2, f32)> = self
@@ -498,7 +512,7 @@ impl GameScene {
       .filter_map(|&e| {
         let t = ctx.world.get::<Transform>(e)?;
         let n = ctx.world.get::<Nebula>(e)?;
-        Some((e, Vec2::new(t.x, t.y), n.radius))
+        Some((e, t.translation, n.radius))
       })
       .collect();
 
@@ -513,7 +527,6 @@ impl GameScene {
       if nebula.is_spawning() {
         let just_finished = nebula.update_spawn(dt);
         let spawn_progress = nebula.spawn_progress();
-        drop(nebula);
 
         // Update orb dissolve shaders
         self.update_nebula_orb_shaders(ctx, nebula_entity, spawn_progress, just_finished);
@@ -531,10 +544,8 @@ impl GameScene {
       let current_pos = ctx
         .world
         .get::<Transform>(nebula_entity)
-        .map(|t| Vec2::new(t.x, t.y))
+        .map(|t| t.translation)
         .unwrap_or(Vec2::ZERO);
-
-      drop(nebula);
 
       match state {
         NebulaState::Moving => {
@@ -542,7 +553,6 @@ impl GameScene {
           let nebula = ctx.world.get::<Nebula>(nebula_entity).unwrap();
           let base_vel = nebula.calculate_base_velocity(current_pos, NEBULA_SPEED);
           let reached = nebula.reached_target(current_pos);
-          drop(nebula);
 
           // Apply steering avoidance
           let neighbors: Vec<(Vec2, f32)> = nebula_positions
@@ -556,8 +566,8 @@ impl GameScene {
 
           // Apply movement
           if let Some(mut t) = ctx.world.get_mut::<Transform>(nebula_entity) {
-            t.x += velocity.x * dt;
-            t.y += velocity.y * dt;
+            t.translation.x += velocity.x * dt;
+            t.translation.y += velocity.y * dt;
           }
 
           // Update orb world positions
@@ -614,7 +624,6 @@ impl GameScene {
             // Fire a rocket
             let nebula = ctx.world.get::<Nebula>(nebula_entity).unwrap();
             let top_pos = nebula.top_orb_position(current_pos);
-            drop(nebula);
 
             self.spawn_rocket(ctx, top_pos, rockets_remaining);
 
@@ -671,23 +680,22 @@ impl GameScene {
     let center = ctx
       .world
       .get::<Transform>(nebula_entity)
-      .map(|t| Vec2::new(t.x, t.y))
+      .map(|t| t.translation)
       .unwrap_or(Vec2::ZERO);
 
     let orb_positions: Vec<Vec2> = nebula.orbs.iter().map(|orb| orb.position(center)).collect();
-    drop(nebula);
 
     // Find and update orb entities
-    for (marker, transform) in ctx
+    for (marker, mut transform) in ctx
       .world
       .query::<(&NebulaOrbMarker, &mut Transform)>()
-      .iter()
+      .iter_mut(ctx.world)
     {
       if marker.parent == nebula_entity
         && let Some(pos) = orb_positions.get(marker.index)
       {
-        transform.x = pos.x;
-        transform.y = pos.y;
+        transform.translation.x = pos.x;
+        transform.translation.y = pos.y;
       }
     }
   }
@@ -699,10 +707,10 @@ impl GameScene {
     progress: f32,
     just_finished: bool,
   ) {
-    for (marker, renderable) in ctx
+    for (marker, mut renderable) in ctx
       .world
       .query::<(&NebulaOrbMarker, &mut Renderable)>()
-      .iter()
+      .iter_mut(ctx.world)
     {
       if marker.parent == nebula_entity {
         if just_finished {
@@ -729,10 +737,10 @@ impl GameScene {
     let flash =
       ((charge_progress * flash_speed * std::f32::consts::TAU).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
 
-    for (marker, renderable) in ctx
+    for (marker, mut renderable) in ctx
       .world
       .query::<(&NebulaOrbMarker, &mut Renderable)>()
-      .iter()
+      .iter_mut(ctx.world)
     {
       if marker.parent == nebula_entity {
         if flash > 0.5 {
@@ -764,59 +772,61 @@ impl GameScene {
       .with_taper(0.8)
       .with_min_distance(3.0);
 
-    let entity = ctx.world.spawn((
-      Transform::new(pos.x + offset_x, pos.y).with_pivot_center(),
-      Renderable::sprite(sprite)
-        .with_z_order(Z_ROCKET)
-        .with_shader(SpriteShader::outline(Color::rgb(255, 190, 130), 2))
-        .interpolated(),
-      RigidBody::kinematic(),
-      Collider::circle_collider(ROCKET_SIZE / 2.0),
-      rocket,
-      trail,
-    ));
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(pos.x + offset_x, pos.y),
+        Renderable::sprite(sprite)
+          .with_z_order(Z_ROCKET)
+          .with_shader(SpriteShader::outline(Color::rgb(255, 190, 130), 2)),
+        Interpolated,
+        RigidBody::kinematic(),
+        Collider::circle_collider(ROCKET_SIZE / 2.0),
+        rocket,
+        trail,
+      ))
+      .id();
 
     self.rockets.push(entity);
 
     // Play launch sound
-    if let Some(audio) = &mut ctx.audio {
-      let _ = audio.play_sound_with("bullet", SoundOptions::new().volume(0.2));
-    }
+    let _ = ctx
+      .audio
+      .play_sound_with("bullet", SoundOptions::new().volume(0.2));
   }
 
   pub(super) fn update_rockets(&mut self, ctx: &mut SceneContext, dt: f32) {
     // Get player position for calibration
     let player_pos = self
       .player
-      .and_then(|e| ctx.world.get::<Transform>(e).map(|t| Vec2::new(t.x, t.y)))
+      .and_then(|e| ctx.world.get::<Transform>(e).map(|t| t.translation))
       .unwrap_or(Vec2::new(self.screen_width / 2.0, self.screen_height / 2.0));
 
     let mut rockets_to_remove: Vec<Entity> = Vec::new();
     let mut player_hit = false;
 
     for &entity in &self.rockets {
-      // Get rocket component and position
-      let Some(mut rocket) = ctx.world.get_mut::<Rocket>(entity) else {
-        continue;
-      };
-
+      // Get rocket position and component
       let current_pos = ctx
         .world
         .get::<Transform>(entity)
-        .map(|t| Vec2::new(t.x, t.y))
+        .map(|t| t.translation)
         .unwrap_or(Vec2::ZERO);
+
+      let Some(mut rocket) = ctx.world.get_mut::<Rocket>(entity) else {
+        continue;
+      };
 
       // Update rocket
       rocket.update(current_pos, player_pos, dt);
       let velocity = rocket.velocity;
       let rotation = rocket.rotation();
       let is_dangerous = rocket.is_dangerous();
-      drop(rocket);
 
       // Apply movement
       if let Some(mut t) = ctx.world.get_mut::<Transform>(entity) {
-        t.x += velocity.x * dt;
-        t.y += velocity.y * dt;
+        t.translation.x += velocity.x * dt;
+        t.translation.y += velocity.y * dt;
         t.rotation = rotation;
       }
 
@@ -826,7 +836,7 @@ impl GameScene {
       let new_pos = ctx
         .world
         .get::<Transform>(entity)
-        .map(|t| (t.x, t.y))
+        .map(|t| (t.translation.x, t.translation.y))
         .unwrap_or((0.0, 0.0));
       if new_pos.0 < -50.0
         || new_pos.0 > self.screen_width + 50.0
@@ -852,9 +862,12 @@ impl GameScene {
       self.apply_player_damage(ctx);
 
       // Spawn explosion at player
-      let player_explosion_pos = self
-        .player
-        .and_then(|p| ctx.world.get::<Transform>(p).map(|t| (t.x, t.y)));
+      let player_explosion_pos = self.player.and_then(|p| {
+        ctx
+          .world
+          .get::<Transform>(p)
+          .map(|t| (t.translation.x, t.translation.y))
+      });
       if let Some((x, y)) = player_explosion_pos {
         self.create_explosion(ctx, x, y);
       }
@@ -863,13 +876,18 @@ impl GameScene {
     // Collect rocket positions for explosions before removing
     let rocket_positions: Vec<(Entity, f32, f32)> = rockets_to_remove
       .iter()
-      .filter_map(|&e| ctx.world.get::<Transform>(e).map(|t| (e, t.x, t.y)))
+      .filter_map(|&e| {
+        ctx
+          .world
+          .get::<Transform>(e)
+          .map(|t| (e, t.translation.x, t.translation.y))
+      })
       .collect();
 
     // Remove rockets and create explosions
     for (entity, x, y) in rocket_positions {
       self.create_explosion(ctx, x, y);
-      let _ = ctx.world.despawn(entity);
+      ctx.world.despawn(entity);
       self.rockets.retain(|&e| e != entity);
     }
   }

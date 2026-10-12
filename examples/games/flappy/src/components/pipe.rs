@@ -1,7 +1,9 @@
 //! Pipe component - obstacles that scroll across the screen
 
+use ryo2d::prelude::*;
+
 /// Marks an entity as a pipe obstacle
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Pipe {
   pub is_top: bool,
   pub has_scored: bool,

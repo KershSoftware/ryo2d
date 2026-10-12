@@ -10,22 +10,24 @@ use super::GameScene;
 impl GameScene {
   pub(super) fn spawn_player(&mut self, ctx: &mut SceneContext) {
     let sprite = self.player_sprite.clone();
-    // Spawn player at center-bottom of screen
-    // Position is now center of sprite (pivot_center)
+    // Spawn player at center-bottom of screen (positions are sprite centres)
     let spawn_y = self.screen_height - 240.0; // Near bottom
-    let player_entity = ctx.world.spawn((
-      Transform::new(self.screen_width / 2.0, spawn_y).with_pivot_center(),
-      Renderable::sprite(sprite)
-        .with_z_order(Z_PLAYER)
-        .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 2))
-        .interpolated(),
-      // Kinematic body - we handle movement manually for wall slides/custom gravity
-      // Rapier still provides collision detection for events
-      RigidBody::kinematic(),
-      Collider::box_collider(PLAYER_SIZE, PLAYER_SIZE),
-      Velocity::zero(),
-      Player::new(PLAYER_MAX_LIVES),
-    ));
+    let player_entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(self.screen_width / 2.0, spawn_y),
+        Renderable::sprite(sprite)
+          .with_z_order(Z_PLAYER)
+          .with_shader(SpriteShader::outline(Color::rgb(0, 0, 0), 2)),
+        Interpolated,
+        // Kinematic body - we handle movement manually for wall slides/custom gravity
+        // Rapier still provides collision detection for events
+        RigidBody::kinematic(),
+        Collider::box_collider(PLAYER_SIZE, PLAYER_SIZE),
+        Velocity::zero(),
+        Player::new(PLAYER_MAX_LIVES),
+      ))
+      .id();
     self.player = Some(player_entity);
   }
 
@@ -34,18 +36,22 @@ impl GameScene {
     let sw = self.screen_width;
     let sh = self.screen_height;
 
-    // Ground platform - full width (x=0 since sprites render from top-left)
-    let mut ground_transform = Transform::new(0.0, sh - 30.0);
-    ground_transform.scale_x = sw / 800.0; // Scale from 800px base
-    let ground = ctx.world.spawn((
-      ground_transform,
-      Renderable::sprite(sprite.clone())
-        .with_z_order(Z_PLATFORM)
-        .with_shader(SpriteShader::platform_outline(2)),
-      RigidBody::kinematic(),
-      Collider::box_collider(800.0, PLATFORM_THICKNESS),
-      Platform,
-    ));
+    // Ground platform - full width, its top edge 30px above the bottom
+    let ground_transform = Transform::from_xy(sw / 2.0, sh - 30.0 + PLATFORM_THICKNESS / 2.0)
+      .with_scale(Vec2::new(sw / 800.0, 1.0)); // Scale from 800px base
+    let ground = ctx
+      .world
+      .spawn((
+        ground_transform,
+        Renderable::sprite(sprite.clone())
+          .with_z_order(Z_PLATFORM)
+          .with_shader(SpriteShader::platform_outline(2)),
+        RigidBody::kinematic(),
+        // Colliders are not scaled with the sprite: give the final size
+        Collider::box_collider(sw, PLATFORM_THICKNESS),
+        Platform,
+      ))
+      .id();
     self.platforms.push(ground);
 
     // Floating platforms - scaled proportionally to screen size
@@ -77,26 +83,26 @@ impl GameScene {
     ];
 
     for (base_x, base_y, base_width) in platform_configs {
-      // Scale positions and widths to current screen size
+      // Scale positions and widths to current screen size (y is the top edge)
       let center_x = base_x * scale_x;
       let y = base_y * scale_y;
       let width = base_width * scale_x;
 
-      // Convert center position to top-left for sprite rendering
-      let left_x = center_x - width / 2.0;
-      let mut transform = Transform::new(left_x, y);
-      transform.scale_x = width / 800.0; // Scale from 800px base sprite
-      let platform = ctx.world.spawn((
-        transform,
-        Renderable::sprite(sprite.clone())
-          .with_z_order(Z_PLATFORM)
-          .with_shader(SpriteShader::platform_outline(2)),
-        RigidBody::kinematic(),
-        // Collider uses base sprite dimensions; transform.scale_x applies to both
-        // sprite rendering and collision detection
-        Collider::box_collider(800.0, PLATFORM_THICKNESS),
-        Platform,
-      ));
+      let transform = Transform::from_xy(center_x, y + PLATFORM_THICKNESS / 2.0)
+        .with_scale(Vec2::new(width / 800.0, 1.0)); // Scale from 800px base sprite
+      let platform = ctx
+        .world
+        .spawn((
+          transform,
+          Renderable::sprite(sprite.clone())
+            .with_z_order(Z_PLATFORM)
+            .with_shader(SpriteShader::platform_outline(2)),
+          RigidBody::kinematic(),
+          // Colliders are not scaled with the sprite: give the final size
+          Collider::box_collider(width, PLATFORM_THICKNESS),
+          Platform,
+        ))
+        .id();
       self.platforms.push(platform);
     }
   }
@@ -115,16 +121,19 @@ impl GameScene {
 
     // Left side turrets - flush against left wall
     for _ in 0..TURRETS_PER_SIDE {
-      let y = rng.gen_range(100.0..(sh - 100.0));
-      let turret = ctx.world.spawn((
-        Transform::new(0.0, y),
-        Renderable::sprite(sprite.clone())
-          .with_z_order(Z_TURRET)
-          .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
-        RigidBody::kinematic(),
-        Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
-        Turret::new(TurretSide::Left),
-      ));
+      let y = rng.gen_range(100.0..(sh - 100.0)) + TURRET_SIZE / 2.0;
+      let turret = ctx
+        .world
+        .spawn((
+          Transform::from_xy(TURRET_SIZE / 2.0, y),
+          Renderable::sprite(sprite.clone())
+            .with_z_order(Z_TURRET)
+            .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
+          RigidBody::kinematic(),
+          Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
+          Turret::new(TurretSide::Left),
+        ))
+        .id();
       // Add stagger delay if right side spawns first
       if !left_first && let Some(mut turret_comp) = ctx.world.get_mut::<Turret>(turret) {
         turret_comp.spawn_timer += stagger_delay;
@@ -134,16 +143,19 @@ impl GameScene {
 
     // Right side turrets - flush against right wall
     for _ in 0..TURRETS_PER_SIDE {
-      let y = rng.gen_range(100.0..(sh - 100.0));
-      let turret_entity = ctx.world.spawn((
-        Transform::new(sw - TURRET_SIZE, y),
-        Renderable::sprite(sprite.clone())
-          .with_z_order(Z_TURRET)
-          .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
-        RigidBody::kinematic(),
-        Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
-        Turret::new(TurretSide::Right),
-      ));
+      let y = rng.gen_range(100.0..(sh - 100.0)) + TURRET_SIZE / 2.0;
+      let turret_entity = ctx
+        .world
+        .spawn((
+          Transform::from_xy(sw - TURRET_SIZE / 2.0, y),
+          Renderable::sprite(sprite.clone())
+            .with_z_order(Z_TURRET)
+            .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
+          RigidBody::kinematic(),
+          Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
+          Turret::new(TurretSide::Right),
+        ))
+        .id();
       // Add stagger delay if left side spawns first
       if left_first && let Some(mut turret) = ctx.world.get_mut::<Turret>(turret_entity) {
         turret.spawn_timer += stagger_delay;
@@ -156,32 +168,39 @@ impl GameScene {
     let sprite = self.barrier_sprite.clone();
     let center_x = self.screen_width / 2.0;
 
-    // Vertical movement bounds (avoid ground and top)
-    let min_y = 150.0;
-    let max_y = self.screen_height - BARRIER_HEIGHT - 100.0;
+    // Vertical movement bounds of the barrier's centre (top edge at 150 or
+    // lower, bottom edge at least 100 above the bottom of the screen)
+    let min_y = 150.0 + BARRIER_HEIGHT / 2.0;
+    let max_y = self.screen_height - 100.0 - BARRIER_HEIGHT / 2.0;
 
     // Left barrier - left of center, moving down initially
-    let left_barrier = ctx.world.spawn((
-      Transform::new(center_x - 250.0, min_y + 100.0),
-      Renderable::sprite(sprite.clone())
-        .with_z_order(Z_BARRIER)
-        .with_shader(SpriteShader::white_outline(2)),
-      RigidBody::kinematic(),
-      Collider::box_collider(BARRIER_WIDTH, BARRIER_HEIGHT),
-      Barrier::new(BARRIER_SPEED, min_y, max_y),
-    ));
+    let left_barrier = ctx
+      .world
+      .spawn((
+        Transform::from_xy(center_x - 250.0 + BARRIER_WIDTH / 2.0, min_y + 100.0),
+        Renderable::sprite(sprite.clone())
+          .with_z_order(Z_BARRIER)
+          .with_shader(SpriteShader::white_outline(2)),
+        RigidBody::kinematic(),
+        Collider::box_collider(BARRIER_WIDTH, BARRIER_HEIGHT),
+        Barrier::new(BARRIER_SPEED, min_y, max_y),
+      ))
+      .id();
     self.barriers.push(left_barrier);
 
     // Right barrier - right of center, moving up initially (mirrored)
-    let right_barrier = ctx.world.spawn((
-      Transform::new(center_x + 250.0 - BARRIER_WIDTH, max_y - 100.0),
-      Renderable::sprite(sprite.clone())
-        .with_z_order(Z_BARRIER)
-        .with_shader(SpriteShader::white_outline(2)),
-      RigidBody::kinematic(),
-      Collider::box_collider(BARRIER_WIDTH, BARRIER_HEIGHT),
-      Barrier::new(-BARRIER_SPEED, min_y, max_y),
-    ));
+    let right_barrier = ctx
+      .world
+      .spawn((
+        Transform::from_xy(center_x + 250.0 - BARRIER_WIDTH / 2.0, max_y - 100.0),
+        Renderable::sprite(sprite.clone())
+          .with_z_order(Z_BARRIER)
+          .with_shader(SpriteShader::white_outline(2)),
+        RigidBody::kinematic(),
+        Collider::box_collider(BARRIER_WIDTH, BARRIER_HEIGHT),
+        Barrier::new(-BARRIER_SPEED, min_y, max_y),
+      ))
+      .id();
     self.barriers.push(right_barrier);
   }
 
@@ -194,17 +213,20 @@ impl GameScene {
     let spawn_x = self.screen_width / 2.0;
     let spawn_y = 200.0;
 
-    let drone_entity = ctx.world.spawn((
-      Transform::new(spawn_x, spawn_y).with_pivot_center(),
-      Renderable::sprite(sprite)
-        .with_z_order(Z_DRONE)
-        // Start with dissolve shader for spawn effect (black edge)
-        .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(0, 0, 0)))
-        .interpolated(),
-      RigidBody::kinematic(),
-      Collider::box_collider(DRONE_SIZE, DRONE_SIZE),
-      Drone::new(spawn_x, spawn_y),
-    ));
+    let drone_entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(spawn_x, spawn_y),
+        Renderable::sprite(sprite)
+          .with_z_order(Z_DRONE)
+          // Start with dissolve shader for spawn effect (black edge)
+          .with_shader(SpriteShader::dissolve_with_edge(1.0, Color::rgb(0, 0, 0))),
+        Interpolated,
+        RigidBody::kinematic(),
+        Collider::box_collider(DRONE_SIZE, DRONE_SIZE),
+        Drone::new(spawn_x, spawn_y),
+      ))
+      .id();
     self.drones.push(drone_entity);
   }
 
@@ -221,8 +243,8 @@ impl GameScene {
       // Calculate direction to player with randomness
       let mut rng = rand::thread_rng();
       (
-        player_transform.x + rng.gen_range(-50.0..50.0),
-        player_transform.y + rng.gen_range(-50.0..50.0),
+        player_transform.translation.x + rng.gen_range(-50.0..50.0),
+        player_transform.translation.y + rng.gen_range(-50.0..50.0),
       )
     };
 
@@ -244,14 +266,12 @@ impl GameScene {
     if let Some(ref mut pool) = self.bullet_pool
       && let Some(bullet) = pool.acquire(ctx.world)
     {
-      // Configure the pooled bullet entity
+      // Configure the pooled bullet entity; it appears here rather than
+      // sliding from where it was last used
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(bullet) {
-        transform.x = x;
-        transform.y = y;
-        // Reset anchor to center
-        transform.pivot_x = 0.5;
-        transform.pivot_y = 0.5;
+        transform.translation = Vec2::new(x, y);
       }
+      ctx.world.skip_interpolation(bullet);
       // Set velocity for Rapier physics
       if let Some(mut vel) = ctx.world.get_mut::<Velocity>(bullet) {
         vel.dx = velocity_x;
@@ -271,23 +291,25 @@ impl GameScene {
 
     // Fallback: direct spawning if pool unavailable
     let sprite = self.bullet_sprite.clone();
-    let bullet = ctx.world.spawn((
-      Transform::new(x, y).with_anchor(Anchor::Center),
-      Renderable::sprite(sprite)
-        .with_z_order(Z_BULLET)
-        .interpolated(),
-      // CCD for fast-moving bullets, no gravity
-      RigidBody::new().with_ccd().with_gravity_scale(0.0),
-      Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
-      Velocity::new(velocity_x, velocity_y),
-      Bullet::new(velocity_x, velocity_y),
-      Trail2D::new(Color::new(255, 140, 30, 230), 3.5)
-        .with_z_order(Z_BULLET)
-        .with_length(25)
-        .with_taper(0.7)
-        .with_fade(true)
-        .with_min_distance(2.0),
-    ));
+    let bullet = ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(sprite).with_z_order(Z_BULLET),
+        Interpolated,
+        // CCD for fast-moving bullets, no gravity
+        RigidBody::new().with_ccd().with_gravity_scale(0.0),
+        Collider::circle_collider(BULLET_SIZE / 2.0).as_trigger(),
+        Velocity::new(velocity_x, velocity_y),
+        Bullet::new(velocity_x, velocity_y),
+        Trail2D::new(Color::new(255, 140, 30, 230), 3.5)
+          .with_z_order(Z_BULLET)
+          .with_length(25)
+          .with_taper(0.7)
+          .with_fade(true)
+          .with_min_distance(2.0),
+      ))
+      .id();
 
     self.bullets.push(bullet);
   }
@@ -302,12 +324,15 @@ impl GameScene {
       let velocity_x = angle.cos() * speed;
       let velocity_y = angle.sin() * speed;
 
-      let particle_entity = ctx.world.spawn((
-        Transform::new(x, y),
-        Renderable::sprite(sprite.clone()).with_z_order(Z_PARTICLE),
-        Collider::circle_collider(PARTICLE_SIZE / 2.0).as_trigger(),
-        Particle::new(velocity_x, velocity_y, PARTICLE_LIFETIME),
-      ));
+      let particle_entity = ctx
+        .world
+        .spawn((
+          Transform::from_xy(x, y),
+          Renderable::sprite(sprite.clone()).with_z_order(Z_PARTICLE),
+          Collider::circle_collider(PARTICLE_SIZE / 2.0).as_trigger(),
+          Particle::new(velocity_x, velocity_y, PARTICLE_LIFETIME),
+        ))
+        .id();
       self.particles.push(particle_entity);
     }
   }
@@ -326,16 +351,19 @@ impl GameScene {
       let left_first = rng.gen_bool(0.5);
 
       // Left side turret - flush against left wall
-      let y = rng.gen_range(100.0..(sh - 100.0));
-      let left_turret = ctx.world.spawn((
-        Transform::new(0.0, y),
-        Renderable::sprite(sprite.clone())
-          .with_z_order(Z_TURRET)
-          .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
-        RigidBody::kinematic(),
-        Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
-        Turret::new(TurretSide::Left),
-      ));
+      let y = rng.gen_range(100.0..(sh - 100.0)) + TURRET_SIZE / 2.0;
+      let left_turret = ctx
+        .world
+        .spawn((
+          Transform::from_xy(TURRET_SIZE / 2.0, y),
+          Renderable::sprite(sprite.clone())
+            .with_z_order(Z_TURRET)
+            .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
+          RigidBody::kinematic(),
+          Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
+          Turret::new(TurretSide::Left),
+        ))
+        .id();
       // Add stagger delay if right side spawns first
       if !left_first && let Some(mut turret) = ctx.world.get_mut::<Turret>(left_turret) {
         turret.spawn_timer += stagger_delay;
@@ -343,16 +371,19 @@ impl GameScene {
       self.turrets.push(left_turret);
 
       // Right side turret - flush against right wall
-      let y = rng.gen_range(100.0..(sh - 100.0));
-      let right_turret = ctx.world.spawn((
-        Transform::new(sw - TURRET_SIZE, y),
-        Renderable::sprite(sprite.clone())
-          .with_z_order(Z_TURRET)
-          .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
-        RigidBody::kinematic(),
-        Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
-        Turret::new(TurretSide::Right),
-      ));
+      let y = rng.gen_range(100.0..(sh - 100.0)) + TURRET_SIZE / 2.0;
+      let right_turret = ctx
+        .world
+        .spawn((
+          Transform::from_xy(sw - TURRET_SIZE / 2.0, y),
+          Renderable::sprite(sprite.clone())
+            .with_z_order(Z_TURRET)
+            .with_shader(SpriteShader::outline(Color::rgb(255, 140, 140), 2)),
+          RigidBody::kinematic(),
+          Collider::box_collider(TURRET_SIZE, TURRET_SIZE),
+          Turret::new(TurretSide::Right),
+        ))
+        .id();
       // Add stagger delay if left side spawns first
       if left_first && let Some(mut turret) = ctx.world.get_mut::<Turret>(right_turret) {
         turret.spawn_timer += stagger_delay;

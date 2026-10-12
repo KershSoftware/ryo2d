@@ -1,7 +1,9 @@
 //! Ball Component
 
+use ryo2d::prelude::*;
+
 /// Marker component for the ball
-#[derive(Debug, Clone)]
+#[derive(Component, Debug, Clone)]
 pub struct Ball {
   /// Whether the ball is currently frozen (waiting for launch)
   pub frozen: bool,

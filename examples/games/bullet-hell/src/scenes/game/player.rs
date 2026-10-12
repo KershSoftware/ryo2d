@@ -30,7 +30,6 @@ impl GameScene {
     let is_wall_jump_locked = player.is_wall_jump_locked();
     player.update(dt);
     let is_invincible = player.is_invincible();
-    drop(player);
 
     // Animate flash shader during invincibility, clear when it ends
     if is_invincible {
@@ -92,7 +91,6 @@ impl GameScene {
       if was_grounded {
         // Normal ground jump
         velocity.dy = -PLAYER_JUMP_FORCE;
-        drop(velocity);
         if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
           player.is_grounded = false;
           player.wall_sliding = None;
@@ -100,13 +98,13 @@ impl GameScene {
         // Add elastic squash-and-stretch effect on jump
         // First stretch the sprite, then tween back to normal with elastic bounce
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-          transform.scale_x = 0.7;
-          transform.scale_y = 1.4;
+          transform.scale.x = 0.7;
+          transform.scale.y = 1.4;
         }
-        let _ = ctx.world.insert_one(
-          player_entity,
-          Tween::to_scale(1.0, 1.0, 0.5).with_easing(Ease::OutElastic),
-        );
+        ctx
+          .world
+          .entity_mut(player_entity)
+          .insert(Tween::to_scale(1.0, 1.0, 0.5).with_easing(Ease::OutElastic));
       } else if can_perform_wall_jump && wall_jump_side.is_some() {
         // Wall jump - push away from wall with forced momentum
         // Works both when actively sliding AND during grace period after releasing wall direction
@@ -116,25 +114,20 @@ impl GameScene {
           WallSide::Left => WALL_JUMP_FORCE_X,   // Push right
           WallSide::Right => -WALL_JUMP_FORCE_X, // Push left
         };
-        drop(velocity);
         if let Some(mut player) = ctx.world.get_mut::<Player>(player_entity) {
           player.start_wall_jump(); // Sets cooldown to prevent horizontal override
           player.wall_sliding = None;
         }
         // Add elastic squash-and-stretch effect on wall jump
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-          transform.scale_x = 0.7;
-          transform.scale_y = 1.4;
+          transform.scale.x = 0.7;
+          transform.scale.y = 1.4;
         }
-        let _ = ctx.world.insert_one(
-          player_entity,
-          Tween::to_scale(1.0, 1.0, 0.5).with_easing(Ease::OutElastic),
-        );
-      } else {
-        drop(velocity);
+        ctx
+          .world
+          .entity_mut(player_entity)
+          .insert(Tween::to_scale(1.0, 1.0, 0.5).with_easing(Ease::OutElastic));
       }
-    } else {
-      drop(velocity);
     }
 
     // Check if player is standing on a moving barrier and ride it
@@ -154,24 +147,22 @@ impl GameScene {
     }
 
     // Apply velocity to transform (player is kinematic, so we handle movement manually)
-    let Some(velocity) = ctx.world.get::<Velocity>(player_entity) else {
+    let Some(velocity) = ctx.world.get::<Velocity>(player_entity).copied() else {
       return;
     };
     let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) else {
       return;
     };
 
-    transform.x += velocity.dx * dt;
+    transform.translation.x += velocity.dx * dt;
     // Skip Y velocity when riding barrier - apply_barrier_riding already snapped position
     if !riding_barrier {
-      transform.y += velocity.dy * dt;
+      transform.translation.y += velocity.dy * dt;
     }
 
-    let tx = transform.x;
-    let ty = transform.y;
+    let tx = transform.translation.x;
+    let ty = transform.translation.y;
     let vel_y = velocity.dy;
-    drop(velocity);
-    drop(transform);
 
     // Wall slide detection - check if player is against screen edge walls or barriers and falling
     // Player must be pressing towards the wall to initiate wall slide
@@ -224,14 +215,17 @@ impl GameScene {
     // Screen bounds (player uses center pivot)
     let half_size = PLAYER_SIZE / 2.0;
     if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-      transform.x = transform.x.clamp(half_size, self.screen_width - half_size);
+      transform.translation.x = transform
+        .translation
+        .x
+        .clamp(half_size, self.screen_width - half_size);
     }
 
     // Ground collision (player uses center pivot, bottom edge is at y + half_size)
     if ty >= self.screen_height - half_size - 30.0 {
       // -30 accounts for ground platform thickness
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-        transform.y = self.screen_height - half_size - 30.0;
+        transform.translation.y = self.screen_height - half_size - 30.0;
       }
       if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
         velocity.dy = 0.0;
@@ -263,29 +257,27 @@ impl GameScene {
 
     // Player uses center pivot
     let half_size = PLAYER_SIZE / 2.0;
-    let player_left = player_transform.x - half_size;
-    let player_right = player_transform.x + half_size;
-    let player_top = player_transform.y - half_size;
-    let player_bottom = player_transform.y + half_size;
+    let player_left = player_transform.translation.x - half_size;
+    let player_right = player_transform.translation.x + half_size;
+    let player_top = player_transform.translation.y - half_size;
+    let player_bottom = player_transform.translation.y + half_size;
     let vel_y = player_velocity.dy;
     let falling = vel_y > 0.0;
-
-    drop(player_transform);
-    drop(player_velocity);
 
     for &platform_entity in &self.platforms {
       let Some(platform_transform) = ctx.world.get::<Transform>(platform_entity) else {
         continue;
       };
 
-      // Platform sprite is 800px base, scaled by transform.scale_x
-      // Transform (x, y) is the TOP-LEFT corner of the sprite
-      let platform_width = 800.0 * platform_transform.scale_x;
+      // Platform sprite is 800px base, scaled by transform.scale.x and
+      // centred on the transform
+      let platform_half_width = 800.0 * platform_transform.scale.x / 2.0;
+      let platform_half_height = PLATFORM_THICKNESS / 2.0;
 
-      let platform_left = platform_transform.x;
-      let platform_right = platform_transform.x + platform_width;
-      let platform_top = platform_transform.y;
-      let platform_bottom = platform_transform.y + PLATFORM_THICKNESS;
+      let platform_left = platform_transform.translation.x - platform_half_width;
+      let platform_right = platform_transform.translation.x + platform_half_width;
+      let platform_top = platform_transform.translation.y - platform_half_height;
+      let platform_bottom = platform_transform.translation.y + platform_half_height;
 
       // Check horizontal overlap (must be within platform X bounds)
       let horizontal_overlap = player_right > platform_left && player_left < platform_right;
@@ -306,7 +298,7 @@ impl GameScene {
       {
         // Landing on top of platform - snap player to platform top (center pivot)
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-          transform.y = platform_top - half_size;
+          transform.translation.y = platform_top - half_size;
         }
         if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
           velocity.dy = 0.0;
@@ -333,15 +325,12 @@ impl GameScene {
 
     // Player uses center pivot
     let half_size = PLAYER_SIZE / 2.0;
-    let player_left = player_transform.x - half_size;
-    let player_right = player_transform.x + half_size;
-    let player_top = player_transform.y - half_size;
-    let player_bottom = player_transform.y + half_size;
+    let player_left = player_transform.translation.x - half_size;
+    let player_right = player_transform.translation.x + half_size;
+    let player_top = player_transform.translation.y - half_size;
+    let player_bottom = player_transform.translation.y + half_size;
     let vel_x = player_velocity.dx;
     let vel_y = player_velocity.dy;
-
-    drop(player_transform);
-    drop(player_velocity);
 
     for &barrier_entity in &self.barriers {
       let Some(barrier_transform) = ctx.world.get::<Transform>(barrier_entity) else {
@@ -353,12 +342,10 @@ impl GameScene {
         .map(|b| b.velocity_y)
         .unwrap_or(0.0);
 
-      let barrier_left = barrier_transform.x;
-      let barrier_right = barrier_transform.x + BARRIER_WIDTH;
-      let barrier_top = barrier_transform.y;
-      let barrier_bottom = barrier_transform.y + BARRIER_HEIGHT;
-
-      drop(barrier_transform);
+      let barrier_left = barrier_transform.translation.x - BARRIER_WIDTH / 2.0;
+      let barrier_right = barrier_transform.translation.x + BARRIER_WIDTH / 2.0;
+      let barrier_top = barrier_transform.translation.y - BARRIER_HEIGHT / 2.0;
+      let barrier_bottom = barrier_transform.translation.y + BARRIER_HEIGHT / 2.0;
 
       // Check AABB collision
       if player_right > barrier_left
@@ -381,14 +368,13 @@ impl GameScene {
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
           if min_overlap == overlap_left && vel_x > 0.0 {
             // Push left (center pivot)
-            transform.x = barrier_left - half_size;
+            transform.translation.x = barrier_left - half_size;
           } else if min_overlap == overlap_right && vel_x < 0.0 {
             // Push right (center pivot)
-            transform.x = barrier_right + half_size;
+            transform.translation.x = barrier_right + half_size;
           } else if min_overlap == overlap_top && vel_y > 0.0 {
             // Push up (landing on top, center pivot)
-            transform.y = barrier_top - half_size;
-            drop(transform);
+            transform.translation.y = barrier_top - half_size;
             if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
               // Inherit the barrier's vertical velocity so player moves with it
               velocity.dy = barrier_vel_y;
@@ -398,8 +384,7 @@ impl GameScene {
             }
           } else if min_overlap == overlap_bottom && vel_y < 0.0 {
             // Push down (hitting from below, center pivot)
-            transform.y = barrier_bottom + half_size;
-            drop(transform);
+            transform.translation.y = barrier_bottom + half_size;
             if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
               velocity.dy = 0.0;
             }
@@ -419,11 +404,9 @@ impl GameScene {
 
     // Player uses center pivot
     let half_size = PLAYER_SIZE / 2.0;
-    let player_left = player_transform.x - half_size;
-    let player_right = player_transform.x + half_size;
-    let player_bottom = player_transform.y + half_size;
-
-    drop(player_transform);
+    let player_left = player_transform.translation.x - half_size;
+    let player_right = player_transform.translation.x + half_size;
+    let player_bottom = player_transform.translation.y + half_size;
 
     for &barrier_entity in &self.barriers {
       let Some(barrier_transform) = ctx.world.get::<Transform>(barrier_entity) else {
@@ -433,13 +416,10 @@ impl GameScene {
         continue;
       };
 
-      let barrier_left = barrier_transform.x;
-      let barrier_right = barrier_transform.x + BARRIER_WIDTH;
-      let barrier_top = barrier_transform.y;
+      let barrier_left = barrier_transform.translation.x - BARRIER_WIDTH / 2.0;
+      let barrier_right = barrier_transform.translation.x + BARRIER_WIDTH / 2.0;
+      let barrier_top = barrier_transform.translation.y - BARRIER_HEIGHT / 2.0;
       let barrier_vel_y = barrier.velocity_y;
-
-      drop(barrier_transform);
-      drop(barrier);
 
       // Check horizontal overlap first
       let horizontal_overlap = player_right > barrier_left && player_left < barrier_right;
@@ -482,7 +462,7 @@ impl GameScene {
 
         // Snap player to ride on top of the barrier (prevents bouncing)
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-          transform.y = barrier_top - half_size;
+          transform.translation.y = barrier_top - half_size;
         }
 
         // Set player velocity to match barrier movement
@@ -510,12 +490,10 @@ impl GameScene {
 
     // Player uses center pivot
     let half_size = PLAYER_SIZE / 2.0;
-    let player_left = player_transform.x - half_size;
-    let player_right = player_transform.x + half_size;
-    let player_top = player_transform.y - half_size;
-    let player_bottom = player_transform.y + half_size;
-
-    drop(player_transform);
+    let player_left = player_transform.translation.x - half_size;
+    let player_right = player_transform.translation.x + half_size;
+    let player_top = player_transform.translation.y - half_size;
+    let player_bottom = player_transform.translation.y + half_size;
 
     // Check input direction (player must be pressing towards the barrier)
     let pressing_right = ctx.input.key_down(KeyCode::KeyD)
@@ -535,10 +513,10 @@ impl GameScene {
         continue;
       };
 
-      let barrier_left = barrier_transform.x;
-      let barrier_right = barrier_transform.x + BARRIER_WIDTH;
-      let barrier_top = barrier_transform.y;
-      let barrier_bottom = barrier_transform.y + BARRIER_HEIGHT;
+      let barrier_left = barrier_transform.translation.x - BARRIER_WIDTH / 2.0;
+      let barrier_right = barrier_transform.translation.x + BARRIER_WIDTH / 2.0;
+      let barrier_top = barrier_transform.translation.y - BARRIER_HEIGHT / 2.0;
+      let barrier_bottom = barrier_transform.translation.y + BARRIER_HEIGHT / 2.0;
 
       // Check if player overlaps vertically with barrier
       if player_bottom > barrier_top && player_top < barrier_bottom {
@@ -577,24 +555,22 @@ impl GameScene {
 
     // Player uses center pivot
     let half_size = PLAYER_SIZE / 2.0;
-    let player_left = player_transform.x - half_size;
-    let player_right = player_transform.x + half_size;
-    let player_top = player_transform.y - half_size;
-    let player_bottom = player_transform.y + half_size;
+    let player_left = player_transform.translation.x - half_size;
+    let player_right = player_transform.translation.x + half_size;
+    let player_top = player_transform.translation.y - half_size;
+    let player_bottom = player_transform.translation.y + half_size;
     let falling = player_velocity.dy > 0.0;
-
-    drop(player_transform);
-    drop(player_velocity);
 
     for &turret_entity in &self.turrets {
       let Some(turret_transform) = ctx.world.get::<Transform>(turret_entity) else {
         continue;
       };
 
-      let turret_left = turret_transform.x;
-      let turret_right = turret_transform.x + TURRET_SIZE;
-      let turret_top = turret_transform.y;
-      let turret_bottom = turret_transform.y + TURRET_SIZE;
+      let half_turret = TURRET_SIZE / 2.0;
+      let turret_left = turret_transform.translation.x - half_turret;
+      let turret_right = turret_transform.translation.x + half_turret;
+      let turret_top = turret_transform.translation.y - half_turret;
+      let turret_bottom = turret_transform.translation.y + half_turret;
 
       // Check AABB collision
       if player_right > turret_left
@@ -605,7 +581,7 @@ impl GameScene {
         // Landing on top of turret (player can use as platform)
         if falling && player_bottom <= turret_top + 15.0 {
           if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-            transform.y = turret_top - half_size;
+            transform.translation.y = turret_top - half_size;
           }
           if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
             velocity.dy = 0.0;
@@ -636,27 +612,22 @@ impl GameScene {
 
     // Player uses center pivot
     let half_size = PLAYER_SIZE / 2.0;
-    let player_left = player_transform.x - half_size;
-    let player_right = player_transform.x + half_size;
-    let player_top = player_transform.y - half_size;
-    let player_bottom = player_transform.y + half_size;
+    let player_left = player_transform.translation.x - half_size;
+    let player_right = player_transform.translation.x + half_size;
+    let player_top = player_transform.translation.y - half_size;
+    let player_bottom = player_transform.translation.y + half_size;
     let falling = player_velocity.dy > 0.0;
-
-    drop(player_transform);
-    drop(player_velocity);
 
     for &drone_entity in &self.drones {
       let Some(drone_transform) = ctx.world.get::<Transform>(drone_entity) else {
         continue;
       };
 
-      // Drone uses pivot_center, so position is center
-      let drone_left = drone_transform.x - DRONE_SIZE / 2.0;
-      let drone_right = drone_transform.x + DRONE_SIZE / 2.0;
-      let drone_top = drone_transform.y - DRONE_SIZE / 2.0;
-      let drone_bottom = drone_transform.y + DRONE_SIZE / 2.0;
-
-      drop(drone_transform);
+      // The drone's position is its centre
+      let drone_left = drone_transform.translation.x - DRONE_SIZE / 2.0;
+      let drone_right = drone_transform.translation.x + DRONE_SIZE / 2.0;
+      let drone_top = drone_transform.translation.y - DRONE_SIZE / 2.0;
+      let drone_bottom = drone_transform.translation.y + DRONE_SIZE / 2.0;
 
       // Check AABB collision
       if player_right > drone_left
@@ -667,7 +638,7 @@ impl GameScene {
         // Landing on top of drone (player can use as platform)
         if falling && player_bottom <= drone_top + 15.0 {
           if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-            transform.y = drone_top - half_size;
+            transform.translation.y = drone_top - half_size;
           }
           if let Some(mut velocity) = ctx.world.get_mut::<Velocity>(player_entity) {
             velocity.dy = 0.0;

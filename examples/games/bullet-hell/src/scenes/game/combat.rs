@@ -9,23 +9,17 @@ use super::GameScene;
 impl GameScene {
   pub(super) fn update_barriers(&mut self, ctx: &mut SceneContext, dt: f32) {
     profile_scope!("barriers");
-    for &barrier_entity in &self.barriers {
-      let Some(mut transform) = ctx.world.get_mut::<Transform>(barrier_entity) else {
-        continue;
-      };
-      let Some(mut barrier) = ctx.world.get_mut::<Barrier>(barrier_entity) else {
-        continue;
-      };
-
+    let mut barriers = ctx.world.query::<(&mut Transform, &mut Barrier)>();
+    for (mut transform, mut barrier) in barriers.iter_mut(ctx.world) {
       // Move barrier
-      transform.y += barrier.velocity_y * dt;
+      transform.translation.y += barrier.velocity_y * dt;
 
       // Bounce at bounds
-      if transform.y <= barrier.min_y {
-        transform.y = barrier.min_y;
+      if transform.translation.y <= barrier.min_y {
+        transform.translation.y = barrier.min_y;
         barrier.velocity_y = barrier.velocity_y.abs();
-      } else if transform.y >= barrier.max_y {
-        transform.y = barrier.max_y;
+      } else if transform.translation.y >= barrier.max_y {
+        transform.translation.y = barrier.max_y;
         barrier.velocity_y = -barrier.velocity_y.abs();
       }
     }
@@ -44,7 +38,7 @@ impl GameScene {
       ) {
         turret_data.push((
           turret_entity,
-          transform.y,
+          transform.translation.y,
           turret.side,
           turret.move_direction,
         ));
@@ -52,22 +46,22 @@ impl GameScene {
     }
 
     for turret_entity in turrets_to_update {
-      let Some(mut transform) = ctx.world.get_mut::<Transform>(turret_entity) else {
-        continue;
-      };
-      let Some(mut turret) = ctx.world.get_mut::<Turret>(turret_entity) else {
+      // Work on copies and write them back below
+      let (Some(mut transform), Some(mut turret)) = (
+        ctx.world.get::<Transform>(turret_entity).copied(),
+        ctx.world.get::<Turret>(turret_entity).copied(),
+      ) else {
         continue;
       };
 
       // Update spawn timer and apply dissolve effect while spawning
-      let is_spawning = turret.is_spawning();
-      if is_spawning {
+      if turret.is_spawning() {
         let just_finished = turret.update_spawn(dt);
         let spawn_progress = turret.spawn_progress();
         let turret_side = turret.side;
-
-        drop(transform);
-        drop(turret);
+        if let Some(mut stored) = ctx.world.get_mut::<Turret>(turret_entity) {
+          *stored = turret;
+        }
 
         // Apply dissolve shader for spawn effect (reverse progress for spawn-in)
         if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(turret_entity) {
@@ -78,10 +72,9 @@ impl GameScene {
               TurretSide::Left => -0.8,
               TurretSide::Right => 0.8,
             };
-            if let Some(audio) = &mut ctx.audio {
-              let _ =
-                audio.play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15).panning(pan));
-            }
+            let _ = ctx
+              .audio
+              .play_sound_with("enemy-spawn", SoundOptions::new().volume(0.15).panning(pan));
           } else {
             // Still spawning - dissolve from invisible to visible with cyan edge glow
             let dissolve_progress = 1.0 - spawn_progress;
@@ -95,20 +88,21 @@ impl GameScene {
       }
 
       // Move up and down using current (progression-scaled) speed
-      transform.y += turret.move_direction * self.current_turret_speed * dt;
+      transform.translation.y += turret.move_direction * self.current_turret_speed * dt;
 
-      // Bounce off screen top and floor platform
-      let top_margin = TURRET_SIZE;
+      // Bounce off screen top and floor platform (limits for the turret's centre)
+      let half_size = TURRET_SIZE / 2.0;
+      let top_limit = TURRET_SIZE + half_size;
       let floor_top = self.screen_height - 30.0; // Floor platform top edge
-      let bottom_limit = floor_top - TURRET_SIZE; // Turret can't go below this
+      let bottom_limit = floor_top - half_size; // Turret can't go below this
 
-      if transform.y < top_margin || transform.y > bottom_limit {
+      if transform.translation.y < top_limit || transform.translation.y > bottom_limit {
         turret.reverse_direction();
-        transform.y = transform.y.clamp(top_margin, bottom_limit);
+        transform.translation.y = transform.translation.y.clamp(top_limit, bottom_limit);
       }
 
       // Check collision with other turrets on the same side
-      let my_y = transform.y;
+      let my_y = transform.translation.y;
       let my_side = turret.side;
       let my_dir = turret.move_direction;
 
@@ -128,31 +122,30 @@ impl GameScene {
             // Push apart slightly to prevent sticking
             let push = (TURRET_SIZE - dist) / 2.0 + 1.0;
             if my_y < other_y {
-              transform.y -= push;
+              transform.translation.y -= push;
             } else {
-              transform.y += push;
+              transform.translation.y += push;
             }
             break;
           }
         }
       }
 
-      let turret_x = transform.x + TURRET_SIZE / 2.0; // Shoot from center of turret
-      let turret_y = transform.y + TURRET_SIZE / 2.0;
+      // Shoot from the turret's centre
+      let turret_x = transform.translation.x;
+      let turret_y = transform.translation.y;
       let turret_side = turret.side;
       let max_burst = turret.max_burst_size;
 
       // Shooting logic (only when fully spawned)
+      let mut shoot = false;
+      let mut burst_started = false;
       if turret.burst_count > 0 {
         turret.burst_timer -= dt;
         if turret.burst_timer <= 0.0 {
-          drop(transform);
-          drop(turret);
-          self.shoot_bullet(ctx, turret_x, turret_y, turret_side);
-          if let Some(mut turret) = ctx.world.get_mut::<Turret>(turret_entity) {
-            turret.burst_count -= 1;
-            turret.burst_timer = TURRET_BURST_DELAY;
-          }
+          turret.burst_count -= 1;
+          turret.burst_timer = TURRET_BURST_DELAY;
+          shoot = true;
         }
       } else {
         turret.shoot_timer -= dt;
@@ -161,17 +154,29 @@ impl GameScene {
           turret.burst_count = max_burst;
           turret.burst_timer = TURRET_BURST_DELAY;
           turret.shoot_timer = TURRET_SHOOT_INTERVAL;
-          drop(turret);
-
-          // Play burst sound with panning based on turret side
-          let pan = match turret_side {
-            TurretSide::Left => -0.8,
-            TurretSide::Right => 0.8,
-          };
-          if let Some(audio) = &mut ctx.audio {
-            let _ = audio.play_sound_with("bullet", SoundOptions::new().volume(0.1).panning(pan));
-          }
+          burst_started = true;
         }
+      }
+
+      if let Some(mut stored) = ctx.world.get_mut::<Transform>(turret_entity) {
+        *stored = transform;
+      }
+      if let Some(mut stored) = ctx.world.get_mut::<Turret>(turret_entity) {
+        *stored = turret;
+      }
+
+      if shoot {
+        self.shoot_bullet(ctx, turret_x, turret_y, turret_side);
+      }
+      if burst_started {
+        // Play burst sound with panning based on turret side
+        let pan = match turret_side {
+          TurretSide::Left => -0.8,
+          TurretSide::Right => 0.8,
+        };
+        let _ = ctx
+          .audio
+          .play_sound_with("bullet", SoundOptions::new().volume(0.1).panning(pan));
       }
     }
   }
@@ -188,15 +193,13 @@ impl GameScene {
         bullets_to_release.push((i, bullet_entity));
         continue;
       };
-      if !ctx.world.has::<Bullet>(bullet_entity) {
+      if ctx.world.get::<Bullet>(bullet_entity).is_none() {
         bullets_to_release.push((i, bullet_entity));
         continue;
       }
 
-      let bx = transform.x;
-      let by = transform.y;
-
-      drop(transform);
+      let bx = transform.translation.x;
+      let by = transform.translation.y;
 
       // Trail is automatically updated by the engine's trail system
 
@@ -237,7 +240,7 @@ impl GameScene {
       if let Some(ref mut pool) = self.bullet_pool {
         pool.release(ctx.world, entity);
       } else {
-        ctx.world.despawn(entity).ok();
+        ctx.world.despawn(entity);
       }
     }
   }
@@ -256,13 +259,12 @@ impl GameScene {
       return false;
     };
 
-    let dx = bx - player_transform.x;
-    let dy = by - player_transform.y;
+    let dx = bx - player_transform.translation.x;
+    let dy = by - player_transform.translation.y;
     let dist_sq = dx * dx + dy * dy;
     let collision_dist = (PLAYER_SIZE + BULLET_SIZE) / 2.0;
 
     if dist_sq < collision_dist * collision_dist {
-      drop(player_transform);
       self.apply_player_damage(ctx);
       return true;
     }
@@ -283,15 +285,15 @@ impl GameScene {
         continue;
       };
 
-      // Platform sprite is 800px base, scaled by transform.scale_x
-      let platform_width = 800.0 * platform_transform.scale_x;
+      // Platform sprite is 800px base, scaled by transform.scale.x
+      let platform_width = 800.0 * platform_transform.scale.x;
       let platform_half_width = platform_width / 2.0;
       let platform_half_height = PLATFORM_THICKNESS / 2.0;
 
-      let platform_left = platform_transform.x - platform_half_width;
-      let platform_right = platform_transform.x + platform_half_width;
-      let platform_top = platform_transform.y - platform_half_height;
-      let platform_bottom = platform_transform.y + platform_half_height;
+      let platform_left = platform_transform.translation.x - platform_half_width;
+      let platform_right = platform_transform.translation.x + platform_half_width;
+      let platform_top = platform_transform.translation.y - platform_half_height;
+      let platform_bottom = platform_transform.translation.y + platform_half_height;
 
       if bx + bullet_half > platform_left
         && bx - bullet_half < platform_right
@@ -318,11 +320,11 @@ impl GameScene {
         continue;
       };
 
-      // Barrier drawn from top-left
-      let barrier_left = barrier_transform.x;
-      let barrier_right = barrier_transform.x + BARRIER_WIDTH;
-      let barrier_top = barrier_transform.y;
-      let barrier_bottom = barrier_transform.y + BARRIER_HEIGHT;
+      // Barrier centred on its position
+      let barrier_left = barrier_transform.translation.x - BARRIER_WIDTH / 2.0;
+      let barrier_right = barrier_transform.translation.x + BARRIER_WIDTH / 2.0;
+      let barrier_top = barrier_transform.translation.y - BARRIER_HEIGHT / 2.0;
+      let barrier_bottom = barrier_transform.translation.y + BARRIER_HEIGHT / 2.0;
 
       if bx + bullet_half > barrier_left
         && bx - bullet_half < barrier_right
@@ -349,9 +351,8 @@ impl GameScene {
       // Update lifetime
       particle.lifetime -= dt;
       if !particle.is_alive() {
-        drop(particle);
         particles_to_remove.push(i);
-        ctx.world.despawn(particle_entity).ok();
+        ctx.world.despawn(particle_entity);
         continue;
       }
 
@@ -359,12 +360,10 @@ impl GameScene {
       let vy = particle.velocity_y;
       let _alpha = (particle.alpha() * 255.0) as u8;
 
-      drop(particle);
-
       // Move particle
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(particle_entity) {
-        transform.x += vx * dt;
-        transform.y += vy * dt;
+        transform.translation.x += vx * dt;
+        transform.translation.y += vy * dt;
       }
 
       // TODO: Fade out particles based on lifetime (needs sprite tint API)
