@@ -64,4 +64,4 @@ Sprite globals carry two clocks: `x` is game elapsed time (`time.game.elapsed()`
 ## Notes for AI Agents
 
 1. **Camera is separate from rendering**: it only handles coordinate transforms; the renderer reads the `Camera` resource each frame.
-2. **Animation updates automatically**: `animate_sprites` (`FixedSet::Juice`) advances every `Animator` / `AnimationController` by the fixed timestep and swaps the entity's `Renderable.sprite` only when the frame changed.
+2. **Animation updates automatically**: `animate_sprites` (`FixedSet::Juice`) advances every `Animator` / `AnimationController` / `ValidatedAnimator` by the fixed timestep and swaps the entity's `Renderable.sprite` only when the frame changed.

@@ -619,9 +619,10 @@ impl ValidatedAnimator {
     self.controller.reset();
   }
 
-  /// Update the animator. The engine does not drive `ValidatedAnimator`:
-  /// call this from `Scene::update` and copy `current_sprite()` to the
-  /// entity's `Renderable`.
+  /// Advance the animator by `dt`. The engine calls this once per fixed
+  /// step for a `ValidatedAnimator` on an entity (and shows its frame on the
+  /// entity's `Renderable`); call it yourself only for one you keep outside
+  /// the world.
   pub fn update(&mut self, dt: f32) {
     self.fsm.update(dt);
 
