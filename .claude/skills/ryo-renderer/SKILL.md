@@ -32,7 +32,7 @@ The world is read fresh every frame; there is no render cache to invalidate. `pr
 
 Placement rules:
 
-- Entities with `PreviousGlobalTransform` (the `Interpolated` marker on them or an ancestor) draw at `render_global(global, previous, time.fixed.overstep_fraction())`; everything else draws at `GlobalTransform`. Composite tiles, lights, occluders and lines are not interpolated.
+- Entities with `PreviousGlobalTransform` (the `Interpolated` marker on them or an ancestor) draw at `render_global(global, previous, time.fixed.overstep_fraction())`; everything else draws at `GlobalTransform`. Composite tiles, lights, occluders and lines on an interpolated entity are blended the same way.
 - A single sprite is placed by `Renderable::anchor` (default `Anchor::Center`); rotation and scale happen about the anchor. Tiled runs and composite parts are laid out from the entity's position (the first tile's top-left).
 - `YSort` sorts by the sprite's feet (`foot_offset` of the way down from its top edge, wherever the anchor is).
 - Sprite globals (`time_resolution`): `x` = game time (sprite effects; a custom sprite shader's `in.time`), `y`/`z` = size, `w` = real time. Lighting, trails, transitions and post-process effects (including a custom effect's `in.time`) use real time.

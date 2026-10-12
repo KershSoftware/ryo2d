@@ -38,7 +38,9 @@ The UI pass reads the frame's input through `ui.input()` (a `UiInput` snapshot: 
 | Consumed by | What |
 |-------------|------|
 | `button`, `button_styled`, `checkbox`, `toggle`, `text_input`, `dropdown` | the left click they act on |
-| A focused text input or an open dropdown | Escape (leaves the field, closes the list) |
+| `slider`, a `scroll_view`'s scrollbar | the press and drag |
+| A focused text input | the whole keyboard and the typed text |
+| An open dropdown | Escape (closes the list) |
 | `ui.consume_click()` | the left click |
 | `ui.consume_escape()` | Escape |
 | `ui.consume_key(key)` | any key |
@@ -53,11 +55,11 @@ The UI pass reads the frame's input through `ui.input()` (a `UiInput` snapshot: 
   }
   ```
 
-- `slider` and `scroll_view` do not consume: if gameplay reads the mouse, call `ui.consume_click()` while the pointer is over them (`ui.is_hovered(rect)`).
+- A press the UI takes stays the UI's until the button is released: gameplay sees neither its held frames nor its release, so holding the mouse on a button never fires a weapon. The mouse wheel is not consumed.
 - A key consumed earlier in the pass also reads as not pressed through `ui.input()`, so Escape that closed a dropdown does not also close the menu. `ui.click_consumed()` / `ui.escape_consumed()` ask directly.
 - Gameplay keys stay in `update` with `ctx.input`; a click the UI took never reaches them.
-- Typing is not consumed: a focused text field leaves letter keys visible to `update`. Record `ui.wants_keyboard()` (true while a text input is focused or a dropdown is open) at the end of `ui` and skip key bindings in `update` while it is set; the UI runs first, so the flag is current for the same frame.
-- Scenes below a transparent overlay draw first and see input first. Do not draw clickable widgets in a scene that is covered by an overlay (track it with `on_pause` / `on_resume`).
+- A focused text field takes the keyboard: `update` sees no keys while one has focus. `ui.wants_keyboard()` (true while a text input is focused or a dropdown is open) is still there for code that wants to know.
+- Scenes below a transparent overlay draw first but run their `ui` with the pointer occluded, so the overlay's widgets get the clicks. They still see the keyboard.
 
 ## Core Types
 

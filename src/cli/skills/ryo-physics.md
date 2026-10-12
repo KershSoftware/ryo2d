@@ -28,7 +28,8 @@ Units are pixels (100 pixels = 1 Rapier metre, converted internally). +Y is down
 
 ## Rules
 
-- **Bodies are root entities.** Physics reads and writes the local `Transform` as if it were world space, so a `RigidBody` on an entity with a `ChildOf` parent is simulated in the wrong place. Put visuals that follow a body on child entities instead.
+- **Bodies are root entities.** Physics reads and writes the local `Transform` as if it were world space, so a `RigidBody` on an entity with a `ChildOf` parent is not simulated: the engine logs it once and leaves it out until the entity is detached. Put the body on the root and hang sprites, hitboxes and effects off it as children.
+- **Edit a `RigidBody` freely.** Changing a body's fields (say, `is_kinematic = true` when a character dies, or `gravity_scale` for a variable jump) updates the simulated body in place; contacts and sleep survive.
 - **Rotation is locked.** Bodies never rotate, and `Transform.rotation` is not synced either way. Rotate a child sprite for looks.
 - **Colliders are centred on the entity origin**, plus `Collider.offset`. With the default `Anchor::Center` that is the sprite's centre, so a 32x32 sprite takes `Collider::box_collider(32.0, 32.0)` with no offset.
 - **Scale does not resize colliders.** Sizes are world pixels.
@@ -122,7 +123,7 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 }
 ```
 
-A contact from step N is read in step N+1's `update`, together with the positions physics produced. Systems read them with `MessageReader<CollisionStarted>`. Messages last until the end of the next frame, so at frame rates far above the fixed rate a fixed-step reader can miss one; the `ryo-messages` skill has the details.
+A contact from step N is read in step N+1's `update`, together with the positions physics produced. Systems read them with `MessageReader<CollisionStarted>`. No contact message is missed at any frame rate (buffers advance only after a fixed step); the `ryo-messages` skill has the details.
 
 ## The physics world and settings
 

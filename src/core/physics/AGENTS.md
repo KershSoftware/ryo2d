@@ -21,18 +21,20 @@ Rapier uses meters, Ryo2D uses pixels:
 
 `FixedSet::Physics`, every fixed step while `PhysicsPaused` is false (the scene manager sets it from the top scene's `is_physics_paused` and the stack shape), chained:
 
-1. `register_new_bodies`: entities that gained `RigidBody`, `Collider` or `GroupedCollider` (`Added<..>`), and bodies whose entity was re-enabled (`RemovedComponents<Disabled>`).
-2. `unregister_removed_bodies`: bodies whose `RigidBody` went away (despawn included) and entities that were just disabled.
-3. `sync_to_physics`: a changed `Transform` teleports the body (a kinematic body moves there over the step); a changed `Velocity` sets its velocity.
-4. `step_physics`: `dt` is `time.fixed.timestep()`, so physics follows game speed, pause and hitstop.
-5. `sync_from_physics`: awake dynamic bodies write position and velocity back.
-6. `emit_collision_messages`: Rapier's contacts drained into `CollisionStarted` / `CollisionStopped`.
+1. `unregister_removed_bodies`: bodies whose `RigidBody` went away (despawn included) and entities that were just disabled.
+2. `drop_parented_bodies`: a body that gained a parent leaves the simulation, logged once.
+3. `register_restored_bodies`: bodies whose entity was re-enabled or detached from its parent.
+4. `register_new_bodies`: root entities that gained `RigidBody`, `Collider` or `GroupedCollider` (`Added<..>`); an edited `RigidBody` on a registered body is applied in place (`apply_body_settings`: body type, gravity scale, drag, CCD; only differing values are written, so contacts and sleep survive).
+5. `sync_to_physics`: a changed `Transform` teleports the body (a kinematic body moves there over the step); a changed `Velocity` sets its velocity.
+6. `step_physics`: `dt` is `time.fixed.timestep()`, so physics follows game speed, pause and hitstop.
+7. `sync_from_physics`: awake dynamic bodies write position and velocity back.
+8. `emit_collision_messages`: Rapier's contacts drained into `CollisionStarted` / `CollisionStopped`.
 
 ## Notes for AI Agents
 
 1. **Sync is change-detected and compared by value.** Physics' write-back is an ordinary change (propagation must see bodies move), so `sync_to_physics` cannot tell it from a game write by change detection alone: it pushes a `Transform` or `Velocity` only when it differs from the body's. A body nobody touched stays asleep.
-2. **Registration also runs in `Last`** every frame, before the trackers are cleared. Removal events survive two tracker clears, and at render rates above the fixed rate no fixed step may run in between; without it a despawned body would stay in Rapier.
-3. **Bodies must be root entities.** Physics reads and writes the local `Transform` as world space; a `RigidBody` on an entity with `ChildOf` is simulated in its parent's space and is wrong. Nothing enforces this yet.
+2. **Removal bookkeeping also runs in `Last`** every frame, before the trackers are cleared: `unregister_removed_bodies` and `register_restored_bodies` only. Removal events survive two tracker clears, and at render rates above the fixed rate no fixed step may run in between; without it a despawned body would stay in Rapier. Added and edited bodies are tick-based and wait for the next fixed step (running them in `Last` too rebuilt bodies the step had already simulated).
+3. **Bodies must be root entities.** Physics reads and writes the local `Transform` as world space, so a `RigidBody` on an entity with `ChildOf` is not simulated: it is logged once and left out, and detaching the entity brings it back.
 4. **An entity is simulated only with `RigidBody` + `Transform` + (`Collider` or `GroupedCollider`).** A `Collider` without a `RigidBody` is never simulated, and there is no static body type (use a kinematic body).
 5. **Collisions are messages.** The physics set drains `RapierPhysicsWorld`'s event list each step, so game code reads `ctx.messages::<CollisionStarted>()`, not `get_collision_events()`. Overlap queries (`are_intersecting`, `get_current_intersections`) read Rapier's narrow phase and still work.
 6. **GroupedCollider**: for composite tiles, use `GroupedCollider` from `graphics/tile.rs`.

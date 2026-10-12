@@ -15,7 +15,7 @@ You help users tell one part of a game that something happened (a hit, a pickup,
 
 - A message type derives `Message`. Each registered type has a buffer, the `Messages<T>` resource.
 - Writers append to it. Every reader has its own cursor and sees each message once: a system through `MessageReader<T>`, a scene through `ctx.messages::<T>()`.
-- Buffers advance once per frame, in `First`. A message written in frame N stays readable until the end of frame N+1, then it is dropped.
+- Buffers advance in `First`, but only once a fixed step has run since the last advance: a message stays readable until two fixed steps have run after it was written, so every reader, per-frame or fixed-step, sees it at any frame rate. While no fixed step runs (the game clock paused) nothing is dropped.
 
 Use a message for "this happened", a resource for shared state, a component for per-entity state.
 
@@ -105,7 +105,7 @@ A reader ordered after the writer in the same schedule sees the message the same
 | Hot reload (`AssetReloaded`, `AssetLoadFailed`) | `PreUpdate`, once a frame | this frame's `ui` and steps |
 | `ParticleSystem::update` (`ParticleCollision`) | where the scene calls it | after that call |
 
-Readers that run every frame (`ui`, systems in `Update` or `PostUpdate`) never miss a message. Fixed-step readers (`Scene::update`, `FixedUpdate` systems) run zero or more times a frame: if two frames pass with no fixed step between them (frame rate above about twice the fixed rate, such as 144 Hz against the default 60), a message written in one step is dropped before the next step runs. Read messages that must not be lost in a per-frame reader, or raise `fixed_hz`.
+No reader misses a message, whether it runs every frame (`ui`, systems in `Update` or `PostUpdate`) or in fixed steps (`Scene::update`, `FixedUpdate` systems), at any frame rate: buffers only advance after a fixed step. A game that writes a message every frame while the game clock is paused accumulates them until it resumes.
 
 ## Scene changes
 

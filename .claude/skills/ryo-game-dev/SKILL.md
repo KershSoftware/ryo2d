@@ -322,8 +322,9 @@ return SceneAction::SwitchWith(
 );
 ```
 
+- Transitions run on real time, once a frame, so a fade finishes even with the game clock paused or slowed.
 - A pushed scene that does not `updates_below` stops the scenes below and pauses physics; engine animation and tweens keep running (pause the game clock to freeze them too).
-- A pause menu: a transparent pushed scene that handles its buttons in `ui` and returns `SceneAction::Pop`.
+- A pause menu: a transparent pushed scene that handles its buttons in `ui` and returns `SceneAction::Pop`. Scenes under it get no pointer in their `ui`, so its buttons win the clicks.
 - Cleanup on `Switch`/`Reset` (not on `Push`/`Pop`): `SceneCleanup` flags `WORLD`, `CAMERA`, `EFFECTS`, `LIGHTING`, `TIME`, `MUSIC`, `MESSAGES`; `DEFAULT` is all but `MUSIC`, plus `NONE` and `ALL`. Combine with `|`, remove with `-`: `SceneCleanup::DEFAULT - SceneCleanup::WORLD` keeps the entities.
 - A scene's console commands and systems leave with it.
 

@@ -62,7 +62,7 @@ if let Some(mut light) = ctx.world.get_mut::<Light2D>(self.torch) {
 }
 ```
 
-Lights are placed at their entity's `GlobalTransform` translation (a child entity follows its parent) and are not interpolated.
+Lights are placed at their entity's `GlobalTransform` translation (a child entity follows its parent); on an interpolated entity they are blended with its sprite, so a light carried by a player does not jitter.
 
 ## Shadows
 

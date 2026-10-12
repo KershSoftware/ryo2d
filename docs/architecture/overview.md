@@ -44,19 +44,22 @@ In 0.20 a resource is a component on a hidden entity marked `IsResource`, so eng
 Engine::frame()
  │
  ├─ queue scripted input (RYO_INPUT) and gamepad events
- ├─ First ........ advance the clocks, publish Input, advance message buffers
+ ├─ First ........ advance the clocks, publish Input, advance message buffers (after a fixed step)
  ├─ debug keys ... F1-F5, `, F9, F10, F12 consume their presses
- ├─ PreUpdate .... async asset loads, hot reload; then the console
- ├─ UI pass ...... Scene::ui for visible scenes (bottom-up), debug overlays, console
- │                 what the UI consumed is hidden from Input for the rest of the frame
+ ├─ PreUpdate .... async asset loads, hot reload, scene transitions (real time); then the console
+ ├─ UI pass ...... Scene::ui for visible scenes (bottom-up; scenes under the top one
+ │                 get no pointer), debug overlays, console
+ │                 what the UI consumed is hidden from Input for the rest of the frame;
+ │                 a press it took stays hidden until released
  │                 a returned SceneAction applies at once (a new scene draws its UI this frame)
  ├─ while fixed.accumulator >= timestep            (0..N times; a quit ends the loop)
  │   └─ FixedUpdate
  │        Snapshot ..... GlobalTransform -> PreviousGlobalTransform
  │        Juice ........ animation, tweens, knockback, squash/stretch, skeletons
- │        Scene ........ transitions, Scene::update(ctx, timestep), its SceneAction
+ │        Scene ........ Scene::update(ctx, timestep) unless a transition runs, its SceneAction
  │        Game ......... the scenes' own FixedUpdate systems
- │        Physics ...... register, sync to Rapier, step, sync back, collision messages
+ │        Physics ...... unregister, register (root bodies only; edits in place), sync to
+ │                       Rapier, step, sync back, collision messages
  │        Transforms ... propagate GlobalTransform
  │        Trails ....... record trail points
  ├─ Update ....... UpdateSet::Game: the scenes' own per-frame systems
@@ -118,7 +121,7 @@ SceneManager (engine-owned stack over the one shared world)
 ## Messages
 
 - A message type derives `Message`. The engine's (`CollisionStarted`/`Stopped`, `TweenStarted`/`Completed`, `KnockbackStarted`/`Finished`, `SquashStretchStarted`/`Finished`, `AssetReloaded`, `AssetLoadFailed`) are registered at build; a game's register with `EngineBuilder::add_message::<T>()` or on the first `ctx.write_message`.
-- Buffers advance once per frame in `First`: a message written in frame N is readable through frame N+1, whether or not a fixed step runs.
+- Buffers advance in `First`, but only once a fixed step has run since the last advance: a message stays readable until two fixed steps have run after it was written, so every reader, per-frame or fixed-step, sees it at any frame rate. While no fixed step runs (the game clock paused) nothing is dropped.
 - Systems use `MessageWriter<T>` / `MessageReader<T>`; scenes use `ctx.write_message(m)` and `ctx.messages::<T>()`, which keeps a cursor per scene so each scene sees each message once.
 - Modules define no message type they do not write; games define their own notifications.
 
@@ -129,7 +132,7 @@ winit / gilrs / RYO_INPUT / headless harness
    -> queued InputEvents -> Input rebuilt in First -> UI pass (consumes) -> FixedUpdate / Update
 ```
 
-- One-shots (`key_pressed`, `mouse_pressed`, ...) are seen by the first fixed step of a frame only; a press in a frame that runs no step waits for the next step.
+- One-shots (`key_pressed`, `mouse_pressed`, ...) are seen by the first fixed step of a frame only; a press in a frame that runs no step waits for the next step, except while the game clock is paused, when it is dropped (gameplay never saw it).
 - `consume_key` / `consume_mouse` / `consume_text` hide an input, held state included, for the rest of the frame. The UI pass consumes what its widgets use.
 - `block_pointer` / `block_all` / `unblock` gate input for gameplay.
 

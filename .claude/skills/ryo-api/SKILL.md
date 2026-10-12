@@ -499,7 +499,7 @@ Engine messages (all `Message + Clone`):
 
 - Scenes: `ctx.messages::<T>()` returns a `Vec<T>` of what arrived since this scene last read `T` (each scene sees each message once); `ctx.write_message(m)`.
 - Systems: `MessageWriter<T>::write(m)`, `MessageReader<T>::read()`.
-- Buffers advance once per frame in `First`: a message is readable from when it is written until the end of the next frame.
+- Buffers advance in `First`, but only once a fixed step has run since the last advance: a message stays readable until two fixed steps have run after it was written, so every reader, per-frame or fixed-step, sees it at any frame rate. While no fixed step runs (the game clock paused) nothing is dropped.
 - Game types: `#[derive(Message, Clone)]`; register with `EngineBuilder::add_message::<T>()` or let the first `write_message` do it. See the `ryo-messages` skill.
 
 ---
@@ -518,7 +518,7 @@ Engine messages (all `Message + Clone`):
 | gating | `block_pointer()`, `block_all()`, `unblock()` |
 | engine plumbing | `new()`, `queue(InputEvent)`, `begin_frame()`, `set_fixed_step(u32)`, `end_fixed_steps(bool)`, `fixed_step()` |
 
-- One-shots (`*_pressed`, `*_released`) are seen once per frame by per-frame code and by the first fixed step of a frame; a press in a frame that runs no step waits for the next step.
+- One-shots (`*_pressed`, `*_released`) are seen once per frame by per-frame code and by the first fixed step of a frame; a press in a frame that runs no step (except while the game clock is paused, when it is dropped) waits for the next step.
 - A consumed input reads as not pressed (held state included) for the rest of the frame. The UI pass consumes what widgets use before `update` runs.
 - `enum GamepadButton { South, East, West, North, LeftBumper, RightBumper, LeftTrigger, RightTrigger, LeftStick, RightStick, Select, Start, Guide, DPadUp, DPadDown, DPadLeft, DPadRight }`.
 - `enum InputEvent { Key { key, pressed }, Text(String), MouseButton { button, pressed }, MouseMove { x, y }, RawMouseMotion { dx, dy }, Scroll(..), ImeEnabled, ImeDisabled, ImePreedit { text, cursor }, ImeCommit(String), GamepadConnected { id, name }, GamepadDisconnected(id), GamepadButton { id, button, pressed }, GamepadTrigger { id, button, value } }`: what the window, gamepads, `RYO_INPUT` scripts and the headless harness queue.

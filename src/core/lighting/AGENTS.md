@@ -23,7 +23,7 @@ Scenes control lighting through the `LightingSettings` resource (`ctx.lighting()
 ## Conventions
 
 - **Artist-friendly units**: colors use 0-255 RGB, not 0.0-1.0. Radius is in pixels.
-- **Placed by `GlobalTransform`**: lights draw at their entity's world translation; occluders use its world translation and rotation (not its scale). Both are drawn at the true transform, never interpolated.
+- **Placed by `GlobalTransform`**: lights draw at their entity's world translation; occluders use its world translation and rotation (not its scale). On an interpolated entity both are blended with its sprite (`render_global`).
 - **Coordinate space**: occluder vertices are local space (relative to the entity), CCW winding.
 
 ## Notes for AI Agents

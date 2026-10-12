@@ -158,7 +158,7 @@ fn knockback_moves_an_entity_without_velocity() {
 
 - A message type derives `Message` (and `Clone` for scene readers). `register_message::<T>(world)` inserts `Messages<T>` and adds an updater and a clearer (`MessageUpdaters`); registering twice is a no-op.
 - The engine's types register in `register_engine_messages` at build; games use `EngineBuilder::add_message::<T>()`, or `ctx.write_message` registers lazily. A system with `MessageReader<T>` for an unregistered `T` fails validation, so register types systems read.
-- `update_messages` advances every buffer once per frame in `First`; `clear_messages` backs `SceneCleanup::MESSAGES`.
+- `update_messages_system` (`First`) advances every buffer only when a fixed step has run since the last advance (`MessagesAdvancedAt` holds the step count), so fixed-step readers never miss a message; `clear_messages` backs `SceneCleanup::MESSAGES`.
 - Scenes read through `SceneMessages` (`messages/scene.rs`): one `MessageCursor<T>` per type per scene instance.
 - Add a message type only if engine code writes it; games define their own notifications.
 

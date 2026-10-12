@@ -61,7 +61,7 @@ Game systems: `EngineBuilder::add_systems(phase, systems)` for the whole run (an
 - `FixedSet::Snapshot` (first in each step) copies `GlobalTransform` into `PreviousGlobalTransform` and clears `skip`.
 - At render, `render_global(global, previous, time.fixed.overstep_fraction())` blends previous to current (linear translation and scale, shortest-arc rotation); with `skip` set or no previous, it is the current transform. Gameplay never reads a blend: `GlobalTransform` is always the true state.
 - After a teleport, `skip_interpolation(entity)` (`WorldExt`, `ctx.skip_interpolation`) draws the new position at once; interpolation resumes from the next step.
-- Renderable entities (single sprites and tiled runs) draw interpolated. Composite tiles, lights, occluders and lines draw at `GlobalTransform`.
+- Everything an interpolated entity draws (single sprites, tiled runs, composite tiles, lights, occluders, lines) is placed at `render_global`, so it stays together. Trail points are recorded world positions and are not blended.
 
 ## Disabled and Pooling
 
@@ -82,7 +82,7 @@ world.query_filtered::<Entity, (Allow<Disabled>, Without<IsResource>)>()
 ## Messages
 
 - A message type derives `Message` and is registered with `register_message::<T>` (`core/messages`): at engine build for the engine's types, `EngineBuilder::add_message::<T>()` for a game's, or lazily on the first `ctx.write_message`.
-- Buffers are double-buffered and advance once per frame in `First`: a message is readable from when it is written until the end of the next frame, and each reader sees it once.
+- Buffers are double-buffered. Buffers advance in `First`, but only once a fixed step has run since the last advance: a message stays readable until two fixed steps have run after it was written, so every reader, per-frame or fixed-step, sees it at any frame rate. While no fixed step runs (the game clock paused) nothing is dropped. Each reader sees a message once.
 - Systems use `MessageWriter<T>` / `MessageReader<T>`. Scenes use `ctx.write_message(m)` and `ctx.messages::<T>()`, which reads through a `MessageCursor` kept per scene instance (`SceneMessages`), so every scene sees each message once.
 - `SceneCleanup::MESSAGES` empties every buffer. Modules define no message type they do not write; a game that wants a notification defines its own.
 
