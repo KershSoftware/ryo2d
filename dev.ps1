@@ -13,6 +13,7 @@
 #   .\dev demos:run-all           - Launch all demos in dev mode (parallel terminals)
 #   .\dev demos:kill-all          - Kill all running demos
 #   .\dev demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)
+#   .\dev web <demo>              - Serve a demo in the browser (WebGPU, needs trunk)
 #   .\dev check                   - Compilation check (engine + all examples, engine for wasm)
 #   .\dev lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)
 #   .\dev test                    - Run unit + integration tests
@@ -424,6 +425,17 @@ switch ($ExampleName.ToLower()) {
         cargo run -q -p demo-kit --bin demo-tour -- @tourArgs
         exit $LASTEXITCODE
     }
+    "web" {
+        if (-not $Arg2) { Write-Host "usage: ./dev web <demo>" -ForegroundColor Yellow; exit 1 }
+        if (-not (Get-Command trunk -ErrorAction SilentlyContinue)) {
+            Write-Host "trunk is required: cargo install trunk --locked" -ForegroundColor Yellow
+            exit 1
+        }
+        rustup target add wasm32-unknown-unknown | Out-Null
+        Push-Location "examples/demos/$Arg2"
+        try { trunk serve --open } finally { Pop-Location }
+        exit $LASTEXITCODE
+    }
     "check" {
         cargo check --workspace
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -554,6 +566,7 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./dev demos:run-all           - Launch all demos in dev mode (parallel terminals)"
         Write-Host "  ./dev demos:kill-all          - Kill all running demos"
         Write-Host "  ./dev demos:tour [demo...]    - Capture every page of every demo headlessly"
+        Write-Host "  ./dev web <demo>              - Serve a demo in the browser (WebGPU, needs trunk)"
         Write-Host "  ./dev check                   - Compilation check (engine + all examples, engine for wasm)"
         Write-Host "  ./dev lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)"
         Write-Host "  ./dev test                    - Run unit + integration tests (default)"

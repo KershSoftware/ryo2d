@@ -63,3 +63,6 @@ Thumbs.db
 
 # Plan execution workspaces (superpowers)
 .superpowers/
+
+# trunk's web builds of the demos
+examples/demos/*/dist/

@@ -12,7 +12,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::frame::should_pace_frames;
-use super::{Engine, FrameOutcome, WindowMode};
+use super::{Engine, EngineEvent, FrameOutcome, WindowMode};
 use crate::core::config::DisplayMode;
 use crate::core::cursor::CursorRequest;
 use crate::core::graphics::renderer::RendererSettings;
@@ -44,8 +44,6 @@ fn cursor_grab_for_focus(
 impl Engine {
   /// Show the window and start the engine on its new renderer (native at
   /// once, the web when its async GPU setup arrives).
-  // Unused on the web until its runner lands
-  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
   fn finish_gpu_setup(
     &mut self,
     event_loop: &ActiveEventLoop,
@@ -75,7 +73,9 @@ impl Engine {
       );
     }
 
+    // A dev window on the web would be a second canvas on the page
     if self.config.debug.logger_window
+      && !cfg!(target_arch = "wasm32")
       && let Some(renderer) = &self.renderer
       && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
     {
@@ -86,6 +86,17 @@ impl Engine {
         instance,
         adapter,
       );
+    }
+  }
+
+  fn renderer_settings(&self) -> RendererSettings {
+    RendererSettings {
+      game_width: self.config.width,
+      game_height: self.config.height,
+      window_mode: self.config.window_mode,
+      max_width: self.config.max_width,
+      max_height: self.config.max_height,
+      vsync: Some(self.vsync),
     }
   }
 
@@ -379,8 +390,12 @@ impl Engine {
   }
 }
 
-impl ApplicationHandler for Engine {
+impl ApplicationHandler<EngineEvent> for Engine {
   fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    // The web can resume a page that already has its canvas
+    if self.window.is_some() {
+      return;
+    }
     let resizable = self.config.window_mode != WindowMode::Fixed;
 
     // Hidden until the first frame is presented, to avoid a white flash
@@ -393,6 +408,15 @@ impl ApplicationHandler for Engine {
       .with_resizable(resizable)
       .with_decorations(self.config.display_mode != DisplayMode::BorderlessFullscreen)
       .with_visible(false);
+    // On the web the window is a canvas appended to the page, sized by the
+    // page's CSS rather than an inline size
+    #[cfg(target_arch = "wasm32")]
+    let window_attrs = {
+      use winit::platform::web::WindowAttributesExtWebSys;
+      let mut window_attrs = window_attrs.with_append(true).with_prevent_default(true);
+      window_attrs.inner_size = None;
+      window_attrs
+    };
 
     let window = match event_loop.create_window(window_attrs) {
       Ok(window) => Arc::new(window),
@@ -424,14 +448,7 @@ impl ApplicationHandler for Engine {
       window.set_window_icon(Some(icon));
     }
 
-    let settings = RendererSettings {
-      game_width: self.config.width,
-      game_height: self.config.height,
-      window_mode: self.config.window_mode,
-      max_width: self.config.max_width,
-      max_height: self.config.max_height,
-      vsync: Some(self.vsync),
-    };
+    let settings = self.renderer_settings();
     #[cfg(not(target_arch = "wasm32"))]
     match pollster::block_on(WgpuRenderer::new(Arc::clone(&window), settings)) {
       Ok(renderer) => self.finish_gpu_setup(event_loop, window, renderer),
@@ -441,12 +458,40 @@ impl ApplicationHandler for Engine {
         event_loop.exit();
       }
     }
-    // The web sets the GPU up asynchronously
+    // The web sets the GPU up asynchronously; `user_event` finishes it
     #[cfg(target_arch = "wasm32")]
     {
-      let _ = (settings, window);
-      crate::engine_error!(module: "Render", "the web GPU setup is not wired yet");
-      event_loop.exit();
+      let proxy = self.proxy.clone();
+      let gpu_window = Arc::clone(&window);
+      wasm_bindgen_futures::spawn_local(async move {
+        let result = WgpuRenderer::new(gpu_window, settings).await;
+        if let Some(proxy) = proxy {
+          let _ = proxy.send_event(EngineEvent::GpuReady(Box::new(result)));
+        }
+      });
+      self.window = Some(window);
+    }
+  }
+
+  fn user_event(&mut self, event_loop: &ActiveEventLoop, event: EngineEvent) {
+    match event {
+      EngineEvent::GpuReady(result) => match *result {
+        Ok(renderer) => {
+          if let Some(window) = self.window.clone() {
+            let size = window.inner_size();
+            self.finish_gpu_setup(event_loop, window, renderer);
+            // The page sized the canvas while the GPU was on its way
+            if size.width > 0 && size.height > 0 {
+              self.resize_window(size.width, size.height);
+            }
+          }
+        }
+        Err(error) => {
+          crate::engine_error!(module: "Render", "{}", error);
+          self.startup_error = Some(error);
+          event_loop.exit();
+        }
+      },
     }
   }
 
@@ -581,7 +626,8 @@ impl ApplicationHandler for Engine {
         engine_info!(module: "Engine", "Close requested, exiting...");
         event_loop.exit();
       }
-      WindowEvent::RedrawRequested => {
+      // Nothing to draw until the GPU is ready (the web sets it up late)
+      WindowEvent::RedrawRequested if self.renderer.is_some() => {
         #[cfg(feature = "profiler")]
         if let Some(profiler) = &mut self.profiler_window {
           profiler.track_frame_time();
@@ -666,7 +712,12 @@ impl ApplicationHandler for Engine {
   }
 
   fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+    // The browser wakes the loop for each animation frame it is asked for
+    event_loop.set_control_flow(if cfg!(target_arch = "wasm32") {
+      winit::event_loop::ControlFlow::Wait
+    } else {
+      winit::event_loop::ControlFlow::Poll
+    });
 
     // Report finished captures and honour RYO_CAPTURE_EXIT
     let reports = self.capture.poll_writes();
@@ -707,6 +758,7 @@ impl ApplicationHandler for Engine {
     }
 
     if std::mem::take(&mut self.pending_open_logger)
+      && !cfg!(target_arch = "wasm32")
       && self.logger_window.is_none()
       && let Some(renderer) = &self.renderer
       && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
@@ -744,8 +796,9 @@ impl ApplicationHandler for Engine {
     }
 
     // An unfocused game window gets no redraw events (Windows): run its frame
-    // here, throttled unless a dev window has focus
-    if !self.game_window_focused {
+    // here, throttled unless a dev window has focus. The browser paces the
+    // web's frames, focused or not.
+    if !self.game_window_focused && !cfg!(target_arch = "wasm32") {
       #[cfg(feature = "profiler")]
       let throttle = !self.profiler_window_focused && !self.logger_window_focused;
       #[cfg(not(feature = "profiler"))]

@@ -1,0 +1,7 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[watch]
+# Rebuild on engine and demo-kit edits too
+watch = [".", "../../demo-kit/src", "../../../src"]

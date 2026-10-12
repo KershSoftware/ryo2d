@@ -137,7 +137,7 @@ impl GlobalLogBuffer {
         .as_ref()
         .map(|m| format!("[{}] ", m))
         .unwrap_or_default();
-      println!(
+      let line = format!(
         "{} [{}/{}] {}{}",
         iso_timestamp,
         level.name(),
@@ -145,6 +145,11 @@ impl GlobalLogBuffer {
         module_str,
         message
       );
+      // The web has no stdout: its lines go to the browser console
+      #[cfg(target_arch = "wasm32")]
+      web_sys::console::log_1(&line.into());
+      #[cfg(not(target_arch = "wasm32"))]
+      println!("{line}");
     }
 
     let entry = LogEntry {

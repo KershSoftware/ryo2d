@@ -15,6 +15,8 @@ use web_time::Instant;
 
 use gilrs::Gilrs;
 use winit::event_loop::EventLoop;
+#[cfg(target_arch = "wasm32")]
+use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
 
 use crate::core::asset::AssetManager;
@@ -62,6 +64,14 @@ use frame::{
   publish_input_system, scene_fixed_systems, scene_transition_system, scene_update_system,
   scene_update_systems, update_effects_system, update_messages_system,
 };
+
+/// Events the engine sends its own event loop.
+// Only the web sends any
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) enum EngineEvent {
+  /// The web's asynchronous GPU setup finished
+  GpuReady(Box<Result<WgpuRenderer, crate::core::graphics::GpuError>>),
+}
 
 /// Configuration for the engine
 #[derive(Debug, Clone)]
@@ -184,6 +194,9 @@ pub struct Engine {
   ui_scale: u32,
   // Why the window's GPU setup failed, returned from `run`
   startup_error: Option<crate::core::graphics::GpuError>,
+  // Delivers the web's asynchronous GPU setup to the event loop
+  #[cfg(target_arch = "wasm32")]
+  proxy: Option<EventLoopProxy<EngineEvent>>,
   last_window_size: (u32, u32),
   vsync: bool,
   /// Run the frame's logic but do not draw it (an unfocused window with
@@ -508,6 +521,8 @@ impl Engine {
       scale_factor: 1.0,
       ui_scale: initial_ui_scale,
       startup_error: None,
+      #[cfg(target_arch = "wasm32")]
+      proxy: None,
       last_window_size: initial_size,
       vsync,
       skip_present: false,
@@ -538,14 +553,28 @@ impl Engine {
     engine_info!(module: "Init", "Resolution: {}x{}", self.config.width, self.config.height);
     engine_info!(module: "Init", "Target FPS: {}", self.config.target_fps);
 
-    let event_loop = EventLoop::new().map_err(|e| EngineError::Window(format!("{}", e)))?;
+    let event_loop = EventLoop::<EngineEvent>::with_user_event()
+      .build()
+      .map_err(|e| EngineError::Window(format!("{}", e)))?;
 
-    event_loop
-      .run_app(&mut self)
-      .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))?;
-    match self.startup_error.take() {
-      Some(error) => Err(EngineError::Gpu(error)),
-      None => Ok(()),
+    // The browser owns the loop: hand the engine to it and return
+    #[cfg(target_arch = "wasm32")]
+    {
+      use winit::platform::web::EventLoopExtWebSys;
+      console_error_panic_hook::set_once();
+      self.proxy = Some(event_loop.create_proxy());
+      event_loop.spawn_app(self);
+      Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+      event_loop
+        .run_app(&mut self)
+        .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))?;
+      match self.startup_error.take() {
+        Some(error) => Err(EngineError::Gpu(error)),
+        None => Ok(()),
+      }
     }
   }
 

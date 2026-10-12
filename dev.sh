@@ -14,6 +14,7 @@
 #     ./dev.sh demos:run-all           - Launch all demos in dev mode (parallel terminals)
 #     ./dev.sh demos:kill-all          - Kill all running demos
 #     ./dev.sh demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)
+#     ./dev.sh web <demo>              - Serve a demo in the browser (WebGPU, needs trunk)
 #     ./dev.sh check                   - Compilation check (engine + all examples, engine for wasm)
 #     ./dev.sh lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)
 #     ./dev.sh test                    - Run unit + integration tests
@@ -480,6 +481,12 @@ case "$COMMAND" in
         done
         cargo run -q -p demo-kit --bin demo-tour -- "${TOUR_ARGS[@]}"
         ;;
+    web)
+        demo="${2:?usage: ./dev.sh web <demo>}"
+        command -v trunk >/dev/null || { echo "trunk is required: cargo install trunk --locked"; exit 1; }
+        rustup target add wasm32-unknown-unknown >/dev/null
+        (cd "examples/demos/$demo" && trunk serve --open)
+        ;;
     check)
         cargo check --workspace
         cargo check -p ryo2d --lib --target wasm32-unknown-unknown
@@ -593,6 +600,7 @@ case "$COMMAND" in
         echo "    ./dev.sh demos:run-all           - Launch all demos in dev mode (parallel terminals)"
         echo "    ./dev.sh demos:kill-all          - Kill all running demos"
         echo "    ./dev.sh demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)"
+        echo "    ./dev.sh web <demo>              - Serve a demo in the browser (WebGPU, needs trunk)"
         echo "    ./dev.sh check                   - Compilation check (engine + all examples, engine for wasm)"
         echo "    ./dev.sh lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)"
         echo "    ./dev.sh test                    - Run unit + integration tests (default)"
