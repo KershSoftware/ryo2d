@@ -60,7 +60,14 @@ impl Engine {
         step += 1;
       }
       // A press nobody stepped over waits for the next frame's first step
-      self.world.resource_mut::<Input>().end_fixed_steps(step > 0);
+      // (between steps at high refresh rates, or through a hitstop), but not
+      // through a pause: gameplay never saw it, so it is dropped rather than
+      // replayed on resume
+      let paused = self.world.resource::<Time>().game.is_paused();
+      self
+        .world
+        .resource_mut::<Input>()
+        .end_fixed_steps(step > 0 || paused);
     }
     self.frame_timings.update = update_start.elapsed();
 
@@ -646,6 +653,51 @@ mod tests {
       "the fade ends on real time"
     );
     assert_eq!(host.scenes.scene_names(), ["Arrived"]);
+  }
+
+  #[test]
+  fn presses_made_while_the_game_clock_is_paused_do_not_reach_the_next_step() {
+    use crate::core::input::{Input, InputEvent};
+    use winit::keyboard::KeyCode;
+
+    #[derive(Resource, Default)]
+    struct Presses(u32);
+    struct CountsSpace;
+    impl Scene for CountsSpace {
+      fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+        if ctx.input.key_pressed(KeyCode::Space) {
+          ctx.world.resource_mut::<Presses>().0 += 1;
+        }
+        SceneAction::Continue
+      }
+    }
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(16, 16)
+      .fixed_hz(60)
+      .insert_resource(Presses::default())
+      .start_scene(CountsSpace)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 16, 16), 1.0);
+    let frame = Duration::from_micros(16_667);
+    e.frame(Some(frame));
+    e.world_mut().resource_mut::<Time>().game.pause();
+    for pressed in [true, false] {
+      e.world_mut()
+        .resource_mut::<Input>()
+        .queue(InputEvent::Key {
+          key: KeyCode::Space,
+          pressed,
+        });
+      e.frame(Some(frame));
+    }
+    e.world_mut().resource_mut::<Time>().game.resume();
+    e.frame(Some(frame));
+    e.frame(Some(frame));
+    assert_eq!(e.world().resource::<Presses>().0, 0);
   }
 
   #[test]
