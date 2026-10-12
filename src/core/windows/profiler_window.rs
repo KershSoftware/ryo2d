@@ -264,7 +264,7 @@ impl ProfilerWindow {
     };
 
     // Collect all scopes from all thread streams using recursive helper
-    for (_thread_info, stream_info) in unpacked.thread_streams.iter() {
+    for stream_info in unpacked.thread_streams.values() {
       Self::collect_scopes_recursive(
         &stream_info.stream,
         0,

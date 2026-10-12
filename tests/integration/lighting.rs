@@ -78,11 +78,11 @@ fn regression_no_lights_renders_normally() {
   let mut world = World::new();
 
   // Spawn some regular entities (no lights)
-  world.spawn((Transform::new(100.0, 100.0),));
-  world.spawn((Transform::new(200.0, 200.0), Velocity::new(1.0, 0.0)));
+  world.spawn((Transform::from_xy(100.0, 100.0),));
+  world.spawn((Transform::from_xy(200.0, 200.0), Velocity::new(1.0, 0.0)));
 
   // Verify no Light2D components exist
-  let light_count = world.query::<&Light2D>().iter().count();
+  let light_count = world.query::<&Light2D>().iter(&world).count();
   assert_eq!(light_count, 0, "Test setup should have no lights");
 
   // In the actual engine, this means lighting.is_enabled() remains false
@@ -450,17 +450,23 @@ fn volumetric_lights_in_world() {
   let mut world = World::new();
 
   // Spawn lights with various volumetric settings
-  let flashlight = world.spawn((
-    Transform::new(100.0, 100.0),
-    Light2D::flashlight(200.0, 0.0).with_volumetric(),
-  ));
+  let flashlight = world
+    .spawn((
+      Transform::from_xy(100.0, 100.0),
+      Light2D::flashlight(200.0, 0.0).with_volumetric(),
+    ))
+    .id();
 
-  let sun = world.spawn((
-    Transform::new(0.0, 0.0),
-    Light2D::point(Color::WHITE, 500.0).with_god_rays(),
-  ));
+  let sun = world
+    .spawn((
+      Transform::from_xy(0.0, 0.0),
+      Light2D::point(Color::WHITE, 500.0).with_god_rays(),
+    ))
+    .id();
 
-  let normal_light = world.spawn((Transform::new(200.0, 200.0), Light2D::torch(100.0)));
+  let normal_light = world
+    .spawn((Transform::from_xy(200.0, 200.0), Light2D::torch(100.0)))
+    .id();
 
   // Query and verify
   let light1 = world.get::<Light2D>(flashlight).unwrap();
@@ -482,23 +488,23 @@ fn filter_god_ray_lights() {
 
   // Mix of lights with and without god rays
   world.spawn((
-    Transform::new(0.0, 0.0),
+    Transform::from_xy(0.0, 0.0),
     Light2D::point(Color::WHITE, 500.0).with_god_rays(),
   ));
   world.spawn((
-    Transform::new(100.0, 100.0),
+    Transform::from_xy(100.0, 100.0),
     Light2D::flashlight(200.0, 0.0).with_volumetric(),
   ));
   world.spawn((
-    Transform::new(200.0, 200.0),
+    Transform::from_xy(200.0, 200.0),
     Light2D::point(Color::WHITE, 300.0).with_god_rays(),
   ));
-  world.spawn((Transform::new(300.0, 300.0), Light2D::torch(100.0)));
+  world.spawn((Transform::from_xy(300.0, 300.0), Light2D::torch(100.0)));
 
   // Count lights that contribute to god rays
   let god_ray_count = world
     .query::<&Light2D>()
-    .iter()
+    .iter(&world)
     .filter(|light| light.contributes_to_god_rays())
     .count();
 
@@ -507,7 +513,7 @@ fn filter_god_ray_lights() {
   // Count lights with any volumetric effect
   let volumetric_count = world
     .query::<&Light2D>()
-    .iter()
+    .iter(&world)
     .filter(|light| light.has_volumetric())
     .count();
 
@@ -524,7 +530,9 @@ fn light2d_entities_queryable() {
   let mut world = World::new();
 
   // Spawn a light entity
-  let light_entity = world.spawn((Transform::new(100.0, 100.0), Light2D::torch(150.0)));
+  let light_entity = world
+    .spawn((Transform::from_xy(100.0, 100.0), Light2D::torch(150.0)))
+    .id();
 
   // Should be able to query it
   let light = world.get::<Light2D>(light_entity);
@@ -532,7 +540,7 @@ fn light2d_entities_queryable() {
 
   // Query all lights
   let mut query = world.query::<(&Transform, &Light2D)>();
-  let lights: Vec<_> = query.iter().collect();
+  let lights: Vec<_> = query.iter(&world).collect();
   assert_eq!(lights.len(), 1, "Should find one light");
 }
 
@@ -542,14 +550,14 @@ fn multiple_lights_coexist() {
   let mut world = World::new();
 
   // Spawn multiple lights
-  world.spawn((Transform::new(0.0, 0.0), Light2D::torch(100.0)));
-  world.spawn((Transform::new(200.0, 0.0), Light2D::moonlight(150.0)));
+  world.spawn((Transform::from_xy(0.0, 0.0), Light2D::torch(100.0)));
+  world.spawn((Transform::from_xy(200.0, 0.0), Light2D::moonlight(150.0)));
   world.spawn((
-    Transform::new(100.0, 200.0),
+    Transform::from_xy(100.0, 200.0),
     Light2D::flashlight(200.0, 0.0),
   ));
 
-  let light_count = world.query::<&Light2D>().iter().count();
+  let light_count = world.query::<&Light2D>().iter(&world).count();
   assert_eq!(light_count, 3, "All lights should be present");
 }
 

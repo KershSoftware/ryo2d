@@ -234,7 +234,7 @@ fn trail_as_ecs_component() {
 
   let trail = Trail2D::new(Color::RED, 3.0).with_length(20);
 
-  let entity = world.spawn((Transform::new(100.0, 100.0), trail));
+  let entity = world.spawn((Transform::from_xy(100.0, 100.0), trail)).id();
 
   // Can retrieve and modify
   {
@@ -253,9 +253,16 @@ fn trail_as_ecs_component() {
 fn multiple_entities_with_trails() {
   let mut world = World::new();
 
-  let e1 = world.spawn((Transform::new(0.0, 0.0), Trail2D::new(Color::RED, 3.0)));
+  let e1 = world
+    .spawn((Transform::from_xy(0.0, 0.0), Trail2D::new(Color::RED, 3.0)))
+    .id();
 
-  let e2 = world.spawn((Transform::new(100.0, 100.0), Trail2D::new(Color::BLUE, 5.0)));
+  let e2 = world
+    .spawn((
+      Transform::from_xy(100.0, 100.0),
+      Trail2D::new(Color::BLUE, 5.0),
+    ))
+    .id();
 
   // Disable one trail
   {

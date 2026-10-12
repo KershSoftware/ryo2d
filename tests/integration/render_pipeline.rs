@@ -159,9 +159,8 @@ fn errors_name_the_pass() {
   );
 }
 
-const ORDER: [&str; 10] = [
+const ORDER: [&str; 9] = [
   pass_ids::CLEAR,
-  pass_ids::RAYCAST,
   pass_ids::WORLD,
   pass_ids::LIGHTING,
   pass_ids::UNLIT_WORLD,
@@ -211,23 +210,6 @@ fn a_full_2d_frame_runs_every_scene_pass() {
       "composite",
       "capture",
     ]
-  );
-}
-
-#[test]
-fn a_raycast_frame_skips_the_2d_world() {
-  let frame = FrameInfo {
-    raycast: true,
-    world: true,
-    lighting: true,
-    effects: true,
-    ui: true,
-    transition: true,
-    ..FrameInfo::default()
-  };
-  assert_eq!(
-    RenderPipeline::default_2d().passes_to_run(&frame),
-    vec!["raycast", "post_process", "ui", "composite"]
   );
 }
 

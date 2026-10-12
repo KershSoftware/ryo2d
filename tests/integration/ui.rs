@@ -337,10 +337,10 @@ fn ui_types_independent_of_ecs() {
 
   // ECS World should work independently
   let mut world = World::new();
-  let entity = world.spawn((Transform::new(0.0, 0.0),));
+  let entity = world.spawn((Transform::from_xy(0.0, 0.0),)).id();
 
   // No conflicts between UI and ECS systems - verify entity exists
-  assert!(world.contains(entity));
+  assert!(world.get_entity(entity).is_ok());
 }
 
 // ============================================================================

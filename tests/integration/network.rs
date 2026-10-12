@@ -3,6 +3,7 @@
 //! These tests verify actual network communication between server and client,
 //! including the `ListenServer` for player-hosted games.
 
+use ryo2d::core::network::ReplicationError;
 use ryo2d::prelude::*;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -858,7 +859,7 @@ fn listen_server_receive_from_host_returns_none() {
 use serde::{Deserialize, Serialize};
 
 /// Test component for replication tests
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Component, Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct TestHealth {
   current: f32,
   max: f32,
@@ -879,7 +880,7 @@ impl Replicated for TestHealth {
 }
 
 /// Test component with higher priority
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Component, Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct TestScore {
   points: i32,
 }
@@ -934,15 +935,15 @@ fn component_registry_registers_and_serializes() {
   assert!(!registry.is_registered::<TestHealth>());
 
   // Test serialization using SerializedComponent directly
-  let transform = Transform::new(100.0, 200.0);
+  let transform = Transform::from_xy(100.0, 200.0);
   let serialized = SerializedComponent::from_component(&transform).unwrap();
 
   assert_eq!(serialized.type_id, Transform::component_id());
 
   // Test deserialization
   let deserialized: Transform = serialized.into_component().unwrap();
-  assert_eq!(deserialized.x, 100.0);
-  assert_eq!(deserialized.y, 200.0);
+  assert_eq!(deserialized.translation.x, 100.0);
+  assert_eq!(deserialized.translation.y, 200.0);
 }
 
 #[test]
@@ -1032,7 +1033,9 @@ fn network_entity_builder_creates_server_owned_entity() {
   let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
 
   // Add component after spawning
-  world.add_component(entity, Transform::new(50.0, 75.0));
+  world
+    .entity_mut(entity)
+    .insert(Transform::from_xy(50.0, 75.0));
 
   // Verify entity was created
   assert!(world.get::<Transform>(entity).is_some());
@@ -1056,7 +1059,9 @@ fn network_entity_builder_creates_client_owned_entity() {
   );
 
   // Add component after spawning
-  world.add_component(entity, Transform::new(100.0, 200.0));
+  world
+    .entity_mut(entity)
+    .insert(Transform::from_xy(100.0, 200.0));
 
   let network_entity = world.get::<NetworkEntity>(entity).unwrap();
   assert_eq!(network_entity.authority, Authority::Client(client_id));
@@ -1070,7 +1075,9 @@ fn replication_manager_tracks_network_ids() {
   manager.register::<Transform>();
 
   let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
-  world.add_component(entity, Transform::new(0.0, 0.0));
+  world
+    .entity_mut(entity)
+    .insert(Transform::from_xy(0.0, 0.0));
 
   // Get network ID from entity
   let network_id = manager.get_network_id(entity);
@@ -1088,7 +1095,9 @@ fn replication_manager_despawns_entities() {
   manager.register::<Transform>();
 
   let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
-  world.add_component(entity, Transform::new(0.0, 0.0));
+  world
+    .entity_mut(entity)
+    .insert(Transform::from_xy(0.0, 0.0));
 
   let network_id = manager.get_network_id(entity).unwrap();
 
@@ -1110,12 +1119,14 @@ fn replication_manager_marks_components_dirty() {
   manager.register::<Velocity>();
 
   let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
-  world.add_component(entity, Transform::new(0.0, 0.0));
-  world.add_component(entity, Velocity::new(1.0, 2.0));
+  world
+    .entity_mut(entity)
+    .insert(Transform::from_xy(0.0, 0.0));
+  world.entity_mut(entity).insert(Velocity::new(1.0, 2.0));
 
   // Modify and mark dirty
   if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-    transform.x = 100.0;
+    transform.translation.x = 100.0;
   }
   manager.mark_dirty::<Transform>(entity);
 
@@ -1132,7 +1143,7 @@ fn replication_manager_marks_components_dirty() {
 #[test]
 fn spawn_entity_message_serializes_correctly() {
   let network_id = NetworkId::new();
-  let transform = Transform::new(100.0, 200.0);
+  let transform = Transform::from_xy(100.0, 200.0);
 
   let serialized_transform = SerializedComponent::from_component(&transform).unwrap();
 
@@ -1155,7 +1166,7 @@ fn spawn_entity_message_serializes_correctly() {
 fn component_batch_message_serializes_correctly() {
   let network_id = NetworkId::new();
 
-  let transform = SerializedComponent::from_component(&Transform::new(50.0, 75.0)).unwrap();
+  let transform = SerializedComponent::from_component(&Transform::from_xy(50.0, 75.0)).unwrap();
   let velocity = SerializedComponent::from_component(&Velocity::new(1.0, 2.0)).unwrap();
 
   let msg = ComponentBatchMessage {
@@ -1179,7 +1190,7 @@ fn full_state_sync_message_serializes_correctly() {
   for i in 0..3 {
     let network_id = NetworkId::new();
     let transform =
-      SerializedComponent::from_component(&Transform::new(i as f32 * 100.0, 0.0)).unwrap();
+      SerializedComponent::from_component(&Transform::from_xy(i as f32 * 100.0, 0.0)).unwrap();
 
     let spawn_msg =
       SpawnEntityMessage::new(network_id, 0, Authority::Server).with_component(transform);
@@ -1505,7 +1516,9 @@ fn replication_server_broadcasts_spawn_to_client() {
     &mut server_world,
     NetworkEntityBuilder::new().server_owned(),
   );
-  server_world.add_component(entity, Transform::new(123.0, 456.0));
+  server_world
+    .entity_mut(entity)
+    .insert(Transform::from_xy(123.0, 456.0));
 
   let network_id = server_replication.get_network_id(entity).unwrap();
 
@@ -1582,12 +1595,14 @@ fn replication_client_receives_component_updates() {
     &mut server_world,
     NetworkEntityBuilder::new().server_owned(),
   );
-  server_world.add_component(entity, Transform::new(0.0, 0.0));
+  server_world
+    .entity_mut(entity)
+    .insert(Transform::from_xy(0.0, 0.0));
 
   // Modify the transform
   if let Some(mut transform) = server_world.get_mut::<Transform>(entity) {
-    transform.x = 500.0;
-    transform.y = 600.0;
+    transform.translation.x = 500.0;
+    transform.translation.y = 600.0;
   }
   server_replication.mark_dirty::<Transform>(entity);
 
@@ -1886,7 +1901,9 @@ fn listen_server_replication_excludes_host_from_network() {
     &mut world,
     NetworkEntityBuilder::new().client_owned(server.host_id()),
   );
-  world.add_component(host_entity, Transform::new(100.0, 100.0));
+  world
+    .entity_mut(host_entity)
+    .insert(Transform::from_xy(100.0, 100.0));
 
   // Spawn entity for remote client
   let remote_clients: Vec<_> = server.remote_clients().collect();
@@ -1896,7 +1913,9 @@ fn listen_server_replication_excludes_host_from_network() {
     &mut world,
     NetworkEntityBuilder::new().client_owned(remote_id),
   );
-  world.add_component(remote_entity, Transform::new(200.0, 200.0));
+  world
+    .entity_mut(remote_entity)
+    .insert(Transform::from_xy(200.0, 200.0));
 
   // Verify both entities exist
   assert!(world.get::<Transform>(host_entity).is_some());
@@ -1990,8 +2009,10 @@ fn multiple_entities_replicate_correctly() {
   let entities: Vec<_> = (0..10)
     .map(|i| {
       let entity = manager.spawn_networked(&mut world, NetworkEntityBuilder::new().server_owned());
-      world.add_component(entity, Transform::new(i as f32 * 100.0, 0.0));
-      world.add_component(entity, Velocity::new(1.0, 0.0));
+      world
+        .entity_mut(entity)
+        .insert(Transform::from_xy(i as f32 * 100.0, 0.0));
+      world.entity_mut(entity).insert(Velocity::new(1.0, 0.0));
       entity
     })
     .collect();

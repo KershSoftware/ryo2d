@@ -1,8 +1,7 @@
 //! Integration tests for NetworkedInputHandler
 
-use hecs::Entity;
-use ryo2d::core::ecs::{Transform, World};
-use ryo2d::core::input::InputState;
+use ryo2d::core::ecs::{Entity, Transform, World};
+use ryo2d::core::input::Input;
 use ryo2d::core::network::Channel;
 use ryo2d::core::network::input::{
   InputBuffer, InputProcessor, NetworkedInputHandler, SequencedInput,
@@ -26,7 +25,7 @@ struct MovementHandler {
 impl NetworkedInputHandler for MovementHandler {
   type Input = TestInput;
 
-  fn gather_input(&self, _state: &InputState, _dt: f32) -> Self::Input {
+  fn gather_input(&self, _state: &Input, _dt: f32) -> Self::Input {
     TestInput {
       move_x: 1.0,
       move_y: 0.0,
@@ -36,8 +35,8 @@ impl NetworkedInputHandler for MovementHandler {
 
   fn apply_input(&self, world: &mut World, entity: Entity, input: &Self::Input, dt: f32) {
     if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-      transform.x += input.move_x * self.move_speed * dt;
-      transform.y += input.move_y * self.move_speed * dt;
+      transform.translation.x += input.move_x * self.move_speed * dt;
+      transform.translation.y += input.move_y * self.move_speed * dt;
     }
   }
 
@@ -49,14 +48,14 @@ impl NetworkedInputHandler for MovementHandler {
 #[test]
 fn handler_gather_and_apply() {
   let mut world = World::new();
-  let entity = world.spawn((Transform::new(0.0, 0.0),));
+  let entity = world.spawn((Transform::from_xy(0.0, 0.0),)).id();
 
   let handler = MovementHandler {
     entity: Some(entity),
     move_speed: 100.0,
   };
 
-  let input_state = InputState::default();
+  let input_state = Input::default();
   let input = handler.gather_input(&input_state, 0.016);
 
   assert_eq!(input.move_x, 1.0);
@@ -66,20 +65,20 @@ fn handler_gather_and_apply() {
   handler.apply_input(&mut world, entity, &input, 1.0);
 
   let transform = world.get::<Transform>(entity).unwrap();
-  assert_eq!(transform.x, 100.0);
+  assert_eq!(transform.translation.x, 100.0);
 }
 
 #[test]
 fn processor_multiple_frames() {
   let mut world = World::new();
-  let entity = world.spawn((Transform::new(0.0, 0.0),));
+  let entity = world.spawn((Transform::from_xy(0.0, 0.0),)).id();
 
   let handler = MovementHandler {
     entity: Some(entity),
     move_speed: 60.0,
   };
   let mut processor = InputProcessor::new(handler, 128);
-  let input_state = InputState::default();
+  let input_state = Input::default();
 
   // Simulate 10 frames
   for i in 0..10 {
@@ -90,7 +89,7 @@ fn processor_multiple_frames() {
 
   // Position should be 10 * 60 = 600
   let transform = world.get::<Transform>(entity).unwrap();
-  assert_eq!(transform.x, 600.0);
+  assert_eq!(transform.translation.x, 600.0);
 
   // Should have 10 pending inputs
   assert_eq!(processor.pending_count(), 10);
@@ -99,14 +98,14 @@ fn processor_multiple_frames() {
 #[test]
 fn processor_reconciliation_scenario() {
   let mut world = World::new();
-  let entity = world.spawn((Transform::new(0.0, 0.0),));
+  let entity = world.spawn((Transform::from_xy(0.0, 0.0),)).id();
 
   let handler = MovementHandler {
     entity: Some(entity),
     move_speed: 10.0,
   };
   let mut processor = InputProcessor::new(handler, 128);
-  let input_state = InputState::default();
+  let input_state = Input::default();
 
   // Client predicts 5 frames
   for i in 0..5 {
@@ -115,13 +114,12 @@ fn processor_reconciliation_scenario() {
 
   // Client thinks position is 50
   let transform = world.get::<Transform>(entity).unwrap();
-  assert_eq!(transform.x, 50.0);
-  drop(transform);
+  assert_eq!(transform.translation.x, 50.0);
 
   // Server correction: "actually you're at 45 after frame 3"
   // (maybe server had different collision result)
   if let Some(mut t) = world.get_mut::<Transform>(entity) {
-    t.x = 45.0;
+    t.translation.x = 45.0;
   }
 
   // Reconcile: replay inputs 4 and 5
@@ -129,7 +127,7 @@ fn processor_reconciliation_scenario() {
 
   // Should be 45 + 10 + 10 = 65
   let transform = world.get::<Transform>(entity).unwrap();
-  assert_eq!(transform.x, 65.0);
+  assert_eq!(transform.translation.x, 65.0);
 }
 
 #[test]

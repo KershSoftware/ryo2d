@@ -5,6 +5,9 @@
 //!
 //! These tests verify that engine subsystems work correctly together.
 
+#[path = "integration/support.rs"]
+mod support;
+
 #[path = "integration/lighting.rs"]
 mod lighting;
 

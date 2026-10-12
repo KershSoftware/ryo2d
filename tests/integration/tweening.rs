@@ -60,7 +60,7 @@ fn regression_tween_sequence_loops() {
 #[test]
 fn regression_tween_captures_start_alpha() {
   let mut tween = Tween::fade_to(0.0, 1.0);
-  let mut transform = Transform::new(0.0, 0.0);
+  let mut transform = Transform::from_xy(0.0, 0.0);
 
   // Simulate Renderable with initial alpha of 0.5
   tween.capture_start_renderable(0.5, Color::WHITE);
@@ -85,7 +85,7 @@ fn regression_tween_captures_start_alpha() {
 #[test]
 fn regression_tween_captures_start_tint() {
   let mut tween = Tween::tint_to(Color::RED, 1.0);
-  let mut transform = Transform::new(0.0, 0.0);
+  let mut transform = Transform::from_xy(0.0, 0.0);
 
   // Simulate Renderable with initial tint of blue
   tween.capture_start_renderable(1.0, Color::BLUE);
@@ -214,7 +214,7 @@ fn tween_has_color_targets() {
 #[test]
 fn tween_alpha_interpolation() {
   let mut tween = Tween::fade_to(0.0, 1.0);
-  let mut transform = Transform::new(0.0, 0.0);
+  let mut transform = Transform::from_xy(0.0, 0.0);
 
   // Capture start from "full opacity"
   tween.capture_start_renderable(1.0, Color::WHITE);
@@ -250,7 +250,7 @@ fn tween_alpha_interpolation() {
 #[test]
 fn tween_tint_interpolation() {
   let mut tween = Tween::tint_to(Color::new(0, 0, 0, 255), 1.0);
-  let mut transform = Transform::new(0.0, 0.0);
+  let mut transform = Transform::from_xy(0.0, 0.0);
 
   // Capture start from WHITE
   tween.capture_start_renderable(1.0, Color::WHITE);
@@ -370,11 +370,13 @@ fn tween_renderable_ecs_integration() {
   let sprite = Sprite::solid_rect(10, 10, 255, 255, 255, 255);
   let handle = SpriteHandle::from_sprite(sprite, "test");
 
-  let entity = world.spawn((
-    Transform::new(0.0, 0.0),
-    Renderable::sprite(handle).with_alpha(0.8),
-    Tween::fade_to(0.2, 1.0),
-  ));
+  let entity = world
+    .spawn((
+      Transform::from_xy(0.0, 0.0),
+      Renderable::sprite(handle).with_alpha(0.8),
+      Tween::fade_to(0.2, 1.0),
+    ))
+    .id();
 
   // Verify all components exist
   assert!(world.get::<Transform>(entity).is_some());
@@ -397,14 +399,16 @@ fn tween_sequence_renderable_ecs_integration() {
   let sprite = Sprite::solid_rect(10, 10, 255, 255, 255, 255);
   let handle = SpriteHandle::from_sprite(sprite, "test");
 
-  let entity = world.spawn((
-    Transform::new(0.0, 0.0),
-    Renderable::sprite(handle),
-    TweenSequence::new()
-      .then(Tween::fade_to(0.5, 0.5))
-      .then(Tween::tint_to(Color::RED, 0.5))
-      .with_loop(),
-  ));
+  let entity = world
+    .spawn((
+      Transform::from_xy(0.0, 0.0),
+      Renderable::sprite(handle),
+      TweenSequence::new()
+        .then(Tween::fade_to(0.5, 0.5))
+        .then(Tween::tint_to(Color::RED, 0.5))
+        .with_loop(),
+    ))
+    .id();
 
   // Verify components exist
   assert!(world.get::<TweenSequence>(entity).is_some());
@@ -425,27 +429,33 @@ fn multiple_tween_entities() {
   let handle3 = SpriteHandle::from_sprite(sprite, "test3");
 
   // Entity with Tween (alpha)
-  let e1 = world.spawn((
-    Transform::new(0.0, 0.0),
-    Renderable::sprite(handle1),
-    Tween::fade_out(1.0),
-  ));
+  let e1 = world
+    .spawn((
+      Transform::from_xy(0.0, 0.0),
+      Renderable::sprite(handle1),
+      Tween::fade_out(1.0),
+    ))
+    .id();
 
   // Entity with Tween (tint)
-  let e2 = world.spawn((
-    Transform::new(100.0, 0.0),
-    Renderable::sprite(handle2),
-    Tween::tint_to(Color::BLUE, 1.0),
-  ));
+  let e2 = world
+    .spawn((
+      Transform::from_xy(100.0, 0.0),
+      Renderable::sprite(handle2),
+      Tween::tint_to(Color::BLUE, 1.0),
+    ))
+    .id();
 
   // Entity with TweenSequence
-  let e3 = world.spawn((
-    Transform::new(200.0, 0.0),
-    Renderable::sprite(handle3),
-    TweenSequence::new()
-      .then(Tween::to_position(300.0, 0.0, 0.5))
-      .then(Tween::fade_to(0.5, 0.5)),
-  ));
+  let e3 = world
+    .spawn((
+      Transform::from_xy(200.0, 0.0),
+      Renderable::sprite(handle3),
+      TweenSequence::new()
+        .then(Tween::to_position(300.0, 0.0, 0.5))
+        .then(Tween::fade_to(0.5, 0.5)),
+    ))
+    .id();
 
   // Verify all entities exist with correct components
   assert!(world.get::<Tween>(e1).is_some());
@@ -458,4 +468,44 @@ fn multiple_tween_entities() {
 
   let t2 = world.get::<Tween>(e2).unwrap();
   assert_eq!(t2.target_tint, Some(Color::BLUE));
+}
+
+// ============================================================================
+// ENGINE SYSTEM
+// ============================================================================
+
+/// The engine's fixed update runs a tween to its end and reports it
+#[test]
+fn the_fixed_update_drives_tweens_and_reports_them() {
+  // Ten 0.1 s steps cover the whole one-second tween
+  let (mut world, mut schedules) = crate::support::juice_world(10);
+  let entity = world
+    .spawn((
+      Transform::from_xy(0.0, 0.0),
+      Tween::to_position(100.0, 0.0, 1.0),
+    ))
+    .id();
+
+  crate::support::run_fixed(&mut world, &mut schedules, 10);
+
+  let x = world
+    .get::<Transform>(entity)
+    .expect("transform")
+    .translation
+    .x;
+  assert!(
+    (x - 100.0).abs() < 1e-3,
+    "the tween ended at x = 100, got {x}"
+  );
+  assert_eq!(
+    crate::support::messages::<TweenStarted>(&world),
+    [TweenStarted { entity }]
+  );
+  assert_eq!(
+    crate::support::messages::<TweenCompleted>(&world),
+    [TweenCompleted {
+      entity,
+      finished: true
+    }]
+  );
 }

@@ -193,7 +193,7 @@ fn knockback_accumulates_force() {
   let mut kb = Knockback::new(Vec2::new(1.0, 0.0), 100.0);
 
   // Apply more force in same direction
-  kb.apply(Vec2::new(1.0, 0.0), 100.0);
+  kb.push(Vec2::new(1.0, 0.0), 100.0);
 
   // Force should accumulate (capped at 2000)
   assert!(kb.force() > 100.0, "Force should accumulate");
@@ -205,7 +205,7 @@ fn knockback_blends_directions() {
   let mut kb = Knockback::new(Vec2::new(1.0, 0.0), 100.0);
 
   // Apply force at 90 degrees
-  kb.apply(Vec2::new(0.0, 1.0), 100.0);
+  kb.push(Vec2::new(0.0, 1.0), 100.0);
 
   // Direction should be blended (roughly 45 degrees)
   let dir = kb.direction();
@@ -218,7 +218,7 @@ fn knockback_blends_directions() {
 fn knockback_replaces_when_no_accumulate() {
   let mut kb = Knockback::new(Vec2::new(1.0, 0.0), 100.0).with_accumulate(false);
 
-  kb.apply(Vec2::new(0.0, -1.0), 200.0);
+  kb.push(Vec2::new(0.0, -1.0), 200.0);
 
   // Should be completely replaced
   let dir = kb.direction();
@@ -236,10 +236,12 @@ fn knockback_replaces_when_no_accumulate() {
 fn knockback_with_transform_ecs() {
   let mut world = World::new();
 
-  let entity = world.spawn((
-    Transform::new(100.0, 100.0),
-    Knockback::new(Vec2::new(1.0, 0.0), 400.0),
-  ));
+  let entity = world
+    .spawn((
+      Transform::from_xy(100.0, 100.0),
+      Knockback::new(Vec2::new(1.0, 0.0), 400.0),
+    ))
+    .id();
 
   assert!(world.get::<Transform>(entity).is_some());
   assert!(world.get::<Knockback>(entity).is_some());
@@ -254,11 +256,13 @@ fn knockback_with_transform_ecs() {
 fn knockback_with_velocity_ecs() {
   let mut world = World::new();
 
-  let entity = world.spawn((
-    Transform::new(100.0, 100.0),
-    Velocity::new(0.0, 0.0),
-    Knockback::new(Vec2::new(-1.0, 0.5), 300.0),
-  ));
+  let entity = world
+    .spawn((
+      Transform::from_xy(100.0, 100.0),
+      Velocity::new(0.0, 0.0),
+      Knockback::new(Vec2::new(-1.0, 0.5), 300.0),
+    ))
+    .id();
 
   assert!(world.get::<Velocity>(entity).is_some());
   assert!(world.get::<Knockback>(entity).is_some());
@@ -270,23 +274,29 @@ fn multiple_knockback_entities() {
   let mut world = World::new();
 
   // Simple entity (Transform only)
-  let e1 = world.spawn((
-    Transform::new(0.0, 0.0),
-    Knockback::new(Vec2::new(1.0, 0.0), 400.0),
-  ));
+  let e1 = world
+    .spawn((
+      Transform::from_xy(0.0, 0.0),
+      Knockback::new(Vec2::new(1.0, 0.0), 400.0),
+    ))
+    .id();
 
   // Physics entity (with Velocity)
-  let e2 = world.spawn((
-    Transform::new(100.0, 0.0),
-    Velocity::new(0.0, 0.0),
-    Knockback::new(Vec2::new(-1.0, 0.0), 300.0),
-  ));
+  let e2 = world
+    .spawn((
+      Transform::from_xy(100.0, 0.0),
+      Velocity::new(0.0, 0.0),
+      Knockback::new(Vec2::new(-1.0, 0.0), 300.0),
+    ))
+    .id();
 
   // Different decay rate
-  let e3 = world.spawn((
-    Transform::new(200.0, 0.0),
-    Knockback::new(Vec2::new(0.0, 1.0), 500.0).with_decay_rate(8.0),
-  ));
+  let e3 = world
+    .spawn((
+      Transform::from_xy(200.0, 0.0),
+      Knockback::new(Vec2::new(0.0, 1.0), 500.0).with_decay_rate(8.0),
+    ))
+    .id();
 
   // Verify all entities have knockback
   assert!(world.get::<Knockback>(e1).is_some());
@@ -301,4 +311,35 @@ fn multiple_knockback_entities() {
   assert_eq!(kb1.force(), 400.0);
   assert_eq!(kb2.force(), 300.0);
   assert_eq!(kb3.decay_rate(), 8.0);
+}
+
+// ============================================================================
+// ENGINE SYSTEM
+// ============================================================================
+
+/// REGRESSION: the engine's fixed update moves a knocked-back entity and
+/// reports the impulse starting and finishing
+#[test]
+fn the_fixed_update_drives_knockback_and_reports_it() {
+  let (mut world, mut schedules) = crate::support::juice_world(60);
+  let entity = world.spawn(Transform::from_xy(0.0, 0.0)).id();
+  Knockback::apply(&mut world, entity, Vec2::new(1.0, 0.0), 300.0);
+
+  crate::support::run_fixed(&mut world, &mut schedules, 1);
+  let x = world
+    .get::<Transform>(entity)
+    .expect("transform")
+    .translation
+    .x;
+  assert!(x > 0.0, "knockback moved the entity along +x, got {x}");
+  assert_eq!(
+    crate::support::messages::<KnockbackStarted>(&world),
+    [KnockbackStarted { entity }]
+  );
+
+  crate::support::run_fixed(&mut world, &mut schedules, 120);
+  assert_eq!(
+    crate::support::messages::<KnockbackFinished>(&world),
+    [KnockbackFinished { entity }]
+  );
 }

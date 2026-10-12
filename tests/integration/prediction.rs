@@ -1,16 +1,20 @@
 //! Integration tests for client-side prediction
 
-use ryo2d::core::ecs::{Transform, World};
+use ryo2d::core::ecs::{Entity, Transform, World};
 use ryo2d::core::network::prediction::{
   Predicted, PredictionHelper, ServerPositionUpdate, UpdateResult,
 };
 
-fn create_player(world: &mut World, owner: u64) -> hecs::Entity {
-  world.spawn((Transform::new(0.0, 0.0), Predicted::new(owner)))
+fn create_player(world: &mut World, owner: u64) -> Entity {
+  world
+    .spawn((Transform::from_xy(0.0, 0.0), Predicted::new(owner)))
+    .id()
 }
 
-fn create_player_spawned(world: &mut World, owner: u64) -> hecs::Entity {
-  world.spawn((Transform::new(0.0, 0.0), Predicted::new_spawned(owner)))
+fn create_player_spawned(world: &mut World, owner: u64) -> Entity {
+  world
+    .spawn((Transform::from_xy(0.0, 0.0), Predicted::new_spawned(owner)))
+    .id()
 }
 
 #[test]
@@ -28,13 +32,12 @@ fn full_prediction_workflow() {
 
   // Verify position
   let pos = world.get::<Transform>(entity).unwrap();
-  assert_eq!(pos.x, 100.0);
-  assert_eq!(pos.y, 100.0);
-  drop(pos);
+  assert_eq!(pos.translation.x, 100.0);
+  assert_eq!(pos.translation.y, 100.0);
 
   // Step 2: Client predicts movement
   if let Some(mut t) = world.get_mut::<Transform>(entity) {
-    t.x = 120.0; // Client thinks we moved to 120
+    t.translation.x = 120.0; // Client thinks we moved to 120
   }
 
   // Step 3: Server sends update (we were at 115 at sequence 1)
@@ -44,7 +47,7 @@ fn full_prediction_workflow() {
 
   // Position should still be predicted value (reconciliation happens elsewhere)
   let pos = world.get::<Transform>(entity).unwrap();
-  assert_eq!(pos.x, 120.0);
+  assert_eq!(pos.translation.x, 120.0);
 }
 
 #[test]
@@ -68,7 +71,7 @@ fn remote_players_always_apply() {
     assert_eq!(result, UpdateResult::Applied);
 
     let pos = world.get::<Transform>(entity).unwrap();
-    assert_eq!(pos.x, i as f32 * 10.0);
+    assert_eq!(pos.translation.x, i as f32 * 10.0);
   }
 }
 
@@ -82,8 +85,8 @@ fn respawn_forces_correction() {
 
   // Move somewhere
   if let Some(mut t) = world.get_mut::<Transform>(entity) {
-    t.x = 500.0;
-    t.y = 500.0;
+    t.translation.x = 500.0;
+    t.translation.y = 500.0;
   }
 
   // Respawn: force correction to spawn point
@@ -92,8 +95,8 @@ fn respawn_forces_correction() {
 
   // Should be at spawn point, not predicted position
   let pos = world.get::<Transform>(entity).unwrap();
-  assert_eq!(pos.x, 0.0);
-  assert_eq!(pos.y, 0.0);
+  assert_eq!(pos.translation.x, 0.0);
+  assert_eq!(pos.translation.y, 0.0);
 }
 
 #[test]

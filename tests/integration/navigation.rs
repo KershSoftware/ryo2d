@@ -331,12 +331,14 @@ fn nav_agent_state_machine() {
 fn nav_agent_world_integration() {
   let mut world = World::new();
 
-  let entity = world.spawn((
-    Transform::new(100.0, 100.0),
-    NavAgent::new(80.0)
-      .with_arrival_threshold(8.0)
-      .with_smoothing(PathSmoothing::LineOfSight),
-  ));
+  let entity = world
+    .spawn((
+      Transform::from_xy(100.0, 100.0),
+      NavAgent::new(80.0)
+        .with_arrival_threshold(8.0)
+        .with_smoothing(PathSmoothing::LineOfSight),
+    ))
+    .id();
 
   // Verify components exist
   let agent = world.get::<NavAgent>(entity);
@@ -353,7 +355,7 @@ fn nav_agent_world_integration() {
 fn nav_target_position_and_follow() {
   let mut world = World::new();
 
-  let player = world.spawn((Transform::new(500.0, 500.0),));
+  let player = world.spawn((Transform::from_xy(500.0, 500.0),)).id();
 
   // Position target
   let target = NavTarget::position(200.0, 300.0);
@@ -422,7 +424,7 @@ fn performance_grid_rebuild() {
   // Spawn 50 obstacles
   for i in 0..50 {
     world.spawn((
-      Transform::new(100.0 + i as f32 * 10.0, 100.0 + i as f32 * 5.0),
+      Transform::from_xy(100.0 + i as f32 * 10.0, 100.0 + i as f32 * 5.0),
       Collider::box_collider(16.0, 16.0),
     ));
   }
@@ -430,7 +432,7 @@ fn performance_grid_rebuild() {
   // Measure rebuild time (just verify it completes)
   let grid = NavigationBuilder::new(800.0, 600.0)
     .with_cell_size(16.0)
-    .build_from_world(&world);
+    .build_from_world(&mut world);
 
   // Verify obstacles are blocked
   let (w, h) = grid.dimensions();

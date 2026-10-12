@@ -19,14 +19,16 @@ use ryo2d::prelude::*;
 fn ysort_spawn_basic() {
   let mut world = World::new();
 
-  let entity = world.spawn((Transform::new(100.0, 200.0), YSort::new()));
+  let entity = world
+    .spawn((Transform::from_xy(100.0, 200.0), YSort::new()))
+    .id();
 
   assert!(
-    world.has::<YSort>(entity),
+    world.get::<YSort>(entity).is_some(),
     "Entity should have YSort component"
   );
   assert!(
-    world.has::<Transform>(entity),
+    world.get::<Transform>(entity).is_some(),
     "Entity should have Transform component"
   );
 }
@@ -36,7 +38,9 @@ fn ysort_spawn_basic() {
 fn ysort_get_defaults() {
   let mut world = World::new();
 
-  let entity = world.spawn((Transform::new(0.0, 0.0), YSort::new()));
+  let entity = world
+    .spawn((Transform::from_xy(0.0, 0.0), YSort::new()))
+    .id();
 
   let ysort = world.get::<YSort>(entity);
   assert!(ysort.is_some());
@@ -52,13 +56,15 @@ fn ysort_get_defaults() {
 fn ysort_spawn_with_settings() {
   let mut world = World::new();
 
-  let entity = world.spawn((
-    Transform::new(50.0, 100.0),
-    YSort::new()
-      .with_foot_offset(0.5)
-      .with_sort_offset(10.0)
-      .with_depth_scale(0.8, 1.2, 0.0, 200.0),
-  ));
+  let entity = world
+    .spawn((
+      Transform::from_xy(50.0, 100.0),
+      YSort::new()
+        .with_foot_offset(0.5)
+        .with_sort_offset(10.0)
+        .with_depth_scale(0.8, 1.2, 0.0, 200.0),
+    ))
+    .id();
 
   let ysort = world.get::<YSort>(entity).unwrap();
   assert_eq!(ysort.foot_offset, 0.5);
@@ -73,7 +79,9 @@ fn ysort_spawn_with_settings() {
 fn ysort_modify() {
   let mut world = World::new();
 
-  let entity = world.spawn((Transform::new(0.0, 0.0), YSort::new()));
+  let entity = world
+    .spawn((Transform::from_xy(0.0, 0.0), YSort::new()))
+    .id();
 
   // Modify the YSort component
   if let Some(mut ysort) = world.get_mut::<YSort>(entity) {
@@ -102,7 +110,9 @@ fn ysort_modify() {
 fn ysort_replace() {
   let mut world = World::new();
 
-  let entity = world.spawn((Transform::new(0.0, 0.0), YSort::new()));
+  let entity = world
+    .spawn((Transform::from_xy(0.0, 0.0), YSort::new()))
+    .id();
 
   // Replace with a completely new YSort
   if let Some(mut ysort) = world.get_mut::<YSort>(entity) {
@@ -126,15 +136,18 @@ fn ysort_query_entities_with() {
   let mut world = World::new();
 
   // Spawn some entities with YSort
-  world.spawn((Transform::new(0.0, 0.0), YSort::new()));
-  world.spawn((Transform::new(10.0, 10.0), YSort::new()));
-  world.spawn((Transform::new(20.0, 20.0), YSort::new()));
+  world.spawn((Transform::from_xy(0.0, 0.0), YSort::new()));
+  world.spawn((Transform::from_xy(10.0, 10.0), YSort::new()));
+  world.spawn((Transform::from_xy(20.0, 20.0), YSort::new()));
 
   // Spawn some entities without YSort
-  world.spawn((Transform::new(30.0, 30.0),));
-  world.spawn((Transform::new(40.0, 40.0),));
+  world.spawn((Transform::from_xy(30.0, 30.0),));
+  world.spawn((Transform::from_xy(40.0, 40.0),));
 
-  let ysort_entities = world.entities_with::<YSort>();
+  let ysort_entities = world
+    .query_filtered::<Entity, With<YSort>>()
+    .iter(&world)
+    .collect::<Vec<_>>();
   assert_eq!(ysort_entities.len(), 3, "Should find 3 entities with YSort");
 }
 
@@ -143,16 +156,19 @@ fn ysort_query_entities_with() {
 fn ysort_query_with_transform() {
   let mut world = World::new();
 
-  world.spawn((Transform::new(100.0, 50.0), YSort::new()));
-  world.spawn((Transform::new(200.0, 100.0), YSort::new()));
+  world.spawn((Transform::from_xy(100.0, 50.0), YSort::new()));
+  world.spawn((Transform::from_xy(200.0, 100.0), YSort::new()));
 
-  let entities = world.entities_with_two::<Transform, YSort>();
+  let entities = world
+    .query_filtered::<Entity, (With<Transform>, With<YSort>)>()
+    .iter(&world)
+    .collect::<Vec<_>>();
   assert_eq!(entities.len(), 2);
 
   // Verify we can access both components
   for entity in entities {
-    assert!(world.has::<Transform>(entity));
-    assert!(world.has::<YSort>(entity));
+    assert!(world.get::<Transform>(entity).is_some());
+    assert!(world.get::<YSort>(entity).is_some());
   }
 }
 
@@ -169,15 +185,19 @@ fn ysort_with_renderable() {
   let sprite = Sprite::solid_rect(16, 24, 255, 0, 0, 255);
   let sprite_handle = SpriteHandle::from_sprite(sprite, "test_sprite");
 
-  let entity = world.spawn((
-    Transform::new(100.0, 150.0).with_anchor(Anchor::BottomCenter),
-    Renderable::sprite(sprite_handle).with_z_order(0),
-    YSort::new(),
-  ));
+  let entity = world
+    .spawn((
+      Transform::from_xy(100.0, 150.0),
+      Renderable::sprite(sprite_handle)
+        .with_anchor(Anchor::BottomCenter)
+        .with_z_order(0),
+      YSort::new(),
+    ))
+    .id();
 
-  assert!(world.has::<Transform>(entity));
-  assert!(world.has::<Renderable>(entity));
-  assert!(world.has::<YSort>(entity));
+  assert!(world.get::<Transform>(entity).is_some());
+  assert!(world.get::<Renderable>(entity).is_some());
+  assert!(world.get::<YSort>(entity).is_some());
 
   // Verify the sprite height can be used with YSort
   let renderable = world.get::<Renderable>(entity).unwrap();
@@ -185,7 +205,7 @@ fn ysort_with_renderable() {
   let transform = world.get::<Transform>(entity).unwrap();
 
   let sprite_height = renderable.sprite.height() as f32;
-  let sort_y = ysort.calculate_sort_y(transform.y, sprite_height);
+  let sort_y = ysort.calculate_sort_y(transform.translation.y, sprite_height);
 
   // sort_y = 150 + (24 * 1.0) + 0 = 174
   assert_eq!(sort_y, 174.0);
@@ -204,23 +224,29 @@ fn ysort_ordering_by_y() {
   let sprite_handle = SpriteHandle::from_sprite(sprite, "test");
 
   // Create entities at different Y positions
-  let entity_top = world.spawn((
-    Transform::new(100.0, 50.0),
-    Renderable::sprite(sprite_handle.clone()),
-    YSort::new(),
-  ));
+  let entity_top = world
+    .spawn((
+      Transform::from_xy(100.0, 50.0),
+      Renderable::sprite(sprite_handle.clone()),
+      YSort::new(),
+    ))
+    .id();
 
-  let entity_middle = world.spawn((
-    Transform::new(100.0, 100.0),
-    Renderable::sprite(sprite_handle.clone()),
-    YSort::new(),
-  ));
+  let entity_middle = world
+    .spawn((
+      Transform::from_xy(100.0, 100.0),
+      Renderable::sprite(sprite_handle.clone()),
+      YSort::new(),
+    ))
+    .id();
 
-  let entity_bottom = world.spawn((
-    Transform::new(100.0, 150.0),
-    Renderable::sprite(sprite_handle),
-    YSort::new(),
-  ));
+  let entity_bottom = world
+    .spawn((
+      Transform::from_xy(100.0, 150.0),
+      Renderable::sprite(sprite_handle),
+      YSort::new(),
+    ))
+    .id();
 
   // Calculate sort Y for each
   let sprite_height = 16.0;
@@ -286,10 +312,12 @@ fn ysort_z_order_precedence() {
 fn ysort_depth_scale_interpolation() {
   let mut world = World::new();
 
-  let entity = world.spawn((
-    Transform::new(100.0, 100.0),
-    YSort::new().with_depth_scale(0.5, 1.5, 0.0, 200.0),
-  ));
+  let entity = world
+    .spawn((
+      Transform::from_xy(100.0, 100.0),
+      YSort::new().with_depth_scale(0.5, 1.5, 0.0, 200.0),
+    ))
+    .id();
 
   let ysort = world.get::<YSort>(entity).unwrap();
 
@@ -344,15 +372,17 @@ fn ysort_depth_scale_application() {
 fn ysort_despawn() {
   let mut world = World::new();
 
-  let entity = world.spawn((Transform::new(0.0, 0.0), YSort::new()));
+  let entity = world
+    .spawn((Transform::from_xy(0.0, 0.0), YSort::new()))
+    .id();
 
-  assert!(world.has::<YSort>(entity));
+  assert!(world.get::<YSort>(entity).is_some());
 
-  let _ = world.despawn(entity);
+  world.despawn(entity);
 
   // Entity should no longer exist
-  assert!(!world.has::<YSort>(entity));
-  assert!(!world.has::<Transform>(entity));
+  assert!(!world.get::<YSort>(entity).is_some());
+  assert!(!world.get::<Transform>(entity).is_some());
 }
 
 // ============================================================================
@@ -370,16 +400,22 @@ fn ysort_many_entities() {
   // Spawn 100 entities with YSort
   let mut entities = Vec::new();
   for i in 0..100 {
-    let entity = world.spawn((
-      Transform::new(i as f32 * 10.0, i as f32 * 5.0),
-      Renderable::sprite(sprite_handle.clone()),
-      YSort::new().with_depth_scale(0.8, 1.2, 0.0, 500.0),
-    ));
+    let entity = world
+      .spawn((
+        Transform::from_xy(i as f32 * 10.0, i as f32 * 5.0),
+        Renderable::sprite(sprite_handle.clone()),
+        YSort::new().with_depth_scale(0.8, 1.2, 0.0, 500.0),
+      ))
+      .id();
     entities.push(entity);
   }
 
   // Verify all entities have YSort
-  let ysort_count = world.entities_with::<YSort>().len();
+  let ysort_count = world
+    .query_filtered::<Entity, With<YSort>>()
+    .iter(&world)
+    .collect::<Vec<_>>()
+    .len();
   assert_eq!(ysort_count, 100);
 
   // Verify we can calculate sort keys for all
@@ -387,7 +423,7 @@ fn ysort_many_entities() {
     let transform = world.get::<Transform>(entity).unwrap();
     let ysort = world.get::<YSort>(entity).unwrap();
 
-    let sort_y = ysort.calculate_sort_y(transform.y, 8.0);
+    let sort_y = ysort.calculate_sort_y(transform.translation.y, 8.0);
     let expected = (i as f32 * 5.0) + 8.0; // y + sprite_height
     assert_eq!(sort_y, expected);
   }
@@ -401,13 +437,16 @@ fn ysort_batch_update() {
   // Spawn entities
   for i in 0..10 {
     world.spawn((
-      Transform::new(i as f32 * 20.0, i as f32 * 10.0),
+      Transform::from_xy(i as f32 * 20.0, i as f32 * 10.0),
       YSort::new(),
     ));
   }
 
   // Collect entities to update
-  let entities_to_update = world.entities_with::<YSort>();
+  let entities_to_update = world
+    .query_filtered::<Entity, With<YSort>>()
+    .iter(&world)
+    .collect::<Vec<_>>();
 
   // Update all YSort components with new settings
   let new_ysort = YSort::new().with_depth_scale(0.7, 1.3, 0.0, 100.0);
@@ -419,7 +458,11 @@ fn ysort_batch_update() {
   }
 
   // Verify all were updated
-  for entity in world.entities_with::<YSort>() {
+  for entity in world
+    .query_filtered::<Entity, With<YSort>>()
+    .iter(&world)
+    .collect::<Vec<_>>()
+  {
     let ysort = world.get::<YSort>(entity).unwrap();
     assert!(ysort.depth_scale_enabled);
     assert_eq!(ysort.scale_min, 0.7);

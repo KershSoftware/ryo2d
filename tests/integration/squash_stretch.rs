@@ -216,7 +216,7 @@ fn squash_stretch_apply() {
   let mut ss = SquashStretch::new(0.3);
   ss.stop();
 
-  ss.apply(0.5);
+  ss.squash(0.5);
 
   assert!(ss.active);
   assert!(ss.just_started);
@@ -233,7 +233,9 @@ fn squash_stretch_apply() {
 fn squash_stretch_with_transform_ecs() {
   let mut world = World::new();
 
-  let entity = world.spawn((Transform::new(100.0, 100.0), SquashStretch::new(0.3)));
+  let entity = world
+    .spawn((Transform::from_xy(100.0, 100.0), SquashStretch::new(0.3)))
+    .id();
 
   assert!(world.get::<Transform>(entity).is_some());
   assert!(world.get::<SquashStretch>(entity).is_some());
@@ -249,22 +251,28 @@ fn multiple_squash_stretch_entities() {
   let mut world = World::new();
 
   // Landing impact (Y-axis)
-  let e1 = world.spawn((
-    Transform::new(0.0, 0.0),
-    SquashStretch::new(0.3).with_axis(SquashAxis::Y),
-  ));
+  let e1 = world
+    .spawn((
+      Transform::from_xy(0.0, 0.0),
+      SquashStretch::new(0.3).with_axis(SquashAxis::Y),
+    ))
+    .id();
 
   // Wall hit (X-axis)
-  let e2 = world.spawn((
-    Transform::new(100.0, 0.0),
-    SquashStretch::new(0.4).with_axis(SquashAxis::X),
-  ));
+  let e2 = world
+    .spawn((
+      Transform::from_xy(100.0, 0.0),
+      SquashStretch::new(0.4).with_axis(SquashAxis::X),
+    ))
+    .id();
 
   // Fast recovery
-  let e3 = world.spawn((
-    Transform::new(200.0, 0.0),
-    SquashStretch::new(0.5).with_decay_rate(12.0),
-  ));
+  let e3 = world
+    .spawn((
+      Transform::from_xy(200.0, 0.0),
+      SquashStretch::new(0.5).with_decay_rate(12.0),
+    ))
+    .id();
 
   // Verify all entities have squash/stretch
   assert!(world.get::<SquashStretch>(e1).is_some());
@@ -303,4 +311,36 @@ fn squash_stretch_captures_base_scale() {
   let (bx, by) = ss.base_scale();
   assert!((bx - 2.0).abs() < 0.01, "Base scale X should not change");
   assert!((by - 1.5).abs() < 0.01, "Base scale Y should not change");
+}
+
+// ============================================================================
+// ENGINE SYSTEM
+// ============================================================================
+
+/// The engine's fixed update deforms a squashed entity, reports it, and
+/// returns it to its base scale
+#[test]
+fn the_fixed_update_drives_squash_and_stretch_and_reports_it() {
+  let (mut world, mut schedules) = crate::support::juice_world(60);
+  let entity = world.spawn(Transform::from_xy(0.0, 0.0)).id();
+  SquashStretch::apply(&mut world, entity, 0.5);
+
+  crate::support::run_fixed(&mut world, &mut schedules, 1);
+  let scale = world.get::<Transform>(entity).expect("transform").scale;
+  assert_ne!(scale, Vec2::ONE, "the squash deformed the entity");
+  assert_eq!(
+    crate::support::messages::<SquashStretchStarted>(&world),
+    [SquashStretchStarted { entity }]
+  );
+
+  crate::support::run_fixed(&mut world, &mut schedules, 240);
+  assert_eq!(
+    crate::support::messages::<SquashStretchFinished>(&world),
+    [SquashStretchFinished { entity }]
+  );
+  let scale = world.get::<Transform>(entity).expect("transform").scale;
+  assert!(
+    (scale - Vec2::ONE).length() < 1e-3,
+    "back to base, got {scale:?}"
+  );
 }

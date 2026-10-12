@@ -1,77 +1,53 @@
-//! Transform and pivot system integration tests
+//! Transform, hierarchy and anchor integration tests
 //!
-//! These tests verify transform pivots behave correctly and don't break
-//! existing game positioning logic.
-//!
-//! REGRESSION CONTEXT:
-//! - Changing default pivot from (0,0) to (0.5,0.5) broke all existing games
-//! - Sprites appeared in wrong positions
-//! - Flappy bird spun wildly instead of tilting (combined with radians bug)
-//! - Pivot offset calculation was incorrectly applied to (0,0) pivot
+//! `Transform` is local to the parent (or the world, for a root); the engine
+//! writes `GlobalTransform`. Single sprites are placed by their anchor, which
+//! defaults to the centre.
 
 use ryo2d::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-// ============================================================================
-// REGRESSION TESTS - Critical invariants that must never break
-// ============================================================================
+#[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Step;
 
-/// REGRESSION: Default pivot MUST be top-left (0, 0)
-///
-/// This is critical for backwards compatibility. Existing games expect:
-/// - Transform position = top-left corner of sprite
-/// - Sprites spawn at exact coordinates given
-///
-/// Changing this default broke all existing games.
-#[test]
-fn regression_default_pivot_is_top_left() {
-  let transform = Transform::new(100.0, 200.0);
-
-  assert_eq!(transform.pivot_x, 0.0, "Default pivot_x must be 0.0 (left)");
-  assert_eq!(transform.pivot_y, 0.0, "Default pivot_y must be 0.0 (top)");
+/// Run transform propagation once, as the engine does each step.
+fn propagate(world: &mut World) {
+  let mut schedule = Schedule::new(Step);
+  schedule.add_systems(propagate_transforms);
+  schedule.run(world);
 }
 
-/// REGRESSION: Top-left pivot (0,0) must use simple positioning
-///
-/// When pivot is (0,0), the engine should NOT apply pivot offset calculations.
-/// This is a special case that preserves the original/legacy behavior where
-/// transform.x/y directly represents the top-left corner of the sprite.
-///
-/// The pivot offset calculation is: offset = (pivot - 0.5) * size
-/// For (0,0): offset = (-0.5, -0.5) * size = shift sprite up-left
-/// For (0.5,0.5): offset = (0,0) = no shift (centered on position)
-///
-/// But for backwards compatibility, (0,0) pivot skips this calculation entirely.
+fn close(a: Vec2, b: Vec2) -> bool {
+  (a - b).length() < 1e-4
+}
+
+// ============================================================================
+// DEFAULTS
+// ============================================================================
+
 #[test]
-fn regression_top_left_pivot_no_offset_calculation() {
-  let transform = Transform::new(100.0, 100.0);
+fn the_default_transform_is_the_identity() {
+  assert_eq!(Transform::default(), Transform::IDENTITY);
+}
 
-  // With (0,0) pivot:
-  // - Position (100, 100) should be the TOP-LEFT corner of the sprite
-  // - No pivot offset should be applied
-  // - Sprite draws at exactly (100, 100) as its origin
-
-  assert_eq!(transform.pivot_x, 0.0);
-  assert_eq!(transform.pivot_y, 0.0);
-
-  // This test documents the engine behavior:
-  // In engine.rs render loop, when pivot is (0,0), the simple draw path is used
-  // without pivot offset calculations.
+#[test]
+fn a_sprite_is_centred_on_its_position_by_default() {
+  let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 255, 255, 255), "dot");
+  assert_eq!(Renderable::sprite(sprite).anchor, Anchor::Center);
 }
 
 /// REGRESSION: Default rotation must be 0 (no rotation)
 #[test]
 fn regression_default_rotation_is_zero() {
-  let transform = Transform::new(100.0, 200.0);
+  let transform = Transform::from_xy(100.0, 200.0);
   assert_eq!(transform.rotation, 0.0, "Default rotation must be 0");
 }
 
 /// REGRESSION: Default scale must be 1.0 (no scaling)
 #[test]
 fn regression_default_scale_is_one() {
-  let transform = Transform::new(100.0, 200.0);
-  assert_eq!(transform.scale_x, 1.0, "Default scale_x must be 1.0");
-  assert_eq!(transform.scale_y, 1.0, "Default scale_y must be 1.0");
+  let transform = Transform::from_xy(100.0, 200.0);
+  assert_eq!(transform.scale, Vec2::ONE, "Default scale must be 1.0");
 }
 
 /// REGRESSION: Engine uses radians for rotation, not degrees
@@ -81,238 +57,145 @@ fn regression_default_scale_is_one() {
 /// (25 radians = 1432 degrees), causing sprites to spin wildly.
 #[test]
 fn regression_rotation_is_in_radians() {
-  // Document that rotation is in radians
-  let mut transform = Transform::new(0.0, 0.0);
+  let mut transform = Transform::from_xy(0.0, 0.0);
 
-  // 90 degrees = PI/2 radians
   transform.rotation = FRAC_PI_2;
-  assert!(
-    (transform.rotation - FRAC_PI_2).abs() < 0.0001,
-    "90 degrees should be PI/2 radians"
-  );
+  assert!((transform.rotation_degrees() - 90.0).abs() < 0.001);
 
-  // 180 degrees = PI radians
   transform.rotation = PI;
-  assert!(
-    (transform.rotation - PI).abs() < 0.0001,
-    "180 degrees should be PI radians"
-  );
+  assert!((transform.rotation_degrees() - 180.0).abs() < 0.001);
 
-  // Full rotation = 2*PI radians (TAU)
   transform.rotation = TAU;
+  assert!((transform.rotation_degrees() - 360.0).abs() < 0.001);
+
   assert!(
-    (transform.rotation - TAU).abs() < 0.0001,
-    "360 degrees should be TAU radians"
+    (Transform::IDENTITY.with_rotation_degrees(45.0).rotation - PI / 4.0).abs() < 0.0001,
+    "degrees go through the explicit helper"
   );
-
-  // Common mistake: using degrees directly
-  // If someone sets rotation = 45.0 (intending 45 degrees),
-  // they're actually setting 45 radians = 2578 degrees = 7+ full rotations
-  // This is a game-level bug, but we document the expected behavior here.
 }
 
 // ============================================================================
-// PIVOT BUILDER TESTS
+// BUILDERS
 // ============================================================================
 
-/// Test center pivot (0.5, 0.5)
-#[test]
-fn pivot_center() {
-  let transform = Transform::new(100.0, 200.0).with_pivot_center();
-
-  assert_eq!(transform.pivot_x, 0.5, "Center pivot_x should be 0.5");
-  assert_eq!(transform.pivot_y, 0.5, "Center pivot_y should be 0.5");
-  assert_eq!(transform.x, 100.0, "Position should be unchanged");
-  assert_eq!(transform.y, 200.0, "Position should be unchanged");
-}
-
-/// Test top-center pivot (0.5, 0.0) - used for pendulums, hanging objects
-#[test]
-fn pivot_top_center() {
-  let transform = Transform::new(100.0, 200.0).with_pivot_top_center();
-
-  assert_eq!(transform.pivot_x, 0.5, "Top-center pivot_x should be 0.5");
-  assert_eq!(transform.pivot_y, 0.0, "Top-center pivot_y should be 0.0");
-}
-
-/// Test bottom-center pivot (0.5, 1.0) - used for standing objects
-#[test]
-fn pivot_bottom_center() {
-  let transform = Transform::new(100.0, 200.0).with_pivot_bottom_center();
-
-  assert_eq!(
-    transform.pivot_x, 0.5,
-    "Bottom-center pivot_x should be 0.5"
-  );
-  assert_eq!(
-    transform.pivot_y, 1.0,
-    "Bottom-center pivot_y should be 1.0"
-  );
-}
-
-/// Test explicit top-left pivot
-#[test]
-fn pivot_top_left_explicit() {
-  let transform = Transform::new(100.0, 200.0).with_pivot_top_left();
-
-  assert_eq!(transform.pivot_x, 0.0, "Top-left pivot_x should be 0.0");
-  assert_eq!(transform.pivot_y, 0.0, "Top-left pivot_y should be 0.0");
-}
-
-/// Test top-right pivot
-#[test]
-fn pivot_top_right() {
-  let transform = Transform::new(100.0, 200.0).with_pivot_top_right();
-
-  assert_eq!(transform.pivot_x, 1.0, "Top-right pivot_x should be 1.0");
-  assert_eq!(transform.pivot_y, 0.0, "Top-right pivot_y should be 0.0");
-}
-
-/// Test custom pivot values
-#[test]
-fn pivot_custom_values() {
-  let transform = Transform::new(100.0, 200.0).with_pivot(0.25, 0.75);
-
-  assert_eq!(
-    transform.pivot_x, 0.25,
-    "Custom pivot_x should be preserved"
-  );
-  assert_eq!(
-    transform.pivot_y, 0.75,
-    "Custom pivot_y should be preserved"
-  );
-}
-
-/// Test pivot via Anchor enum
-#[test]
-fn pivot_via_anchor() {
-  let transform = Transform::new(100.0, 200.0).with_anchor(Anchor::Center);
-  assert_eq!(transform.pivot_x, 0.5);
-  assert_eq!(transform.pivot_y, 0.5);
-
-  let transform = Transform::new(100.0, 200.0).with_anchor(Anchor::BottomRight);
-  assert_eq!(transform.pivot_x, 1.0);
-  assert_eq!(transform.pivot_y, 1.0);
-
-  let transform = Transform::new(100.0, 200.0).with_anchor(Anchor::TopLeft);
-  assert_eq!(transform.pivot_x, 0.0);
-  assert_eq!(transform.pivot_y, 0.0);
-}
-
-// ============================================================================
-// TRANSFORM BUILDER CHAIN TESTS
-// ============================================================================
-
-/// Test that builder methods can be chained
 #[test]
 fn builder_method_chaining() {
-  let transform = Transform::new(100.0, 200.0)
-    .with_pivot_center()
+  let transform = Transform::from_xy(100.0, 200.0)
     .with_rotation(PI / 4.0)
-    .with_scale(2.0, 2.0);
+    .with_scale(Vec2::new(2.0, 3.0));
 
-  assert_eq!(transform.x, 100.0);
-  assert_eq!(transform.y, 200.0);
-  assert_eq!(transform.pivot_x, 0.5);
-  assert_eq!(transform.pivot_y, 0.5);
+  assert_eq!(transform.translation, Vec2::new(100.0, 200.0));
   assert!((transform.rotation - PI / 4.0).abs() < 0.0001);
-  assert_eq!(transform.scale_x, 2.0);
-  assert_eq!(transform.scale_y, 2.0);
+  assert_eq!(transform.scale, Vec2::new(2.0, 3.0));
 }
 
-/// Test uniform scale builder
 #[test]
 fn uniform_scale() {
-  let transform = Transform::new(0.0, 0.0).with_uniform_scale(3.0);
-
-  assert_eq!(transform.scale_x, 3.0);
-  assert_eq!(transform.scale_y, 3.0);
+  let transform = Transform::from_xy(0.0, 0.0).with_uniform_scale(3.0);
+  assert_eq!(transform.scale, Vec2::splat(3.0));
 }
 
-/// Test offset builder
 #[test]
-fn offset_builder() {
-  let transform = Transform::new(100.0, 200.0)
-    .with_anchor(Anchor::Center)
-    .with_offset(10.0, -5.0);
-
-  assert_eq!(transform.offset_x, 10.0);
-  assert_eq!(transform.offset_y, -5.0);
+fn from_translation_matches_from_xy() {
+  assert_eq!(
+    Transform::from_translation(Vec2::new(50.0, 75.0)),
+    Transform::from_xy(50.0, 75.0)
+  );
 }
 
 // ============================================================================
-// TRANSFORM + WORLD INTEGRATION TESTS
+// HIERARCHY
 // ============================================================================
 
-/// Test transforms can be spawned and queried
+#[test]
+fn a_child_of_a_rotated_parent_is_placed_in_its_frame() {
+  let mut world = World::new();
+  let parent = world
+    .spawn(Transform::from_xy(100.0, 100.0).with_rotation(FRAC_PI_2))
+    .id();
+  // 10 px along the parent's x axis, which points down the screen
+  let child = world.spawn_child(parent, Transform::from_xy(10.0, 0.0));
+
+  // Moving the parent moves the child once the step propagates
+  world
+    .get_mut::<Transform>(parent)
+    .expect("parent")
+    .translation = Vec2::new(200.0, 100.0);
+  propagate(&mut world);
+
+  let global = world.get::<GlobalTransform>(child).expect("child global");
+  assert!(
+    close(global.translation(), Vec2::new(200.0, 110.0)),
+    "child at {:?}",
+    global.translation()
+  );
+}
+
+#[test]
+fn detaching_keeps_the_world_position() {
+  let mut world = World::new();
+  let parent = world
+    .spawn(Transform::from_xy(100.0, 50.0).with_rotation(FRAC_PI_2))
+    .id();
+  let child = world.spawn_child(parent, Transform::from_xy(10.0, 0.0));
+  propagate(&mut world);
+  let before = world
+    .get::<GlobalTransform>(child)
+    .expect("global")
+    .translation();
+
+  world.detach_keep_world(child);
+  propagate(&mut world);
+
+  assert!(world.get::<ChildOf>(child).is_none());
+  let local = world.get::<Transform>(child).expect("transform");
+  assert!(
+    close(local.translation, before),
+    "local {:?}",
+    local.translation
+  );
+  let after = world
+    .get::<GlobalTransform>(child)
+    .expect("global")
+    .translation();
+  assert!(close(after, before), "moved from {before:?} to {after:?}");
+}
+
+// ============================================================================
+// TRANSFORM + WORLD
+// ============================================================================
+
 #[test]
 fn transform_spawn_and_query() {
   let mut world = World::new();
+  let entity = world.spawn(Transform::from_xy(100.0, 200.0)).id();
 
-  let entity = world.spawn((Transform::new(100.0, 200.0).with_pivot_center(),));
-
-  let transform = world.get::<Transform>(entity);
-  assert!(transform.is_some());
-
-  let t = transform.unwrap();
-  assert_eq!(t.x, 100.0);
-  assert_eq!(t.y, 200.0);
-  assert_eq!(t.pivot_x, 0.5);
-  assert_eq!(t.pivot_y, 0.5);
+  let transform = world.get::<Transform>(entity).expect("transform");
+  assert_eq!(transform.translation, Vec2::new(100.0, 200.0));
+  // Spawning places the entity at once
+  let global = world.get::<GlobalTransform>(entity).expect("global");
+  assert_eq!(global.translation(), Vec2::new(100.0, 200.0));
 }
 
-/// Test transform modification via world
 #[test]
 fn transform_modification() {
   let mut world = World::new();
+  let entity = world.spawn(Transform::from_xy(0.0, 0.0)).id();
 
-  let entity = world.spawn((Transform::new(0.0, 0.0),));
-
-  // Modify transform
   if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-    transform.x = 50.0;
-    transform.y = 75.0;
+    transform.translation = Vec2::new(50.0, 75.0);
     transform.rotation = PI / 2.0;
   }
 
-  // Verify changes persisted
-  let transform = world.get::<Transform>(entity).unwrap();
-  assert_eq!(transform.x, 50.0);
-  assert_eq!(transform.y, 75.0);
+  let transform = world.get::<Transform>(entity).expect("transform");
+  assert_eq!(transform.translation, Vec2::new(50.0, 75.0));
   assert!((transform.rotation - PI / 2.0).abs() < 0.0001);
 }
 
-/// Test Vec2/Vec3 conversion methods
-#[test]
-fn vec_conversions() {
-  let transform = Transform::new(100.0, 200.0);
-
-  let v2 = transform.as_vec2();
-  assert_eq!(v2.x, 100.0);
-  assert_eq!(v2.y, 200.0);
-
-  let v3 = transform.as_vec3();
-  assert_eq!(v3.x, 100.0);
-  assert_eq!(v3.y, 200.0);
-  assert_eq!(v3.z, 0.0); // Default z
-
-  // Test from_vec2
-  let transform = Transform::from_vec2(Vec2::new(50.0, 75.0));
-  assert_eq!(transform.x, 50.0);
-  assert_eq!(transform.y, 75.0);
-
-  // Test from_vec3
-  let transform = Transform::from_vec3(Vec3::new(10.0, 20.0, 30.0));
-  assert_eq!(transform.x, 10.0);
-  assert_eq!(transform.y, 20.0);
-  assert_eq!(transform.z, 30.0);
-}
-
 // ============================================================================
-// VELOCITY COMPONENT TESTS
+// VELOCITY
 // ============================================================================
 
-/// Test Velocity creation and defaults
 #[test]
 fn velocity_creation() {
   let velocity = Velocity::new(5.0, -3.0);
@@ -320,7 +203,6 @@ fn velocity_creation() {
   assert_eq!(velocity.dy, -3.0);
 }
 
-/// Test Velocity default is zero
 #[test]
 fn velocity_default_is_zero() {
   let velocity = Velocity::default();
@@ -328,19 +210,16 @@ fn velocity_default_is_zero() {
   assert_eq!(velocity.dy, 0.0);
 }
 
-/// Test Velocity with Transform in ECS
 #[test]
 fn velocity_with_transform() {
   let mut world = World::new();
+  world.spawn((Transform::from_xy(100.0, 100.0), Velocity::new(10.0, 5.0)));
 
-  let _entity = world.spawn((Transform::new(100.0, 100.0), Velocity::new(10.0, 5.0)));
-
-  // Query both components together
   let mut query = world.query::<(&Transform, &Velocity)>();
-  let query_result: Vec<_> = query.iter().collect();
-  assert_eq!(query_result.len(), 1);
+  let found: Vec<_> = query.iter(&world).collect();
+  assert_eq!(found.len(), 1);
 
-  let (transform, velocity) = query_result[0];
-  assert_eq!(transform.x, 100.0);
+  let (transform, velocity) = found[0];
+  assert_eq!(transform.translation.x, 100.0);
   assert_eq!(velocity.dx, 10.0);
 }
