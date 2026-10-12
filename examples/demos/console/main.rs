@@ -26,22 +26,24 @@ fn main() {
 /// Declare all commands and register the shared handlers.
 /// Declarations are global and idempotent; handlers are scoped to the active page.
 fn register_shared_commands(ctx: &mut SceneContext) {
+  let mut console = ctx.console();
+
   // Declare ALL commands up front (visible in help immediately)
-  ctx.declare_console_command(
+  console.declare(
     "game:hello",
     "Print a greeting",
     Some(
       "Usage: game:hello [name]\n\nPrints 'Hello, <name>!' or 'Hello, World!' if no name given.",
     ),
   );
-  ctx.declare_console_command(
+  console.declare(
     "game:paint",
     "Change background color (Workshop page only)",
     Some("Usage: game:paint <color>\n\nColors: red, green, blue, yellow, purple, reset\nOnly has effect on the Workshop page."),
   );
 
   // Register handlers that work on every page (scoped, re-registered on each enter)
-  ctx.register_console_command("game:hello", |args, cmd_ctx| {
+  console.register("game:hello", |args, cmd_ctx| {
     let name = if args.is_empty() { "World" } else { args[0] };
     cmd_ctx.console.print(format!("Hello, {}!", name));
     CommandResult::Ok
@@ -70,7 +72,7 @@ impl DemoPage for HubPage {
     register_shared_commands(ctx);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     let x = area.x + 10.0;
     let y = area.y + 10.0;
@@ -138,7 +140,7 @@ impl DemoPage for WorkshopPage {
     register_shared_commands(ctx);
 
     // Register scoped handler for game:paint (auto-cleaned on page exit)
-    ctx.register_console_command("game:paint", |args, cmd_ctx| {
+    ctx.console().register("game:paint", |args, cmd_ctx| {
       if args.is_empty() {
         cmd_ctx.console.print("Usage: game:paint <color>");
         cmd_ctx
@@ -196,7 +198,7 @@ impl DemoPage for WorkshopPage {
     });
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     // Painted background (set via game:paint console command)
     let r = PAINT_R.load(Ordering::Relaxed);
     let g = PAINT_G.load(Ordering::Relaxed);

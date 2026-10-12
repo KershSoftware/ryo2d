@@ -1,5 +1,5 @@
 # Anchor Positioning Demo - Ryo2D Engine Project Configuration
-# Demonstrates the Anchor enum and offset system for sprite positioning
+# Demonstrates sprite anchors (Renderable::with_anchor) and child offsets
 
 [project]
 name = "Anchor Positioning Demo"

@@ -1,19 +1,19 @@
 //! Anchor Positioning Demo - Ryo2D
 //!
-//! Shows the Anchor system for sprite positioning: the 9-point anchors
-//! (TopLeft, Center, BottomRight, ...), how they change where a sprite appears
-//! relative to its position, and offset adjustments for fine-tuning. Each cell
-//! has a red crosshair at the target position and a sprite anchored to it.
-//! Runs on the demo-kit shell.
+//! Shows sprite anchors: the 9-point anchors (TopLeft, Center, BottomRight,
+//! ...) set with `Renderable::with_anchor`, and how they change which part of
+//! a sprite sits on its position. Each cell has a red crosshair at the target
+//! position; the sprite is the crosshair's child, so its local `Transform`
+//! offsets it from there. Runs on the demo-kit shell.
 
 use demo_kit::prelude::*;
 
 /// Marker component for the demo sprites
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct DemoSprite;
 
 /// Marker for crosshair entities
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct Crosshair;
 
 /// Grid margin around the cells
@@ -88,12 +88,12 @@ impl AnchorPage {
     SpriteHandle::from_sprite(sprite, "crosshair")
   }
 
-  /// Update sprite offsets
+  /// Move each sprite from its crosshair by the offset (its local position)
   fn update_offsets(&self, world: &mut World) {
+    let offset = Vec2::new(self.offset_x, self.offset_y);
     for &entity in &self.sprites {
       if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-        transform.offset_x = self.offset_x;
-        transform.offset_y = self.offset_y;
+        transform.translation = offset;
       }
     }
   }
@@ -106,8 +106,8 @@ impl DemoPage for AnchorPage {
 
   fn description(&self) -> &str {
     "Red crosshair = target position | Blue rect = sprite with anchor\n\
-     The anchor picks which part of the sprite sits on the crosshair (Transform x, y).\n\
-     Offset is extra pixels applied after the anchor: Transform::with_offset(x, y)."
+     The anchor picks which part of the sprite sits on its position: Renderable::with_anchor.\n\
+     Each sprite is its crosshair's child; Offset is its local Transform, moving it from there."
   }
 
   fn settings(&mut self, s: &mut Settings) {
@@ -136,19 +136,28 @@ impl DemoPage for AnchorPage {
       let target_x = MARGIN + cell_w * (col as f32 + 0.5);
       let target_y = TOP + cell_h * (row as f32 + 0.5);
 
-      // Spawn crosshair at target position (always centered)
-      ctx.world.spawn((
-        Crosshair,
-        Transform::new(target_x, target_y).with_anchor(Anchor::Center),
-        Renderable::sprite(crosshair_handle.clone()).with_z_order(10),
-      ));
+      // Spawn crosshair at target position (centred by the default anchor)
+      let crosshair = ctx
+        .world
+        .spawn((
+          Crosshair,
+          Transform::from_xy(target_x, target_y),
+          Renderable::sprite(crosshair_handle.clone()).with_z_order(10),
+        ))
+        .id();
 
-      // Spawn demo sprite at target position with the specified anchor
-      let entity = ctx.world.spawn((
-        DemoSprite,
-        Transform::new(target_x, target_y).with_anchor(anchor),
-        Renderable::sprite(sprite_handle.clone()).with_z_order(5),
-      ));
+      // Spawn the demo sprite as the crosshair's child, placed by its anchor;
+      // its local position is the offset from the crosshair
+      let entity = ctx.spawn_child(
+        crosshair,
+        (
+          DemoSprite,
+          Transform::from_xy(self.offset_x, self.offset_y),
+          Renderable::sprite(sprite_handle.clone())
+            .with_anchor(anchor)
+            .with_z_order(5),
+        ),
+      );
 
       self.sprites.push(entity);
     }
@@ -158,7 +167,7 @@ impl DemoPage for AnchorPage {
     self.update_offsets(ctx.world);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let (screen_w, screen_h) = ui.screen_size();
     let (cell_w, cell_h) = cell_size(screen_w as f32, screen_h as f32);
 
@@ -190,7 +199,7 @@ fn main() {
     .configure(|b| {
       b.window_mode(WindowMode::ResizableIntegerScale)
         .target_fps(60)
-        .physics_hz(60)
+        .fixed_hz(60)
     })
     .page(AnchorPage::new)
     .run();

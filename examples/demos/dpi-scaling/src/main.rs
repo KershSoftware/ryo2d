@@ -69,7 +69,7 @@ impl DemoPage for DpiScalingPage {
     self.apply_scale(ctx);
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let (width, height) = ui.screen_size();
     let current_scale = ui.ui_scale();
     let area = content_area(ui);

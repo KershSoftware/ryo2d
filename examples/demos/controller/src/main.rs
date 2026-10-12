@@ -13,7 +13,7 @@ use demo_kit::prelude::*;
 
 struct ControllerPage {
   button_history: Vec<String>,
-  // Cached input state for render_ui
+  // Cached input state for ui
   gamepad_connected: bool,
   gamepad_name: String,
   left_stick: (f32, f32),
@@ -63,7 +63,7 @@ impl DemoPage for ControllerPage {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) {
-    // Cache input state for render_ui
+    // Cache input state for ui
     self.gamepad_connected = ctx.input.gamepad_connected();
     self.gamepad_name = ctx.input.gamepad_name().to_string();
     self.left_stick = ctx.input.left_stick();
@@ -126,7 +126,7 @@ impl DemoPage for ControllerPage {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     // Two columns in the content area: the left one for status, sticks,
     // triggers and history, the right one for buttons and values

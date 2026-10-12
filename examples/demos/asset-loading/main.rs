@@ -169,7 +169,7 @@ impl DemoPage for LoadingPage {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
 
     match self.state {

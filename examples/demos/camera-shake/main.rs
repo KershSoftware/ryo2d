@@ -12,11 +12,11 @@
 use demo_kit::prelude::*;
 
 /// Marker for grid squares (to show shake effect)
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct GridSquare;
 
 /// Marker for the "player" entity
-#[derive(Debug)]
+#[derive(Component, Debug)]
 struct Player;
 
 /// Intensity curves offered by the Curve setting
@@ -75,7 +75,7 @@ impl CameraShakePage {
         let sprite = Self::create_square(square_size, r, g, b);
         ctx.world.spawn((
           GridSquare,
-          Transform::new(x, y).with_pivot_center(),
+          Transform::from_xy(x, y),
           Renderable::sprite(sprite).with_z_order(0),
         ));
       }
@@ -98,7 +98,7 @@ impl CameraShakePage {
 
     ctx.world.spawn((
       Player,
-      Transform::new(screen_w / 2.0, screen_h / 2.0).with_pivot_center(),
+      Transform::from_xy(screen_w / 2.0, screen_h / 2.0),
       Renderable::sprite(sprite).with_z_order(10),
     ));
   }
@@ -154,7 +154,7 @@ impl DemoPage for CameraShakePage {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let area = content_area(ui);
     ui.draw_text(
       "Press keys to trigger shake!",
@@ -171,7 +171,7 @@ fn main() {
     .configure(|b| {
       b.window_mode(WindowMode::ResizableAspectRatio)
         .target_fps(60)
-        .physics_hz(60)
+        .fixed_hz(60)
     })
     .page(CameraShakePage::new)
     .run();

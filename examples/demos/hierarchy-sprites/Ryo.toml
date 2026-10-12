@@ -1,5 +1,5 @@
 # Hierarchy Sprites Demo - Ryo2D Engine Project Configuration
-# Demonstrates parent-child entity relationships with the Renderable component
+# Demonstrates parent-child hierarchies, detaching in place and interpolated children
 
 [project]
 name = "Hierarchy Sprites Demo"

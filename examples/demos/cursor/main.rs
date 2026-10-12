@@ -246,7 +246,7 @@ impl DemoPage for CursorDemoScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) {
-    // Store mouse position for render_ui
+    // Store mouse position for ui
     let (mx, my) = ctx.input.mouse_position();
     self.mouse_x = mx;
     self.mouse_y = my;
@@ -316,7 +316,7 @@ impl DemoPage for CursorDemoScene {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     self.layout(content_area(ui));
     let mx = self.mouse_x;
     let my = self.mouse_y;
