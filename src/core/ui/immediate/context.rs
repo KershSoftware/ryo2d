@@ -1511,6 +1511,19 @@ impl<'a> UiContext<'a> {
   // Scroll View Widget
   // =========================================================================
 
+  /// What a scroll view takes once it has handled its input: the wheel
+  /// while it is hovered and can scroll, and a press on its scrollbar,
+  /// which starts the UI's drag.
+  fn take_scroll_input(&mut self, can_scroll: bool, hovered: bool, scrollbar_hovered: bool) {
+    let (wheel_x, wheel_y) = self.input.scroll_delta();
+    if can_scroll && hovered && (wheel_x != 0.0 || wheel_y != 0.0) {
+      self.input.consume_scroll();
+    }
+    if scrollbar_hovered && self.input.mouse_pressed(MouseButton::Left) {
+      self.input.consume_mouse(MouseButton::Left);
+    }
+  }
+
   /// Draw a scrollable content area.
   ///
   /// This widget provides a scrollable container with automatic scrollbar.
@@ -1540,19 +1553,6 @@ impl<'a> UiContext<'a> {
   ///     }
   /// });
   /// ```
-  /// What a scroll view takes once it has handled its input: the wheel
-  /// while it is hovered and can scroll, and a press on its scrollbar,
-  /// which starts the UI's drag.
-  fn take_scroll_input(&mut self, can_scroll: bool, hovered: bool, scrollbar_hovered: bool) {
-    let (wheel_x, wheel_y) = self.input.scroll_delta();
-    if can_scroll && hovered && (wheel_x != 0.0 || wheel_y != 0.0) {
-      self.input.consume_scroll();
-    }
-    if scrollbar_hovered && self.input.mouse_pressed(MouseButton::Left) {
-      self.input.consume_mouse(MouseButton::Left);
-    }
-  }
-
   pub fn scroll_view<F>(
     &mut self,
     state: &mut ScrollViewState,
@@ -1602,7 +1602,7 @@ impl<'a> UiContext<'a> {
 
     // Check hover states
     let content_hovered = self.is_hovered(content_rect);
-    let scrollbar_hovered = self.is_hovered(scrollbar_rect);
+    let scrollbar_hovered = needs_scrollbar && self.is_hovered(scrollbar_rect);
 
     // Handle input
     let scrollbar_thumb_rect = if needs_scrollbar {
@@ -1754,7 +1754,7 @@ impl<'a> UiContext<'a> {
 
     // Check hover states
     let content_hovered = self.is_hovered(content_rect);
-    let scrollbar_hovered = self.is_hovered(scrollbar_rect);
+    let scrollbar_hovered = needs_scrollbar && self.is_hovered(scrollbar_rect);
 
     // Handle input for horizontal scrolling
     let scrollbar_thumb_rect = if needs_scrollbar {
@@ -3010,6 +3010,34 @@ mod tests {
       |_, _| {},
     );
     assert!(ui.click_consumed());
+  }
+
+  #[test]
+  fn a_scroll_view_whose_content_fits_leaves_clicks_beside_it() {
+    // Without a scrollbar, its strip lies just outside the view
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 105.0, 50.0);
+    let mut list = ScrollViewState::new();
+    ui.scroll_view(
+      &mut list,
+      Rect::new(0.0, 0.0, 100.0, 100.0),
+      50.0,
+      0.016,
+      |_, _| {},
+    );
+    assert!(!ui.click_consumed(), "right of a vertical view");
+
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 105.0);
+    let mut strip = ScrollViewState::new();
+    ui.scroll_view_horizontal(
+      &mut strip,
+      Rect::new(0.0, 0.0, 100.0, 100.0),
+      50.0,
+      0.016,
+      |_, _| {},
+    );
+    assert!(!ui.click_consumed(), "below a horizontal view");
   }
 
   #[test]

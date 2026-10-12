@@ -261,8 +261,6 @@ fn lights_to_draw(world: &mut World, alpha: f32) -> Vec<(Vec2, Light2D)> {
     .collect()
 }
 
-/// The occluders to draw this frame, with their world transforms (blended
-/// for interpolated entities).
 type OccluderItem = (
   &'static GlobalTransform,
   Option<&'static PreviousGlobalTransform>,
