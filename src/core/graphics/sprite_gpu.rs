@@ -40,6 +40,7 @@ use crate::core::render::{
   DrawKind, DrawList, PipelineKind, SpriteShading, TextureRef, WorldRun, plan_runs,
 };
 use crate::core::shaders::custom::{self, ParamLayout, ShaderError, ShaderKind};
+use crate::core::shaders::scope::Checked;
 use crate::core::ui::Color;
 
 /// Per-instance data for GPU sprite rendering
@@ -340,8 +341,10 @@ struct CustomEntry {
 
 /// One compiled source, shared by every handle with that source.
 struct CompiledSource {
-  /// `None` when the source failed to compile; it is not retried
-  ready: Option<CustomPipeline>,
+  /// Pending until the GPU's check comes back; failed sources are not retried
+  state: Checked<CustomPipeline>,
+  /// The shader's id, for reporting a pipeline the GPU rejects
+  shader: String,
   last_used: u64,
 }
 
@@ -380,16 +383,17 @@ impl CustomPipelines {
     {
       entry.last_used = frame;
       compiled.last_used = frame;
-      return compiled.ready.is_some().then_some(entry.source);
+      return compiled.state.ready().is_some().then_some(entry.source);
     }
     let (generation, source) = shader.snapshot();
     let key = custom::source_key(ShaderKind::Sprite, &source);
     if !self.compiled.contains_key(&key) {
-      let ready = self.build(device, shader, key, &source);
+      let state = self.build(device, shader, key, &source);
       self.compiled.insert(
         key,
         CompiledSource {
-          ready,
+          state,
+          shader: shader.id().to_string(),
           last_used: frame,
         },
       );
@@ -404,7 +408,7 @@ impl CustomPipelines {
     );
     let compiled = self.compiled.get_mut(&key)?;
     compiled.last_used = frame;
-    compiled.ready.is_some().then_some(key)
+    compiled.state.ready().is_some().then_some(key)
   }
 
   /// Drop shaders unused for [`CUSTOM_SHADER_TTL`] frames and their warnings.
@@ -431,17 +435,15 @@ impl CustomPipelines {
     shader: &ShaderHandle,
     key: u64,
     source: &str,
-  ) -> Option<CustomPipeline> {
+  ) -> Checked<CustomPipeline> {
     let compiled = match custom::compile(ShaderKind::Sprite, shader.id(), source) {
       Ok(compiled) => compiled,
       Err(error) => {
         custom::report_once(key, &error);
-        return None;
+        return Checked::Failed;
       }
     };
 
-    // Anything naga accepted but the device rejects surfaces here instead of
-    // taking the engine down
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some(shader.id()),
@@ -475,20 +477,32 @@ impl CustomPipelines {
       multiview_mask: None,
       cache: None,
     });
-    if let Some(error) = pollster::block_on(scope.pop()) {
-      let error = ShaderError {
-        shader: shader.id().to_string(),
-        line: None,
-        column: None,
-        message: error.to_string(),
-      };
-      custom::report_once(key, &error);
-      return None;
+    // Anything naga accepted but the device rejects is found by a later
+    // frame's `settle`, without waiting on the GPU here
+    let _ = key;
+    Checked::pending(
+      CustomPipeline {
+        pipeline,
+        layout: compiled.layout,
+      },
+      scope,
+    )
+  }
+
+  /// Settle pipelines whose GPU checks have come back; a rejected one is
+  /// reported once and its sprites keep drawing plain.
+  fn settle(&mut self) {
+    for (key, compiled) in &mut self.compiled {
+      if let Some(message) = compiled.state.settle() {
+        let error = ShaderError {
+          shader: compiled.shader.clone(),
+          line: None,
+          column: None,
+          message,
+        };
+        custom::report_once(*key, &error);
+      }
     }
-    Some(CustomPipeline {
-      pipeline,
-      layout: compiled.layout,
-    })
   }
 
   /// Put `params` into the instance's eight effect floats, in the layout of
@@ -502,7 +516,7 @@ impl CustomPipelines {
     let Some(ready) = self
       .compiled
       .get(&entry.source)
-      .and_then(|c| c.ready.as_ref())
+      .and_then(|c| c.state.ready())
     else {
       return;
     };
@@ -544,7 +558,7 @@ impl CustomPipelines {
 
   /// The pipeline for a key from [`prepare`](Self::prepare)
   fn pipeline(&self, key: u64) -> Option<&wgpu::RenderPipeline> {
-    let ready = self.compiled.get(&key)?.ready.as_ref()?;
+    let ready = self.compiled.get(&key)?.state.ready()?;
     Some(&ready.pipeline)
   }
 }
@@ -988,6 +1002,8 @@ impl SpriteGpuRenderer {
     queue: &wgpu::Queue,
     list: &DrawList,
   ) {
+    // Shaders built last frame become usable once the GPU accepted them
+    self.custom.settle();
     let mut seen = std::mem::take(&mut self.resident_scratch);
     seen.clear();
     // Consecutive sprites mostly share a texture: compare pointers before
@@ -1813,6 +1829,9 @@ mod tests {
     let src = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
     let shader = ShaderHandle::from_source("prune.wgsl", src);
     let mut instance = SpriteInstance::new();
+    let first = renderer.shade_custom(&device, &shader, &ShaderParams::new(), &mut instance);
+    assert!(first.is_none(), "pending until the GPU check comes back");
+    renderer.custom.settle();
     let key = renderer.shade_custom(&device, &shader, &ShaderParams::new(), &mut instance);
     assert!(key.is_some());
     assert_eq!(renderer.custom.entries.len(), 1);
@@ -1833,11 +1852,14 @@ mod tests {
     let src =
       "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv) * 0.5; }";
     let mut instance = SpriteInstance::new();
-    let keys: Vec<Option<u64>> = (0..3)
-      .map(|i| {
-        let shader = ShaderHandle::from_source(format!("shared-{i}.wgsl"), src);
-        renderer.shade_custom(&device, &shader, &ShaderParams::new(), &mut instance)
-      })
+    let shaders: Vec<ShaderHandle> = (0..3)
+      .map(|i| ShaderHandle::from_source(format!("shared-{i}.wgsl"), src))
+      .collect();
+    renderer.shade_custom(&device, &shaders[0], &ShaderParams::new(), &mut instance);
+    renderer.custom.settle();
+    let keys: Vec<Option<u64>> = shaders
+      .iter()
+      .map(|shader| renderer.shade_custom(&device, shader, &ShaderParams::new(), &mut instance))
       .collect();
     assert!(keys[0].is_some());
     assert!(keys.iter().all(|k| *k == keys[0]), "{keys:?}");

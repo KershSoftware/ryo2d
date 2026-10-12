@@ -7,6 +7,7 @@ use super::custom::{self, ParamLayout, ShaderError, ShaderKind};
 use super::effects::{EffectParams, GodRaysParams, PostProcessEffect};
 use super::manager::CustomEffect;
 use super::post_process_shaders;
+use super::scope::Checked;
 use crate::core::ecs::{ShaderHandle, ShaderParams};
 use std::collections::{HashMap, HashSet};
 
@@ -94,8 +95,10 @@ struct CustomEntry {
 
 /// One compiled source, shared by every handle with that source
 struct CompiledSource {
-  /// `None` when the source failed to compile; it is not retried
-  ready: Option<CustomPipeline>,
+  /// Pending until the GPU's check comes back; failed sources are not retried
+  state: Checked<CustomPipeline>,
+  /// The shader's id, for reporting a pipeline the GPU rejects
+  shader: String,
   last_used: u64,
 }
 
@@ -174,16 +177,17 @@ impl CustomEffectPipelines {
     {
       entry.last_used = frame;
       compiled.last_used = frame;
-      return compiled.ready.is_some().then_some(entry.source);
+      return compiled.state.ready().is_some().then_some(entry.source);
     }
     let (generation, source) = shader.snapshot();
     let key = custom::source_key(ShaderKind::Effect, &source);
     if !self.compiled.contains_key(&key) {
-      let ready = self.build(device, shader, key, &source);
+      let state = self.build(device, shader, key, &source);
       self.compiled.insert(
         key,
         CompiledSource {
-          ready,
+          state,
+          shader: shader.id().to_string(),
           last_used: frame,
         },
       );
@@ -198,7 +202,7 @@ impl CustomEffectPipelines {
     );
     let compiled = self.compiled.get_mut(&key)?;
     compiled.last_used = frame;
-    compiled.ready.is_some().then_some(key)
+    compiled.state.ready().is_some().then_some(key)
   }
 
   /// Drop effects unused for [`CUSTOM_EFFECT_TTL`] frames and their warnings.
@@ -225,12 +229,12 @@ impl CustomEffectPipelines {
     shader: &ShaderHandle,
     key: u64,
     source: &str,
-  ) -> Option<CustomPipeline> {
+  ) -> Checked<CustomPipeline> {
     let compiled = match custom::compile(ShaderKind::Effect, shader.id(), source) {
       Ok(compiled) => compiled,
       Err(error) => {
         custom::report_once(key, &error);
-        return None;
+        return Checked::Failed;
       }
     };
     if custom::uniform_size(ShaderKind::Effect, &compiled.layout) as u64 > CUSTOM_PARAMS_BYTES {
@@ -241,11 +245,9 @@ impl CustomEffectPipelines {
         message: format!("Params is larger than {CUSTOM_PARAMS_BYTES} bytes"),
       };
       custom::report_once(key, &error);
-      return None;
+      return Checked::Failed;
     }
 
-    // Anything naga accepted but the device rejects surfaces here instead of
-    // taking the engine down
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some(shader.id()),
@@ -279,20 +281,32 @@ impl CustomEffectPipelines {
       multiview_mask: None,
       cache: None,
     });
-    if let Some(error) = pollster::block_on(scope.pop()) {
-      let error = ShaderError {
-        shader: shader.id().to_string(),
-        line: None,
-        column: None,
-        message: error.to_string(),
-      };
-      custom::report_once(key, &error);
-      return None;
+    // Anything naga accepted but the device rejects is found by a later
+    // frame's `settle`, without waiting on the GPU here
+    let _ = key;
+    Checked::pending(
+      CustomPipeline {
+        pipeline,
+        layout: compiled.layout,
+      },
+      scope,
+    )
+  }
+
+  /// Settle pipelines whose GPU checks have come back; a rejected one is
+  /// reported once and its sprites keep drawing plain.
+  fn settle(&mut self) {
+    for (key, compiled) in &mut self.compiled {
+      if let Some(message) = compiled.state.settle() {
+        let error = ShaderError {
+          shader: compiled.shader.clone(),
+          line: None,
+          column: None,
+          message,
+        };
+        custom::report_once(*key, &error);
+      }
     }
-    Some(CustomPipeline {
-      pipeline,
-      layout: compiled.layout,
-    })
   }
 
   /// Pack `params` for the shader's `Params` into `out`; the number of bytes
@@ -306,7 +320,7 @@ impl CustomEffectPipelines {
   ) -> Option<usize> {
     let serial = shader.serial();
     let entry = self.entries.get(&serial)?;
-    let ready = self.compiled.get(&entry.source)?.ready.as_ref()?;
+    let ready = self.compiled.get(&entry.source)?.state.ready()?;
     let generation = entry.generation;
     let size = custom::uniform_size(ShaderKind::Effect, &ready.layout);
     let warned = &mut self.warned;
@@ -342,7 +356,7 @@ impl CustomEffectPipelines {
 
   /// The pipeline for a key from [`prepare`](Self::prepare)
   fn pipeline(&self, key: u64) -> Option<&wgpu::RenderPipeline> {
-    let ready = self.compiled.get(&key)?.ready.as_ref()?;
+    let ready = self.compiled.get(&key)?.state.ready()?;
     Some(&ready.pipeline)
   }
 }
@@ -722,6 +736,8 @@ impl PostProcessPipeline {
     custom: &[&CustomEffect],
     time: f32,
   ) -> OutputBuffer {
+    // Effects built on an earlier frame become usable once the GPU accepted them
+    self.custom.settle();
     if effects.is_empty() && custom.is_empty() {
       return OutputBuffer::A;
     }
@@ -1533,11 +1549,17 @@ mod tests {
     };
     let mut effects = CustomEffectPipelines::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
     let src = "fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv) * 0.5; }";
-    let keys: Vec<Option<u64>> = (0..3)
-      .map(|i| {
-        let shader = ShaderHandle::from_source(format!("shared-fx-{i}.wgsl"), src);
-        effects.prepare(&device, &shader, 1)
-      })
+    let shaders: Vec<ShaderHandle> = (0..3)
+      .map(|i| ShaderHandle::from_source(format!("shared-fx-{i}.wgsl"), src))
+      .collect();
+    assert!(
+      effects.prepare(&device, &shaders[0], 1).is_none(),
+      "pending"
+    );
+    effects.settle();
+    let keys: Vec<Option<u64>> = shaders
+      .iter()
+      .map(|shader| effects.prepare(&device, shader, 1))
       .collect();
     assert!(keys[0].is_some());
     assert!(keys.iter().all(|k| *k == keys[0]), "{keys:?}");

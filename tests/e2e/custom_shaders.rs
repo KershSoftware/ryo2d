@@ -657,3 +657,30 @@ fn effect_uv_runs_from_the_top_left() {
     "x grows rightward, y downward: {top_right:?}"
   );
 }
+
+#[test]
+fn a_custom_shader_applies_once_the_gpu_has_accepted_it() {
+  let shader = ShaderHandle::from_source("t3-pending.wgsl", INVERT);
+  let scene = Fixture::entities(move |ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(10.0, 20.0),
+      Renderable::sprite(solid("t3-pending-red", 20, RED))
+        .with_anchor(Anchor::TopLeft)
+        .with_shader(SpriteShader::custom(shader.clone())),
+    ));
+  });
+  let Some(mut engine) = start(scene) else {
+    return;
+  };
+  engine.step_frames(1).unwrap();
+  assert_eq!(
+    engine.frame().unwrap().get_pixel(20, 30).0,
+    RED,
+    "plain while the GPU check is pending"
+  );
+  engine.step_frames(1).unwrap();
+  assert_eq!(
+    engine.frame().unwrap().get_pixel(20, 30).0,
+    [35, 225, 215, 255]
+  );
+}

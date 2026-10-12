@@ -50,6 +50,7 @@ pub(crate) mod custom;
 mod effects;
 mod manager;
 mod pipeline;
+pub(crate) mod scope;
 
 pub use effects::{EffectParams, GodRaysParams, PostProcessEffect};
 pub use manager::{EffectError, EffectsManager};
