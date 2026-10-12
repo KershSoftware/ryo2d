@@ -54,8 +54,25 @@ pub use puffin;
 /// use these (`ryo2d::wgpu`), so a game needs no `wgpu` dependency of its own.
 pub use wgpu;
 
+/// The crate behind `ryo2d::ecs`, re-exported under its own name only so the
+/// derive macros in the prelude resolve from a game crate. Never name it.
+#[doc(hidden)]
+pub use bevy_ecs;
+
 /// The prelude module - import everything you need with `use ryo2d::prelude::*`
 pub mod prelude {
+  // The ECS derives expand to paths rooted at the kernel crate's own name;
+  // bringing that name into scope through this glob is what makes
+  // `#[derive(Component)]` work in a game crate. Never name it in game code.
+  #[doc(hidden)]
+  pub use crate::bevy_ecs;
+
+  // ECS kernel derives and system types (the rest arrives with the new World)
+  pub use crate::core::ecs::kernel::{
+    Added, Changed, Commands, Component, Event, Message, Query, Res, ResMut, Resource,
+    ScheduleLabel, SystemSet, With, Without,
+  };
+
   // Core game types
   pub use crate::core::game::{GpuRenderContext, TimeControl, TimeInfo, WindowRequest};
 

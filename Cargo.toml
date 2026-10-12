@@ -37,6 +37,7 @@ flate2 = "1.1"
 glam = "0.31"
 bitflags = "2"
 hecs = { version = "0.11", features = ["macros"] }
+bevy_ecs = { version = "0.20", default-features = false, features = ["std", "backtrace"] }
 half = { version = "2", features = ["bytemuck"] }
 image = "0.25"
 kira = "0.11"
