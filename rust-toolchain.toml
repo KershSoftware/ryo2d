@@ -1,0 +1,6 @@
+# Pinned so every machine runs the same rustc, clippy and rustfmt: an unpinned
+# `stable` drifts apart between machines, and so do the lints each one reports.
+# Bump this deliberately, then fix whatever new lints the bump brings.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt", "rust-src"]
