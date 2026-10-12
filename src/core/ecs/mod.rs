@@ -12,8 +12,10 @@
 
 pub mod interpolate;
 pub mod kernel;
+pub mod pooling;
 pub mod propagate;
 pub mod transform;
+pub mod world_ext;
 
 mod active;
 mod component;

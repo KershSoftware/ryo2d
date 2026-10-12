@@ -14,9 +14,11 @@ pub use bevy_ecs::event::{EntityEvent, Event};
 pub use bevy_ecs::hierarchy::{ChildOf, Children};
 pub use bevy_ecs::lifecycle::RemovedComponents;
 pub use bevy_ecs::message::{Message, MessageCursor, MessageReader, MessageWriter, Messages};
-pub use bevy_ecs::observer::On;
+pub use bevy_ecs::observer::{Observer, On};
 pub use bevy_ecs::query::{Added, Allow, Changed, Has, Or, With, Without};
-pub use bevy_ecs::resource::Resource;
+// Resources live on hidden entities; `IsResource` marks them so world-wide
+// entity sweeps can leave them alone.
+pub use bevy_ecs::resource::{IsResource, Resource};
 pub use bevy_ecs::schedule::{
   IntoScheduleConfigs, Schedule, ScheduleLabel, SingleThreadedExecutor, SystemSet,
 };
