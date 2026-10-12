@@ -9,6 +9,7 @@ use std::time::Duration;
 
 static CONSOLE_RESPAWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+use ryo2d::core::network::NetworkError;
 use ryo2d::prelude::*;
 
 use crate::components::*;
@@ -565,23 +566,29 @@ impl GameScene {
       Platform::new(width, chunk_y)
     };
 
-    let entity = ctx.world.spawn((
-      Transform::new(x, y),
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_rect(
-          width as u32,
-          PLATFORM_HEIGHT as u32,
-          color.0,
-          color.1,
-          color.2,
-          255,
-        ),
-        format!("platform_{}_{}", chunk_y, self.platforms.len()),
+    // Platforms are placed and collided by their top-left corner
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(x, y),
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_rect(
+            width as u32,
+            PLATFORM_HEIGHT as u32,
+            color.0,
+            color.1,
+            color.2,
+            255,
+          ),
+          format!("platform_{}_{}", chunk_y, self.platforms.len()),
+        ))
+        .with_z_order(Z_PLATFORM)
+        .with_anchor(Anchor::TopLeft),
+        Collider::box_collider(width, PLATFORM_HEIGHT)
+          .with_offset(width / 2.0, PLATFORM_HEIGHT / 2.0),
+        platform,
       ))
-      .with_z_order(Z_PLATFORM),
-      Collider::box_collider(width, PLATFORM_HEIGHT),
-      platform,
-    ));
+      .id();
 
     // Attach MovingPlatform component if this is a moving platform
     if is_moving {
@@ -590,7 +597,7 @@ impl GameScene {
         .wrapping_add(chunk_y as u64 * 4919 + platform_index as u64);
       let phase = (phase_seed % 628) as f32 / 100.0;
       let moving = MovingPlatform::new(x, width, self.screen_width, MOVING_PLATFORM_SPEED, phase);
-      let _ = ctx.world.insert_one(entity, moving);
+      ctx.world.entity_mut(entity).insert(moving);
     }
 
     self.platforms.push(entity);
@@ -631,30 +638,36 @@ impl GameScene {
     let lamp_y = platform_y + LAMP_OFFSET_Y;
 
     // Outer glow light (dimmer, larger) - with soft shadows
-    let outer_lamp = ctx.world.spawn((
-      Transform::new(lamp_x, lamp_y),
-      Light2D::point_with_intensity(
-        Color::rgb(LAMP_LIGHT_COLOR.0, LAMP_LIGHT_COLOR.1, LAMP_LIGHT_COLOR.2),
-        LAMP_LIGHT_RADIUS,
-        LAMP_LIGHT_INTENSITY,
-      )
-      .with_soft_shadows(LAMP_SHADOW_SOFTNESS),
-      PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult)
-        .with_platform_entity(platform_entity),
-    ));
+    let outer_lamp = ctx
+      .world
+      .spawn((
+        Transform::from_xy(lamp_x, lamp_y),
+        Light2D::point_with_intensity(
+          Color::rgb(LAMP_LIGHT_COLOR.0, LAMP_LIGHT_COLOR.1, LAMP_LIGHT_COLOR.2),
+          LAMP_LIGHT_RADIUS,
+          LAMP_LIGHT_INTENSITY,
+        )
+        .with_soft_shadows(LAMP_SHADOW_SOFTNESS),
+        PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult)
+          .with_platform_entity(platform_entity),
+      ))
+      .id();
     self.platform_lamps.push(outer_lamp);
 
     // Inner bright core light (brighter, smaller)
-    let inner_lamp = ctx.world.spawn((
-      Transform::new(lamp_x, lamp_y),
-      Light2D::point_with_intensity(
-        Color::rgb(LAMP_INNER_COLOR.0, LAMP_INNER_COLOR.1, LAMP_INNER_COLOR.2),
-        LAMP_INNER_RADIUS,
-        LAMP_INNER_INTENSITY,
-      ),
-      PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult)
-        .with_platform_entity(platform_entity),
-    ));
+    let inner_lamp = ctx
+      .world
+      .spawn((
+        Transform::from_xy(lamp_x, lamp_y),
+        Light2D::point_with_intensity(
+          Color::rgb(LAMP_INNER_COLOR.0, LAMP_INNER_COLOR.1, LAMP_INNER_COLOR.2),
+          LAMP_INNER_RADIUS,
+          LAMP_INNER_INTENSITY,
+        ),
+        PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult)
+          .with_platform_entity(platform_entity),
+      ))
+      .id();
     self.platform_lamps.push(inner_lamp);
 
     // Create dust sprite if not already created
@@ -667,27 +680,30 @@ impl GameScene {
 
     // Dust mote particle emitter - gentle floating particles in the light
     if let Some(ref dust_sprite) = self.dust_sprite {
-      let dust_emitter = ctx.world.spawn((
-        Transform::new(lamp_x, lamp_y),
-        ParticleEmitter::new(dust_sprite.clone())
-          .with_mode(EmissionMode::Continuous { rate: 3.0 }) // Sparse, gentle
-          .with_shape(EmissionShape::Circle {
-            radius: LAMP_LIGHT_RADIUS * 0.6,
-            hollow: false,
-          })
-          .with_lifetime(3.0, 6.0)
-          .with_size(1.0, 3.0)
-          .with_end_size(0.5, 1.5)
-          .with_speed(2.0, 8.0) // Very slow drift
-          .with_color(
-            Color::new(255, 240, 200, 80), // Warm, semi-transparent
-            Color::new(255, 220, 180, 0),  // Fade to invisible
-          )
-          .with_gravity(0.0, -5.0) // Gentle upward drift
-          .with_drag(2.0),
-        PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult)
-          .with_platform_entity(platform_entity),
-      ));
+      let dust_emitter = ctx
+        .world
+        .spawn((
+          Transform::from_xy(lamp_x, lamp_y),
+          ParticleEmitter::new(dust_sprite.clone())
+            .with_mode(EmissionMode::Continuous { rate: 3.0 }) // Sparse, gentle
+            .with_shape(EmissionShape::Circle {
+              radius: LAMP_LIGHT_RADIUS * 0.6,
+              hollow: false,
+            })
+            .with_lifetime(3.0, 6.0)
+            .with_size(1.0, 3.0)
+            .with_end_size(0.5, 1.5)
+            .with_speed(2.0, 8.0) // Very slow drift
+            .with_color(
+              Color::new(255, 240, 200, 80), // Warm, semi-transparent
+              Color::new(255, 220, 180, 0),  // Fade to invisible
+            )
+            .with_gravity(0.0, -5.0) // Gentle upward drift
+            .with_drag(2.0),
+          PlatformLamp::new(lamp_x, lamp_y, phase, platform_width, speed_mult)
+            .with_platform_entity(platform_entity),
+        ))
+        .id();
       self.lamp_dust_emitters.push(dust_emitter);
     }
   }
@@ -696,7 +712,7 @@ impl GameScene {
     let lamp_entities: Vec<Entity> = self.platform_lamps.clone();
 
     for entity in lamp_entities {
-      let lamp_data = ctx.world.get::<PlatformLamp>(entity).map(|l| *l);
+      let lamp_data = ctx.world.get::<PlatformLamp>(entity).copied();
 
       if let Some(lamp) = lamp_data
         && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity)
@@ -734,14 +750,14 @@ impl GameScene {
           (0.0, 0.0)
         };
 
-        transform.x = lamp.base_x + offset_x + flicker.0;
-        transform.y = lamp.base_y + offset_y + flicker.1;
+        transform.translation.x = lamp.base_x + offset_x + flicker.0;
+        transform.translation.y = lamp.base_y + offset_y + flicker.1;
       }
     }
 
     // Update dust emitter positions to follow their lamps
     for entity in &self.lamp_dust_emitters {
-      let lamp_data = ctx.world.get::<PlatformLamp>(*entity).map(|l| *l);
+      let lamp_data = ctx.world.get::<PlatformLamp>(*entity).copied();
 
       if let Some(lamp) = lamp_data
         && let Some(mut transform) = ctx.world.get_mut::<Transform>(*entity)
@@ -766,8 +782,8 @@ impl GameScene {
         let offset_x = travel_range * (fairy_x * 0.7 + drift_x * 0.3);
         let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
 
-        transform.x = lamp.base_x + offset_x;
-        transform.y = lamp.base_y + offset_y;
+        transform.translation.x = lamp.base_x + offset_x;
+        transform.translation.y = lamp.base_y + offset_y;
       }
     }
   }
@@ -814,13 +830,16 @@ impl GameScene {
       ));
 
     // Position emitter at top of visible camera area
-    let rain_entity = ctx.world.spawn((
-      Transform::new(
-        self.screen_width / 2.0,
-        self.camera_y - self.screen_height / 2.0,
-      ),
-      emitter,
-    ));
+    let rain_entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(
+          self.screen_width / 2.0,
+          self.camera_y - self.screen_height / 2.0,
+        ),
+        emitter,
+      ))
+      .id();
 
     self.rain_emitter = Some(rain_entity);
   }
@@ -830,8 +849,8 @@ impl GameScene {
     if let Some(rain_entity) = self.rain_emitter
       && let Some(mut transform) = ctx.world.get_mut::<Transform>(rain_entity)
     {
-      transform.x = self.screen_width / 2.0;
-      transform.y = self.camera_y - self.screen_height / 2.0; // Top of visible area
+      transform.translation.x = self.screen_width / 2.0;
+      transform.translation.y = self.camera_y - self.screen_height / 2.0; // Top of visible area
     }
   }
 
@@ -847,13 +866,13 @@ impl GameScene {
     for &entity in &self.background_tiles {
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
         // If tile is below visible area, move it up
-        if transform.y > visible_bottom {
+        if transform.translation.y > visible_bottom {
           // Move up by total height of all tiles
-          transform.y -= self.bg_tile_height * self.background_tiles.len() as f32;
+          transform.translation.y -= self.bg_tile_height * self.background_tiles.len() as f32;
         }
         // If tile is above visible area, move it down
-        else if transform.y + self.bg_tile_height < visible_top {
-          transform.y += self.bg_tile_height * self.background_tiles.len() as f32;
+        else if transform.translation.y + self.bg_tile_height < visible_top {
+          transform.translation.y += self.bg_tile_height * self.background_tiles.len() as f32;
         }
       }
     }
@@ -861,10 +880,6 @@ impl GameScene {
 
   /// Update ambient lighting based on player height - gets brighter as you climb
   fn update_ambient_by_height(&self, ctx: &mut SceneContext) {
-    let Some(lighting) = ctx.lighting else {
-      return;
-    };
-
     // Calculate height factor (0.0 at bottom, 1.0 at max height)
     let height_factor = (self.current_height / HEIGHT_FOR_MAX_AMBIENT).clamp(0.0, 1.0);
 
@@ -875,7 +890,9 @@ impl GameScene {
     let intensity =
       AMBIENT_DARK_INTENSITY + (AMBIENT_BRIGHT_INTENSITY - AMBIENT_DARK_INTENSITY) * height_factor;
 
-    lighting.set_ambient(AmbientLight::new(Color::rgb(r, g, b), intensity));
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::new(Color::rgb(r, g, b), intensity));
   }
 
   fn update_player_lights(&mut self, ctx: &mut SceneContext) {
@@ -890,12 +907,12 @@ impl GameScene {
       };
 
       // Center the light on the player
-      let light_x = player_transform.x + PLAYER_WIDTH / 2.0;
-      let light_y = player_transform.y + PLAYER_HEIGHT / 2.0;
+      let light_x = player_transform.translation.x + PLAYER_WIDTH / 2.0;
+      let light_y = player_transform.translation.y + PLAYER_HEIGHT / 2.0;
 
       if let Some(mut light_transform) = ctx.world.get_mut::<Transform>(light_entity) {
-        light_transform.x = light_x;
-        light_transform.y = light_y;
+        light_transform.translation.x = light_x;
+        light_transform.translation.y = light_y;
       }
     }
   }
@@ -958,14 +975,19 @@ impl GameScene {
         (1.0, 1.0, 0.0)
       };
 
-      if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-        transform.scale_x = scale_x;
-        transform.scale_y = scale_y;
-        // Visual lean effect (doesn't affect collision)
-        transform.offset_x = offset_x;
-        // Offset Y to keep feet grounded when squishing
-        // When scale_y < 1, the sprite gets shorter, so offset down to keep feet in place
-        transform.offset_y = PLAYER_HEIGHT * (1.0 - scale_y);
+      // The sprite is a child anchored at the player's bottom-left corner, so
+      // squishing keeps the feet grounded; the lean only moves the sprite
+      // (it doesn't affect collision).
+      let Some(sprite) = ctx
+        .world
+        .get::<Children>(entity)
+        .and_then(|children| children.first().copied())
+      else {
+        continue;
+      };
+      if let Some(mut transform) = ctx.world.get_mut::<Transform>(sprite) {
+        transform.scale = Vec2::new(scale_x, scale_y);
+        transform.translation.x = offset_x;
       }
     }
   }
@@ -985,48 +1007,64 @@ impl GameScene {
       Predicted::new(client_id)
     };
 
-    let entity = ctx.world.spawn((
-      Transform::new(spawn_x, PLAYER_SPAWN_Y),
-      Renderable::sprite(SpriteHandle::from_sprite(
-        Sprite::solid_rect(
-          PLAYER_WIDTH as u32,
-          PLAYER_HEIGHT as u32,
-          color.0,
-          color.1,
-          color.2,
-          255,
-        ),
-        format!("player_{}", slot),
+    // The player's position is its top-left corner; the sprite is a child
+    // standing on the bottom-left corner so it can squish in place.
+    let entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(spawn_x, PLAYER_SPAWN_Y),
+        Collider::box_collider(PLAYER_WIDTH, PLAYER_HEIGHT)
+          .with_offset(PLAYER_WIDTH / 2.0, PLAYER_HEIGHT / 2.0),
+        Player::new(slot),
+        Velocity::zero(),
+        predicted,
       ))
-      .with_z_order(Z_PLAYER),
-      Collider::box_collider(PLAYER_WIDTH, PLAYER_HEIGHT),
-      Player::new(slot),
-      Velocity::zero(),
-      predicted,
-    ));
+      .id();
+    ctx.spawn_child(
+      entity,
+      (
+        Transform::from_xy(0.0, PLAYER_HEIGHT),
+        Renderable::sprite(SpriteHandle::from_sprite(
+          Sprite::solid_rect(
+            PLAYER_WIDTH as u32,
+            PLAYER_HEIGHT as u32,
+            color.0,
+            color.1,
+            color.2,
+            255,
+          ),
+          format!("player_{}", slot),
+        ))
+        .with_z_order(Z_PLAYER)
+        .with_anchor(Anchor::BottomLeft),
+      ),
+    );
 
     self.players.insert(client_id, entity);
 
     // Spawn a light for this player - with subtle volumetric glow
-    let light_entity = ctx.world.spawn((
-      Transform::new(
-        spawn_x + PLAYER_WIDTH / 2.0,
-        PLAYER_SPAWN_Y + PLAYER_HEIGHT / 2.0,
-      ),
-      Light2D::point_with_intensity(
-        Color::rgb(
-          PLAYER_LIGHT_COLOR.0,
-          PLAYER_LIGHT_COLOR.1,
-          PLAYER_LIGHT_COLOR.2,
+    let light_entity = ctx
+      .world
+      .spawn((
+        Transform::from_xy(
+          spawn_x + PLAYER_WIDTH / 2.0,
+          PLAYER_SPAWN_Y + PLAYER_HEIGHT / 2.0,
         ),
-        PLAYER_LIGHT_RADIUS,
-        PLAYER_LIGHT_INTENSITY,
-      )
-      .with_volumetric_settings(VolumetricSettings::subtle_beam()),
-      PlayerLight {
-        player_entity: entity,
-      },
-    ));
+        Light2D::point_with_intensity(
+          Color::rgb(
+            PLAYER_LIGHT_COLOR.0,
+            PLAYER_LIGHT_COLOR.1,
+            PLAYER_LIGHT_COLOR.2,
+          ),
+          PLAYER_LIGHT_RADIUS,
+          PLAYER_LIGHT_INTENSITY,
+        )
+        .with_volumetric_settings(VolumetricSettings::subtle_beam()),
+        PlayerLight {
+          player_entity: entity,
+        },
+      ))
+      .id();
     self.player_lights.insert(client_id, light_entity);
 
     entity
@@ -1080,7 +1118,7 @@ impl GameScene {
     let death_y = self.local_checkpoint().y + DEATH_Y_OFFSET;
 
     // Start respawn timer if player fell below death threshold
-    if transform.y > death_y {
+    if transform.translation.y > death_y {
       self.respawn_timer = Some(RESPAWN_DELAY);
     }
   }
@@ -1096,7 +1134,7 @@ impl GameScene {
         let Some(player) = ctx.world.get::<Player>(entity) else {
           return;
         };
-        (transform.y, player.grounded)
+        (transform.translation.y, player.grounded)
       };
 
       let raw_height = (PLAYER_SPAWN_Y - player_y) / HEIGHT_SCALE;
@@ -1125,7 +1163,7 @@ impl GameScene {
         let Some(player) = ctx.world.get::<Player>(entity) else {
           continue;
         };
-        (transform.y, player.grounded)
+        (transform.translation.y, player.grounded)
       };
 
       let height = ((PLAYER_SPAWN_Y - player_y) / HEIGHT_SCALE).max(0.0);
@@ -1207,7 +1245,7 @@ impl GameScene {
             PLATFORM_COLOR.2,
             255,
           ),
-          format!("platform_normal_{}", old_plat.id()),
+          format!("platform_normal_{}", old_plat.to_bits()),
         );
         renderable.sprite = new_sprite;
       }
@@ -1228,16 +1266,16 @@ impl GameScene {
         continue;
       }
 
-      let dist = (platform_transform.y - target_y).abs();
+      let dist = (platform_transform.translation.y - target_y).abs();
       if dist > max_dist {
         continue;
       }
       let is_closer = best.as_ref().is_none_or(|b| dist < (b.1 - target_y).abs());
       if is_closer {
-        let center_x = platform_transform.x + platform.width / 2.0;
+        let center_x = platform_transform.translation.x + platform.width / 2.0;
         best = Some((
           platform_entity,
-          platform_transform.y,
+          platform_transform.translation.y,
           center_x,
           platform.width,
         ));
@@ -1257,7 +1295,7 @@ impl GameScene {
           CHECKPOINT_PLATFORM_COLOR.2,
           255,
         ),
-        format!("platform_checkpoint_{}", plat_entity.id()),
+        format!("platform_checkpoint_{}", plat_entity.to_bits()),
       );
       renderable.sprite = new_sprite;
     }
@@ -1329,10 +1367,10 @@ impl GameScene {
         continue;
       }
       // Pick the platform closest to the cutoff Y (which is the threshold position)
-      let dist = (transform.y - cutoff_y).abs();
+      let dist = (transform.translation.y - cutoff_y).abs();
       let is_closer = best.as_ref().is_none_or(|b| dist < (b.1 - cutoff_y).abs());
       if is_closer {
-        best = Some((platform_entity, transform.y));
+        best = Some((platform_entity, transform.translation.y));
       }
     }
 
@@ -1366,7 +1404,7 @@ impl GameScene {
             PLATFORM_COLOR.2,
             255,
           ),
-          format!("platform_normal_{}", old_entity.id()),
+          format!("platform_normal_{}", old_entity.to_bits()),
         );
         renderable.sprite = new_sprite;
       }
@@ -1374,19 +1412,19 @@ impl GameScene {
 
     // Color new future checkpoint platform yellow
     if let Some(new_entity) = new_entity
-      && let Some(platform) = ctx.world.get::<Platform>(new_entity)
+      && let Some(width) = ctx.world.get::<Platform>(new_entity).map(|p| p.width)
       && let Some(mut renderable) = ctx.world.get_mut::<Renderable>(new_entity)
     {
       let new_sprite = SpriteHandle::from_sprite(
         Sprite::solid_rect(
-          platform.width as u32,
+          width as u32,
           PLATFORM_HEIGHT as u32,
           FUTURE_CHECKPOINT_COLOR.0,
           FUTURE_CHECKPOINT_COLOR.1,
           FUTURE_CHECKPOINT_COLOR.2,
           255,
         ),
-        format!("platform_future_{}", new_entity.id()),
+        format!("platform_future_{}", new_entity.to_bits()),
       );
       renderable.sprite = new_sprite;
     }
@@ -1421,8 +1459,8 @@ impl GameScene {
           continue;
         }
         if let Some(other_transform) = ctx.world.get::<Transform>(other_entity)
-          && x < other_transform.x + PLAYER_WIDTH
-          && x + PLAYER_WIDTH > other_transform.x
+          && x < other_transform.translation.x + PLAYER_WIDTH
+          && x + PLAYER_WIDTH > other_transform.translation.x
         {
           return true;
         }
@@ -1464,8 +1502,8 @@ impl GameScene {
     // system preserves local positions for the local entity, so the respawn sticks
     // until the server catches up.
     if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-      transform.x = spawn_x;
-      transform.y = spawn_y;
+      transform.translation.x = spawn_x;
+      transform.translation.y = spawn_y;
     }
     if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
       vel.dx = 0.0;
@@ -1760,8 +1798,6 @@ impl GameScene {
           let vx = force * angle_rad.cos() * direction;
           let vy = -force * angle_rad.sin(); // Negative because Y is down
 
-          drop(player);
-
           if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
             vel.dx = vx;
             vel.dy = vy;
@@ -1773,9 +1809,9 @@ impl GameScene {
           }
 
           // Play jump sound
-          if let Some(audio) = &mut ctx.audio {
-            let _ = audio.play_sound_with("jump", SoundOptions::new().volume(0.05));
-          }
+          let _ = ctx
+            .audio
+            .play_sound_with("jump", SoundOptions::new().volume(0.05));
         } else if input.charging {
           // Update charge
           let new_charge = charge_time + dt;
@@ -1825,7 +1861,7 @@ impl GameScene {
       let old_x = ctx
         .world
         .get::<Transform>(*plat_entity)
-        .map(|t| t.x)
+        .map(|t| t.translation.x)
         .unwrap_or(0.0);
 
       let new_x = moving.x_at(self.elapsed_time);
@@ -1833,7 +1869,7 @@ impl GameScene {
 
       // Update platform position
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(*plat_entity) {
-        transform.x = new_x;
+        transform.translation.x = new_x;
       }
 
       // Get platform dimensions for rider check
@@ -1845,7 +1881,7 @@ impl GameScene {
       let plat_top = ctx
         .world
         .get::<Transform>(*plat_entity)
-        .map(|t| t.y)
+        .map(|t| t.translation.y)
         .unwrap_or(0.0);
 
       // Move grounded players standing on this platform
@@ -1861,21 +1897,18 @@ impl GameScene {
           }
 
           if let Some(pt) = ctx.world.get::<Transform>(player_entity) {
-            let player_left = pt.x;
-            let player_right = pt.x + PLAYER_WIDTH;
-            let player_bottom = pt.y + PLAYER_HEIGHT;
+            let player_left = pt.translation.x;
+            let player_right = pt.translation.x + PLAYER_WIDTH;
+            let player_bottom = pt.translation.y + PLAYER_HEIGHT;
 
             // Check if player is standing on this platform
             let on_platform = player_right > new_x
               && player_left < new_x + plat_width
               && (player_bottom - plat_top).abs() < 5.0;
 
-            if on_platform {
-              // Drop the immutable borrow before taking mutable
-              drop(pt);
-              if let Some(mut pt_mut) = ctx.world.get_mut::<Transform>(player_entity) {
-                pt_mut.x = (pt_mut.x + delta_x).clamp(0.0, self.screen_width - PLAYER_WIDTH);
-              }
+            if on_platform && let Some(mut pt_mut) = ctx.world.get_mut::<Transform>(player_entity) {
+              pt_mut.translation.x =
+                (pt_mut.translation.x + delta_x).clamp(0.0, self.screen_width - PLAYER_WIDTH);
             }
           }
         }
@@ -1885,14 +1918,14 @@ impl GameScene {
     // Update lamp base_x for lamps on moving platforms
     let lamp_entities: Vec<Entity> = self.platform_lamps.clone();
     for entity in lamp_entities {
-      let lamp_data = ctx.world.get::<PlatformLamp>(entity).map(|l| *l);
+      let lamp_data = ctx.world.get::<PlatformLamp>(entity).copied();
       if let Some(lamp) = lamp_data
         && let Some(plat_entity) = lamp.platform_entity
         && let Some(plat_transform) = ctx.world.get::<Transform>(plat_entity)
         && let Some(plat) = ctx.world.get::<Platform>(plat_entity)
         && ctx.world.get::<MovingPlatform>(plat_entity).is_some()
       {
-        let new_base_x = plat_transform.x + plat.width / 2.0;
+        let new_base_x = plat_transform.translation.x + plat.width / 2.0;
         if let Some(mut lamp_mut) = ctx.world.get_mut::<PlatformLamp>(entity) {
           lamp_mut.base_x = new_base_x;
         }
@@ -1901,14 +1934,14 @@ impl GameScene {
 
     // Update dust emitter base_x too
     for &entity in &self.lamp_dust_emitters {
-      let lamp_data = ctx.world.get::<PlatformLamp>(entity).map(|l| *l);
+      let lamp_data = ctx.world.get::<PlatformLamp>(entity).copied();
       if let Some(lamp) = lamp_data
         && let Some(plat_entity) = lamp.platform_entity
         && let Some(plat_transform) = ctx.world.get::<Transform>(plat_entity)
         && let Some(plat) = ctx.world.get::<Platform>(plat_entity)
         && ctx.world.get::<MovingPlatform>(plat_entity).is_some()
       {
-        let new_base_x = plat_transform.x + plat.width / 2.0;
+        let new_base_x = plat_transform.translation.x + plat.width / 2.0;
         if let Some(mut lamp_mut) = ctx.world.get_mut::<PlatformLamp>(entity) {
           lamp_mut.base_x = new_base_x;
         }
@@ -1939,18 +1972,18 @@ impl GameScene {
       // they remain flagged as grounded, causing them to float.
       if !is_airborne {
         if let Some(transform) = ctx.world.get::<Transform>(entity) {
-          let player_left = transform.x;
-          let player_right = transform.x + PLAYER_WIDTH;
-          let player_bottom = transform.y + PLAYER_HEIGHT;
+          let player_left = transform.translation.x;
+          let player_right = transform.translation.x + PLAYER_WIDTH;
+          let player_bottom = transform.translation.y + PLAYER_HEIGHT;
 
           let mut supported = false;
           for &plat_entity in &self.platforms {
             if let Some(pt) = ctx.world.get::<Transform>(plat_entity)
               && let Some(plat) = ctx.world.get::<Platform>(plat_entity)
             {
-              let plat_left = pt.x;
-              let plat_right = pt.x + plat.width;
-              let plat_top = pt.y;
+              let plat_left = pt.translation.x;
+              let plat_right = pt.translation.x + plat.width;
+              let plat_top = pt.translation.y;
 
               if player_right > plat_left
                 && player_left < plat_right
@@ -1969,6 +2002,7 @@ impl GameScene {
             }
             // Don't skip — fall through to airborne physics below
           } else {
+            Self::slide_by_knockback(ctx, entity, dt);
             continue;
           }
         } else {
@@ -1989,21 +2023,21 @@ impl GameScene {
         let prev_y = ctx
           .world
           .get::<Transform>(entity)
-          .map(|t| t.y)
+          .map(|t| t.translation.y)
           .unwrap_or(0.0);
 
         // Update position
         let mut wall_hit = false;
         if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-          transform.x += vx * dt;
-          transform.y += vy * dt;
+          transform.translation.x += vx * dt;
+          transform.translation.y += vy * dt;
 
           // Check wall collision
-          if transform.x < 0.0 {
-            transform.x = 0.0;
+          if transform.translation.x < 0.0 {
+            transform.translation.x = 0.0;
             wall_hit = true;
-          } else if transform.x > self.screen_width - PLAYER_WIDTH {
-            transform.x = self.screen_width - PLAYER_WIDTH;
+          } else if transform.translation.x > self.screen_width - PLAYER_WIDTH {
+            transform.translation.x = self.screen_width - PLAYER_WIDTH;
             wall_hit = true;
           }
         }
@@ -2021,9 +2055,22 @@ impl GameScene {
     }
   }
 
+  /// Knockback pushes through `Velocity`, which grounded players otherwise
+  /// ignore: slide them along the ground while a push lasts.
+  fn slide_by_knockback(ctx: &mut SceneContext, entity: Entity, dt: f32) {
+    let pushed = ctx
+      .world
+      .get::<Knockback>(entity)
+      .is_some_and(|knockback| knockback.active);
+    let dx = ctx.world.get::<Velocity>(entity).map_or(0.0, |vel| vel.dx);
+    if pushed && let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
+      transform.translation.x += dx * dt;
+    }
+  }
+
   fn check_platform_landing(&mut self, ctx: &mut SceneContext, player_entity: Entity, prev_y: f32) {
     let player_transform = match ctx.world.get::<Transform>(player_entity) {
-      Some(t) => (t.x, t.y),
+      Some(t) => (t.translation.x, t.translation.y),
       None => return,
     };
 
@@ -2043,7 +2090,7 @@ impl GameScene {
       };
 
       let plat_transform = match ctx.world.get::<Transform>(platform_entity) {
-        Some(t) => (t.x, t.y),
+        Some(t) => (t.translation.x, t.translation.y),
         None => continue,
       };
 
@@ -2077,7 +2124,7 @@ impl GameScene {
     // Apply the landing if we found one
     if let Some((plat_top, _)) = best_landing {
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(player_entity) {
-        transform.y = plat_top - PLAYER_HEIGHT;
+        transform.translation.y = plat_top - PLAYER_HEIGHT;
       }
 
       if let Some(mut vel) = ctx.world.get_mut::<Velocity>(player_entity) {
@@ -2093,9 +2140,9 @@ impl GameScene {
       }
 
       // Play land sound
-      if let Some(audio) = &mut ctx.audio {
-        let _ = audio.play_sound_with("land", SoundOptions::new().volume(0.05));
-      }
+      let _ = ctx
+        .audio
+        .play_sound_with("land", SoundOptions::new().volume(0.05));
     }
   }
 
@@ -2114,7 +2161,7 @@ impl GameScene {
     let mut any_collision = false;
 
     // Collect player data to avoid borrow issues
-    let player_data: Vec<(Entity, AABB, f32, bool)> = self
+    let player_data: Vec<(Entity, (Vec2, Vec2), f32, bool)> = self
       .players
       .values()
       .filter_map(|&entity| {
@@ -2122,8 +2169,8 @@ impl GameScene {
         let collider = ctx.world.get::<Collider>(entity)?;
         let vel = ctx.world.get::<Velocity>(entity)?;
         let player = ctx.world.get::<Player>(entity)?;
-        let aabb = collider.world_aabb(&transform);
-        Some((entity, aabb, vel.dy, player.leap_state.is_airborne()))
+        let bounds = collider.world_bounds(transform.translation);
+        Some((entity, bounds, vel.dy, player.leap_state.is_airborne()))
       })
       .collect();
 
@@ -2133,15 +2180,11 @@ impl GameScene {
         let (entity_a, ref a_bounds, avy, a_airborne) = player_data[i];
         let (entity_b, ref b_bounds, bvy, b_airborne) = player_data[j];
 
-        let a_left = a_bounds.min_x;
-        let a_right = a_bounds.max_x;
-        let a_top = a_bounds.min_y;
-        let a_bottom = a_bounds.max_y;
+        let (a_left, a_top) = (a_bounds.0.x, a_bounds.0.y);
+        let (a_right, a_bottom) = (a_bounds.1.x, a_bounds.1.y);
 
-        let b_left = b_bounds.min_x;
-        let b_right = b_bounds.max_x;
-        let b_top = b_bounds.min_y;
-        let b_bottom = b_bounds.max_y;
+        let (b_left, b_top) = (b_bounds.0.x, b_bounds.0.y);
+        let (b_right, b_bottom) = (b_bounds.1.x, b_bounds.1.y);
 
         // Check horizontal overlap
         let h_overlap = a_right > b_left && a_left < b_right;
@@ -2164,9 +2207,9 @@ impl GameScene {
             vel.dy = HEAD_BOUNCE_VELOCITY;
           }
           // Play a subtle sound
-          if let Some(audio) = &mut ctx.audio {
-            let _ = audio.play_sound_with("land", SoundOptions::new().volume(0.03));
-          }
+          let _ = ctx
+            .audio
+            .play_sound_with("land", SoundOptions::new().volume(0.03));
           any_collision = true;
           continue; // Don't apply push collision for head bounce
         }
@@ -2177,9 +2220,9 @@ impl GameScene {
           if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity_b) {
             vel.dy = HEAD_BOUNCE_VELOCITY;
           }
-          if let Some(audio) = &mut ctx.audio {
-            let _ = audio.play_sound_with("land", SoundOptions::new().volume(0.03));
-          }
+          let _ = ctx
+            .audio
+            .play_sound_with("land", SoundOptions::new().volume(0.03));
           any_collision = true;
           continue;
         }
@@ -2222,31 +2265,20 @@ impl GameScene {
             (Vec2::new(1.0, 0.0), Vec2::new(-1.0, 0.0))
           };
 
-          // Apply knockback to player A
-          let has_kb_a = ctx.world.get::<Knockback>(entity_a).is_some();
-          if has_kb_a {
-            if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity_a) {
-              kb.apply(dir_a, PLAYER_PUSH_FORCE);
-            }
-          } else {
-            let _ = ctx.world.insert_one(
-              entity_a,
-              Knockback::new(dir_a, PLAYER_PUSH_FORCE).with_decay_rate(PLAYER_PUSH_DECAY),
-            );
-          }
-
-          // Apply knockback to player B
-          let has_kb_b = ctx.world.get::<Knockback>(entity_b).is_some();
-          if has_kb_b {
-            if let Some(mut kb) = ctx.world.get_mut::<Knockback>(entity_b) {
-              kb.apply(dir_b, PLAYER_PUSH_FORCE);
-            }
-          } else {
-            let _ = ctx.world.insert_one(
-              entity_b,
-              Knockback::new(dir_b, PLAYER_PUSH_FORCE).with_decay_rate(PLAYER_PUSH_DECAY),
-            );
-          }
+          Knockback::apply_with_decay(
+            ctx.world,
+            entity_a,
+            dir_a,
+            PLAYER_PUSH_FORCE,
+            PLAYER_PUSH_DECAY,
+          );
+          Knockback::apply_with_decay(
+            ctx.world,
+            entity_b,
+            dir_b,
+            PLAYER_PUSH_FORCE,
+            PLAYER_PUSH_DECAY,
+          );
           any_collision = true;
         }
       }
@@ -2259,9 +2291,9 @@ impl GameScene {
     let mut highest_y = self.highest_player_y;
     for &entity in self.players.values() {
       if let Some(transform) = ctx.world.get::<Transform>(entity)
-        && transform.y < highest_y
+        && transform.translation.y < highest_y
       {
-        highest_y = transform.y;
+        highest_y = transform.translation.y;
       }
     }
     self.highest_player_y = highest_y;
@@ -2292,7 +2324,7 @@ impl GameScene {
   fn update_camera(&mut self, ctx: &mut SceneContext) {
     // Follow local player - camera looks ABOVE the player so they can see where to jump
     let player_y = match self.get_local_player_entity() {
-      Some(entity) => ctx.world.get::<Transform>(entity).map(|t| t.y),
+      Some(entity) => ctx.world.get::<Transform>(entity).map(|t| t.translation.y),
       None => None,
     };
 
@@ -2356,7 +2388,7 @@ impl GameScene {
     self.update_charge_indicator(ctx);
 
     // Update particle system
-    self.particle_system.update(ctx.world, ctx.events, dt);
+    self.particle_system.update(ctx.world, dt);
   }
 
   fn update_host(&mut self, ctx: &mut SceneContext, dt: f32) {
@@ -2593,7 +2625,7 @@ impl GameScene {
     self.update_charge_indicator(ctx);
 
     // Update particle system
-    self.particle_system.update(ctx.world, ctx.events, dt);
+    self.particle_system.update(ctx.world, dt);
 
     // Track remote players' best heights and slots on the host side
     let local_id = self.local_client_id;
@@ -2605,7 +2637,7 @@ impl GameScene {
         && let Some(player) = ctx.world.get::<Player>(entity)
       {
         self.remote_slots.insert(client_id, player.slot);
-        let height = ((PLAYER_SPAWN_Y - transform.y) / HEIGHT_SCALE).max(0.0);
+        let height = ((PLAYER_SPAWN_Y - transform.translation.y) / HEIGHT_SCALE).max(0.0);
         if player.grounded {
           let best = self.remote_best_heights.entry(client_id).or_insert(0.0);
           if height > *best {
@@ -2853,32 +2885,30 @@ impl GameScene {
           let local_pos = self
             .get_local_player_entity()
             .and_then(|e| ctx.world.get::<Transform>(e))
-            .map(|t| (t.x, t.y));
+            .map(|t| (t.translation.x, t.translation.y));
 
           // Detect jump (transition to Airborne)
           if !matches!(prev_state, NetworkLeapState::Airborne)
             && matches!(new_state, NetworkLeapState::Airborne)
-            && let Some(audio) = &mut ctx.audio
           {
             let options = if let Some((lx, ly)) = local_pos {
               spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
             } else {
               SoundOptions::new().volume(0.05)
             };
-            let _ = audio.play_sound_with("jump", options);
+            let _ = ctx.audio.play_sound_with("jump", options);
           }
 
           // Detect land (transition to Landing)
           if !matches!(prev_state, NetworkLeapState::Landing { .. })
             && matches!(new_state, NetworkLeapState::Landing { .. })
-            && let Some(audio) = &mut ctx.audio
           {
             let options = if let Some((lx, ly)) = local_pos {
               spatial_sound_options(lx, ly, update.x, update.y).volume(0.05)
             } else {
               SoundOptions::new().volume(0.05)
             };
-            let _ = audio.play_sound_with("land", options);
+            let _ = ctx.audio.play_sound_with("land", options);
           }
 
           // Store current state for next comparison
@@ -2910,8 +2940,8 @@ impl GameScene {
           // Trust the server — snap position, velocity, and state.
           if (server_airborne && client_grounded) || (server_grounded && client_airborne) {
             if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-              transform.x = update.x;
-              transform.y = update.y;
+              transform.translation.x = update.x;
+              transform.translation.y = update.y;
             }
             if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
               vel.dx = update.vx;
@@ -2926,7 +2956,10 @@ impl GameScene {
           // significantly. Lerp toward the server position to prevent
           // gradual drift without jarring snaps.
           else {
-            let client_pos = ctx.world.get::<Transform>(entity).map(|t| (t.x, t.y));
+            let client_pos = ctx
+              .world
+              .get::<Transform>(entity)
+              .map(|t| (t.translation.x, t.translation.y));
             if let Some((cx, cy)) = client_pos {
               let dx = update.x - cx;
               let dy = update.y - cy;
@@ -2934,8 +2967,8 @@ impl GameScene {
               // Large discrepancy (>48px, ~1.5 player heights): snap
               if dist_sq > 48.0 * 48.0 {
                 if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-                  transform.x = update.x;
-                  transform.y = update.y;
+                  transform.translation.x = update.x;
+                  transform.translation.y = update.y;
                 }
                 if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
                   vel.dx = update.vx;
@@ -2946,8 +2979,8 @@ impl GameScene {
               else if dist_sq > 8.0 * 8.0 {
                 let blend = 0.3; // Blend 30% toward server each update (20Hz)
                 if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-                  transform.x += dx * blend;
-                  transform.y += dy * blend;
+                  transform.translation.x += dx * blend;
+                  transform.translation.y += dy * blend;
                 }
                 // Also nudge velocity toward server to prevent re-diverging
                 if let Some(mut vel) = ctx.world.get_mut::<Velocity>(entity) {
@@ -3042,7 +3075,7 @@ impl GameScene {
     self.update_charge_indicator(ctx);
 
     // Update particle system
-    self.particle_system.update(ctx.world, ctx.events, dt);
+    self.particle_system.update(ctx.world, dt);
   }
 
   fn broadcast_positions(&mut self, ctx: &mut SceneContext) {
@@ -3076,8 +3109,8 @@ impl GameScene {
         updates.push(PositionUpdate {
           client_id,
           slot: player.slot,
-          x: transform.x,
-          y: transform.y,
+          x: transform.translation.x,
+          y: transform.translation.y,
           vx: vel.dx,
           vy: vel.dy,
           leap_state: player.leap_state.into(),
@@ -3142,8 +3175,8 @@ impl GameScene {
 
     self.charge_indicator.visible = true;
     // Convert world position to screen position via camera
-    let world_x = transform.x + PLAYER_WIDTH / 2.0;
-    let world_y = transform.y + PLAYER_HEIGHT / 2.0;
+    let world_x = transform.translation.x + PLAYER_WIDTH / 2.0;
+    let world_y = transform.translation.y + PLAYER_HEIGHT / 2.0;
     let (sx, sy) = ctx.camera.world_to_screen(world_x, world_y);
     self.charge_indicator.screen_x = sx;
     self.charge_indicator.screen_y = sy;
@@ -3284,7 +3317,8 @@ impl Scene for GameScene {
       .set_position(self.screen_width / 2.0, self.screen_height / 2.0);
 
     // Set up atmospheric lighting
-    if let Some(lighting) = ctx.lighting {
+    {
+      let mut lighting = ctx.lighting();
       // Dark cave ambient - will transition as player climbs
       lighting.set_ambient(AmbientLight::new(
         Color::rgb(
@@ -3296,12 +3330,10 @@ impl Scene for GameScene {
       ));
       // Dusty atmosphere for visible light beams
       lighting.set_atmosphere(Atmosphere::dusty());
-      // Keep UI readable in darkness
-      lighting.set_ui_affected_by_lighting(false);
     }
 
     // Enable ambient occlusion for corner darkening
-    ctx.effects.set_ambient_occlusion(0.35, 6.0);
+    ctx.effects().set_ambient_occlusion(0.35, 6.0);
 
     // Spawn rain particles
     self.spawn_rain(ctx);
@@ -3309,18 +3341,16 @@ impl Scene for GameScene {
     // Rain audio is already playing from menu scene (persists between scenes)
 
     // Register console command handler (auto-cleaned on scene exit)
-    ctx.register_console_command("game:respawn", |_args, cmd_ctx| {
+    ctx.console().register("game:respawn", |_args, cmd_ctx| {
       CONSOLE_RESPAWN_REQUESTED.store(true, Ordering::SeqCst);
       cmd_ctx.console.print_system("Respawning at checkpoint...");
       CommandResult::Ok
     });
 
     // Load jump and land sound effects
-    if let Some(audio) = &mut ctx.audio {
-      let _ = audio.load_sound("jump", "assets/jump.mp3");
-      let _ = audio.load_sound("land", "assets/land.wav");
-      self.sounds_loaded = true;
-    }
+    let _ = ctx.audio.load_sound("jump", "assets/jump.mp3");
+    let _ = ctx.audio.load_sound("land", "assets/land.wav");
+    self.sounds_loaded = true;
 
     // Spawn spawn platform
     self.spawn_starting_platform(ctx);
@@ -3427,7 +3457,7 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     let (sw, sh) = ui.screen_size();
 
     // Room info (top right)
@@ -3643,18 +3673,18 @@ impl Scene for GameScene {
     SceneAction::Continue
   }
 
-  fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
     // Upload particle sprite textures
     if let Some(ref sprite) = self.rain_sprite {
-      ctx.upload_sprite(sprite);
+      gpu.upload_sprite(sprite);
     }
     if let Some(ref sprite) = self.dust_sprite {
-      ctx.upload_sprite(sprite);
+      gpu.upload_sprite(sprite);
     }
 
     // Collect particles for rendering
     self
       .particle_system
-      .collect_for_render(ctx.world, ctx.camera, ctx.batch);
+      .collect_for_render(gpu.world, gpu.camera, gpu.batch);
   }
 }

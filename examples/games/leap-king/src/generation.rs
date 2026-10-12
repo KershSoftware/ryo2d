@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use ryo2d::prelude::SeededRng;
+use ryo2d_procgen::prelude::SeededRng;
 
 use crate::constants::*;
 

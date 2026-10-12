@@ -65,7 +65,6 @@ pub struct MenuScene {
   address_input: TextInputState,
   signal_url_input: TextInputState,
   error_message: Option<String>,
-  last_dt: f32,
   pending_scene: Option<Box<dyn Scene>>,
 
   // Host mode toggle
@@ -99,7 +98,6 @@ impl MenuScene {
       address_input,
       signal_url_input,
       error_message: None,
-      last_dt: 0.016,
       pending_scene: None,
       host_mode: HostMode::Lan,
       selected: MenuItem::SinglePlayer,
@@ -168,7 +166,8 @@ impl MenuScene {
     // Position emitter at top of visible area (camera is at screen center)
     let rain_entity = ctx
       .world
-      .spawn((Transform::new(self.screen_width / 2.0, 0.0), emitter));
+      .spawn((Transform::from_xy(self.screen_width / 2.0, 0.0), emitter))
+      .id();
 
     self.rain_emitter = Some(rain_entity);
   }
@@ -243,13 +242,10 @@ impl Scene for MenuScene {
       .set_position(self.screen_width / 2.0, self.screen_height / 2.0);
 
     // Set up ambient lighting - bright enough to see rain particles
-    if let Some(lighting) = ctx.lighting {
-      lighting.set_ambient(AmbientLight::new(
-        Color::rgb(60, 70, 100), // Brighter blue-gray ambient
-        0.6,                     // High intensity so rain is visible everywhere
-      ));
-      lighting.set_ui_affected_by_lighting(false);
-    }
+    ctx.lighting().set_ambient(AmbientLight::new(
+      Color::rgb(60, 70, 100), // Brighter blue-gray ambient
+      0.6,                     // High intensity so rain is visible everywhere
+    ));
 
     // Spawn fairy lights at random positions
     let mut rng = rand::thread_rng();
@@ -266,24 +262,30 @@ impl Scene for MenuScene {
       };
 
       // Outer glow light
-      let outer = ctx.world.spawn((
-        Transform::new(x, y),
-        Light2D::point_with_intensity(
-          Color::rgb(LAMP_LIGHT_COLOR.0, LAMP_LIGHT_COLOR.1, LAMP_LIGHT_COLOR.2),
-          LAMP_LIGHT_RADIUS,
-          LAMP_LIGHT_INTENSITY,
-        ),
-      ));
+      let outer = ctx
+        .world
+        .spawn((
+          Transform::from_xy(x, y),
+          Light2D::point_with_intensity(
+            Color::rgb(LAMP_LIGHT_COLOR.0, LAMP_LIGHT_COLOR.1, LAMP_LIGHT_COLOR.2),
+            LAMP_LIGHT_RADIUS,
+            LAMP_LIGHT_INTENSITY,
+          ),
+        ))
+        .id();
 
       // Inner bright core (separate entity)
-      let inner = ctx.world.spawn((
-        Transform::new(x, y),
-        Light2D::point_with_intensity(
-          Color::rgb(LAMP_INNER_COLOR.0, LAMP_INNER_COLOR.1, LAMP_INNER_COLOR.2),
-          LAMP_INNER_RADIUS,
-          LAMP_INNER_INTENSITY,
-        ),
-      ));
+      let inner = ctx
+        .world
+        .spawn((
+          Transform::from_xy(x, y),
+          Light2D::point_with_intensity(
+            Color::rgb(LAMP_INNER_COLOR.0, LAMP_INNER_COLOR.1, LAMP_INNER_COLOR.2),
+            LAMP_INNER_RADIUS,
+            LAMP_INNER_INTENSITY,
+          ),
+        ))
+        .id();
 
       // Track both lights with same animation data
       self.fairy_lights.push((outer, light_data));
@@ -294,16 +296,13 @@ impl Scene for MenuScene {
     self.spawn_rain(ctx);
 
     // Play rain ambient sound (persists between scenes with play_music_once)
-    if let Some(audio) = &mut ctx.audio {
-      let _ = audio.play_music_once(
-        "assets/rain.mp3",
-        MusicOptions::new().volume(0.4).looping(true),
-      );
-    }
+    let _ = ctx.audio.play_music_once(
+      "assets/rain.mp3",
+      MusicOptions::new().volume(0.4).looping(true),
+    );
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    self.last_dt = dt;
     self.elapsed_time += dt;
 
     // Update cooldown
@@ -330,13 +329,13 @@ impl Scene for MenuScene {
         let offset_x = LAMP_OSCILLATE_RADIUS * (fairy_x * 0.8 + drift_x) * 3.0;
         let offset_y = LAMP_OSCILLATE_RADIUS * (fairy_y * 0.5 + drift_y);
 
-        transform.x = light.base_x + offset_x;
-        transform.y = light.base_y + offset_y;
+        transform.translation.x = light.base_x + offset_x;
+        transform.translation.y = light.base_y + offset_y;
       }
     }
 
     // Update particle system
-    self.particle_system.update(ctx.world, ctx.events, dt);
+    self.particle_system.update(ctx.world, dt);
 
     // Check for pending scene switch
     if let Some(scene) = self.pending_scene.take() {
@@ -415,8 +414,8 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
-    let dt = self.last_dt;
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    let dt = ctx.time.real.delta();
     let (sw, sh) = ui.screen_size();
     let center_x = sw as f32 / 2.0;
     let center_y = sh as f32 / 2.0;
@@ -694,15 +693,15 @@ impl Scene for MenuScene {
     SceneAction::Continue
   }
 
-  fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
     // Upload rain sprite texture and collect particles
     if let Some(ref sprite) = self.rain_sprite {
-      ctx.upload_sprite(sprite);
+      gpu.upload_sprite(sprite);
     }
 
     // Collect particles for rendering (uses Z_PLATFORM - 1 set in emitter)
     self
       .particle_system
-      .collect_for_render(ctx.world, ctx.camera, ctx.batch);
+      .collect_for_render(gpu.world, gpu.camera, gpu.batch);
   }
 }

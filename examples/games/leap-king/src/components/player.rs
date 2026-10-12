@@ -1,5 +1,6 @@
 //! Player component and related types
 
+use ryo2d::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::constants::*;
@@ -73,7 +74,7 @@ impl LeapState {
 }
 
 /// Player marker component
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Player {
   /// Which player slot (0 = host/left, 1 = client/right)
   pub slot: u8,
@@ -113,7 +114,7 @@ impl Player {
 }
 
 /// Platform marker component
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct Platform {
   pub width: f32,
   pub chunk_y: i32, // Which chunk this platform belongs to
@@ -174,13 +175,13 @@ pub struct LeapInput {
 }
 
 /// Marker component for a light that follows a player
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct PlayerLight {
   pub player_entity: Entity,
 }
 
 /// Moving platform component — oscillates left/right sinusoidally
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct MovingPlatform {
   pub left_bound: f32,  // min X (left edge of platform)
   pub right_bound: f32, // max X (left edge of platform)
@@ -230,7 +231,7 @@ impl MovingPlatform {
 }
 
 /// Component for platform lamps with oscillation data
-#[derive(Debug, Clone, Copy)]
+#[derive(Component, Debug, Clone, Copy)]
 pub struct PlatformLamp {
   pub base_x: f32,
   pub base_y: f32,
@@ -257,6 +258,3 @@ impl PlatformLamp {
     self
   }
 }
-
-// Re-export Entity for use in components
-use ryo2d::prelude::Entity;

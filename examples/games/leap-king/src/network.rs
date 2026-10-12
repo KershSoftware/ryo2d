@@ -1,5 +1,6 @@
 //! Network message types for multiplayer
 
+use ryo2d::core::network::NetworkError;
 use ryo2d::core::network::action::{ActionContext, NetworkAction};
 use ryo2d::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -150,7 +151,7 @@ impl NetworkAction for RespawnAction {
   fn apply(&self, ctx: &mut ActionContext) {
     // Find the player entity by slot and reset its state
     let mut target_entity = None;
-    for (entity, player) in ctx.world.query::<(Entity, &Player)>().iter() {
+    for (entity, player) in ctx.world.query::<(Entity, &Player)>().iter(ctx.world) {
       if player.slot == self.slot {
         target_entity = Some(entity);
         break;
@@ -163,8 +164,7 @@ impl NetworkAction for RespawnAction {
 
     // Reset position
     if let Some(mut transform) = ctx.world.get_mut::<Transform>(entity) {
-      transform.x = self.spawn_x;
-      transform.y = self.spawn_y;
+      transform.translation = Vec2::new(self.spawn_x, self.spawn_y);
     }
 
     // Reset velocity
