@@ -634,3 +634,51 @@ fn transition_fades_like_srgb_bytes() {
   }
   assert!(checked >= 2, "too few mid-fade frames ({checked})");
 }
+
+const ANCHOR_RED: [u8; 4] = [220, 30, 40, 255];
+
+fn red_rect(width: u32, height: u32, name: &str) -> SpriteHandle {
+  SpriteHandle::from_sprite(Sprite::solid_rect(width, height, 220, 30, 40, 255), name)
+}
+
+#[test]
+fn a_sprite_is_centred_on_its_position_by_default() {
+  // 10 x 10 at (20, 20): it covers 15..25 on both axes
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(20.0, 20.0),
+      Renderable::sprite(red_rect(10, 10, "centred")),
+    ));
+  });
+  let Some(frame) = frame_of(scene, (48, 48)) else {
+    return;
+  };
+  for (x, y) in [(15, 15), (24, 24), (20, 20)] {
+    assert_eq!(frame.get_pixel(x, y).0, ANCHOR_RED, "({x}, {y}) inside");
+  }
+  for (x, y) in [(14, 20), (25, 20), (20, 14), (20, 25)] {
+    assert_ne!(frame.get_pixel(x, y).0, ANCHOR_RED, "({x}, {y}) outside");
+  }
+}
+
+#[test]
+fn a_sprite_rotates_about_its_anchor() {
+  // 20 wide, 10 tall, standing on (32, 32). A quarter turn clockwise (y is
+  // down) lays it to the right of its feet: x 32..42, y 22..42
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(32.0, 32.0).with_rotation(std::f32::consts::FRAC_PI_2),
+      Renderable::sprite(red_rect(20, 10, "rotated")).with_anchor(Anchor::BottomCenter),
+    ));
+  });
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  for (x, y) in [(34, 24), (40, 40), (37, 32)] {
+    assert_eq!(frame.get_pixel(x, y).0, ANCHOR_RED, "({x}, {y}) inside");
+  }
+  // Turning about the middle instead would cover these
+  for (x, y) in [(28, 20), (29, 34)] {
+    assert_ne!(frame.get_pixel(x, y).0, ANCHOR_RED, "({x}, {y}) outside");
+  }
+}

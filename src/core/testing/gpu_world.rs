@@ -340,3 +340,41 @@ fn a_tapped_key_is_seen_by_exactly_one_fixed_update() {
   engine.step_frames(3).unwrap();
   assert_eq!(*seen.lock().unwrap(), 1);
 }
+
+#[test]
+fn an_interpolated_sprite_draws_between_its_last_two_steps() {
+  use std::time::Duration;
+  /// Moves its sprite 20 px right every fixed step.
+  struct Mover;
+  impl Scene for Mover {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 220, 30, 40, 255), "lerp");
+      ctx.world.spawn((
+        Transform::from_xy(0.0, 10.0),
+        Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
+        Interpolated,
+      ));
+    }
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      for mut transform in ctx.world.query::<&mut Transform>().iter_mut(ctx.world) {
+        transform.translation.x += 20.0;
+      }
+      SceneAction::Continue
+    }
+  }
+  let builder = EngineBuilder::new()
+    .resolution(120, 30)
+    .fixed_hz(50)
+    .start_scene(Mover);
+  let Some(mut engine) = engine(builder) else {
+    return;
+  };
+  // Two whole steps: the sprite is at x = 40 and was at 20
+  engine.step_frames(2).unwrap();
+  // A step and a half: one more step (to x = 60, from 40) and half a step
+  // left over, so it draws half way, at x = 50
+  engine.engine.frame(Some(Duration::from_millis(30)));
+  let frame = engine.frame().unwrap();
+  assert_eq!(frame.get_pixel(51, 11).0, RED, "drawn at x = 50");
+  assert_ne!(frame.get_pixel(61, 11).0, RED, "not at the stepped x = 60");
+}

@@ -931,6 +931,53 @@ mod tests {
   }
 
   #[test]
+  fn a_message_written_in_the_ui_pass_reaches_the_next_fixed_step() {
+    use crate::core::ecs::{Message, MessageReader};
+    use crate::core::ui::UiContext;
+    #[derive(Message, Clone)]
+    struct Clicked;
+    #[derive(Resource, Default)]
+    struct Heard(u32);
+    struct WritesOnce {
+      written: bool,
+    }
+    impl Scene for WritesOnce {
+      fn ui(&mut self, _ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+        if !self.written {
+          self.written = true;
+          ctx.write_message(Clicked);
+        }
+        SceneAction::Continue
+      }
+    }
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(16, 16)
+      .fixed_hz(60)
+      .add_message::<Clicked>()
+      .insert_resource(Heard::default())
+      .add_systems(
+        Phase::FixedUpdate,
+        |mut clicks: MessageReader<Clicked>, mut heard: ResMut<Heard>| {
+          heard.0 += clicks.read().count() as u32;
+        },
+      )
+      .start_scene(WritesOnce { written: false })
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 16, 16), 1.0);
+    // Written in a frame with no fixed step, then frames without one
+    for _ in 0..3 {
+      e.frame(Some(Duration::from_micros(4_166)));
+    }
+    e.frame(Some(Duration::from_micros(16_667)));
+    e.frame(Some(Duration::from_micros(16_667)));
+    assert_eq!(e.world().resource::<Heard>().0, 1);
+  }
+
+  #[test]
   fn a_message_from_a_fixed_step_survives_frames_without_one() {
     use crate::core::ecs::{IntoScheduleConfigs, Message, MessageReader, MessageWriter};
     #[derive(Message, Clone)]
