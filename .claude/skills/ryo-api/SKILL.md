@@ -257,15 +257,16 @@ A dynamic body (`RigidBody`, not kinematic, with `Velocity`) gets the knockback 
 ```rust
 pub struct Pool<B: Bundle>;
 Pool::new(factory: impl Fn() -> B + Send + Sync + 'static, config: PoolConfig) -> Self
-pool.acquire(&mut self, world: &mut World) -> Option<Entity>   // enabled; components keep old values
+pool.acquire(&mut self, world: &mut World) -> Option<Entity>   // enabled, interpolation skipped; components keep old values
 pool.release(&mut self, world: &mut World, entity: Entity) -> bool // disabled again
 pool.release_all(&mut self, world: &mut World)
-pool.active(&self) -> &[Entity]; pool.is_active(&self, Entity) -> bool; pool.stats(&self) -> PoolStats
+pool.active(&self) -> impl Iterator<Item = Entity> /* oldest first */; pool.is_active(&self, Entity) -> bool; pool.stats(&self) -> PoolStats
 ```
 
 - `PoolConfig { initial_capacity: 32, max_capacity: 0 /* unlimited */, expand_batch_size: 16, exhausted_policy: PoolExhaustedPolicy::Expand }`.
 - `enum PoolExhaustedPolicy { Expand, ReturnNone, RecycleOldest }`; `PoolStats { total_spawned, active, available }`.
-- Pooled entities are `Disabled`, so queries skip them. After `acquire`, set every field you rely on and call `skip_interpolation` if the entity is `Interpolated`.
+- Pooled entities are `Disabled`, so queries skip them. After `acquire`, set every field you rely on; an `Interpolated` entity draws where you put it this step (acquire skips its interpolation).
+- `acquire`, `release` and `is_active` are O(1); entities a scene cleanup despawned are dropped when the pool meets them or runs dry.
 
 ---
 

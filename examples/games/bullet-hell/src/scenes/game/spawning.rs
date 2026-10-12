@@ -266,12 +266,11 @@ impl GameScene {
     if let Some(ref mut pool) = self.bullet_pool
       && let Some(bullet) = pool.acquire(ctx.world)
     {
-      // Configure the pooled bullet entity; it appears here rather than
-      // sliding from where it was last used
+      // Configure the pooled bullet entity (acquire stops it sliding from
+      // where it was last used)
       if let Some(mut transform) = ctx.world.get_mut::<Transform>(bullet) {
         transform.translation = Vec2::new(x, y);
       }
-      ctx.world.skip_interpolation(bullet);
       // Set velocity for Rapier physics
       if let Some(mut vel) = ctx.world.get_mut::<Velocity>(bullet) {
         vel.dx = velocity_x;

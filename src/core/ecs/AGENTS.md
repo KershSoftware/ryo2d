@@ -66,8 +66,8 @@ Game systems: `EngineBuilder::add_systems(phase, systems)` for the whole run (an
 ## Disabled and Pooling
 
 - `Disabled` is the kernel's entity-disabling marker: every query skips a disabled entity unless it asks with `Allow<Disabled>` (or names `Disabled` in its terms). Engine systems, physics (unregisters, re-registers on enable), rendering and particles skip disabled entities with no filter of their own.
-- `Pool<B>` (`pooling.rs`) spawns its batch disabled; `acquire` removes `Disabled`, `release` / `release_all` insert it. `acquire` does not reset components: set every field you rely on, and call `skip_interpolation` after placing an interpolated entity so it does not slide from where it was released.
-- A pool drops entities the world no longer has (a `SceneCleanup::WORLD` sweep) and refills itself on the next `acquire`.
+- `Pool<B>` (`pooling.rs`) spawns its batch disabled; `acquire` removes `Disabled`, `release` / `release_all` insert it. `acquire` does not reset components (set every field you rely on); it sets the interpolation skip so the entity does not slide from where it was released.
+- `acquire`, `release` and `is_active` are O(1): the active list is a queue of (acquisition number, entity) plus an entity-to-number map, and a released entry stays in the queue as stale until skipped or compacted. A pool drops entities the world no longer has (a `SceneCleanup::WORLD` sweep) lazily, and purges fully when it runs dry, before applying its policy.
 
 ## Resources Are Entities
 
