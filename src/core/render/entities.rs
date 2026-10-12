@@ -21,8 +21,8 @@
 use super::{DrawKind, DrawList, SpriteShading, TextureRef};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{
-  Entity, GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable,
-  ShaderHandle, ShaderParams, SpriteEffect, SpriteShader, World, YSort, render_global,
+  GlobalTransform, Material, PreviousGlobalTransform, RenderStyle, Renderable, ShaderHandle,
+  ShaderParams, SpriteEffect, SpriteShader, World, YSort, render_global,
 };
 use crate::core::graphics::sprite_gpu::effective_shader;
 use crate::core::graphics::{Camera, CompositeTile, Sprite, SpriteGpuRenderer, SpriteInstance};
@@ -78,10 +78,28 @@ impl DrawOrder {
 
 /// What one entity is drawn from.
 struct EntityFrame<'a> {
-  world: &'a World,
   camera: &'a Camera,
   /// Render interpolation factor
   alpha: f32,
+}
+
+/// What a single-sprite entity is drawn from.
+type DrawableItem = (
+  &'static Renderable,
+  &'static GlobalTransform,
+  Option<&'static PreviousGlobalTransform>,
+  Option<&'static Material>,
+  Option<&'static YSort>,
+);
+
+/// One entity's components, borrowed from the world for the frame.
+#[derive(Clone, Copy)]
+struct Drawable<'w> {
+  renderable: &'w Renderable,
+  global: &'w GlobalTransform,
+  previous: Option<&'w PreviousGlobalTransform>,
+  material: Option<&'w Material>,
+  y_sort: Option<&'w YSort>,
 }
 
 /// Turns the world's renderable entities into draw list sprites, keeping the
@@ -108,13 +126,19 @@ impl EntityDrawer {
     queue: &wgpu::Queue,
     list: &mut DrawList,
   ) -> usize {
+    let mut drawables = world.query::<DrawableItem>();
+    let mut composites = world.query::<(
+      &GlobalTransform,
+      Option<&PreviousGlobalTransform>,
+      &CompositeTile,
+    )>();
+    let world: &World = world;
     // The draw list sorts by each entity's own z; this order (y-sorted after
     // plain within a layer) becomes the submission sequence
-    let mut items: Vec<(Entity, DrawOrder)> = world
-      .query::<(Entity, &Renderable, &GlobalTransform, Option<&YSort>)>()
+    let mut items: Vec<(DrawOrder, Drawable<'_>)> = drawables
       .iter(world)
-      .filter(|(_, renderable, _, _)| renderable.visible)
-      .map(|(entity, renderable, global, y_sort)| {
+      .filter(|(renderable, ..)| renderable.visible)
+      .map(|(renderable, global, previous, material, y_sort)| {
         let order = match y_sort {
           Some(y_sort) => DrawOrder::y_sorted(
             renderable.z_order,
@@ -122,22 +146,20 @@ impl EntityDrawer {
           ),
           None => DrawOrder::plain(renderable.z_order),
         };
-        (entity, order)
+        let drawable = Drawable {
+          renderable,
+          global,
+          previous,
+          material,
+          y_sort,
+        };
+        (order, drawable)
       })
       .collect();
     // Stable, so plain sprites keep their order
-    items.sort_by(|(_, a), (_, b)| a.cmp(b));
-    let composites: Vec<Entity> = world
-      .query::<(Entity, &GlobalTransform, &CompositeTile)>()
-      .iter(world)
-      .map(|(entity, _, _)| entity)
-      .collect();
+    items.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-    let frame = EntityFrame {
-      world,
-      camera,
-      alpha,
-    };
+    let frame = EntityFrame { camera, alpha };
     let mut out = Emitter {
       gpu,
       device,
@@ -146,11 +168,11 @@ impl EntityDrawer {
       ellipse: &mut self.ellipse,
       size,
     };
-    for &(entity, _) in &items {
-      collect_entity(&frame, entity, &mut out);
+    for (_, drawable) in &items {
+      collect_entity(&frame, drawable, &mut out);
     }
-    for entity in composites {
-      collect_composite(&frame, entity, &mut out);
+    for (global, previous, composite) in composites.iter(world) {
+      collect_composite(&frame, global, previous, composite, &mut out);
     }
     items.len()
   }
@@ -449,31 +471,26 @@ fn tile_start(direction: TileDirection, tile_count: u32, tile_size: f32) -> (f32
 }
 
 /// One renderable entity: its shadows, then its sprite or tiles.
-fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>) {
-  let world = frame.world;
+fn collect_entity(frame: &EntityFrame<'_>, drawable: &Drawable<'_>, out: &mut Emitter<'_>) {
   let camera = frame.camera;
-  let (Some(renderable), Some(global)) = (
-    world.get::<Renderable>(entity),
-    world.get::<GlobalTransform>(entity),
-  ) else {
-    return;
-  };
+  let Drawable {
+    renderable,
+    global,
+    previous,
+    material,
+    y_sort,
+  } = *drawable;
   let z = renderable.z_order;
-  let material = world.get::<Material>(entity);
 
   // Between the last two fixed steps for interpolated entities
-  let drawn = render_global(
-    global,
-    world.get::<PreviousGlobalTransform>(entity),
-    frame.alpha,
-  );
+  let drawn = render_global(global, previous, frame.alpha);
   let position = drawn.translation();
   let scale = drawn.scale();
   let (x, y, rotation, scale_x, scale_y) =
     (position.x, position.y, drawn.rotation(), scale.x, scale.y);
   let (pivot_x, pivot_y) = renderable.anchor.to_pivot();
 
-  let (scale_x, scale_y) = if let Some(y_sort) = world.get::<YSort>(entity) {
+  let (scale_x, scale_y) = if let Some(y_sort) = y_sort {
     let (depth_x, depth_y) = y_sort.calculate_depth_scale(y);
     (scale_x * depth_x, scale_y * depth_y)
   } else {
@@ -669,24 +686,19 @@ fn collect_entity(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>
 
 /// A multi-part tile: static parts once, tiled parts repeated, each part at
 /// the composite's `z_order`, laid out from the entity's position.
-fn collect_composite(frame: &EntityFrame<'_>, entity: Entity, out: &mut Emitter<'_>) {
-  let world = frame.world;
+fn collect_composite(
+  frame: &EntityFrame<'_>,
+  global: &GlobalTransform,
+  previous: Option<&PreviousGlobalTransform>,
+  composite: &CompositeTile,
+  out: &mut Emitter<'_>,
+) {
   let camera = frame.camera;
-  let (Some(global), Some(composite)) = (
-    world.get::<GlobalTransform>(entity),
-    world.get::<CompositeTile>(entity),
-  ) else {
-    return;
-  };
   if !composite.visible {
     return;
   }
   // Blended for interpolated entities, like single sprites
-  let global = &render_global(
-    global,
-    world.get::<PreviousGlobalTransform>(entity),
-    frame.alpha,
-  );
+  let global = &render_global(global, previous, frame.alpha);
 
   let z = composite.z_order;
   let origin = global.translation();
