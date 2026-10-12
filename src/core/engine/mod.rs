@@ -319,8 +319,8 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::Last,
     (
-      register_new_bodies,
       unregister_removed_bodies,
+      register_new_bodies,
       clear_trackers_system,
     )
       .chain(),

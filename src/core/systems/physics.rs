@@ -1,7 +1,7 @@
 //! Physics: keep Rapier in step with the world, step it, and read it back.
 //!
 //! Each fixed step, in `FixedSet::Physics` and only while `PhysicsPaused` is
-//! false: register new bodies, unregister removed or disabled ones, push the
+//! false: unregister removed or disabled bodies, register new ones, push the
 //! game's writes to `Transform` and `Velocity` into Rapier, step by the fixed
 //! timestep, write the simulated positions back, and turn Rapier's contacts
 //! into `CollisionStarted`/`CollisionStopped` messages.
@@ -41,13 +41,20 @@ type Moved = (With<RigidBody>, Changed<Transform>);
 type Pushed = (With<RigidBody>, Changed<Velocity>);
 
 /// Register bodies that gained a `RigidBody` or a collider, and bodies whose
-/// entity was re-enabled.
+/// entity was re-enabled. A `RigidBody` replaced or edited (a dynamic body
+/// made kinematic) rebuilds its body. Runs after `unregister_removed_bodies`,
+/// so a `RigidBody` removed and added again in one tick keeps a body.
 pub fn register_new_bodies(
   mut physics: ResMut<RapierPhysicsWorld>,
+  retyped: Query<BodyItem, Changed<RigidBody>>,
   added: Query<BodyItem, NewBody>,
   bodies: Query<BodyItem, With<RigidBody>>,
   mut re_enabled: RemovedComponents<Disabled>,
 ) {
+  for item in &retyped {
+    physics.unregister_entity(item.0);
+    register(&mut physics, item);
+  }
   for item in &added {
     register(&mut physics, item);
   }
@@ -172,8 +179,8 @@ pub fn register_physics_systems(schedules: &mut EngineSchedules) {
   schedules.add_systems(
     Phase::FixedUpdate,
     (
-      register_new_bodies,
       unregister_removed_bodies,
+      register_new_bodies,
       sync_to_physics,
       step_physics,
       sync_from_physics,
@@ -255,6 +262,45 @@ mod tests {
     world.despawn(e);
     s.run(Phase::FixedUpdate, &mut world);
     assert!(!world.resource::<RapierPhysicsWorld>().is_registered(e));
+  }
+
+  /// A falling body run for `steps`, then changed by `change`, then run for
+  /// `steps` more; the y it fell in the second run.
+  fn fall_after(change: impl FnOnce(&mut World, Entity)) -> f32 {
+    let (mut world, mut s) = world(60);
+    let e = world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::new(),
+        Collider::box_collider(4.0, 4.0),
+      ))
+      .id();
+    for _ in 0..10 {
+      s.run(Phase::FixedUpdate, &mut world);
+    }
+    change(&mut world, e);
+    let before = world.get::<Transform>(e).unwrap().translation.y;
+    for _ in 0..10 {
+      s.run(Phase::FixedUpdate, &mut world);
+    }
+    world.get::<Transform>(e).unwrap().translation.y - before
+  }
+
+  #[test]
+  fn a_body_made_kinematic_stops_falling() {
+    let fell = fall_after(|world, e| {
+      world.entity_mut(e).insert(RigidBody::kinematic());
+    });
+    assert!(fell.abs() < 1e-3, "a kinematic body fell {fell}");
+  }
+
+  #[test]
+  fn a_body_removed_and_added_again_in_one_tick_keeps_simulating() {
+    let fell = fall_after(|world, e| {
+      world.entity_mut(e).remove::<RigidBody>();
+      world.entity_mut(e).insert(RigidBody::new());
+    });
+    assert!(fell > 1.0, "the body stopped: fell {fell}");
   }
 
   #[test]
