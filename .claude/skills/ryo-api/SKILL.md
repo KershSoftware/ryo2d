@@ -307,7 +307,7 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | `Last` | tracker clearing |
 
 - `enum FixedSet { Snapshot, Juice, Scene, Game, Physics, Transforms, Trails }`, `enum UpdateSet { Game }`, `enum PostUpdateSet { Transforms, Camera, Extract }`: order your systems with `.in_set(..)`, `.before(..)`, `.after(..)`.
-- Game-wide systems: `EngineBuilder::add_systems(phase, systems)` (any phase; in `FixedUpdate`/`Update`, systems that name none of the phase's sets run in its `Game` set). Scene-owned systems: `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)`, dropped when the scene leaves the stack.
+- Game-wide systems: `EngineBuilder::add_systems(phase, systems)` (any phase; in `FixedUpdate`/`Update`, a call whose systems are not ordered against anything outside it runs in its `Game` set; one that names a set or another call's system (`.in_set`, `.before`, `.after`) keeps exactly that order). Scene-owned systems: `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)`, dropped when the scene leaves the stack.
 - Every schedule is single-threaded.
 
 ---
@@ -453,7 +453,7 @@ EngineBuilder::new()
   .fixed_hz(60)
   .insert_resource(Score::default())
   .add_message::<CoinCollected>()
-  .add_systems(Phase::FixedUpdate, move_players) // FixedSet::Game unless it names a set
+  .add_systems(Phase::FixedUpdate, move_players) // FixedSet::Game: it names nothing to order against
   .start_scene(Level::default())
   .build()
   .run()?; // EngineResult<()>

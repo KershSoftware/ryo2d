@@ -35,7 +35,7 @@ Ryo2D's ECS is `bevy_ecs` 0.20, presented as Ryo2D's own: `kernel.rs` re-exports
 
 A quit from the UI pass or a step ends the fixed loop; no step runs after it. Systems are registered in `register_engine_systems` (`engine/mod.rs`); every schedule uses the single-threaded executor. Systems may return `Result<(), SystemError>`: the `FallbackErrorHandler` resource panics in debug builds and logs in release.
 
-Game systems: `EngineBuilder::add_systems(phase, systems)` for the whole run (any phase; in `FixedUpdate`/`Update` a call whose systems name none of the phase's sets runs in its `Game` set, otherwise where `.in_set`/`.before`/`.after` put it), or `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)` for a schedule the scene owns, run inside `FixedSet::Game` / `UpdateSet::Game` while the scene is active (or below an `updates_below` scene) and dropped with it. Other phases return `SceneScheduleError::UnsupportedPhase`.
+Game systems: `EngineBuilder::add_systems(phase, systems)` for the whole run (any phase; in `FixedUpdate`/`Update` a call whose systems are not ordered against anything outside it runs in its `Game` set; one that names a set or another call's system (`.in_set`, `.before`, `.after`) keeps exactly that order), or `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)` for a schedule the scene owns, run inside `FixedSet::Game` / `UpdateSet::Game` while the scene is active (or below an `updates_below` scene) and dropped with it. Other phases return `SceneScheduleError::UnsupportedPhase`.
 
 ## The Resource-Scope Rule
 

@@ -65,18 +65,6 @@ pub enum FixedSet {
   Trails,
 }
 
-impl FixedSet {
-  pub const ALL: [FixedSet; 7] = [
-    FixedSet::Snapshot,
-    FixedSet::Juice,
-    FixedSet::Scene,
-    FixedSet::Game,
-    FixedSet::Physics,
-    FixedSet::Transforms,
-    FixedSet::Trails,
-  ];
-}
-
 /// Order inside `Update`.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UpdateSet {
@@ -181,19 +169,17 @@ impl EngineSchedules {
 
   /// Add a game's systems to a phase for the whole run
   /// (`EngineBuilder::add_systems`). In `FixedUpdate` and `Update`, a call
-  /// whose systems name none of the phase's sets (`in_set`, `before`,
-  /// `after`) runs in the phase's `Game` set.
+  /// whose systems are not in, before or after anything outside the call (a
+  /// phase set, a set of the game's, another call's system) runs in the
+  /// phase's `Game` set; one that names something keeps exactly that order.
   pub fn add_game_systems<M>(
     &mut self,
     phase: Phase,
     systems: impl IntoScheduleConfigs<ScheduleSystem, M>,
   ) {
-    let (default, engine_sets): (InternedSystemSet, Vec<InternedSystemSet>) = match phase {
-      Phase::FixedUpdate => (
-        FixedSet::Game.intern(),
-        FixedSet::ALL.iter().map(SystemSet::intern).collect(),
-      ),
-      Phase::Update => (UpdateSet::Game.intern(), vec![UpdateSet::Game.intern()]),
+    let default = match phase {
+      Phase::FixedUpdate => FixedSet::Game.intern(),
+      Phase::Update => UpdateSet::Game.intern(),
       _ => {
         self.get(phase).add_systems(systems);
         return;
@@ -203,7 +189,7 @@ impl EngineSchedules {
     let group = GameSystems(self.game_calls);
     let schedule = self.get(phase);
     schedule.add_systems(systems.in_set(group));
-    if !names_a_set(schedule, group.intern(), &engine_sets) {
+    if !places_itself(schedule, group.intern()) {
       schedule.configure_sets(group.in_set(default));
     }
   }
@@ -214,28 +200,43 @@ impl EngineSchedules {
   }
 }
 
-/// Whether any system in `group` is in, before or after one of `sets`.
-fn names_a_set(schedule: &Schedule, group: InternedSystemSet, sets: &[InternedSystemSet]) -> bool {
+/// Whether the systems in `group` are in, before or after anything outside
+/// the call that added them: a set, or a system they did not bring. Their
+/// own type sets and anonymous `run_if` sets do not count.
+fn places_itself(schedule: &Schedule, group: InternedSystemSet) -> bool {
   let graph = schedule.graph();
-  let set_nodes: Vec<NodeId> = sets
-    .iter()
-    .filter_map(|set| graph.system_sets.get_key(*set))
-    .map(NodeId::Set)
-    .collect();
-  let Some(group) = graph.system_sets.get_key(group) else {
+  let Some(group) = graph.system_sets.get_key(group).map(NodeId::Set) else {
     return false;
   };
   let hierarchy = graph.hierarchy().graph();
   let dependency = graph.dependency().graph();
-  hierarchy
-    .neighbors_directed(NodeId::Set(group), Direction::Outgoing)
-    .any(|system| {
-      hierarchy
+  let members: Vec<NodeId> = hierarchy
+    .neighbors_directed(group, Direction::Outgoing)
+    .collect();
+  let incidental = |node: NodeId| match node {
+    NodeId::Set(key) => graph
+      .system_sets
+      .get(key)
+      .is_some_and(|set| set.system_type().is_some() || set.is_anonymous()),
+    NodeId::System(_) => false,
+  };
+  // A system, or a type or anonymous set holding only this call's systems
+  let inside = |node: NodeId| {
+    members.contains(&node)
+      || (incidental(node)
+        && hierarchy
+          .neighbors_directed(node, Direction::Outgoing)
+          .all(|child| members.contains(&child)))
+  };
+  members.iter().any(|&system| {
+    hierarchy
+      .neighbors_directed(system, Direction::Incoming)
+      .any(|parent| parent != group && !incidental(parent))
+      || dependency
         .neighbors_directed(system, Direction::Incoming)
-        .chain(dependency.neighbors_directed(system, Direction::Incoming))
         .chain(dependency.neighbors_directed(system, Direction::Outgoing))
-        .any(|node| set_nodes.contains(&node))
-    })
+        .any(|node| !inside(node))
+  })
 }
 
 /// Why [`SceneContext::add_systems`](crate::core::scene::SceneContext::add_systems)
@@ -355,6 +356,32 @@ mod tests {
     assert!(at("early") < at("scene"), "{log:?}");
     assert!(
       at("physics") < at("late") && at("late") < at("transforms"),
+      "{log:?}"
+    );
+  }
+
+  fn read_contacts(mut log: ResMut<Log>) {
+    log.0.push("read");
+  }
+
+  fn react(mut log: ResMut<Log>) {
+    log.0.push("react");
+  }
+
+  #[test]
+  fn a_game_system_ordered_against_another_keeps_that_order() {
+    let mut world = World::new();
+    world.init_resource::<Log>();
+    let mut s = EngineSchedules::new();
+    engine_fixed_sets(&mut s);
+    s.add_game_systems(Phase::FixedUpdate, read_contacts.after(FixedSet::Physics));
+    // Putting this in Game (before Physics) would make a cycle
+    s.add_game_systems(Phase::FixedUpdate, react.after(read_contacts));
+    s.run(Phase::FixedUpdate, &mut world);
+    let log = log(&world);
+    let at = |label| log.iter().position(|l| *l == label).unwrap_or(usize::MAX);
+    assert!(
+      at("physics") < at("read") && at("read") < at("react"),
       "{log:?}"
     );
   }
