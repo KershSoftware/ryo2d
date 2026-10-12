@@ -31,7 +31,12 @@ param(
     [string]$Arg2 = "",
     [switch]$dev,
     [switch]$release,
-    [switch]$p
+    [switch]$p,
+    # Any further positional args, e.g. extra demo names for demos:tour. The [Parameter]
+    # attributes above make this an advanced script, so $args stays empty and a third
+    # positional arg would otherwise fail to bind. Named so it shares no prefix with -d/-p/-r.
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$Extra = @()
 )
 
 # Add cargo to PATH if not already present
@@ -415,7 +420,7 @@ switch ($ExampleName.ToLower()) {
     "demos:tour" {
         $tourArgs = @()
         if ($Arg2) { $tourArgs += $Arg2 }
-        $tourArgs += $args
+        $tourArgs += $Extra
         cargo run -q -p demo-kit --bin demo-tour -- @tourArgs
         exit $LASTEXITCODE
     }
