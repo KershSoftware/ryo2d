@@ -91,7 +91,9 @@ pub struct Workspace {
   root: PathBuf,
   /// Parsed configuration
   config: WorkspaceConfig,
-  /// `[debug] dev_window_keys` as written in Ryo.toml, if present
+  /// `[debug] dev_window_keys` as written in Ryo.toml, if present (read by
+  /// the CLI, which the web build does not have)
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
   dev_window_keys_setting: Option<bool>,
   /// Save directory of a release build (`ryo2d build`); `None` in dev
   release_save_dir: Option<PathBuf>,
@@ -664,6 +666,7 @@ impl Workspace {
   }
 
   /// The `[debug] dev_window_keys` value Ryo.toml sets explicitly, if any.
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn dev_window_keys_setting(&self) -> Option<bool> {
     self.dev_window_keys_setting
   }

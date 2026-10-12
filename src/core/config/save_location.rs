@@ -100,7 +100,11 @@ pub(crate) fn compiled_release_save_dir() -> Option<PathBuf> {
           );
           Some(cwd)
         })?;
-      release_save_dir(compiled_embedded_value, &game_dir, dirs::data_dir())
+      #[cfg(not(target_arch = "wasm32"))]
+      let data_dir = dirs::data_dir();
+      #[cfg(target_arch = "wasm32")]
+      let data_dir = None;
+      release_save_dir(compiled_embedded_value, &game_dir, data_dir)
     })
     .clone()
 }

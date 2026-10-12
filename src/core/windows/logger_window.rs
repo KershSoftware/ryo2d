@@ -137,7 +137,7 @@ pub struct LoggerWindow {
   // Store rendered text for each visible line (for selection/copy)
   rendered_lines: Vec<String>,
   // Copy feedback message and timer
-  copy_feedback: Option<(String, std::time::Instant)>,
+  copy_feedback: Option<(String, web_time::Instant)>,
   // Text selection state
   selection: TextSelection,
 }
@@ -464,19 +464,11 @@ impl LoggerWindow {
 
   /// Copy text to system clipboard.
   fn copy_to_clipboard(&mut self, text: &str) {
-    match arboard::Clipboard::new() {
-      Ok(mut clipboard) => match clipboard.set_text(text) {
-        Ok(_) => {
-          self.copy_feedback = Some(("Copied!".to_string(), std::time::Instant::now()));
-        }
-        Err(e) => {
-          self.copy_feedback = Some((format!("Copy failed: {}", e), std::time::Instant::now()));
-        }
-      },
-      Err(e) => {
-        self.copy_feedback = Some((format!("Clipboard error: {}", e), std::time::Instant::now()));
-      }
-    }
+    let feedback = match crate::core::clipboard::set_text(text) {
+      Ok(()) => "Copied!".to_string(),
+      Err(e) => format!("Copy failed: {}", e),
+    };
+    self.copy_feedback = Some((feedback, web_time::Instant::now()));
     self.renderer.request_redraw();
   }
 

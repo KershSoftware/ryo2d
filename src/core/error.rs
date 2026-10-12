@@ -148,6 +148,10 @@ pub enum SaveError {
   /// Invalid save slot
   #[error("Invalid save slot: {0}")]
   InvalidSlot(String),
+
+  /// Saving to disk is not available on this platform (the web)
+  #[error("saving to disk is not available on the web")]
+  Unsupported,
 }
 
 /// Result type for save operations

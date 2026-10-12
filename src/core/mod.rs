@@ -8,9 +8,11 @@ pub mod messages;
 // Core systems
 pub mod asset;
 pub mod audio;
+pub(crate) mod clipboard;
 pub mod cursor;
 pub mod input;
 pub(crate) mod input_script;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod network;
 
 // Graphics & rendering
@@ -50,6 +52,7 @@ pub mod windows;
 // Frame structure, clocks and test support
 pub mod schedule;
 pub mod systems;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
 pub mod time;
 

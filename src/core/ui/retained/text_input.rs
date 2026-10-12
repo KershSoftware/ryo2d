@@ -22,7 +22,6 @@
 //! }
 //! ```
 
-use arboard::Clipboard;
 use winit::keyboard::KeyCode;
 
 use super::focus::Focusable;
@@ -197,12 +196,9 @@ impl TextInputState {
   ///
   /// Returns `true` if text was copied successfully.
   pub fn copy(&self) -> bool {
-    if let Some(selected) = self.selected_text()
-      && let Ok(mut clipboard) = Clipboard::new()
-    {
-      return clipboard.set_text(selected).is_ok();
-    }
-    false
+    self
+      .selected_text()
+      .is_some_and(|selected| crate::core::clipboard::set_text(selected).is_ok())
   }
 
   /// Cut the selected text to the system clipboard.
@@ -221,9 +217,7 @@ impl TextInputState {
   ///
   /// Returns `true` if text was pasted successfully.
   pub fn paste(&mut self) -> bool {
-    if let Ok(mut clipboard) = Clipboard::new()
-      && let Ok(text) = clipboard.get_text()
-    {
+    if let Ok(text) = crate::core::clipboard::get_text() {
       // Filter out control characters except newlines (which we'll convert to space)
       let clean_text: String = text
         .chars()
@@ -520,6 +514,7 @@ impl Focusable for TextInputState {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use arboard::Clipboard;
   use serial_test::serial;
 
   #[test]

@@ -11,7 +11,7 @@ mod window;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 use gilrs::Gilrs;
 use winit::event_loop::EventLoop;
@@ -527,6 +527,7 @@ impl Engine {
   /// With `RYO_HEADLESS=1` in a dev build this renders offscreen instead of
   /// opening a window (see [`capture`](crate::core::capture)).
   pub fn run(mut self) -> EngineResult<()> {
+    #[cfg(not(target_arch = "wasm32"))]
     if self.offscreen_run {
       return self.run_offscreen();
     }
@@ -556,6 +557,7 @@ impl Engine {
   }
 
   /// `RYO_HEADLESS`: run without a window, one fixed update per frame.
+  #[cfg(not(target_arch = "wasm32"))]
   fn run_offscreen(mut self) -> EngineResult<()> {
     // A scripted run with a typo would capture the wrong thing or never end
     if self.offscreen_refused {
@@ -579,6 +581,7 @@ impl Engine {
 
   /// The offscreen loop: step until the scene quits or `RYO_CAPTURE_EXIT` is
   /// met, then flush captures. Returns whether a scheduled capture failed.
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn run_offscreen_frames(&mut self) -> EngineResult<bool> {
     let (device, queue) =
       crate::core::testing::shared_gpu().map_err(|e| EngineError::Render(e.to_string()))?;
@@ -640,6 +643,7 @@ impl Engine {
   }
 
   /// The fixed logic timestep.
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn fixed_timestep(&self) -> std::time::Duration {
     self.world.resource::<Time>().fixed.timestep_duration()
   }
@@ -677,22 +681,27 @@ impl Engine {
       Camera::centered_at(width as f32 / 2.0, height as f32 / 2.0, width, height);
   }
 
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn game_size(&self) -> (u32, u32) {
     (self.config.width, self.config.height)
   }
 
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn world(&self) -> &World {
     &self.world
   }
 
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn world_mut(&mut self) -> &mut World {
     &mut self.world
   }
 
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn input_mut(&mut self) -> crate::core::ecs::Mut<'_, Input> {
     self.world.resource_mut::<Input>()
   }
 
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn read_frame(&self) -> crate::core::error::CaptureResult<image::RgbaImage> {
     match &self.renderer {
       Some(renderer) => renderer.read_frame(),
@@ -1050,6 +1059,7 @@ impl EngineBuilder {
 
   /// Build an engine for `testing::HeadlessEngine`: no audio, gamepads, hot
   /// reload, user preferences, capture env vars or wall-clock overlays.
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn build_headless(self) -> Engine {
     self.build_engine(true)
   }

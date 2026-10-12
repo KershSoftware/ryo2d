@@ -2,7 +2,8 @@
 //! and frames while the window is unfocused.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use winit::application::ApplicationHandler;
 use winit::event::{Ime, WindowEvent};
@@ -41,6 +42,53 @@ fn cursor_grab_for_focus(
 }
 
 impl Engine {
+  /// Show the window and start the engine on its new renderer (native at
+  /// once, the web when its async GPU setup arrives).
+  // Unused on the web until its runner lands
+  #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+  fn finish_gpu_setup(
+    &mut self,
+    event_loop: &ActiveEventLoop,
+    window: Arc<winit::window::Window>,
+    mut renderer: WgpuRenderer,
+  ) {
+    // Present a first frame before showing the window, to avoid a white flash
+    let _ = renderer.render_blank_frame(&mut RenderPipeline::default_2d(), &[]);
+    window.set_visible(true);
+
+    let scale_factor = window.scale_factor();
+    self.window = Some(window);
+    self.init_gpu(renderer, scale_factor);
+
+    // The profiler opens on its own only for `ryo2d dev --profiler`
+    #[cfg(feature = "profiler")]
+    if std::env::var("RYO_PROFILER_AUTO_OPEN").is_ok()
+      && let Some(renderer) = &self.renderer
+      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
+    {
+      self.profiler_window = crate::core::windows::profiler_window::ProfilerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        instance,
+        adapter,
+      );
+    }
+
+    if self.config.debug.logger_window
+      && let Some(renderer) = &self.renderer
+      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
+    {
+      self.logger_window = crate::core::windows::logger_window::LoggerWindow::new(
+        event_loop,
+        renderer.device_arc(),
+        renderer.queue_arc(),
+        instance,
+        adapter,
+      );
+    }
+  }
+
   /// Transform window coordinates to game coordinates.
   ///
   /// Handles scaling and letterboxing when window size differs from game resolution.
@@ -100,6 +148,7 @@ impl Engine {
 
   /// Apply the window requests that still make sense without a window.
   /// Only UI scale does; resolution and display mode requests are ignored.
+  #[cfg(not(target_arch = "wasm32"))]
   pub(crate) fn apply_headless_requests(&mut self) {
     let request = std::mem::take(&mut *self.world.resource_mut::<WindowRequest>());
     if let Some(scale) = request.ui_scale {
@@ -312,7 +361,8 @@ impl Engine {
     };
     let target = Duration::from_secs_f64(1.0 / f64::from(fps.max(1)));
     let elapsed = frame_start.elapsed();
-    if elapsed < target {
+    // The browser paces frames, and the web cannot sleep
+    if elapsed < target && !cfg!(target_arch = "wasm32") {
       std::thread::sleep(target - elapsed);
     }
 
@@ -382,50 +432,21 @@ impl ApplicationHandler for Engine {
       max_height: self.config.max_height,
       vsync: Some(self.vsync),
     };
-    let mut renderer = match pollster::block_on(WgpuRenderer::new(Arc::clone(&window), settings)) {
-      Ok(renderer) => renderer,
+    #[cfg(not(target_arch = "wasm32"))]
+    match pollster::block_on(WgpuRenderer::new(Arc::clone(&window), settings)) {
+      Ok(renderer) => self.finish_gpu_setup(event_loop, window, renderer),
       Err(error) => {
         crate::engine_error!(module: "Render", "{}", error);
         self.startup_error = Some(error);
         event_loop.exit();
-        return;
       }
-    };
-
-    // Present a first frame before showing the window, to avoid a white flash
-    let _ = renderer.render_blank_frame(&mut RenderPipeline::default_2d(), &[]);
-    window.set_visible(true);
-
-    let scale_factor = window.scale_factor();
-    self.window = Some(window);
-    self.init_gpu(renderer, scale_factor);
-
-    // The profiler opens on its own only for `ryo2d dev --profiler`
-    #[cfg(feature = "profiler")]
-    if std::env::var("RYO_PROFILER_AUTO_OPEN").is_ok()
-      && let Some(renderer) = &self.renderer
-      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
-    {
-      self.profiler_window = crate::core::windows::profiler_window::ProfilerWindow::new(
-        event_loop,
-        renderer.device_arc(),
-        renderer.queue_arc(),
-        instance,
-        adapter,
-      );
     }
-
-    if self.config.debug.logger_window
-      && let Some(renderer) = &self.renderer
-      && let (Some(instance), Some(adapter)) = (renderer.instance(), renderer.adapter())
+    // The web sets the GPU up asynchronously
+    #[cfg(target_arch = "wasm32")]
     {
-      self.logger_window = crate::core::windows::logger_window::LoggerWindow::new(
-        event_loop,
-        renderer.device_arc(),
-        renderer.queue_arc(),
-        instance,
-        adapter,
-      );
+      let _ = (settings, window);
+      crate::engine_error!(module: "Render", "the web GPU setup is not wired yet");
+      event_loop.exit();
     }
   }
 
@@ -638,6 +659,7 @@ impl ApplicationHandler for Engine {
     // after this without returning from `run_app`, so captures are flushed here.
     let reports = self.capture.finish();
     self.report_captures(reports);
+    #[cfg(not(target_arch = "wasm32"))]
     if self.capture.exit_with_failure() {
       std::process::exit(1);
     }

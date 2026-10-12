@@ -22,14 +22,20 @@
 //! `AssetManager::process_reloads()` each frame in `PreUpdate` to apply pending
 //! asset updates, and reports them as `AssetReloaded` / `AssetLoadFailed` messages.
 
-use crossbeam_channel::{Receiver, unbounded};
+use crossbeam_channel::Receiver;
+#[cfg(not(target_arch = "wasm32"))]
+use crossbeam_channel::unbounded;
+#[cfg(not(target_arch = "wasm32"))]
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread::{self, JoinHandle};
 
 use crate::core::error::{HotReloadError, HotReloadResult};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{engine_info, engine_warn};
 
 /// Messages sent from the watcher thread to the main thread
@@ -90,8 +96,10 @@ pub struct HotReloadWatcher {
   /// Receiver for events from the watcher thread
   receiver: Receiver<HotReloadEvent>,
   /// Handle to the watcher thread (kept alive as long as this struct exists)
+  #[cfg(not(target_arch = "wasm32"))]
   _thread_handle: JoinHandle<()>,
   /// The watcher itself (must be kept alive)
+  #[cfg(not(target_arch = "wasm32"))]
   _watcher: Arc<Mutex<RecommendedWatcher>>,
   /// Configuration
   config: HotReloadConfig,
@@ -101,6 +109,15 @@ impl HotReloadWatcher {
   /// Create a new hot reload watcher with the given configuration
   ///
   /// This spawns a background thread that monitors the filesystem.
+  #[cfg(target_arch = "wasm32")]
+  pub fn new(config: HotReloadConfig) -> HotReloadResult<Self> {
+    let _ = config;
+    Err(HotReloadError::WatcherCreation(
+      "file watching is not available on the web".to_string(),
+    ))
+  }
+
+  #[cfg(not(target_arch = "wasm32"))]
   pub fn new(config: HotReloadConfig) -> HotReloadResult<Self> {
     let (tx, rx) = unbounded::<HotReloadEvent>();
 

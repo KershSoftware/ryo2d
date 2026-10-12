@@ -83,7 +83,7 @@ pub struct ProfilerWindow {
   // Track if we've ever received data
   has_received_data: bool,
   // Track actual wall-clock frame time for accurate FPS display
-  last_new_frame_time: Option<std::time::Instant>,
+  last_new_frame_time: Option<web_time::Instant>,
   actual_frame_duration_ns: u64,
   // Pause state - when true, stop collecting new data
   paused: bool,
@@ -183,7 +183,7 @@ impl ProfilerWindow {
     if self.paused {
       return;
     }
-    let now = std::time::Instant::now();
+    let now = web_time::Instant::now();
     if let Some(last) = self.last_new_frame_time {
       self.actual_frame_duration_ns = last.elapsed().as_nanos() as u64;
     }

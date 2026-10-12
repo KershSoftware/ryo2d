@@ -1,7 +1,7 @@
 //! Drawing the world: scene GPU sprites, entities, trails, lines, lights and
 //! overlays into the frame's draw list, then the render pipeline.
 
-use std::time::Instant;
+use web_time::Instant;
 
 use super::{Engine, PresentOutcome, SceneHost};
 use crate::core::config::DebugStats;

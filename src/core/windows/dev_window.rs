@@ -83,7 +83,7 @@ pub struct DevWindowRenderer {
   // Keyboard modifier state
   modifiers: ModifiersState,
   // Render throttling
-  last_render_time: std::time::Instant,
+  last_render_time: web_time::Instant,
   render_throttle_ms: u64,
 }
 
@@ -269,7 +269,7 @@ impl DevWindowRenderer {
       mouse_x: 0.0,
       mouse_y: 0.0,
       modifiers: ModifiersState::empty(),
-      last_render_time: std::time::Instant::now(),
+      last_render_time: web_time::Instant::now(),
       render_throttle_ms: config.render_throttle_ms,
     })
   }
@@ -316,7 +316,7 @@ impl DevWindowRenderer {
 
   /// Mark that a render just occurred.
   pub fn mark_rendered(&mut self) {
-    self.last_render_time = std::time::Instant::now();
+    self.last_render_time = web_time::Instant::now();
   }
 
   /// Request a redraw of the window.

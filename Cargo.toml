@@ -29,10 +29,8 @@ members = [
 # Run demos/games with: cargo run -p <name> or ./dev demos:run-all
 
 [dependencies]
-arboard = "3.6.1"
 bytemuck = { version = "1.21", features = ["derive"] }
 crossbeam-channel = "0.5"
-dirs = "6"
 flate2 = "1.1"
 glam = { version = "0.31", features = ["serde"] }
 bitflags = "2"
@@ -40,11 +38,7 @@ bevy_ecs = { version = "0.20", default-features = false, features = ["std", "bac
 half = { version = "2", features = ["bytemuck"] }
 image = "0.25"
 kira = "0.11"
-notify = "7"
-pollster = "0.4"
 rapier2d = "0.22"
-renet = "2.0"
-renet_netcode = "2.0"
 resvg = "0.44"
 ron = "0.10"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -56,16 +50,39 @@ wgpu = "30.0.1"
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 winit = "0.30"
 gilrs = "0.11"
-zip = "2"
 rand = "0.8"
 etagere = "0.2"
 ryo2d-derive = { path = "crates/ryo2d-derive" }
+
+web-time = "1.1"
+
+# Native only: the desktop's clipboard, file system, threads, sockets and
+# dev tooling, all compiled out of the web build
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard = "3.6.1"
+dirs = "6"
+notify = "7"
+pollster = "0.4"
+renet = "2.0"
+renet_netcode = "2.0"
+zip = "2"
 
 # Optional profiling dependency (enable with --features profiler)
 puffin = { version = "0.19", optional = true }
 
 # Optional WebRTC transport for NAT traversal (enable with --features matchbox)
 matchbox_socket = { version = "0.10", optional = true, features = ["ggrs"] }
+
+# The web build: the browser's event loop, futures and panics, and its
+# random-number backend (gilrs picks its web gamepad backend by target)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Window", "Document", "Element", "HtmlCanvasElement", "CssStyleDeclaration"] }
+console_error_panic_hook = "0.1.7"
+# The web is single-threaded: let wgpu's types be Send + Sync there too
+wgpu = { version = "30.0.1", features = ["fragile-send-sync-non-atomic-wasm"] }
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 [features]
 default = []

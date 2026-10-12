@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -360,6 +361,7 @@ struct LoadResult {
 }
 
 /// Background loader for async asset loading
+#[cfg(not(target_arch = "wasm32"))]
 struct AsyncLoader {
   /// Sender for load requests
   request_tx: Sender<PathBuf>,
@@ -369,6 +371,31 @@ struct AsyncLoader {
   _thread: JoinHandle<()>,
 }
 
+/// The web has no threads: loads run inline and wait in the channel for the
+/// next poll
+#[cfg(target_arch = "wasm32")]
+struct AsyncLoader {
+  result_tx: Sender<LoadResult>,
+  result_rx: Receiver<LoadResult>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl AsyncLoader {
+  fn new() -> Self {
+    let (result_tx, result_rx) = unbounded::<LoadResult>();
+    AsyncLoader {
+      result_tx,
+      result_rx,
+    }
+  }
+
+  fn request_load(&self, path: PathBuf) {
+    let result = Sprite::load(&path).map_err(|e| e.to_string());
+    let _ = self.result_tx.send(LoadResult { path, result });
+  }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl AsyncLoader {
   fn new() -> Self {
     let (request_tx, request_rx) = unbounded::<PathBuf>();
@@ -392,7 +419,9 @@ impl AsyncLoader {
   fn request_load(&self, path: PathBuf) {
     let _ = self.request_tx.send(path);
   }
+}
 
+impl AsyncLoader {
   fn poll_results(&self) -> Vec<LoadResult> {
     let mut results = Vec::new();
     while let Ok(result) = self.result_rx.try_recv() {
@@ -765,6 +794,9 @@ impl AssetManager {
     if let Some(loader) = &self.async_loader {
       loader.request_load(full_path);
     }
+    // The web loaded it inline: hand back a completed handle
+    #[cfg(target_arch = "wasm32")]
+    self.process_async_loads();
 
     async_handle
   }
@@ -1018,6 +1050,13 @@ impl AssetManager {
     I: IntoIterator<Item = P>,
   {
     use super::hot_reload::HotReloadConfig;
+
+    // Files cannot be watched on the web
+    if cfg!(target_arch = "wasm32") {
+      let _ = watch_paths;
+      engine_info!(module: "HotReload", "hot reload is not available on the web");
+      return Ok(());
+    }
 
     let paths: Vec<PathBuf> = watch_paths
       .into_iter()

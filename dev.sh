@@ -14,8 +14,8 @@
 #     ./dev.sh demos:run-all           - Launch all demos in dev mode (parallel terminals)
 #     ./dev.sh demos:kill-all          - Kill all running demos
 #     ./dev.sh demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)
-#     ./dev.sh check                   - Compilation check (engine + all examples)
-#     ./dev.sh lint                    - Linting with clippy (engine + all examples, incl. tests)
+#     ./dev.sh check                   - Compilation check (engine + all examples, engine for wasm)
+#     ./dev.sh lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)
 #     ./dev.sh test                    - Run unit + integration tests
 #     ./dev.sh test:unit               - Run unit tests only
 #     ./dev.sh test:integration        - Run integration tests only
@@ -482,9 +482,11 @@ case "$COMMAND" in
         ;;
     check)
         cargo check --workspace
+        cargo check -p ryo2d --lib --target wasm32-unknown-unknown
         ;;
     lint)
         cargo clippy --workspace --all-targets
+        cargo clippy -p ryo2d --lib --target wasm32-unknown-unknown
         ;;
     test)
         # Default: run unit tests + integration tests
@@ -591,8 +593,8 @@ case "$COMMAND" in
         echo "    ./dev.sh demos:run-all           - Launch all demos in dev mode (parallel terminals)"
         echo "    ./dev.sh demos:kill-all          - Kill all running demos"
         echo "    ./dev.sh demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)"
-        echo "    ./dev.sh check                   - Compilation check (engine + all examples)"
-        echo "    ./dev.sh lint                    - Linting with clippy (engine + all examples, incl. tests)"
+        echo "    ./dev.sh check                   - Compilation check (engine + all examples, engine for wasm)"
+        echo "    ./dev.sh lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)"
         echo "    ./dev.sh test                    - Run unit + integration tests (default)"
         echo "    ./dev.sh test:unit               - Run unit tests only"
         echo "    ./dev.sh test:integration        - Run integration tests only"

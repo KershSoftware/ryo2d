@@ -13,8 +13,8 @@
 #   .\dev demos:run-all           - Launch all demos in dev mode (parallel terminals)
 #   .\dev demos:kill-all          - Kill all running demos
 #   .\dev demos:tour [demo...]    - Capture every page of every demo headlessly (target/demo-tour)
-#   .\dev check                   - Compilation check (engine + all examples)
-#   .\dev lint                    - Linting with clippy (engine + all examples, incl. tests)
+#   .\dev check                   - Compilation check (engine + all examples, engine for wasm)
+#   .\dev lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)
 #   .\dev test                    - Run unit + integration tests
 #   .\dev test:unit               - Run unit tests only
 #   .\dev test:integration        - Run integration tests only
@@ -427,9 +427,13 @@ switch ($ExampleName.ToLower()) {
     "check" {
         cargo check --workspace
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cargo check -p ryo2d --lib --target wasm32-unknown-unknown
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
     "lint" {
         cargo clippy --workspace --all-targets
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cargo clippy -p ryo2d --lib --target wasm32-unknown-unknown
     }
     "test" {
         # Default: run unit tests + integration tests
@@ -550,8 +554,8 @@ switch ($ExampleName.ToLower()) {
         Write-Host "  ./dev demos:run-all           - Launch all demos in dev mode (parallel terminals)"
         Write-Host "  ./dev demos:kill-all          - Kill all running demos"
         Write-Host "  ./dev demos:tour [demo...]    - Capture every page of every demo headlessly"
-        Write-Host "  ./dev check                   - Compilation check (engine + all examples)"
-        Write-Host "  ./dev lint                    - Linting with clippy (engine + all examples, incl. tests)"
+        Write-Host "  ./dev check                   - Compilation check (engine + all examples, engine for wasm)"
+        Write-Host "  ./dev lint                    - Linting with clippy (engine + all examples, incl. tests; engine for wasm)"
         Write-Host "  ./dev test                    - Run unit + integration tests (default)"
         Write-Host "  ./dev test:unit               - Run unit tests only"
         Write-Host "  ./dev test:integration        - Run integration tests only"

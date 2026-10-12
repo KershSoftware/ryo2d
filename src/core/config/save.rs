@@ -676,8 +676,8 @@ impl<T> GameSaveData<T> {
   pub fn new(data: T) -> Self {
     GameSaveData {
       data,
-      timestamp: std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+      timestamp: web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs(),
       name: None,
@@ -737,6 +737,9 @@ impl SaveManager {
   /// The directory will be created if it doesn't exist.
   pub fn new(save_dir: impl Into<PathBuf>) -> SaveResult<Self> {
     let save_dir = save_dir.into();
+    if cfg!(target_arch = "wasm32") {
+      return Err(SaveError::Unsupported);
+    }
     fs::create_dir_all(&save_dir)?;
     Ok(SaveManager {
       save_dir,

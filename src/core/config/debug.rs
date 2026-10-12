@@ -272,7 +272,8 @@ impl Default for DebugConfig {
 // Frame Timing
 // ============================================================================
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 /// Tracks timing for each phase of the game loop.
 ///

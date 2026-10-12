@@ -72,6 +72,11 @@ impl CaptureState {
 
   /// Request a capture of the next presented frame (F12, console).
   pub fn request(&mut self, target: CaptureTarget) {
+    // Captures are written to disk, which the web does not have
+    if cfg!(target_arch = "wasm32") {
+      crate::engine_warn!(module: "Capture", "frame capture is not available on the web");
+      return;
+    }
     self.manual = Some(target);
   }
 

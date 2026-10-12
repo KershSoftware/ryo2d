@@ -47,9 +47,11 @@
 //! `render(gpu)` for batched GPU sprites. Scenes add their own systems with
 //! `ctx.add_systems`.
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod cli;
 pub mod core;
 pub use core::ecs;
+#[cfg(not(target_arch = "wasm32"))]
 pub use core::testing;
 
 // Re-export puffin so that profile_scope!/profile_function! macros resolve
@@ -223,6 +225,7 @@ pub mod prelude {
   };
 
   // Networking
+  #[cfg(not(target_arch = "wasm32"))]
   pub use crate::core::network::{
     Channel, ClientId, ClientLike, LOCAL_HOST_ID, ListenServer, NetworkClient, NetworkClientConfig,
     NetworkError, NetworkEvent, NetworkResult, NetworkServer, NetworkServerConfig,
@@ -230,10 +233,11 @@ pub mod prelude {
   };
 
   // WebRTC transport (requires the `matchbox` feature)
-  #[cfg(feature = "matchbox")]
+  #[cfg(all(feature = "matchbox", not(target_arch = "wasm32")))]
   pub use crate::core::network::{IceServer, WebRtcConfig};
 
   // Network replication
+  #[cfg(not(target_arch = "wasm32"))]
   pub use crate::core::network::replication::{
     Authority, ComponentBatchMessage, ComponentRegistry, ComponentTypeId, ComponentUpdateMessage,
     DespawnEntityMessage, DirtyTracker, FullStateSyncMessage, NetworkEntity, NetworkEntityBuilder,
@@ -242,23 +246,27 @@ pub mod prelude {
   };
 
   // RPC
+  #[cfg(not(target_arch = "wasm32"))]
   pub use crate::core::network::rpc::{
     ReceivedRpc, Rpc, RpcRegistry, RpcTarget, RpcTypeId, SerializedRpc,
   };
 
   // Network input (derive macro and helpers)
+  #[cfg(not(target_arch = "wasm32"))]
   pub use crate::core::network::input::{
     InputBuffer, InputProcessor, NetworkInput, NetworkInputTrait, NetworkedInputHandler,
     SequencedInput,
   };
 
   // Network actions (local and networked execution)
+  #[cfg(not(target_arch = "wasm32"))]
   pub use crate::core::network::action::{
     ActionContext, ActionError, NetworkAction, SerializedAction, apply_received_action,
     execute_action, execute_action_broadcast, execute_action_server, try_execute_action,
   };
 
   // Client-side prediction
+  #[cfg(not(target_arch = "wasm32"))]
   pub use crate::core::network::prediction::{
     Predicted, PredictionHelper, ServerPositionUpdate, UpdateResult,
   };

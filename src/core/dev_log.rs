@@ -17,7 +17,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Instant, SystemTime};
+use web_time::{Instant, SystemTime};
 
 /// Log level for filtering and display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

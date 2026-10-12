@@ -164,7 +164,7 @@ impl SceneManager {
     };
     top.messages = SceneMessages::starting_now(world);
     #[cfg(debug_assertions)]
-    let start = std::time::Instant::now();
+    let start = web_time::Instant::now();
     top.call(world, audio, |scene, ctx| scene.on_enter(ctx));
     #[cfg(debug_assertions)]
     {

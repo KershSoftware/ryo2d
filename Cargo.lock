@@ -1251,6 +1251,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2450,7 +2460,7 @@ dependencies = [
  "vec_map",
  "wasm-bindgen",
  "web-sys",
- "windows 0.54.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -2547,7 +2557,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.18",
- "windows 0.54.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -5210,11 +5220,13 @@ dependencies = [
  "bevy_ecs",
  "bitflags 2.10.0",
  "bytemuck",
+ "console_error_panic_hook",
  "criterion",
  "crossbeam-channel",
  "dirs",
  "etagere",
  "flate2",
+ "getrandom 0.2.17",
  "gilrs",
  "glam 0.31.0",
  "half",
@@ -5239,6 +5251,10 @@ dependencies = [
  "thiserror 2.0.18",
  "tiny-skia",
  "toml",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
  "wgpu",
  "winit",
  "zip",

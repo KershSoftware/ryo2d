@@ -20,12 +20,13 @@
 //! of all audio (including already-playing sounds). Category and sound volumes
 //! are applied per-sound at play time.
 
+#[cfg(not(target_arch = "wasm32"))]
+use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle, StreamingSoundSettings};
 use kira::{
   AudioManager as KiraAudioManager, AudioManagerSettings, Decibels, Tween,
   sound::{
     FromFileError, PlaybackState,
     static_sound::{StaticSoundData, StaticSoundHandle, StaticSoundSettings},
-    streaming::{StreamingSoundData, StreamingSoundHandle, StreamingSoundSettings},
   },
 };
 use std::collections::HashMap;
@@ -236,10 +237,16 @@ impl SoundHandle {
   }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+type MusicSound = StreamingSoundHandle<FromFileError>;
+// Music cannot be streamed from files on the web; no handle is ever made
+#[cfg(target_arch = "wasm32")]
+type MusicSound = StaticSoundHandle;
+
 /// Handle to playing background music
 #[derive(Debug)]
 pub struct MusicHandle {
-  handle: StreamingSoundHandle<FromFileError>,
+  handle: MusicSound,
   /// Original volume multiplier (before category/master volumes)
   reference_volume: f32,
   /// Fade-out duration when dropped (if set)
@@ -381,6 +388,19 @@ impl AudioManager {
   ///
   /// Supports: WAV, MP3, OGG, FLAC
   pub fn load_sound(&mut self, name: &str, path: impl AsRef<Path>) -> AudioResult<()> {
+    #[cfg(target_arch = "wasm32")]
+    {
+      let _ = (name, path);
+      Err(AudioError::LoadError(
+        "loading sounds from files is not available on the web".to_string(),
+      ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    self.load_sound_file(name, path)
+  }
+
+  #[cfg(not(target_arch = "wasm32"))]
+  fn load_sound_file(&mut self, name: &str, path: impl AsRef<Path>) -> AudioResult<()> {
     let sound_data = StaticSoundData::from_file(path.as_ref())?;
     self.sounds.insert(name.to_string(), sound_data);
     Ok(())
@@ -394,6 +414,7 @@ impl AudioManager {
 
   /// Calculate the effective volume for music.
   /// Note: master_volume is applied at the main track level, not here.
+  #[cfg(not(target_arch = "wasm32"))]
   fn effective_music_volume(&self, music_volume: f32) -> f32 {
     self.music_volume * music_volume
   }
@@ -479,6 +500,23 @@ impl AudioManager {
   /// )?;
   /// ```
   pub fn play_music_with(
+    &mut self,
+    path: impl AsRef<Path>,
+    options: MusicOptions,
+  ) -> AudioResult<MusicHandle> {
+    #[cfg(target_arch = "wasm32")]
+    {
+      let _ = (path, options);
+      Err(AudioError::LoadError(
+        "streaming music from files is not available on the web".to_string(),
+      ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    self.play_streaming(path, options)
+  }
+
+  #[cfg(not(target_arch = "wasm32"))]
+  fn play_streaming(
     &mut self,
     path: impl AsRef<Path>,
     options: MusicOptions,

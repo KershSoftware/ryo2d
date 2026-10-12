@@ -1,6 +1,7 @@
 //! One frame: clocks, input, the UI pass, the fixed steps, then render.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use winit::keyboard::KeyCode;
 
@@ -371,6 +372,10 @@ impl Engine {
   /// Wait out the rest of the frame at `target_fps` (sleep, then spin for
   /// the last stretch, which sleep cannot hit exactly).
   pub(super) fn pace_frame(&self) {
+    // The browser paces frames, and the web cannot sleep
+    if cfg!(target_arch = "wasm32") {
+      return;
+    }
     let Some(start) = self.world.resource::<Time>().frame_start() else {
       return;
     };

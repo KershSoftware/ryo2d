@@ -4,7 +4,8 @@
 //! everything the player perceives as game time reads it. `fixed` accumulates
 //! game time into constant steps that drive `FixedUpdate`.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use crate::core::ecs::kernel::Resource;
 
