@@ -34,11 +34,7 @@ impl Bleed {
 }
 
 impl Scene for Bleed {
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    SceneAction::Continue
-  }
-
-  fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
     gpu.upload_sprite(&self.red);
     gpu.upload_sprite(&self.blue);
     let size = 4.0 * self.scale;

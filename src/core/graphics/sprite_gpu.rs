@@ -1335,21 +1335,18 @@ impl SpriteGpuRenderer {
 
   /// How many textures are cached (for tests that watch for leaks).
   #[cfg(test)]
-  #[allow(dead_code)] // MIGRATION: Task 15 (the GPU world tests)
   pub(crate) fn texture_count(&self) -> usize {
     self.textures.len()
   }
 
   /// How many entity sprites hold a standalone texture.
   #[cfg(test)]
-  #[allow(dead_code)] // MIGRATION: Task 15 (the GPU world tests)
   pub(crate) fn standalone_entity_count(&self) -> usize {
     self.standalone_entity_serials().len()
   }
 
   /// Whether the entity sprite is resident (for tests of what gets uploaded).
   #[cfg(test)]
-  #[allow(dead_code)] // MIGRATION: Task 15 (the GPU world tests)
   pub(crate) fn has_entity_sprite(&self, sprite: &SpriteHandle) -> bool {
     self
       .entity_sprites

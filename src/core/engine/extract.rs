@@ -6,7 +6,8 @@ use std::time::Instant;
 use super::{Engine, PresentOutcome, SceneHost};
 use crate::core::config::DebugStats;
 use crate::core::config::debug::{OverlayFlags, overlay_lines};
-use crate::core::ecs::{GlobalTransform, Mut, Vec2};
+use crate::core::ecs::kernel::SystemIdMarker;
+use crate::core::ecs::{GlobalTransform, IsResource, Mut, Observer, Vec2, World};
 use crate::core::graphics::{Camera, GpuRenderContext};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::{DrawKind, FrameScene, LightingFrame, RenderPipeline};
@@ -162,7 +163,7 @@ impl Engine {
 
     let trail_draws = trails.as_ref().map_or(0, |t| t.draw_count());
     self.debug_stats = DebugStats {
-      entity_count: self.world.entities().len(),
+      entity_count: game_entity_count(&self.world),
       draw_calls: (gpu.world_draw_count() + trail_draws) as u32,
       sprite_count: (entity_sprites + self.batch_collector.sprite_count()) as u32,
     };
@@ -228,4 +229,24 @@ impl Engine {
     }
     outcome
   }
+}
+
+/// The entities the game made: every entity but bevy's resources, observers
+/// and registered systems. Counted per archetype, so the cost does not grow
+/// with the entity count.
+fn game_entity_count(world: &World) -> u32 {
+  let internal: Vec<_> = [
+    world.component_id::<IsResource>(),
+    world.component_id::<Observer>(),
+    world.component_id::<SystemIdMarker>(),
+  ]
+  .into_iter()
+  .flatten()
+  .collect();
+  world
+    .archetypes()
+    .iter()
+    .filter(|archetype| !internal.iter().any(|&id| archetype.contains(id)))
+    .map(|archetype| archetype.len())
+    .sum()
 }

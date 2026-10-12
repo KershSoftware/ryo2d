@@ -27,23 +27,23 @@
 //! reload and no dev windows; they never read or write `system.json` user
 //! preferences, ignore `RYO_CAPTURE_*`, and keep the FPS, frame-timing and
 //! stats overlays off. `Ryo.toml` is honoured as in a normal build. Input
-//! injected with `press_key`/`tap_key`/`press_mouse`/`mouse_move` goes through
-//! the same handlers as window events; the engine's own debug keys (F1-F5, F9,
+//! injected with `press_key`/`tap_key`/`press_mouse`/`mouse_move` is queued
+//! like window events and seen from the next step; the engine's own debug keys (F1-F5, F9,
 //! F10, F12) are inert headless. Seed any randomness your scene uses if you
 //! compare frames exactly.
 //! Particle emitters use an unseeded thread RNG, so don't compare frames
 //! containing particles byte-for-byte.
 
-// MIGRATION: Task 15 restores the headless engine and its GPU tests
-// #[cfg(test)]
-// mod atlas_bleeding;
-// #[cfg(test)]
-// mod capture_matches_frame;
-// #[cfg(test)]
-// mod gpu_world;
-// mod headless;
-// pub use headless::HeadlessEngine;
+#[cfg(test)]
+mod atlas_bleeding;
+#[cfg(test)]
+mod capture_matches_frame;
 mod gpu;
+#[cfg(test)]
+mod gpu_world;
+mod headless;
+
+pub use headless::{HeadlessEngine, StepOutcome};
 
 pub use crate::core::error::HeadlessError;
 pub use gpu::shared_gpu;

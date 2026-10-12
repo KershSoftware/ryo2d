@@ -139,7 +139,7 @@ pub struct Engine {
   world: World,
   schedules: EngineSchedules,
   // GPU renderers the passes draw with (engine-owned, not resources)
-  sprite_gpu: Option<SpriteGpuRenderer>,
+  pub(crate) sprite_gpu: Option<SpriteGpuRenderer>,
   lighting: Option<LightingRenderer>,
   trail_renderer: Option<TrailRenderer>,
   entity_drawer: EntityDrawer,
@@ -664,22 +664,18 @@ impl Engine {
     (self.config.width, self.config.height)
   }
 
-  #[cfg_attr(not(test), allow(dead_code))] // MIGRATION: Task 15 (HeadlessEngine)
   pub(crate) fn world(&self) -> &World {
     &self.world
   }
 
-  #[cfg_attr(not(test), allow(dead_code))] // MIGRATION: Task 15 (HeadlessEngine)
   pub(crate) fn world_mut(&mut self) -> &mut World {
     &mut self.world
   }
 
-  #[allow(dead_code)] // MIGRATION: Task 15 (HeadlessEngine)
   pub(crate) fn input_mut(&mut self) -> crate::core::ecs::Mut<'_, Input> {
     self.world.resource_mut::<Input>()
   }
 
-  #[allow(dead_code)] // MIGRATION: Task 15 (HeadlessEngine)
   pub(crate) fn read_frame(&self) -> crate::core::error::CaptureResult<image::RgbaImage> {
     match &self.renderer {
       Some(renderer) => renderer.read_frame(),
@@ -776,7 +772,6 @@ impl Engine {
 
   /// The stats of the last frame, for tests.
   #[cfg(test)]
-  #[allow(dead_code)] // MIGRATION: Task 15 (the GPU world tests)
   pub(crate) fn debug_stats(&self) -> &DebugStats {
     &self.debug_stats
   }
@@ -1032,7 +1027,6 @@ impl EngineBuilder {
 
   /// Build an engine for `testing::HeadlessEngine`: no audio, gamepads, hot
   /// reload, user preferences, capture env vars or wall-clock overlays.
-  #[cfg_attr(not(test), allow(dead_code))] // MIGRATION: Task 15 (HeadlessEngine)
   pub(crate) fn build_headless(self) -> Engine {
     self.build_engine(true)
   }

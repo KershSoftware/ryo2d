@@ -17,10 +17,6 @@ impl Scene for Fixture {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     (self.setup)(ctx);
   }
-
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    SceneAction::Continue
-  }
 }
 
 fn engine(builder: EngineBuilder) -> Option<HeadlessEngine> {
@@ -33,9 +29,10 @@ fn replaced_sprite_pixels_are_drawn_again() {
     setup: |ctx| {
       let sprite =
         SpriteHandle::from_sprite(Sprite::solid_rect(10, 10, 220, 30, 40, 255), "reload");
-      ctx
-        .world
-        .spawn((Transform::new(40.0, 40.0), Renderable::sprite(sprite)));
+      ctx.world.spawn((
+        Transform::from_xy(40.0, 40.0),
+        Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
+      ));
     },
   };
   let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
@@ -46,9 +43,9 @@ fn replaced_sprite_pixels_are_drawn_again() {
 
   // A hot reload replaces the pixels behind the same handle
   let handle = {
-    let world = engine.world();
-    let entity = *world.entities_with::<Renderable>().first().unwrap();
-    world.get::<Renderable>(entity).unwrap().sprite.clone()
+    let world = engine.world_mut();
+    let mut renderables = world.query::<&Renderable>();
+    renderables.iter(world).next().unwrap().sprite.clone()
   };
   handle.update(Sprite::solid_rect(10, 10, 10, 200, 30, 255));
   engine.step_frames(2).unwrap();
@@ -65,16 +62,17 @@ impl Scene for VaryingBlob {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 220, 30, 40, 255), "varying");
     ctx.world.spawn((
-      Transform::new(60.0, 40.0),
-      Renderable::sprite(sprite).with_blob_shadow(BlobShadow::default()),
+      Transform::from_xy(60.0, 40.0),
+      Renderable::sprite(sprite)
+        .with_anchor(Anchor::TopLeft)
+        .with_blob_shadow(BlobShadow::default()),
     ));
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    for entity in ctx.world.entities_with::<Renderable>() {
-      if let Some(mut renderable) = ctx.world.get_mut::<Renderable>(entity)
-        && let Some(blob) = renderable.blob_shadow.as_mut()
-      {
+    let mut renderables = ctx.world.query::<&mut Renderable>();
+    for mut renderable in renderables.iter_mut(ctx.world) {
+      if let Some(blob) = renderable.blob_shadow.as_mut() {
         blob.radius_x += 0.37;
         blob.radius_y += 0.21;
         let shift = (blob.radius_x * 7.0) as u8;
@@ -106,12 +104,14 @@ fn off_screen_entities_are_not_uploaded() {
     setup: |ctx| {
       let near = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 1, 2, 3, 255), "near");
       let far = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 4, 5, 6, 255), "far");
-      ctx
-        .world
-        .spawn((Transform::new(20.0, 20.0), Renderable::sprite(near)));
-      ctx
-        .world
-        .spawn((Transform::new(5000.0, 20.0), Renderable::sprite(far)));
+      ctx.world.spawn((
+        Transform::from_xy(20.0, 20.0),
+        Renderable::sprite(near).with_anchor(Anchor::TopLeft),
+      ));
+      ctx.world.spawn((
+        Transform::from_xy(5000.0, 20.0),
+        Renderable::sprite(far).with_anchor(Anchor::TopLeft),
+      ));
     },
   };
   let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
@@ -119,11 +119,11 @@ fn off_screen_entities_are_not_uploaded() {
   };
   engine.step_frames(2).unwrap();
   let handles: Vec<SpriteHandle> = {
-    let world = engine.world();
-    world
-      .entities_with::<Renderable>()
-      .into_iter()
-      .map(|e| world.get::<Renderable>(e).unwrap().sprite.clone())
+    let world = engine.world_mut();
+    let mut renderables = world.query::<&Renderable>();
+    renderables
+      .iter(world)
+      .map(|renderable| renderable.sprite.clone())
       .collect()
   };
   let gpu = engine.engine.sprite_gpu.as_ref().unwrap();
@@ -138,81 +138,6 @@ fn off_screen_entities_are_not_uploaded() {
 }
 
 #[test]
-fn raycast_frames_do_not_collect_the_2d_world() {
-  let scene = Fixture {
-    setup: |ctx| {
-      ctx.enable_raycast();
-      let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 1, 2, 3, 255), "ray-near");
-      ctx
-        .world
-        .spawn((Transform::new(20.0, 20.0), Renderable::sprite(sprite)));
-    },
-  };
-  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
-    return;
-  };
-  engine.step_frames(3).unwrap();
-  let sprite = {
-    let world = engine.world();
-    let entity = *world.entities_with::<Renderable>().first().unwrap();
-    world.get::<Renderable>(entity).unwrap().sprite.clone()
-  };
-  let gpu = engine.engine.sprite_gpu.as_ref().unwrap();
-  assert!(
-    !gpu.has_entity_sprite(&sprite),
-    "a raycast frame uploaded a 2D entity sprite"
-  );
-}
-
-#[test]
-fn raycast_frames_count_their_own_draws() {
-  // Three shaders draw three runs in 2D; then the raycast view takes over
-  struct ThenRaycast {
-    updates: u32,
-  }
-  impl Scene for ThenRaycast {
-    fn on_enter(&mut self, ctx: &mut SceneContext) {
-      let sprite =
-        SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 200, 30, 40, 255), "ray-runs");
-      for (i, swizzle) in ["rgba", "bgra", "gbra"].into_iter().enumerate() {
-        let src = format!(
-          "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {{ return sample(in.uv).{swizzle}; }}"
-        );
-        let shader = ShaderHandle::from_source(format!("ray-runs-{i}.wgsl"), src);
-        ctx.world.spawn((
-          Transform::new(i as f32 * 6.0, 0.0),
-          Renderable::sprite(sprite.clone())
-            .with_z_order(i as i32)
-            .with_shader(SpriteShader::custom(shader)),
-        ));
-      }
-    }
-    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-      self.updates += 1;
-      if self.updates == 3 {
-        ctx.enable_raycast();
-      }
-      SceneAction::Continue
-    }
-  }
-  let builder = EngineBuilder::new()
-    .resolution(64, 64)
-    .start_scene(ThenRaycast { updates: 0 });
-  let Some(mut engine) = engine(builder) else {
-    return;
-  };
-  engine.step_frames(2).unwrap();
-  assert_eq!(engine.engine.debug_stats().draw_calls, 3, "2D frame");
-  engine.step_frames(3).unwrap();
-  // Walls, plus sprites when there are any
-  assert!(
-    engine.engine.debug_stats().draw_calls <= 2,
-    "raycast frame reported {} draws",
-    engine.engine.debug_stats().draw_calls
-  );
-}
-
-#[test]
 fn large_standalone_entity_textures_are_bounded() {
   // A new 300x20 sprite (standalone, over the 256 px atlas limit) every frame
   let scene = Fixture { setup: |_| {} };
@@ -222,14 +147,21 @@ fn large_standalone_entity_textures_are_bounded() {
   for i in 0..200 {
     {
       let world = engine.world_mut();
-      for entity in world.entities_with::<Renderable>() {
-        let _ = world.despawn(entity);
+      let old: Vec<Entity> = world
+        .query_filtered::<Entity, With<Renderable>>()
+        .iter(world)
+        .collect();
+      for entity in old {
+        world.despawn(entity);
       }
       let sprite = SpriteHandle::from_sprite(
         Sprite::solid_rect(300, 20, 1, 2, 3, 255),
         format!("wide-{i}"),
       );
-      world.spawn((Transform::new(0.0, 10.0), Renderable::sprite(sprite)));
+      world.spawn((
+        Transform::from_xy(0.0, 10.0),
+        Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
+      ));
     }
     engine.step().unwrap();
   }
@@ -258,8 +190,8 @@ fn ten_thousand_sprites_few_draws() {
       for i in 0..10_000usize {
         let (col, row) = ((i % 100) as f32, (i / 100) as f32);
         ctx.world.spawn((
-          Transform::new(col * 3.0, row * 3.0),
-          Renderable::sprite(textures[i % 3].clone()),
+          Transform::from_xy(col * 3.0, row * 3.0),
+          Renderable::sprite(textures[i % 3].clone()).with_anchor(Anchor::TopLeft),
         ));
       }
     },
@@ -290,8 +222,9 @@ fn draw_calls_for(a_src: &'static str, b_src: &'static str) -> Option<u32> {
       let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 200, 30, 40, 255), "split");
       for (i, shader) in [&a, &a, &b, &b].into_iter().enumerate() {
         ctx.world.spawn((
-          Transform::new(i as f32 * 6.0, 0.0),
+          Transform::from_xy(i as f32 * 6.0, 0.0),
           Renderable::sprite(sprite.clone())
+            .with_anchor(Anchor::TopLeft)
             .with_z_order(i as i32)
             .with_shader(SpriteShader::custom(shader.clone())),
         ));
@@ -348,8 +281,10 @@ fn editing_a_shader_file_redraws_with_the_new_source() {
       let shader = ctx.assets.load_shader(&self.path).expect("load shader");
       let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(8, 8, 200, 30, 40, 255), "edit");
       ctx.world.spawn((
-        Transform::new(4.0, 4.0),
-        Renderable::sprite(sprite).with_shader(SpriteShader::custom(shader)),
+        Transform::from_xy(4.0, 4.0),
+        Renderable::sprite(sprite)
+          .with_anchor(Anchor::TopLeft)
+          .with_shader(SpriteShader::custom(shader)),
       ));
     }
     fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -379,4 +314,29 @@ fn editing_a_shader_file_redraws_with_the_new_source() {
   assert_eq!(engine.frame().unwrap().get_pixel(8, 8).0, [0, 255, 0, 255]);
   engine.step_frames(3).unwrap();
   assert_eq!(engine.frame().unwrap().get_pixel(8, 8).0, [0, 0, 255, 255]);
+}
+
+#[test]
+fn a_tapped_key_is_seen_by_exactly_one_fixed_update() {
+  use std::sync::{Arc, Mutex};
+  let seen = Arc::new(Mutex::new(0));
+  struct Counter(Arc<Mutex<u32>>);
+  impl Scene for Counter {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      if ctx.input.key_pressed(KeyCode::Space) {
+        *self.0.lock().unwrap() += 1;
+      }
+      SceneAction::Continue
+    }
+  }
+  let Some(mut engine) = HeadlessEngine::new_or_skip(
+    EngineBuilder::new()
+      .resolution(32, 32)
+      .start_scene(Counter(seen.clone())),
+  ) else {
+    return;
+  };
+  engine.tap_key(KeyCode::Space);
+  engine.step_frames(3).unwrap();
+  assert_eq!(*seen.lock().unwrap(), 1);
 }

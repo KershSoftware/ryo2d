@@ -4,11 +4,11 @@ use image::RgbaImage;
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
+use super::{HeadlessError, shared_gpu};
 use crate::core::ecs::World;
-use crate::core::input::InputEvent;
 use crate::core::engine::{Engine, EngineBuilder, FrameOutcome};
 use crate::core::graphics::WgpuRenderer;
-
+use crate::core::input::InputEvent;
 
 /// Largest supported render target side, in pixels.
 const MAX_DIMENSION: u32 = 8192;
@@ -24,7 +24,7 @@ pub enum StepOutcome {
 
 /// The engine running without a window. See the [module docs](self).
 pub struct HeadlessEngine {
-  engine: Engine,
+  pub(super) engine: Engine,
   presented: u64,
   quit: bool,
   pending_releases: Vec<KeyCode>,
@@ -70,19 +70,19 @@ impl HeadlessEngine {
     }
   }
 
-  /// Run one frame: one fixed update, then render.
+  /// Run one frame: exactly one fixed update, then render.
   pub fn step(&mut self) -> Result<StepOutcome, HeadlessError> {
     if self.quit {
       return Ok(StepOutcome::Quit);
     }
     let dt = self.engine.fixed_timestep();
-    let outcome = self.engine.step_frame(Some(dt));
+    let outcome = self.engine.frame(Some(dt));
     self.engine.apply_headless_requests();
     for key in self.pending_releases.drain(..) {
-      self
-        .engine
-        .input_mut()
-        .queue(InputEvent::Key { key, pressed: false });
+      self.engine.input_mut().queue(InputEvent::Key {
+        key,
+        pressed: false,
+      });
     }
     match outcome {
       FrameOutcome::Presented => {
@@ -150,19 +150,22 @@ impl HeadlessEngine {
 
   /// Release `key`; the next step sees it as just released.
   pub fn release_key(&mut self, key: KeyCode) {
-    self
-      .engine
-      .input_mut()
-      .queue(InputEvent::Key { key, pressed: false });
+    self.engine.input_mut().queue(InputEvent::Key {
+      key,
+      pressed: false,
+    });
   }
 
-  /// Press `key` for the next step only; it is released after that step.
   /// Deliver typed text, as a window's text event does alongside a key press
   /// (`press_key` and `tap_key` type nothing).
   pub fn type_text(&mut self, text: &str) {
-    self.engine.input_mut().queue(InputEvent::Text(text.to_string()));
+    self
+      .engine
+      .input_mut()
+      .queue(InputEvent::Text(text.to_string()));
   }
 
+  /// Press `key` for the next step only; it is released after that step.
   pub fn tap_key(&mut self, key: KeyCode) {
     self.press_key(key);
     self.pending_releases.push(key);
@@ -170,25 +173,25 @@ impl HeadlessEngine {
 
   /// Hold a mouse button down from the next step.
   pub fn press_mouse(&mut self, button: MouseButton) {
-    self
-      .engine
-      .input_mut()
-      .queue(InputEvent::MouseButton { button, pressed: true });
+    self.engine.input_mut().queue(InputEvent::MouseButton {
+      button,
+      pressed: true,
+    });
   }
 
   /// Release a mouse button.
   pub fn release_mouse(&mut self, button: MouseButton) {
-    self
-      .engine
-      .input_mut()
-      .queue(InputEvent::MouseButton { button, pressed: false });
+    self.engine.input_mut().queue(InputEvent::MouseButton {
+      button,
+      pressed: false,
+    });
   }
 
   /// Move the mouse to `(x, y)` in game coordinates.
   pub fn mouse_move(&mut self, x: f32, y: f32) {
-    self
-      .engine
-      .input_mut()
-      .queue(InputEvent::MouseMove { x: f64::from(x), y: f64::from(y) });
+    self.engine.input_mut().queue(InputEvent::MouseMove {
+      x: f64::from(x),
+      y: f64::from(y),
+    });
   }
 }

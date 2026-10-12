@@ -14,17 +14,13 @@ impl Scene for Fixture {
     let blue = SpriteHandle::from_sprite(Sprite::solid_rect(30, 12, 0, 60, 255, 255), "blue");
     ctx
       .world
-      .spawn((Transform::new(10.0, 10.0), Renderable::sprite(red)));
+      .spawn((Transform::from_xy(10.0, 10.0), Renderable::sprite(red)));
     ctx
       .world
-      .spawn((Transform::new(40.0, 30.0), Renderable::sprite(blue)));
+      .spawn((Transform::from_xy(40.0, 30.0), Renderable::sprite(blue)));
   }
 
-  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     ui.draw_rect(Rect::new(30.0, 5.0, 25.0, 25.0), Color::new(0, 255, 0, 128));
     SceneAction::Continue
   }
