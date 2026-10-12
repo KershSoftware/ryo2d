@@ -1,8 +1,8 @@
 //! The engine's phases and the schedules behind them.
 
 use crate::core::ecs::kernel::{
-  IntoScheduleConfigs, Schedule, ScheduleLabel, ScheduleSystem, SingleThreadedExecutor, SystemSet,
-  World,
+  Direction, InternedSystemSet, IntoScheduleConfigs, NodeId, Schedule, ScheduleLabel,
+  ScheduleSystem, SingleThreadedExecutor, SystemSet, World,
 };
 
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,6 +65,18 @@ pub enum FixedSet {
   Trails,
 }
 
+impl FixedSet {
+  pub const ALL: [FixedSet; 7] = [
+    FixedSet::Snapshot,
+    FixedSet::Juice,
+    FixedSet::Scene,
+    FixedSet::Game,
+    FixedSet::Physics,
+    FixedSet::Transforms,
+    FixedSet::Trails,
+  ];
+}
+
 /// Order inside `Update`.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UpdateSet {
@@ -89,6 +101,10 @@ fn new_schedule(label: impl ScheduleLabel) -> Schedule {
   schedule
 }
 
+/// One `add_game_systems` call's systems, so they can be placed together.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct GameSystems(u32);
+
 /// The engine's six schedules.
 pub struct EngineSchedules {
   first: Schedule,
@@ -97,6 +113,7 @@ pub struct EngineSchedules {
   update: Schedule,
   post_update: Schedule,
   last: Schedule,
+  game_calls: u32,
 }
 
 impl Default for EngineSchedules {
@@ -138,6 +155,7 @@ impl EngineSchedules {
       update,
       post_update,
       last: new_schedule(Last),
+      game_calls: 0,
     }
   }
 
@@ -161,10 +179,63 @@ impl EngineSchedules {
     self.get(phase).add_systems(systems);
   }
 
+  /// Add a game's systems to a phase for the whole run
+  /// (`EngineBuilder::add_systems`). In `FixedUpdate` and `Update`, a call
+  /// whose systems name none of the phase's sets (`in_set`, `before`,
+  /// `after`) runs in the phase's `Game` set.
+  pub fn add_game_systems<M>(
+    &mut self,
+    phase: Phase,
+    systems: impl IntoScheduleConfigs<ScheduleSystem, M>,
+  ) {
+    let (default, engine_sets): (InternedSystemSet, Vec<InternedSystemSet>) = match phase {
+      Phase::FixedUpdate => (
+        FixedSet::Game.intern(),
+        FixedSet::ALL.iter().map(SystemSet::intern).collect(),
+      ),
+      Phase::Update => (UpdateSet::Game.intern(), vec![UpdateSet::Game.intern()]),
+      _ => {
+        self.get(phase).add_systems(systems);
+        return;
+      }
+    };
+    self.game_calls += 1;
+    let group = GameSystems(self.game_calls);
+    let schedule = self.get(phase);
+    schedule.add_systems(systems.in_set(group));
+    if !names_a_set(schedule, group.intern(), &engine_sets) {
+      schedule.configure_sets(group.in_set(default));
+    }
+  }
+
   /// Run one phase, applying its deferred commands at the end.
   pub fn run(&mut self, phase: Phase, world: &mut World) {
     self.get(phase).run(world);
   }
+}
+
+/// Whether any system in `group` is in, before or after one of `sets`.
+fn names_a_set(schedule: &Schedule, group: InternedSystemSet, sets: &[InternedSystemSet]) -> bool {
+  let graph = schedule.graph();
+  let set_nodes: Vec<NodeId> = sets
+    .iter()
+    .filter_map(|set| graph.system_sets.get_key(*set))
+    .map(NodeId::Set)
+    .collect();
+  let Some(group) = graph.system_sets.get_key(group) else {
+    return false;
+  };
+  let hierarchy = graph.hierarchy().graph();
+  let dependency = graph.dependency().graph();
+  hierarchy
+    .neighbors_directed(NodeId::Set(group), Direction::Outgoing)
+    .any(|system| {
+      hierarchy
+        .neighbors_directed(system, Direction::Incoming)
+        .chain(dependency.neighbors_directed(system, Direction::Incoming))
+        .chain(dependency.neighbors_directed(system, Direction::Outgoing))
+        .any(|node| set_nodes.contains(&node))
+    })
 }
 
 /// Why [`SceneContext::add_systems`](crate::core::scene::SceneContext::add_systems)
@@ -227,6 +298,65 @@ mod tests {
 
   fn push(label: &'static str) -> impl Fn(ResMut<Log>) {
     move |mut log: ResMut<Log>| log.0.push(label)
+  }
+
+  fn log(world: &World) -> Vec<&'static str> {
+    world.resource::<Log>().0.clone()
+  }
+
+  fn engine_fixed_sets(s: &mut EngineSchedules) {
+    s.add_systems(
+      Phase::FixedUpdate,
+      (
+        push("juice").in_set(FixedSet::Juice),
+        push("scene").in_set(FixedSet::Scene),
+        push("physics").in_set(FixedSet::Physics),
+        push("transforms").in_set(FixedSet::Transforms),
+      ),
+    );
+  }
+
+  #[test]
+  fn a_game_system_that_names_no_set_runs_in_game() {
+    let mut world = World::new();
+    world.init_resource::<Log>();
+    let mut s = EngineSchedules::new();
+    s.add_game_systems(Phase::FixedUpdate, (push("a"), push("b")).chain());
+    engine_fixed_sets(&mut s);
+    s.add_game_systems(Phase::FixedUpdate, push("c"));
+    s.run(Phase::FixedUpdate, &mut world);
+    let log = log(&world);
+    let at = |label| log.iter().position(|l| *l == label).unwrap_or(usize::MAX);
+    for game in ["a", "b", "c"] {
+      assert!(
+        at("scene") < at(game) && at(game) < at("physics"),
+        "{game}: {log:?}"
+      );
+    }
+    assert!(at("a") < at("b"), "a chain inside a call is kept: {log:?}");
+  }
+
+  #[test]
+  fn a_game_system_keeps_the_place_it_names() {
+    let mut world = World::new();
+    world.init_resource::<Log>();
+    let mut s = EngineSchedules::new();
+    s.add_game_systems(
+      Phase::FixedUpdate,
+      push("late")
+        .after(FixedSet::Physics)
+        .before(FixedSet::Transforms),
+    );
+    s.add_game_systems(Phase::FixedUpdate, push("early").in_set(FixedSet::Juice));
+    engine_fixed_sets(&mut s);
+    s.run(Phase::FixedUpdate, &mut world);
+    let log = log(&world);
+    let at = |label| log.iter().position(|l| *l == label).unwrap_or(usize::MAX);
+    assert!(at("early") < at("scene"), "{log:?}");
+    assert!(
+      at("physics") < at("late") && at("late") < at("transforms"),
+      "{log:?}"
+    );
   }
 
   #[test]

@@ -974,12 +974,17 @@ impl EngineBuilder {
 
   /// Add systems to an engine phase for the whole run (scenes add their own
   /// with `SceneContext::add_systems`).
+  ///
+  /// In `FixedUpdate` and `Update`, systems that name none of the phase's
+  /// sets run in its `Game` set (`FixedSet::Game`: after the scene's
+  /// `update`, before physics). Name another place with `.in_set(..)`,
+  /// `.before(..)` or `.after(..)`.
   pub fn add_systems<M>(
     mut self,
     phase: Phase,
     systems: impl IntoScheduleConfigs<ScheduleSystem, M>,
   ) -> Self {
-    self.schedules.add_systems(phase, systems);
+    self.schedules.add_game_systems(phase, systems);
     self
   }
 

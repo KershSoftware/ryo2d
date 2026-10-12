@@ -306,7 +306,7 @@ pub struct Time { pub real: RealClock, pub game: GameClock, pub fixed: FixedCloc
 | `Last` | tracker clearing |
 
 - `enum FixedSet { Snapshot, Juice, Scene, Game, Physics, Transforms, Trails }`, `enum UpdateSet { Game }`, `enum PostUpdateSet { Transforms, Camera, Extract }`: order your systems with `.in_set(..)`, `.before(..)`, `.after(..)`.
-- Game-wide systems: `EngineBuilder::add_systems(phase, systems)` (any phase). Scene-owned systems: `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)`, dropped when the scene leaves the stack.
+- Game-wide systems: `EngineBuilder::add_systems(phase, systems)` (any phase; in `FixedUpdate`/`Update`, systems that name none of the phase's sets run in its `Game` set). Scene-owned systems: `ctx.add_systems(Phase::FixedUpdate | Phase::Update, systems)`, dropped when the scene leaves the stack.
 - Every schedule is single-threaded.
 
 ---
@@ -452,7 +452,7 @@ EngineBuilder::new()
   .fixed_hz(60)
   .insert_resource(Score::default())
   .add_message::<CoinCollected>()
-  .add_systems(Phase::FixedUpdate, move_players.in_set(FixedSet::Game))
+  .add_systems(Phase::FixedUpdate, move_players) // FixedSet::Game unless it names a set
   .start_scene(Level::default())
   .build()
   .run()?; // EngineResult<()>

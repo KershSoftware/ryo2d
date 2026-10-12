@@ -22,6 +22,8 @@ pub(crate) use bevy_ecs::system::SystemIdMarker;
 // Resources live on hidden entities; `IsResource` marks them so world-wide
 // entity sweeps can leave them alone.
 pub use bevy_ecs::resource::{IsResource, Resource};
+pub(crate) use bevy_ecs::schedule::graph::Direction;
+pub(crate) use bevy_ecs::schedule::{InternedSystemSet, NodeId};
 pub use bevy_ecs::schedule::{
   IntoScheduleConfigs, Schedule, ScheduleLabel, SingleThreadedExecutor, SystemSet,
 };
