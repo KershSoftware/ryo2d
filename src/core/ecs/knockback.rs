@@ -29,11 +29,48 @@
 //!
 //! # Physics Integration
 //!
-//! The knockback system sets the entity's `Velocity` when it has one (physics
-//! or the game moves it from there) and otherwise moves its `Transform`.
+//! A dynamic body gets the knockback added to its `Velocity`, so gravity and
+//! collisions keep acting; as the push decays it is taken back, except what
+//! the simulation already absorbed (a wall, drag). Removing or replacing an
+//! active knockback, or stopping it, takes back what it added. Anything else
+//! is moved through its `Transform`.
 
 use super::Vec2;
-use super::kernel::{Component, Entity, World};
+use super::components::Velocity;
+use super::kernel::{Component, DeferredWorld, Entity, HookContext, World};
+
+/// Move `velocity` from carrying `applied` of knockback to carrying
+/// `target`, returning what it carries afterwards. A take-back never pushes
+/// the body's velocity along the push below zero: what a collision or drag
+/// absorbed is not handed back.
+pub(crate) fn retarget(velocity: &mut Velocity, applied: Vec2, target: Vec2) -> Vec2 {
+  let mut change = target - applied;
+  if let Some(direction) = applied.try_normalize() {
+    let taken_back = -change.dot(direction);
+    let moving = Vec2::new(velocity.dx, velocity.dy).dot(direction).max(0.0);
+    if taken_back > moving {
+      change += direction * (taken_back - moving);
+    }
+  }
+  velocity.dx += change.x;
+  velocity.dy += change.y;
+  applied + change
+}
+
+/// An active knockback that is removed or replaced takes back what it added.
+fn take_back_on_discard(mut world: DeferredWorld, context: HookContext) {
+  let Some(applied) = world
+    .get::<Knockback>(context.entity)
+    .map(|knockback| knockback.applied)
+  else {
+    return;
+  };
+  if applied != Vec2::ZERO
+    && let Some(mut velocity) = world.get_mut::<Velocity>(context.entity)
+  {
+    retarget(&mut velocity, applied, Vec2::ZERO);
+  }
+}
 
 /// Component for applying decaying directional force to an entity.
 ///
@@ -54,6 +91,7 @@ use super::kernel::{Component, Entity, World};
 ///     .with_decay_rate(8.0);  // Fast decay
 /// ```
 #[derive(Component, Debug, Clone)]
+#[component(on_discard = take_back_on_discard)]
 pub struct Knockback {
   /// Normalized direction X component
   direction_x: f32,
@@ -75,7 +113,7 @@ pub struct Knockback {
   pub accumulate: bool,
   /// The velocity this knockback has added to a dynamic body, taken back
   /// step by step as it decays
-  pub(crate) applied: (f32, f32),
+  pub(crate) applied: Vec2,
 }
 
 impl Default for Knockback {
@@ -90,7 +128,7 @@ impl Default for Knockback {
       just_started: false,
       just_finished: false,
       accumulate: true,
-      applied: (0.0, 0.0),
+      applied: Vec2::ZERO,
     }
   }
 }
@@ -130,7 +168,7 @@ impl Knockback {
       just_started: true,
       just_finished: false,
       accumulate: true,
-      applied: (0.0, 0.0),
+      applied: Vec2::ZERO,
     }
   }
 
@@ -165,7 +203,7 @@ impl Knockback {
       just_started: true,
       just_finished: false,
       accumulate: true,
-      applied: (0.0, 0.0),
+      applied: Vec2::ZERO,
     }
   }
 

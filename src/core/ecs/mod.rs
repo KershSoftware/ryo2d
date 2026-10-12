@@ -14,7 +14,7 @@ pub mod transform;
 pub mod world_ext;
 
 mod components;
-mod knockback;
+pub(crate) mod knockback;
 mod lerp;
 mod material;
 mod property_tween;

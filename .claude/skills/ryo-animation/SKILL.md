@@ -245,7 +245,7 @@ if let Some(mut kb) = ctx.world.get_mut::<Knockback>(enemy) {
 }
 ```
 
-The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. A dynamic physics body gets the knockback added to its `Velocity` (gravity and collisions keep acting, and the push is taken back as it decays); anything else, including an entity whose `Velocity` your own code integrates, is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
+The direction is normalised; force is pixels per second at full strength and decays as strength squared (`DEFAULT_DECAY_RATE` 4.0, about a quarter second). `with_accumulate(true)` blends a new push into an active one. A dynamic physics body gets the knockback added to its `Velocity` (gravity and collisions keep acting; the push is taken back as it decays, except what a wall or drag absorbed, and `stop()` or removing the component takes it back at once); anything else, including an entity whose `Velocity` your own code integrates, is moved through its `Transform`. Messages: `KnockbackStarted`, `KnockbackFinished`.
 
 ## Squash and stretch
 

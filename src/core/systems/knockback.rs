@@ -1,6 +1,7 @@
 //! Knockback: decay each `Knockback` and move its entity.
 
-use crate::core::ecs::{Entity, Knockback, MessageWriter, Query, Res, Transform, Velocity};
+use crate::core::ecs::knockback::retarget;
+use crate::core::ecs::{Entity, Knockback, MessageWriter, Query, Res, Transform, Vec2, Velocity};
 use crate::core::messages::{KnockbackFinished, KnockbackStarted};
 use crate::core::physics::RigidBody;
 use crate::core::time::Time;
@@ -15,8 +16,9 @@ type Pushed = (
 
 /// Decay every active `Knockback` by one fixed step. A dynamic body's
 /// `Velocity` gets the change in knockback velocity added, so gravity and
-/// collisions keep acting and the push is taken back as it decays; anything
-/// else is moved through its `Transform`.
+/// collisions keep acting and the push is taken back as it decays (never
+/// more than the body still moves along it); anything else is moved through
+/// its `Transform`. A stopped knockback takes back what it added.
 pub fn update_knockback(
   time: Res<Time>,
   mut query: Query<Pushed>,
@@ -26,6 +28,12 @@ pub fn update_knockback(
   let dt = time.fixed.timestep();
   for (entity, mut knockback, velocity, body, transform) in &mut query {
     if !knockback.active {
+      if knockback.applied != Vec2::ZERO {
+        if let Some(mut velocity) = velocity {
+          retarget(&mut velocity, knockback.applied, Vec2::ZERO);
+        }
+        knockback.applied = Vec2::ZERO;
+      }
       continue;
     }
     let just_started = knockback.just_started;
@@ -40,10 +48,13 @@ pub fn update_knockback(
     let dynamic = body.is_some_and(|body| !body.is_kinematic);
     match velocity {
       Some(mut velocity) if dynamic => {
-        let (added_x, added_y) = knockback.applied;
-        velocity.dx += dx - added_x;
-        velocity.dy += dy - added_y;
-        knockback.applied = (dx, dy);
+        let carried = retarget(&mut velocity, knockback.applied, Vec2::new(dx, dy));
+        // Once it finishes, whatever is left was absorbed
+        knockback.applied = if knockback.active {
+          carried
+        } else {
+          Vec2::ZERO
+        };
       }
       _ => {
         if let Some(mut transform) = transform {
@@ -137,6 +148,52 @@ mod tests {
     let velocity = world.get::<Velocity>(entity).unwrap();
     assert!(velocity.dx.abs() < 1e-3, "{}", velocity.dx);
     assert_eq!(velocity.dy, 300.0);
+  }
+
+  fn pushed_body(world: &mut crate::core::ecs::World) -> Entity {
+    world
+      .spawn((
+        Transform::IDENTITY,
+        RigidBody::new(),
+        Velocity::zero(),
+        Knockback::new(Vec2::X, 400.0),
+      ))
+      .id()
+  }
+
+  #[test]
+  fn a_push_a_wall_absorbed_is_not_given_back() {
+    let mut world = world(60);
+    let entity = pushed_body(&mut world);
+    run(&mut world, update_knockback);
+    // The body hit a wall: physics took all of the push
+    world.get_mut::<Velocity>(entity).unwrap().dx = 0.0;
+    for _ in 0..60 {
+      run(&mut world, update_knockback);
+    }
+    let dx = world.get::<Velocity>(entity).unwrap().dx;
+    assert!(dx > -1e-3, "thrown back at {dx}");
+  }
+
+  #[test]
+  fn a_stopped_knockback_takes_back_what_it_added() {
+    let mut world = world(60);
+    let entity = pushed_body(&mut world);
+    run(&mut world, update_knockback);
+    world.get_mut::<Knockback>(entity).unwrap().stop();
+    run(&mut world, update_knockback);
+    let dx = world.get::<Velocity>(entity).unwrap().dx;
+    assert!(dx.abs() < 1e-3, "{dx}");
+  }
+
+  #[test]
+  fn removing_a_knockback_takes_back_what_it_added() {
+    let mut world = world(60);
+    let entity = pushed_body(&mut world);
+    run(&mut world, update_knockback);
+    world.entity_mut(entity).remove::<Knockback>();
+    let dx = world.get::<Velocity>(entity).unwrap().dx;
+    assert!(dx.abs() < 1e-3, "{dx}");
   }
 
   #[test]
