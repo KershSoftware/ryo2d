@@ -42,6 +42,20 @@ impl SceneSlot {
     }
   }
 
+  /// Only the top scene's action applies: say so, once per scene, when a
+  /// scene below returns one from `hook`.
+  fn warn_if_dropped(&mut self, action: &SceneAction, hook: &str) {
+    if matches!(action, SceneAction::Continue) || self.warned_dropped_action {
+      return;
+    }
+    self.warned_dropped_action = true;
+    crate::engine_warn!(
+      "scene {} returned {} from {hook} below the top scene; only the top scene's action is applied (logged once)",
+      self.scene.name(),
+      action.kind()
+    );
+  }
+
   /// Run `f` with this slot's scene and a context built for it.
   fn call<R>(
     &mut self,
@@ -308,13 +322,8 @@ impl SceneManager {
       let result = slot.call(world, audio, |scene, ctx| scene.update(ctx, dt));
       if i == top {
         action = result;
-      } else if !matches!(result, SceneAction::Continue) && !slot.warned_dropped_action {
-        slot.warned_dropped_action = true;
-        crate::engine_warn!(
-          "scene {} returned {} from update below the top scene; only the top scene's action is applied (logged once)",
-          slot.scene.name(),
-          result.kind()
-        );
+      } else {
+        slot.warn_if_dropped(&result, "update");
       }
     }
     action
@@ -484,9 +493,12 @@ impl SceneManager {
       } else {
         ui.restore_mouse_occluded(occluded);
       }
-      let result = self.scenes[i].call(world, audio, |scene, ctx| scene.ui(ui, ctx));
+      let slot = &mut self.scenes[i];
+      let result = slot.call(world, audio, |scene, ctx| scene.ui(ui, ctx));
       if i == top {
         action = result;
+      } else {
+        slot.warn_if_dropped(&result, "ui");
       }
     }
     ui.restore_mouse_occluded(occluded);
@@ -739,6 +751,43 @@ mod tests {
     let warnings = crate::core::dev_log::get_entries()
       .iter()
       .filter(|entry| entry.message.contains("DroppedQuitter"))
+      .count();
+    assert_eq!(warnings, 1);
+  }
+
+  struct UiQuitter;
+
+  impl Scene for UiQuitter {
+    fn ui(&mut self, _ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+      SceneAction::Quit
+    }
+  }
+
+  struct Glass;
+
+  impl Scene for Glass {
+    fn is_transparent(&self) -> bool {
+      true
+    }
+  }
+
+  #[test]
+  fn a_lower_scene_s_dropped_ui_action_is_warned_about_once() {
+    let (mut world, mut audio) = world();
+    let mut m = SceneManager::with_scene(Box::new(UiQuitter));
+    m.enter_initial(&mut world, &mut audio);
+    m.push(Box::new(Glass), &mut world, &mut audio);
+    let font: &'static crate::core::ui::BitmapFont =
+      Box::leak(Box::new(crate::core::ui::create_debug_font()));
+    let mut frame = vec![0u8; 16 * 16 * 4];
+    let mut ui = UiContext::new(&mut frame, 16, 16, Default::default(), font);
+    for _ in 0..3 {
+      let action = m.ui_pass(&mut world, &mut audio, &mut ui);
+      assert!(matches!(action, SceneAction::Continue));
+    }
+    let warnings = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|entry| entry.message.contains("UiQuitter"))
       .count();
     assert_eq!(warnings, 1);
   }

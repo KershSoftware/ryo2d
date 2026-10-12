@@ -32,7 +32,7 @@ Most subsystems have their own AGENTS.md or a skill in `.claude/skills/`. This f
 
 - The stack (`SceneManager`) and the Kira `Audio` live in the world as the non-send `SceneHost`; the scene systems (`engine/frame.rs`) take it out, build a `SceneContext` per call and put it back.
 - Each stacked scene owns its `FixedUpdate`/`Update` schedules, its message cursors (starting past every message written before it entered) and a console scope (unique per instance): its systems, unread messages and console handlers leave with it.
-- Updating: the top scene, and below it while each scene above `updates_below`, bottom-up. Only the top scene's `SceneAction` is applied; a lower scene's non-`Continue` action is dropped with a warning, logged once per scene instance. While a transition runs, `Scene::update` waits but scene systems keep running.
+- Updating: the top scene, and below it while each scene above `updates_below`, bottom-up. Only the top scene's `SceneAction` is applied; a lower scene's non-`Continue` action (from `update` or `ui`) is dropped with a warning, logged once per scene instance. While a transition runs, `Scene::update` waits but scene systems keep running.
 - Drawing and `ui`: the top, and below it while each scene above `is_transparent`.
 - `PhysicsPaused` is true when the top scene `is_physics_paused`, or when it sits over another scene without `updates_below`.
 - Cleanup (`SceneCleanup`, `scene/cleanup.rs`) runs on `Switch` and `Reset`, never on `Push`/`Pop`. `WORLD` uses `despawn_game_entities`, which keeps resources, observers and registered systems.

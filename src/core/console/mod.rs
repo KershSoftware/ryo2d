@@ -624,6 +624,7 @@ impl ConsoleState {
     // Mouse wheel scrolling works even when unfocused (as long as mouse is over console)
     let (_, scroll_y) = input.scroll_delta();
     if scroll_y.abs() > 0.01 && window_rect.contains(mouse_x, mouse_y) {
+      input.consume_scroll();
       // Scroll up (positive scroll_y) increases offset, scroll down decreases
       let scroll_lines = (scroll_y * 3.0).round() as i32;
       if scroll_lines > 0 {
@@ -1050,6 +1051,21 @@ mod tests {
     assert_eq!(console.scroll_offset, 0);
     // Welcome message adds lines
     assert!(!console.output_lines.is_empty());
+  }
+
+  #[test]
+  fn the_wheel_over_the_console_scrolls_it_and_not_the_game() {
+    let mut console = ConsoleState::new();
+    console.toggle();
+    let rect = console.window_rect();
+    let mut input = Input::new();
+    input.handle_mouse_move(
+      f64::from(rect.x + rect.width / 2.0),
+      f64::from(rect.y + rect.height / 2.0),
+    );
+    input.handle_scroll(winit::event::MouseScrollDelta::LineDelta(0.0, 1.0));
+    console.handle_input(&mut input);
+    assert_eq!(input.scroll_delta(), (0.0, 0.0));
   }
 
   #[test]
