@@ -1,17 +1,27 @@
 //! Per-scene read cursors, so a scene sees each message once.
 
-use std::any::{Any, TypeId};
+use std::any::TypeId;
 use std::collections::HashMap;
 
+use super::{ErasedCursor, cursors_now};
 use crate::core::ecs::kernel::{Message, MessageCursor, Messages, World};
 
-/// A scene's read position in every message buffer it has looked at.
+/// A scene's read position in every message buffer.
 #[derive(Default)]
 pub struct SceneMessages {
-  cursors: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+  cursors: HashMap<TypeId, ErasedCursor>,
 }
 
 impl SceneMessages {
+  /// Read positions past everything written so far: a scene entering now
+  /// sees only messages written after it. A type registered later is read
+  /// from its first message.
+  pub fn starting_now(world: &World) -> Self {
+    Self {
+      cursors: cursors_now(world).into_iter().collect(),
+    }
+  }
+
   /// Every `T` written since this scene last read, cloned out.
   pub fn read<T: Message + Clone>(&mut self, world: &World) -> Vec<T> {
     let Some(messages) = world.get_resource::<Messages<T>>() else {

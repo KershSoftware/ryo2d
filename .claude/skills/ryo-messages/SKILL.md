@@ -64,6 +64,7 @@ fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
 
 - The cursor belongs to the scene instance and is shared by all its callbacks: what `ui` reads, `update` will not see again.
 - Each scene on the stack has its own cursor, so an overlay and the scene below it both see every message.
+- A scene's cursor starts when it enters: messages written before a `Push`, `Switch` or `Reset` (say, by the scene that pushed it) are not read by the new scene. Hand such data over in the scene's constructor.
 - A scene's first read returns every message still buffered (up to the previous frame's).
 
 ## In systems

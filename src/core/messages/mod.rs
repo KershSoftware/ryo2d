@@ -13,13 +13,20 @@ mod scene;
 pub use builtin::*;
 pub use scene::SceneMessages;
 
+use std::any::{Any, TypeId};
+
 use crate::core::ecs::kernel::{Message, Messages, Resource, World};
 
-/// One updater and one clearer per registered message type.
+/// A type-erased `MessageCursor<T>`.
+pub(crate) type ErasedCursor = Box<dyn Any + Send + Sync>;
+
+/// One updater, one clearer and one "read from now on" cursor maker per
+/// registered message type.
 #[derive(Resource, Default)]
 struct MessageUpdaters {
   update: Vec<fn(&mut World)>,
   clear: Vec<fn(&mut World)>,
+  cursor_now: Vec<(TypeId, fn(&World) -> ErasedCursor)>,
 }
 
 fn update_one<T: Message>(world: &mut World) {
@@ -28,6 +35,23 @@ fn update_one<T: Message>(world: &mut World) {
 
 fn clear_one<T: Message>(world: &mut World) {
   world.resource_mut::<Messages<T>>().clear();
+}
+
+fn cursor_now<T: Message>(world: &World) -> ErasedCursor {
+  Box::new(world.resource::<Messages<T>>().get_cursor_current())
+}
+
+/// A cursor past every message already written, per registered type.
+pub(crate) fn cursors_now(world: &World) -> Vec<(TypeId, ErasedCursor)> {
+  world
+    .get_resource::<MessageUpdaters>()
+    .map(|u| {
+      u.cursor_now
+        .iter()
+        .map(|(id, make)| (*id, make(world)))
+        .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// Make `T` writable and readable in this world. Registering twice is a no-op.
@@ -39,6 +63,9 @@ pub fn register_message<T: Message>(world: &mut World) {
   let mut updaters = world.get_resource_or_insert_with(MessageUpdaters::default);
   updaters.update.push(update_one::<T>);
   updaters.clear.push(clear_one::<T>);
+  updaters
+    .cursor_now
+    .push((TypeId::of::<T>(), cursor_now::<T>));
 }
 
 /// Advance every buffer by one frame.

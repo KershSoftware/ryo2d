@@ -144,6 +144,7 @@ impl SceneManager {
     let Some(top) = self.scenes.last_mut() else {
       return;
     };
+    top.messages = SceneMessages::starting_now(world);
     #[cfg(debug_assertions)]
     let start = std::time::Instant::now();
     top.call(world, audio, |scene, ctx| scene.on_enter(ctx));
@@ -664,6 +665,39 @@ mod tests {
       action: None,
       updates_below: false,
     })
+  }
+
+  struct Listener(Arc<Mutex<usize>>);
+
+  impl Scene for Listener {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      *self.0.lock().unwrap() += ctx.messages::<Ping>().len();
+      SceneAction::Continue
+    }
+  }
+
+  #[test]
+  fn a_pushed_scene_reads_only_messages_written_after_it_entered() {
+    let log: Shared = Arc::default();
+    let (mut world, mut audio) = world();
+    let mut m = SceneManager::with_scene(rec(&log, "a"));
+    m.enter_initial(&mut world, &mut audio);
+    world
+      .resource_mut::<crate::core::ecs::Messages<Ping>>()
+      .write(Ping);
+    let heard = Arc::new(Mutex::new(0));
+    m.handle_action(
+      SceneAction::Push(Box::new(Listener(heard.clone()))),
+      &mut world,
+      &mut audio,
+    );
+    m.update(&mut world, &mut audio);
+    assert_eq!(*heard.lock().unwrap(), 0, "written before it entered");
+    world
+      .resource_mut::<crate::core::ecs::Messages<Ping>>()
+      .write(Ping);
+    m.update(&mut world, &mut audio);
+    assert_eq!(*heard.lock().unwrap(), 1);
   }
 
   #[test]
