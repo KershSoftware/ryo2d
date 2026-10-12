@@ -35,7 +35,7 @@ fn seen(shared: &Shared) -> Seen {
 }
 
 /// A page with one row of each kind (Level, Count, Mode, On); Mode "C" hides
-/// the On toggle row. Optional text input and dropdown are drawn in `render_ui`.
+/// the On toggle row. Optional text input and dropdown are drawn in `ui`.
 struct Probe {
   name: &'static str,
   shared: Shared,
@@ -100,7 +100,7 @@ impl DemoPage for Probe {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     if let Ok(mut seen) = self.shared.lock() {
       seen.content = Some(content_area(ui));
     }
@@ -548,7 +548,7 @@ impl DemoPage for Typing {
     "Typing"
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     ui.text_input(
       &mut self.field,
       Rect::new(10.0, 100.0, 120.0, 20.0),
@@ -610,7 +610,7 @@ impl DemoPage for Clicky {
     "Clicky"
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     if ui.button("Press", Rect::new(10.0, 100.0, 120.0, 20.0))
       && let Ok(mut seen) = self.shared.lock()
     {

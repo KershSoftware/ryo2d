@@ -50,7 +50,7 @@ impl Demo {
     self
   }
 
-  /// Any other engine setting, e.g. `.configure(|b| b.physics_hz(144))`
+  /// Any other engine setting, e.g. `.configure(|b| b.fixed_hz(144))`
   pub fn configure(mut self, f: impl FnOnce(EngineBuilder) -> EngineBuilder + 'static) -> Self {
     self.configure.push(Box::new(f));
     self

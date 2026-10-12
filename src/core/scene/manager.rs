@@ -520,6 +520,12 @@ impl SceneManager {
     self.scenes.last().map(|slot| slot.scene.as_ref())
   }
 
+  /// The top scene's identity, unique to each scene entered (a scene of the
+  /// same type entered again has a new one).
+  pub(crate) fn top_scope(&self) -> Option<u64> {
+    self.scenes.last().map(|slot| slot.scope_id)
+  }
+
   /// The top scene, if any.
   pub fn top_mut(&mut self) -> Option<&mut dyn Scene> {
     self.scenes.last_mut().map(|slot| slot.scene.as_mut())

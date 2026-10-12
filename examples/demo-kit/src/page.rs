@@ -49,12 +49,11 @@ pub trait DemoPage: 'static {
   /// Fixed-timestep update; read settings fields here
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) {}
 
-  /// Called every frame before rendering (see `Scene::render`)
-  fn render(&mut self, _ctx: &mut SceneContext, _alpha: f32) {}
+  /// The page's own UI, drawn under the shell's. It runs once a frame before
+  /// the fixed updates, and what it consumes (`ui.consume_key`, clicks on
+  /// widgets) `update` does not see.
+  fn ui(&mut self, _ui: &mut UiContext, _ctx: &mut SceneContext) {}
 
-  /// The page's own UI, drawn under the shell's
-  fn render_ui(&mut self, _ui: &mut UiContext) {}
-
-  /// GPU drawing (particles, `render_gpu` sprites)
-  fn render_gpu(&mut self, _ctx: &mut GpuRenderContext) {}
+  /// GPU drawing (particles, batched sprites), once a frame
+  fn render(&mut self, _gpu: &mut GpuRenderContext) {}
 }

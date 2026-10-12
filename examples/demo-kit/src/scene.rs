@@ -23,7 +23,8 @@ pub(crate) struct PageScene {
   rows: Vec<Row>,
   left: HoldRepeat,
   right: HoldRepeat,
-  /// A widget had keyboard focus on the last UI frame
+  /// A widget had keyboard focus on the last UI frame (the shell ignores its
+  /// keys while one does)
   keyboard_wanted: bool,
   /// Where the settings panel was drawn on the last UI frame
   panel: Option<Rect>,
@@ -70,25 +71,20 @@ impl PageScene {
   }
 
   /// Handle the shell's keys; returns the adjustment steps for the panel, or
-  /// a scene action to return instead of updating the page
-  fn shell_keys(&mut self, ctx: &mut SceneContext) -> Result<i32, SceneAction> {
-    let dt = ctx.time.fixed_dt;
-    let input = &mut *ctx.input;
-
-    let help = input.key_pressed_and_consume(KeyCode::KeyH);
+  /// a scene action to return instead of drawing the page. The keys it acts
+  /// on are consumed, so neither the page's widgets nor its update see them.
+  fn shell_keys(&mut self, ui: &mut UiContext) -> Result<i32, SceneAction> {
+    let help = take(ui, KeyCode::KeyH);
     // Escape closes help first; otherwise a page that wants it gets it
-    let escape = (self.help_open || !self.page.wants_escape())
-      && input.key_pressed_and_consume(KeyCode::Escape);
+    let escape = (self.help_open || !self.page.wants_escape()) && take(ui, KeyCode::Escape);
     // `|` so both aliases are consumed
-    let next = input.key_pressed_and_consume(KeyCode::BracketRight)
-      | input.key_pressed_and_consume(KeyCode::PageDown);
-    let prev = input.key_pressed_and_consume(KeyCode::BracketLeft)
-      | input.key_pressed_and_consume(KeyCode::PageUp);
-    let reset = input.key_pressed_and_consume(KeyCode::KeyR);
+    let next = take(ui, KeyCode::BracketRight) | take(ui, KeyCode::PageDown);
+    let prev = take(ui, KeyCode::BracketLeft) | take(ui, KeyCode::PageUp);
+    let reset = take(ui, KeyCode::KeyR);
     // A key the shell acts on must not also be typed into a field, such as
     // one the next page focuses on entry
     if help || escape || next || prev || reset {
-      input.consume_text_input();
+      ui.input().consume_text();
     }
 
     if help {
@@ -118,22 +114,39 @@ impl PageScene {
       self.right = HoldRepeat::default();
       return Ok(0);
     }
-    if input.key_pressed_and_consume(KeyCode::ArrowDown) && !self.rows.is_empty() {
+    if take(ui, KeyCode::ArrowDown) && !self.rows.is_empty() {
       self.selected = (self.selected + 1).min(self.rows.len() - 1);
     }
-    if input.key_pressed_and_consume(KeyCode::ArrowUp) {
+    if take(ui, KeyCode::ArrowUp) {
       self.selected = self.selected.saturating_sub(1);
     }
-    let right_pressed = input.key_pressed_and_consume(KeyCode::ArrowRight);
-    let left_pressed = input.key_pressed_and_consume(KeyCode::ArrowLeft);
-    let right = self
-      .right
-      .steps(right_pressed, input.key_down(KeyCode::ArrowRight), dt);
-    let left = self
-      .left
-      .steps(left_pressed, input.key_down(KeyCode::ArrowLeft), dt);
+    // Hold-to-repeat runs on real time, like the rest of the UI
+    let dt = ui.dt();
+    let (right_pressed, right_down) = take_held(ui, KeyCode::ArrowRight);
+    let (left_pressed, left_down) = take_held(ui, KeyCode::ArrowLeft);
+    let right = self.right.steps(right_pressed, right_down, dt);
+    let left = self.left.steps(left_pressed, left_down, dt);
     Ok(right as i32 - left as i32)
   }
+}
+
+/// Whether `key` was pressed this frame, consuming it if so.
+fn take(ui: &mut UiContext, key: KeyCode) -> bool {
+  let pressed = ui.input().key_pressed(key);
+  if pressed {
+    ui.consume_key(key);
+  }
+  pressed
+}
+
+/// Whether `key` was pressed this frame and whether it is down, consuming it
+/// while down: the panel's arrows never reach the page.
+fn take_held(ui: &mut UiContext, key: KeyCode) -> (bool, bool) {
+  let (pressed, down) = (ui.input().key_pressed(key), ui.input().key_down(key));
+  if pressed || down {
+    ui.consume_key(key);
+  }
+  (pressed, down)
 }
 
 impl Scene for PageScene {
@@ -153,21 +166,8 @@ impl Scene for PageScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    let adjust = if self.keyboard_wanted {
-      // Typing into a widget: the shell's keys belong to it
-      self.left = HoldRepeat::default();
-      self.right = HoldRepeat::default();
-      0
-    } else {
-      match self.shell_keys(ctx) {
-        Ok(adjust) => adjust,
-        Err(action) => return action,
-      }
-    };
-
-    self.read_rows(adjust);
-
-    // The page sees no input under help, and no pointer over the panel
+    // The page sees no input under help, and no pointer over the panel (both
+    // as drawn by this frame's UI pass, which runs first)
     let input = &mut *ctx.input;
     let (mx, my) = input.mouse_position();
     if self.help_open {
@@ -180,17 +180,26 @@ impl Scene for PageScene {
     SceneAction::Continue
   }
 
-  fn render(&mut self, ctx: &mut SceneContext, alpha: f32) {
-    self.page.render(ctx, alpha);
-  }
+  fn ui(&mut self, ui: &mut UiContext, ctx: &mut SceneContext) -> SceneAction {
+    let adjust = if self.keyboard_wanted {
+      // Typing into a widget: the shell's keys belong to it
+      self.left = HoldRepeat::default();
+      self.right = HoldRepeat::default();
+      0
+    } else {
+      match self.shell_keys(ui) {
+        Ok(adjust) => adjust,
+        Err(action) => return action,
+      }
+    };
+    self.read_rows(adjust);
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
     // Help covers the page: its widgets take no clicks or hover. The shell's
     // own chrome uses no mouse.
     if self.help_open {
       ui.set_mouse_occluded();
     }
-    self.page.render_ui(ui);
+    self.page.ui(ui, ctx);
     self.keyboard_wanted = ui.wants_keyboard();
     let controls = self.page.controls();
     let wants_escape = self.page.wants_escape();
@@ -224,7 +233,7 @@ impl Scene for PageScene {
     SceneAction::Continue
   }
 
-  fn render_gpu(&mut self, ctx: &mut GpuRenderContext) {
-    self.page.render_gpu(ctx);
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
+    self.page.render(gpu);
   }
 }

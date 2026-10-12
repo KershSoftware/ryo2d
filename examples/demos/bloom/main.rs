@@ -115,10 +115,15 @@ impl BloomPage {
         let handle = ctx
           .assets
           .create_sprite(sprite, format!("bg_{}_{}", row, col));
-        let entity = ctx.world.spawn((
-          Transform::new(col as f32 * tile_size, row as f32 * tile_size),
-          Renderable::sprite(handle).with_z_order(0),
-        ));
+        let entity = ctx
+          .world
+          .spawn((
+            Transform::from_xy(col as f32 * tile_size, row as f32 * tile_size),
+            Renderable::sprite(handle)
+              .with_anchor(Anchor::TopLeft)
+              .with_z_order(0),
+          ))
+          .id();
         self.bg_tiles.push(entity);
       }
     }
@@ -139,10 +144,13 @@ impl BloomPage {
 
       let angle = (i as f32 / bright_colors.len() as f32) * std::f32::consts::TAU;
       let dist = 120.0;
-      let entity = ctx.world.spawn((
-        Transform::new(cx + angle.cos() * dist, cy + angle.sin() * dist),
-        Renderable::sprite(handle).with_z_order(2),
-      ));
+      let entity = ctx
+        .world
+        .spawn((
+          Transform::from_xy(cx + angle.cos() * dist, cy + angle.sin() * dist),
+          Renderable::sprite(handle).with_z_order(2),
+        ))
+        .id();
       self.bright_sprites.push(entity);
     }
 
@@ -160,10 +168,13 @@ impl BloomPage {
     for (i, &(r, g, b)) in orbit_colors.iter().enumerate() {
       let sprite = Sprite::solid_rect(12, 12, r, g, b, 255);
       let handle = ctx.assets.create_sprite(sprite, format!("orbit_{}", i));
-      let entity = ctx.world.spawn((
-        Transform::new(cx, cy),
-        Renderable::sprite(handle).with_z_order(3),
-      ));
+      let entity = ctx
+        .world
+        .spawn((
+          Transform::from_xy(cx, cy),
+          Renderable::sprite(handle).with_z_order(3),
+        ))
+        .id();
       self.orbiting_sprites.push(entity);
     }
   }
@@ -178,8 +189,7 @@ impl BloomPage {
         let base_angle = (i as f32 / self.bright_sprites.len() as f32) * std::f32::consts::TAU;
         let angle = base_angle + self.time * 0.3;
         let dist = 120.0 + (self.time * 0.8 + i as f32).sin() * 20.0;
-        t.x = cx + angle.cos() * dist;
-        t.y = cy + angle.sin() * dist;
+        t.translation = Vec2::new(cx + angle.cos() * dist, cy + angle.sin() * dist);
         t.rotation = self.time * 1.5;
       }
     }
@@ -191,17 +201,16 @@ impl BloomPage {
         let r = 60.0 + (i as f32) * 22.0;
         let angle = self.time * speed
           + (i as f32 / self.orbiting_sprites.len() as f32) * std::f32::consts::TAU;
-        t.x = cx + angle.cos() * r;
-        t.y = cy + angle.sin() * r;
+        t.translation = Vec2::new(cx + angle.cos() * r, cy + angle.sin() * r);
       }
     }
   }
 
   fn apply_bloom(&self, ctx: &mut SceneContext) {
-    ctx.effects.clear();
+    ctx.effects().clear();
 
     if self.intensity > 0.001 {
-      ctx.effects.set_bloom_custom(
+      ctx.effects().set_bloom_custom(
         self.threshold,
         self.intensity,
         self.radius,

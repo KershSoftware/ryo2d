@@ -45,7 +45,7 @@ impl DemoPage for Backdrop {
       })
       .collect()
   }
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let (w, h) = ui.screen_size();
     ui.draw_rect(Rect::new(0.0, 0.0, w as f32, h as f32), RED);
   }
@@ -161,7 +161,7 @@ impl DemoPage for Bright {
   fn controls(&self) -> Vec<Control> {
     vec![Control::key(KeyCode::Digit1, "Do the thing")]
   }
-  fn render_ui(&mut self, ui: &mut UiContext) {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {
     let (w, h) = ui.screen_size();
     if let Ok(mut seen) = self.seen.lock() {
       *seen = Some((content_area(ui), ui.text_size("Ag").1));

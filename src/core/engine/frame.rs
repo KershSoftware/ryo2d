@@ -257,15 +257,41 @@ impl Engine {
   /// The UI pass: the scenes' `ui` (visible scenes, bottom-up), then the
   /// debug overlays and the console, before any fixed step. What it consumes
   /// is hidden from gameplay for the frame, and the scene action it returns
-  /// applies at once.
+  /// applies at once. When that action brings a new scene to the top, the UI
+  /// is drawn again so the frame shows the new scene's UI, not none; once
+  /// only, so a scene that switches on every call cannot loop.
   fn ui_pass(&mut self) {
-    let Some((width, height)) = self
+    for _ in 0..2 {
+      let Some(action) = self.draw_ui() else {
+        return;
+      };
+      if matches!(action, SceneAction::Continue) {
+        return;
+      }
+      let (keep_running, top_changed) = with_host(&mut self.world, |world, host| {
+        let SceneHost { scenes, audio } = host;
+        let before = scenes.top_scope();
+        let keep_running = scenes.handle_action(action, world, audio);
+        scenes.sync_physics_paused(world);
+        (keep_running, scenes.top_scope() != before)
+      });
+      if !keep_running {
+        self.world.insert_resource(QuitRequested);
+        return;
+      }
+      if !top_changed {
+        return;
+      }
+    }
+  }
+
+  /// Draw one UI pass into the UI buffer and apply what it consumed; `None`
+  /// before the GPU is up.
+  fn draw_ui(&mut self) -> Option<SceneAction> {
+    let (width, height) = self
       .renderer
       .as_ref()
-      .map(|renderer| (renderer.game_width(), renderer.game_height()))
-    else {
-      return;
-    };
+      .map(|renderer| (renderer.game_width(), renderer.game_height()))?;
     self.ui_buffer.fill(0);
     let snapshot = UiInput::snapshot(self.world.resource::<Input>());
     let real_dt = self.world.resource::<Time>().real.delta();
@@ -314,17 +340,7 @@ impl Engine {
     };
 
     consumed.apply_consumed(&mut self.world.resource_mut::<Input>());
-    if !matches!(action, SceneAction::Continue) {
-      let keep_running = with_host(&mut self.world, |world, host| {
-        let SceneHost { scenes, audio } = host;
-        let keep_running = scenes.handle_action(action, world, audio);
-        scenes.sync_physics_paused(world);
-        keep_running
-      });
-      if !keep_running {
-        self.world.insert_resource(QuitRequested);
-      }
-    }
+    Some(action)
   }
 
   /// Wait out the rest of the frame at `target_fps` (sleep, then spin for
@@ -659,6 +675,38 @@ mod tests {
     assert!(
       !update_saw.load(Ordering::SeqCst),
       "the press the UI took never reached the fixed update"
+    );
+  }
+
+  #[test]
+  fn a_scene_switched_from_ui_draws_its_ui_the_same_frame() {
+    use crate::core::ui::{Color, Rect, UiContext};
+    struct Leaves;
+    impl Scene for Leaves {
+      fn ui(&mut self, _ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        SceneAction::Switch(Box::new(Arrives))
+      }
+    }
+    struct Arrives;
+    impl Scene for Arrives {
+      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        ui.draw_rect(Rect::new(0.0, 0.0, 4.0, 4.0), Color::rgb(255, 0, 0));
+        SceneAction::Continue
+      }
+    }
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(16, 16)
+      .start_scene(Leaves)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 16, 16), 1.0);
+    e.frame(Some(Duration::from_millis(16)));
+    assert_eq!(
+      &e.ui_buffer[..4],
+      &[255, 0, 0, 255],
+      "the arriving scene's UI is in the switching frame"
     );
   }
 
