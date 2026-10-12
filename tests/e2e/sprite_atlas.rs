@@ -42,7 +42,7 @@ impl Scene for AtlasScene {
     SceneAction::Continue
   }
 
-  fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
     for sprite in &self.sprites {
       gpu.upload_sprite(sprite);
     }

@@ -62,7 +62,7 @@ impl Scene for Fixture {
     SceneAction::Continue
   }
 
-  fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
     if let Some(draw) = self.gpu.as_mut() {
       draw(gpu);
     }
@@ -84,8 +84,9 @@ fn custom_shader_inverts_its_sprite() {
   let shader = ShaderHandle::from_source("t2-invert.wgsl", INVERT);
   let scene = Fixture::entities(move |ctx| {
     ctx.world.spawn((
-      Transform::new(10.0, 20.0),
+      Transform::from_xy(10.0, 20.0),
       Renderable::sprite(solid("t2-inv-red", 20, RED))
+        .with_anchor(Anchor::TopLeft)
         .with_shader(SpriteShader::custom(shader.clone())),
     ));
   });
@@ -129,8 +130,9 @@ fn sprite_time_advances() {
   let shader = ShaderHandle::from_source("t2-clock.wgsl", CLOCK);
   let scene = Fixture::entities(move |ctx| {
     ctx.world.spawn((
-      Transform::new(10.0, 10.0),
+      Transform::from_xy(10.0, 10.0),
       Renderable::sprite(solid("t2-clock-red", 10, RED))
+        .with_anchor(Anchor::TopLeft)
         .with_shader(SpriteShader::custom(shader.clone())),
     ));
   });
@@ -158,12 +160,16 @@ fn params_reach_the_shader() {
       .with_param("a", 0.0)
       .with_param("color", Color::rgb(10, 200, 90));
     ctx.world.spawn((
-      Transform::new(5.0, 5.0),
-      Renderable::sprite(sprite.clone()).with_shader(on),
+      Transform::from_xy(5.0, 5.0),
+      Renderable::sprite(sprite.clone())
+        .with_anchor(Anchor::TopLeft)
+        .with_shader(on),
     ));
     ctx.world.spawn((
-      Transform::new(30.0, 5.0),
-      Renderable::sprite(sprite).with_shader(off),
+      Transform::from_xy(30.0, 5.0),
+      Renderable::sprite(sprite)
+        .with_anchor(Anchor::TopLeft)
+        .with_shader(off),
     ));
   });
   let Some(mut engine) = start(scene) else {
@@ -186,14 +192,15 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
   let shader = ShaderHandle::from_source("t2-shift.wgsl", shifted);
   let scene = Fixture::entities(move |ctx| {
     ctx.world.spawn((
-      Transform::new(10.0, 10.0),
+      Transform::from_xy(10.0, 10.0),
       Renderable::sprite(solid("t2-shift-red", 8, RED))
+        .with_anchor(Anchor::TopLeft)
         .with_shader(SpriteShader::custom(shader.clone())),
     ));
     // Right next to it, on the same atlas page
     ctx.world.spawn((
-      Transform::new(18.0, 10.0),
-      Renderable::sprite(solid("t2-shift-green", 8, GREEN)),
+      Transform::from_xy(18.0, 10.0),
+      Renderable::sprite(solid("t2-shift-green", 8, GREEN)).with_anchor(Anchor::TopLeft),
     ));
   });
   let Some(mut engine) = start(scene) else {
@@ -226,8 +233,9 @@ fn tint_applies_after_the_custom_shader() {
   let shader = ShaderHandle::from_source("t2-tint.wgsl", IDENTITY);
   let scene = Fixture::entities(move |ctx| {
     ctx.world.spawn((
-      Transform::new(10.0, 10.0),
+      Transform::from_xy(10.0, 10.0),
       Renderable::sprite(solid("t2-tint-grey", 10, [200, 200, 200, 255]))
+        .with_anchor(Anchor::TopLeft)
         .with_tint(Color::rgb(130, 130, 130))
         .with_shader(SpriteShader::custom(shader.clone())),
     ));
@@ -255,8 +263,9 @@ fn sprite(in: SpriteIn, params: Params) -> vec4<f32> {
   let blue = ShaderHandle::from_source("t2-mat-blue.wgsl", blue);
   let scene = Fixture::entities(move |ctx| {
     ctx.world.spawn((
-      Transform::new(10.0, 10.0),
+      Transform::from_xy(10.0, 10.0),
       Renderable::sprite(solid("t2-mat-red", 10, RED))
+        .with_anchor(Anchor::TopLeft)
         .with_shader(SpriteShader::custom(invert.clone())),
       Material::custom(blue.clone()),
     ));
@@ -296,8 +305,9 @@ fn broken_sprite_shader_falls_back() {
   let shader = ShaderHandle::from_source(id, source);
   let scene = Fixture::entities(move |ctx| {
     ctx.world.spawn((
-      Transform::new(10.0, 10.0),
+      Transform::from_xy(10.0, 10.0),
       Renderable::sprite(solid("t2-broken-red", 10, RED))
+        .with_anchor(Anchor::TopLeft)
         .with_shader(SpriteShader::custom(shader.clone())),
     ));
   });
@@ -323,8 +333,9 @@ fn replaced_source_changes_the_next_frame() {
   let handle = shader.clone();
   let scene = Fixture::entities(move |ctx| {
     ctx.world.spawn((
-      Transform::new(10.0, 10.0),
+      Transform::from_xy(10.0, 10.0),
       Renderable::sprite(solid("t2-replace-red", 10, RED))
+        .with_anchor(Anchor::TopLeft)
         .with_shader(SpriteShader::custom(shader.clone())),
     ));
   });
@@ -343,8 +354,9 @@ fn material_built_in_effect_wins_over_renderable_shader() {
   let identity = ShaderHandle::from_source("t2-mat-builtin-identity.wgsl", IDENTITY);
   let scene = Fixture::entities(move |ctx| {
     ctx.world.spawn((
-      Transform::new(10.0, 10.0),
+      Transform::from_xy(10.0, 10.0),
       Renderable::sprite(solid("t2-mat-builtin-red", 10, RED))
+        .with_anchor(Anchor::TopLeft)
         .with_shader(SpriteShader::custom(identity.clone())),
       Material::invert(),
     ));
@@ -363,8 +375,9 @@ fn fixed_shader_recovers_after_an_error() {
   let handle = shader.clone();
   let scene = Fixture::entities(move |ctx| {
     ctx.world.spawn((
-      Transform::new(10.0, 10.0),
+      Transform::from_xy(10.0, 10.0),
       Renderable::sprite(solid("t2-recover-red", 10, RED))
+        .with_anchor(Anchor::TopLeft)
         .with_shader(SpriteShader::custom(shader.clone())),
     ));
   });
@@ -412,11 +425,11 @@ struct EffectScene {
 impl Scene for EffectScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     ctx.world.spawn((
-      Transform::new(0.0, 0.0),
-      Renderable::sprite(solid("t3-red-screen", 64, RED)),
+      Transform::from_xy(0.0, 0.0),
+      Renderable::sprite(solid("t3-red-screen", 64, RED)).with_anchor(Anchor::TopLeft),
     ));
     if let Some(setup) = self.setup.take() {
-      setup(ctx.effects);
+      setup(&mut ctx.effects());
     }
   }
 
@@ -427,7 +440,7 @@ impl Scene for EffectScene {
       .map(|mut q| q.drain(..).collect())
       .unwrap_or_default();
     for command in pending {
-      command(ctx.effects);
+      command(&mut ctx.effects());
     }
     SceneAction::Continue
   }
@@ -582,14 +595,15 @@ impl Scene for Quadrants {
       })
       .collect();
     ctx.world.spawn((
-      Transform::new(0.0, 0.0),
+      Transform::from_xy(0.0, 0.0),
       Renderable::sprite(SpriteHandle::from_sprite(
         Sprite::from_rgba(pixels, 64, 64),
         "t3-quadrants",
-      )),
+      ))
+      .with_anchor(Anchor::TopLeft),
     ));
     if let Some(shader) = self.effect.take() {
-      assert!(ctx.effects.add_custom("fx", shader).is_ok());
+      assert!(ctx.effects().add_custom("fx", shader).is_ok());
     }
   }
 

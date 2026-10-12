@@ -55,7 +55,7 @@ impl Scene for Fixture {
     SceneAction::Continue
   }
 
-  fn render_gpu(&mut self, gpu: &mut GpuRenderContext) {
+  fn render(&mut self, gpu: &mut GpuRenderContext) {
     for (sprite, x, y, size, z) in &self.gpu_sprites {
       gpu.upload_sprite(sprite);
       let instance = SpriteInstance::new().with_transform(*x, *y, 0.0, *size, *size);
@@ -63,7 +63,7 @@ impl Scene for Fixture {
     }
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     ui.draw_rect(Rect::new(4.0, 4.0, 10.0, 10.0), Color::rgb(30, 60, 230));
     SceneAction::Continue
   }
@@ -84,8 +84,10 @@ fn frame_of(scene: Fixture, size: (u32, u32)) -> Option<image::RgbaImage> {
 
 fn spawn_entity(ctx: &mut SceneContext, name: &str, x: f32, y: f32, c: [u8; 4], z: i32) {
   ctx.world.spawn((
-    Transform::new(x, y),
-    Renderable::sprite(solid(name, 20, c)).with_z_order(z),
+    Transform::from_xy(x, y),
+    Renderable::sprite(solid(name, 20, c))
+      .with_anchor(Anchor::TopLeft)
+      .with_z_order(z),
   ));
 }
 
@@ -120,7 +122,7 @@ fn particle_between_entities() {
 /// A horizontal green line across y 32 at `z`.
 fn spawn_line(ctx: &mut SceneContext, z: i32) {
   let line = Line2D::horizontal(32.0, 0.0, 64.0, Color::new(0, 255, 0, 255), 4.0).with_z_order(z);
-  ctx.world.spawn((Transform::new(0.0, 0.0), line));
+  ctx.world.spawn((Transform::from_xy(0.0, 0.0), line));
 }
 
 #[test]
@@ -172,8 +174,8 @@ fn ysort_lower_draws_in_front() {
   let scene = Fixture::new(|ctx| {
     let sorted = |name: &str, y: f32, c: [u8; 4]| {
       (
-        Transform::new(20.0, y),
-        Renderable::sprite(solid(name, 20, c)),
+        Transform::from_xy(20.0, y),
+        Renderable::sprite(solid(name, 20, c)).with_anchor(Anchor::TopLeft),
         YSort::new(),
       )
     };
@@ -196,8 +198,8 @@ fn ysort_entities_stay_in_their_layer() {
   // between the z -1 and z 1 layers.
   let scene = Fixture::new(|ctx| {
     ctx.world.spawn((
-      Transform::new(20.0, 10.0),
-      Renderable::sprite(solid("yl-mid", 20, RED)),
+      Transform::from_xy(20.0, 10.0),
+      Renderable::sprite(solid("yl-mid", 20, RED)).with_anchor(Anchor::TopLeft),
       YSort {
         sort_offset: 500.0,
         ..YSort::new()
@@ -226,8 +228,8 @@ fn ysort_entities_stay_in_their_layer() {
 fn a_higher_layer_beats_a_far_down_ysort_entity() {
   let scene = Fixture::new(|ctx| {
     ctx.world.spawn((
-      Transform::new(20.0, 20.0),
-      Renderable::sprite(solid("hl-ysort", 20, RED)),
+      Transform::from_xy(20.0, 20.0),
+      Renderable::sprite(solid("hl-ysort", 20, RED)).with_anchor(Anchor::TopLeft),
       YSort {
         sort_offset: 2000.0,
         ..YSort::new()
@@ -276,7 +278,9 @@ fn skeleton_debug_lines_draw_on_top() {
     return;
   };
   for line in lines {
-    engine.world_mut().spawn((Transform::new(0.0, 0.0), line));
+    engine
+      .world_mut()
+      .spawn((Transform::from_xy(0.0, 0.0), line));
   }
   engine.step_frames(2).unwrap();
   let frame = engine.frame().unwrap();
@@ -295,13 +299,15 @@ fn composite_tile_honours_z() {
     let tile = |name: &str| {
       CompositeTile::new().add_part(TilePart::static_part(solid(name, 20, GREEN), 0.0, 0.0))
     };
-    ctx
-      .world
-      .spawn((Transform::new(50.0, 40.0), tile("ct-under").with_z_order(0)));
+    ctx.world.spawn((
+      Transform::from_xy(50.0, 40.0),
+      tile("ct-under").with_z_order(0),
+    ));
     spawn_entity(ctx, "ct-below", 40.0, 10.0, RED, -1);
-    ctx
-      .world
-      .spawn((Transform::new(50.0, 10.0), tile("ct-above").with_z_order(0)));
+    ctx.world.spawn((
+      Transform::from_xy(50.0, 10.0),
+      tile("ct-above").with_z_order(0),
+    ));
   });
   let Some(frame) = frame_of(scene, (120, 90)) else {
     return;
@@ -353,8 +359,10 @@ fn blob_shadow_under_its_entity() {
       ..BlobShadow::default()
     };
     ctx.world.spawn((
-      Transform::new(60.0, 40.0),
-      Renderable::sprite(sprite).with_blob_shadow(blob),
+      Transform::from_xy(60.0, 40.0),
+      Renderable::sprite(sprite)
+        .with_anchor(Anchor::TopLeft)
+        .with_blob_shadow(blob),
     ));
   });
   let Some(frame) = frame_of(scene, (120, 90)) else {
@@ -373,7 +381,7 @@ fn blob_shadow_under_its_entity() {
 fn debug_colliders_draw() {
   let scene = Fixture::new(|ctx| {
     ctx.world.spawn((
-      Transform::new(50.0, 40.0),
+      Transform::from_xy(50.0, 40.0),
       Collider::box_collider(30.0, 20.0),
     ));
   });
@@ -392,7 +400,8 @@ fn debug_colliders_draw() {
     .count();
   // The outline of a 30x20 box is about 96 pixels
   assert!(green > 60, "collider outline pixels: {green}");
-  assert_eq!(frame.get_pixel(60, 40).0, [0, 255, 0, 255]);
+  // Centred on (50, 40): the top edge runs along y = 30
+  assert_eq!(frame.get_pixel(60, 30).0, [0, 255, 0, 255]);
 }
 
 /// Draws a green unlit line and a UI rect, and pushes a fade through magenta.
@@ -408,7 +417,7 @@ impl Scene for Next {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     ui.draw_rect(Rect::new(4.0, 4.0, 10.0, 10.0), Color::rgb(30, 60, 230));
     SceneAction::Continue
   }
@@ -418,7 +427,7 @@ impl Scene for FadesOut {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let line =
       Line2D::horizontal(30.0, 10.0, 100.0, Color::new(0, 255, 0, 255), 4.0).with_lighting(false);
-    ctx.world.spawn((Transform::new(0.0, 0.0), line));
+    ctx.world.spawn((Transform::from_xy(0.0, 0.0), line));
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -433,7 +442,7 @@ impl Scene for FadesOut {
     )
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     ui.draw_rect(Rect::new(4.0, 4.0, 10.0, 10.0), Color::rgb(30, 60, 230));
     SceneAction::Continue
   }
@@ -467,17 +476,19 @@ fn transition_covers_trails_not_ui() {
 fn inactive_and_invisible_entities_do_not_draw() {
   let scene = Fixture::new(|ctx| {
     ctx.world.spawn((
-      Transform::new(10.0, 10.0),
-      Renderable::sprite(solid("inactive", 10, RED)),
-      Inactive,
+      Transform::from_xy(10.0, 10.0),
+      Renderable::sprite(solid("inactive", 10, RED)).with_anchor(Anchor::TopLeft),
+      Disabled,
     ));
     ctx.world.spawn((
-      Transform::new(40.0, 10.0),
-      Renderable::sprite(solid("hidden", 10, RED)).with_visible(false),
+      Transform::from_xy(40.0, 10.0),
+      Renderable::sprite(solid("hidden", 10, RED))
+        .with_anchor(Anchor::TopLeft)
+        .with_visible(false),
     ));
     ctx.world.spawn((
-      Transform::new(70.0, 10.0),
-      Renderable::sprite(solid("shown", 10, RED)),
+      Transform::from_xy(70.0, 10.0),
+      Renderable::sprite(solid("shown", 10, RED)).with_anchor(Anchor::TopLeft),
     ));
   });
   let Some(frame) = frame_of(scene, (120, 90)) else {
@@ -513,8 +524,10 @@ fn lines_stay_in_place_after_a_stretch_resize() {
 /// A y-sorted entity at `(x, y)` in layer `z`
 fn spawn_sorted(ctx: &mut SceneContext, name: &str, x: f32, y: f32, c: [u8; 4], z: i32) {
   ctx.world.spawn((
-    Transform::new(x, y),
-    Renderable::sprite(solid(name, 20, c)).with_z_order(z),
+    Transform::from_xy(x, y),
+    Renderable::sprite(solid(name, 20, c))
+      .with_anchor(Anchor::TopLeft)
+      .with_z_order(z),
     YSort::default(),
   ));
 }
@@ -576,8 +589,9 @@ impl Scene for FadesToWhite {
       32,
     );
     ctx.world.spawn((
-      Transform::new(0.0, 0.0),
-      Renderable::sprite(SpriteHandle::from_sprite(halves, "fade-halves")),
+      Transform::from_xy(0.0, 0.0),
+      Renderable::sprite(SpriteHandle::from_sprite(halves, "fade-halves"))
+        .with_anchor(Anchor::TopLeft),
     ));
   }
 

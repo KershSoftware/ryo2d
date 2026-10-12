@@ -113,10 +113,13 @@ impl Engine {
         .map(|(global, occluder)| (*global, occluder.clone()))
         .collect();
       if let Some(lighting) = lighting.as_mut() {
-        if !lights.is_empty() && !lighting.is_enabled() {
-          lighting.set_enabled(true);
-        }
         let settings = self.world.resource::<LightingSettings>();
+        match settings.enabled() {
+          Some(enabled) => lighting.set_enabled(enabled),
+          // On once any light exists, and it stays on
+          None if !lights.is_empty() => lighting.set_enabled(true),
+          None => {}
+        }
         lighting.set_ambient(*settings.ambient());
         lighting.set_atmosphere(settings.atmosphere().clone());
         let mut effects = self.world.resource_mut::<EffectsManager>();

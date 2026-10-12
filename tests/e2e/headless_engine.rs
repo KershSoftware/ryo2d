@@ -13,16 +13,17 @@ struct Squares;
 impl Scene for Squares {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(20, 20, 255, 0, 0, 255), "red");
-    ctx
-      .world
-      .spawn((Transform::new(100.0, 50.0), Renderable::sprite(sprite)));
+    ctx.world.spawn((
+      Transform::from_xy(100.0, 50.0),
+      Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
+    ));
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     ui.draw_rect(Rect::new(10.0, 10.0, 30.0, 30.0), Color::rgb(0, 255, 0));
     SceneAction::Continue
   }
@@ -39,7 +40,7 @@ impl Scene for Mover {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     ui.draw_rect(Rect::new(self.x, 40.0, 8.0, 8.0), Color::rgb(255, 255, 0));
     SceneAction::Continue
   }
@@ -188,16 +189,15 @@ struct InputProbe {
 }
 
 impl Scene for InputProbe {
-  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    self.held = ctx.input.key_down(KeyCode::Space);
-    self.pressed = ctx.input.key_pressed(KeyCode::Space);
-    self.released = ctx.input.key_released(KeyCode::Space);
-    self.mouse_down = ctx.input.mouse_down(MouseButton::Left);
-    self.mouse = ctx.input.mouse_position();
-    SceneAction::Continue
-  }
-
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  // The UI pass runs first each frame, so the probe reads that frame's input
+  // where it draws
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+    let input = ui.input();
+    self.held = input.key_down(KeyCode::Space);
+    self.pressed = input.key_pressed(KeyCode::Space);
+    self.released = input.key_released(KeyCode::Space);
+    self.mouse_down = input.mouse_down(MouseButton::Left);
+    self.mouse = input.mouse_position();
     for (i, on) in [self.held, self.pressed, self.released, self.mouse_down]
       .into_iter()
       .enumerate()
@@ -322,7 +322,7 @@ impl Scene for WantsUiScale {
     SceneAction::Continue
   }
 
-  fn render_ui(&mut self, ui: &mut UiContext) -> SceneAction {
+  fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
     let side = 10.0 * ui.ui_scale() as f32;
     ui.draw_rect(Rect::new(0.0, 0.0, side, side), Color::rgb(0, 255, 255));
     SceneAction::Continue
@@ -370,7 +370,7 @@ impl Scene for LineScene {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     if self.with_light {
       ctx.world.spawn((
-        Transform::new(160.0, 90.0),
+        Transform::from_xy(160.0, 90.0),
         Light2D::point(Color::rgb(255, 255, 255), 400.0).with_intensity(2.0),
       ));
     }
@@ -379,7 +379,7 @@ impl Scene for LineScene {
       Color::rgb(255, 255, 255),
       8.0,
     );
-    ctx.world.spawn((Transform::new(0.0, 0.0), line));
+    ctx.world.spawn((Transform::from_xy(0.0, 0.0), line));
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -432,19 +432,19 @@ impl Scene for PauseOnHit {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     // A falling body overlapping a kinematic floor
     ctx.world.spawn((
-      Transform::new(100.0, 100.0),
+      Transform::from_xy(100.0, 100.0),
       RigidBody::new(),
       Collider::box_collider(20.0, 20.0),
     ));
     ctx.world.spawn((
-      Transform::new(100.0, 105.0),
+      Transform::from_xy(100.0, 105.0),
       RigidBody::kinematic(),
       Collider::box_collider(80.0, 20.0),
     ));
   }
 
   fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
-    let seen = ctx.events.read::<CollisionStarted>().count();
+    let seen = ctx.messages::<CollisionStarted>().len();
     if seen > 0 {
       self
         .started
@@ -479,12 +479,10 @@ struct DarkLines;
 
 impl Scene for DarkLines {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
-    if let Some(lighting) = ctx.lighting.as_mut() {
-      lighting.set_ambient(AmbientLight::dark());
-    }
+    ctx.lighting().set_ambient(AmbientLight::dark());
     // A tiny light far from the lines, so lighting is on but they stay dark
     ctx.world.spawn((
-      Transform::new(310.0, 5.0),
+      Transform::from_xy(310.0, 5.0),
       Light2D::point(Color::rgb(255, 255, 255), 4.0),
     ));
     let white_line = |y: f32| {
@@ -496,9 +494,9 @@ impl Scene for DarkLines {
     };
     ctx
       .world
-      .spawn((Transform::new(0.0, 0.0), white_line(60.0)));
+      .spawn((Transform::from_xy(0.0, 0.0), white_line(60.0)));
     ctx.world.spawn((
-      Transform::new(0.0, 0.0),
+      Transform::from_xy(0.0, 0.0),
       white_line(120.0).with_lighting(false),
     ));
   }
@@ -537,7 +535,7 @@ impl Scene for UnlitLineNoLights {
       8.0,
     )
     .with_lighting(false);
-    ctx.world.spawn((Transform::new(0.0, 0.0), line));
+    ctx.world.spawn((Transform::from_xy(0.0, 0.0), line));
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {

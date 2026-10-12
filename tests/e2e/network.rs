@@ -11,6 +11,7 @@
 //!
 //! Run with: `cargo test --test network_e2e`
 
+use ryo2d::core::network::NetworkError;
 use ryo2d::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -31,7 +32,7 @@ fn get_test_port() -> u16 {
 // =============================================================================
 
 /// Player position component for replication tests
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Component, Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct PlayerPosition {
   x: f32,
   y: f32,
@@ -185,11 +186,14 @@ impl HeadlessClient {
 
   fn handle_spawn(&mut self, spawn: SpawnEntityMessage) {
     // Create local entity with NetworkEntity component
-    let entity = self.world.spawn((NetworkEntity {
-      network_id: spawn.network_id,
-      owner: spawn.owner,
-      authority: spawn.authority,
-    },));
+    let entity = self
+      .world
+      .spawn((NetworkEntity {
+        network_id: spawn.network_id,
+        owner: spawn.owner,
+        authority: spawn.authority,
+      },))
+      .id();
 
     // Apply initial components
     for serialized in &spawn.components {
@@ -221,7 +225,7 @@ impl HeadlessClient {
             *t = transform;
           }
         } else {
-          self.world.add_component(entity, transform);
+          self.world.entity_mut(entity).insert(transform);
         }
       }
     } else if serialized.type_id == PlayerPosition::component_id()
@@ -232,7 +236,7 @@ impl HeadlessClient {
           *p = pos;
         }
       } else {
-        self.world.add_component(entity, pos);
+        self.world.entity_mut(entity).insert(pos);
       }
     }
   }
@@ -313,14 +317,14 @@ impl HeadlessServer {
       &mut self.world,
       NetworkEntityBuilder::new().client_owned(client_id),
     );
-    self.world.add_component(entity, Transform::new(0.0, 0.0));
-    self.world.add_component(
-      entity,
-      PlayerPosition {
-        x: 100.0 * client_id as f32,
-        y: 100.0,
-      },
-    );
+    self
+      .world
+      .entity_mut(entity)
+      .insert(Transform::from_xy(0.0, 0.0));
+    self.world.entity_mut(entity).insert(PlayerPosition {
+      x: 100.0 * client_id as f32,
+      y: 100.0,
+    });
 
     self.player_entities.insert(client_id, entity);
 
@@ -1065,14 +1069,14 @@ impl HeadlessListenServer {
       &mut self.world,
       NetworkEntityBuilder::new().client_owned(client_id),
     );
-    self.world.add_component(entity, Transform::new(0.0, 0.0));
-    self.world.add_component(
-      entity,
-      PlayerPosition {
-        x: 50.0 * client_id as f32,
-        y: 50.0,
-      },
-    );
+    self
+      .world
+      .entity_mut(entity)
+      .insert(Transform::from_xy(0.0, 0.0));
+    self.world.entity_mut(entity).insert(PlayerPosition {
+      x: 50.0 * client_id as f32,
+      y: 50.0,
+    });
     self.player_entities.insert(client_id, entity);
   }
 

@@ -9,9 +9,10 @@ fn engine(scene: impl Scene + 'static) -> Option<HeadlessEngine> {
 
 fn spawn_sprite(ctx: &mut SceneContext, sprite: Sprite, name: &str) {
   let handle = SpriteHandle::from_sprite(sprite, name);
-  ctx
-    .world
-    .spawn((Transform::new(0.0, 0.0), Renderable::sprite(handle)));
+  ctx.world.spawn((
+    Transform::from_xy(0.0, 0.0),
+    Renderable::sprite(handle).with_anchor(Anchor::TopLeft),
+  ));
 }
 
 /// Mid-grey screen with a strong vignette followed by a near-zero colour tint.
@@ -20,10 +21,12 @@ struct StackedEffects;
 impl Scene for StackedEffects {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     spawn_sprite(ctx, Sprite::solid_rect(64, 64, 128, 128, 128, 255), "grey");
-    ctx.effects.set_vignette_custom(1.0, 0.2, 0.3);
+    ctx.effects().set_vignette_custom(1.0, 0.2, 0.3);
     // Comes after the vignette in the chain; its params.x (0.01) would all but
     // disable the vignette if the vignette read it.
-    ctx.effects.set_color_tint(Color::rgb(255, 255, 255), 0.01);
+    ctx
+      .effects()
+      .set_color_tint(Color::rgb(255, 255, 255), 0.01);
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -53,7 +56,7 @@ struct DefaultVignette;
 impl Scene for DefaultVignette {
   fn on_enter(&mut self, ctx: &mut SceneContext) {
     spawn_sprite(ctx, Sprite::solid_rect(64, 64, 128, 128, 128, 255), "grey");
-    ctx.effects.set_vignette(1.0);
+    ctx.effects().set_vignette(1.0);
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -94,7 +97,7 @@ impl Scene for BrightLine {
     }
     spawn_sprite(ctx, Sprite::from_rgba(pixels, 64, 64), "line");
     if self.bloom {
-      ctx.effects.set_bloom(1.0);
+      ctx.effects().set_bloom(1.0);
     }
   }
 
@@ -139,7 +142,7 @@ impl Scene for BrightDot {
       }
     }
     spawn_sprite(ctx, Sprite::from_rgba(pixels, 128, 64), "dot");
-    ctx.effects.set_bloom_custom(0.1, 5.0, 5.0, 1);
+    ctx.effects().set_bloom_custom(0.1, 5.0, 5.0, 1);
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
@@ -192,7 +195,7 @@ impl Scene for BrightSquare {
       }
     }
     spawn_sprite(ctx, Sprite::from_rgba(pixels, 128, 64), "square");
-    ctx.effects.set_bloom_custom(0.1, 5.0, 5.0, 1);
+    ctx.effects().set_bloom_custom(0.1, 5.0, 5.0, 1);
   }
 
   fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {

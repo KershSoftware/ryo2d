@@ -6,6 +6,7 @@
 //! Tests gracefully skip when no GPU is available (CI without GPU).
 
 use crate::common::gpu::TestGpu;
+use ryo2d::core::lighting::LightingRenderer;
 use ryo2d::prelude::*;
 
 /// Create an sRGB render target for lighting tests.
@@ -310,7 +311,7 @@ fn test_compose_receives_pixel_data() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    std::iter::empty::<(&Transform, &Light2D)>(),
+    std::iter::empty::<(&Vec2, &Light2D)>(),
     Vec2::ZERO,
     1.0,
   );
@@ -380,7 +381,7 @@ fn test_compose_with_ambient() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    std::iter::empty::<(&Transform, &Light2D)>(),
+    std::iter::empty::<(&Vec2, &Light2D)>(),
     Vec2::ZERO,
     1.0,
   );
@@ -467,7 +468,7 @@ fn test_compose_with_zero_ambient() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    std::iter::empty::<(&Transform, &Light2D)>(),
+    std::iter::empty::<(&Vec2, &Light2D)>(),
     Vec2::ZERO,
     1.0,
   );
@@ -536,7 +537,7 @@ fn test_render_lights_empty() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    std::iter::empty::<(&Transform, &Light2D)>(),
+    std::iter::empty::<(&Vec2, &Light2D)>(),
     Vec2::ZERO,
     1.0,
   );
@@ -560,7 +561,7 @@ fn test_render_lights_with_data() {
   renderer.set_enabled(true);
 
   // Create light data
-  let transform = Transform::new(50.0, 50.0);
+  let transform = Transform::from_xy(50.0, 50.0);
   let light = Light2D::torch(50.0);
   let lights = [(transform, light)];
 
@@ -575,7 +576,7 @@ fn test_render_lights_with_data() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    lights.iter().map(|(t, l)| (t, l)),
+    lights.iter().map(|(t, l)| (&t.translation, l)),
     Vec2::ZERO,
     1.0,
   );
@@ -598,7 +599,7 @@ fn test_render_lights_when_disabled() {
   // Disable the renderer
   renderer.set_enabled(false);
 
-  let transform = Transform::new(50.0, 50.0);
+  let transform = Transform::from_xy(50.0, 50.0);
   let light = Light2D::torch(50.0);
   let lights = [(transform, light)];
 
@@ -613,7 +614,7 @@ fn test_render_lights_when_disabled() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    lights.iter().map(|(t, l)| (t, l)),
+    lights.iter().map(|(t, l)| (&t.translation, l)),
     Vec2::ZERO,
     1.0,
   );
@@ -679,7 +680,7 @@ fn test_lighting_plus_effects_produces_visible_output() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    std::iter::empty::<(&Transform, &Light2D)>(),
+    std::iter::empty::<(&Vec2, &Light2D)>(),
     Vec2::ZERO,
     1.0,
   );
@@ -783,7 +784,7 @@ fn test_lighting_with_multiple_effects() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    std::iter::empty::<(&Transform, &Light2D)>(),
+    std::iter::empty::<(&Vec2, &Light2D)>(),
     Vec2::ZERO,
     1.0,
   );
@@ -825,10 +826,10 @@ fn test_render_volumetric_lights() {
   renderer.set_enabled(true);
 
   // Create lights with volumetric settings
-  let transform1 = Transform::new(50.0, 50.0);
+  let transform1 = Transform::from_xy(50.0, 50.0);
   let light1 = Light2D::flashlight(80.0, 0.0).with_volumetric();
 
-  let transform2 = Transform::new(75.0, 75.0);
+  let transform2 = Transform::from_xy(75.0, 75.0);
   let light2 = Light2D::point(Color::WHITE, 100.0).with_god_rays();
 
   let lights = [(transform1, light1), (transform2, light2)];
@@ -844,7 +845,7 @@ fn test_render_volumetric_lights() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    lights.iter().map(|(t, l)| (t, l)),
+    lights.iter().map(|(t, l)| (&t.translation, l)),
     Vec2::ZERO,
     1.0,
   );
@@ -880,7 +881,7 @@ fn test_volumetric_spotlight_beam() {
   let target = create_srgb_target(gpu, width, height);
 
   // Create a spotlight with volumetric beam
-  let transform = Transform::new(32.0, 32.0);
+  let transform = Transform::from_xy(32.0, 32.0);
   let light = Light2D::spot(Color::WHITE, 50.0, 45.0, 0.0)
     .with_intensity(2.0)
     .with_volumetric_settings(VolumetricSettings::strong_beam());
@@ -910,7 +911,7 @@ fn test_volumetric_spotlight_beam() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    lights.iter().map(|(t, l)| (t, l)),
+    lights.iter().map(|(t, l)| (&t.translation, l)),
     Vec2::ZERO,
     1.0,
   );
@@ -984,7 +985,7 @@ fn test_god_rays_with_lighting() {
     ryo2d::core::shaders::PostProcessPipeline::new(&gpu.device, width, height, format);
 
   // Create a bright light with god rays
-  let transform = Transform::new(10.0, 10.0);
+  let transform = Transform::from_xy(10.0, 10.0);
   let light = Light2D::point(Color::WHITE, 50.0)
     .with_intensity(2.0)
     .with_god_rays();
@@ -1016,7 +1017,7 @@ fn test_god_rays_with_lighting() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    lights.iter().map(|(t, l)| (t, l)),
+    lights.iter().map(|(t, l)| (&t.translation, l)),
     Vec2::ZERO,
     1.0,
   );
@@ -1064,7 +1065,7 @@ fn test_non_volumetric_lights_unchanged() {
   let target = create_srgb_target(gpu, width, height);
 
   // Create a normal light (no volumetric)
-  let transform = Transform::new(16.0, 16.0);
+  let transform = Transform::from_xy(16.0, 16.0);
   let light = Light2D::point(Color::WHITE, 15.0).with_intensity(1.0);
 
   // Verify light does NOT have volumetric
@@ -1090,7 +1091,7 @@ fn test_non_volumetric_lights_unchanged() {
     &gpu.device,
     &gpu.queue,
     &mut encoder,
-    lights.iter().map(|(t, l)| (t, l)),
+    lights.iter().map(|(t, l)| (&t.translation, l)),
     Vec2::ZERO,
     1.0,
   );

@@ -68,8 +68,10 @@ fn wave_shifts_rows_by_its_amplitude_in_pixels_and_wraps() {
       time: FRAC_PI_2,
     };
     ctx.world.spawn((
-      Transform::new(16.0, 16.0),
-      Renderable::sprite(column_sprite("wave-column", 14)).with_shader(SpriteShader::BuiltIn(wave)),
+      Transform::from_xy(16.0, 16.0),
+      Renderable::sprite(column_sprite("wave-column", 14))
+        .with_anchor(Anchor::TopLeft)
+        .with_shader(SpriteShader::BuiltIn(wave)),
     ));
   }) else {
     return;
@@ -89,8 +91,9 @@ fn wave_follows_its_effect_time() {
         time,
       };
       ctx.world.spawn((
-        Transform::new(16.0, 16.0),
+        Transform::from_xy(16.0, 16.0),
         Renderable::sprite(column_sprite("wave-time-column", 8))
+          .with_anchor(Anchor::TopLeft)
           .with_shader(SpriteShader::BuiltIn(wave)),
       ));
     })
@@ -139,13 +142,15 @@ fn every_built_in_effect_changes_its_entity() {
     let sprite = gradient_sprite();
     for (i, (_, effect)) in spawned.iter().enumerate() {
       ctx.world.spawn((
-        Transform::new(i as f32 * cell as f32 + 8.0, 8.0),
-        Renderable::sprite(sprite.clone()).with_shader(SpriteShader::BuiltIn(effect.clone())),
+        Transform::from_xy(i as f32 * cell as f32 + 8.0, 8.0),
+        Renderable::sprite(sprite.clone())
+          .with_anchor(Anchor::TopLeft)
+          .with_shader(SpriteShader::BuiltIn(effect.clone())),
       ));
     }
     ctx.world.spawn((
-      Transform::new((count - 1) as f32 * cell as f32 + 8.0, 8.0),
-      Renderable::sprite(sprite),
+      Transform::from_xy((count - 1) as f32 * cell as f32 + 8.0, 8.0),
+      Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
     ));
   }) else {
     return;

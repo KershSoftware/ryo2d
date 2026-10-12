@@ -89,7 +89,6 @@ fn test_begin_frame_clears_vertices() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 100, 100, format);
-  let transform = Transform::new(0.0, 0.0);
 
   // Create a trail with points
   let mut trail = Trail2D::new(Color::WHITE, 5.0).with_min_distance(0.0);
@@ -98,7 +97,7 @@ fn test_begin_frame_clears_vertices() {
   trail.update(20.0, 20.0, 0.016);
 
   // Add trail to renderer
-  renderer.add_trail(&trail, &transform);
+  renderer.add_trail(&trail);
   assert!(
     renderer.vertex_count() > 0,
     "Should have vertices after adding trail"
@@ -123,7 +122,6 @@ fn test_invisible_trail_no_vertices() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 100, 100, format);
-  let transform = Transform::new(0.0, 0.0);
 
   // Create a trail and set it invisible
   let mut trail = Trail2D::new(Color::WHITE, 5.0).with_min_distance(0.0);
@@ -136,7 +134,7 @@ fn test_invisible_trail_no_vertices() {
   assert_eq!(trail.point_count(), 3, "Trail should have 3 points");
 
   // Add trail to renderer
-  renderer.add_trail(&trail, &transform);
+  renderer.add_trail(&trail);
 
   assert_eq!(
     renderer.vertex_count(),
@@ -155,7 +153,6 @@ fn test_disabled_trail_no_vertices() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 100, 100, format);
-  let transform = Transform::new(0.0, 0.0);
 
   // Create a trail with points, then disable it
   let mut trail = Trail2D::new(Color::WHITE, 5.0).with_min_distance(0.0);
@@ -167,7 +164,7 @@ fn test_disabled_trail_no_vertices() {
   assert!(!trail.is_visible(), "Disabled trail should be invisible");
 
   // Add trail to renderer
-  renderer.add_trail(&trail, &transform);
+  renderer.add_trail(&trail);
 
   assert_eq!(
     renderer.vertex_count(),
@@ -186,7 +183,6 @@ fn test_single_trail_generates_vertices() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 100, 100, format);
-  let transform = Transform::new(0.0, 0.0);
 
   // Create a trail with 3 points (minimum for visible trail)
   let mut trail = Trail2D::new(Color::WHITE, 5.0).with_min_distance(0.0);
@@ -195,7 +191,7 @@ fn test_single_trail_generates_vertices() {
   trail.update(20.0, 20.0, 0.016);
 
   // Add trail to renderer
-  renderer.add_trail(&trail, &transform);
+  renderer.add_trail(&trail);
 
   // 3 points should generate 6 vertices (2 per point for triangle strip)
   assert_eq!(
@@ -218,7 +214,6 @@ fn test_multiple_trails_degenerate_separation() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 100, 100, format);
-  let transform = Transform::new(0.0, 0.0);
 
   // Create first trail with 3 points
   let mut trail1 = Trail2D::new(Color::WHITE, 5.0).with_min_distance(0.0);
@@ -234,8 +229,8 @@ fn test_multiple_trails_degenerate_separation() {
   trail2.update(80.0, 50.0, 0.016);
 
   // Add both trails
-  renderer.add_trail(&trail1, &transform);
-  renderer.add_trail(&trail2, &transform);
+  renderer.add_trail(&trail1);
+  renderer.add_trail(&trail2);
 
   // Expected vertex count:
   // Trail 1: 3 points * 2 = 6 vertices
@@ -258,7 +253,6 @@ fn test_insufficient_points_no_vertices() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 100, 100, format);
-  let transform = Transform::new(0.0, 0.0);
 
   // Create a trail with only 1 point
   let mut trail = Trail2D::new(Color::WHITE, 5.0).with_min_distance(0.0);
@@ -267,7 +261,7 @@ fn test_insufficient_points_no_vertices() {
   assert_eq!(trail.point_count(), 1, "Trail should have 1 point");
 
   // Add trail to renderer
-  renderer.add_trail(&trail, &transform);
+  renderer.add_trail(&trail);
 
   assert_eq!(
     renderer.vertex_count(),
@@ -326,7 +320,6 @@ fn test_render_when_disabled() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 100, 100, format);
-  let transform = Transform::new(0.0, 0.0);
   let target = gpu.create_target(100, 100);
 
   // Create and add a trail
@@ -334,7 +327,7 @@ fn test_render_when_disabled() {
   trail.update(0.0, 0.0, 0.016);
   trail.update(50.0, 50.0, 0.016);
   trail.update(100.0, 100.0, 0.016);
-  renderer.add_trail(&trail, &transform);
+  renderer.add_trail(&trail);
 
   // Disable the renderer
   renderer.set_enabled(false);
@@ -387,7 +380,6 @@ fn test_render_produces_visible_output() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 64, 64, format);
-  let transform = Transform::new(0.0, 0.0);
   let target = gpu.create_target(64, 64);
 
   // Create a wide white trail through the center
@@ -397,7 +389,7 @@ fn test_render_produces_visible_output() {
   trail.update(32.0, 32.0, 0.016);
   trail.update(64.0, 32.0, 0.016);
 
-  renderer.add_trail(&trail, &transform);
+  renderer.add_trail(&trail);
 
   // Clear target to black
   target.clear(gpu, 0.0, 0.0, 0.0, 1.0);
@@ -443,7 +435,6 @@ fn test_render_all_styles() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 64, 64, format);
-  let transform = Transform::new(0.0, 0.0);
   let target = gpu.create_target(64, 64);
 
   let styles = [TrailStyle::Solid, TrailStyle::Soft, TrailStyle::Glow];
@@ -457,7 +448,7 @@ fn test_render_all_styles() {
     trail.update(32.0, 32.0, 0.016);
     trail.update(54.0, 32.0, 0.016);
 
-    renderer.add_trail(&trail, &transform);
+    renderer.add_trail(&trail);
 
     target.clear(gpu, 0.0, 0.0, 0.0, 1.0);
 
@@ -500,7 +491,6 @@ fn regression_visibility_check_in_add_trail() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 100, 100, format);
-  let transform = Transform::new(0.0, 0.0);
 
   // Create trail and add points while enabled
   let mut trail = Trail2D::new(Color::WHITE, 5.0).with_min_distance(0.0);
@@ -517,7 +507,7 @@ fn regression_visibility_check_in_add_trail() {
   assert!(!trail.is_visible(), "set_enabled(false) should hide trail");
 
   // Try to add to renderer
-  renderer.add_trail(&trail, &transform);
+  renderer.add_trail(&trail);
 
   // Should have no vertices because trail is not visible
   assert_eq!(
@@ -540,7 +530,6 @@ fn regression_no_cross_trail_connections() {
 
   let format = wgpu::TextureFormat::Rgba8Unorm;
   let mut renderer = TrailRenderer::new(&gpu.device, 200, 200, format);
-  let transform = Transform::new(0.0, 0.0);
   let target = gpu.create_target(200, 200);
 
   // Create two trails at opposite corners
@@ -554,8 +543,8 @@ fn regression_no_cross_trail_connections() {
   trail2.update(170.0, 170.0, 0.016);
   trail2.update(190.0, 190.0, 0.016);
 
-  renderer.add_trail(&trail1, &transform);
-  renderer.add_trail(&trail2, &transform);
+  renderer.add_trail(&trail1);
+  renderer.add_trail(&trail2);
 
   target.clear(gpu, 0.0, 0.0, 0.0, 1.0);
 
@@ -616,7 +605,7 @@ fn test_line_rendering() {
     5.0,
   );
 
-  renderer.add_line(&line, 0.0, 0.0);
+  renderer.add_line(&line, Vec2::new(0.0, 0.0));
 
   assert!(renderer.vertex_count() > 0, "Line should generate vertices");
 
@@ -663,7 +652,7 @@ fn test_invisible_line_no_vertices() {
 
   assert!(!line.is_visible(), "Line should be invisible");
 
-  renderer.add_line(&line, 0.0, 0.0);
+  renderer.add_line(&line, Vec2::new(0.0, 0.0));
 
   assert_eq!(
     renderer.vertex_count(),
