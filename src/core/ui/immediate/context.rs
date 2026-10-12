@@ -286,6 +286,12 @@ impl<'a> UiContext<'a> {
     self.input.consume_mouse(MouseButton::Left);
   }
 
+  /// Consume the mouse wheel for this frame, from other widgets and from
+  /// gameplay (scroll views that scroll take it themselves).
+  pub fn consume_scroll(&mut self) {
+    self.input.consume_scroll();
+  }
+
   /// Consume the escape key for this frame, from other widgets and from
   /// gameplay.
   pub fn consume_escape(&mut self) {
@@ -1534,6 +1540,19 @@ impl<'a> UiContext<'a> {
   ///     }
   /// });
   /// ```
+  /// What a scroll view takes once it has handled its input: the wheel
+  /// while it is hovered and can scroll, and a press on its scrollbar,
+  /// which starts the UI's drag.
+  fn take_scroll_input(&mut self, can_scroll: bool, hovered: bool, scrollbar_hovered: bool) {
+    let (wheel_x, wheel_y) = self.input.scroll_delta();
+    if can_scroll && hovered && (wheel_x != 0.0 || wheel_y != 0.0) {
+      self.input.consume_scroll();
+    }
+    if scrollbar_hovered && self.input.mouse_pressed(MouseButton::Left) {
+      self.input.consume_mouse(MouseButton::Left);
+    }
+  }
+
   pub fn scroll_view<F>(
     &mut self,
     state: &mut ScrollViewState,
@@ -1600,10 +1619,11 @@ impl<'a> UiContext<'a> {
       scrollbar_thumb_rect,
       dt,
     );
-    // A press on the scrollbar starts the UI's drag
-    if scrollbar_hovered && self.input.mouse_pressed(MouseButton::Left) {
-      self.input.consume_mouse(MouseButton::Left);
-    }
+    self.take_scroll_input(
+      needs_scrollbar,
+      content_hovered || scrollbar_hovered,
+      scrollbar_hovered,
+    );
 
     // Get colors from theme or use defaults
     let (bg_color, scrollbar_bg, scrollbar_thumb, scrollbar_thumb_hover) =
@@ -1750,6 +1770,11 @@ impl<'a> UiContext<'a> {
       scrollbar_hovered,
       scrollbar_thumb_rect,
       dt,
+    );
+    self.take_scroll_input(
+      needs_scrollbar,
+      content_hovered || scrollbar_hovered,
+      scrollbar_hovered,
     );
 
     // Get colors from theme or use defaults
@@ -2945,6 +2970,51 @@ mod tests {
     focused.set_focused(true);
     ui.text_input(&mut focused, Rect::new(0.0, 30.0, 100.0, 20.0), "", 0.0);
     assert!(ui.wants_keyboard());
+  }
+
+  fn wheel_over_a_list(content_height: f32) -> Input {
+    let mut input = Input::new();
+    input.handle_mouse_move(50.0, 50.0);
+    input.handle_scroll(winit::event::MouseScrollDelta::LineDelta(0.0, -1.0));
+    let font: &'static BitmapFont = Box::leak(Box::new(super::super::font::create_debug_font()));
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    let mut ui = UiContext::new(&mut frame, 200, 200, UiInput::snapshot(&input), font);
+    let mut list = ScrollViewState::new();
+    ui.scroll_view(
+      &mut list,
+      Rect::new(0.0, 0.0, 100.0, 100.0),
+      content_height,
+      0.016,
+      |_, _| {},
+    );
+    ui.input().apply_consumed(&mut input);
+    input
+  }
+
+  #[test]
+  fn a_scroll_view_that_scrolls_takes_the_wheel() {
+    assert_eq!(wheel_over_a_list(500.0).scroll_delta(), (0.0, 0.0));
+  }
+
+  #[test]
+  fn a_press_on_a_horizontal_scrollbar_is_taken() {
+    let mut frame = vec![0u8; 200 * 200 * 4];
+    // The scrollbar is a strip along the bottom of the view
+    let mut ui = create_test_context_with_click(200, 200, &mut frame, 50.0, 97.0);
+    let mut strip = ScrollViewState::new();
+    ui.scroll_view_horizontal(
+      &mut strip,
+      Rect::new(0.0, 0.0, 100.0, 100.0),
+      500.0,
+      0.016,
+      |_, _| {},
+    );
+    assert!(ui.click_consumed());
+  }
+
+  #[test]
+  fn a_scroll_view_whose_content_fits_leaves_the_wheel() {
+    assert_eq!(wheel_over_a_list(50.0).scroll_delta(), (0.0, -1.0));
   }
 
   #[test]

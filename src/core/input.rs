@@ -457,6 +457,15 @@ impl Input {
     self.consumed_gamepad.insert(button);
   }
 
+  /// Hide this frame's mouse wheel for the rest of the frame.
+  pub fn consume_scroll(&mut self) {
+    if self.pointer_blocked() {
+      return;
+    }
+    self.scroll_delta_x = 0.0;
+    self.scroll_delta_y = 0.0;
+  }
+
   /// Hide this frame's text from later readers.
   pub fn consume_text(&mut self) {
     self.consume_text_input();

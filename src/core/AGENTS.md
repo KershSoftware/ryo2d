@@ -25,7 +25,7 @@ Most subsystems have their own AGENTS.md or a skill in `.claude/skills/`. This f
 `Input` (`input.rs`) is rebuilt in `First` from queued `InputEvent`s (window events, gamepads, `RYO_INPUT`, the headless harness).
 
 - One-shots (`key_pressed`, `mouse_pressed`, ...) are visible in the first fixed step of a frame only; a press in a frame that runs no fixed step waits for the next step (two views: the frame view and the fixed view, `end_fixed_steps`), except while the game clock is paused, when the fixed view is cleared so presses are not replayed on resume.
-- `consume_key` / `consume_mouse` / `consume_text` hide the input, held state included, for the rest of the frame. The UI pass runs before the fixed steps and consumes what it uses, so `update` never sees a click the UI took.
+- `consume_key` / `consume_mouse` / `consume_text` / `consume_scroll` hide the input, held state included, for the rest of the frame. The UI pass runs before the fixed steps and consumes what it uses, so `update` never sees a click the UI took.
 - `block_pointer` / `block_all` / `unblock` gate input for gameplay (the demo shell uses them under help and over its panel).
 
 ## Scenes (`scene/`)

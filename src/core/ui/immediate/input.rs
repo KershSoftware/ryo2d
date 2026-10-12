@@ -21,6 +21,7 @@ pub struct UiInput {
   consumed_keys: HashSet<KeyCode>,
   consumed_mouse: HashSet<MouseButton>,
   text_consumed: Cell<bool>,
+  scroll_consumed: bool,
 }
 
 /// What a UI pass consumed.
@@ -29,6 +30,7 @@ pub struct UiConsumed {
   pub keys: Vec<KeyCode>,
   pub mouse: Vec<MouseButton>,
   pub text: bool,
+  pub scroll: bool,
 }
 
 impl UiInput {
@@ -73,7 +75,11 @@ impl UiInput {
   }
 
   pub fn scroll_delta(&self) -> (f32, f32) {
-    self.view.scroll
+    if self.scroll_consumed {
+      (0.0, 0.0)
+    } else {
+      self.view.scroll
+    }
   }
 
   // --- keyboard ---
@@ -149,6 +155,11 @@ impl UiInput {
     self.text_consumed.set(true);
   }
 
+  /// Take the frame's mouse wheel, from the UI and from gameplay.
+  pub fn consume_scroll(&mut self) {
+    self.scroll_consumed = true;
+  }
+
   pub fn is_key_consumed(&self, key: KeyCode) -> bool {
     self.consumed_keys.contains(&key)
   }
@@ -163,6 +174,7 @@ impl UiInput {
       keys: self.consumed_keys.iter().copied().collect(),
       mouse: self.consumed_mouse.iter().copied().collect(),
       text: self.text_consumed.get(),
+      scroll: self.scroll_consumed,
     }
   }
 
@@ -205,6 +217,9 @@ impl UiInput {
     }
     if self.text_consumed.get() {
       input.consume_text();
+    }
+    if self.scroll_consumed {
+      input.consume_scroll();
     }
   }
 }
