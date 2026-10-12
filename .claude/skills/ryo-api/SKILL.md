@@ -719,7 +719,7 @@ Lights and occluders sit at their entity's `GlobalTransform`. See `ryo-lighting`
 | `add_custom(name, ShaderHandle) -> Result<(), EffectError>`, `set_custom_param(name, param, value) -> bool`, `set_custom_enabled(name, bool) -> bool`, `remove_custom(name) -> bool`, `has_custom(name)` | game-written full-screen WGSL |
 | `new()`, `update(dt)`, `time()`, `active_effects()`, `has_active_effects()`, `clear()` | |
 
-`enum PostProcessEffect { Fade, ColorTint, Vignette, ScreenFlash, Crt, ChromaticAberration, GodRays, AmbientOcclusion, Bloom }` (what `active_effects` yields); `enum EffectError { DuplicateName(String) }`; `trait EffectTarget { fn effects(&self) -> &EffectsManager; fn effects_mut(&mut self) -> &mut EffectsManager; }`.
+`enum PostProcessEffect { Fade, ColorTint, Vignette, ScreenFlash, Crt, ChromaticAberration, GodRays, AmbientOcclusion, Bloom }` (what `active_effects` yields); `enum EffectError { DuplicateName(String) }`.
 
 ---
 

@@ -5,11 +5,10 @@
 //!
 //! # Architecture
 //!
-//! The shader system is built around three core concepts:
+//! The shader system is built around two core concepts:
 //!
 //! 1. **Effects** ([`PostProcessEffect`]) - Individual visual effects with parameters
 //! 2. **Effect Stack** ([`EffectsManager`]) - Manages active effects and their order
-//! 3. **Effect Target** ([`EffectTarget`]) - Trait for types that own an `EffectsManager`
 //!
 //! # Shader Organization
 //!
@@ -53,7 +52,7 @@ mod manager;
 mod pipeline;
 
 pub use effects::{EffectParams, GodRaysParams, PostProcessEffect};
-pub use manager::{EffectError, EffectTarget, EffectsManager};
+pub use manager::{EffectError, EffectsManager};
 pub use pipeline::{OutputBuffer, PostProcessPipeline};
 
 /// Embed core shaders at compile time

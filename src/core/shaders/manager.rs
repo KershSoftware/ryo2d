@@ -35,27 +35,6 @@ impl CustomEffect {
   }
 }
 
-/// Trait for types that own an [`EffectsManager`].
-///
-/// The engine implements it for nothing: scenes reach the screen's effects
-/// through `ctx.effects()`. Implement it for a game type that keeps its own
-/// manager to share code that drives effects.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// fn pulse(target: &mut impl EffectTarget, amount: f32) {
-///     target.effects_mut().set_vignette(amount);
-/// }
-/// ```
-pub trait EffectTarget {
-  /// Get a reference to the effects manager
-  fn effects(&self) -> &EffectsManager;
-
-  /// Get a mutable reference to the effects manager
-  fn effects_mut(&mut self) -> &mut EffectsManager;
-}
-
 /// Manages post-processing effects for a render target.
 ///
 /// The manager handles:
