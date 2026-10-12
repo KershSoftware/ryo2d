@@ -283,9 +283,8 @@ fn render_gpu_sprites_can_use_custom_shaders() {
   let shader = ShaderHandle::from_source("t2-gpu-invert.wgsl", INVERT);
   let sprite = solid("t2-gpu-red", 4, RED);
   let scene = Fixture::gpu(move |gpu| {
-    gpu.upload_sprite(&sprite);
     let instance = SpriteInstance::new().with_transform(30.0, 30.0, 0.0, 20.0, 20.0);
-    gpu.add_custom_sprite(&sprite.id(), &shader, &ShaderParams::new(), instance, 0);
+    gpu.add_custom_sprite(&sprite, &shader, &ShaderParams::new(), instance, 0);
   });
   let Some(mut engine) = start(scene) else {
     return;

@@ -15,15 +15,10 @@ use crate::core::ecs::{ShaderHandle, ShaderParams, World};
 /// ```ignore
 /// fn render(&mut self, gpu: &mut GpuRenderContext) {
 ///     for particle in &self.particles {
-///         // Upload texture if not cached
-///         gpu.upload_sprite(&particle.sprite);
-///
-///         // Create instance with transform
 ///         let instance = SpriteInstance::new()
 ///             .with_transform(particle.x, particle.y, particle.rotation, 1.0, 1.0);
-///
-///         // Add to batch
-///         gpu.batch.add(particle.sprite.id(), false, instance, particle.z_order);
+///         // The texture is uploaded the first time a frame draws it
+///         gpu.add_sprite_instance(&particle.sprite, instance, particle.z_order, false);
 ///     }
 /// }
 /// ```
@@ -32,10 +27,8 @@ pub struct GpuRenderContext<'a> {
   pub batch: &'a mut BatchCollector,
   /// The GPU sprite renderer (for uploading textures)
   gpu_renderer: &'a mut SpriteGpuRenderer,
-  /// Device for GPU operations
+  /// Device for compiling game shaders
   device: &'a wgpu::Device,
-  /// Queue for GPU operations
-  queue: &'a wgpu::Queue,
   /// Camera for coordinate transforms
   pub camera: &'a Camera,
   /// The ECS world (read-only for rendering)
@@ -48,7 +41,6 @@ impl<'a> GpuRenderContext<'a> {
     batch: &'a mut BatchCollector,
     gpu_renderer: &'a mut SpriteGpuRenderer,
     device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
     camera: &'a Camera,
     world: &'a World,
   ) -> Self {
@@ -56,38 +48,19 @@ impl<'a> GpuRenderContext<'a> {
       batch,
       gpu_renderer,
       device,
-      queue,
       camera,
       world,
     }
   }
 
-  /// Upload a sprite texture to the GPU cache.
-  ///
-  /// Call this for each unique sprite, every frame, before adding its
-  /// instances to the batch. Sprites are cached by ID, so later calls with
-  /// the same sprite are no-ops; textures neither uploaded nor drawn for 600
-  /// frames are dropped.
-  pub fn upload_sprite(&mut self, sprite: &SpriteHandle) {
-    self
-      .gpu_renderer
-      .upload_sprite(self.device, self.queue, sprite);
-  }
-
-  /// Check if a sprite texture is already uploaded
-  pub fn has_texture(&self, id: &str) -> bool {
-    self.gpu_renderer.has_texture(id)
-  }
-
   /// Add a sprite drawn with a game shader.
   ///
-  /// `texture_id` is the id the texture was uploaded under. `params` are
-  /// matched by name to the fields of the shader's `Params` struct (the
-  /// sprite's own effect parameters are overwritten with them). A shader that
-  /// fails to compile is logged and the sprite is drawn plain.
+  /// `params` are matched by name to the fields of the shader's `Params`
+  /// struct (the sprite's own effect parameters are overwritten with them). A
+  /// shader that fails to compile is logged and the sprite is drawn plain.
   pub fn add_custom_sprite(
     &mut self,
-    texture_id: &str,
+    sprite: &SpriteHandle,
     shader: &ShaderHandle,
     params: &ShaderParams,
     mut instance: SpriteInstance,
@@ -100,9 +73,7 @@ impl<'a> GpuRenderContext<'a> {
       Some(key) => crate::core::render::SpriteShading::Custom(key),
       None => crate::core::render::SpriteShading::Plain,
     };
-    self
-      .batch
-      .add_shaded(texture_id, shading, instance, z_order);
+    self.batch.add_shaded(sprite, shading, instance, z_order);
   }
 
   /// Get screen dimensions (width, height)
@@ -127,17 +98,19 @@ impl<'a> GpuRenderContext<'a> {
     self.camera
   }
 
-  /// Add a sprite instance to the batch collector.
+  /// Add a sprite instance drawing `sprite`'s texture.
   ///
-  /// This is the low-level API for adding GPU sprites. Most games should use
-  /// the higher-level APIs (e.g., GpuParallaxBackground) instead.
+  /// The texture is uploaded the first time a frame draws it, and dropped
+  /// once no frame has drawn it for 600 frames. This is the low-level API
+  /// for GPU sprites; most games use the higher-level ones (particles,
+  /// `GpuParallaxBackground`).
   pub fn add_sprite_instance(
     &mut self,
-    texture_id: &str,
+    sprite: &SpriteHandle,
     instance: SpriteInstance,
     z_order: i32,
     has_effects: bool,
   ) {
-    self.batch.add(texture_id, has_effects, instance, z_order);
+    self.batch.add(sprite, has_effects, instance, z_order);
   }
 }

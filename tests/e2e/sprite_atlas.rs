@@ -17,8 +17,8 @@ fn color(c: [u8; 4]) -> Color {
   Color::new(c[0], c[1], c[2], c[3])
 }
 
-/// Uploads `sprites` in order (so they sit next to each other in the atlas)
-/// and draws the first one, 4x4 texels, centred at (32, 32) at `scale`.
+/// Draws the first of `sprites`, 4x4 texels, centred at (32, 32) at `scale`,
+/// and the others off screen after it, so they sit next to it in the atlas.
 struct AtlasScene {
   sprites: Vec<SpriteHandle>,
   scale: f32,
@@ -43,9 +43,6 @@ impl Scene for AtlasScene {
   }
 
   fn render(&mut self, gpu: &mut GpuRenderContext) {
-    for sprite in &self.sprites {
-      gpu.upload_sprite(sprite);
-    }
     let size = 4.0 * self.scale;
     let mut instance = SpriteInstance::new()
       .with_transform(32.0, 32.0, 0.0, size, size)
@@ -53,8 +50,11 @@ impl Scene for AtlasScene {
     if let Some(effect) = &self.effect {
       instance = instance.with_effect(effect);
     }
-    let id = self.sprites[0].id();
-    gpu.add_sprite_instance(&id, instance, 0, self.effect.is_some());
+    gpu.add_sprite_instance(&self.sprites[0], instance, 0, self.effect.is_some());
+    for sprite in &self.sprites[1..] {
+      let off_screen = SpriteInstance::new().with_transform(-100.0, -100.0, 0.0, 4.0, 4.0);
+      gpu.add_sprite_instance(sprite, off_screen, 0, false);
+    }
   }
 }
 

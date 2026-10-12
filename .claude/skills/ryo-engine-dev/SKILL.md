@@ -64,7 +64,7 @@ Engine::frame
 
 | In the world (resources) | Engine-owned (fields of `Engine`) |
 |--------------------------|-----------------------------------|
-| `Time`, `Input`, `Camera`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `TextureManager`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `RapierPhysicsWorld`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer and sprite/lighting/trail renderers, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
+| `Time`, `Input`, `Camera`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `Gpu` (after GPU init), `PhysicsPaused`, `PhysicsConfig`, `RapierPhysicsWorld`, `CommandRegistry`, `FallbackErrorHandler`, `Messages<T>` per type | The window, the wgpu renderer and sprite/lighting/trail renderers, the draw list, the UI buffer and font, console state, debug config and overlays, dev windows, gilrs, capture state |
 | Non-send `SceneHost` (scene stack + Kira `Audio`), taken out by the scene systems while they run | |
 
 - `init_world_resources` (`engine/mod.rs`) inserts the resources when the engine is built, windowed or headless; `Gpu` follows in `init_gpu`.
@@ -85,7 +85,6 @@ Engine::frame
 | `scene/` | `Scene`, `SceneAction`, `SceneContext`, `SceneManager`, cleanup |
 | `render/` | `RenderPipeline` of `RenderPass`es, the draw list, entity extraction |
 | `graphics/` | wgpu renderer, sprite GPU batching, camera, sprite animation, tiles, parallax, atlas, compositor |
-| `texture/` | `TextureManager`, `TextureContext` for game textures |
 | `shaders/` | Post-process effects (`EffectsManager`) and sprite shaders |
 | `lighting/` | 2D lights, occluders, `LightingSettings` |
 | `physics/` | Rapier integration, `RigidBody`, `Collider`, `RapierPhysicsWorld` |

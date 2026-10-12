@@ -179,11 +179,6 @@ pub mod prelude {
     generate_collision_rects, generate_collision_rects_region, load_tiled_map,
   };
 
-  // Texture management
-  pub use crate::core::texture::{
-    TextureArrayHandle, TextureContext, TextureHandle, TextureManager,
-  };
-
   // Render pipeline
   pub use crate::core::render::{
     FrameInfo, RenderContext, RenderPass, RenderPipeline, RenderPipelineError, pass_ids,

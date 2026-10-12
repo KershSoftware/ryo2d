@@ -22,7 +22,7 @@ The whole world draws on the GPU. The only CPU drawing left is the UI (`UiContex
 | Resource | What | In scenes |
 |----------|------|-----------|
 | `Camera` | position, zoom, viewport, trauma shake | `ctx.camera` (taken out of the world during callbacks) |
-| `Gpu` | `Arc<Device>` and `Arc<Queue>`, inserted once the GPU is up | through `ctx.textures()`; systems take `Res<Gpu>` |
+| `Gpu` | `Arc<Device>` and `Arc<Queue>`, inserted once the GPU is up | systems take `Res<Gpu>` |
 
 Renderers are engine-owned, not resources. `GpuRenderContext` is the only GPU access a scene gets: `Scene::render(&mut self, gpu: &mut GpuRenderContext)` runs once per frame at present time for the visible scenes, with `gpu.batch`, `gpu.camera` and a read-only `gpu.world`. `SpriteInstance` positions are screen pixels: convert with `gpu.camera.world_to_screen`. Positions read from `gpu.world` are true (uninterpolated) `GlobalTransform`s.
 
@@ -39,7 +39,7 @@ Sprite globals carry game elapsed time in `x` (`time.game.elapsed()`), which spr
 ## GPU Sprite Batching
 
 - `BatchCollector` keeps each `Scene::render` sprite in submission order (texture id shared per texture) and pushes them into the `DrawList`. There are no per-texture batches: `SpriteGpuRenderer::prepare_world` merges **consecutive** sprites on one atlas page and pipeline into one draw, so many small textures still cost few draws.
-- Upload each texture every frame you draw it (`gpu.upload_sprite(&handle)`, a no-op when cached): textures neither uploaded nor drawn for 600 frames are dropped.
+- Sprites pass their `SpriteHandle`; its texture is registered and uploaded the first time a frame draws it, and dropped once no frame has drawn it for 600 frames. Two handles are two textures, whatever their names.
 - **Synchronization**: all instance data is written to the instance buffer **before** the render pass begins (`prepare_world`), so the GPU never reads a buffer still being written. Each draw binds `instance_buffer.slice(offset..end)`.
 
 ## Texture Atlas and Shading

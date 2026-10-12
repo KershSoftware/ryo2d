@@ -5,6 +5,7 @@
 use super::{Line2D, LineCap, LineJoin, TextureMode, Trail2D, TrailEffect, TrailPoint};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::Vec2;
+use crate::core::graphics::TextureId;
 use crate::core::ui::Color;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -57,12 +58,14 @@ struct CachedTexture {
   #[expect(dead_code, reason = "texture kept alive for GPU bind group lifetime")]
   texture: wgpu::Texture,
   bind_group: wgpu::BindGroup,
+  /// The sprite content generation uploaded (hot reload bumps it)
+  generation: u64,
 }
 
 /// A batch of textured trail vertices
 struct TexturedBatch {
-  /// Sprite handle ID (for cache lookup)
-  sprite_id: String,
+  /// The texture to draw with (set by `add_trail_with_device`)
+  texture: Option<TextureId>,
   /// Starting vertex index
   start: usize,
   /// Ending vertex index (exclusive)
@@ -136,8 +139,9 @@ pub struct TrailRenderer {
   /// Sampler for textures
   sampler: wgpu::Sampler,
 
-  /// Cached textures (sprite_id -> CachedTexture)
-  texture_cache: HashMap<String, CachedTexture>,
+  /// Trail textures by the sprite renderer's texture id (sampled repeating
+  /// along the trail, so not from the atlas)
+  texture_cache: HashMap<TextureId, CachedTexture>,
 
   /// The group being built: its non-textured vertices
   vertices: Vec<TrailVertex>,
@@ -492,16 +496,21 @@ impl TrailRenderer {
     std::mem::swap(&mut self.textured_batches, &mut geometry.textured_batches);
   }
 
-  /// Ensure a texture is cached and return its sprite_id for batch lookup.
+  /// Ensure `sprite`'s texture is cached under `id`, rebuilt when its content
+  /// changed.
   fn ensure_texture_cached(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    id: TextureId,
     sprite: &SpriteHandle,
-  ) -> String {
-    let sprite_id = sprite.id();
-
-    if !self.texture_cache.contains_key(&sprite_id) {
+  ) {
+    let generation = sprite.generation();
+    if self
+      .texture_cache
+      .get(&id)
+      .is_none_or(|cached| cached.generation != generation)
+    {
       // Create GPU texture from sprite data
       let sprite_data = sprite.sprite();
       let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -559,15 +568,20 @@ impl TrailRenderer {
       });
 
       self.texture_cache.insert(
-        sprite_id.clone(),
+        id,
         CachedTexture {
           texture,
           bind_group,
+          generation,
         },
       );
     }
+  }
 
-    sprite_id
+  /// Forget cached textures whose id fails `live` (the sprite renderer
+  /// dropped them).
+  pub(crate) fn retain_textures(&mut self, live: impl Fn(TextureId) -> bool) {
+    self.texture_cache.retain(|id, _| live(*id));
   }
 
   /// Add a trail to be rendered.
@@ -931,12 +945,10 @@ impl TrailRenderer {
       }
     }
 
-    // If textured, record the batch info (sprite_id will be set during render)
+    // If textured, record the batch (its texture is set by add_trail_with_device)
     if has_texture {
-      // Store placeholder batch - sprite_id will be resolved during render
-      // We use a sentinel value that will be replaced
       self.textured_batches.push(TexturedBatch {
-        sprite_id: String::new(), // Will be set during add_trail_with_device
+        texture: None,
         start: start_vertex,
         end: self.textured_vertices.len(),
       });
@@ -946,15 +958,17 @@ impl TrailRenderer {
   /// Add a trail with device access for texture caching.
   ///
   /// This variant allows texture caching. Call this instead of `add_trail`
-  /// when you have device/queue access and the trail may have a texture.
-  pub fn add_trail_with_device(
+  /// when you have device/queue access and the trail may have a texture;
+  /// `texture` is the sprite renderer's id for it.
+  pub(crate) fn add_trail_with_device(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     trail: &Trail2D,
+    texture: Option<TextureId>,
   ) {
     self.add_in_group(trail.lighting(), trail.z_order(), |renderer| {
-      renderer.push_trail_with_device(device, queue, trail)
+      renderer.push_trail_with_device(device, queue, trail, texture)
     });
   }
 
@@ -963,22 +977,23 @@ impl TrailRenderer {
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     trail: &Trail2D,
+    texture: Option<TextureId>,
   ) {
     if !self.enabled || !trail.is_visible() || trail.point_count() < 2 {
       return;
     }
 
     // If trail has texture, ensure it's cached and record the batch
-    if let Some(sprite) = trail.texture() {
-      let sprite_id = self.ensure_texture_cached(device, queue, sprite);
+    if let (Some(sprite), Some(id)) = (trail.texture(), texture) {
+      self.ensure_texture_cached(device, queue, id, sprite);
       let batch_index = self.textured_batches.len();
 
       // Add the trail vertices
       self.push_trail(trail);
 
-      // Update the batch with the correct sprite_id
-      if batch_index < self.textured_batches.len() {
-        self.textured_batches[batch_index].sprite_id = sprite_id;
+      // Point the batch at its texture
+      if let Some(batch) = self.textured_batches.get_mut(batch_index) {
+        batch.texture = Some(id);
       }
     } else {
       // No texture, use regular add_trail
@@ -1710,7 +1725,7 @@ impl TrailRenderer {
     // Textured trails (grouped by texture) follow the non-textured ones
     let textured_base = base + geometry.vertices.len();
     for batch in &geometry.textured_batches {
-      if let Some(cached) = self.texture_cache.get(&batch.sprite_id) {
+      if let Some(cached) = batch.texture.and_then(|id| self.texture_cache.get(&id)) {
         pass.set_pipeline(&self.textured_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_bind_group(1, &cached.bind_group, &[]);
@@ -1734,7 +1749,11 @@ impl TrailRenderer {
         let textured = geometry
           .textured_batches
           .iter()
-          .filter(|batch| self.texture_cache.contains_key(&batch.sprite_id))
+          .filter(|batch| {
+            batch
+              .texture
+              .is_some_and(|id| self.texture_cache.contains_key(&id))
+          })
           .count();
         usize::from(!geometry.vertices.is_empty()) + textured
       })

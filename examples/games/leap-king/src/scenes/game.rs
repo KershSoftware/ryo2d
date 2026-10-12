@@ -3660,14 +3660,6 @@ impl Scene for GameScene {
   }
 
   fn render(&mut self, gpu: &mut GpuRenderContext) {
-    // Upload particle sprite textures
-    if let Some(ref sprite) = self.rain_sprite {
-      gpu.upload_sprite(sprite);
-    }
-    if let Some(ref sprite) = self.dust_sprite {
-      gpu.upload_sprite(sprite);
-    }
-
     // Collect particles for rendering
     self
       .particle_system

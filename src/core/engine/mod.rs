@@ -50,7 +50,6 @@ use crate::core::systems::{
   record_trail_points, register_juice_systems, register_physics_systems, register_restored_bodies,
   unregister_removed_bodies,
 };
-use crate::core::texture::TextureManager;
 use crate::core::time::Time;
 use crate::core::trail::TrailRenderer;
 use crate::core::ui::{BitmapFont, create_debug_font};
@@ -280,7 +279,6 @@ pub(crate) fn init_world_resources(
     display_mode: config.display_mode,
   });
   world.insert_resource(RenderPipeline::default_2d());
-  world.insert_resource(TextureManager::new());
   world.insert_resource(PhysicsPaused(false));
   world.insert_resource(config.physics.clone());
   world.insert_resource(RapierPhysicsWorld::new());

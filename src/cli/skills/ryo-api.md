@@ -15,7 +15,7 @@ Conventions: 2D with +Y down, units are pixels, rotation is radians unless a nam
 use ryo2d::prelude::*;
 ```
 
-Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Camera and sprites](#camera-and-sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Textures](#textures) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
+Contents: [ECS kernel](#ecs-kernel) · [Transform and hierarchy](#transform-and-hierarchy) · [Engine components](#engine-components) · [Juice](#juice-tweens-knockback-squash) · [Pooling](#pooling) · [Time](#time) · [Phases](#phases-and-sets) · [Scenes](#scenes) · [SceneContext](#scenecontext) · [EngineBuilder](#enginebuilder) · [Messages](#messages) · [Input](#input) · [Audio](#audio) · [Camera and sprites](#camera-and-sprites) · [Sprite animation](#sprite-animation) · [GPU sprites and parallax](#gpu-sprites-and-parallax) · [Composite tiles](#composite-tiles) · [Physics](#physics) · [Lighting](#lighting) · [Assets](#assets) · [Window and cursor](#window-and-cursor) · [Post-processing](#post-processing) · [Trails and lines](#trails-and-lines) · [Skeletons](#skeletal-animation) · [Particles](#particles) · [Tilemaps](#tilemaps) · [Render pipeline](#render-pipeline) · [Config and saves](#config-and-saves) · [UI](#ui) · [Errors](#errors) · [Navigation](#navigation) · [State machines](#state-machines) · [Networking](#networking) · [Profiling, console, logging](#profiling-console-logging) · [Optional crates](#optional-crates) · [Testing](#testing-ryo2dtesting)
 
 ---
 
@@ -383,7 +383,6 @@ pub struct SceneContext<'a> {
 | `tilemaps(&mut self) -> Mut<'_, TilemapManager>` | |
 | `render_pipeline(&mut self) -> Mut<'_, RenderPipeline>` | toggle or insert passes (persist across scenes) |
 | `window(&mut self) -> Mut<'_, WindowRequest>`, `cursor(&mut self) -> Mut<'_, CursorRequest>` | requests applied after the frame |
-| `textures(&mut self) -> TextureContext<'_>` | GPU textures |
 | `console(&mut self) -> ConsoleScope<'_>` | scene-scoped console handlers |
 | `spawn_child(&mut self, parent: Entity, bundle: impl Bundle) -> Entity` | |
 | `skip_interpolation(&mut self, entity: Entity)` | |
@@ -608,19 +607,18 @@ pub struct GpuRenderContext<'a> { pub batch: &'a mut BatchCollector, pub camera:
 
 | `GpuRenderContext` | |
 |---|---|
-| `upload_sprite(&mut self, &SpriteHandle)`, `has_texture(id) -> bool` | upload once, by `SpriteHandle::id()` |
-| `add_sprite_instance(texture_id: &str, instance: SpriteInstance, z_order: i32, has_effects: bool)` | one sprite |
-| `add_custom_sprite(texture_id, &ShaderHandle, &ShaderParams, SpriteInstance, z_order)` | one sprite with a game shader |
+| `add_sprite_instance(&SpriteHandle, instance: SpriteInstance, z_order: i32, has_effects: bool)` | one sprite; its texture uploads when first drawn and is dropped 600 frames after it was last drawn |
+| `add_custom_sprite(&SpriteHandle, &ShaderHandle, &ShaderParams, SpriteInstance, z_order)` | one sprite with a game shader |
 | `screen_size()`, `screen_width()`, `screen_height()`, `camera()` | |
 
 - `SpriteInstance { transform, uv_rect, tint, effect_params, effect_extra, uv_bounds }`: `new()`, `with_transform(x, y, rotation, scale_x, scale_y)`, `with_uv(u_min, v_min, u_max, v_max)`, `with_tint(Color, alpha)`, `with_effect(&SpriteEffect)`.
-- `BatchCollector`: `new()`, `with_capacity(n)`, `add(texture_id, has_effects, SpriteInstance, z_order)`, `sprite_count()`, `clear()`.
+- `BatchCollector`: `new()`, `with_capacity(n)`, `add(&SpriteHandle, has_effects, SpriteInstance, z_order)`, `sprite_count()`, `clear()`.
 
 Parallax backgrounds:
 
 - `GpuParallaxBuilder`: `new()`, `layer(&SpriteHandle, scroll_speed, z_order)`, `static_layer(&SpriteHandle, z_order)`, then for the last layer `with_auto_scroll(px_per_s)`, `with_y_offset(f32)`, `with_tile_mode(TileMode)`, `with_scale(f32)`; `build() -> GpuParallaxBackground`.
-- `GpuParallaxBackground`: `new()`, `add_layer(GpuParallaxLayer)`, `remove_layer(id)`, `get_layer_mut(id)`, `layer_count()`, `update(dt)` (auto-scroll), `set_elapsed_time(f32)`, `render(&self, &mut GpuRenderContext)` (call from `Scene::render`), `upload_textures(..)`.
-- `GpuParallaxLayer { texture_id, scroll_speed (0 static, 1 moves with camera), auto_scroll_speed, y_offset, z_order, tile_mode, .. }`: `new(&SpriteHandle, scroll_speed, z_order)`, `from_id(..)`, `with_auto_scroll`, `with_y_offset`, `with_tile_mode`, `with_scale`, `with_tint(r, g, b, a)`, `texture_id()`.
+- `GpuParallaxBackground`: `new()`, `add_layer(GpuParallaxLayer)`, `remove_layer(&SpriteHandle)`, `get_layer_mut(&SpriteHandle)`, `layer_count()`, `update(dt)` (auto-scroll), `set_elapsed_time(f32)`, `render(&self, &mut GpuRenderContext)` (call from `Scene::render`).
+- `GpuParallaxLayer { scroll_speed (0 static, 1 moves with camera), auto_scroll_speed, y_offset, z_order, tile_mode, .. }`: `new(&SpriteHandle, scroll_speed, z_order)`, `with_auto_scroll`, `with_y_offset`, `with_tile_mode`, `with_scale`, `with_tint(r, g, b, a)`, `sprite()`.
 - `enum TileMode { None, Horizontal, InfiniteScroll }`.
 
 ---
@@ -790,16 +788,6 @@ Tile data, coordinates, collision and Tiled import; the renderer does not draw t
 - Collision: `generate_collision_rects(&Tilemap) -> Vec<CollisionRect>`, `generate_collision_rects_region(&Tilemap, x0, y0, x1, y1)` (greedy-merged solid tiles); `CollisionRect { x, y, w, h }` (tiles), `to_world(tile_w, tile_h) -> (f32, f32, f32, f32)`.
 - Chunks: `ChunkCoord { chunk_x, chunk_y, layer_index }`, `ChunkState { coord, dirty, has_tiles }` (16×16 tiles).
 - Tiled: `load_tiled_map(path: &str) -> Result<(Tilemap, Vec<TiledObject>), TilemapError>`; `TiledObject { name, obj_type, x, y, width, height, rotation (deg), shape: TiledShape, properties }`; `enum TiledShape { Rect, Ellipse, Point, Polygon(Vec<(f32, f32)>), Polyline(..) }`; `enum TiledValue { Bool, Int, Float, String }`; `enum TilemapError { Io, Parse, MissingTileset, UnsupportedFeature }`.
-
----
-
-## Textures
-
-GPU textures for custom render passes and shaders (sprites do not need these).
-
-- `TextureContext` (`ctx.textures()`): `load(path) -> TextureHandle` (deduplicated by path), `load_atlas(path, tile_w, tile_h) -> Vec<TextureHandle>`, `from_rgba(Vec<u8>, w, h) -> TextureHandle`, `create_array(&[TextureHandle]) -> TextureArrayHandle`.
-- `TextureManager` (resource): the same with explicit `device`/`queue`, plus `get_view(TextureHandle)`, `get_array_view(TextureArrayHandle)`, `dimensions(TextureHandle)`, `drop_texture`, `drop_array`.
-- `TextureHandle`, `TextureArrayHandle`: generational handles (`Copy`).
 
 ---
 

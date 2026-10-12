@@ -32,7 +32,7 @@ The world is Ryo2D's ECS: `bevy_ecs` 0.20, exposed through `ryo2d::ecs` and the 
 
 | Resources (in the world) | Engine-owned |
 |---|---|
-| `Time`, `Input`, `Camera`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `TextureManager`, `Gpu` (once the GPU is up), `RapierPhysicsWorld`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack and the Kira audio manager sit in the world as one non-send value that only the scene systems take out |
+| `Time`, `Input`, `Camera`, `AssetManager`, `EffectsManager`, `LightingSettings`, `TilemapManager`, `WindowRequest`, `CursorRequest`, `WindowInfo`, `RenderPipeline`, `Gpu` (once the GPU is up), `RapierPhysicsWorld`, `PhysicsConfig`, `PhysicsPaused`, the console's `CommandRegistry`, one `Messages<T>` per message type, and the game's own resources | the window, the renderers (sprite, lighting, trail, compositor, post-process), gilrs, the dev windows, frame capture, the console overlay and the debug flags; the scene stack and the Kira audio manager sit in the world as one non-send value that only the scene systems take out |
 
 In 0.20 a resource is a component on a hidden entity marked `IsResource`, so engine sweeps over "every entity" filter it out.
 
@@ -115,7 +115,7 @@ SceneManager (engine-owned stack over the one shared world)
 
 - A `Scene` implements any of `on_enter`, `on_exit`, `on_pause`, `on_resume`, `update` (each fixed step), `ui` (once a frame, before the steps) and `render` (GPU-batched sprites), plus the flags `is_transparent`, `updates_below`, `is_physics_paused`.
 - `SceneAction`: `Continue`, `Push`, `Pop`, `Switch`, `Reset`, `PopReturn`, `Quit`, each with a `*With(Transition)` form (fade or slide).
-- `SceneContext` has the fields `world`, `time`, `input`, `camera`, `assets`, `audio` and helpers for everything else (`effects()`, `lighting()`, `render_pipeline()`, `window()`, `cursor()`, `textures()`, `tilemaps()`, `console()`, `messages::<T>()`, `write_message`, `resource*`, `add_systems`). `time`, `input`, `camera` and `assets` are taken out of the world for the length of the callback.
+- `SceneContext` has the fields `world`, `time`, `input`, `camera`, `assets`, `audio` and helpers for everything else (`effects()`, `lighting()`, `render_pipeline()`, `window()`, `cursor()`, `tilemaps()`, `console()`, `messages::<T>()`, `write_message`, `resource*`, `add_systems`). `time`, `input`, `camera` and `assets` are taken out of the world for the length of the callback.
 - On `Switch` and `Reset` the leaving scene's `cleanup_on_exit()` (`SceneCleanup` flags: world, camera, effects, lighting, time, music, messages) resets engine state; `Push` and `Pop` keep it.
 
 ## Messages

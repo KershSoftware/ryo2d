@@ -8,14 +8,13 @@ use crate::core::ecs::{
   Bundle, Entity, IntoScheduleConfigs, Message, Messages, Mut, Mutable, Resource, ScheduleSystem,
   World, WorldExt,
 };
-use crate::core::graphics::{Camera, Gpu};
+use crate::core::graphics::Camera;
 use crate::core::input::Input;
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::{SceneMessages, register_message};
 use crate::core::render::RenderPipeline;
 use crate::core::schedule::{Phase, SceneScheduleError, SceneSchedules};
 use crate::core::shaders::EffectsManager;
-use crate::core::texture::{TextureContext, TextureManager};
 use crate::core::tilemap::TilemapManager;
 use crate::core::time::Time;
 use crate::core::window::{DisplayMode, WindowInfo, WindowRequest};
@@ -174,13 +173,6 @@ impl SceneContext<'_> {
   /// Pending cursor changes, applied after the frame.
   pub fn cursor(&mut self) -> Mut<'_, CursorRequest> {
     self.world.resource_mut::<CursorRequest>()
-  }
-
-  /// Load and manage GPU textures.
-  pub fn textures(&mut self) -> TextureContext<'_> {
-    let gpu = self.world.resource::<Gpu>().clone();
-    let manager = self.world.resource_mut::<TextureManager>().into_inner();
-    TextureContext::new(manager, gpu)
   }
 
   /// Console commands; handlers registered here go away with the scene.

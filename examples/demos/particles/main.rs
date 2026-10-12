@@ -949,9 +949,6 @@ impl DemoPage for ParticlesPage {
   }
 
   fn render(&mut self, gpu: &mut GpuRenderContext) {
-    // Upload particle sprite texture
-    gpu.upload_sprite(&self.particle_sprite);
-
     // Collect particles for rendering
     self
       .particle_system

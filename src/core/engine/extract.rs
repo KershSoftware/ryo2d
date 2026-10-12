@@ -67,7 +67,6 @@ impl Engine {
           &mut self.batch_collector,
           &mut gpu,
           rend.device(),
-          rend.queue(),
           &camera,
           &self.world,
         );
@@ -83,8 +82,10 @@ impl Engine {
       if let Some(trails) = trails.as_mut() {
         trails.begin_frame();
         for trail in self.world.query::<&Trail2D>().iter(&self.world) {
-          trails.add_trail_with_device(rend.device(), rend.queue(), trail);
+          let texture = trail.texture().map(|sprite| gpu.texture_of(sprite));
+          trails.add_trail_with_device(rend.device(), rend.queue(), trail, texture);
         }
+        trails.retain_textures(|id| gpu.is_texture(id));
         for (global, previous, line) in self
           .world
           .query::<(&GlobalTransform, Option<&PreviousGlobalTransform>, &Line2D)>()
@@ -126,7 +127,7 @@ impl Engine {
       self.draw_list.clear();
       self
         .batch_collector
-        .push_to(&mut self.draw_list, DrawKind::Sprite, &gpu);
+        .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu);
       let entity_sprites = self.entity_drawer.collect(
         &mut self.world,
         &camera,

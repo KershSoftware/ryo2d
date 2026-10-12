@@ -141,7 +141,7 @@ Entities are not drawn by `render`: anything with `Transform` + `Renderable` is 
 | `ctx.assets` | `&mut AssetManager` | Sprites (`load_sprite`, `create_sprite`) |
 | `ctx.audio` | `&mut Audio` | Sounds and music (calls return `AudioError::Unavailable` without a device) |
 
-Helpers: `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `textures()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
+Helpers: `add_systems`, `messages::<T>()`, `write_message`, `resource`, `resource_mut`, `resource_or_default`, `insert_resource`, `effects()`, `lighting()`, `tilemaps()`, `render_pipeline()`, `window()`, `cursor()`, `console()`, `spawn_child`, `skip_interpolation`, `screen_size()`, `request_display_mode`, `request_resolution`, `set_cursor*`. The accessors return `Mut<..>`; bind one for several calls: `let mut fx = ctx.effects();`.
 
 **`time`, `input`, `camera` and `assets` are taken out of the world for the length of a callback.** Use the fields; `ctx.world.resource::<Time>()` panics inside a callback. Systems see them as resources (`Res<Time>`) as usual.
 

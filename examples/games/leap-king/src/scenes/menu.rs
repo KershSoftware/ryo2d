@@ -694,11 +694,6 @@ impl Scene for MenuScene {
   }
 
   fn render(&mut self, gpu: &mut GpuRenderContext) {
-    // Upload rain sprite texture and collect particles
-    if let Some(ref sprite) = self.rain_sprite {
-      gpu.upload_sprite(sprite);
-    }
-
     // Collect particles for rendering (uses Z_PLATFORM - 1 set in emitter)
     self
       .particle_system

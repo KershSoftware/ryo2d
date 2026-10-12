@@ -57,9 +57,8 @@ impl Scene for Fixture {
 
   fn render(&mut self, gpu: &mut GpuRenderContext) {
     for (sprite, x, y, size, z) in &self.gpu_sprites {
-      gpu.upload_sprite(sprite);
       let instance = SpriteInstance::new().with_transform(*x, *y, 0.0, *size, *size);
-      gpu.add_sprite_instance(&sprite.id(), instance, *z, false);
+      gpu.add_sprite_instance(sprite, instance, *z, false);
     }
   }
 
@@ -726,4 +725,20 @@ fn a_top_left_anchored_sprite_rotates_about_its_corner() {
   for (x, y) in [(42, 30), (45, 40)] {
     assert_ne!(frame.get_pixel(x, y).0, ANCHOR_RED, "({x}, {y}) outside");
   }
+}
+
+/// Two handles loaded under one name are two textures: the second does not
+/// draw the first one's pixels.
+#[test]
+fn two_handles_with_one_name_draw_their_own_pixels() {
+  let red = solid("same-name", 20, RED);
+  let blue = solid("same-name", 20, BLUE);
+  let scene = Fixture::new(|_| {})
+    .with_gpu_sprite(red, 15.0, 15.0, 20.0, 0)
+    .with_gpu_sprite(blue, 45.0, 15.0, 20.0, 0);
+  let Some(frame) = frame_of(scene, (64, 32)) else {
+    return;
+  };
+  assert_eq!(frame.get_pixel(15, 15).0, RED);
+  assert_eq!(frame.get_pixel(45, 15).0, BLUE);
 }

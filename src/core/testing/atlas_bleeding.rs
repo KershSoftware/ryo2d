@@ -35,28 +35,30 @@ impl Bleed {
 
 impl Scene for Bleed {
   fn render(&mut self, gpu: &mut GpuRenderContext) {
-    gpu.upload_sprite(&self.red);
-    gpu.upload_sprite(&self.blue);
     let size = 4.0 * self.scale;
     let mut instance =
       SpriteInstance::new().with_transform(self.centre, self.centre, self.rotation, size, size);
     if self.flip_x {
       instance = instance.with_uv(1.0, 0.0, 0.0, 1.0);
     }
-    gpu.add_sprite_instance(&self.red.id(), instance, 0, false);
+    gpu.add_sprite_instance(&self.red, instance, 0, false);
+    // Blue off screen, so it is uploaded next to red in the atlas
+    let off_screen = SpriteInstance::new().with_transform(-100.0, -100.0, 0.0, 4.0, 4.0);
+    gpu.add_sprite_instance(&self.blue, off_screen, 0, false);
   }
 }
 
 /// Draw a scene and check the frame; returns the frame for further checks.
 fn draw(scene: Bleed) -> Option<image::RgbaImage> {
+  let (scene_red, scene_blue) = (scene.red.clone(), scene.blue.clone());
   let builder = EngineBuilder::new().resolution(64, 64).start_scene(scene);
   let mut engine = HeadlessEngine::new_or_skip(builder)?;
   engine.step_frames(2).unwrap();
 
   // Bleeding needs the two sprites on one atlas page
   let gpu = engine.engine.sprite_gpu.as_ref().expect("renderer");
-  let red = gpu.lookup("bleed-red").expect("red resident");
-  let blue = gpu.lookup("bleed-blue").expect("blue resident");
+  let red = gpu.lookup_sprite(&scene_red).expect("red resident");
+  let blue = gpu.lookup_sprite(&scene_blue).expect("blue resident");
   assert_eq!(red.page, blue.page, "sprites must share an atlas page");
 
   Some(engine.frame().unwrap())

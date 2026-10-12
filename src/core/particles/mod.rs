@@ -97,6 +97,7 @@ pub use particle::Particle;
 
 use std::collections::HashMap;
 
+use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Entity, GlobalTransform, SpriteEffect, World};
 use crate::core::graphics::{BatchCollector, Camera, SpriteInstance};
 use crate::core::messages::register_message;
@@ -804,23 +805,19 @@ impl ParticleSystem {
     let Some(mut emitters) = world.try_query::<(Entity, &ParticleEmitter)>() else {
       return;
     };
-    let looks: HashMap<Entity, (String, Option<&SpriteEffect>, i32)> = emitters
+    let looks: HashMap<Entity, (&SpriteHandle, Option<&SpriteEffect>, i32)> = emitters
       .iter(world)
       .map(|(entity, emitter)| {
         (
           entity,
-          (
-            emitter.sprite.id(),
-            emitter.effect.as_ref(),
-            emitter.z_order,
-          ),
+          (&emitter.sprite, emitter.effect.as_ref(), emitter.z_order),
         )
       })
       .collect();
     let zoom = camera.zoom;
 
     for p in &self.particles {
-      let Some((texture_id, effect, z_order)) = looks.get(&p.emitter_entity) else {
+      let Some((sprite, effect, z_order)) = looks.get(&p.emitter_entity) else {
         continue;
       };
 
@@ -846,7 +843,7 @@ impl ParticleSystem {
         instance = instance.with_effect(effect);
       }
 
-      collector.add(texture_id, effect.is_some(), instance, *z_order);
+      collector.add(sprite, effect.is_some(), instance, *z_order);
     }
   }
 

@@ -34,8 +34,7 @@ impl Scene for Level {
   }
 
   fn render(&mut self, gpu: &mut GpuRenderContext) {
-    // Upload every particle sprite, then add the particles to the batch
-    gpu.upload_sprite(&self.spark);
+    // Add the particles to the batch (their sprites upload when first drawn)
     self.particles.collect_for_render(gpu.world, gpu.camera, gpu.batch);
   }
 }

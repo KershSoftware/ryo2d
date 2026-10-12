@@ -544,7 +544,7 @@ pub struct SpriteGpuRenderer {
   atlas: TextureAtlas,
   // The textures and their pixel sources, for (re)uploading
   registry: TextureRegistry,
-  // Textures `Scene::render` sprites name, by the name they were uploaded under
+  // Pixel textures by the name they were uploaded under (the shadow ellipse)
   names: HashMap<String, TextureId>,
   // Atlas frame counter, advanced by `prepare`
   frame: u64,
@@ -1124,25 +1124,24 @@ impl SpriteGpuRenderer {
     self.atlas.lookup(self.named_texture(name)?)
   }
 
-  /// Upload a sprite from a SpriteHandle to the GPU texture cache
-  ///
-  /// Convenience method that extracts data from SpriteHandle.
-  /// Uses the sprite's ID as the cache key.
-  pub fn upload_sprite(
-    &mut self,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    sprite: &SpriteHandle,
-  ) {
-    let name = sprite.id();
-    if let Some(id) = self.named_texture(&name) {
-      self.touch(id);
-      return;
-    }
-    let id = self.registry.sprite(sprite, self.frame);
-    if self.resident(device, queue, id).is_some() {
-      self.names.insert(name, id);
-    }
+  /// Where a sprite's texture currently lives in the atlas.
+  #[cfg(test)]
+  pub(crate) fn lookup_sprite(&self, sprite: &SpriteHandle) -> Option<AtlasSlot> {
+    let (id, _) = self.registry.iter().find(|(_, entry)| {
+      matches!(&entry.source, TextureSource::Sprite(s) if s.serial() == sprite.serial())
+    })?;
+    self.atlas.lookup(id)
+  }
+
+  /// The texture a sprite draws with, registered on first use; its pixels
+  /// are uploaded when a frame draws it.
+  pub(crate) fn texture_of(&mut self, sprite: &SpriteHandle) -> TextureId {
+    self.registry.sprite(sprite, self.frame)
+  }
+
+  /// Whether `id` is still a texture (unused ones are forgotten).
+  pub(crate) fn is_texture(&self, id: TextureId) -> bool {
+    self.registry.get(id).is_some()
   }
 
   /// Make an entity's sprite resident and return the texture to draw it by.
@@ -1244,11 +1243,6 @@ impl SpriteGpuRenderer {
       matches!(&entry.source, TextureSource::Sprite(s) if s.serial() == sprite.serial())
         && !self.registry.needs_upload(id)
     })
-  }
-
-  /// Check if a texture is already cached
-  pub fn has_texture(&self, id: &str) -> bool {
-    self.named_texture(id).is_some()
   }
 
   /// Clear the texture cache
@@ -1357,23 +1351,23 @@ pub const SPRITE_SHADER: &str = include_str!("../shaders/core/sprite.wgsl");
 ///
 /// ```ignore
 /// let mut collector = BatchCollector::new();
-/// collector.add(sprite.id(), has_effect, instance, z_order);
+/// collector.add(&sprite, has_effect, instance, z_order);
 /// ```
 #[derive(Debug, Default)]
 pub struct BatchCollector {
   /// Every sprite in submission order
   items: Vec<CollectedSprite>,
-  /// The texture ids sprites name, each held once (an index in `CollectedSprite`).
-  /// Kept across frames; it only grows with the distinct textures used.
-  names: Vec<String>,
-  name_index: HashMap<String, usize>,
+  /// The handles this frame's sprites draw, each held once (an index in
+  /// `CollectedSprite`), by serial
+  sprites: Vec<SpriteHandle>,
+  sprite_index: HashMap<usize, usize>,
 }
 
 /// One collected sprite, as the draw list takes it.
 #[derive(Debug)]
 struct CollectedSprite {
-  /// Index of its texture's name
-  name: usize,
+  /// Index of its handle in `sprites`
+  sprite: usize,
   shading: SpriteShading,
   z_order: i32,
   instance: SpriteInstance,
@@ -1393,10 +1387,10 @@ impl BatchCollector {
     }
   }
 
-  /// Add a sprite. `texture_id` is the id the texture was uploaded under.
+  /// Add a sprite drawing `sprite`'s texture.
   pub fn add(
     &mut self,
-    texture_id: impl AsRef<str>,
+    sprite: &SpriteHandle,
     has_effects: bool,
     instance: SpriteInstance,
     z_order: i32,
@@ -1406,28 +1400,29 @@ impl BatchCollector {
     } else {
       SpriteShading::Plain
     };
-    self.add_shaded(texture_id, shading, instance, z_order);
+    self.add_shaded(sprite, shading, instance, z_order);
   }
 
   /// Add a sprite with its shading already decided.
   pub(crate) fn add_shaded(
     &mut self,
-    texture_id: impl AsRef<str>,
+    sprite: &SpriteHandle,
     shading: SpriteShading,
     instance: SpriteInstance,
     z_order: i32,
   ) {
-    let id = texture_id.as_ref();
-    let name = match self.name_index.get(id) {
-      Some(&name) => name,
+    let index = match self.sprite_index.get(&sprite.serial()) {
+      Some(&index) => index,
       None => {
-        self.names.push(id.to_string());
-        self.name_index.insert(id.to_string(), self.names.len() - 1);
-        self.names.len() - 1
+        self.sprites.push(sprite.clone());
+        self
+          .sprite_index
+          .insert(sprite.serial(), self.sprites.len() - 1);
+        self.sprites.len() - 1
       }
     };
     self.items.push(CollectedSprite {
-      name,
+      sprite: index,
       shading,
       z_order,
       instance,
@@ -1435,14 +1430,15 @@ impl BatchCollector {
   }
 
   /// Push every collected sprite onto `list` as `kind`, in submission order,
-  /// with its texture resolved through `gpu`; sprites naming a texture that
-  /// was never uploaded are dropped.
-  pub(crate) fn push_to(&self, list: &mut DrawList, kind: DrawKind, gpu: &SpriteGpuRenderer) {
-    let mut resolved: Vec<Option<Option<TextureId>>> = vec![None; self.names.len()];
+  /// with its texture registered in `gpu`.
+  pub(crate) fn push_to(&self, list: &mut DrawList, kind: DrawKind, gpu: &mut SpriteGpuRenderer) {
+    let textures: Vec<TextureId> = self
+      .sprites
+      .iter()
+      .map(|sprite| gpu.texture_of(sprite))
+      .collect();
     for item in &self.items {
-      let texture =
-        *resolved[item.name].get_or_insert_with(|| gpu.named_texture(&self.names[item.name]));
-      if let Some(texture) = texture {
+      if let Some(&texture) = textures.get(item.sprite) {
         list.push_sprite(kind, item.z_order, texture, item.shading, item.instance);
       }
     }
@@ -1453,9 +1449,12 @@ impl BatchCollector {
     self.items.len()
   }
 
-  /// Forget this frame's sprites, keeping the allocations.
+  /// Forget this frame's sprites (and the handles they held), keeping the
+  /// allocations.
   pub fn clear(&mut self) {
     self.items.clear();
+    self.sprites.clear();
+    self.sprite_index.clear();
   }
 }
 
@@ -1522,6 +1521,11 @@ mod tests {
   // =========================================================================
 
   const PAGE: (u32, u32) = (2048, 2048);
+
+  fn solid(name: &str) -> SpriteHandle {
+    let sprite = crate::core::graphics::Sprite::solid_rect(2, 2, 255, 255, 255, 255);
+    SpriteHandle::from_sprite(sprite, name)
+  }
 
   fn texels(v: [f32; 4]) -> [f32; 4] {
     v.map(|c| c * 2048.0)
@@ -1608,10 +1612,10 @@ mod tests {
     assert_eq!(pad(SpriteEffect::invert()), 0.0);
   }
 
-  fn world_list(renderer: &SpriteGpuRenderer, entries: &[(&str, i32)]) -> DrawList {
+  fn world_list(renderer: &mut SpriteGpuRenderer, entries: &[(&SpriteHandle, i32)]) -> DrawList {
     let mut collector = BatchCollector::new();
-    for (id, z) in entries {
-      collector.add(id, false, SpriteInstance::new(), *z);
+    for (sprite, z) in entries {
+      collector.add(sprite, false, SpriteInstance::new(), *z);
     }
     let mut list = DrawList::default();
     collector.push_to(&mut list, DrawKind::Sprite, renderer);
@@ -1626,14 +1630,17 @@ mod tests {
     };
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
-    renderer.upload_texture(&device, &queue, "a", 2, 2, &[255; 16]);
+    let a = solid("a");
+    let list = world_list(&mut renderer, &[(&a, 0)]);
+    renderer.prepare_world(&device, &queue, &list);
+    assert!(renderer.lookup_sprite(&a).is_some());
     // As if the atlas had evicted it
     renderer.atlas.clear();
-    assert!(renderer.lookup("a").is_none());
+    assert!(renderer.lookup_sprite(&a).is_none());
 
-    let list = world_list(&renderer, &[("a", 0)]);
+    let list = world_list(&mut renderer, &[(&a, 0)]);
     renderer.prepare_world(&device, &queue, &list);
-    assert!(renderer.lookup("a").is_some());
+    assert!(renderer.lookup_sprite(&a).is_some());
   }
 
   #[test]
@@ -1644,7 +1651,7 @@ mod tests {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
     renderer.upload_texture(&device, &queue, "short", 2, 2, &[255; 15]);
-    assert!(!renderer.has_texture("short"));
+    assert!(renderer.named_texture("short").is_none());
   }
 
   #[test]
@@ -1655,17 +1662,21 @@ mod tests {
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
     renderer.upload_texture(&device, &queue, "gone", 2, 2, &[255; 16]);
+    let drawn = solid("drawn");
+    let gone_sprite = solid("gone-sprite");
+    let list = world_list(&mut renderer, &[(&gone_sprite, 0)]);
+    renderer.prepare_world(&device, &queue, &list);
     for _ in 0..=TEXTURE_TTL {
-      // Games upload what they draw each frame (a no-op once cached)
+      // The engine uploads what it draws each frame (a no-op once cached)
       renderer.upload_texture(&device, &queue, "uploaded", 2, 2, &[255; 16]);
-      renderer.upload_texture(&device, &queue, "drawn", 2, 2, &[255; 16]);
-      let list = world_list(&renderer, &[("drawn", 0)]);
+      let list = world_list(&mut renderer, &[(&drawn, 0)]);
       renderer.prepare_world(&device, &queue, &list);
     }
-    assert!(!renderer.has_texture("gone"));
+    assert!(renderer.named_texture("gone").is_none());
     assert!(renderer.lookup("gone").is_none(), "its atlas rect is freed");
-    assert!(renderer.has_texture("uploaded"));
-    assert!(renderer.has_texture("drawn"));
+    assert!(renderer.lookup_sprite(&gone_sprite).is_none());
+    assert!(renderer.named_texture("uploaded").is_some());
+    assert!(renderer.lookup_sprite(&drawn).is_some());
   }
 
   #[test]
@@ -1675,9 +1686,9 @@ mod tests {
     };
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
-    renderer.upload_texture(&device, &queue, "a", 2, 2, &[255; 16]);
-    let entries = vec![("a", 0); SpriteGpuRenderer::MAX_INSTANCES + 1];
-    let list = world_list(&renderer, &entries);
+    let a = solid("a");
+    let entries = vec![(&a, 0); SpriteGpuRenderer::MAX_INSTANCES + 1];
+    let list = world_list(&mut renderer, &entries);
     renderer.prepare_world(&device, &queue, &list);
     assert_eq!(renderer.instance_capacity, 16384);
     let size = 16384 * std::mem::size_of::<SpriteInstance>() as u64;
@@ -1761,16 +1772,21 @@ mod tests {
 
   #[test]
   fn collector_keeps_submission_order_and_counts() {
+    let (c, a) = (solid("tex_c"), solid("tex_a"));
     let mut collector = BatchCollector::new();
-    collector.add("tex_c", false, SpriteInstance::new(), 100);
-    collector.add("tex_a", true, SpriteInstance::new(), 0);
-    collector.add(String::from("tex_a"), false, SpriteInstance::new(), 50);
+    collector.add(&c, false, SpriteInstance::new(), 100);
+    collector.add(&a, true, SpriteInstance::new(), 0);
+    collector.add(&a.clone(), false, SpriteInstance::new(), 50);
     assert_eq!(collector.sprite_count(), 3);
 
-    // One name per texture id, shared by its sprites
-    assert_eq!(collector.names, vec!["tex_c", "tex_a"]);
-    assert_eq!(collector.items[1].name, collector.items[2].name);
+    // One handle per texture, shared by its sprites
+    assert_eq!(collector.sprites.len(), 2);
+    assert_eq!(collector.items[1].sprite, collector.items[2].sprite);
     collector.clear();
     assert_eq!(collector.sprite_count(), 0);
+    assert!(
+      collector.sprites.is_empty(),
+      "no handle is kept past the frame"
+    );
   }
 }
