@@ -30,7 +30,8 @@ impl RealClock {
 }
 
 /// Game time: real time times `speed`, zero while paused or in hitstop,
-/// and never more than `max_delta` per frame.
+/// and never more than `max_delta` (or one fixed timestep, if longer) of
+/// real time per frame.
 #[derive(Debug, Clone)]
 pub struct GameClock {
   delta: Duration,
@@ -55,6 +56,9 @@ impl Default for GameClock {
 }
 
 impl GameClock {
+  /// The fastest `set_speed` allows.
+  pub const MAX_SPEED: f32 = 100.0;
+
   pub fn delta(&self) -> f32 {
     self.delta.as_secs_f32()
   }
@@ -72,10 +76,10 @@ impl GameClock {
     self.speed
   }
 
-  /// Negative speeds clamp to 0; a non-finite speed resets to 1.
+  /// Speeds clamp to `0..=MAX_SPEED`; a non-finite speed resets to 1.
   pub fn set_speed(&mut self, speed: f32) {
     self.speed = if speed.is_finite() {
-      speed.max(0.0)
+      speed.clamp(0.0, Self::MAX_SPEED)
     } else {
       1.0
     };
@@ -93,9 +97,10 @@ impl GameClock {
     self.paused
   }
 
-  /// Freeze game time for `seconds` of real time (a longer hitstop replaces a shorter one).
+  /// Freeze game time for `seconds` of real time (a longer hitstop replaces a
+  /// shorter one). One too long to represent lasts until `clear_hitstop`.
   pub fn hitstop(&mut self, seconds: f32) {
-    let requested = Duration::from_secs_f32(seconds.max(0.0));
+    let requested = Duration::try_from_secs_f32(seconds.max(0.0)).unwrap_or(Duration::MAX);
     self.hitstop = self.hitstop.max(requested);
   }
 
@@ -108,7 +113,8 @@ impl GameClock {
     self.hitstop = Duration::ZERO;
   }
 
-  /// The most real time one frame may add to game time.
+  /// The most real time one frame may add to game time. A fixed timestep
+  /// longer than this raises the cap to one step.
   pub fn max_delta(&self) -> Duration {
     self.max_delta
   }
@@ -117,7 +123,7 @@ impl GameClock {
     self.max_delta = max_delta;
   }
 
-  fn advance(&mut self, real_delta: Duration) {
+  fn advance(&mut self, real_delta: Duration, min_cap: Duration) {
     if !self.hitstop.is_zero() {
       self.hitstop = self.hitstop.saturating_sub(real_delta);
       self.delta = Duration::ZERO;
@@ -127,7 +133,7 @@ impl GameClock {
       self.delta = Duration::ZERO;
       return;
     }
-    let capped = real_delta.min(self.max_delta);
+    let capped = real_delta.min(self.max_delta.max(min_cap));
     self.delta = capped.mul_f32(self.speed);
     self.elapsed += self.delta;
   }
@@ -234,7 +240,7 @@ impl Time {
   pub fn advance(&mut self, real_delta: Duration) {
     self.real.delta = real_delta;
     self.real.elapsed += real_delta;
-    self.game.advance(real_delta);
+    self.game.advance(real_delta, self.fixed.timestep);
     self.fixed.accumulator += self.game.delta;
     self.frame_count += 1;
   }
@@ -295,6 +301,13 @@ mod tests {
       (t.real.delta() - 10.0).abs() < 1e-6,
       "real clock is never capped"
     );
+  }
+
+  #[test]
+  fn a_frame_one_timestep_long_runs_a_step_at_any_rate() {
+    let mut t = Time::new(2);
+    t.advance(t.fixed.timestep_duration());
+    assert!(t.try_expend_fixed_step(), "500 ms is longer than max_delta");
   }
 
   #[test]
@@ -381,6 +394,26 @@ mod tests {
     assert_eq!(t.game.speed(), 1.0, "a non-finite speed resets to normal");
     t.game.set_speed(f32::INFINITY);
     assert_eq!(t.game.speed(), 1.0);
+  }
+
+  #[test]
+  fn a_huge_speed_is_capped() {
+    let mut t = Time::new(60);
+    t.game.set_speed(f32::MAX);
+    assert_eq!(t.game.speed(), GameClock::MAX_SPEED);
+    t.advance(ms(250));
+    assert!((t.game.delta() - 0.25 * GameClock::MAX_SPEED).abs() < 1e-3);
+  }
+
+  #[test]
+  fn an_infinite_hitstop_lasts_until_cleared() {
+    let mut t = Time::new(60);
+    t.game.hitstop(f32::INFINITY);
+    t.advance(Duration::from_secs(3600));
+    assert!(t.game.is_hitstop());
+    t.game.clear_hitstop();
+    t.advance(ms(20));
+    assert!(t.try_expend_fixed_step());
   }
 
   #[test]
