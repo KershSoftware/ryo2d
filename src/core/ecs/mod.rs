@@ -11,6 +11,7 @@
 //! - **Object pooling** - Pre-allocated entity pools for high-frequency spawning
 
 pub mod kernel;
+pub mod transform;
 
 mod active;
 mod component;

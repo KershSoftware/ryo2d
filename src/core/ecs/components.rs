@@ -484,7 +484,7 @@ mod tests {
 
   #[test]
   fn anchor_default() {
-    assert_eq!(Anchor::default(), Anchor::TopLeft);
+    assert_eq!(Anchor::default(), Anchor::Center);
   }
 
   #[test]
