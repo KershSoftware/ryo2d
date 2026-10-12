@@ -34,9 +34,6 @@ pub mod physics;
 // Navigation & Pathfinding
 pub mod navigation;
 
-// Procedural Generation
-pub mod procgen;
-
 // State Machines
 pub mod state_machine;
 
@@ -51,10 +48,6 @@ pub mod capture;
 pub mod console;
 pub mod dev_log;
 pub mod windows;
-
-// Inventory & Item System
-// MIGRATION: Task 19 (moves to crates/ryo2d-inventory)
-// pub mod inventory;
 
 // Frame structure, clocks and test support
 pub mod schedule;

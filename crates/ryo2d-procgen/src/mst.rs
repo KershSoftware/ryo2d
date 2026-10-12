@@ -215,8 +215,8 @@ pub fn connect_regions_mst(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::core::procgen::config::GridRect;
-  use crate::core::procgen::grid::RegionType;
+  use crate::config::GridRect;
+  use crate::grid::RegionType;
 
   fn make_regions() -> Vec<Region> {
     vec![
@@ -255,7 +255,7 @@ mod tests {
 
   #[test]
   fn mst_with_extra_connectivity() {
-    use crate::core::procgen::config::SeededRng;
+    use crate::config::SeededRng;
 
     let regions = make_regions();
     let mut rng = SeededRng::new(12345);
@@ -269,7 +269,7 @@ mod tests {
 
   #[test]
   fn connect_regions_in_grid() {
-    use crate::core::procgen::config::{SeededRng, TileType};
+    use crate::config::{SeededRng, TileType};
 
     let mut grid = GenerationGrid::new(50, 50);
 

@@ -5,7 +5,8 @@
 
 use std::time::Duration;
 
-use crate::core::ecs::Message;
+// The glob brings the name `#[derive(Message)]` expands to
+use ryo2d::prelude::*;
 
 /// Emitted when a generation algorithm starts
 ///

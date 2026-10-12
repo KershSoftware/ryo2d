@@ -2,7 +2,7 @@
 
 use super::item::{ItemId, ItemStack};
 use super::registry::ItemRegistry;
-use crate::core::error::InventoryError;
+use crate::InventoryError;
 
 /// Slot-based item container with stacking, transfer, and compact operations.
 ///
@@ -14,6 +14,7 @@ use crate::core::error::InventoryError;
 ///
 /// ```rust,ignore
 /// use ryo2d::prelude::*;
+/// use ryo2d_inventory::prelude::*;
 ///
 /// let mut registry = ItemRegistry::new();
 /// let potion = registry.register(

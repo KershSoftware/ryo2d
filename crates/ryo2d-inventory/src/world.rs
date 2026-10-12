@@ -1,13 +1,15 @@
+// The glob brings the name `#[derive(Component)]` expands to
+use ryo2d::prelude::*;
+
 use super::item::ItemStack;
-use crate::core::ecs::{Entity, Transform, World};
-use crate::core::error::InventoryError;
+use crate::InventoryError;
 
 /// ECS component for items dropped in the game world.
 ///
 /// The bridge between inventory value types and world entities.
 /// When items are in inventory, they're lightweight `ItemStack` values.
 /// When dropped in the world, they become entities with this component.
-#[derive(Clone)]
+#[derive(Component, Clone)]
 pub struct ItemDrop {
   pub item_stack: ItemStack,
 }
@@ -17,10 +19,12 @@ pub struct ItemDrop {
 /// Creates an entity with `Transform` and `ItemDrop` components.
 /// Game devs can add additional components (sprite, collision) after spawning.
 pub fn spawn_item_drop(world: &mut World, stack: ItemStack, position: (f32, f32)) -> Entity {
-  world.spawn((
-    Transform::new(position.0, position.1),
-    ItemDrop { item_stack: stack },
-  ))
+  world
+    .spawn((
+      Transform::from_xy(position.0, position.1),
+      ItemDrop { item_stack: stack },
+    ))
+    .id()
 }
 
 /// Pick up an item entity from the world.
@@ -40,7 +44,6 @@ pub fn pickup_item(world: &mut World, entity: Entity) -> Result<ItemStack, Inven
       }
     }
   };
-  // Despawn the entity
-  let _ = world.despawn(entity);
+  world.despawn(entity);
   Ok(stack)
 }

@@ -20,7 +20,7 @@ path = "src/bin/ryo2d.rs"
 [workspace]
 members = [
   ".",
-  "ryo2d-derive",
+  "crates/*",
   "examples/demo-kit",
   "examples/demos/*",
   "examples/games/*",
@@ -57,10 +57,9 @@ naga = { version = "22", features = ["wgsl-in"] }
 winit = "0.30"
 gilrs = "0.11"
 zip = "2"
-noise = "0.9"
 rand = "0.8"
 etagere = "0.2"
-ryo2d-derive = { path = "ryo2d-derive" }
+ryo2d-derive = { path = "crates/ryo2d-derive" }
 
 # Optional profiling dependency (enable with --features profiler)
 puffin = { version = "0.19", optional = true }

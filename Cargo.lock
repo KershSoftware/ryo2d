@@ -2930,6 +2930,7 @@ dependencies = [
  "demo-kit",
  "rand 0.8.5",
  "ryo2d",
+ "ryo2d-inventory",
 ]
 
 [[package]]
@@ -3099,6 +3100,7 @@ version = "0.0.1"
 dependencies = [
  "dirs",
  "ryo2d",
+ "ryo2d-procgen",
  "serde",
  "serde_json",
 ]
@@ -4495,6 +4497,7 @@ version = "0.1.0"
 dependencies = [
  "demo-kit",
  "ryo2d",
+ "ryo2d-procgen",
 ]
 
 [[package]]
@@ -5169,7 +5172,6 @@ dependencies = [
  "kira",
  "matchbox_socket",
  "naga",
- "noise",
  "notify",
  "pollster",
  "puffin",
@@ -5199,6 +5201,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "ryo2d-inventory"
+version = "0.0.1"
+dependencies = [
+ "rand 0.8.5",
+ "ryo2d",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "ryo2d-procgen"
+version = "0.0.1"
+dependencies = [
+ "noise",
+ "rand 0.8.5",
+ "ryo2d",
+ "serde",
 ]
 
 [[package]]

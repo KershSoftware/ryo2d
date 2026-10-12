@@ -1,6 +1,7 @@
-//! Integration tests for the Inventory & Item System
+//! Integration tests for the inventory crate
 
 use ryo2d::prelude::*;
+use ryo2d_inventory::prelude::*;
 use std::any::Any;
 
 // ---------------------------------------------------------------------------
@@ -856,8 +857,8 @@ fn pickup_item_removes_entity() {
 #[test]
 fn pickup_nonexistent_entity() {
   let mut world = World::new();
-  let entity = world.spawn((Transform::default(),));
-  world.despawn(entity).unwrap();
+  let entity = world.spawn(Transform::default()).id();
+  world.despawn(entity);
   let result = pickup_item(&mut world, entity);
   assert!(result.is_err());
 }

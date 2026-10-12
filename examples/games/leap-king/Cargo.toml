@@ -16,6 +16,7 @@ profiler = ["ryo2d/profiler"]
 
 [dependencies]
 ryo2d = { path = "../../..", features = ["matchbox"] }
+ryo2d-procgen = { path = "../../../crates/ryo2d-procgen" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dirs = "6"

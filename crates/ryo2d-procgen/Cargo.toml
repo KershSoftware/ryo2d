@@ -1,0 +1,12 @@
+[package]
+name = "ryo2d-procgen"
+version = "0.0.1"
+edition = "2024"
+description = "Procedural generation for Ryo2D: BSP, caves, noise, WFC, Poisson"
+license = "MIT"
+
+[dependencies]
+ryo2d = { path = "../.." }
+noise = "0.9"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }

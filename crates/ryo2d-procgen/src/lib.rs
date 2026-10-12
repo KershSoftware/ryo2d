@@ -4,7 +4,7 @@
 //!
 //! # Overview
 //!
-//! This module provides multiple algorithms for generating game content:
+//! This crate provides multiple algorithms for generating game content:
 //!
 //! | Algorithm | Use Case |
 //! |-----------|----------|
@@ -22,6 +22,7 @@
 //!
 //! ```ignore
 //! use ryo2d::prelude::*;
+//! use ryo2d_procgen::prelude::*;
 //!
 //! // Generate a dungeon with BSP
 //! let result = ProcgenBuilder::new(64, 64)
@@ -77,7 +78,7 @@
 //! Even point distribution for spawning:
 //!
 //! ```ignore
-//! use ryo2d::core::procgen::{poisson_points, PoissonConfig};
+//! use ryo2d_procgen::{poisson_points, PoissonConfig};
 //!
 //! let points = poisson_points(
 //!     800.0, 600.0,
@@ -182,3 +183,16 @@ pub use poisson::{
 };
 pub use random_walk::RandomWalkConfig;
 pub use wfc::{WfcConfig, WfcDirection, WfcResult, WfcTile};
+
+/// Everything a game uses, for `use ryo2d_procgen::prelude::*;` beside
+/// `ryo2d::prelude::*`.
+pub mod prelude {
+  pub use crate::{
+    BspConfig, CellularConfig, Connection, GenerationCompleted, GenerationFailed,
+    GenerationFailureReason, GenerationGrid, GenerationResult, GenerationStarted, GridRect,
+    MstConfig, MstEdge, NoiseConfig, NoiseThreshold, NoiseType, PoissonConfig, PoissonResult,
+    ProcgenBuilder, RandomWalkConfig, Region, RegionCreated, RegionMetadata, RegionType,
+    RegionsConnected, SeededRng, TileType, WfcConfig, WfcDirection, WfcResult, WfcTile,
+    poisson_points,
+  };
+}

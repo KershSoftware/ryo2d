@@ -3,7 +3,7 @@
 //! Provides the core data structure for storing and manipulating generated maps.
 
 use super::config::{GridRect, TileType};
-use crate::core::navigation::NavigationGrid;
+use ryo2d::core::navigation::NavigationGrid;
 
 /// Type of region generated
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

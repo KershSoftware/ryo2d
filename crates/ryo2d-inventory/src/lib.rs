@@ -1,4 +1,4 @@
-//! Inventory & Item System
+//! Inventory and items for Ryo2D
 //!
 //! A generic framework for items, inventories, equipment, and loot tables.
 //!
@@ -18,6 +18,7 @@
 //!
 //! ```rust,ignore
 //! use ryo2d::prelude::*;
+//! use ryo2d_inventory::prelude::*;
 //!
 //! // Register item templates
 //! let mut registry = ItemRegistry::new();
@@ -37,14 +38,29 @@
 
 mod container;
 mod equipment;
+mod error;
 mod item;
 mod loot;
+mod messages;
 mod registry;
 mod world;
 
 pub use container::*;
 pub use equipment::*;
+pub use error::{InventoryError, InventoryResult};
 pub use item::*;
 pub use loot::*;
+pub use messages::{InventoryChanged, ItemDropped, ItemEquipped, ItemPickedUp, ItemUnequipped};
 pub use registry::*;
 pub use world::*;
+
+/// Everything a game uses, for `use ryo2d_inventory::prelude::*;` beside
+/// `ryo2d::prelude::*`.
+pub mod prelude {
+  pub use crate::{
+    EquipValidator, Equipment, Inventory, InventoryChanged, InventoryError, InventoryResult,
+    ItemData, ItemDrop, ItemDropped, ItemEquipped, ItemId, ItemPickedUp, ItemRegistry, ItemStack,
+    ItemTemplate, ItemTemplateBuilder, ItemUnequipped, LootEntry, LootTable, pickup_item,
+    spawn_item_drop,
+  };
+}

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ryo2d = { path = "../../../" }
+ryo2d-inventory = { path = "../../../crates/ryo2d-inventory" }
 demo-kit = { path = "../../demo-kit" }
 rand = "0.8"
 

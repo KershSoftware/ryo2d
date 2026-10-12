@@ -159,8 +159,8 @@ impl TileType {
   }
 
   /// Convert to navigation CellState for pathfinding integration
-  pub fn to_cell_state(&self) -> crate::core::navigation::CellState {
-    use crate::core::navigation::CellState;
+  pub fn to_cell_state(&self) -> ryo2d::core::navigation::CellState {
+    use ryo2d::core::navigation::CellState;
     match self {
       TileType::Empty => CellState::Blocked,
       TileType::Floor => CellState::Walkable,

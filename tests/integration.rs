@@ -64,6 +64,3 @@ mod console;
 
 #[path = "integration/tilemap.rs"]
 mod tilemap;
-
-#[path = "integration/inventory.rs"]
-mod inventory;

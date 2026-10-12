@@ -1,7 +1,7 @@
 //! Item registry: central catalog for item templates with code and JSON loading.
 
-use crate::core::error::InventoryError;
-use crate::core::inventory::{ItemData, ItemId, ItemTemplate};
+use crate::InventoryError;
+use crate::{ItemData, ItemId, ItemTemplate};
 use std::collections::HashMap;
 
 /// Factory function that deserializes a JSON value into a boxed [`ItemData`].

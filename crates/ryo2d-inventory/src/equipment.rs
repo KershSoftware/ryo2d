@@ -2,7 +2,7 @@
 
 use super::item::ItemStack;
 use super::registry::ItemRegistry;
-use crate::core::error::InventoryError;
+use crate::InventoryError;
 
 /// Validation trait for equipment slot restrictions.
 /// Optional -- without a validator, any item fits any slot.

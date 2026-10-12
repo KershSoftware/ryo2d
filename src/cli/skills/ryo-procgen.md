@@ -23,10 +23,20 @@ The procgen framework provides multiple algorithms that can be used standalone o
 - **WFC** - Wave Function Collapse for constraint-based generation
 - **MST** - Minimum spanning tree for connecting regions
 
+## Setup
+
+Procedural generation is the optional `ryo2d-procgen` crate. Add it beside `ryo2d` in the game's `Cargo.toml` (a path or version like `ryo2d`'s) and import its prelude:
+
+```toml
+[dependencies]
+ryo2d-procgen = { path = "<ryo2d checkout>/crates/ryo2d-procgen" }
+```
+
 ## Quick Start with ProcgenBuilder
 
 ```rust
 use ryo2d::prelude::*;
+use ryo2d_procgen::prelude::*;
 
 // Generate a dungeon
 let result = ProcgenBuilder::new(64, 64)
@@ -106,9 +116,9 @@ let result = ProcgenBuilder::new(128, 128)
 - `NoiseConfig::island_preset()` - Island with water edges
 - `NoiseConfig::cave_preset()` - Binary floor/wall noise
 
-**Heightmap generation** (`generate_heightmap` is not in the prelude; import it from `ryo2d::core::procgen`):
+**Heightmap generation** (`generate_heightmap` is not in the prelude; import it from `ryo2d_procgen`):
 ```rust
-use ryo2d::core::procgen::generate_heightmap;
+use ryo2d_procgen::generate_heightmap;
 
 let mut rng = SeededRng::new(12345);
 let heightmap = generate_heightmap(128, 128, &NoiseConfig::default(), &mut rng);
@@ -148,9 +158,9 @@ for (x, y) in points.iter() {
 }
 ```
 
-**Variants** (`poisson_circle` and `poisson_masked` are not in the prelude; import them from `ryo2d::core::procgen`):
+**Variants** (`poisson_circle` and `poisson_masked` are not in the prelude; import them from `ryo2d_procgen`):
 ```rust
-use ryo2d::core::procgen::{poisson_circle, poisson_masked};
+use ryo2d_procgen::{poisson_circle, poisson_masked};
 
 let mut rng = SeededRng::new(12345);
 
@@ -344,7 +354,7 @@ let result = ProcgenBuilder::new(64, 64)
 ### Island Terrain
 
 ```rust
-use ryo2d::core::procgen::apply_island_gradient;
+use ryo2d_procgen::apply_island_gradient;
 
 let result = ProcgenBuilder::new(64, 64)
     .with_seed(12345)

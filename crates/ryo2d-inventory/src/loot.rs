@@ -24,6 +24,7 @@ pub struct LootEntry {
 ///
 /// ```rust,ignore
 /// use ryo2d::prelude::*;
+/// use ryo2d_inventory::prelude::*;
 ///
 /// let table = LootTable::new()
 ///     .entry(potion_id, 0.8, 1..=3)
