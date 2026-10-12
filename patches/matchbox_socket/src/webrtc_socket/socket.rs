@@ -7,7 +7,9 @@ use crate::{
     Error,
 };
 use futures::{future::Fuse, select, Future, FutureExt, StreamExt};
-use futures_channel::mpsc::{SendError, TrySendError, UnboundedReceiver, UnboundedSender};
+use futures_channel::mpsc::{
+    SendError, TryRecvError, TrySendError, UnboundedReceiver, UnboundedSender,
+};
 use log::{debug, error};
 use matchbox_protocol::PeerId;
 use std::{collections::HashMap, marker::PhantomData, pin::Pin, time::Duration};
@@ -368,7 +370,7 @@ impl WebRtcChannel {
     /// Messages are removed from the socket when called.
     pub fn receive(&mut self) -> Vec<(PeerId, Packet)> {
         let mut messages = vec![];
-        while let Ok(Some(x)) = self.rx.try_next() {
+        while let Ok(x) = self.rx.try_recv() {
             messages.push(x);
         }
         messages
@@ -481,15 +483,16 @@ impl<C: ChannelPlurality> WebRtcSocket<C> {
     /// socket is closed.
     pub fn try_update_peers(&mut self) -> Result<Vec<(PeerId, PeerState)>, ChannelError> {
         let mut changes = Vec::new();
-        while let Ok(res) = self.peer_state_rx.try_next() {
-            match res {
-                Some((id, state)) => {
+        loop {
+            match self.peer_state_rx.try_recv() {
+                Ok((id, state)) => {
                     let old = self.peers.insert(id, state);
                     if old != Some(state) {
                         changes.push((id, state));
                     }
                 }
-                None => return Err(ChannelError::Closed),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Closed) => return Err(ChannelError::Closed),
             }
         }
 
