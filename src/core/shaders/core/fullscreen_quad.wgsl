@@ -4,6 +4,8 @@
 struct ViewportUniform {
     // x: scale_x, y: scale_y, z: offset_x (unused), w: offset_y (unused)
     transform: vec4<f32>,
+    // x: 1.0 when the target is not sRGB and the output must be encoded
+    flags: vec4<f32>,
 };
 
 @group(0) @binding(0) var t_game: texture_2d<f32>;
@@ -57,7 +59,17 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return out;
 }
 
+fn encode_srgb(c: vec4<f32>) -> vec4<f32> {
+    let lo = c.rgb * 12.92;
+    let hi = 1.055 * pow(c.rgb, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return vec4<f32>(select(hi, lo, c.rgb <= vec3<f32>(0.0031308)), c.a);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(t_game, s_game, in.tex_coord);
+    let color = textureSample(t_game, s_game, in.tex_coord);
+    if viewport.flags.x > 0.5 {
+        return encode_srgb(color);
+    }
+    return color;
 }

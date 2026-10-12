@@ -13,6 +13,26 @@ use crate::core::input::InputEvent;
 /// Largest supported render target side, in pixels.
 const MAX_DIMENSION: u32 = 8192;
 
+/// How the offscreen window stand-in is made.
+#[derive(Debug, Clone, Copy)]
+pub struct OffscreenOptions {
+  pub(crate) format: wgpu::TextureFormat,
+}
+
+impl Default for OffscreenOptions {
+  fn default() -> Self {
+    Self {
+      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+    }
+  }
+}
+
+/// Offscreen options with a chosen target format, for testing output that
+/// is not sRGB.
+pub fn offscreen_with_format(format: wgpu::TextureFormat) -> OffscreenOptions {
+  OffscreenOptions { format }
+}
+
 /// Whether the scene is still running after a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepOutcome {
@@ -37,6 +57,14 @@ impl HeadlessEngine {
   ///
   /// Panics if the builder has no start scene (`EngineBuilder::start_scene`).
   pub fn new(builder: EngineBuilder) -> Result<Self, HeadlessError> {
+    Self::new_with(builder, OffscreenOptions::default())
+  }
+
+  /// [`new`](Self::new) with offscreen options (a different target format).
+  pub fn new_with(
+    builder: EngineBuilder,
+    options: OffscreenOptions,
+  ) -> Result<Self, HeadlessError> {
     let (device, queue) = shared_gpu()?;
     let mut engine = builder.build_headless();
     let (width, height) = engine.game_size();
@@ -46,7 +74,7 @@ impl HeadlessEngine {
       )));
     }
     engine.init_gpu(
-      WgpuRenderer::new_offscreen(device, queue, width, height),
+      WgpuRenderer::new_offscreen_with_format(device, queue, width, height, options.format),
       1.0,
     );
     Ok(Self {
@@ -60,7 +88,12 @@ impl HeadlessEngine {
   /// Like [`new`](Self::new), but returns `None` (and prints a skip line) when
   /// there is no GPU, so tests can `return` early. Panics on any other error.
   pub fn new_or_skip(builder: EngineBuilder) -> Option<Self> {
-    match Self::new(builder) {
+    Self::new_or_skip_with(builder, OffscreenOptions::default())
+  }
+
+  /// [`new_or_skip`](Self::new_or_skip) with offscreen options.
+  pub fn new_or_skip_with(builder: EngineBuilder, options: OffscreenOptions) -> Option<Self> {
+    match Self::new_with(builder, options) {
       Ok(engine) => Some(engine),
       Err(HeadlessError::NoGpu) => {
         eprintln!("skipping: no GPU available for HeadlessEngine");

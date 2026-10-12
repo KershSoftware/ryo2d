@@ -555,3 +555,29 @@ fn unlit_lines_render_without_lighting() {
     "unlit line missing without lighting: on {on_line:?}, beside {beside:?}"
   );
 }
+
+/// A mid-grey sprite must come out mid-grey on a target without an sRGB
+/// format: the composite encodes to sRGB itself, so the output is not dark.
+#[test]
+fn a_non_srgb_target_still_shows_srgb_colours() {
+  use ryo2d::testing::offscreen_with_format;
+  struct Grey;
+  impl Scene for Grey {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let grey = SpriteHandle::from_sprite(Sprite::solid_rect(32, 32, 128, 128, 128, 255), "grey");
+      ctx
+        .world
+        .spawn((Transform::from_xy(16.0, 16.0), Renderable::sprite(grey)));
+    }
+  }
+  let builder = EngineBuilder::new().resolution(32, 32).start_scene(Grey);
+  let Some(mut engine) = HeadlessEngine::new_or_skip_with(
+    builder,
+    offscreen_with_format(wgpu::TextureFormat::Rgba8Unorm),
+  ) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let pixel = engine.frame().unwrap().get_pixel(16, 16).0;
+  assert!((i32::from(pixel[0]) - 128).abs() <= 2, "{pixel:?}");
+}

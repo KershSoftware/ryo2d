@@ -44,7 +44,7 @@ mod gpu;
 mod gpu_world;
 mod headless;
 
-pub use headless::{HeadlessEngine, StepOutcome};
+pub use headless::{HeadlessEngine, OffscreenOptions, StepOutcome, offscreen_with_format};
 
 pub use crate::core::error::HeadlessError;
 pub use gpu::shared_gpu;

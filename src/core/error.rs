@@ -33,6 +33,10 @@ pub enum EngineError {
   /// Workspace configuration error
   #[error("Workspace error: {0}")]
   WorkspaceError(String),
+
+  /// The GPU could not be set up or was lost
+  #[error(transparent)]
+  Gpu(#[from] crate::core::graphics::GpuError),
 }
 
 /// Result type for engine operations

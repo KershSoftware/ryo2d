@@ -29,6 +29,10 @@ pub(crate) struct PendingDelta(pub(crate) Option<Duration>);
 impl Engine {
   /// One frame. `real_delta` of `None` means wall clock.
   pub(crate) fn frame(&mut self, real_delta: Option<Duration>) -> FrameOutcome {
+    if let Some(message) = self.renderer.as_ref().and_then(|r| r.take_fault()) {
+      crate::engine_error!(module: "Render", "{}", message);
+      return FrameOutcome::Fatal(message);
+    }
     self.frame_timings = Default::default();
     self.world.insert_resource(PendingDelta(real_delta));
 

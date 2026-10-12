@@ -14,6 +14,7 @@ use super::frame::should_pace_frames;
 use super::{Engine, FrameOutcome, WindowMode};
 use crate::core::config::DisplayMode;
 use crate::core::cursor::CursorRequest;
+use crate::core::graphics::renderer::RendererSettings;
 use crate::core::graphics::{Camera, WgpuRenderer};
 use crate::core::input::{Input, InputEvent};
 use crate::core::render::RenderPipeline;
@@ -373,15 +374,23 @@ impl ApplicationHandler for Engine {
       window.set_window_icon(Some(icon));
     }
 
-    let mut renderer = pollster::block_on(WgpuRenderer::new(
-      Arc::clone(&window),
-      self.config.width,
-      self.config.height,
-      self.config.window_mode,
-      self.config.max_width,
-      self.config.max_height,
-      Some(self.vsync),
-    ));
+    let settings = RendererSettings {
+      game_width: self.config.width,
+      game_height: self.config.height,
+      window_mode: self.config.window_mode,
+      max_width: self.config.max_width,
+      max_height: self.config.max_height,
+      vsync: Some(self.vsync),
+    };
+    let mut renderer = match pollster::block_on(WgpuRenderer::new(Arc::clone(&window), settings)) {
+      Ok(renderer) => renderer,
+      Err(error) => {
+        crate::engine_error!(module: "Render", "{}", error);
+        self.startup_error = Some(error);
+        event_loop.exit();
+        return;
+      }
+    };
 
     // Present a first frame before showing the window, to avoid a white flash
     let _ = renderer.render_blank_frame(&mut RenderPipeline::default_2d(), &[]);

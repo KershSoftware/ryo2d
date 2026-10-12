@@ -209,6 +209,7 @@ pub mod prelude {
     AssetError, AssetResult, AudioError, AudioResult, EngineError, EngineResult, HotReloadError,
     HotReloadResult, SaveError, SaveResult, SpriteError, SpriteResult,
   };
+  pub use crate::core::graphics::GpuError;
 
   // Navigation and pathfinding
   pub use crate::core::navigation::{

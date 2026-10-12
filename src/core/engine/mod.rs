@@ -182,6 +182,8 @@ pub struct Engine {
   surface_needs_reconfigure: bool,
   scale_factor: f64,
   ui_scale: u32,
+  // Why the window's GPU setup failed, returned from `run`
+  startup_error: Option<crate::core::graphics::GpuError>,
   last_window_size: (u32, u32),
   vsync: bool,
   /// Run the frame's logic but do not draw it (an unfocused window with
@@ -505,6 +507,7 @@ impl Engine {
       surface_needs_reconfigure: false,
       scale_factor: 1.0,
       ui_scale: initial_ui_scale,
+      startup_error: None,
       last_window_size: initial_size,
       vsync,
       skip_present: false,
@@ -538,7 +541,11 @@ impl Engine {
 
     event_loop
       .run_app(&mut self)
-      .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))
+      .map_err(|e| EngineError::Window(format!("Event loop error: {}", e)))?;
+    match self.startup_error.take() {
+      Some(error) => Err(EngineError::Gpu(error)),
+      None => Ok(()),
+    }
   }
 
   /// Make [`run`](Self::run) render offscreen with these schedules (`RYO_HEADLESS`).

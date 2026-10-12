@@ -11,6 +11,8 @@ use wgpu::util::DeviceExt;
 struct ViewportUniform {
   // x: scale_x, y: scale_y, z: offset_x, w: offset_y
   transform: [f32; 4],
+  // x: 1.0 when the target is not sRGB and the shader must encode
+  flags: [f32; 4],
 }
 
 /// Which viewport transform a composite uses.
@@ -24,6 +26,8 @@ pub(crate) enum Viewport {
 
 /// Resources and drawing for the final composite.
 pub(crate) struct Compositor {
+  // 1.0 when the target is not sRGB, so the composite encodes to sRGB itself
+  encode_srgb: f32,
   // REPLACE blend: draws the scene source
   render_pipeline: wgpu::RenderPipeline,
   // ALPHA_BLENDING: draws the UI overlay on top
@@ -86,8 +90,10 @@ impl Compositor {
     });
 
     // Create uniform buffer for viewport transform (changes based on window size/mode)
+    let encode_srgb = if target_format.is_srgb() { 0.0 } else { 1.0 };
     let uniform = ViewportUniform {
       transform: [1.0, 1.0, 0.0, 0.0],
+      flags: [encode_srgb, 0.0, 0.0, 0.0],
     };
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
       label: Some("Viewport Uniform Buffer"),
@@ -124,7 +130,7 @@ impl Compositor {
         },
         wgpu::BindGroupLayoutEntry {
           binding: 2,
-          visibility: wgpu::ShaderStages::VERTEX,
+          visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
           ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
@@ -227,6 +233,7 @@ impl Compositor {
     });
 
     Self {
+      encode_srgb,
       render_pipeline,
       blend_pipeline,
       bind_group_layout,
@@ -251,7 +258,10 @@ impl Compositor {
 
   /// Set the letterbox transform: `[scale_x, scale_y, offset_x, offset_y]`.
   pub(crate) fn set_viewport_transform(&self, queue: &wgpu::Queue, transform: [f32; 4]) {
-    let uniform = ViewportUniform { transform };
+    let uniform = ViewportUniform {
+      transform,
+      flags: [self.encode_srgb, 0.0, 0.0, 0.0],
+    };
     queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
   }
 
@@ -369,8 +379,9 @@ mod tests {
     // ViewportUniform must be Pod for bytemuck::cast_slice
     let uniform = ViewportUniform {
       transform: [1.0, 1.0, 0.0, 0.0],
+      flags: [0.0; 4],
     };
     let bytes = bytemuck::bytes_of(&uniform);
-    assert_eq!(bytes.len(), 16); // 4 floats * 4 bytes
+    assert_eq!(bytes.len(), 32); // 8 floats * 4 bytes
   }
 }

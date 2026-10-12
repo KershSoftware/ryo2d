@@ -31,6 +31,7 @@ use crate::core::render::{
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 use crate::core::window::WindowMode;
 
+use super::gpu_error::{GpuError, GpuFault, SurfaceAction, SurfaceState, surface_action};
 use super::{Compositor, SpriteGpuRenderer};
 
 /// Where finished frames go: the window surface or an offscreen texture.
@@ -58,7 +59,12 @@ enum PresentTarget {
 }
 
 /// The texture an offscreen renderer presents into, read back by `read_frame`
-fn offscreen_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+fn offscreen_target(
+  device: &wgpu::Device,
+  width: u32,
+  height: u32,
+  format: wgpu::TextureFormat,
+) -> wgpu::Texture {
   device.create_texture(&wgpu::TextureDescriptor {
     label: Some("Offscreen Target"),
     size: wgpu::Extent3d {
@@ -69,7 +75,7 @@ fn offscreen_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Tex
     mip_level_count: 1,
     sample_count: 1,
     dimension: wgpu::TextureDimension::D2,
-    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+    format,
     usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
     view_formats: &[],
   })
@@ -77,29 +83,41 @@ fn offscreen_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Tex
 
 impl PresentTarget {
   /// The view to draw this frame into, plus the surface texture to present afterwards.
-  fn acquire(&self) -> Result<(Option<wgpu::SurfaceTexture>, wgpu::TextureView), FrameError> {
+  /// The next frame's texture and view, and whether to reconfigure the
+  /// surface after presenting it.
+  fn acquire(&self) -> Result<(Option<wgpu::SurfaceTexture>, wgpu::TextureView, bool), FrameError> {
     match self {
       PresentTarget::Surface { surface, .. } => {
-        let output = match surface.get_current_texture() {
-          wgpu::CurrentSurfaceTexture::Success(output)
-          | wgpu::CurrentSurfaceTexture::Suboptimal(output) => output,
-          wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-            return Err(FrameError::Skip);
+        let (state, output) = match surface.get_current_texture() {
+          wgpu::CurrentSurfaceTexture::Success(output) => (SurfaceState::Success, Some(output)),
+          wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
+            (SurfaceState::Suboptimal, Some(output))
           }
-          wgpu::CurrentSurfaceTexture::Outdated => return Err(FrameError::Reconfigure),
-          wgpu::CurrentSurfaceTexture::Lost => return Err(FrameError::Recreate),
-          wgpu::CurrentSurfaceTexture::Validation => {
-            return Err(FrameError::Fatal("surface validation error".to_string()));
-          }
+          wgpu::CurrentSurfaceTexture::Timeout => (SurfaceState::Timeout, None),
+          wgpu::CurrentSurfaceTexture::Occluded => (SurfaceState::Occluded, None),
+          wgpu::CurrentSurfaceTexture::Outdated => (SurfaceState::Outdated, None),
+          wgpu::CurrentSurfaceTexture::Lost => (SurfaceState::Lost, None),
+          wgpu::CurrentSurfaceTexture::Validation => (SurfaceState::Validation, None),
         };
-        let view = output
-          .texture
-          .create_view(&wgpu::TextureViewDescriptor::default());
-        Ok((Some(output), view))
+        match (surface_action(state), output) {
+          (SurfaceAction::Draw { then_reconfigure }, Some(output)) => {
+            let view = output
+              .texture
+              .create_view(&wgpu::TextureViewDescriptor::default());
+            Ok((Some(output), view, then_reconfigure))
+          }
+          (SurfaceAction::Draw { .. } | SurfaceAction::Skip, _) => Err(FrameError::Skip),
+          (SurfaceAction::Reconfigure, _) => Err(FrameError::Reconfigure),
+          (SurfaceAction::Recreate, _) => Err(FrameError::Recreate),
+          (SurfaceAction::Fatal, _) => {
+            Err(FrameError::Fatal("surface validation error".to_string()))
+          }
+        }
       }
       PresentTarget::Offscreen { texture } => Ok((
         None,
         texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        false,
       )),
     }
   }
@@ -126,6 +144,17 @@ struct RendererParts {
   window_mode: WindowMode,
   max_width: Option<u32>,
   max_height: Option<u32>,
+}
+
+/// How the window renderer is set up.
+#[derive(Debug, Clone, Copy)]
+pub struct RendererSettings {
+  pub game_width: u32,
+  pub game_height: u32,
+  pub window_mode: WindowMode,
+  pub max_width: Option<u32>,
+  pub max_height: Option<u32>,
+  pub vsync: Option<bool>,
 }
 
 /// Handles wgpu rendering of the game texture to screen.
@@ -167,6 +196,10 @@ pub struct WgpuRenderer {
   pending_capture: Option<PathBuf>,
   // Result of the latest capture, collected by the engine
   capture_result: Option<CaptureResult<CapturedFrame>>,
+  // Errors reported by the device's callbacks, picked up by the next frame
+  fault: GpuFault,
+  // The surface was suboptimal: reconfigure it after this frame
+  needs_reconfigure: bool,
 }
 
 /// Create the persistent lighting output texture at game resolution.
@@ -206,15 +239,15 @@ impl WgpuRenderer {
   /// - `max_width`: Optional maximum viewport width constraint
   /// - `max_height`: Optional maximum viewport height constraint
   /// - `vsync`: `Some(true)` or `None` = Fifo (waits for the display); `Some(false)` = Mailbox, else Immediate
-  pub async fn new(
-    window: Arc<Window>,
-    game_width: u32,
-    game_height: u32,
-    window_mode: WindowMode,
-    max_width: Option<u32>,
-    max_height: Option<u32>,
-    vsync: Option<bool>,
-  ) -> Self {
+  pub async fn new(window: Arc<Window>, settings: RendererSettings) -> Result<Self, GpuError> {
+    let RendererSettings {
+      game_width,
+      game_height,
+      window_mode,
+      max_width,
+      max_height,
+      vsync,
+    } = settings;
     let size = window.inner_size();
 
     // Create wgpu instance
@@ -223,8 +256,9 @@ impl WgpuRenderer {
     descriptor.backends = wgpu::Backends::all();
     let instance = wgpu::Instance::new(descriptor);
 
-    // Create surface
-    let surface = instance.create_surface(window).unwrap();
+    let surface = instance
+      .create_surface(window)
+      .map_err(|e| GpuError::CreateSurface(e.to_string()))?;
 
     // Request adapter
     let adapter = instance
@@ -235,7 +269,7 @@ impl WgpuRenderer {
         apply_limit_buckets: false,
       })
       .await
-      .expect("Failed to find an appropriate adapter");
+      .map_err(|e| GpuError::NoAdapter(e.to_string()))?;
 
     // Request device and queue (wrapped in Arc for sharing with profiler window)
     let (device, queue) = adapter
@@ -248,7 +282,17 @@ impl WgpuRenderer {
         trace: wgpu::Trace::Off,
       })
       .await
-      .expect("Failed to create device");
+      .map_err(|e| GpuError::RequestDevice(e.to_string()))?;
+    // Errors no scope catches, and a lost device, end the run at the next frame
+    let fault = GpuFault::default();
+    let uncaptured = fault.clone();
+    device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+      uncaptured.record(error.to_string());
+    }));
+    let lost = fault.clone();
+    device.set_device_lost_callback(move |_reason, message| {
+      lost.record(GpuError::DeviceLost(message).to_string());
+    });
     let device = std::sync::Arc::new(device);
     let queue = std::sync::Arc::new(queue);
 
@@ -259,7 +303,8 @@ impl WgpuRenderer {
       .iter()
       .find(|f| f.is_srgb())
       .copied()
-      .unwrap_or(surface_caps.formats[0]);
+      .or_else(|| surface_caps.formats.first().copied())
+      .ok_or_else(|| GpuError::CreateSurface("the surface supports no format".to_string()))?;
 
     // VSync on: Fifo, which waits for the display (every surface supports
     // it). Off: Mailbox, else Immediate, paced to target_fps by the engine
@@ -280,13 +325,17 @@ impl WgpuRenderer {
       width: size.width.max(1),
       height: size.height.max(1),
       present_mode,
-      alpha_mode: surface_caps.alpha_modes[0],
+      alpha_mode: surface_caps
+        .alpha_modes
+        .first()
+        .copied()
+        .unwrap_or(wgpu::CompositeAlphaMode::Auto),
       view_formats: vec![],
       desired_maximum_frame_latency: 2,
       color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(&device, &config);
-    Self::from_parts(RendererParts {
+    let mut renderer = Self::from_parts(RendererParts {
       instance: Some(instance),
       adapter: Some(adapter),
       device,
@@ -299,7 +348,9 @@ impl WgpuRenderer {
       window_mode,
       max_width,
       max_height,
-    })
+    });
+    renderer.fault = fault;
+    Ok(renderer)
   }
 
   /// Create a renderer that draws into an offscreen texture instead of a window.
@@ -312,7 +363,25 @@ impl WgpuRenderer {
     width: u32,
     height: u32,
   ) -> Self {
-    let texture = offscreen_target(&device, width, height);
+    Self::new_offscreen_with_format(
+      device,
+      queue,
+      width,
+      height,
+      wgpu::TextureFormat::Rgba8UnormSrgb,
+    )
+  }
+
+  /// [`new_offscreen`](Self::new_offscreen) with a chosen target format
+  /// (tests of non-sRGB output).
+  pub fn new_offscreen_with_format(
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+  ) -> Self {
+    let texture = offscreen_target(&device, width, height, format);
     Self::from_parts(RendererParts {
       instance: None,
       adapter: None,
@@ -467,6 +536,8 @@ impl WgpuRenderer {
       capture_texture: None,
       pending_capture: None,
       capture_result: None,
+      fault: GpuFault::default(),
+      needs_reconfigure: false,
     };
 
     // Initialize viewport transform
@@ -565,7 +636,7 @@ impl WgpuRenderer {
       }
       // An offscreen target stands in for the window
       PresentTarget::Offscreen { texture } => {
-        *texture = offscreen_target(&self.device, new_width, new_height);
+        *texture = offscreen_target(&self.device, new_width, new_height, texture.format());
       }
     }
     self.window_width = new_width;
@@ -732,7 +803,8 @@ impl WgpuRenderer {
     pipeline: &mut RenderPipeline,
     scene: FrameScene<'_>,
   ) -> Result<(), FrameError> {
-    let (output, view) = self.target.acquire()?;
+    let (output, view, then_reconfigure) = self.target.acquire()?;
+    self.needs_reconfigure |= then_reconfigure;
     let capture_path = self.prepare_capture();
     let frame = FrameInfo {
       game_width: self.game_width,
@@ -817,6 +889,16 @@ impl WgpuRenderer {
   ///
   /// Replaces any pending request. Collect the outcome with
   /// [`take_capture_result`](Self::take_capture_result) after rendering.
+  /// Whether the surface asked to be reconfigured (and forget the request).
+  pub(crate) fn take_needs_reconfigure(&mut self) -> bool {
+    std::mem::take(&mut self.needs_reconfigure)
+  }
+
+  /// A GPU error a device callback reported since the last call.
+  pub(crate) fn take_fault(&self) -> Option<String> {
+    self.fault.take()
+  }
+
   pub fn request_capture(&mut self, path: PathBuf) {
     self.pending_capture = Some(path);
   }

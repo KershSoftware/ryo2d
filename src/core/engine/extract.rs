@@ -194,7 +194,12 @@ impl Engine {
       });
 
     let outcome = match result {
-      Ok(()) => PresentOutcome::Presented,
+      Ok(()) => {
+        if rend.take_needs_reconfigure() {
+          self.surface_needs_reconfigure = true;
+        }
+        PresentOutcome::Presented
+      }
       // Recoverable: reconfigure and draw the next frame
       Err(FrameError::Skip) => PresentOutcome::Skipped,
       Err(FrameError::Reconfigure) => {
