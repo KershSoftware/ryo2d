@@ -27,6 +27,8 @@ pub(crate) struct SceneSlot {
   pub(crate) schedules: SceneSchedules,
   pub(crate) messages: SceneMessages,
   pub(crate) scope_id: u64,
+  /// Set once this scene's action has been dropped and logged.
+  warned_dropped_action: bool,
 }
 
 impl SceneSlot {
@@ -36,6 +38,7 @@ impl SceneSlot {
       schedules: SceneSchedules::default(),
       messages: SceneMessages::default(),
       scope_id: NEXT_SCOPE_ID.fetch_add(1, Ordering::Relaxed),
+      warned_dropped_action: false,
     }
   }
 
@@ -51,6 +54,7 @@ impl SceneSlot {
       schedules,
       messages,
       scope_id,
+      ..
     } = self;
     SceneContext::scoped_parts(world, audio, schedules, messages, *scope_id, |ctx| {
       f(scene.as_mut(), ctx)
@@ -300,9 +304,17 @@ impl SceneManager {
     let top = self.scenes.len() - 1;
     let mut action = SceneAction::Continue;
     for i in self.update_from()..=top {
-      let result = self.scenes[i].call(world, audio, |scene, ctx| scene.update(ctx, dt));
+      let slot = &mut self.scenes[i];
+      let result = slot.call(world, audio, |scene, ctx| scene.update(ctx, dt));
       if i == top {
         action = result;
+      } else if !matches!(result, SceneAction::Continue) && !slot.warned_dropped_action {
+        slot.warned_dropped_action = true;
+        crate::engine_warn!(
+          "scene {} returned {} from update below the top scene; only the top scene's action is applied (logged once)",
+          slot.scene.name(),
+          result.kind()
+        );
       }
     }
     action
@@ -698,6 +710,37 @@ mod tests {
       .write(Ping);
     m.update(&mut world, &mut audio);
     assert_eq!(*heard.lock().unwrap(), 1);
+  }
+
+  struct DroppedQuitter;
+
+  impl Scene for DroppedQuitter {
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Quit
+    }
+  }
+
+  #[test]
+  fn a_lower_scene_s_dropped_action_is_warned_about_once() {
+    let log: Shared = Arc::default();
+    let (mut world, mut audio) = world();
+    let mut m = SceneManager::with_scene(Box::new(DroppedQuitter));
+    m.enter_initial(&mut world, &mut audio);
+    let mut overlay = rec(&log, "overlay");
+    overlay.updates_below = true;
+    m.push(overlay, &mut world, &mut audio);
+    for _ in 0..3 {
+      let action = m.update(&mut world, &mut audio);
+      assert!(
+        matches!(action, SceneAction::Continue),
+        "only the top's action applies"
+      );
+    }
+    let warnings = crate::core::dev_log::get_entries()
+      .iter()
+      .filter(|entry| entry.message.contains("DroppedQuitter"))
+      .count();
+    assert_eq!(warnings, 1);
   }
 
   #[test]

@@ -269,6 +269,26 @@ pub enum SceneAction {
   Quit,
 }
 
+impl SceneAction {
+  /// The variant's name, for logs.
+  pub fn kind(&self) -> &'static str {
+    match self {
+      SceneAction::Continue => "Continue",
+      SceneAction::Push(_) => "Push",
+      SceneAction::PushWith(..) => "PushWith",
+      SceneAction::Pop => "Pop",
+      SceneAction::PopWith(_) => "PopWith",
+      SceneAction::Switch(_) => "Switch",
+      SceneAction::SwitchWith(..) => "SwitchWith",
+      SceneAction::Reset(_) => "Reset",
+      SceneAction::ResetWith(..) => "ResetWith",
+      SceneAction::PopReturn(_) => "PopReturn",
+      SceneAction::PopReturnWith(..) => "PopReturnWith",
+      SceneAction::Quit => "Quit",
+    }
+  }
+}
+
 /// Convenience helper for extracting typed data from `on_resume`'s returned parameter.
 ///
 /// # Example

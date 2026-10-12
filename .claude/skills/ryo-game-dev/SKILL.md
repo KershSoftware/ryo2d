@@ -124,7 +124,7 @@ Every method has a default; implement what the scene needs.
 | `on_pause(ctx)` / `on_resume(ctx, returned)` | Another scene is pushed on top / the one above popped |
 | `on_exit(ctx)` | The scene leaves the stack |
 | `is_transparent()` | Scenes below are still drawn and still get `ui` (overlays, HUDs) |
-| `updates_below()` | Scenes below still update and run their systems |
+| `updates_below()` | Scenes below still update and run their systems; only the top scene's returned `SceneAction` is applied (a lower scene's is dropped with a warning) |
 | `is_physics_paused()` | Pause physics while this scene is on top |
 | `cleanup_on_exit()` | Which engine state `Switch`/`Reset` resets (default `SceneCleanup::DEFAULT`) |
 
