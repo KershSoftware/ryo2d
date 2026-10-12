@@ -75,6 +75,11 @@ matchbox = ["matchbox_socket"]
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
+criterion = "0.5"
+
+[[bench]]
+name = "foundation"
+harness = false
 
 # Dev builds: optimize dependencies and engine for performance, keep game code light for fast iteration
 # The engine's pixel operations (parallax, sprite blitting) need full optimization

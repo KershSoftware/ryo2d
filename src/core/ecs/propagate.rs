@@ -2,8 +2,8 @@
 //! `GlobalTransform`s, recomputing only subtrees that changed.
 
 use super::kernel::{
-  ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Entity, Has, Query, Ref, With,
-  Without,
+  Added, Changed, ChildOf, Children, Commands, DetectChanges, DetectChangesMut, Entity, Has, Or,
+  Query, Ref, RemovedComponents, With, Without,
 };
 use super::transform::{GlobalTransform, Interpolated, PreviousGlobalTransform, Transform};
 
@@ -15,6 +15,9 @@ type RootItem<'a> = (
   Has<Interpolated>,
   Has<PreviousGlobalTransform>,
 );
+
+/// Anything that can move an entity or change whether it is interpolated
+type Placement = Or<(Changed<Transform>, Changed<ChildOf>, Added<Interpolated>)>;
 
 type NodeItem<'a> = (
   Ref<'a, Transform>,
@@ -32,17 +35,32 @@ type NodeItem<'a> = (
 /// Roots are entities with a `Transform` and no parent. Children of a parent
 /// that has no `Transform` of its own (a bare grouping entity) start from the
 /// identity, as if they were roots.
+#[allow(clippy::too_many_arguments)] // one query or removal reader per input
 pub fn propagate_transforms(
   mut roots: Query<RootItem, Without<ChildOf>>,
   mut nodes: Query<NodeItem, With<ChildOf>>,
   grouping: Query<(Entity, &Children), Without<Transform>>,
+  changed: Query<(), Placement>,
+  mut detached: RemovedComponents<ChildOf>,
+  mut uninterpolated: RemovedComponents<Interpolated>,
+  mut untransformed: RemovedComponents<Transform>,
   mut commands: Commands,
 ) {
+  // Nothing that places an entity changed since the last run, so every
+  // `GlobalTransform` and `PreviousGlobalTransform` is already right. The
+  // removal readers are drained either way so old removals don't count again.
+  // An entity that lost its parent is a root placed by its own Transform
+  let detached: Vec<Entity> = detached.read().collect();
+  let removed = detached.len() + uninterpolated.read().count() + untransformed.read().count();
+  if removed == 0 && changed.is_empty() {
+    return;
+  }
+
   // (entity, parent's global, parent changed, parent interpolated)
   let mut stack: Vec<(Entity, GlobalTransform, bool, bool)> = Vec::new();
 
   for (entity, transform, mut global, children, interpolated, has_previous) in roots.iter_mut() {
-    let changed = transform.is_changed();
+    let changed = transform.is_changed() || detached.contains(&entity);
     if changed {
       global.set_if_neq(GlobalTransform::from_transform(&transform));
     }
@@ -156,6 +174,41 @@ mod tests {
       global(&world, e).translation(),
       Vec2::new(30.0, 40.0)
     ));
+  }
+
+  #[test]
+  fn removing_child_of_makes_the_entity_a_root_at_its_local_transform() {
+    let mut world = World::new();
+    let parent = world.spawn(Transform::from_xy(100.0, 0.0)).id();
+    let child = world
+      .spawn((Transform::from_xy(10.0, 0.0), ChildOf(parent)))
+      .id();
+    let mut s = schedule();
+    s.run(&mut world);
+    assert!(close(
+      global(&world, child).translation(),
+      Vec2::new(110.0, 0.0)
+    ));
+    world.entity_mut(child).remove::<ChildOf>();
+    s.run(&mut world);
+    assert!(
+      close(global(&world, child).translation(), Vec2::new(10.0, 0.0)),
+      "detached child at {:?}",
+      global(&world, child).translation()
+    );
+  }
+
+  #[test]
+  fn a_still_world_is_not_rewritten() {
+    let mut world = World::new();
+    let parent = world.spawn(Transform::from_xy(1.0, 0.0)).id();
+    world.spawn((Transform::from_xy(1.0, 0.0), ChildOf(parent)));
+    let mut s = schedule();
+    s.run(&mut world);
+    world.clear_trackers();
+    s.run(&mut world);
+    let mut rewritten = world.query_filtered::<(), Changed<GlobalTransform>>();
+    assert_eq!(rewritten.iter(&world).count(), 0);
   }
 
   #[test]
