@@ -44,7 +44,7 @@ pub fn bricks(mortar: [u8; 4], brick: [u8; 4], size: u32) -> Vec<u8> {
 /// Generate an RGBA solid color texture at the given size.
 pub fn solid(color: [u8; 4], size: u32) -> Vec<u8> {
   let mut data = vec![0u8; (size * size * 4) as usize];
-  for pixel in data.chunks_exact_mut(4) {
+  for pixel in data.as_chunks_mut::<4>().0 {
     pixel.copy_from_slice(&color);
   }
   data
@@ -221,7 +221,7 @@ mod tests {
     let color = [42, 128, 200, 255];
     let tex = solid(color, 64);
     assert_eq!(tex.len(), 64 * 64 * 4);
-    for pixel in tex.chunks_exact(4) {
+    for pixel in tex.as_chunks::<4>().0 {
       assert_eq!(pixel, &color);
     }
   }
@@ -230,7 +230,7 @@ mod tests {
   fn stone_size_and_alpha() {
     let tex = stone([128, 128, 128], 64);
     assert_eq!(tex.len(), 64 * 64 * 4);
-    for pixel in tex.chunks_exact(4) {
+    for pixel in tex.as_chunks::<4>().0 {
       assert_eq!(pixel[3], 255);
     }
   }

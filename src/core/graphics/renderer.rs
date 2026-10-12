@@ -399,7 +399,7 @@ impl WgpuRenderer {
     // Fill the game texture with a dark charcoal background, which is presented
     // immediately to prevent a flash on startup
     let mut pixel_buffer = vec![0u8; (game_width * game_height * 4) as usize];
-    for pixel in pixel_buffer.chunks_exact_mut(4) {
+    for pixel in pixel_buffer.as_chunks_mut::<4>().0 {
       pixel[0] = 0x2d; // R: 45
       pixel[1] = 0x2d; // G: 45
       pixel[2] = 0x2d; // B: 45
@@ -1023,7 +1023,7 @@ mod tests {
 
     // Opaque UI pattern: each pixel encodes its position
     let mut expected = vec![0u8; (width * height * 4) as usize];
-    for (i, px) in expected.chunks_exact_mut(4).enumerate() {
+    for (i, px) in expected.as_chunks_mut::<4>().0.iter_mut().enumerate() {
       let (x, y) = ((i as u32 % width) as u8, (i as u32 / width) as u8);
       px.copy_from_slice(&[x * 6, y * 20, 128, 255]);
     }
@@ -1034,7 +1034,13 @@ mod tests {
     let frame = renderer.read_frame().expect("read frame");
 
     assert_eq!(frame.dimensions(), (width, height));
-    for (got, want) in frame.as_raw().chunks_exact(4).zip(expected.chunks_exact(4)) {
+    for (got, want) in frame
+      .as_raw()
+      .as_chunks::<4>()
+      .0
+      .iter()
+      .zip(expected.as_chunks::<4>().0)
+    {
       assert!(
         got.iter().zip(want).all(|(g, w)| g.abs_diff(*w) <= 1),
         "got {got:?}, want {want:?}"

@@ -733,7 +733,9 @@ mod tests {
     assert_eq!(unknown, vec!["missing".to_string()]);
 
     let floats: Vec<f32> = out
-      .chunks_exact(4)
+      .as_chunks::<4>()
+      .0
+      .iter()
       .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
       .collect();
     assert_eq!(floats[0], 2.5);
@@ -767,7 +769,9 @@ mod tests {
     assert!(problems.is_empty(), "{problems:?}");
 
     let floats: Vec<f32> = out
-      .chunks_exact(4)
+      .as_chunks::<4>()
+      .0
+      .iter()
       .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
       .collect();
     assert_eq!(floats, [1.0, 0.0, 0.2, 0.5]);

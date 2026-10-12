@@ -24,7 +24,7 @@ pub fn strip_row_padding(data: &[u8], width: u32, height: u32, padded_row: u32) 
 
 /// Swap the red and blue channels of BGRA8 pixels in place.
 pub fn bgra_to_rgba_in_place(pixels: &mut [u8]) {
-  for px in pixels.chunks_exact_mut(4) {
+  for px in pixels.as_chunks_mut::<4>().0 {
     px.swap(0, 2);
   }
 }

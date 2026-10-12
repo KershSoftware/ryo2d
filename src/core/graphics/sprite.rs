@@ -19,7 +19,7 @@ pub struct Sprite {
 impl Sprite {
   /// Check if all pixels in the data are fully opaque (alpha=255)
   fn check_opaque(data: &[u8]) -> bool {
-    data.chunks_exact(4).all(|pixel| pixel[3] == 255)
+    data.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255)
   }
 
   /// Create a new sprite from raw RGBA data
@@ -41,7 +41,7 @@ impl Sprite {
   /// Create a solid color rectangle sprite
   pub fn solid_rect(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Self {
     let mut data = vec![0u8; (width * height * 4) as usize];
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
       pixel[0] = r;
       pixel[1] = g;
       pixel[2] = b;
@@ -64,7 +64,7 @@ impl Sprite {
     // Initialize all pixels with the target color (not black) to prevent
     // black fringing during bilinear interpolation at edges
     let mut data = vec![0u8; (diameter * diameter * 4) as usize];
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
       pixel[0] = r;
       pixel[1] = g;
       pixel[2] = b;
@@ -114,7 +114,7 @@ impl Sprite {
   pub fn solid_ellipse(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Self {
     // Initialize all pixels with the target color to prevent fringing
     let mut data = vec![0u8; (width * height * 4) as usize];
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
       pixel[0] = r;
       pixel[1] = g;
       pixel[2] = b;
@@ -316,7 +316,7 @@ impl Sprite {
   /// Convert premultiplied alpha to straight alpha
   fn unpremultiply_alpha(data: &[u8]) -> Vec<u8> {
     let mut result = Vec::with_capacity(data.len());
-    for chunk in data.chunks_exact(4) {
+    for chunk in data.as_chunks::<4>().0 {
       let a = chunk[3] as f32 / 255.0;
       if a > 0.0 {
         result.push((chunk[0] as f32 / a).min(255.0) as u8);

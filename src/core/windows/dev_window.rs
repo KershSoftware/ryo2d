@@ -403,7 +403,7 @@ impl DevWindowRenderer {
 
   /// Clear the pixel buffer with a color.
   pub fn clear(&mut self, color: [u8; 4]) {
-    for pixel in self.pixel_buffer.chunks_exact_mut(4) {
+    for pixel in self.pixel_buffer.as_chunks_mut::<4>().0 {
       pixel.copy_from_slice(&color);
     }
   }

@@ -348,7 +348,7 @@ impl<B: DynamicBundle + Clone + Send + Sync + 'static> Pool<B> {
     self.check_generation(world);
 
     // Collect entities to avoid borrow issues
-    let entities: Vec<Entity> = self.active.drain(..).collect();
+    let entities: Vec<Entity> = std::mem::take(&mut self.active);
 
     // Deactivate and move to available
     for entity in entities {

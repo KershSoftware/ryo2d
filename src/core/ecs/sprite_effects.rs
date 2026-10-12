@@ -311,7 +311,7 @@ impl SpriteEffect {
       Self::Flash { color, intensity } => {
         let mut dst = src.to_vec();
         // Blend each pixel toward the flash color
-        for pixel in dst.chunks_exact_mut(4) {
+        for pixel in dst.as_chunks_mut::<4>().0 {
           if pixel[3] > 0 {
             // Only affect visible pixels
             let t = *intensity;
@@ -326,7 +326,7 @@ impl SpriteEffect {
       Self::ColorShift { color, amount } => {
         let mut dst = src.to_vec();
         // Shift colors toward target
-        for pixel in dst.chunks_exact_mut(4) {
+        for pixel in dst.as_chunks_mut::<4>().0 {
           if pixel[3] > 0 {
             let t = *amount;
             pixel[0] = lerp_u8(pixel[0], color.r, t);
@@ -340,7 +340,7 @@ impl SpriteEffect {
       Self::Silhouette { color } => {
         let mut dst = src.to_vec();
         // Replace all RGB with silhouette color, blend alpha with silhouette alpha
-        for pixel in dst.chunks_exact_mut(4) {
+        for pixel in dst.as_chunks_mut::<4>().0 {
           if pixel[3] > 0 {
             pixel[0] = color.r;
             pixel[1] = color.g;
@@ -355,7 +355,7 @@ impl SpriteEffect {
       Self::Invert => {
         let mut dst = src.to_vec();
         // Invert RGB channels
-        for pixel in dst.chunks_exact_mut(4) {
+        for pixel in dst.as_chunks_mut::<4>().0 {
           if pixel[3] > 0 {
             pixel[0] = 255 - pixel[0];
             pixel[1] = 255 - pixel[1];
@@ -368,7 +368,7 @@ impl SpriteEffect {
       Self::Grayscale { intensity } => {
         let mut dst = src.to_vec();
         // Convert to grayscale
-        for pixel in dst.chunks_exact_mut(4) {
+        for pixel in dst.as_chunks_mut::<4>().0 {
           if pixel[3] > 0 {
             // Standard luminance weights
             let gray =

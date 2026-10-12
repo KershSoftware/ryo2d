@@ -291,7 +291,7 @@ fn test_compose_receives_pixel_data() {
 
   // Create pixel data with known content (red pixels)
   let mut pixel_data = vec![0u8; (width * height * 4) as usize];
-  for pixel in pixel_data.chunks_exact_mut(4) {
+  for pixel in pixel_data.as_chunks_mut::<4>().0 {
     pixel[0] = 255; // R
     pixel[1] = 0; // G
     pixel[2] = 0; // B
@@ -361,7 +361,7 @@ fn test_compose_with_ambient() {
   // Create pixel data with gray pixels
   let gray_value = 128u8;
   let mut pixel_data = vec![0u8; (width * height * 4) as usize];
-  for pixel in pixel_data.chunks_exact_mut(4) {
+  for pixel in pixel_data.as_chunks_mut::<4>().0 {
     pixel[0] = gray_value; // R
     pixel[1] = gray_value; // G
     pixel[2] = gray_value; // B
@@ -448,7 +448,7 @@ fn test_compose_with_zero_ambient() {
 
   // Create pixel data with bright pixels
   let mut pixel_data = vec![0u8; (width * height * 4) as usize];
-  for pixel in pixel_data.chunks_exact_mut(4) {
+  for pixel in pixel_data.as_chunks_mut::<4>().0 {
     pixel[0] = 255; // R
     pixel[1] = 255; // G
     pixel[2] = 255; // B
@@ -661,7 +661,7 @@ fn test_lighting_plus_effects_produces_visible_output() {
 
   // Create bright white pixel data
   let mut pixel_data = vec![0u8; (width * height * 4) as usize];
-  for pixel in pixel_data.chunks_exact_mut(4) {
+  for pixel in pixel_data.as_chunks_mut::<4>().0 {
     pixel[0] = 255; // R
     pixel[1] = 255; // G
     pixel[2] = 255; // B
@@ -765,7 +765,7 @@ fn test_lighting_with_multiple_effects() {
 
   // Create gray pixel data
   let mut pixel_data = vec![0u8; (width * height * 4) as usize];
-  for pixel in pixel_data.chunks_exact_mut(4) {
+  for pixel in pixel_data.as_chunks_mut::<4>().0 {
     pixel[0] = 128;
     pixel[1] = 128;
     pixel[2] = 128;
@@ -1073,7 +1073,7 @@ fn test_non_volumetric_lights_unchanged() {
   let lights = [(transform, light)];
 
   let mut pixel_data = vec![0u8; (width * height * 4) as usize];
-  for pixel in pixel_data.chunks_exact_mut(4) {
+  for pixel in pixel_data.as_chunks_mut::<4>().0 {
     pixel[0] = 200;
     pixel[1] = 200;
     pixel[2] = 200;

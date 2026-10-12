@@ -100,7 +100,9 @@ fn readback_bgra_texture_is_swizzled_to_rgba() {
   let image = read_texture_rgba(&gpu.device, &gpu.queue, &texture).unwrap();
 
   let expected: Vec<u8> = bgra
-    .chunks_exact(4)
+    .as_chunks::<4>()
+    .0
+    .iter()
     .flat_map(|px| [px[2], px[1], px[0], px[3]])
     .collect();
   assert_eq!(image.into_raw(), expected);
