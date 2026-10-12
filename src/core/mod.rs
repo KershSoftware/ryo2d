@@ -4,6 +4,7 @@
 pub mod ecs;
 pub mod error;
 pub mod events;
+pub mod messages;
 
 // Core systems
 pub mod asset;
