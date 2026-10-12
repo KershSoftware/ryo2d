@@ -14,10 +14,11 @@ use crate::core::ecs::{MessageWriter, Res, ResMut, Resource, World};
 use crate::core::graphics::Camera;
 use crate::core::input::{Input, InputEvent};
 use crate::core::messages::{AssetLoadFailed, AssetReloaded, update_messages};
+use crate::core::scene::SceneAction;
 use crate::core::schedule::Phase;
 use crate::core::shaders::EffectsManager;
 use crate::core::time::Time;
-use crate::core::ui::UiContext;
+use crate::core::ui::{UiContext, UiInput};
 use crate::profile_scope;
 
 /// The real delta the loop chose for this frame: `Some` for headless runs
@@ -48,15 +49,15 @@ impl Engine {
       profile_scope!("cpu:update");
       self.ui_pass();
       let mut step = 0;
-      while self.world.resource_mut::<Time>().try_expend_fixed_step() {
+      // A quit (from the UI pass or a step) ends the steps
+      while !self.world.contains_resource::<QuitRequested>()
+        && self.world.resource_mut::<Time>().try_expend_fixed_step()
+      {
         self.world.resource_mut::<Input>().set_fixed_step(step);
         self.world.resource_mut::<Time>().set_in_fixed(true);
         self.schedules.run(Phase::FixedUpdate, &mut self.world);
         self.world.resource_mut::<Time>().set_in_fixed(false);
         step += 1;
-        if self.world.contains_resource::<QuitRequested>() {
-          break;
-        }
       }
       // A press nobody stepped over waits for the next frame's first step
       self.world.resource_mut::<Input>().end_fixed_steps(step > 0);
@@ -253,7 +254,10 @@ impl Engine {
     }
   }
 
-  /// Draw the frame's UI layer: debug overlays and the console.
+  /// The UI pass: the scenes' `ui` (visible scenes, bottom-up), then the
+  /// debug overlays and the console, before any fixed step. What it consumes
+  /// is hidden from gameplay for the frame, and the scene action it returns
+  /// applies at once.
   fn ui_pass(&mut self) {
     let Some((width, height)) = self
       .renderer
@@ -263,37 +267,64 @@ impl Engine {
       return;
     };
     self.ui_buffer.fill(0);
+    let snapshot = UiInput::snapshot(self.world.resource::<Input>());
     let real_dt = self.world.resource::<Time>().real.delta();
-    let input = self.world.resource::<Input>();
-    let mut ui = UiContext::new_scaled(
-      &mut self.ui_buffer,
-      width,
-      height,
-      input,
-      &self.ui_font,
-      self.ui_scale,
-    );
-    ui.set_dt(real_dt);
-    // MIGRATION: Task 14 runs the scenes' `ui` here, before the overlays
-
-    // Overlays draw over game UI: stats (top), FPS, frame timing (bottom)
-    let debug = &self.config.debug;
-    if debug.show_stats {
-      overlays::render_stats(&mut ui, &self.smoothed_stats, height);
-    }
-    if debug.show_fps {
-      overlays::render_fps_counter(
-        &mut ui,
-        self.smoothed_timings.fps as u64,
+    let (action, consumed) = {
+      let mut ui = UiContext::new_scaled(
+        &mut self.ui_buffer,
+        width,
         height,
-        debug.show_frame_timing,
+        snapshot,
+        &self.ui_font,
+        self.ui_scale,
       );
+      ui.set_dt(real_dt);
+      // The console blocks the mouse for everything under it
+      if self.console_state.visible {
+        let (mouse_x, mouse_y) = ui.input().mouse_position();
+        if self.console_state.window_rect().contains(mouse_x, mouse_y) {
+          ui.set_mouse_occluded();
+          ui.consume_click();
+        }
+      }
+
+      let action = with_host(&mut self.world, |world, host| {
+        host.scenes.ui_pass(world, &mut host.audio, &mut ui)
+      });
+
+      // Overlays draw over game UI: stats (top), FPS, frame timing (bottom)
+      let debug = &self.config.debug;
+      if debug.show_stats {
+        overlays::render_stats(&mut ui, &self.smoothed_stats, height);
+      }
+      if debug.show_fps {
+        overlays::render_fps_counter(
+          &mut ui,
+          self.smoothed_timings.fps as u64,
+          height,
+          debug.show_frame_timing,
+        );
+      }
+      if debug.show_frame_timing {
+        overlays::render_frame_timing(&mut ui, &self.smoothed_timings, height);
+      }
+      // The console over everything
+      self.console_state.render(&mut ui, width, height);
+      (action, ui.into_input())
+    };
+
+    consumed.apply_consumed(&mut self.world.resource_mut::<Input>());
+    if !matches!(action, SceneAction::Continue) {
+      let keep_running = with_host(&mut self.world, |world, host| {
+        let SceneHost { scenes, audio } = host;
+        let keep_running = scenes.handle_action(action, world, audio);
+        scenes.sync_physics_paused(world);
+        keep_running
+      });
+      if !keep_running {
+        self.world.insert_resource(QuitRequested);
+      }
     }
-    if debug.show_frame_timing {
-      overlays::render_frame_timing(&mut ui, &self.smoothed_timings, height);
-    }
-    // The console over everything
-    self.console_state.render(&mut ui, width, height);
   }
 
   /// Wait out the rest of the frame at `target_fps` (sleep, then spin for
@@ -568,6 +599,98 @@ mod tests {
       !e.world()
         .resource::<RapierPhysicsWorld>()
         .is_registered(body)
+    );
+  }
+
+  #[test]
+  fn the_ui_pass_runs_first_and_what_it_consumes_never_reaches_update() {
+    use crate::core::ui::UiContext;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use winit::keyboard::KeyCode;
+
+    struct UiFirst {
+      ui_saw: Arc<AtomicBool>,
+      update_saw: Arc<AtomicBool>,
+    }
+    impl Scene for UiFirst {
+      fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        if ui.input().key_pressed(KeyCode::Space) {
+          self.ui_saw.store(true, Ordering::SeqCst);
+          ui.consume_key(KeyCode::Space);
+        }
+        SceneAction::Continue
+      }
+      fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+        if ctx.input.key_pressed(KeyCode::Space) {
+          self.update_saw.store(true, Ordering::SeqCst);
+        }
+        SceneAction::Continue
+      }
+    }
+
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let (ui_saw, update_saw) = (
+      Arc::new(AtomicBool::new(false)),
+      Arc::new(AtomicBool::new(false)),
+    );
+    let mut e = EngineBuilder::new()
+      .resolution(64, 48)
+      .fixed_hz(50)
+      .start_scene(UiFirst {
+        ui_saw: ui_saw.clone(),
+        update_saw: update_saw.clone(),
+      })
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 64, 48), 1.0);
+    e.world_mut()
+      .resource_mut::<crate::core::input::Input>()
+      .queue(crate::core::input::InputEvent::Key {
+        key: KeyCode::Space,
+        pressed: true,
+      });
+    e.frame(Some(Duration::from_millis(20)));
+    assert!(
+      ui_saw.load(Ordering::SeqCst),
+      "the scene's ui ran this frame"
+    );
+    assert!(
+      !update_saw.load(Ordering::SeqCst),
+      "the press the UI took never reached the fixed update"
+    );
+  }
+
+  #[test]
+  fn a_scene_action_from_ui_applies_before_the_fixed_steps() {
+    use crate::core::ui::UiContext;
+    struct QuitFromUi;
+    impl Scene for QuitFromUi {
+      fn ui(&mut self, _ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {
+        SceneAction::Quit
+      }
+    }
+    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
+      return;
+    };
+    let mut e = EngineBuilder::new()
+      .resolution(32, 32)
+      .insert_resource(Steps::default())
+      .start_scene(QuitFromUi)
+      .build_headless();
+    e.init_gpu(WgpuRenderer::new_offscreen(device, queue, 32, 32), 1.0);
+    assert_eq!(
+      e.frame(Some(Duration::from_millis(100))),
+      FrameOutcome::Quit
+    );
+    assert_eq!(
+      e.world()
+        .resource::<crate::core::time::Time>()
+        .fixed
+        .step_count(),
+      0,
+      "no fixed step runs after the UI quit"
     );
   }
 

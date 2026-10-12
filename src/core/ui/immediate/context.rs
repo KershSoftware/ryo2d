@@ -21,8 +21,9 @@
 //! ```
 
 use winit::event::MouseButton;
+use winit::keyboard::KeyCode;
 
-use crate::core::input::Input;
+use super::input::UiInput;
 
 use super::font::BitmapFont;
 use crate::core::ui::retained::{DropdownState, Focusable, ScrollViewState, TextInputState};
@@ -73,8 +74,8 @@ pub struct UiContext<'a> {
   frame_width: u32,
   /// Frame height in pixels
   frame_height: u32,
-  /// Current input state (for click detection)
-  input: &'a Input,
+  /// The frame's input; widgets consume what they use
+  input: UiInput,
   /// Font for text rendering
   font: &'a BitmapFont,
   /// Optional theme for styled widgets
@@ -85,10 +86,6 @@ pub struct UiContext<'a> {
   current_clip: Option<Rect>,
   /// Pending dropdown overlays to draw at end of frame
   pending_dropdowns: Vec<PendingDropdown>,
-  /// Whether escape was consumed by a widget this frame
-  escape_consumed: bool,
-  /// Whether the primary mouse click was consumed by a widget this frame
-  click_consumed: bool,
   /// ID of the currently focused dropdown (0 = none)
   focused_dropdown_id: u32,
   /// Whether a focused text input or an open dropdown was drawn this frame
@@ -110,7 +107,7 @@ impl<'a> UiContext<'a> {
     frame: &'a mut [u8],
     frame_width: u32,
     frame_height: u32,
-    input: &'a Input,
+    input: UiInput,
     font: &'a BitmapFont,
   ) -> Self {
     Self {
@@ -123,8 +120,6 @@ impl<'a> UiContext<'a> {
       clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
       current_clip: None,
       pending_dropdowns: Vec::new(),
-      escape_consumed: false,
-      click_consumed: false,
       focused_dropdown_id: 0,
       keyboard_focus: false,
       ui_scale: 1,
@@ -141,7 +136,7 @@ impl<'a> UiContext<'a> {
     frame: &'a mut [u8],
     frame_width: u32,
     frame_height: u32,
-    input: &'a Input,
+    input: UiInput,
     font: &'a BitmapFont,
     ui_scale: u32,
   ) -> Self {
@@ -155,8 +150,6 @@ impl<'a> UiContext<'a> {
       clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
       current_clip: None,
       pending_dropdowns: Vec::new(),
-      escape_consumed: false,
-      click_consumed: false,
       focused_dropdown_id: 0,
       keyboard_focus: false,
       ui_scale: ui_scale.max(1),
@@ -170,7 +163,7 @@ impl<'a> UiContext<'a> {
     frame: &'a mut [u8],
     frame_width: u32,
     frame_height: u32,
-    input: &'a Input,
+    input: UiInput,
     font: &'a BitmapFont,
     theme: &'a Theme,
   ) -> Self {
@@ -184,8 +177,6 @@ impl<'a> UiContext<'a> {
       clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
       current_clip: None,
       pending_dropdowns: Vec::new(),
-      escape_consumed: false,
-      click_consumed: false,
       focused_dropdown_id: 0,
       keyboard_focus: false,
       ui_scale: 1,
@@ -199,7 +190,7 @@ impl<'a> UiContext<'a> {
     frame: &'a mut [u8],
     frame_width: u32,
     frame_height: u32,
-    input: &'a Input,
+    input: UiInput,
     font: &'a BitmapFont,
     theme: &'a Theme,
     ui_scale: u32,
@@ -214,8 +205,6 @@ impl<'a> UiContext<'a> {
       clip_stack: Vec::with_capacity(MAX_CLIP_STACK_DEPTH),
       current_clip: None,
       pending_dropdowns: Vec::new(),
-      escape_consumed: false,
-      click_consumed: false,
       focused_dropdown_id: 0,
       keyboard_focus: false,
       ui_scale: ui_scale.max(1),
@@ -276,7 +265,7 @@ impl<'a> UiContext<'a> {
   /// self.escape_consumed = ui.escape_consumed();
   /// ```
   pub fn escape_consumed(&self) -> bool {
-    self.escape_consumed
+    self.input.is_key_consumed(KeyCode::Escape)
   }
 
   /// Check if a mouse click was consumed by a widget this frame.
@@ -284,17 +273,34 @@ impl<'a> UiContext<'a> {
   /// Use this to avoid processing clicks on game elements when UI
   /// handled the click.
   pub fn click_consumed(&self) -> bool {
-    self.click_consumed
+    self.input.is_mouse_consumed(MouseButton::Left)
   }
 
-  /// Consume the mouse click for this frame, preventing other widgets from responding.
+  /// Consume the mouse click for this frame, from other widgets and from
+  /// gameplay.
   pub fn consume_click(&mut self) {
-    self.click_consumed = true;
+    self.input.consume_mouse(MouseButton::Left);
   }
 
-  /// Consume the escape key for this frame, preventing other widgets from responding.
+  /// Consume the escape key for this frame, from other widgets and from
+  /// gameplay.
   pub fn consume_escape(&mut self) {
-    self.escape_consumed = true;
+    self.input.consume_key(KeyCode::Escape);
+  }
+
+  /// Consume `key` for this frame, from other widgets and from gameplay.
+  pub fn consume_key(&mut self, key: KeyCode) {
+    self.input.consume_key(key);
+  }
+
+  /// The frame's input as the UI sees it.
+  pub fn input(&self) -> &UiInput {
+    &self.input
+  }
+
+  /// End the pass, handing back the input with what was consumed.
+  pub fn into_input(self) -> UiInput {
+    self.input
   }
 
   /// Mark the mouse as occluded by an overlay (e.g. developer console).
@@ -849,9 +855,9 @@ impl<'a> UiContext<'a> {
   pub fn button(&mut self, text: &str, rect: Rect) -> bool {
     let hovered = self.is_hovered(rect);
     let held = self.is_held(rect);
-    let clicked = !self.click_consumed && self.is_clicked(rect);
+    let clicked = self.is_clicked(rect);
     if clicked {
-      self.click_consumed = true;
+      self.input.consume_mouse(MouseButton::Left);
     }
 
     // Use theme colors if available, otherwise use defaults
@@ -913,9 +919,9 @@ impl<'a> UiContext<'a> {
   ) -> bool {
     let hovered = self.is_hovered(rect);
     let held = self.is_held(rect);
-    let clicked = !self.click_consumed && self.is_clicked(rect);
+    let clicked = self.is_clicked(rect);
     if clicked {
-      self.click_consumed = true;
+      self.input.consume_mouse(MouseButton::Left);
     }
 
     let bg_color = if held {
@@ -1123,9 +1129,9 @@ impl<'a> UiContext<'a> {
   /// * `label` - Optional label text to display next to the checkbox
   pub fn checkbox(&mut self, rect: Rect, checked: &mut bool, label: Option<&str>) -> bool {
     let hovered = self.is_hovered(rect);
-    let clicked = !self.click_consumed && self.is_clicked(rect);
+    let clicked = self.is_clicked(rect);
     if clicked {
-      self.click_consumed = true;
+      self.input.consume_mouse(MouseButton::Left);
     }
 
     // Get colors from theme or use defaults
@@ -1189,9 +1195,9 @@ impl<'a> UiContext<'a> {
   /// * `on` - Mutable reference to the toggle state
   pub fn toggle(&mut self, rect: Rect, on: &mut bool) -> bool {
     let hovered = self.is_hovered(rect);
-    let clicked = !self.click_consumed && self.is_clicked(rect);
+    let clicked = self.is_clicked(rect);
     if clicked {
-      self.click_consumed = true;
+      self.input.consume_mouse(MouseButton::Left);
     }
 
     // Get colors from theme or use defaults
@@ -1287,11 +1293,11 @@ impl<'a> UiContext<'a> {
     let text_x = rect.x + pad_x;
 
     // Handle focus on click
-    let clicked = !self.click_consumed && self.is_clicked(rect);
+    let clicked = self.is_clicked(rect);
     let hovered = self.is_hovered(rect);
 
     if clicked {
-      self.click_consumed = true;
+      self.input.consume_mouse(MouseButton::Left);
       state.set_focused(true);
 
       // Calculate which character was clicked, accounting for scroll offset
@@ -1321,19 +1327,16 @@ impl<'a> UiContext<'a> {
         idx.min(state.text().chars().count())
       };
       state.set_cursor_char(char_index, true); // true = extend selection from anchor
-    } else if self.input.mouse_pressed(MouseButton::Left) && !hovered {
+    } else if self.input.mouse_went_down(MouseButton::Left) && !hovered {
       // Click outside always unfocuses, even if click was consumed by another widget.
       // This prevents dual-focus when clicking between text inputs rendered in any order.
       state.set_focused(false);
     }
 
     // Escape leaves the field, used up so the scene does not also act on it
-    if state.is_focused()
-      && !self.escape_consumed
-      && self.input.key_pressed(winit::keyboard::KeyCode::Escape)
-    {
+    if state.is_focused() && self.input.key_pressed(KeyCode::Escape) {
       state.set_focused(false);
-      self.escape_consumed = true;
+      self.input.consume_key(KeyCode::Escape);
     }
 
     if state.is_focused() {
@@ -1341,7 +1344,7 @@ impl<'a> UiContext<'a> {
     }
 
     // Handle keyboard input
-    let modified = state.handle_input(self.input);
+    let modified = state.handle_input(&self.input);
 
     // Get colors from theme or use defaults
     let (bg_color, border_color, text_color, placeholder_color, cursor_color, selection_color) =
@@ -1439,12 +1442,12 @@ impl<'a> UiContext<'a> {
       self.draw_text(text, text_x - scroll, text_y, text_color);
 
       // Draw IME preedit text at cursor if composing
-      let preedit = self.input.ime_preedit();
+      let preedit = self.input.ime_preedit().to_owned();
       if !preedit.is_empty() {
         let cursor_chars = text[..state.cursor()].chars().count();
         let preedit_x = text_x + cursor_chars as f32 * char_width - scroll;
         // Draw preedit with underline-style indicator
-        self.draw_text(preedit, preedit_x, text_y, text_color);
+        self.draw_text(&preedit, preedit_x, text_y, text_color);
         // Draw underline for preedit text
         let preedit_width = preedit.chars().count() as f32 * char_width;
         self.draw_rect(
@@ -1565,7 +1568,7 @@ impl<'a> UiContext<'a> {
       None
     };
     let changed = state.handle_input(
-      self.input,
+      &self.input,
       view_height,
       content_height,
       content_hovered || scrollbar_hovered,
@@ -1712,7 +1715,7 @@ impl<'a> UiContext<'a> {
       None
     };
     let changed = state.handle_input_horizontal(
-      self.input,
+      &self.input,
       view_width,
       content_width,
       content_hovered || scrollbar_hovered,
@@ -1833,7 +1836,7 @@ impl<'a> UiContext<'a> {
       };
 
     let trigger_hovered = self.is_hovered(rect);
-    let mouse_pressed = self.input.mouse_pressed(MouseButton::Left) && !self.click_consumed;
+    let mouse_pressed = self.input.mouse_pressed(MouseButton::Left);
     let mouse_x = self.input.mouse_x();
     let mouse_y = self.input.mouse_y();
 
@@ -1893,7 +1896,7 @@ impl<'a> UiContext<'a> {
     // Handle trigger click to toggle dropdown
     if trigger_hovered && mouse_pressed {
       state.toggle();
-      self.click_consumed = true;
+      self.input.consume_mouse(MouseButton::Left);
     }
 
     // Note: Space/Enter to open focused dropdown is handled in handle_dropdown_tab_navigation()
@@ -1917,7 +1920,7 @@ impl<'a> UiContext<'a> {
       }
       if self.input.key_pressed(winit::keyboard::KeyCode::Escape) {
         state.close();
-        self.escape_consumed = true;
+        self.input.consume_key(KeyCode::Escape);
       }
 
       // Calculate list rect for click-outside detection
@@ -1944,13 +1947,13 @@ impl<'a> UiContext<'a> {
         if option_hovered && mouse_pressed {
           state.set_selected(i);
           state.close();
-          self.click_consumed = true;
+          self.input.consume_mouse(MouseButton::Left);
         }
       }
 
       // Consume click if anywhere on the dropdown to prevent passthrough
       if mouse_pressed && full_dropdown.contains(mouse_x, mouse_y) {
-        self.click_consumed = true;
+        self.input.consume_mouse(MouseButton::Left);
       }
 
       // Queue the dropdown list to be drawn later (on top of everything)
@@ -2350,16 +2353,14 @@ impl<'a> UiContext<'a> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::core::input::Input;
   use winit::event::ElementState;
 
   fn create_test_context(width: u32, height: u32, frame: &mut [u8]) -> UiContext<'_> {
-    let input = Input::new();
-    // Leak the input to get a static reference for testing
-    let input_ref: &'static Input = Box::leak(Box::new(input));
     let font = super::super::font::create_debug_font();
     let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
 
-    UiContext::new(frame, width, height, input_ref, font_ref)
+    UiContext::new(frame, width, height, UiInput::default(), font_ref)
   }
 
   #[test]
@@ -2527,10 +2528,9 @@ mod tests {
     let mut input = Input::new();
     input.handle_mouse_move(click_x as f64, click_y as f64);
     input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
-    let input_ref: &'static Input = Box::leak(Box::new(input));
     let font = super::super::font::create_debug_font();
     let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
-    UiContext::new(frame, width, height, input_ref, font_ref)
+    UiContext::new(frame, width, height, UiInput::snapshot(&input), font_ref)
   }
 
   #[test]
@@ -2713,12 +2713,10 @@ mod tests {
     frame: &mut [u8],
     scale: u32,
   ) -> UiContext<'_> {
-    let input = Input::new();
-    let input_ref: &'static Input = Box::leak(Box::new(input));
     let font = super::super::font::create_debug_font();
     let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
 
-    UiContext::new_scaled(frame, width, height, input_ref, font_ref, scale)
+    UiContext::new_scaled(frame, width, height, UiInput::default(), font_ref, scale)
   }
 
   #[test]
@@ -2809,10 +2807,9 @@ mod tests {
   ) -> UiContext<'_> {
     let mut input = Input::new();
     input.handle_mouse_move(hover_x as f64, hover_y as f64);
-    let input_ref: &'static Input = Box::leak(Box::new(input));
     let font = super::super::font::create_debug_font();
     let font_ref: &'static BitmapFont = Box::leak(Box::new(font));
-    UiContext::new(frame, width, height, input_ref, font_ref)
+    UiContext::new(frame, width, height, UiInput::snapshot(&input), font_ref)
   }
 
   #[test]
@@ -2928,10 +2925,9 @@ mod tests {
       winit::keyboard::KeyCode::Escape,
       winit::event::ElementState::Pressed,
     );
-    let input: &'static Input = Box::leak(Box::new(input));
     let font: &'static BitmapFont = Box::leak(Box::new(super::super::font::create_debug_font()));
     let mut frame = vec![0u8; 200 * 100 * 4];
-    let mut ui = UiContext::new(&mut frame, 200, 100, input, font);
+    let mut ui = UiContext::new(&mut frame, 200, 100, UiInput::snapshot(&input), font);
     let mut field = TextInputState::new();
     field.set_focused(true);
 

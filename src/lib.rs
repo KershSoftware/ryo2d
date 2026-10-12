@@ -204,7 +204,8 @@ pub mod prelude {
   pub use crate::core::ui::{
     Anchor, BitmapFont, Color, DropdownState, FocusTrap, Focusable, HAlign, HBox, HotReloadTheme,
     Rect, ScrollViewState, Stack, TextInputState, Theme, ThemeError, TweenColor, TweenFloat,
-    TweenRect, TweenVec2, UiContext, UiTween, UiTweenLoop, VAlign, VBox, create_debug_font,
+    TweenRect, TweenVec2, UiContext, UiInput, UiTween, UiTweenLoop, VAlign, VBox,
+    create_debug_font,
   };
 
   // 2D Lighting system

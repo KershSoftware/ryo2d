@@ -40,8 +40,10 @@
 
 mod context;
 mod font;
+mod input;
 mod layout;
 
 pub use context::UiContext;
 pub use font::{BitmapFont, create_debug_font};
+pub use input::{UiConsumed, UiInput};
 pub use layout::{HAlign, HBox, Stack, VAlign, VBox};

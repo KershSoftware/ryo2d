@@ -1043,6 +1043,76 @@ impl Input {
   }
 }
 
+/// This frame's input as the UI pass sees it: every set filtered through the
+/// same blocks, suppression and consumption the read methods apply.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct InputView {
+  pub(crate) mouse: (f32, f32),
+  pub(crate) scroll: (f32, f32),
+  pub(crate) keys_down: HashSet<KeyCode>,
+  pub(crate) keys_pressed: HashSet<KeyCode>,
+  pub(crate) keys_released: HashSet<KeyCode>,
+  pub(crate) keys_repeated: HashSet<KeyCode>,
+  pub(crate) mouse_down: HashSet<MouseButton>,
+  pub(crate) mouse_pressed: HashSet<MouseButton>,
+  pub(crate) mouse_released: HashSet<MouseButton>,
+  pub(crate) text: String,
+  pub(crate) ime_preedit: String,
+  pub(crate) ime_preedit_cursor: Option<(usize, usize)>,
+  pub(crate) ime_composing: bool,
+  pub(crate) ime_enabled: bool,
+  pub(crate) gamepad_pressed: HashSet<GamepadButton>,
+  pub(crate) left_stick: (f32, f32),
+}
+
+impl Input {
+  /// What the UI pass reads; nothing here is consumed by taking it.
+  pub(crate) fn ui_view(&self) -> InputView {
+    fn keep<T: Copy + Eq + std::hash::Hash>(
+      set: &HashSet<T>,
+      read: impl Fn(T) -> bool,
+    ) -> HashSet<T> {
+      set.iter().copied().filter(|item| read(*item)).collect()
+    }
+    InputView {
+      mouse: self.mouse_position(),
+      scroll: self.scroll_delta(),
+      keys_down: keep(&self.keys_down, |key| self.key_down(key)),
+      keys_pressed: keep(&self.keys_pressed, |key| self.key_pressed(key)),
+      keys_released: keep(&self.keys_released, |key| self.key_released(key)),
+      keys_repeated: keep(&self.keys_repeated, |key| self.key_repeat(key)),
+      mouse_down: keep(&self.mouse_buttons_down, |button| self.mouse_down(button)),
+      mouse_pressed: keep(&self.mouse_buttons_pressed, |button| {
+        self.mouse_pressed(button)
+      }),
+      mouse_released: keep(&self.mouse_buttons_released, |button| {
+        self.mouse_released(button)
+      }),
+      text: self.peek_text_input().to_string(),
+      ime_preedit: self.ime_preedit().to_string(),
+      ime_preedit_cursor: self.ime_preedit_cursor(),
+      ime_composing: self.ime_composing(),
+      ime_enabled: self.ime_enabled(),
+      gamepad_pressed: keep(&self.gamepad_buttons_pressed, |button| {
+        self.gamepad_button_pressed(button)
+      }),
+      left_stick: self.left_stick(),
+    }
+  }
+
+  /// The frame's typed text, as `text_input` would return it, without
+  /// consuming it.
+  fn peek_text_input(&self) -> &str {
+    if self.oneshots() == OneShots::Suppressed
+      || self.keys_blocked()
+      || self.text_input_consumed.load(Ordering::Relaxed)
+    {
+      return "";
+    }
+    &self.text_input
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

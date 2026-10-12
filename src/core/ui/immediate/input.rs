@@ -1,0 +1,237 @@
+//! What the UI pass reads of input: a snapshot that records what it consumes.
+
+use std::cell::Cell;
+use std::collections::HashSet;
+
+use winit::event::MouseButton;
+use winit::keyboard::KeyCode;
+
+use crate::core::input::{GamepadButton, Input, InputView};
+
+/// The frame's input as the UI sees it.
+///
+/// The UI pass runs before gameplay. Widgets read this snapshot and consume
+/// what they use (a clicked button takes the click, a focused text field the
+/// typed text); the engine then applies the consumption to `Input`, so
+/// gameplay never sees input the UI took. A consumed key or button reads as
+/// not pressed, held or released for the rest of the frame.
+#[derive(Debug, Clone, Default)]
+pub struct UiInput {
+  view: InputView,
+  consumed_keys: HashSet<KeyCode>,
+  consumed_mouse: HashSet<MouseButton>,
+  text_consumed: Cell<bool>,
+}
+
+/// What a UI pass consumed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UiConsumed {
+  pub keys: Vec<KeyCode>,
+  pub mouse: Vec<MouseButton>,
+  pub text: bool,
+}
+
+impl UiInput {
+  /// The frame's input, read without consuming anything.
+  pub fn snapshot(input: &Input) -> Self {
+    Self {
+      view: input.ui_view(),
+      ..Self::default()
+    }
+  }
+
+  // --- mouse ---
+
+  pub fn mouse_position(&self) -> (f32, f32) {
+    self.view.mouse
+  }
+
+  pub fn mouse_x(&self) -> f32 {
+    self.view.mouse.0
+  }
+
+  pub fn mouse_y(&self) -> f32 {
+    self.view.mouse.1
+  }
+
+  pub fn mouse_down(&self, button: MouseButton) -> bool {
+    !self.consumed_mouse.contains(&button) && self.view.mouse_down.contains(&button)
+  }
+
+  pub fn mouse_pressed(&self, button: MouseButton) -> bool {
+    !self.consumed_mouse.contains(&button) && self.view.mouse_pressed.contains(&button)
+  }
+
+  pub fn mouse_released(&self, button: MouseButton) -> bool {
+    !self.consumed_mouse.contains(&button) && self.view.mouse_released.contains(&button)
+  }
+
+  /// Whether `button` went down this frame, consumed or not (a click
+  /// anywhere unfocuses a text field even when another widget took it).
+  pub(crate) fn mouse_went_down(&self, button: MouseButton) -> bool {
+    self.view.mouse_pressed.contains(&button)
+  }
+
+  pub fn scroll_delta(&self) -> (f32, f32) {
+    self.view.scroll
+  }
+
+  // --- keyboard ---
+
+  pub fn key_down(&self, key: KeyCode) -> bool {
+    !self.consumed_keys.contains(&key) && self.view.keys_down.contains(&key)
+  }
+
+  pub fn key_pressed(&self, key: KeyCode) -> bool {
+    !self.consumed_keys.contains(&key) && self.view.keys_pressed.contains(&key)
+  }
+
+  pub fn key_released(&self, key: KeyCode) -> bool {
+    !self.consumed_keys.contains(&key) && self.view.keys_released.contains(&key)
+  }
+
+  /// The key fired this frame: initial press or repeat.
+  pub fn key_repeat(&self, key: KeyCode) -> bool {
+    !self.consumed_keys.contains(&key) && self.view.keys_repeated.contains(&key)
+  }
+
+  /// The frame's typed text. The first non-empty read consumes it.
+  pub fn text_input(&self) -> &str {
+    if self.text_consumed.get() {
+      return "";
+    }
+    if !self.view.text.is_empty() {
+      self.text_consumed.set(true);
+    }
+    &self.view.text
+  }
+
+  pub fn ime_preedit(&self) -> &str {
+    &self.view.ime_preedit
+  }
+
+  pub fn ime_preedit_cursor(&self) -> Option<(usize, usize)> {
+    self.view.ime_preedit_cursor
+  }
+
+  pub fn ime_composing(&self) -> bool {
+    self.view.ime_composing
+  }
+
+  pub fn ime_enabled(&self) -> bool {
+    self.view.ime_enabled
+  }
+
+  // --- gamepad ---
+
+  pub fn gamepad_button_pressed(&self, button: GamepadButton) -> bool {
+    self.view.gamepad_pressed.contains(&button)
+  }
+
+  pub fn left_stick(&self) -> (f32, f32) {
+    self.view.left_stick
+  }
+
+  // --- consumption ---
+
+  /// Take `key` for the rest of the frame, from the UI and from gameplay.
+  pub fn consume_key(&mut self, key: KeyCode) {
+    self.consumed_keys.insert(key);
+  }
+
+  /// Take `button` for the rest of the frame, from the UI and from gameplay.
+  pub fn consume_mouse(&mut self, button: MouseButton) {
+    self.consumed_mouse.insert(button);
+  }
+
+  /// Take the frame's typed text.
+  pub fn consume_text(&self) {
+    self.text_consumed.set(true);
+  }
+
+  pub fn is_key_consumed(&self, key: KeyCode) -> bool {
+    self.consumed_keys.contains(&key)
+  }
+
+  pub fn is_mouse_consumed(&self, button: MouseButton) -> bool {
+    self.consumed_mouse.contains(&button)
+  }
+
+  /// Everything consumed so far.
+  pub fn consumed(&self) -> UiConsumed {
+    UiConsumed {
+      keys: self.consumed_keys.iter().copied().collect(),
+      mouse: self.consumed_mouse.iter().copied().collect(),
+      text: self.text_consumed.get(),
+    }
+  }
+
+  /// Hide what the UI consumed from `input` for the rest of the frame.
+  pub fn apply_consumed(&self, input: &mut Input) {
+    for &key in &self.consumed_keys {
+      input.consume_key(key);
+    }
+    for &button in &self.consumed_mouse {
+      input.consume_mouse(button);
+    }
+    if self.text_consumed.get() {
+      input.consume_text();
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::core::input::{Input, InputEvent};
+  use winit::keyboard::KeyCode;
+
+  #[test]
+  fn snapshot_reads_and_consumption_flows_back() {
+    let mut input = Input::new();
+    input.queue(InputEvent::Key {
+      key: KeyCode::Escape,
+      pressed: true,
+    });
+    input.queue(InputEvent::MouseMove { x: 10.0, y: 20.0 });
+    input.begin_frame();
+    let mut ui = UiInput::snapshot(&input);
+    assert!(ui.key_pressed(KeyCode::Escape));
+    assert_eq!(ui.mouse_position(), (10.0, 20.0));
+    ui.consume_key(KeyCode::Escape);
+    assert!(!ui.key_pressed(KeyCode::Escape));
+    ui.apply_consumed(&mut input);
+    assert!(
+      !input.key_pressed(KeyCode::Escape),
+      "gameplay no longer sees it"
+    );
+  }
+
+  #[test]
+  fn typed_text_read_by_the_ui_is_gone_for_gameplay() {
+    let mut input = Input::new();
+    input.queue(InputEvent::Text("hi".into()));
+    input.begin_frame();
+    let ui = UiInput::snapshot(&input);
+    assert_eq!(ui.text_input(), "hi");
+    assert_eq!(ui.text_input(), "", "the first read consumes");
+    ui.apply_consumed(&mut input);
+    assert_eq!(input.text_input(), "");
+  }
+
+  #[test]
+  fn taking_a_snapshot_consumes_nothing() {
+    let mut input = Input::new();
+    input.queue(InputEvent::Text("hi".into()));
+    input.queue(InputEvent::MouseButton {
+      button: MouseButton::Left,
+      pressed: true,
+    });
+    input.begin_frame();
+    let ui = UiInput::snapshot(&input);
+    assert!(ui.mouse_pressed(MouseButton::Left));
+    ui.apply_consumed(&mut input);
+    assert!(input.mouse_pressed(MouseButton::Left));
+    assert_eq!(input.text_input(), "hi");
+  }
+}

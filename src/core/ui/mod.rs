@@ -72,7 +72,9 @@ mod types;
 pub use types::{Anchor, Color, Rect};
 
 // Re-export immediate mode API (stateless per-frame drawing)
-pub use immediate::{BitmapFont, HAlign, HBox, Stack, UiContext, VAlign, VBox, create_debug_font};
+pub use immediate::{
+  BitmapFont, HAlign, HBox, Stack, UiConsumed, UiContext, UiInput, VAlign, VBox, create_debug_font,
+};
 
 // Re-export retained mode API (stateful widgets)
 pub use retained::{DropdownState, FocusTrap, Focusable, ScrollViewState, TextInputState};
