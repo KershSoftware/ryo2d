@@ -7,6 +7,7 @@ use crate::core::graphics::Camera;
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::clear_messages;
 use crate::core::shaders::EffectsManager;
+use crate::core::tilemap::manager::forget_despawned_tilemaps;
 use crate::core::time::Time;
 
 use super::SceneCleanup;
@@ -19,6 +20,7 @@ pub(super) fn execute_cleanup(cleanup: SceneCleanup, world: &mut World, audio: &
   }
   if cleanup.contains(SceneCleanup::WORLD) {
     despawn_game_entities(world);
+    forget_despawned_tilemaps(world);
   }
   if cleanup.contains(SceneCleanup::CAMERA)
     && let Some(mut camera) = world.get_resource_mut::<Camera>()

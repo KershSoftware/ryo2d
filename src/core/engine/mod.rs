@@ -328,6 +328,7 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
     (
       unregister_removed_bodies,
       register_restored_bodies,
+      crate::core::tilemap::manager::forget_despawned_tilemaps,
       clear_trackers_system,
     )
       .chain(),

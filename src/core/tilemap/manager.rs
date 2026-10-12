@@ -12,6 +12,27 @@ struct TilemapRecord {
   chunks: HashMap<ChunkCoord, ChunkState>,
 }
 
+/// Drop the records of tilemaps whose entity no longer exists (runs in
+/// `Last` and after a scene cleanup despawns the world).
+pub(crate) fn forget_despawned_tilemaps(world: &mut crate::core::ecs::World) {
+  let Some(manager) = world.get_resource::<TilemapManager>() else {
+    return;
+  };
+  let gone: Vec<Entity> = manager
+    .tilemaps
+    .keys()
+    .copied()
+    .filter(|&entity| world.get_entity(entity).is_err())
+    .collect();
+  if gone.is_empty() {
+    return;
+  }
+  let mut manager = world.resource_mut::<TilemapManager>();
+  for entity in gone {
+    manager.unregister(entity);
+  }
+}
+
 /// Manages all active tilemaps.
 ///
 /// Each tilemap is associated with an [`Entity`] and tracked with
@@ -207,6 +228,24 @@ mod tests {
   use crate::core::tilemap::layer::TilemapLayer;
   use crate::core::tilemap::tileset::{TileProperties, Tileset};
   use std::collections::HashMap;
+
+  #[test]
+  fn a_despawned_tilemap_entity_is_forgotten() {
+    let mut world = crate::core::ecs::World::new();
+    world.insert_resource(TilemapManager::new());
+    let kept = world.spawn_empty().id();
+    let gone = world.spawn_empty().id();
+    for entity in [kept, gone] {
+      world
+        .resource_mut::<TilemapManager>()
+        .register(entity, Tilemap::new(32, 32, 4, 4));
+    }
+    world.despawn(gone);
+    forget_despawned_tilemaps(&mut world);
+    let manager = world.resource::<TilemapManager>();
+    assert!(manager.get_tilemap(kept).is_some());
+    assert!(manager.get_tilemap(gone).is_none());
+  }
 
   fn test_tileset() -> Tileset {
     Tileset {
