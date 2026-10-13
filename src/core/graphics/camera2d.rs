@@ -209,11 +209,6 @@ impl CameraView {
     (world.x, world.y)
   }
 
-  /// Whether the world rectangle at `(x, y)` of `width`x`height` can be seen.
-  pub(crate) fn is_visible_rect(&self, x: f32, y: f32, width: f32, height: f32) -> bool {
-    self.is_visible(Vec2::new(x, y), Vec2::new(x + width, y + height))
-  }
-
   /// Whether the world box `min..max` can be seen.
   pub fn is_visible(&self, min: Vec2, max: Vec2) -> bool {
     max.x > self.bounds.left

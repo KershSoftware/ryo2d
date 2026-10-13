@@ -12,9 +12,13 @@
 // on output for the Rgba8UnormSrgb game texture. Samples outside the sprite's
 // own rect (uv_bounds) are transparent, so atlas neighbours never show.
 
+// The camera the sprites are drawn through (`CameraGlobals`)
 struct Globals {
     view_proj: mat4x4<f32>,
-    time_resolution: vec4<f32>, // x=game time, y=width, z=height, w=unused
+    resolution: vec2<f32>, // the camera image, in pixels
+    game_time: f32,
+    real_time: f32,
+    snap: f32,             // 1.0: axis-aligned quads land on whole pixels
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -63,8 +67,16 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     let local_pos = vec3<f32>(vertex.position, 1.0);
     let world_pos = transform * local_pos;
     
-    // Apply view-projection
-    out.clip_position = globals.view_proj * vec4<f32>(world_pos.xy, 0.0, 1.0);
+    // Through the camera
+    var clip = globals.view_proj * vec4<f32>(world_pos.xy, 0.0, 1.0);
+    // Pixel art: axis-aligned quads put their corners on whole pixels
+    let axis_aligned = abs(instance.transform0.y) < 1e-5 && abs(instance.transform1.x) < 1e-5;
+    if globals.snap > 0.5 && axis_aligned {
+        let pixel = (clip.xy * vec2<f32>(0.5, -0.5) + 0.5) * globals.resolution;
+        let snapped = round(pixel) / globals.resolution;
+        clip = vec4<f32>((snapped - 0.5) * vec2<f32>(2.0, -2.0), clip.z, clip.w);
+    }
+    out.clip_position = clip;
     
     // Interpolate UVs from uv_rect
     out.uv = mix(instance.uv_rect.xy, instance.uv_rect.zw, vertex.uv);

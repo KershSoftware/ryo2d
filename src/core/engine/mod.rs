@@ -158,6 +158,8 @@ pub struct Engine {
   lighting: Option<LightingRenderer>,
   trail_renderer: Option<TrailRenderer>,
   entity_drawer: EntityDrawer,
+  // Each camera's uniform buffer, kept across frames
+  camera_uniforms: crate::core::graphics::camera_gpu::CameraUniforms,
   draw_list: DrawList,
   batch_collector: BatchCollector,
   // UI
@@ -495,6 +497,7 @@ impl Engine {
       lighting: None,
       trail_renderer: None,
       entity_drawer: EntityDrawer,
+      camera_uniforms: Default::default(),
       draw_list: DrawList::default(),
       batch_collector: BatchCollector::new(),
       ui_font,

@@ -20,6 +20,7 @@ impl RenderPass for World {
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
     let sprites: &SpriteGpuRenderer = ctx.scene.sprites;
     let trails: Option<&TrailRenderer> = ctx.scene.trails;
+    let camera = ctx.scene.camera;
     let (queue, game_view) = (ctx.queue(), ctx.targets.game_view);
 
     // Buffer writes can't happen inside the pass (the engine already wrote
@@ -48,7 +49,7 @@ impl RenderPass for World {
     });
     for run in runs {
       match run {
-        WorldRun::Sprites { .. } => sprites.draw_world_run(&mut pass, run),
+        WorldRun::Sprites { .. } => sprites.draw_world_run(&mut pass, run, camera),
         WorldRun::Trail { z } => {
           if let Some(trails) = trails {
             trails.draw_group(&mut pass, true, *z);

@@ -33,9 +33,11 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
+use super::CameraView;
+use super::camera_gpu::CameraUniforms;
 use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
 use crate::core::asset::SpriteHandle;
-use crate::core::ecs::{Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
+use crate::core::ecs::{Entity, Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
 use crate::core::render::{DrawKind, DrawList, PipelineKind, SpriteShading, WorldRun, plan_runs};
 use crate::core::shaders::custom::{self, ParamLayout, ShaderError, ShaderKind};
 use crate::core::shaders::scope::Checked;
@@ -239,34 +241,6 @@ impl SpriteInstance {
 impl Default for SpriteInstance {
   fn default() -> Self {
     Self::new()
-  }
-}
-
-/// Global uniforms for sprite rendering
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct SpriteGlobals {
-  /// View-projection matrix (orthographic 2D)
-  pub view_proj: [[f32; 4]; 4],
-  /// Time and resolution: x = game time (what sprite effects and custom
-  /// sprite shaders animate on), y = width, z = height, w = unused (0)
-  pub time_resolution: [f32; 4],
-}
-
-impl SpriteGlobals {
-  /// Create globals for orthographic 2D rendering
-  pub fn new(width: f32, height: f32, game_time: f32) -> Self {
-    // Orthographic projection: maps (0,0)-(width,height) to clip space (-1,-1)-(1,1)
-    // Y is flipped so 0 is at top
-    Self {
-      view_proj: [
-        [2.0 / width, 0.0, 0.0, 0.0],
-        [0.0, -2.0 / height, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [-1.0, 1.0, 0.0, 1.0],
-      ],
-      time_resolution: [game_time, width, height, 0.0],
-    }
   }
 }
 
@@ -530,8 +504,10 @@ pub struct SpriteGpuRenderer {
   custom: CustomPipelines,
 
   // Global uniforms
-  globals_buffer: wgpu::Buffer,
-  globals_bind_group: wgpu::BindGroup,
+  // Group 0 is the camera the sprites are drawn through: one bind group per
+  // camera's uniform buffer
+  globals_layout: wgpu::BindGroupLayout,
+  camera_bind_groups: HashMap<Entity, wgpu::BindGroup>,
 
   // Instance buffer (rebuilt each frame)
   instance_buffer: wgpu::Buffer,
@@ -628,23 +604,6 @@ impl SpriteGpuRenderer {
       mipmap_filter: wgpu::MipmapFilterMode::Nearest,
       ..Default::default()
     }));
-
-    // Create globals buffer
-    let globals = SpriteGlobals::new(320.0, 180.0, 0.0);
-    let globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-      label: Some("Sprite Globals Buffer"),
-      contents: bytemuck::cast_slice(&[globals]),
-      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
-
-    let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Sprite Globals Bind Group"),
-      layout: &globals_layout,
-      entries: &[wgpu::BindGroupEntry {
-        binding: 0,
-        resource: globals_buffer.as_entire_binding(),
-      }],
-    });
 
     let instance_buffer = Self::create_instance_buffer(device, Self::MAX_INSTANCES);
 
@@ -850,8 +809,8 @@ impl SpriteGpuRenderer {
         compiled: HashMap::new(),
         warned: HashMap::new(),
       },
-      globals_buffer,
-      globals_bind_group,
+      globals_layout,
+      camera_bind_groups: HashMap::new(),
       instance_buffer,
       instance_capacity: Self::MAX_INSTANCES,
       vertex_buffer,
@@ -874,11 +833,29 @@ impl SpriteGpuRenderer {
     })
   }
 
-  /// Update globals for the current frame: the game resolution and the time
-  /// custom sprite shaders read as `in.time`, in seconds
-  pub fn set_viewport(&mut self, queue: &wgpu::Queue, width: f32, height: f32, game_time: f32) {
-    let globals = SpriteGlobals::new(width, height, game_time);
-    queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
+  /// Bind every camera's uniform buffer (made by `CameraUniforms::sync`),
+  /// dropping the bind groups of cameras that are gone.
+  pub(crate) fn sync_cameras(&mut self, device: &wgpu::Device, uniforms: &CameraUniforms) {
+    self
+      .camera_bind_groups
+      .retain(|camera, _| uniforms.buffer(*camera).is_some());
+    for camera in uniforms.cameras() {
+      if self.camera_bind_groups.contains_key(&camera) {
+        continue;
+      }
+      let Some(buffer) = uniforms.buffer(camera) else {
+        continue;
+      };
+      let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Sprite Camera Bind Group"),
+        layout: &self.globals_layout,
+        entries: &[wgpu::BindGroupEntry {
+          binding: 0,
+          resource: buffer.as_entire_binding(),
+        }],
+      });
+      self.camera_bind_groups.insert(camera, bind_group);
+    }
   }
 
   /// Upload a sprite texture to the GPU (cached by id).
@@ -998,7 +975,7 @@ impl SpriteGpuRenderer {
   /// draw order and splits the sorted items into draws (sprites merge only
   /// when consecutive on one atlas page and pipeline; trail groups split
   /// them). `list` must be sorted ([`DrawList::sorted`]). Call once per frame,
-  /// after [`set_viewport`](Self::set_viewport).
+  /// after [`sync_cameras`](Self::sync_cameras).
   pub(crate) fn prepare_world(
     &mut self,
     device: &wgpu::Device,
@@ -1100,7 +1077,12 @@ impl SpriteGpuRenderer {
 
   /// Draw one sprite run inside a render pass, after
   /// [`upload_world`](Self::upload_world). Does nothing for trail runs.
-  pub(crate) fn draw_world_run<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, run: &WorldRun) {
+  pub(crate) fn draw_world_run<'a>(
+    &'a self,
+    pass: &mut wgpu::RenderPass<'a>,
+    run: &WorldRun,
+    camera: Entity,
+  ) {
     let WorldRun::Sprites {
       page,
       pipeline,
@@ -1110,7 +1092,10 @@ impl SpriteGpuRenderer {
     else {
       return;
     };
-    let Some(bind_group) = self.atlas.bind_group(page) else {
+    let (Some(bind_group), Some(camera_group)) = (
+      self.atlas.bind_group(page),
+      self.camera_bind_groups.get(&camera),
+    ) else {
       return;
     };
     let pipeline = match pipeline {
@@ -1119,7 +1104,7 @@ impl SpriteGpuRenderer {
       PipelineKind::Custom(key) => self.custom.pipeline(key).unwrap_or(&self.base_pipeline),
     };
     pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, &self.globals_bind_group, &[]);
+    pass.set_bind_group(0, camera_group, &[]);
     pass.set_bind_group(1, bind_group, &[]);
     pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
     let instance_size = std::mem::size_of::<SpriteInstance>() as u64;
@@ -1441,8 +1426,15 @@ impl BatchCollector {
   }
 
   /// Push every collected sprite onto `list` as `kind`, in submission order,
-  /// with its texture registered in `gpu`.
-  pub(crate) fn push_to(&self, list: &mut DrawList, kind: DrawKind, gpu: &mut SpriteGpuRenderer) {
+  /// with its texture registered in `gpu`. The sprites are placed in screen
+  /// space; `camera` takes them into the world it draws.
+  pub(crate) fn push_to(
+    &self,
+    list: &mut DrawList,
+    kind: DrawKind,
+    gpu: &mut SpriteGpuRenderer,
+    camera: &CameraView,
+  ) {
     let textures: Vec<TextureId> = self
       .sprites
       .iter()
@@ -1450,7 +1442,8 @@ impl BatchCollector {
       .collect();
     for item in &self.items {
       if let Some(&texture) = textures.get(item.sprite) {
-        list.push_sprite(kind, item.z_order, texture, item.shading, item.instance);
+        let instance = screen_to_world(camera, item.instance);
+        list.push_sprite(kind, item.z_order, texture, item.shading, instance);
       }
     }
   }
@@ -1469,6 +1462,23 @@ impl BatchCollector {
   }
 }
 
+/// A screen-space instance in the world `camera` draws: its basis turned
+/// and scaled by the inverse view, its centre through `screen_to_world`.
+fn screen_to_world(camera: &CameraView, mut instance: SpriteInstance) -> SpriteInstance {
+  let turn = glam::Vec2::from_angle(camera.rotation);
+  for column in 0..2 {
+    let [x, y, ..] = instance.transform[column];
+    let world = turn.rotate(glam::Vec2::new(x, y)) / camera.scale;
+    instance.transform[column][0] = world.x;
+    instance.transform[column][1] = world.y;
+  }
+  let [x, y, ..] = instance.transform[2];
+  let center = camera.screen_to_world(glam::Vec2::new(x, y));
+  instance.transform[2][0] = center.x;
+  instance.transform[2][1] = center.y;
+  instance
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1478,11 +1488,6 @@ mod tests {
   fn sprite_instance_size() {
     // Verify instance size matches expected (for GPU buffer layout)
     assert_eq!(std::mem::size_of::<SpriteInstance>(), 128);
-  }
-
-  #[test]
-  fn sprite_globals_size() {
-    assert_eq!(std::mem::size_of::<SpriteGlobals>(), 80);
   }
 
   #[test]
@@ -1629,7 +1634,12 @@ mod tests {
       collector.add(sprite, false, SpriteInstance::new(), *z);
     }
     let mut list = DrawList::default();
-    collector.push_to(&mut list, DrawKind::Sprite, renderer);
+    collector.push_to(
+      &mut list,
+      DrawKind::Sprite,
+      renderer,
+      &CameraView::default(),
+    );
     list.sorted();
     list
   }

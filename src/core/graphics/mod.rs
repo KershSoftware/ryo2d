@@ -13,6 +13,7 @@ pub mod animation;
 mod atlas;
 pub mod camera;
 pub mod camera2d;
+pub(crate) mod camera_gpu;
 pub mod camera_mut;
 mod compositor;
 mod gpu_context;
@@ -46,10 +47,7 @@ pub use render_layers::RenderLayers;
 pub use renderer::WgpuRenderer;
 pub use screen::{Presentation, ScreenMapping};
 pub use sprite::{AnimatedSprite, Sprite};
-pub(crate) use sprite_gpu::effect_padding;
-pub use sprite_gpu::{
-  BatchCollector, SpriteGlobals, SpriteGpuRenderer, SpriteInstance, get_sprite_effect,
-};
+pub use sprite_gpu::{BatchCollector, SpriteGpuRenderer, SpriteInstance, get_sprite_effect};
 pub(crate) use texture_registry::{TextureId, TextureRegistry, TextureSource};
 pub use tile::{CompositeTile, CompositeTileBuilder, GroupedCollider, TileDirection, TilePart};
 

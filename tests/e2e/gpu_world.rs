@@ -720,3 +720,76 @@ fn two_handles_with_one_name_draw_their_own_pixels() {
   assert_eq!(frame.get_pixel(15, 15).0, RED);
   assert_eq!(frame.get_pixel(45, 15).0, BLUE);
 }
+
+#[test]
+fn a_rotated_camera_turns_the_world() {
+  // A red square 10 px right of the camera centre shows 10 px above it
+  // when the camera turns a quarter clockwise
+  let scene = Fixture::new(|ctx| {
+    ctx.camera().set_position(32.0, 32.0);
+    ctx.camera().set_rotation(std::f32::consts::FRAC_PI_2);
+    ctx.world.spawn((
+      Transform::from_xy(42.0, 32.0),
+      Renderable::sprite(red_rect(4, 4, "turned")),
+    ));
+  });
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  assert_eq!(frame.get_pixel(32, 22).0, ANCHOR_RED);
+  assert_ne!(frame.get_pixel(42, 32).0, ANCHOR_RED);
+}
+
+#[test]
+fn a_fractional_position_is_not_truncated() {
+  // At scale factor 2, a sprite whose left edge is at x = 10.5 starts at
+  // physical pixel 21, not 20
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(10.5, 10.0),
+      Renderable::sprite(red_rect(10, 10, "half")).with_anchor(Anchor::TopLeft),
+    ));
+  });
+  let builder = EngineBuilder::new().resolution(32, 32).start_scene(scene);
+  let Some(mut engine) = HeadlessEngine::new_or_skip_with_scale_factor(builder, 2.0) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  // Row 35: inside the sprite (20..40), below the fixture's UI square
+  assert_ne!(frame.get_pixel(20, 35).0, ANCHOR_RED);
+  assert_eq!(frame.get_pixel(21, 35).0, ANCHOR_RED);
+  assert_eq!(frame.get_pixel(40, 35).0, ANCHOR_RED);
+  assert_ne!(frame.get_pixel(41, 35).0, ANCHOR_RED);
+}
+
+#[test]
+fn pixel_art_sprites_land_on_whole_pixels() {
+  // The camera sits a third of a pixel off; every pixel of the sprite's row
+  // is fully red or fully background, never a blend
+  let scene = Fixture::new(|ctx| {
+    ctx.camera().set_position(16.33, 16.0);
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 16.0),
+      Renderable::sprite(red_rect(9, 9, "snap")),
+    ));
+  });
+  let builder = EngineBuilder::new().pixel_art(32, 32).start_scene(scene);
+  let Some(mut engine) = HeadlessEngine::new_or_skip(builder) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let background = frame.get_pixel(0, 16).0;
+  let reds = (0..32)
+    .filter(|&x| frame.get_pixel(x, 16).0 == ANCHOR_RED)
+    .count();
+  assert_eq!(reds, 9);
+  for x in 0..32 {
+    let pixel = frame.get_pixel(x, 16).0;
+    assert!(
+      pixel == ANCHOR_RED || pixel == background,
+      "blend at x = {x}: {pixel:?}"
+    );
+  }
+}

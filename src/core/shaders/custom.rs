@@ -433,7 +433,7 @@ fn fs_custom(in: VertexOutput) -> @location(0) vec4<f32> {{
   let f = array<f32, 8>(in.effect_params.x, in.effect_params.y, in.effect_params.z, in.effect_params.w,
                         in.effect_extra.x, in.effect_extra.y, in.effect_extra.z, in.effect_extra.w);
   let params = Params({fields});
-  return finish(sprite(SpriteIn(local, size, in.clip_position.xy, globals.time_resolution.x), params), in.tint);
+  return finish(sprite(SpriteIn(local, size, in.clip_position.xy, globals.game_time), params), in.tint);
 }}
 ",
     fields = sprite_fields(layout)

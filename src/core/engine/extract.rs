@@ -9,12 +9,13 @@ use crate::core::config::debug::{OverlayFlags, overlay_lines};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::{QueryState, SystemIdMarker};
 use crate::core::ecs::{
-  DetectChangesMut, GlobalTransform, IsResource, Mut, Observer, PreviousGlobalTransform, Vec2,
-  World,
+  DetectChangesMut, Entity, GlobalTransform, IsResource, Mut, Observer, PreviousGlobalTransform,
+  Vec2, World,
 };
-use crate::core::graphics::GpuRenderContext;
-use crate::core::graphics::camera_mut::main_view;
+use crate::core::graphics::camera_gpu::CameraGlobals;
+use crate::core::graphics::camera_mut::{main_camera_entity, main_view};
 use crate::core::graphics::renderer::FrameError;
+use crate::core::graphics::{CameraView, GpuRenderContext, Presentation};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::{DrawKind, FrameScene, LightingFrame, RenderPipeline};
 use crate::core::shaders::EffectsManager;
@@ -60,9 +61,7 @@ impl Engine {
       )
     };
     let camera_pos = camera.center;
-    // Sprites are placed in screen units, which the projection spans
-    let screen = rend.screen_size();
-    let size = rend.ui_size();
+    let main_camera = main_camera_entity(&mut self.world);
 
     let (entity_sprites, lights) = {
       profile_scope!("cpu:render");
@@ -129,18 +128,33 @@ impl Engine {
         lighting.update_god_rays(&mut effects, &lights, camera_pos, camera.scale);
       }
 
-      // Sprite effects and custom sprite shaders animate on game time
-      gpu.set_viewport(rend.queue(), screen.x, screen.y, game_time);
+      // Every camera's uniforms: its matrix, image size, clocks and pixel
+      // snapping (sprite effects and custom sprite shaders animate on game
+      // time). Only the main camera draws until cameras get their own passes
+      let snap = matches!(self.config.presentation, Presentation::PixelArt { .. });
+      let image = rend.render_size();
+      let cameras: Vec<_> = self
+        .world
+        .query::<(Entity, &CameraView)>()
+        .iter(&self.world)
+        .map(|(entity, view)| {
+          let globals = CameraGlobals::new(view, image, game_time, real_time, snap);
+          (entity, globals)
+        })
+        .collect();
+      self
+        .camera_uniforms
+        .sync(rend.device(), rend.queue(), &cameras);
+      gpu.sync_cameras(rend.device(), &self.camera_uniforms);
 
       self.draw_list.clear();
       self
         .batch_collector
-        .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu);
+        .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu, &camera);
       let entity_sprites = self.entity_drawer.collect(
         &mut self.world,
         &camera,
         alpha,
-        size,
         &mut gpu,
         rend.device(),
         rend.queue(),
@@ -196,6 +210,7 @@ impl Engine {
           ui_buffer: &self.ui_buffer,
           camera_pos,
           camera_zoom: camera.scale,
+          camera: main_camera.unwrap_or(Entity::PLACEHOLDER),
           time: real_time,
           overlay,
         };

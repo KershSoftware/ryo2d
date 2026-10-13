@@ -827,6 +827,7 @@ impl WgpuRenderer {
       ui_buffer,
       camera_pos: glam::Vec2::ZERO,
       camera_zoom: 1.0,
+      camera: crate::core::ecs::Entity::PLACEHOLDER,
       time: 0.0,
       overlay: ([0; 3], 0.0),
     };

@@ -68,7 +68,8 @@ pub(crate) fn reset_main_camera(world: &mut World) {
   world.skip_interpolation(entity);
 }
 
-fn main_camera_entity(world: &mut World) -> Option<Entity> {
+/// The main camera's entity, if there is one.
+pub(crate) fn main_camera_entity(world: &mut World) -> Option<Entity> {
   world
     .query_filtered::<Entity, With<MainCamera>>()
     .iter(world)

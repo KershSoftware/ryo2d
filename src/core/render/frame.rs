@@ -76,6 +76,8 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) ui_buffer: &'a [u8],
   pub(crate) camera_pos: glam::Vec2,
   pub(crate) camera_zoom: f32,
+  /// The camera the world passes draw through
+  pub(crate) camera: crate::core::ecs::Entity,
   pub(crate) time: f32,
   /// The scene transition's fade overlay: colour (RGB bytes) and opacity.
   /// Opacity 0 means no fade.
