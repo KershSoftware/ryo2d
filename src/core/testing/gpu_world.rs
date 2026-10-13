@@ -528,3 +528,64 @@ fn a_resize_rebuilds_bind_groups_once() {
     "it still draws"
   );
 }
+
+/// `Busy` plus a shadow-casting light, an occluder, a second lit camera and a
+/// long fade.
+struct BusyLit {
+  started: bool,
+}
+
+impl Scene for BusyLit {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    Busy.on_enter(ctx);
+    ctx.world.spawn((
+      Transform::from_xy(60.0, 20.0),
+      Light2D::point(Color::WHITE, 80.0).with_shadows(),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(60.0, 45.0),
+      LightOccluder2D::rect(10.0, 10.0),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(60.0, 45.0),
+      Camera2d {
+        viewport: Viewport::new(0.5, 0.0, 0.5, 0.5),
+        order: 1,
+        ..Default::default()
+      },
+    ));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    if std::mem::replace(&mut self.started, true) {
+      return SceneAction::Continue;
+    }
+    // Push keeps this scene's world (and its cameras) drawing under the fade
+    SceneAction::PushWith(
+      Box::new(Idle),
+      Transition::fade(std::time::Duration::from_secs(10)),
+    )
+  }
+}
+
+/// A scene that does nothing (pushed over `BusyLit`, which keeps drawing).
+struct Idle;
+
+impl Scene for Idle {
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn lit_split_frames_create_no_bind_groups() {
+  use crate::core::graphics::bind_groups::created_on_this_thread;
+  let scene = BusyLit { started: false };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(120, 90).start_scene(scene)) else {
+    return;
+  };
+  engine.step_frames(4).unwrap();
+  let before = created_on_this_thread();
+  engine.step_frames(3).unwrap();
+  assert_eq!(created_on_this_thread() - before, 0);
+}

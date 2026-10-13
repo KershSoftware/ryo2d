@@ -3,9 +3,10 @@
 //! This renderer collects all lights in the scene and renders them
 //! to an accumulation buffer, which is then used to light the scene.
 
-use super::shadow::{MAX_SHADOW_VERTICES, ShadowGeometry, ShadowVertex};
+use super::shadow::{MAX_SHADOW_VERTICES, ShadowGeometry, ShadowVertex, generate_shadow_geometry};
 use super::{AmbientLight, Atmosphere, Light2D, LightOccluder2D};
 use crate::core::ecs::{Entity, GlobalTransform, Vec2};
+use crate::core::graphics::bind_groups::{BindGroupCache, Bound};
 use crate::core::graphics::camera_gpu::{CameraGlobals, CameraUniforms};
 use crate::core::graphics::{Camera2d, CameraView};
 use crate::core::render::CameraDraw;
@@ -135,6 +136,13 @@ pub struct LightingRenderer {
 
   /// The targets of each lit camera, at its image's size
   cameras: HashMap<Entity, LightTargets>,
+
+  /// Each lit camera's light, shadow and compose bind groups, made once
+  bind_groups: BindGroupCache,
+
+  /// The lights and shadow vertices `prepare_frame` uploaded this frame
+  frame_lights: u32,
+  frame_shadow_vertices: u32,
 
   /// Sampler for textures
   sampler: wgpu::Sampler,
@@ -658,6 +666,9 @@ impl LightingRenderer {
     Self {
       targets: LightTargets::new(device, width, height),
       cameras: HashMap::new(),
+      bind_groups: BindGroupCache::default(),
+      frame_lights: 0,
+      frame_shadow_vertices: 0,
       sampler,
       light_pipeline,
       compose_pipeline,
@@ -744,6 +755,7 @@ impl LightingRenderer {
   /// Keep light targets for every lit camera of `cameras`, sized to its
   /// image; drop the others.
   pub(crate) fn sync_cameras(&mut self, device: &wgpu::Device, cameras: &[CameraDraw]) {
+    let before = self.cameras.len();
     self.cameras.retain(|entity, targets| {
       cameras.iter().any(|camera| {
         camera.entity == *entity
@@ -751,12 +763,128 @@ impl LightingRenderer {
           && (targets.width, targets.height) == camera.rect.size()
       })
     });
+    let mut changed = self.cameras.len() != before;
     for camera in cameras.iter().filter(|camera| camera.lit) {
       self.cameras.entry(camera.entity).or_insert_with(|| {
+        changed = true;
         let (width, height) = camera.rect.size();
         LightTargets::new(device, width, height)
       });
     }
+    // Bind groups of dropped or recreated targets would keep them alive
+    if changed {
+      self.bind_groups.clear();
+    }
+  }
+
+  /// Build this frame's light instances and shadow geometry and upload them
+  /// once; every lit camera then draws them ([`draw_for_camera`](Self::draw_for_camera)).
+  pub(crate) fn prepare_frame(
+    &mut self,
+    queue: &wgpu::Queue,
+    lights: &[(Vec2, Light2D)],
+    occluders: &[(GlobalTransform, &LightOccluder2D)],
+  ) {
+    let instances = light_instances(lights.iter().map(|(position, light)| (position, light)));
+    if !instances.is_empty() {
+      queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&instances));
+    }
+    self.frame_lights = instances.len() as u32;
+    self.frame_shadow_vertices = 0;
+    let casts_shadows = lights.iter().any(|(_, light)| light.casts_shadows());
+    if casts_shadows && !occluders.is_empty() {
+      let occluders: Vec<(&GlobalTransform, &LightOccluder2D)> = occluders
+        .iter()
+        .map(|(transform, occluder)| (transform, *occluder))
+        .collect();
+      let lights = lights.iter().map(|(position, light)| (position, light));
+      let geometry = generate_shadow_geometry(lights, &occluders);
+      if !geometry.is_empty() {
+        queue.write_buffer(
+          &self.shadow_vertex_buffer,
+          0,
+          bytemuck::cast_slice(&geometry.vertices),
+        );
+        self.frame_shadow_vertices = geometry.vertex_count();
+      }
+    }
+  }
+
+  /// Draw this frame's lights into `camera`'s light buffer (cleared first),
+  /// then subtract the shadows, through its uniforms in `uniforms`.
+  pub(crate) fn draw_for_camera(
+    &self,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    camera: Entity,
+    uniforms: &CameraUniforms,
+  ) {
+    let (Some(globals), Some(targets)) = (uniforms.buffer(camera), self.cameras.get(&camera))
+    else {
+      return;
+    };
+    let light_group = self.bind_groups.get(
+      device,
+      "Light Bind Group",
+      &self.light_bind_group_layout,
+      &[
+        Bound::Buffer(globals.clone()),
+        Bound::Buffer(self.light_buffer.clone()),
+      ],
+    );
+    {
+      let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Light Accumulation Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &targets.light_view,
+          depth_slice: None,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+        timestamp_writes: None,
+      });
+      if self.frame_lights > 0 {
+        pass.set_pipeline(&self.light_pipeline);
+        pass.set_bind_group(0, &light_group, &[]);
+        pass.draw(0..6, 0..self.frame_lights);
+      }
+    }
+    if self.frame_shadow_vertices == 0 {
+      return;
+    }
+    let shadow_group = self.bind_groups.get(
+      device,
+      "Shadow Bind Group",
+      &self.shadow_bind_group_layout,
+      &[Bound::Buffer(globals.clone())],
+    );
+    // Reverse-subtract blending cuts the shadows from the light buffer
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+      label: Some("Shadow Pass"),
+      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+        view: &targets.light_view,
+        depth_slice: None,
+        resolve_target: None,
+        ops: wgpu::Operations {
+          load: wgpu::LoadOp::Load,
+          store: wgpu::StoreOp::Store,
+        },
+      })],
+      depth_stencil_attachment: None,
+      occlusion_query_set: None,
+      multiview_mask: None,
+      timestamp_writes: None,
+    });
+    pass.set_pipeline(&self.shadow_pipeline);
+    pass.set_bind_group(0, &shadow_group, &[]);
+    pass.set_vertex_buffer(0, self.shadow_vertex_buffer.slice(..));
+    pass.draw(0..self.frame_shadow_vertices, 0..1);
   }
 
   /// How many cameras have light targets.
@@ -787,23 +915,6 @@ impl LightingRenderer {
     let globals = self.standalone_globals(device, camera_pos, camera_zoom);
     let target = &self.targets.light_view;
     self.draw_lights(device, queue, encoder, lights, Some(&globals), target);
-  }
-
-  /// Render lights into `camera`'s light buffer, through its uniforms
-  /// (in `uniforms`).
-  pub(crate) fn render_lights_for_camera<'a>(
-    &self,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)>,
-    camera: Entity,
-    uniforms: &CameraUniforms,
-  ) {
-    if let Some(targets) = self.cameras.get(&camera) {
-      let globals = uniforms.buffer(camera);
-      self.draw_lights(device, queue, encoder, lights, globals, &targets.light_view);
-    }
   }
 
   /// The camera uniforms of a view centred on `center` at `zoom`, one world
@@ -838,67 +949,7 @@ impl LightingRenderer {
     // Note: We still render the light accumulation pass even if disabled to ensure
     // the light_texture is cleared. The compose pass handles ambient lighting.
 
-    // Collect light instances
-    let mut instances: Vec<LightInstance> = Vec::with_capacity(MAX_LIGHTS);
-
-    for (position, light) in lights {
-      if instances.len() >= MAX_LIGHTS {
-        break;
-      }
-
-      let pos_x = position.x;
-      let pos_y = position.y;
-
-      let instance = match light {
-        Light2D::Point {
-          color,
-          radius,
-          intensity,
-          falloff,
-          volumetric,
-          ..
-        } => LightInstance {
-          position_radius_type: [pos_x, pos_y, *radius, 0.0],
-          color_intensity: [
-            color.r as f32 / 255.0,
-            color.g as f32 / 255.0,
-            color.b as f32 / 255.0,
-            *intensity,
-          ],
-          params: [*falloff, 0.0, 0.0, 0.0],
-          volumetric: volumetric
-            .as_ref()
-            .map(|v| v.to_gpu_vec4())
-            .unwrap_or([0.0; 4]),
-        },
-        Light2D::Spot {
-          color,
-          radius,
-          intensity,
-          falloff,
-          angle,
-          direction,
-          softness,
-          volumetric,
-          ..
-        } => LightInstance {
-          position_radius_type: [pos_x, pos_y, *radius, 1.0],
-          color_intensity: [
-            color.r as f32 / 255.0,
-            color.g as f32 / 255.0,
-            color.b as f32 / 255.0,
-            *intensity,
-          ],
-          params: [*falloff, *angle, *direction, *softness],
-          volumetric: volumetric
-            .as_ref()
-            .map(|v| v.to_gpu_vec4())
-            .unwrap_or([0.0; 4]),
-        },
-      };
-
-      instances.push(instance);
-    }
+    let instances = light_instances(lights);
 
     // Upload light data
     if !instances.is_empty() {
@@ -953,30 +1004,6 @@ impl LightingRenderer {
         // 6 vertices per light quad, N instances
         render_pass.draw(0..6, 0..instances.len() as u32);
       }
-    }
-  }
-
-  /// Render shadows to subtract from the light accumulation buffer.
-  ///
-  /// Call this after `render_lights()` to apply shadow occlusion.
-  ///
-  /// # Arguments
-  /// * `device` - The wgpu device
-  /// * `queue` - The wgpu queue
-  /// * `encoder` - The command encoder
-  /// * `shadow_geometry` - Pre-generated shadow geometry from `generate_shadow_geometry()`
-  pub(crate) fn render_shadows(
-    &self,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    shadow_geometry: &ShadowGeometry,
-    camera: Entity,
-    uniforms: &CameraUniforms,
-  ) {
-    if let (Some(globals), Some(targets)) = (uniforms.buffer(camera), self.cameras.get(&camera)) {
-      let target = &targets.light_view;
-      self.draw_shadows(device, queue, encoder, shadow_geometry, globals, target);
     }
   }
 
@@ -1417,30 +1444,16 @@ impl LightingRenderer {
       0,
       bytemuck::cast_slice(&[compose_uniform]),
     );
-    let compose_bind_group = crate::core::graphics::bind_groups::create(
+    let compose_bind_group = self.bind_groups.get(
       device,
-      &wgpu::BindGroupDescriptor {
-        label: Some("Lighting Compose Bind Group"),
-        layout: &self.compose_bind_group_layout,
-        entries: &[
-          wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::TextureView(&targets.scene_copy_view),
-          },
-          wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::TextureView(&targets.light_view),
-          },
-          wgpu::BindGroupEntry {
-            binding: 2,
-            resource: wgpu::BindingResource::Sampler(&self.sampler),
-          },
-          wgpu::BindGroupEntry {
-            binding: 3,
-            resource: targets.compose_uniforms.as_entire_binding(),
-          },
-        ],
-      },
+      "Lighting Compose Bind Group",
+      &self.compose_bind_group_layout,
+      &[
+        Bound::View(targets.scene_copy_view.clone()),
+        Bound::View(targets.light_view.clone()),
+        Bound::Sampler(self.sampler.clone()),
+        Bound::Buffer(targets.compose_uniforms.clone()),
+      ],
     );
     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
       label: Some("Lighting Compose Pass"),
@@ -1462,6 +1475,74 @@ impl LightingRenderer {
     render_pass.set_bind_group(0, &compose_bind_group, &[]);
     render_pass.draw(0..6, 0..1);
   }
+}
+
+/// The GPU instances of `lights` (at most `MAX_LIGHTS`).
+fn light_instances<'a>(
+  lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)>,
+) -> Vec<LightInstance> {
+  let mut instances: Vec<LightInstance> = Vec::with_capacity(MAX_LIGHTS);
+
+  for (position, light) in lights {
+    if instances.len() >= MAX_LIGHTS {
+      break;
+    }
+
+    let pos_x = position.x;
+    let pos_y = position.y;
+
+    let instance = match light {
+      Light2D::Point {
+        color,
+        radius,
+        intensity,
+        falloff,
+        volumetric,
+        ..
+      } => LightInstance {
+        position_radius_type: [pos_x, pos_y, *radius, 0.0],
+        color_intensity: [
+          color.r as f32 / 255.0,
+          color.g as f32 / 255.0,
+          color.b as f32 / 255.0,
+          *intensity,
+        ],
+        params: [*falloff, 0.0, 0.0, 0.0],
+        volumetric: volumetric
+          .as_ref()
+          .map(|v| v.to_gpu_vec4())
+          .unwrap_or([0.0; 4]),
+      },
+      Light2D::Spot {
+        color,
+        radius,
+        intensity,
+        falloff,
+        angle,
+        direction,
+        softness,
+        volumetric,
+        ..
+      } => LightInstance {
+        position_radius_type: [pos_x, pos_y, *radius, 1.0],
+        color_intensity: [
+          color.r as f32 / 255.0,
+          color.g as f32 / 255.0,
+          color.b as f32 / 255.0,
+          *intensity,
+        ],
+        params: [*falloff, *angle, *direction, *softness],
+        volumetric: volumetric
+          .as_ref()
+          .map(|v| v.to_gpu_vec4())
+          .unwrap_or([0.0; 4]),
+      },
+    };
+
+    instances.push(instance);
+  }
+
+  instances
 }
 
 /// Copy `scene_texture` into the scene copy of `targets` (the same size).

@@ -1,13 +1,13 @@
 //! What a frame contains, decided before any pass runs
 
 use super::DrawList;
-use crate::core::ecs::{Entity, GlobalTransform, Vec2};
+use crate::core::ecs::Entity;
 use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
   Camera2d, CameraClear, CameraTarget, CameraView, RenderLayers, RenderTarget, RenderTargets,
   SpriteGpuRenderer, Viewport,
 };
-use crate::core::lighting::{Light2D, LightOccluder2D, LightingRenderer};
+use crate::core::lighting::LightingRenderer;
 use crate::core::shaders::{EffectsManager, OutputBuffer};
 use crate::core::trail::TrailRenderer;
 
@@ -63,11 +63,8 @@ pub(crate) enum FrameImage {
 
 /// Lighting inputs for a frame (only built while lighting is enabled).
 pub(crate) struct LightingFrame<'a> {
+  /// With this frame's lights and shadows uploaded (`prepare_frame`)
   pub(crate) renderer: &'a mut LightingRenderer,
-  /// Each light's world position
-  pub(crate) lights: &'a [(Vec2, Light2D)],
-  /// Each occluder where it is drawn, borrowed from the world
-  pub(crate) occluders: &'a [(GlobalTransform, &'a LightOccluder2D)],
 }
 
 /// The engine subsystems and per-frame data the built-in passes draw from.

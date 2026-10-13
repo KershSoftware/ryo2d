@@ -1,7 +1,5 @@
 //! 2D lighting: lights, shadows, then the lit scene
 
-use crate::core::ecs::GlobalTransform;
-use crate::core::lighting::{LightOccluder2D, generate_shadow_geometry};
 use crate::core::render::{FrameImage, FrameInfo, PassScope, RenderContext, RenderPass, pass_ids};
 
 /// Renders the lights (and shadows from shadow-casting lights and occluders),
@@ -36,32 +34,11 @@ impl RenderPass for Lighting {
     let Some(lighting) = scene.lighting.as_mut() else {
       return;
     };
-    let lights = lighting.lights;
-    let light_refs = || lights.iter().map(|(position, light)| (position, light));
-
     let (entity, uniforms) = (camera.entity, scene.camera_uniforms);
-    lighting.renderer.render_lights_for_camera(
-      device,
-      queue,
-      encoder,
-      light_refs(),
-      entity,
-      uniforms,
-    );
-
-    // Shadows subtract from the light buffer
-    let casts_shadows = lights.iter().any(|(_, light)| light.casts_shadows());
-    if casts_shadows && !lighting.occluders.is_empty() {
-      let occluders: Vec<(&GlobalTransform, &LightOccluder2D)> = lighting
-        .occluders
-        .iter()
-        .map(|(transform, occluder)| (transform, *occluder))
-        .collect();
-      let geometry = generate_shadow_geometry(light_refs(), &occluders);
-      lighting
-        .renderer
-        .render_shadows(device, queue, encoder, &geometry, entity, uniforms);
-    }
+    // The lights and shadows were uploaded once for the frame
+    lighting
+      .renderer
+      .draw_for_camera(device, encoder, entity, uniforms);
 
     // The camera drawing straight into the scene image is lit into the lit
     // image; a camera with an image of its own is lit in place

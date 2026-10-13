@@ -238,21 +238,17 @@ impl Engine {
       .resource_scope(|world, mut pipeline: Mut<RenderPipeline>| {
         let mut occluder_query = world.query::<OccluderItem>();
         let world: &World = world;
-        let lighting = lighting.as_mut().filter(|l| l.is_enabled());
-        let occluders = if lighting.is_some() {
-          occluders_to_draw(world, &mut occluder_query, alpha)
-        } else {
-          Vec::new()
-        };
+        let mut lighting = lighting.as_mut().filter(|l| l.is_enabled());
+        // Lights and shadows are uploaded once; every lit camera draws them
+        if let Some(lighting) = lighting.as_deref_mut() {
+          let occluders = occluders_to_draw(world, &mut occluder_query, alpha);
+          lighting.prepare_frame(rend.queue(), &lights, &occluders);
+        }
         let scene = FrameScene {
           sprites: &gpu,
           draw_list: &self.draw_list,
           trails: trails.as_ref(),
-          lighting: lighting.map(|renderer| LightingFrame {
-            renderer,
-            lights: &lights,
-            occluders: &occluders,
-          }),
+          lighting: lighting.map(|renderer| LightingFrame { renderer }),
           effects: world.resource::<EffectsManager>(),
           ui_buffer: &self.ui_buffer,
           cameras: &self.camera_draws,
