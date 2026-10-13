@@ -98,6 +98,10 @@ criterion = "0.5"
 name = "foundation"
 harness = false
 
+[[bench]]
+name = "physics"
+harness = false
+
 # Dev builds: optimize dependencies and engine for performance, keep game code light for fast iteration
 # The engine's pixel operations (parallax, sprite blitting) need full optimization
 [profile.dev]
