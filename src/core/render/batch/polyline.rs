@@ -211,7 +211,12 @@ impl Builder<'_> {
         let u = point.u + hw * scale;
         let far_left = self.vertex(p + n * hw + out * hw, &point, [u, 0.0], n);
         let far_right = self.vertex(p - n * hw + out * hw, &point, [u, 1.0], n);
-        self.quad((left, right), (far_left, far_right));
+        // Along the line's direction, like the strip
+        if first {
+          self.quad((far_left, far_right), (left, right));
+        } else {
+          self.quad((left, right), (far_left, far_right));
+        }
       }
       LineCap::Round => {
         let centre = self.vertex(p, &point, [point.u, 0.5], Vec2::ZERO);
@@ -226,10 +231,11 @@ impl Builder<'_> {
           let along = offset.dot(out);
           let uv = [point.u + along * scale, 0.5 - 0.5 * offset.dot(n) / hw];
           let arc = self.vertex(p + offset, &point, uv, n);
-          self.triangle(centre, previous, arc);
+          // The fan turns the other way at the end: wind it like the strip
+          self.wedge(-turn, centre, previous, arc);
           previous = arc;
         }
-        self.triangle(centre, previous, right);
+        self.wedge(-turn, centre, previous, right);
       }
     }
     Joint {
@@ -288,7 +294,10 @@ impl Builder<'_> {
     };
     let bisector = (n0 + n1).normalize_or(n0);
     let reach = miter.length() * hw;
-    let shares_inside = reach.is_finite() && reach <= before.len.min(after.len);
+    // Shared only while it stays in the near half of both segments: the
+    // corner at a segment's other end may pull its inner edge from that end
+    // too, and past the middle the two would cross and twist the segment
+    let shares_inside = reach.is_finite() && reach <= before.len.min(after.len) / 2.0;
 
     let outer_end = self.vertex(p + side * n0 * hw, &point, [u_end, v_out], n0);
     let outer_start = self.vertex(p + side * n1 * hw, &point, [u, v_out], n1);
@@ -303,8 +312,8 @@ impl Builder<'_> {
         Some(u) => self.vertex(at, &point, [u, v_in], bisector),
       };
       // Between the segments' slanted ends and the point
-      self.triangle(centre, inner_end, outer_end);
-      self.triangle(centre, outer_start, inner);
+      self.wedge(side, centre, inner_end, outer_end);
+      self.wedge(side, centre, outer_start, inner);
       (inner_end, inner)
     } else {
       // Too sharp to share: each segment keeps its own inner edge
@@ -318,10 +327,10 @@ impl Builder<'_> {
     match self.style.join {
       LineJoin::Miter if mitered => {
         let tip = self.vertex(p + side * miter * hw, &point, [u, v_out], bisector);
-        self.triangle(centre, outer_end, tip);
-        self.triangle(centre, tip, outer_start);
+        self.wedge(side, centre, outer_end, tip);
+        self.wedge(side, centre, tip, outer_start);
       }
-      LineJoin::Miter | LineJoin::Bevel => self.triangle(centre, outer_end, outer_start),
+      LineJoin::Miter | LineJoin::Bevel => self.wedge(side, centre, outer_end, outer_start),
       LineJoin::Round => {
         let from = side * n0;
         let angle = from.angle_to(side * n1);
@@ -332,10 +341,10 @@ impl Builder<'_> {
           let direction = Vec2::from_angle(angle * t).rotate(from);
           let across = Vec2::from_angle(angle * t).rotate(n0);
           let arc = self.vertex(p + direction * hw, &point, [u, v_out], across);
-          self.triangle(centre, previous, arc);
+          self.wedge(side, centre, previous, arc);
           previous = arc;
         }
-        self.triangle(centre, previous, outer_start);
+        self.wedge(side, centre, previous, outer_start);
       }
     }
 
@@ -350,6 +359,17 @@ impl Builder<'_> {
     Joint {
       end: pair(outer_end, inner_end),
       start: pair(outer_start, inner_start),
+    }
+  }
+
+  /// A triangle of a corner's wedge (or a cap's fan), given as for a left
+  /// turn: wound like the strip whichever way it turns (`side` is the
+  /// outside).
+  fn wedge(&mut self, side: f32, a: u32, b: u32, c: u32) {
+    if side < 0.0 {
+      self.triangle(a, b, c);
+    } else {
+      self.triangle(a, c, b);
     }
   }
 
@@ -557,6 +577,47 @@ mod tests {
           let v: Vec<f32> = tri.iter().map(|&k| t.vertices[k as usize].uv[1]).collect();
           let one_edge = v.iter().all(|&v| v == 0.0) || v.iter().all(|&v| v == 1.0);
           assert!(!one_edge, "{join:?} {cap:?}: {v:?}");
+        }
+      }
+    }
+  }
+
+  /// Each triangle's signed area (zero-area ones left out).
+  fn windings(t: &Triangles) -> Vec<f32> {
+    t.indices
+      .chunks(3)
+      .map(|tri| {
+        let [a, b, c] = [0, 1, 2].map(|k| Vec2::from(t.vertices[tri[k] as usize].position));
+        (b - a).perp_dot(c - a) / 2.0
+      })
+      .filter(|area| area.abs() > 1e-6)
+      .collect()
+  }
+
+  #[test]
+  fn every_triangle_winds_the_same_way() {
+    // A segment whose inner edge ran backwards would be a twisted quad,
+    // wound the other way
+    let tight_u = [(0.0, 0.0), (1.5, 0.0), (1.5, 1.5), (0.0, 1.5)];
+    let zigzag = [(0.0, 0.0), (1.0, 0.7), (2.0, 0.0), (3.0, 0.7), (4.0, 0.0)];
+    let long_zigzag = [(0.0, 0.0), (10.0, 7.0), (20.0, 0.0), (30.0, 7.0)];
+    let square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+    for join in [LineJoin::Miter, LineJoin::Bevel, LineJoin::Round] {
+      for cap in [LineCap::Butt, LineCap::Square, LineCap::Round] {
+        let shapes: [(&[(f32, f32)], bool); 5] = [
+          (&L, false),
+          (&tight_u, false),
+          (&zigzag, false),
+          (&long_zigzag, false),
+          (&square, true),
+        ];
+        for (points, closed) in shapes {
+          let t = build(points, 2.0, join, cap, closed);
+          let areas = windings(&t);
+          assert!(
+            areas.iter().all(|a| *a > 0.0) || areas.iter().all(|a| *a < 0.0),
+            "{join:?} {cap:?} {points:?}: {areas:?}"
+          );
         }
       }
     }

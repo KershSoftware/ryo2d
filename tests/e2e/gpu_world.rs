@@ -1576,3 +1576,48 @@ fn split_screen_cameras_each_see_their_own_parallax() {
   assert_eq!(frame.get_pixel(2, 2).0, GREEN, "left camera");
   assert_eq!(frame.get_pixel(34, 2).0, GREEN, "right camera");
 }
+
+#[test]
+fn pixel_art_sprites_turn_with_a_rotated_camera() {
+  /// A 16x16 red square at the view's centre, the camera turned by `angle`.
+  struct Turned(f32);
+  impl Scene for Turned {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      ctx.camera().set_position(32.0, 16.0);
+      ctx.camera().set_rotation(self.0);
+      ctx.world.spawn((
+        Transform::from_xy(32.0, 16.0),
+        Renderable::sprite(solid("turned-red", 16, RED)),
+      ));
+    }
+    fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      SceneAction::Continue
+    }
+  }
+  let reds = |builder: EngineBuilder| {
+    let mut engine = start(builder)?;
+    engine.step_frames(2).unwrap();
+    let frame = engine.frame().unwrap();
+    Some(frame.pixels().filter(|p| p.0 == RED).count())
+  };
+  for angle in [0.3, std::f32::consts::FRAC_PI_4] {
+    let Some(smooth) = reds(
+      EngineBuilder::new()
+        .resolution(64, 32)
+        .start_scene(Turned(angle)),
+    ) else {
+      return;
+    };
+    let pixel_art = reds(
+      EngineBuilder::new()
+        .pixel_art(64, 32)
+        .start_scene(Turned(angle)),
+    )
+    .unwrap();
+    // The same turned square, give or take its edge pixels
+    assert!(
+      pixel_art.abs_diff(smooth) <= 40,
+      "at {angle} rad: {pixel_art} red pixels in pixel art, {smooth} smooth"
+    );
+  }
+}

@@ -76,9 +76,12 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     
     // Through the camera
     var clip = globals.view_proj * vec4<f32>(world_pos.xy, 0.0, 1.0);
-    // Pixel art: an axis-aligned quad's top-left and size round to whole
-    // pixels once, so it keeps its width as it moves
-    let axis_aligned = abs(instance.transform0.y) < 1e-5 && abs(instance.transform1.x) < 1e-5;
+    // Pixel art: a quad axis-aligned on screen (itself and the camera
+    // unturned) rounds its top-left and size to whole pixels once, so it
+    // keeps its width as it moves; under a turned camera it draws unsnapped
+    let unturned = abs(instance.transform0.y) < 1e-5 && abs(instance.transform1.x) < 1e-5;
+    let camera_unturned = abs(globals.view_proj[0][1]) < 1e-5 && abs(globals.view_proj[1][0]) < 1e-5;
+    let axis_aligned = unturned && camera_unturned;
     if globals.snap > 0.5 && axis_aligned {
         let p0 = to_pixel((transform * vec3<f32>(-0.5, -0.5, 1.0)).xy);
         let p1 = to_pixel((transform * vec3<f32>(0.5, 0.5, 1.0)).xy);
