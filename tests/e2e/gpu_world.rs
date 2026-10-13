@@ -1660,3 +1660,27 @@ fn light_above_white_survives_until_the_tonemap() {
   // 2.0 halved is 1.0 (white); an image clamped at 1.0 shows 188
   assert!(pixel[0] > 230, "{pixel:?}");
 }
+
+#[test]
+fn a_glowing_line_over_white_keeps_its_look() {
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Renderable::sprite(solid("glow-white", 64, [255, 255, 255, 255]))
+        .with_anchor(Anchor::TopLeft)
+        .with_z_order(0),
+    ));
+    let mut trail = Trail2D::new(Color::new(100, 200, 255, 255), 20.0)
+      .with_style(TrailStyle::Glow)
+      .with_fade(false)
+      .with_lighting(false);
+    trail.populate_line(4.0, 32.0, 60.0, 32.0, 8);
+    ctx.world.spawn((Transform::from_xy(0.0, 0.0), trail));
+  });
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  // Glow alpha peaks above 1; it must not subtract from what is below
+  let red = frame.get_pixel(32, 31).0[0];
+  assert!(red.abs_diff(226) <= 1, "core red {red}");
+}

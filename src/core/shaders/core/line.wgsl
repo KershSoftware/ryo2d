@@ -138,7 +138,10 @@ fn styled(color_in: vec4<f32>, uv: vec2<f32>, params: vec4<f32>, aa: f32) -> vec
         let brightness = core_val + glow_val * 0.5;
         color = vec4<f32>(color.rgb * brightness, color.a * (core_val + glow_val * 0.3));
     }
-    return premultiply(color);
+    // Glow alpha peaks above 1, which a float image would not clamp: the
+    // blend would subtract from what is below
+    let p = premultiply(color);
+    return vec4<f32>(p.rgb, min(p.a, 1.0));
 }
 
 @fragment
