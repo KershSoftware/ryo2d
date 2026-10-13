@@ -35,6 +35,11 @@
 //! }
 //! ```
 
+/// The format of every image the world draws into: the scene, lit and
+/// camera images, render targets and the lighting copy. Linear light,
+/// premultiplied by alpha, with values above 1.
+pub(crate) const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 pub(crate) mod batch;
 mod context;
 mod debug_draw;

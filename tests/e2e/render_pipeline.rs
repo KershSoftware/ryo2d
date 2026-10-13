@@ -201,6 +201,11 @@ fn a_frame_pass_before_the_tonemap_reaches_the_frame() {
     engine.frame().unwrap().get_pixel(32, 32).0,
     [255, 0, 255, 255]
   );
+  assert_eq!(
+    *SEEN_BEFORE_TONEMAP.lock().unwrap(),
+    Some(ryo2d::wgpu::TextureFormat::Rgba16Float),
+    "frame passes before the tonemap draw on the HDR scene image"
+  );
 }
 
 /// A uniform grey scene under a strong vignette; turns the post-process pass off at update 3.

@@ -83,7 +83,7 @@ struct LightTargets {
 }
 
 impl LightTargets {
-  fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+  fn new(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
     let size = wgpu::Extent3d {
       width,
       height,
@@ -108,7 +108,7 @@ impl LightTargets {
       mip_level_count: 1,
       sample_count: 1,
       dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      format,
       usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
       view_formats: &[],
     });
@@ -131,6 +131,9 @@ impl LightTargets {
 
 /// The lighting renderer manages GPU resources for 2D lighting.
 pub struct LightingRenderer {
+  /// The format of the images it lights, which its scene copies share
+  format: wgpu::TextureFormat,
+
   /// The targets for lighting on its own, at the renderer's size
   targets: LightTargets,
 
@@ -666,7 +669,8 @@ impl LightingRenderer {
     });
 
     Self {
-      targets: LightTargets::new(device, width, height),
+      targets: LightTargets::new(device, width, height, output_format),
+      format: output_format,
       cameras: HashMap::new(),
       bind_groups: BindGroupCache::default(),
       instances: Vec::with_capacity(MAX_LIGHTS),
@@ -751,7 +755,7 @@ impl LightingRenderer {
   /// Resize the light accumulation texture.
   pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
     if (width, height) != (self.targets.width, self.targets.height) {
-      self.targets = LightTargets::new(device, width, height);
+      self.targets = LightTargets::new(device, width, height, self.format);
     }
   }
 
@@ -766,12 +770,13 @@ impl LightingRenderer {
           && (targets.width, targets.height) == camera.rect.size()
       })
     });
+    let format = self.format;
     let mut changed = self.cameras.len() != before;
     for camera in cameras.iter().filter(|camera| camera.lit) {
       self.cameras.entry(camera.entity).or_insert_with(|| {
         changed = true;
         let (width, height) = camera.rect.size();
-        LightTargets::new(device, width, height)
+        LightTargets::new(device, width, height, format)
       });
     }
     // Bind groups of dropped or recreated targets would keep them alive

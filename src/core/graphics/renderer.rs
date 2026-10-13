@@ -208,7 +208,7 @@ fn create_lit_texture(
     mip_level_count: 1,
     sample_count: 1,
     dimension: wgpu::TextureDimension::D2,
-    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+    format: crate::core::render::SCENE_FORMAT,
     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
       | wgpu::TextureUsages::TEXTURE_BINDING
       | wgpu::TextureUsages::COPY_SRC, // Allow copying to post-process texture
@@ -428,7 +428,7 @@ impl WgpuRenderer {
       mip_level_count: 1,
       sample_count: 1,
       dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      format: crate::core::render::SCENE_FORMAT,
       usage: wgpu::TextureUsages::TEXTURE_BINDING
         | wgpu::TextureUsages::COPY_DST
         | wgpu::TextureUsages::COPY_SRC // Allow copying from this texture for post-processing
@@ -439,7 +439,7 @@ impl WgpuRenderer {
     let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     let compositor = Compositor::new(&device, target_format, ui_width, ui_height);
-    let camera_images = CameraImages::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let camera_images = CameraImages::new(&device, crate::core::render::SCENE_FORMAT);
     let (lit_texture, lit_texture_view) = create_lit_texture(&device, game_width, game_height);
 
     // Create bind group for main game texture
@@ -467,34 +467,34 @@ impl WgpuRenderer {
 
     // Fill the game texture with a dark charcoal background, which is presented
     // immediately to prevent a flash on startup
-    let mut pixel_buffer = vec![0u8; (game_width * game_height * 4) as usize];
-    for pixel in pixel_buffer.as_chunks_mut::<4>().0 {
-      pixel[0] = 0x2d; // R: 45
-      pixel[1] = 0x2d; // G: 45
-      pixel[2] = 0x2d; // B: 45
-      pixel[3] = 0xff; // A: 255
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+      label: Some("Initial Game Texture Clear"),
+    });
+    {
+      let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Initial Game Texture Clear"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+          view: &texture_view,
+          depth_slice: None,
+          resolve_target: None,
+          ops: wgpu::Operations {
+            // sRGB 45 grey in linear light
+            load: wgpu::LoadOp::Clear(wgpu::Color {
+              r: 0.0262,
+              g: 0.0262,
+              b: 0.0262,
+              a: 1.0,
+            }),
+            store: wgpu::StoreOp::Store,
+          },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+      });
     }
-
-    // Upload the initial colour to the game texture immediately
-    queue.write_texture(
-      wgpu::TexelCopyTextureInfo {
-        texture: &texture,
-        mip_level: 0,
-        origin: wgpu::Origin3d::ZERO,
-        aspect: wgpu::TextureAspect::All,
-      },
-      &pixel_buffer,
-      wgpu::TexelCopyBufferLayout {
-        offset: 0,
-        bytes_per_row: Some(4 * game_width),
-        rows_per_image: Some(game_height),
-      },
-      wgpu::Extent3d {
-        width: game_width,
-        height: game_height,
-        depth_or_array_layers: 1,
-      },
-    );
+    queue.submit(std::iter::once(encoder.finish()));
 
     // Create the display effect stage
     let display_effects = PostProcessPipeline::new(
@@ -617,9 +617,9 @@ impl WgpuRenderer {
     self.target.format()
   }
 
-  /// Get the format of the game texture (where the world renders to)
+  /// The format the world renders in: linear HDR
   pub fn game_texture_format(&self) -> wgpu::TextureFormat {
-    wgpu::TextureFormat::Rgba8UnormSrgb
+    crate::core::render::SCENE_FORMAT
   }
 
   /// Resize the window target, keeping the presentation and scale factor.
@@ -678,7 +678,7 @@ impl WgpuRenderer {
       mip_level_count: 1,
       sample_count: 1,
       dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      format: crate::core::render::SCENE_FORMAT,
       usage: wgpu::TextureUsages::TEXTURE_BINDING
         | wgpu::TextureUsages::COPY_DST
         | wgpu::TextureUsages::COPY_SRC

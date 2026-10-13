@@ -8,7 +8,7 @@ use wgpu::util::DeviceExt;
 
 use super::pipelines::{self, PipelineKey, Pipelines};
 use super::polyline::{Triangles, Vertex2D};
-use super::{BatchShader, Draw, DrawState, Placed, Sampling, Stream, plan_draws};
+use super::{BatchShader, Draw, DrawState, PageKind, Placed, Sampling, Stream, plan_draws};
 use crate::core::ecs::Entity;
 use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
@@ -241,6 +241,7 @@ impl Batch2D {
               shader,
               blend: line.blend,
               stream: Stream::Triangles,
+              page: PageKind::Srgb8,
               format,
             };
             if ensured.is_none_or(|(last, _)| last != key) {
@@ -276,6 +277,7 @@ impl Batch2D {
           shader: wanted,
           blend: sprite.blend,
           stream: Stream::Quads,
+          page: PageKind::of(Some(slot.page)),
           format,
         };
         let shader = match ensured {
@@ -362,10 +364,15 @@ impl Batch2D {
     camera: Entity,
     textures: &'a SpriteGpuRenderer,
   ) {
+    let page = match draw.stream {
+      Stream::Quads => PageKind::of(draw.state.page),
+      Stream::Triangles => PageKind::Srgb8,
+    };
     let key = PipelineKey {
       shader: draw.state.shader,
       blend: draw.state.blend,
       stream: draw.stream,
+      page,
       format: self.format,
     };
     let (Some(pipeline), Some(camera_group)) =

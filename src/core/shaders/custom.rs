@@ -419,6 +419,13 @@ fn fs_custom_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {{
   return finish_premultiplied(ry_custom(in), in.tint);
 }}
 
+@fragment
+fn fs_custom_linear(in: VertexOutput) -> @location(0) vec4<f32> {{
+  take_derivatives(in.uv);
+  linear_page = true;
+  return finish(ry_custom(in), in.tint);
+}}
+
 fn ry_custom(in: VertexOutput) -> vec4<f32> {{
   ry_bounds = in.uv_bounds;
   let extent = in.uv_bounds.zw - in.uv_bounds.xy;

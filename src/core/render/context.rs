@@ -99,7 +99,7 @@ impl<'a> RenderContext<'a> {
   }
 
   /// The size the scene renders at, in pixels: every scene image (game, lit
-  /// and post-process output) has it. A camera with an image of its own
+  /// and display) has it. A camera with an image of its own
   /// draws on its viewport's part of it.
   pub fn render_size(&self) -> (u32, u32) {
     (self.frame.render_width, self.frame.render_height)
@@ -117,15 +117,16 @@ impl<'a> RenderContext<'a> {
   }
 
   /// The format of [`current_view`](Self::current_view), for the render
-  /// pipelines a pass builds. Every game-size image (game, lit and
-  /// post-process output) shares it.
+  /// pipelines a pass builds: `Rgba16Float` (linear light, may exceed 1) in
+  /// camera passes and frame passes before `tonemap`, `Rgba8UnormSrgb` (the
+  /// display image) after it.
   pub fn format(&self) -> wgpu::TextureFormat {
     image_texture(&self.targets, &self.stages, self.image).format()
   }
 
-  /// The texture holding the frame's latest image (the game texture, the lit
-  /// scene or the post-process output), at game resolution. In a camera pass
-  /// it is the camera's image.
+  /// The texture holding the frame's latest image, at game resolution: before
+  /// `tonemap` a scene image (the game texture or the lit scene), after it
+  /// the display image. In a camera pass it is the camera's image.
   ///
   /// Only passes before `composite` reach the window: it copies this image to
   /// the screen, so drawing on it from a pass placed after `composite` is not

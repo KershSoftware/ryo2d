@@ -1,10 +1,10 @@
-//! Post-process effects on the latest image
+//! Post-process effects on the display image
 
 use crate::core::render::{FrameImage, FrameInfo, RenderContext, RenderPass, pass_ids};
 use crate::core::shaders::OutputBuffer;
 
-/// Runs the active effect chain on the latest image (the lit scene when
-/// lighting ran); the chain's output becomes the latest image.
+/// Runs the active display effects on the display image the tonemap pass
+/// wrote; the chain's output becomes the latest image.
 pub(super) struct PostProcess;
 
 impl RenderPass for PostProcess {

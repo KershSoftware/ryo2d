@@ -1621,3 +1621,42 @@ fn pixel_art_sprites_turn_with_a_rotated_camera() {
     );
   }
 }
+
+/// Two additive white squares (2.0 in linear light), halved by a multiply.
+struct PileUp;
+
+impl Scene for PileUp {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let white = solid("pile-white", 32, [255, 255, 255, 255]);
+    for z in 0..2 {
+      ctx.world.spawn((
+        Transform::from_xy(16.0, 16.0),
+        Renderable::sprite(white.clone())
+          .with_z_order(z)
+          .with_blend(BlendMode::Additive),
+      ));
+    }
+    // sRGB 188 is half in linear light
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 16.0),
+      Renderable::sprite(solid("pile-half", 32, [188, 188, 188, 255]))
+        .with_z_order(2)
+        .with_blend(BlendMode::Multiply),
+    ));
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn light_above_white_survives_until_the_tonemap() {
+  let Some(mut engine) = start(EngineBuilder::new().resolution(32, 32).start_scene(PileUp)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let pixel = engine.frame().unwrap().get_pixel(16, 16).0;
+  // 2.0 halved is 1.0 (white); an image clamped at 1.0 shows 188
+  assert!(pixel[0] > 230, "{pixel:?}");
+}

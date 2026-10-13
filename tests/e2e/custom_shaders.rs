@@ -684,3 +684,49 @@ fn a_custom_shader_applies_once_the_gpu_has_accepted_it() {
     [35, 225, 215, 255]
   );
 }
+
+/// A red square seen by a texture camera, shown by a sprite with `shader`.
+fn red_through_a_target(shader: SpriteShader) -> Fixture {
+  Fixture::entities(move |ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(1000.0, 1000.0),
+      Renderable::sprite(solid("rt-red", 16, RED)),
+    ));
+    let target = ctx.render_targets().create(16, 16);
+    ctx.world.spawn((
+      Transform::from_xy(1000.0, 1000.0),
+      Camera2d {
+        target: CameraTarget::Texture(target),
+        ..Default::default()
+      },
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(32.0, 32.0),
+      Renderable::render_target(target).with_shader(shader.clone()),
+    ));
+  })
+}
+
+fn assert_near(pixel: [u8; 4], want: [u8; 4]) {
+  for (got, want) in pixel.iter().zip(want) {
+    assert!(got.abs_diff(want) <= 1, "{pixel:?} vs {want:?}");
+  }
+}
+
+#[test]
+fn a_custom_shader_sees_a_render_target_as_straight_srgb() {
+  let shader = ShaderHandle::from_source("t2-rt-invert.wgsl", INVERT);
+  let Some(mut engine) = start(red_through_a_target(SpriteShader::custom(shader))) else {
+    return;
+  };
+  assert_near(render(&mut engine).get_pixel(32, 32).0, [35, 225, 215, 255]);
+}
+
+#[test]
+fn a_built_in_effect_sees_a_render_target_as_straight_srgb() {
+  let invert = SpriteShader::BuiltIn(SpriteEffect::Invert);
+  let Some(mut engine) = start(red_through_a_target(invert)) else {
+    return;
+  };
+  assert_near(render(&mut engine).get_pixel(32, 32).0, [35, 225, 215, 255]);
+}

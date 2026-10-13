@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use super::polyline::Vertex2D;
-use super::{BatchShader, BlendMode, Stream};
+use super::{BatchShader, BlendMode, PageKind, Stream};
 use crate::core::graphics::SpriteInstance;
 use crate::core::shaders::custom::{self, ShaderError};
 use crate::core::shaders::scope::Checked;
@@ -37,6 +37,7 @@ pub(crate) struct PipelineKey {
   pub(crate) shader: BatchShader,
   pub(crate) blend: BlendMode,
   pub(crate) stream: Stream,
+  pub(crate) page: PageKind,
   pub(crate) format: wgpu::TextureFormat,
 }
 
@@ -181,22 +182,30 @@ impl Pipelines {
     };
     // Premultiplied textures take their colour as it is
     let premultiplied = key.blend == BlendMode::Premultiplied;
-    let (module, layout, fragment) = match (key.shader, key.stream, premultiplied) {
-      (BatchShader::Sprite, Stream::Quads, false) => (&self.sprite, &self.layout, "fs_base"),
-      (BatchShader::Sprite, Stream::Quads, true) => {
+    let linear = key.page == PageKind::Linear;
+    let (module, layout, fragment) = match (key.shader, key.stream, premultiplied, linear) {
+      // Render targets hold linear premultiplied colour, whatever the blend
+      (BatchShader::Sprite, Stream::Quads, _, true) => {
+        (&self.sprite, &self.layout, "fs_base_linear")
+      }
+      (BatchShader::Sprite, Stream::Quads, false, false) => (&self.sprite, &self.layout, "fs_base"),
+      (BatchShader::Sprite, Stream::Quads, true, false) => {
         (&self.sprite, &self.layout, "fs_base_premultiplied")
       }
-      (BatchShader::SpriteEffect, Stream::Quads, false) => {
+      (BatchShader::SpriteEffect, Stream::Quads, _, true) => {
+        (&self.sprite, &self.layout, "fs_effect_linear")
+      }
+      (BatchShader::SpriteEffect, Stream::Quads, false, false) => {
         (&self.sprite, &self.layout, "fs_effect")
       }
-      (BatchShader::SpriteEffect, Stream::Quads, true) => {
+      (BatchShader::SpriteEffect, Stream::Quads, true, false) => {
         (&self.sprite, &self.layout, "fs_effect_premultiplied")
       }
-      (BatchShader::Line, Stream::Triangles, _) => (&self.line, &self.camera_only, "fs_main"),
-      (BatchShader::LineTextured, Stream::Triangles, _) => {
+      (BatchShader::Line, Stream::Triangles, _, _) => (&self.line, &self.camera_only, "fs_main"),
+      (BatchShader::LineTextured, Stream::Triangles, _, _) => {
         (&self.line, &self.layout, "fs_textured")
       }
-      (BatchShader::Custom(source), Stream::Quads, _) => {
+      (BatchShader::Custom(source), Stream::Quads, _, _) => {
         let Some((name, wgsl)) = custom else {
           return;
         };
@@ -205,7 +214,9 @@ impl Pipelines {
           label: Some(name),
           source: wgpu::ShaderSource::Wgsl(wgsl.into()),
         });
-        let fragment = if premultiplied {
+        let fragment = if linear {
+          "fs_custom_linear"
+        } else if premultiplied {
           "fs_custom_premultiplied"
         } else {
           "fs_custom"

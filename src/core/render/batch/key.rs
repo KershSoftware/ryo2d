@@ -23,6 +23,24 @@ pub enum BlendMode {
   Screen,
 }
 
+/// What a sampled page holds: sRGB bytes (atlas and standalone pages) or
+/// linear colour premultiplied by alpha (render targets).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PageKind {
+  Srgb8,
+  Linear,
+}
+
+impl PageKind {
+  /// The kind of `page`; untextured draws count as sRGB.
+  pub(crate) fn of(page: Option<SlotPage>) -> Self {
+    match page {
+      Some(SlotPage::Target(_)) => Self::Linear,
+      _ => Self::Srgb8,
+    }
+  }
+}
+
 /// How a texture is sampled when drawn at other than its own pixel size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Filter {
@@ -93,6 +111,19 @@ pub(crate) struct DrawState {
 mod tests {
   use super::*;
   use crate::core::graphics::Presentation;
+
+  #[test]
+  fn render_targets_are_linear_pages() {
+    use crate::core::graphics::{RenderTargets, SlotPage};
+    let target = RenderTargets::default().create(4, 4);
+    assert_eq!(
+      PageKind::of(Some(SlotPage::Target(target))),
+      PageKind::Linear
+    );
+    assert_eq!(PageKind::of(Some(SlotPage::Atlas(0))), PageKind::Srgb8);
+    assert_eq!(PageKind::of(Some(SlotPage::Standalone(2))), PageKind::Srgb8);
+    assert_eq!(PageKind::of(None), PageKind::Srgb8);
+  }
 
   #[test]
   fn the_default_filter_follows_the_presentation() {

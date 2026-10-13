@@ -6,12 +6,14 @@
 // - Per-instance tint colors with alpha
 // - Per-instance visual effects (outline, glow, flash, etc.)
 //
-// Sprites are sampled from texture atlas pages (Rgba8Unorm), so samples are
-// raw sRGB bytes. Effects and tint run in that sRGB space, in the CPU
-// renderer's order (effect, then tint), and the result is converted to linear
-// on output for the Rgba8UnormSrgb game texture. Samples outside the sprite's
-// own rect (uv_bounds) are transparent, so atlas neighbours never show.
-// Output is premultiplied by alpha, like every batch shader.
+// Atlas and standalone pages (Rgba8Unorm) are sampled as raw sRGB bytes.
+// Effects and tint run in that sRGB space, in the CPU renderer's order
+// (effect, then tint), and the result is converted to linear on output.
+// Render-target pages hold linear colour premultiplied by alpha: the base
+// entry tints them in linear light, the effect entries read them back as
+// straight sRGB. Output goes to the linear float scene image. Samples outside
+// the sprite's own rect (uv_bounds) are transparent, so atlas neighbours
+// never show. Output is premultiplied by alpha, like every batch shader.
 
 // The camera the sprites are drawn through (`CameraGlobals`)
 @group(1) @binding(0) var sprite_texture: texture_2d<f32>;
@@ -55,9 +57,34 @@ fn take_derivatives(uv: vec2<f32>) {
     uv_ddy = dpdy(uv);
 }
 
+// Set by the entries for render-target pages, which hold linear colour
+// premultiplied by alpha: samples come back as straight sRGB, like any
+// other texture's
+var<private> linear_page: bool;
+
 // The sprite texture at `uv`, transparent outside `bounds`
 fn sample_sprite(uv: vec2<f32>, bounds: vec4<f32>) -> vec4<f32> {
-    return sample_masked(sprite_texture, sprite_sampler, uv, bounds, uv_ddx, uv_ddy);
+    let texel = sample_masked(sprite_texture, sprite_sampler, uv, bounds, uv_ddx, uv_ddy);
+    if linear_page {
+        return straight_srgb(texel);
+    }
+    return texel;
+}
+
+// Linear colour premultiplied by alpha as straight sRGB (0 to 1)
+fn straight_srgb(c: vec4<f32>) -> vec4<f32> {
+    if c.a <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    let rgb = clamp(c.rgb / c.a, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(linear_to_srgb(rgb), min(c.a, 1.0));
+}
+
+// A linear premultiplied texel tinted in linear light (the tint decoded from
+// sRGB); values above 1 are kept
+fn finish_linear(color: vec4<f32>, tint: vec4<f32>) -> vec4<f32> {
+    let a = clamp(tint.a, 0.0, 1.0);
+    return vec4<f32>(color.rgb * srgb_to_linear(tint.rgb) * a, color.a * a);
 }
 
 @vertex
@@ -143,6 +170,22 @@ fn fs_base_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_effect_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
     return finish_premultiplied(effect_color(in), in.tint);
+}
+
+// The same for render-target pages
+@fragment
+fn fs_base_linear(in: VertexOutput) -> @location(0) vec4<f32> {
+    take_derivatives(in.uv);
+    let color = sample_masked(sprite_texture, sprite_sampler, in.uv, in.uv_bounds, uv_ddx, uv_ddy);
+    return finish_linear(color, in.tint);
+}
+
+// Effects work on straight sRGB, so the page reads back as it
+@fragment
+fn fs_effect_linear(in: VertexOutput) -> @location(0) vec4<f32> {
+    take_derivatives(in.uv);
+    linear_page = true;
+    return finish(effect_color(in), in.tint);
 }
 
 // The sprite's colour with its built-in effect applied

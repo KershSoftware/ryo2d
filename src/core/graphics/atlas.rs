@@ -559,19 +559,15 @@ impl TextureAtlas {
       mip_level_count: 1,
       sample_count: 1,
       dimension: wgpu::TextureDimension::D2,
-      format: wgpu::TextureFormat::Rgba8UnormSrgb,
+      format: crate::core::render::SCENE_FORMAT,
       // Lighting copies the camera's image before lighting it in place
       usage: wgpu::TextureUsages::RENDER_ATTACHMENT
         | wgpu::TextureUsages::TEXTURE_BINDING
         | wgpu::TextureUsages::COPY_SRC,
-      view_formats: &[PAGE_FORMAT],
+      view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let sampled = texture.create_view(&wgpu::TextureViewDescriptor {
-      format: Some(PAGE_FORMAT),
-      ..Default::default()
-    });
-    let bind_groups = self.bind(device, &sampled, "Render Target");
+    let bind_groups = self.bind(device, &view, "Render Target");
     self.target_ids.insert(key, target);
     self.targets.insert(
       target,
