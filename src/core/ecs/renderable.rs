@@ -485,6 +485,10 @@ pub struct Renderable {
   /// Lit by 2D lighting (default `true`); an unlit sprite and its shadows
   /// draw after lighting, at full brightness
   pub lighting: bool,
+  /// Multiplies the sprite's light; above 1 it glows past white and feeds
+  /// bloom (default 1). A lit sprite is still darkened by lighting: to glow
+  /// in the dark it also takes `with_lighting(false)`.
+  pub emission: f32,
 }
 
 impl Renderable {
@@ -508,6 +512,7 @@ impl Renderable {
       blend: BlendMode::Alpha,
       filter: Filter::Default,
       lighting: true,
+      emission: 1.0,
     }
   }
 
@@ -552,7 +557,14 @@ impl Renderable {
       blend: BlendMode::Alpha,
       filter: Filter::Default,
       lighting: true,
+      emission: 1.0,
     }
+  }
+
+  /// Multiply the sprite's light by `emission` (see [`emission`](Self::emission)).
+  pub fn with_emission(mut self, emission: f32) -> Self {
+    self.emission = emission;
+    self
   }
 
   /// Set how the sprite combines with what is below.

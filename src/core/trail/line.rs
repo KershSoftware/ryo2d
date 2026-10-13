@@ -68,6 +68,8 @@ pub struct Line2D {
   blend: BlendMode,
   /// Whether scene lighting applies (false: full brightness over the lit scene)
   lighting: bool,
+  /// Multiplies the line's light (default 1)
+  emission: f32,
 }
 
 impl Line2D {
@@ -92,6 +94,7 @@ impl Line2D {
       join: LineJoin::Miter,
       blend: BlendMode::Alpha,
       lighting: true,
+      emission: 1.0,
     }
   }
 
@@ -415,6 +418,22 @@ impl Line2D {
   pub fn with_lighting(mut self, enabled: bool) -> Self {
     self.lighting = enabled;
     self
+  }
+
+  /// Multiply the line's light by `emission` (default 1): above 1 it glows
+  /// past white and feeds bloom. NaN counts as 1; clamped to 0..=65504.
+  pub fn with_emission(mut self, emission: f32) -> Self {
+    self.emission = if emission.is_nan() {
+      1.0
+    } else {
+      emission.clamp(0.0, 65504.0)
+    };
+    self
+  }
+
+  /// How much the line's light is multiplied by.
+  pub fn emission(&self) -> f32 {
+    self.emission
   }
 
   /// Whether scene lighting applies to this line.

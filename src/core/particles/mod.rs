@@ -817,6 +817,7 @@ impl ParticleSystem {
         filter: emitter.filter,
         lit: emitter.lighting,
         effects: emitter.effect.is_some(),
+        emission: emitter.emission,
       };
       let look = (emitter.sprite.clone(), emitter.effect.clone(), draw);
       (entity, look)

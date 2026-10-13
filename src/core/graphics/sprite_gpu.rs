@@ -33,7 +33,8 @@ use crate::core::ui::Color;
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SpriteInstance {
   /// Transform matrix (2D affine: scale, rotation, translation)
-  /// Row-major 3x3 packed into 3 vec4s (last component unused)
+  /// Row-major 3x3 packed into 3 vec4s (the last lane of row 0 holds
+  /// emission - 1; the other last lanes are unused)
   pub transform: [[f32; 4]; 3],
   /// UV rect: x=u_min, y=v_min, z=u_max, w=v_max
   pub uv_rect: [f32; 4],
@@ -87,11 +88,31 @@ impl SpriteInstance {
     // Column 0: X-axis transform [scale_x * cos, scale_x * sin, 0]
     // Column 1: Y-axis transform [-scale_y * sin, scale_y * cos, 0]
     // Column 2: Translation [x, y, 1]
-    self.transform[0] = [scale_x * cos, scale_x * sin, 0.0, 0.0];
+    let emission = self.transform[0][3];
+    self.transform[0] = [scale_x * cos, scale_x * sin, 0.0, emission];
     self.transform[1] = [-scale_y * sin, scale_y * cos, 0.0, 0.0];
     self.transform[2] = [x, y, 1.0, 0.0];
 
     self
+  }
+
+  /// Multiply the sprite's light by `emission` (default 1): above 1 it
+  /// glows past white and feeds bloom. Kept as `emission - 1` in
+  /// `transform[0][3]`, so a zeroed instance means 1. NaN counts as 1; the
+  /// value is clamped to 0..=65504 (the most a scene image holds).
+  pub fn with_emission(mut self, emission: f32) -> Self {
+    let emission = if emission.is_nan() {
+      1.0
+    } else {
+      emission.clamp(0.0, 65504.0)
+    };
+    self.transform[0][3] = emission - 1.0;
+    self
+  }
+
+  /// The instance's emission (see [`with_emission`](Self::with_emission)).
+  pub fn emission(&self) -> f32 {
+    self.transform[0][3] + 1.0
   }
 
   /// Set UV rectangle (for sprite sheets/atlases)
@@ -868,6 +889,8 @@ pub struct SpriteDraw {
   pub lit: bool,
   /// Its instance carries a built-in effect (`SpriteInstance::with_effect`)
   pub effects: bool,
+  /// Multiplies the instance's emission (default 1)
+  pub emission: f32,
 }
 
 impl Default for SpriteDraw {
@@ -880,11 +903,18 @@ impl Default for SpriteDraw {
       filter: Filter::Default,
       lit: true,
       effects: false,
+      emission: 1.0,
     }
   }
 }
 
 impl SpriteDraw {
+  /// Multiply the instance's emission by `emission`.
+  pub fn with_emission(mut self, emission: f32) -> Self {
+    self.emission = emission;
+    self
+  }
+
   /// How the draw list takes a sprite drawn with `shading`.
   fn look(&self, shading: SpriteShading) -> SpriteLook {
     SpriteLook {
@@ -959,6 +989,7 @@ impl BatchCollector {
     instance: SpriteInstance,
     draw: SpriteDraw,
   ) {
+    let instance = instance.with_emission(instance.emission() * draw.emission);
     let index = match self.sprite_index.get(&sprite.serial()) {
       Some(&index) => index,
       None => {
@@ -1027,6 +1058,27 @@ impl BatchCollector {
 mod tests {
   use super::*;
   use crate::core::graphics::SlotPage;
+
+  #[test]
+  fn emission_lives_in_the_unused_transform_lane() {
+    let zeroed: SpriteInstance = bytemuck::Zeroable::zeroed();
+    assert_eq!(zeroed.emission(), 1.0, "a zeroed lane means no glow");
+    let glowing = SpriteInstance::new()
+      .with_emission(3.0)
+      .with_transform(10.0, 20.0, 0.5, 2.0, 2.0);
+    assert_eq!(glowing.emission(), 3.0, "with_transform keeps it");
+    assert_eq!(
+      SpriteInstance::new().with_emission(f32::NAN).emission(),
+      1.0
+    );
+    assert_eq!(SpriteInstance::new().with_emission(-2.0).emission(), 0.0);
+    assert_eq!(
+      SpriteInstance::new()
+        .with_emission(f32::INFINITY)
+        .emission(),
+      65504.0
+    );
+  }
 
   #[test]
   fn sprite_instance_size() {

@@ -42,6 +42,7 @@ struct VertexOutput {
     @location(2) @interpolate(flat) effect_params: vec4<f32>,
     @location(3) @interpolate(flat) effect_extra: vec4<f32>,
     @location(4) @interpolate(flat) uv_bounds: vec4<f32>,
+    @location(5) @interpolate(flat) emission: f32,
 }
 
 // Alpha above which a texel counts as visible (the CPU tests alpha > 0)
@@ -82,9 +83,9 @@ fn straight_srgb(c: vec4<f32>) -> vec4<f32> {
 
 // A linear premultiplied texel tinted in linear light (the tint decoded from
 // sRGB); values above 1 are kept
-fn finish_linear(color: vec4<f32>, tint: vec4<f32>) -> vec4<f32> {
+fn finish_linear(color: vec4<f32>, tint: vec4<f32>, emission: f32) -> vec4<f32> {
     let a = clamp(tint.a, 0.0, 1.0);
-    return vec4<f32>(color.rgb * srgb_to_linear(tint.rgb) * a, color.a * a);
+    return vec4<f32>(color.rgb * srgb_to_linear(tint.rgb) * a * emission, color.a * a);
 }
 
 @vertex
@@ -127,6 +128,7 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.effect_params = instance.effect_params;
     out.effect_extra = instance.effect_extra;
     out.uv_bounds = instance.uv_bounds;
+    out.emission = instance.transform0.w + 1.0;
     
     return out;
 }
@@ -147,14 +149,14 @@ fn from_pixel(pixel: vec2<f32>) -> vec4<f32> {
 @fragment
 fn fs_base(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
-    return finish(sample_sprite(in.uv, in.uv_bounds), in.tint);
+    return finish(sample_sprite(in.uv, in.uv_bounds), in.tint, in.emission);
 }
 
 // Effect fragment shader
 @fragment
 fn fs_effect(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
-    return finish(effect_color(in), in.tint);
+    return finish(effect_color(in), in.tint, in.emission);
 }
 
 // The same for premultiplied textures (render targets): their colour is
@@ -163,13 +165,13 @@ fn fs_effect(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_base_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
     let color = sample_sprite(in.uv, in.uv_bounds);
-    return finish_premultiplied(color, in.tint);
+    return finish_premultiplied(color, in.tint, in.emission);
 }
 
 @fragment
 fn fs_effect_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
-    return finish_premultiplied(effect_color(in), in.tint);
+    return finish_premultiplied(effect_color(in), in.tint, in.emission);
 }
 
 // The same for render-target pages
@@ -177,7 +179,7 @@ fn fs_effect_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_base_linear(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
     let color = sample_masked(sprite_texture, sprite_sampler, in.uv, in.uv_bounds, uv_ddx, uv_ddy);
-    return finish_linear(color, in.tint);
+    return finish_linear(color, in.tint, in.emission);
 }
 
 // Effects work on straight sRGB, so the page reads back as it
@@ -185,7 +187,7 @@ fn fs_base_linear(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_effect_linear(in: VertexOutput) -> @location(0) vec4<f32> {
     take_derivatives(in.uv);
     linear_page = true;
-    return finish(effect_color(in), in.tint);
+    return finish(effect_color(in), in.tint, in.emission);
 }
 
 // The sprite's colour with its built-in effect applied
@@ -254,20 +256,20 @@ fn texel_size() -> vec2<f32> {
 // RGB is quantised to bytes: the source byte times the tint fraction,
 // truncated. Alpha is source alpha times tint alpha, truncated to a byte
 // unless it reaches 1 (so opaque stays opaque).
-fn finish(color: vec4<f32>, tint: vec4<f32>) -> vec4<f32> {
+fn finish(color: vec4<f32>, tint: vec4<f32>, emission: f32) -> vec4<f32> {
     let source = round(clamp(color.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) * 255.0);
     let rgb = floor(min(source * tint.rgb, vec3<f32>(255.0))) / 255.0;
     let a = clamp(color.a * tint.a, 0.0, 1.0);
     let alpha = select(floor(a * 255.0) / 255.0, 1.0, a >= 1.0);
-    return vec4<f32>(srgb_to_linear(rgb) * alpha, alpha);
+    return vec4<f32>(srgb_to_linear(rgb) * alpha * emission, alpha);
 }
 
 // Tint a premultiplied colour like `finish`: RGB in sRGB, with the tint's
 // alpha scaling colour and alpha together; then convert RGB to linear.
-fn finish_premultiplied(color: vec4<f32>, tint: vec4<f32>) -> vec4<f32> {
+fn finish_premultiplied(color: vec4<f32>, tint: vec4<f32>, emission: f32) -> vec4<f32> {
     let rgb = srgb_to_linear(clamp(color.rgb * tint.rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
     let alpha = clamp(color.a * tint.a, 0.0, 1.0);
-    return vec4<f32>(rgb * tint.a, alpha);
+    return vec4<f32>(rgb * tint.a * emission, alpha);
 }
 
 // =============================================================================

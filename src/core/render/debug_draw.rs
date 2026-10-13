@@ -243,7 +243,7 @@ impl DebugDraw {
         scratch.extend(path.iter().enumerate().map(|(i, &pos)| PolyPoint {
           pos,
           half_width,
-          color: super::batch::line_color(shape.color),
+          color: super::batch::line_color(shape.color, 1.0),
           u: i as f32 / last,
         }));
         let style = PolyStyle {

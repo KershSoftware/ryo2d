@@ -168,6 +168,8 @@ pub struct Trail2D {
   filter: Filter,
   /// Whether scene lighting applies (false: full brightness over the lit scene)
   lighting: bool,
+  /// Multiplies the trail's light (default 1)
+  emission: f32,
   /// Draw order against sprites and other trails (higher draws on top)
   z_order: i32,
 }
@@ -222,6 +224,7 @@ impl Trail2D {
       blend: BlendMode::Alpha,
       filter: Filter::Default,
       lighting: true,
+      emission: 1.0,
       z_order: 0,
     }
   }
@@ -908,6 +911,22 @@ impl Trail2D {
   pub fn with_z_order(mut self, z_order: i32) -> Self {
     self.z_order = z_order;
     self
+  }
+
+  /// Multiply the line's light by `emission` (default 1): above 1 it glows
+  /// past white and feeds bloom. NaN counts as 1; clamped to 0..=65504.
+  pub fn with_emission(mut self, emission: f32) -> Self {
+    self.emission = if emission.is_nan() {
+      1.0
+    } else {
+      emission.clamp(0.0, 65504.0)
+    };
+    self
+  }
+
+  /// How much the line's light is multiplied by.
+  pub fn emission(&self) -> f32 {
+    self.emission
   }
 
   /// The draw order of this trail (see [`Trail2D::with_z_order`]).

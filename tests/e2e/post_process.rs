@@ -129,6 +129,7 @@ fn bloom_blurs_horizontally() {
 /// times additively, under default bloom.
 struct GlowingLine {
   layers: u32,
+  emission: f32,
 }
 
 impl Scene for GlowingLine {
@@ -137,13 +138,15 @@ impl Scene for GlowingLine {
     ctx
       .world
       .spawn((Transform::from_xy(32.0, 32.0), Renderable::sprite(black)));
-    let line = SpriteHandle::from_sprite(Sprite::solid_rect(2, 64, 255, 255, 255, 255), "glow-line");
+    let line =
+      SpriteHandle::from_sprite(Sprite::solid_rect(2, 64, 255, 255, 255, 255), "glow-line");
     for z in 1..=self.layers as i32 {
       ctx.world.spawn((
         Transform::from_xy(33.0, 32.0),
         Renderable::sprite(line.clone())
           .with_z_order(z)
-          .with_blend(BlendMode::Additive),
+          .with_blend(BlendMode::Additive)
+          .with_emission(self.emission),
       ));
     }
     ctx.effects().set_bloom(1.0);
@@ -163,18 +166,95 @@ fn glow_beside(scene: impl Scene + 'static) -> Option<u8> {
 
 #[test]
 fn plain_white_does_not_bloom_by_default() {
-  let Some(glow) = glow_beside(GlowingLine { layers: 1 }) else {
+  let Some(glow) = glow_beside(GlowingLine {
+    layers: 1,
+    emission: 1.0,
+  }) else {
     return;
   };
-  assert!(glow <= 2, "white is not above the default threshold: {glow}");
+  assert!(
+    glow <= 2,
+    "white is not above the default threshold: {glow}"
+  );
 }
 
 #[test]
 fn light_above_white_blooms_by_default() {
-  let Some(glow) = glow_beside(GlowingLine { layers: 3 }) else {
+  let Some(glow) = glow_beside(GlowingLine {
+    layers: 3,
+    emission: 1.0,
+  }) else {
     return;
   };
   assert!(glow > 20, "three layers of white glow: {glow}");
+}
+
+#[test]
+fn an_emissive_sprite_blooms_where_plain_white_does_not() {
+  let (Some(plain), Some(glowing)) = (
+    glow_beside(GlowingLine {
+      layers: 1,
+      emission: 1.0,
+    }),
+    glow_beside(GlowingLine {
+      layers: 1,
+      emission: 3.0,
+    }),
+  ) else {
+    return;
+  };
+  assert!(
+    plain <= 2 && glowing > 20,
+    "plain {plain}, emissive {glowing}"
+  );
+}
+
+/// An emissive line seen by a texture camera, shown by a sprite: the target
+/// keeps light above white.
+struct GlowThroughTarget;
+
+impl Scene for GlowThroughTarget {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let black =
+      SpriteHandle::from_sprite(Sprite::solid_rect(64, 64, 0, 0, 0, 255), "rt-glow-black");
+    let line = SpriteHandle::from_sprite(
+      Sprite::solid_rect(2, 64, 255, 255, 255, 255),
+      "rt-glow-line",
+    );
+    ctx.world.spawn((
+      Transform::from_xy(1000.0, 1000.0),
+      Renderable::sprite(black),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(1001.0, 1000.0),
+      Renderable::sprite(line).with_z_order(1).with_emission(3.0),
+    ));
+    let target = ctx.render_targets().create(64, 64);
+    ctx.world.spawn((
+      Transform::from_xy(1000.0, 1000.0),
+      Camera2d {
+        target: CameraTarget::Texture(target),
+        ..Default::default()
+      },
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(32.0, 32.0),
+      Renderable::render_target(target),
+    ));
+    ctx.effects().set_bloom(1.0);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn an_emissive_sprite_seen_through_a_render_target_still_blooms() {
+  let Some(glow) = glow_beside(GlowThroughTarget) else {
+    return;
+  };
+  assert!(glow > 20, "{glow}");
 }
 
 /// `BrightLine` with bloom (threshold 0.5) and the display stage switched off.

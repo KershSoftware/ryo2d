@@ -270,3 +270,81 @@ fn extreme_exposure_and_contrast_stay_finite() {
   };
   assert!(pixel[..3].iter().all(|&c| c >= 242), "{pixel:?}");
 }
+
+/// A square of `color` with `emission`, under `look`.
+fn emitting(color: [u8; 4], emission: f32, look: Look) -> Square {
+  Square {
+    color: [0, 0, 0, 255],
+    look,
+    setup: Some(Box::new(move |ctx: &mut SceneContext| {
+      let [r, g, b, a] = color;
+      let sprite =
+        SpriteHandle::from_sprite(Sprite::solid_rect(32, 32, r, g, b, a), "look-emitting");
+      ctx.world.spawn((
+        Transform::from_xy(16.0, 16.0),
+        Renderable::sprite(sprite)
+          .with_z_order(1)
+          .with_emission(emission),
+      ));
+    })),
+  }
+}
+
+#[test]
+fn emission_multiplies_a_sprites_light() {
+  let look = Look {
+    tonemap: Tonemap::Clamp,
+    ..Look::default()
+  };
+  let Some(pixel) = shown(emitting([128, 128, 128, 255], 2.0, look)) else {
+    return;
+  };
+  assert!(pixel[0].abs_diff(encode(0.4317)) <= 1, "{pixel:?}");
+}
+
+/// A 4-px white square with `emission` at the left of a 128x32 frame, with bloom.
+struct Blazing(f32);
+
+impl Scene for Blazing {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let sprite =
+      SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 255, 255, 255, 255), "look-blazing");
+    ctx.world.spawn((
+      Transform::from_xy(8.0, 16.0),
+      Renderable::sprite(sprite).with_emission(self.0),
+    ));
+    ctx.effects().set_bloom(1.0);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+fn blazing(emission: f32) -> Option<image::RgbaImage> {
+  let builder = EngineBuilder::new()
+    .resolution(128, 32)
+    .start_scene(Blazing(emission));
+  let mut engine = HeadlessEngine::new_or_skip(builder)?;
+  engine.step_frames(2).unwrap();
+  Some(engine.frame().unwrap())
+}
+
+#[test]
+fn infinite_emission_shows_white_and_leaves_the_rest_alone() {
+  let (Some(frame), Some(plain)) = (blazing(f32::INFINITY), blazing(1.0)) else {
+    return;
+  };
+  let centre = frame.get_pixel(8, 16).0;
+  assert!(centre[..3].iter().all(|&c| c >= 242), "{centre:?}");
+  // Far from it the background is what it is without the glow
+  let (far, background) = (frame.get_pixel(124, 16).0, plain.get_pixel(124, 16).0);
+  for (got, want) in far.iter().zip(background) {
+    assert!(got.abs_diff(want) <= 1, "{far:?} vs {background:?}");
+  }
+  // NaN would show as black
+  assert!(
+    frame.pixels().all(|p| p.0[..3] != [0, 0, 0]),
+    "no black (NaN) pixels"
+  );
+}

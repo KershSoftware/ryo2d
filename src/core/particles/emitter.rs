@@ -193,6 +193,8 @@ pub struct ParticleEmitter {
   /// Lit by 2D lighting (default `true`); unlit particles keep full
   /// brightness in the dark
   pub lighting: bool,
+  /// Multiplies each particle's light (default 1)
+  pub emission: f32,
 
   // =========================================================================
   // Features
@@ -251,6 +253,7 @@ impl ParticleEmitter {
       blend: BlendMode::Alpha,
       filter: Filter::Default,
       lighting: true,
+      emission: 1.0,
       collision: None,
       layer: 0,
       max_particles: 1000,
@@ -365,6 +368,12 @@ impl ParticleEmitter {
   /// Set whether 2D lighting lights the particles.
   pub fn with_lighting(mut self, lighting: bool) -> Self {
     self.lighting = lighting;
+    self
+  }
+
+  /// Multiply each particle's light by `emission`.
+  pub fn with_emission(mut self, emission: f32) -> Self {
+    self.emission = emission;
     self
   }
 

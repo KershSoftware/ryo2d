@@ -323,6 +323,8 @@ struct Shading<'a> {
   custom: Option<(&'a ShaderHandle, &'a ShaderParams)>,
   /// Shadows blend over what is below whatever their entity's blend
   blend: BlendMode,
+  /// Multiplies the light (see `Renderable::emission`)
+  emission: f32,
 }
 
 impl<'a> Shading<'a> {
@@ -332,6 +334,7 @@ impl<'a> Shading<'a> {
     effect: None,
     custom: None,
     blend: BlendMode::Alpha,
+    emission: 1.0,
   };
 
   fn tinted(tint: Color, alpha: f32) -> Self {
@@ -341,11 +344,16 @@ impl<'a> Shading<'a> {
       effect: None,
       custom: None,
       blend: BlendMode::Alpha,
+      emission: 1.0,
     }
   }
 
   fn blended(self, blend: BlendMode) -> Self {
     Self { blend, ..self }
+  }
+
+  fn emitting(self, emission: f32) -> Self {
+    Self { emission, ..self }
   }
 
   /// Shade with `shader`, whichever kind it is.
@@ -457,7 +465,8 @@ impl Emitter<'_> {
     let mut instance = SpriteInstance::new()
       .with_transform(at.center.x, at.center.y, at.rotation, size.x, size.y)
       .with_uv(u0, v0, u1, v1)
-      .with_tint(shading.tint, shading.alpha);
+      .with_tint(shading.tint, shading.alpha)
+      .with_emission(shading.emission);
     if let Some(effect) = shading.effect {
       let effect = SpriteInstance::new().with_effect(effect);
       instance.effect_params = effect.effect_params;
@@ -606,7 +615,9 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
         Placement::centered(center, scale)
           .rotated(rotation)
           .flipped(renderable.flip_x, renderable.flip_y),
-        Shading::shaded(tint, alpha, shader).blended(renderable.blend),
+        Shading::shaded(tint, alpha, shader)
+          .blended(renderable.blend)
+          .emitting(renderable.emission),
       );
     }
 
@@ -660,7 +671,9 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
           Placement::from_top_left(tile_corner(i), texels, scale)
             .rotated(rotation)
             .flipped(renderable.flip_x, renderable.flip_y),
-          Shading::tinted(tint, alpha).blended(renderable.blend),
+          Shading::tinted(tint, alpha)
+            .blended(renderable.blend)
+            .emitting(renderable.emission),
         );
       }
     }

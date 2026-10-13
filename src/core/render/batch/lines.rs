@@ -63,7 +63,7 @@ pub(crate) fn trail_points(trail: &Trail2D, out: &mut Vec<PolyPoint>) -> Option<
     out.push(PolyPoint {
       pos: Vec2::new(point.x, point.y),
       half_width: trail.width_at(t) / 2.0,
-      color: line_color(color),
+      color: line_color(color, trail.emission()),
       u,
     });
   }
@@ -88,7 +88,7 @@ pub(crate) fn line_points(line: &Line2D, at: Vec2, out: &mut Vec<PolyPoint>) -> 
     out.push(PolyPoint {
       pos: *point + at,
       half_width: line.width_at(t) / 2.0,
-      color: line_color(line.color_at(t)),
+      color: line_color(line.color_at(t), line.emission()),
       u: t,
     });
   }
@@ -152,9 +152,11 @@ fn effect_reach(params: &[f32; 4]) -> f32 {
   }
 }
 
-/// A colour decoded to linear light, for a vertex.
-pub(crate) fn line_color(color: Color) -> [f32; 4] {
-  color.to_linear()
+/// A colour decoded to linear light for a vertex, its light multiplied by
+/// `emission`.
+pub(crate) fn line_color(color: Color, emission: f32) -> [f32; 4] {
+  let [r, g, b, a] = color.to_linear();
+  [r * emission, g * emission, b * emission, a]
 }
 
 /// Effect type in bits 0-3 (0 none, 1 lightning, 2 noise, 3 scroll, 4
