@@ -561,7 +561,7 @@ impl Renderable {
     }
   }
 
-  /// Multiply the sprite's light by `emission` (see [`emission`](Self::emission)).
+  /// Multiply the sprite's light by `emission` (see the [`emission`](Self::emission) field).
   pub fn with_emission(mut self, emission: f32) -> Self {
     self.emission = emission;
     self
