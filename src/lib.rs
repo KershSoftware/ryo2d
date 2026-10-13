@@ -136,6 +136,7 @@ pub mod prelude {
 
   // GPU sprite batching (for high-performance particle systems)
   pub use crate::core::graphics::{BatchCollector, SpriteInstance};
+  pub use crate::core::render::batch::{BlendMode, Filter};
 
   // Physics
   pub use crate::core::physics::{

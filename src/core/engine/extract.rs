@@ -218,6 +218,7 @@ impl Engine {
         rend.queue(),
         &self.draw_list,
         &self.camera_draws,
+        self.config.presentation,
       );
       (entity_sprites, lights)
     };

@@ -35,6 +35,7 @@
 //! }
 //! ```
 
+pub(crate) mod batch;
 mod context;
 mod draw_list;
 mod entities;
@@ -45,13 +46,11 @@ mod pipeline;
 
 pub(crate) use context::FrameTargets;
 pub use context::RenderContext;
-pub(crate) use draw_list::{
-  DrawKind, DrawList, DrawPayload, PipelineKind, SpriteShading, WorldRun, plan_runs,
-};
+pub(crate) use draw_list::{DrawItem, DrawKind, DrawList, DrawPayload, SpriteShading};
 pub(crate) use entities::EntityDrawer;
 pub use frame::FrameInfo;
 pub(crate) use frame::{
-  CameraDraw, FrameImage, FrameScene, LightingFrame, TRANSITION_VISIBLE, plan_cameras,
+  CameraDraw, FrameImage, FrameScene, LightingFrame, PixelRect, TRANSITION_VISIBLE, plan_cameras,
 };
 pub use pass::{PassScope, RenderPass};
 pub use pipeline::{RenderPipeline, RenderPipelineError};

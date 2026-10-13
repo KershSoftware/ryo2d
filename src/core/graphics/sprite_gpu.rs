@@ -37,12 +37,13 @@ use wgpu::util::DeviceExt;
 use super::RenderTarget;
 use super::camera_gpu::CameraUniforms;
 use super::render_targets::RenderTargets;
-use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
+use super::{
+  AtlasSlot, Presentation, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource,
+};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::{Entity, Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
-use crate::core::render::{
-  CameraDraw, DrawKind, DrawList, PipelineKind, SpriteShading, WorldRun, plan_runs,
-};
+use crate::core::render::batch::{BatchShader, Draw, DrawState, Placed, Planned, plan_draws};
+use crate::core::render::{CameraDraw, DrawKind, DrawList, DrawPayload, SpriteShading};
 use crate::core::shaders::custom::{self, ParamLayout, ShaderError, ShaderKind};
 use crate::core::shaders::scope::Checked;
 use crate::core::ui::Color;
@@ -533,7 +534,7 @@ pub struct SpriteGpuRenderer {
   // range of their own), and each camera's draws over them; both built by
   // `prepare_world` and reused across frames
   placed: Vec<SpriteInstance>,
-  world_runs: Vec<(Entity, Vec<WorldRun>)>,
+  draws: Vec<(Entity, Vec<Planned>)>,
   // Textures already made resident this frame (scratch, reused across frames)
   resident_scratch: HashSet<TextureId>,
 }
@@ -824,7 +825,7 @@ impl SpriteGpuRenderer {
       names: HashMap::new(),
       frame: 0,
       placed: Vec::new(),
-      world_runs: Vec::new(),
+      draws: Vec::new(),
       resident_scratch: HashSet::new(),
     }
   }
@@ -981,13 +982,14 @@ impl SpriteGpuRenderer {
   }
 
   /// Lay out and upload the z-sorted draw list's sprites for
-  /// [`draw_world_run`](Self::draw_world_run), once per camera.
+  /// [`draw`](Self::draw), once per camera.
   ///
   /// Makes the list's textures resident; then, for each of `cameras`,
   /// remaps the sprites it sees into their atlas slots in draw order, in a
   /// range of the instance buffer of its own, and splits the items it draws
-  /// into draws (sprites merge only when consecutive on one atlas page and
-  /// pipeline; trail groups split them). `list` must be sorted
+  /// into draws (sprites merge only when consecutive with equal draw
+  /// states; trail groups split them). Filters resolve for `presentation`.
+  /// `list` must be sorted
   /// ([`DrawList::sorted`]). Call once per frame, after
   /// [`sync_cameras`](Self::sync_cameras).
   pub(crate) fn prepare_world(
@@ -996,6 +998,7 @@ impl SpriteGpuRenderer {
     queue: &wgpu::Queue,
     list: &DrawList,
     cameras: &[CameraDraw],
+    presentation: Presentation,
   ) {
     // Shaders built last frame become usable once the GPU accepted them
     self.custom.settle();
@@ -1015,15 +1018,19 @@ impl SpriteGpuRenderer {
     self.resident_scratch = seen;
 
     self.placed.clear();
-    let mut world_runs = std::mem::take(&mut self.world_runs);
-    world_runs.resize_with(cameras.len(), || (Entity::PLACEHOLDER, Vec::new()));
+    let mut draws = std::mem::take(&mut self.draws);
+    draws.resize_with(cameras.len(), || (Entity::PLACEHOLDER, Vec::new()));
     // The previous sprite's texture and where it lives, reused while
     // sprites share it
     let mut last: Option<(TextureId, AtlasSlot, (u32, u32))> = None;
-    for (camera, (entity, runs)) in cameras.iter().zip(&mut world_runs) {
+    for (camera, (entity, planned)) in cameras.iter().zip(&mut draws) {
       *entity = camera.entity;
-      let first = self.placed.len();
-      plan_runs(list.items_for(camera), runs, first, |index| {
+      let first = self.placed.len() as u32;
+      plan_draws(list.items_for(camera), planned, first, |item| {
+        let index = match item.payload {
+          DrawPayload::Sprite(index) => index,
+          DrawPayload::Trail { z, layers } => return Some(Placed::External { z, layers }),
+        };
         let sprite = list.sprite(index)?;
         let (slot, page_size) = match last {
           Some((texture, slot, size)) if texture == sprite.texture => (slot, size),
@@ -1035,23 +1042,29 @@ impl SpriteGpuRenderer {
             (slot, size)
           }
         };
-        let pipeline = match sprite.shading {
-          SpriteShading::Plain => PipelineKind::Plain,
-          SpriteShading::Effect => PipelineKind::Effect,
+        let shader = match sprite.shading {
+          SpriteShading::Plain => BatchShader::Sprite,
+          SpriteShading::Effect => BatchShader::SpriteEffect,
           SpriteShading::Custom(key) if self.custom.pipeline(key).is_some() => {
-            PipelineKind::Custom(key)
+            BatchShader::Custom(key)
           }
-          SpriteShading::Custom(_) => PipelineKind::Plain,
+          SpriteShading::Custom(_) => BatchShader::Sprite,
         };
         // Only built-in effects grow the quad; custom params are not effect ids
-        let effects = pipeline == PipelineKind::Effect;
+        let effects = shader == BatchShader::SpriteEffect;
         self
           .placed
           .push(place_in_slot(&sprite.instance, &slot, page_size, effects));
-        Some((slot.page, pipeline))
+        Some(Placed::Quad(DrawState {
+          page: Some(slot.page),
+          shader,
+          blend: sprite.blend,
+          sampling: sprite.filter.resolve(presentation),
+          scissor: None,
+        }))
       });
     }
-    self.world_runs = world_runs;
+    self.draws = draws;
 
     if self.placed.len() > self.instance_capacity {
       self.instance_capacity = self.placed.len().next_power_of_two();
@@ -1082,40 +1095,29 @@ impl SpriteGpuRenderer {
 
   /// The draws [`prepare_world`](Self::prepare_world) laid out for
   /// `camera`, in order.
-  pub(crate) fn world_runs(&self, camera: Entity) -> &[WorldRun] {
+  pub(crate) fn draws(&self, camera: Entity) -> &[Planned] {
     self
-      .world_runs
+      .draws
       .iter()
       .find(|(entity, _)| *entity == camera)
-      .map_or(&[], |(_, runs)| runs.as_slice())
+      .map_or(&[], |(_, planned)| planned.as_slice())
   }
 
-  /// Number of sprite draws [`draw_world_run`](Self::draw_world_run) issues
-  /// for the laid-out frame.
+  /// Number of sprite draws [`draw`](Self::draw) issues for the laid-out
+  /// frame.
   pub(crate) fn world_draw_count(&self) -> usize {
     self
-      .world_runs
+      .draws
       .iter()
-      .flat_map(|(_, runs)| runs)
-      .filter(|run| matches!(run, WorldRun::Sprites { .. }))
+      .flat_map(|(_, planned)| planned)
+      .filter(|planned| matches!(planned, Planned::Draw(_)))
       .count()
   }
 
-  /// Draw one sprite run of `camera`'s inside a render pass, after
-  /// [`prepare_world`](Self::prepare_world). Does nothing for trail runs.
-  pub(crate) fn draw_world_run<'a>(
-    &'a self,
-    pass: &mut wgpu::RenderPass<'a>,
-    run: &WorldRun,
-    camera: Entity,
-  ) {
-    let WorldRun::Sprites {
-      page,
-      pipeline,
-      start,
-      count,
-    } = *run
-    else {
+  /// Issue one of `camera`'s draws inside a render pass, after
+  /// [`prepare_world`](Self::prepare_world).
+  pub(crate) fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, draw: &Draw, camera: Entity) {
+    let Some(page) = draw.state.page else {
       return;
     };
     let (Some(bind_group), Some(camera_group)) = (
@@ -1124,20 +1126,20 @@ impl SpriteGpuRenderer {
     ) else {
       return;
     };
-    let pipeline = match pipeline {
-      PipelineKind::Plain => &self.base_pipeline,
-      PipelineKind::Effect => &self.effect_pipeline,
-      PipelineKind::Custom(key) => self.custom.pipeline(key).unwrap_or(&self.base_pipeline),
+    let pipeline = match draw.state.shader {
+      BatchShader::SpriteEffect => &self.effect_pipeline,
+      BatchShader::Custom(key) => self.custom.pipeline(key).unwrap_or(&self.base_pipeline),
+      BatchShader::Sprite | BatchShader::Line | BatchShader::LineTextured => &self.base_pipeline,
     };
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, camera_group, &[]);
     pass.set_bind_group(1, bind_group, &[]);
     pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
     let instance_size = std::mem::size_of::<SpriteInstance>() as u64;
-    let offset = start as u64 * instance_size;
-    let end = offset + count as u64 * instance_size;
+    let offset = u64::from(draw.range.start) * instance_size;
+    let end = u64::from(draw.range.end) * instance_size;
     pass.set_vertex_buffer(1, self.instance_buffer.slice(offset..end));
-    pass.draw(0..6, 0..count as u32);
+    pass.draw(0..6, 0..draw.range.len() as u32);
   }
 
   /// Where a texture uploaded by name currently lives in the atlas.
@@ -1301,7 +1303,7 @@ impl SpriteGpuRenderer {
     self.names.clear();
     self.atlas.clear();
     self.placed.clear();
-    self.world_runs.clear();
+    self.draws.clear();
   }
 }
 
@@ -1683,14 +1685,14 @@ mod tests {
     let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
     let a = solid("a");
     let list = world_list(&mut renderer, &[(&a, 0)]);
-    renderer.prepare_world(&device, &queue, &list, &[]);
+    renderer.prepare_world(&device, &queue, &list, &[], Presentation::default());
     assert!(renderer.lookup_sprite(&a).is_some());
     // As if the atlas had evicted it
     renderer.atlas.clear();
     assert!(renderer.lookup_sprite(&a).is_none());
 
     let list = world_list(&mut renderer, &[(&a, 0)]);
-    renderer.prepare_world(&device, &queue, &list, &[]);
+    renderer.prepare_world(&device, &queue, &list, &[], Presentation::default());
     assert!(renderer.lookup_sprite(&a).is_some());
   }
 
@@ -1716,12 +1718,12 @@ mod tests {
     let drawn = solid("drawn");
     let gone_sprite = solid("gone-sprite");
     let list = world_list(&mut renderer, &[(&gone_sprite, 0)]);
-    renderer.prepare_world(&device, &queue, &list, &[]);
+    renderer.prepare_world(&device, &queue, &list, &[], Presentation::default());
     for _ in 0..=TEXTURE_TTL {
       // The engine uploads what it draws each frame (a no-op once cached)
       renderer.upload_texture(&device, &queue, "uploaded", 2, 2, &[255; 16]);
       let list = world_list(&mut renderer, &[(&drawn, 0)]);
-      renderer.prepare_world(&device, &queue, &list, &[]);
+      renderer.prepare_world(&device, &queue, &list, &[], Presentation::default());
     }
     assert!(renderer.named_texture("gone").is_none());
     assert!(renderer.lookup("gone").is_none(), "its atlas rect is freed");
@@ -1740,7 +1742,7 @@ mod tests {
     let a = solid("a");
     let entries = vec![(&a, 0); SpriteGpuRenderer::MAX_INSTANCES + 1];
     let list = world_list(&mut renderer, &entries);
-    renderer.prepare_world(&device, &queue, &list, &[]);
+    renderer.prepare_world(&device, &queue, &list, &[], Presentation::default());
     assert_eq!(renderer.instance_capacity, 16384);
     let size = 16384 * std::mem::size_of::<SpriteInstance>() as u64;
     assert_eq!(renderer.instance_buffer.size(), size);

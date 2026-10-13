@@ -1,9 +1,8 @@
 //! The world: entities, sprites and trails/lines drawn together in z order
 
 use crate::core::graphics::SpriteGpuRenderer;
-use crate::core::render::{
-  DrawPayload, FrameInfo, PassScope, RenderContext, RenderPass, WorldRun, pass_ids,
-};
+use crate::core::render::batch::Planned;
+use crate::core::render::{DrawPayload, FrameInfo, PassScope, RenderContext, RenderPass, pass_ids};
 use crate::core::trail::TrailRenderer;
 
 /// Draws the entities, sprites and lit trails and lines a camera sees onto
@@ -31,8 +30,8 @@ impl RenderPass for World {
     };
     // The engine wrote the instances and trail vertices when it laid out
     // the frame (buffer writes can't happen inside the pass)
-    let runs = sprites.world_runs(camera);
-    if runs.is_empty() {
+    let draws = sprites.draws(camera);
+    if draws.is_empty() {
       return;
     }
     let (encoder, view) = ctx.encoder_and_current_view();
@@ -52,10 +51,10 @@ impl RenderPass for World {
       occlusion_query_set: None,
       multiview_mask: None,
     });
-    for run in runs {
-      match run {
-        WorldRun::Sprites { .. } => sprites.draw_world_run(&mut pass, run, camera),
-        WorldRun::Trail { z, layers } => {
+    for planned in draws {
+      match planned {
+        Planned::Draw(draw) => sprites.draw(&mut pass, draw, camera),
+        Planned::External { z, layers } => {
           if let Some(trails) = trails {
             trails.draw_group(&mut pass, true, (*z, *layers), camera);
           }

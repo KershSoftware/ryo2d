@@ -5,8 +5,9 @@
 //! a trail can sit between two sprites in one render pass.
 
 use super::CameraDraw;
+use super::batch::{BlendMode, Filter};
 use crate::core::ecs::Vec2;
-use crate::core::graphics::{RenderLayers, RenderTarget, SlotPage, SpriteInstance, TextureId};
+use crate::core::graphics::{RenderLayers, RenderTarget, SpriteInstance, TextureId};
 
 /// What a drawable is, which breaks ties between equal z (in declaration order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -51,20 +52,13 @@ pub(crate) enum SpriteShading {
   Custom(u64),
 }
 
-/// The pipeline a run of sprites is drawn with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PipelineKind {
-  Plain,
-  Effect,
-  /// The custom pipeline of the shader source with this key
-  Custom(u64),
-}
-
 /// A sprite waiting to be drawn.
 #[derive(Debug, Clone)]
 pub(crate) struct DrawSprite {
   pub(crate) texture: TextureId,
   pub(crate) shading: SpriteShading,
+  pub(crate) blend: BlendMode,
+  pub(crate) filter: Filter,
   pub(crate) instance: SpriteInstance,
   /// The cameras on these layers draw it
   pub(crate) layers: RenderLayers,
@@ -128,6 +122,8 @@ impl DrawList {
     self.sprites.push(DrawSprite {
       texture,
       shading,
+      blend: BlendMode::default(),
+      filter: Filter::default(),
       instance,
       layers,
       shows,
@@ -240,63 +236,6 @@ fn reach(instance: &SpriteInstance) -> (Vec2, Vec2) {
   (center - half, center + half)
 }
 
-/// One draw of the world pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WorldRun {
-  /// `count` consecutive placed instances from `start`, on one atlas page
-  /// and pipeline
-  Sprites {
-    page: SlotPage,
-    pipeline: PipelineKind,
-    start: usize,
-    count: usize,
-  },
-  /// The trail/line group of this z and layers
-  Trail { z: i32, layers: RenderLayers },
-}
-
-/// Split sorted `items` into draw runs over instances placed from `first`.
-///
-/// `place` is asked once per sprite, in draw order, with its index in the
-/// list: it puts the sprite in the instance buffer and returns its atlas page
-/// and the pipeline it draws with, or `None` to drop the sprite.
-/// Consecutive sprites on one page and pipeline merge into one run; a trail
-/// group splits runs.
-pub(crate) fn plan_runs<'i>(
-  items: impl IntoIterator<Item = &'i DrawItem>,
-  runs: &mut Vec<WorldRun>,
-  first: usize,
-  mut place: impl FnMut(usize) -> Option<(SlotPage, PipelineKind)>,
-) {
-  runs.clear();
-  let mut placed = first;
-  for item in items {
-    match item.payload {
-      DrawPayload::Sprite(index) => {
-        let Some((page, pipeline)) = place(index) else {
-          continue;
-        };
-        match runs.last_mut() {
-          Some(WorldRun::Sprites {
-            page: run_page,
-            pipeline: run_pipeline,
-            count,
-            ..
-          }) if *run_page == page && *run_pipeline == pipeline => *count += 1,
-          _ => runs.push(WorldRun::Sprites {
-            page,
-            pipeline,
-            start: placed,
-            count: 1,
-          }),
-        }
-        placed += 1;
-      }
-      DrawPayload::Trail { z, layers } => runs.push(WorldRun::Trail { z, layers }),
-    }
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -375,133 +314,6 @@ mod tests {
       order(list.unlit_items()),
       vec![(-1, DrawKind::Trail), (2, DrawKind::Trail)]
     );
-  }
-
-  fn runs_for(list: &mut DrawList, pages: &[(usize, PipelineKind)]) -> Vec<WorldRun> {
-    list.sorted();
-    let mut runs = Vec::new();
-    plan_runs(list.items(), &mut runs, 0, |i| {
-      let (page, pipeline) = pages[i];
-      Some((SlotPage::Atlas(page), pipeline))
-    });
-    runs
-  }
-
-  fn sprites(page: usize, start: usize, count: usize) -> WorldRun {
-    WorldRun::Sprites {
-      page: SlotPage::Atlas(page),
-      pipeline: PipelineKind::Plain,
-      start,
-      count,
-    }
-  }
-
-  #[test]
-  fn consecutive_sprites_on_one_page_merge_into_one_run() {
-    let mut list = DrawList::default();
-    for z in 0..3 {
-      push(&mut list, DrawKind::Sprite, z, 0);
-    }
-
-    let runs = runs_for(&mut list, &[(0, PipelineKind::Plain); 3]);
-
-    assert_eq!(runs, vec![sprites(0, 0, 3)]);
-  }
-
-  #[test]
-  fn a_trail_between_sprites_splits_the_run() {
-    let mut list = DrawList::default();
-    push(&mut list, DrawKind::Sprite, 0, 0);
-    list.push_trail_group(true, 1, RenderLayers::default());
-    push(&mut list, DrawKind::Sprite, 2, 0);
-
-    let runs = runs_for(&mut list, &[(0, PipelineKind::Plain); 2]);
-
-    assert_eq!(
-      runs,
-      vec![
-        sprites(0, 0, 1),
-        WorldRun::Trail {
-          z: 1,
-          layers: RenderLayers::default()
-        },
-        sprites(0, 1, 1)
-      ]
-    );
-  }
-
-  #[test]
-  fn a_new_page_or_pipeline_starts_a_run() {
-    let mut list = DrawList::default();
-    for z in 0..3 {
-      push(&mut list, DrawKind::Sprite, z, 0);
-    }
-
-    let runs = runs_for(
-      &mut list,
-      &[
-        (0, PipelineKind::Plain),
-        (1, PipelineKind::Plain),
-        (1, PipelineKind::Effect),
-      ],
-    );
-
-    assert_eq!(
-      runs,
-      vec![
-        sprites(0, 0, 1),
-        sprites(1, 1, 1),
-        WorldRun::Sprites {
-          page: SlotPage::Atlas(1),
-          pipeline: PipelineKind::Effect,
-          start: 2,
-          count: 1,
-        },
-      ]
-    );
-  }
-
-  #[test]
-  fn each_custom_shader_starts_a_run() {
-    let mut list = DrawList::default();
-    for z in 0..4 {
-      push(&mut list, DrawKind::Sprite, z, 0);
-    }
-
-    let runs = runs_for(
-      &mut list,
-      &[
-        (0, PipelineKind::Custom(1)),
-        (0, PipelineKind::Custom(1)),
-        (0, PipelineKind::Custom(2)),
-        (0, PipelineKind::Custom(1)),
-      ],
-    );
-
-    let counts: Vec<_> = runs
-      .iter()
-      .map(|run| match run {
-        WorldRun::Sprites { count, .. } => *count,
-        WorldRun::Trail { .. } => 0,
-      })
-      .collect();
-    assert_eq!(counts, vec![2, 1, 1]);
-  }
-
-  #[test]
-  fn dropped_sprites_leave_no_gap() {
-    let mut list = DrawList::default();
-    for z in 0..3 {
-      push(&mut list, DrawKind::Sprite, z, 0);
-    }
-    list.sorted();
-
-    let mut runs = Vec::new();
-    plan_runs(list.items(), &mut runs, 0, |i| {
-      (i != 1).then_some((SlotPage::Atlas(0), PipelineKind::Plain))
-    });
-
-    assert_eq!(runs, vec![sprites(0, 0, 2)]);
   }
 
   #[test]
