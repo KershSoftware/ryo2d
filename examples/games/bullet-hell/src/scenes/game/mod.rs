@@ -63,8 +63,6 @@ pub struct GameScene {
   pub(super) particle_sprite: SpriteHandle,
   pub(super) platform_sprite: SpriteHandle,
   pub(super) barrier_sprite: SpriteHandle,
-  // GPU-accelerated parallax background
-  pub(super) background: GpuParallaxBackground,
   // Progression tracking
   pub(super) difficulty_level: u32,
   pub(super) time_since_last_progression: f32,
@@ -119,62 +117,6 @@ impl GameScene {
       255,
     );
 
-    // Load parallax background layers as sprite handles (for GPU upload)
-    let sky_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_sky.png").expect("Failed to load sky sprite"),
-      "desert_sky",
-    );
-    let moon_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_moon.png").expect("Failed to load moon sprite"),
-      "desert_moon",
-    );
-    let cloud_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_cloud.png").expect("Failed to load cloud sprite"),
-      "desert_cloud",
-    );
-    let mountain_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_mountain.png").expect("Failed to load mountain sprite"),
-      "desert_mountain",
-    );
-    let dune_mid_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_dunemid.png").expect("Failed to load mid dune sprite"),
-      "desert_dunemid",
-    );
-    let dune_front_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_dunefrontt.png").expect("Failed to load front dune sprite"),
-      "desert_dunefront",
-    );
-
-    // Scale factor to fit 1000px sprites to 1080px screen height
-    let scale = 1080.0 / 1000.0;
-
-    // Build GPU-accelerated parallax background with desert layers
-    // Speeds must match menu.rs for seamless scene transition
-    let background = GpuParallaxBuilder::new()
-      .static_layer(&sky_sprite, -100)
-      .with_scale(scale)
-      .layer(&moon_sprite, 0.0, -90)
-      .with_scale(scale)
-      .with_auto_scroll(10.0)
-      .with_tile_mode(TileMode::InfiniteScroll)
-      .layer(&cloud_sprite, 0.0, -80)
-      .with_scale(scale)
-      .with_auto_scroll(30.0)
-      .with_tile_mode(TileMode::InfiniteScroll)
-      .layer(&mountain_sprite, 0.0, -60)
-      .with_scale(scale)
-      .with_auto_scroll(60.0)
-      .with_tile_mode(TileMode::InfiniteScroll)
-      .layer(&dune_mid_sprite, 0.0, -40)
-      .with_scale(scale)
-      .with_auto_scroll(100.0)
-      .with_tile_mode(TileMode::InfiniteScroll)
-      .layer(&dune_front_sprite, 0.0, -20)
-      .with_scale(scale)
-      .with_auto_scroll(160.0)
-      .with_tile_mode(TileMode::InfiniteScroll)
-      .build();
-
     Self {
       player: None,
       turrets: Vec::new(),
@@ -200,7 +142,6 @@ impl GameScene {
       particle_sprite: SpriteHandle::from_sprite(particle_sprite, "particle.png"),
       platform_sprite: SpriteHandle::from_sprite(platform_sprite, "platform.png"),
       barrier_sprite: SpriteHandle::from_sprite(barrier_sprite, "barrier"),
-      background,
       // Progression starts at level 0
       difficulty_level: 0,
       time_since_last_progression: 0.0,
@@ -244,10 +185,8 @@ impl Scene for GameScene {
     let _ = ctx.audio.load_sound("hurt", "assets/hurt.mp3");
     let _ = ctx.audio.load_sound("bullet", "assets/bullet.wav");
 
-    // Sync parallax background with shared time (persists from menu)
-    self
-      .background
-      .set_elapsed_time(shared::get_parallax_time());
+    // The backdrop carries on from the shared parallax time
+    shared::spawn_background(ctx);
 
     // Reset state
     self.survival_time = 0.0;
@@ -322,10 +261,8 @@ impl Scene for GameScene {
       return SceneAction::Push(Box::new(PauseScene::new()));
     }
 
-    // Update parallax background
-    // Update shared parallax time (persists between menu and game)
-    let parallax_time = shared::add_parallax_time(dt);
-    self.background.set_elapsed_time(parallax_time);
+    // The shared parallax time carries the backdrop into the next scene
+    shared::add_parallax_time(dt);
 
     self.survival_time += dt;
 
@@ -383,11 +320,6 @@ impl Scene for GameScene {
     }
 
     SceneAction::Continue
-  }
-
-  fn render(&mut self, gpu: &mut GpuRenderContext) {
-    profile_scope!("sprites");
-    self.background.render(gpu);
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {

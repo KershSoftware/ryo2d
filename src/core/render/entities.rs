@@ -479,7 +479,7 @@ impl Emitter<'_> {
       texture,
       look,
       instance,
-      (self.layers, self.shows),
+      (self.layers, self.shows, None),
     );
   }
 }

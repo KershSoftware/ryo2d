@@ -130,9 +130,8 @@ pub mod prelude {
     ValidatedAnimator,
   };
 
-  // Parallax backgrounds (GPU-accelerated)
-  pub use crate::core::graphics::TileMode;
-  pub use crate::core::graphics::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
+  // Parallax layers
+  pub use crate::core::graphics::{ParallaxLayer, TileMode};
 
   // GPU sprite batching (for high-performance particle systems)
   pub use crate::core::graphics::{BatchCollector, SpriteDraw, SpriteInstance};

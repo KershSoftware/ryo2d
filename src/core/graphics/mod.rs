@@ -8,7 +8,7 @@
 //!   world/screen transforms; [`RenderTargets`] for render-to-texture
 //! - [`Animation`] / [`Animator`] / [`AnimationController`] / [`ValidatedAnimator`] - Sprite animation system
 //! - Tiled rendering for repeating sprites and composite tiles
-//! - [`GpuParallaxBackground`] - GPU-accelerated parallax for layered scrolling backgrounds
+//! - [`ParallaxLayer`] - parallax layers laid out for every camera
 
 pub mod animation;
 mod atlas;
@@ -22,7 +22,6 @@ mod compositor;
 mod gpu_context;
 pub mod gpu_error;
 pub mod parallax;
-pub mod parallax_gpu;
 pub mod render_layers;
 pub mod render_targets;
 pub mod renderer;
@@ -45,8 +44,7 @@ pub use camera2d::{
 pub(crate) use compositor::{CompositeViewport, Compositor};
 pub use gpu_context::GpuRenderContext;
 pub use gpu_error::GpuError;
-pub use parallax::TileMode;
-pub use parallax_gpu::{GpuParallaxBackground, GpuParallaxBuilder, GpuParallaxLayer};
+pub use parallax::{ParallaxLayer, TileMode};
 pub use render_layers::RenderLayers;
 pub use render_targets::{MAX_TARGET_SIDE, RenderTargets};
 pub use renderer::WgpuRenderer;

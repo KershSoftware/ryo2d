@@ -39,6 +39,7 @@ use crate::core::error::{EngineError, EngineResult};
 use crate::core::graphics::camera_mut::{
   camera_shake_system, camera_view_system, spawn_main_camera,
 };
+use crate::core::graphics::parallax::advance_parallax;
 use crate::core::graphics::{
   BatchCollector, Gpu, Presentation, ScreenMapping, SpriteGpuRenderer, WgpuRenderer,
 };
@@ -356,7 +357,9 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
       (camera_shake_system, camera_view_system)
         .chain()
         .in_set(PostUpdateSet::Camera),
-      update_effects_system.in_set(PostUpdateSet::Extract),
+      (advance_parallax, update_effects_system)
+        .chain()
+        .in_set(PostUpdateSet::Extract),
     ),
   );
   // Removal events last two tracker clears, and the fixed steps may not run

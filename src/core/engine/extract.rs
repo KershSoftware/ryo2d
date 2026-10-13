@@ -18,10 +18,12 @@ use crate::core::graphics::renderer::FrameError;
 use crate::core::graphics::{
   Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers, RenderTargets,
 };
+use crate::core::graphics::{ParallaxLayer, parallax};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::batch::{Filter, LineLook, line_points, push_polyline, trail_points};
 use crate::core::render::{
-  DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, plan_cameras,
+  DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, SpriteLook, SpriteShading,
+  plan_cameras,
 };
 use crate::core::shaders::EffectsManager;
 use crate::core::time::Time;
@@ -166,6 +168,35 @@ impl Engine {
       self
         .batch_collector
         .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu);
+      // Parallax layers, laid out for each camera from its own view
+      let mut quads = Vec::new();
+      for (layer, layers) in self
+        .world
+        .query::<(&ParallaxLayer, Option<&RenderLayers>)>()
+        .iter(&self.world)
+      {
+        let layers = layers.copied().unwrap_or_default();
+        let texels = Vec2::new(layer.sprite.width() as f32, layer.sprite.height() as f32);
+        let texture = gpu.texture_of(&layer.sprite);
+        let look = SpriteLook {
+          shading: SpriteShading::Plain,
+          blend: layer.blend,
+          filter: layer.filter,
+          lit: layer.lighting,
+        };
+        for camera in &self.camera_draws {
+          if !camera.layers.intersects(&layers) {
+            continue;
+          }
+          parallax::layout(layer, texels, &camera.view, &mut quads);
+          for quad in &quads {
+            let seen = (layers, None, Some(camera.entity));
+            let z = layer.z_order;
+            let list = &mut self.draw_list;
+            list.push_sprite_in(DrawKind::Sprite, z, texture, look, *quad, seen);
+          }
+        }
+      }
       let entity_sprites = self.entity_drawer.collect(
         &mut self.world,
         &self.camera_draws,

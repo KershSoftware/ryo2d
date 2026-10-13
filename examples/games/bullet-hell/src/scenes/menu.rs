@@ -8,7 +8,6 @@ use super::GameScene;
 
 pub struct MenuScene {
   best_time: f32,
-  background: GpuParallaxBackground,
 }
 
 impl Default for MenuScene {
@@ -19,64 +18,8 @@ impl Default for MenuScene {
 
 impl MenuScene {
   pub fn new() -> Self {
-    // Load parallax background layers as sprite handles (for GPU upload)
-    let sky_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_sky.png").expect("Failed to load sky sprite"),
-      "desert_sky",
-    );
-    let moon_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_moon.png").expect("Failed to load moon sprite"),
-      "desert_moon",
-    );
-    let cloud_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_cloud.png").expect("Failed to load cloud sprite"),
-      "desert_cloud",
-    );
-    let mountain_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_mountain.png").expect("Failed to load mountain sprite"),
-      "desert_mountain",
-    );
-    let dune_mid_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_dunemid.png").expect("Failed to load mid dune sprite"),
-      "desert_dunemid",
-    );
-    let dune_front_sprite = SpriteHandle::from_sprite(
-      Sprite::load("assets/desert_dunefrontt.png").expect("Failed to load front dune sprite"),
-      "desert_dunefront",
-    );
-
-    // Scale factor to fit 1000px sprites to 1080px screen height
-    let scale = 1080.0 / 1000.0;
-
-    // Build GPU-accelerated parallax background with desert layers
-    let background = GpuParallaxBuilder::new()
-      .static_layer(&sky_sprite, -100)
-      .with_scale(scale)
-      .layer(&moon_sprite, 0.0, -90)
-      .with_scale(scale)
-      .with_auto_scroll(10.0)
-      .with_tile_mode(TileMode::InfiniteScroll)
-      .layer(&cloud_sprite, 0.0, -80)
-      .with_scale(scale)
-      .with_auto_scroll(30.0)
-      .with_tile_mode(TileMode::InfiniteScroll)
-      .layer(&mountain_sprite, 0.0, -60)
-      .with_scale(scale)
-      .with_auto_scroll(60.0)
-      .with_tile_mode(TileMode::InfiniteScroll)
-      .layer(&dune_mid_sprite, 0.0, -40)
-      .with_scale(scale)
-      .with_auto_scroll(100.0)
-      .with_tile_mode(TileMode::InfiniteScroll)
-      .layer(&dune_front_sprite, 0.0, -20)
-      .with_scale(scale)
-      .with_auto_scroll(160.0)
-      .with_tile_mode(TileMode::InfiniteScroll)
-      .build();
-
     Self {
       best_time: load_best_time(),
-      background,
     }
   }
 }
@@ -92,10 +35,8 @@ impl Scene for MenuScene {
       Some("Resets all game state including score, player position, and enemies. Only available during gameplay."),
     );
 
-    // Sync parallax background with shared time (persists across scenes)
-    self
-      .background
-      .set_elapsed_time(shared::get_parallax_time());
+    // The backdrop carries on from the shared parallax time
+    shared::spawn_background(ctx);
 
     // Start background music (only if not already playing - persists across scenes)
     let _ = ctx
@@ -104,9 +45,8 @@ impl Scene for MenuScene {
   }
 
   fn update(&mut self, ctx: &mut SceneContext, dt: f32) -> SceneAction {
-    // Update shared parallax time (persists between menu and game)
-    let parallax_time = shared::add_parallax_time(dt);
-    self.background.set_elapsed_time(parallax_time);
+    // The shared parallax time carries the backdrop into the next scene
+    shared::add_parallax_time(dt);
 
     // Start game (keyboard or gamepad)
     if ctx.input.key_pressed(KeyCode::Space)
@@ -121,10 +61,6 @@ impl Scene for MenuScene {
       return SceneAction::Quit;
     }
     SceneAction::Continue
-  }
-
-  fn render(&mut self, gpu: &mut GpuRenderContext) {
-    self.background.render(gpu);
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) -> SceneAction {

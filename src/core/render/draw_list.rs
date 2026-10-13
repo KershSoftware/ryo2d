@@ -154,11 +154,12 @@ impl DrawList {
   ) {
     let look = SpriteLook::plain(shading);
     let layers = RenderLayers::default();
-    self.push_sprite_in(kind, z, texture, look, instance, (layers, None));
+    self.push_sprite_in(kind, z, texture, look, instance, (layers, None, None));
   }
 
-  /// Add a sprite drawn as `look` says, for the cameras on `layers`, from
-  /// an entity that shows the render target `shows`.
+  /// Add a sprite drawn as `look` says, for the cameras on `layers` (or
+  /// `only_camera` alone), from an entity that shows the render target
+  /// `shows`.
   pub(crate) fn push_sprite_in(
     &mut self,
     kind: DrawKind,
@@ -166,7 +167,7 @@ impl DrawList {
     texture: TextureId,
     look: SpriteLook,
     instance: SpriteInstance,
-    (layers, shows): (RenderLayers, Option<RenderTarget>),
+    (layers, shows, only_camera): (RenderLayers, Option<RenderTarget>, Option<Entity>),
   ) {
     let payload = DrawPayload::Sprite(self.sprites.len());
     let (min, max) = reach(&instance);
@@ -181,7 +182,7 @@ impl DrawList {
       min,
       max,
     });
-    self.push_item(look.lit, z, kind, payload, None);
+    self.push_item(look.lit, z, kind, payload, only_camera);
   }
 
   /// Add a trail or line at `z`, for `only_camera` or every camera; `lit`

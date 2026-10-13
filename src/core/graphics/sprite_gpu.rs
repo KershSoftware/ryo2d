@@ -1000,7 +1000,7 @@ impl BatchCollector {
       .collect();
     for item in &self.items {
       if let Some(&texture) = textures.get(item.sprite) {
-        let everyone = (RenderLayers::default(), None);
+        let everyone = (RenderLayers::default(), None, None);
         list.push_sprite_in(
           kind,
           item.z_order,

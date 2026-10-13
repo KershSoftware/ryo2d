@@ -1553,3 +1553,26 @@ fn a_debug_line_is_one_pixel_wide_when_zoomed_out() {
     .count();
   assert_eq!(rows, 1);
 }
+
+#[test]
+fn split_screen_cameras_each_see_their_own_parallax() {
+  let scene = Fixture::new(|ctx| {
+    // A screen-fixed layer (scroll 0) sits at each viewport's top-left
+    let green = solid("plx-green", 8, GREEN);
+    ctx.world.spawn(ParallaxLayer::new(&green));
+    ctx.camera().set_viewport(Viewport::new(0.0, 0.0, 0.5, 1.0));
+    ctx.world.spawn((
+      Transform::from_xy(1000.0, 0.0),
+      Camera2d {
+        viewport: Viewport::new(0.5, 0.0, 0.5, 1.0),
+        order: 1,
+        ..Default::default()
+      },
+    ));
+  });
+  let Some(frame) = frame_of(scene, (64, 32)) else {
+    return;
+  };
+  assert_eq!(frame.get_pixel(2, 2).0, GREEN, "left camera");
+  assert_eq!(frame.get_pixel(34, 2).0, GREEN, "right camera");
+}
