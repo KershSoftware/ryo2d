@@ -13,39 +13,8 @@ struct EffectParams {
 @group(0) @binding(1) var s_input: sampler;
 @group(0) @binding(2) var<uniform> effect: EffectParams;
 
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) tex_coord: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, 1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(1.0, -1.0),
-    );
-
-    var tex_coords = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-    );
-
-    var out: VertexOutput;
-    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    out.tex_coord = tex_coords[vertex_index];
-    return out;
-}
-
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
     let sigma = clamp(effect.params.z, 0.25, 16.0);
     let direction = effect.params.w; // 0.0 = horizontal, 1.0 = vertical
 
@@ -63,7 +32,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let falloff = -1.0 / (2.0 * sigma * sigma);
     let last = i32(ceil(3.0 * sigma));
 
-    var result = textureSampleLevel(t_input, s_input, in.tex_coord, 0.0);
+    var result = textureSampleLevel(t_input, s_input, in.uv, 0.0);
     var total = 1.0;
     for (var i = 1; i <= last; i += 2) {
         let a = f32(i);
@@ -72,8 +41,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let wb = exp(b * b * falloff);
         let w = wa + wb;
         let offset = dir * ((a * wa + b * wb) / w);
-        result += textureSampleLevel(t_input, s_input, in.tex_coord + offset, 0.0) * w;
-        result += textureSampleLevel(t_input, s_input, in.tex_coord - offset, 0.0) * w;
+        result += textureSampleLevel(t_input, s_input, in.uv + offset, 0.0) * w;
+        result += textureSampleLevel(t_input, s_input, in.uv - offset, 0.0) * w;
         total += 2.0 * w;
     }
 

@@ -12,37 +12,6 @@ struct EffectParams {
 @group(0) @binding(1) var s_input: sampler;
 @group(0) @binding(2) var<uniform> effect: EffectParams;
 
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) tex_coord: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, 1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(1.0, -1.0),
-    );
-
-    var tex_coords = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-    );
-
-    var out: VertexOutput;
-    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    out.tex_coord = tex_coords[vertex_index];
-    return out;
-}
-
 // Calculate luminance from RGB
 fn luminance(color: vec3<f32>) -> f32 {
     return dot(color, vec3<f32>(0.299, 0.587, 0.114));
@@ -56,8 +25,8 @@ fn has_edge(uv: vec2<f32>, center_lum: f32, bias: f32) -> bool {
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let scene_color = textureSample(t_input, s_input, in.tex_coord);
+fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
+    let scene_color = textureSample(t_input, s_input, in.uv);
 
     let intensity = effect.params.x;
     let radius = effect.params.y;
@@ -84,35 +53,35 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var edge_mask: u32 = 0u;
 
     // Direction 0: Right
-    if has_edge(in.tex_coord + vec2<f32>(1.0, 0.0) * step, center_lum, bias) {
+    if has_edge(in.uv + vec2<f32>(1.0, 0.0) * step, center_lum, bias) {
         edge_mask = edge_mask | 1u;
     }
     // Direction 1: Bottom-right
-    if has_edge(in.tex_coord + vec2<f32>(0.707, 0.707) * step, center_lum, bias) {
+    if has_edge(in.uv + vec2<f32>(0.707, 0.707) * step, center_lum, bias) {
         edge_mask = edge_mask | 2u;
     }
     // Direction 2: Bottom
-    if has_edge(in.tex_coord + vec2<f32>(0.0, 1.0) * step, center_lum, bias) {
+    if has_edge(in.uv + vec2<f32>(0.0, 1.0) * step, center_lum, bias) {
         edge_mask = edge_mask | 4u;
     }
     // Direction 3: Bottom-left
-    if has_edge(in.tex_coord + vec2<f32>(-0.707, 0.707) * step, center_lum, bias) {
+    if has_edge(in.uv + vec2<f32>(-0.707, 0.707) * step, center_lum, bias) {
         edge_mask = edge_mask | 8u;
     }
     // Direction 4: Left
-    if has_edge(in.tex_coord + vec2<f32>(-1.0, 0.0) * step, center_lum, bias) {
+    if has_edge(in.uv + vec2<f32>(-1.0, 0.0) * step, center_lum, bias) {
         edge_mask = edge_mask | 16u;
     }
     // Direction 5: Top-left
-    if has_edge(in.tex_coord + vec2<f32>(-0.707, -0.707) * step, center_lum, bias) {
+    if has_edge(in.uv + vec2<f32>(-0.707, -0.707) * step, center_lum, bias) {
         edge_mask = edge_mask | 32u;
     }
     // Direction 6: Top
-    if has_edge(in.tex_coord + vec2<f32>(0.0, -1.0) * step, center_lum, bias) {
+    if has_edge(in.uv + vec2<f32>(0.0, -1.0) * step, center_lum, bias) {
         edge_mask = edge_mask | 64u;
     }
     // Direction 7: Top-right
-    if has_edge(in.tex_coord + vec2<f32>(0.707, -0.707) * step, center_lum, bias) {
+    if has_edge(in.uv + vec2<f32>(0.707, -0.707) * step, center_lum, bias) {
         edge_mask = edge_mask | 128u;
     }
 

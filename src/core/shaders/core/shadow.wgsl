@@ -3,14 +3,6 @@
 // Supports soft shadows with configurable edge softness and colored shadows
 
 // The camera the lights are drawn through (`CameraGlobals`)
-struct ShadowGlobals {
-    view_proj: mat4x4<f32>,
-    resolution: vec2<f32>,
-    game_time: f32,
-    real_time: f32,
-    snap: f32,
-};
-
 struct ShadowVertex {
     // Position in world space
     @location(0) position: vec2<f32>,
@@ -24,7 +16,6 @@ struct ShadowVertex {
     @location(4) shadow_color: u32,
 };
 
-@group(0) @binding(0) var<uniform> globals: ShadowGlobals;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,

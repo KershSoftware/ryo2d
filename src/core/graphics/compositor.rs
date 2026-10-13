@@ -144,7 +144,7 @@ impl Compositor {
     // Create shader module
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Fullscreen Quad Shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/core/fullscreen_quad.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::COMPOSITE.into()),
     });
 
     // Create pipeline layout

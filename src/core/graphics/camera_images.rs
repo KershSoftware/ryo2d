@@ -63,7 +63,7 @@ impl CameraImages {
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Camera Image Shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/core/camera_image.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::CAMERA_IMAGE.into()),
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: Some("Camera Image Pipeline Layout"),

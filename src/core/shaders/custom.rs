@@ -69,13 +69,12 @@ const SPRITE_PRELUDE: &str = "
 struct SpriteIn { uv: vec2<f32>, size: vec2<f32>, screen_pos: vec2<f32>, time: f32 }
 var<private> ry_bounds: vec4<f32>;
 fn sample(uv: vec2<f32>) -> vec4<f32> {
-  return sample_masked(ry_bounds.xy + uv * (ry_bounds.zw - ry_bounds.xy), ry_bounds);
+  return sample_masked(sprite_texture, sprite_sampler, ry_bounds.xy + uv * (ry_bounds.zw - ry_bounds.xy), ry_bounds);
 }
 ";
 
-/// Self-contained effect module header (no reference to `Params`, which comes later)
-///
-/// The vertex stage draws the same six-vertex quad as the built-in full-screen pass.
+/// Effect module header after the shared fullscreen vertex stage (no reference
+/// to `Params`, which comes later)
 const EFFECT_PRELUDE: &str = "
 struct EffectGlobals { time_resolution: vec4<f32> }
 @group(0) @binding(0) var ry_scene: texture_2d<f32>;
@@ -84,22 +83,6 @@ struct EffectGlobals { time_resolution: vec4<f32> }
 struct EffectIn { uv: vec2<f32>, time: f32, resolution: vec2<f32> }
 fn scene(uv: vec2<f32>) -> vec4<f32> {
   return textureSampleLevel(ry_scene, ry_sampler, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0);
-}
-struct RyVsOut { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> }
-@vertex
-fn vs_main(@builtin(vertex_index) i: u32) -> RyVsOut {
-  var positions = array<vec2<f32>, 6>(
-    vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, -1.0),
-    vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(1.0, -1.0),
-  );
-  var uvs = array<vec2<f32>, 6>(
-    vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
-    vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
-  );
-  var out: RyVsOut;
-  out.position = vec4<f32>(positions[i], 0.0, 1.0);
-  out.uv = uvs[i];
-  return out;
 }
 ";
 
@@ -443,7 +426,7 @@ fn fs_custom(in: VertexOutput) -> @location(0) vec4<f32> {{
 const EFFECT_ENTRY: &str = "
 @group(0) @binding(2) var<uniform> ry_params: Params;
 @fragment
-fn fs_main(in: RyVsOut) -> @location(0) vec4<f32> {
+fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
   return effect(EffectIn(in.uv, ry_globals.time_resolution.x, ry_globals.time_resolution.yz), ry_params);
 }
 ";
@@ -487,7 +470,7 @@ pub(crate) fn compile(
       SPRITE_PARAM_LIMIT,
     ),
     ShaderKind::Effect => (
-      EFFECT_PRELUDE.to_string(),
+      super::compose::compose(&[super::compose::FULLSCREEN, EFFECT_PRELUDE]),
       "effect",
       "EffectIn",
       EFFECT_PARAM_LIMIT,

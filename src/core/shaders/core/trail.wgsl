@@ -2,14 +2,6 @@
 // Supports per-vertex style (Solid/Soft/Glow) and GPU effects (Lightning/Noise/UvScroll/Ribbon)
 
 // The camera the trails are drawn through (`CameraGlobals`)
-struct TrailGlobals {
-    view_proj: mat4x4<f32>,
-    resolution: vec2<f32>,
-    game_time: f32,
-    real_time: f32,
-    snap: f32,
-};
-
 struct TrailVertex {
     @location(0) position: vec2<f32>,
     @location(1) color: vec4<f32>,
@@ -18,7 +10,6 @@ struct TrailVertex {
     @location(4) perpendicular: vec2<f32>,
 };
 
-@group(0) @binding(0) var<uniform> globals: TrailGlobals;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,

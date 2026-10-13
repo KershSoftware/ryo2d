@@ -295,7 +295,7 @@ impl LightingRenderer {
     // Create light rendering pipeline
     let light_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Light Shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/core/light.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::LIGHT.into()),
     });
 
     let light_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -357,9 +357,7 @@ impl LightingRenderer {
     // Create composition pipeline
     let compose_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Lighting Compose Shader"),
-      source: wgpu::ShaderSource::Wgsl(
-        include_str!("../shaders/post-process/lighting.wgsl").into(),
-      ),
+      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::LIGHTING_COMPOSE.into()),
     });
 
     let compose_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -435,7 +433,7 @@ impl LightingRenderer {
     // Shadow shader
     let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Shadow Shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/core/shadow.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::SHADOW.into()),
     });
 
     let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -597,7 +595,7 @@ impl LightingRenderer {
     // Raymarch shader
     let raymarch_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Raymarch Shadow Shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/core/raymarch_shadow.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::RAYMARCH_SHADOW.into()),
     });
 
     let raymarch_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

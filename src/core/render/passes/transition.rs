@@ -20,7 +20,7 @@ impl FadePipeline {
   fn new(device: &wgpu::Device, format: wgpu::TextureFormat, (width, height): (u32, u32)) -> Self {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Transition Shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/core/transition.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::TRANSITION.into()),
     });
     let overlay = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
       label: Some("Transition Overlay"),

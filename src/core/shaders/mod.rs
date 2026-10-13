@@ -46,6 +46,7 @@
 //! ```
 
 // Consumed by the sprite and effect pipelines
+pub(crate) mod compose;
 pub(crate) mod custom;
 mod effects;
 mod manager;
@@ -58,20 +59,20 @@ pub use pipeline::{OutputBuffer, PostProcessPipeline};
 
 /// Embed core shaders at compile time
 pub mod core_shaders {
-  pub const FULLSCREEN_QUAD: &str = include_str!("core/fullscreen_quad.wgsl");
+  pub const FULLSCREEN_QUAD: &str = super::compose::COMPOSITE;
 }
 
 /// Embed post-process shaders at compile time
 pub mod post_process_shaders {
-  pub const FADE: &str = include_str!("post-process/fade.wgsl");
-  pub const COLOR_TINT: &str = include_str!("post-process/color_tint.wgsl");
-  pub const VIGNETTE: &str = include_str!("post-process/vignette.wgsl");
-  pub const SCREEN_FLASH: &str = include_str!("post-process/screen_flash.wgsl");
-  pub const CRT: &str = include_str!("post-process/crt.wgsl");
-  pub const CHROMATIC_ABERRATION: &str = include_str!("post-process/chromatic_aberration.wgsl");
-  pub const GOD_RAYS: &str = include_str!("post-process/god_rays.wgsl");
-  pub const AMBIENT_OCCLUSION: &str = include_str!("post-process/ambient_occlusion.wgsl");
-  pub const BLOOM_EXTRACT: &str = include_str!("post-process/bloom_extract.wgsl");
-  pub const BLOOM_BLUR: &str = include_str!("post-process/bloom_blur.wgsl");
-  pub const BLOOM_COMPOSITE: &str = include_str!("post-process/bloom_composite.wgsl");
+  pub const FADE: &str = super::compose::FADE;
+  pub const COLOR_TINT: &str = super::compose::COLOR_TINT;
+  pub const VIGNETTE: &str = super::compose::VIGNETTE;
+  pub const SCREEN_FLASH: &str = super::compose::SCREEN_FLASH;
+  pub const CRT: &str = super::compose::CRT;
+  pub const CHROMATIC_ABERRATION: &str = super::compose::CHROMATIC_ABERRATION;
+  pub const GOD_RAYS: &str = super::compose::GOD_RAYS;
+  pub const AMBIENT_OCCLUSION: &str = super::compose::AMBIENT_OCCLUSION;
+  pub const BLOOM_EXTRACT: &str = super::compose::BLOOM_EXTRACT;
+  pub const BLOOM_BLUR: &str = super::compose::BLOOM_BLUR;
+  pub const BLOOM_COMPOSITE: &str = super::compose::BLOOM_COMPOSITE;
 }

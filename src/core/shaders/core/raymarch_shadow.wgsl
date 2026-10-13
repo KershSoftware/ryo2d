@@ -5,14 +5,6 @@
 const MAX_EDGES: u32 = 64u;
 
 // The camera the lights are drawn through (`CameraGlobals`)
-struct Globals {
-    view_proj: mat4x4<f32>,
-    resolution: vec2<f32>,
-    game_time: f32,
-    real_time: f32,
-    snap: f32,
-};
-
 struct RaymarchParams {
     // Light position (x, y), radius (z), samples (w)
     light_params: vec4<f32>,
@@ -31,7 +23,6 @@ struct EdgeBuffer {
     edges: array<Edge, 64>,  // MAX_EDGES
 };
 
-@group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var<uniform> params: RaymarchParams;
 @group(0) @binding(2) var<storage, read> edge_buffer: EdgeBuffer;
 

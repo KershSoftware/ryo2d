@@ -12,37 +12,6 @@ struct EffectParams {
 @group(0) @binding(1) var s_input: sampler;
 @group(0) @binding(2) var<uniform> effect: EffectParams;
 
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) tex_coord: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, 1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(1.0, -1.0),
-    );
-    
-    var tex_coords = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-    );
-    
-    var out: VertexOutput;
-    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    out.tex_coord = tex_coords[vertex_index];
-    return out;
-}
-
 // Apply barrel distortion for CRT curvature
 fn apply_curvature(uv: vec2<f32>, curvature: f32) -> vec2<f32> {
     let centered = uv - 0.5;
@@ -52,15 +21,15 @@ fn apply_curvature(uv: vec2<f32>, curvature: f32) -> vec2<f32> {
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
     let scanline_intensity = effect.params.x;
     let curvature = effect.params.y;
     let rgb_offset = effect.params.z;
     
     // Apply screen curvature
-    var uv = in.tex_coord;
+    var uv = in.uv;
     if curvature > 0.0 {
-        uv = apply_curvature(in.tex_coord, curvature);
+        uv = apply_curvature(in.uv, curvature);
         
         // Black out pixels outside the curved screen
         if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
@@ -81,7 +50,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     
     // Scanlines
     if scanline_intensity > 0.0 {
-        let screen_y = in.tex_coord.y * effect.time_resolution.z;  // z = height
+        let screen_y = in.uv.y * effect.time_resolution.z;  // z = height
         // Alternate dark lines
         let scanline = sin(screen_y * 3.14159) * 0.5 + 0.5;
         let darkness = 1.0 - scanline_intensity * (1.0 - scanline);

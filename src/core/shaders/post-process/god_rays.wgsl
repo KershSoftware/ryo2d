@@ -24,37 +24,6 @@ struct GodRaysParams {
 @group(0) @binding(1) var s_input: sampler;
 @group(0) @binding(2) var<uniform> effect: GodRaysParams;
 
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) tex_coord: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, 1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(1.0, -1.0),
-    );
-
-    var tex_coords = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-    );
-
-    var out: VertexOutput;
-    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    out.tex_coord = tex_coords[vertex_index];
-    return out;
-}
-
 // Calculate brightness/luminance of a color
 fn luminance(color: vec3<f32>) -> f32 {
     return dot(color, vec3<f32>(0.299, 0.587, 0.114));
@@ -111,9 +80,9 @@ fn sample_god_rays(
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: FullscreenVertex) -> @location(0) vec4<f32> {
     // Get original scene color
-    let original = textureSample(t_input, s_input, in.tex_coord);
+    let original = textureSample(t_input, s_input, in.uv);
 
     // Extract parameters
     let intensity = effect.params.x;
@@ -134,22 +103,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Process each light source (max 4)
     if num_lights >= 1 {
         let light_pos = vec2<f32>(effect.light_pos_01.x, effect.light_pos_01.y);
-        god_rays += sample_god_rays(in.tex_coord, light_pos, samples, decay, density, weight, threshold);
+        god_rays += sample_god_rays(in.uv, light_pos, samples, decay, density, weight, threshold);
     }
 
     if num_lights >= 2 {
         let light_pos = vec2<f32>(effect.light_pos_01.z, effect.light_pos_01.w);
-        god_rays += sample_god_rays(in.tex_coord, light_pos, samples, decay, density, weight, threshold);
+        god_rays += sample_god_rays(in.uv, light_pos, samples, decay, density, weight, threshold);
     }
 
     if num_lights >= 3 {
         let light_pos = vec2<f32>(effect.light_pos_23.x, effect.light_pos_23.y);
-        god_rays += sample_god_rays(in.tex_coord, light_pos, samples, decay, density, weight, threshold);
+        god_rays += sample_god_rays(in.uv, light_pos, samples, decay, density, weight, threshold);
     }
 
     if num_lights >= 4 {
         let light_pos = vec2<f32>(effect.light_pos_23.z, effect.light_pos_23.w);
-        god_rays += sample_god_rays(in.tex_coord, light_pos, samples, decay, density, weight, threshold);
+        god_rays += sample_god_rays(in.uv, light_pos, samples, decay, density, weight, threshold);
     }
 
     // Additive blend with original scene

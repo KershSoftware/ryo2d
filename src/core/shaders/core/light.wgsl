@@ -2,14 +2,6 @@
 // Renders individual lights to the light accumulation buffer
 
 // The camera the lights are drawn through (`CameraGlobals`)
-struct LightGlobals {
-    view_proj: mat4x4<f32>,
-    resolution: vec2<f32>,
-    game_time: f32,
-    real_time: f32,
-    snap: f32,
-};
-
 // Per-light instance data
 struct LightInstance {
     // Position (x, y) and radius (z), type (w: 0=point, 1=spot)
@@ -22,7 +14,6 @@ struct LightInstance {
     volumetric: vec4<f32>,
 };
 
-@group(0) @binding(0) var<uniform> globals: LightGlobals;
 @group(0) @binding(1) var<storage, read> lights: array<LightInstance>;
 
 struct VertexOutput {

@@ -1385,7 +1385,7 @@ pub fn get_sprite_effect<'a>(
 }
 
 /// The WGSL shader for sprite rendering (loaded from external file)
-pub const SPRITE_SHADER: &str = include_str!("../shaders/core/sprite.wgsl");
+pub const SPRITE_SHADER: &str = crate::core::shaders::compose::SPRITE;
 
 // =============================================================================
 // Sprite Batching System

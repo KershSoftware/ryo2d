@@ -13,15 +13,6 @@
 // own rect (uv_bounds) are transparent, so atlas neighbours never show.
 
 // The camera the sprites are drawn through (`CameraGlobals`)
-struct Globals {
-    view_proj: mat4x4<f32>,
-    resolution: vec2<f32>, // the camera image, in pixels
-    game_time: f32,
-    real_time: f32,
-    snap: f32,             // 1.0: axis-aligned quads land on whole pixels
-}
-
-@group(0) @binding(0) var<uniform> globals: Globals;
 @group(1) @binding(0) var sprite_texture: texture_2d<f32>;
 @group(1) @binding(1) var sprite_sampler: sampler;
 
@@ -92,13 +83,13 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
 // Base fragment shader (no effects)
 @fragment
 fn fs_base(in: VertexOutput) -> @location(0) vec4<f32> {
-    return finish(sample_masked(in.uv, in.uv_bounds), in.tint);
+    return finish(sample_masked(sprite_texture, sprite_sampler, in.uv, in.uv_bounds), in.tint);
 }
 
 // Effect fragment shader
 @fragment
 fn fs_effect(in: VertexOutput) -> @location(0) vec4<f32> {
-    let base = sample_masked(in.uv, in.uv_bounds);
+    let base = sample_masked(sprite_texture, sprite_sampler, in.uv, in.uv_bounds);
     let params = in.effect_params;
     let extra = in.effect_extra;
     var color = base;
@@ -157,28 +148,6 @@ fn texel_size() -> vec2<f32> {
     return 1.0 / vec2<f32>(textureDimensions(sprite_texture));
 }
 
-// Sample at `uv`; transparent outside `bounds` (the sprite's own rect).
-// UVs within a hundredth of a texel of the rect still count as inside (float
-// error at quad edges) and are clamped onto its edge texels.
-fn sample_masked(uv: vec2<f32>, bounds: vec4<f32>) -> vec4<f32> {
-    let texel = texel_size();
-    let slack = texel * 0.01;
-    if any(uv < bounds.xy - slack) || any(uv > bounds.zw + slack) {
-        return vec4<f32>(0.0);
-    }
-    // A rect narrower than one texel clamps onto its first texel
-    let low = bounds.xy + texel * 0.5;
-    let high = max(low, bounds.zw - texel * 0.5);
-    let inner = clamp(uv, low, high);
-    return textureSampleLevel(sprite_texture, sprite_sampler, inner, 0.0);
-}
-
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let low = c / 12.92;
-    let high = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
-    return select(high, low, c <= vec3<f32>(0.04045));
-}
-
 // Tint like the CPU renderer, then convert RGB to linear.
 //
 // RGB is quantised to bytes: the source byte times the tint fraction,
@@ -205,7 +174,7 @@ fn near_visible(uv: vec2<f32>, bounds: vec4<f32>, thickness: f32) -> bool {
         for (var dx = -t; dx <= t; dx += 1) {
             if dx == 0 && dy == 0 { continue; }
             let offset = vec2<f32>(f32(dx), f32(dy)) * texel;
-            if sample_masked(uv + offset, bounds).a > VISIBLE {
+            if sample_masked(sprite_texture, sprite_sampler, uv + offset, bounds).a > VISIBLE {
                 return true;
             }
         }
@@ -266,7 +235,7 @@ fn apply_glow(
     for (var i = 0.0; i < samples; i += 1.0) {
         let angle = i * 6.28318 / samples;
         let offset = vec2<f32>(cos(angle), sin(angle)) * radius * texel;
-        glow_amount += sample_masked(uv + offset, bounds).a;
+        glow_amount += sample_masked(sprite_texture, sprite_sampler, uv + offset, bounds).a;
     }
     glow_amount = glow_amount / samples * intensity;
     
@@ -281,7 +250,7 @@ fn apply_pixelate(uv: vec2<f32>, bounds: vec4<f32>, block_size: f32) -> vec4<f32
     let size = max(block_size, 1.0);
     let local = floor((uv - bounds.xy) / texel);
     let block = floor(local / size) * size;
-    return sample_masked(bounds.xy + (block + 0.5) * texel, bounds);
+    return sample_masked(sprite_texture, sprite_sampler, bounds.xy + (block + 0.5) * texel, bounds);
 }
 
 // Like the CPU renderer did: each row shifts right by `amplitude` texels times
@@ -303,7 +272,7 @@ fn apply_wave(
     let local_y = (uv.y - bounds.y) / size.y;
     let shift = amplitude * sin(local_y * frequency * 6.2831853 + time) * texel.x;
     let x = bounds.x + fract((uv.x - shift - bounds.x) / size.x) * size.x;
-    return sample_masked(vec2<f32>(x, uv.y), bounds);
+    return sample_masked(sprite_texture, sprite_sampler, vec2<f32>(x, uv.y), bounds);
 }
 
 fn apply_dissolve(

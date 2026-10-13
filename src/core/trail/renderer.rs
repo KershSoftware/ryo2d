@@ -261,13 +261,13 @@ impl TrailRenderer {
     // Create shader module (non-textured)
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Trail Shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/core/trail.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::TRAIL.into()),
     });
 
     // Create shader module (textured)
     let textured_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("Trail Textured Shader"),
-      source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/core/trail_textured.wgsl").into()),
+      source: wgpu::ShaderSource::Wgsl(crate::core::shaders::compose::TRAIL_TEXTURED.into()),
     });
 
     // Create pipeline layout for non-textured trails
