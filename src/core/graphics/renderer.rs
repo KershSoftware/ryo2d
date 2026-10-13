@@ -834,12 +834,13 @@ impl WgpuRenderer {
     pipeline: &mut RenderPipeline,
     ui_buffer: &[u8],
   ) -> Result<(), FrameError> {
-    let sprites = SpriteGpuRenderer::new(&self.device, &self.queue, self.target.format());
+    let sprites = SpriteGpuRenderer::new(&self.device, &self.queue);
     let uniforms = super::camera_gpu::CameraUniforms::default();
     let effects = EffectsManager::new();
     let draw_list = DrawList::default();
     let scene = FrameScene {
       sprites: &sprites,
+      batch: None,
       draw_list: &draw_list,
       trails: None,
       lighting: None,

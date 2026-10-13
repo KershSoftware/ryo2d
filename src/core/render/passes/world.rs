@@ -25,12 +25,12 @@ impl RenderPass for World {
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
     let sprites: &SpriteGpuRenderer = ctx.scene.sprites;
     let trails: Option<&TrailRenderer> = ctx.scene.trails;
-    let Some(camera) = ctx.camera_entity() else {
+    let (Some(camera), Some(batch)) = (ctx.camera_entity(), ctx.scene.batch) else {
       return;
     };
     // The engine wrote the instances and trail vertices when it laid out
     // the frame (buffer writes can't happen inside the pass)
-    let draws = sprites.draws(camera);
+    let draws = batch.draws(camera);
     if draws.is_empty() {
       return;
     }
@@ -53,7 +53,7 @@ impl RenderPass for World {
     });
     for planned in draws {
       match planned {
-        Planned::Draw(draw) => sprites.draw(&mut pass, draw, camera),
+        Planned::Draw(draw) => batch.draw(&mut pass, draw, camera, sprites),
         Planned::External { z, layers } => {
           if let Some(trails) = trails {
             trails.draw_group(&mut pass, true, (*z, *layers), camera);

@@ -47,6 +47,7 @@ use crate::core::input_script::InputScript;
 use crate::core::lighting::{LightingRenderer, LightingSettings};
 use crate::core::messages::{register_engine_messages, register_message};
 use crate::core::physics::{PhysicsConfig, RapierPhysicsWorld};
+use crate::core::render::batch::Batch2D;
 use crate::core::render::{DrawList, EntityDrawer, RenderPipeline};
 use crate::core::scene::{PhysicsPaused, Scene, SceneManager};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet, UpdateSet};
@@ -155,6 +156,7 @@ pub struct Engine {
   schedules: EngineSchedules,
   // GPU renderers the passes draw with (engine-owned, not resources)
   pub(crate) sprite_gpu: Option<SpriteGpuRenderer>,
+  pub(crate) batch: Option<Batch2D>,
   lighting: Option<LightingRenderer>,
   trail_renderer: Option<TrailRenderer>,
   entity_drawer: EntityDrawer,
@@ -501,6 +503,7 @@ impl Engine {
       world,
       schedules,
       sprite_gpu: None,
+      batch: None,
       lighting: None,
       trail_renderer: None,
       entity_drawer: EntityDrawer::default(),
@@ -809,8 +812,8 @@ impl Engine {
       Presentation::PixelArt { .. } => wgpu::FilterMode::Nearest,
       Presentation::ResolutionIndependent => wgpu::FilterMode::Linear,
     };
-    let sprite_gpu =
-      SpriteGpuRenderer::with_filter(renderer.device(), renderer.queue(), format, filter);
+    let sprite_gpu = SpriteGpuRenderer::with_filter(renderer.device(), renderer.queue(), filter);
+    let batch = Batch2D::new(renderer.device(), format, self.config.presentation);
     // Each camera is lit in light targets of its own size; the renderer's
     // own targets are only for lighting on its own
     let lighting = LightingRenderer::new(renderer.device(), 1, 1, format);
@@ -831,6 +834,7 @@ impl Engine {
 
     self.renderer = Some(renderer);
     self.sprite_gpu = Some(sprite_gpu);
+    self.batch = Some(batch);
     self.lighting = Some(lighting);
     self.trail_renderer = Some(trail_renderer);
     self.last_window_size = mapping.physical_size();

@@ -47,7 +47,11 @@ impl Engine {
     if self.minimized {
       return PresentOutcome::Skipped;
     }
-    let (Some(mut rend), Some(mut gpu)) = (self.renderer.take(), self.sprite_gpu.take()) else {
+    let (Some(mut rend), Some(mut gpu), Some(mut batch)) = (
+      self.renderer.take(),
+      self.sprite_gpu.take(),
+      self.batch.take(),
+    ) else {
       return PresentOutcome::Skipped;
     };
     let mut lighting = self.lighting.take();
@@ -72,7 +76,6 @@ impl Engine {
         let mut gpu_ctx = GpuRenderContext::new(
           &mut self.batch_collector,
           &mut gpu,
-          rend.device(),
           &camera,
           rend.screen_size(),
           &self.world,
@@ -186,7 +189,7 @@ impl Engine {
       self
         .camera_uniforms
         .sync(rend.device(), rend.queue(), &cameras);
-      gpu.sync_cameras(rend.device(), &self.camera_uniforms);
+      batch.sync_cameras(rend.device(), &self.camera_uniforms);
 
       self.draw_list.clear();
       self
@@ -213,12 +216,12 @@ impl Engine {
         trails.prepare(rend.queue());
       }
       self.draw_list.sorted();
-      gpu.prepare_world(
+      batch.prepare(
         rend.device(),
         rend.queue(),
         &self.draw_list,
         &self.camera_draws,
-        self.config.presentation,
+        &mut gpu,
       );
       (entity_sprites, lights)
     };
@@ -226,7 +229,7 @@ impl Engine {
     let trail_draws = trails.as_ref().map_or(0, |t| t.draw_count());
     self.debug_stats = DebugStats {
       entity_count: game_entity_count(&self.world),
-      draw_calls: (gpu.world_draw_count() + trail_draws) as u32,
+      draw_calls: (batch.draw_count() + trail_draws) as u32,
       sprite_count: (entity_sprites + self.batch_collector.sprite_count()) as u32,
     };
     self.frame_timings.render = render_start.elapsed();
@@ -247,6 +250,7 @@ impl Engine {
         }
         let scene = FrameScene {
           sprites: &gpu,
+          batch: Some(&batch),
           draw_list: &self.draw_list,
           trails: trails.as_ref(),
           lighting: lighting.map(|renderer| LightingFrame { renderer }),
@@ -289,6 +293,7 @@ impl Engine {
     self.smoothed_stats.update(&self.debug_stats);
     self.renderer = Some(rend);
     self.sprite_gpu = Some(gpu);
+    self.batch = Some(batch);
     self.lighting = lighting;
     self.trail_renderer = trails;
     self.frame_timings.present = present_start.elapsed();

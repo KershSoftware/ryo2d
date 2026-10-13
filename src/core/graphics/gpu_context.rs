@@ -27,8 +27,6 @@ pub struct GpuRenderContext<'a> {
   pub batch: &'a mut BatchCollector,
   /// The GPU sprite renderer (for uploading textures)
   gpu_renderer: &'a mut SpriteGpuRenderer,
-  /// Device for compiling game shaders
-  device: &'a wgpu::Device,
   /// The main camera's view this frame
   camera: &'a CameraView,
   /// The size of screen space
@@ -42,7 +40,6 @@ impl<'a> GpuRenderContext<'a> {
   pub fn new(
     batch: &'a mut BatchCollector,
     gpu_renderer: &'a mut SpriteGpuRenderer,
-    device: &'a wgpu::Device,
     camera: &'a CameraView,
     screen: glam::Vec2,
     world: &'a World,
@@ -50,7 +47,6 @@ impl<'a> GpuRenderContext<'a> {
     Self {
       batch,
       gpu_renderer,
-      device,
       camera,
       screen,
       world,
@@ -72,7 +68,7 @@ impl<'a> GpuRenderContext<'a> {
   ) {
     let shading = match self
       .gpu_renderer
-      .shade_custom(self.device, shader, params, &mut instance)
+      .shade_custom(shader, params, &mut instance)
     {
       Some(key) => crate::core::render::SpriteShading::Custom(key),
       None => crate::core::render::SpriteShading::Plain,

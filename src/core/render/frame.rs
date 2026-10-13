@@ -1,6 +1,7 @@
 //! What a frame contains, decided before any pass runs
 
 use super::DrawList;
+use super::batch::Batch2D;
 use crate::core::ecs::Entity;
 use crate::core::graphics::camera_gpu::CameraUniforms;
 use crate::core::graphics::{
@@ -69,7 +70,11 @@ pub(crate) struct LightingFrame<'a> {
 
 /// The engine subsystems and per-frame data the built-in passes draw from.
 pub(crate) struct FrameScene<'a> {
+  /// The sprites' textures (atlas and render-target pages)
   pub(crate) sprites: &'a SpriteGpuRenderer,
+  /// The world's draws, laid out per camera (`None` before the engine's
+  /// renderers exist)
+  pub(crate) batch: Option<&'a Batch2D>,
   /// The z-sorted drawables of the world passes
   pub(crate) draw_list: &'a DrawList,
   pub(crate) trails: Option<&'a TrailRenderer>,

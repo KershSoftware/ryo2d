@@ -427,10 +427,7 @@ impl Emitter<'_> {
       (Some(_), _) => SpriteShading::Effect,
       (None, Some((shader, params))) => {
         // Params are packed into the instance now; a failed shader draws plain
-        match self
-          .gpu
-          .shade_custom(self.device, shader, params, &mut instance)
-        {
+        match self.gpu.shade_custom(shader, params, &mut instance) {
           Some(key) => SpriteShading::Custom(key),
           None => SpriteShading::Plain,
         }

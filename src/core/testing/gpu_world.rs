@@ -589,3 +589,30 @@ fn lit_split_frames_create_no_bind_groups() {
   engine.step_frames(3).unwrap();
   assert_eq!(created_on_this_thread() - before, 0);
 }
+
+#[test]
+fn the_batch_grows_past_its_first_capacity() {
+  // 2,000 visible 1x1 sprites, more than the instance buffer starts with
+  let scene = Fixture {
+    setup: |ctx| {
+      let dot = SpriteHandle::from_sprite(Sprite::solid_rect(1, 1, 200, 40, 40, 255), "grow-dot");
+      for i in 0..2_000usize {
+        let (col, row) = ((i % 50) as f32, (i / 50) as f32);
+        ctx.world.spawn((
+          Transform::from_xy(col * 2.0, row * 2.0),
+          Renderable::sprite(dot.clone()).with_anchor(Anchor::TopLeft),
+        ));
+      }
+    },
+  };
+  let builder = EngineBuilder::new().resolution(100, 80).start_scene(scene);
+  let Some(mut engine) = engine(builder) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let batch = engine.engine.batch.as_ref().unwrap();
+  assert_eq!(batch.capacity(), 2048);
+  // The last sprite drawn (column 49, row 39) shows
+  assert_eq!(frame.get_pixel(98, 78).0, [200, 40, 40, 255]);
+}

@@ -11,6 +11,7 @@
 // renderer's order (effect, then tint), and the result is converted to linear
 // on output for the Rgba8UnormSrgb game texture. Samples outside the sprite's
 // own rect (uv_bounds) are transparent, so atlas neighbours never show.
+// Output is premultiplied by alpha, like every batch shader.
 
 // The camera the sprites are drawn through (`CameraGlobals`)
 @group(1) @binding(0) var sprite_texture: texture_2d<f32>;
@@ -148,7 +149,7 @@ fn texel_size() -> vec2<f32> {
     return 1.0 / vec2<f32>(textureDimensions(sprite_texture));
 }
 
-// Tint like the CPU renderer, then convert RGB to linear.
+// Tint like the CPU renderer, then convert RGB to linear and premultiply.
 //
 // RGB is quantised to bytes: the source byte times the tint fraction,
 // truncated. Alpha is source alpha times tint alpha, truncated to a byte
@@ -158,7 +159,7 @@ fn finish(color: vec4<f32>, tint: vec4<f32>) -> vec4<f32> {
     let rgb = floor(min(source * tint.rgb, vec3<f32>(255.0))) / 255.0;
     let a = clamp(color.a * tint.a, 0.0, 1.0);
     let alpha = select(floor(a * 255.0) / 255.0, 1.0, a >= 1.0);
-    return vec4<f32>(srgb_to_linear(rgb), alpha);
+    return vec4<f32>(srgb_to_linear(rgb) * alpha, alpha);
 }
 
 // =============================================================================

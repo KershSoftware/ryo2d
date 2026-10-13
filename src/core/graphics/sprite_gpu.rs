@@ -32,20 +32,13 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use wgpu::util::DeviceExt;
-
 use super::RenderTarget;
-use super::camera_gpu::CameraUniforms;
 use super::render_targets::RenderTargets;
-use super::{
-  AtlasSlot, Presentation, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource,
-};
+use super::{AtlasSlot, SlotPage, TextureAtlas, TextureId, TextureRegistry, TextureSource};
 use crate::core::asset::SpriteHandle;
-use crate::core::ecs::{Entity, Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
-use crate::core::render::batch::{BatchShader, Draw, DrawState, Placed, Planned, plan_draws};
-use crate::core::render::{CameraDraw, DrawKind, DrawList, DrawPayload, SpriteShading};
-use crate::core::shaders::custom::{self, ParamLayout, ShaderError, ShaderKind};
-use crate::core::shaders::scope::Checked;
+use crate::core::ecs::{Material, ShaderHandle, ShaderParams, SpriteEffect, SpriteShader};
+use crate::core::render::{DrawKind, DrawList, SpriteShading};
+use crate::core::shaders::custom::{self, CompiledShader, ShaderKind};
 use crate::core::ui::Color;
 
 /// Per-instance data for GPU sprite rendering
@@ -261,16 +254,10 @@ const PRUNE_EVERY: u64 = 120;
 /// every frame can't hold hundreds of them until the TTL.
 const MAX_STANDALONE_ENTITY_SPRITES: usize = 64;
 
-/// A compiled game shader: its pipeline and the `Params` layout to pack for it.
-struct CustomPipeline {
-  pipeline: wgpu::RenderPipeline,
-  layout: ParamLayout,
-}
-
 /// What the cache knows about one shader handle's current version.
 struct CustomEntry {
   generation: u64,
-  /// Its source's key in [`CustomPipelines::compiled`]
+  /// Its source's key in [`CustomShaders::compiled`]
   source: u64,
   /// Atlas frame the shader was last drawn in, to drop unused shaders
   last_used: u64,
@@ -278,10 +265,11 @@ struct CustomEntry {
 
 /// One compiled source, shared by every handle with that source.
 struct CompiledSource {
-  /// Pending until the GPU's check comes back; failed sources are not retried
-  state: Checked<CustomPipeline>,
-  /// The shader's id, for reporting a pipeline the GPU rejects
-  shader: String,
+  /// The composed WGSL and its `Params` layout; `None` when it failed to
+  /// compile (failed sources are not retried)
+  shader: Option<CompiledShader>,
+  /// The shader's id, for labelling and reporting its pipelines
+  name: String,
   last_used: u64,
 }
 
@@ -289,29 +277,23 @@ struct CompiledSource {
 /// spawn don't keep their pipelines forever.
 const CUSTOM_SHADER_TTL: u64 = 600;
 
-/// Pipelines of game sprite shaders, built on first use and rebuilt when the
-/// shader's source changes.
-///
-/// Built with the effect pipeline's layout, vertex buffers, blend and target,
-/// but with the shader's own `fs_custom` entry point.
-struct CustomPipelines {
-  layout: wgpu::PipelineLayout,
-  vertex: wgpu::VertexBufferLayout<'static>,
-  instance: wgpu::VertexBufferLayout<'static>,
-  format: wgpu::TextureFormat,
+/// Game sprite shaders compiled to WGSL on first use and again when the
+/// shader's source changes; the batch makes their pipelines.
+#[derive(Default)]
+struct CustomShaders {
   /// By `ShaderHandle::serial()`
   entries: HashMap<u64, CustomEntry>,
-  /// Compiled pipelines by [`custom::source_key`]: handles with equal sources
+  /// Compiled sources by [`custom::source_key`]: handles with equal sources
   /// compile once
   compiled: HashMap<u64, CompiledSource>,
   /// Parameter names already warned about, by (serial, generation)
   warned: HashMap<(u64, u64), HashSet<String>>,
 }
 
-impl CustomPipelines {
+impl CustomShaders {
   /// Make sure the cache holds the shader's current version; the key to draw
-  /// it with ([`pipeline`](Self::pipeline)), or `None` if it failed.
-  fn prepare(&mut self, device: &wgpu::Device, shader: &ShaderHandle, frame: u64) -> Option<u64> {
+  /// it with ([`source`](Self::source)), or `None` if it failed.
+  fn prepare(&mut self, shader: &ShaderHandle, frame: u64) -> Option<u64> {
     let serial = shader.serial();
     // Cheap check first: this runs for every custom sprite of every frame
     if let Some(entry) = self.entries.get_mut(&serial)
@@ -320,21 +302,24 @@ impl CustomPipelines {
     {
       entry.last_used = frame;
       compiled.last_used = frame;
-      return compiled.state.ready().is_some().then_some(entry.source);
+      return compiled.shader.is_some().then_some(entry.source);
     }
     let (generation, source) = shader.snapshot();
     let key = custom::source_key(ShaderKind::Sprite, &source);
-    if !self.compiled.contains_key(&key) {
-      let state = self.build(device, shader, key, &source);
-      self.compiled.insert(
-        key,
-        CompiledSource {
-          state,
-          shader: shader.id().to_string(),
-          last_used: frame,
-        },
-      );
-    }
+    self.compiled.entry(key).or_insert_with(|| {
+      let compiled = match custom::compile(ShaderKind::Sprite, shader.id(), &source) {
+        Ok(compiled) => Some(compiled),
+        Err(error) => {
+          custom::report_once(key, &error);
+          None
+        }
+      };
+      CompiledSource {
+        shader: compiled,
+        name: shader.id().to_string(),
+        last_used: frame,
+      }
+    });
     self.entries.insert(
       serial,
       CustomEntry {
@@ -345,7 +330,7 @@ impl CustomPipelines {
     );
     let compiled = self.compiled.get_mut(&key)?;
     compiled.last_used = frame;
-    compiled.state.ready().is_some().then_some(key)
+    compiled.shader.is_some().then_some(key)
   }
 
   /// Drop shaders unused for [`CUSTOM_SHADER_TTL`] frames and their warnings.
@@ -364,84 +349,6 @@ impl CustomPipelines {
     });
   }
 
-  /// Compile `source` (whose key is `key`) and build its pipeline; any
-  /// failure is logged once and leaves the shader drawn plain.
-  fn build(
-    &self,
-    device: &wgpu::Device,
-    shader: &ShaderHandle,
-    key: u64,
-    source: &str,
-  ) -> Checked<CustomPipeline> {
-    let compiled = match custom::compile(ShaderKind::Sprite, shader.id(), source) {
-      Ok(compiled) => compiled,
-      Err(error) => {
-        custom::report_once(key, &error);
-        return Checked::Failed;
-      }
-    };
-
-    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-      label: Some(shader.id()),
-      source: wgpu::ShaderSource::Wgsl(compiled.wgsl.into()),
-    });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-      label: Some(shader.id()),
-      layout: Some(&self.layout),
-      vertex: wgpu::VertexState {
-        module: &module,
-        entry_point: Some("vs_main"),
-        buffers: &[Some(self.vertex.clone()), Some(self.instance.clone())],
-        compilation_options: Default::default(),
-      },
-      fragment: Some(wgpu::FragmentState {
-        module: &module,
-        entry_point: Some("fs_custom"),
-        targets: &[Some(wgpu::ColorTargetState {
-          format: self.format,
-          blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-          write_mask: wgpu::ColorWrites::ALL,
-        })],
-        compilation_options: Default::default(),
-      }),
-      primitive: wgpu::PrimitiveState {
-        topology: wgpu::PrimitiveTopology::TriangleList,
-        ..Default::default()
-      },
-      depth_stencil: None,
-      multisample: wgpu::MultisampleState::default(),
-      multiview_mask: None,
-      cache: None,
-    });
-    // Anything naga accepted but the device rejects is found by a later
-    // frame's `settle`, without waiting on the GPU here
-    let _ = key;
-    Checked::pending(
-      CustomPipeline {
-        pipeline,
-        layout: compiled.layout,
-      },
-      scope,
-    )
-  }
-
-  /// Settle pipelines whose GPU checks have come back; a rejected one is
-  /// reported once and its sprites keep drawing plain.
-  fn settle(&mut self) {
-    for (key, compiled) in &mut self.compiled {
-      if let Some(message) = compiled.state.settle() {
-        let error = ShaderError {
-          shader: compiled.shader.clone(),
-          line: None,
-          column: None,
-          message,
-        };
-        custom::report_once(*key, &error);
-      }
-    }
-  }
-
   /// Put `params` into the instance's eight effect floats, in the layout of
   /// the shader's `Params`. Names the shader doesn't have are warned about
   /// once per shader version; correct names allocate nothing.
@@ -453,7 +360,7 @@ impl CustomPipelines {
     let Some(ready) = self
       .compiled
       .get(&entry.source)
-      .and_then(|c| c.state.ready())
+      .and_then(|c| c.shader.as_ref())
     else {
       return;
     };
@@ -493,33 +400,19 @@ impl CustomPipelines {
     instance.effect_extra = [floats[4], floats[5], floats[6], floats[7]];
   }
 
-  /// The pipeline for a key from [`prepare`](Self::prepare)
-  fn pipeline(&self, key: u64) -> Option<&wgpu::RenderPipeline> {
-    let ready = self.compiled.get(&key)?.state.ready()?;
-    Some(&ready.pipeline)
+  /// The name and composed WGSL of a key from [`prepare`](Self::prepare).
+  fn source(&self, key: u64) -> Option<(&str, &str)> {
+    let compiled = self.compiled.get(&key)?;
+    let shader = compiled.shader.as_ref()?;
+    Some((compiled.name.as_str(), shader.wgsl.as_str()))
   }
 }
 
-/// GPU-based sprite renderer with per-sprite shader effects
+/// The sprites' textures and game shaders: every texture drawn lives in its
+/// atlas, and game sprite shaders are compiled here; the 2D batch draws them.
 pub struct SpriteGpuRenderer {
-  // Shader pipelines (one per effect type + base)
-  base_pipeline: wgpu::RenderPipeline,
-  effect_pipeline: wgpu::RenderPipeline,
   // Game sprite shaders
-  custom: CustomPipelines,
-
-  // Global uniforms
-  // Group 0 is the camera the sprites are drawn through: one bind group per
-  // camera's uniform buffer
-  globals_layout: wgpu::BindGroupLayout,
-  camera_bind_groups: HashMap<Entity, wgpu::BindGroup>,
-
-  // Instance buffer (rebuilt each frame)
-  instance_buffer: wgpu::Buffer,
-  instance_capacity: usize,
-
-  // Vertex buffer (quad)
-  vertex_buffer: wgpu::Buffer,
+  custom: CustomShaders,
 
   // Every texture drawn lives in the atlas under its `TextureId`
   atlas: TextureAtlas,
@@ -527,29 +420,17 @@ pub struct SpriteGpuRenderer {
   registry: TextureRegistry,
   // Pixel textures by the name they were uploaded under (the shadow ellipse)
   names: HashMap<String, TextureId>,
-  // Atlas frame counter, advanced by `prepare`
+  // Atlas frame counter, advanced by `prepare_textures`
   frame: u64,
 
-  // This frame's instances remapped into atlas slots (each camera's in a
-  // range of their own), and each camera's draws over them; both built by
-  // `prepare_world` and reused across frames
-  placed: Vec<SpriteInstance>,
-  draws: Vec<(Entity, Vec<Planned>)>,
   // Textures already made resident this frame (scratch, reused across frames)
   resident_scratch: HashSet<TextureId>,
 }
 
 impl SpriteGpuRenderer {
-  /// Initial instance buffer capacity (grown by `prepare` when needed)
-  const MAX_INSTANCES: usize = 10000;
-
   /// Create a new GPU sprite renderer sampling textures with nearest filtering
-  pub fn new(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    surface_format: wgpu::TextureFormat,
-  ) -> Self {
-    Self::with_filter(device, queue, surface_format, wgpu::FilterMode::Nearest)
+  pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+    Self::with_filter(device, queue, wgpu::FilterMode::Nearest)
   }
 
   /// Create a sprite renderer sampling textures with `filter`: nearest for
@@ -557,47 +438,9 @@ impl SpriteGpuRenderer {
   pub fn with_filter(
     device: &wgpu::Device,
     _queue: &wgpu::Queue,
-    surface_format: wgpu::TextureFormat,
     filter: wgpu::FilterMode,
   ) -> Self {
-    // Create bind group layouts
-    let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-      label: Some("Sprite Globals Layout"),
-      entries: &[wgpu::BindGroupLayoutEntry {
-        binding: 0,
-        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Buffer {
-          ty: wgpu::BufferBindingType::Uniform,
-          has_dynamic_offset: false,
-          min_binding_size: None,
-        },
-        count: None,
-      }],
-    });
-
-    let texture_layout = Arc::new(device.create_bind_group_layout(
-      &wgpu::BindGroupLayoutDescriptor {
-        label: Some("Sprite Texture Layout"),
-        entries: &[
-          wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-              multisampled: false,
-              view_dimension: wgpu::TextureViewDimension::D2,
-              sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            },
-            count: None,
-          },
-          wgpu::BindGroupLayoutEntry {
-            binding: 1,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            count: None,
-          },
-        ],
-      },
-    ));
+    let texture_layout = Arc::new(crate::core::render::batch::texture_layout(device));
 
     // Nearest filtering for pixel art; the atlas border covers any edge overshoot
     let sampler = Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
@@ -611,259 +454,13 @@ impl SpriteGpuRenderer {
       ..Default::default()
     }));
 
-    let instance_buffer = Self::create_instance_buffer(device, Self::MAX_INSTANCES);
-
-    // Create quad vertex buffer
-    // Each vertex: position (x, y), uv (u, v)
-    #[repr(C)]
-    #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-    struct Vertex {
-      position: [f32; 2],
-      uv: [f32; 2],
-    }
-
-    // Center-based quad: translation becomes the center position
-    // This matches industry-standard GPU sprite conventions
-    let vertices = [
-      Vertex {
-        position: [-0.5, -0.5],
-        uv: [0.0, 0.0],
-      }, // top-left
-      Vertex {
-        position: [0.5, -0.5],
-        uv: [1.0, 0.0],
-      }, // top-right
-      Vertex {
-        position: [-0.5, 0.5],
-        uv: [0.0, 1.0],
-      }, // bottom-left
-      Vertex {
-        position: [0.5, -0.5],
-        uv: [1.0, 0.0],
-      }, // top-right
-      Vertex {
-        position: [0.5, 0.5],
-        uv: [1.0, 1.0],
-      }, // bottom-right
-      Vertex {
-        position: [-0.5, 0.5],
-        uv: [0.0, 1.0],
-      }, // bottom-left
-    ];
-
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-      label: Some("Sprite Vertex Buffer"),
-      contents: bytemuck::cast_slice(&vertices),
-      usage: wgpu::BufferUsages::VERTEX,
-    });
-
-    // Create shader module
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-      label: Some("Sprite Shader"),
-      source: wgpu::ShaderSource::Wgsl(SPRITE_SHADER.into()),
-    });
-
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-      label: Some("Sprite Pipeline Layout"),
-      bind_group_layouts: &[Some(&globals_layout), Some(&*texture_layout)],
-      immediate_size: 0,
-    });
-
-    // Vertex buffer layout
-    let vertex_layout: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
-      array_stride: 16, // 4 floats * 4 bytes
-      step_mode: wgpu::VertexStepMode::Vertex,
-      attributes: &[
-        wgpu::VertexAttribute {
-          offset: 0,
-          shader_location: 0, // position
-          format: wgpu::VertexFormat::Float32x2,
-        },
-        wgpu::VertexAttribute {
-          offset: 8,
-          shader_location: 1, // uv
-          format: wgpu::VertexFormat::Float32x2,
-        },
-      ],
-    };
-
-    // Instance buffer layout
-    let instance_layout: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
-      array_stride: std::mem::size_of::<SpriteInstance>() as u64,
-      step_mode: wgpu::VertexStepMode::Instance,
-      attributes: &[
-        // transform row 0
-        wgpu::VertexAttribute {
-          offset: 0,
-          shader_location: 2,
-          format: wgpu::VertexFormat::Float32x4,
-        },
-        // transform row 1
-        wgpu::VertexAttribute {
-          offset: 16,
-          shader_location: 3,
-          format: wgpu::VertexFormat::Float32x4,
-        },
-        // transform row 2
-        wgpu::VertexAttribute {
-          offset: 32,
-          shader_location: 4,
-          format: wgpu::VertexFormat::Float32x4,
-        },
-        // uv_rect
-        wgpu::VertexAttribute {
-          offset: 48,
-          shader_location: 5,
-          format: wgpu::VertexFormat::Float32x4,
-        },
-        // tint
-        wgpu::VertexAttribute {
-          offset: 64,
-          shader_location: 6,
-          format: wgpu::VertexFormat::Float32x4,
-        },
-        // effect_params
-        wgpu::VertexAttribute {
-          offset: 80,
-          shader_location: 7,
-          format: wgpu::VertexFormat::Float32x4,
-        },
-        // effect_extra
-        wgpu::VertexAttribute {
-          offset: 96,
-          shader_location: 8,
-          format: wgpu::VertexFormat::Float32x4,
-        },
-        // uv_bounds
-        wgpu::VertexAttribute {
-          offset: 112,
-          shader_location: 9,
-          format: wgpu::VertexFormat::Float32x4,
-        },
-      ],
-    };
-
-    // Base pipeline (no effects, just textured sprites)
-    let base_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-      label: Some("Sprite Base Pipeline"),
-      layout: Some(&pipeline_layout),
-      vertex: wgpu::VertexState {
-        module: &shader,
-        entry_point: Some("vs_main"),
-        buffers: &[Some(vertex_layout.clone()), Some(instance_layout.clone())],
-        compilation_options: Default::default(),
-      },
-      fragment: Some(wgpu::FragmentState {
-        module: &shader,
-        entry_point: Some("fs_base"),
-        targets: &[Some(wgpu::ColorTargetState {
-          format: surface_format,
-          blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-          write_mask: wgpu::ColorWrites::ALL,
-        })],
-        compilation_options: Default::default(),
-      }),
-      primitive: wgpu::PrimitiveState {
-        topology: wgpu::PrimitiveTopology::TriangleList,
-        ..Default::default()
-      },
-      depth_stencil: None,
-      multisample: wgpu::MultisampleState::default(),
-      multiview_mask: None,
-      cache: None,
-    });
-
-    // Effect pipeline (applies per-sprite effects)
-    let effect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-      label: Some("Sprite Effect Pipeline"),
-      layout: Some(&pipeline_layout),
-      vertex: wgpu::VertexState {
-        module: &shader,
-        entry_point: Some("vs_main"),
-        buffers: &[Some(vertex_layout.clone()), Some(instance_layout.clone())],
-        compilation_options: Default::default(),
-      },
-      fragment: Some(wgpu::FragmentState {
-        module: &shader,
-        entry_point: Some("fs_effect"),
-        targets: &[Some(wgpu::ColorTargetState {
-          format: surface_format,
-          blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-          write_mask: wgpu::ColorWrites::ALL,
-        })],
-        compilation_options: Default::default(),
-      }),
-      primitive: wgpu::PrimitiveState {
-        topology: wgpu::PrimitiveTopology::TriangleList,
-        ..Default::default()
-      },
-      depth_stencil: None,
-      multisample: wgpu::MultisampleState::default(),
-      multiview_mask: None,
-      cache: None,
-    });
-
     Self {
-      base_pipeline,
-      effect_pipeline,
-      custom: CustomPipelines {
-        layout: pipeline_layout,
-        vertex: vertex_layout,
-        instance: instance_layout,
-        format: surface_format,
-        entries: HashMap::new(),
-        compiled: HashMap::new(),
-        warned: HashMap::new(),
-      },
-      globals_layout,
-      camera_bind_groups: HashMap::new(),
-      instance_buffer,
-      instance_capacity: Self::MAX_INSTANCES,
-      vertex_buffer,
+      custom: CustomShaders::default(),
       atlas: TextureAtlas::new(device, texture_layout, sampler),
       registry: TextureRegistry::new(),
       names: HashMap::new(),
       frame: 0,
-      placed: Vec::new(),
-      draws: Vec::new(),
       resident_scratch: HashSet::new(),
-    }
-  }
-
-  fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-      label: Some("Sprite Instance Buffer"),
-      size: (capacity * std::mem::size_of::<SpriteInstance>()) as u64,
-      usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-      mapped_at_creation: false,
-    })
-  }
-
-  /// Bind every camera's uniform buffer (made by `CameraUniforms::sync`),
-  /// dropping the bind groups of cameras that are gone.
-  pub(crate) fn sync_cameras(&mut self, device: &wgpu::Device, uniforms: &CameraUniforms) {
-    self
-      .camera_bind_groups
-      .retain(|camera, _| uniforms.buffer(*camera).is_some());
-    for camera in uniforms.cameras() {
-      if self.camera_bind_groups.contains_key(&camera) {
-        continue;
-      }
-      let Some(buffer) = uniforms.buffer(camera) else {
-        continue;
-      };
-      let bind_group = crate::core::graphics::bind_groups::create(
-        device,
-        &wgpu::BindGroupDescriptor {
-          label: Some("Sprite Camera Bind Group"),
-          layout: &self.globals_layout,
-          entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: buffer.as_entire_binding(),
-          }],
-        },
-      );
-      self.camera_bind_groups.insert(camera, bind_group);
     }
   }
 
@@ -957,15 +554,13 @@ impl SpriteGpuRenderer {
     slot
   }
 
-  /// Make the textures `ids` resident for this frame, which draws `sprites`
-  /// instances: re-upload what the atlas evicted, mark them used, grow the
-  /// instance buffer and run the atlas housekeeping.
+  /// Make the textures `ids` resident for this frame: re-upload what the
+  /// atlas evicted, mark them used and run the atlas housekeeping.
   fn make_resident(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     ids: impl Iterator<Item = TextureId>,
-    sprites: usize,
   ) {
     for id in ids {
       self.touch(id);
@@ -974,34 +569,16 @@ impl SpriteGpuRenderer {
     self.atlas.end_frame(self.frame);
     self.prune();
     self.frame += 1;
-
-    if sprites > self.instance_capacity {
-      self.instance_capacity = sprites.next_power_of_two();
-      self.instance_buffer = Self::create_instance_buffer(device, self.instance_capacity);
-    }
   }
 
-  /// Lay out and upload the z-sorted draw list's sprites for
-  /// [`draw`](Self::draw), once per camera.
-  ///
-  /// Makes the list's textures resident; then, for each of `cameras`,
-  /// remaps the sprites it sees into their atlas slots in draw order, in a
-  /// range of the instance buffer of its own, and splits the items it draws
-  /// into draws (sprites merge only when consecutive with equal draw
-  /// states; trail groups split them). Filters resolve for `presentation`.
-  /// `list` must be sorted
-  /// ([`DrawList::sorted`]). Call once per frame, after
-  /// [`sync_cameras`](Self::sync_cameras).
-  pub(crate) fn prepare_world(
+  /// Make the textures of `list`'s sprites resident for this frame (the
+  /// batch then looks up their [`slot`](Self::slot)s). Call once per frame.
+  pub(crate) fn prepare_textures(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     list: &DrawList,
-    cameras: &[CameraDraw],
-    presentation: Presentation,
   ) {
-    // Shaders built last frame become usable once the GPU accepted them
-    self.custom.settle();
     let mut seen = std::mem::take(&mut self.resident_scratch);
     seen.clear();
     // Consecutive sprites mostly share a texture: skip repeats before hashing
@@ -1014,65 +591,26 @@ impl SpriteGpuRenderer {
         previous = Some(texture);
         !repeat && seen.insert(texture)
       });
-    self.make_resident(device, queue, textures, list.sprite_count());
+    self.make_resident(device, queue, textures);
     self.resident_scratch = seen;
+  }
 
-    self.placed.clear();
-    let mut draws = std::mem::take(&mut self.draws);
-    draws.resize_with(cameras.len(), || (Entity::PLACEHOLDER, Vec::new()));
-    // The previous sprite's texture and where it lives, reused while
-    // sprites share it
-    let mut last: Option<(TextureId, AtlasSlot, (u32, u32))> = None;
-    for (camera, (entity, planned)) in cameras.iter().zip(&mut draws) {
-      *entity = camera.entity;
-      let first = self.placed.len() as u32;
-      plan_draws(list.items_for(camera), planned, first, |item| {
-        let index = match item.payload {
-          DrawPayload::Sprite(index) => index,
-          DrawPayload::Trail { z, layers } => return Some(Placed::External { z, layers }),
-        };
-        let sprite = list.sprite(index)?;
-        let (slot, page_size) = match last {
-          Some((texture, slot, size)) if texture == sprite.texture => (slot, size),
-          _ => {
-            let slot = self.atlas.lookup(sprite.texture)?;
-            let page = self.atlas.texture(slot.page)?;
-            let size = (page.width(), page.height());
-            last = Some((sprite.texture, slot, size));
-            (slot, size)
-          }
-        };
-        let shader = match sprite.shading {
-          SpriteShading::Plain => BatchShader::Sprite,
-          SpriteShading::Effect => BatchShader::SpriteEffect,
-          SpriteShading::Custom(key) if self.custom.pipeline(key).is_some() => {
-            BatchShader::Custom(key)
-          }
-          SpriteShading::Custom(_) => BatchShader::Sprite,
-        };
-        // Only built-in effects grow the quad; custom params are not effect ids
-        let effects = shader == BatchShader::SpriteEffect;
-        self
-          .placed
-          .push(place_in_slot(&sprite.instance, &slot, page_size, effects));
-        Some(Placed::Quad(DrawState {
-          page: Some(slot.page),
-          shader,
-          blend: sprite.blend,
-          sampling: sprite.filter.resolve(presentation),
-          scissor: None,
-        }))
-      });
-    }
-    self.draws = draws;
+  /// Where `texture` lives in the atlas, and the size of its page.
+  pub(crate) fn slot(&self, texture: TextureId) -> Option<(AtlasSlot, (u32, u32))> {
+    let slot = self.atlas.lookup(texture)?;
+    let page = self.atlas.texture(slot.page)?;
+    Some((slot, (page.width(), page.height())))
+  }
 
-    if self.placed.len() > self.instance_capacity {
-      self.instance_capacity = self.placed.len().next_power_of_two();
-      self.instance_buffer = Self::create_instance_buffer(device, self.instance_capacity);
-    }
-    if !self.placed.is_empty() {
-      queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.placed));
-    }
+  /// The bind group sampling atlas or target page `page`.
+  pub(crate) fn page_bind_group(&self, page: SlotPage) -> Option<&wgpu::BindGroup> {
+    self.atlas.bind_group(page)
+  }
+
+  /// The name and composed WGSL of the game shader with source key `key`
+  /// (from [`shade_custom`](Self::shade_custom)), while it is kept.
+  pub(crate) fn custom_shader(&self, key: u64) -> Option<(&str, &str)> {
+    self.custom.source(key)
   }
 
   /// Compile (or reuse) the game shader and pack `params` into `instance`.
@@ -1083,63 +621,13 @@ impl SpriteGpuRenderer {
   /// has to be kept until the frame is laid out.
   pub(crate) fn shade_custom(
     &mut self,
-    device: &wgpu::Device,
     shader: &ShaderHandle,
     params: &ShaderParams,
     instance: &mut SpriteInstance,
   ) -> Option<u64> {
-    let key = self.custom.prepare(device, shader, self.frame)?;
+    let key = self.custom.prepare(shader, self.frame)?;
     self.custom.pack(shader, params, instance);
     Some(key)
-  }
-
-  /// The draws [`prepare_world`](Self::prepare_world) laid out for
-  /// `camera`, in order.
-  pub(crate) fn draws(&self, camera: Entity) -> &[Planned] {
-    self
-      .draws
-      .iter()
-      .find(|(entity, _)| *entity == camera)
-      .map_or(&[], |(_, planned)| planned.as_slice())
-  }
-
-  /// Number of sprite draws [`draw`](Self::draw) issues for the laid-out
-  /// frame.
-  pub(crate) fn world_draw_count(&self) -> usize {
-    self
-      .draws
-      .iter()
-      .flat_map(|(_, planned)| planned)
-      .filter(|planned| matches!(planned, Planned::Draw(_)))
-      .count()
-  }
-
-  /// Issue one of `camera`'s draws inside a render pass, after
-  /// [`prepare_world`](Self::prepare_world).
-  pub(crate) fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, draw: &Draw, camera: Entity) {
-    let Some(page) = draw.state.page else {
-      return;
-    };
-    let (Some(bind_group), Some(camera_group)) = (
-      self.atlas.bind_group(page),
-      self.camera_bind_groups.get(&camera),
-    ) else {
-      return;
-    };
-    let pipeline = match draw.state.shader {
-      BatchShader::SpriteEffect => &self.effect_pipeline,
-      BatchShader::Custom(key) => self.custom.pipeline(key).unwrap_or(&self.base_pipeline),
-      BatchShader::Sprite | BatchShader::Line | BatchShader::LineTextured => &self.base_pipeline,
-    };
-    pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, camera_group, &[]);
-    pass.set_bind_group(1, bind_group, &[]);
-    pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-    let instance_size = std::mem::size_of::<SpriteInstance>() as u64;
-    let offset = u64::from(draw.range.start) * instance_size;
-    let end = u64::from(draw.range.end) * instance_size;
-    pass.set_vertex_buffer(1, self.instance_buffer.slice(offset..end));
-    pass.draw(0..6, 0..draw.range.len() as u32);
   }
 
   /// Where a texture uploaded by name currently lives in the atlas.
@@ -1302,8 +790,6 @@ impl SpriteGpuRenderer {
     self.registry = TextureRegistry::new();
     self.names.clear();
     self.atlas.clear();
-    self.placed.clear();
-    self.draws.clear();
   }
 }
 
@@ -1326,7 +812,7 @@ pub(crate) fn effect_padding(params: &[f32; 4]) -> f32 {
 /// `effects` is set and the effect grows the sprite, the quad and its UVs are
 /// enlarged by the effect's padding around the same centre, so the effect can
 /// draw outside the sprite. `page_size` is the size of the slot's texture.
-fn place_in_slot(
+pub(crate) fn place_in_slot(
   instance: &SpriteInstance,
   slot: &AtlasSlot,
   page_size: (u32, u32),
@@ -1677,22 +1163,21 @@ mod tests {
   }
 
   #[test]
-  fn prepare_world_reuploads_evicted_textures() {
+  fn prepared_textures_reupload_when_evicted() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
     let a = solid("a");
     let list = world_list(&mut renderer, &[(&a, 0)]);
-    renderer.prepare_world(&device, &queue, &list, &[], Presentation::default());
+    renderer.prepare_textures(&device, &queue, &list);
     assert!(renderer.lookup_sprite(&a).is_some());
     // As if the atlas had evicted it
     renderer.atlas.clear();
     assert!(renderer.lookup_sprite(&a).is_none());
 
     let list = world_list(&mut renderer, &[(&a, 0)]);
-    renderer.prepare_world(&device, &queue, &list, &[], Presentation::default());
+    renderer.prepare_textures(&device, &queue, &list);
     assert!(renderer.lookup_sprite(&a).is_some());
   }
 
@@ -1701,8 +1186,7 @@ mod tests {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
     renderer.upload_texture(&device, &queue, "short", 2, 2, &[255; 15]);
     assert!(renderer.named_texture("short").is_none());
   }
@@ -1712,40 +1196,23 @@ mod tests {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
     renderer.upload_texture(&device, &queue, "gone", 2, 2, &[255; 16]);
     let drawn = solid("drawn");
     let gone_sprite = solid("gone-sprite");
     let list = world_list(&mut renderer, &[(&gone_sprite, 0)]);
-    renderer.prepare_world(&device, &queue, &list, &[], Presentation::default());
+    renderer.prepare_textures(&device, &queue, &list);
     for _ in 0..=TEXTURE_TTL {
       // The engine uploads what it draws each frame (a no-op once cached)
       renderer.upload_texture(&device, &queue, "uploaded", 2, 2, &[255; 16]);
       let list = world_list(&mut renderer, &[(&drawn, 0)]);
-      renderer.prepare_world(&device, &queue, &list, &[], Presentation::default());
+      renderer.prepare_textures(&device, &queue, &list);
     }
     assert!(renderer.named_texture("gone").is_none());
     assert!(renderer.lookup("gone").is_none(), "its atlas rect is freed");
     assert!(renderer.lookup_sprite(&gone_sprite).is_none());
     assert!(renderer.named_texture("uploaded").is_some());
     assert!(renderer.lookup_sprite(&drawn).is_some());
-  }
-
-  #[test]
-  fn prepare_world_grows_the_instance_buffer() {
-    let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
-      return;
-    };
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
-    let a = solid("a");
-    let entries = vec![(&a, 0); SpriteGpuRenderer::MAX_INSTANCES + 1];
-    let list = world_list(&mut renderer, &entries);
-    renderer.prepare_world(&device, &queue, &list, &[], Presentation::default());
-    assert_eq!(renderer.instance_capacity, 16384);
-    let size = 16384 * std::mem::size_of::<SpriteInstance>() as u64;
-    assert_eq!(renderer.instance_buffer.size(), size);
   }
 
   #[test]
@@ -1778,15 +1245,11 @@ mod tests {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
     let src = "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv); }";
     let shader = ShaderHandle::from_source("prune.wgsl", src);
     let mut instance = SpriteInstance::new();
-    let first = renderer.shade_custom(&device, &shader, &ShaderParams::new(), &mut instance);
-    assert!(first.is_none(), "pending until the GPU check comes back");
-    renderer.custom.settle();
-    let key = renderer.shade_custom(&device, &shader, &ShaderParams::new(), &mut instance);
+    let key = renderer.shade_custom(&shader, &ShaderParams::new(), &mut instance);
     assert!(key.is_some());
     assert_eq!(renderer.custom.entries.len(), 1);
 
@@ -1797,26 +1260,24 @@ mod tests {
   }
 
   #[test]
-  fn handles_with_the_same_source_share_one_pipeline() {
+  fn handles_with_the_same_source_share_one_compiled_source() {
     let Ok((device, queue)) = crate::core::testing::shared_gpu() else {
       return;
     };
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let mut renderer = SpriteGpuRenderer::new(&device, &queue, format);
+    let mut renderer = SpriteGpuRenderer::new(&device, &queue);
     let src =
       "fn sprite(in: SpriteIn, params: Params) -> vec4<f32> { return sample(in.uv) * 0.5; }";
     let mut instance = SpriteInstance::new();
     let shaders: Vec<ShaderHandle> = (0..3)
       .map(|i| ShaderHandle::from_source(format!("shared-{i}.wgsl"), src))
       .collect();
-    renderer.shade_custom(&device, &shaders[0], &ShaderParams::new(), &mut instance);
-    renderer.custom.settle();
     let keys: Vec<Option<u64>> = shaders
       .iter()
-      .map(|shader| renderer.shade_custom(&device, shader, &ShaderParams::new(), &mut instance))
+      .map(|shader| renderer.shade_custom(shader, &ShaderParams::new(), &mut instance))
       .collect();
     assert!(keys[0].is_some());
     assert!(keys.iter().all(|k| *k == keys[0]), "{keys:?}");
+    assert_eq!(renderer.custom.compiled.len(), 1);
   }
 
   // =========================================================================
