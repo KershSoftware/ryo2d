@@ -2,8 +2,17 @@
 
 // Sample `t` at `uv`; transparent outside `bounds` (the slot's own rect).
 // UVs within a hundredth of a texel of the rect still count as inside (float
-// error at quad edges) and are clamped onto its edge texels.
-fn sample_masked(t: texture_2d<f32>, s: sampler, uv: vec2<f32>, bounds: vec4<f32>) -> vec4<f32> {
+// error at quad edges) and are clamped onto its edge texels. `ddx` and `ddy`
+// are the UV's screen derivatives, taken where control flow is uniform; they
+// pick the mip level.
+fn sample_masked(
+    t: texture_2d<f32>,
+    s: sampler,
+    uv: vec2<f32>,
+    bounds: vec4<f32>,
+    ddx: vec2<f32>,
+    ddy: vec2<f32>,
+) -> vec4<f32> {
     let texel = 1.0 / vec2<f32>(textureDimensions(t));
     let slack = texel * 0.01;
     if any(uv < bounds.xy - slack) || any(uv > bounds.zw + slack) {
@@ -13,5 +22,5 @@ fn sample_masked(t: texture_2d<f32>, s: sampler, uv: vec2<f32>, bounds: vec4<f32
     let low = bounds.xy + texel * 0.5;
     let high = max(low, bounds.zw - texel * 0.5);
     let inner = clamp(uv, low, high);
-    return textureSampleLevel(t, s, inner, 0.0);
+    return textureSampleGrad(t, s, inner, ddx, ddy);
 }

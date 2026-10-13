@@ -69,7 +69,7 @@ const SPRITE_PRELUDE: &str = "
 struct SpriteIn { uv: vec2<f32>, size: vec2<f32>, screen_pos: vec2<f32>, time: f32 }
 var<private> ry_bounds: vec4<f32>;
 fn sample(uv: vec2<f32>) -> vec4<f32> {
-  return sample_masked(sprite_texture, sprite_sampler, ry_bounds.xy + uv * (ry_bounds.zw - ry_bounds.xy), ry_bounds);
+  return sample_sprite(ry_bounds.xy + uv * (ry_bounds.zw - ry_bounds.xy), ry_bounds);
 }
 ";
 
@@ -409,11 +409,13 @@ fn sprite_entry(layout: &ParamLayout) -> String {
     "
 @fragment
 fn fs_custom(in: VertexOutput) -> @location(0) vec4<f32> {{
+  take_derivatives(in.uv);
   return finish(ry_custom(in), in.tint);
 }}
 
 @fragment
 fn fs_custom_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {{
+  take_derivatives(in.uv);
   return finish_premultiplied(ry_custom(in), in.tint);
 }}
 

@@ -45,6 +45,21 @@ struct VertexOutput {
 // Alpha above which a texel counts as visible (the CPU tests alpha > 0)
 const VISIBLE: f32 = 0.002;
 
+// The fragment's UV derivatives, taken first thing in every fragment entry
+// (where control flow is uniform), so any sample picks the right mip level
+var<private> uv_ddx: vec2<f32>;
+var<private> uv_ddy: vec2<f32>;
+
+fn take_derivatives(uv: vec2<f32>) {
+    uv_ddx = dpdx(uv);
+    uv_ddy = dpdy(uv);
+}
+
+// The sprite texture at `uv`, transparent outside `bounds`
+fn sample_sprite(uv: vec2<f32>, bounds: vec4<f32>) -> vec4<f32> {
+    return sample_masked(sprite_texture, sprite_sampler, uv, bounds, uv_ddx, uv_ddy);
+}
+
 @vertex
 fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     var out: VertexOutput;
@@ -101,12 +116,14 @@ fn from_pixel(pixel: vec2<f32>) -> vec4<f32> {
 // Base fragment shader (no effects)
 @fragment
 fn fs_base(in: VertexOutput) -> @location(0) vec4<f32> {
-    return finish(sample_masked(sprite_texture, sprite_sampler, in.uv, in.uv_bounds), in.tint);
+    take_derivatives(in.uv);
+    return finish(sample_sprite(in.uv, in.uv_bounds), in.tint);
 }
 
 // Effect fragment shader
 @fragment
 fn fs_effect(in: VertexOutput) -> @location(0) vec4<f32> {
+    take_derivatives(in.uv);
     return finish(effect_color(in), in.tint);
 }
 
@@ -114,18 +131,20 @@ fn fs_effect(in: VertexOutput) -> @location(0) vec4<f32> {
 // already multiplied by alpha
 @fragment
 fn fs_base_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
-    let color = sample_masked(sprite_texture, sprite_sampler, in.uv, in.uv_bounds);
+    take_derivatives(in.uv);
+    let color = sample_sprite(in.uv, in.uv_bounds);
     return finish_premultiplied(color, in.tint);
 }
 
 @fragment
 fn fs_effect_premultiplied(in: VertexOutput) -> @location(0) vec4<f32> {
+    take_derivatives(in.uv);
     return finish_premultiplied(effect_color(in), in.tint);
 }
 
 // The sprite's colour with its built-in effect applied
 fn effect_color(in: VertexOutput) -> vec4<f32> {
-    let base = sample_masked(sprite_texture, sprite_sampler, in.uv, in.uv_bounds);
+    let base = sample_sprite(in.uv, in.uv_bounds);
     let params = in.effect_params;
     let extra = in.effect_extra;
     var color = base;
@@ -218,7 +237,7 @@ fn near_visible(uv: vec2<f32>, bounds: vec4<f32>, thickness: f32) -> bool {
         for (var dx = -t; dx <= t; dx += 1) {
             if dx == 0 && dy == 0 { continue; }
             let offset = vec2<f32>(f32(dx), f32(dy)) * texel;
-            if sample_masked(sprite_texture, sprite_sampler, uv + offset, bounds).a > VISIBLE {
+            if sample_sprite(uv + offset, bounds).a > VISIBLE {
                 return true;
             }
         }
@@ -279,7 +298,7 @@ fn apply_glow(
     for (var i = 0.0; i < samples; i += 1.0) {
         let angle = i * 6.28318 / samples;
         let offset = vec2<f32>(cos(angle), sin(angle)) * radius * texel;
-        glow_amount += sample_masked(sprite_texture, sprite_sampler, uv + offset, bounds).a;
+        glow_amount += sample_sprite(uv + offset, bounds).a;
     }
     glow_amount = glow_amount / samples * intensity;
     
@@ -294,7 +313,7 @@ fn apply_pixelate(uv: vec2<f32>, bounds: vec4<f32>, block_size: f32) -> vec4<f32
     let size = max(block_size, 1.0);
     let local = floor((uv - bounds.xy) / texel);
     let block = floor(local / size) * size;
-    return sample_masked(sprite_texture, sprite_sampler, bounds.xy + (block + 0.5) * texel, bounds);
+    return sample_sprite(bounds.xy + (block + 0.5) * texel, bounds);
 }
 
 // Like the CPU renderer did: each row shifts right by `amplitude` texels times
@@ -316,7 +335,7 @@ fn apply_wave(
     let local_y = (uv.y - bounds.y) / size.y;
     let shift = amplitude * sin(local_y * frequency * 6.2831853 + time) * texel.x;
     let x = bounds.x + fract((uv.x - shift - bounds.x) / size.x) * size.x;
-    return sample_masked(sprite_texture, sprite_sampler, vec2<f32>(x, uv.y), bounds);
+    return sample_sprite(vec2<f32>(x, uv.y), bounds);
 }
 
 fn apply_dissolve(

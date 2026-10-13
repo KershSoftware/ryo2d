@@ -2,9 +2,10 @@
 //!
 //! Small images (at most [`MAX_ATLAS_IMAGE`] px per side) are packed into
 //! shared 2048x2048 pages so many sprites can share one bind group. Every
-//! placed image carries a 1-px border repeating its edge pixels, so bilinear
-//! sampling and scaling never bleed in a neighbour. Larger images get their
-//! own standalone texture with the same border and slot semantics.
+//! placed image carries an 8-px border repeating its edge pixels and starts
+//! on an 8-px grid, so bilinear sampling never bleeds in a neighbour at any
+//! of the pages' four mip levels. Larger images get their own standalone
+//! texture with the same border and slot semantics and a full mip chain.
 //!
 //! An [`AtlasSlot`] names its texture with a [`SlotPage`]: either a shared atlas
 //! page or a standalone texture.
@@ -29,8 +30,14 @@ const STALE_FRAMES: u64 = 300;
 /// Most entries evicted for a single placement before giving up (the image
 /// then falls back to a standalone texture rather than flushing the atlas).
 const MAX_EVICTIONS: usize = 64;
-/// Border added around every image, in pixels.
-const BORDER: u32 = 1;
+/// Border added around every image, in pixels: one texel at the smallest
+/// mip level.
+const BORDER: u32 = 8;
+/// Atlas rects start on and span multiples of this many pixels, so they
+/// stay whole texels down to the smallest mip level.
+const CELL: u32 = 8;
+/// Mip levels of an atlas page (2048 down to 256 px).
+pub(crate) const MIP_LEVELS: u32 = 4;
 /// How often stale atlas entries are freed and empty pages released
 const RELEASE_EVERY: u64 = 60;
 const PAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -98,7 +105,8 @@ impl AtlasLayout {
     self.pages.len()
   }
 
-  /// Find a slot for `key`, allocating `width`x`height` (+2 px border) if new.
+  /// Find a slot for `key`, allocating `width`x`height` plus its border (in
+  /// whole cells) if new.
   /// `None` when the image must be standalone (larger than 256 px) or nothing can be freed.
   pub(crate) fn place(
     &mut self,
@@ -203,15 +211,17 @@ impl AtlasLayout {
     }
   }
 
+  /// Allocate `bw`x`bh` pixels, rounded up to whole cells; the rect's pixel
+  /// origin.
   fn try_allocate(&mut self, bw: u32, bh: u32) -> Option<(usize, AllocId, u32, u32)> {
-    let size = size2(bw as i32, bh as i32);
+    let size = size2(bw.div_ceil(CELL) as i32, bh.div_ceil(CELL) as i32);
     for (index, page) in self.pages.iter_mut().enumerate() {
       if let Some(a) = page.allocate(size) {
         return Some((
           index,
           a.id,
-          a.rectangle.min.x as u32,
-          a.rectangle.min.y as u32,
+          a.rectangle.min.x as u32 * CELL,
+          a.rectangle.min.y as u32 * CELL,
         ));
       }
     }
@@ -231,10 +241,10 @@ impl AtlasLayout {
       return Some(found);
     }
     while self.pages.len() < self.max_pages {
-      self.pages.push(BucketedAtlasAllocator::new(size2(
-        self.page_size as i32,
-        self.page_size as i32,
-      )));
+      let cells = (self.page_size / CELL) as i32;
+      self
+        .pages
+        .push(BucketedAtlasAllocator::new(size2(cells, cells)));
       if let Some(found) = self.try_allocate(bw, bh) {
         return Some(found);
       }
@@ -353,8 +363,9 @@ impl TextureAtlas {
   /// An empty atlas whose textures bind with `layout` (texture, then
   /// sampler).
   pub(crate) fn new(device: &wgpu::Device, layout: wgpu::BindGroupLayout) -> Self {
-    // The atlas border covers any edge overshoot of either filter
-    let sampler = |label, filter| {
+    // The atlas border covers any edge overshoot of either filter. Nearest
+    // keeps to the full-size level (exact texels); linear blends levels
+    let sampler = |label, filter, mipmap_filter, lod_max_clamp| {
       device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some(label),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -362,7 +373,8 @@ impl TextureAtlas {
         address_mode_w: wgpu::AddressMode::ClampToEdge,
         mag_filter: filter,
         min_filter: filter,
-        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        mipmap_filter,
+        lod_max_clamp,
         ..Default::default()
       })
     };
@@ -375,8 +387,18 @@ impl TextureAtlas {
       targets: HashMap::new(),
       target_ids: HashMap::new(),
       bind_layout: layout,
-      nearest: sampler("Sprite Sampler (nearest)", wgpu::FilterMode::Nearest),
-      linear: sampler("Sprite Sampler (linear)", wgpu::FilterMode::Linear),
+      nearest: sampler(
+        "Sprite Sampler (nearest)",
+        wgpu::FilterMode::Nearest,
+        wgpu::MipmapFilterMode::Nearest,
+        0.0,
+      ),
+      linear: sampler(
+        "Sprite Sampler (linear)",
+        wgpu::FilterMode::Linear,
+        wgpu::MipmapFilterMode::Linear,
+        32.0,
+      ),
     }
   }
 
@@ -451,7 +473,8 @@ impl TextureAtlas {
 
     // Validate before registering anything, so a bad upload leaves no entry.
     let pixels = rgba();
-    let bordered = extrude_border(&pixels, width, height)?;
+    let bordered = extrude_border(&pixels, width, height, BORDER)?;
+    let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
     if small && let Some(p) = self.layout.place(key, width, height, frame) {
       while self.pages.len() < self.layout.page_count() {
         self.pages.push(self.create_page(device));
@@ -460,7 +483,13 @@ impl TextureAtlas {
         return None;
       };
       let page = self.pages.get(index)?;
-      write_bordered(queue, &page.texture, p.x, p.y, width, height, &bordered);
+      write_mips(
+        queue,
+        &page.texture,
+        p.x,
+        p.y,
+        &mip_chain(&bordered, bw, bh, MIP_LEVELS),
+      );
       return Some(p.slot);
     }
     // Standalone now: a leftover atlas slot would be returned, unwritten, if
@@ -611,7 +640,8 @@ impl TextureAtlas {
   }
 
   fn create_page(&self, device: &wgpu::Device) -> Page {
-    let (texture, bind_groups) = self.create_texture(device, PAGE_SIZE, PAGE_SIZE, "Atlas Page");
+    let (texture, bind_groups) =
+      self.create_texture(device, PAGE_SIZE, PAGE_SIZE, MIP_LEVELS, "Atlas Page");
     Page {
       texture,
       bind_groups,
@@ -623,6 +653,7 @@ impl TextureAtlas {
     device: &wgpu::Device,
     width: u32,
     height: u32,
+    mip_levels: u32,
     label: &str,
   ) -> (wgpu::Texture, PageBindGroups) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -632,7 +663,7 @@ impl TextureAtlas {
         height,
         depth_or_array_layers: 1,
       },
-      mip_level_count: 1,
+      mip_level_count: mip_levels,
       sample_count: 1,
       dimension: wgpu::TextureDimension::D2,
       format: PAGE_FORMAT,
@@ -658,8 +689,10 @@ impl TextureAtlas {
     frame: u64,
   ) -> AtlasSlot {
     let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
-    let (texture, bind_groups) = self.create_texture(device, bw, bh, "Atlas Standalone");
-    write_bordered(queue, &texture, 0, 0, width, height, bordered);
+    // A full chain, down to one texel
+    let levels = 32 - bw.max(bh).leading_zeros();
+    let (texture, bind_groups) = self.create_texture(device, bw, bh, levels, "Atlas Standalone");
+    write_mips(queue, &texture, 0, 0, &mip_chain(bordered, bw, bh, levels));
     let id = self.next_standalone;
     self.next_standalone += 1;
     let slot = AtlasSlot {
@@ -689,17 +722,17 @@ impl TextureAtlas {
 
 /// Copy `rgba` into a `(w+2)x(h+2)` buffer whose border repeats the edge pixels.
 /// `None` when `rgba` is not `width * height * 4` bytes.
-fn extrude_border(rgba: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
-  let (w, h) = (width as usize, height as usize);
-  if rgba.len() != w * h * 4 {
+fn extrude_border(rgba: &[u8], width: u32, height: u32, border: u32) -> Option<Vec<u8>> {
+  let (w, h, d) = (width as usize, height as usize, border as usize);
+  if w == 0 || h == 0 || rgba.len() != w * h * 4 {
     return None;
   }
-  let bw = w + 2;
-  let mut out = vec![0u8; bw * (h + 2) * 4];
-  for by in 0..h + 2 {
-    let sy = by.saturating_sub(1).min(h - 1);
+  let bw = w + 2 * d;
+  let mut out = vec![0u8; bw * (h + 2 * d) * 4];
+  for by in 0..h + 2 * d {
+    let sy = by.saturating_sub(d).min(h - 1);
     for bx in 0..bw {
-      let sx = bx.saturating_sub(1).min(w - 1);
+      let sx = bx.saturating_sub(d).min(w - 1);
       let src = (sy * w + sx) * 4;
       let dst = (by * bw + bx) * 4;
       out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
@@ -708,35 +741,129 @@ fn extrude_border(rgba: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
   Some(out)
 }
 
-fn write_bordered(
+/// `rgba` (`width`x`height`, sRGB bytes) and up to `levels - 1` smaller
+/// levels, each halving the one before (an odd side keeps its last row or
+/// column), down to one texel at most.
+///
+/// Texels average in linear light, weighted by alpha, so transparent
+/// surroundings neither darken nor tint an edge; alpha averages as it is.
+pub(crate) fn mip_chain(
+  rgba: &[u8],
+  width: u32,
+  height: u32,
+  levels: u32,
+) -> Vec<(u32, u32, Vec<u8>)> {
+  let decode: [f32; 256] = std::array::from_fn(|byte| {
+    let c = byte as f32 / 255.0;
+    if c <= 0.04045 {
+      c / 12.92
+    } else {
+      ((c + 0.055) / 1.055).powf(2.4)
+    }
+  });
+  let encode = |linear: f32| {
+    let c = linear.clamp(0.0, 1.0);
+    let srgb = if c <= 0.003_130_8 {
+      c * 12.92
+    } else {
+      1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+    (srgb * 255.0).round() as u8
+  };
+  let mut chain = vec![(width, height, rgba.to_vec())];
+  while (chain.len() as u32) < levels {
+    let Some((w, h, pixels)) = chain.last() else {
+      break;
+    };
+    let (w, h) = (*w as usize, *h as usize);
+    if w <= 1 && h <= 1 {
+      break;
+    }
+    let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
+    let mut next = vec![0u8; nw * nh * 4];
+    for y in 0..nh {
+      for x in 0..nw {
+        let rows = [2 * y, (2 * y + 1).min(h - 1)];
+        let cols = [2 * x, (2 * x + 1).min(w - 1)];
+        let (mut rgb, mut alpha) = ([0.0f32; 3], 0.0f32);
+        let mut plain = [0.0f32; 3];
+        for row in rows {
+          for col in cols {
+            let texel = &pixels[(row * w + col) * 4..][..4];
+            let a = f32::from(texel[3]) / 255.0;
+            for c in 0..3 {
+              let linear = decode[usize::from(texel[c])];
+              rgb[c] += linear * a;
+              plain[c] += linear;
+            }
+            alpha += a;
+          }
+        }
+        let out = &mut next[(y * nw + x) * 4..][..4];
+        for c in 0..3 {
+          // Fully transparent texels keep their plain average
+          out[c] = encode(if alpha > 0.0 {
+            rgb[c] / alpha
+          } else {
+            plain[c] / 4.0
+          });
+        }
+        out[3] = (alpha / 4.0 * 255.0).round() as u8;
+      }
+    }
+    chain.push((nw as u32, nh as u32, next));
+  }
+  chain
+}
+
+/// Write each level of `chain` into `texture`'s matching mip level, at
+/// (`x`, `y`) scaled to that level.
+///
+/// The GPU rounds odd level sizes down where the chain rounds them up: a
+/// level that would overrun its texture loses its last column or row (the
+/// border's, repeating the edge).
+fn write_mips(
   queue: &wgpu::Queue,
   texture: &wgpu::Texture,
   x: u32,
   y: u32,
-  width: u32,
-  height: u32,
-  bordered: &[u8],
+  chain: &[(u32, u32, Vec<u8>)],
 ) {
-  let (bw, bh) = (width + 2 * BORDER, height + 2 * BORDER);
-  queue.write_texture(
-    wgpu::TexelCopyTextureInfo {
-      texture,
-      mip_level: 0,
-      origin: wgpu::Origin3d { x, y, z: 0 },
-      aspect: wgpu::TextureAspect::All,
-    },
-    bordered,
-    wgpu::TexelCopyBufferLayout {
-      offset: 0,
-      bytes_per_row: Some(bw * 4),
-      rows_per_image: Some(bh),
-    },
-    wgpu::Extent3d {
-      width: bw,
-      height: bh,
-      depth_or_array_layers: 1,
-    },
-  );
+  for (level, (width, height, pixels)) in (0u32..).zip(chain) {
+    if level >= texture.mip_level_count() {
+      break;
+    }
+    let (x, y) = (x >> level, y >> level);
+    let room = texture
+      .size()
+      .mip_level_size(level, wgpu::TextureDimension::D2);
+    let copy = (
+      (*width).min(room.width.saturating_sub(x)),
+      (*height).min(room.height.saturating_sub(y)),
+    );
+    if copy.0 == 0 || copy.1 == 0 {
+      continue;
+    }
+    queue.write_texture(
+      wgpu::TexelCopyTextureInfo {
+        texture,
+        mip_level: level,
+        origin: wgpu::Origin3d { x, y, z: 0 },
+        aspect: wgpu::TextureAspect::All,
+      },
+      pixels,
+      wgpu::TexelCopyBufferLayout {
+        offset: 0,
+        bytes_per_row: Some(width * 4),
+        rows_per_image: Some(*height),
+      },
+      wgpu::Extent3d {
+        width: copy.0,
+        height: copy.1,
+        depth_or_array_layers: 1,
+      },
+    );
+  }
 }
 
 #[cfg(test)]
@@ -753,6 +880,11 @@ mod tests {
       ((self.0 >> 33) as u32) % max
     }
   }
+
+  /// An image whose bordered rect is a quarter of a 128 px page (64 px)
+  const Q: u32 = 64 - 2 * BORDER;
+  /// An image whose bordered rect is half of a 256 px page (128 px)
+  const H: u32 = 128 - 2 * BORDER;
 
   fn id(n: usize) -> TextureId {
     TextureId::for_test(n as u32)
@@ -777,7 +909,7 @@ mod tests {
     for n in 0..50 {
       let (w, h) = (1 + rng.next(120), 1 + rng.next(120));
       let p = layout.place(id(n), w, h, 0).unwrap();
-      rects.push((p.slot.page, p.x, p.y, w + 2, h + 2));
+      rects.push((p.slot.page, p.x, p.y, w + 2 * BORDER, h + 2 * BORDER));
     }
     for (i, a) in rects.iter().enumerate() {
       for b in &rects[i + 1..] {
@@ -802,22 +934,22 @@ mod tests {
   fn new_pages_before_eviction_then_lru() {
     let mut layout = AtlasLayout::new(128, 2);
     let placed: Vec<_> = (0..8)
-      .map(|n| layout.place(id(n), 62, 62, n as u64 + 1).unwrap())
+      .map(|n| layout.place(id(n), Q, Q, n as u64 + 1).unwrap())
       .collect();
     assert_eq!(placed[0].slot.page, SlotPage::Atlas(0));
     assert_eq!(placed[4].slot.page, SlotPage::Atlas(1));
     assert!(placed.iter().all(|p| p.newly_allocated));
-    let ninth = layout.place(id(8), 62, 62, 20).unwrap();
+    let ninth = layout.place(id(8), Q, Q, 20).unwrap();
     assert_eq!(
       (ninth.slot, ninth.x, ninth.y),
       (placed[0].slot, placed[0].x, placed[0].y)
     );
-    assert!(layout.place(id(0), 62, 62, 21).unwrap().newly_allocated);
+    assert!(layout.place(id(0), Q, Q, 21).unwrap().newly_allocated);
   }
 
   #[test]
   fn a_full_atlas_frees_a_whole_page_instead_of_scattered_entries() {
-    let mut layout = AtlasLayout::new(512, 1);
+    let mut layout = AtlasLayout::new(1024, 1);
     let mut n = 0;
     while n < 2000 && layout.place(id(n), 14, 14, 1).is_some() {
       n += 1;
@@ -833,35 +965,35 @@ mod tests {
     let mut layout = AtlasLayout::new(256, 2);
     for n in 0..16 {
       assert_eq!(
-        layout.place(id(n), 62, 62, 1).map(|p| p.slot.page),
+        layout.place(id(n), Q, Q, 1).map(|p| p.slot.page),
         Some(SlotPage::Atlas(0))
       );
     }
     for n in 16..32 {
       assert_eq!(
-        layout.place(id(n), 62, 62, 2).map(|p| p.slot.page),
+        layout.place(id(n), Q, Q, 2).map(|p| p.slot.page),
         Some(SlotPage::Atlas(1))
       );
     }
     // Page 0 is older, but one of its images is drawn this frame
-    layout.place(id(0), 62, 62, 3);
-    let big = layout.place(id(100), 126, 126, 3).expect("room is made");
+    layout.place(id(0), Q, Q, 3);
+    let big = layout.place(id(100), H, H, 3).expect("room is made");
     assert_eq!(big.slot.page, SlotPage::Atlas(1));
-    assert!((0..16).all(|n| layout.holds(id(n), 62, 62)), "page 0 kept");
+    assert!((0..16).all(|n| layout.holds(id(n), Q, Q)), "page 0 kept");
   }
 
   #[test]
   fn stale_entries_are_freed_and_empty_trailing_pages_released() {
     let mut layout = AtlasLayout::new(128, 3);
     for n in 0..8 {
-      layout.place(id(n), 62, 62, 1);
+      layout.place(id(n), Q, Q, 1);
     }
     assert_eq!(layout.page_count(), 2);
     // Only one image on page 0 is still drawn
-    layout.place(id(0), 62, 62, 200);
+    layout.place(id(0), Q, Q, 200);
     layout.release_stale(301);
-    assert!(layout.holds(id(0), 62, 62));
-    assert!(!(1..8).any(|n| layout.holds(id(n), 62, 62)));
+    assert!(layout.holds(id(0), Q, Q));
+    assert!(!(1..8).any(|n| layout.holds(id(n), Q, Q)));
     assert_eq!(layout.page_count(), 1, "the emptied last page is released");
   }
 
@@ -878,7 +1010,7 @@ mod tests {
     let rects: Vec<_> = layout
       .entries
       .values()
-      .map(|e| (e.slot.page, e.x, e.y, e.w + 2, e.h + 2))
+      .map(|e| (e.slot.page, e.x, e.y, e.w + 2 * BORDER, e.h + 2 * BORDER))
       .collect();
     for (i, a) in rects.iter().enumerate() {
       for b in &rects[i + 1..] {
@@ -895,9 +1027,9 @@ mod tests {
   fn full_page_frees_entries_unused_for_300_frames() {
     let mut layout = AtlasLayout::new(128, 2);
     let old: Vec<_> = (0..4)
-      .map(|n| layout.place(id(n), 62, 62, 0).unwrap())
+      .map(|n| layout.place(id(n), Q, Q, 0).unwrap())
       .collect();
-    let p = layout.place(id(9), 62, 62, 300).unwrap();
+    let p = layout.place(id(9), Q, Q, 300).unwrap();
     assert_eq!(layout.page_count(), 1);
     assert_eq!(p.slot.page, SlotPage::Atlas(0));
     assert!(old.iter().any(|o| (o.x, o.y) == (p.x, p.y)));
@@ -908,13 +1040,13 @@ mod tests {
   fn fresh_entries_are_kept_and_a_page_is_opened() {
     let mut layout = AtlasLayout::new(128, 2);
     let old: Vec<_> = (0..4)
-      .map(|n| layout.place(id(n), 62, 62, 0).unwrap())
+      .map(|n| layout.place(id(n), Q, Q, 0).unwrap())
       .collect();
-    let p = layout.place(id(9), 62, 62, 299).unwrap();
+    let p = layout.place(id(9), Q, Q, 299).unwrap();
     assert_eq!(layout.page_count(), 2);
     assert_eq!(p.slot.page, SlotPage::Atlas(1));
     for (n, o) in old.iter().enumerate() {
-      let again = layout.place(id(n), 62, 62, 299).unwrap();
+      let again = layout.place(id(n), Q, Q, 299).unwrap();
       assert!(!again.newly_allocated);
       assert_eq!(again.slot, o.slot);
     }
@@ -924,11 +1056,11 @@ mod tests {
   fn nothing_used_this_frame_is_evicted() {
     let mut layout = AtlasLayout::new(128, 1);
     let old: Vec<_> = (0..4)
-      .map(|n| layout.place(id(n), 62, 62, 5).unwrap())
+      .map(|n| layout.place(id(n), Q, Q, 5).unwrap())
       .collect();
-    assert!(layout.place(id(9), 62, 62, 5).is_none());
+    assert!(layout.place(id(9), Q, Q, 5).is_none());
     for (n, o) in old.iter().enumerate() {
-      let again = layout.place(id(n), 62, 62, 5).unwrap();
+      let again = layout.place(id(n), Q, Q, 5).unwrap();
       assert!(!again.newly_allocated);
       assert_eq!(again.slot, o.slot);
     }
@@ -938,14 +1070,54 @@ mod tests {
   fn lru_eviction_keeps_live_rects_disjoint() {
     let mut layout = AtlasLayout::new(128, 2);
     for n in 0..8 {
-      layout.place(id(n), 62, 62, n as u64 + 1).unwrap();
+      layout.place(id(n), Q, Q, n as u64 + 1).unwrap();
     }
     for n in 8..12 {
-      let p = layout.place(id(n), 62, 62, 20 + n as u64).unwrap();
+      let p = layout.place(id(n), Q, Q, 20 + n as u64).unwrap();
       assert!(p.newly_allocated);
       assert_live_disjoint(&layout);
     }
     assert_eq!(layout.entries.len(), 8);
+  }
+
+  #[test]
+  fn mip_levels_average_in_linear_light() {
+    // A black and white 2x2 checker averages to linear 0.5: sRGB 188
+    let rgba = [
+      0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255,
+    ];
+    let chain = mip_chain(&rgba, 2, 2, 2);
+    assert_eq!(chain.len(), 2);
+    let (w, h, pixels) = &chain[1];
+    assert_eq!((*w, *h), (1, 1));
+    assert!((187..=189).contains(&pixels[0]), "{pixels:?}");
+    assert_eq!(pixels[3], 255);
+  }
+
+  #[test]
+  fn slots_line_up_with_the_smallest_mip_level() {
+    let mut layout = AtlasLayout::new(PAGE_SIZE, MAX_PAGES);
+    for (i, (w, h)) in [(5, 9), (16, 16), (31, 3), (1, 1)].into_iter().enumerate() {
+      let placed = layout
+        .place(TextureId::for_test(i as u32), w, h, 0)
+        .unwrap();
+      assert_eq!((placed.x % CELL, placed.y % CELL), (0, 0), "{w}x{h}");
+      let [u0, v0, ..] = placed.slot.uv;
+      let inset = (
+        (u0 * PAGE_SIZE as f32).round() as u32 - placed.x,
+        (v0 * PAGE_SIZE as f32).round() as u32 - placed.y,
+      );
+      assert_eq!(inset, (BORDER, BORDER));
+    }
+  }
+
+  #[test]
+  fn borders_repeat_edge_pixels_eight_deep() {
+    let rgba = [10, 20, 30, 255];
+    let bordered = extrude_border(&rgba, 1, 1, BORDER).unwrap();
+    let side = (1 + 2 * BORDER) as usize;
+    assert_eq!(bordered.len(), side * side * 4);
+    assert!(bordered.chunks(4).all(|p| p == [10, 20, 30, 255]));
   }
 
   fn gpu_atlas(device: &wgpu::Device) -> TextureAtlas {
@@ -988,7 +1160,7 @@ mod tests {
       .unwrap();
     assert_ne!(a.uv, b.uv);
     let tex = atlas.texture(b.page).unwrap();
-    assert_eq!(tex.width(), 303);
+    assert_eq!(tex.width(), 301 + 2 * BORDER);
   }
 
   #[test]

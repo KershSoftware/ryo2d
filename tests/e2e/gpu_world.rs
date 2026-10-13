@@ -1328,3 +1328,49 @@ fn a_fractional_quad_keeps_its_width_as_it_moves_in_pixel_art() {
   let b = width_at(10.7).unwrap();
   assert_eq!(a, b, "the bar is {a} then {b} pixels wide");
 }
+
+/// A 64x64 one-texel checker drawn at an eighth of its size.
+struct Shrunk(Filter);
+
+impl Scene for Shrunk {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let mut data = Vec::with_capacity(64 * 64 * 4);
+    for i in 0..64 * 64 {
+      let v = if (i % 64 + i / 64) % 2 == 0 { 0 } else { 255 };
+      data.extend_from_slice(&[v, v, v, 255]);
+    }
+    let checker = SpriteHandle::from_sprite(Sprite::from_rgba(data, 64, 64), "shrunk-checker");
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 16.0).with_scale(Vec2::splat(0.125)),
+      Renderable::sprite(checker).with_filter(self.0),
+    ));
+  }
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_shrunk_checker_averages_to_grey_with_mipmaps() {
+  let centre = |filter| {
+    let mut engine = start(
+      EngineBuilder::new()
+        .resolution(32, 32)
+        .start_scene(Shrunk(filter)),
+    )?;
+    engine.step_frames(2).unwrap();
+    Some(engine.frame().unwrap().get_pixel(16, 16).0)
+  };
+  let Some(linear) = centre(Filter::Linear) else {
+    return;
+  };
+  let nearest = centre(Filter::Nearest).unwrap();
+  assert!(
+    (160..=215).contains(&linear[0]),
+    "linear with mips is grey: {linear:?}"
+  );
+  assert!(
+    nearest[0] < 10 || nearest[0] > 245,
+    "nearest is one texel: {nearest:?}"
+  );
+}

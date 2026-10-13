@@ -616,3 +616,34 @@ fn the_batch_grows_past_its_first_capacity() {
   // The last sprite drawn (column 49, row 39) shows
   assert_eq!(frame.get_pixel(98, 78).0, [200, 40, 40, 255]);
 }
+
+#[test]
+fn a_reloaded_sprite_is_new_at_every_mip_level() {
+  // 64 px drawn at 8: sampled from the smaller mip levels
+  let scene = Fixture {
+    setup: |ctx| {
+      let red = Sprite::solid_rect(64, 64, 220, 30, 40, 255);
+      let sprite = SpriteHandle::from_sprite(red, "reload-mips");
+      ctx.world.spawn((
+        Transform::from_xy(16.0, 16.0).with_scale(Vec2::splat(0.125)),
+        Renderable::sprite(sprite).with_filter(Filter::Linear),
+      ));
+    },
+  };
+  let Some(mut engine) = engine(EngineBuilder::new().resolution(32, 32).start_scene(scene)) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  assert_eq!(engine.frame().unwrap().get_pixel(16, 16).0, RED);
+  let handle = {
+    let world = engine.world_mut();
+    let mut renderables = world.query::<&Renderable>();
+    renderables.iter(world).next().unwrap().sprite.clone()
+  };
+  handle.update(Sprite::solid_rect(64, 64, 30, 200, 60, 255));
+  engine.step_frames(2).unwrap();
+  assert_eq!(
+    engine.frame().unwrap().get_pixel(16, 16).0,
+    [30, 200, 60, 255]
+  );
+}
