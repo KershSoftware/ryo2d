@@ -83,12 +83,15 @@ pub mod pass_ids {
   pub const UNLIT_WORLD: &str = "unlit_world";
   /// The window cameras' images placed in their viewports
   pub const CAMERAS: &str = "cameras";
+  /// HDR effects (bloom, god rays, ambient occlusion, HDR custom effects)
+  /// on the scene image
+  pub const HDR_EFFECTS: &str = "hdr_effects";
   /// The look: the scene image into the display image (exposure, curve,
   /// grading)
   pub const TONEMAP: &str = "tonemap";
   /// Scene transition fade over the whole frame
   pub const TRANSITION: &str = "transition";
-  /// Post-process effects
+  /// Display effects (fade, tint, vignette, flash, CRT, chromatic aberration, display custom effects) on the display image
   pub const POST_PROCESS: &str = "post_process";
   /// UI upload
   pub const UI: &str = "ui";

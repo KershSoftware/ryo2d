@@ -36,7 +36,9 @@ pub struct FrameInfo {
   pub world: bool,
   /// 2D lighting is on
   pub lighting: bool,
-  /// Post-process effects are active
+  /// HDR-stage effects are active
+  pub hdr_effects: bool,
+  /// Display-stage effects are active
   pub effects: bool,
   /// The UI buffer has something to draw
   pub ui: bool,
@@ -56,6 +58,8 @@ pub(crate) enum FrameImage {
   Game,
   /// The lighting output
   Lit,
+  /// A buffer of the HDR effect stage
+  Hdr(OutputBuffer),
   /// A buffer of the display effect stage: `A` is the display image the
   /// `tonemap` pass writes
   Display(OutputBuffer),

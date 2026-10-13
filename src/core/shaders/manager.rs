@@ -4,7 +4,7 @@
 //! and provides a clean API for enabling/disabling effects.
 
 use super::super::ui::Color;
-use super::effects::PostProcessEffect;
+use super::effects::{EffectStage, PostProcessEffect};
 use crate::core::ecs::{ParamValue, Resource, ShaderHandle, ShaderParams};
 use std::time::Duration;
 
@@ -23,6 +23,7 @@ pub(crate) struct CustomEffect {
   shader: ShaderHandle,
   params: ShaderParams,
   enabled: bool,
+  stage: EffectStage,
 }
 
 impl CustomEffect {
@@ -160,6 +161,18 @@ impl EffectsManager {
       .filter(|e| e.is_active())
   }
 
+  /// The active effects that run in `stage`, in order.
+  pub fn active_effects_in(&self, stage: EffectStage) -> impl Iterator<Item = &PostProcessEffect> {
+    self
+      .active_effects()
+      .filter(move |effect| effect.stage() == stage)
+  }
+
+  /// Whether any effect (built-in or custom) runs in `stage`.
+  pub fn has_active_effects_in(&self, stage: EffectStage) -> bool {
+    self.active_effects_in(stage).next().is_some() || self.enabled_custom_in(stage).next().is_some()
+  }
+
   /// Check if any effects are currently active
   pub fn has_active_effects(&self) -> bool {
     self.effects.iter().any(|a| a.effect.is_active()) || self.custom.iter().any(|c| c.enabled)
@@ -193,6 +206,21 @@ impl EffectsManager {
     name: impl Into<String>,
     shader: ShaderHandle,
   ) -> Result<(), EffectError> {
+    self.add_custom_in(name, shader, EffectStage::Display)
+  }
+
+  /// Add a game effect that runs in `stage`: `Hdr` sees linear light that
+  /// may exceed 1, `Display` the tonemapped image.
+  ///
+  /// # Errors
+  ///
+  /// [`EffectError::DuplicateName`] if `name` is already registered.
+  pub fn add_custom_in(
+    &mut self,
+    name: impl Into<String>,
+    shader: ShaderHandle,
+    stage: EffectStage,
+  ) -> Result<(), EffectError> {
     let name = name.into();
     if self.has_custom(&name) {
       return Err(EffectError::DuplicateName(name));
@@ -202,6 +230,7 @@ impl EffectsManager {
       shader,
       params: ShaderParams::new(),
       enabled: true,
+      stage,
     });
     Ok(())
   }
@@ -251,9 +280,15 @@ impl EffectsManager {
     self.custom.iter().any(|c| c.name == name)
   }
 
-  /// Enabled custom effects in the order they run
-  pub(crate) fn enabled_custom(&self) -> impl Iterator<Item = &CustomEffect> {
-    self.custom.iter().filter(|c| c.enabled)
+  /// The enabled game effects of `stage`, in insertion order.
+  pub(crate) fn enabled_custom_in(
+    &self,
+    stage: EffectStage,
+  ) -> impl Iterator<Item = &CustomEffect> {
+    self
+      .custom
+      .iter()
+      .filter(move |c| c.enabled && c.stage == stage)
   }
 
   // ========== Convenience Methods ==========
@@ -524,6 +559,39 @@ impl EffectsManager {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn effects_report_their_stage() {
+    let mut manager = EffectsManager::new();
+    manager.set_bloom(1.0);
+    manager.set_vignette(0.5);
+    let hdr: Vec<_> = manager.active_effects_in(EffectStage::Hdr).collect();
+    let display: Vec<_> = manager.active_effects_in(EffectStage::Display).collect();
+    assert!(matches!(hdr[..], [PostProcessEffect::Bloom { .. }]));
+    assert!(matches!(display[..], [PostProcessEffect::Vignette { .. }]));
+    assert!(manager.has_active_effects_in(EffectStage::Hdr));
+  }
+
+  #[test]
+  fn custom_effects_run_in_the_stage_they_were_added_to() {
+    let mut manager = EffectsManager::new();
+    let shader = ShaderHandle::from_source(
+      "stage.wgsl",
+      "fn effect(in: EffectIn, params: Params) -> vec4<f32> { return scene(in.uv); }",
+    );
+    manager.add_custom("late", shader.clone()).unwrap();
+    manager
+      .add_custom_in("early", shader, EffectStage::Hdr)
+      .unwrap();
+    let names = |stage| {
+      manager
+        .enabled_custom_in(stage)
+        .map(|c| c.name.clone())
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(names(EffectStage::Hdr), ["early"]);
+    assert_eq!(names(EffectStage::Display), ["late"]);
+  }
 
   #[test]
   fn new_manager_has_no_effects() {

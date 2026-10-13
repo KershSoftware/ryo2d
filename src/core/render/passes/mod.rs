@@ -16,13 +16,14 @@ mod world;
 use super::RenderPass;
 
 /// The built-in passes, in `default_2d` order.
-pub(crate) fn built_in() -> [Box<dyn RenderPass>; 11] {
+pub(crate) fn built_in() -> [Box<dyn RenderPass>; 12] {
   [
     Box::new(scene::Clear),
     Box::new(world::World),
     Box::new(lighting::Lighting),
     Box::new(world::UnlitWorld),
     Box::new(cameras::Cameras),
+    Box::new(post_process::HdrEffects),
     Box::new(tonemap::Tonemap::default()),
     Box::new(transition::TransitionPass::default()),
     Box::new(post_process::PostProcess),

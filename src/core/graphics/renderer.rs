@@ -29,7 +29,7 @@ use crate::core::render::{
   DrawList, EffectStages, FrameInfo, FrameScene, FrameTargets, RenderContext, RenderPipeline,
   TRANSITION_VISIBLE,
 };
-use crate::core::shaders::{EffectsManager, PostProcessPipeline};
+use crate::core::shaders::{EffectStage, EffectsManager, PostProcessPipeline};
 
 use super::camera_images::CameraImages;
 use super::gpu_error::{GpuError, GpuFault, SurfaceAction, SurfaceState, surface_action};
@@ -173,6 +173,8 @@ pub struct WgpuRenderer {
   mapping: ScreenMapping,
   // The display effect stage; its buffer A is the display image
   display_effects: PostProcessPipeline,
+  // The HDR effect stage, in the scene format
+  hdr_effects: PostProcessPipeline,
   // Whether presentation blocks until vsync (Fifo mode)
   // When true, manual frame limiting should be skipped to avoid double-waiting
   presentation_blocks: bool,
@@ -504,6 +506,13 @@ impl WgpuRenderer {
       wgpu::TextureFormat::Rgba8UnormSrgb,
     );
 
+    let hdr_effects = PostProcessPipeline::new(
+      &device,
+      game_width,
+      game_height,
+      crate::core::render::SCENE_FORMAT,
+    );
+
     let mut renderer = WgpuRenderer {
       instance,
       adapter,
@@ -519,6 +528,7 @@ impl WgpuRenderer {
       bind_group,
       mapping,
       display_effects,
+      hdr_effects,
       presentation_blocks,
       capture_texture: None,
       keep_scene: false,
@@ -718,6 +728,7 @@ impl WgpuRenderer {
     self
       .display_effects
       .resize(&self.device, new_width, new_height);
+    self.hdr_effects.resize(&self.device, new_width, new_height);
     self.compositor.forget_sources();
 
     // Recreated at the new size on the next capture
@@ -769,7 +780,8 @@ impl WgpuRenderer {
       render_height,
       world: !scene.draw_list.items().is_empty(),
       lighting: scene.lighting.is_some(),
-      effects: scene.effects.has_active_effects(),
+      hdr_effects: scene.effects.has_active_effects_in(EffectStage::Hdr),
+      effects: scene.effects.has_active_effects_in(EffectStage::Display),
       ui: scene.ui_buffer.iter().any(|&b| b != 0),
       transition: scene.overlay.1 > TRANSITION_VISIBLE,
       capture: capture_path.is_some() || self.keep_scene,
@@ -807,6 +819,7 @@ impl WgpuRenderer {
         targets,
         scene,
         EffectStages {
+          hdr: &mut self.hdr_effects,
           display: &mut self.display_effects,
         },
       );

@@ -24,6 +24,8 @@ pub(crate) struct FrameTargets<'a> {
 
 /// The effect stages' pipelines and their ping-pong images.
 pub(crate) struct EffectStages<'a> {
+  /// The HDR stage, on the scene image
+  pub(crate) hdr: &'a mut PostProcessPipeline,
   /// The display stage: its buffer `A` is the display image the `tonemap`
   /// pass writes
   pub(crate) display: &'a mut PostProcessPipeline,
@@ -201,6 +203,7 @@ pub(super) fn image_view<'t>(
   match image {
     FrameImage::Game => targets.game_view,
     FrameImage::Lit => targets.lit_view,
+    FrameImage::Hdr(buffer) => stages.hdr.get_output_view(buffer),
     FrameImage::Display(buffer) => stages.display.get_output_view(buffer),
     FrameImage::Camera(camera) => targets
       .camera_images
@@ -218,6 +221,8 @@ pub(super) fn image_texture<'t>(
   match image {
     FrameImage::Game => targets.game,
     FrameImage::Lit => targets.lit,
+    FrameImage::Hdr(OutputBuffer::A) => stages.hdr.texture_a(),
+    FrameImage::Hdr(OutputBuffer::B) => stages.hdr.texture_b(),
     FrameImage::Display(OutputBuffer::A) => stages.display.texture_a(),
     FrameImage::Display(OutputBuffer::B) => stages.display.texture_b(),
     FrameImage::Camera(camera) => targets

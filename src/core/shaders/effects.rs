@@ -119,7 +119,26 @@ pub enum PostProcessEffect {
   },
 }
 
+/// Where an effect runs: on the HDR scene before the tonemap, or on the
+/// display image after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EffectStage {
+  /// Linear light that may exceed 1: bloom, god rays, ambient occlusion
+  Hdr,
+  /// The display image, linear 0 to 1: fade, tint, vignette, flash, CRT,
+  /// chromatic aberration
+  Display,
+}
+
 impl PostProcessEffect {
+  /// The stage this effect runs in.
+  pub fn stage(&self) -> EffectStage {
+    match self {
+      Self::Bloom { .. } | Self::GodRays { .. } | Self::AmbientOcclusion { .. } => EffectStage::Hdr,
+      _ => EffectStage::Display,
+    }
+  }
+
   /// Create a black fade at the given progress
   pub fn fade(progress: f32) -> Self {
     Self::Fade {

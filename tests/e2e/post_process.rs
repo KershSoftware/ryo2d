@@ -125,6 +125,87 @@ fn bloom_blurs_horizontally() {
   );
 }
 
+/// `BrightLine` with bloom (threshold 0.5) and the display stage switched off.
+struct BloomWithoutPostProcess;
+
+impl Scene for BloomWithoutPostProcess {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    BrightLine { bloom: false }.on_enter(ctx);
+    ctx.effects().set_bloom_custom(0.5, 1.0, 5.0, 2);
+    let _ = ctx
+      .render_pipeline()
+      .set_enabled(pass_ids::POST_PROCESS, false);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn bloom_survives_switching_post_process_off() {
+  let (Some(plain), Some(mut engine)) =
+    (pixel_right_of_line(false), engine(BloomWithoutPostProcess))
+  else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let bloomed = engine.frame().unwrap().get_pixel(38, 32).0[0];
+  assert!(bloomed > plain + 5, "plain {plain}, bloomed {bloomed}");
+}
+
+const QUARTER: &str = "
+fn effect(in: EffectIn, params: Params) -> vec4<f32> {
+  return vec4<f32>(scene(in.uv).rgb * 0.25, 1.0);
+}
+";
+
+/// Two additive white squares (2.0 in linear light) under the clamp curve,
+/// a quarter of them kept by a custom effect in `stage`.
+struct Quartered(EffectStage);
+
+impl Scene for Quartered {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    let white = SpriteHandle::from_sprite(
+      Sprite::solid_rect(64, 64, 255, 255, 255, 255),
+      "quarter-white",
+    );
+    for z in 0..2 {
+      ctx.world.spawn((
+        Transform::from_xy(32.0, 32.0),
+        Renderable::sprite(white.clone())
+          .with_z_order(z)
+          .with_blend(BlendMode::Additive),
+      ));
+    }
+    ctx.look().tonemap = Tonemap::Clamp;
+    let shader = ShaderHandle::from_source("quarter.wgsl", QUARTER);
+    let _ = ctx.effects().add_custom_in("quarter", shader, self.0);
+  }
+
+  fn update(&mut self, _ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    SceneAction::Continue
+  }
+}
+
+fn quartered(stage: EffectStage) -> Option<u8> {
+  let mut engine = engine(Quartered(stage))?;
+  // Custom effects compile asynchronously: give them a few frames
+  engine.step_frames(4).unwrap();
+  Some(engine.frame().unwrap().get_pixel(32, 32).0[0])
+}
+
+#[test]
+fn an_hdr_custom_effect_sees_light_above_white() {
+  let (Some(hdr), Some(display)) = (quartered(EffectStage::Hdr), quartered(EffectStage::Display))
+  else {
+    return;
+  };
+  // About 2.03 x 0.25 = 0.51 in HDR (sRGB 189); 1.0 x 0.25 after the clamp (sRGB 137)
+  assert!(hdr.abs_diff(189) <= 3, "hdr {hdr}");
+  assert!(display.abs_diff(137) <= 3, "display {display}");
+}
+
 /// Black 128x64 screen with a 2x2 white dot at (20, 31).
 struct BrightDot;
 

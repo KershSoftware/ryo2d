@@ -159,12 +159,13 @@ fn errors_name_the_pass() {
   );
 }
 
-const ORDER: [&str; 11] = [
+const ORDER: [&str; 12] = [
   pass_ids::CLEAR,
   pass_ids::WORLD,
   pass_ids::LIGHTING,
   pass_ids::UNLIT_WORLD,
   pass_ids::CAMERAS,
+  pass_ids::HDR_EFFECTS,
   pass_ids::TONEMAP,
   pass_ids::TRANSITION,
   pass_ids::POST_PROCESS,
@@ -194,6 +195,7 @@ fn a_full_2d_frame_runs_every_scene_pass() {
     world: true,
     lighting: true,
     effects: true,
+    hdr_effects: true,
     ui: true,
     transition: true,
     capture: true,
@@ -207,6 +209,7 @@ fn a_full_2d_frame_runs_every_scene_pass() {
       "lighting",
       "unlit_world",
       "cameras",
+      "hdr_effects",
       "tonemap",
       "transition",
       "post_process",

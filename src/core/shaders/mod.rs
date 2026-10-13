@@ -53,7 +53,7 @@ mod manager;
 mod pipeline;
 pub(crate) mod scope;
 
-pub use effects::{EffectParams, GodRaysParams, PostProcessEffect};
+pub use effects::{EffectParams, EffectStage, GodRaysParams, PostProcessEffect};
 pub use manager::{EffectError, EffectsManager};
 pub use pipeline::{OutputBuffer, PostProcessPipeline};
 
