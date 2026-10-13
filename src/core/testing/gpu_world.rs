@@ -421,3 +421,44 @@ fn an_interpolated_camera_draws_between_its_last_two_steps() {
     "drawn from the interpolated camera"
   );
 }
+
+#[test]
+fn despawned_cameras_free_their_gpu_state() {
+  /// Spawns three cameras, then despawns them on the fourth update.
+  struct Churn(u32, Vec<Entity>);
+  impl Scene for Churn {
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      self.0 += 1;
+      if self.0 == 1 {
+        for i in 0..3 {
+          let camera = Camera2d {
+            viewport: Viewport::new(0.0, 0.0, 0.5, 0.5),
+            order: i + 1,
+            ..Default::default()
+          };
+          self
+            .1
+            .push(ctx.world.spawn((Transform::IDENTITY, camera)).id());
+        }
+      } else if self.0 == 4 {
+        for entity in self.1.drain(..) {
+          ctx.world.despawn(entity);
+        }
+      }
+      SceneAction::Continue
+    }
+  }
+  let Some(mut engine) = engine(
+    EngineBuilder::new()
+      .resolution(32, 32)
+      .start_scene(Churn(0, Vec::new())),
+  ) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let busy = engine.engine.camera_gpu_entries();
+  engine.step_frames(3).unwrap();
+  let calm = engine.engine.camera_gpu_entries();
+  assert!(busy > calm, "{busy} then {calm}");
+  assert_eq!(calm, 1, "only the main camera's uniform remains");
+}

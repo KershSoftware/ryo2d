@@ -14,6 +14,7 @@ mod atlas;
 pub mod camera;
 pub mod camera2d;
 pub(crate) mod camera_gpu;
+pub(crate) mod camera_images;
 pub mod camera_mut;
 mod compositor;
 mod gpu_context;

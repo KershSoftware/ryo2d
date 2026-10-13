@@ -30,6 +30,7 @@ use crate::core::render::{
 };
 use crate::core::shaders::{EffectsManager, PostProcessPipeline};
 
+use super::camera_images::CameraImages;
 use super::gpu_error::{GpuError, GpuFault, SurfaceAction, SurfaceState, surface_action};
 use super::screen::{Presentation, ScreenMapping};
 use super::{Compositor, SpriteGpuRenderer};
@@ -161,6 +162,8 @@ pub struct WgpuRenderer {
   texture_view: wgpu::TextureView,
   // Final composite (scene + UI overlay to the target) and its shared resources
   compositor: Compositor,
+  // The window cameras' own images, placed in the scene image each frame
+  camera_images: CameraImages,
   // Lighting output, kept between frames and recreated with the game texture
   lit_texture: wgpu::Texture,
   lit_texture_view: wgpu::TextureView,
@@ -435,6 +438,7 @@ impl WgpuRenderer {
     let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     let compositor = Compositor::new(&device, target_format, ui_width, ui_height);
+    let camera_images = CameraImages::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
     let (lit_texture, lit_texture_view) = create_lit_texture(&device, game_width, game_height);
 
     // Create bind group for main game texture
@@ -505,6 +509,7 @@ impl WgpuRenderer {
       texture,
       texture_view,
       compositor,
+      camera_images,
       lit_texture,
       lit_texture_view,
       bind_group,
@@ -761,6 +766,7 @@ impl WgpuRenderer {
       transition: scene.overlay.1 > TRANSITION_VISIBLE,
       capture: capture_path.is_some() || self.keep_scene,
     };
+    self.camera_images.sync(&self.device, scene.cameras);
     let mut encoder = self
       .device
       .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -774,6 +780,7 @@ impl WgpuRenderer {
         lit: &self.lit_texture,
         lit_view: &self.lit_texture_view,
         compositor: &self.compositor,
+        camera_images: &self.camera_images,
         output_view: &view,
         capture: (capture_path.is_some() || self.keep_scene)
           .then_some(self.capture_texture.as_ref())
@@ -826,7 +833,7 @@ impl WgpuRenderer {
       lighting: None,
       effects: &effects,
       ui_buffer,
-      camera: crate::core::ecs::Entity::PLACEHOLDER,
+      cameras: &[],
       camera_uniforms: &uniforms,
       time: 0.0,
       overlay: ([0; 3], 0.0),
@@ -842,6 +849,12 @@ impl WgpuRenderer {
   /// Whether the surface asked to be reconfigured (and forget the request).
   pub(crate) fn take_needs_reconfigure(&mut self) -> bool {
     std::mem::take(&mut self.needs_reconfigure)
+  }
+
+  /// How many window cameras have an image of their own.
+  #[cfg(test)]
+  pub(crate) fn camera_image_count(&self) -> usize {
+    self.camera_images.len()
   }
 
   /// A GPU error a device callback reported since the last call.

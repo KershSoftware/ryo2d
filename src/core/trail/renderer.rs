@@ -8,7 +8,7 @@ use crate::core::ecs::Entity;
 use crate::core::ecs::Vec2;
 use crate::core::graphics::TextureId;
 use crate::core::graphics::camera_gpu::{CameraGlobals, CameraUniforms};
-use crate::core::graphics::{Camera2d, CameraView};
+use crate::core::graphics::{Camera2d, CameraView, RenderLayers};
 use crate::core::ui::Color;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -84,13 +84,15 @@ impl Geometry {
   }
 }
 
-/// The geometry of the trails and lines sharing a lighting mode and z-order.
+/// The geometry of the trails and lines sharing a lighting mode, z-order
+/// and render layers.
 ///
 /// Groups drawn before lighting are lit; the others (`with_lighting(false)`)
-/// draw after it.
+/// draw after it. Each camera draws the groups on its layers.
 struct Group {
   lit: bool,
   z: i32,
+  layers: RenderLayers,
   /// Whether anything was added to the group this frame
   used: bool,
   geometry: Geometry,
@@ -100,8 +102,8 @@ struct Group {
 
 impl Group {
   /// Position in draw order: lit groups first, each by z.
-  fn order(&self) -> (bool, i32) {
-    (!self.lit, self.z)
+  fn order(&self) -> (bool, i32, u32) {
+    (!self.lit, self.z, self.layers.bits())
   }
 }
 
@@ -157,8 +159,8 @@ pub struct TrailRenderer {
   /// groups first, each by z), which is also their layout in the vertex buffer
   groups: Vec<Group>,
 
-  /// `(lit, z)` to the group's index in `groups`
-  group_index: HashMap<(bool, i32), usize>,
+  /// `(lit, z, layers)` to the group's index in `groups`
+  group_index: HashMap<(bool, i32, RenderLayers), usize>,
 
   /// Whether geometry was dropped this frame because the vertex buffer is full
   dropped: bool,
@@ -463,11 +465,11 @@ impl TrailRenderer {
     (center, zoom, time): (Vec2, f32, f32),
     lit: bool,
   ) {
-    let mut zs: Vec<i32> = self.groups(lit).collect();
+    let mut zs: Vec<(i32, RenderLayers)> = self.groups(lit).collect();
     if zs.is_empty() {
       return;
     }
-    zs.sort_unstable();
+    zs.sort_unstable_by_key(|&(z, layers)| (z, layers.bits()));
     let camera = Camera2d {
       zoom,
       ..Camera2d::default()
@@ -493,8 +495,8 @@ impl TrailRenderer {
       multiview_mask: None,
       timestamp_writes: None,
     });
-    for z in zs {
-      self.draw_group_with(&mut render_pass, lit, z, &self.standalone_bind_group);
+    for group in zs {
+      self.draw_group_with(&mut render_pass, lit, group, &self.standalone_bind_group);
     }
   }
 
@@ -546,23 +548,27 @@ impl TrailRenderer {
   fn reindex_groups(&mut self) {
     self.group_index.clear();
     for (index, group) in self.groups.iter().enumerate() {
-      self.group_index.insert((group.lit, group.z), index);
+      self
+        .group_index
+        .insert((group.lit, group.z, group.layers), index);
     }
   }
 
-  /// Build geometry with `add` into the group of this lighting mode and z.
-  fn add_in_group(&mut self, lit: bool, z: i32, add: impl FnOnce(&mut Self)) {
-    let index = match self.group_index.get(&(lit, z)) {
+  /// Build geometry with `add` into the group of this lighting mode, z and
+  /// layers.
+  fn add_in_group(&mut self, lit: bool, z: i32, layers: RenderLayers, add: impl FnOnce(&mut Self)) {
+    let index = match self.group_index.get(&(lit, z, layers)) {
       Some(&index) => index,
       None => {
         // Keep the groups in draw order
-        let order = (!lit, z);
+        let order = (!lit, z, layers.bits());
         let index = self.groups.partition_point(|group| group.order() < order);
         self.groups.insert(
           index,
           Group {
             lit,
             z,
+            layers,
             used: false,
             geometry: Geometry::default(),
             base: Cell::new(0),
@@ -682,7 +688,8 @@ impl TrailRenderer {
   /// The trail's points are converted to triangle strip vertices.
   /// If the trail has a texture, it will be rendered with texture mapping.
   pub fn add_trail(&mut self, trail: &Trail2D) {
-    self.add_in_group(trail.lighting(), trail.z_order(), |renderer| {
+    let layers = RenderLayers::default();
+    self.add_in_group(trail.lighting(), trail.z_order(), layers, |renderer| {
       renderer.push_trail(trail)
     });
   }
@@ -1052,15 +1059,17 @@ impl TrailRenderer {
   ///
   /// This variant allows texture caching. Call this instead of `add_trail`
   /// when you have device/queue access and the trail may have a texture;
-  /// `texture` is the sprite renderer's id for it.
+  /// `texture` is the sprite renderer's id for it. The cameras on `layers`
+  /// draw it.
   pub(crate) fn add_trail_with_device(
     &mut self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     trail: &Trail2D,
     texture: Option<TextureId>,
+    layers: RenderLayers,
   ) {
-    self.add_in_group(trail.lighting(), trail.z_order(), |renderer| {
+    self.add_in_group(trail.lighting(), trail.z_order(), layers, |renderer| {
       renderer.push_trail_with_device(device, queue, trail, texture)
     });
   }
@@ -1096,7 +1105,12 @@ impl TrailRenderer {
 
   /// Add a line to be rendered.
   pub fn add_line(&mut self, line: &Line2D, offset: Vec2) {
-    self.add_in_group(line.lighting(), line.z_order(), |renderer| {
+    self.add_line_in(line, offset, RenderLayers::default());
+  }
+
+  /// [`add_line`](Self::add_line) for the cameras on `layers`.
+  pub(crate) fn add_line_in(&mut self, line: &Line2D, offset: Vec2, layers: RenderLayers) {
+    self.add_in_group(line.lighting(), line.z_order(), layers, |renderer| {
       renderer.push_line(line, offset)
     });
   }
@@ -1624,13 +1638,14 @@ impl TrailRenderer {
   }
 
   /// Render the trails and lines that scene lighting applies to.
-  /// The z of every group of one lighting mode that has geometry to draw.
-  pub(crate) fn groups(&self, lit: bool) -> impl Iterator<Item = i32> + '_ {
+  /// The z and layers of every group of one lighting mode that has geometry
+  /// to draw.
+  pub(crate) fn groups(&self, lit: bool) -> impl Iterator<Item = (i32, RenderLayers)> + '_ {
     self
       .groups
       .iter()
       .filter(move |group| self.enabled && group.lit == lit && group.geometry.len() > 0)
-      .map(|group| group.z)
+      .map(|group| (group.z, group.layers))
   }
 
   /// Upload every group's (world-space) vertices.
@@ -1682,7 +1697,8 @@ impl TrailRenderer {
     }
   }
 
-  /// Draw one group inside a render pass, after [`prepare`](Self::prepare).
+  /// Draw the group of `(z, layers)` through `camera` inside a render pass,
+  /// after [`prepare`](Self::prepare).
   ///
   /// Draws nothing when the group is empty or does not exist. Leaves the
   /// pipeline and bind groups set for trails, so a caller drawing something
@@ -1691,11 +1707,11 @@ impl TrailRenderer {
     &'a self,
     pass: &mut wgpu::RenderPass<'a>,
     lit: bool,
-    z: i32,
+    group: (i32, RenderLayers),
     camera: Entity,
   ) {
     if let Some(camera_group) = self.camera_bind_groups.get(&camera) {
-      self.draw_group_with(pass, lit, z, camera_group);
+      self.draw_group_with(pass, lit, group, camera_group);
     }
   }
 
@@ -1704,7 +1720,7 @@ impl TrailRenderer {
     &'a self,
     pass: &mut wgpu::RenderPass<'a>,
     lit: bool,
-    z: i32,
+    (z, layers): (i32, RenderLayers),
     camera_group: &'a wgpu::BindGroup,
   ) {
     if !self.enabled {
@@ -1712,7 +1728,7 @@ impl TrailRenderer {
     }
     let Some(group) = self
       .group_index
-      .get(&(lit, z))
+      .get(&(lit, z, layers))
       .and_then(|&index| self.groups.get(index))
     else {
       return;

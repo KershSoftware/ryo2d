@@ -4,7 +4,9 @@
 //! passes draw them sorted by z, then by [`DrawKind`], then by submission, so
 //! a trail can sit between two sprites in one render pass.
 
-use crate::core::graphics::{SlotPage, SpriteInstance, TextureId};
+use super::CameraDraw;
+use crate::core::ecs::Vec2;
+use crate::core::graphics::{RenderLayers, SlotPage, SpriteInstance, TextureId};
 
 /// What a drawable is, which breaks ties between equal z (in declaration order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -24,7 +26,7 @@ pub(crate) enum DrawPayload {
   /// resolved at draw time)
   Sprite(usize),
   /// A trail/line geometry group
-  Trail { z: i32 },
+  Trail { z: i32, layers: RenderLayers },
 }
 
 /// One drawable and where it sorts.
@@ -64,6 +66,11 @@ pub(crate) struct DrawSprite {
   pub(crate) texture: TextureId,
   pub(crate) shading: SpriteShading,
   pub(crate) instance: SpriteInstance,
+  /// The cameras on these layers draw it
+  pub(crate) layers: RenderLayers,
+  /// The world box its quad stays inside at any rotation
+  pub(crate) min: Vec2,
+  pub(crate) max: Vec2,
 }
 
 /// The frame's sprites and trail groups, reused across frames.
@@ -98,18 +105,35 @@ impl DrawList {
     shading: SpriteShading,
     instance: SpriteInstance,
   ) {
+    self.push_sprite_in(kind, z, texture, shading, instance, RenderLayers::default());
+  }
+
+  /// [`push_sprite`](Self::push_sprite) for the cameras on `layers`.
+  pub(crate) fn push_sprite_in(
+    &mut self,
+    kind: DrawKind,
+    z: i32,
+    texture: TextureId,
+    shading: SpriteShading,
+    instance: SpriteInstance,
+    layers: RenderLayers,
+  ) {
     let payload = DrawPayload::Sprite(self.sprites.len());
+    let (min, max) = reach(&instance);
     self.sprites.push(DrawSprite {
       texture,
       shading,
       instance,
+      layers,
+      min,
+      max,
     });
     self.push_item(true, z, kind, payload);
   }
 
   /// Add the trail/line geometry of z `z`; `lit` groups draw before lighting.
-  pub(crate) fn push_trail_group(&mut self, lit: bool, z: i32) {
-    self.push_item(lit, z, DrawKind::Trail, DrawPayload::Trail { z });
+  pub(crate) fn push_trail_group(&mut self, lit: bool, z: i32, layers: RenderLayers) {
+    self.push_item(lit, z, DrawKind::Trail, DrawPayload::Trail { z, layers });
   }
 
   fn push_item(&mut self, lit: bool, z: i32, kind: DrawKind, payload: DrawPayload) {
@@ -149,6 +173,7 @@ impl DrawList {
   }
 
   /// The unlit items, in draw order once [`sorted`](Self::sorted) has run.
+  #[cfg(test)]
   pub(crate) fn unlit_items(&self) -> &[DrawItem] {
     &self.unlit_items
   }
@@ -162,6 +187,49 @@ impl DrawList {
   pub(crate) fn sprite_count(&self) -> usize {
     self.sprites.len()
   }
+
+  /// The lit items `camera` draws, in order: those on its layers, and of
+  /// the sprites only those inside its view.
+  pub(crate) fn items_for<'s>(
+    &'s self,
+    camera: &'s CameraDraw,
+  ) -> impl Iterator<Item = &'s DrawItem> + 's {
+    self.items.iter().filter(|item| self.sees(camera, item))
+  }
+
+  /// The unlit items `camera` draws, in order.
+  pub(crate) fn unlit_items_for<'s>(
+    &'s self,
+    camera: &'s CameraDraw,
+  ) -> impl Iterator<Item = &'s DrawItem> + 's {
+    self
+      .unlit_items
+      .iter()
+      .filter(|item| self.sees(camera, item))
+  }
+
+  fn sees(&self, camera: &CameraDraw, item: &DrawItem) -> bool {
+    match item.payload {
+      DrawPayload::Sprite(index) => self.sprites.get(index).is_some_and(|sprite| {
+        sprite.layers.intersects(&camera.layers) && camera.view.is_visible(sprite.min, sprite.max)
+      }),
+      DrawPayload::Trail { layers, .. } => layers.intersects(&camera.layers),
+    }
+  }
+}
+
+/// The world box `instance`'s quad stays inside at any rotation: its centre
+/// give or take its half-diagonal.
+fn reach(instance: &SpriteInstance) -> (Vec2, Vec2) {
+  let [x, y, at] = [
+    instance.transform[0],
+    instance.transform[1],
+    instance.transform[2],
+  ];
+  let diagonal = Vec2::new(x[0], x[1]).length_squared() + Vec2::new(y[0], y[1]).length_squared();
+  let half = Vec2::splat(diagonal.sqrt() / 2.0);
+  let center = Vec2::new(at[0], at[1]);
+  (center - half, center + half)
 }
 
 /// One draw of the world pass.
@@ -175,24 +243,25 @@ pub(crate) enum WorldRun {
     start: usize,
     count: usize,
   },
-  /// The trail/line group of this z
-  Trail { z: i32 },
+  /// The trail/line group of this z and layers
+  Trail { z: i32, layers: RenderLayers },
 }
 
-/// Split sorted `items` into draw runs.
+/// Split sorted `items` into draw runs over instances placed from `first`.
 ///
 /// `place` is asked once per sprite, in draw order, with its index in the
 /// list: it puts the sprite in the instance buffer and returns its atlas page
 /// and the pipeline it draws with, or `None` to drop the sprite.
 /// Consecutive sprites on one page and pipeline merge into one run; a trail
 /// group splits runs.
-pub(crate) fn plan_runs(
-  items: &[DrawItem],
+pub(crate) fn plan_runs<'i>(
+  items: impl IntoIterator<Item = &'i DrawItem>,
   runs: &mut Vec<WorldRun>,
+  first: usize,
   mut place: impl FnMut(usize) -> Option<(SlotPage, PipelineKind)>,
 ) {
   runs.clear();
-  let mut placed = 0;
+  let mut placed = first;
   for item in items {
     match item.payload {
       DrawPayload::Sprite(index) => {
@@ -215,7 +284,7 @@ pub(crate) fn plan_runs(
         }
         placed += 1;
       }
-      DrawPayload::Trail { z } => runs.push(WorldRun::Trail { z }),
+      DrawPayload::Trail { z, layers } => runs.push(WorldRun::Trail { z, layers }),
     }
   }
 }
@@ -242,7 +311,7 @@ mod tests {
   fn sorts_by_z_then_kind_then_sequence() {
     let mut list = DrawList::default();
     push(&mut list, DrawKind::Entity, 1, 0);
-    list.push_trail_group(true, 0);
+    list.push_trail_group(true, 0, RenderLayers::default());
     push(&mut list, DrawKind::Sprite, 1, 1);
     push(&mut list, DrawKind::Entity, 1, 2);
 
@@ -287,9 +356,9 @@ mod tests {
   #[test]
   fn unlit_groups_sort_apart_from_lit_ones() {
     let mut list = DrawList::default();
-    list.push_trail_group(false, 2);
-    list.push_trail_group(true, 5);
-    list.push_trail_group(false, -1);
+    list.push_trail_group(false, 2, RenderLayers::default());
+    list.push_trail_group(true, 5, RenderLayers::default());
+    list.push_trail_group(false, -1, RenderLayers::default());
 
     list.sorted();
 
@@ -303,7 +372,7 @@ mod tests {
   fn runs_for(list: &mut DrawList, pages: &[(usize, PipelineKind)]) -> Vec<WorldRun> {
     list.sorted();
     let mut runs = Vec::new();
-    plan_runs(list.items(), &mut runs, |i| {
+    plan_runs(list.items(), &mut runs, 0, |i| {
       let (page, pipeline) = pages[i];
       Some((SlotPage::Atlas(page), pipeline))
     });
@@ -335,14 +404,21 @@ mod tests {
   fn a_trail_between_sprites_splits_the_run() {
     let mut list = DrawList::default();
     push(&mut list, DrawKind::Sprite, 0, 0);
-    list.push_trail_group(true, 1);
+    list.push_trail_group(true, 1, RenderLayers::default());
     push(&mut list, DrawKind::Sprite, 2, 0);
 
     let runs = runs_for(&mut list, &[(0, PipelineKind::Plain); 2]);
 
     assert_eq!(
       runs,
-      vec![sprites(0, 0, 1), WorldRun::Trail { z: 1 }, sprites(0, 1, 1)]
+      vec![
+        sprites(0, 0, 1),
+        WorldRun::Trail {
+          z: 1,
+          layers: RenderLayers::default()
+        },
+        sprites(0, 1, 1)
+      ]
     );
   }
 
@@ -413,7 +489,7 @@ mod tests {
     list.sorted();
 
     let mut runs = Vec::new();
-    plan_runs(list.items(), &mut runs, |i| {
+    plan_runs(list.items(), &mut runs, 0, |i| {
       (i != 1).then_some((SlotPage::Atlas(0), PipelineKind::Plain))
     });
 
@@ -424,7 +500,7 @@ mod tests {
   fn clear_empties_the_list_for_reuse() {
     let mut list = DrawList::default();
     push(&mut list, DrawKind::Sprite, 0, 0);
-    list.push_trail_group(false, 0);
+    list.push_trail_group(false, 0, RenderLayers::default());
 
     list.clear();
 

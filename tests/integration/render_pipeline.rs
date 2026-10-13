@@ -159,11 +159,12 @@ fn errors_name_the_pass() {
   );
 }
 
-const ORDER: [&str; 9] = [
+const ORDER: [&str; 10] = [
   pass_ids::CLEAR,
   pass_ids::WORLD,
   pass_ids::LIGHTING,
   pass_ids::UNLIT_WORLD,
+  pass_ids::CAMERAS,
   pass_ids::TRANSITION,
   pass_ids::POST_PROCESS,
   pass_ids::UI,
@@ -182,7 +183,7 @@ fn a_plain_frame_runs_the_always_on_passes() {
   // unlit trails or lines
   assert_eq!(
     RenderPipeline::default_2d().passes_to_run(&FrameInfo::default()),
-    vec!["clear", "unlit_world", "composite"]
+    vec!["clear", "unlit_world", "cameras", "composite"]
   );
 }
 
@@ -204,6 +205,7 @@ fn a_full_2d_frame_runs_every_scene_pass() {
       "world",
       "lighting",
       "unlit_world",
+      "cameras",
       "transition",
       "post_process",
       "ui",
@@ -222,7 +224,14 @@ fn the_transition_pass_runs_only_while_fading() {
   };
   assert_eq!(
     RenderPipeline::default_2d().passes_to_run(&fading),
-    vec!["clear", "world", "unlit_world", "transition", "composite"]
+    vec![
+      "clear",
+      "world",
+      "unlit_world",
+      "cameras",
+      "transition",
+      "composite"
+    ]
   );
 }
 
@@ -238,5 +247,30 @@ fn the_world_pass_needs_lit_items() {
     !pipeline
       .passes_to_run(&FrameInfo::default())
       .contains(&"world")
+  );
+}
+
+/// A camera pass with the given id.
+struct PerCamera(&'static str);
+
+impl RenderPass for PerCamera {
+  fn id(&self) -> &str {
+    self.0
+  }
+
+  fn scope(&self) -> PassScope {
+    PassScope::Camera
+  }
+
+  fn execute(&mut self, _ctx: &mut RenderContext<'_>) {}
+}
+
+#[test]
+fn camera_passes_run_before_the_frame_passes() {
+  let mut pipeline = RenderPipeline::default_2d();
+  pipeline.push(PerCamera("late")).unwrap();
+  assert_eq!(
+    pipeline.passes_to_run(&FrameInfo::default()),
+    vec!["clear", "unlit_world", "late", "cameras", "composite"]
   );
 }

@@ -388,3 +388,46 @@ fn lights_turn_with_the_camera() {
   let dark = frame.get_pixel(48, 32).0;
   assert!(lit[0] > dark[0].saturating_add(60), "{lit:?} vs {dark:?}");
 }
+
+struct CountPerCamera(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl RenderPass for CountPerCamera {
+  fn id(&self) -> &str {
+    "count_per_camera"
+  }
+  fn scope(&self) -> PassScope {
+    PassScope::Camera
+  }
+  fn execute(&mut self, ctx: &mut RenderContext<'_>) {
+    assert!(ctx.camera().is_some());
+    self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+  }
+}
+
+struct TwoCameras(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Scene for TwoCameras {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.world.spawn((
+      Transform::from_xy(0.0, 0.0),
+      Camera2d {
+        order: 1,
+        ..Default::default()
+      },
+    ));
+    ctx
+      .render_pipeline()
+      .insert_after(pass_ids::WORLD, CountPerCamera(self.0.clone()))
+      .unwrap();
+  }
+}
+
+#[test]
+fn a_camera_pass_runs_once_per_camera() {
+  let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+  let Some(mut engine) = engine(TwoCameras(count.clone())) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 6);
+}

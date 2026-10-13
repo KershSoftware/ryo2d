@@ -4,8 +4,9 @@
 //! frame's [`DrawList`] as world-space quads: each instance carries its
 //! quad's centre, size (texels times scale), rotation and flips, and the
 //! camera's matrix takes it to the screen on the GPU (pixel art snaps
-//! axis-aligned quads to whole pixels there). Quads the camera cannot see
-//! are skipped before their texture is uploaded.
+//! axis-aligned quads to whole pixels there). Quads no camera on the
+//! entity's [`RenderLayers`] can see are skipped before their texture is
+//! uploaded; each camera later keeps the ones it sees.
 //!
 //! Everything an entity emits (its shadows first, then the sprite or its
 //! tiles) is a [`DrawKind::Entity`] item at the entity's `z_order`, submitted
@@ -18,7 +19,7 @@
 //! its `Renderable::anchor`; tiled runs and composite parts are laid out from
 //! the entity's position.
 
-use super::{DrawKind, DrawList, SpriteShading};
+use super::{CameraDraw, DrawKind, DrawList, SpriteShading};
 use crate::core::asset::SpriteHandle;
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::{
@@ -28,7 +29,7 @@ use crate::core::ecs::{
 use crate::core::graphics::TileDirection;
 use crate::core::graphics::sprite_gpu::effective_shader;
 use crate::core::graphics::{
-  CameraView, CompositeTile, Sprite, SpriteGpuRenderer, SpriteInstance, TextureId,
+  CompositeTile, RenderLayers, Sprite, SpriteGpuRenderer, SpriteInstance, TextureId,
 };
 use crate::core::ui::Color;
 
@@ -88,6 +89,7 @@ type DrawableItem = (
   Option<&'static PreviousGlobalTransform>,
   Option<&'static Material>,
   Option<&'static YSort>,
+  Option<&'static RenderLayers>,
 );
 
 /// One entity's components, borrowed from the world for the frame.
@@ -98,6 +100,7 @@ struct Drawable<'w> {
   previous: Option<&'w PreviousGlobalTransform>,
   material: Option<&'w Material>,
   y_sort: Option<&'w YSort>,
+  layers: RenderLayers,
 }
 
 /// Turns the world's renderable entities into draw list sprites.
@@ -107,12 +110,12 @@ pub(crate) struct EntityDrawer;
 impl EntityDrawer {
   /// Push the frame's entities onto `list` as world-space quads, returning
   /// how many visible renderables there were. `alpha` is the render
-  /// interpolation factor; quads `camera` cannot see are skipped.
+  /// interpolation factor; quads none of `cameras` can see are skipped.
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn collect(
     &mut self,
     world: &mut World,
-    camera: &CameraView,
+    cameras: &[CameraDraw],
     alpha: f32,
     gpu: &mut SpriteGpuRenderer,
     device: &wgpu::Device,
@@ -124,6 +127,7 @@ impl EntityDrawer {
       &GlobalTransform,
       Option<&PreviousGlobalTransform>,
       &CompositeTile,
+      Option<&RenderLayers>,
     )>();
     let world: &World = world;
     // The draw list sorts by each entity's own z; this order (y-sorted after
@@ -131,7 +135,7 @@ impl EntityDrawer {
     let mut items: Vec<(DrawOrder, Drawable<'_>)> = drawables
       .iter(world)
       .filter(|(renderable, ..)| renderable.visible)
-      .map(|(renderable, global, previous, material, y_sort)| {
+      .map(|(renderable, global, previous, material, y_sort, layers)| {
         let order = match y_sort {
           Some(y_sort) => DrawOrder::y_sorted(
             renderable.z_order,
@@ -145,6 +149,7 @@ impl EntityDrawer {
           previous,
           material,
           y_sort,
+          layers: layers.copied().unwrap_or_default(),
         };
         (order, drawable)
       })
@@ -158,12 +163,15 @@ impl EntityDrawer {
       device,
       queue,
       list,
-      camera,
+      cameras,
+      layers: RenderLayers::default(),
     };
     for (_, drawable) in &items {
+      out.layers = drawable.layers;
       collect_entity(&frame, drawable, &mut out);
     }
-    for (global, previous, composite) in composites.iter(world) {
+    for (global, previous, composite, layers) in composites.iter(world) {
+      out.layers = layers.copied().unwrap_or_default();
       collect_composite(&frame, global, previous, composite, &mut out);
     }
     items.len()
@@ -293,8 +301,11 @@ struct Emitter<'a> {
   device: &'a wgpu::Device,
   queue: &'a wgpu::Queue,
   list: &'a mut DrawList,
-  /// Quads this camera cannot see are skipped (and never uploaded)
-  camera: &'a CameraView,
+  /// Quads none of these cameras on `layers` can see are skipped (and
+  /// never uploaded)
+  cameras: &'a [CameraDraw],
+  /// The layers of the entity being drawn
+  layers: RenderLayers,
 }
 
 impl Emitter<'_> {
@@ -340,7 +351,12 @@ impl Emitter<'_> {
     }
     // The quad's half-diagonal covers it at any rotation
     let reach = Vec2::splat(size.length() / 2.0);
-    if !self.camera.is_visible(at.center - reach, at.center + reach) {
+    let (min, max) = (at.center - reach, at.center + reach);
+    let seen = self
+      .cameras
+      .iter()
+      .any(|camera| camera.layers.intersects(&self.layers) && camera.view.is_visible(min, max));
+    if !seen {
       return;
     }
     let (u0, u1) = if at.flip_x { (1.0, 0.0) } else { (0.0, 1.0) };
@@ -375,7 +391,7 @@ impl Emitter<'_> {
     };
     self
       .list
-      .push_sprite(DrawKind::Entity, z, texture, shading, instance);
+      .push_sprite_in(DrawKind::Entity, z, texture, shading, instance, self.layers);
   }
 }
 
@@ -397,6 +413,7 @@ fn collect_entity(frame: &EntityFrame, drawable: &Drawable<'_>, out: &mut Emitte
     previous,
     material,
     y_sort,
+    ..
   } = *drawable;
   let z = renderable.z_order;
 

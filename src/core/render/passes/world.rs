@@ -1,11 +1,13 @@
 //! The world: entities, sprites and trails/lines drawn together in z order
 
 use crate::core::graphics::SpriteGpuRenderer;
-use crate::core::render::{FrameInfo, RenderContext, RenderPass, WorldRun, pass_ids};
+use crate::core::render::{
+  DrawPayload, FrameInfo, PassScope, RenderContext, RenderPass, WorldRun, pass_ids,
+};
 use crate::core::trail::TrailRenderer;
 
-/// Draws the frame's entities, sprites and lit trails and lines onto the game texture
-/// in one render pass, interleaved by z.
+/// Draws the entities, sprites and lit trails and lines a camera sees onto
+/// its image in one render pass, interleaved by z.
 pub(super) struct World;
 
 impl RenderPass for World {
@@ -17,24 +19,27 @@ impl RenderPass for World {
     frame.world
   }
 
+  fn scope(&self) -> PassScope {
+    PassScope::Camera
+  }
+
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
     let sprites: &SpriteGpuRenderer = ctx.scene.sprites;
     let trails: Option<&TrailRenderer> = ctx.scene.trails;
-    let camera = ctx.scene.camera;
-    let (queue, game_view) = (ctx.queue(), ctx.targets.game_view);
-
-    // Buffer writes can't happen inside the pass (the engine already wrote
-    // the trail vertices when it laid out the frame)
-    sprites.upload_world(queue);
-
-    let runs = sprites.world_runs();
+    let Some(camera) = ctx.camera_entity() else {
+      return;
+    };
+    // The engine wrote the instances and trail vertices when it laid out
+    // the frame (buffer writes can't happen inside the pass)
+    let runs = sprites.world_runs(camera);
     if runs.is_empty() {
       return;
     }
-    let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    let (encoder, view) = ctx.encoder_and_current_view();
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
       label: Some("World Render Pass"),
       color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        view: game_view,
+        view,
         depth_slice: None,
         resolve_target: None,
         ops: wgpu::Operations {
@@ -50,9 +55,9 @@ impl RenderPass for World {
     for run in runs {
       match run {
         WorldRun::Sprites { .. } => sprites.draw_world_run(&mut pass, run, camera),
-        WorldRun::Trail { z } => {
+        WorldRun::Trail { z, layers } => {
           if let Some(trails) = trails {
-            trails.draw_group(&mut pass, true, *z, camera);
+            trails.draw_group(&mut pass, true, (*z, *layers), camera);
           }
         }
       }
@@ -60,8 +65,8 @@ impl RenderPass for World {
   }
 }
 
-/// Draws the `with_lighting(false)` trails and lines, by z, onto the latest
-/// image (the lit scene when lighting ran).
+/// Draws the `with_lighting(false)` trails and lines a camera sees, by z,
+/// onto its latest image (the lit one when lighting ran).
 pub(super) struct UnlitWorld;
 
 impl RenderPass for UnlitWorld {
@@ -73,15 +78,21 @@ impl RenderPass for UnlitWorld {
     true
   }
 
+  fn scope(&self) -> PassScope {
+    PassScope::Camera
+  }
+
   fn execute(&mut self, ctx: &mut RenderContext<'_>) {
     let Some(trails) = ctx.scene.trails else {
       return;
     };
+    let Some(camera) = ctx.current_camera() else {
+      return;
+    };
     let list = ctx.scene.draw_list;
-    if list.unlit_items().is_empty() {
+    if list.unlit_items_for(camera).next().is_none() {
       return;
     }
-    let camera = ctx.scene.camera;
     let (encoder, view) = ctx.encoder_and_current_view();
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
       label: Some("Unlit World Render Pass"),
@@ -99,9 +110,9 @@ impl RenderPass for UnlitWorld {
       occlusion_query_set: None,
       multiview_mask: None,
     });
-    for item in list.unlit_items() {
-      if let crate::core::render::DrawPayload::Trail { z } = item.payload {
-        trails.draw_group(&mut pass, false, z, camera);
+    for item in list.unlit_items_for(camera) {
+      if let DrawPayload::Trail { z, layers } = item.payload {
+        trails.draw_group(&mut pass, false, (z, layers), camera.entity);
       }
     }
   }

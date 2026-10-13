@@ -13,11 +13,11 @@ use crate::core::ecs::{
   Vec2, World,
 };
 use crate::core::graphics::camera_gpu::CameraGlobals;
-use crate::core::graphics::camera_mut::{main_camera_entity, main_view};
+use crate::core::graphics::camera_mut::main_view;
 use crate::core::graphics::renderer::FrameError;
-use crate::core::graphics::{CameraView, GpuRenderContext, Presentation};
+use crate::core::graphics::{Camera2d, CameraView, GpuRenderContext, Presentation, RenderLayers};
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
-use crate::core::render::{DrawKind, FrameScene, LightingFrame, RenderPipeline};
+use crate::core::render::{DrawKind, FrameScene, LightingFrame, RenderPipeline, plan_cameras};
 use crate::core::shaders::EffectsManager;
 use crate::core::time::Time;
 use crate::core::trail::{Line2D, Trail2D};
@@ -60,7 +60,6 @@ impl Engine {
         time.game.elapsed(),
       )
     };
-    let main_camera = main_camera_entity(&mut self.world);
 
     let (entity_sprites, lights) = {
       profile_scope!("cpu:render");
@@ -87,17 +86,29 @@ impl Engine {
       // Trails (world-space points), lines (at their entity) and overlays
       if let Some(trails) = trails.as_mut() {
         trails.begin_frame();
-        for trail in self.world.query::<&Trail2D>().iter(&self.world) {
-          let texture = trail.texture().map(|sprite| gpu.texture_of(sprite));
-          trails.add_trail_with_device(rend.device(), rend.queue(), trail, texture);
-        }
-        trails.retain_textures(|id| gpu.is_texture(id));
-        for (global, previous, line) in self
+        let (device, queue) = (rend.device(), rend.queue());
+        for (trail, layers) in self
           .world
-          .query::<(&GlobalTransform, Option<&PreviousGlobalTransform>, &Line2D)>()
+          .query::<(&Trail2D, Option<&RenderLayers>)>()
           .iter(&self.world)
         {
-          trails.add_line(line, render_global(global, previous, alpha).translation());
+          let texture = trail.texture().map(|sprite| gpu.texture_of(sprite));
+          let layers = layers.copied().unwrap_or_default();
+          trails.add_trail_with_device(device, queue, trail, texture, layers);
+        }
+        trails.retain_textures(|id| gpu.is_texture(id));
+        for (global, previous, line, layers) in self
+          .world
+          .query::<(
+            &GlobalTransform,
+            Option<&PreviousGlobalTransform>,
+            &Line2D,
+            Option<&RenderLayers>,
+          )>()
+          .iter(&self.world)
+        {
+          let at = render_global(global, previous, alpha).translation();
+          trails.add_line_in(line, at, layers.copied().unwrap_or_default());
         }
         // Unlit lines on top, added last so that when the vertex budget runs
         // out the overlays are dropped, not game trails
@@ -127,18 +138,36 @@ impl Engine {
         lighting.update_god_rays(&mut effects, &lights, &camera);
       }
 
-      // Every camera's uniforms: its matrix, image size, clocks and pixel
-      // snapping (sprite effects and custom sprite shaders animate on game
-      // time). Only the main camera draws until cameras get their own passes
+      // The cameras in render order, and each one's uniforms: its matrix,
+      // image size, clocks and pixel snapping (sprite effects and custom
+      // sprite shaders animate on game time)
+      let lit = lighting
+        .as_ref()
+        .is_some_and(|lighting| lighting.is_enabled());
+      plan_cameras(
+        self
+          .world
+          .query::<(Entity, &Camera2d, &CameraView, Option<&RenderLayers>)>()
+          .iter(&self.world),
+        rend.render_size(),
+        lit,
+        &mut self.camera_draws,
+      );
+      if lit && !self.warned_unlit_cameras && self.camera_draws.iter().any(|c| !c.direct) {
+        self.warned_unlit_cameras = true;
+        crate::engine_warn!(
+          module: "Render",
+          "Only a camera covering the whole window is lit for now; the others draw unlit"
+        );
+      }
       let snap = matches!(self.config.presentation, Presentation::PixelArt { .. });
-      let image = rend.render_size();
       let cameras: Vec<_> = self
-        .world
-        .query::<(Entity, &CameraView)>()
-        .iter(&self.world)
-        .map(|(entity, view)| {
-          let globals = CameraGlobals::new(view, image, game_time, real_time, snap);
-          (entity, globals)
+        .camera_draws
+        .iter()
+        .map(|camera| {
+          let size = camera.rect.size();
+          let globals = CameraGlobals::new(&camera.view, size, game_time, real_time, snap);
+          (camera.entity, globals)
         })
         .collect();
       self
@@ -152,7 +181,7 @@ impl Engine {
         .push_to(&mut self.draw_list, DrawKind::Sprite, &mut gpu);
       let entity_sprites = self.entity_drawer.collect(
         &mut self.world,
-        &camera,
+        &self.camera_draws,
         alpha,
         &mut gpu,
         rend.device(),
@@ -160,18 +189,23 @@ impl Engine {
         &mut self.draw_list,
       );
       if let Some(trails) = trails.as_mut() {
-        for z in trails.groups(true) {
-          self.draw_list.push_trail_group(true, z);
+        for (z, layers) in trails.groups(true) {
+          self.draw_list.push_trail_group(true, z, layers);
         }
-        for z in trails.groups(false) {
-          self.draw_list.push_trail_group(false, z);
+        for (z, layers) in trails.groups(false) {
+          self.draw_list.push_trail_group(false, z, layers);
         }
         // Upload the trail and line vertices once; the world passes only draw
         trails.sync_cameras(rend.device(), &self.camera_uniforms);
         trails.prepare(rend.queue());
       }
       self.draw_list.sorted();
-      gpu.prepare_world(rend.device(), rend.queue(), &self.draw_list);
+      gpu.prepare_world(
+        rend.device(),
+        rend.queue(),
+        &self.draw_list,
+        &self.camera_draws,
+      );
       (entity_sprites, lights)
     };
 
@@ -208,7 +242,7 @@ impl Engine {
           }),
           effects: world.resource::<EffectsManager>(),
           ui_buffer: &self.ui_buffer,
-          camera: main_camera.unwrap_or(Entity::PLACEHOLDER),
+          cameras: &self.camera_draws,
           camera_uniforms: &self.camera_uniforms,
           time: real_time,
           overlay,

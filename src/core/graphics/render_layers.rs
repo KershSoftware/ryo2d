@@ -4,7 +4,7 @@ use crate::core::ecs::Component;
 
 /// The layers an entity is on, or a camera sees (32 of them, 0..=31). A
 /// camera draws an entity when they share a layer.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RenderLayers(u32);
 
 impl RenderLayers {
@@ -32,6 +32,11 @@ impl RenderLayers {
   /// Whether the two share a layer.
   pub const fn intersects(&self, other: &RenderLayers) -> bool {
     self.0 & other.0 != 0
+  }
+
+  /// One bit per layer, layer 0 lowest.
+  pub(crate) const fn bits(self) -> u32 {
+    self.0
   }
 }
 

@@ -160,6 +160,10 @@ pub struct Engine {
   entity_drawer: EntityDrawer,
   // Each camera's uniform buffer, kept across frames
   camera_uniforms: crate::core::graphics::camera_gpu::CameraUniforms,
+  // The frame's cameras in render order (reused across frames), and
+  // whether the warning that only one camera is lit was given
+  camera_draws: Vec<crate::core::render::CameraDraw>,
+  warned_unlit_cameras: bool,
   draw_list: DrawList,
   batch_collector: BatchCollector,
   // UI
@@ -498,6 +502,8 @@ impl Engine {
       trail_renderer: None,
       entity_drawer: EntityDrawer,
       camera_uniforms: Default::default(),
+      camera_draws: Vec::new(),
+      warned_unlit_cameras: false,
       draw_list: DrawList::default(),
       batch_collector: BatchCollector::new(),
       ui_font,
@@ -882,6 +888,16 @@ impl Engine {
   #[cfg(test)]
   pub(crate) fn debug_stats(&self) -> &DebugStats {
     &self.debug_stats
+  }
+
+  /// Per-camera GPU state: the uniform buffers plus the camera images.
+  #[cfg(test)]
+  pub(crate) fn camera_gpu_entries(&self) -> usize {
+    let images = self
+      .renderer
+      .as_ref()
+      .map_or(0, WgpuRenderer::camera_image_count);
+    self.camera_uniforms.len() + images
   }
 }
 

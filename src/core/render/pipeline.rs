@@ -1,6 +1,6 @@
 //! An ordered list of render passes
 
-use super::{FrameInfo, RenderContext, RenderPass, passes};
+use super::{FrameInfo, PassScope, RenderContext, RenderPass, passes};
 use crate::core::ecs::Resource;
 
 /// A problem configuring a [`RenderPipeline`].
@@ -112,21 +112,36 @@ impl RenderPipeline {
     self.entries.iter().map(|entry| entry.pass.id())
   }
 
-  /// The ids of the passes that would run for `frame`, in order.
+  /// The ids of the passes that would run for `frame`, in the order they
+  /// run: the camera passes (once per camera), then the frame passes.
   pub fn passes_to_run(&self, frame: &FrameInfo) -> Vec<&str> {
-    self
-      .entries
-      .iter()
-      .filter(|entry| entry.enabled && entry.pass.should_run(frame))
+    [PassScope::Camera, PassScope::Frame]
+      .into_iter()
+      .flat_map(|scope| {
+        self.entries.iter().filter(move |entry| {
+          entry.enabled && entry.pass.scope() == scope && entry.pass.should_run(frame)
+        })
+      })
       .map(|entry| entry.pass.id())
       .collect()
   }
 
-  /// Record the frame: every enabled pass whose `should_run` holds, in order.
+  /// Record the frame: every enabled camera pass whose `should_run` holds,
+  /// in order, for each camera in render order; then every such frame pass.
   pub(crate) fn execute(&mut self, ctx: &mut RenderContext<'_>) {
+    for camera in 0..ctx.scene.cameras.len() {
+      ctx.enter_camera(camera);
+      self.run(PassScope::Camera, ctx);
+      ctx.leave_camera();
+    }
+    self.run(PassScope::Frame, ctx);
+  }
+
+  /// Run the enabled passes of `scope` that take part in the frame, in order.
+  fn run(&mut self, scope: PassScope, ctx: &mut RenderContext<'_>) {
     let frame = *ctx.frame();
     for entry in &mut self.entries {
-      if entry.enabled && entry.pass.should_run(&frame) {
+      if entry.enabled && entry.pass.scope() == scope && entry.pass.should_run(&frame) {
         // Name the pass in GPU validation errors
         ctx.encoder.push_debug_group(entry.pass.id());
         entry.pass.execute(ctx);

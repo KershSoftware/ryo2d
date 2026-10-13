@@ -870,3 +870,111 @@ fn a_rotated_camera_turns_lines_too() {
   );
   assert!(!is_line(frame.get_pixel(5, 32).0));
 }
+
+/// A second camera spawned by a test scene.
+fn spawn_camera(ctx: &mut SceneContext, at: Vec2, camera: Camera2d) -> Entity {
+  ctx
+    .world
+    .spawn((Transform::from_xy(at.x, at.y), camera))
+    .id()
+}
+
+#[test]
+fn two_cameras_split_the_window() {
+  let scene = Fixture::new(|ctx| {
+    // Red at (-1000, 0), blue at (1000, 0); each half looks at one
+    ctx.world.spawn((
+      Transform::from_xy(-1000.0, 0.0),
+      Renderable::sprite(solid("split-red", 16, RED)),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(1000.0, 0.0),
+      Renderable::sprite(solid("split-blue", 16, BLUE)),
+    ));
+    ctx.camera().set_position(-1000.0, 0.0);
+    ctx.camera().set_viewport(Viewport::new(0.0, 0.0, 0.5, 1.0));
+    spawn_camera(
+      ctx,
+      Vec2::new(1000.0, 0.0),
+      Camera2d {
+        viewport: Viewport::new(0.5, 0.0, 0.5, 1.0),
+        order: 1,
+        ..Default::default()
+      },
+    );
+  });
+  let Some(frame) = frame_of(scene, (64, 32)) else {
+    return;
+  };
+  assert_eq!(frame.get_pixel(16, 16).0, RED, "left half centre");
+  assert_eq!(frame.get_pixel(48, 16).0, BLUE, "right half centre");
+}
+
+#[test]
+fn an_overlay_camera_draws_over_the_main_view() {
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(32.0, 32.0),
+      Renderable::sprite(solid("main-red", 64, RED)),
+    ));
+    ctx.world.spawn((
+      Transform::from_xy(500.0, 500.0),
+      Renderable::sprite(solid("far-green", 8, GREEN)),
+    ));
+    spawn_camera(
+      ctx,
+      Vec2::new(500.0, 500.0),
+      Camera2d {
+        viewport: Viewport::new(0.75, 0.0, 0.25, 0.25),
+        order: 1,
+        clear: CameraClear::None,
+        ..Default::default()
+      },
+    );
+  });
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  assert_eq!(frame.get_pixel(56, 8).0, GREEN, "the overlay's centre");
+  assert_eq!(
+    frame.get_pixel(50, 2).0,
+    RED,
+    "the overlay does not clear: the main view shows through"
+  );
+  assert_eq!(frame.get_pixel(20, 40).0, RED, "the main view");
+}
+
+#[test]
+fn render_layers_choose_what_a_camera_sees() {
+  let scene = Fixture::new(|ctx| {
+    ctx.world.spawn((
+      Transform::from_xy(16.0, 16.0),
+      Renderable::sprite(solid("layer-one", 8, GREEN)),
+      RenderLayers::layer(1),
+    ));
+    ctx.camera().set_viewport(Viewport::new(0.0, 0.0, 0.5, 1.0));
+    let right = spawn_camera(
+      ctx,
+      Vec2::new(16.0, 16.0),
+      Camera2d {
+        viewport: Viewport::new(0.5, 0.0, 0.5, 1.0),
+        order: 1,
+        ..Default::default()
+      },
+    );
+    ctx.world.entity_mut(right).insert(RenderLayers::layer(1));
+  });
+  let Some(frame) = frame_of(scene, (64, 32)) else {
+    return;
+  };
+  assert_ne!(
+    frame.get_pixel(16, 16).0,
+    GREEN,
+    "the main camera sees layer 0 only"
+  );
+  assert_eq!(
+    frame.get_pixel(48, 16).0,
+    GREEN,
+    "the second camera sees layer 1"
+  );
+}

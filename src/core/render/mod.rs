@@ -2,7 +2,11 @@
 //!
 //! A [`RenderPipeline`] holds [`RenderPass`]es in order. For each frame, every
 //! enabled pass whose [`RenderPass::should_run`] holds for the [`FrameInfo`]
-//! records its work, in list order, on one command encoder.
+//! records its work, in list order, on one command encoder: first the camera
+//! passes ([`PassScope::Camera`]: clear, world, lighting, unlit world), once
+//! per camera on its image, then the frame passes once (the cameras' images
+//! placed in their viewports, transition, post-process, UI, composite,
+//! capture).
 //!
 //! Passes are found by id: add one at the end with `push`, or place it with
 //! `insert_before` / `insert_after` a named pass. Duplicate or unknown ids are
@@ -46,20 +50,25 @@ pub(crate) use draw_list::{
 };
 pub(crate) use entities::EntityDrawer;
 pub use frame::FrameInfo;
-pub(crate) use frame::{FrameImage, FrameScene, LightingFrame, TRANSITION_VISIBLE};
-pub use pass::RenderPass;
+pub(crate) use frame::{
+  CameraDraw, FrameImage, FrameScene, LightingFrame, TRANSITION_VISIBLE, plan_cameras,
+};
+pub use pass::{PassScope, RenderPass};
 pub use pipeline::{RenderPipeline, RenderPipelineError};
 
 /// Ids of the built-in passes, in the order `RenderPipeline::default_2d` runs them.
 pub mod pass_ids {
-  /// Game texture clear
+  /// A camera's image clear (per camera)
   pub const CLEAR: &str = "clear";
   /// Entities, sprites and lit trails and lines, drawn together in z order
+  /// (per camera)
   pub const WORLD: &str = "world";
-  /// 2D lighting
+  /// 2D lighting (per camera)
   pub const LIGHTING: &str = "lighting";
-  /// Trails and lines that skip lighting, drawn in z order
+  /// Trails and lines that skip lighting, drawn in z order (per camera)
   pub const UNLIT_WORLD: &str = "unlit_world";
+  /// The window cameras' images placed in their viewports
+  pub const CAMERAS: &str = "cameras";
   /// Scene transition fade over the whole frame
   pub const TRANSITION: &str = "transition";
   /// Post-process effects

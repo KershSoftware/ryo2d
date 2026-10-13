@@ -4,6 +4,7 @@
 //! (sprites, trails, lighting, post-process, compositor) and a pass
 //! calls into one of them with the frame's targets and scene data.
 
+mod cameras;
 mod lighting;
 mod output;
 mod post_process;
@@ -14,12 +15,13 @@ mod world;
 use super::RenderPass;
 
 /// The built-in passes, in `default_2d` order.
-pub(crate) fn built_in() -> [Box<dyn RenderPass>; 9] {
+pub(crate) fn built_in() -> [Box<dyn RenderPass>; 10] {
   [
     Box::new(scene::Clear),
     Box::new(world::World),
     Box::new(lighting::Lighting),
     Box::new(world::UnlitWorld),
+    Box::new(cameras::Cameras),
     Box::new(transition::TransitionPass::default()),
     Box::new(post_process::PostProcess),
     Box::new(output::Ui),
