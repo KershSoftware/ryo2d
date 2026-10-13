@@ -69,6 +69,13 @@ impl ShadowVertex {
   }
 }
 
+/// `color` decoded from sRGB to linear light, packed as RGBA bytes.
+fn pack_linear(color: crate::core::ui::Color) -> u32 {
+  let [r, g, b, a] = color.to_linear();
+  let byte = |c: f32| (c * 255.0).round() as u8;
+  ShadowVertex::pack_color(byte(r), byte(g), byte(b), byte(a))
+}
+
 /// Collected shadow geometry for a frame
 #[derive(Default)]
 pub struct ShadowGeometry {
@@ -282,12 +289,7 @@ fn generate_shadow_quads_for_occluder(
     let ly = light_pos.y;
     let lr = light_radius;
     let ss = shadow_softness;
-    let sc = ShadowVertex::pack_color(
-      shadow_color.r,
-      shadow_color.g,
-      shadow_color.b,
-      shadow_color.a,
-    );
+    let sc = pack_linear(shadow_color);
 
     // Triangle 1
     geometry
@@ -333,6 +335,14 @@ fn project_vertex(vertex: Vec2, light_pos: Vec2, light_radius: f32) -> Vec2 {
 
 #[cfg(test)]
 mod tests {
+  #[test]
+  fn shadow_colour_packs_decoded() {
+    use crate::core::ui::Color;
+    let packed = super::pack_linear(Color::new(128, 255, 0, 128));
+    // 128 decodes to 0.2159 (55 of 255); alpha stays straight
+    assert_eq!(packed, 55 | (255 << 8) | (128 << 24));
+  }
+
   use super::*;
 
   #[test]

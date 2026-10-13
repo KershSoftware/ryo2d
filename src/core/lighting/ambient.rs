@@ -82,13 +82,11 @@ impl AmbientLight {
 
   /// Get the effective color with intensity applied.
   ///
-  /// Returns normalized RGB values (0.0 - 1.0) with intensity multiplied in.
+  /// Returns linear-light RGB (the colour decoded from sRGB) with intensity
+  /// multiplied in: what the compose pass adds.
   pub fn effective_color(&self) -> [f32; 3] {
-    [
-      (self.color.r as f32 / 255.0) * self.intensity,
-      (self.color.g as f32 / 255.0) * self.intensity,
-      (self.color.b as f32 / 255.0) * self.intensity,
-    ]
+    let [r, g, b, _] = self.color.to_linear();
+    [r * self.intensity, g * self.intensity, b * self.intensity]
   }
 
   /// Set the intensity.
@@ -147,6 +145,9 @@ mod tests {
     assert!((eff[0] - 0.5).abs() < 0.001);
     assert!((eff[1] - 0.5).abs() < 0.001);
     assert!((eff[2] - 0.5).abs() < 0.001);
+    // Mid-grey is decoded from sRGB: 0.2159 in linear light
+    let grey = AmbientLight::new(Color::rgb(128, 128, 128), 0.5).effective_color();
+    assert!((grey[0] - 0.215_861 * 0.5).abs() < 1e-4, "{grey:?}");
   }
 
   #[test]

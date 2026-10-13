@@ -1141,12 +1141,10 @@ impl LightingRenderer {
     // Update raymarch params
     let params = RaymarchParams {
       light_params: [light_pos.x, light_pos.y, light_radius, samples as f32],
-      shadow_color: [
-        shadow_color.r as f32 / 255.0,
-        shadow_color.g as f32 / 255.0,
-        shadow_color.b as f32 / 255.0,
-        1.0,
-      ],
+      shadow_color: {
+        let [r, g, b, _] = shadow_color.to_linear();
+        [r, g, b, 1.0]
+      },
       edge_params: [edges.len() as f32, shadow_softness, 0.0, 0.0],
       _padding: [0.0; 4],
     };
