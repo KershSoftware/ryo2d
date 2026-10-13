@@ -48,7 +48,9 @@ use crate::core::lighting::{LightingRenderer, LightingSettings};
 use crate::core::messages::{register_engine_messages, register_message};
 use crate::core::physics::{PhysicsConfig, RapierPhysicsWorld};
 use crate::core::render::batch::Batch2D;
-use crate::core::render::{DrawList, EntityDrawer, RenderPipeline};
+use crate::core::render::{
+  DrawList, EntityDrawer, RenderPipeline, begin_debug_fixed_step, end_debug_fixed_step,
+};
 use crate::core::scene::{PhysicsPaused, Scene, SceneManager};
 use crate::core::schedule::{EngineSchedules, FixedSet, Phase, PostUpdateSet, UpdateSet};
 use crate::core::shaders::EffectsManager;
@@ -288,6 +290,7 @@ pub(crate) fn init_world_resources(
   world.insert_resource(EffectsManager::new());
   world.insert_resource(LightingSettings::default());
   world.insert_resource(crate::core::graphics::RenderTargets::default());
+  world.insert_resource(crate::core::render::DebugDraw::default());
   world.insert_resource(crate::core::tilemap::TilemapManager::new());
   world.insert_resource(WindowRequest::default());
   world.insert_resource(CursorRequest::default());
@@ -321,7 +324,9 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   );
   schedules.add_systems(
     Phase::FixedUpdate,
-    snapshot_previous_transforms.in_set(FixedSet::Snapshot),
+    (begin_debug_fixed_step, snapshot_previous_transforms)
+      .chain()
+      .in_set(FixedSet::Snapshot),
   );
   register_juice_systems(schedules);
   schedules.add_systems(
@@ -339,7 +344,9 @@ fn register_engine_systems(schedules: &mut EngineSchedules) {
   );
   schedules.add_systems(
     Phase::FixedUpdate,
-    record_trail_points.in_set(FixedSet::Trails),
+    (record_trail_points, end_debug_fixed_step)
+      .chain()
+      .in_set(FixedSet::Trails),
   );
   schedules.add_systems(Phase::Update, scene_update_systems.in_set(UpdateSet::Game));
   schedules.add_systems(

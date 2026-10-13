@@ -6,6 +6,7 @@
 
 use super::CameraDraw;
 use super::batch::{BlendMode, Filter};
+use crate::core::ecs::Entity;
 use crate::core::ecs::Vec2;
 use std::ops::Range;
 
@@ -40,6 +41,8 @@ pub(crate) struct DrawItem {
   /// Submission order across the whole list
   pub(crate) sequence: u32,
   pub(crate) payload: DrawPayload,
+  /// Drawn by this camera alone (debug shapes built for one camera)
+  pub(crate) only_camera: Option<Entity>,
 }
 
 /// How a sprite is shaded.
@@ -178,17 +181,31 @@ impl DrawList {
       min,
       max,
     });
-    self.push_item(look.lit, z, kind, payload);
+    self.push_item(look.lit, z, kind, payload, None);
   }
 
-  /// Add a trail or line at `z`; `lit` ones draw before lighting.
-  pub(crate) fn push_triangles(&mut self, lit: bool, z: i32, triangles: DrawTriangles) {
+  /// Add a trail or line at `z`, for `only_camera` or every camera; `lit`
+  /// ones draw before lighting.
+  pub(crate) fn push_triangles(
+    &mut self,
+    lit: bool,
+    z: i32,
+    only_camera: Option<Entity>,
+    triangles: DrawTriangles,
+  ) {
     let payload = DrawPayload::Triangles(self.triangles.len());
     self.triangles.push(triangles);
-    self.push_item(lit, z, DrawKind::Trail, payload);
+    self.push_item(lit, z, DrawKind::Trail, payload, only_camera);
   }
 
-  fn push_item(&mut self, lit: bool, z: i32, kind: DrawKind, payload: DrawPayload) {
+  fn push_item(
+    &mut self,
+    lit: bool,
+    z: i32,
+    kind: DrawKind,
+    payload: DrawPayload,
+    only_camera: Option<Entity>,
+  ) {
     let sequence = self.next_sequence;
     self.next_sequence = self.next_sequence.wrapping_add(1);
     let item = DrawItem {
@@ -196,6 +213,7 @@ impl DrawList {
       kind,
       sequence,
       payload,
+      only_camera,
     };
     if lit {
       self.items.push(item);
@@ -274,6 +292,9 @@ impl DrawList {
   }
 
   fn sees(&self, camera: &CameraDraw, item: &DrawItem) -> bool {
+    if item.only_camera.is_some_and(|only| only != camera.entity) {
+      return false;
+    }
     match item.payload {
       DrawPayload::Sprite(index) => self.sprites.get(index).is_some_and(|sprite| {
         sprite.layers.intersects(&camera.layers)
@@ -328,7 +349,7 @@ mod tests {
       indices: 0..3,
       vertices: 0..3,
     };
-    list.push_triangles(lit, z, triangles);
+    list.push_triangles(lit, z, None, triangles);
   }
 
   fn order(items: &[DrawItem]) -> Vec<(i32, DrawKind)> {

@@ -19,7 +19,7 @@ pub use bone::{
   compute_world_transforms,
 };
 pub use controller::{SkeletalAnimationId, SkeletalController};
-pub use render::skeleton_debug_lines;
+pub use render::draw_skeleton;
 
 use std::sync::Arc;
 

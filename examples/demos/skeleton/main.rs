@@ -12,10 +12,6 @@ use demo_kit::prelude::*;
 
 use scenes::{ActionRpgScene, CasualScene, FighterScene};
 
-/// Marker for debug line entities so we can despawn/respawn them each frame.
-#[derive(Component, Debug)]
-pub(crate) struct DebugBone;
-
 /// The stick figure every page animates, built once and shared
 pub(crate) fn stick_fighter() -> Arc<SkeletonDef> {
   static DEF: OnceLock<Arc<SkeletonDef>> = OnceLock::new();

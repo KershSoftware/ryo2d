@@ -247,7 +247,7 @@ impl DemoPage for CasualScene {
       self.base.cache_state(&ctrl);
     }
 
-    self.base.redraw_debug_lines(ctx.world);
+    self.base.draw_bones(ctx);
   }
 
   fn ui(&mut self, ui: &mut UiContext, _ctx: &mut SceneContext) {

@@ -1,46 +1,27 @@
-//! Debug rendering for skeletons using Line2D components.
+//! Debug drawing for skeletons.
 
 use super::bone::{BoneWorldTransform, SkeletonDef};
-use crate::core::trail::Line2D;
+use crate::core::render::DebugDraw;
 use crate::core::ui::Color;
 
-/// Z order of skeleton debug lines: above game content, below the engine's
-/// own debug overlays (`i32::MAX`).
-pub const SKELETON_DEBUG_Z_ORDER: i32 = i32::MAX - 1;
-
-/// Generate Line2D components for debug visualization of a skeleton.
-///
-/// Returns a vec of Line2D segments (bones) and circles (joints) suitable
-/// for spawning as entities or updating existing debug entities. The lines
-/// draw on top of the world, at `SKELETON_DEBUG_Z_ORDER`.
-pub fn skeleton_debug_lines(
+/// Draw a skeleton's bones (a line from each bone to its parent) and joints
+/// (a circle of `joint_radius` at each bone) into `debug`, `width` screen
+/// pixels wide. Call it every update to keep the skeleton drawn.
+pub fn draw_skeleton(
+  debug: &mut DebugDraw,
   def: &SkeletonDef,
   world_transforms: &[BoneWorldTransform],
   bone_color: Color,
   joint_color: Color,
-  line_width: f32,
+  width: f32,
   joint_radius: f32,
-) -> Vec<Line2D> {
-  let mut lines = Vec::new();
-
-  for (i, bone) in def.bones.iter().enumerate() {
-    let bone_pos = world_transforms[i].position;
-
-    // Draw bone line to parent
-    if let Some(parent_idx) = bone.parent {
-      let parent_pos = world_transforms[parent_idx].position;
-      lines.push(
-        Line2D::segment(parent_pos, bone_pos, bone_color, line_width)
-          .with_z_order(SKELETON_DEBUG_Z_ORDER),
-      );
+) {
+  let mut pen = debug.width(width);
+  for (bone, transform) in def.bones.iter().zip(world_transforms) {
+    let at = transform.position;
+    if let Some(parent) = bone.parent.and_then(|parent| world_transforms.get(parent)) {
+      pen.line(parent.position, at, bone_color);
     }
-
-    // Draw joint circle
-    lines.push(
-      Line2D::circle(bone_pos, joint_radius, joint_color, line_width, 8)
-        .with_z_order(SKELETON_DEBUG_Z_ORDER),
-    );
+    pen.circle(at, joint_radius, joint_color);
   }
-
-  lines
 }

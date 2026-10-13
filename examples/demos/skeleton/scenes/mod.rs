@@ -10,8 +10,6 @@ use std::sync::Arc;
 
 use demo_kit::prelude::*;
 
-use crate::DebugBone;
-
 /// Shared state and helpers for skeleton demo scenes.
 ///
 /// Holds the common fields (entity, debug lines, cached UI state) and
@@ -21,7 +19,6 @@ pub(crate) struct SceneBase {
   def: Arc<SkeletonDef>,
   pub controller_template: SkeletalController,
   pub skeleton_entity: Option<Entity>,
-  debug_entities: Vec<Entity>,
   pub current_state: &'static str,
   pub blending: bool,
   bone_color: Color,
@@ -39,7 +36,6 @@ impl SceneBase {
       def,
       controller_template: controller,
       skeleton_entity: None,
-      debug_entities: Vec::new(),
       current_state: "idle",
       blending: false,
       bone_color,
@@ -66,36 +62,18 @@ impl SceneBase {
     self.blending = ctrl.is_blending();
   }
 
-  /// Redraw debug bone lines from the skeleton component.
-  pub fn redraw_debug_lines(&mut self, world: &mut World) {
-    // Despawn old
-    for entity in self.debug_entities.drain(..) {
-      world.despawn(entity);
-    }
-
-    // Spawn new
-    let lines = if let Some(entity) = self.skeleton_entity {
-      world
-        .get::<Skeleton>(entity)
-        .map(|skeleton| {
-          skeleton_debug_lines(
-            &skeleton.def,
-            &skeleton.world_transforms,
-            self.bone_color,
-            self.joint_color,
-            2.0,
-            4.0,
-          )
-        })
-        .unwrap_or_default()
-    } else {
-      Vec::new()
+  /// Draw the skeleton's bones and joints this step.
+  pub fn draw_bones(&self, ctx: &mut SceneContext) {
+    let Some(entity) = self.skeleton_entity else {
+      return;
     };
-
-    for line in lines {
-      let e = world.spawn((Transform::default(), line, DebugBone)).id();
-      self.debug_entities.push(e);
-    }
+    let Some(skeleton) = ctx.world.get::<Skeleton>(entity) else {
+      return;
+    };
+    let (def, transforms) = (skeleton.def.clone(), skeleton.world_transforms.clone());
+    let mut debug = ctx.debug_draw();
+    let (bone, joint) = (self.bone_color, self.joint_color);
+    draw_skeleton(&mut debug, &def, &transforms, bone, joint, 2.0, 4.0);
   }
 
   /// Render the controller state and blend status at the top of the content area

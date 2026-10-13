@@ -86,9 +86,10 @@
 //! Values set programmatically will override config file settings.
 
 use crate::core::ecs::{GlobalTransform, Vec2, Velocity, Without, World};
+use crate::core::graphics::camera_mut::main_view;
 use crate::core::graphics::{Camera2d, GroupedCollider};
 use crate::core::physics::{Collider, ColliderShape};
-use crate::core::trail::{Line2D, TrailStyle};
+use crate::core::render::DebugDraw;
 use crate::core::ui::{Color, UiContext};
 
 // ============================================================================
@@ -397,7 +398,7 @@ pub mod colors {
 /// Half the length of an origin crosshair arm, in screen pixels.
 const CROSS_SIZE: f32 = 4.0;
 
-/// Which debug overlays [`overlay_lines`] builds.
+/// Which debug overlays [`overlay_shapes`] draws.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct OverlayFlags {
   pub(crate) colliders: bool,
@@ -405,76 +406,19 @@ pub(crate) struct OverlayFlags {
   pub(crate) origins: bool,
 }
 
-/// The enabled debug overlays as unlit world-space lines on top of
-/// everything: collider outlines where physics puts them, velocity arrows from
-/// the origin and origin crosses. `camera_scale` (screen pixels per world
-/// unit) keeps them one pixel wide. The lines use the `Soft` style: a
-/// pixel-wide `Solid` line is anti-aliased into a faint smear.
-pub(crate) fn overlay_lines(
-  world: &mut World,
-  flags: OverlayFlags,
-  camera_scale: f32,
-) -> Vec<Line2D> {
-  let pixel = if camera_scale.is_finite() && camera_scale > 0.0 {
-    1.0 / camera_scale
-  } else {
-    1.0
-  };
-  let line = |points: Vec<Vec2>, color: [u8; 4]| {
-    Line2D::new(
-      points,
-      Color::new(color[0], color[1], color[2], color[3]),
-      pixel,
-    )
-    .with_style(TrailStyle::Soft)
-    .with_lighting(false)
-    .with_z_order(i32::MAX)
-  };
-  let mut lines = Vec::new();
-  // A one-pixel line half a pixel inside an edge covers whole pixels
-  let half = pixel / 2.0;
-  // Origins snap down to a whole pixel, so crosses and arrows stay crisp
-  let snap = |point: Vec2| (point / pixel).floor() * pixel;
-  let rect = |lines: &mut Vec<Line2D>, center: Vec2, size: Vec2| {
-    let (min, max) = (center - size / 2.0, center + size / 2.0);
-    for (a, b) in [
-      (
-        Vec2::new(min.x, min.y + half),
-        Vec2::new(max.x, min.y + half),
-      ),
-      (
-        Vec2::new(min.x, max.y - half),
-        Vec2::new(max.x, max.y - half),
-      ),
-      (
-        Vec2::new(min.x + half, min.y),
-        Vec2::new(min.x + half, max.y),
-      ),
-      (
-        Vec2::new(max.x - half, min.y),
-        Vec2::new(max.x - half, max.y),
-      ),
-    ] {
-      lines.push(line(vec![a, b], colors::COLLIDER));
-    }
-  };
-
+/// Draw the enabled debug overlays into `debug` for this frame: collider
+/// outlines where physics puts them, velocity arrows from the origin and
+/// origin crosses (sized in the main camera's pixels).
+pub(crate) fn overlay_shapes(world: &mut World, flags: OverlayFlags, debug: &mut DebugDraw) {
+  let color = |c: [u8; 4]| Color::new(c[0], c[1], c[2], c[3]);
   if flags.colliders {
     for (global, collider) in world.query::<(&GlobalTransform, &Collider)>().iter(world) {
       let center = collider.world_center(global.translation());
       match collider.shape {
-        ColliderShape::Box { width, height } => rect(&mut lines, center, Vec2::new(width, height)),
-        ColliderShape::Circle { radius } => {
-          let mut circle = Line2D::circle(center, radius, Color::WHITE, pixel, 32);
-          let c = colors::COLLIDER;
-          circle.set_color(Color::new(c[0], c[1], c[2], c[3]));
-          lines.push(
-            circle
-              .with_style(TrailStyle::Soft)
-              .with_lighting(false)
-              .with_z_order(i32::MAX),
-          );
+        ColliderShape::Box { width, height } => {
+          debug.rect(center, Vec2::new(width, height), color(colors::COLLIDER));
         }
+        ColliderShape::Circle { radius } => debug.circle(center, radius, color(colors::COLLIDER)),
       }
     }
     // A grouped collider spans `offset` to `offset + size` from its origin
@@ -485,7 +429,7 @@ pub(crate) fn overlay_lines(
       let size = Vec2::new(grouped.width, grouped.height);
       let center =
         global.translation() + Vec2::new(grouped.offset_x, grouped.offset_y) + size / 2.0;
-      rect(&mut lines, center, size);
+      debug.rect(center, size, color(colors::COLLIDER));
     }
   }
 
@@ -496,39 +440,29 @@ pub(crate) fn overlay_lines(
       if velocity.dx.abs() < 0.1 && velocity.dy.abs() < 0.1 {
         continue;
       }
-      let origin = snap(global.translation()) + Vec2::splat(half);
+      let origin = global.translation();
       let end = origin + Vec2::new(velocity.dx, velocity.dy) * VELOCITY_SCALE;
-      lines.push(line(vec![origin, end], colors::VELOCITY));
+      debug.arrow(origin, end, color(colors::VELOCITY));
     }
   }
 
   if flags.origins {
+    // `CROSS_SIZE` main-camera pixels either side of the origin's pixel
+    let scale = main_view(world).scale;
+    let pixel = if scale.is_finite() && scale > 0.0 {
+      1.0 / scale
+    } else {
+      1.0
+    };
+    let size = (2.0 * CROSS_SIZE + 1.0) * pixel;
     // Cameras are not drawn
-    let arm = CROSS_SIZE * pixel;
     for global in world
       .query_filtered::<&GlobalTransform, Without<Camera2d>>()
       .iter(world)
     {
-      // Arms through the middle of the origin's pixel, `arm` either side
-      let origin = snap(global.translation());
-      let (row, column) = (origin.y + half, origin.x + half);
-      lines.push(line(
-        vec![
-          Vec2::new(origin.x - arm, row),
-          Vec2::new(origin.x + arm + pixel, row),
-        ],
-        colors::ORIGIN,
-      ));
-      lines.push(line(
-        vec![
-          Vec2::new(column, origin.y - arm),
-          Vec2::new(column, origin.y + arm + pixel),
-        ],
-        colors::ORIGIN,
-      ));
+      debug.cross(global.translation(), size, color(colors::ORIGIN));
     }
   }
-  lines
 }
 
 /// Height of the frame timing overlay (5 lines + padding).
@@ -680,20 +614,22 @@ mod tests {
       colliders: true,
       ..Default::default()
     };
-    let lines = overlay_lines(&mut world, colliders, 1.0);
-    let points: Vec<Vec2> = lines
-      .iter()
-      .flat_map(|line| line.points().iter().copied())
+    let mut debug = DebugDraw::default();
+    overlay_shapes(&mut world, colliders, &mut debug);
+    let shapes: Vec<_> = debug
+      .each()
+      .map(|(shape, points)| (shape.kind, points.to_vec()))
       .collect();
-    // The outline spans the box (each edge half a pixel inside it)
-    let min = points.iter().copied().fold(Vec2::MAX, Vec2::min);
-    let max = points.iter().copied().fold(Vec2::MIN, Vec2::max);
     assert_eq!(
-      (min, max),
-      (Vec2::new(90.0, 45.0), Vec2::new(110.0, 55.0)),
-      "{points:?}"
+      shapes,
+      [(
+        crate::core::render::ShapeKind::Rect,
+        vec![Vec2::new(100.0, 50.0), Vec2::new(20.0, 10.0)]
+      )]
     );
-    assert!(overlay_lines(&mut world, OverlayFlags::default(), 1.0).is_empty());
+    debug.end_frame();
+    overlay_shapes(&mut world, OverlayFlags::default(), &mut debug);
+    assert_eq!(debug.len(), 0);
   }
 
   #[test]

@@ -251,40 +251,52 @@ fn a_higher_layer_beats_a_far_down_ysort_entity() {
   assert_eq!(frame.get_pixel(25, 30).0, RED);
 }
 
+/// A two-bone skeleton drawn with `draw_skeleton` over a z-10 sprite.
+struct Skeletal;
+
+impl Scene for Skeletal {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    spawn_entity(ctx, "sk-cover", 20.0, 22.0, RED, 10);
+  }
+
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let def = SkeletonDef::builder()
+      .bone("root", None, Vec2::new(0.0, 32.0), 0.0, 10.0)
+      .bone("tip", Some("root"), Vec2::new(64.0, 0.0), 0.0, 10.0)
+      .build();
+    let transforms = [
+      BoneWorldTransform {
+        position: Vec2::new(0.0, 32.0),
+        rotation: 0.0,
+      },
+      BoneWorldTransform {
+        position: Vec2::new(64.0, 32.0),
+        rotation: 0.0,
+      },
+    ];
+    let green = Color::new(0, 255, 0, 255);
+    draw_skeleton(
+      &mut ctx.debug_draw(),
+      &def,
+      &transforms,
+      green,
+      green,
+      4.0,
+      1.0,
+    );
+    SceneAction::Continue
+  }
+}
+
 #[test]
-fn skeleton_debug_lines_draw_on_top() {
-  let def = SkeletonDef::builder()
-    .bone("root", None, Vec2::new(0.0, 32.0), 0.0, 10.0)
-    .bone("tip", Some("root"), Vec2::new(64.0, 0.0), 0.0, 10.0)
-    .build();
-  let transforms = [
-    BoneWorldTransform {
-      position: Vec2::new(0.0, 32.0),
-      rotation: 0.0,
-    },
-    BoneWorldTransform {
-      position: Vec2::new(64.0, 32.0),
-      rotation: 0.0,
-    },
-  ];
-  let lines = skeleton_debug_lines(
-    &def,
-    &transforms,
-    Color::new(0, 255, 0, 255),
-    Color::new(0, 255, 0, 255),
-    4.0,
-    1.0,
-  );
-  assert!(!lines.is_empty());
-  let scene = Fixture::new(|ctx| spawn_entity(ctx, "sk-cover", 20.0, 22.0, RED, 10));
-  let Some(mut engine) = start(EngineBuilder::new().resolution(64, 64).start_scene(scene)) else {
+fn draw_skeleton_draws_on_top() {
+  let Some(mut engine) = start(
+    EngineBuilder::new()
+      .resolution(64, 64)
+      .start_scene(Skeletal),
+  ) else {
     return;
   };
-  for line in lines {
-    engine
-      .world_mut()
-      .spawn((Transform::from_xy(0.0, 0.0), line));
-  }
   engine.step_frames(2).unwrap();
   let frame = engine.frame().unwrap();
   assert!(
@@ -822,7 +834,8 @@ fn shake_moves_sprites_and_lines_together() {
     let mut camera = ctx.camera();
     camera.configure_shake(12.0, 0.0);
     camera.add_trauma(1.0);
-    spawn_line(ctx, 0); // green across y 32, rows 30..34
+    // Green across y 32 (rows 30..34), under the sprite so its top shows
+    spawn_line(ctx, -1);
     ctx.world.spawn((
       Transform::from_xy(40.0, 32.0),
       Renderable::sprite(solid("shake-red", 10, RED)).with_anchor(Anchor::TopLeft),
@@ -1504,4 +1517,39 @@ fn separate_trails_do_not_connect() {
     (10..22).all(|y| frame.get_pixel(20, y).0[1] < 100),
     "nothing between the trails"
   );
+}
+
+/// Draws a horizontal debug line every update (camera zoomed out 4x).
+struct DebugLine;
+
+impl Scene for DebugLine {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    ctx.camera().set_zoom(0.25);
+  }
+  fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+    let centre = ctx.camera().position();
+    ctx.debug_draw().line(
+      centre - Vec2::new(40.0, 0.0),
+      centre + Vec2::new(40.0, 0.0),
+      Color::new(30, 200, 60, 255),
+    );
+    SceneAction::Continue
+  }
+}
+
+#[test]
+fn a_debug_line_is_one_pixel_wide_when_zoomed_out() {
+  let Some(mut engine) = start(
+    EngineBuilder::new()
+      .resolution(64, 32)
+      .start_scene(DebugLine),
+  ) else {
+    return;
+  };
+  engine.step_frames(2).unwrap();
+  let frame = engine.frame().unwrap();
+  let rows = (0..32)
+    .filter(|&y| frame.get_pixel(32, y).0[1] > 150)
+    .count();
+  assert_eq!(rows, 1);
 }

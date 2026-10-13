@@ -37,6 +37,7 @@
 
 pub(crate) mod batch;
 mod context;
+mod debug_draw;
 mod draw_list;
 mod entities;
 mod frame;
@@ -46,6 +47,10 @@ mod pipeline;
 
 pub(crate) use context::FrameTargets;
 pub use context::RenderContext;
+#[cfg(test)]
+pub(crate) use debug_draw::ShapeKind;
+pub use debug_draw::{DebugDraw, DebugPen};
+pub(crate) use debug_draw::{begin_debug_fixed_step, end_debug_fixed_step};
 pub(crate) use draw_list::{
   DrawItem, DrawKind, DrawList, DrawPayload, DrawTriangles, SpriteLook, SpriteShading,
 };

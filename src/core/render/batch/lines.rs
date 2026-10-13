@@ -5,6 +5,7 @@ use glam::Vec2;
 
 use super::polyline::{PolyPoint, PolyStyle, Triangles};
 use super::{BlendMode, Filter};
+use crate::core::ecs::Entity;
 use crate::core::graphics::{RenderLayers, TextureId};
 use crate::core::render::{DrawList, DrawTriangles};
 use crate::core::trail::{Line2D, TextureMode, Trail2D, TrailEffect, TrailStyle};
@@ -21,6 +22,8 @@ pub(crate) struct LineLook {
   pub(crate) blend: BlendMode,
   pub(crate) filter: Filter,
   pub(crate) layers: RenderLayers,
+  /// Drawn by this camera alone (shapes built for one camera)
+  pub(crate) only_camera: Option<Entity>,
 }
 
 /// The points of `trail` as a polyline into `out` (cleared first), and how
@@ -60,7 +63,7 @@ pub(crate) fn trail_points(trail: &Trail2D, out: &mut Vec<PolyPoint>) -> Option<
     out.push(PolyPoint {
       pos: Vec2::new(point.x, point.y),
       half_width: trail.width_at(t) / 2.0,
-      color: color_to_array(color),
+      color: line_color(color),
       u,
     });
   }
@@ -85,7 +88,7 @@ pub(crate) fn line_points(line: &Line2D, at: Vec2, out: &mut Vec<PolyPoint>) -> 
     out.push(PolyPoint {
       pos: *point + at,
       half_width: line.width_at(t) / 2.0,
-      color: color_to_array(line.color_at(t)),
+      color: line_color(line.color_at(t)),
       u: t,
     });
   }
@@ -124,6 +127,7 @@ pub(crate) fn push_polyline(
   list.push_triangles(
     look.lit,
     look.z,
+    look.only_camera,
     DrawTriangles {
       texture: look.texture,
       blend: look.blend,
@@ -150,7 +154,7 @@ fn effect_reach(params: &[f32; 4]) -> f32 {
 
 /// A colour's bytes over 255, which line shaders take as linear (as 2a's
 /// trail renderer did).
-fn color_to_array(color: Color) -> [f32; 4] {
+pub(crate) fn line_color(color: Color) -> [f32; 4] {
   [
     color.r as f32 / 255.0,
     color.g as f32 / 255.0,

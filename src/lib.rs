@@ -137,6 +137,7 @@ pub mod prelude {
   // GPU sprite batching (for high-performance particle systems)
   pub use crate::core::graphics::{BatchCollector, SpriteDraw, SpriteInstance};
   pub use crate::core::render::batch::{BlendMode, Filter};
+  pub use crate::core::render::{DebugDraw, DebugPen};
 
   // Physics
   pub use crate::core::physics::{
@@ -170,7 +171,7 @@ pub mod prelude {
   // Skeletal animation
   pub use crate::core::skeleton::{
     BoneDef, BoneTransform, BoneWorldTransform, Pose, SkeletalAnimation, SkeletalAnimator,
-    SkeletalBlender, SkeletalController, Skeleton, SkeletonDef, skeleton_debug_lines,
+    SkeletalBlender, SkeletalController, Skeleton, SkeletonDef, draw_skeleton,
   };
 
   // Particles

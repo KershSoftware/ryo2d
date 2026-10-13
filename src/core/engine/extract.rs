@@ -5,7 +5,7 @@ use web_time::Instant;
 
 use super::{Engine, PresentOutcome, SceneHost};
 use crate::core::config::DebugStats;
-use crate::core::config::debug::{OverlayFlags, overlay_lines};
+use crate::core::config::debug::{OverlayFlags, overlay_shapes};
 use crate::core::ecs::interpolate::render_global;
 use crate::core::ecs::kernel::{QueryState, SystemIdMarker};
 use crate::core::ecs::{
@@ -20,7 +20,9 @@ use crate::core::graphics::{
 };
 use crate::core::lighting::{Light2D, LightOccluder2D, LightingSettings};
 use crate::core::render::batch::{Filter, LineLook, line_points, push_polyline, trail_points};
-use crate::core::render::{DrawKind, FrameScene, LightingFrame, RenderPipeline, plan_cameras};
+use crate::core::render::{
+  DebugDraw, DrawKind, FrameScene, LightingFrame, RenderPipeline, plan_cameras,
+};
 use crate::core::shaders::EffectsManager;
 use crate::core::time::Time;
 use crate::core::trail::{Line2D, Trail2D};
@@ -42,6 +44,14 @@ impl Engine {
   /// Render and present one frame: the single present path for window and
   /// headless runs.
   pub(super) fn present_frame(&mut self) -> PresentOutcome {
+    let outcome = self.draw_frame();
+    // This frame's debug shapes were drawn or skipped (the last fixed
+    // step's stay until the next step)
+    self.world.resource_mut::<DebugDraw>().end_frame();
+    outcome
+  }
+
+  fn draw_frame(&mut self) -> PresentOutcome {
     let render_start = Instant::now();
     // Taken out for the frame so they can be used beside `self.world`
     // A minimised window draws nothing until it comes back
@@ -185,6 +195,7 @@ impl Engine {
           blend: trail.blend(),
           filter: trail.filter(),
           layers: layers.copied().unwrap_or_default(),
+          only_camera: None,
         };
         push_polyline(&mut self.draw_list, triangles, &points, &style, look);
       }
@@ -195,6 +206,7 @@ impl Engine {
         blend: line.blend(),
         filter: Filter::Default,
         layers: layers.copied().unwrap_or_default(),
+        only_camera: None,
       };
       for (global, previous, line, layers) in self
         .world
@@ -212,16 +224,21 @@ impl Engine {
           push_polyline(&mut self.draw_list, triangles, &points, &style, look);
         }
       }
+      // The overlays join the debug shapes, which each camera builds in its
+      // own screen pixels
       let flags = OverlayFlags {
         colliders: self.config.debug.show_colliders,
         velocities: self.config.debug.show_velocities,
         origins: self.config.debug.show_origins,
       };
-      for line in overlay_lines(&mut self.world, flags, camera.scale) {
-        if let Some(style) = line_points(&line, Vec2::ZERO, &mut points) {
-          let look = line_look(&line, None);
-          push_polyline(&mut self.draw_list, triangles, &points, &style, look);
-        }
+      self
+        .world
+        .resource_scope(|world, mut debug: Mut<DebugDraw>| {
+          overlay_shapes(world, flags, &mut debug);
+        });
+      let debug = self.world.resource::<DebugDraw>();
+      for camera in &self.camera_draws {
+        debug.push_for_camera(camera, &mut self.draw_list, triangles, &mut points);
       }
       self.draw_list.sorted();
       batch.prepare(

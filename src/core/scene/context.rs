@@ -12,7 +12,7 @@ use crate::core::graphics::{CameraMut, RenderTargets, ScreenMapping};
 use crate::core::input::Input;
 use crate::core::lighting::LightingSettings;
 use crate::core::messages::{SceneMessages, register_message};
-use crate::core::render::RenderPipeline;
+use crate::core::render::{DebugDraw, RenderPipeline};
 use crate::core::schedule::{Phase, SceneScheduleError, SceneSchedules};
 use crate::core::shaders::EffectsManager;
 use crate::core::tilemap::TilemapManager;
@@ -158,6 +158,13 @@ impl SceneContext<'_> {
   /// pops unless the scene removes it.
   pub fn render_pipeline(&mut self) -> Mut<'_, RenderPipeline> {
     self.world.resource_mut::<RenderPipeline>()
+  }
+
+  /// Debug lines, rectangles, circles, arrows and crosses over the world
+  /// ([`DebugDraw`]): drawn until the next fixed step when added in
+  /// `update`, for one frame otherwise.
+  pub fn debug_draw(&mut self) -> Mut<'_, DebugDraw> {
+    self.world.resource_mut::<DebugDraw>()
   }
 
   /// The render targets: textures cameras render into and sprites show.

@@ -123,8 +123,11 @@ fn styled(color_in: vec4<f32>, uv: vec2<f32>, params: vec4<f32>, aa: f32) -> vec
     let edge_dist = abs(uv.y - 0.5) * 2.0;
     var color = color_in;
     if style == 0u {
-        // Solid with SDF anti-aliasing
-        color.a *= 1.0 - smoothstep(1.0 - aa * 2.0, 1.0, edge_dist);
+        // Solid: how much of the pixel the line covers, ramping over the
+        // pixel its edge crosses (`aa` is edge_dist per pixel), so a line
+        // one pixel wide stays solid
+        let to_edge = (1.0 - edge_dist) / max(aa, 1e-4);
+        color.a *= clamp(to_edge + 0.5, 0.0, 1.0);
     } else if style == 1u {
         // Soft edges
         color.a *= 1.0 - smoothstep(0.7, 1.0, edge_dist);
