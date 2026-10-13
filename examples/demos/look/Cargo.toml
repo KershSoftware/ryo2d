@@ -1,0 +1,13 @@
+[package]
+name = "look-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Tonemapping, grading, LUTs and auto-exposure demo for Ryo2D engine"
+
+[[bin]]
+name = "look-demo"
+path = "main.rs"
+
+[dependencies]
+ryo2d = { path = "../../.." }
+demo-kit = { path = "../../demo-kit" }
