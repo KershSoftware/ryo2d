@@ -4,9 +4,13 @@
 // Maximum number of occluder edges we can handle
 const MAX_EDGES: u32 = 64u;
 
+// The camera the lights are drawn through (`CameraGlobals`)
 struct Globals {
     view_proj: mat4x4<f32>,
-    resolution_time: vec4<f32>,  // x: width, y: height, z: time, w: unused
+    resolution: vec2<f32>,
+    game_time: f32,
+    real_time: f32,
+    snap: f32,
 };
 
 struct RaymarchParams {

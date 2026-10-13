@@ -32,13 +32,14 @@ impl RenderPass for Lighting {
     let lights = lighting.lights;
     let light_refs = || lights.iter().map(|(position, light)| (position, light));
 
-    lighting.renderer.render_lights(
+    let (camera, uniforms) = (scene.camera, scene.camera_uniforms);
+    lighting.renderer.render_lights_for_camera(
       device,
       queue,
       encoder,
       light_refs(),
-      scene.camera_pos,
-      scene.camera_zoom,
+      camera,
+      uniforms,
     );
 
     // Shadows subtract from the light buffer
@@ -52,7 +53,7 @@ impl RenderPass for Lighting {
       let geometry = generate_shadow_geometry(light_refs(), &occluders);
       lighting
         .renderer
-        .render_shadows(device, queue, encoder, &geometry);
+        .render_shadows(device, queue, encoder, &geometry, camera, uniforms);
     }
 
     lighting.renderer.compose_from_texture(

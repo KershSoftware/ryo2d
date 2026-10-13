@@ -5,7 +5,9 @@
 
 use super::shadow::{MAX_SHADOW_VERTICES, ShadowGeometry, ShadowVertex};
 use super::{AmbientLight, Atmosphere, Light2D, LightOccluder2D};
-use crate::core::ecs::{GlobalTransform, Vec2};
+use crate::core::ecs::{Entity, GlobalTransform, Vec2};
+use crate::core::graphics::camera_gpu::{CameraGlobals, CameraUniforms};
+use crate::core::graphics::{Camera2d, CameraView};
 use crate::core::shaders::EffectsManager;
 use wgpu::util::DeviceExt;
 
@@ -27,16 +29,6 @@ struct LightInstance {
   params: [f32; 4],
   /// Volumetric: intensity (x), density (y), scattering (z), god_rays (w: 0 or 1)
   volumetric: [f32; 4],
-}
-
-/// Global uniforms for light rendering
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct LightGlobals {
-  /// View-projection matrix
-  view_proj: [[f32; 4]; 4],
-  /// Resolution (x, y) and time (z), padding (w)
-  resolution_time: [f32; 4],
 }
 
 /// Uniforms for the lighting composition pass
@@ -93,9 +85,6 @@ pub struct LightingRenderer {
   /// Storage buffer for light instances
   light_buffer: wgpu::Buffer,
 
-  /// Uniform buffer for light globals
-  globals_buffer: wgpu::Buffer,
-
   /// Uniform buffer for composition pass
   compose_uniform_buffer: wgpu::Buffer,
 
@@ -114,8 +103,6 @@ pub struct LightingRenderer {
   /// Render size of the light and scene textures, in pixels
   width: u32,
   height: u32,
-  /// Screen space's size, which the projection spans
-  screen: glam::Vec2,
 
   /// Whether lighting is enabled
   enabled: bool,
@@ -192,20 +179,6 @@ impl LightingRenderer {
     });
 
     // Create globals uniform buffer
-    let globals = LightGlobals {
-      view_proj: [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-      ],
-      resolution_time: [width as f32, height as f32, 0.0, 0.0],
-    };
-    let globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-      label: Some("Light Globals Buffer"),
-      contents: bytemuck::cast_slice(&[globals]),
-      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
 
     // Create compose uniform buffer
     let compose_uniform = LightingParams {
@@ -686,7 +659,6 @@ impl LightingRenderer {
       light_pipeline,
       compose_pipeline,
       light_buffer,
-      globals_buffer,
       compose_uniform_buffer,
       light_bind_group_layout,
       compose_bind_group_layout,
@@ -694,7 +666,6 @@ impl LightingRenderer {
       atmosphere: Atmosphere::default(),
       width,
       height,
-      screen: glam::Vec2::new(width as f32, height as f32),
       enabled: false, // Disabled by default, enabled when Light2D entities exist
       ui_affected_by_lighting: false, // By default, UI is always visible
       scene_copy_texture,
@@ -765,11 +736,6 @@ impl LightingRenderer {
     self.ui_affected_by_lighting
   }
 
-  /// Set screen space's size, which lights are projected into.
-  pub(crate) fn set_screen_size(&mut self, size: glam::Vec2) {
-    self.screen = size;
-  }
-
   /// Resize the light accumulation texture.
   pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
     if width == self.width && height == self.height {
@@ -824,8 +790,9 @@ impl LightingRenderer {
   /// * `queue` - The wgpu queue
   /// * `encoder` - The command encoder
   /// * `lights` - Iterator of (position, light) pairs
-  /// * `camera_pos` - Camera position for view matrix
-  /// * `camera_zoom` - Camera zoom level
+  /// * `camera_pos`, `camera_zoom` - The view's centre and zoom over a target
+  ///   of the renderer's size (for using the renderer on its own; the engine
+  ///   draws each camera through its uniforms)
   pub fn render_lights<'a>(
     &self,
     device: &wgpu::Device,
@@ -834,6 +801,50 @@ impl LightingRenderer {
     lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)>,
     camera_pos: Vec2,
     camera_zoom: f32,
+  ) {
+    let globals = self.standalone_globals(device, camera_pos, camera_zoom);
+    self.draw_lights(device, queue, encoder, lights, Some(&globals));
+  }
+
+  /// Render lights through `camera`, whose uniforms `uniforms` holds.
+  pub(crate) fn render_lights_for_camera<'a>(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)>,
+    camera: Entity,
+    uniforms: &CameraUniforms,
+  ) {
+    self.draw_lights(device, queue, encoder, lights, uniforms.buffer(camera));
+  }
+
+  /// The camera uniforms of a view centred on `center` at `zoom`, one world
+  /// unit per pixel of the renderer's size.
+  fn standalone_globals(&self, device: &wgpu::Device, center: Vec2, zoom: f32) -> wgpu::Buffer {
+    let camera = Camera2d {
+      zoom,
+      ..Camera2d::default()
+    };
+    let size = Vec2::new(self.width as f32, self.height as f32);
+    let view = CameraView::compute(center, 0.0, &camera, Vec2::ZERO, size);
+    let globals = CameraGlobals::new(&view, (self.width, self.height), 0.0, 0.0, false);
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+      label: Some("Standalone Light Globals"),
+      contents: bytemuck::bytes_of(&globals),
+      usage: wgpu::BufferUsages::UNIFORM,
+    })
+  }
+
+  /// Clear the light buffer and draw `lights` through `globals` (nothing is
+  /// drawn without them).
+  fn draw_lights<'a>(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    lights: impl Iterator<Item = (&'a Vec2, &'a Light2D)>,
+    globals: Option<&wgpu::Buffer>,
   ) {
     // Note: We still render the light accumulation pass even if disabled to ensure
     // the light_texture is cleared. The compose pass handles ambient lighting.
@@ -905,44 +916,22 @@ impl LightingRenderer {
       queue.write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&instances));
     }
 
-    // Update globals with camera transform (screen space spans the target)
-    let half_w = self.screen.x / 2.0;
-    let half_h = self.screen.y / 2.0;
-
-    // Create orthographic projection with camera offset
-    // This transforms world coordinates to clip space (-1 to 1)
-    let scale_x = camera_zoom / half_w;
-    let scale_y = -camera_zoom / half_h; // Flip Y
-    let offset_x = -camera_pos.x * scale_x;
-    let offset_y = -camera_pos.y * scale_y;
-
-    let view_proj = [
-      [scale_x, 0.0, 0.0, 0.0],
-      [0.0, scale_y, 0.0, 0.0],
-      [0.0, 0.0, 1.0, 0.0],
-      [offset_x, offset_y, 0.0, 1.0],
-    ];
-
-    let globals = LightGlobals {
-      view_proj,
-      resolution_time: [self.width as f32, self.height as f32, 0.0, 0.0],
-    };
-    queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
-
-    // Create bind group for light rendering
-    let light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Light Bind Group"),
-      layout: &self.light_bind_group_layout,
-      entries: &[
-        wgpu::BindGroupEntry {
-          binding: 0,
-          resource: self.globals_buffer.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-          binding: 1,
-          resource: self.light_buffer.as_entire_binding(),
-        },
-      ],
+    // The camera's uniforms and the lights, for this camera
+    let light_bind_group = globals.map(|globals| {
+      device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Light Bind Group"),
+        layout: &self.light_bind_group_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: globals.as_entire_binding(),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: self.light_buffer.as_entire_binding(),
+          },
+        ],
+      })
     });
 
     // Clear and render lights to accumulation buffer
@@ -964,9 +953,11 @@ impl LightingRenderer {
         timestamp_writes: None,
       });
 
-      if !instances.is_empty() {
+      if let Some(light_bind_group) = &light_bind_group
+        && !instances.is_empty()
+      {
         render_pass.set_pipeline(&self.light_pipeline);
-        render_pass.set_bind_group(0, &light_bind_group, &[]);
+        render_pass.set_bind_group(0, light_bind_group, &[]);
         // 6 vertices per light quad, N instances
         render_pass.draw(0..6, 0..instances.len() as u32);
       }
@@ -982,12 +973,28 @@ impl LightingRenderer {
   /// * `queue` - The wgpu queue
   /// * `encoder` - The command encoder
   /// * `shadow_geometry` - Pre-generated shadow geometry from `generate_shadow_geometry()`
-  pub fn render_shadows(
+  pub(crate) fn render_shadows(
     &self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
     shadow_geometry: &ShadowGeometry,
+    camera: Entity,
+    uniforms: &CameraUniforms,
+  ) {
+    if let Some(globals) = uniforms.buffer(camera) {
+      self.draw_shadows(device, queue, encoder, shadow_geometry, globals);
+    }
+  }
+
+  /// Subtract `shadow_geometry` from the light buffer, through `globals`.
+  fn draw_shadows(
+    &self,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    shadow_geometry: &ShadowGeometry,
+    globals: &wgpu::Buffer,
   ) {
     if shadow_geometry.is_empty() {
       return;
@@ -1000,13 +1007,13 @@ impl LightingRenderer {
       bytemuck::cast_slice(&shadow_geometry.vertices),
     );
 
-    // Create bind group for shadow rendering (reuse globals buffer)
+    // The camera's uniforms
     let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
       label: Some("Shadow Bind Group"),
       layout: &self.shadow_bind_group_layout,
       entries: &[wgpu::BindGroupEntry {
         binding: 0,
-        resource: self.globals_buffer.as_entire_binding(),
+        resource: globals.as_entire_binding(),
       }],
     });
 
@@ -1041,11 +1048,12 @@ impl LightingRenderer {
   /// This is an alternative to geometry-based shadows that uses per-pixel
   /// ray casting for more accurate shadow rendering in complex scenes.
   #[allow(clippy::too_many_arguments)]
-  pub fn render_raymarched_shadow(
+  fn render_raymarched_shadow(
     &self,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
+    globals: &wgpu::Buffer,
     light_pos: Vec2,
     light_radius: f32,
     samples: u32,
@@ -1123,7 +1131,7 @@ impl LightingRenderer {
       entries: &[
         wgpu::BindGroupEntry {
           binding: 0,
-          resource: self.globals_buffer.as_entire_binding(),
+          resource: globals.as_entire_binding(),
         },
         wgpu::BindGroupEntry {
           binding: 1,
@@ -1169,8 +1177,7 @@ impl LightingRenderer {
   /// * `encoder` - The command encoder
   /// * `lights` - Iterator of (transform, light) pairs
   /// * `occluders` - Slice of (transform, occluder) pairs for shadow casting
-  /// * `camera_pos` - Camera position for view matrix
-  /// * `camera_zoom` - Camera zoom level
+  /// * `camera_pos`, `camera_zoom` - The view, as for [`render_lights`](Self::render_lights)
   #[allow(clippy::too_many_arguments)]
   pub fn render_lights_with_shadows<'a>(
     &self,
@@ -1182,15 +1189,9 @@ impl LightingRenderer {
     camera_pos: Vec2,
     camera_zoom: f32,
   ) {
+    let globals = self.standalone_globals(device, camera_pos, camera_zoom);
     // First render all lights
-    self.render_lights(
-      device,
-      queue,
-      encoder,
-      lights.clone(),
-      camera_pos,
-      camera_zoom,
-    );
+    self.draw_lights(device, queue, encoder, lights.clone(), Some(&globals));
 
     // Separate lights into regular shadows and raymarched shadows
     let mut raymarch_lights: Vec<(&Vec2, &Light2D)> = Vec::new();
@@ -1205,7 +1206,7 @@ impl LightingRenderer {
 
     // Generate and render regular shadow volumes
     let shadow_geometry = super::shadow::generate_shadow_geometry(regular_lights, occluders);
-    self.render_shadows(device, queue, encoder, &shadow_geometry);
+    self.draw_shadows(device, queue, encoder, &shadow_geometry, &globals);
 
     // Render ray-marched shadows for lights that use them
     for (position, light) in raymarch_lights {
@@ -1214,6 +1215,7 @@ impl LightingRenderer {
           device,
           queue,
           encoder,
+          &globals,
           *position,
           light.radius(),
           samples,
@@ -1364,25 +1366,17 @@ impl LightingRenderer {
     &self,
     effects: &mut EffectsManager,
     lights: &[(Vec2, Light2D)],
-    camera_pos: Vec2,
-    camera_zoom: f32,
+    view: &CameraView,
   ) {
-    let half_w = self.screen.x / 2.0;
-    let half_h = self.screen.y / 2.0;
-    let viewport_w = self.screen.x;
-    let viewport_h = self.screen.y;
-
     // Filter lights that contribute to god rays and convert to screen UV
     let positions: Vec<(f32, f32)> = lights
       .iter()
       .filter(|(_, light)| light.contributes_to_god_rays())
       .take(4) // Shader supports max 4 lights
       .map(|(position, _)| {
-        // World to screen (same math as Camera::world_to_screen)
-        let screen_x = (position.x - camera_pos.x) * camera_zoom + half_w;
-        let screen_y = (position.y - camera_pos.y) * camera_zoom + half_h;
-        // Screen to UV
-        (screen_x / viewport_w, screen_y / viewport_h)
+        // Where the camera shows the light, as a UV of its rectangle
+        let uv = (view.world_to_screen(*position) - view.rect_min) / view.rect_size;
+        (uv.x, uv.y)
       })
       .collect();
 

@@ -74,10 +74,9 @@ pub(crate) struct FrameScene<'a> {
   pub(crate) lighting: Option<LightingFrame<'a>>,
   pub(crate) effects: &'a EffectsManager,
   pub(crate) ui_buffer: &'a [u8],
-  pub(crate) camera_pos: glam::Vec2,
-  pub(crate) camera_zoom: f32,
-  /// The camera the world passes draw through
+  /// The camera the world passes draw through, and every camera's uniforms
   pub(crate) camera: crate::core::ecs::Entity,
+  pub(crate) camera_uniforms: &'a crate::core::graphics::camera_gpu::CameraUniforms,
   pub(crate) time: f32,
   /// The scene transition's fade overlay: colour (RGB bytes) and opacity.
   /// Opacity 0 means no fade.

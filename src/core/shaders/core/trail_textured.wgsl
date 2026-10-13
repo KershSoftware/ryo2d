@@ -1,11 +1,13 @@
 // Textured trail/line uber-shader
 // Same as trail.wgsl but with texture sampling
 
+// The camera the trails are drawn through (`CameraGlobals`)
 struct TrailGlobals {
     view_proj: mat4x4<f32>,
     resolution: vec2<f32>,
-    time: f32,
-    _padding: f32,
+    game_time: f32,
+    real_time: f32,
+    snap: f32,
 };
 
 struct TrailVertex {
@@ -93,13 +95,13 @@ fn vs_main(vertex: TrailVertex) -> VertexOutput {
     let effect_type = type_style & 0xFu;
 
     if (effect_type == 1u) {
-        let d = lightning_displacement(vertex.uv.x, vertex.effect_params[1], vertex.effect_params[2], vertex.effect_params[3], globals.time);
+        let d = lightning_displacement(vertex.uv.x, vertex.effect_params[1], vertex.effect_params[2], vertex.effect_params[3], globals.real_time);
         pos += vertex.perpendicular * d;
     } else if (effect_type == 2u) {
-        let d = noise_displacement(vertex.uv.x, vertex.effect_params[1], vertex.effect_params[2], vertex.effect_params[3], globals.time);
+        let d = noise_displacement(vertex.uv.x, vertex.effect_params[1], vertex.effect_params[2], vertex.effect_params[3], globals.real_time);
         pos += vertex.perpendicular * d;
     } else if (effect_type == 4u) {
-        let d = ribbon_displacement(vertex.uv, vertex.effect_params[1], vertex.effect_params[2], vertex.effect_params[3], globals.time);
+        let d = ribbon_displacement(vertex.uv, vertex.effect_params[1], vertex.effect_params[2], vertex.effect_params[3], globals.real_time);
         pos += vertex.perpendicular * d;
     }
 
@@ -109,7 +111,7 @@ fn vs_main(vertex: TrailVertex) -> VertexOutput {
     out.effect_params = vertex.effect_params;
 
     if (effect_type == 3u) {
-        out.uv.x += globals.time * vertex.effect_params[1];
+        out.uv.x += globals.real_time * vertex.effect_params[1];
     }
 
     return out;

@@ -60,7 +60,6 @@ impl Engine {
         time.game.elapsed(),
       )
     };
-    let camera_pos = camera.center;
     let main_camera = main_camera_entity(&mut self.world);
 
     let (entity_sprites, lights) = {
@@ -125,7 +124,7 @@ impl Engine {
         lighting.set_ambient(*settings.ambient());
         lighting.set_atmosphere(settings.atmosphere().clone());
         let mut effects = self.world.resource_mut::<EffectsManager>();
-        lighting.update_god_rays(&mut effects, &lights, camera_pos, camera.scale);
+        lighting.update_god_rays(&mut effects, &lights, &camera);
       }
 
       // Every camera's uniforms: its matrix, image size, clocks and pixel
@@ -160,7 +159,7 @@ impl Engine {
         rend.queue(),
         &mut self.draw_list,
       );
-      if let Some(trails) = trails.as_ref() {
+      if let Some(trails) = trails.as_mut() {
         for z in trails.groups(true) {
           self.draw_list.push_trail_group(true, z);
         }
@@ -168,7 +167,8 @@ impl Engine {
           self.draw_list.push_trail_group(false, z);
         }
         // Upload the trail and line vertices once; the world passes only draw
-        trails.prepare(rend.queue(), (camera_pos, camera.scale, real_time));
+        trails.sync_cameras(rend.device(), &self.camera_uniforms);
+        trails.prepare(rend.queue());
       }
       self.draw_list.sorted();
       gpu.prepare_world(rend.device(), rend.queue(), &self.draw_list);
@@ -208,9 +208,8 @@ impl Engine {
           }),
           effects: world.resource::<EffectsManager>(),
           ui_buffer: &self.ui_buffer,
-          camera_pos,
-          camera_zoom: camera.scale,
           camera: main_camera.unwrap_or(Entity::PLACEHOLDER),
+          camera_uniforms: &self.camera_uniforms,
           time: real_time,
           overlay,
         };

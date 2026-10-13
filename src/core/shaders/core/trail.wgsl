@@ -1,11 +1,13 @@
 // Trail/Line uber-shader
 // Supports per-vertex style (Solid/Soft/Glow) and GPU effects (Lightning/Noise/UvScroll/Ribbon)
 
+// The camera the trails are drawn through (`CameraGlobals`)
 struct TrailGlobals {
     view_proj: mat4x4<f32>,
     resolution: vec2<f32>,
-    time: f32,
-    _padding: f32,
+    game_time: f32,
+    real_time: f32,
+    snap: f32,
 };
 
 struct TrailVertex {
@@ -102,7 +104,7 @@ fn vs_main(vertex: TrailVertex) -> VertexOutput {
             vertex.effect_params[1],
             vertex.effect_params[2],
             vertex.effect_params[3],
-            globals.time
+            globals.real_time
         );
         pos += vertex.perpendicular * d;
     } else if (effect_type == 2u) {
@@ -111,7 +113,7 @@ fn vs_main(vertex: TrailVertex) -> VertexOutput {
             vertex.effect_params[1],
             vertex.effect_params[2],
             vertex.effect_params[3],
-            globals.time
+            globals.real_time
         );
         pos += vertex.perpendicular * d;
     } else if (effect_type == 4u) {
@@ -120,7 +122,7 @@ fn vs_main(vertex: TrailVertex) -> VertexOutput {
             vertex.effect_params[1],
             vertex.effect_params[2],
             vertex.effect_params[3],
-            globals.time
+            globals.real_time
         );
         pos += vertex.perpendicular * d;
     }
@@ -132,7 +134,7 @@ fn vs_main(vertex: TrailVertex) -> VertexOutput {
 
     // UV scroll effect
     if (effect_type == 3u) {
-        out.uv.x += globals.time * vertex.effect_params[1];
+        out.uv.x += globals.real_time * vertex.effect_params[1];
     }
 
     return out;

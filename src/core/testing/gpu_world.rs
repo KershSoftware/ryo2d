@@ -381,3 +381,43 @@ fn an_interpolated_sprite_draws_between_its_last_two_steps() {
   assert_eq!(frame.get_pixel(51, 11).0, RED, "drawn at x = 50");
   assert_ne!(frame.get_pixel(61, 11).0, RED, "not at the stepped x = 60");
 }
+
+#[test]
+fn an_interpolated_camera_draws_between_its_last_two_steps() {
+  use std::time::Duration;
+  /// Pans the main camera 20 px right every fixed step over a still sprite.
+  struct Pan;
+  impl Scene for Pan {
+    fn on_enter(&mut self, ctx: &mut SceneContext) {
+      let sprite = SpriteHandle::from_sprite(Sprite::solid_rect(4, 4, 220, 30, 40, 255), "still");
+      ctx.world.spawn((
+        Transform::from_xy(58.0, 10.0),
+        Renderable::sprite(sprite).with_anchor(Anchor::TopLeft),
+      ));
+    }
+    fn update(&mut self, ctx: &mut SceneContext, _dt: f32) -> SceneAction {
+      let mut camera = ctx.camera();
+      let p = camera.position();
+      camera.set_position(p.x + 20.0, p.y);
+      SceneAction::Continue
+    }
+  }
+  let builder = EngineBuilder::new()
+    .resolution(120, 30)
+    .fixed_hz(50)
+    .start_scene(Pan);
+  let Some(mut engine) = engine(builder) else {
+    return;
+  };
+  // The camera starts at x = 60; two steps take it to 100 (from 80)
+  engine.step_frames(2).unwrap();
+  // One more step (to 120) and half a step left over: drawn at 110, so the
+  // sprite at world 58 shows at screen 58 - 110 + 60 = 8
+  engine.engine.frame(Some(Duration::from_millis(30)));
+  let frame = engine.frame().unwrap();
+  assert_eq!(
+    frame.get_pixel(9, 11).0,
+    RED,
+    "drawn from the interpolated camera"
+  );
+}

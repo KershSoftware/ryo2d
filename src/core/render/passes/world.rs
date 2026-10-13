@@ -52,7 +52,7 @@ impl RenderPass for World {
         WorldRun::Sprites { .. } => sprites.draw_world_run(&mut pass, run, camera),
         WorldRun::Trail { z } => {
           if let Some(trails) = trails {
-            trails.draw_group(&mut pass, true, *z);
+            trails.draw_group(&mut pass, true, *z, camera);
           }
         }
       }
@@ -81,6 +81,7 @@ impl RenderPass for UnlitWorld {
     if list.unlit_items().is_empty() {
       return;
     }
+    let camera = ctx.scene.camera;
     let (encoder, view) = ctx.encoder_and_current_view();
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
       label: Some("Unlit World Render Pass"),
@@ -100,7 +101,7 @@ impl RenderPass for UnlitWorld {
     });
     for item in list.unlit_items() {
       if let crate::core::render::DrawPayload::Trail { z } = item.payload {
-        trails.draw_group(&mut pass, false, z);
+        trails.draw_group(&mut pass, false, z, camera);
       }
     }
   }

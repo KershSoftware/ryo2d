@@ -816,6 +816,7 @@ impl WgpuRenderer {
     ui_buffer: &[u8],
   ) -> Result<(), FrameError> {
     let sprites = SpriteGpuRenderer::new(&self.device, &self.queue, self.target.format());
+    let uniforms = super::camera_gpu::CameraUniforms::default();
     let effects = EffectsManager::new();
     let draw_list = DrawList::default();
     let scene = FrameScene {
@@ -825,9 +826,8 @@ impl WgpuRenderer {
       lighting: None,
       effects: &effects,
       ui_buffer,
-      camera_pos: glam::Vec2::ZERO,
-      camera_zoom: 1.0,
       camera: crate::core::ecs::Entity::PLACEHOLDER,
+      camera_uniforms: &uniforms,
       time: 0.0,
       overlay: ([0; 3], 0.0),
     };

@@ -2,11 +2,13 @@
 // Renders shadow volume geometry to subtract from the light accumulation buffer
 // Supports soft shadows with configurable edge softness and colored shadows
 
+// The camera the lights are drawn through (`CameraGlobals`)
 struct ShadowGlobals {
-    view_proj: mat4x4<f32>,     // Camera projection matrix
-    resolution: vec2<f32>,      // Screen resolution
-    time: f32,                  // Current time
-    _padding: f32,
+    view_proj: mat4x4<f32>,
+    resolution: vec2<f32>,
+    game_time: f32,
+    real_time: f32,
+    snap: f32,
 };
 
 struct ShadowVertex {

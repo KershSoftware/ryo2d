@@ -719,14 +719,9 @@ impl Engine {
     if self.ui_buffer.len() != ui_len {
       self.ui_buffer = vec![0; ui_len];
     }
-    let screen = mapping.screen_size();
     if let Some(lighting) = &mut self.lighting {
       let (width, height) = mapping.render_size();
       lighting.resize(renderer.device(), width, height);
-      lighting.set_screen_size(screen);
-    }
-    if let Some(trails) = &mut self.trail_renderer {
-      trails.set_screen_size(screen);
     }
     self.world.insert_resource(mapping);
   }

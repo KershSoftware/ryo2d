@@ -4,12 +4,14 @@
 
 use super::{Line2D, LineCap, LineJoin, TextureMode, Trail2D, TrailEffect, TrailPoint};
 use crate::core::asset::SpriteHandle;
+use crate::core::ecs::Entity;
 use crate::core::ecs::Vec2;
 use crate::core::graphics::TextureId;
+use crate::core::graphics::camera_gpu::{CameraGlobals, CameraUniforms};
+use crate::core::graphics::{Camera2d, CameraView};
 use crate::core::ui::Color;
 use std::cell::Cell;
 use std::collections::HashMap;
-use wgpu::util::DeviceExt;
 
 /// Maximum number of vertices per frame (across all trails/lines)
 pub const MAX_TRAIL_VERTICES: usize = 65536;
@@ -41,16 +43,6 @@ struct TrailVertex {
   effect_params: [f32; 4],
   /// Normalized perpendicular direction for GPU displacement effects
   perpendicular: [f32; 2],
-}
-
-/// Global uniforms for trail rendering
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct TrailGlobals {
-  /// View-projection matrix
-  view_proj: [[f32; 4]; 4],
-  /// Resolution and time
-  resolution_time: [f32; 4], // x, y = resolution, z = time, w = padding
 }
 
 /// Cached GPU texture for a trail
@@ -123,18 +115,20 @@ pub struct TrailRenderer {
   /// Vertex buffer
   vertex_buffer: wgpu::Buffer,
 
-  /// Uniform buffer for globals
-  globals_buffer: wgpu::Buffer,
-
-  /// Bind group layout for non-textured trails (globals only)
-  #[expect(dead_code, reason = "layout kept alive for shader validation")]
+  /// Bind group layout for the camera (group 0)
   bind_group_layout: wgpu::BindGroupLayout,
 
   /// Bind group layout for textured trails (texture + sampler)
   texture_bind_group_layout: wgpu::BindGroupLayout,
 
-  /// Current bind group (globals)
-  bind_group: wgpu::BindGroup,
+  /// Group 0 per camera, over its uniform buffer
+  camera_bind_groups: HashMap<Entity, wgpu::BindGroup>,
+
+  /// Group 0 for drawing on its own (`render`): its uniforms, and the
+  /// target size their view spans
+  standalone_globals: wgpu::Buffer,
+  standalone_bind_group: wgpu::BindGroup,
+  standalone_size: glam::Vec2,
 
   /// Sampler for textures
   sampler: wgpu::Sampler,
@@ -172,15 +166,15 @@ pub struct TrailRenderer {
   /// Whether the current run of frames with dropped geometry was reported
   drop_warned: std::cell::Cell<bool>,
 
-  /// Screen space's size, which the projection spans
-  screen: glam::Vec2,
-
   /// Whether the renderer is enabled
   enabled: bool,
 }
 
 impl TrailRenderer {
   /// Create a new trail renderer.
+  /// A trail renderer. `width`x`height` is the target [`render`](Self::render)
+  /// draws on when the renderer is used on its own; the engine draws each
+  /// camera through its own uniforms.
   pub fn new(
     device: &wgpu::Device,
     width: u32,
@@ -193,22 +187,6 @@ impl TrailRenderer {
       size: (std::mem::size_of::<TrailVertex>() * MAX_TRAIL_VERTICES) as u64,
       usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
       mapped_at_creation: false,
-    });
-
-    // Create globals uniform buffer
-    let globals = TrailGlobals {
-      view_proj: [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-      ],
-      resolution_time: [width as f32, height as f32, 0.0, 0.0],
-    };
-    let globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-      label: Some("Trail Globals Buffer"),
-      contents: bytemuck::cast_slice(&[globals]),
-      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
     // Create bind group layout for non-textured trails
@@ -250,13 +228,19 @@ impl TrailRenderer {
         ],
       });
 
-    // Create bind group
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-      label: Some("Trail Bind Group"),
+    // Group 0 for drawing on its own
+    let standalone_globals = device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("Trail Standalone Globals"),
+      size: std::mem::size_of::<CameraGlobals>() as u64,
+      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+      mapped_at_creation: false,
+    });
+    let standalone_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("Trail Standalone Bind Group"),
       layout: &bind_group_layout,
       entries: &[wgpu::BindGroupEntry {
         binding: 0,
-        resource: globals_buffer.as_entire_binding(),
+        resource: standalone_globals.as_entire_binding(),
       }],
     });
 
@@ -392,10 +376,12 @@ impl TrailRenderer {
       pipeline,
       textured_pipeline,
       vertex_buffer,
-      globals_buffer,
       bind_group_layout,
       texture_bind_group_layout,
-      bind_group,
+      camera_bind_groups: HashMap::new(),
+      standalone_globals,
+      standalone_bind_group,
+      standalone_size: glam::Vec2::new(width as f32, height as f32),
       sampler,
       texture_cache: HashMap::new(),
       vertices: Vec::with_capacity(MAX_TRAIL_VERTICES),
@@ -407,7 +393,6 @@ impl TrailRenderer {
       group_index: HashMap::new(),
       dropped: false,
       drop_warned: std::cell::Cell::new(false),
-      screen: glam::Vec2::new(width as f32, height as f32),
       enabled: true,
     }
   }
@@ -422,14 +407,120 @@ impl TrailRenderer {
     self.enabled
   }
 
-  /// Resize the renderer.
+  /// Resize the target [`render`](Self::render) draws on.
   pub fn resize(&mut self, width: u32, height: u32) {
-    self.screen = glam::Vec2::new(width as f32, height as f32);
+    self.standalone_size = glam::Vec2::new(width as f32, height as f32);
   }
 
-  /// Set screen space's size, which trails and lines are projected into.
-  pub(crate) fn set_screen_size(&mut self, size: glam::Vec2) {
-    self.screen = size;
+  /// Draw the lit trails and lines on `target_view` on their own (the engine
+  /// draws them in its world passes), through a view centred on
+  /// `camera_pos` at `camera_zoom` over the renderer's size.
+  #[allow(clippy::too_many_arguments)]
+  pub fn render(
+    &self,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    target_view: &wgpu::TextureView,
+    camera_pos: Vec2,
+    camera_zoom: f32,
+    time: f32,
+    _style: TrailStyle,
+  ) {
+    self.render_standalone(
+      queue,
+      encoder,
+      target_view,
+      (camera_pos, camera_zoom, time),
+      true,
+    );
+  }
+
+  /// [`render`](Self::render) for the unlit trails and lines.
+  pub fn render_unlit(
+    &self,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    target_view: &wgpu::TextureView,
+    camera_pos: Vec2,
+    camera_zoom: f32,
+    time: f32,
+  ) {
+    self.render_standalone(
+      queue,
+      encoder,
+      target_view,
+      (camera_pos, camera_zoom, time),
+      false,
+    );
+  }
+
+  /// Upload and draw the groups of one lighting mode in a pass of their own.
+  fn render_standalone(
+    &self,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    target_view: &wgpu::TextureView,
+    (center, zoom, time): (Vec2, f32, f32),
+    lit: bool,
+  ) {
+    let mut zs: Vec<i32> = self.groups(lit).collect();
+    if zs.is_empty() {
+      return;
+    }
+    zs.sort_unstable();
+    let camera = Camera2d {
+      zoom,
+      ..Camera2d::default()
+    };
+    let view = CameraView::compute(center, 0.0, &camera, Vec2::ZERO, self.standalone_size);
+    let size = (self.standalone_size.x as u32, self.standalone_size.y as u32);
+    let globals = CameraGlobals::new(&view, size, 0.0, time, false);
+    queue.write_buffer(&self.standalone_globals, 0, bytemuck::bytes_of(&globals));
+    self.prepare(queue);
+    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+      label: Some("Trail Render Pass"),
+      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+        view: target_view,
+        depth_slice: None,
+        resolve_target: None,
+        ops: wgpu::Operations {
+          load: wgpu::LoadOp::Load,
+          store: wgpu::StoreOp::Store,
+        },
+      })],
+      depth_stencil_attachment: None,
+      occlusion_query_set: None,
+      multiview_mask: None,
+      timestamp_writes: None,
+    });
+    for z in zs {
+      self.draw_group_with(&mut render_pass, lit, z, &self.standalone_bind_group);
+    }
+  }
+
+  /// Bind every camera's uniform buffer as group 0, dropping cameras that
+  /// are gone.
+  pub(crate) fn sync_cameras(&mut self, device: &wgpu::Device, uniforms: &CameraUniforms) {
+    self
+      .camera_bind_groups
+      .retain(|camera, _| uniforms.buffer(*camera).is_some());
+    for camera in uniforms.cameras() {
+      if self.camera_bind_groups.contains_key(&camera) {
+        continue;
+      }
+      let Some(buffer) = uniforms.buffer(camera) else {
+        continue;
+      };
+      let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Trail Camera Bind Group"),
+        layout: &self.bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+          binding: 0,
+          resource: buffer.as_entire_binding(),
+        }],
+      });
+      self.camera_bind_groups.insert(camera, bind_group);
+    }
   }
 
   /// Begin a new frame (clears accumulated vertices).
@@ -1533,84 +1624,6 @@ impl TrailRenderer {
   }
 
   /// Render the trails and lines that scene lighting applies to.
-  #[allow(clippy::too_many_arguments)]
-  pub fn render(
-    &self,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    target_view: &wgpu::TextureView,
-    camera_pos: Vec2,
-    camera_zoom: f32,
-    time: f32,
-    _style: TrailStyle,
-  ) {
-    self.render_groups(
-      queue,
-      encoder,
-      target_view,
-      (camera_pos, camera_zoom, time),
-      true,
-    );
-  }
-
-  /// Render the trails and lines created with `with_lighting(false)`.
-  ///
-  /// Call after lighting, onto the lit scene. Their geometry sits after the lit
-  /// geometry in the vertex buffer, so both can be drawn in the same frame.
-  pub fn render_unlit(
-    &self,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    target_view: &wgpu::TextureView,
-    camera_pos: Vec2,
-    camera_zoom: f32,
-    time: f32,
-  ) {
-    self.render_groups(
-      queue,
-      encoder,
-      target_view,
-      (camera_pos, camera_zoom, time),
-      false,
-    );
-  }
-
-  /// Upload and draw the groups of one lighting mode in a pass of their own.
-  fn render_groups(
-    &self,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    target_view: &wgpu::TextureView,
-    camera: (Vec2, f32, f32),
-    lit: bool,
-  ) {
-    let mut zs: Vec<i32> = self.groups(lit).collect();
-    if zs.is_empty() {
-      return;
-    }
-    zs.sort_unstable();
-    self.prepare(queue, camera);
-    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-      label: Some("Trail Render Pass"),
-      color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        view: target_view,
-        depth_slice: None,
-        resolve_target: None,
-        ops: wgpu::Operations {
-          load: wgpu::LoadOp::Load,
-          store: wgpu::StoreOp::Store,
-        },
-      })],
-      depth_stencil_attachment: None,
-      occlusion_query_set: None,
-      multiview_mask: None,
-      timestamp_writes: None,
-    });
-    for z in zs {
-      self.draw_group(&mut render_pass, lit, z);
-    }
-  }
-
   /// The z of every group of one lighting mode that has geometry to draw.
   pub(crate) fn groups(&self, lit: bool) -> impl Iterator<Item = i32> + '_ {
     self
@@ -1620,16 +1633,12 @@ impl TrailRenderer {
       .map(|group| group.z)
   }
 
-  /// Upload the frame's globals and every group's vertices.
+  /// Upload every group's (world-space) vertices.
   ///
   /// Call before the render pass that draws groups with
   /// [`draw_group`](Self::draw_group); buffer writes are not allowed
   /// mid-pass.
-  pub(crate) fn prepare(
-    &self,
-    queue: &wgpu::Queue,
-    (camera_pos, camera_zoom, time): (Vec2, f32, f32),
-  ) {
+  pub(crate) fn prepare(&self, queue: &wgpu::Queue) {
     if !self.enabled {
       return;
     }
@@ -1642,28 +1651,6 @@ impl TrailRenderer {
         "Trail/line vertex limit ({MAX_TRAIL_VERTICES}) reached; some trails or lines were not drawn this frame"
       );
     }
-
-    // Update globals with camera transform
-    let half_w = self.screen.x / 2.0;
-    let half_h = self.screen.y / 2.0;
-
-    let scale_x = camera_zoom / half_w;
-    let scale_y = -camera_zoom / half_h; // Flip Y
-    let offset_x = -camera_pos.x * scale_x;
-    let offset_y = -camera_pos.y * scale_y;
-
-    let view_proj = [
-      [scale_x, 0.0, 0.0, 0.0],
-      [0.0, scale_y, 0.0, 0.0],
-      [0.0, 0.0, 1.0, 0.0],
-      [offset_x, offset_y, 0.0, 1.0],
-    ];
-
-    let globals = TrailGlobals {
-      view_proj,
-      resolution_time: [self.screen.x, self.screen.y, time, 0.0],
-    };
-    queue.write_buffer(&self.globals_buffer, 0, bytemuck::cast_slice(&[globals]));
 
     let vertex_size = std::mem::size_of::<TrailVertex>();
     // The groups are in draw order, so each starts where the last one ended
@@ -1700,7 +1687,26 @@ impl TrailRenderer {
   /// Draws nothing when the group is empty or does not exist. Leaves the
   /// pipeline and bind groups set for trails, so a caller drawing something
   /// else next sets its own.
-  pub(crate) fn draw_group<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, lit: bool, z: i32) {
+  pub(crate) fn draw_group<'a>(
+    &'a self,
+    pass: &mut wgpu::RenderPass<'a>,
+    lit: bool,
+    z: i32,
+    camera: Entity,
+  ) {
+    if let Some(camera_group) = self.camera_bind_groups.get(&camera) {
+      self.draw_group_with(pass, lit, z, camera_group);
+    }
+  }
+
+  /// [`draw_group`](Self::draw_group) through the group-0 `camera_group`.
+  fn draw_group_with<'a>(
+    &'a self,
+    pass: &mut wgpu::RenderPass<'a>,
+    lit: bool,
+    z: i32,
+    camera_group: &'a wgpu::BindGroup,
+  ) {
     if !self.enabled {
       return;
     }
@@ -1720,7 +1726,7 @@ impl TrailRenderer {
     pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
     if !geometry.vertices.is_empty() {
       pass.set_pipeline(&self.pipeline);
-      pass.set_bind_group(0, &self.bind_group, &[]);
+      pass.set_bind_group(0, camera_group, &[]);
       pass.draw(base as u32..(base + geometry.vertices.len()) as u32, 0..1);
     }
 
@@ -1729,7 +1735,7 @@ impl TrailRenderer {
     for batch in &geometry.textured_batches {
       if let Some(cached) = batch.texture.and_then(|id| self.texture_cache.get(&id)) {
         pass.set_pipeline(&self.textured_pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(0, camera_group, &[]);
         pass.set_bind_group(1, &cached.bind_group, &[]);
         let start = (textured_base + batch.start) as u32;
         let end = (textured_base + batch.end) as u32;
@@ -2182,15 +2188,6 @@ mod tests {
     // perpendicular: [f32; 2] = 8 bytes
     // Total: 56 bytes
     assert_eq!(std::mem::size_of::<TrailVertex>(), 56);
-  }
-
-  #[test]
-  fn trail_globals_struct_size() {
-    // Ensure TrailGlobals is the expected size for GPU uniform buffer
-    // view_proj: [[f32; 4]; 4] = 64 bytes
-    // resolution_time: [f32; 4] = 16 bytes
-    // Total: 80 bytes
-    assert_eq!(std::mem::size_of::<TrailGlobals>(), 80);
   }
 
   #[test]

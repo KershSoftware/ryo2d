@@ -356,3 +356,35 @@ fn an_occluder_shadows_what_is_behind_it() {
     "{shadowed:?} vs {open:?}"
   );
 }
+
+/// A white scene under dark ambient with one light 16 px right of the
+/// camera centre; the camera turns a quarter clockwise.
+struct LitTurned;
+
+impl Scene for LitTurned {
+  fn on_enter(&mut self, ctx: &mut SceneContext) {
+    white_sprite(ctx);
+    ctx.world.spawn((
+      Transform::from_xy(48.0, 32.0),
+      Light2D::point(Color::rgb(255, 255, 255), 8.0),
+    ));
+    ctx
+      .lighting()
+      .set_ambient(AmbientLight::with_intensity(0.02));
+    ctx.camera().set_position(32.0, 32.0);
+    ctx.camera().set_rotation(std::f32::consts::FRAC_PI_2);
+  }
+}
+
+#[test]
+fn lights_turn_with_the_camera() {
+  let Some(mut engine) = engine(LitTurned) else {
+    return;
+  };
+  engine.step_frames(3).unwrap();
+  let frame = engine.frame().unwrap();
+  // 16 right of the centre shows 16 above it: (32, 16)
+  let lit = frame.get_pixel(32, 16).0;
+  let dark = frame.get_pixel(48, 32).0;
+  assert!(lit[0] > dark[0].saturating_add(60), "{lit:?} vs {dark:?}");
+}

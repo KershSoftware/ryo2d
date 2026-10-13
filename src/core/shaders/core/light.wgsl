@@ -1,11 +1,13 @@
 // 2D Light rendering shader
 // Renders individual lights to the light accumulation buffer
 
+// The camera the lights are drawn through (`CameraGlobals`)
 struct LightGlobals {
-    view_proj: mat4x4<f32>,     // Camera projection matrix
-    resolution: vec2<f32>,      // Screen resolution
-    time: f32,                  // Current time
-    _padding: f32,
+    view_proj: mat4x4<f32>,
+    resolution: vec2<f32>,
+    game_time: f32,
+    real_time: f32,
+    snap: f32,
 };
 
 // Per-light instance data

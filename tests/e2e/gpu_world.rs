@@ -811,3 +811,62 @@ fn render_gpu_sprites_are_placed_in_the_world() {
   assert_eq!(frame.get_pixel(30, 32).0, RED);
   assert_ne!(frame.get_pixel(40, 32).0, RED);
 }
+
+#[test]
+fn shake_moves_sprites_and_lines_together() {
+  let scene = Fixture::new(|ctx| {
+    let mut camera = ctx.camera();
+    camera.configure_shake(12.0, 0.0);
+    camera.add_trauma(1.0);
+    spawn_line(ctx, 0); // green across y 32, rows 30..34
+    ctx.world.spawn((
+      Transform::from_xy(40.0, 32.0),
+      Renderable::sprite(solid("shake-red", 10, RED)).with_anchor(Anchor::TopLeft),
+    ));
+  });
+  let builder = EngineBuilder::new().resolution(64, 64).start_scene(scene);
+  let Some(mut engine) = start(builder) else {
+    return;
+  };
+  // Step until the shake has moved the view by at least 3 px vertically
+  let mut shaken = None;
+  for _ in 0..120 {
+    engine.step_frames(1).unwrap();
+    let mut views = engine.world_mut().query::<&CameraView>();
+    let shake = views.iter(engine.world()).next().unwrap().shake;
+    if shake.y.abs() >= 3.0 {
+      shaken = Some(shake);
+      break;
+    }
+  }
+  let shake = shaken.expect("the shake never moved the view");
+  let frame = engine.frame().unwrap();
+  // The shake moves the view sideways too: sample where each one went
+  let column = |x: f32| (x + shake.x).round() as u32;
+  let first =
+    |x: u32, hit: &dyn Fn([u8; 4]) -> bool| (0..64).find(|&y| hit(frame.get_pixel(x, y).0));
+  let line_top = first(column(20.0), &is_line).unwrap();
+  let sprite_top = first(column(45.0), &|p| p == RED).unwrap();
+  // Unshaken they are 2 rows apart; a fractional shake can move their
+  // anti-aliased edges a row apart (lines that ignored the shake would be
+  // 2 + shake.y apart)
+  let gap = sprite_top as i32 - line_top as i32;
+  assert!((gap - 2).abs() <= 1, "{gap} rows apart at shake {shake}");
+}
+
+#[test]
+fn a_rotated_camera_turns_lines_too() {
+  let scene = Fixture::new(|ctx| {
+    ctx.camera().set_position(32.0, 32.0);
+    ctx.camera().set_rotation(std::f32::consts::FRAC_PI_2);
+    spawn_line(ctx, 0); // horizontal through the centre
+  });
+  let Some(frame) = frame_of(scene, (64, 64)) else {
+    return;
+  };
+  assert!(
+    is_line(frame.get_pixel(32, 5).0),
+    "now vertical through the centre"
+  );
+  assert!(!is_line(frame.get_pixel(5, 32).0));
+}
